@@ -148,5 +148,25 @@ class TestTranspilerUnit(unittest.TestCase):
         self.assertIn("row.value * -2", result)
         self.assertIn("row.age > -5", result)
 
+    def test_between_compiles_to_conjunction(self):
+        sql = "SELECT SUM(value) FROM my_table WHERE age BETWEEN 20 AND 30"
+        result = transpile_sql_to_dafny(sql, self.schema)
+        self.assertIn("row.age >= 20", result)
+        self.assertIn("row.age <= 30", result)
+
+    def test_in_compiles_to_disjunction(self):
+        sql = "SELECT SUM(value) FROM my_table WHERE category IN ('A', 'B')"
+        result = transpile_sql_to_dafny(sql, self.schema)
+        self.assertIn('row.category == "A"', result)
+        self.assertIn('row.category == "B"', result)
+        self.assertIn("||", result)
+
+    def test_or_condition(self):
+        sql = "SELECT SUM(value) FROM my_table WHERE age < 20 OR age > 30"
+        result = transpile_sql_to_dafny(sql, self.schema)
+        self.assertIn("row.age < 20", result)
+        self.assertIn("row.age > 30", result)
+        self.assertIn("||", result)
+
 if __name__ == '__main__':
     unittest.main()

@@ -337,5 +337,70 @@ method Main() {{
         self.verify_query("SELECT SUM(value) FROM my_table WHERE age > -10")
         self.verify_query("SELECT SUM(value * -1) FROM my_table WHERE age >= -5 AND age <= 100")
 
+    def test_functional_or_condition(self):
+        # OR between two int predicates
+        self.verify_query("SELECT SUM(value) FROM my_table WHERE age < 21 OR age > 30")
+        # OR between two string predicates
+        self.verify_query("SELECT COUNT(*) FROM my_table WHERE category = 'A' OR category = 'C'")
+        # OR combined with AND
+        self.verify_query("SELECT SUM(value) FROM my_table WHERE age > 25 OR category = 'A'")
+
+    def test_functional_between(self):
+        self.verify_query("SELECT SUM(value) FROM my_table WHERE age BETWEEN 20 AND 30")
+        self.verify_query("SELECT COUNT(*) FROM my_table WHERE age BETWEEN 19 AND 25")
+        self.verify_query("SELECT category, SUM(value) FROM my_table WHERE age BETWEEN 20 AND 30 GROUP BY category")
+
+    def test_functional_in(self):
+        self.verify_query("SELECT SUM(value) FROM my_table WHERE category IN ('A', 'C')")
+        self.verify_query("SELECT COUNT(*) FROM my_table WHERE category IN ('B')")
+        self.verify_query("SELECT category, SUM(value) FROM my_table WHERE category IN ('A', 'B') GROUP BY category")
+
+    def test_functional_single_row_dataset(self):
+        orig = self.dummy_data
+        self.dummy_data = [{"category": "A", "value": 42, "age": 30, "name": "Solo"}]
+        try:
+            self.verify_query("SELECT SUM(value) FROM my_table")
+            self.verify_query("SELECT COUNT(*) FROM my_table")
+            self.verify_query("SELECT AVG(value) FROM my_table")
+            self.verify_query("SELECT category, SUM(value) FROM my_table GROUP BY category")
+        finally:
+            self.dummy_data = orig
+
+    def test_functional_all_filtered_within_group(self):
+        # WHERE eliminates some groups — those keys absent from result map
+        self.verify_query(
+            "SELECT category, SUM(value) FROM my_table WHERE age > 28 GROUP BY category"
+        )
+        # WHERE eliminates all rows — empty map
+        self.verify_query(
+            "SELECT category, SUM(value) FROM my_table WHERE age > 999 GROUP BY category"
+        )
+
+    def test_functional_negative_grouped_sum(self):
+        self.verify_query("SELECT category, SUM(value * -1) FROM my_table GROUP BY category")
+        self.verify_query("SELECT category, SUM(value * -2) FROM my_table WHERE age > 20 GROUP BY category")
+
+    def test_functional_ssb_query1(self):
+        """Real SSB Query 1 run through Dafny against a minimal dataset."""
+        from sql_transpiler import queries, schema as ssb_schema
+        # Build a minimal dataset: 3 rows with all SSB columns present
+        minimal_data = []
+        for i in range(3):
+            row = {col: (i + 1 if t == "int" else "AMERICA") for col, t in ssb_schema.items()}
+            row["LO_ORDERDATE"] = 19930101 + i
+            row["LO_DISCOUNT"] = 2
+            row["LO_QUANTITY"] = 25
+            row["LO_EXTENDEDPRICE"] = 1000
+            row["D_YEAR"] = 1993
+            minimal_data.append(row)
+        orig_data, orig_schema = self.dummy_data, self.schema
+        self.dummy_data = minimal_data
+        self.schema = ssb_schema
+        try:
+            self.verify_query(queries[0])  # SSB Query 1
+        finally:
+            self.dummy_data, self.schema = orig_data, orig_schema
+
 if __name__ == '__main__':
     unittest.main()
+

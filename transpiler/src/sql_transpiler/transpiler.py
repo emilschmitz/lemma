@@ -86,7 +86,7 @@ def parse_sql(sql_str: str, schema_dict: dict[str, str]) -> SQLQuery:
     for node in expression.walk():
         if isinstance(node, (
             exp.Join, exp.Union, exp.Subquery, exp.Having, exp.Order, 
-            exp.Limit, exp.Exists, exp.In, exp.Like, exp.Between,
+            exp.Limit, exp.Exists, exp.Like,
             exp.Max, exp.Min, exp.Distinct
         )):
             raise UnsupportedContractError("Query falls outside the supported dashboard subset.")
