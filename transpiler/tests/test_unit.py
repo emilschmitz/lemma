@@ -168,5 +168,35 @@ class TestTranspilerUnit(unittest.TestCase):
         self.assertIn("row.age > 30", result)
         self.assertIn("||", result)
 
+    def test_between_string_column_rejected(self):
+        # BETWEEN on a string column should raise — strings have no ordering in Dafny
+        with self.assertRaises(UnsupportedContractError):
+            transpile_sql_to_dafny(
+                "SELECT SUM(value) FROM my_table WHERE name BETWEEN 'A' AND 'Z'",
+                self.schema
+            )
+
+    def test_in_type_mismatch_rejected(self):
+        # IN with int column but string values should raise
+        with self.assertRaises(UnsupportedContractError):
+            transpile_sql_to_dafny(
+                "SELECT SUM(value) FROM my_table WHERE age IN ('A', 'B')",
+                self.schema
+            )
+        # IN with string column but int values should raise
+        with self.assertRaises(UnsupportedContractError):
+            transpile_sql_to_dafny(
+                "SELECT SUM(value) FROM my_table WHERE category IN (1, 2)",
+                self.schema
+            )
+
+    def test_in_empty_list_rejected(self):
+        # IN () is degenerate SQL — should raise rather than emit invalid Dafny
+        with self.assertRaises(UnsupportedContractError):
+            transpile_sql_to_dafny(
+                "SELECT SUM(value) FROM my_table WHERE category IN ()",
+                self.schema
+            )
+
 if __name__ == '__main__':
     unittest.main()

@@ -219,15 +219,45 @@ def parse_sql(sql_str: str, schema_dict: dict[str, str]) -> SQLQuery:
             elif isinstance(node, exp.Not):
                 return f"!({compile_where_expr(node.this)})"
             elif isinstance(node, exp.Between):
+                # Type guard: BETWEEN only makes sense for int columns
+                if not isinstance(node.this, exp.Column):
+                    raise UnsupportedContractError("BETWEEN left-hand side must be a column.")
+                col_lower = node.this.name.lower()
+                if col_lower not in schema_resolved:
+                    raise UnsupportedContractError(f"BETWEEN column '{node.this.name}' not found in schema.")
+                _, col_type = schema_resolved[col_lower]
+                if col_type != 'int':
+                    raise UnsupportedContractError(
+                        f"BETWEEN is only supported on int columns, not '{col_type}'.")
                 low_val = compile_where_expr(node.args.get("low"))
                 high_val = compile_where_expr(node.args.get("high"))
                 this_val = compile_where_expr(node.this)
                 return f"({this_val} >= {low_val} && {this_val} <= {high_val})"
             elif isinstance(node, exp.In):
+                if not node.expressions:
+                    raise UnsupportedContractError("IN () with empty list is not supported.")
+                # Determine column type for validation
+                if not isinstance(node.this, exp.Column):
+                    raise UnsupportedContractError("IN left-hand side must be a column.")
+                col_lower = node.this.name.lower()
+                if col_lower not in schema_resolved:
+                    raise UnsupportedContractError(f"IN column '{node.this.name}' not found in schema.")
+                _, col_type = schema_resolved[col_lower]
                 this_val = compile_where_expr(node.this)
                 eqs = []
                 for val_node in node.expressions:
                     val_str = compile_where_expr(val_node)
+                    # Type-check each element
+                    if isinstance(val_node, exp.Literal):
+                        elem_type = 'string' if val_node.is_string else 'int'
+                    elif isinstance(val_node, exp.Neg):
+                        elem_type = 'int'
+                    else:
+                        elem_type = col_type  # column ref — assume matches
+                    if elem_type != col_type:
+                        raise UnsupportedContractError(
+                            f"Type mismatch in IN list: column '{node.this.name}' is {col_type} "
+                            f"but value {val_str!r} is {elem_type}.")
                     eqs.append(f"{this_val} == {val_str}")
                 return f"({' || '.join(eqs)})"
             elif isinstance(node, (exp.EQ, exp.NEQ, exp.GT, exp.LT, exp.GTE, exp.LTE)):
