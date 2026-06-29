@@ -494,4 +494,8 @@ def transpile_sql_to_dafny(sql_str: str, schema_dict: dict[str, str]) -> str:
 
     # Combine everything
     functions_dafny = "\n\n".join(func.to_dafny() for func in functions)
-    return f"{schema_dafny}\n\n{functions_dafny}"
+    type_definitions = (
+        "type uint64 = x: int | 0 <= x < 18446744073709551616\n"
+        "type uint32 = x: int | 0 <= x < 4294967296\n\n"
+    )
+    return f"{type_definitions}{schema_dafny}\n\n{functions_dafny}"
