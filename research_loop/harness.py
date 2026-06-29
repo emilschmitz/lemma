@@ -78,7 +78,7 @@ def optimize_rust_file(file_path):
         content = f.read()
     
     # 1. Locate RunQuery function block
-    pattern = r"(pub fn RunQuery\([^{]*\{)([\s\S]*?)(\n\s*\}\n)"
+    pattern = r"(pub fn RunQuery\([^{]*\{)([\s\S]*?)(\n        \}\n)"
     match = re.search(pattern, content)
     if not match:
         return
@@ -96,10 +96,12 @@ def optimize_rust_file(file_path):
     body = body.replace("let mut len: DafnyInt = data.cardinality();", "let mut len: usize = data.cardinality().as_usize();")
     body = body.replace("let mut len: DafnyInt = LO_ORDERDATE.cardinality();", "let mut len: usize = LO_ORDERDATE.cardinality().as_usize();")
     
-    # Replace loop iterator conditions and increments
+    # Replace loop iterator conditions and increments (handle both wrapped and unwrapped literals)
     body = body.replace("while i.clone() < len.clone() {", "while i < len {")
     body = body.replace("i = i.clone() + int!(1);", "i = i + 1;")
     body = body.replace("i = i.clone() + int!(1_i32);", "i = i + 1;")
+    body = body.replace("i = i.clone() + 1;", "i = i + 1;")
+    body = body.replace("i = i.clone() + 1_i32;", "i = i + 1;")
     
     # Replace index accesses to use get_usize instead of get(&DafnyInt)
     body = body.replace("data.get(&i)", "data.get_usize(i)")
@@ -115,20 +117,27 @@ def optimize_rust_file(file_path):
     # Replace integer literal wrappers int!(N)
     body = re.sub(r"int!\((\d+)(?:_i32)?\)", r"\1", body)
     
-    # Replace complex int!(row.FIELD().clone()) wrappers to (row.FIELD().clone() as u64)
-    body = re.sub(r"int!\((row\.[a-zA-Z0-9_]+\(\)(?:\.clone\(\))?)\)", r"(\1 as u64)", body)
+    # Replace complex int!(val) wrappers to (val as u64)
+    # Handles both local variables (e.g. int!(price)) and nested getters (e.g. int!(row.LO_EXTENDEDPRICE().clone()))
+    body = re.sub(r"int!\(([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+\(\))?(?:\.clone\(\))?)\)", r"(\1 as u64)", body)
     
     # Reassemble
     optimized_content = content[:match.start()] + header + body + footer + content[match.end():]
     
-    # 2. Update Main's variable declarations for _out0 and opt_res to u64
+    # 2. Update Main's variable declarations for _out0 and opt_res to u64, and add timing wrapper
     optimized_content = optimized_content.replace(
         "let mut _out0: DafnyInt = _default::RunQuery(&data);",
-        "let mut _out0: u64 = _default::RunQuery(&data);"
+        "let start = ::std::time::Instant::now();\n"
+        "            let mut _out0: u64 = _default::RunQuery(&data);\n"
+        "            let elapsed_us = start.elapsed().as_micros();\n"
+        "            print!(\"QUERY_LATENCY_US: {}\\n\", elapsed_us);"
     )
     optimized_content = optimized_content.replace(
-        "let mut _out0: DafnyInt = _default::RunQuery(&LO_ORDERDATE",
-        "let mut _out0: u64 = _default::RunQuery(&LO_ORDERDATE"
+        "let mut _out0: DafnyInt = _default::RunQuery(&LO_ORDERDATE, &LO_DISCOUNT, &LO_QUANTITY, &LO_EXTENDEDPRICE);",
+        "let start = ::std::time::Instant::now();\n"
+        "            let mut _out0: u64 = _default::RunQuery(&LO_ORDERDATE, &LO_DISCOUNT, &LO_QUANTITY, &LO_EXTENDEDPRICE);\n"
+        "            let elapsed_us = start.elapsed().as_micros();\n"
+        "            print!(\"QUERY_LATENCY_US: {}\\n\", elapsed_us);"
     )
     optimized_content = optimized_content.replace(
         "let mut opt_res: DafnyInt;",
@@ -390,9 +399,14 @@ method {{:verify false}} Main() {{
             timeout=10
         )
         end_time = time.perf_counter()
-        latency_us = int((end_time - start_time) * 1_000_000)
-
         stdout = run_res.stdout.strip()
+        
+        # Parse microsecond latency from stdout if present
+        latency_match = re.search(r"QUERY_LATENCY_US:\s*(\d+)", stdout)
+        if latency_match:
+            latency_us = int(latency_match.group(1))
+        else:
+            latency_us = int((end_time - start_time) * 1_000_000)
         if run_res.returncode != 0:
             exit_with_metrics("FAILURE", True, -1, f"Executable crashed during execution. Return code: {run_res.returncode}\nSTDERR: {run_res.stderr}")
         
