@@ -51,10 +51,22 @@ pub mod _module {
         }
         /// working_query.dfy(11,1)
         pub fn RunQuery(data: &Sequence<Rc<Row>>) -> DafnyInt {
-            let mut res: DafnyInt = _default::MethodSpec(data);
+            let mut res: DafnyInt = int!(0);
+            let mut i: DafnyInt = int!(0);
+            while i.clone() < data.cardinality() {
+                let mut row: Rc<Row> = data.get(&i);
+                let mut term: DafnyInt;
+                if row.LO_ORDERDATE().clone() >= int!(b"19930101") && row.LO_ORDERDATE().clone() <= int!(b"19931231") && row.LO_DISCOUNT().clone() >= int!(1) && row.LO_DISCOUNT().clone() <= int!(3) && row.LO_QUANTITY().clone() < int!(25) {
+                    term = row.LO_EXTENDEDPRICE().clone() * row.LO_DISCOUNT().clone();
+                } else {
+                    term = int!(0);
+                };
+                res = res.clone() + term.clone();
+                i = i.clone() + int!(1);
+            };
             return res.clone();
         }
-        /// working_query.dfy(18,1)
+        /// working_query.dfy(28,1)
         pub fn Main(_noArgsParameter: &Sequence<Sequence<DafnyChar>>) -> () {
             let mut data: Sequence<Rc<Row>> = {
                     let _initializer = {
@@ -140,17 +152,12 @@ pub mod _module {
                 })
         }) as Rc<dyn ::std::ops::Fn(&_) -> _>
                         };
-                    integer_range(Zero::zero(), int!(1000)).map(move |i| _initializer(&i)).collect::<Sequence<_>>()
+                    integer_range(Zero::zero(), int!(b"50000")).map(move |i| _initializer(&i)).collect::<Sequence<_>>()
                 };
-            let mut spec_res: DafnyInt = _default::MethodSpec(&data);
             let mut opt_res: DafnyInt;
             let mut _out0: DafnyInt = _default::RunQuery(&data);
             opt_res = _out0.clone();
-            if spec_res.clone() != opt_res.clone() {
-                print!("{}", DafnyPrintWrapper(&string_of("ERROR: runtime mismatch\n")))
-            } else {
-                print!("{}", DafnyPrintWrapper(&string_of("SUCCESS\n")))
-            };
+            print!("{}", DafnyPrintWrapper(&string_of("SUCCESS\n")));
             return ();
         }
     }

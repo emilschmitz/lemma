@@ -24,3 +24,8 @@ obj/
 # Rust target/build files
 target/
 temp_build/
+
+# Logs and experimental runs
+*.log
+experiments/
+scratch/
