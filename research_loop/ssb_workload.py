@@ -4,10 +4,15 @@
 # This file defines the schema and queries for the Star Schema Benchmark (SSB)
 # denormalized/flat table (lineorder_flat). These queries and table structure
 # represent the standard workload used to evaluate query engine performance
-# (as referenced in modern OLAP research, e.g., the GenDB paper, arXiv:2603.02081).
+# (as referenced in modern OLAP research, e.g., the GenDB paper, published March 2026).
 #
-# Schema Source: Star Schema Benchmark (SSB) denormalized flat schema
-# Query Source: Standard SSB Query Set (Q1.1 - Q4.3 / Q5.x variants)
+# Sources:
+# - GenDB Paper (March 2026): "GenDB: The Next Generation of Query Processing — 
+#   Synthesized, Not Engineered" by Jiale Lao & Immanuel Trummer (Cornell University).
+#   arXiv Link: https://arxiv.org/abs/2603.02081
+#   GitHub Repository: https://github.com/SolidLao/GenDB
+# - Schema & Query Definitions: Standard Star Schema Benchmark (SSB) denormalized 
+#   flat schema (Q1.1 - Q4.3).
 # ==============================================================================
 from sql_transpiler import transpile_sql_to_dafny
 
