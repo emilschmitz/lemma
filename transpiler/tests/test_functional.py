@@ -382,10 +382,56 @@ method Main() {{
 
     def test_functional_ssb_query1(self):
         """Real SSB Query 1 run through Dafny against a minimal dataset."""
-        import sys
-        import os
-        sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
-        from queries import queries, schema as ssb_schema
+        ssb_schema = {
+            "LO_ORDERKEY": "int",
+            "LO_LINENUMBER": "int",
+            "LO_CUSTKEY": "int",
+            "LO_PARTKEY": "int",
+            "LO_SUPPKEY": "int",
+            "LO_ORDERDATE": "int",
+            "LO_ORDERPRIORITY": "string",
+            "LO_SHIPPRIORITY": "int",
+            "LO_QUANTITY": "int",
+            "LO_EXTENDEDPRICE": "int",
+            "LO_ORDTOTALPRICE": "int",
+            "LO_DISCOUNT": "int",
+            "LO_REVENUE": "int",
+            "LO_SUPPLYCOST": "int",
+            "LO_TAX": "int",
+            "LO_COMMITDATE": "int",
+            "LO_SHIPMODE": "string",
+            "C_NAME": "string",
+            "C_ADDRESS": "string",
+            "C_CITY": "string",
+            "C_NATION": "string",
+            "C_REGION": "string",
+            "C_PHONE": "string",
+            "C_MKTSEGMENT": "string",
+            "S_NAME": "string",
+            "S_ADDRESS": "string",
+            "S_CITY": "string",
+            "S_NATION": "string",
+            "S_REGION": "string",
+            "S_PHONE": "string",
+            "P_NAME": "string",
+            "P_MFGR": "string",
+            "P_CATEGORY": "string",
+            "P_BRAND": "string",
+            "P_COLOR": "string",
+            "P_TYPE": "string",
+            "P_SIZE": "int",
+            "P_CONTAINER": "string",
+            "D_YEAR": "int",
+            "D_YEARMONTHNUM": "int",
+            "D_WEEKNUMINYEAR": "int"
+        }
+        ssb_query_1 = """
+        SELECT SUM(LO_EXTENDEDPRICE * LO_DISCOUNT) AS revenue
+        FROM my_table
+        WHERE D_YEAR = 1993
+          AND LO_DISCOUNT BETWEEN 1 AND 3
+          AND LO_QUANTITY < 25
+        """
         # Build a minimal dataset: 3 rows with all SSB columns present
         minimal_data = []
         for i in range(3):
@@ -400,7 +446,7 @@ method Main() {{
         self.dummy_data = minimal_data
         self.schema = ssb_schema
         try:
-            self.verify_query(queries[0])  # SSB Query 1
+            self.verify_query(ssb_query_1)  # SSB Query 1
         finally:
             self.dummy_data, self.schema = orig_data, orig_schema
 
