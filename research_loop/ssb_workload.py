@@ -1,3 +1,14 @@
+# ==============================================================================
+# SSB Workload and Schema Specification
+#
+# This file defines the schema and queries for the Star Schema Benchmark (SSB)
+# denormalized/flat table (lineorder_flat). These queries and table structure
+# represent the standard workload used to evaluate query engine performance
+# (as referenced in modern OLAP research, e.g., the GenDB paper, arXiv:2603.02081).
+#
+# Schema Source: Star Schema Benchmark (SSB) denormalized flat schema
+# Query Source: Standard SSB Query Set (Q1.1 - Q4.3 / Q5.x variants)
+# ==============================================================================
 from sql_transpiler import transpile_sql_to_dafny
 
 schema = {
