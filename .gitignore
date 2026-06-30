@@ -36,5 +36,9 @@ db_extension/bin/
 db_extension/cache.json
 db_extension/temp_query.sql
 db_extension/hillclimbing.duckdb_extension
+db_extension/init.sql
+db_extension/*.parquet
 configure/
+duckdb
+
 

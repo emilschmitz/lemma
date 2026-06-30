@@ -22,10 +22,9 @@ make install
 make extension
 
 # 3. Start the interactive REPL shell and load the extension
-./dbcli
+./run_duckdb_and_load_extension_and_sbb_dataset.sh
 # In the shell:
-# LOAD hillclimbing;
-# SELECT SUM(LO_EXTENDEDPRICE * LO_DISCOUNT) FROM lineorder_flat WHERE LO_ORDERDATE >= 19930101 AND LO_ORDERDATE <= 19931231 AND LO_DISCOUNT >= 1 AND LO_DISCOUNT <= 3 AND LO_QUANTITY < 25;
+# SELECT hillclimbing('SELECT SUM(LO_EXTENDEDPRICE * LO_DISCOUNT) FROM lineorder_flat WHERE LO_ORDERDATE >= 19930101 AND LO_ORDERDATE <= 19931231 AND LO_DISCOUNT >= 1 AND LO_DISCOUNT <= 3 AND LO_QUANTITY < 25');
 ```
 
 ### Requirements
@@ -40,20 +39,20 @@ make extension
 
 ```
 verified-hillclimbing-db/
-├── dbcli                # Interactive CLI wrapper shell script
+├── run_duckdb_and_load_extension_and_sbb_dataset.sh  # Interactive C++ CLI shell launcher
 ├── TODOS.md             # Consolidated project tasks
 ├── queries.py           # Backward-compat query module forwarder
 ├── transpiler/          # SQL → Dafny transpiler (Python package: sql-transpiler)
 │   ├── src/sql_transpiler/
 │   │   └── transpiler.py   # Core transpiler logic
 │   └── tests/
-├── db_extension/        # DuckDB loadable C++ extension and REPL client
+├── db_extension/        # DuckDB loadable C++ extension and REPL helpers
 │   ├── src/
 │   │   └── hillclimbing.cpp # C++ extension source registering UDFs
 │   ├── catalog.py       # Dynamic DuckDB schema extractor
 │   ├── optimizer.py     # Optimization orchestrator and loop generator
 │   ├── run_optimizer.py # Subprocess wrapper running the compiled query
-│   ├── dbcli.py         # REPL client delegating to the C++ UDF
+│   ├── utils.py         # Shared cache handlers and dataset helpers
 │   └── test_extension.py # Extension unit/integration tests
 └── research_loop/       # Autonomous optimization loop
     ├── harness.py          # Orchestrator: verify → compile → benchmark

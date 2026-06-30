@@ -13,7 +13,7 @@ root_dir = os.path.dirname(current_dir)
 if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
 
-from db_extension.dbcli import setup_db, get_sql_hash, load_cache, save_cache, print_result_table, BIN_DIR
+from db_extension.utils import setup_db, get_sql_hash, load_cache, save_cache, print_result_table, BIN_DIR
 from db_extension.optimizer import run_optimization_loop
 
 # ANSI Color Codes

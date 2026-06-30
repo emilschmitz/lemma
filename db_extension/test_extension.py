@@ -79,7 +79,7 @@ def test_end_to_end_optimization_map():
 
 def test_loadable_extension_scalar():
     import duckdb
-    ext_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hillclimbing.duckdb_extension")
+    ext_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hillclimbing_python.duckdb_extension")
     assert os.path.exists(ext_path)
     
     con = duckdb.connect(config={'allow_unsigned_extensions': 'true'})
@@ -93,7 +93,7 @@ def test_loadable_extension_scalar():
 
 def test_loadable_extension_cached():
     import duckdb
-    ext_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hillclimbing.duckdb_extension")
+    ext_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hillclimbing_python.duckdb_extension")
     con = duckdb.connect(config={'allow_unsigned_extensions': 'true'})
     con.execute(f"LOAD '{ext_path}'")
     
