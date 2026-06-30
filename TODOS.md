@@ -8,3 +8,9 @@
 ## DB Extension
 - [ ] **CREATE SANDBOX FOR AGENT**
   - Setup a secure sandbox environment for the optimizing agent.
+
+## Future Research & Reference
+- [ ] **Investigate GenDB (arXiv:2603.02081)**
+  - Research how GenDB represents and verifies queries, specifically how they handle literals, column mappings, and verification strategies.
+  - Evaluate integrating GenDB's verification strategies as a backup optimization pass.
+
