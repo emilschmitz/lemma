@@ -1,15 +1,40 @@
 # Verified Hill-Climbing Query Optimizer
 
-A research system that uses **Dafny formal verification** to provably correct, hardware-optimized query implementations for analytical SQL workloads. An autonomous optimization agent iteratively proposes query implementations that are formally proved correct by the Z3 theorem prover, compiled to native Rust binaries, and benchmarked on real hardware.
+A research database system that uses **Dafny formal verification** to construct provably correct, hardware-optimized query implementations for analytical SQL workloads. It features a dynamically loadable **DuckDB C++ Extension** that intercepts queries, executes an autonomous optimization loop (using Z3 and Rust compilation), and caches query plans for instant execution.
 
 ## What It Does
 
 1. A SQL query is **deterministically transpiled** into a mathematical `MethodSpec` in Dafny — the ground truth.
-2. An **optimizing agent** writes an imperative `method RunQuery` implementation.
-3. **Dafny/Z3** formally proves that `RunQuery` satisfies `MethodSpec`. If the proof fails, the loop stops immediately.
-4. The verified code is **compiled to Rust** and benchmarked — only provably correct code ever runs.
+2. The **hill-climbing optimizer** uses an agent (or mock mode) to write an optimized `method RunQuery`.
+3. **Dafny/Z3** formally proves that `RunQuery` satisfies `MethodSpec`.
+4. The verified code is **compiled to native Rust** and executed.
+5. Successful optimized binaries are **cached** and loaded directly inside **DuckDB** via the C++ extension.
 
-The loop hill-climbs on execution latency while maintaining a formal correctness guarantee at every step.
+---
+
+## Quick Start
+
+```bash
+# 1. Install dependencies
+make install
+
+# 2. Build the DuckDB loadable extension
+make extension
+
+# 3. Start the interactive REPL shell and load the extension
+./dbcli
+# In the shell:
+# LOAD hillclimbing;
+# SELECT SUM(LO_EXTENDEDPRICE * LO_DISCOUNT) FROM lineorder_flat WHERE LO_ORDERDATE >= 19930101 AND LO_ORDERDATE <= 19931231 AND LO_DISCOUNT >= 1 AND LO_DISCOUNT <= 3 AND LO_QUANTITY < 25;
+```
+
+### Requirements
+- [uv](https://docs.astral.sh/uv/) — Python package manager
+- [Dafny 4.x](https://github.com/dafny-lang/dafny) — in `PATH`
+- [Rust/Cargo](https://rustup.rs/) — for native compilation
+- [DuckDB CLI](https://duckdb.org/) — (optional) for running the extension in standard terminal sessions
+
+---
 
 ## Repository Structure
 
@@ -20,8 +45,7 @@ verified-hillclimbing-db/
 ├── queries.py           # Backward-compat query module forwarder
 ├── transpiler/          # SQL → Dafny transpiler (Python package: sql-transpiler)
 │   ├── src/sql_transpiler/
-│   │   ├── transpiler.py   # Core transpiler logic
-│   │   └── queries.py      # 15 SSB/TPC-H benchmark queries + lineorder_flat schema
+│   │   └── transpiler.py   # Core transpiler logic
 │   └── tests/
 ├── db_extension/        # DuckDB loadable C++ extension and REPL client
 │   ├── src/
@@ -36,24 +60,6 @@ verified-hillclimbing-db/
     ├── agent_scratchpad.md # Agent writes optimized RunQuery implementations here
     └── working_query-rust/ # Cached Cargo workspace for fast incremental builds
 ```
-
-## Quick Start
-
-```bash
-# Install dependencies (requires uv)
-make install
-
-# Run unit tests (no Dafny required)
-make test
-
-# Run the optimization loop (Query 1, 50k rows)
-make loop
-```
-
-### Requirements
-- [uv](https://docs.astral.sh/uv/) — Python package manager
-- [Dafny 4.x](https://github.com/dafny-lang/dafny) — in `PATH`
-- [Rust/Cargo](https://rustup.rs/) — for native compilation
 
 ## How It Works
 
