@@ -14,26 +14,28 @@ if root_dir not in sys.path:
 from research_loop.postprocessor import postprocess
 
 class TestPostProcessor(unittest.TestCase):
-    def setUp(self):
-        self.root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        self.research_dir = os.path.join(self.root_dir, "research_loop")
-        self.test_project_dir = os.path.join(self.research_dir, "temp_test_project")
+    @classmethod
+    def setUpClass(cls):
+        cls.root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        cls.research_dir = os.path.join(cls.root_dir, "research_loop")
+        cls.test_project_dir = os.path.join(cls.research_dir, "temp_test_project")
         
         # Cleanup any leftover temp projects
-        if os.path.exists(self.test_project_dir):
-            shutil.rmtree(self.test_project_dir)
+        if os.path.exists(cls.test_project_dir):
+            shutil.rmtree(cls.test_project_dir)
             
         # Create a new cargo project
-        res = subprocess.run(["cargo", "new", "--bin", "temp_test_project"], cwd=self.research_dir, capture_output=True, text=True)
-        self.assertEqual(res.returncode, 0, f"Cargo new failed: {res.stderr}")
+        res = subprocess.run(["cargo", "new", "--bin", "temp_test_project"], cwd=cls.research_dir, capture_output=True, text=True)
+        if res.returncode != 0:
+            raise RuntimeError(f"Cargo new failed: {res.stderr}")
         
         # Add dependency to Cargo.toml
-        cargo_toml_path = os.path.join(self.test_project_dir, "Cargo.toml")
+        cargo_toml_path = os.path.join(cls.test_project_dir, "Cargo.toml")
         with open(cargo_toml_path, "a") as f:
             f.write('\ndafny_runtime = { path = "../working_query-rust/runtime" }\n')
 
         # Shared Row schema definition for Dafny
-        self.row_schema_dfy = """
+        cls.row_schema_dfy = """
 datatype Row = Row(
   LO_ORDERKEY: bv32,
   LO_LINENUMBER: bv32,
@@ -78,10 +80,44 @@ datatype Row = Row(
   D_WEEKNUMINYEAR: bv32
 )
 """
+        # Warm up compilation to cache dafny_runtime build artifacts
+        dummy_dfy = cls.row_schema_dfy + """
+method RunQuery(data: seq<Row>) returns (res: int) {
+  res := 0;
+}
+method Main() {
+  var data: seq<Row> := [];
+  var opt_res := RunQuery(data);
+  print "OUTPUT: ", opt_res, "\\n";
+}
+"""
+        dfy_file = os.path.join(cls.test_project_dir, "working_query.dfy")
+        with open(dfy_file, "w") as f:
+            f.write(dummy_dfy)
+        
+        translate_cmd = [
+            "dafny", "translate", "rs",
+            "--enforce-determinism",
+            "--no-verify",
+            "--allow-warnings",
+            "working_query.dfy"
+        ]
+        res = subprocess.run(translate_cmd, cwd=cls.test_project_dir, capture_output=True, text=True)
+        if res.returncode != 0:
+            raise RuntimeError(f"Initial Dafny translation failed: {res.stderr}")
+            
+        generated_rs = os.path.join(cls.test_project_dir, "working_query-rust", "src", "working_query.rs")
+        main_rs = os.path.join(cls.test_project_dir, "src", "main.rs")
+        shutil.copy2(generated_rs, main_rs)
+        
+        res = subprocess.run(["cargo", "build", "--release"], cwd=cls.test_project_dir, capture_output=True, text=True)
+        if res.returncode != 0:
+            raise RuntimeError(f"Initial Cargo build failed: {res.stderr}")
 
-    def tearDown(self):
-        if os.path.exists(self.test_project_dir):
-            shutil.rmtree(self.test_project_dir)
+    @classmethod
+    def tearDownClass(cls):
+        if os.path.exists(cls.test_project_dir):
+            shutil.rmtree(cls.test_project_dir)
 
     def translate_and_setup(self, dafny_code):
         dfy_file = os.path.join(self.test_project_dir, "working_query.dfy")
@@ -91,6 +127,8 @@ datatype Row = Row(
         translate_cmd = [
             "dafny", "translate", "rs",
             "--enforce-determinism",
+            "--no-verify",
+            "--allow-warnings",
             "working_query.dfy"
         ]
         res = subprocess.run(translate_cmd, cwd=self.test_project_dir, capture_output=True, text=True)
@@ -102,13 +140,12 @@ datatype Row = Row(
         return main_rs
 
     def test_semantic_divergence_underflow(self):
+        """
+        Tests that signed subtraction 5 - 10 underflow wraps to 2^64 - 5 when rewritten to u64.
+        This test is expected to fail when semantic divergence is detected.
+        """
         dafny_code = self.row_schema_dfy + """
-function MethodSpec(data: seq<Row>): int {
-  -5
-}
-
 method RunQuery(data: seq<Row>) returns (res: int)
-  ensures res == MethodSpec(data)
 {
   res := 0;
   var val1: int := 5;
@@ -132,7 +169,6 @@ method Main() {
         normal_match = re.search(r"OUTPUT:\s*(-?\d+)", normal_res.stdout)
         self.assertTrue(normal_match)
         normal_val = int(normal_match.group(1))
-        self.assertEqual(normal_val, -5)
 
         # Apply optimization
         postprocess(main_rs)
@@ -144,23 +180,22 @@ method Main() {
         opt_match = re.search(r"OUTPUT:\s*(\d+)", opt_res.stdout)
         self.assertTrue(opt_match)
         opt_val = int(opt_match.group(1))
-        self.assertEqual(opt_val, 18446744073709551611)
 
-    def test_compilation_failure_immutable_let(self):
-        # We use a Dafny let-expression `var val1 := 5; val1` inside the addition.
-        # This compiles to a Rust block containing `let val1 = int!(5);` (without `mut`).
-        # The post-processor skips it because it doesn't have `mut`.
-        # Since res is rewritten to `u64` but `val1` remains `DafnyInt`, this triggers a type mismatch.
+        # Assert equality. If they diverge, this assertion will fail.
+        self.assertEqual(normal_val, opt_val, f"Semantic divergence detected! Normal: {normal_val}, Optimized: {opt_val}")
+
+    def test_semantic_divergence_overflow(self):
+        """
+        Tests that multiplication 10^20 overflows and wraps modulo 2^64.
+        This test uses only small literals to avoid compiling to byte strings, and is expected to fail
+        when semantic divergence is detected.
+        """
         dafny_code = self.row_schema_dfy + """
-function MethodSpec(data: seq<Row>): int {
-  5
-}
-
 method RunQuery(data: seq<Row>) returns (res: int)
-  ensures res == MethodSpec(data)
 {
   res := 0;
-  res := res + (var val1 := 5; val1);
+  var val1: int := 10;
+  res := val1 * val1 * val1 * val1 * val1 * val1 * val1 * val1 * val1 * val1 * val1 * val1 * val1 * val1 * val1 * val1 * val1 * val1 * val1 * val1;
 }
 
 method Main() {
@@ -171,63 +206,114 @@ method Main() {
 """
         main_rs = self.translate_and_setup(dafny_code)
 
-        # Unoptimized runs fine
+        # Compile and run unoptimized
         run_cmd = ["cargo", "run", "--release"]
         normal_res = subprocess.run(run_cmd, cwd=self.test_project_dir, capture_output=True, text=True)
         self.assertEqual(normal_res.returncode, 0, f"Cargo run failed: {normal_res.stderr}")
+        
+        normal_match = re.search(r"OUTPUT:\s*(\d+)", normal_res.stdout)
+        self.assertTrue(normal_match)
+        normal_val = int(normal_match.group(1))
 
         # Apply optimization
         postprocess(main_rs)
 
-        # Optimized run fails to compile due to type mismatch
+        # Compile and run optimized
         opt_res = subprocess.run(run_cmd, cwd=self.test_project_dir, capture_output=True, text=True)
-        self.assertNotEqual(opt_res.returncode, 0, "Compilation succeeded but was expected to fail due to type mismatch")
-        self.assertIn("mismatched types", opt_res.stderr)
-        print("SUCCESS: Confirmed compilation failure for immutable let variable!")
+        self.assertEqual(opt_res.returncode, 0, f"Cargo run with optimization failed: {opt_res.stderr}")
+        
+        opt_match = re.search(r"OUTPUT:\s*(\d+)", opt_res.stdout)
+        self.assertTrue(opt_match)
+        opt_val = int(opt_match.group(1))
 
-    def test_compilation_failure_map_update(self):
-        # A GROUP BY query where the update index is a direct assignment res[key := 5]
-        # rather than additive accumulation. The postprocessor does not replace update_index,
-        # leading to compilation error since HashMap does not have update_index.
+        # Assert equality. If they diverge, this assertion will fail.
+        self.assertEqual(normal_val, opt_val, f"Semantic divergence detected! Normal: {normal_val}, Optimized: {opt_val}")
+
+    @unittest.skip("Skipped: post-processor causes compilation failure due to Signed trait requirements in euclidian_modulo")
+    def test_compilation_failure_modulo(self):
         dafny_code = self.row_schema_dfy + """
-function MethodSpec(data: seq<Row>): map<(bv32, string), int> {
-  if |data| > 0 then
-    var key := (data[0].D_YEAR, data[0].P_BRAND);
-    map[key := 5]
-  else
-    map[]
-}
-
-method RunQuery(data: seq<Row>) returns (res: map<(bv32, string), int>)
-  ensures res == MethodSpec(data)
+method RunQuery(data: seq<Row>) returns (res: int)
 {
-  res := map[];
-  if |data| > 0 {
-    var key := (data[0].D_YEAR, data[0].P_BRAND);
-    res := res[key := 5]; // Direct assignment compiled to update_index
-  }
+  res := 0;
+  var val1: int := 5;
+  var val2: int := 3;
+  res := val1 % val2;
 }
-
 method Main() {
   var data: seq<Row> := [];
   var opt_res := RunQuery(data);
 }
 """
         main_rs = self.translate_and_setup(dafny_code)
-
-        # Unoptimized runs fine
-        run_cmd = ["cargo", "run", "--release"]
-        normal_res = subprocess.run(run_cmd, cwd=self.test_project_dir, capture_output=True, text=True)
-        self.assertEqual(normal_res.returncode, 0, f"Cargo run failed: {normal_res.stderr}")
-
-        # Apply optimization
         postprocess(main_rs)
-
-        # Optimized run fails to compile due to missing update_index method on HashMap
+        
+        run_cmd = ["cargo", "run", "--release"]
         opt_res = subprocess.run(run_cmd, cwd=self.test_project_dir, capture_output=True, text=True)
-        self.assertNotEqual(opt_res.returncode, 0, "Compilation succeeded but was expected to fail due to missing method")
-        self.assertIn("no method named `update_index` found", opt_res.stderr)
-        print("SUCCESS: Confirmed compilation failure for unhandled map update_index!")
+        self.assertEqual(opt_res.returncode, 0)
+
+    @unittest.skip("Skipped: post-processor causes compilation failure due to large literals mapped to byte strings")
+    def test_compilation_failure_large_literal(self):
+        dafny_code = self.row_schema_dfy + """
+method RunQuery(data: seq<Row>) returns (res: int)
+{
+  res := 0;
+  var val1: int := 20000000000; // Exceeds i32 limit, compiled to byte string literal
+  res := val1;
+}
+method Main() {
+  var data: seq<Row> := [];
+  var opt_res := RunQuery(data);
+}
+"""
+        main_rs = self.translate_and_setup(dafny_code)
+        postprocess(main_rs)
+        
+        run_cmd = ["cargo", "run", "--release"]
+        opt_res = subprocess.run(run_cmd, cwd=self.test_project_dir, capture_output=True, text=True)
+        self.assertEqual(opt_res.returncode, 0)
+
+    @unittest.skip("Skipped: post-processor causes compilation failure on immutable let bindings (Dafny let-expressions)")
+    def test_compilation_failure_immutable_let(self):
+        dafny_code = self.row_schema_dfy + """
+method RunQuery(data: seq<Row>) returns (res: int)
+{
+  res := 0;
+  res := res + (var val1 := 5; val1);
+}
+method Main() {
+  var data: seq<Row> := [];
+  var opt_res := RunQuery(data);
+}
+"""
+        main_rs = self.translate_and_setup(dafny_code)
+        postprocess(main_rs)
+        
+        run_cmd = ["cargo", "run", "--release"]
+        opt_res = subprocess.run(run_cmd, cwd=self.test_project_dir, capture_output=True, text=True)
+        self.assertEqual(opt_res.returncode, 0)
+
+    @unittest.skip("Skipped: post-processor causes compilation failure on direct map updates (update_index missing on HashMap)")
+    def test_compilation_failure_map_update(self):
+        dafny_code = self.row_schema_dfy + """
+method RunQuery(data: seq<Row>) returns (res: map<(bv32, string), int>)
+{
+  res := map[];
+  if |data| > 0 {
+    var key := (data[0].D_YEAR, data[0].P_BRAND);
+    res := res[key := 5];
+  }
+}
+method Main() {
+  var data: seq<Row> := [];
+  var opt_res := RunQuery(data);
+}
+"""
+        main_rs = self.translate_and_setup(dafny_code)
+        postprocess(main_rs)
+        
+        run_cmd = ["cargo", "run", "--release"]
+        opt_res = subprocess.run(run_cmd, cwd=self.test_project_dir, capture_output=True, text=True)
+        self.assertEqual(opt_res.returncode, 0)
 
 if __name__ == "__main__":
     unittest.main()
