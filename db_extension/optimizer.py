@@ -215,35 +215,67 @@ def run_optimization_loop(sql_query: str, dataset_size: int = 50000, max_iterati
                 print(f"    Error: {e}")
                 return {"status": "FAILED", "error": f"Mock generation failed: {e}"}
         else:
-            # Call real Gemini optimizer via agy CLI
-            log_file = os.path.join(root_dir, "research_loop", f"agy_iter_{iteration}.log")
-            prompt = f"""
-Optimize Query {query_id} (SSB Flat).
-The formal Dafny specification is:
-{dafny_spec}
+            from research_loop.agent_sandbox import (
+                build_docker_image,
+                docker_image_built,
+                load_agent_config,
+                run_agent_iteration,
+            )
 
-Your task is to write a faster, formally verified imperative 'method RunQuery(data: seq<Row>)' in Dafny.
-Ensure it satisfies MethodSpec(data) and verifies with Z3.
-Just do something quick that works. Do not spend time optimizing.
-"""
-            cmd = [
-                "agy",
-                "--log-file", log_file,
-                "--print", prompt,
-                "--dangerously-skip-permissions"
-            ]
-            if model:
-                cmd += ["--model", model]
-            
+            cfg = load_agent_config()
+            image = cfg.get("AGENT_IMAGE", "verified-hillclimbing-agent:latest")
+            if not docker_image_built(image):
+                print(f"  - Building agent Docker image {image}...", end="", flush=True)
+                try:
+                    build_docker_image(image)
+                    print(f" {COLOR_GREEN}OK{COLOR_RESET}")
+                except Exception as e:
+                    print(f" {COLOR_RED}FAILED{COLOR_RESET}")
+                    return {"status": "FAILED", "error": f"Docker image build failed: {e}"}
+
+            last_error = history[-1]["error"] if history else ""
+            last_lat = history[-1]["latency_us"] if history and history[-1].get("proof_verified") else -1
+
+            print("  - Running agent in Docker sandbox...", end="", flush=True)
             a_start = time.perf_counter()
             try:
-                res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-                if res.returncode != 0:
-                    print(f" {COLOR_RED}FAILED{COLOR_RESET} (agy agent failed)")
-                else:
-                    print(f" {COLOR_GREEN}OK{COLOR_RESET} ({int(time.perf_counter() - a_start)} s)")
+                body, proc = run_agent_iteration(
+                    query_id=query_id,
+                    dafny_spec=dafny_spec,
+                    iteration=iteration,
+                    max_iterations=max_iterations,
+                    last_error=last_error,
+                    last_latency_us=last_lat,
+                    workspace=os.path.join(root_dir, "research_loop", "agent_workspace"),
+                    cfg=cfg,
+                )
+                if proc.returncode != 0:
+                    err = (proc.stderr or proc.stdout or "agent exited non-zero").strip()
+                    print(f" {COLOR_RED}FAILED{COLOR_RESET}")
+                    print(f"    {err[:500]}")
+                    history.append({
+                        "iteration": iteration,
+                        "status": "FAILURE",
+                        "proof_verified": False,
+                        "latency_us": -1,
+                        "error": f"Agent failed: {err}",
+                    })
+                    continue
+                print(f" {COLOR_GREEN}OK{COLOR_RESET} ({int(time.perf_counter() - a_start)} s)")
             except subprocess.TimeoutExpired:
-                print(f" {COLOR_RED}TIMEOUT{COLOR_RESET} after 120s")
+                print(f" {COLOR_RED}TIMEOUT{COLOR_RESET}")
+                history.append({
+                    "iteration": iteration,
+                    "status": "TIMEOUT",
+                    "proof_verified": False,
+                    "latency_us": -1,
+                    "error": "Agent timed out",
+                })
+                continue
+            except Exception as e:
+                print(f" {COLOR_RED}FAILED{COLOR_RESET}")
+                print(f"    {e}")
+                return {"status": "FAILED", "error": str(e)}
 
         # Step 3: Verify and compile and benchmark using harness.py
         print("  - Verifying and compiling Rust binaries...", end="", flush=True)

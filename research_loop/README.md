@@ -44,7 +44,9 @@ Output:
 |---|---|
 | `harness.py` | Orchestration script |
 | `config.env` | Verification and compilation timeouts |
-| `agent_scratchpad.md` | **Agent writes here** — hypothesis, invariants, and `method RunQuery` code block |
+| `agent_scratchpad.md` | Legacy agent output (markdown); prefer `agent_workspace/runquery_agent.dfy` |
+| `agent_workspace/` | Docker agent RW mount — body-only `runquery_agent.dfy` |
+| `AGENT_SANDBOX.md` | Docker agent setup, env vars, loop/submit flow |
 | `working_query-rust/` | Persistent Cargo workspace cache (keeps rebuild times ~0.8s) |
 
 ## Query Signatures

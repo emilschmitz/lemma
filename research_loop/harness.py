@@ -136,13 +136,7 @@ def main():
     dafny_verify_timeout = int(config.get("DAFNY_VERIFY_TIMEOUT_SEC", 30))
     compile_timeout = int(config.get("COMPILE_TIMEOUT_SEC", 30))
 
-    # 2. Extract agent's optimized RunQuery code
-    scratchpad_path = os.path.join(CURRENT_DIR, "agent_scratchpad.md")
-    agent_code = extract_dafny_code(scratchpad_path)
-    if not agent_code:
-        exit_with_metrics("FAILURE", False, -1, "Could not find any ```dafny ... ``` code block in agent_scratchpad.md.")
-
-    # 3. Transpile SQL query to Dafny (timing this step)
+    # 2. Transpile SQL query to Dafny (timing this step)
     start_transpile = time.perf_counter()
     try:
         dafny_spec = transpile_sql_to_dafny(sql_query, schema)
@@ -150,6 +144,28 @@ def main():
     except Exception as e:
         transpile_time_ms = int((time.perf_counter() - start_transpile) * 1000)
         exit_with_metrics("FAILURE", False, -1, f"SQL Transpilation failed: {e}")
+
+    # 3. Load agent RunQuery (assembled body file, or legacy scratchpad)
+    agent_body_path = os.path.join(CURRENT_DIR, "agent_workspace", "runquery_agent.dfy")
+    agent_code = None
+    if os.path.exists(agent_body_path):
+        from research_loop.assemble_runquery import assemble_runquery_from_body
+        try:
+            with open(agent_body_path) as f:
+                agent_code = assemble_runquery_from_body(dafny_spec, f.read())
+        except Exception as e:
+            exit_with_metrics("FAILURE", False, -1, f"RunQuery body assembly failed: {e}")
+
+    if agent_code is None:
+        scratchpad_path = os.path.join(CURRENT_DIR, "agent_scratchpad.md")
+        agent_code = extract_dafny_code(scratchpad_path)
+        if not agent_code:
+            exit_with_metrics(
+                "FAILURE",
+                False,
+                -1,
+                "No RunQuery: set agent_workspace/runquery_agent.dfy or agent_scratchpad.md",
+            )
 
     # 4. Generate the Main method and full source file
     main_code = f"""
