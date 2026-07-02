@@ -735,6 +735,84 @@ method Main() {{
         self.assertEqual(opt_val, normal_val)
 
     # ==========================================================================
+    # GROUP 8: Columnar NativeAggMap / Object postprocessor hazards
+    # ==========================================================================
+
+    def test_stack_agg_rewrite_risk_with_aliased_handles(self):
+        """
+        Concrete hazard: Dafny class semantics allow two vars to name one NativeAggMap.
+        Postprocessor rewrites the primary Object allocation to a stack NativeAggMap
+        but leaves sibling handles (clone / alias) on the old Object path, so
+        Add via agg vs Add via alias may hit different maps in Rust while Dafny
+        proved they share Snapshot().
+
+        This test documents that failure mode at the rewrite level (no agent steering).
+        """
+        from research_loop.postprocessor import postprocess
+
+        # Minimal slice mimicking Dafny→Rust for `var agg := new ...; var alias := agg;`
+        fake_main = """
+pub mod _module {
+    impl _default {
+        pub fn RunQuery(cols: &Object<ColsNative>) -> i64 {
+            let mut agg: Object<NativeAggMap>;
+            let mut _nw0: Object<NativeAggMap> = NativeAggMap::_allocate_object();
+            agg = _nw0.clone();
+            let mut alias = agg.clone();
+            rd!(agg).Add(1993u32, &nation_seq, 10i64);
+            rd!(alias).Add(1993u32, &nation_seq, 20i64);
+            0i64
+        }
+        /// q.dfy(99,1)
+        pub fn Main() {}
+    }
+}
+"""
+        path = os.path.join(self.test_project_dir, "alias_agg.rs")
+        with open(path, "w") as f:
+            f.write(fake_main)
+        postprocess(path)
+        with open(path) as f:
+            out = f.read()
+
+        # Rewrite applied: stack-local primary agg (Object wrapper removed).
+        self.assertIn("let mut agg = NativeAggMap::default()", out)
+        # Alias path still uses Object/read-through handle — not merged into stack agg.
+        self.assertIn("alias", out)
+        self.assertTrue(
+            "Object<NativeAggMap>" in out or "rd!(alias)" in out,
+            "expected alias to remain on Object/handle path after rewrite",
+        )
+        # Dafny proved Add on agg and alias update one map; Rust may use two.
+        self.assertIn("rd!(alias)", out)
+
+    def test_slow_mode_skips_native_agg_rewrites(self):
+        from research_loop.postprocessor import postprocess
+
+        fake_main = """
+pub mod _module {
+    impl _default {
+        pub fn RunQuery(cols: &Object<ColsNative>) -> i64 {
+            let mut agg: Object<NativeAggMap>;
+            let mut _nw0: Object<NativeAggMap> = NativeAggMap::_allocate_object();
+            agg = _nw0.clone();
+            rd!(agg).Add(1u32, &nation_seq, 1i64);
+            0i64
+        }
+        pub fn Main() {}
+    }
+}
+"""
+        path = os.path.join(self.test_project_dir, "slow_agg.rs")
+        with open(path, "w") as f:
+            f.write(fake_main)
+        postprocess(path, allow_fast_native_agg=False)
+        with open(path) as f:
+            out = f.read()
+        self.assertNotIn("NativeAggMap::default()", out)
+        self.assertIn("Object<NativeAggMap>", out)
+
+    # ==========================================================================
     # COMPILATION FAILURE TESTS (Skipped)
     # ==========================================================================
 

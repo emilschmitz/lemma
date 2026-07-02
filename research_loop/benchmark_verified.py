@@ -11,6 +11,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from db_extension import DatabaseCatalog
+from research_loop.admit_runquery import admit_runquery
 from research_loop.benchmark_runqueries import RUNQUERIES
 from research_loop.postprocessor import postprocess, inject_hot_loop_main
 from research_loop.ssb_workload import queries
@@ -78,6 +79,11 @@ def bench_verified(query_idx: int, runquery: str) -> tuple[int, bool]:
     with open(cols_rs, "w") as f:
         f.write(generate_cols_native_rs(schema))
 
+    admission = admit_runquery(src)
+    if not admission.ok:
+        print("RunQuery admission failed:", "; ".join(admission.violations))
+        return -1, False
+
     v = run_cmd(["dafny", "verify", "--allow-warnings", dfy], timeout=180)
     if v.returncode != 0:
         print(v.stdout, v.stderr)
@@ -100,7 +106,7 @@ def bench_verified(query_idx: int, runquery: str) -> tuple[int, bool]:
     with open(cargo, "w") as f:
         f.write(f'[package]\nname = "bench"\nversion = "0.1.0"\nedition = "2021"\n[dependencies]\ndafny_runtime = {{ path = "{RUNTIME}" }}\n')
 
-    postprocess(main_rs, TBL, LIMIT)
+    postprocess(main_rs, TBL, LIMIT, allow_fast_native_agg=admission.allow_fast_native_agg)
     inject_hot_loop_main(main_rs, TBL, LIMIT)
     env = os.environ.copy()
     env["RUSTFLAGS"] = "-C target-cpu=native"

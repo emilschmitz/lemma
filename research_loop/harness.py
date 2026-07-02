@@ -88,9 +88,9 @@ def extract_dafny_code(scratchpad_path):
 # Result: Warmed-up query latency drops to 0.13 ms (8x FASTER than DuckDB!)
 # with 100% formal safety guarantees intact.
 # ==============================================================================
-def optimize_rust_file(file_path):
+def optimize_rust_file(file_path, *, allow_fast_native_agg: bool = True):
     from research_loop.postprocessor import postprocess
-    postprocess(file_path)
+    postprocess(file_path, allow_fast_native_agg=allow_fast_native_agg)
 
 
 def main():
@@ -170,6 +170,16 @@ method {{:verify false}} Main() {{
     
     with open(working_dfy_path, "w") as f:
         f.write(full_source)
+
+    from research_loop.admit_runquery import admit_runquery
+    admission = admit_runquery(full_source)
+    if not admission.ok:
+        exit_with_metrics(
+            "FAILURE",
+            False,
+            -1,
+            "RunQuery admission failed: " + "; ".join(admission.violations),
+        )
 
     # 5. Static Proof Verification (timing this step)
     verify_cmd = [
@@ -259,7 +269,10 @@ method {{:verify false}} Main() {{
 
     # 6c. Apply custom u64 Native Approximation Compiler Pass
     try:
-        optimize_rust_file(os.path.join(stable_rust_dir, "src", "working_query.rs"))
+        optimize_rust_file(
+            os.path.join(stable_rust_dir, "src", "working_query.rs"),
+            allow_fast_native_agg=admission.allow_fast_native_agg,
+        )
     except Exception as e:
         exit_with_metrics("FAILURE", True, -1, f"Custom u64 Rust optimization pass failed: {e}")
 

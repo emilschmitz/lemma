@@ -35,7 +35,13 @@ class PostProcessState:
     needs_dataset: bool = False
 
 
-def postprocess(file_path: str, tbl_path: str = DEFAULT_TBL, row_limit: int = DEFAULT_LIMIT) -> None:
+def postprocess(
+    file_path: str,
+    tbl_path: str = DEFAULT_TBL,
+    row_limit: int = DEFAULT_LIMIT,
+    *,
+    allow_fast_native_agg: bool = True,
+) -> None:
     if not os.path.exists(file_path):
         return
     with open(file_path) as f:
@@ -43,19 +49,20 @@ def postprocess(file_path: str, tbl_path: str = DEFAULT_TBL, row_limit: int = DE
     if "fn RunQuery" not in content:
         return
     state = PostProcessState(tbl_path=tbl_path, row_limit=row_limit)
-    out = _transform(content, state)
+    out = _transform(content, state, allow_fast_native_agg=allow_fast_native_agg)
     with open(file_path, "w") as f:
         f.write(out)
 
 
-def _transform(content: str, state: PostProcessState) -> str:
+def _transform(content: str, state: PostProcessState, *, allow_fast_native_agg: bool = True) -> str:
     _extract_row_schema(content, state)
     content = _inject_dataset_loader(content, state)
     content = _inject_native_extern_imports(content)
     content = _inject_native_ops_delegates(content)
     content = _optimize_runquery_hot_loop(content)
-    content = _fix_native_agg_local(content)
-    content = _optimize_native_agg_calls(content)
+    if allow_fast_native_agg:
+        content = _fix_native_agg_local(content)
+        content = _optimize_native_agg_calls(content)
     content = _strip_maybe_placebo_return(content)
     if state.needs_dataset:
         content = _ensure_mod_dataset(content)
