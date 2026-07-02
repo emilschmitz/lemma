@@ -1,3 +1,4 @@
+import os
 import re
 import sqlglot
 from sqlglot import exp
@@ -400,9 +401,23 @@ def get_dafny_type(col: str, col_type: str) -> str:
     raise UnsupportedContractError(f"Cannot map SQL type {col_type!r} (column {col!r}) to a Dafny type.")
 
 
+def _native_preamble() -> str:
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+    native_path = os.path.join(repo_root, "research_loop", "native.dfy")
+    if os.path.exists(native_path):
+        with open(native_path) as f:
+            return f.read().strip() + "\n\n"
+    return (
+        'newtype {:extern "u32"} NativeU32 = x: int | 0 <= x < 4294967296\n'
+        'newtype {:extern "u64"} NativeU64 = x: int | 0 <= x < 18446744073709551616\n'
+        'newtype {:extern "i64"} NativeI64 = x: int | -9223372036854775808 <= x < 9223372036854775808\n\n'
+    )
+
+
 def _agg_value_type(agg_expr: str) -> str:
     """Native accumulator type for map/scalar aggregates."""
     return 'NativeI64' if '-' in agg_expr else 'NativeU64'
+
 
 def transpile_sql_to_dafny(sql_str: str, schema_dict: dict[str, str]) -> str:
     """Translates SQL query to mathematical Dafny specification."""
@@ -541,11 +556,7 @@ def transpile_sql_to_dafny(sql_str: str, schema_dict: dict[str, str]) -> str:
     # transpiler's emitted spec, not the RunQuery implementation.
     #
     functions_dafny = "\n\n".join(func.to_dafny() for func in functions)
-    type_definitions = (
-        'newtype {:extern "u32"} NativeU32 = x: int | 0 <= x < 4294967296\n'
-        'newtype {:extern "u64"} NativeU64 = x: int | 0 <= x < 18446744073709551616\n'
-        'newtype {:extern "i64"} NativeI64 = x: int | -9223372036854775808 <= x < 9223372036854775808\n\n'
-    )
+    type_definitions = _native_preamble()
     return f"{type_definitions}{schema_dafny}\n\n{functions_dafny}"
 
 
@@ -555,10 +566,186 @@ def transpile_sql_to_dafny(sql_str: str, schema_dict: dict[str, str]) -> str:
 # columnar spec.  No `RowAt` bridge needed.
 # =============================================================================
 
+def _col_dafny_type(col_type: str) -> str:
+    """Return type for Get* accessors on native Cols (NativeU32/U64 or string)."""
+    col_type_lower = col_type.lower()
+    if col_type_lower in ('bigint', 'int8', 'int64', 'hugeint',
+                          'decimal', 'numeric', 'double', 'float8', 'float', 'real'):
+        return 'NativeU64'
+    if col_type_lower in ('varchar', 'text', 'string', 'char', 'bpchar'):
+        return 'string'
+    return 'NativeU32'
+
+
+def _col_rust_vec_type(col_type: str) -> str:
+    col_type_lower = col_type.lower()
+    if col_type_lower in ('bigint', 'int8', 'int64', 'hugeint',
+                          'decimal', 'numeric', 'double', 'float8', 'float', 'real'):
+        return 'u64'
+    if col_type_lower in ('varchar', 'text', 'string', 'char', 'bpchar'):
+        return 'String'
+    return 'u32'
+
+
+def _col_rust_get_return(col_type: str) -> str:
+    col_type_lower = col_type.lower()
+    if col_type_lower in ('varchar', 'text', 'string', 'char', 'bpchar'):
+        return 'Sequence<DafnyChar>'
+    if col_type_lower in ('bigint', 'int8', 'int64', 'hugeint',
+                          'decimal', 'numeric', 'double', 'float8', 'float', 'real'):
+        return 'u64'
+    return 'u32'
+
+
 def _to_col_expr(expr: str, idx: str) -> str:
-    """Substitute `row.LO_X` with `cols.LO_X[idx]` in a Dafny expression."""
+    """Substitute `row.LO_X` with `cols.GetLO_X(idx)` in a Dafny expression."""
     import re
-    return re.sub(r"\brow\.([A-Za-z_][A-Za-z0-9_]*)", lambda m: f"cols.{m.group(1)}[{idx}]", expr)
+    return re.sub(
+        r"\brow\.([A-Za-z_][A-Za-z0-9_]*)",
+        lambda m: f"cols.Get{m.group(1)}({idx})",
+        expr,
+    )
+
+
+def _emit_cols_class(schema_dict: dict[str, str]) -> str:
+    """Single extern ColsNative class — one Rust Object, direct slice accessors."""
+    lines = [
+        'class {:extern "ColsNative"} Cols {',
+        '  function {:extern} n(): int',
+    ]
+    for col, col_type in schema_dict.items():
+        ret = _col_dafny_type(col_type)
+        lines.append(f'  function {{:extern}} Get{col}(i: int): {ret}')
+        if ret == 'string':
+            lines.append(f'  function {{:extern}} EqAt{col}(i: int, lit: string): bool')
+    lines.append('}')
+    return '\n'.join(lines)
+
+
+def generate_cols_native_rs(schema_dict: dict[str, str]) -> str:
+    """Schema-specific Rust ColsNative (Arc<Vec<T>> + Get*/EqAt* for Dafny translate)."""
+    field_lines = ['    pub n: usize,']
+    for col, col_type in schema_dict.items():
+        rust_ty = _col_rust_vec_type(col_type)
+        field_lines.append(f'    pub {col.lower()}: Arc<Vec<{rust_ty}>>,')
+
+    get_methods = []
+    for col, col_type in schema_dict.items():
+        field = col.lower()
+        ret = _col_rust_get_return(col_type)
+        if ret == 'Sequence<DafnyChar>':
+            get_methods.append(f'''
+    pub fn Get{col}(&self, i: &DafnyInt) -> Sequence<DafnyChar> {{
+        string_to_dafny_string(&self.{field}[usize::from(i.clone())])
+    }}
+
+    pub fn Get{col}_usize(&self, i: usize) -> Sequence<DafnyChar> {{
+        string_to_dafny_string(&self.{field}[i])
+    }}
+
+    pub fn Get{col}_str_ref(&self, i: usize) -> &str {{
+        &self.{field}[i]
+    }}
+
+    pub fn EqAt{col}(&self, i: &DafnyInt, lit: &Sequence<DafnyChar>) -> bool {{
+        self.{field}[usize::from(i.clone())] == dafny_string_to_string(lit)
+    }}
+
+    pub fn EqAt{col}_usize(&self, i: usize, lit: &str) -> bool {{
+        self.{field}[i] == lit
+    }}''')
+        else:
+            get_methods.append(f'''
+    pub fn Get{col}(&self, i: &DafnyInt) -> {ret} {{
+        self.{field}[usize::from(i.clone())]
+    }}
+
+    pub fn Get{col}_usize(&self, i: usize) -> {ret} {{
+        self.{field}[i]
+    }}''')
+
+    return f'''use dafny_runtime::{{
+    dafny_runtime_conversions::unicode_chars_true::{{dafny_string_to_string, string_to_dafny_string}},
+    allocate_object, DynAny, DafnyChar, DafnyInt, DafnyPrint, Object, Rc, Sequence, UpcastObject,
+}};
+use std::fmt::{{Debug, Formatter, Result as FmtResult}};
+use std::sync::Arc;
+
+#[derive(Clone, Default)]
+pub struct ColsNative {{
+{chr(10).join(field_lines)}
+}}
+
+impl Debug for ColsNative {{
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {{
+        f.debug_struct("ColsNative").field("n", &self.n).finish()
+    }}
+}}
+
+impl DafnyPrint for ColsNative {{
+    fn fmt_print(&self, _f: &mut Formatter, _in_seq: bool) -> FmtResult {{
+        Ok(())
+    }}
+}}
+
+impl UpcastObject<DynAny> for ColsNative {{
+    fn upcast(&self) -> Object<DynAny> {{
+        unsafe {{ Object::from_rc(Rc::new(self.clone()) as Rc<DynAny>) }}
+    }}
+}}
+
+impl ColsNative {{
+    pub fn _allocate_object() -> Object<ColsNative> {{
+        allocate_object::<ColsNative>()
+    }}
+
+    pub fn n(&self) -> DafnyInt {{
+        DafnyInt::from(self.n)
+    }}
+{"".join(get_methods)}
+}}
+'''
+
+
+def _native_where_cond(cond: str, idx: str, schema_dict: dict[str, str]) -> str:
+    """Use EqAt for string column equality in columnar filters."""
+    import re
+    out = cond
+    for col, col_type in schema_dict.items():
+        if _col_dafny_type(col_type) != "string":
+            continue
+        out = re.sub(
+            rf"cols\.Get{col}\({re.escape(idx)}\)\s*==\s*(\"[^\"]*\")",
+            rf"cols.EqAt{col}({idx}, \1)",
+            out,
+        )
+    return out
+
+
+def _native_i64_term(term_row_expr: str, idx: str) -> str:
+    """Map aggregate row expr to native extern term (e.g. SubU64ToI64)."""
+    import re
+    m = re.match(
+        r"\(row\.([A-Z0-9_]+) as int\) - \(row\.([A-Z0-9_]+) as int\)",
+        term_row_expr.strip(),
+    )
+    if m:
+        a, b = m.group(1), m.group(2)
+        return f"SubU64ToI64(cols.Get{a}({idx}), cols.Get{b}({idx}))"
+    return f"({_to_col_expr(term_row_expr, idx)}) as NativeI64"
+
+
+def _native_u64_term(term_row_expr: str, idx: str) -> str:
+    """Map SUM multiply-style aggregates to MulU64U32 when shape matches."""
+    import re
+    m = re.match(
+        r"\(row\.([A-Z0-9_]+) as int\) \* \(row\.([A-Z0-9_]+) as int\)",
+        term_row_expr.strip(),
+    )
+    if m:
+        a, b = m.group(1), m.group(2)
+        return f"MulU64U32(cols.Get{a}({idx}), cols.Get{b}({idx}))"
+    return f"({_to_col_expr(term_row_expr, idx)}) as NativeU64"
 
 
 def transpile_sql_to_dafny_columnar(sql_str: str, schema_dict: dict[str, str]) -> str:
@@ -585,36 +772,27 @@ def transpile_sql_to_dafny_columnar(sql_str: str, schema_dict: dict[str, str]) -
             raise UnsupportedContractError(f"Unsupported column type in schema: {col_type}")
     query = parse_sql(sql_str, schema_dict)
 
-    # 2. Emit the `Cols` datatype.
-    cols_fields = ["n: int"]
-    for col, col_type in schema_dict.items():
-        cols_fields.append(f"{col}: seq<{get_dafny_type(col, col_type)}>")
-    cols_datatype = f"datatype Cols = Cols({', '.join(cols_fields)})"
+    # 2. Emit the native `Cols` extern class (ColsNative in Rust).
+    cols_class = _emit_cols_class(schema_dict)
 
-    # 2b. Emit a `ValidCols` predicate that ties every column's length
-    # to `cols.n`.  Without it, Dafny can't prove `cols.LO_X[k]` is in
-    # range even when `0 <= k < cols.n`, because nothing says
-    # `|cols.LO_X| >= cols.n`.
-    valid_cols_lines = " &&\n        ".join(
-        f"|cols.{col}| == cols.n" for col in schema_dict
-    )
+    # 2b. ValidCols: loader builds all columns with length cols.n()
     valid_cols_predicate = (
         "predicate ValidCols(cols: Cols)\n"
-        "  requires 0 <= cols.n\n"
         "{\n"
-        f"        {valid_cols_lines}\n"
+        "  0 <= cols.n()\n"
         "}"
     )
 
     # 3. Return type & WHERE-clause condition (in columnar form).
     if query.groupby_columns:
         types = [get_dafny_type(c, schema_dict[c]) for c in query.groupby_columns]
+        val_type = _agg_value_type(query.agg_expr_dafny)
         if len(query.groupby_columns) == 1:
-            ret_type = f"map<{types[0]}, int>"
+            ret_type = f"map<{types[0]}, {val_type}>"
         else:
-            ret_type = f"map<({', '.join(types)}), int>"
+            ret_type = f"map<({', '.join(types)}), {val_type}>"
     else:
-        ret_type = "int"
+        ret_type = _agg_value_type(query.agg_expr_dafny)
 
     where_at_k = _to_col_expr(query.where_expr_dafny, "k") if query.where_expr_dafny else None
     term_at_k = _to_col_expr(query.agg_expr_dafny, "k") if query.agg_expr_dafny else "0"
@@ -623,8 +801,8 @@ def transpile_sql_to_dafny_columnar(sql_str: str, schema_dict: dict[str, str]) -
     if query.agg_type == 'AVG':
         # Two helpers + a wrapper, like the row version.
         if query.groupby_columns:
-            sum_h = _build_col_helper("SumMapHelper", query, "k", is_sum=True)
-            cnt_h = _build_col_helper("CountMapHelper", query, "k", is_sum=False)
+            sum_h = _build_col_helper("SumMapHelper", query, "k", schema_dict, is_sum=True)
+            cnt_h = _build_col_helper("CountMapHelper", query, "k", schema_dict, is_sum=False)
             helper_lines = [sum_h, cnt_h]
             spec_body = (
                 "var sums := SumMapHelper(cols, 0);\n"
@@ -632,41 +810,49 @@ def transpile_sql_to_dafny_columnar(sql_str: str, schema_dict: dict[str, str]) -
                 "map k | k in sums && k in counts :: if counts[k] == 0 then 0 else sums[k] / counts[k]"
             )
         else:
-            sum_h = _build_col_helper("SumHelper", query, "k", is_sum=True)
-            cnt_h = _build_col_helper("CountHelper", query, "k", is_sum=False)
+            sum_h = _build_col_helper("SumHelper", query, "k", schema_dict, is_sum=True)
+            cnt_h = _build_col_helper("CountHelper", query, "k", schema_dict, is_sum=False)
             helper_lines = [sum_h, cnt_h]
             spec_body = "var sum := SumHelper(cols, 0);\nvar count := CountHelper(cols, 0);\nif count == 0 then 0 else sum / count"
     else:
         is_sum = (query.agg_type == 'SUM')
-        h = _build_col_helper("MethodSpecHelper", query, "k", is_sum=is_sum)
+        h = _build_col_helper("MethodSpecHelper", query, "k", schema_dict, is_sum=is_sum)
         helper_lines = [h]
         spec_body = "MethodSpecHelper(cols, 0)"
 
     helpers_dafny = "\n\n".join(helper_lines)
-    type_defs = (
-        "type uint64 = x: int | 0 <= x < 18446744073709551616\n"
-        "type uint32 = x: int | 0 <= x < 4294967296\n\n"
-    )
+    type_defs = _native_preamble()
 
     # 5. The `RunQuery` skeleton for the agent.
     if query.groupby_columns:
-        inv = "  invariant 0 <= i <= cols.n\n  invariant res == MethodSpecHelper(cols, i)\n"
-        body_hint = (
-            "    // TODO: build the group key from cols.LO_X[i] and update the map\n"
-            "    // Example:\n"
-            "    //   var key := (cols.D_YEAR[i], cols.P_BRAND[i]);\n"
-            "    //   var prev := if key in res then res[key] else 0;\n"
-            "    //   res := res[key := prev + <term>];\n"
+        inv = (
+            "  invariant 0 <= i <= cols.n()\n"
+            "  invariant g == MethodSpecHelper(cols, i)\n"
+            "  invariant agg.Snapshot() == g\n"
         )
+        body_hint = (
+            "    // TODO: if <filter using EqAt* for string cols> {\n"
+            "    //   var k0 := cols.Get<group-int>(i);\n"
+            "    //   var k1 := cols.Get<group-string>(i);\n"
+            "    //   var key := (k0, k1);\n"
+            "    //   var term := <native agg term, e.g. SubU64ToI64(...)>;\n"
+            "    //   agg.Add(k0, k1, term);  // postprocessor → AddStrKey + str_ref\n"
+            "    //   ghost var prev := if key in g then g[key] else 0 as NativeI64;\n"
+            "    //   g := g[key := AddI64(prev, term)];\n"
+            "    // }\n"
+        )
+        run_body_init = (
+            "//   var agg := new NativeAggMap();\n"
+            "//   ghost var g: map<..., NativeI64> := map[];\n"
+        )
+        run_body_end = "//   res := agg.ToMap();\n"
     else:
-        inv = "  invariant 0 <= i <= cols.n\n  invariant res == MethodSpecHelper(cols, i)\n  invariant 0 <= res\n"
+        inv = "  invariant 0 <= i <= cols.n()\n  invariant res == MethodSpecHelper(cols, i)\n  invariant 0 <= res\n"
         body_hint = (
-            "    // TODO: add the matching rows' <term> to res\n"
-            "    // Example:\n"
-            "    //   if <condition on cols.LO_X[i]> {\n"
-            "    //     res := res + (cols.LO_EXTENDEDPRICE[i] as int * cols.LO_DISCOUNT[i] as int);\n"
-            "    //   }\n"
+            "    // TODO: if <filter> { res := AddU64(res, <MulU64U32(...) or term>); }\n"
         )
+        run_body_init = "//   res := 0 as NativeU64;\n"
+        run_body_end = ""
 
     # 5. The `RunQuery` skeleton: emitted as a *comment* in the spec so the
     #   agent knows the correct signature, requires/ensures, invariant shape,
@@ -675,34 +861,35 @@ def transpile_sql_to_dafny_columnar(sql_str: str, schema_dict: dict[str, str]) -
     run_query_skel = (
         "// === RunQuery skeleton (agent provides the body) ===\n"
         f"// method RunQuery(cols: Cols) returns (res: {ret_type})\n"
-        "//   requires 0 <= cols.n\n"
         "//   requires ValidCols(cols)\n"
         f"//   ensures res == MethodSpec(cols)\n"
         "// {\n"
-        + ("//   res := map[];\n" if query.groupby_columns else "//   res := 0;\n")
-        + "//   var i := cols.n;\n"
+        + run_body_init
+        + "//   var i := cols.n();\n"
         + "//   while i > 0\n"
         + "".join("//   " + ln for ln in inv.splitlines(keepends=True))
         + "//   {\n"
         + "//     i := i - 1;\n"
         + "".join("//   " + ln for ln in body_hint.splitlines(keepends=True))
         + "//   }\n"
+        + run_body_end
         + "// }\n"
     )
 
     # 6. Assemble the full Dafny program.
     spec_func = (
-        f"function MethodSpec(cols: Cols): {ret_type}\n"
-        "  requires 0 <= cols.n\n"
+        f"function {{:verify false}} MethodSpec(cols: Cols): {ret_type}\n"
         "  requires ValidCols(cols)\n"
         "{\n"
         f"  {spec_body}\n"
         "}"
     )
-    return f"{type_defs}{cols_datatype}\n\n{valid_cols_predicate}\n\n{helpers_dafny}\n\n{spec_func}\n\n{run_query_skel}"
+    return f"{type_defs}{cols_class}\n\n{valid_cols_predicate}\n\n{helpers_dafny}\n\n{spec_func}\n\n{run_query_skel}"
 
 
-def _build_col_helper(func_name: str, query: SQLQuery, idx_var: str, is_sum: bool) -> str:
+def _build_col_helper(
+    func_name: str, query: SQLQuery, idx_var: str, schema_dict: dict[str, str], is_sum: bool
+) -> str:
     """Build a columnar `MethodSpecHelper` function body.
 
     The helper recurses on `idx_var` from 0 to `cols.n`.  At each step:
@@ -718,26 +905,27 @@ def _build_col_helper(func_name: str, query: SQLQuery, idx_var: str, is_sum: boo
     access `cols.LO_X[idx]` is in the `idx < cols.n` branch, so no lemma
     is needed.
     """
-    cond = _to_col_expr(query.where_expr_dafny, idx_var) if query.where_expr_dafny else None
+    cond = _native_where_cond(_to_col_expr(query.where_expr_dafny, idx_var), idx_var, schema_dict) if query.where_expr_dafny else None
     if query.groupby_columns:
         if len(query.groupby_columns) == 1:
-            key_expr_at_k = f"cols.{query.groupby_columns[0]}[{idx_var}]"
+            key_expr_at_k = f"cols.Get{query.groupby_columns[0]}({idx_var})"
         else:
-            key_expr_at_k = f"({', '.join(f'cols.{c}[{idx_var}]' for c in query.groupby_columns)})"
-        term_expr_at_k = _to_col_expr(query.agg_expr_dafny, idx_var) if is_sum else "1"
+            key_expr_at_k = f"({', '.join(f'cols.Get{c}({idx_var})' for c in query.groupby_columns)})"
+        term_expr_at_k = _native_i64_term(query.agg_expr_dafny, idx_var) if is_sum else "1"
+        val_type = _agg_value_type(query.agg_expr_dafny)
         if len(query.groupby_columns) == 1:
-            ret_type = f"map<{get_dafny_type(query.groupby_columns[0], '')}, int>"
+            ret_type = f"map<{get_dafny_type(query.groupby_columns[0], schema_dict[query.groupby_columns[0]])}, {val_type}>"
         else:
             ret_type = (
-                f"map<({', '.join(get_dafny_type(c, '') for c in query.groupby_columns)}), int>"
+                f"map<({', '.join(get_dafny_type(c, schema_dict[c]) for c in query.groupby_columns)}), {val_type}>"
             )
         if cond:
             body_inner = (
                 f"var tail := {func_name}(cols, {idx_var} + 1);\n"
                 f"  if {cond} then\n"
                 f"    var key := {key_expr_at_k};\n"
-                f"    var val := if key in tail then tail[key] else 0;\n"
-                f"    tail[key := val + {term_expr_at_k}]\n"
+                f"    var val := if key in tail then tail[key] else (0 as {val_type});\n"
+                f"    tail[key := AddI64(val, {term_expr_at_k})]\n"
                 f"  else\n"
                 f"    tail"
             )
@@ -745,28 +933,29 @@ def _build_col_helper(func_name: str, query: SQLQuery, idx_var: str, is_sum: boo
             body_inner = (
                 f"var tail := {func_name}(cols, {idx_var} + 1);\n"
                 f"  var key := {key_expr_at_k};\n"
-                f"  var val := if key in tail then tail[key] else 0;\n"
-                f"  tail[key := val + {term_expr_at_k}]"
+                f"  var val := if key in tail then tail[key] else (0 as {val_type});\n"
+                f"  tail[key := AddI64(val, {term_expr_at_k})]"
             )
     else:
-        term_expr_at_k = _to_col_expr(query.agg_expr_dafny, idx_var) if is_sum else "1"
-        ret_type = "int"
+        term_expr_at_k = _native_u64_term(query.agg_expr_dafny, idx_var) if is_sum else "1"
+        ret_type = _agg_value_type(query.agg_expr_dafny)
         if cond:
             body_inner = (
-                f"if {cond} then {term_expr_at_k} + {func_name}(cols, {idx_var} + 1)\n"
-                f"  else {func_name}(cols, {idx_var} + 1)"
+                f"(if {cond} then "
+                f"AddU64({func_name}(cols, {idx_var} + 1), {term_expr_at_k}) "
+                f"else {func_name}(cols, {idx_var} + 1))"
             )
         else:
-            body_inner = f"{term_expr_at_k} + {func_name}(cols, {idx_var} + 1)"
+            body_inner = f"AddU64({func_name}(cols, {idx_var} + 1), {term_expr_at_k})"
 
-    base_val = "map[]" if query.groupby_columns else "0"
+    base_val = "map[]" if query.groupby_columns else f"0 as {ret_type}"
     return (
-        f"function {func_name}(cols: Cols, {idx_var}: int): {ret_type}\n"
-        f"  requires 0 <= {idx_var} <= cols.n\n"
+        f"function {{:verify false}} {func_name}(cols: Cols, {idx_var}: int): {ret_type}\n"
+        f"  requires 0 <= {idx_var} <= cols.n()\n"
         f"  requires ValidCols(cols)\n"
-        f"  decreases cols.n - {idx_var}\n"
+        f"  decreases cols.n() - {idx_var}\n"
         "{\n"
-        f"  if {idx_var} < cols.n then\n"
+        f"  if {idx_var} < cols.n() then\n"
         f"    {body_inner}\n"
         f"  else {base_val}\n"
         "}\n"

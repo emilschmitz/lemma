@@ -152,7 +152,6 @@ datatype Row = Row(
     # GROUP 1: Scalar return types and local variable optimizations
     # ==========================================================================
 
-    @unittest.expectedFailure
     def test_semantic_divergence_underflow(self):
         """
         Tests that signed subtraction underflow (5 - 10) wraps to 2^64 - 5 in optimized u64.
@@ -185,13 +184,12 @@ method Main() {
         os.utime(main_rs, None)
         opt_res = subprocess.run(run_cmd, cwd=self.test_project_dir, capture_output=True, text=True)
         self.assertEqual(opt_res.returncode, 0, f"Cargo run failed: {opt_res.stderr}")
-        m = re.search(r"OUTPUT:\s*(\d+)", opt_res.stdout)
+        m = re.search(r"OUTPUT:\s*(-?\d+)", opt_res.stdout)
         self.assertIsNotNone(m, f"Optimized run did not match OUTPUT. stdout: {opt_res.stdout}")
         opt_val = int(m.group(1))
 
         self.assertEqual(normal_val, opt_val, f"Divergence: {normal_val} != {opt_val}")
 
-    @unittest.expectedFailure
     def test_semantic_divergence_overflow(self):
         """
         Tests that multiplication 10^20 wraps around 2^64 in optimized u64.
@@ -229,7 +227,6 @@ method Main() {
 
         self.assertEqual(normal_val, opt_val, f"Divergence: {normal_val} != {opt_val}")
 
-    @unittest.expectedFailure
     def test_semantic_divergence_overflow_addition(self):
         """
         Tests that addition (2 * 10^20) wraps modulo 2^64 in optimized u64.
@@ -272,7 +269,6 @@ method Main() {
     # GROUP 2: Loop Index Variable and Conditions/Increments
     # ==========================================================================
 
-    @unittest.expectedFailure
     def test_semantic_divergence_loop_decrement_underflow(self):
         """
         Tests that decrementing loop index past 0 wraps to 2^64-1 in optimized usize,
@@ -314,7 +310,6 @@ method Main() {
 
         self.assertEqual(normal_val, opt_val, f"Divergence: {normal_val} != {opt_val}")
 
-    @unittest.expectedFailure
     def test_semantic_divergence_loop_cardinality_underflow(self):
         """
         Tests decrement loop initialized to sequence cardinality.
@@ -356,7 +351,6 @@ method Main() {{
 
         self.assertEqual(normal_val, opt_val, f"Divergence: {normal_val} != {opt_val}")
 
-    @unittest.expectedFailure
     def test_semantic_divergence_len_subtraction_underflow(self):
         """
         Tests len subtraction underflow when len is 5.
@@ -387,7 +381,7 @@ method Main() {{
         os.utime(main_rs, None)
         opt_res = subprocess.run(run_cmd, cwd=self.test_project_dir, capture_output=True, text=True)
         self.assertEqual(opt_res.returncode, 0, f"Cargo run failed: {opt_res.stderr}")
-        m = re.search(r"OUTPUT:\s*(\d+)", opt_res.stdout)
+        m = re.search(r"OUTPUT:\s*(-?\d+)", opt_res.stdout)
         self.assertIsNotNone(m, f"Optimized run did not match OUTPUT. stdout: {opt_res.stdout}")
         opt_val = int(m.group(1))
 
@@ -397,7 +391,6 @@ method Main() {{
     # GROUP 3: Index access rules
     # ==========================================================================
 
-    @unittest.expectedFailure
     def test_semantic_divergence_index_out_of_bounds(self):
         """
         Tests accessing data[i] with wrapped index. Optimized u64 condition (i < 0) becomes false,
@@ -445,7 +438,6 @@ method Main() {
     # GROUP 4: GROUP BY HashMap return type, initialization and updates
     # ==========================================================================
 
-    @unittest.expectedFailure
     def test_semantic_divergence_map_value_underflow(self):
         """
         Tests that plain int subtraction underflow inside a map update wraps in u64.
@@ -496,7 +488,6 @@ method Main() {{
 
         self.assertEqual(normal_val, opt_val, f"Divergence: {normal_val} != {opt_val}")
 
-    @unittest.expectedFailure
     def test_semantic_divergence_map_value_overflow(self):
         """
         Tests that overflow inside map values wraps in u64.
@@ -647,7 +638,7 @@ method Main() {{
         m = re.search(r"OUTPUT:\s*(\d+)", opt_res.stdout)
         self.assertIsNotNone(m, f"Optimized run did not match OUTPUT. stdout: {opt_res.stdout}")
         opt_val = int(m.group(1))
-        self.assertEqual(opt_val, 1275213)
+        self.assertEqual(opt_val, normal_val)
 
     # ==========================================================================
     # GROUP 6: String comparison optimization
@@ -695,7 +686,7 @@ method Main() {{
         m = re.search(r"OUTPUT:\s*(\d+)", opt_res.stdout)
         self.assertIsNotNone(m, f"Optimized run did not match OUTPUT. stdout: {opt_res.stdout}")
         opt_val = int(m.group(1))
-        self.assertEqual(opt_val, 99170)
+        self.assertEqual(opt_val, normal_val)
 
     # ==========================================================================
     # GROUP 7: Column projection pass
@@ -741,7 +732,7 @@ method Main() {{
         m = re.search(r"OUTPUT:\s*(\d+)", opt_res.stdout)
         self.assertIsNotNone(m, f"Optimized run did not match OUTPUT. stdout: {opt_res.stdout}")
         opt_val = int(m.group(1))
-        self.assertEqual(opt_val, 201386)
+        self.assertEqual(opt_val, normal_val)
 
     # ==========================================================================
     # COMPILATION FAILURE TESTS (Skipped)

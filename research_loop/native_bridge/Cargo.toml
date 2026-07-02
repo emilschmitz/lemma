@@ -1,0 +1,7 @@
+[package]
+name = "native_bridge"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dafny_runtime = { path = "../working_query-rust/runtime" }

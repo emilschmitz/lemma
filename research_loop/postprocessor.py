@@ -1,13 +1,13 @@
 """Minimal Python post-processor for Dafny→Rust output.
 
-Keeps only semantic-preserving, RunQuery-scoped transforms:
-  1. Strip MethodSpec (safety net)
-  2. Rc<Row> clone → reference borrow in loops
-  3. Empty data mock → dataset::load_dataset injection + Loadable impl
-  4. Sequence index: data.get(&i) → data.get_usize(i) inside RunQuery
+Only:
+  - Row-path: empty mock → load_dataset + Loadable impl
+  - Column-path: benchmark harness (load_cols_from_tbl + main) via inject_hot_loop_main
+  - RunQuery: hoist cols ref + usize reverse loop + _usize column accessors (read-only; safe)
+  - NativeAggMap: stack-local agg + AddStrKey (skip Dafny string alloc on group keys)
+  - RunQuery: strip MaybePlacebo return wrapper (same value returned)
 
-Removed (unsafe / handled by {:extern} newtypes in Dafny instead):
-  - DafnyInt→u64, Map→HashMap, int!() rewrites, timing wrapper
+No query-specific rewrites. Column storage is schema-generated ColsNative (single Object).
 """
 
 from __future__ import annotations
@@ -16,12 +16,6 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
-
-import tree_sitter_rust as ts_rust
-from tree_sitter import Language, Parser, Node
-
-RUST_LANGUAGE = Language(ts_rust.language())
-PARSER = Parser(RUST_LANGUAGE)
 
 DEFAULT_TBL = "ssb-dbgen/lineorder_flat.tbl"
 DEFAULT_LIMIT = 50000
@@ -44,7 +38,7 @@ class PostProcessState:
 def postprocess(file_path: str, tbl_path: str = DEFAULT_TBL, row_limit: int = DEFAULT_LIMIT) -> None:
     if not os.path.exists(file_path):
         return
-    with open(file_path, "r") as f:
+    with open(file_path) as f:
         content = f.read()
     if "fn RunQuery" not in content:
         return
@@ -57,11 +51,207 @@ def postprocess(file_path: str, tbl_path: str = DEFAULT_TBL, row_limit: int = DE
 def _transform(content: str, state: PostProcessState) -> str:
     _extract_row_schema(content, state)
     content = _inject_dataset_loader(content, state)
-    content = _rewrite_runquery_body(content)
+    content = _inject_native_extern_imports(content)
+    content = _inject_native_ops_delegates(content)
+    content = _optimize_runquery_hot_loop(content)
+    content = _fix_native_agg_local(content)
+    content = _optimize_native_agg_calls(content)
+    content = _strip_maybe_placebo_return(content)
     if state.needs_dataset:
         content = _ensure_mod_dataset(content)
         content = _inject_loadable_impl(content, state)
     return content
+
+
+def _inject_native_extern_imports(content: str) -> str:
+    """Import native_bridge types into generated _module."""
+    if "pub mod _module" not in content:
+        return content
+    imports = []
+    if "ColsNative" in content:
+        imports.append("ColsNative")
+    if "NativeAggMap" in content:
+        imports.append("NativeAggMap")
+    if not imports:
+        return content
+    use_line = f"use crate::_dafny_externs::{{{', '.join(imports)}}};"
+    if use_line in content:
+        return content
+    return re.sub(r"(pub mod _module\s*\{)", r"\1\n    " + use_line, content, count=1)
+
+
+def _inject_native_ops_delegates(content: str) -> str:
+    """Dafny codegen calls _default::_native_* for {:extern} functions."""
+    if "_default::_native_" not in content or "fn _native_add_u64" in content:
+        return content
+    delegates = """
+        pub fn _native_add_u64(a: u64, b: u64) -> u64 {
+            crate::native_ops::native_add_u64(a, b)
+        }
+        pub fn _native_mul_u64_u32(ep: u64, d: u32) -> u64 {
+            crate::native_ops::native_mul_u64_u32(ep, d)
+        }
+        pub fn _native_sub_u64_i64(a: u64, b: u64) -> i64 {
+            crate::native_ops::native_sub_u64_i64(a, b)
+        }
+        pub fn _native_add_i64(a: i64, b: i64) -> i64 {
+            crate::native_ops::native_add_i64(a, b)
+        }
+"""
+    return re.sub(r"(impl _default \{)", r"\1" + delegates, content, count=1)
+
+
+def _runquery_span(content: str) -> tuple[int, int] | None:
+    m = re.search(r"pub fn RunQuery\(cols: &Object<ColsNative>\)[^{]+\{", content)
+    if not m:
+        return None
+    start = m.end()
+    depth, i = 1, start
+    while i < len(content) and depth:
+        if content[i] == "{":
+            depth += 1
+        elif content[i] == "}":
+            depth -= 1
+        i += 1
+    return (m.start(), i) if depth == 0 else None
+
+
+def _optimize_runquery_hot_loop(content: str) -> str:
+    """Safe RunQuery opts: one cols borrow, usize loop, native slice accessors."""
+    span = _runquery_span(content)
+    if not span:
+        return content
+    rs, re_ = span
+    chunk = content[rs:re_]
+    if "cols_ref" in chunk:
+        body = chunk
+    else:
+        body = chunk.replace(
+            "{",
+            "{\n            let cols_ref = rd!(cols);",
+            1,
+        )
+        body = re.sub(r"rd!\(\s*cols\s*\)\.", "cols_ref.", body)
+    body = re.sub(
+        r"let mut i: DafnyInt = cols_ref\.n\(\);\s*"
+        r"while int!\(0\) < i\.clone\(\) \{\s*"
+        r"i = i\.clone\(\) - int!\(1\);",
+        "let mut i: usize = cols_ref.n;\n            while i > 0 {\n                i -= 1;",
+        body,
+        count=1,
+    )
+    body = re.sub(
+        r"cols_ref\.Get([A-Z0-9_]+)\(&i\)",
+        r"cols_ref.Get\1_usize(i)",
+        body,
+    )
+    body = re.sub(
+        r'cols_ref\.EqAt([A-Z0-9_]+)\(&i, &string_of\("([^"]*)"\)\)',
+        r'cols_ref.EqAt\1_usize(i, "\2")',
+        body,
+    )
+    return content[:rs] + body + content[re_:]
+
+
+def _fix_native_agg_local(content: str) -> str:
+    """Dafny `new NativeAggMap()` → Object; local agg can be stack NativeAggMap."""
+    if "NativeAggMap" not in content:
+        return content
+    m = re.search(r"pub fn RunQuery\(cols: &Object<ColsNative>\)[^{]+\{", content)
+    if not m:
+        m = re.search(r"pub fn RunQuery\(cols: &Rc<Cols>\)[^{]+\{", content)
+    if not m:
+        return content
+    end = content.find("\n        /// ", m.end())
+    if end == -1:
+        end = content.find("\n    /// ", m.end())
+    if end == -1:
+        return content
+    chunk = content[m.start() : end]
+    if "Object<NativeAggMap>" not in chunk:
+        return content
+    chunk = re.sub(
+        r"let mut agg: Object<NativeAggMap>;\s*"
+        r"let mut _nw\d+: Object<NativeAggMap> = NativeAggMap::_allocate_object\(\);\s*"
+        r"agg = _nw\d+\.clone\(\);\s*",
+        "let mut agg = NativeAggMap::default();\n            ",
+        chunk,
+        count=1,
+    )
+    chunk = re.sub(r"(?:md|rd)!\(\s*agg\s*\)\.(Add|ToMap|Snapshot)\(", r"agg.\1(", chunk)
+    return content[: m.start()] + chunk + content[end:]
+
+
+def _optimize_native_agg_calls(content: str) -> str:
+    """Native agg hot path: AddStrKey + str_ref instead of Dafny Sequence keys."""
+    span = _runquery_span(content)
+    if not span:
+        return content
+    rs, re_ = span
+    body = content[rs:re_]
+    # yr + nation locals + optional key tuple + agg.Add(&nation) — drop Dafny string allocs.
+    body = re.sub(
+        r"let mut ([a-zA-Z_]+): u32 = cols_ref\.Get([A-Z0-9_]+)_usize\(i\);\s*"
+        r"let mut ([a-zA-Z_]+): Sequence<DafnyChar> = cols_ref\.Get([A-Z0-9_]+)_usize\(i\);\s*"
+        r"let mut key: \(u32, Sequence<DafnyChar>\) = \(\s*\1,\s*\3\.clone\(\)\s*\);\s*"
+        r"(let mut term: [^;]+;)\s*"
+        r"agg\.Add\(\1, &\3(?:\.clone\(\))?, term\)",
+        r"let mut \1: u32 = cols_ref.Get\2_usize(i);\n                    \5\n                    agg.AddStrKey(\1, cols_ref.Get\4_str_ref(i), term)",
+        body,
+        count=1,
+    )
+    # Tuple key built from two Get*_usize → Add(key.0, key.1).
+    body = re.sub(
+        r"let mut key: \(u32, Sequence<DafnyChar>\) = \(\s*"
+        r"cols_ref\.Get([A-Z0-9_]+)_usize\(i\),\s*"
+        r"cols_ref\.Get([A-Z0-9_]+)_usize\(i\)\s*\);\s*"
+        r"(let mut term: [^;]+;)\s*"
+        r"agg\.Add\(key\.0(?:\.clone\(\))?, &key\.1(?:\.clone\(\))?, term\)",
+        r"\3\n                    agg.AddStrKey(cols_ref.Get\1_usize(i), cols_ref.Get\2_str_ref(i), term)",
+        body,
+        count=1,
+    )
+    body = re.sub(
+        r"agg\.Add\(([^,]+),\s*&cols_ref\.Get([A-Z0-9_]+)_usize\(i\),\s*([^)]+)\)",
+        r"agg.AddStrKey(\1, cols_ref.Get\2_str_ref(i), \3)",
+        body,
+    )
+    body = re.sub(
+        r"let mut ([a-zA-Z_][a-zA-Z0-9_]*): Sequence<DafnyChar> = "
+        r"cols_ref\.Get([A-Z0-9_]+)_usize\(i\);\s*"
+        r"(?:let mut [^;]+;\s*)?"
+        r"agg\.Add\(([^,]+), &\1(?:\.clone\(\))?, ([^)]+)\)",
+        r"agg.AddStrKey(\3, cols_ref.Get\2_str_ref(i), \4)",
+        body,
+    )
+    return content[:rs] + body + content[re_:]
+
+
+def _strip_maybe_placebo_return(content: str) -> str:
+    """Dafny emits MaybePlacebo + clone on return; direct return is equivalent."""
+    span = _runquery_span(content)
+    if not span:
+        return content
+    rs, re_ = span
+    body = content[rs:re_]
+    if "MaybePlacebo" not in body:
+        return content
+    body = re.sub(
+        r"let mut _out0: ([^=]+) = agg\.ToMap\(\);\s*"
+        r"res = MaybePlacebo::from\(_out0\.clone\(\)\);\s*"
+        r"return res\.read\(\);",
+        r"return agg.ToMap();",
+        body,
+        count=1,
+    )
+    body = re.sub(
+        r"res = MaybePlacebo::from\(([^;]+)\.clone\(\)\);\s*return res\.read\(\);",
+        r"return \1;",
+        body,
+        count=1,
+    )
+    body = re.sub(r"let mut res = MaybePlacebo::<[^;]+>::new\(\);\s*", "", body, count=1)
+    return content[:rs] + body + content[re_:]
 
 
 def _extract_row_schema(content: str, state: PostProcessState) -> None:
@@ -73,8 +263,7 @@ def _extract_row_schema(content: str, state: PostProcessState) -> None:
         if not part or ":" not in part:
             continue
         name, ty = part.split(":", 1)
-        name = name.strip()
-        ty = ty.strip()
+        name, ty = name.strip(), ty.strip()
         if "Sequence" in ty:
             rust_ty = "String"
         elif "u64" in ty:
@@ -84,16 +273,7 @@ def _extract_row_schema(content: str, state: PostProcessState) -> None:
         state.row_fields.append(RowField(name, rust_ty))
 
 
-def _strip_method_spec(content: str) -> str:
-    return re.sub(
-        r"fn MethodSpec[\s\S]*?^\s*\}\s*\n(?=\s*(?:pub\s+)?fn\s|\s*#\[|\s*\})",
-        "",
-        content,
-        flags=re.MULTILINE,
-    )
-
-
-def _inject_dataset_loader(content: str, state: PostProcessState) -> str:
+def _inject_dataset_loader(content: str, state: PostProcessState) -> None:
     pat = re.compile(
         r"let mut data\s*:\s*Sequence\s*<\s*Rc\s*<\s*Row\s*>\s*>\s*=\s*(?:\[\s*\]|seq!\[\s*\])\s*;",
     )
@@ -112,9 +292,7 @@ def _ensure_mod_dataset(content: str) -> str:
     if "mod dataset;" in content:
         return content
     pos = content.find("pub mod _module")
-    if pos != -1:
-        return content[:pos] + "mod dataset; " + content[pos:]
-    return "mod dataset;\n" + content
+    return content[:pos] + "mod dataset; " + content[pos:] if pos != -1 else "mod dataset;\n" + content
 
 
 def _build_loadable_impl(state: PostProcessState) -> str:
@@ -139,98 +317,121 @@ def _build_loadable_impl(state: PostProcessState) -> str:
 
 
 def _inject_loadable_impl(content: str, state: PostProcessState) -> str:
-    impl = _build_loadable_impl(state)
     if "impl crate::dataset::Loadable" in content:
         return content
-    marker = "pub enum Row"
-    pos = content.find(marker)
+    impl = _build_loadable_impl(state)
+    pos = content.find("pub enum Row")
     if pos == -1:
         return content + impl
     end = content.find("} }", pos)
-    if end == -1:
-        return content + impl
-    insert_at = end + 3
-    return content[:insert_at] + impl + content[insert_at:]
+    return content[: end + 3] + impl + content[end + 3 :] if end != -1 else content + impl
 
 
-def _rewrite_runquery_body(content: str) -> str:
-    tree = PARSER.parse(content.encode("utf-8"))
-    root = tree.root_node
-    run_query = _find_run_query_fn(root)
-    if run_query is None:
-        return content
-    edits: list[tuple[int, int, str]] = []
-
-    body = run_query.child_by_field_name("body")
-    if body:
-        _collect_runquery_edits(body, content.encode("utf-8"), edits)
-
-    edits.sort(key=lambda e: e[0], reverse=True)
-    b = bytearray(content.encode("utf-8"))
-    for start, end, repl in edits:
-        b[start:end] = repl.encode("utf-8")
-    return b.decode("utf-8")
-
-
-def _find_run_query_fn(root: Node) -> Node | None:
-    for child in root.children:
-        if child.type == "function_item":
-            name = child.child_by_field_name("name")
-            if name and _node_text(name) == "RunQuery":
-                return child
-        if child.type in ("mod_item", "source_file", "declaration_list"):
-            found = _find_run_query_fn(child)
-            if found:
-                return found
-        if child.type == "impl_item":
-            for item in child.children:
-                if item.type == "function_item":
-                    name = item.child_by_field_name("name")
-                    if name and _node_text(name) == "RunQuery":
-                        return item
-    return None
+def _extract_cols_schema_from_native_rs(native_rs_path: str, state: PostProcessState) -> None:
+    """Parse schema-specific cols_native.rs generated alongside the Dafny program."""
+    with open(native_rs_path) as f:
+        content = f.read()
+    state.row_fields.clear()
+    for m in re.finditer(r"pub fn Get([A-Z0-9_]+)\(", content):
+        col = m.group(1)
+        field_m = re.search(rf"pub {re.escape(col.lower())}: Arc<Vec<(\w+)>>", content)
+        if not field_m:
+            continue
+        rust_ty = field_m.group(1)
+        if rust_ty == "String":
+            ty = "String"
+        elif rust_ty == "u64":
+            ty = "u64"
+        else:
+            ty = "u32"
+        state.row_fields.append(RowField(col.lower(), ty))
 
 
-def _collect_runquery_edits(node: Node, src: bytes, edits: list[tuple[int, int, str]]) -> None:
-    if node.type == "let_declaration":
-        txt = src[node.start_byte:node.end_byte].decode("utf-8")
-        m = re.search(
-            r"let mut (\w+)\s*:\s*Rc\s*<\s*Row\s*>\s*=\s*(\w+)_vec\[i\]\.clone\(\)",
-            txt.replace(" ", ""),
-        )
-        if m:
-            row, base = m.group(1), m.group(2)
-            new = f"let mut {row} = &{base}_vec[i];"
-            edits.append((node.start_byte, node.end_byte, new))
-            return
-
-    if node.type == "method_call_expression":
-        method = node.child_by_field_name("name")
-        args = node.child_by_field_name("arguments")
-        if method and _node_text(method) == "get" and args:
-            arg_txt = src[args.start_byte:args.end_byte].decode("utf-8").strip()
-            if re.fullmatch(r"\(\s*&i\s*\)", arg_txt):
-                recv = node.child_by_field_name("value")
-                recv_txt = src[recv.start_byte:recv.end_byte].decode("utf-8") if recv else ""
-                new = f"{recv_txt}.get_usize(i)"
-                edits.append((node.start_byte, node.end_byte, new))
-                return
-
-    for child in node.children:
-        _collect_runquery_edits(child, src, edits)
-
-
-def _node_text(node: Node) -> str:
-    return node.text.decode("utf-8") if isinstance(node.text, bytes) else (node.text or "")
+def _build_load_cols_fn(state: PostProcessState, tbl_lit: str) -> str:
+    """Load tbl → ColsNative (Arc<Vec> columns) wrapped in Object<ColsNative>."""
+    vec_decls, field_inits, parse_lines = [], [], []
+    for fld in state.row_fields:
+        vname = f"v_{fld.name}"
+        col = fld.name.upper()
+        if fld.rust_type == "String":
+            vec_decls.append(f"    let mut {vname}: Vec<String> = Vec::new();")
+            parse_lines.append(
+                f'        {vname}.push(f[ci["{col}"]].trim_matches(\'"\').to_string());'
+            )
+        else:
+            vec_decls.append(f"    let mut {vname}: Vec<{fld.rust_type}> = Vec::new();")
+            parse_lines.append(
+                f'        {vname}.push(f[ci["{col}"]].parse::<{fld.rust_type}>().unwrap());'
+            )
+        field_inits.append(f"        {fld.name}: Arc::new({vname}),")
+    return f"""
+fn load_cols_from_tbl(tbl_path: &str, limit: usize) -> ::dafny_runtime::Object<crate::_dafny_externs::ColsNative> {{
+    use std::collections::HashMap;
+    use std::fs::File;
+    use std::io::{{BufRead, BufReader}};
+    use std::sync::Arc;
+    use crate::_dafny_externs::ColsNative;
+    let mut base = std::env::current_dir().unwrap();
+    let mut p = base.join(tbl_path);
+    while !p.exists() {{
+        match base.parent() {{ Some(par) => {{ base = par.to_path_buf(); p = base.join(tbl_path); }} None => break }}
+    }}
+    let mut rdr = BufReader::new(File::open(&p).unwrap());
+    let mut hdr = String::new();
+    rdr.read_line(&mut hdr).unwrap();
+    let mut ci: HashMap<String, usize> = HashMap::new();
+    for (i, c) in hdr.split('|').enumerate() {{ ci.insert(c.trim().to_uppercase(), i); }}
+{chr(10).join(vec_decls)}
+    let mut n = 0usize;
+    for ln in rdr.lines().take(limit) {{
+        let line = ln.unwrap();
+        let f: Vec<&str> = line.split('|').collect();
+        if f.is_empty() {{ continue; }}
+{chr(10).join(parse_lines)}
+        n += 1;
+    }}
+    ::dafny_runtime::Object::new(ColsNative {{
+        n,
+{chr(10).join(field_inits)}
+    }})
+}}
+"""
 
 
 def inject_hot_loop_main(file_path: str, tbl_path: str, row_limit: int) -> None:
-    """Replace Dafny's main with: load once, warm 2x, time 3rd RunQuery."""
     with open(file_path) as f:
         content = f.read()
     content = re.sub(r"\nfn main\s*\(\)\s*\{[\s\S]*\}\s*$", "\n", content)
     tbl_lit = json.dumps(tbl_path)
-    harness = f"""
+    state = PostProcessState(tbl_path=tbl_path, row_limit=row_limit)
+    native_rs = os.path.join(os.path.dirname(file_path), "cols_native.rs")
+    uses_cols = "ColsNative" in content and re.search(r"fn RunQuery\s*\(\s*cols:", content)
+    if uses_cols and os.path.exists(native_rs):
+        _extract_cols_schema_from_native_rs(native_rs, state)
+        harness = f"""
+{_build_load_cols_fn(state, tbl_lit)}
+fn main() {{
+    use std::time::Instant;
+    let cols = load_cols_from_tbl({tbl_lit}, {row_limit});
+    for run in 0..3 {{
+        let t0 = Instant::now();
+        let _ = crate::_module::_default::RunQuery(&cols);
+        let dt = t0.elapsed().as_micros();
+        if run == 2 {{
+            println!("QUERY_LATENCY_US: {{}}", dt);
+        }}
+    }}
+}}
+"""
+    else:
+        _extract_row_schema(content, state)
+        if "mod dataset;" not in content:
+            pos = content.find("pub mod _module")
+            if pos != -1:
+                content = content[:pos] + "mod dataset; " + content[pos:]
+        if "impl crate::dataset::Loadable" not in content:
+            content = _inject_loadable_impl(content, state)
+        harness = f"""
 fn main() {{
     use std::time::Instant;
     let data = crate::dataset::load_dataset::<crate::_module::Row>({tbl_lit}, {row_limit});
@@ -244,13 +445,5 @@ fn main() {{
     }}
 }}
 """
-    if "mod dataset;" not in content:
-        pos = content.find("pub mod _module")
-        if pos != -1:
-            content = content[:pos] + "mod dataset; " + content[pos:]
-    state = PostProcessState(tbl_path=tbl_path, row_limit=row_limit)
-    _extract_row_schema(content, state)
-    if "impl crate::dataset::Loadable" not in content:
-        content = _inject_loadable_impl(content, state)
     with open(file_path, "w") as f:
         f.write(content + harness)
