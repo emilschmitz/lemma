@@ -13,7 +13,7 @@ https://github.com/user-attachments/assets/7f7891c7-5ef6-406b-882b-8e01134ed37c
 5. The code is compiled and executed.
 6. Successful optimized binaries are **cached** and loaded via the DuckDB extension.
 
-* Post-processing rewrites are trusted to match verified Dafny semantics, but only verified empirically; see `research_loop/COMPILATION_GUIDE.md`.
+* Post-processing rewrites and a few assumptions in the Dafny spec are added for performance. These manipulations should match verified Dafny semantics, but that is only verified empirically; see `research_loop/COMPILATION_GUIDE.md`.
 
 ---
 
