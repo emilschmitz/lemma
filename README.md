@@ -1,6 +1,6 @@
 # Lemma
 
-Verified query synthesis for DuckDB: SQL is transpiled to a Dafny spec, an agent (or mock) writes an optimized `RunQuery`, Dafny/Z3 proves correctness, and the result is compiled to native Rust. Optimized binaries are cached and invoked via the **Lemma** DuckDB extension.
+Verified query synthesis: SQL is transpiled to a Dafny spec, an agent (or mock) writes an optimized `RunQuery`, Dafny/Z3 proves correctness, and the result is compiled to native Rust. Contains DuckDB extension, where Optimized binaries are cached and invoked when rerun.
 
 ## What It Does
 
@@ -15,7 +15,7 @@ Verified query synthesis for DuckDB: SQL is transpiled to a Dafny spec, an agent
 
 ---
 
-## Quick Start
+## Quick Start with DuckDB extension
 
 ```bash
 make install
