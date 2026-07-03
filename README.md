@@ -17,24 +17,34 @@ https://github.com/user-attachments/assets/7f7891c7-5ef6-406b-882b-8e01134ed37c
 
 ---
 
-## Quick Start with DuckDB extension
+## Quick Start
+
+One-time setup, then run the interactive demo:
 
 ```bash
 make install
-make extension
-./run_duckdb_and_load_extension_and_sbb_dataset.sh
-# In the shell:
-# SELECT lemma('SELECT SUM(LO_EXTENDEDPRICE * LO_DISCOUNT) FROM lineorder_flat WHERE ...');
+./scripts/build_ssb_flat_dataset.sh   # one-time: generates ssb-dbgen flat table (~2M rows)
+./scripts/demo.sh                     # builds extension if needed, prepares data, opens DuckDB CLI
 ```
 
-Interactive demo (clears cache, seeds mock body, opens DuckDB CLI): `./scripts/demo.sh`
+In the DuckDB shell, try Lemma on a query (see the on-screen instructions), e.g.:
+
+```sql
+SELECT lemma('SELECT SUM(LO_EXTENDEDPRICE * LO_DISCOUNT) FROM lineorder_flat WHERE ...');
+```
+
+`demo.sh` handles extension build, dataset loading (`prepare_data`), and launching DuckDB — you do not need to run those steps separately. The flat table only needs to be built once via `build_ssb_flat_dataset.sh`; after that, `prepare_data` runs automatically whenever you start the demo or the lower-level launcher.
+
+**No agent / offline:** `./scripts/mockdemo.sh` — same UX with a pre-seeded RunQuery (no LLM).
+
+**Lower-level launcher** (DuckDB shell only, no demo UI): `make extension` then `./run_duckdb_and_load_extension_and_sbb_dataset.sh`
 
 ### Requirements
 - [uv](https://docs.astral.sh/uv/) — Python package manager
 - [Dafny 4.x](https://github.com/dafny-lang/dafny) — in `PATH`
 - [Rust/Cargo](https://rustup.rs/) — for native compilation
 - [DuckDB CLI](https://duckdb.org/) — vendored to `build/duckdb` on first launcher run
-- **AI coding agent** — for live query optimization (e.g. [Cursor Agent CLI](https://cursor.com/docs/agent/cli) with `agent` on `PATH`). For offline demos without an LLM, use `./scripts/mockdemo.sh` instead.
+- [Cursor Agent CLI](https://cursor.com/docs/agent/cli) — `agent` on `PATH` (for `./scripts/demo.sh`; other agents work too if you set `AGENT_CMD` in `research_loop/config.env`)
 
 ---
 
@@ -46,7 +56,9 @@ Lemma/
 ├── transpiler/          # SQL → Dafny transpiler (sql-transpiler)
 ├── db_extension/        # Lemma DuckDB extension + optimizer entrypoint
 ├── research_loop/       # Verify, compile, agent sandbox
-└── scripts/demo.sh      # Interactive demo
+└── scripts/
+    ├── demo.sh          # Live demo (Cursor Agent CLI)
+    └── mockdemo.sh      # Offline demo (no LLM)
 ```
 
 ## Makefile
