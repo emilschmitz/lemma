@@ -20,9 +20,12 @@ from research_loop.pipeline_demo import (
     demo_banner,
     demo_duckdb_query,
     demo_enabled,
+    demo_emit_box_result,
     demo_execute,
     demo_note,
+    demo_query_result_table,
     verbose_enabled,
+    _lemma_extension,
 )
 
 COMPONENT = "run_optimizer"
@@ -55,6 +58,15 @@ def time_duckdb_us(con, sql: str, warmup: int = 2) -> int:
     return int((time.perf_counter() - t0) * 1_000_000)
 
 
+def _show_query_results(df_res) -> None:
+    if demo_enabled():
+        if not _lemma_extension():
+            demo_query_result_table(df_res)
+        demo_emit_box_result(df_res)
+    else:
+        print_result_table(df_res)
+
+
 def main():
     apply_config_env()
     if len(sys.argv) < 2:
@@ -67,10 +79,11 @@ def main():
     else:
         sql = sys.argv[1]
 
-    log_info(COMPONENT, "start", "run_optimizer invoked", sql_preview=sql[:120], mock=os.environ.get("MOCK_AGENT", "1"))
+    if not demo_enabled():
+        log_info(COMPONENT, "start", "run_optimizer invoked", sql_preview=sql[:120], mock=os.environ.get("MOCK_AGENT", "1"))
 
     con = duckdb.connect()
-    setup_db(con)
+    setup_db(con, quiet=demo_enabled())
 
     exit_code = 0
 
@@ -91,7 +104,7 @@ def main():
 
     if cached_run:
         if demo_enabled():
-            demo_banner("Lemma (cached)")
+            demo_banner("Lemma Optimizer")
         else:
             _vprint(f"{COLOR_BLUE}Running optimized query implementation...{COLOR_RESET}")
         t_start = time.perf_counter()
@@ -106,12 +119,12 @@ def main():
             else:
                 _vprint(f"{COLOR_GREEN}Executed in {elapsed_us} us{COLOR_RESET}")
             df_res = con.execute(sql).df()
-            print_result_table(df_res)
+            _show_query_results(df_res)
         except Exception as e:
             exit_code = 1
             _vprint(f"{COLOR_RED}Error running optimized binary: {e}. Falling back to DuckDB...{COLOR_RESET}")
             df_res = con.execute(sql).df()
-            print_result_table(df_res)
+            _show_query_results(df_res)
             elapsed_us = time_duckdb_us(con, sql, warmup=0)
             if demo_enabled():
                 demo_duckdb_query(elapsed_us)
@@ -143,7 +156,7 @@ def main():
                 save_cache(cache)
 
             df_res = con.execute(sql).df()
-            print_result_table(df_res)
+            _show_query_results(df_res)
             if not demo_enabled():
                 _vprint(f"{COLOR_GREEN}Executed in {res_loop['best_latency_us']} us{COLOR_RESET}")
         else:
@@ -153,7 +166,7 @@ def main():
             else:
                 _vprint(f"{COLOR_RED}Optimization failed. Falling back to DuckDB...{COLOR_RESET}")
             df_res = con.execute(sql).df()
-            print_result_table(df_res)
+            _show_query_results(df_res)
 
     sys.exit(exit_code)
 

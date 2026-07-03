@@ -62,7 +62,7 @@ pub mod _module {
         /// working_query.dfy(108,1)
         pub fn MethodSpecHelper(cols: &Object<ColsNative>, k: &DafnyInt) -> u64 {
             if k.clone() < rd!(cols).n() {
-                if rd!(cols).GetLO_ORDERDATE(k) >= 19940101 && rd!(cols).GetLO_ORDERDATE(k) <= 19940131 && rd!(cols).GetLO_DISCOUNT(k) >= 4 && rd!(cols).GetLO_DISCOUNT(k) <= 6 && rd!(cols).GetLO_QUANTITY(k) >= 26 && rd!(cols).GetLO_QUANTITY(k) <= 35 {
+                if rd!(cols).GetD_WEEKNUMINYEAR(k) == 6 && rd!(cols).GetD_YEAR(k) == 1994 && rd!(cols).GetLO_DISCOUNT(k) >= 5 && rd!(cols).GetLO_DISCOUNT(k) <= 7 && rd!(cols).GetLO_QUANTITY(k) >= 26 && rd!(cols).GetLO_QUANTITY(k) <= 35 {
                     _default::_native_add_u64(_default::MethodSpecHelper(cols, &(k.clone() + int!(1))), _default::_native_mul_u64_u32(rd!(cols).GetLO_EXTENDEDPRICE(k), rd!(cols).GetLO_DISCOUNT(k)))
                 } else {
                     _default::MethodSpecHelper(cols, &(k.clone() + int!(1)))
@@ -83,17 +83,18 @@ pub mod _module {
             let mut i: usize = cols_ref.n;
             while i > 0 {
                 i -= 1;
-                let mut od: u32 = cols_ref.GetLO_ORDERDATE_usize(i);
+                let mut week: u32 = cols_ref.GetD_WEEKNUMINYEAR_usize(i);
+                let mut yr: u32 = cols_ref.GetD_YEAR_usize(i);
                 let mut disc: u32 = cols_ref.GetLO_DISCOUNT_usize(i);
                 let mut qty: u32 = cols_ref.GetLO_QUANTITY_usize(i);
-                if 19940101 <= od && od <= 19940131 && 4 <= disc && disc <= 6 && 26 <= qty && qty <= 35 {
+                if week == 6 && yr == 1994 && 5 <= disc && disc <= 7 && 26 <= qty && qty <= 35 {
                     let mut ep: u64 = cols_ref.GetLO_EXTENDEDPRICE_usize(i);
                     res = _default::_native_add_u64(res, _default::_native_mul_u64_u32(ep, disc));
                 }
             };
             return res;
         }
-        /// working_query.dfy(168,1)
+        /// working_query.dfy(169,1)
         pub fn Main(_noArgsParameter: &Sequence<Sequence<DafnyChar>>) -> () {
             print!("{}", DafnyPrintWrapper(&string_of("SUCCESS\n")));
             return ();

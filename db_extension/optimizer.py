@@ -9,13 +9,12 @@ from research_loop.ssb_workload import queries, schema
 from research_loop.pipeline_log import log_debug, log_info, log_trace, log_warn
 from research_loop.pipeline_demo import (
     demo_enabled,
-    demo_execute,
-    demo_from_harness_metrics,
     demo_iteration,
     demo_note,
-    demo_step_done,
     demo_step_pass_fail,
     demo_banner,
+    demo_live_step,
+    format_demo_seconds_from_us,
     verbose_enabled,
 )
 
@@ -33,6 +32,42 @@ COLOR_RESET = "\033[0m"
 def _vprint(*args, **kwargs) -> None:
     if verbose_enabled() or not demo_enabled():
         print(*args, **kwargs)
+
+_HARNESS_METRICS_PREFIX = "LEMMA_METRICS_JSON:"
+
+
+def _parse_harness_metrics(stderr: str) -> dict:
+    for line in (stderr or "").splitlines():
+        if line.startswith(_HARNESS_METRICS_PREFIX):
+            return json.loads(line[len(_HARNESS_METRICS_PREFIX):])
+    return {}
+
+
+def _run_harness_demo(harness_cmd: list[str], *, cwd: str, timeout: int) -> tuple[int, dict]:
+    """Run harness; stream demo UI on stderr live, parse metrics from the trailer line."""
+    proc = subprocess.Popen(
+        harness_cmd,
+        cwd=cwd,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    metrics: dict = {}
+    assert proc.stderr is not None
+    try:
+        for line in proc.stderr:
+            if line.startswith(_HARNESS_METRICS_PREFIX):
+                metrics = json.loads(line[len(_HARNESS_METRICS_PREFIX):].strip())
+            else:
+                sys.stderr.write(line)
+                sys.stderr.flush()
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        raise
+    return proc.returncode, metrics
+
 
 def match_query_index(sql_query: str) -> int:
     """
@@ -230,8 +265,7 @@ def run_optimization_loop(sql_query: str, dataset_size: int = 50000, max_iterati
     scratchpad_path = os.path.join(root_dir, "research_loop", "agent_scratchpad.md")
 
     if demo_enabled():
-        agent_label = "mock fixture" if use_mock else "Composer agent"
-        demo_banner(f"Lemma optimizer · Q{query_id} · {agent_label}")
+        demo_banner("Lemma Optimizer")
     else:
         _vprint(f"{COLOR_CYAN}--- Starting Lemma optimizer for Query {query_id} ---{COLOR_RESET}")
     
@@ -250,33 +284,35 @@ def run_optimization_loop(sql_query: str, dataset_size: int = 50000, max_iterati
 
         # Step 1: Transpile SQL
         log_debug(COMPONENT, "transpile_start", "sql_transpiler")
-        _vprint("  - Transpiling SQL query to formal Daphne spec...", end="", flush=True)
-        t_start = time.perf_counter()
+        _vprint("  - Transpiling SQL query to formal Dafny spec...", end="", flush=True)
         try:
-            dafny_spec = transpile_sql_to_dafny_columnar(sql_query, schema)
-            ms = int((time.perf_counter() - t_start) * 1000)
-            log_debug(COMPONENT, "transpile_done", f"{ms}ms", spec_bytes=len(dafny_spec))
             if demo_enabled():
-                demo_step_done("🏗️", "Transpiling query into Dafny spec", ms)
+                with demo_live_step("🏗", "SQL → Dafny spec"):
+                    dafny_spec = transpile_sql_to_dafny_columnar(sql_query, schema)
             else:
+                t_start = time.perf_counter()
+                dafny_spec = transpile_sql_to_dafny_columnar(sql_query, schema)
+                ms = int((time.perf_counter() - t_start) * 1000)
+                log_debug(COMPONENT, "transpile_done", f"{ms}ms", spec_bytes=len(dafny_spec))
                 _vprint(f" {COLOR_GREEN}OK{COLOR_RESET} ({ms} ms)")
         except Exception as e:
             _vprint(f" {COLOR_RED}FAILED{COLOR_RESET}")
             _vprint(f"    Error: {e}")
             return {"status": "FAILED", "error": f"Transpilation failed: {e}"}
+        if demo_enabled():
+            log_debug(COMPONENT, "transpile_done", "ok", spec_bytes=len(dafny_spec))
 
         # Step 2: Write agent code
-        _vprint("  - Writing optimized query in Daphne...", end="", flush=True)
-        write_ms = 0
+        _vprint("  - Writing optimized query in Dafny...", end="", flush=True)
         if use_mock:
             try:
-                w_start = time.perf_counter()
-                agent_body_path = os.path.join(root_dir, "research_loop", "agent_workspace", "runquery_agent.dfy")
-                write_mock_agent_body(query_id, agent_body_path)
-                write_ms = int((time.perf_counter() - w_start) * 1000)
                 if demo_enabled():
-                    demo_step_done("🧑‍💻", "Writing optimized implementation", write_ms, detail="mock")
+                    with demo_live_step("🦾", "Generating RunQuery"):
+                        agent_body_path = os.path.join(root_dir, "research_loop", "agent_workspace", "runquery_agent.dfy")
+                        write_mock_agent_body(query_id, agent_body_path)
                 else:
+                    agent_body_path = os.path.join(root_dir, "research_loop", "agent_workspace", "runquery_agent.dfy")
+                    write_mock_agent_body(query_id, agent_body_path)
                     _vprint(f" {COLOR_GREEN}OK{COLOR_RESET} (Mock Agent, columnar fixture Q{query_id})")
             except Exception as e:
                 _vprint(f" {COLOR_RED}FAILED{COLOR_RESET} (Mock generation failed)")
@@ -315,41 +351,62 @@ def run_optimization_loop(sql_query: str, dataset_size: int = 50000, max_iterati
 
             a_start = time.perf_counter()
             try:
-                body, proc = run_agent_iteration(
-                    query_id=query_id,
-                    dafny_spec=dafny_spec,
-                    iteration=iteration,
-                    max_iterations=max_iterations,
-                    last_error=last_error,
-                    last_latency_us=last_lat,
-                    workspace=workspace,
-                    cfg=cfg,
-                )
-                log_trace(COMPONENT, "agent_body_preview", body[:200])
-                if proc.returncode != 0:
-                    err = (proc.stderr or proc.stdout or "agent exited non-zero").strip()
-                    write_ms = int((time.perf_counter() - a_start) * 1000)
-                    if demo_enabled():
-                        demo_step_pass_fail("🧑‍💻", "Writing optimized implementation", write_ms, False)
-                    else:
+                if demo_enabled():
+                    with demo_live_step("🦾", "Generating RunQuery", pass_fail=True) as gen_step:
+                        body, proc = run_agent_iteration(
+                            query_id=query_id,
+                            dafny_spec=dafny_spec,
+                            iteration=iteration,
+                            max_iterations=max_iterations,
+                            last_error=last_error,
+                            last_latency_us=last_lat,
+                            workspace=workspace,
+                            cfg=cfg,
+                        )
+                        log_trace(COMPONENT, "agent_body_preview", body[:200])
+                        gen_step.set_passed(proc.returncode == 0)
+                        if proc.returncode != 0:
+                            err = (proc.stderr or proc.stdout or "agent exited non-zero").strip()
+                            if not demo_enabled():
+                                _vprint(f" {COLOR_RED}FAILED{COLOR_RESET}")
+                                _vprint(f"    {err[:500]}")
+                            history.append({
+                                "iteration": iteration,
+                                "status": "FAILURE",
+                                "proof_verified": False,
+                                "latency_us": -1,
+                                "error": f"Agent failed: {err}",
+                            })
+                            continue
+                else:
+                    body, proc = run_agent_iteration(
+                        query_id=query_id,
+                        dafny_spec=dafny_spec,
+                        iteration=iteration,
+                        max_iterations=max_iterations,
+                        last_error=last_error,
+                        last_latency_us=last_lat,
+                        workspace=workspace,
+                        cfg=cfg,
+                    )
+                    log_trace(COMPONENT, "agent_body_preview", body[:200])
+                    if proc.returncode != 0:
+                        err = (proc.stderr or proc.stdout or "agent exited non-zero").strip()
                         _vprint(f" {COLOR_RED}FAILED{COLOR_RESET}")
                         _vprint(f"    {err[:500]}")
-                    history.append({
-                        "iteration": iteration,
-                        "status": "FAILURE",
-                        "proof_verified": False,
-                        "latency_us": -1,
-                        "error": f"Agent failed: {err}",
-                    })
-                    continue
-                write_ms = int((time.perf_counter() - a_start) * 1000)
-                if demo_enabled():
-                    demo_step_done("🧑‍💻", "Writing optimized implementation", write_ms)
-                else:
+                        history.append({
+                            "iteration": iteration,
+                            "status": "FAILURE",
+                            "proof_verified": False,
+                            "latency_us": -1,
+                            "error": f"Agent failed: {err}",
+                        })
+                        continue
+                    write_ms = int((time.perf_counter() - a_start) * 1000)
                     _vprint(f" {COLOR_GREEN}OK{COLOR_RESET} ({write_ms // 1000} s)")
             except subprocess.TimeoutExpired:
                 if demo_enabled():
-                    demo_step_pass_fail("🧑‍💻", "Writing optimized implementation", int((time.perf_counter() - a_start) * 1000), False)
+                    demo_step_pass_fail("🦾", "Generating RunQuery", int((time.perf_counter() - a_start) * 1000), False)
                 _vprint(f" {COLOR_RED}TIMEOUT{COLOR_RESET}")
                 history.append({
                     "iteration": iteration,
@@ -383,20 +440,31 @@ def run_optimization_loop(sql_query: str, dataset_size: int = 50000, max_iterati
                         break
         
         try:
-            harness_res = subprocess.run(
-                harness_cmd, cwd=root_dir, capture_output=True, text=True, timeout=harness_timeout
-            )
+            if demo_enabled():
+                returncode, metrics = _run_harness_demo(
+                    harness_cmd, cwd=root_dir, timeout=harness_timeout
+                )
+                if not metrics:
+                    metrics = {
+                        "status": "FAILURE",
+                        "proof_verified": False,
+                        "latency_us": -1,
+                        "compiler_error": f"Harness crashed (exit {returncode})",
+                    }
+            else:
+                harness_res = subprocess.run(
+                    harness_cmd, cwd=root_dir, capture_output=True, text=True, timeout=harness_timeout
+                )
+                try:
+                    metrics = json.loads(harness_res.stdout)
+                except json.JSONDecodeError:
+                    metrics = {
+                        "status": "FAILURE",
+                        "proof_verified": False,
+                        "latency_us": -1,
+                        "compiler_error": f"Harness crashed: {harness_res.stderr}"
+                    }
             h_time = time.perf_counter() - h_start
-            
-            try:
-                metrics = json.loads(harness_res.stdout)
-            except json.JSONDecodeError:
-                metrics = {
-                    "status": "FAILURE",
-                    "proof_verified": False,
-                    "latency_us": -1,
-                    "compiler_error": f"Harness crashed: {harness_res.stderr}"
-                }
             
             status = metrics["status"]
             proof_verified = metrics["proof_verified"]
@@ -409,19 +477,18 @@ def run_optimization_loop(sql_query: str, dataset_size: int = 50000, max_iterati
                 ms=int(h_time * 1000),
             )
 
-            if demo_enabled():
-                demo_from_harness_metrics(metrics)
-            elif status == "SUCCESS" and proof_verified:
-                _vprint(f" {COLOR_GREEN}VERIFIED & COMPILED{COLOR_RESET} in {h_time:.1f}s")
-                _vprint(f"    {COLOR_GREEN}Result:{COLOR_RESET} Executed in {COLOR_CYAN}{latency} us{COLOR_RESET}")
-            elif not proof_verified:
-                _vprint(f" {COLOR_RED}VERIFICATION FAILED{COLOR_RESET}")
-                if "compiler_error" in metrics and metrics["compiler_error"]:
-                    _vprint(f"    Error: {metrics['compiler_error']}")
-            else:
-                _vprint(f" {COLOR_RED}COMPILATION FAILED{COLOR_RESET}")
-                if "compiler_error" in metrics and metrics["compiler_error"]:
-                    _vprint(f"    Error: {metrics['compiler_error']}")
+            if not demo_enabled():
+                if status == "SUCCESS" and proof_verified:
+                    _vprint(f" {COLOR_GREEN}VERIFIED & COMPILED{COLOR_RESET} in {h_time:.1f}s")
+                    _vprint(f"    {COLOR_GREEN}Result:{COLOR_RESET} Executed in {COLOR_CYAN}{latency} us{COLOR_RESET}")
+                elif not proof_verified:
+                    _vprint(f" {COLOR_RED}VERIFICATION FAILED{COLOR_RESET}")
+                    if "compiler_error" in metrics and metrics["compiler_error"]:
+                        _vprint(f"    Error: {metrics['compiler_error']}")
+                else:
+                    _vprint(f" {COLOR_RED}COMPILATION FAILED{COLOR_RESET}")
+                    if "compiler_error" in metrics and metrics["compiler_error"]:
+                        _vprint(f"    Error: {metrics['compiler_error']}")
 
             if status == "SUCCESS" and proof_verified:
                 if best_latency == -1 or latency < best_latency:
@@ -438,7 +505,7 @@ def run_optimization_loop(sql_query: str, dataset_size: int = 50000, max_iterati
 
         except subprocess.TimeoutExpired:
             if demo_enabled():
-                demo_step_pass_fail("✅", "Verifying implementation", int(harness_timeout * 1000), False)
+                demo_step_pass_fail("✅", "Verifying against spec", int(harness_timeout * 1000), False)
             _vprint(f" {COLOR_RED}TIMEOUT{COLOR_RESET} after 90s")
             history.append({
                 "iteration": iteration,
@@ -450,7 +517,10 @@ def run_optimization_loop(sql_query: str, dataset_size: int = 50000, max_iterati
 
     if demo_enabled():
         if best_latency != -1:
-            demo_note(f"Best: iteration {best_iteration} out of {max_iterations} at {best_latency} µs")
+            demo_note(
+                f"Best: iteration {best_iteration} out of {max_iterations} at "
+                f"{format_demo_seconds_from_us(best_latency)} s"
+            )
     else:
         _vprint(f"\n{COLOR_CYAN}--- Optimization Finished ---{COLOR_RESET}")
         if best_latency != -1:

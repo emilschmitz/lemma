@@ -45,15 +45,15 @@ cat <<EOF
 
     ${SQL_ONELINE}
 
-  (2) Lemma — must be quoted as one string. Demo steps + revenue print on stdout;
-      ignore any empty 1-row table DuckDB shows as the SELECT result:
+  (2) Lemma — progress prints above; revenue appears in DuckDB's result box. Turn off timer first:
+
+    .timer off
 
     SELECT lemma('${SQL_ONELINE}');
 
   (3) Run (2) again → cached optimized binary (💾 path in demo UI).
 
-  Tip: paste carefully — the prompt is "lemma>" but your SQL must still start with
-  SELECT. Do not merge the prompt text into the query.
+  Tip: use the default DuckDB prompt (D ); paste full SQL starting with SELECT.
 
   Our 🦆 DuckDB timing line only appears if LEMMA_DEMO_DUCKDB=1 (off by default).
 

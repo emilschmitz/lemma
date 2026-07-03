@@ -2,10 +2,18 @@
 #include <iostream>
 #include <string>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 DUCKDB_EXTENSION_EXTERN
 
 void RegisterLemmaFunction(duckdb_connection connection);
+
+static bool lemma_demo_mode() {
+    const char* v = std::getenv("LEMMA_DEMO");
+    return v != nullptr && v[0] != '\0' && std::strcmp(v, "0") != 0 && std::strcmp(v, "false") != 0
+           && std::strcmp(v, "False") != 0;
+}
 
 static void LemmaOptimize(duckdb_function_info info, duckdb_data_chunk input, duckdb_vector output) {
     idx_t input_size = duckdb_data_chunk_get_size(input);
@@ -24,21 +32,36 @@ static void LemmaOptimize(duckdb_function_info info, duckdb_data_chunk input, du
             fclose(sql_file);
         }
 
-        std::string cmd = "uv run python -m db_extension.run_optimizer --file " + temp_sql_path + " 2>&1";
+        // Demo progress UI → Python stderr (streams live). Query result scalar → stdout (captured for DuckDB box).
+        std::string cmd =
+            "PYTHONUNBUFFERED=1 uv run python -m db_extension.run_optimizer --file " + temp_sql_path;
 
         char buffer[1024];
         FILE* pipe = popen(cmd.c_str(), "r");
         int exit_code = -1;
+        std::string captured;
+        const bool demo = lemma_demo_mode();
         if (pipe) {
             while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-                std::cout << buffer << std::flush;
+                captured += buffer;
+                if (!demo) {
+                    std::cout << buffer << std::flush;
+                }
             }
             exit_code = pclose(pipe);
+            while (!captured.empty() && (captured.back() == '\n' || captured.back() == '\r')) {
+                captured.pop_back();
+            }
         }
 
         remove(temp_sql_path.c_str());
 
-        std::string output_str = (exit_code == 0) ? "" : "Lemma optimization failed.";
+        std::string output_str;
+        if (exit_code == 0) {
+            output_str = demo ? captured : "";
+        } else {
+            output_str = demo ? ("Lemma optimization failed.\n" + captured) : "Lemma optimization failed.";
+        }
         duckdb_vector_assign_string_element(output, row, output_str.c_str());
     }
 }

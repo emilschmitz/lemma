@@ -87,7 +87,7 @@ def print_result_table(df: pd.DataFrame):
         return
     print(df.to_string(index=False))
 
-def setup_db(con: duckdb.DuckDBPyConnection):
+def setup_db(con: duckdb.DuckDBPyConnection, *, quiet: bool = False):
     current_dir = os.path.dirname(os.path.abspath(__file__))
     root_dir = os.path.dirname(current_dir)
     tbl_path = os.path.join(root_dir, "ssb-dbgen", "lineorder_flat.tbl")
@@ -97,7 +97,12 @@ def setup_db(con: duckdb.DuckDBPyConnection):
             f"Real SSB flat table not found at {tbl_path}.\n"
             "Please compile ssb-dbgen, run the generator, and run flatten_ssb.py to build the real dataset."
         )
+
+    if quiet:
+        con.execute("SET enable_progress_bar = false")
     
-    print(f"Loading table 'lineorder_flat' from {tbl_path}...")
+    if not quiet:
+        print(f"Loading table 'lineorder_flat' from {tbl_path}...")
     con.execute(f"CREATE TABLE lineorder_flat AS SELECT * FROM read_csv('{tbl_path}', delim='|', header=True) LIMIT 50000")
-    print(f"{COLOR_GREEN}Loaded 50,000 rows into 'lineorder_flat'.{COLOR_RESET}")
+    if not quiet:
+        print(f"{COLOR_GREEN}Loaded 50,000 rows into 'lineorder_flat'.{COLOR_RESET}")
