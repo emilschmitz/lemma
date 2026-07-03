@@ -231,9 +231,9 @@ def run_optimization_loop(sql_query: str, dataset_size: int = 50000, max_iterati
 
     if demo_enabled():
         agent_label = "mock fixture" if use_mock else "Composer agent"
-        demo_banner(f"Hillclimbing optimizer · Q{query_id} · {agent_label}")
+        demo_banner(f"Lemma optimizer · Q{query_id} · {agent_label}")
     else:
-        _vprint(f"{COLOR_CYAN}--- Starting verified-hillclimbing optimizer for Query {query_id} ---{COLOR_RESET}")
+        _vprint(f"{COLOR_CYAN}--- Starting Lemma optimizer for Query {query_id} ---{COLOR_RESET}")
     
     best_latency = -1
     best_iteration = -1
@@ -298,7 +298,7 @@ def run_optimization_loop(sql_query: str, dataset_size: int = 50000, max_iterati
             last_lat = history[-1]["latency_us"] if history and history[-1].get("proof_verified") else -1
 
             if use_docker(cfg):
-                image = cfg.get("AGENT_IMAGE", "verified-hillclimbing-agent:latest")
+                image = cfg.get("AGENT_IMAGE", "lemma-agent:latest")
                 if not docker_image_built(image):
                     log_info(COMPONENT, "docker_build_start", f"building {image}")
                     _vprint(f"  - Building agent Docker image {image}...", end="", flush=True)

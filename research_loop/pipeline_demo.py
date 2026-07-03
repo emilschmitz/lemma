@@ -13,11 +13,11 @@ _RESET = "\033[0m"
 
 
 def demo_enabled() -> bool:
-    return os.environ.get("HILLCLIMBING_DEMO", "0") not in ("0", "false", "False", "")
+    return os.environ.get("LEMMA_DEMO", "0") not in ("0", "false", "False", "")
 
 
 def verbose_enabled() -> bool:
-    return os.environ.get("HILLCLIMBING_VERBOSE", "0") not in ("0", "false", "False", "")
+    return os.environ.get("LEMMA_VERBOSE", "0") not in ("0", "false", "False", "")
 
 
 def _out(line: str) -> None:

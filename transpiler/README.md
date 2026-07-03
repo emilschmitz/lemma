@@ -1,6 +1,6 @@
 # sql-transpiler
 
-A SQL-to-Dafny transpiler that converts analytical SQL queries (aggregations, GROUP BY, WHERE filters) into a mathematical `MethodSpec` function in Dafny — for use as a formal correctness specification in the verified hill-climbing query optimizer.
+A SQL-to-Dafny transpiler that converts analytical SQL queries (aggregations, GROUP BY, WHERE filters) into a mathematical `MethodSpec` function in Dafny — for use as a formal correctness specification in **Lemma**.
 
 ## What it does
 

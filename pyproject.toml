@@ -1,7 +1,7 @@
 [project]
-name = "verified-hillclimbing-db"
+name = "lemma"
 version = "0.1.0"
-description = "Verified hill-climbing query optimizer using Dafny formal proofs and native Rust compilation"
+description = "Lemma — verified query synthesis as a DuckDB extension (Dafny proofs + native Rust)"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

@@ -18,32 +18,30 @@ loop:
 
 extension:
 	mkdir -p build
-	g++ -shared -o build/hillclimbing.duckdb_extension -fPIC \
-		db_extension/src/hillclimbing.cpp \
+	g++ -shared -o build/lemma.duckdb_extension -fPIC \
+		db_extension/src/lemma.cpp \
 		-Idb_extension/extension-template-c/duckdb_capi \
-		-DDUCKDB_EXTENSION_NAME=hillclimbing
+		-DDUCKDB_EXTENSION_NAME=lemma
 	python3 db_extension/extension-template-c/extension-ci-tools/scripts/append_extension_metadata.py \
-		-l build/hillclimbing.duckdb_extension \
-		-n hillclimbing \
+		-l build/lemma.duckdb_extension \
+		-n lemma \
 		-dv v1.2.0 \
 		-p linux_amd64_gcc4 \
 		-ev 0.0.1 \
-		-o build/hillclimbing.duckdb_extension
-	g++ -shared -o build/hillclimbing_python.duckdb_extension -fPIC \
-		db_extension/src/hillclimbing.cpp \
+		-o build/lemma.duckdb_extension
+	g++ -shared -o build/lemma_python.duckdb_extension -fPIC \
+		db_extension/src/lemma.cpp \
 		-Idb_extension/extension-template-c/duckdb_capi \
-		-DDUCKDB_EXTENSION_NAME=hillclimbing_python
+		-DDUCKDB_EXTENSION_NAME=lemma_python
 	python3 db_extension/extension-template-c/extension-ci-tools/scripts/append_extension_metadata.py \
-		-l build/hillclimbing_python.duckdb_extension \
-		-n hillclimbing_python \
+		-l build/lemma_python.duckdb_extension \
+		-n lemma_python \
 		-dv v1.2.0 \
 		-p linux_amd64 \
 		-ev 0.0.1 \
-		-o build/hillclimbing_python.duckdb_extension
+		-o build/lemma_python.duckdb_extension
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	rm -rf research_loop/temp_build build configure
-
-
 

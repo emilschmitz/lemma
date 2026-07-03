@@ -1,4 +1,4 @@
-# verified-hillclimbing-db Plans & Design Journey
+# Lemma — Plans & Design Journey
 
 ## Completed Design Journey: High-Speed Verified Compilation
 

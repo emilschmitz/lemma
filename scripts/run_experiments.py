@@ -10,12 +10,9 @@ import pandas as pd
 import duckdb
 import matplotlib.pyplot as plt
 
-# Ensure root directory and local directory are in sys.path
+# Ensure repo root on sys.path (this file lives in scripts/)
 current_dir = os.path.dirname(os.path.abspath(__file__))
-if os.path.basename(current_dir) == 'research_loop':
-    root_dir = os.path.dirname(current_dir)
-else:
-    root_dir = current_dir
+root_dir = os.path.dirname(current_dir)
 if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
 if current_dir not in sys.path:
@@ -83,7 +80,7 @@ def run_duckdb_baseline(query_id, dataset_size):
     con = duckdb.connect(database=':memory:')
     con.execute(f"""
         CREATE TABLE lineorder_flat AS 
-        SELECT * FROM read_csv('/home/emil/projects/verified-hillclimbing-db/ssb-dbgen/lineorder_flat.tbl', delim='|', header=True)
+        SELECT * FROM read_csv('{os.path.join(root_dir, "ssb-dbgen", "lineorder_flat.tbl")}', delim='|', header=True)
         LIMIT {dataset_size}
     """)
     
@@ -272,14 +269,14 @@ Optimization guidelines:
 3. Write your optimized code inside a ```dafny ... ``` block. Use inductive loop invariants so Dafny/Z3 can verify correctness statically.
 
 IMPORTANT: Before writing any code, read the compilation reference guide at:
-  /home/emil/projects/verified-hillclimbing-db/research_loop/COMPILATION_GUIDE.md
+  {os.path.join(root_dir, "research_loop", "COMPILATION_GUIDE.md")}
 This explains exactly how your Dafny code will be translated to Rust and what patterns
 the post-processor can and cannot optimize. Writing post-processor-friendly Dafny is
 essential for achieving fast execution — verified-but-slow is not good enough.
 
-Note: The workspace root is `/home/emil/projects/verified-hillclimbing-db`.
-The SQL transpiler queries and schemas are defined in `/home/emil/projects/verified-hillclimbing-db/queries.py`.
-You must write your optimized Dafny method in a ```dafny ... ``` block, and it will be written to `/home/emil/projects/verified-hillclimbing-db/research_loop/agent_scratchpad.md`.
+Note: The workspace root is `{root_dir}`.
+The SQL transpiler queries and schemas are defined in `research_loop/ssb_workload.py`.
+You must write your optimized Dafny method in a ```dafny ... ``` block, and it will be written to `{os.path.join(root_dir, "research_loop", "agent_scratchpad.md")}`.
 """
         
         log_file = os.path.join(output_dir, f"iter_{iteration}_agy.log")

@@ -9,7 +9,7 @@ _LEVELS = {"OFF": 0, "ERROR": 1, "WARN": 2, "INFO": 3, "DEBUG": 4, "TRACE": 5}
 
 
 def _level() -> int:
-    return _LEVELS.get(os.environ.get("HILLCLIMBING_LOG_LEVEL", "INFO").upper(), 3)
+    return _LEVELS.get(os.environ.get("LEMMA_LOG_LEVEL", "INFO").upper(), 3)
 
 
 def _utc() -> str:

@@ -46,7 +46,7 @@ class TestPostProcessor(unittest.TestCase):
         # Configure shared cargo target directory to cache dafny_runtime compilation artifacts.
         # Lives in /tmp so it's outside the project, persists across runs, and never needs gitignoring.
         # Cargo handles staleness automatically via fingerprinting.
-        cls.shared_target_dir = "/tmp/verified-hillclimbing-test-cache"
+        cls.shared_target_dir = "/tmp/lemma-test-cache"
         os.environ["CARGO_TARGET_DIR"] = cls.shared_target_dir
 
         # Shared Row schema definition for Dafny

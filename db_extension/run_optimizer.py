@@ -74,7 +74,7 @@ def main():
 
     exit_code = 0
 
-    if os.environ.get("HILLCLIMBING_DEMO_DUCKDB", "0") not in ("0", "false", "False", ""):
+    if os.environ.get("LEMMA_DEMO_DUCKDB", "0") not in ("0", "false", "False", ""):
         demo_banner("DuckDB baseline")
         demo_duckdb_query(time_duckdb_us(con, sql))
 
@@ -91,7 +91,7 @@ def main():
 
     if cached_run:
         if demo_enabled():
-            demo_banner("Hillclimbing (cached)")
+            demo_banner("Lemma (cached)")
         else:
             _vprint(f"{COLOR_BLUE}Running optimized query implementation...{COLOR_RESET}")
         t_start = time.perf_counter()

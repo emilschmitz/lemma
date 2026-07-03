@@ -79,27 +79,25 @@ def test_end_to_end_optimization_map():
 
 def test_loadable_extension_scalar():
     import duckdb
-    ext_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "build", "hillclimbing_python.duckdb_extension")
+    ext_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "build", "lemma_python.duckdb_extension")
     assert os.path.exists(ext_path)
     
     con = duckdb.connect(config={'allow_unsigned_extensions': 'true'})
     con.execute(f"LOAD '{ext_path}'")
     
-    # Run a small query using UDF
-    q_sql = "SELECT hillclimbing_optimize('SELECT SUM(LO_EXTENDEDPRICE * LO_DISCOUNT) FROM lineorder_flat WHERE LO_ORDERDATE >= 19930101 AND LO_ORDERDATE <= 19931231 AND LO_DISCOUNT >= 1 AND LO_DISCOUNT <= 3 AND LO_QUANTITY < 25')"
+    q_sql = "SELECT lemma_optimize('SELECT SUM(LO_EXTENDEDPRICE * LO_DISCOUNT) FROM lineorder_flat WHERE LO_ORDERDATE >= 19930101 AND LO_ORDERDATE <= 19931231 AND LO_DISCOUNT >= 1 AND LO_DISCOUNT <= 3 AND LO_QUANTITY < 25')"
     res = con.execute(q_sql).fetchall()
     assert len(res) == 1
-    assert "Executed in" in res[0][0]
+    assert res[0][0] == ""
 
 def test_loadable_extension_cached():
     import duckdb
-    ext_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "build", "hillclimbing_python.duckdb_extension")
+    ext_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "build", "lemma_python.duckdb_extension")
     con = duckdb.connect(config={'allow_unsigned_extensions': 'true'})
     con.execute(f"LOAD '{ext_path}'")
     
-    # Run the same query again to hit cache
-    q_sql = "SELECT hillclimbing_optimize('SELECT SUM(LO_EXTENDEDPRICE * LO_DISCOUNT) FROM lineorder_flat WHERE LO_ORDERDATE >= 19930101 AND LO_ORDERDATE <= 19931231 AND LO_DISCOUNT >= 1 AND LO_DISCOUNT <= 3 AND LO_QUANTITY < 25')"
+    q_sql = "SELECT lemma_optimize('SELECT SUM(LO_EXTENDEDPRICE * LO_DISCOUNT) FROM lineorder_flat WHERE LO_ORDERDATE >= 19930101 AND LO_ORDERDATE <= 19931231 AND LO_DISCOUNT >= 1 AND LO_DISCOUNT <= 3 AND LO_QUANTITY < 25')"
     res = con.execute(q_sql).fetchall()
     assert len(res) == 1
-    assert "Executed in" in res[0][0]
+    assert res[0][0] == ""
 

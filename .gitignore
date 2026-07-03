@@ -37,6 +37,8 @@ ssb-dbgen/
 db_extension/bin/
 db_extension/cache.json
 db_extension/temp_query.sql
+db_extension/lemma.duckdb_extension
+db_extension/lemma_python.duckdb_extension
 db_extension/hillclimbing.duckdb_extension
 db_extension/hillclimbing_python.duckdb_extension
 db_extension/init.sql

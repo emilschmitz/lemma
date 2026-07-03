@@ -12,7 +12,7 @@ from research_loop.pipeline_log import log_debug, log_info, log_trace, log_warn
 ROOT = Path(__file__).resolve().parents[1]
 RESEARCH = Path(__file__).resolve().parent
 TEMPLATE = RESEARCH / "templates" / "runquery_agent.dfy"
-DEFAULT_IMAGE = "verified-hillclimbing-agent:latest"
+DEFAULT_IMAGE = "lemma-agent:latest"
 DEFAULT_WORKSPACE = RESEARCH / "agent_workspace"
 COMPONENT = "agent_sandbox"
 
@@ -85,7 +85,7 @@ def build_agent_prompt(
     elif last_latency_us >= 0:
         feedback = f"\n## Previous iteration\nVerified OK at {last_latency_us} us — try to beat that latency.\n"
 
-    return f"""# Verified hillclimbing — RunQuery optimizer (SSB Q{query_id}, iter {iteration}/{max_iterations})
+    return f"""# Lemma — RunQuery optimizer (SSB Q{query_id}, iter {iteration}/{max_iterations})
 
 ## Your task
 Write a **fast, verifiable** Dafny RunQuery **body** for the SQL query. The host will inject the method signature and `ensures res == MethodSpec(data)`.

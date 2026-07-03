@@ -1,53 +1,49 @@
-# Verified Hill-Climbing Query Optimizer
+# Lemma
 
-A DB system that uses Dafny formal verification to construct provably correct, hardware-optimized query implementations for analytical SQL workloads. Packaged as a DuckDB C++ Extension that processes queries by executing an autonomous optimization loop (using Z3 and Rust compilation). Optimized query code is cached for instant execution.
+Verified query synthesis for DuckDB: SQL is transpiled to a Dafny spec, an agent (or mock) writes an optimized `RunQuery`, Dafny/Z3 proves correctness, and the result is compiled to native Rust. Optimized binaries are cached and invoked via the **Lemma** DuckDB extension.
 
 ## What It Does
 
 1. A SQL query is **deterministically transpiled** into a mathematical `MethodSpec` in Dafny — the ground truth.
-2. The hill-climbing optimizer uses an agent (or mock mode) to write an optimized `method RunQuery`.
-3. Dafny/Z3 formally proves that the agents output satisfies `MethodSpec`.
-4. The verified Dafny is compiled to Rust.
-4. We apply some heuristic postprocessing, since the Dafny output is not idiomatic performant Rust.*
+2. The Lemma optimizer uses an agent (or mock mode) to write an optimized `method RunQuery`.
+3. Dafny/Z3 formally proves that the agent's output satisfies `MethodSpec`.
+4. The verified Dafny is translated to Rust and post-processed for native performance.*
 5. The code is compiled and executed.
-6. Successful optimized binaries are **cached** and loaded directly inside **DuckDB** via the C++ extension.
+6. Successful optimized binaries are **cached** and loaded via the DuckDB extension.
 
-* This means that the final binary is not formally verified, even though the agents outputs are. Making sure this code is minimal and well tested is an ongoing project. Ideally this would give us the same level of practical guarantees of other DBs.
+* Post-processing rewrites are trusted to match verified Dafny semantics; see `research_loop/COMPILATION_GUIDE.md`.
 
 ---
 
 ## Quick Start
 
 ```bash
-# 1. Install dependencies
 make install
-
-# 2. Build the DuckDB loadable extension
 make extension
-
-# 3. Start the interactive REPL shell and load the extension
 ./run_duckdb_and_load_extension_and_sbb_dataset.sh
 # In the shell:
-# SELECT hillclimbing('SELECT SUM(LO_EXTENDEDPRICE * LO_DISCOUNT) FROM lineorder_flat WHERE LO_ORDERDATE >= 19930101 AND LO_ORDERDATE <= 19931231 AND LO_DISCOUNT >= 1 AND LO_DISCOUNT <= 3 AND LO_QUANTITY < 25');
+# SELECT lemma('SELECT SUM(LO_EXTENDEDPRICE * LO_DISCOUNT) FROM lineorder_flat WHERE ...');
 ```
+
+Interactive demo (clears cache, seeds mock body, opens DuckDB CLI): `./scripts/demo.sh`
 
 ### Requirements
 - [uv](https://docs.astral.sh/uv/) — Python package manager
 - [Dafny 4.x](https://github.com/dafny-lang/dafny) — in `PATH`
 - [Rust/Cargo](https://rustup.rs/) — for native compilation
-- [DuckDB CLI](https://duckdb.org/) — (optional) for running the extension in standard terminal sessions
+- [DuckDB CLI](https://duckdb.org/) — vendored to `build/duckdb` on first launcher run
 
 ---
 
 ## Repository Structure
 
 ```
-verified-hillclimbing-db/
-├── run_duckdb_and_load_extension_and_sbb_dataset.sh  # Interactive C++ CLI shell launcher
-├── TODOS.md             # Consolidated project tasks
-├── transpiler/          # SQL → Dafny transpiler (Python package: sql-transpiler)
-├── db_extension/        # DuckDB loadable C++ extension and REPL helpers
-└── research_loop/       # Autonomous optimization loop
+Lemma/
+├── run_duckdb_and_load_extension_and_sbb_dataset.sh  # DuckDB CLI launcher
+├── transpiler/          # SQL → Dafny transpiler (sql-transpiler)
+├── db_extension/        # Lemma DuckDB extension + optimizer entrypoint
+├── research_loop/       # Verify, compile, agent sandbox
+└── scripts/demo.sh      # Interactive demo
 ```
 
 ## Makefile
@@ -58,6 +54,5 @@ verified-hillclimbing-db/
 | `make test` | Run transpiler and database extension unit tests |
 | `make test-slow` | Run Dafny functional tests (requires `dafny` in PATH) |
 | `make loop` | Run one iteration of the research loop (Query 1, 50k rows) |
-| `make extension` | Compile and package the loadable C++ DuckDB extension |
-| `make clean` | Remove build artifacts, cached binaries, local cache mapping, and `__pycache__` |
-
+| `make extension` | Build `build/lemma.duckdb_extension` |
+| `make clean` | Remove build artifacts and `__pycache__` |

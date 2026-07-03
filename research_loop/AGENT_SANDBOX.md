@@ -21,7 +21,7 @@ No separate “submit” button — one Docker run = one iteration.
 ### 1. Build the agent image (once)
 
 ```bash
-docker build -t verified-hillclimbing-agent:latest docker/agent
+docker build -t lemma-agent:latest docker/agent
 ```
 
 The image installs (best effort): **Cursor Agent** (`agent`), **agy**, **Claude**, **Codex**, **OpenCode**, **Pi**. Each tool has its own license — you must comply with the vendor TOS when passing API keys.
@@ -49,7 +49,7 @@ uv run python -m db_extension.run_optimizer "SELECT ..."
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `USE_AGENT_DOCKER` | `1` | Run agent in Docker |
-| `AGENT_IMAGE` | `verified-hillclimbing-agent:latest` | Docker image name |
+| `AGENT_IMAGE` | `lemma-agent:latest` | Docker image name |
 | `AGENT_CMD` | Cursor `agent` + Composer 2.5 | Shell command run **inside** container in `/workspace/rw` |
 | `AGENT_ENV` | `CURSOR_API_KEY` | Comma-separated env var **names** copied from host into container |
 | `AGENT_TIMEOUT_SEC` | `600` | Agent run timeout |
