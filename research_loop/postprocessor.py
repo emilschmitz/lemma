@@ -221,7 +221,7 @@ def _fix_native_agg_local(content: str) -> str:
         chunk,
         count=1,
     )
-    chunk = re.sub(r"(?:md|rd)!\(\s*agg\s*\)\.(Add|ToMap|Snapshot)\(", r"agg.\1(", chunk)
+    chunk = re.sub(r"(?:md|rd)!\(\s*agg\s*\)\.(Add|ToMap|ToU64Map|Snapshot)\(", r"agg.\1(", chunk)
     return content[: m.start()] + chunk + content[end:]
 
 
@@ -284,6 +284,14 @@ def _strip_maybe_placebo_return(content: str) -> str:
         r"res = MaybePlacebo::from\(_out0\.clone\(\)\);\s*"
         r"return res\.read\(\);",
         r"return agg.ToMap();",
+        body,
+        count=1,
+    )
+    body = re.sub(
+        r"let mut _out0: ([^=]+) = agg\.ToU64Map\(\);\s*"
+        r"res = MaybePlacebo::from\(_out0\.clone\(\)\);\s*"
+        r"return res\.read\(\);",
+        r"return agg.ToU64Map();",
         body,
         count=1,
     )

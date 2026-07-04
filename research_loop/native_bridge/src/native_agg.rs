@@ -48,6 +48,15 @@ impl NativeAggMap {
         self.snapshot_map()
     }
 
+    pub fn ToU64Map(&self) -> Map<(u32, Sequence<DafnyChar>), u64> {
+        let mut hm: HashMap<(u32, Sequence<DafnyChar>), u64> =
+            HashMap::with_capacity(self.inner.len());
+        for ((y, s), v) in &self.inner {
+            hm.insert((*y, string_to_dafny_string(s)), *v as u64);
+        }
+        hashmap_to_dafny_map(&hm, |k| k.clone(), |v| *v)
+    }
+
     pub fn Snapshot(&self) -> Map<(u32, Sequence<DafnyChar>), i64> {
         self.snapshot_map()
     }

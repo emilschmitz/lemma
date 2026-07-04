@@ -52,6 +52,23 @@ Z3 still **unfolds** those definitions when proving `ensures res == MethodSpec(c
 If you sabotage `MethodSpec` to return a constant, a correct `RunQuery` **fails** to
 verify. The gap is **SQL ≡ MethodSpec**, not agent vs spec.
 
+### Global input bounds (`ValidCols`)
+
+The transpiler emits **Lemma-wide cell bounds** into `ValidCols` (injected as
+`requires ValidCols(cols)` on every `RunQuery` and `MethodSpec`). The agent does
+**not** add these; they apply to all queries automatically.
+
+| Constant | Value | Meaning |
+|:---|:---|:---|
+| `LemmaMaxRows` | 2³¹ | Max row count |
+| `LemmaMaxNativeU32` | 2³¹ | Per-cell `NativeU32` columns |
+| `LemmaMaxMoneyU64` | 2⁴⁰ | Per-cell `NativeU64` money/metrics |
+| `LemmaMaxStringLen` | 128 | Per-cell string length |
+
+Defined in `transpiler/src/sql_transpiler/value_bounds.py`. SSB/TPC-H-style data
+fits comfortably. These bounds let the verifier prove casts (e.g. `NativeU64` →
+`NativeI64` for `NativeAggMap`) without per-query `requires`.
+
 ---
 
 ## Stage 1 — Write Dafny for fast verification and fast codegen

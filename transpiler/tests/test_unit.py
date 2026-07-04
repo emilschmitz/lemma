@@ -198,5 +198,26 @@ class TestTranspilerUnit(unittest.TestCase):
                 self.schema
             )
 
+    def test_columnar_valid_cols_global_bounds(self):
+        from sql_transpiler import transpile_sql_to_dafny_columnar
+
+        schema = {
+            "qty": "int",
+            "amount": "bigint",
+            "label": "string",
+        }
+        result = transpile_sql_to_dafny_columnar(
+            "SELECT SUM(amount) FROM t WHERE qty > 0",
+            schema,
+        )
+        self.assertIn("const LemmaMaxRows: int :=", result)
+        self.assertIn("const LemmaMaxNativeU32: int :=", result)
+        self.assertIn("const LemmaMaxMoneyU64: int :=", result)
+        self.assertIn("const LemmaMaxStringLen: int :=", result)
+        self.assertIn("0 <= cols.n() <= LemmaMaxRows", result)
+        self.assertIn("(cols.Getqty(i) as int) < LemmaMaxNativeU32", result)
+        self.assertIn("(cols.Getamount(i) as int) < LemmaMaxMoneyU64", result)
+        self.assertIn("|cols.Getlabel(i)| <= LemmaMaxStringLen", result)
+
 if __name__ == '__main__':
     unittest.main()

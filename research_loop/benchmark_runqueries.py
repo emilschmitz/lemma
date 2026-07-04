@@ -2,7 +2,7 @@
 
 Picked at random (seed=42) for expansion: Q2, Q3, Q5, Q6, Q10, Q13.
 Patterns: NativeU64 scalar loops (AddU64/MulU64U32), NativeAggMap+ghost for 2-key group-by,
-Dafny map + native ops for 3-key group-by (NativeAggMap is 2-key only today).
+Dafny map + native ops for 3-key group-by (NativeAggMap is 2-key i64-only today).
 """
 
 # Q1 — SSB Q1.1 (baseline)
@@ -82,17 +82,20 @@ method RunQuery(cols: Cols) returns (res: NativeU64)
 }
 """
 
-# Q4 — SSB Q2.1 (2-key group-by)
+# Q4 — SSB Q2.1 (2-key group-by; NativeAggMap + ghost u64 map)
 Q4_RUNQUERY = """
 method RunQuery(cols: Cols) returns (res: map<(NativeU32, string), NativeU64>)
   requires ValidCols(cols)
   ensures res == MethodSpec(cols)
 {
-  res := map[];
+  var agg := new NativeAggMap();
+  ghost var g: map<(NativeU32, string), NativeU64> := map[];
   var i := cols.n();
   while i > 0
     invariant 0 <= i <= cols.n()
-    invariant res == MethodSpecHelper(cols, i)
+    invariant g == MethodSpecHelper(cols, i)
+    invariant forall k :: k in g ==> k in agg.Snapshot() && agg.Snapshot()[k] as int == g[k] as int
+    invariant forall k :: k in agg.Snapshot() ==> k in g
   {
     i := i - 1;
     if cols.EqAtP_CATEGORY(i, "MFGR#12") && cols.EqAtS_REGION(i, "AMERICA")
@@ -100,24 +103,32 @@ method RunQuery(cols: Cols) returns (res: map<(NativeU32, string), NativeU64>)
       var yr := cols.GetD_YEAR(i);
       var brand := cols.GetP_BRAND(i);
       var key := (yr, brand);
-      var val := if key in res then res[key] else (0 as NativeU64);
-      res := res[key := AddU64(val, cols.GetLO_REVENUE(i))];
+      var rev := cols.GetLO_REVENUE(i);
+      ValidCols_GetLO_REVENUE(cols, i);
+      var term := ((rev as int) as NativeU64);
+      agg.Add(yr, brand, term as NativeI64);
+      ghost var prev := if key in g then g[key] else 0 as NativeU64;
+      g := g[key := AddU64(prev, term)];
     }
   }
+  res := agg.ToU64Map();
 }
 """
 
-# Q5 — SSB Q2.2 (2-key group-by; Dafny map — spec value type NativeU64)
+# Q5 — SSB Q2.2 (2-key group-by; NativeAggMap + ghost u64 map)
 Q5_RUNQUERY = """
 method RunQuery(cols: Cols) returns (res: map<(NativeU32, string), NativeU64>)
   requires ValidCols(cols)
   ensures res == MethodSpec(cols)
 {
-  res := map[];
+  var agg := new NativeAggMap();
+  ghost var g: map<(NativeU32, string), NativeU64> := map[];
   var i := cols.n();
   while i > 0
     invariant 0 <= i <= cols.n()
-    invariant res == MethodSpecHelper(cols, i)
+    invariant g == MethodSpecHelper(cols, i)
+    invariant forall k :: k in g ==> k in agg.Snapshot() && agg.Snapshot()[k] as int == g[k] as int
+    invariant forall k :: k in agg.Snapshot() ==> k in g
   {
     i := i - 1;
     if cols.EqAtP_BRAND(i, "MFGR#2221") && cols.GetP_SIZE(i) >= 10
@@ -126,10 +137,15 @@ method RunQuery(cols: Cols) returns (res: map<(NativeU32, string), NativeU64>)
       var yr := cols.GetD_YEAR(i);
       var brand := cols.GetP_BRAND(i);
       var key := (yr, brand);
-      var val := if key in res then res[key] else (0 as NativeU64);
-      res := res[key := AddU64(val, cols.GetLO_REVENUE(i))];
+      var rev := cols.GetLO_REVENUE(i);
+      ValidCols_GetLO_REVENUE(cols, i);
+      var term := ((rev as int) as NativeU64);
+      agg.Add(yr, brand, term as NativeI64);
+      ghost var prev := if key in g then g[key] else 0 as NativeU64;
+      g := g[key := AddU64(prev, term)];
     }
   }
+  res := agg.ToU64Map();
 }
 """
 

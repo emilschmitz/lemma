@@ -31,4 +31,8 @@ class {:extern "NativeAggMap"} NativeAggMap {
 
   method {:extern} ToMap() returns (m: map<(NativeU32, string), NativeI64>)
     ensures m == Snapshot()
+
+  method {:extern} {:axiom} ToU64Map() returns (m: map<(NativeU32, string), NativeU64>)
+    ensures forall k :: k in Snapshot() ==> k in m && m[k] as int == Snapshot()[k] as int
+    ensures forall k :: k in m ==> k in Snapshot()
 }

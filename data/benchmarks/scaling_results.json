@@ -18,7 +18,7 @@
       "bare_rust",
       "verified_rust"
     ],
-    "updated_at": "2026-07-03T19:13:42.992201+00:00",
+    "updated_at": "2026-07-04T15:23:18.197241+00:00",
     "description": "SSB flat table Q1\u2013Q5 scaling benchmark (hot-loop latency).",
     "metric": "hot_us \u2014 microseconds for the 3rd consecutive timed query execution",
     "plot_metric": "Mean of Q1\u2013Q5 hot_us converted to milliseconds",
@@ -160,29 +160,29 @@
         },
         "4": {
           "bare_rust": {
-            "wall_s": 0.0138,
-            "load_est_s": 0.0137,
-            "hot_us": 9,
+            "wall_s": 0.1752,
+            "load_est_s": 0.175,
+            "hot_us": 52,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           },
           "verified_rust": {
-            "wall_s": 0.0212,
-            "load_est_s": 0.0211,
-            "hot_us": 17,
+            "wall_s": 0.0667,
+            "load_est_s": 0.0665,
+            "hot_us": 46,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           }
         },
         "5": {
           "bare_rust": {
-            "wall_s": 0.0115,
-            "load_est_s": 0.0115,
-            "hot_us": 7,
+            "wall_s": 0.0289,
+            "load_est_s": 0.0288,
+            "hot_us": 11,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           },
           "verified_rust": {
-            "wall_s": 0.0214,
-            "load_est_s": 0.0214,
-            "hot_us": 13,
+            "wall_s": 0.0526,
+            "load_est_s": 0.0525,
+            "hot_us": 45,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           }
         }
@@ -394,29 +394,29 @@
         },
         "4": {
           "bare_rust": {
-            "wall_s": 0.0126,
-            "load_est_s": 0.0125,
-            "hot_us": 19,
+            "wall_s": 0.0405,
+            "load_est_s": 0.0403,
+            "hot_us": 53,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           },
           "verified_rust": {
-            "wall_s": 0.0236,
-            "load_est_s": 0.0235,
-            "hot_us": 22,
+            "wall_s": 0.0591,
+            "load_est_s": 0.0589,
+            "hot_us": 63,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           }
         },
         "5": {
           "bare_rust": {
-            "wall_s": 0.0139,
-            "load_est_s": 0.0138,
-            "hot_us": 8,
+            "wall_s": 0.0325,
+            "load_est_s": 0.0325,
+            "hot_us": 11,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           },
           "verified_rust": {
-            "wall_s": 0.0648,
-            "load_est_s": 0.0647,
-            "hot_us": 50,
+            "wall_s": 0.0606,
+            "load_est_s": 0.0606,
+            "hot_us": 13,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           }
         }
@@ -628,29 +628,29 @@
         },
         "4": {
           "bare_rust": {
-            "wall_s": 0.0206,
-            "load_est_s": 0.0205,
-            "hot_us": 45,
+            "wall_s": 0.2126,
+            "load_est_s": 0.2116,
+            "hot_us": 310,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           },
           "verified_rust": {
-            "wall_s": 0.0772,
-            "load_est_s": 0.0767,
-            "hot_us": 175,
+            "wall_s": 0.1137,
+            "load_est_s": 0.1129,
+            "hot_us": 252,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           }
         },
         "5": {
           "bare_rust": {
-            "wall_s": 0.0399,
-            "load_est_s": 0.0398,
-            "hot_us": 55,
+            "wall_s": 0.0598,
+            "load_est_s": 0.0596,
+            "hot_us": 75,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           },
           "verified_rust": {
-            "wall_s": 0.0425,
-            "load_est_s": 0.0424,
-            "hot_us": 32,
+            "wall_s": 0.1559,
+            "load_est_s": 0.1554,
+            "hot_us": 159,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           }
         }
@@ -862,29 +862,29 @@
         },
         "4": {
           "bare_rust": {
-            "wall_s": 0.0529,
-            "load_est_s": 0.0524,
-            "hot_us": 163,
+            "wall_s": 0.6881,
+            "load_est_s": 0.6865,
+            "hot_us": 526,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           },
           "verified_rust": {
-            "wall_s": 0.1327,
-            "load_est_s": 0.1311,
-            "hot_us": 542,
+            "wall_s": 0.2711,
+            "load_est_s": 0.2691,
+            "hot_us": 672,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           }
         },
         "5": {
           "bare_rust": {
-            "wall_s": 0.0468,
-            "load_est_s": 0.0465,
-            "hot_us": 96,
+            "wall_s": 0.1561,
+            "load_est_s": 0.1544,
+            "hot_us": 549,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           },
           "verified_rust": {
-            "wall_s": 0.0877,
-            "load_est_s": 0.0872,
-            "hot_us": 170,
+            "wall_s": 0.171,
+            "load_est_s": 0.1705,
+            "hot_us": 148,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           }
         }
@@ -1096,29 +1096,29 @@
         },
         "4": {
           "bare_rust": {
-            "wall_s": 0.078,
-            "load_est_s": 0.0764,
-            "hot_us": 526,
+            "wall_s": 0.5302,
+            "load_est_s": 0.5287,
+            "hot_us": 499,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           },
           "verified_rust": {
-            "wall_s": 0.2246,
-            "load_est_s": 0.2208,
-            "hot_us": 1263,
+            "wall_s": 0.3032,
+            "load_est_s": 0.2996,
+            "hot_us": 1189,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           }
         },
         "5": {
           "bare_rust": {
-            "wall_s": 0.0759,
-            "load_est_s": 0.0749,
-            "hot_us": 321,
+            "wall_s": 0.1471,
+            "load_est_s": 0.1454,
+            "hot_us": 566,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           },
           "verified_rust": {
-            "wall_s": 0.2017,
-            "load_est_s": 0.2006,
-            "hot_us": 379,
+            "wall_s": 0.5487,
+            "load_est_s": 0.547,
+            "hot_us": 566,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           }
         }
@@ -1330,29 +1330,29 @@
         },
         "4": {
           "bare_rust": {
-            "wall_s": 0.0842,
-            "load_est_s": 0.0824,
-            "hot_us": 618,
+            "wall_s": 0.1951,
+            "load_est_s": 0.1937,
+            "hot_us": 479,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           },
           "verified_rust": {
-            "wall_s": 0.2138,
-            "load_est_s": 0.2109,
-            "hot_us": 960,
+            "wall_s": 0.2484,
+            "load_est_s": 0.2463,
+            "hot_us": 707,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           }
         },
         "5": {
           "bare_rust": {
-            "wall_s": 0.0851,
-            "load_est_s": 0.0842,
-            "hot_us": 297,
+            "wall_s": 0.1347,
+            "load_est_s": 0.1336,
+            "hot_us": 353,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           },
           "verified_rust": {
-            "wall_s": 0.2513,
-            "load_est_s": 0.2497,
-            "hot_us": 528,
+            "wall_s": 0.424,
+            "load_est_s": 0.4197,
+            "hot_us": 1426,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           }
         }
@@ -1564,29 +1564,29 @@
         },
         "4": {
           "bare_rust": {
-            "wall_s": 0.1983,
-            "load_est_s": 0.1949,
-            "hot_us": 1148,
+            "wall_s": 1.8193,
+            "load_est_s": 1.8115,
+            "hot_us": 2620,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           },
           "verified_rust": {
-            "wall_s": 0.4089,
-            "load_est_s": 0.4022,
-            "hot_us": 2231,
+            "wall_s": 0.374,
+            "load_est_s": 0.3664,
+            "hot_us": 2531,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           }
         },
         "5": {
           "bare_rust": {
-            "wall_s": 0.1773,
-            "load_est_s": 0.1743,
-            "hot_us": 988,
+            "wall_s": 0.1744,
+            "load_est_s": 0.1711,
+            "hot_us": 1073,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           },
           "verified_rust": {
-            "wall_s": 0.3532,
-            "load_est_s": 0.3502,
-            "hot_us": 987,
+            "wall_s": 0.3818,
+            "load_est_s": 0.3778,
+            "hot_us": 1352,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           }
         }
@@ -1798,29 +1798,29 @@
         },
         "4": {
           "bare_rust": {
-            "wall_s": 0.3681,
-            "load_est_s": 0.3602,
-            "hot_us": 2642,
+            "wall_s": 2.6969,
+            "load_est_s": 2.688,
+            "hot_us": 2986,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           },
           "verified_rust": {
-            "wall_s": 0.7327,
-            "load_est_s": 0.7165,
-            "hot_us": 5385,
+            "wall_s": 0.8077,
+            "load_est_s": 0.795,
+            "hot_us": 4232,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           }
         },
         "5": {
           "bare_rust": {
-            "wall_s": 0.356,
-            "load_est_s": 0.3502,
-            "hot_us": 1932,
+            "wall_s": 0.3922,
+            "load_est_s": 0.3834,
+            "hot_us": 2930,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           },
           "verified_rust": {
-            "wall_s": 1.6989,
-            "load_est_s": 1.6917,
-            "hot_us": 2401,
+            "wall_s": 1.0323,
+            "load_est_s": 1.0255,
+            "hot_us": 2246,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           }
         }
@@ -2032,29 +2032,29 @@
         },
         "4": {
           "bare_rust": {
-            "wall_s": 1.3227,
-            "load_est_s": 1.2985,
-            "hot_us": 8055,
+            "wall_s": 2.4145,
+            "load_est_s": 2.3893,
+            "hot_us": 8403,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           },
           "verified_rust": {
-            "wall_s": 1.8412,
-            "load_est_s": 1.8085,
-            "hot_us": 10916,
+            "wall_s": 5.5149,
+            "load_est_s": 5.4882,
+            "hot_us": 8892,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           }
         },
         "5": {
           "bare_rust": {
-            "wall_s": 0.7132,
-            "load_est_s": 0.7014,
-            "hot_us": 3946,
+            "wall_s": 0.7754,
+            "load_est_s": 0.7523,
+            "hot_us": 7716,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           },
           "verified_rust": {
-            "wall_s": 1.3755,
-            "load_est_s": 1.3593,
-            "hot_us": 5384,
+            "wall_s": 1.6513,
+            "load_est_s": 1.6263,
+            "hot_us": 8342,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           }
         }
@@ -2266,29 +2266,29 @@
         },
         "4": {
           "bare_rust": {
-            "wall_s": 1.3777,
-            "load_est_s": 1.3418,
-            "hot_us": 11992,
+            "wall_s": 6.0572,
+            "load_est_s": 6.0064,
+            "hot_us": 16930,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           },
           "verified_rust": {
-            "wall_s": 4.1415,
-            "load_est_s": 4.0833,
-            "hot_us": 19411,
+            "wall_s": 5.4018,
+            "load_est_s": 5.3446,
+            "hot_us": 19080,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           }
         },
         "5": {
           "bare_rust": {
-            "wall_s": 1.6727,
-            "load_est_s": 1.6484,
-            "hot_us": 8097,
+            "wall_s": 2.9366,
+            "load_est_s": 2.9031,
+            "hot_us": 11155,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           },
           "verified_rust": {
-            "wall_s": 2.8419,
-            "load_est_s": 2.8196,
-            "hot_us": 7410,
+            "wall_s": 8.5396,
+            "load_est_s": 8.5122,
+            "hot_us": 9111,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           }
         }
@@ -2500,28 +2500,28 @@
         },
         "4": {
           "bare_rust": {
-            "wall_s": 20.2884,
-            "load_est_s": 20.2058,
-            "hot_us": 27516,
+            "wall_s": 13.6854,
+            "load_est_s": 13.5912,
+            "hot_us": 31410,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           },
           "verified_rust": {
-            "wall_s": 13.9744,
-            "load_est_s": 13.8466,
-            "hot_us": 42598,
+            "wall_s": 46.5165,
+            "load_est_s": 46.3034,
+            "hot_us": 71034,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           }
         },
         "5": {
           "bare_rust": {
-            "wall_s": 2.9626,
-            "load_est_s": 2.9102,
-            "hot_us": 17473,
+            "wall_s": 6.8024,
+            "load_est_s": 6.7379,
+            "hot_us": 21501,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           },
           "verified_rust": {
-            "wall_s": 12.5671,
-            "load_est_s": 12.5072,
+            "wall_s": 12.3037,
+            "load_est_s": 12.2438,
             "hot_us": 19961,
             "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
           }

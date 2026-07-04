@@ -3,6 +3,13 @@ import re
 import sqlglot
 from sqlglot import exp
 
+from .value_bounds import (
+    emit_bound_constants,
+    emit_bound_lemmas,
+    emit_valid_cols_accessor_lemmas,
+    emit_valid_cols_predicate,
+)
+
 class UnsupportedContractError(Exception):
     """Raised when a SQL query falls outside the supported dashboard subset."""
     pass
@@ -775,13 +782,8 @@ def transpile_sql_to_dafny_columnar(sql_str: str, schema_dict: dict[str, str]) -
     # 2. Emit the native `Cols` extern class (ColsNative in Rust).
     cols_class = _emit_cols_class(schema_dict)
 
-    # 2b. ValidCols: loader builds all columns with length cols.n()
-    valid_cols_predicate = (
-        "predicate ValidCols(cols: Cols)\n"
-        "{\n"
-        "  0 <= cols.n()\n"
-        "}"
-    )
+    # 2b. ValidCols: global row/cell bounds (Lemma policy) + column alignment
+    valid_cols_predicate = emit_valid_cols_predicate(schema_dict)
 
     # 3. Return type & WHERE-clause condition (in columnar form).
     if query.groupby_columns:
@@ -821,7 +823,15 @@ def transpile_sql_to_dafny_columnar(sql_str: str, schema_dict: dict[str, str]) -
         spec_body = "MethodSpecHelper(cols, 0)"
 
     helpers_dafny = "\n\n".join(helper_lines)
-    type_defs = _native_preamble()
+    type_defs = (
+        _native_preamble()
+        + emit_bound_constants()
+        + "\n"
+        + emit_bound_lemmas()
+        + "\n"
+        + emit_valid_cols_accessor_lemmas(schema_dict)
+        + "\n"
+    )
 
     # 5. The `RunQuery` skeleton for the agent.
     if query.groupby_columns:

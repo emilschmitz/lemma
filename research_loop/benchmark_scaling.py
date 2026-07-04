@@ -397,6 +397,40 @@ def save_results(data: dict) -> None:
     RESULTS_PATH.write_text(json.dumps(data, indent=2))
 
 
+def refresh_queries(data: dict, query_ids: list[int], *, refresh_bare: bool = True) -> dict:
+    """Re-bench bare/verified for selected queries at all complete sizes (keeps DuckDB/PG)."""
+    ensure_bare_binary()
+    sizes = sorted(int(k) for k, v in data["sizes"].items() if v.get("complete"))
+    if not sizes:
+        raise RuntimeError("no complete sizes in scaling_results.json")
+
+    for q in query_ids:
+        if q not in QUERIES:
+            raise ValueError(f"query {q} not in scaling set {QUERIES}")
+        for limit in sizes:
+            cache = verified_bin_path(q, limit)
+            if cache.is_dir():
+                shutil.rmtree(cache, ignore_errors=True)
+
+    for limit in sizes:
+        key = str(limit)
+        block = data["sizes"][key]
+        print(f"\n=== refresh Q{query_ids} @ {limit:,} rows ===", flush=True)
+        for q in query_ids:
+            qs = str(q)
+            if refresh_bare:
+                print(f"  Q{q} bare...", flush=True)
+                block["queries"][qs]["bare_rust"] = bench_bare(q, limit)
+            print(f"  Q{q} verified...", flush=True)
+            block["queries"][qs]["verified_rust"] = bench_verified(q, limit)
+            b = block["queries"][qs]["bare_rust"].get("hot_us", -1)
+            v = block["queries"][qs]["verified_rust"].get("hot_us", -1)
+            d1 = block["duckdb"]["hot_us"]["duckdb_1t"][qs]
+            print(f"    hot_us  duck1t={d1}  bare={b}  verified={v}", flush=True)
+        save_results(data)
+    return data
+
+
 def run_all() -> dict:
     ensure_bare_binary()
     data = load_results()
@@ -550,12 +584,25 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--postgres-only", action="store_true", help="Run PostgreSQL hot loops for cached sizes")
     parser.add_argument("--plot-only", action="store_true", help="Regenerate plot from scaling_results.json")
+    parser.add_argument(
+        "--refresh-queries",
+        metavar="N,N",
+        help="Re-bench bare+verified for query ids at all complete sizes (e.g. 4,5)",
+    )
     args = parser.parse_args()
 
     data = load_results()
     if args.plot_only:
         plot = plot_results(data)
         print(f"Plot: {plot}")
+        return
+
+    if args.refresh_queries:
+        qids = [int(x.strip()) for x in args.refresh_queries.split(",") if x.strip()]
+        data = refresh_queries(data, qids)
+        plot = plot_results(data)
+        print(f"\nResults: {RESULTS_PATH}")
+        print(f"Plot:    {plot}")
         return
 
     if args.postgres_only:
