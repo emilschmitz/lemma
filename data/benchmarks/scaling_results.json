@@ -1,0 +1,2612 @@
+{
+  "meta": {
+    "created_at": "2026-07-03T16:07:22.339346+00:00",
+    "methodology": "Hot loop = 3rd consecutive timed execution after data resident in process. DuckDB: table loaded once per (threads, row_count); Rust: load_cols inside binary before timed loop. Load never in hot_us.",
+    "queries": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "warm_runs": 3,
+    "engines": [
+      "duckdb_1t",
+      "duckdb_mt",
+      "postgres_1t",
+      "postgres_mt",
+      "bare_rust",
+      "verified_rust"
+    ],
+    "updated_at": "2026-07-03T19:13:42.992201+00:00",
+    "description": "SSB flat table Q1\u2013Q5 scaling benchmark (hot-loop latency).",
+    "metric": "hot_us \u2014 microseconds for the 3rd consecutive timed query execution",
+    "plot_metric": "Mean of Q1\u2013Q5 hot_us converted to milliseconds",
+    "data_source": "ssb-dbgen/lineorder_flat.tbl",
+    "postgres": {
+      "image": "postgres:16",
+      "port": 54329,
+      "load": "COPY ... FROM PROGRAM 'head -n LIMIT+1 /data/lineorder_flat.tbl'",
+      "parallelism": {
+        "postgres_1t": "SET max_parallel_workers_per_gather = 0",
+        "postgres_mt": "default PostgreSQL parallel query settings"
+      }
+    }
+  },
+  "sizes": {
+    "5000": {
+      "rows": 5000,
+      "duckdb": {
+        "load_s": {
+          "duckdb_1t": 1.3023,
+          "duckdb_mt": 0.1737
+        },
+        "hot_us": {
+          "duckdb_1t": {
+            "1": 917,
+            "2": 1690,
+            "3": 873,
+            "4": 1470,
+            "5": 1051
+          },
+          "duckdb_mt": {
+            "1": 1953,
+            "2": 1896,
+            "3": 1693,
+            "4": 4490,
+            "5": 2528
+          }
+        },
+        "all_runs_us": {
+          "duckdb_1t": {
+            "1": [
+              16605,
+              1401,
+              917
+            ],
+            "2": [
+              1264,
+              1164,
+              1690
+            ],
+            "3": [
+              951,
+              1126,
+              873
+            ],
+            "4": [
+              17470,
+              2191,
+              1470
+            ],
+            "5": [
+              1061,
+              1032,
+              1051
+            ]
+          },
+          "duckdb_mt": {
+            "1": [
+              2458,
+              1880,
+              1953
+            ],
+            "2": [
+              2863,
+              7207,
+              1896
+            ],
+            "3": [
+              1785,
+              2142,
+              1693
+            ],
+            "4": [
+              5903,
+              3971,
+              4490
+            ],
+            "5": [
+              2053,
+              1891,
+              2528
+            ]
+          }
+        },
+        "duckdb_default_threads": 8
+      },
+      "queries": {
+        "1": {
+          "bare_rust": {
+            "wall_s": 0.0256,
+            "load_est_s": 0.0255,
+            "hot_us": 14,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.0258,
+            "load_est_s": 0.0257,
+            "hot_us": 17,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "2": {
+          "bare_rust": {
+            "wall_s": 0.013,
+            "load_est_s": 0.013,
+            "hot_us": 2,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.0209,
+            "load_est_s": 0.0209,
+            "hot_us": 2,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "3": {
+          "bare_rust": {
+            "wall_s": 0.0145,
+            "load_est_s": 0.0145,
+            "hot_us": 2,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.0266,
+            "load_est_s": 0.0266,
+            "hot_us": 2,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "4": {
+          "bare_rust": {
+            "wall_s": 0.0138,
+            "load_est_s": 0.0137,
+            "hot_us": 9,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.0212,
+            "load_est_s": 0.0211,
+            "hot_us": 17,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "5": {
+          "bare_rust": {
+            "wall_s": 0.0115,
+            "load_est_s": 0.0115,
+            "hot_us": 7,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.0214,
+            "load_est_s": 0.0214,
+            "hot_us": 13,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        }
+      },
+      "complete": true,
+      "postgres": {
+        "load_s": {
+          "postgres_1t": 0.471,
+          "postgres_mt": 0.1744
+        },
+        "hot_us": {
+          "postgres_1t": {
+            "1": 1406,
+            "2": 1220,
+            "3": 3221,
+            "4": 2573,
+            "5": 2966
+          },
+          "postgres_mt": {
+            "1": 1142,
+            "2": 878,
+            "3": 1528,
+            "4": 1354,
+            "5": 2525
+          }
+        },
+        "all_runs_us": {
+          "postgres_1t": {
+            "1": [
+              9111,
+              1704,
+              1406
+            ],
+            "2": [
+              2684,
+              1562,
+              1220
+            ],
+            "3": [
+              3492,
+              3280,
+              3221
+            ],
+            "4": [
+              3575,
+              2679,
+              2573
+            ],
+            "5": [
+              3835,
+              3069,
+              2966
+            ]
+          },
+          "postgres_mt": {
+            "1": [
+              1693,
+              1859,
+              1142
+            ],
+            "2": [
+              1088,
+              1014,
+              878
+            ],
+            "3": [
+              1867,
+              1658,
+              1528
+            ],
+            "4": [
+              1345,
+              1371,
+              1354
+            ],
+            "5": [
+              2808,
+              2820,
+              2525
+            ]
+          }
+        },
+        "postgres_image": "postgres:16"
+      }
+    },
+    "5859": {
+      "rows": 5859,
+      "duckdb": {
+        "load_s": {
+          "duckdb_1t": 0.2808,
+          "duckdb_mt": 0.1141
+        },
+        "hot_us": {
+          "duckdb_1t": {
+            "1": 1028,
+            "2": 695,
+            "3": 437,
+            "4": 1382,
+            "5": 661
+          },
+          "duckdb_mt": {
+            "1": 2088,
+            "2": 1740,
+            "3": 1518,
+            "4": 3092,
+            "5": 1782
+          }
+        },
+        "all_runs_us": {
+          "duckdb_1t": {
+            "1": [
+              4763,
+              1432,
+              1028
+            ],
+            "2": [
+              2606,
+              1124,
+              695
+            ],
+            "3": [
+              537,
+              485,
+              437
+            ],
+            "4": [
+              3729,
+              1349,
+              1382
+            ],
+            "5": [
+              854,
+              700,
+              661
+            ]
+          },
+          "duckdb_mt": {
+            "1": [
+              3137,
+              3035,
+              2088
+            ],
+            "2": [
+              2093,
+              2048,
+              1740
+            ],
+            "3": [
+              2318,
+              1951,
+              1518
+            ],
+            "4": [
+              4097,
+              2744,
+              3092
+            ],
+            "5": [
+              1920,
+              1949,
+              1782
+            ]
+          }
+        },
+        "duckdb_default_threads": 8
+      },
+      "queries": {
+        "1": {
+          "bare_rust": {
+            "wall_s": 0.0103,
+            "load_est_s": 0.0103,
+            "hot_us": 9,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.0217,
+            "load_est_s": 0.0217,
+            "hot_us": 20,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "2": {
+          "bare_rust": {
+            "wall_s": 0.0171,
+            "load_est_s": 0.0171,
+            "hot_us": 4,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.0265,
+            "load_est_s": 0.0265,
+            "hot_us": 2,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "3": {
+          "bare_rust": {
+            "wall_s": 0.0146,
+            "load_est_s": 0.0146,
+            "hot_us": 2,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.0193,
+            "load_est_s": 0.0193,
+            "hot_us": 2,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "4": {
+          "bare_rust": {
+            "wall_s": 0.0126,
+            "load_est_s": 0.0125,
+            "hot_us": 19,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.0236,
+            "load_est_s": 0.0235,
+            "hot_us": 22,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "5": {
+          "bare_rust": {
+            "wall_s": 0.0139,
+            "load_est_s": 0.0138,
+            "hot_us": 8,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.0648,
+            "load_est_s": 0.0647,
+            "hot_us": 50,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        }
+      },
+      "complete": true,
+      "postgres": {
+        "load_s": {
+          "postgres_1t": 0.258,
+          "postgres_mt": 0.2632
+        },
+        "hot_us": {
+          "postgres_1t": {
+            "1": 1199,
+            "2": 963,
+            "3": 2491,
+            "4": 1448,
+            "5": 2627
+          },
+          "postgres_mt": {
+            "1": 1105,
+            "2": 792,
+            "3": 2138,
+            "4": 1517,
+            "5": 1415
+          }
+        },
+        "all_runs_us": {
+          "postgres_1t": {
+            "1": [
+              1574,
+              1306,
+              1199
+            ],
+            "2": [
+              1565,
+              1306,
+              963
+            ],
+            "3": [
+              2281,
+              2341,
+              2491
+            ],
+            "4": [
+              1994,
+              1788,
+              1448
+            ],
+            "5": [
+              2737,
+              2441,
+              2627
+            ]
+          },
+          "postgres_mt": {
+            "1": [
+              1842,
+              1187,
+              1105
+            ],
+            "2": [
+              962,
+              864,
+              792
+            ],
+            "3": [
+              1899,
+              1978,
+              2138
+            ],
+            "4": [
+              2335,
+              2567,
+              1517
+            ],
+            "5": [
+              1732,
+              1596,
+              1415
+            ]
+          }
+        },
+        "postgres_image": "postgres:16"
+      }
+    },
+    "11718": {
+      "rows": 11718,
+      "duckdb": {
+        "load_s": {
+          "duckdb_1t": 0.4848,
+          "duckdb_mt": 0.3701
+        },
+        "hot_us": {
+          "duckdb_1t": {
+            "1": 9741,
+            "2": 1184,
+            "3": 11839,
+            "4": 13637,
+            "5": 1859
+          },
+          "duckdb_mt": {
+            "1": 2063,
+            "2": 2184,
+            "3": 3166,
+            "4": 9594,
+            "5": 2157
+          }
+        },
+        "all_runs_us": {
+          "duckdb_1t": {
+            "1": [
+              2441,
+              1493,
+              9741
+            ],
+            "2": [
+              1897,
+              1653,
+              1184
+            ],
+            "3": [
+              1326,
+              1921,
+              11839
+            ],
+            "4": [
+              5701,
+              3137,
+              13637
+            ],
+            "5": [
+              2261,
+              1812,
+              1859
+            ]
+          },
+          "duckdb_mt": {
+            "1": [
+              3325,
+              2194,
+              2063
+            ],
+            "2": [
+              3280,
+              2368,
+              2184
+            ],
+            "3": [
+              2094,
+              12677,
+              3166
+            ],
+            "4": [
+              9129,
+              5396,
+              9594
+            ],
+            "5": [
+              2584,
+              2637,
+              2157
+            ]
+          }
+        },
+        "duckdb_default_threads": 8
+      },
+      "queries": {
+        "1": {
+          "bare_rust": {
+            "wall_s": 0.0411,
+            "load_est_s": 0.0411,
+            "hot_us": 20,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.0668,
+            "load_est_s": 0.0667,
+            "hot_us": 42,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "2": {
+          "bare_rust": {
+            "wall_s": 0.0352,
+            "load_est_s": 0.0351,
+            "hot_us": 8,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.0532,
+            "load_est_s": 0.0532,
+            "hot_us": 4,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "3": {
+          "bare_rust": {
+            "wall_s": 0.0301,
+            "load_est_s": 0.0301,
+            "hot_us": 6,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.0503,
+            "load_est_s": 0.0503,
+            "hot_us": 4,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "4": {
+          "bare_rust": {
+            "wall_s": 0.0206,
+            "load_est_s": 0.0205,
+            "hot_us": 45,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.0772,
+            "load_est_s": 0.0767,
+            "hot_us": 175,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "5": {
+          "bare_rust": {
+            "wall_s": 0.0399,
+            "load_est_s": 0.0398,
+            "hot_us": 55,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.0425,
+            "load_est_s": 0.0424,
+            "hot_us": 32,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        }
+      },
+      "complete": true,
+      "postgres": {
+        "load_s": {
+          "postgres_1t": 1.0743,
+          "postgres_mt": 0.5023
+        },
+        "hot_us": {
+          "postgres_1t": {
+            "1": 2502,
+            "2": 4834,
+            "3": 10779,
+            "4": 4201,
+            "5": 5382
+          },
+          "postgres_mt": {
+            "1": 2360,
+            "2": 2315,
+            "3": 5502,
+            "4": 4625,
+            "5": 5315
+          }
+        },
+        "all_runs_us": {
+          "postgres_1t": {
+            "1": [
+              2898,
+              1647,
+              2502
+            ],
+            "2": [
+              2904,
+              5049,
+              4834
+            ],
+            "3": [
+              5170,
+              5761,
+              10779
+            ],
+            "4": [
+              6154,
+              5909,
+              4201
+            ],
+            "5": [
+              8149,
+              5425,
+              5382
+            ]
+          },
+          "postgres_mt": {
+            "1": [
+              3749,
+              2210,
+              2360
+            ],
+            "2": [
+              1777,
+              2317,
+              2315
+            ],
+            "3": [
+              5404,
+              5655,
+              5502
+            ],
+            "4": [
+              5566,
+              4408,
+              4625
+            ],
+            "5": [
+              5867,
+              4971,
+              5315
+            ]
+          }
+        },
+        "postgres_image": "postgres:16"
+      }
+    },
+    "23437": {
+      "rows": 23437,
+      "duckdb": {
+        "load_s": {
+          "duckdb_1t": 0.1378,
+          "duckdb_mt": 0.1881
+        },
+        "hot_us": {
+          "duckdb_1t": {
+            "1": 996,
+            "2": 485,
+            "3": 372,
+            "4": 1535,
+            "5": 970
+          },
+          "duckdb_mt": {
+            "1": 2170,
+            "2": 1764,
+            "3": 1640,
+            "4": 4196,
+            "5": 2959
+          }
+        },
+        "all_runs_us": {
+          "duckdb_1t": {
+            "1": [
+              2562,
+              1831,
+              996
+            ],
+            "2": [
+              535,
+              479,
+              485
+            ],
+            "3": [
+              561,
+              820,
+              372
+            ],
+            "4": [
+              1223,
+              1097,
+              1535
+            ],
+            "5": [
+              2536,
+              1322,
+              970
+            ]
+          },
+          "duckdb_mt": {
+            "1": [
+              2041,
+              1711,
+              2170
+            ],
+            "2": [
+              2987,
+              1754,
+              1764
+            ],
+            "3": [
+              1247,
+              1771,
+              1640
+            ],
+            "4": [
+              4368,
+              9263,
+              4196
+            ],
+            "5": [
+              3643,
+              5411,
+              2959
+            ]
+          }
+        },
+        "duckdb_default_threads": 8
+      },
+      "queries": {
+        "1": {
+          "bare_rust": {
+            "wall_s": 0.0618,
+            "load_est_s": 0.0617,
+            "hot_us": 36,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.1087,
+            "load_est_s": 0.1084,
+            "hot_us": 96,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "2": {
+          "bare_rust": {
+            "wall_s": 0.0507,
+            "load_est_s": 0.0507,
+            "hot_us": 11,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.0931,
+            "load_est_s": 0.0931,
+            "hot_us": 7,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "3": {
+          "bare_rust": {
+            "wall_s": 0.0419,
+            "load_est_s": 0.0419,
+            "hot_us": 11,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.1794,
+            "load_est_s": 0.1794,
+            "hot_us": 9,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "4": {
+          "bare_rust": {
+            "wall_s": 0.0529,
+            "load_est_s": 0.0524,
+            "hot_us": 163,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.1327,
+            "load_est_s": 0.1311,
+            "hot_us": 542,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "5": {
+          "bare_rust": {
+            "wall_s": 0.0468,
+            "load_est_s": 0.0465,
+            "hot_us": 96,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.0877,
+            "load_est_s": 0.0872,
+            "hot_us": 170,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        }
+      },
+      "complete": true,
+      "postgres": {
+        "load_s": {
+          "postgres_1t": 1.1563,
+          "postgres_mt": 1.1637
+        },
+        "hot_us": {
+          "postgres_1t": {
+            "1": 3442,
+            "2": 3976,
+            "3": 8568,
+            "4": 4953,
+            "5": 7713
+          },
+          "postgres_mt": {
+            "1": 2709,
+            "2": 3427,
+            "3": 8043,
+            "4": 6671,
+            "5": 8078
+          }
+        },
+        "all_runs_us": {
+          "postgres_1t": {
+            "1": [
+              3386,
+              3527,
+              3442
+            ],
+            "2": [
+              3654,
+              3519,
+              3976
+            ],
+            "3": [
+              7656,
+              6958,
+              8568
+            ],
+            "4": [
+              6656,
+              5810,
+              4953
+            ],
+            "5": [
+              6855,
+              8161,
+              7713
+            ]
+          },
+          "postgres_mt": {
+            "1": [
+              3117,
+              2591,
+              2709
+            ],
+            "2": [
+              2761,
+              5192,
+              3427
+            ],
+            "3": [
+              8583,
+              7827,
+              8043
+            ],
+            "4": [
+              12992,
+              9241,
+              6671
+            ],
+            "5": [
+              8832,
+              7861,
+              8078
+            ]
+          }
+        },
+        "postgres_image": "postgres:16"
+      }
+    },
+    "46875": {
+      "rows": 46875,
+      "duckdb": {
+        "load_s": {
+          "duckdb_1t": 0.2202,
+          "duckdb_mt": 0.2456
+        },
+        "hot_us": {
+          "duckdb_1t": {
+            "1": 787,
+            "2": 508,
+            "3": 451,
+            "4": 2106,
+            "5": 1611
+          },
+          "duckdb_mt": {
+            "1": 1912,
+            "2": 1059,
+            "3": 1483,
+            "4": 4656,
+            "5": 3187
+          }
+        },
+        "all_runs_us": {
+          "duckdb_1t": {
+            "1": [
+              2320,
+              1087,
+              787
+            ],
+            "2": [
+              966,
+              1367,
+              508
+            ],
+            "3": [
+              549,
+              575,
+              451
+            ],
+            "4": [
+              3477,
+              1775,
+              2106
+            ],
+            "5": [
+              3133,
+              1909,
+              1611
+            ]
+          },
+          "duckdb_mt": {
+            "1": [
+              3680,
+              3568,
+              1912
+            ],
+            "2": [
+              1653,
+              1423,
+              1059
+            ],
+            "3": [
+              1422,
+              1070,
+              1483
+            ],
+            "4": [
+              4426,
+              4206,
+              4656
+            ],
+            "5": [
+              4252,
+              4348,
+              3187
+            ]
+          }
+        },
+        "duckdb_default_threads": 8
+      },
+      "queries": {
+        "1": {
+          "bare_rust": {
+            "wall_s": 0.0715,
+            "load_est_s": 0.0712,
+            "hot_us": 83,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.2452,
+            "load_est_s": 0.2442,
+            "hot_us": 330,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "2": {
+          "bare_rust": {
+            "wall_s": 0.0958,
+            "load_est_s": 0.0957,
+            "hot_us": 21,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.1889,
+            "load_est_s": 0.1889,
+            "hot_us": 15,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "3": {
+          "bare_rust": {
+            "wall_s": 0.0798,
+            "load_est_s": 0.0798,
+            "hot_us": 24,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.2112,
+            "load_est_s": 0.2112,
+            "hot_us": 17,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "4": {
+          "bare_rust": {
+            "wall_s": 0.078,
+            "load_est_s": 0.0764,
+            "hot_us": 526,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.2246,
+            "load_est_s": 0.2208,
+            "hot_us": 1263,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "5": {
+          "bare_rust": {
+            "wall_s": 0.0759,
+            "load_est_s": 0.0749,
+            "hot_us": 321,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.2017,
+            "load_est_s": 0.2006,
+            "hot_us": 379,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        }
+      },
+      "complete": true,
+      "postgres": {
+        "load_s": {
+          "postgres_1t": 2.0396,
+          "postgres_mt": 1.4359
+        },
+        "hot_us": {
+          "postgres_1t": {
+            "1": 4568,
+            "2": 5687,
+            "3": 15116,
+            "4": 12780,
+            "5": 17954
+          },
+          "postgres_mt": {
+            "1": 8516,
+            "2": 6568,
+            "3": 15595,
+            "4": 10932,
+            "5": 19631
+          }
+        },
+        "all_runs_us": {
+          "postgres_1t": {
+            "1": [
+              5778,
+              5260,
+              4568
+            ],
+            "2": [
+              4659,
+              5259,
+              5687
+            ],
+            "3": [
+              16260,
+              15874,
+              15116
+            ],
+            "4": [
+              13125,
+              13944,
+              12780
+            ],
+            "5": [
+              16474,
+              14670,
+              17954
+            ]
+          },
+          "postgres_mt": {
+            "1": [
+              5752,
+              6532,
+              8516
+            ],
+            "2": [
+              6263,
+              8521,
+              6568
+            ],
+            "3": [
+              19045,
+              16053,
+              15595
+            ],
+            "4": [
+              17293,
+              19481,
+              10932
+            ],
+            "5": [
+              17826,
+              18756,
+              19631
+            ]
+          }
+        },
+        "postgres_image": "postgres:16"
+      }
+    },
+    "50000": {
+      "rows": 50000,
+      "duckdb": {
+        "load_s": {
+          "duckdb_1t": 0.1825,
+          "duckdb_mt": 0.2655
+        },
+        "hot_us": {
+          "duckdb_1t": {
+            "1": 711,
+            "2": 423,
+            "3": 441,
+            "4": 1964,
+            "5": 1323
+          },
+          "duckdb_mt": {
+            "1": 1628,
+            "2": 1798,
+            "3": 1242,
+            "4": 3781,
+            "5": 2584
+          }
+        },
+        "all_runs_us": {
+          "duckdb_1t": {
+            "1": [
+              1315,
+              866,
+              711
+            ],
+            "2": [
+              618,
+              499,
+              423
+            ],
+            "3": [
+              440,
+              461,
+              441
+            ],
+            "4": [
+              2189,
+              1986,
+              1964
+            ],
+            "5": [
+              1382,
+              1397,
+              1323
+            ]
+          },
+          "duckdb_mt": {
+            "1": [
+              2127,
+              1678,
+              1628
+            ],
+            "2": [
+              1305,
+              1057,
+              1798
+            ],
+            "3": [
+              1438,
+              1276,
+              1242
+            ],
+            "4": [
+              4003,
+              3807,
+              3781
+            ],
+            "5": [
+              2531,
+              2449,
+              2584
+            ]
+          }
+        },
+        "duckdb_default_threads": 8
+      },
+      "queries": {
+        "1": {
+          "bare_rust": {
+            "wall_s": 0.0795,
+            "load_est_s": 0.0792,
+            "hot_us": 75,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.2289,
+            "load_est_s": 0.2283,
+            "hot_us": 182,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "2": {
+          "bare_rust": {
+            "wall_s": 0.0791,
+            "load_est_s": 0.079,
+            "hot_us": 22,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.208,
+            "load_est_s": 0.2079,
+            "hot_us": 16,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "3": {
+          "bare_rust": {
+            "wall_s": 0.0959,
+            "load_est_s": 0.0958,
+            "hot_us": 26,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.2179,
+            "load_est_s": 0.2179,
+            "hot_us": 18,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "4": {
+          "bare_rust": {
+            "wall_s": 0.0842,
+            "load_est_s": 0.0824,
+            "hot_us": 618,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.2138,
+            "load_est_s": 0.2109,
+            "hot_us": 960,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "5": {
+          "bare_rust": {
+            "wall_s": 0.0851,
+            "load_est_s": 0.0842,
+            "hot_us": 297,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.2513,
+            "load_est_s": 0.2497,
+            "hot_us": 528,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        }
+      },
+      "complete": true,
+      "postgres": {
+        "load_s": {
+          "postgres_1t": 1.3707,
+          "postgres_mt": 1.1828
+        },
+        "hot_us": {
+          "postgres_1t": {
+            "1": 6157,
+            "2": 5987,
+            "3": 18552,
+            "4": 15923,
+            "5": 16443
+          },
+          "postgres_mt": {
+            "1": 5575,
+            "2": 5979,
+            "3": 17504,
+            "4": 12598,
+            "5": 19985
+          }
+        },
+        "all_runs_us": {
+          "postgres_1t": {
+            "1": [
+              8882,
+              7010,
+              6157
+            ],
+            "2": [
+              8958,
+              7629,
+              5987
+            ],
+            "3": [
+              16256,
+              22412,
+              18552
+            ],
+            "4": [
+              11681,
+              12156,
+              15923
+            ],
+            "5": [
+              20847,
+              18173,
+              16443
+            ]
+          },
+          "postgres_mt": {
+            "1": [
+              16350,
+              8792,
+              5575
+            ],
+            "2": [
+              5129,
+              4865,
+              5979
+            ],
+            "3": [
+              18766,
+              15195,
+              17504
+            ],
+            "4": [
+              13609,
+              11886,
+              12598
+            ],
+            "5": [
+              20906,
+              19497,
+              19985
+            ]
+          }
+        },
+        "postgres_image": "postgres:16"
+      }
+    },
+    "93750": {
+      "rows": 93750,
+      "duckdb": {
+        "load_s": {
+          "duckdb_1t": 1.0625,
+          "duckdb_mt": 1.7287
+        },
+        "hot_us": {
+          "duckdb_1t": {
+            "1": 2159,
+            "2": 704,
+            "3": 563,
+            "4": 2642,
+            "5": 2107
+          },
+          "duckdb_mt": {
+            "1": 12793,
+            "2": 12785,
+            "3": 3072,
+            "4": 32423,
+            "5": 16163
+          }
+        },
+        "all_runs_us": {
+          "duckdb_1t": {
+            "1": [
+              2158,
+              1563,
+              2159
+            ],
+            "2": [
+              1597,
+              1025,
+              704
+            ],
+            "3": [
+              626,
+              613,
+              563
+            ],
+            "4": [
+              3498,
+              2959,
+              2642
+            ],
+            "5": [
+              2864,
+              2796,
+              2107
+            ]
+          },
+          "duckdb_mt": {
+            "1": [
+              15101,
+              3478,
+              12793
+            ],
+            "2": [
+              3232,
+              18712,
+              12785
+            ],
+            "3": [
+              3302,
+              10853,
+              3072
+            ],
+            "4": [
+              29835,
+              32091,
+              32423
+            ],
+            "5": [
+              15556,
+              16596,
+              16163
+            ]
+          }
+        },
+        "duckdb_default_threads": 8
+      },
+      "queries": {
+        "1": {
+          "bare_rust": {
+            "wall_s": 0.724,
+            "load_est_s": 0.7231,
+            "hot_us": 315,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.3738,
+            "load_est_s": 0.3727,
+            "hot_us": 347,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "2": {
+          "bare_rust": {
+            "wall_s": 0.1806,
+            "load_est_s": 0.1804,
+            "hot_us": 67,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.7465,
+            "load_est_s": 0.7464,
+            "hot_us": 43,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "3": {
+          "bare_rust": {
+            "wall_s": 0.413,
+            "load_est_s": 0.4127,
+            "hot_us": 107,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.5108,
+            "load_est_s": 0.5106,
+            "hot_us": 51,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "4": {
+          "bare_rust": {
+            "wall_s": 0.1983,
+            "load_est_s": 0.1949,
+            "hot_us": 1148,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.4089,
+            "load_est_s": 0.4022,
+            "hot_us": 2231,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "5": {
+          "bare_rust": {
+            "wall_s": 0.1773,
+            "load_est_s": 0.1743,
+            "hot_us": 988,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.3532,
+            "load_est_s": 0.3502,
+            "hot_us": 987,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        }
+      },
+      "complete": true,
+      "postgres": {
+        "load_s": {
+          "postgres_1t": 2.1891,
+          "postgres_mt": 1.3549
+        },
+        "hot_us": {
+          "postgres_1t": {
+            "1": 9545,
+            "2": 13395,
+            "3": 33854,
+            "4": 17686,
+            "5": 29265
+          },
+          "postgres_mt": {
+            "1": 10576,
+            "2": 15018,
+            "3": 17573,
+            "4": 18434,
+            "5": 24958
+          }
+        },
+        "all_runs_us": {
+          "postgres_1t": {
+            "1": [
+              17014,
+              13026,
+              9545
+            ],
+            "2": [
+              10859,
+              12746,
+              13395
+            ],
+            "3": [
+              22105,
+              32644,
+              33854
+            ],
+            "4": [
+              20589,
+              18789,
+              17686
+            ],
+            "5": [
+              22304,
+              32465,
+              29265
+            ]
+          },
+          "postgres_mt": {
+            "1": [
+              27703,
+              11109,
+              10576
+            ],
+            "2": [
+              10866,
+              13010,
+              15018
+            ],
+            "3": [
+              22054,
+              16205,
+              17573
+            ],
+            "4": [
+              19107,
+              18519,
+              18434
+            ],
+            "5": [
+              24971,
+              23032,
+              24958
+            ]
+          }
+        },
+        "postgres_image": "postgres:16"
+      }
+    },
+    "187500": {
+      "rows": 187500,
+      "duckdb": {
+        "load_s": {
+          "duckdb_1t": 1.6206,
+          "duckdb_mt": 4.9387
+        },
+        "hot_us": {
+          "duckdb_1t": {
+            "1": 2183,
+            "2": 3075,
+            "3": 1113,
+            "4": 5788,
+            "5": 6486
+          },
+          "duckdb_mt": {
+            "1": 6710,
+            "2": 4868,
+            "3": 14011,
+            "4": 21772,
+            "5": 10201
+          }
+        },
+        "all_runs_us": {
+          "duckdb_1t": {
+            "1": [
+              1895,
+              1994,
+              2183
+            ],
+            "2": [
+              6499,
+              2312,
+              3075
+            ],
+            "3": [
+              1598,
+              1166,
+              1113
+            ],
+            "4": [
+              5421,
+              5011,
+              5788
+            ],
+            "5": [
+              4071,
+              4041,
+              6486
+            ]
+          },
+          "duckdb_mt": {
+            "1": [
+              15967,
+              3842,
+              6710
+            ],
+            "2": [
+              3123,
+              7301,
+              4868
+            ],
+            "3": [
+              4322,
+              3137,
+              14011
+            ],
+            "4": [
+              26176,
+              10536,
+              21772
+            ],
+            "5": [
+              21587,
+              7198,
+              10201
+            ]
+          }
+        },
+        "duckdb_default_threads": 8
+      },
+      "queries": {
+        "1": {
+          "bare_rust": {
+            "wall_s": 0.6826,
+            "load_est_s": 0.6808,
+            "hot_us": 630,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.7203,
+            "load_est_s": 0.7182,
+            "hot_us": 678,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "2": {
+          "bare_rust": {
+            "wall_s": 0.3313,
+            "load_est_s": 0.3307,
+            "hot_us": 194,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.6993,
+            "load_est_s": 0.6991,
+            "hot_us": 58,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "3": {
+          "bare_rust": {
+            "wall_s": 0.3122,
+            "load_est_s": 0.3119,
+            "hot_us": 97,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.7184,
+            "load_est_s": 0.7182,
+            "hot_us": 65,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "4": {
+          "bare_rust": {
+            "wall_s": 0.3681,
+            "load_est_s": 0.3602,
+            "hot_us": 2642,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 0.7327,
+            "load_est_s": 0.7165,
+            "hot_us": 5385,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "5": {
+          "bare_rust": {
+            "wall_s": 0.356,
+            "load_est_s": 0.3502,
+            "hot_us": 1932,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 1.6989,
+            "load_est_s": 1.6917,
+            "hot_us": 2401,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        }
+      },
+      "complete": true,
+      "postgres": {
+        "load_s": {
+          "postgres_1t": 3.2217,
+          "postgres_mt": 1.9061
+        },
+        "hot_us": {
+          "postgres_1t": {
+            "1": 17824,
+            "2": 21532,
+            "3": 34501,
+            "4": 27987,
+            "5": 57967
+          },
+          "postgres_mt": {
+            "1": 24286,
+            "2": 61226,
+            "3": 31508,
+            "4": 25703,
+            "5": 26742
+          }
+        },
+        "all_runs_us": {
+          "postgres_1t": {
+            "1": [
+              21625,
+              18961,
+              17824
+            ],
+            "2": [
+              16322,
+              17224,
+              21532
+            ],
+            "3": [
+              35850,
+              38914,
+              34501
+            ],
+            "4": [
+              30505,
+              28520,
+              27987
+            ],
+            "5": [
+              37319,
+              40480,
+              57967
+            ]
+          },
+          "postgres_mt": {
+            "1": [
+              41537,
+              15799,
+              24286
+            ],
+            "2": [
+              24644,
+              15864,
+              61226
+            ],
+            "3": [
+              26180,
+              27735,
+              31508
+            ],
+            "4": [
+              25595,
+              35691,
+              25703
+            ],
+            "5": [
+              25258,
+              26900,
+              26742
+            ]
+          }
+        },
+        "postgres_image": "postgres:16"
+      }
+    },
+    "375000": {
+      "rows": 375000,
+      "duckdb": {
+        "load_s": {
+          "duckdb_1t": 3.4162,
+          "duckdb_mt": 1.658
+        },
+        "hot_us": {
+          "duckdb_1t": {
+            "1": 3218,
+            "2": 3353,
+            "3": 3063,
+            "4": 13491,
+            "5": 7234
+          },
+          "duckdb_mt": {
+            "1": 2376,
+            "2": 1965,
+            "3": 1873,
+            "4": 7186,
+            "5": 5792
+          }
+        },
+        "all_runs_us": {
+          "duckdb_1t": {
+            "1": [
+              4012,
+              2394,
+              3218
+            ],
+            "2": [
+              2211,
+              1603,
+              3353
+            ],
+            "3": [
+              4216,
+              4387,
+              3063
+            ],
+            "4": [
+              16194,
+              12488,
+              13491
+            ],
+            "5": [
+              6945,
+              6747,
+              7234
+            ]
+          },
+          "duckdb_mt": {
+            "1": [
+              4383,
+              4854,
+              2376
+            ],
+            "2": [
+              2137,
+              2334,
+              1965
+            ],
+            "3": [
+              2361,
+              2603,
+              1873
+            ],
+            "4": [
+              8116,
+              8776,
+              7186
+            ],
+            "5": [
+              7032,
+              5302,
+              5792
+            ]
+          }
+        },
+        "duckdb_default_threads": 8
+      },
+      "queries": {
+        "1": {
+          "bare_rust": {
+            "wall_s": 0.6715,
+            "load_est_s": 0.6692,
+            "hot_us": 773,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 5.1947,
+            "load_est_s": 5.1895,
+            "hot_us": 1756,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "2": {
+          "bare_rust": {
+            "wall_s": 0.7483,
+            "load_est_s": 0.7477,
+            "hot_us": 222,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 1.9479,
+            "load_est_s": 1.9471,
+            "hot_us": 279,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "3": {
+          "bare_rust": {
+            "wall_s": 0.7656,
+            "load_est_s": 0.765,
+            "hot_us": 209,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 2.5314,
+            "load_est_s": 2.5301,
+            "hot_us": 453,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "4": {
+          "bare_rust": {
+            "wall_s": 1.3227,
+            "load_est_s": 1.2985,
+            "hot_us": 8055,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 1.8412,
+            "load_est_s": 1.8085,
+            "hot_us": 10916,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "5": {
+          "bare_rust": {
+            "wall_s": 0.7132,
+            "load_est_s": 0.7014,
+            "hot_us": 3946,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 1.3755,
+            "load_est_s": 1.3593,
+            "hot_us": 5384,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        }
+      },
+      "complete": true,
+      "postgres": {
+        "load_s": {
+          "postgres_1t": 6.1359,
+          "postgres_mt": 3.2872
+        },
+        "hot_us": {
+          "postgres_1t": {
+            "1": 42796,
+            "2": 35778,
+            "3": 86157,
+            "4": 52757,
+            "5": 66080
+          },
+          "postgres_mt": {
+            "1": 26817,
+            "2": 28139,
+            "3": 46503,
+            "4": 32600,
+            "5": 38038
+          }
+        },
+        "all_runs_us": {
+          "postgres_1t": {
+            "1": [
+              40761,
+              36805,
+              42796
+            ],
+            "2": [
+              40029,
+              37624,
+              35778
+            ],
+            "3": [
+              61628,
+              63835,
+              86157
+            ],
+            "4": [
+              52243,
+              53503,
+              52757
+            ],
+            "5": [
+              60042,
+              63043,
+              66080
+            ]
+          },
+          "postgres_mt": {
+            "1": [
+              27048,
+              30392,
+              26817
+            ],
+            "2": [
+              34400,
+              27200,
+              28139
+            ],
+            "3": [
+              39893,
+              47407,
+              46503
+            ],
+            "4": [
+              42757,
+              37730,
+              32600
+            ],
+            "5": [
+              40346,
+              37278,
+              38038
+            ]
+          }
+        },
+        "postgres_image": "postgres:16"
+      }
+    },
+    "750000": {
+      "rows": 750000,
+      "duckdb": {
+        "load_s": {
+          "duckdb_1t": 4.9139,
+          "duckdb_mt": 11.7967
+        },
+        "hot_us": {
+          "duckdb_1t": {
+            "1": 3966,
+            "2": 2774,
+            "3": 4470,
+            "4": 19138,
+            "5": 18565
+          },
+          "duckdb_mt": {
+            "1": 4574,
+            "2": 7110,
+            "3": 2365,
+            "4": 6881,
+            "5": 5892
+          }
+        },
+        "all_runs_us": {
+          "duckdb_1t": {
+            "1": [
+              8104,
+              3903,
+              3966
+            ],
+            "2": [
+              2852,
+              2906,
+              2774
+            ],
+            "3": [
+              4094,
+              3752,
+              4470
+            ],
+            "4": [
+              23208,
+              17307,
+              19138
+            ],
+            "5": [
+              16331,
+              12796,
+              18565
+            ]
+          },
+          "duckdb_mt": {
+            "1": [
+              5908,
+              11934,
+              4574
+            ],
+            "2": [
+              3029,
+              2249,
+              7110
+            ],
+            "3": [
+              4163,
+              2383,
+              2365
+            ],
+            "4": [
+              9738,
+              7306,
+              6881
+            ],
+            "5": [
+              5148,
+              5408,
+              5892
+            ]
+          }
+        },
+        "duckdb_default_threads": 8
+      },
+      "queries": {
+        "1": {
+          "bare_rust": {
+            "wall_s": 1.4343,
+            "load_est_s": 1.4282,
+            "hot_us": 2024,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 3.4955,
+            "load_est_s": 3.4868,
+            "hot_us": 2928,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "2": {
+          "bare_rust": {
+            "wall_s": 1.5775,
+            "load_est_s": 1.5747,
+            "hot_us": 952,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 3.0252,
+            "load_est_s": 3.0242,
+            "hot_us": 337,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "3": {
+          "bare_rust": {
+            "wall_s": 1.2792,
+            "load_est_s": 1.2758,
+            "hot_us": 1120,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 3.7585,
+            "load_est_s": 3.7569,
+            "hot_us": 517,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "4": {
+          "bare_rust": {
+            "wall_s": 1.3777,
+            "load_est_s": 1.3418,
+            "hot_us": 11992,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 4.1415,
+            "load_est_s": 4.0833,
+            "hot_us": 19411,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "5": {
+          "bare_rust": {
+            "wall_s": 1.6727,
+            "load_est_s": 1.6484,
+            "hot_us": 8097,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 2.8419,
+            "load_est_s": 2.8196,
+            "hot_us": 7410,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        }
+      },
+      "complete": true,
+      "postgres": {
+        "load_s": {
+          "postgres_1t": 13.0645,
+          "postgres_mt": 11.2397
+        },
+        "hot_us": {
+          "postgres_1t": {
+            "1": 73750,
+            "2": 74289,
+            "3": 119044,
+            "4": 126015,
+            "5": 123631
+          },
+          "postgres_mt": {
+            "1": 37966,
+            "2": 40414,
+            "3": 68822,
+            "4": 50026,
+            "5": 65136
+          }
+        },
+        "all_runs_us": {
+          "postgres_1t": {
+            "1": [
+              95525,
+              79959,
+              73750
+            ],
+            "2": [
+              70321,
+              68042,
+              74289
+            ],
+            "3": [
+              116897,
+              127669,
+              119044
+            ],
+            "4": [
+              120315,
+              110455,
+              126015
+            ],
+            "5": [
+              122150,
+              133690,
+              123631
+            ]
+          },
+          "postgres_mt": {
+            "1": [
+              65335,
+              43844,
+              37966
+            ],
+            "2": [
+              53762,
+              35954,
+              40414
+            ],
+            "3": [
+              79864,
+              66299,
+              68822
+            ],
+            "4": [
+              67654,
+              51827,
+              50026
+            ],
+            "5": [
+              64593,
+              62275,
+              65136
+            ]
+          }
+        },
+        "postgres_image": "postgres:16"
+      }
+    },
+    "1500000": {
+      "rows": 1500000,
+      "duckdb": {
+        "load_s": {
+          "duckdb_1t": 8.0057,
+          "duckdb_mt": 18.9217
+        },
+        "hot_us": {
+          "duckdb_1t": {
+            "1": 6937,
+            "2": 16342,
+            "3": 5816,
+            "4": 32472,
+            "5": 23675
+          },
+          "duckdb_mt": {
+            "1": 4957,
+            "2": 3246,
+            "3": 3532,
+            "4": 18086,
+            "5": 10885
+          }
+        },
+        "all_runs_us": {
+          "duckdb_1t": {
+            "1": [
+              10208,
+              7169,
+              6937
+            ],
+            "2": [
+              6680,
+              6697,
+              16342
+            ],
+            "3": [
+              5954,
+              5104,
+              5816
+            ],
+            "4": [
+              39468,
+              32618,
+              32472
+            ],
+            "5": [
+              23330,
+              25910,
+              23675
+            ]
+          },
+          "duckdb_mt": {
+            "1": [
+              24384,
+              5511,
+              4957
+            ],
+            "2": [
+              5342,
+              3601,
+              3246
+            ],
+            "3": [
+              10274,
+              4562,
+              3532
+            ],
+            "4": [
+              23745,
+              17596,
+              18086
+            ],
+            "5": [
+              11974,
+              11363,
+              10885
+            ]
+          }
+        },
+        "duckdb_default_threads": 8
+      },
+      "queries": {
+        "1": {
+          "bare_rust": {
+            "wall_s": 3.5396,
+            "load_est_s": 3.5226,
+            "hot_us": 5674,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 30.5723,
+            "load_est_s": 30.5457,
+            "hot_us": 8844,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "2": {
+          "bare_rust": {
+            "wall_s": 11.8503,
+            "load_est_s": 11.8427,
+            "hot_us": 2533,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 8.2776,
+            "load_est_s": 8.2745,
+            "hot_us": 1030,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "3": {
+          "bare_rust": {
+            "wall_s": 2.8463,
+            "load_est_s": 2.8388,
+            "hot_us": 2523,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 8.2104,
+            "load_est_s": 8.2057,
+            "hot_us": 1568,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "4": {
+          "bare_rust": {
+            "wall_s": 20.2884,
+            "load_est_s": 20.2058,
+            "hot_us": 27516,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 13.9744,
+            "load_est_s": 13.8466,
+            "hot_us": 42598,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        },
+        "5": {
+          "bare_rust": {
+            "wall_s": 2.9626,
+            "load_est_s": 2.9102,
+            "hot_us": 17473,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          },
+          "verified_rust": {
+            "wall_s": 12.5671,
+            "load_est_s": 12.5072,
+            "hot_us": 19961,
+            "note": "hot_us is 3rd timed RunQuery; load is before timer inside process"
+          }
+        }
+      },
+      "complete": true,
+      "postgres": {
+        "load_s": {
+          "postgres_1t": 22.7463,
+          "postgres_mt": 12.9866
+        },
+        "hot_us": {
+          "postgres_1t": {
+            "1": 194627,
+            "2": 181519,
+            "3": 305686,
+            "4": 251276,
+            "5": 263041
+          },
+          "postgres_mt": {
+            "1": 68676,
+            "2": 69196,
+            "3": 119865,
+            "4": 96680,
+            "5": 121843
+          }
+        },
+        "all_runs_us": {
+          "postgres_1t": {
+            "1": [
+              2072861,
+              280736,
+              194627
+            ],
+            "2": [
+              181294,
+              171176,
+              181519
+            ],
+            "3": [
+              357127,
+              313659,
+              305686
+            ],
+            "4": [
+              268434,
+              293853,
+              251276
+            ],
+            "5": [
+              277873,
+              272400,
+              263041
+            ]
+          },
+          "postgres_mt": {
+            "1": [
+              168106,
+              111408,
+              68676
+            ],
+            "2": [
+              96434,
+              63280,
+              69196
+            ],
+            "3": [
+              114526,
+              606683,
+              119865
+            ],
+            "4": [
+              108883,
+              119946,
+              96680
+            ],
+            "5": [
+              130266,
+              102598,
+              121843
+            ]
+          }
+        },
+        "postgres_image": "postgres:16"
+      }
+    }
+  }
+}

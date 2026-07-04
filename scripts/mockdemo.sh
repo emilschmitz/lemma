@@ -83,4 +83,4 @@ if [[ -t 1 ]] && command -v clear >/dev/null 2>&1; then
   clear
 fi
 
-exec "$ROOT/run_duckdb_and_load_extension_and_sbb_dataset.sh"
+exec "$ROOT/scripts/duckdb_shell.sh"

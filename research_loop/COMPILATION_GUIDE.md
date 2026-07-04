@@ -191,7 +191,7 @@ codegen); we add **more** unproved translation optimizations for speed.
 
 ## Performance (Q1, 50k rows — indicative)
 
-From `writeup_plan.md` on SSB flat data:
+From `design_docs/writeup_plan.md` on SSB flat data:
 
 | Stage | Latency |
 |:---|---:|

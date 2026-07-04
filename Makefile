@@ -43,5 +43,6 @@ extension:
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
-	rm -rf research_loop/temp_build build configure
+	rm -rf research_loop/temp_build research_loop/bench_build research_loop/scratch_timing \
+		research_loop/temp_* research_loop/poc_alias/build_* build configure
 

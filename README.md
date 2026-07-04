@@ -1,6 +1,6 @@
 # Lemma
 
-Verified query synthesis: SQL is transpiled to a Dafny spec, an agent (or mock) writes an optimized `RunQuery`, Dafny/Z3 proves correctness, and the result is compiled to native Rust. Contains DuckDB extension, where Optimized binaries are cached and invoked when rerun.
+Verified query synthesis: SQL is transpiled to a Dafny spec, an agent (or mock) writes an optimized `RunQuery`, Dafny/Z3 proves correctness, and the result is compiled to native Rust. Contains a DuckDB extension where optimized binaries are cached and invoked on rerun.
 
 https://github.com/user-attachments/assets/7f7891c7-5ef6-406b-882b-8e01134ed37c
 
@@ -23,7 +23,7 @@ One-time setup, then run the interactive demo:
 
 ```bash
 make install
-./scripts/build_ssb_flat_dataset.sh   # one-time: generates ssb-dbgen flat table (~2M rows)
+./scripts/build_ssb_flat_dataset.sh   # one-time: real ssb-dbgen flat table (~6M rows on disk)
 ./scripts/demo.sh                     # builds extension if needed, prepares data, opens DuckDB CLI
 ```
 
@@ -37,7 +37,7 @@ SELECT lemma('SELECT SUM(LO_EXTENDEDPRICE * LO_DISCOUNT) FROM lineorder_flat WHE
 
 **No agent / offline:** `./scripts/mockdemo.sh` — same UX with a pre-seeded RunQuery (no LLM).
 
-**Lower-level launcher** (DuckDB shell only, no demo UI): `make extension` then `./run_duckdb_and_load_extension_and_sbb_dataset.sh`
+**Lower-level launcher** (DuckDB shell only, no demo UI): `make extension` then `./scripts/duckdb_shell.sh`
 
 ### Requirements
 - [uv](https://docs.astral.sh/uv/) — Python package manager
@@ -48,17 +48,39 @@ SELECT lemma('SELECT SUM(LO_EXTENDEDPRICE * LO_DISCOUNT) FROM lineorder_flat WHE
 
 ---
 
+## Results
+
+Scaling benchmark on the SSB flat table (`lineorder_flat`): Q1–Q5 hot-loop latency (3rd timed run) vs row count, comparing DuckDB, PostgreSQL, bare Rust, and verified+postprocessed Rust. Full methodology and raw numbers are in `data/benchmarks/scaling_results.json`.
+
+![SSB Q1–Q5 scaling: mean hot-loop latency vs row count](plots/scaling_avg_hot_q1_q5.png)
+
+Reproduce:
+
+```bash
+uv run python research_loop/benchmark_scaling.py
+uv run python research_loop/benchmark_verified.py   # single-point check at 50k rows
+```
+
+At 50k rows, verified Rust matches DuckDB on correctness and is competitive on simple scans; at 1.5M rows group-by queries remain the hard case. See `design_docs/writeup_plan.md` for the compilation pipeline performance story.
+
+---
+
 ## Repository Structure
 
 ```
 Lemma/
-├── run_duckdb_and_load_extension_and_sbb_dataset.sh  # DuckDB CLI launcher
-├── transpiler/          # SQL → Dafny transpiler (sql-transpiler)
-├── db_extension/        # Lemma DuckDB extension + optimizer entrypoint
-├── research_loop/       # Verify, compile, agent sandbox
-└── scripts/
-    ├── demo.sh          # Live demo (Cursor Agent CLI)
-    └── mockdemo.sh      # Offline demo (no LLM)
+├── transpiler/              # SQL → Dafny transpiler (sql-transpiler)
+├── db_extension/            # Lemma DuckDB extension + optimizer entrypoint
+├── research_loop/           # Verify, compile, agent sandbox, benchmarks
+│   └── examples/dafny/      # Standalone Dafny snippets for manual experiments
+├── scripts/
+│   ├── demo.sh              # Live demo (Cursor Agent CLI)
+│   ├── mockdemo.sh          # Offline demo (no LLM)
+│   ├── duckdb_shell.sh      # DuckDB CLI launcher
+│   └── build_ssb_flat_dataset.sh
+├── data/benchmarks/         # Scaling benchmark JSON results
+├── plots/                   # Benchmark plots for README / papers
+└── design_docs/             # Design notes and writeup plans
 ```
 
 ## Makefile

@@ -33,6 +33,15 @@ research_loop/demo_view/state/
 experiments/
 scratch/
 ssb-dbgen/
+data/benchmarks/verified_bins/
+data/benchmarks/*.log
+
+# Research loop scratch builds
+research_loop/bench_build/
+research_loop/scratch_timing/
+research_loop/temp_*/
+research_loop/poc_alias/build_*/
+query1_extern-rust/
 
 # DuckDB extension binaries, configure logs, and cache mappings
 db_extension/bin/
