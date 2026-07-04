@@ -8,6 +8,8 @@ import threading
 import time
 import unicodedata
 from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Iterator
 
 _RED = "\033[91m"
@@ -53,12 +55,21 @@ def _demo_stream():
     return sys.stderr if _lemma_extension() else sys.stdout
 
 
+def _color_enabled() -> bool:
+    if os.environ.get("NO_COLOR") or os.environ.get("LEMMA_DEMO_NO_COLOR"):
+        return False
+    # Demo UI should stay colored even when stderr is not a TTY (lemma() subprocess via DuckDB).
+    if demo_enabled():
+        return True
+    return _demo_stream().isatty()
+
+
 def _interactive_tty() -> bool:
     return _demo_stream().isatty()
 
 
 def _ansi(code: str) -> str:
-    if not _interactive_tty():
+    if not _color_enabled():
         return ""
     return code
 
@@ -155,6 +166,7 @@ class _LiveStepHandle:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._tty = False
+        self._inplace = False
         self._last_tick = -1
         self._result_latency_us: int | None = None
         self._live_line_active = False
@@ -191,8 +203,9 @@ class _LiveStepHandle:
         stream = _demo_stream()
         if self._tty:
             if self._live_line_active:
-                print("", file=stream)
-            print(row, file=stream, flush=True)
+                print(f"\r\033[K{row}", file=stream, flush=True)
+            else:
+                print(row, file=stream, flush=True)
         elif self._live_line_active:
             _out(f"\033[A\033[K{row}")
         else:
@@ -201,6 +214,8 @@ class _LiveStepHandle:
 
     def _tick_loop(self) -> None:
         while not self._stop.wait(_TICK_SEC):
+            if not self._inplace:
+                continue
             if self._tty:
                 self._emit_tick(self._elapsed_sec())
             else:
@@ -212,8 +227,11 @@ class _LiveStepHandle:
 
     def start(self) -> None:
         self._start = time.perf_counter()
-        self._tty = _interactive_tty()
-        if self.count_up:
+        stream = _demo_stream()
+        self._tty = stream.isatty()
+        # In-place live timer only when the stream supports it (avoids duplicate lines).
+        self._inplace = self._tty
+        if self.count_up and self._inplace:
             self._thread = threading.Thread(target=self._tick_loop, daemon=True)
             self._thread.start()
 
@@ -223,8 +241,8 @@ class _LiveStepHandle:
             self._thread.join()
         elapsed = self._elapsed_sec()
         if self.pass_fail:
-            ok = True if self._passed is None else self._passed
-            word = "passed" if ok else "failed"
+            ok = False if self._passed is None else self._passed
+            word = "ok" if ok else "failed"
             color = _GREEN if ok else _RED
             row = _format_row(
                 self.emoji,
@@ -293,7 +311,7 @@ def demo_step_done(emoji: str, label: str, ms: int | None, *, detail: str = "") 
 
 
 def demo_step_pass_fail(emoji: str, label: str, ms: int | None, passed: bool) -> None:
-    word = "passed" if passed else "failed"
+    word = "ok" if passed else "failed"
     color = _GREEN if passed else _RED
     time_plain = format_demo_seconds_from_ms(ms)
     _out(_format_row(emoji, label, status=word, status_color=color, time_plain=time_plain))
@@ -328,6 +346,81 @@ def demo_note(msg: str) -> None:
     _out(f"{_ansi(_DIM)}{msg}{_ansi(_RESET)}")
 
 
+def resolve_demo_view_dir() -> Path | None:
+    """Demo view state dir (agent.log, spec.dfy). Defaults when LEMMA_DEMO=1 — matches demo_view/_paths.sh."""
+    raw = os.environ.get("LEMMA_DEMO_VIEW_DIR", "").strip()
+    if not raw:
+        if not demo_enabled():
+            return None
+        raw = str(Path(__file__).resolve().parent / "demo_view" / "state")
+    p = Path(raw)
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _demo_view_dir() -> Path | None:
+    return resolve_demo_view_dir()
+
+
+def _stream_chunks(f, text: str, *, chunk: int, delay: float) -> None:
+    for i in range(0, len(text), chunk):
+        f.write(text[i : i + chunk])
+        f.flush()
+        if delay > 0:
+            time.sleep(delay)
+
+
+def stream_mock_agent_output(*, workspace_path: str | Path, body_inner: str) -> None:
+    """Mock agent: grow runquery_agent.dfy + agent.log so demo viewers are not static."""
+    path = Path(workspace_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = ["{", *body_inner.splitlines(), "}"]
+
+    line_delay = float(os.environ.get("LEMMA_DEMO_STREAM_LINE_DELAY", "0.06"))
+    token_delay = float(os.environ.get("LEMMA_DEMO_STREAM_TOKEN_DELAY", "0.014"))
+    token_chars = max(1, int(os.environ.get("LEMMA_DEMO_STREAM_CHARS", "4")))
+
+    log_path = _demo_view_dir()
+    log_f = None
+    if log_path is not None:
+        log_file = log_path / "agent.log"
+        log_f = open(log_file, "a", encoding="utf-8")
+        log_f.write(f"\n--- mock agent {datetime.now(timezone.utc).isoformat()} ---\n")
+        log_f.flush()
+
+    try:
+        with open(path, "w", encoding="utf-8") as body_f:
+            if log_f:
+                _stream_chunks(
+                    log_f,
+                    "Editing runquery_agent.dfy (RunQuery body)...\n",
+                    chunk=token_chars,
+                    delay=token_delay,
+                )
+            for line in lines:
+                body_f.write(line + "\n")
+                body_f.flush()
+                if log_f:
+                    _stream_chunks(
+                        log_f,
+                        f"+ {line}\n",
+                        chunk=token_chars,
+                        delay=token_delay,
+                    )
+                if line_delay > 0:
+                    time.sleep(line_delay)
+            if log_f:
+                _stream_chunks(
+                    log_f,
+                    "Saved runquery_agent.dfy\n",
+                    chunk=token_chars,
+                    delay=token_delay,
+                )
+    finally:
+        if log_f:
+            log_f.close()
+
+
 def demo_query_result_table(df) -> None:
     if df.empty:
         _out("")
@@ -348,6 +441,14 @@ def demo_emit_box_result(df) -> None:
         print("", file=sys.stdout, flush=True)
         return
     if df.shape == (1, 1):
-        print(str(df.iloc[0, 0]), file=sys.stdout, end="", flush=True)
+        from db_extension.utils import format_scalar_for_box
+
+        print(format_scalar_for_box(df.iloc[0, 0]), file=sys.stdout, end="", flush=True)
         return
-    print(df.to_csv(index=False).strip(), file=sys.stdout, flush=True)
+    from db_extension.utils import format_scalar_for_box
+
+    lines = [",".join(df.columns)]
+    for row in df.itertuples(index=False):
+        lines.append(",".join(format_scalar_for_box(v) for v in row))
+    text = "\n".join(lines)
+    print(text, file=sys.stdout, flush=True)

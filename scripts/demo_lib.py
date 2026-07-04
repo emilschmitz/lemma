@@ -63,6 +63,27 @@ def sql_one_line(query_id: int) -> str:
     return re.sub(r"\s+", " ", queries[query_id - 1].strip())
 
 
+def lemma_select_line_for_query(sql: str) -> str:
+    """DuckDB SELECT for lemma() with result column alias (from query metadata, not hardcoded)."""
+    import duckdb
+
+    sys.path.insert(0, str(ROOT))
+    from db_extension.utils import escape_sql_string_literal, lemma_select_line, setup_db
+
+    con = duckdb.connect()
+    setup_db(con, quiet=True)
+    return lemma_select_line(con, sql)
+
+
+def lemma_show_line(sql: str) -> str:
+    """Generic short box header 'value' — use when you don't need the query's AS name."""
+    sys.path.insert(0, str(ROOT))
+    from db_extension.utils import escape_sql_string_literal
+
+    inner = escape_sql_string_literal(sql.strip())
+    return f"SELECT * FROM lemma_show('{inner}')"
+
+
 def main() -> None:
     if len(sys.argv) < 2:
         raise SystemExit("usage: demo_lib.py clear | seed <query_id>")

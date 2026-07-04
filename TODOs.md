@@ -5,6 +5,8 @@
 - [ ] (Down the line) Make the transpiler support all of (ANSI) SQL
 
 ## Research Loop
+- [x] **Update `research_loop/COMPILATION_GUIDE.md` to match current pipeline** (done)
+  - Documents `postprocessor.py`, `{:verify false}`, columnar `NativeU64` / `NativeAggMap`, admission lint, trust model.
 - [ ] **CREATE TEST SUITE FOR RUST POSTPROCESSING (29 JUN 26)**
   - The Rust post-processor (`optimize_rust_file` in `research_loop/harness.py`) needs to be extensively unit tested.
   - Test all regex replacements, type conversions, and boundary condition rewrites.
@@ -23,6 +25,7 @@
 - [ ] Make the choice of optimizing agent completely free. Support user API keys.
 
 ## Future Research & Reference
+- [ ] **(Long term) Retire ad-hoc `postprocessor.py` via Dafny-native fast paths** — Per optimization (hoisted column reads, native loops, certified `{:extern}` ops, linear `NativeAggMap`, etc.): express the fast form in Dafny, prove it equivalent to the naive form in Dafny, then codegen Rust directly and remove the post-verify regex pass. See `COMPILATION_GUIDE.md` trust model.
 - [ ] **Investigate GenDB (arXiv:2603.02081)**
   - Research how GenDB represents and verifies queries, specifically how they handle literals, column mappings, and verification strategies.
   - Evaluate integrating GenDB's verification strategies as a backup optimization pass.

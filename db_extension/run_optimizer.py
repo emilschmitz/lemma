@@ -13,6 +13,7 @@ if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
 
 from db_extension.utils import setup_db, get_sql_hash, load_cache, save_cache, print_result_table, BIN_DIR
+from db_extension.dataset_config import effective_dataset_size
 from db_extension.optimizer import run_optimization_loop
 from research_loop.harness import load_env
 from research_loop.pipeline_log import log_info
@@ -135,7 +136,7 @@ def main():
 
         res_loop = run_optimization_loop(
             sql,
-            dataset_size=50000,
+            dataset_size=effective_dataset_size(),
             max_iterations=max_iters,
             use_mock=use_mock,
             model=gemini_model,

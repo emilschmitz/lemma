@@ -4,6 +4,7 @@ import sys
 import json
 import subprocess
 import time
+from pathlib import Path
 from sql_transpiler import transpile_sql_to_dafny_columnar
 from research_loop.ssb_workload import queries, schema
 from research_loop.pipeline_log import log_debug, log_info, log_trace, log_warn
@@ -15,6 +16,7 @@ from research_loop.pipeline_demo import (
     demo_banner,
     demo_live_step,
     format_demo_seconds_from_us,
+    stream_mock_agent_output,
     verbose_enabled,
 )
 
@@ -152,8 +154,11 @@ def write_mock_agent_body(query_id: int, workspace_path: str) -> None:
         body,
     )
     os.makedirs(os.path.dirname(workspace_path), exist_ok=True)
-    with open(workspace_path, "w") as f:
-        f.write("{\n" + body + "\n}\n")
+    if demo_enabled():
+        stream_mock_agent_output(workspace_path=workspace_path, body_inner=body)
+    else:
+        with open(workspace_path, "w") as f:
+            f.write("{\n" + body + "\n}\n")
 
 
 def generate_mock_dafny_code(dafny_spec: str) -> str:
@@ -287,8 +292,9 @@ def run_optimization_loop(sql_query: str, dataset_size: int = 50000, max_iterati
         _vprint("  - Transpiling SQL query to formal Dafny spec...", end="", flush=True)
         try:
             if demo_enabled():
-                with demo_live_step("🏗", "SQL → Dafny spec"):
+                with demo_live_step("🏗", "SQL → Dafny spec", pass_fail=True) as transpile_step:
                     dafny_spec = transpile_sql_to_dafny_columnar(sql_query, schema)
+                    transpile_step.set_passed(True)
             else:
                 t_start = time.perf_counter()
                 dafny_spec = transpile_sql_to_dafny_columnar(sql_query, schema)
@@ -301,15 +307,22 @@ def run_optimization_loop(sql_query: str, dataset_size: int = 50000, max_iterati
             return {"status": "FAILED", "error": f"Transpilation failed: {e}"}
         if demo_enabled():
             log_debug(COMPONENT, "transpile_done", "ok", spec_bytes=len(dafny_spec))
+        view_raw = os.environ.get("LEMMA_DEMO_VIEW_DIR", "").strip()
+        if view_raw:
+            view_p = Path(view_raw)
+            view_p.mkdir(parents=True, exist_ok=True)
+            (view_p / "spec.dfy").write_text(dafny_spec)
+            (view_p / "CURRENT").write_text("spec.dfy (transpiled)\n")
 
         # Step 2: Write agent code
         _vprint("  - Writing optimized query in Dafny...", end="", flush=True)
         if use_mock:
             try:
                 if demo_enabled():
-                    with demo_live_step("🦾", "Generating RunQuery"):
+                    with demo_live_step("🦾", "Generating RunQuery", pass_fail=True) as gen_step:
                         agent_body_path = os.path.join(root_dir, "research_loop", "agent_workspace", "runquery_agent.dfy")
                         write_mock_agent_body(query_id, agent_body_path)
+                        gen_step.set_passed(True)
                 else:
                     agent_body_path = os.path.join(root_dir, "research_loop", "agent_workspace", "runquery_agent.dfy")
                     write_mock_agent_body(query_id, agent_body_path)
@@ -319,7 +332,6 @@ def run_optimization_loop(sql_query: str, dataset_size: int = 50000, max_iterati
                 _vprint(f"    Error: {e}")
                 return {"status": "FAILED", "error": f"Mock generation failed: {e}"}
         else:
-            from pathlib import Path
             from research_loop.agent_sandbox import (
                 build_docker_image,
                 docker_image_built,

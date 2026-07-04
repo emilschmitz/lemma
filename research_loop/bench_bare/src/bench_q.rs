@@ -159,6 +159,19 @@ fn run_q3(c: &Cols) {
     });
 }
 
+fn run_q4(c: &Cols) {
+    time_loop(|| {
+        let mut acc: HashMap<(u32, String), u64> = HashMap::new();
+        for i in 0..c.lo_orderdate.len() {
+            if c.p_category[i] == "MFGR#12" && c.s_region[i] == "AMERICA" {
+                let key = (c.d_year[i], c.p_brand[i].clone());
+                *acc.entry(key).or_insert(0) += c.lo_revenue[i];
+            }
+        }
+        std::hint::black_box(acc.len());
+    });
+}
+
 fn run_q5(c: &Cols) {
     time_loop(|| {
         let mut acc: HashMap<(u32, String), u64> = HashMap::new();
@@ -248,6 +261,7 @@ fn main() {
         1 => run_q1(&cols),
         2 => run_q2(&cols),
         3 => run_q3(&cols),
+        4 => run_q4(&cols),
         5 => run_q5(&cols),
         6 => run_q6(&cols),
         10 => run_q10(&cols),

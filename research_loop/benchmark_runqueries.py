@@ -82,6 +82,31 @@ method RunQuery(cols: Cols) returns (res: NativeU64)
 }
 """
 
+# Q4 — SSB Q2.1 (2-key group-by)
+Q4_RUNQUERY = """
+method RunQuery(cols: Cols) returns (res: map<(NativeU32, string), NativeU64>)
+  requires ValidCols(cols)
+  ensures res == MethodSpec(cols)
+{
+  res := map[];
+  var i := cols.n();
+  while i > 0
+    invariant 0 <= i <= cols.n()
+    invariant res == MethodSpecHelper(cols, i)
+  {
+    i := i - 1;
+    if cols.EqAtP_CATEGORY(i, "MFGR#12") && cols.EqAtS_REGION(i, "AMERICA")
+    {
+      var yr := cols.GetD_YEAR(i);
+      var brand := cols.GetP_BRAND(i);
+      var key := (yr, brand);
+      var val := if key in res then res[key] else (0 as NativeU64);
+      res := res[key := AddU64(val, cols.GetLO_REVENUE(i))];
+    }
+  }
+}
+"""
+
 # Q5 — SSB Q2.2 (2-key group-by; Dafny map — spec value type NativeU64)
 Q5_RUNQUERY = """
 method RunQuery(cols: Cols) returns (res: map<(NativeU32, string), NativeU64>)
@@ -237,6 +262,7 @@ RUNQUERIES: dict[int, str] = {
     1: Q1_RUNQUERY,
     2: Q2_RUNQUERY,
     3: Q3_RUNQUERY,
+    4: Q4_RUNQUERY,
     5: Q5_RUNQUERY,
     6: Q6_RUNQUERY,
     10: Q10_RUNQUERY,

@@ -2,8 +2,11 @@ import os
 import re
 import json
 import hashlib
+
 import duckdb
 import pandas as pd
+
+from db_extension.dataset_config import effective_dataset_size, tbl_path
 
 # ANSI Color Codes
 COLOR_GREEN = "\033[92m"
@@ -87,22 +90,99 @@ def print_result_table(df: pd.DataFrame):
         return
     print(df.to_string(index=False))
 
+
+def truncate_for_box(text: str, width: int = 18) -> str:
+    """Conservative single-line truncation for DuckDB CLI box display."""
+    text = str(text).replace("\n", " ").strip()
+    if width < 4 or len(text) <= width:
+        return text
+    return text[: width - 1] + "…"
+
+
+def demo_box_width() -> int | None:
+    raw = os.environ.get("LEMMA_DEMO_BOX", os.environ.get("LEMMA_LIMIT_BOX", "0")).strip()
+    if raw in ("0", "false", "False", ""):
+        return None
+    if raw in ("1", "true", "True"):
+        return int(os.environ.get("LEMMA_DEMO_BOX_WIDTH", "18"))
+    try:
+        return max(4, int(raw))
+    except ValueError:
+        return 18
+
+
+def format_scalar_for_box(val) -> str:
+    """Format a single query result cell for lemma()'s stdout → DuckDB box."""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return ""
+    if isinstance(val, bool):
+        return "true" if val else "false"
+    if isinstance(val, int):
+        return str(val)
+    if isinstance(val, float):
+        if val.is_integer() and abs(val) < 1e15:
+            return str(int(val))
+        return format(val, ".15g")
+    text = str(val).strip()
+    if re.fullmatch(r"-?\d+\.0+", text):
+        return text.split(".", 1)[0]
+    width = demo_box_width()
+    if width is not None:
+        text = truncate_for_box(text, width)
+    return text
+
+
+def sql_result_schema(con: duckdb.DuckDBPyConnection, sql: str) -> tuple[list[str], list[str]]:
+    """Column names and DuckDB type strings for any SELECT (generic)."""
+    cur = con.execute(sql)
+    desc = cur.description or []
+    names = [d[0] for d in desc]
+    types = [str(d[1]) if len(d) > 1 else "" for d in desc]
+    return names, types
+
+
+def is_integer_result_type(type_str: str) -> bool:
+    t = type_str.upper()
+    return any(k in t for k in ("INT", "HUGEINT", "BIGINT", "SMALLINT", "TINYINT", "UBIGINT"))
+
+
+def quote_sql_identifier(name: str) -> str:
+    if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
+        return name
+    return '"' + name.replace('"', '""') + '"'
+
+
+def escape_sql_string_literal(sql: str) -> str:
+    return sql.replace("'", "''")
+
+
+def lemma_select_line(con: duckdb.DuckDBPyConnection, sql: str) -> str:
+    """Build a lemma() SELECT with short column label and native-looking numeric type when possible."""
+    names, types = sql_result_schema(con, sql)
+    alias = quote_sql_identifier(names[0] if len(names) == 1 else "result")
+    inner = escape_sql_string_literal(sql.strip())
+    call = f"lemma('{inner}')"
+    if len(names) == 1 and is_integer_result_type(types[0]):
+        return f"SELECT CAST({call} AS HUGEINT) AS {alias}"
+    return f"SELECT {call} AS {alias}"
+
 def setup_db(con: duckdb.DuckDBPyConnection, *, quiet: bool = False):
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    root_dir = os.path.dirname(current_dir)
-    tbl_path = os.path.join(root_dir, "ssb-dbgen", "lineorder_flat.tbl")
-    
-    if not os.path.exists(tbl_path):
+    flat_path = tbl_path()
+    row_limit = effective_dataset_size()
+
+    if not flat_path.exists():
         raise FileNotFoundError(
-            f"Real SSB flat table not found at {tbl_path}.\n"
-            "Please compile ssb-dbgen, run the generator, and run flatten_ssb.py to build the real dataset."
+            f"Real SSB flat table not found at {flat_path}.\n"
+            "Run: ./scripts/build_ssb_flat_dataset.sh"
         )
 
     if quiet:
         con.execute("SET enable_progress_bar = false")
-    
+
     if not quiet:
-        print(f"Loading table 'lineorder_flat' from {tbl_path}...")
-    con.execute(f"CREATE TABLE lineorder_flat AS SELECT * FROM read_csv('{tbl_path}', delim='|', header=True) LIMIT 50000")
+        print(f"Loading table 'lineorder_flat' from {flat_path} ({row_limit:,} rows)...")
+    con.execute(
+        f"CREATE TABLE lineorder_flat AS SELECT * FROM read_csv('{flat_path}', delim='|', header=True) LIMIT {row_limit}"
+    )
     if not quiet:
-        print(f"{COLOR_GREEN}Loaded 50,000 rows into 'lineorder_flat'.{COLOR_RESET}")
+        print(f"{COLOR_GREEN}Loaded {row_limit:,} rows into 'lineorder_flat'.{COLOR_RESET}")

@@ -22,4 +22,5 @@ dev = [
     "duckdb>=1.5.4",
     "matplotlib>=3.11.0",
     "pandas>=3.0.3",
+    "psycopg[binary]>=3.3.4",
 ]

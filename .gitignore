@@ -26,6 +26,7 @@ target/
 temp_build/
 research_loop/temp_test_project_*/
 research_loop/agent_workspace/
+research_loop/demo_view/state/
 
 # Logs and experimental runs
 *.log

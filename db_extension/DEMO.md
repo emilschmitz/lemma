@@ -1,20 +1,35 @@
 # Lemma interactive demo
 
-## One command
+## Live demo (real agent)
 
 ```bash
 chmod +x scripts/demo.sh
 ./scripts/demo.sh
 ```
 
-This script **only** (production stays default):
+Right pane (split terminal):
 
-1. Clears **all** cached optimized queries (`cache.json`, `db_extension/bin/q_*`, `build/queries/q_*`)
-2. Writes a **hardcoded** columnar RunQuery body for Q3 (override: `DEMO_QUERY_ID=5 ./scripts/demo.sh`)
-3. Sets `LEMMA_DEMO=1`, `MOCK_AGENT=1`, `MAX_ITERATIONS=1`
-4. Drops you into the **official DuckDB CLI** (downloaded to `build/duckdb` on first run)
+```bash
+./scripts/demo_view/follow-agent-log.sh
+```
 
-Prints the exact SQL to paste. **DuckDB timing** is DuckDB's own `.timer on`.
+This script:
+
+1. Clears **all** cached optimized queries
+2. Sets `LEMMA_DEMO=1`, `MOCK_AGENT=0`, `LEMMA_DATASET_SIZE=100000`
+3. Drops you into the **official DuckDB CLI** (downloaded to `build/duckdb` on first run)
+
+Requires the Cursor \`agent\` CLI on PATH (same auth as running \`agent\` in your shell).
+
+## Mock demo (offline / no API key)
+
+```bash
+./scripts/mockdemo.sh
+```
+
+Same UX, but seeds a hardcoded RunQuery body (`MOCK_AGENT=1`, 2M rows, no LLM).
+
+Override query: `DEMO_QUERY_ID=5 ./scripts/demo.sh`
 
 ## In the DuckDB shell
 
@@ -28,16 +43,17 @@ SELECT lemma('SELECT SUM(...) FROM lineorder_flat WHERE ...');
 -- (3) Run (2) again → cached 💾 path
 ```
 
-## Env toggles (set by demo.sh)
+## Env toggles
 
-| Variable | Demo value | Purpose |
-|----------|------------|---------|
-| `LEMMA_DEMO=1` | on | Step emojis + durations on stdout |
-| `MOCK_AGENT=1` | on | Skip LLM; use pre-seeded body |
-| `LEMMA_LOG_LEVEL=WARN` | quiet stderr | Debug logs still on stderr if raised |
+| Variable | `demo.sh` | `mockdemo.sh` |
+|----------|-----------|---------------|
+| `LEMMA_DEMO` | on | on |
+| `MOCK_AGENT` | **0** (real agent) | **1** (fixture) |
+| `LEMMA_DATASET_SIZE` | 100,000 | 2,000,000 |
+| `LEMMA_LOG_LEVEL` | WARN | WARN |
 
 Production `config.env` keeps demo **off**.
 
 ## Re-run fresh pipeline
 
-Run `./scripts/demo.sh` again — it clears cache every time.
+Run the script again — it clears cache every time.

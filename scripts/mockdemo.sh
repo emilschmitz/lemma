@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Live demo: clear cache → real agent (no mock) → DuckDB CLI with demo UI on.
-# For Twitter/recording: split terminal, right pane = follow-agent-log.sh
+# Mock demo: clear cache → seed hardcoded RunQuery → DuckDB CLI with demo UI on.
+# No LLM; instant fixture body streamed into agent.log for the right pane.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -11,6 +11,9 @@ QUERY_ID="${DEMO_QUERY_ID:-3}"
 echo "==> Clearing Lemma cache (all optimized queries)..."
 uv run python "$ROOT/scripts/demo_lib.py" clear
 
+echo "==> Seeding hardcoded demo RunQuery body for Q${QUERY_ID}..."
+uv run python "$ROOT/scripts/demo_lib.py" seed "$QUERY_ID"
+
 SQL_ONELINE="$(uv run python -c "
 import sys; sys.path.insert(0, '$ROOT')
 from scripts.demo_lib import sql_one_line
@@ -19,11 +22,12 @@ print(sql_one_line($QUERY_ID))
 
 export LEMMA_DEMO=1
 export LEMMA_DEMO_CLI_WIDTH=30
-export LEMMA_DATASET_SIZE=100000
+export LEMMA_DATASET_SIZE=2000000
+export LEMMA_SSB_SCALE=1.333
 export LEMMA_DEMO_VIEW_DIR="$ROOT/research_loop/demo_view/state"
 mkdir -p "$LEMMA_DEMO_VIEW_DIR"
 : >"$LEMMA_DEMO_VIEW_DIR/agent.log"
-export MOCK_AGENT=0
+export MOCK_AGENT=1
 export USE_AGENT_DOCKER=0
 export MAX_ITERATIONS=1
 export LEMMA_VERBOSE=0
@@ -42,10 +46,10 @@ fi
 cat <<EOF
 
 ╔══════════════════════════════════════════════════════════════════════╗
-║  Lemma live demo (Q${QUERY_ID}, 100k rows) — DuckDB shell below         ║
+║  Lemma mock demo (Q${QUERY_ID}) — DuckDB shell below                    ║
 ╚══════════════════════════════════════════════════════════════════════╝
 
-  MOCK_AGENT=0 — real agent streams to agent.log (uses your local \`agent\` CLI auth).
+  MOCK_AGENT=1 — pre-seeded RunQuery, no real LLM.
 
   DuckDB's built-in timer is already on (.timer on in init.sql).
   After a plain SELECT, look for "Run Time (s): real ..." below the result.
@@ -66,9 +70,10 @@ cat <<EOF
 
   Tip: use the default DuckDB prompt (D ); paste full SQL starting with SELECT.
 
-  Right pane (split terminal): ./scripts/demo_view/follow-agent-log.sh
+  Right pane (optional, split terminal): ./scripts/demo_view/follow-agent-log.sh
+  (token stream during 🦾 Generating RunQuery) or follow-runquery.sh (code lines).
 
-  Mock / offline replay: ./scripts/mockdemo.sh
+  Our 🦆 DuckDB timing line only appears if LEMMA_DEMO_DUCKDB=1 (off by default).
 
 Press Enter to open DuckDB CLI...
 EOF

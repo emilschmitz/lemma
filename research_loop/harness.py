@@ -17,6 +17,7 @@ if ROOT_DIR not in sys.path:
 from sql_transpiler import transpile_sql_to_dafny_columnar
 from research_loop.ssb_workload import queries
 from db_extension import DatabaseCatalog
+from db_extension.dataset_config import effective_dataset_size
 from research_loop.pipeline_log import log_debug, log_info, log_trace
 from research_loop.pipeline_columnar import DEFAULT_TBL, dafny_translate_cmd, sync_rust_src
 from research_loop.pipeline_demo import demo_enabled, demo_live_step
@@ -102,11 +103,14 @@ def optimize_rust_file(file_path, *, allow_fast_native_agg: bool = True):
 def main():
     parser = argparse.ArgumentParser(description="Auto-research benchmarking harness")
     parser.add_argument("-q", "--query", type=int, default=1, help="Query index (1-15) from SSB queries. Default: 1")
-    parser.add_argument("-d", "--dataset-size", type=int, default=50000, help="Dataset size for benchmarking. Default: 50000")
+    parser.add_argument("-d", "--dataset-size", type=int, default=None, help="Rows from lineorder_flat.tbl (default: LEMMA_DATASET_SIZE or 2M)")
     args = parser.parse_args()
 
     for k, v in load_env(os.path.join(CURRENT_DIR, "config.env")).items():
         os.environ.setdefault(k, v)
+
+    if args.dataset_size is None:
+        args.dataset_size = effective_dataset_size()
 
     # Validate query index
     if args.query < 1 or args.query > len(queries):
@@ -274,7 +278,7 @@ method {:verify false} Main() {
     stable_rust_dir = os.path.join(CURRENT_DIR, "working_query-rust")
     temp_rust_dir = os.path.join(temp_build_dir, "working_query-rust")
 
-    with demo_live_step("🏗", "Dafny → Rust"):
+    with demo_live_step("🏗", "Dafny → Rust", pass_fail=True) as codegen_step:
         start_codegen = time.perf_counter()
         log_debug(COMPONENT, "codegen_start", "dafny translate rs (columnar)")
         build_cmd = dafny_translate_cmd(working_dfy_path, temp_build_dir, schema)
@@ -291,10 +295,13 @@ method {:verify false} Main() {
             if build_res.returncode != 0:
                 error_msg = build_res.stdout + "\n" + build_res.stderr
                 shutil.rmtree(temp_build_dir, ignore_errors=True)
+                codegen_step.set_passed(False)
                 exit_with_metrics("FAILURE", True, -1, f"Dafny translate (codegen) failed:\n{error_msg.strip()}")
+            codegen_step.set_passed(True)
             log_info(COMPONENT, "codegen_done", f"{codegen_time_ms}ms", ok=True)
         except subprocess.TimeoutExpired:
             shutil.rmtree(temp_build_dir, ignore_errors=True)
+            codegen_step.set_passed(False)
             exit_with_metrics("FAILURE", True, -1, f"Dafny translate timed out after {compile_timeout} seconds.")
 
     # 6b. Sync generated Rust src into stable workspace (keep runtime + Cargo.toml)
@@ -310,7 +317,7 @@ method {:verify false} Main() {
     tbl_path = DEFAULT_TBL
 
     # 6c. Postprocess + hot-loop benchmark main
-    with demo_live_step("⚙", "Post-process Rust"):
+    with demo_live_step("⚙", "Post-process Rust", pass_fail=True) as post_step:
         log_debug(COMPONENT, "postprocess_start", "optimize_rust_file", fast_agg=admission.allow_fast_native_agg)
         start_post = time.perf_counter()
         try:
@@ -323,13 +330,15 @@ method {:verify false} Main() {
             )
             inject_hot_loop_main(rust_src, tbl_path, args.dataset_size)
         except Exception as e:
+            post_step.set_passed(False)
             exit_with_metrics("FAILURE", True, -1, f"Custom u64 Rust optimization pass failed: {e}")
+        post_step.set_passed(True)
         postprocess_time_ms = int((time.perf_counter() - start_post) * 1000)
         log_debug(COMPONENT, "postprocess_done", "optimize_rust_file + hot loop main")
 
     # 7. Native Compilation using Cargo (Release Mode)
     cargo_toml_path = os.path.join(stable_rust_dir, "Cargo.toml")
-    with demo_live_step("🔧", "Compiling Rust"):
+    with demo_live_step("🔧", "Compiling Rust", pass_fail=True) as cargo_step:
         log_debug(COMPONENT, "cargo_start", "cargo build --release", manifest=cargo_toml_path)
         cargo_cmd = ["cargo", "build", "--release", "--manifest-path", cargo_toml_path]
         start_cargo = time.perf_counter()
@@ -349,10 +358,13 @@ method {:verify false} Main() {
             log_info(COMPONENT, "cargo_done", f"{cargo_time_ms}ms", ok=cargo_res.returncode == 0)
             if cargo_res.returncode != 0:
                 error_msg = cargo_res.stdout + "\n" + cargo_res.stderr
+                cargo_step.set_passed(False)
                 exit_with_metrics("FAILURE", True, -1, f"Cargo release build failed:\n{error_msg.strip()}")
+            cargo_step.set_passed(True)
         except subprocess.TimeoutExpired:
             cargo_time_ms = int((time.perf_counter() - start_cargo) * 1000)
             compile_time_ms = codegen_time_ms + cargo_time_ms
+            cargo_step.set_passed(False)
             exit_with_metrics("FAILURE", True, -1, f"Cargo build timed out after {compile_timeout} seconds.")
 
     # 8. Execution and Latency Profiling
