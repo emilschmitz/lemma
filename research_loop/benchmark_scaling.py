@@ -9,7 +9,7 @@ Methodology (apples-to-apples hot loop):
   - Bare / verified Rust: single-threaded generated loops (no parallelism today).
 
 Results: data/benchmarks/scaling_results.json
-Plot:     plots/scaling_avg_hot_q1_q5.png
+Plot:     plots/scaling_avg_hot_q1_q5.png  (seaborn, log₂ rows, log₁₀ ms)
 """
 from __future__ import annotations
 
@@ -461,6 +461,8 @@ def run_postgres(data: dict) -> dict:
 
 def plot_results(data: dict) -> Path:
     import matplotlib.pyplot as plt
+    import pandas as pd
+    import seaborn as sns
 
     PLOTS_DIR.mkdir(parents=True, exist_ok=True)
     sizes = sorted(int(k) for k in data["sizes"] if data["sizes"][k].get("complete"))
@@ -493,7 +495,6 @@ def plot_results(data: dict) -> Path:
                 continue
             points[k].append((limit, sum(avgs[k]) / len(avgs[k]) / 1000.0))
 
-    fig, ax = plt.subplots(figsize=(10, 5.5))
     labels = {
         "duckdb_1t": "DuckDB (1 thread)",
         "duckdb_mt": "DuckDB (default threads)",
@@ -502,29 +503,45 @@ def plot_results(data: dict) -> Path:
         "bare_rust": "Bare Rust",
         "verified_rust": "Verified Rust",
     }
-    markers = {
-        "duckdb_1t": "o",
-        "duckdb_mt": "s",
-        "postgres_1t": "v",
-        "postgres_mt": "P",
-        "bare_rust": "^",
-        "verified_rust": "D",
-    }
+
+    rows: list[dict] = []
     for key, pts in points.items():
-        if not pts:
-            continue
-        xs, ys = zip(*pts)
-        ax.plot(xs, ys, marker=markers[key], label=labels[key], linewidth=2)
+        for limit, ms in pts:
+            if ms <= 0:
+                continue
+            rows.append({"rows": limit, "ms": ms, "engine": labels[key]})
+    if not rows:
+        raise RuntimeError("no positive latency points to plot")
+
+    df = pd.DataFrame(rows)
+    min_ms = df["ms"].min()
+    max_ms = df["ms"].max()
+
+    sns.set_theme(style="whitegrid", context="notebook", palette="tab10")
+    fig, ax = plt.subplots(figsize=(10, 5.5))
+    sns.lineplot(
+        data=df,
+        x="rows",
+        y="ms",
+        hue="engine",
+        style="engine",
+        markers=True,
+        dashes=False,
+        linewidth=2,
+        markersize=8,
+        ax=ax,
+    )
 
     ax.set_xscale("log", base=2)
-    ax.set_xlabel("Row count (SSB flat)")
-    ax.set_ylabel("Avg hot-loop time Q1–Q5 (ms)")
+    ax.set_yscale("log")
+    ax.set_xlabel("Row count (SSB flat, log₂ scale)")
+    ax.set_ylabel("Avg hot-loop time Q1–Q5 (ms, log₁₀ scale)")
     ax.set_title("SSB Q1–Q5: avg 3rd-run hot loop vs row count")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+    ax.set_ylim(bottom=max(min_ms * 0.5, 1e-3), top=max_ms * 2)
+    ax.legend(title="Engine", bbox_to_anchor=(1.02, 1), loc="upper left")
     fig.tight_layout()
     out = PLOTS_DIR / "scaling_avg_hot_q1_q5.png"
-    fig.savefig(out, dpi=150)
+    fig.savefig(out, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return out
 

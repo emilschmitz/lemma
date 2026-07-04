@@ -1,4 +1,25 @@
-.PHONY: install test test-unit test-slow loop clean extension
+# Lemma — common targets. Run `make help` for descriptions.
+
+.PHONY: help install test test-unit test-slow loop clean extension
+
+help:
+	@echo "Lemma Makefile targets:"
+	@echo ""
+	@echo "  make install     Install Python deps (uv sync)"
+	@echo "  make test        Run unit tests (transpiler, extension, postprocessor)"
+	@echo "  make test-slow   Run Dafny functional tests (requires dafny in PATH)"
+	@echo "  make loop        One research-loop iteration (Q1, 50k rows)"
+	@echo "  make extension   Build DuckDB loadable extensions under build/"
+	@echo "  make clean       Remove build artifacts, temp dirs, __pycache__"
+	@echo ""
+	@echo "Repo layout (high level):"
+	@echo "  transpiler/       SQL → Dafny transpiler"
+	@echo "  db_extension/     DuckDB extension + optimizer"
+	@echo "  research_loop/    Verify, compile, benchmarks, agent sandbox"
+	@echo "  scripts/          demo.sh, mockdemo.sh, duckdb_shell.sh, dataset build"
+	@echo "  data/benchmarks/  Scaling benchmark JSON"
+	@echo "  plots/            Benchmark figures"
+	@echo "  design_docs/      Design notes"
 
 install:
 	uv sync
@@ -45,4 +66,3 @@ clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	rm -rf research_loop/temp_build research_loop/bench_build research_loop/scratch_timing \
 		research_loop/temp_* research_loop/poc_alias/build_* build configure
-

@@ -50,7 +50,7 @@ SELECT lemma('SELECT SUM(LO_EXTENDEDPRICE * LO_DISCOUNT) FROM lineorder_flat WHE
 
 ## Results
 
-Scaling benchmark on the SSB flat table (`lineorder_flat`): Q1–Q5 hot-loop latency (3rd timed run) vs row count, comparing DuckDB, PostgreSQL, bare Rust, and verified+postprocessed Rust. Full methodology and raw numbers are in `data/benchmarks/scaling_results.json`.
+Scaling benchmark on the SSB flat table (`lineorder_flat`): Q1–Q5 hot-loop latency (3rd timed run) vs row count (log₂ x-axis, log₁₀ y-axis), comparing DuckDB, PostgreSQL, bare Rust, and verified+postprocessed Rust. Full methodology and raw numbers are in `data/benchmarks/scaling_results.json`.
 
 ![SSB Q1–Q5 scaling: mean hot-loop latency vs row count](plots/scaling_avg_hot_q1_q5.png)
 
@@ -62,34 +62,3 @@ uv run python research_loop/benchmark_verified.py   # single-point check at 50k 
 ```
 
 At 50k rows, verified Rust matches DuckDB on correctness and is competitive on simple scans; at 1.5M rows group-by queries remain the hard case. See `design_docs/writeup_plan.md` for the compilation pipeline performance story.
-
----
-
-## Repository Structure
-
-```
-Lemma/
-├── transpiler/              # SQL → Dafny transpiler (sql-transpiler)
-├── db_extension/            # Lemma DuckDB extension + optimizer entrypoint
-├── research_loop/           # Verify, compile, agent sandbox, benchmarks
-│   └── examples/dafny/      # Standalone Dafny snippets for manual experiments
-├── scripts/
-│   ├── demo.sh              # Live demo (Cursor Agent CLI)
-│   ├── mockdemo.sh          # Offline demo (no LLM)
-│   ├── duckdb_shell.sh      # DuckDB CLI launcher
-│   └── build_ssb_flat_dataset.sh
-├── data/benchmarks/         # Scaling benchmark JSON results
-├── plots/                   # Benchmark plots for README / papers
-└── design_docs/             # Design notes and writeup plans
-```
-
-## Makefile
-
-| Command | Description |
-|---|---|
-| `make install` | Install all Python dependencies via `uv sync` |
-| `make test` | Run transpiler and database extension unit tests |
-| `make test-slow` | Run Dafny functional tests (requires `dafny` in PATH) |
-| `make loop` | Run one iteration of the research loop (Query 1, 50k rows) |
-| `make extension` | Build `build/lemma.duckdb_extension` |
-| `make clean` | Remove build artifacts and `__pycache__` |
