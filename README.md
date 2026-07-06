@@ -50,15 +50,28 @@ SELECT lemma('SELECT SUM(LO_EXTENDEDPRICE * LO_DISCOUNT) FROM lineorder_flat WHE
 
 ## Results
 
-Scaling benchmark on the SSB flat table (`lineorder_flat`): Q1–Q5 hot-loop latency (3rd timed run) vs row count (log₂ x-axis, log₁₀ y-axis), comparing DuckDB, PostgreSQL, bare Rust, and verified+postprocessed Rust. Full methodology and raw numbers are in `data/benchmarks/scaling_results.json`.
+Hot-loop latency on SSB `lineorder_flat` at **1.5M rows**. All engines run **single-threaded** (DuckDB `threads=1`, PostgreSQL without parallel gather, Rust without OpenMP). Metric: 3rd timed execution of the query loop; load is outside the timer. Raw numbers: `data/benchmarks/scaling_results.json` — see also `docs/verified_benchmark_rundown.md`.
 
-![SSB Q1–Q5 scaling: mean hot-loop latency vs row count](plots/scaling_avg_hot_q1_q5.png)
+![SSB Q1–Q5 overview: single-thread hot-loop latency](plots/benchmark_overview.png)
 
-Reproduce:
+**Three queries where verified is strong** (✓ on chart — well ahead of DuckDB, often close to bare):
+
+- **Q2 / Q3** — selective scalar `SUM` with native `AddU64` / `MulU64U32`; almost no allocation in the loop.
+- **Q5** — two-key `(year, brand)` group-by via schema-driven `AggPush_*` on `NativeAggMap`; beats DuckDB 1t, still ~1.3× slower than bare.
+
+**Two queries where gains are modest** (~ on chart — verified ≈ DuckDB or worse, clearly behind bare):
+
+- **Q1** — simple revenue sum but enough row traffic that runtime wrapper overhead shows; verified slightly **slower** than DuckDB 1t at this size.
+- **Q4** — `(year, brand)` group-by plus string equality filters; hash + string work keeps verified near DuckDB and ~20% above bare.
+
+### What it takes to match bare consistently
+
+Bare is hand-tuned columnar Rust (minimal columns, direct indexing, no proof/runtime wrapper). Verified adds `Object<ColsNative>`, Dafny codegen, and general-purpose agg maps. Closing the gap everywhere means more **schema-driven** pipeline work, not per-query hacks: SQL column projection (done), native agg push for all group-by shapes (2-key string/u32 done; 3-key still on functional maps), skip Dafny result materialization on the engine boundary (`BenchFinish`, done for benchmarks), and eventually tighter encodings for low-cardinality strings where the schema allows it.
+
+Reproduce the chart:
 
 ```bash
-uv run python research_loop/benchmark_scaling.py
-uv run python research_loop/benchmark_verified.py   # single-point check at 50k rows
+uv run python research_loop/benchmark_scaling.py   # refresh scaling_results.json if needed
+uv run python scripts/generate_benchmark_overview_plot.py
+uv run python research_loop/benchmark_verified.py # single-point check at 50k rows
 ```
-
-At 50k rows, verified Rust matches DuckDB on correctness and is competitive on simple scans; at 1.5M rows group-by queries remain the hard case. See `design_docs/writeup_plan.md` for the compilation pipeline performance story.
