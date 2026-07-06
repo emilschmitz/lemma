@@ -20,7 +20,7 @@ https://github.com/user-attachments/assets/7f7891c7-5ef6-406b-882b-8e01134ed37c
 ## Quick Start
 
 ```bash
-./scripts/setup.sh          # tools + Python deps + ssb-dbgen clone
+./scripts/setup.sh          # tools + Python deps + ssb-dbgen clone (works on Linux x86_64)
 ./scripts/demo.sh           # dataset + extension + DuckDB CLI (needs agent CLI)
 # or, no LLM:
 ./scripts/mockdemo.sh       # pre-seeded RunQuery; still needs Dafny + Rust for first compile
@@ -38,7 +38,7 @@ SELECT lemma('SELECT SUM(LO_EXTENDEDPRICE * LO_DISCOUNT) FROM lineorder_flat WHE
 - [uv](https://docs.astral.sh/uv/) — Python env
 - [Dafny 4.x](https://github.com/dafny-lang/dafny) — verification
 - [Rust/Cargo](https://rustup.rs/) — native compile
-- **g++**, **make**, **git**, **curl**, **unzip** — extension + ssb-dbgen + DuckDB CLI download (Linux x86_64)
+- **g++**, **make**, **git**, **curl**, **unzip** — to run `setup.sh`
 - [Cursor Agent CLI](https://cursor.com/docs/agent/cli) — `agent` on PATH for `./scripts/demo.sh` only
 
 ---
