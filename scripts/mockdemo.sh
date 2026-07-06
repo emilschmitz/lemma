@@ -6,6 +6,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+"$ROOT/scripts/setup.sh"
+
 QUERY_ID="${DEMO_QUERY_ID:-3}"
 
 echo "==> Clearing Lemma cache (all optimized queries)..."
@@ -33,10 +35,19 @@ export MAX_ITERATIONS=1
 export LEMMA_VERBOSE=0
 export LEMMA_LOG_LEVEL=WARN
 
-if [ ! -f "$ROOT/build/lemma.duckdb_extension" ]; then
-  echo "==> Building extension (first time)..."
-  make extension
+FLAT_TBL="$(uv run python -c "
+import sys; sys.path.insert(0, '$ROOT')
+from db_extension.dataset_config import tbl_path
+print(tbl_path())
+")"
+
+if [[ ! -f "$FLAT_TBL" ]]; then
+  echo "==> SSB flat table missing — building dataset (first time, may take a few minutes)..."
+  "$ROOT/scripts/build_ssb_flat_dataset.sh"
 fi
+
+echo "==> Building DuckDB extension..."
+make extension
 uv run python -m db_extension.prepare_data
 
 if [[ -t 1 ]] && command -v clear >/dev/null 2>&1; then

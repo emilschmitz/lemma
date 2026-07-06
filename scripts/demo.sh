@@ -41,6 +41,8 @@ done
 
 QUERY_ID="${DEMO_QUERY_ID:-3}"
 
+"$ROOT/scripts/setup.sh"
+
 # Demo defaults — apply only when not already set in the environment.
 export LEMMA_DEMO="${LEMMA_DEMO:-1}"
 export LEMMA_DEMO_CLI_WIDTH="${LEMMA_DEMO_CLI_WIDTH:-30}"

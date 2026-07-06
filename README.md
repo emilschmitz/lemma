@@ -19,25 +19,27 @@ https://github.com/user-attachments/assets/7f7891c7-5ef6-406b-882b-8e01134ed37c
 
 ## Quick Start
 
-One-time setup, then run the interactive demo:
-
 ```bash
-make install
-./scripts/demo.sh                     # dataset + extension + prepare_data + DuckDB CLI
+./scripts/setup.sh          # tools + Python deps + ssb-dbgen clone
+./scripts/demo.sh           # dataset + extension + DuckDB CLI (needs agent CLI)
+# or, no LLM:
+./scripts/mockdemo.sh       # pre-seeded RunQuery; still needs Dafny + Rust for first compile
 ```
 
-Optional: `./scripts/demo.sh --query 1 --rows 50000` (or `DEMO_QUERY_ID`, `LEMMA_DATASET_SIZE`). Builds `ssb-dbgen` flat table on first run if missing. Clears Lemma cache, sets demo env, opens DuckDB with the extension loaded.
+First run builds SSB flat data (~2M rows, several minutes) and downloads DuckDB CLI. First `SELECT lemma(...)` runs Dafny verify + Rust compile (minutes).
+
+Optional: `./scripts/demo.sh --query 1 --rows 50000`. Eager dataset build: `./scripts/setup.sh --with-dataset`.
 
 ```sql
 SELECT lemma('SELECT SUM(LO_EXTENDEDPRICE * LO_DISCOUNT) FROM lineorder_flat WHERE ...');
 ```
 
 ### Requirements
-- [uv](https://docs.astral.sh/uv/) — Python package manager
-- [Dafny 4.x](https://github.com/dafny-lang/dafny) — in `PATH`
-- [Rust/Cargo](https://rustup.rs/) — for native compilation
-- [DuckDB CLI](https://duckdb.org/) — vendored to `build/duckdb` on first launcher run
-- [Cursor Agent CLI](https://cursor.com/docs/agent/cli) — `agent` on `PATH` (for `./scripts/demo.sh`; other agents work too if you set `AGENT_CMD` in `research_loop/config.env`)
+- [uv](https://docs.astral.sh/uv/) — Python env
+- [Dafny 4.x](https://github.com/dafny-lang/dafny) — verification
+- [Rust/Cargo](https://rustup.rs/) — native compile
+- **g++**, **make**, **git**, **curl**, **unzip** — extension + ssb-dbgen + DuckDB CLI download (Linux x86_64)
+- [Cursor Agent CLI](https://cursor.com/docs/agent/cli) — `agent` on PATH for `./scripts/demo.sh` only
 
 ---
 

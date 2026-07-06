@@ -1,11 +1,12 @@
 # Lemma — common targets. Run `make help` for descriptions.
 
-.PHONY: help install test test-unit test-slow loop clean extension
+.PHONY: help install setup test test-unit test-slow loop clean extension
 
 help:
 	@echo "Lemma Makefile targets:"
 	@echo ""
-	@echo "  make install     Install Python deps (uv sync)"
+	@echo "  make setup       Check tools, uv sync, clone ssb-dbgen"
+	@echo "  make install     Same as setup (alias)"
 	@echo "  make test        Run unit tests (transpiler, extension, postprocessor)"
 	@echo "  make test-slow   Run Dafny functional tests (requires dafny in PATH)"
 	@echo "  make loop        One research-loop iteration (Q1, 50k rows)"
@@ -21,8 +22,10 @@ help:
 	@echo "  plots/            Benchmark figures"
 	@echo "  design_docs/      Design notes"
 
-install:
-	uv sync
+install: setup
+
+setup:
+	./scripts/setup.sh
 
 test: test-unit
 

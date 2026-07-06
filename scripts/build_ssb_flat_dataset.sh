@@ -6,6 +6,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SSB="$ROOT/ssb-dbgen"
 SCALE="${LEMMA_SSB_SCALE:-1.333}"
 
+"$ROOT/scripts/ensure_ssb_dbgen.sh"
+
 echo "==> SSB flat build (real ssb-dbgen, scale=$SCALE)"
 echo "    Target flat file: $SSB/lineorder_flat.tbl"
 
@@ -25,6 +27,6 @@ echo "==> Generating dimension + fact tables (dbgen -s $SCALE)..."
 )
 
 echo "==> Flattening to lineorder_flat.tbl (DuckDB join)..."
-uv run python "$SSB/flatten_ssb.py" --root "$ROOT"
+uv run python "$ROOT/scripts/flatten_ssb.py" --root "$ROOT"
 
 echo "==> Done. Set LEMMA_DATASET_SIZE to cap rows loaded (default in dataset_config.py)."
