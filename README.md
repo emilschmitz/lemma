@@ -32,8 +32,6 @@ Optional: `./scripts/demo.sh --query 1 --rows 50000` (or `DEMO_QUERY_ID`, `LEMMA
 SELECT lemma('SELECT SUM(LO_EXTENDEDPRICE * LO_DISCOUNT) FROM lineorder_flat WHERE ...');
 ```
 
-**No agent:** `./scripts/mockdemo.sh` — pre-seeded RunQuery, no LLM.
-
 ### Requirements
 - [uv](https://docs.astral.sh/uv/) — Python package manager
 - [Dafny 4.x](https://github.com/dafny-lang/dafny) — in `PATH`
