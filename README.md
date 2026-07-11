@@ -2,6 +2,8 @@
 
 Verified query synthesis: SQL is transpiled to a Dafny spec, an agent (or mock) writes an optimized `RunQuery`, Dafny (Z3) proves correctness, and the result is compiled to native Rust. Contains a DuckDB extension where optimized binaries are cached and invoked on rerun (WIP).
 
+Inpired by https://arxiv.org/pdf/2603.02081.
+
 https://github.com/user-attachments/assets/7f7891c7-5ef6-406b-882b-8e01134ed37c
 
 ## Pipeline steps
