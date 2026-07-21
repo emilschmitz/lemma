@@ -1,0 +1,29 @@
+[package]
+name = "lemma_agent_primitives"
+version = "0.1.0"
+edition = "2021"
+description = "TRUSTED extern helpers for Verus Lemma agents (GenDB-style primitives)"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+parallel = ["rayon"]
+partitioned_join = ["parallel"]
+vector_scan = []
+simd = []
+spill_hash = []
+
+[dependencies]
+rayon = { version = "1.10", optional = true }
+serde_json = "1.0"
+
+[dev-dependencies]
+serde_json = "1.0"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"

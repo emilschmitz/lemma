@@ -1,0 +1,414 @@
+% Paste into a VLDB Overleaf project (acmart + pvldb.sty already present).
+% VLDB-Template / acmart.cls v2.19 — keep the VLDB blocks below as-is.
+
+\documentclass[sigconf, nonacm]{acmart}
+
+%%% do not modify the following VLDB block %%
+%%% VLDB block start %%%
+\usepackage{pvldb}
+%%% VLDB block end %%%
+
+% booktabs / graphicx already via acmart; do not re-load hyperref (option clash).
+
+\renewcommand\vldbdoi{XX.XX/XXX.XX}
+\renewcommand\vldbpages{XXX-XXX}
+\renewcommand\vldbavailabilityurl{URL_TO_YOUR_ARTIFACTS}
+
+\begin{document}
+\title{Lemma: Verified LLM Synthesis of Query Executors}
+
+\author{TODO}
+\affiliation{%
+  \institution{TODO}
+  \country{TODO}
+}
+\email{TODO}
+
+\begin{abstract}
+% TODO: write later. One-liner for now:
+Lemma synthesizes per-query native executors with an LLM, then verifies them
+against a deterministically transpiled Verus \texttt{MethodSpec} before compile
+and reuse via a DuckDB extension.
+\end{abstract}
+
+\maketitle
+
+%%% do not modify the following VLDB block %%
+%%% VLDB block start %%%
+\vldbtopmatter
+%%% VLDB block end %%%
+
+%% =====================================================================
+\section{Introduction}
+%% =====================================================================
+% Keep short. Expand prose later.
+
+\begin{itemize}
+  \item General-purpose OLAP engines pay for generality (interpretation, operators, abstractions).
+  \item LLM-synthesized per-query code can be much faster (CodexDB, GenDB, Bespoke OLAP) but is hard to trust.
+  \item \textbf{Lemma:} SQL $\to$ formal \texttt{MethodSpec} $\to$ agent writes optimized \texttt{run\_query} $\to$ \textbf{Verus proves} \texttt{run\_query} $\equiv$ \texttt{MethodSpec} $\to$ native binary, cached in DuckDB.
+  \item Target: recurring analytical queries where verify+compile amortizes over many runs.
+\end{itemize}
+
+%% =====================================================================
+\section{Pipeline}
+%% =====================================================================
+
+\begin{figure}[t]
+  \centering
+  % \includegraphics[width=\linewidth]{figures/pipeline}
+  \fbox{\parbox{0.95\linewidth}{\centering\vspace{1.2em}
+  SQL $\to$ transpile \texttt{MethodSpec}/\texttt{valid\_cols} $\to$ agent \texttt{run\_query}\\
+  $\to$ assemble $\to$ Verus verify $\to$ \texttt{verus --compile} $\to$ binary\\
+  $\to$ DuckDB extension cache / invoke
+  \vspace{1.2em}}}
+  \caption{Lemma end-to-end pipeline (Verus path).}
+  \Description{Flow from SQL through MethodSpec, agent run\_query, Verus verify and compile, to DuckDB-cached binary.}
+  \label{fig:pipeline}
+\end{figure}
+
+\noindent\textbf{Steps.}
+\begin{enumerate}
+  \item \textbf{Transpile.} Deterministic SQL$\to$Verus: columnar \texttt{Cols}, \texttt{valid\_cols} (row/cell bounds), \texttt{method\_spec} / \texttt{method\_spec\_helper}. Schema-driven (no hard-coded benchmark columns).
+  \item \textbf{Agent.} Writes only the \texttt{run\_query} body (optimized loop / agg). Host injects signature + \texttt{requires valid\_cols} + \texttt{ensures} $\equiv$ \texttt{method\_spec}. Agent must not add contracts.
+  \item \textbf{Assemble.} Single \texttt{.rs}: spec + proved body + trusted arith/agg helpers + \texttt{load\_cols} + timing \texttt{main}.
+  \item \textbf{Verify.} Verus/Z3: \texttt{run\_query} exec $\equiv$ \texttt{method\_spec}. Fail $\Rightarrow$ reject (no ship).
+  \item \textbf{Compile.} \texttt{verus --compile} $\to$ native binary (no Dafny postprocessor path).
+  \item \textbf{Serve.} DuckDB extension caches binary; repeat queries invoke native path.
+\end{enumerate}
+
+\noindent\textbf{Trust boundary (concise).}
+\begin{itemize}
+  \item \textbf{Proved:} agent \texttt{run\_query} $\equiv$ \texttt{method\_spec} (scalar + group-by fixtures; ghost map tied to helper in same loop as exec agg).
+  \item \textbf{Trusted:} wrapping arith under \texttt{valid\_cols}; NativeAgg-style \texttt{hashmap\_*}/\texttt{agg\_*}; \texttt{load\_cols} I/O; some SQL-feature helpers (LIKE, certain joins/set ops) when used.
+  \item \textbf{Trusted transpiler:} SQL $\equiv$ \texttt{method\_spec} checked empirically / tests, not proved in Verus.
+  \item Residual gap same class as Dafny externs: malicious \texttt{external\_body} can lie; agent-written proved body cannot.
+\end{itemize}
+
+\noindent\textbf{Why Verus (vs prior Dafny path).}
+\begin{itemize}
+  \item One artifact: annotated Rust is both proof subject and executable (no translate + unsafe peephole pass).
+  \item Avoids Dafny\texttt{Int}/BigInt vs bitvector timeout tradeoff and postprocessor soundness hole.
+  \item Hot path is ordinary Rust (\texttt{HashMap}, slices) with ghost state for the proof.
+\end{itemize}
+
+%% =====================================================================
+\section{System notes}
+%% =====================================================================
+
+\subsection{DuckDB extension}
+\begin{itemize}
+  \item \texttt{SELECT lemma('SQL...')} triggers optimize / verify / compile on miss; cache hit runs native binary.
+  \item WIP polish; research harness also runs standalone (\texttt{benchmark\_verified.py}).
+\end{itemize}
+
+\subsection{Agent sandbox (extension)}
+\begin{itemize}
+  \item Production need: sandbox the optimizer agent (or at least its tool calls). Status as of 2026-07-21: host OpenRouter ReAct loop; tools run in Docker (\texttt{--network none} by default). Not fully ``production-hardened'' yet.
+  \item Inspiration: Inspect AI tool-call sandboxing; Inspect agent bridge as a way to let users plug in their own agent CLI.
+  \item Data policy modes for DuckDB tool: none / stats / full (read-only).
+\end{itemize}
+
+\subsection{SQL surface (sketch)}
+\begin{itemize}
+  \item Analytical subset: aggs, filters, GROUP BY/HAVING, joins, subqueries/CTEs, set ops, ORDER BY/LIMIT --- many advanced shapes still use TRUSTED helpers.
+  \item Fixtures: SSB flat, TPC-H (e.g.\ Q1/Q6), plus basic-SQL holdouts.
+\end{itemize}
+
+%% =====================================================================
+\section{Related Work}
+%% =====================================================================
+% Bullets only --- expand to prose later.
+
+\paragraph{LLM-synthesized query engines.}
+\begin{itemize}
+  \item \textbf{CodexDB}~\cite{Trummer2022CodexDB}: LLM synthesizes per-query processing code from SQL (+ NL instructions); correctness via tests / execution, not formal proof vs a MethodSpec.
+  \item \textbf{GPT-DB}~\cite{Trummer2023GPTDB}: follow-on demo; customizable GPT-generated SQL processing code.
+  \item \textbf{GenDB}~\cite{Lao2026GenDB}: multi-agent instance-optimized C++ per query (workload / storage / plan / codegen / optimize); strong speedups vs DuckDB/Umbra; correctness mainly empirical / inspection.
+  \item \textbf{Bespoke OLAP}~\cite{Wehrstein2026Bespoke}: full workload-specific C++ engine (storage + executors) with iterative perf feedback; validates vs DuckDB, not formal refinement.
+\end{itemize}
+
+\paragraph{Classical query compilation (not LLM).}
+\begin{itemize}
+  \item \textbf{HIQUE}~\cite{Krikellas2010HIQUE}: template-based holistic per-query C codegen.
+  \item \textbf{HyPer}~\cite{Neumann2011Hyper} / adaptive execution~\cite{Kohn2018Adaptive}: data-centric LLVM compilation; interpret$\leftrightarrow$compile switching.
+  \item \textbf{LegoBase}~\cite{Klonatos2014LegoBase}: generative programming / staging; Scala$\to$specialized C.
+  \item \textbf{Umbra}~\cite{Kersten2021UmbraFlyingStart}: fast compile (Flying Start) + optimizing LLVM path.
+  \item \textbf{NoisePage / Peloton line}~\cite{Menon2017Relaxed,Menon2020Permutable}: relaxed operator fusion; permutable compiled queries without full recompile.
+  \item \textbf{DBToaster}~\cite{Ahmad2012DBToaster}, \textbf{Tupleware}~\cite{Crotty2015Tupleware}, \textbf{Weld}~\cite{Palkar2018Weld}: specialized / IR-based codegen lineages (cite selectively).
+\end{itemize}
+
+\paragraph{Formal SQL semantics \& verified query compilers.}
+\begin{itemize}
+  \item \textbf{HoTTSQL}~\cite{Chu2017HoTTSQL}: mechanized denotational SQL semantics (Coq); prove rewrite rules.
+  \item \textbf{Cosette}~\cite{Chu2017Cosette}: automated SQL equivalence prover (proof or counterexample).
+  \item \textbf{SQL$_{\mathrm{Coq}}$ / SQL algebra}~\cite{Benzaken2019SQLCoq}: Coq semantics for realistic SQL + algebra equivalence.
+  \item \textbf{Physical algebra / QEP layer}~\cite{Benzaken2018Physical}: Coq formalization of low-level RDBMS operators / physical plans.
+  \item \textbf{Q$^\ast$cert}~\cite{Auerbach2017Qcert}: Coq platform for verified query compilation (NRA$^e$, multi-target).
+  \item \textbf{DBCert}~\cite{Benzaken2022DBCert}: verified SQL$_{\mathrm{Coq}}$ $\to$ Imp (then JS); correct-by-construction compiler, \emph{not} LLM-written hot paths.
+  \item Contrast w/ Lemma: those systems verify a \emph{fixed} compiler or rewrite; Lemma verifies an \emph{LLM-written} executor against a transpiled MethodSpec.
+\end{itemize}
+
+\paragraph{LLM + machine-checked code (general, not DB-specific).}
+\begin{itemize}
+  \item \textbf{AlphaVerus}~\cite{Aggarwal2025AlphaVerus}: LLM$\to$verified Verus via translation + verifier-guided tree search (``Treefinement'').
+  \item \textbf{Vericoding benchmarks}~\cite{Dougherty2025Vericoding}: large Dafny/Verus/Lean specs for LLM verified synthesis eval.
+  \item Related: Formal Disco / verified-program datasets; DafnyBench-style eval --- cite if space.
+\end{itemize}
+
+\paragraph{Adjacent LLM$\times$DB (not executor synthesis).}
+\begin{itemize}
+  \item \textbf{SQLBarber}~\cite{Lao2025SQLBarber}: LLM generates customized SQL \emph{workloads} / templates (benchmarking), not query executors.
+  \item Text-to-SQL / NL$\to$SQL systems: large literature; orthogonal (query \emph{text}, not verified runtime).
+\end{itemize}
+
+\paragraph{Verification substrate.}
+\begin{itemize}
+  \item \textbf{Verus}~\cite{Lattuada2023Verus}: SMT verification for Rust; Lemma's proof target.
+  \item \textbf{Dafny}~\cite{Leino2010Dafny}: prior Lemma path; same agent-vs-spec idea, heavier codegen/postprocess story.
+\end{itemize}
+
+\paragraph{Positioning (one line).}
+\begin{itemize}
+  \item Lemma $\approx$ GenDB/CodexDB-style synthesis \emph{plus} DBCert/Cosette-style machine-checked guarantees, scoped to \texttt{run\_query} $\equiv$ MethodSpec before ship.
+\end{itemize}
+
+%% =====================================================================
+\section{Evaluation}
+%% =====================================================================
+
+\subsection{Holdout microbenchmark (agent-style kernels)}
+\label{sec:holdout-eval}
+
+\noindent\textbf{Snapshot.}
+Measured \texttt{2026-07-21T22:38:52Z} (UTC); results committed with this draft as
+\texttt{a07d1cf} (this commit). Fair protocol: both sides
+start from \emph{already loaded} in-memory columns / DuckDB tables; 3 warmups then
+median of 5 timed query-only runs. Lemma kernels written as a perfect agent would
+(zone maps at ingest, dict codes at ingest, in-place hash probe, dense small-card
+buckets); query predicates / join build+probe / aggs stay on the clock.
+
+\noindent\textbf{Hardware (this machine).}
+AMD Ryzen AI 5 330 (8 logical CPUs, SMT), $\sim$7.8\,GiB RAM, Linux WSL2.
+MT modes: \texttt{RAYON\_NUM\_THREADS=8}, DuckDB \texttt{PRAGMA threads=8}.
+
+\noindent\textbf{Datasets (on disk under holdout export; no extra cloud download).}
+\begin{itemize}
+  \item Holdout working set $\approx$\,\textbf{364\,MB} under
+        \texttt{verus/research\_loop/holdout/data/}:
+        synthetic \texttt{scan\_skew} 500k / 1M; Zipf join 200k$\times$50k;
+        EDGAR-like \texttt{str\_filter} 100k; TPC-H SF1 \emph{slices}
+        (200k and 1M lineitem + matching orders); SSB flat 500k row slice
+        from local \texttt{ssb-dbgen/lineorder\_flat.tbl}.
+  \item Source TPC-H SF1 full tables also present locally ($\approx$\,967\,MB under
+        \texttt{data/tpch-sf1/}) used only to cut slices.
+\end{itemize}
+
+\noindent\textbf{Queries H1--H25.} Diverse shapes: selective zone-pruned scans,
+small-card group-by, Zipf joins (+ multiplicity), string/dict filters, TPC-H
+Q1/Q3/Q6-like literals on slices, SSB Q1.1-ish, large-card mod-1000 group-by.
+Baselines: Lemma ST/MT, bare Rust ST, DuckDB 1T/MT. Ratios $<1$ mean Lemma wins.
+
+\begin{table*}[t]
+  \centering
+  \small
+  \caption{Holdout H1--H25 hot-loop latency ($\mu$s). Ratios $=$ Lemma / other.}
+  \label{tab:holdout-h1-h25}
+  \begin{tabular}{lrrrrrrr}
+    \toprule
+    Q & L$_{\mathrm{st}}$ & L$_{\mathrm{mt}}$ & bare & D$_{1t}$ & D$_{\mathrm{mt}}$ & L/D$_{1t}$ & L$_{\mathrm{mt}}$/D$_{\mathrm{mt}}$ \\
+    \midrule
+H1 & 13 & 956 & 120 & 461 & 1513 & 0.03 & 0.63 \\
+H2 & 64 & 64 & 144 & 1689 & 2110 & 0.04 & 0.03 \\
+H3 & 1698 & 1106 & 1249 & 79716 & 62558 & 0.02 & 0.02 \\
+H4 & 125 & 307 & 621 & 1751 & 2830 & 0.07 & 0.11 \\
+H5 & 1034 & 1626 & 682 & 1448 & 1894 & 0.71 & 0.86 \\
+H6 & 621 & 1516 & 2779 & 1737 & 3270 & 0.36 & 0.46 \\
+H7 & 248 & 264 & 4853 & 3930 & 3889 & 0.06 & 0.07 \\
+H8 & 1 & 973 & 38 & 378 & 1128 & 0.00 & 0.86 \\
+H9 & 13 & 1086 & 118 & 436 & 1181 & 0.03 & 0.92 \\
+H10 & 27 & 1340 & 244 & 442 & 1471 & 0.06 & 0.91 \\
+H11 & 1223 & 1095 & 1485 & 87953 & 65229 & 0.01 & 0.02 \\
+H12 & 3992 & 4050 & 4110 & 607234 & 415966 & 0.01 & 0.01 \\
+H13 & 178 & 232 & 542 & 1703 & 2943 & 0.10 & 0.08 \\
+H14 & 3 & 294 & 296 & 357 & 848 & 0.01 & 0.35 \\
+H15 & 3979 & 2371 & 3205 & 3922 & 2612 & 1.01 & 0.91 \\
+H16 & 1204 & 1160 & 25008 & 17662 & 5609 & 0.07 & 0.21 \\
+H17 & 3563 & 2918 & 18925 & 6105 & 5001 & 0.58 & 0.58 \\
+H18 & 1264 & 1122 & 6912 & 8457 & 3203 & 0.15 & 0.35 \\
+H19 & 384 & 799 & 358 & 857 & 1362 & 0.45 & 0.59 \\
+H20 & 386 & 579 & 1188 & 2883 & 2729 & 0.13 & 0.21 \\
+H21 & 504 & 2313 & 388 & 2815 & 2995 & 0.18 & 0.77 \\
+H22 & 1811 & 1963 & 3143 & 10470 & 8908 & 0.17 & 0.22 \\
+H23 & 674 & 2010 & 580 & 1828 & 1657 & 0.37 & 1.21 \\
+H24 & 122 & 125 & 123 & 3792 & 6972 & 0.03 & 0.02 \\
+H25 & 5522 & 2234 & 6181 & 11897 & 5092 & 0.46 & 0.44 \\
+    \bottomrule
+  \end{tabular}
+\end{table*}
+
+\noindent\textbf{Takeaways (this snapshot).}
+Lemma ST $\le$ DuckDB 1T on 24/25 queries (H15 $\approx$ tie). Wins concentrate on
+zone-pruned scans, dict-coded filters, small-card group-by, and Zipf joins; MT
+helps when work is large enough (e.g.\ H15/H17/H25) and hurts tiny kernels.
+Scale-up gaps (partitioned join build, vectorized scans, spill hash, DuckDB-backed
+columnar load) are tracked as flagged primitives / \texttt{verus/db\_extension}
+experiments---not claimed solved by this table.
+
+\begin{itemize}
+  \item Additional baselines still planned: full Verus-proved binaries (not only
+        agent-primitive holdout kernels), verify+compile amortization, cache hits.
+  \item Larger GCP / SF-scale runs deferred; protocol above is the intended fair compare.
+\end{itemize}
+
+%% =====================================================================
+\section{Future Work}
+%% =====================================================================
+
+\begin{enumerate}
+  \item Shrink TRUSTED surface: extend Verus coverage so low-level perf ops need fewer \texttt{external\_body} externs.
+  \item Hardware-aware optimization: give agent HW info; needs verification support for HW-specific objects/params.
+  \item Stronger optimizing harness / RSI-style self-improvement loop (cite recent RSI harness papers --- TODO).
+  \item Distributed executors: interesting, but verification challenges multiply (networks, faults, consistency).
+  \item Harden extension sandbox; optional Inspect-style / pluggable agent CLI bridge.
+\end{enumerate}
+
+\begin{acks}
+TODO.
+\end{acks}
+
+% Inline bib so paste works without sample.bib. Venue/pages TODOs marked lightly --- polish later.
+\begin{thebibliography}{99}
+
+\bibitem{Trummer2022CodexDB}
+Immanuel Trummer.
+\newblock CodexDB: Synthesizing Code for Query Processing from Natural Language Instructions using GPT-3 Codex.
+\newblock \emph{PVLDB}, 15(11):2921--2928, 2022.
+
+\bibitem{Trummer2023GPTDB}
+Immanuel Trummer.
+\newblock Demonstrating GPT-DB: Generating Query-Specific and Customizable Code for SQL Processing with GPT-4.
+\newblock \emph{PVLDB}, 16(12), 2023.
+
+\bibitem{Lao2026GenDB}
+Jiale Lao and Immanuel Trummer.
+\newblock GenDB: The Next Generation of Query Processing -- Synthesized, Not Engineered.
+\newblock arXiv:2603.02081, 2026.
+
+\bibitem{Wehrstein2026Bespoke}
+Johannes Wehrstein, Timo Eckmann, Matthias Jasny, and Carsten Binnig.
+\newblock Bespoke OLAP: Synthesizing Workload-Specific One-size-fits-one Database Engines.
+\newblock arXiv:2603.02001, 2026.
+
+\bibitem{Krikellas2010HIQUE}
+Konstantinos Krikellas, Stratis D.\ Viglas, and Marcelo Cintra.
+\newblock Generating Code for Holistic Query Evaluation.
+\newblock In \emph{ICDE}, 2010.
+
+\bibitem{Neumann2011Hyper}
+Thomas Neumann.
+\newblock Efficiently Compiling Efficient Query Plans for Modern Hardware.
+\newblock \emph{PVLDB}, 4(9):539--550, 2011.
+
+\bibitem{Kohn2018Adaptive}
+Andr{\'e} Kohn, Viktor Leis, and Thomas Neumann.
+\newblock Adaptive Execution of Compiled Queries.
+\newblock In \emph{ICDE}, 2018.
+
+\bibitem{Klonatos2014LegoBase}
+Yannis Klonatos, Christoph Koch, Tiark Rompf, and Hassan Chafi.
+\newblock Building Efficient Query Engines in a High-Level Language.
+\newblock \emph{PVLDB}, 7(10):853--864, 2014.
+
+\bibitem{Kersten2021UmbraFlyingStart}
+Timo Kersten, Viktor Leis, and Thomas Neumann.
+\newblock Tidy Tuples and Flying Start: Fast Compilation and Fast Execution of Relational Queries in Umbra.
+\newblock \emph{VLDB J.}, 2021.
+
+\bibitem{Menon2017Relaxed}
+Prashanth Menon, Todd C.\ Mowry, and Andrew Pavlo.
+\newblock Relaxed Operator Fusion for In-Memory Databases: Making Compilation, Vectorization, and Prefetching Work Together At Last.
+\newblock \emph{PVLDB}, 11(1):1--13, 2017.
+
+\bibitem{Menon2020Permutable}
+Prashanth Menon, Amadou Ngom, Lin Ma, Todd C.\ Mowry, and Andrew Pavlo.
+\newblock Permutable Compiled Queries: Dynamically Adapting Compiled Queries without Recompiling.
+\newblock \emph{PVLDB}, 14(2):101--113, 2020.
+
+\bibitem{Ahmad2012DBToaster}
+Yanif Ahmad, Oliver Kennedy, Christoph Koch, and Milos Nikolic.
+\newblock DBToaster: Higher-order Delta Processing for Dynamic, Frequently Fresh Views.
+\newblock \emph{PVLDB}, 5(10):968--979, 2012.
+\newblock % confirm exact citation if needed
+
+\bibitem{Crotty2015Tupleware}
+Andrew Crotty, Alex Galakatos, Kayhan Dursun, Tim Kraska, Carsten Binnig, Ugur Cetintemel, and Stan Zdonik.
+\newblock An Architecture for Compiling UDF-centric Workflows.
+\newblock \emph{PVLDB}, 8(12):1466--1477, 2015.
+\newblock % Tupleware lineage; confirm title/pages
+
+\bibitem{Palkar2018Weld}
+Shoumik Palkar, James Thomas, Deepak Narayanan, Pratiksha Thaker, Rahul Palamuttam, Parimajan Negi, Anil Shanbhag, Malte Schwarzkopf, Holger Pirk, Saman Amarasinghe, Samuel Madden, and Matei Zaharia.
+\newblock Evaluating End-to-End Optimization for Data Analytics Applications in Weld.
+\newblock \emph{PVLDB}, 11(9):1002--1015, 2018.
+
+\bibitem{Chu2017HoTTSQL}
+Shumo Chu, Konstantin Weitz, Alvin Cheung, and Dan Suciu.
+\newblock HoTTSQL: Proving Query Rewrites with Univalent SQL Semantics.
+\newblock In \emph{PLDI}, 2017.
+
+\bibitem{Chu2017Cosette}
+Shumo Chu, Chenglong Wang, Konstantin Weitz, and Alvin Cheung.
+\newblock Cosette: An Automated Prover for SQL.
+\newblock In \emph{CIDR}, 2017.
+
+\bibitem{Benzaken2019SQLCoq}
+V{\'e}ronique Benzaken and {\'E}velyne Contejean.
+\newblock A Coq Mechanised Formal Semantics for Realistic SQL Queries: Formally Reconciling SQL and Relational Algebra.
+\newblock In \emph{CPP}, 2019.
+\newblock % confirm venue (CPP / related)
+
+\bibitem{Benzaken2018Physical}
+V{\'e}ronique Benzaken, {\'E}velyne Contejean, Chantal Keller, and Eunice Martins.
+\newblock A Coq Formalisation of SQL's Execution Engines.
+\newblock % ITP / related --- polish venue
+\newblock 2018.
+
+\bibitem{Auerbach2017Qcert}
+Joshua S.\ Auerbach, Martin Hirzel, Louis Mandel, Avraham Shinnar, and J{\'e}r{\^o}me Sim{\'e}on.
+\newblock Q$^\ast$cert: A Platform for Implementing and Verifying Query Compilers.
+\newblock In \emph{SIGMOD} (demo), 2017.
+
+\bibitem{Benzaken2022DBCert}
+V{\'e}ronique Benzaken, {\'E}velyne Contejean, Mohammed Houssem Hachmaoui, Chantal Keller, Louis Mandel, Avraham Shinnar, and J{\'e}r{\^o}me Sim{\'e}on.
+\newblock Translating Canonical SQL to Imperative Code in Coq.
+\newblock \emph{Proc.\ ACM Program.\ Lang.}, 6(OOPSLA1), 2022.
+
+\bibitem{Aggarwal2025AlphaVerus}
+Pranjal Aggarwal, Bryan Parno, and Sean Welleck.
+\newblock AlphaVerus: Bootstrapping Formally Verified Code Generation through Self-Improving Translation and Treefinement.
+\newblock In \emph{ICML}, 2025.
+
+\bibitem{Dougherty2025Vericoding}
+Sergiu Bursuc, Theodore Ehrenborg, Shaowei Lin, Lacramioara Astefanoaei, Ionel Emilian Chiosa, Jure Kukovec, Alok Singh, Oliver Butterley, Adem Bizid, Quinn Dougherty, Miranda Zhao, Max Tan, and Max Tegmark.
+\newblock A Benchmark for Vericoding: Formally Verified Program Synthesis.
+\newblock arXiv:2509.22908, 2025.
+
+\bibitem{Lao2025SQLBarber}
+Jiale Lao and Immanuel Trummer.
+\newblock SQLBarber: A System Leveraging Large Language Models to Generate Customized and Realistic SQL Workloads.
+\newblock arXiv:2507.06192, 2025.
+
+\bibitem{Lattuada2023Verus}
+Andrea Lattuada, Travis Hance, Chanhee Cho, Matthias Brun, Isitha Subasinghe, Yi Zhou, Jon Howell, Bryan Parno, and Chris Hawblitzel.
+\newblock Verus: Verifying Rust Programs using Linear Ghost Types.
+\newblock \emph{Proc.\ ACM Program.\ Lang.}, 7(OOPSLA1), 2023.
+
+\bibitem{Leino2010Dafny}
+K.\ Rustan M.\ Leino.
+\newblock Dafny: An Automatic Program Verifier for Functional Correctness.
+\newblock In \emph{LPAR}, 2010.
+
+\end{thebibliography}
+
+\end{document}

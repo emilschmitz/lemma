@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(os.path.dirname(CURRENT_DIR))
 VERUS_SRC = os.path.join(ROOT_DIR, "verus", "src")
 GENERATED = os.path.join(CURRENT_DIR, "generated")
+FAILED_TRANSPILE_DIR = os.path.join(CURRENT_DIR, "agents", "failed_transpile")
+PENDING_RUNQUERY_DIR = os.path.join(CURRENT_DIR, "agents", "pending_runquery")
 WORKING = os.path.join(CURRENT_DIR, "working_query")
 DEFAULT_SSB_TBL = os.path.join(ROOT_DIR, "ssb-dbgen", "lineorder_flat.tbl")
 BENCH_BARE_DIR = os.path.join(ROOT_DIR, "research_loop", "bench_bare")
@@ -72,6 +76,7 @@ from verus.research_loop.basic_sql_proj_order_fixtures import (  # noqa: E402
 from verus.research_loop.basic_sql_extended_fixtures import (  # noqa: E402
     BASIC_SQL_EXTENDED_FIXTURES,
 )
+from verus.research_loop.lemma_flags import enable_templates  # noqa: E402
 
 ALL_BASIC_SQL_FIXTURES: dict = {
     **BASIC_SQL_FIXTURES,
@@ -81,6 +86,194 @@ ALL_BASIC_SQL_FIXTURES: dict = {
 }
 
 TESTDATA_DIR = os.path.join(CURRENT_DIR, "testdata")
+
+
+def _schema_summary(schema: dict) -> dict:
+    from verus_transpiler.parse_sql import normalize_schema
+
+    flat, multi = normalize_schema(schema)
+    if multi:
+        return {
+            "kind": "multi",
+            "tables": {t: list(cols.keys()) for t, cols in multi.items()},
+        }
+    return {"kind": "flat", "columns": list(flat.keys())}
+
+
+def _record_pipeline_json(
+    dest_dir: str,
+    stage: str,
+    sql: str,
+    error: str,
+    schema: dict | None = None,
+    *,
+    extra: dict | None = None,
+) -> str:
+    """Write a JSON artifact for agent follow-up. Returns path."""
+    os.makedirs(dest_dir, exist_ok=True)
+    ts = datetime.now(timezone.utc)
+    stamp = ts.strftime("%Y%m%d_%H%M%S")
+    digest = abs(hash((sql, stage, error))) % 1_000_000
+    path = os.path.join(dest_dir, f"{stage}_{stamp}_{digest:06d}.json")
+    payload: dict = {
+        "timestamp": ts.isoformat(),
+        "stage": stage,
+        "sql": sql,
+        "error": error,
+        "schema_summary": _schema_summary(schema) if schema is not None else None,
+    }
+    if extra:
+        payload.update(extra)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+        f.write("\n")
+    return path
+
+
+def _record_pending_runquery(
+    sql: str,
+    error: str,
+    schema: dict,
+    spec_rs: str,
+    *,
+    tbl_paths: dict[str, str] | None = None,
+    limit: int | None = None,
+) -> str:
+    """Write pending agent work: manifest + transpiled spec.rs + context.json."""
+    from verus.research_loop.agent_context import build_agent_context, write_agent_context
+
+    os.makedirs(PENDING_RUNQUERY_DIR, exist_ok=True)
+    ts = datetime.now(timezone.utc)
+    stamp = ts.strftime("%Y%m%d_%H%M%S")
+    digest = abs(hash((sql, error))) % 1_000_000
+    artifact_dir = os.path.join(
+        PENDING_RUNQUERY_DIR, f"pending_{stamp}_{digest:06d}"
+    )
+    os.makedirs(artifact_dir, exist_ok=True)
+    spec_path = os.path.join(artifact_dir, "spec.rs")
+    with open(spec_path, "w", encoding="utf-8") as f:
+        f.write(spec_rs)
+    context_path = os.path.join(artifact_dir, "context.json")
+    ctx = build_agent_context(
+        sql=sql,
+        schema=schema,
+        tbl_paths=tbl_paths,
+        limit=limit,
+    )
+    write_agent_context(context_path, **ctx)
+    manifest_path = os.path.join(artifact_dir, "manifest.json")
+    payload = {
+        "timestamp": ts.isoformat(),
+        "stage": "awaiting_agent",
+        "sql": sql,
+        "error": error,
+        "schema_summary": _schema_summary(schema),
+        "spec_rs_path": os.path.relpath(spec_path, CURRENT_DIR),
+        "context_json_path": os.path.relpath(context_path, CURRENT_DIR),
+        "run_query_skeleton": "see spec.rs (commented RunQuery skeleton)",
+    }
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+        f.write("\n")
+    return manifest_path
+
+
+def _pipeline_failure(
+    stage: str,
+    sql: str,
+    error: str,
+    schema: dict | None = None,
+    *,
+    agents_path: str | None = None,
+    **extra: object,
+) -> dict:
+    if agents_path is None:
+        if stage == "transpile":
+            agents_path = _record_pipeline_json(
+                FAILED_TRANSPILE_DIR, stage, sql, error, schema
+            )
+        elif stage == "awaiting_agent" and schema is not None:
+            spec_rs = extra.pop("spec_rs", "")
+            tbl_paths = extra.pop("tbl_paths", None)
+            limit = extra.pop("limit", None)
+            agents_path = _record_pending_runquery(
+                sql, error, schema, str(spec_rs),
+                tbl_paths=tbl_paths if isinstance(tbl_paths, dict) else None,
+                limit=limit if isinstance(limit, int) else None,
+            )
+        else:
+            agents_path = _record_pipeline_json(
+                FAILED_TRANSPILE_DIR, stage, sql, error, schema
+            )
+    rel = os.path.relpath(agents_path, CURRENT_DIR)
+    msg = f"CUSTOM_PIPELINE_FAILED [{stage}]: {error} → {rel}"
+    if stage == "awaiting_agent":
+        msg += "\nAgent must supply run_query_body ≡ method_spec."
+    print(msg, file=sys.stderr)
+    out: dict = {
+        "status": "FAILURE",
+        "error": error,
+        "stage": stage,
+        "agents_failure_path": agents_path,
+        "workload": "custom",
+    }
+    out.update(extra)
+    return out
+
+
+def _resolve_custom_ret_type(
+    query: object,
+    projected: dict,
+    *,
+    multi: bool,
+) -> str:
+    """Map parsed SQL shape to assembler RET_TYPE_CONFIG key (no exec codegen)."""
+    from verus_transpiler.codegen_exec import (
+        _resolve_join_groupby_ret_type_key,
+        resolve_ret_type_key,
+    )
+    from verus_transpiler.col_exprs import to_col_expr
+    from verus_transpiler.joins import emit_join_spec_helpers
+    from verus_transpiler.parse_sql import SQLQuery, _agg_value_type
+    from verus_transpiler.transpiler import _emit_set_op_helpers, _emit_union_helpers
+
+    assert isinstance(query, SQLQuery)
+    if query.union_query is not None:
+        if multi:
+            raise ValueError("set-op custom query requires flat schema dict")
+        _, _, ret_type = _emit_union_helpers(query, projected)
+        return ret_type
+    if query.intersect_query is not None:
+        if multi:
+            raise ValueError("set-op custom query requires flat schema dict")
+        _, _, ret_type = _emit_set_op_helpers(query, projected, op="intersect")
+        return ret_type
+    if query.except_query is not None:
+        if multi:
+            raise ValueError("set-op custom query requires flat schema dict")
+        _, _, ret_type = _emit_set_op_helpers(query, projected, op="except")
+        return ret_type
+    if query.joins and multi:
+        multi_schema = projected  # type: ignore[assignment]
+        if query.groupby_columns:
+            return _resolve_join_groupby_ret_type_key(query, multi_schema)
+        where_at = to_col_expr(query.where_expr, "li") if query.where_expr else None
+        val_type = _agg_value_type(query.agg_expr)
+        is_sum = query.agg_type in ("SUM", "AVG", "MIN", "MAX")
+        _, _, ret_type = emit_join_spec_helpers(
+            query,
+            multi_schema,
+            where_expr=where_at,
+            agg_expr=query.agg_expr,
+            is_sum=is_sum,
+            val_type=val_type,
+        )
+        return ret_type
+    if multi:
+        raise ValueError("single-table custom query requires flat schema dict")
+    if not query.groupby_columns:
+        return "u64"
+    return resolve_ret_type_key(query, projected)
 
 
 def load_env(env_path: str) -> dict[str, str]:
@@ -475,7 +668,7 @@ def write_unified_join_program(
     bench_exec: str = "",
 ) -> str:
     projected = project_multi_schema_for_query(sql, multi_schema)
-    spec_rs = transpile_sql_to_verus(sql, projected, enable_templates=False)
+    spec_rs = transpile_sql_to_verus(sql, projected, enable_templates=enable_templates())
     program = assemble_verified_join_program(
         spec_rs=spec_rs,
         run_query_body=runquery_body,
@@ -507,7 +700,7 @@ def write_unified_nway_program(
     bench_exec: str = "",
 ) -> str:
     projected = project_multi_schema_for_query(sql, multi_schema)
-    spec_rs = transpile_sql_to_verus(sql, projected, enable_templates=False)
+    spec_rs = transpile_sql_to_verus(sql, projected, enable_templates=enable_templates())
     program = assemble_verified_nway_program(
         spec_rs=spec_rs,
         run_query_body=runquery_body,
@@ -544,11 +737,11 @@ def write_unified_program(
     # drops subquery/CTE columns (EXISTS / IN / WITH).
     try:
         projected = project_schema_for_query(sql, schema)
-        spec_rs = transpile_sql_to_verus(sql, projected, enable_templates=False)
+        spec_rs = transpile_sql_to_verus(sql, projected, enable_templates=enable_templates())
         schema_for_load = projected
     except Exception:
         projected = schema
-        spec_rs = transpile_sql_to_verus(sql, projected, enable_templates=False)
+        spec_rs = transpile_sql_to_verus(sql, projected, enable_templates=enable_templates())
         schema_for_load = projected
     program = assemble_verified_program(
         spec_rs=spec_rs,
@@ -1415,14 +1608,18 @@ def run_custom_sql_pipeline(
     sql: str,
     schema: dict,
     *,
+    run_query_body: str | None = None,
     tbl: str | None = None,
     tbls: dict[str, str] | None = None,
     limit: int = 50_000,
     table_order: tuple[str, ...] | None = None,
     skip_bench: bool = False,
 ) -> dict:
-    """Transpile → generate_exec_bundle → assemble → verify → compile → run (no fixture dicts)."""
-    from verus_transpiler.codegen_exec import generate_exec_bundle
+    """Transpile MethodSpec → agent run_query → assemble → verify → compile → run.
+
+    Never falls back to DuckDB or auto-codegen — unsupported SQL or missing
+    ``run_query_body`` fail loudly with artifacts under ``agents/``.
+    """
     from verus_transpiler.parse_sql import normalize_schema, parse_sql
 
     cfg = load_env(os.path.join(CURRENT_DIR, "config.env"))
@@ -1436,8 +1633,15 @@ def run_custom_sql_pipeline(
         "REQUIRE_PROOF", "1" if enable_verify else "0"
     ) == "1"
 
-    _flat, multi = normalize_schema(schema)
-    query = parse_sql(sql, schema)
+    try:
+        _flat, multi = normalize_schema(schema)
+    except Exception as e:
+        return _pipeline_failure("parse", sql, f"schema: {e}", schema)
+
+    try:
+        query = parse_sql(sql, schema)
+    except Exception as e:
+        return _pipeline_failure("parse", sql, str(e), schema)
 
     try:
         if multi:
@@ -1448,58 +1652,85 @@ def run_custom_sql_pipeline(
         projected = schema
 
     try:
-        bundle = generate_exec_bundle(query, projected, multi_schema=multi)
+        spec_rs = transpile_sql_to_verus(sql, projected, enable_templates=enable_templates())
     except Exception as e:
-        return {"status": "FAILURE", "error": f"codegen_exec: {e}", "workload": "custom"}
+        return _pipeline_failure("transpile", sql, str(e), schema)
 
-    spec_rs = transpile_sql_to_verus(sql, projected, enable_templates=False)
+    body = (run_query_body or "").strip()
+    if not body:
+        tbl_paths: dict[str, str] | None = None
+        if tbl:
+            tbl_paths = {"t": tbl}
+        elif tbls:
+            tbl_paths = dict(tbls)
+        return _pipeline_failure(
+            "awaiting_agent",
+            sql,
+            "missing run_query_body — agent must supply proved run_query ≡ method_spec",
+            schema,
+            spec_rs=spec_rs,
+            tbl_paths=tbl_paths,
+            limit=limit,
+        )
+
+    try:
+        ret_type = _resolve_custom_ret_type(query, projected, multi=bool(multi))
+    except Exception as e:
+        return _pipeline_failure("assemble", sql, f"ret_type: {e}", schema)
+
     rs_path = os.path.join(GENERATED, "custom_query.rs")
 
-    if bundle.table_order and len(bundle.table_order) == 2:
-        order = table_order or bundle.table_order
-        left_t, right_t = order[0], order[1]
-        default_tbls = tbls or {left_t: "", right_t: ""}
-        program = assemble_verified_join_program(
-            spec_rs=spec_rs,
-            run_query_body=bundle.run_query_rs,
-            multi_schema=projected if multi else schema,
-            table_order=(left_t, right_t),
-            ret_type=bundle.ret_type,
-            default_tbls=default_tbls,
-            hot_path_rs=bundle.hot_path_rs,
-            bench_exec=bundle.bench_exec,
-        )
-    elif bundle.table_order and len(bundle.table_order) >= 3:
-        order = table_order or bundle.table_order
-        default_tbls = tbls or {t: "" for t in order}
-        program = assemble_verified_nway_program(
-            spec_rs=spec_rs,
-            run_query_body=bundle.run_query_rs,
-            multi_schema=projected if isinstance(projected, dict) and multi else schema,
-            table_order=order,
-            ret_type=bundle.ret_type,
-            default_tbls=default_tbls,
-            hot_path_rs=bundle.hot_path_rs,
-            bench_exec=bundle.bench_exec,
-        )
-    else:
-        if multi:
-            return {
-                "status": "FAILURE",
-                "error": "single-table custom query requires flat schema dict",
-                "workload": "custom",
-            }
-        schema_dict = projected if isinstance(projected, dict) else _flat
-        default_tbl = tbl or ""
-        program = assemble_verified_program(
-            spec_rs=spec_rs,
-            run_query_body=bundle.run_query_rs,
-            schema_dict=schema_dict,
-            ret_type=bundle.ret_type,
-            default_tbl=default_tbl,
-            hot_path_rs=bundle.hot_path_rs,
-            bench_exec=bundle.bench_exec,
-        )
+    try:
+        if query.joins and multi:
+            tables = tuple(query.tables)
+            if len(tables) == 2:
+                order = table_order or tables
+                left_t, right_t = order[0], order[1]
+                default_tbls = tbls or {left_t: "", right_t: ""}
+                multi_schema = projected if isinstance(projected, dict) else schema
+                program = assemble_verified_join_program(
+                    spec_rs=spec_rs,
+                    run_query_body=body,
+                    multi_schema=multi_schema,
+                    table_order=(left_t, right_t),
+                    ret_type=ret_type,
+                    default_tbls=default_tbls,
+                )
+            elif len(tables) >= 3:
+                order = table_order or tables
+                default_tbls = tbls or {t: "" for t in order}
+                multi_schema = projected if isinstance(projected, dict) else schema
+                program = assemble_verified_nway_program(
+                    spec_rs=spec_rs,
+                    run_query_body=body,
+                    multi_schema=multi_schema,
+                    table_order=order,
+                    ret_type=ret_type,
+                    default_tbls=default_tbls,
+                )
+            else:
+                return _pipeline_failure(
+                    "assemble", sql, "join requires at least two tables", schema
+                )
+        else:
+            if multi:
+                return _pipeline_failure(
+                    "assemble",
+                    sql,
+                    "single-table custom query requires flat schema dict",
+                    schema,
+                )
+            schema_dict = projected if isinstance(projected, dict) else _flat
+            default_tbl = tbl or ""
+            program = assemble_verified_program(
+                spec_rs=spec_rs,
+                run_query_body=body,
+                schema_dict=schema_dict,
+                ret_type=ret_type,
+                default_tbl=default_tbl,
+            )
+    except Exception as e:
+        return _pipeline_failure("assemble", sql, str(e), schema)
 
     os.makedirs(os.path.dirname(rs_path), exist_ok=True)
     with open(rs_path, "w") as f:
@@ -1514,40 +1745,36 @@ def run_custom_sql_pipeline(
             with open(log_path, "w") as f:
                 f.write(verify_msg)
             if require_proof:
-                return {
-                    "status": "FAILURE",
-                    "proof_verified": False,
-                    "error": f"verus verify failed: see {log_path}",
-                    "verify_msg": verify_msg[:2000],
-                    "workload": "custom",
-                    "proved_exec": bundle.proved,
-                }
+                return _pipeline_failure(
+                    "verify",
+                    sql,
+                    f"verus verify failed: see {log_path}",
+                    schema,
+                    proof_verified=False,
+                    verify_msg=verify_msg[:2000],
+                )
     elif enable_verify and require_proof:
-        return {
-            "status": "FAILURE",
-            "error": "verus not on PATH",
-            "workload": "custom",
-        }
+        return _pipeline_failure("verify", sql, "verus not on PATH", schema)
 
     ok, compile_msg, binary = run_verus_compile(rs_path, compile_timeout)
     if not ok or not binary:
         log_path = os.path.join(GENERATED, "compile_error_custom.log")
         with open(log_path, "w") as f:
             f.write(compile_msg)
-        return {
-            "status": "FAILURE",
-            "proof_verified": proof_verified,
-            "error": f"verus --compile failed: see {log_path}",
-            "workload": "custom",
-        }
+        return _pipeline_failure(
+            "compile",
+            sql,
+            f"verus --compile failed: see {log_path}",
+            schema,
+            proof_verified=proof_verified,
+        )
 
     result: dict = {
         "status": "SUCCESS" if proof_verified or not require_proof else "SUCCESS_UNVERIFIED",
         "proof_verified": proof_verified,
         "verify_msg": verify_msg,
         "workload": "custom",
-        "proved_exec": bundle.proved,
-        "ret_type": bundle.ret_type,
+        "ret_type": ret_type,
         "rs_path": rs_path,
         "binary": binary,
     }
@@ -1555,27 +1782,37 @@ def run_custom_sql_pipeline(
     if skip_bench:
         return result
 
-    if bundle.table_order and len(bundle.table_order) == 2:
-        order = table_order or bundle.table_order
-        resolved = tbls or {}
-        left_p = resolved.get(order[0], "")
-        right_p = resolved.get(order[1], "")
-        if not left_p or not right_p or not os.path.exists(left_p) or not os.path.exists(right_p):
+    if query.joins and multi:
+        tables = tuple(query.tables)
+        if len(tables) == 2:
+            order = table_order or tables
+            resolved = tbls or {}
+            left_p = resolved.get(order[0], "")
+            right_p = resolved.get(order[1], "")
+            if (
+                not left_p
+                or not right_p
+                or not os.path.exists(left_p)
+                or not os.path.exists(right_p)
+            ):
+                result["bench_skipped"] = True
+                return result
+            latency, stdout, stderr = run_binary_join(
+                binary, left_p, right_p, limit
+            )
+        elif len(tables) >= 3:
+            order = table_order or tables
+            resolved = tbls or {}
+            paths = [resolved.get(t, "") for t in order]
+            if any(not p or not os.path.exists(p) for p in paths):
+                result["bench_skipped"] = True
+                return result
+            latency, stdout, stderr = run_binary_nway(
+                binary, resolved, limit, table_order=order
+            )
+        else:
             result["bench_skipped"] = True
             return result
-        latency, stdout, stderr = run_binary_join(
-            binary, left_p, right_p, limit
-        )
-    elif bundle.table_order and len(bundle.table_order) >= 3:
-        order = table_order or bundle.table_order
-        resolved = tbls or {}
-        paths = [resolved.get(t, "") for t in order]
-        if any(not p or not os.path.exists(p) for p in paths):
-            result["bench_skipped"] = True
-            return result
-        latency, stdout, stderr = run_binary_nway(
-            binary, resolved, limit, table_order=order
-        )
     else:
         tbl_path = tbl or ""
         if not tbl_path or not os.path.exists(tbl_path):
@@ -1628,7 +1865,18 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=50_000, help="Row limit from tbl")
     parser.add_argument("--tbl", type=str, default=None, help="Path to workload tbl")
     parser.add_argument("--skip-bench", action="store_true")
-    parser.add_argument("--sql", type=str, default=None, help="Ad-hoc SQL for custom generation pipeline")
+    parser.add_argument(
+        "--runquery-file",
+        type=str,
+        default=None,
+        help="Path to agent-supplied run_query body for --sql (required)",
+    )
+    parser.add_argument(
+        "--sql",
+        type=str,
+        default=None,
+        help="Ad-hoc SQL for custom agent pipeline (requires --runquery-file)",
+    )
     parser.add_argument(
         "--schema-json",
         type=str,
@@ -1645,10 +1893,15 @@ def main() -> None:
             sys.exit(1)
         with open(args.schema_json) as f:
             schema = json.load(f)
+        runquery_body: str | None = None
+        if args.runquery_file:
+            with open(args.runquery_file, encoding="utf-8") as f:
+                runquery_body = f.read()
         t0 = time.perf_counter()
         res = run_custom_sql_pipeline(
             args.sql,
             schema,
+            run_query_body=runquery_body,
             tbl=args.tbl,
             limit=args.limit,
             skip_bench=args.skip_bench,
@@ -1737,7 +1990,15 @@ def main() -> None:
 
 def _print_single_result(res: dict) -> None:
     if res.get("status") not in ("SUCCESS", "SUCCESS_UNVERIFIED"):
-        print(res.get("error", res))
+        agents_path = res.get("agents_failure_path")
+        if agents_path:
+            rel = os.path.relpath(agents_path, CURRENT_DIR)
+            print(
+                f"CUSTOM_PIPELINE_FAILED: {res.get('error', res)} → {rel}",
+                file=sys.stderr,
+            )
+        else:
+            print(res.get("error", res), file=sys.stderr)
         return
     if res.get("bench_skipped"):
         print(f"{res.get('query_label')}: {res['bench_msg']}")

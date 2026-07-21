@@ -1,0 +1,12 @@
+[package]
+name = "lemma_duckdb_bridge"
+version = "0.1.0"
+edition = "2021"
+description = "CLI smoke test for DuckDB column export manifests"
+
+[[bin]]
+name = "lemma_duckdb_load_test"
+path = "src/bin/lemma_duckdb_load_test.rs"
+
+[dependencies]
+lemma_agent_primitives = { path = "../../research_loop/agent_primitives" }

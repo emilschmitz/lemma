@@ -1,0 +1,20 @@
+[package]
+name = "bench_holdout"
+version = "0.1.0"
+edition = "2021"
+description = "Holdout benchmark: bare vs Lemma agent primitives"
+
+[[bin]]
+name = "bench_holdout"
+path = "src/main.rs"
+
+[dependencies]
+lemma_agent_primitives = { path = "../../agent_primitives", features = ["parallel"] }
+rayon = "1.10"
+rustc-hash = "2.1.3"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"

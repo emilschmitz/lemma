@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import re
 
+from verus.research_loop.agent_primitives.emit_externs import emit_agent_externs
 from verus.research_loop.exec_cols import _rust_vec_type
+from verus.research_loop.lemma_flags import lemma_load_format
 
 RUNQUERY_SKELETON_MARKER = "// === RunQuery skeleton"
 
@@ -291,6 +293,39 @@ def _strip_skeleton(spec_rs: str) -> str:
     return head.rstrip() + "\n"
 
 
+def _inject_duckdb_like_cols_fields(spec_rs: str, schema_dict: dict[str, str]) -> str:
+    """Append duckdb_like metadata fields to transpiled Cols struct."""
+    extras: list[str] = []
+    for col, col_type in schema_dict.items():
+        field = col.lower()
+        if _rust_vec_type(col_type) == "String":
+            extras.append(f"    pub {field}_codes: Vec<u32>,")
+            extras.append(f"    pub {field}_dict: Vec<String>,")
+        else:
+            extras.append(f"    pub {field}_zones: Vec<(u32, u32, usize, usize)>,")
+    if not extras:
+        return spec_rs
+    injection = "\n".join(extras)
+    marker = "\n}\n\nimpl Cols"
+    if marker not in spec_rs:
+        return spec_rs
+    return spec_rs.replace(marker, f"\n{injection}\n}}\n\nimpl Cols", 1)
+
+
+def _prepare_spec_rs(spec_rs: str, schema_dict: dict[str, str] | None = None) -> str:
+    core = _strip_skeleton(spec_rs)
+    if lemma_load_format() == "duckdb_like" and schema_dict is not None:
+        core = _inject_duckdb_like_cols_fields(core, schema_dict)
+    return core
+
+
+def _select_load_generator(load_format: str | None = None):
+    fmt = load_format or lemma_load_format()
+    if fmt == "duckdb_like":
+        return generate_load_cols_duckdb_like_verus
+    return generate_load_cols_verus
+
+
 def generate_load_cols_verus(
     schema_dict: dict[str, str],
     *,
@@ -362,6 +397,138 @@ pub exec fn {load_fn}(path: &str, limit: usize) -> (cols: {struct_name})
     {struct_name} {{
         n,
 {field_inits}
+    }}
+}}
+"""
+
+
+def generate_load_cols_duckdb_like_verus(
+    schema_dict: dict[str, str],
+    *,
+    struct_name: str = "Cols",
+    valid_fn: str = "valid_cols",
+    load_fn: str = "load_cols",
+    zone_rows: int = 65536,
+) -> str:
+    """duckdb_like: dictionary-encoded strings + precomputed zone maps for numerics."""
+    fields = ["    pub n: usize,"]
+    col_indices: list[str] = []
+    load_pushes: list[str] = []
+    vec_decls: list[str] = []
+    zone_build: list[str] = []
+
+    for col, col_type in schema_dict.items():
+        field = col.lower()
+        rust_ty = _rust_vec_type(col_type)
+        col_indices.append(
+            f'    let {field}_i = *name_to_idx.get("{col.upper()}").expect("missing col {col}");'
+        )
+        if rust_ty == "String":
+            fields.append(f"    pub {field}: Vec<String>,")
+            fields.append(f"    pub {field}_codes: Vec<u32>,")
+            fields.append(f"    pub {field}_dict: Vec<String>,")
+            vec_decls.append(f"        let mut {field}: Vec<String> = Vec::new();")
+            vec_decls.append(f"        let mut {field}_codes: Vec<u32> = Vec::new();")
+            vec_decls.append(f"        let mut {field}_dict: Vec<String> = Vec::new();")
+            vec_decls.append(
+                f"        let mut {field}_rev: std::collections::HashMap<String, u32> = "
+                "std::collections::HashMap::new();"
+            )
+            load_pushes.append(
+                f"""        {{
+            let raw = strip_quotes(f[{field}_i]).to_string();
+            let code = match {field}_rev.get(&raw) {{
+                Some(&c) => c,
+                None => {{
+                    let c = {field}_dict.len() as u32;
+                    {field}_dict.push(raw.clone());
+                    {field}_rev.insert(raw.clone(), c);
+                    c
+                }},
+            }};
+            {field}_codes.push(code);
+            {field}.push(raw);
+        }}"""
+            )
+        else:
+            fields.append(f"    pub {field}: Vec<{rust_ty}>,")
+            fields.append(f"    pub {field}_zones: Vec<(u32, u32, usize, usize)>,")
+            vec_decls.append(f"        let mut {field}: Vec<{rust_ty}> = Vec::new();")
+            load_pushes.append(
+                f"        {field}.push(f[{field}_i].parse::<{rust_ty}>().unwrap());"
+            )
+            zone_build.append(
+                f"""    let mut {field}_zones: Vec<(u32, u32, usize, usize)> = Vec::new();
+    {{
+        let zr = {zone_rows};
+        let mut start: usize = 0;
+        while start < {field}.len() {{
+            let end = if start + zr < {field}.len() {{ start + zr }} else {{ {field}.len() }};
+            let mut min_v = {field}[start];
+            let mut max_v = {field}[start];
+            let mut j = start + 1;
+            while j < end {{
+                if {field}[j] < min_v {{ min_v = {field}[j]; }}
+                if {field}[j] > max_v {{ max_v = {field}[j]; }}
+                j = j + 1;
+            }}
+            {field}_zones.push((min_v as u32, max_v as u32, start, end));
+            start = end;
+        }}
+    }}"""
+            )
+
+    first_field = list(schema_dict.keys())[0].lower()
+    field_inits: list[str] = []
+    for col, col_type in schema_dict.items():
+        field = col.lower()
+        rust_ty = _rust_vec_type(col_type)
+        field_inits.append(f"            {field},")
+        if rust_ty == "String":
+            field_inits.append(f"            {field}_codes,")
+            field_inits.append(f"            {field}_dict,")
+        else:
+            field_inits.append(f"            {field}_zones,")
+
+    return f"""
+#[verifier::external_body]
+pub exec fn {load_fn}(path: &str, limit: usize) -> (cols: {struct_name})
+    ensures {valid_fn}(&cols),
+{{
+    use std::collections::HashMap;
+    use std::fs::File;
+    use std::io::{{BufRead, BufReader}};
+
+    fn strip_quotes(s: &str) -> &str {{
+        s.trim_matches('"')
+    }}
+
+    let f = File::open(path).expect("open .tbl");
+    let mut rdr = BufReader::new(f);
+    let mut hdr = String::new();
+    rdr.read_line(&mut hdr).unwrap();
+    let mut name_to_idx: HashMap<String, usize> = HashMap::new();
+    for (i, c) in hdr.split('|').enumerate() {{
+        name_to_idx.insert(c.trim().to_uppercase(), i);
+    }}
+{chr(10).join('    ' + line for line in col_indices)}
+
+{chr(10).join(vec_decls)}
+
+    for line in rdr.lines().take(limit) {{
+        let line = line.unwrap();
+        let f: Vec<&str> = line.split('|').collect();
+        if f.is_empty() {{
+            continue;
+        }}
+{chr(10).join(load_pushes)}
+    }}
+
+    let n = {first_field}.len();
+{chr(10).join(zone_build)}
+    {struct_name} {{
+        n,
+{chr(10).join(field_inits)}
     }}
 }}
 """
@@ -511,10 +678,12 @@ def assemble_verified_join_program(
     if left_table not in multi_schema or right_table not in multi_schema:
         raise ValueError(f"table_order {table_order} not in multi_schema keys")
 
-    core = _strip_skeleton(spec_rs)
+    core = _prepare_spec_rs(spec_rs, None)
     boundary = _emit_agg_helpers(ret_type)
+    agent_externs = emit_agent_externs()
+    load_gen = _select_load_generator()
     loaders = "\n".join(
-        generate_load_cols_verus(
+        load_gen(
             cols,
             struct_name=f"Cols_{table}",
             valid_fn=f"valid_cols_{table}",
@@ -535,6 +704,7 @@ def assemble_verified_join_program(
     return (
         f"{core}\n"
         f"{boundary}\n"
+        f"{agent_externs.rstrip()}\n\n"
         f"{run_query_body.rstrip()}\n\n"
         f"{loaders}\n"
         f"}} // verus!\n"
@@ -603,10 +773,12 @@ def assemble_verified_nway_program(
         if table not in multi_schema:
             raise ValueError(f"table {table!r} not in multi_schema")
 
-    core = _strip_skeleton(spec_rs)
+    core = _prepare_spec_rs(spec_rs, None)
     boundary = _emit_agg_helpers(ret_type)
+    agent_externs = emit_agent_externs()
+    load_gen = _select_load_generator()
     loaders = "\n".join(
-        generate_load_cols_verus(
+        load_gen(
             cols,
             struct_name=f"Cols_{table}",
             valid_fn=f"valid_cols_{table}",
@@ -624,6 +796,7 @@ def assemble_verified_nway_program(
     return (
         f"{core}\n"
         f"{boundary}\n"
+        f"{agent_externs.rstrip()}\n\n"
         f"{run_query_body.rstrip()}\n\n"
         f"{loaders}\n"
         f"}} // verus!\n"
@@ -649,9 +822,11 @@ def assemble_verified_program(
     if ret_type not in RET_TYPE_CONFIG:
         raise ValueError(f"unknown ret_type: {ret_type}")
 
-    core = _strip_skeleton(spec_rs)
+    core = _prepare_spec_rs(spec_rs, schema_dict)
     boundary = _emit_agg_helpers(ret_type)
-    load_cols = generate_load_cols_verus(schema_dict)
+    agent_externs = emit_agent_externs()
+    load_gen = _select_load_generator()
+    load_cols = load_gen(schema_dict)
     main_rs = generate_main_rs(
         default_tbl=default_tbl,
         ret_type=ret_type,
@@ -665,6 +840,7 @@ def assemble_verified_program(
     return (
         f"{core}\n"
         f"{boundary}\n"
+        f"{agent_externs.rstrip()}\n\n"
         f"{run_query_body.rstrip()}\n\n"
         f"{load_cols}\n"
         f"}} // verus!\n"

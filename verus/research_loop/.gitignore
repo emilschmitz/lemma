@@ -4,3 +4,9 @@ generated/*.rs
 generated/*_q*
 generated/verify_error_*.log
 generated/compile_error_*.log
+agents/failed_transpile/*
+!agents/failed_transpile/.gitkeep
+agents/pending_runquery/*
+!agents/pending_runquery/.gitkeep
+agents/failed_codegen/*
+!agents/failed_codegen/.gitkeep
