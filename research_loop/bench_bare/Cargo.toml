@@ -19,6 +19,10 @@ path = "src/bench_q.rs"
 name = "bench_tpch"
 path = "src/bench_tpch.rs"
 
+[[bin]]
+name = "bench_joins"
+path = "src/bench_joins.rs"
+
 [profile.release]
 opt-level = 3
 lto = true

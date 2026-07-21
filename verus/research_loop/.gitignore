@@ -1,0 +1,6 @@
+working_query/verify_error_*.log
+generated/
+generated/*.rs
+generated/*_q*
+generated/verify_error_*.log
+generated/compile_error_*.log

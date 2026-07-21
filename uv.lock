@@ -21,6 +21,7 @@ exclude-newer-span = "P7D"
 members = [
     "lemma",
     "sql-transpiler",
+    "verus-transpiler",
 ]
 
 [[package]]
@@ -333,6 +334,7 @@ dependencies = [
     { name = "sql-transpiler" },
     { name = "tree-sitter" },
     { name = "tree-sitter-rust" },
+    { name = "verus-transpiler" },
 ]
 
 [package.dev-dependencies]
@@ -350,6 +352,7 @@ requires-dist = [
     { name = "sql-transpiler", editable = "transpiler" },
     { name = "tree-sitter", specifier = ">=0.25.2" },
     { name = "tree-sitter-rust", specifier = ">=0.24.2" },
+    { name = "verus-transpiler", editable = "verus" },
 ]
 
 [package.metadata.requires-dev]
@@ -972,3 +975,23 @@ sdist = { url = "https://files.pythonhosted.org/packages/ba/19/1b9b0e29f30c6d35c
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ce/e4/dccd7f47c4b64213ac01ef921a1337ee6e30e8c6466046018326977efd95/tzdata-2026.2-py2.py3-none-any.whl", hash = "sha256:bbe9af844f658da81a5f95019480da3a89415801f6cc966806612cc7169bffe7", size = 349321, upload-time = "2026-04-24T15:22:05.876Z" },
 ]
+
+[[package]]
+name = "verus-transpiler"
+version = "0.1.0"
+source = { editable = "verus" }
+dependencies = [
+    { name = "sqlglot" },
+]
+
+[package.optional-dependencies]
+test = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pytest", marker = "extra == 'test'", specifier = ">=9.1.1" },
+    { name = "sqlglot", specifier = ">=30.11.0" },
+]
+provides-extras = ["test"]

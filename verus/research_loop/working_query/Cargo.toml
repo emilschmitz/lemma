@@ -1,0 +1,17 @@
+[package]
+name = "lemma_working_query"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "working_query"
+path = "src/main.rs"
+
+[dependencies]
+lemma_native = { path = "../native" }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
