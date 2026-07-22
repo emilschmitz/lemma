@@ -8,16 +8,21 @@ description = "TRUSTED extern helpers for Verus Lemma agents (GenDB-style primit
 path = "src/lib.rs"
 
 [features]
-default = []
+default = ["duckdb_pin"]
 parallel = ["rayon"]
 partitioned_join = ["parallel"]
 vector_scan = []
 simd = []
 spill_hash = []
+# Pin/lease against prebuilt libduckdb.so (no bundled DuckDB compile — keeps RAM low).
+duckdb_pin = []
 
 [dependencies]
 rayon = { version = "1.10", optional = true }
 serde_json = "1.0"
+
+[build-dependencies]
+cc = "1.2"
 
 [dev-dependencies]
 serde_json = "1.0"

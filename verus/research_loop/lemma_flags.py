@@ -18,8 +18,18 @@ def lemma_load_format() -> str:
 
 
 def lemma_load_from_duckdb() -> bool:
-    """When set, load column buffers from a DuckDB export manifest (copy export, not zero-copy)."""
+    """When set, pin DuckDB column buffers for Rust (zero-copy lease, not sidecar export)."""
     return env_bool("LEMMA_LOAD_FROM_DUCKDB", "0") or lemma_load_format() == "duckdb_memory"
+
+
+def lemma_duckdb_sidecar_export() -> bool:
+    """When set, use legacy `.lemma_cols` copy export instead of pin path."""
+    return env_bool("LEMMA_DUCKDB_SIDECAR_EXPORT", "0")
+
+
+def lemma_force_regenerate() -> bool:
+    """Bust caches (export dir / regenerated artifacts) when set."""
+    return env_bool("LEMMA_FORCE_REGENERATE", "0")
 
 
 def lemma_enable_parallel() -> bool:

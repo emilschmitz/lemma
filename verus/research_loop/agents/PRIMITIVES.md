@@ -46,7 +46,7 @@ builds per-partition sets (optionally in parallel), then merges. Behind Cargo fe
 | `LEMMA_ENABLE_SPILL_HASH` | `0` | Document/agent hint: build crate with `--features spill_hash` |
 | `LEMMA_HASH_SPILL_BYTES` | `1073741824` | Estimated HashSet bytes before spill stub writes keys to tempfile |
 | `LEMMA_LOAD_FORMAT` | `lemma_columnar` | `duckdb_like` adds dict-encoded strings + zone maps on `Cols` (single-table) |
-| `LEMMA_LOAD_FROM_DUCKDB` | `0` | Bridge flag for future DuckDB extension load (stub; no loader yet) |
+| `LEMMA_LOAD_FROM_DUCKDB` | `0` | Pin DuckDB column buffers for Rust (`duckdb_pin.rs` zero-copy lease) |
 | `LEMMA_AGENT_STATS` | `1` | Aggregate stats + histograms in `context.json` |
 | `LEMMA_AGENT_HARDWARE` | `1` | Hardware profile in `context.json` |
 | `LEMMA_AGENT_DUCK_EXPLAIN` | `0` | DuckDB EXPLAIN/SUMMARIZE hints (never executes analytical query) |
@@ -137,7 +137,9 @@ Rust mirror: `stats::column_stats_bundle_u32/u64/str` in the crate.
 - **`duckdb_like`**: same spec-visible `Vec<String>` for strings, plus `{col}_codes` /
   `{col}_dict`; numeric columns get `{col}_zones` precomputed at load. Single-table assembly
   only for now.
-- **`LEMMA_LOAD_FROM_DUCKDB=1`**: future bridge to DuckDB extension loader (flag stub only).
+- **`LEMMA_LOAD_FROM_DUCKDB=1`**: pin/lease on DuckDB `SELECT` result buffers (Rust
+  `duckdb_pin.rs`; sidecar copy export only when `LEMMA_DUCKDB_SIDECAR_EXPORT=1`). See
+  `verus/db_extension/README.md`.
 
 ## Agent context
 

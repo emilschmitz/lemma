@@ -1,0 +1,78 @@
+{
+  "timestamp": "2026-07-22T20:59:09Z",
+  "protocol": "3 warmup + median of 5; pin/load outside timer",
+  "dataset": "scan_skew 500k",
+  "expect_sum": 1260130811,
+  "rows": [
+    {
+      "label": "lemma_pin_chunk",
+      "median_us": 427,
+      "trial_medians_us": [
+        314,
+        427,
+        480
+      ],
+      "result": 1260130811,
+      "notes": "pin outside timer; scan DuckDB chunks; 3 warm+median5 per process; mom of 3"
+    },
+    {
+      "label": "duckdb_1t_file",
+      "median_us": 956,
+      "samples_us": [
+        744,
+        805,
+        956,
+        986,
+        1075
+      ],
+      "result": 1260130811,
+      "notes": "same scan.duckdb; load already on disk; query-only 3 warm+median5"
+    },
+    {
+      "label": "duckdb_1t_fresh",
+      "median_us": 883,
+      "samples_us": [
+        710,
+        824,
+        883,
+        884,
+        1212
+      ],
+      "result": 1260130811,
+      "notes": "holdout-style: materialize CSV then query-only timer"
+    },
+    {
+      "label": "lemma_st",
+      "median_us": 14,
+      "result": 1260130811,
+      "notes": "load+zone prep outside timer; 3 warm+median5 (bench_holdout)",
+      "raw": [
+        "QUERY_LATENCY_US: 14",
+        "RESULT: 1260130811"
+      ]
+    },
+    {
+      "label": "bare_st",
+      "median_us": 123,
+      "result": 1260130811,
+      "notes": "load+zone prep outside timer; 3 warm+median5 (bench_holdout)",
+      "raw": [
+        "QUERY_LATENCY_US: 123",
+        "RESULT: 1260130811"
+      ]
+    }
+  ],
+  "ratios": {
+    "pin_over_duckdb_1t_file": 0.446652719665272,
+    "pin_over_duckdb_1t_fresh": 0.48357870894677235,
+    "pin_over_lemma_st": 30.5,
+    "pin_over_bare_st": 3.4715447154471546,
+    "lemma_st_over_duckdb_1t_fresh": 0.015855039637599093
+  },
+  "prior_holdout_results_json_H1": {
+    "lemma_st_us": 13,
+    "bare_st_us": 120,
+    "duckdb_1t_us": 461,
+    "note": "prior snapshot; this run remeasures on current HW"
+  }
+}

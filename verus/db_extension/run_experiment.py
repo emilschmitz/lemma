@@ -15,21 +15,23 @@ if str(ROOT) not in sys.path:
 import duckdb  # noqa: E402
 
 from verus.db_extension.dataset_config import holdout_data_dir  # noqa: E402
-from verus.db_extension.duckdb_memory import export_tables, load_holdout_tables  # noqa: E402
+from verus.db_extension.duckdb_memory import (  # noqa: E402
+    duckdb_table_names,
+    ensure_holdout_tables,
+    export_tables,
+    load_holdout_tables,
+    maybe_clear_export_cache,
+    session_db_path,
+)
 from verus.db_extension.utils import print_result_table, setup_ssb_flat  # noqa: E402
 from verus.research_loop.lemma_flags import (  # noqa: E402
-    lemma_load_format,
+    lemma_duckdb_sidecar_export,
+    lemma_force_regenerate,
     lemma_load_from_duckdb,
 )
 
 CONFIG_ENV = ROOT / "verus" / "research_loop" / "config.env"
-RUST_BRIDGE_BIN = (
-    Path(__file__).resolve().parent
-    / "rust_bridge"
-    / "target"
-    / "release"
-    / "lemma_duckdb_load_test"
-)
+RUST_BRIDGE_DIR = Path(__file__).resolve().parent / "rust_bridge"
 BENCH_BIN = (
     ROOT
     / "verus"
@@ -64,34 +66,94 @@ def ensure_holdout_data(data_dir: Path) -> None:
         raise SystemExit("holdout gen_data.py failed")
 
 
-def ensure_rust_bridge() -> Path:
-    if RUST_BRIDGE_BIN.is_file():
-        return RUST_BRIDGE_BIN
-    manifest = Path(__file__).resolve().parent / "rust_bridge" / "Cargo.toml"
-    print("Building lemma_duckdb_load_test (release)...")
+def _rust_build_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env.setdefault("CARGO_BUILD_JOBS", "1")
+    env.setdefault("RAYON_NUM_THREADS", "1")
+    duck_lib = ROOT / "build" / "libduckdb"
+    env.setdefault("LEMMA_DUCKDB_LIB_DIR", str(duck_lib))
+    ld = env.get("LD_LIBRARY_PATH", "")
+    duck_ld = str(duck_lib)
+    if duck_ld not in ld.split(":"):
+        env["LD_LIBRARY_PATH"] = f"{duck_ld}:{ld}" if ld else duck_ld
+    return env
+
+
+def ensure_rust_bridge(*, bin_name: str = "lemma_duckdb_load_test") -> Path:
+    manifest = RUST_BRIDGE_DIR / "Cargo.toml"
+    out = RUST_BRIDGE_DIR / "target" / "release" / bin_name
+    if out.is_file() and not lemma_force_regenerate():
+        return out
+    print(f"Building {bin_name} (release, CARGO_BUILD_JOBS=1)...")
     r = subprocess.run(
-        ["cargo", "build", "--release", "--manifest-path", str(manifest)],
+        [
+            "cargo",
+            "build",
+            "--release",
+            "--manifest-path",
+            str(manifest),
+            "--bin",
+            bin_name,
+        ],
         cwd=ROOT,
         check=False,
+        env=_rust_build_env(),
     )
-    if r.returncode != 0 or not RUST_BRIDGE_BIN.is_file():
-        raise SystemExit("cargo build lemma_duckdb_load_test failed")
-    return RUST_BRIDGE_BIN
+    if r.returncode != 0 or not out.is_file():
+        raise SystemExit(f"cargo build {bin_name} failed")
+    return out
 
 
-def run_rust_load_probe(manifest_path: Path, table: str, column: str) -> None:
-    bin_path = ensure_rust_bridge()
+def run_rust_sidecar_probe(manifest_path: Path, table: str, column: str) -> None:
+    bin_path = ensure_rust_bridge(bin_name="lemma_duckdb_load_test")
     r = subprocess.run(
-        [str(bin_path), str(manifest_path), table, column],
+        [str(bin_path), "sidecar", str(manifest_path), table, column],
         cwd=ROOT,
         check=False,
         capture_output=True,
         text=True,
+        env=_rust_build_env(),
     )
     print(r.stdout, end="")
     if r.returncode != 0:
         print(r.stderr, file=sys.stderr)
-        raise SystemExit(f"rust load probe failed (exit {r.returncode})")
+        raise SystemExit(f"rust sidecar probe failed (exit {r.returncode})")
+
+
+def run_rust_pin_probe(db_path: str, table: str, column: str) -> None:
+    bin_path = ensure_rust_bridge(bin_name="lemma_duckdb_load_test")
+    r = subprocess.run(
+        [str(bin_path), "pin", db_path, table, column],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=_rust_build_env(),
+    )
+    print(r.stdout, end="")
+    if r.returncode != 0:
+        print(r.stderr, file=sys.stderr)
+        raise SystemExit(f"rust pin probe failed (exit {r.returncode})")
+
+
+def run_pin_h1_smoke(db_path: str) -> None:
+    guard = Path(__file__).resolve().parent / "check_mem.sh"
+    bin_path = ensure_rust_bridge(bin_name="lemma_pin_h1_smoke")
+    cmd = [str(bin_path), db_path]
+    if guard.is_file():
+        cmd = [str(guard), str(bin_path), db_path]
+    r = subprocess.run(
+        cmd,
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=_rust_build_env(),
+    )
+    print(r.stdout, end="")
+    if r.returncode != 0:
+        print(r.stderr, file=sys.stderr)
+        raise SystemExit(f"lemma_pin_h1_smoke failed (exit {r.returncode})")
 
 
 def maybe_run_holdout_bench(data_dir: Path) -> None:
@@ -127,12 +189,12 @@ def main() -> None:
     parser.add_argument(
         "--export-table",
         default="scan_skew",
-        help="Table name for Rust column-load probe when duckdb export is enabled",
+        help="Table name for Rust column probe when duckdb load is enabled",
     )
     parser.add_argument(
         "--export-column",
         default="AMOUNT",
-        help="Column name for Rust column-load probe",
+        help="Column name for Rust column probe",
     )
     args = parser.parse_args()
 
@@ -143,33 +205,69 @@ def main() -> None:
     else:
         sql = "SELECT COUNT(*) AS n FROM scan_skew"
 
-    db_path = os.environ.get("LEMMA_DUCKDB_PATH", ":memory:")
-    con = duckdb.connect(db_path)
-    use_duckdb_export = lemma_load_from_duckdb() or lemma_load_format() == "duckdb_memory"
+    use_duckdb_load = lemma_load_from_duckdb()
+    use_sidecar = lemma_duckdb_sidecar_export()
+    use_h1_smoke = os.environ.get("LEMMA_DUCKDB_H1_SMOKE", "0") == "1"
+    db_path = session_db_path(os.environ.get("LEMMA_DUCKDB_PATH", ":memory:"))
 
+    if use_duckdb_load and lemma_force_regenerate() and db_path.endswith("session.duckdb"):
+        p = Path(db_path)
+        if p.is_file():
+            p.unlink()
+
+    data_dir = holdout_data_dir()
+    probe_column = args.export_column
     tables: list[str] = []
-    if args.workload == "ssb":
-        setup_ssb_flat(con)
-        tables = ["lineorder_flat"]
-    else:
-        data_dir = holdout_data_dir()
-        ensure_holdout_data(data_dir)
-        tables = load_holdout_tables(con, data_dir, quiet=use_duckdb_export)
 
-    manifest_path: Path | None = None
-    if use_duckdb_export and tables:
-        probe_table = args.export_table if args.export_table in tables else tables[0]
-        export_only = os.environ.get("LEMMA_DUCKDB_EXPORT_TABLES", probe_table).split(",")
-        export_only = [t.strip() for t in export_only if t.strip() in tables]
-        if not export_only:
-            export_only = [probe_table]
-        print(
-            f"LEMMA_LOAD_FROM_DUCKDB=1 / LEMMA_LOAD_FORMAT=duckdb_memory: "
-            f"exporting {export_only} to column sidecars (copy export)..."
-        )
-        manifest = export_tables(con, export_only, db_path=db_path)
-        manifest_path = Path(manifest.export_dir) / "manifest.json"
-        run_rust_load_probe(manifest_path, probe_table, args.export_column)
+    def prepare_tables(con: duckdb.DuckDBPyConnection) -> list[str]:
+        if args.workload == "ssb":
+            setup_ssb_flat(con)
+            return ["lineorder_flat"]
+        if use_duckdb_load and not use_sidecar:
+            names = duckdb_table_names(con)
+            if names:
+                return names
+            ensure_holdout_data(data_dir)
+            pin_only = os.environ.get("LEMMA_DUCKDB_PIN_TABLES", args.export_table)
+            pin_names = [t.strip() for t in pin_only.split(",") if t.strip()]
+            return ensure_holdout_tables(con, data_dir, pin_names, quiet=True)
+        ensure_holdout_data(data_dir)
+        return load_holdout_tables(con, data_dir, quiet=use_duckdb_load)
+
+    con = duckdb.connect(db_path)
+    tables = prepare_tables(con)
+
+    probe_table = args.export_table if args.export_table in tables else (tables[0] if tables else args.export_table)
+
+    if use_duckdb_load and tables:
+        if use_h1_smoke:
+            con.close()
+            print(f"LEMMA_DUCKDB_H1_SMOKE=1: H1 pin smoke on {db_path}...")
+            run_pin_h1_smoke(db_path)
+            con = duckdb.connect(db_path)
+        elif use_sidecar:
+            from verus.db_extension.duckdb_memory import default_export_dir
+
+            export_dir = default_export_dir(db_path)
+            maybe_clear_export_cache(export_dir)
+            export_only = os.environ.get("LEMMA_DUCKDB_EXPORT_TABLES", probe_table).split(",")
+            export_only = [t.strip() for t in export_only if t.strip() in tables]
+            if not export_only:
+                export_only = [probe_table]
+            print(
+                f"LEMMA_DUCKDB_SIDECAR_EXPORT=1: exporting {export_only} to column sidecars (copy export)..."
+            )
+            manifest = export_tables(con, export_only, db_path=db_path, export_dir=export_dir)
+            manifest_path = Path(manifest.export_dir) / "manifest.json"
+            run_rust_sidecar_probe(manifest_path, probe_table, probe_column)
+        else:
+            con.close()
+            print(
+                f"LEMMA_LOAD_FROM_DUCKDB=1: pin+Rust probe on {db_path} "
+                f"(table={probe_table}, column={probe_column})..."
+            )
+            run_rust_pin_probe(db_path, probe_table, probe_column)
+            con = duckdb.connect(db_path)
 
     print(f"\nRunning SQL in DuckDB:\n  {sql}\n")
     df = con.execute(sql).df()

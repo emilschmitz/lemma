@@ -1,8 +1,10 @@
-"""Export DuckDB in-memory tables to columnar sidecars for Rust/Verus experiments.
+"""DuckDB table access for Rust/Verus experiments.
 
-MVP honesty: this is a **copy export** (DuckDB → Arrow/numpy → `.lemma_cols` files),
-not a zero-copy mmap of DuckDB's internal buffers. The manifest points at on-disk
-column files that Rust can mmap or read into `Vec<T>`.
+Default path (`LEMMA_LOAD_FROM_DUCKDB=1`): **pin/lease** on DuckDB `SELECT` result
+buffers (zero-copy pointers into DuckDB vector memory; see `duckdb_pin.rs`).
+
+Legacy copy export (numpy → `.lemma_cols` sidecars) is opt-in via
+`LEMMA_DUCKDB_SIDECAR_EXPORT=1`.
 """
 from __future__ import annotations
 
@@ -94,6 +96,28 @@ def export_column_array(path: Path, arr: np.ndarray, lemma_dtype: str) -> dict[s
         "length": row_count,
         "copy_export": True,
     }
+
+
+def session_db_path(db_path: str | None = None) -> str:
+    """Return a filesystem DuckDB path shared with Rust pin probes."""
+    raw = db_path if db_path is not None else os.environ.get("LEMMA_DUCKDB_PATH", ":memory:")
+    if raw not in (":memory:", ""):
+        return raw
+    out = default_export_dir(raw) / "session.duckdb"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    return str(out)
+
+
+def maybe_clear_export_cache(export_dir: Path) -> None:
+    from verus.research_loop.lemma_flags import lemma_force_regenerate
+
+    if not lemma_force_regenerate():
+        return
+    import shutil
+
+    if export_dir.is_dir():
+        shutil.rmtree(export_dir)
+    export_dir.mkdir(parents=True, exist_ok=True)
 
 
 def export_table(
@@ -200,28 +224,69 @@ def export_tables(
     return manifest
 
 
-def load_holdout_tables(con: duckdb.DuckDBPyConnection, data_dir: Path, *, quiet: bool = False) -> list[str]:
-    """Load holdout benchmark CSVs into DuckDB once."""
+_HOLDOUT_TABLE_SPECS: list[tuple[str, str]] = [
+    ("scan_skew", "scan_skew.tbl"),
+    ("scan_skew_1m", "scan_skew_1m.tbl"),
+    ("zipf_left", "zipf_left.tbl"),
+    ("zipf_right", "zipf_right.tbl"),
+    ("str_filter", "str_filter.tbl"),
+    ("lineitem_slice", "lineitem_slice.tbl"),
+    ("orders_slice", "orders_slice.tbl"),
+    ("lineitem_1m", "lineitem_1m.tbl"),
+    ("orders_1m", "orders_1m.tbl"),
+    ("ssb_flat_500k", "ssb_flat_500k.tbl"),
+]
+
+
+def holdout_table_path(data_dir: Path, table: str) -> Path | None:
+    for name, fname in _HOLDOUT_TABLE_SPECS:
+        if name == table:
+            p = data_dir / fname
+            return p if p.is_file() else None
+    return None
+
+
+def duckdb_table_names(con: duckdb.DuckDBPyConnection) -> list[str]:
+    return [row[0] for row in con.execute("SHOW TABLES").fetchall()]
+
+
+def load_holdout_table(
+    con: duckdb.DuckDBPyConnection,
+    data_dir: Path,
+    table: str,
+    *,
+    quiet: bool = False,
+) -> bool:
+    """Load one holdout `.tbl` into DuckDB. Returns True if loaded."""
     from verus.db_extension.utils import load_csv_table
 
+    path = holdout_table_path(data_dir, table)
+    if path is None:
+        return False
+    load_csv_table(con, table, path, quiet=quiet)
+    return True
+
+
+def ensure_holdout_tables(
+    con: duckdb.DuckDBPyConnection,
+    data_dir: Path,
+    tables: list[str],
+    *,
+    quiet: bool = False,
+) -> list[str]:
+    """Ensure named holdout tables exist; load missing ones only."""
     if quiet:
         con.execute("SET enable_progress_bar = false")
+    present = set(duckdb_table_names(con))
+    for name in tables:
+        if name in present:
+            continue
+        if load_holdout_table(con, data_dir, name, quiet=quiet):
+            present.add(name)
+    return [t for t in tables if t in present]
 
-    specs = [
-        ("scan_skew", data_dir / "scan_skew.tbl"),
-        ("scan_skew_1m", data_dir / "scan_skew_1m.tbl"),
-        ("zipf_left", data_dir / "zipf_left.tbl"),
-        ("zipf_right", data_dir / "zipf_right.tbl"),
-        ("str_filter", data_dir / "str_filter.tbl"),
-        ("lineitem_slice", data_dir / "lineitem_slice.tbl"),
-        ("orders_slice", data_dir / "orders_slice.tbl"),
-        ("lineitem_1m", data_dir / "lineitem_1m.tbl"),
-        ("orders_1m", data_dir / "orders_1m.tbl"),
-        ("ssb_flat_500k", data_dir / "ssb_flat_500k.tbl"),
-    ]
-    loaded: list[str] = []
-    for name, path in specs:
-        if path.is_file():
-            load_csv_table(con, name, path, quiet=quiet)
-            loaded.append(name)
-    return loaded
+
+def load_holdout_tables(con: duckdb.DuckDBPyConnection, data_dir: Path, *, quiet: bool = False) -> list[str]:
+    """Load all holdout benchmark CSVs into DuckDB once."""
+    names = [name for name, _ in _HOLDOUT_TABLE_SPECS]
+    return ensure_holdout_tables(con, data_dir, names, quiet=quiet)

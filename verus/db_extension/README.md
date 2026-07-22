@@ -8,148 +8,137 @@ sandbox agent step and no Dafny hillclimbing optimizer loop.
 
 | Path | Purpose |
 |------|---------|
-| `src/lemma.cpp` | DuckDB C API extension: `lemma()`, `lemma_experiment()`, `lemma_export_table()` |
-| `duckdb_memory.py` | Load tables into DuckDB once → export columnar `.lemma_cols` + `manifest.json` |
-| `run_experiment.py` | Thin experiment runner (SQL + optional Rust load probe) |
-| `catalog.py`, `dataset_config.py`, `prepare_data.py`, `utils.py` | Shared helpers (adapted imports) |
-| `rust_bridge/` | `lemma_duckdb_load_test` binary reading export manifests |
+| `src/lemma.cpp`, `src/lemma_pin.cpp` | DuckDB C API extension + pin/lease core |
+| `duckdb_memory.py` | Load tables; optional `.lemma_cols` sidecar export |
+| `run_experiment.py` | Thin experiment runner (SQL + Rust pin probe / H1 smoke) |
+| `check_mem.sh` | Abort if `MemAvailable` < 1.5 GiB; forces `CARGO_BUILD_JOBS=1` |
+| `catalog.py`, `dataset_config.py`, `prepare_data.py`, `utils.py` | Shared helpers |
+| `rust_bridge/` | `lemma_duckdb_load_test`, `lemma_pin_h1_smoke` (pin smoke binaries) |
 | `Makefile` | Build `build/lemma_verus.duckdb_extension` |
 
-## What is **not** here (use root `db_extension/` instead)
+## DuckDB pin path (default when `LEMMA_LOAD_FROM_DUCKDB=1`)
 
-- `agent/` OpenRouter sandbox
-- `run_optimizer.py` / `optimizer.py` agent hillclimb
-- Docker-dependent generation loop
+1. **Python** opens DuckDB (shared `session.duckdb` file when path is `:memory:`).
+2. **`lemma_pin_table`** (C++) runs `SELECT … FROM table` and retains the `duckdb_result`
+   plus materialized chunks — a **lease** on DuckDB vector buffers.
+3. **Rust** (`lemma_agent_primitives::duckdb_pin`) reads raw pointers per chunk via FFI;
+   slices are valid until `unpin` / drop.
+4. **Concurrency**: global mutex registry; `lemma_unpin` blocks while iterators hold the pin.
+   **Writers must wait** — do not mutate pinned tables while a pin is active.
+5. **MethodSpec** unchanged (logical). Sidecar export only when `LEMMA_DUCKDB_SIDECAR_EXPORT=1`.
 
-## `extension-template-c`
+Pin path loads **only** tables listed in `LEMMA_DUCKDB_PIN_TABLES` (default: probe table,
+usually `scan_skew`). Reuses an existing `LEMMA_DUCKDB_PATH` file without reloading holdout
+tables.
 
-The DuckDB C API headers live in the **root** tree (not duplicated):
+### Limitations
 
-```
-../../db_extension/extension-template-c/duckdb_capi/
-```
-
-Symlink if you want a local path:
-
-```bash
-ln -s ../../db_extension/extension-template-c extension-template-c
-```
+| Aspect | Pin path (default) | Sidecar (`LEMMA_DUCKDB_SIDECAR_EXPORT=1`) |
+|--------|-------------------|-------------------------------------------|
+| DuckDB → Rust | Zero-copy pointers into query result buffers | Python/numpy **copy** to `.lemma_cols` |
+| Lifetime | Pin lease; writers unsafe during pin | Files on disk |
+| Full-table arena | **Not used** | N/A |
 
 ## Build
 
-From repo root:
+Uses **prebuilt** `libduckdb.so` (never bundled compile). Set `LEMMA_DUCKDB_LIB_DIR` if not
+at `build/libduckdb/`. Keep builds single-threaded on small boxes:
 
 ```bash
+export CARGO_BUILD_JOBS=1 RAYON_NUM_THREADS=1
+export LEMMA_DUCKDB_LIB_DIR="$PWD/build/libduckdb"
+export LD_LIBRARY_PATH="$LEMMA_DUCKDB_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
 make -C verus/db_extension extension
 # → build/lemma_verus.duckdb_extension
+
+cargo build --release --manifest-path verus/db_extension/rust_bridge/Cargo.toml
+cargo test --manifest-path verus/research_loop/agent_primitives/Cargo.toml
 ```
 
-Requires `g++` and Python (for extension metadata script).
+## RAM-safe H1 pin smoke (scan.duckdb only)
 
-## Run experiments (Python, no DuckDB shell)
+**Hardware budget:** keep agent work under ~6 GiB RSS; one DuckDB at a time; never
+compile DuckDB from source (`bundled`). Prefer this tiny session (~500k rows / ~3 MiB
+file). Does **not** load the full holdout suite.
 
 ```bash
-# Holdout tables (generates data if missing)
-uv run python -m verus.db_extension.run_experiment \
-  "SELECT COUNT(*) FROM scan_skew"
+export CARGO_BUILD_JOBS=1 RAYON_NUM_THREADS=1
+export LEMMA_DUCKDB_LIB_DIR="$PWD/build/libduckdb"
+export LD_LIBRARY_PATH="$LEMMA_DUCKDB_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-# Enable DuckDB → column sidecar export + Rust load probe
-LEMMA_LOAD_FROM_DUCKDB=1 uv run python -m verus.db_extension.run_experiment \
-  "SELECT SUM(AMOUNT) FROM scan_skew WHERE EVENT_DATE BETWEEN 19960101 AND 19961231"
+verus/db_extension/check_mem.sh \
+  cargo build --release \
+  --manifest-path verus/db_extension/rust_bridge/Cargo.toml \
+  --bin lemma_pin_h1_smoke
 
-# Same via LEMMA_LOAD_FORMAT
-LEMMA_LOAD_FORMAT=duckdb_memory uv run python -m verus.db_extension.run_experiment
+verus/db_extension/check_mem.sh \
+  verus/db_extension/rust_bridge/target/release/lemma_pin_h1_smoke \
+  build/duckdb_pin_session/scan.duckdb
+# Expect SUM_AMOUNT: 1260130811
+
+Fair H1 comparison (same protocol; see `measure_pin_h1.py` / `pin_h1_measure.json`):
+
+```bash
+verus/db_extension/check_mem.sh uv run python verus/db_extension/measure_pin_h1.py
 ```
 
-Optional: run holdout bench binary after export probe:
+Latest on this box (scan_skew 500k): pin chunk ~427µs, DuckDB 1T ~880–960µs,
+lemma_st (zone-map) ~14µs, bare_st ~123µs. Pin beats DuckDB SQL (~0.45×) but is not
+the Vec/zone-map path — that remains the agent-optimized holdout baseline.
+```
+
+Or via Python (same pin path, runs `check_mem.sh` wrapper automatically):
 
 ```bash
-LEMMA_LOAD_FROM_DUCKDB=1 LEMMA_RUN_HOLDOUT_BENCH=1 \
+LEMMA_LOAD_FROM_DUCKDB=1 LEMMA_DUCKDB_H1_SMOKE=1 \
+  LEMMA_DUCKDB_PATH=build/duckdb_pin_session/scan.duckdb \
   uv run python -m verus.db_extension.run_experiment
 ```
 
-Build the Rust probe binary:
+## Run experiments
 
 ```bash
-cargo build --release --manifest-path verus/db_extension/rust_bridge/Cargo.toml
+# Default SQL only
+uv run python -m verus.db_extension.run_experiment \
+  "SELECT COUNT(*) FROM scan_skew"
+
+# Pin + Rust checksum probe (default duckdb load path)
+LEMMA_LOAD_FROM_DUCKDB=1 uv run python -m verus.db_extension.run_experiment \
+  "SELECT SUM(AMOUNT) FROM scan_skew WHERE EVENT_DATE BETWEEN 19960101 AND 19961231"
+
+# Legacy sidecar export
+LEMMA_LOAD_FROM_DUCKDB=1 LEMMA_DUCKDB_SIDECAR_EXPORT=1 \
+  uv run python -m verus.db_extension.run_experiment
+
+# Cache bust
+LEMMA_FORCE_REGENERATE=1 LEMMA_LOAD_FROM_DUCKDB=1 \
+  uv run python -m verus.db_extension.run_experiment
 ```
 
-## Run via DuckDB CLI (like root demo)
-
-```bash
-make -C verus/db_extension extension
-uv run python verus/db_extension/prepare_data.py
-./build/duckdb -init verus/db_extension/init.sql   # if you have duckdb CLI in build/
-```
-
-In SQL:
+In DuckDB SQL (extension loaded):
 
 ```sql
 LOAD 'build/lemma_verus.duckdb_extension';
-SELECT lemma('SELECT COUNT(*) FROM scan_skew');
--- optional export helper (requires table already loaded in session)
-SELECT lemma_export_table('scan_skew');
+SELECT lemma_pin('scan_skew');           -- all columns
+SELECT lemma_pin('scan_skew:AMOUNT');   -- subset
+SELECT lemma_unpin(1);
 ```
 
 ## Environment flags
 
 | Flag | Default | Effect |
 |------|---------|--------|
-| `LEMMA_LOAD_FROM_DUCKDB` | `0` | When `1`, export DuckDB tables to `.lemma_cols` sidecars for Rust |
-| `LEMMA_LOAD_FORMAT` | `lemma_columnar` | Set to `duckdb_memory` to enable the same export path |
-| `LEMMA_DUCKDB_EXPORT_DIR` | `build/duckdb_memory_export` | Output directory for manifests + column files |
-| `LEMMA_DUCKDB_PATH` | `:memory:` | DuckDB database path |
-| `LEMMA_EXPERIMENT_WORKLOAD` | `holdout` | `holdout` or `ssb` tables to load |
-| `LEMMA_DUCKDB_EXPORT_TABLES` | *(probe table)* | Comma-separated tables to export (default: probe table only) |
-| `LEMMA_RUN_HOLDOUT_BENCH` | `0` | When `1`, also run `bench_holdout` H1 after export probe |
-| `LEMMA_HOLDOUT_DATA` | *(holdout/data)* | Override holdout `.tbl` directory |
-| `LEMMA_DATASET_SIZE` | `2000000` | Row limit for SSB flat load |
+| `LEMMA_LOAD_FROM_DUCKDB` | `0` | Pin + Rust probe on DuckDB buffers |
+| `LEMMA_DUCKDB_SIDECAR_EXPORT` | `0` | Use legacy `.lemma_cols` copy export |
+| `LEMMA_DUCKDB_H1_SMOKE` | `0` | Run `lemma_pin_h1_smoke` instead of checksum probe |
+| `LEMMA_DUCKDB_PIN_TABLES` | probe table | Comma list of holdout tables to load if missing |
+| `LEMMA_FORCE_REGENERATE` | `0` | Bust session/export caches |
+| `LEMMA_LOAD_FORMAT` | `lemma_columnar` | `duckdb_memory` also enables pin path |
+| `LEMMA_DUCKDB_EXPORT_DIR` | `build/duckdb_memory_export` | Sidecar + session db parent dir |
+| `LEMMA_DUCKDB_PATH` | `:memory:` | DuckDB path (`:memory:` → shared session file) |
+| `LEMMA_DUCKDB_LIB_DIR` | `build/libduckdb` | Prebuilt DuckDB headers + `libduckdb.so` for Rust FFI |
+| `LEMMA_EXPERIMENT_WORKLOAD` | `holdout` | `holdout` or `ssb` tables |
+| `LEMMA_RUN_HOLDOUT_BENCH` | `0` | Run `bench_holdout` H1 after probe |
 
-Wired in `verus/research_loop/lemma_flags.py`: `lemma_load_from_duckdb()`.
-
-## DuckDB memory load path (MVP)
-
-1. **Python** opens DuckDB, `CREATE TABLE` / `read_csv` **once**.
-2. **`duckdb_memory.export_tables`** copies each column via DuckDB → numpy → `.lemma_cols` binary
-   (32-byte header + raw little-endian payload).
-3. **`manifest.json`** records table/column names, dtypes, lengths, file paths.
-4. **Rust** (`lemma_agent_primitives::duckdb_export`) reads manifest + files into `Vec<u64>` etc.
-5. **`lemma_duckdb_load_test`** prints row count + wrapping checksum of first column (smoke test).
-
-### Limitations (copy vs zero-copy)
-
-| Aspect | This MVP | True zero-copy |
-|--------|----------|----------------|
-| DuckDB → Rust | Python/numpy **copy** to sidecar files | mmap DuckDB storage or C API buffer handoff |
-| Strings | UTF-8 blob in `.lemma_cols` | Dictionary / Arrow C Data Interface |
-| Re-load cost | One export per session (cached on disk) | Shared memory with live DB |
-| Extension `lemma_export_table` | Shells out to Python | Would call export in-process |
-
-Future work: DuckDB C API / Arrow C Data Interface for in-process export; mmap sidecars for
-read-only experiments.
-
-## Directory tree
-
-```
-verus/db_extension/
-├── README.md
-├── Makefile
-├── __init__.py
-├── catalog.py
-├── dataset_config.py
-├── duckdb_memory.py
-├── prepare_data.py
-├── run_experiment.py
-├── utils.py
-├── init.sql                 # generated by prepare_data.py
-├── queries/
-│   ├── q2.sql
-│   └── q3.sql
-├── rust_bridge/
-│   ├── Cargo.toml
-│   └── src/bin/lemma_duckdb_load_test.rs
-└── src/
-    └── lemma.cpp
-```
-
-Rust loader library: `verus/research_loop/agent_primitives/src/duckdb_export.rs`.
+Rust pin module: `verus/research_loop/agent_primitives/src/duckdb_pin.rs`.

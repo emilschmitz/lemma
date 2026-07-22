@@ -5,6 +5,8 @@
 
 pub mod dict;
 pub mod duckdb_export;
+#[cfg(feature = "duckdb_pin")]
+pub mod duckdb_pin;
 pub mod hash_join;
 pub mod parallel;
 pub mod small_card_agg;
@@ -17,6 +19,10 @@ pub use dict::{decode_dict_str, encode_dictionary_str};
 pub use duckdb_export::{
     checksum_u64, load_cols_from_duckdb_export, load_manifest, load_u32_column, load_u64_column,
     ColumnMeta, DuckdbManifest, LoadError, TableMeta,
+};
+#[cfg(feature = "duckdb_pin")]
+pub use duckdb_pin::{
+    pin_and_checksum, pin_checksum_u64_column, DuckChunk, DuckDb, DuckTablePin, PinError,
 };
 pub use hash_join::{
     build_hashset_u32, par_probe_sum_u64, par_probe_sum_u64_morsel, par_probe_sum_u64_multi,

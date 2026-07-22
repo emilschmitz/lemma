@@ -8,5 +8,9 @@ description = "CLI smoke test for DuckDB column export manifests"
 name = "lemma_duckdb_load_test"
 path = "src/bin/lemma_duckdb_load_test.rs"
 
+[[bin]]
+name = "lemma_pin_h1_smoke"
+path = "src/bin/lemma_pin_h1_smoke.rs"
+
 [dependencies]
 lemma_agent_primitives = { path = "../../research_loop/agent_primitives" }
