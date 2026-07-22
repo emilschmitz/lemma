@@ -181,8 +181,8 @@ and reuse via a DuckDB extension.
 \label{sec:holdout-eval}
 
 \noindent\textbf{Snapshot.}
-Measured \texttt{2026-07-21T22:38:52Z} (UTC); holdout artifact commit \texttt{dcc9d59}
-(\texttt{Add fair holdout H1--H25...}). Fair protocol: both sides
+Measured \texttt{2026-07-21T22:38:52Z} (UTC); holdout artifact commit \texttt{dcc9d59}.
+Fair protocol: both sides
 start from \emph{already loaded} in-memory columns / DuckDB tables; 3 warmups then
 median of 5 timed query-only runs. Lemma kernels written as a perfect agent would
 (zone maps at ingest, dict codes at ingest, in-place hash probe, dense small-card

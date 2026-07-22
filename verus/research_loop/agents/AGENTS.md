@@ -17,6 +17,12 @@ Never silently emit a skeleton program, auto-codegen `run_query`, or fall back t
 
 Surface `CUSTOM_PIPELINE_FAILED` on stderr so an agent can pick up the work.
 
+## Agent assumptions
+
+- **Performance:** assume a capable agent (may specialize to HW, DuckDB version, layout, stats).
+- **Validity:** assume an **adversarial** agent that may try to trick the Spec; only ship if Verus
+  proves `run_query` ≡ `method_spec` (TRUSTED surface must be small and empirically locked).
+
 ## Agent job
 
 Fill `run_query` so that **`run_query` ≡ `method_spec`** (proved loop or documented TRUSTED
