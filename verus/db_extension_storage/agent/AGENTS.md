@@ -4,32 +4,41 @@ You optimize **one path only**: `verus/db_extension_storage/` (below Chunk API �
 
 Do **not** share code or prompts with chunk, lease, or copy agents.
 
-## Default H1 plan (e2e cached rerun)
+## Number to optimize
 
-**Not SQL `SELECT … WHERE`.** Scan table storage via `duckdb.hpp` + `libduckdb.so`:
+**Primary: `SESSION_HOT_US`** (also printed as `QUERY_US`) — GenDB-comparable warm **recompute**.
 
-1. `Catalog::GetEntry<TableCatalogEntry>` → `GetStorage()` → `DataTable`.
-2. `DataTable::ScanTableSegment` — walks row groups / `DataChunk`s from on-disk layout.
-3. Lemma zone-prune + filter + sum on each storage chunk (`lemma_storage.cpp`).
-4. Expect SUM `1260130811`. Default `SCAN_MODE: real_datatable_scan`.
+Minimize that vs `duckdb_sql_*`. Still **print** `OPEN_US`, `PREP_US`, `COLD_QUERY_US`,
+`E2E_CACHED_RERUN_US` (open+cold) — do not optimize those as the headline.
 
-If true DataTable scan is blocked on this DuckDB build, document fallback honestly in `SCAN_MODE` — do not silently use analytical SQL.
+**Forbidden cheat:** return a memoized final SUM on hot runs. Hot must recompute.
+
+## Default H1 plan (GenDB-allowed residency)
+
+**Not SQL `SELECT … WHERE`.** Use `duckdb.hpp` + `libduckdb.so`:
+
+1. `lemma_storage_h1_open` — DuckDB + txn (`OPEN_US`).
+2. **Prep (once, `PREP_US` / first scan):** real `DataTable::ScanTableSegment` (band prune OK) →
+   keep **decoded** `event_date` / `amount` (and zone maps) on the session.
+   Band-bounds-only cache is **not** enough for primary session-hot.
+3. **Hot (`SESSION_HOT_US`):** Lemma zone-prune + filter + sum on that resident data only —
+   do **not** re-decode via `ScanTableSegment` every hot query (optional diagnostic rescan path OK).
+4. Expect SUM `1260130811`. Label scan modes honestly (`…+band_prune`, `…+resident`, etc.).
 
 ## Mandate — AGGRESSIVE
 
-- Maximize control: column projection at storage bind, segment zonemap skip, fused filter+agg
+- Agent owns residency + kernel (zones, fusion, layout); scaffold only gives session + scan API
 - Single-threaded, low RAM; no bundled DuckDB compile
-- **TRUSTED:** storage scan I/O. **Spec:** logical `MethodSpec` only.
+- **TRUSTED:** storage scan I/O at prep. **Spec:** logical `MethodSpec` only.
 
-**Forbidden:** `Connection::Query("SELECT … WHERE …")` for the timed kernel; editing other extension trees.
+**Forbidden:** `Connection::Query("SELECT … WHERE …")` for the timed kernel; answer memoization;
+editing other extension trees.
 
 ## Edit target
 
-`src/lemma_storage.cpp`, `src/lemma_storage_internal.hpp`.
+`src/lemma_storage.cpp`, `src/lemma_storage_internal.hpp`, e2e bin if prep/hot split needs it.
 
-## Metric
-
-**E2E cached rerun** vs `duckdb_sql_*`.
+## Measure
 
 ```bash
 export CARGO_BUILD_JOBS=1 RAYON_NUM_THREADS=1
@@ -41,4 +50,5 @@ Dataset: `build/duckdb_pin_session/scan.duckdb` (500k). No full holdout.
 
 ## Agent vs scaffolding
 
-See `verus/research_loop/agents/AGENTS.md`. **Current H1 e2e gap vs DuckDB: primarily agent/kernel**, not missing path scaffolding. Do not push analytical WHERE/SUM back to DuckDB SQL to fake a win.
+See `verus/research_loop/agents/AGENTS.md`. Primary gaps on `SESSION_HOT_US` are **agent/kernel**.
+Do not push analytical WHERE/SUM back to DuckDB SQL.

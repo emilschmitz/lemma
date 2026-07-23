@@ -76,38 +76,38 @@ Below: what each construct does, with a tiny example.
 | `DISTINCT` | Unique rows only | `SELECT DISTINCT a FROM t` |
 | `ORDER BY` + `LIMIT` | Sort then take first *n* rows | `… ORDER BY k LIMIT 2` |
 
-## Custom query generation (general path)
+## Custom query generation (agent path)
 
-For ad-hoc Lemma Basic SQL (not in the SSB/TPC-H fixture dicts), use **custom generation**:
+For ad-hoc Lemma Basic SQL (not in the SSB/TPC-H fixture dicts), the research-loop contract is:
 
-`SQL + schema → MethodSpec (transpiler) → codegen_exec.generate_exec_bundle → assemble → verify → compile → run`
+`SQL + schema → MethodSpec (transpiler) → **agent `run_query`** → assemble → verify → compile → run`
+
+Hand-written SSB/TPC-H/basic-sql **fixtures** are stand-in agents for benchmarks — they supply
+pre-proved `run_query` bodies. For new SQL, an agent must fill `run_query` ≡ `method_spec`.
 
 ```bash
-# harness CLI
-python verus/research_loop/harness.py --sql "SELECT SUM(x) FROM t WHERE y > 0" \
-  --schema-json path/to/schema.json --tbl path/to/data.tbl
+# harness CLI — run_query body required
+python verus/research_loop/harness.py \
+  --sql "SELECT SUM(x) FROM t WHERE y > 0" \
+  --schema-json path/to/schema.json \
+  --runquery-file path/to/run_query.rs \
+  --tbl path/to/data.tbl
 
 # Python API
 from verus.research_loop.harness import run_custom_sql_pipeline
-run_custom_sql_pipeline(sql, schema, tbl="data.tbl", limit=50_000)
+run_custom_sql_pipeline(sql, schema, run_query_body=body, tbl="data.tbl", limit=50_000)
 ```
 
-Hand-written SSB/TPC-H fixtures remain the high-assurance reference proofs; custom generation is the **default** for new queries in dialect.
+**Missing `run_query_body`:** loud failure → `agents/pending_runquery/` (SQL, schema summary,
+transpiled `spec.rs` with commented skeleton, `stage=awaiting_agent`).
 
-### Proved vs TRUSTED (custom exec)
+**Transpile failure:** loud failure → `agents/failed_transpile/`. DuckDB never executes
+research-loop queries.
 
-| Shape | `method_spec` | `run_query` exec |
-|-------|---------------|------------------|
-| Scalar SUM/COUNT/AVG/MIN/MAX + WHERE | Recursive fold | **Proved** loop ≡ spec |
-| Group-by (1–3 keys) | Recursive Map fold | **TRUSTED** `external_body` → HashMap hot path |
-| 2-table INNER/LEFT scalar SUM | Nested-loop fold (INNER) / TRUSTED axiom (LEFT) | **TRUSTED** hash-join hot path |
-| N-way (3+) scalar SUM equijoin | TRUSTED nested-loop reference | **TRUSTED** multi-stage HashSet hot path |
+### Optional experimental codegen
 
-### Verification gaps (custom generation)
-
-- **Proved:** single-table scalars with loop invariant `res == method_spec_helper`.
-- **TRUSTED exec bridge:** group-by, join, n-way — `#[verifier::external_body]` with `ensures` tied to `method_spec` / map views; correctness relies on hot-path matching spec on bounded inputs (DuckDB oracle on tiny tables in tests).
-- **Unmodeled / not generated:** HAVING, subqueries, CTEs, windows, set ops, projection/DISTINCT/ORDER, join group-by, FULL/CROSS/SEMI/ANTI, non-SUM join aggs, AVG join, correlated filters spanning both sides without per-table split.
+`verus_transpiler/codegen_exec.py` may exist for experiments (whitelist exec emission) but is
+**not** the research-loop contract and is not called by the harness.
 
 ## What Lemma proves today
 

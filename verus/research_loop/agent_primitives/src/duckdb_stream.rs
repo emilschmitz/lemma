@@ -222,6 +222,27 @@ impl DuckStream {
         Ok((matched, sum))
     }
 
+    /// Ingest all rows from a two-column stream into owned `u32` dates + `u64` amounts.
+    pub fn ingest_u32_dates_u64_amounts(&mut self) -> Result<(Vec<u32>, Vec<u64>), PinError> {
+        let mut dates = Vec::new();
+        let mut amounts = Vec::new();
+        loop {
+            let rc = unsafe { lemma_stream_fetch_next(self.stream_id) };
+            if rc < 0 {
+                return Err(PinError::Pin("lemma_stream_fetch_next failed".into()));
+            }
+            if rc == 0 {
+                break;
+            }
+            let n = unsafe { lemma_stream_chunk_len(self.stream_id) as usize };
+            if n == 0 {
+                continue;
+            }
+            append_chunk_u32_u64(self.stream_id, self.date_col, self.amount_col, n, &mut dates, &mut amounts)?;
+        }
+        Ok((dates, amounts))
+    }
+
     /// Legacy two-column scan + Rust-side filter (prefer [`Self::h1_sum_optimized`]).
     pub fn stream_h1_sum_filtered(&mut self, lo: u32, hi: u32) -> Result<(u64, u64), PinError> {
         let mut matched = 0u64;
@@ -350,6 +371,58 @@ fn chunk_sum_amounts(stream_id: i64, amount_col: usize, n: usize) -> Result<u64,
         }
     }
     Ok(sum)
+}
+
+fn append_chunk_u32_u64(
+    stream_id: i64,
+    date_col: usize,
+    amount_col: usize,
+    n: usize,
+    dates: &mut Vec<u32>,
+    amounts: &mut Vec<u64>,
+) -> Result<(), PinError> {
+    let date_ty = unsafe { lemma_stream_vector_type(stream_id, date_col as u64) };
+    let amount_ty = unsafe { lemma_stream_vector_type(stream_id, amount_col as u64) };
+    let date_ptr = unsafe { lemma_stream_vector_data(stream_id, date_col as u64) };
+    let amount_ptr = unsafe { lemma_stream_vector_data(stream_id, amount_col as u64) };
+    if date_ptr.is_null() || amount_ptr.is_null() {
+        return Err(PinError::ColumnNotFound("chunk vectors".into()));
+    }
+
+    dates.reserve(n);
+    amounts.reserve(n);
+
+    macro_rules! append {
+        ($d:ty, $a:ty) => {{
+            let dslice = unsafe { std::slice::from_raw_parts(date_ptr as *const $d, n) };
+            let aslice = unsafe { std::slice::from_raw_parts(amount_ptr as *const $a, n) };
+            for i in 0..n {
+                dates.push(dslice[i] as u32);
+                amounts.push(aslice[i] as u64);
+            }
+        }};
+    }
+
+    match (date_ty, amount_ty) {
+        (DUCKDB_TYPE_BIGINT | DUCKDB_TYPE_UBIGINT, DUCKDB_TYPE_BIGINT | DUCKDB_TYPE_UBIGINT) => {
+            append!(i64, i64)
+        }
+        (DUCKDB_TYPE_BIGINT | DUCKDB_TYPE_UBIGINT, DUCKDB_TYPE_INTEGER | DUCKDB_TYPE_UINTEGER) => {
+            append!(i64, i32)
+        }
+        (DUCKDB_TYPE_INTEGER | DUCKDB_TYPE_UINTEGER, DUCKDB_TYPE_BIGINT | DUCKDB_TYPE_UBIGINT) => {
+            append!(i32, i64)
+        }
+        (DUCKDB_TYPE_INTEGER | DUCKDB_TYPE_UINTEGER, DUCKDB_TYPE_INTEGER | DUCKDB_TYPE_UINTEGER) => {
+            append!(i32, i32)
+        }
+        _ => {
+            return Err(PinError::UnsupportedType(format!(
+                "date_ty={date_ty} amount_ty={amount_ty}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn chunk_sum_filtered(

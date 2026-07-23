@@ -32,7 +32,6 @@ from .subqueries import (
     emit_scalar_subquery_helper,
 )
 from .windows import emit_window_spec_helper
-from .codegen_exec import generate_exec_bundle
 from .templates import emit_run_query_skeleton, emit_run_query_template
 from .value_bounds import (
     col_spec_accessor_return,
@@ -735,16 +734,7 @@ def transpile_sql_to_verus(
             val_type=val_type,
         )
         helpers = join_helper
-        if enable_templates:
-            try:
-                bundle = generate_exec_bundle(
-                    query, multi_schema, multi_schema=multi_schema
-                )
-                run_query = bundle.run_query_rs
-            except UnsupportedContractError:
-                run_query = emit_run_query_skeleton(query, ret_type, is_join=True)
-        else:
-            run_query = emit_run_query_skeleton(query, ret_type, is_join=True)
+        run_query = emit_run_query_skeleton(query, ret_type, is_join=True)
     else:
         if is_join:
             raise UnsupportedContractError(
@@ -772,18 +762,14 @@ def transpile_sql_to_verus(
         term_at_k = _term_at_i_for_query(query)
 
         if enable_templates and not query.is_projection:
-            try:
-                bundle = generate_exec_bundle(query, flat_schema)
-                run_query = bundle.run_query_rs
-            except UnsupportedContractError:
-                run_query = emit_run_query_template(
-                    query,
-                    ret_type,
-                    where_at_i=where_at_k,
-                    term_at_i=term_at_k,
-                    agg_push=agg_push,
-                    agg_push_str=agg_push_str,
-                )
+            run_query = emit_run_query_template(
+                query,
+                ret_type,
+                where_at_i=where_at_k,
+                term_at_i=term_at_k,
+                agg_push=agg_push,
+                agg_push_str=agg_push_str,
+            )
         else:
             run_query = emit_run_query_skeleton(
                 query,

@@ -1,0 +1,105 @@
+{
+  "generated_at": "2026-07-23T17:36:42.976754+00:00",
+  "protocol": "one process; open once; per query: cold query; 2 untimed warmups; median of 5 timed queries \u2192 SESSION_HOT_US (primary, GenDB-comparable); QUERY_US = SESSION_HOT_US",
+  "engine": "duckdb_sql",
+  "lemma": "not_run_complex_sql",
+  "data": {
+    "synthetic": true,
+    "duckdb_path": "/home/emil/projects/lemma-db/holdout/gendb_sec_edgar/duckdb/sec_edgar_tiny.duckdb",
+    "row_counts": {
+      "sub": 500,
+      "pre": 75000,
+      "num": 8000,
+      "tag": 5
+    }
+  },
+  "OPEN_US": 8039,
+  "queries": {
+    "Q1": {
+      "sql": "SELECT stmt, rfile, COUNT(*) AS cnt,\n       COUNT(DISTINCT adsh) AS num_filings,\n       AVG(line) AS avg_line_num\nFROM pre\nWHERE stmt IS NOT NULL\nGROUP BY stmt, rfile\nORDER BY cnt DESC;",
+      "COLD_QUERY_US": 8314,
+      "SESSION_HOT_US": 7392,
+      "QUERY_US": 7392,
+      "timed_samples_us": [
+        6704,
+        7275,
+        8481,
+        8746,
+        7392
+      ],
+      "result": {
+        "columns": [
+          "stmt",
+          "rfile",
+          "cnt",
+          "num_filings",
+          "avg_line_num"
+        ],
+        "row_count": 14,
+        "checksum_sha256": "52c76f9c836ecda3045d7ef3d63c21558afb7939207038b5a548acb00c82ec5a",
+        "preview": [
+          {
+            "stmt": "EQ",
+            "rfile": "H",
+            "cnt": 8743,
+            "num_filings": 500,
+            "avg_line_num": 30.697701017957222
+          },
+          {
+            "stmt": "UN",
+            "rfile": "H",
+            "cnt": 8730,
+            "num_filings": 500,
+            "avg_line_num": 30.098854524627722
+          },
+          {
+            "stmt": "BS",
+            "rfile": "H",
+            "cnt": 8647,
+            "num_filings": 500,
+            "avg_line_num": 30.252804440846536
+          }
+        ]
+      }
+    },
+    "SMOKE2": {
+      "sql": "SELECT s.form, COUNT(*) AS cnt, SUM(n.value) AS total_value\nFROM num n\nJOIN sub s ON n.adsh = s.adsh\nWHERE n.uom = 'USD' AND n.value IS NOT NULL\nGROUP BY s.form\nORDER BY total_value DESC",
+      "COLD_QUERY_US": 3360,
+      "SESSION_HOT_US": 2901,
+      "QUERY_US": 2901,
+      "timed_samples_us": [
+        2766,
+        3178,
+        2901,
+        3136,
+        2894
+      ],
+      "result": {
+        "columns": [
+          "form",
+          "cnt",
+          "total_value"
+        ],
+        "row_count": 4,
+        "checksum_sha256": "3df9badbd03e0e351ac6241661db16fa97313b19c42db869b46ad88acdcb0452",
+        "preview": [
+          {
+            "form": "8-K",
+            "cnt": 1273,
+            "total_value": 642235572.2599994
+          },
+          {
+            "form": "20-F",
+            "cnt": 1221,
+            "total_value": 627898962.7999988
+          },
+          {
+            "form": "10-Q",
+            "cnt": 1214,
+            "total_value": 608886835.2199999
+          }
+        ]
+      }
+    }
+  }
+}

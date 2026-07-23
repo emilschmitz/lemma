@@ -413,7 +413,10 @@ def docker_image_built(image: str = DEFAULT_IMAGE) -> bool:
 
 
 def build_docker_image(image: str = DEFAULT_IMAGE) -> None:
+    # Build context is repo root (Dockerfile copies db_extension/agent tool worker).
+    # Note: this image is the OpenRouter tool sandbox, not a multi-CLI agent image.
+    dockerfile = ROOT / "docker" / "agent" / "Dockerfile"
     subprocess.run(
-        ["docker", "build", "-t", image, str(ROOT / "docker" / "agent")],
+        ["docker", "build", "-t", image, "-f", str(dockerfile), str(ROOT)],
         check=True,
     )

@@ -1,4 +1,8 @@
-"""Schema-driven exec + hot-path emission from SQLQuery (custom query generation)."""
+"""Schema-driven exec + hot-path emission from SQLQuery (custom query generation).
+
+Coverage gaps are in this module (`codegen_exec.py`), not fundamental impossibility —
+expand supported shapes here so custom generation emits runnable TRUSTED exec.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +10,7 @@ import re
 from dataclasses import dataclass
 
 from .col_exprs import native_u64_term, native_where_cond, to_col_expr
-from .joins import _col_access, _resolve_join_row_expr, _table_struct_name
+from .joins import _col_access, _resolve_join_row_expr, _table_for_col, _table_struct_name
 from .parse_sql import SQLQuery, UnsupportedContractError, normalize_schema
 from .parse_sql import _agg_value_type
 from .templates import (
@@ -33,10 +37,32 @@ class ExecBundle:
 
 def resolve_ret_type_key(query: SQLQuery, flat_schema: dict[str, str]) -> str:
   """Map query shape to assembler RET_TYPE_CONFIG key."""
-  if not query.groupby_columns:
-    return "u64"
-  val_type = _agg_value_type(query.agg_expr)
-  keys = [col_verus_type(flat_schema[c]) for c in query.groupby_columns]
+  keys = _groupby_verus_key_types(query, flat_schema)
+  return _ret_type_key_from_verus_types(keys, _agg_value_type(query.agg_expr))
+
+
+def _groupby_verus_key_types(
+    query: SQLQuery,
+    flat_schema: dict[str, str],
+) -> list[str]:
+  return [col_verus_type(flat_schema[c]) for c in query.groupby_columns]
+
+
+def _resolve_join_groupby_ret_type_key(
+    query: SQLQuery,
+    multi_schema: dict[str, dict[str, str]],
+) -> str:
+  left_table, right_table = query.tables[0], query.tables[1]
+  keys: list[str] = []
+  for col, tbl in zip(query.groupby_columns, query.groupby_tables, strict=True):
+    resolved = tbl or _table_for_col(
+        col, tbl, left_table, right_table, multi_schema
+    )
+    keys.append(col_verus_type(multi_schema[resolved][col]))
+  return _ret_type_key_from_verus_types(keys, _agg_value_type(query.agg_expr))
+
+
+def _ret_type_key_from_verus_types(keys: list[str], val_type: str) -> str:
   if len(keys) == 1:
     if keys[0] == "u32":
       return f"map_u32_{val_type}"
@@ -57,6 +83,37 @@ def resolve_ret_type_key(query: SQLQuery, flat_schema: dict[str, str]) -> str:
   raise UnsupportedContractError(
       f"unsupported group-by key types {keys!r} for custom exec generation"
   )
+
+
+def _list_blocking_features(query: SQLQuery) -> list[str]:
+  """Features that block custom exec generation (coverage gap, not impossibility)."""
+  blocked: list[str] = []
+  if query.union_query:
+    blocked.append("union_query")
+  if query.intersect_query:
+    blocked.append("intersect_query")
+  if query.except_query:
+    blocked.append("except_query")
+  if query.is_projection:
+    blocked.append("is_projection")
+  if query.derived_tables:
+    blocked.append("derived_tables")
+  if query.scalar_subqueries:
+    blocked.append("scalar_subqueries")
+  if query.exists_subqueries:
+    blocked.append("exists_subqueries")
+  if query.in_subqueries:
+    blocked.append("in_subqueries")
+  if query.ctes:
+    blocked.append("ctes")
+  if query.window_specs:
+    blocked.append("window_specs")
+  return blocked
+
+
+def _having_to_hot_filter(having_expr: str) -> str:
+  """Map spec HAVING predicate (v, k, k.N) to Rust filter on &(K, V) pairs."""
+  return re.sub(r"\bv\b", "*v", having_expr)
 
 
 def _term_at_i_for_query(query: SQLQuery) -> str:
@@ -359,6 +416,11 @@ def _emit_groupby_hot(
   where_hot = _where_to_hot_loop(where_at, "i") or "true"
   key_tuple = _groupby_hot_key_tuple(query, flat_schema, "i")
   term_hot = _term_to_hot_loop(_hot_term_at_i(query), "i")
+  if query.having_expr:
+    having_hot = _having_to_hot_filter(query.having_expr)
+    having_tail = f"    acc.into_iter().filter(|(k, v)| {having_hot}).collect()\n"
+  else:
+    having_tail = "    acc\n"
 
   fn = f"""\
 #[inline(always)]
@@ -373,8 +435,7 @@ fn custom_groupby_hot({params}) -> {rust_ret} {{
             acc.insert(key, prev.wrapping_add({term_hot}));
         }}
     }}
-    acc
-}}"""
+{having_tail}}}"""
   bench_args = ", ".join(f"&cols.{c.lower()}" for c in cols)
   return fn, f"custom_groupby_hot({bench_args})"
 
@@ -437,6 +498,173 @@ def _nway_where_hot(
   return out
 
 
+def _join_expr_to_hot_pair(expr: str | None) -> str:
+  if not expr:
+    return "0"
+  out = expr
+  out = re.sub(r"left\.(\w+)\[li as int\]", r"left_\1[li]", out)
+  out = re.sub(r"right\.(\w+)\[ri as int\]", r"right_\1[ri]", out)
+  out = re.sub(r"left\.(\w+)\[li\]", r"left_\1[li]", out)
+  out = re.sub(r"right\.(\w+)\[ri\]", r"right_\1[ri]", out)
+  out = re.sub(r"mul_u64_u32\(([^,]+), ([^)]+)\)", r"(\1).wrapping_mul(\2 as u64)", out)
+  out = re.sub(
+      r"sub_u64_to_i64\(([^,]+), ([^)]+)\)",
+      r"(\1 as i64) - (\2 as i64)",
+      out,
+  )
+  if out.strip() == "1":
+    return "1"
+  if out.strip().endswith("as u64"):
+    return out
+  return f"({out}) as u64"
+
+
+def _join_groupby_hot_key_tuple(
+    query: SQLQuery,
+    multi_schema: dict[str, dict[str, str]],
+    left_table: str,
+    right_table: str,
+) -> str:
+  parts: list[str] = []
+  for col, tbl in zip(query.groupby_columns, query.groupby_tables, strict=True):
+    resolved = tbl or _table_for_col(
+        col, tbl, left_table, right_table, multi_schema
+    )
+    field = col.lower()
+    if resolved == right_table:
+      expr = f"right_{field}[ri]"
+    else:
+      expr = f"left_{field}[li]"
+    col_type = multi_schema[resolved][col]
+    if col_verus_type(col_type) == "String":
+      parts.append(f"{expr}.clone()")
+    else:
+      parts.append(expr)
+  if len(parts) == 1:
+    return parts[0]
+  return f"({', '.join(parts)})"
+
+
+def _emit_join_groupby_bundle(
+    query: SQLQuery,
+    multi_schema: dict[str, dict[str, str]],
+) -> ExecBundle:
+  if len(query.tables) != 2:
+    raise UnsupportedContractError("join group-by bundle requires exactly two tables")
+  if query.having_expr:
+    raise UnsupportedContractError(
+        "join group-by with HAVING not yet generated (single-table HAVING is supported)"
+    )
+  join_kind = query.joins[0].join_type if query.joins else "INNER"
+  if join_kind != "INNER":
+    raise UnsupportedContractError(
+        f"join group-by custom exec supports INNER only, got {join_kind!r}"
+    )
+  if query.agg_type not in ("SUM", "COUNT"):
+    raise UnsupportedContractError(
+        f"join group-by agg {query.agg_type!r} not supported (SUM/COUNT only)"
+    )
+
+  ret_type = _resolve_join_groupby_ret_type_key(query, multi_schema)
+  if ret_type not in _RET_TYPE_META:
+    raise UnsupportedContractError(f"no assembler config for join ret_type {ret_type!r}")
+
+  left_table, right_table = query.tables[0], query.tables[1]
+  left_struct = _table_struct_name(left_table)
+  right_struct = _table_struct_name(right_table)
+  table_order = (left_table, right_table)
+  rust_ret, view_spec = _RET_TYPE_META[ret_type]
+  val_type = _agg_value_type(query.agg_expr)
+  zero = "0i64" if val_type == "i64" else "0"
+
+  where_resolved = None
+  if query.where_expr:
+    raw = to_col_expr(query.where_expr, "li")
+    raw = re.sub(r"cols\.get_([a-z0-9_]+)\(\w+\)", r"row.\1", raw)
+    where_resolved = _resolve_join_row_expr(
+        raw, left_table, right_table, multi_schema
+    )
+
+  join = query.joins[0]
+  left_key = join.on_equalities[0][0].split(".")[-1].lower()
+  right_key = join.on_equalities[0][1].split(".")[-1].lower()
+  join_cond = f"left_{left_key}[li] == right_{right_key}[ri]"
+
+  agg_term = _resolve_join_row_expr(
+      query.agg_expr if query.agg_type == "SUM" else "1",
+      left_table,
+      right_table,
+      multi_schema,
+  )
+  term_hot = _join_expr_to_hot_pair(agg_term)
+  key_tuple = _join_groupby_hot_key_tuple(
+      query, multi_schema, left_table, right_table
+  )
+
+  left_schema = multi_schema[left_table]
+  right_schema = multi_schema[right_table]
+  where_by_table = _split_table_where(where_resolved, ["left", "right"])
+  left_where = _join_expr_to_hot(where_by_table.get("left"), "li")
+  right_where = _join_expr_to_hot(where_by_table.get("right"), "ri")
+
+  param_parts: list[str] = []
+  for col in left_schema:
+    field = col.lower()
+    param_parts.append(
+        f"left_{field}: &[{_hot_rust_type(left_schema[col])}]"
+    )
+  for col in right_schema:
+    field = col.lower()
+    param_parts.append(
+        f"right_{field}: &[{_hot_rust_type(right_schema[col])}]"
+    )
+  param_sig = ", ".join(param_parts)
+
+  hot_path = f"""\
+#[inline(always)]
+fn custom_join_groupby_hot({param_sig}) -> {rust_ret} {{
+    use std::collections::HashMap;
+    let mut acc: {rust_ret} = HashMap::with_capacity(64);
+    for li in 0..left_{left_key}.len() {{
+        if {left_where} {{
+            for ri in 0..right_{right_key}.len() {{
+                if {right_where} && {join_cond} {{
+                    let key = {key_tuple};
+                    let prev = acc.get(&key).copied().unwrap_or({zero});
+                    acc.insert(key, prev.wrapping_add({term_hot}));
+                }}
+            }}
+        }}
+    }}
+    acc
+}}"""
+
+  bench_cols = [f"&left.{col.lower()}" for col in left_schema]
+  bench_cols.extend(f"&right.{col.lower()}" for col in right_schema)
+  bench_exec = f"custom_join_groupby_hot({', '.join(bench_cols)})"
+
+  run_query = f"""\
+// TRUSTED: INNER join + group-by via nested-loop hot path (method_spec nested-loop fold).
+#[verifier::external_body]
+pub exec fn run_query(left: &{left_struct}, right: &{right_struct}) -> (res: {rust_ret})
+    requires
+        valid_cols_{left_table}(left),
+        valid_cols_{right_table}(right),
+    ensures {view_spec}(res@) == method_spec(left, right),
+{{
+    {bench_exec}
+}}"""
+
+  return ExecBundle(
+      run_query_rs=run_query,
+      hot_path_rs=hot_path,
+      bench_exec=bench_exec,
+      ret_type=ret_type,
+      proved=False,
+      table_order=table_order,
+  )
+
+
 def _emit_join_bundle(
     query: SQLQuery,
     multi_schema: dict[str, dict[str, str]],
@@ -444,7 +672,7 @@ def _emit_join_bundle(
   if len(query.tables) != 2:
     raise UnsupportedContractError("join bundle requires exactly two tables")
   if query.groupby_columns:
-    raise UnsupportedContractError("join group-by custom exec not yet generated")
+    return _emit_join_groupby_bundle(query, multi_schema)
   if query.agg_type not in ("SUM", "COUNT"):
     raise UnsupportedContractError(f"join agg {query.agg_type!r} not supported")
 
@@ -574,7 +802,10 @@ def _emit_nway_bundle(
     multi_schema: dict[str, dict[str, str]],
 ) -> ExecBundle:
   if query.groupby_columns:
-    raise UnsupportedContractError("n-way join group-by custom exec not yet generated")
+    raise UnsupportedContractError(
+        "n-way join group-by custom exec not yet generated "
+        "(use 2-table INNER join + GROUP BY + SUM)"
+    )
   if query.agg_type not in ("SUM", "COUNT"):
     raise UnsupportedContractError(f"n-way agg {query.agg_type!r} not supported")
 
@@ -710,21 +941,10 @@ def generate_exec_bundle(
   if multi_schema is None:
     multi_schema = multi
 
-  if (
-      query.union_query
-      or query.intersect_query
-      or query.except_query
-      or query.is_projection
-      or query.derived_tables
-      or query.scalar_subqueries
-      or query.exists_subqueries
-      or query.in_subqueries
-      or query.ctes
-      or query.window_specs
-      or query.having_expr
-  ):
+  blocked = _list_blocking_features(query)
+  if blocked:
     raise UnsupportedContractError(
-        "custom exec generation supports scalar / group-by / equijoin SUM only"
+        "custom exec generation blocked by: " + ", ".join(blocked)
     )
 
   if query.joins and multi_schema:

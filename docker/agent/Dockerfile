@@ -1,20 +1,14 @@
-# Agent sandbox: coding CLIs only (no Dafny/Rust — harness runs on host).
-FROM node:22-bookworm-slim
+# Agent sandbox: JSON-lines tool worker (no LLM in container).
+FROM python:3.12-slim-bookworm
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl git bash ripgrep \
+    bash \
     && rm -rf /var/lib/apt/lists/*
 
-ENV PATH="/root/.local/bin:/root/.cursor/bin:${PATH}"
-ENV AGENT_WORKDIR=/workspace/rw
+RUN pip install --no-cache-dir duckdb
 
-COPY install-agents.sh /tmp/install-agents.sh
-RUN chmod +x /tmp/install-agents.sh && /tmp/install-agents.sh && rm /tmp/install-agents.sh
+COPY db_extension/agent/ /app/lemma_agent/
+ENV PYTHONPATH=/app
+WORKDIR /workspace
 
-COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
-
-WORKDIR /workspace/rw
-
-# Network: use default bridge (LLM API access). No Dafny/Rust in this image.
-ENTRYPOINT ["/entrypoint.sh"]
+ENTRYPOINT ["python", "-m", "lemma_agent.tools_worker"]

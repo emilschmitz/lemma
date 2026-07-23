@@ -44,7 +44,7 @@ Pin/lease is **not** a SQL `VIEW` and **not** `lemma_copy`.
 |------|--------------|----------------|
 | `lemma_chunk` | **Lemma** (zone-prune + filter in C++/Rust) | `lemma_stream_h1_sum_lemma_filter` |
 | `lemma_lease` | **Lemma** on pinned buffers | `PinH1Prep::run` |
-| `lemma_storage` | **Lemma** on storage `DataChunk`s | `DataTable::ScanTableSegment` + filter |
+| `lemma_storage` | **Lemma** on storage `DataChunk`s | `DataTable::ScanTableSegment` + sparse **band prune** + fused filter/sum (`+band_prune` when probes hit) |
 | `duckdb_sql` | **DuckDB** | `SELECT SUM(amount) … WHERE …` |
 
 Expect SUM **`1260130811`** on all paths.
@@ -53,15 +53,16 @@ Legacy **`lemma_stream_h1_sum_optimized`** (SQL `WHERE` pushdown) remains in tre
 
 ---
 
-## Agent vs scaffolding (H1 e2e)
+## Agent vs scaffolding (H1)
 
-**Right now the gap vs DuckDB is mostly agent/kernel, not missing architecture.**
+**Number every path agent optimizes: `SESSION_HOT_US`** (GenDB hot recompute). Keep open / prep /
+cold / e2e-diag as side metrics.
 
-- Scaffolding **can** feed Lemma via copy / chunk / lease / storage (`DataTable` scan).
-- Defaults still lose on **QUERY_US** → improve **Lemma** prune/filter/agg code.
-- Do **not** “win” by handing `WHERE`/`SUM` back to DuckDB SQL.
+- Allowed prep: residency, decoded columns, zonemaps (GenDB-like).
+- Forbidden: memoized final answer; SQL `WHERE`/`SUM` pushdown on Lemma paths.
+- Storage agents: band-only is not enough — keep decoded+zones for primary hot.
 
-See also `verus/research_loop/agents/AGENTS.md` § *Agent vs scaffolding*.
+See `verus/research_loop/agents/AGENTS.md`.
 
 ---
 

@@ -1,6 +1,12 @@
-# Agent Docker sandbox
+# Agent Docker sandbox (legacy CLI)
 
-The optimizing agent runs in a **Docker container** with network access (LLM APIs). Dafny verify, Rust compile, and DuckDB stay on the **host**.
+> **Preferred path:** host OpenRouter + container tools — see [`db_extension/AGENT.md`](../db_extension/AGENT.md)
+> (`LEMMA_AGENT_BACKEND=openrouter`). This document describes the legacy
+> `LEMMA_AGENT_BACKEND=cli` path (vendor coding CLIs). The current
+> `docker/agent` image is the **tool worker** for OpenRouter; it no longer
+> installs Cursor/Claude/Codex. For CLI-in-Docker you must bring your own image.
+
+The optimizing agent (CLI mode) runs in a **Docker container** with network access (LLM APIs). Dafny verify, Rust compile, and DuckDB stay on the **host**.
 
 ## How submission works (the loop)
 

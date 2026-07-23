@@ -93,14 +93,16 @@ def _emit_join_loop_body(
     key_expr: str | None,
     add_fn: str,
 ) -> str:
+    val_ty = "i64" if add_fn == "add_i64" else "u64"
+    map_insert = f"(val as int + ({term_at_pair}) as int) as {val_ty}"
     if key_expr is not None:
         if filter_cond:
             inner = f"""let tail = {helper_name}(left, right, li, ri + 1);
             if {join_cond} {{
                 if {filter_cond} {{
                     let key = {key_expr};
-                    let val = if tail@.contains_key(key) {{ tail[key] }} else {{ 0 }};
-                    tail.insert(key, {add_fn}(val, {term_at_pair}))
+                    let val = if tail.contains_key(key) {{ tail[key] }} else {{ 0 }};
+                    tail.insert(key, {map_insert})
                 }} else {{
                     tail
                 }}
@@ -111,8 +113,8 @@ def _emit_join_loop_body(
             inner = f"""let tail = {helper_name}(left, right, li, ri + 1);
             if {join_cond} {{
                 let key = {key_expr};
-                let val = if tail@.contains_key(key) {{ tail[key] }} else {{ 0 }};
-                tail.insert(key, {add_fn}(val, {term_at_pair}))
+                let val = if tail.contains_key(key) {{ tail[key] }} else {{ 0 }};
+                tail.insert(key, {map_insert})
             }} else {{
                 {helper_name}(left, right, li, ri + 1)
             }}"""

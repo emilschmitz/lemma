@@ -19,43 +19,46 @@ Surface `CUSTOM_PIPELINE_FAILED` on stderr so an agent can pick up the work.
 
 ## Relevant performance metric (conceptual)
 
-**Primary (product-relevant):** *cached Lemma, week-later / cold process, new session* vs
-DuckDB engine on the **same data and SQL shape**.
+**Number to optimize (primary):** **`SESSION_HOT_US`** (printed also as `QUERY_US`).
 
-Wall clock from process start through answer:
+That is the GenDB-comparable clock: process + DB already open; after allowed prep, time
+**recomputing** the query (scan/prune/filter/agg). Harness: open → prep → cold → 2 untimed
+warmups → median of 5 timed runs → `SESSION_HOT_US`. Ratios vs `duckdb_sql` use this number.
 
-`open DB → bind/prep (pin or scan; zone maps / other data-dependent prep) → execute → result`
+| Metric | What it answers | Role |
+|--------|-----------------|------|
+| **SESSION_HOT_US** (= `QUERY_US`) | Warm recompute with session open | **Optimize this** vs DuckDB |
+| **PREP_US** | Pin / ingest / decode+zones / band discovery | Side — do heavy residency here |
+| **OPEN_US** | One-time open/load | Side diagnostic |
+| **COLD_QUERY_US** | First query after prep | Side diagnostic |
+| **E2E_CACHED_RERUN_US** | `OPEN_US + COLD_QUERY_US` | Legacy diagnostic — **not** primary |
 
-Call this **e2e cached rerun**. Do **not** treat kernel-only µs (load/pin outside timer) as the
-product claim unless explicitly labeled **query-hot**.
+### Allowed warm (GenDB-like) vs cheat
 
-| Metric | What it answers | Misleading if… |
-|--------|-----------------|----------------|
-| **e2e cached rerun** | Next week, binary already built, data may be new or same file | You omit prep/materialize |
-| **query-hot** | Kernel quality after data is already leased/loaded | Sold as “10× vs DuckDB” alone |
+**Allowed in prep (outside `SESSION_HOT_US`):** OS/page cache; DuckDB open; pin/ingest;
+decoded columns kept on the session; zone maps / indexes built for this snapshot; band bounds.
 
-**Amdahl (e2e):** if shared scan/I/O is large, even a 10–30× kernel cannot yield 10–30× e2e.
-Expect e2e speedup ≪ query-hot speedup until prep is a streaming/storage scan or an in-engine
-operator (no retained full-column `SELECT`).
+**Forbidden as the timed “win”:** memoizing the **final answer** (e.g. cached SUM) and returning
+it on hot runs without recomputing. Hot must still execute the plan on resident data.
 
-**Verification:** Spec stays logical; layout/pin/operator are TRUSTED means. Same metric applies
-to `lemma_st`, `lemma_st_duckdb_mem`, and `lemma_st_duckdb_copy` once each path’s prep is in the
-timer for e2e.
+**Do not** push analytical `WHERE`/`SUM` into DuckDB SQL on Lemma paths to fake a win.
+
+**Verification:** Spec stays logical; layout/pin/operator are TRUSTED means. Holdout/pin benches
+may still use query-only timers; H1 e2e binaries print session-hot as primary.
 
 ## Agent vs scaffolding (be explicit)
 
-When Lemma loses to DuckDB on **e2e cached rerun**, always say which bucket it is:
+When Lemma loses to DuckDB on the **primary (session-hot)** clock, always say which bucket it is:
 
 | Verdict | Meaning | What to do |
 |---------|---------|------------|
-| **Agent / kernel** | Scaffold delivered the right data; **our filter/join/agg code** is slower than DuckDB’s | Specialize harder (zones, layout, HW, fusion). This is the capable-agent job. |
+| **Agent / kernel** | Scaffold delivered the right data; **our filter/join/agg code** is slower than DuckDB’s | Specialize harder (zones, layout, HW, fusion, residency). This is the capable-agent job. |
 | **Scaffolding** | We cannot express the intended physical plan (no storage scan, forced SQL `WHERE` pushdown, forced full copy, broken lease) | Fix TRUSTED APIs / path folders — **not** an agent prompt tweak. |
-| **Metric / Amdahl** | Open/I/O dominates the clock; even a great kernel barely moves e2e | Report **QUERY_US** and **OPEN_US** separately; don’t claim e2e 10× from query-hot. |
+| **Metric mix-up** | Optimizing open/cold/e2e-diag instead of session-hot | Optimize **`SESSION_HOT_US` only** as primary; keep other metrics reported. |
 
-**Current H1 status (chunk / lease / storage vs `duckdb_sql`, Lemma does the filter):**  
-Scaffolding is **good enough** to run the intended architectures (`lemma_copy`, `lemma_chunk`, `lemma_lease`, `lemma_storage` with real `DataTable` scan). The remaining gap on **QUERY_US** is primarily **agent/kernel quality** (defaults are not GenDB-grade yet), not “we lack a below-chunk path.” Secondary scaffold nits (e.g. storage open folded into QUERY_US) must not be confused with that.
-
-**Do not** “fix” a kernel gap by pushing analytical `WHERE`/`SUM` back into DuckDB SQL — that changes the experiment (DuckDB does the meaningful work again).
+**H1 path rule:** **prep once** (pin / ingest / storage decode+zones — GenDB-allowed residency), then
+timed queries run **Lemma recompute only**. Band-bounds-only on storage is **not** enough for a
+fair GenDB primary — keep **decoded columns + zonemaps** on the session for hot runs (agent job).
 
 Path index: `verus/DB_EXTENSION_PATHS.md`.
 

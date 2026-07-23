@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from sql_transpiler import transpile_sql_to_dafny_columnar
 from research_loop.ssb_workload import queries, schema
-from research_loop.pipeline_log import log_debug, log_info, log_trace, log_warn
+from research_loop.pipeline_log import log_debug, log_info, log_trace
 from research_loop.pipeline_demo import (
     demo_enabled,
     demo_iteration,
@@ -267,7 +267,6 @@ def run_optimization_loop(sql_query: str, dataset_size: int = 50000, max_iterati
     query_id = match_query_index(sql_query)
     current_dir = os.path.dirname(os.path.abspath(__file__))
     root_dir = os.path.dirname(current_dir)
-    scratchpad_path = os.path.join(root_dir, "research_loop", "agent_scratchpad.md")
 
     if demo_enabled():
         demo_banner("Lemma Optimizer")
@@ -332,49 +331,89 @@ def run_optimization_loop(sql_query: str, dataset_size: int = 50000, max_iterati
                 _vprint(f"    Error: {e}")
                 return {"status": "FAILED", "error": f"Mock generation failed: {e}"}
         else:
-            from research_loop.agent_sandbox import (
-                build_docker_image,
-                docker_image_built,
-                load_agent_config,
-                run_agent_iteration,
-                use_docker,
-            )
+            from types import SimpleNamespace
 
-            cfg = load_agent_config()
+            from db_extension.agent.config import load_agent_flags
+
+            agent_flags = load_agent_flags()
+            backend = agent_flags.backend.strip().lower()
             workspace = Path(root_dir) / "research_loop" / "agent_workspace"
             last_error = history[-1]["error"] if history else ""
             last_lat = history[-1]["latency_us"] if history and history[-1].get("proof_verified") else -1
 
-            if use_docker(cfg):
-                image = cfg.get("AGENT_IMAGE", "lemma-agent:latest")
-                if not docker_image_built(image):
-                    log_info(COMPONENT, "docker_build_start", f"building {image}")
-                    _vprint(f"  - Building agent Docker image {image}...", end="", flush=True)
-                    try:
-                        build_docker_image(image)
-                        _vprint(f" {COLOR_GREEN}OK{COLOR_RESET}")
-                    except Exception as e:
-                        _vprint(f" {COLOR_RED}FAILED{COLOR_RESET}")
-                        return {"status": "FAILED", "error": f"Docker image build failed: {e}"}
-                _vprint("  - Running agent in Docker sandbox...", end="", flush=True)
-            else:
-                log_info(COMPONENT, "agent_local", "subprocess AGENT_CMD", workspace=str(workspace))
-                _vprint("  - Running agent (local subprocess)...", end="", flush=True)
+            try:
+                from db_extension.dataset_config import tbl_path
+
+                data_path = tbl_path()
+            except ImportError:
+                data_path = None
+
+            def _run_agent() -> tuple[str, SimpleNamespace]:
+                if backend == "cli":
+                    from research_loop.agent_sandbox import (
+                        build_docker_image,
+                        docker_image_built,
+                        load_agent_config,
+                        run_agent_iteration,
+                        use_docker,
+                    )
+
+                    cfg = load_agent_config()
+                    if use_docker(cfg):
+                        image = cfg.get("AGENT_IMAGE", "lemma-agent:latest")
+                        if not docker_image_built(image):
+                            log_info(COMPONENT, "docker_build_start", f"building {image}")
+                            _vprint(f"  - Building agent Docker image {image}...", end="", flush=True)
+                            build_docker_image(image)
+                            _vprint(f" {COLOR_GREEN}OK{COLOR_RESET}")
+                        _vprint("  - Running agent in Docker sandbox...", end="", flush=True)
+                    else:
+                        log_info(COMPONENT, "agent_local", "subprocess AGENT_CMD", workspace=str(workspace))
+                        _vprint("  - Running agent (local subprocess)...", end="", flush=True)
+                    body, proc = run_agent_iteration(
+                        query_id=query_id,
+                        dafny_spec=dafny_spec,
+                        iteration=iteration,
+                        max_iterations=max_iterations,
+                        last_error=last_error,
+                        last_latency_us=last_lat,
+                        workspace=workspace,
+                        cfg=cfg,
+                    )
+                    return body, proc
+
+                from db_extension.agent import run_openrouter_agent_iteration
+                from db_extension.agent.docker_runner import ensure_image
+
+                log_info(COMPONENT, "agent_openrouter", "OpenRouter ReAct + Docker tools")
+                _vprint("  - Running OpenRouter agent (Docker tools)...", end="", flush=True)
+                ensure_image(agent_flags.agent_image)
+                body, meta = run_openrouter_agent_iteration(
+                    query_id=query_id,
+                    sql_query=sql_query,
+                    dafny_spec=dafny_spec,
+                    iteration=iteration,
+                    max_iterations=max_iterations,
+                    last_error=last_error,
+                    last_latency_us=last_lat,
+                    workspace=workspace,
+                    data_path=data_path,
+                    flags=agent_flags,
+                )
+                ok = bool(meta.get("ok"))
+                err = meta.get("error", "") or ""
+                proc = SimpleNamespace(
+                    returncode=0 if ok else 1,
+                    stdout=err,
+                    stderr=err,
+                )
+                return body, proc
 
             a_start = time.perf_counter()
             try:
                 if demo_enabled():
                     with demo_live_step("🦾", "Generating RunQuery", pass_fail=True) as gen_step:
-                        body, proc = run_agent_iteration(
-                            query_id=query_id,
-                            dafny_spec=dafny_spec,
-                            iteration=iteration,
-                            max_iterations=max_iterations,
-                            last_error=last_error,
-                            last_latency_us=last_lat,
-                            workspace=workspace,
-                            cfg=cfg,
-                        )
+                        body, proc = _run_agent()
                         log_trace(COMPONENT, "agent_body_preview", body[:200])
                         gen_step.set_passed(proc.returncode == 0)
                         if proc.returncode != 0:
@@ -391,16 +430,7 @@ def run_optimization_loop(sql_query: str, dataset_size: int = 50000, max_iterati
                             })
                             continue
                 else:
-                    body, proc = run_agent_iteration(
-                        query_id=query_id,
-                        dafny_spec=dafny_spec,
-                        iteration=iteration,
-                        max_iterations=max_iterations,
-                        last_error=last_error,
-                        last_latency_us=last_lat,
-                        workspace=workspace,
-                        cfg=cfg,
-                    )
+                    body, proc = _run_agent()
                     log_trace(COMPONENT, "agent_body_preview", body[:200])
                     if proc.returncode != 0:
                         err = (proc.stderr or proc.stdout or "agent exited non-zero").strip()

@@ -27,7 +27,9 @@ This path **copies** data (unlike lease/chunk/storage). Use when Lemma must own 
 
 ## Metric
 
-Copy smoke is optional in `measure_e2e_paths.py` when `lemma_copy_h1_smoke` exists.
+**Primary to optimize: `SESSION_HOT_US`** when this path is in the measure harness (optional copy
+smoke). GenDB-like: prep/export residency outside hot; hot **recomputes** (no answer memoization).
+See `verus/research_loop/agents/AGENTS.md`.
 
 ```bash
 export CARGO_BUILD_JOBS=1 RAYON_NUM_THREADS=1

@@ -22,6 +22,14 @@ optimization. It is never hand-tuned for one query.
 During development, do **not** run the optimization agent loop. Write and test queries
 directly (`research_loop/benchmark_verified.py`).
 
+### E2E cached rerun (db_extension)
+
+When comparing Lemma on DuckDB layouts vs the DuckDB SQL engine, use **e2e cached rerun**:
+timer starts at process launch and includes **open/connect + query** on
+`build/duckdb_pin_session/scan.duckdb` only. Primary metric: `E2E_CACHED_RERUN_US`.
+Lemma stream layout: `lemma_st_duckdb_stream` (`ENGINE: lemma`, `LAYOUT: duckdb_stream`).
+See `verus/db_extension/measure_e2e_cached_rerun.py`.
+
 Use `NativeU32` / `NativeU64` / `NativeI64` extern newtypes from the transpiler — do
 not rely on unsafe postprocessor type rewrites.
 
