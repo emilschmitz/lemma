@@ -33,7 +33,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "lemma_ops_bridge"
+name = "lemma_lease_bridge"
 version = "0.1.0"
 dependencies = [
  "cc",

@@ -1,8 +1,7 @@
-# Verus `db_extension` — path `lemma` / pin_stream
+# Verus `db_extension` — path `lemma_copy` (+ shared FFI)
 
-This directory is the **`lemma` / pin_stream** path: pin/lease + streaming chunk access
-over DuckDB vector buffers. See also [`../DB_EXTENSION_PATHS.md`](../DB_EXTENSION_PATHS.md)
-for `lemma_runtime` and `lemma_ops` (separate trees + agent environments).
+This directory holds **`lemma_copy`** (sidecar `.lemma_cols`) and shared DuckDB FFI
+(`lemma_pin`, `lemma_stream`) used by lease/chunk bridges. See [`../DB_EXTENSION_PATHS.md`](../DB_EXTENSION_PATHS.md).
 
 Stripped copy of the root [`db_extension/`](../../db_extension/) for **Verus** experiments.
 Humans (or Cursor) write kernels; there is **no** OpenRouter/Docker sandbox agent step and
@@ -106,7 +105,7 @@ verus/db_extension/check_mem.sh \
   --manifest-path verus/db_extension/rust_bridge/Cargo.toml \
   --bin lemma_stream_h1_e2e --bin lemma_pin_h1_e2e
 
-verus/db_extension/check_mem.sh uv run python verus/db_extension/measure_e2e_three_paths.py
+verus/db_extension/check_mem.sh uv run python verus/db_extension/measure_e2e_paths.py
 # → verus/db_extension/e2e_three_paths_h1.json
 ```
 

@@ -57,8 +57,16 @@ LemmaStreamId lemma_stream_start_pushdown(
     char *error_out,
     size_t error_len);
 
-//! H1 e2e default: pushdown `scan_skew` date range + fused amount sum in C++ (no per-chunk Rust FFI).
+//! Legacy H1: SQL WHERE pushdown + amount sum (DuckDB filters; not chunk-path default).
 int lemma_stream_h1_sum_optimized(
+    void *conn,
+    uint64_t *matched_out,
+    uint64_t *sum_out,
+    char *error_out,
+    size_t error_len);
+
+//! H1 chunk default: stream raw `event_date,amount`; Lemma zone-prune + filter + sum in C++.
+int lemma_stream_h1_sum_lemma_filter(
     void *conn,
     uint64_t *matched_out,
     uint64_t *sum_out,

@@ -45,6 +45,13 @@ extern "C" {
         error_out: *mut c_char,
         error_len: usize,
     ) -> i32;
+    fn lemma_stream_h1_sum_lemma_filter(
+        conn: *mut c_void,
+        matched_out: *mut u64,
+        sum_out: *mut u64,
+        error_out: *mut c_char,
+        error_len: usize,
+    ) -> i32;
     fn lemma_stream_fetch_next(stream: i64) -> i32;
     fn lemma_stream_chunk_len(stream: i64) -> u64;
     fn lemma_stream_column_count(stream: i64) -> u64;
@@ -142,7 +149,30 @@ impl DuckStream {
         })
     }
 
-    /// Default H1 e2e: fused pushdown + sum in C++ (no per-chunk Rust FFI).
+    /// Chunk-path H1 default: stream raw columns; Lemma zone-prune + filter + sum in C++.
+    pub fn h1_sum_lemma_filter(db: &DuckDb) -> Result<(u64, u64), PinError> {
+        let mut matched = 0u64;
+        let mut sum = 0u64;
+        let mut err_buf = vec![0i8; 512];
+        let rc = unsafe {
+            lemma_stream_h1_sum_lemma_filter(
+                db.connection_ptr(),
+                &mut matched,
+                &mut sum,
+                err_buf.as_mut_ptr(),
+                err_buf.len(),
+            )
+        };
+        if rc != 0 {
+            let msg = unsafe { CStr::from_ptr(err_buf.as_ptr()) }
+                .to_string_lossy()
+                .into_owned();
+            return Err(PinError::Pin(msg));
+        }
+        Ok((matched, sum))
+    }
+
+    /// Legacy: SQL WHERE pushdown + amount sum (DuckDB filters; not chunk default).
     pub fn h1_sum_optimized(db: &DuckDb) -> Result<(u64, u64), PinError> {
         let mut matched = 0u64;
         let mut sum = 0u64;

@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""E2E cached rerun across three Lemma paths + DuckDB SQL baseline.
+"""E2E cached rerun across Lemma paths + DuckDB SQL baseline.
 
 Competitors (fresh process, median of 5):
-  - lemma_pin_stream_e2e   (verus/db_extension — pin/stream path)
-  - lemma_runtime_e2e      (verus/db_extension_runtime — chunk API plan)
-  - lemma_ops_e2e          (verus/db_extension_ops — operator-shaped batches)
-  - duckdb_sql_e2e         (DuckDB SQL engine baseline)
+  - lemma_chunk_e2e    (verus/db_extension_runtime — Chunk API, Lemma filter+agg)
+  - lemma_lease_e2e    (verus/db_extension_lease — pin/lease + zone maps)
+  - lemma_storage_e2e  (verus/db_extension_storage — DataTable storage scan)
+  - duckdb_sql_e2e     (DuckDB SQL engine baseline)
+  - lemma_copy_e2e     (optional — sidecar copy smoke if binary exists)
 
 RAM-safe: scan_skew 500k only; check_mem.sh wrapper; CARGO_BUILD_JOBS=1.
 """
@@ -24,18 +25,20 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 DB = ROOT / "build/duckdb_pin_session/scan.duckdb"
 CHECK_MEM = ROOT / "verus/db_extension/check_mem.sh"
-OUT = ROOT / "verus/db_extension/e2e_three_paths_h1.json"
+OUT = ROOT / "verus/db_extension/e2e_paths_h1.json"
 
-BINS = {
-    "lemma_pin_stream_e2e": ROOT
-    / "verus/db_extension/rust_bridge/target/release/lemma_stream_h1_e2e",
-    "lemma_runtime_e2e": ROOT
+BINS: dict[str, Path] = {
+    "lemma_chunk_e2e": ROOT
     / "verus/db_extension_runtime/rust_bridge/target/release/lemma_runtime_h1_e2e",
-    "lemma_ops_e2e": ROOT
-    / "verus/db_extension_ops/rust_bridge/target/release/lemma_ops_h1_e2e",
+    "lemma_lease_e2e": ROOT
+    / "verus/db_extension_lease/rust_bridge/target/release/lemma_lease_h1_e2e",
+    "lemma_storage_e2e": ROOT
+    / "verus/db_extension_storage/rust_bridge/target/release/lemma_storage_h1_e2e",
     "duckdb_sql_e2e": ROOT
     / "verus/db_extension/rust_bridge/target/release/duckdb_sql_h1_e2e",
 }
+
+COPY_BIN = ROOT / "verus/db_extension/rust_bridge/target/release/lemma_copy_h1_smoke"
 
 EXPECT = 1_260_130_811
 N_RUNS = 5
@@ -68,28 +71,31 @@ def run_cmd(cmd: list[str]) -> str:
     return r.stdout
 
 
-def parse_e2e_us(stdout: str) -> tuple[int, dict[str, int]]:
+def parse_e2e_us(stdout: str) -> tuple[int, dict[str, int | str]]:
     m = re.search(r"E2E_CACHED_RERUN_US:\s*(\d+)", stdout)
     if not m:
         raise ValueError(f"no E2E_CACHED_RERUN_US in:\n{stdout}")
-    meta: dict[str, int] = {}
+    meta: dict[str, int | str] = {}
     for key in ("MATCHED_ROWS", "SUM", "EXPECT", "OPEN_US", "QUERY_US"):
         km = re.search(rf"{key}:\s*(\d+)", stdout)
         if km:
             meta[key] = int(km.group(1))
+    sm = re.search(r"SCAN_MODE:\s*(\S+)", stdout)
+    if sm:
+        meta["SCAN_MODE"] = sm.group(1)
     return int(m.group(1)), meta
 
 
-def measure_binary(label: str, bin_path: Path) -> dict:
+def measure_binary(label: str, bin_path: Path, extra_args: list[str] | None = None) -> dict:
     if not bin_path.is_file():
         raise SystemExit(f"missing {bin_path}; build first")
-    cmd = [str(bin_path), str(DB)]
+    cmd = [str(bin_path), *(extra_args or [str(DB)])]
     if CHECK_MEM.is_file():
         cmd = [str(CHECK_MEM), *cmd]
     times: list[int] = []
     open_times: list[int] = []
     query_times: list[int] = []
-    last_meta: dict[str, int] = {}
+    last_meta: dict[str, int | str] = {}
     peak_rss_kb = 0
     wall_us = 0
     for _ in range(N_RUNS):
@@ -98,9 +104,9 @@ def measure_binary(label: str, bin_path: Path) -> dict:
         wall_us = int((time.perf_counter() - t0) * 1_000_000)
         us, meta = parse_e2e_us(out)
         times.append(us)
-        if "OPEN_US" in meta:
+        if "OPEN_US" in meta and isinstance(meta["OPEN_US"], int):
             open_times.append(meta["OPEN_US"])
-        if "QUERY_US" in meta:
+        if "QUERY_US" in meta and isinstance(meta["QUERY_US"], int):
             query_times.append(meta["QUERY_US"])
         last_meta = meta
         if meta.get("SUM") != EXPECT:
@@ -141,11 +147,21 @@ def main() -> None:
         rows.append(row)
         open_us = row.get("median_open_us", "?")
         query_us = row.get("median_query_us", "?")
+        scan_mode = row.get("scan_mode", "")
+        extra = f" SCAN_MODE={scan_mode}" if scan_mode else ""
         print(
             f"  E2E={row['median_e2e_us']}µs "
-            f"OPEN={open_us}µs QUERY={query_us}µs",
+            f"OPEN={open_us}µs QUERY={query_us}µs{extra}",
             flush=True,
         )
+
+    if COPY_BIN.is_file():
+        manifest = ROOT / "build/duckdb_pin_session/scan_skew_manifest.json"
+        if manifest.is_file():
+            print("measuring lemma_copy_e2e (optional)...", flush=True)
+            copy_row = measure_binary("lemma_copy_e2e", COPY_BIN, [str(manifest)])
+            rows.append(copy_row)
+            print(f"  E2E={copy_row['median_e2e_us']}µs", flush=True)
 
     by = {r["label"]: r["median_e2e_us"] for r in rows}
     sql_us = by["duckdb_sql_e2e"]
@@ -160,34 +176,43 @@ def main() -> None:
         "db_path": str(DB.relative_to(ROOT)),
         "expect_sum": EXPECT,
         "paths": {
-            "lemma_pin_stream_e2e": {
-                "folder": "verus/db_extension",
-                "agent": "verus/db_extension/agent/AGENTS.md",
-                "sql_entry": "lemma, lemma_pin, lemma_stream FFI",
-            },
-            "lemma_runtime_e2e": {
+            "lemma_chunk_e2e": {
+                "clear_name": "lemma_chunk",
                 "folder": "verus/db_extension_runtime",
                 "agent": "verus/db_extension_runtime/agent/AGENTS.md",
-                "sql_entry": "lemma_runtime(VARCHAR)",
             },
-            "lemma_ops_e2e": {
-                "folder": "verus/db_extension_ops",
-                "agent": "verus/db_extension_ops/agent/AGENTS.md",
-                "sql_entry": "lemma_ops(VARCHAR)",
+            "lemma_lease_e2e": {
+                "clear_name": "lemma_lease",
+                "folder": "verus/db_extension_lease",
+                "agent": "verus/db_extension_lease/agent/AGENTS.md",
+            },
+            "lemma_storage_e2e": {
+                "clear_name": "lemma_storage",
+                "folder": "verus/db_extension_storage",
+                "agent": "verus/db_extension_storage/agent/AGENTS.md",
             },
             "duckdb_sql_e2e": {
+                "clear_name": "duckdb_sql",
                 "folder": "verus/db_extension/rust_bridge",
                 "agent": None,
-                "sql_entry": "DuckDB SQL engine (baseline)",
+            },
+            "lemma_copy_e2e": {
+                "clear_name": "lemma_copy",
+                "folder": "verus/db_extension",
+                "agent": "verus/db_extension/agent/AGENTS.md",
+                "optional": True,
             },
         },
         "rows": rows,
         "ratios_vs_duckdb_sql_e2e": {
-            k: (v / sql_us if sql_us else None) for k, v in by.items() if k != "duckdb_sql_e2e"
+            k: (v / sql_us if sql_us else None)
+            for k, v in by.items()
+            if k != "duckdb_sql_e2e"
         },
         "notes": (
             "Lemma paths execute the query; duckdb_sql_* is the DuckDB engine baseline. "
-            "Extension .duckdb_extension stubs optional; e2e binaries are authoritative for timing."
+            "lemma_chunk default: Lemma filter+agg (no SQL WHERE pushdown). "
+            "lemma_storage: DataTable::ScanTableSegment when SCAN_MODE=real_datatable_scan."
         ),
     }
     OUT.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")

@@ -1,26 +1,21 @@
-# Path `lemma_runtime` — Lemma owns the physical plan
+# Path `lemma_chunk` — Lemma owns filter + agg on Chunk API
 
-**Option 2:** Lemma drives the full end-to-end pipeline (scan chunks → filter → join → agg).
-DuckDB supplies storage and chunk I/O only; **do not** run the analytical query via DuckDB SQL.
+**Chunk API:** stream column batches from DuckDB; **Lemma owns filter + agg** (default: no SQL `WHERE` pushdown).
 
 ## vs other paths
 
-| Path | Folder | Entry | Who plans execution |
-|------|--------|-------|---------------------|
-| `lemma` / pin_stream | `verus/db_extension/` | `lemma`, `lemma_pin`, `lemma_stream_*` | Pin/lease + optional stream; zone maps on DuckDB chunks |
-| **`lemma_runtime`** | **`verus/db_extension_runtime/`** | **`lemma_runtime(VARCHAR)`** | **Agent owns entire physical plan** |
-| `lemma_ops` | `verus/db_extension_ops/` | `lemma_ops(VARCHAR)` | DuckDB operator callbacks drive batch kernels |
+| Path | Folder | Who plans execution |
+|------|--------|---------------------|
+| `lemma_copy` | `verus/db_extension/` | Copy to `.lemma_cols` → Lemma on owned memory |
+| **`lemma_chunk`** | **`verus/db_extension_runtime/`** | **Lemma filter+agg on streamed chunks** |
+| `lemma_lease` | `verus/db_extension_lease/` | Pin/lease + zone maps on DuckDB vectors |
+| `lemma_storage` | `verus/db_extension_storage/` | DataTable storage scan (`duckdb.hpp`) |
 
 ## Build (RAM-safe)
-
-Prebuilt `libduckdb.so` at `build/libduckdb` only — never bundled compile.
 
 ```bash
 export CARGO_BUILD_JOBS=1 RAYON_NUM_THREADS=1
 export LEMMA_DUCKDB_LIB_DIR="$PWD/build/libduckdb"
-export LD_LIBRARY_PATH="$LEMMA_DUCKDB_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-
-make -C verus/db_extension_runtime extension   # stub .duckdb_extension (optional)
 
 verus/db_extension/check_mem.sh \
   cargo build --release \
@@ -36,6 +31,6 @@ verus/db_extension/check_mem.sh \
   build/duckdb_pin_session/scan.duckdb
 ```
 
-Chunk FFI reuses `../db_extension/src/lemma_stream.*` (shared compile in `build.rs`) to avoid drift.
+Chunk FFI reuses `../db_extension/src/lemma_stream.*` via `lemma_agent_primitives`.
 
 Agent brief: `agent/AGENTS.md`.

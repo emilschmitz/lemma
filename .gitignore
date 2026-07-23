@@ -69,5 +69,6 @@ data/tpch-sf1/*.tbl
 /basic_join_*
 research_loop/bench_bare/Cargo.toml.nolto
 verus/db_extension_runtime/rust_bridge/target/
-verus/db_extension_ops/rust_bridge/target/
+verus/db_extension_lease/rust_bridge/target/
+verus/db_extension_storage/rust_bridge/target/
 verus/db_extension/rust_bridge/target/

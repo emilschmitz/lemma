@@ -389,6 +389,199 @@ LemmaStreamId lemma_stream_start_pushdown(
     return id;
 }
 
+bool chunk_may_satisfy_range(
+    duckdb_data_chunk chunk,
+    idx_t date_col,
+    int64_t date_lo,
+    int64_t date_hi
+) {
+    if (chunk == nullptr) {
+        return false;
+    }
+    idx_t n = duckdb_data_chunk_get_size(chunk);
+    if (n == 0) {
+        return false;
+    }
+    duckdb_vector date_vec = duckdb_data_chunk_get_vector(chunk, date_col);
+    void *date_ptr = duckdb_vector_get_data(date_vec);
+    if (date_ptr == nullptr) {
+        return false;
+    }
+    duckdb_logical_type date_ltype = duckdb_vector_get_column_type(date_vec);
+    duckdb_type date_ty = duckdb_get_type_id(date_ltype);
+    duckdb_destroy_logical_type(&date_ltype);
+
+    int64_t min_v = 0;
+    int64_t max_v = 0;
+    if (date_ty == DUCKDB_TYPE_BIGINT || date_ty == DUCKDB_TYPE_UBIGINT) {
+        const int64_t *p = static_cast<const int64_t *>(date_ptr);
+        min_v = max_v = p[0];
+        for (idx_t i = 1; i < n; ++i) {
+            if (p[i] < min_v) {
+                min_v = p[i];
+            }
+            if (p[i] > max_v) {
+                max_v = p[i];
+            }
+        }
+    } else {
+        const int32_t *p = static_cast<const int32_t *>(date_ptr);
+        min_v = max_v = p[0];
+        for (idx_t i = 1; i < n; ++i) {
+            if (p[i] < min_v) {
+                min_v = p[i];
+            }
+            if (p[i] > max_v) {
+                max_v = p[i];
+            }
+        }
+    }
+    return max_v >= date_lo && min_v <= date_hi;
+}
+
+void sum_filtered_chunk(
+    duckdb_data_chunk chunk,
+    idx_t date_col,
+    idx_t amount_col,
+    int64_t date_lo,
+    int64_t date_hi,
+    uint64_t &matched,
+    uint64_t &sum
+) {
+    if (chunk == nullptr) {
+        return;
+    }
+    idx_t n = duckdb_data_chunk_get_size(chunk);
+    if (n == 0) {
+        return;
+    }
+
+    duckdb_vector date_vec = duckdb_data_chunk_get_vector(chunk, date_col);
+    duckdb_vector amount_vec = duckdb_data_chunk_get_vector(chunk, amount_col);
+    void *date_ptr = duckdb_vector_get_data(date_vec);
+    void *amount_ptr = duckdb_vector_get_data(amount_vec);
+    if (date_ptr == nullptr || amount_ptr == nullptr) {
+        return;
+    }
+
+    duckdb_logical_type date_ltype = duckdb_vector_get_column_type(date_vec);
+    duckdb_logical_type amount_ltype = duckdb_vector_get_column_type(amount_vec);
+    duckdb_type date_ty = duckdb_get_type_id(date_ltype);
+    duckdb_type amount_ty = duckdb_get_type_id(amount_ltype);
+    duckdb_destroy_logical_type(&date_ltype);
+    duckdb_destroy_logical_type(&amount_ltype);
+
+    if ((date_ty == DUCKDB_TYPE_BIGINT || date_ty == DUCKDB_TYPE_UBIGINT) &&
+        (amount_ty == DUCKDB_TYPE_BIGINT || amount_ty == DUCKDB_TYPE_UBIGINT)) {
+        const int64_t *dates = static_cast<const int64_t *>(date_ptr);
+        const int64_t *amounts = static_cast<const int64_t *>(amount_ptr);
+        for (idx_t i = 0; i < n; ++i) {
+            const int64_t d = dates[i];
+            if (d >= date_lo && d <= date_hi) {
+                sum += static_cast<uint64_t>(amounts[i]);
+                matched += 1;
+            }
+        }
+        return;
+    }
+    if ((date_ty == DUCKDB_TYPE_BIGINT || date_ty == DUCKDB_TYPE_UBIGINT) &&
+        (amount_ty == DUCKDB_TYPE_INTEGER || amount_ty == DUCKDB_TYPE_UINTEGER)) {
+        const int64_t *dates = static_cast<const int64_t *>(date_ptr);
+        const int32_t *amounts = static_cast<const int32_t *>(amount_ptr);
+        for (idx_t i = 0; i < n; ++i) {
+            const int64_t d = dates[i];
+            if (d >= date_lo && d <= date_hi) {
+                sum += static_cast<uint64_t>(amounts[i]);
+                matched += 1;
+            }
+        }
+        return;
+    }
+    if ((date_ty == DUCKDB_TYPE_INTEGER || date_ty == DUCKDB_TYPE_UINTEGER) &&
+        (amount_ty == DUCKDB_TYPE_BIGINT || amount_ty == DUCKDB_TYPE_UBIGINT)) {
+        const int32_t *dates = static_cast<const int32_t *>(date_ptr);
+        const int64_t *amounts = static_cast<const int64_t *>(amount_ptr);
+        for (idx_t i = 0; i < n; ++i) {
+            const int64_t d = dates[i];
+            if (d >= date_lo && d <= date_hi) {
+                sum += static_cast<uint64_t>(amounts[i]);
+                matched += 1;
+            }
+        }
+        return;
+    }
+    if ((date_ty == DUCKDB_TYPE_INTEGER || date_ty == DUCKDB_TYPE_UINTEGER) &&
+        (amount_ty == DUCKDB_TYPE_INTEGER || amount_ty == DUCKDB_TYPE_UINTEGER)) {
+        const int32_t *dates = static_cast<const int32_t *>(date_ptr);
+        const int32_t *amounts = static_cast<const int32_t *>(amount_ptr);
+        for (idx_t i = 0; i < n; ++i) {
+            const int64_t d = dates[i];
+            if (d >= date_lo && d <= date_hi) {
+                sum += static_cast<uint64_t>(amounts[i]);
+                matched += 1;
+            }
+        }
+    }
+}
+
+int lemma_stream_h1_sum_lemma_filter(
+    void *conn,
+    uint64_t *matched_out,
+    uint64_t *sum_out,
+    char *error_out,
+    size_t error_len
+) {
+    auto *connection = static_cast<duckdb_connection>(conn);
+    if (connection == nullptr || matched_out == nullptr || sum_out == nullptr) {
+        set_error(error_out, error_len, "lemma_stream_h1_sum_lemma_filter: null argument");
+        return -1;
+    }
+
+    const char *columns[] = {"event_date", "amount"};
+    StreamState state;
+    std::ostringstream sql;
+    sql << "SELECT " << quote_ident(columns[0]) << ", " << quote_ident(columns[1])
+        << " FROM " << quote_ident("scan_skew");
+
+    duckdb_state status = duckdb_prepare(connection, sql.str().c_str(), &state.prepared);
+    state.has_prepared = true;
+    if (status != DuckDBSuccess) {
+        const char *err = duckdb_prepare_error(state.prepared);
+        set_error(error_out, error_len, err != nullptr ? err : "duckdb_prepare failed");
+        destroy_stream_state(state);
+        return -1;
+    }
+    if (!execute_streaming_result(state, error_out, error_len)) {
+        destroy_stream_state(state);
+        return -1;
+    }
+
+    const int64_t date_lo = 19960101;
+    const int64_t date_hi = 19961231;
+    const idx_t date_col = 0;
+    const idx_t amount_col = 1;
+
+    uint64_t matched = 0;
+    uint64_t sum = 0;
+    state.exhausted = false;
+    while (true) {
+        release_current_chunk(state);
+        duckdb_data_chunk chunk = duckdb_fetch_chunk(state.result);
+        if (chunk == nullptr) {
+            break;
+        }
+        if (chunk_may_satisfy_range(chunk, date_col, date_lo, date_hi)) {
+            sum_filtered_chunk(chunk, date_col, amount_col, date_lo, date_hi, matched, sum);
+        }
+        duckdb_destroy_data_chunk(&chunk);
+    }
+
+    destroy_stream_state(state);
+    *matched_out = matched;
+    *sum_out = sum;
+    return 0;
+}
+
 int lemma_stream_h1_sum_optimized(
     void *conn,
     uint64_t *matched_out,

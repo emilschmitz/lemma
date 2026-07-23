@@ -1,0 +1,183 @@
+{
+  "timestamp": "2026-07-23T15:27:01Z",
+  "protocol": "fresh process each run; median of 5; E2E_CACHED_RERUN_US=open+query; OPEN_US / QUERY_US when available",
+  "dataset": "scan_skew 500k",
+  "db_path": "build/duckdb_pin_session/scan.duckdb",
+  "expect_sum": 1260130811,
+  "paths": {
+    "lemma_chunk_e2e": {
+      "clear_name": "lemma_chunk",
+      "folder": "verus/db_extension_runtime",
+      "agent": "verus/db_extension_runtime/agent/AGENTS.md"
+    },
+    "lemma_lease_e2e": {
+      "clear_name": "lemma_lease",
+      "folder": "verus/db_extension_lease",
+      "agent": "verus/db_extension_lease/agent/AGENTS.md"
+    },
+    "lemma_storage_e2e": {
+      "clear_name": "lemma_storage",
+      "folder": "verus/db_extension_storage",
+      "agent": "verus/db_extension_storage/agent/AGENTS.md"
+    },
+    "duckdb_sql_e2e": {
+      "clear_name": "duckdb_sql",
+      "folder": "verus/db_extension/rust_bridge",
+      "agent": null
+    },
+    "lemma_copy_e2e": {
+      "clear_name": "lemma_copy",
+      "folder": "verus/db_extension",
+      "agent": "verus/db_extension/agent/AGENTS.md",
+      "optional": true
+    }
+  },
+  "rows": [
+    {
+      "label": "lemma_chunk_e2e",
+      "binary": "verus/db_extension_runtime/rust_bridge/target/release/lemma_runtime_h1_e2e",
+      "median_e2e_us": 15661,
+      "samples_e2e_us": [
+        14075,
+        15362,
+        15661,
+        15773,
+        17832
+      ],
+      "wall_median_us": 35124,
+      "result": 1260130811,
+      "maxrss_kb": 36096,
+      "matched_rows": 25000,
+      "sum": 1260130811,
+      "open_us": 10106,
+      "query_us": 5555,
+      "median_open_us": 9575,
+      "samples_open_us": [
+        8411,
+        9315,
+        9575,
+        10106,
+        11718
+      ],
+      "median_query_us": 5786,
+      "samples_query_us": [
+        5555,
+        5662,
+        5786,
+        6113,
+        6458
+      ]
+    },
+    {
+      "label": "lemma_lease_e2e",
+      "binary": "verus/db_extension_lease/rust_bridge/target/release/lemma_lease_h1_e2e",
+      "median_e2e_us": 15835,
+      "samples_e2e_us": [
+        15174,
+        15582,
+        15835,
+        15981,
+        20037
+      ],
+      "wall_median_us": 30669,
+      "result": 1260130811,
+      "maxrss_kb": 50560,
+      "matched_rows": 25000,
+      "sum": 1260130811,
+      "open_us": 7962,
+      "query_us": 7620,
+      "median_open_us": 8054,
+      "samples_open_us": [
+        7865,
+        7962,
+        8054,
+        8334,
+        12154
+      ],
+      "median_query_us": 7646,
+      "samples_query_us": [
+        7308,
+        7620,
+        7646,
+        7780,
+        7882
+      ]
+    },
+    {
+      "label": "lemma_storage_e2e",
+      "binary": "verus/db_extension_storage/rust_bridge/target/release/lemma_storage_h1_e2e",
+      "median_e2e_us": 17494,
+      "samples_e2e_us": [
+        14625,
+        15370,
+        17494,
+        18210,
+        18563
+      ],
+      "wall_median_us": 38142,
+      "result": 1260130811,
+      "maxrss_kb": 50560,
+      "matched_rows": 25000,
+      "sum": 1260130811,
+      "open_us": 0,
+      "query_us": 18563,
+      "scan_mode": "real_datatable_scan",
+      "median_open_us": 0,
+      "samples_open_us": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "median_query_us": 17494,
+      "samples_query_us": [
+        14625,
+        15369,
+        17494,
+        18209,
+        18563
+      ]
+    },
+    {
+      "label": "duckdb_sql_e2e",
+      "binary": "verus/db_extension/rust_bridge/target/release/duckdb_sql_h1_e2e",
+      "median_e2e_us": 12986,
+      "samples_e2e_us": [
+        11201,
+        12208,
+        12986,
+        13531,
+        14189
+      ],
+      "wall_median_us": 27465,
+      "result": 1260130811,
+      "maxrss_kb": 50560,
+      "sum": 1260130811,
+      "open_us": 8163,
+      "query_us": 3037,
+      "median_open_us": 9536,
+      "samples_open_us": [
+        8163,
+        8892,
+        9536,
+        10520,
+        11032
+      ],
+      "median_query_us": 3037,
+      "samples_query_us": [
+        2671,
+        3010,
+        3037,
+        3156,
+        4093
+      ]
+    }
+  ],
+  "ratios_vs_duckdb_sql_e2e": {
+    "lemma_chunk_e2e": 1.2059910673032497,
+    "lemma_lease_e2e": 1.2193901124287694,
+    "lemma_storage_e2e": 1.3471430771600186
+  },
+  "notes": "Lemma paths execute the query; duckdb_sql_* is the DuckDB engine baseline. lemma_chunk default: Lemma filter+agg (no SQL WHERE pushdown). lemma_storage: DataTable::ScanTableSegment when SCAN_MODE=real_datatable_scan."
+}
