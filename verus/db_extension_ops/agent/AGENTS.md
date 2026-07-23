@@ -3,6 +3,16 @@
 You optimize **one path only**: `verus/db_extension_ops/`.
 Do **not** share code or prompts with pin_stream or runtime agents.
 
+## Default H1 plan (e2e cached rerun)
+
+**Predicate pushdown at scan + fused amount sum** in operator batches.
+
+1. Pushdown SQL per batch stream:
+   `SELECT "amount" FROM table WHERE "event_date" >= lo AND "event_date" <= hi`
+2. `ops_sum_amounts_batch` sums pre-filtered BIGINT amounts (no second date pass).
+3. Default e2e: `lemma_ops_h1_run` uses this plan. Expect SUM `1260130811`.
+4. Optimize batch loops / fusion further; keep pushdown + amount-only sum as baseline.
+
 ## Mandate — AGGRESSIVE (capable agent)
 
 Write **stage bodies** as if DuckDB’s executor drives them: per-batch scan / filter / join / agg.

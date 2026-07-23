@@ -28,6 +28,23 @@ extern "C" {
         error_out: *mut c_char,
         error_len: usize,
     ) -> i64;
+    fn lemma_stream_start_pushdown(
+        conn: *mut c_void,
+        table: *const c_char,
+        amount_column: *const c_char,
+        date_column: *const c_char,
+        date_lo: i64,
+        date_hi: i64,
+        error_out: *mut c_char,
+        error_len: usize,
+    ) -> i64;
+    fn lemma_stream_h1_sum_optimized(
+        conn: *mut c_void,
+        matched_out: *mut u64,
+        sum_out: *mut u64,
+        error_out: *mut c_char,
+        error_len: usize,
+    ) -> i32;
     fn lemma_stream_fetch_next(stream: i64) -> i32;
     fn lemma_stream_chunk_len(stream: i64) -> u64;
     fn lemma_stream_column_count(stream: i64) -> u64;
@@ -41,6 +58,7 @@ pub struct DuckStream {
     stream_id: i64,
     date_col: usize,
     amount_col: usize,
+    pushdown: bool,
 }
 
 impl DuckStream {
@@ -81,10 +99,100 @@ impl DuckStream {
             stream_id,
             date_col,
             amount_col,
+            pushdown: false,
         })
     }
 
-    /// Single-pass H1-style filter+sum with per-chunk min/max prune.
+    /// Predicate pushdown at scan: project `amount_col` only; DuckDB filters on `date_col`.
+    pub fn open_range(
+        db: &DuckDb,
+        table: &str,
+        amount_col: &str,
+        date_col: &str,
+        lo: u32,
+        hi: u32,
+    ) -> Result<Self, PinError> {
+        let c_table = CString::new(table).map_err(|e| PinError::Pin(e.to_string()))?;
+        let c_amount = CString::new(amount_col).map_err(|e| PinError::Pin(e.to_string()))?;
+        let c_date = CString::new(date_col).map_err(|e| PinError::Pin(e.to_string()))?;
+        let mut err_buf = vec![0i8; 512];
+        let stream_id = unsafe {
+            lemma_stream_start_pushdown(
+                db.connection_ptr(),
+                c_table.as_ptr(),
+                c_amount.as_ptr(),
+                c_date.as_ptr(),
+                lo as i64,
+                hi as i64,
+                err_buf.as_mut_ptr(),
+                err_buf.len(),
+            )
+        };
+        if stream_id == LEMMA_STREAM_INVALID {
+            let msg = unsafe { CStr::from_ptr(err_buf.as_ptr()) }
+                .to_string_lossy()
+                .into_owned();
+            return Err(PinError::Pin(msg));
+        }
+        Ok(Self {
+            stream_id,
+            date_col: 0,
+            amount_col: 0,
+            pushdown: true,
+        })
+    }
+
+    /// Default H1 e2e: fused pushdown + sum in C++ (no per-chunk Rust FFI).
+    pub fn h1_sum_optimized(db: &DuckDb) -> Result<(u64, u64), PinError> {
+        let mut matched = 0u64;
+        let mut sum = 0u64;
+        let mut err_buf = vec![0i8; 512];
+        let rc = unsafe {
+            lemma_stream_h1_sum_optimized(
+                db.connection_ptr(),
+                &mut matched,
+                &mut sum,
+                err_buf.as_mut_ptr(),
+                err_buf.len(),
+            )
+        };
+        if rc != 0 {
+            let msg = unsafe { CStr::from_ptr(err_buf.as_ptr()) }
+                .to_string_lossy()
+                .into_owned();
+            return Err(PinError::Pin(msg));
+        }
+        Ok((matched, sum))
+    }
+
+    /// Sum pre-filtered amount column after [`Self::open_range`] (one column per chunk).
+    pub fn sum_amounts_only(&mut self) -> Result<(u64, u64), PinError> {
+        if !self.pushdown {
+            return Err(PinError::Pin(
+                "sum_amounts_only requires open_range pushdown stream".into(),
+            ));
+        }
+        let mut matched = 0u64;
+        let mut sum = 0u64;
+        loop {
+            let rc = unsafe { lemma_stream_fetch_next(self.stream_id) };
+            if rc < 0 {
+                return Err(PinError::Pin("lemma_stream_fetch_next failed".into()));
+            }
+            if rc == 0 {
+                break;
+            }
+            let n = unsafe { lemma_stream_chunk_len(self.stream_id) as usize };
+            if n == 0 {
+                continue;
+            }
+            matched += n as u64;
+            sum = sum.wrapping_add(chunk_sum_amounts(self.stream_id, 0, n)?);
+        }
+        Ok((matched, sum))
+    }
+
+    /// Legacy two-column scan + Rust-side filter (prefer [`Self::h1_sum_optimized`]).
     pub fn stream_h1_sum_filtered(&mut self, lo: u32, hi: u32) -> Result<(u64, u64), PinError> {
         let mut matched = 0u64;
         let mut sum = 0u64;
@@ -176,6 +284,42 @@ fn min_max_dates(date_ptr: *mut c_void, date_ty: DuckDBType, n: usize) -> Result
             "stream date col type {date_ty}"
         ))),
     }
+}
+
+fn chunk_sum_amounts(stream_id: i64, amount_col: usize, n: usize) -> Result<u64, PinError> {
+    let amount_ty = unsafe { lemma_stream_vector_type(stream_id, amount_col as u64) };
+    let amount_ptr = unsafe { lemma_stream_vector_data(stream_id, amount_col as u64) };
+    if amount_ptr.is_null() {
+        return Err(PinError::ColumnNotFound("amount vector".into()));
+    }
+
+    let mut sum = 0u64;
+    match amount_ty {
+        DUCKDB_TYPE_BIGINT | DUCKDB_TYPE_UBIGINT => {
+            let p = amount_ptr as *const i64;
+            let end = unsafe { p.add(n) };
+            let mut cur = p;
+            while cur < end {
+                sum = sum.wrapping_add(unsafe { *cur } as u64);
+                cur = unsafe { cur.add(1) };
+            }
+        }
+        DUCKDB_TYPE_INTEGER | DUCKDB_TYPE_UINTEGER => {
+            let p = amount_ptr as *const i32;
+            let end = unsafe { p.add(n) };
+            let mut cur = p;
+            while cur < end {
+                sum = sum.wrapping_add(unsafe { *cur } as u64);
+                cur = unsafe { cur.add(1) };
+            }
+        }
+        _ => {
+            return Err(PinError::UnsupportedType(format!(
+                "amount col type {amount_ty}"
+            )));
+        }
+    }
+    Ok(sum)
 }
 
 fn chunk_sum_filtered(

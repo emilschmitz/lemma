@@ -45,6 +45,26 @@ uint32_t lemma_stream_vector_type(LemmaStreamId stream, uint64_t col);
 
 void lemma_stream_close(LemmaStreamId stream);
 
+//! Pushdown scan: `SELECT amount_col FROM table WHERE date_col >= lo AND date_col <= hi`.
+//! Projects one column; DuckDB applies the predicate during storage scan.
+LemmaStreamId lemma_stream_start_pushdown(
+    void *conn,
+    const char *table,
+    const char *amount_column,
+    const char *date_column,
+    int64_t date_lo,
+    int64_t date_hi,
+    char *error_out,
+    size_t error_len);
+
+//! H1 e2e default: pushdown `scan_skew` date range + fused amount sum in C++ (no per-chunk Rust FFI).
+int lemma_stream_h1_sum_optimized(
+    void *conn,
+    uint64_t *matched_out,
+    uint64_t *sum_out,
+    char *error_out,
+    size_t error_len);
+
 #ifdef __cplusplus
 }
 #endif

@@ -111,83 +111,43 @@ bool start_pending_stream(OpsBatchState &state, duckdb_connection conn, const st
     return true;
 }
 
-/// Stage kernel: filter+sum one operator batch (duckdb_data_chunk).
-void ops_filter_sum_batch(
-    duckdb_data_chunk chunk,
-    int32_t lo,
-    int32_t hi,
-    uint64_t &matched,
-    uint64_t &sum
-) {
+/// Stage kernel: sum pre-filtered amount column in one operator batch.
+void ops_sum_amounts_batch(duckdb_data_chunk chunk, uint64_t &matched, uint64_t &sum) {
     if (chunk == nullptr) {
         return;
     }
     idx_t n = duckdb_data_chunk_get_size(chunk);
-    if (n == 0 || duckdb_data_chunk_get_column_count(chunk) < 2) {
+    if (n == 0 || duckdb_data_chunk_get_column_count(chunk) < 1) {
         return;
     }
-    duckdb_vector date_vec = duckdb_data_chunk_get_vector(chunk, 0);
-    duckdb_vector amount_vec = duckdb_data_chunk_get_vector(chunk, 1);
-    void *date_ptr = duckdb_vector_get_data(date_vec);
+    matched += static_cast<uint64_t>(n);
+
+    duckdb_vector amount_vec = duckdb_data_chunk_get_vector(chunk, 0);
     void *amount_ptr = duckdb_vector_get_data(amount_vec);
-    if (date_ptr == nullptr || amount_ptr == nullptr) {
+    if (amount_ptr == nullptr) {
         return;
     }
 
-    duckdb_logical_type date_ltype = duckdb_vector_get_column_type(date_vec);
     duckdb_logical_type amount_ltype = duckdb_vector_get_column_type(amount_vec);
-    duckdb_type date_ty = duckdb_get_type_id(date_ltype);
     duckdb_type amount_ty = duckdb_get_type_id(amount_ltype);
-    duckdb_destroy_logical_type(&date_ltype);
     duckdb_destroy_logical_type(&amount_ltype);
 
-    const int64_t lo64 = lo;
-    const int64_t hi64 = hi;
-
-    auto scan_i32_i64 = [&](const int32_t *dates, const int64_t *amounts) {
-        for (idx_t i = 0; i < n; i++) {
-            if (dates[i] >= lo && dates[i] <= hi) {
-                sum += static_cast<uint64_t>(amounts[i]);
-                matched++;
-            }
+    if (amount_ty == DUCKDB_TYPE_BIGINT || amount_ty == DUCKDB_TYPE_UBIGINT) {
+        const int64_t *p = static_cast<const int64_t *>(amount_ptr);
+        const int64_t *end = p + n;
+        uint64_t local = 0;
+        for (; p < end; ++p) {
+            local += static_cast<uint64_t>(*p);
         }
-    };
-    auto scan_i32_i32 = [&](const int32_t *dates, const int32_t *amounts) {
-        for (idx_t i = 0; i < n; i++) {
-            if (dates[i] >= lo && dates[i] <= hi) {
-                sum += static_cast<uint64_t>(amounts[i]);
-                matched++;
-            }
-        }
-    };
-    auto scan_i64_i64 = [&](const int64_t *dates, const int64_t *amounts) {
-        for (idx_t i = 0; i < n; i++) {
-            if (dates[i] >= lo64 && dates[i] <= hi64) {
-                sum += static_cast<uint64_t>(amounts[i]);
-                matched++;
-            }
-        }
-    };
-    auto scan_i64_i32 = [&](const int64_t *dates, const int32_t *amounts) {
-        for (idx_t i = 0; i < n; i++) {
-            if (dates[i] >= lo64 && dates[i] <= hi64) {
-                sum += static_cast<uint64_t>(amounts[i]);
-                matched++;
-            }
-        }
-    };
-
-    const bool date_is_big = (date_ty == DUCKDB_TYPE_BIGINT || date_ty == DUCKDB_TYPE_UBIGINT);
-    const bool amount_is_big = (amount_ty == DUCKDB_TYPE_BIGINT || amount_ty == DUCKDB_TYPE_UBIGINT);
-
-    if (date_is_big && amount_is_big) {
-        scan_i64_i64(static_cast<const int64_t *>(date_ptr), static_cast<const int64_t *>(amount_ptr));
-    } else if (date_is_big && !amount_is_big) {
-        scan_i64_i32(static_cast<const int64_t *>(date_ptr), static_cast<const int32_t *>(amount_ptr));
-    } else if (!date_is_big && amount_is_big) {
-        scan_i32_i64(static_cast<const int32_t *>(date_ptr), static_cast<const int64_t *>(amount_ptr));
+        sum += local;
     } else {
-        scan_i32_i32(static_cast<const int32_t *>(date_ptr), static_cast<const int32_t *>(amount_ptr));
+        const int32_t *p = static_cast<const int32_t *>(amount_ptr);
+        const int32_t *end = p + n;
+        uint64_t local = 0;
+        for (; p < end; ++p) {
+            local += static_cast<uint64_t>(*p);
+        }
+        sum += local;
     }
 }
 
@@ -227,7 +187,9 @@ int lemma_ops_h1_run(
     }
 
     std::ostringstream sql;
-    sql << "SELECT \"event_date\", \"amount\" FROM " << quote_ident(table);
+    sql << "SELECT \"amount\" FROM " << quote_ident(table)
+        << " WHERE \"event_date\" >= " << lo
+        << " AND \"event_date\" <= " << hi;
 
     OpsBatchState state;
     if (!start_pending_stream(state, connection, sql.str(), error_out, error_len)) {
@@ -238,7 +200,7 @@ int lemma_ops_h1_run(
     uint64_t matched = 0;
     uint64_t sum = 0;
     while (fetch_next_batch(state)) {
-        ops_filter_sum_batch(state.current_chunk, lo, hi, matched, sum);
+        ops_sum_amounts_batch(state.current_chunk, matched, sum);
     }
 
     destroy_ops_state(state);

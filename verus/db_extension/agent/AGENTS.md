@@ -2,6 +2,16 @@
 
 You optimize **one path only**: `verus/db_extension/` (pin + streaming chunk lease).
 
+## Default H1 plan (e2e cached rerun)
+
+**Predicate pushdown at scan + fused amount sum** — not full-column read then Rust refilter.
+
+1. Stream SQL with trusted bounds (agent-chosen, not DuckDB analytical SQL for the timed kernel):
+   `SELECT "amount" FROM "scan_skew" WHERE "event_date" >= 19960101 AND "event_date" <= 19961231`
+2. DuckDB storage prune applies the date predicate; Lemma **sums `amount` only** (one column).
+3. Default e2e: `lemma_stream_h1_sum_optimized` in C++ (no per-chunk Rust FFI). Expect SUM `1260130811`.
+4. Agent may tune further (SIMD, tighter loops) but keep pushdown + single-column sum as baseline.
+
 ## What Lemma executes here
 
 - **Pin path**: `lemma_pin_table` retains DuckDB vector buffers; build sub-zones (`PIN_ZONE_ROWS`) and prune before scan.

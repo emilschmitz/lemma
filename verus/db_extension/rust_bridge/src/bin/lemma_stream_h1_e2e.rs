@@ -8,8 +8,6 @@ use lemma_agent_primitives::{DuckDb, DuckStream};
 use std::env;
 use std::time::Instant;
 
-const H1_LO: u32 = 19960101;
-const H1_HI: u32 = 19961231;
 const EXPECT: u64 = 1_260_130_811;
 
 fn main() {
@@ -21,10 +19,7 @@ fn main() {
     let open_us = t_open.elapsed().as_micros();
 
     let t_q = Instant::now();
-    let mut stream = DuckStream::open(&db, "scan_skew", &["event_date", "amount"]).expect("stream");
-    let (matched, sum) = stream
-        .stream_h1_sum_filtered(H1_LO, H1_HI)
-        .expect("stream H1");
+    let (matched, sum) = DuckStream::h1_sum_optimized(&db).expect("stream H1");
     let query_us = t_q.elapsed().as_micros();
     let e2e_us = t_all.elapsed().as_micros();
 

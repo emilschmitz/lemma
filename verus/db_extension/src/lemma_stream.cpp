@@ -79,6 +79,74 @@ void load_column_metadata(StreamState &state) {
     }
 }
 
+bool prepare_pushdown_sql(
+    StreamState &state,
+    duckdb_connection connection,
+    const char *table,
+    const char *amount_column,
+    const char *date_column,
+    int64_t date_lo,
+    int64_t date_hi,
+    char *error_out,
+    size_t error_len
+) {
+    std::ostringstream sql;
+    sql << "SELECT " << quote_ident(amount_column != nullptr ? amount_column : "amount")
+        << " FROM " << quote_ident(table)
+        << " WHERE " << quote_ident(date_column != nullptr ? date_column : "event_date")
+        << " >= " << date_lo
+        << " AND " << quote_ident(date_column != nullptr ? date_column : "event_date")
+        << " <= " << date_hi;
+
+    duckdb_state status = duckdb_prepare(connection, sql.str().c_str(), &state.prepared);
+    state.has_prepared = true;
+    if (status != DuckDBSuccess) {
+        const char *err = duckdb_prepare_error(state.prepared);
+        set_error(error_out, error_len, err != nullptr ? err : "duckdb_prepare failed");
+        return false;
+    }
+    return true;
+}
+
+void sum_amounts_chunk(duckdb_data_chunk chunk, uint64_t &matched, uint64_t &sum) {
+    if (chunk == nullptr) {
+        return;
+    }
+    idx_t n = duckdb_data_chunk_get_size(chunk);
+    if (n == 0) {
+        return;
+    }
+    matched += static_cast<uint64_t>(n);
+
+    duckdb_vector amount_vec = duckdb_data_chunk_get_vector(chunk, 0);
+    void *amount_ptr = duckdb_vector_get_data(amount_vec);
+    if (amount_ptr == nullptr) {
+        return;
+    }
+
+    duckdb_logical_type amount_ltype = duckdb_vector_get_column_type(amount_vec);
+    duckdb_type amount_ty = duckdb_get_type_id(amount_ltype);
+    duckdb_destroy_logical_type(&amount_ltype);
+
+    if (amount_ty == DUCKDB_TYPE_BIGINT || amount_ty == DUCKDB_TYPE_UBIGINT) {
+        const int64_t *p = static_cast<const int64_t *>(amount_ptr);
+        const int64_t *end = p + n;
+        uint64_t local = 0;
+        for (; p < end; ++p) {
+            local += static_cast<uint64_t>(*p);
+        }
+        sum += local;
+    } else {
+        const int32_t *p = static_cast<const int32_t *>(amount_ptr);
+        const int32_t *end = p + n;
+        uint64_t local = 0;
+        for (; p < end; ++p) {
+            local += static_cast<uint64_t>(*p);
+        }
+        sum += local;
+    }
+}
+
 bool execute_streaming_result(StreamState &state, char *error_out, size_t error_len) {
     duckdb_state status = duckdb_pending_prepared_streaming(state.prepared, &state.pending);
     state.has_pending = true;
@@ -283,6 +351,85 @@ void lemma_stream_close(LemmaStreamId stream) {
     if (owned != nullptr) {
         destroy_stream_state(*owned);
     }
+}
+
+LemmaStreamId lemma_stream_start_pushdown(
+    void *conn,
+    const char *table,
+    const char *amount_column,
+    const char *date_column,
+    int64_t date_lo,
+    int64_t date_hi,
+    char *error_out,
+    size_t error_len
+) {
+    auto *connection = static_cast<duckdb_connection>(conn);
+    if (connection == nullptr || table == nullptr) {
+        set_error(error_out, error_len, "lemma_stream_start_pushdown: null connection or table");
+        return LEMMA_STREAM_INVALID;
+    }
+
+    auto state = std::make_unique<StreamState>();
+    state->table_name = table;
+
+    if (!prepare_pushdown_sql(
+            *state, connection, table, amount_column, date_column, date_lo, date_hi, error_out, error_len)) {
+        destroy_stream_state(*state);
+        return LEMMA_STREAM_INVALID;
+    }
+
+    if (!execute_streaming_result(*state, error_out, error_len)) {
+        destroy_stream_state(*state);
+        return LEMMA_STREAM_INVALID;
+    }
+
+    std::lock_guard<std::mutex> lock(g_registry_mutex);
+    LemmaStreamId id = g_next_stream_id++;
+    g_streams.emplace(id, std::move(state));
+    return id;
+}
+
+int lemma_stream_h1_sum_optimized(
+    void *conn,
+    uint64_t *matched_out,
+    uint64_t *sum_out,
+    char *error_out,
+    size_t error_len
+) {
+    auto *connection = static_cast<duckdb_connection>(conn);
+    if (connection == nullptr || matched_out == nullptr || sum_out == nullptr) {
+        set_error(error_out, error_len, "lemma_stream_h1_sum_optimized: null argument");
+        return -1;
+    }
+
+    StreamState state;
+    if (!prepare_pushdown_sql(
+            state, connection, "scan_skew", "amount", "event_date", 19960101, 19961231, error_out, error_len)) {
+        destroy_stream_state(state);
+        return -1;
+    }
+    if (!execute_streaming_result(state, error_out, error_len)) {
+        destroy_stream_state(state);
+        return -1;
+    }
+
+    uint64_t matched = 0;
+    uint64_t sum = 0;
+    state.exhausted = false;
+    while (true) {
+        release_current_chunk(state);
+        duckdb_data_chunk chunk = duckdb_fetch_chunk(state.result);
+        if (chunk == nullptr) {
+            break;
+        }
+        sum_amounts_chunk(chunk, matched, sum);
+        duckdb_destroy_data_chunk(&chunk);
+    }
+
+    destroy_stream_state(state);
+    *matched_out = matched;
+    *sum_out = sum;
+    return 0;
 }
 
 }  // extern "C"
