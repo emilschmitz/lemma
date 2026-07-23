@@ -1,0 +1,176 @@
+{
+  "timestamp": "2026-07-23T14:14:59Z",
+  "protocol": "fresh process each run; median of 5; E2E_CACHED_RERUN_US=open+query; OPEN_US / QUERY_US when available",
+  "dataset": "scan_skew 500k",
+  "db_path": "build/duckdb_pin_session/scan.duckdb",
+  "expect_sum": 1260130811,
+  "paths": {
+    "lemma_pin_stream_e2e": {
+      "folder": "verus/db_extension",
+      "agent": "verus/db_extension/agent/AGENTS.md",
+      "sql_entry": "lemma, lemma_pin, lemma_stream FFI"
+    },
+    "lemma_runtime_e2e": {
+      "folder": "verus/db_extension_runtime",
+      "agent": "verus/db_extension_runtime/agent/AGENTS.md",
+      "sql_entry": "lemma_runtime(VARCHAR)"
+    },
+    "lemma_ops_e2e": {
+      "folder": "verus/db_extension_ops",
+      "agent": "verus/db_extension_ops/agent/AGENTS.md",
+      "sql_entry": "lemma_ops(VARCHAR)"
+    },
+    "duckdb_sql_e2e": {
+      "folder": "verus/db_extension/rust_bridge",
+      "agent": null,
+      "sql_entry": "DuckDB SQL engine (baseline)"
+    }
+  },
+  "rows": [
+    {
+      "label": "lemma_pin_stream_e2e",
+      "binary": "verus/db_extension/rust_bridge/target/release/lemma_stream_h1_e2e",
+      "median_e2e_us": 15144,
+      "samples_e2e_us": [
+        15060,
+        15132,
+        15144,
+        16050,
+        17701
+      ],
+      "wall_median_us": 32130,
+      "result": 1260130811,
+      "maxrss_kb": 36736,
+      "matched_rows": 25000,
+      "sum": 1260130811,
+      "open_us": 9672,
+      "query_us": 6376,
+      "median_open_us": 9672,
+      "samples_open_us": [
+        8984,
+        9061,
+        9672,
+        10176,
+        12022
+      ],
+      "median_query_us": 6075,
+      "samples_query_us": [
+        4955,
+        5677,
+        6075,
+        6082,
+        6376
+      ]
+    },
+    {
+      "label": "lemma_runtime_e2e",
+      "binary": "verus/db_extension_runtime/rust_bridge/target/release/lemma_runtime_h1_e2e",
+      "median_e2e_us": 17181,
+      "samples_e2e_us": [
+        15892,
+        15956,
+        17181,
+        18237,
+        20925
+      ],
+      "wall_median_us": 30990,
+      "result": 1260130811,
+      "maxrss_kb": 36736,
+      "matched_rows": 25000,
+      "sum": 1260130811,
+      "open_us": 9188,
+      "query_us": 6704,
+      "median_open_us": 10335,
+      "samples_open_us": [
+        9188,
+        9324,
+        10335,
+        11945,
+        14668
+      ],
+      "median_query_us": 6631,
+      "samples_query_us": [
+        6254,
+        6291,
+        6631,
+        6704,
+        6845
+      ]
+    },
+    {
+      "label": "lemma_ops_e2e",
+      "binary": "verus/db_extension_ops/rust_bridge/target/release/lemma_ops_h1_e2e",
+      "median_e2e_us": 15966,
+      "samples_e2e_us": [
+        14766,
+        15330,
+        15966,
+        16053,
+        18461
+      ],
+      "wall_median_us": 30195,
+      "result": 1260130811,
+      "maxrss_kb": 36736,
+      "matched_rows": 25000,
+      "sum": 1260130811,
+      "open_us": 9519,
+      "query_us": 5810,
+      "median_open_us": 9678,
+      "samples_open_us": [
+        9494,
+        9519,
+        9678,
+        10072,
+        11969
+      ],
+      "median_query_us": 5980,
+      "samples_query_us": [
+        5087,
+        5810,
+        5980,
+        6471,
+        6492
+      ]
+    },
+    {
+      "label": "duckdb_sql_e2e",
+      "binary": "verus/db_extension/rust_bridge/target/release/duckdb_sql_h1_e2e",
+      "median_e2e_us": 13084,
+      "samples_e2e_us": [
+        12843,
+        12885,
+        13084,
+        13636,
+        13746
+      ],
+      "wall_median_us": 28167,
+      "result": 1260130811,
+      "maxrss_kb": 36736,
+      "sum": 1260130811,
+      "open_us": 9448,
+      "query_us": 3436,
+      "median_open_us": 9501,
+      "samples_open_us": [
+        9210,
+        9448,
+        9501,
+        10268,
+        10477
+      ],
+      "median_query_us": 3367,
+      "samples_query_us": [
+        3268,
+        3342,
+        3367,
+        3436,
+        3872
+      ]
+    }
+  ],
+  "ratios_vs_duckdb_sql_e2e": {
+    "lemma_pin_stream_e2e": 1.1574442066646287,
+    "lemma_runtime_e2e": 1.3131305411189238,
+    "lemma_ops_e2e": 1.2202690308774076
+  },
+  "notes": "Lemma paths execute the query; duckdb_sql_* is the DuckDB engine baseline. Extension .duckdb_extension stubs optional; e2e binaries are authoritative for timing."
+}

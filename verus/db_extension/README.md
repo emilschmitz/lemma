@@ -1,8 +1,14 @@
-# Verus `db_extension` — experiment-oriented DuckDB extension
+# Verus `db_extension` — path `lemma` / pin_stream
 
-This directory is a **stripped copy** of the root [`db_extension/`](../../db_extension/) for
-**Verus** experiments. Humans (or Cursor) write kernels; there is **no** OpenRouter/Docker
-sandbox agent step and no Dafny hillclimbing optimizer loop.
+This directory is the **`lemma` / pin_stream** path: pin/lease + streaming chunk access
+over DuckDB vector buffers. See also [`../DB_EXTENSION_PATHS.md`](../DB_EXTENSION_PATHS.md)
+for `lemma_runtime` and `lemma_ops` (separate trees + agent environments).
+
+Stripped copy of the root [`db_extension/`](../../db_extension/) for **Verus** experiments.
+Humans (or Cursor) write kernels; there is **no** OpenRouter/Docker sandbox agent step and
+no Dafny hillclimbing optimizer loop.
+
+**Agent brief:** [`agent/AGENTS.md`](agent/AGENTS.md) — optimize zone maps on pinned/streamed chunks; e2e metric.
 
 ## What is here
 
@@ -100,9 +106,11 @@ verus/db_extension/check_mem.sh \
   --manifest-path verus/db_extension/rust_bridge/Cargo.toml \
   --bin lemma_stream_h1_e2e --bin lemma_pin_h1_e2e
 
-verus/db_extension/check_mem.sh uv run python verus/db_extension/measure_e2e_cached_rerun.py
-# → verus/db_extension/e2e_cached_rerun_h1.json
+verus/db_extension/check_mem.sh uv run python verus/db_extension/measure_e2e_three_paths.py
+# → verus/db_extension/e2e_three_paths_h1.json
 ```
+
+See [`../DB_EXTENSION_PATHS.md`](../DB_EXTENSION_PATHS.md) for all three Lemma paths.
 
 Latest on this box (scan_skew 500k, see `pin_h1_measure.json`): **lemma_st_duckdb_mem**
 ~15µs (zone-map prune on pinned buffers), **duckdb_sql** 1T ~456–569µs, **lemma_st**

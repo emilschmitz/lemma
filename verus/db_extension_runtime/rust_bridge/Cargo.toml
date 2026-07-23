@@ -1,0 +1,24 @@
+[package]
+name = "lemma_runtime_bridge"
+version = "0.1.0"
+edition = "2021"
+description = "E2E timing for lemma_runtime path (Lemma owns physical plan)"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "lemma_runtime_h1_e2e"
+path = "src/bin/lemma_runtime_h1_e2e.rs"
+
+[dependencies]
+lemma_agent_primitives = { path = "../../research_loop/agent_primitives" }
+
+[build-dependencies]
+cc = "1.2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
