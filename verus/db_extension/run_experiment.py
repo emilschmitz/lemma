@@ -242,7 +242,7 @@ def main() -> None:
     if use_duckdb_load and tables:
         if use_h1_smoke:
             con.close()
-            print(f"LEMMA_DUCKDB_H1_SMOKE=1: H1 pin smoke on {db_path}...")
+            print(f"LEMMA_DUCKDB_H1_SMOKE=1: Lemma H1 on DuckDB mem ({db_path})...")
             run_pin_h1_smoke(db_path)
             con = duckdb.connect(db_path)
         elif use_sidecar:
@@ -263,7 +263,7 @@ def main() -> None:
         else:
             con.close()
             print(
-                f"LEMMA_LOAD_FROM_DUCKDB=1: pin+Rust probe on {db_path} "
+                f"LEMMA_LOAD_FROM_DUCKDB=1: Lemma probe on DuckDB mem ({db_path}) "
                 f"(table={probe_table}, column={probe_column})..."
             )
             run_rust_pin_probe(db_path, probe_table, probe_column)

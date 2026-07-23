@@ -1,4 +1,4 @@
-//! Smoke-test binary for DuckDB pin (default) and legacy sidecar export.
+//! Smoke-test binary for Lemma on DuckDB mem (default) and legacy sidecar export.
 
 use std::env;
 use std::path::PathBuf;

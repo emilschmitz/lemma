@@ -1,7 +1,8 @@
-"""DuckDB table access for Rust/Verus experiments.
+"""DuckDB-hosted buffers for Lemma experiments.
 
-Default path (`LEMMA_LOAD_FROM_DUCKDB=1`): **pin/lease** on DuckDB `SELECT` result
-buffers (zero-copy pointers into DuckDB vector memory; see `duckdb_pin.rs`).
+Default path (`LEMMA_LOAD_FROM_DUCKDB=1`): **pin/lease** so **Lemma** can execute on
+DuckDB `SELECT` result vector memory (zero-copy; see `duckdb_pin.rs`). DuckDB is the
+memory host, not the query engine for that timed path.
 
 Legacy copy export (numpy → `.lemma_cols` sidecars) is opt-in via
 `LEMMA_DUCKDB_SIDECAR_EXPORT=1`.

@@ -7,6 +7,8 @@ pub mod dict;
 pub mod duckdb_export;
 #[cfg(feature = "duckdb_pin")]
 pub mod duckdb_pin;
+#[cfg(feature = "duckdb_pin")]
+pub mod duckdb_stream;
 pub mod hash_join;
 pub mod parallel;
 pub mod small_card_agg;
@@ -22,8 +24,11 @@ pub use duckdb_export::{
 };
 #[cfg(feature = "duckdb_pin")]
 pub use duckdb_pin::{
-    pin_and_checksum, pin_checksum_u64_column, DuckChunk, DuckDb, DuckTablePin, PinError,
+    build_pin_zone_map_u32, pin_and_checksum, pin_checksum_u64_column, PinError, PinH1Prep,
+    PinZoneSegmentU32, DuckChunk, DuckDb, DuckTablePin, PIN_ZONE_ROWS,
 };
+#[cfg(feature = "duckdb_pin")]
+pub use duckdb_stream::DuckStream;
 pub use hash_join::{
     build_hashset_u32, par_probe_sum_u64, par_probe_sum_u64_morsel, par_probe_sum_u64_multi,
     partitioned_build_hashset_u32, probe_build_sum_u64, probe_sum_u64, probe_sum_u64_multi,

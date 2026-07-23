@@ -1,4 +1,5 @@
-//! Zero-copy **pin/lease** on DuckDB `SELECT` result chunk buffers (TRUSTED).
+//! Zero-copy **pin/lease** so **Lemma** can execute on DuckDB `SELECT` result chunk
+//! buffers (TRUSTED layout host). DuckDB is not the query engine on this path.
 //!
 //! Links prebuilt `libduckdb.so` + `lemma_pin_ffi` (no bundled DuckDB compile).
 //! Writers must not mutate the pinned table until [`DuckTablePin::unpin`].
@@ -10,6 +11,36 @@ use std::os::raw::{c_char, c_void};
 use std::ptr;
 
 use crate::duckdb_export::checksum_u64;
+use crate::zone_map::{may_satisfy_range_u32, ZoneSegmentU32};
+
+/// Sub-zones within pinned DuckDB chunks (same row budget as holdout `ZONE_ROWS`).
+pub const PIN_ZONE_ROWS: usize = 8192;
+
+/// Min/max over a date sub-slice inside one chunk; row indices are chunk-local.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PinZoneSegmentU32 {
+    pub chunk_index: usize,
+    pub min: u32,
+    pub max: u32,
+    pub start: usize,
+    pub end: usize,
+}
+
+impl PinZoneSegmentU32 {
+    #[inline]
+    pub fn may_satisfy(&self, lo: u32, hi: u32) -> bool {
+        may_satisfy_range_u32(
+            &ZoneSegmentU32 {
+                min: self.min,
+                max: self.max,
+                start: self.start,
+                end: self.end,
+            },
+            lo,
+            hi,
+        )
+    }
+}
 
 // Minimal DuckDB C API (from prebuilt duckdb.h) — avoid libduckdb-sys bundled build.
 type DuckDBState = u32;
@@ -45,6 +76,7 @@ extern "C" {
     ) -> DuckDBState;
     fn duckdb_destroy_result(result: *mut c_void);
     fn duckdb_result_error(result: *mut c_void) -> *const c_char;
+    fn duckdb_value_int64(result: *mut c_void, col: u64, row: u64) -> i64;
 
     fn lemma_pin_table(
         conn: *mut c_void,
@@ -147,6 +179,32 @@ impl DuckDb {
         }
         Ok(())
     }
+
+    /// Run SQL that returns a single INT64/BIGINT cell (DuckDB engine path for e2e baselines).
+    pub fn query_i64(&self, sql: &str) -> Result<i64, PinError> {
+        let c_sql = CString::new(sql).map_err(|e| PinError::Open(e.to_string()))?;
+        let mut result = vec![0u8; DUCKDB_RESULT_BYTES];
+        unsafe {
+            let status = duckdb_query(
+                self.conn,
+                c_sql.as_ptr(),
+                result.as_mut_ptr() as *mut c_void,
+            );
+            if status != DUCKDB_SUCCESS {
+                let err = duckdb_result_error(result.as_mut_ptr() as *mut c_void);
+                let msg = if err.is_null() {
+                    "query failed".to_string()
+                } else {
+                    CStr::from_ptr(err).to_string_lossy().into_owned()
+                };
+                duckdb_destroy_result(result.as_mut_ptr() as *mut c_void);
+                return Err(PinError::Open(msg));
+            }
+            let v = duckdb_value_int64(result.as_mut_ptr() as *mut c_void, 0, 0);
+            duckdb_destroy_result(result.as_mut_ptr() as *mut c_void);
+            Ok(v)
+        }
+    }
 }
 
 impl Drop for DuckDb {
@@ -238,6 +296,13 @@ impl DuckTablePin {
         Self::resolve_column(self.pin_id, name)
     }
 
+    pub fn chunk(&self, index: usize) -> DuckChunk<'_> {
+        DuckChunk {
+            pin: self,
+            index,
+        }
+    }
+
     pub fn unpin(self) {
         unsafe { lemma_unpin(self.pin_id) };
         std::mem::forget(self);
@@ -326,7 +391,24 @@ impl<'a> DuckChunk<'a> {
         lo: u32,
         hi: u32,
     ) -> Result<(u64, u64), PinError> {
+        self.col_i64_or_i32_sum_filtered_range(date_col, amount_col, lo, hi, 0, self.len())
+    }
+
+    /// Filtered sum over `[row_start, row_end)` within this chunk (chunk-local indices).
+    pub fn col_i64_or_i32_sum_filtered_range(
+        &self,
+        date_col: usize,
+        amount_col: usize,
+        lo: u32,
+        hi: u32,
+        row_start: usize,
+        row_end: usize,
+    ) -> Result<(u64, u64), PinError> {
         let n = self.len();
+        if row_start >= row_end || row_start >= n {
+            return Ok((0, 0));
+        }
+        let row_end = row_end.min(n);
         let lo64 = lo as i64;
         let hi64 = hi as i64;
         let date_ty =
@@ -339,12 +421,11 @@ impl<'a> DuckChunk<'a> {
         let mut sum = 0u64;
         let mut matched = 0u64;
 
-        // Inline date/amount width combinations (no heap alloc).
         macro_rules! scan {
             ($d:ty, $a:ty) => {{
                 let dates = unsafe { std::slice::from_raw_parts(date_ptr as *const $d, n) };
                 let amounts = unsafe { std::slice::from_raw_parts(amount_ptr as *const $a, n) };
-                for i in 0..n {
+                for i in row_start..row_end {
                     let d = dates[i] as i64;
                     if d >= lo64 && d <= hi64 {
                         sum = sum.wrapping_add(amounts[i] as u64);
@@ -416,4 +497,123 @@ pub fn pin_and_checksum(
     let cksum = pin_checksum_u64_column(&pin, col_idx)?;
     pin.unpin();
     Ok((rows, cksum))
+}
+
+fn min_max_dates_as_u32(
+    date_ptr: *const u8,
+    date_ty: DuckDBType,
+    chunk_len: usize,
+    start: usize,
+    end: usize,
+) -> Result<(u32, u32), PinError> {
+    match date_ty {
+        DUCKDB_TYPE_INTEGER | DUCKDB_TYPE_UINTEGER => {
+            let all =
+                unsafe { std::slice::from_raw_parts(date_ptr as *const i32, chunk_len) };
+            let slice = &all[start..end];
+            let min = *slice.iter().min().unwrap_or(&0) as u32;
+            let max = *slice.iter().max().unwrap_or(&0) as u32;
+            Ok((min, max))
+        }
+        DUCKDB_TYPE_BIGINT | DUCKDB_TYPE_UBIGINT => {
+            let all =
+                unsafe { std::slice::from_raw_parts(date_ptr as *const i64, chunk_len) };
+            let slice = &all[start..end];
+            let min = *slice.iter().min().unwrap_or(&0) as u32;
+            let max = *slice.iter().max().unwrap_or(&0) as u32;
+            Ok((min, max))
+        }
+        _ => Err(PinError::UnsupportedType(format!(
+            "zone date col type {date_ty} (need INTEGER/BIGINT)"
+        ))),
+    }
+}
+
+/// Build sub-zones over pinned DuckDB date vectors (zero-copy; indices are chunk-local).
+pub fn build_pin_zone_map_u32(
+    pin: &DuckTablePin,
+    date_col: usize,
+    zone_rows: usize,
+) -> Result<Vec<PinZoneSegmentU32>, PinError> {
+    let zone_rows = zone_rows.max(1);
+    let mut zones = Vec::new();
+    for chunk_index in 0..pin.chunk_count() {
+        let chunk = pin.chunk(chunk_index);
+        let n = chunk.len();
+        if n == 0 {
+            continue;
+        }
+        let date_ty = unsafe { lemma_pin_column_type(pin.pin_id, date_col as u64) };
+        let date_ptr = chunk.raw_data(date_col)?;
+        let mut start = 0usize;
+        while start < n {
+            let end = (start + zone_rows).min(n);
+            let (min, max) = min_max_dates_as_u32(date_ptr, date_ty, n, start, end)?;
+            zones.push(PinZoneSegmentU32 {
+                chunk_index,
+                min,
+                max,
+                start,
+                end,
+            });
+            start = end;
+        }
+    }
+    Ok(zones)
+}
+
+/// H1-style date-range sum over pinned DuckDB buffers with zone-map prune (prep outside timer).
+pub struct PinH1Prep<'a> {
+    pin: &'a DuckTablePin,
+    date_col: usize,
+    amount_col: usize,
+    zones: Vec<PinZoneSegmentU32>,
+}
+
+impl<'a> PinH1Prep<'a> {
+    pub fn new(
+        pin: &'a DuckTablePin,
+        date_col: usize,
+        amount_col: usize,
+    ) -> Result<Self, PinError> {
+        Ok(Self {
+            pin,
+            date_col,
+            amount_col,
+            zones: build_pin_zone_map_u32(pin, date_col, PIN_ZONE_ROWS)?,
+        })
+    }
+
+    pub fn zone_count(&self) -> usize {
+        self.zones.len()
+    }
+
+    pub fn zones(&self) -> &[PinZoneSegmentU32] {
+        &self.zones
+    }
+
+    /// Returns `(matched_rows, sum, zones_kept, zones_total)`.
+    pub fn run(&self, lo: u32, hi: u32) -> Result<(u64, u64, usize, usize), PinError> {
+        let zones_total = self.zones.len();
+        let mut zones_kept = 0usize;
+        let mut matched = 0u64;
+        let mut sum = 0u64;
+        for z in &self.zones {
+            if z.may_satisfy(lo, hi) {
+                zones_kept += 1;
+                let chunk = self.pin.chunk(z.chunk_index);
+                let (m, s) = chunk.col_i64_or_i32_sum_filtered_range(
+                    self.date_col,
+                    self.amount_col,
+                    lo,
+                    hi,
+                    z.start,
+                    z.end,
+                )?;
+                matched += m;
+                sum = sum.wrapping_add(s);
+            }
+        }
+        Ok((matched, sum, zones_kept, zones_total))
+    }
 }

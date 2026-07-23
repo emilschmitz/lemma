@@ -12,5 +12,21 @@ path = "src/bin/lemma_duckdb_load_test.rs"
 name = "lemma_pin_h1_smoke"
 path = "src/bin/lemma_pin_h1_smoke.rs"
 
+[[bin]]
+name = "lemma_stream_h1_e2e"
+path = "src/bin/lemma_stream_h1_e2e.rs"
+
+[[bin]]
+name = "lemma_pin_h1_e2e"
+path = "src/bin/lemma_pin_h1_e2e.rs"
+
+[[bin]]
+name = "duckdb_sql_h1_e2e"
+path = "src/bin/duckdb_sql_h1_e2e.rs"
+
+[[bin]]
+name = "lemma_copy_h1_smoke"
+path = "src/bin/lemma_copy_h1_smoke.rs"
+
 [dependencies]
 lemma_agent_primitives = { path = "../../research_loop/agent_primitives" }

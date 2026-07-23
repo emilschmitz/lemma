@@ -1,78 +1,87 @@
 {
-  "timestamp": "2026-07-22T20:59:09Z",
+  "timestamp": "2026-07-22T22:56:43Z",
   "protocol": "3 warmup + median of 5; pin/load outside timer",
   "dataset": "scan_skew 500k",
   "expect_sum": 1260130811,
+  "naming": {
+    "lemma_st_duckdb_mem": "Lemma executes; storage/layout is DuckDB vector buffers",
+    "duckdb_sql_*": "DuckDB query engine executes SQL (baseline competitor)",
+    "lemma_st": "Lemma on owned Vec columns + zone maps"
+  },
   "rows": [
     {
-      "label": "lemma_pin_chunk",
-      "median_us": 427,
+      "label": "lemma_st_duckdb_mem",
+      "median_us": 14,
       "trial_medians_us": [
-        314,
-        427,
-        480
+        14,
+        14,
+        19
       ],
       "result": 1260130811,
-      "notes": "pin outside timer; scan DuckDB chunks; 3 warm+median5 per process; mom of 3"
+      "notes": "Lemma executes the query; DuckDB supplies vector memory only (pin+zone prep outside timer; zone-map prune; 3 warm+median5 \u00d7 3 processes \u2192 mom)",
+      "ZONES_TOTAL": 245,
+      "ZONES_KEPT": 13,
+      "MATCHED_ROWS": 25000,
+      "SUM_AMOUNT": 1260130811
     },
     {
-      "label": "duckdb_1t_file",
-      "median_us": 956,
+      "label": "duckdb_sql_1t_file",
+      "median_us": 2036,
       "samples_us": [
-        744,
-        805,
-        956,
-        986,
-        1075
+        1253,
+        1930,
+        2036,
+        2090,
+        2187
       ],
       "result": 1260130811,
-      "notes": "same scan.duckdb; load already on disk; query-only 3 warm+median5"
+      "notes": "DuckDB engine executes SQL (not Lemma); same scan.duckdb; query-only 3 warm+median5"
     },
     {
-      "label": "duckdb_1t_fresh",
-      "median_us": 883,
+      "label": "duckdb_sql_1t_fresh",
+      "median_us": 816,
       "samples_us": [
-        710,
-        824,
-        883,
-        884,
-        1212
+        685,
+        697,
+        816,
+        1050,
+        1051
       ],
       "result": 1260130811,
-      "notes": "holdout-style: materialize CSV then query-only timer"
+      "notes": "DuckDB engine executes SQL (not Lemma); holdout-style CSV materialize then query-only"
     },
     {
       "label": "lemma_st",
-      "median_us": 14,
+      "median_us": 11,
       "result": 1260130811,
       "notes": "load+zone prep outside timer; 3 warm+median5 (bench_holdout)",
       "raw": [
-        "QUERY_LATENCY_US: 14",
+        "QUERY_LATENCY_US: 11",
         "RESULT: 1260130811"
       ]
     },
     {
       "label": "bare_st",
-      "median_us": 123,
+      "median_us": 122,
       "result": 1260130811,
       "notes": "load+zone prep outside timer; 3 warm+median5 (bench_holdout)",
       "raw": [
-        "QUERY_LATENCY_US: 123",
+        "QUERY_LATENCY_US: 122",
         "RESULT: 1260130811"
       ]
     }
   ],
   "ratios": {
-    "pin_over_duckdb_1t_file": 0.446652719665272,
-    "pin_over_duckdb_1t_fresh": 0.48357870894677235,
-    "pin_over_lemma_st": 30.5,
-    "pin_over_bare_st": 3.4715447154471546,
-    "lemma_st_over_duckdb_1t_fresh": 0.015855039637599093
+    "lemma_st_duckdb_mem_over_duckdb_sql_1t_file": 0.0068762278978389,
+    "lemma_st_duckdb_mem_over_duckdb_sql_1t_fresh": 0.01715686274509804,
+    "lemma_st_duckdb_mem_over_lemma_st": 1.2727272727272727,
+    "lemma_st_duckdb_mem_over_bare_st": 0.11475409836065574,
+    "lemma_st_over_duckdb_sql_1t_fresh": 0.013480392156862746
   },
   "prior_holdout_results_json_H1": {
     "lemma_st_us": 13,
     "bare_st_us": 120,
-    "duckdb_1t_us": 461,
+    "duckdb_sql_1t_us": 461,
     "note": "prior snapshot; this run remeasures on current HW"
   }
 }

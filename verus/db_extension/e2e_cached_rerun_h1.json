@@ -1,0 +1,128 @@
+{
+  "timestamp": "2026-07-22T23:42:39Z",
+  "protocol": "fresh process each run; median of 5; E2E_CACHED_RERUN_US=open+query; also OPEN_US / QUERY_US splits",
+  "dataset": "scan_skew 500k",
+  "db_path": "build/duckdb_pin_session/scan.duckdb",
+  "expect_sum": 1260130811,
+  "naming": {
+    "lemma_st_duckdb_stream": "Lemma executes on streaming DuckDB chunks (no retain-all)",
+    "duckdb_sql_1t_file_e2e": "DuckDB SQL engine baseline (same Rust open+query e2e binary)",
+    "lemma_st_duckdb_mem_pin_e2e": "Lemma pin materialize+zone reference"
+  },
+  "rows": [
+    {
+      "label": "lemma_st_duckdb_stream",
+      "median_e2e_us": 27415,
+      "samples_e2e_us": [
+        18629,
+        19593,
+        27415,
+        27630,
+        29176
+      ],
+      "wall_median_us": 59419,
+      "result": 1260130811,
+      "maxrss_kb": 37504,
+      "matched_rows": 25000,
+      "sum": 1260130811,
+      "open_us": 16675,
+      "query_us": 12500,
+      "median_open_us": 16675,
+      "samples_open_us": [
+        11608,
+        12426,
+        16675,
+        18403,
+        20352
+      ],
+      "median_query_us": 7277,
+      "samples_query_us": [
+        7020,
+        7165,
+        7277,
+        9011,
+        12500
+      ]
+    },
+    {
+      "label": "duckdb_sql_1t_file_e2e",
+      "median_e2e_us": 15221,
+      "samples_e2e_us": [
+        14780,
+        14996,
+        15221,
+        15750,
+        16316
+      ],
+      "wall_median_us": 33840,
+      "result": 1260130811,
+      "maxrss_kb": 37504,
+      "sum": 1260130811,
+      "open_us": 11816,
+      "query_us": 3178,
+      "median_open_us": 11320,
+      "samples_open_us": [
+        10996,
+        11288,
+        11320,
+        11816,
+        12396
+      ],
+      "median_query_us": 3491,
+      "samples_query_us": [
+        3178,
+        3352,
+        3491,
+        3900,
+        5319
+      ]
+    },
+    {
+      "label": "lemma_st_duckdb_mem_pin_e2e",
+      "median_e2e_us": 23210,
+      "samples_e2e_us": [
+        20659,
+        22926,
+        23210,
+        23218,
+        23902
+      ],
+      "wall_median_us": 45404,
+      "result": 1260130811,
+      "maxrss_kb": 51456,
+      "matched_rows": 25000,
+      "sum": 1260130811,
+      "open_us": 12465,
+      "query_us": 11436,
+      "median_open_us": 12656,
+      "samples_open_us": [
+        12362,
+        12465,
+        12656,
+        12656,
+        13545
+      ],
+      "median_query_us": 10269,
+      "samples_query_us": [
+        8295,
+        9672,
+        10269,
+        10553,
+        11436
+      ]
+    }
+  ],
+  "ratios": {
+    "stream_over_duckdb_sql_e2e": 1.8011300177386504,
+    "stream_over_pin_e2e": 1.1811719086600603,
+    "pin_e2e_over_duckdb_sql_e2e": 1.5248669601208855,
+    "stream_over_duckdb_sql_query": 2.0845030077341735,
+    "stream_over_pin_query": 0.7086376472879541
+  },
+  "verdict": {
+    "stream_beats_pin_e2e": false,
+    "stream_beats_duckdb_sql_e2e": false,
+    "stream_beats_duckdb_sql_query": false
+  },
+  "notes": "All three are fresh OS processes with the same Rust DuckDb::open path. On this small H1, OPEN_US dominates E2E; QUERY_US is the post-open compare."
+}

@@ -17,6 +17,31 @@ Never silently emit a skeleton program, auto-codegen `run_query`, or fall back t
 
 Surface `CUSTOM_PIPELINE_FAILED` on stderr so an agent can pick up the work.
 
+## Relevant performance metric (conceptual)
+
+**Primary (product-relevant):** *cached Lemma, week-later / cold process, new session* vs
+DuckDB engine on the **same data and SQL shape**.
+
+Wall clock from process start through answer:
+
+`open DB → bind/prep (pin or scan; zone maps / other data-dependent prep) → execute → result`
+
+Call this **e2e cached rerun**. Do **not** treat kernel-only µs (load/pin outside timer) as the
+product claim unless explicitly labeled **query-hot**.
+
+| Metric | What it answers | Misleading if… |
+|--------|-----------------|----------------|
+| **e2e cached rerun** | Next week, binary already built, data may be new or same file | You omit prep/materialize |
+| **query-hot** | Kernel quality after data is already leased/loaded | Sold as “10× vs DuckDB” alone |
+
+**Amdahl (e2e):** if shared scan/I/O is large, even a 10–30× kernel cannot yield 10–30× e2e.
+Expect e2e speedup ≪ query-hot speedup until prep is a streaming/storage scan or an in-engine
+operator (no retained full-column `SELECT`).
+
+**Verification:** Spec stays logical; layout/pin/operator are TRUSTED means. Same metric applies
+to `lemma_st`, `lemma_st_duckdb_mem`, and `lemma_st_duckdb_copy` once each path’s prep is in the
+timer for e2e.
+
 ## Agent assumptions
 
 - **Performance:** assume a capable agent (may specialize to HW, DuckDB version, layout, stats).

@@ -1,10 +1,11 @@
-//! H1 smoke: sum(amount) with date filter over DuckDB pin chunks (no sidecar).
+//! H1 smoke: Lemma sum(amount) with date filter over pinned DuckDB vector buffers.
 //!
 //!   lemma_pin_h1_smoke <db_path>
 //!
-//! Expects `scan_skew` already loaded. Uses chunk vector pointers under a pin lease.
+//! Expects `scan_skew` already loaded. Lemma executes; DuckDB only supplies layout/memory.
+//! Zone maps are built at prep time (outside query timer), matching holdout H1LemmaPrep.
 
-use lemma_agent_primitives::DuckDb;
+use lemma_agent_primitives::{DuckDb, PinH1Prep};
 use std::env;
 use std::time::Instant;
 
@@ -22,38 +23,36 @@ fn main() {
     let date_col = pin.column_index("event_date").expect("event_date");
     let amount_col = pin.column_index("amount").expect("amount");
 
+    // Prep: zone maps over pinned date vectors (outside query timer).
+    let prep = PinH1Prep::new(&pin, date_col, amount_col).expect("zone prep");
+
     // Warmup
     for _ in 0..3 {
-        let mut _s = 0u64;
-        for chunk in pin.chunks() {
-            let (m, s) = chunk
-                .col_i64_or_i32_sum_filtered(date_col, amount_col, H1_LO, H1_HI)
-                .expect("sum");
-            let _ = m;
-            _s = _s.wrapping_add(s);
-        }
+        let _ = prep.run(H1_LO, H1_HI).expect("warmup");
     }
 
     let mut times = [0u128; 5];
-    let mut sum = 0u64;
     let mut matched = 0u64;
+    let mut sum = 0u64;
+    let mut zones_kept = 0usize;
+    let mut zones_total = prep.zone_count();
     for t in &mut times {
         let t0 = Instant::now();
-        sum = 0;
-        matched = 0;
-        for chunk in pin.chunks() {
-            let (m, s) = chunk
-                .col_i64_or_i32_sum_filtered(date_col, amount_col, H1_LO, H1_HI)
-                .expect("sum");
-            matched += m;
-            sum = sum.wrapping_add(s);
-        }
+        let (m, s, kept, total) = prep.run(H1_LO, H1_HI).expect("query");
+        matched = m;
+        sum = s;
+        zones_kept = kept;
+        zones_total = total;
         *t = t0.elapsed().as_micros();
     }
     times.sort();
     let median = times[2];
 
-    println!("H1_PIN_OK");
+    println!("H1_LEMMA_OK");
+    println!("ENGINE: lemma");
+    println!("LAYOUT: duckdb_mem");
+    println!("ZONES_TOTAL: {zones_total}");
+    println!("ZONES_KEPT: {zones_kept}");
     println!("MATCHED_ROWS: {matched}");
     println!("SUM_AMOUNT: {sum}");
     println!("QUERY_LATENCY_US: {median}");

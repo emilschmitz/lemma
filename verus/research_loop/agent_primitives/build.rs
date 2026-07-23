@@ -12,10 +12,13 @@ fn main() {
         .unwrap_or_else(|_| repo.join("build/libduckdb"));
 
     let pin_cpp = manifest_dir.join("../../db_extension/src/lemma_pin.cpp");
+    let stream_cpp = manifest_dir.join("../../db_extension/src/lemma_stream.cpp");
     let pin_inc = manifest_dir.join("../../db_extension/src");
 
     println!("cargo:rerun-if-changed={}", pin_cpp.display());
+    println!("cargo:rerun-if-changed={}", stream_cpp.display());
     println!("cargo:rerun-if-changed={}", pin_inc.join("lemma_pin.h").display());
+    println!("cargo:rerun-if-changed={}", pin_inc.join("lemma_stream.h").display());
     println!("cargo:rerun-if-env-changed=LEMMA_DUCKDB_LIB_DIR");
 
     if !cfg!(feature = "duckdb_pin") {
@@ -37,6 +40,7 @@ fn main() {
         .cpp(true)
         .std("c++17")
         .file(&pin_cpp)
+        .file(&stream_cpp)
         .include(&pin_inc)
         .include(&duck_dir)
         .define("LEMMA_PIN_FFI_BUILD", None)

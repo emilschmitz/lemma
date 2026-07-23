@@ -18,7 +18,7 @@ def lemma_load_format() -> str:
 
 
 def lemma_load_from_duckdb() -> bool:
-    """When set, pin DuckDB column buffers for Rust (zero-copy lease, not sidecar export)."""
+    """When set, Lemma executes on pinned DuckDB vector buffers (zero-copy; DuckDB is layout host)."""
     return env_bool("LEMMA_LOAD_FROM_DUCKDB", "0") or lemma_load_format() == "duckdb_memory"
 
 
