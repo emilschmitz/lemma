@@ -42,6 +42,23 @@ operator (no retained full-column `SELECT`).
 to `lemma_st`, `lemma_st_duckdb_mem`, and `lemma_st_duckdb_copy` once each path’s prep is in the
 timer for e2e.
 
+## Agent vs scaffolding (be explicit)
+
+When Lemma loses to DuckDB on **e2e cached rerun**, always say which bucket it is:
+
+| Verdict | Meaning | What to do |
+|---------|---------|------------|
+| **Agent / kernel** | Scaffold delivered the right data; **our filter/join/agg code** is slower than DuckDB’s | Specialize harder (zones, layout, HW, fusion). This is the capable-agent job. |
+| **Scaffolding** | We cannot express the intended physical plan (no storage scan, forced SQL `WHERE` pushdown, forced full copy, broken lease) | Fix TRUSTED APIs / path folders — **not** an agent prompt tweak. |
+| **Metric / Amdahl** | Open/I/O dominates the clock; even a great kernel barely moves e2e | Report **QUERY_US** and **OPEN_US** separately; don’t claim e2e 10× from query-hot. |
+
+**Current H1 status (chunk / lease / storage vs `duckdb_sql`, Lemma does the filter):**  
+Scaffolding is **good enough** to run the intended architectures (`lemma_copy`, `lemma_chunk`, `lemma_lease`, `lemma_storage` with real `DataTable` scan). The remaining gap on **QUERY_US** is primarily **agent/kernel quality** (defaults are not GenDB-grade yet), not “we lack a below-chunk path.” Secondary scaffold nits (e.g. storage open folded into QUERY_US) must not be confused with that.
+
+**Do not** “fix” a kernel gap by pushing analytical `WHERE`/`SUM` back into DuckDB SQL — that changes the experiment (DuckDB does the meaningful work again).
+
+Path index: `verus/DB_EXTENSION_PATHS.md`.
+
 ## Agent assumptions
 
 - **Performance:** assume a capable agent (may specialize to HW, DuckDB version, layout, stats).

@@ -38,3 +38,7 @@ verus/db_extension/check_mem.sh uv run python verus/db_extension/measure_e2e_pat
 ```
 
 Dataset: `build/duckdb_pin_session/scan.duckdb` (500k). No full holdout.
+
+## Agent vs scaffolding
+
+See `verus/research_loop/agents/AGENTS.md`. **Current H1 e2e gap vs DuckDB: primarily agent/kernel**, not missing path scaffolding. Do not push analytical WHERE/SUM back to DuckDB SQL to fake a win.

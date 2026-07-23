@@ -53,6 +53,18 @@ Legacy **`lemma_stream_h1_sum_optimized`** (SQL `WHERE` pushdown) remains in tre
 
 ---
 
+## Agent vs scaffolding (H1 e2e)
+
+**Right now the gap vs DuckDB is mostly agent/kernel, not missing architecture.**
+
+- Scaffolding **can** feed Lemma via copy / chunk / lease / storage (`DataTable` scan).
+- Defaults still lose on **QUERY_US** → improve **Lemma** prune/filter/agg code.
+- Do **not** “win” by handing `WHERE`/`SUM` back to DuckDB SQL.
+
+See also `verus/research_loop/agents/AGENTS.md` § *Agent vs scaffolding*.
+
+---
+
 ## Build / measure
 
 ```bash
