@@ -468,7 +468,7 @@ def run_optimization_loop(sql_query: str, dataset_size: int = 50000, max_iterati
         _vprint("  - Verifying and compiling Rust binaries...", end="", flush=True)
         h_start = time.perf_counter()
         harness_cmd = [
-            "uv", "run", "python", "research_loop/harness.py",
+            "uv", "run", "python", "research_loop/dafny_legacy/harness.py",
             "-q", str(query_id),
             "--dataset-size", str(dataset_size)
         ]

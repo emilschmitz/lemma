@@ -1,6 +1,6 @@
 # GenDB-style SEC-EDGAR holdout (test set)
 
-**Outside `verus/`** — holdout / leakage-resistant eval set, not Lemma engine code.
+**At repo root** — holdout / leakage-resistant eval set, not Lemma engine code.
 
 Same custom-benchmark **method** GenDB used (paper §4.1–4.2; Immanuel: use that
 procedure). Files copied from upstream `SolidLao/GenDB` `benchmarks/sec-edgar/` —
@@ -88,7 +88,7 @@ script -f holdout/gendb_sec_edgar/results/gcloud_ssh_$(date -u +%Y%m%dT%H%M%SZ).
 # or: ssh … 'bash -lc …' 2>&1 | tee results/remote_run.log
 ```
 
-## Relation to `verus/research_loop/holdout`
+## Relation to `research_loop/holdout`
 
 That tree is Lemma’s **small synthetic** holdout (scan_skew, etc.). This folder is the
 **GenDB SEC-EDGAR** procedure / queries for a separate, leakage-resistant test set.

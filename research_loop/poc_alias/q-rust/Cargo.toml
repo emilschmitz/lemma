@@ -1,6 +1,0 @@
-[package]
-name="poc"
-version="0.1.0"
-edition="2021"
-[dependencies]
-dafny_runtime={path="/home/emil/projects/verified-hillclimbing-db/research_loop/working_query-rust/runtime"}

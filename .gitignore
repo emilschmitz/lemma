@@ -63,7 +63,7 @@ verus/research_loop/working_query/verify_error_*.log
 # Verus research artifacts / large data
 verus/research_loop/generated/
 verus/research_loop/**/target/
-verus/research_loop/holdout/data/*.tbl
+research_loop/holdout/data/*.tbl
 data/tpch-sf1/*.tbl
 *.long-type-*.txt
 /basic_join_*

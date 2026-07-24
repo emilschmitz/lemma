@@ -118,7 +118,7 @@ def extract_marked_body(text: str) -> str:
         body = marked
     else:
         try:
-            from research_loop.assemble_runquery import extract_runquery_body_text as _fallback
+            from research_loop.dafny_legacy.assemble_runquery import extract_runquery_body_text as _fallback
 
             body = _fallback(text)
         except ImportError:

@@ -1,67 +1,89 @@
-# Research Loop
+# Verus research loop
 
-An isolated sandboxed environment for running an autonomous, Karpathy-style optimization loop over analytial SQL queries. An optimizing agent iteratively writes a verified query implementation, which is checked against a Dafny formal specification, compiled to a native Rust binary, and benchmarked on real hardware.
-
-> **Depends on** the `sql-transpiler` package from the `transpiler/` workspace member. Run `uv sync` at the project root before using.
-
-## How It Works
+Verified query pipeline for **Verus-annotated Rust** that proves and runs a
+**single artifact** per query.
 
 ```
-Agent writes RunQuery → harness.py verifies (Dafny/Z3) → compiles (Rust/Cargo) → benchmarks → reports JSON
+SQL → MethodSpec (transpile) → proved run_query ≡ MethodSpec → verus verify → verus --compile → run binary
 ```
 
-1. **Specification**: `harness.py` transpiles the target SQL query into a Dafny `MethodSpec` (the ground truth).
-2. **Agent Code**: The agent writes an optimized `method RunQuery` into `agent_scratchpad.md`.
-3. **Verification**: Dafny/Z3 formally proves that `RunQuery` satisfies `MethodSpec`. If the proof fails, the loop reports a failure immediately — no binary is produced.
-4. **Compilation**: The verified Dafny code is translated to Rust and postprocessed to optimize performance (NB: this technically breaks the formal verification, see root README for details) and compiled to a release binary using `cargo build --release`.
-5. **Benchmarking**: The binary is executed and wall-clock latency is measured in microseconds.
-6. **Telemetry**: A JSON blob is emitted to stdout for the agent to interpret and iterate on.
+## Default path (unified)
 
-## Running
+One generated `.rs` file under `generated/` contains:
+
+- Transpiled `Cols` / `valid_cols` / `method_spec` / `method_spec_helper`
+- Trusted arithmetic prelude (`add_u64`, …)
+- **`pub exec fn run_query`** with real loop invariants (no `external_body` on `run_query`)
+- Trusted `load_cols` (tbl I/O boundary)
+- `main` that loads `.tbl`, warms up, times the 3rd run, prints `QUERY_LATENCY_US:` and `RESULT:`
+
+`proof_verified=True` means **Verus verified the whole file**, including `run_query` ≡ `method_spec`.
+
+`REQUIRE_PROOF=1` (default when verify is enabled): verify or compile failure → pipeline `FAILURE`.
+
+Set `LEGACY_UNPROVED_EXEC=1` to restore the old dual path (verify `spec.rs` only + cargo unproved `query.rs`) for debugging.
+
+## Quick start
+
+From repo root:
 
 ```bash
-# From the project root:
-make loop                  # Query 1, 50k rows (default)
-
-# Or directly:
-uv run python research_loop/harness.py -q 1 --dataset-size 50000
-uv run python research_loop/harness.py -q 4 --dataset-size 5000
+export PATH=$HOME/tools/verus:$PATH
+uv sync
+uv run python research_loop/benchmark_verified.py --limit 50000
+uv run python research_loop/benchmark_verified.py --tpch --limit 50000
+uv run python research_loop/benchmark_verified.py --basic-sql --limit 50000
 ```
 
-Output:
-```json
-{
-  "status": "SUCCESS",
-  "proof_verified": true,
-  "latency_us": 17618,
-  "compiler_error": ""
-}
+Smoke test (no data file):
+
+```bash
+uv run python research_loop/benchmark_verified.py --smoke
 ```
 
-## Files
+Single query / basic-sql fixture:
 
-| File | Purpose |
-|---|---|
-| `harness.py` | Orchestration script |
-| `config.env` | Verification and compilation timeouts |
-| `agent_scratchpad.md` | Legacy agent output (markdown); prefer `agent_workspace/runquery_agent.dfy` |
-| `agent_workspace/` | Docker agent RW mount — body-only `runquery_agent.dfy` |
-| `AGENT_SANDBOX.md` | Docker agent setup, env vars, loop/submit flow |
-| `working_query-rust/` | Persistent Cargo workspace cache (keeps rebuild times ~0.8s) |
+```bash
+uv run python research_loop/harness.py -q 1
+uv run python research_loop/harness.py --basic-sql inner_join_sum
+uv run python research_loop/harness.py --basic-sql all
+```
 
-## Query Signatures
+Requires `ssb-dbgen/lineorder_flat.tbl` (SSB) or `data/tpch-sf1/lineitem.tbl` (TPC-H) for timing.
 
-The `RunQuery` return type must match `MethodSpec` for the chosen query:
+## Layout
 
-| Queries | Return Type |
-|---|---|
-| 1, 2, 3, 14 | `int` |
-| 4, 5, 6, 11, 12 | `map<(int, string), int>` |
-| 7, 8, 9, 10 | `map<(string, string, int), int>` |
-| 13 | `map<(int, string, string), int>` |
-| 15 | `map<string, int>` |
+- `harness.py` — transpile → assemble → verus verify → verus `--compile` → run binary
+- `assemble_verified_program.py` — single-file assembly (spec + proved body + load + main)
+- `verified_runqueries.py` — hand-written proved `run_query` bodies for all fixtures
+- `benchmark_verified.py` — multi-query bench vs bare Rust
+- `benchmark_runqueries.py` — legacy unproved exec bodies (`LEGACY_UNPROVED_EXEC=1` only)
+- `harness_legacy.py` — old dual-path harness
+- `native/` — optional helpers (unified path uses transpiler prelude)
+- `generated/` — per-query `.rs` sources and compiled binaries (gitignored)
 
-## Compilation Caching
+## Fixtures
 
-- **First run / after `make clean`**: Detects missing `Cargo.toml`, triggers `dafny build --target:rs` to regenerate the full Cargo workspace (~15s).
-- **All subsequent runs**: Uses `dafny translate rs` (source only) + incremental `cargo build --release` (~0.8s).
+SSB: Q1, Q2, Q3, Q4, Q5, Q6, Q10, Q11, Q13  
+TPC-H: Q1, Q6
+
+Scalars use backward `while i > 0` with `res == method_spec_helper(cols, i as int)`.
+Group-bys prove a ghost `Map` tied to `method_spec_helper` in the **same** backward loop that accumulates exec `HashMap` via **TRUSTED** NativeAgg-style helpers (`hashmap_*_view`, `agg_new_*`, `agg_add_*`) — no separate rematerialize scan.
+
+### Trust model (summary)
+
+**Verified:** `run_query` exec ≡ `method_spec` for scalar + group-by fixtures (ghost map + same-loop NativeAgg).
+
+**Still TRUSTED:** wrapping arith under `valid_cols`; `hashmap_*_view` / `agg_new_*` / `agg_add_*`; `load_cols` I/O; LIKE / LEFT JOIN / UNION / EXISTS / IN / DISTINCT / ORDER BY helpers when those SQL features are used.
+
+### Basic SQL fixtures
+
+Batch-1 scalars (`basic_sql_fixtures.py`), joins (`basic_sql_join_fixtures.py`), set/subquery/CTE (`basic_sql_set_cte_fixtures.py`), projection/order/arith (`basic_sql_proj_order_fixtures.py`). See feature table in `verus_transpiler/README.md` and [basic_sql_primer.md](../docs/verus/basic_sql_primer.md).
+
+Cheating inside TRUSTED `external_body` bodies can still “verify” while returning wrong SQL results — that is the residual gap; agent-written `run_query` cannot.
+
+`agg_add_*` postconditions use Verus mutable-ref syntax: `old(hm)@` / `final(hm)@` (not `old(view(hm@))`). String `get_*_exec` / `eq_at_*` ensures are emitted by the transpiler (exec filters connect to the spec proof).
+
+## Transpiler
+
+Package `verus_transpiler/` — see `verus_transpiler/README.md`.

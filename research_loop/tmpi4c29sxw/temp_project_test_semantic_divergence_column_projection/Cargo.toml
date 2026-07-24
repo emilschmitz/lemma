@@ -1,8 +1,0 @@
-[package]
-name = "temp_project_test_semantic_divergence_column_projection"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-
-dafny_runtime = { path = "/home/emil/projects/verified-hillclimbing-db/research_loop/working_query-rust/runtime" }

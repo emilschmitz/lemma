@@ -39,6 +39,9 @@ class AgentFlags:
     agent_network: bool = False
     agent_data_mode: str = "stats"
     agent_workload_hint: bool = True
+    agent_web_search: bool = False
+    agent_docs_mount: bool = True
+    agent_submit_only_measure: bool = True
     agent_image: str = "lemma-agent:latest"
     agent_max_turns: int = 40
 
@@ -53,6 +56,9 @@ class AgentFlags:
             agent_network=truthy(cfg.get("AGENT_NETWORK", "0")),
             agent_data_mode=cfg.get("AGENT_DATA_MODE", "stats"),
             agent_workload_hint=truthy(cfg.get("AGENT_WORKLOAD_HINT", "1")),
+            agent_web_search=truthy(cfg.get("AGENT_WEB_SEARCH", "0")),
+            agent_docs_mount=truthy(cfg.get("AGENT_DOCS_MOUNT", "1")),
+            agent_submit_only_measure=truthy(cfg.get("AGENT_SUBMIT_ONLY_MEASURE", "1")),
             agent_image=cfg.get("AGENT_IMAGE", "lemma-agent:latest"),
             agent_max_turns=int(cfg.get("AGENT_MAX_TURNS", "40")),
         )
@@ -69,6 +75,9 @@ def load_agent_flags(config_env: Path | None = None) -> AgentFlags:
         "AGENT_TIMEOUT_SEC",
         "AGENT_NETWORK",
         "AGENT_DATA_MODE",
+        "AGENT_WEB_SEARCH",
+        "AGENT_DOCS_MOUNT",
+        "AGENT_SUBMIT_ONLY_MEASURE",
         "AGENT_WORKLOAD_HINT",
         "AGENT_IMAGE",
         "AGENT_MAX_TURNS",

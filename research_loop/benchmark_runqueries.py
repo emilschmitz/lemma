@@ -1,278 +1,152 @@
-"""Hand-written optimized RunQuery bodies for SSB benchmark queries (1-indexed).
+"""Hand-written Verus/Rust RunQuery bodies for SSB benchmark fixtures."""
 
-Picked at random (seed=42) for expansion: Q2, Q3, Q5, Q6, Q10, Q13.
-Patterns: NativeU64 scalar loops (AddU64/MulU64U32), NativeAggMap+ghost for 2-key group-by,
-Dafny map + native ops for 3-key group-by (NativeAggMap is 2-key i64-only today).
-"""
-
-# Q1 — SSB Q1.1 (baseline)
+# Q1 — SSB Q1.1
 Q1_RUNQUERY = """
-method RunQuery(cols: Cols) returns (res: NativeU64)
-  requires ValidCols(cols)
-  ensures res == MethodSpec(cols)
-{
-  res := 0 as NativeU64;
-  var i := cols.n();
-  while i > 0
-    invariant 0 <= i <= cols.n()
-    invariant res as int == MethodSpecHelper(cols, i) as int
-  {
-    i := i - 1;
-    var od := cols.GetLO_ORDERDATE(i);
-    var disc := cols.GetLO_DISCOUNT(i);
-    var qty := cols.GetLO_QUANTITY(i);
-    if 19930101 <= od && od <= 19931231 && 1 <= disc && disc <= 3 && qty < 25 {
-      var ep := cols.GetLO_EXTENDEDPRICE(i);
-      res := AddU64(res, MulU64U32(ep, disc));
+    let n = cols.n;
+    let mut acc: u64 = 0;
+    for i in 0..n {
+        let q = cols.lo_quantity[i];
+        if q < 25
+            && (1_993_0101 <= cols.lo_orderdate[i] && cols.lo_orderdate[i] <= 1_993_1231)
+            && (1 <= cols.lo_discount[i] && cols.lo_discount[i] <= 3)
+        {
+            acc = add_u64(acc, mul_u64_u32(cols.lo_extendedprice[i], cols.lo_discount[i]));
+        }
     }
-  }
-}
+    acc
 """
 
 # Q2 — SSB Q1.2
 Q2_RUNQUERY = """
-method RunQuery(cols: Cols) returns (res: NativeU64)
-  requires ValidCols(cols)
-  ensures res == MethodSpec(cols)
-{
-  res := 0 as NativeU64;
-  var i := cols.n();
-  while i > 0
-    invariant 0 <= i <= cols.n()
-    invariant res as int == MethodSpecHelper(cols, i) as int
-  {
-    i := i - 1;
-    var od := cols.GetLO_ORDERDATE(i);
-    var disc := cols.GetLO_DISCOUNT(i);
-    var qty := cols.GetLO_QUANTITY(i);
-    if 19940101 <= od && od <= 19940131 && 4 <= disc && disc <= 6
-       && 26 <= qty && qty <= 35
-    {
-      var ep := cols.GetLO_EXTENDEDPRICE(i);
-      res := AddU64(res, MulU64U32(ep, disc));
+    let n = cols.n;
+    let mut acc: u64 = 0;
+    for i in 0..n {
+        let od = cols.lo_orderdate[i];
+        let disc = cols.lo_discount[i];
+        let qty = cols.lo_quantity[i];
+        if od >= 1_994_0101 && od <= 1_994_0131 && disc >= 4 && disc <= 6 && qty >= 26 && qty <= 35
+        {
+            acc = add_u64(acc, mul_u64_u32(cols.lo_extendedprice[i], disc));
+        }
     }
-  }
-}
+    acc
 """
 
 # Q3 — SSB Q1.3
 Q3_RUNQUERY = """
-method RunQuery(cols: Cols) returns (res: NativeU64)
-  requires ValidCols(cols)
-  ensures res == MethodSpec(cols)
-{
-  res := 0 as NativeU64;
-  var i := cols.n();
-  while i > 0
-    invariant 0 <= i <= cols.n()
-    invariant res as int == MethodSpecHelper(cols, i) as int
-  {
-    i := i - 1;
-    var week := cols.GetD_WEEKNUMINYEAR(i);
-    var yr := cols.GetD_YEAR(i);
-    var disc := cols.GetLO_DISCOUNT(i);
-    var qty := cols.GetLO_QUANTITY(i);
-    if week == 6 && yr == 1994 && 5 <= disc && disc <= 7
-       && 26 <= qty && qty <= 35
-    {
-      var ep := cols.GetLO_EXTENDEDPRICE(i);
-      res := AddU64(res, MulU64U32(ep, disc));
+    let n = cols.n;
+    let mut acc: u64 = 0;
+    for i in 0..n {
+        if cols.d_weeknuminyear[i] == 6
+            && cols.d_year[i] == 1994
+            && cols.lo_discount[i] >= 5
+            && cols.lo_discount[i] <= 7
+            && cols.lo_quantity[i] >= 26
+            && cols.lo_quantity[i] <= 35
+        {
+            acc = add_u64(acc, mul_u64_u32(cols.lo_extendedprice[i], cols.lo_discount[i]));
+        }
     }
-  }
-}
+    acc
 """
 
-# Q4 — SSB Q2.1 (2-key group-by; NativeAggMap + ghost u64 map)
+# Q4 — SSB Q2.1 (2-key group-by u64)
 Q4_RUNQUERY = """
-method RunQuery(cols: Cols) returns (res: map<(NativeU32, string), NativeU64>)
-  requires ValidCols(cols)
-  ensures res == MethodSpec(cols)
-{
-  var agg := new NativeAggMap();
-  ghost var g: map<(NativeU32, string), NativeU64> := map[];
-  var i := cols.n();
-  while i > 0
-    invariant 0 <= i <= cols.n()
-    invariant g == MethodSpecHelper(cols, i)
-    invariant forall k :: k in g ==> k in agg.Snapshot() && agg.Snapshot()[k] as int == g[k] as int
-    invariant forall k :: k in agg.Snapshot() ==> k in g
-  {
-    i := i - 1;
-    if cols.EqAtP_CATEGORY(i, "MFGR#12") && cols.EqAtS_REGION(i, "AMERICA")
-    {
-      var yr := cols.GetD_YEAR(i);
-      var brand := cols.GetP_BRAND(i);
-      var key := (yr, brand);
-      var rev := cols.GetLO_REVENUE(i);
-      ValidCols_GetLO_REVENUE(cols, i);
-      var term := ((rev as int) as NativeU64);
-      cols.AggPush_D_YEAR_P_BRAND(agg, i, term as NativeI64);
-      ghost var prev := if key in g then g[key] else 0 as NativeU64;
-      g := g[key := AddU64(prev, term)];
+    let n = cols.n;
+    let mut acc: HashMap<(u32, String), u64> = HashMap::new();
+    for i in 0..n {
+        if cols.p_category[i] == "MFGR#12" && cols.s_region[i] == "AMERICA" {
+            let key = (cols.d_year[i], cols.p_brand[i].clone());
+            *acc.entry(key).or_insert(0) += cols.lo_revenue[i];
+        }
     }
-  }
-  res := agg.ToU64Map();
-}
+    acc
 """
 
-# Q5 — SSB Q2.2 (2-key group-by; NativeAggMap + ghost u64 map)
+# Q5 — SSB Q2.2
 Q5_RUNQUERY = """
-method RunQuery(cols: Cols) returns (res: map<(NativeU32, string), NativeU64>)
-  requires ValidCols(cols)
-  ensures res == MethodSpec(cols)
-{
-  var agg := new NativeAggMap();
-  ghost var g: map<(NativeU32, string), NativeU64> := map[];
-  var i := cols.n();
-  while i > 0
-    invariant 0 <= i <= cols.n()
-    invariant g == MethodSpecHelper(cols, i)
-    invariant forall k :: k in g ==> k in agg.Snapshot() && agg.Snapshot()[k] as int == g[k] as int
-    invariant forall k :: k in agg.Snapshot() ==> k in g
-  {
-    i := i - 1;
-    if cols.EqAtP_BRAND(i, "MFGR#2221") && cols.GetP_SIZE(i) >= 10
-       && cols.EqAtS_REGION(i, "ASIA")
-    {
-      var yr := cols.GetD_YEAR(i);
-      var brand := cols.GetP_BRAND(i);
-      var key := (yr, brand);
-      var rev := cols.GetLO_REVENUE(i);
-      ValidCols_GetLO_REVENUE(cols, i);
-      var term := ((rev as int) as NativeU64);
-      cols.AggPush_D_YEAR_P_BRAND(agg, i, term as NativeI64);
-      ghost var prev := if key in g then g[key] else 0 as NativeU64;
-      g := g[key := AddU64(prev, term)];
+    let n = cols.n;
+    let mut acc: HashMap<(u32, String), u64> = HashMap::new();
+    for i in 0..n {
+        if cols.p_brand[i] == "MFGR#2221" && cols.p_size[i] >= 10 && cols.s_region[i] == "ASIA" {
+            let key = (cols.d_year[i], cols.p_brand[i].clone());
+            *acc.entry(key).or_insert(0) += cols.lo_revenue[i];
+        }
     }
-  }
-  res := agg.ToU64Map();
-}
+    acc
 """
 
 # Q6 — SSB Q2.3
 Q6_RUNQUERY = """
-method RunQuery(cols: Cols) returns (res: map<(NativeU32, string), NativeU64>)
-  requires ValidCols(cols)
-  ensures res == MethodSpec(cols)
-{
-  res := map[];
-  var i := cols.n();
-  while i > 0
-    invariant 0 <= i <= cols.n()
-    invariant res == MethodSpecHelper(cols, i)
-  {
-    i := i - 1;
-    if cols.EqAtP_BRAND(i, "MFGR#2221") && cols.EqAtS_REGION(i, "EUROPE") {
-      var yr := cols.GetD_YEAR(i);
-      var brand := cols.GetP_BRAND(i);
-      var key := (yr, brand);
-      var val := if key in res then res[key] else (0 as NativeU64);
-      res := res[key := AddU64(val, cols.GetLO_REVENUE(i))];
+    let n = cols.n;
+    let mut acc: HashMap<(u32, String), u64> = HashMap::new();
+    for i in 0..n {
+        if cols.p_brand[i] == "MFGR#2221" && cols.s_region[i] == "EUROPE" {
+            let key = (cols.d_year[i], cols.p_brand[i].clone());
+            *acc.entry(key).or_insert(0) += cols.lo_revenue[i];
+        }
     }
-  }
-}
+    acc
 """
 
 # Q10 — SSB Q3.4 (3-key group-by)
 Q10_RUNQUERY = """
-method RunQuery(cols: Cols) returns (res: map<(string, string, NativeU32), NativeU64>)
-  requires ValidCols(cols)
-  ensures res == MethodSpec(cols)
-{
-  res := map[];
-  var i := cols.n();
-  while i > 0
-    invariant 0 <= i <= cols.n()
-    invariant res == MethodSpecHelper(cols, i)
-  {
-    i := i - 1;
-    var od := cols.GetLO_ORDERDATE(i);
-    if cols.EqAtC_CITY(i, "UNITED KI1") && cols.EqAtS_CITY(i, "UNITED KI5")
-       && 19971201 <= od && od <= 19971231
-    {
-      var ccity := cols.GetC_CITY(i);
-      var scity := cols.GetS_CITY(i);
-      var yr := cols.GetD_YEAR(i);
-      var key := (ccity, scity, yr);
-      var val := if key in res then res[key] else (0 as NativeU64);
-      res := res[key := AddU64(val, cols.GetLO_REVENUE(i))];
+    let n = cols.n;
+    let mut acc: HashMap<(String, String, u32), u64> = HashMap::new();
+    for i in 0..n {
+        let od = cols.lo_orderdate[i];
+        if cols.c_city[i] == "UNITED KI1"
+            && cols.s_city[i] == "UNITED KI5"
+            && od >= 1_997_1201
+            && od <= 1_997_1231
+        {
+            let key = (cols.c_city[i].clone(), cols.s_city[i].clone(), cols.d_year[i]);
+            *acc.entry(key).or_insert(0) += cols.lo_revenue[i];
+        }
     }
-  }
-}
+    acc
 """
 
-# Q11 — SSB Q4.1 (NativeAggMap + ghost)
+# Q11 — SSB Q4.1 (2-key group-by i64 profit)
 Q11_RUNQUERY = """
-method RunQuery(cols: Cols) returns (res: map<(NativeU32, string), NativeI64>)
-  requires ValidCols(cols)
-  ensures res == MethodSpec(cols)
-  requires forall j :: 0 <= j < cols.n() ==>
-    -9223372036854775808 <= SubU64ToI64(cols.GetLO_REVENUE(j), cols.GetLO_SUPPLYCOST(j)) as int
-      < 9223372036854775808
-{
-  var agg := new NativeAggMap();
-  ghost var g: map<(NativeU32, string), NativeI64> := map[];
-  var i := cols.n();
-  while i > 0
-    invariant 0 <= i <= cols.n()
-    invariant g == MethodSpecHelper(cols, i)
-    invariant agg.Snapshot() == g
-    invariant forall k :: k in g ==>
-      -9223372036854775808 <= g[k] as int < 9223372036854775808
-  {
-    i := i - 1;
-    if cols.EqAtC_REGION(i, "AMERICA") && cols.EqAtS_REGION(i, "AMERICA")
-       && cols.EqAtP_MFGR(i, "MFGR#1")
-    {
-      var yr := cols.GetD_YEAR(i);
-      var nation := cols.GetC_NATION(i);
-      var key := (yr, nation);
-      var term := SubU64ToI64(cols.GetLO_REVENUE(i), cols.GetLO_SUPPLYCOST(i));
-      cols.AggPush_D_YEAR_C_NATION(agg, i, term);
-      ghost var prev := if key in g then g[key] else 0 as NativeI64;
-      g := g[key := AddI64(prev, term)];
+    let n = cols.n;
+    let mut acc: HashMap<(u32, String), i64> = HashMap::new();
+    for i in 0..n {
+        if cols.c_region[i] == "AMERICA"
+            && cols.s_region[i] == "AMERICA"
+            && cols.p_mfgr[i] == "MFGR#1"
+        {
+            let term = sub_u64_to_i64(cols.lo_revenue[i], cols.lo_supplycost[i]);
+            let key = (cols.d_year[i], cols.c_nation[i].clone());
+            *acc.entry(key).or_insert(0) += term;
+        }
     }
-  }
-  res := agg.ToMap();
-}
+    acc
 """
 
-# Q13 — SSB Q4.3 (3-key group-by, profit)
+# Q13 — SSB Q4.3 (3-key group-by i64)
 Q13_RUNQUERY = """
-method RunQuery(cols: Cols) returns (res: map<(NativeU32, string, string), NativeI64>)
-  requires ValidCols(cols)
-  ensures res == MethodSpec(cols)
-  requires forall j :: 0 <= j < cols.n() ==>
-    -9223372036854775808 <= SubU64ToI64(cols.GetLO_REVENUE(j), cols.GetLO_SUPPLYCOST(j)) as int
-      < 9223372036854775808
-{
-  res := map[];
-  var i := cols.n();
-  while i > 0
-    invariant 0 <= i <= cols.n()
-    invariant res == MethodSpecHelper(cols, i)
-    invariant forall k :: k in res ==>
-      -9223372036854775808 <= res[k] as int < 9223372036854775808
-  {
-    i := i - 1;
-    var od := cols.GetLO_ORDERDATE(i);
-    if cols.EqAtC_REGION(i, "AMERICA") && cols.EqAtS_NATION(i, "UNITED STATES")
-       && 19970101 <= od && od <= 19971231 && cols.EqAtP_CATEGORY(i, "MFGR#14")
-    {
-      var yr := cols.GetD_YEAR(i);
-      var snation := cols.GetS_NATION(i);
-      var pcat := cols.GetP_CATEGORY(i);
-      var key := (yr, snation, pcat);
-      var term := SubU64ToI64(cols.GetLO_REVENUE(i), cols.GetLO_SUPPLYCOST(i));
-      var prev := if key in res then res[key] else 0 as NativeI64;
-      res := res[key := AddI64(prev, term)];
+    let n = cols.n;
+    let mut acc: HashMap<(u32, String, String), i64> = HashMap::new();
+    for i in 0..n {
+        let od = cols.lo_orderdate[i];
+        if cols.c_region[i] == "AMERICA"
+            && cols.s_nation[i] == "UNITED STATES"
+            && od >= 1_997_0101
+            && od <= 1_997_1231
+            && cols.p_category[i] == "MFGR#14"
+        {
+            let term = sub_u64_to_i64(cols.lo_revenue[i], cols.lo_supplycost[i]);
+            let key = (
+                cols.d_year[i],
+                cols.s_nation[i].clone(),
+                cols.p_category[i].clone(),
+            );
+            *acc.entry(key).or_insert(0) += term;
+        }
     }
-  }
-}
+    acc
 """
-
-# Random sample (seed=42): Q2, Q3, Q5, Q6, Q10, Q13
-RANDOM_SIX = [2, 3, 5, 6, 10, 13]
 
 RUNQUERIES: dict[int, str] = {
     1: Q1_RUNQUERY,
@@ -284,4 +158,17 @@ RUNQUERIES: dict[int, str] = {
     10: Q10_RUNQUERY,
     11: Q11_RUNQUERY,
     13: Q13_RUNQUERY,
+}
+
+# Return-type tags consumed by assemble_runquery.py
+RETURN_TYPES: dict[int, str] = {
+    1: "u64",
+    2: "u64",
+    3: "u64",
+    4: "map_u32_str_u64",
+    5: "map_u32_str_u64",
+    6: "map_u32_str_u64",
+    10: "map_str_str_u32_u64",
+    11: "map_u32_str_i64",
+    13: "map_u32_str_str_i64",
 }

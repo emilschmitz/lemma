@@ -1,56 +1,60 @@
 # Lemma
 
-Verified query synthesis: SQL is transpiled to a Dafny spec, an agent (or mock) writes an optimized `RunQuery`, Dafny (Z3) proves correctness, and the result is compiled to native Rust. Contains a DuckDB extension where optimized binaries are cached and invoked on rerun (WIP).
+Verified query synthesis: SQL is transpiled to a Verus `MethodSpec`, an agent writes an optimized
+`run_query`, Verus proves correctness, and the result is compiled to native Rust. H1 path agents
+optimize **`SESSION_HOT_US`** on DuckDB-backed layouts (`db_extension_*`). A legacy OpenRouter
+agent in `db_extension/` still splices Dafny bodies pending Verus migration.
 
-Inpired by https://arxiv.org/pdf/2603.02081.
+Inspired by https://arxiv.org/pdf/2603.02081.
 
 https://github.com/user-attachments/assets/7f7891c7-5ef6-406b-882b-8e01134ed37c
 
-## Pipeline steps
-
-1. SQL query is deterministically transpiled into a formal `MethodSpec` in Dafny, this is GT.
-2. AI agent writes optimized Dafny `method RunQuery`.
-3. Dafny formally proves that the agent's output satisfies `MethodSpec`.
-4. Verified Dafny is translated to Rust, we use some post-processing for native performance.*
-5. Code is compiled and executed.
-6. Optimized binaries are cached and loaded in on repeat queries via the DuckDB extension (working, but unpolished).
-
-* Post-processing rewrites and a few assumptions in the Dafny spec are added for performance. These manipulations should match verified Dafny semantics, but that is only verified empirically; see `research_loop/COMPILATION_GUIDE.md`.
-
----
-
-## Quick Start
+## Quick start (Verus harness)
 
 ```bash
-./scripts/setup.sh          # tools + Python deps + ssb-dbgen clone (works on Linux x86_64)
-./scripts/demo.sh           # dataset + extension + DuckDB CLI (needs agent CLI)
-# or, no LLM:
-./scripts/mockdemo.sh       # pre-seeded RunQuery; still needs Dafny + Rust for first compile
+./scripts/setup.sh
+uv run python research_loop/harness.py -q 1 --dataset-size 50000
+uv run python research_loop/benchmark_verified.py --smoke
 ```
 
-First run builds SSB flat data (~2M rows, several minutes) and downloads DuckDB CLI. First `SELECT lemma(...)` runs Dafny verify + Rust compile (minutes).
+Requires [Verus](research_loop/scripts/install_verus.md), [uv](https://docs.astral.sh/uv/), and Rust.
 
-Optional: `./scripts/demo.sh --query 1 --rows 50000`. Eager dataset build: `./scripts/setup.sh --with-dataset`.
+### H1 path measure
 
-```sql
-SELECT lemma('SELECT SUM(LO_EXTENDEDPRICE * LO_DISCOUNT) FROM lineorder_flat WHERE ...');
+```bash
+export LEMMA_DUCKDB_LIB_DIR="$PWD/build/libduckdb"
+db_extension_paths/check_mem.sh uv run python db_extension_paths/measure_e2e_paths.py
 ```
 
-### Requirements
-- [uv](https://docs.astral.sh/uv/) — Python env
-- [Dafny 4.x](https://github.com/dafny-lang/dafny) — verification
-- [Rust/Cargo](https://rustup.rs/) — native compile
-- **g++**, **make**, **git**, **curl**, **unzip** — to run `setup.sh`
-- [Cursor Agent CLI](https://cursor.com/docs/agent/cli) — `agent` on PATH for `./scripts/demo.sh` only
+See `DB_EXTENSION_PATHS.md` for copy/chunk/lease/storage paths.
 
----
+### Legacy OpenRouter agent (Dafny bodies)
 
-## Results
+```bash
+docker build -t lemma-agent:latest -f docker/agent/Dockerfile .
+MOCK_AGENT=0 OPENROUTER_API_KEY=sk-or-... uv run python -m db_extension.run_optimizer "SELECT ..."
+```
 
-Latency on SSB flat (1.5M rows) and TPC-H SF1 (6M rows), running on mid-range 2026 Ryzen 5 Asus Notebook. All engines run single-threaded. Timed metric is hot-loop latency: median of timed query-loop executions after warm-up, with table load outside the timer.
+See `db_extension/AGENT.md`. Dafny verify/compile uses `research_loop/dafny_legacy/harness.py`.
 
-![Benchmark overview: SSB Q1–Q3 + TPC-H Q1/Q6 hot-loop latency](plots/benchmark_overview.png)
+## Layout
 
-Row counts under query labels on chart.
+| Path | Role |
+|------|------|
+| `verus_transpiler/` | SQL → Verus transpiler |
+| `research_loop/` | Verus verify, compile, benchmarks |
+| `research_loop/dafny_legacy/` | Dafny harness (OpenRouter agent only) |
+| `db_extension/` | DuckDB extension + OpenRouter agent |
+| `db_extension_paths/` | Sidecar copy path (`lemma_copy`) |
+| `db_extension_runtime/` | Chunk API (`lemma_chunk`) |
+| `db_extension_lease/` | Pin/lease (`lemma_lease`) |
+| `db_extension_storage/` | Storage scan (`lemma_storage`) |
+| `holdout/` | Leakage-resistant eval (GenDB SEC, etc.) |
 
-Optimization wins vary by query structure. Custom Rust is strongest on selective scans and native hash aggregation, circumventing the somewhat fixed overhead of DuckDB’s generic multi-step path. The Dafny step adds a bare Rust; Dafny codegen favors prover-friendly constructs.
+## Requirements
+
+- Python 3.11+, [uv](https://docs.astral.sh/uv/)
+- [Verus](https://github.com/verus-lang/verus) — primary verification
+- [Rust/Cargo](https://rustup.rs/)
+- Dafny 4.x — only for legacy OpenRouter agent path
+- **g++**, **make**, **git**, **curl**, **unzip** — for `./scripts/setup.sh`

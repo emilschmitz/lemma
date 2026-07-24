@@ -523,10 +523,10 @@ dev = [
 requires-dist = [
     { name = "openai", specifier = ">=2.45.0" },
     { name = "pytest", specifier = ">=9.1.1" },
-    { name = "sql-transpiler", editable = "transpiler" },
+    { name = "sql-transpiler", editable = "db_extension/dafny_transpiler" },
     { name = "tree-sitter", specifier = ">=0.25.2" },
     { name = "tree-sitter-rust", specifier = ">=0.24.2" },
-    { name = "verus-transpiler", editable = "verus" },
+    { name = "verus-transpiler", editable = "verus_transpiler" },
 ]
 
 [package.metadata.requires-dev]
@@ -1199,7 +1199,7 @@ wheels = [
 [[package]]
 name = "sql-transpiler"
 version = "0.1.0"
-source = { editable = "transpiler" }
+source = { editable = "db_extension/dafny_transpiler" }
 dependencies = [
     { name = "sqlglot" },
 ]
@@ -1322,7 +1322,7 @@ wheels = [
 [[package]]
 name = "verus-transpiler"
 version = "0.1.0"
-source = { editable = "verus" }
+source = { editable = "verus_transpiler" }
 dependencies = [
     { name = "sqlglot" },
 ]
