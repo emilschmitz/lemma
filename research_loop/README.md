@@ -55,7 +55,7 @@ Requires `ssb-dbgen/lineorder_flat.tbl` (SSB) or `data/tpch-sf1/lineitem.tbl` (T
 
 - `harness.py` — transpile → assemble → verus verify → verus `--compile` → run binary
 - `assemble_verified_program.py` — single-file assembly (spec + proved body + load + main)
-- `verified_runqueries.py` — hand-written proved `run_query` bodies for all fixtures
+- `bench_standins/` — optional bench/CI stand-in `run_query` bodies (artifacts, not engine)
 - `benchmark_verified.py` — multi-query bench vs bare Rust
 - `benchmark_runqueries.py` — legacy unproved exec bodies (`LEGACY_UNPROVED_EXEC=1` only)
 - `harness_legacy.py` — old dual-path harness
@@ -64,7 +64,7 @@ Requires `ssb-dbgen/lineorder_flat.tbl` (SSB) or `data/tpch-sf1/lineitem.tbl` (T
 
 ## Fixtures (stand-in agents for bench/CI)
 
-SSB: Q1–Q15 (`verified_runqueries.SSB_RUNQUERIES`)  
+SSB: Q1–Q15 (`bench_standins.verified_runqueries.SSB_RUNQUERIES`)  
 TPC-H: Q1, Q3, Q6 only (not the full TPC-H suite)
 
 Scalars use backward `while i > 0` with `res == method_spec_helper(cols, i as int)`.
@@ -78,10 +78,11 @@ Group-bys prove a ghost `Map` tied to `method_spec_helper` in the **same** backw
 
 ### Basic SQL fixtures
 
-Stand-in agents (pre-written proved `run_query` bodies) for CI/bench: scalars
-(`basic_sql_fixtures.py`), joins (`basic_sql_join_fixtures.py`), set/subquery/CTE
-(`basic_sql_set_cte_fixtures.py`), projection/order/arith (`basic_sql_proj_order_fixtures.py`),
-extended (`basic_sql_extended_fixtures.py`). See root `AGENTS.md` for the product contract.
+Stand-in agents (pre-written proved `run_query` bodies) for optional CI/bench only, under
+`bench_standins/` (artifacts, not engine): scalars (`basic_sql_fixtures.py`), joins
+(`basic_sql_join_fixtures.py`), set/subquery/CTE (`basic_sql_set_cte_fixtures.py`),
+projection/order/arith (`basic_sql_proj_order_fixtures.py`), extended
+(`basic_sql_extended_fixtures.py`). See root `AGENTS.md` for the product contract.
 
 Cheating inside TRUSTED `external_body` bodies can still “verify” while returning wrong SQL results — that is the residual gap; agent-written `run_query` cannot.
 

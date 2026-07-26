@@ -14,18 +14,18 @@ DEFAULT_TPCH_TBL = os.path.join(ROOT, "data", "tpch-sf1", "lineitem.tbl")
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from research_loop.verified_runqueries import (  # noqa: E402
+from research_loop.bench_standins.verified_runqueries import (  # noqa: E402
     SSB_RUNQUERIES,
     TPCH_RUNQUERIES,
 )
-from research_loop.basic_sql_fixtures import BASIC_SQL_FIXTURES  # noqa: E402
-from research_loop.basic_sql_join_fixtures import (  # noqa: E402
+from research_loop.bench_standins.basic_sql_fixtures import BASIC_SQL_FIXTURES  # noqa: E402
+from research_loop.bench_standins.basic_sql_join_fixtures import (  # noqa: E402
     BASIC_SQL_JOIN_FIXTURES,
 )
-from research_loop.basic_sql_set_cte_fixtures import (  # noqa: E402
+from research_loop.bench_standins.basic_sql_set_cte_fixtures import (  # noqa: E402
     BASIC_SQL_SET_CTE_FIXTURES,
 )
-from research_loop.basic_sql_proj_order_fixtures import (  # noqa: E402
+from research_loop.bench_standins.basic_sql_proj_order_fixtures import (  # noqa: E402
     BASIC_SQL_PROJ_ORDER_FIXTURES,
 )
 from research_loop.harness import (  # noqa: E402
@@ -311,7 +311,7 @@ def _smoke_assemble_admit() -> None:
     from research_loop.assemble_verified_program import assemble_verified_program
     from research_loop.ssb_queries import load_schema, queries as ssb_queries
     from research_loop._transpiler import project_schema_for_query, transpile_sql_to_verus
-    from research_loop.verified_runqueries import SSB_RETURN_TYPES, SSB_RUNQUERIES
+    from research_loop.bench_standins.verified_runqueries import SSB_RETURN_TYPES, SSB_RUNQUERIES
 
     sql = ssb_queries[0]
     schema = project_schema_for_query(sql, load_schema())

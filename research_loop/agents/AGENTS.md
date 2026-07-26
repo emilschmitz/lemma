@@ -102,9 +102,8 @@ Path index: `DB_EXTENSION_PATHS.md`.
 Fill `run_query` so Verus proves **`run_query` ≡ `method_spec`**. The agent may **call**
 predefined TRUSTED helpers (NativeAgg, `add_u64`, …); it may **not** declare new
 `external_body` / `arbitrary` / `assume`. Transpiler emits real `method_spec` + commented
-RunQuery skeleton. Hand-written bodies in `verified_runqueries.py` /
-`basic_sql_*_fixtures.py` are **stand-in agents** for bench/CI only (they are not the
-product path and do not limit what a real agent may write).
+RunQuery skeleton. Optional hand-written bodies in `research_loop/bench_standins/` are
+**bench/CI stand-in agents** (artifacts / data), not part of the transpiler or optimizer.
 
 ## Agent context (`context.json`)
 

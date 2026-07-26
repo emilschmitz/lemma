@@ -38,7 +38,7 @@ from research_loop.assemble_verified_program import (  # noqa: E402
     assemble_verified_program,
 )
 from research_loop.ssb_queries import load_schema, queries as ssb_queries  # noqa: E402
-from research_loop.tpch_runqueries import (  # noqa: E402
+from research_loop.bench_standins.tpch_runqueries import (  # noqa: E402
     DEFAULT_TBL as DEFAULT_TPCH_TBL,
     TPCH_BENCH_EXEC,
     TPCH_BENCH_MAIN_PREFIX,
@@ -52,7 +52,7 @@ from research_loop.tpch_runqueries import (  # noqa: E402
     queries as tpch_queries,
     schema as tpch_schema,
 )
-from research_loop.verified_runqueries import (  # noqa: E402
+from research_loop.bench_standins.verified_runqueries import (  # noqa: E402
     SSB_BENCH_EXEC,
     SSB_BENCH_TIMING_BODY,
     SSB_HOT_PATHS,
@@ -61,19 +61,19 @@ from research_loop.verified_runqueries import (  # noqa: E402
     TPCH_RETURN_TYPES,
     TPCH_RUNQUERIES,
 )
-from research_loop.basic_sql_fixtures import (  # noqa: E402
+from research_loop.bench_standins.basic_sql_fixtures import (  # noqa: E402
     BASIC_SQL_FIXTURES,
 )
-from research_loop.basic_sql_join_fixtures import (  # noqa: E402
+from research_loop.bench_standins.basic_sql_join_fixtures import (  # noqa: E402
     BASIC_SQL_JOIN_FIXTURES,
 )
-from research_loop.basic_sql_set_cte_fixtures import (  # noqa: E402
+from research_loop.bench_standins.basic_sql_set_cte_fixtures import (  # noqa: E402
     BASIC_SQL_SET_CTE_FIXTURES,
 )
-from research_loop.basic_sql_proj_order_fixtures import (  # noqa: E402
+from research_loop.bench_standins.basic_sql_proj_order_fixtures import (  # noqa: E402
     BASIC_SQL_PROJ_ORDER_FIXTURES,
 )
-from research_loop.basic_sql_extended_fixtures import (  # noqa: E402
+from research_loop.bench_standins.basic_sql_extended_fixtures import (  # noqa: E402
     BASIC_SQL_EXTENDED_FIXTURES,
 )
 from research_loop.lemma_flags import enable_templates  # noqa: E402

@@ -31,7 +31,7 @@ from research_loop.harness import (  # noqa: E402
 )
 from research_loop._transpiler import project_schema_for_query, transpile_sql_to_verus
 from research_loop.ssb_queries import load_schema, queries as ssb_queries
-from research_loop.tpch_runqueries import (
+from research_loop.bench_standins.tpch_runqueries import (
     DEFAULT_TBL as DEFAULT_TPCH_TBL,
     RETURN_TYPES as TPCH_RETURN_TYPES,
     RUNQUERIES as TPCH_LEGACY_RUNQUERIES,

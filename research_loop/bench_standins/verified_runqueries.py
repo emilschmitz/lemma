@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from research_loop.tpch_runqueries import Q3_RUNQUERY as TPCH_Q3_RUNQUERY
+from research_loop.bench_standins.tpch_runqueries import Q3_RUNQUERY as TPCH_Q3_RUNQUERY
 
 # --- Scalar aggregates (backward loop; res == method_spec_helper) ---
 
