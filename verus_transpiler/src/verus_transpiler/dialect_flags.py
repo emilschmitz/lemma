@@ -18,6 +18,11 @@ TRUSTED_FEATURES: dict[str, bool] = {
     "grouped_derived": True,
     "case_when": True,
     "null_3vl": True,
+    "count_distinct": True,
+    "having_subquery": True,
+    "multi_agg": True,
+    "derived_join": True,
+    "left_anti_join": True,
 }
 
 

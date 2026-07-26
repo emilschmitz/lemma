@@ -38,6 +38,9 @@ def load_agent_config(config: dict[str, str] | None = None) -> dict[str, str]:
         "AGENT_CMD",
         "AGENT_ENV",
         "AGENT_TIMEOUT_SEC",
+        "AGENT_EGRESS_PROFILE",
+        "AGENT_CREDENTIALS_DIR",
+        "LEMMA_EGRESS_ALLOWLIST",
     ):
         if key in os.environ:
             cfg[key] = os.environ[key]
@@ -339,28 +342,140 @@ def run_agent_docker(
     workspace: Path,
     prompt: str,
     cfg: dict[str, str] | None = None,
+    *,
+    query_id: int = 1,
 ) -> subprocess.CompletedProcess[str]:
+    """Run CLI agent in Docker with network none + allowlisted API egress + MCP.
+
+    - Mounts host credentials (default ``~/.cursor``) for Cursor CLI.
+    - Passes ``AGENT_ENV`` secrets (e.g. ``CURSOR_API_KEY``) into the container.
+    - Egress only to vendor API hosts via host ``EgressBridge`` + sidecar proxy.
+    - MCP measure tools via Unix socket + sandbox ``mcp_proxy``.
+    """
     cfg = load_agent_config(cfg)
     image = cfg.get("AGENT_IMAGE", DEFAULT_IMAGE)
     agent_cmd = cfg.get("AGENT_CMD", default_agent_cmd())
     timeout = int(cfg.get("AGENT_TIMEOUT_SEC", "600"))
     (workspace / "PROMPT.txt").write_text(prompt)
 
+    from db_extension.agent.egress_bridge import (
+        EgressBridge,
+        _parse_allowlist,
+        infer_egress_profile,
+    )
+    from db_extension.agent.measure_core import MeasureContext
+    from db_extension.agent.mcp_socket import McpSocketServer
+
     env = parse_agent_env(cfg, base={})
     env["AGENT_CMD"] = agent_cmd
+    env["LEMMA_AGENT_MODE"] = "cli"
+    env["LEMMA_MCP_SOCK"] = "/lemma-mcp.sock"
+    env["LEMMA_EGRESS_SOCK"] = "/lemma-egress.sock"
+    env["LEMMA_QUERY_ID"] = str(query_id)
+    env["PYTHONPATH"] = "/app"
+    env["HOME"] = "/root"
+    env["CURSOR_CONFIG_DIR"] = "/root/.cursor"
 
-    log_info(COMPONENT, "agent_docker_start", f"docker run {image}", image=image)
+    profile = infer_egress_profile(
+        agent_cmd,
+        cfg.get("AGENT_EGRESS_PROFILE") or os.environ.get("AGENT_EGRESS_PROFILE"),
+    )
+    allow = _parse_allowlist(
+        cfg.get("LEMMA_EGRESS_ALLOWLIST") or os.environ.get("LEMMA_EGRESS_ALLOWLIST"),
+        profile=profile,
+    )
+
+    ws = workspace.resolve()
+    sock_dir = ws / "mcp_results"
+    sock_dir.mkdir(parents=True, exist_ok=True)
+    mcp_sock = sock_dir / "mcp.sock"
+    egress_sock = sock_dir / "egress.sock"
+
+    mcp_server = McpSocketServer(mcp_sock, MeasureContext(query_id=query_id, workspace=ws))
+    egress_server = EgressBridge(
+        egress_sock,
+        allow,
+        log_path=sock_dir / "egress_bridge.jsonl",
+    )
+    mcp_server.start()
+    egress_server.start()
+
+    cred_host = (
+        cfg.get("AGENT_CREDENTIALS_DIR")
+        or os.environ.get("AGENT_CREDENTIALS_DIR")
+        or str(Path.home() / ".cursor")
+    )
+    cred_path = Path(cred_host).expanduser()
+
+    log_info(
+        COMPONENT,
+        "agent_docker_start",
+        f"docker run {image} (network none + egress={profile})",
+        image=image,
+        allowlist=list(allow),
+    )
     cmd = [
         "docker", "run", "--rm",
-        "--network", "bridge",
-        "-v", f"{workspace.resolve()}:/workspace/rw:rw",
-        "-v", f"{(workspace / 'context' / 'ro').resolve()}:/context/ro:ro",
-        "-w", "/workspace/rw",
+        "--network", "none",
+        "--cap-drop", "ALL",
+        "-v", f"{ws}:/workspace:rw",
+        "-v", f"{(ws / 'context' / 'ro').resolve()}:/context/ro:ro",
+        "-v", f"{mcp_sock.resolve()}:/lemma-mcp.sock",
+        "-v", f"{egress_sock.resolve()}:/lemma-egress.sock",
+        "-w", "/workspace",
+        "-e", "LEMMA_AGENT_MODE=cli",
+        "-e", "LEMMA_MCP_SOCK=/lemma-mcp.sock",
+        "-e", "LEMMA_EGRESS_SOCK=/lemma-egress.sock",
+        "-e", f"LEMMA_QUERY_ID={query_id}",
+        "-e", "PYTHONPATH=/app",
+        "-e", "HOME=/root",
+        "-e", "CURSOR_CONFIG_DIR=/root/.cursor",
+        "-e", "CURSOR_FORCED_SHELL_EGRESS=1",
+        "-e", f"AGENT_CMD={agent_cmd}",
     ]
+    if cred_path.is_dir():
+        cmd.extend(["-v", f"{cred_path.resolve()}:/root/.cursor:ro"])
+        log_info(COMPONENT, "credentials_mount", str(cred_path))
+    else:
+        log_warn(COMPONENT, "credentials_missing", f"no credentials dir at {cred_path}")
+
+    skip_env = {
+        "AGENT_CMD",
+        "LEMMA_AGENT_MODE",
+        "LEMMA_MCP_SOCK",
+        "LEMMA_EGRESS_SOCK",
+        "LEMMA_QUERY_ID",
+        "PYTHONPATH",
+        "HOME",
+        "CURSOR_CONFIG_DIR",
+    }
     for k, v in env.items():
+        if k in skip_env:
+            continue
         cmd.extend(["-e", f"{k}={v}"])
     cmd.append(image)
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    finally:
+        mcp_server.stop()
+        egress_server.stop()
+    run_dir_raw = os.environ.get("LEMMA_RUN_DIR", "").strip()
+    if run_dir_raw:
+        logs_dir = Path(run_dir_raw) / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        (logs_dir / "docker_agent.stdout").write_text(proc.stdout or "", encoding="utf-8")
+        (logs_dir / "docker_agent.stderr").write_text(proc.stderr or "", encoding="utf-8")
+        meta = {
+            "returncode": proc.returncode,
+            "profile": profile,
+            "allowlist": sorted(allow),
+            "image": image,
+            "query_id": query_id,
+        }
+        (logs_dir / "docker_meta.json").write_text(
+            json.dumps(meta, indent=2) + "\n",
+            encoding="utf-8",
+        )
     log_info(COMPONENT, "agent_docker_end", f"exit={proc.returncode}")
     return proc
 
@@ -399,7 +514,7 @@ def run_agent_iteration(
         last_latency_us=last_latency_us,
     )
     if use_docker(cfg):
-        proc = run_agent_docker(ws, prompt, cfg=cfg)
+        proc = run_agent_docker(ws, prompt, cfg=cfg, query_id=query_id)
     else:
         proc = run_agent_local(ws, prompt, cfg=cfg)
     return read_agent_body(ws), proc

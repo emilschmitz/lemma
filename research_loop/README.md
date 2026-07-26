@@ -62,10 +62,10 @@ Requires `ssb-dbgen/lineorder_flat.tbl` (SSB) or `data/tpch-sf1/lineitem.tbl` (T
 - `native/` — optional helpers (unified path uses transpiler prelude)
 - `generated/` — per-query `.rs` sources and compiled binaries (gitignored)
 
-## Fixtures
+## Fixtures (stand-in agents for bench/CI)
 
-SSB: Q1, Q2, Q3, Q4, Q5, Q6, Q10, Q11, Q13  
-TPC-H: Q1, Q6
+SSB: Q1–Q15 (`verified_runqueries.SSB_RUNQUERIES`)  
+TPC-H: Q1, Q3, Q6 only (not the full TPC-H suite)
 
 Scalars use backward `while i > 0` with `res == method_spec_helper(cols, i as int)`.
 Group-bys prove a ghost `Map` tied to `method_spec_helper` in the **same** backward loop that accumulates exec `HashMap` via **TRUSTED** NativeAgg-style helpers (`hashmap_*_view`, `agg_new_*`, `agg_add_*`) — no separate rematerialize scan.
@@ -78,7 +78,10 @@ Group-bys prove a ghost `Map` tied to `method_spec_helper` in the **same** backw
 
 ### Basic SQL fixtures
 
-Batch-1 scalars (`basic_sql_fixtures.py`), joins (`basic_sql_join_fixtures.py`), set/subquery/CTE (`basic_sql_set_cte_fixtures.py`), projection/order/arith (`basic_sql_proj_order_fixtures.py`). See feature table in `verus_transpiler/README.md` and [basic_sql_primer.md](../docs/verus/basic_sql_primer.md).
+Stand-in agents (pre-written proved `run_query` bodies) for CI/bench: scalars
+(`basic_sql_fixtures.py`), joins (`basic_sql_join_fixtures.py`), set/subquery/CTE
+(`basic_sql_set_cte_fixtures.py`), projection/order/arith (`basic_sql_proj_order_fixtures.py`),
+extended (`basic_sql_extended_fixtures.py`). See root `AGENTS.md` for the product contract.
 
 Cheating inside TRUSTED `external_body` bodies can still “verify” while returning wrong SQL results — that is the residual gap; agent-written `run_query` cannot.
 

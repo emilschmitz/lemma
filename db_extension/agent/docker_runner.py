@@ -69,6 +69,8 @@ def start_tool_container(
     flags: AgentFlags,
     *,
     data_file_name: str | None = None,
+    mcp_sock: Path | None = None,
+    query_id: int | None = None,
 ) -> ContainerSession:
     ensure_image(flags.agent_image)
     workspace = workspace.resolve()
@@ -100,6 +102,12 @@ def start_tool_container(
         cmd.extend(["-v", f"{data_dir.resolve()}:/data:ro"])
     if data_file_name:
         cmd.extend(["-e", f"AGENT_DATA_FILE={data_file_name}"])
+    if mcp_sock is not None:
+        sock = mcp_sock.resolve()
+        cmd.extend(["-v", f"{sock}:/lemma-mcp.sock"])
+        cmd.extend(["-e", "LEMMA_MCP_SOCK=/lemma-mcp.sock"])
+    if query_id is not None:
+        cmd.extend(["-e", f"LEMMA_QUERY_ID={query_id}"])
     cmd.append(flags.agent_image)
     proc = subprocess.Popen(
         cmd,

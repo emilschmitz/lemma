@@ -15,9 +15,9 @@ from .col_exprs import (
 )
 from .joins import _table_struct_name, emit_join_spec_helpers
 from .parse_sql import (
+    AggSpec,
     SQLQuery,
     UnsupportedContractError,
-    get_rust_type,
     normalize_schema,
     parse_sql,
     _agg_value_type,
@@ -34,6 +34,7 @@ from .subqueries import (
 from .windows import emit_window_spec_helper
 from .templates import emit_run_query_skeleton, emit_run_query_template
 from .value_bounds import (
+    SUPPORTED_SCHEMA_TYPES,
     col_spec_accessor_return,
     col_verus_type,
     emit_bound_constants,
@@ -43,10 +44,7 @@ from .value_bounds import (
     spec_map_key_type,
 )
 
-_SUPPORTED_TYPES = frozenset({
-    "int", "string", "bigint", "int8", "int64", "integer", "int4", "int32",
-    "varchar", "text", "date", "bool", "boolean",
-})
+_SUPPORTED_TYPES = SUPPORTED_SCHEMA_TYPES
 
 
 def _validate_schema(schema: dict[str, str] | dict[str, dict[str, str]]) -> None:
@@ -332,32 +330,10 @@ def _emit_having_helper() -> str:
 
 
 def _emit_projection_spec(query: SQLQuery, flat_schema: dict[str, str]) -> tuple[str, str, str]:
-    src_match = re.match(r"row\.([A-Za-z_][A-Za-z0-9_]*)", query.projection_exprs[0])
-    src_col = src_match.group(1) if src_match else query.projection_columns[0]
-    col_type = flat_schema.get(src_col) or flat_schema.get(query.projection_columns[0], "int")
-    rust_ty = get_rust_type(src_col, col_type)
-    if query.distinct:
-        ret_type = f"Set<{rust_ty}>"
-        helper = """// TRUSTED axiom: DISTINCT projection fold not yet recursive.
-#[verifier::external_body]
-pub open spec fn projection_distinct_helper(cols: &Cols, k: int) -> Set<u32> {
-    arbitrary()
-}"""
-        spec_body = "projection_distinct_helper(cols, 0)"
-    else:
-        ret_type = f"Seq<{rust_ty}>"
-        helper = """// TRUSTED axiom: projection fold not yet recursive.
-#[verifier::external_body]
-pub open spec fn projection_helper(cols: &Cols, k: int) -> Seq<u32> {
-    arbitrary()
-}"""
-        spec_body = "projection_helper(cols, 0)"
-    spec_fn = f"""pub open spec fn method_spec(cols: &Cols) -> {ret_type}
-    recommends valid_cols(cols),
-{{
-    {spec_body}
-}}"""
-    return helper, spec_fn, ret_type
+    _ = query, flat_schema
+    raise UnsupportedContractError(
+        "SELECT projection needs real MethodSpec fold; not yet supported"
+    )
 
 
 def _result_row_type(base_ret: str) -> str:
@@ -394,14 +370,10 @@ def _emit_method_spec_result(query: SQLQuery, base_ret: str) -> str:
     ) or "unspecified"
     limit_s = str(query.limit) if query.limit is not None else "none"
     offset_s = str(query.offset) if query.offset is not None else "0"
-    return f"""// ORDER BY ({order_cols}), LIMIT {limit_s}, OFFSET {offset_s}
-// TRUSTED axiom: sort/limit on multi-row results not yet defined.
-#[verifier::external_body]
-pub open spec fn method_spec_result(cols: &Cols) -> Seq<{row_ty}> {{
-    arbitrary()
-}}
-
-"""
+    return (
+        f"// Note: ORDER BY ({order_cols}), LIMIT {limit_s}, OFFSET {offset_s} "
+        f"are not part of method_spec ({row_ty}); agent may apply in run_query.\n"
+    )
 
 
 def _emit_set_op_helpers(
@@ -411,50 +383,222 @@ def _emit_set_op_helpers(
     op: str,
 ) -> tuple[str, str, str]:
     """Emit INTERSECT / EXCEPT / UNION composition over two branch specs."""
-    branch_query = query.union_query or query.intersect_query or query.except_query
-    assert branch_query is not None
-    left_helpers, _, left_ret = _emit_single_table_spec(
-        query, flat_schema, helper_name=f"{op}_left_helper"
+    _ = query, flat_schema, op
+    raise UnsupportedContractError(
+        f"{op.upper()} set operation needs real MethodSpec fold; not yet supported"
     )
-    right_helpers, _, right_ret = _emit_single_table_spec(
-        branch_query, flat_schema, helper_name=f"{op}_right_helper"
-    )
-    if op == "union":
-        mode = "union_all" if query.union_all else "union_distinct"
-    elif op == "intersect":
-        mode = "intersect_all" if query.intersect_all else "intersect_distinct"
-    else:
-        mode = "except_all" if query.except_all else "except_distinct"
-    helpers = left_helpers + "\n\n" + right_helpers + f"""
-
-// TRUSTED axiom: {op.upper()} branch specs composed without proved recursion.
-#[verifier::external_body]
-pub open spec fn {op}_left_branch(cols: &Cols) -> {left_ret} {{
-    arbitrary()
-}}
-
-#[verifier::external_body]
-pub open spec fn {op}_right_branch(cols: &Cols) -> {right_ret} {{
-    arbitrary()
-}}
-
-#[verifier::external_body]
-pub open spec fn {mode}_compose(left: {left_ret}, right: {right_ret}) -> Seq<u64> {{
-    arbitrary()
-}}
-"""
-    ret_type = "Seq<u64>"
-    spec_fn = f"""pub open spec fn method_spec(cols: &Cols) -> {ret_type}
-    recommends valid_cols(cols),
-{{
-    {mode}_compose({op}_left_branch(cols), {op}_right_branch(cols))
-}}"""
-    return helpers, spec_fn, ret_type
 
 
 def _emit_union_helpers(query: SQLQuery, flat_schema: dict[str, str]) -> tuple[str, str, str]:
     """Emit UNION / UNION ALL composition over two branch specs."""
     return _emit_set_op_helpers(query, flat_schema, op="union")
+
+
+def _multi_agg_val_types(query: SQLQuery) -> list[str]:
+    types: list[str] = []
+    for spec in query.agg_specs:
+        if spec.agg_type in ("SUM", "COUNT", "COUNT_DISTINCT", "AVG"):
+            types.append(_agg_value_type(spec.agg_expr))
+        else:
+            types.append("u64")
+    return types
+
+
+def _multi_agg_tuple_type(query: SQLQuery) -> str:
+    types = _multi_agg_val_types(query)
+    if len(types) == 1:
+        return types[0]
+    return f"({', '.join(types)})"
+
+
+def _distinct_val_expr(spec: AggSpec, idx_var: str, flat_schema: dict[str, str]) -> str:
+    col = spec.agg_column
+    field = col.lower()
+    if col_verus_type(flat_schema[col]) == "String":
+        return f"cols.{field}[{idx_var} as int]@"
+    return f"cols.{field}[{idx_var} as int]"
+
+
+def _emit_multi_agg_spec(
+    query: SQLQuery,
+    flat_schema: dict[str, str],
+    *,
+    helper_name: str = "multi_agg_helper",
+) -> tuple[str, str, str]:
+    """Multi-aggregate group-by spec: recursive fold with Map<Key, state tuple>."""
+    idx_var = "k"
+    cond = (
+        spec_where_cond(to_col_expr(query.where_expr, idx_var), idx_var, flat_schema)
+        if query.where_expr
+        else None
+    )
+    key_expr = _groupby_key_expr(query.groupby_columns, idx_var, flat_schema)
+
+    state_types: list[str] = []
+    state_defaults: list[str] = []
+    update_stmts: list[tuple[int, str]] = []
+    project_parts: list[str] = []
+
+    for spec in query.agg_specs:
+        pos = len(state_types)
+
+        if spec.agg_type == "COUNT":
+            state_types.append("u64")
+            state_defaults.append("0u64")
+            update_stmts.append((pos, f"let s{pos} = ({{prev}} as int + 1) as u64;"))
+            project_parts.append(f"s{pos}")
+        elif spec.agg_type == "SUM":
+            val_type = _agg_value_type(spec.agg_expr)
+            state_types.append(val_type)
+            state_defaults.append(f"0{val_type}")
+            term = (
+                spec_i64_term(spec.agg_expr, idx_var)
+                if val_type == "i64"
+                else spec_u64_term(spec.agg_expr, idx_var)
+            )
+            update_stmts.append((
+                pos,
+                f"let s{pos} = ({{prev}} as int + {term} as int) as {val_type};",
+            ))
+            project_parts.append(f"s{pos}")
+        elif spec.agg_type == "MIN":
+            state_types.append("u64")
+            state_defaults.append("u64::MAX")
+            term = spec_u64_term(spec.agg_expr, idx_var)
+            update_stmts.append((
+                pos,
+                f"let t{pos} = {term};\n"
+                f"            let s{pos} = if t{pos} < {{prev}} {{ t{pos} }} else {{ {{prev}} }};",
+            ))
+            project_parts.append(f"s{pos}")
+        elif spec.agg_type == "MAX":
+            state_types.append("u64")
+            state_defaults.append("0u64")
+            term = spec_u64_term(spec.agg_expr, idx_var)
+            update_stmts.append((
+                pos,
+                f"let t{pos} = {term};\n"
+                f"            let s{pos} = if t{pos} > {{prev}} {{ t{pos} }} else {{ {{prev}} }};",
+            ))
+            project_parts.append(f"s{pos}")
+        elif spec.agg_type == "AVG":
+            sum_pos = len(state_types)
+            state_types.extend(["u64", "u64"])
+            state_defaults.extend(["0u64", "0u64"])
+            term = spec_u64_term(spec.agg_expr, idx_var)
+            update_stmts.append((
+                sum_pos,
+                f"let s{sum_pos} = ({{prev_sum}} as int + {term} as int) as u64;\n"
+                f"            let s{sum_pos + 1} = ({{prev_cnt}} as int + 1) as u64;",
+            ))
+            project_parts.append(
+                f"if s{sum_pos + 1} == 0 {{ 0 }} else {{ s{sum_pos} / s{sum_pos + 1} }}"
+            )
+        elif spec.agg_type == "COUNT_DISTINCT":
+            val_ty = spec_map_key_type(flat_schema[spec.agg_column])
+            state_types.append(f"Map<{val_ty}, bool>")
+            state_defaults.append("Map::empty()")
+            val_expr = _distinct_val_expr(spec, idx_var, flat_schema)
+            update_stmts.append((
+                pos,
+                f"let s{pos} = if {{prev}}.contains_key({val_expr}) {{ {{prev}} }} "
+                f"else {{ {{prev}}.insert({val_expr}, true) }};",
+            ))
+            project_parts.append(f"s{pos}.dom().len() as u64")
+        else:
+            raise UnsupportedContractError(
+                f"multi-agg unsupported aggregate {spec.agg_type!r}"
+            )
+
+    n_state = len(state_types)
+
+    def pref(i: int) -> str:
+        return f"prev.{i}" if n_state > 1 else "prev"
+
+    rendered_updates: list[str] = []
+    for pos, tmpl in update_stmts:
+        pos_i = int(pos)
+        if "{{prev_sum}}" in tmpl:
+            rendered = tmpl.replace("{{prev_sum}}", pref(pos_i)).replace(
+                "{{prev_cnt}}", pref(pos_i + 1)
+            )
+        else:
+            rendered = tmpl.replace("{{prev}}", pref(pos_i))
+        rendered_updates.append(rendered)
+
+    if n_state == 1:
+        state_tuple_type = state_types[0]
+        default_state = state_defaults[0]
+        rebuild_state = "s0"
+    else:
+        state_tuple_type = f"({', '.join(state_types)})"
+        default_state = f"({', '.join(state_defaults)})"
+        rebuild_state = f"({', '.join(f's{i}' for i in range(n_state))})"
+
+    if len(project_parts) == 1:
+        project_expr = project_parts[0]
+    else:
+        project_expr = f"({', '.join(project_parts)})"
+
+    update_block = "\n            ".join(rendered_updates)
+
+    if cond:
+        body_inner = (
+            f"let tail = {helper_name}(cols, {idx_var} + 1);\n"
+            f"        if {cond} {{\n"
+            f"            let key = {key_expr};\n"
+            f"            let prev = if tail.contains_key(key) {{ tail[key] }} else {{ {default_state} }};\n"
+            f"            {update_block}\n"
+            f"            tail.insert(key, {rebuild_state})\n"
+            f"        }} else {{\n"
+            f"            tail\n"
+            f"        }}"
+        )
+    else:
+        body_inner = (
+            f"let tail = {helper_name}(cols, {idx_var} + 1);\n"
+            f"        let key = {key_expr};\n"
+            f"        let prev = if tail.contains_key(key) {{ tail[key] }} else {{ {default_state} }};\n"
+            f"        {update_block}\n"
+            f"        tail.insert(key, {rebuild_state})"
+        )
+
+    if len(query.groupby_columns) == 1:
+        c = query.groupby_columns[0]
+        map_key_ty = spec_map_key_type(flat_schema[c])
+    else:
+        map_key_ty = f"({', '.join(spec_map_key_type(flat_schema[c]) for c in query.groupby_columns)})"
+    ret_type = f"Map<{map_key_ty}, {_multi_agg_tuple_type(query)}>"
+    map_state_ret = f"Map<{map_key_ty}, {state_tuple_type}>"
+
+    helper = f"""pub open spec fn {helper_name}(cols: &Cols, {idx_var}: int) -> {map_state_ret}
+    recommends
+        0 <= {idx_var} && {idx_var} <= cols.n,
+        valid_cols(cols),
+    decreases cols.n - {idx_var},
+{{
+    if {idx_var} < cols.n {{
+        {body_inner}
+    }} else {{
+        Map::empty()
+    }}
+}}"""
+
+    spec_body = (
+        f"let raw = {helper_name}(cols, 0);\n"
+        f"    raw.map_values(|_k| {project_expr})"
+    )
+    extra = ""
+    if query.having_expr:
+        extra = "\n\n" + _emit_having_helper()
+        spec_body = _emit_having_filter(spec_body, query, flat_schema).strip()
+
+    spec_fn = f"""pub open spec fn method_spec(cols: &Cols) -> {ret_type}
+    recommends valid_cols(cols),
+{{
+    {spec_body}
+}}"""
+    return helper + extra, spec_fn, ret_type
 
 
 def _emit_single_table_spec(
@@ -468,6 +612,9 @@ def _emit_single_table_spec(
 
     if query.is_projection:
         return _emit_projection_spec(query, flat_schema)
+
+    if query.is_multi_agg and query.groupby_columns:
+        return _emit_multi_agg_spec(query, flat_schema, helper_name=helper_name)
 
     if query.agg_type == "SELECT_SUBQUERY":
         ret_type = "u64"
@@ -487,40 +634,15 @@ def _emit_single_table_spec(
             (c for c in query.ctes if c.recursive and c.name == derived.alias), None
         )
         if recursive_cte is not None or inner.union_query is not None:
-            inner_helpers = ""
-            if recursive_cte is not None:
-                inner_helpers = emit_recursive_cte_helper(recursive_cte) + "\n\n"
-            inner_helpers += f"""// TRUSTED: outer SUM over derived recursive CTE '{derived.alias}'.
-#[verifier::external_body]
-pub open spec fn derived_{derived.alias}_outer_spec(cols: &Cols) -> u64 {{
-    arbitrary()
-}}"""
-            spec_body = f"derived_{derived.alias}_outer_spec(cols)"
-            ret_type = "u64"
-            spec_fn = f"""pub open spec fn method_spec(cols: &Cols) -> {ret_type}
-    recommends valid_cols(cols),
-{{
-    {spec_body}
-}}"""
-            return inner_helpers, spec_fn, ret_type
+            raise UnsupportedContractError(
+                f"outer aggregate over derived recursive CTE '{derived.alias}' "
+                "needs real MethodSpec; not yet supported"
+            )
         if inner.window_specs:
-            win = inner.window_specs[0]
-            inner_helpers = emit_window_spec_helper(win)
-            inner_helpers += f"""
-
-// TRUSTED: outer SUM over derived window column '{win.alias}'.
-#[verifier::external_body]
-pub open spec fn derived_{derived.alias}_outer_spec(cols: &Cols) -> u64 {{
-    arbitrary()
-}}"""
-            spec_body = f"derived_{derived.alias}_outer_spec(cols)"
-            ret_type = "u64"
-            spec_fn = f"""pub open spec fn method_spec(cols: &Cols) -> {ret_type}
-    recommends valid_cols(cols),
-{{
-    {spec_body}
-}}"""
-            return inner_helpers, spec_fn, ret_type
+            raise UnsupportedContractError(
+                "outer aggregate over derived window column needs real MethodSpec; "
+                "not yet supported"
+            )
         if inner.groupby_columns:
             inner_helpers, inner_spec_call, _inner_ret = emit_derived_grouped_inner_spec(
                 derived.alias, inner, flat_schema
@@ -650,6 +772,43 @@ def _term_at_i_for_query(query: SQLQuery) -> str:
     return native_u64_term(expr, "i").replace(" as int", "")
 
 
+def _emit_run_query(
+    query: SQLQuery,
+    ret_type: str,
+    *,
+    agg_push: tuple[str, str] | None = None,
+    agg_push_str: tuple[str, str] | None = None,
+    where_at_k: str | None = None,
+    term_at_k: str | None = None,
+    enable_templates: bool = False,
+    is_join: bool = False,
+) -> str:
+    """Emit agent RunQuery skeleton; optional proved scalar templates when enabled."""
+    if (
+        enable_templates
+        and not is_join
+        and not query.groupby_columns
+        and not query.is_projection
+        and query.agg_type in ("SUM", "COUNT", "AVG")
+        and term_at_k is not None
+    ):
+        return emit_run_query_template(
+            query,
+            ret_type,
+            where_at_i=where_at_k,
+            term_at_i=term_at_k,
+            agg_push=agg_push,
+            agg_push_str=agg_push_str,
+        )
+    return emit_run_query_skeleton(
+        query,
+        ret_type,
+        agg_push=agg_push,
+        agg_push_str=agg_push_str,
+        is_join=is_join,
+    )
+
+
 def transpile_sql_to_verus(
     sql: str,
     schema: dict[str, str] | dict[str, dict[str, str]],
@@ -732,9 +891,11 @@ def transpile_sql_to_verus(
             agg_expr=query.agg_expr,
             is_sum=is_sum,
             val_type=val_type,
+            flat_schema=flat_schema,
         )
         helpers = join_helper
-        run_query = emit_run_query_skeleton(query, ret_type, is_join=True)
+        result_spec = _emit_method_spec_result(query, ret_type)
+        run_query = _emit_run_query(query, ret_type, is_join=True)
     else:
         if is_join:
             raise UnsupportedContractError(
@@ -761,22 +922,15 @@ def transpile_sql_to_verus(
             )
         term_at_k = _term_at_i_for_query(query)
 
-        if enable_templates and not query.is_projection:
-            run_query = emit_run_query_template(
-                query,
-                ret_type,
-                where_at_i=where_at_k,
-                term_at_i=term_at_k,
-                agg_push=agg_push,
-                agg_push_str=agg_push_str,
-            )
-        else:
-            run_query = emit_run_query_skeleton(
-                query,
-                ret_type,
-                agg_push=agg_push,
-                agg_push_str=agg_push_str,
-            )
+        run_query = _emit_run_query(
+            query,
+            ret_type,
+            agg_push=agg_push,
+            agg_push_str=agg_push_str,
+            where_at_k=where_at_k,
+            term_at_k=term_at_k,
+            enable_templates=enable_templates,
+        )
 
         cols_block = f"{cols_block}\n\n{valid_cols}\n\n{accessor_lemmas}"
 

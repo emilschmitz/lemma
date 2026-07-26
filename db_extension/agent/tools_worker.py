@@ -4,14 +4,13 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import stat
 import sys
 from pathlib import Path
 
 try:
-    from db_extension.agent.extract import extract_marked_body
     from db_extension.agent.sql_gate import check_duckdb_sql
 except ImportError:
-    from lemma_agent.extract import extract_marked_body
     from lemma_agent.sql_gate import check_duckdb_sql
 
 WORKSPACE_ROOT = Path(os.environ.get("AGENT_WORKSPACE", "/workspace"))
@@ -19,8 +18,9 @@ CONTEXT_RO_ROOT = Path(os.environ.get("AGENT_CONTEXT_RO", "/context/ro"))
 DATA_ROOT = Path(os.environ.get("AGENT_DATA", "/data"))
 OUTPUT_LIMIT = 32_768
 SHELL_TIMEOUT_SEC = 60
-SUBMIT_FLAG = WORKSPACE_ROOT / ".lemma_submit"
 RUNQUERY_PATH = WORKSPACE_ROOT / "runquery_agent.dfy"
+MCP_SOCK = Path(os.environ.get("LEMMA_MCP_SOCK", "/lemma-mcp.sock"))
+DEFAULT_QUERY_ID = int(os.environ.get("LEMMA_QUERY_ID", "1"))
 
 
 def _resolve_allowed(path: str, allowed_roots: tuple[Path, ...]) -> Path:
@@ -48,6 +48,29 @@ def _truncate(text: str, limit: int = OUTPUT_LIMIT) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 20] + "\n... [truncated]"
+
+
+def _mcp_sock_ready() -> bool:
+    try:
+        return stat.S_ISSOCK(MCP_SOCK.stat().st_mode)
+    except OSError:
+        return False
+
+
+def _call_mcp(tool: str, args: dict) -> dict:
+    if not _mcp_sock_ready():
+        raise RuntimeError(
+            f"Host MCP socket missing at {MCP_SOCK}. "
+            "The OpenRouter harness must start McpSocketServer before the tool container."
+        )
+    try:
+        from db_extension.agent.mcp_socket import call_mcp_socket
+    except ImportError:
+        from lemma_agent.mcp_socket import call_mcp_socket
+    resp = call_mcp_socket(MCP_SOCK, tool, args)
+    if not resp.get("ok"):
+        raise RuntimeError(str(resp.get("result", resp)))
+    return resp.get("result", resp)
 
 
 def tool_read_file(args: dict) -> str:
@@ -123,7 +146,6 @@ def _attach_data(con) -> None:
         p = DATA_ROOT / preferred
         if p.is_file():
             candidates.append(p)
-    # Prefer well-known flat table names, then any tabular file.
     for name in ("lineorder_flat.tbl", "lineorder_flat.csv", "lineorder_flat.parquet"):
         p = DATA_ROOT / name
         if p.is_file() and p not in candidates:
@@ -168,13 +190,50 @@ def tool_duckdb_sql(args: dict) -> str:
         con.close()
 
 
-def tool_submit(_args: dict) -> str:
-    if not RUNQUERY_PATH.is_file():
-        raise FileNotFoundError(f"{RUNQUERY_PATH} not found")
-    text = RUNQUERY_PATH.read_text()
-    extract_marked_body(text)
-    SUBMIT_FLAG.write_text("ok\n")
-    return "submission accepted"
+def tool_validate_runquery(args: dict) -> str:
+    path = args.get("path", "runquery_agent.dfy")
+    result = _call_mcp("validate_runquery", {"path": path})
+    return json.dumps(result, ensure_ascii=False)
+
+
+def tool_run_runquery(args: dict) -> str:
+    path = args.get("path", "runquery_agent.dfy")
+    mcp_args: dict = {"path": path}
+    if "dataset_size" in args and args["dataset_size"] is not None:
+        mcp_args["dataset_size"] = args["dataset_size"]
+    if "query_id" in args and args["query_id"] is not None:
+        mcp_args["query_id"] = args["query_id"]
+    result = _call_mcp("run_runquery", mcp_args)
+    return json.dumps(result, ensure_ascii=False)
+
+
+def tool_submit_runquery(args: dict) -> str:
+    run_id = args.get("run_id")
+    if not run_id:
+        raise ValueError(
+            "submit requires run_id. Call run_runquery first, then submit(run_id=<returned run_id>)."
+        )
+    result = _call_mcp("submit_runquery", {"run_id": run_id})
+    return json.dumps(result, ensure_ascii=False)
+
+
+def tool_get_submit_result(_args: dict) -> str:
+    result = _call_mcp("get_submit_result", {})
+    return json.dumps(result, ensure_ascii=False)
+
+
+def tool_list_runs(_args: dict) -> str:
+    result = _call_mcp("list_runs", {})
+    return json.dumps(result, ensure_ascii=False)
+
+
+def tool_mcp_health(_args: dict) -> str:
+    result = _call_mcp("mcp_health", {})
+    return json.dumps(result, ensure_ascii=False)
+
+
+def tool_submit(args: dict) -> str:
+    return tool_submit_runquery(args)
 
 
 _TOOLS = {
@@ -184,7 +243,13 @@ _TOOLS = {
     "run_shell": tool_run_shell,
     "duckdb_sql": tool_duckdb_sql,
     "time_cmd": tool_time_cmd,
+    "validate_runquery": tool_validate_runquery,
+    "run_runquery": tool_run_runquery,
+    "submit_runquery": tool_submit_runquery,
     "submit": tool_submit,
+    "get_submit_result": tool_get_submit_result,
+    "list_runs": tool_list_runs,
+    "mcp_health": tool_mcp_health,
 }
 
 

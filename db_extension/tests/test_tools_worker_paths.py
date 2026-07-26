@@ -18,7 +18,6 @@ def sandbox_dirs(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(tw, "WORKSPACE_ROOT", ws)
     monkeypatch.setattr(tw, "CONTEXT_RO_ROOT", ro)
     monkeypatch.setattr(tw, "RUNQUERY_PATH", ws / "runquery_agent.dfy")
-    monkeypatch.setattr(tw, "SUBMIT_FLAG", ws / ".lemma_submit")
     return ws, ro
 
 

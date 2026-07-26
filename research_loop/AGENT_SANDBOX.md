@@ -1,113 +1,74 @@
-# Agent Docker sandbox (legacy CLI)
+# Agent Docker sandbox (CLI)
 
-> **Preferred path:** host OpenRouter + container tools — see [`db_extension/AGENT.md`](../db_extension/AGENT.md)
-> (`LEMMA_AGENT_BACKEND=openrouter`). This document describes the legacy
-> `LEMMA_AGENT_BACKEND=cli` path (vendor coding CLIs). The current
-> `docker/agent` image is the **tool worker** for OpenRouter; it no longer
-> installs Cursor/Claude/Codex. For CLI-in-Docker you must bring your own image.
+> OpenRouter tools path: [`db_extension/AGENT.md`](../db_extension/AGENT.md).
 
-The optimizing agent (CLI mode) runs in a **Docker container** with network access (LLM APIs). Dafny verify, Rust compile, and DuckDB stay on the **host**.
+## Setup (Cursor CLI, network none, API-only egress)
 
-## How submission works (the loop)
-
-Each optimization iteration:
-
-1. **Host** transpiles SQL → writes `spec.dfy` into read-only context.
-2. **Host** copies `templates/runquery_agent.dfy` into `agent_workspace/` (iteration 1 only; later iterations keep the file for refinement).
-3. **Host** writes `PROMPT.txt` (feedback from last harness run) and runs `docker run`.
-4. **Agent** edits **only** `/workspace/rw/runquery_agent.dfy` (body inside `{ ... }`).
-5. **Agent exits** — saving that file **is** the submission (headless `-p` / print mode).
-6. **Host** reads the body, splices into trusted `RunQuery` shell (`assemble_runquery.py`), runs `admit_runquery`, then `harness.py`.
-7. Harness JSON (verify error or latency) feeds the **next** iteration’s prompt.
-
-No separate “submit” button — one Docker run = one iteration.
-
-## Setup
-
-### 1. Build the agent image (once)
-
-```bash
-docker build -t lemma-agent:latest docker/agent
+```
+Host
+  ├─ EgressBridge (allowlist: cursor.com / api.cursor.com / …)
+  ├─ McpSocketServer (measure)
+  └─ docker --network none
+        ├─ mount ~/.cursor → /root/.cursor
+        ├─ CURSOR_API_KEY via AGENT_ENV (optional if creds dir enough)
+        ├─ HTTPS_PROXY → sidecar → egress sock  (only allowlisted hosts)
+        └─ agent CLI + mcp_proxy
 ```
 
-The image installs (best effort): **Cursor Agent** (`agent`), **agy**, **Claude**, **Codex**, **OpenCode**, **Pi**. Each tool has its own license — you must comply with the vendor TOS when passing API keys.
+Web fetches to non-allowlisted hosts fail at the proxy. No separate “deny web” config required.
 
-### 2. Configure API keys and command
-
-Edit `research_loop/config.env` or export env vars before running the DuckDB optimizer:
-
-```bash
-export CURSOR_API_KEY="your-key"
-export AGENT_ENV=CURSOR_API_KEY
-export AGENT_CMD='agent -p --force --model composer-2.5 "$(cat PROMPT.txt)"'
-```
-
-Run optimizer (real agent, not mock):
+When egress is on, the entrypoint also sets **`CURSOR_FORCED_SHELL_EGRESS=1`**, which Cursor’s
+own CLI honors to disable **WebSearch / WebFetch** (cloud-side tools that would still work
+via `api2.cursor.sh`). It also writes `/workspace/.cursor/cli.json` denying those tools.
+Do **not** set `CURSOR_FORCED_SHELL_EGRESS_ALLOW_WEB_TOOLS` unless you intentionally want them back.
 
 ```bash
-export MOCK_AGENT=0
 export USE_AGENT_DOCKER=1
-uv run python -m db_extension.run_optimizer "SELECT ..."
+export MOCK_AGENT=0
+export AGENT_CMD='agent -p --force --trust --model composer-2.5 --output-format stream-json --stream-partial-output "$(cat PROMPT.txt)"'
+export AGENT_ENV=CURSOR_API_KEY          # and/or mount creds
+export AGENT_CREDENTIALS_DIR=$HOME/.cursor
+export AGENT_EGRESS_PROFILE=cursor       # optional; inferred from AGENT_CMD
+# export LEMMA_EGRESS_ALLOWLIST=api.cursor.com,cursor.com   # full override if needed
+export CURSOR_API_KEY=...
+
+docker build -t lemma-agent:latest -f docker/agent/Dockerfile .
+LEMMA_AGENT_BACKEND=cli uv run python -m db_extension.run_optimizer "SELECT ..."
 ```
 
-### Environment variables
+### Other CLIs
 
-| Variable | Default | Meaning |
-|----------|---------|---------|
-| `USE_AGENT_DOCKER` | `1` | Run agent in Docker |
-| `AGENT_IMAGE` | `lemma-agent:latest` | Docker image name |
-| `AGENT_CMD` | Cursor `agent` + Composer 2.5 | Shell command run **inside** container in `/workspace/rw` |
-| `AGENT_ENV` | `CURSOR_API_KEY` | Comma-separated env var **names** copied from host into container |
-| `AGENT_TIMEOUT_SEC` | `600` | Agent run timeout |
-| `MOCK_AGENT` | `1` in extension | Set `0` to use real agent |
+| `AGENT_CMD` | Inferred profile | Typical env |
+|-------------|------------------|-------------|
+| `agent …` | `cursor` | `CURSOR_API_KEY` + `~/.cursor` |
+| `claude …` | `anthropic` | `ANTHROPIC_API_KEY` |
+| `codex …` | `openai` | `OPENAI_API_KEY` |
 
-Override at runtime:
+`AGENT_EGRESS_PROFILE=cursor,anthropic` unions allowlists.
 
-```bash
-AGENT_CMD='agy -p "$(cat PROMPT.txt)"' \
-AGENT_ENV=GOOGLE_API_KEY \
-MOCK_AGENT=0 \
-uv run python -m db_extension.run_optimizer "SELECT ..."
-```
+**Denied egress** is logged to:
+- `mcp_results/egress_bridge.jsonl` (all attempts)
+- `mcp_results/egress_denied.jsonl` (denials only)
+- host stderr as `[egress-denied] {...}`
 
-### Alternative agents (install commands in image)
+Rebuild the agent image after entrypoint changes.
 
-| Agent | Install (in Dockerfile) | Example `AGENT_CMD` | Typical env |
-|-------|-------------------------|---------------------|-------------|
-| **Cursor** (default) | `curl https://cursor.com/install \| bash` | `agent -p --force --model composer-2.5 "$(cat PROMPT.txt)"` | `CURSOR_API_KEY` |
-| **agy** (Antigravity) | `curl -fsSL https://antigravity.google/cli/install.sh \| bash` | `agy -p "$(cat PROMPT.txt)"` | Google/Gemini auth |
-| **Claude Code** | `curl -fsSL https://claude.ai/install.sh \| bash` | `claude -p "$(cat PROMPT.txt)"` | `ANTHROPIC_API_KEY` |
-| **Codex** | `npm install -g @openai/codex` | `codex exec "$(cat PROMPT.txt)"` | `OPENAI_API_KEY` |
-| **OpenCode** | `npm install -g opencode-ai` | `opencode run "$(cat PROMPT.txt)"` | provider keys |
-| **Pi** | `npm install -g --ignore-scripts @earendil-works/pi-coding-agent` | `pi -p "$(cat PROMPT.txt)"` | provider keys |
+## Run artifacts (GCP harvest)
 
-## Mount layout
+Each optimizer job with **`LEMMA_RESEARCH_LOG=1`** collects artifacts under
+`research_loop/runs/<UTC>_q<qid>_<hex>/`:
 
 ```
-agent_workspace/          → /workspace/rw   (read-write)
-  runquery_agent.dfy      ← agent edits this
-  PROMPT.txt              ← host writes each iteration
-  context/ro/             → /context/ro     (read-only in container)
-    spec.dfy
-    COMPILATION_GUIDE.md
+manifest.json
+result.json
+history.json
+workspace/          # trace.jsonl, runquery_agent.dfy, mcp_results/, egress_*.jsonl
+logs/pipeline.log
+logs/pipeline.jsonl
+logs/docker_agent.stdout
+logs/docker_agent.stderr
+logs/docker_meta.json
+logs/harness_iter*.json
 ```
 
-Host repo (`postprocessor.py`, `harness.py`, etc.) is **not** mounted writable.
-
-## Trust boundary
-
-- Agent file is **untrusted** — only the body is used.
-- Host injects `ensures res == MethodSpec(data)` via `assemble_runquery.py`.
-- `admit_runquery` runs before verify (NativeAggMap linearity).
-
-## Mock mode (no Docker)
-
-```bash
-MOCK_AGENT=1 uv run python -m db_extension.run_optimizer "SELECT ..."
-```
-
-Uses generated RunQuery and skips the agent container entirely.
-
-## Licensing note
-
-Bundling multiple agent CLIs in one image is for **user convenience**. You are responsible for accepting each vendor’s terms and supplying your own API keys. We do not redistribute model access.
+`research_loop/runs/LATEST` contains the absolute path of the latest run. Archive the directory for upload (`tar` / `gsutil cp -r`).

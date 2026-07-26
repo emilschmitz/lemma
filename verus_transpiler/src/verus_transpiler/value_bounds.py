@@ -15,8 +15,22 @@ LEMMA_MAX_MONEY_U64 = 2**40
 LEMMA_MAX_STRING_LEN = 128
 
 
+# Schema types accepted by col_verus_type (shared with transpiler validation).
+SUPPORTED_SCHEMA_TYPES = frozenset({
+    "int", "integer", "int4", "int32", "int2", "smallint", "int16",
+    "int8", "int64", "bigint", "hugeint", "tinyint", "int1",
+    "usmallint", "utinyint", "uinteger", "ubigint",
+    "decimal", "numeric", "double", "float8", "float", "real",
+    "string", "varchar", "text", "char", "bpchar",
+    "date",
+    "bool", "boolean",
+})
+
+
 def col_verus_type(col_type: str) -> str:
-    t = col_type.lower()
+    t = col_type.lower().split("(")[0]
+    if t not in SUPPORTED_SCHEMA_TYPES:
+        raise ValueError(f"unsupported column type: {col_type!r}")
     if t in (
         "bigint",
         "int64",
@@ -251,6 +265,30 @@ pub exec fn str_upper_exec(s: &str) -> (res: String)
     ensures res@ == str_upper(s@),
 {
     s.to_ascii_uppercase()
+}
+
+// === Seq helpers (projection + LIMIT) ===
+pub open spec fn spec_seq_take<A>(s: Seq<A>, n: int) -> Seq<A> {
+    if n <= 0 {
+        Seq::empty()
+    } else if n >= s.len() {
+        s
+    } else {
+        s.subrange(0, n)
+    }
+}
+
+// === IS NULL / anti-join (Lemma non-null loads; LEFT JOIN miss) ===
+// TRUSTED: LEFT JOIN anti-join miss predicate (schema-driven bridge).
+#[verifier::external_body]
+pub open spec fn left_join_miss_generic(cols: &Cols, row: int) -> bool {
+    arbitrary()
+}
+
+// TRUSTED: multi-agg HashMap exec view bridge.
+#[verifier::external_body]
+pub open spec fn hashmap_multi_agg_view<K, V>(m: Map<K, V>) -> Map<K, V> {
+    m
 }
 """
 

@@ -44,6 +44,8 @@ class AgentFlags:
     agent_submit_only_measure: bool = True
     agent_image: str = "lemma-agent:latest"
     agent_max_turns: int = 40
+    # Host MCP (outside sandbox). Empty = volume-flag submit only.
+    agent_mcp_url: str = ""
 
     @classmethod
     def from_mapping(cls, cfg: dict[str, str]) -> AgentFlags:
@@ -61,6 +63,7 @@ class AgentFlags:
             agent_submit_only_measure=truthy(cfg.get("AGENT_SUBMIT_ONLY_MEASURE", "1")),
             agent_image=cfg.get("AGENT_IMAGE", "lemma-agent:latest"),
             agent_max_turns=int(cfg.get("AGENT_MAX_TURNS", "40")),
+            agent_mcp_url=cfg.get("AGENT_MCP_URL", ""),
         )
 
 
@@ -81,6 +84,7 @@ def load_agent_flags(config_env: Path | None = None) -> AgentFlags:
         "AGENT_WORKLOAD_HINT",
         "AGENT_IMAGE",
         "AGENT_MAX_TURNS",
+        "AGENT_MCP_URL",
     )
     for key in keys:
         if key in os.environ:

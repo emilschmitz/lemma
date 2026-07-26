@@ -178,7 +178,11 @@ def main():
         exit_with_metrics("FAILURE", False, -1, f"SQL Transpilation failed: {e}")
 
     # 3. Load agent RunQuery (assembled body file, or legacy scratchpad)
-    agent_body_path = os.path.join(CURRENT_DIR, "agent_workspace", "runquery_agent.dfy")
+    ws_raw = os.environ.get("LEMMA_AGENT_WORKSPACE", "").strip()
+    if ws_raw:
+        agent_body_path = os.path.join(ws_raw, "runquery_agent.dfy")
+    else:
+        agent_body_path = os.path.join(CURRENT_DIR, "agent_workspace", "runquery_agent.dfy")
     agent_code = None
     if os.path.exists(agent_body_path):
         from research_loop.dafny_legacy.assemble_runquery import assemble_runquery_from_body

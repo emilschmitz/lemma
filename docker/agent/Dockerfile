@@ -1,14 +1,17 @@
-# Agent sandbox: JSON-lines tool worker (no LLM in container).
+# Agent sandbox: JSON-lines tool worker + MCP proxy + model-proxy sidecar.
 FROM python:3.12-slim-bookworm
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir duckdb
+# duckdb: sandbox SQL. mcp/httpx: MCP stdio proxy + model sidecar → host UDS.
+RUN pip install --no-cache-dir duckdb "mcp>=1.28" httpx
 
 COPY db_extension/agent/ /app/lemma_agent/
+COPY docker/agent/entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 ENV PYTHONPATH=/app
 WORKDIR /workspace
 
-ENTRYPOINT ["python", "-m", "lemma_agent.tools_worker"]
+ENTRYPOINT ["/app/entrypoint.sh"]

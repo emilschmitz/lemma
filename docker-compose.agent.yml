@@ -1,0 +1,63 @@
+# Lemma agent stack: optional Compose MCP (prefer in-process Unix socket).
+#
+# Default OpenRouter path: host starts McpSocketServer (measure_core) before
+# `docker run --network none`; tools_worker proxies validate/run/submit via
+# LEMMA_MCP_SOCK=/lemma-mcp.sock. No Compose required.
+#
+# Optional host FastMCP for Cursor (stdio/HTTP):
+#   LEMMA_AGENT_WORKSPACE=$PWD/research_loop/agent_workspace \
+#     uv run python -m db_extension.agent.mcp_host --transport stdio
+#
+# Compose below is optional/overkill — use only if you want a long-lived HTTP MCP
+# service instead of the in-process socket:
+#   docker compose -f docker-compose.agent.yml up -d lemma-mcp
+
+services:
+  lemma-mcp:
+    image: ghcr.io/astral-sh/uv:python3.12-bookworm
+    working_dir: /repo
+    command:
+      - uv
+      - run
+      - python
+      - -m
+      - db_extension.agent.mcp_host
+      - --transport
+      - streamable-http
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8765"
+    environment:
+      LEMMA_AGENT_WORKSPACE: /workspace
+      LEMMA_MCP_TRANSPORT: streamable-http
+      PYTHONPATH: /repo
+    volumes:
+      - ./:/repo:rw
+      - ./research_loop/agent_workspace:/workspace:rw
+    ports:
+      - "8765:8765"
+    networks:
+      - lemma-agent-net
+    restart: unless-stopped
+
+  # Optional profile: long-lived tools worker on compose network (not default).
+  lemma-agent-tools:
+    image: lemma-agent:latest
+    profiles: ["tools"]
+    working_dir: /workspace
+    environment:
+      AGENT_DATA_MODE: stats
+      PYTHONPATH: /app
+      LEMMA_MCP_URL: http://lemma-mcp:8765/mcp
+    volumes:
+      - ./research_loop/agent_workspace:/workspace:rw
+    networks:
+      - lemma-agent-net
+    depends_on:
+      - lemma-mcp
+    stdin_open: true
+
+networks:
+  lemma-agent-net:
+    driver: bridge

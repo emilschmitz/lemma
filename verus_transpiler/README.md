@@ -1,9 +1,10 @@
 # verus-transpiler
 
-SQL → Verus Rust transpiler for verified analytical query specs.
+SQL → Verus `MethodSpec` (+ RunQuery skeleton for the agent).
 
 ```python
 from verus_transpiler import transpile_sql_to_verus
 ```
 
-See `docs/verus/basic_sql_primer.md` and `research_loop/README.md`.
+Pipeline contract: root `AGENTS.md`. Research loop: `research_loop/README.md`.
+Unsupported SQL fails with `UnsupportedContractError` (prefer failure over mocks).

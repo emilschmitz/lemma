@@ -11,6 +11,7 @@ dependencies = [
     "tree-sitter>=0.25.2",
     "tree-sitter-rust>=0.24.2",
     "openai>=2.45.0",
+    "mcp>=1.28.1",
 ]
 
 [tool.uv.workspace]

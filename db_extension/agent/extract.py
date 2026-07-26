@@ -1,20 +1,17 @@
-"""Extract and validate RunQuery body from marked agent workspace file."""
+"""Extract and validate Verus run_query body from marked agent workspace file."""
 from __future__ import annotations
 
+import re
+from research_loop.assemble_runquery import (
+    AGENT_END,
+    AGENT_START,
+    extract_agent_body,
+    validate_runquery_body as validate_rust_runquery_body,
+)
 
+# Legacy Dafny markers (fallback during transition)
 MARKER_START = "// <<<LEMMA_RUNQUERY_BODY>>>"
 MARKER_END = "// <<<END_LEMMA_RUNQUERY_BODY>>>"
-
-_FORBIDDEN_IN_BODY = (
-    "method ",
-    "function ",
-    "lemma ",
-    "predicate ",
-    "class ",
-    "module ",
-    "{:verify false}",
-    "axiom",
-)
 
 
 def _strip_comments_and_strings(text: str) -> str:
@@ -53,34 +50,19 @@ def _strip_comments_and_strings(text: str) -> str:
 
 
 def validate_runquery_body(body: str) -> list[str]:
-    """Return validation errors; empty list means OK."""
-    errors: list[str] = []
+    """Return validation errors; empty list means OK (Verus/Rust agent body)."""
+    errors = validate_rust_runquery_body(body)
     if not body.strip():
-        errors.append("RunQuery body is empty")
         return errors
     clean = _strip_comments_and_strings(body)
-    if not clean.strip():
+    stripped = re.sub(r"[{}\s;]+", "", clean)
+    if not stripped:
         errors.append("RunQuery body has no executable statements (comments only)")
-        return errors
-    for kw in _FORBIDDEN_IN_BODY:
-        if kw in clean:
-            errors.append(f"forbidden construct in body: {kw.strip()!r}")
-    depth = 0
-    for ch in clean:
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth < 0:
-                errors.append("unbalanced braces in body")
-                return errors
-    if depth != 0:
-        errors.append("unbalanced braces in body")
     return errors
 
 
 def extract_runquery_body_text(raw: str) -> str:
-    """Extract inner body; file may be `{ ... }` or raw statements."""
+    """Extract inner body from braced block."""
     text = raw.strip()
     if text.startswith("{"):
         depth, i = 0, 0
@@ -98,30 +80,28 @@ def extract_runquery_body_text(raw: str) -> str:
     return text
 
 
-def _extract_between_markers(text: str) -> str | None:
-    start = text.find(MARKER_START)
-    end = text.find(MARKER_END)
+def _extract_between_markers(text: str, start_marker: str, end_marker: str) -> str | None:
+    start = text.find(start_marker)
+    end = text.find(end_marker)
     if start == -1 or end == -1 or end <= start:
         return None
-    inner = text[start + len(MARKER_START) : end]
-    # Strip optional wrapping braces inside markers.
-    inner = inner.strip()
+    inner = text[start + len(start_marker) : end].strip()
     if inner.startswith("{"):
         return extract_runquery_body_text(inner)
-    return inner.strip()
+    return inner
 
 
 def extract_marked_body(text: str) -> str:
-    """Extract body between markers, else fall back to brace/raw extraction."""
-    marked = _extract_between_markers(text)
-    if marked is not None:
-        body = marked
-    else:
-        try:
-            from research_loop.dafny_legacy.assemble_runquery import extract_runquery_body_text as _fallback
-
-            body = _fallback(text)
-        except ImportError:
+    """Extract body between AGENT_BODY or LEMMA markers."""
+    try:
+        body = extract_agent_body(text)
+    except Exception:
+        marked = _extract_between_markers(text, AGENT_START, AGENT_END)
+        if marked is None:
+            marked = _extract_between_markers(text, MARKER_START, MARKER_END)
+        if marked is not None:
+            body = marked
+        else:
             body = extract_runquery_body_text(text)
     errors = validate_runquery_body(body)
     if errors:
@@ -130,15 +110,41 @@ def extract_marked_body(text: str) -> str:
 
 
 def wrap_body_with_markers(body_inner: str) -> str:
-    """Produce template file content with marker comments."""
+    """Produce Verus agent template with AGENT_BODY markers."""
+    from db_extension.verus_bridge import RUNQUERY_TEMPLATE, copy_runquery_template
+    from pathlib import Path
+    import tempfile
+
     inner = body_inner.strip()
-    if not inner.startswith("{"):
-        inner = "{\n" + inner + "\n}"
-    header = """// Agent workspace — edit ONLY between the markers below.
-// Do not add method, function, lemma, class, or module declarations.
-// Do not change requires/ensures (the host injects ValidCols + ensures).
-//
-// Engine is schema-general: use cols.Get<COL> / EqAt<COL> from the transpiled spec only.
-// Never assume a fixed dataset in patterns you invent for reusable bodies.
-"""
-    return f"{header}{MARKER_START}\n{inner}\n{MARKER_END}\n"
+    if RUNQUERY_TEMPLATE.is_file():
+        template = RUNQUERY_TEMPLATE.read_text(encoding="utf-8")
+        if AGENT_START in template and AGENT_END in template:
+            start = template.index(AGENT_START) + len(AGENT_START)
+            end = template.index(AGENT_END)
+            head = template[:start]
+            tail = template[end:]
+            if "pub fn run_query" in inner or "pub exec fn run_query" in inner:
+                return head + "\n" + inner + "\n" + tail
+            return (
+                head
+                + "\n"
+                + "pub fn run_query(cols: &Cols) -> u64 {\n"
+                + inner
+                + "\n}\n"
+                + tail
+            )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = Path(tmp) / "runquery_agent.rs"
+        copy_runquery_template(dest)
+        template = dest.read_text(encoding="utf-8")
+    start = template.index(AGENT_START) + len(AGENT_START)
+    end = template.index(AGENT_END)
+    return (
+        template[:start]
+        + "\n"
+        + "pub fn run_query(cols: &Cols) -> u64 {\n"
+        + inner
+        + "\n}\n"
+        + template[end:]
+    )

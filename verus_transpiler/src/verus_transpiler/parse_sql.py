@@ -105,6 +105,14 @@ def _build_schema_resolver(
 
 
 @dataclass
+class AggSpec:
+    agg_type: str
+    agg_column: str
+    agg_expr: str
+    alias: str = ""
+
+
+@dataclass
 class JoinSpec:
     join_type: str
     table: str
@@ -180,6 +188,8 @@ class SQLQuery:
     groupby_tables: list[str | None] = field(default_factory=list)
     where_conditions: list[tuple[str, str, object, str]] = field(default_factory=list)
     agg_expr: str = ""
+    agg_specs: list[AggSpec] = field(default_factory=list)
+    select_aliases: dict[str, int] = field(default_factory=dict)
     where_expr: str = ""
     scalar_subqueries: list[ScalarSubquery] = field(default_factory=list)
     derived_tables: list[DerivedTable] = field(default_factory=list)
@@ -210,6 +220,19 @@ class SQLQuery:
     @property
     def has_order_or_limit(self) -> bool:
         return bool(self.order_by) or self.limit is not None or self.offset is not None
+
+    @property
+    def is_multi_agg(self) -> bool:
+        return len(self.agg_specs) > 1
+
+
+def _sync_primary_agg(query: SQLQuery) -> None:
+    """Keep agg_type/agg_column/agg_expr aligned with first agg_specs entry."""
+    if query.agg_specs:
+        first = query.agg_specs[0]
+        query.agg_type = first.agg_type
+        query.agg_column = first.agg_column
+        query.agg_expr = first.agg_expr
 
 
 def _outer_table_names(query: SQLQuery) -> set[str]:
@@ -253,6 +276,155 @@ def _parse_table_ref(node: exp.Expression) -> tuple[str, str | None]:
     if isinstance(node, exp.Alias) and isinstance(node.this, exp.Table):
         return node.this.name, node.alias
     raise UnsupportedContractError("Query falls outside the supported Lemma Basic SQL subset.")
+
+
+def _parse_agg_item(
+    node: exp.Expression,
+    resolver: dict[str, tuple[str, str, str | None]],
+    *,
+    alias: str = "",
+) -> AggSpec:
+    """Parse one aggregate SELECT item into AggSpec."""
+    inner = _unwrap_alias(node)
+    item_alias = alias or (node.alias if isinstance(node, exp.Alias) else "")
+
+    if isinstance(inner, exp.Count):
+        if isinstance(inner.this, exp.Distinct):
+            distinct_col = inner.this.expressions[0]
+            if not isinstance(distinct_col, exp.Column):
+                raise UnsupportedContractError(
+                    "COUNT(DISTINCT) argument must be a column."
+                )
+            real_col, _, _ = _resolve_col(distinct_col, resolver)
+            require_trusted("count_distinct")
+            return AggSpec(
+                agg_type="COUNT_DISTINCT",
+                agg_column=real_col,
+                agg_expr=f"row.{real_col}",
+                alias=item_alias,
+            )
+        if isinstance(inner.this, exp.Star):
+            return AggSpec(
+                agg_type="COUNT",
+                agg_column="*",
+                agg_expr="1",
+                alias=item_alias,
+            )
+        if not isinstance(inner.this, exp.Column):
+            raise UnsupportedContractError("COUNT argument must be * or a column.")
+        real_col, _, _ = _resolve_col(inner.this, resolver)
+        return AggSpec(
+            agg_type="COUNT",
+            agg_column=real_col,
+            agg_expr="1",
+            alias=item_alias,
+        )
+    if isinstance(inner, exp.Min):
+        return AggSpec(
+            agg_type="MIN",
+            agg_column=inner.this.sql() if hasattr(inner.this, "sql") else "",
+            agg_expr=_to_row_expr(inner.this, resolver),
+            alias=item_alias,
+        )
+    if isinstance(inner, exp.Max):
+        return AggSpec(
+            agg_type="MAX",
+            agg_column=inner.this.sql() if hasattr(inner.this, "sql") else "",
+            agg_expr=_to_row_expr(inner.this, resolver),
+            alias=item_alias,
+        )
+    if isinstance(inner, exp.Sum):
+        return AggSpec(
+            agg_type="SUM",
+            agg_column=inner.this.sql() if hasattr(inner.this, "sql") else "",
+            agg_expr=_to_row_expr(inner.this, resolver),
+            alias=item_alias,
+        )
+    if isinstance(inner, exp.Avg):
+        return AggSpec(
+            agg_type="AVG",
+            agg_column=inner.this.sql() if hasattr(inner.this, "sql") else "",
+            agg_expr=_to_row_expr(inner.this, resolver),
+            alias=item_alias,
+        )
+    raise UnsupportedContractError(
+        f"Unsupported aggregate expression: {type(inner)}"
+    )
+
+
+def _left_join_aliases(query: SQLQuery) -> set[str]:
+    """Table aliases introduced by LEFT JOIN (for anti-join IS NULL checks)."""
+    aliases: set[str] = set()
+    for join in query.joins:
+        if join.join_type == "LEFT":
+            if join.alias:
+                aliases.add(join.alias.lower())
+            aliases.add(join.table.lower())
+    return aliases
+
+
+def _compile_is_null_check(
+    col_node: exp.Column,
+    is_null: bool,
+    resolver: dict[str, tuple[str, str, str | None]],
+    query: SQLQuery,
+) -> str:
+    """Compile IS [NOT] NULL for Lemma non-nullable column loads.
+
+    Base-table cells are always present (non-null). LEFT JOIN miss uses
+    anti-join sentinel: right-side IS NULL => no matching join row.
+    """
+    require_trusted("null_3vl")
+    real_col, col_type, table = _resolve_col(col_node, resolver)
+    col_ref = f"row.{real_col}"
+    tbl_prefix = (col_node.table or "").lower()
+    if tbl_prefix and tbl_prefix in _left_join_aliases(query):
+        if is_null:
+            return "left_join_miss_generic(cols, 0)"
+        return "!left_join_miss_generic(cols, 0)"
+    # Lemma loads non-null cells for typed columns.
+    if _kind_of(col_type) == "string":
+        if is_null:
+            return f"({col_ref} == \"\"@)"
+        return f"({col_ref} != \"\"@)"
+    if is_null:
+        return "false"
+    return "true"
+
+
+def _parse_join_from(
+    node: exp.Expression,
+    schema: dict[str, str] | dict[str, dict[str, str]],
+    resolver: dict[str, tuple[str, str, str | None]],
+    *,
+    parent_ctes: list[CTESpec] | None = None,
+) -> tuple[str, str | None, DerivedTable | None]:
+    """Parse JOIN/FROM table ref; derived subquery returns (alias, alias, DerivedTable)."""
+    if isinstance(node, exp.Subquery):
+        require_trusted("derived_join")
+        inner_select = node.this
+        if not isinstance(inner_select, exp.Select):
+            raise UnsupportedContractError("derived JOIN table must be SELECT.")
+        inner_q = _parse_select(
+            inner_select,
+            schema,
+            allow_subqueries=False,
+            derived_inner=True,
+            parent_ctes=parent_ctes,
+        )
+        alias = node.alias or "derived"
+        exposed, source_col = _derived_exposed_columns(
+            inner_q, inner_select, resolver,
+        )
+        derived = DerivedTable(
+            alias=alias,
+            query=inner_q,
+            columns=exposed,
+            source_column=source_col,
+        )
+        return alias, alias, derived
+    table_name, alias = _parse_table_ref(node)
+    return table_name, alias, None
 
 
 def _parse_on_equalities(
@@ -643,6 +815,11 @@ def _compile_where_expr(
                 key = exists.correlation_cols[0]
                 return f"!exists_corr_{exists.alias}_spec(cols, row.{key})"
             return f"!exists_{exists.alias}_spec(cols)"
+        if isinstance(inner, exp.Is):
+            col_node = inner.this
+            if not isinstance(col_node, exp.Column):
+                raise UnsupportedContractError("IS NOT NULL requires a column.")
+            return _compile_is_null_check(col_node, is_null=False, resolver=resolver, query=query)
         return f"!({_compile_where_expr(inner, resolver, query, scalar_subqueries, outer_tables=outer_tables, exists_counter=exists_counter, in_counter=in_counter)})"
     if isinstance(node, exp.Exists):
         exists = _parse_exists_subquery(
@@ -799,6 +976,12 @@ def _compile_where_expr(
         return f"row.{real_col}"
     if isinstance(node, exp.Boolean):
         return "true" if node.this else "false"
+    if isinstance(node, exp.Is):
+        col_node = node.this
+        if not isinstance(col_node, exp.Column):
+            raise UnsupportedContractError("IS NULL requires a column.")
+        is_null = isinstance(node.expression, exp.Null)
+        return _compile_is_null_check(col_node, is_null=is_null, resolver=resolver, query=query)
     if isinstance(node, exp.Paren):
         return f"({_compile_where_expr(node.this, resolver, query, scalar_subqueries, outer_tables=outer_tables, exists_counter=exists_counter, in_counter=in_counter)})"
     raise UnsupportedContractError(f"Unsupported node in filter expression: {type(node)}")
@@ -842,13 +1025,45 @@ def _compile_having_expr_side(
     query: SQLQuery,
     agg_expr: str,
 ) -> str:
+    if isinstance(node, exp.Subquery):
+        require_trusted("having_subquery")
+        inner = _parse_scalar_subquery(node, resolver, alias_prefix="having_sq")
+        query.scalar_subqueries.append(inner)
+        return f"subquery_{inner.alias}_spec(cols)"
     if isinstance(node, (exp.Sum, exp.Count, exp.Avg, exp.Min, exp.Max)):
-        return "v"
+        inner = _unwrap_alias(node)
+        if isinstance(inner, exp.Count) and isinstance(inner.this, exp.Distinct):
+            require_trusted("count_distinct")
+            idx = next(
+                (i for i, a in enumerate(query.agg_specs) if a.agg_type == "COUNT_DISTINCT"),
+                0,
+            )
+        else:
+            agg_kind = (
+                "SUM" if isinstance(inner, exp.Sum)
+                else "COUNT" if isinstance(inner, exp.Count)
+                else "AVG" if isinstance(inner, exp.Avg)
+                else "MIN" if isinstance(inner, exp.Min)
+                else "MAX"
+            )
+            idx = next(
+                (i for i, a in enumerate(query.agg_specs) if a.agg_type == agg_kind),
+                0,
+            )
+        if len(query.agg_specs) <= 1:
+            return "v"
+        return f"v.{idx}"
     if isinstance(node, exp.Column):
         real_col, _, _ = _resolve_col(node, resolver)
+        alias_key = real_col.lower()
+        if alias_key in query.select_aliases:
+            idx = query.select_aliases[alias_key]
+            if len(query.agg_specs) <= 1:
+                return "v"
+            return f"v.{idx}"
         if real_col not in query.groupby_columns:
             raise UnsupportedContractError(
-                f"HAVING column {real_col!r} must be a GROUP BY column."
+                f"HAVING column {real_col!r} must be a GROUP BY column or aggregate alias."
             )
         if len(query.groupby_columns) == 1:
             return "k"
@@ -871,11 +1086,11 @@ def _parse_scalar_subquery(
     if not isinstance(inner_select, exp.Select):
         raise UnsupportedContractError("scalar subquery must be a SELECT.")
     flat_schema = {c: t for c, t, _ in outer_resolver.values()}
-    inner = _parse_select(inner_select, flat_schema, allow_subqueries=False)
-    if inner.groupby_columns:
-        raise UnsupportedContractError("scalar subquery with GROUP BY not supported in this shape.")
+    inner = _parse_select(inner_select, flat_schema, allow_subqueries=True)
     if inner.derived_tables:
-        raise UnsupportedContractError("scalar subquery with derived FROM not supported.")
+        require_trusted("having_subquery")
+    if inner.groupby_columns:
+        require_trusted("having_subquery")
     alias = f"{alias_prefix}{len(flat_schema)}"
     return ScalarSubquery(alias=alias, query=inner)
 
@@ -907,21 +1122,57 @@ def _derived_exposed_columns(
     resolver: dict[str, tuple[str, str, str | None]],
 ) -> tuple[dict[str, str], str | None]:
     """Return (alias -> type, source base column for project shapes)."""
-    if inner_q.joins or inner_q.derived_tables:
+    if inner_q.derived_tables:
         raise UnsupportedContractError(
-            "derived table inner query cannot contain JOINs or nested derived tables."
+            "derived table inner query cannot contain nested derived tables."
         )
+    if inner_q.joins:
+        require_trusted("having_subquery")
+        out: dict[str, str] = {}
+        for col in inner_q.groupby_columns:
+            out[col] = resolver.get(col.lower(), (col, "int", None))[1]
+        for item in inner_select.expressions:
+            inner_expr = _unwrap_alias(item)
+            alias = item.alias if isinstance(item, exp.Alias) else None
+            if isinstance(inner_expr, exp.Column):
+                real_col, col_type, _ = _resolve_col(inner_expr, resolver)
+                out[alias or real_col] = col_type
+            elif isinstance(inner_expr, (exp.Sum, exp.Count, exp.Avg, exp.Min, exp.Max)):
+                agg_alias = alias or "_agg"
+                val_type = "bigint" if inner_q.agg_type in ("SUM", "COUNT", "AVG", "COUNT_DISTINCT") else "int"
+                out[agg_alias] = val_type
+        for spec in inner_q.agg_specs:
+            a = spec.alias or "_agg"
+            out[a] = "bigint" if spec.agg_type in ("SUM", "COUNT", "AVG", "COUNT_DISTINCT") else "int"
+        if not out:
+            raise UnsupportedContractError(
+                "joined derived table must expose columns from its SELECT list."
+            )
+        return out, None
     if inner_q.groupby_columns:
         require_trusted("grouped_derived")
-        out: dict[str, str] = {c: "int" for c in inner_q.groupby_columns}
-        agg_alias = "_agg"
+        out: dict[str, str] = {}
+        for col in inner_q.groupby_columns:
+            out[col] = resolver.get(col.lower(), (col, "int", None))[1]
         for item in inner_select.expressions:
             inner_expr = _unwrap_alias(item)
             if isinstance(inner_expr, (exp.Sum, exp.Count, exp.Avg, exp.Min, exp.Max)):
                 agg_alias = item.alias or "_agg"
-                val_type = "bigint" if inner_q.agg_type in ("SUM", "COUNT", "AVG") else "int"
+                if isinstance(inner_expr, exp.Count) and isinstance(inner_expr.this, exp.Distinct):
+                    val_type = "bigint"
+                else:
+                    val_type = "bigint" if inner_q.agg_type in ("SUM", "COUNT", "AVG", "COUNT_DISTINCT") else "int"
                 out[agg_alias] = val_type
-                break
+        if inner_q.agg_specs:
+            for spec in inner_q.agg_specs:
+                alias = spec.alias or "_agg"
+                val_type = "bigint" if spec.agg_type in ("SUM", "COUNT", "AVG", "COUNT_DISTINCT") else "int"
+                out[alias] = val_type
+        elif not any(
+            isinstance(_unwrap_alias(item), (exp.Sum, exp.Count, exp.Avg, exp.Min, exp.Max))
+            for item in inner_select.expressions
+        ):
+            out["_agg"] = "bigint"
         return out, None
 
     if inner_q.window_specs:
@@ -991,6 +1242,9 @@ def _parse_limit_offset(expression: exp.Select) -> tuple[int | None, int | None]
 def _parse_order_by(
     expression: exp.Select,
     resolver: dict[str, tuple[str, str, str | None]],
+    *,
+    select_aliases: dict[str, str] | None = None,
+    agg_alias_indices: dict[str, int] | None = None,
 ) -> list[OrderByItem]:
     order_clause = expression.args.get("order")
     if not order_clause:
@@ -998,15 +1252,25 @@ def _parse_order_by(
     items: list[OrderByItem] = []
     for ob in order_clause.expressions:
         inner = ob.this
-        if not isinstance(inner, exp.Column):
-            raise UnsupportedContractError("ORDER BY supports column references only.")
-        real_col, _, _ = _resolve_col(inner, resolver)
         desc = bool(ob.args.get("desc"))
-        items.append(OrderByItem(
-            expr=f"row.{real_col}",
-            column=real_col,
-            descending=desc,
-        ))
+        if isinstance(inner, exp.Column):
+            name = inner.name.lower()
+            if agg_alias_indices and name in agg_alias_indices:
+                idx = agg_alias_indices[name]
+                items.append(OrderByItem(
+                    expr=f"agg_alias_{idx}",
+                    column=name,
+                    descending=desc,
+                ))
+                continue
+            real_col, _, _ = _resolve_col(inner, resolver)
+            items.append(OrderByItem(
+                expr=f"row.{real_col}",
+                column=real_col,
+                descending=desc,
+            ))
+            continue
+        raise UnsupportedContractError("ORDER BY supports column references only.")
     return items
 
 
@@ -1259,7 +1523,7 @@ def _parse_select(
             if alias:
                 query.table_aliases[alias] = table_name
 
-        for join in expression.find_all(exp.Join):
+        for join in expression.args.get("joins") or []:
             side = (join.side or join.kind or "INNER").upper()
             if side in ("FULL",):
                 require_trusted("full_join")
@@ -1270,7 +1534,19 @@ def _parse_select(
             elif side == "RIGHT":
                 require_trusted("nway_join")
 
-            jtable, jalias = _parse_table_ref(join.this)
+            jtable, jalias, jderived = _parse_join_from(
+                join.this,
+                schema,
+                derived_resolver,
+                parent_ctes=list(cte_map.values()),
+            )
+            if jderived is not None:
+                query.derived_tables.append(jderived)
+                for col, typ in jderived.columns.items():
+                    derived_resolver[col.lower()] = (col, typ, jderived.alias)
+                    derived_resolver[f"{jderived.alias}.{col}".lower()] = (col, typ, jderived.alias)
+                jtable = jderived.alias
+                jalias = jderived.alias
             swap_right = side == "RIGHT"
             if side == "RIGHT":
                 side = "LEFT"
@@ -1305,7 +1581,7 @@ def _parse_select(
                 query.tables.append(base_table)
                 if base_alias:
                     query.table_aliases[base_alias] = base_table
-                on_equalities = [(r, l) for l, r in on_equalities]
+                on_equalities = [(right, left) for left, right in on_equalities]
             else:
                 query.tables.append(jtable)
                 if jalias:
@@ -1336,22 +1612,34 @@ def _parse_select(
     select_items = expression.expressions
     agg_node = None
     if query.groupby_columns:
-        if len(select_items) != len(query.groupby_columns) + 1:
-            raise UnsupportedContractError(
-                "SELECT must list all GROUP BY columns plus one aggregate."
-            )
         unwrapped = [_unwrap_alias(item) for item in select_items]
         select_cols: set[str] = set()
-        for item in unwrapped:
+        agg_items: list[exp.Expression] = []
+        for item, raw in zip(unwrapped, select_items, strict=True):
             if isinstance(item, exp.Column):
                 real_col, _, _ = _resolve_col(item, resolver)
                 select_cols.add(real_col)
             elif isinstance(item, (exp.Sum, exp.Count, exp.Avg, exp.Min, exp.Max)):
-                agg_node = item
-        if not agg_node or select_cols != set(query.groupby_columns):
+                agg_items.append(raw)
+        if not agg_items:
             raise UnsupportedContractError(
-                "SELECT must include all GROUP BY columns and exactly one aggregate."
+                "GROUP BY SELECT must include at least one aggregate."
             )
+        if not select_cols.issubset(set(query.groupby_columns)):
+            raise UnsupportedContractError(
+                "Non-aggregated SELECT columns must appear in GROUP BY."
+            )
+        if len(select_items) != len(select_cols) + len(agg_items):
+            raise UnsupportedContractError(
+                "SELECT must list GROUP BY columns (optional) plus one or more aggregates."
+            )
+        for raw in agg_items:
+            spec = _parse_agg_item(raw, resolver)
+            if spec.alias:
+                query.select_aliases[spec.alias.lower()] = len(query.agg_specs)
+            query.agg_specs.append(spec)
+        agg_node = _unwrap_alias(agg_items[0])
+        _sync_primary_agg(query)
     else:
         if len(select_items) == 1:
             select_item = _unwrap_alias(select_items[0])
@@ -1471,29 +1759,13 @@ def _parse_select(
                 raise UnsupportedContractError("DISTINCT with scalar aggregate is not supported.")
             return _flatten_derived_project(query)
 
-    if isinstance(agg_node, exp.Count):
-        query.agg_type = "COUNT"
-        if isinstance(agg_node.this, exp.Star):
-            query.agg_column = "*"
-            query.agg_expr = "1"
-        else:
-            if not isinstance(agg_node.this, exp.Column):
-                raise UnsupportedContractError("COUNT argument must be * or a column.")
-            real_col, _, _ = _resolve_col(agg_node.this, resolver)
-            query.agg_column = real_col
-            query.agg_expr = "1"
-    elif isinstance(agg_node, exp.Min):
-        query.agg_type = "MIN"
-        query.agg_expr = _to_row_expr(agg_node.this, resolver)
-        query.agg_column = agg_node.this.sql() if hasattr(agg_node.this, "sql") else ""
-    elif isinstance(agg_node, exp.Max):
-        query.agg_type = "MAX"
-        query.agg_expr = _to_row_expr(agg_node.this, resolver)
-        query.agg_column = agg_node.this.sql() if hasattr(agg_node.this, "sql") else ""
-    else:
-        query.agg_type = "SUM" if isinstance(agg_node, exp.Sum) else "AVG"
-        query.agg_expr = _to_row_expr(agg_node.this, resolver)
-        query.agg_column = agg_node.this.sql() if hasattr(agg_node.this, "sql") else ""
+    if agg_node is not None and not query.agg_specs:
+        spec = _parse_agg_item(
+            next(raw for raw in select_items if isinstance(_unwrap_alias(raw), (exp.Sum, exp.Count, exp.Avg, exp.Min, exp.Max))),
+            resolver,
+        )
+        query.agg_specs.append(spec)
+        _sync_primary_agg(query)
 
     where_clause = expression.args.get("where")
     if where_clause:
@@ -1514,7 +1786,12 @@ def _parse_select(
         )
 
     query.limit, query.offset = _parse_limit_offset(expression)
-    query.order_by = _parse_order_by(expression, resolver)
+    agg_alias_indices = {
+        alias: idx for alias, idx in query.select_aliases.items()
+    }
+    query.order_by = _parse_order_by(
+        expression, resolver, agg_alias_indices=agg_alias_indices,
+    )
 
     if query.distinct and query.agg_type and not query.groupby_columns:
         raise UnsupportedContractError("DISTINCT with scalar aggregate is not supported.")

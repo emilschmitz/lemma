@@ -1,82 +1,123 @@
 # Lemma OpenRouter agent
 
+Schema-driven **Verus** optimizer (not SSB-only). The host transpiles SQL with a caller-supplied
+or catalog-resolved schema via `verus_transpiler`; agents edit `runquery_agent.rs` against
+`/context/ro/spec.rs`. Legacy Dafny paths live under `research_loop/dafny_legacy/` and are not
+used by the default optimizer.
+
+## Schema
+
+Pass an explicit schema dict to `run_optimization_loop(..., schema={...})`, set
+`LEMMA_SCHEMA_JSON=/path/to/schema.json`, or rely on `DatabaseCatalog` (DuckDB /
+`lineorder_flat` bootstrap). Unknown tables fail loudly — SSB schema is only a fallback when
+SQL clearly targets `lineorder_flat`.
+
 ## Architecture
 
-The **host** runs an OpenRouter (OpenAI-compatible) ReAct tool loop. Tool calls execute inside a **Docker** container with `--network none` by default. The agent edits `runquery_agent.dfy` between marker comments; the host extracts the body and the existing assemble/harness pipeline verifies it.
-
 ```
-Host (OpenRouter API)  ←→  docker run -i lemma-agent:latest
-                              └─ JSONL tools_worker (read/write/shell/duckdb/submit)
+Host
+  ├─ OpenRouter ReAct (LLM on host)     [default]
+  ├─ EgressBridge allowlist UDS         [CLI-in-Docker: Cursor/Anthropic/…]
+  ├─ McpSocketServer UDS → measure_core
+  └─ tool/CLI container (--network none)
+        ├─ tools_worker / agent CLI
+        ├─ mcp_proxy (stdio MCP → MCP sock)
+        └─ egress sidecar HTTPS_PROXY → only vendor API hosts
 ```
 
-**Migration note:** This agent still splices **Dafny** `RunQuery` bodies (`db_extension/agent/template_runquery.dfy`, `db_extension/dafny_transpiler/`). The verified engine path is **Verus** (`research_loop/` harness, `verus_transpiler/`). New work should target Verus `run_query` bodies; Dafny is legacy-only for this OpenRouter loop.
+**CLI:** mount `~/.cursor` (or `AGENT_CREDENTIALS_DIR`), pass `AGENT_ENV` keys, egress
+allowlist by profile (`cursor`, `anthropic`, …). Non-API web is blocked by the proxy.
+With egress on, Cursor also gets `CURSOR_FORCED_SHELL_EGRESS=1` so **WebSearch/WebFetch**
+are disabled automatically (they run in Cursor cloud via `api2`, not as local curls).
+See `research_loop/AGENT_SANDBOX.md`.
 
-## Configuration
+**Real MCP:** `mcp_tool_specs.py` → host FastMCP, sandbox `mcp_proxy`, OpenRouter defs.
 
-Flags load from `research_loop/config.env` with process-env overrides (`db_extension/agent/config.py`).
+### Tools
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `LEMMA_AGENT_BACKEND` | `openrouter` | `openrouter` or `cli` (legacy Cursor CLI sandbox) |
-| `OPENROUTER_API_KEY` | (empty) | Required for OpenRouter backend |
-| `OPENROUTER_MODEL` | `anthropic/claude-sonnet-4` | Model id |
-| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | API base |
-| `AGENT_TIMEOUT_SEC` | `600` | Wall-clock limit per iteration |
-| `AGENT_NETWORK` | `0` | `1` enables container network (default off; GenDB agents had web search) |
-| `AGENT_DATA_MODE` | `stats` | `none` / `stats` / `full` — DuckDB tool policy; no raw row dumps by default |
-| `AGENT_WEB_SEARCH` | `0` | `1` allows web search tool in container |
-| `AGENT_DOCS_MOUNT` | `1` | Mount primer/AGENTS docs into agent context |
-| `AGENT_SUBMIT_ONLY_MEASURE` | `1` | Timed measure only via host submit/harness (not agent wall-clock gaming) |
-| `AGENT_WORKLOAD_HINT` | `1` | Write `WORKLOAD.md` into context |
-| `AGENT_IMAGE` | `lemma-agent:latest` | Tool-worker image |
-| `AGENT_MAX_TURNS` | `40` | Max ReAct turns per iteration |
+| Tool | Action |
+|------|--------|
+| `validate_runquery` | Body lint |
+| `run_runquery` | Host harness; `run_id` + metrics |
+| `submit_runquery` / `submit` | Mark only |
+| `get_submit_result` / `list_runs` / `mcp_health` | Read back |
 
-**Primary metric:** `SESSION_HOT_US` for H1 path agents (`DB_EXTENSION_PATHS.md`). OpenRouter Dafny loop uses harness wall-clock until Verus migration.
+### Register MCP (CLI on host)
 
-### GenDB fair-compare alignment
+```json
+{
+  "mcpServers": {
+    "lemma-host": {
+      "command": "uv",
+      "args": ["run", "python", "-m", "db_extension.agent.mcp_host", "--transport", "stdio"],
+      "env": {
+        "LEMMA_AGENT_WORKSPACE": "/ABS/PATH/research_loop/agent_workspace",
+        "LEMMA_QUERY_ID": "1"
+      }
+    }
+  }
+}
+```
 
-GenDB README agents had file I/O, terminal, and **web search**. Our defaults disable network and web search. GenDB disallowed result/intermediate caching and precomputed derived columns — align submit harness accordingly (no memoized final answers on hot runs).
+Inside Docker CLI mode, entrypoint writes `.cursor/mcp.json` → `python -m lemma_agent.mcp_proxy`.
 
-## Container mounts
+## CLI-in-Docker (Cursor / other CLIs)
 
-| Host | Container | Mode |
-|------|-----------|------|
-| `research_loop/agent_workspace` | `/workspace` | rw |
-| `.../context/ro` | `/context/ro` | ro |
-| SSB flat tbl parent dir | `/data` | ro (optional) |
+`--network none` + **allowlisted egress** (not open internet):
 
-When `AGENT_DOCS_MOUNT=1`, primer and AGENTS markdown are copied into `/context/ro`.
+- Mount `AGENT_CREDENTIALS_DIR` (default `~/.cursor`) → `/root/.cursor`
+- Pass `AGENT_ENV` keys (e.g. `CURSOR_API_KEY`)
+- Host `EgressBridge` allowlist by `AGENT_EGRESS_PROFILE` (`cursor`, `anthropic`, …)
+- Sandbox `HTTPS_PROXY=http://127.0.0.1:8118` → only those API hosts
+- MCP measure via Unix socket / `mcp_proxy`
 
-## Data modes
-
-- **none** — `duckdb_sql` disabled; agent uses spec only.
-- **stats** — read-only aggregate/stats queries (COUNT, SUMMARIZE, EXPLAIN, etc.).
-- **full** — any read-only SQL.
+See `research_loop/AGENT_SANDBOX.md`. Rebuild: `docker build -t lemma-agent:latest -f docker/agent/Dockerfile .`
 
 ## Run
 
-Build the tool image (from repo root):
-
 ```bash
 docker build -t lemma-agent:latest -f docker/agent/Dockerfile .
-```
-
-Run the optimizer with a real agent:
-
-```bash
 MOCK_AGENT=0 OPENROUTER_API_KEY=sk-or-... uv run python -m db_extension.run_optimizer "SELECT ..."
 ```
 
-Legacy Cursor CLI path (still viable):
+Custom schema example:
 
 ```bash
-LEMMA_AGENT_BACKEND=cli USE_AGENT_DOCKER=1 MOCK_AGENT=0 uv run python -m db_extension.run_optimizer "SELECT ..."
+export LEMMA_SCHEMA_JSON=/path/to/schema.json   # {"V":"int"} or multi-table JSON
+uv run python -c "
+from db_extension.optimizer import run_optimization_loop
+print(run_optimization_loop('SELECT SUM(v) FROM t', schema={'V':'int'}, use_mock=True))
+"
 ```
-
-Preferred: OpenRouter host + tool Docker (`network none`).
 
 ## Tests
 
 ```bash
-uv run pytest db_extension/tests/ -q
+uv run python -m pytest db_extension/tests/test_measure_core.py db_extension/tests/test_mcp_socket.py db_extension/tests/test_mcp_host.py db_extension/tests/test_mcp_registry_sync.py db_extension/tests/test_model_bridge.py db_extension/tests/test_tools_worker_paths.py -q
 ```
+
+## Run artifacts (GCP harvest)
+
+Each optimizer job **with ``LEMMA_RESEARCH_LOG=1``** writes one harvest directory under
+`research_loop/runs/<id>/`:
+
+```
+manifest.json
+result.json
+history.json
+workspace/          # agent files, mcp_results/, egress_*.jsonl, trace.jsonl
+logs/pipeline.log
+logs/pipeline.jsonl
+logs/docker_agent.*
+logs/harness_iter*.json
+logs/openrouter_meta_iter*.json
+```
+
+`research_loop/runs/LATEST` points at the most recent run (absolute path). Set automatically via
+`LEMMA_RUN_DIR` and `LEMMA_AGENT_WORKSPACE` when research logging is on.
+
+```bash
+LEMMA_RESEARCH_LOG=1  # required for harvest dirs (default 0)
+```
+
+Archive the whole directory for GCP: `tar czf run.tgz -C research_loop/runs <id>/` or `gsutil cp -r research_loop/runs/<id>/ gs://bucket/path/`.

@@ -10,7 +10,7 @@ import re
 from dataclasses import dataclass
 
 from .col_exprs import native_u64_term, native_where_cond, to_col_expr
-from .joins import _col_access, _resolve_join_row_expr, _table_for_col, _table_struct_name
+from .joins import _resolve_join_row_expr, _table_for_col, _table_struct_name
 from .parse_sql import SQLQuery, UnsupportedContractError, normalize_schema
 from .parse_sql import _agg_value_type
 from .templates import (
@@ -19,6 +19,7 @@ from .templates import (
     _filter_block,
     _scalar_loop_invariant,
     emit_run_query_template,
+    emit_trusted_run_query,
 )
 from .value_bounds import col_verus_type
 
@@ -930,6 +931,165 @@ pub exec fn run_query({struct_params}) -> (res: u64)
   )
 
 
+def _hot_term_for_spec(query: SQLQuery, spec, idx: str = "i") -> str:
+  if spec.agg_type == "COUNT":
+    return "1"
+  if spec.agg_type == "COUNT_DISTINCT":
+    col = spec.agg_column.lower()
+    return f"{col}[{idx}].clone()"
+  expr = (spec.agg_expr or "").strip()
+  if _agg_value_type(expr) == "i64":
+    from .col_exprs import native_i64_term
+    return native_i64_term(expr, idx).replace(" as int", "")
+  return native_u64_term(expr, idx).replace(" as int", "")
+
+
+def _multi_agg_rust_ret_type(query: SQLQuery, flat_schema: dict[str, str]) -> str:
+  keys = _groupby_verus_key_types(query, flat_schema)
+  val_parts: list[str] = []
+  for spec in query.agg_specs:
+    if spec.agg_type == "AVG":
+      val_parts.extend(["u64", "u64"])  # sum, count
+    elif spec.agg_type == "COUNT_DISTINCT":
+      val_parts.append("u64")
+    else:
+      val_parts.append("u64")
+  if len(val_parts) == 1:
+    val_ty = val_parts[0]
+  else:
+    val_ty = f"({', '.join(val_parts)})"
+  if len(keys) == 1:
+    if keys[0] == "String":
+      return f"HashMap<String, {val_ty}>"
+    return f"HashMap<u32, {val_ty}>"
+  if keys == ["String", "String"]:
+    return f"HashMap<(String, String), {val_ty}>"
+  key_ty = ", ".join(keys)
+  return f"HashMap<({key_ty}), {val_ty}>"
+
+
+def _emit_multi_agg_groupby_bundle(
+    query: SQLQuery,
+    flat_schema: dict[str, str],
+) -> ExecBundle:
+  """Single-table multi-aggregate group-by with HashMap hot path (TRUSTED ensures)."""
+  rust_ret = _multi_agg_rust_ret_type(query, flat_schema)
+  where_at = _exec_where_at_i(query.where_expr, "i", flat_schema)
+  cols = _collect_single_table_cols(query, flat_schema)
+  params = ", ".join(f"{c.lower()}: &[{_hot_rust_type(flat_schema[c])}]" for c in cols)
+  n_expr = f"{cols[0].lower()}.len()"
+  where_hot = _where_to_hot_loop(where_at, "i") or "true"
+  key_tuple = _groupby_hot_key_tuple(query, flat_schema, "i")
+
+  update_lines: list[str] = []
+  tuple_fields: list[str] = []
+  field_idx = 0
+  for spec in query.agg_specs:
+    if spec.agg_type in ("COUNT", "SUM"):
+      term = _hot_term_for_spec(query, spec)
+      if spec.agg_type == "COUNT":
+        term = "1"
+      update_lines.append(
+          f"            entry.{field_idx} = entry.{field_idx}.wrapping_add({term});"
+      )
+      tuple_fields.append("0u64")
+      field_idx += 1
+    elif spec.agg_type == "COUNT_DISTINCT":
+      col = spec.agg_column.lower()
+      update_lines.append(
+          f"            distinct_{field_idx}.entry(key.clone()).or_default().insert({col}[i].clone());"
+      )
+      tuple_fields.append("0u64")
+      field_idx += 1
+    elif spec.agg_type == "AVG":
+      term = _hot_term_for_spec(query, spec)
+      update_lines.append(
+          f"            entry.{field_idx} = entry.{field_idx}.wrapping_add({term});\n"
+          f"            entry.{field_idx + 1} = entry.{field_idx + 1}.wrapping_add(1);"
+      )
+      tuple_fields.extend(["0u64", "0u64"])
+      field_idx += 2
+
+  zero_tuple = ", ".join(tuple_fields) if len(tuple_fields) > 1 else tuple_fields[0]
+  distinct_decls = "\n".join(
+      f"    let mut distinct_{i}: HashMap<{rust_ret.split('<')[1].split(',')[0]}, HashSet<String>> = HashMap::new();"
+      for i, spec in enumerate(query.agg_specs)
+      if spec.agg_type == "COUNT_DISTINCT"
+  )
+  post_lines: list[str] = []
+  out_idx = 0
+  for spec in query.agg_specs:
+    if spec.agg_type == "COUNT_DISTINCT":
+      for j, s in enumerate(query.agg_specs):
+        if s is spec:
+          post_lines.append(
+              f"        v.{out_idx} = distinct_{j}.get(k).map(|s| s.len() as u64).unwrap_or(0);"
+          )
+          out_idx += 1
+          break
+    elif spec.agg_type == "AVG":
+      post_lines.append(
+          f"        v.{out_idx} = if v.{out_idx + 1} == 0 {{ 0 }} else {{ v.{out_idx} / v.{out_idx + 1} }};"
+      )
+      out_idx += 2
+    else:
+      out_idx += 1
+
+  having_tail = ""
+  if query.having_expr:
+    having_hot = _having_to_hot_filter(query.having_expr)
+    having_tail = f"    acc.into_iter().filter(|(k, v)| {having_hot}).collect()\n"
+  else:
+    having_tail = "    acc\n"
+
+  hot_path = f"""\
+#[inline(always)]
+fn custom_multi_agg_hot({params}) -> {rust_ret} {{
+    use std::collections::{{HashMap, HashSet}};
+{distinct_decls}
+    let n = {n_expr};
+    let mut acc: {rust_ret} = HashMap::with_capacity(64);
+    for i in 0..n {{
+        if {where_hot} {{
+            let key = {key_tuple};
+            let entry = acc.entry(key.clone()).or_insert(({zero_tuple}));
+{chr(10).join(update_lines)}
+        }}
+    }}
+    for (k, mut v) in acc.iter_mut() {{
+{chr(10).join(post_lines)}
+    }}
+{having_tail}}}"""
+
+  bench_args = ", ".join(f"&cols.{c.lower()}" for c in cols)
+  bench_exec = f"custom_multi_agg_hot({bench_args})"
+  run_query = emit_trusted_run_query(
+      query,
+      rust_ret,
+      view_spec="hashmap_multi_agg_view",
+      hot_path_call=bench_exec,
+  )
+  return ExecBundle(
+      run_query_rs=run_query,
+      hot_path_rs=hot_path,
+      bench_exec=bench_exec,
+      ret_type="multi_agg",
+      proved=False,
+  )
+
+
+def try_generate_exec_bundle(
+    query: SQLQuery,
+    schema: dict[str, str] | dict[str, dict[str, str]],
+    *,
+    multi_schema: dict[str, dict[str, str]] | None = None,
+) -> ExecBundle | None:
+  try:
+    return generate_exec_bundle(query, schema, multi_schema=multi_schema)
+  except UnsupportedContractError:
+    return None
+
+
 def generate_exec_bundle(
     query: SQLQuery,
     schema: dict[str, str] | dict[str, dict[str, str]],
@@ -953,6 +1113,9 @@ def generate_exec_bundle(
     if len(query.tables) >= 3:
       return _emit_nway_bundle(query, multi_schema)
     raise UnsupportedContractError("join query missing table list")
+
+  if query.is_multi_agg and query.groupby_columns and not query.joins:
+    return _emit_multi_agg_groupby_bundle(query, flat_schema)
 
   if query.groupby_columns:
     return _emit_groupby_bundle(query, flat_schema)

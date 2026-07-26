@@ -1,13 +1,19 @@
 import os
-import re
 import sys
 import json
 import subprocess
 import time
 from pathlib import Path
-from sql_transpiler import transpile_sql_to_dafny_columnar
-from research_loop.ssb_workload import queries, schema
+from verus_transpiler import transpile_sql_to_verus
+from db_extension.verus_bridge import (
+    invoke_verus_custom_pipeline,
+    match_query_index,
+    resolve_query_id,
+    resolve_schema_for_sql,
+    write_mock_agent_body,
+)
 from research_loop.pipeline_log import log_debug, log_info, log_trace
+from research_loop.run_artifacts import RunArtifacts, begin_run, end_run
 from research_loop.pipeline_demo import (
     demo_enabled,
     demo_iteration,
@@ -16,7 +22,6 @@ from research_loop.pipeline_demo import (
     demo_banner,
     demo_live_step,
     format_demo_seconds_from_us,
-    stream_mock_agent_output,
     verbose_enabled,
 )
 
@@ -71,213 +76,82 @@ def _run_harness_demo(harness_cmd: list[str], *, cwd: str, timeout: int) -> tupl
     return proc.returncode, metrics
 
 
-def match_query_index(sql_query: str) -> int:
+# match_query_index, write_mock_agent_body, resolve_schema_for_sql live in verus_bridge
+
+def _finish_run(run: RunArtifacts | None, result: dict) -> dict:
+    if run is None:
+        return result
+    return end_run(run, result)
+
+
+def run_optimization_loop(
+    sql_query: str,
+    dataset_size: int = 50000,
+    max_iterations: int = 3,
+    use_mock: bool = True,
+    model: str = None,
+    schema: dict | None = None,
+) -> dict:
     """
-    Normalizes the input SQL query and matches it against the 15 standard queries.
-    Returns 1-based query index, or 1 if no match.
+    Runs the query optimization loop (schema-driven Verus). Prints step-by-step colored output.
     """
-    def normalize(s: str) -> str:
-        s = re.sub(r"\s+", " ", s).strip().lower()
-        # Remove table aliases or quotes
-        s = s.replace('"', '').replace("'", "")
-        return s
+    from research_loop.run_artifacts import research_logging_enabled
 
-    norm_input = normalize(sql_query)
-    for idx, q_sql in enumerate(queries):
-        if normalize(q_sql) == norm_input or normalize(q_sql) in norm_input or norm_input in normalize(q_sql):
-            return idx + 1
-            
-    # Substring matching heuristics
-    # Group By queries
-    if "group by" in norm_input:
-        if "d_year" in norm_input and "p_brand" in norm_input:
-            if "mfgr#12" in norm_input or "p_category" in norm_input:
-                return 4
-            elif "mfgr#2221" in norm_input:
-                if "asia" in norm_input:
-                    return 5
-                return 6
-            return 4
-        elif "c_nation" in norm_input and "s_nation" in norm_input:
-            return 7
-        elif "c_city" in norm_input and "s_city" in norm_input:
-            if "united states" in norm_input:
-                return 8
-            elif "19971201" in norm_input or "19971231" in norm_input:
-                return 10
-            return 9
-        elif "c_nation" in norm_input and "d_year" in norm_input:
-            if "19970101" in norm_input:
-                return 12
-            return 11
-        elif "s_nation" in norm_input and "p_category" in norm_input:
-            return 13
-        elif "lo_orderpriority" in norm_input:
-            return 15
+    try:
+        resolved_schema = resolve_schema_for_sql(sql_query, schema)
+    except ValueError as e:
+        return {"status": "FAILED", "error": str(e), "history": []}
 
-    # Scalar queries
-    if "lo_quantity < 24" in norm_input or "lo_quantity < 25" in norm_input or "lo_quantity" in norm_input:
-        if "19940101" in norm_input or "19941231" in norm_input:
-            return 14
-        if "19930101" in norm_input:
-            return 1
-        if "1994" in norm_input:
-            return 2
-        return 1
-    if "d_weeknuminyear" in norm_input:
-        return 3
-
-    return 1
-
-def write_mock_agent_body(query_id: int, workspace_path: str) -> None:
-    """Write verified columnar RunQuery body for mock mode (from benchmark fixtures)."""
-    from research_loop.benchmark_runqueries import RUNQUERIES
-
-    if query_id not in RUNQUERIES:
-        raise ValueError(f"No mock RunQuery fixture for query {query_id}")
-    full = RUNQUERIES[query_id].strip()
-    m = re.search(r"method\s+RunQuery[^{]+\{", full, re.DOTALL)
-    if not m:
-        raise ValueError(f"Could not parse RunQuery method for query {query_id}")
-    start = m.end()
-    depth, i = 1, start
-    while i < len(full) and depth:
-        if full[i] == "{":
-            depth += 1
-        elif full[i] == "}":
-            depth -= 1
-        i += 1
-    body = full[start : i - 1].strip()
-    body = re.sub(
-        r"MulU64U32\(ep,\s*disc\)",
-        "MulU64U32(ep as NativeU64, disc)",
-        body,
-    )
-    os.makedirs(os.path.dirname(workspace_path), exist_ok=True)
-    if demo_enabled():
-        stream_mock_agent_output(workspace_path=workspace_path, body_inner=body)
-    else:
-        with open(workspace_path, "w") as f:
-            f.write("{\n" + body + "\n}\n")
-
-
-def generate_mock_dafny_code(dafny_spec: str) -> str:
-    """
-    Parses the transpiled Dafny spec and automatically generates a backward-loop
-    RunQuery implementation that Z3 can verify statically and instantly.
-    """
-    # 1. Determine the return type from MethodSpec definition
-    ret_type_match = re.search(r"function MethodSpec\(data: seq<Row>\):\s*([^\n{]+)", dafny_spec)
-    if not ret_type_match:
-        raise ValueError("Could not find MethodSpec return type in spec.")
-    ret_type = ret_type_match.group(1).strip()
-
-    is_map = "map" in ret_type
-
-    # 2. Extract the body of MethodSpec
-    body_match = re.search(r"function MethodSpec\(data: seq<Row>\):[^{]+\{([\s\S]*?)\n\}", dafny_spec)
-    if not body_match:
-        raise ValueError("Could not find MethodSpec body in spec.")
-    spec_body = body_match.group(1)
-
-    loop_body = ""
-
-    if is_map:
-        # Map-returning query (GROUP BY)
-        # We need to extract:
-        # - The condition (optional): `if (condition) then`
-        # - The key expression: `var key := (expression);`
-        # - The term expression: `tailMap[key := val + (expression)]`
-        cond_match = re.search(r"if\s+\(([^)]+)\)\s+then", spec_body)
-        key_match = re.search(r"var key\s*:=\s*([^;]+);", spec_body)
-        term_match = re.search(r"tailMap\[key\s*:=\s*val\s*\+\s*([^\]]+)\]", spec_body)
-
-        if not key_match or not term_match:
-            raise ValueError("Could not parse GROUP BY expressions in MethodSpec.")
-
-        key_expr = key_match.group(1).strip()
-        term_expr = term_match.group(1).strip()
-
-        if cond_match:
-            condition = cond_match.group(1).strip()
-            loop_body = f"""    if ({condition}) {{
-      var key := {key_expr};
-      res := res[key := (if key in res then res[key] else 0) + {term_expr}];
-    }}"""
-        else:
-            loop_body = f"""    var key := {key_expr};
-    res := res[key := (if key in res then res[key] else 0) + {term_expr}];"""
-
-        code = f"""method RunQuery(data: seq<Row>) returns (res: {ret_type})
-  ensures res == MethodSpec(data)
-{{
-  res := map[];
-  var i := |data|;
-  while i > 0
-    invariant 0 <= i <= |data|
-    invariant res == MethodSpec(data[i..])
-  {{
-    i := i - 1;
-    var row := data[i];
-{loop_body}
-  }}
-}}"""
-    else:
-        # Scalar-returning query (SUM/COUNT)
-        # Check if we have `var term := if (condition) then term_expr else 0;`
-        term_def_match = re.search(r"var term\s*:=\s*(if[\s\S]*?else\s*0);", spec_body)
-        if term_def_match:
-            term_expr = term_def_match.group(1).strip()
-            loop_body = f"""    var term := {term_expr};
-    res := term + res;"""
-        else:
-            # Maybe it is directly `some_expr + MethodSpec(tail)`
-            direct_match = re.search(r"([\s\S]*?)\s*\+\s*MethodSpec\(tail\)", spec_body)
-            if direct_match:
-                term_expr = direct_match.group(1).strip()
-                # Clean up row definition
-                term_expr = re.sub(r"var row\s*:=\s*data\[0\];\s*var tail\s*:=\s*data\[1..\];", "", term_expr).strip()
-                loop_body = f"    res := ({term_expr}) + res;"
-            else:
-                raise ValueError("Could not parse scalar aggregation in MethodSpec.")
-
-        code = f"""method RunQuery(data: seq<Row>) returns (res: {ret_type})
-  ensures res == MethodSpec(data)
-{{
-  res := 0;
-  var i := |data|;
-  while i > 0
-    invariant 0 <= i <= |data|
-    invariant res == MethodSpec(data[i..])
-  {{
-    i := i - 1;
-    var row := data[i];
-{loop_body}
-  }}
-}}"""
-
-    # Fix formatting/brackets inside string insertion
-    code = code.replace("{室内}", "{")
-    return code
-
-def run_optimization_loop(sql_query: str, dataset_size: int = 50000, max_iterations: int = 3, use_mock: bool = True, model: str = None) -> dict:
-    """
-    Runs the query optimization loop. Prints step-by-step colored output.
-    """
-    query_id = match_query_index(sql_query)
+    query_id = resolve_query_id(sql_query)
+    ssb_match = match_query_index(sql_query)
     current_dir = os.path.dirname(os.path.abspath(__file__))
     root_dir = os.path.dirname(current_dir)
+
+    run: RunArtifacts | None = None
+    if research_logging_enabled():
+        run = begin_run(
+            query_id=query_id,
+            sql_query=sql_query,
+            root=root_dir,
+            extra_manifest={
+                "dataset_size": dataset_size,
+                "max_iterations": max_iterations,
+                "use_mock": use_mock,
+                "model": model,
+            },
+        )
+        workspace = run.workspace
+    else:
+        workspace = Path(root_dir) / "research_loop" / "agent_workspace"
 
     if demo_enabled():
         demo_banner("Lemma Optimizer")
     else:
-        _vprint(f"{COLOR_CYAN}--- Starting Lemma optimizer for Query {query_id} ---{COLOR_RESET}")
+        _vprint(f"{COLOR_CYAN}--- Starting Lemma optimizer (query_id={query_id}) ---{COLOR_RESET}")
+        if ssb_match is not None:
+            _vprint(f"    SSB harness match: Q{ssb_match} (optional convenience)")
     
     best_latency = -1
     best_iteration = -1
     history = []
 
-    log_info(COMPONENT, "loop_start", f"query_id={query_id}", dataset_size=dataset_size, mock=use_mock)
+    log_info(
+        COMPONENT,
+        "loop_start",
+        f"query_id={query_id}",
+        dataset_size=dataset_size,
+        mock=use_mock,
+        run_dir=str(run.path) if run else "",
+        research_log=bool(run),
+    )
+
+    def _snapshot_history() -> None:
+        if run is not None:
+            run.write_history(history)
+
+    def _save_harness_metrics(iteration: int, metrics: dict) -> None:
+        if run is not None and metrics:
+            run.save_json(f"harness_iter{iteration}.json", metrics)
 
     for iteration in range(1, max_iterations + 1):
         log_info(COMPONENT, "iteration_start", f"iter={iteration}/{max_iterations}")
@@ -287,49 +161,56 @@ def run_optimization_loop(sql_query: str, dataset_size: int = 50000, max_iterati
             _vprint(f"\n{COLOR_BLUE}Iteration {iteration}:{COLOR_RESET}")
 
         # Step 1: Transpile SQL
-        log_debug(COMPONENT, "transpile_start", "sql_transpiler")
-        _vprint("  - Transpiling SQL query to formal Dafny spec...", end="", flush=True)
+        log_debug(COMPONENT, "transpile_start", "verus_transpiler")
+        _vprint("  - Transpiling SQL query to formal Verus spec...", end="", flush=True)
         try:
             if demo_enabled():
-                with demo_live_step("🏗", "SQL → Dafny spec", pass_fail=True) as transpile_step:
-                    dafny_spec = transpile_sql_to_dafny_columnar(sql_query, schema)
+                with demo_live_step("🏗", "SQL → Verus spec", pass_fail=True) as transpile_step:
+                    verus_spec = transpile_sql_to_verus(sql_query, resolved_schema)
                     transpile_step.set_passed(True)
             else:
                 t_start = time.perf_counter()
-                dafny_spec = transpile_sql_to_dafny_columnar(sql_query, schema)
+                verus_spec = transpile_sql_to_verus(sql_query, resolved_schema)
                 ms = int((time.perf_counter() - t_start) * 1000)
-                log_debug(COMPONENT, "transpile_done", f"{ms}ms", spec_bytes=len(dafny_spec))
+                log_debug(COMPONENT, "transpile_done", f"{ms}ms", spec_bytes=len(verus_spec))
                 _vprint(f" {COLOR_GREEN}OK{COLOR_RESET} ({ms} ms)")
         except Exception as e:
             _vprint(f" {COLOR_RED}FAILED{COLOR_RESET}")
             _vprint(f"    Error: {e}")
-            return {"status": "FAILED", "error": f"Transpilation failed: {e}"}
+            return _finish_run(run, {"status": "FAILED", "error": f"Transpilation failed: {e}", "history": history})
         if demo_enabled():
-            log_debug(COMPONENT, "transpile_done", "ok", spec_bytes=len(dafny_spec))
+            log_debug(COMPONENT, "transpile_done", "ok", spec_bytes=len(verus_spec))
+        schema_json_path = workspace / "context" / "ro" / "schema.json"
+        schema_json_path.parent.mkdir(parents=True, exist_ok=True)
+        schema_json_path.write_text(json.dumps(resolved_schema, indent=2) + "\n")
         view_raw = os.environ.get("LEMMA_DEMO_VIEW_DIR", "").strip()
         if view_raw:
             view_p = Path(view_raw)
             view_p.mkdir(parents=True, exist_ok=True)
-            (view_p / "spec.dfy").write_text(dafny_spec)
-            (view_p / "CURRENT").write_text("spec.dfy (transpiled)\n")
+            (view_p / "spec.rs").write_text(verus_spec)
+            (view_p / "CURRENT").write_text("spec.rs (transpiled)\n")
+        ro_spec = workspace / "context" / "ro" / "spec.rs"
+        ro_spec.parent.mkdir(parents=True, exist_ok=True)
+        ro_spec.write_text(verus_spec)
+        (workspace / "context" / "ro" / "query.sql").write_text(sql_query.strip() + "\n")
 
         # Step 2: Write agent code
-        _vprint("  - Writing optimized query in Dafny...", end="", flush=True)
+        _vprint("  - Writing optimized query in Verus...", end="", flush=True)
+        agent_body_path = workspace / "runquery_agent.rs"
+        agent_meta: dict | None = None
         if use_mock:
             try:
                 if demo_enabled():
                     with demo_live_step("🦾", "Generating RunQuery", pass_fail=True) as gen_step:
-                        agent_body_path = os.path.join(root_dir, "research_loop", "agent_workspace", "runquery_agent.dfy")
-                        write_mock_agent_body(query_id, agent_body_path)
+                        write_mock_agent_body(verus_spec, agent_body_path)
                         gen_step.set_passed(True)
                 else:
-                    agent_body_path = os.path.join(root_dir, "research_loop", "agent_workspace", "runquery_agent.dfy")
-                    write_mock_agent_body(query_id, agent_body_path)
-                    _vprint(f" {COLOR_GREEN}OK{COLOR_RESET} (Mock Agent, columnar fixture Q{query_id})")
+                    write_mock_agent_body(verus_spec, agent_body_path)
+                    _vprint(f" {COLOR_GREEN}OK{COLOR_RESET} (Mock Agent, TRUSTED run_query from spec)")
             except Exception as e:
                 _vprint(f" {COLOR_RED}FAILED{COLOR_RESET} (Mock generation failed)")
                 _vprint(f"    Error: {e}")
-                return {"status": "FAILED", "error": f"Mock generation failed: {e}"}
+                return _finish_run(run, {"status": "FAILED", "error": f"Mock generation failed: {e}", "history": history})
         else:
             from types import SimpleNamespace
 
@@ -337,7 +218,6 @@ def run_optimization_loop(sql_query: str, dataset_size: int = 50000, max_iterati
 
             agent_flags = load_agent_flags()
             backend = agent_flags.backend.strip().lower()
-            workspace = Path(root_dir) / "research_loop" / "agent_workspace"
             last_error = history[-1]["error"] if history else ""
             last_lat = history[-1]["latency_us"] if history and history[-1].get("proof_verified") else -1
 
@@ -349,6 +229,7 @@ def run_optimization_loop(sql_query: str, dataset_size: int = 50000, max_iterati
                 data_path = None
 
             def _run_agent() -> tuple[str, SimpleNamespace]:
+                nonlocal agent_meta
                 if backend == "cli":
                     from research_loop.agent_sandbox import (
                         build_docker_image,
@@ -372,7 +253,7 @@ def run_optimization_loop(sql_query: str, dataset_size: int = 50000, max_iterati
                         _vprint("  - Running agent (local subprocess)...", end="", flush=True)
                     body, proc = run_agent_iteration(
                         query_id=query_id,
-                        dafny_spec=dafny_spec,
+                        dafny_spec=verus_spec,
                         iteration=iteration,
                         max_iterations=max_iterations,
                         last_error=last_error,
@@ -391,7 +272,8 @@ def run_optimization_loop(sql_query: str, dataset_size: int = 50000, max_iterati
                 body, meta = run_openrouter_agent_iteration(
                     query_id=query_id,
                     sql_query=sql_query,
-                    dafny_spec=dafny_spec,
+                    verus_spec=verus_spec,
+                    schema=resolved_schema,
                     iteration=iteration,
                     max_iterations=max_iterations,
                     last_error=last_error,
@@ -400,6 +282,7 @@ def run_optimization_loop(sql_query: str, dataset_size: int = 50000, max_iterati
                     data_path=data_path,
                     flags=agent_flags,
                 )
+                agent_meta = meta
                 ok = bool(meta.get("ok"))
                 err = meta.get("error", "") or ""
                 proc = SimpleNamespace(
@@ -415,8 +298,11 @@ def run_optimization_loop(sql_query: str, dataset_size: int = 50000, max_iterati
                     with demo_live_step("🦾", "Generating RunQuery", pass_fail=True) as gen_step:
                         body, proc = _run_agent()
                         log_trace(COMPONENT, "agent_body_preview", body[:200])
-                        gen_step.set_passed(proc.returncode == 0)
-                        if proc.returncode != 0:
+                        has_marked = bool(
+                            agent_meta and agent_meta.get("submitted_metrics") is not None
+                        )
+                        gen_step.set_passed(proc.returncode == 0 or has_marked)
+                        if proc.returncode != 0 and not has_marked:
                             err = (proc.stderr or proc.stdout or "agent exited non-zero").strip()
                             if not demo_enabled():
                                 _vprint(f" {COLOR_RED}FAILED{COLOR_RESET}")
@@ -428,11 +314,16 @@ def run_optimization_loop(sql_query: str, dataset_size: int = 50000, max_iterati
                                 "latency_us": -1,
                                 "error": f"Agent failed: {err}",
                             })
+                            _snapshot_history()
                             continue
                 else:
                     body, proc = _run_agent()
                     log_trace(COMPONENT, "agent_body_preview", body[:200])
-                    if proc.returncode != 0:
+                    # Marked submit (even failed verify) still has metrics — do not drop them.
+                    has_marked = bool(
+                        agent_meta and agent_meta.get("submitted_metrics") is not None
+                    )
+                    if proc.returncode != 0 and not has_marked:
                         err = (proc.stderr or proc.stdout or "agent exited non-zero").strip()
                         _vprint(f" {COLOR_RED}FAILED{COLOR_RESET}")
                         _vprint(f"    {err[:500]}")
@@ -443,9 +334,13 @@ def run_optimization_loop(sql_query: str, dataset_size: int = 50000, max_iterati
                             "latency_us": -1,
                             "error": f"Agent failed: {err}",
                         })
+                        _snapshot_history()
                         continue
                     write_ms = int((time.perf_counter() - a_start) * 1000)
-                    _vprint(f" {COLOR_GREEN}OK{COLOR_RESET} ({write_ms // 1000} s)")
+                    if has_marked and proc.returncode != 0:
+                        _vprint(f" {COLOR_GREEN}OK{COLOR_RESET} (marked run; verify failed)")
+                    else:
+                        _vprint(f" {COLOR_GREEN}OK{COLOR_RESET} ({write_ms // 1000} s)")
             except subprocess.TimeoutExpired:
                 if demo_enabled():
                     demo_step_pass_fail("🦾", "Generating RunQuery", int((time.perf_counter() - a_start) * 1000), False)
@@ -457,21 +352,56 @@ def run_optimization_loop(sql_query: str, dataset_size: int = 50000, max_iterati
                     "latency_us": -1,
                     "error": "Agent timed out",
                 })
+                _snapshot_history()
                 continue
             except Exception as e:
                 _vprint(f" {COLOR_RED}FAILED{COLOR_RESET}")
                 _vprint(f"    {e}")
-                return {"status": "FAILED", "error": str(e)}
+                return _finish_run(run, {"status": "FAILED", "error": str(e), "history": history})
 
-        # Step 3: Verify and compile and benchmark using harness.py
-        log_debug(COMPONENT, "harness_start", f"q={query_id}", dataset_size=dataset_size)
-        _vprint("  - Verifying and compiling Rust binaries...", end="", flush=True)
+        # Step 3: Verify and compile and benchmark (skip if OpenRouter marked a run)
+        use_marked_metrics = (
+            not use_mock
+            and agent_meta is not None
+            and agent_meta.get("submitted_metrics") is not None
+        )
+        if use_marked_metrics:
+            metrics = dict(agent_meta["submitted_metrics"])
+            metrics.setdefault("status", "SUCCESS" if agent_meta.get("ok") else "FAILURE")
+            metrics.setdefault("proof_verified", bool(agent_meta.get("ok")))
+            metrics.setdefault("latency_us", agent_meta.get("latency_us", -1))
+            log_info(
+                COMPONENT,
+                "harness_skip",
+                "using marked submit metrics from agent",
+                run_id=agent_meta.get("submitted_run_id"),
+                latency_us=metrics.get("latency_us"),
+            )
+            _vprint("  - Using marked submit metrics (skipping duplicate harness)...", end="", flush=True)
+            h_time = 0.0
+            status = metrics["status"]
+            proof_verified = metrics["proof_verified"]
+            latency = metrics["latency_us"]
+            _vprint(f" {COLOR_GREEN}OK{COLOR_RESET} (marked run)")
+            if status == "SUCCESS" and proof_verified:
+                if best_latency == -1 or latency < best_latency:
+                    best_latency = latency
+                    best_iteration = iteration
+            history.append({
+                "iteration": iteration,
+                "status": status,
+                "proof_verified": proof_verified,
+                "latency_us": latency,
+                "error": metrics.get("compiler_error", ""),
+                "submitted_run_id": agent_meta.get("submitted_run_id"),
+            })
+            _save_harness_metrics(iteration, metrics)
+            _snapshot_history()
+            continue
+
+        log_debug(COMPONENT, "harness_start", f"custom sql query_id={query_id}", dataset_size=dataset_size)
+        _vprint("  - Verifying and compiling Verus program...", end="", flush=True)
         h_start = time.perf_counter()
-        harness_cmd = [
-            "uv", "run", "python", "research_loop/dafny_legacy/harness.py",
-            "-q", str(query_id),
-            "--dataset-size", str(dataset_size)
-        ]
         harness_timeout = 90
         cfg_path = os.path.join(root_dir, "research_loop", "config.env")
         if os.path.exists(cfg_path):
@@ -480,32 +410,29 @@ def run_optimization_loop(sql_query: str, dataset_size: int = 50000, max_iterati
                     if line.strip().startswith("COMPILE_TIMEOUT_SEC="):
                         harness_timeout = int(line.split("=", 1)[1].strip()) + 120
                         break
-        
+
+        def _run_verus_harness() -> dict:
+            return invoke_verus_custom_pipeline(
+                sql=sql_query,
+                schema=resolved_schema,
+                runquery_path=agent_body_path,
+                dataset_size=dataset_size,
+            )
+
         try:
             if demo_enabled():
-                returncode, metrics = _run_harness_demo(
-                    harness_cmd, cwd=root_dir, timeout=harness_timeout
-                )
-                if not metrics:
-                    metrics = {
-                        "status": "FAILURE",
-                        "proof_verified": False,
-                        "latency_us": -1,
-                        "compiler_error": f"Harness crashed (exit {returncode})",
-                    }
+                metrics = _run_verus_harness()
+                if metrics:
+                    print(
+                        f"{_HARNESS_METRICS_PREFIX}{json.dumps(metrics)}",
+                        file=sys.stderr,
+                    )
             else:
-                harness_res = subprocess.run(
-                    harness_cmd, cwd=root_dir, capture_output=True, text=True, timeout=harness_timeout
-                )
-                try:
-                    metrics = json.loads(harness_res.stdout)
-                except json.JSONDecodeError:
-                    metrics = {
-                        "status": "FAILURE",
-                        "proof_verified": False,
-                        "latency_us": -1,
-                        "compiler_error": f"Harness crashed: {harness_res.stderr}"
-                    }
+                import concurrent.futures
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    future = pool.submit(_run_verus_harness)
+                    metrics = future.result(timeout=harness_timeout)
             h_time = time.perf_counter() - h_start
             
             status = metrics["status"]
@@ -544,6 +471,8 @@ def run_optimization_loop(sql_query: str, dataset_size: int = 50000, max_iterati
                 "latency_us": latency,
                 "error": metrics.get("compiler_error", "")
             })
+            _save_harness_metrics(iteration, metrics)
+            _snapshot_history()
 
         except subprocess.TimeoutExpired:
             if demo_enabled():
@@ -556,6 +485,7 @@ def run_optimization_loop(sql_query: str, dataset_size: int = 50000, max_iterati
                 "latency_us": -1,
                 "error": "Harness timed out"
             })
+            _snapshot_history()
 
     if demo_enabled():
         if best_latency != -1:
@@ -571,14 +501,14 @@ def run_optimization_loop(sql_query: str, dataset_size: int = 50000, max_iterati
             _vprint(f"{COLOR_RED}No iteration succeeded in verification and compilation.{COLOR_RESET}")
 
     if best_latency != -1:
-        return {
+        return _finish_run(run, {
             "status": "SUCCESS",
             "best_latency_us": best_latency,
             "best_iteration": best_iteration,
             "history": history,
-        }
-    return {
+        })
+    return _finish_run(run, {
         "status": "FAILED",
         "best_latency_us": -1,
         "history": history,
-    }
+    })

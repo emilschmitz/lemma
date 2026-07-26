@@ -4,14 +4,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .col_exprs import native_u64_term, spec_where_cond, to_col_expr
+from .col_exprs import native_u64_term, spec_i64_term, spec_u64_term, spec_where_cond, to_col_expr
 from .parse_sql import (
     ExistsSubquery,
     InSubquerySpec,
     ScalarSubquery,
     SQLQuery,
+    UnsupportedContractError,
     _agg_value_type,
 )
+from .value_bounds import col_verus_type, spec_map_key_type
 
 
 @dataclass
@@ -30,7 +32,6 @@ def _emit_recursive_helper(
     struct_name: str = "Cols",
     combine: str = "add",
 ) -> str:
-    add_fn = "add_i64" if ret_type == "i64" else "add_u64"
     zero = "0"
     if combine == "min":
         base = "u64::MAX"
@@ -74,6 +75,23 @@ def _emit_recursive_helper(
 }}"""
 
 
+def _groupby_key_expr(
+    groupby_columns: list[str],
+    idx_var: str,
+    schema_dict: dict[str, str],
+) -> str:
+    parts: list[str] = []
+    for col in groupby_columns:
+        field = col.lower()
+        if col_verus_type(schema_dict[col]) == "String":
+            parts.append(f"cols.{field}[{idx_var} as int]@")
+        else:
+            parts.append(f"cols.{field}[{idx_var} as int]")
+    if len(parts) == 1:
+        return parts[0]
+    return f"({', '.join(parts)})"
+
+
 def _wrap_spec(
     spec_name: str,
     helper_name: str,
@@ -98,6 +116,97 @@ def _agg_combine(agg_type: str) -> str:
     return "add"
 
 
+def _emit_groupby_map_helper(
+    prefix: str,
+    inner: SQLQuery,
+    schema: dict[str, str],
+    *,
+    struct_name: str = "Cols",
+) -> tuple[str, str, str]:
+    """Single-aggregate group-by fold -> Map<Key, Val>."""
+    helper_name = f"{prefix}_helper"
+    spec_name = f"{prefix}_spec"
+    idx_var = "k"
+    where_at_k = (
+        spec_where_cond(to_col_expr(inner.where_expr, idx_var), idx_var, schema)
+        if inner.where_expr
+        else None
+    )
+    combine = _agg_combine(inner.agg_type)
+    is_sum = inner.agg_type == "SUM"
+    val_type = _agg_value_type(inner.agg_expr) if is_sum else "u64"
+    if inner.agg_type in ("MIN", "MAX"):
+        val_type = "u64"
+    term_at_k = (
+        spec_i64_term(inner.agg_expr, idx_var)
+        if is_sum and val_type == "i64"
+        else (
+            spec_u64_term(inner.agg_expr, idx_var)
+            if inner.agg_type in ("SUM", "MIN", "MAX")
+            else "1"
+        )
+    )
+
+    if len(inner.groupby_columns) == 1:
+        c = inner.groupby_columns[0]
+        map_key_ty = spec_map_key_type(schema[c])
+    else:
+        map_key_ty = f"({', '.join(spec_map_key_type(schema[c]) for c in inner.groupby_columns)})"
+    map_ret = f"Map<{map_key_ty}, {val_type}>"
+    key_expr = _groupby_key_expr(inner.groupby_columns, idx_var, schema)
+    zero = f"0{val_type}"
+
+    if where_at_k:
+        body_inner = (
+            f"let tail = {helper_name}(cols, {idx_var} + 1);\n"
+            f"        if {where_at_k} {{\n"
+            f"            let key = {key_expr};\n"
+            f"            let prev = if tail.contains_key(key) {{ tail[key] }} else {{ {zero} }};\n"
+            f"            tail.insert(key, (prev as int + {term_at_k} as int) as {val_type})\n"
+            f"        }} else {{\n"
+            f"            tail\n"
+            f"        }}"
+        )
+    elif combine == "max":
+        body_inner = (
+            f"let tail = {helper_name}(cols, {idx_var} + 1);\n"
+            f"        let key = {key_expr};\n"
+            f"        let prev = if tail.contains_key(key) {{ tail[key] }} else {{ 0u64 }};\n"
+            f"        let t = {term_at_k};\n"
+            f"        tail.insert(key, if t > prev {{ t }} else {{ prev }})"
+        )
+    elif combine == "min":
+        body_inner = (
+            f"let tail = {helper_name}(cols, {idx_var} + 1);\n"
+            f"        let key = {key_expr};\n"
+            f"        let prev = if tail.contains_key(key) {{ tail[key] }} else {{ u64::MAX }};\n"
+            f"        let t = {term_at_k};\n"
+            f"        tail.insert(key, if t < prev {{ t }} else {{ prev }})"
+        )
+    else:
+        body_inner = (
+            f"let tail = {helper_name}(cols, {idx_var} + 1);\n"
+            f"        let key = {key_expr};\n"
+            f"        let prev = if tail.contains_key(key) {{ tail[key] }} else {{ {zero} }};\n"
+            f"        tail.insert(key, (prev as int + {term_at_k} as int) as {val_type})"
+        )
+
+    helper = f"""pub open spec fn {helper_name}(cols: &{struct_name}, {idx_var}: int) -> {map_ret}
+    recommends
+        0 <= {idx_var} && {idx_var} <= cols.n,
+        valid_cols(cols),
+    decreases cols.n - {idx_var},
+{{
+    if {idx_var} < cols.n {{
+        {body_inner}
+    }} else {{
+        Map::empty()
+    }}
+}}"""
+    spec = _wrap_spec(spec_name, helper_name, struct_name=struct_name, ret_type=map_ret)
+    return helper + "\n\n" + spec, f"{spec_name}(cols)", map_ret
+
+
 def emit_scalar_subquery_helper(
     sub: ScalarSubquery,
     inner_schema: dict[str, str],
@@ -107,6 +216,19 @@ def emit_scalar_subquery_helper(
     """Emit a nested helper for a scalar subquery used in WHERE or SELECT."""
     helper_name = f"subquery_{sub.alias}_helper"
     spec_name = f"subquery_{sub.alias}_spec"
+
+    if sub.query.derived_tables or sub.query.joins or sub.query.groupby_columns:
+        helper = f"""// TRUSTED: nested scalar / HAVING subquery ({sub.alias}).
+#[verifier::external_body]
+pub open spec fn {spec_name}(cols: &{struct_name}) -> u64 {{
+    arbitrary()
+}}"""
+        return SubqueryEmit(
+            name=spec_name,
+            helper_source=helper,
+            spec_call=f"{spec_name}(cols)",
+        )
+
     where_at_k = (
         spec_where_cond(to_col_expr(sub.query.where_expr, "k"), "k", inner_schema)
         if sub.query.where_expr
@@ -306,23 +428,20 @@ def emit_derived_grouped_inner_spec(
     *,
     struct_name: str = "Cols",
 ) -> tuple[str, str, str]:
-    """Emit TRUSTED grouped derived-table inner spec. Returns (helpers, spec_call, ret_type)."""
-    _ = inner, schema
+    """Emit grouped derived-table inner spec. Returns (helpers, spec_call, ret_type)."""
     prefix = f"derived_{derived_alias}"
-    if len(inner.groupby_columns) == 1:
-        c = inner.groupby_columns[0]
-        from .value_bounds import spec_map_key_type
-        key_ty = spec_map_key_type(schema.get(c, "int"))
-        val_ty = _agg_value_type(inner.agg_expr)
-        ret_type = f"Map<{key_ty}, {val_ty}>"
-    else:
-        ret_type = "Map<_, u64>"
-    helper = f"""// TRUSTED: grouped derived inner fold (group-by map).
-#[verifier::external_body]
-pub open spec fn {prefix}_spec(cols: &{struct_name}) -> {ret_type} {{
-    arbitrary()
-}}"""
-    return helper, f"{prefix}_spec(cols)", ret_type
+    if inner.is_multi_agg and inner.groupby_columns:
+        raise UnsupportedContractError(
+            "multi-agg grouped derived table in FROM needs dedicated emitter"
+        )
+    if not inner.groupby_columns or not inner.agg_type:
+        raise UnsupportedContractError(
+            "grouped derived table requires GROUP BY with aggregate"
+        )
+    helpers, spec_call, ret_type = _emit_groupby_map_helper(
+        prefix, inner, schema, struct_name=struct_name,
+    )
+    return helpers, spec_call, ret_type
 
 
 def emit_derived_inner_spec(
