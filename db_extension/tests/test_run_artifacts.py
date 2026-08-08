@@ -37,6 +37,14 @@ def test_begin_run_creates_layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     _init_git_repo(tmp_path)
     monkeypatch.setenv("LEMMA_EXPERIMENT", "1")
     monkeypatch.setenv("LEMMA_MEASURE_PATH", "lease")
+    monkeypatch.setenv("LEMMA_AGENT_BACKEND", "cli")
+    monkeypatch.setenv(
+        "AGENT_CMD",
+        'agent -p --force --trust --model cursor-grok-4.5-high --output-format stream-json "$(cat PROMPT.txt)"',
+    )
+    monkeypatch.setenv("AGENT_IMAGE", "lemma-agent:cli")
+    monkeypatch.setenv("MAX_ITERATIONS", "4")
+    monkeypatch.setenv("AGENT_TIMEOUT_SEC", "300")
     run = begin_run(query_id=4, sql_query="SELECT 1", root=tmp_path)
     assert isinstance(run, RunArtifacts)
     assert run.path.is_dir()
@@ -48,6 +56,12 @@ def test_begin_run_creates_layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert "started_at" in manifest
     assert manifest["env"]["LEMMA_EXPERIMENT"] == "1"
     assert manifest["env"]["LEMMA_MEASURE_PATH"] == "lease"
+    assert manifest["agent_model"] == "cursor-grok-4.5-high"
+    assert manifest["env"]["agent_model"] == "cursor-grok-4.5-high"
+    assert "cursor-grok-4.5-high" in (manifest["agent_cmd"] or "")
+    assert manifest["agent_image"] == "lemma-agent:cli"
+    assert manifest["max_iterations"] == "4"
+    assert manifest["agent_timeout_sec"] == "300"
     assert manifest["git_dirty"] is False
     assert manifest["git_commit"] == manifest["git_sha"]
     assert "machine" in manifest["env"]

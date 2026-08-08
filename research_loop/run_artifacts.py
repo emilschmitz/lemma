@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import re
 import secrets
 import subprocess
 from dataclasses import dataclass, field
@@ -16,15 +17,31 @@ from research_loop.lemma_flags import lemma_experiment, lemma_research_log
 _ENV_KEYS = (
     "LEMMA_AGENT_BACKEND",
     "AGENT_EGRESS_PROFILE",
+    "AGENT_CMD",
+    "AGENT_IMAGE",
+    "AGENT_TIMEOUT_SEC",
+    "AGENT_NETWORK",
+    "AGENT_DATA_MODE",
+    "AGENT_WEB_SEARCH",
+    "AGENT_MAX_TURNS",
     "OPENROUTER_MODEL",
+    "OPENROUTER_BASE_URL",
     "MOCK_AGENT",
     "USE_AGENT_DOCKER",
+    "MAX_ITERATIONS",
     "LEMMA_RESEARCH_LOG",
     "LEMMA_EXPERIMENT",
+    "LEMMA_EXPERIMENT_ALLOW_DIRTY",
     "LEMMA_WORKLOAD",
     "LEMMA_DUCKDB_PATH",
+    "LEMMA_DUCKDB_LIB_DIR",
     "LEMMA_MEASURE_PATH",
     "LEMMA_ALLOW_DUCKDB_FALLBACK",
+    "LEMMA_ENABLE_PARALLEL",
+    "LEMMA_LOAD_FORMAT",
+    "LEMMA_AGENT_HARDWARE",
+    "LEMMA_AGENT_DUCK_EXPLAIN",
+    "LEMMA_AGENT_STATS",
 )
 
 _HISTORY_OPTIONAL_KEYS = (
@@ -103,12 +120,31 @@ def assert_experiment_git_clean(root: Path | str) -> None:
         )
 
 
+def _agent_model_from_env() -> str | None:
+    """Resolve model id for harvest: OpenRouter model, else ``--model`` from AGENT_CMD."""
+    backend = (os.environ.get("LEMMA_AGENT_BACKEND") or "").strip().lower()
+    if backend != "cli":
+        orm = (os.environ.get("OPENROUTER_MODEL") or "").strip()
+        if orm:
+            return orm
+    cmd = (os.environ.get("AGENT_CMD") or "").strip()
+    if cmd:
+        m = re.search(r"--model\s+(\S+)", cmd)
+        if m:
+            return m.group(1)
+    orm = (os.environ.get("OPENROUTER_MODEL") or "").strip()
+    return orm or None
+
+
 def _env_snapshot() -> dict[str, str | dict[str, str]]:
     snap: dict[str, str | dict[str, str]] = {}
     for key in _ENV_KEYS:
         val = os.environ.get(key)
         if val is not None and val != "":
             snap[key] = val
+    model = _agent_model_from_env()
+    if model:
+        snap["agent_model"] = model
     uname = platform.uname()
     snap["machine"] = {
         "system": uname.system,
@@ -229,6 +265,7 @@ def begin_run(
             "but git rev-parse HEAD failed (not a git repo or git missing)."
         )
 
+    env_snap = _env_snapshot()
     manifest: dict[str, Any] = {
         "run_id": run_id,
         "started_at": datetime.now(timezone.utc).isoformat(),
@@ -237,7 +274,15 @@ def begin_run(
         "git_sha": git_commit,
         "git_commit": git_commit,
         "git_dirty": git_dirty,
-        "env": _env_snapshot(),
+        "agent_backend": (os.environ.get("LEMMA_AGENT_BACKEND") or "").strip() or None,
+        "agent_model": env_snap.get("agent_model"),
+        "agent_cmd": (os.environ.get("AGENT_CMD") or "").strip() or None,
+        "agent_image": (os.environ.get("AGENT_IMAGE") or "").strip() or None,
+        "max_iterations": (os.environ.get("MAX_ITERATIONS") or "").strip() or None,
+        "agent_timeout_sec": (os.environ.get("AGENT_TIMEOUT_SEC") or "").strip() or None,
+        "workload": (os.environ.get("LEMMA_WORKLOAD") or "").strip() or None,
+        "duckdb_path": (os.environ.get("LEMMA_DUCKDB_PATH") or "").strip() or None,
+        "env": env_snap,
     }
     if extra_manifest:
         manifest.update(extra_manifest)
