@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 
-from verus.db_extension.dataset_config import effective_dataset_size, tbl_path
+from db_extension_paths.dataset_config import effective_dataset_size, tbl_path
 
 
 def main() -> None:

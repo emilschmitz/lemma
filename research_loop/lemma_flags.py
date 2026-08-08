@@ -63,3 +63,30 @@ def lemma_hash_spill_bytes() -> int:
     except ValueError:
         return 1_073_741_824
 
+
+def lemma_experiment() -> bool:
+    """Paper / eval runs: fail loud, no mock agent, no DuckDB result fallback."""
+    return env_bool("LEMMA_EXPERIMENT", "0")
+
+
+def lemma_research_log() -> bool:
+    """Harvest rich run metadata under ``research_loop/runs/<id>/``."""
+    return env_bool("LEMMA_RESEARCH_LOG", "0") or lemma_experiment()
+
+
+def lemma_allow_duckdb_fallback() -> bool:
+    """If 1, optimizer UX may print DuckDB results after Lemma failure (demo/prod convenience).
+
+    Experiments must leave this off (default). ``LEMMA_EXPERIMENT=1`` forces off.
+    """
+    if lemma_experiment():
+        return False
+    return env_bool("LEMMA_ALLOW_DUCKDB_FALLBACK", "0")
+
+
+def lemma_use_mock_agent() -> bool:
+    """Mock/fixture agent body. ``LEMMA_EXPERIMENT=1`` forces real agent (``MOCK_AGENT=0``)."""
+    if lemma_experiment():
+        return False
+    return os.environ.get("MOCK_AGENT", "1") != "0"
+

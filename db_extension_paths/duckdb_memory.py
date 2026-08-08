@@ -259,7 +259,7 @@ def load_holdout_table(
     quiet: bool = False,
 ) -> bool:
     """Load one holdout `.tbl` into DuckDB. Returns True if loaded."""
-    from verus.db_extension.utils import load_csv_table
+    from db_extension.utils import load_csv_table
 
     path = holdout_table_path(data_dir, table)
     if path is None:

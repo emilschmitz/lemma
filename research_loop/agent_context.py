@@ -30,12 +30,30 @@ def _parse_cache_kb(path: str) -> int | None:
         return None
 
 
+def _mem_total_kb() -> int | None:
+    meminfo = Path("/proc/meminfo")
+    if not meminfo.is_file():
+        return None
+    try:
+        for line in meminfo.read_text(encoding="utf-8").splitlines():
+            if line.startswith("MemTotal:"):
+                parts = line.split()
+                if len(parts) >= 2:
+                    return int(parts[1])
+    except (OSError, ValueError):
+        return None
+    return None
+
+
 def hardware_profile() -> dict[str, Any]:
     """CPU count and optional cache sizes (sysfs or LEMMA_ASSUMED_L* overrides)."""
     profile: dict[str, Any] = {
         "cpu_count": os.cpu_count() or 1,
         "parallel_enabled": lemma_enable_parallel(),
     }
+    mem_kb = _mem_total_kb()
+    if mem_kb is not None:
+        profile["mem_total_kb"] = mem_kb
     for level, env_key, sysfs in (
         ("l1d_kb", "LEMMA_ASSUMED_L1", "/sys/devices/system/cpu/cpu0/cache/index0/size"),
         ("l2_kb", "LEMMA_ASSUMED_L2", "/sys/devices/system/cpu/cpu0/cache/index2/size"),
@@ -51,6 +69,16 @@ def hardware_profile() -> dict[str, Any]:
         if raw is not None:
             profile[level] = raw
     return profile
+
+
+def hardware_profile_markdown(profile: dict[str, Any] | None = None) -> str:
+    """Markdown summary of hardware_profile() for agent context/ro/hardware.md."""
+    hw = profile if profile is not None else hardware_profile()
+    lines = ["# Hardware profile", ""]
+    for key in sorted(hw.keys()):
+        lines.append(f"- **{key}**: `{hw[key]}`")
+    lines.append("")
+    return "\n".join(lines)
 
 
 def _histogram_u32(col: list[int], bins: int) -> list[int]:

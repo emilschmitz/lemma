@@ -854,6 +854,143 @@ def _emit_join_projection(
     return helper, spec_body, ret_type
 
 
+def _raw_join_equalities(
+    equalities: list[tuple[str, str]],
+    slots: list[_Slot],
+    schemas_by_table: dict[str, dict[str, str]],
+    derived_by_alias: dict[str, DerivedTable],
+    derived_map_vars: dict[str, str],
+    query: SQLQuery,
+) -> str:
+    parts: list[str] = []
+    derived = _derived_aliases(query)
+    for left_ref, right_ref in equalities:
+        r_alias = right_ref.split(".")[0].lower()
+        if r_alias in {a.lower() for a in derived}:
+            d = derived_by_alias[next(a for a in derived if a.lower() == r_alias)]
+            map_var = derived_map_vars[d.alias]
+            r_col = right_ref.split(".")[-1].lower()
+            l_expr = _col_access_ref(left_ref, query, slots, schemas_by_table, derived_by_alias)
+            if r_col in {c.lower() for c in d.query.groupby_columns}:
+                continue
+            parts.append(f"{map_var}[key] == {l_expr}")
+        else:
+            l_expr = _col_access_ref(left_ref, query, slots, schemas_by_table, derived_by_alias)
+            r_expr = _col_access_ref(right_ref, query, slots, schemas_by_table, derived_by_alias)
+            parts.append(f"{l_expr} == {r_expr}")
+    return " && ".join(parts) if parts else "true"
+
+
+def _emit_full_outer_scalar_sum(
+    query: SQLQuery,
+    slots: list[_Slot],
+    schemas_by_table: dict[str, dict[str, str]],
+    derived_by_alias: dict[str, DerivedTable],
+    derived_map_vars: dict[str, str],
+    *,
+    where_expr: str | None,
+    agg_expr: str,
+    val_type: str,
+) -> tuple[str, str, str]:
+    """FULL OUTER JOIN scalar SUM: matched pairs + unmatched left rows."""
+    if len(slots) != 2:
+        raise UnsupportedContractError("FULL OUTER JOIN spec supports exactly two tables")
+    left, right = slots[0], slots[1]
+    join = query.joins[0]
+    match_parts: list[str] = []
+    for left_ref, right_ref in join.on_equalities:
+        l_expr = _col_access_ref(left_ref, query, slots, schemas_by_table, derived_by_alias)
+        r_expr = _col_access_ref(right_ref, query, slots, schemas_by_table, derived_by_alias)
+        r_expr = r_expr.replace(f"{right.idx} as int", "rj as int")
+        l_expr = l_expr.replace(f"{left.idx} as int", "li as int")
+        match_parts.append(f"{l_expr} == {r_expr}")
+    match_conds = " && ".join(match_parts) if match_parts else "false"
+    match_helper = _emit_match_helper(left, right, match_conds)
+
+    filter_raw, _ = _strip_anti_join_predicates(where_expr)
+    filter_cond = (
+        _resolve_row_expr(filter_raw, query, slots, schemas_by_table, derived_by_alias)
+        if filter_raw
+        else None
+    )
+    join_cond = _raw_join_equalities(
+        join.on_equalities, slots, schemas_by_table, derived_by_alias, derived_map_vars, query,
+    )
+    term = _resolve_row_expr(agg_expr, query, slots, schemas_by_table, derived_by_alias)
+
+    matched_helper = "full_join_matched_helper"
+    matched_loop = _gen_nested_loop(
+        matched_helper,
+        slots,
+        join_cond=join_cond,
+        filter_cond=filter_cond,
+        update_expr=f"(tail as int + ({term}) as int) as {val_type}",
+        ret_type=val_type,
+        ret_base=f"0{val_type}",
+        extra_params=[(v, "Map<_, _>") for v in derived_map_vars.values()] if derived_map_vars else None,
+    )
+
+    left_only_helper = "full_join_left_unmatched_helper"
+    left_slots = [left]
+    filter_left = (
+        _resolve_row_expr(filter_raw, query, left_slots, schemas_by_table, derived_by_alias)
+        if filter_raw
+        else None
+    )
+    term_left = _resolve_row_expr(agg_expr, query, left_slots, schemas_by_table, derived_by_alias)
+    left_update = (
+        f"if !{match_helper}({left.param}, {right.param}, {left.idx}, 0) {{\n"
+        f"            (tail as int + ({term_left}) as int) as {val_type}\n"
+        f"        }} else {{\n"
+        f"            tail\n"
+        f"        }}"
+    )
+    if filter_left:
+        left_body = (
+            f"if {left.idx} < {left.param}.n {{\n"
+            f"        let tail = {left_only_helper}({left.param}, {right.param}, {left.idx} + 1);\n"
+            f"        if {filter_left} {{\n"
+            f"            {left_update}\n"
+            f"        }} else {{\n"
+            f"            tail\n"
+            f"        }}\n"
+            f"    }} else {{\n"
+            f"        0{val_type}\n"
+            f"    }}"
+        )
+    else:
+        left_body = (
+            f"if {left.idx} < {left.param}.n {{\n"
+            f"        let tail = {left_only_helper}({left.param}, {right.param}, {left.idx} + 1);\n"
+            f"        {left_update}\n"
+            f"    }} else {{\n"
+            f"        0{val_type}\n"
+            f"    }}"
+        )
+    left_only = f"""pub open spec fn {left_only_helper}(
+    {left.param}: &{left.struct},
+    {right.param}: &{right.struct},
+    {left.idx}: int,
+) -> (res: {val_type})
+    decreases {left.param}.n - {left.idx},
+{{
+    {left_body}
+}}"""
+
+    init_args = ", ".join(
+        [*(s.param for s in slots)]
+        + list(derived_map_vars.values())
+        + [_init_indices(slots)]
+    )
+    spec_body = (
+        f"let matched = {matched_helper}({init_args});\n"
+        f"    let left_only = {left_only_helper}({left.param}, {right.param}, 0);\n"
+        f"    (matched as int + left_only as int) as {val_type}"
+    )
+    helpers = "\n\n".join([match_helper, matched_loop, left_only])
+    return helpers, spec_body, val_type
+
+
 def _emit_single_agg_nway(
     query: SQLQuery,
     slots: list[_Slot],
@@ -944,10 +1081,15 @@ def emit_join_spec_helpers(
         for i, t in enumerate(base)
     ]
 
-    for join in query.joins:
-        if join.join_type in ("FULL", "CROSS", "SEMI", "ANTI"):
+    join_types = {j.join_type for j in query.joins}
+    for jt in join_types:
+        if jt in ("SEMI", "ANTI"):
             raise UnsupportedContractError(
-                f"{join.join_type} JOIN needs real MethodSpec; not yet supported"
+                f"{jt} JOIN needs real MethodSpec; not yet supported"
+            )
+        if jt == "FULL" and (query.groupby_columns or query.is_projection or not is_sum):
+            raise UnsupportedContractError(
+                "FULL OUTER JOIN group-by / projection needs real MethodSpec; not yet supported"
             )
 
     derived_helpers: list[str] = []
@@ -1006,6 +1148,18 @@ def emit_join_spec_helpers(
             for t in base:
                 flat.update(schemas_by_table[t])
             spec_body = _emit_having_filter(spec_body, query, flat)
+    elif "FULL" in join_types and not query.groupby_columns:
+        full_helpers, spec_body, ret_type = _emit_full_outer_scalar_sum(
+            query,
+            slots,
+            schemas_by_table,
+            derived_by_alias,
+            derived_map_vars,
+            where_expr=where_expr,
+            agg_expr=agg_expr,
+            val_type=val_type,
+        )
+        helpers = "\n\n".join(derived_helpers + [full_helpers])
     else:
         loop_helper, spec_body, ret_type = _emit_single_agg_nway(
             query, slots, schemas_by_table, derived_by_alias, derived_map_vars,

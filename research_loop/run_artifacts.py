@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import secrets
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from research_loop.lemma_flags import lemma_experiment, lemma_research_log
 
 _ENV_KEYS = (
     "LEMMA_AGENT_BACKEND",
@@ -17,13 +20,30 @@ _ENV_KEYS = (
     "MOCK_AGENT",
     "USE_AGENT_DOCKER",
     "LEMMA_RESEARCH_LOG",
+    "LEMMA_EXPERIMENT",
+    "LEMMA_WORKLOAD",
+    "LEMMA_DUCKDB_PATH",
+    "LEMMA_MEASURE_PATH",
+    "LEMMA_ALLOW_DUCKDB_FALLBACK",
+)
+
+_HISTORY_OPTIONAL_KEYS = (
+    "SESSION_HOT_US",
+    "PREP_US",
+    "latency_us",
+    "proof_verified",
+    "wall_s",
+    "agent_gen_wall_s",
+    "tokens_in",
+    "tokens_out",
+    "cost_usd",
+    "measure_path",
 )
 
 
 def research_logging_enabled() -> bool:
     """When true, optimizer creates a timestamped ``research_loop/runs/<id>/`` harvest dir."""
-    raw = os.environ.get("LEMMA_RESEARCH_LOG", "0")
-    return raw.strip().lower() not in ("", "0", "false", "no", "off")
+    return lemma_research_log()
 
 
 def _utc_stamp() -> str:
@@ -45,13 +65,85 @@ def _git_sha(root: Path) -> str | None:
         return None
 
 
-def _env_snapshot() -> dict[str, str]:
-    snap: dict[str, str] = {}
+def _git_porcelain(root: Path) -> str:
+    try:
+        out = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return out.stdout
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        return ""
+
+
+def _git_dirty(root: Path) -> bool:
+    return bool(_git_porcelain(root).strip())
+
+
+def assert_experiment_git_clean(root: Path | str) -> None:
+    """Under LEMMA_EXPERIMENT=1, refuse dirty working trees (override: LEMMA_EXPERIMENT_ALLOW_DIRTY=1)."""
+    if not lemma_experiment():
+        return
+    if os.environ.get("LEMMA_EXPERIMENT_ALLOW_DIRTY", "0") == "1":
+        return
+    root_path = Path(root).resolve()
+    porcelain = _git_porcelain(root_path)
+    if porcelain.strip():
+        lines = porcelain.strip().splitlines()
+        preview = "\n".join(lines[:20])
+        if len(lines) > 20:
+            preview += f"\n... ({len(lines) - 20} more)"
+        raise SystemExit(
+            "LEMMA_EXPERIMENT=1 requires a clean git working tree.\n"
+            "Commit or stash changes, or set LEMMA_EXPERIMENT_ALLOW_DIRTY=1 to override.\n"
+            f"Dirty files ({len(lines)}):\n{preview}"
+        )
+
+
+def _env_snapshot() -> dict[str, str | dict[str, str]]:
+    snap: dict[str, str | dict[str, str]] = {}
     for key in _ENV_KEYS:
         val = os.environ.get(key)
         if val is not None and val != "":
             snap[key] = val
+    uname = platform.uname()
+    snap["machine"] = {
+        "system": uname.system,
+        "node": uname.node,
+        "release": uname.release,
+        "version": uname.version,
+        "machine": uname.machine,
+        "processor": uname.processor,
+    }
     return snap
+
+
+def _write_hardware_profile(run: "RunArtifacts") -> None:
+    try:
+        from research_loop.agent_context import hardware_profile
+    except ImportError:
+        return
+    meta_dir = run.path / "meta"
+    meta_dir.mkdir(parents=True, exist_ok=True)
+    (meta_dir / "hardware.json").write_text(
+        json.dumps(hardware_profile(), indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+
+def normalize_history_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    """Preserve optional harvest fields when present; omit when absent."""
+    out = dict(entry)
+    for key in _HISTORY_OPTIONAL_KEYS:
+        if key not in entry:
+            continue
+        val = entry[key]
+        if val is None:
+            out.pop(key, None)
+    return out
 
 
 @dataclass
@@ -74,7 +166,8 @@ class RunArtifacts:
         )
 
     def write_history(self, history: list, result: dict[str, Any] | None = None) -> None:
-        payload: dict[str, Any] = {"history": history}
+        normalized = [normalize_history_entry(h) for h in history if isinstance(h, dict)]
+        payload: dict[str, Any] = {"history": normalized}
         if result is not None:
             payload["result"] = result
         self.logs_dir.mkdir(parents=True, exist_ok=True)
@@ -128,12 +221,22 @@ def begin_run(
     workspace.mkdir(parents=True, exist_ok=True)
     logs_dir.mkdir(parents=True, exist_ok=True)
 
+    git_commit = _git_sha(root_path)
+    git_dirty = _git_dirty(root_path)
+    if lemma_experiment() and not git_commit:
+        raise SystemExit(
+            "LEMMA_EXPERIMENT=1 requires a git commit hash in the run manifest, "
+            "but git rev-parse HEAD failed (not a git repo or git missing)."
+        )
+
     manifest: dict[str, Any] = {
         "run_id": run_id,
         "started_at": datetime.now(timezone.utc).isoformat(),
         "query_id": query_id,
         "sql": sql_query,
-        "git_sha": _git_sha(root_path),
+        "git_sha": git_commit,
+        "git_commit": git_commit,
+        "git_dirty": git_dirty,
         "env": _env_snapshot(),
     }
     if extra_manifest:
@@ -141,6 +244,7 @@ def begin_run(
 
     run = RunArtifacts(path=path, workspace=workspace, _manifest=manifest)
     run.write_manifest()
+    _write_hardware_profile(run)
 
     os.environ["LEMMA_RUN_DIR"] = str(path)
     os.environ["LEMMA_AGENT_WORKSPACE"] = str(workspace)
@@ -154,5 +258,6 @@ def begin_run(
 def end_run(run: RunArtifacts, result: dict[str, Any]) -> dict[str, Any]:
     out = dict(result)
     out["run_dir"] = str(run.path)
+    _write_hardware_profile(run)
     run.finalize(out)
     return out

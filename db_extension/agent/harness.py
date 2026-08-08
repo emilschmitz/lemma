@@ -14,6 +14,8 @@ from db_extension.agent.measure_core import MeasureContext, get_submitted
 from db_extension.agent.mcp_socket import McpSocketServer
 from db_extension.agent.mcp_tool_specs import openai_host_tool_definitions
 from db_extension.agent.profile import build_data_profile
+from research_loop.agent_context import hardware_profile, hardware_profile_markdown
+from research_loop.lemma_flags import lemma_agent_hardware
 
 ROOT = Path(__file__).resolve().parents[2]
 RESEARCH = ROOT / "research_loop"
@@ -141,6 +143,7 @@ Paths: `/workspace`, `/context/ro`, `/data`.
 
 def _build_user_prompt(
     *,
+    workspace: Path,
     query_id: int,
     sql_query: str,
     iteration: int,
@@ -155,6 +158,19 @@ def _build_user_prompt(
         feedback = (
             f"\n## Previous iteration\nVerified OK at {last_latency_us} µs — try to beat that.\n"
         )
+    from research_loop.agent_sandbox import SPEC_NAME, _extract_spec_excerpt
+
+    spec_file = workspace / "context" / "ro" / SPEC_NAME
+    spec_excerpt = _extract_spec_excerpt(spec_file.read_text()) if spec_file.is_file() else ""
+    spec_section = ""
+    if spec_excerpt:
+        spec_section = f"""
+## Spec excerpt (full file: /context/ro/spec.rs)
+```rust
+{spec_excerpt}
+```
+"""
+
     return f"""# Lemma RunQuery optimizer (query_id={query_id}, iter {iteration}/{max_iterations})
 
 ## Target SQL
@@ -166,15 +182,21 @@ def _build_user_prompt(
 - `/context/ro/spec.rs` — method_spec ground truth
 - `/context/ro/COMPILATION_GUIDE.md` — Verus/Rust patterns
 - `/context/ro/data_profile.md` — schema/stats for the workload
+- `/context/ro/hardware.md` — CPU/cache/memory hints for tuning
 - `/context/ro/query.sql` — same SQL as above
 - `/context/ro/schema.json` — column types for this query
+
+## Hints
+- Match the backward-loop pattern in COMPILATION_GUIDE (`cols.n`, `method_spec_helper(cols, i as int)`).
+- Do **not** put `valid_cols(...)` in the loop invariant — it is already in `requires`.
+- Do **not** add `proof {{ }}` blocks unless a Verus error requires a specific lemma already in scope.
 
 ## Workspace
 - Edit `/workspace/runquery_agent.rs` between the AGENT_BODY_START/END markers.
 - Call `run_runquery(dataset_size=50000)` (or smaller) to verify and measure on the host.
 - Call `submit(run_id=...)` to mark your official run when ready.
-{feedback}
-Begin by reading spec.rs and data_profile.md, then implement the run_query body.
+{feedback}{spec_section}
+Begin by reading the spec excerpt and `/context/ro/data_profile.md`, then implement the run_query body.
 """
 
 
@@ -198,9 +220,19 @@ def _prepare_workspace(
     (ro / "data_profile.md").write_text(
         build_data_profile(data_path, sql_query, flags.agent_data_mode)
     )
-    guide = RESEARCH / "COMPILATION_GUIDE.md"
+    if lemma_agent_hardware():
+        hw = hardware_profile()
+        (ro / "hardware.json").write_text(json.dumps(hw, indent=2) + "\n")
+        (ro / "hardware.md").write_text(hardware_profile_markdown(hw))
+    guide = RESEARCH / "agents" / "COMPILATION_GUIDE.md"
+    if not guide.is_file():
+        guide = RESEARCH / "COMPILATION_GUIDE.md"
     if guide.is_file():
         shutil.copy2(guide, ro / "COMPILATION_GUIDE.md")
+    for name in ("AGENTS.md", "PRIMITIVES.md"):
+        src = RESEARCH / "agents" / name
+        if src.is_file():
+            shutil.copy2(src, ro / name)
     if flags.agent_workload_hint:
         (ro / "WORKLOAD.md").write_text(
             "# Workload hint\n\n"
@@ -243,10 +275,7 @@ def run_openrouter_agent_iteration(
     workspace: Path | None = None,
     data_path: Path | None = None,
     flags: AgentFlags | None = None,
-    dafny_spec: str | None = None,
 ) -> tuple[str, dict]:
-    if not verus_spec and dafny_spec:
-        verus_spec = dafny_spec
     if not verus_spec:
         raise ValueError("verus_spec is required")
     flags = flags or load_agent_flags()
@@ -319,6 +348,7 @@ def run_openrouter_agent_iteration(
             {
                 "role": "user",
                 "content": _build_user_prompt(
+                    workspace=ws,
                     query_id=query_id,
                     sql_query=sql_query,
                     iteration=iteration,
@@ -342,6 +372,7 @@ def run_openrouter_agent_iteration(
                     tools=TOOL_DEFINITIONS,
                     tool_choice="auto",
                 )
+                _accumulate_usage(meta, response, model=flags.openrouter_model)
                 choice = response.choices[0]
                 assistant_msg = choice.message
                 trace_f.write(
@@ -421,3 +452,37 @@ def _write_openrouter_meta(iteration: int, meta: dict) -> None:
     logs_dir.mkdir(parents=True, exist_ok=True)
     path = logs_dir / f"openrouter_meta_iter{iteration}.json"
     path.write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+# Per-million token rates (input, output) for common OpenRouter models; unknown → tokens only.
+_MODEL_RATES_PER_M: dict[str, tuple[float, float]] = {
+    "anthropic/claude-sonnet-4": (3.0, 15.0),
+    "anthropic/claude-3.5-sonnet": (3.0, 15.0),
+    "openai/gpt-4o": (2.5, 10.0),
+}
+
+
+def estimate_openrouter_cost(model: str, tokens_in: int, tokens_out: int) -> float | None:
+    rates = _MODEL_RATES_PER_M.get(model)
+    if rates is None:
+        for key, val in _MODEL_RATES_PER_M.items():
+            if model.startswith(key) or key in model:
+                rates = val
+                break
+    if rates is None:
+        return None
+    in_rate, out_rate = rates
+    return (tokens_in * (in_rate / 1_000_000)) + (tokens_out * (out_rate / 1_000_000))
+
+
+def _accumulate_usage(meta: dict, response, *, model: str) -> None:
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return
+    prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
+    completion = int(getattr(usage, "completion_tokens", 0) or 0)
+    meta["tokens_in"] = int(meta.get("tokens_in", 0)) + prompt
+    meta["tokens_out"] = int(meta.get("tokens_out", 0)) + completion
+    cost = estimate_openrouter_cost(model, meta["tokens_in"], meta["tokens_out"])
+    if cost is not None:
+        meta["cost_usd"] = cost

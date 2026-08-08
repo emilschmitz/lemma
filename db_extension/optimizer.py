@@ -14,6 +14,7 @@ from db_extension.verus_bridge import (
 )
 from research_loop.pipeline_log import log_debug, log_info, log_trace
 from research_loop.run_artifacts import RunArtifacts, begin_run, end_run
+from research_loop.lemma_flags import lemma_research_log
 from research_loop.pipeline_demo import (
     demo_enabled,
     demo_iteration,
@@ -48,6 +49,56 @@ def _parse_harness_metrics(stderr: str) -> dict:
         if line.startswith(_HARNESS_METRICS_PREFIX):
             return json.loads(line[len(_HARNESS_METRICS_PREFIX):])
     return {}
+
+
+def _history_entry(
+    *,
+    iteration: int,
+    status: str,
+    proof_verified: bool,
+    latency: int,
+    error: str = "",
+    metrics: dict | None = None,
+    agent_meta: dict | None = None,
+    wall_s: float | None = None,
+    agent_gen_wall_s: float | None = None,
+    extra: dict | None = None,
+) -> dict:
+    entry: dict = {
+        "iteration": iteration,
+        "status": status,
+        "proof_verified": proof_verified,
+        "latency_us": latency,
+        "error": error,
+    }
+    if wall_s is not None:
+        entry["wall_s"] = round(wall_s, 3)
+    if agent_gen_wall_s is not None:
+        entry["agent_gen_wall_s"] = round(agent_gen_wall_s, 3)
+    if agent_meta:
+        for key in ("tokens_in", "tokens_out", "cost_usd"):
+            if key in agent_meta:
+                entry[key] = agent_meta[key]
+    if metrics:
+        for key in ("SESSION_HOT_US", "PREP_US", "OPEN_US", "COLD_QUERY_US", "measure_path"):
+            if key in metrics:
+                entry[key] = metrics[key]
+    if extra:
+        entry.update(extra)
+    return entry
+
+
+def _maybe_merge_lease_metrics(metrics: dict) -> dict:
+    try:
+        from db_extension.agent.lease_measure import lease_measure_enabled, merge_lease_into_metrics
+
+        if lease_measure_enabled() and metrics.get("status") == "SUCCESS" and metrics.get("proof_verified"):
+            return merge_lease_into_metrics(metrics)
+    except Exception as exc:
+        out = dict(metrics)
+        out["lease_measure_error"] = str(exc)
+        return out
+    return metrics
 
 
 def _run_harness_demo(harness_cmd: list[str], *, cwd: str, timeout: int) -> tuple[int, dict]:
@@ -91,12 +142,11 @@ def run_optimization_loop(
     use_mock: bool = True,
     model: str = None,
     schema: dict | None = None,
+    workload_tables: dict | None = None,
 ) -> dict:
     """
     Runs the query optimization loop (schema-driven Verus). Prints step-by-step colored output.
     """
-    from research_loop.run_artifacts import research_logging_enabled
-
     try:
         resolved_schema = resolve_schema_for_sql(sql_query, schema)
     except ValueError as e:
@@ -108,7 +158,7 @@ def run_optimization_loop(
     root_dir = os.path.dirname(current_dir)
 
     run: RunArtifacts | None = None
-    if research_logging_enabled():
+    if lemma_research_log():
         run = begin_run(
             query_id=query_id,
             sql_query=sql_query,
@@ -134,6 +184,7 @@ def run_optimization_loop(
     best_latency = -1
     best_iteration = -1
     history = []
+    agent_gen_wall_s = 0.0
 
     log_info(
         COMPONENT,
@@ -155,6 +206,7 @@ def run_optimization_loop(
 
     for iteration in range(1, max_iterations + 1):
         log_info(COMPONENT, "iteration_start", f"iter={iteration}/{max_iterations}")
+        iter_agent_wall_s = 0.0
         if demo_enabled():
             demo_iteration(iteration, max_iterations)
         else:
@@ -219,12 +271,20 @@ def run_optimization_loop(
             agent_flags = load_agent_flags()
             backend = agent_flags.backend.strip().lower()
             last_error = history[-1]["error"] if history else ""
+            if last_error:
+                from db_extension.verus_bridge import enrich_agent_error_message
+
+                last_error = enrich_agent_error_message(last_error)
             last_lat = history[-1]["latency_us"] if history and history[-1].get("proof_verified") else -1
 
             try:
-                from db_extension.dataset_config import tbl_path
+                bench_raw = os.environ.get("LEMMA_BENCH_TBL", "").strip()
+                if bench_raw:
+                    data_path = Path(bench_raw)
+                else:
+                    from db_extension.dataset_config import tbl_path
 
-                data_path = tbl_path()
+                    data_path = tbl_path()
             except ImportError:
                 data_path = None
 
@@ -245,7 +305,7 @@ def run_optimization_loop(
                         if not docker_image_built(image):
                             log_info(COMPONENT, "docker_build_start", f"building {image}")
                             _vprint(f"  - Building agent Docker image {image}...", end="", flush=True)
-                            build_docker_image(image)
+                            build_docker_image(image, install_agent_cli=True)
                             _vprint(f" {COLOR_GREEN}OK{COLOR_RESET}")
                         _vprint("  - Running agent in Docker sandbox...", end="", flush=True)
                     else:
@@ -253,7 +313,10 @@ def run_optimization_loop(
                         _vprint("  - Running agent (local subprocess)...", end="", flush=True)
                     body, proc = run_agent_iteration(
                         query_id=query_id,
-                        dafny_spec=verus_spec,
+                        verus_spec=verus_spec,
+                        sql_query=sql_query,
+                        schema=resolved_schema,
+                        data_path=data_path,
                         iteration=iteration,
                         max_iterations=max_iterations,
                         last_error=last_error,
@@ -307,13 +370,15 @@ def run_optimization_loop(
                             if not demo_enabled():
                                 _vprint(f" {COLOR_RED}FAILED{COLOR_RESET}")
                                 _vprint(f"    {err[:500]}")
-                            history.append({
-                                "iteration": iteration,
-                                "status": "FAILURE",
-                                "proof_verified": False,
-                                "latency_us": -1,
-                                "error": f"Agent failed: {err}",
-                            })
+                            history.append(_history_entry(
+                                iteration=iteration,
+                                status="FAILURE",
+                                proof_verified=False,
+                                latency=-1,
+                                error=f"Agent failed: {err}",
+                                wall_s=time.perf_counter() - a_start,
+                                agent_gen_wall_s=agent_gen_wall_s + (time.perf_counter() - a_start),
+                            ))
                             _snapshot_history()
                             continue
                 else:
@@ -327,13 +392,15 @@ def run_optimization_loop(
                         err = (proc.stderr or proc.stdout or "agent exited non-zero").strip()
                         _vprint(f" {COLOR_RED}FAILED{COLOR_RESET}")
                         _vprint(f"    {err[:500]}")
-                        history.append({
-                            "iteration": iteration,
-                            "status": "FAILURE",
-                            "proof_verified": False,
-                            "latency_us": -1,
-                            "error": f"Agent failed: {err}",
-                        })
+                        history.append(_history_entry(
+                            iteration=iteration,
+                            status="FAILURE",
+                            proof_verified=False,
+                            latency=-1,
+                            error=f"Agent failed: {err}",
+                            wall_s=time.perf_counter() - a_start,
+                            agent_gen_wall_s=agent_gen_wall_s + (time.perf_counter() - a_start),
+                        ))
                         _snapshot_history()
                         continue
                     write_ms = int((time.perf_counter() - a_start) * 1000)
@@ -342,22 +409,30 @@ def run_optimization_loop(
                     else:
                         _vprint(f" {COLOR_GREEN}OK{COLOR_RESET} ({write_ms // 1000} s)")
             except subprocess.TimeoutExpired:
+                iter_agent_wall_s = time.perf_counter() - a_start
+                agent_gen_wall_s += iter_agent_wall_s
                 if demo_enabled():
-                    demo_step_pass_fail("🦾", "Generating RunQuery", int((time.perf_counter() - a_start) * 1000), False)
+                    demo_step_pass_fail("🦾", "Generating RunQuery", int(iter_agent_wall_s * 1000), False)
                 _vprint(f" {COLOR_RED}TIMEOUT{COLOR_RESET}")
-                history.append({
-                    "iteration": iteration,
-                    "status": "TIMEOUT",
-                    "proof_verified": False,
-                    "latency_us": -1,
-                    "error": "Agent timed out",
-                })
+                history.append(_history_entry(
+                    iteration=iteration,
+                    status="TIMEOUT",
+                    proof_verified=False,
+                    latency=-1,
+                    error="Agent timed out",
+                    wall_s=iter_agent_wall_s,
+                    agent_gen_wall_s=agent_gen_wall_s,
+                ))
                 _snapshot_history()
                 continue
             except Exception as e:
                 _vprint(f" {COLOR_RED}FAILED{COLOR_RESET}")
                 _vprint(f"    {e}")
                 return _finish_run(run, {"status": "FAILED", "error": str(e), "history": history})
+
+            if not use_mock:
+                iter_agent_wall_s = time.perf_counter() - a_start
+                agent_gen_wall_s += iter_agent_wall_s
 
         # Step 3: Verify and compile and benchmark (skip if OpenRouter marked a run)
         use_marked_metrics = (
@@ -387,14 +462,18 @@ def run_optimization_loop(
                 if best_latency == -1 or latency < best_latency:
                     best_latency = latency
                     best_iteration = iteration
-            history.append({
-                "iteration": iteration,
-                "status": status,
-                "proof_verified": proof_verified,
-                "latency_us": latency,
-                "error": metrics.get("compiler_error", ""),
-                "submitted_run_id": agent_meta.get("submitted_run_id"),
-            })
+            history.append(_history_entry(
+                iteration=iteration,
+                status=status,
+                proof_verified=proof_verified,
+                latency=latency,
+                error=metrics.get("compiler_error", ""),
+                metrics=metrics,
+                agent_meta=agent_meta,
+                wall_s=iter_agent_wall_s or None,
+                agent_gen_wall_s=agent_gen_wall_s,
+                extra={"submitted_run_id": agent_meta.get("submitted_run_id")},
+            ))
             _save_harness_metrics(iteration, metrics)
             _snapshot_history()
             continue
@@ -417,6 +496,7 @@ def run_optimization_loop(
                 schema=resolved_schema,
                 runquery_path=agent_body_path,
                 dataset_size=dataset_size,
+                workload_tables=workload_tables,
             )
 
         try:
@@ -459,18 +539,24 @@ def run_optimization_loop(
                     if "compiler_error" in metrics and metrics["compiler_error"]:
                         _vprint(f"    Error: {metrics['compiler_error']}")
 
+            metrics = _maybe_merge_lease_metrics(metrics)
+
             if status == "SUCCESS" and proof_verified:
                 if best_latency == -1 or latency < best_latency:
                     best_latency = latency
                     best_iteration = iteration
 
-            history.append({
-                "iteration": iteration,
-                "status": status,
-                "proof_verified": proof_verified,
-                "latency_us": latency,
-                "error": metrics.get("compiler_error", "")
-            })
+            history.append(_history_entry(
+                iteration=iteration,
+                status=status,
+                proof_verified=proof_verified,
+                latency=latency,
+                error=metrics.get("compiler_error", ""),
+                metrics=metrics,
+                agent_meta=agent_meta if not use_mock else None,
+                wall_s=iter_agent_wall_s or None,
+                agent_gen_wall_s=agent_gen_wall_s,
+            ))
             _save_harness_metrics(iteration, metrics)
             _snapshot_history()
 
@@ -478,13 +564,15 @@ def run_optimization_loop(
             if demo_enabled():
                 demo_step_pass_fail("✅", "Verifying against spec", int(harness_timeout * 1000), False)
             _vprint(f" {COLOR_RED}TIMEOUT{COLOR_RESET} after 90s")
-            history.append({
-                "iteration": iteration,
-                "status": "TIMEOUT",
-                "proof_verified": False,
-                "latency_us": -1,
-                "error": "Harness timed out"
-            })
+            history.append(_history_entry(
+                iteration=iteration,
+                status="TIMEOUT",
+                proof_verified=False,
+                latency=-1,
+                error="Harness timed out",
+                wall_s=iter_agent_wall_s or None,
+                agent_gen_wall_s=agent_gen_wall_s,
+            ))
             _snapshot_history()
 
     if demo_enabled():

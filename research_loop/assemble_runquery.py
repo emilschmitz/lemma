@@ -160,7 +160,10 @@ def extract_agent_body(raw: str) -> str:
         start = raw.index(AGENT_START) + len(AGENT_START)
         end = raw.index(AGENT_END)
         inner = raw[start:end].strip()
-        m = re.search(r"pub\s+fn\s+run_query\s*\([^)]*\)\s*->\s*[\w:(),\s]+\{", inner)
+        m = re.search(
+            r"pub\s+(?:exec\s+)?fn\s+run_query\s*\([^)]*\)\s*->\s*[\w:(),\s]+\{",
+            inner,
+        )
         if m:
             brace_start = m.end() - 1
             depth, i = 1, brace_start + 1

@@ -14,8 +14,8 @@ if str(ROOT) not in sys.path:
 
 import duckdb  # noqa: E402
 
-from verus.db_extension.dataset_config import holdout_data_dir  # noqa: E402
-from verus.db_extension.duckdb_memory import (  # noqa: E402
+from db_extension_paths.dataset_config import holdout_data_dir  # noqa: E402
+from db_extension_paths.duckdb_memory import (  # noqa: E402
     duckdb_table_names,
     ensure_holdout_tables,
     export_tables,
@@ -23,14 +23,14 @@ from verus.db_extension.duckdb_memory import (  # noqa: E402
     maybe_clear_export_cache,
     session_db_path,
 )
-from verus.db_extension.utils import print_result_table, setup_ssb_flat  # noqa: E402
+from db_extension_paths.utils import print_result_table, setup_ssb_flat  # noqa: E402
 from research_loop.lemma_flags import (  # noqa: E402
     lemma_duckdb_sidecar_export,
     lemma_force_regenerate,
     lemma_load_from_duckdb,
 )
 
-CONFIG_ENV = ROOT / "verus" / "research_loop" / "config.env"
+CONFIG_ENV = ROOT / "research_loop" / "config.env"
 RUST_BRIDGE_DIR = Path(__file__).resolve().parent / "rust_bridge"
 BENCH_BIN = (
     ROOT
@@ -59,7 +59,7 @@ def ensure_holdout_data(data_dir: Path) -> None:
     needed = [data_dir / "scan_skew.tbl", data_dir / "scan_skew_1m.tbl"]
     if all(p.is_file() for p in needed):
         return
-    gen = ROOT / "verus" / "research_loop" / "holdout" / "gen_data.py"
+    gen = ROOT / "research_loop" / "holdout" / "gen_data.py"
     print(f"Generating holdout data via {gen}...")
     r = subprocess.run([sys.executable, str(gen)], cwd=ROOT, check=False)
     if r.returncode != 0:
@@ -246,7 +246,7 @@ def main() -> None:
             run_pin_h1_smoke(db_path)
             con = duckdb.connect(db_path)
         elif use_sidecar:
-            from verus.db_extension.duckdb_memory import default_export_dir
+            from db_extension_paths.duckdb_memory import default_export_dir
 
             export_dir = default_export_dir(db_path)
             maybe_clear_export_cache(export_dir)

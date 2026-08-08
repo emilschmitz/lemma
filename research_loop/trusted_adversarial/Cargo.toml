@@ -1,0 +1,13 @@
+[package]
+name = "lemma_trusted_adversarial"
+version = "0.1.0"
+edition = "2021"
+description = "Adversarial unit tests for Verus TRUSTED external_body externs"
+publish = false
+
+[dependencies]
+lemma_native = { path = "../native" }
+lemma_agent_primitives = { path = "../agent_primitives", default-features = false }
+
+[dev-dependencies]
+lemma_agent_primitives = { path = "../agent_primitives", default-features = false, features = ["parallel"] }

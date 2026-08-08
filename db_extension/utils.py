@@ -166,23 +166,67 @@ def lemma_select_line(con: duckdb.DuckDBPyConnection, sql: str) -> str:
         return f"SELECT CAST({call} AS HUGEINT) AS {alias}"
     return f"SELECT {call} AS {alias}"
 
-def setup_db(con: duckdb.DuckDBPyConnection, *, quiet: bool = False):
-    flat_path = tbl_path()
-    row_limit = effective_dataset_size()
+def quote_sql_identifier(name: str) -> str:
+    if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
+        return name
+    return '"' + name.replace('"', '""') + '"'
 
-    if not flat_path.exists():
-        raise FileNotFoundError(
-            f"Real SSB flat table not found at {flat_path}.\n"
-            "Run: ./scripts/build_ssb_flat_dataset.sh"
-        )
+
+def load_csv_table(
+    con: duckdb.DuckDBPyConnection,
+    table: str,
+    path: os.PathLike[str] | str,
+    *,
+    quiet: bool = False,
+    row_limit: int | None = None,
+) -> int:
+    path = os.fspath(path)
+    if not quiet:
+        print(f"Loading '{table}' from {path}...")
+    limit_clause = f" LIMIT {row_limit}" if row_limit is not None else ""
+    con.execute(
+        f"CREATE OR REPLACE TABLE {quote_sql_identifier(table)} AS "
+        f"SELECT * FROM read_csv('{path}', delim='|', header=true, quote='\"')"
+        f"{limit_clause}"
+    )
+    n = con.execute(f"SELECT COUNT(*) FROM {quote_sql_identifier(table)}").fetchone()[0]
+    if not quiet:
+        print(f"{COLOR_GREEN}Loaded {n:,} rows into '{table}'.{COLOR_RESET}")
+    return int(n)
+
+
+def setup_workload(con: duckdb.DuckDBPyConnection, spec, *, quiet: bool = False) -> None:
+    """Create/load tables for a resolved WorkloadSpec (CSV/tbl or existing DuckDB)."""
+    from db_extension.workload_config import WorkloadSpec
+
+    if not isinstance(spec, WorkloadSpec):
+        raise TypeError(f"expected WorkloadSpec, got {type(spec)!r}")
 
     if quiet:
         con.execute("SET enable_progress_bar = false")
 
-    if not quiet:
-        print(f"Loading table 'lineorder_flat' from {flat_path} ({row_limit:,} rows)...")
-    con.execute(
-        f"CREATE TABLE lineorder_flat AS SELECT * FROM read_csv('{flat_path}', delim='|', header=True) LIMIT {row_limit}"
-    )
-    if not quiet:
-        print(f"{COLOR_GREEN}Loaded {row_limit:,} rows into 'lineorder_flat'.{COLOR_RESET}")
+    if spec.name == "sec":
+        return
+
+    existing = {row[0].lower() for row in con.execute("SHOW TABLES").fetchall()}
+    row_limit: int | None = None
+    if spec.name == "ssb":
+        row_limit = effective_dataset_size()
+
+    for table, path in spec.tables.items():
+        if table.lower() in existing:
+            continue
+        if not path.is_file():
+            raise FileNotFoundError(f"Table file for {table!r} not found: {path}")
+        load_csv_table(con, table, path, quiet=quiet, row_limit=row_limit)
+
+
+def setup_db(con: duckdb.DuckDBPyConnection, *, quiet: bool = False, sql: str | None = None):
+    """Backward-compatible DB setup; delegates to workload resolution."""
+    from db_extension.workload_config import resolve_workload
+
+    if sql:
+        spec = resolve_workload(sql)
+    else:
+        spec = resolve_workload("SELECT 1 FROM lineorder_flat", workload="ssb")
+    setup_workload(con, spec, quiet=quiet)

@@ -1,7 +1,7 @@
 # Verus `db_extension` — path `lemma_copy` (+ shared FFI)
 
 This directory holds **`lemma_copy`** (sidecar `.lemma_cols`) and shared DuckDB FFI
-(`lemma_pin`, `lemma_stream`) used by lease/chunk bridges. See [`../DB_EXTENSION_PATHS.md`](../DB_EXTENSION_PATHS.md).
+(`lemma_pin`, `lemma_stream`) used by lease/chunk bridges. See [`../docs/DB_EXTENSION_PATHS.md`](../docs/DB_EXTENSION_PATHS.md).
 
 Stripped copy of the root [`db_extension/`](../../db_extension/) for **Verus** experiments.
 Humans (or Cursor) write kernels; there is **no** OpenRouter/Docker sandbox agent step and
@@ -109,7 +109,7 @@ db_extension_paths/check_mem.sh uv run python db_extension_paths/measure_e2e_pat
 # → db_extension_paths/e2e_three_paths_h1.json
 ```
 
-See [`../DB_EXTENSION_PATHS.md`](../DB_EXTENSION_PATHS.md) for all three Lemma paths.
+See [`../docs/DB_EXTENSION_PATHS.md`](../docs/DB_EXTENSION_PATHS.md) for all three Lemma paths.
 
 Latest on this box (scan_skew 500k, see `pin_h1_measure.json`): **lemma_st_duckdb_mem**
 ~15µs (zone-map prune on pinned buffers), **duckdb_sql** 1T ~456–569µs, **lemma_st**

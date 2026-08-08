@@ -89,7 +89,7 @@ OpenRouter and CLI agents load flags from `research_loop/config.env` (see `db_ex
 
 Primary metric: **`SESSION_HOT_US`**.
 
-Path index: `DB_EXTENSION_PATHS.md`.
+Path index: `docs/DB_EXTENSION_PATHS.md`.
 
 ## Agent assumptions
 

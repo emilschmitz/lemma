@@ -92,3 +92,6 @@ script -f holdout/gendb_sec_edgar/results/gcloud_ssh_$(date -u +%Y%m%dT%H%M%SZ).
 
 That tree is Lemma’s **small synthetic** holdout (scan_skew, etc.). This folder is the
 **GenDB SEC-EDGAR** procedure / queries for a separate, leakage-resistant test set.
+
+Fixed GenDB-comparable experiment plan (agents, HW, costs, GCP data bring-up):
+[`../EXPERIMENTS_GENDB.md`](../EXPERIMENTS_GENDB.md).

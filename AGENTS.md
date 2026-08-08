@@ -50,7 +50,7 @@ directly (`research_loop/benchmark_verified.py`).
 ### H1 path agents (db_extension_*)
 
 Primary metric: **`SESSION_HOT_US`** (GenDB hot recompute with session open). Path index:
-`DB_EXTENSION_PATHS.md`. Agent briefs live under `db_extension_paths/agent/`,
+`docs/DB_EXTENSION_PATHS.md`. Agent briefs live under `db_extension_paths/agent/`,
 `db_extension_runtime/agent/`, `db_extension_lease/agent/`, `db_extension_storage/agent/`.
 
 Measure:

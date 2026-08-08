@@ -13,7 +13,7 @@ META_PATH = SSB_DIR / "dataset_meta.json"
 DEFAULT_DATASET_SIZE = 2_000_000
 DEFAULT_SSB_SCALE = 1.333
 
-HOLDOUT_DATA = ROOT / "verus" / "research_loop" / "holdout" / "data"
+HOLDOUT_DATA = ROOT / "research_loop" / "holdout" / "data"
 
 
 def ssb_dir() -> Path:

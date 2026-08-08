@@ -16,6 +16,7 @@ from .col_exprs import (
 from .joins import _table_struct_name, emit_join_spec_helpers
 from .parse_sql import (
     AggSpec,
+    DerivedTable,
     SQLQuery,
     UnsupportedContractError,
     normalize_schema,
@@ -329,11 +330,191 @@ def _emit_having_helper() -> str:
 }"""
 
 
-def _emit_projection_spec(query: SQLQuery, flat_schema: dict[str, str]) -> tuple[str, str, str]:
-    _ = query, flat_schema
-    raise UnsupportedContractError(
-        "SELECT projection needs real MethodSpec fold; not yet supported"
+def _schema_col_key(flat_schema: dict[str, str], name: str) -> str:
+    for k in flat_schema:
+        if k.lower() == name.lower():
+            return k
+    return name
+
+
+def _projection_col_type(
+    expr: str,
+    flat_schema: dict[str, str],
+) -> str:
+    if "window_sum_" in expr:
+        return "u64"
+    if "window_row_number_" in expr:
+        return "u32"
+    m = re.match(r"row\.([A-Za-z_][A-Za-z0-9_]*)", expr.strip())
+    if m:
+        key = _schema_col_key(flat_schema, m.group(1))
+        return spec_map_key_type(flat_schema[key])
+    return "u64"
+
+
+def _row_expr_at(
+    expr: str,
+    idx_var: str,
+    flat_schema: dict[str, str],
+) -> str:
+    out = re.sub(
+        r"window_([a-z0-9_]+)_spec\(cols,\s*k\)",
+        rf"window_\1_spec(cols, {idx_var})",
+        expr,
     )
+
+    def repl(m: re.Match[str]) -> str:
+        key = _schema_col_key(flat_schema, m.group(1))
+        field = key.lower()
+        if col_verus_type(flat_schema[key]) == "String":
+            return f"cols.{field}[{idx_var} as int]@"
+        return f"cols.{field}[{idx_var} as int]"
+
+    return re.sub(r"\brow\.([A-Za-z_][A-Za-z0-9_]*)", repl, out)
+
+
+def _emit_projection_branch(
+    query: SQLQuery,
+    flat_schema: dict[str, str],
+    *,
+    helper_name: str = "projection_helper",
+    spec_name: str | None = None,
+    struct_name: str = "Cols",
+) -> tuple[str, str, str]:
+    """Projection fold; returns (helpers, spec_call, ret_type)."""
+    idx_var = "k"
+    where_at_k = (
+        spec_where_cond(to_col_expr(query.where_expr, idx_var), idx_var, flat_schema)
+        if query.where_expr
+        else None
+    )
+    row_types = [
+        _projection_col_type(expr, flat_schema) for expr in query.projection_exprs
+    ]
+    row_exprs = [
+        _row_expr_at(expr, idx_var, flat_schema) for expr in query.projection_exprs
+    ]
+    if len(row_exprs) == 1:
+        row_expr = row_exprs[0]
+        row_ty = row_types[0]
+    else:
+        row_expr = f"({', '.join(row_exprs)})"
+        row_ty = f"({', '.join(row_types)})"
+
+    if query.distinct:
+        update_expr = (
+            f"if tail.contains({row_expr}) {{ tail }} else {{ tail.push({row_expr}) }}"
+        )
+    else:
+        update_expr = f"tail.push({row_expr})"
+
+    container_ty = f"Seq<{row_ty}>"
+    ret_type = container_ty
+    ret_base = "Seq::empty()"
+
+    if where_at_k:
+        body_inner = (
+            f"let tail = {helper_name}(cols, {idx_var} + 1);\n"
+            f"        if {where_at_k} {{\n"
+            f"            {update_expr}\n"
+            f"        }} else {{\n"
+            f"            tail\n"
+            f"        }}"
+        )
+    else:
+        body_inner = (
+            f"let tail = {helper_name}(cols, {idx_var} + 1);\n"
+            f"        {update_expr}"
+        )
+
+    helper = f"""pub open spec fn {helper_name}(cols: &{struct_name}, {idx_var}: int) -> {container_ty}
+    recommends
+        0 <= {idx_var} && {idx_var} <= cols.n,
+        valid_cols(cols),
+    decreases cols.n - {idx_var},
+{{
+    if {idx_var} < cols.n {{
+        {body_inner}
+    }} else {{
+        {ret_base}
+    }}
+}}"""
+
+    body = f"{helper_name}(cols, 0)"
+    if query.limit is not None:
+        body = f"spec_seq_take({body}, {query.limit})"
+
+    if spec_name:
+        spec = f"""pub open spec fn {spec_name}(cols: &{struct_name}) -> {ret_type}
+    recommends valid_cols(cols),
+{{
+    {body}
+}}"""
+        return helper + "\n\n" + spec, f"{spec_name}(cols)", ret_type
+    return helper, body, ret_type
+
+
+def _emit_projection_spec(query: SQLQuery, flat_schema: dict[str, str]) -> tuple[str, str, str]:
+    """Single-table SELECT projection: recursive Seq fold + optional LIMIT."""
+    helpers, spec_body, ret_type = _emit_projection_branch(
+        query, flat_schema, helper_name="projection_helper",
+    )
+    spec_fn = f"""pub open spec fn method_spec(cols: &Cols) -> {ret_type}
+    recommends valid_cols(cols),
+{{
+    {spec_body}
+}}"""
+    return helpers, spec_fn, ret_type
+
+
+def _emit_derived_union_outer_spec(
+    query: SQLQuery,
+    derived: DerivedTable,
+    flat_schema: dict[str, str],
+) -> tuple[str, str, str]:
+    """Outer aggregate over UNION/UNION ALL derived projection."""
+    inner = derived.query
+    right = inner.union_query
+    if right is None or not inner.is_projection:
+        raise UnsupportedContractError(
+            "derived UNION composition requires compatible projection branches"
+        )
+    if len(inner.projection_columns) != 1 or not query.agg_type:
+        raise UnsupportedContractError(
+            "derived UNION outer aggregate requires single-column projection + scalar agg"
+        )
+
+    prefix_l = f"derived_{derived.alias}_left"
+    prefix_r = f"derived_{derived.alias}_right"
+    left_helpers, left_call, _ = _emit_projection_branch(
+        inner, flat_schema, helper_name=f"{prefix_l}_helper", spec_name=f"{prefix_l}_spec",
+    )
+    right_helpers, right_call, _ = _emit_projection_branch(
+        right, flat_schema, helper_name=f"{prefix_r}_helper", spec_name=f"{prefix_r}_spec",
+    )
+    if inner.union_all:
+        combined = f"spec_seq_concat({left_call}, {right_call})"
+    else:
+        combined = f"spec_seq_union_distinct({left_call}, {right_call})"
+
+    if query.agg_type == "SUM":
+        spec_body = f"seq_sum_u64({combined})"
+        ret_type = "u64"
+    elif query.agg_type == "COUNT":
+        spec_body = f"{combined}.len() as u64"
+        ret_type = "u64"
+    else:
+        raise UnsupportedContractError(
+            f"outer {query.agg_type!r} over derived UNION not supported"
+        )
+
+    helpers = "\n\n".join([left_helpers, right_helpers])
+    spec_fn = f"""pub open spec fn method_spec(cols: &Cols) -> {ret_type}
+    recommends valid_cols(cols),
+{{
+    {spec_body}
+}}"""
+    return helpers, spec_fn, ret_type
 
 
 def _result_row_type(base_ret: str) -> str:
@@ -633,11 +814,13 @@ def _emit_single_table_spec(
         recursive_cte = next(
             (c for c in query.ctes if c.recursive and c.name == derived.alias), None
         )
-        if recursive_cte is not None or inner.union_query is not None:
+        if recursive_cte is not None:
             raise UnsupportedContractError(
                 f"outer aggregate over derived recursive CTE '{derived.alias}' "
                 "needs real MethodSpec; not yet supported"
             )
+        if inner.union_query is not None:
+            return _emit_derived_union_outer_spec(query, derived, flat_schema)
         if inner.window_specs:
             raise UnsupportedContractError(
                 "outer aggregate over derived window column needs real MethodSpec; "
@@ -828,7 +1011,7 @@ def transpile_sql_to_verus(
     for exists in query.exists_subqueries:
         subquery_blocks.append(emit_exists_subquery_helper(exists, flat_schema))
     for win in query.window_specs:
-        subquery_blocks.append(emit_window_spec_helper(win))
+        subquery_blocks.append(emit_window_spec_helper(win, schema=flat_schema))
     for in_sub in query.in_subqueries:
         subquery_blocks.append(emit_in_subquery_helper(in_sub, flat_schema))
     for cte in query.ctes:
@@ -838,8 +1021,9 @@ def transpile_sql_to_verus(
         else:
             subquery_blocks.append(f"// CTE {cte.name} (non-recursive; inlined in FROM)")
         if not cte.recursive and cte.query.agg_type:
-            inner_helpers, _, _ = emit_derived_inner_spec(cte.name, cte.query, flat_schema)
-            subquery_blocks.append(inner_helpers)
+            if not any(d.alias == cte.name for d in query.derived_tables):
+                inner_helpers, _, _ = emit_derived_inner_spec(cte.name, cte.query, flat_schema)
+                subquery_blocks.append(inner_helpers)
 
     agg_push = resolve_two_key_u32_str_groupby(query.groupby_columns, flat_schema)
     agg_push_str = resolve_two_key_str_str_groupby(query.groupby_columns, flat_schema)

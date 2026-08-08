@@ -278,6 +278,53 @@ pub open spec fn spec_seq_take<A>(s: Seq<A>, n: int) -> Seq<A> {
     }
 }
 
+pub open spec fn spec_seq_concat<A>(a: Seq<A>, b: Seq<A>) -> Seq<A> {
+    spec_seq_concat_helper(a, b, 0)
+}
+
+pub open spec fn spec_seq_concat_helper<A>(a: Seq<A>, b: Seq<A>, i: int) -> Seq<A>
+    decreases b.len() - i,
+{
+    if i < b.len() {
+        spec_seq_concat_helper(a.push(b[i]), b, i + 1)
+    } else {
+        a
+    }
+}
+
+pub open spec fn spec_seq_union_distinct<A>(a: Seq<A>, b: Seq<A>) -> Seq<A> {
+    spec_seq_union_distinct_helper(a, b, 0)
+}
+
+pub open spec fn spec_seq_union_distinct_helper<A>(a: Seq<A>, b: Seq<A>, i: int) -> Seq<A>
+    decreases b.len() - i,
+{
+    if i < b.len() {
+        let tail = spec_seq_union_distinct_helper(a, b, i + 1);
+        if tail.contains(b[i]) {
+            tail
+        } else {
+            tail.push(b[i])
+        }
+    } else {
+        a
+    }
+}
+
+pub open spec fn seq_sum_u64(s: Seq<u64>) -> u64 {
+    seq_sum_u64_helper(s, 0)
+}
+
+pub open spec fn seq_sum_u64_helper(s: Seq<u64>, i: int) -> u64
+    decreases s.len() - i,
+{
+    if i < s.len() {
+        (seq_sum_u64_helper(s, i + 1) as int + s[i] as int) as u64
+    } else {
+        0
+    }
+}
+
 // === IS NULL / anti-join (Lemma non-null loads; LEFT JOIN miss) ===
 // TRUSTED: LEFT JOIN anti-join miss predicate (schema-driven bridge).
 #[verifier::external_body]

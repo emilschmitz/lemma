@@ -12,10 +12,24 @@ root_dir = os.path.dirname(current_dir)
 if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
 
-from db_extension.utils import setup_db, get_sql_hash, load_cache, save_cache, print_result_table, BIN_DIR
+from db_extension.utils import (
+    get_sql_hash,
+    load_cache,
+    save_cache,
+    print_result_table,
+    setup_workload,
+    BIN_DIR,
+)
 from db_extension.dataset_config import effective_dataset_size
+from db_extension.workload_config import primary_bench_tbl, resolve_workload
 from db_extension.optimizer import run_optimization_loop
 from research_loop.harness import load_env
+from research_loop.lemma_flags import (
+    lemma_allow_duckdb_fallback,
+    lemma_experiment,
+    lemma_use_mock_agent,
+)
+from research_loop.run_artifacts import assert_experiment_git_clean
 from research_loop.pipeline_log import log_info
 from research_loop.pipeline_demo import (
     demo_banner,
@@ -80,11 +94,61 @@ def main():
     else:
         sql = sys.argv[1]
 
-    if not demo_enabled():
-        log_info(COMPONENT, "start", "run_optimizer invoked", sql_preview=sql[:120], mock=os.environ.get("MOCK_AGENT", "1"))
+    experiment = lemma_experiment()
+    if experiment:
+        assert_experiment_git_clean(root_dir)
+    allow_fallback = lemma_allow_duckdb_fallback()
+    use_mock = lemma_use_mock_agent()
+    if experiment:
+        # Force on: config.env may set LEMMA_RESEARCH_LOG=0; experiments always harvest.
+        os.environ["LEMMA_RESEARCH_LOG"] = "1"
+        os.environ.setdefault("MOCK_AGENT", "0")
+    if experiment and os.environ.get("MOCK_AGENT", "0") == "1":
+        print(
+            f"{COLOR_RED}LEMMA_EXPERIMENT=1 forbids MOCK_AGENT=1 "
+            f"(no fixture bodies in eval runs).{COLOR_RESET}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
-    con = duckdb.connect()
-    setup_db(con, quiet=demo_enabled())
+    if not demo_enabled():
+        log_info(
+            COMPONENT,
+            "start",
+            "run_optimizer invoked",
+            sql_preview=sql[:120],
+            mock=use_mock,
+            experiment=experiment,
+            allow_duckdb_fallback=allow_fallback,
+        )
+
+    try:
+        spec = resolve_workload(sql)
+    except (FileNotFoundError, ValueError) as e:
+        print(f"{COLOR_RED}CUSTOM_PIPELINE_FAILED: {e}{COLOR_RESET}", file=sys.stderr)
+        sys.exit(2)
+
+    os.environ.setdefault("LEMMA_DUCKDB_PATH", spec.db_path)
+    bench_tbl = primary_bench_tbl(spec)
+    if bench_tbl:
+        os.environ.setdefault("LEMMA_BENCH_TBL", bench_tbl)
+
+    if not demo_enabled():
+        log_info(
+            COMPONENT,
+            "workload",
+            f"resolved workload={spec.name}",
+            db_path=spec.db_path,
+            primary_table=spec.primary_table,
+            tables=list(spec.tables),
+        )
+
+    con = duckdb.connect(spec.db_path)
+    try:
+        setup_workload(con, spec, quiet=demo_enabled())
+    except FileNotFoundError as e:
+        print(f"{COLOR_RED}CUSTOM_PIPELINE_FAILED: {e}{COLOR_RESET}", file=sys.stderr)
+        sys.exit(2)
 
     exit_code = 0
 
@@ -102,6 +166,23 @@ def main():
         binary_path = cache[sql_hash]["binary_path"]
         if os.path.exists(binary_path):
             cached_run = True
+
+    def _fail_loud(msg: str) -> None:
+        nonlocal exit_code
+        exit_code = 1
+        print(f"{COLOR_RED}CUSTOM_PIPELINE_FAILED: {msg}{COLOR_RESET}", file=sys.stderr)
+        if allow_fallback:
+            note = "Optimization failed — falling back to DuckDB for results table"
+            if demo_enabled():
+                demo_note(note)
+            else:
+                _vprint(f"{COLOR_RED}{note}{COLOR_RESET}")
+            df_res = con.execute(sql).df()
+            _show_query_results(df_res)
+        else:
+            _vprint(
+                f"{COLOR_RED}Failing loud (set LEMMA_ALLOW_DUCKDB_FALLBACK=1 for demo/prod UX).{COLOR_RESET}"
+            )
 
     if cached_run:
         if demo_enabled():
@@ -122,16 +203,11 @@ def main():
             df_res = con.execute(sql).df()
             _show_query_results(df_res)
         except Exception as e:
-            exit_code = 1
-            _vprint(f"{COLOR_RED}Error running optimized binary: {e}. Falling back to DuckDB...{COLOR_RESET}")
-            df_res = con.execute(sql).df()
-            _show_query_results(df_res)
-            elapsed_us = time_duckdb_us(con, sql, warmup=0)
-            if demo_enabled():
-                demo_duckdb_query(elapsed_us)
+            _fail_loud(f"cached optimized binary failed: {e}")
+            if allow_fallback and demo_enabled():
+                demo_duckdb_query(time_duckdb_us(con, sql, warmup=0))
     else:
         max_iters = int(os.environ.get("MAX_ITERATIONS", "3"))
-        use_mock = os.environ.get("MOCK_AGENT", "1") != "0"
         gemini_model = os.environ.get("GEMINI_MODEL", None)
 
         res_loop = run_optimization_loop(
@@ -140,6 +216,8 @@ def main():
             max_iterations=max_iters,
             use_mock=use_mock,
             model=gemini_model,
+            schema=spec.schema,
+            workload_tables=spec.tables,
         )
 
         if res_loop["status"] == "SUCCESS":
@@ -161,13 +239,8 @@ def main():
             if not demo_enabled():
                 _vprint(f"{COLOR_GREEN}Executed in {res_loop['best_latency_us']} us{COLOR_RESET}")
         else:
-            exit_code = 1
-            if demo_enabled():
-                demo_note("Optimization failed — falling back to DuckDB for results table")
-            else:
-                _vprint(f"{COLOR_RED}Optimization failed. Falling back to DuckDB...{COLOR_RESET}")
-            df_res = con.execute(sql).df()
-            _show_query_results(df_res)
+            err = res_loop.get("error") or res_loop.get("status") or "optimization failed"
+            _fail_loud(str(err))
 
     sys.exit(exit_code)
 

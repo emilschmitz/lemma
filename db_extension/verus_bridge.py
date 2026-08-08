@@ -207,30 +207,29 @@ def extract_trusted_run_query(spec_rs: str) -> str | None:
 
 
 def agent_file_to_run_query_body(agent_raw: str, spec_rs: str) -> str:
-    """Convert agent workspace file to harness run_query_body (full pub exec fn)."""
-    if "pub exec fn run_query" in agent_raw:
-        m = _EXEC_RUN_QUERY_RE.search(agent_raw)
-        if m:
-            body = m.group(0).strip()
-            if "external_body" not in body and "unimplemented!" not in body:
-                return body
+    """Convert agent workspace file to harness run_query_body (full pub exec fn).
 
-    from research_loop.assemble_runquery import extract_agent_body
+    Always re-wrap with host ``requires`` / ``ensures``. Never accept an agent-provided
+    ``pub exec fn run_query`` that omits the method_spec postcondition (that would
+    "verify" without proving equivalence).
+    """
+    _ = spec_rs
+    from research_loop.assemble_runquery import extract_agent_body, validate_runquery_body
 
     inner = extract_agent_body(agent_raw)
     if not inner.strip():
         raise ValueError(
             "agent run_query body is empty; TRUSTED/unimplemented transpile stubs are not accepted"
         )
+    errors = validate_runquery_body(inner)
+    if errors:
+        raise ValueError("; ".join(errors))
+    indented = "\n".join(f"    {line}" if line.strip() else "" for line in inner.splitlines())
     return f"""pub exec fn run_query(cols: &Cols) -> (res: u64)
     requires valid_cols(cols),
     ensures res == method_spec(cols),
 {{
-    run_query_hot(cols)
-}}
-
-pub fn run_query_hot(cols: &Cols) -> u64 {{
-{inner}
+{indented}
 }}
 """
 
@@ -265,12 +264,40 @@ def write_mock_agent_body(
     copy_runquery_template(dest)
 
 
-def resolve_tbl_path(sql: str, schema: dict) -> str:
-    """Best-effort tbl path for benchmark (SSB flat default when applicable)."""
+def resolve_tbl_path(sql: str, schema: dict, workload_tables: dict[str, Path] | None = None) -> str:
+    """Best-effort tbl path for benchmark (env > workload > SSB/holdout heuristics)."""
+    raw = os.environ.get("LEMMA_BENCH_TBL", "").strip()
+    if raw:
+        return raw
     raw = os.environ.get("LEMMA_SSB_FLAT_TBL", "").strip()
     if raw:
         return raw
+
+    if workload_tables:
+        tables = extract_tables_from_sql(sql)
+        for t in tables:
+            p = workload_tables.get(t)
+            if p is not None and Path(p).is_file():
+                return str(p)
+        primary = next(iter(workload_tables.values()), None)
+        if primary is not None and Path(primary).is_file():
+            return str(primary)
+
     tables = extract_tables_from_sql(sql)
+    if any(t == "scan_skew" for t in tables) or any(t == "scan_skew_1m" for t in tables):
+        try:
+            from db_extension.workload_config import holdout_data_dir, holdout_table_path
+
+            for t in tables:
+                p = holdout_table_path(t)
+                if p is not None and p.is_file():
+                    return str(p)
+            skew = holdout_data_dir() / "scan_skew.tbl"
+            if skew.is_file():
+                return str(skew)
+        except ImportError:
+            pass
+
     if any(t == "lineorder_flat" for t in tables) or looks_like_ssb_sql(sql):
         try:
             from db_extension.dataset_config import tbl_path
@@ -292,6 +319,7 @@ def invoke_verus_custom_pipeline(
     run_query_body: str | None = None,
     dataset_size: int = 50_000,
     tbl: str | None = None,
+    workload_tables: dict[str, Path] | None = None,
 ) -> dict:
     """Run research_loop Verus custom SQL pipeline; normalize metrics for optimizer/MCP."""
     from research_loop.harness import run_custom_sql_pipeline
@@ -307,7 +335,7 @@ def invoke_verus_custom_pipeline(
             spec_rs = transpile_sql_to_verus(sql, schema)
         body = agent_file_to_run_query_body(agent_raw, spec_rs)
 
-    tbl_path = tbl if tbl is not None else resolve_tbl_path(sql, schema)
+    tbl_path = tbl if tbl is not None else resolve_tbl_path(sql, schema, workload_tables)
     res = run_custom_sql_pipeline(
         sql,
         schema,
@@ -318,15 +346,45 @@ def invoke_verus_custom_pipeline(
     return normalize_harness_metrics(res)
 
 
+def enrich_agent_error_message(
+    error: str,
+    *,
+    verify_msg: str = "",
+    max_chars: int = 2000,
+) -> str:
+    """Append verify/compile log excerpt when error only points at a log file."""
+    err = (error or "").strip()
+    if not err:
+        return err
+    extra = (verify_msg or "").strip()
+    if not extra:
+        m = re.search(r"see\s+(\S+\.log)\b", err)
+        if m:
+            log_path = Path(m.group(1))
+            if log_path.is_file():
+                try:
+                    extra = log_path.read_text(encoding="utf-8", errors="replace").strip()
+                except OSError:
+                    pass
+    if extra and extra not in err:
+        return f"{err}\n\n--- log excerpt ---\n{extra[:max_chars]}"
+    return err
+
+
 def normalize_harness_metrics(res: dict) -> dict:
     status = res.get("status", "FAILURE")
     proof_verified = bool(res.get("proof_verified"))
     ok_status = status in ("SUCCESS", "SUCCESS_UNVERIFIED")
+    compiler_error = res.get("error") or res.get("bench_error") or res.get("verify_msg") or ""
+    compiler_error = enrich_agent_error_message(
+        str(compiler_error),
+        verify_msg=str(res.get("verify_msg") or ""),
+    )
     return {
         "status": "SUCCESS" if ok_status and proof_verified else "FAILURE",
         "proof_verified": proof_verified,
         "latency_us": int(res.get("latency_us", -1)),
-        "compiler_error": res.get("error") or res.get("bench_error") or res.get("verify_msg") or "",
+        "compiler_error": compiler_error,
         "raw_status": status,
         "bench_skipped": bool(res.get("bench_skipped")),
     }

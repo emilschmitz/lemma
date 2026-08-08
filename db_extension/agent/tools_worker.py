@@ -18,7 +18,7 @@ CONTEXT_RO_ROOT = Path(os.environ.get("AGENT_CONTEXT_RO", "/context/ro"))
 DATA_ROOT = Path(os.environ.get("AGENT_DATA", "/data"))
 OUTPUT_LIMIT = 32_768
 SHELL_TIMEOUT_SEC = 60
-RUNQUERY_PATH = WORKSPACE_ROOT / "runquery_agent.dfy"
+RUNQUERY_PATH = WORKSPACE_ROOT / "runquery_agent.rs"
 MCP_SOCK = Path(os.environ.get("LEMMA_MCP_SOCK", "/lemma-mcp.sock"))
 DEFAULT_QUERY_ID = int(os.environ.get("LEMMA_QUERY_ID", "1"))
 
@@ -191,13 +191,13 @@ def tool_duckdb_sql(args: dict) -> str:
 
 
 def tool_validate_runquery(args: dict) -> str:
-    path = args.get("path", "runquery_agent.dfy")
+    path = args.get("path", "runquery_agent.rs")
     result = _call_mcp("validate_runquery", {"path": path})
     return json.dumps(result, ensure_ascii=False)
 
 
 def tool_run_runquery(args: dict) -> str:
-    path = args.get("path", "runquery_agent.dfy")
+    path = args.get("path", "runquery_agent.rs")
     mcp_args: dict = {"path": path}
     if "dataset_size" in args and args["dataset_size"] is not None:
         mcp_args["dataset_size"] = args["dataset_size"]

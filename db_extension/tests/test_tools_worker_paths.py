@@ -17,7 +17,7 @@ def sandbox_dirs(tmp_path: Path, monkeypatch):
     (ro / "spec.txt").write_text("readonly")
     monkeypatch.setattr(tw, "WORKSPACE_ROOT", ws)
     monkeypatch.setattr(tw, "CONTEXT_RO_ROOT", ro)
-    monkeypatch.setattr(tw, "RUNQUERY_PATH", ws / "runquery_agent.dfy")
+    monkeypatch.setattr(tw, "RUNQUERY_PATH", ws / "runquery_agent.rs")
     return ws, ro
 
 

@@ -1110,6 +1110,14 @@ def _cte_exposed_columns(cte_query: SQLQuery) -> dict[str, str]:
         cols["_agg"] = "bigint"
         return cols
     if cte_query.agg_type and not cte_query.groupby_columns:
+        if cte_query.agg_specs and cte_query.agg_specs[0].alias:
+            alias = cte_query.agg_specs[0].alias
+            val_type = (
+                "bigint"
+                if cte_query.agg_type in ("SUM", "COUNT", "AVG", "COUNT_DISTINCT")
+                else "int"
+            )
+            return {alias: val_type}
         return {"_scalar": "bigint"}
     raise UnsupportedContractError(
         "CTE must expose a projection, scalar aggregate, or group-by shape."
@@ -1118,7 +1126,7 @@ def _cte_exposed_columns(cte_query: SQLQuery) -> dict[str, str]:
 
 def _derived_exposed_columns(
     inner_q: SQLQuery,
-    inner_select: exp.Select,
+    inner_select: exp.Expression,
     resolver: dict[str, tuple[str, str, str | None]],
 ) -> tuple[dict[str, str], str | None]:
     """Return (alias -> type, source base column for project shapes)."""
@@ -1126,6 +1134,12 @@ def _derived_exposed_columns(
         raise UnsupportedContractError(
             "derived table inner query cannot contain nested derived tables."
         )
+    if inner_q.union_query is not None and inner_q.is_projection:
+        out: dict[str, str] = {}
+        for col in inner_q.projection_columns:
+            out[col] = resolver.get(col.lower(), (col, "int", None))[1]
+        src_col = inner_q.projection_columns[0] if len(inner_q.projection_columns) == 1 else None
+        return out, src_col
     if inner_q.joins:
         require_trusted("having_subquery")
         out: dict[str, str] = {}
@@ -1484,13 +1498,18 @@ def _parse_select(
         schema, cte_columns={n: s.columns for n, s in cte_map.items()},
     ))
     if isinstance(from_this, exp.Subquery) and allow_subqueries:
-        inner_select = from_this.this
-        if not isinstance(inner_select, exp.Select):
-            raise UnsupportedContractError("derived table must be SELECT.")
-        inner_q = _parse_select(
-            inner_select, schema, allow_subqueries=False, derived_inner=True,
-            parent_ctes=list(cte_map.values()),
-        )
+        inner_expr = from_this.this
+        if isinstance(inner_expr, exp.Select):
+            inner_q = _parse_select(
+                inner_expr, schema, allow_subqueries=False, derived_inner=True,
+                parent_ctes=list(cte_map.values()),
+            )
+            inner_select = inner_expr
+        elif isinstance(inner_expr, (exp.Union, exp.Intersect, exp.Except)):
+            inner_q = _parse_expression(inner_expr, schema)
+            inner_select = inner_expr
+        else:
+            raise UnsupportedContractError("derived table must be SELECT or UNION.")
         alias = from_this.alias or "derived"
         exposed, source_col = _derived_exposed_columns(
             inner_q, inner_select, _build_schema_resolver(schema),

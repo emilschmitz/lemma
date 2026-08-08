@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,10 +16,13 @@ from research_loop.pipeline_log import log_debug, log_info, log_trace, log_warn
 
 ROOT = Path(__file__).resolve().parents[1]
 RESEARCH = Path(__file__).resolve().parent
-TEMPLATE = RESEARCH / "templates" / "runquery_agent.dfy"
+TEMPLATE = RESEARCH / "templates" / "runquery_agent.rs"
 DEFAULT_IMAGE = "lemma-agent:latest"
 DEFAULT_WORKSPACE = RESEARCH / "agent_workspace"
 COMPONENT = "agent_sandbox"
+BODY_NAME = "runquery_agent.rs"
+SPEC_NAME = "spec.rs"
+SPEC_EXCERPT_MAX_CHARS = 12000
 
 
 def load_agent_config(config: dict[str, str] | None = None) -> dict[str, str]:
@@ -40,6 +44,7 @@ def load_agent_config(config: dict[str, str] | None = None) -> dict[str, str]:
         "AGENT_TIMEOUT_SEC",
         "AGENT_EGRESS_PROFILE",
         "AGENT_CREDENTIALS_DIR",
+        "AGENT_AUTH_DIR",
         "LEMMA_EGRESS_ALLOWLIST",
     ):
         if key in os.environ:
@@ -67,6 +72,34 @@ def parse_agent_env(cfg: dict[str, str], base: dict[str, str] | None = None) -> 
     return out
 
 
+def _extract_spec_excerpt(spec_text: str, *, max_chars: int = SPEC_EXCERPT_MAX_CHARS) -> str:
+    """Return up to max_chars of spec.rs, preferring the method_spec fold region."""
+    if not spec_text:
+        return ""
+    if len(spec_text) <= max_chars:
+        return spec_text
+    start = 0
+    for anchor in (
+        "pub open spec fn method_spec_helper",
+        "pub open spec fn method_spec",
+        "open spec fn method_spec_helper",
+        "open spec fn method_spec",
+    ):
+        idx = spec_text.find(anchor)
+        if idx >= 0:
+            start = idx
+            break
+    if start > 0:
+        for marker in ("pub open spec fn valid_cols", "pub struct Cols", "impl Cols"):
+            idx = spec_text.rfind(marker, 0, start)
+            if idx >= 0:
+                start = min(start, idx)
+    excerpt = spec_text[start : start + max_chars]
+    if start + max_chars < len(spec_text):
+        excerpt += "\n// ... (truncated — read full spec.rs for remainder)\n"
+    return excerpt
+
+
 def default_agent_cmd() -> str:
     # stream-json + stream-partial-output: line-delimited events for agent.log tail (see agent --help).
     return (
@@ -80,60 +113,89 @@ def build_agent_prompt(
     *,
     workspace: Path,
     query_id: int,
-    dafny_spec: str,
+    sql_query: str,
     iteration: int,
     max_iterations: int,
     last_error: str = "",
     last_latency_us: int = -1,
+    in_docker: bool = False,
+    agent_data_mode: str = "stats",
 ) -> str:
-    ws = workspace.resolve()
-    body_path = ws / "runquery_agent.dfy"
-    spec_path = ws / "context" / "ro" / "spec.dfy"
-    guide_path = ws / "context" / "ro" / "COMPILATION_GUIDE.md"
+    """Build CLI agent prompt aligned with OpenRouter harness user prompt."""
+    if in_docker:
+        body_path = f"/workspace/{BODY_NAME}"
+        ctx = "/context/ro"
+    else:
+        ws = workspace.resolve()
+        body_path = str(ws / BODY_NAME)
+        ctx = str(ws / "context" / "ro")
 
     feedback = ""
     if last_error:
         feedback = f"\n## Previous iteration failure\n{last_error}\n"
     elif last_latency_us >= 0:
-        feedback = f"\n## Previous iteration\nVerified OK at {last_latency_us} us — try to beat that latency.\n"
+        feedback = (
+            f"\n## Previous iteration\nVerified OK at {last_latency_us} µs "
+            f"— try to beat that.\n"
+        )
 
-    return f"""# Lemma — RunQuery optimizer (SSB Q{query_id}, iter {iteration}/{max_iterations})
+    spec_path_label = f"{ctx}/spec.rs"
+    spec_file = workspace / "context" / "ro" / SPEC_NAME
+    spec_excerpt = ""
+    if spec_file.is_file():
+        spec_excerpt = _extract_spec_excerpt(spec_file.read_text())
+    spec_section = ""
+    if spec_excerpt:
+        spec_section = f"""
+## Spec excerpt (full file: {spec_path_label})
+```rust
+{spec_excerpt}
+```
+"""
+
+    return f"""# Lemma RunQuery optimizer (query_id={query_id}, iter {iteration}/{max_iterations})
+
+## Target SQL
+```sql
+{sql_query.strip()}
+```
 
 ## Your task
-Write a **fast, verifiable** Dafny RunQuery **body** for the SQL query. The host will inject the method signature and `ensures res == MethodSpec(data)`.
-
-**You must design the loop yourself** from `MethodSpec` in the spec — do not hunt the repo for a ready-made answer.
+Write a **fast, Verus-provable** Rust `run_query` **body** for the SQL above.
+The host injects the method signature and `ensures res == method_spec(...)`.
+**Derive** filters, loop order, and aggregation from `method_spec` in `{ctx}/spec.rs`.
 
 ## ALLOWED (only these)
 1. **Edit one file**: `{body_path}`
-2. **Change only** the statements inside the outer `{{ ... }}` braces (the RunQuery body).
-3. **Read** (do not modify) — and **only these two context files**:
-   - `{spec_path}` — MethodSpec ground truth (your source of truth)
-   - `{guide_path}` — Dafny→Rust / postprocessor **patterns** (APIs and idioms, not a query solution to copy)
-4. **Save** `{body_path}` and **exit** — saving the file is your submission.
+2. **Change only** code between `// AGENT_BODY_START` and `// AGENT_BODY_END`.
+3. **Read** (do not modify) context files under `{ctx}/`:
+   - `spec.rs` — MethodSpec ground truth
+   - `COMPILATION_GUIDE.md` — Verus/Rust patterns
+   - `data_profile.md` — schema/stats (AGENT_DATA_MODE=`{agent_data_mode}`)
+   - `query.sql` — same SQL as above
+   - `schema.json` — column types for this query
+   - `AGENTS.md`, `PRIMITIVES.md` — agent brief / TRUSTED helpers (if present)
+4. **Prefer MCP tools** when available: `validate_runquery`, `run_runquery`, `submit`.
+5. Saving `{body_path}` is your submission if MCP is unavailable.
 
 ## FORBIDDEN
-- Do NOT create, edit, or delete any other file.
-- Do NOT add `method`, `function`, `lemma`, `predicate`, `class`, or `module` declarations.
-- Do NOT write `requires`, `ensures`, or change the RunQuery signature (host adds those).
-- Do NOT use `{{:verify false}}`, `axiom`, or `assume` to cheat verification.
-- Do NOT modify postprocessor, harness, transpiler, or spec files.
-- Do NOT run `dafny verify` yourself unless needed to sanity-check; the host pipeline will verify.
-- Do NOT search the codebase (glob, grep, semantic search, or shell) for existing RunQuery bodies, mock fixtures, benchmarks, scratchpads, `working_query*`, prior agent outputs, or any pre-made implementation of this query.
-- Do NOT copy, adapt, or “patch in” a solution found elsewhere in the repository — **derive filters, loop order, and aggregation from `MethodSpec` and optimize from first principles**.
-- Do NOT read any file except `{body_path}`, `{spec_path}`, and `{guide_path}`.
+- Do NOT create/edit/delete other files.
+- Do NOT add new `spec fn`, `proof`, `assume`, `arbitrary`, `#[verifier::external_body]`, or `unimplemented!`.
+- Do NOT change `requires`/`ensures` or the `run_query` signature.
+- Do NOT search the repo for existing RunQuery bodies or fixtures to copy.
+- Do NOT read any file except the allowed context files above and `{body_path}`.
 
-## Verification hints
-- Use a **backward** loop: `var i := cols.n(); while i > 0 {{ i := i - 1; ... }}`
-- Scalar invariant: `res as int == MethodSpecHelper(cols, i) as int`
-- Access columns via `cols.GetCOLUMNNAME(i)` (see spec / skeleton comments).
-- Match return/types from MethodSpec in `{spec_path}`.
+## Hints
+- Match the **backward-loop** pattern in `{ctx}/COMPILATION_GUIDE.md` (`cols.n`, `method_spec_helper(cols, i as int)`).
+- Do **not** put `valid_cols(...)` in the loop invariant — it is already in `requires`.
+- Do **not** add `proof {{ }}` blocks unless a Verus error requires a specific lemma already in scope.
 
-{feedback}
-## Spec excerpt (full file: {spec_path})
-```dafny
-{dafny_spec[:14000]}
-```
+## Workspace
+- Edit `{body_path}` between the AGENT_BODY_START/END markers.
+- Call `run_runquery(dataset_size=50000)` (or smaller) to verify and measure on the host.
+- Call `submit(run_id=...)` to mark your official run when ready.
+{feedback}{spec_section}
+Begin by reading the spec excerpt and `{ctx}/data_profile.md`, then implement the run_query body.
 """
 
 
@@ -227,6 +289,28 @@ def _tee_agent_stdout_line(log_f, raw: str, *, capture: list[str]) -> None:
         return
 
 
+def _agent_log_dirs(workspace: Path) -> tuple[Path, Path | None]:
+    """Ensure workspace/logs and optional LEMMA_RUN_DIR/logs exist."""
+    ws_logs = workspace / "logs"
+    ws_logs.mkdir(parents=True, exist_ok=True)
+    run_dir_raw = os.environ.get("LEMMA_RUN_DIR", "").strip()
+    run_logs: Path | None = None
+    if run_dir_raw:
+        run_logs = Path(run_dir_raw) / "logs"
+        run_logs.mkdir(parents=True, exist_ok=True)
+    return ws_logs, run_logs
+
+
+def _sync_agent_logs(workspace_logs: Path, run_logs: Path | None) -> None:
+    """Copy mounted workspace agent logs into run harvest dir (if configured)."""
+    if run_logs is None:
+        return
+    for name in ("agent_stream.jsonl", "agent_stderr.log"):
+        src = workspace_logs / name
+        if src.is_file():
+            shutil.copy2(src, run_logs / name)
+
+
 def _run_subprocess_tee_agent_log(
     cmd: list[str],
     *,
@@ -234,34 +318,47 @@ def _run_subprocess_tee_agent_log(
     env: dict[str, str],
     timeout: int,
     log_path: Path,
+    parsed_log_path: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Run local agent CLI; append live stdout to log_path (for follow-agent-log.sh)."""
+    """Run local agent CLI; append raw stream-json to log_path as the agent runs."""
     chunks: list[str] = []
-    with open(log_path, "a", encoding="utf-8") as log_f:
-        log_f.write(f"\n--- agent run {datetime.now(timezone.utc).isoformat()} ---\n")
-        log_f.flush()
-        proc = subprocess.Popen(
-            cmd,
-            cwd=cwd,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-        assert proc.stdout is not None
-        deadline = time.monotonic() + timeout
-        while True:
-            line = proc.stdout.readline()
-            if line:
-                _tee_agent_stdout_line(log_f, line, capture=chunks)
-            elif proc.poll() is not None:
-                break
-            elif time.monotonic() > deadline:
-                proc.kill()
-                proc.wait()
-                raise subprocess.TimeoutExpired(cmd, timeout)
-        rc = proc.wait()
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    parsed_f = None
+    if parsed_log_path is not None:
+        parsed_log_path.parent.mkdir(parents=True, exist_ok=True)
+        parsed_f = open(parsed_log_path, "a", encoding="utf-8")
+    try:
+        with open(log_path, "a", encoding="utf-8") as log_f:
+            log_f.write(f"\n--- agent run {datetime.now(timezone.utc).isoformat()} ---\n")
+            log_f.flush()
+            proc = subprocess.Popen(
+                cmd,
+                cwd=cwd,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            assert proc.stdout is not None
+            deadline = time.monotonic() + timeout
+            while True:
+                line = proc.stdout.readline()
+                if line:
+                    log_f.write(line)
+                    log_f.flush()
+                    if parsed_f is not None:
+                        _tee_agent_stdout_line(parsed_f, line, capture=chunks)
+                elif proc.poll() is not None:
+                    break
+                elif time.monotonic() > deadline:
+                    proc.kill()
+                    proc.wait()
+                    raise subprocess.TimeoutExpired(cmd, timeout)
+            rc = proc.wait()
+    finally:
+        if parsed_f is not None:
+            parsed_f.close()
     out = "".join(chunks)
     return subprocess.CompletedProcess(cmd, rc, stdout=out, stderr="")
 
@@ -269,21 +366,37 @@ def _run_subprocess_tee_agent_log(
 def prepare_workspace(
     workspace: Path,
     *,
-    dafny_spec: str,
+    verus_spec: str,
+    sql_query: str = "",
+    schema: dict | None = None,
+    data_path: Path | None = None,
+    agent_data_mode: str = "stats",
     reset_body: bool = True,
 ) -> Path:
     workspace.mkdir(parents=True, exist_ok=True)
     ro = workspace / "context" / "ro"
     ro.mkdir(parents=True, exist_ok=True)
-    (ro / "spec.dfy").write_text(dafny_spec)
+    (ro / SPEC_NAME).write_text(verus_spec)
+    (ro / "query.sql").write_text(sql_query.strip() + "\n")
+    (ro / "schema.json").write_text(json.dumps(schema or {}, indent=2) + "\n")
+    from db_extension.agent.profile import build_data_profile
+
+    (ro / "data_profile.md").write_text(
+        build_data_profile(data_path, sql_query, agent_data_mode)
+    )
     view = _demo_view_dir()
     if view:
-        shutil.copy2(ro / "spec.dfy", view / "spec.dfy")
-        (view / "CURRENT").write_text("spec.dfy (RunQuery spec)\n")
-    guide = RESEARCH / "COMPILATION_GUIDE.md"
-    if guide.exists():
-        shutil.copy2(guide, ro / "COMPILATION_GUIDE.md")
-    body_path = workspace / "runquery_agent.dfy"
+        shutil.copy2(ro / SPEC_NAME, view / SPEC_NAME)
+        (view / "CURRENT").write_text(f"{SPEC_NAME} (run_query MethodSpec)\n")
+    for name in ("COMPILATION_GUIDE.md", "PRIMER.md", "AGENTS.md", "PRIMITIVES.md"):
+        for base in (RESEARCH / "agents", RESEARCH, ROOT / "research_loop" / "agents"):
+            guide = base / name
+            if guide.exists():
+                shutil.copy2(guide, ro / name)
+                break
+    body_path = workspace / BODY_NAME
+    if not TEMPLATE.exists():
+        raise FileNotFoundError(f"Verus agent template missing: {TEMPLATE}")
     if reset_body or not body_path.exists():
         shutil.copy2(TEMPLATE, body_path)
         log_debug(COMPONENT, "workspace_reset", "copied template", path=str(body_path))
@@ -308,24 +421,19 @@ def run_agent_local(
     log_trace(COMPONENT, "prompt_bytes", str(prompt_path.stat().st_size))
 
     cmd = ["bash", "-lc", agent_cmd]
+    workspace_logs, run_logs = _agent_log_dirs(workspace)
+    stream_path = workspace_logs / "agent_stream.jsonl"
     view = _demo_view_dir()
-    if view:
-        proc = _run_subprocess_tee_agent_log(
-            cmd,
-            cwd=workspace,
-            env=env,
-            timeout=timeout,
-            log_path=view / "agent.log",
-        )
-    else:
-        proc = subprocess.run(
-            cmd,
-            cwd=workspace,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+    parsed_path = (view / "agent.log") if view else None
+    proc = _run_subprocess_tee_agent_log(
+        cmd,
+        cwd=workspace,
+        env=env,
+        timeout=timeout,
+        log_path=stream_path,
+        parsed_log_path=parsed_path,
+    )
+    _sync_agent_logs(workspace_logs, run_logs)
     log_info(
         COMPONENT,
         "agent_subprocess_end",
@@ -374,6 +482,7 @@ def run_agent_docker(
     env["LEMMA_QUERY_ID"] = str(query_id)
     env["PYTHONPATH"] = "/app"
     env["HOME"] = "/root"
+    # Writable config dir (host creds are mounted RO at /root/.cursor-host).
     env["CURSOR_CONFIG_DIR"] = "/root/.cursor"
 
     profile = infer_egress_profile(
@@ -386,16 +495,25 @@ def run_agent_docker(
     )
 
     ws = workspace.resolve()
-    sock_dir = ws / "mcp_results"
+    sock_dir = Path(os.environ.get("LEMMA_MCP_SOCK_DIR", "/tmp"))
     sock_dir.mkdir(parents=True, exist_ok=True)
-    mcp_sock = sock_dir / "mcp.sock"
-    egress_sock = sock_dir / "egress.sock"
+    # AF_UNIX path limit (~108 bytes): keep socks short under /tmp, not deep runs/ paths.
+    short = f"lemma-{os.getpid()}-{query_id}"
+    mcp_sock = sock_dir / f"{short}-mcp.sock"
+    egress_sock = sock_dir / f"{short}-egress.sock"
+    for p in (mcp_sock, egress_sock):
+        if p.exists():
+            p.unlink()
+
+    # Still keep human-readable logs under workspace.
+    log_dir = ws / "mcp_results"
+    log_dir.mkdir(parents=True, exist_ok=True)
 
     mcp_server = McpSocketServer(mcp_sock, MeasureContext(query_id=query_id, workspace=ws))
     egress_server = EgressBridge(
         egress_sock,
         allow,
-        log_path=sock_dir / "egress_bridge.jsonl",
+        log_path=log_dir / "egress_bridge.jsonl",
     )
     mcp_server.start()
     egress_server.start()
@@ -406,6 +524,12 @@ def run_agent_docker(
         or str(Path.home() / ".cursor")
     )
     cred_path = Path(cred_host).expanduser()
+
+    workspace_logs, run_logs = _agent_log_dirs(ws)
+    stream_container = "/workspace/logs/agent_stream.jsonl"
+    stderr_container = "/workspace/logs/agent_stderr.log"
+    env["LEMMA_AGENT_STREAM_LOG"] = stream_container
+    env["LEMMA_AGENT_STDERR_LOG"] = stderr_container
 
     log_info(
         COMPONENT,
@@ -418,6 +542,8 @@ def run_agent_docker(
         "docker", "run", "--rm",
         "--network", "none",
         "--cap-drop", "ALL",
+        # Host-owned bind mounts need DAC_OVERRIDE when container runs as root.
+        "--cap-add", "DAC_OVERRIDE",
         "-v", f"{ws}:/workspace:rw",
         "-v", f"{(ws / 'context' / 'ro').resolve()}:/context/ro:ro",
         "-v", f"{mcp_sock.resolve()}:/lemma-mcp.sock",
@@ -432,12 +558,28 @@ def run_agent_docker(
         "-e", "CURSOR_CONFIG_DIR=/root/.cursor",
         "-e", "CURSOR_FORCED_SHELL_EGRESS=1",
         "-e", f"AGENT_CMD={agent_cmd}",
+        "-e", f"LEMMA_AGENT_STREAM_LOG={stream_container}",
+        "-e", f"LEMMA_AGENT_STDERR_LOG={stderr_container}",
     ]
     if cred_path.is_dir():
-        cmd.extend(["-v", f"{cred_path.resolve()}:/root/.cursor:ro"])
+        # Mount RO elsewhere; entrypoint copies into writable /root/.cursor.
+        cmd.extend(["-v", f"{cred_path.resolve()}:/root/.cursor-host:ro"])
         log_info(COMPONENT, "credentials_mount", str(cred_path))
     else:
         log_warn(COMPONENT, "credentials_missing", f"no credentials dir at {cred_path}")
+
+    # Cursor agent login lives under ~/.config/cursor/auth.json (not ~/.cursor).
+    auth_host = (
+        cfg.get("AGENT_AUTH_DIR")
+        or os.environ.get("AGENT_AUTH_DIR")
+        or str(Path.home() / ".config" / "cursor")
+    )
+    auth_path = Path(auth_host).expanduser()
+    if auth_path.is_dir():
+        cmd.extend(["-v", f"{auth_path.resolve()}:/root/.config/cursor-host:ro"])
+        log_info(COMPONENT, "auth_mount", str(auth_path))
+    else:
+        log_warn(COMPONENT, "auth_missing", f"no auth dir at {auth_path}")
 
     skip_env = {
         "AGENT_CMD",
@@ -448,42 +590,104 @@ def run_agent_docker(
         "PYTHONPATH",
         "HOME",
         "CURSOR_CONFIG_DIR",
+        "LEMMA_AGENT_STREAM_LOG",
+        "LEMMA_AGENT_STDERR_LOG",
     }
     for k, v in env.items():
         if k in skip_env:
             continue
         cmd.extend(["-e", f"{k}={v}"])
     cmd.append(image)
+
+    proc = subprocess.CompletedProcess(cmd, -1, "", "")
+    timed_out = False
+    docker_stdout_path = run_logs / "docker_agent.stdout" if run_logs else None
+    docker_stderr_path = run_logs / "docker_agent.stderr" if run_logs else None
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        popen = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        stdout_chunks: list[str] = []
+        stderr_chunks: list[str] = []
+
+        def _drain(stream, chunks: list[str], out_path: Path | None) -> None:
+            assert stream is not None
+            out_f = open(out_path, "a", encoding="utf-8") if out_path else None
+            try:
+                for line in iter(stream.readline, ""):
+                    chunks.append(line)
+                    if out_f is not None:
+                        out_f.write(line)
+                        out_f.flush()
+            finally:
+                if out_f is not None:
+                    out_f.close()
+
+        threads = [
+            threading.Thread(
+                target=_drain,
+                args=(popen.stdout, stdout_chunks, docker_stdout_path),
+                daemon=True,
+            ),
+            threading.Thread(
+                target=_drain,
+                args=(popen.stderr, stderr_chunks, docker_stderr_path),
+                daemon=True,
+            ),
+        ]
+        for t in threads:
+            t.start()
+        try:
+            rc = popen.wait(timeout=timeout)
+            proc = subprocess.CompletedProcess(
+                cmd, rc, "".join(stdout_chunks), "".join(stderr_chunks)
+            )
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            popen.kill()
+            popen.wait()
+            proc = subprocess.CompletedProcess(
+                cmd, -1, "".join(stdout_chunks), "".join(stderr_chunks)
+            )
+        finally:
+            for t in threads:
+                t.join(timeout=5)
     finally:
         mcp_server.stop()
         egress_server.stop()
-    run_dir_raw = os.environ.get("LEMMA_RUN_DIR", "").strip()
-    if run_dir_raw:
-        logs_dir = Path(run_dir_raw) / "logs"
-        logs_dir.mkdir(parents=True, exist_ok=True)
-        (logs_dir / "docker_agent.stdout").write_text(proc.stdout or "", encoding="utf-8")
-        (logs_dir / "docker_agent.stderr").write_text(proc.stderr or "", encoding="utf-8")
-        meta = {
-            "returncode": proc.returncode,
-            "profile": profile,
-            "allowlist": sorted(allow),
-            "image": image,
-            "query_id": query_id,
-        }
-        (logs_dir / "docker_meta.json").write_text(
-            json.dumps(meta, indent=2) + "\n",
-            encoding="utf-8",
-        )
-    log_info(COMPONENT, "agent_docker_end", f"exit={proc.returncode}")
+        _sync_agent_logs(workspace_logs, run_logs)
+        if run_logs is not None:
+            if docker_stdout_path is not None and proc.stdout:
+                docker_stdout_path.write_text(proc.stdout, encoding="utf-8")
+            if docker_stderr_path is not None and proc.stderr:
+                docker_stderr_path.write_text(proc.stderr, encoding="utf-8")
+            meta = {
+                "returncode": proc.returncode,
+                "timed_out": timed_out,
+                "stream_path": str(workspace_logs / "agent_stream.jsonl"),
+                "profile": profile,
+                "allowlist": sorted(allow),
+                "image": image,
+                "query_id": query_id,
+            }
+            (run_logs / "docker_meta.json").write_text(
+                json.dumps(meta, indent=2) + "\n",
+                encoding="utf-8",
+            )
+    log_info(COMPONENT, "agent_docker_end", f"exit={proc.returncode}", timed_out=timed_out)
     return proc
 
 
 def read_agent_body(workspace: Path) -> str:
-    path = workspace / "runquery_agent.dfy"
+    path = workspace / BODY_NAME
+    legacy = workspace / "runquery_agent.dfy"
+    if not path.exists() and legacy.exists():
+        path = legacy
     if not path.exists():
-        raise FileNotFoundError(f"Agent body not found: {path}")
+        raise FileNotFoundError(f"Agent body not found: {workspace / BODY_NAME}")
     text = path.read_text()
     log_debug(COMPONENT, "body_read", f"{len(text)} bytes", path=str(path))
     return text
@@ -492,7 +696,10 @@ def read_agent_body(workspace: Path) -> str:
 def run_agent_iteration(
     *,
     query_id: int,
-    dafny_spec: str,
+    verus_spec: str = "",
+    sql_query: str = "",
+    schema: dict | None = None,
+    data_path: Path | None = None,
     iteration: int,
     max_iterations: int,
     last_error: str = "",
@@ -501,17 +708,36 @@ def run_agent_iteration(
     reset_body: bool = False,
     cfg: dict[str, str] | None = None,
 ) -> tuple[str, subprocess.CompletedProcess[str]]:
+    if not verus_spec:
+        raise ValueError("verus_spec is required")
     cfg = load_agent_config(cfg)
+    from db_extension.agent.config import load_agent_flags
+
+    flags = load_agent_flags()
+    if schema is None and sql_query.strip():
+        from db_extension.verus_bridge import resolve_schema_for_sql
+
+        schema = resolve_schema_for_sql(sql_query)
     ws = workspace or DEFAULT_WORKSPACE
-    prepare_workspace(ws, dafny_spec=dafny_spec, reset_body=reset_body or iteration == 1)
+    prepare_workspace(
+        ws,
+        verus_spec=verus_spec,
+        sql_query=sql_query,
+        schema=schema,
+        data_path=data_path,
+        agent_data_mode=flags.agent_data_mode,
+        reset_body=reset_body or iteration == 1,
+    )
     prompt = build_agent_prompt(
         workspace=ws,
         query_id=query_id,
-        dafny_spec=dafny_spec,
+        sql_query=sql_query,
         iteration=iteration,
         max_iterations=max_iterations,
         last_error=last_error,
         last_latency_us=last_latency_us,
+        in_docker=use_docker(cfg),
+        agent_data_mode=flags.agent_data_mode,
     )
     if use_docker(cfg):
         proc = run_agent_docker(ws, prompt, cfg=cfg, query_id=query_id)
@@ -527,11 +753,11 @@ def docker_image_built(image: str = DEFAULT_IMAGE) -> bool:
     ).returncode == 0
 
 
-def build_docker_image(image: str = DEFAULT_IMAGE) -> None:
+def build_docker_image(image: str = DEFAULT_IMAGE, *, install_agent_cli: bool = False) -> None:
     # Build context is repo root (Dockerfile copies db_extension/agent tool worker).
-    # Note: this image is the OpenRouter tool sandbox, not a multi-CLI agent image.
     dockerfile = ROOT / "docker" / "agent" / "Dockerfile"
-    subprocess.run(
-        ["docker", "build", "-t", image, "-f", str(dockerfile), str(ROOT)],
-        check=True,
-    )
+    cmd = ["docker", "build", "-t", image, "-f", str(dockerfile)]
+    if install_agent_cli:
+        cmd.extend(["--build-arg", "INSTALL_AGENT_CLI=1"])
+    cmd.append(str(ROOT))
+    subprocess.run(cmd, check=True)

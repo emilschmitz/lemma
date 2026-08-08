@@ -84,4 +84,4 @@ uv run python research_loop/benchmark_scaling.py
 uv run python research_loop/benchmark_tpch.py
 ```
 
-Plot: `plots/scaling_avg_hot_q1_q5.png`
+Plot: `scratch/plots/scaling_avg_hot_q1_q5.png`

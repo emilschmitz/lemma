@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from .config import AgentFlags, load_agent_flags, truthy
-from .extract import extract_marked_body, wrap_body_with_markers
 
 __all__ = [
     "AgentFlags",
@@ -12,6 +11,18 @@ __all__ = [
     "truthy",
     "wrap_body_with_markers",
 ]
+
+
+def extract_marked_body(*args, **kwargs):
+    from .extract import extract_marked_body as _fn
+
+    return _fn(*args, **kwargs)
+
+
+def wrap_body_with_markers(*args, **kwargs):
+    from .extract import wrap_body_with_markers as _fn
+
+    return _fn(*args, **kwargs)
 
 
 def run_openrouter_agent_iteration(*args, **kwargs):

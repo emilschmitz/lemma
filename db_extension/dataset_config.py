@@ -64,8 +64,18 @@ def file_row_count() -> int | None:
 
 
 def effective_dataset_size() -> int:
-    """Rows to load/run against: min(env limit, rows available in flat tbl)."""
+    """Rows to load/run against: min(env limit, rows available for the active bench tbl)."""
     limit = dataset_size_limit()
+    bench = os.environ.get("LEMMA_BENCH_TBL", "").strip()
+    if bench:
+        p = Path(bench)
+        if p.is_file():
+            with open(p, "rb") as f:
+                lines = 0
+                for chunk in iter(lambda: f.read(1 << 20), b""):
+                    lines += chunk.count(b"\n")
+            available = max(0, lines - 1)
+            return min(limit, available) if available else limit
     available = file_row_count()
     if available is None:
         return limit

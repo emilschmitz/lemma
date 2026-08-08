@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCALING = ROOT / "data" / "benchmarks" / "scaling_results.json"
 TPCH = ROOT / "data" / "benchmarks" / "tpch_sf1_results.json"
 ENV = ROOT / "data" / "benchmarks" / "benchmark_environment.json"
-OUT = ROOT / "plots" / "benchmark_overview.png"
+OUT = ROOT / "scratch" / "plots" / "benchmark_overview.png"
 
 SSB_ROWS = 1_500_000
 SSB_QUERIES = ["1", "2", "3"]

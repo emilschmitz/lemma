@@ -29,10 +29,12 @@ VENDOR_ALLOWLISTS: dict[str, tuple[str, ...]] = {
         "cursor.com",
         "www.cursor.com",
         "origin.cursor.com",
-        # Agent / backend APIs (from cursor-agent 2026.07.20-8cc9c0b)
+        # Agent / backend APIs (suffix match: *.cursor.sh)
+        "cursor.sh",
         "api2.cursor.sh",
         "api2direct.cursor.sh",
         "api3.cursor.sh",
+        "api5.cursor.sh",
         "repo42.cursor.sh",
         # Telemetry used by the CLI (deny breaks nothing critical for inference, but
         # the binary references these; keep so agent startup is quiet)

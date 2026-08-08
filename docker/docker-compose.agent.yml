@@ -10,7 +10,7 @@
 #
 # Compose below is optional/overkill — use only if you want a long-lived HTTP MCP
 # service instead of the in-process socket:
-#   docker compose -f docker-compose.agent.yml up -d lemma-mcp
+#   docker compose -f docker/docker-compose.agent.yml up -d lemma-mcp
 
 services:
   lemma-mcp:
@@ -33,8 +33,8 @@ services:
       LEMMA_MCP_TRANSPORT: streamable-http
       PYTHONPATH: /repo
     volumes:
-      - ./:/repo:rw
-      - ./research_loop/agent_workspace:/workspace:rw
+      - ..:/repo:rw
+      - ../research_loop/agent_workspace:/workspace:rw
     ports:
       - "8765:8765"
     networks:
@@ -51,7 +51,7 @@ services:
       PYTHONPATH: /app
       LEMMA_MCP_URL: http://lemma-mcp:8765/mcp
     volumes:
-      - ./research_loop/agent_workspace:/workspace:rw
+      - ../research_loop/agent_workspace:/workspace:rw
     networks:
       - lemma-agent-net
     depends_on:
