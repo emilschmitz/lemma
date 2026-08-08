@@ -30,6 +30,28 @@ def _resolve_schema_col(name: str, schema_dict: dict[str, str]) -> str | None:
     return None
 
 
+def _add_col_to_used(used: set[str], name: str, flat_schema: dict[str, str]) -> None:
+    if not name or name == "*":
+        return
+    if name in flat_schema:
+        used.add(name)
+        return
+    resolved = _resolve_schema_col(name, flat_schema)
+    if resolved:
+        used.add(resolved)
+
+
+def _add_cols_from_expr(used: set[str], expr: str, flat_schema: dict[str, str]) -> None:
+    for col in _cols_from_expr(expr):
+        _add_col_to_used(used, col, flat_schema)
+
+
+def _add_agg_specs_to_used(used: set[str], agg_specs, flat_schema: dict[str, str]) -> None:
+    for spec in agg_specs:
+        _add_cols_from_expr(used, spec.agg_expr, flat_schema)
+        _add_col_to_used(used, spec.agg_column, flat_schema)
+
+
 def columns_used_by_query(
     sql_str: str,
     schema: dict[str, str] | dict[str, dict[str, str]],
@@ -37,39 +59,29 @@ def columns_used_by_query(
     """Return canonical column names referenced by a supported SQL query."""
     flat_schema, _tables = normalize_schema(schema)
     query = parse_sql(sql_str, schema)
-    used: set[str] = set(query.groupby_columns)
-    used.update(_cols_from_expr(query.where_expr))
-    used.update(_cols_from_expr(query.agg_expr))
-    used.update(_cols_from_expr(query.having_expr))
+    used: set[str] = set()
+    for col in query.groupby_columns:
+        _add_col_to_used(used, col, flat_schema)
+    _add_cols_from_expr(used, query.where_expr, flat_schema)
+    _add_cols_from_expr(used, query.agg_expr, flat_schema)
+    _add_cols_from_expr(used, query.having_expr, flat_schema)
+    _add_agg_specs_to_used(used, query.agg_specs, flat_schema)
     for col in query.projection_columns:
-        resolved = _resolve_schema_col(col, flat_schema)
-        if resolved:
-            used.add(resolved)
+        _add_col_to_used(used, col, flat_schema)
     for expr in query.projection_exprs:
-        used.update(_cols_from_expr(expr))
+        _add_cols_from_expr(used, expr, flat_schema)
     for ob in query.order_by:
-        resolved = _resolve_schema_col(ob.column, flat_schema)
-        if resolved:
-            used.add(resolved)
+        _add_col_to_used(used, ob.column, flat_schema)
     for col, _op, _val, _ty in query.where_conditions:
-        resolved = _resolve_schema_col(col, flat_schema) if col not in flat_schema else col
-        if resolved:
-            used.add(resolved)
-    if query.agg_column and query.agg_column != "*":
-        resolved = _resolve_schema_col(query.agg_column, flat_schema)
-        if resolved:
-            used.add(resolved)
+        _add_col_to_used(used, col, flat_schema)
+    _add_col_to_used(used, query.agg_column, flat_schema)
     for join in query.joins:
         for pair in join.on_equalities:
             for side in pair:
                 bare = side.split(".")[-1]
-                resolved = _resolve_schema_col(bare, flat_schema)
-                if resolved:
-                    used.add(resolved)
+                _add_col_to_used(used, bare, flat_schema)
     for in_sub in query.in_subqueries:
-        resolved = _resolve_schema_col(in_sub.column, flat_schema)
-        if resolved:
-            used.add(resolved)
+        _add_col_to_used(used, in_sub.column, flat_schema)
     for sub in query.scalar_subqueries:
         used.update(columns_used_by_query_from_parsed(sub.query, flat_schema))
     for exists in query.exists_subqueries:
@@ -86,16 +98,18 @@ def columns_used_by_query_from_parsed(
     query,
     flat_schema: dict[str, str],
 ) -> set[str]:
-    used: set[str] = set(query.groupby_columns)
-    used.update(_cols_from_expr(query.where_expr))
-    used.update(_cols_from_expr(query.agg_expr))
-    used.update(_cols_from_expr(query.having_expr))
+    used: set[str] = set()
+    for col in query.groupby_columns:
+        _add_col_to_used(used, col, flat_schema)
+    _add_cols_from_expr(used, query.where_expr, flat_schema)
+    _add_cols_from_expr(used, query.agg_expr, flat_schema)
+    _add_cols_from_expr(used, query.having_expr, flat_schema)
+    _add_agg_specs_to_used(used, query.agg_specs, flat_schema)
     for col in query.projection_columns:
-        resolved = _resolve_schema_col(col, flat_schema)
-        if resolved:
-            used.add(resolved)
+        _add_col_to_used(used, col, flat_schema)
     for expr in query.projection_exprs:
-        used.update(_cols_from_expr(expr))
+        _add_cols_from_expr(used, expr, flat_schema)
+    _add_col_to_used(used, query.agg_column, flat_schema)
     return used
 
 
