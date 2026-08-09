@@ -82,6 +82,7 @@ def _subquery_inner_table_name(query: SQLQuery) -> str:
             "subquery inner query must have a single base table."
         )
     if query.derived_tables:
+        # TODO: HAVING scalar subquery with derived/CTE inner FROM on JOIN (e.g. SEC Q3).
         raise UnsupportedContractError(
             "subquery inner FROM derived/CTE is not supported on JOIN."
         )
@@ -1080,18 +1081,18 @@ def transpile_sql_to_verus(
     query = parse_sql(sql, schema)
 
     is_join = bool(query.joins)
-    if is_join and (
-        query.scalar_subqueries
-        or query.exists_subqueries
-        or query.in_subqueries
-    ):
+    has_subqueries = bool(
+        query.scalar_subqueries or query.exists_subqueries or query.in_subqueries
+    )
+    multi_for_subqueries = multi_schema if (is_join or has_subqueries) else None
+    if is_join and has_subqueries:
         _assert_join_subquery_supported(query)
     subquery_blocks: list[str] = []
-    outer_schema = _flat_outer_schema(flat_schema, multi_schema if is_join else None)
+    outer_schema = _flat_outer_schema(flat_schema, multi_for_subqueries)
     for sub in query.scalar_subqueries:
         inner_table = sub.inner_table or _subquery_inner_table_name(sub.query)
         struct_name, valid_fn, param_name, inner_schema = _subquery_emit_binding(
-            inner_table, flat_schema, multi_schema if is_join else None,
+            inner_table, flat_schema, multi_for_subqueries,
         )
         emitted = emit_scalar_subquery_helper(
             sub,
@@ -1105,7 +1106,7 @@ def transpile_sql_to_verus(
     for exists in query.exists_subqueries:
         inner_table = _subquery_inner_table_name(exists.query)
         struct_name, valid_fn, param_name, inner_schema = _subquery_emit_binding(
-            inner_table, flat_schema, multi_schema if is_join else None,
+            inner_table, flat_schema, multi_for_subqueries,
         )
         subquery_blocks.append(
             emit_exists_subquery_helper(
@@ -1122,7 +1123,7 @@ def transpile_sql_to_verus(
     for in_sub in query.in_subqueries:
         inner_table = _subquery_inner_table_name(in_sub.query)
         struct_name, valid_fn, param_name, inner_schema = _subquery_emit_binding(
-            inner_table, flat_schema, multi_schema if is_join else None,
+            inner_table, flat_schema, multi_for_subqueries,
         )
         subquery_blocks.append(
             emit_in_subquery_helper(

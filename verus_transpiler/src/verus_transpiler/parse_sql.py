@@ -378,6 +378,9 @@ def _compile_is_null_check(
     """
     require_trusted("null_3vl")
     real_col, col_type, table = _resolve_col(col_node, resolver)
+    query.where_conditions.append(
+        (real_col, "IS NOT NULL" if not is_null else "IS NULL", None, col_type)
+    )
     col_ref = f"row.{real_col}"
     tbl_prefix = (col_node.table or "").lower()
     if tbl_prefix and tbl_prefix in _left_join_aliases(query):
@@ -766,14 +769,25 @@ def _parse_exists_subquery(
     *,
     alias_prefix: str,
     counter: list[int],
+    catalog_schema: dict[str, str] | dict[str, dict[str, str]] | None = None,
 ) -> ExistsSubquery:
     inner_select = node.this
     if not isinstance(inner_select, exp.Select):
         raise UnsupportedContractError("EXISTS subquery must be a SELECT.")
     flat_schema = {c: t for c, t, _ in outer_resolver.values()}
-    inner_schema = _subquery_inner_schema(inner_select, flat_schema)
-    inner = _parse_select(inner_select, inner_schema, allow_subqueries=True)
-    outer_names = set(outer_tables) | set(outer_resolver.keys())
+    schema = catalog_schema if catalog_schema is not None else flat_schema
+    inner_schema = _subquery_inner_schema(inner_select, schema)
+    outer_names = set(outer_tables) | {
+        k.split(".")[0] for k in outer_resolver if "." in k
+    }
+    inner = _parse_select(
+        inner_select,
+        inner_schema,
+        allow_subqueries=True,
+        correlation_outer_names=outer_names,
+        catalog_schema=schema,
+        outer_resolver=outer_resolver,
+    )
     correlated_cols = _detect_correlation_sql(inner_select, outer_names)
     if not correlated_cols:
         correlated_cols = _detect_correlation(inner, set(inner_schema.keys()))
@@ -798,6 +812,7 @@ def _parse_in_subquery(
     *,
     alias_prefix: str,
     counter: list[int],
+    catalog_schema: dict[str, str] | dict[str, dict[str, str]] | None = None,
 ) -> InSubquerySpec:
     if not isinstance(node.this, exp.Column):
         raise UnsupportedContractError("IN subquery left-hand side must be a column.")
@@ -809,11 +824,19 @@ def _parse_in_subquery(
     if not isinstance(inner_select, exp.Select):
         raise UnsupportedContractError("IN subquery must be a SELECT.")
     flat_schema = {c: t for c, t, _ in outer_resolver.values()}
-    inner_schema = _subquery_inner_schema(inner_select, flat_schema)
-    inner = _parse_select(inner_select, inner_schema, allow_subqueries=False)
+    schema = catalog_schema if catalog_schema is not None else flat_schema
+    inner_schema = _subquery_inner_schema(inner_select, schema)
     outer_names = set(outer_tables) | {
         k.split(".")[0] for k in outer_resolver if "." in k
     }
+    inner = _parse_select(
+        inner_select,
+        inner_schema,
+        allow_subqueries=False,
+        correlation_outer_names=outer_names,
+        catalog_schema=schema,
+        outer_resolver=outer_resolver,
+    )
     correlated_cols = _detect_correlation_sql(inner_select, outer_names)
     if not correlated_cols:
         correlated_cols = _detect_correlation(inner, set(inner_schema.keys()))
@@ -890,6 +913,7 @@ def _compile_where_expr(
             exists = _parse_exists_subquery(
                 inner, resolver, outer_tables,
                 alias_prefix="exists_", counter=exists_counter,
+                catalog_schema=catalog_schema,
             )
             exists.negated = True
             query.exists_subqueries.append(exists)
@@ -906,6 +930,7 @@ def _compile_where_expr(
         exists = _parse_exists_subquery(
             node, resolver, outer_tables,
             alias_prefix="exists_", counter=exists_counter,
+            catalog_schema=catalog_schema,
         )
         query.exists_subqueries.append(exists)
         if exists.correlated:
@@ -929,6 +954,7 @@ def _compile_where_expr(
             in_spec = _parse_in_subquery(
                 node, resolver, outer_tables,
                 alias_prefix="in_", counter=in_counter,
+                catalog_schema=catalog_schema,
             )
             query.in_subqueries.append(in_spec)
             if in_spec.correlated:

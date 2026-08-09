@@ -128,6 +128,17 @@ def project_schema_for_query(
     return {col: flat_schema[col] for col in flat_schema if col in used}
 
 
+def _flat_schema_for_used_columns(
+    used: set[str],
+    schema: dict[str, str] | dict[str, dict[str, str]],
+) -> dict[str, str]:
+    """Flat schema dict restricted to ``used`` (stable column order)."""
+    flat_schema, _multi = normalize_schema(schema)
+    if not used:
+        raise ValueError("query uses no known schema columns")
+    return {col: flat_schema[col] for col in flat_schema if col in used}
+
+
 def project_multi_schema_for_query(
     sql_str: str,
     schema: dict[str, str] | dict[str, dict[str, str]],
@@ -142,11 +153,9 @@ def project_multi_schema_for_query(
     if not query.joins:
         base = [t for t in query.tables if t not in derived_aliases]
         if len(base) == 1 and base[0] in multi:
-            table = base[0]
-            used = columns_used_by_query(sql_str, {table: multi[table]})
-            if not used:
-                raise ValueError("query uses no known schema columns")
-            return {col: multi[table][col] for col in multi[table] if col in used}
+            # Full catalog: EXISTS/IN/scalar subqueries may read other tables.
+            used = columns_used_by_query(sql_str, schema)
+            return _flat_schema_for_used_columns(used, schema)
         return project_schema_for_query(sql_str, schema)
     if query.joins:
         projected: dict[str, dict[str, str]] = {}
