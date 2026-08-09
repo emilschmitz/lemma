@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .rust_ident import rust_ident
 from .value_bounds import col_verus_type
 
 
@@ -30,8 +31,8 @@ def resolve_two_key_u32_str_groupby(
 def emit_cols_agg_push_verus(u32_col: str, str_col: str, struct_name: str = "Cols") -> str:
     _ = struct_name
     name = agg_push_method_name(u32_col, str_col)
-    u32_field = u32_col.lower()
-    str_field = str_col.lower()
+    u32_field = rust_ident(u32_col)
+    str_field = rust_ident(str_col)
     return f"""    #[verifier::external_body]
     pub exec fn {name}(
         &self,

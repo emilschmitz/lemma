@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 
+from verus_transpiler.rust_ident import rust_ident
+
 from research_loop.agent_primitives.emit_externs import emit_agent_externs
 from research_loop.exec_cols import _rust_vec_type
 from research_loop.lemma_flags import lemma_load_format
@@ -406,12 +408,12 @@ def _inject_duckdb_like_cols_fields(spec_rs: str, schema_dict: dict[str, str]) -
     """Append duckdb_like metadata fields to transpiled Cols struct."""
     extras: list[str] = []
     for col, col_type in schema_dict.items():
-        field = col.lower()
+        base = col.lower()
         if _rust_vec_type(col_type) == "String":
-            extras.append(f"    pub {field}_codes: Vec<u32>,")
-            extras.append(f"    pub {field}_dict: Vec<String>,")
+            extras.append(f"    pub {base}_codes: Vec<u32>,")
+            extras.append(f"    pub {base}_dict: Vec<String>,")
         else:
-            extras.append(f"    pub {field}_zones: Vec<(u32, u32, usize, usize)>,")
+            extras.append(f"    pub {base}_zones: Vec<(u32, u32, usize, usize)>,")
     if not extras:
         return spec_rs
     injection = "\n".join(extras)
@@ -449,24 +451,26 @@ def generate_load_cols_verus(
     vec_decls: list[str] = []
 
     for col, col_type in schema_dict.items():
-        field = col.lower()
+        base = col.lower()
+        field = rust_ident(col)
         rust_ty = _rust_vec_type(col_type)
         fields.append(f"    pub {field}: Vec<{rust_ty}>,")
         col_indices.append(
-            f'    let {field}_i = *name_to_idx.get("{col.upper()}").expect("missing col {col}");'
+            f'    let {base}_i = *name_to_idx.get("{col.upper()}").expect("missing col {col}");'
         )
         vec_decls.append(f"        let mut {field}: Vec<{rust_ty}> = Vec::new();")
         if rust_ty == "String":
             load_pushes.append(
-                f"        {field}.push(strip_quotes(f[{field}_i]).to_string());"
+                f"        {field}.push(strip_quotes(f[{base}_i]).to_string());"
             )
         else:
             load_pushes.append(
-                f"        {field}.push(f[{field}_i].parse::<{rust_ty}>().unwrap());"
+                f"        {field}.push(f[{base}_i].parse::<{rust_ty}>().unwrap());"
             )
 
-    first_field = list(schema_dict.keys())[0].lower()
-    field_inits = "\n".join(f"            {col.lower()}," for col in schema_dict)
+    first_col = next(iter(schema_dict.keys()))
+    first_field = rust_ident(first_col)
+    field_inits = "\n".join(f"            {rust_ident(col)}," for col in schema_dict)
 
     return f"""
 #[verifier::external_body]
@@ -493,9 +497,9 @@ pub exec fn {load_fn}(path: &str, limit: usize) -> (cols: {struct_name})
 
 {chr(10).join(vec_decls)}
 
-    for line in rdr.lines().take(limit) {{
-        let line = line.unwrap();
-        let f: Vec<&str> = line.split('|').collect();
+    for raw_line in rdr.lines().take(limit) {{
+        let raw_line = raw_line.unwrap();
+        let f: Vec<&str> = raw_line.split('|').collect();
         if f.is_empty() {{
             continue;
         }}
@@ -527,47 +531,48 @@ def generate_load_cols_duckdb_like_verus(
     zone_build: list[str] = []
 
     for col, col_type in schema_dict.items():
-        field = col.lower()
+        base = col.lower()
+        field = rust_ident(col)
         rust_ty = _rust_vec_type(col_type)
         col_indices.append(
-            f'    let {field}_i = *name_to_idx.get("{col.upper()}").expect("missing col {col}");'
+            f'    let {base}_i = *name_to_idx.get("{col.upper()}").expect("missing col {col}");'
         )
         if rust_ty == "String":
             fields.append(f"    pub {field}: Vec<String>,")
-            fields.append(f"    pub {field}_codes: Vec<u32>,")
-            fields.append(f"    pub {field}_dict: Vec<String>,")
+            fields.append(f"    pub {base}_codes: Vec<u32>,")
+            fields.append(f"    pub {base}_dict: Vec<String>,")
             vec_decls.append(f"        let mut {field}: Vec<String> = Vec::new();")
-            vec_decls.append(f"        let mut {field}_codes: Vec<u32> = Vec::new();")
-            vec_decls.append(f"        let mut {field}_dict: Vec<String> = Vec::new();")
+            vec_decls.append(f"        let mut {base}_codes: Vec<u32> = Vec::new();")
+            vec_decls.append(f"        let mut {base}_dict: Vec<String> = Vec::new();")
             vec_decls.append(
-                f"        let mut {field}_rev: std::collections::HashMap<String, u32> = "
+                f"        let mut {base}_rev: std::collections::HashMap<String, u32> = "
                 "std::collections::HashMap::new();"
             )
             load_pushes.append(
                 f"""        {{
-            let raw = strip_quotes(f[{field}_i]).to_string();
-            let code = match {field}_rev.get(&raw) {{
+            let raw = strip_quotes(f[{base}_i]).to_string();
+            let code = match {base}_rev.get(&raw) {{
                 Some(&c) => c,
                 None => {{
-                    let c = {field}_dict.len() as u32;
-                    {field}_dict.push(raw.clone());
-                    {field}_rev.insert(raw.clone(), c);
+                    let c = {base}_dict.len() as u32;
+                    {base}_dict.push(raw.clone());
+                    {base}_rev.insert(raw.clone(), c);
                     c
                 }},
             }};
-            {field}_codes.push(code);
+            {base}_codes.push(code);
             {field}.push(raw);
         }}"""
             )
         else:
             fields.append(f"    pub {field}: Vec<{rust_ty}>,")
-            fields.append(f"    pub {field}_zones: Vec<(u32, u32, usize, usize)>,")
+            fields.append(f"    pub {base}_zones: Vec<(u32, u32, usize, usize)>,")
             vec_decls.append(f"        let mut {field}: Vec<{rust_ty}> = Vec::new();")
             load_pushes.append(
-                f"        {field}.push(f[{field}_i].parse::<{rust_ty}>().unwrap());"
+                f"        {field}.push(f[{base}_i].parse::<{rust_ty}>().unwrap());"
             )
             zone_build.append(
-                f"""    let mut {field}_zones: Vec<(u32, u32, usize, usize)> = Vec::new();
+                f"""    let mut {base}_zones: Vec<(u32, u32, usize, usize)> = Vec::new();
     {{
         let zr = {zone_rows};
         let mut start: usize = 0;
@@ -581,23 +586,24 @@ def generate_load_cols_duckdb_like_verus(
                 if {field}[j] > max_v {{ max_v = {field}[j]; }}
                 j = j + 1;
             }}
-            {field}_zones.push((min_v as u32, max_v as u32, start, end));
+            {base}_zones.push((min_v as u32, max_v as u32, start, end));
             start = end;
         }}
     }}"""
             )
 
-    first_field = list(schema_dict.keys())[0].lower()
+    first_field = rust_ident(next(iter(schema_dict.keys())))
     field_inits: list[str] = []
     for col, col_type in schema_dict.items():
-        field = col.lower()
+        base = col.lower()
+        field = rust_ident(col)
         rust_ty = _rust_vec_type(col_type)
         field_inits.append(f"            {field},")
         if rust_ty == "String":
-            field_inits.append(f"            {field}_codes,")
-            field_inits.append(f"            {field}_dict,")
+            field_inits.append(f"            {base}_codes,")
+            field_inits.append(f"            {base}_dict,")
         else:
-            field_inits.append(f"            {field}_zones,")
+            field_inits.append(f"            {base}_zones,")
 
     return f"""
 #[verifier::external_body]
@@ -624,9 +630,9 @@ pub exec fn {load_fn}(path: &str, limit: usize) -> (cols: {struct_name})
 
 {chr(10).join(vec_decls)}
 
-    for line in rdr.lines().take(limit) {{
-        let line = line.unwrap();
-        let f: Vec<&str> = line.split('|').collect();
+    for raw_line in rdr.lines().take(limit) {{
+        let raw_line = raw_line.unwrap();
+        let f: Vec<&str> = raw_line.split('|').collect();
         if f.is_empty() {{
             continue;
         }}

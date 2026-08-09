@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 from .parse_sql import WindowSpec
+from .rust_ident import rust_ident
 from .value_bounds import col_verus_type
 
 
@@ -18,7 +19,7 @@ def _col_at(
         if k.lower() == col.lower():
             key = k
             break
-    field = key.lower()
+    field = rust_ident(key)
     if col_verus_type(schema[key]) == "String":
         return f"cols.{field}[{idx} as int]@"
     return f"cols.{field}[{idx} as int]"

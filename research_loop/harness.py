@@ -257,7 +257,7 @@ def _resolve_custom_ret_type(
         multi_schema = projected  # type: ignore[assignment]
         if query.groupby_columns:
             return _resolve_join_groupby_ret_type_key(query, multi_schema)
-        where_at = to_col_expr(query.where_expr, "li") if query.where_expr else None
+        where_at = query.where_expr
         val_type = _agg_value_type(query.agg_expr)
         is_sum = query.agg_type in ("SUM", "AVG", "MIN", "MAX")
         _, _, ret_type = emit_join_spec_helpers(
@@ -1696,7 +1696,8 @@ def run_custom_sql_pipeline(
 
     try:
         if query.joins and multi:
-            tables = tuple(query.tables)
+            derived_aliases = {d.alias for d in query.derived_tables}
+            tables = tuple(t for t in query.tables if t not in derived_aliases)
             if len(tables) == 2:
                 order = table_order or tables
                 left_t, right_t = order[0], order[1]
@@ -1728,13 +1729,9 @@ def run_custom_sql_pipeline(
                 )
         else:
             if multi:
-                return _pipeline_failure(
-                    "assemble",
-                    sql,
-                    "single-table custom query requires flat schema dict",
-                    schema,
-                )
-            schema_dict = projected if isinstance(projected, dict) else _flat
+                schema_dict = project_schema_for_query(sql, schema)
+            else:
+                schema_dict = projected if isinstance(projected, dict) else _flat
             default_tbl = tbl or ""
             program = assemble_verified_program(
                 spec_rs=spec_rs,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from verus_transpiler.rust_ident import rust_ident
 from verus_transpiler.value_bounds import col_verus_type
 
 
@@ -22,24 +23,25 @@ def generate_cols_exec_rs(schema_dict: dict[str, str]) -> str:
     vec_decls: list[str] = []
 
     for col, col_type in schema_dict.items():
-        field = col.lower()
+        base = col.lower()
+        field = rust_ident(col)
         rust_ty = _rust_vec_type(col_type)
         fields.append(f"    pub {field}: Vec<{rust_ty}>,")
         col_indices.append(
-            f'    let {field}_i = *name_to_idx.get("{col.upper()}").expect("missing col {col}");'
+            f'    let {base}_i = *name_to_idx.get("{col.upper()}").expect("missing col {col}");'
         )
         vec_decls.append(f"        let mut {field}: Vec<{rust_ty}> = Vec::new();")
         if rust_ty == "String":
             load_pushes.append(
-                f"        {field}.push(strip_quotes(f[{field}_i]).to_string());"
+                f"        {field}.push(strip_quotes(f[{base}_i]).to_string());"
             )
         else:
             load_pushes.append(
-                f"        {field}.push(f[{field}_i].parse::<{rust_ty}>().unwrap());"
+                f"        {field}.push(f[{base}_i].parse::<{rust_ty}>().unwrap());"
             )
 
-    first_field = list(schema_dict.keys())[0].lower()
-    field_inits = "\n".join(f"            {col.lower()}," for col in schema_dict)
+    first_field = rust_ident(next(iter(schema_dict.keys())))
+    field_inits = "\n".join(f"            {rust_ident(col)}," for col in schema_dict)
 
     return f"""// Generated exec Cols (plain Rust — not compiled with Verus).
 use std::collections::HashMap;
@@ -69,9 +71,9 @@ impl Cols {{
 
 {chr(10).join(vec_decls)}
 
-        for line in rdr.lines().take(limit) {{
-            let line = line.unwrap();
-            let f: Vec<&str> = line.split('|').collect();
+        for raw_line in rdr.lines().take(limit) {{
+            let raw_line = raw_line.unwrap();
+            let f: Vec<&str> = raw_line.split('|').collect();
             if f.is_empty() {{
                 continue;
             }}

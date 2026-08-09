@@ -19,11 +19,12 @@ from .parse_sql import (
     DerivedTable,
     SQLQuery,
     UnsupportedContractError,
+    _agg_value_type,
     normalize_schema,
     parse_sql,
-    _agg_value_type,
 )
 from .recursive_cte import emit_recursive_cte_helper
+from .rust_ident import rust_ident
 from .subqueries import (
     compose_outer_over_derived_scalar,
     emit_derived_grouped_inner_spec,
@@ -32,7 +33,6 @@ from .subqueries import (
     emit_in_subquery_helper,
     emit_scalar_subquery_helper,
 )
-from .windows import emit_window_spec_helper
 from .templates import emit_run_query_skeleton, emit_run_query_template
 from .value_bounds import (
     SUPPORTED_SCHEMA_TYPES,
@@ -44,6 +44,7 @@ from .value_bounds import (
     emit_valid_cols_predicate,
     spec_map_key_type,
 )
+from .windows import emit_window_spec_helper
 
 _SUPPORTED_TYPES = SUPPORTED_SCHEMA_TYPES
 
@@ -76,41 +77,42 @@ def generate_cols_rs(
     field_lines = ["    pub n: usize,"]
     for col, col_type in schema_dict.items():
         rust_ty = col_verus_type(col_type)
-        field_lines.append(f"    pub {col.lower()}: Vec<{rust_ty}>,")
+        field_lines.append(f"    pub {rust_ident(col)}: Vec<{rust_ty}>,")
 
     getters: list[str] = []
     for col, col_type in schema_dict.items():
-        field = col.lower()
+        base = col.lower()
+        field = rust_ident(col)
         ret = col_spec_accessor_return(col_type)
         if ret == "Seq<char>":
-            getters.append(f"""    pub open spec fn get_{field}(self, i: int) -> Seq<char> {{
+            getters.append(f"""    pub open spec fn get_{base}(self, i: int) -> Seq<char> {{
         self.{field}[i as int]@
     }}
 
     #[verifier::external_body]
-    pub exec fn get_{field}_exec(&self, i: usize) -> (res: String)
+    pub exec fn get_{base}_exec(&self, i: usize) -> (res: String)
         requires i < self.n,
-        ensures res@ == self.get_{field}(i as int),
+        ensures res@ == self.get_{base}(i as int),
     {{
         self.{field}[i].clone()
     }}
 
     #[verifier::external_body]
-    pub exec fn eq_at_{field}(&self, i: usize, lit: &str) -> (res: bool)
+    pub exec fn eq_at_{base}(&self, i: usize, lit: &str) -> (res: bool)
         requires i < self.n,
-        ensures res == (self.get_{field}(i as int) == lit@),
+        ensures res == (self.get_{base}(i as int) == lit@),
     {{
         self.{field}[i] == lit
     }}""")
         else:
-            getters.append(f"""    pub open spec fn get_{field}(self, i: int) -> {ret} {{
+            getters.append(f"""    pub open spec fn get_{base}(self, i: int) -> {ret} {{
         self.{field}[i as int]
     }}
 
     #[verifier::external_body]
-    pub exec fn get_{field}_exec(&self, i: usize) -> (res: {ret})
+    pub exec fn get_{base}_exec(&self, i: usize) -> (res: {ret})
         requires i < self.n,
-        ensures res == self.get_{field}(i as int),
+        ensures res == self.get_{base}(i as int),
     {{
         self.{field}[i]
     }}""")
@@ -139,7 +141,7 @@ def _groupby_key_expr(
     """Spec key at row index (String cols → Seq<char> via @)."""
     parts: list[str] = []
     for col in groupby_columns:
-        field = col.lower()
+        field = rust_ident(col)
         if col_verus_type(schema_dict[col]) == "String":
             parts.append(f"cols.{field}[{idx_var} as int]@")
         else:
@@ -365,7 +367,7 @@ def _row_expr_at(
 
     def repl(m: re.Match[str]) -> str:
         key = _schema_col_key(flat_schema, m.group(1))
-        field = key.lower()
+        field = rust_ident(key)
         if col_verus_type(flat_schema[key]) == "String":
             return f"cols.{field}[{idx_var} as int]@"
         return f"cols.{field}[{idx_var} as int]"
@@ -594,7 +596,7 @@ def _multi_agg_tuple_type(query: SQLQuery) -> str:
 
 def _distinct_val_expr(spec: AggSpec, idx_var: str, flat_schema: dict[str, str]) -> str:
     col = spec.agg_column
-    field = col.lower()
+    field = rust_ident(col)
     if col_verus_type(flat_schema[col]) == "String":
         return f"cols.{field}[{idx_var} as int]@"
     return f"cols.{field}[{idx_var} as int]"
@@ -779,7 +781,7 @@ def _emit_multi_agg_spec(
 
     spec_body = (
         f"let raw = {helper_name}(cols, 0);\n"
-        f"    raw.map_values(|{val_bind}| {project_expr})"
+        f"    raw.map_values(|{val_bind}: {state_tuple_type}| {project_expr})"
     )
     extra = ""
     if query.having_expr:
@@ -948,20 +950,20 @@ def _term_at_i_for_query(query: SQLQuery) -> str:
     # SUM(col) or single column
     m = re.match(r"\(row\.([A-Za-z_][A-Za-z0-9_]*) as int\)$", expr)
     if m:
-        return f"cols.{m.group(1).lower()}[i] as u64"
+        return f"cols.{rust_ident(m.group(1))}[i] as u64"
     m = re.match(
         r"\(row\.([A-Za-z_][A-Za-z0-9_]*) as int\) \* \(row\.([A-Za-z_][A-Za-z0-9_]*) as int\)",
         expr,
     )
     if m:
-        a, b = m.group(1).lower(), m.group(2).lower()
+        a, b = rust_ident(m.group(1)), rust_ident(m.group(2))
         return f"mul_u64_u32(cols.{a}[i] as u64, cols.{b}[i])"
     m = re.match(
         r"\(row\.([A-Za-z_][A-Za-z0-9_]*) as int\) - \(row\.([A-Za-z_][A-Za-z0-9_]*) as int\)",
         expr,
     )
     if m:
-        a, b = m.group(1).lower(), m.group(2).lower()
+        a, b = rust_ident(m.group(1)), rust_ident(m.group(2))
         return f"sub_u64_to_i64(cols.{a}[i] as u64, cols.{b}[i] as u64)"
     # Fallback: strip row. and cast
     return native_u64_term(expr, "i").replace(" as int", "")
@@ -1077,7 +1079,8 @@ def transpile_sql_to_verus(
         run_query = emit_run_query_skeleton(query, ret_type)
     elif is_join and multi_schema:
         cols_block = _emit_multi_table_cols(multi_schema, query)
-        where_at = to_col_expr(query.where_expr, "li") if query.where_expr else None
+        # Join helpers resolve row.* via slot params; do not pre-convert to cols.get_*.
+        where_at = query.where_expr
         val_type = _agg_value_type(query.agg_expr)
         is_sum = query.agg_type in ("SUM", "AVG", "MIN", "MAX")
         join_helper, spec_fn, ret_type = emit_join_spec_helpers(
@@ -1134,6 +1137,9 @@ def transpile_sql_to_verus(
     if subquery_section:
         subquery_section = subquery_section + "\n\n"
 
+    join_multi = is_join and bool(multi_schema)
+    trusted_prelude = emit_trusted_prelude(include_left_join_miss=not join_multi)
+
     return f"""use vstd::prelude::*;
 use std::collections::HashMap;
 
@@ -1141,7 +1147,7 @@ verus! {{
 
 {emit_bound_constants()}
 
-{emit_trusted_prelude()}
+{trusted_prelude}
 
 {cols_block}
 

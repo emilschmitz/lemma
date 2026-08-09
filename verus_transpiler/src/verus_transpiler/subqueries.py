@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .col_exprs import native_u64_term, spec_i64_term, spec_u64_term, spec_where_cond, to_col_expr
+from .col_exprs import (
+    native_u64_term,
+    spec_i64_term,
+    spec_u64_term,
+    spec_where_cond,
+    to_col_expr,
+)
 from .parse_sql import (
     ExistsSubquery,
     InSubquerySpec,
@@ -13,6 +19,7 @@ from .parse_sql import (
     UnsupportedContractError,
     _agg_value_type,
 )
+from .rust_ident import rust_ident
 from .value_bounds import col_verus_type, spec_map_key_type
 
 
@@ -82,7 +89,7 @@ def _groupby_key_expr(
 ) -> str:
     parts: list[str] = []
     for col in groupby_columns:
-        field = col.lower()
+        field = rust_ident(col)
         if col_verus_type(schema_dict[col]) == "String":
             parts.append(f"cols.{field}[{idx_var} as int]@")
         else:
@@ -239,9 +246,7 @@ pub open spec fn {spec_name}(cols: &{struct_name}) -> u64 {{
     if sub.query.agg_type in ("SUM", "COUNT", "MIN", "MAX"):
         is_sum = sub.query.agg_type == "SUM"
         val_type = _agg_value_type(sub.query.agg_expr) if is_sum else "u64"
-        if sub.query.agg_type == "MIN":
-            val_type = "u64"
-        elif sub.query.agg_type == "MAX":
+        if sub.query.agg_type == "MIN" or sub.query.agg_type == "MAX":
             val_type = "u64"
         term_at_k = (
             native_u64_term(sub.query.agg_expr, "k")

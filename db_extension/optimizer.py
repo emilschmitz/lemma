@@ -9,7 +9,7 @@ from verus_transpiler.column_projection import (
     project_multi_schema_for_query,
     project_schema_for_query,
 )
-from verus_transpiler.parse_sql import normalize_schema
+from verus_transpiler.parse_sql import normalize_schema, parse_sql
 
 from db_extension.verus_bridge import (
     invoke_verus_custom_pipeline,
@@ -164,10 +164,11 @@ def run_optimization_loop(
         # Same projection the harness uses — agent must see the Cols/MethodSpec that assemble verifies.
         try:
             _flat, multi = normalize_schema(catalog_schema)
-            if multi is not None:
+            parsed = parse_sql(sql_query, catalog_schema)
+            if multi is not None and parsed.joins:
                 resolved_schema = project_multi_schema_for_query(sql_query, multi)
             else:
-                resolved_schema = project_schema_for_query(sql_query, _flat)
+                resolved_schema = project_schema_for_query(sql_query, catalog_schema)
         except Exception:
             resolved_schema = catalog_schema
     except ValueError as e:

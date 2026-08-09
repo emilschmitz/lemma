@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 
+from .rust_ident import rust_ident
 from .value_bounds import col_verus_type
 
 
@@ -80,7 +81,7 @@ def native_u64_term(term_row_expr: str, idx: str) -> str:
         term_row_expr.strip(),
     )
     if m:
-        a, b = m.group(1).lower(), m.group(2).lower()
+        a, b = rust_ident(m.group(1)), rust_ident(m.group(2))
         return f"mul_u64_u32(cols.{a}[{idx} as int] as u64, cols.{b}[{idx} as int])"
     converted = to_col_expr(term_row_expr, idx)
     return f"({converted}) as u64"
@@ -111,7 +112,7 @@ def spec_u64_term(term_row_expr: str, idx: str) -> str:
         term_row_expr.strip(),
     )
     if m:
-        a, b = m.group(1).lower(), m.group(2).lower()
+        a, b = rust_ident(m.group(1)), rust_ident(m.group(2))
         return f"((cols.{a}[{idx} as int] as int) * (cols.{b}[{idx} as int] as int)) as u64"
     converted = to_col_expr(term_row_expr, idx)
     return f"({converted}) as u64"
@@ -123,7 +124,7 @@ def native_i64_term(term_row_expr: str, idx: str) -> str:
         term_row_expr.strip(),
     )
     if m:
-        a, b = m.group(1).lower(), m.group(2).lower()
+        a, b = rust_ident(m.group(1)), rust_ident(m.group(2))
         return f"sub_u64_to_i64(cols.{a}[{idx} as int], cols.{b}[{idx} as int])"
     return f"({to_col_expr(term_row_expr, idx)}) as i64"
 
@@ -134,7 +135,7 @@ def spec_i64_term(term_row_expr: str, idx: str) -> str:
         term_row_expr.strip(),
     )
     if m:
-        a, b = m.group(1).lower(), m.group(2).lower()
+        a, b = rust_ident(m.group(1)), rust_ident(m.group(2))
         return f"((cols.{a}[{idx} as int] as int) - (cols.{b}[{idx} as int] as int)) as i64"
     return f"({to_col_expr(term_row_expr, idx)}) as i64"
 

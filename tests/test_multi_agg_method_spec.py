@@ -94,7 +94,7 @@ def test_q1_like_multi_agg_emission() -> None:
     _assert_no_placeholders(out)
 
     closure = _map_values_closure(spec)
-    assert "map_values(|v|" in closure
+    assert re.search(r"map_values\(\|v:", closure)
     _assert_no_free_state_in_closure(closure)
 
     # AVG leg projects sum/count slots (v.2 / v.3) inside the closure.
@@ -115,7 +115,7 @@ def test_count_sum_multi_agg_projection_and_prev() -> None:
     _assert_no_placeholders(out)
 
     closure = _map_values_closure(spec)
-    assert "map_values(|v|" in closure
+    assert re.search(r"map_values\(\|v:", closure)
     assert "(v.0, v.1)" in closure
     _assert_no_free_state_in_closure(closure)
 

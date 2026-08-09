@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+VERUS_HOME="${VERUS_HOME:-$HOME/tools/verus}"
+RUSTUP_HOME="${RUSTUP_HOME:-$HOME/tools/verus-rustup}"
+CARGO_HOME="${CARGO_HOME:-$HOME/tools/verus-cargo}"
+IMAGE="${LEMMA_VERUS_DOCKER_IMAGE:-lemma-verus-runtime:24.04}"
+
+exec docker run --rm \
+  --network=none \
+  -u "$(id -u):$(id -g)" \
+  -v "$VERUS_HOME:/opt/verus:ro" \
+  -v "$RUSTUP_HOME:/rustup" \
+  -v "$CARGO_HOME:/cargo" \
+  -v "$PWD:$PWD" \
+  -w "$PWD" \
+  -e HOME=/tmp \
+  -e RUSTUP_HOME=/rustup \
+  -e CARGO_HOME=/cargo \
+  -e PATH=/opt/verus:/cargo/bin:/usr/bin:/bin \
+  "$IMAGE" \
+  /opt/verus/verus "$@"

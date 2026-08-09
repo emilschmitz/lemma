@@ -1,5 +1,32 @@
 # Custom SQL agent pipeline
 
+## Always read the traces on failure
+
+On any loud fail (`CUSTOM_PIPELINE_FAILED`, experiment `exit=1`, MCP verify error): open the
+cited logs/artifacts (`verify_error_custom.log`, `failed_transpile/verify_*.json`, run-dir
+`agent_stream.jsonl` / `runquery_agent.rs`) and state the **concrete** error before guessing.
+Host codegen bugs and agent proof failures look the same at the one-line summary.
+
+### Always name the failure type
+
+After reading the traces, **label the failure** (one primary type). Say whether a smarter
+agent using only its allowed tools / `AGENT_EDIT` region could have fixed it.
+
+| Label | Meaning | Smarter agent could fix? |
+|-------|---------|--------------------------|
+| `transpile_fail` | SQL/schema unsupported or transpiler error before a real MethodSpec shell | No |
+| `host_codegen` | Assembled MethodSpec / loaders / harness outside `AGENT_EDIT` does not typecheck or compile | No |
+| `admission` | Agent edit rejected (fingerprint, forbidden TRUSTED/`assume`, bad `ensures`) | Usually yes — rewrite within contract |
+| `agent_verify` | Host program OK; Verus fails on the agent `run_query` body / proof | Yes — better body, invariants, Trusted menu use |
+| `agent_timeout` / `agent_crash` | Sandbox timed out or exited before a valid submit | Maybe — simpler approach or fewer verify loops |
+| `measure_harness` | Verified binary fails at timed measure / data path | Rarely via `run_query` alone; often host/data |
+| `infra` | Docker, MCP, credentials, preempt, disk | No |
+
+**Rule:** If the first compile/verify errors point at generated `method_spec`, loaders, or
+other non-editable scaffolding → `host_codegen` (or `transpile_fail`), **not**
+`agent_verify`. Do not say “the agent failed verification” when the agent never got a
+fair shot at proving its body.
+
 ## No fallbacks without explicit approval
 
 **Never** add a fallback or silent alternate path (including prompt text like “if MCP is

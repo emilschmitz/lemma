@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .rust_ident import rust_ident
+
 # Max rows in one Cols table (also matches practical in-memory caps).
 LEMMA_MAX_ROWS = 2**31
 
@@ -87,7 +89,17 @@ pub const LEMMA_MAX_STRING_LEN: usize = {LEMMA_MAX_STRING_LEN};
 """
 
 
-def emit_trusted_prelude() -> str:
+def emit_trusted_prelude(*, include_left_join_miss: bool = True) -> str:
+    left_join_miss = ""
+    if include_left_join_miss:
+        left_join_miss = """// === IS NULL / anti-join (Lemma non-null loads; LEFT JOIN miss) ===
+// TRUSTED: LEFT JOIN anti-join miss predicate (schema-driven bridge).
+#[verifier::external_body]
+pub open spec fn left_join_miss_generic(cols: &Cols, row: int) -> bool {
+    arbitrary()
+}
+
+"""
     return """// === Trusted arithmetic helpers ===
 // TRUSTED: rustc wrapping_add; sound when ValidCols row/cell bounds apply (no overflow).
 #[verifier::external_body]
@@ -325,19 +337,13 @@ pub open spec fn seq_sum_u64_helper(s: Seq<u64>, i: int) -> u64
     }
 }
 
-// === IS NULL / anti-join (Lemma non-null loads; LEFT JOIN miss) ===
-// TRUSTED: LEFT JOIN anti-join miss predicate (schema-driven bridge).
-#[verifier::external_body]
-pub open spec fn left_join_miss_generic(cols: &Cols, row: int) -> bool {
-    arbitrary()
-}
-
-// TRUSTED: multi-agg HashMap exec view bridge.
+""" + left_join_miss + """// TRUSTED: multi-agg HashMap exec view bridge.
 #[verifier::external_body]
 pub open spec fn hashmap_multi_agg_view<K, V>(m: Map<K, V>) -> Map<K, V> {
     m
 }
 """
+
 
 
 def emit_valid_cols_predicate(schema_dict: dict[str, str], struct_name: str = "Cols") -> str:
@@ -347,7 +353,8 @@ def emit_valid_cols_predicate(schema_dict: dict[str, str], struct_name: str = "C
         "    &&& cols.n <= LEMMA_MAX_ROWS",
     ]
     for col, col_type in schema_dict.items():
-        field = col.lower()
+        base = col.lower()
+        field = rust_ident(col)
         vt = col_verus_type(col_type)
         if vt == "u32":
             lines.append(
@@ -379,7 +386,8 @@ def emit_valid_cols_accessor_lemmas(schema_dict: dict[str, str], struct_name: st
     """Per-column bound lemmas (proved from valid_cols when possible)."""
     blocks: list[str] = []
     for col, col_type in schema_dict.items():
-        field = col.lower()
+        base = col.lower()
+        field = rust_ident(col)
         vt = col_verus_type(col_type)
         if vt == "u32":
             ensures = f"cols.{field}[i as int] < LEMMA_MAX_NATIVE_U32"
@@ -390,7 +398,7 @@ def emit_valid_cols_accessor_lemmas(schema_dict: dict[str, str], struct_name: st
         else:
             ensures = f"(cols.{field}[i as int]@).len() <= LEMMA_MAX_STRING_LEN"
         blocks.append(
-            f"pub proof fn valid_cols_get_{field}(cols: &{struct_name}, i: int)\n"
+            f"pub proof fn valid_cols_get_{base}(cols: &{struct_name}, i: int)\n"
             f"    requires\n"
             f"        valid_cols(cols),\n"
             f"        0 <= i && i < cols.n as int,\n"

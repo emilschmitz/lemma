@@ -1,5 +1,28 @@
 # Lemma agent & engine rules
 
+## Always read the traces on failure
+
+When a run, experiment, verify, assemble, or agent session **fails**, do **not** guess from the
+one-line summary alone. **Open the traces and identify the concrete error:**
+
+- Experiment / optimizer logs: `experiment_data/logs/*.log`, `nohup.out`
+- Verify: `research_loop/generated/verify_error_custom.log` and
+  `research_loop/agents/failed_transpile/verify_*.json`
+- Agent session: run dir under `research_loop/runs/<id>/` — especially
+  `workspace/runquery_agent.rs`, `workspace/logs/agent_stream.jsonl`,
+  `workspace/logs/agent_stderr.log`, MCP result JSON under `workspace/mcp_results/`
+- Harness / assemble output referenced in `CUSTOM_PIPELINE_FAILED [...]` lines
+
+Report **what failed** (stage + root cause from those files), not only “exit 1” or
+“verification failed.” Fix host bugs when the trace shows host/codegen errors; do not
+blame the agent body until the traces say so.
+
+**Always name the failure type** (see `research_loop/agents/AGENTS.md`): e.g.
+`transpile_fail`, `host_codegen`, `admission`, `agent_verify`, `agent_timeout`,
+`measure_harness`, `infra`. Explicitly answer: could a smarter agent have fixed it
+within `AGENT_EDIT` / allowed tools? If errors are in generated MethodSpec/loaders →
+`host_codegen` — **no**.
+
 ## No fallbacks without explicit approval
 
 **Never** add a fallback, silent alternate path, soft degrade, “if X is down do Y”,

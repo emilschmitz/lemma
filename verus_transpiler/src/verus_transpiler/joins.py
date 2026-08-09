@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 
 from .parse_sql import AggSpec, DerivedTable, SQLQuery, UnsupportedContractError
+from .rust_ident import rust_ident
 from .subqueries import emit_derived_grouped_inner_spec
 from .value_bounds import col_verus_type, spec_map_key_type
 
@@ -109,7 +110,7 @@ def _col_access_ref(
             f"direct derived column access {ref!r} must go through map lookup"
         )
     slot = slots[_slot_index(slots, table)]
-    field = col.lower()
+    field = rust_ident(col)
     if col_verus_type(schema[col]) == "String":
         return f"{slot.param}.{field}[{slot.idx} as int]@"
     return f"{slot.param}.{field}[{slot.idx} as int]"
@@ -134,9 +135,10 @@ def _resolve_row_expr(
             schema = schemas_by_table[slot.table]
             for k in schema:
                 if k.lower() == col.lower():
+                    field = rust_ident(k)
                     if col_verus_type(schema[k]) == "String":
-                        return f"{slot.param}.{col.lower()}[{slot.idx} as int]@"
-                    return f"{slot.param}.{col.lower()}[{slot.idx} as int]"
+                        return f"{slot.param}.{field}[{slot.idx} as int]@"
+                    return f"{slot.param}.{field}[{slot.idx} as int]"
         return f"row.{col}"
 
     out = re.sub(r"\brow\.([A-Za-z_][A-Za-z0-9_]*)", repl_col, stripped)
@@ -279,10 +281,11 @@ def _groupby_key_parts(
                 break
         slot = slots[_slot_index(slots, table)] if table not in derived_by_alias else slots[0]
         if table not in derived_by_alias:
+            field = rust_ident(col_key)
             if col_verus_type(schema[col_key]) == "String":
-                parts.append(f"{slot.param}.{col_key.lower()}[{slot.idx} as int]@")
+                parts.append(f"{slot.param}.{field}[{slot.idx} as int]@")
             else:
-                parts.append(f"{slot.param}.{col_key.lower()}[{slot.idx} as int]")
+                parts.append(f"{slot.param}.{field}[{slot.idx} as int]")
         types.append(spec_map_key_type(schema[col_key]))
     key_expr = parts[0] if len(parts) == 1 else f"({', '.join(parts)})"
     key_ty = types[0] if len(types) == 1 else f"({', '.join(types)})"
@@ -446,9 +449,10 @@ def _distinct_val_expr(
             col_key = k
             break
     slot = slots[_slot_index(slots, table)]
+    field = rust_ident(col_key)
     if col_verus_type(schema[col_key]) == "String":
-        return f"{slot.param}.{col_key.lower()}[{slot.idx} as int]@"
-    return f"{slot.param}.{col_key.lower()}[{slot.idx} as int]"
+        return f"{slot.param}.{field}[{slot.idx} as int]@"
+    return f"{slot.param}.{field}[{slot.idx} as int]"
 
 
 def _agg_term_expr(
@@ -573,10 +577,18 @@ def _emit_join_multi_agg(
             f"            tail.insert(key, {rebuild})"
         )
 
+    def _project_from_v(expr: str) -> str:
+        out = expr
+        if n_state == 1:
+            return out.replace("s0", "v")
+        for i in range(n_state - 1, -1, -1):
+            out = out.replace(f"s{i}", f"v.{i}")
+        return out
+
     if len(project_parts) == 1:
-        project_expr = project_parts[0]
+        project_expr = _project_from_v(project_parts[0])
     else:
-        project_expr = f"({', '.join(project_parts)})"
+        project_expr = f"({', '.join(_project_from_v(p) for p in project_parts)})"
 
     val_types: list[str] = []
     for spec in query.agg_specs:
@@ -604,7 +616,7 @@ def _emit_join_multi_agg(
         f"let raw = {helper_name}({', '.join(s.param for s in slots)}"
         f"{', ' + ', '.join(derived_map_vars.values()) if derived_map_vars else ''}"
         f", {_init_indices(slots)});\n"
-        f"    raw.map_values(|_k| {project_expr})"
+        f"    raw.map_values(|v: {state_tuple_type}| {project_expr})"
     )
     return helper, spec_body, ret_type
 
@@ -765,7 +777,18 @@ def _emit_left_anti_multi_agg(
     }}
 }}"""
 
-    project_expr = project_parts[0] if len(project_parts) == 1 else f"({', '.join(project_parts)})"
+    def _project_from_v(expr: str) -> str:
+        out = expr
+        if n_state == 1:
+            return out.replace("s0", "v")
+        for i in range(n_state - 1, -1, -1):
+            out = out.replace(f"s{i}", f"v.{i}")
+        return out
+
+    if len(project_parts) == 1:
+        project_expr = _project_from_v(project_parts[0])
+    else:
+        project_expr = f"({', '.join(_project_from_v(p) for p in project_parts)})"
     if n_state == 1 and not query.is_multi_agg:
         ret_type = f"Map<{key_ty}, u64>"
         spec_body = (
@@ -776,7 +799,7 @@ def _emit_left_anti_multi_agg(
         ret_type = f"Map<{key_ty}, {_multi_agg_tuple_type(query)}>"
         spec_body = (
             f"let raw = {helper_name}({left.param}, {right.param}, 0);\n"
-            f"    raw.map_values(|_k| {project_expr})"
+            f"    raw.map_values(|v: {state_tuple_type}| {project_expr})"
         )
     return match_helper + "\n\n" + helper, spec_body, ret_type
 
@@ -1235,7 +1258,7 @@ def _resolve_join_row_expr(
     """Rewrite row.col into left./right. indexed accesses (2-table exec path)."""
 
     def col_access(col: str, tbl: str | None) -> str:
-        field = col.lower()
+        field = rust_ident(col)
         resolved = _table_for_col(col, tbl, left_table, right_table, schemas_by_table)
         side = "right" if resolved == right_table else "left"
         idx = "ri" if side == "right" else "li"
