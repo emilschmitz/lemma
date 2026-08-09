@@ -32,6 +32,7 @@ research_loop/demo_view/state/
 *.log
 experiments/
 scratch/
+research_loop/runs/
 ssb-dbgen/
 data/benchmarks/verified_bins/
 data/benchmarks/*.log
