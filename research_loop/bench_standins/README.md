@@ -5,7 +5,8 @@ agent. They are **query artifacts / data**, not part of the transpiler, optimize
 scaffolding.
 
 `sec_q1_runquery.py` demonstrates a Verus-verified Q1 body using only host
-`agg_step_*` helpers (no `admit()`). Verify locally:
+`agg_step_*` helpers (no `admit()`). `sec_holdout_runqueries.py` tracks per-holdout
+query capability status (see `tests/test_sec_holdout_capability.py`).
 
 ```bash
 uv run python -m pytest tests/test_multi_agg_step.py::test_sec_q1_agg_step_runquery_verus -q

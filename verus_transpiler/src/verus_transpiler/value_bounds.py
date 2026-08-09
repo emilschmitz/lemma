@@ -357,11 +357,13 @@ def emit_valid_cols_predicate(schema_dict: dict[str, str], struct_name: str = "C
         field = rust_ident(col)
         vt = col_verus_type(col_type)
         if vt == "u32":
+            lines.append(f"    &&& cols.{field}.len() == cols.n")
             lines.append(
                 f"    &&& forall|i: int| 0 <= i && i < cols.n as int ==>"
                 f" cols.{field}[i] < LEMMA_MAX_NATIVE_U32"
             )
         elif vt == "u64":
+            lines.append(f"    &&& cols.{field}.len() == cols.n")
             lines.append(
                 f"    &&& forall|i: int| 0 <= i && i < cols.n as int ==>"
                 f" cols.{field}[i] < LEMMA_MAX_MONEY_U64"

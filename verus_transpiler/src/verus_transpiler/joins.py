@@ -467,6 +467,20 @@ def _groupby_key_parts(
     return key_expr, key_ty
 
 
+def _anti_left_li(expr: str, left: _Slot) -> str:
+    """Rewrite left-table row index to ``li`` for LEFT anti-join single-scan helpers."""
+    return expr.replace(f"{left.idx} as int", "li as int")
+
+
+def _join_spec_string_literals(expr: str) -> str:
+    """Add ``@`` to string literals compared against ``Seq<char>`` (``field[idx]@ == "x"``)."""
+    return re.sub(
+        r'(\[[^\]]+ as int\]@\s*(?:==|!=)\s*)("(?:[^"\\]|\\.)*")(?!\@)',
+        r"\1\2@",
+        expr,
+    )
+
+
 def _emit_match_helper(
     left_slot: _Slot,
     right_slot: _Slot,
@@ -901,7 +915,7 @@ def _emit_left_anti_multi_agg(
     for left_ref, right_ref in join.on_equalities:
         l_expr = _col_access_ref(left_ref, query, slots, schemas_by_table, {})
         r_col = _col_access_ref(right_ref, query, slots, schemas_by_table, {})
-        r_expr = r_col.replace(f"{right.idx} as int", "rj as int")
+        r_expr = r_col.replace(f"{right.idx} as int", "ri as int")
         l_expr = l_expr.replace(f"{left.idx} as int", "li as int")
         match_parts.append(f"{l_expr} == {r_expr}")
     match_conds = " && ".join(match_parts)
@@ -909,11 +923,17 @@ def _emit_left_anti_multi_agg(
 
     filter_raw, _ = _strip_anti_join_predicates(where_expr)
     filter_cond = (
-        _resolve_row_expr(filter_raw, query, [left], schemas_by_table, {})
+        _join_spec_string_literals(
+            _anti_left_li(
+                _resolve_row_expr(filter_raw, query, [left], schemas_by_table, {}),
+                left,
+            )
+        )
         if filter_raw
         else None
     )
     key_expr, key_ty = _groupby_key_parts(query, slots, schemas_by_table, {})
+    key_expr = _anti_left_li(key_expr, left)
 
     state_types: list[str] = []
     state_defaults: list[str] = []
@@ -935,7 +955,10 @@ def _emit_left_anti_multi_agg(
             vt = _agg_value_type(spec.agg_expr)
             state_types.append(vt)
             state_defaults.append(f"0{vt}")
-            term = _agg_term_expr(spec, query, [left], schemas_by_table, {})
+            term = _anti_left_li(
+                _agg_term_expr(spec, query, [left], schemas_by_table, {}),
+                left,
+            )
             prev_ref = "prev" if len(specs) == 1 else f"prev.{i}"
             update_stmts.append(
                 f"let s{i} = ({prev_ref} as int + {term} as int) as {vt};"
@@ -1136,7 +1159,7 @@ def _emit_full_outer_scalar_sum(
     for left_ref, right_ref in join.on_equalities:
         l_expr = _col_access_ref(left_ref, query, slots, schemas_by_table, derived_by_alias)
         r_expr = _col_access_ref(right_ref, query, slots, schemas_by_table, derived_by_alias)
-        r_expr = r_expr.replace(f"{right.idx} as int", "rj as int")
+        r_expr = r_expr.replace(f"{right.idx} as int", "ri as int")
         l_expr = l_expr.replace(f"{left.idx} as int", "li as int")
         match_parts.append(f"{l_expr} == {r_expr}")
     match_conds = " && ".join(match_parts) if match_parts else "false"
