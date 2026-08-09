@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -9,12 +10,23 @@ import pytest
 
 from research_loop.assemble_verified_program import assemble_verified_program, prepare_agent_visible_spec
 from research_loop.harness import resolve_verus_bin, run_verus_verify
+from research_loop.method_spec_ret_type import resolve_ret_type_from_method_spec
 from research_loop.multi_agg_step_bridge import (
     emit_multi_agg_step_trusted,
+    multi_agg_step_trusted_rs,
     parse_multi_agg_layout,
 )
+from research_loop.scripts.sqlsmith_trusted_coverage import load_sec_schema, parse_sql_file
 from research_loop.trusted_ret_bridge import get_bridge, structural_bridge_for_spec_type
 from verus_transpiler import transpile_sql_to_verus
+from verus_transpiler.column_projection import project_multi_schema_for_query
+from verus_transpiler.parse_sql import normalize_schema
+
+ROOT = Path(__file__).resolve().parents[1]
+_VACUOUS_TRUSTED_RUN_QUERY_RE = re.compile(
+    r"#\[verifier::external_body\]\s*pub\s+exec\s+fn\s+run_query",
+    re.MULTILINE,
+)
 
 PRE_SCHEMA = {
     "stmt": "string",
@@ -29,6 +41,63 @@ Q1_LIKE_SQL = """SELECT stmt, rfile, COUNT(*) AS cnt,
 FROM pre
 WHERE stmt IS NOT NULL
 GROUP BY stmt, rfile"""
+
+TOP_MULTI_AGG_RET_TYPES = (
+    "map_str_str_str_str__u64_u64",
+    "map_str_u32__u64_u64_u64",
+    "map_u32_str_str__u64_u64_u64",
+    "map_str_u32_str_str_str__u64_u64",
+    "map_str_str__u64_u64",
+    "map_str_str_str__u64_u64_u64_u64",
+    "map_str_str__u64_u64_u64",
+)
+
+
+def _first_sql_for_ret_type(ret_type: str) -> tuple[str, str] | None:
+    """Return (qid, sql) for the first scored query with this ret_type, or None."""
+    score_path = ROOT / "research_loop" / "generated" / "trusted_capability_score.json"
+    if not score_path.is_file():
+        return None
+    data = json.loads(score_path.read_text(encoding="utf-8"))
+    target = next(
+        (q for q in data.get("queries", []) if q.get("ret_type") == ret_type),
+        None,
+    )
+    if target is None:
+        return None
+    sql_path = ROOT / target["source"]
+    for qid, sql in parse_sql_file(sql_path):
+        if qid == target["id"]:
+            return qid, sql
+    return None
+
+
+def _agent_visible_for_sec_sql(sql: str) -> str:
+    schema = load_sec_schema()
+    flat, multi = normalize_schema(schema)
+    projected = project_multi_schema_for_query(sql, multi) if multi else flat
+    spec_rs = transpile_sql_to_verus(sql, projected)
+    ret_type = resolve_ret_type_from_method_spec(spec_rs)
+    return prepare_agent_visible_spec(spec_rs, ret_type)
+
+
+@pytest.mark.parametrize("ret_type", TOP_MULTI_AGG_RET_TYPES)
+def test_top_ret_types_emit_agg_step(ret_type: str) -> None:
+    found = _first_sql_for_ret_type(ret_type)
+    if found is None:
+        pytest.skip(f"no fixture SQL for ret_type {ret_type}")
+    _qid, sql = found
+    visible = _agent_visible_for_sec_sql(sql)
+    assert re.search(r"pub exec fn agg_step_(?:state_new_)?\w+", visible), ret_type
+    assert "agg_step_apply_row_" in visible
+    assert not _VACUOUS_TRUSTED_RUN_QUERY_RE.search(visible)
+    helper_chunks = re.findall(
+        r"pub open spec fn (?:method_spec_helper|multi_agg_helper)[\s\S]*?^}",
+        visible,
+        re.MULTILINE,
+    )
+    assert helper_chunks
+    assert all("arbitrary()" not in chunk for chunk in helper_chunks)
 
 
 def test_parse_q1_multi_agg_layout() -> None:

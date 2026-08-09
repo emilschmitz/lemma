@@ -21,12 +21,18 @@ from research_loop.trusted_ret_bridge import (
 _HELPER_NAMES = ("method_spec_helper", "multi_agg_helper")
 
 _COL_REF_RE = re.compile(
-    r"cols\.(?:get_)?(\w+)\((?:k|\w+)\)(?:@)?|cols\.(\w+)\[(?:k|\w+) as int\]@"
+    r"cols\.(?:get_)?(\w+)\((?:k|\w+)\)(?:@)?"
+    r"|cols\.(\w+)\[(?:k|\w+) as int\](?:@)?"
+    r"|\w+\.\w+\[(?:\w+) as int\](?:@)?"
 )
 
 _UPDATE_LET_RE = re.compile(
-    r"let\s+(s\d+)\s*=\s*(.+?);",
+    r"let\s+((?:s|t)\d+)\s*=\s*(.+?);",
     re.DOTALL,
+)
+
+_NUMERIC_CAST_RE = re.compile(
+    r"\(\(\(cols\.(?:get_)?(\w+)\((?:k|\w+)\)(?:@)? as int\)\) as u64 as int\)"
 )
 
 
@@ -100,7 +106,7 @@ def _find_helper(spec_rs: str) -> tuple[str, str, str, str] | None:
             continue
         head = spec_rs[pos:]
         ret_m = re.search(
-            rf"pub open spec fn {name}\(cols: &Cols, \w+: int\) -> Map<",
+            rf"pub open spec fn {re.escape(name)}\([^)]+\)\s*->\s*(?:\(res:\s*)?Map<",
             head,
         )
         if not ret_m:
@@ -181,7 +187,7 @@ def _parse_update_block(body: str) -> tuple[list[str], str]:
                 for um in _UPDATE_LET_RE.finditer(updates_raw):
                     updates.append(f"let {um.group(1)} = {um.group(2).strip()};")
                 if not updates:
-                    raise ValueError("no let sN = updates in multi-agg helper")
+                    raise ValueError("no let sN/tN = updates in multi-agg helper")
                 return updates, rebuild
             depth -= 1
         i += 1
@@ -204,45 +210,58 @@ def _distinct_atom_from_map_type(ty: str) -> str | None:
 
 
 
+def _col_ref_usage(line: str, expr: str) -> str:
+    if ".contains_key" in line or ".insert" in line:
+        return "distinct"
+    return "numeric"
+
+
+def _is_str_distinct_expr(expr: str) -> bool:
+    return expr.rstrip().endswith("@")
+
+
 def _rewrite_updates_for_apply(
     update_lines: list[str],
 ) -> tuple[list[str], list[RowParam]]:
     params: list[RowParam] = []
     seen_cols: dict[str, str] = {}
 
-    def col_param(col: str, usage: str) -> str:
-        if col in seen_cols:
-            return seen_cols[col]
+    def col_param(expr: str, usage: str) -> str:
+        if expr in seen_cols:
+            return seen_cols[expr]
         if usage == "distinct":
             n = len([p for p in params if p.name.startswith("distinct_")])
             pname = f"distinct_{n}"
-            params.append(RowParam(pname, "&str", "Seq<char>"))
+            if _is_str_distinct_expr(expr):
+                params.append(RowParam(pname, "&str", "Seq<char>"))
+            else:
+                params.append(RowParam(pname, "u32", "u32"))
         else:
             n = len([p for p in params if p.name.startswith("row_u64_")])
             pname = f"row_u64_{n}"
             params.append(RowParam(pname, "u64", "u64"))
-        seen_cols[col] = params[-1].name
+        seen_cols[expr] = params[-1].name
         return params[-1].name
 
+    def spec_ref_for(expr: str, pname: str, usage: str) -> str:
+        if usage == "distinct":
+            return pname
+        return f"{pname} as int"
+
     rewritten: list[str] = []
-    numeric_cast_re = re.compile(
-        r"\(\(\(cols\.(?:get_)?(\w+)\((?:k|\w+)\)(?:@)? as int\)\) as u64 as int\)"
-    )
     for line in update_lines:
         out = line
-        out = numeric_cast_re.sub(
-            lambda m: f"({col_param(m.group(1), 'numeric')} as int)", out
+        out = _NUMERIC_CAST_RE.sub(
+            lambda m: f"({col_param(m.group(0), 'numeric')} as int)",
+            out,
         )
         for m in _COL_REF_RE.finditer(line):
-            col = m.group(1) or m.group(2)
-            if m.group(0) in out:
-                usage = "distinct" if ".contains_key" in line or ".insert" in line else "numeric"
-                pname = col_param(col, usage)
-                if usage == "distinct":
-                    spec_ref = pname
-                else:
-                    spec_ref = f"{pname} as int"
-                out = out.replace(m.group(0), spec_ref)
+            expr = m.group(0)
+            if expr not in out:
+                continue
+            usage = _col_ref_usage(line, expr)
+            pname = col_param(expr, usage)
+            out = out.replace(expr, spec_ref_for(expr, pname, usage))
         rewritten.append(out)
     return rewritten, params
 
@@ -315,6 +334,33 @@ def _projected_exec_expr(project_body: str, var: str, slots: list[TypeExpr]) -> 
     return out
 
 
+def _minmax_src_from_t_line(t_line: str) -> str | None:
+    m = re.search(r"let t\d+ = (.+);", t_line)
+    if not m:
+        return None
+    expr = m.group(1).strip()
+    m2 = re.search(r"(row_u64_\d+)", expr)
+    if m2:
+        return m2.group(1)
+    return None
+
+
+def _sum_delta_expr(s_line: str, slot_i: int, *, multi_slot: bool) -> str | None:
+    prev_ref = f"prev.{slot_i}" if multi_slot else "prev"
+    m = re.search(
+        rf"let s{slot_i} = \({prev_ref} as int \+ (.+?) as int\) as u64",
+        s_line,
+    )
+    return m.group(1).strip() if m else None
+
+
+def _spec_expr_to_exec(expr: str) -> str:
+    out = expr.replace("case_when_u64(", "case_when_u64_exec(")
+    out = re.sub(r"\(row_u64_(\d+) as int ([^)]+)\)", r"(row_u64_\1 \2)", out)
+    out = re.sub(r"row_u64_(\d+) as int", r"row_u64_\1", out)
+    return out
+
+
 def _exec_update_inner(
     layout: MultiAggLayout,
     slots: list[TypeExpr],
@@ -339,8 +385,10 @@ def _exec_update_inner(
             if atom == "str":
                 lines.append(f"set_insert_{atom}(&mut new_inner, {dp.name});")
             else:
-                lines.append(f"set_insert_{atom}(&mut new_inner, *{dp.name});")
+                lines.append(f"set_insert_{atom}(&mut new_inner, {dp.name});")
             return lines
+
+    apply_lines = [ln.strip() for ln in layout.apply_body.split("\n") if ln.strip()]
 
     slot_vals: list[str] = []
     for i, slot in enumerate(slots):
@@ -354,21 +402,47 @@ def _exec_update_inner(
             if atom == "str":
                 lines.append(f"set_insert_{atom}(&mut v{i}, {dp.name});")
             else:
-                lines.append(f"set_insert_{atom}(&mut v{i}, *{dp.name});")
+                lines.append(f"set_insert_{atom}(&mut v{i}, {dp.name});")
             slot_vals.append(f"v{i}")
         elif isinstance(slot, TypeAtom) and slot.name == "u64":
-            update_line = next(
-                (ln for ln in layout.apply_body.split("\n") if f"s{i} =" in ln),
+            s_line = next(
+                (ln for ln in apply_lines if ln.startswith(f"let s{i} =")),
                 "",
             )
-            if "as int + 1) as u64" in update_line and numeric_i >= len(numeric_params):
+            t_line = next(
+                (ln for ln in apply_lines if ln.startswith(f"let t{i} =")),
+                "",
+            )
+            is_min = re.search(rf"let s{i} = if t{i} <", s_line) is not None
+            is_max = re.search(rf"let s{i} = if t{i} >", s_line) is not None
+            if is_min or is_max:
+                src = _minmax_src_from_t_line(t_line)
+                if src is None:
+                    if numeric_i >= len(numeric_params):
+                        raise ValueError(
+                            f"missing numeric param for {'MIN' if is_min else 'MAX'} slot {i}"
+                        )
+                    src = numeric_params[numeric_i].name
+                    numeric_i += 1
+                op = "<" if is_min else ">"
+                lines.append(
+                    f"let v{i} = if {src} {op} {prev_var}.{i} "
+                    f"{{ {src} }} else {{ {prev_var}.{i} }};"
+                )
+            elif "as int + 1) as u64" in s_line:
                 lines.append(f"let v{i} = {prev_var}.{i}.wrapping_add(1);")
-            elif numeric_i < len(numeric_params):
-                np = numeric_params[numeric_i]
-                numeric_i += 1
-                lines.append(f"let v{i} = {prev_var}.{i}.wrapping_add({np.name});")
             else:
-                lines.append(f"let v{i} = {prev_var}.{i}.wrapping_add(1);")
+                delta = _sum_delta_expr(s_line, i, multi_slot=len(slots) > 1)
+                if delta is not None:
+                    lines.append(
+                        f"let v{i} = {prev_var}.{i}.wrapping_add({_spec_expr_to_exec(delta)});"
+                    )
+                elif numeric_i < len(numeric_params):
+                    np = numeric_params[numeric_i]
+                    numeric_i += 1
+                    lines.append(f"let v{i} = {prev_var}.{i}.wrapping_add({np.name});")
+                else:
+                    lines.append(f"let v{i} = {prev_var}.{i}.wrapping_add(1);")
             slot_vals.append(f"v{i}")
 
     lines.append(f"let new_inner = ({', '.join(slot_vals)});")
