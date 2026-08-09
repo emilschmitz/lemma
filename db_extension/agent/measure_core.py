@@ -10,7 +10,7 @@ from concurrent import futures
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from db_extension.agent.extract import extract_marked_body, validate_runquery_body
+from db_extension.agent.extract import admit_workspace_runquery, extract_marked_body, validate_runquery_body
 from db_extension.agent.lease_measure import lease_measure_enabled, merge_lease_into_metrics
 from db_extension.dataset_config import effective_dataset_size
 from db_extension.verus_bridge import (
@@ -94,7 +94,7 @@ def _read_workspace_sql_schema(ws: Path) -> tuple[str, dict]:
 
 def _is_host_standin_runquery(text: str) -> bool:
     """Proved bench stand-in: full ``pub exec fn run_query`` without agent markers."""
-    if "AGENT_BODY_START" in text:
+    if "AGENT_BODY_START" in text or "AGENT_EDIT_START" in text:
         return False
     return bool(
         re.search(r"pub\s+(?:exec\s+)?fn\s+run_query\s*\(", text)
@@ -114,7 +114,13 @@ def _read_body(*, path: str | None, body: str | None, ws: Path | None = None) ->
     if not target.is_file():
         raise FileNotFoundError(f"file not found: {target}")
     text = target.read_text(encoding="utf-8")
-    if "AGENT_BODY_START" in text:
+    if "AGENT_EDIT_START" in text:
+        spec_path = target.parent / "context" / "ro" / "spec.rs"
+        if not spec_path.is_file():
+            raise ValueError(f"missing spec.rs for AGENT_EDIT admission: {spec_path}")
+        spec_rs = spec_path.read_text(encoding="utf-8")
+        inner = admit_workspace_runquery(text, spec_rs=spec_rs, agent_path=target)
+    elif "AGENT_BODY_START" in text:
         inner = extract_marked_body(text, agent_path=target)
     else:
         inner = text
@@ -124,14 +130,16 @@ def _read_body(*, path: str | None, body: str | None, ws: Path | None = None) ->
 def _write_marked_runquery(body: str, ws: Path | None = None) -> Path:
     base = ws or workspace()
     rq = base / DEFAULT_RUNQUERY
-    ret_type = "u64"
-    try:
+    spec_path = base / "context" / "ro" / "spec.rs"
+    if spec_path.is_file():
+        from db_extension.verus_bridge import resolve_ret_type_for_spec
+
+        ret_type = resolve_ret_type_for_spec(spec_path.read_text(encoding="utf-8"))
+    else:
         sql, schema = _read_workspace_sql_schema(base)
         from db_extension.verus_bridge import resolve_ret_type_for_sql
 
         ret_type = resolve_ret_type_for_sql(sql, schema)
-    except Exception:
-        pass
     from research_loop.assemble_runquery import write_runquery_agent_file
 
     write_runquery_agent_file(rq, ret_type=ret_type, body_inner=body)
@@ -204,6 +212,16 @@ def validate_solution(
             "errors": [],
             "runquery_path": str(source),
             "body_chars": len(raw),
+            "source_path": str(source),
+        }
+
+    if "AGENT_EDIT_START" in raw:
+        return {
+            "ok": True,
+            "phase": "validated",
+            "errors": [],
+            "runquery_path": str(source),
+            "body_chars": len(inner),
             "source_path": str(source),
         }
 

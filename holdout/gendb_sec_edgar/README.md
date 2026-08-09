@@ -18,6 +18,13 @@ Their fixed six queries are checked in as `queries.sql` (paper figure labels).
 `generate_queries.py` regenerates a pool + selects a diverse subset if you need a
 **fresh** holdout (different seed / `--num-select`).
 
+## Lemma verified pipeline gap
+
+Transpile often **succeeds** for these six (real MethodSpec with a concrete return
+type). The agent shell still fails until Trusted/shell wiring exists for that type
+— mostly **multi-agg** maps (tuple values) and **projection** `Seq` of rows, not
+SQL nicknames. See [`docs/METHODSPEC_SHELL_TRUSTED_GAP.md`](../../docs/METHODSPEC_SHELL_TRUSTED_GAP.md).
+
 ## Layout
 
 | File | Role |

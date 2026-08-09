@@ -1619,6 +1619,7 @@ def run_custom_sql_pipeline(
     bench_timing_body: str = "",
     bench_post_timing: str = "",
     bench_main_prefix: str = "",
+    rust_ret: str | None = None,
 ) -> dict:
     """Transpile MethodSpec → agent run_query → assemble → verify → compile → run.
 
@@ -1679,9 +1680,17 @@ def run_custom_sql_pipeline(
         )
 
     try:
-        ret_type = _resolve_custom_ret_type(query, projected, multi=bool(multi))
-    except Exception as e:
-        return _pipeline_failure("assemble", sql, f"ret_type: {e}", schema)
+        from research_loop.method_spec_ret_type import resolve_ret_type_from_method_spec
+
+        ret_type = resolve_ret_type_from_method_spec(spec_rs)
+    except ValueError as e:
+        return _pipeline_failure("assemble", sql, str(e), schema)
+
+    exec_rust_ret = rust_ret
+    if exec_rust_ret is None:
+        from research_loop.assemble_verified_program import rust_ret_from_run_query_fn
+
+        exec_rust_ret = rust_ret_from_run_query_fn(body)
 
     rs_path = os.path.join(GENERATED, "custom_query.rs")
 
@@ -1738,6 +1747,7 @@ def run_custom_sql_pipeline(
                 bench_timing_body=bench_timing_body,
                 bench_post_timing=bench_post_timing,
                 bench_main_prefix=bench_main_prefix,
+                rust_ret=exec_rust_ret,
             )
     except Exception as e:
         return _pipeline_failure("assemble", sql, str(e), schema)

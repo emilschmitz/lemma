@@ -1,16 +1,19 @@
-"""Extract and validate Verus run_query body from marked agent workspace file."""
+"""Extract and validate Verus run_query from marked agent workspace file."""
 from __future__ import annotations
 
 import re
 from pathlib import Path
 
+from research_loop.admit_agent_runquery import admit_or_extract_legacy
 from research_loop.assemble_runquery import (
+    AGENT_EDIT_START,
     AGENT_END,
     AGENT_START,
     build_runquery_agent_source,
+    build_runquery_agent_source_legacy,
     extract_agent_body,
     extract_agent_body_checked,
-    read_shell_fingerprint,
+    read_edit_fingerprint,
     validate_runquery_body as validate_rust_runquery_body,
     write_runquery_agent_file,
 )
@@ -63,16 +66,39 @@ def validate_runquery_body(body: str) -> list[str]:
     return errors
 
 
-def extract_marked_body(text: str, *, agent_path: Path | None = None) -> str:
-    """Extract body between AGENT_BODY markers; verify shell fingerprint when path given."""
+def admit_workspace_runquery(
+    agent_text: str,
+    *,
+    spec_rs: str,
+    agent_path: Path | None = None,
+) -> str:
+    """Admit agent file; return full ``pub exec fn run_query`` for assembly."""
+    expected_fp = read_edit_fingerprint(agent_path) if agent_path is not None else None
+    return admit_or_extract_legacy(
+        agent_text,
+        method_spec_rs=spec_rs,
+        expected_fingerprint=expected_fp,
+    )
+
+
+def extract_marked_body(
+    text: str,
+    *,
+    agent_path: Path | None = None,
+    spec_rs: str | None = None,
+) -> str:
+    """Extract admitted run_query (AGENT_EDIT) or legacy body (AGENT_BODY)."""
+    if AGENT_EDIT_START in text:
+        if not spec_rs:
+            raise ValueError("AGENT_EDIT admission requires spec_rs")
+        return admit_workspace_runquery(text, spec_rs=spec_rs, agent_path=agent_path)
+
     if AGENT_START not in text or AGENT_END not in text:
         raise ValueError(
-            "runquery_agent.rs missing AGENT_BODY_START/AGENT_BODY_END markers; "
-            "only marked agent bodies are accepted"
+            "runquery_agent.rs missing AGENT_EDIT_START/END or AGENT_BODY_START/END markers; "
+            "only marked agent files are accepted"
         )
-    expected_fp: str | None = None
-    if agent_path is not None:
-        expected_fp = read_shell_fingerprint(agent_path)
+    expected_fp = read_edit_fingerprint(agent_path) if agent_path is not None else None
     if expected_fp is not None:
         return extract_agent_body_checked(text, expected_fingerprint=expected_fp)
     body = extract_agent_body(text)
@@ -83,8 +109,13 @@ def extract_marked_body(text: str, *, agent_path: Path | None = None) -> str:
 
 
 def wrap_body_with_markers(body_inner: str, *, ret_type: str = "u64") -> str:
-    """Produce natural Verus agent shell with AGENT_BODY markers."""
+    """Produce Verus agent shell with AGENT_EDIT around full run_query."""
     return build_runquery_agent_source(ret_type=ret_type, body_inner=body_inner)
+
+
+def wrap_body_with_markers_legacy(body_inner: str, *, ret_type: str = "u64") -> str:
+    """Legacy AGENT_BODY shell for old tests."""
+    return build_runquery_agent_source_legacy(ret_type=ret_type, body_inner=body_inner)
 
 
 def write_marked_runquery(
@@ -92,6 +123,12 @@ def write_marked_runquery(
     body_inner: str,
     *,
     ret_type: str = "u64",
+    use_body_markers: bool = False,
 ) -> None:
     """Write shell + fingerprint sibling for ``runquery_agent.rs``."""
-    write_runquery_agent_file(dest, ret_type=ret_type, body_inner=body_inner)
+    write_runquery_agent_file(
+        dest,
+        ret_type=ret_type,
+        body_inner=body_inner,
+        use_body_markers=use_body_markers,
+    )

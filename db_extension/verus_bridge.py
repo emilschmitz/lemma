@@ -203,28 +203,37 @@ def extract_trusted_run_query(spec_rs: str) -> str | None:
     return None
 
 
+def resolve_ret_type_for_spec(verus_spec: str) -> str:
+    """Map MethodSpec text to assembler RET_TYPE_CONFIG key (source of truth)."""
+    from research_loop.method_spec_ret_type import resolve_ret_type_from_method_spec
+
+    return resolve_ret_type_from_method_spec(verus_spec)
+
+
 def resolve_ret_type_for_sql(sql: str, schema: dict | None) -> str:
-    """Map SQL + schema to assembler RET_TYPE_CONFIG key (harness-aligned)."""
+    """Map SQL + schema to assembler RET_TYPE_CONFIG key.
+
+    Fallback only when MethodSpec text is not available yet; prefer
+    ``resolve_ret_type_for_spec`` when transpiled spec exists.
+    Fail loud on parse/shape errors (do not invent ``u64``).
+    """
     if not sql.strip():
-        return "u64"
-    try:
-        from verus_transpiler.parse_sql import normalize_schema, parse_sql
+        raise ValueError("cannot resolve ret_type: empty SQL")
+    from verus_transpiler.parse_sql import normalize_schema, parse_sql
 
-        from research_loop.harness import _resolve_custom_ret_type
-        from verus_transpiler.column_projection import (
-            project_multi_schema_for_query,
-            project_schema_for_query,
-        )
+    from research_loop.harness import _resolve_custom_ret_type
+    from verus_transpiler.column_projection import (
+        project_multi_schema_for_query,
+        project_schema_for_query,
+    )
 
-        flat, multi = normalize_schema(schema or {})
-        query = parse_sql(sql, schema or {})
-        if multi:
-            projected = project_multi_schema_for_query(sql, multi)
-        else:
-            projected = project_schema_for_query(sql, flat)
-        return _resolve_custom_ret_type(query, projected, multi=bool(multi))
-    except Exception:
-        return "u64"
+    flat, multi = normalize_schema(schema or {})
+    query = parse_sql(sql, schema or {})
+    if multi:
+        projected = project_multi_schema_for_query(sql, multi)
+    else:
+        projected = project_schema_for_query(sql, flat)
+    return _resolve_custom_ret_type(query, projected, multi=bool(multi))
 
 
 def agent_file_to_run_query_body(
@@ -236,43 +245,58 @@ def agent_file_to_run_query_body(
 ) -> str:
     """Convert agent workspace file to harness run_query_body (full pub exec fn).
 
-    Always re-wrap with host ``requires`` / ``ensures``. Never accept an agent-provided
-    ``pub exec fn run_query`` that omits the method_spec postcondition (that would
-    "verify" without proving equivalence).
+    AGENT_EDIT: admit full fn with contract checks. AGENT_BODY: legacy body extract + host wrap.
+    Never accept a vacuous TRUSTED run_query without method_spec postcondition.
     """
-    _ = spec_rs
-    from research_loop.assemble_runquery import (
-        AGENT_START,
-        build_exec_run_query_from_body,
-        extract_agent_body_checked,
-        read_shell_fingerprint,
-    )
+    from research_loop.admit_agent_runquery import admit_or_extract_legacy, read_expected_fingerprint
+    from research_loop.assemble_runquery import AGENT_EDIT_START, AGENT_START
 
     # Host-injected proved stand-ins (bench_standins) ship a full pub exec fn with proof.
-    if AGENT_START not in agent_raw and _EXEC_RUN_QUERY_RE.search(agent_raw):
+    if (
+        AGENT_EDIT_START not in agent_raw
+        and AGENT_START not in agent_raw
+        and _EXEC_RUN_QUERY_RE.search(agent_raw)
+    ):
         body = agent_raw.strip()
         if "method_spec" in body and "external_body" not in body and "unimplemented!" not in body:
             return body
 
-    ret = ret_type or "u64"
-    expected_fp = read_shell_fingerprint(agent_path) if agent_path is not None else None
-    if expected_fp is not None:
-        inner = extract_agent_body_checked(agent_raw, expected_fingerprint=expected_fp)
-    else:
-        inner = extract_agent_body_checked(agent_raw)
-    if not inner.strip():
+    ret = ret_type
+    if ret is None:
+        if not spec_rs.strip():
+            raise ValueError("cannot resolve ret_type: missing MethodSpec and ret_type")
+        from research_loop.method_spec_ret_type import resolve_ret_type_from_method_spec
+
+        ret = resolve_ret_type_from_method_spec(spec_rs)
+    expected_fp = read_expected_fingerprint(agent_path) if agent_path is not None else None
+    fn_text = admit_or_extract_legacy(
+        agent_raw,
+        method_spec_rs=spec_rs,
+        ret_type=ret,
+        expected_fingerprint=expected_fp,
+    )
+    if not fn_text.strip():
         raise ValueError(
             "agent run_query body is empty; TRUSTED/unimplemented transpile stubs are not accepted"
         )
-    return build_exec_run_query_from_body(inner, ret)
+    return fn_text
 
 
 def copy_runquery_template(
-    dest: Path, *, ret_type: str = "u64", sql_query: str | None = None
+    dest: Path,
+    *,
+    ret_type: str = "u64",
+    sql_query: str | None = None,
+    method_spec_rs: str | None = None,
 ) -> None:
     from research_loop.assemble_runquery import write_runquery_agent_file
 
-    write_runquery_agent_file(dest, ret_type=ret_type, sql_query=sql_query)
+    write_runquery_agent_file(
+        dest,
+        ret_type=ret_type,
+        sql_query=sql_query,
+        method_spec_rs=method_spec_rs,
+    )
 
 
 def write_mock_agent_body(
@@ -286,15 +310,19 @@ def write_mock_agent_body(
     """Write mock runquery_agent.rs — skeleton only; never vacuous TRUSTED run_query."""
     from research_loop.pipeline_demo import demo_enabled, stream_mock_agent_output
 
-    _ = spec_rs
     dest = Path(workspace_path)
     if stream_demo and demo_enabled():
         stream_mock_agent_output(
             workspace_path=str(dest),
             body_inner="// TODO: agent fills run_query body",
         )
-    ret = resolve_ret_type_for_sql(sql_query, schema)
-    copy_runquery_template(dest, ret_type=ret, sql_query=sql_query or None)
+    ret = resolve_ret_type_for_spec(spec_rs) if spec_rs.strip() else resolve_ret_type_for_sql(sql_query, schema)
+    copy_runquery_template(
+        dest,
+        ret_type=ret,
+        sql_query=sql_query or None,
+        method_spec_rs=spec_rs if spec_rs.strip() else None,
+    )
 
 
 def resolve_tbl_path(sql: str, schema: dict, workload_tables: dict[str, Path] | None = None) -> str:
@@ -390,13 +418,18 @@ def invoke_verus_custom_pipeline(
             from verus_transpiler import transpile_sql_to_verus
 
             spec_rs = transpile_sql_to_verus(sql, schema)
-        ret_type = resolve_ret_type_for_sql(sql, schema)
+        ret_type = resolve_ret_type_for_spec(spec_rs)
         body = agent_file_to_run_query_body(
             agent_raw,
             spec_rs,
             ret_type=ret_type,
             agent_path=runquery_path,
         )
+        from research_loop.assemble_verified_program import rust_ret_from_run_query_fn
+
+        admitted_rust_ret = rust_ret_from_run_query_fn(body)
+    else:
+        admitted_rust_ret = None
 
     tbl_path = tbl if tbl is not None else resolve_tbl_path(sql, schema, workload_tables)
     res = run_custom_sql_pipeline(
@@ -405,6 +438,7 @@ def invoke_verus_custom_pipeline(
         run_query_body=body,
         tbl=tbl_path or None,
         limit=dataset_size,
+        rust_ret=admitted_rust_ret,
         **bench_hints,
     )
     return normalize_harness_metrics(res)

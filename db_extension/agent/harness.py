@@ -133,21 +133,23 @@ def _build_system_prompt(flags: AgentFlags) -> str:
 ## Task
 Edit **only** `/workspace/runquery_agent.rs` **between** the markers:
 ```
-// AGENT_BODY_START
+// AGENT_EDIT_START
 ...
-// AGENT_BODY_END
+// AGENT_EDIT_END
 ```
 
-The file is a **host-owned Verus `run_query` shell** (signature + `ensures` are fixed).
-**Edit only the marked body** — MethodSpec / `valid_cols` live in `/context/ro/spec.rs`.
-Editing the shell outside the markers fails admission.
+The file is a **host-owned Verus shell** wrapping the full `pub exec fn run_query`.
+**Edit only the marked region** (signature + `requires` + `ensures` + body must stay
+contract-equivalent to MethodSpec). MethodSpec + Trusted live in `/context/ro/spec.rs` (read-only).
+Editing outside the markers fails admission. **Do not weaken** `ensures` vs `method_spec`.
 **Derive** filters, loop order, and aggregation from `method_spec` in `/context/ro/spec.rs`.
 Optimize for the **workload class**, not overfitting the sample data.
 
 {budget}
 ## Rules
-- Do NOT add `mod`, `struct`, `enum`, `trait`, `impl`, `lemma`, or `spec fn` items.
-- Do NOT write `requires`, `ensures`, or change the `run_query` signature.
+- Do NOT add `mod`, `struct`, `enum`, `trait`, `impl`, `lemma`, or new Trusted `spec fn` items.
+- Do NOT use `assume`, `arbitrary`, `#[verifier::external_body]`, or `unimplemented!`.
+- Do NOT weaken `ensures` away from `method_spec(cols)` (admission rejects it).
 - Read `/context/ro/spec.rs` and `/context/ro/COMPILATION_GUIDE.md` for patterns.
 - Use `duckdb_sql` per AGENT_DATA_MODE=`{flags.agent_data_mode}` (see data_profile.md).
 - Prefer `run_runquery` without `dataset_size` (host default); use a smaller size only while iterating if needed.
@@ -223,13 +225,13 @@ def _build_user_prompt(
 - Do **not** add `proof {{ }}` blocks unless a Verus error requires a specific lemma already in scope.
 
 ## Workspace
-- `/workspace/runquery_agent.rs` is a host-owned Verus shell (SQL is in the file header + `query.sql`); edit only the body between AGENT_BODY markers.
-- MethodSpec remains in `/context/ro/spec.rs` (not inlined in the agent file).
+- `/workspace/runquery_agent.rs` is a host-owned Verus shell; edit only the AGENT_EDIT region (full `run_query`).
+- MethodSpec + Trusted remain in `/context/ro/spec.rs` (not inlined in the agent file).
 - Call `run_runquery` (omit `dataset_size` for host default) to verify and measure on the host.
 - Call `submit_runquery(run_id=...)` when a run is verified and beats your current official mark (re-submit on improvements).
 - Time left: `session_status` or `python3 check_session_time`.
 {feedback}{spec_section}
-Begin by reading the spec excerpt and `/context/ro/data_profile.md`, then implement the run_query body.
+Begin by reading the spec excerpt and `/context/ro/data_profile.md`, then implement `run_query`.
 """
 
 
@@ -245,14 +247,9 @@ def _prepare_workspace(
     reset_body: bool,
 ) -> Path:
     workspace.mkdir(parents=True, exist_ok=True)
-    ret_type = "u64"
-    if sql_query.strip():
-        try:
-            from db_extension.verus_bridge import resolve_ret_type_for_sql
+    from research_loop.method_spec_ret_type import resolve_ret_type_from_method_spec
 
-            ret_type = resolve_ret_type_for_sql(sql_query, schema)
-        except Exception:
-            pass
+    ret_type = resolve_ret_type_from_method_spec(verus_spec)
     from research_loop.assemble_verified_program import prepare_agent_visible_spec
 
     agent_spec = prepare_agent_visible_spec(verus_spec, ret_type)
@@ -290,7 +287,7 @@ def _prepare_workspace(
     if reset_body or not body_path.exists():
         from research_loop.assemble_runquery import write_runquery_agent_file
 
-        write_runquery_agent_file(body_path, ret_type=ret_type, sql_query=sql_query)
+        write_runquery_agent_file(body_path, ret_type=ret_type, sql_query=sql_query, method_spec_rs=verus_spec)
     return body_path
 
 
@@ -501,7 +498,13 @@ def run_openrouter_agent_iteration(
                 )
         else:
             try:
-                extract_marked_body(body_text)
+                spec_file = ws / "context" / "ro" / "spec.rs"
+                spec_rs = spec_file.read_text(encoding="utf-8") if spec_file.is_file() else None
+                extract_marked_body(
+                    body_text,
+                    agent_path=ws / DEFAULT_RUNQUERY,
+                    spec_rs=spec_rs,
+                )
                 meta["error"] = meta["error"] or "iteration ended without marked submit"
             except ValueError as e:
                 meta["error"] = meta["error"] or str(e)

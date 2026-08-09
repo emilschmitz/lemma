@@ -8,11 +8,22 @@ from pathlib import Path
 from db_extension.agent.extract import wrap_body_with_markers
 from db_extension.agent.measure_core import MeasureContext
 from db_extension.agent.mcp_socket import McpSocketServer, call_mcp_socket
+from verus_transpiler import transpile_sql_to_verus
+
+
+def _write_workspace_spec(ws: Path) -> None:
+    ro = ws / "context" / "ro"
+    ro.mkdir(parents=True)
+    spec = transpile_sql_to_verus("SELECT SUM(V) FROM t", {"V": "bigint"})
+    (ro / "spec.rs").write_text(spec, encoding="utf-8")
+    (ro / "query.sql").write_text("SELECT SUM(V) FROM t", encoding="utf-8")
+    (ro / "schema.json").write_text('{"V": "bigint"}', encoding="utf-8")
 
 
 def test_socket_validate_runquery(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("LEMMA_AGENT_WORKSPACE", str(tmp_path))
-    (tmp_path / "runquery_agent.rs").write_text(wrap_body_with_markers("let x = 1;"))
+    _write_workspace_spec(tmp_path)
+    (tmp_path / "runquery_agent.rs").write_text(wrap_body_with_markers("0u64"))
     sock_path = tmp_path / "test.sock"
     ctx = MeasureContext(query_id=1, workspace=tmp_path)
     server = McpSocketServer(sock_path, ctx)

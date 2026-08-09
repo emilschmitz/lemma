@@ -1,7 +1,9 @@
 # Verus `run_query` compilation guide
 
-Edit **only** the body between `// AGENT_BODY_START` and `// AGENT_BODY_END` in
-`runquery_agent.rs`. The host injects the signature and `ensures res == method_spec(...)`.
+Edit **only** the region between `// AGENT_EDIT_START` and `// AGENT_EDIT_END` in
+`runquery_agent.rs` (full `pub exec fn run_query`: signature, `requires`, `ensures`, body).
+Legacy shells use `AGENT_BODY_START`/`END` (body only). MethodSpec + Trusted live in
+`context/ro/spec.rs` — read-only. **Do not weaken** `ensures` away from `method_spec(cols)`.
 
 ## Ground truth
 

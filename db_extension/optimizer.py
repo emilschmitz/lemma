@@ -15,7 +15,7 @@ from db_extension.verus_bridge import (
     invoke_verus_custom_pipeline,
     match_query_index,
     resolve_query_id,
-    resolve_ret_type_for_sql,
+    resolve_ret_type_for_spec,
     resolve_schema_for_sql,
     write_mock_agent_body,
 )
@@ -256,7 +256,7 @@ def run_optimization_loop(
         schema_json_path = workspace / "context" / "ro" / "schema.json"
         schema_json_path.parent.mkdir(parents=True, exist_ok=True)
         schema_json_path.write_text(json.dumps(resolved_schema, indent=2) + "\n")
-        ret_type = resolve_ret_type_for_sql(sql_query, resolved_schema)
+        ret_type = resolve_ret_type_for_spec(verus_spec)
         agent_spec = prepare_agent_visible_spec(verus_spec, ret_type)
         view_raw = os.environ.get("LEMMA_DEMO_VIEW_DIR", "").strip()
         if view_raw:

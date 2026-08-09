@@ -172,16 +172,16 @@ def build_agent_prompt(
 ```
 
 ## Your task
-Write a **fast, Verus-provable** Rust `run_query` **body** for the SQL above.
-`{body_path}` is a **host-owned Verus shell** (`pub exec fn run_query` with signature and
-`ensures`); **edit only** the marked **body** between `AGENT_BODY_START` / `AGENT_BODY_END`.
-MethodSpec / `valid_cols` remain in `{ctx}/spec.rs` — do not inline them. Editing the
-shell outside the markers fails admission.
+Write a **fast, Verus-provable** `pub exec fn run_query` for the SQL above.
+`{body_path}` is a **host-owned Verus shell**; **edit only** the marked region between
+`AGENT_EDIT_START` / `AGENT_EDIT_END` (full function: signature, `requires`, `ensures`, body).
+MethodSpec + Trusted remain in `{ctx}/spec.rs` — read-only; do not redefine or add Trusted.
+Editing the shell outside the markers fails admission. **Do not weaken** `ensures` vs `method_spec`.
 
 {budget_section}
 ## ALLOWED (only these)
 1. **Edit one file**: `{body_path}`
-2. **Change only** code between `// AGENT_BODY_START` and `// AGENT_BODY_END`.
+2. **Change only** code between `// AGENT_EDIT_START` and `// AGENT_EDIT_END`.
 3. **Read** (do not modify) context files under `{ctx}/`:
    - `query.sql` — **the SQL we are optimizing** (same as Target SQL above)
    - `schema.json` / `spec.rs` — **query-projected** columns only (same Cols the host verifies)
@@ -198,8 +198,9 @@ shell outside the markers fails admission.
 
 ## FORBIDDEN
 - Do NOT create/edit/delete other files.
-- Do NOT add new `spec fn`, `proof`, `assume`, `arbitrary`, `#[verifier::external_body]`, or `unimplemented!`.
-- Do NOT change `requires`/`ensures` or the `run_query` signature.
+- Do NOT add new `spec fn`, `assume`, `arbitrary`, `#[verifier::external_body]`, or `unimplemented!`.
+- Do NOT weaken or change `ensures` away from `method_spec(cols)` (admission rejects it).
+- Do NOT add new Trusted helpers or redefine `method_spec`.
 - Do NOT search the repo for existing RunQuery bodies or fixtures to copy.
 - Do NOT read any file except the allowed context files above and `{body_path}`.
 
@@ -209,11 +210,11 @@ shell outside the markers fails admission.
 - Do **not** add `proof {{ }}` blocks unless a Verus error requires a specific lemma already in scope.
 
 ## Workspace
-- Edit `{body_path}` between the AGENT_BODY_START/END markers.
+- Edit `{body_path}` between the AGENT_EDIT_START/END markers (full `run_query`).
 - Call `run_runquery(path="runquery_agent.rs")` (omit `dataset_size` unless iterating on a smaller host-allowed limit) to verify and measure.
 - Call `submit_runquery(run_id=...)` with a `run_id` that is **verified** and **better than** your current official mark (or first verified success); re-submit when you beat it.
 {feedback}{spec_section}
-Begin by reading the spec excerpt and `{ctx}/data_profile.md`, then implement the run_query body.
+Begin by reading the spec excerpt and `{ctx}/data_profile.md`, then implement `run_query`.
 """
 
 
@@ -392,14 +393,9 @@ def prepare_workspace(
     reset_body: bool = True,
 ) -> Path:
     workspace.mkdir(parents=True, exist_ok=True)
-    ret_type = "u64"
-    if sql_query.strip():
-        try:
-            from db_extension.verus_bridge import resolve_ret_type_for_sql
+    from research_loop.method_spec_ret_type import resolve_ret_type_from_method_spec
 
-            ret_type = resolve_ret_type_for_sql(sql_query, schema)
-        except Exception:
-            pass
+    ret_type = resolve_ret_type_from_method_spec(verus_spec)
     from research_loop.assemble_verified_program import prepare_agent_visible_spec
 
     agent_spec = prepare_agent_visible_spec(verus_spec, ret_type)
@@ -427,7 +423,7 @@ def prepare_workspace(
     if reset_body or not body_path.exists():
         from research_loop.assemble_runquery import write_runquery_agent_file
 
-        write_runquery_agent_file(body_path, ret_type=ret_type, sql_query=sql_query)
+        write_runquery_agent_file(body_path, ret_type=ret_type, sql_query=sql_query, method_spec_rs=verus_spec)
         log_debug(COMPONENT, "workspace_reset", "built agent shell", path=str(body_path))
     from db_extension.agent.session_clock import write_check_script
 

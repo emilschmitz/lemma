@@ -16,12 +16,29 @@ RET_TYPE_CONFIG: dict[str, dict[str, str]] = {
         "rust_ret": "u64",
         "format_result": 'format!("RESULT: {}", res)',
     },
+    "i64": {
+        "rust_ret": "i64",
+        "format_result": 'format!("RESULT: {}", res)',
+    },
     "map_u32_str_u64": {
         "rust_ret": "HashMap<(u32, String), u64>",
         "hm_map": "Map<(u32, String), u64>",
         "spec_map": "Map<(u32, Seq<char>), u64>",
         "view_spec": "hashmap_u32_str_u64_view",
         "agg_suffix": "u32_str_u64",
+        "format_result": (
+            "{\n"
+            "        let checksum: u64 = res.values().copied().fold(0u64, |a, v| a.wrapping_add(v));\n"
+            '        format!("RESULT: map_len={} checksum={}", res.len(), checksum)\n'
+            "    }"
+        ),
+    },
+    "map_str_u32_u64": {
+        "rust_ret": "HashMap<(String, u32), u64>",
+        "hm_map": "Map<(String, u32), u64>",
+        "spec_map": "Map<(Seq<char>, u32), u64>",
+        "view_spec": "hashmap_str_u32_u64_view",
+        "agg_suffix": "str_u32_u64",
         "format_result": (
             "{\n"
             "        let checksum: u64 = res.values().copied().fold(0u64, |a, v| a.wrapping_add(v));\n"
@@ -77,6 +94,19 @@ RET_TYPE_CONFIG: dict[str, dict[str, str]] = {
         "format_result": (
             "{\n"
             "        let checksum: i64 = res.values().copied().fold(0i64, |a, v| a.wrapping_add(v));\n"
+            '        format!("RESULT: map_len={} checksum={}", res.len(), checksum)\n'
+            "    }"
+        ),
+    },
+    "map_u32_str_str_u64": {
+        "rust_ret": "HashMap<(u32, String, String), u64>",
+        "hm_map": "Map<(u32, String, String), u64>",
+        "spec_map": "Map<(u32, Seq<char>, Seq<char>), u64>",
+        "view_spec": "hashmap_u32_str_str_u64_view",
+        "agg_suffix": "u32_str_str_u64",
+        "format_result": (
+            "{\n"
+            "        let checksum: u64 = res.values().copied().fold(0u64, |a, v| a.wrapping_add(v));\n"
             '        format!("RESULT: map_len={} checksum={}", res.len(), checksum)\n'
             "    }"
         ),
@@ -158,7 +188,7 @@ RET_TYPE_CONFIG: dict[str, dict[str, str]] = {
     },
 }
 
-# NativeAgg-style trusted helpers per map return type.
+
 _AGG_HELPER_SPECS: dict[str, dict[str, str]] = {
     "map_u32_str_u64": {
         "add_params": "k0: u32, k1: &str, delta: u64",
@@ -166,6 +196,16 @@ _AGG_HELPER_SPECS: dict[str, dict[str, str]] = {
         "value_ty": "u64",
         "exec_body": """
     let key = (k0, k1.to_string());
+    let prev = hm.get(&key).copied().unwrap_or(0);
+    hm.insert(key, prev.wrapping_add(delta));
+""",
+    },
+    "map_str_u32_u64": {
+        "add_params": "k0: &str, k1: u32, delta: u64",
+        "spec_key": "(k0@, k1)",
+        "value_ty": "u64",
+        "exec_body": """
+    let key = (k0.to_string(), k1);
     let prev = hm.get(&key).copied().unwrap_or(0);
     hm.insert(key, prev.wrapping_add(delta));
 """,
@@ -204,6 +244,16 @@ _AGG_HELPER_SPECS: dict[str, dict[str, str]] = {
         "add_params": "k0: u32, k1: &str, k2: &str, delta: i64",
         "spec_key": "(k0, k1@, k2@)",
         "value_ty": "i64",
+        "exec_body": """
+    let key = (k0, k1.to_string(), k2.to_string());
+    let prev = hm.get(&key).copied().unwrap_or(0);
+    hm.insert(key, prev.wrapping_add(delta));
+""",
+    },
+    "map_u32_str_str_u64": {
+        "add_params": "k0: u32, k1: &str, k2: &str, delta: u64",
+        "spec_key": "(k0, k1@, k2@)",
+        "value_ty": "u64",
         "exec_body": """
     let key = (k0, k1.to_string(), k2.to_string());
     let prev = hm.get(&key).copied().unwrap_or(0);
@@ -282,6 +332,39 @@ pub exec fn agg_add_{suffix}(hm: &mut {rust_ret}, {agg["add_params"]})
 """
 
 
+def _cfg(ret_type: str) -> dict[str, str]:
+    if ret_type in RET_TYPE_CONFIG:
+        return RET_TYPE_CONFIG[ret_type]
+    from research_loop.trusted_ret_bridge import dynamic_ret_type_config
+
+    dyn = dynamic_ret_type_config()
+    if ret_type in dyn:
+        return dyn[ret_type]
+    raise ValueError(
+        f"unsupported MethodSpec return type key (no Trusted/shell wiring): {ret_type}"
+    )
+
+
+def _ret_type_supported(ret_type: str) -> bool:
+    if ret_type in RET_TYPE_CONFIG:
+        return True
+    from research_loop.trusted_ret_bridge import dynamic_ret_type_config
+
+    return ret_type in dynamic_ret_type_config()
+
+
+def _boundary_helpers(ret_type: str) -> str:
+    boundary = _emit_agg_helpers(ret_type)
+    if boundary:
+        return boundary
+    from research_loop.trusted_ret_bridge import get_bridge
+
+    b = get_bridge(ret_type)
+    if b and b.trusted_rs:
+        return b.trusted_rs
+    return ""
+
+
 def _strip_skeleton(spec_rs: str) -> str:
     """Remove commented run_query skeleton; keep closing verus! brace."""
     if RUNQUERY_SKELETON_MARKER not in spec_rs:
@@ -307,12 +390,13 @@ def _trim_verus_close(spec_rs: str) -> str:
 def prepare_agent_visible_spec(verus_spec: str, ret_type: str) -> str:
     """Spec the sandbox agent may read: MethodSpec + TRUSTED agg API for ret_type; no RunQuery skeleton."""
     core = _trim_verus_close(_strip_skeleton(verus_spec))
-    boundary = _emit_agg_helpers(ret_type)
+    boundary = _boundary_helpers(ret_type)
     if boundary:
         agent_note = (
-            "// === Agent: for GROUP BY maps use agg_new_* / agg_add_* below (TRUSTED).\n"
-            "// Raw HashMap::new() will not prove against opaque hashmap_*_view; prefer these\n"
-            "// over Cols.agg_push_* helpers.\n"
+            "// === Agent: use TRUSTED helpers below for opaque views.\n"
+            "// Maps: agg_new_* / agg_add_* (wrapping) / agg_put_* (set projected tuple).\n"
+            "// Seqs: seq_new_* / seq_push_* when present. Raw HashMap::new()/Vec::new()\n"
+            "// will not prove against opaque hashmap_*/vec_*_view.\n"
         )
         boundary = agent_note + boundary.lstrip("\n")
     return f"{core}{boundary}}} // verus!\n"
@@ -606,9 +690,15 @@ def generate_main_rs(
     bench_timing_body: str = "",
     bench_post_timing: str = "",
     bench_main_prefix: str = "",
+    rust_ret: str | None = None,
 ) -> str:
-    cfg = RET_TYPE_CONFIG[ret_type]
-    fmt = cfg["format_result"]
+    if rust_ret is not None:
+        from research_loop.format_result_from_type import format_result_for_exec_type
+
+        fmt = format_result_for_exec_type(rust_ret)
+    else:
+        cfg = _cfg(ret_type)
+        fmt = cfg["format_result"]
     bench_call = bench_exec or "run_query(&cols)"
     timing = _median_bench_loop(
         fmt=fmt,
@@ -650,7 +740,7 @@ def generate_main_join_rs(
     ret_type: str,
     bench_exec: str = "run_query(&left, &right)",
 ) -> str:
-    cfg = RET_TYPE_CONFIG[ret_type]
+    cfg = _cfg(ret_type)
     fmt = cfg["format_result"]
     left_struct = f"Cols_{left_table}"
     right_struct = f"Cols_{right_table}"
@@ -696,15 +786,17 @@ def assemble_verified_join_program(
     bench_exec: str = "",
 ) -> str:
     """Build one `.rs` file for a two-table join query."""
-    if ret_type not in RET_TYPE_CONFIG:
-        raise ValueError(f"unknown ret_type: {ret_type}")
+    if not _ret_type_supported(ret_type):
+        raise ValueError(
+            f"unsupported MethodSpec return type key (no Trusted/shell wiring): {ret_type}"
+        )
 
     left_table, right_table = table_order
     if left_table not in multi_schema or right_table not in multi_schema:
         raise ValueError(f"table_order {table_order} not in multi_schema keys")
 
     core = _prepare_spec_rs(spec_rs, None)
-    boundary = _emit_agg_helpers(ret_type)
+    boundary = _boundary_helpers(ret_type)
     agent_externs = emit_agent_externs()
     load_gen = _select_load_generator()
     loaders = "\n".join(
@@ -745,7 +837,7 @@ def generate_main_nway_rs(
     ret_type: str,
     bench_exec: str = "",
 ) -> str:
-    cfg = RET_TYPE_CONFIG[ret_type]
+    cfg = _cfg(ret_type)
     fmt = cfg["format_result"]
     load_lines = []
     arg_names = []
@@ -791,15 +883,17 @@ def assemble_verified_nway_program(
     bench_exec: str = "",
 ) -> str:
     """Build one `.rs` file for an N-table (3+) join query."""
-    if ret_type not in RET_TYPE_CONFIG:
-        raise ValueError(f"unknown ret_type: {ret_type}")
+    if not _ret_type_supported(ret_type):
+        raise ValueError(
+            f"unsupported MethodSpec return type key (no Trusted/shell wiring): {ret_type}"
+        )
 
     for table in table_order:
         if table not in multi_schema:
             raise ValueError(f"table {table!r} not in multi_schema")
 
     core = _prepare_spec_rs(spec_rs, None)
-    boundary = _emit_agg_helpers(ret_type)
+    boundary = _boundary_helpers(ret_type)
     agent_externs = emit_agent_externs()
     load_gen = _select_load_generator()
     loaders = "\n".join(
@@ -842,13 +936,16 @@ def assemble_verified_program(
     bench_timing_body: str = "",
     bench_post_timing: str = "",
     bench_main_prefix: str = "",
+    rust_ret: str | None = None,
 ) -> str:
     """Build one `.rs` file: spec + proved run_query + load_cols + main."""
-    if ret_type not in RET_TYPE_CONFIG:
-        raise ValueError(f"unknown ret_type: {ret_type}")
+    if not _ret_type_supported(ret_type):
+        raise ValueError(
+            f"unsupported MethodSpec return type key (no Trusted/shell wiring): {ret_type}"
+        )
 
     core = _prepare_spec_rs(spec_rs, schema_dict)
-    boundary = _emit_agg_helpers(ret_type)
+    boundary = _boundary_helpers(ret_type)
     agent_externs = emit_agent_externs()
     load_gen = _select_load_generator()
     load_cols = load_gen(schema_dict)
@@ -859,6 +956,7 @@ def assemble_verified_program(
         bench_timing_body=bench_timing_body,
         bench_post_timing=bench_post_timing,
         bench_main_prefix=bench_main_prefix,
+        rust_ret=rust_ret,
     )
     hot = f"{hot_path_rs.rstrip()}\n\n" if hot_path_rs else ""
 
@@ -872,3 +970,13 @@ def assemble_verified_program(
         f"{hot}"
         f"{main_rs}"
     )
+
+
+def rust_ret_from_run_query_fn(fn_text: str) -> str | None:
+    """Parse admitted ``pub exec fn run_query`` return type for format_result wiring."""
+    from research_loop.admit_agent_runquery import _parse_return_type
+
+    try:
+        return _parse_return_type(fn_text)
+    except ValueError:
+        return None

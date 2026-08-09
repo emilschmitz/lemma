@@ -6,7 +6,7 @@ from pathlib import Path
 
 from db_extension.agent.config import AgentFlags
 from db_extension.agent.harness import _prepare_workspace
-from db_extension.verus_bridge import resolve_ret_type_for_sql
+from db_extension.verus_bridge import resolve_ret_type_for_spec
 from research_loop.agent_sandbox import prepare_workspace
 from research_loop.assemble_verified_program import (
     RUNQUERY_SKELETON_MARKER,
@@ -22,7 +22,7 @@ _SCALAR_SCHEMA = {"V": "bigint"}
 
 def test_prepare_agent_visible_spec_map_includes_agg_helpers() -> None:
     raw = transpile_sql_to_verus(_HAVING_SQL, _HAVING_SCHEMA)
-    ret_type = resolve_ret_type_for_sql(_HAVING_SQL, _HAVING_SCHEMA)
+    ret_type = resolve_ret_type_for_spec(raw)
     assert ret_type == "map_u32_str_u64"
 
     out = prepare_agent_visible_spec(raw, ret_type)
@@ -38,7 +38,7 @@ def test_prepare_agent_visible_spec_map_includes_agg_helpers() -> None:
 
 def test_prepare_agent_visible_spec_scalar_strips_skeleton_no_agg() -> None:
     raw = transpile_sql_to_verus(_SCALAR_SQL, _SCALAR_SCHEMA)
-    ret_type = resolve_ret_type_for_sql(_SCALAR_SQL, _SCALAR_SCHEMA)
+    ret_type = resolve_ret_type_for_spec(raw)
     assert ret_type == "u64"
 
     out = prepare_agent_visible_spec(raw, ret_type)

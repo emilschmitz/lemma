@@ -14,7 +14,10 @@ See also root **`AGENTS.md`** (pipeline contract). Summary:
 
 - MethodSpec = **real** open-spec fold — **not** `arbitrary()`.
 - Agent fills `run_query` so Verus proves `≡ method_spec`; agent **cannot** add TRUSTEDs.
-- Predefined host TRUSTED helpers only (`value_bounds` / primitives / NativeAgg).
+- Predefined host TRUSTED helpers only (`value_bounds` / primitives / NativeAgg /
+  structural `hashmap_*_view`·`agg_*` / `vec_*_view`·`seq_*` from MethodSpec `T`).
+  Shell `->` type is derived from MethodSpec return type (see
+  `docs/METHODSPEC_SHELL_TRUSTED_GAP.md`). Agent still cannot invent new TRUSTEDs.
 - **Forbidden:** vacuous TRUSTED `run_query`, `unimplemented!` bridges, auto-HashMap
   “verified” bodies, DuckDB fallback for verified success.
 
