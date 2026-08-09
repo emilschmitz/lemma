@@ -245,10 +245,17 @@ def agent_file_to_run_query_body(
     """
     _ = spec_rs
     from research_loop.assemble_runquery import (
+        AGENT_START,
         build_exec_run_query_from_body,
         extract_agent_body_checked,
         read_shell_fingerprint,
     )
+
+    # Host-injected proved stand-ins (bench_standins) ship a full pub exec fn with proof.
+    if AGENT_START not in agent_raw and _EXEC_RUN_QUERY_RE.search(agent_raw):
+        body = agent_raw.strip()
+        if "method_spec" in body and "external_body" not in body and "unimplemented!" not in body:
+            return body
 
     ret = ret_type or "u64"
     expected_fp = read_shell_fingerprint(agent_path) if agent_path is not None else None
@@ -340,6 +347,29 @@ def resolve_tbl_path(sql: str, schema: dict, workload_tables: dict[str, Path] | 
     return ""
 
 
+def read_workspace_bench_hints(runquery_path: Path | None) -> dict[str, str]:
+    """Optional hot-path bench overrides from ``context/ro/bench_hints.json``."""
+    if runquery_path is None:
+        return {}
+    hints_path = runquery_path.parent / "context" / "ro" / "bench_hints.json"
+    if not hints_path.is_file():
+        return {}
+    try:
+        raw = json.loads(hints_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    keys = (
+        "hot_path_rs",
+        "bench_exec",
+        "bench_timing_body",
+        "bench_post_timing",
+        "bench_main_prefix",
+    )
+    return {k: str(raw[k]) for k in keys if k in raw and raw[k]}
+
+
 def invoke_verus_custom_pipeline(
     *,
     sql: str,
@@ -353,6 +383,7 @@ def invoke_verus_custom_pipeline(
     """Run research_loop Verus custom SQL pipeline; normalize metrics for optimizer/MCP."""
     from research_loop.harness import run_custom_sql_pipeline
 
+    bench_hints = read_workspace_bench_hints(runquery_path)
     body = (run_query_body or "").strip()
     if not body and runquery_path is not None and runquery_path.is_file():
         agent_raw = runquery_path.read_text(encoding="utf-8")
@@ -377,6 +408,7 @@ def invoke_verus_custom_pipeline(
         run_query_body=body,
         tbl=tbl_path or None,
         limit=dataset_size,
+        **bench_hints,
     )
     return normalize_harness_metrics(res)
 

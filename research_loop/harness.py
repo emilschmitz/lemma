@@ -1614,6 +1614,11 @@ def run_custom_sql_pipeline(
     limit: int = 50_000,
     table_order: tuple[str, ...] | None = None,
     skip_bench: bool = False,
+    hot_path_rs: str = "",
+    bench_exec: str = "",
+    bench_timing_body: str = "",
+    bench_post_timing: str = "",
+    bench_main_prefix: str = "",
 ) -> dict:
     """Transpile MethodSpec → agent run_query → assemble → verify → compile → run.
 
@@ -1728,6 +1733,11 @@ def run_custom_sql_pipeline(
                 schema_dict=schema_dict,
                 ret_type=ret_type,
                 default_tbl=default_tbl,
+                hot_path_rs=hot_path_rs,
+                bench_exec=bench_exec,
+                bench_timing_body=bench_timing_body,
+                bench_post_timing=bench_post_timing,
+                bench_main_prefix=bench_main_prefix,
             )
     except Exception as e:
         return _pipeline_failure("assemble", sql, str(e), schema)
