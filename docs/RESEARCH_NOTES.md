@@ -47,5 +47,6 @@ Distinct-set helpers (`set_insert_str`, etc.) plus **group `agg_step_*`** (see `
 
 ## Safety / generality bar
 
+- Adversarial test policy: `docs/ADVERSARIAL_TESTS.md` (pattern: `tests/test_admit_agent_runquery.py`).
 - Safe = fixed host menu; admission rejects agent-authored TRUSTED/`admit`/`arbitrary`.
 - Practically general for SEC-like analytical SQL if shape-level steps cover resample clusters; not “all SQL forever.”

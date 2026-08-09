@@ -43,6 +43,7 @@ _FORBIDDEN_IN_EDIT = (
     "unimplemented!",
     "#[verifier::external_body]",
     "#[verifier::admit",
+    "admit(",
     "pub open spec fn",
     "spec fn method_spec",
     "unsafe ",
