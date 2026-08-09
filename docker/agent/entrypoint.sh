@@ -70,6 +70,16 @@ if [[ "${LEMMA_AGENT_MODE:-tools}" == "cli" ]]; then
   }
 }
 EOF
+    # Also seed CURSOR_CONFIG_DIR so discovery is not only under /workspace/.cursor.
+    if [[ -n "${CURSOR_CONFIG_DIR:-}" ]]; then
+      mkdir -p "$CURSOR_CONFIG_DIR"
+      cp "$CURSOR_PROJECT_DIR/mcp.json" "$CURSOR_CONFIG_DIR/mcp.json"
+    fi
+    # Pre-approve for this project (AGENT_CMD should also pass --approve-mcps).
+    if command -v agent >/dev/null 2>&1; then
+      (cd /workspace && agent mcp enable lemma-host) >/tmp/lemma-mcp-enable.log 2>&1 \
+        || echo "WARN: agent mcp enable lemma-host failed (see /tmp/lemma-mcp-enable.log)" >&2
+    fi
   fi
   # Project CLI overrides: deny web tools when network is restricted (egress sock present).
   if [[ -n "${LEMMA_EGRESS_SOCK:-}" && -S "${LEMMA_EGRESS_SOCK}" ]]; then

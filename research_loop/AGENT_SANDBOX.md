@@ -39,7 +39,7 @@ Do **not** set `CURSOR_FORCED_SHELL_EGRESS_ALLOW_WEB_TOOLS` unless you intention
 ```bash
 export USE_AGENT_DOCKER=1
 export MOCK_AGENT=0
-export AGENT_CMD='agent -p --force --trust --model composer-2.5 --output-format stream-json --stream-partial-output "$(cat PROMPT.txt)"'
+export AGENT_CMD='agent -p --force --trust --approve-mcps --model composer-2.5 --output-format stream-json --stream-partial-output "$(cat PROMPT.txt)"'
 export AGENT_ENV=CURSOR_API_KEY          # optional if ~/.config/cursor/auth.json exists
 export AGENT_CREDENTIALS_DIR=$HOME/.cursor
 export AGENT_AUTH_DIR=$HOME/.config/cursor
