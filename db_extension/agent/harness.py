@@ -10,9 +10,9 @@ from pathlib import Path
 from db_extension.agent.config import AgentFlags, load_agent_flags
 from db_extension.agent.docker_runner import ContainerSession, start_tool_container
 from db_extension.agent.extract import extract_marked_body
-from db_extension.agent.measure_core import MeasureContext, get_submitted
 from db_extension.agent.mcp_socket import McpSocketServer
 from db_extension.agent.mcp_tool_specs import openai_host_tool_definitions
+from db_extension.agent.measure_core import MeasureContext, get_submitted
 from db_extension.agent.profile import build_data_profile
 from research_loop.agent_context import hardware_profile, hardware_profile_markdown
 from research_loop.lemma_flags import lemma_agent_hardware
@@ -214,9 +214,20 @@ def _prepare_workspace(
     reset_body: bool,
 ) -> Path:
     workspace.mkdir(parents=True, exist_ok=True)
+    ret_type = "u64"
+    if sql_query.strip():
+        try:
+            from db_extension.verus_bridge import resolve_ret_type_for_sql
+
+            ret_type = resolve_ret_type_for_sql(sql_query, schema)
+        except Exception:
+            pass
+    from research_loop.assemble_verified_program import prepare_agent_visible_spec
+
+    agent_spec = prepare_agent_visible_spec(verus_spec, ret_type)
     ro = workspace / "context" / "ro"
     ro.mkdir(parents=True, exist_ok=True)
-    (ro / "spec.rs").write_text(verus_spec)
+    (ro / "spec.rs").write_text(agent_spec)
     (ro / "query.sql").write_text(sql_query.strip() + "\n")
     (ro / "schema.json").write_text(json.dumps(schema, indent=2) + "\n")
     (ro / "data_profile.md").write_text(
@@ -246,14 +257,6 @@ def _prepare_workspace(
         )
     body_path = workspace / DEFAULT_RUNQUERY
     if reset_body or not body_path.exists():
-        ret_type = "u64"
-        if sql_query.strip():
-            try:
-                from db_extension.verus_bridge import resolve_ret_type_for_sql
-
-                ret_type = resolve_ret_type_for_sql(sql_query, schema)
-            except Exception:
-                pass
         from research_loop.assemble_runquery import write_runquery_agent_file
 
         write_runquery_agent_file(body_path, ret_type=ret_type, sql_query=sql_query)

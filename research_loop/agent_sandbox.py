@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from research_loop.pipeline_demo import resolve_demo_view_dir
@@ -332,7 +332,7 @@ def _run_subprocess_tee_agent_log(
         parsed_f = open(parsed_log_path, "a", encoding="utf-8")
     try:
         with open(log_path, "a", encoding="utf-8") as log_f:
-            log_f.write(f"\n--- agent run {datetime.now(timezone.utc).isoformat()} ---\n")
+            log_f.write(f"\n--- agent run {datetime.now(UTC).isoformat()} ---\n")
             log_f.flush()
             proc = subprocess.Popen(
                 cmd,
@@ -377,9 +377,20 @@ def prepare_workspace(
     reset_body: bool = True,
 ) -> Path:
     workspace.mkdir(parents=True, exist_ok=True)
+    ret_type = "u64"
+    if sql_query.strip():
+        try:
+            from db_extension.verus_bridge import resolve_ret_type_for_sql
+
+            ret_type = resolve_ret_type_for_sql(sql_query, schema)
+        except Exception:
+            pass
+    from research_loop.assemble_verified_program import prepare_agent_visible_spec
+
+    agent_spec = prepare_agent_visible_spec(verus_spec, ret_type)
     ro = workspace / "context" / "ro"
     ro.mkdir(parents=True, exist_ok=True)
-    (ro / SPEC_NAME).write_text(verus_spec)
+    (ro / SPEC_NAME).write_text(agent_spec)
     (ro / "query.sql").write_text(sql_query.strip() + "\n")
     (ro / "schema.json").write_text(json.dumps(schema or {}, indent=2) + "\n")
     from db_extension.agent.profile import build_data_profile
@@ -390,7 +401,7 @@ def prepare_workspace(
     view = _demo_view_dir()
     if view:
         shutil.copy2(ro / SPEC_NAME, view / SPEC_NAME)
-        (view / "CURRENT").write_text(f"{SPEC_NAME} (run_query MethodSpec)\n")
+        (view / "CURRENT").write_text(f"{SPEC_NAME} (MethodSpec + TRUSTED agg API)\n")
     for name in ("COMPILATION_GUIDE.md", "PRIMER.md", "AGENTS.md", "PRIMITIVES.md"):
         for base in (RESEARCH / "agents", RESEARCH, ROOT / "research_loop" / "agents"):
             guide = base / name
@@ -399,14 +410,6 @@ def prepare_workspace(
                 break
     body_path = workspace / BODY_NAME
     if reset_body or not body_path.exists():
-        ret_type = "u64"
-        if sql_query.strip():
-            try:
-                from db_extension.verus_bridge import resolve_ret_type_for_sql
-
-                ret_type = resolve_ret_type_for_sql(sql_query, schema)
-            except Exception:
-                pass
         from research_loop.assemble_runquery import write_runquery_agent_file
 
         write_runquery_agent_file(body_path, ret_type=ret_type, sql_query=sql_query)
@@ -482,8 +485,8 @@ def run_agent_docker(
         _parse_allowlist,
         infer_egress_profile,
     )
-    from db_extension.agent.measure_core import MeasureContext
     from db_extension.agent.mcp_socket import McpSocketServer
+    from db_extension.agent.measure_core import MeasureContext
 
     env = parse_agent_env(cfg, base={})
     env["AGENT_CMD"] = agent_cmd

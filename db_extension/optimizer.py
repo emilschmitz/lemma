@@ -1,35 +1,39 @@
-import os
-import sys
 import json
+import os
 import subprocess
+import sys
 import time
 from pathlib import Path
-from verus_transpiler import transpile_sql_to_verus
+
 from verus_transpiler.column_projection import (
     project_multi_schema_for_query,
     project_schema_for_query,
 )
 from verus_transpiler.parse_sql import normalize_schema
+
 from db_extension.verus_bridge import (
     invoke_verus_custom_pipeline,
     match_query_index,
     resolve_query_id,
+    resolve_ret_type_for_sql,
     resolve_schema_for_sql,
     write_mock_agent_body,
 )
-from research_loop.pipeline_log import log_debug, log_info, log_trace
-from research_loop.run_artifacts import RunArtifacts, begin_run, end_run
+from research_loop.assemble_verified_program import prepare_agent_visible_spec
 from research_loop.lemma_flags import lemma_research_log
 from research_loop.pipeline_demo import (
+    demo_banner,
     demo_enabled,
     demo_iteration,
+    demo_live_step,
     demo_note,
     demo_step_pass_fail,
-    demo_banner,
-    demo_live_step,
     format_demo_seconds_from_us,
     verbose_enabled,
 )
+from research_loop.pipeline_log import log_debug, log_info, log_trace
+from research_loop.run_artifacts import RunArtifacts, begin_run, end_run
+from verus_transpiler import transpile_sql_to_verus
 
 COMPONENT = "optimizer"
 
@@ -95,7 +99,10 @@ def _history_entry(
 
 def _maybe_merge_lease_metrics(metrics: dict) -> dict:
     try:
-        from db_extension.agent.lease_measure import lease_measure_enabled, merge_lease_into_metrics
+        from db_extension.agent.lease_measure import (
+            lease_measure_enabled,
+            merge_lease_into_metrics,
+        )
 
         if lease_measure_enabled() and metrics.get("status") == "SUCCESS" and metrics.get("proof_verified"):
             return merge_lease_into_metrics(metrics)
@@ -249,15 +256,17 @@ def run_optimization_loop(
         schema_json_path = workspace / "context" / "ro" / "schema.json"
         schema_json_path.parent.mkdir(parents=True, exist_ok=True)
         schema_json_path.write_text(json.dumps(resolved_schema, indent=2) + "\n")
+        ret_type = resolve_ret_type_for_sql(sql_query, resolved_schema)
+        agent_spec = prepare_agent_visible_spec(verus_spec, ret_type)
         view_raw = os.environ.get("LEMMA_DEMO_VIEW_DIR", "").strip()
         if view_raw:
             view_p = Path(view_raw)
             view_p.mkdir(parents=True, exist_ok=True)
-            (view_p / "spec.rs").write_text(verus_spec)
-            (view_p / "CURRENT").write_text("spec.rs (transpiled)\n")
+            (view_p / "spec.rs").write_text(agent_spec)
+            (view_p / "CURRENT").write_text("spec.rs (MethodSpec + TRUSTED agg API)\n")
         ro_spec = workspace / "context" / "ro" / "spec.rs"
         ro_spec.parent.mkdir(parents=True, exist_ok=True)
-        ro_spec.write_text(verus_spec)
+        ro_spec.write_text(agent_spec)
         (workspace / "context" / "ro" / "query.sql").write_text(sql_query.strip() + "\n")
 
         # Step 2: Write agent code
@@ -556,11 +565,11 @@ def run_optimization_loop(
                     _vprint(f"    {COLOR_GREEN}Result:{COLOR_RESET} Executed in {COLOR_CYAN}{latency} us{COLOR_RESET}")
                 elif not proof_verified:
                     _vprint(f" {COLOR_RED}VERIFICATION FAILED{COLOR_RESET}")
-                    if "compiler_error" in metrics and metrics["compiler_error"]:
+                    if metrics.get("compiler_error"):
                         _vprint(f"    Error: {metrics['compiler_error']}")
                 else:
                     _vprint(f" {COLOR_RED}COMPILATION FAILED{COLOR_RESET}")
-                    if "compiler_error" in metrics and metrics["compiler_error"]:
+                    if metrics.get("compiler_error"):
                         _vprint(f"    Error: {metrics['compiler_error']}")
 
             metrics = _maybe_merge_lease_metrics(metrics)

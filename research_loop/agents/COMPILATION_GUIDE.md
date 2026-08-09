@@ -35,7 +35,7 @@ Match `method_spec_helper(cols, i as int)` to the transpiled helper name in `spe
 ## Allowed patterns
 
 - Use TRUSTED helpers already in scope (`add_u64`, column `get_*_exec` accessors, NativeAgg bridges).
-- Ghost maps for GROUP BY state when the spec uses them.
+- For map returns, use `agg_new_*` / `agg_add_*` from `spec.rs` (TRUSTED); do not prove `HashMap::new()` against `hashmap_*_view`.
 
 ## Forbidden
 

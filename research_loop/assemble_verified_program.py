@@ -293,6 +293,31 @@ def _strip_skeleton(spec_rs: str) -> str:
     return head.rstrip() + "\n"
 
 
+_VERUS_CLOSE_RE = re.compile(r"\n\} // verus!\s*$", re.MULTILINE)
+
+
+def _trim_verus_close(spec_rs: str) -> str:
+    """Drop trailing ``} // verus!`` so callers can append boundary helpers."""
+    m = _VERUS_CLOSE_RE.search(spec_rs)
+    if m:
+        return spec_rs[: m.start()].rstrip() + "\n"
+    return spec_rs.rstrip() + "\n"
+
+
+def prepare_agent_visible_spec(verus_spec: str, ret_type: str) -> str:
+    """Spec the sandbox agent may read: MethodSpec + TRUSTED agg API for ret_type; no RunQuery skeleton."""
+    core = _trim_verus_close(_strip_skeleton(verus_spec))
+    boundary = _emit_agg_helpers(ret_type)
+    if boundary:
+        agent_note = (
+            "// === Agent: for GROUP BY maps use agg_new_* / agg_add_* below (TRUSTED).\n"
+            "// Raw HashMap::new() will not prove against opaque hashmap_*_view; prefer these\n"
+            "// over Cols.agg_push_* helpers.\n"
+        )
+        boundary = agent_note + boundary.lstrip("\n")
+    return f"{core}{boundary}}} // verus!\n"
+
+
 def _inject_duckdb_like_cols_fields(spec_rs: str, schema_dict: dict[str, str]) -> str:
     """Append duckdb_like metadata fields to transpiled Cols struct."""
     extras: list[str] = []
