@@ -223,17 +223,63 @@ def _ret_type_cfg(ret_type: str) -> dict[str, str]:
         ) from None
 
 
-def _ensures_clause(ret_type: str) -> str:
+def _valid_cols_predicate(struct_name: str, param: str) -> str:
+    if struct_name == "Cols":
+        return f"valid_cols({param})"
+    if struct_name.startswith("Cols_"):
+        table = struct_name[len("Cols_") :]
+        return f"valid_cols_{table}({param})"
+    raise ValueError(f"unsupported Cols struct name in method_spec: {struct_name}")
+
+
+def _method_spec_params(method_spec_rs: str | None) -> list[tuple[str, str]] | None:
+    if not method_spec_rs or not method_spec_rs.strip():
+        return None
+    from research_loop.method_spec_ret_type import parse_method_spec_params
+
+    try:
+        return parse_method_spec_params(method_spec_rs)
+    except ValueError:
+        return None
+
+
+def _method_spec_call(method_spec_rs: str | None) -> str:
+    params = _method_spec_params(method_spec_rs)
+    if not params:
+        return "method_spec(cols)"
+    return f"method_spec({', '.join(p for p, _ in params)})"
+
+
+def _run_query_signature(rust_ret: str, method_spec_rs: str | None) -> str:
+    params = _method_spec_params(method_spec_rs)
+    if not params:
+        return f"pub exec fn run_query(cols: &Cols) -> (res: {rust_ret})"
+    sig_params = ", ".join(f"{p}: &{s}" for p, s in params)
+    return f"pub exec fn run_query({sig_params}) -> (res: {rust_ret})"
+
+
+def _run_query_requires(method_spec_rs: str | None) -> str:
+    params = _method_spec_params(method_spec_rs)
+    if not params:
+        return "    requires valid_cols(cols),"
+    return "\n".join(
+        f"    requires {_valid_cols_predicate(struct, param)},"
+        for param, struct in params
+    )
+
+
+def _ensures_clause(ret_type: str, *, method_spec_rs: str | None = None) -> str:
+    call = _method_spec_call(method_spec_rs)
     from research_loop.trusted_ret_bridge import get_bridge
 
     b = get_bridge(ret_type)
     if b is not None:
-        return b.ensures
+        return b.ensures.replace("method_spec(cols)", call)
     cfg = _ret_type_cfg(ret_type)
     view_spec = cfg.get("view_spec")
     if view_spec:
-        return f"{view_spec}(res@) == method_spec(cols),"
-    return "res == method_spec(cols),"
+        return f"{view_spec}(res@) == {call},"
+    return f"res == {call},"
 
 
 def _default_body_stub(ret_type: str) -> str:
@@ -282,16 +328,17 @@ def _method_spec_hint_comments(method_spec_rs: str | None, *, ret_type: str) -> 
     except ValueError:
         return ""
     views = trusted_view_menu(method_spec_rs)
+    call = _method_spec_call(method_spec_rs)
     if views:
         names = ", ".join(v.name for v in views)
-        view_example = f"{views[0].name}(res@) == method_spec(cols)"
+        view_example = f"{views[0].name}(res@) == {call}"
     else:
         contract = allowed_contract_from_method_spec(method_spec_rs)
         names = contract.view_name or "(direct res == method_spec)"
         view_example = (
-            f"{contract.view_name}(res@) == method_spec(cols)"
+            f"{contract.view_name}(res@) == {call}"
             if contract.view_name
-            else "res == method_spec(cols)"
+            else f"res == {call}"
         )
     return (
         f"// MethodSpec returns: {t}\n"
@@ -320,7 +367,7 @@ def build_runquery_agent_source(
         )
     cfg = _ret_type_cfg(ret_type)
     rust_ret = cfg["rust_ret"]
-    ensures = _ensures_clause(ret_type)
+    ensures = _ensures_clause(ret_type, method_spec_rs=method_spec_rs)
     extra_use = ""
     if rust_ret.startswith("HashMap"):
         extra_use = "use std::collections::HashMap;\n"
@@ -336,8 +383,8 @@ def build_runquery_agent_source(
     hint = _method_spec_hint_comments(method_spec_rs, ret_type=ret_type)
     run_query_fn = (
         f"{hint}"
-        f"pub exec fn run_query(cols: &Cols) -> (res: {rust_ret})\n"
-        "    requires valid_cols(cols),\n"
+        f"{_run_query_signature(rust_ret, method_spec_rs)}\n"
+        f"{_run_query_requires(method_spec_rs)}\n"
         f"    ensures {ensures}\n"
         "{\n"
         f"{inner_body}\n"
@@ -371,7 +418,7 @@ def build_runquery_agent_source_legacy(
     """Legacy Verus agent shell with AGENT_BODY markers around body statements only."""
     cfg = _ret_type_cfg(ret_type)
     rust_ret = cfg["rust_ret"]
-    ensures = _ensures_clause(ret_type)
+    ensures = _ensures_clause(ret_type, method_spec_rs=method_spec_rs)
     extra_use = ""
     if rust_ret.startswith("HashMap"):
         extra_use = "use std::collections::HashMap;\n"
@@ -394,8 +441,8 @@ def build_runquery_agent_source_legacy(
         f"{extra_use}"
         "// Types below are provided when host assembles with spec.rs.\n\n"
         "verus! {\n\n"
-        f"pub exec fn run_query(cols: &Cols) -> (res: {rust_ret})\n"
-        "    requires valid_cols(cols),\n"
+        f"{_run_query_signature(rust_ret, method_spec_rs)}\n"
+        f"{_run_query_requires(method_spec_rs)}\n"
         f"    ensures {ensures}\n"
         "{\n"
         f"{AGENT_START}\n"
@@ -428,15 +475,20 @@ def host_edit_fingerprint(source: str) -> str:
     return hashlib.sha256(outside.encode("utf-8")).hexdigest()
 
 
-def build_exec_run_query_from_body(body_inner: str, ret_type: str) -> str:
+def build_exec_run_query_from_body(
+    body_inner: str,
+    ret_type: str,
+    *,
+    method_spec_rs: str | None = None,
+) -> str:
     """Re-wrap extracted body into full ``pub exec fn run_query`` for assembly."""
     cfg = _ret_type_cfg(ret_type)
     rust_ret = cfg["rust_ret"]
-    ensures = _ensures_clause(ret_type)
+    ensures = _ensures_clause(ret_type, method_spec_rs=method_spec_rs)
     indented = _indent_body_lines(body_inner)
     return (
-        f"pub exec fn run_query(cols: &Cols) -> (res: {rust_ret})\n"
-        "    requires valid_cols(cols),\n"
+        f"{_run_query_signature(rust_ret, method_spec_rs)}\n"
+        f"{_run_query_requires(method_spec_rs)}\n"
         f"    ensures {ensures}\n"
         "{\n"
         f"{indented}\n"

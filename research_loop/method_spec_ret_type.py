@@ -8,6 +8,11 @@ _METHOD_SPEC_SIG = re.compile(
     r"pub\s+open\s+spec\s+fn\s+method_spec\s*\([^)]*\)\s*->\s*",
     re.DOTALL,
 )
+_METHOD_SPEC_FN = re.compile(
+    r"pub\s+open\s+spec\s+fn\s+method_spec\s*\(",
+    re.DOTALL,
+)
+_PARAM_RE = re.compile(r"(\w+)\s*:\s*&(\w+)")
 
 # Verus spec return types for RET_TYPE_CONFIG entries without spec_map.
 _SEQ_SPEC_TYPES: dict[str, str] = {
@@ -56,6 +61,56 @@ def _read_verus_type(text: str, pos: int) -> tuple[str, int]:
                 break
         pos += 1
     return text[start:pos].strip(), pos
+
+
+def _split_top_level_commas(text: str) -> list[str]:
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    for i, ch in enumerate(text):
+        if ch == "<":
+            depth += 1
+        elif ch == ">":
+            depth = max(0, depth - 1)
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        elif ch == "," and depth == 0:
+            parts.append(text[start:i])
+            start = i + 1
+    parts.append(text[start:])
+    return parts
+
+
+def parse_method_spec_params(spec_text: str) -> list[tuple[str, str]]:
+    """Return ``[(param, struct_name), ...]`` from ``method_spec(param: &Struct, ...)``."""
+    m = _METHOD_SPEC_FN.search(spec_text)
+    if not m:
+        raise ValueError("method_spec signature not found in spec text")
+    pos = m.end()
+    depth = 1
+    start = pos
+    while pos < len(spec_text) and depth:
+        ch = spec_text[pos]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        pos += 1
+    params_str = spec_text[start : pos - 1]
+    params: list[tuple[str, str]] = []
+    for chunk in _split_top_level_commas(params_str):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        pm = _PARAM_RE.fullmatch(chunk)
+        if not pm:
+            raise ValueError(f"cannot parse method_spec parameter: {chunk!r}")
+        params.append((pm.group(1), pm.group(2)))
+    if not params:
+        raise ValueError("method_spec signature has no parameters")
+    return params
 
 
 def parse_method_spec_return_type(spec_text: str) -> str:

@@ -158,3 +158,25 @@ LIMIT 50"""
     schema = {"num": SEC_SCHEMA["num"], "sub": SEC_SCHEMA["sub"]}
     with pytest.raises(UnsupportedContractError, match="table-scoped"):
         transpile_sql_to_verus(sql, schema)
+
+
+def test_join_agent_shell_matches_method_spec_signature() -> None:
+    """Join workspace shell must use Cols_<table> params, not bare Cols."""
+    from research_loop.assemble_runquery import build_runquery_agent_source
+
+    sql = _load_query("2")
+    schema = {"num": SEC_SCHEMA["num"], "sub": SEC_SCHEMA["sub"]}
+    _, multi = normalize_schema(schema)
+    projected = project_multi_schema_for_query(sql, multi)
+    spec_rs = transpile_sql_to_verus(sql, projected)
+    ret_type = resolve_ret_type_from_method_spec(spec_rs)
+    shell = build_runquery_agent_source(
+        ret_type=ret_type,
+        method_spec_rs=spec_rs,
+    )
+    assert "pub exec fn run_query(num: &Cols_num, sub: &Cols_sub)" in shell
+    assert "requires valid_cols_num(num)," in shell
+    assert "requires valid_cols_sub(sub)," in shell
+    assert "method_spec(num, sub)" in shell
+    assert "valid_cols(cols)" not in shell
+    assert "pub exec fn run_query(cols: &Cols)" not in shell
