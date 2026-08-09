@@ -175,8 +175,11 @@ shell outside the markers fails admission.
    - `data_profile.md` — schema/stats (AGENT_DATA_MODE=`{agent_data_mode}`)
    - `COMPILATION_GUIDE.md` — Verus/Rust patterns
    - `AGENTS.md`, `PRIMITIVES.md` — agent brief / TRUSTED helpers (if present)
-4. **Prefer MCP tools** when available: `validate_runquery`, `run_runquery`, `submit`.
-5. Saving `{body_path}` is your submission if MCP is unavailable.
+4. **Use MCP tools** (lemma-host is pre-approved in this sandbox):
+   - `validate_runquery(path="runquery_agent.rs")` — lint/extract check
+   - `run_runquery(path="runquery_agent.rs", dataset_size=...)` — host verify + **speed** metrics (`run_id`)
+   - `submit_runquery(run_id=...)` — mark that run as official
+5. Saving `{body_path}` alone is a fallback only if MCP is truly down — prefer `run_runquery` then `submit_runquery`.
 
 ## FORBIDDEN
 - Do NOT create/edit/delete other files.
