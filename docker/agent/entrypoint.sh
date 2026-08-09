@@ -64,7 +64,8 @@ if [[ "${LEMMA_AGENT_MODE:-tools}" == "cli" ]]; then
       "command": "python",
       "args": ["-m", "lemma_agent.mcp_proxy"],
       "env": {
-        "LEMMA_MCP_SOCK": "/lemma-mcp.sock"
+        "LEMMA_MCP_SOCK": "/lemma-mcp.sock",
+        "PYTHONPATH": "/app"
       }
     }
   }

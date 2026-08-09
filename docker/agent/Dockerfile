@@ -20,7 +20,8 @@ RUN if [ "$INSTALL_AGENT_CLI" = "1" ]; then \
 ENV PATH="/root/.local/bin:/root/.cursor/bin:${PATH}"
 
 # duckdb: sandbox SQL. mcp/httpx: MCP stdio proxy + model sidecar → host UDS.
-RUN pip install --no-cache-dir duckdb "mcp>=1.28" httpx
+# Pin mcp<2: PyPI also ships an unrelated mcp 2.x without fastmcp.
+RUN pip install --no-cache-dir duckdb "mcp>=1.28,<2" httpx
 
 COPY db_extension/agent/ /app/lemma_agent/
 # extract.py imports research_loop.assemble_runquery (stdlib-only module).
