@@ -124,6 +124,8 @@ class JoinSpec:
 class ScalarSubquery:
     alias: str
     query: "SQLQuery"
+    inner_table: str = ""
+    correlated: bool = False
     correlation_cols: list[str] = field(default_factory=list)
 
 
@@ -480,6 +482,22 @@ def _resolve_col(
     raise UnsupportedContractError(f"Identifier '{node.name}' not found in schema.")
 
 
+def _compile_column_ref(
+    node: exp.Column,
+    resolver: dict[str, tuple[str, str, str | None]],
+    outer_name_lower: set[str],
+    *,
+    outer_resolver: dict[str, tuple[str, str, str | None]] | None = None,
+) -> tuple[str, str]:
+    """Compile a column to row./outer. expression and type kind."""
+    if outer_name_lower and node.table and node.table.lower() in outer_name_lower:
+        lookup = outer_resolver if outer_resolver is not None else resolver
+        real_col, col_type, _ = _resolve_col(node, lookup)
+        return f"outer.{real_col}", _kind_of(col_type)
+    real_col, col_type, _ = _resolve_col(node, resolver)
+    return f"row.{real_col}", _kind_of(col_type)
+
+
 def _compile_row_bool_expr(
     node: exp.Expression,
     resolver: dict[str, tuple[str, str, str | None]],
@@ -659,7 +677,39 @@ def _detect_correlation(
     for expr in (inner.where_expr, inner.having_expr, *inner.projection_exprs):
         for m in re.finditer(r"row\.([A-Za-z_][A-Za-z0-9_]*)", expr):
             refs.add(m.group(1))
+        for m in re.finditer(r"outer\.([A-Za-z_][A-Za-z0-9_]*)", expr):
+            refs.add(m.group(1))
     return [c for c in refs if c not in schema_cols]
+
+
+def _scalar_subquery_spec_call(sub: ScalarSubquery, *, join_context: bool = False) -> str:
+    """Placeholder call for join rewriter: __INNER__ table param, outer.{col} accessors."""
+    inner_arg = "__INNER__" if join_context else "cols"
+    if sub.correlated:
+        outer_args = ", ".join(f"outer.{c}" for c in sub.correlation_cols)
+        return f"subquery_{sub.alias}_spec({inner_arg}, {outer_args})"
+    return f"subquery_{sub.alias}_spec({inner_arg})"
+
+
+def _exists_subquery_spec_call(exists: ExistsSubquery, *, join_context: bool = False) -> str:
+    inner_arg = "__INNER__" if join_context else "cols"
+    if exists.correlated:
+        key = exists.correlation_cols[0]
+        outer_key = f"outer.{key}" if join_context else f"row.{key}"
+        return f"exists_corr_{exists.alias}_spec({inner_arg}, {outer_key})"
+    return f"exists_{exists.alias}_spec({inner_arg})"
+
+
+def _in_subquery_contains_call(in_spec: InSubquerySpec, *, join_context: bool = False) -> str:
+    inner_arg = "__INNER__" if join_context else "cols"
+    if in_spec.correlated:
+        key = in_spec.correlation_cols[0]
+        outer_key = f"outer.{key}" if join_context else f"row.{key}"
+        return (
+            f"in_corr_{in_spec.alias}_contains("
+            f"{inner_arg}, row.{in_spec.column}, {outer_key})"
+        )
+    return f"in_{in_spec.alias}_contains({inner_arg}, row.{in_spec.column})"
 
 
 def _detect_correlation_sql(
@@ -783,6 +833,10 @@ def _compile_where_expr(
     outer_tables: set[str] | None = None,
     exists_counter: list[int] | None = None,
     in_counter: list[int] | None = None,
+    correlation_outer_names: set[str] | None = None,
+    catalog_schema: dict[str, str] | dict[str, dict[str, str]] | None = None,
+    scalar_counter: list[int] | None = None,
+    outer_resolver: dict[str, tuple[str, str, str | None]] | None = None,
 ) -> str:
     if outer_tables is None:
         outer_tables = _outer_table_names(query)
@@ -790,17 +844,34 @@ def _compile_where_expr(
         exists_counter = [0]
     if in_counter is None:
         in_counter = [0]
+    if scalar_counter is None:
+        scalar_counter = [0]
+    join_context = bool(query.joins)
+    outer_name_lower = (
+        {n.lower() for n in correlation_outer_names}
+        if correlation_outer_names is not None
+        else set()
+    )
+
+    def _compile_child(child: exp.Expression) -> str:
+        return _compile_where_expr(
+            child,
+            resolver,
+            query,
+            scalar_subqueries,
+            outer_tables=outer_tables,
+            exists_counter=exists_counter,
+            in_counter=in_counter,
+            correlation_outer_names=correlation_outer_names,
+            catalog_schema=catalog_schema,
+            scalar_counter=scalar_counter,
+            outer_resolver=outer_resolver,
+        )
 
     if isinstance(node, exp.And):
-        return (
-            f"({_compile_where_expr(node.left, resolver, query, scalar_subqueries, outer_tables=outer_tables, exists_counter=exists_counter, in_counter=in_counter)}"
-            f" && {_compile_where_expr(node.right, resolver, query, scalar_subqueries, outer_tables=outer_tables, exists_counter=exists_counter, in_counter=in_counter)})"
-        )
+        return f"({_compile_child(node.left)} && {_compile_child(node.right)})"
     if isinstance(node, exp.Or):
-        return (
-            f"({_compile_where_expr(node.left, resolver, query, scalar_subqueries, outer_tables=outer_tables, exists_counter=exists_counter, in_counter=in_counter)}"
-            f" || {_compile_where_expr(node.right, resolver, query, scalar_subqueries, outer_tables=outer_tables, exists_counter=exists_counter, in_counter=in_counter)})"
-        )
+        return f"({_compile_child(node.left)} || {_compile_child(node.right)})"
     if isinstance(node, exp.Not):
         inner = node.this
         if isinstance(inner, exp.Exists):
@@ -812,15 +883,13 @@ def _compile_where_expr(
             query.exists_subqueries.append(exists)
             if exists.correlated:
                 query.correlated = True
-                key = exists.correlation_cols[0]
-                return f"!exists_corr_{exists.alias}_spec(cols, row.{key})"
-            return f"!exists_{exists.alias}_spec(cols)"
+            return f"!{_exists_subquery_spec_call(exists, join_context=join_context)}"
         if isinstance(inner, exp.Is):
             col_node = inner.this
             if not isinstance(col_node, exp.Column):
                 raise UnsupportedContractError("IS NOT NULL requires a column.")
             return _compile_is_null_check(col_node, is_null=False, resolver=resolver, query=query)
-        return f"!({_compile_where_expr(inner, resolver, query, scalar_subqueries, outer_tables=outer_tables, exists_counter=exists_counter, in_counter=in_counter)})"
+        return f"!({_compile_child(inner)})"
     if isinstance(node, exp.Exists):
         exists = _parse_exists_subquery(
             node, resolver, outer_tables,
@@ -829,9 +898,7 @@ def _compile_where_expr(
         query.exists_subqueries.append(exists)
         if exists.correlated:
             query.correlated = True
-            key = exists.correlation_cols[0]
-            return f"exists_corr_{exists.alias}_spec(cols, row.{key})"
-        return f"exists_{exists.alias}_spec(cols)"
+        return _exists_subquery_spec_call(exists, join_context=join_context)
     if isinstance(node, exp.Between):
         if not isinstance(node.this, exp.Column):
             raise UnsupportedContractError("BETWEEN left-hand side must be a column.")
@@ -840,14 +907,8 @@ def _compile_where_expr(
             raise UnsupportedContractError(
                 f"BETWEEN is only supported on int columns, not '{col_type}'."
             )
-        low = _compile_where_expr(
-            node.args["low"], resolver, query, scalar_subqueries,
-            outer_tables=outer_tables, exists_counter=exists_counter, in_counter=in_counter,
-        )
-        high = _compile_where_expr(
-            node.args["high"], resolver, query, scalar_subqueries,
-            outer_tables=outer_tables, exists_counter=exists_counter, in_counter=in_counter,
-        )
+        low = _compile_child(node.args["low"])
+        high = _compile_child(node.args["high"])
         this_val = f"row.{real_col}"
         return f"({this_val} >= {low} && {this_val} <= {high})"
     if isinstance(node, exp.In):
@@ -860,9 +921,7 @@ def _compile_where_expr(
             query.in_subqueries.append(in_spec)
             if in_spec.correlated:
                 query.correlated = True
-                key = in_spec.correlation_cols[0]
-                return f"in_corr_{in_spec.alias}_contains(cols, row.{in_spec.column}, row.{key})"
-            return f"in_{in_spec.alias}_contains(cols, row.{in_spec.column})"
+            return _in_subquery_contains_call(in_spec, join_context=join_context)
         if not node.expressions:
             raise UnsupportedContractError("IN () with empty list is not supported.")
         if not isinstance(node.this, exp.Column):
@@ -871,10 +930,7 @@ def _compile_where_expr(
         this_val = f"row.{real_col}"
         eqs = []
         for val_node in node.expressions:
-            val_str = _compile_where_expr(
-                val_node, resolver, query, scalar_subqueries,
-                outer_tables=outer_tables, exists_counter=exists_counter, in_counter=in_counter,
-            )
+            val_str = _compile_child(val_node)
             eqs.append(f"{this_val} == {val_str}")
         return f"({' || '.join(eqs)})"
     if isinstance(node, exp.Like):
@@ -906,14 +962,24 @@ def _compile_where_expr(
             if not isinstance(node.left, exp.Column):
                 raise UnsupportedContractError("scalar subquery comparison requires column on other side.")
             real_col, col_type, _ = _resolve_col(node.left, resolver)
-            inner = _parse_scalar_subquery(node.right, resolver)
+            inner = _parse_scalar_subquery(
+                node.right,
+                resolver,
+                outer_tables=outer_tables or _outer_table_names(query),
+                catalog_schema=catalog_schema,
+                alias_prefix="sq",
+                counter=scalar_counter,
+            )
             scalar_subqueries[inner.alias] = inner
             left_expr = f"row.{real_col}"
-            val_resolved = f"subquery_{inner.alias}_spec(cols)"
+            val_resolved = _scalar_subquery_spec_call(inner, join_context=join_context)
+            kind = _kind_of(col_type)
             val_type = "int"
         elif isinstance(node.left, exp.Column):
-            real_col, col_type, _ = _resolve_col(node.left, resolver)
-            left_expr = f"row.{real_col}"
+            left_expr, kind = _compile_column_ref(
+                node.left, resolver, outer_name_lower, outer_resolver=outer_resolver,
+            )
+            real_col, _, _ = _resolve_col(node.left, resolver)
             right_node = node.right
             if isinstance(right_node, exp.Literal):
                 if right_node.is_string:
@@ -934,9 +1000,9 @@ def _compile_where_expr(
                 val_resolved = f"-{right_node.this.this}"
                 val_type = "int"
             elif isinstance(right_node, exp.Column):
-                rreal_col, rcol_type, _ = _resolve_col(right_node, resolver)
-                val_resolved = f"row.{rreal_col}"
-                val_type = _kind_of(rcol_type)
+                val_resolved, val_type = _compile_column_ref(
+                    right_node, resolver, outer_name_lower, outer_resolver=outer_resolver,
+                )
             elif isinstance(right_node, exp.Boolean):
                 val_resolved = "true" if right_node.this else "false"
                 val_type = "bool"
@@ -945,7 +1011,6 @@ def _compile_where_expr(
         else:
             raise UnsupportedContractError("Left hand side of comparison must be a column.")
 
-        kind = _kind_of(col_type)
         if kind == "int" and val_type != "int":
             raise UnsupportedContractError("Type mismatch: comparing int column with non-int value.")
         if kind == "bool" and val_type != "bool":
@@ -972,8 +1037,10 @@ def _compile_where_expr(
     if isinstance(node, exp.Neg) and isinstance(node.this, exp.Literal):
         return f"-{node.this.this}"
     if isinstance(node, exp.Column):
-        real_col, _, _ = _resolve_col(node, resolver)
-        return f"row.{real_col}"
+        expr, _ = _compile_column_ref(
+            node, resolver, outer_name_lower, outer_resolver=outer_resolver,
+        )
+        return expr
     if isinstance(node, exp.Boolean):
         return "true" if node.this else "false"
     if isinstance(node, exp.Is):
@@ -983,7 +1050,7 @@ def _compile_where_expr(
         is_null = isinstance(node.expression, exp.Null)
         return _compile_is_null_check(col_node, is_null=is_null, resolver=resolver, query=query)
     if isinstance(node, exp.Paren):
-        return f"({_compile_where_expr(node.this, resolver, query, scalar_subqueries, outer_tables=outer_tables, exists_counter=exists_counter, in_counter=in_counter)})"
+        return f"({_compile_child(node.this)})"
     raise UnsupportedContractError(f"Unsupported node in filter expression: {type(node)}")
 
 
@@ -1027,9 +1094,15 @@ def _compile_having_expr_side(
 ) -> str:
     if isinstance(node, exp.Subquery):
         require_trusted("having_subquery")
-        inner = _parse_scalar_subquery(node, resolver, alias_prefix="having_sq")
+        inner = _parse_scalar_subquery(
+            node,
+            resolver,
+            outer_tables=_outer_table_names(query),
+            catalog_schema=None,
+            alias_prefix="having_sq",
+        )
         query.scalar_subqueries.append(inner)
-        return f"subquery_{inner.alias}_spec(cols)"
+        return _scalar_subquery_spec_call(inner, join_context=False)
     if isinstance(node, (exp.Sum, exp.Count, exp.Avg, exp.Min, exp.Max)):
         inner = _unwrap_alias(node)
         if isinstance(inner, exp.Count) and isinstance(inner.this, exp.Distinct):
@@ -1080,19 +1153,59 @@ def _parse_scalar_subquery(
     node: exp.Subquery,
     outer_resolver: dict[str, tuple[str, str, str | None]],
     *,
+    outer_tables: set[str],
+    catalog_schema: dict[str, str] | dict[str, dict[str, str]] | None = None,
     alias_prefix: str = "sq",
+    counter: list[int] | None = None,
 ) -> ScalarSubquery:
     inner_select = node.this
     if not isinstance(inner_select, exp.Select):
         raise UnsupportedContractError("scalar subquery must be a SELECT.")
     flat_schema = {c: t for c, t, _ in outer_resolver.values()}
-    inner = _parse_select(inner_select, flat_schema, allow_subqueries=True)
+    schema = catalog_schema if catalog_schema is not None else flat_schema
+    inner_schema = _subquery_inner_schema(inner_select, schema)
+    from_clause = inner_select.args.get("from_")
+    if not from_clause:
+        raise UnsupportedContractError("scalar subquery must have a FROM clause.")
+    from_this = from_clause.this
+    if isinstance(from_this, exp.Subquery):
+        inner_table = ""
+    else:
+        inner_table, _inner_alias = _parse_table_ref(from_this)
+    outer_names = set(outer_tables) | {
+        k.split(".")[0] for k in outer_resolver if "." in k
+    }
+    inner = _parse_select(
+        inner_select,
+        inner_schema,
+        allow_subqueries=True,
+        correlation_outer_names=outer_names,
+        catalog_schema=schema,
+        outer_resolver=outer_resolver,
+    )
     if inner.derived_tables:
         require_trusted("having_subquery")
     if inner.groupby_columns:
         require_trusted("having_subquery")
-    alias = f"{alias_prefix}{len(flat_schema)}"
-    return ScalarSubquery(alias=alias, query=inner)
+    if inner.joins:
+        raise UnsupportedContractError(
+            "scalar subquery inner query with JOIN is not supported."
+        )
+    correlated_cols = _detect_correlation_sql(inner_select, outer_names)
+    if not correlated_cols:
+        correlated_cols = _detect_correlation(inner, set(inner_schema.keys()))
+    correlated = bool(correlated_cols)
+    if counter is None:
+        counter = [0]
+    counter[0] += 1
+    alias = f"{alias_prefix}{counter[0]}"
+    return ScalarSubquery(
+        alias=alias,
+        query=inner,
+        inner_table=inner_table,
+        correlated=correlated,
+        correlation_cols=correlated_cols,
+    )
 
 
 def _cte_exposed_columns(cte_query: SQLQuery) -> dict[str, str]:
@@ -1424,12 +1537,17 @@ def _parse_select(
     allow_subqueries: bool = True,
     derived_inner: bool = False,
     parent_ctes: list[CTESpec] | None = None,
+    correlation_outer_names: set[str] | None = None,
+    catalog_schema: dict[str, str] | dict[str, dict[str, str]] | None = None,
+    outer_resolver: dict[str, tuple[str, str, str | None]] | None = None,
 ) -> SQLQuery:
     _check_forbidden_nodes(expression)
     query = SQLQuery()
     scalar_map: dict[str, ScalarSubquery] = {}
     exists_counter = [0]
     in_counter = [0]
+    scalar_counter = [0]
+    full_schema = catalog_schema if catalog_schema is not None else schema
 
     cte_map: dict[str, CTESpec] = {}
     for cte in parent_ctes or []:
@@ -1617,6 +1735,21 @@ def _parse_select(
         schema, query.table_aliases, cte_columns={n: s.columns for n, s in cte_map.items()},
     )
 
+    def _compile_where(node_expr: exp.Expression) -> str:
+        return _compile_where_expr(
+            node_expr,
+            resolver,
+            query,
+            scalar_map,
+            outer_tables=_outer_table_names(query),
+            exists_counter=exists_counter,
+            in_counter=in_counter,
+            correlation_outer_names=correlation_outer_names,
+            catalog_schema=full_schema,
+            scalar_counter=scalar_counter,
+            outer_resolver=outer_resolver,
+        )
+
     groupby_clause = expression.args.get("group")
     if groupby_clause:
         for groupby_node in groupby_clause.expressions:
@@ -1672,32 +1805,29 @@ def _parse_select(
                 ]
                 where_clause = expression.args.get("where")
                 if where_clause:
-                    query.where_expr = _compile_where_expr(
-                        where_clause.this, resolver, query, scalar_map,
-                        outer_tables=_outer_table_names(query),
-                        exists_counter=exists_counter,
-                        in_counter=in_counter,
-                    )
+                    query.where_expr = _compile_where(where_clause.this)
                     query.scalar_subqueries.extend(scalar_map.values())
                 query.limit, query.offset = _parse_limit_offset(expression)
                 query.order_by = _parse_order_by(expression, resolver)
                 return query
             if isinstance(select_item, exp.Subquery):
                 inner = _parse_scalar_subquery(
-                    select_item, resolver, alias_prefix="sel_sq",
+                    select_item,
+                    resolver,
+                    outer_tables=_outer_table_names(query),
+                    catalog_schema=full_schema,
+                    alias_prefix="sel_sq",
+                    counter=scalar_counter,
                 )
                 query.scalar_subqueries.append(inner)
                 query.agg_type = "SELECT_SUBQUERY"
-                query.agg_expr = f"subquery_{inner.alias}_spec(cols)"
+                query.agg_expr = _scalar_subquery_spec_call(
+                    inner, join_context=bool(query.joins),
+                )
                 query.agg_column = inner.alias
                 where_clause = expression.args.get("where")
                 if where_clause:
-                    query.where_expr = _compile_where_expr(
-                        where_clause.this, resolver, query, scalar_map,
-                        outer_tables=_outer_table_names(query),
-                        exists_counter=exists_counter,
-                        in_counter=in_counter,
-                    )
+                    query.where_expr = _compile_where(where_clause.this)
                     query.scalar_subqueries.extend(scalar_map.values())
                 query.limit, query.offset = _parse_limit_offset(expression)
                 query.order_by = _parse_order_by(expression, resolver)
@@ -1711,12 +1841,7 @@ def _parse_select(
                 query.projection_exprs = ["1"]
                 where_clause = expression.args.get("where")
                 if where_clause:
-                    query.where_expr = _compile_where_expr(
-                        where_clause.this, resolver, query, scalar_map,
-                        outer_tables=_outer_table_names(query),
-                        exists_counter=exists_counter,
-                        in_counter=in_counter,
-                    )
+                    query.where_expr = _compile_where(where_clause.this)
                     query.scalar_subqueries.extend(scalar_map.values())
                 return query
             elif isinstance(select_item, exp.Column) or derived_inner:
@@ -1729,12 +1854,7 @@ def _parse_select(
                     query.agg_column = alias
                 where_clause = expression.args.get("where")
                 if where_clause:
-                    query.where_expr = _compile_where_expr(
-                        where_clause.this, resolver, query, scalar_map,
-                        outer_tables=_outer_table_names(query),
-                        exists_counter=exists_counter,
-                        in_counter=in_counter,
-                    )
+                    query.where_expr = _compile_where(where_clause.this)
                     query.scalar_subqueries.extend(scalar_map.values())
                 query.limit, query.offset = _parse_limit_offset(expression)
                 query.order_by = _parse_order_by(expression, resolver)
@@ -1765,12 +1885,7 @@ def _parse_select(
             query.projection_exprs = proj_exprs
             where_clause = expression.args.get("where")
             if where_clause:
-                query.where_expr = _compile_where_expr(
-                    where_clause.this, resolver, query, scalar_map,
-                    outer_tables=_outer_table_names(query),
-                    exists_counter=exists_counter,
-                    in_counter=in_counter,
-                )
+                query.where_expr = _compile_where(where_clause.this)
                 query.scalar_subqueries.extend(scalar_map.values())
             query.limit, query.offset = _parse_limit_offset(expression)
             query.order_by = _parse_order_by(expression, resolver)
@@ -1788,12 +1903,7 @@ def _parse_select(
 
     where_clause = expression.args.get("where")
     if where_clause:
-        query.where_expr = _compile_where_expr(
-            where_clause.this, resolver, query, scalar_map,
-            outer_tables=_outer_table_names(query),
-            exists_counter=exists_counter,
-            in_counter=in_counter,
-        )
+        query.where_expr = _compile_where(where_clause.this)
         query.scalar_subqueries.extend(scalar_map.values())
 
     having_clause = expression.args.get("having")

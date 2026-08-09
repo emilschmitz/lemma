@@ -116,6 +116,134 @@ def _col_access_ref(
     return f"{slot.param}.{field}[{slot.idx} as int]"
 
 
+def _col_access_for_col(
+    col: str,
+    query: SQLQuery,
+    slots: list[_Slot],
+    schemas_by_table: dict[str, dict[str, str]],
+    derived_by_alias: dict[str, DerivedTable],
+) -> str:
+    table, col_key = _find_table_for_col(col, query, schemas_by_table)
+    if table in derived_by_alias:
+        raise UnsupportedContractError(
+            f"subquery correlation on derived column {col!r} is not supported"
+        )
+    slot = slots[_slot_index(slots, table)]
+    field = rust_ident(col_key)
+    schema = schemas_by_table[table]
+    if col_verus_type(schema[col_key]) == "String":
+        return f"{slot.param}.{field}[{slot.idx} as int]@"
+    return f"{slot.param}.{field}[{slot.idx} as int]"
+
+
+def _resolve_subquery_calls(
+    expr: str,
+    query: SQLQuery,
+    slots: list[_Slot],
+    schemas_by_table: dict[str, dict[str, str]],
+    derived_by_alias: dict[str, DerivedTable],
+) -> str:
+    """Rewrite __INNER__/outer. placeholders and legacy cols binders in subquery calls."""
+    out = expr
+
+    def inner_param_for_table(table: str) -> str:
+        return slots[_slot_index(slots, table)].param
+
+    for sub in query.scalar_subqueries:
+        inner_table = sub.inner_table or sub.query.tables[0]
+        inner_param = inner_param_for_table(inner_table)
+        pattern = rf"subquery_{re.escape(sub.alias)}_spec\(__INNER__(?:,\s*([^)]*))?\)"
+        def repl_scalar(m: re.Match[str], _sub=sub, _param=inner_param) -> str:
+            if _sub.correlated:
+                return f"subquery_{_sub.alias}_spec({_param}, {m.group(1)})"
+            return f"subquery_{_sub.alias}_spec({_param})"
+        out = re.sub(pattern, repl_scalar, out)
+        legacy = f"subquery_{sub.alias}_spec(cols)"
+        if sub.correlated:
+            args = ", ".join(
+                f"outer.{c}" for c in sub.correlation_cols
+            )
+            out = out.replace(legacy, f"subquery_{sub.alias}_spec({inner_param}, {args})")
+        else:
+            out = out.replace(legacy, f"subquery_{sub.alias}_spec({inner_param})")
+
+    for exists in query.exists_subqueries:
+        inner_table = exists.query.tables[0]
+        inner_param = inner_param_for_table(inner_table)
+        if exists.correlated:
+            key = exists.correlation_cols[0]
+            out = re.sub(
+                rf"exists_corr_{re.escape(exists.alias)}_spec\(__INNER__, ([^)]+)\)",
+                rf"exists_corr_{exists.alias}_spec({inner_param}, \1)",
+                out,
+            )
+            key_access = _col_access_for_col(
+                key, query, slots, schemas_by_table, derived_by_alias,
+            )
+            out = out.replace(
+                f"exists_corr_{exists.alias}_spec(cols, row.{key})",
+                f"exists_corr_{exists.alias}_spec({inner_param}, {key_access})",
+            )
+        else:
+            out = out.replace(
+                f"exists_{exists.alias}_spec(__INNER__)",
+                f"exists_{exists.alias}_spec({inner_param})",
+            )
+            out = out.replace(
+                f"exists_{exists.alias}_spec(cols)",
+                f"exists_{exists.alias}_spec({inner_param})",
+            )
+
+    for in_spec in query.in_subqueries:
+        inner_table = in_spec.query.tables[0]
+        inner_param = inner_param_for_table(inner_table)
+        if in_spec.correlated:
+            out = re.sub(
+                (
+                    rf"in_corr_{re.escape(in_spec.alias)}_contains\("
+                    rf"__INNER__, ([^,]+), ([^)]+)\)"
+                ),
+                rf"in_corr_{in_spec.alias}_contains({inner_param}, \1, \2)",
+                out,
+            )
+            val_access = _col_access_for_col(
+                in_spec.column, query, slots, schemas_by_table, derived_by_alias,
+            )
+            key = in_spec.correlation_cols[0]
+            key_access = _col_access_for_col(
+                key, query, slots, schemas_by_table, derived_by_alias,
+            )
+            out = out.replace(
+                (
+                    f"in_corr_{in_spec.alias}_contains("
+                    f"cols, row.{in_spec.column}, row.{key})"
+                ),
+                f"in_corr_{in_spec.alias}_contains({inner_param}, {val_access}, {key_access})",
+            )
+        else:
+            out = re.sub(
+                rf"in_{re.escape(in_spec.alias)}_contains\(__INNER__, ([^)]+)\)",
+                rf"in_{in_spec.alias}_contains({inner_param}, \1)",
+                out,
+            )
+            out = out.replace(
+                f"in_{in_spec.alias}_contains(cols, row.{in_spec.column})",
+                (
+                    f"in_{in_spec.alias}_contains({inner_param}, "
+                    f"{_col_access_for_col(in_spec.column, query, slots, schemas_by_table, derived_by_alias)})"
+                ),
+            )
+
+    def repl_outer(m: re.Match[str]) -> str:
+        return _col_access_for_col(
+            m.group(1), query, slots, schemas_by_table, derived_by_alias,
+        )
+
+    out = re.sub(r"\bouter\.([A-Za-z_][A-Za-z0-9_]*)", repl_outer, out)
+
+    return out
+
+
 def _resolve_row_expr(
     expr: str,
     query: SQLQuery,
@@ -142,7 +270,9 @@ def _resolve_row_expr(
         return f"row.{col}"
 
     out = re.sub(r"\brow\.([A-Za-z_][A-Za-z0-9_]*)", repl_col, stripped)
-    return out
+    return _resolve_subquery_calls(
+        out, query, slots, schemas_by_table, derived_by_alias,
+    )
 
 
 def _join_equalities_expr(

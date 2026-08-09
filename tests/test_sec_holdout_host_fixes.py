@@ -140,10 +140,8 @@ def test_single_table_multi_catalog_project_schema_is_flat() -> None:
     assert "tag" in projected and "uom" in projected
 
 
-def test_join_with_scalar_subquery_fails_loud_not_cols_stub() -> None:
-    """Correlated scalar subquery on JOIN must not emit &Cols helpers (Spot q2 host bug)."""
-    from verus_transpiler.parse_sql import UnsupportedContractError
-
+def test_join_with_scalar_subquery_transpiles_table_scoped_helpers() -> None:
+    """Correlated scalar subquery on JOIN uses Cols_<table> helpers, not bare Cols."""
     sql = """SELECT s.name, n.tag, n.value
 FROM num n
 JOIN sub s ON n.adsh = s.adsh
@@ -156,8 +154,12 @@ WHERE n.uom = 'pure' AND s.fy = 2022 AND n.value IS NOT NULL
 ORDER BY n.value DESC
 LIMIT 50"""
     schema = {"num": SEC_SCHEMA["num"], "sub": SEC_SCHEMA["sub"]}
-    with pytest.raises(UnsupportedContractError, match="table-scoped"):
-        transpile_sql_to_verus(sql, schema)
+    out = transpile_sql_to_verus(sql, schema)
+    assert "subquery_sq1_helper(num: &Cols_num" in out
+    assert "valid_cols_num(num)" in out
+    assert "subquery_sq1_spec(num, num.tag[i0 as int]@" in out
+    assert "valid_cols(cols)" not in out
+    assert "subquery_sq1_spec(cols)" not in out
 
 
 def test_join_agent_shell_matches_method_spec_signature() -> None:

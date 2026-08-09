@@ -49,6 +49,70 @@ from .windows import emit_window_spec_helper
 _SUPPORTED_TYPES = SUPPORTED_SCHEMA_TYPES
 
 
+def _flat_outer_schema(
+    flat_schema: dict[str, str],
+    multi_schema: dict[str, dict[str, str]] | None,
+) -> dict[str, str]:
+    if not multi_schema:
+        return flat_schema
+    merged: dict[str, str] = {}
+    for cols in multi_schema.values():
+        merged.update(cols)
+    return merged
+
+
+def _subquery_emit_binding(
+    inner_table: str,
+    flat_schema: dict[str, str],
+    multi_schema: dict[str, dict[str, str]] | None,
+) -> tuple[str, str, str, dict[str, str]]:
+    if multi_schema and inner_table in multi_schema:
+        return (
+            _table_struct_name(inner_table),
+            f"valid_cols_{inner_table}",
+            inner_table,
+            multi_schema[inner_table],
+        )
+    return "Cols", "valid_cols", "cols", flat_schema
+
+
+def _subquery_inner_table_name(query: SQLQuery) -> str:
+    if not query.tables:
+        raise UnsupportedContractError(
+            "subquery inner query must have a single base table."
+        )
+    if query.derived_tables:
+        raise UnsupportedContractError(
+            "subquery inner FROM derived/CTE is not supported on JOIN."
+        )
+    if query.joins:
+        raise UnsupportedContractError(
+            "subquery inner multi-table FROM is not supported on JOIN."
+        )
+    return query.tables[0]
+
+
+def _assert_join_subquery_supported(query: SQLQuery) -> None:
+    if query.having_expr and any(
+        sub.alias.startswith("having_sq") for sub in query.scalar_subqueries
+    ):
+        raise UnsupportedContractError(
+            "JOIN + HAVING + scalar subquery is not yet supported."
+        )
+    if query.is_projection and any(
+        sub.alias.startswith("sel_sq") for sub in query.scalar_subqueries
+    ):
+        raise UnsupportedContractError(
+            "scalar subquery in SELECT list on JOIN projection is not supported."
+        )
+    for sub in query.scalar_subqueries:
+        _subquery_inner_table_name(sub.query)
+    for exists in query.exists_subqueries:
+        _subquery_inner_table_name(exists.query)
+    for in_sub in query.in_subqueries:
+        _subquery_inner_table_name(in_sub.query)
+
+
 def _validate_schema(schema: dict[str, str] | dict[str, dict[str, str]]) -> None:
     flat, multi = normalize_schema(schema)
     for col_type in flat.values():
@@ -1018,28 +1082,58 @@ def transpile_sql_to_verus(
     query = parse_sql(sql, schema)
 
     is_join = bool(query.joins)
-    # Join programs assemble Cols_<table> only. Scalar/EXISTS/IN subquery helpers still
-    # default to &Cols — that typechecks as host_codegen failure on Spot (SEC q2/q3).
-    # Prefer loud fail until subquery emission is table-scoped for joins.
     if is_join and (
         query.scalar_subqueries
         or query.exists_subqueries
         or query.in_subqueries
     ):
-        raise UnsupportedContractError(
-            "JOIN queries with scalar/EXISTS/IN subqueries need table-scoped "
-            "MethodSpec helpers (Cols_<table>); refusing Cols-typed subquery stubs"
-        )
+        _assert_join_subquery_supported(query)
     subquery_blocks: list[str] = []
+    outer_schema = _flat_outer_schema(flat_schema, multi_schema if is_join else None)
     for sub in query.scalar_subqueries:
-        emitted = emit_scalar_subquery_helper(sub, flat_schema)
+        inner_table = sub.inner_table or _subquery_inner_table_name(sub.query)
+        struct_name, valid_fn, param_name, inner_schema = _subquery_emit_binding(
+            inner_table, flat_schema, multi_schema if is_join else None,
+        )
+        emitted = emit_scalar_subquery_helper(
+            sub,
+            inner_schema,
+            struct_name=struct_name,
+            valid_fn=valid_fn,
+            param_name=param_name,
+            outer_schema=outer_schema,
+        )
         subquery_blocks.append(emitted.helper_source)
     for exists in query.exists_subqueries:
-        subquery_blocks.append(emit_exists_subquery_helper(exists, flat_schema))
+        inner_table = _subquery_inner_table_name(exists.query)
+        struct_name, valid_fn, param_name, inner_schema = _subquery_emit_binding(
+            inner_table, flat_schema, multi_schema if is_join else None,
+        )
+        subquery_blocks.append(
+            emit_exists_subquery_helper(
+                exists,
+                inner_schema,
+                struct_name=struct_name,
+                valid_fn=valid_fn,
+                param_name=param_name,
+            )
+        )
     for win in query.window_specs:
         subquery_blocks.append(emit_window_spec_helper(win, schema=flat_schema))
     for in_sub in query.in_subqueries:
-        subquery_blocks.append(emit_in_subquery_helper(in_sub, flat_schema))
+        inner_table = _subquery_inner_table_name(in_sub.query)
+        struct_name, valid_fn, param_name, inner_schema = _subquery_emit_binding(
+            inner_table, flat_schema, multi_schema if is_join else None,
+        )
+        subquery_blocks.append(
+            emit_in_subquery_helper(
+                in_sub,
+                inner_schema,
+                struct_name=struct_name,
+                valid_fn=valid_fn,
+                param_name=param_name,
+            )
+        )
     for cte in query.ctes:
         if cte.recursive:
             if not any(d.alias == cte.name for d in query.derived_tables):

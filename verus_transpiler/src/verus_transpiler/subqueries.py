@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 
 from .col_exprs import (
     native_u64_term,
@@ -28,6 +29,57 @@ class SubqueryEmit:
     name: str
     helper_source: str
     spec_call: str
+    inner_table: str = ""
+    correlated: bool = False
+    correlation_cols: list[str] = field(default_factory=list)
+
+
+def _outer_param_name(col: str) -> str:
+    return f"outer_{rust_ident(col)}"
+
+
+def _lookup_col_type(
+    col: str,
+    inner_schema: dict[str, str],
+    outer_schema: dict[str, str] | None = None,
+) -> str:
+    col_l = col.lower()
+    if outer_schema:
+        for k, v in outer_schema.items():
+            if k.lower() == col_l:
+                return v
+    for k, v in inner_schema.items():
+        if k.lower() == col_l:
+            return v
+    return "int"
+
+
+def _rewrite_outer_refs_in_where(
+    where_at_k: str,
+    correlation_cols: list[str],
+    inner_schema: dict[str, str],
+    outer_schema: dict[str, str] | None = None,
+) -> str:
+    out = where_at_k
+    for col in correlation_cols:
+        pname = _outer_param_name(col)
+        typ = _lookup_col_type(col, inner_schema, outer_schema)
+        replacement = f"{pname}@" if col_verus_type(typ) == "String" else pname
+        out = re.sub(rf"\bouter\.{re.escape(col)}\b", replacement, out, flags=re.IGNORECASE)
+    return out
+
+
+def _correlated_param_specs(
+    correlation_cols: list[str],
+    inner_schema: dict[str, str],
+    outer_schema: dict[str, str] | None = None,
+) -> list[tuple[str, str]]:
+    specs: list[tuple[str, str]] = []
+    for col in correlation_cols:
+        typ = _lookup_col_type(col, inner_schema, outer_schema)
+        vt = col_verus_type(typ)
+        specs.append((_outer_param_name(col), vt))
+    return specs
 
 
 def _emit_recursive_helper(
@@ -37,7 +89,10 @@ def _emit_recursive_helper(
     term_at_k: str,
     ret_type: str = "u64",
     struct_name: str = "Cols",
+    param_name: str = "cols",
+    valid_fn: str = "valid_cols",
     combine: str = "add",
+    extra_params: list[tuple[str, str]] | None = None,
 ) -> str:
     zero = "0"
     if combine == "min":
@@ -50,9 +105,15 @@ def _emit_recursive_helper(
         base = zero
         combine_body = f"(tail as int + {term_at_k} as int) as u64"
 
+    extra_sig = ""
+    extra_call = ""
+    if extra_params:
+        extra_sig = ", " + ", ".join(f"{n}: {t}" for n, t in extra_params)
+        extra_call = ", " + ", ".join(n for n, _ in extra_params)
+
     if where_at_k:
-        body = f"""if k < cols.n {{
-        let tail = {func_name}(cols, k + 1);
+        body = f"""if k < {param_name}.n {{
+        let tail = {func_name}({param_name}{extra_call}, k + 1);
         if {where_at_k} {{
             {combine_body}
         }} else {{
@@ -63,20 +124,21 @@ def _emit_recursive_helper(
     }}"""
     else:
         if combine in ("min", "max"):
-            body = f"""if k < cols.n {{
-        let tail = {func_name}(cols, k + 1);
+            body = f"""if k < {param_name}.n {{
+        let tail = {func_name}({param_name}{extra_call}, k + 1);
         {combine_body}
     }} else {{
         {base}
     }}"""
         else:
-            body = f"""if k < cols.n {{
-        ({func_name}(cols, k + 1) as int + {term_at_k} as int) as u64
+            body = f"""if k < {param_name}.n {{
+        ({func_name}({param_name}{extra_call}, k + 1) as int + {term_at_k} as int) as u64
     }} else {{
         {zero}
     }}"""
-    return f"""pub open spec fn {func_name}(cols: &{struct_name}, k: int) -> (res: {ret_type})
-    decreases cols.n - k,
+    return f"""pub open spec fn {func_name}({param_name}: &{struct_name}{extra_sig}, k: int) -> (res: {ret_type})
+    recommends {valid_fn}({param_name}),
+    decreases {param_name}.n - k,
 {{
     {body}
 }}"""
@@ -104,12 +166,20 @@ def _wrap_spec(
     helper_name: str,
     *,
     struct_name: str = "Cols",
+    param_name: str = "cols",
+    valid_fn: str = "valid_cols",
     ret_type: str = "u64",
     body: str | None = None,
+    extra_params: list[tuple[str, str]] | None = None,
 ) -> str:
-    inner = body if body is not None else f"    {helper_name}(cols, 0)"
-    return f"""pub open spec fn {spec_name}(cols: &{struct_name}) -> {ret_type}
-    recommends valid_cols(cols),
+    extra_sig = ""
+    extra_call = ""
+    if extra_params:
+        extra_sig = ", " + ", ".join(f"{n}: {t}" for n, t in extra_params)
+        extra_call = ", " + ", ".join(n for n, _ in extra_params)
+    inner = body if body is not None else f"    {helper_name}({param_name}{extra_call}, 0)"
+    return f"""pub open spec fn {spec_name}({param_name}: &{struct_name}{extra_sig}) -> {ret_type}
+    recommends {valid_fn}({param_name}),
 {{
 {inner}
 }}"""
@@ -219,28 +289,58 @@ def emit_scalar_subquery_helper(
     inner_schema: dict[str, str],
     *,
     struct_name: str = "Cols",
+    valid_fn: str = "valid_cols",
+    param_name: str = "cols",
+    outer_schema: dict[str, str] | None = None,
 ) -> SubqueryEmit:
     """Emit a nested helper for a scalar subquery used in WHERE or SELECT."""
     helper_name = f"subquery_{sub.alias}_helper"
     spec_name = f"subquery_{sub.alias}_spec"
+    inner_table = sub.inner_table or (sub.query.tables[0] if sub.query.tables else "")
+    corr_params = (
+        _correlated_param_specs(sub.correlation_cols, inner_schema, outer_schema)
+        if sub.correlated
+        else []
+    )
+    spec_call = f"{spec_name}({param_name}"
+    if sub.correlated:
+        spec_call += ", " + ", ".join(
+            f"outer.{c}" for c in sub.correlation_cols
+        )
+    spec_call += ")"
 
     if sub.query.derived_tables or sub.query.joins or sub.query.groupby_columns:
+        extra_sig = ""
+        if corr_params:
+            extra_sig = ", " + ", ".join(f"{n}: {t}" for n, t in corr_params)
         helper = f"""// TRUSTED: nested scalar / HAVING subquery ({sub.alias}).
 #[verifier::external_body]
-pub open spec fn {spec_name}(cols: &{struct_name}) -> u64 {{
+pub open spec fn {spec_name}({param_name}: &{struct_name}{extra_sig}) -> u64 {{
     arbitrary()
 }}"""
         return SubqueryEmit(
             name=spec_name,
             helper_source=helper,
-            spec_call=f"{spec_name}(cols)",
+            spec_call=spec_call,
+            inner_table=inner_table,
+            correlated=sub.correlated,
+            correlation_cols=list(sub.correlation_cols),
         )
 
-    where_at_k = (
-        spec_where_cond(to_col_expr(sub.query.where_expr, "k"), "k", inner_schema)
-        if sub.query.where_expr
-        else None
-    )
+    where_at_k = None
+    if sub.query.where_expr:
+        where_row = to_col_expr(sub.query.where_expr, "k")
+        if param_name != "cols":
+            where_row = where_row.replace("cols.", f"{param_name}.")
+        where_at_k = spec_where_cond(where_row, "k", inner_schema)
+        if sub.correlated:
+            where_at_k = _rewrite_outer_refs_in_where(
+                where_at_k,
+                sub.correlation_cols,
+                inner_schema,
+                outer_schema,
+            )
+
     combine = _agg_combine(sub.query.agg_type)
 
     if sub.query.agg_type in ("SUM", "COUNT", "MIN", "MAX"):
@@ -253,40 +353,65 @@ pub open spec fn {spec_name}(cols: &{struct_name}) -> u64 {{
             if sub.query.agg_type in ("SUM", "MIN", "MAX")
             else "1"
         )
+        if param_name != "cols":
+            term_at_k = term_at_k.replace("cols.", f"{param_name}.")
         helper = _emit_recursive_helper(
             helper_name,
             where_at_k=where_at_k,
             term_at_k=term_at_k,
             ret_type=val_type,
             struct_name=struct_name,
+            param_name=param_name,
+            valid_fn=valid_fn,
             combine=combine,
+            extra_params=corr_params or None,
         )
-        spec = _wrap_spec(spec_name, helper_name, struct_name=struct_name, ret_type=val_type)
+        extra_call = ", " + ", ".join(n for n, _ in corr_params) if corr_params else ""
+        spec = _wrap_spec(
+            spec_name,
+            helper_name,
+            struct_name=struct_name,
+            param_name=param_name,
+            valid_fn=valid_fn,
+            ret_type=val_type,
+            extra_params=corr_params or None,
+            body=f"    {helper_name}({param_name}{extra_call}, 0)",
+        )
     elif sub.query.agg_type == "AVG":
         sum_helper = f"{helper_name}_sum"
         count_helper = f"{helper_name}_count"
         sum_term = native_u64_term(sub.query.agg_expr, "k")
+        extra_call = ", " + ", ".join(n for n, _ in corr_params) if corr_params else ""
         helper = "\n\n".join([
             _emit_recursive_helper(
                 sum_helper,
                 where_at_k=where_at_k,
                 term_at_k=sum_term,
                 struct_name=struct_name,
+                param_name=param_name,
+                valid_fn=valid_fn,
+                extra_params=corr_params or None,
             ),
             _emit_recursive_helper(
                 count_helper,
                 where_at_k=where_at_k,
                 term_at_k="1",
                 struct_name=struct_name,
+                param_name=param_name,
+                valid_fn=valid_fn,
+                extra_params=corr_params or None,
             ),
         ])
         spec = _wrap_spec(
             spec_name,
             sum_helper,
             struct_name=struct_name,
+            param_name=param_name,
+            valid_fn=valid_fn,
+            extra_params=corr_params or None,
             body=(
-                f"    let s = {sum_helper}(cols, 0);\n"
-                f"    let c = {count_helper}(cols, 0);\n"
+                f"    let s = {sum_helper}({param_name}{extra_call}, 0);\n"
+                f"    let c = {count_helper}({param_name}{extra_call}, 0);\n"
                 f"    if c == 0 {{ 0 }} else {{ s / c }}"
             ),
         )
@@ -296,7 +421,10 @@ pub open spec fn {spec_name}(cols: &{struct_name}) -> u64 {{
     return SubqueryEmit(
         name=spec_name,
         helper_source=helper + "\n\n" + spec,
-        spec_call=f"{spec_name}(cols)",
+        spec_call=spec_call,
+        inner_table=inner_table,
+        correlated=sub.correlated,
+        correlation_cols=list(sub.correlation_cols),
     )
 
 
@@ -305,21 +433,29 @@ def emit_exists_subquery_helper(
     inner_schema: dict[str, str],
     *,
     struct_name: str = "Cols",
+    valid_fn: str = "valid_cols",
+    param_name: str = "cols",
 ) -> str:
     """Emit EXISTS (or NOT EXISTS) semi-join spec helper."""
     if exists.correlated:
-        return emit_exists_corr_subquery_helper(exists, inner_schema, struct_name=struct_name)
+        return emit_exists_corr_subquery_helper(
+            exists,
+            inner_schema,
+            struct_name=struct_name,
+            valid_fn=valid_fn,
+            param_name=param_name,
+        )
     helper_name = f"exists_{exists.alias}_helper"
     spec_name = f"exists_{exists.alias}_spec"
     _ = inner_schema, exists.query.where_expr
     helper = f"""#[verifier::external_body]
-pub open spec fn {helper_name}(cols: &{struct_name}, k: int) -> bool {{
+pub open spec fn {helper_name}({param_name}: &{struct_name}, k: int) -> bool {{
     arbitrary()
 }}"""
-    spec = f"""pub open spec fn {spec_name}(cols: &{struct_name}) -> bool
-    recommends valid_cols(cols),
+    spec = f"""pub open spec fn {spec_name}({param_name}: &{struct_name}) -> bool
+    recommends {valid_fn}({param_name}),
 {{
-    {helper_name}(cols, 0)
+    {helper_name}({param_name}, 0)
 }}"""
     return helper + "\n\n" + spec
 
@@ -329,6 +465,8 @@ def emit_exists_corr_subquery_helper(
     inner_schema: dict[str, str],
     *,
     struct_name: str = "Cols",
+    valid_fn: str = "valid_cols",
+    param_name: str = "cols",
 ) -> str:
     """Emit correlated EXISTS spec helper (TRUSTED nested-loop reference)."""
     _ = inner_schema
@@ -336,7 +474,6 @@ def emit_exists_corr_subquery_helper(
     key_ty = "u32"
     for col, typ in inner_schema.items():
         if col.lower() == key_col:
-            from .value_bounds import col_verus_type
             vt = col_verus_type(typ)
             key_ty = vt if vt != "String" else "u32"
             break
@@ -344,13 +481,13 @@ def emit_exists_corr_subquery_helper(
     helper_name = f"exists_corr_{exists.alias}_helper"
     helper = f"""// TRUSTED: correlated EXISTS nested-loop semi-join reference.
 #[verifier::external_body]
-pub open spec fn {helper_name}(cols: &{struct_name}, outer_key: {key_ty}, k: int) -> bool {{
+pub open spec fn {helper_name}({param_name}: &{struct_name}, outer_key: {key_ty}, k: int) -> bool {{
     arbitrary()
 }}"""
-    spec = f"""pub open spec fn {spec_name}(cols: &{struct_name}, outer_key: {key_ty}) -> bool
-    recommends valid_cols(cols),
+    spec = f"""pub open spec fn {spec_name}({param_name}: &{struct_name}, outer_key: {key_ty}) -> bool
+    recommends {valid_fn}({param_name}),
 {{
-    {helper_name}(cols, outer_key, 0)
+    {helper_name}({param_name}, outer_key, 0)
 }}"""
     return helper + "\n\n" + spec
 
@@ -360,10 +497,18 @@ def emit_in_subquery_helper(
     inner_schema: dict[str, str],
     *,
     struct_name: str = "Cols",
+    valid_fn: str = "valid_cols",
+    param_name: str = "cols",
 ) -> str:
     """Emit IN (subquery) membership helper."""
     if in_spec.correlated:
-        return emit_in_corr_subquery_helper(in_spec, inner_schema, struct_name=struct_name)
+        return emit_in_corr_subquery_helper(
+            in_spec,
+            inner_schema,
+            struct_name=struct_name,
+            valid_fn=valid_fn,
+            param_name=param_name,
+        )
     set_name = f"in_{in_spec.alias}_set"
     contains_name = f"in_{in_spec.alias}_contains"
     col_field = in_spec.column.lower()
@@ -376,18 +521,18 @@ def emit_in_subquery_helper(
         else None
     )
     set_helper = f"""#[verifier::external_body]
-pub open spec fn {set_name}(cols: &{struct_name}) -> Set<u32> {{
+pub open spec fn {set_name}({param_name}: &{struct_name}) -> Set<u32> {{
     arbitrary()
 }}"""
     if where_at_k:
         contains = f"""#[verifier::external_body]
-pub open spec fn {contains_name}(cols: &{struct_name}, val: u32) -> bool {{
-    {set_name}(cols).contains(val)
+pub open spec fn {contains_name}({param_name}: &{struct_name}, val: u32) -> bool {{
+    {set_name}({param_name}).contains(val)
 }}"""
     else:
         contains = f"""#[verifier::external_body]
-pub open spec fn {contains_name}(cols: &{struct_name}, val: u32) -> bool {{
-    {set_name}(cols).contains(val)
+pub open spec fn {contains_name}({param_name}: &{struct_name}, val: u32) -> bool {{
+    {set_name}({param_name}).contains(val)
 }}"""
     _ = col_field, inner_col, where_at_k
     return set_helper + "\n\n" + contains
@@ -398,6 +543,8 @@ def emit_in_corr_subquery_helper(
     inner_schema: dict[str, str],
     *,
     struct_name: str = "Cols",
+    valid_fn: str = "valid_cols",
+    param_name: str = "cols",
 ) -> str:
     """Emit correlated IN (subquery) membership helper (TRUSTED)."""
     _ = inner_schema
@@ -405,7 +552,6 @@ def emit_in_corr_subquery_helper(
     key_ty = "u32"
     val_ty = "u32"
     for col, typ in inner_schema.items():
-        from .value_bounds import col_verus_type
         vt = col_verus_type(typ)
         if col.lower() == key_col:
             key_ty = vt if vt != "String" else "u32"
@@ -415,13 +561,13 @@ def emit_in_corr_subquery_helper(
     helper_name = f"in_corr_{in_spec.alias}_helper"
     helper = f"""// TRUSTED: correlated IN nested-loop membership reference.
 #[verifier::external_body]
-pub open spec fn {helper_name}(cols: &{struct_name}, outer_key: {key_ty}, k: int) -> Set<{val_ty}> {{
+pub open spec fn {helper_name}({param_name}: &{struct_name}, outer_key: {key_ty}, k: int) -> Set<{val_ty}> {{
     arbitrary()
 }}"""
-    contains = f"""pub open spec fn {contains_name}(cols: &{struct_name}, val: {val_ty}, outer_key: {key_ty}) -> bool
-    recommends valid_cols(cols),
+    contains = f"""pub open spec fn {contains_name}({param_name}: &{struct_name}, val: {val_ty}, outer_key: {key_ty}) -> bool
+    recommends {valid_fn}({param_name}),
 {{
-    {helper_name}(cols, outer_key, 0).contains(val)
+    {helper_name}({param_name}, outer_key, 0).contains(val)
 }}"""
     return helper + "\n\n" + contains
 
