@@ -156,7 +156,24 @@ def _resolve_subquery_calls(
         return slots[_slot_index(slots, table)].param
 
     for sub in query.scalar_subqueries:
-        inner_table = sub.inner_table or sub.query.tables[0]
+        if sub.inner_tables and len(sub.inner_tables) > 1:
+            params = ", ".join(inner_param_for_table(t) for t in sub.inner_tables)
+            pattern = rf"subquery_{re.escape(sub.alias)}_spec\(__INNER__(?:,\s*([^)]*))?\)"
+            def repl_multi(m: re.Match[str], _sub=sub, _params=params) -> str:
+                if _sub.correlated:
+                    return f"subquery_{_sub.alias}_spec({_params}, {m.group(1)})"
+                return f"subquery_{_sub.alias}_spec({_params})"
+            out = re.sub(pattern, repl_multi, out)
+            legacy = f"subquery_{sub.alias}_spec(cols)"
+            if sub.correlated:
+                args = ", ".join(f"outer.{c}" for c in sub.correlation_cols)
+                out = out.replace(legacy, f"subquery_{sub.alias}_spec({params}, {args})")
+            else:
+                out = out.replace(legacy, f"subquery_{sub.alias}_spec({params})")
+            continue
+        inner_table = sub.inner_table or (
+            sub.inner_tables[0] if sub.inner_tables else sub.query.tables[0]
+        )
         inner_param = inner_param_for_table(inner_table)
         pattern = rf"subquery_{re.escape(sub.alias)}_spec\(__INNER__(?:,\s*([^)]*))?\)"
         def repl_scalar(m: re.Match[str], _sub=sub, _param=inner_param) -> str:
@@ -1220,6 +1237,7 @@ def _emit_single_agg_nway(
     agg_expr: str,
     is_sum: bool,
     val_type: str,
+    helper_name: str = "join_method_spec_helper",
 ) -> tuple[str, str, str]:
     filter_raw, _ = _strip_anti_join_predicates(where_expr)
     filter_cond = (
@@ -1247,12 +1265,10 @@ def _emit_single_agg_nway(
         )
         ret_type = f"Map<{key_ty}, {val_type}>"
         ret_base = "Map::empty()"
-        helper_name = "join_method_spec_helper"
     else:
         update_expr = f"(tail as int + ({term}) as int) as {val_type}"
         ret_type = val_type
         ret_base = f"0{val_type}"
-        helper_name = "join_method_spec_helper"
 
     helper = _gen_nested_loop(
         helper_name,
@@ -1419,6 +1435,59 @@ def emit_join_spec_helpers(
 }}"""
 
     return helpers + extra_having, spec_fn, ret_type
+
+
+def emit_join_grouped_map_spec(
+    query: SQLQuery,
+    schemas_by_table: dict[str, dict[str, str]],
+    *,
+    where_expr: str | None,
+    agg_expr: str,
+    is_sum: bool,
+    val_type: str,
+    prefix: str,
+) -> tuple[str, str, str]:
+    """Emit join GROUP BY single-agg fold -> Map. Returns (helpers, spec_call, ret_type)."""
+    if len(query.tables) < 2:
+        raise ValueError("join grouped map spec requires at least two tables")
+    derived_by_alias = {d.alias: d for d in query.derived_tables}
+    base = _base_tables(query)
+    slots = [
+        _Slot(
+            table=t,
+            param=t,
+            idx=f"i{i}",
+            struct=_table_struct_name(t),
+        )
+        for i, t in enumerate(base)
+    ]
+    helper_name = f"{prefix}_helper"
+    spec_name = f"{prefix}_spec"
+    loop_helper, loop_call, ret_type = _emit_single_agg_nway(
+        query,
+        slots,
+        schemas_by_table,
+        derived_by_alias,
+        {},
+        where_expr=where_expr,
+        agg_expr=agg_expr,
+        is_sum=is_sum,
+        val_type=val_type,
+        helper_name=helper_name,
+    )
+    param_list = ", ".join(f"{s.param}: &{s.struct}" for s in slots)
+    recommends = "\n        ".join(
+        f"valid_cols_{s.table}({s.param})," for s in slots
+    )
+    spec = f"""pub open spec fn {spec_name}({param_list}) -> {ret_type}
+    recommends
+        {recommends}
+{{
+    {loop_call}
+}}"""
+    init_args = ", ".join(s.param for s in slots)
+    spec_call = f"{spec_name}({init_args})"
+    return loop_helper + "\n\n" + spec, spec_call, ret_type
 
 
 # --- Legacy 2-table helpers (used by codegen_exec) ---

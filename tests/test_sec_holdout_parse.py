@@ -47,9 +47,8 @@ SEC_SCHEMA: dict[str, dict[str, str]] = {
 }
 
 # Transpile outcome matrix (see scripts/sec_holdout_smoke.py).
-SEC_REAL_SPEC = {"1", "2", "4", "6", "24"}
-# Q3: JOIN + HAVING scalar subquery remains unsupported until HAVING join rewriter exists.
-SEC_UNSUPPORTED: set[str] = {"3"}
+SEC_REAL_SPEC = {"1", "2", "3", "4", "6", "24"}
+SEC_UNSUPPORTED: set[str] = set()
 
 
 def _load_sec_queries() -> list[tuple[str, str]]:

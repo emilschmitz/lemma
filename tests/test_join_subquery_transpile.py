@@ -129,3 +129,50 @@ HAVING SUM(n.value) > (SELECT AVG(value) FROM num WHERE uom = 'USD')"""
     assert "valid_cols_num(num)" in out
     assert "subquery_having_sq1_spec(cols)" not in out
     assert "apply_having_filter" in out
+
+
+def test_join_having_derived_join_scalar_subquery_real_spec() -> None:
+    """HAVING scalar subquery with derived JOIN GROUP BY inner (SEC Q3 shape)."""
+    sql = """SELECT s.name, s.cik, SUM(n.value) AS total_value
+FROM num n
+JOIN sub s ON n.adsh = s.adsh
+WHERE n.uom = 'USD' AND s.fy = 2022 AND n.value IS NOT NULL
+GROUP BY s.name, s.cik
+HAVING SUM(n.value) > (
+    SELECT AVG(sub_total) FROM (
+        SELECT SUM(n2.value) AS sub_total
+        FROM num n2
+        JOIN sub s2 ON n2.adsh = s2.adsh
+        WHERE n2.uom = 'USD' AND s2.fy = 2022 AND n2.value IS NOT NULL
+        GROUP BY s2.cik
+    ) avg_sub
+)
+LIMIT 100"""
+    schema = {"num": SEC_NUM, "sub": SEC_SUB}
+    out = transpile_sql_to_verus(sql, schema)
+    assert "subquery_having_sq1_spec(num, sub)" in out
+    assert "subquery_having_sq1_derived_avg_sub_helper" in out
+    assert "arbitrary()" not in out.split("subquery_having_sq1_derived_avg_sub_helper")[1].split(
+        "pub open spec fn method_spec", 1
+    )[0]
+    assert "apply_having_filter" in out
+
+
+def test_having_derived_single_table_scalar_subquery_real_spec() -> None:
+    """Non-join HAVING with derived grouped inner (resample Q5 shape)."""
+    sql = """SELECT n.tag, COUNT(*) AS usage_count
+FROM num n
+WHERE n.uom = 'USD' AND n.value IS NOT NULL
+GROUP BY n.tag
+HAVING COUNT(*) > (
+    SELECT AVG(cnt) FROM (
+        SELECT COUNT(*) AS cnt FROM num WHERE uom = 'USD' GROUP BY tag
+    ) sub
+)
+LIMIT 1000"""
+    schema = {"num": SEC_NUM, "sub": SEC_SUB}
+    out = transpile_sql_to_verus(sql, schema)
+    assert "subquery_having_sq1_spec(num)" in out
+    assert "subquery_having_sq1_derived_sub_helper" in out
+    section = out[out.find("subquery_having_sq1_derived_sub_helper") : out.find("pub open spec fn method_spec")]
+    assert "arbitrary()" not in section

@@ -125,8 +125,34 @@ class ScalarSubquery:
     alias: str
     query: "SQLQuery"
     inner_table: str = ""
+    inner_tables: list[str] = field(default_factory=list)
     correlated: bool = False
     correlation_cols: list[str] = field(default_factory=list)
+
+
+def is_grouped_derived_scalar_subquery(query: SQLQuery) -> bool:
+    """Scalar agg over one grouped derived/CTE subquery (e.g. HAVING AVG over JOIN GROUP BY)."""
+    if not query.derived_tables or len(query.derived_tables) != 1:
+        return False
+    if query.agg_type not in ("AVG", "SUM", "MIN", "MAX", "COUNT"):
+        return False
+    inner = query.derived_tables[0].query
+    if inner.is_multi_agg:
+        return False
+    if not inner.groupby_columns or not inner.agg_type:
+        return False
+    if inner.derived_tables or inner.scalar_subqueries or inner.exists_subqueries:
+        return False
+    if inner.union_query or inner.window_specs or inner.in_subqueries:
+        return False
+    return True
+
+
+def grouped_derived_scalar_inner_tables(query: SQLQuery) -> list[str]:
+    inner = query.derived_tables[0].query
+    if inner.joins:
+        return list(inner.tables)
+    return [inner.tables[0]]
 
 
 @dataclass
@@ -1222,10 +1248,12 @@ def _parse_scalar_subquery(
         outer_resolver=outer_resolver,
     )
     if inner.derived_tables:
-        require_trusted("having_subquery")
+        if not is_grouped_derived_scalar_subquery(inner):
+            require_trusted("having_subquery")
     if inner.groupby_columns:
-        require_trusted("having_subquery")
-    if inner.joins:
+        if not is_grouped_derived_scalar_subquery(inner):
+            require_trusted("having_subquery")
+    if inner.joins and not is_grouped_derived_scalar_subquery(inner):
         raise UnsupportedContractError(
             "scalar subquery inner query with JOIN is not supported."
         )
@@ -1237,10 +1265,16 @@ def _parse_scalar_subquery(
         counter = [0]
     counter[0] += 1
     alias = f"{alias_prefix}{counter[0]}"
+    inner_tables: list[str] = []
+    if is_grouped_derived_scalar_subquery(inner):
+        inner_tables = grouped_derived_scalar_inner_tables(inner)
+    elif inner_table:
+        inner_tables = [inner_table]
     return ScalarSubquery(
         alias=alias,
         query=inner,
         inner_table=inner_table,
+        inner_tables=inner_tables,
         correlated=correlated,
         correlation_cols=correlated_cols,
     )

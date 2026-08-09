@@ -20,6 +20,8 @@ from .parse_sql import (
     SQLQuery,
     UnsupportedContractError,
     _agg_value_type,
+    grouped_derived_scalar_inner_tables,
+    is_grouped_derived_scalar_subquery,
     normalize_schema,
     parse_sql,
 )
@@ -82,7 +84,8 @@ def _subquery_inner_table_name(query: SQLQuery) -> str:
             "subquery inner query must have a single base table."
         )
     if query.derived_tables:
-        # TODO: HAVING scalar subquery with derived/CTE inner FROM on JOIN (e.g. SEC Q3).
+        if is_grouped_derived_scalar_subquery(query):
+            return grouped_derived_scalar_inner_tables(query)[0]
         raise UnsupportedContractError(
             "subquery inner FROM derived/CTE is not supported on JOIN."
         )
@@ -101,6 +104,8 @@ def _assert_join_subquery_supported(query: SQLQuery) -> None:
             "scalar subquery in SELECT list on JOIN projection is not supported."
         )
     for sub in query.scalar_subqueries:
+        if is_grouped_derived_scalar_subquery(sub.query):
+            continue
         _subquery_inner_table_name(sub.query)
     for exists in query.exists_subqueries:
         _subquery_inner_table_name(exists.query)
@@ -1089,6 +1094,7 @@ def transpile_sql_to_verus(
         _assert_join_subquery_supported(query)
     subquery_blocks: list[str] = []
     outer_schema = _flat_outer_schema(flat_schema, multi_for_subqueries)
+    sub_spec_calls: dict[str, str] = {}
     for sub in query.scalar_subqueries:
         inner_table = sub.inner_table or _subquery_inner_table_name(sub.query)
         struct_name, valid_fn, param_name, inner_schema = _subquery_emit_binding(
@@ -1101,8 +1107,17 @@ def transpile_sql_to_verus(
             valid_fn=valid_fn,
             param_name=param_name,
             outer_schema=outer_schema,
+            schemas_by_table=multi_for_subqueries,
         )
         subquery_blocks.append(emitted.helper_source)
+        sub_spec_calls[sub.alias] = emitted.spec_call
+    if sub_spec_calls and query.having_expr and not is_join:
+        resolved_having = query.having_expr
+        for alias, call in sub_spec_calls.items():
+            resolved_having = resolved_having.replace(
+                f"subquery_{alias}_spec(cols)", call,
+            )
+        query.having_expr = resolved_having
     for exists in query.exists_subqueries:
         inner_table = _subquery_inner_table_name(exists.query)
         struct_name, valid_fn, param_name, inner_schema = _subquery_emit_binding(

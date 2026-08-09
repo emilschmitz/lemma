@@ -19,6 +19,8 @@ from .parse_sql import (
     SQLQuery,
     UnsupportedContractError,
     _agg_value_type,
+    grouped_derived_scalar_inner_tables,
+    is_grouped_derived_scalar_subquery,
 )
 from .rust_ident import rust_ident
 from .value_bounds import col_verus_type, spec_map_key_type
@@ -30,8 +32,40 @@ class SubqueryEmit:
     helper_source: str
     spec_call: str
     inner_table: str = ""
+    inner_tables: list[str] = field(default_factory=list)
     correlated: bool = False
     correlation_cols: list[str] = field(default_factory=list)
+
+
+def compose_outer_agg_over_map(outer_agg: str, map_expr: str, *, val_type: str = "u64") -> str:
+    """Fold outer aggregate (AVG/SUM/…) over per-group values in a Map."""
+    if outer_agg == "SUM":
+        return (
+            f"{map_expr}.values().fold(0{val_type}, "
+            f"|acc, v| (acc as int + v as int) as {val_type})"
+        )
+    if outer_agg == "AVG":
+        return (
+            f"{{\n"
+            f"    let m = {map_expr};\n"
+            f"    let s = m.values().fold(0u64, |acc, v| (acc as int + v as int) as u64);\n"
+            f"    let c = m.len() as u64;\n"
+            f"    if c == 0 {{ 0 }} else {{ s / c }}\n"
+            f"}}"
+        )
+    if outer_agg == "MIN":
+        return (
+            f"{map_expr}.values().fold(u64::MAX, "
+            f"|acc, v| if v < acc {{ v }} else {{ acc }})"
+        )
+    if outer_agg == "MAX":
+        return (
+            f"{map_expr}.values().fold(0u64, "
+            f"|acc, v| if v > acc {{ v }} else {{ acc }})"
+        )
+    if outer_agg == "COUNT":
+        return f"{map_expr}.len() as u64"
+    raise ValueError(f"unsupported outer aggregate over grouped derived map: {outer_agg}")
 
 
 def _outer_param_name(col: str) -> str:
@@ -317,16 +351,99 @@ def emit_scalar_subquery_helper(
     valid_fn: str = "valid_cols",
     param_name: str = "cols",
     outer_schema: dict[str, str] | None = None,
+    schemas_by_table: dict[str, dict[str, str]] | None = None,
 ) -> SubqueryEmit:
     """Emit a nested helper for a scalar subquery used in WHERE or SELECT."""
     helper_name = f"subquery_{sub.alias}_helper"
     spec_name = f"subquery_{sub.alias}_spec"
-    inner_table = sub.inner_table or (sub.query.tables[0] if sub.query.tables else "")
+    inner_tables = sub.inner_tables or (
+        grouped_derived_scalar_inner_tables(sub.query)
+        if is_grouped_derived_scalar_subquery(sub.query)
+        else []
+    )
+    inner_table = (
+        inner_tables[0]
+        if inner_tables
+        else sub.inner_table or (sub.query.tables[0] if sub.query.tables else "")
+    )
     corr_params = (
         _correlated_param_specs(sub.correlation_cols, inner_schema, outer_schema)
         if sub.correlated
         else []
     )
+
+    if is_grouped_derived_scalar_subquery(sub.query) and not sub.correlated:
+        derived = sub.query.derived_tables[0]
+        inner = derived.query
+        prefix = f"subquery_{sub.alias}_derived_{derived.alias}"
+        is_sum = inner.agg_type == "SUM"
+        val_type = _agg_value_type(inner.agg_expr) if is_sum else "u64"
+        if inner.joins:
+            if schemas_by_table is None:
+                raise UnsupportedContractError(
+                    "grouped derived JOIN scalar subquery requires multi-table schema"
+                )
+            from .joins import _table_struct_name, emit_join_grouped_map_spec
+
+            helpers, map_call, _map_ret = emit_join_grouped_map_spec(
+                inner,
+                schemas_by_table,
+                where_expr=inner.where_expr,
+                agg_expr=inner.agg_expr,
+                is_sum=is_sum,
+                val_type=val_type,
+                prefix=prefix,
+            )
+            param_decls = ", ".join(
+                f"{t}: &{_table_struct_name(t)}" for t in inner_tables
+            )
+            valid_recommends = ", ".join(
+                f"valid_cols_{t}({t})" for t in inner_tables
+            )
+            param_names = ", ".join(inner_tables)
+            outer_body = compose_outer_agg_over_map(
+                sub.query.agg_type, map_call, val_type=val_type,
+            )
+            spec = f"""pub open spec fn {spec_name}({param_decls}) -> u64
+    recommends {valid_recommends},
+{{
+    {outer_body}
+}}"""
+            spec_call = f"{spec_name}({param_names})"
+            return SubqueryEmit(
+                name=spec_name,
+                helper_source=helpers + "\n\n" + spec,
+                spec_call=spec_call,
+                inner_table=inner_table,
+                inner_tables=inner_tables,
+                correlated=False,
+                correlation_cols=[],
+            )
+
+        map_helpers, map_call, map_ret = emit_derived_grouped_inner_spec(
+            prefix, inner, inner_schema, struct_name=struct_name,
+        )
+        if valid_fn != "valid_cols":
+            map_helpers = map_helpers.replace("valid_cols", valid_fn)
+        outer_body = compose_outer_agg_over_map(
+            sub.query.agg_type, map_call, val_type=val_type,
+        )
+        spec = f"""pub open spec fn {spec_name}({param_name}: &{struct_name}) -> u64
+    recommends {valid_fn}({param_name}),
+{{
+    {outer_body}
+}}"""
+        spec_call = f"{spec_name}({param_name})"
+        return SubqueryEmit(
+            name=spec_name,
+            helper_source=map_helpers + "\n\n" + spec,
+            spec_call=spec_call,
+            inner_table=inner_table,
+            inner_tables=inner_tables,
+            correlated=False,
+            correlation_cols=[],
+        )
+
     spec_call = f"{spec_name}({param_name}"
     if sub.correlated:
         spec_call += ", " + ", ".join(
