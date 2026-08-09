@@ -180,12 +180,12 @@ def _build_user_prompt(
 ```
 
 ## Context files (read-only)
-- `/context/ro/spec.rs` — method_spec ground truth
+- `/context/ro/query.sql` — **the SQL we are optimizing** (same as Target SQL above)
+- `/context/ro/spec.rs` — MethodSpec for that SQL (`Cols` = query-projected columns)
+- `/context/ro/schema.json` — same projected column types as `Cols`
 - `/context/ro/COMPILATION_GUIDE.md` — Verus/Rust patterns
 - `/context/ro/data_profile.md` — schema/stats for the workload
 - `/context/ro/hardware.md` — CPU/cache/memory hints for tuning
-- `/context/ro/query.sql` — same SQL as above
-- `/context/ro/schema.json` — column types for this query
 
 ## Hints
 - Match the backward-loop pattern in COMPILATION_GUIDE (`cols.n`, `method_spec_helper(cols, i as int)`).
@@ -193,7 +193,7 @@ def _build_user_prompt(
 - Do **not** add `proof {{ }}` blocks unless a Verus error requires a specific lemma already in scope.
 
 ## Workspace
-- `/workspace/runquery_agent.rs` is a host-owned Verus shell; edit only the body between AGENT_BODY markers.
+- `/workspace/runquery_agent.rs` is a host-owned Verus shell (SQL is in the file header + `query.sql`); edit only the body between AGENT_BODY markers.
 - MethodSpec remains in `/context/ro/spec.rs` (not inlined in the agent file).
 - Call `run_runquery(dataset_size=50000)` (or smaller) to verify and measure on the host.
 - Call `submit(run_id=...)` to mark your official run when ready.
@@ -256,7 +256,7 @@ def _prepare_workspace(
                 pass
         from research_loop.assemble_runquery import write_runquery_agent_file
 
-        write_runquery_agent_file(body_path, ret_type=ret_type)
+        write_runquery_agent_file(body_path, ret_type=ret_type, sql_query=sql_query)
     return body_path
 
 

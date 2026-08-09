@@ -170,11 +170,10 @@ shell outside the markers fails admission.
 1. **Edit one file**: `{body_path}`
 2. **Change only** code between `// AGENT_BODY_START` and `// AGENT_BODY_END`.
 3. **Read** (do not modify) context files under `{ctx}/`:
-   - `spec.rs` — MethodSpec ground truth
-   - `COMPILATION_GUIDE.md` — Verus/Rust patterns
+   - `query.sql` — **the SQL we are optimizing** (same as Target SQL above)
+   - `schema.json` / `spec.rs` — **query-projected** columns only (same Cols the host verifies)
    - `data_profile.md` — schema/stats (AGENT_DATA_MODE=`{agent_data_mode}`)
-   - `query.sql` — same SQL as above
-   - `schema.json` — column types for this query
+   - `COMPILATION_GUIDE.md` — Verus/Rust patterns
    - `AGENTS.md`, `PRIMITIVES.md` — agent brief / TRUSTED helpers (if present)
 4. **Prefer MCP tools** when available: `validate_runquery`, `run_runquery`, `submit`.
 5. Saving `{body_path}` is your submission if MCP is unavailable.
@@ -407,7 +406,7 @@ def prepare_workspace(
                 pass
         from research_loop.assemble_runquery import write_runquery_agent_file
 
-        write_runquery_agent_file(body_path, ret_type=ret_type)
+        write_runquery_agent_file(body_path, ret_type=ret_type, sql_query=sql_query)
         log_debug(COMPONENT, "workspace_reset", "built agent shell", path=str(body_path))
     log_trace(COMPONENT, "workspace_ready", "context prepared", workspace=str(workspace))
     return body_path

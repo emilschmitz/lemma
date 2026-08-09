@@ -5,6 +5,11 @@ import subprocess
 import time
 from pathlib import Path
 from verus_transpiler import transpile_sql_to_verus
+from verus_transpiler.column_projection import (
+    project_multi_schema_for_query,
+    project_schema_for_query,
+)
+from verus_transpiler.parse_sql import normalize_schema
 from db_extension.verus_bridge import (
     invoke_verus_custom_pipeline,
     match_query_index,
@@ -148,7 +153,16 @@ def run_optimization_loop(
     Runs the query optimization loop (schema-driven Verus). Prints step-by-step colored output.
     """
     try:
-        resolved_schema = resolve_schema_for_sql(sql_query, schema)
+        catalog_schema = resolve_schema_for_sql(sql_query, schema)
+        # Same projection the harness uses — agent must see the Cols/MethodSpec that assemble verifies.
+        try:
+            _flat, multi = normalize_schema(catalog_schema)
+            if multi is not None:
+                resolved_schema = project_multi_schema_for_query(sql_query, multi)
+            else:
+                resolved_schema = project_schema_for_query(sql_query, _flat)
+        except Exception:
+            resolved_schema = catalog_schema
     except ValueError as e:
         return {"status": "FAILED", "error": str(e), "history": []}
 
@@ -254,10 +268,20 @@ def run_optimization_loop(
             try:
                 if demo_enabled():
                     with demo_live_step("🦾", "Generating RunQuery", pass_fail=True) as gen_step:
-                        write_mock_agent_body(verus_spec, agent_body_path)
+                        write_mock_agent_body(
+                            verus_spec,
+                            agent_body_path,
+                            sql_query=sql_query,
+                            schema=resolved_schema,
+                        )
                         gen_step.set_passed(True)
                 else:
-                    write_mock_agent_body(verus_spec, agent_body_path)
+                    write_mock_agent_body(
+                        verus_spec,
+                        agent_body_path,
+                        sql_query=sql_query,
+                        schema=resolved_schema,
+                    )
                     _vprint(f" {COLOR_GREEN}OK{COLOR_RESET} (Mock Agent, TRUSTED run_query from spec)")
             except Exception as e:
                 _vprint(f" {COLOR_RED}FAILED{COLOR_RESET} (Mock generation failed)")

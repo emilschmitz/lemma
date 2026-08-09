@@ -59,6 +59,14 @@ def test_fingerprint_file_round_trip(tmp_path: Path):
     assert len(fp) == 64
 
 
+def test_build_runquery_agent_source_includes_sql_header():
+    sql = "SELECT SUM(x) FROM t"
+    src = build_runquery_agent_source(ret_type="u64", sql_query=sql)
+    assert "Target SQL" in src
+    assert "SELECT SUM(x) FROM t" in src
+    assert "query-projected" in src
+
+
 def test_build_exec_run_query_from_body_map_uses_view_ensures():
     body = "let mut m = HashMap::new();\n    m"
     wrapped = build_exec_run_query_from_body(body, "map_str_str_u64")

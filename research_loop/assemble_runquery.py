@@ -200,10 +200,22 @@ def _indent_body_lines(body_inner: str) -> str:
     return "\n".join(f"    {line}" if line.strip() else "" for line in body_inner.splitlines())
 
 
+def _sql_comment_block(sql_query: str | None) -> str:
+    """Embed target SQL as line comments (outside markers → part of host shell fingerprint)."""
+    if not sql_query or not sql_query.strip():
+        return ""
+    lines = ["//! Target SQL (also in context/ro/query.sql):"]
+    for line in sql_query.strip().splitlines():
+        lines.append(f"//!   {line.rstrip()}")
+    lines.append("//!")
+    return "\n".join(lines) + "\n"
+
+
 def build_runquery_agent_source(
     *,
     ret_type: str,
     body_inner: str | None = None,
+    sql_query: str | None = None,
 ) -> str:
     """Natural Verus agent shell with markers around body statements only."""
     cfg = _ret_type_cfg(ret_type)
@@ -220,9 +232,13 @@ def build_runquery_agent_source(
         )
     else:
         inner = _indent_body_lines(body_inner.strip())
+    sql_block = _sql_comment_block(sql_query)
     return (
         "//! Host-owned shell — edit ONLY between AGENT_BODY_START/END.\n"
-        "//! Cols / method_spec / valid_cols live in context/ro/spec.rs (not inlined).\n\n"
+        "//! Cols / method_spec / valid_cols: context/ro/spec.rs (query-projected, not inlined).\n"
+        "//! schema.json lists the same projected columns as Cols.\n"
+        f"{sql_block}"
+        "\n"
         "use vstd::prelude::*;\n"
         f"{extra_use}"
         "// Types below are provided when host assembles with spec.rs.\n\n"
@@ -271,9 +287,12 @@ def write_runquery_agent_file(
     *,
     ret_type: str = "u64",
     body_inner: str | None = None,
+    sql_query: str | None = None,
 ) -> None:
     """Write agent shell and sibling ``runquery_agent.shell.sha256`` fingerprint."""
-    source = build_runquery_agent_source(ret_type=ret_type, body_inner=body_inner)
+    source = build_runquery_agent_source(
+        ret_type=ret_type, body_inner=body_inner, sql_query=sql_query
+    )
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(source, encoding="utf-8")
     sha_path = runquery_agent_sha_path(dest)

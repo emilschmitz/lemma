@@ -263,10 +263,12 @@ def agent_file_to_run_query_body(
     return build_exec_run_query_from_body(inner, ret)
 
 
-def copy_runquery_template(dest: Path, *, ret_type: str = "u64") -> None:
+def copy_runquery_template(
+    dest: Path, *, ret_type: str = "u64", sql_query: str | None = None
+) -> None:
     from research_loop.assemble_runquery import write_runquery_agent_file
 
-    write_runquery_agent_file(dest, ret_type=ret_type)
+    write_runquery_agent_file(dest, ret_type=ret_type, sql_query=sql_query)
 
 
 def write_mock_agent_body(
@@ -274,6 +276,8 @@ def write_mock_agent_body(
     workspace_path: str | Path,
     *,
     stream_demo: bool = False,
+    sql_query: str = "",
+    schema: dict | None = None,
 ) -> None:
     """Write mock runquery_agent.rs — skeleton only; never vacuous TRUSTED run_query."""
     from research_loop.pipeline_demo import demo_enabled, stream_mock_agent_output
@@ -285,7 +289,8 @@ def write_mock_agent_body(
             workspace_path=str(dest),
             body_inner="// TODO: agent fills run_query body",
         )
-    copy_runquery_template(dest, ret_type=resolve_ret_type_for_sql("", {}))
+    ret = resolve_ret_type_for_sql(sql_query, schema)
+    copy_runquery_template(dest, ret_type=ret, sql_query=sql_query or None)
 
 
 def resolve_tbl_path(sql: str, schema: dict, workload_tables: dict[str, Path] | None = None) -> str:
