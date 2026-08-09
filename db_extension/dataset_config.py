@@ -69,6 +69,34 @@ def file_row_count() -> int | None:
     return _count_tbl_rows(path)
 
 
+def _count_duckdb_primary_rows() -> int | None:
+    """Row count from LEMMA_DUCKDB_PATH primary table (SEC / DuckDB workloads)."""
+    db = os.environ.get("LEMMA_DUCKDB_PATH", "").strip()
+    if not db or not Path(db).is_file():
+        return None
+    table = (os.environ.get("LEMMA_PRIMARY_TABLE") or "").strip()
+    if not table:
+        # Common env set by run_optimizer after workload resolve — optional.
+        table = (os.environ.get("LEMMA_BENCH_TABLE") or "").strip()
+    if not table:
+        return None
+    try:
+        import duckdb
+    except ImportError:
+        return None
+    con = duckdb.connect(db, read_only=True)
+    try:
+        # Quote identifier safely: only allow simple names
+        if not table.replace("_", "").isalnum():
+            return None
+        n = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        return int(n)
+    except Exception:
+        return None
+    finally:
+        con.close()
+
+
 def effective_dataset_size() -> int:
     """Rows to load/run against: env limit if set, else all available rows."""
     limit = dataset_size_limit()
@@ -82,6 +110,9 @@ def effective_dataset_size() -> int:
             return available
 
     available = file_row_count()
+    if available is None:
+        available = _count_duckdb_primary_rows()
+
     if limit is not None:
         if available is None:
             return limit

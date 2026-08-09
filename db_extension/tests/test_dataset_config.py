@@ -67,7 +67,26 @@ def test_effective_size_raises_without_tbl_or_env(
 ) -> None:
     monkeypatch.delenv("LEMMA_DATASET_SIZE", raising=False)
     monkeypatch.delenv("LEMMA_BENCH_TBL", raising=False)
+    monkeypatch.delenv("LEMMA_DUCKDB_PATH", raising=False)
+    monkeypatch.delenv("LEMMA_PRIMARY_TABLE", raising=False)
     with pytest.raises(RuntimeError, match="LEMMA_DATASET_SIZE"):
         effective_dataset_size()
     with pytest.raises(RuntimeError, match="LEMMA_DATASET_SIZE"):
         paths_effective_dataset_size()
+
+
+def test_effective_size_from_duckdb_primary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    isolated_ssb: Path,
+) -> None:
+    duckdb = pytest.importorskip("duckdb")
+    db = tmp_path / "t.duckdb"
+    con = duckdb.connect(str(db))
+    con.execute("CREATE TABLE pre AS SELECT * FROM range(5) t(x)")
+    con.close()
+    monkeypatch.delenv("LEMMA_DATASET_SIZE", raising=False)
+    monkeypatch.delenv("LEMMA_BENCH_TBL", raising=False)
+    monkeypatch.setenv("LEMMA_DUCKDB_PATH", str(db))
+    monkeypatch.setenv("LEMMA_PRIMARY_TABLE", "pre")
+    assert effective_dataset_size() == 5

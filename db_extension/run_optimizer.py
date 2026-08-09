@@ -129,6 +129,8 @@ def main():
         sys.exit(2)
 
     os.environ.setdefault("LEMMA_DUCKDB_PATH", spec.db_path)
+    if spec.primary_table:
+        os.environ["LEMMA_PRIMARY_TABLE"] = spec.primary_table
     bench_tbl = primary_bench_tbl(spec)
     if bench_tbl:
         os.environ.setdefault("LEMMA_BENCH_TBL", bench_tbl)
