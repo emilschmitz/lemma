@@ -87,12 +87,9 @@ def build_data_profile(data_path: Path | None, sql_query: str, mode: str) -> str
 
     table = _table_name_for_path(data_path)
 
-    try:
-        from db_extension.dataset_config import effective_dataset_size
+    from db_extension.dataset_config import effective_dataset_size
 
-        row_limit = effective_dataset_size()
-    except ImportError:
-        row_limit = 2_000_000
+    row_limit = effective_dataset_size()
 
     con = duckdb.connect(":memory:")
     try:

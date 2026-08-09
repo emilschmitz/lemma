@@ -10,10 +10,14 @@ SSB_DIR = ROOT / "ssb-dbgen"
 DEFAULT_TBL = SSB_DIR / "lineorder_flat.tbl"
 META_PATH = SSB_DIR / "dataset_meta.json"
 
-DEFAULT_DATASET_SIZE = 2_000_000
 DEFAULT_SSB_SCALE = 1.333
 
 HOLDOUT_DATA = ROOT / "research_loop" / "holdout" / "data"
+
+_NO_DATASET_SIZE_MSG = (
+    "Cannot determine dataset row count: set LEMMA_DATASET_SIZE or provide "
+    "a readable bench table (LEMMA_BENCH_TBL) or SSB flat tbl."
+)
 
 
 def ssb_dir() -> Path:
@@ -40,11 +44,19 @@ def ssb_scale() -> float:
     return float(raw)
 
 
-def dataset_size_limit() -> int:
+def dataset_size_limit() -> int | None:
     raw = os.environ.get("LEMMA_DATASET_SIZE", "").strip()
     if not raw:
-        return DEFAULT_DATASET_SIZE
+        return None
     return max(1, int(raw))
+
+
+def _count_tbl_rows(path: Path) -> int:
+    with open(path, "rb") as f:
+        lines = 0
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            lines += chunk.count(b"\n")
+    return max(0, lines - 1)
 
 
 def file_row_count() -> int | None:
@@ -60,16 +72,26 @@ def file_row_count() -> int | None:
     path = tbl_path()
     if not path.is_file():
         return None
-    with open(path, "rb") as f:
-        lines = 0
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            lines += chunk.count(b"\n")
-    return max(0, lines - 1)
+    return _count_tbl_rows(path)
 
 
 def effective_dataset_size() -> int:
     limit = dataset_size_limit()
+    bench = os.environ.get("LEMMA_BENCH_TBL", "").strip()
+    if bench:
+        p = Path(bench)
+        if p.is_file():
+            available = _count_tbl_rows(p)
+            if limit is not None:
+                return min(limit, available)
+            return available
+
     available = file_row_count()
+    if limit is not None:
+        if available is None:
+            return limit
+        return min(limit, available)
+
     if available is None:
-        return limit
-    return min(limit, available)
+        raise RuntimeError(_NO_DATASET_SIZE_MSG)
+    return available

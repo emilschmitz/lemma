@@ -27,7 +27,7 @@ Requires the Cursor \`agent\` CLI on PATH (same auth as running \`agent\` in you
 ./scripts/mockdemo.sh
 ```
 
-Same UX, but seeds a hardcoded RunQuery body (`MOCK_AGENT=1`, 2M rows, no LLM).
+Same UX, but seeds a hardcoded RunQuery body (`MOCK_AGENT=1`, `LEMMA_DATASET_SIZE=2000000`, no LLM).
 
 Override query: `DEMO_QUERY_ID=5 ./scripts/demo.sh`
 
