@@ -626,7 +626,7 @@ def _emit_multi_agg_spec(
         if spec.agg_type == "COUNT":
             state_types.append("u64")
             state_defaults.append("0u64")
-            update_stmts.append((pos, f"let s{pos} = ({{prev}} as int + 1) as u64;"))
+            update_stmts.append((pos, f"let s{pos} = (__PREV__ as int + 1) as u64;"))
             project_parts.append(f"s{pos}")
         elif spec.agg_type == "SUM":
             val_type = _agg_value_type(spec.agg_expr)
@@ -639,7 +639,7 @@ def _emit_multi_agg_spec(
             )
             update_stmts.append((
                 pos,
-                f"let s{pos} = ({{prev}} as int + {term} as int) as {val_type};",
+                f"let s{pos} = (__PREV__ as int + {term} as int) as {val_type};",
             ))
             project_parts.append(f"s{pos}")
         elif spec.agg_type == "MIN":
@@ -649,7 +649,7 @@ def _emit_multi_agg_spec(
             update_stmts.append((
                 pos,
                 f"let t{pos} = {term};\n"
-                f"            let s{pos} = if t{pos} < {{prev}} {{ t{pos} }} else {{ {{prev}} }};",
+                f"            let s{pos} = if t{pos} < __PREV__ {{ t{pos} }} else {{ __PREV__ }};",
             ))
             project_parts.append(f"s{pos}")
         elif spec.agg_type == "MAX":
@@ -659,7 +659,7 @@ def _emit_multi_agg_spec(
             update_stmts.append((
                 pos,
                 f"let t{pos} = {term};\n"
-                f"            let s{pos} = if t{pos} > {{prev}} {{ t{pos} }} else {{ {{prev}} }};",
+                f"            let s{pos} = if t{pos} > __PREV__ {{ t{pos} }} else {{ __PREV__ }};",
             ))
             project_parts.append(f"s{pos}")
         elif spec.agg_type == "AVG":
@@ -669,8 +669,8 @@ def _emit_multi_agg_spec(
             term = spec_u64_term(spec.agg_expr, idx_var)
             update_stmts.append((
                 sum_pos,
-                f"let s{sum_pos} = ({{prev_sum}} as int + {term} as int) as u64;\n"
-                f"            let s{sum_pos + 1} = ({{prev_cnt}} as int + 1) as u64;",
+                f"let s{sum_pos} = (__PREV_SUM__ as int + {term} as int) as u64;\n"
+                f"            let s{sum_pos + 1} = (__PREV_CNT__ as int + 1) as u64;",
             ))
             project_parts.append(
                 f"if s{sum_pos + 1} == 0 {{ 0 }} else {{ s{sum_pos} / s{sum_pos + 1} }}"
@@ -682,8 +682,8 @@ def _emit_multi_agg_spec(
             val_expr = _distinct_val_expr(spec, idx_var, flat_schema)
             update_stmts.append((
                 pos,
-                f"let s{pos} = if {{prev}}.contains_key({val_expr}) {{ {{prev}} }} "
-                f"else {{ {{prev}}.insert({val_expr}, true) }};",
+                f"let s{pos} = if __PREV__.contains_key({val_expr}) {{ __PREV__ }} "
+                f"else {{ __PREV__.insert({val_expr}, true) }};",
             ))
             project_parts.append(f"s{pos}.dom().len() as u64")
         else:
@@ -699,27 +699,39 @@ def _emit_multi_agg_spec(
     rendered_updates: list[str] = []
     for pos, tmpl in update_stmts:
         pos_i = int(pos)
-        if "{{prev_sum}}" in tmpl:
-            rendered = tmpl.replace("{{prev_sum}}", pref(pos_i)).replace(
-                "{{prev_cnt}}", pref(pos_i + 1)
+        if "__PREV_SUM__" in tmpl:
+            rendered = tmpl.replace("__PREV_SUM__", pref(pos_i)).replace(
+                "__PREV_CNT__", pref(pos_i + 1)
             )
         else:
-            rendered = tmpl.replace("{{prev}}", pref(pos_i))
+            rendered = tmpl.replace("__PREV__", pref(pos_i))
         rendered_updates.append(rendered)
 
     if n_state == 1:
         state_tuple_type = state_types[0]
         default_state = state_defaults[0]
         rebuild_state = "s0"
+        val_bind = "v"
     else:
         state_tuple_type = f"({', '.join(state_types)})"
         default_state = f"({', '.join(state_defaults)})"
         rebuild_state = f"({', '.join(f's{i}' for i in range(n_state))})"
+        val_bind = "v"
+
+    # Projection reads the folded state value `v` (not free s0/s1 names).
+    def _project_from_v(expr: str) -> str:
+        out = expr
+        if n_state == 1:
+            return out.replace("s0", "v")
+        # High→low so s10 is not mangled by replacing s1 first.
+        for i in range(n_state - 1, -1, -1):
+            out = out.replace(f"s{i}", f"v.{i}")
+        return out
 
     if len(project_parts) == 1:
-        project_expr = project_parts[0]
+        project_expr = _project_from_v(project_parts[0])
     else:
-        project_expr = f"({', '.join(project_parts)})"
+        project_expr = f"({', '.join(_project_from_v(p) for p in project_parts)})"
 
     update_block = "\n            ".join(rendered_updates)
 
@@ -767,7 +779,7 @@ def _emit_multi_agg_spec(
 
     spec_body = (
         f"let raw = {helper_name}(cols, 0);\n"
-        f"    raw.map_values(|_k| {project_expr})"
+        f"    raw.map_values(|{val_bind}| {project_expr})"
     )
     extra = ""
     if query.having_expr:
