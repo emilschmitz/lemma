@@ -141,6 +141,149 @@ def _correlated_param_specs(
     return specs
 
 
+def _validate_simple_semi_join_inner(query: SQLQuery, *, label: str) -> None:
+    """Reject EXISTS/IN inner shapes that lack a single-table scan fold."""
+    if query.joins:
+        raise UnsupportedContractError(
+            f"{label} inner JOIN is not supported in MethodSpec semi-join fold"
+        )
+    if query.groupby_columns:
+        raise UnsupportedContractError(
+            f"{label} inner GROUP BY is not supported in MethodSpec semi-join fold"
+        )
+    if query.derived_tables:
+        raise UnsupportedContractError(
+            f"{label} inner derived table is not supported in MethodSpec semi-join fold"
+        )
+    if query.scalar_subqueries or query.exists_subqueries or query.in_subqueries:
+        raise UnsupportedContractError(
+            f"nested subqueries inside {label} are not supported"
+        )
+    if len(query.tables) != 1:
+        raise UnsupportedContractError(
+            f"{label} requires exactly one inner table"
+        )
+
+
+def _rewrite_outer_refs_to_tuple_key(
+    where_at_k: str,
+    correlation_cols: list[str],
+    inner_schema: dict[str, str],
+    outer_schema: dict[str, str] | None = None,
+) -> str:
+    """Map ``outer.col`` refs to ``outer_key.i`` for correlated EXISTS/IN tuple keys."""
+    out = where_at_k
+    for i, col in enumerate(correlation_cols):
+        replacement = f"outer_key.{i}"
+        out = re.sub(
+            rf"\bouter\.{re.escape(col)}\b",
+            replacement,
+            out,
+            flags=re.IGNORECASE,
+        )
+        pname = _outer_param_name(col)
+        typ = _lookup_col_type(col, inner_schema, outer_schema)
+        if col_verus_type(typ) == "String":
+            out = re.sub(rf"\b{re.escape(pname)}@\b", replacement, out)
+        out = re.sub(rf"\b{re.escape(pname)}\b", replacement, out)
+    return out
+
+
+def _build_semi_join_where_at_k(
+    query: SQLQuery,
+    inner_schema: dict[str, str],
+    *,
+    param_name: str = "cols",
+    correlation_cols: list[str] | None = None,
+    outer_schema: dict[str, str] | None = None,
+    tuple_outer_key: bool = False,
+) -> str | None:
+    if not query.where_expr:
+        return None
+    where_row = to_col_expr(query.where_expr, "k")
+    if param_name != "cols":
+        where_row = where_row.replace("cols.", f"{param_name}.")
+    where_at_k = spec_where_cond(where_row, "k", inner_schema)
+    if correlation_cols:
+        if tuple_outer_key:
+            where_at_k = _rewrite_outer_refs_to_tuple_key(
+                where_at_k, correlation_cols, inner_schema, outer_schema,
+            )
+        else:
+            where_at_k = _rewrite_outer_refs_in_where(
+                where_at_k, correlation_cols, inner_schema, outer_schema,
+            )
+    return where_at_k
+
+
+def _spec_col_at_k(
+    col: str,
+    idx: str,
+    schema: dict[str, str],
+    *,
+    param_name: str = "cols",
+) -> str:
+    field = col.lower()
+    return f"{param_name}.get_{field}({idx})"
+
+
+def _in_projection_column(in_spec: InSubquerySpec) -> str:
+    if in_spec.query.is_projection and in_spec.query.projection_columns:
+        return in_spec.query.projection_columns[0]
+    if in_spec.query.groupby_columns:
+        return in_spec.query.groupby_columns[0]
+    return in_spec.column
+
+
+def _emit_bool_scan_helper(
+    func_name: str,
+    *,
+    where_at_k: str | None,
+    match_at_k: str | None = None,
+    struct_name: str = "Cols",
+    param_name: str = "cols",
+    valid_fn: str = "valid_cols",
+    extra_params: list[tuple[str, str]] | None = None,
+    extra_mid_params: list[tuple[str, str]] | None = None,
+) -> str:
+    """Recursive row scan returning true on first matching row (EXISTS / IN membership)."""
+    extra_sig = ""
+    extra_call = ""
+    if extra_params:
+        extra_sig = ", " + ", ".join(f"{n}: {t}" for n, t in extra_params)
+        extra_call = ", " + ", ".join(n for n, _ in extra_params)
+    mid_sig = ""
+    mid_call = ""
+    if extra_mid_params:
+        mid_sig = ", " + ", ".join(f"{n}: {t}" for n, t in extra_mid_params)
+        mid_call = ", " + ", ".join(n for n, _ in extra_mid_params)
+
+    if match_at_k and where_at_k:
+        row_match = f"({where_at_k}) && ({match_at_k})"
+    elif match_at_k:
+        row_match = match_at_k
+    elif where_at_k:
+        row_match = where_at_k
+    else:
+        row_match = "true"
+
+    body = f"""if k < {param_name}.n {{
+        if {row_match} {{
+            true
+        }} else {{
+            {func_name}({param_name}{extra_call}{mid_call}, k + 1)
+        }}
+    }} else {{
+        false
+    }}"""
+    return f"""pub open spec fn {func_name}({param_name}: &{struct_name}{extra_sig}{mid_sig}, k: int) -> bool
+    recommends {valid_fn}({param_name}),
+    decreases {param_name}.n - k,
+{{
+    {body}
+}}"""
+
+
 def _emit_recursive_helper(
     func_name: str,
     *,
@@ -589,18 +732,29 @@ def emit_exists_subquery_helper(
             param_name=param_name,
             outer_schema=outer_schema,
         )
+    _validate_simple_semi_join_inner(exists.query, label="EXISTS")
     helper_name = f"exists_{exists.alias}_helper"
     spec_name = f"exists_{exists.alias}_spec"
-    _ = inner_schema, exists.query.where_expr
-    helper = f"""#[verifier::external_body]
-pub open spec fn {helper_name}({param_name}: &{struct_name}, k: int) -> bool {{
-    arbitrary()
-}}"""
-    spec = f"""pub open spec fn {spec_name}({param_name}: &{struct_name}) -> bool
-    recommends {valid_fn}({param_name}),
-{{
-    {helper_name}({param_name}, 0)
-}}"""
+    where_at_k = _build_semi_join_where_at_k(
+        exists.query,
+        inner_schema,
+        param_name=param_name,
+    )
+    helper = _emit_bool_scan_helper(
+        helper_name,
+        where_at_k=where_at_k,
+        struct_name=struct_name,
+        param_name=param_name,
+        valid_fn=valid_fn,
+    )
+    spec = _wrap_spec(
+        spec_name,
+        helper_name,
+        struct_name=struct_name,
+        param_name=param_name,
+        valid_fn=valid_fn,
+        ret_type="bool",
+    )
     return helper + "\n\n" + spec
 
 
@@ -613,22 +767,38 @@ def emit_exists_corr_subquery_helper(
     param_name: str = "cols",
     outer_schema: dict[str, str] | None = None,
 ) -> str:
-    """Emit correlated EXISTS spec helper (TRUSTED nested-loop reference)."""
+    """Emit correlated EXISTS spec helper (nested-loop semi-join fold)."""
+    _validate_simple_semi_join_inner(exists.query, label="correlated EXISTS")
     key_ty = _corr_outer_key_type(
         exists.correlation_cols, inner_schema, outer_schema
     )
     spec_name = f"exists_corr_{exists.alias}_spec"
     helper_name = f"exists_corr_{exists.alias}_helper"
-    helper = f"""// TRUSTED: correlated EXISTS nested-loop semi-join reference.
-#[verifier::external_body]
-pub open spec fn {helper_name}({param_name}: &{struct_name}, outer_key: {key_ty}, k: int) -> bool {{
-    arbitrary()
-}}"""
-    spec = f"""pub open spec fn {spec_name}({param_name}: &{struct_name}, outer_key: {key_ty}) -> bool
-    recommends {valid_fn}({param_name}),
-{{
-    {helper_name}({param_name}, outer_key, 0)
-}}"""
+    where_at_k = _build_semi_join_where_at_k(
+        exists.query,
+        inner_schema,
+        param_name=param_name,
+        correlation_cols=exists.correlation_cols,
+        outer_schema=outer_schema,
+        tuple_outer_key=True,
+    )
+    helper = _emit_bool_scan_helper(
+        helper_name,
+        where_at_k=where_at_k,
+        struct_name=struct_name,
+        param_name=param_name,
+        valid_fn=valid_fn,
+        extra_params=[("outer_key", key_ty)],
+    )
+    spec = _wrap_spec(
+        spec_name,
+        helper_name,
+        struct_name=struct_name,
+        param_name=param_name,
+        valid_fn=valid_fn,
+        ret_type="bool",
+        extra_params=[("outer_key", key_ty)],
+    )
     return helper + "\n\n" + spec
 
 
@@ -651,33 +821,33 @@ def emit_in_subquery_helper(
             param_name=param_name,
             outer_schema=outer_schema,
         )
-    set_name = f"in_{in_spec.alias}_set"
+    _validate_simple_semi_join_inner(in_spec.query, label="IN")
+    helper_name = f"in_{in_spec.alias}_helper"
     contains_name = f"in_{in_spec.alias}_contains"
-    col_field = in_spec.column.lower()
-    inner_col = in_spec.query.projection_columns[0].lower() if in_spec.query.is_projection else in_spec.column.lower()
-    where_at_k = (
-        spec_where_cond(
-            to_col_expr(in_spec.query.where_expr, "k"), "k", inner_schema,
-        )
-        if in_spec.query.where_expr
-        else None
+    proj_col = _in_projection_column(in_spec)
+    val_ty = spec_map_key_type(inner_schema.get(proj_col.lower(), "int"))
+    where_at_k = _build_semi_join_where_at_k(
+        in_spec.query,
+        inner_schema,
+        param_name=param_name,
     )
-    set_helper = f"""#[verifier::external_body]
-pub open spec fn {set_name}({param_name}: &{struct_name}) -> Set<u32> {{
-    arbitrary()
+    proj_at_k = _spec_col_at_k(proj_col, "k", inner_schema, param_name=param_name)
+    match_at_k = f"{proj_at_k} == val"
+    helper = _emit_bool_scan_helper(
+        helper_name,
+        where_at_k=where_at_k,
+        match_at_k=match_at_k,
+        struct_name=struct_name,
+        param_name=param_name,
+        valid_fn=valid_fn,
+        extra_mid_params=[("val", val_ty)],
+    )
+    contains = f"""pub open spec fn {contains_name}({param_name}: &{struct_name}, val: {val_ty}) -> bool
+    recommends {valid_fn}({param_name}),
+{{
+    {helper_name}({param_name}, val, 0)
 }}"""
-    if where_at_k:
-        contains = f"""#[verifier::external_body]
-pub open spec fn {contains_name}({param_name}: &{struct_name}, val: u32) -> bool {{
-    {set_name}({param_name}).contains(val)
-}}"""
-    else:
-        contains = f"""#[verifier::external_body]
-pub open spec fn {contains_name}({param_name}: &{struct_name}, val: u32) -> bool {{
-    {set_name}({param_name}).contains(val)
-}}"""
-    _ = col_field, inner_col, where_at_k
-    return set_helper + "\n\n" + contains
+    return helper + "\n\n" + contains
 
 
 def emit_in_corr_subquery_helper(
@@ -689,22 +859,39 @@ def emit_in_corr_subquery_helper(
     param_name: str = "cols",
     outer_schema: dict[str, str] | None = None,
 ) -> str:
-    """Emit correlated IN (subquery) membership helper (TRUSTED)."""
+    """Emit correlated IN (subquery) membership helper."""
+    _validate_simple_semi_join_inner(in_spec.query, label="correlated IN")
     key_ty = _corr_outer_key_type(
         in_spec.correlation_cols, inner_schema, outer_schema,
     )
     val_ty = _corr_key_spec_type(in_spec.column, inner_schema, outer_schema)
     contains_name = f"in_corr_{in_spec.alias}_contains"
     helper_name = f"in_corr_{in_spec.alias}_helper"
-    helper = f"""// TRUSTED: correlated IN nested-loop membership reference.
-#[verifier::external_body]
-pub open spec fn {helper_name}({param_name}: &{struct_name}, outer_key: {key_ty}, k: int) -> Set<{val_ty}> {{
-    arbitrary()
-}}"""
+    proj_col = _in_projection_column(in_spec)
+    where_at_k = _build_semi_join_where_at_k(
+        in_spec.query,
+        inner_schema,
+        param_name=param_name,
+        correlation_cols=in_spec.correlation_cols,
+        outer_schema=outer_schema,
+        tuple_outer_key=True,
+    )
+    proj_at_k = _spec_col_at_k(proj_col, "k", inner_schema, param_name=param_name)
+    match_at_k = f"{proj_at_k} == val"
+    helper = _emit_bool_scan_helper(
+        helper_name,
+        where_at_k=where_at_k,
+        match_at_k=match_at_k,
+        struct_name=struct_name,
+        param_name=param_name,
+        valid_fn=valid_fn,
+        extra_params=[("outer_key", key_ty)],
+        extra_mid_params=[("val", val_ty)],
+    )
     contains = f"""pub open spec fn {contains_name}({param_name}: &{struct_name}, val: {val_ty}, outer_key: {key_ty}) -> bool
     recommends {valid_fn}({param_name}),
 {{
-    {helper_name}({param_name}, outer_key, 0).contains(val)
+    {helper_name}({param_name}, outer_key, val, 0)
 }}"""
     return helper + "\n\n" + contains
 

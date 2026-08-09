@@ -103,6 +103,9 @@ LIMIT 5"""
     assert "exists_corr_exists_1_spec(fact, fact.key" in out
     assert "valid_cols_fact" in out
     assert "exists_corr_exists_1_spec(cols" not in out
+    section = out[out.find("exists_corr_exists_1_helper") : out.find("pub open spec fn method_spec")]
+    assert "decreases" in section
+    assert "arbitrary()" not in section
 
 
 def test_in_uncorrelated_join_wiring() -> None:
@@ -114,6 +117,10 @@ LIMIT 5"""
     assert "in_in_1_contains(fact, fact.tag" in out
     assert "valid_cols_fact" in out
     assert "in_1_contains(cols" not in out
+    section = out[out.find("in_in_1_helper") : out.find("pub open spec fn method_spec")]
+    assert "decreases" in section
+    assert "arbitrary()" not in section
+    assert "val: Seq<char>" in section
 
 
 def test_join_having_scalar_subquery_transpiles_table_scoped() -> None:

@@ -65,5 +65,9 @@ GROUP BY e.entity_id, e.name"""
     inner = q.in_subqueries[0].query
     assert inner.groupby_columns == ["entity_id"]
     assert any(a.agg_type == "COUNT_DISTINCT" for a in inner.agg_specs)
-    out = transpile_sql_to_verus(sql, GENERIC_SCHEMA)
-    assert "method_spec" in out
+    import pytest
+
+    from verus_transpiler.parse_sql import UnsupportedContractError
+
+    with pytest.raises(UnsupportedContractError, match="IN inner GROUP BY"):
+        transpile_sql_to_verus(sql, GENERIC_SCHEMA)
