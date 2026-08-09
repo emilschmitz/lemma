@@ -9,7 +9,7 @@ from pathlib import Path
 
 from db_extension.agent.config import AgentFlags, load_agent_flags
 from db_extension.agent.docker_runner import ContainerSession, start_tool_container
-from db_extension.agent.extract import extract_marked_body, wrap_body_with_markers
+from db_extension.agent.extract import extract_marked_body
 from db_extension.agent.measure_core import MeasureContext, get_submitted
 from db_extension.agent.mcp_socket import McpSocketServer
 from db_extension.agent.mcp_tool_specs import openai_host_tool_definitions
@@ -20,7 +20,6 @@ from research_loop.lemma_flags import lemma_agent_hardware
 ROOT = Path(__file__).resolve().parents[2]
 RESEARCH = ROOT / "research_loop"
 DEFAULT_WORKSPACE = RESEARCH / "agent_workspace"
-RUNQUERY_TEMPLATE = RESEARCH / "templates" / "runquery_agent.rs"
 DEFAULT_RUNQUERY = "runquery_agent.rs"
 
 # Sandbox-local tools (executed in the container). Host measure tools come from MCP specs.
@@ -123,7 +122,9 @@ Edit **only** `/workspace/runquery_agent.rs` **between** the markers:
 // AGENT_BODY_END
 ```
 
-The host injects the `run_query` signature; do not add `requires`/`ensures`, modules, or new items.
+The file is a **host-owned Verus `run_query` shell** (signature + `ensures` are fixed).
+**Edit only the marked body** — MethodSpec / `valid_cols` live in `/context/ro/spec.rs`.
+Editing the shell outside the markers fails admission.
 **Derive** filters, loop order, and aggregation from `method_spec` in `/context/ro/spec.rs`.
 Optimize for the **workload class**, not overfitting the sample data.
 
@@ -192,7 +193,8 @@ def _build_user_prompt(
 - Do **not** add `proof {{ }}` blocks unless a Verus error requires a specific lemma already in scope.
 
 ## Workspace
-- Edit `/workspace/runquery_agent.rs` between the AGENT_BODY_START/END markers.
+- `/workspace/runquery_agent.rs` is a host-owned Verus shell; edit only the body between AGENT_BODY markers.
+- MethodSpec remains in `/context/ro/spec.rs` (not inlined in the agent file).
 - Call `run_runquery(dataset_size=50000)` (or smaller) to verify and measure on the host.
 - Call `submit(run_id=...)` to mark your official run when ready.
 {feedback}{spec_section}
@@ -244,12 +246,17 @@ def _prepare_workspace(
         )
     body_path = workspace / DEFAULT_RUNQUERY
     if reset_body or not body_path.exists():
-        if RUNQUERY_TEMPLATE.is_file():
-            body_path.write_text(RUNQUERY_TEMPLATE.read_text(encoding="utf-8"))
-        else:
-            body_path.write_text(
-                wrap_body_with_markers("// TODO: implement run_query body\n")
-            )
+        ret_type = "u64"
+        if sql_query.strip():
+            try:
+                from db_extension.verus_bridge import resolve_ret_type_for_sql
+
+                ret_type = resolve_ret_type_for_sql(sql_query, schema)
+            except Exception:
+                pass
+        from research_loop.assemble_runquery import write_runquery_agent_file
+
+        write_runquery_agent_file(body_path, ret_type=ret_type)
     return body_path
 
 

@@ -206,7 +206,37 @@ def extract_trusted_run_query(spec_rs: str) -> str | None:
     return None
 
 
-def agent_file_to_run_query_body(agent_raw: str, spec_rs: str) -> str:
+def resolve_ret_type_for_sql(sql: str, schema: dict | None) -> str:
+    """Map SQL + schema to assembler RET_TYPE_CONFIG key (harness-aligned)."""
+    if not sql.strip():
+        return "u64"
+    try:
+        from verus_transpiler.parse_sql import normalize_schema, parse_sql
+
+        from research_loop.harness import _resolve_custom_ret_type
+        from verus_transpiler.column_projection import (
+            project_multi_schema_for_query,
+            project_schema_for_query,
+        )
+
+        flat, multi = normalize_schema(schema or {})
+        query = parse_sql(sql, schema or {})
+        if multi:
+            projected = project_multi_schema_for_query(sql, multi)
+        else:
+            projected = project_schema_for_query(sql, flat)
+        return _resolve_custom_ret_type(query, projected, multi=bool(multi))
+    except Exception:
+        return "u64"
+
+
+def agent_file_to_run_query_body(
+    agent_raw: str,
+    spec_rs: str,
+    *,
+    ret_type: str | None = None,
+    agent_path: Path | None = None,
+) -> str:
     """Convert agent workspace file to harness run_query_body (full pub exec fn).
 
     Always re-wrap with host ``requires`` / ``ensures``. Never accept an agent-provided
@@ -214,35 +244,29 @@ def agent_file_to_run_query_body(agent_raw: str, spec_rs: str) -> str:
     "verify" without proving equivalence).
     """
     _ = spec_rs
-    from research_loop.assemble_runquery import extract_agent_body, validate_runquery_body
+    from research_loop.assemble_runquery import (
+        build_exec_run_query_from_body,
+        extract_agent_body_checked,
+        read_shell_fingerprint,
+    )
 
-    inner = extract_agent_body(agent_raw)
+    ret = ret_type or "u64"
+    expected_fp = read_shell_fingerprint(agent_path) if agent_path is not None else None
+    if expected_fp is not None:
+        inner = extract_agent_body_checked(agent_raw, expected_fingerprint=expected_fp)
+    else:
+        inner = extract_agent_body_checked(agent_raw)
     if not inner.strip():
         raise ValueError(
             "agent run_query body is empty; TRUSTED/unimplemented transpile stubs are not accepted"
         )
-    errors = validate_runquery_body(inner)
-    if errors:
-        raise ValueError("; ".join(errors))
-    indented = "\n".join(f"    {line}" if line.strip() else "" for line in inner.splitlines())
-    return f"""pub exec fn run_query(cols: &Cols) -> (res: u64)
-    requires valid_cols(cols),
-    ensures res == method_spec(cols),
-{{
-{indented}
-}}
-"""
+    return build_exec_run_query_from_body(inner, ret)
 
 
-def copy_runquery_template(dest: Path) -> None:
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    if RUNQUERY_TEMPLATE.is_file():
-        dest.write_text(RUNQUERY_TEMPLATE.read_text(encoding="utf-8"), encoding="utf-8")
-    else:
-        dest.write_text(
-            "// AGENT_BODY_START\npub fn run_query(cols: &Cols) -> u64 {\n    unimplemented!()\n}\n// AGENT_BODY_END\n",
-            encoding="utf-8",
-        )
+def copy_runquery_template(dest: Path, *, ret_type: str = "u64") -> None:
+    from research_loop.assemble_runquery import write_runquery_agent_file
+
+    write_runquery_agent_file(dest, ret_type=ret_type)
 
 
 def write_mock_agent_body(
@@ -261,7 +285,7 @@ def write_mock_agent_body(
             workspace_path=str(dest),
             body_inner="// TODO: agent fills run_query body",
         )
-    copy_runquery_template(dest)
+    copy_runquery_template(dest, ret_type=resolve_ret_type_for_sql("", {}))
 
 
 def resolve_tbl_path(sql: str, schema: dict, workload_tables: dict[str, Path] | None = None) -> str:
@@ -333,7 +357,13 @@ def invoke_verus_custom_pipeline(
             from verus_transpiler import transpile_sql_to_verus
 
             spec_rs = transpile_sql_to_verus(sql, schema)
-        body = agent_file_to_run_query_body(agent_raw, spec_rs)
+        ret_type = resolve_ret_type_for_sql(sql, schema)
+        body = agent_file_to_run_query_body(
+            agent_raw,
+            spec_rs,
+            ret_type=ret_type,
+            agent_path=runquery_path,
+        )
 
     tbl_path = tbl if tbl is not None else resolve_tbl_path(sql, schema, workload_tables)
     res = run_custom_sql_pipeline(

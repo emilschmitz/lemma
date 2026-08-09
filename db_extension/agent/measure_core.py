@@ -9,11 +9,7 @@ from concurrent import futures
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from db_extension.agent.extract import (
-    extract_marked_body,
-    validate_runquery_body,
-    wrap_body_with_markers,
-)
+from db_extension.agent.extract import extract_marked_body, validate_runquery_body
 from db_extension.agent.lease_measure import lease_measure_enabled, merge_lease_into_metrics
 from db_extension.dataset_config import effective_dataset_size
 from db_extension.verus_bridge import (
@@ -106,7 +102,7 @@ def _read_body(*, path: str | None, body: str | None, ws: Path | None = None) ->
         raise FileNotFoundError(f"file not found: {target}")
     text = target.read_text(encoding="utf-8")
     if "AGENT_BODY_START" in text or "<<<LEMMA_RUNQUERY_BODY>>>" in text:
-        inner = extract_marked_body(text)
+        inner = extract_marked_body(text, agent_path=target)
     else:
         inner = text
     return inner, target
@@ -115,7 +111,17 @@ def _read_body(*, path: str | None, body: str | None, ws: Path | None = None) ->
 def _write_marked_runquery(body: str, ws: Path | None = None) -> Path:
     base = ws or workspace()
     rq = base / DEFAULT_RUNQUERY
-    rq.write_text(wrap_body_with_markers(body), encoding="utf-8")
+    ret_type = "u64"
+    try:
+        sql, schema = _read_workspace_sql_schema(base)
+        from db_extension.verus_bridge import resolve_ret_type_for_sql
+
+        ret_type = resolve_ret_type_for_sql(sql, schema)
+    except Exception:
+        pass
+    from research_loop.assemble_runquery import write_runquery_agent_file
+
+    write_runquery_agent_file(rq, ret_type=ret_type, body_inner=body)
     return rq
 
 

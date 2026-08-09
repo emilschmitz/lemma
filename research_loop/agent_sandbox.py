@@ -16,7 +16,6 @@ from research_loop.pipeline_log import log_debug, log_info, log_trace, log_warn
 
 ROOT = Path(__file__).resolve().parents[1]
 RESEARCH = Path(__file__).resolve().parent
-TEMPLATE = RESEARCH / "templates" / "runquery_agent.rs"
 DEFAULT_IMAGE = "lemma-agent:latest"
 DEFAULT_WORKSPACE = RESEARCH / "agent_workspace"
 COMPONENT = "agent_sandbox"
@@ -162,8 +161,10 @@ def build_agent_prompt(
 
 ## Your task
 Write a **fast, Verus-provable** Rust `run_query` **body** for the SQL above.
-The host injects the method signature and `ensures res == method_spec(...)`.
-**Derive** filters, loop order, and aggregation from `method_spec` in `{ctx}/spec.rs`.
+`{body_path}` is a **host-owned Verus shell** (`pub exec fn run_query` with signature and
+`ensures`); **edit only** the marked **body** between `AGENT_BODY_START` / `AGENT_BODY_END`.
+MethodSpec / `valid_cols` remain in `{ctx}/spec.rs` — do not inline them. Editing the
+shell outside the markers fails admission.
 
 ## ALLOWED (only these)
 1. **Edit one file**: `{body_path}`
@@ -395,11 +396,19 @@ def prepare_workspace(
                 shutil.copy2(guide, ro / name)
                 break
     body_path = workspace / BODY_NAME
-    if not TEMPLATE.exists():
-        raise FileNotFoundError(f"Verus agent template missing: {TEMPLATE}")
     if reset_body or not body_path.exists():
-        shutil.copy2(TEMPLATE, body_path)
-        log_debug(COMPONENT, "workspace_reset", "copied template", path=str(body_path))
+        ret_type = "u64"
+        if sql_query.strip():
+            try:
+                from db_extension.verus_bridge import resolve_ret_type_for_sql
+
+                ret_type = resolve_ret_type_for_sql(sql_query, schema)
+            except Exception:
+                pass
+        from research_loop.assemble_runquery import write_runquery_agent_file
+
+        write_runquery_agent_file(body_path, ret_type=ret_type)
+        log_debug(COMPONENT, "workspace_reset", "built agent shell", path=str(body_path))
     log_trace(COMPONENT, "workspace_ready", "context prepared", workspace=str(workspace))
     return body_path
 

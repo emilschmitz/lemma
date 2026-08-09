@@ -2,11 +2,17 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
+
 from research_loop.assemble_runquery import (
     AGENT_END,
     AGENT_START,
+    build_runquery_agent_source,
     extract_agent_body,
+    extract_agent_body_checked,
+    read_shell_fingerprint,
     validate_runquery_body as validate_rust_runquery_body,
+    write_runquery_agent_file,
 )
 
 # Legacy Dafny markers (fallback during transition)
@@ -91,11 +97,20 @@ def _extract_between_markers(text: str, start_marker: str, end_marker: str) -> s
     return inner
 
 
-def extract_marked_body(text: str) -> str:
-    """Extract body between AGENT_BODY or LEMMA markers."""
-    try:
+def extract_marked_body(text: str, *, agent_path: Path | None = None) -> str:
+    """Extract body between AGENT_BODY or LEMMA markers; verify shell fingerprint."""
+    expected_fp: str | None = None
+    if agent_path is not None:
+        expected_fp = read_shell_fingerprint(agent_path)
+    if AGENT_START in text and AGENT_END in text:
+        if expected_fp is not None:
+            return extract_agent_body_checked(text, expected_fingerprint=expected_fp)
         body = extract_agent_body(text)
-    except Exception:
+        errors = validate_runquery_body(body)
+        if errors:
+            raise ValueError("; ".join(errors))
+        return body
+    try:
         marked = _extract_between_markers(text, AGENT_START, AGENT_END)
         if marked is None:
             marked = _extract_between_markers(text, MARKER_START, MARKER_END)
@@ -103,48 +118,24 @@ def extract_marked_body(text: str) -> str:
             body = marked
         else:
             body = extract_runquery_body_text(text)
+    except Exception:
+        body = extract_runquery_body_text(text)
     errors = validate_runquery_body(body)
     if errors:
         raise ValueError("; ".join(errors))
     return body
 
 
-def wrap_body_with_markers(body_inner: str) -> str:
-    """Produce Verus agent template with AGENT_BODY markers."""
-    from db_extension.verus_bridge import RUNQUERY_TEMPLATE, copy_runquery_template
-    from pathlib import Path
-    import tempfile
+def wrap_body_with_markers(body_inner: str, *, ret_type: str = "u64") -> str:
+    """Produce natural Verus agent shell with AGENT_BODY markers."""
+    return build_runquery_agent_source(ret_type=ret_type, body_inner=body_inner)
 
-    inner = body_inner.strip()
-    if RUNQUERY_TEMPLATE.is_file():
-        template = RUNQUERY_TEMPLATE.read_text(encoding="utf-8")
-        if AGENT_START in template and AGENT_END in template:
-            start = template.index(AGENT_START) + len(AGENT_START)
-            end = template.index(AGENT_END)
-            head = template[:start]
-            tail = template[end:]
-            if "pub fn run_query" in inner or "pub exec fn run_query" in inner:
-                return head + "\n" + inner + "\n" + tail
-            return (
-                head
-                + "\n"
-                + "pub fn run_query(cols: &Cols) -> u64 {\n"
-                + inner
-                + "\n}\n"
-                + tail
-            )
 
-    with tempfile.TemporaryDirectory() as tmp:
-        dest = Path(tmp) / "runquery_agent.rs"
-        copy_runquery_template(dest)
-        template = dest.read_text(encoding="utf-8")
-    start = template.index(AGENT_START) + len(AGENT_START)
-    end = template.index(AGENT_END)
-    return (
-        template[:start]
-        + "\n"
-        + "pub fn run_query(cols: &Cols) -> u64 {\n"
-        + inner
-        + "\n}\n"
-        + template[end:]
-    )
+def write_marked_runquery(
+    dest: Path,
+    body_inner: str,
+    *,
+    ret_type: str = "u64",
+) -> None:
+    """Write shell + fingerprint sibling for ``runquery_agent.rs``."""
+    write_runquery_agent_file(dest, ret_type=ret_type, body_inner=body_inner)
