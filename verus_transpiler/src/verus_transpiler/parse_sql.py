@@ -501,9 +501,14 @@ def _is_aggregate_expr(node: exp.Expression) -> bool:
 
 
 def _collect_aggregate_exprs(node: exp.Expression) -> list[exp.Expression]:
-    """Collect aggregate expression nodes from a predicate tree (e.g. HAVING)."""
+    """Collect aggregate expression nodes from a predicate tree (e.g. HAVING).
+
+    Does not descend into scalar subqueries: inner aggregates (including
+    references to derived-table column aliases like ``sub_total``) are parsed
+    by the subquery's own resolver, not the outer query's.
+    """
     found: list[exp.Expression] = []
-    for child in node.walk():
+    for child in node.walk(prune=lambda n: isinstance(n, exp.Subquery)):
         if _is_aggregate_expr(child):
             found.append(child)
     return found

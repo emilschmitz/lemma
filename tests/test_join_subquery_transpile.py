@@ -176,3 +176,28 @@ LIMIT 1000"""
     assert "subquery_having_sq1_derived_sub_helper" in out
     section = out[out.find("subquery_having_sq1_derived_sub_helper") : out.find("pub open spec fn method_spec")]
     assert "arbitrary()" not in section
+
+
+def test_having_derived_alias_sub_total_generic_schema() -> None:
+    """HAVING scalar subquery AVG over derived alias sub_total (generic catalog)."""
+    sql = """SELECT d.name, SUM(f.val) AS total
+FROM fact f
+JOIN dim d ON f.key = d.key
+WHERE f.uom = 'USD'
+GROUP BY d.name
+HAVING SUM(f.val) > (
+    SELECT AVG(sub_total) FROM (
+        SELECT SUM(f2.val) AS sub_total
+        FROM fact f2
+        JOIN dim d2 ON f2.key = d2.key
+        WHERE f2.uom = 'USD'
+        GROUP BY d2.yr
+    ) avg_sub
+)
+LIMIT 100"""
+    out = transpile_sql_to_verus(sql, JOIN_CATALOG)
+    assert "subquery_having_sq1_spec(fact, dim)" in out
+    assert "subquery_having_sq1_derived_avg_sub_helper" in out
+    section = out[out.find("subquery_having_sq1_derived_avg_sub_helper") : out.find("pub open spec fn method_spec")]
+    assert "arbitrary()" not in section
+    assert "apply_having_filter" in out
