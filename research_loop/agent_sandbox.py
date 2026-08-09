@@ -195,8 +195,8 @@ shell outside the markers fails admission.
 
 ## Workspace
 - Edit `{body_path}` between the AGENT_BODY_START/END markers.
-- Call `run_runquery(dataset_size=50000)` (or smaller) to verify and measure on the host.
-- Call `submit(run_id=...)` to mark your official run when ready.
+- Call `run_runquery(path="runquery_agent.rs", dataset_size=50000)` (or smaller) to verify and measure on the host.
+- Call `submit_runquery(run_id=...)` with the `run_id` from that measure to mark your official run.
 {feedback}{spec_section}
 Begin by reading the spec excerpt and `{ctx}/data_profile.md`, then implement the run_query body.
 """
