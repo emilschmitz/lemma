@@ -4,18 +4,22 @@ from __future__ import annotations
 
 import json
 import os
-import re
-import shutil
-import subprocess
 import sys
 import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
-    sys.path.insert(0, ROOT)
+    sys.path.insert(0, str(ROOT))
 
 from verus_transpiler.column_projection import project_schema_for_query
+
+from research_loop.local_sandbox_eval import (
+    REPO_ROOT,
+    resolve_query,
+    standin_latency_us,
+    verus_available,
+)
 
 
 def _env_for_cli_agent(*, limit: int, tbl: Path, workload: str) -> None:
@@ -49,93 +53,6 @@ def _env_for_cli_agent(*, limit: int, tbl: Path, workload: str) -> None:
         'agent -p --force --trust --approve-mcps --model cursor-grok-4.5-high '
         '--output-format stream-json --stream-partial-output "$(cat PROMPT.txt)"'
     )
-
-
-def _parse_latency(out: str) -> tuple[int, bool, str]:
-    latency = -1
-    proof = False
-    status = "FAILURE"
-    m = re.search(r"QUERY_LATENCY_US:\s*(\d+)", out)
-    if m:
-        latency = int(m.group(1))
-    for line in out.splitlines():
-        if line.startswith("TPC-H") or line.startswith("SSB"):
-            parts = line.split()
-            if len(parts) >= 6:
-                try:
-                    if parts[2] != "-":
-                        latency = int(parts[2])
-                except ValueError:
-                    pass
-                proof = parts[5] in ("1", "True", "true")
-                status = parts[-1]
-    if latency >= 0 and "proof_ok" not in out.lower():
-        # SSB sometimes prints latency before the table parser fails
-        if "RESULT:" in out or "QUERY_LATENCY_US:" in out:
-            proof = True
-            status = "SUCCESS"
-    if latency >= 0 and proof:
-        status = "SUCCESS"
-    return latency, proof, status
-
-
-def standin_latency_us(*, workload: str, qkey: str, limit: int, tbl: Path) -> dict:
-    cmd = [
-        "uv",
-        "run",
-        "python",
-        "research_loop/benchmark_verified.py",
-        "--limit",
-        str(limit),
-        "--tbl",
-        str(tbl),
-    ]
-    if workload == "tpch":
-        cmd += ["--tpch", "-q", qkey]
-    else:
-        cmd += ["-q", qkey]
-    env = os.environ.copy()
-    env["PATH"] = (
-        f"/home/emil/tools/verus:{env.get('HOME', '/home/emil')}/.cargo/bin:{env.get('PATH', '')}"
-    )
-    t0 = time.perf_counter()
-    proc = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True)
-    wall = time.perf_counter() - t0
-    out = (proc.stdout or "") + (proc.stderr or "")
-    latency, proof, status = _parse_latency(out)
-    # proof_ok column can be 1 even when parser marks FAILURE
-    if latency >= 0 and re.search(r"\b1\s+FAILURE\b", out):
-        proof = True
-        status = "SUCCESS"
-    return {
-        "status": status,
-        "latency_us": latency,
-        "proof_verified": proof,
-        "wall_s": wall,
-        "returncode": proc.returncode,
-        "tail": "\n".join(out.splitlines()[-40:]),
-    }
-
-
-def _resolve_query(spec: str) -> tuple[str, str, str, Path, dict]:
-    """Return workload, qkey, sql, tbl, schema_dict."""
-    spec = spec.upper()
-    if spec.startswith("SSB"):
-        from research_loop.ssb_queries import queries as ssb_queries
-        from research_loop.ssb_queries import schema as ssb_schema
-
-        idx = int(spec.replace("SSB", "").replace("Q", "") or "1")
-        sql = ssb_queries[idx - 1].strip()
-        tbl = ROOT / "ssb-dbgen" / "lineorder_flat.tbl"
-        return "ssb", str(idx), sql, tbl, dict(ssb_schema)
-    # TPCH
-    from research_loop.bench_standins.tpch_runqueries import lineitem_schema
-    from research_loop.bench_standins.tpch_runqueries import queries as tpch_sql
-
-    qkey = spec if spec.startswith("Q") else f"Q{spec}"
-    sql = tpch_sql[qkey].strip()
-    tbl = ROOT / "data" / "tpch-sf1" / "lineitem.tbl"
-    return "tpch", qkey, sql, tbl, dict(lineitem_schema)
 
 
 def run_agent(
@@ -174,16 +91,16 @@ def run_agent(
 
 
 def main() -> int:
-    os.chdir(ROOT)
+    os.chdir(REPO_ROOT)
     spec = (sys.argv[1] if len(sys.argv) > 1 else "SSB1").upper()
     limit = int(os.environ.get("LEMMA_DATASET_SIZE", "5000"))
-    workload, qkey, sql, tbl, schema = _resolve_query(spec)
+    workload, qkey, sql, tbl, schema = resolve_query(spec)
     if os.environ.get("LEMMA_BENCH_TBL"):
         tbl = Path(os.environ["LEMMA_BENCH_TBL"])
     if not tbl.is_file():
         print(f"missing tbl {tbl}", file=sys.stderr)
         return 2
-    if shutil.which("verus") is None and not Path("/home/emil/tools/verus/verus").is_file():
+    if not verus_available():
         print("verus missing", file=sys.stderr)
         return 2
 
