@@ -3,12 +3,13 @@
 set -euo pipefail
 export PATH="${HOME}/bin:${HOME}/.local/bin:${PATH}"
 cd "${HOME}/lemma"
+export PYTHONPATH="${HOME}/lemma${PYTHONPATH:+:${PYTHONPATH}}"
 LOG="${HOME}/phase1_logs/standin_tpch_sf1.log"
 TBL="${HOME}/lemma/data/tpch-sf1/lineitem.tbl"
 LIMIT=6001215
 mkdir -p "${HOME}/phase1_logs"
 {
-  echo "=== start $(date -u +%Y-%m-%dT%H:%M:%SZ) host=$(hostname) nproc=$(nproc) ==="
+  echo "=== start $(date -u +%Y-%m-%dT%H:%M:%SZ) host=$(hostname) nproc=$(nproc) HEAD=$(git rev-parse --short HEAD) ==="
   echo "tbl=${TBL} limit=${LIMIT}"
   for q in Q1 Q6; do
     echo "--- ${q} ---"

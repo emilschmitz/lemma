@@ -7,7 +7,7 @@ import os
 import sys
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(os.path.dirname(CURRENT_DIR))
+ROOT = os.path.dirname(CURRENT_DIR)
 DEFAULT_SSB_TBL = os.path.join(ROOT, "ssb-dbgen", "lineorder_flat.tbl")
 DEFAULT_TPCH_TBL = os.path.join(ROOT, "data", "tpch-sf1", "lineitem.tbl")
 
