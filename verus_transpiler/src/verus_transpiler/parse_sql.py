@@ -494,6 +494,43 @@ def _unwrap_alias(node: exp.Expression) -> exp.Expression:
     return node
 
 
+def _is_aggregate_expr(node: exp.Expression) -> bool:
+    """True for SUM/COUNT/AVG/MIN/MAX, including COUNT(DISTINCT col)."""
+    inner = _unwrap_alias(node)
+    return isinstance(inner, (exp.Sum, exp.Count, exp.Avg, exp.Min, exp.Max))
+
+
+def _collect_aggregate_exprs(node: exp.Expression) -> list[exp.Expression]:
+    """Collect aggregate expression nodes from a predicate tree (e.g. HAVING)."""
+    found: list[exp.Expression] = []
+    for child in node.walk():
+        if _is_aggregate_expr(child):
+            found.append(child)
+    return found
+
+
+def _agg_spec_key(spec: AggSpec) -> tuple[str, str, str]:
+    return (spec.agg_type, spec.agg_column, spec.agg_expr)
+
+
+def _append_agg_specs_from_exprs(
+    nodes: list[exp.Expression],
+    resolver: dict[str, tuple[str, str, str | None]],
+    query: SQLQuery,
+) -> None:
+    """Parse aggregate nodes into query.agg_specs, skipping duplicates."""
+    existing = {_agg_spec_key(s) for s in query.agg_specs}
+    for node in nodes:
+        spec = _parse_agg_item(node, resolver)
+        key = _agg_spec_key(spec)
+        if key in existing:
+            continue
+        existing.add(key)
+        if spec.alias:
+            query.select_aliases[spec.alias.lower()] = len(query.agg_specs)
+        query.agg_specs.append(spec)
+
+
 def _resolve_col(
     node: exp.Column,
     resolver: dict[str, tuple[str, str, str | None]],
@@ -870,7 +907,9 @@ def _parse_in_subquery(
     if correlated:
         require_trusted("correlated_subquery")
     if inner.groupby_columns or inner.agg_type not in ("", "SELECT_SUBQUERY"):
-        if not inner.is_projection or len(inner.projection_columns) != 1:
+        single_col_projection = inner.is_projection and len(inner.projection_columns) == 1
+        single_col_groupby = len(inner.groupby_columns) == 1
+        if not single_col_projection and not single_col_groupby:
             raise UnsupportedContractError(
                 "IN subquery must be a single-column projection."
             )
@@ -1843,12 +1882,8 @@ def _parse_select(
             if isinstance(item, exp.Column):
                 real_col, _, _ = _resolve_col(item, resolver)
                 select_cols.add(real_col)
-            elif isinstance(item, (exp.Sum, exp.Count, exp.Avg, exp.Min, exp.Max)):
+            elif _is_aggregate_expr(item):
                 agg_items.append(raw)
-        if not agg_items:
-            raise UnsupportedContractError(
-                "GROUP BY SELECT must include at least one aggregate."
-            )
         if not select_cols.issubset(set(query.groupby_columns)):
             raise UnsupportedContractError(
                 "Non-aggregated SELECT columns must appear in GROUP BY."
@@ -1857,13 +1892,10 @@ def _parse_select(
             raise UnsupportedContractError(
                 "SELECT must list GROUP BY columns (optional) plus one or more aggregates."
             )
-        for raw in agg_items:
-            spec = _parse_agg_item(raw, resolver)
-            if spec.alias:
-                query.select_aliases[spec.alias.lower()] = len(query.agg_specs)
-            query.agg_specs.append(spec)
-        agg_node = _unwrap_alias(agg_items[0])
-        _sync_primary_agg(query)
+        _append_agg_specs_from_exprs(agg_items, resolver, query)
+        agg_node = _unwrap_alias(agg_items[0]) if agg_items else None
+        if query.agg_specs:
+            _sync_primary_agg(query)
     else:
         if len(select_items) == 1:
             select_item = _unwrap_alias(select_items[0])
@@ -1982,6 +2014,13 @@ def _parse_select(
     if having_clause:
         if not query.groupby_columns:
             raise UnsupportedContractError("HAVING requires GROUP BY.")
+        _append_agg_specs_from_exprs(
+            _collect_aggregate_exprs(having_clause.this),
+            resolver,
+            query,
+        )
+        if query.agg_specs:
+            _sync_primary_agg(query)
         query.having_expr = _compile_having_expr(
             having_clause.this, resolver, query, query.agg_expr,
         )
