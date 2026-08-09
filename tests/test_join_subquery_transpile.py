@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import re
 
-import pytest
-
 from verus_transpiler import transpile_sql_to_verus
-from verus_transpiler.parse_sql import UnsupportedContractError, parse_sql
+from verus_transpiler.parse_sql import parse_sql
 
 JOIN_CATALOG: dict[str, dict[str, str]] = {
     "fact": {
@@ -118,12 +116,16 @@ LIMIT 5"""
     assert "in_1_contains(cols" not in out
 
 
-def test_join_having_scalar_subquery_still_gated() -> None:
+def test_join_having_scalar_subquery_transpiles_table_scoped() -> None:
+    """Uncorrelated HAVING scalar subquery on JOIN uses Cols_<table> helpers."""
     sql = """SELECT s.name, SUM(n.value) AS total
 FROM num n JOIN sub s ON n.adsh = s.adsh
 WHERE n.uom = 'USD'
 GROUP BY s.name
 HAVING SUM(n.value) > (SELECT AVG(value) FROM num WHERE uom = 'USD')"""
     schema = {"num": SEC_NUM, "sub": SEC_SUB}
-    with pytest.raises(UnsupportedContractError, match="HAVING"):
-        transpile_sql_to_verus(sql, schema)
+    out = transpile_sql_to_verus(sql, schema)
+    assert "subquery_having_sq1_spec(num)" in out
+    assert "valid_cols_num(num)" in out
+    assert "subquery_having_sq1_spec(cols)" not in out
+    assert "apply_having_filter" in out

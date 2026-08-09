@@ -93,12 +93,6 @@ def _subquery_inner_table_name(query: SQLQuery) -> str:
 
 
 def _assert_join_subquery_supported(query: SQLQuery) -> None:
-    if query.having_expr and any(
-        sub.alias.startswith("having_sq") for sub in query.scalar_subqueries
-    ):
-        raise UnsupportedContractError(
-            "JOIN + HAVING + scalar subquery is not yet supported."
-        )
     if query.is_projection and any(
         sub.alias.startswith("sel_sq") for sub in query.scalar_subqueries
     ):
@@ -1120,6 +1114,7 @@ def transpile_sql_to_verus(
                 struct_name=struct_name,
                 valid_fn=valid_fn,
                 param_name=param_name,
+                outer_schema=outer_schema,
             )
         )
     for win in query.window_specs:
@@ -1136,6 +1131,7 @@ def transpile_sql_to_verus(
                 struct_name=struct_name,
                 valid_fn=valid_fn,
                 param_name=param_name,
+                outer_schema=outer_schema,
             )
         )
     for cte in query.ctes:

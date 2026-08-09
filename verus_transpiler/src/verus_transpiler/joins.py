@@ -789,11 +789,28 @@ def _emit_having_helper() -> str:
 }"""
 
 
-def _emit_having_filter(spec_body: str, query: SQLQuery, flat_schema: dict[str, str]) -> str:
+def _emit_having_filter(
+    spec_body: str,
+    query: SQLQuery,
+    flat_schema: dict[str, str],
+    *,
+    slots: list[_Slot] | None = None,
+    schemas_by_table: dict[str, dict[str, str]] | None = None,
+    derived_by_alias: dict[str, DerivedTable] | None = None,
+) -> str:
     if not query.having_expr:
         return spec_body
     key_ty, val_ty = _having_closure_types(query, flat_schema)
-    pred = f"|k: {key_ty}, v: {val_ty}| {query.having_expr}"
+    having_expr = query.having_expr
+    if slots is not None and schemas_by_table is not None:
+        having_expr = _resolve_subquery_calls(
+            having_expr,
+            query,
+            slots,
+            schemas_by_table,
+            derived_by_alias or {},
+        )
+    pred = f"|k: {key_ty}, v: {val_ty}| {having_expr}"
     if "\n" in spec_body:
         wrapped = f"{{\n        {spec_body}\n    }}"
         return f"""{{
@@ -1272,6 +1289,23 @@ def emit_join_spec_helpers(
     ret_type: str
     helpers: str
 
+    def _apply_join_having_filter(body: str) -> str:
+        nonlocal extra_having
+        if not query.having_expr:
+            return body
+        extra_having = "\n\n" + _emit_having_helper()
+        flat: dict[str, str] = {}
+        for t in base:
+            flat.update(schemas_by_table[t])
+        return _emit_having_filter(
+            body,
+            query,
+            flat,
+            slots=slots,
+            schemas_by_table=schemas_by_table,
+            derived_by_alias=derived_by_alias,
+        )
+
     if query.is_projection:
         proj_helper, spec_body, ret_type = _emit_join_projection(
             query, slots, schemas_by_table, derived_by_alias, derived_map_vars,
@@ -1283,24 +1317,14 @@ def emit_join_spec_helpers(
             query, slots, schemas_by_table, where_expr=where_expr,
         )
         helpers = anti_helper
-        if query.having_expr:
-            extra_having = "\n\n" + _emit_having_helper()
-            flat = {}
-            for t in base:
-                flat.update(schemas_by_table[t])
-            spec_body = _emit_having_filter(spec_body, query, flat)
+        spec_body = _apply_join_having_filter(spec_body)
     elif query.is_multi_agg and query.groupby_columns:
         ma_helper, spec_body, ret_type = _emit_join_multi_agg(
             query, slots, schemas_by_table, derived_by_alias, derived_map_vars,
             where_expr=where_expr,
         )
         helpers = "\n\n".join(derived_helpers + [ma_helper])
-        if query.having_expr:
-            extra_having = "\n\n" + _emit_having_helper()
-            flat = {}
-            for t in base:
-                flat.update(schemas_by_table[t])
-            spec_body = _emit_having_filter(spec_body, query, flat)
+        spec_body = _apply_join_having_filter(spec_body)
     elif "FULL" in join_types and not query.groupby_columns:
         full_helpers, spec_body, ret_type = _emit_full_outer_scalar_sum(
             query,
@@ -1322,12 +1346,7 @@ def emit_join_spec_helpers(
             val_type=val_type,
         )
         helpers = "\n\n".join(derived_helpers + [loop_helper])
-        if query.having_expr:
-            extra_having = "\n\n" + _emit_having_helper()
-            flat = {}
-            for t in base:
-                flat.update(schemas_by_table[t])
-            spec_body = _emit_having_filter(spec_body, query, flat)
+        spec_body = _apply_join_having_filter(spec_body)
 
     derived_prelude = ""
     for d in query.derived_tables:
