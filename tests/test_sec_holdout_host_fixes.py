@@ -27,6 +27,13 @@ def _load_query(qnum: str) -> str:
     return m.group(1).strip()
 
 
+_SIMPLE_JOIN_SQL = """SELECT s.name, SUM(n.value) AS total
+FROM num n
+JOIN sub s ON n.adsh = s.adsh
+WHERE n.uom = 'USD' AND s.fy = 2022
+GROUP BY s.name"""
+
+
 def _join_run_query_stub(ret_type: str) -> str:
     sig = "pub exec fn run_query(num: &Cols_num, sub: &Cols_sub)"
     return f"""#[verifier::external_body]
@@ -40,9 +47,8 @@ def _join_run_query_stub(ret_type: str) -> str:
 
 def test_join_where_uses_slot_accessors_not_cols_get() -> None:
     """Join MethodSpec must not reference bare cols/li from single-table to_col_expr."""
-    sql = _load_query("3")
     schema = {"num": SEC_SCHEMA["num"], "sub": SEC_SCHEMA["sub"]}
-    out = transpile_sql_to_verus(sql, schema)
+    out = transpile_sql_to_verus(_SIMPLE_JOIN_SQL, schema)
     assert "cols.get_uom(li)" not in out
     assert "left_join_miss_generic(cols: &Cols" not in out
     assert "num.uom[i0 as int]" in out or 'num.uom[i0 as int]@' in out
@@ -50,11 +56,10 @@ def test_join_where_uses_slot_accessors_not_cols_get() -> None:
 
 def test_join_assemble_omits_cols_struct_from_trusted_prelude() -> None:
     """Two-table join assemble must not require undefined Cols from anti-join prelude."""
-    sql = _load_query("3")
     schema = {"num": SEC_SCHEMA["num"], "sub": SEC_SCHEMA["sub"]}
     _, multi = normalize_schema(schema)
-    projected = project_multi_schema_for_query(sql, multi)
-    spec_rs = transpile_sql_to_verus(sql, projected)
+    projected = project_multi_schema_for_query(_SIMPLE_JOIN_SQL, multi)
+    spec_rs = transpile_sql_to_verus(_SIMPLE_JOIN_SQL, projected)
     ret_type = resolve_ret_type_from_method_spec(spec_rs)
     program = assemble_verified_join_program(
         spec_rs=spec_rs,
@@ -133,3 +138,23 @@ def test_single_table_multi_catalog_project_schema_is_flat() -> None:
     _, multi = normalize_schema(projected)
     assert multi is None
     assert "tag" in projected and "uom" in projected
+
+
+def test_join_with_scalar_subquery_fails_loud_not_cols_stub() -> None:
+    """Correlated scalar subquery on JOIN must not emit &Cols helpers (Spot q2 host bug)."""
+    from verus_transpiler.parse_sql import UnsupportedContractError
+
+    sql = """SELECT s.name, n.tag, n.value
+FROM num n
+JOIN sub s ON n.adsh = s.adsh
+WHERE n.uom = 'pure' AND s.fy = 2022 AND n.value IS NOT NULL
+      AND n.value = (
+          SELECT MAX(n2.value)
+          FROM num n2
+          WHERE n2.tag = n.tag AND n2.adsh = n.adsh AND n2.uom = 'pure'
+      )
+ORDER BY n.value DESC
+LIMIT 50"""
+    schema = {"num": SEC_SCHEMA["num"], "sub": SEC_SCHEMA["sub"]}
+    with pytest.raises(UnsupportedContractError, match="table-scoped"):
+        transpile_sql_to_verus(sql, schema)

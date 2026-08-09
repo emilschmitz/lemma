@@ -1018,6 +1018,18 @@ def transpile_sql_to_verus(
     query = parse_sql(sql, schema)
 
     is_join = bool(query.joins)
+    # Join programs assemble Cols_<table> only. Scalar/EXISTS/IN subquery helpers still
+    # default to &Cols — that typechecks as host_codegen failure on Spot (SEC q2/q3).
+    # Prefer loud fail until subquery emission is table-scoped for joins.
+    if is_join and (
+        query.scalar_subqueries
+        or query.exists_subqueries
+        or query.in_subqueries
+    ):
+        raise UnsupportedContractError(
+            "JOIN queries with scalar/EXISTS/IN subqueries need table-scoped "
+            "MethodSpec helpers (Cols_<table>); refusing Cols-typed subquery stubs"
+        )
     subquery_blocks: list[str] = []
     for sub in query.scalar_subqueries:
         emitted = emit_scalar_subquery_helper(sub, flat_schema)
