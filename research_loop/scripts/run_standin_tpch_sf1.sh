@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run hand-standin TPC-H Q1/Q6 (and Q3 if orders.tbl exists) on SF1 lineitem.
 set -euo pipefail
-export PATH="${HOME}/bin:${PATH}"
+export PATH="${HOME}/bin:${HOME}/.local/bin:${PATH}"
 cd "${HOME}/lemma"
 LOG="${HOME}/phase1_logs/standin_tpch_sf1.log"
 TBL="${HOME}/lemma/data/tpch-sf1/lineitem.tbl"
