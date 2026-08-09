@@ -691,11 +691,22 @@ def _scalar_subquery_spec_call(sub: ScalarSubquery, *, join_context: bool = Fals
     return f"subquery_{sub.alias}_spec({inner_arg})"
 
 
+def _corr_outer_key_expr(correlation_cols: list[str], *, join_context: bool) -> str:
+    prefix = "outer" if join_context else "row"
+    parts = [f"{prefix}.{c}" for c in correlation_cols]
+    if not parts:
+        return f"{prefix}.key"
+    if len(parts) == 1:
+        return parts[0]
+    return f"({', '.join(parts)})"
+
+
 def _exists_subquery_spec_call(exists: ExistsSubquery, *, join_context: bool = False) -> str:
     inner_arg = "__INNER__" if join_context else "cols"
     if exists.correlated:
-        key = exists.correlation_cols[0]
-        outer_key = f"outer.{key}" if join_context else f"row.{key}"
+        outer_key = _corr_outer_key_expr(
+            exists.correlation_cols, join_context=join_context,
+        )
         return f"exists_corr_{exists.alias}_spec({inner_arg}, {outer_key})"
     return f"exists_{exists.alias}_spec({inner_arg})"
 
@@ -703,8 +714,9 @@ def _exists_subquery_spec_call(exists: ExistsSubquery, *, join_context: bool = F
 def _in_subquery_contains_call(in_spec: InSubquerySpec, *, join_context: bool = False) -> str:
     inner_arg = "__INNER__" if join_context else "cols"
     if in_spec.correlated:
-        key = in_spec.correlation_cols[0]
-        outer_key = f"outer.{key}" if join_context else f"row.{key}"
+        outer_key = _corr_outer_key_expr(
+            in_spec.correlation_cols, join_context=join_context,
+        )
         return (
             f"in_corr_{in_spec.alias}_contains("
             f"{inner_arg}, row.{in_spec.column}, {outer_key})"

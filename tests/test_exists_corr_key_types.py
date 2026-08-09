@@ -17,22 +17,21 @@ GROUP BY n.tag, n.version
 HAVING COUNT(*) > 10"""
 
 
-def test_exists_corr_string_key_uses_seq_char() -> None:
-    """Correlated EXISTS on string adsh must use Seq<char> outer_key, not u32."""
+def test_exists_corr_multi_string_keys_use_seq_char_tuple() -> None:
+    """Multi-col string correlation → outer_key tuple of Seq<char>, not u32."""
     catalog = {"num": SEC_SCHEMA["num"], "pre": SEC_SCHEMA["pre"]}
     projected = project_multi_schema_for_query(_Q4_SHAPED_SQL, catalog)
     out = transpile_sql_to_verus(_Q4_SHAPED_SQL, projected)
 
     assert re.search(
-        r"exists_corr_\w+_helper\([^,]+,\s*outer_key:\s*Seq<char>",
+        r"outer_key:\s*\(Seq<char>,\s*Seq<char>,\s*Seq<char>\)",
         out,
-    ), "expected Seq<char> outer_key in exists_corr helper"
+    ), "expected 3-way Seq<char> outer_key in exists_corr helper"
     assert "outer_key: u32" not in out
-
     assert re.search(
-        r"exists_corr_\w+_spec\([^,]+,\s*cols\.get_adsh\(k\)\)",
+        r"exists_corr_\w+_spec\(\s*cols,\s*\(cols\.get_\w+\(k\),\s*cols\.get_\w+\(k\),\s*cols\.get_\w+\(k\)\)\s*\)",
         out,
-    ), "call site must pass Seq<char> view via cols.get_adsh(k)"
+    ), "call site must pass all corr keys"
 
 
 def test_multi_agg_having_projects_count_via_v_dot_zero() -> None:

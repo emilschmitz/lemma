@@ -10,6 +10,15 @@ from db_extension.agent.config import AgentFlags
 from db_extension.agent.harness import _prepare_workspace
 
 
+_MIN_SPEC = """
+pub open spec fn method_spec(cols: &Cols) -> u64
+    recommends valid_cols(cols),
+{
+    0u64
+}
+"""
+
+
 def test_prepare_workspace_writes_hardware(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LEMMA_AGENT_HARDWARE", "1")
     flags = AgentFlags.from_mapping({"AGENT_DATA_MODE": "none", "LEMMA_AGENT_HARDWARE": "1"})
@@ -17,9 +26,9 @@ def test_prepare_workspace_writes_hardware(tmp_path: Path, monkeypatch: pytest.M
     _prepare_workspace(
         ws,
         query_id=1,
-        verus_spec="// spec",
+        verus_spec=_MIN_SPEC,
         sql_query="SELECT 1",
-        schema={"cols": {}},
+        schema={"n": "u64"},
         data_path=None,
         flags=flags,
         reset_body=True,
@@ -41,9 +50,9 @@ def test_prepare_workspace_skips_hardware_when_disabled(
     _prepare_workspace(
         ws,
         query_id=1,
-        verus_spec="// spec",
+        verus_spec=_MIN_SPEC,
         sql_query="SELECT 1",
-        schema={"cols": {}},
+        schema={"n": "u64"},
         data_path=None,
         flags=flags,
         reset_body=True,

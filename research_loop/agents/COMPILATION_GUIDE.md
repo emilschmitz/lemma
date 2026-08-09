@@ -13,9 +13,9 @@ call in `spec.rs` (single-table `method_spec(cols)` or join `method_spec(num, su
   `valid_cols_<table>(param)` for joins).
 - Your loop must prove the accumulator matches that fold at every step.
 
-## Backward loop + invariant
+## Loop shape (example — match `spec.rs`, not this snippet blindly)
 
-Most queries use a backward index loop:
+When MethodSpec uses a backward fold helper, a typical exec shape is:
 
 ```rust
 let mut res: u64 = 0;
@@ -27,15 +27,13 @@ while i > 0
     decreases i,
 {
     i = i - 1;
-    // read row i, update res / agg state
+    // update from row i
 }
 res
 ```
 
-Match `method_spec_helper(cols, i as int)` to the transpiled helper name in `spec.rs`.
-
-**Do not** add `valid_cols(cols)` to the loop invariant — it is already in `requires`.
-**Do not** add `proof { }` blocks unless a Verus error demands a specific lemma call already in scope.
+Use the helper name and params from **this query's** `spec.rs` (joins use `Cols_<table>` params).
+`valid_cols` / `valid_cols_<table>` belong in `requires`, not the loop invariant.
 
 ## Allowed patterns
 

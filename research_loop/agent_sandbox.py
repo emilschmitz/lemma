@@ -108,6 +108,16 @@ def default_agent_cmd() -> str:
     )
 
 
+def _read_ro_excerpt(workspace: Path, name: str, *, max_chars: int = 2500) -> str:
+    path = workspace / "context" / "ro" / name
+    if not path.is_file():
+        return ""
+    text = path.read_text()
+    if len(text) <= max_chars:
+        return text.strip()
+    return text[:max_chars].rstrip() + "\n…\n"
+
+
 def build_agent_prompt(
     *,
     workspace: Path,
@@ -122,7 +132,7 @@ def build_agent_prompt(
     budget_sec: int | None = None,
     submit_ends_session: bool | None = None,
 ) -> str:
-    """Build CLI agent prompt aligned with OpenRouter harness user prompt."""
+    """Build CLI agent prompt from query + host facts (stats/hw), not canned tactics."""
     from db_extension.agent.session_clock import (
         agent_timeout_sec,
         session_budget_prompt_section,
@@ -143,7 +153,7 @@ def build_agent_prompt(
     elif last_latency_us >= 0:
         feedback = (
             f"\n## Previous iteration\nVerified OK at {last_latency_us} µs "
-            f"— try to beat that.\n"
+            f"(SESSION_HOT_US) — try to beat that.\n"
         )
 
     spec_path_label = f"{ctx}/spec.rs"
@@ -160,6 +170,16 @@ def build_agent_prompt(
 ```
 """
 
+    # Facts for this query — from host-written context files, not magic advice.
+    profile_excerpt = _read_ro_excerpt(workspace, "data_profile.md", max_chars=2200)
+    hw_excerpt = _read_ro_excerpt(workspace, "hardware.md", max_chars=800)
+    facts_sections: list[str] = []
+    if profile_excerpt:
+        facts_sections.append(f"## Data profile (from `{ctx}/data_profile.md`)\n{profile_excerpt}\n")
+    if hw_excerpt:
+        facts_sections.append(f"## Hardware (from `{ctx}/hardware.md`)\n{hw_excerpt}\n")
+    facts_block = "\n".join(facts_sections)
+
     budget = int(budget_sec) if budget_sec is not None else agent_timeout_sec()
     ends = _submit_ends() if submit_ends_session is None else bool(submit_ends_session)
     budget_section = session_budget_prompt_section(budget_sec=budget, submit_ends=ends)
@@ -171,54 +191,28 @@ def build_agent_prompt(
 {sql_query.strip()}
 ```
 
-## Your task
-Write a **fast, Verus-provable** `pub exec fn run_query` for the SQL above.
-`{body_path}` is a **host-owned Verus shell**; **edit only** the marked region between
-`AGENT_EDIT_START` / `AGENT_EDIT_END` (full function: signature, `requires`, `ensures`, body).
-MethodSpec + Trusted remain in `{ctx}/spec.rs` — read-only; do not redefine or add Trusted.
-Editing the shell outside the markers fails admission. **Do not weaken** `ensures` vs `method_spec`.
-Keep the host `run_query` signature, `requires`, and `ensures` aligned with `method_spec` in
-`spec.rs` (single `cols: &Cols` or multi-table `Cols_<table>` params — match what MethodSpec uses).
-Do not rewrite a join to bare `cols` / `valid_cols(cols)` / `method_spec(cols)`.
+## Task
+Implement a **fast, Verus-provable** `run_query` for that SQL. Primary metric: **SESSION_HOT_US**.
+Edit only `{body_path}` between `AGENT_EDIT_START` / `AGENT_EDIT_END`.
+Keep the host signature / `requires` / `ensures` matching `method_spec(...)` in `{ctx}/spec.rs`
+(admission rejects bare `cols` when MethodSpec is multi-table). Do not add Trusted, `assume`,
+`arbitrary`, `external_body`, or redefine `method_spec`.
 
 {budget_section}
-## ALLOWED (only these)
-1. **Edit one file**: `{body_path}`
-2. **Change only** code between `// AGENT_EDIT_START` and `// AGENT_EDIT_END`.
-3. **Read** (do not modify) context files under `{ctx}/`:
-   - `query.sql` — **the SQL we are optimizing** (same as Target SQL above)
-   - `schema.json` / `spec.rs` — **query-projected** columns only (same Cols the host verifies)
-   - `data_profile.md` — schema/stats (AGENT_DATA_MODE=`{agent_data_mode}`)
-   - `COMPILATION_GUIDE.md` — Verus/Rust patterns
-   - `AGENTS.md`, `PRIMITIVES.md` — agent brief / TRUSTED helpers (if present)
-4. **Use MCP tools** (lemma-host is pre-approved in this sandbox):
-   - `validate_runquery(path="runquery_agent.rs")` — lint/extract check
-   - `run_runquery(path="runquery_agent.rs")` — host verify + **speed** metrics (`run_id`); omit `dataset_size` for host default
-   - `submit_runquery(run_id=...)` — mark that run as official
-   - `session_status` — wall-clock budget / time remaining
-5. Prefer `run_runquery` then `submit_runquery` when the run is verified and beats your current official mark.
-6. Optional: `python3 check_session_time` in the workspace to print remaining seconds.
+{facts_block}
+## Context to read (do not modify)
+- `{ctx}/query.sql`, `{ctx}/schema.json`, `{ctx}/spec.rs`
+- `{ctx}/data_profile.md` (AGENT_DATA_MODE=`{agent_data_mode}`), `{ctx}/hardware.md` (if present)
+- `{ctx}/COMPILATION_GUIDE.md`, `{ctx}/AGENTS.md`, `{ctx}/PRIMITIVES.md` — contract + Trusted menu only
 
-## FORBIDDEN
-- Do NOT create/edit/delete other files.
-- Do NOT add new `spec fn`, `assume`, `arbitrary`, `#[verifier::external_body]`, or `unimplemented!`.
-- Do NOT weaken or change `ensures` away from the MethodSpec call in `spec.rs`
-  (e.g. `method_spec(cols)` or `method_spec(num, sub)` — admission rejects mismatches).
-- Do NOT add new Trusted helpers or redefine `method_spec`.
-- Do NOT search the repo for existing RunQuery bodies or fixtures to copy.
-- Do NOT read any file except the allowed context files above and `{body_path}`.
+## Tools
+- `validate_runquery` / `run_runquery` / `submit_runquery` / `session_status` (lemma-host MCP)
+- Optimize using the SQL + profile + hardware above; prove against MethodSpec; measure SESSION_HOT_US.
 
-## Hints
-- Match the **backward-loop** pattern in `{ctx}/COMPILATION_GUIDE.md` (`cols.n`, `method_spec_helper(cols, i as int)`).
-- Do **not** put `valid_cols(...)` in the loop invariant — it is already in `requires`.
-- Do **not** add `proof {{ }}` blocks unless a Verus error requires a specific lemma already in scope.
-
-## Workspace
-- Edit `{body_path}` between the AGENT_EDIT_START/END markers (full `run_query`).
-- Call `run_runquery(path="runquery_agent.rs")` (omit `dataset_size` unless iterating on a smaller host-allowed limit) to verify and measure.
-- Call `submit_runquery(run_id=...)` with a `run_id` that is **verified** and **better than** your current official mark (or first verified success); re-submit when you beat it.
+## Forbidden
+- Other files; repo fishing for stand-in bodies; weakening `ensures`; inventing Trusted APIs.
 {feedback}{spec_section}
-Begin by reading the spec excerpt and `{ctx}/data_profile.md`, then implement `run_query`.
+Start from the SQL, `{ctx}/data_profile.md`, `{ctx}/hardware.md` (if any), and the MethodSpec excerpt.
 """
 
 
@@ -413,6 +407,14 @@ def prepare_workspace(
     (ro / "data_profile.md").write_text(
         build_data_profile(data_path, sql_query, agent_data_mode)
     )
+    from research_loop.lemma_flags import lemma_agent_hardware
+
+    if lemma_agent_hardware():
+        from research_loop.agent_context import hardware_profile, hardware_profile_markdown
+
+        hw = hardware_profile()
+        (ro / "hardware.json").write_text(json.dumps(hw, indent=2) + "\n")
+        (ro / "hardware.md").write_text(hardware_profile_markdown(hw))
     view = _demo_view_dir()
     if view:
         shutil.copy2(ro / SPEC_NAME, view / SPEC_NAME)

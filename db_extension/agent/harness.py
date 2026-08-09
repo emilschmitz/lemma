@@ -138,21 +138,19 @@ Edit **only** `/workspace/runquery_agent.rs` **between** the markers:
 // AGENT_EDIT_END
 ```
 
-The file is a **host-owned Verus shell** wrapping the full `pub exec fn run_query`.
-**Edit only the marked region** (signature + `requires` + `ensures` + body must stay
-contract-equivalent to MethodSpec). MethodSpec + Trusted live in `/context/ro/spec.rs` (read-only).
-Editing outside the markers fails admission. **Do not weaken** `ensures` vs `method_spec`.
-**Derive** filters, loop order, and aggregation from `method_spec` in `/context/ro/spec.rs`.
-Optimize for the **workload class**, not overfitting the sample data.
+Host-owned Verus shell: keep signature / `requires` / `ensures` matched to `method_spec(...)` in
+`/context/ro/spec.rs` (admission rejects bare `cols` when MethodSpec is multi-table).
+MethodSpec + Trusted are read-only in that file. Optimize **SESSION_HOT_US** from the SQL,
+data profile, and hardware — not canned loop recipes.
 
 {budget}
 ## Rules
 - Do NOT add `mod`, `struct`, `enum`, `trait`, `impl`, `lemma`, or new Trusted `spec fn` items.
 - Do NOT use `assume`, `arbitrary`, `#[verifier::external_body]`, or `unimplemented!`.
-- Do NOT weaken `ensures` away from `method_spec(cols)` (admission rejects it).
-- Read `/context/ro/spec.rs` and `/context/ro/COMPILATION_GUIDE.md` for patterns.
+- Do NOT weaken `ensures` away from the MethodSpec call in `spec.rs`.
+- Read `/context/ro/spec.rs`, `data_profile.md`, `hardware.md`, and `COMPILATION_GUIDE.md` as needed.
 - Use `duckdb_sql` per AGENT_DATA_MODE=`{flags.agent_data_mode}` (see data_profile.md).
-- Prefer `run_runquery` without `dataset_size` (host default); use a smaller size only while iterating if needed.
+- Prefer `run_runquery` without `dataset_size` (host default); smaller size only while iterating if needed.
 - {submit_line}
 - Check time: MCP `session_status` or `python3 check_session_time`.
 
@@ -180,7 +178,7 @@ def _build_user_prompt(
         feedback = (
             f"\n## Previous iteration\nVerified OK at {last_latency_us} µs — try to beat that.\n"
         )
-    from research_loop.agent_sandbox import SPEC_NAME, _extract_spec_excerpt
+    from research_loop.agent_sandbox import SPEC_NAME, _extract_spec_excerpt, _read_ro_excerpt
 
     spec_file = workspace / "context" / "ro" / SPEC_NAME
     spec_excerpt = _extract_spec_excerpt(spec_file.read_text()) if spec_file.is_file() else ""
@@ -192,6 +190,19 @@ def _build_user_prompt(
 {spec_excerpt}
 ```
 """
+
+    profile_excerpt = _read_ro_excerpt(workspace, "data_profile.md", max_chars=2200)
+    hw_excerpt = _read_ro_excerpt(workspace, "hardware.md", max_chars=800)
+    facts_sections: list[str] = []
+    if profile_excerpt:
+        facts_sections.append(
+            f"## Data profile (from `/context/ro/data_profile.md`)\n{profile_excerpt}\n"
+        )
+    if hw_excerpt:
+        facts_sections.append(
+            f"## Hardware (from `/context/ro/hardware.md`)\n{hw_excerpt}\n"
+        )
+    facts_block = "\n".join(facts_sections)
 
     from db_extension.agent.session_clock import (
         agent_timeout_sec,
@@ -211,27 +222,17 @@ def _build_user_prompt(
 ```
 
 {budget_section}
+{facts_block}
 ## Context files (read-only)
-- `/context/ro/query.sql` — **the SQL we are optimizing** (same as Target SQL above)
-- `/context/ro/spec.rs` — MethodSpec for that SQL (`Cols` = query-projected columns)
-- `/context/ro/schema.json` — same projected column types as `Cols`
-- `/context/ro/COMPILATION_GUIDE.md` — Verus/Rust patterns
-- `/context/ro/data_profile.md` — schema/stats for the workload
-- `/context/ro/hardware.md` — CPU/cache/memory hints for tuning
-
-## Hints
-- Match the backward-loop pattern in COMPILATION_GUIDE (`cols.n`, `method_spec_helper(cols, i as int)`).
-- Do **not** put `valid_cols(...)` in the loop invariant — it is already in `requires`.
-- Do **not** add `proof {{ }}` blocks unless a Verus error requires a specific lemma already in scope.
+- `/context/ro/query.sql`, `schema.json`, `spec.rs`
+- `/context/ro/data_profile.md`, `/context/ro/hardware.md`
+- `/context/ro/COMPILATION_GUIDE.md`, `AGENTS.md`, `PRIMITIVES.md` — contract + Trusted menu
 
 ## Workspace
-- `/workspace/runquery_agent.rs` is a host-owned Verus shell; edit only the AGENT_EDIT region (full `run_query`).
-- MethodSpec + Trusted remain in `/context/ro/spec.rs` (not inlined in the agent file).
-- Call `run_runquery` (omit `dataset_size` for host default) to verify and measure on the host.
-- Call `submit_runquery(run_id=...)` when a run is verified and beats your current official mark (re-submit on improvements).
-- Time left: `session_status` or `python3 check_session_time`.
+- Edit `/workspace/runquery_agent.rs` AGENT_EDIT region only; keep MethodSpec contract.
+- Primary metric: **SESSION_HOT_US**. Use `run_runquery` / `submit_runquery` / `session_status`.
 {feedback}{spec_section}
-Begin by reading the spec excerpt and `/context/ro/data_profile.md`, then implement `run_query`.
+Start from the SQL, data profile, hardware, and MethodSpec — not canned tactics.
 """
 
 

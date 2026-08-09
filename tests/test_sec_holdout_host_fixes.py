@@ -202,11 +202,20 @@ HAVING COUNT(*) > 10
 
 
 def test_exists_corr_string_key_and_multi_agg_having() -> None:
-    """Correlated EXISTS string keys use Seq<char>; HAVING sees multi-agg tuple."""
+    """Correlated EXISTS string keys use tuple Seq<char>; HAVING sees multi-agg tuple."""
     schema = {"num": SEC_SCHEMA["num"], "pre": SEC_SCHEMA["pre"]}
     out = transpile_sql_to_verus(_Q4_EXISTS_MULTI_AGG, schema)
     assert "outer_key: u32" not in out
-    assert "outer_key: Seq<char>" in out
+    assert re.search(
+        r"outer_key:\s*\(Seq<char>,\s*Seq<char>,\s*Seq<char>\)",
+        out,
+    ), "multi-col correlated EXISTS must use tuple outer_key"
+    assert re.search(
+        r"exists_corr_\w+_spec\("
+        r"[^,]+,\s*"
+        r"\(cols\.get_adsh\(k\),\s*cols\.get_tag\(k\),\s*cols\.get_version\(k\)\)\)",
+        out,
+    ), "call site must pass all correlation keys"
     assert re.search(
         r"apply_having_filter\(m,\s*\|k:\s*\(Seq<char>,\s*Seq<char>\),\s*v:\s*\(u64,\s*u64\)\|",
         out,

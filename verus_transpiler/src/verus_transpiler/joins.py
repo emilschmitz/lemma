@@ -5,7 +5,13 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from .parse_sql import AggSpec, DerivedTable, SQLQuery, UnsupportedContractError
+from .parse_sql import (
+    AggSpec,
+    DerivedTable,
+    SQLQuery,
+    UnsupportedContractError,
+    _corr_outer_key_expr,
+)
 from .rust_ident import rust_ident
 from .subqueries import emit_derived_grouped_inner_spec
 from .value_bounds import col_verus_type, spec_map_key_type
@@ -171,17 +177,33 @@ def _resolve_subquery_calls(
         inner_table = exists.query.tables[0]
         inner_param = inner_param_for_table(inner_table)
         if exists.correlated:
-            key = exists.correlation_cols[0]
-            out = re.sub(
-                rf"exists_corr_{re.escape(exists.alias)}_spec\(__INNER__, ([^)]+)\)",
-                rf"exists_corr_{exists.alias}_spec({inner_param}, \1)",
-                out,
+            out = out.replace(
+                f"exists_corr_{exists.alias}_spec(__INNER__,",
+                f"exists_corr_{exists.alias}_spec({inner_param},",
             )
-            key_access = _col_access_for_col(
-                key, query, slots, schemas_by_table, derived_by_alias,
+            key_parts = [
+                _col_access_for_col(
+                    c, query, slots, schemas_by_table, derived_by_alias,
+                )
+                for c in exists.correlation_cols
+            ]
+            key_access = (
+                key_parts[0]
+                if len(key_parts) == 1
+                else f"({', '.join(key_parts)})"
+            )
+            legacy_outer = _corr_outer_key_expr(
+                exists.correlation_cols, join_context=False,
             )
             out = out.replace(
-                f"exists_corr_{exists.alias}_spec(cols, row.{key})",
+                f"exists_corr_{exists.alias}_spec(cols, {legacy_outer})",
+                f"exists_corr_{exists.alias}_spec({inner_param}, {key_access})",
+            )
+            legacy_join = _corr_outer_key_expr(
+                exists.correlation_cols, join_context=True,
+            )
+            out = out.replace(
+                f"exists_corr_{exists.alias}_spec({inner_param}, {legacy_join})",
                 f"exists_corr_{exists.alias}_spec({inner_param}, {key_access})",
             )
         else:
@@ -198,25 +220,31 @@ def _resolve_subquery_calls(
         inner_table = in_spec.query.tables[0]
         inner_param = inner_param_for_table(inner_table)
         if in_spec.correlated:
-            out = re.sub(
-                (
-                    rf"in_corr_{re.escape(in_spec.alias)}_contains\("
-                    rf"__INNER__, ([^,]+), ([^)]+)\)"
-                ),
-                rf"in_corr_{in_spec.alias}_contains({inner_param}, \1, \2)",
-                out,
+            out = out.replace(
+                f"in_corr_{in_spec.alias}_contains(__INNER__,",
+                f"in_corr_{in_spec.alias}_contains({inner_param},",
             )
             val_access = _col_access_for_col(
                 in_spec.column, query, slots, schemas_by_table, derived_by_alias,
             )
-            key = in_spec.correlation_cols[0]
-            key_access = _col_access_for_col(
-                key, query, slots, schemas_by_table, derived_by_alias,
+            key_parts = [
+                _col_access_for_col(
+                    c, query, slots, schemas_by_table, derived_by_alias,
+                )
+                for c in in_spec.correlation_cols
+            ]
+            key_access = (
+                key_parts[0]
+                if len(key_parts) == 1
+                else f"({', '.join(key_parts)})"
+            )
+            legacy_outer = _corr_outer_key_expr(
+                in_spec.correlation_cols, join_context=False,
             )
             out = out.replace(
                 (
                     f"in_corr_{in_spec.alias}_contains("
-                    f"cols, row.{in_spec.column}, row.{key})"
+                    f"cols, row.{in_spec.column}, {legacy_outer})"
                 ),
                 f"in_corr_{in_spec.alias}_contains({inner_param}, {val_access}, {key_access})",
             )

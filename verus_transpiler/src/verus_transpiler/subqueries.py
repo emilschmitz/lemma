@@ -78,6 +78,22 @@ def _corr_key_spec_type(
     return spec_map_key_type(_lookup_col_type(col, inner_schema, outer_schema))
 
 
+def _corr_outer_key_type(
+    correlation_cols: list[str],
+    inner_schema: dict[str, str],
+    outer_schema: dict[str, str] | None = None,
+) -> str:
+    """Spec type for correlated outer key(s); tuple when multiple cols."""
+    types = [
+        _corr_key_spec_type(c, inner_schema, outer_schema) for c in correlation_cols
+    ]
+    if not types:
+        return "u32"
+    if len(types) == 1:
+        return types[0]
+    return f"({', '.join(types)})"
+
+
 def _correlated_param_specs(
     correlation_cols: list[str],
     inner_schema: dict[str, str],
@@ -481,8 +497,9 @@ def emit_exists_corr_subquery_helper(
     outer_schema: dict[str, str] | None = None,
 ) -> str:
     """Emit correlated EXISTS spec helper (TRUSTED nested-loop reference)."""
-    key_col = exists.correlation_cols[0]
-    key_ty = _corr_key_spec_type(key_col, inner_schema, outer_schema)
+    key_ty = _corr_outer_key_type(
+        exists.correlation_cols, inner_schema, outer_schema
+    )
     spec_name = f"exists_corr_{exists.alias}_spec"
     helper_name = f"exists_corr_{exists.alias}_helper"
     helper = f"""// TRUSTED: correlated EXISTS nested-loop semi-join reference.
@@ -556,8 +573,9 @@ def emit_in_corr_subquery_helper(
     outer_schema: dict[str, str] | None = None,
 ) -> str:
     """Emit correlated IN (subquery) membership helper (TRUSTED)."""
-    key_col = in_spec.correlation_cols[0]
-    key_ty = _corr_key_spec_type(key_col, inner_schema, outer_schema)
+    key_ty = _corr_outer_key_type(
+        in_spec.correlation_cols, inner_schema, outer_schema,
+    )
     val_ty = _corr_key_spec_type(in_spec.column, inner_schema, outer_schema)
     contains_name = f"in_corr_{in_spec.alias}_contains"
     helper_name = f"in_corr_{in_spec.alias}_helper"
