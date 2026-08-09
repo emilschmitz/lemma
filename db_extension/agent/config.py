@@ -42,6 +42,7 @@ class AgentFlags:
     agent_web_search: bool = False
     agent_docs_mount: bool = True
     agent_submit_only_measure: bool = True
+    agent_submit_ends_session: bool = False
     agent_image: str = "lemma-agent:latest"
     agent_max_turns: int = 40
     # Host MCP (outside sandbox). Empty = volume-flag submit only.
@@ -61,6 +62,7 @@ class AgentFlags:
             agent_web_search=truthy(cfg.get("AGENT_WEB_SEARCH", "0")),
             agent_docs_mount=truthy(cfg.get("AGENT_DOCS_MOUNT", "1")),
             agent_submit_only_measure=truthy(cfg.get("AGENT_SUBMIT_ONLY_MEASURE", "1")),
+            agent_submit_ends_session=truthy(cfg.get("AGENT_SUBMIT_ENDS_SESSION", "0")),
             agent_image=cfg.get("AGENT_IMAGE", "lemma-agent:latest"),
             agent_max_turns=int(cfg.get("AGENT_MAX_TURNS", "40")),
             agent_mcp_url=cfg.get("AGENT_MCP_URL", ""),
@@ -81,6 +83,7 @@ def load_agent_flags(config_env: Path | None = None) -> AgentFlags:
         "AGENT_WEB_SEARCH",
         "AGENT_DOCS_MOUNT",
         "AGENT_SUBMIT_ONLY_MEASURE",
+        "AGENT_SUBMIT_ENDS_SESSION",
         "AGENT_WORKLOAD_HINT",
         "AGENT_IMAGE",
         "AGENT_MAX_TURNS",

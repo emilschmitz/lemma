@@ -112,6 +112,20 @@ TOOL_DEFINITIONS = SANDBOX_TOOL_DEFINITIONS + openai_host_tool_definitions(inclu
 
 
 def _build_system_prompt(flags: AgentFlags) -> str:
+    from db_extension.agent.session_clock import session_budget_prompt_section
+
+    budget = session_budget_prompt_section(
+        budget_sec=flags.agent_timeout_sec,
+        submit_ends=flags.agent_submit_ends_session,
+    )
+    submit_line = (
+        "When ready, call `submit_runquery(run_id=...)` — that **ends the session** (host-enforced). "
+        "Only submit when you expect no further improvement."
+        if flags.agent_submit_ends_session
+        else "When you have a good run, call `submit_runquery(run_id=...)` to mark it official "
+        "(submit does **not** end the session). If you expect no further improvement, stop; "
+        "otherwise keep running until the wall-clock budget."
+    )
     return f"""You are Lemma's RunQuery optimizer agent.
 
 ## Task
@@ -128,16 +142,18 @@ Editing the shell outside the markers fails admission.
 **Derive** filters, loop order, and aggregation from `method_spec` in `/context/ro/spec.rs`.
 Optimize for the **workload class**, not overfitting the sample data.
 
+{budget}
 ## Rules
 - Do NOT add `mod`, `struct`, `enum`, `trait`, `impl`, `lemma`, or `spec fn` items.
 - Do NOT write `requires`, `ensures`, or change the `run_query` signature.
 - Read `/context/ro/spec.rs` and `/context/ro/COMPILATION_GUIDE.md` for patterns.
 - Use `duckdb_sql` per AGENT_DATA_MODE=`{flags.agent_data_mode}` (see data_profile.md).
-- Use `run_runquery` with a **small** `dataset_size` to iterate; fix errors from metrics.
-- When satisfied, call `submit(run_id=...)` to mark your best run as official (you may keep editing after marking).
+- Prefer `run_runquery` without `dataset_size` (host default); use a smaller size only while iterating if needed.
+- {submit_line}
+- Check time: MCP `session_status` or `python3 check_session_time`.
 
 ## Tools
-Sandbox tools (read/write/shell/duckdb) run in Docker. Validate/run/submit reach the **host** via a Unix socket (`validate_runquery`, `run_runquery`, `submit`, `get_submit_result`).
+Sandbox tools (read/write/shell/duckdb) run in Docker. Validate/run/submit reach the **host** via a Unix socket (`validate_runquery`, `run_runquery`, `submit_runquery`, `session_status`, `get_submit_result`).
 Paths: `/workspace`, `/context/ro`, `/data`.
 """
 
@@ -151,6 +167,7 @@ def _build_user_prompt(
     max_iterations: int,
     last_error: str,
     last_latency_us: int,
+    flags: AgentFlags | None = None,
 ) -> str:
     feedback = ""
     if last_error:
@@ -172,6 +189,16 @@ def _build_user_prompt(
 ```
 """
 
+    from db_extension.agent.session_clock import (
+        agent_timeout_sec,
+        session_budget_prompt_section,
+        submit_ends_session,
+    )
+
+    budget_sec = flags.agent_timeout_sec if flags else agent_timeout_sec()
+    ends = flags.agent_submit_ends_session if flags else submit_ends_session()
+    budget_section = session_budget_prompt_section(budget_sec=budget_sec, submit_ends=ends)
+
     return f"""# Lemma RunQuery optimizer (query_id={query_id}, iter {iteration}/{max_iterations})
 
 ## Target SQL
@@ -179,6 +206,7 @@ def _build_user_prompt(
 {sql_query.strip()}
 ```
 
+{budget_section}
 ## Context files (read-only)
 - `/context/ro/query.sql` — **the SQL we are optimizing** (same as Target SQL above)
 - `/context/ro/spec.rs` — MethodSpec for that SQL (`Cols` = query-projected columns)
@@ -195,8 +223,9 @@ def _build_user_prompt(
 ## Workspace
 - `/workspace/runquery_agent.rs` is a host-owned Verus shell (SQL is in the file header + `query.sql`); edit only the body between AGENT_BODY markers.
 - MethodSpec remains in `/context/ro/spec.rs` (not inlined in the agent file).
-- Call `run_runquery(dataset_size=50000)` (or smaller) to verify and measure on the host.
-- Call `submit(run_id=...)` to mark your official run when ready.
+- Call `run_runquery` (omit `dataset_size` for host default) to verify and measure on the host.
+- Call `submit_runquery(run_id=...)` to mark your official run when ready.
+- Time left: `session_status` or `python3 check_session_time`.
 {feedback}{spec_section}
 Begin by reading the spec excerpt and `/context/ro/data_profile.md`, then implement the run_query body.
 """
@@ -365,15 +394,31 @@ def run_openrouter_agent_iteration(
                     max_iterations=max_iterations,
                     last_error=last_error,
                     last_latency_us=last_latency_us,
+                    flags=flags,
                 ),
             },
         ]
+        from db_extension.agent.session_clock import (
+            end_session_requested,
+            start_session_clock,
+        )
+
+        # Stamp at agent start so remaining_sec matches the live budget.
+        start_session_clock(
+            ws,
+            budget_sec=flags.agent_timeout_sec,
+            submit_ends=flags.agent_submit_ends_session,
+        )
         deadline = time.monotonic() + flags.agent_timeout_sec
+        stop_after_tools = False
 
         with open(trace_path, "w", encoding="utf-8") as trace_f:
             for turn in range(1, flags.agent_max_turns + 1):
                 if time.monotonic() > deadline:
                     meta["error"] = "agent timeout"
+                    break
+                if end_session_requested(ws):
+                    meta["session_end_requested"] = True
                     break
                 meta["turns"] = turn
                 response = client.chat.completions.create(
@@ -422,6 +467,20 @@ def run_openrouter_agent_iteration(
                             "content": _tool_result_text(resp),
                         }
                     )
+                    result = resp.get("result") if isinstance(resp, dict) else None
+                    # tools_worker returns host JSON as a string payload.
+                    if isinstance(result, str):
+                        try:
+                            result = json.loads(result)
+                        except json.JSONDecodeError:
+                            result = None
+                    if isinstance(result, dict) and result.get("session_end_requested"):
+                        stop_after_tools = True
+                    if end_session_requested(ws):
+                        stop_after_tools = True
+                if stop_after_tools:
+                    meta["session_end_requested"] = True
+                    break
 
         body_text = (ws / DEFAULT_RUNQUERY).read_text()
         submitted_record = get_submitted(ws=ws)

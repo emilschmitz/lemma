@@ -94,6 +94,11 @@ def build_proxy_mcp() -> FastMCP:
         return _proxy("submit_runquery", {"run_id": run_id})
 
     @mcp.tool()
+    def session_status() -> str:
+        """Return agent session wall-clock budget / time remaining (host)."""
+        return _proxy("session_status", {})
+
+    @mcp.tool()
     def get_submit_result() -> str:
         """Read the currently marked official submission."""
         return _proxy("get_submit_result", {})
@@ -113,6 +118,7 @@ def build_proxy_mcp() -> FastMCP:
         "validate_runquery",
         "run_runquery",
         "submit_runquery",
+        "session_status",
         "get_submit_result",
         "list_runs",
         "mcp_health",

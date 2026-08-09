@@ -232,6 +232,11 @@ def tool_mcp_health(_args: dict) -> str:
     return json.dumps(result, ensure_ascii=False)
 
 
+def tool_session_status(_args: dict) -> str:
+    result = _call_mcp("session_status", {})
+    return json.dumps(result, ensure_ascii=False)
+
+
 def tool_submit(args: dict) -> str:
     return tool_submit_runquery(args)
 
@@ -250,6 +255,7 @@ _TOOLS = {
     "get_submit_result": tool_get_submit_result,
     "list_runs": tool_list_runs,
     "mcp_health": tool_mcp_health,
+    "session_status": tool_session_status,
 }
 
 

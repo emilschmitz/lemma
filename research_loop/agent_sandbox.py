@@ -119,8 +119,16 @@ def build_agent_prompt(
     last_latency_us: int = -1,
     in_docker: bool = False,
     agent_data_mode: str = "stats",
+    budget_sec: int | None = None,
+    submit_ends_session: bool | None = None,
 ) -> str:
     """Build CLI agent prompt aligned with OpenRouter harness user prompt."""
+    from db_extension.agent.session_clock import (
+        agent_timeout_sec,
+        session_budget_prompt_section,
+        submit_ends_session as _submit_ends,
+    )
+
     if in_docker:
         body_path = f"/workspace/{BODY_NAME}"
         ctx = "/context/ro"
@@ -152,6 +160,10 @@ def build_agent_prompt(
 ```
 """
 
+    budget = int(budget_sec) if budget_sec is not None else agent_timeout_sec()
+    ends = _submit_ends() if submit_ends_session is None else bool(submit_ends_session)
+    budget_section = session_budget_prompt_section(budget_sec=budget, submit_ends=ends)
+
     return f"""# Lemma RunQuery optimizer (query_id={query_id}, iter {iteration}/{max_iterations})
 
 ## Target SQL
@@ -166,6 +178,7 @@ Write a **fast, Verus-provable** Rust `run_query` **body** for the SQL above.
 MethodSpec / `valid_cols` remain in `{ctx}/spec.rs` — do not inline them. Editing the
 shell outside the markers fails admission.
 
+{budget_section}
 ## ALLOWED (only these)
 1. **Edit one file**: `{body_path}`
 2. **Change only** code between `// AGENT_BODY_START` and `// AGENT_BODY_END`.
@@ -177,9 +190,11 @@ shell outside the markers fails admission.
    - `AGENTS.md`, `PRIMITIVES.md` — agent brief / TRUSTED helpers (if present)
 4. **Use MCP tools** (lemma-host is pre-approved in this sandbox):
    - `validate_runquery(path="runquery_agent.rs")` — lint/extract check
-   - `run_runquery(path="runquery_agent.rs", dataset_size=...)` — host verify + **speed** metrics (`run_id`)
+   - `run_runquery(path="runquery_agent.rs")` — host verify + **speed** metrics (`run_id`); omit `dataset_size` for host default
    - `submit_runquery(run_id=...)` — mark that run as official
+   - `session_status` — wall-clock budget / time remaining
 5. Saving `{body_path}` alone is a fallback only if MCP is truly down — prefer `run_runquery` then `submit_runquery`.
+6. Optional: `python3 check_session_time` in the workspace to print remaining seconds.
 
 ## FORBIDDEN
 - Do NOT create/edit/delete other files.
@@ -195,7 +210,7 @@ shell outside the markers fails admission.
 
 ## Workspace
 - Edit `{body_path}` between the AGENT_BODY_START/END markers.
-- Call `run_runquery(path="runquery_agent.rs", dataset_size=50000)` (or smaller) to verify and measure on the host.
+- Call `run_runquery(path="runquery_agent.rs")` (omit `dataset_size` unless iterating on a smaller host-allowed limit) to verify and measure.
 - Call `submit_runquery(run_id=...)` with the `run_id` from that measure to mark your official run.
 {feedback}{spec_section}
 Begin by reading the spec excerpt and `{ctx}/data_profile.md`, then implement the run_query body.
@@ -414,6 +429,9 @@ def prepare_workspace(
 
         write_runquery_agent_file(body_path, ret_type=ret_type, sql_query=sql_query)
         log_debug(COMPONENT, "workspace_reset", "built agent shell", path=str(body_path))
+    from db_extension.agent.session_clock import write_check_script
+
+    write_check_script(workspace)
     log_trace(COMPONENT, "workspace_ready", "context prepared", workspace=str(workspace))
     return body_path
 
@@ -655,9 +673,29 @@ def run_agent_docker(
         for t in threads:
             t.start()
         try:
-            rc = popen.wait(timeout=timeout)
+            # Poll so AGENT_SUBMIT_ENDS_SESSION can stop the container early.
+            from db_extension.agent.session_clock import end_session_requested
+
+            deadline = time.monotonic() + timeout
+            rc: int | None = None
+            while True:
+                rc = popen.poll()
+                if rc is not None:
+                    break
+                if end_session_requested(workspace):
+                    log_info(
+                        COMPONENT,
+                        "agent_docker_end_session",
+                        "end_session sentinel after submit",
+                    )
+                    popen.kill()
+                    rc = popen.wait()
+                    break
+                if time.monotonic() > deadline:
+                    raise subprocess.TimeoutExpired(cmd, timeout)
+                time.sleep(0.5)
             proc = subprocess.CompletedProcess(
-                cmd, rc, "".join(stdout_chunks), "".join(stderr_chunks)
+                cmd, int(rc if rc is not None else -1), "".join(stdout_chunks), "".join(stderr_chunks)
             )
         except subprocess.TimeoutExpired:
             timed_out = True
@@ -752,6 +790,18 @@ def run_agent_iteration(
         last_latency_us=last_latency_us,
         in_docker=use_docker(cfg),
         agent_data_mode=flags.agent_data_mode,
+        budget_sec=int(cfg.get("AGENT_TIMEOUT_SEC", flags.agent_timeout_sec)),
+        submit_ends_session=flags.agent_submit_ends_session
+        or (cfg.get("AGENT_SUBMIT_ENDS_SESSION", "").strip() in ("1", "true", "yes")),
+    )
+    # Stamp clock at agent start (not earlier prepare) so remaining_sec is accurate.
+    from db_extension.agent.session_clock import start_session_clock
+
+    start_session_clock(
+        ws,
+        budget_sec=int(cfg.get("AGENT_TIMEOUT_SEC", flags.agent_timeout_sec)),
+        submit_ends=flags.agent_submit_ends_session
+        or (cfg.get("AGENT_SUBMIT_ENDS_SESSION", "").strip() in ("1", "true", "yes")),
     )
     if use_docker(cfg):
         proc = run_agent_docker(ws, prompt, cfg=cfg, query_id=query_id)

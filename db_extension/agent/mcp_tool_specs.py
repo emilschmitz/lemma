@@ -56,7 +56,8 @@ HOST_TOOL_SPECS: tuple[HostToolSpec, ...] = (
         name="submit_runquery",
         description=(
             "Mark a prior run_id as the official submission (does not re-run harness). "
-            "Call run_runquery first to obtain run_id."
+            "Call run_runquery first to obtain run_id. "
+            "When AGENT_SUBMIT_ENDS_SESSION=1 the host ends the agent session after a successful mark."
         ),
         parameters={
             "type": "object",
@@ -66,6 +67,15 @@ HOST_TOOL_SPECS: tuple[HostToolSpec, ...] = (
             "required": ["run_id"],
         },
         aliases=("submit",),
+    ),
+    HostToolSpec(
+        name="session_status",
+        description=(
+            "Return agent session wall-clock budget: elapsed_sec, remaining_sec, "
+            "budget_sec, submit_ends_session. Same data as session_clock.json / "
+            "python3 check_session_time."
+        ),
+        parameters={"type": "object", "properties": {}},
     ),
     HostToolSpec(
         name="get_submit_result",

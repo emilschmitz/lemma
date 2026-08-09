@@ -195,7 +195,7 @@ else
   fail "docker: expected ready after enable (rebuild image if mcp_proxy import fails)"
 fi
 
-for tool in validate_runquery run_runquery submit_runquery get_submit_result list_runs mcp_health; do
+for tool in validate_runquery run_runquery submit_runquery session_status get_submit_result list_runs mcp_health; do
   if echo "$DOCKER_OUT" | grep -q "$tool"; then
     pass "docker list-tools exposes $tool"
   else
@@ -206,7 +206,7 @@ done
 pass "all host + docker MCP approval checks passed"
 echo ""
 echo "Real lemma_agent.mcp_proxy tools (db_extension/agent/mcp_proxy.py):"
-echo "  validate_runquery, run_runquery, submit_runquery, get_submit_result, list_runs, mcp_health"
+echo "  validate_runquery, run_runquery, submit_runquery, session_status, get_submit_result, list_runs, mcp_health"
 echo ""
 echo "Rebuild agent image after entrypoint/Dockerfile changes:"
 echo "  docker build -t lemma-agent:cli --build-arg INSTALL_AGENT_CLI=1 -f docker/agent/Dockerfile ."
