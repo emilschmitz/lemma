@@ -63,14 +63,33 @@ When the shell ret_type is a projected multi-agg map (`map_*__u64_…` keys),
 
 | helper | exec | spec view |
 |--------|------|-----------|
-| `hashset_str_view` | `HashSet<String>` | `Map<Seq<char>, bool>` |
+| `hashset_str_view` | `Set<String>` | `Map<Seq<char>, bool>` |
 | `set_new_str` / `set_insert_str` | string keys | membership + dom size on insert |
-| `hashset_u32_view` | `HashSet<u32>` | `Map<u32, bool>` |
+| `hashset_u32_view` | `Set<u32>` | `Map<u32, bool>` |
 | `set_new_u32` / `set_insert_u32` | u32 keys | same contract |
 
 `set_insert_*` returns `is_new`; when true, `dom().len()` increases by 1. Use
 with ghost `method_spec_helper` folds that track `Map<K, bool>` distinct state
 then project via `dom().len() as u64`.
+
+## Multi-agg group step (`agg_step_*`)
+
+When `prepare_agent_visible_spec` / assembly sees a projected multi-agg map
+(`map_*__u64_…` ret_type) **and** can parse the transpiled fold, it also emits
+per-query step helpers (names keyed by `agg_suffix`, e.g. `str_str__u64_u64_u64`):
+
+| helper | role |
+|--------|------|
+| `AggStepState_{suffix}` | `projected` HashMap + `inner` HashMap (exec tuple incl. `HashSet` for COUNT_DISTINCT slots) |
+| `agg_step_inner_{suffix}_view` | exec inner map → spec helper state map |
+| `agg_step_project_{suffix}` | open spec: inner state tuple → projected agg tuple (from `method_spec` `map_values`) |
+| `agg_step_apply_row_{suffix}` | open spec: one-row inner update (from fold body; row params for distinct / SUM/AVG inputs) |
+| `agg_step_state_new_{suffix}` | empty state |
+| `agg_step_{suffix}` | TRUSTED: apply one qualifying row to a group (inner + projected maps stay in sync) |
+
+Agent loop pattern: backward scan, `agg_step_{suffix}(…)` per row, invariant
+`agg_step_inner_{suffix}_view(st.inner@) == method_spec_helper(cols, i)`.
+Capability reference: `research_loop/bench_standins/sec_q1_runquery.py` (Verus-verified).
 
 ## Admission wiring
 

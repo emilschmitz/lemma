@@ -144,7 +144,7 @@ def test_nested_map_unsupported() -> None:
 
 def test_spec_to_exec_type_rejects_unknown_atom() -> None:
     with pytest.raises(ValueError, match="unsupported Verus type"):
-        parse_verus_type("bool")
+        parse_verus_type("f64")
 
 
 def test_resolve_ret_type_registers_seq_projection() -> None:

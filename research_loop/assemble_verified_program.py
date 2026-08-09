@@ -355,7 +355,8 @@ def _ret_type_supported(ret_type: str) -> bool:
     return ret_type in dynamic_ret_type_config()
 
 
-def _boundary_helpers(ret_type: str) -> str:
+def _boundary_helpers(ret_type: str, verus_spec: str | None = None) -> str:
+    from research_loop.multi_agg_step_bridge import multi_agg_step_trusted_rs
     from research_loop.trusted_ret_bridge import (
         distinct_set_trusted_rs,
         get_bridge,
@@ -370,6 +371,10 @@ def _boundary_helpers(ret_type: str) -> str:
     if multi_agg_ret_type(ret_type):
         distinct = distinct_set_trusted_rs()
         boundary = f"{boundary}{distinct}" if boundary else distinct
+        if verus_spec:
+            step = multi_agg_step_trusted_rs(verus_spec, ret_type)
+            if step:
+                boundary = f"{boundary}{step}" if boundary else step
     return boundary
 
 
@@ -398,11 +403,12 @@ def _trim_verus_close(spec_rs: str) -> str:
 def prepare_agent_visible_spec(verus_spec: str, ret_type: str) -> str:
     """Spec the sandbox agent may read: MethodSpec + TRUSTED agg API for ret_type; no RunQuery skeleton."""
     core = _trim_verus_close(_strip_skeleton(verus_spec))
-    boundary = _boundary_helpers(ret_type)
+    boundary = _boundary_helpers(ret_type, verus_spec)
     if boundary:
         agent_note = (
             "// === Agent: use TRUSTED helpers below for opaque views.\n"
             "// Maps: agg_new_* / agg_add_* (wrapping) / agg_put_* (set projected tuple).\n"
+            "// Multi-agg steps: agg_step_state_new_* / agg_step_* (+ agg_step_apply_row_* spec).\n"
             "// Distinct sets: hashset_*_view + set_new_* / set_insert_* (COUNT_DISTINCT state).\n"
             "// Seqs: seq_new_* / seq_push_* when present. Raw HashMap::new()/Vec::new()\n"
             "// will not prove against opaque hashmap_*/vec_*_view.\n"
@@ -807,7 +813,7 @@ def assemble_verified_join_program(
         raise ValueError(f"table_order {table_order} not in multi_schema keys")
 
     core = _prepare_spec_rs(spec_rs, None)
-    boundary = _boundary_helpers(ret_type)
+    boundary = _boundary_helpers(ret_type, spec_rs)
     agent_externs = emit_agent_externs()
     load_gen = _select_load_generator()
     loaders = "\n".join(
@@ -904,7 +910,7 @@ def assemble_verified_nway_program(
             raise ValueError(f"table {table!r} not in multi_schema")
 
     core = _prepare_spec_rs(spec_rs, None)
-    boundary = _boundary_helpers(ret_type)
+    boundary = _boundary_helpers(ret_type, spec_rs)
     agent_externs = emit_agent_externs()
     load_gen = _select_load_generator()
     loaders = "\n".join(
@@ -956,7 +962,7 @@ def assemble_verified_program(
         )
 
     core = _prepare_spec_rs(spec_rs, schema_dict)
-    boundary = _boundary_helpers(ret_type)
+    boundary = _boundary_helpers(ret_type, spec_rs)
     agent_externs = emit_agent_externs()
     load_gen = _select_load_generator()
     load_cols = load_gen(schema_dict)

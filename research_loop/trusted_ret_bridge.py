@@ -157,7 +157,7 @@ def _parse_type_at(s: str, pos: int) -> tuple[TypeExpr, int]:
             raise ValueError("unclosed tuple type")
         return TypeTuple(elems=tuple(elems)), pos + 1
 
-    for atom in ("u32", "u64", "i64"):
+    for atom in ("u32", "u64", "i64", "bool"):
         if s.startswith(atom, pos):
             return TypeAtom(atom), pos + len(atom)
 
@@ -427,6 +427,7 @@ def _emit_distinct_set_trusted(atom: str) -> str:
         view = "hashset_str_view"
         spec_map = "Map<Seq<char>, bool>"
         rust_set = "HashSet<String>"
+        ghost_set = "Set<String>"
         insert_param = "k: &str"
         spec_key = "k@"
         exec_insert = "k.to_string()"
@@ -435,6 +436,7 @@ def _emit_distinct_set_trusted(atom: str) -> str:
         view = "hashset_u32_view"
         spec_map = "Map<u32, bool>"
         rust_set = "HashSet<u32>"
+        ghost_set = "Set<u32>"
         insert_param = "k: u32"
         spec_key = "k"
         exec_insert = "k"
@@ -446,7 +448,7 @@ def _emit_distinct_set_trusted(atom: str) -> str:
     return f"""
 // === TRUSTED distinct-set helpers ({atom}: HashSet exec ↔ Map spec view) ===
 #[verifier::external_body]
-pub open spec fn {view}(s: {rust_set}) -> {spec_map} {{
+pub open spec fn {view}(s: {ghost_set}) -> {spec_map} {{
     arbitrary()
 }}
 

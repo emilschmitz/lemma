@@ -4,6 +4,7 @@
 - [ ] Find out what subset of SQL queries would be nice to support and extend the transpiler accordingly
 - [ ] (Down the line) Make the transpiler support all of (ANSI) SQL
 - [ ] **SEC EDGAR shell/Trusted families** — MethodSpec often OK; missing multi-agg Map+(tuple values) and projection `Seq<(…)>` Trusted bridges. See `docs/METHODSPEC_SHELL_TRUSTED_GAP.md`.
+- [ ] **Trusted step menu from resample mining** — see `docs/RESEARCH_NOTES.md`. Next: multi-agg + COUNT_DISTINCT group `agg_step` (prove capability host-side; no agent-sandbox fishing).
 
 ## Research Loop
 - [x] **Update `research_loop/COMPILATION_GUIDE.md` to match current pipeline** (done)

@@ -1263,7 +1263,7 @@ def transpile_sql_to_verus(
     trusted_prelude = emit_trusted_prelude(include_left_join_miss=not join_multi)
 
     return f"""use vstd::prelude::*;
-use std::collections::HashMap;
+use std::collections::{{HashMap, HashSet}};
 
 verus! {{
 
