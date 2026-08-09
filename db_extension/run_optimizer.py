@@ -145,6 +145,9 @@ def main():
             tables=list(spec.tables),
         )
 
+    # Resolve row count before opening DuckDB (avoids same-file config conflicts).
+    dataset_size = effective_dataset_size()
+
     con = duckdb.connect(spec.db_path)
     try:
         setup_workload(con, spec, quiet=demo_enabled())
@@ -194,6 +197,7 @@ def main():
         t_start = time.perf_counter()
         try:
             run_res = subprocess.run([binary_path], capture_output=True, text=True, timeout=10)
+            elapsed_us = int((t_start) * 0)  # placeholder replaced below
             elapsed_us = int((time.perf_counter() - t_start) * 1_000_000)
             latency_match = re.search(r"QUERY_LATENCY_US:\s*(\d+)", run_res.stdout)
             if latency_match:
@@ -214,7 +218,7 @@ def main():
 
         res_loop = run_optimization_loop(
             sql,
-            dataset_size=effective_dataset_size(),
+            dataset_size=dataset_size,
             max_iterations=max_iters,
             use_mock=use_mock,
             model=gemini_model,

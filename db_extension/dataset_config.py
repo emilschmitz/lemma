@@ -76,25 +76,24 @@ def _count_duckdb_primary_rows() -> int | None:
         return None
     table = (os.environ.get("LEMMA_PRIMARY_TABLE") or "").strip()
     if not table:
-        # Common env set by run_optimizer after workload resolve — optional.
         table = (os.environ.get("LEMMA_BENCH_TABLE") or "").strip()
     if not table:
+        return None
+    if not table.replace("_", "").isalnum():
         return None
     try:
         import duckdb
     except ImportError:
         return None
-    con = duckdb.connect(db, read_only=True)
     try:
-        # Quote identifier safely: only allow simple names
-        if not table.replace("_", "").isalnum():
-            return None
-        n = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-        return int(n)
+        con = duckdb.connect(db)
+        try:
+            n = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            return int(n)
+        finally:
+            con.close()
     except Exception:
         return None
-    finally:
-        con.close()
 
 
 def effective_dataset_size() -> int:
