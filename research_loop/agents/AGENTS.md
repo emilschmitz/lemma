@@ -141,6 +141,11 @@ predefined TRUSTED helpers (NativeAgg, `add_u64`, …); it may **not** declare n
 RunQuery skeleton. Optional hand-written bodies in `research_loop/bench_standins/` are
 **bench/CI stand-in agents** (artifacts / data), not part of the transpiler or optimizer.
 
+Host injects `run_query` signature + `requires` + `ensures` matching MethodSpec parameters
+(single-table `cols: &Cols` or join `num: &Cols_num, sub: &Cols_sub`, …). Admission rejects
+bare `valid_cols(cols)` / `method_spec(cols)` when MethodSpec is multi-param. Edit the marked
+region only; do not rewrite join contracts to bare `cols`.
+
 ## Agent context (`context.json`)
 
 When the pipeline stops at `awaiting_agent`, each `pending_runquery/pending_*/` directory

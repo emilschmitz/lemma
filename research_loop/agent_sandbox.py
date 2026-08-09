@@ -177,6 +177,9 @@ Write a **fast, Verus-provable** `pub exec fn run_query` for the SQL above.
 `AGENT_EDIT_START` / `AGENT_EDIT_END` (full function: signature, `requires`, `ensures`, body).
 MethodSpec + Trusted remain in `{ctx}/spec.rs` — read-only; do not redefine or add Trusted.
 Editing the shell outside the markers fails admission. **Do not weaken** `ensures` vs `method_spec`.
+Keep the host `run_query` signature, `requires`, and `ensures` aligned with `method_spec` in
+`spec.rs` (single `cols: &Cols` or multi-table `Cols_<table>` params — match what MethodSpec uses).
+Do not rewrite a join to bare `cols` / `valid_cols(cols)` / `method_spec(cols)`.
 
 {budget_section}
 ## ALLOWED (only these)
@@ -199,7 +202,8 @@ Editing the shell outside the markers fails admission. **Do not weaken** `ensure
 ## FORBIDDEN
 - Do NOT create/edit/delete other files.
 - Do NOT add new `spec fn`, `assume`, `arbitrary`, `#[verifier::external_body]`, or `unimplemented!`.
-- Do NOT weaken or change `ensures` away from `method_spec(cols)` (admission rejects it).
+- Do NOT weaken or change `ensures` away from the MethodSpec call in `spec.rs`
+  (e.g. `method_spec(cols)` or `method_spec(num, sub)` — admission rejects mismatches).
 - Do NOT add new Trusted helpers or redefine `method_spec`.
 - Do NOT search the repo for existing RunQuery bodies or fixtures to copy.
 - Do NOT read any file except the allowed context files above and `{body_path}`.

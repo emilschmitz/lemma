@@ -34,6 +34,12 @@ _MAP_STR_U32_SPEC = """pub open spec fn method_spec(cols: &Cols) -> Map<(Seq<cha
     Map::empty()
 }"""
 
+_SIMPLE_JOIN_SQL = """SELECT s.name, SUM(n.value) AS total
+FROM num n
+JOIN sub s ON n.adsh = s.adsh
+WHERE n.uom = 'USD' AND s.fy = 2022
+GROUP BY s.name"""
+
 
 def _scalar_spec() -> str:
     return transpile_sql_to_verus(_SCALAR_SQL, _SCALAR_SCHEMA)
@@ -41,6 +47,13 @@ def _scalar_spec() -> str:
 
 def _map_spec() -> str:
     return transpile_sql_to_verus(_HAVING_SQL, _HAVING_SCHEMA)
+
+
+def _join_spec() -> str:
+    from tests.test_sec_holdout_parse import SEC_SCHEMA
+
+    schema = {"num": SEC_SCHEMA["num"], "sub": SEC_SCHEMA["sub"]}
+    return transpile_sql_to_verus(_SIMPLE_JOIN_SQL, schema)
 
 
 def _admit(source: str, spec_rs: str, *, fp: str | None = None):
@@ -361,3 +374,71 @@ def test_rejects_fake_view_name() -> None:
     result = _admit(src, spec)
     assert not result.ok
     assert any("fake_view_xyz" in v or "untrusted view" in v for v in result.violations)
+
+
+def test_accepts_multi_table_join_contract() -> None:
+    from research_loop.method_spec_ret_type import resolve_ret_type_from_method_spec
+
+    spec = _join_spec()
+    ret_type = resolve_ret_type_from_method_spec(spec)
+    src = build_runquery_agent_source(
+        ret_type=ret_type,
+        method_spec_rs=spec,
+    )
+    result = _admit(src, spec)
+    assert result.ok, result.violations
+    fn = result.run_query_fn or ""
+    assert "valid_cols_num(num)" in fn
+    assert "valid_cols_sub(sub)" in fn
+    assert "method_spec(num, sub)" in fn
+
+
+def test_rejects_multi_table_bare_cols_requires() -> None:
+    spec = _join_spec()
+    fn = (
+        "pub exec fn run_query(num: &Cols_num, sub: &Cols_sub) -> (res: u64)\n"
+        "    requires valid_cols(cols),\n"
+        "    ensures res == method_spec(num, sub),\n"
+        "{\n    0u64\n}"
+    )
+    src = _replace_edit_region(
+        build_runquery_agent_source(ret_type="u64", method_spec_rs=spec),
+        fn,
+    )
+    result = _admit(src, spec)
+    assert not result.ok
+    assert any("valid_cols" in v for v in result.violations)
+
+
+def test_rejects_multi_table_method_spec_cols_ensures() -> None:
+    spec = _join_spec()
+    fn = (
+        "pub exec fn run_query(num: &Cols_num, sub: &Cols_sub) -> (res: u64)\n"
+        "    requires valid_cols_num(num), valid_cols_sub(sub),\n"
+        "    ensures res == method_spec(cols),\n"
+        "{\n    0u64\n}"
+    )
+    src = _replace_edit_region(
+        build_runquery_agent_source(ret_type="u64", method_spec_rs=spec),
+        fn,
+    )
+    result = _admit(src, spec)
+    assert not result.ok
+    assert any("ensures" in v.lower() for v in result.violations)
+
+
+def test_rejects_multi_table_wrong_signature_params() -> None:
+    spec = _join_spec()
+    fn = (
+        "pub exec fn run_query(cols: &Cols) -> (res: u64)\n"
+        "    requires valid_cols(cols),\n"
+        "    ensures res == method_spec(cols),\n"
+        "{\n    0u64\n}"
+    )
+    src = _replace_edit_region(
+        build_runquery_agent_source(ret_type="u64", method_spec_rs=spec),
+        fn,
+    )
+    result = _admit(src, spec)
+    assert not result.ok
+    assert any("parameter" in v or "valid_cols" in v for v in result.violations)

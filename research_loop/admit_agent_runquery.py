@@ -12,15 +12,22 @@ from research_loop.assemble_runquery import (
     _ensures_clause,
     _ret_type_cfg,
     _strip_rust_comments_and_strings,
+    _valid_cols_predicate,
     build_exec_run_query_from_body,
     extract_agent_body_checked,
     host_edit_fingerprint,
     read_edit_fingerprint,
 )
+from research_loop.method_spec_ret_type import parse_method_spec_params
 
 _RUN_QUERY_FN_RE = re.compile(
     r"pub\s+exec\s+fn\s+run_query\s*\(",
     re.MULTILINE,
+)
+
+_RUN_QUERY_SIG_RE = re.compile(
+    r"pub\s+exec\s+fn\s+run_query\s*\(([^)]*)\)",
+    re.DOTALL,
 )
 
 _VIEW_FN_RE = re.compile(
@@ -160,26 +167,66 @@ def trusted_view_menu(spec_rs: str) -> list[ViewOption]:
     return options
 
 
-def parse_ensures_relation(ensures: str) -> tuple[str, str | None]:
+def _split_top_level_commas(text: str) -> list[str]:
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    for i, ch in enumerate(text):
+        if ch in "<(":
+            depth += 1
+        elif ch in ">)":
+            depth = max(0, depth - 1)
+        elif ch == "," and depth == 0:
+            parts.append(text[start:i])
+            start = i + 1
+    parts.append(text[start:])
+    return parts
+
+
+def method_spec_call(params: list[tuple[str, str]]) -> str:
+    """``method_spec(p1, p2, ...)`` from parsed MethodSpec / run_query params."""
+    return f"method_spec({', '.join(p for p, _ in params)})"
+
+
+def _method_spec_call_pattern(params: list[tuple[str, str]]) -> str:
+    args = r"\s*,\s*".join(re.escape(p) for p, _ in params)
+    return rf"method_spec\s*\(\s*{args}\s*\)"
+
+
+def parse_ensures_relation(
+    ensures: str,
+    *,
+    method_spec_params: list[tuple[str, str]] | None = None,
+    method_spec_call: str | None = None,
+) -> tuple[str, str | None]:
     """Return ``('direct', None)`` or ``('view', VIEW_NAME)``; raise on invalid."""
+    if method_spec_params is None:
+        method_spec_params = [("cols", "Cols")]
+    # Kwarg shadows module fn ``method_spec_call`` — build expected call explicitly.
+    expected_call = method_spec_call or (
+        f"method_spec({', '.join(p for p, _ in method_spec_params)})"
+    )
+    call_pat = _method_spec_call_pattern(method_spec_params)
+
     norm = normalize_ensures(ensures)
     collapsed = re.sub(r"\s+", "", norm)
-    if "method_spec(cols)" not in collapsed:
-        raise ValueError("ensures must mention method_spec(cols)")
+    collapsed_call = re.sub(r"\s+", "", expected_call)
+    if collapsed_call not in collapsed:
+        raise ValueError(f"ensures must mention {expected_call}")
     if re.search(r"\|\|\s*true", norm):
         raise ValueError("forbidden vacuous ensures: || true")
     if re.fullmatch(r"true,?", norm.rstrip(",").strip()):
         raise ValueError("forbidden vacuous ensures: ensures true")
 
     stripped = norm.rstrip(",").strip()
-    if re.fullmatch(r"res\s*==\s*method_spec\s*\(\s*cols\s*\)", stripped):
+    if re.fullmatch(rf"res\s*==\s*{call_pat}", stripped):
         return ("direct", None)
 
-    if re.fullmatch(r"res@\s*==\s*method_spec\s*\(\s*cols\s*\)", stripped):
+    if re.fullmatch(rf"res@\s*==\s*{call_pat}", stripped):
         return ("direct", None)
 
     m = re.fullmatch(
-        r"(\w+)\s*\(\s*res@\s*\)\s*==\s*method_spec\s*\(\s*cols\s*\)",
+        rf"(\w+)\s*\(\s*res@\s*\)\s*==\s*{call_pat}",
         stripped,
     )
     if m:
@@ -361,11 +408,61 @@ def _function_body_inner(fn_text: str) -> str:
     return fn_text[brace_start + 1 : i - 1]
 
 
-def _has_valid_cols_requires(requires: str | None) -> bool:
+def _parse_run_query_signature_params(fn_text: str) -> list[tuple[str, str]]:
+    clean = _strip_rust_comments_and_strings(fn_text)
+    m = _RUN_QUERY_SIG_RE.search(clean)
+    if not m:
+        raise ValueError("run_query signature not found")
+    params_str = m.group(1).strip()
+    if not params_str:
+        raise ValueError("run_query signature has no parameters")
+    params: list[tuple[str, str]] = []
+    for chunk in _split_top_level_commas(params_str):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        pm = re.fullmatch(r"(\w+)\s*:\s*&(\w+)", chunk)
+        if not pm:
+            raise ValueError(f"cannot parse run_query parameter: {chunk!r}")
+        params.append((pm.group(1), pm.group(2)))
+    if not params:
+        raise ValueError("run_query signature has no parameters")
+    return params
+
+
+def _signature_matches_method_spec(
+    fn_params: list[tuple[str, str]],
+    spec_params: list[tuple[str, str]],
+) -> str | None:
+    if len(fn_params) != len(spec_params):
+        return (
+            f"run_query has {len(fn_params)} parameter(s), "
+            f"MethodSpec has {len(spec_params)}"
+        )
+    for (fp, fs), (sp, ss) in zip(fn_params, spec_params, strict=True):
+        if fp != sp:
+            return f"run_query param {fp!r} must match MethodSpec param {sp!r}"
+        if fs != ss:
+            return f"run_query param {fp!r} must be &{ss}, got &{fs}"
+    return None
+
+
+def _check_valid_cols_requires(
+    requires: str | None,
+    spec_params: list[tuple[str, str]],
+) -> str | None:
     if not requires:
-        return False
+        return "requires clause missing"
     collapsed = re.sub(r"\s+", "", requires)
-    return "valid_cols(cols)" in collapsed
+    is_multi = len(spec_params) > 1 or any(s != "Cols" for _, s in spec_params)
+    if is_multi and "valid_cols(cols)" in collapsed:
+        return "multi-table MethodSpec must not use bare valid_cols(cols)"
+    for param, struct in spec_params:
+        pred = _valid_cols_predicate(struct, param)
+        collapsed_pred = re.sub(r"\s+", "", pred)
+        if collapsed_pred not in collapsed:
+            return f"requires must include {pred}"
+    return None
 
 
 def _scan_forbidden(edit_region: str) -> list[str]:
@@ -419,9 +516,29 @@ def admit_agent_runquery(
 
     violations.extend(_scan_forbidden(edit_region))
 
+    try:
+        spec_params = parse_method_spec_params(method_spec_rs)
+    except ValueError as exc:
+        violations.append(str(exc))
+        return AdmitResult(ok=False, violations=violations)
+
+    expected_call = method_spec_call(spec_params)
+
+    try:
+        fn_params = _parse_run_query_signature_params(fn_text)
+    except ValueError as exc:
+        violations.append(str(exc))
+        fn_params = None
+
+    if fn_params is not None:
+        sig_err = _signature_matches_method_spec(fn_params, spec_params)
+        if sig_err:
+            violations.append(sig_err)
+
     requires = _parse_requires_clause(fn_text)
-    if not _has_valid_cols_requires(requires):
-        violations.append("requires must include valid_cols(cols)")
+    valid_cols_err = _check_valid_cols_requires(requires, spec_params)
+    if valid_cols_err:
+        violations.append(valid_cols_err)
 
     try:
         spec_t = method_spec_type(method_spec_rs)
@@ -446,7 +563,11 @@ def admit_agent_runquery(
         violations.append("missing ensures clause")
     else:
         try:
-            relation, view_name = parse_ensures_relation(ensures)
+            relation, view_name = parse_ensures_relation(
+                ensures,
+                method_spec_params=spec_params,
+                method_spec_call=expected_call,
+            )
         except ValueError as exc:
             violations.append(str(exc))
             relation, view_name = None, None
@@ -454,7 +575,7 @@ def admit_agent_runquery(
         if relation == "direct":
             if _forbids_direct_equality(spec_t):
                 violations.append(
-                    "direct ensures res == method_spec(cols) forbidden for ghost Map/Seq<char> "
+                    f"direct ensures res == {expected_call} forbidden for ghost Map/Seq<char> "
                     "MethodSpec return; use a Trusted view"
                 )
             elif not _exec_ret_matches_spec(agent_ret, spec_t):
@@ -525,7 +646,9 @@ def admit_or_extract_legacy(
             from research_loop.method_spec_ret_type import resolve_ret_type_from_method_spec
 
             ret_type = resolve_ret_type_from_method_spec(method_spec_rs)
-        return build_exec_run_query_from_body(inner, ret_type)
+        return build_exec_run_query_from_body(
+            inner, ret_type, method_spec_rs=method_spec_rs
+        )
 
     raise ValueError(
         "runquery_agent.rs missing AGENT_EDIT_START/END or AGENT_BODY_START/END markers"

@@ -367,7 +367,11 @@ def _having_closure_types(query: SQLQuery, flat_schema: dict[str, str]) -> tuple
             spec_map_key_type(flat_schema[c]) for c in query.groupby_columns
         )
         key_ty = f"({parts})"
-    val_ty = _agg_value_type(query.agg_expr)
+    # Must match MethodSpec map value (multi-agg tuple), not singular agg_expr.
+    if query.agg_specs:
+        val_ty = _multi_agg_tuple_type(query)
+    else:
+        val_ty = _agg_value_type(query.agg_expr)
     return key_ty, val_ty
 
 

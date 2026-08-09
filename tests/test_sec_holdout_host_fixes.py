@@ -164,6 +164,7 @@ LIMIT 50"""
 
 def test_join_agent_shell_matches_method_spec_signature() -> None:
     """Join workspace shell must use Cols_<table> params, not bare Cols."""
+    from research_loop.admit_agent_runquery import admit_agent_runquery
     from research_loop.assemble_runquery import build_runquery_agent_source
 
     sql = _load_query("2")
@@ -182,3 +183,33 @@ def test_join_agent_shell_matches_method_spec_signature() -> None:
     assert "method_spec(num, sub)" in shell
     assert "valid_cols(cols)" not in shell
     assert "pub exec fn run_query(cols: &Cols)" not in shell
+    result = admit_agent_runquery(shell, method_spec_rs=spec_rs)
+    assert result.ok, result.violations
+
+
+_Q4_EXISTS_MULTI_AGG = """
+SELECT n.tag, n.version, COUNT(*) AS cnt, SUM(n.value) AS total
+FROM num n
+WHERE n.uom = 'USD' AND n.ddate BETWEEN 20230101 AND 20231231
+      AND n.value IS NOT NULL
+      AND NOT EXISTS (
+          SELECT 1 FROM pre p
+          WHERE p.tag = n.tag AND p.version = n.version AND p.adsh = n.adsh
+      )
+GROUP BY n.tag, n.version
+HAVING COUNT(*) > 10
+"""
+
+
+def test_exists_corr_string_key_and_multi_agg_having() -> None:
+    """Correlated EXISTS string keys use Seq<char>; HAVING sees multi-agg tuple."""
+    schema = {"num": SEC_SCHEMA["num"], "pre": SEC_SCHEMA["pre"]}
+    out = transpile_sql_to_verus(_Q4_EXISTS_MULTI_AGG, schema)
+    assert "outer_key: u32" not in out
+    assert "outer_key: Seq<char>" in out
+    assert re.search(
+        r"apply_having_filter\(m,\s*\|k:\s*\(Seq<char>,\s*Seq<char>\),\s*v:\s*\(u64,\s*u64\)\|",
+        out,
+    ), out[out.find("apply_having_filter") : out.find("apply_having_filter") + 200]
+    assert "v.0 > 10" in out or "(v.0 > 10)" in out
+    assert "|k: (Seq<char>, Seq<char>), v: u64|" not in out

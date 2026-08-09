@@ -69,6 +69,15 @@ def _rewrite_outer_refs_in_where(
     return out
 
 
+def _corr_key_spec_type(
+    col: str,
+    inner_schema: dict[str, str],
+    outer_schema: dict[str, str] | None = None,
+) -> str:
+    """Spec type for a correlated outer key (String cols → Seq<char>)."""
+    return spec_map_key_type(_lookup_col_type(col, inner_schema, outer_schema))
+
+
 def _correlated_param_specs(
     correlation_cols: list[str],
     inner_schema: dict[str, str],
@@ -435,6 +444,7 @@ def emit_exists_subquery_helper(
     struct_name: str = "Cols",
     valid_fn: str = "valid_cols",
     param_name: str = "cols",
+    outer_schema: dict[str, str] | None = None,
 ) -> str:
     """Emit EXISTS (or NOT EXISTS) semi-join spec helper."""
     if exists.correlated:
@@ -444,6 +454,7 @@ def emit_exists_subquery_helper(
             struct_name=struct_name,
             valid_fn=valid_fn,
             param_name=param_name,
+            outer_schema=outer_schema,
         )
     helper_name = f"exists_{exists.alias}_helper"
     spec_name = f"exists_{exists.alias}_spec"
@@ -467,16 +478,11 @@ def emit_exists_corr_subquery_helper(
     struct_name: str = "Cols",
     valid_fn: str = "valid_cols",
     param_name: str = "cols",
+    outer_schema: dict[str, str] | None = None,
 ) -> str:
     """Emit correlated EXISTS spec helper (TRUSTED nested-loop reference)."""
-    _ = inner_schema
-    key_col = exists.correlation_cols[0].lower()
-    key_ty = "u32"
-    for col, typ in inner_schema.items():
-        if col.lower() == key_col:
-            vt = col_verus_type(typ)
-            key_ty = vt if vt != "String" else "u32"
-            break
+    key_col = exists.correlation_cols[0]
+    key_ty = _corr_key_spec_type(key_col, inner_schema, outer_schema)
     spec_name = f"exists_corr_{exists.alias}_spec"
     helper_name = f"exists_corr_{exists.alias}_helper"
     helper = f"""// TRUSTED: correlated EXISTS nested-loop semi-join reference.
@@ -499,6 +505,7 @@ def emit_in_subquery_helper(
     struct_name: str = "Cols",
     valid_fn: str = "valid_cols",
     param_name: str = "cols",
+    outer_schema: dict[str, str] | None = None,
 ) -> str:
     """Emit IN (subquery) membership helper."""
     if in_spec.correlated:
@@ -508,6 +515,7 @@ def emit_in_subquery_helper(
             struct_name=struct_name,
             valid_fn=valid_fn,
             param_name=param_name,
+            outer_schema=outer_schema,
         )
     set_name = f"in_{in_spec.alias}_set"
     contains_name = f"in_{in_spec.alias}_contains"
@@ -545,18 +553,12 @@ def emit_in_corr_subquery_helper(
     struct_name: str = "Cols",
     valid_fn: str = "valid_cols",
     param_name: str = "cols",
+    outer_schema: dict[str, str] | None = None,
 ) -> str:
     """Emit correlated IN (subquery) membership helper (TRUSTED)."""
-    _ = inner_schema
-    key_col = in_spec.correlation_cols[0].lower()
-    key_ty = "u32"
-    val_ty = "u32"
-    for col, typ in inner_schema.items():
-        vt = col_verus_type(typ)
-        if col.lower() == key_col:
-            key_ty = vt if vt != "String" else "u32"
-        if col.lower() == in_spec.column.lower():
-            val_ty = vt if vt != "String" else "u32"
+    key_col = in_spec.correlation_cols[0]
+    key_ty = _corr_key_spec_type(key_col, inner_schema, outer_schema)
+    val_ty = _corr_key_spec_type(in_spec.column, inner_schema, outer_schema)
     contains_name = f"in_corr_{in_spec.alias}_contains"
     helper_name = f"in_corr_{in_spec.alias}_helper"
     helper = f"""// TRUSTED: correlated IN nested-loop membership reference.
