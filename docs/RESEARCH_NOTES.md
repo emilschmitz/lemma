@@ -15,6 +15,10 @@ Do **not** invent a large Trusted API list up front. Mine coverage gaps:
 6. Re-measure on fresh resamples until the agent-provable-in-principle rate plateaus for the workload family.
 7. **Do not** burn agent-sandbox iterations to discover the menu. Host-side: assemble + (where feasible) hand/Verus check that a body using only the new helpers can prove. Then subagents implement + unit-test thoroughly (same style as prior scaffold fixes).
 
+## Trusted usage harvest (quantitative)
+
+When `LEMMA_RESEARCH_LOG=1` or `LEMMA_EXPERIMENT=1`, every optimizer / MCP admit path records which Trusted helpers the agent body referenced vs the per-query menu in `spec.rs`. See `research_loop/trusted_usage.py`; harvest writes `logs/trusted_usage.json` and copies `trusted_menu` / `trusted_used` / `trusted_unused` into `history.json` entries for menu mining without re-parsing Rust.
+
 ## What we already did (shell layer)
 
 On SEC GenDB resamples (`queries_resample_r1`…`r4` and `queries_all`):

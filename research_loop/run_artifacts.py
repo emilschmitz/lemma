@@ -55,6 +55,9 @@ _HISTORY_OPTIONAL_KEYS = (
     "tokens_out",
     "cost_usd",
     "measure_path",
+    "trusted_menu",
+    "trusted_used",
+    "trusted_unused",
 )
 
 
@@ -227,6 +230,10 @@ class RunArtifacts:
             encoding="utf-8",
         )
         return dest
+
+    def write_trusted_usage(self, report: dict) -> Path:
+        """Overwrite latest Trusted menu/usage harvest snapshot for this run."""
+        return self.save_json("trusted_usage.json", report)
 
     def finalize(self, result: dict[str, Any]) -> None:
         self._manifest["finished_at"] = datetime.now(timezone.utc).isoformat()

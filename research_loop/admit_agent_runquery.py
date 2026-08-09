@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from research_loop.assemble_runquery import (
     AGENT_EDIT_END,
@@ -72,6 +72,54 @@ class AdmitResult:
     violations: list[str]
     run_query_fn: str | None = None
     rust_ret: str | None = None
+    trusted_menu: list[str] = field(default_factory=list)
+    trusted_used: list[str] = field(default_factory=list)
+
+
+def _trusted_usage_fields(
+    *,
+    method_spec_rs: str,
+    source: str,
+    fn_text: str | None = None,
+) -> tuple[list[str], list[str]]:
+    from research_loop.trusted_usage import (
+        agent_scan_text,
+        list_trusted_menu,
+        scan_trusted_used,
+    )
+
+    menu = list_trusted_menu(method_spec_rs)
+    if fn_text is not None:
+        scan_target = _function_body_inner(fn_text)
+    else:
+        scan_target = agent_scan_text(source)
+    used = scan_trusted_used(scan_target, menu)
+    return menu, used
+
+
+def _admit_result(
+    ok: bool,
+    violations: list[str],
+    *,
+    method_spec_rs: str,
+    source: str,
+    run_query_fn: str | None = None,
+    rust_ret: str | None = None,
+    fn_text: str | None = None,
+) -> AdmitResult:
+    menu, used = _trusted_usage_fields(
+        method_spec_rs=method_spec_rs,
+        source=source,
+        fn_text=fn_text,
+    )
+    return AdmitResult(
+        ok=ok,
+        violations=violations,
+        run_query_fn=run_query_fn,
+        rust_ret=rust_ret,
+        trusted_menu=menu,
+        trusted_used=used,
+    )
 
 
 def method_spec_type(spec_rs: str) -> str:
@@ -488,12 +536,18 @@ def admit_agent_runquery(
 ) -> AdmitResult:
     """Admit agent-edited run_query; enforce contract ≡ MethodSpec and no trust expansion."""
     violations: list[str] = []
+    fn_text: str | None = None
 
     if expected_fingerprint is not None:
         try:
             actual = host_edit_fingerprint(source)
         except ValueError as exc:
-            return AdmitResult(ok=False, violations=[str(exc)])
+            return _admit_result(
+                False,
+                [str(exc)],
+                method_spec_rs=method_spec_rs,
+                source=source,
+            )
         if actual != expected_fingerprint.strip():
             violations.append(
                 "runquery_agent.rs shell tampered outside AGENT_EDIT markers "
@@ -503,13 +557,23 @@ def admit_agent_runquery(
     try:
         edit_region = extract_agent_edit_region(source)
     except ValueError as exc:
-        return AdmitResult(ok=False, violations=[str(exc)])
+        return _admit_result(
+            False,
+            [str(exc)],
+            method_spec_rs=method_spec_rs,
+            source=source,
+        )
 
     try:
         fn_text = parse_run_query_fn(edit_region)
     except ValueError as exc:
         violations.append(str(exc))
-        return AdmitResult(ok=False, violations=violations)
+        return _admit_result(
+            False,
+            violations,
+            method_spec_rs=method_spec_rs,
+            source=source,
+        )
 
     if "#[verifier::external_body]" in fn_text.split("{", 1)[0]:
         violations.append("forbidden #[verifier::external_body] on run_query")
@@ -520,7 +584,13 @@ def admit_agent_runquery(
         spec_params = parse_method_spec_params(method_spec_rs)
     except ValueError as exc:
         violations.append(str(exc))
-        return AdmitResult(ok=False, violations=violations)
+        return _admit_result(
+            False,
+            violations,
+            method_spec_rs=method_spec_rs,
+            source=source,
+            fn_text=fn_text,
+        )
 
     expected_call = method_spec_call(spec_params)
 
@@ -544,13 +614,25 @@ def admit_agent_runquery(
         spec_t = method_spec_type(method_spec_rs)
     except ValueError as exc:
         violations.append(str(exc))
-        return AdmitResult(ok=False, violations=violations)
+        return _admit_result(
+            False,
+            violations,
+            method_spec_rs=method_spec_rs,
+            source=source,
+            fn_text=fn_text,
+        )
 
     try:
         agent_ret = _parse_return_type(fn_text)
     except ValueError as exc:
         violations.append(str(exc))
-        return AdmitResult(ok=False, violations=violations)
+        return _admit_result(
+            False,
+            violations,
+            method_spec_rs=method_spec_rs,
+            source=source,
+            fn_text=fn_text,
+        )
 
     if normalize_rust_type(agent_ret).startswith("Map"):
         violations.append(
@@ -612,12 +694,21 @@ def admit_agent_runquery(
         violations.append("run_query body has no executable statements (comments only)")
 
     if violations:
-        return AdmitResult(ok=False, violations=violations)
-    return AdmitResult(
-        ok=True,
-        violations=[],
+        return _admit_result(
+            False,
+            violations,
+            method_spec_rs=method_spec_rs,
+            source=source,
+            fn_text=fn_text,
+        )
+    return _admit_result(
+        True,
+        [],
+        method_spec_rs=method_spec_rs,
+        source=source,
         run_query_fn=fn_text,
         rust_ret=admitted_rust_ret,
+        fn_text=fn_text,
     )
 
 
@@ -662,7 +753,7 @@ def admit_with_rust_ret(
     expected_fingerprint: str | None = None,
 ) -> tuple[str, str | None]:
     """Admit AGENT_EDIT source; return ``(run_query_fn, admitted_rust_ret)``."""
-    result = admit_agent_runquery(
+    result, _report = admit_agent_runquery_with_usage(
         source,
         method_spec_rs=method_spec_rs,
         expected_fingerprint=expected_fingerprint,
@@ -671,6 +762,34 @@ def admit_with_rust_ret(
         raise ValueError("; ".join(result.violations))
     assert result.run_query_fn is not None
     return result.run_query_fn, result.rust_ret
+
+
+def admit_agent_runquery_with_usage(
+    source: str,
+    *,
+    method_spec_rs: str,
+    expected_fingerprint: str | None = None,
+) -> tuple[AdmitResult, dict]:
+    """Admit agent source; return result plus harvest ``trusted_usage_report`` dict."""
+    from research_loop.trusted_usage import trusted_usage_report
+
+    result = admit_agent_runquery(
+        source,
+        method_spec_rs=method_spec_rs,
+        expected_fingerprint=expected_fingerprint,
+    )
+    report = trusted_usage_report(spec_rs=method_spec_rs, agent_source_or_fn=source)
+    if result.trusted_menu:
+        report["trusted_menu"] = result.trusted_menu
+    if result.trusted_used is not None:
+        report["trusted_used"] = result.trusted_used
+    report["trusted_unused"] = sorted(
+        set(report["trusted_menu"]) - set(report["trusted_used"])
+    )
+    report["trusted_menu_count"] = len(report["trusted_menu"])
+    report["trusted_used_count"] = len(report["trusted_used"])
+    report["trusted_unused_count"] = len(report["trusted_unused"])
+    return result, report
 
 
 def read_expected_fingerprint(agent_path) -> str | None:

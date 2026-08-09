@@ -97,6 +97,29 @@ def _history_entry(
     return entry
 
 
+def _trusted_usage_extra(
+    *,
+    agent_body_path: Path,
+    spec_rs: str,
+    run: RunArtifacts | None,
+) -> dict:
+    """Harvest Trusted menu/usage for history + ``logs/trusted_usage.json``."""
+    if not agent_body_path.is_file():
+        return {}
+    from research_loop.trusted_usage import (
+        trusted_usage_report,
+        write_trusted_usage_artifact,
+    )
+
+    report = trusted_usage_report(spec_rs, agent_body_path.read_text(encoding="utf-8"))
+    write_trusted_usage_artifact(report, run=run)
+    return {
+        "trusted_menu": report["trusted_menu"],
+        "trusted_used": report["trusted_used"],
+        "trusted_unused": report["trusted_unused"],
+    }
+
+
 def _maybe_merge_lease_metrics(metrics: dict) -> dict:
     try:
         from db_extension.agent.lease_measure import (
@@ -469,6 +492,11 @@ def run_optimization_loop(
                 agent_gen_wall_s += iter_agent_wall_s
 
         # Step 3: Verify and compile and benchmark (skip if OpenRouter marked a run)
+        usage_extra = _trusted_usage_extra(
+            agent_body_path=agent_body_path,
+            spec_rs=agent_spec,
+            run=run,
+        )
         use_marked_metrics = (
             not use_mock
             and agent_meta is not None
@@ -506,7 +534,7 @@ def run_optimization_loop(
                 agent_meta=agent_meta,
                 wall_s=iter_agent_wall_s or None,
                 agent_gen_wall_s=agent_gen_wall_s,
-                extra={"submitted_run_id": agent_meta.get("submitted_run_id")},
+                extra={"submitted_run_id": agent_meta.get("submitted_run_id"), **usage_extra},
             ))
             _save_harness_metrics(iteration, metrics)
             _snapshot_history()
@@ -590,6 +618,7 @@ def run_optimization_loop(
                 agent_meta=agent_meta if not use_mock else None,
                 wall_s=iter_agent_wall_s or None,
                 agent_gen_wall_s=agent_gen_wall_s,
+                extra=usage_extra or None,
             ))
             _save_harness_metrics(iteration, metrics)
             _snapshot_history()
@@ -606,6 +635,7 @@ def run_optimization_loop(
                 error="Harness timed out",
                 wall_s=iter_agent_wall_s or None,
                 agent_gen_wall_s=agent_gen_wall_s,
+                extra=usage_extra or None,
             ))
             _snapshot_history()
 

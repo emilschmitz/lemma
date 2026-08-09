@@ -190,6 +190,30 @@ def _invoke_harness(
     return metrics, returncode
 
 
+def _trusted_usage_payload(*, raw: str, spec_rs: str | None, ws: Path | None) -> dict:
+    from research_loop.trusted_usage import (
+        trusted_usage_report,
+        write_trusted_usage_artifact,
+    )
+
+    if not spec_rs:
+        spec_path = (ws or workspace()) / "context" / "ro" / "spec.rs"
+        if spec_path.is_file():
+            spec_rs = spec_path.read_text(encoding="utf-8")
+    if not spec_rs:
+        return {}
+    report = trusted_usage_report(spec_rs, raw)
+    write_trusted_usage_artifact(report)
+    return {
+        "trusted_menu": report["trusted_menu"],
+        "trusted_used": report["trusted_used"],
+        "trusted_unused": report["trusted_unused"],
+        "trusted_menu_count": report["trusted_menu_count"],
+        "trusted_used_count": report["trusted_used_count"],
+        "trusted_unused_count": report["trusted_unused_count"],
+    }
+
+
 def validate_solution(
     *,
     path: str | None = None,
@@ -205,6 +229,10 @@ def validate_solution(
         return {"ok": False, "phase": "extract", "errors": [str(exc)], "runquery_path": None}
 
     raw = body if body is not None else source.read_text(encoding="utf-8")
+    spec_path = (ws or workspace()) / "context" / "ro" / "spec.rs"
+    spec_rs = spec_path.read_text(encoding="utf-8") if spec_path.is_file() else None
+    usage = _trusted_usage_payload(raw=raw, spec_rs=spec_rs, ws=ws)
+
     if _is_host_standin_runquery(raw):
         return {
             "ok": True,
@@ -213,6 +241,7 @@ def validate_solution(
             "runquery_path": str(source),
             "body_chars": len(raw),
             "source_path": str(source),
+            **usage,
         }
 
     if "AGENT_EDIT_START" in raw:
@@ -223,6 +252,7 @@ def validate_solution(
             "runquery_path": str(source),
             "body_chars": len(inner),
             "source_path": str(source),
+            **usage,
         }
 
     errors = validate_runquery_body(inner)
@@ -234,6 +264,7 @@ def validate_solution(
             "runquery_path": None,
             "body_chars": len(inner),
             "source_path": str(source),
+            **usage,
         }
 
     rq_path = _write_marked_runquery(inner, ws)
@@ -244,6 +275,7 @@ def validate_solution(
         "runquery_path": str(rq_path),
         "body_chars": len(inner),
         "source_path": str(source),
+        **usage,
     }
 
 

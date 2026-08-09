@@ -96,3 +96,6 @@ Capability reference: `research_loop/bench_standins/sec_q1_runquery.py` (Verus-v
 `admit_agent_runquery.trusted_view_menu` merges views from `TRUSTED_FAMILY_MENU`
 when a family's `spec_ret` normalizes equal to the query MethodSpec return type
 T (via `bridge_for_family`). Views are deduplicated by name.
+
+Admission and research harvests also record **which menu helpers the agent body used**
+(`research_loop/trusted_usage.py` → `logs/trusted_usage.json`).
