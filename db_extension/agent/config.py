@@ -45,7 +45,7 @@ class AgentFlags:
     agent_submit_ends_session: bool = False
     agent_image: str = "lemma-agent:latest"
     agent_max_turns: int = 40
-    # Host MCP (outside sandbox). Empty = volume-flag submit only.
+    # Optional HTTP MCP URL (unset when empty). Measure/submit require host Unix-socket MCP.
     agent_mcp_url: str = ""
 
     @classmethod

@@ -119,11 +119,13 @@ def _build_system_prompt(flags: AgentFlags) -> str:
         submit_ends=flags.agent_submit_ends_session,
     )
     submit_line = (
-        "When ready, call `submit_runquery(run_id=...)` — that **ends the session** (host-enforced). "
-        "Only submit when you expect no further improvement."
+        "Call `submit_runquery(run_id=...)` on a **verified** run that is **better than** your "
+        "current official mark (or your first verified success) — that **ends the session** "
+        "(host-enforced)."
         if flags.agent_submit_ends_session
-        else "When you have a good run, call `submit_runquery(run_id=...)` to mark it official "
-        "(submit does **not** end the session). If you expect no further improvement, stop; "
+        else "Call `submit_runquery(run_id=...)` on a **verified** run that is **better than** "
+        "your current official mark (or your first verified success); re-submit when you beat it. "
+        "Submit does **not** end the session. If you expect no further improvement, stop; "
         "otherwise keep running until the wall-clock budget."
     )
     return f"""You are Lemma's RunQuery optimizer agent.
@@ -224,7 +226,7 @@ def _build_user_prompt(
 - `/workspace/runquery_agent.rs` is a host-owned Verus shell (SQL is in the file header + `query.sql`); edit only the body between AGENT_BODY markers.
 - MethodSpec remains in `/context/ro/spec.rs` (not inlined in the agent file).
 - Call `run_runquery` (omit `dataset_size` for host default) to verify and measure on the host.
-- Call `submit_runquery(run_id=...)` to mark your official run when ready.
+- Call `submit_runquery(run_id=...)` when a run is verified and beats your current official mark (re-submit on improvements).
 - Time left: `session_status` or `python3 check_session_time`.
 {feedback}{spec_section}
 Begin by reading the spec excerpt and `/context/ro/data_profile.md`, then implement the run_query body.

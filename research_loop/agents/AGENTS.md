@@ -1,5 +1,11 @@
 # Custom SQL agent pipeline
 
+## No fallbacks without explicit approval
+
+**Never** add a fallback or silent alternate path (including prompt text like “if MCP is
+down, just save the file”) without Emil’s **explicit approval** of that specific
+fallback — **especially** for scientific / `LEMMA_EXPERIMENT` runs. Prefer loud failure.
+
 The research loop contract for ad-hoc Lemma Basic SQL is:
 
 **SQL → MethodSpec (transpiler) → agent `run_query` → verify → compile → run**

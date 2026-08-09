@@ -193,7 +193,7 @@ shell outside the markers fails admission.
    - `run_runquery(path="runquery_agent.rs")` — host verify + **speed** metrics (`run_id`); omit `dataset_size` for host default
    - `submit_runquery(run_id=...)` — mark that run as official
    - `session_status` — wall-clock budget / time remaining
-5. Saving `{body_path}` alone is a fallback only if MCP is truly down — prefer `run_runquery` then `submit_runquery`.
+5. Prefer `run_runquery` then `submit_runquery` when the run is verified and beats your current official mark.
 6. Optional: `python3 check_session_time` in the workspace to print remaining seconds.
 
 ## FORBIDDEN
@@ -211,7 +211,7 @@ shell outside the markers fails admission.
 ## Workspace
 - Edit `{body_path}` between the AGENT_BODY_START/END markers.
 - Call `run_runquery(path="runquery_agent.rs")` (omit `dataset_size` unless iterating on a smaller host-allowed limit) to verify and measure.
-- Call `submit_runquery(run_id=...)` with the `run_id` from that measure to mark your official run.
+- Call `submit_runquery(run_id=...)` with a `run_id` that is **verified** and **better than** your current official mark (or first verified success); re-submit when you beat it.
 {feedback}{spec_section}
 Begin by reading the spec excerpt and `{ctx}/data_profile.md`, then implement the run_query body.
 """

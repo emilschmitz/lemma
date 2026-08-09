@@ -180,22 +180,27 @@ def session_budget_prompt_section(*, budget_sec: int, submit_ends: bool) -> str:
         f"(or MCP `session_status`). MCP validate/run/submit responses also include "
         f"`session.remaining_sec`."
     )
+    submit_when = (
+        "Call `submit_runquery(run_id=...)` when a run is **verified** and **faster than** "
+        "your current official mark (or is your first verified success). Re-submit whenever "
+        "you beat the marked run."
+    )
     stop = (
-        "If you expect **no further improvement** (latency / proof), **stop** "
-        "(exit the agent). Otherwise **keep running** and try again within the budget."
+        "If you expect **no further improvement**, **stop** (exit). Otherwise **keep running** "
+        "within the budget."
     )
     if submit_ends:
         mode = (
-            f"**Submit ends the session** (`AGENT_SUBMIT_ENDS_SESSION=1`): when you call "
-            f"`submit_runquery(run_id=...)`, the host **ends this session immediately** "
-            f"and locks that run as official. Wall-clock budget: **{budget_sec} seconds**. "
-            f"Only submit when you are ready to stop; until then keep iterating."
+            f"**Submit ends the session** (`AGENT_SUBMIT_ENDS_SESSION=1`): a successful "
+            f"`submit_runquery` locks that run as official and the host **ends the session**. "
+            f"Wall-clock budget: **{budget_sec} seconds**. {submit_when} Because submit ends "
+            f"the session, only submit when that best is what you want locked. Until then keep "
+            f"iterating."
         )
     else:
         mode = (
             f"**Submit does not end the session** (`AGENT_SUBMIT_ENDS_SESSION=0`): "
-            f"`submit_runquery` only marks the official `run_id` (you may re-submit a better "
-            f"run later). Wall-clock budget: **{budget_sec} seconds** (host kills the session "
-            f"when it expires). {stop}"
+            f"Wall-clock budget: **{budget_sec} seconds** (host ends the session when it "
+            f"expires). {submit_when} {stop}"
         )
     return f"## Session budget\n{mode}\n{check}\n"

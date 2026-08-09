@@ -84,7 +84,7 @@ def resolve_schema_for_sql(
     *,
     catalog: DatabaseCatalog | None = None,
 ) -> dict:
-    """Resolve flat or multi-table schema for SQL (explicit > env > catalog > SSB fallback)."""
+    """Resolve flat or multi-table schema for SQL (explicit > env > catalog)."""
     if schema is not None:
         return _normalize_schema_dict(schema)
 
@@ -100,7 +100,9 @@ def resolve_schema_for_sql(
             "Pass schema= to run_optimization_loop or set LEMMA_SCHEMA_JSON."
         )
 
-    cat = catalog or DatabaseCatalog()
+    cat = catalog or DatabaseCatalog(
+        (os.environ.get("LEMMA_DUCKDB_PATH") or "").strip() or None
+    )
     if len(tables) == 1:
         table_schema = cat.get_table_schema(tables[0])
         if table_schema:
@@ -116,11 +118,6 @@ def resolve_schema_for_sql(
         if len(tables) == 1:
             return multi[tables[0]]
         return multi
-
-    if looks_like_ssb_sql(sql):
-        from research_loop.ssb_workload import schema as ssb_schema
-
-        return _normalize_schema_dict(dict(ssb_schema))
 
     raise ValueError(
         f"Cannot resolve schema for table(s) {tables!r}. "

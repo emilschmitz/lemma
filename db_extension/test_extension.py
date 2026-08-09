@@ -8,13 +8,20 @@ from research_loop.ssb_workload import queries
 
 
 def test_database_catalog():
+    import duckdb
+
     catalog = DatabaseCatalog()
+    catalog.con = duckdb.connect(":memory:")
+    catalog.con.execute(
+        "CREATE TABLE lineorder_flat ("
+        "LO_ORDERDATE INTEGER, LO_ORDERPRIORITY VARCHAR, LO_QUANTITY INTEGER)"
+    )
     table_schema = catalog.get_table_schema("lineorder_flat")
     assert isinstance(table_schema, dict)
     assert "LO_ORDERDATE" in table_schema
-    assert table_schema["LO_ORDERDATE"].lower() in ("int", "integer")
+    assert table_schema["LO_ORDERDATE"] == "INTEGER"
     assert "LO_ORDERPRIORITY" in table_schema
-    assert table_schema["LO_ORDERPRIORITY"].lower() in ("string", "varchar")
+    assert table_schema["LO_ORDERPRIORITY"] == "VARCHAR"
 
     pks = catalog.get_primary_keys("lineorder_flat")
     assert isinstance(pks, list)

@@ -179,13 +179,6 @@ def _build_ssb_spec(sql_tables: list[str]) -> WorkloadSpec:
     primary = "lineorder_flat"
     tables = {primary: flat}
     schema = _schema_for_tables(tables, sql_tables=[primary])
-    if not schema and flat.is_file():
-        from research_loop.ssb_workload import schema as ssb_schema, fallback_dtypes
-
-        schema = {
-            col: (fallback_dtypes.get(col, "INTEGER") if t == "int" else "VARCHAR")
-            for col, t in ssb_schema.items()
-        }
     return WorkloadSpec(
         name="ssb",
         db_path=session_db_path(),
@@ -236,10 +229,6 @@ def _build_tpch_spec(sql_tables: list[str]) -> WorkloadSpec:
         if p is not None:
             tables[primary] = p
     schema = _schema_for_tables(tables, sql_tables=sql_tables or list(tables))
-    if not schema and len(sql_tables) == 1 and sql_tables[0].lower() == "lineitem":
-        from research_loop.bench_standins.tpch_runqueries import lineitem_schema
-
-        schema = dict(lineitem_schema)
     return WorkloadSpec(
         name="tpch",
         db_path=session_db_path(),

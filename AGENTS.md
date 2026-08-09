@@ -1,5 +1,18 @@
 # Lemma agent & engine rules
 
+## No fallbacks without explicit approval
+
+**Never** add a fallback, silent alternate path, soft degrade, “if X is down do Y”,
+or any other substitute that can look like success when the intended path failed —
+**especially for scientific / `LEMMA_EXPERIMENT` runs** — unless Emil has **explicitly
+approved that specific fallback** in the conversation (or an approved written design).
+
+- Prefer **loud failure** over a clever backup.
+- Do not invent MCP-down, DuckDB, mock-agent, dirty-git, missing-tool, or “save the file
+  and hope” escapes in prompts, harnesses, or product code without that approval.
+- Existing forbidden mocks in the pipeline contract below still apply; this rule is
+  broader: **no new fallbacks of any kind without asking first.**
+
 ## Pipeline contract (non-negotiable)
 
 ```

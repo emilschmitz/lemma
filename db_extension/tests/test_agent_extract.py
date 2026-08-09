@@ -1,15 +1,10 @@
-"""Tests for marker extraction and fallback (Verus)."""
+"""Tests for marker extraction (Verus AGENT_BODY markers only)."""
 from __future__ import annotations
 
 import pytest
 
-from db_extension.agent.extract import (
-    AGENT_END,
-    AGENT_START,
-    extract_marked_body,
-    wrap_body_with_markers,
-)
-from research_loop.assemble_runquery import write_runquery_agent_file
+from db_extension.agent.extract import extract_marked_body, wrap_body_with_markers
+from research_loop.assemble_runquery import AGENT_END, AGENT_START, write_runquery_agent_file
 
 
 def test_extract_marked_body_verus():
@@ -30,10 +25,10 @@ def test_wrap_body_with_markers_roundtrip(tmp_path):
     assert "let x = 1" in body
 
 
-def test_fallback_brace_extraction():
+def test_rejects_missing_markers():
     raw = "{ let i = 0; }"
-    body = extract_marked_body(raw)
-    assert body.strip() == "let i = 0;"
+    with pytest.raises(ValueError, match="missing AGENT_BODY"):
+        extract_marked_body(raw)
 
 
 def test_rejects_forbidden_construct():

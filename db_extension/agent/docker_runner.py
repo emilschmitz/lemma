@@ -72,6 +72,11 @@ def start_tool_container(
     mcp_sock: Path | None = None,
     query_id: int | None = None,
 ) -> ContainerSession:
+    if mcp_sock is None:
+        raise RuntimeError(
+            "Host MCP Unix socket path is required for tool container measure/submit tools. "
+            "Start McpSocketServer and pass mcp_sock= to start_tool_container."
+        )
     ensure_image(flags.agent_image)
     workspace = workspace.resolve()
     context_ro = context_ro.resolve()
@@ -102,10 +107,9 @@ def start_tool_container(
         cmd.extend(["-v", f"{data_dir.resolve()}:/data:ro"])
     if data_file_name:
         cmd.extend(["-e", f"AGENT_DATA_FILE={data_file_name}"])
-    if mcp_sock is not None:
-        sock = mcp_sock.resolve()
-        cmd.extend(["-v", f"{sock}:/lemma-mcp.sock"])
-        cmd.extend(["-e", "LEMMA_MCP_SOCK=/lemma-mcp.sock"])
+    sock = mcp_sock.resolve()
+    cmd.extend(["-v", f"{sock}:/lemma-mcp.sock"])
+    cmd.extend(["-e", "LEMMA_MCP_SOCK=/lemma-mcp.sock"])
     if query_id is not None:
         cmd.extend(["-e", f"LEMMA_QUERY_ID={query_id}"])
     cmd.append(flags.agent_image)

@@ -94,7 +94,7 @@ def _read_workspace_sql_schema(ws: Path) -> tuple[str, dict]:
 
 def _is_host_standin_runquery(text: str) -> bool:
     """Proved bench stand-in: full ``pub exec fn run_query`` without agent markers."""
-    if "AGENT_BODY_START" in text or "<<<LEMMA_RUNQUERY_BODY>>>" in text:
+    if "AGENT_BODY_START" in text:
         return False
     return bool(
         re.search(r"pub\s+(?:exec\s+)?fn\s+run_query\s*\(", text)
@@ -114,7 +114,7 @@ def _read_body(*, path: str | None, body: str | None, ws: Path | None = None) ->
     if not target.is_file():
         raise FileNotFoundError(f"file not found: {target}")
     text = target.read_text(encoding="utf-8")
-    if "AGENT_BODY_START" in text or "<<<LEMMA_RUNQUERY_BODY>>>" in text:
+    if "AGENT_BODY_START" in text:
         inner = extract_marked_body(text, agent_path=target)
     else:
         inner = text

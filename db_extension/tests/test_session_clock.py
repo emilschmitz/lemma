@@ -111,7 +111,7 @@ def test_session_budget_prompt_section_submit_ends_on() -> None:
     assert "600" in text
     assert "Submit ends the session" in text
     assert "AGENT_SUBMIT_ENDS_SESSION=1" in text
-    assert "keep iterating" in text
+    assert "faster than" in text
     assert "check_session_time" in text
     assert "session_status" in text
 
@@ -121,6 +121,7 @@ def test_session_budget_prompt_section_submit_ends_off() -> None:
     assert "300" in text
     assert "Submit does not end the session" in text
     assert "AGENT_SUBMIT_ENDS_SESSION=0" in text
+    assert "faster than" in text
     assert "no further improvement" in text
     assert "keep running" in text
     assert "check_session_time" in text

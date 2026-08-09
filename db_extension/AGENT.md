@@ -8,9 +8,9 @@ used by the default optimizer.
 ## Schema
 
 Pass an explicit schema dict to `run_optimization_loop(..., schema={...})`, set
-`LEMMA_SCHEMA_JSON=/path/to/schema.json`, or rely on `DatabaseCatalog` (DuckDB /
-`lineorder_flat` bootstrap). Unknown tables fail loudly — SSB schema is only a fallback when
-SQL clearly targets `lineorder_flat`.
+`LEMMA_SCHEMA_JSON=/path/to/schema.json`, or use `DatabaseCatalog` against the DuckDB
+file that holds the workload tables (`LEMMA_DUCKDB_PATH`). Unknown tables fail loudly —
+there is no hardcoded SSB/TPCH schema invent path.
 
 ## Architecture
 
