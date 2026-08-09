@@ -701,6 +701,26 @@ def _emit_join_multi_agg(
                 f"else {{ prev.{pos}.insert({val_expr}, true) }};",
             ))
             project_parts.append(f"s{pos}.dom().len() as u64")
+        elif spec.agg_type == "MIN":
+            state_types.append("u64")
+            state_defaults.append("u64::MAX")
+            term = _agg_term_expr(spec, query, slots, schemas_by_table, derived_by_alias)
+            update_stmts.append((
+                pos,
+                f"let t{pos} = {term};\n"
+                f"            let s{pos} = if t{pos} < prev.{pos} {{ t{pos} }} else {{ prev.{pos} }};",
+            ))
+            project_parts.append(f"s{pos}")
+        elif spec.agg_type == "MAX":
+            state_types.append("u64")
+            state_defaults.append("0u64")
+            term = _agg_term_expr(spec, query, slots, schemas_by_table, derived_by_alias)
+            update_stmts.append((
+                pos,
+                f"let t{pos} = {term};\n"
+                f"            let s{pos} = if t{pos} > prev.{pos} {{ t{pos} }} else {{ prev.{pos} }};",
+            ))
+            project_parts.append(f"s{pos}")
         else:
             raise UnsupportedContractError(
                 f"multi-agg join unsupported aggregate {spec.agg_type!r}"
@@ -750,7 +770,7 @@ def _emit_join_multi_agg(
 
     val_types: list[str] = []
     for spec in query.agg_specs:
-        if spec.agg_type in ("SUM", "COUNT", "COUNT_DISTINCT", "AVG"):
+        if spec.agg_type in ("SUM", "COUNT", "COUNT_DISTINCT", "AVG", "MIN", "MAX"):
             from .parse_sql import _agg_value_type
             val_types.append(_agg_value_type(spec.agg_expr))
         else:
@@ -790,7 +810,7 @@ def _having_closure_types(query: SQLQuery, flat_schema: dict[str, str]) -> tuple
         key_ty = f"({parts})"
     val_types: list[str] = []
     for spec in query.agg_specs:
-        if spec.agg_type in ("SUM", "COUNT", "COUNT_DISTINCT", "AVG"):
+        if spec.agg_type in ("SUM", "COUNT", "COUNT_DISTINCT", "AVG", "MIN", "MAX"):
             val_types.append(_agg_value_type(spec.agg_expr))
         else:
             val_types.append("u64")
@@ -802,7 +822,7 @@ def _multi_agg_tuple_type(query: SQLQuery) -> str:
     from .parse_sql import _agg_value_type
     types: list[str] = []
     for spec in query.agg_specs:
-        if spec.agg_type in ("SUM", "COUNT", "COUNT_DISTINCT", "AVG"):
+        if spec.agg_type in ("SUM", "COUNT", "COUNT_DISTINCT", "AVG", "MIN", "MAX"):
             types.append(_agg_value_type(spec.agg_expr))
         else:
             types.append("u64")

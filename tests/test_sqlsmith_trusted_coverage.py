@@ -1,4 +1,7 @@
-"""Smoke tests for sqlsmith trusted shell coverage harness."""
+"""Smoke tests for sqlsmith trusted shell coverage harness.
+
+``ok_shell`` is transpile + ret-type + shell + admission only — not Verus prove.
+"""
 
 from __future__ import annotations
 
@@ -65,5 +68,5 @@ def test_run_coverage_counts() -> None:
     results, summary, buckets = run_coverage(queries, SEC_SCHEMA)
     assert len(results) == 1
     assert summary["counts"]["ok_shell"] == 1
-    assert summary["pass_rate"] == 1.0
+    assert summary["shell_pass_rate"] == 1.0
     assert buckets == []

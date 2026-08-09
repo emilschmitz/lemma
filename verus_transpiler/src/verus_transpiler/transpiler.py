@@ -643,7 +643,7 @@ def _emit_union_helpers(query: SQLQuery, flat_schema: dict[str, str]) -> tuple[s
 def _multi_agg_val_types(query: SQLQuery) -> list[str]:
     types: list[str] = []
     for spec in query.agg_specs:
-        if spec.agg_type in ("SUM", "COUNT", "COUNT_DISTINCT", "AVG"):
+        if spec.agg_type in ("SUM", "COUNT", "COUNT_DISTINCT", "AVG", "MIN", "MAX"):
             types.append(_agg_value_type(spec.agg_expr))
         else:
             types.append("u64")

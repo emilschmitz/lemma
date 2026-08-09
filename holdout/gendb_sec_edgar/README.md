@@ -25,6 +25,9 @@ type). The agent shell still fails until Trusted/shell wiring exists for that ty
 — mostly **multi-agg** maps (tuple values) and **projection** `Seq` of rows, not
 SQL nicknames. See [`docs/METHODSPEC_SHELL_TRUSTED_GAP.md`](../../docs/METHODSPEC_SHELL_TRUSTED_GAP.md).
 
+Shell-pipeline coverage (transpile → ret type → agent shell → admission; **not**
+end-to-end Verus verify): `uv run python research_loop/scripts/sqlsmith_trusted_coverage.py --sql-file holdout/gendb_sec_edgar/queries_all.sql`.
+
 ## Layout
 
 | File | Role |

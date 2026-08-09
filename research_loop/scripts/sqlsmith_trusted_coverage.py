@@ -1,8 +1,21 @@
 #!/usr/bin/env python3
 """Coverage harness for GenDB-style resampled SQL (SQLSmith stand-in).
 
-For each query: transpile → resolve MethodSpec return type → agent shell → assemble.
-Classifies shell support without Verus verify/compile (no whole-query TRUSTED mocks).
+For each query: transpile → resolve MethodSpec return type → agent shell → admission
+→ stitch a full program (``assemble_verified_*``). **Does not run Verus
+verify/compile** and does not prove ``run_query ≡ method_spec``.
+
+Status taxonomy:
+
+- ``ok_shell`` — transpile, ret-type resolution, host ``run_query`` shell template,
+  admission lint, and program assembly all succeed (default stub body; no agent edit).
+- ``transpile_fail`` — ``UnsupportedContractError`` or ``transpile_sql_to_verus`` failure
+  (includes pre-transpile ``UnsupportedContractError`` from parse/projection).
+- ``shell_fail`` — transpile OK but ret-type, shell build, admission, or assembly failed.
+- ``other`` — pre-transpile parse/projection errors that are not ``UnsupportedContractError``.
+
+``pass_rate`` / ``shell_pass_rate`` in the JSON report = ``ok_shell / total`` (shell
+pipeline only; **not** end-to-end verified-query success).
 
 Usage::
 
@@ -177,6 +190,7 @@ def _assemble_program(
 
 
 def classify_query(sql: str, qid: str, schema: dict) -> QueryResult:
+    """Classify one query through the shell pipeline (no Verus prove/compile)."""
     preview = " ".join(sql.split())[:120]
     try:
         from verus_transpiler.column_projection import (
@@ -281,7 +295,7 @@ def run_coverage(
     counts = Counter(r.status for r in results)
     total = len(results)
     ok = counts.get("ok_shell", 0)
-    pass_rate = ok / total if total else 0.0
+    shell_pass_rate = ok / total if total else 0.0
 
     fail_reasons = Counter(
         normalize_failure_reason(r.reason)
@@ -301,7 +315,7 @@ def run_coverage(
             "shell_fail": counts.get("shell_fail", 0),
             "other": counts.get("other", 0),
         },
-        "pass_rate": pass_rate,
+        "shell_pass_rate": shell_pass_rate,
         "failure_buckets": failure_buckets,
     }
     return results, summary, failure_buckets
@@ -350,9 +364,12 @@ def print_summary(report: dict[str, object], output_path: Path) -> None:
     counts = report["counts"]
     total = report["total"]
     ok = counts["ok_shell"]
-    pass_pct = 100.0 * report["pass_rate"]
+    shell_pct = 100.0 * report["shell_pass_rate"]
     print(f"\nSQLSmith trusted shell coverage ({report['source']})")
-    print(f"  total={total} ok_shell={ok} pass_rate={pass_pct:.1f}%")
+    print(
+        f"  total={total} ok_shell={ok} shell_pass_rate={shell_pct:.1f}% "
+        "(transpile+shell+admission; not Verus verify)"
+    )
     print(
         f"  transpile_fail={counts['transpile_fail']} "
         f"shell_fail={counts['shell_fail']} other={counts['other']}"
@@ -367,7 +384,10 @@ def print_summary(report: dict[str, object], output_path: Path) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Measure transpile + agent shell coverage for GenDB-style SQL",
+        description=(
+            "Measure transpile + agent shell + admission coverage for GenDB-style SQL "
+            "(no Verus verify/compile)"
+        ),
     )
     parser.add_argument(
         "--sql-file",
