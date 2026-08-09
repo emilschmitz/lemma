@@ -563,7 +563,7 @@ def emit_scalar_subquery_helper(
                 correlation_cols=[],
             )
 
-        map_helpers, map_call, map_ret = emit_derived_grouped_inner_spec(
+        map_helpers, map_call, _map_ret = emit_derived_grouped_inner_spec(
             prefix, inner, inner_schema, struct_name=struct_name,
         )
         if valid_fn != "valid_cols":
