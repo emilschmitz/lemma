@@ -9,7 +9,9 @@ Registry: `research_loop/trusted_families.py` (`TRUSTED_FAMILY_MENU`).
 
 **Nested `Map` return types are intentionally unsupported.** COUNT DISTINCT and
 similar queries use flat projected `u64` or `Seq<…>` families instead of nested
-maps.
+maps. MethodSpec helper state may still use `Map<K, bool>` for distinct keys;
+agents prove exec `HashSet` updates via TRUSTED `hashset_*_view` + `set_insert_*`
+(emitted alongside multi-agg map families in agent-visible spec).
 
 ## Testing policy
 
@@ -53,6 +55,22 @@ Parametrized tests: `tests/test_trusted_families.py`.
 | `seq_str_str_u64` | seq | `Seq<(Seq<char>, Seq<char>, u64)>` | Two-string + u64 projection row |
 | `seq_u32_str_u64` | seq | `Seq<(u32, Seq<char>, u64)>` | u32 + string + u64 projection row |
 | `seq_str_str_u32_u64` | seq | `Seq<(Seq<char>, Seq<char>, u32, u64)>` | Two-string + u32 + u64 projection row |
+
+## Distinct-set helpers (multi-agg companion)
+
+When the shell ret_type is a projected multi-agg map (`map_*__u64_…` keys),
+`prepare_agent_visible_spec` also emits:
+
+| helper | exec | spec view |
+|--------|------|-----------|
+| `hashset_str_view` | `HashSet<String>` | `Map<Seq<char>, bool>` |
+| `set_new_str` / `set_insert_str` | string keys | membership + dom size on insert |
+| `hashset_u32_view` | `HashSet<u32>` | `Map<u32, bool>` |
+| `set_new_u32` / `set_insert_u32` | u32 keys | same contract |
+
+`set_insert_*` returns `is_new`; when true, `dom().len()` increases by 1. Use
+with ghost `method_spec_helper` folds that track `Map<K, bool>` distinct state
+then project via `dom().len() as u64`.
 
 ## Admission wiring
 

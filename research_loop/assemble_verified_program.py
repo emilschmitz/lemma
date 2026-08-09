@@ -356,15 +356,21 @@ def _ret_type_supported(ret_type: str) -> bool:
 
 
 def _boundary_helpers(ret_type: str) -> str:
-    boundary = _emit_agg_helpers(ret_type)
-    if boundary:
-        return boundary
-    from research_loop.trusted_ret_bridge import get_bridge
+    from research_loop.trusted_ret_bridge import (
+        distinct_set_trusted_rs,
+        get_bridge,
+        multi_agg_ret_type,
+    )
 
-    b = get_bridge(ret_type)
-    if b and b.trusted_rs:
-        return b.trusted_rs
-    return ""
+    boundary = _emit_agg_helpers(ret_type)
+    if not boundary:
+        b = get_bridge(ret_type)
+        if b and b.trusted_rs:
+            boundary = b.trusted_rs
+    if multi_agg_ret_type(ret_type):
+        distinct = distinct_set_trusted_rs()
+        boundary = f"{boundary}{distinct}" if boundary else distinct
+    return boundary
 
 
 def _strip_skeleton(spec_rs: str) -> str:
@@ -397,6 +403,7 @@ def prepare_agent_visible_spec(verus_spec: str, ret_type: str) -> str:
         agent_note = (
             "// === Agent: use TRUSTED helpers below for opaque views.\n"
             "// Maps: agg_new_* / agg_add_* (wrapping) / agg_put_* (set projected tuple).\n"
+            "// Distinct sets: hashset_*_view + set_new_* / set_insert_* (COUNT_DISTINCT state).\n"
             "// Seqs: seq_new_* / seq_push_* when present. Raw HashMap::new()/Vec::new()\n"
             "// will not prove against opaque hashmap_*/vec_*_view.\n"
         )
@@ -748,8 +755,6 @@ def generate_main_join_rs(
 ) -> str:
     cfg = _cfg(ret_type)
     fmt = cfg["format_result"]
-    left_struct = f"Cols_{left_table}"
-    right_struct = f"Cols_{right_table}"
     load_left = f"load_cols_{left_table}"
     load_right = f"load_cols_{right_table}"
     return f"""

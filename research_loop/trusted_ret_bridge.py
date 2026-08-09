@@ -336,7 +336,6 @@ def _agg_add_ensures(
         }},
     )"""
     if isinstance(value, TypeTuple):
-        n = len(value.elems)
         prev_access = f"{old_view}[{spec_key}]"
         tuple_fields = []
         for i, e in enumerate(value.elems):
@@ -415,6 +414,68 @@ def _format_seq_result(elem: TypeExpr) -> str:
             "    }"
         )
     raise ValueError(f"unsupported seq element for format_result: {elem}")
+
+
+def multi_agg_ret_type(ret_type: str) -> bool:
+    """True when ret_type key denotes a projected multi-agg map (tuple value slug)."""
+    return "__" in ret_type
+
+
+def _emit_distinct_set_trusted(atom: str) -> str:
+    """TRUSTED HashSet exec ↔ Map<K,bool> view + set_new/set_insert for one key atom."""
+    if atom == "str":
+        view = "hashset_str_view"
+        spec_map = "Map<Seq<char>, bool>"
+        rust_set = "HashSet<String>"
+        insert_param = "k: &str"
+        spec_key = "k@"
+        exec_insert = "k.to_string()"
+        contains_check = "!s.contains(k)"
+    elif atom == "u32":
+        view = "hashset_u32_view"
+        spec_map = "Map<u32, bool>"
+        rust_set = "HashSet<u32>"
+        insert_param = "k: u32"
+        spec_key = "k"
+        exec_insert = "k"
+        contains_check = "!s.contains(&k)"
+    else:
+        raise ValueError(f"unsupported distinct-set atom: {atom!r}")
+
+    suffix = atom
+    return f"""
+// === TRUSTED distinct-set helpers ({atom}: HashSet exec ↔ Map spec view) ===
+#[verifier::external_body]
+pub open spec fn {view}(s: {rust_set}) -> {spec_map} {{
+    arbitrary()
+}}
+
+#[verifier::external_body]
+pub exec fn set_new_{suffix}() -> (s: {rust_set})
+    ensures {view}(s@) == Map::empty(),
+{{
+    HashSet::new()
+}}
+
+#[verifier::external_body]
+pub exec fn set_insert_{suffix}(s: &mut {rust_set}, {insert_param}) -> (is_new: bool)
+    ensures
+        {view}(final(s)@).contains_key({spec_key}),
+        {view}(final(s)@) == {view}(old(s)@).insert({spec_key}, true),
+        is_new == !{view}(old(s)@).contains_key({spec_key}),
+        is_new ==> {view}(final(s)@).dom().len() == {view}(old(s)@).dom().len() + 1,
+        !is_new ==> {view}(final(s)@).dom().len() == {view}(old(s)@).dom().len(),
+{{
+    let is_new = {contains_check};
+    s.insert({exec_insert});
+    is_new
+}}
+"""
+
+
+def distinct_set_trusted_rs() -> str:
+    """Emit str and u32 distinct-set TRUSTED helpers (agent-visible for COUNT_DISTINCT)."""
+    return _emit_distinct_set_trusted("str") + _emit_distinct_set_trusted("u32")
 
 
 def _emit_map_trusted(

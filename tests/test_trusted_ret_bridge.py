@@ -8,15 +8,16 @@ from pathlib import Path
 import pytest
 
 from research_loop.assemble_runquery import build_runquery_agent_source
+from research_loop.assemble_verified_program import prepare_agent_visible_spec
 from research_loop.method_spec_ret_type import (
-    parse_method_spec_return_type,
     resolve_ret_type_from_method_spec,
     ret_key_from_method_spec_type,
 )
 from research_loop.trusted_ret_bridge import (
+    distinct_set_trusted_rs,
     get_bridge,
+    multi_agg_ret_type,
     parse_verus_type,
-    spec_to_exec_type,
     structural_bridge_for_spec_type,
 )
 from verus_transpiler import transpile_sql_to_verus
@@ -160,9 +161,7 @@ def test_sec_holdout_resolve_ret_type(qnum: str) -> None:
     tables: dict[str, dict[str, str]] = {}
     if qnum == "1":
         tables = {"pre": SEC_SCHEMA["pre"]}
-    elif qnum == "2":
-        tables = {"num": SEC_SCHEMA["num"], "sub": SEC_SCHEMA["sub"]}
-    elif qnum == "3":
+    elif qnum == "2" or qnum == "3":
         tables = {"num": SEC_SCHEMA["num"], "sub": SEC_SCHEMA["sub"]}
     elif qnum == "4":
         tables = {t: SEC_SCHEMA[t] for t in ("num", "sub", "tag", "pre")}
@@ -181,3 +180,41 @@ def test_sec_holdout_resolve_ret_type(qnum: str) -> None:
             "map_str_u32_u64",
             "map_u32_str_u64",
         }
+
+
+def test_distinct_set_trusted_rs_codegen() -> None:
+    rs = distinct_set_trusted_rs()
+    assert "hashset_str_view" in rs
+    assert "hashset_u32_view" in rs
+    assert "set_insert_str" in rs
+    assert "set_insert_u32" in rs
+    assert "set_new_str" in rs
+    assert "set_new_u32" in rs
+    assert rs.count("external_body") >= 6
+    assert "dom().len()" in rs
+
+
+def test_multi_agg_ret_type_detection() -> None:
+    assert multi_agg_ret_type("map_str_str__u64_u64_u64")
+    assert multi_agg_ret_type("map_str_str__u64_u64")
+    assert not multi_agg_ret_type("map_str_str_u64")
+    assert not multi_agg_ret_type("map_u32_str_u64")
+
+
+def test_prepare_agent_visible_spec_multi_agg_includes_set_helpers() -> None:
+    spec_ret = "Map<(Seq<char>, Seq<char>), (u64, u64, u64)>"
+    raw = _spec(spec_ret)
+    bridge = structural_bridge_for_spec_type(spec_ret)
+    out = prepare_agent_visible_spec(raw, bridge.key)
+    assert "hashset_str_view" in out
+    assert "set_insert_str" in out
+    assert "hashset_u32_view" in out
+    assert "set_insert_u32" in out
+    assert "agg_put_str_str__u64_u64_u64" in out
+
+
+def test_prepare_agent_visible_spec_single_agg_no_set_helpers() -> None:
+    raw = _spec("Map<(Seq<char>, u32), u64>")
+    out = prepare_agent_visible_spec(raw, "map_str_u32_u64")
+    assert "set_insert_str" not in out
+    assert "hashset_str_view" not in out
