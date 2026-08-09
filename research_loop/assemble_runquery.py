@@ -262,10 +262,12 @@ def _run_query_requires(method_spec_rs: str | None) -> str:
     params = _method_spec_params(method_spec_rs)
     if not params:
         return "    requires valid_cols(cols),"
-    return "\n".join(
-        f"    requires {_valid_cols_predicate(struct, param)},"
-        for param, struct in params
+    # Verus allows one `requires` with comma-separated preds; repeating `requires`
+    # is a parse error ("expected curly braces").
+    preds = ", ".join(
+        _valid_cols_predicate(struct, param) for param, struct in params
     )
+    return f"    requires {preds},"
 
 
 def _ensures_clause(ret_type: str, *, method_spec_rs: str | None = None) -> str:

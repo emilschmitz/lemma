@@ -177,8 +177,8 @@ def test_join_agent_shell_matches_method_spec_signature() -> None:
         method_spec_rs=spec_rs,
     )
     assert "pub exec fn run_query(num: &Cols_num, sub: &Cols_sub)" in shell
-    assert "requires valid_cols_num(num)," in shell
-    assert "requires valid_cols_sub(sub)," in shell
+    assert "requires valid_cols_num(num), valid_cols_sub(sub)," in shell
+    assert shell.count("requires ") == 1
     assert "method_spec(num, sub)" in shell
     assert "valid_cols(cols)" not in shell
     assert "pub exec fn run_query(cols: &Cols)" not in shell

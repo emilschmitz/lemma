@@ -20,7 +20,7 @@ def emit_run_query_skeleton(
     """Emit a commented/TODO exec fn run_query skeleton."""
     if is_join:
         sig = "pub exec fn run_query(left: &Cols_left, right: &Cols_right) -> (res: u64)"
-        req = "    requires valid_cols_left(left),\n    requires valid_cols_right(right),"
+        req = "    requires valid_cols_left(left), valid_cols_right(right),"
         ens = "    ensures res == method_spec(left, right),"
     else:
         sig = f"pub exec fn run_query(cols: &Cols) -> (res: {ret_type})"
@@ -232,10 +232,7 @@ def emit_trusted_run_query(
         left_struct = f"Cols_{left}"
         right_struct = f"Cols_{right}"
         sig = f"pub exec fn run_query(left: &{left_struct}, right: &{right_struct}) -> (res: {ret_type})"
-        req = (
-            f"    requires valid_cols_{left}(left),\n"
-            f"    requires valid_cols_{right}(right),"
-        )
+        req = f"    requires valid_cols_{left}(left), valid_cols_{right}(right),"
         ens = (
             f"    ensures {view_spec}(res@) == method_spec(left, right),"
             if view_spec
