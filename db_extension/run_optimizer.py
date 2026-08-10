@@ -29,6 +29,7 @@ from research_loop.lemma_flags import (
     lemma_experiment,
     lemma_use_mock_agent,
 )
+from research_loop.experiment_stream import emit_experiment_hello, emit_query_failure
 from research_loop.run_artifacts import assert_experiment_git_clean
 from research_loop.pipeline_log import log_info
 from research_loop.pipeline_demo import (
@@ -97,6 +98,7 @@ def main():
     experiment = lemma_experiment()
     if experiment:
         assert_experiment_git_clean(root_dir)
+        emit_experiment_hello(root=root_dir)
     allow_fallback = lemma_allow_duckdb_fallback()
     use_mock = lemma_use_mock_agent()
     if experiment:
@@ -126,6 +128,7 @@ def main():
         spec = resolve_workload(sql)
     except (FileNotFoundError, ValueError) as e:
         print(f"{COLOR_RED}CUSTOM_PIPELINE_FAILED: {e}{COLOR_RESET}", file=sys.stderr)
+        emit_query_failure(sql_query=sql, error=str(e), stage="resolve_workload")
         sys.exit(2)
 
     os.environ.setdefault("LEMMA_DUCKDB_PATH", spec.db_path)
@@ -153,6 +156,7 @@ def main():
         setup_workload(con, spec, quiet=demo_enabled())
     except FileNotFoundError as e:
         print(f"{COLOR_RED}CUSTOM_PIPELINE_FAILED: {e}{COLOR_RESET}", file=sys.stderr)
+        emit_query_failure(sql_query=sql, error=str(e), stage="setup_workload")
         sys.exit(2)
 
     exit_code = 0
@@ -172,10 +176,18 @@ def main():
         if os.path.exists(binary_path):
             cached_run = True
 
-    def _fail_loud(msg: str) -> None:
+    def _fail_loud(msg: str, *, stage: str = "optimizer", stream_failure: bool = True) -> None:
         nonlocal exit_code
         exit_code = 1
         print(f"{COLOR_RED}CUSTOM_PIPELINE_FAILED: {msg}{COLOR_RESET}", file=sys.stderr)
+        if stream_failure:
+            emit_query_failure(
+                sql_query=sql,
+                error=msg,
+                exit_code=exit_code,
+                stage=stage,
+                cached_run=cached_run,
+            )
         if allow_fallback:
             note = "Optimization failed — falling back to DuckDB for results table"
             if demo_enabled():
@@ -245,7 +257,7 @@ def main():
                 _vprint(f"{COLOR_GREEN}Executed in {res_loop['best_latency_us']} us{COLOR_RESET}")
         else:
             err = res_loop.get("error") or res_loop.get("status") or "optimization failed"
-            _fail_loud(str(err))
+            _fail_loud(str(err), stage="optimization_loop", stream_failure=False)
 
     sys.exit(exit_code)
 

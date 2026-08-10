@@ -8,10 +8,11 @@ import re
 import secrets
 import subprocess
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from research_loop.experiment_stream import emit_query_end, emit_query_start
 from research_loop.lemma_flags import lemma_experiment, lemma_research_log
 
 _ENV_KEYS = (
@@ -67,7 +68,7 @@ def research_logging_enabled() -> bool:
 
 
 def _utc_stamp() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
 def _git_sha(root: Path) -> str | None:
@@ -160,7 +161,7 @@ def _env_snapshot() -> dict[str, str | dict[str, str]]:
     return snap
 
 
-def _write_hardware_profile(run: "RunArtifacts") -> None:
+def _write_hardware_profile(run: RunArtifacts) -> None:
     try:
         from research_loop.agent_context import hardware_profile
     except ImportError:
@@ -236,7 +237,7 @@ class RunArtifacts:
         return self.save_json("trusted_usage.json", report)
 
     def finalize(self, result: dict[str, Any]) -> None:
-        self._manifest["finished_at"] = datetime.now(timezone.utc).isoformat()
+        self._manifest["finished_at"] = datetime.now(UTC).isoformat()
         self.write_manifest()
         (self.path / "result.json").write_text(
             json.dumps(result, indent=2, ensure_ascii=False) + "\n",
@@ -275,7 +276,7 @@ def begin_run(
     env_snap = _env_snapshot()
     manifest: dict[str, Any] = {
         "run_id": run_id,
-        "started_at": datetime.now(timezone.utc).isoformat(),
+        "started_at": datetime.now(UTC).isoformat(),
         "query_id": query_id,
         "sql": sql_query,
         "git_sha": git_commit,
@@ -304,6 +305,14 @@ def begin_run(
     latest = runs_root / "LATEST"
     latest.write_text(str(path) + "\n", encoding="utf-8")
 
+    emit_query_start(
+        query_id=query_id,
+        sql_query=sql_query,
+        run_dir=path,
+        root=root_path,
+        run_id=run_id,
+    )
+
     return run
 
 
@@ -312,4 +321,10 @@ def end_run(run: RunArtifacts, result: dict[str, Any]) -> dict[str, Any]:
     out["run_dir"] = str(run.path)
     _write_hardware_profile(run)
     run.finalize(out)
+    emit_query_end(
+        query_id=run._manifest.get("query_id"),
+        sql_query=run._manifest.get("sql"),
+        run_dir=run.path,
+        result=out,
+    )
     return out

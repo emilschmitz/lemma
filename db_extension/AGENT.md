@@ -121,3 +121,5 @@ LEMMA_RESEARCH_LOG=1  # required for harvest dirs (default 0)
 ```
 
 Archive the whole directory for GCP: `tar czf run.tgz -C research_loop/runs <id>/` or `gsutil cp -r research_loop/runs/<id>/ gs://bucket/path/`.
+
+For Spot/preemptible VMs, also set `LEMMA_EXPERIMENT_EVENT_URL` to a durable receiver (`research_loop/scripts/experiment_event_receiver.py`; see `holdout/EXPERIMENTS_GENDB.md`) so `query_end` summaries stream off-box as each query finishes.

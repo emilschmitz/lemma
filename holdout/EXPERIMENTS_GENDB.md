@@ -48,6 +48,28 @@ Per iteration + best: `SESSION_HOT_US`, `PREP_US`, `OPEN_US`, `COLD_QUERY_US`, V
 Run tree: `manifest.json`, `result.json`, `history.json`, `meta/hardware.json`, `workspace/`,
 `logs/`. SCP/gsutil the whole `research_loop/runs/<id>/`.
 
+### Durable event stream (Spot / preemptible VMs)
+
+Run the receiver on a **durable host** (laptop, home server, or GCE instance you keep):
+
+```bash
+uv run python -m research_loop.scripts.experiment_event_receiver --host 0.0.0.0 --port 8765
+# optional: LEMMA_EVENT_STORE_DIR=research_loop/generated/experiment_events
+```
+
+On the experiment VM, point the optimizer at it (tunnel or public IP + firewall):
+
+```bash
+export LEMMA_EXPERIMENT_EVENT_URL=http://<durable-host>:8765/event
+# optional local NDJSON on the VM too:
+export LEMMA_EXPERIMENT_EVENT_FILE=/tmp/lemma_experiment_events.ndjson
+```
+
+Live tail: `bash research_loop/scripts/tail_experiment_sse.sh http://<durable-host>:8765`
+
+Each query emits `query_start` / `query_end` (compact `result` + small `result.json` artifact when &lt;256KB).
+Still **rsync/gsutil** full `research_loop/runs/` as backup — the stream is summary + metrics, not the whole workspace.
+
 ---
 
 ## Iteration policy

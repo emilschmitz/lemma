@@ -1,4 +1,11 @@
-"""Global column value bounds for Lemma (all queries, host-injected via valid_cols)."""
+"""Global column/table bounds for Lemma (host-injected, all queries).
+
+Emits ``LEMMA_MAX_*`` constants, ``valid_cols`` (row count + per-cell caps),
+TRUSTED arithmetic prelude (``wrapping_add`` exec; spec uses unbounded ``int``),
+and per-column accessor lemmas. Proof soundness assumes loaded data satisfies
+``valid_cols`` — we do not assume integers never overflow globally. See
+``docs/RESEARCH_NOTES.md`` (overflow / table-bound assumptions).
+"""
 
 from __future__ import annotations
 

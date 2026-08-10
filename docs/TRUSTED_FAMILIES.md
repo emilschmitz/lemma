@@ -24,7 +24,8 @@ For every family in `TRUSTED_FAMILY_MENU`:
    `seq_push_` as appropriate.
 4. `assert_menu_complete()` validates the full menu in CI.
 
-Parametrized tests: `tests/test_trusted_families.py`.
+Parametrized structural tests: `tests/test_trusted_families.py`.
+Semantic differential (exec math vs oracle / DuckDB): `tests/test_trusted_semantic_differential.py`.
 
 ## Menu (25 families)
 
