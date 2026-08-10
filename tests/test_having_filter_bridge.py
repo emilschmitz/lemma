@@ -12,6 +12,7 @@ from research_loop.admit_agent_runquery import admit_agent_runquery
 from research_loop.assemble_verified_program import prepare_agent_visible_spec
 from research_loop.having_filter_bridge import (
     emit_having_filter_trusted,
+    having_filter_trusted_rs,
     parse_having_filter_layout,
     table_params_for_having,
 )
@@ -138,7 +139,7 @@ def test_scalar_map_having_emits_exec() -> None:
     visible = prepare_agent_visible_spec(spec_rs, ret_type)
     assert ret_type == "map_u32_u64"
     assert "apply_having_filter_exec_u32_u64" in visible
-    assert ".filter(|(_k, v)| (v > 5))" in visible
+    assert ".filter(|(_k, v)| (*v > 5))" in visible
 
 
 def test_admission_rejects_agent_having_external_body_helper() -> None:
@@ -195,6 +196,36 @@ def test_join_having_scalar_subquery_exec_binds_table_params() -> None:
     assert "valid_cols_sub(sub)" in visible
     assert "subquery_having_sq1_spec(num, sub)" in visible
     assert _having_exec_unbound_identifiers(visible) == []
+    assert (
+        ".filter(|(_k, v)| (*v > subquery_having_sq1_spec(num, sub)))"
+        in visible
+    )
+
+
+def test_scalar_having_exec_derefs_map_value() -> None:
+    """Scalar map values are ``&u64`` in filter; bare ``v`` must not compare to ``u64``."""
+    schema = load_sec_schema()
+    _flat, multi = normalize_schema(schema)
+    projected = project_multi_schema_for_query(Q9_SQL, multi)
+    spec_rs = transpile_sql_to_verus(Q9_SQL, projected)
+    layout = parse_having_filter_layout(spec_rs)
+    assert layout is not None
+    bridge = get_bridge("map_str_str__u64_u64")
+    assert bridge is not None
+    tuple_rs = emit_having_filter_trusted(layout, bridge)
+    assert ".filter(|(_k, v)| (v.0 > 5))" in tuple_rs
+
+    sql = "SELECT k, COUNT(*) AS c FROM t GROUP BY k HAVING COUNT(*) > 5"
+    scalar_spec = transpile_sql_to_verus(sql, {"k": "int"})
+    scalar_rs = having_filter_trusted_rs(scalar_spec, "map_u32_u64")
+    assert ".filter(|(_k, v)| (*v > 5))" in scalar_rs
+
+    r10_spec = transpile_sql_to_verus(R10_Q34_SQL, {"num": SEC_NUM, "sub": SEC_SUB})
+    r10_rs = having_filter_trusted_rs(r10_spec, "map_str_u32_u64")
+    assert (
+        ".filter(|(_k, v)| (*v > subquery_having_sq1_spec(num, sub)))"
+        in r10_rs
+    )
 
 
 def test_referenced_table_params_from_having_closure() -> None:

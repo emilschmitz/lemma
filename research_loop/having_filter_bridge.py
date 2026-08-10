@@ -111,9 +111,37 @@ def parse_having_filter_layout(spec_rs: str) -> HavingFilterLayout | None:
     )
 
 
+def _value_param_type(closure_params: str) -> str | None:
+    for part in closure_params.split(","):
+        part = part.strip()
+        if ":" not in part:
+            continue
+        name, typ = part.split(":", 1)
+        if name.strip() == "v":
+            return typ.strip()
+    return None
+
+
+def _is_scalar_value_type(typ: str) -> bool:
+    typ = typ.strip()
+    return bool(typ) and not typ.startswith("(")
+
+
+_SCALAR_V_RE = re.compile(r"(?<!\*)\bv(?![.\w])")
+
+
+def _deref_scalar_v_in_body(body: str) -> str:
+    """Rewrite bare ``v`` to ``*v`` for exec ``HashMap::filter`` (value is ``&V``)."""
+    return _SCALAR_V_RE.sub("*v", body)
+
+
 def _exec_filter_body(layout: HavingFilterLayout) -> str:
-    """Spec HAVING body is valid Rust on exec map values for supported shapes."""
-    return layout.closure_body
+    """Spec HAVING body rewritten for exec HashMap filter when value type is scalar."""
+    body = layout.closure_body
+    v_type = _value_param_type(layout.closure_params)
+    if v_type and _is_scalar_value_type(v_type):
+        body = _deref_scalar_v_in_body(body)
+    return body
 
 
 def _valid_cols_predicate(struct_name: str, param: str) -> str:
