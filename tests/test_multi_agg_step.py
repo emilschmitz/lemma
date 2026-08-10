@@ -7,20 +7,27 @@ import re
 from pathlib import Path
 
 import pytest
+from verus_transpiler.column_projection import project_multi_schema_for_query
+from verus_transpiler.parse_sql import normalize_schema
 
-from research_loop.assemble_verified_program import assemble_verified_program, prepare_agent_visible_spec
+from research_loop.assemble_verified_program import (
+    assemble_verified_program,
+    prepare_agent_visible_spec,
+)
 from research_loop.harness import resolve_verus_bin, run_verus_verify
 from research_loop.method_spec_ret_type import resolve_ret_type_from_method_spec
 from research_loop.multi_agg_step_bridge import (
+    _spec_expr_to_exec,
     emit_multi_agg_step_trusted,
     multi_agg_step_trusted_rs,
     parse_multi_agg_layout,
 )
-from research_loop.scripts.sqlsmith_trusted_coverage import load_sec_schema, parse_sql_file
+from research_loop.scripts.sqlsmith_trusted_coverage import (
+    load_sec_schema,
+    parse_sql_file,
+)
 from research_loop.trusted_ret_bridge import get_bridge, structural_bridge_for_spec_type
 from verus_transpiler import transpile_sql_to_verus
-from verus_transpiler.column_projection import project_multi_schema_for_query
-from verus_transpiler.parse_sql import normalize_schema
 
 ROOT = Path(__file__).resolve().parents[1]
 _VACUOUS_TRUSTED_RUN_QUERY_RE = re.compile(
@@ -187,6 +194,15 @@ def _agg_step_exec_wrapping_add_lines(rs: str, suffix: str) -> list[str]:
     return [ln for ln in m.group(1).split("\n") if "wrapping_add" in ln]
 
 
+def test_spec_expr_to_exec_strips_ghost_int_addends() -> None:
+    assert _spec_expr_to_exec("(row_u64_0) as int") == "row_u64_0"
+    assert _spec_expr_to_exec("(row_u64_0 as int) as int") == "row_u64_0"
+    assert (
+        _spec_expr_to_exec("case_when_u64((row_u64_0 as int) > 0, 1, 0) as int")
+        == "case_when_u64_exec(row_u64_0 > 0, 1, 0)"
+    )
+
+
 def test_exec_wrapping_add_no_ghost_int_q1_avg() -> None:
     """SUM/AVG row adds in exec agg_step must not cast through ghost int."""
     out = transpile_sql_to_verus(Q1_LIKE_SQL, {"pre": PRE_SCHEMA})
@@ -212,6 +228,31 @@ def test_exec_wrapping_add_no_ghost_int_count_sum() -> None:
     assert bad, "expected wrapping_add lines in agg_step exec"
     assert all("as int" not in ln for ln in bad), bad
     assert any("wrapping_add(row_u64_0)" in ln.replace(" ", "") for ln in bad)
+
+
+R10_SQL_PATH = ROOT / "holdout/gendb_sec_edgar/queries_resample_r10.sql"
+R10_WRAPPING_ADD_QIDS = (1, 2, 4, 6, 8, 10, 12, 15, 20, 22, 26, 28, 29, 30, 32, 38)
+
+
+@pytest.mark.parametrize("qid", R10_WRAPPING_ADD_QIDS)
+def test_r10_exec_wrapping_add_has_no_ghost_int(qid: int) -> None:
+    if not R10_SQL_PATH.is_file():
+        pytest.skip("r10 holdout SQL missing")
+    schema = load_sec_schema()
+    flat, multi = normalize_schema(schema)
+    queries = dict(parse_sql_file(R10_SQL_PATH))
+    sql = queries.get(f"Q{qid}")
+    if sql is None:
+        pytest.skip(f"Q{qid} missing from r10 holdout")
+    projected = project_multi_schema_for_query(sql, multi) if multi else flat
+    spec_rs = transpile_sql_to_verus(sql, projected)
+    ret_type = resolve_ret_type_from_method_spec(spec_rs)
+    rs = multi_agg_step_trusted_rs(spec_rs, ret_type)
+    suffix = ret_type.removeprefix("map_")
+    bad = _agg_step_exec_wrapping_add_lines(rs, suffix)
+    if not bad:
+        pytest.skip(f"Q{qid} has no wrapping_add in exec agg_step")
+    assert all("as int" not in ln for ln in bad), bad
 
 
 def test_multi_agg_case_when_cast_parentheses() -> None:

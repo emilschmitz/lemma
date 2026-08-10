@@ -399,23 +399,38 @@ def _sum_delta_expr(s_line: str, slot_i: int, *, multi_slot: bool) -> str | None
     return m.group(1).strip() if m else None
 
 
-_ROW_U64_GHOST_WRAP_RE = re.compile(
-    r"^\s*(?:\(\s*)*(?P<name>row_u64_\d+)"
-    r"(?:\s+as\s+int\s*\))*"
-    r"(?:\s+as\s+u64)?"
-    r"(?:\s+as\s+int\s*\))*"
-    r"\s*$"
+_ROW_U64_BARE_RE = re.compile(
+    r"^\s*(?:\(\s*)*(?P<name>row_u64_\d+)(?:\s*\))*\s*$"
 )
+
+_ROW_U64_GHOST_INT_RE = re.compile(r"\(row_u64_(\d+) as int\)|row_u64_(\d+) as int")
+_TRAILING_GHOST_INT_RE = re.compile(r"^(?P<inner>.+?) as int$")
+
+
+def _strip_row_u64_ghost_int(expr: str) -> str:
+    """Remove spec ``row_u64_N as int`` casts; leave bare u64 param names."""
+    while True:
+        prev = expr
+        expr = _ROW_U64_GHOST_INT_RE.sub(
+            lambda m: f"row_u64_{m.group(1) or m.group(2)}", expr
+        )
+        if expr == prev:
+            return expr
 
 
 def _spec_expr_to_exec(expr: str) -> str:
-    out = expr.replace("case_when_u64(", "case_when_u64_exec(")
-    bare = _ROW_U64_GHOST_WRAP_RE.match(out.strip())
-    if bare:
-        return bare.group("name")
-    out = re.sub(r"\(row_u64_(\d+) as int ([^)]+)\)", r"(row_u64_\1 \2)", out)
-    out = re.sub(r"row_u64_(\d+) as int", r"row_u64_\1", out)
-    return out
+    """Convert a spec ghost-int addend into an exec u64 addend for wrapping_add."""
+    out = _strip_row_u64_ghost_int(expr.strip())
+    out = out.replace("case_when_u64(", "case_when_u64_exec(")
+    while True:
+        bare = _ROW_U64_BARE_RE.match(out)
+        if bare:
+            return bare.group("name")
+        trailing = _TRAILING_GHOST_INT_RE.match(out)
+        if trailing:
+            out = trailing.group("inner").strip()
+            continue
+        return out
 
 
 def _exec_update_inner(
