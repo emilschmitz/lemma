@@ -10,6 +10,7 @@ Spot VM **r9** (`lemma-gendb`) was deleted before `scp` of `research_loop/runs/`
 - **r9 Q9** (join + COUNT/COUNT DISTINCT + HAVING): host fixes (`lit@`, nested-loop wrap, `apply_having_filter_exec`); Grok proved.
 - **r9 Q11** (join + COUNT/SUM/AVG, 3-string keys): Grok proved with `agg_step_str_str_str__u64_u64_u64`.
 - **r10** (`holdout/gendb_sec_edgar/queries_resample_r10.sql`, 40 queries): **40/40 agent-proved** under admission (`VERIFY True` after batch re-verify). Host gaps closed along the way: subquery `Seq`/`lit@`, `vec_*_view` exec↔spec split, `seq_push` `final(s)@`, exec `agg_step` strip of ghost `as int`, HAVING Trusted table params + scalar `*v`.
+- **r11** (seed 1111, 50 queries): **49/50 = 98%** agent-proved (`VERIFY True`). One loud `transpile_fail`: Q19 IN+GROUP BY (unsupported MethodSpec semi-join). Clears the **≥98%** gate.
 
 
 Shell / “Trusted menu ready” on fresh SQLSmith draws plateaued (r5–r9). Spot agents still mostly failed to **finish a Verus proof**. New loop focus:
@@ -85,6 +86,7 @@ Distinct-set helpers (`set_insert_str`, etc.) plus **group `agg_step_*`** (see `
 | 2026-08-09 | r7 (seed 707, 80 SQL) | **100%** shell (80/80) | **100%** `ready` (80/80) | Fresh resample. |
 | 2026-08-09 | r9 (seed 909, 60 SQL) | **98.3%** shell (59/60) | **98.3%** `ready` (59/60) | Fresh draw after menu freeze; 1 loud-fail IN+GROUP BY (same gap as r3). Combined all pools ≈99.7% ready. |
 | 2026-08-10 | **r10** (40 SQL) | **100%** shell | **100%** agent-proved (`VERIFY True` ×40) | Grok `run_query` + host Trusted/codegen fixes; batch re-verify after final `agg_step` `as int` strip. Exceeds ~90% paper gate on this draw. |
+| 2026-08-10 | **r11** (seed 1111, 50 SQL) | **98%** shell (49/50) | **98%** agent-proved (49/50 `VERIFY True`) | Gate raised to ≥98%. Miss = Q19 IN+GROUP BY transpile (loud fail). |
 
 Host scorer buckets: `ready` = shell OK + real MethodSpec folds + Trusted step surface for shape; `needs_trusted` = shell OK but multi-agg / COUNT(DISTINCT) without `agg_step_*`; `transpile_fail` / `shell_fail` otherwise.
 
