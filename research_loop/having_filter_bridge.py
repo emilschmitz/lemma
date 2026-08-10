@@ -8,6 +8,27 @@ from dataclasses import dataclass
 from research_loop.trusted_ret_bridge import RetBridge, get_bridge
 
 _APPLY_HAVING_RE = re.compile(r"apply_having_filter\s*\(")
+_IDENT_RE = re.compile(r"\b([a-z_][a-z0-9_]*)\b")
+_RUST_KEYWORDS = frozenset(
+    {
+        "as",
+        "bool",
+        "break",
+        "continue",
+        "else",
+        "false",
+        "if",
+        "in",
+        "int",
+        "let",
+        "match",
+        "return",
+        "true",
+        "u32",
+        "u64",
+        "while",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -95,7 +116,155 @@ def _exec_filter_body(layout: HavingFilterLayout) -> str:
     return layout.closure_body
 
 
-def emit_having_filter_trusted(layout: HavingFilterLayout, bridge: RetBridge) -> str:
+def _valid_cols_predicate(struct_name: str, param: str) -> str:
+    if struct_name == "Cols":
+        return f"valid_cols({param})"
+    if struct_name.startswith("Cols_"):
+        table = struct_name[len("Cols_") :]
+        return f"valid_cols_{table}({param})"
+    raise ValueError(f"unsupported Cols struct name in method_spec: {struct_name}")
+
+
+def _closure_param_names(closure_params: str) -> set[str]:
+    names: set[str] = set()
+    for part in closure_params.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        names.add(part.split(":")[0].strip())
+    return names
+
+
+def referenced_table_params(
+    body: str,
+    closure_params: str,
+    method_params: list[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    """``method_spec`` table params referenced in the HAVING closure body."""
+    locals_ = _closure_param_names(closure_params)
+    out: list[tuple[str, str]] = []
+    for param, struct in method_params:
+        if param in locals_:
+            continue
+        if re.search(rf"\b{re.escape(param)}\b", body):
+            out.append((param, struct))
+    return out
+
+
+_SPEC_PARAM_RE = re.compile(r"(\w+)\s*:\s*&(\w+)")
+
+
+def _split_top_level_commas(text: str) -> list[str]:
+    from research_loop.method_spec_ret_type import _split_top_level_commas as split
+
+    return split(text)
+
+
+def _parse_spec_fn_params(spec_rs: str, fn_name: str) -> list[tuple[str, str]] | None:
+    m = re.search(rf"pub\s+open\s+spec\s+fn\s+{re.escape(fn_name)}\s*\(", spec_rs)
+    if not m:
+        return None
+    inner = _extract_balanced_parens(spec_rs, m.end() - 1)
+    if inner is None:
+        return None
+    params: list[tuple[str, str]] = []
+    for chunk in _split_top_level_commas(inner[0]):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        pm = _SPEC_PARAM_RE.fullmatch(chunk)
+        if not pm:
+            return None
+        params.append((pm.group(1), pm.group(2)))
+    return params
+
+
+def _calls_in_body(body: str) -> list[tuple[str, list[str]]]:
+    calls: list[tuple[str, list[str]]] = []
+    for m in re.finditer(r"(\w+)\s*\(", body):
+        fn_name = m.group(1)
+        inner = _extract_balanced_parens(body, m.end() - 1)
+        if inner is None:
+            continue
+        args = [a.strip() for a in _split_top_level_commas(inner[0]) if a.strip()]
+        if not args:
+            calls.append((fn_name, []))
+            continue
+        if all(re.fullmatch(r"[a-z_][a-z0-9_]*", a) for a in args):
+            calls.append((fn_name, args))
+    return calls
+
+
+def table_params_for_having(
+    body: str,
+    closure_params: str,
+    spec_rs: str,
+    method_params: list[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    """Table params the HAVING exec helper must take (method_spec + spec helper calls)."""
+    locals_ = _closure_param_names(closure_params)
+    seen: set[str] = set()
+    out: list[tuple[str, str]] = []
+
+    def add(param: str, struct: str) -> None:
+        if param in locals_ or param in seen:
+            return
+        seen.add(param)
+        out.append((param, struct))
+
+    for param, struct in referenced_table_params(body, closure_params, method_params):
+        add(param, struct)
+
+    for fn_name, args in _calls_in_body(body):
+        sig_params = _parse_spec_fn_params(spec_rs, fn_name)
+        if not sig_params:
+            continue
+        for arg, (pname, struct) in zip(args, sig_params, strict=False):
+            if arg != pname:
+                add(arg, struct)
+            else:
+                add(pname, struct)
+
+    return out
+
+
+def unsupported_having_predicate_reason(
+    layout: HavingFilterLayout,
+    spec_rs: str,
+    method_params: list[tuple[str, str]],
+) -> str | None:
+    """Return a skip reason when the predicate needs bindings we cannot emit."""
+    locals_ = _closure_param_names(layout.closure_params)
+    bound = locals_ | {p for p, _ in table_params_for_having(
+        layout.closure_body,
+        layout.closure_params,
+        spec_rs,
+        method_params,
+    )}
+    body = layout.closure_body
+    for m in _IDENT_RE.finditer(body):
+        name = m.group(1)
+        if name in bound or name in _RUST_KEYWORDS:
+            continue
+        rest = body[m.end() :].lstrip()
+        if rest.startswith("("):
+            continue
+        return (
+            f"predicate references unbound identifier {name!r} "
+            "(not a method_spec table param or spec helper argument)"
+        )
+    return None
+
+
+def _having_skip_comment(reason: str) -> str:
+    return f"\n// === HAVING exec skipped: {reason} ===\n"
+
+
+def emit_having_filter_trusted(
+    layout: HavingFilterLayout,
+    bridge: RetBridge,
+    table_params: list[tuple[str, str]] | None = None,
+) -> str:
     """Emit TRUSTED ``apply_having_filter_exec_{suffix}`` for one query."""
     suffix = bridge.agg_suffix or bridge.key.removeprefix("map_")
     view = bridge.view_spec
@@ -104,12 +273,22 @@ def emit_having_filter_trusted(layout: HavingFilterLayout, bridge: RetBridge) ->
     fn = f"apply_having_filter_exec_{suffix}"
     pred = layout.full_closure
     filter_body = _exec_filter_body(layout)
+    table_params = table_params or []
+    sig_parts = [f"hm: {bridge.rust_ret}"]
+    sig_parts.extend(f"{p}: &{s}" for p, s in table_params)
+    sig = ",\n    ".join(sig_parts)
+    requires = ""
+    if table_params:
+        preds = ",\n        ".join(
+            _valid_cols_predicate(struct, param) for param, struct in table_params
+        )
+        requires = f"\n    requires\n        {preds},"
     return f"""
 // === HAVING post-filter ({suffix}): exec HashMap retain vs apply_having_filter ===
 #[verifier::external_body]
 pub exec fn {fn}(
-    hm: {bridge.rust_ret},
-) -> (res: {bridge.rust_ret})
+    {sig},
+) -> (res: {bridge.rust_ret}){requires}
     ensures
         {view}(res@)
             == apply_having_filter(
@@ -158,6 +337,21 @@ def having_filter_trusted_rs(spec_rs: str, ret_type: str) -> str:
     if bridge is None:
         return ""
     try:
-        return emit_having_filter_trusted(layout, bridge)
+        from research_loop.method_spec_ret_type import parse_method_spec_params
+
+        method_params = parse_method_spec_params(spec_rs)
+    except ValueError:
+        return _having_skip_comment("cannot parse method_spec parameters for HAVING exec")
+    skip = unsupported_having_predicate_reason(layout, spec_rs, method_params)
+    if skip:
+        return _having_skip_comment(skip)
+    table_params = table_params_for_having(
+        layout.closure_body,
+        layout.closure_params,
+        spec_rs,
+        method_params,
+    )
+    try:
+        return emit_having_filter_trusted(layout, bridge, table_params)
     except (ValueError, KeyError, AttributeError):
         return ""
