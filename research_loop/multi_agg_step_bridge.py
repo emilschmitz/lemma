@@ -241,11 +241,27 @@ def _is_str_distinct_expr(expr: str) -> bool:
     return expr.rstrip().endswith("@")
 
 
+_MINMAX_S_LINE_RE = re.compile(
+    r"let s(\d+) = if t\1 [<>] prev(?:\.\d+)?",
+)
+
+
+def _minmax_t_indices(update_lines: list[str]) -> set[int]:
+    """Slot indices whose ``tN`` bind MIN/MAX row values (u64, not int)."""
+    indices: set[int] = set()
+    for line in update_lines:
+        m = _MINMAX_S_LINE_RE.search(line)
+        if m:
+            indices.add(int(m.group(1)))
+    return indices
+
+
 def _rewrite_updates_for_apply(
     update_lines: list[str],
 ) -> tuple[list[str], list[RowParam]]:
     params: list[RowParam] = []
     seen_cols: dict[str, str] = {}
+    minmax_slots = _minmax_t_indices(update_lines)
 
     def col_param(expr: str, usage: str) -> str:
         if expr in seen_cols:
@@ -264,16 +280,24 @@ def _rewrite_updates_for_apply(
         seen_cols[expr] = params[-1].name
         return params[-1].name
 
-    def spec_ref_for(expr: str, pname: str, usage: str) -> str:
+    def spec_ref_for(pname: str, usage: str, *, minmax: bool) -> str:
         if usage == "distinct":
             return pname
-        return f"{pname} as int"
+        if minmax:
+            return pname
+        return f"({pname} as int)"
 
     rewritten: list[str] = []
     for line in update_lines:
+        t_slot_m = re.match(r"\s*let t(\d+) =", line)
+        minmax = bool(t_slot_m and int(t_slot_m.group(1)) in minmax_slots)
         out = line
         out = _NUMERIC_CAST_RE.sub(
-            lambda m: f"({col_param(m.group(0), 'numeric')} as int)",
+            lambda m, minmax=minmax: (
+                col_param(m.group(0), "numeric")
+                if minmax
+                else f"({col_param(m.group(0), 'numeric')} as int)"
+            ),
             out,
         )
         for m in _COL_REF_RE.finditer(line):
@@ -282,7 +306,7 @@ def _rewrite_updates_for_apply(
                 continue
             usage = _col_ref_usage(line, expr)
             pname = col_param(expr, usage)
-            out = out.replace(expr, spec_ref_for(expr, pname, usage))
+            out = out.replace(expr, spec_ref_for(pname, usage, minmax=minmax))
         rewritten.append(out)
     return rewritten, params
 

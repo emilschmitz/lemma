@@ -7,7 +7,12 @@ import re
 import pytest
 
 from research_loop.assemble_runquery import build_runquery_agent_source
+from research_loop.assemble_verified_program import prepare_agent_visible_spec
 from research_loop.method_spec_ret_type import resolve_ret_type_from_method_spec
+from research_loop.multi_agg_step_bridge import (
+    multi_agg_step_trusted_rs,
+    parse_multi_agg_layout,
+)
 from research_loop.trusted_ret_bridge import get_bridge
 from verus_transpiler import transpile_sql_to_verus
 
@@ -129,6 +134,31 @@ def test_q9_like_resolve_ret_type_and_shell() -> None:
     src = build_runquery_agent_source(ret_type=key)
     assert "HashMap<u32, (u64, u64, u64, u64, u64, u64)>" in src
     assert bridge.ensures in src
+
+
+def test_q9_like_agg_step_apply_row_min_max_u64() -> None:
+    """MIN/MAX apply_row must bind row params as u64, not int (matches inner state slots)."""
+    out = transpile_sql_to_verus(Q9_LIKE_SQL, {"num": NUM_SCHEMA, "sub": SUB_SCHEMA})
+    layout = parse_multi_agg_layout(out)
+    assert layout is not None
+    assert re.search(r"let t\d+ = row_u64_\d+;", layout.apply_body)
+    assert not re.search(r"let t\d+ = row_u64_\d+ as int;", layout.apply_body)
+
+    ret_type = resolve_ret_type_from_method_spec(out)
+    trusted = multi_agg_step_trusted_rs(out, ret_type)
+    assert "agg_step_apply_row_u32__u64_u64_u64_u64_u64_u64" in trusted
+    apply_chunk = re.search(
+        r"pub open spec fn agg_step_apply_row_u32__u64_u64_u64_u64_u64_u64[\s\S]*?^}",
+        trusted,
+        re.MULTILINE,
+    )
+    assert apply_chunk is not None
+    body = apply_chunk.group(0)
+    assert re.search(r"let t\d+ = row_u64_\d+;", body)
+    assert not re.search(r"let t\d+ = row_u64_\d+ as int;", body)
+
+    visible = prepare_agent_visible_spec(out, ret_type)
+    assert "let t5 = row_u64_0;" in visible or "let t5 = row_u64_0;\n" in visible
 
 
 def test_join_multi_agg_where_string_literal_seq_view() -> None:
