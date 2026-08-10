@@ -221,3 +221,12 @@ def test_prepare_agent_visible_spec_single_agg_no_set_helpers() -> None:
     out = prepare_agent_visible_spec(raw, "map_str_u32_u64")
     assert "set_insert_str" not in out
     assert "hashset_str_view" not in out
+
+
+def test_seq_push_ensures_use_final_for_mut_receiver() -> None:
+    bridge = structural_bridge_for_spec_type("Seq<(Seq<char>, Seq<char>, u32, Seq<char>)>")
+    rs = bridge.trusted_rs
+    assert "seq_push_str_str_u32_str" in rs
+    # mut-ref postcondition must use final(s)@, not bare s@
+    assert "ensures vec_str_str_u32_str_view(final(s)@) == vec_str_str_u32_str_view(old(s)@).push(" in rs
+    assert re.search(r"seq_push_\w+.*ensures \w+\(s@\)", rs) is None

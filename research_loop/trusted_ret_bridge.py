@@ -664,7 +664,7 @@ pub exec fn seq_new_{suffix}() -> (s: {rust_ret})
 
 #[verifier::external_body]
 pub exec fn seq_push_{suffix}(s: &mut {rust_ret}, {push_sig})
-    ensures {view}(s@) == {view}(old(s)@).push({spec_elem_val}),
+    ensures {view}(final(s)@) == {view}(old(s)@).push({spec_elem_val}),
 {{
     s.push({exec_elem_val});
 }}
