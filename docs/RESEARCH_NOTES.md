@@ -44,7 +44,7 @@ Distinct-set helpers (`set_insert_str`, etc.) plus **group `agg_step_*`** (see `
 |------|-------------------|---------------|--------------------------------------------------|-------|
 | 2026-08-09 | r1–r4, queries_all | ≈100% (r3: 1 loud-fail IN+GROUP BY) | not fully scored yet | Shell layer only; no agent-sandbox menu fishing |
 | 2026-08-09 | holdout `queries.sql` / Q1 shape | 100% shell (4/4) | **yes** for COUNT+COUNT_DISTINCT+AVG group-by | Host `agg_step_*` + standin `run_query` Verus-verified without `admit()` (`tests/test_multi_agg_step.py`) |
-| 2026-08-09 | holdout + r1–r4 + `queries_all` (229 SQL, host scorer) | **99.6%** shell (228/229) | **99.6%** `ready` (228/229) | After generalizing `multi_agg_step_bridge.py` for join `multi_agg_helper` signatures, u32 COUNT_DISTINCT, MIN/MAX, and CASE WHEN sum deltas. 1 `transpile_fail` (IN inner GROUP BY, r3). Prior baseline: 48.5% ready (111/229), 117 missing `agg_step_*`. |
+| 2026-08-09 | holdout + r1–r4 + `queries_all` (231 SQL after parser fix) | **99.6%** shell (230/231) | **99.6%** `ready` (230/231) | `agg_step_*` for join/anti-join/`multi_agg_helper`; holdout `queries.sql` 6/6 ready. 1 loud-fail: IN inner GROUP BY (r3). Adversarial suite covers resample pools. |
 
 Host scorer buckets: `ready` = shell OK + real MethodSpec folds + Trusted step surface for shape; `needs_trusted` = shell OK but multi-agg / COUNT(DISTINCT) without `agg_step_*`; `transpile_fail` / `shell_fail` otherwise.
 

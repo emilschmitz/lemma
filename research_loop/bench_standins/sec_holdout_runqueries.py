@@ -141,18 +141,16 @@ SEC_HOLDOUT_CAPABILITY: dict[str, HoldoutCapability] = {
         qnum="4",
         status="blocked",
         reason=(
-            "missing Trusted n-way multi_agg_step_* for "
-            "Map<(u32, Seq<char>, Seq<char>), (Map<u32,bool>, u64, u64, u64)> "
-            "(COUNT_DISTINCT cik + SUM + AVG on 4-table join fold)"
+            "agg_step_* now emitted for this multi-agg shape; full Verus standin still "
+            "needs join-scan step lemmas for 4-table nested fold (not query-hardcoded)"
         ),
     ),
     "6": HoldoutCapability(
         qnum="6",
         status="blocked",
         reason=(
-            "missing Trusted n-way multi_agg_step_* for "
-            "Map<(Seq<char>×4), (u64, u64)> on 3-table nested-loop join fold "
-            "(agg_add_* alone cannot prove nested join scan)"
+            "agg_step_* now emitted for 4-string-key multi-agg; full Verus standin still "
+            "needs 3-table nested-loop scan lemmas"
         ),
     ),
     "24": HoldoutCapability(

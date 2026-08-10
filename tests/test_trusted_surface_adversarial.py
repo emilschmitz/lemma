@@ -10,7 +10,12 @@ import re
 from pathlib import Path
 
 import pytest
-from verus_transpiler.parse_sql import UnsupportedContractError
+from verus_transpiler import transpile_sql_to_verus
+from verus_transpiler.column_projection import (
+    project_multi_schema_for_query,
+    project_schema_for_query,
+)
+from verus_transpiler.parse_sql import UnsupportedContractError, normalize_schema
 
 from research_loop.admit_agent_runquery import admit_agent_runquery
 from research_loop.assemble_runquery import (
@@ -22,7 +27,12 @@ from research_loop.assemble_runquery import (
 )
 from research_loop.assemble_verified_program import prepare_agent_visible_spec
 from research_loop.method_spec_ret_type import resolve_ret_type_from_method_spec
-from research_loop.scripts.sqlsmith_trusted_coverage import classify_query
+from research_loop.scripts.sqlsmith_trusted_coverage import (
+    classify_query,
+    load_sec_schema,
+    parse_sql_file,
+)
+from research_loop.scripts.trusted_capability_score import score_query
 from research_loop.trusted_ret_bridge import get_bridge, structural_bridge_for_spec_type
 from research_loop.trusted_usage import list_trusted_menu, scan_trusted_used
 from tests.test_sec_holdout_parse import (
@@ -31,10 +41,15 @@ from tests.test_sec_holdout_parse import (
     _fold_helpers,
     _fold_helpers_have_no_arbitrary,
 )
-from verus_transpiler import transpile_sql_to_verus
 
 _SCALAR_SQL = "SELECT SUM(V) FROM t"
 _SCALAR_SCHEMA = {"V": "bigint"}
+
+ROOT = Path(__file__).resolve().parents[1]
+HOLDOUT = ROOT / "holdout" / "gendb_sec_edgar"
+RESAMPLE_POOL_FILES = [
+    HOLDOUT / f"queries_resample_r{i}.sql" for i in range(1, 5)
+] + [HOLDOUT / "queries_all.sql"]
 
 Q1_LIKE_SQL = """SELECT stmt, rfile, COUNT(*) AS cnt,
        COUNT(DISTINCT adsh) AS num_filings,
@@ -67,6 +82,35 @@ def _agent_visible_for_sql(sql: str, schema: dict) -> str:
     spec_rs = transpile_sql_to_verus(sql, schema)
     ret_type = resolve_ret_type_from_method_spec(spec_rs)
     return prepare_agent_visible_spec(spec_rs, ret_type)
+
+
+def _projected_sec_schema(sql: str) -> dict:
+    schema = load_sec_schema()
+    flat, multi = normalize_schema(schema)
+    if multi:
+        return project_multi_schema_for_query(sql, multi)
+    return project_schema_for_query(sql, flat)
+
+
+def _agent_visible_for_sec_sql(sql: str) -> str:
+    projected = _projected_sec_schema(sql)
+    spec_rs = transpile_sql_to_verus(sql, projected)
+    ret_type = resolve_ret_type_from_method_spec(spec_rs)
+    return prepare_agent_visible_spec(spec_rs, ret_type)
+
+
+def _resample_pool_cases() -> list[tuple[str, str, str]]:
+    """(pool_file, qid, sql) for GenDB resample pools + queries_all."""
+    cases: list[tuple[str, str, str]] = []
+    for path in RESAMPLE_POOL_FILES:
+        if not path.is_file():
+            continue
+        for qid, sql in parse_sql_file(path):
+            cases.append((path.name, qid, sql))
+    return cases
+
+
+RESAMPLE_POOL_CASES = _resample_pool_cases()
 
 
 # --- Admission escape gaps (see test_admit_agent_runquery.py for the main matrix) ---
@@ -242,3 +286,57 @@ def test_multi_agg_visible_spec_bridge_is_structural_not_arbitrary() -> None:
         re.MULTILINE,
     )[0]
     assert "arbitrary()" not in helper
+
+
+# --- GenDB resample pools (adversarial shell / agg_step / fold) ---
+
+
+@pytest.mark.parametrize(
+    "pool,qid,sql",
+    RESAMPLE_POOL_CASES,
+    ids=[f"{pool}:{qid}" for pool, qid, _ in RESAMPLE_POOL_CASES],
+)
+def test_resample_pool_shell_ok_adversarial(pool: str, qid: str, sql: str) -> None:
+    """Shell-OK resample queries: no vacuous TRUSTED run_query, real folds, agg_step when needed."""
+    schema = load_sec_schema()
+    shell = classify_query(sql, qid, schema)
+    if shell.status != "ok_shell":
+        pytest.skip(f"{pool}:{qid} not shell-OK ({shell.status}: {shell.reason})")
+
+    scored = score_query(source=pool, qid=qid, sql=sql, schema=schema)
+    assert scored.shell_ok
+    assert not scored.fold_arbitrary, f"{pool}:{qid} MethodSpec fold must not use arbitrary()"
+
+    visible = _agent_visible_for_sec_sql(sql)
+    assert "pub exec fn run_query" not in visible
+    assert not _VACUOUS_TRUSTED_RUN_QUERY_RE.search(visible)
+    assert "unimplemented!" not in visible
+
+    if scored.sql_has_count_distinct or scored.sql_is_multi_agg:
+        assert scored.has_agg_step, (
+            f"{pool}:{qid} multi-agg / COUNT DISTINCT requires agg_step_* in agent-visible spec"
+        )
+        assert re.search(r"pub exec fn agg_step_(?:state_new_)?\w+", visible), (
+            f"{pool}:{qid} missing agg_step_* helper in visible spec"
+        )
+
+    projected = _projected_sec_schema(sql)
+    spec_rs = transpile_sql_to_verus(sql, projected)
+    helpers = _fold_helpers(spec_rs)
+    assert helpers, f"{pool}:{qid} must emit recursive MethodSpec fold helpers"
+    assert _fold_helpers_have_no_arbitrary(spec_rs)
+
+
+def test_resample_r3_q10_in_inner_groupby_still_raises_unsupported() -> None:
+    """Known loud-fail: IN subquery with inner GROUP BY (r3 Q10)."""
+    r3_path = HOLDOUT / "queries_resample_r3.sql"
+    queries = dict(parse_sql_file(r3_path))
+    sql = queries["Q10"]
+    schema = load_sec_schema()
+
+    shell = classify_query(sql, "Q10", schema)
+    assert shell.status == "transpile_fail"
+    assert "IN inner GROUP BY" in shell.reason
+
+    with pytest.raises(UnsupportedContractError, match="IN inner GROUP BY"):
+        transpile_sql_to_verus(sql, _projected_sec_schema(sql))

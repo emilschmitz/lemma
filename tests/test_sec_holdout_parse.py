@@ -52,15 +52,9 @@ SEC_UNSUPPORTED: set[str] = set()
 
 
 def _load_sec_queries() -> list[tuple[str, str]]:
-    text = QUERIES_PATH.read_text()
-    out: list[tuple[str, str]] = []
-    for m in re.finditer(
-        r"-- Q(\d+):.*?\n(SELECT.*?;)",
-        text,
-        re.DOTALL | re.IGNORECASE,
-    ):
-        out.append((m.group(1), m.group(2).strip()))
-    return out
+    from research_loop.scripts.sqlsmith_trusted_coverage import parse_sql_file
+
+    return [(qid.removeprefix("Q"), sql) for qid, sql in parse_sql_file(QUERIES_PATH)]
 
 
 SEC_QUERIES = _load_sec_queries()

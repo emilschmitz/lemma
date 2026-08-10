@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from research_loop.scripts.sqlsmith_trusted_coverage import parse_sql_file
 from research_loop.scripts.trusted_capability_score import (
     fold_has_arbitrary,
     guess_capability,
@@ -13,6 +14,7 @@ from research_loop.scripts.trusted_capability_score import (
 from tests.test_sec_holdout_parse import SEC_SCHEMA
 
 ROOT = Path(__file__).resolve().parents[1]
+HOLDOUT_QUERIES = ROOT / "holdout" / "gendb_sec_edgar" / "queries.sql"
 
 _SIMPLE = """SELECT stmt, COUNT(*) AS cnt
 FROM pre
@@ -101,3 +103,22 @@ pub open spec fn method_spec_helper(cols: &Cols, i: int) -> Map<Seq<char>, u64>
 }
 """
     assert fold_has_arbitrary(fake)
+
+
+def test_holdout_queries_sql_scores_all_six_blocks() -> None:
+    """queries.sql has 6 labeled blocks (Q1,Q2,Q3,Q4,Q6,Q24); scorer must see all."""
+    pairs = parse_sql_file(HOLDOUT_QUERIES)
+    assert len(pairs) == 6
+    assert [qid for qid, _ in pairs] == ["Q1", "Q2", "Q3", "Q4", "Q6", "Q24"]
+
+    results = [
+        score_query(
+            source="holdout/gendb_sec_edgar/queries.sql",
+            qid=qid,
+            sql=sql,
+            schema=SEC_SCHEMA,
+        )
+        for qid, sql in pairs
+    ]
+    summary = summarize(results)
+    assert summary["total"] == 6

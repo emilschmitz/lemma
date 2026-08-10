@@ -92,7 +92,7 @@ def test_top_ret_types_emit_agg_step(ret_type: str) -> None:
     assert "agg_step_apply_row_" in visible
     assert not _VACUOUS_TRUSTED_RUN_QUERY_RE.search(visible)
     helper_chunks = re.findall(
-        r"pub open spec fn (?:method_spec_helper|multi_agg_helper)[\s\S]*?^}",
+        r"pub open spec fn \w*(?:method_spec_helper|multi_agg_helper)[\s\S]*?^}",
         visible,
         re.MULTILINE,
     )

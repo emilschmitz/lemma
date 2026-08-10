@@ -57,7 +57,7 @@ _SCHEMA_COL = re.compile(
 )
 
 _LABELED_QUERY = re.compile(
-    r"--\s*Q(\d+):[^\n]*\n(SELECT\b.*?;)",
+    r"--\s*Q(\d+):.*?\n(SELECT\b.*?;)",
     re.DOTALL | re.IGNORECASE,
 )
 _BARE_SELECT = re.compile(r"(SELECT\b.*?;)", re.DOTALL | re.IGNORECASE)

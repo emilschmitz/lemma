@@ -117,12 +117,14 @@ def test_valid_cols_numeric_columns_have_vec_len() -> None:
     assert "cols.value.len() == cols.n" in spec
 
 
-def test_q24_has_no_agg_step_emitted() -> None:
+def test_q24_emits_agg_step_for_anti_join_helper() -> None:
     sql = _load_query("24")
     projected = _projected_schema(sql)
     spec = transpile_sql_to_verus(sql, projected)
     ret = resolve_ret_type_from_method_spec(spec)
-    assert multi_agg_step_trusted_rs(spec, ret) == ""
+    step = multi_agg_step_trusted_rs(spec, ret)
+    assert "agg_step_" in step
+    assert "join_anti_multi_agg_helper" in spec
 
 
 @pytest.mark.parametrize(
@@ -165,4 +167,8 @@ def test_blocked_queries_document_missing_helpers() -> None:
     blocked = {q: c for q, c in SEC_HOLDOUT_CAPABILITY.items() if c.status == "blocked"}
     assert blocked.keys() == {"2", "3", "4", "6"}
     for cap in blocked.values():
-        assert "missing" in cap.reason.lower() or "Trusted" in cap.reason
+        reason = cap.reason.lower()
+        assert any(
+            token in reason
+            for token in ("missing", "trusted", "still needs", "standin", "lemma")
+        ), cap.reason

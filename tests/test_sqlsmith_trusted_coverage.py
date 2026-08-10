@@ -27,8 +27,8 @@ GROUP BY stmt;"""
 
 def test_parse_queries_sql_file() -> None:
     pairs = parse_sql_file(QUERIES_SQL)
-    assert len(pairs) >= 4
-    assert pairs[0][0] == "Q1"
+    assert len(pairs) == 6
+    assert [qid for qid, _ in pairs] == ["Q1", "Q2", "Q3", "Q4", "Q6", "Q24"]
     assert pairs[0][1].upper().startswith("SELECT")
 
 

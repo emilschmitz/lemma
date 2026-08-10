@@ -18,7 +18,16 @@ from research_loop.trusted_ret_bridge import (
     spec_to_exec_type,
 )
 
-_HELPER_NAMES = ("method_spec_helper", "multi_agg_helper")
+_HELPER_NAMES = (
+    "method_spec_helper",
+    "multi_agg_helper",
+    "join_anti_multi_agg_helper",
+    "join_multi_agg_helper",
+)
+
+_HELPER_FN_RE = re.compile(
+    r"pub open spec fn (\w*(?:multi_agg_helper|method_spec_helper))\(",
+)
 
 _COL_REF_RE = re.compile(
     r"cols\.(?:get_)?(\w+)\((?:k|\w+)\)(?:@)?"
@@ -99,7 +108,19 @@ def _split_map_type_args(inner: str) -> tuple[str, str]:
 
 
 def _find_helper(spec_rs: str) -> tuple[str, str, str, str] | None:
+    """Locate the multi-agg fold helper (single-table, join, or anti-join)."""
+    candidates: list[str] = []
     for name in _HELPER_NAMES:
+        if f"pub open spec fn {name}(" in spec_rs:
+            candidates.append(name)
+    for m in _HELPER_FN_RE.finditer(spec_rs):
+        name = m.group(1)
+        if name not in candidates:
+            candidates.append(name)
+    # Prefer the longest/most specific name (anti-join before generic).
+    candidates.sort(key=len, reverse=True)
+
+    for name in candidates:
         marker = f"pub open spec fn {name}("
         pos = spec_rs.find(marker)
         if pos == -1:
