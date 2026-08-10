@@ -356,6 +356,7 @@ def _ret_type_supported(ret_type: str) -> bool:
 
 
 def _boundary_helpers(ret_type: str, verus_spec: str | None = None) -> str:
+    from research_loop.having_filter_bridge import having_filter_trusted_rs
     from research_loop.multi_agg_step_bridge import multi_agg_step_trusted_rs
     from research_loop.trusted_ret_bridge import (
         distinct_set_trusted_rs,
@@ -375,6 +376,10 @@ def _boundary_helpers(ret_type: str, verus_spec: str | None = None) -> str:
             step = multi_agg_step_trusted_rs(verus_spec, ret_type)
             if step:
                 boundary = f"{boundary}{step}" if boundary else step
+    if verus_spec:
+        having = having_filter_trusted_rs(verus_spec, ret_type)
+        if having:
+            boundary = f"{boundary}{having}" if boundary else having
     return boundary
 
 
@@ -409,6 +414,7 @@ def prepare_agent_visible_spec(verus_spec: str, ret_type: str) -> str:
             "// === Agent: use TRUSTED helpers below for opaque views.\n"
             "// Maps: agg_new_* / agg_add_* (wrapping) / agg_put_* (set projected tuple).\n"
             "// Multi-agg steps: agg_step_state_new_* / agg_step_* (+ agg_step_apply_row_* spec).\n"
+            "// HAVING: host post-filter exec helper (ensures vs apply_having_filter).\n"
             "// Distinct sets: hashset_*_view + set_new_* / set_insert_* (COUNT_DISTINCT state).\n"
             "// Seqs: seq_new_* / seq_push_* when present. Raw HashMap::new()/Vec::new()\n"
             "// will not prove against opaque hashmap_*/vec_*_view.\n"

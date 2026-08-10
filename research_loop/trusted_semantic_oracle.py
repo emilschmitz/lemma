@@ -89,6 +89,58 @@ class AggMapOracle:
         return dict(self._hm)
 
 
+def apply_having_filter_oracle(
+    hm: dict[Any, Any],
+    pred_body: str,
+) -> dict[Any, Any]:
+    """Mirror ``apply_having_filter_exec_*`` retain for simple ``v`` / ``v.N`` predicates."""
+    body = pred_body.strip()
+    if body.startswith("(") and body.endswith(")"):
+        body = body[1:-1].strip()
+
+    def eval_pred(_k: Any, v: Any) -> bool:
+        if body.startswith("v."):
+            field = int(body.split(".", 2)[1].split()[0])
+            left = v[field] if isinstance(v, tuple) else v
+            rest = body.split(".", 2)[1]
+            op_rhs = rest[rest.find(" ") + 1 :].strip()
+            op = op_rhs.split()[0]
+            rhs = int(op_rhs.split()[1])
+            if op == ">":
+                return left > rhs
+            if op == ">=":
+                return left >= rhs
+            if op == "<":
+                return left < rhs
+            if op == "<=":
+                return left <= rhs
+            if op == "==":
+                return left == rhs
+            if op == "!=":
+                return left != rhs
+            raise ValueError(f"unsupported HAVING oracle predicate: {pred_body!r}")
+        if body.startswith("v "):
+            left = v
+            op_rhs = body[2:].strip()
+            op = op_rhs.split()[0]
+            rhs = int(op_rhs.split()[1])
+            if op == ">":
+                return left > rhs
+            if op == ">=":
+                return left >= rhs
+            if op == "<":
+                return left < rhs
+            if op == "<=":
+                return left <= rhs
+            if op == "==":
+                return left == rhs
+            if op == "!=":
+                return left != rhs
+        raise ValueError(f"unsupported HAVING oracle predicate: {pred_body!r}")
+
+    return {k: v for k, v in hm.items() if eval_pred(k, v)}
+
+
 class TupleAggMapOracle:
     """Mirrors tuple-valued ``agg_add_*`` / ``agg_put_*`` (projected multi-agg map slots)."""
 
