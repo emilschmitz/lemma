@@ -606,7 +606,8 @@ def _emit_seq_trusted(
     *,
     view: str,
     suffix: str,
-    spec_elem: str,
+    exec_seq: str,
+    spec_seq: str,
     rust_ret: str,
     elem: TypeExpr,
 ) -> str:
@@ -650,7 +651,7 @@ def _emit_seq_trusted(
     return f"""
 // === TRUSTED structural seq helpers (view + seq_new + seq_push) ===
 #[verifier::external_body]
-pub open spec fn {view}(s: {spec_elem}) -> {spec_elem} {{
+pub open spec fn {view}(s: {exec_seq}) -> {spec_seq} {{
     arbitrary()
 }}
 
@@ -714,14 +715,16 @@ def _build_seq_bridge(spec_ret: str, elem: TypeExpr) -> RetBridge | None:
     bridge_key = f"seq_{elem_slug}"
     rust_ret = spec_to_exec_type(TypeSeq(elem=elem))
     needs_view = _contains_seq_char(elem)
-    spec_elem = f"Seq<{_type_to_spec_str(elem)}>"
+    spec_seq = f"Seq<{_type_to_spec_str(elem)}>"
+    exec_seq = f"Seq<{_type_to_hm_str(elem)}>"
 
     if needs_view:
         view = f"vec_{elem_slug}_view"
         trusted = _emit_seq_trusted(
             view=view,
             suffix=elem_slug,
-            spec_elem=spec_elem,
+            exec_seq=exec_seq,
+            spec_seq=spec_seq,
             rust_ret=rust_ret,
             elem=elem,
         )
@@ -741,7 +744,7 @@ def _build_seq_bridge(spec_ret: str, elem: TypeExpr) -> RetBridge | None:
         format_result=_format_seq_result(elem),
         needs_hashmap=False,
         view_spec=view_spec,
-        spec_map=spec_elem,
+        spec_map=spec_seq,
         hm_map=None,
         agg_suffix=elem_slug if needs_view else None,
     )

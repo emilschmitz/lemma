@@ -188,8 +188,9 @@ LIMIT 100"""
         "Seq<(Seq<char>, Seq<char>, u64)>"
     )
     assert ret_type == "seq_str_str_u64"
-    assert "pub open spec fn vec_str_str_u64_view(s: Seq<(Seq<char>, Seq<char>, u64)>" in (
-        bridge.trusted_rs
+    assert (
+        "pub open spec fn vec_str_str_u64_view(s: Seq<(String, String, u64)>)"
+        " -> Seq<(Seq<char>, Seq<char>, u64)>" in bridge.trusted_rs
     )
 
 

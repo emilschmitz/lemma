@@ -125,7 +125,8 @@ def test_structural_bridge_shapes(
     assert rust_fragment in bridge.rust_ret
     assert trusted_fragment in bridge.trusted_rs
     if trusted_fragment.startswith("vec_"):
-        assert f"pub open spec fn {trusted_fragment}(s: {spec_ret})" in bridge.trusted_rs
+        assert f"pub open spec fn {trusted_fragment}(s: Seq<(String, String, u64)>)" in bridge.trusted_rs
+        assert "-> Seq<(Seq<char>, Seq<char>, u64)>" in bridge.trusted_rs
     src = build_runquery_agent_source(ret_type=bridge.key)
     assert rust_fragment in src
     assert bridge.ensures in src
