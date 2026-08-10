@@ -15,6 +15,8 @@ Shell / “Trusted menu ready” on fresh SQLSmith draws plateaued (r5–r9). Sp
 5. On repeated stuck patterns across queries: add a **general**, intuitive Trusted step (or docs/API clarity), ship **adversarial + semantic** tests, then **fresh draw** and try again.
 6. Do **not** treat “ready” as “proved.” Goal metric for this phase: **agent-proved rate on fresh draws**, not shell %.
 
+- **Q9 / Spot SpecEq (2026-08-10):** join multi-agg MethodSpec WHERE string compares now emit `lit@` (`"BS"@` not bare `"BS"`) via `_join_spec_string_literals` on all join filter paths; nested-loop wrap advances outer index when inner exhausts. HAVING `apply_having_filter_exec` for map tuple ret types still follow-up (bench standins only today).
+
 Still prefer host-side Trusted design (no fishing whole-query TRUSTED). Composer/workers may implement Trusted/tests; proof attempts use Grok 4.5.
 
 ## Method (adopted 2026-08-09)

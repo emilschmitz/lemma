@@ -46,6 +46,11 @@ WHERE n.uom = 'pure' AND s.fy = 2024
 GROUP BY s.sic
 HAVING COUNT(DISTINCT s.cik) >= 3"""
 
+JOIN_STRING_FILTER_SQL = """SELECT s.sic, COUNT(*) AS cnt, COUNT(DISTINCT n.adsh) AS n_adsh
+FROM num n JOIN sub s ON n.adsh = s.adsh
+WHERE n.uom = 'pure' AND s.name = 'ACME'
+GROUP BY s.sic"""
+
 
 def _extract_fn(out: str, name: str) -> str:
     marker = f"pub open spec fn {name}("
@@ -124,3 +129,27 @@ def test_q9_like_resolve_ret_type_and_shell() -> None:
     src = build_runquery_agent_source(ret_type=key)
     assert "HashMap<u32, (u64, u64, u64, u64, u64, u64)>" in src
     assert bridge.ensures in src
+
+
+def test_join_multi_agg_where_string_literal_seq_view() -> None:
+    out = transpile_sql_to_verus(JOIN_STRING_FILTER_SQL, {"num": NUM_SCHEMA, "sub": SUB_SCHEMA})
+    helpers = _fold_helpers(out)
+    assert helpers
+    helper = helpers[0]
+    assert re.search(r'==\s*"pure"@', helper), helper
+    assert re.search(r'==\s*"ACME"@', helper), helper
+    assert not re.search(r'==\s*"pure"(?!@)', helper)
+    assert not re.search(r'==\s*"ACME"(?!@)', helper)
+
+
+def test_join_multi_agg_nested_loop_wrap_advances_outer() -> None:
+    out = transpile_sql_to_verus(JOIN_STRING_FILTER_SQL, {"num": NUM_SCHEMA, "sub": SUB_SCHEMA})
+    helper = _extract_fn(out, "multi_agg_helper")
+    assert re.search(
+        r"if i1 < sub\.n \{[\s\S]*?\} else \{\s*multi_agg_helper\(num, sub, i0 \+ 1, 0\)",
+        helper,
+    ), helper
+    assert re.search(
+        r"if i0 < num\.n \{[\s\S]*?\} else \{\s*Map::empty\(\)",
+        helper,
+    ), helper

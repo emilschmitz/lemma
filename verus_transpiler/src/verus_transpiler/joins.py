@@ -474,10 +474,29 @@ def _anti_left_li(expr: str, left: _Slot) -> str:
 
 def _join_spec_string_literals(expr: str) -> str:
     """Add ``@`` to string literals compared against ``Seq<char>`` (``field[idx]@ == "x"``)."""
-    return re.sub(
+    seq_lit = re.sub(
         r'(\[[^\]]+ as int\]@\s*(?:==|!=)\s*)("(?:[^"\\]|\\.)*")(?!\@)',
         r"\1\2@",
         expr,
+    )
+    return re.sub(
+        r'((?:==|!=)\s*)("(?:[^"\\]|\\.)*")(?!\@)(\s*\[[^\]]+ as int\]@)',
+        r"\1\2@\3",
+        seq_lit,
+    )
+
+
+def _resolve_filter_expr(
+    expr: str | None,
+    query: SQLQuery,
+    slots: list[_Slot],
+    schemas_by_table: dict[str, dict[str, str]],
+    derived_by_alias: dict[str, DerivedTable],
+) -> str | None:
+    if not expr:
+        return None
+    return _join_spec_string_literals(
+        _resolve_row_expr(expr, query, slots, schemas_by_table, derived_by_alias),
     )
 
 
@@ -573,6 +592,18 @@ def _gen_nested_loop(
     {body}
 }}"""
 
+    def _exhaust_else_expr(level: int) -> str:
+        if level == 0:
+            return ret_base
+        advance = ", ".join(
+            f"{slots[i].idx} + 1" if i == level - 1 else ("0" if i >= level else slots[i].idx)
+            for i in range(n)
+        )
+        return (
+            f"{helper_name}({', '.join(x.param for x in slots)}"
+            f"{', ' + extra_args if extra_args else ''}, {advance})"
+        )
+
     def emit_level(level: int, indent: str) -> str:
         s = slots[level]
         if level == n - 1:
@@ -586,24 +617,19 @@ def _gen_nested_loop(
                 f"{indent}    if {full_cond} {{\n"
                 f"{indent}        {update_expr}\n"
                 f"{indent}    }} else {{\n"
-                f"{indent}        {call}\n"
+                f"{indent}        tail\n"
                 f"{indent}    }}\n"
                 f"{indent}}} else {{\n"
-                f"{indent}    {ret_base}\n"
+                f"{indent}    {_exhaust_else_expr(level)}\n"
                 f"{indent}}}"
             )
         next_indent = indent + "    "
         inner = emit_level(level + 1, next_indent)
-        advance = ", ".join(
-            f"{slots[i].idx} + 1" if i == level else ("0" if i > level else slots[i].idx)
-            for i in range(n)
-        )
-        call = f"{helper_name}({', '.join(x.param for x in slots)}{', ' + extra_args if extra_args else ''}, {advance})"
         return (
             f"{indent}if {s.idx} < {s.param}.n {{\n"
             f"{inner}\n"
             f"{indent}}} else {{\n"
-            f"{indent}    {call if level < n - 1 else ret_base}\n"
+            f"{indent}    {_exhaust_else_expr(level)}\n"
             f"{indent}}}"
         )
 
@@ -670,10 +696,8 @@ def _emit_join_multi_agg(
     from .parse_sql import _agg_value_type
 
     filter_raw, _ = _strip_anti_join_predicates(where_expr)
-    filter_cond = (
-        _resolve_row_expr(filter_raw, query, slots, schemas_by_table, derived_by_alias)
-        if filter_raw
-        else None
+    filter_cond = _resolve_filter_expr(
+        filter_raw, query, slots, schemas_by_table, derived_by_alias,
     )
     join_cond, _ = _all_join_conds(
         query, slots, schemas_by_table, derived_by_alias, derived_map_vars,
@@ -889,6 +913,7 @@ def _emit_having_filter(
             schemas_by_table,
             derived_by_alias or {},
         )
+        having_expr = _join_spec_string_literals(having_expr)
     pred = f"|k: {key_ty}, v: {val_ty}| {having_expr}"
     if "\n" in spec_body:
         wrapped = f"{{\n        {spec_body}\n    }}"
@@ -923,11 +948,9 @@ def _emit_left_anti_multi_agg(
 
     filter_raw, _ = _strip_anti_join_predicates(where_expr)
     filter_cond = (
-        _join_spec_string_literals(
-            _anti_left_li(
-                _resolve_row_expr(filter_raw, query, [left], schemas_by_table, {}),
-                left,
-            )
+        _anti_left_li(
+            _resolve_filter_expr(filter_raw, query, [left], schemas_by_table, {}) or "",
+            left,
         )
         if filter_raw
         else None
@@ -1049,10 +1072,8 @@ def _emit_join_projection(
     where_expr: str | None,
 ) -> tuple[str, str, str]:
     filter_raw, _ = _strip_anti_join_predicates(where_expr)
-    filter_cond = (
-        _resolve_row_expr(filter_raw, query, slots, schemas_by_table, derived_by_alias)
-        if filter_raw
-        else None
+    filter_cond = _resolve_filter_expr(
+        filter_raw, query, slots, schemas_by_table, derived_by_alias,
     )
     join_cond, _ = _all_join_conds(
         query, slots, schemas_by_table, derived_by_alias, derived_map_vars,
@@ -1166,10 +1187,8 @@ def _emit_full_outer_scalar_sum(
     match_helper = _emit_match_helper(left, right, match_conds)
 
     filter_raw, _ = _strip_anti_join_predicates(where_expr)
-    filter_cond = (
-        _resolve_row_expr(filter_raw, query, slots, schemas_by_table, derived_by_alias)
-        if filter_raw
-        else None
+    filter_cond = _resolve_filter_expr(
+        filter_raw, query, slots, schemas_by_table, derived_by_alias,
     )
     join_cond = _raw_join_equalities(
         join.on_equalities, slots, schemas_by_table, derived_by_alias, derived_map_vars, query,
@@ -1190,10 +1209,8 @@ def _emit_full_outer_scalar_sum(
 
     left_only_helper = "full_join_left_unmatched_helper"
     left_slots = [left]
-    filter_left = (
-        _resolve_row_expr(filter_raw, query, left_slots, schemas_by_table, derived_by_alias)
-        if filter_raw
-        else None
+    filter_left = _resolve_filter_expr(
+        filter_raw, query, left_slots, schemas_by_table, derived_by_alias,
     )
     term_left = _resolve_row_expr(agg_expr, query, left_slots, schemas_by_table, derived_by_alias)
     left_update = (
@@ -1263,10 +1280,8 @@ def _emit_single_agg_nway(
     helper_name: str = "join_method_spec_helper",
 ) -> tuple[str, str, str]:
     filter_raw, _ = _strip_anti_join_predicates(where_expr)
-    filter_cond = (
-        _resolve_row_expr(filter_raw, query, slots, schemas_by_table, derived_by_alias)
-        if filter_raw
-        else None
+    filter_cond = _resolve_filter_expr(
+        filter_raw, query, slots, schemas_by_table, derived_by_alias,
     )
     join_cond, _ = _all_join_conds(
         query, slots, schemas_by_table, derived_by_alias, derived_map_vars,
