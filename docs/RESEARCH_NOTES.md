@@ -21,7 +21,7 @@ When `LEMMA_RESEARCH_LOG=1` or `LEMMA_EXPERIMENT=1`, every optimizer / MCP admit
 
 ## What we already did (shell layer)
 
-On SEC GenDB resamples (`queries_resample_r1`…`r4` and `queries_all`):
+On SEC GenDB resamples (`queries_resample_r*.sql` and `queries_all`):
 
 - Shell build rate ≈ **100%** for most pools (transpile + resolve return type + agent shell + admission + assemble). That is **not** “agent proved a fast body.”
 - General (schema-driven) fixes included: EXISTS/IN projection, HAVING over grouped join-derived scalars, GROUP BY with aggregates only in HAVING, HAVING not collecting nested subquery aggs, MIN/MAX multi-agg joins, EXISTS/IN semi-join real folds (common shapes), COUNT_DISTINCT HashSet companions on multi-agg shells.
@@ -45,6 +45,11 @@ Distinct-set helpers (`set_insert_str`, etc.) plus **group `agg_step_*`** (see `
 | 2026-08-09 | r1–r4, queries_all | ≈100% (r3: 1 loud-fail IN+GROUP BY) | not fully scored yet | Shell layer only; no agent-sandbox menu fishing |
 | 2026-08-09 | holdout `queries.sql` / Q1 shape | 100% shell (4/4) | **yes** for COUNT+COUNT_DISTINCT+AVG group-by | Host `agg_step_*` + standin `run_query` Verus-verified without `admit()` (`tests/test_multi_agg_step.py`) |
 | 2026-08-09 | holdout + r1–r4 + `queries_all` (231 SQL after parser fix) | **99.6%** shell (230/231) | **99.6%** `ready` (230/231) | `agg_step_*` for join/anti-join/`multi_agg_helper`; holdout `queries.sql` 6/6 ready. 1 loud-fail: IN inner GROUP BY (r3). Adversarial suite covers resample pools. |
+| 2026-08-09 | **generalize → fresh-resample → score** (host only; no agent-sandbox) | | | After Trusted-menu work (`agg_step_*`, distinct-set helpers, join folds), score **new** GenDB draws with `trusted_capability_score.py` — not optimizer iterations. |
+| 2026-08-09 | r5 (seed 505, 60 SQL) | **100%** shell (60/60) | **100%** `ready` (60/60) | Fresh resample; adversarial suite glob `queries_resample_r*.sql`. |
+| 2026-08-09 | r6 (seed 606, 60 SQL) | **100%** shell (60/60) | **100%** `ready` (60/60) | Fresh resample. |
+| 2026-08-09 | r7 (seed 707, 80 SQL) | **100%** shell (80/80) | **100%** `ready` (80/80) | Fresh resample. |
+| 2026-08-09 | r8 (100 SQL) | **100%** shell (100/100) | **100%** `ready` (100/100) | Fresh resample; host scorer 2026-08-09. |
 
 Host scorer buckets: `ready` = shell OK + real MethodSpec folds + Trusted step surface for shape; `needs_trusted` = shell OK but multi-agg / COUNT(DISTINCT) without `agg_step_*`; `transpile_fail` / `shell_fail` otherwise.
 

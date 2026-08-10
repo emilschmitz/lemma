@@ -47,9 +47,9 @@ _SCALAR_SCHEMA = {"V": "bigint"}
 
 ROOT = Path(__file__).resolve().parents[1]
 HOLDOUT = ROOT / "holdout" / "gendb_sec_edgar"
-RESAMPLE_POOL_FILES = [
-    HOLDOUT / f"queries_resample_r{i}.sql" for i in range(1, 5)
-] + [HOLDOUT / "queries_all.sql"]
+RESAMPLE_POOL_FILES = sorted(HOLDOUT.glob("queries_resample_r*.sql")) + [
+    HOLDOUT / "queries_all.sql"
+]
 
 Q1_LIKE_SQL = """SELECT stmt, rfile, COUNT(*) AS cnt,
        COUNT(DISTINCT adsh) AS num_filings,
