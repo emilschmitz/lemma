@@ -650,7 +650,7 @@ def _emit_seq_trusted(
     return f"""
 // === TRUSTED structural seq helpers (view + seq_new + seq_push) ===
 #[verifier::external_body]
-pub open spec fn {view}(s: {rust_ret}) -> {spec_elem} {{
+pub open spec fn {view}(s: {spec_elem}) -> {spec_elem} {{
     arbitrary()
 }}
 

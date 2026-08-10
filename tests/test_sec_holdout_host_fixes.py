@@ -10,7 +10,7 @@ import pytest
 from research_loop.assemble_verified_program import assemble_verified_join_program
 from research_loop.harness import run_custom_sql_pipeline
 from research_loop.method_spec_ret_type import resolve_ret_type_from_method_spec
-from research_loop.trusted_ret_bridge import get_bridge
+from research_loop.trusted_ret_bridge import get_bridge, structural_bridge_for_spec_type
 from tests.test_sec_holdout_parse import SEC_SCHEMA
 from verus_transpiler import transpile_sql_to_verus
 from verus_transpiler.column_projection import project_multi_schema_for_query
@@ -160,6 +160,37 @@ LIMIT 50"""
     assert "subquery_sq1_spec(num, num.tag[i0 as int]@" in out
     assert "valid_cols(cols)" not in out
     assert "subquery_sq1_spec(cols)" not in out
+
+
+def test_r10_q11_correlated_scalar_subquery_host_codegen_types() -> None:
+    """r10 Q11: correlated scalar params are Seq<char>; subquery WHERE uses lit@."""
+    sql = """SELECT s.name, n.tag, n.value
+FROM num n
+JOIN sub s ON n.adsh = s.adsh
+WHERE n.uom = 'USD' AND s.fy = 2024 AND n.value IS NOT NULL
+      AND n.value = (
+          SELECT MAX(n2.value)
+          FROM num n2
+          WHERE n2.tag = n.tag AND n2.adsh = n.adsh AND n2.uom = 'USD'
+      )
+ORDER BY n.value DESC
+LIMIT 100"""
+    schema = {"num": SEC_SCHEMA["num"], "sub": SEC_SCHEMA["sub"]}
+    out = transpile_sql_to_verus(sql, schema)
+    assert "outer_tag: Seq<char>" in out
+    assert "outer_adsh: Seq<char>" in out
+    assert "outer_tag: String" not in out
+    assert 'num.get_uom(k) == "USD"@' in out
+    assert "num.get_tag(k) == outer_tag" in out
+    assert "num.get_tag(k) == outer_tag@" not in out
+    ret_type = resolve_ret_type_from_method_spec(out)
+    bridge = structural_bridge_for_spec_type(
+        "Seq<(Seq<char>, Seq<char>, u64)>"
+    )
+    assert ret_type == "seq_str_str_u64"
+    assert "pub open spec fn vec_str_str_u64_view(s: Seq<(Seq<char>, Seq<char>, u64)>" in (
+        bridge.trusted_rs
+    )
 
 
 def test_join_agent_shell_matches_method_spec_signature() -> None:

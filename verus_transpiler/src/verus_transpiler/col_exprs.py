@@ -38,9 +38,16 @@ def spec_where_cond(cond: str, idx: str, schema_dict: dict[str, str]) -> str:
         if col_verus_type(col_type) != "String":
             continue
         col_pat = re.escape(col)
+        # Table-scoped getters (num.get_uom(k)) as well as bare cols.get_*.
+        getter_pat = rf"\w+\.get_{col_pat.lower()}\({re.escape(idx)}\)"
         out = re.sub(
-            rf"cols\.get_{col_pat.lower()}\({re.escape(idx)}\)\s*==\s*(\"[^\"]*\")",
-            rf"cols.get_{col.lower()}({idx}) == \1@",
+            rf"({getter_pat})\s*==\s*(\"[^\"]*\")(?!\@)",
+            r"\1 == \2@",
+            out,
+        )
+        out = re.sub(
+            rf"({getter_pat})\s*!=\s*(\"[^\"]*\")(?!\@)",
+            r"\1 != \2@",
             out,
         )
     out = re.sub(

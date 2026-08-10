@@ -147,6 +147,48 @@ def test_prepare_agent_visible_spec_includes_agg_step() -> None:
     assert "arbitrary()" not in helper
 
 
+Q26_CASE_WHEN_SQL = """SELECT n.tag, t.tlabel, t.datatype,
+       COUNT(DISTINCT n.adsh) AS num_filings,
+       COUNT(*) AS total_entries,
+       SUM(CASE WHEN n.value > 0 THEN 1 ELSE 0 END) AS positive_count,
+       SUM(CASE WHEN n.value < 0 THEN 1 ELSE 0 END) AS negative_count
+FROM num n
+JOIN tag t ON n.tag = t.tag AND n.version = t.version
+WHERE n.ddate BETWEEN 20220101 AND 20221231 AND n.value IS NOT NULL
+      AND t.custom = 0
+GROUP BY n.tag, t.tlabel, t.datatype
+HAVING COUNT(DISTINCT n.adsh) > 100
+LIMIT 500"""
+
+TAG_SCHEMA = {
+    "tag": "string",
+    "version": "string",
+    "tlabel": "string",
+    "datatype": "string",
+    "custom": "int",
+    "abstract": "int",
+}
+NUM_SCHEMA = {
+    "adsh": "string",
+    "tag": "string",
+    "version": "string",
+    "uom": "string",
+    "value": "double",
+    "ddate": "int",
+}
+
+
+def test_multi_agg_case_when_cast_parentheses() -> None:
+    """CASE-WHEN row compares in agg_step apply_row parenthesize (row as int) < n."""
+    schema = {"num": NUM_SCHEMA, "tag": TAG_SCHEMA}
+    out = transpile_sql_to_verus(Q26_CASE_WHEN_SQL, schema)
+    ret_type = resolve_ret_type_from_method_spec(out)
+    rs = multi_agg_step_trusted_rs(out, ret_type)
+    assert "(row_u64_0 as int) > 0" in rs
+    assert "(row_u64_0 as int) < 0" in rs
+    assert "row_u64_0 as int < 0" not in rs
+    assert "row_u64_0 as int > 0" not in rs
+
 def test_sec_q1_agg_step_runquery_verus(tmp_path: Path) -> None:
     from research_loop.bench_standins.sec_q1_runquery import SEC_Q1_RUNQUERY
 

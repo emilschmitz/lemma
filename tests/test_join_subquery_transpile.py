@@ -87,10 +87,15 @@ LIMIT 50"""
     assert "valid_cols_num" in section
     assert "valid_cols(cols)" not in section
     assert "outer_tag" in section
+    assert "outer_tag: Seq<char>" in section
+    assert "outer_adsh: Seq<char>" in section
     assert re.search(
         r"subquery_sq1_spec\(num, num\.tag\[i0 as int\]@, num\.adsh\[i0 as int\]@\)",
         out,
     )
+    assert 'num.get_uom(k) == "pure"@' in out
+    assert "num.get_tag(k) == outer_tag@" not in out
+    assert "num.get_tag(k) == outer_tag" in out
 
 
 def test_exists_join_wiring() -> None:

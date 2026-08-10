@@ -97,9 +97,8 @@ def _rewrite_outer_refs_in_where(
     out = where_at_k
     for col in correlation_cols:
         pname = _outer_param_name(col)
-        typ = _lookup_col_type(col, inner_schema, outer_schema)
-        replacement = f"{pname}@" if col_verus_type(typ) == "String" else pname
-        out = re.sub(rf"\bouter\.{re.escape(col)}\b", replacement, out, flags=re.IGNORECASE)
+        # Correlated params are Seq<char> (or numeric); no @ lift from exec String.
+        out = re.sub(rf"\bouter\.{re.escape(col)}\b", pname, out, flags=re.IGNORECASE)
     return out
 
 
@@ -135,8 +134,7 @@ def _correlated_param_specs(
 ) -> list[tuple[str, str]]:
     specs: list[tuple[str, str]] = []
     for col in correlation_cols:
-        typ = _lookup_col_type(col, inner_schema, outer_schema)
-        vt = col_verus_type(typ)
+        vt = _corr_key_spec_type(col, inner_schema, outer_schema)
         specs.append((_outer_param_name(col), vt))
     return specs
 
