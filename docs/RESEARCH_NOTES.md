@@ -19,7 +19,7 @@ Shell / “Trusted menu ready” on fresh SQLSmith draws plateaued (r5–r9). Sp
 3. Have a **Grok 4.5** agent write `run_query` only (Cursor Task / local workspace — **not** required to burn full Docker Spot sandbox for every trial). Budget **~10–15 min** wall; if the trace looks stuck (same verify error loop, no progress), stop early.
 4. Host admits + Verus-verifies. Success = proof closes under admission.
 5. On repeated stuck patterns across queries: add a **general**, intuitive Trusted step (or docs/API clarity), ship **adversarial + semantic** tests, then **fresh draw** and try again.
-6. Do **not** treat “ready” as “proved.” Goal metric for this phase: **agent-proved rate on fresh draws**, not shell %.
+6. Do **not** treat “ready” as “proved.” Goal metric for this phase: **agent-proved rate on fresh draws**, not shell %. **Gate: ≥98%** `VERIFY True` under admission on each new resample (r10 cleared 40/40; r11+ must clear 98%).
 
 ### Trusted design goal (human review)
 
