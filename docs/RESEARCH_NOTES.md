@@ -58,3 +58,7 @@ Host scorer buckets: `ready` = shell OK + real MethodSpec folds + Trusted step s
 - Adversarial test policy: `docs/ADVERSARIAL_TESTS.md` (pattern: `tests/test_admit_agent_runquery.py`).
 - Safe = fixed host menu; admission rejects agent-authored TRUSTED/`admit`/`arbitrary`.
 - Practically general for SEC-like analytical SQL if shape-level steps cover resample clusters; not “all SQL forever.”
+
+## Paper / eval note: multi-engine soundness check
+
+Beyond Verus proof of `run_query ≡ method_spec`, a practical **implementation soundness** check for the paper: run the same SQL (and/or the native Lemma result) against **several other engines** (e.g. DuckDB, SQLite, Postgres, Spark SQL) on the same fixture data and require **row-multiset / aggregate agreement** (modulo known float/NULL quirks). Disagreement flags either a MethodSpec bug, a Trusted bridge bug, or an engine dialect difference — triage before claiming verified end-to-end. This does not replace the proof; it catches “proved against a wrong spec” and harness wiring errors. Log engine versions + result digests next to `SESSION_HOT_US` in experiment harvests when enabled.
