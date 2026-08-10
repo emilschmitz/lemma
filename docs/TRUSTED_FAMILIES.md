@@ -5,6 +5,32 @@ Trusted return-type families. Each family maps a normalized Verus MethodSpec
 return type `T` to exec-shaped Rust (`u64`/`i64`, `HashMap<…>`, `Vec<…>`) plus
 optional TRUSTED view/agg helpers.
 
+**Reviewability:** Trusteds should stay **conceptually few** and **grouped** (views,
+agg accumulate, distinct-set, one-row `agg_step`, HAVING filter) so a human can
+audit them. Suffixes encode key/value shape; they are not separate Trusted
+ideas. Prefer fixing MethodSpec/docs over inventing another opaque helper.
+
+### Rocketship bar (NASA-grade local assumptions)
+
+A product-path `#[verifier::external_body]` may stay only if **all** of:
+
+1. **One idea** — one sentence names the operation.
+2. **Ensures ≡ body under a named precondition** — no silent gap (e.g. math `+`
+   vs `wrapping_add` without an explicit `requires` that the sum fits).
+3. **Local** — not a whole-query / whole-join / “subquery answer” Trusted.
+4. **Expert-blind** — a careful systems/Rust reviewer accepts it after reading
+   `requires`/`ensures` and a short body, without Lemma folklore.
+5. **Tested** — semantic differential (or equivalent) covers the contract,
+   including precondition boundaries where applicable.
+
+**Tiers:** **A** already meets the bar; **B** fixable (put the bound in the
+signature); **C** dialect/Unicode — pin a rule then test; **D** fail the bar
+(`arbitrary()`, whole-query Trusteds) — remove from the verified product path
+or replace with a real open-spec definition. Fail loud rather than ship D.
+
+Inventory of product-path Trusteds and tier tags: see
+`docs/RESEARCH_NOTES.md` (Rocketship Trusted inventory).
+
 Registry: `research_loop/trusted_families.py` (`TRUSTED_FAMILY_MENU`).
 
 **Nested `Map` return types are intentionally unsupported.** COUNT DISTINCT and

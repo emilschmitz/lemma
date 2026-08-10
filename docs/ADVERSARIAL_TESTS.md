@@ -11,7 +11,8 @@ Happy-path-only tests are **insufficient**.
 | Suite | Purpose | Example |
 |-------|---------|---------|
 | **Security / admission** | Agent cannot cheat the trust boundary; shell has no vacuous TRUSTED `run_query`; folds are real | `tests/test_admit_agent_runquery.py`, `tests/test_trusted_surface_adversarial.py` |
-| **Semantic differential** | TRUSTED exec bodies match an independent oracle on tiny fixtures (Python twin and/or DuckDB); parametrized over all 25 menu families. Overflow contract is explicit `valid_cols` / `LEMMA_MAX_*` bounds on loaded data, not silent “ints never wrap” — see `docs/RESEARCH_NOTES.md`. | `tests/test_trusted_semantic_differential.py`, `research_loop/trusted_semantic_oracle.py` |
+| **Semantic differential** | TRUSTED exec bodies match an independent oracle on tiny fixtures (Python twin and/or DuckDB); parametrized over all 25 menu families. Overflow contract is explicit `valid_cols` / `LEMMA_MAX_*` **and** Verus `requires` on arithmetic Trusteds (rocketship bar) — see `docs/RESEARCH_NOTES.md` / `docs/TRUSTED_FAMILIES.md`. | `tests/test_trusted_semantic_differential.py`, `research_loop/trusted_semantic_oracle.py` |
+
 
 The adversarial suite does **not** prove that every `#[verifier::external_body]` `ensures`
 matches real exec semantics (e.g. that `set_insert` really grows the distinct set). That is

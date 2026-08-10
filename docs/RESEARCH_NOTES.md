@@ -127,7 +127,19 @@ Admission requires `run_query` to keep `requires valid_cols(cols)` (or the per-t
 
 Exec bodies use wrapping because that is what rustc does on `u64`/`i64`. The logical spec treats sums as unbounded integers then casts back. **Soundness story:** for a given workload, the host must ensure `valid_cols` holds on loaded data *and* that intermediate aggregates stay within the width of the exec type so wrapping never occurs — then `wrapping_add` agrees with the spec's `int` math. Where wrapping is intentional (semantic differential oracle), tests model Rust wrap explicitly (`research_loop/trusted_semantic_oracle.py`).
 
-Comments on TRUSTED prelude helpers state this contract: *"sound when ValidCols row/cell bounds apply (no overflow)."*
+Comments on TRUSTED prelude helpers state this contract: *"sound when ValidCols row/cell bounds apply (no overflow)."* **Rocketship bar:** that bound must appear as Verus `requires` on the Trusted (not only a comment), so an expert reads the assumption in the signature — same *kind* of acceptance as “two ints summing under `u64::MAX` do not overflow.”
+
+### Rocketship Trusted inventory (product path)
+
+| Tier | Surface | Status / action |
+|------|---------|-----------------|
+| **A** | `agg_new_*`, `seq_new_*`, HashMap/`HashSet` `@` views, `set_insert_*` membership+dom, `case_when_u64_exec`, HAVING filter (pred copy + `*v`/table params) | Keep; one-liner in comment |
+| **B** | `add_u64` / `add_i64` / `mul_u64_u32` / `sub_u64_to_i64` | **Done:** fit-in-width `requires` + `checked_add` / `checked_mul` |
+| **B (remaining)** | `agg_add_*` / `agg_step_*` numeric slots still use wrapping in exec with math `ensures` | Next: thread the same fit-in-width `requires` into those helpers (or prove callers discharge `add_u64` requires) |
+| **C** | LIKE/ILIKE / `str_lower`/`upper` / `str_like_contains` | **Done (ASCII pin):** real open specs; exec Trusteds tie via `ensures` |
+| **D** | nested complex subquery MethodSpec still `external_body`+`arbitrary()`; experimental whole-query TRUSTED `run_query` | Loud-fail / quarantine — not agent-prove success path. `left_join_miss_generic` → `false` (done). Opaque `@` **view** specs (`hashset_*_view`, `agg_step_inner_*_view`) stay `arbitrary()` bodies but are constrained by insert/step `ensures` (A-tier *interpretation* axiom, not a whole-query result) |
+
+Related: `docs/TRUSTED_FAMILIES.md` (Rocketship bar), `docs/ADVERSARIAL_TESTS.md`.
 
 ### Practical workflow (before prove / run)
 
@@ -141,8 +153,10 @@ Constants are global (not per-benchmark query literals) per engine policy in `AG
 ### Honest gaps
 
 - **No end-to-end proved no-overflow lemma** for every aggregation path yet (e.g. `n * LEMMA_MAX_MONEY_U64` fitting in `u64` for arbitrary SUM). Cell and row caps bound per-cell magnitude and table size; **cross-row aggregate bounds are still host/workload reasoning**, not fully discharged inside Verus for all shapes.
-- **TRUSTED `wrapping_add` bridges** (`agg_add_*`, `add_u64`, multi-agg `agg_step_*`) are trusted to match spec `ensures` when bounds hold; we do not yet prove a general "sum of n bounded cells fits in u64" lemma for each emitted query.
+- **TRUSTED arithmetic:** prelude `add_u64` / `mul_*` / `add_i64` now carry fit-in-width `requires` and `checked_*` bodies. `agg_add_*` / `agg_step_*` still need the same treatment (or must call the checked helpers so requires are discharged at the call site).
+- **Cross-row aggregate fit** in `u64` for arbitrary SUM length is still host/workload reasoning, not a fully discharged Verus lemma for every shape.
 - **Semantic differential tests** check exec ≡ Python/Rust-wrap oracle on tiny fixtures; they do not prove absence of overflow on production-sized tables.
 - **Float / decimal** columns map to `u64` exec cells with the same cell bound; non-integer semantics are a separate (known) approximation.
+- **Complex nested subqueries** may still emit Trusted `arbitrary()` MethodSpec helpers — unsupported for rocketship until real folds exist (loud fail preferred).
 
 Related: `docs/VERIFICATION_CHAIN.md` (`valid_cols` in admission), `docs/TRUSTED_FAMILIES.md` (`agg_add_*` menu), `docs/ADVERSARIAL_TESTS.md` (semantic suite uses wrapping oracle; overflow contract is `valid_cols`, not silent).

@@ -1,10 +1,11 @@
 """Global column/table bounds for Lemma (host-injected, all queries).
 
 Emits ``LEMMA_MAX_*`` constants, ``valid_cols`` (row count + per-cell caps),
-TRUSTED arithmetic prelude (``wrapping_add`` exec; spec uses unbounded ``int``),
-and per-column accessor lemmas. Proof soundness assumes loaded data satisfies
-``valid_cols`` — we do not assume integers never overflow globally. See
-``docs/RESEARCH_NOTES.md`` (overflow / table-bound assumptions).
+TRUSTED arithmetic prelude (``checked_add`` / ``checked_mul`` exec under fit-in-width
+``requires``; spec uses unbounded ``int``), and per-column accessor lemmas. Proof
+soundness assumes loaded data satisfies ``valid_cols`` — we do not assume integers
+never overflow globally. See ``docs/RESEARCH_NOTES.md`` (overflow / table-bound
+assumptions).
 """
 
 from __future__ import annotations
@@ -100,44 +101,59 @@ def emit_trusted_prelude(*, include_left_join_miss: bool = True) -> str:
     left_join_miss = ""
     if include_left_join_miss:
         left_join_miss = """// === IS NULL / anti-join (Lemma non-null loads; LEFT JOIN miss) ===
-// TRUSTED: LEFT JOIN anti-join miss predicate (schema-driven bridge).
-#[verifier::external_body]
+// Lemma non-null columnar loads compile base-table IS NULL without this helper.
+// Multi-table LEFT JOIN miss is join-specific in MethodSpec; this schema-agnostic
+// placeholder is always false (no unconstrained miss axiom on single-table emit).
 pub open spec fn left_join_miss_generic(cols: &Cols, row: int) -> bool {
-    arbitrary()
+    false
 }
 
 """
     return """// === Trusted arithmetic helpers ===
-// TRUSTED: rustc wrapping_add; sound when ValidCols row/cell bounds apply (no overflow).
+// TRUSTED: if (a as int) + (b as int) <= u64::MAX then add is mathematical +.
 #[verifier::external_body]
 pub exec fn add_u64(a: u64, b: u64) -> (res: u64)
-    ensures res == a + b,
+    requires
+        (a as int) + (b as int) <= u64::MAX as int,
+    ensures
+        res == a + b,
 {
-    a.wrapping_add(b)
+    a.checked_add(b).expect("Trusted overflow: ValidCols/requires violated")
 }
 
-// TRUSTED: rustc wrapping_mul; sound when ValidCols bounds apply.
+// TRUSTED: if (a as int) * (b as int) <= u64::MAX then mul is mathematical *.
 #[verifier::external_body]
 pub exec fn mul_u64_u32(a: u64, b: u32) -> (res: u64)
-    ensures res == a * (b as u64),
+    requires
+        (a as int) * (b as int) <= u64::MAX as int,
+    ensures
+        res == a * (b as u64),
 {
-    a.wrapping_mul(b as u64)
+    a.checked_mul(b as u64).expect("Trusted overflow: ValidCols/requires violated")
 }
 
-// TRUSTED: signed difference on bounded u64 cells.
+// TRUSTED: if (a as int) - (b as int) fits in i64 then sub is mathematical -.
 #[verifier::external_body]
 pub exec fn sub_u64_to_i64(a: u64, b: u64) -> (res: i64)
-    ensures res == (a as int) - (b as int),
+    requires
+        (a as int) - (b as int) >= i64::MIN as int,
+        (a as int) - (b as int) <= i64::MAX as int,
+    ensures
+        res == (a as int) - (b as int),
 {
     (a as i64) - (b as i64)
 }
 
-// TRUSTED: rustc wrapping_add on i64.
+// TRUSTED: if (a as int) + (b as int) fits in i64 then add is mathematical +.
 #[verifier::external_body]
 pub exec fn add_i64(a: i64, b: i64) -> (res: i64)
-    ensures res == a + b,
+    requires
+        (a as int) + (b as int) >= i64::MIN as int,
+        (a as int) + (b as int) <= i64::MAX as int,
+    ensures
+        res == a + b,
 {
-    a.wrapping_add(b)
+    a.checked_add(b).expect("Trusted overflow: ValidCols/requires violated")
 }
 
 // === CASE WHEN (simple int branches) ===
@@ -161,10 +177,16 @@ pub open spec fn str_like_suffix(s: Seq<char>, lit: Seq<char>) -> bool {
     lit.is_suffix_of(s)
 }
 
-// TRUSTED axiom: substring containment (exists quantifier needs manual triggers).
-#[verifier::external_body]
+// Substring containment (open spec; empty lit matches any s).
 pub open spec fn str_like_contains(s: Seq<char>, lit: Seq<char>) -> bool {
-    arbitrary()
+  if lit.len() == 0 {
+    true
+  } else {
+    exists|i: int|
+      0 <= i
+      && i + lit.len() <= s.len()
+      && #[trigger] s.subrange(i, i + lit.len()) == lit
+  }
 }
 
 // TRUSTED: exec string prefix check (ensures tie to spec).
@@ -191,17 +213,60 @@ pub exec fn str_like_contains_exec(s: &str, lit: &str) -> (res: bool)
     s.contains(lit)
 }
 
-// === ILIKE + underscore LIKE (TRUSTED pattern match) ===
-// TRUSTED axiom: case-insensitive SQL LIKE/ILIKE pattern (%, _ wildcards).
-#[verifier::external_body]
-pub open spec fn str_ilike_match(s: Seq<char>, pat: Seq<char>) -> bool {
-    arbitrary()
+// === ILIKE + underscore LIKE (C-tier: ASCII / DuckDB-like exec path) ===
+pub open spec fn ascii_lower_char(c: char) -> char {
+    if 'A' <= c && c <= 'Z' {
+        ((c as int) - ('A' as int) + ('a' as int)) as char
+    } else {
+        c
+    }
 }
 
-// TRUSTED axiom: case-sensitive LIKE with _ single-char wildcard.
-#[verifier::external_body]
+pub open spec fn str_ascii_lower(s: Seq<char>) -> Seq<char> {
+    str_ascii_lower_helper(s, 0)
+}
+
+pub open spec fn str_ascii_lower_helper(s: Seq<char>, i: int) -> Seq<char>
+    decreases s.len() - i,
+{
+    if i >= s.len() {
+        Seq::empty()
+    } else {
+        str_ascii_lower_helper(s, i + 1).insert(0, ascii_lower_char(s[i]))
+    }
+}
+
 pub open spec fn str_like_underscore_match(s: Seq<char>, pat: Seq<char>) -> bool {
-    arbitrary()
+    str_like_underscore_match_rec(s, pat, 0, 0)
+}
+
+pub open spec fn str_like_underscore_match_rec(
+    s: Seq<char>,
+    pat: Seq<char>,
+    si: int,
+    pi: int,
+) -> bool
+    decreases pat.len() - pi,
+{
+    if pi >= pat.len() {
+        si >= s.len()
+    } else if pat[pi] == '%' {
+        exists|k: int|
+            si <= k
+            && k <= s.len()
+            && #[trigger] str_like_underscore_match_rec(s, pat, k, pi + 1)
+    } else if pat[pi] == '_' {
+        si < s.len() && str_like_underscore_match_rec(s, pat, si + 1, pi + 1)
+    } else if si >= s.len() || s[si] != pat[pi] {
+        false
+    } else {
+        str_like_underscore_match_rec(s, pat, si + 1, pi + 1)
+    }
+}
+
+// C-tier: ASCII ILIKE (matches exec to_ascii_lowercase + underscore match).
+pub open spec fn str_ilike_match(s: Seq<char>, pat: Seq<char>) -> bool {
+    str_like_underscore_match(str_ascii_lower(s), str_ascii_lower(pat))
 }
 
 // TRUSTED: exec ILIKE pattern check (ensures tie to spec).
@@ -248,28 +313,47 @@ pub exec fn str_like_underscore_match_exec(s: &str, pat: &str) -> (res: bool)
 }
 
 // === Scalar helpers (abs / case) ===
-// TRUSTED: abs on bounded u64 cell.
-#[verifier::external_body]
+// abs on u64 cell: identity (non-negative type; SQL ABS on unsigned is a no-op).
 pub open spec fn abs_u64(x: u64) -> u64 {
-    arbitrary()
+    x
 }
 
 #[verifier::external_body]
 pub exec fn abs_u64_exec(x: u64) -> (res: u64)
     ensures res == abs_u64(x),
 {
-    if x > (0u64) { x } else { 0u64.wrapping_sub(x) }
+    x
 }
 
-// TRUSTED axiom: ASCII lower/upper on Seq<char>.
-#[verifier::external_body]
+// C-tier/ASCII dialect pin (same as ILIKE): lower/upper via per-char ASCII fold.
+pub open spec fn ascii_upper_char(c: char) -> char {
+    if 'a' <= c && c <= 'z' {
+        ((c as int) - ('a' as int) + ('A' as int)) as char
+    } else {
+        c
+    }
+}
+
+pub open spec fn str_ascii_upper(s: Seq<char>) -> Seq<char> {
+    str_ascii_upper_helper(s, 0)
+}
+
+pub open spec fn str_ascii_upper_helper(s: Seq<char>, i: int) -> Seq<char>
+    decreases s.len() - i,
+{
+    if i >= s.len() {
+        Seq::empty()
+    } else {
+        str_ascii_upper_helper(s, i + 1).insert(0, ascii_upper_char(s[i]))
+    }
+}
+
 pub open spec fn str_lower(s: Seq<char>) -> Seq<char> {
-    arbitrary()
+    str_ascii_lower(s)
 }
 
-#[verifier::external_body]
 pub open spec fn str_upper(s: Seq<char>) -> Seq<char> {
-    arbitrary()
+    str_ascii_upper(s)
 }
 
 #[verifier::external_body]
