@@ -1,5 +1,19 @@
 # Lemma agent & engine rules
 
+## GCP / Spot compute policy
+
+When booking cloud VMs for Lemma experiments:
+
+- **At most one** compute instance at a time (delete or stop the previous before create).
+- **No GPUs.** CPU/RAM only.
+- Prefer template / known shape: Spot **`n2-highmem-64`** from snapshot
+  `lemma-gendb-pre-spot-*` (or the saved `lemma-gendb-n2-highmem-64` template overrides).
+- **Hard cost cap ≈ $5/hr.** Do not book A100/H100, multi-node, or other expensive SKUs.
+  Spot `n2-highmem-64` is the default; if Spot stock fails, retry another zone — still one
+  machine, still under the cap — do not “upgrade” the machine class.
+- Agent timeouts for paper/CLI runs stay **`AGENT_TIMEOUT_SEC=600`** (10 min) unless Emil
+  overrides; model **`cursor-grok-4.5-high`** in `research_loop/config.env` `AGENT_CMD`.
+
 ## Always read the traces on failure
 
 When a run, experiment, verify, assemble, or agent session **fails**, do **not** guess from the
