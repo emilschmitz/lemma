@@ -5,6 +5,12 @@
 Spot VM **r9** (`lemma-gendb`) was deleted before `scp` of `research_loop/runs/` — only partial chat status survived. Added best-effort off-box streaming: `research_loop/experiment_stream.py` POSTs NDJSON events on each `begin_run`/`end_run`; `research_loop/scripts/experiment_event_receiver.py` persists + SSE tail. Set `LEMMA_EXPERIMENT_EVENT_URL` on GCP; run receiver on durable host. See `holdout/EXPERIMENTS_GENDB.md`.
 
 ## Agent-prove loop (started 2026-08-10)
+### Progress (prove loop)
+- **r9 Q56** (single-table Q1-like + `agg_step`): Grok proved.
+- **r9 Q9** (join + COUNT/COUNT DISTINCT + HAVING): host fixes (`lit@`, nested-loop wrap, `apply_having_filter_exec`); Grok proved.
+- **r9 Q11** (join + COUNT/SUM/AVG, 3-string keys): Grok proved with `agg_step_str_str_str__u64_u64_u64`.
+- **r10** (`holdout/gendb_sec_edgar/queries_resample_r10.sql`, 40 queries): **40/40 agent-proved** under admission (`VERIFY True` after batch re-verify). Host gaps closed along the way: subquery `Seq`/`lit@`, `vec_*_view` exec↔spec split, `seq_push` `final(s)@`, exec `agg_step` strip of ghost `as int`, HAVING Trusted table params + scalar `*v`.
+
 
 Shell / “Trusted menu ready” on fresh SQLSmith draws plateaued (r5–r9). Spot agents still mostly failed to **finish a Verus proof**. New loop focus:
 
@@ -15,7 +21,16 @@ Shell / “Trusted menu ready” on fresh SQLSmith draws plateaued (r5–r9). Sp
 5. On repeated stuck patterns across queries: add a **general**, intuitive Trusted step (or docs/API clarity), ship **adversarial + semantic** tests, then **fresh draw** and try again.
 6. Do **not** treat “ready” as “proved.” Goal metric for this phase: **agent-proved rate on fresh draws**, not shell %.
 
-- **Q9 / Spot SpecEq (2026-08-10):** join multi-agg MethodSpec WHERE string compares now emit `lit@` (`"BS"@` not bare `"BS"`) via `_join_spec_string_literals` on all join filter paths; nested-loop wrap advances outer index when inner exhausts. HAVING `apply_having_filter_exec` for map tuple ret types still follow-up (bench standins only today).
+### Trusted design goal (human review)
+
+Trusteds must stay **few in concept**, **easy for a human to read**, and **grouped logically** — not a pile of one-off helpers per SQLSmith query.
+
+- Prefer a small set of **families** (e.g. map view + `agg_new`/`agg_add`, distinct `set_insert`, one-row `agg_step`, HAVING `apply_having_filter_exec`) with names that vary by key/value shape — same idea, generated suffixes, not new ideas.
+- Each Trusted should mean one clear thing a reviewer can check (“update this group for one row”, “filter map by HAVING pred”, “insert into distinct set”).
+- Do **not** add a new Trusted because one agent got stuck once; wait for a **repeated shape** gap, then add something reviewable + adversarially tested.
+- Resist menu bloat: if a proof only needs clearer docs / `eq_at_*` / MethodSpec lit@, fix that instead of another `external_body`.
+
+- **Q9 / Spot SpecEq (2026-08-10):** join multi-agg MethodSpec WHERE string compares emit `lit@`; nested-loop wrap advances outer index; HAVING `apply_having_filter_exec_*` now emitted from MethodSpec (agent-prove path).
 
 Still prefer host-side Trusted design (no fishing whole-query TRUSTED). Composer/workers may implement Trusted/tests; proof attempts use Grok 4.5.
 
@@ -69,6 +84,7 @@ Distinct-set helpers (`set_insert_str`, etc.) plus **group `agg_step_*`** (see `
 | 2026-08-09 | r6 (seed 606, 60 SQL) | **100%** shell (60/60) | **100%** `ready` (60/60) | Fresh resample. |
 | 2026-08-09 | r7 (seed 707, 80 SQL) | **100%** shell (80/80) | **100%** `ready` (80/80) | Fresh resample. |
 | 2026-08-09 | r9 (seed 909, 60 SQL) | **98.3%** shell (59/60) | **98.3%** `ready` (59/60) | Fresh draw after menu freeze; 1 loud-fail IN+GROUP BY (same gap as r3). Combined all pools ≈99.7% ready. |
+| 2026-08-10 | **r10** (40 SQL) | **100%** shell | **100%** agent-proved (`VERIFY True` ×40) | Grok `run_query` + host Trusted/codegen fixes; batch re-verify after final `agg_step` `as int` strip. Exceeds ~90% paper gate on this draw. |
 
 Host scorer buckets: `ready` = shell OK + real MethodSpec folds + Trusted step surface for shape; `needs_trusted` = shell OK but multi-agg / COUNT(DISTINCT) without `agg_step_*`; `transpile_fail` / `shell_fail` otherwise.
 
