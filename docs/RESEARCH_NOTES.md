@@ -49,14 +49,15 @@ Distinct-set helpers (`set_insert_str`, etc.) plus **group `agg_step_*`** (see `
 | 2026-08-09 | r5 (seed 505, 60 SQL) | **100%** shell (60/60) | **100%** `ready` (60/60) | Fresh resample; adversarial suite glob `queries_resample_r*.sql`. |
 | 2026-08-09 | r6 (seed 606, 60 SQL) | **100%** shell (60/60) | **100%** `ready` (60/60) | Fresh resample. |
 | 2026-08-09 | r7 (seed 707, 80 SQL) | **100%** shell (80/80) | **100%** `ready` (80/80) | Fresh resample. |
-| 2026-08-09 | r8 (100 SQL) | **100%** shell (100/100) | **100%** `ready` (100/100) | Fresh resample; host scorer 2026-08-09. |
+| 2026-08-09 | r9 (seed 909, 60 SQL) | **98.3%** shell (59/60) | **98.3%** `ready` (59/60) | Fresh draw after menu freeze; 1 loud-fail IN+GROUP BY (same gap as r3). Combined all pools ≈99.7% ready. |
 
 Host scorer buckets: `ready` = shell OK + real MethodSpec folds + Trusted step surface for shape; `needs_trusted` = shell OK but multi-agg / COUNT(DISTINCT) without `agg_step_*`; `transpile_fail` / `shell_fail` otherwise.
 
 ## Safety / generality bar
 
 - Adversarial test policy: `docs/ADVERSARIAL_TESTS.md` (pattern: `tests/test_admit_agent_runquery.py`).
-- Safe = fixed host menu; admission rejects agent-authored TRUSTED/`admit`/`arbitrary`.
+- **Security / admission** adversarial suite: fixed host menu; admission rejects agent-authored TRUSTED/`admit`/`arbitrary`; no vacuous whole-query `run_query`. Does **not** differentially prove Trusted `ensures` ≡ exec.
+- **Semantic differential** suite (`tests/test_trusted_semantic_differential.py`): tiny-fixture checks that core agent-visible TRUSTED exec (`set_insert_*`, `agg_add_*`, GROUP BY shapes) match Python twins and/or DuckDB. Not a full proof of every `external_body`; `agg_step_*` Verus exec is structural-only until a native diff path lands.
 - Practically general for SEC-like analytical SQL if shape-level steps cover resample clusters; not “all SQL forever.”
 
 ## Paper / eval note: multi-engine soundness check
