@@ -178,6 +178,42 @@ NUM_SCHEMA = {
 }
 
 
+def _agg_step_exec_wrapping_add_lines(rs: str, suffix: str) -> list[str]:
+    m = re.search(
+        rf"pub exec fn agg_step_{re.escape(suffix)}\([\s\S]*?\{{\n([\s\S]*?)\n\}}\n",
+        rs,
+    )
+    assert m, f"missing agg_step_{suffix} exec body"
+    return [ln for ln in m.group(1).split("\n") if "wrapping_add" in ln]
+
+
+def test_exec_wrapping_add_no_ghost_int_q1_avg() -> None:
+    """SUM/AVG row adds in exec agg_step must not cast through ghost int."""
+    out = transpile_sql_to_verus(Q1_LIKE_SQL, {"pre": PRE_SCHEMA})
+    layout = parse_multi_agg_layout(out)
+    assert layout is not None
+    bridge = structural_bridge_for_spec_type(
+        "Map<(Seq<char>, Seq<char>), (u64, u64, u64)>"
+    )
+    rs = emit_multi_agg_step_trusted(layout, bridge)
+    bad = _agg_step_exec_wrapping_add_lines(rs, "str_str__u64_u64_u64")
+    assert bad, "expected wrapping_add lines in agg_step exec"
+    assert all("as int" not in ln for ln in bad), bad
+    assert any("wrapping_add(row_u64_0)" in ln.replace(" ", "") for ln in bad)
+
+
+def test_exec_wrapping_add_no_ghost_int_count_sum() -> None:
+    sql = "SELECT a, b, COUNT(*) AS c, SUM(x) AS s FROM t GROUP BY a, b"
+    schema = {"t": {"a": "string", "b": "string", "x": "int"}}
+    out = transpile_sql_to_verus(sql, schema)
+    ret_type = resolve_ret_type_from_method_spec(out)
+    rs = multi_agg_step_trusted_rs(out, ret_type)
+    bad = _agg_step_exec_wrapping_add_lines(rs, "str_str__u64_u64")
+    assert bad, "expected wrapping_add lines in agg_step exec"
+    assert all("as int" not in ln for ln in bad), bad
+    assert any("wrapping_add(row_u64_0)" in ln.replace(" ", "") for ln in bad)
+
+
 def test_multi_agg_case_when_cast_parentheses() -> None:
     """CASE-WHEN row compares in agg_step apply_row parenthesize (row as int) < n."""
     schema = {"num": NUM_SCHEMA, "tag": TAG_SCHEMA}

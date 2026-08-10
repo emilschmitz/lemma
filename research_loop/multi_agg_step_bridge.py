@@ -393,14 +393,26 @@ def _minmax_src_from_t_line(t_line: str) -> str | None:
 def _sum_delta_expr(s_line: str, slot_i: int, *, multi_slot: bool) -> str | None:
     prev_ref = f"prev.{slot_i}" if multi_slot else "prev"
     m = re.search(
-        rf"let s{slot_i} = \({prev_ref} as int \+ (.+?) as int\) as u64",
+        rf"let s{slot_i} = \({prev_ref} as int \+ (.+?)\) as u64",
         s_line,
     )
     return m.group(1).strip() if m else None
 
 
+_ROW_U64_GHOST_WRAP_RE = re.compile(
+    r"^\s*(?:\(\s*)*(?P<name>row_u64_\d+)"
+    r"(?:\s+as\s+int\s*\))*"
+    r"(?:\s+as\s+u64)?"
+    r"(?:\s+as\s+int\s*\))*"
+    r"\s*$"
+)
+
+
 def _spec_expr_to_exec(expr: str) -> str:
     out = expr.replace("case_when_u64(", "case_when_u64_exec(")
+    bare = _ROW_U64_GHOST_WRAP_RE.match(out.strip())
+    if bare:
+        return bare.group("name")
     out = re.sub(r"\(row_u64_(\d+) as int ([^)]+)\)", r"(row_u64_\1 \2)", out)
     out = re.sub(r"row_u64_(\d+) as int", r"row_u64_\1", out)
     return out
