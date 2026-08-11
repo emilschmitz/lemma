@@ -32,9 +32,9 @@ Must hold **all** of:
    when the transpiler caller supplies external ``CatalogAssumptions`` /
    ``TableAssumptions`` (prove_loop uses ``research_loop/sec_table_assumptions.py``
    explicitly). Product arithmetic lemmas (`lemma_*_cell_u64_*`, `lemma_rem_cap_*`)
-   are checkable from those named caps; **fold slot/count/sum bounds** are emitted
-   as `assume_*` (auditable acceptance under catalog assumptions — not Verus-proved
-   induction).
+   are checkable from those named caps; **fold slot/count/sum bounds** remain
+   `assume_*` (auditable acceptance under catalog assumptions — Phase 1 proved
+   nested-loop **rem geometry** as `lemma_join_nested_rem_*` / `lemma_fold_suffix_rem_*`).
 
 ### External assumptions vs Trusteds
 

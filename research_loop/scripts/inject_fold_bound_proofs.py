@@ -62,8 +62,9 @@ HAVING_TYPO_RE = re.compile(r"apply_having_filter_exec_([a-z0-9_]+)__u64\b")
 PROOF_BINDING_NAMES = frozenset({"value", "val", "line", "delta", "amt"})
 FOLD_PROOF_MARKER_RE = re.compile(
     r"lemma_u64_add_|lemma_rem_cap_cell_u64_add_fits|lemma_rem_cap_one_add_fits"
-    r"|assume_join_nested_rem_leq_rows|assume_\w+_slot\d+_|assume_\w+_(?:count|sum)_"
-    r"|lemma_join_nested_rem_leq_rows|lemma_\w+_slot\d+_|lemma_\w+_(?:count|sum)_"
+    r"|lemma_join_nested_rem_leq_rows|lemma_fold_suffix_rem_leq_rows"
+    r"|assume_\w+_slot\d+_|assume_\w+_(?:count|sum)_"
+    r"|lemma_\w+_slot\d+_|lemma_\w+_(?:count|sum)_"
 )
 EXEC_IN_PROOF_RE = re.compile(r"(\w+)\.get_(\w+)_exec\(([^)]+)\)")
 
@@ -613,7 +614,7 @@ def _nested_join_rem_lines(ctx, lemma_idx_args: list[str]) -> list[str]:
     t1, _ = ctx.table_params[1]
     return [
         (
-            f"assume_join_nested_rem_leq_rows_sq("
+            f"lemma_join_nested_rem_leq_rows_sq("
             f"{t0}.n, {t1}.n, {lemma_idx_args[0]}, {lemma_idx_args[1]});"
         )
     ]
@@ -638,9 +639,9 @@ def _fold_suffix_rem_lines(ctx, lemma_idx_args: list[str]) -> list[str]:
     ns = ", ".join(f"{p}.n" for p, _ in ctx.table_params)
     is_ = ", ".join(lemma_idx_args[:n_tab])
     if n_tab == 3:
-        return [f"assume_fold_suffix_rem_leq_rows_pow3({ns}, {is_});"]
+        return [f"lemma_fold_suffix_rem_leq_rows_pow3({ns}, {is_});"]
     if n_tab == 4:
-        return [f"assume_fold_suffix_rem_leq_rows_pow4({ns}, {is_});"]
+        return [f"lemma_fold_suffix_rem_leq_rows_pow4({ns}, {is_});"]
     return []
 
 
@@ -662,7 +663,7 @@ def _join_depth(ctx) -> int:
 def _rem_cap_one_add_lemma_for_ctx(ctx) -> str | None:
     """Return rem_cap_one lemma, or None when fold_suffix already matches depth.
 
-    Depth ≥3 uses ``assume_fold_suffix_rem_leq_rows_pow*`` with ``LEMMA_MAX_ROWS^k``,
+    Depth ≥3 uses ``lemma_fold_suffix_rem_leq_rows_pow*`` with ``LEMMA_MAX_ROWS^k``,
     which does **not** discharge ``lemma_rem_cap_one_add_fits_{cube|4}`` (CUBE / ROWS_4).
     Pass99 proofs omitted rem_cap_one on those shapes; keep that alignment.
     """

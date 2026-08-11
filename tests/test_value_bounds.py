@@ -148,8 +148,9 @@ def test_bound_lemmas_emitted_with_requires_ensures() -> None:
     for name in (
         "lemma_max_rows_times_native_fits_u64",
         "lemma_max_rows_times_cell_u64_fits_u64",
-        "assume_join_nested_rem_leq_rows_cube",
-        "assume_join_nested_rem_leq_rows_4",
+        "lemma_join_nested_rem_leq_rows_cube",
+        "lemma_join_nested_rem_leq_rows_4",
+        "lemma_fold_suffix_rem_leq_rows_pow3",
         "lemma_u64_add_one_fit",
         "lemma_rem_cap_one_add_fits",
         "lemma_u64_add_native_fit",
@@ -159,6 +160,14 @@ def test_bound_lemmas_emitted_with_requires_ensures() -> None:
         block = lemmas.split(f"pub proof fn {name}")[1].split("pub proof fn")[0]
         assert "requires" in block or "ensures" in block
         assert "arbitrary()" not in block
+
+
+def test_bound_lemmas_no_assume_rem_names() -> None:
+    lemmas = emit_bound_lemmas(catalog=sec_prove_loop_catalog_assumptions())
+    assert "assume_join_nested_rem_" not in lemmas
+    assert "assume_fold_suffix_rem_" not in lemmas
+    assert "lemma_join_nested_rem_leq_rows_sq" in lemmas
+    assert "lemma_fold_suffix_rem_leq_rows_pow3" in lemmas
 
 
 def test_default_bound_lemmas_omit_cell_u64_product_lemmas() -> None:
