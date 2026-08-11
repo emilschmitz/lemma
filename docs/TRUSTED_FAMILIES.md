@@ -46,7 +46,7 @@ Must hold **all** of:
     [External] CatalogAssumptions (user | engine defaults | sec_prove_loop profile)
         → resolve_bounds → LEMMA_MAX_* + valid_cols
     [Trusteds] IF valid_cols/caps THEN checked_add / lemma_* fold bounds
-    [Agent]    uses assumes + lemmas under those caps
+    [Agent]    calls proved lemma_* fold / rem / fit helpers under those caps
 
 Engine defaults are applied at transpile/assemble boundaries via
 ``with_catalog_assumptions(..., defaults=engine_default_catalog_assumptions())`` —
