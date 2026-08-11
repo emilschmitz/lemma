@@ -338,7 +338,15 @@ pub proof fn lemma_rem_cap_native_add_fits(prev_cap: u64)
             {};
 }
 
-// === Map insert (fold induction helper; vstd Map one-key update) ===
+// === Map insert (fold induction; vstd Map one-key update — container axioms) ===
+#[verifier::external_body]
+pub proof fn lemma_map_insert_get<K, V>(m: Map<K, V>, k: K, v: V)
+    ensures
+        m.insert(k, v).contains_key(k),
+        m.insert(k, v)[k] == v,
+{
+}
+
 #[verifier::external_body]
 pub proof fn lemma_map_insert_preserves_other_key<K, V>(m: Map<K, V>, k1: K, k2: K, v: V)
     requires
@@ -352,6 +360,24 @@ pub proof fn lemma_map_insert_preserves_other_key<K, V>(m: Map<K, V>, k1: K, k2:
 // === Nested-loop suffix rem geometry (proved; suffix-start boundary requires) ===
 pub open spec fn rem_join_sq(n0: usize, n1: usize, i0: int, i1: int) -> int {
     (n1 as int - i1) + (n0 as int - i0 - 1) * (n1 as int)
+}
+
+/// One inner-index step: rem(i0, i1) = rem(i0, i1+1) + 1 when i1 < n1.
+pub proof fn lemma_rem_join_sq_inner_step(n0: usize, n1: usize, i0: int, i1: int)
+    requires
+        0 <= i0 <= n0 as int,
+        0 <= i1 < n1 as int,
+    ensures
+        rem_join_sq(n0, n1, i0, i1) == rem_join_sq(n0, n1, i0, i1 + 1) + 1,
+{
+    assert(
+        rem_join_sq(n0, n1, i0, i1)
+            == (n1 as int - i1) + (n0 as int - i0 - 1) * (n1 as int)
+    );
+    assert(
+        rem_join_sq(n0, n1, i0, i1 + 1)
+            == (n1 as int - (i1 + 1)) + (n0 as int - i0 - 1) * (n1 as int)
+    );
 }
 
 proof fn lemma_rem_join_sq_nonneg_inner(n0: usize, n1: usize, i0: int, i1: int)

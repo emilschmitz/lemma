@@ -787,7 +787,7 @@ def _build_before_proof(
         )
         lines.append(f"    let ghost rem = {rem_u64};")
         for slot_i, kind in slots:
-            fname = f"lemma_{helper}_slot{slot_i}_{kind}_leq_{suffix}"
+            fname = f"assume_{helper}_slot{slot_i}_{kind}_leq_{suffix}"
             lines.append(f"    {fname}({lemma_args});")
             if kind == "count":
                 lines.append(f"    assert(prev.{slot_i} <= rem);")

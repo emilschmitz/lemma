@@ -1037,6 +1037,16 @@ def _sum_cap_const(kind: str) -> str:
     return "LEMMA_MAX_NATIVE_U32" if kind == "sum_native" else "LEMMA_MAX_CELL_U64"
 
 
+def _sanitize_fold_step_for_proof(fold_step: str) -> str:
+    """Rename MethodSpec ``let key =`` binder so it does not shadow the lemma ``key`` param."""
+    s = fold_step
+    s = re.sub(r"\blet key =", "let row_key =", s)
+    s = re.sub(r"\bcontains_key\(key\)", "contains_key(row_key)", s)
+    s = re.sub(r"\btail\[key\]", "tail[row_key]", s)
+    s = re.sub(r"\.insert\(key,", ".insert(row_key,", s)
+    return s
+
+
 def _emit_inductive_hit_branch(
     *,
     ctx: FoldBoundContext,
@@ -1048,8 +1058,8 @@ def _emit_inductive_hit_branch(
     sum_delta: str | None,
     indent: str,
     cur_call: str,
-    rem_here: str,
-    rem_tail: str,
+    rem_here_int: str,
+    rem_tail_int: str,
     tail_call: str,
     tail_rec_args: str,
     spec_rs: str,
@@ -1057,6 +1067,8 @@ def _emit_inductive_hit_branch(
     cap = _sum_cap_const(kind)
     helper = ctx.helper
     fold_step = _parse_helper_fold_step(spec_rs, helper)
+    if fold_step is not None:
+        fold_step = _sanitize_fold_step_for_proof(fold_step)
     lines: list[str] = []
     if hit.scalar_map:
         prev_slot = f"if tail.contains_key({key}) {{ tail[{key}] }} else {{ 0u64 }}"
@@ -1074,90 +1086,141 @@ def _emit_inductive_hit_branch(
 
     lines.append(f"{indent}{fname}({tail_rec_args}, {key});")
     lines.append(f"{indent}let ghost tail = {tail_call};")
-    rem_here_int = _rem_int_expr(ctx)
     lines.append(f"{indent}let ghost rem_here_int = {rem_here_int};")
+    lines.append(f"{indent}let ghost rem_tail_int = {rem_tail_int};")
     lines.append(f"{indent}let ghost prev_slot = {prev_slot};")
-    lines.append(f"{indent}assert(prev_slot <= (rem_here_int - 1) as u64);")
+    # One inner step: rem_here = rem_tail + 1 (proved lemma when 2-table rem_join_sq).
+    if len(ctx.table_params) == 2:
+        n0, _ = ctx.table_params[0]
+        n1, _ = ctx.table_params[1]
+        i0 = ctx.index_params[0]
+        i1 = ctx.index_params[1]
+        lines.append(
+            f"{indent}lemma_rem_join_sq_inner_step({n0}.n, {n1}.n, {i0}, {i1});"
+        )
+    else:
+        lines.append(
+            f"{indent}assert(rem_here_int == rem_tail_int + 1) by (nonlinear_arith);"
+        )
+    lines.append(f"{indent}assert(prev_slot as int <= rem_tail_int);")
+    lines.append(f"{indent}assert(prev_slot as int <= rem_here_int - 1);")
     if kind != "count":
         assert sum_delta is not None
         lines.append(
-            f"{indent}assert(prev_slot <= (rem_here_int - 1) as u64 * ({cap} as u64));"
+            f"{indent}assert(prev_slot as int <= (rem_here_int - 1) * ({cap} as int));"
         )
         lines.append(f"{indent}assert({sum_delta} < ({cap} as int));")
 
     if fold_step is not None:
+        # Unfold one recursive step of the open helper (no key-shadowing in copied body).
+        lines.append(f"{indent}reveal_with_fuel({helper}, 1);")
         lines.append(f"{indent}assert({cur_call} =~= {{")
         lines.append(f"{indent}    let tail = {tail_call};")
         for step_line in fold_step.splitlines():
             lines.append(f"{indent}    {step_line}")
         lines.append(f"{indent}}});")
-        lines.append(f"{indent}reveal_with_fuel({helper}, 1);")
     else:
-        lines.append(f"{indent}if ({hit.filter_expr}) {{")
-        lines.append(f"{indent}    let ghost row_key = {hit.key_expr};")
-        lines.append(f"{indent}    if row_key == {key} {{")
-        lines.append(f"{indent}    }} else {{")
-        lines.append(f"{indent}        assert({slot_expr(cur_call)} == prev_slot);")
-        lines.append(f"{indent}    }}")
-        lines.append(f"{indent}}} else {{")
-        lines.append(f"{indent}    assert({cur_call} == tail);")
-        lines.append(f"{indent}}}")
+        lines.append(f"{indent}reveal_with_fuel({helper}, 1);")
 
     if kind == "count":
+        # Bind the one-step map explicitly so indexing facts are local.
+        lines.append(f"{indent}let ghost next_map = {{")
+        lines.append(f"{indent}    let tail = {tail_call};")
+        if fold_step is not None:
+            for step_line in fold_step.splitlines():
+                lines.append(f"{indent}    {step_line}")
+        else:
+            lines.append(
+                f"{indent}    if ({hit.filter_expr}) {{"
+            )
+            lines.append(f"{indent}        let row_key = {hit.key_expr};")
+            lines.append(
+                f"{indent}        let prev = if tail.contains_key(row_key) {{ tail[row_key] }} else {{ {hit.default_state} }};"
+            )
+            if hit.scalar_map:
+                lines.append(f"{indent}        let s0 = (prev as int + 1) as u64;")
+                lines.append(f"{indent}        tail.insert(row_key, s0)")
+            else:
+                lines.append(f"{indent}        let s0 = (prev.0 as int + 1) as u64;")
+                lines.append(
+                    f"{indent}        tail.insert(row_key, (s0, prev.1)) // slot0 count; other slots unchanged in this stub"
+                )
+            lines.append(f"{indent}    }} else {{")
+            lines.append(f"{indent}        tail")
+            lines.append(f"{indent}    }}")
+        lines.append(f"{indent}}};")
+        lines.append(f"{indent}assert({cur_call} == next_map);")
         lines.append(f"{indent}if ({hit.filter_expr}) {{")
         lines.append(f"{indent}    let ghost row_key = {hit.key_expr};")
         lines.append(f"{indent}    if row_key == {key} {{")
+        lines.append(f"{indent}        assert(next_map.contains_key({key}));")
         lines.append(
-            f"{indent}        assert({slot_expr(cur_call)} == (prev_slot as int + 1) as u64);"
+            f"{indent}        let ghost prev_full = if tail.contains_key({key}) {{ tail[{key}] }} else {{ {hit.default_state} }};"
         )
+        if hit.scalar_map:
+            lines.append(f"{indent}        assert(prev_full == prev_slot);")
+            lines.append(
+                f"{indent}        let ghost s0 = (prev_full as int + 1) as u64;"
+            )
+            lines.append(f"{indent}        assert(next_map == tail.insert({key}, s0));")
+            lines.append(f"{indent}        lemma_map_insert_get(tail, {key}, s0);")
+            lines.append(f"{indent}        assert(next_map[{key}] == s0);")
+            lines.append(f"{indent}        assert(s0 as int == prev_slot as int + 1);")
+        else:
+            lines.append(f"{indent}        assert(prev_full.0 == prev_slot);")
+            lines.append(
+                f"{indent}        let ghost s0 = (prev_full.0 as int + 1) as u64;"
+            )
+            # Value stored at key in next_map is the inserted tuple; read it back.
+            lines.append(f"{indent}        let ghost v = next_map[{key}];")
+            lines.append(f"{indent}        assert(next_map == tail.insert({key}, v));")
+            lines.append(f"{indent}        lemma_map_insert_get(tail, {key}, v);")
+            lines.append(
+                f"{indent}        assert(v.0 as int == prev_slot as int + 1);"
+            )
         lines.append(
-            f"{indent}        assert((prev_slot as int) + 1 <= rem_here_int);"
+            f"{indent}        assert(prev_slot as int + 1 <= rem_here_int);"
         )
         lines.append(f"{indent}    }} else {{")
-        lines.append(f"{indent}        assert({cur_call}.contains_key(row_key));")
-        if hit.scalar_map:
-            lines.append(
-                f"{indent}        lemma_map_insert_preserves_other_key(tail, row_key, {key}, {cur_call}[row_key]);"
-            )
-        else:
-            lines.append(
-                f"{indent}        lemma_map_insert_preserves_other_key(tail, row_key, {key}, {cur_call}[row_key]);"
-            )
         lines.append(
-            f"{indent}        assert({cur_call}.contains_key({key}) == tail.contains_key({key}));"
+            f"{indent}        lemma_map_insert_preserves_other_key(tail, row_key, {key}, next_map[row_key]);"
+        )
+        lines.append(
+            f"{indent}        assert(next_map.contains_key({key}) == tail.contains_key({key}));"
         )
         lines.append(f"{indent}        if tail.contains_key({key}) {{")
-        lines.append(
-            f"{indent}            assert({slot_expr(cur_call)} == prev_slot);"
-        )
+        if hit.scalar_map:
+            lines.append(f"{indent}            assert(next_map[{key}] == prev_slot);")
+        else:
+            lines.append(
+                f"{indent}            assert(next_map[{key}]{val_access} == prev_slot);"
+            )
         lines.append(f"{indent}        }} else {{")
-        lines.append(f"{indent}            assert(!{cur_call}.contains_key({key}));")
+        lines.append(f"{indent}            assert(!next_map.contains_key({key}));")
         lines.append(f"{indent}        }}")
         lines.append(f"{indent}    }}")
         lines.append(f"{indent}}} else {{")
-        lines.append(f"{indent}    assert({cur_call} == tail);")
+        lines.append(f"{indent}    assert(next_map == tail);")
         lines.append(f"{indent}}}")
+        lines.append(
+            f"{indent}assert({_slot_bound_expr('next_map', key, val_access, scalar_map=hit.scalar_map)} as int <= rem_here_int);"
+        )
     else:
         assert sum_delta is not None
         lines.append(f"{indent}if ({hit.filter_expr}) {{")
         lines.append(f"{indent}    let ghost row_key = {hit.key_expr};")
         lines.append(f"{indent}    if row_key == {key} {{")
         lines.append(
-            f"{indent}        assert({slot_expr(cur_call)} == (prev_slot as int + {sum_delta}) as u64);"
+            f"{indent}        assert({slot_expr(cur_call)} as int == prev_slot as int + ({sum_delta}));"
         )
         lines.append(
-            f"{indent}        assert((prev_slot as int) + {sum_delta} <= rem_here_int * ({cap} as int));"
+            f"{indent}        assert(prev_slot as int + ({sum_delta}) <= rem_here_int * ({cap} as int));"
         )
         lines.append(f"{indent}    }} else {{")
         lines.append(f"{indent}        assert({cur_call}.contains_key(row_key));")
-        if hit.scalar_map:
-            lines.append(
-                f"{indent}        lemma_map_insert_preserves_other_key(tail, row_key, {key}, {cur_call}[row_key]);"
-            )
-        else:
-            lines.append(
-                f"{indent}        lemma_map_insert_preserves_other_key(tail, row_key, {key}, {cur_call}[row_key]);"
-            )
+        lines.append(
+            f"{indent}        lemma_map_insert_preserves_other_key(tail, row_key, {key}, {cur_call}[row_key]);"
+        )
         lines.append(
             f"{indent}        assert({cur_call}.contains_key({key}) == tail.contains_key({key}));"
         )
@@ -1172,14 +1235,9 @@ def _emit_inductive_hit_branch(
         lines.append(f"{indent}}} else {{")
         lines.append(f"{indent}    assert({cur_call} == tail);")
         lines.append(f"{indent}}}")
-    cap_u64 = (
-        "rem_here_int as u64"
-        if kind == "count"
-        else f"rem_here_int as u64 * ({cap} as u64)"
-    )
-    lines.append(
-        f"{indent}assert({_slot_bound_expr(cur_call, key, val_access, scalar_map=hit.scalar_map)} <= {cap_u64});"
-    )
+        lines.append(
+            f"{indent}assert({_slot_bound_expr(cur_call, key, val_access, scalar_map=hit.scalar_map)} as int <= rem_here_int * ({cap} as int));"
+        )
     return lines
 
 
@@ -1206,13 +1264,13 @@ def _emit_nested_count_or_sum_body(
 
     tab_param, _tab_struct = ctx.table_params[level]
     idx = ctx.index_params[level]
-    rem_here = f"({_rem_int_expr(ctx)}) as u64"
+    rem_here_int = _rem_int_expr(ctx)
 
     if level == depth - 1:
         overrides_tail = {idx: f"{idx} + 1"}
         tail_call = _helper_call(ctx, overrides_tail)
         tail_rec_args = _helper_call_args(ctx, overrides_tail)
-        rem_tail = f"({_rem_int_expr(ctx, overrides_tail)}) as u64"
+        rem_tail_int = _rem_int_expr(ctx, overrides_tail)
         cur_call = _helper_call(ctx)
         lines = [f"{indent}if {idx} < {tab_param}.n as int {{"]
         lines.extend(
@@ -1226,8 +1284,8 @@ def _emit_nested_count_or_sum_body(
                 sum_delta=sum_delta,
                 indent=indent + "    ",
                 cur_call=cur_call,
-                rem_here=rem_here,
-                rem_tail=rem_tail,
+                rem_here_int=rem_here_int,
+                rem_tail_int=rem_tail_int,
                 tail_call=tail_call,
                 tail_rec_args=tail_rec_args,
                 spec_rs=spec_rs,
@@ -1294,8 +1352,9 @@ _FOLD_LEMMA_HEADER = (
 )
 
 _FOLD_AXIOM_HEADER = (
-    "// Fold slot bound (expert TCB under valid_cols + open-spec fold): partial agg ≤ rem·cap.\n"
-    "// Set LEMMA_FOLD_SLOT_INDUCTIVE=1 to emit experimental inductive proof bodies."
+    "// ASSUMPTION (catalog/user): under valid_cols + open-spec fold, partial agg ≤ rem·cap.\n"
+    "// Honest empty external_body — not a proved lemma. Set LEMMA_FOLD_SLOT_INDUCTIVE=1\n"
+    "// for experimental inductive `lemma_*` bodies (COUNT/SUM)."
 )
 
 
@@ -1324,7 +1383,7 @@ def _emit_axiomatic_slot_bound_lemma(
 ) -> str:
     helper = ctx.helper
     rem = ctx.suffix_remaining_u64()
-    fname = f"lemma_{helper}_slot{slot_i}_{kind}_leq_{suffix}"
+    fname = f"assume_{helper}_slot{slot_i}_{kind}_leq_{suffix}"
     if kind == "count":
         detail = f"COUNT slot {slot_i}: ≤{rem} filtered rows add ≤1 each."
         cap = rem
@@ -1390,9 +1449,12 @@ def _emit_inductive_slot_bound_lemma(
         cap = f"{rem} * (LEMMA_MAX_CELL_U64 as u64)"
     comment = f"{_FOLD_LEMMA_HEADER}\n// {detail}"
     cur_call = _helper_call(ctx)
-    ensures = (
-        f"{_slot_bound_expr(cur_call, 'key', val_access, scalar_map=hit.scalar_map)} <= {cap},"
-    )
+    rem_int = _rem_int_expr(ctx)
+    slot_e = _slot_bound_expr(cur_call, "key", val_access, scalar_map=hit.scalar_map)
+    if kind == "count":
+        ensures = f"({slot_e} as int) <= ({rem_int}),"
+    else:
+        ensures = f"({slot_e} as int) <= ({rem_int}) * ({_sum_cap_const(kind)} as int),"
     sig_params = ",\n    ".join(f"{p}: &{s}" for p, s in ctx.table_params)
     sig_params += ",\n    " + ",\n    ".join(f"{i}: int" for i in ctx.index_params)
     sig_params += f",\n    key: {key_spec}"
@@ -1411,7 +1473,7 @@ def _emit_inductive_slot_bound_lemma(
         spec_rs=spec_rs,
     )
     body = "\n".join(proof_body)
-    return f"""{comment}
+    lemma_block = f"""{comment}
 pub proof fn {fname}(
     {sig_params},
 )
@@ -1424,6 +1486,26 @@ pub proof fn {fname}(
 {body}
 }}
 """
+    # Compat alias: old agent bodies call assume_*; body is one call to the proved lemma.
+    alias = f"assume_{helper}_slot{slot_i}_{kind}_leq_{suffix}"
+    call_args = ", ".join(
+        [p for p, _ in ctx.table_params] + list(ctx.index_params) + ["key"]
+    )
+    lemma_block += f"""
+// Compat alias — prefer `{fname}`; body is the proved lemma (not an axiom).
+pub proof fn {alias}(
+    {sig_params},
+)
+    requires
+        {ctx.valid_requires},
+        {ctx.index_bounds_requires()},
+    ensures
+        {ensures}
+{{
+    {fname}({call_args});
+}}
+"""
+    return lemma_block
 
 
 def _emit_slot_bound_lemma(
@@ -1443,7 +1525,10 @@ def _emit_slot_bound_lemma(
     sum_delta = _parse_slot_sum_delta(spec_rs, helper, slot_i) if kind != "count" else None
     if kind != "count" and sum_delta is None:
         return ""
-    if _fold_slot_inductive_enabled():
+    # Inductive COUNT/SUM behind LEMMA_FOLD_SLOT_INDUCTIVE=1 until Verus closes
+    # Map-fold unfold (rocketship goal). Default: honest assume_* (not fake lemma_*).
+    use_inductive = _fold_slot_inductive_enabled()
+    if use_inductive:
         return _emit_inductive_slot_bound_lemma(
             ctx=ctx,
             suffix=suffix,
