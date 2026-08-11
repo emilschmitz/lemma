@@ -27,6 +27,12 @@ Must hold **all** of:
 4. **Rust-evident** — no Lemma folklore; no Lemma-authored `arbitrary()` view
    bodies. Prefer Verus vstd container Trusteds (`HashMapWithView` /
    `HashSetWithView` / `StringHashMap`) whose insert/new match Rust maps/sets.
+   **Bound caps:** rocketship base = SQL type width + checked ops + vstd `@`.
+   Tighter `u64` cell caps (`LEMMA_MAX_CELL_U64`) and row-depth caps appear only
+   when the transpiler caller supplies `CatalogAssumptions` / `TableAssumptions`
+   (prove_loop uses `research_loop/sec_table_assumptions.py` explicitly). Product
+   lemmas (`lemma_*_cell_u64_*`, fold slot bounds) are derived from those
+   assumptions, not from pretending BIGINT is always `2**31`.
 5. **Tested** — semantic differential (or equivalent), including precondition
    boundaries.
 

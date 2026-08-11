@@ -26,6 +26,7 @@ from research_loop.scripts.sqlsmith_trusted_coverage import (
     load_sec_schema,
     parse_sql_file,
 )
+from research_loop.sec_table_assumptions import sec_prove_loop_catalog_assumptions
 from research_loop.trusted_ret_bridge import get_bridge, structural_bridge_for_spec_type
 from verus_transpiler import transpile_sql_to_verus
 
@@ -83,7 +84,9 @@ def _agent_visible_for_sec_sql(sql: str) -> str:
     schema = load_sec_schema()
     flat, multi = normalize_schema(schema)
     projected = project_multi_schema_for_query(sql, multi) if multi else flat
-    spec_rs = transpile_sql_to_verus(sql, projected)
+    spec_rs = transpile_sql_to_verus(
+        sql, projected, catalog_assumptions=sec_prove_loop_catalog_assumptions()
+    )
     ret_type = resolve_ret_type_from_method_spec(spec_rs)
     return prepare_agent_visible_spec(spec_rs, ret_type)
 
@@ -108,7 +111,11 @@ def test_top_ret_types_emit_agg_step(ret_type: str) -> None:
 
 
 def test_parse_q1_multi_agg_layout() -> None:
-    out = transpile_sql_to_verus(Q1_LIKE_SQL, {"pre": PRE_SCHEMA})
+    out = transpile_sql_to_verus(
+        Q1_LIKE_SQL,
+        {"pre": PRE_SCHEMA},
+        catalog_assumptions=sec_prove_loop_catalog_assumptions(),
+    )
     layout = parse_multi_agg_layout(out)
     assert layout is not None
     assert layout.helper_name == "method_spec_helper"
@@ -119,7 +126,11 @@ def test_parse_q1_multi_agg_layout() -> None:
 
 
 def test_emit_agg_step_stable_names() -> None:
-    out = transpile_sql_to_verus(Q1_LIKE_SQL, {"pre": PRE_SCHEMA})
+    out = transpile_sql_to_verus(
+        Q1_LIKE_SQL,
+        {"pre": PRE_SCHEMA},
+        catalog_assumptions=sec_prove_loop_catalog_assumptions(),
+    )
     layout = parse_multi_agg_layout(out)
     assert layout is not None
     bridge = structural_bridge_for_spec_type(
@@ -141,7 +152,11 @@ def test_emit_agg_step_stable_names() -> None:
 
 
 def test_prepare_agent_visible_spec_includes_agg_step() -> None:
-    out = transpile_sql_to_verus(Q1_LIKE_SQL, {"pre": PRE_SCHEMA})
+    out = transpile_sql_to_verus(
+        Q1_LIKE_SQL,
+        {"pre": PRE_SCHEMA},
+        catalog_assumptions=sec_prove_loop_catalog_assumptions(),
+    )
     bridge = get_bridge("map_str_str__u64_u64_u64")
     assert bridge is not None
     visible = prepare_agent_visible_spec(out, bridge.key)
@@ -207,7 +222,11 @@ def test_spec_expr_to_exec_strips_ghost_int_addends() -> None:
 
 def test_exec_checked_add_no_ghost_int_q1_avg() -> None:
     """SUM/AVG row adds in exec agg_step must not cast through ghost int."""
-    out = transpile_sql_to_verus(Q1_LIKE_SQL, {"pre": PRE_SCHEMA})
+    out = transpile_sql_to_verus(
+        Q1_LIKE_SQL,
+        {"pre": PRE_SCHEMA},
+        catalog_assumptions=sec_prove_loop_catalog_assumptions(),
+    )
     layout = parse_multi_agg_layout(out)
     assert layout is not None
     bridge = structural_bridge_for_spec_type(
@@ -219,7 +238,7 @@ def test_exec_checked_add_no_ghost_int_q1_avg() -> None:
     assert all("as int" not in ln for ln in bad), bad
     assert any("checked_add(row_u64_0)" in ln.replace(" ", "") for ln in bad)
     req_block = rs.split("pub exec fn agg_step_str_str__u64_u64_u64")[1].split("ensures")[0]
-    assert "row_u64_0 < LEMMA_MAX_MONEY_U64" in req_block
+    assert "row_u64_0 < LEMMA_MAX_CELL_U64" in req_block
     assert "(prev as int) +" not in req_block
     assert "case_when_u64_exec" not in req_block
 
@@ -251,7 +270,9 @@ def test_r10_exec_checked_add_has_no_ghost_int(qid: int) -> None:
     if sql is None:
         pytest.skip(f"Q{qid} missing from r10 holdout")
     projected = project_multi_schema_for_query(sql, multi) if multi else flat
-    spec_rs = transpile_sql_to_verus(sql, projected)
+    spec_rs = transpile_sql_to_verus(
+        sql, projected, catalog_assumptions=sec_prove_loop_catalog_assumptions()
+    )
     ret_type = resolve_ret_type_from_method_spec(spec_rs)
     rs = multi_agg_step_trusted_rs(spec_rs, ret_type)
     suffix = ret_type.removeprefix("map_")
@@ -265,7 +286,11 @@ def test_r10_exec_checked_add_has_no_ghost_int(qid: int) -> None:
 def test_multi_agg_case_when_cast_parentheses() -> None:
     """CASE-WHEN row compares in agg_step apply_row parenthesize (row as int) < n."""
     schema = {"num": NUM_SCHEMA, "tag": TAG_SCHEMA}
-    out = transpile_sql_to_verus(Q26_CASE_WHEN_SQL, schema)
+    out = transpile_sql_to_verus(
+        Q26_CASE_WHEN_SQL,
+        schema,
+        catalog_assumptions=sec_prove_loop_catalog_assumptions(),
+    )
     ret_type = resolve_ret_type_from_method_spec(out)
     rs = multi_agg_step_trusted_rs(out, ret_type)
     assert "(row_u64_0 as int) > 0" in rs
@@ -277,7 +302,11 @@ def test_multi_agg_case_when_cast_parentheses() -> None:
 def test_agg_step_requires_no_case_when_exec() -> None:
     """agg_step public requires must not embed exec helpers (case_when_u64_exec)."""
     schema = {"num": NUM_SCHEMA, "tag": TAG_SCHEMA}
-    out = transpile_sql_to_verus(Q26_CASE_WHEN_SQL, schema)
+    out = transpile_sql_to_verus(
+        Q26_CASE_WHEN_SQL,
+        schema,
+        catalog_assumptions=sec_prove_loop_catalog_assumptions(),
+    )
     ret_type = resolve_ret_type_from_method_spec(out)
     rs = multi_agg_step_trusted_rs(out, ret_type)
     suffix = ret_type.removeprefix("map_")
@@ -288,7 +317,11 @@ def test_agg_step_requires_no_case_when_exec() -> None:
 def test_sec_q1_agg_step_runquery_verus(tmp_path: Path) -> None:
     from research_loop.bench_standins.sec_q1_runquery import SEC_Q1_RUNQUERY
 
-    spec_rs = transpile_sql_to_verus(Q1_LIKE_SQL, {"pre": PRE_SCHEMA})
+    spec_rs = transpile_sql_to_verus(
+        Q1_LIKE_SQL,
+        {"pre": PRE_SCHEMA},
+        catalog_assumptions=sec_prove_loop_catalog_assumptions(),
+    )
     ret_type = "map_str_str__u64_u64_u64"
     structural_bridge_for_spec_type(
         "Map<(Seq<char>, Seq<char>), (u64, u64, u64)>"

@@ -523,7 +523,7 @@ def _emit_agg_step_requires(
         row_param = _row_u64_param_in_delta(delta)
         if row_param is not None and row_param not in seen_params:
             seen_params.add(row_param)
-            clauses.append(f"{row_param} < LEMMA_MAX_MONEY_U64")
+            clauses.append(f"{row_param} < LEMMA_MAX_CELL_U64")
         exec_delta = _spec_expr_to_exec(delta)
         clauses.append(_u64_add_bound_requires(prev_ref, f"({exec_delta} as int)"))
     if not clauses:
@@ -668,7 +668,7 @@ def parse_multi_agg_layout(spec_rs: str) -> MultiAggLayout | None:
 
 
 def _classify_u64_slot(s_line: str, slot_i: int, *, multi_slot: bool) -> str | None:
-    """Return count / sum_native / sum_money for a numeric slot, or None (MIN/MAX / skip)."""
+    """Return count / sum_native / sum_cell_u64 for a numeric slot, or None (MIN/MAX / skip)."""
     prev_ref = f"prev.{slot_i}" if multi_slot else "prev"
     if re.search(rf"let s{slot_i} = if t{slot_i} [<>] {re.escape(prev_ref)}", s_line):
         return None
@@ -680,10 +680,10 @@ def _classify_u64_slot(s_line: str, slot_i: int, *, multi_slot: bool) -> str | N
     if "case_when_u64" in delta:
         return "count"
     if re.fullmatch(r"row_u64_\d+", delta.strip()):
-        return "sum_money"
+        return "sum_cell_u64"
     if "as int)" in delta or " as int" in delta:
         return "sum_native"
-    return "sum_money"
+    return "sum_cell_u64"
 
 
 def _parse_helper_params(spec_rs: str, helper_name: str) -> str | None:
@@ -798,9 +798,9 @@ def _emit_slot_bound_lemma(
         cap = f"{rem} * (LEMMA_MAX_NATIVE_U32 as u64)"
     else:
         comment = (
-            f"// Elementary: ≤{rem} money cells each < LEMMA_MAX_MONEY_U64 → slot {slot_i}."
+            f"// Elementary: ≤{rem} u64 cells each < LEMMA_MAX_CELL_U64 → slot {slot_i}."
         )
-        cap = f"{rem} * (LEMMA_MAX_MONEY_U64 as u64)"
+        cap = f"{rem} * (LEMMA_MAX_CELL_U64 as u64)"
     if kind == "count":
         cap = rem
     # Bound ghost prev at call sites (0 if key absent) — no contains_key requires.
@@ -874,7 +874,7 @@ def _classify_scalar_map_u64(body: str) -> str | None:
     if re.search(r"prev as int \+ 1", body) or re.search(r"\+ 1u64", body):
         return "count"
     if ".value[" in body or "get_value(" in body:
-        return "sum_money"
+        return "sum_cell_u64"
     return None
 
 
@@ -924,11 +924,11 @@ def emit_scalar_fold_bound_lemmas(spec_rs: str, bridge: RetBridge) -> str:
             comment = f"// Elementary: ≤{rem} filtered rows (COUNT) in fold suffix."
             bound = rem
         else:
-            fname = f"lemma_{name}_sum_money_leq_{suffix}"
+            fname = f"lemma_{name}_sum_cell_u64_leq_{suffix}"
             comment = (
-                f"// Elementary: ≤{rem} money cells each < LEMMA_MAX_MONEY_U64."
+                f"// Elementary: ≤{rem} u64 cells each < LEMMA_MAX_CELL_U64."
             )
-            bound = f"{rem} * (LEMMA_MAX_MONEY_U64 as u64)"
+            bound = f"{rem} * (LEMMA_MAX_CELL_U64 as u64)"
         # Bound the ghost prev used at call sites (0 if key absent) — no contains_key requires.
         ensures = (
             f"(if {name}({ctx.call_args}).contains_key(key) {{ "

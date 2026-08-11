@@ -1,19 +1,20 @@
 # Project TODOS
 
 ## Bound assumptions / overflow
-- [ ] **Table assumptions (not folklore cell caps)** — Stub: `research_loop/table_assumptions.py`.
-  By default **no** extra assumptions: a `u64`/BIGINT column is full type width (`2**64`),
-  not a silent `2**31` “money” cap. Optional caller-supplied `TableAssumptions` /
-  `CatalogAssumptions` (max rows, per-column max) feed `valid_cols`. Without a tight
-  u64 cell assumption, fixed-width `u64` SUM may not fit → **wide accumulator**
-  (u128 / DuckDB-like HUGEINT) or loud fail — do not pretend `2**31`. Rename
-  `LEMMA_MAX_MONEY_*` → neutral `max_cell_u64` / assumption-driven names.
+- [x] **Table assumptions (not folklore cell caps)** — `research_loop/table_assumptions.py`
+  + `research_loop/sec_table_assumptions.py`. Default transpile: **no** tight u64
+  cell cap in `valid_cols` / no `LEMMA_MAX_CELL_U64` const; INT32-ish → type width
+  (`LEMMA_MAX_NATIVE_U32`); u64/BIGINT → full type width unless assumptions supplied.
+  prove_loop / SEC inject pass `sec_prove_loop_catalog_assumptions()` so working caps
+  (`max_rows=2**16`, cell `2**31`, native `2**31`, string 128) are **named assumptions**.
+  Bridges / prelude use `LEMMA_MAX_CELL_U64` (legacy alias `LEMMA_MAX_MONEY_U64` when
+  emitted). Still open: **wide accumulator** when no tight cell assumption.
 - [ ] **Trusted audit follow-ups (2026-08-11)** — full inventories from value_bounds /
   ret+multi_agg+having / other-path audits:
   - `LEMMA_MAX_NATIVE_U32 = 2**31` is also tighter than full `u32` / maps signed INT→u32
-  - `double`/`float`/`hugeint`/`decimal` → `u64` + money cap (width/semantics loss)
+  - `double`/`float`/`hugeint`/`decimal` → `u64` + cell cap (width/semantics loss)
   - `DATE` → `u32` assumes YYYYMMDD-ish, not DuckDB epoch days
-  - `agg_step` requires often use MONEY cap even for `sum_native` slots (cap mismatch)
+  - `agg_step` requires: verify native vs cell cap per slot (partial rename to `cell_u64`)
   - Fold bound lemmas are empty `external_body` axioms (OK only if treated as Trusted
     assumptions about MethodSpec folds, not “proved elementary”)
   - HAVING `transmute` peel; `Cols.agg_push_*` no ensures; agent_primitives weak ensures

@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import re
 
+from research_loop.sec_table_assumptions import (
+    SEC_PROVE_LOOP_MAX_CELL_U64,
+    sec_prove_loop_bounds,
+    sec_prove_loop_catalog_assumptions,
+)
+from research_loop.table_assumptions import resolve_bounds
 from verus_transpiler.value_bounds import (
-    LEMMA_MAX_MONEY_U64,
     LEMMA_MAX_NATIVE_U32,
     LEMMA_MAX_ROWS,
     emit_bound_lemmas,
@@ -135,13 +140,16 @@ def test_left_join_miss_not_external_body() -> None:
 
 
 def test_bound_lemmas_emitted_with_requires_ensures() -> None:
-    lemmas = emit_bound_lemmas()
+    lemmas = emit_bound_lemmas(catalog=sec_prove_loop_catalog_assumptions())
     for name in (
         "lemma_max_rows_times_native_fits_u64",
-        "lemma_max_rows_times_money_fits_u64",
+        "lemma_max_rows_times_cell_u64_fits_u64",
+        "lemma_join_nested_rem_leq_rows_cube",
+        "lemma_join_nested_rem_leq_rows_4",
         "lemma_u64_add_one_fit",
+        "lemma_rem_cap_one_add_fits",
         "lemma_u64_add_native_fit",
-        "lemma_u64_add_money_fit",
+        "lemma_u64_add_cell_u64_fit",
     ):
         assert f"pub proof fn {name}" in lemmas
         block = lemmas.split(f"pub proof fn {name}")[1].split("pub proof fn")[0]
@@ -149,9 +157,23 @@ def test_bound_lemmas_emitted_with_requires_ensures() -> None:
         assert "arbitrary()" not in block
 
 
-def test_money_native_products_fit_u64() -> None:
-    assert LEMMA_MAX_ROWS * LEMMA_MAX_NATIVE_U32 <= 2**64 - 1
-    assert LEMMA_MAX_ROWS * LEMMA_MAX_MONEY_U64 <= 2**64 - 1
-    assert LEMMA_MAX_ROWS * LEMMA_MAX_ROWS * LEMMA_MAX_MONEY_U64 <= 2**64 - 1
-    assert LEMMA_MAX_ROWS * LEMMA_MAX_ROWS * LEMMA_MAX_NATIVE_U32 <= 2**64 - 1
-    assert LEMMA_MAX_MONEY_U64 == 2**31
+def test_default_bound_lemmas_omit_cell_u64_product_lemmas() -> None:
+    lemmas = emit_bound_lemmas()
+    assert "lemma_u64_add_cell_u64_fit" not in lemmas
+    assert "lemma_max_rows_times_cell_u64_fits_u64" not in lemmas
+
+
+def test_sec_cell_native_products_fit_u64() -> None:
+    b = sec_prove_loop_bounds()
+    assert b.max_rows * LEMMA_MAX_NATIVE_U32 <= 2**64 - 1
+    assert b.max_rows * b.max_cell_u64 <= 2**64 - 1
+    assert b.max_rows * b.max_rows * b.max_cell_u64 <= 2**64 - 1
+    assert b.max_rows * b.max_rows * LEMMA_MAX_NATIVE_U32 <= 2**64 - 1
+    assert b.max_rows_cube**3 * b.max_cell_u64 <= 2**64 - 1
+    assert b.max_rows_4**4 * b.max_cell_u64 <= 2**64 - 1
+    assert SEC_PROVE_LOOP_MAX_CELL_U64 == 2**31
+
+
+def test_engine_default_no_tight_cell_u64() -> None:
+    assert resolve_bounds().max_cell_u64 is None
+    assert LEMMA_MAX_ROWS == 2**16

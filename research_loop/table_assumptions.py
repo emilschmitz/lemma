@@ -1,31 +1,30 @@
-"""Table / catalog bound assumptions (stub).
+"""Table / catalog bound assumptions for rocketship-honest Trusted caps.
 
 By default Lemma must **not** invent tighter-than-type cell caps. A SQL ``BIGINT`` /
-``u64`` column has domain ``[0, 2**64)`` (or the signed analogue). Silently using
-``2**31`` as a global ``LEMMA_MAX_MONEY_U64`` is **not** legitimate unless the
-caller attaches an explicit assumption (or we widen the accumulator, DuckDB-style
-``SUM`` → ``HUGEINT``).
+``u64`` column has domain ``[0, 2**64)``. Silently using ``2**31`` without an
+explicit ``CatalogAssumptions.max_cell_u64`` (or column assumption) is illegitimate.
 
-Intended flow:
-
-1. Caller supplies ``TableAssumptions`` next to schema (rows, per-column max).
-2. ``value_bounds`` / ``valid_cols`` emit those caps when present.
-3. Absent assumptions → type-width caps only; fixed-width ``u64`` accumulate that
-   needs ``n * cell < 2**64`` may be impossible → loud fail or wide (u128) path.
-
-This module is a **stub** for wiring; prove_loop still uses global constants today.
+Prove_loop / SEC fixtures pass ``sec_prove_loop_catalog_assumptions()`` so those
+caps are **named assumptions**, not type folklore.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+TYPE_MAX_U32_EXCLUSIVE = 2**31
+TYPE_MAX_U64_EXCLUSIVE = 2**64
+
+ENGINE_DEFAULT_MAX_ROWS = 2**16
+ENGINE_DEFAULT_MAX_ROWS_CUBE = 2**11 - 1
+ENGINE_DEFAULT_MAX_ROWS_4 = 2**8
+DEFAULT_MAX_STRING_LEN = 128
+
 
 @dataclass(frozen=True)
 class ColumnAssumption:
     """Optional exclusive upper bound on a column's cell values (exec domain)."""
 
-    # None → use full type width (e.g. u64 → 2**64, not a folklore 2**31).
     max_value_exclusive: int | None = None
     max_string_len: int | None = None
 
@@ -34,16 +33,35 @@ class ColumnAssumption:
 class TableAssumptions:
     """Assumptions attached to one physical/logical table (or projected Cols)."""
 
-    # None → only the engine's global max-rows policy / type-derived defaults.
     max_rows: int | None = None
     columns: dict[str, ColumnAssumption] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class CatalogAssumptions:
-    """Per-table assumptions for a multi-table schema."""
+    """Catalog-level and optional per-table assumptions."""
 
     tables: dict[str, TableAssumptions] = field(default_factory=dict)
+    max_rows: int | None = None
+    max_rows_cube: int | None = None
+    max_rows_4: int | None = None
+    max_cell_u64: int | None = None
+    max_native_u32: int | None = None
+    max_string_len: int | None = None
+
+
+@dataclass(frozen=True)
+class ResolvedBounds:
+    max_rows: int
+    max_rows_cube: int
+    max_rows_4: int
+    max_native_u32: int
+    max_string_len: int
+    max_cell_u64: int | None = None
+
+    @property
+    def has_tight_cell_u64(self) -> bool:
+        return self.max_cell_u64 is not None
 
 
 def empty_catalog_assumptions() -> CatalogAssumptions:
@@ -51,11 +69,27 @@ def empty_catalog_assumptions() -> CatalogAssumptions:
     return CatalogAssumptions()
 
 
+def resolve_bounds(catalog: CatalogAssumptions | None = None) -> ResolvedBounds:
+    cat = catalog if catalog is not None else empty_catalog_assumptions()
+    max_rows = cat.max_rows if cat.max_rows is not None else ENGINE_DEFAULT_MAX_ROWS
+    for ta in cat.tables.values():
+        if ta.max_rows is not None:
+            max_rows = ta.max_rows
+    return ResolvedBounds(
+        max_rows=max_rows,
+        max_rows_cube=cat.max_rows_cube or ENGINE_DEFAULT_MAX_ROWS_CUBE,
+        max_rows_4=cat.max_rows_4 or ENGINE_DEFAULT_MAX_ROWS_4,
+        max_native_u32=cat.max_native_u32 or TYPE_MAX_U32_EXCLUSIVE,
+        max_string_len=cat.max_string_len or DEFAULT_MAX_STRING_LEN,
+        max_cell_u64=cat.max_cell_u64,
+    )
+
+
 def cell_u64_cap(
     assumptions: TableAssumptions | None,
     column: str | None,
     *,
-    type_max_exclusive: int = 2**64,
+    type_max_exclusive: int = TYPE_MAX_U64_EXCLUSIVE,
 ) -> int:
     """Resolve u64-ish cell cap: explicit assumption or full type width."""
     if assumptions is not None and column is not None:
@@ -73,3 +107,26 @@ def rows_cap(
     if assumptions is not None and assumptions.max_rows is not None:
         return assumptions.max_rows
     return default_max_rows
+
+
+def table_assumptions_for(
+    catalog: CatalogAssumptions | None,
+    table: str,
+) -> TableAssumptions | None:
+    if catalog is None:
+        return None
+    return catalog.tables.get(table)
+
+
+def column_u64_cap_exclusive(
+    column: str,
+    table: TableAssumptions | None,
+    bounds: ResolvedBounds,
+) -> int | None:
+    """Per-column u64 cap: column override, else catalog ``max_cell_u64``, else None (full width)."""
+    if table is not None:
+        col = table.columns.get(column)
+        if col is not None and col.max_value_exclusive is not None:
+            return col.max_value_exclusive
+    return bounds.max_cell_u64
+

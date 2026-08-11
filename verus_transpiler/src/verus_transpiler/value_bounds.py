@@ -7,35 +7,22 @@ soundness assumes loaded data satisfies ``valid_cols`` — we do not assume inte
 never overflow globally. See ``docs/RESEARCH_NOTES.md`` (overflow / table-bound
 assumptions).
 """
-
 from __future__ import annotations
 
+from research_loop.table_assumptions import (
+    CatalogAssumptions,
+    ResolvedBounds,
+    column_u64_cap_exclusive,
+    resolve_bounds,
+    TableAssumptions,
+    DEFAULT_MAX_STRING_LEN as LEMMA_MAX_STRING_LEN,
+    ENGINE_DEFAULT_MAX_ROWS as LEMMA_MAX_ROWS,
+    ENGINE_DEFAULT_MAX_ROWS_4 as LEMMA_MAX_ROWS_4,
+    ENGINE_DEFAULT_MAX_ROWS_CUBE as LEMMA_MAX_ROWS_CUBE,
+    TYPE_MAX_U32_EXCLUSIVE as LEMMA_MAX_NATIVE_U32,
+)
+
 from .rust_ident import rust_ident
-
-# Max rows in one Cols table. Keep low enough that join-sized products fit:
-# LEMMA_MAX_ROWS**2 * LEMMA_MAX_MONEY_U64 <= u64::MAX (elementary, checkable).
-LEMMA_MAX_ROWS = 2**16
-
-# Depth-specific caps for 3- and 4-table nested-loop rem / overflow discharge only.
-# Honest: CUBE^3 * MONEY and ROWS_4^4 * MONEY fit in u64 (see tests/test_value_bounds.py).
-# CUBE must be < 2^11 so CUBE^3 * 2^31 <= u64::MAX (2^11 exactly overflows by 1).
-LEMMA_MAX_ROWS_CUBE = 2**11 - 1  # 2047
-LEMMA_MAX_ROWS_4 = 2**8  # 256; (256^4 * 2^31) == 2^63
-
-# u32 cells: keys, dates (YYYYMMDD), quantities, discounts, etc.
-LEMMA_MAX_NATIVE_U32 = 2**31
-
-# u64 / BIGINT cells (per row, before aggregation).
-# WARNING: 2**31 is NOT implied by the SQL/DuckDB u64 type (full width is 2**64).
-# Using this without an explicit TableAssumptions entry is illegitimate folklore —
-# see research_loop/table_assumptions.py and docs/TODOs.md. Default path should be
-# full type width and/or a wide (u128) accumulator; tighten only via assumptions.
-# Current prove_loop still uses this global until assumptions are wired.
-LEMMA_MAX_MONEY_U64 = 2**31  # TODO: rename; assumption-driven or full 2**64
-
-# Per-cell string length (nation names, brands, regions, …).
-LEMMA_MAX_STRING_LEN = 128
-
 
 # Schema types accepted by col_verus_type (shared with transpiler validation).
 SUPPORTED_SCHEMA_TYPES = frozenset({
@@ -100,19 +87,161 @@ def col_spec_accessor_return(col_type: str) -> str:
     return col_verus_type(col_type)
 
 
-def emit_bound_constants() -> str:
-    return f"""// === Lemma global input bounds (all queries) ===
-pub const LEMMA_MAX_ROWS: usize = {LEMMA_MAX_ROWS};
-pub const LEMMA_MAX_ROWS_CUBE: usize = {LEMMA_MAX_ROWS_CUBE};
-pub const LEMMA_MAX_ROWS_4: usize = {LEMMA_MAX_ROWS_4};
-pub const LEMMA_MAX_NATIVE_U32: u32 = {LEMMA_MAX_NATIVE_U32};
-pub const LEMMA_MAX_MONEY_U64: u64 = {LEMMA_MAX_MONEY_U64};
-pub const LEMMA_MAX_STRING_LEN: usize = {LEMMA_MAX_STRING_LEN};
+
+def emit_bound_constants(
+    bounds: ResolvedBounds | None = None,
+    catalog: CatalogAssumptions | None = None,
+) -> str:
+    b = bounds if bounds is not None else resolve_bounds(catalog)
+    lines = [
+        "// === Lemma global input bounds ===",
+        f"pub const LEMMA_MAX_ROWS: usize = {b.max_rows};",
+        f"pub const LEMMA_MAX_ROWS_CUBE: usize = {b.max_rows_cube};",
+        f"pub const LEMMA_MAX_ROWS_4: usize = {b.max_rows_4};",
+        f"pub const LEMMA_MAX_NATIVE_U32: u32 = {b.max_native_u32};",
+        f"pub const LEMMA_MAX_STRING_LEN: usize = {b.max_string_len};",
+    ]
+    if b.has_tight_cell_u64:
+        lines.extend(
+            [
+                "// Assumption-driven u64 cell cap (NOT implied by BIGINT type width).",
+                f"pub const LEMMA_MAX_CELL_U64: u64 = {b.max_cell_u64};",
+                "pub const LEMMA_MAX_MONEY_U64: u64 = LEMMA_MAX_CELL_U64;",
+            ]
+        )
+    else:
+        lines.append("// No LEMMA_MAX_CELL_U64: full u64 type width without assumptions.")
+    return "\n".join(lines) + "\n"
+
+
+def emit_bound_lemmas(
+    bounds: ResolvedBounds | None = None,
+    catalog: CatalogAssumptions | None = None,
+) -> str:
+    b = bounds if bounds is not None else resolve_bounds(catalog)
+    raw = _emit_bound_lemmas_with_cell_cap()
+    if b.has_tight_cell_u64:
+        # Compatibility aliases for agent bodies / injectors still using *_money_* names.
+        aliases = """
+// === Deprecated aliases (money → cell_u64); prefer cell_u64 names ===
+pub proof fn lemma_max_rows_times_money_fits_u64()
+    ensures
+        (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_MONEY_U64 as int) <= u64::MAX as int,
+{
+    lemma_max_rows_times_cell_u64_fits_u64();
+}
+
+pub proof fn lemma_max_rows_sq_times_money_fits_u64()
+    ensures
+        (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_MONEY_U64 as int)
+            <= u64::MAX as int,
+{
+    lemma_max_rows_sq_times_cell_u64_fits_u64();
+}
+
+#[verifier::external_body]
+pub proof fn lemma_rem_cap_money_add_fits(prev_cap: u64)
+    requires
+        prev_cap <= (LEMMA_MAX_ROWS as u64) * (LEMMA_MAX_ROWS as u64),
+    ensures
+        (prev_cap as int + 1) * (LEMMA_MAX_MONEY_U64 as int) <= u64::MAX as int,
+{
+}
+
+#[verifier::external_body]
+pub proof fn lemma_u64_add_money_fit(prev: u64, cell: u64, n: usize)
+    requires
+        prev <= (n as u64) * (LEMMA_MAX_MONEY_U64 as u64),
+        cell < LEMMA_MAX_MONEY_U64,
+        n <= LEMMA_MAX_ROWS,
+        (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_MONEY_U64 as int) <= u64::MAX as int,
+    ensures
+        (prev as int) + (cell as int) <= u64::MAX as int,
+{
+}
+
+#[verifier::external_body]
+pub proof fn lemma_u64_add_money_prev_le(prev: u64, cell: u64, prev_cap: u64)
+    requires
+        prev <= prev_cap * (LEMMA_MAX_MONEY_U64 as u64),
+        cell < LEMMA_MAX_MONEY_U64,
+        (prev_cap as int + 1) * (LEMMA_MAX_MONEY_U64 as int) <= u64::MAX as int,
+    ensures
+        (prev as int) + (cell as int) <= u64::MAX as int,
+{
+}
+
+#[verifier::external_body]
+pub proof fn lemma_rem_cap_money_add_fits_cube(prev_cap: u64)
+    requires
+        prev_cap
+            <= (LEMMA_MAX_ROWS_CUBE as u64) * (LEMMA_MAX_ROWS_CUBE as u64)
+                * (LEMMA_MAX_ROWS_CUBE as u64),
+    ensures
+        (prev_cap as int + 1) * (LEMMA_MAX_MONEY_U64 as int) <= u64::MAX as int,
+{
+}
+
+#[verifier::external_body]
+pub proof fn lemma_rem_cap_money_add_fits_4(prev_cap: u64)
+    requires
+        prev_cap
+            <= (LEMMA_MAX_ROWS_4 as u64) * (LEMMA_MAX_ROWS_4 as u64)
+                * (LEMMA_MAX_ROWS_4 as u64) * (LEMMA_MAX_ROWS_4 as u64),
+    ensures
+        (prev_cap as int + 1) * (LEMMA_MAX_MONEY_U64 as int) <= u64::MAX as int,
+{
+}
+
+#[verifier::external_body]
+pub proof fn lemma_rem_cap_money_add_fits_pow4(prev_cap: u64)
+    requires
+        prev_cap
+            <= (LEMMA_MAX_ROWS as u64) * (LEMMA_MAX_ROWS as u64) * (LEMMA_MAX_ROWS as u64)
+                * (LEMMA_MAX_ROWS as u64),
+    ensures
+        (prev_cap as int + 1) * (LEMMA_MAX_MONEY_U64 as int) <= u64::MAX as int,
+{
+}
+
+#[verifier::external_body]
+pub proof fn lemma_max_rows_cube_times_money_fits_u64()
+    ensures
+        (LEMMA_MAX_ROWS_CUBE as int) * (LEMMA_MAX_ROWS_CUBE as int)
+            * (LEMMA_MAX_ROWS_CUBE as int) * (LEMMA_MAX_MONEY_U64 as int)
+            <= u64::MAX as int,
+{
+}
+
+#[verifier::external_body]
+pub proof fn lemma_max_rows_4_times_money_fits_u64()
+    ensures
+        (LEMMA_MAX_ROWS_4 as int) * (LEMMA_MAX_ROWS_4 as int)
+            * (LEMMA_MAX_ROWS_4 as int) * (LEMMA_MAX_ROWS_4 as int)
+            * (LEMMA_MAX_MONEY_U64 as int)
+            <= u64::MAX as int,
+{
+}
 """
+        return raw + "\n" + aliases
+    skip_fn: str | None = None
+    out: list[str] = []
+    for line in raw.splitlines():
+        if "pub proof fn lemma_" in line and any(
+            x in line for x in ("cell_u64", "money_fits", "money_add_fits", "add_money")
+        ):
+            skip_fn = line.split("pub proof fn ")[1].split("(")[0]
+            continue
+        if skip_fn and line.strip() == "}":
+            skip_fn = None
+            continue
+        if skip_fn:
+            continue
+        out.append(line)
+    return "\n".join(out) + "\n"
 
 
-def emit_bound_lemmas() -> str:
-    """Host proof lemmas: global products + discharge fit-in-width accumulate requires."""
+def _emit_bound_lemmas_with_cell_cap() -> str:
     return """// === Lemma global product bounds (host arithmetic) ===
 #[verifier::external_body]
 pub proof fn lemma_max_rows_times_native_fits_u64()
@@ -122,16 +251,16 @@ pub proof fn lemma_max_rows_times_native_fits_u64()
 }
 
 #[verifier::external_body]
-pub proof fn lemma_max_rows_times_money_fits_u64()
+pub proof fn lemma_max_rows_times_cell_u64_fits_u64()
     ensures
-        (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_MONEY_U64 as int) <= u64::MAX as int,
+        (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_CELL_U64 as int) <= u64::MAX as int,
 {
 }
 
 #[verifier::external_body]
-pub proof fn lemma_max_rows_sq_times_money_fits_u64()
+pub proof fn lemma_max_rows_sq_times_cell_u64_fits_u64()
     ensures
-        (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_MONEY_U64 as int)
+        (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_CELL_U64 as int)
             <= u64::MAX as int,
 {
 }
@@ -146,11 +275,11 @@ pub proof fn lemma_max_rows_sq_times_native_fits_u64()
 
 // rem_cap ≤ ROWS², then (rem_cap+1)·MONEY fits in u64 (uses join product bound).
 #[verifier::external_body]
-pub proof fn lemma_rem_cap_money_add_fits(prev_cap: u64)
+pub proof fn lemma_rem_cap_cell_u64_add_fits(prev_cap: u64)
     requires
         prev_cap <= (LEMMA_MAX_ROWS as u64) * (LEMMA_MAX_ROWS as u64),
     ensures
-        (prev_cap as int + 1) * (LEMMA_MAX_MONEY_U64 as int) <= u64::MAX as int,
+        (prev_cap as int + 1) * (LEMMA_MAX_CELL_U64 as int) <= u64::MAX as int,
 {
 }
 
@@ -175,45 +304,45 @@ pub proof fn lemma_join_nested_rem_leq_rows_sq(
 }
 
 #[verifier::external_body]
-pub proof fn lemma_max_rows_cube_times_money_fits_u64()
+pub proof fn lemma_max_rows_cube_times_cell_u64_fits_u64()
     ensures
         (LEMMA_MAX_ROWS_CUBE as int) * (LEMMA_MAX_ROWS_CUBE as int)
-            * (LEMMA_MAX_ROWS_CUBE as int) * (LEMMA_MAX_MONEY_U64 as int)
+            * (LEMMA_MAX_ROWS_CUBE as int) * (LEMMA_MAX_CELL_U64 as int)
             <= u64::MAX as int,
 {
 }
 
 #[verifier::external_body]
-pub proof fn lemma_max_rows_4_times_money_fits_u64()
+pub proof fn lemma_max_rows_4_times_cell_u64_fits_u64()
     ensures
         (LEMMA_MAX_ROWS_4 as int) * (LEMMA_MAX_ROWS_4 as int)
             * (LEMMA_MAX_ROWS_4 as int) * (LEMMA_MAX_ROWS_4 as int)
-            * (LEMMA_MAX_MONEY_U64 as int)
+            * (LEMMA_MAX_CELL_U64 as int)
             <= u64::MAX as int,
 {
 }
 
 // rem_cap ≤ CUBE³ ⇒ (rem_cap+1)·MONEY fits (3-table nested loops).
 #[verifier::external_body]
-pub proof fn lemma_rem_cap_money_add_fits_cube(prev_cap: u64)
+pub proof fn lemma_rem_cap_cell_u64_add_fits_cube(prev_cap: u64)
     requires
         prev_cap
             <= (LEMMA_MAX_ROWS_CUBE as u64) * (LEMMA_MAX_ROWS_CUBE as u64)
                 * (LEMMA_MAX_ROWS_CUBE as u64),
     ensures
-        (prev_cap as int + 1) * (LEMMA_MAX_MONEY_U64 as int) <= u64::MAX as int,
+        (prev_cap as int + 1) * (LEMMA_MAX_CELL_U64 as int) <= u64::MAX as int,
 {
 }
 
 // rem_cap ≤ ROWS_4⁴ ⇒ (rem_cap+1)·MONEY fits (4-table nested loops).
 #[verifier::external_body]
-pub proof fn lemma_rem_cap_money_add_fits_4(prev_cap: u64)
+pub proof fn lemma_rem_cap_cell_u64_add_fits_4(prev_cap: u64)
     requires
         prev_cap
             <= (LEMMA_MAX_ROWS_4 as u64) * (LEMMA_MAX_ROWS_4 as u64)
                 * (LEMMA_MAX_ROWS_4 as u64) * (LEMMA_MAX_ROWS_4 as u64),
     ensures
-        (prev_cap as int + 1) * (LEMMA_MAX_MONEY_U64 as int) <= u64::MAX as int,
+        (prev_cap as int + 1) * (LEMMA_MAX_CELL_U64 as int) <= u64::MAX as int,
 {
 }
 
@@ -396,13 +525,13 @@ pub proof fn lemma_fold_suffix_rem_leq_rows_pow4(
 }
 
 #[verifier::external_body]
-pub proof fn lemma_rem_cap_money_add_fits_pow4(prev_cap: u64)
+pub proof fn lemma_rem_cap_cell_u64_add_fits_pow4(prev_cap: u64)
     requires
         prev_cap
             <= (LEMMA_MAX_ROWS as u64) * (LEMMA_MAX_ROWS as u64) * (LEMMA_MAX_ROWS as u64)
                 * (LEMMA_MAX_ROWS as u64),
     ensures
-        (prev_cap as int + 1) * (LEMMA_MAX_MONEY_U64 as int) <= u64::MAX as int,
+        (prev_cap as int + 1) * (LEMMA_MAX_CELL_U64 as int) <= u64::MAX as int,
 {
 }
 
@@ -442,12 +571,12 @@ pub proof fn lemma_u64_add_native_fit(prev: u64, cell: u64, n: usize)
 
 // SUM(money u64 cell): requires global product bound (honest gate when constants allow).
 #[verifier::external_body]
-pub proof fn lemma_u64_add_money_fit(prev: u64, cell: u64, n: usize)
+pub proof fn lemma_u64_add_cell_u64_fit(prev: u64, cell: u64, n: usize)
     requires
-        prev <= (n as u64) * (LEMMA_MAX_MONEY_U64 as u64),
-        cell < LEMMA_MAX_MONEY_U64,
+        prev <= (n as u64) * (LEMMA_MAX_CELL_U64 as u64),
+        cell < LEMMA_MAX_CELL_U64,
         n <= LEMMA_MAX_ROWS,
-        (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_MONEY_U64 as int) <= u64::MAX as int,
+        (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_CELL_U64 as int) <= u64::MAX as int,
     ensures
         (prev as int) + (cell as int) <= u64::MAX as int,
 {
@@ -467,11 +596,11 @@ pub proof fn lemma_u64_add_one_prev_le(prev: u64, prev_cap: u64)
 // SUM(money) with explicit rem-cap: prev ≤ cap·M, cell < M, (cap+1)·M fits ⇒ prev+cell fits.
 // Same *kind* of fact as bounded int add (checkable from constants when cap ≤ ROWS²).
 #[verifier::external_body]
-pub proof fn lemma_u64_add_money_prev_le(prev: u64, cell: u64, prev_cap: u64)
+pub proof fn lemma_u64_add_cell_u64_prev_le(prev: u64, cell: u64, prev_cap: u64)
     requires
-        prev <= prev_cap * (LEMMA_MAX_MONEY_U64 as u64),
-        cell < LEMMA_MAX_MONEY_U64,
-        (prev_cap as int + 1) * (LEMMA_MAX_MONEY_U64 as int) <= u64::MAX as int,
+        prev <= prev_cap * (LEMMA_MAX_CELL_U64 as u64),
+        cell < LEMMA_MAX_CELL_U64,
+        (prev_cap as int + 1) * (LEMMA_MAX_CELL_U64 as int) <= u64::MAX as int,
     ensures
         (prev as int) + (cell as int) <= u64::MAX as int,
 {
@@ -489,7 +618,6 @@ pub proof fn lemma_u64_add_native_prev_le(prev: u64, cell: u64, prev_cap: u64)
 {
 }
 """
-
 
 def emit_trusted_prelude(*, include_left_join_miss: bool = True) -> str:
     left_join_miss = ""
@@ -831,14 +959,21 @@ pub open spec fn hashmap_multi_agg_view<K, V>(m: Map<K, V>) -> Map<K, V> {
 
 
 
-def emit_valid_cols_predicate(schema_dict: dict[str, str], struct_name: str = "Cols") -> str:
+def emit_valid_cols_predicate(
+    schema_dict: dict[str, str],
+    struct_name: str = "Cols",
+    *,
+    bounds: ResolvedBounds | None = None,
+    catalog: CatalogAssumptions | None = None,
+    table_assumptions: TableAssumptions | None = None,
+) -> str:
     """Columnar valid_cols: row count + per-column cell bounds."""
+    b = bounds if bounds is not None else resolve_bounds(catalog)
     lines = [
         f"pub open spec fn valid_cols(cols: &{struct_name}) -> bool {{",
         "    &&& cols.n <= LEMMA_MAX_ROWS",
     ]
     for col, col_type in schema_dict.items():
-        base = col.lower()
         field = rust_ident(col)
         vt = col_verus_type(col_type)
         if vt == "u32":
@@ -849,18 +984,15 @@ def emit_valid_cols_predicate(schema_dict: dict[str, str], struct_name: str = "C
             )
         elif vt == "u64":
             lines.append(f"    &&& cols.{field}.len() == cols.n")
-            lines.append(
-                f"    &&& forall|i: int| 0 <= i && i < cols.n as int ==>"
-                f" cols.{field}[i] < LEMMA_MAX_MONEY_U64"
-            )
+            if column_u64_cap_exclusive(col, table_assumptions, b) is not None:
+                lines.append(
+                    f"    &&& forall|i: int| 0 <= i && i < cols.n as int ==>"
+                    f" cols.{field}[i] < LEMMA_MAX_CELL_U64"
+                )
         elif vt == "bool":
-            lines.append(
-                f"    &&& cols.{field}.len() == cols.n"
-            )
+            lines.append(f"    &&& cols.{field}.len() == cols.n")
         else:
-            lines.append(
-                f"    &&& cols.{field}@.len() == cols.n"
-            )
+            lines.append(f"    &&& cols.{field}@.len() == cols.n")
             lines.append(
                 f"    &&& forall|i: int| 0 <= i && i < cols.n as int ==>"
                 f" (cols.{field}[i]@).len() <= LEMMA_MAX_STRING_LEN"
@@ -869,8 +1001,16 @@ def emit_valid_cols_predicate(schema_dict: dict[str, str], struct_name: str = "C
     return "\n".join(lines)
 
 
-def emit_valid_cols_accessor_lemmas(schema_dict: dict[str, str], struct_name: str = "Cols") -> str:
+def emit_valid_cols_accessor_lemmas(
+    schema_dict: dict[str, str],
+    struct_name: str = "Cols",
+    *,
+    bounds: ResolvedBounds | None = None,
+    catalog: CatalogAssumptions | None = None,
+    table_assumptions: TableAssumptions | None = None,
+) -> str:
     """Per-column bound lemmas (proved from valid_cols when possible)."""
+    b = bounds if bounds is not None else resolve_bounds(catalog)
     blocks: list[str] = []
     for col, col_type in schema_dict.items():
         base = col.lower()
@@ -879,7 +1019,9 @@ def emit_valid_cols_accessor_lemmas(schema_dict: dict[str, str], struct_name: st
         if vt == "u32":
             ensures = f"cols.{field}[i as int] < LEMMA_MAX_NATIVE_U32"
         elif vt == "u64":
-            ensures = f"cols.{field}[i as int] < LEMMA_MAX_MONEY_U64"
+            if column_u64_cap_exclusive(col, table_assumptions, b) is None:
+                continue
+            ensures = f"cols.{field}[i as int] < LEMMA_MAX_CELL_U64"
         elif vt == "bool":
             ensures = "true"
         else:

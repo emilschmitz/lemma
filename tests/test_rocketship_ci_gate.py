@@ -50,10 +50,12 @@ def test_ci_gate_prelude_no_arbitrary(prelude: str) -> None:
 
 
 def test_ci_gate_bound_lemmas_present() -> None:
-    lemmas = emit_bound_lemmas()
+    from research_loop.sec_table_assumptions import sec_prove_loop_catalog_assumptions
+
+    lemmas = emit_bound_lemmas(catalog=sec_prove_loop_catalog_assumptions())
     assert "lemma_u64_add_one_fit" in lemmas
     assert "lemma_u64_add_native_fit" in lemmas
-    assert "lemma_u64_add_money_fit" in lemmas
+    assert "lemma_u64_add_cell_u64_fit" in lemmas
     assert "arbitrary()" not in lemmas
     for name in ("lemma_u64_add_one_fit", "lemma_u64_add_native_fit"):
         block = lemmas.split(f"pub proof fn {name}")[1].split("pub proof fn")[0]
@@ -77,7 +79,7 @@ def test_ci_gate_agg_add_bridge_checked_add_with_prev_fit_requires() -> None:
     assert "requires" in block
     assert "checked_add" in block
     assert "wrapping_add" not in block
-    assert "delta < LEMMA_MAX_MONEY_U64" in block
+    assert "delta < LEMMA_MAX_CELL_U64" in block
     assert "old(hm)@" in block
     assert "(prev as int) + (delta as int)" not in block
 
@@ -88,7 +90,7 @@ def test_ci_gate_multi_agg_tuple_agg_add_checked_with_prev_fit() -> None:
     assert "requires" in block
     assert "checked_add" in block
     assert "wrapping_add" not in block
-    assert "d0 < LEMMA_MAX_MONEY_U64" in block
+    assert "d0 < LEMMA_MAX_CELL_U64" in block
     assert "old(hm)@" in block
     assert "(prev as int) +" not in block
 

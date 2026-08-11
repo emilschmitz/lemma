@@ -112,17 +112,25 @@ Lemma does **not** assume machine integers never overflow. Soundness for aggrega
 
 **Default (no table assumptions):** caps come only from **SQL/DuckDB types** (INT32-ish → ~`2**31`, u64/BIGINT → **full `2**64`**). DuckDB does not assume BIGINT cells are small for `SUM`; it widens to `HUGEINT`. Lemma should match: full type width and/or a **wide accumulator**, or require caller-supplied assumptions to tighten.
 
-**Optional table assumptions:** stub in `research_loop/table_assumptions.py`. When present (e.g. “≤10M rows, this column `< 10**12`”), `valid_cols` / product lemmas may use tighter caps for fixed-width `u64` accumulate.
-
-**Current gap:** prove_loop still emits global `LEMMA_MAX_MONEY_U64 = 2**31` for all u64 cells so `ROWS²·cell` fits in `u64`. That is **not** type-legitimate without assumptions — see `docs/TODOs.md` (rename + wire assumptions / wide accumulate).
+**Optional table assumptions:** `research_loop/table_assumptions.py` +
+`research_loop/sec_table_assumptions.py`. When the transpiler caller passes
+`CatalogAssumptions` (prove_loop uses `sec_prove_loop_catalog_assumptions()`),
+`value_bounds` emits `LEMMA_MAX_CELL_U64` and per-column `< LEMMA_MAX_CELL_U64`
+in `valid_cols`; product lemmas (`lemma_*_cell_u64_*`, fold slot bounds) are
+emitted only under that tight cap. Without assumptions, fixed-width `u64` SUM
+may not fit → **wide accumulator** (future) or loud fail — do not pretend
+`2**31` is type-implied.
 
 ### What `valid_cols` establishes
 
-The transpiler emits `valid_cols` (and per-column accessor lemmas) from schema via `verus_transpiler/value_bounds.py` → `emit_valid_cols_predicate`. For each `Cols` (or `valid_cols_{table}` on joins):
+The transpiler emits `valid_cols` (and per-column accessor lemmas) from schema via
+`verus_transpiler/value_bounds.py` → `emit_valid_cols_predicate`, driven by
+`resolve_bounds(catalog_assumptions)`. For each `Cols` (or `valid_cols_{table}` on joins):
 
-- `cols.n <= LEMMA_MAX_ROWS` (engine policy; override via table assumptions when wired)
-- `u32` columns: every cell `< LEMMA_MAX_NATIVE_U32` (`2**31`, type-shaped)
-- `u64` columns: today still `< LEMMA_MAX_MONEY_U64` (`2**31`, **provisional folklore** — see gap); target = assumption or full type width
+- `cols.n <= LEMMA_MAX_ROWS` (engine default `2**16`; override via catalog assumptions)
+- `u32` columns: every cell `< LEMMA_MAX_NATIVE_U32` (`2**31`, INT32-ish type width)
+- `u64` columns: **only when assumptions supply `max_cell_u64`** — `< LEMMA_MAX_CELL_U64`;
+  default transpile omits tight u64 cell bounds (full `u64` type width)
 - strings: length `<= LEMMA_MAX_STRING_LEN` (128)
 
 Admission requires `run_query` to keep `requires valid_cols(cols)` (or the per-table predicates on multi-table shells). These are **preconditions on the input**, not a claim that all Rust `u64`/`i64` ops are globally safe.
@@ -173,7 +181,10 @@ Constants are global (not per-benchmark query literals) per engine policy in `AG
 ### Honest gaps
 
 - **Host bound lemmas (2026-08-10):** `lemma_u64_add_*_fit` (+ global product lemmas) for explicit discharge. Product-path `agg_add_*` / `agg_step_*` carry prev-fit + cell-cap `requires` on every accumulate call. Multi-agg `emit_multi_agg_bound_lemmas()` emits elementary n·cap fold slot lemmas (COUNT ≤ n−k, SUM ≤ (n−k)·`LEMMA_MAX_*`).
-- **Money SUM:** `LEMMA_MAX_MONEY_U64` tightened to `2**32` so `LEMMA_MAX_ROWS * LEMMA_MAX_MONEY_U64` fits in `u64`; SEC `num.value` (double→u64) must stay under that cell cap per `valid_cols`.
+- **Cell-u64 SUM (SEC prove_loop):** with `sec_prove_loop_catalog_assumptions()`,
+  `LEMMA_MAX_CELL_U64 = 2**31` is an **explicit assumption** so `ROWS²·cell` fits in
+  `u64`; SEC `num.value` (double→u64) must stay under that cell cap per `valid_cols`.
+  Default transpile does not emit this const.
 - **Fold bound lemmas are Trusted axioms** (`external_body` proof fns) justified by open-spec fold semantics — not yet machine-checked by induction inside Verus.
 - **Semantic differential tests** check exec ≡ Python oracle on tiny fixtures under fit-in-width; they do not prove absence of overflow on production-sized tables.
 - **Float / decimal** columns map to `u64` exec cells with the same cell bound; non-integer semantics are a separate (known) approximation.

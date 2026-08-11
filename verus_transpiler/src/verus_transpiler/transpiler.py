@@ -4,6 +4,13 @@ from __future__ import annotations
 
 import re
 
+from research_loop.table_assumptions import (
+    CatalogAssumptions,
+    ResolvedBounds,
+    resolve_bounds,
+    table_assumptions_for,
+)
+
 from .agg_push import emit_cols_agg_push_verus, resolve_two_key_u32_str_groupby
 from .agg_push_str import emit_cols_agg_push_str_verus, resolve_two_key_str_str_groupby
 from .col_exprs import (
@@ -357,6 +364,9 @@ def _build_col_helper(
 def _emit_multi_table_cols(
     multi_schema: dict[str, dict[str, str]],
     query: SQLQuery,
+    *,
+    bounds: ResolvedBounds,
+    catalog: CatalogAssumptions | None = None,
 ) -> str:
     parts: list[str] = []
     for table, cols in multi_schema.items():
@@ -364,9 +374,16 @@ def _emit_multi_table_cols(
             continue
         struct = _table_struct_name(table)
         parts.append(generate_cols_rs(cols, groupby_columns=query.groupby_columns, struct_name=struct))
-        parts.append(emit_valid_cols_predicate(cols, struct_name=struct).replace(
-            "valid_cols", f"valid_cols_{table}"
-        ))
+        ta = table_assumptions_for(catalog, table)
+        parts.append(
+            emit_valid_cols_predicate(
+                cols,
+                struct_name=struct,
+                bounds=bounds,
+                catalog=catalog,
+                table_assumptions=ta,
+            ).replace("valid_cols", f"valid_cols_{table}")
+        )
     return "\n\n".join(parts)
 
 
@@ -1095,10 +1112,12 @@ def transpile_sql_to_verus(
     schema: dict[str, str] | dict[str, dict[str, str]],
     *,
     enable_templates: bool = False,
+    catalog_assumptions: CatalogAssumptions | None = None,
 ) -> str:
     """Return a complete Verus Rust source string."""
     _validate_schema(schema)
     flat_schema, multi_schema = normalize_schema(schema)
+    bounds = resolve_bounds(catalog_assumptions)
     query = parse_sql(sql, schema)
 
     is_join = bool(query.joins)
@@ -1188,8 +1207,12 @@ def transpile_sql_to_verus(
             sql_str=sql,
             groupby_columns=query.groupby_columns,
         )
-        valid_cols = emit_valid_cols_predicate(flat_schema)
-        accessor_lemmas = emit_valid_cols_accessor_lemmas(flat_schema)
+        valid_cols = emit_valid_cols_predicate(
+            flat_schema, bounds=bounds, catalog=catalog_assumptions
+        )
+        accessor_lemmas = emit_valid_cols_accessor_lemmas(
+            flat_schema, bounds=bounds, catalog=catalog_assumptions
+        )
         cols_block = f"{cols_block}\n\n{valid_cols}\n\n{accessor_lemmas}"
         helpers, spec_fn, ret_type = _emit_set_op_helpers(query, flat_schema, op="intersect")
         run_query = emit_run_query_skeleton(query, ret_type)
@@ -1199,8 +1222,12 @@ def transpile_sql_to_verus(
             sql_str=sql,
             groupby_columns=query.groupby_columns,
         )
-        valid_cols = emit_valid_cols_predicate(flat_schema)
-        accessor_lemmas = emit_valid_cols_accessor_lemmas(flat_schema)
+        valid_cols = emit_valid_cols_predicate(
+            flat_schema, bounds=bounds, catalog=catalog_assumptions
+        )
+        accessor_lemmas = emit_valid_cols_accessor_lemmas(
+            flat_schema, bounds=bounds, catalog=catalog_assumptions
+        )
         cols_block = f"{cols_block}\n\n{valid_cols}\n\n{accessor_lemmas}"
         helpers, spec_fn, ret_type = _emit_set_op_helpers(query, flat_schema, op="except")
         run_query = emit_run_query_skeleton(query, ret_type)
@@ -1210,13 +1237,19 @@ def transpile_sql_to_verus(
             sql_str=sql,
             groupby_columns=query.groupby_columns,
         )
-        valid_cols = emit_valid_cols_predicate(flat_schema)
-        accessor_lemmas = emit_valid_cols_accessor_lemmas(flat_schema)
+        valid_cols = emit_valid_cols_predicate(
+            flat_schema, bounds=bounds, catalog=catalog_assumptions
+        )
+        accessor_lemmas = emit_valid_cols_accessor_lemmas(
+            flat_schema, bounds=bounds, catalog=catalog_assumptions
+        )
         cols_block = f"{cols_block}\n\n{valid_cols}\n\n{accessor_lemmas}"
         helpers, spec_fn, ret_type = _emit_union_helpers(query, flat_schema)
         run_query = emit_run_query_skeleton(query, ret_type)
     elif is_join and multi_schema:
-        cols_block = _emit_multi_table_cols(multi_schema, query)
+        cols_block = _emit_multi_table_cols(
+            multi_schema, query, bounds=bounds, catalog=catalog_assumptions
+        )
         # Join helpers resolve row.* via slot params; do not pre-convert to cols.get_*.
         where_at = query.where_expr
         val_type = _agg_value_type(query.agg_expr)
@@ -1244,8 +1277,12 @@ def transpile_sql_to_verus(
             sql_str=sql,
             groupby_columns=query.groupby_columns,
         )
-        valid_cols = emit_valid_cols_predicate(flat_schema)
-        accessor_lemmas = emit_valid_cols_accessor_lemmas(flat_schema)
+        valid_cols = emit_valid_cols_predicate(
+            flat_schema, bounds=bounds, catalog=catalog_assumptions
+        )
+        accessor_lemmas = emit_valid_cols_accessor_lemmas(
+            flat_schema, bounds=bounds, catalog=catalog_assumptions
+        )
 
         helpers, spec_fn, ret_type = _emit_single_table_spec(query, flat_schema)
         result_spec = _emit_method_spec_result(query, ret_type)
@@ -1283,9 +1320,9 @@ use std::collections::{{HashMap, HashSet}};
 
 verus! {{
 
-{emit_bound_constants()}
+{emit_bound_constants(bounds=bounds)}
 
-{emit_bound_lemmas()}
+{emit_bound_lemmas(bounds=bounds)}
 
 {trusted_prelude}
 

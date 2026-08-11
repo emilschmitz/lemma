@@ -24,7 +24,7 @@ def test_agg_push_u32_str_delegates_to_agg_add_with_u64_map() -> None:
     assert "HashMapWithView<(u32, String), u64>" in block
     assert "requires" in block
     assert "ensures" in block
-    assert "delta < LEMMA_MAX_MONEY_U64" in block
+    assert "delta < LEMMA_MAX_CELL_U64" in block
     assert "old(agg)@" in block
     assert "agg_add_u32_str__u64(" in block
     assert "std::collections::HashMap" not in block
@@ -36,7 +36,7 @@ def test_agg_push_str_str_delegates_to_agg_add_with_u64_map() -> None:
     assert "HashMapWithView<(String, String), u64>" in block
     assert "requires" in block
     assert "ensures" in block
-    assert "delta < LEMMA_MAX_MONEY_U64" in block
+    assert "delta < LEMMA_MAX_CELL_U64" in block
     assert "old(agg)@" in block
     assert "agg_add_str_str__u64(" in block
     assert "std::collections::HashMap" not in block

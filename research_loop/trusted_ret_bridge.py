@@ -383,7 +383,7 @@ def _agg_add_scalar_requires(
     prev_expr = _ghost_prev_expr(spec_key)
     clauses: list[str] = []
     if value.name == "u64":
-        clauses.append(f"{delta_name} < LEMMA_MAX_MONEY_U64")
+        clauses.append(f"{delta_name} < LEMMA_MAX_CELL_U64")
         clauses.append(_u64_add_bound_requires(prev_expr, f"({delta_name} as int)"))
     elif value.name == "i64":
         clauses.append(_i64_add_bound_requires(prev_expr, f"({delta_name} as int)"))
@@ -402,7 +402,7 @@ def _agg_add_tuple_requires(value: TypeTuple, *, spec_key: str) -> str | None:
         else:
             prev_slot = _ghost_prev_slot_expr(spec_key, i)
         if e.name == "u64":
-            clauses.append(f"d{i} < LEMMA_MAX_MONEY_U64")
+            clauses.append(f"d{i} < LEMMA_MAX_CELL_U64")
             clauses.append(_u64_add_bound_requires(prev_slot, f"(d{i} as int)"))
         elif e.name == "i64":
             clauses.append(_i64_add_bound_requires(prev_slot, f"(d{i} as int)"))

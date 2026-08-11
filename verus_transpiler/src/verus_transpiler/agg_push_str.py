@@ -54,7 +54,7 @@ def _agg_push_str_str_requires(
     )
     clauses = ["i < self.n"]
     if val_type == "u64":
-        clauses.append(f"{delta_name} < LEMMA_MAX_MONEY_U64")
+        clauses.append(f"{delta_name} < LEMMA_MAX_CELL_U64")
         clauses.append(_u64_prev_fit_requires(prev_expr, f"({delta_name} as int)"))
     else:
         clauses.append(_i64_prev_fit_requires(prev_expr, f"({delta_name} as int)"))

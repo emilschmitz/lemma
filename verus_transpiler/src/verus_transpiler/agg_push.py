@@ -64,7 +64,7 @@ def _agg_push_u32_str_requires(
         f"if old(agg)@.contains_key({spec_key}) {{ old(agg)@{spec_key} }} "
         f"else {{ 0{val_type} }}"
     )
-    clauses = ["i < self.n", f"{delta_name} < LEMMA_MAX_MONEY_U64"] if val_type == "u64" else ["i < self.n"]
+    clauses = ["i < self.n", f"{delta_name} < LEMMA_MAX_CELL_U64"] if val_type == "u64" else ["i < self.n"]
     if val_type == "u64":
         clauses.append(_u64_prev_fit_requires(prev_expr, f"({delta_name} as int)"))
     else:
@@ -118,5 +118,5 @@ def emit_cols_agg_push_verus(
         ensures
             {ensures},
     {{
-        {agg_add_fn}(agg, self.get_{u32_base}_exec(i), &self.get_{str_base}_exec(i), delta);
+        {agg_add_fn}(agg, &self.get_{u32_base}_exec(i), &self.get_{str_base}_exec(i), delta);
     }}"""

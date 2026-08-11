@@ -33,6 +33,7 @@ from research_loop.trusted_ret_bridge import (
     get_bridge,
     parse_verus_type,
 )
+from research_loop.sec_table_assumptions import sec_prove_loop_catalog_assumptions
 from verus_transpiler import transpile_sql_to_verus
 
 AGG_CALL_RE = re.compile(
@@ -60,15 +61,13 @@ DEC_RE = re.compile(r"(\w+)\s*=\s*\1\s*-\s*1\s*;")
 HAVING_TYPO_RE = re.compile(r"apply_having_filter_exec_([a-z0-9_]+)__u64\b")
 PROOF_BINDING_NAMES = frozenset({"value", "val", "line", "delta", "amt"})
 FOLD_PROOF_MARKER_RE = re.compile(
-    r"lemma_u64_add_|lemma_rem_cap_money_add_fits|lemma_rem_cap_one_add_fits"
+    r"lemma_u64_add_|lemma_rem_cap_cell_u64_add_fits|lemma_rem_cap_one_add_fits"
     r"|lemma_join_nested_rem_leq_rows|lemma_\w+_slot\d+_|lemma_\w+_(?:count|sum)_"
 )
 EXEC_IN_PROOF_RE = re.compile(r"(\w+)\.get_(\w+)_exec\(([^)]+)\)")
 
 
 def _load_spec(dir_path: Path) -> str:
-    from research_loop.sec_table_assumptions import sec_prove_loop_catalog_assumptions
-
     transpiled = dir_path / "spec_transpiled.rs"
     if transpiled.is_file():
         return transpiled.read_text(encoding="utf-8")
@@ -642,10 +641,10 @@ def _rem_cap_lines(ctx, kind: str) -> list[str]:
     if n_tab <= 2:
         if kind == "native":
             return []
-        return ["lemma_rem_cap_money_add_fits(rem);"]
+        return ["lemma_rem_cap_cell_u64_add_fits(rem);"]
     if kind == "native":
         return ["lemma_rem_cap_native_add_fits_pow4(rem);"]
-    return ["lemma_rem_cap_money_add_fits_pow4(rem);"]
+    return ["lemma_rem_cap_cell_u64_add_fits_pow4(rem);"]
 
 
 def _join_depth(ctx) -> int:
@@ -800,14 +799,14 @@ def _build_before_proof(
                 raw_cell = money_cell or "0u64"
                 cell_spec = _cell_spec_expr(raw_cell, bindings)
                 lines.append(
-                    f"    assert(prev.{slot_i} <= rem * (LEMMA_MAX_MONEY_U64 as u64));"
+                    f"    assert(prev.{slot_i} <= rem * (LEMMA_MAX_CELL_U64 as u64));"
                 )
-                lines.append(f"    assert({cell_spec} < LEMMA_MAX_MONEY_U64);")
+                lines.append(f"    assert({cell_spec} < LEMMA_MAX_CELL_U64);")
                 lines.extend(f"    {ln}" for ln in _table_rows_asserts(ctx))
                 lines.extend(f"    {ln}" for ln in _rem_discharge_lines(ctx, lemma_idx_args))
-                lines.extend(f"    {ln}" for ln in _rem_cap_lines(ctx, "money"))
+                lines.extend(f"    {ln}" for ln in _rem_cap_lines(ctx, "cell_u64"))
                 lines.append(
-                    f"    lemma_u64_add_money_prev_le(prev.{slot_i}, {cell_spec}, rem);"
+                    f"    lemma_u64_add_cell_u64_prev_le(prev.{slot_i}, {cell_spec}, rem);"
                 )
     else:
         zero = prev_zero if prev_zero != "0u64" else "0u64"
@@ -822,20 +821,20 @@ def _build_before_proof(
             lines.extend(f"    {ln}" for ln in _rem_discharge_lines(ctx, lemma_idx_args))
             lines.extend(f"    {ln}" for ln in _rem_cap_one_add_lines(ctx))
             lines.append("    lemma_u64_add_one_prev_le(prev, rem);")
-        elif scalar_kind == "sum_money":
+        elif scalar_kind == "sum_cell_u64":
             raw_cell = money_cell or "delta"
             cell_spec = _cell_spec_expr(raw_cell, bindings)
             lines.append("    if tail.contains_key(key) {")
-            lines.append(f"        lemma_{helper}_sum_money_leq_{suffix}({lemma_args});")
+            lines.append(f"        lemma_{helper}_sum_cell_u64_leq_{suffix}({lemma_args});")
             lines.append(
-                f"        assert((prev as int) <= ({rem_tail_int}) * (LEMMA_MAX_MONEY_U64 as int));"
+                f"        assert((prev as int) <= ({rem_tail_int}) * (LEMMA_MAX_CELL_U64 as int));"
             )
             lines.append("    } else {")
             lines.append("        assert(prev == 0u64);")
             lines.append("    }")
-            lines.append(f"    assert({cell_spec} < LEMMA_MAX_MONEY_U64);")
-            lines.extend(f"    {ln}" for ln in _rem_cap_lines(ctx, "money"))
-            lines.append(f"    lemma_u64_add_money_prev_le(prev, {cell_spec}, rem);")
+            lines.append(f"    assert({cell_spec} < LEMMA_MAX_CELL_U64);")
+            lines.extend(f"    {ln}" for ln in _rem_cap_lines(ctx, "cell_u64"))
+            lines.append(f"    lemma_u64_add_cell_u64_prev_le(prev, {cell_spec}, rem);")
         else:
             return None
     lines.append("}")
@@ -1073,10 +1072,10 @@ def strip_before_agg_proofs(text: str) -> str:
             nxt = "".join(lines[j : j + 10])
             if (
                 "lemma_u64_add_one_prev_le" in block
-                or "lemma_u64_add_money_prev_le" in block
+                or "lemma_u64_add_cell_u64_prev_le" in block
                 or "lemma_u64_add_native_fit" in block
                 or "lemma_u64_add_native_prev_le" in block
-                or "lemma_rem_cap_money_add_fits" in block
+                or "lemma_rem_cap_cell_u64_add_fits" in block
                 or "lemma_multi_agg_helper_slot" in block
                 or "lemma_join_method_spec_helper_" in block
                 or "lemma_method_spec_helper_slot" in block
