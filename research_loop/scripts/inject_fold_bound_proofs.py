@@ -60,13 +60,15 @@ DEC_RE = re.compile(r"(\w+)\s*=\s*\1\s*-\s*1\s*;")
 HAVING_TYPO_RE = re.compile(r"apply_having_filter_exec_([a-z0-9_]+)__u64\b")
 PROOF_BINDING_NAMES = frozenset({"value", "val", "line", "delta", "amt"})
 FOLD_PROOF_MARKER_RE = re.compile(
-    r"lemma_u64_add_|lemma_rem_cap_money_add_fits|lemma_join_nested_rem_leq_rows_sq|"
-    r"lemma_\w+_slot\d+_|lemma_\w+_(?:count|sum)_"
+    r"lemma_u64_add_|lemma_rem_cap_money_add_fits|lemma_rem_cap_one_add_fits"
+    r"|lemma_join_nested_rem_leq_rows|lemma_\w+_slot\d+_|lemma_\w+_(?:count|sum)_"
 )
 EXEC_IN_PROOF_RE = re.compile(r"(\w+)\.get_(\w+)_exec\(([^)]+)\)")
 
 
 def _load_spec(dir_path: Path) -> str:
+    from research_loop.sec_table_assumptions import sec_prove_loop_catalog_assumptions
+
     transpiled = dir_path / "spec_transpiled.rs"
     if transpiled.is_file():
         return transpiled.read_text(encoding="utf-8")
@@ -74,7 +76,9 @@ def _load_spec(dir_path: Path) -> str:
     schema = load_sec_schema()
     _flat, multi = normalize_schema(schema)
     projected = project_multi_schema_for_query(sql, multi)
-    return transpile_sql_to_verus(sql, projected)
+    return transpile_sql_to_verus(
+        sql, projected, catalog_assumptions=sec_prove_loop_catalog_assumptions()
+    )
 
 
 def _vec_view_for_ret(ret_type: str) -> str | None:
@@ -644,6 +648,29 @@ def _rem_cap_lines(ctx, kind: str) -> list[str]:
     return ["lemma_rem_cap_money_add_fits_pow4(rem);"]
 
 
+def _join_depth(ctx) -> int:
+    return len(ctx.table_params)
+
+
+def _rem_cap_one_add_lemma_for_ctx(ctx) -> str:
+    depth = _join_depth(ctx)
+    if depth >= 4:
+        return "lemma_rem_cap_one_add_fits_4"
+    if depth == 3:
+        return "lemma_rem_cap_one_add_fits_cube"
+    if depth <= 1:
+        return "lemma_rem_cap_one_add_fits_rows"
+    return "lemma_rem_cap_one_add_fits"
+
+
+def _rem_cap_one_add_lines(ctx) -> list[str]:
+    lemma = _rem_cap_one_add_lemma_for_ctx(ctx)
+    lines = [f"{lemma}(rem);"]
+    if lemma == "lemma_rem_cap_one_add_fits_rows":
+        lines.insert(0, "assert(rem <= LEMMA_MAX_ROWS as u64);")
+    return lines
+
+
 def _rem_discharge_lines(ctx, lemma_idx_args: list[str]) -> list[str]:
     n_tab = len(ctx.table_params)
     if n_tab >= 3:
@@ -752,6 +779,7 @@ def _build_before_proof(
                 lines.append(f"    assert(prev.{slot_i} <= rem);")
                 lines.extend(f"    {ln}" for ln in _table_rows_asserts(ctx))
                 lines.extend(f"    {ln}" for ln in _rem_discharge_lines(ctx, lemma_idx_args))
+                lines.extend(f"    {ln}" for ln in _rem_cap_one_add_lines(ctx))
                 lines.append(f"    lemma_u64_add_one_prev_le(prev.{slot_i}, rem);")
             elif kind == "sum_native":
                 raw_cell = money_cell or "0u64"
@@ -792,6 +820,7 @@ def _build_before_proof(
             lines.append("    assert(prev <= rem);")
             lines.extend(f"    {ln}" for ln in _table_rows_asserts(ctx))
             lines.extend(f"    {ln}" for ln in _rem_discharge_lines(ctx, lemma_idx_args))
+            lines.extend(f"    {ln}" for ln in _rem_cap_one_add_lines(ctx))
             lines.append("    lemma_u64_add_one_prev_le(prev, rem);")
         elif scalar_kind == "sum_money":
             raw_cell = money_cell or "delta"
