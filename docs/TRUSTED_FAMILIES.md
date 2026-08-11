@@ -31,8 +31,9 @@ Must hold **all** of:
    Tighter `u64` cell caps (`LEMMA_MAX_CELL_U64`) and row-depth caps appear only
    when the transpiler caller supplies `CatalogAssumptions` / `TableAssumptions`
    (prove_loop uses `research_loop/sec_table_assumptions.py` explicitly). Product
-   lemmas (`lemma_*_cell_u64_*`, fold slot bounds) are derived from those
-   assumptions, not from pretending BIGINT is always `2**31`.
+   arithmetic lemmas (`lemma_*_cell_u64_*`, `lemma_rem_cap_*`) are checkable from
+   those named caps; **fold slot/count/sum bounds** are emitted as `assume_*`
+   (auditable acceptance under catalog assumptions — not Verus-proved induction).
 5. **Tested** — semantic differential (or equivalent), including precondition
    boundaries.
 

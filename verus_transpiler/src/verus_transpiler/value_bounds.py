@@ -293,9 +293,10 @@ pub proof fn lemma_rem_cap_native_add_fits(prev_cap: u64)
 {
 }
 
-// Nested-loop rem ((n1-i1)+(n0-i0-1)*n1) ≤ ROWS² under valid_cols (elementary).
+// ASSUMPTION (catalog/user): nested-loop rem ≤ ROWS² under valid_cols row caps.
+// Not Verus-proved from fold induction — expert accepts under table assumptions.
 #[verifier::external_body]
-pub proof fn lemma_join_nested_rem_leq_rows_sq(
+pub proof fn assume_join_nested_rem_leq_rows_sq(
     n0: usize,
     n1: usize,
     i0: int,
@@ -423,9 +424,9 @@ pub proof fn lemma_rem_cap_one_add_fits_4(prev_cap: u64)
 {
 }
 
-// 3-table nested rem ≤ CUBE³ when each n ≤ LEMMA_MAX_ROWS_CUBE.
+// ASSUMPTION (catalog/user): 3-table nested rem ≤ CUBE³ under valid_cols row caps.
 #[verifier::external_body]
-pub proof fn lemma_join_nested_rem_leq_rows_cube(
+pub proof fn assume_join_nested_rem_leq_rows_cube(
     n0: usize,
     n1: usize,
     n2: usize,
@@ -450,9 +451,9 @@ pub proof fn lemma_join_nested_rem_leq_rows_cube(
 {
 }
 
-// 4-table nested rem ≤ ROWS_4⁴ when each n ≤ LEMMA_MAX_ROWS_4.
+// ASSUMPTION (catalog/user): 4-table nested rem ≤ ROWS_4⁴ under valid_cols row caps.
 #[verifier::external_body]
-pub proof fn lemma_join_nested_rem_leq_rows_4(
+pub proof fn assume_join_nested_rem_leq_rows_4(
     n0: usize,
     n1: usize,
     n2: usize,
@@ -483,9 +484,9 @@ pub proof fn lemma_join_nested_rem_leq_rows_4(
 {
 }
 
-// 3-table suffix rem ≤ ROWS³ (elementary product bound).
+// ASSUMPTION (catalog/user): 3-table suffix rem ≤ ROWS³ under valid_cols row caps.
 #[verifier::external_body]
-pub proof fn lemma_fold_suffix_rem_leq_rows_pow3(
+pub proof fn assume_fold_suffix_rem_leq_rows_pow3(
     n0: usize,
     n1: usize,
     n2: usize,
@@ -506,9 +507,9 @@ pub proof fn lemma_fold_suffix_rem_leq_rows_pow3(
 {
 }
 
-// 4-table suffix rem ≤ ROWS⁴ (elementary product bound).
+// ASSUMPTION (catalog/user): 4-table suffix rem ≤ ROWS⁴ under valid_cols row caps.
 #[verifier::external_body]
-pub proof fn lemma_fold_suffix_rem_leq_rows_pow4(
+pub proof fn assume_fold_suffix_rem_leq_rows_pow4(
     n0: usize,
     n1: usize,
     n2: usize,

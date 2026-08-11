@@ -41,7 +41,7 @@ AGG_CALL_RE = re.compile(
     re.MULTILINE,
 )
 PROOF_HAS_LEMMA_RE = re.compile(
-    r"lemma_u64_add_|lemma_\w+_slot\d+_|lemma_\w+_(?:count|sum)_"
+    r"lemma_u64_add_|assume_\w+_slot\d+_|assume_\w+_(?:count|sum)_"
 )
 ENSURES_RES_RE = re.compile(r"ensures\s+res@\s*==\s*method_spec")
 OUT_AT_RE = re.compile(r"\bout@")
@@ -62,6 +62,7 @@ HAVING_TYPO_RE = re.compile(r"apply_having_filter_exec_([a-z0-9_]+)__u64\b")
 PROOF_BINDING_NAMES = frozenset({"value", "val", "line", "delta", "amt"})
 FOLD_PROOF_MARKER_RE = re.compile(
     r"lemma_u64_add_|lemma_rem_cap_cell_u64_add_fits|lemma_rem_cap_one_add_fits"
+    r"|assume_join_nested_rem_leq_rows|assume_\w+_slot\d+_|assume_\w+_(?:count|sum)_"
     r"|lemma_join_nested_rem_leq_rows|lemma_\w+_slot\d+_|lemma_\w+_(?:count|sum)_"
 )
 EXEC_IN_PROOF_RE = re.compile(r"(\w+)\.get_(\w+)_exec\(([^)]+)\)")
@@ -101,7 +102,8 @@ def _proof_before_has_lemma(src: str, call_start: int) -> bool:
         r"let ghost tail = \w+\(",
         window,
     ) and re.search(
-        r"lemma_u64_add_|lemma_\w+_slot\d+_|lemma_\w+_(?:count|sum)_(?:money_)?leq_",
+        r"lemma_u64_add_|assume_\w+_slot\d+_|assume_\w+_(?:count|sum)_(?:money_)?leq_"
+        r"|lemma_\w+_slot\d+_|lemma_\w+_(?:count|sum)_(?:money_)?leq_",
         window,
     ):
         return True
@@ -587,6 +589,12 @@ def _rem_int_from_subst(
 
 
 def _table_rows_asserts(ctx) -> list[str]:
+    """Assert row caps that follow from ``valid_cols`` (always ``LEMMA_MAX_ROWS`` today).
+
+    Depth-specific ``ROWS_CUBE`` / ``ROWS_4`` caps are catalog constants for product
+    lemmas; they are **not** in ``valid_cols`` unless/until per-query depth caps are
+    wired into ``valid_cols``. Do not assert them here — proofs cannot discharge them.
+    """
     seen: set[str] = set()
     lines: list[str] = []
     for param, _struct in ctx.table_params:
@@ -605,7 +613,7 @@ def _nested_join_rem_lines(ctx, lemma_idx_args: list[str]) -> list[str]:
     t1, _ = ctx.table_params[1]
     return [
         (
-            f"lemma_join_nested_rem_leq_rows_sq("
+            f"assume_join_nested_rem_leq_rows_sq("
             f"{t0}.n, {t1}.n, {lemma_idx_args[0]}, {lemma_idx_args[1]});"
         )
     ]
@@ -630,9 +638,9 @@ def _fold_suffix_rem_lines(ctx, lemma_idx_args: list[str]) -> list[str]:
     ns = ", ".join(f"{p}.n" for p, _ in ctx.table_params)
     is_ = ", ".join(lemma_idx_args[:n_tab])
     if n_tab == 3:
-        return [f"lemma_fold_suffix_rem_leq_rows_pow3({ns}, {is_});"]
+        return [f"assume_fold_suffix_rem_leq_rows_pow3({ns}, {is_});"]
     if n_tab == 4:
-        return [f"lemma_fold_suffix_rem_leq_rows_pow4({ns}, {is_});"]
+        return [f"assume_fold_suffix_rem_leq_rows_pow4({ns}, {is_});"]
     return []
 
 
@@ -651,12 +659,16 @@ def _join_depth(ctx) -> int:
     return len(ctx.table_params)
 
 
-def _rem_cap_one_add_lemma_for_ctx(ctx) -> str:
+def _rem_cap_one_add_lemma_for_ctx(ctx) -> str | None:
+    """Return rem_cap_one lemma, or None when fold_suffix already matches depth.
+
+    Depth ≥3 uses ``assume_fold_suffix_rem_leq_rows_pow*`` with ``LEMMA_MAX_ROWS^k``,
+    which does **not** discharge ``lemma_rem_cap_one_add_fits_{cube|4}`` (CUBE / ROWS_4).
+    Pass99 proofs omitted rem_cap_one on those shapes; keep that alignment.
+    """
     depth = _join_depth(ctx)
-    if depth >= 4:
-        return "lemma_rem_cap_one_add_fits_4"
-    if depth == 3:
-        return "lemma_rem_cap_one_add_fits_cube"
+    if depth >= 3:
+        return None
     if depth <= 1:
         return "lemma_rem_cap_one_add_fits_rows"
     return "lemma_rem_cap_one_add_fits"
@@ -664,6 +676,8 @@ def _rem_cap_one_add_lemma_for_ctx(ctx) -> str:
 
 def _rem_cap_one_add_lines(ctx) -> list[str]:
     lemma = _rem_cap_one_add_lemma_for_ctx(ctx)
+    if lemma is None:
+        return []
     lines = [f"{lemma}(rem);"]
     if lemma == "lemma_rem_cap_one_add_fits_rows":
         lines.insert(0, "assert(rem <= LEMMA_MAX_ROWS as u64);")
@@ -772,7 +786,7 @@ def _build_before_proof(
         )
         lines.append(f"    let ghost rem = {rem_u64};")
         for slot_i, kind in slots:
-            fname = f"lemma_{helper}_slot{slot_i}_{kind}_leq_{suffix}"
+            fname = f"assume_{helper}_slot{slot_i}_{kind}_leq_{suffix}"
             lines.append(f"    {fname}({lemma_args});")
             if kind == "count":
                 lines.append(f"    assert(prev.{slot_i} <= rem);")
@@ -815,7 +829,7 @@ def _build_before_proof(
         )
         lines.append(f"    let ghost rem = {rem_u64};")
         if scalar_kind == "count":
-            lines.append(f"    lemma_{helper}_count_leq_{suffix}({lemma_args});")
+            lines.append(f"    assume_{helper}_count_leq_{suffix}({lemma_args});")
             lines.append("    assert(prev <= rem);")
             lines.extend(f"    {ln}" for ln in _table_rows_asserts(ctx))
             lines.extend(f"    {ln}" for ln in _rem_discharge_lines(ctx, lemma_idx_args))
@@ -825,7 +839,7 @@ def _build_before_proof(
             raw_cell = money_cell or "delta"
             cell_spec = _cell_spec_expr(raw_cell, bindings)
             lines.append("    if tail.contains_key(key) {")
-            lines.append(f"        lemma_{helper}_sum_cell_u64_leq_{suffix}({lemma_args});")
+            lines.append(f"        assume_{helper}_sum_cell_u64_leq_{suffix}({lemma_args});")
             lines.append(
                 f"        assert((prev as int) <= ({rem_tail_int}) * (LEMMA_MAX_CELL_U64 as int));"
             )
@@ -1076,6 +1090,9 @@ def strip_before_agg_proofs(text: str) -> str:
                 or "lemma_u64_add_native_fit" in block
                 or "lemma_u64_add_native_prev_le" in block
                 or "lemma_rem_cap_cell_u64_add_fits" in block
+                or "assume_multi_agg_helper_slot" in block
+                or "assume_join_method_spec_helper_" in block
+                or "assume_method_spec_helper_slot" in block
                 or "lemma_multi_agg_helper_slot" in block
                 or "lemma_join_method_spec_helper_" in block
                 or "lemma_method_spec_helper_slot" in block

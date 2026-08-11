@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from research_loop.table_assumptions import CatalogAssumptions, resolve_bounds
 from research_loop.trusted_ret_bridge import (
     RetBridge,
     TypeAtom,
@@ -774,6 +775,22 @@ def _state_val_access(n_slots: int, slot_i: int) -> str:
     return "" if n_slots == 1 else f".{slot_i}"
 
 
+_FOLD_ASSUME_HEADER = (
+    "// ASSUMPTION (catalog/user): under `valid_cols` + this open-spec fold, "
+    "partial agg ≤ rem·cap.\n"
+    "// Not a Verus-proved induction — expert accepts under table/catalog assumptions."
+)
+
+
+def _fold_bounds_allow_cell_cap(
+    spec_rs: str,
+    catalog: CatalogAssumptions | None,
+) -> bool:
+    if catalog is not None:
+        return resolve_bounds(catalog).has_tight_cell_u64
+    return "LEMMA_MAX_CELL_U64" in spec_rs
+
+
 def _emit_slot_bound_lemma(
     *,
     ctx: FoldBoundContext,
@@ -785,24 +802,23 @@ def _emit_slot_bound_lemma(
 ) -> str:
     helper = ctx.helper
     rem = ctx.suffix_remaining_u64()
-    fname = f"lemma_{helper}_slot{slot_i}_{kind}_leq_{suffix}"
+    fname = f"assume_{helper}_slot{slot_i}_{kind}_leq_{suffix}"
     if kind == "count":
         cap = rem
-        comment = (
-            f"// Elementary: ≤{rem} filtered rows add ≤1 to slot {slot_i} (COUNT)."
-        )
+        detail = f"COUNT slot {slot_i}: ≤{rem} filtered rows add ≤1 each."
     elif kind == "sum_native":
-        comment = (
-            f"// Elementary: ≤{rem} native cells each < LEMMA_MAX_NATIVE_U32 → slot {slot_i}."
+        detail = (
+            f"SUM(native) slot {slot_i}: ≤{rem} cells each < LEMMA_MAX_NATIVE_U32."
         )
         cap = f"{rem} * (LEMMA_MAX_NATIVE_U32 as u64)"
     else:
-        comment = (
-            f"// Elementary: ≤{rem} u64 cells each < LEMMA_MAX_CELL_U64 → slot {slot_i}."
+        detail = (
+            f"SUM(u64 cell) slot {slot_i}: ≤{rem} cells each < LEMMA_MAX_CELL_U64."
         )
         cap = f"{rem} * (LEMMA_MAX_CELL_U64 as u64)"
     if kind == "count":
         cap = rem
+    comment = f"{_FOLD_ASSUME_HEADER}\n// {detail}"
     # Bound ghost prev at call sites (0 if key absent) — no contains_key requires.
     ensures = (
         f"(if {helper}({ctx.call_args}).contains_key(key) {{ "
@@ -833,26 +849,29 @@ def emit_multi_agg_bound_lemmas(
     bridge: RetBridge,
     *,
     spec_rs: str,
+    catalog_assumptions: CatalogAssumptions | None = None,
 ) -> str:
-    """Trusted fold bound lemmas: helper slot caps discharge agg_step requires."""
+    """Auditable fold-bound assumptions: helper slot caps discharge agg_step requires."""
     ctx = _parse_fold_bound_context(spec_rs, layout.helper_name)
     if ctx is None:
         return ""
 
-    helper = layout.helper_name
+    allow_cell = _fold_bounds_allow_cell_cap(spec_rs, catalog_assumptions)
     key_spec = _type_to_str(layout.key_type)
     slots = _state_slots(layout.state_type)
     n_slots = len(slots)
     suffix = bridge.agg_suffix or bridge.key.removeprefix("map_")
     apply_lines = [ln.strip() for ln in layout.apply_body.split("\n") if ln.strip()]
 
-    blocks: list[str] = [f"\n// === Multi-agg fold bound lemmas ({suffix}) ==="]
+    blocks: list[str] = [f"\n// === Multi-agg fold bound assumptions ({suffix}) ==="]
     for i, slot in enumerate(slots):
         if not isinstance(slot, TypeAtom) or slot.name != "u64":
             continue
         s_line = next((ln for ln in apply_lines if ln.startswith(f"let s{i} =")), "")
         kind = _classify_u64_slot(s_line, i, multi_slot=n_slots > 1)
         if kind is None:
+            continue
+        if kind == "sum_cell_u64" and not allow_cell:
             continue
         val_access = _state_val_access(n_slots, i)
         blocks.append(
@@ -878,8 +897,13 @@ def _classify_scalar_map_u64(body: str) -> str | None:
     return None
 
 
-def emit_scalar_fold_bound_lemmas(spec_rs: str, bridge: RetBridge) -> str:
-    """Bound lemmas for scalar Map<K,u64> fold helpers (single-table or join agg_add)."""
+def emit_scalar_fold_bound_lemmas(
+    spec_rs: str,
+    bridge: RetBridge,
+    *,
+    catalog_assumptions: CatalogAssumptions | None = None,
+) -> str:
+    """Fold-bound assumptions for scalar Map<K,u64> fold helpers (single-table or join agg_add)."""
     for name in (
         "join_method_spec_helper",
         "method_spec_helper",
@@ -915,20 +939,23 @@ def emit_scalar_fold_bound_lemmas(spec_rs: str, bridge: RetBridge) -> str:
         kind = _classify_scalar_map_u64(body)
         if kind is None:
             return ""
+        if kind == "sum_cell_u64" and not _fold_bounds_allow_cell_cap(
+            spec_rs, catalog_assumptions
+        ):
+            return ""
         key_ty_s, _ = _split_map_type_args(inner)
         key_spec = key_ty_s.strip()
         suffix = bridge.agg_suffix or bridge.key.removeprefix("map_")
         rem = ctx.suffix_remaining_u64()
         if kind == "count":
-            fname = f"lemma_{name}_count_leq_{suffix}"
-            comment = f"// Elementary: ≤{rem} filtered rows (COUNT) in fold suffix."
+            fname = f"assume_{name}_count_leq_{suffix}"
+            detail = f"COUNT: ≤{rem} filtered rows in fold suffix."
             bound = rem
         else:
-            fname = f"lemma_{name}_sum_cell_u64_leq_{suffix}"
-            comment = (
-                f"// Elementary: ≤{rem} u64 cells each < LEMMA_MAX_CELL_U64."
-            )
+            fname = f"assume_{name}_sum_cell_u64_leq_{suffix}"
+            detail = f"SUM(u64 cell): ≤{rem} cells each < LEMMA_MAX_CELL_U64."
             bound = f"{rem} * (LEMMA_MAX_CELL_U64 as u64)"
+        comment = f"{_FOLD_ASSUME_HEADER}\n// {detail}"
         # Bound the ghost prev used at call sites (0 if key absent) — no contains_key requires.
         ensures = (
             f"(if {name}({ctx.call_args}).contains_key(key) {{ "
@@ -938,7 +965,7 @@ def emit_scalar_fold_bound_lemmas(spec_rs: str, bridge: RetBridge) -> str:
         sig_params += ",\n    " + ",\n    ".join(f"{idx}: int" for idx in ctx.index_params)
         sig_params += f",\n    key: {key_spec}"
         return f"""
-// === Scalar map fold bound lemmas ({suffix}) ===
+// === Scalar map fold bound assumptions ({suffix}) ===
 {comment}
 #[verifier::external_body]
 pub proof fn {fname}(
@@ -960,6 +987,7 @@ def emit_multi_agg_step_trusted(
     bridge: RetBridge,
     *,
     spec_rs: str = "",
+    catalog_assumptions: CatalogAssumptions | None = None,
 ) -> str:
     """Emit open-spec apply/project + TRUSTED agg_step state/step for one multi-agg query."""
     suffix = bridge.agg_suffix or bridge.key.removeprefix("map_")
@@ -1074,11 +1102,21 @@ pub exec fn agg_step_{suffix}(
 }}
 """
     )
-    bound = emit_multi_agg_bound_lemmas(layout, bridge, spec_rs=spec_rs)
+    bound = emit_multi_agg_bound_lemmas(
+        layout,
+        bridge,
+        spec_rs=spec_rs,
+        catalog_assumptions=catalog_assumptions,
+    )
     return head + bound
 
 
-def multi_agg_step_trusted_rs(spec_rs: str, ret_type: str) -> str:
+def multi_agg_step_trusted_rs(
+    spec_rs: str,
+    ret_type: str,
+    *,
+    catalog_assumptions: CatalogAssumptions | None = None,
+) -> str:
     """Return TRUSTED agg_step helpers for this spec/ret_type, or empty string."""
     from research_loop.trusted_ret_bridge import get_bridge, multi_agg_ret_type
 
@@ -1091,6 +1129,11 @@ def multi_agg_step_trusted_rs(spec_rs: str, ret_type: str) -> str:
     if bridge is None:
         return ""
     try:
-        return emit_multi_agg_step_trusted(layout, bridge, spec_rs=spec_rs)
+        return emit_multi_agg_step_trusted(
+            layout,
+            bridge,
+            spec_rs=spec_rs,
+            catalog_assumptions=catalog_assumptions,
+        )
     except (ValueError, KeyError, AttributeError, IndexError):
         return ""

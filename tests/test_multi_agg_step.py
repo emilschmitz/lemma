@@ -147,7 +147,8 @@ def test_emit_agg_step_stable_names() -> None:
     ):
         assert name in rs
     assert rs.count("external_body") >= 3
-    assert "lemma_method_spec_helper_slot0_count_leq_str_str__u64_u64_u64" in rs
+    assert "assume_method_spec_helper_slot0_count_leq_str_str__u64_u64_u64" in rs
+    assert "ASSUMPTION (catalog/user)" in rs
     assert "lemma_u64_add_one_fit" not in rs  # prelude lemmas live in transpiled spec
 
 

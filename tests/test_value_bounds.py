@@ -144,8 +144,8 @@ def test_bound_lemmas_emitted_with_requires_ensures() -> None:
     for name in (
         "lemma_max_rows_times_native_fits_u64",
         "lemma_max_rows_times_cell_u64_fits_u64",
-        "lemma_join_nested_rem_leq_rows_cube",
-        "lemma_join_nested_rem_leq_rows_4",
+        "assume_join_nested_rem_leq_rows_cube",
+        "assume_join_nested_rem_leq_rows_4",
         "lemma_u64_add_one_fit",
         "lemma_rem_cap_one_add_fits",
         "lemma_u64_add_native_fit",

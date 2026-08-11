@@ -37,13 +37,13 @@ pub exec fn run_query(cols: &Cols) -> (res: HashMapWithView<(String, String), (u
                 };
                 valid_cols_get_line(cols, i as int);
                 if tail.contains_key(key) {
-                    lemma_method_spec_helper_slot0_count_leq_str_str__u64_u64_u64(
+                    assume_method_spec_helper_slot0_count_leq_str_str__u64_u64_u64(
                         cols, k, key,
                     );
-                    lemma_method_spec_helper_slot2_sum_native_leq_str_str__u64_u64_u64(
+                    assume_method_spec_helper_slot2_sum_native_leq_str_str__u64_u64_u64(
                         cols, k, key,
                     );
-                    lemma_method_spec_helper_slot3_count_leq_str_str__u64_u64_u64(
+                    assume_method_spec_helper_slot3_count_leq_str_str__u64_u64_u64(
                         cols, k, key,
                     );
                     assert(prev.0 <= (cols.n - k) as u64);

@@ -6,6 +6,10 @@ explicit ``CatalogAssumptions.max_cell_u64`` (or column assumption) is illegitim
 
 Prove_loop / SEC fixtures pass ``sec_prove_loop_catalog_assumptions()`` so those
 caps are **named assumptions**, not type folklore.
+
+Fold slot/count/sum bounds in ``multi_agg_step_bridge`` are emitted as ``assume_*``
+when justified (cell slots only when ``has_tight_cell_u64``). Experts audit those
+under the supplied catalog/table assumptions — they are not Verus-proved induction.
 """
 
 from __future__ import annotations

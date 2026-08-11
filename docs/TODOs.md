@@ -15,8 +15,9 @@
   - `double`/`float`/`hugeint`/`decimal` → `u64` + cell cap (width/semantics loss)
   - `DATE` → `u32` assumes YYYYMMDD-ish, not DuckDB epoch days
   - `agg_step` requires: verify native vs cell cap per slot (partial rename to `cell_u64`)
-  - Fold bound lemmas are empty `external_body` axioms (OK only if treated as Trusted
-    assumptions about MethodSpec folds, not “proved elementary”)
+  - Fold bound **assumptions** (`assume_*_slot*`, `assume_*_count_leq_*`,
+    `assume_join_nested_rem_*`) are auditable acceptance under catalog assumptions
+    — not silent folklore or fake `lemma_*` induction [done 2026-08-11]
   - HAVING `transmute` peel → named unwrap/wrap Trusteds (`having_map_peel.rs.inc`) [done]
   - `Cols.agg_push_*` no ensures; agent_primitives weak ensures off default assemble
     (`LEMMA_EMIT_AGENT_PRIMITIVES=1` to opt in) [done]
