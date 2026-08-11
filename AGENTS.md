@@ -1,5 +1,46 @@
 # Lemma agent & engine rules
 
+## Git checkpoints (overrides “commit only when asked”)
+
+For **this repo**, agents **must** create git commits as rollback points. Do **not**
+wait for Emil to say “commit” on routine milestones. (Global Cursor “ask before
+commit” does **not** apply here.)
+
+**When to commit (local `git commit`; push when Emil asks or when a clean tree is
+needed for `LEMMA_EXPERIMENT`):**
+
+1. After a **coherent host milestone** lands (Trusted/bridge/transpiler/injector/
+   tests) and the relevant pytest slice is green — or after an intentional policy
+   change even if the prove corpus is still climbing.
+2. **Before** a risky corpus mutation (`inject_fold_bound_proofs --strip`, mass
+   rewrite, brace “repair”, bulk restore).
+3. After **recovering** from a bad inject/rewrite (so the fixed host + snapshot
+   are restorable).
+
+**Quality bar (still “make sure it’s good”):**
+
+- Focused commits; message states **why** (milestone / checkpoint / recovery).
+- Do not commit secrets, `.env`, credentials, or huge binaries.
+- Do not commit paper TeX / Overleaf drafts unless Emil asks.
+- Do not `--amend` / force-push unless Emil explicitly asks.
+- Prefer green tests for the touched slice; if committing a known-broken WIP
+  checkpoint, say so in the message (`WIP checkpoint: …`).
+
+**`research_loop/generated/` is gitignored** (including prove_loop
+`runquery_agent.rs`). Git alone will **not** roll back agent bodies. Before risky
+inject/rewrite:
+
+```bash
+./research_loop/scripts/checkpoint_prove_loop.sh <label>
+git add research_loop/artifacts/prove_loop_<label>.tar.gz AGENTS.md # + host files
+git commit -m "Checkpoint prove_loop <label> (+ host if changed)."
+```
+
+Restore: `tar -xzf research_loop/artifacts/prove_loop_<label>.tar.gz -C research_loop/generated`.
+
+Workers must **not** be told “no commit”; briefs should say “checkpoint per
+AGENTS.md” when they finish a milestone or before strip/inject.
+
 ## GCP / Spot compute policy
 
 When booking cloud VMs for Lemma experiments:
