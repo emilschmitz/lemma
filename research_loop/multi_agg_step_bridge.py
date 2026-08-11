@@ -776,6 +776,13 @@ class FoldBoundContext:
                 parts.append(f"({n} as int - {idx} - 1) * ({tail_prod})")
         return f"({' + '.join(parts)}) as u64"
 
+    def suffix_remaining_int_expr(self) -> str:
+        """Same geometry as ``suffix_remaining_u64`` without the ``as u64`` cast."""
+        u = self.suffix_remaining_u64()
+        if u.endswith(" as u64"):
+            return u[: -len(" as u64")]
+        return u
+
 
 def _parse_fold_bound_context(spec_rs: str, helper_name: str) -> FoldBoundContext | None:
     params = _parse_helper_params(spec_rs, helper_name)
@@ -1238,31 +1245,44 @@ def _emit_sum_add_fit_steps(
     lines: list[str] = []
     ns = [p for p, _ in ctx.table_params]
     idxs = list(ctx.index_params)
-    if depth == 2:
+    if depth == 1:
+        lines.append(f"{indent}assert(0 <= {rem_tail_int});")
+        lines.append(f"{indent}assert({rem_tail_int} <= {ns[0]}.n as int);")
+        lines.append(f"{indent}assert({ns[0]}.n <= LEMMA_MAX_ROWS);")
+        lines.append(f"{indent}let ghost rem_tail_u64 = {rem_tail_int} as u64;")
+        lines.append(
+            f"{indent}assert(rem_tail_u64 <= LEMMA_MAX_ROWS as u64);"
+        )
+    elif depth == 2:
         lines.append(
             f"{indent}lemma_join_nested_rem_leq_rows_sq("
             f"{ns[0]}.n, {ns[1]}.n, {idxs[0]}, {idxs[1]} + 1);"
         )
+        lines.append(f"{indent}let ghost rem_tail_u64 = {rem_tail_int} as u64;")
     elif depth == 3:
         lines.append(
             f"{indent}lemma_join_nested_rem_leq_rows_cube("
             f"{ns[0]}.n, {ns[1]}.n, {ns[2]}.n, {idxs[0]}, {idxs[1]}, {idxs[2]} + 1);"
         )
+        lines.append(f"{indent}let ghost rem_tail_u64 = {rem_tail_int} as u64;")
     elif depth == 4:
         lines.append(
             f"{indent}lemma_join_nested_rem_leq_rows_4("
             f"{ns[0]}.n, {ns[1]}.n, {ns[2]}.n, {ns[3]}.n, "
             f"{idxs[0]}, {idxs[1]}, {idxs[2]}, {idxs[3]} + 1);"
         )
-    lines.append(f"{indent}let ghost rem_tail_u64 = {rem_tail_int} as u64;")
+        lines.append(f"{indent}let ghost rem_tail_u64 = {rem_tail_int} as u64;")
+    else:
+        lines.append(f"{indent}let ghost rem_tail_u64 = {rem_tail_int} as u64;")
     if kind == "sum_native":
-        if depth == 2:
+        if depth == 1:
+            lines.append(f"{indent}lemma_rem_cap_native_add_fits_rows(rem_tail_u64);")
+        elif depth == 2:
             lines.append(f"{indent}lemma_rem_cap_native_add_fits(rem_tail_u64);")
         elif depth == 3:
-            lines.append(
-                f"{indent}assert((rem_tail_u64 as int + 1) * (LEMMA_MAX_NATIVE_U32 as int) "
-                f"<= u64::MAX as int) by (nonlinear_arith);"
-            )
+            lines.append(f"{indent}lemma_rem_cap_native_add_fits_cube(rem_tail_u64);")
+        elif depth == 4:
+            lines.append(f"{indent}lemma_rem_cap_native_add_fits_pow4(rem_tail_u64);")
         else:
             lines.append(f"{indent}lemma_rem_cap_native_add_fits(rem_tail_u64);")
         lines.append(
@@ -1272,7 +1292,9 @@ def _emit_sum_add_fit_steps(
             f"{indent}lemma_u64_add_native_prev_le(prev_slot, ({sum_delta}) as u64, rem_tail_u64);"
         )
     else:
-        if depth == 2:
+        if depth == 1:
+            lines.append(f"{indent}lemma_rem_cap_cell_u64_add_fits_rows(rem_tail_u64);")
+        elif depth == 2:
             lines.append(f"{indent}lemma_rem_cap_cell_u64_add_fits(rem_tail_u64);")
         elif depth == 3:
             lines.append(f"{indent}lemma_rem_cap_cell_u64_add_fits_cube(rem_tail_u64);")
@@ -1354,6 +1376,19 @@ def _emit_inductive_hit_branch(
             f"{indent}lemma_rem_join_cube_inner_step("
             f"{n0}.n, {n1}.n, {n2}.n, {i0}, {i1}, {i2});"
         )
+    elif len(ctx.table_params) == 4:
+        n0, _ = ctx.table_params[0]
+        n1, _ = ctx.table_params[1]
+        n2, _ = ctx.table_params[2]
+        n3, _ = ctx.table_params[3]
+        i0, i1, i2, i3 = ctx.index_params
+        lines.append(
+            f"{indent}lemma_rem_join_4_inner_step("
+            f"{n0}.n, {n1}.n, {n2}.n, {n3}.n, {i0}, {i1}, {i2}, {i3});"
+        )
+    elif len(ctx.table_params) == 1:
+        # rem = n - i; rem_tail = n - (i+1); definitional.
+        lines.append(f"{indent}assert(rem_here_int == rem_tail_int + 1);")
     else:
         lines.append(
             f"{indent}assert(rem_here_int == rem_tail_int + 1) by (nonlinear_arith);"
@@ -1737,6 +1772,21 @@ def _emit_nested_count_or_sum_body(
                 f"{indent}lemma_rem_join_cube_nonneg_boundary({n0}.n, {n1}.n, {n2}.n);"
             )
             lines.append(f"{indent}assert({rem_here_int} == 0);")
+        elif len(ctx.table_params) == 4:
+            n0, _ = ctx.table_params[0]
+            n1, _ = ctx.table_params[1]
+            n2, _ = ctx.table_params[2]
+            n3, _ = ctx.table_params[3]
+            i0, i1, i2, i3 = ctx.index_params
+            lines.append(f"{indent}assert({i0} == {n0}.n as int);")
+            lines.append(f"{indent}assert({i1} == 0);")
+            lines.append(f"{indent}assert({i2} == 0);")
+            lines.append(f"{indent}assert({i3} == 0);")
+            lines.append(
+                f"{indent}lemma_rem_join_4_nonneg_boundary("
+                f"{n0}.n, {n1}.n, {n2}.n, {n3}.n);"
+            )
+            lines.append(f"{indent}assert({rem_here_int} == 0);")
         else:
             lines.append(f"{indent}assert(0 <= {rem_here_int});")
             lines.append(
@@ -1788,9 +1838,7 @@ def _emit_nested_count_or_sum_body(
                 f"{indent}    assert({_slot_bound_expr(cur_call, key, val_access, scalar_map=hit.scalar_map)} == 0u64);"
             )
             lines.append(f"{indent}    assert({idx} == {tab_param}.n as int);")
-            lines.append(
-                f"{indent}    assert({rem_here_int} == 0) by (nonlinear_arith);"
-            )
+            lines.append(f"{indent}    assert({rem_here_int} == 0);")
             bound_rhs = (
                 rem_here_int
                 if kind == "count"
@@ -1826,6 +1874,16 @@ def _emit_nested_count_or_sum_body(
                     f"{indent}    lemma_rem_join_cube_mid_roll("
                     f"{n0}.n, {n1}.n, {n2}.n, {i0}, {i1}, {i2});"
                 )
+            elif depth == 4:
+                n0, _ = ctx.table_params[0]
+                n1, _ = ctx.table_params[1]
+                n2, _ = ctx.table_params[2]
+                n3, _ = ctx.table_params[3]
+                i0, i1, i2, i3 = ctx.index_params
+                lines.append(
+                    f"{indent}    lemma_rem_join_4_i2_roll("
+                    f"{n0}.n, {n1}.n, {n2}.n, {n3}.n, {i0}, {i1}, {i2}, {i3});"
+                )
             else:
                 lines.append(
                     f"{indent}    assert({rem_here_int} == {rem_boundary_int}) by (nonlinear_arith);"
@@ -1857,9 +1915,17 @@ def _emit_nested_count_or_sum_body(
             spec_rs=spec_rs,
         )
     )
-    boundary_overrides: dict[str, str] = {idx: f"{idx} + 1"}
-    for inner in ctx.index_params[level + 1 :]:
-        boundary_overrides[inner] = "0"
+    boundary_overrides: dict[str, str] = {}
+    if level > 0:
+        parent_idx = ctx.index_params[level - 1]
+        boundary_overrides[parent_idx] = f"{parent_idx} + 1"
+        boundary_overrides[idx] = "0"
+        for inner in ctx.index_params[level + 1 :]:
+            boundary_overrides[inner] = "0"
+    else:
+        boundary_overrides = {idx: f"{idx} + 1"}
+        for inner in ctx.index_params[level + 1 :]:
+            boundary_overrides[inner] = "0"
     boundary_args = _helper_call_args(ctx, boundary_overrides)
     lines.append(f"{indent}}} else {{")
     if level == 0:
@@ -1884,8 +1950,9 @@ def _emit_nested_count_or_sum_body(
         lines.append(f"{indent}    {fname}({boundary_args}, {key});")
         lines.append(f"{indent}    reveal_with_fuel({ctx.helper}, 1);")
         lines.append(f"{indent}    assert({idx} == {tab_param}.n as int);")
-        # MethodSpec sets inner indices to 0 when rolling this level.
-        for inner in ctx.index_params[level + 1 :]:
+        for inner in ctx.index_params[level:]:
+            if inner == idx:
+                continue
             lines.append(f"{indent}    assert({inner} == 0);")
         lines.append(f"{indent}    assert({cur_call} == {boundary_call});")
         if depth == 3 and level == 1:
@@ -1896,6 +1963,31 @@ def _emit_nested_count_or_sum_body(
             lines.append(
                 f"{indent}    lemma_rem_join_cube_outer_roll("
                 f"{n0}.n, {n1}.n, {n2}.n, {i0}, {i1}, {i2});"
+            )
+        elif depth == 4 and level == 2:
+            n0, _ = ctx.table_params[0]
+            n1, _ = ctx.table_params[1]
+            n2, _ = ctx.table_params[2]
+            n3, _ = ctx.table_params[3]
+            i0, i1, i2, i3 = ctx.index_params
+            lines.append(
+                f"{indent}    lemma_rem_join_4_i1_roll("
+                f"{n0}.n, {n1}.n, {n2}.n, {n3}.n, {i0}, {i1}, {i2}, {i3});"
+            )
+        elif depth == 4 and level == 1:
+            n0, _ = ctx.table_params[0]
+            n1, _ = ctx.table_params[1]
+            n2, _ = ctx.table_params[2]
+            n3, _ = ctx.table_params[3]
+            i0, i1, i2, i3 = ctx.index_params
+            lines.append(
+                f"{indent}    lemma_rem_join_4_outer_roll("
+                f"{n0}.n, {n1}.n, {n2}.n, {n3}.n, {i0}, {i1}, {i2}, {i3});"
+            )
+        elif depth == 2 and level == 1:
+            # Should not happen: depth-2 innermost is handled above.
+            lines.append(
+                f"{indent}    assert({rem_here_int} == {rem_boundary_int}) by (nonlinear_arith);"
             )
         else:
             lines.append(
@@ -1921,13 +2013,18 @@ _FOLD_LEMMA_HEADER = (
 
 _FOLD_AXIOM_HEADER = (
     "// ASSUMPTION (catalog/user): under valid_cols + open-spec fold, partial agg ≤ rem·cap.\n"
-    "// Honest empty external_body — not a proved lemma. Set LEMMA_FOLD_SLOT_INDUCTIVE=1\n"
-    "// for experimental inductive `lemma_*` bodies (COUNT/SUM)."
+    "// Honest empty external_body — not a proved lemma. Set LEMMA_FOLD_SLOT_AXIOMATIC=1\n"
+    "// to force this path; default product emit is inductive `lemma_*`."
 )
 
 
 def _fold_slot_inductive_enabled() -> bool:
-    return os.environ.get("LEMMA_FOLD_SLOT_INDUCTIVE", "") == "1"
+    """Default ON (rocketship). Opt out with LEMMA_FOLD_SLOT_AXIOMATIC=1."""
+    if os.environ.get("LEMMA_FOLD_SLOT_AXIOMATIC", "") == "1":
+        return False
+    if os.environ.get("LEMMA_FOLD_SLOT_INDUCTIVE", "") == "0":
+        return False
+    return True
 
 
 def _fold_bounds_allow_cell_cap(
@@ -2019,10 +2116,13 @@ def _emit_inductive_slot_bound_lemma(
     cur_call = _helper_call(ctx)
     rem_int = _rem_int_expr(ctx)
     slot_e = _slot_bound_expr(cur_call, "key", val_access, scalar_map=hit.scalar_map)
-    if kind == "count":
-        ensures = f"({slot_e} as int) <= ({rem_int}),"
-    else:
-        ensures = f"({slot_e} as int) <= ({rem_int}) * ({_sum_cap_const(kind)} as int),"
+    # Match axiomatic/agent u64 ensures so assume_* alias keeps working.
+    ensures = f"{slot_e} <= {cap},"
+    ensures_int = (
+        f"({slot_e} as int) <= ({rem_int}),"
+        if kind == "count"
+        else f"({slot_e} as int) <= ({rem_int}) * ({_sum_cap_const(kind)} as int),"
+    )
     sig_params = ",\n    ".join(f"{p}: &{s}" for p, s in ctx.table_params)
     sig_params += ",\n    " + ",\n    ".join(f"{i}: int" for i in ctx.index_params)
     sig_params += f",\n    key: {key_spec}"
@@ -2040,6 +2140,48 @@ def _emit_inductive_slot_bound_lemma(
         indent="    ",
         spec_rs=spec_rs,
     )
+    # Bridge int rem bound → u64 ensures used by agent bodies.
+    rem_expand = ctx.suffix_remaining_int_expr()
+    proof_body.append(f"    assert({ensures_int.rstrip(',')});")
+    proof_body.append(f"    assert(0 <= ({rem_int}));")
+    depth = len(ctx.table_params)
+    ns = [p for p, _ in ctx.table_params]
+    idxs = list(ctx.index_params)
+    if depth == 2:
+        proof_body.append(
+            f"    lemma_join_nested_rem_leq_rows_sq({ns[0]}.n, {ns[1]}.n, {idxs[0]}, {idxs[1]});"
+        )
+    elif depth == 3:
+        proof_body.append(
+            f"    lemma_join_nested_rem_leq_rows_cube("
+            f"{ns[0]}.n, {ns[1]}.n, {ns[2]}.n, {idxs[0]}, {idxs[1]}, {idxs[2]});"
+        )
+    elif depth == 4:
+        proof_body.append(
+            f"    lemma_join_nested_rem_leq_rows_4("
+            f"{ns[0]}.n, {ns[1]}.n, {ns[2]}.n, {ns[3]}.n, "
+            f"{idxs[0]}, {idxs[1]}, {idxs[2]}, {idxs[3]});"
+        )
+    proof_body.append(
+        f"    assert(({rem_int}) == ({rem_expand})) by (nonlinear_arith);"
+    )
+    proof_body.append(f"    assert(({rem_int}) as int <= u64::MAX as int);")
+    proof_body.append(f"    assert((({rem_int}) as u64) as int == ({rem_int}));")
+    proof_body.append(f"    assert(({rem_int}) as u64 == {rem});")
+    proof_body.append(f"    assert(({rem}) as int == ({rem_int}));")
+    if kind == "count":
+        proof_body.append(
+            f"    assert(({slot_e}) as int <= ({rem}) as int);"
+        )
+        proof_body.append(f"    assert({slot_e} <= {rem});")
+    else:
+        cap_c = _sum_cap_const(kind)
+        proof_body.append(
+            f"    assert(({slot_e}) as int <= (({rem}) as int) * ({cap_c} as int));"
+        )
+        proof_body.append(
+            f"    assert({slot_e} <= {rem} * ({cap_c} as u64));"
+        )
     body = "\n".join(proof_body)
     suffix_req = ctx.suffix_start_requires()
     requires_extra = f",\n        {suffix_req}" if suffix_req else ""
@@ -2051,7 +2193,8 @@ pub proof fn {fname}(
         {ctx.valid_requires},
         {ctx.index_bounds_requires()}{requires_extra},
     ensures
-        {ensures}{decreases_clause}
+        {ensures}
+        {ensures_int}{decreases_clause}
 {{
 {body}
 }}
@@ -2071,6 +2214,7 @@ pub proof fn {alias}(
         {ctx.index_bounds_requires()}{requires_extra},
     ensures
         {ensures}
+        {ensures_int}
 {{
     {fname}({call_args});
 }}
@@ -2095,8 +2239,7 @@ def _emit_slot_bound_lemma(
     sum_delta = _parse_slot_sum_delta(spec_rs, helper, slot_i) if kind != "count" else None
     if kind != "count" and sum_delta is None:
         return ""
-    # Inductive COUNT/SUM behind LEMMA_FOLD_SLOT_INDUCTIVE=1 until Verus closes
-    # Map-fold unfold (rocketship goal). Default: honest assume_* (not fake lemma_*).
+    # Default: inductive proved lemma_* (rocketship). Opt out: LEMMA_FOLD_SLOT_AXIOMATIC=1.
     use_inductive = _fold_slot_inductive_enabled()
     if use_inductive:
         return _emit_inductive_slot_bound_lemma(
@@ -2280,6 +2423,8 @@ pub proof fn {fname}(
             spec_rs=spec_rs,
         )
         body = "\n".join(proof_body)
+        suffix_req = ctx.suffix_start_requires()
+        requires_extra = f",\n        {suffix_req}" if suffix_req else ""
         return f"""
 // === Scalar map fold bound lemmas ({suffix}) ===
 {comment}
@@ -2288,7 +2433,7 @@ pub proof fn {fname}(
 )
     requires
         {ctx.valid_requires},
-        {ctx.index_bounds_requires()},
+        {ctx.index_bounds_requires()}{requires_extra},
     ensures
         {ensures}{decreases_clause}
 {{

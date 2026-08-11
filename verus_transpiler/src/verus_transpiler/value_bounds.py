@@ -306,6 +306,19 @@ pub proof fn lemma_max_rows_sq_times_native_fits_u64()
     ) by (compute_only);
 }
 
+pub proof fn lemma_max_rows_cube_times_native_fits_u64()
+    ensures
+        (LEMMA_MAX_ROWS_CUBE as int) * (LEMMA_MAX_ROWS_CUBE as int)
+            * (LEMMA_MAX_ROWS_CUBE as int) * (LEMMA_MAX_NATIVE_U32 as int)
+            <= u64::MAX as int,
+{
+    assert(
+        (LEMMA_MAX_ROWS_CUBE as int) * (LEMMA_MAX_ROWS_CUBE as int)
+            * (LEMMA_MAX_ROWS_CUBE as int) * (LEMMA_MAX_NATIVE_U32 as int)
+            <= u64::MAX as int
+    ) by (compute_only);
+}
+
 // rem_cap ≤ ROWS², then (rem_cap+1)·cell fits in u64 (uses join product bound).
 pub proof fn lemma_rem_cap_cell_u64_add_fits(prev_cap: u64)
     requires
@@ -334,6 +347,27 @@ pub proof fn lemma_rem_cap_native_add_fits(prev_cap: u64)
         requires
             prev_cap <= (LEMMA_MAX_ROWS as u64) * (LEMMA_MAX_ROWS as u64),
             (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_NATIVE_U32 as int)
+                <= u64::MAX as int,
+            {};
+}
+
+// rem_cap ≤ CUBE³, then (rem_cap+1)·NATIVE_U32 fits (3-table join rem for SUM(native)).
+pub proof fn lemma_rem_cap_native_add_fits_cube(prev_cap: u64)
+    requires
+        prev_cap
+            <= (LEMMA_MAX_ROWS_CUBE as u64) * (LEMMA_MAX_ROWS_CUBE as u64)
+                * (LEMMA_MAX_ROWS_CUBE as u64),
+    ensures
+        (prev_cap as int + 1) * (LEMMA_MAX_NATIVE_U32 as int) <= u64::MAX as int,
+{
+    lemma_max_rows_cube_times_native_fits_u64();
+    assert((prev_cap as int + 1) * (LEMMA_MAX_NATIVE_U32 as int) <= u64::MAX as int) by (nonlinear_arith)
+        requires
+            prev_cap
+                <= (LEMMA_MAX_ROWS_CUBE as u64) * (LEMMA_MAX_ROWS_CUBE as u64)
+                    * (LEMMA_MAX_ROWS_CUBE as u64),
+            (LEMMA_MAX_ROWS_CUBE as int) * (LEMMA_MAX_ROWS_CUBE as int)
+                * (LEMMA_MAX_ROWS_CUBE as int) * (LEMMA_MAX_NATIVE_U32 as int)
                 <= u64::MAX as int,
             {};
 }
@@ -546,6 +580,36 @@ pub proof fn lemma_rem_cap_one_add_fits_rows(prev_cap: u64)
     assert((prev_cap as int) + 1 <= u64::MAX as int) by (nonlinear_arith)
         requires
             prev_cap <= LEMMA_MAX_ROWS as u64,
+            {};
+}
+
+// rem_cap ≤ ROWS ⇒ (rem_cap+1)·NATIVE fits (single-table SUM(native) suffix rem).
+pub proof fn lemma_rem_cap_native_add_fits_rows(prev_cap: u64)
+    requires
+        prev_cap <= LEMMA_MAX_ROWS as u64,
+    ensures
+        (prev_cap as int + 1) * (LEMMA_MAX_NATIVE_U32 as int) <= u64::MAX as int,
+{
+    lemma_max_rows_times_native_fits_u64();
+    assert((prev_cap as int + 1) * (LEMMA_MAX_NATIVE_U32 as int) <= u64::MAX as int) by (nonlinear_arith)
+        requires
+            prev_cap <= LEMMA_MAX_ROWS as u64,
+            (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_NATIVE_U32 as int) <= u64::MAX as int,
+            {};
+}
+
+// rem_cap ≤ ROWS ⇒ (rem_cap+1)·CELL_U64 fits (single-table SUM(money) suffix rem).
+pub proof fn lemma_rem_cap_cell_u64_add_fits_rows(prev_cap: u64)
+    requires
+        prev_cap <= LEMMA_MAX_ROWS as u64,
+    ensures
+        (prev_cap as int + 1) * (LEMMA_MAX_CELL_U64 as int) <= u64::MAX as int,
+{
+    lemma_max_rows_times_cell_u64_fits_u64();
+    assert((prev_cap as int + 1) * (LEMMA_MAX_CELL_U64 as int) <= u64::MAX as int) by (nonlinear_arith)
+        requires
+            prev_cap <= LEMMA_MAX_ROWS as u64,
+            (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_CELL_U64 as int) <= u64::MAX as int,
             {};
 }
 
@@ -799,6 +863,128 @@ pub open spec fn rem_join_4(
         + (n0 as int - i0 - 1) * (n1 as int) * (n2 as int) * (n3 as int)
 }
 
+/// Innermost step: rem(i0,i1,i2,i3) = rem(i0,i1,i2,i3+1) + 1 when i3 < n3.
+pub proof fn lemma_rem_join_4_inner_step(
+    n0: usize,
+    n1: usize,
+    n2: usize,
+    n3: usize,
+    i0: int,
+    i1: int,
+    i2: int,
+    i3: int,
+)
+    requires
+        0 <= i0 <= n0 as int,
+        0 <= i1 <= n1 as int,
+        0 <= i2 <= n2 as int,
+        0 <= i3 < n3 as int,
+    ensures
+        rem_join_4(n0, n1, n2, n3, i0, i1, i2, i3)
+            == rem_join_4(n0, n1, n2, n3, i0, i1, i2, i3 + 1) + 1,
+{
+    assert(
+        rem_join_4(n0, n1, n2, n3, i0, i1, i2, i3)
+            == rem_join_4(n0, n1, n2, n3, i0, i1, i2, i3 + 1) + 1
+    ) by (nonlinear_arith)
+        requires
+            0 <= i3 < n3 as int,
+            {};
+}
+
+/// i2 roll: rem(i0,i1,i2,n3) = rem(i0,i1,i2+1,0) when i2 < n2 and i3 == n3.
+pub proof fn lemma_rem_join_4_i2_roll(
+    n0: usize,
+    n1: usize,
+    n2: usize,
+    n3: usize,
+    i0: int,
+    i1: int,
+    i2: int,
+    i3: int,
+)
+    requires
+        0 <= i0 <= n0 as int,
+        0 <= i1 <= n1 as int,
+        0 <= i2 < n2 as int,
+        i3 == n3 as int,
+    ensures
+        rem_join_4(n0, n1, n2, n3, i0, i1, i2, i3)
+            == rem_join_4(n0, n1, n2, n3, i0, i1, i2 + 1, 0),
+{
+    assert(
+        rem_join_4(n0, n1, n2, n3, i0, i1, i2, i3)
+            == rem_join_4(n0, n1, n2, n3, i0, i1, i2 + 1, 0)
+    ) by (nonlinear_arith)
+        requires
+            i3 == n3 as int,
+            0 <= i2 < n2 as int,
+            {};
+}
+
+/// i1 roll: rem(i0,i1,n2,0) = rem(i0,i1+1,0,0) when i1 < n1, i2 == n2, i3 == 0.
+pub proof fn lemma_rem_join_4_i1_roll(
+    n0: usize,
+    n1: usize,
+    n2: usize,
+    n3: usize,
+    i0: int,
+    i1: int,
+    i2: int,
+    i3: int,
+)
+    requires
+        0 <= i0 <= n0 as int,
+        0 <= i1 < n1 as int,
+        i2 == n2 as int,
+        i3 == 0,
+    ensures
+        rem_join_4(n0, n1, n2, n3, i0, i1, i2, i3)
+            == rem_join_4(n0, n1, n2, n3, i0, i1 + 1, 0, 0),
+{
+    assert(
+        rem_join_4(n0, n1, n2, n3, i0, i1, i2, i3)
+            == rem_join_4(n0, n1, n2, n3, i0, i1 + 1, 0, 0)
+    ) by (nonlinear_arith)
+        requires
+            i2 == n2 as int,
+            i3 == 0,
+            0 <= i1 < n1 as int,
+            {};
+}
+
+/// Outer roll: rem(i0,n1,0,0) = rem(i0+1,0,0,0) when i0 < n0, i1 == n1, i2 == 0, i3 == 0.
+pub proof fn lemma_rem_join_4_outer_roll(
+    n0: usize,
+    n1: usize,
+    n2: usize,
+    n3: usize,
+    i0: int,
+    i1: int,
+    i2: int,
+    i3: int,
+)
+    requires
+        0 <= i0 < n0 as int,
+        i1 == n1 as int,
+        i2 == 0,
+        i3 == 0,
+    ensures
+        rem_join_4(n0, n1, n2, n3, i0, i1, i2, i3)
+            == rem_join_4(n0, n1, n2, n3, i0 + 1, 0, 0, 0),
+{
+    assert(
+        rem_join_4(n0, n1, n2, n3, i0, i1, i2, i3)
+            == rem_join_4(n0, n1, n2, n3, i0 + 1, 0, 0, 0)
+    ) by (nonlinear_arith)
+        requires
+            i1 == n1 as int,
+            i2 == 0,
+            i3 == 0,
+            0 <= i0 < n0 as int,
+            {};
+}
+
 proof fn lemma_rem_join_4_nonneg_inner(
     n0: usize,
     n1: usize,
@@ -830,7 +1016,7 @@ proof fn lemma_rem_join_4_nonneg_inner(
             {};
 }
 
-proof fn lemma_rem_join_4_nonneg_boundary(n0: usize, n1: usize, n2: usize, n3: usize)
+pub proof fn lemma_rem_join_4_nonneg_boundary(n0: usize, n1: usize, n2: usize, n3: usize)
     ensures
         rem_join_4(n0, n1, n2, n3, n0 as int, 0, 0, 0) == 0,
 {
@@ -1458,6 +1644,19 @@ pub open spec fn hashmap_multi_agg_view<K, V>(m: Map<K, V>) -> Map<K, V> {
 
 
 
+def row_cap_const_for_join_depth(depth: int) -> str:
+    """Layer A row-count constant for ``valid_cols`` by nested-loop join depth.
+
+    Product rem·cell fit lemmas use tighter caps at depth ≥3 (CUBE) and ≥4 (ROWS_4).
+    Depth is the number of base tables in the MethodSpec fold (schema-driven).
+    """
+    if depth >= 4:
+        return "LEMMA_MAX_ROWS_4"
+    if depth >= 3:
+        return "LEMMA_MAX_ROWS_CUBE"
+    return "LEMMA_MAX_ROWS"
+
+
 def emit_valid_cols_predicate(
     schema_dict: dict[str, str],
     struct_name: str = "Cols",
@@ -1465,13 +1664,19 @@ def emit_valid_cols_predicate(
     bounds: ResolvedBounds | None = None,
     catalog: CatalogAssumptions | None = None,
     table_assumptions: TableAssumptions | None = None,
+    row_cap_const: str | None = None,
 ) -> str:
     """Columnar valid_cols: row count + per-column cell bounds."""
     b = _bounds_for_emit(bounds, catalog)
+    cap = row_cap_const if row_cap_const is not None else "LEMMA_MAX_ROWS"
     lines = [
         f"pub open spec fn valid_cols(cols: &{struct_name}) -> bool {{",
-        "    &&& cols.n <= LEMMA_MAX_ROWS",
+        f"    &&& cols.n <= {cap}",
     ]
+    # When the depth cap is tighter than ROWS, also state n ≤ ROWS so existing
+    # agent/host proofs that assert LEMMA_MAX_ROWS still discharge from valid_cols.
+    if cap != "LEMMA_MAX_ROWS":
+        lines.append("    &&& cols.n <= LEMMA_MAX_ROWS")
     for col, col_type in schema_dict.items():
         field = rust_ident(col)
         vt = col_verus_type(col_type)
