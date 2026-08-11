@@ -8,6 +8,17 @@
   u64 cell assumption, fixed-width `u64` SUM may not fit → **wide accumulator**
   (u128 / DuckDB-like HUGEINT) or loud fail — do not pretend `2**31`. Rename
   `LEMMA_MAX_MONEY_*` → neutral `max_cell_u64` / assumption-driven names.
+- [ ] **Trusted audit follow-ups (2026-08-11)** — full inventories from value_bounds /
+  ret+multi_agg+having / other-path audits:
+  - `LEMMA_MAX_NATIVE_U32 = 2**31` is also tighter than full `u32` / maps signed INT→u32
+  - `double`/`float`/`hugeint`/`decimal` → `u64` + money cap (width/semantics loss)
+  - `DATE` → `u32` assumes YYYYMMDD-ish, not DuckDB epoch days
+  - `agg_step` requires often use MONEY cap even for `sum_native` slots (cap mismatch)
+  - Fold bound lemmas are empty `external_body` axioms (OK only if treated as Trusted
+    assumptions about MethodSpec folds, not “proved elementary”)
+  - HAVING `transmute` peel; `Cols.agg_push_*` no ensures; agent_primitives weak ensures
+    (`build_hashset_u32 ensures true`, `decode_dict_str`, zone map)
+  - Quarantine: `codegen_exec` whole-query Trusteds (not product path)
 
 ## Transpiler
 - [ ] Find out what subset of SQL queries would be nice to support and extend the transpiler accordingly
