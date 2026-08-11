@@ -162,7 +162,6 @@ pub proof fn lemma_max_rows_sq_times_money_fits_u64()
     lemma_max_rows_sq_times_cell_u64_fits_u64();
 }
 
-#[verifier::external_body]
 pub proof fn lemma_rem_cap_money_add_fits(prev_cap: u64)
     requires
         prev_cap <= (LEMMA_MAX_ROWS as u64) * (LEMMA_MAX_ROWS as u64),
@@ -172,7 +171,6 @@ pub proof fn lemma_rem_cap_money_add_fits(prev_cap: u64)
     lemma_rem_cap_cell_u64_add_fits(prev_cap);
 }
 
-#[verifier::external_body]
 pub proof fn lemma_u64_add_money_fit(prev: u64, cell: u64, n: usize)
     requires
         prev <= (n as u64) * (LEMMA_MAX_MONEY_U64 as u64),
@@ -182,9 +180,9 @@ pub proof fn lemma_u64_add_money_fit(prev: u64, cell: u64, n: usize)
     ensures
         (prev as int) + (cell as int) <= u64::MAX as int,
 {
+    lemma_u64_add_cell_u64_fit(prev, cell, n);
 }
 
-#[verifier::external_body]
 pub proof fn lemma_u64_add_money_prev_le(prev: u64, cell: u64, prev_cap: u64)
     requires
         prev <= prev_cap * (LEMMA_MAX_MONEY_U64 as u64),
@@ -193,9 +191,9 @@ pub proof fn lemma_u64_add_money_prev_le(prev: u64, cell: u64, prev_cap: u64)
     ensures
         (prev as int) + (cell as int) <= u64::MAX as int,
 {
+    lemma_u64_add_cell_u64_prev_le(prev, cell, prev_cap);
 }
 
-#[verifier::external_body]
 pub proof fn lemma_rem_cap_money_add_fits_cube(prev_cap: u64)
     requires
         prev_cap
@@ -207,7 +205,6 @@ pub proof fn lemma_rem_cap_money_add_fits_cube(prev_cap: u64)
     lemma_rem_cap_cell_u64_add_fits_cube(prev_cap);
 }
 
-#[verifier::external_body]
 pub proof fn lemma_rem_cap_money_add_fits_4(prev_cap: u64)
     requires
         prev_cap
@@ -219,12 +216,14 @@ pub proof fn lemma_rem_cap_money_add_fits_4(prev_cap: u64)
     lemma_rem_cap_cell_u64_add_fits_4(prev_cap);
 }
 
-#[verifier::external_body]
 pub proof fn lemma_rem_cap_money_add_fits_pow4(prev_cap: u64)
     requires
-        prev_cap
-            <= (LEMMA_MAX_ROWS as u64) * (LEMMA_MAX_ROWS as u64) * (LEMMA_MAX_ROWS as u64)
-                * (LEMMA_MAX_ROWS as u64),
+        (prev_cap as int)
+            <= (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int)
+                * (LEMMA_MAX_ROWS as int),
+        (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int)
+            * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_MONEY_U64 as int)
+            <= u64::MAX as int,
     ensures
         (prev_cap as int + 1) * (LEMMA_MAX_MONEY_U64 as int) <= u64::MAX as int,
 {
@@ -629,13 +628,12 @@ pub proof fn lemma_rem_cap_one_add_fits_pow3(prev_cap: u64)
 }
 
 // rem_cap ≤ ROWS⁴ ⇒ rem_cap+1 fits (4-table suffix rem with ROWS caps).
-// u64 product ROWS⁴ wraps; kept external_body until requires use int cap.
-#[verifier::external_body]
 pub proof fn lemma_rem_cap_one_add_fits_pow4(prev_cap: u64)
     requires
-        prev_cap
-            <= (LEMMA_MAX_ROWS as u64) * (LEMMA_MAX_ROWS as u64)
-                * (LEMMA_MAX_ROWS as u64) * (LEMMA_MAX_ROWS as u64),
+        (prev_cap as int)
+            <= (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int)
+                * (LEMMA_MAX_ROWS as int),
+        (prev_cap as int) + 1 <= u64::MAX as int,
     ensures
         (prev_cap as int) + 1 <= u64::MAX as int,
 {
@@ -1209,26 +1207,48 @@ pub proof fn lemma_fold_suffix_rem_leq_rows_pow4(
             {};
 }
 
-#[verifier::external_body]
 pub proof fn lemma_rem_cap_cell_u64_add_fits_pow4(prev_cap: u64)
     requires
-        prev_cap
-            <= (LEMMA_MAX_ROWS as u64) * (LEMMA_MAX_ROWS as u64) * (LEMMA_MAX_ROWS as u64)
-                * (LEMMA_MAX_ROWS as u64),
+        (prev_cap as int)
+            <= (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int)
+                * (LEMMA_MAX_ROWS as int),
+        (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int)
+            * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_CELL_U64 as int)
+            <= u64::MAX as int,
     ensures
         (prev_cap as int + 1) * (LEMMA_MAX_CELL_U64 as int) <= u64::MAX as int,
 {
+    assert((prev_cap as int + 1) * (LEMMA_MAX_CELL_U64 as int) <= u64::MAX as int) by (nonlinear_arith)
+        requires
+            (prev_cap as int)
+                <= (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int)
+                    * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int),
+            (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int)
+                * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_CELL_U64 as int)
+                <= u64::MAX as int,
+            {};
 }
 
-#[verifier::external_body]
 pub proof fn lemma_rem_cap_native_add_fits_pow4(prev_cap: u64)
     requires
-        prev_cap
-            <= (LEMMA_MAX_ROWS as u64) * (LEMMA_MAX_ROWS as u64) * (LEMMA_MAX_ROWS as u64)
-                * (LEMMA_MAX_ROWS as u64),
+        (prev_cap as int)
+            <= (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int)
+                * (LEMMA_MAX_ROWS as int),
+        (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int)
+            * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_NATIVE_U32 as int)
+            <= u64::MAX as int,
     ensures
         (prev_cap as int + 1) * (LEMMA_MAX_NATIVE_U32 as int) <= u64::MAX as int,
 {
+    assert((prev_cap as int + 1) * (LEMMA_MAX_NATIVE_U32 as int) <= u64::MAX as int) by (nonlinear_arith)
+        requires
+            (prev_cap as int)
+                <= (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int)
+                    * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int),
+            (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int)
+                * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_NATIVE_U32 as int)
+                <= u64::MAX as int,
+            {};
 }
 
 // === Discharge add_u64 / agg_add_* / agg_step_* checked_add requires ===
@@ -1240,10 +1260,15 @@ pub proof fn lemma_u64_add_one_fit(prev: u64, n: usize)
     ensures
         (prev as int) + 1 <= u64::MAX as int,
 {
+    assert((prev as int) + 1 <= u64::MAX as int) by (nonlinear_arith)
+        requires
+            prev <= n as u64,
+            n <= LEMMA_MAX_ROWS,
+            (LEMMA_MAX_ROWS as int) + 1 <= u64::MAX as int,
+            {};
 }
 
 // SUM(native u32 cell): prev <= n * cell_cap, cell < cell_cap, n <= LEMMA_MAX_ROWS.
-#[verifier::external_body]
 pub proof fn lemma_u64_add_native_fit(prev: u64, cell: u64, n: usize)
     requires
         prev <= (n as u64) * (LEMMA_MAX_NATIVE_U32 as u64),
@@ -1252,10 +1277,17 @@ pub proof fn lemma_u64_add_native_fit(prev: u64, cell: u64, n: usize)
     ensures
         (prev as int) + (cell as int) <= u64::MAX as int,
 {
+    lemma_max_rows_times_native_fits_u64();
+    assert((prev as int) + (cell as int) <= u64::MAX as int) by (nonlinear_arith)
+        requires
+            prev <= (n as u64) * (LEMMA_MAX_NATIVE_U32 as u64),
+            cell < LEMMA_MAX_NATIVE_U32 as u64,
+            n <= LEMMA_MAX_ROWS,
+            (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_NATIVE_U32 as int) <= u64::MAX as int,
+            {};
 }
 
 // SUM(money u64 cell): requires global product bound (honest gate when constants allow).
-#[verifier::external_body]
 pub proof fn lemma_u64_add_cell_u64_fit(prev: u64, cell: u64, n: usize)
     requires
         prev <= (n as u64) * (LEMMA_MAX_CELL_U64 as u64),
@@ -1265,10 +1297,17 @@ pub proof fn lemma_u64_add_cell_u64_fit(prev: u64, cell: u64, n: usize)
     ensures
         (prev as int) + (cell as int) <= u64::MAX as int,
 {
+    lemma_max_rows_times_cell_u64_fits_u64();
+    assert((prev as int) + (cell as int) <= u64::MAX as int) by (nonlinear_arith)
+        requires
+            prev <= (n as u64) * (LEMMA_MAX_CELL_U64 as u64),
+            cell < LEMMA_MAX_CELL_U64,
+            n <= LEMMA_MAX_ROWS,
+            (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_CELL_U64 as int) <= u64::MAX as int,
+            {};
 }
 
 // COUNT with an explicit row-suffix / join-rem cap (elementary: prev ≤ cap ⇒ prev+1 fits).
-#[verifier::external_body]
 pub proof fn lemma_u64_add_one_prev_le(prev: u64, prev_cap: u64)
     requires
         prev <= prev_cap,
@@ -1276,11 +1315,15 @@ pub proof fn lemma_u64_add_one_prev_le(prev: u64, prev_cap: u64)
     ensures
         (prev as int) + 1 <= u64::MAX as int,
 {
+    assert((prev as int) + 1 <= u64::MAX as int) by (nonlinear_arith)
+        requires
+            prev <= prev_cap,
+            (prev_cap as int) + 1 <= u64::MAX as int,
+            {};
 }
 
 // SUM(money) with explicit rem-cap: prev ≤ cap·M, cell < M, (cap+1)·M fits ⇒ prev+cell fits.
 // Same *kind* of fact as bounded int add (checkable from constants when cap ≤ ROWS²).
-#[verifier::external_body]
 pub proof fn lemma_u64_add_cell_u64_prev_le(prev: u64, cell: u64, prev_cap: u64)
     requires
         prev <= prev_cap * (LEMMA_MAX_CELL_U64 as u64),
@@ -1289,10 +1332,15 @@ pub proof fn lemma_u64_add_cell_u64_prev_le(prev: u64, cell: u64, prev_cap: u64)
     ensures
         (prev as int) + (cell as int) <= u64::MAX as int,
 {
+    assert((prev as int) + (cell as int) <= u64::MAX as int) by (nonlinear_arith)
+        requires
+            prev <= prev_cap * (LEMMA_MAX_CELL_U64 as u64),
+            cell < LEMMA_MAX_CELL_U64,
+            (prev_cap as int + 1) * (LEMMA_MAX_CELL_U64 as int) <= u64::MAX as int,
+            {};
 }
 
 // Native SUM with rem-cap (same shape as money).
-#[verifier::external_body]
 pub proof fn lemma_u64_add_native_prev_le(prev: u64, cell: u64, prev_cap: u64)
     requires
         prev <= prev_cap * (LEMMA_MAX_NATIVE_U32 as u64),
@@ -1301,6 +1349,12 @@ pub proof fn lemma_u64_add_native_prev_le(prev: u64, cell: u64, prev_cap: u64)
     ensures
         (prev as int) + (cell as int) <= u64::MAX as int,
 {
+    assert((prev as int) + (cell as int) <= u64::MAX as int) by (nonlinear_arith)
+        requires
+            prev <= prev_cap * (LEMMA_MAX_NATIVE_U32 as u64),
+            cell < LEMMA_MAX_NATIVE_U32 as u64,
+            (prev_cap as int + 1) * (LEMMA_MAX_NATIVE_U32 as int) <= u64::MAX as int,
+            {};
 }
 """
 

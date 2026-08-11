@@ -1282,7 +1282,7 @@ def _emit_sum_add_fit_steps(
         elif depth == 3:
             lines.append(f"{indent}lemma_rem_cap_native_add_fits_cube(rem_tail_u64);")
         elif depth == 4:
-            lines.append(f"{indent}lemma_rem_cap_native_add_fits_pow4(rem_tail_u64);")
+            lines.append(f"{indent}lemma_rem_cap_native_add_fits_4(rem_tail_u64);")
         else:
             lines.append(f"{indent}lemma_rem_cap_native_add_fits(rem_tail_u64);")
         lines.append(

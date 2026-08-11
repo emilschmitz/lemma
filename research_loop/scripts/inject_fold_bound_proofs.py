@@ -650,9 +650,23 @@ def _rem_cap_lines(ctx, kind: str) -> list[str]:
         if kind == "native":
             return ["lemma_rem_cap_native_add_fits(rem);"]
         return ["lemma_rem_cap_cell_u64_add_fits(rem);"]
+    if n_tab == 3:
+        if kind == "native":
+            return ["lemma_rem_cap_native_add_fits_cube(rem);"]
+        return ["lemma_rem_cap_cell_u64_add_fits_cube(rem);"]
+    if n_tab == 4:
+        if kind == "native":
+            return ["lemma_rem_cap_native_add_fits_4(rem);"]
+        return ["lemma_rem_cap_cell_u64_add_fits_4(rem);"]
+    lines = [
+        "assert((rem as int) <= (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int)"
+        " * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int));",
+    ]
     if kind == "native":
-        return ["lemma_rem_cap_native_add_fits_pow4(rem);"]
-    return ["lemma_rem_cap_cell_u64_add_fits_pow4(rem);"]
+        lines.append("lemma_rem_cap_native_add_fits_pow4(rem);")
+    else:
+        lines.append("lemma_rem_cap_cell_u64_add_fits_pow4(rem);")
+    return lines
 
 
 def _join_depth(ctx) -> int:
