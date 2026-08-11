@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
-from research_loop.trusted_ret_bridge import RetBridge, get_bridge, map_new_expr
+from research_loop.trusted_ret_bridge import RetBridge, get_bridge
+
+_HAVING_MAP_PEEL_INC = Path(__file__).resolve().parent / "having_map_peel.rs.inc"
 
 _APPLY_HAVING_RE = re.compile(r"apply_having_filter\s*\(")
 _IDENT_RE = re.compile(r"\b([a-z_][a-z0-9_]*)\b")
@@ -284,43 +287,37 @@ def unsupported_having_predicate_reason(
     return None
 
 
+def emit_having_map_peel_trusted() -> str:
+    """Named newtype peel/wrap Trusteds (transmute only inside these helpers)."""
+    return _HAVING_MAP_PEEL_INC.read_text(encoding="utf-8")
+
+
+def _needs_having_map_peel(rust_ret: str) -> bool:
+    return rust_ret.startswith(("HashMapWithView", "StringHashMap"))
+
+
 def _having_filter_exec_body(rust_ret: str, filter_expr: str) -> str:
-    """Runtime filter body for vstd map wrappers (layout-peel; external_body only)."""
-    new_expr = map_new_expr(rust_ret)
+    """Runtime filter via named peel Trusteds (no inline transmute)."""
     if rust_ret.startswith("StringHashMap"):
         val_ty = rust_ret[len("StringHashMap<") : -1]
         return f"""{{
-    #[repr(C)]
-    struct _Peel {{ m: std::collections::HashMap<String, {val_ty}> }}
-    let peeled: _Peel = unsafe {{ std::mem::transmute(hm) }};
-    let std_res: std::collections::HashMap<String, {val_ty}> = peeled
-        .m
+    let std_hm = string_hashmap_unwrap(hm);
+    let std_res: std::collections::HashMap<String, {val_ty}> = std_hm
         .into_iter()
         .filter(|(_k, v)| {filter_expr})
         .collect();
-    let mut out = {new_expr};
-    for (k, v) in std_res {{
-        out.insert(k, v);
-    }}
-    out
+    string_hashmap_wrap(std_res)
 }}"""
     if rust_ret.startswith("HashMapWithView"):
         inner = rust_ret[len("HashMapWithView<") : -1]
         key_ty, val_ty = inner.split(", ", 1)
         return f"""{{
-    #[repr(C)]
-    struct _Peel {{ m: std::collections::HashMap<{key_ty}, {val_ty}> }}
-    let peeled: _Peel = unsafe {{ std::mem::transmute(hm) }};
-    let std_res: std::collections::HashMap<{key_ty}, {val_ty}> = peeled
-        .m
+    let std_hm = hashmap_with_view_unwrap(hm);
+    let std_res: std::collections::HashMap<{key_ty}, {val_ty}> = std_hm
         .into_iter()
         .filter(|(_k, v)| {filter_expr})
         .collect();
-    let mut out = {new_expr};
-    for (k, v) in std_res {{
-        out.insert(k, v);
-    }}
-    out
+    hashmap_with_view_wrap(std_res)
 }}"""
     return f"""hm.into_iter().filter(|(_k, v)| {filter_expr}).collect()"""
 
@@ -423,6 +420,9 @@ def having_filter_trusted_rs(spec_rs: str, ret_type: str) -> str:
         method_params,
     )
     try:
-        return emit_having_filter_trusted(layout, bridge, table_params)
+        body = emit_having_filter_trusted(layout, bridge, table_params)
     except (ValueError, KeyError, AttributeError):
         return ""
+    if _needs_having_map_peel(bridge.rust_ret):
+        return emit_having_map_peel_trusted().rstrip() + "\n" + body
+    return body

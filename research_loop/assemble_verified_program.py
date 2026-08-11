@@ -6,7 +6,7 @@ import re
 
 from verus_transpiler.rust_ident import rust_ident
 
-from research_loop.agent_primitives.emit_externs import emit_agent_externs
+from research_loop.agent_primitives.emit_externs import maybe_emit_agent_externs
 from research_loop.exec_cols import _rust_vec_type
 from research_loop.lemma_flags import lemma_load_format
 
@@ -746,7 +746,7 @@ def assemble_verified_join_program(
 
     core = _prepare_spec_rs(spec_rs, None)
     boundary = _boundary_helpers(ret_type, spec_rs)
-    agent_externs = emit_agent_externs()
+    agent_externs = maybe_emit_agent_externs(run_query_body)
     load_gen = _select_load_generator()
     loaders = "\n".join(
         load_gen(
@@ -843,7 +843,7 @@ def assemble_verified_nway_program(
 
     core = _prepare_spec_rs(spec_rs, None)
     boundary = _boundary_helpers(ret_type, spec_rs)
-    agent_externs = emit_agent_externs()
+    agent_externs = maybe_emit_agent_externs(run_query_body)
     load_gen = _select_load_generator()
     loaders = "\n".join(
         load_gen(
@@ -895,7 +895,7 @@ def assemble_verified_program(
 
     core = _prepare_spec_rs(spec_rs, schema_dict)
     boundary = _boundary_helpers(ret_type, spec_rs)
-    agent_externs = emit_agent_externs()
+    agent_externs = maybe_emit_agent_externs(run_query_body)
     load_gen = _select_load_generator()
     load_cols = load_gen(schema_dict)
     main_rs = generate_main_rs(
