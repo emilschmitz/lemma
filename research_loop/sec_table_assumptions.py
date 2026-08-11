@@ -1,8 +1,25 @@
-"""Explicit SEC / prove_loop catalog assumptions (working caps as named assumptions).
+"""Named external assumption profiles for SEC / prove_loop (Layer A — not Trusteds).
 
-These values are **not** implied by SQL/DuckDB types. prove_loop and SEC holdout
-transpile/assemble should pass ``sec_prove_loop_catalog_assumptions()`` so
-``valid_cols`` and product lemmas state what we assume rather than folklore.
+Paper-friendly story for the **sec_prove_loop** profile (same numeric caps we already
+use — kept for prove_loop continuity):
+
+* Each table has at most **65 536** rows (``2**16``).
+* Each ``BIGINT`` / money-like cell is **< 2³¹** (~2.1 billion) — like a non-negative
+  amount that fits in a signed 32-bit int.
+* Each INT32-ish / ``u32`` cell is likewise **< 2³¹**.
+* Strings are at most **128** characters.
+
+Why not “every sum < one trillion”? With up to 65 536 rows, a **per-cell** cap of
+``10**12`` makes ``rows² · cell`` overflow a 64-bit register on two-table joins.
+Fitting partial aggregates in ``u64`` forces cell ≲ ``2**32`` at that row scale — so
+“under ~two billion per cell” is the simple sound story, not a trillion.
+
+For **3- and 4-table** nested joins we additionally assume the participating tables
+are smaller (**≤ 2047** / **≤ 256** rows) so the same cell cap still keeps products
+inside ``u64``. Those depth caps are part of this profile, not separate folklore
+inside Trusteds.
+
+Swap profiles freely: Trusteds only see ``ResolvedBounds`` / ``valid_cols``.
 """
 
 from __future__ import annotations
@@ -16,6 +33,7 @@ from research_loop.table_assumptions import (
 )
 
 # prove_loop / SEC working caps (explicit assumptions — not type-derived).
+# Kept at historical values so the prove corpus stays green.
 SEC_PROVE_LOOP_MAX_ROWS = 2**16
 SEC_PROVE_LOOP_MAX_ROWS_CUBE = 2**11 - 1  # 2047; CUBE³·cell fits u64 under cell cap
 SEC_PROVE_LOOP_MAX_ROWS_4 = 2**8  # 256; ROWS_4⁴·cell fits u64 under cell cap
@@ -25,9 +43,16 @@ SEC_PROVE_LOOP_MAX_STRING_LEN = 128
 
 
 def sec_prove_loop_catalog_assumptions() -> CatalogAssumptions:
-    """Named external profile for prove_loop / SEC (engine defaults + tight cell cap)."""
+    """Named external profile for prove_loop / SEC (full explicit caps, old numbers)."""
     return with_catalog_assumptions(
-        CatalogAssumptions(max_cell_u64=SEC_PROVE_LOOP_MAX_CELL_U64),
+        CatalogAssumptions(
+            max_rows=SEC_PROVE_LOOP_MAX_ROWS,
+            max_rows_cube=SEC_PROVE_LOOP_MAX_ROWS_CUBE,
+            max_rows_4=SEC_PROVE_LOOP_MAX_ROWS_4,
+            max_cell_u64=SEC_PROVE_LOOP_MAX_CELL_U64,
+            max_native_u32=SEC_PROVE_LOOP_MAX_NATIVE_U32,
+            max_string_len=SEC_PROVE_LOOP_MAX_STRING_LEN,
+        ),
         defaults=engine_default_catalog_assumptions(),
     )
 
@@ -35,3 +60,14 @@ def sec_prove_loop_catalog_assumptions() -> CatalogAssumptions:
 def sec_prove_loop_bounds() -> ResolvedBounds:
     """Resolved bounds for SEC / prove_loop (same caps as ``sec_prove_loop_catalog_assumptions``)."""
     return resolve_bounds(sec_prove_loop_catalog_assumptions())
+
+
+def sec_prove_loop_assumption_summary() -> str:
+    """One-paragraph paper/docs blurb for the SEC / prove_loop profile."""
+    return (
+        "SEC/prove_loop data assumptions: ≤65 536 rows per table; each money/BIGINT "
+        "and INT32-ish cell < 2³¹ (~2.1e9); strings ≤128 chars; 3-table joins further "
+        "assume ≤2047 rows/table and 4-table joins ≤256 rows/table so partial "
+        "aggregates fit in 64-bit registers. (A trillion-per-cell story is too loose "
+        "at 64k-row join scale.)"
+    )

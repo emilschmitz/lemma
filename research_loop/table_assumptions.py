@@ -86,7 +86,18 @@ def empty_catalog_assumptions() -> CatalogAssumptions:
 
 
 def engine_default_catalog_assumptions() -> CatalogAssumptions:
-    """Explicit default *external* assumptions (rows/native/string; NO tight cell_u64)."""
+    """Default *external* assumptions for most tables (no tight BIGINT cell cap).
+
+    Paper-friendly story:
+
+    * ≤ **65 536** rows per table (and the same depth caps as SEC for 3-/4-way joins).
+    * INT32-ish cells **< 2³¹**; strings ≤ **128** chars.
+    * **No** ``max_cell_u64`` — BIGINT stays full ``u64`` width unless the caller
+      overlays a profile (e.g. ``sec_prove_loop_catalog_assumptions``) or user caps.
+
+    For SUM over BIGINT that must fit in ``u64`` under join rem, pass a profile with
+    ``max_cell_u64`` (SEC uses ``2**31`` — see ``sec_table_assumptions``).
+    """
     return CatalogAssumptions(
         max_rows=ENGINE_DEFAULT_MAX_ROWS,
         max_rows_cube=ENGINE_DEFAULT_MAX_ROWS_CUBE,

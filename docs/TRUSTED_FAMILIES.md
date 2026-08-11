@@ -48,6 +48,15 @@ Must hold **all** of:
 Engine defaults are applied at transpile/assemble boundaries via
 ``with_catalog_assumptions(..., defaults=engine_default_catalog_assumptions())`` —
 not baked into Trusted bodies.
+
+**Default / SEC profiles (plain language).** Engine defaults: ≤65 536 rows/table,
+INT32-ish &lt; 2³¹, strings ≤128 chars; BIGINT uncapped. SEC/prove_loop keeps the
+**same row/string/native caps** and adds BIGINT/money cells &lt; 2³¹ (~2.1 billion),
+plus smaller row caps for 3-/4-table joins (≤2047 / ≤256) so rem·cell fits in
+``u64``. A “sum under a trillion” cell story is too loose at 64k-row join scale;
+“under ~two billion per cell” is the simple sound bound. See
+``research_loop/sec_table_assumptions.py``
+(``sec_prove_loop_assumption_summary()``).
 5. **Tested** — semantic differential (or equivalent), including precondition
    boundaries.
 

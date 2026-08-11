@@ -50,8 +50,17 @@ def test_with_catalog_assumptions_merge_user_over_defaults() -> None:
 def test_sec_profile_is_defaults_plus_cell_cap() -> None:
     cat = sec_prove_loop_catalog_assumptions()
     defaults = engine_default_catalog_assumptions()
-    assert cat.max_rows == defaults.max_rows
+    assert cat.max_rows == defaults.max_rows == SEC_PROVE_LOOP_MAX_ROWS
     assert cat.max_cell_u64 == SEC_PROVE_LOOP_MAX_CELL_U64
+    assert cat.max_rows_cube == defaults.max_rows_cube
+    assert cat.max_string_len == 128
+
+
+def test_sec_assumption_summary_mentions_plain_caps() -> None:
+    from research_loop.sec_table_assumptions import sec_prove_loop_assumption_summary
+
+    s = sec_prove_loop_assumption_summary()
+    assert "65" in s and "128" in s and "2³¹" in s
 
 
 def test_sec_prove_loop_bounds_explicit() -> None:
