@@ -287,23 +287,19 @@ def unsupported_having_predicate_reason(
     return None
 
 
-def emit_having_map_peel_trusted(rust_ret: str | None = None) -> str:
-    """Named newtype peel/wrap Trusteds (transmute only inside these helpers)."""
+def emit_having_map_peel_structs(rust_ret: str | None = None) -> str:
+    """Layout structs for inline peel inside ``apply_having_filter_exec_*`` only."""
     full = _HAVING_MAP_PEEL_INC.read_text(encoding="utf-8")
     if rust_ret is None:
         return full
-    hm_fn = full.find("#[verifier::external_body]\npub exec fn hashmap_with_view_unwrap")
-    if hm_fn == -1:
-        hm_fn = full.find("pub exec fn hashmap_with_view_unwrap")
-    sm_fn = full.find("#[verifier::external_body]\npub exec fn string_hashmap_unwrap")
-    if sm_fn == -1:
-        sm_fn = full.find("pub exec fn string_hashmap_unwrap")
-    prefix = full[:hm_fn].rstrip() + "\n\n"
-    if rust_ret.startswith("StringHashMap"):
-        return prefix + full[sm_fn:].rstrip() + "\n"
-    if rust_ret.startswith("HashMapWithView"):
-        return prefix + full[hm_fn:sm_fn].rstrip() + "\n"
+    if rust_ret.startswith(("HashMapWithView", "StringHashMap")):
+        return full.rstrip() + "\n"
     return ""
+
+
+def emit_having_map_peel_trusted(rust_ret: str | None = None) -> str:
+    """Deprecated alias: peel is private inside HAVING exec; structs only."""
+    return emit_having_map_peel_structs(rust_ret)
 
 
 def _needs_having_map_peel(rust_ret: str) -> bool:
@@ -311,27 +307,31 @@ def _needs_having_map_peel(rust_ret: str) -> bool:
 
 
 def _having_filter_exec_body(rust_ret: str, filter_expr: str) -> str:
-    """Runtime filter via named peel Trusteds (no inline transmute)."""
+    """Runtime filter via inline peel (transmute scoped to HAVING exec Trusted)."""
     if rust_ret.startswith("StringHashMap"):
         val_ty = rust_ret[len("StringHashMap<") : -1]
         return f"""{{
-    let std_hm = string_hashmap_unwrap(hm);
+    let peeled: StringHashMapPeel<{val_ty}> = unsafe {{ std::mem::transmute(hm) }};
+    let std_hm = peeled.m;
     let std_res: std::collections::HashMap<String, {val_ty}> = std_hm
         .into_iter()
         .filter(|(_k, v)| {filter_expr})
         .collect();
-    string_hashmap_wrap(std_res)
+    let wrapped = StringHashMapPeel {{ m: std_res }};
+    unsafe {{ std::mem::transmute(wrapped) }}
 }}"""
     if rust_ret.startswith("HashMapWithView"):
         inner = rust_ret[len("HashMapWithView<") : -1]
         key_ty, val_ty = inner.split(", ", 1)
         return f"""{{
-    let std_hm = hashmap_with_view_unwrap(hm);
+    let peeled: HashMapWithViewPeel<{key_ty}, {val_ty}> = unsafe {{ std::mem::transmute(hm) }};
+    let std_hm = peeled.m;
     let std_res: std::collections::HashMap<{key_ty}, {val_ty}> = std_hm
         .into_iter()
         .filter(|(_k, v)| {filter_expr})
         .collect();
-    hashmap_with_view_wrap(std_res)
+    let wrapped = HashMapWithViewPeel {{ m: std_res }};
+    unsafe {{ std::mem::transmute(wrapped) }}
 }}"""
     return f"""hm.into_iter().filter(|(_k, v)| {filter_expr}).collect()"""
 
@@ -438,6 +438,6 @@ def having_filter_trusted_rs(spec_rs: str, ret_type: str) -> str:
     except (ValueError, KeyError, AttributeError):
         return ""
     if _needs_having_map_peel(bridge.rust_ret):
-        peel = emit_having_map_peel_trusted(bridge.rust_ret).rstrip()
-        return f"{peel}\n\n{body.lstrip()}"
+        structs = emit_having_map_peel_structs(bridge.rust_ret).rstrip()
+        return f"{structs}\n\n{body.lstrip()}"
     return body

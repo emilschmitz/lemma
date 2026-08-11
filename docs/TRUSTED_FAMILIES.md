@@ -67,9 +67,14 @@ plus smaller row caps for 3-/4-table joins (≤2047 / ≤256) so rem·cell fits 
 `agg_step_inner_*_view` with `arbitrary()`; owned-map overflow handwaves;
 empty-body fold axioms that smuggle MethodSpec shape; whole-query Trusteds.
 
-**HAVING map peel:** vstd `HashMapWithView` / `StringHashMap` unwrap/wrap Trusteds
-(`having_map_peel.rs.inc`) — one idea: single-field newtype over `std::collections::HashMap`;
-`transmute` only inside those named helpers; HAVING exec uses unwrap → filter → wrap.
+**HAVING map peel:** vstd `HashMapWithView` / `StringHashMap` peel is **private** inside
+`apply_having_filter_exec_*` only (`having_map_peel.rs.inc` layout structs + inline
+transmute). One Trusted per query with real `res@ == apply_having_filter(hm@, …)`;
+no standalone unwrap/wrap helpers with `ensures true`.
+
+**Loader (Layer A):** `load_cols_*` exec that establishes `valid_cols` is an
+**external data boundary** (I/O → columnar invariants), not an arithmetic Trusted.
+Keep it; do not invent a proof — document and audit as named assumption surface.
 
 **Agent primitives (opt-in):** `emit_agent_externs()` is **not** on the default product
 assemble path. Set `LEMMA_EMIT_AGENT_PRIMITIVES=1` (or reference symbols in `run_query`)

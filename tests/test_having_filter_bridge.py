@@ -129,20 +129,26 @@ def test_emit_having_filter_stable_name_and_predicate() -> None:
     assert "apply_having_filter_exec_str_str__u64_u64" in rs
     assert ".filter(|(_k, v)| (v.0 > 5))" in rs
     assert rs.count("external_body") == 1
-    assert "transmute" not in rs
+    assert "transmute" in rs
+    assert "ensures true" not in rs
 
 
-def test_having_map_peel_trusted_named_helpers_no_inline_transmute() -> None:
+def test_having_map_peel_private_inside_exec_not_standalone_trusted() -> None:
     visible = _agent_visible_for_sec_sql(Q9_SQL)
-    assert "hashmap_with_view_unwrap" in visible
-    assert "hashmap_with_view_wrap" in visible
+    assert "hashmap_with_view_unwrap" not in visible
+    assert "hashmap_with_view_wrap" not in visible
+    assert "ensures true" not in visible
     exec_idx = visible.find("pub exec fn apply_having_filter_exec")
-    peel_idx = visible.find("pub exec fn hashmap_with_view_unwrap")
-    assert peel_idx != -1 and exec_idx != -1
-    exec_body = visible[exec_idx:]
-    assert "transmute" not in exec_body
-    peel_body = visible[peel_idx:exec_idx]
-    assert "transmute" in peel_body
+    assert exec_idx != -1
+    window_start = visible.rfind("\n// ===", 0, exec_idx)
+    window_end = visible.find("\n// ===", exec_idx + 1)
+    if window_end == -1:
+        window_end = len(visible)
+    exec_block = visible[window_start if window_start != -1 else exec_idx : window_end]
+    assert "transmute" in exec_block
+    assert "res@" in exec_block
+    assert "apply_having_filter(" in exec_block
+    assert exec_block.count("external_body") == 1
 
 
 def test_scalar_map_having_emits_exec() -> None:
