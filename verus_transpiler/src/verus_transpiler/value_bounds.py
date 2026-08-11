@@ -283,6 +283,16 @@ pub proof fn lemma_rem_cap_cell_u64_add_fits(prev_cap: u64)
 {
 }
 
+// rem_cap ≤ ROWS², then (rem_cap+1)·NATIVE_U32 fits (2-table join rem for SUM(native)).
+#[verifier::external_body]
+pub proof fn lemma_rem_cap_native_add_fits(prev_cap: u64)
+    requires
+        prev_cap <= (LEMMA_MAX_ROWS as u64) * (LEMMA_MAX_ROWS as u64),
+    ensures
+        (prev_cap as int + 1) * (LEMMA_MAX_NATIVE_U32 as int) <= u64::MAX as int,
+{
+}
+
 // Nested-loop rem ((n1-i1)+(n0-i0-1)*n1) ≤ ROWS² under valid_cols (elementary).
 #[verifier::external_body]
 pub proof fn lemma_join_nested_rem_leq_rows_sq(

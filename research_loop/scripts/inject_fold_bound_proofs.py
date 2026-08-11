@@ -640,7 +640,7 @@ def _rem_cap_lines(ctx, kind: str) -> list[str]:
     n_tab = len(ctx.table_params)
     if n_tab <= 2:
         if kind == "native":
-            return []
+            return ["lemma_rem_cap_native_add_fits(rem);"]
         return ["lemma_rem_cap_cell_u64_add_fits(rem);"]
     if kind == "native":
         return ["lemma_rem_cap_native_add_fits_pow4(rem);"]
