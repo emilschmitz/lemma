@@ -132,10 +132,16 @@ def generate_cols_rs(
     sql_str: str | None = None,
     groupby_columns: list[str] | None = None,
     struct_name: str = "Cols",
+    val_type: str | None = None,
 ) -> str:
     """Emit columnar Cols struct + getters for the given schema."""
-    if groupby_columns is None and sql_str is not None:
-        groupby_columns = parse_sql(sql_str, schema_dict).groupby_columns
+    parsed_query = parse_sql(sql_str, schema_dict) if sql_str is not None else None
+    if groupby_columns is None and parsed_query is not None:
+        groupby_columns = parsed_query.groupby_columns
+    if val_type is None and parsed_query is not None and parsed_query.agg_expr:
+        val_type = _agg_value_type(parsed_query.agg_expr)
+    if val_type is None:
+        val_type = "u64"
     agg_push = resolve_two_key_u32_str_groupby(groupby_columns, schema_dict)
     agg_push_str = resolve_two_key_str_str_groupby(groupby_columns, schema_dict)
 
@@ -184,9 +190,13 @@ def generate_cols_rs(
 
     agg_methods = ""
     if agg_push is not None:
-        agg_methods += "\n" + emit_cols_agg_push_verus(*agg_push, struct_name=struct_name)
+        agg_methods += "\n" + emit_cols_agg_push_verus(
+            *agg_push, struct_name=struct_name, val_type=val_type
+        )
     if agg_push_str is not None:
-        agg_methods += "\n" + emit_cols_agg_push_str_verus(*agg_push_str, struct_name=struct_name)
+        agg_methods += "\n" + emit_cols_agg_push_str_verus(
+            *agg_push_str, struct_name=struct_name, val_type=val_type
+        )
 
     return f"""pub struct {struct_name} {{
 {chr(10).join(field_lines)}
@@ -1048,8 +1058,11 @@ def _emit_run_query(
     term_at_k: str | None = None,
     enable_templates: bool = False,
     is_join: bool = False,
+    val_type: str | None = None,
 ) -> str:
     """Emit agent RunQuery skeleton; optional proved scalar templates when enabled."""
+    if val_type is None:
+        val_type = _agg_value_type(query.agg_expr) if query.agg_expr else "u64"
     if (
         enable_templates
         and not is_join
@@ -1065,6 +1078,7 @@ def _emit_run_query(
             term_at_i=term_at_k,
             agg_push=agg_push,
             agg_push_str=agg_push_str,
+            val_type=val_type,
         )
     return emit_run_query_skeleton(
         query,
@@ -1072,6 +1086,7 @@ def _emit_run_query(
         agg_push=agg_push,
         agg_push_str=agg_push_str,
         is_join=is_join,
+        val_type=val_type,
     )
 
 

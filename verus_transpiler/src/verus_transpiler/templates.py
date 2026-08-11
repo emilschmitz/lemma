@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import re
 
-from .agg_push import agg_push_method_name
-from .agg_push_str import agg_push_str_method_name
+from .agg_push import agg_bridge_u32_str
+from .agg_push_str import agg_bridge_str_str
 from .parse_sql import SQLQuery
 
 
@@ -16,6 +16,7 @@ def emit_run_query_skeleton(
     agg_push: tuple[str, str] | None = None,
     agg_push_str: tuple[str, str] | None = None,
     is_join: bool = False,
+    val_type: str = "u64",
 ) -> str:
     """Emit a commented/TODO exec fn run_query skeleton."""
     if is_join:
@@ -34,28 +35,34 @@ def emit_run_query_skeleton(
         )
         if agg_push is not None:
             u32_col, str_col = agg_push
-            push = agg_push_method_name(u32_col, str_col)
+            agg_new_fn, agg_add_fn, rust_map = agg_bridge_u32_str(val_type)
+            u32_base = u32_col.lower()
+            str_base = str_col.lower()
             body_hint = (
                 f"        // TODO: if <filter> {{\n"
-                f"        //   cols.{push}(&mut agg, i, term);\n"
+                f"        //   {agg_add_fn}(&mut agg, cols.get_{u32_base}_exec(i), "
+                f"&cols.get_{str_base}_exec(i), term);\n"
                 f"        // }}\n"
             )
             init = (
-                "    // let mut agg: HashMap<(u32, String), i64> = HashMap::new();\n"
-                "    // ghost let mut g: Map<_, i64> = Map::empty();\n"
+                f"    // let mut agg: {rust_map} = {agg_new_fn}();\n"
+                "    // ghost let mut g: Map<_, _> = Map::empty();\n"
             )
             end = "    // res = agg;\n"
         elif agg_push_str is not None:
             s0, s1 = agg_push_str
-            push = agg_push_str_method_name(s0, s1)
+            agg_new_fn, agg_add_fn, rust_map = agg_bridge_str_str(val_type)
+            s0_base = s0.lower()
+            s1_base = s1.lower()
             body_hint = (
                 f"        // TODO: if <filter> {{\n"
-                f"        //   cols.{push}(&mut agg, i, term);\n"
+                f"        //   {agg_add_fn}(&mut agg, &cols.get_{s0_base}_exec(i), "
+                f"&cols.get_{s1_base}_exec(i), term);\n"
                 f"        // }}\n"
             )
             init = (
-                "    // let mut agg: HashMap<(String, String), u64> = HashMap::new();\n"
-                "    // ghost let mut g: Map<_, u64> = Map::empty();\n"
+                f"    // let mut agg: {rust_map} = {agg_new_fn}();\n"
+                "    // ghost let mut g: Map<_, _> = Map::empty();\n"
             )
             end = "    // res = agg;\n"
         else:
@@ -145,6 +152,7 @@ def emit_run_query_template(
     term_at_i: str,
     agg_push: tuple[str, str] | None = None,
     agg_push_str: tuple[str, str] | None = None,
+    val_type: str = "u64",
 ) -> str:
     """Emit filled run_query for scalar SUM/COUNT/AVG only (no external_body).
 
@@ -160,6 +168,7 @@ def emit_run_query_template(
             ret_type,
             agg_push=agg_push,
             agg_push_str=agg_push_str,
+            val_type=val_type,
         )
 
     where_e = _exec_accessorify(_execify_expr(where_at_i)) if where_at_i else None
