@@ -617,6 +617,87 @@ pub open spec fn rem_join_cube(n0: usize, n1: usize, n2: usize, i0: int, i1: int
         + (n0 as int - i0 - 1) * (n1 as int) * (n2 as int)
 }
 
+/// Innermost step: rem(i0,i1,i2) = rem(i0,i1,i2+1) + 1 when i2 < n2.
+pub proof fn lemma_rem_join_cube_inner_step(
+    n0: usize,
+    n1: usize,
+    n2: usize,
+    i0: int,
+    i1: int,
+    i2: int,
+)
+    requires
+        0 <= i0 <= n0 as int,
+        0 <= i1 <= n1 as int,
+        0 <= i2 < n2 as int,
+    ensures
+        rem_join_cube(n0, n1, n2, i0, i1, i2)
+            == rem_join_cube(n0, n1, n2, i0, i1, i2 + 1) + 1,
+{
+    assert(
+        rem_join_cube(n0, n1, n2, i0, i1, i2)
+            == rem_join_cube(n0, n1, n2, i0, i1, i2 + 1) + 1
+    ) by (nonlinear_arith)
+        requires
+            0 <= i2 < n2 as int,
+            {};
+}
+
+/// Middle index roll: rem(i0,i1,n2) = rem(i0,i1+1,0) when i1 < n1.
+pub proof fn lemma_rem_join_cube_mid_roll(
+    n0: usize,
+    n1: usize,
+    n2: usize,
+    i0: int,
+    i1: int,
+    i2: int,
+)
+    requires
+        0 <= i0 < n0 as int,
+        0 <= i1 < n1 as int,
+        i2 == n2 as int,
+    ensures
+        rem_join_cube(n0, n1, n2, i0, i1, i2)
+            == rem_join_cube(n0, n1, n2, i0, i1 + 1, 0),
+{
+    assert(
+        rem_join_cube(n0, n1, n2, i0, i1, i2)
+            == rem_join_cube(n0, n1, n2, i0, i1 + 1, 0)
+    ) by (nonlinear_arith)
+        requires
+            i2 == n2 as int,
+            0 <= i1 < n1 as int,
+            {};
+}
+
+/// Outer index roll: rem(i0,n1,0) = rem(i0+1,0,0).
+pub proof fn lemma_rem_join_cube_outer_roll(
+    n0: usize,
+    n1: usize,
+    n2: usize,
+    i0: int,
+    i1: int,
+    i2: int,
+)
+    requires
+        0 <= i0 < n0 as int,
+        i1 == n1 as int,
+        i2 == 0,
+    ensures
+        rem_join_cube(n0, n1, n2, i0, i1, i2)
+            == rem_join_cube(n0, n1, n2, i0 + 1, 0, 0),
+{
+    assert(
+        rem_join_cube(n0, n1, n2, i0, i1, i2)
+            == rem_join_cube(n0, n1, n2, i0 + 1, 0, 0)
+    ) by (nonlinear_arith)
+        requires
+            i1 == n1 as int,
+            i2 == 0,
+            0 <= i0 < n0 as int,
+            {};
+}
+
 proof fn lemma_rem_join_cube_nonneg_inner(
     n0: usize,
     n1: usize,
@@ -642,7 +723,7 @@ proof fn lemma_rem_join_cube_nonneg_inner(
             {};
 }
 
-proof fn lemma_rem_join_cube_nonneg_boundary(n0: usize, n1: usize, n2: usize)
+pub proof fn lemma_rem_join_cube_nonneg_boundary(n0: usize, n1: usize, n2: usize)
     ensures
         rem_join_cube(n0, n1, n2, n0 as int, 0, 0) == 0,
 {

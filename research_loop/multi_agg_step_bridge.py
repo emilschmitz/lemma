@@ -1336,7 +1336,7 @@ def _emit_inductive_hit_branch(
     lines.append(f"{indent}let ghost rem_here_int = {rem_here_int};")
     lines.append(f"{indent}let ghost rem_tail_int = {rem_tail_int};")
     lines.append(f"{indent}let ghost prev_slot = {prev_slot};")
-    # One inner step: rem_here = rem_tail + 1 (proved lemma when 2-table rem_join_sq).
+    # One inner step: rem_here = rem_tail + 1 (proved lemma when rem_join_sq/cube).
     if len(ctx.table_params) == 2:
         n0, _ = ctx.table_params[0]
         n1, _ = ctx.table_params[1]
@@ -1344,6 +1344,15 @@ def _emit_inductive_hit_branch(
         i1 = ctx.index_params[1]
         lines.append(
             f"{indent}lemma_rem_join_sq_inner_step({n0}.n, {n1}.n, {i0}, {i1});"
+        )
+    elif len(ctx.table_params) == 3:
+        n0, _ = ctx.table_params[0]
+        n1, _ = ctx.table_params[1]
+        n2, _ = ctx.table_params[2]
+        i0, i1, i2 = ctx.index_params
+        lines.append(
+            f"{indent}lemma_rem_join_cube_inner_step("
+            f"{n0}.n, {n1}.n, {n2}.n, {i0}, {i1}, {i2});"
         )
     else:
         lines.append(
@@ -1716,6 +1725,18 @@ def _emit_nested_count_or_sum_body(
                 f"{indent}lemma_rem_join_sq_nonneg_boundary({n0}.n, {n1}.n);"
             )
             lines.append(f"{indent}assert({rem_here_int} == 0);")
+        elif len(ctx.table_params) == 3:
+            n0, _ = ctx.table_params[0]
+            n1, _ = ctx.table_params[1]
+            n2, _ = ctx.table_params[2]
+            i0, i1, i2 = ctx.index_params
+            lines.append(f"{indent}assert({i0} == {n0}.n as int);")
+            lines.append(f"{indent}assert({i1} == 0);")
+            lines.append(f"{indent}assert({i2} == 0);")
+            lines.append(
+                f"{indent}lemma_rem_join_cube_nonneg_boundary({n0}.n, {n1}.n, {n2}.n);"
+            )
+            lines.append(f"{indent}assert({rem_here_int} == 0);")
         else:
             lines.append(f"{indent}assert(0 <= {rem_here_int});")
             lines.append(
@@ -1796,6 +1817,15 @@ def _emit_nested_count_or_sum_body(
                     f"{indent}    lemma_rem_join_sq_outer_roll("
                     f"{parent_tab}.n, {tab_param}.n, {parent_idx}, {idx});"
                 )
+            elif depth == 3:
+                n0, _ = ctx.table_params[0]
+                n1, _ = ctx.table_params[1]
+                n2, _ = ctx.table_params[2]
+                i0, i1, i2 = ctx.index_params
+                lines.append(
+                    f"{indent}    lemma_rem_join_cube_mid_roll("
+                    f"{n0}.n, {n1}.n, {n2}.n, {i0}, {i1}, {i2});"
+                )
             else:
                 lines.append(
                     f"{indent}    assert({rem_here_int} == {rem_boundary_int}) by (nonlinear_arith);"
@@ -1848,7 +1878,38 @@ def _emit_nested_count_or_sum_body(
             )
         )
     else:
+        boundary_call = _helper_call(ctx, boundary_overrides)
+        rem_boundary_int = _rem_int_expr(ctx, boundary_overrides)
+        cur_call = _helper_call(ctx)
         lines.append(f"{indent}    {fname}({boundary_args}, {key});")
+        lines.append(f"{indent}    reveal_with_fuel({ctx.helper}, 1);")
+        lines.append(f"{indent}    assert({idx} == {tab_param}.n as int);")
+        # MethodSpec sets inner indices to 0 when rolling this level.
+        for inner in ctx.index_params[level + 1 :]:
+            lines.append(f"{indent}    assert({inner} == 0);")
+        lines.append(f"{indent}    assert({cur_call} == {boundary_call});")
+        if depth == 3 and level == 1:
+            n0, _ = ctx.table_params[0]
+            n1, _ = ctx.table_params[1]
+            n2, _ = ctx.table_params[2]
+            i0, i1, i2 = ctx.index_params
+            lines.append(
+                f"{indent}    lemma_rem_join_cube_outer_roll("
+                f"{n0}.n, {n1}.n, {n2}.n, {i0}, {i1}, {i2});"
+            )
+        else:
+            lines.append(
+                f"{indent}    assert({rem_here_int} == {rem_boundary_int}) by (nonlinear_arith);"
+            )
+        bound_rhs = (
+            rem_here_int
+            if kind == "count"
+            else f"{rem_here_int} * ({_sum_cap_const(kind)} as int)"
+        )
+        lines.append(
+            f"{indent}    assert({_slot_bound_expr(cur_call, key, val_access, scalar_map=hit.scalar_map)} as int "
+            f"<= {bound_rhs});"
+        )
     lines.append(f"{indent}}}")
     return lines
 
