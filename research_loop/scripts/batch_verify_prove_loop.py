@@ -88,7 +88,12 @@ def main() -> int:
         default=ROOT / "research_loop" / "generated" / "prove_loop",
     )
     parser.add_argument("--rounds", nargs="+", default=["r11", "r12"])
-    parser.add_argument("-j", type=int, default=8)
+    parser.add_argument(
+        "-j",
+        type=int,
+        default=2,
+        help="Parallel verifies (default 2 — Verus is RAM-heavy; avoid -j>4 on ≤16Gi hosts)",
+    )
     parser.add_argument("--report", type=Path, default=None)
     args = parser.parse_args()
 
