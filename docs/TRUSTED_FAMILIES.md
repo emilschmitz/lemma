@@ -40,6 +40,14 @@ Must hold **all** of:
 `agg_step_inner_*_view` with `arbitrary()`; owned-map overflow handwaves;
 empty-body fold axioms that smuggle MethodSpec shape; whole-query Trusteds.
 
+**HAVING map peel:** vstd `HashMapWithView` / `StringHashMap` unwrap/wrap Trusteds
+(`having_map_peel.rs.inc`) — one idea: single-field newtype over `std::collections::HashMap`;
+`transmute` only inside those named helpers; HAVING exec uses unwrap → filter → wrap.
+
+**Agent primitives (opt-in):** `emit_agent_externs()` is **not** on the default product
+assemble path. Set `LEMMA_EMIT_AGENT_PRIMITIVES=1` (or reference symbols in `run_query`)
+to splice hash-join / zone-map / dict helpers from `agent_primitives/`.
+
 **String dialect:** LIKE / ILIKE / `str_lower` / `str_upper` = **ASCII /
 DuckDB-like** only (`to_ascii_lowercase`, open `%`/`_` specs). Non-ASCII
 codepoints pass through unchanged in lower/upper.

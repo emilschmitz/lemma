@@ -17,6 +17,8 @@ pub exec fn hashmap_with_view_unwrap<K, V>(
 ) -> (m: std::collections::HashMap<K, V>)
     where
         K: vstd::view::View + std::cmp::Eq + std::hash::Hash,
+    ensures
+        true,
 {
     let peeled: HashMapWithViewPeel<K, V> = unsafe { std::mem::transmute(hm) };
     peeled.m
@@ -28,6 +30,8 @@ pub exec fn hashmap_with_view_wrap<K, V>(
 ) -> (hm: HashMapWithView<K, V>)
     where
         K: vstd::view::View + std::cmp::Eq + std::hash::Hash,
+    ensures
+        true,
 {
     let peeled = HashMapWithViewPeel { m };
     unsafe { std::mem::transmute(peeled) }
@@ -37,6 +41,8 @@ pub exec fn hashmap_with_view_wrap<K, V>(
 pub exec fn string_hashmap_unwrap<V>(
     hm: StringHashMap<V>,
 ) -> (m: std::collections::HashMap<String, V>)
+    ensures
+        true,
 {
     let peeled: StringHashMapPeel<V> = unsafe { std::mem::transmute(hm) };
     peeled.m
@@ -46,6 +52,8 @@ pub exec fn string_hashmap_unwrap<V>(
 pub exec fn string_hashmap_wrap<V>(
     m: std::collections::HashMap<String, V>,
 ) -> (hm: StringHashMap<V>)
+    ensures
+        true,
 {
     let peeled = StringHashMapPeel { m };
     unsafe { std::mem::transmute(peeled) }

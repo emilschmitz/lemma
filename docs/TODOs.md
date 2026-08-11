@@ -17,8 +17,10 @@
   - `agg_step` requires: verify native vs cell cap per slot (partial rename to `cell_u64`)
   - Fold bound lemmas are empty `external_body` axioms (OK only if treated as Trusted
     assumptions about MethodSpec folds, not “proved elementary”)
-  - HAVING `transmute` peel; `Cols.agg_push_*` no ensures; agent_primitives weak ensures
-    (`build_hashset_u32 ensures true`, `decode_dict_str`, zone map)
+  - HAVING `transmute` peel → named unwrap/wrap Trusteds (`having_map_peel.rs.inc`) [done]
+  - `Cols.agg_push_*` no ensures; agent_primitives weak ensures off default assemble
+    (`LEMMA_EMIT_AGENT_PRIMITIVES=1` to opt in) [done]
+  - Non-goals: DuckDB DATE epoch vs Lemma DATE-as-u32; hugeint→u64 when cells fit
   - Quarantine: `codegen_exec` whole-query Trusteds (not product path)
 
 ## Transpiler

@@ -287,9 +287,23 @@ def unsupported_having_predicate_reason(
     return None
 
 
-def emit_having_map_peel_trusted() -> str:
+def emit_having_map_peel_trusted(rust_ret: str | None = None) -> str:
     """Named newtype peel/wrap Trusteds (transmute only inside these helpers)."""
-    return _HAVING_MAP_PEEL_INC.read_text(encoding="utf-8")
+    full = _HAVING_MAP_PEEL_INC.read_text(encoding="utf-8")
+    if rust_ret is None:
+        return full
+    hm_fn = full.find("#[verifier::external_body]\npub exec fn hashmap_with_view_unwrap")
+    if hm_fn == -1:
+        hm_fn = full.find("pub exec fn hashmap_with_view_unwrap")
+    sm_fn = full.find("#[verifier::external_body]\npub exec fn string_hashmap_unwrap")
+    if sm_fn == -1:
+        sm_fn = full.find("pub exec fn string_hashmap_unwrap")
+    prefix = full[:hm_fn].rstrip() + "\n\n"
+    if rust_ret.startswith("StringHashMap"):
+        return prefix + full[sm_fn:].rstrip() + "\n"
+    if rust_ret.startswith("HashMapWithView"):
+        return prefix + full[hm_fn:sm_fn].rstrip() + "\n"
+    return ""
 
 
 def _needs_having_map_peel(rust_ret: str) -> bool:
@@ -424,5 +438,6 @@ def having_filter_trusted_rs(spec_rs: str, ret_type: str) -> str:
     except (ValueError, KeyError, AttributeError):
         return ""
     if _needs_having_map_peel(bridge.rust_ret):
-        return emit_having_map_peel_trusted().rstrip() + "\n" + body
+        peel = emit_having_map_peel_trusted(bridge.rust_ret).rstrip()
+        return f"{peel}\n\n{body.lstrip()}"
     return body
