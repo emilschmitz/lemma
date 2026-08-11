@@ -127,12 +127,12 @@ _HAVING_RUNQUERY = """\
 // TRUSTED: HAVING post-filter on exec HashMap (spec uses apply_having_filter).
 #[verifier::external_body]
 pub exec fn apply_having_filter_exec(
-    hm: HashMap<(u32, String), u64>,
-) -> (res: HashMap<(u32, String), u64>)
+    hm: HashMapWithView<(u32, String), u64>,
+) -> (res: HashMapWithView<(u32, String), u64>)
     ensures
-        hashmap_u32_str_u64_view(res@)
+        res@
             == apply_having_filter(
-                hashmap_u32_str_u64_view(hm@),
+                hm@,
                 |k: (u32, Seq<char>), v: u64| v > 10,
             ),
 {
@@ -141,11 +141,11 @@ pub exec fn apply_having_filter_exec(
         .collect()
 }
 
-pub exec fn run_query(cols: &Cols) -> (res: HashMap<(u32, String), u64>)
+pub exec fn run_query(cols: &Cols) -> (res: HashMapWithView<(u32, String), u64>)
     requires valid_cols(cols),
-    ensures hashmap_u32_str_u64_view(res@) == method_spec(cols),
+    ensures res@ == method_spec(cols),
 {
-    let mut agg = agg_new_u32_str_u64();
+    let mut agg = agg_new_u32_str__u64();
     let mut i: usize = cols.n;
     let ghost mut g: Map<(u32, Seq<char>), u64> = Map::empty();
     while i > 0
@@ -153,7 +153,7 @@ pub exec fn run_query(cols: &Cols) -> (res: HashMap<(u32, String), u64>)
             i <= cols.n,
             valid_cols(cols),
             g == method_spec_helper(cols, i as int),
-            hashmap_u32_str_u64_view(agg@) == g,
+            agg@ == g,
         decreases i,
     {
         i = i - 1;
@@ -161,16 +161,16 @@ pub exec fn run_query(cols: &Cols) -> (res: HashMap<(u32, String), u64>)
             let k = cols.get_k_exec(i);
             let s = cols.get_s_exec(i);
             let v = cols.get_v_exec(i);
-            agg_add_u32_str_u64(&mut agg, k, &s, v);
+            agg_add_u32_str__u64(&mut agg, k, &s, v);
             proof {
                 let ghost old_g = g;
                 let key = (k, s@);
                 let prev = if old_g.contains_key(key) { old_g[key] } else { 0u64 };
                 g = old_g.insert(key, (prev as int + v as int) as u64);
-                assert(hashmap_u32_str_u64_view(agg@) == g);
+                assert(agg@ == g);
             }
         }
-        assert(g == method_spec_helper(cols, i as int) && hashmap_u32_str_u64_view(agg@) == g);
+        assert(g == method_spec_helper(cols, i as int) && agg@ == g);
     }
     apply_having_filter_exec(agg)
 }"""

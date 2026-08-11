@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import re
 
-from verus_transpiler.value_bounds import emit_trusted_prelude
+from verus_transpiler.value_bounds import (
+    LEMMA_MAX_MONEY_U64,
+    LEMMA_MAX_NATIVE_U32,
+    LEMMA_MAX_ROWS,
+    emit_bound_lemmas,
+    emit_trusted_prelude,
+)
 
 
 def test_add_u64_requires_int_bound_and_checked_add() -> None:
@@ -106,3 +112,46 @@ def test_str_lower_upper_open_spec_not_arbitrary() -> None:
     assert "str_ascii_upper(s)" in upper_block
     assert "ascii_upper_char" in prelude
     assert "str_ascii_upper" in prelude
+
+
+def test_prelude_global_no_arbitrary() -> None:
+    prelude = emit_trusted_prelude()
+    assert "arbitrary()" not in prelude
+
+
+def test_mul_u64_u32_no_wrapping_mul() -> None:
+    prelude = emit_trusted_prelude()
+    block = prelude.split("pub exec fn mul_u64_u32")[1].split("pub exec fn sub_u64_to_i64")[0]
+    assert "checked_mul" in block
+    assert "wrapping_mul" not in block
+
+
+def test_left_join_miss_not_external_body() -> None:
+    prelude = emit_trusted_prelude(include_left_join_miss=True)
+    start = prelude.index("pub open spec fn left_join_miss_generic")
+    end = prelude.index("\n}", start) + 2
+    block = prelude[start:end]
+    assert "external_body" not in block
+
+
+def test_bound_lemmas_emitted_with_requires_ensures() -> None:
+    lemmas = emit_bound_lemmas()
+    for name in (
+        "lemma_max_rows_times_native_fits_u64",
+        "lemma_max_rows_times_money_fits_u64",
+        "lemma_u64_add_one_fit",
+        "lemma_u64_add_native_fit",
+        "lemma_u64_add_money_fit",
+    ):
+        assert f"pub proof fn {name}" in lemmas
+        block = lemmas.split(f"pub proof fn {name}")[1].split("pub proof fn")[0]
+        assert "requires" in block or "ensures" in block
+        assert "arbitrary()" not in block
+
+
+def test_money_native_products_fit_u64() -> None:
+    assert LEMMA_MAX_ROWS * LEMMA_MAX_NATIVE_U32 <= 2**64 - 1
+    assert LEMMA_MAX_ROWS * LEMMA_MAX_MONEY_U64 <= 2**64 - 1
+    assert LEMMA_MAX_ROWS * LEMMA_MAX_ROWS * LEMMA_MAX_MONEY_U64 <= 2**64 - 1
+    assert LEMMA_MAX_ROWS * LEMMA_MAX_ROWS * LEMMA_MAX_NATIVE_U32 <= 2**64 - 1
+    assert LEMMA_MAX_MONEY_U64 == 2**31

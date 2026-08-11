@@ -7,8 +7,8 @@ Coverage is **parametrized over the full ``TRUSTED_FAMILY_MENU``** (25 families)
 distinct-set companions and multi-agg ``agg_step_*`` helpers:
 
 - **Scalars**: bridge contract (``ensures res == method_spec``; empty ``trusted_rs``)
-- **Maps**: ``AggMapOracle`` / ``TupleAggMapOracle`` vs pure-Python wrapping math;
-  bridge exec surface (``HashMap::new``, ``wrapping_add`` / ``agg_put``)
+- **Maps**: ``AggMapOracle`` / ``TupleAggMapOracle`` vs pure-Python math under fit-in-width
+  bounds; bridge exec surface (``HashMap::new``, ``checked_add`` / ``agg_put``)
 - **Seqs**: ``SeqOracle`` push order; bridge exec surface (``Vec::new``, ``push``)
 - **Distinct-set**: ``set_insert_str`` / ``set_insert_u32`` adversarial key streams
 - **DuckDB differential**: GROUP BY COUNT / SUM / COUNT DISTINCT on representative key widths
@@ -17,9 +17,13 @@ distinct-set companions and multi-agg ``agg_step_*`` helpers:
 Gaps (documented, not failures):
 - ``hashset_*_view`` / ``hashmap_*_view`` spec bridges still use ``arbitrary()`` — not
   differentially checked here
+- Scalar arithmetic Trusteds (``add_u64``, ``checked_add``, fit-in-width ``requires``) are
+  guarded by ``tests/test_rocketship_trusted_adversarial.py``, not this menu-parametrized suite
+- ``agg_add_*`` / ``agg_step_*`` use ``checked_add``; accumulate Trusteds own map
+  invariant (no prev-fit ``requires``); optional cell-cap ``requires`` on addends
+  (rocketship bar); oracles use mathematical ``+`` when requires hold
 - ``agg_step_*`` native Verus exec is not compiled in this suite; oracle + presence only
-- ``u64`` wrapping near ``2^64`` is oracle-only (``ORACLE_U64_WRAP_ROWS``); DuckDB BIGINT
-  fixtures cannot load out-of-range literals — see ``docs/RESEARCH_NOTES.md`` / ``valid_cols``
+- Overflow beyond ``requires`` is out of scope for positive fixtures; see adversarial suite
 """
 
 from __future__ import annotations
@@ -44,7 +48,7 @@ from research_loop.trusted_semantic_oracle import (
     FIXTURE_THREE_KEY,
     FIXTURE_U32_KEY,
     FIXTURE_WRAP_NEAR_U64_MAX,
-    ORACLE_U64_WRAP_ROWS,
+    U64_MASK,
     AggMapOracle,
     AggStepOracle,
     DistinctSetOracle,
@@ -178,7 +182,7 @@ def test_map_family_empty_oracle(fam) -> None:
 
 
 @pytest.mark.parametrize("fam", _MAP_FAMILIES, ids=[f.id for f in _MAP_FAMILIES])
-def test_map_family_wrapping_near_max(fam) -> None:
+def test_map_family_near_max_overflow_raises(fam) -> None:
     atoms = key_atom_types_for_family(fam)
     streams = adversarial_key_streams(atoms)
     if not streams:
@@ -187,29 +191,30 @@ def test_map_family_wrapping_near_max(fam) -> None:
     n = map_value_n_fields(fam)
     if n == 1:
         hm = AggMapOracle(signed=map_value_signed(fam))
-        hm.add(key, 2**64 - 5)
-        hm.add(key, 10)
-        expected = u64_wrap(2**64 - 5 + 10) if not map_value_signed(fam) else i64_wrap(2**64 - 5 + 10)
-        assert hm.get(key) == expected
+        hm.add(key, 2**64 - 5 if not map_value_signed(fam) else 2**63 - 5)
+        with pytest.raises(OverflowError):
+            hm.add(key, 10)
     else:
         agg = TupleAggMapOracle(n)
         big = 2**64 - 5
         agg.add(key, *([big] * n))
-        agg.add(key, *([10] * n))
-        got = agg.get(key)
-        expected = u64_wrap(big + 10)
-        assert all(got[i] == expected for i in range(n))
+        with pytest.raises(OverflowError):
+            agg.add(key, *([10] * n))
 
 
 @pytest.mark.parametrize("fam", _SIGNED_I64_MAP, ids=[f.id for f in _SIGNED_I64_MAP])
-def test_signed_i64_map_family_wrapping(fam) -> None:
+def test_signed_i64_map_family_mathematical_under_requires(fam) -> None:
     atoms = key_atom_types_for_family(fam)
     key = adversarial_key_streams(atoms)["first_insert"][0]
     hm = AggMapOracle(signed=True)
     i64_max = 2**63 - 1
-    hm.add(key, i64_max)
-    hm.add(key, 1)
-    assert hm.get(key) == i64_wrap(i64_max + 1)
+    hm.add(key, i64_max - 10)
+    hm.add(key, 5)
+    assert hm.get(key) == i64_max - 5
+    hm2 = AggMapOracle(signed=True)
+    hm2.add(key, i64_max)
+    with pytest.raises(OverflowError):
+        hm2.add(key, 1)
 
 
 _MULTI_AGG_MAP = [f for f in _MAP_FAMILIES if is_multi_agg_map_family(f)]
@@ -225,7 +230,7 @@ def test_map_family_agg_put_overwrite(fam) -> None:
     agg.put(key, *([99] * n))
     assert agg.get(key) == tuple(99 for _ in range(n))
     agg.add(key, *([1] * n))
-    assert agg.get(key) == tuple(u64_wrap(99 + 1) for _ in range(n))
+    assert agg.get(key) == tuple(99 + 1 for _ in range(n))
 
 
 @pytest.mark.parametrize("fam", _MAP_FAMILIES, ids=[f.id for f in _MAP_FAMILIES])
@@ -248,9 +253,11 @@ def test_map_family_bridge_exec_surface(fam) -> None:
     assert bridge.view_spec and bridge.view_spec in rs
     if is_multi_agg_map_family(fam):
         assert "agg_put_" in rs
-        assert "wrapping_add" in rs
+        assert "checked_add" in rs
+        assert "wrapping_add" not in rs
     else:
-        assert "wrapping_add" in rs
+        assert "checked_add" in rs
+        assert "wrapping_add" not in rs
 
 
 # --- Seq families ---
@@ -415,39 +422,44 @@ def test_seq_oracle_empty_and_tuple() -> None:
     assert s.as_list() == [("a", "b", 3)]
 
 
-def test_agg_add_scalar_matches_wrapping_sum() -> None:
+def test_agg_add_scalar_matches_checked_sum() -> None:
     hm = AggMapOracle()
     hm.add("a", 100)
-    hm.add("a", u64_wrap(2**64 - 50))
-    assert hm.get("a") == u64_wrap(100 + (2**64 - 50))
+    hm.add("a", 50)
+    assert hm.get("a") == 150
 
 
-def test_agg_add_i64_signed_wrapping() -> None:
+def test_agg_add_i64_signed_mathematical() -> None:
     hm = AggMapOracle(signed=True)
     i64_max = 2**63 - 1
-    hm.add("k", i64_max)
-    hm.add("k", 1)
-    assert hm.get("k") == i64_wrap(i64_max + 1)
+    hm.add("k", i64_max - 10)
+    hm.add("k", 5)
+    assert hm.get("k") == i64_max - 5
 
 
-def test_agg_add_tuple_multi_slot_wrapping() -> None:
+def test_agg_add_scalar_overflow_raises() -> None:
+    hm = AggMapOracle()
+    hm.add("a", U64_MASK)
+    with pytest.raises(OverflowError):
+        hm.add("a", 1)
+
+
+def test_agg_add_tuple_multi_slot_mathematical() -> None:
     agg = TupleAggMapOracle(2)
     agg.add(("g1", "g2"), 3, 10)
-    agg.add(("g1", "g2"), 1, u64_wrap(2**64 - 5))
-    assert agg.get(("g1", "g2")) == (4, u64_wrap(10 + (2**64 - 5)))
+    agg.add(("g1", "g2"), 1, 5)
+    assert agg.get(("g1", "g2")) == (4, 15)
 
 
 # --- GROUP BY oracle fixtures ---
 
 
-def test_group_u64_wrap_oracle_near_max() -> None:
-    oracle = simulate_group_single_key_sum(ORACLE_U64_WRAP_ROWS, group_col="k", sum_col="n")
-    ref: dict[Any, int] = {}
-    for row in ORACLE_U64_WRAP_ROWS:
-        ref[row["k"]] = u64_wrap(ref.get(row["k"], 0) + int(row["n"]))
-    assert oracle == ref
+def test_group_u64_near_max_overflow_raises() -> None:
+    agg = AggMapOracle()
     near_u64 = (1 << 64) - 10
-    assert oracle["g1"] == u64_wrap(near_u64 + 20)
+    agg.add("g1", near_u64)
+    with pytest.raises(OverflowError):
+        agg.add("g1", 20)
 
 
 @pytest.mark.parametrize(
@@ -468,7 +480,7 @@ def test_group_single_key_sum_oracle(rows: list, fixture_id: str) -> None:
     oracle = simulate_group_single_key_sum(rows, group_col="k", sum_col="n")
     ref: dict[Any, int] = {}
     for row in rows:
-        ref[row["k"]] = u64_wrap(ref.get(row["k"], 0) + int(row["n"]))
+        ref[row["k"]] = ref.get(row["k"], 0) + int(row["n"])
     assert oracle == ref
 
 

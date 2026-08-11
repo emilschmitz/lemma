@@ -87,7 +87,7 @@ def parse_verus_type(text: str) -> TypeExpr:
 
 
 def spec_to_exec_type(t: TypeExpr) -> str:
-    """Map MethodSpec type AST to exec (HashMap/Vec/String) Rust type."""
+    """Map MethodSpec type AST to exec (Vec/String/scalar) Rust type."""
     if isinstance(t, TypeAtom):
         if t.name == "u32":
             return "u32"
@@ -102,10 +102,48 @@ def spec_to_exec_type(t: TypeExpr) -> str:
         inner = ", ".join(spec_to_exec_type(e) for e in t.elems)
         return f"({inner})"
     if isinstance(t, TypeMap):
-        return f"HashMap<{spec_to_exec_type(t.key)}, {spec_to_exec_type(t.value)}>"
+        return spec_to_map_rust_ret(t.key, t.value)
     if isinstance(t, TypeSeq):
         return f"Vec<{spec_to_exec_type(t.elem)}>"
     raise ValueError(f"unsupported spec type node: {t!r}")
+
+
+def _is_string_only_map_key(key: TypeExpr) -> bool:
+    if isinstance(key, TypeAtom):
+        return key.name == "Seq<char>"
+    return False
+
+
+def spec_to_map_rust_ret(key: TypeExpr, value: TypeExpr) -> str:
+    """Exec map return type: vstd ``StringHashMap`` or ``HashMapWithView``."""
+    exec_val = spec_to_exec_type(value) if not isinstance(value, TypeMap) else spec_to_exec_type(
+        value
+    )
+    if _is_string_only_map_key(key):
+        return f"StringHashMap<{exec_val}>"
+    exec_key = spec_to_exec_type(key)
+    return f"HashMapWithView<{exec_key}, {exec_val}>"
+
+
+def map_new_expr(rust_ret: str) -> str:
+    if rust_ret.startswith("StringHashMap"):
+        return "StringHashMap::new()"
+    if rust_ret.startswith("HashMapWithView"):
+        return "HashMapWithView::new()"
+    return "HashMap::new()"
+
+
+def _map_get_expr(rust_ret: str, key_ref: str) -> str:
+    if rust_ret.startswith("StringHashMap"):
+        return f"{key_ref}.get(&key)"
+    return f"{key_ref}.get(&key)"
+
+
+def _map_insert_key_expr(key: TypeExpr, exec_key: str) -> str:
+    """Exec key expression for insert (StringHashMap wants owned String keys)."""
+    if isinstance(key, TypeAtom) and key.name == "Seq<char>":
+        return f"{exec_key}.to_string()"
+    return exec_key
 
 
 def _parse_type_at(s: str, pos: int) -> tuple[TypeExpr, int]:
@@ -315,16 +353,78 @@ def _exec_value_tuple(value: TypeExpr, *, use_delta: bool) -> str:
     return f"({', '.join(f'{prefix}{i}' for i in range(len(params)))})"
 
 
+def _u64_add_bound_requires(prev_expr: str, delta_expr: str) -> str:
+    return f"({prev_expr} as int) + ({delta_expr}) <= u64::MAX as int"
+
+
+def _i64_add_bound_requires(prev_expr: str, delta_expr: str) -> str:
+    return f"""({prev_expr} as int) + ({delta_expr} as int) >= i64::MIN as int,
+        ({prev_expr} as int) + ({delta_expr} as int) <= i64::MAX as int"""
+
+
+def _ghost_prev_expr(spec_key: str, *, zero: str = "0u64") -> str:
+    return f"if old(hm)@.contains_key({spec_key}) {{ old(hm)@[{spec_key}] }} else {{ {zero} }}"
+
+
+def _ghost_prev_slot_expr(spec_key: str, slot: int, *, zero: str = "0u64") -> str:
+    return (
+        f"if old(hm)@.contains_key({spec_key}) {{ old(hm)@[{spec_key}].{slot} }} "
+        f"else {{ {zero} }}"
+    )
+
+
+def _agg_add_scalar_requires(
+    value: TypeAtom,
+    *,
+    delta_name: str = "delta",
+    spec_key: str,
+) -> str | None:
+    """Fit-in-width requires on cell cap and prev+delta (ghost prev from old(hm)@)."""
+    prev_expr = _ghost_prev_expr(spec_key)
+    clauses: list[str] = []
+    if value.name == "u64":
+        clauses.append(f"{delta_name} < LEMMA_MAX_MONEY_U64")
+        clauses.append(_u64_add_bound_requires(prev_expr, f"({delta_name} as int)"))
+    elif value.name == "i64":
+        clauses.append(_i64_add_bound_requires(prev_expr, f"({delta_name} as int)"))
+    if not clauses:
+        return None
+    return " &&\n        ".join(clauses)
+
+
+def _agg_add_tuple_requires(value: TypeTuple, *, spec_key: str) -> str | None:
+    """Per-slot cell caps and prev-fit on numeric accumulate slots."""
+    clauses: list[str] = []
+    for i, e in enumerate(value.elems):
+        assert isinstance(e, TypeAtom)
+        if len(value.elems) == 1:
+            prev_slot = _ghost_prev_expr(spec_key)
+        else:
+            prev_slot = _ghost_prev_slot_expr(spec_key, i)
+        if e.name == "u64":
+            clauses.append(f"d{i} < LEMMA_MAX_MONEY_U64")
+            clauses.append(_u64_add_bound_requires(prev_slot, f"(d{i} as int)"))
+        elif e.name == "i64":
+            clauses.append(_i64_add_bound_requires(prev_slot, f"(d{i} as int)"))
+    if not clauses:
+        return None
+    return " &&\n        ".join(clauses)
+
+
+def _checked_add_expr(prev: str, delta: str, *, signed: bool = False) -> str:
+    op = "checked_add"
+    msg = "Trusted overflow: ValidCols/requires violated"
+    return f"{prev}.{op}({delta}).expect(\"{msg}\")"
+
+
 def _agg_add_ensures(
-    view: str,
-    spec_map: str,
     spec_key: str,
     value: TypeExpr,
     *,
     scalar_name: str = "delta",
 ) -> str:
-    old_view = f"{view}(old(hm)@)"
-    final_view = f"{view}(final(hm)@)"
+    old_view = "old(hm)@"
+    final_view = "final(hm)@"
     if isinstance(value, TypeAtom):
         vty = value.name
         return f"""{final_view} == {old_view}.insert(
@@ -358,6 +458,9 @@ def _agg_add_ensures(
 
 
 def _format_map_result(rust_ret: str, value: TypeExpr) -> str:
+    # vstd map wrappers lack public value iteration; harness checksum uses len only.
+    if rust_ret.startswith("HashMapWithView") or rust_ret.startswith("StringHashMap"):
+        return 'format!("RESULT: map_len={}", res.len())'
     if isinstance(value, TypeAtom):
         vty = value.name
         zero = "0u64" if vty == "u64" else "0i64"
@@ -421,42 +524,53 @@ def multi_agg_ret_type(ret_type: str) -> bool:
     return "__" in ret_type
 
 
-def _emit_distinct_set_trusted(atom: str) -> str:
-    """TRUSTED HashSet exec ↔ Map<K,bool> view + set_new/set_insert for one key atom."""
+def _set_as_map_open_spec(atom: str) -> tuple[str, str, str]:
+    """(view_fn, set_ghost_ty, spec_map) for distinct-set Map<K,bool> bridge."""
     if atom == "str":
-        view = "hashset_str_view"
-        spec_map = "Map<Seq<char>, bool>"
-        rust_set = "HashSet<String>"
-        ghost_set = "Set<String>"
+        return (
+            "hashset_str_as_map",
+            "Set<Seq<char>>",
+            "Map<Seq<char>, bool>",
+        )
+    if atom == "u32":
+        return (
+            "hashset_u32_as_map",
+            "Set<u32>",
+            "Map<u32, bool>",
+        )
+    raise ValueError(f"unsupported distinct-set atom: {atom!r}")
+
+
+def _emit_distinct_set_trusted(atom: str) -> str:
+    """TRUSTED distinct-set helpers: vstd HashSetWithView + open Map bridge."""
+    view, set_ghost, spec_map = _set_as_map_open_spec(atom)
+    if atom == "str":
+        rust_set = "HashSetWithView<String>"
         insert_param = "k: &str"
         spec_key = "k@"
+        contains_check = "!s.contains(&k.to_string())"
         exec_insert = "k.to_string()"
-        contains_check = "!s.contains(k)"
     elif atom == "u32":
-        view = "hashset_u32_view"
-        spec_map = "Map<u32, bool>"
-        rust_set = "HashSet<u32>"
-        ghost_set = "Set<u32>"
+        rust_set = "HashSetWithView<u32>"
         insert_param = "k: u32"
         spec_key = "k"
-        exec_insert = "k"
         contains_check = "!s.contains(&k)"
+        exec_insert = "k"
     else:
         raise ValueError(f"unsupported distinct-set atom: {atom!r}")
 
     suffix = atom
     return f"""
-// === TRUSTED distinct-set helpers ({atom}: HashSet exec ↔ Map spec view) ===
-#[verifier::external_body]
-pub open spec fn {view}(s: {ghost_set}) -> {spec_map} {{
-    arbitrary()
+// === TRUSTED distinct-set helpers ({atom}: HashSetWithView exec ↔ Map spec) ===
+pub open spec fn {view}(s: {set_ghost}) -> {spec_map} {{
+    Map::new(s, |k| true)
 }}
 
 #[verifier::external_body]
 pub exec fn set_new_{suffix}() -> (s: {rust_set})
     ensures {view}(s@) == Map::empty(),
 {{
-    HashSet::new()
+    HashSetWithView::new()
 }}
 
 #[verifier::external_body]
@@ -482,10 +596,7 @@ def distinct_set_trusted_rs() -> str:
 
 def _emit_map_trusted(
     *,
-    view: str,
     suffix: str,
-    hm_map: str,
-    spec_map: str,
     rust_ret: str,
     key: TypeExpr,
     value: TypeExpr,
@@ -497,22 +608,16 @@ def _emit_map_trusted(
     key_sig = ", ".join(f"{n}: {t}" for n, t, _ in key_params)
     val_sig = ", ".join(f"{n}: {t}" for n, t, _ in value_params)
     spec_val = _spec_value_tuple(value)
-    put_ensures = (
-        f"{view}(final(hm)@) == {view}(old(hm)@).insert({spec_key}, {spec_val}),"
-    )
+    put_ensures = f"final(hm)@ == old(hm)@.insert({spec_key}, {spec_val}),"
+    new_expr = map_new_expr(rust_ret)
 
     lines = [
-        "// === TRUSTED structural map helpers (view + agg_new + agg_put/agg_add) ===",
-        "#[verifier::external_body]",
-        f"pub open spec fn {view}(hm: {hm_map}) -> {spec_map} {{",
-        "    arbitrary()",
-        "}",
-        "",
+        "// === TRUSTED structural map helpers (vstd view @ + agg_new + agg_put/agg_add) ===",
         "#[verifier::external_body]",
         f"pub exec fn agg_new_{suffix}() -> (hm: {rust_ret})",
-        f"    ensures {view}(hm@) == Map::empty(),",
+        f"    ensures hm@ == Map::empty(),",
         "{",
-        "    HashMap::new()",
+        f"    {new_expr}",
         "}",
     ]
 
@@ -536,28 +641,32 @@ def _emit_map_trusted(
             delta_bits.append(f"d{i}: {e.name}")
         delta_params = ", ".join(delta_bits)
         add_key_sig = f"{key_sig}, {delta_params}"
-        add_ensures = _agg_add_ensures(view, spec_map, spec_key, value)
+        add_ensures = _agg_add_ensures(spec_key, value)
         zeros = ", ".join(
             "0u64" if isinstance(e, TypeAtom) and e.name == "u64" else "0i64"
             for e in value.elems
         )
-        if len(value.elems) == 1:
-            default_val = zeros
-        else:
-            default_val = f"({zeros})"
-        wrapped = ", ".join(
-            f"prev.{i}.wrapping_add(d{i})" for i in range(len(value.elems))
+        default_val = zeros if len(value.elems) == 1 else f"({zeros})"
+        slot_types = [e.name for e in value.elems if isinstance(e, TypeAtom)]
+        updated = ", ".join(
+            _checked_add_expr(f"prev.{i}", f"d{i}", signed=(slot_types[i] == "i64"))
+            for i in range(len(value.elems))
         )
+        add_requires = _agg_add_tuple_requires(value, spec_key=spec_key)
         add_body_lines = [
             f"    let key = {exec_key};",
             f"    let prev = hm.get(&key).copied().unwrap_or({default_val});",
-            f"    hm.insert(key, ({wrapped}));",
+            f"    hm.insert(key, ({updated}));",
         ]
-        lines.extend(
+        add_fn: list[str] = [
+            "",
+            "#[verifier::external_body]",
+            f"pub exec fn agg_add_{suffix}(hm: &mut {rust_ret}, {add_key_sig})",
+        ]
+        if add_requires:
+            add_fn.extend(["    requires", f"        {add_requires},"])
+        add_fn.extend(
             [
-                "",
-                "#[verifier::external_body]",
-                f"pub exec fn agg_add_{suffix}(hm: &mut {rust_ret}, {add_key_sig})",
                 "    ensures",
                 f"        {add_ensures},",
                 "{",
@@ -565,32 +674,39 @@ def _emit_map_trusted(
                 "}",
             ]
         )
+        lines.extend(add_fn)
     else:
         assert isinstance(value, TypeAtom)
         add_sig = f"{key_sig}, delta: {value.name}"
-        add_ensures = _agg_add_ensures(view, spec_map, spec_key, value)
-        if isinstance(key, TypeAtom) and key.name == "Seq<char>":
+        add_ensures = _agg_add_ensures(spec_key, value)
+        add_requires = _agg_add_scalar_requires(value, spec_key=spec_key)
+        signed = value.name == "i64"
+        checked = _checked_add_expr("prev", "delta", signed=signed)
+        if isinstance(key, TypeAtom) and key.name == "u32":
             body = f"""
-    let key = {exec_key};
-    let prev = hm.get(&key).copied().unwrap_or(0);
-    hm.insert(key, prev.wrapping_add(delta));
-"""
-        elif isinstance(key, TypeAtom) and key.name == "u32":
-            body = """
     let prev = hm.get(&k0).copied().unwrap_or(0);
-    hm.insert(k0, prev.wrapping_add(delta));
+    hm.insert(k0, {checked});
+"""
+        elif isinstance(key, TypeAtom) and key.name == "Seq<char>":
+            body = f"""
+    let prev = hm.get(k0).copied().unwrap_or(0);
+    hm.insert(k0.to_string(), {checked});
 """
         else:
             body = f"""
     let key = {exec_key};
     let prev = hm.get(&key).copied().unwrap_or(0);
-    hm.insert(key, prev.wrapping_add(delta));
+    hm.insert(key, {checked});
 """
-        lines.extend(
+        add_fn = [
+            "",
+            "#[verifier::external_body]",
+            f"pub exec fn agg_add_{suffix}(hm: &mut {rust_ret}, {add_sig})",
+        ]
+        if add_requires:
+            add_fn.extend(["    requires", f"        {add_requires},"])
+        add_fn.extend(
             [
-                "",
-                "#[verifier::external_body]",
-                f"pub exec fn agg_add_{suffix}(hm: &mut {rust_ret}, {add_sig})",
                 "    ensures",
                 f"        {add_ensures},",
                 "{",
@@ -598,16 +714,56 @@ def _emit_map_trusted(
                 "}",
             ]
         )
+        lines.extend(add_fn)
 
     return "\n".join(lines) + "\n"
 
 
+def _emit_vec_view(*, suffix: str, spec_elem: str, exec_elem: str) -> tuple[str, str]:
+    """Open-spec Vec@ bridge: exec String tuple rows → MethodSpec Seq<char> rows."""
+    view_fn = f"vec_{suffix}_view"
+    rec_fn = f"{view_fn}_rec"
+    return (
+        view_fn,
+        f"""
+// === Vec@ exec ↔ MethodSpec Seq view ({suffix}) ===
+pub open spec fn {view_fn}(s: Seq<{exec_elem}>) -> Seq<{spec_elem}> {{
+    {rec_fn}(s, 0)
+}}
+
+pub open spec fn {rec_fn}(s: Seq<{exec_elem}>, i: int) -> Seq<{spec_elem}>
+    decreases s.len() - i,
+{{
+    if i >= s.len() {{
+        Seq::empty()
+    }} else {{
+        {rec_fn}(s, i + 1).insert(0, {_vec_view_elem_at(spec_elem, "s[i]")})
+    }}
+}}
+""",
+    )
+
+
+def _vec_view_elem_at(spec_elem: str, access: str) -> str:
+    """Map one exec row expression to spec row at index access."""
+    parsed = parse_verus_type(spec_elem)
+
+    def walk(e: TypeExpr, path: str) -> str:
+        if isinstance(e, TypeAtom):
+            if e.name == "Seq<char>":
+                return f"{path}@"
+            return path
+        if isinstance(e, TypeTuple):
+            parts = [walk(child, f"{path}.{i}") for i, child in enumerate(e.elems)]
+            return f"({', '.join(parts)})"
+        raise ValueError(f"unsupported vec view elem: {e!r}")
+
+    return walk(parsed, access)
+
+
 def _emit_seq_trusted(
     *,
-    view: str,
     suffix: str,
-    exec_seq: str,
-    spec_seq: str,
     rust_ret: str,
     elem: TypeExpr,
 ) -> str:
@@ -648,23 +804,29 @@ def _emit_seq_trusted(
         spec_elem_val = f"({', '.join(spec_push_elems)})"
         exec_elem_val = f"({', '.join(exec_push_elems)})"
 
-    return f"""
-// === TRUSTED structural seq helpers (view + seq_new + seq_push) ===
-#[verifier::external_body]
-pub open spec fn {view}(s: {exec_seq}) -> {spec_seq} {{
-    arbitrary()
-}}
+    spec_elem_str = _type_to_spec_str(elem)
+    exec_elem_str = spec_to_exec_type(elem)
+    view_fn, view_rs = _emit_vec_view(
+        suffix=suffix,
+        spec_elem=spec_elem_str,
+        exec_elem=exec_elem_str,
+    )
+    push_ensures = (
+        f"{view_fn}(final(s)@) == {view_fn}(old(s)@).push({spec_elem_val}),"
+    )
 
+    return f"""{view_rs}
+// === TRUSTED structural seq helpers (Vec@ + seq_new + seq_push) ===
 #[verifier::external_body]
 pub exec fn seq_new_{suffix}() -> (s: {rust_ret})
-    ensures {view}(s@) == Seq::empty(),
+    ensures {view_fn}(s@) == Seq::empty(),
 {{
     Vec::new()
 }}
 
 #[verifier::external_body]
 pub exec fn seq_push_{suffix}(s: &mut {rust_ret}, {push_sig})
-    ensures {view}(final(s)@) == {view}(old(s)@).push({spec_elem_val}),
+    ensures {push_ensures}
 {{
     s.push({exec_elem_val});
 }}
@@ -679,15 +841,10 @@ def _build_map_bridge(spec_ret: str, key: TypeExpr, value: TypeExpr) -> RetBridg
     val_slug = _type_slug(value)
     bridge_key = f"map_{key_slug}__{val_slug}"
     agg_suffix = bridge_key.removeprefix("map_")
-    view = f"hashmap_{agg_suffix}_view"
     spec_map = normalize_spec_type(spec_ret)
-    hm_map = f"Map<{_type_to_hm_str(key)}, {_type_to_hm_str(value)}>"
-    rust_ret = f"HashMap<{spec_to_exec_type(key)}, {spec_to_exec_type(value)}>"
+    rust_ret = spec_to_map_rust_ret(key, value)
     trusted = _emit_map_trusted(
-        view=view,
         suffix=agg_suffix,
-        hm_map=hm_map,
-        spec_map=spec_map,
         rust_ret=rust_ret,
         key=key,
         value=value,
@@ -695,14 +852,14 @@ def _build_map_bridge(spec_ret: str, key: TypeExpr, value: TypeExpr) -> RetBridg
     return RetBridge(
         key=bridge_key,
         rust_ret=rust_ret,
-        ensures=f"{view}(res@) == method_spec(cols),",
+        ensures="res@ == method_spec(cols),",
         trusted_rs=trusted,
-        default_stub="HashMap::new()",
+        default_stub=map_new_expr(rust_ret),
         format_result=_format_map_result(rust_ret, value),
         needs_hashmap=True,
-        view_spec=view,
+        view_spec=None,
         spec_map=spec_map,
-        hm_map=hm_map,
+        hm_map=None,
         agg_suffix=agg_suffix,
     )
 
@@ -714,22 +871,18 @@ def _build_seq_bridge(spec_ret: str, elem: TypeExpr) -> RetBridge | None:
     elem_slug = _type_slug(elem)
     bridge_key = f"seq_{elem_slug}"
     rust_ret = spec_to_exec_type(TypeSeq(elem=elem))
-    needs_view = _contains_seq_char(elem)
+    needs_helpers = _contains_seq_char(elem)
     spec_seq = f"Seq<{_type_to_spec_str(elem)}>"
-    exec_seq = f"Seq<{_type_to_hm_str(elem)}>"
 
-    if needs_view:
-        view = f"vec_{elem_slug}_view"
+    if needs_helpers:
         trusted = _emit_seq_trusted(
-            view=view,
             suffix=elem_slug,
-            exec_seq=exec_seq,
-            spec_seq=spec_seq,
             rust_ret=rust_ret,
             elem=elem,
         )
-        ensures = f"{view}(res@) == method_spec(cols),"
-        view_spec: str | None = view
+        view_fn = f"vec_{elem_slug}_view"
+        ensures = f"{view_fn}(res@) == method_spec(cols),"
+        view_spec: str | None = view_fn
     else:
         trusted = ""
         ensures = "res@ == method_spec(cols),"
@@ -746,7 +899,7 @@ def _build_seq_bridge(spec_ret: str, elem: TypeExpr) -> RetBridge | None:
         view_spec=view_spec,
         spec_map=spec_seq,
         hm_map=None,
-        agg_suffix=elem_slug if needs_view else None,
+        agg_suffix=elem_slug if needs_helpers else None,
     )
 
 
@@ -777,6 +930,8 @@ def bridge_from_static_key(key: str) -> RetBridge:
     view = cfg.get("view_spec")
     if view:
         ensures = f"{view}(res@) == method_spec(cols),"
+    elif cfg["rust_ret"].startswith(("HashMapWithView", "StringHashMap", "Vec")):
+        ensures = "res@ == method_spec(cols),"
     else:
         ensures = "res == method_spec(cols),"
     rust_ret = cfg["rust_ret"]
@@ -784,6 +939,8 @@ def bridge_from_static_key(key: str) -> RetBridge:
         default_stub = "0u64"
     elif rust_ret.startswith("Vec"):
         default_stub = "Vec::new()"
+    elif rust_ret.startswith(("HashMapWithView", "StringHashMap")):
+        default_stub = map_new_expr(rust_ret)
     else:
         default_stub = "HashMap::new()"
     return RetBridge(

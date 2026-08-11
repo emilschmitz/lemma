@@ -321,7 +321,11 @@ def normalize_spec_type(s: str) -> str:
     return _norm(s)
 
 
-def _forbids_direct_equality(spec_t: str) -> bool:
+def _forbids_direct_equality(ensures: str, spec_t: str) -> bool:
+    """``res ==`` without ``@`` is forbidden for Map / string Seq; ``res@ ==`` is OK."""
+    norm = normalize_ensures(ensures)
+    if re.match(r"res@\s*==", norm):
+        return False
     t = normalize_spec_type(spec_t)
     if t.startswith("Map"):
         return True
@@ -334,10 +338,21 @@ def _exec_ret_matches_spec(agent_ret: str, spec_t: str) -> bool:
     """True when exec return type matches ghost MethodSpec return type."""
     ar = normalize_rust_type(agent_ret)
     st = normalize_spec_type(spec_t)
+
+    def exec_to_spec_ty(ty: str) -> str:
+        return normalize_spec_type(ty.replace("Vec<", "Seq<").replace("String", "Seq<char>"))
+
     if ar == st:
         return True
-    if ar.startswith("Vec<") and st.startswith("Seq<"):
-        return normalize_spec_type(ar.replace("Vec<", "Seq<", 1)) == st
+    if exec_to_spec_ty(ar) == st:
+        return True
+    if ar.startswith("HashMapWithView<") and st.startswith("Map<"):
+        inner = ar[len("HashMapWithView") :]
+        map_inner = st[len("Map") :]
+        return normalize_rust_type("Map" + inner.replace("String", "Seq<char>")) == st
+    if ar.startswith("StringHashMap<") and st.startswith("Map<"):
+        val = ar[len("StringHashMap<") : -1]
+        return st == normalize_spec_type(f"Map<Seq<char>, {val}>")
     if ar.startswith("HashMap<") and st.startswith("Map<"):
         hm_inner = ar[len("HashMap") :]
         map_inner = st[len("Map") :]
@@ -656,7 +671,7 @@ def admit_agent_runquery(
             relation, view_name = None, None
 
         if relation == "direct":
-            if _forbids_direct_equality(spec_t):
+            if _forbids_direct_equality(ensures, spec_t):
                 violations.append(
                     f"direct ensures res == {expected_call} forbidden for ghost Map/Seq<char> "
                     "MethodSpec return; use a Trusted view"

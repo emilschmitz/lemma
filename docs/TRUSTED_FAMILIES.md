@@ -10,34 +10,45 @@ agg accumulate, distinct-set, one-row `agg_step`, HAVING filter) so a human can
 audit them. Suffixes encode key/value shape; they are not separate Trusted
 ideas. Prefer fixing MethodSpec/docs over inventing another opaque helper.
 
-### Rocketship bar (NASA-grade local assumptions)
+### Rocketship bar (NASA / Rust-evident)
 
-A product-path `#[verifier::external_body]` may stay only if **all** of:
+A product-path Trusted may stay only if a careful Rust/systems reviewer would
+**commit it to high-assurance code** after reading `requires`/`ensures` and a
+short body — **same kind of acceptance as “two ints summing under `u64::MAX`
+do not overflow,”** or “I know how this Rust container behaves.”
+
+Must hold **all** of:
 
 1. **One idea** — one sentence names the operation.
-2. **Ensures ≡ body under a named precondition** — no silent gap (e.g. math `+`
-   vs `wrapping_add` without an explicit `requires` that the sum fits).
+2. **Ensures ≡ body under a named precondition** — no silent gap (math `+` vs
+   wrap; no “owned map will stay in bounds” as a substitute for fit-in-width
+   `requires` on accumulate).
 3. **Local** — not a whole-query / whole-join / “subquery answer” Trusted.
-4. **Expert-blind** — a careful systems/Rust reviewer accepts it after reading
-   `requires`/`ensures` and a short body, without Lemma folklore.
-5. **Tested** — semantic differential (or equivalent) covers the contract,
-   including precondition boundaries where applicable.
+4. **Rust-evident** — no Lemma folklore; no Lemma-authored `arbitrary()` view
+   bodies. Prefer Verus vstd container Trusteds (`HashMapWithView` /
+   `HashSetWithView` / `StringHashMap`) whose insert/new match Rust maps/sets.
+5. **Tested** — semantic differential (or equivalent), including precondition
+   boundaries.
 
-**Tiers:** **A** already meets the bar; **B** fixable (put the bound in the
-signature); **C** dialect/Unicode — pin a rule then test; **D** fail the bar
-(`arbitrary()`, whole-query Trusteds) — remove from the verified product path
-or replace with a real open-spec definition. Fail loud rather than ship D.
+**Out (must go):** opaque Lemma `hashmap_*_view` / `hashset_*_view` /
+`agg_step_inner_*_view` with `arbitrary()`; owned-map overflow handwaves;
+empty-body fold axioms that smuggle MethodSpec shape; whole-query Trusteds.
 
-Inventory of product-path Trusteds and tier tags: see
-`docs/RESEARCH_NOTES.md` (Rocketship Trusted inventory).
+**String dialect:** LIKE / ILIKE / `str_lower` / `str_upper` = **ASCII /
+DuckDB-like** only (`to_ascii_lowercase`, open `%`/`_` specs). Non-ASCII
+codepoints pass through unchanged in lower/upper.
+
+Inventory: `docs/RESEARCH_NOTES.md`. Gate: keep looping agent-prove on fresh
+draws until **≥98%** `VERIFY True` under this surface (`AGENT_TIMEOUT_SEC`
+target 600s / 10 min; stretch 15–20 min only when needed).
 
 Registry: `research_loop/trusted_families.py` (`TRUSTED_FAMILY_MENU`).
 
 **Nested `Map` return types are intentionally unsupported.** COUNT DISTINCT and
 similar queries use flat projected `u64` or `Seq<…>` families instead of nested
 maps. MethodSpec helper state may still use `Map<K, bool>` for distinct keys;
-agents prove exec `HashSet` updates via TRUSTED `hashset_*_view` + `set_insert_*`
-(emitted alongside multi-agg map families in agent-visible spec).
+agents prove exec set updates via vstd `HashSetWithView` (or equivalent) whose
+`@` is the membership model — not Lemma `hashset_*_view` + `arbitrary()`.
 
 ## Testing policy
 
@@ -88,11 +99,11 @@ Semantic differential (exec math vs oracle / DuckDB): `tests/test_trusted_semant
 When the shell ret_type is a projected multi-agg map (`map_*__u64_…` keys),
 `prepare_agent_visible_spec` also emits:
 
-| helper | exec | spec view |
+| helper | exec | spec bridge |
 |--------|------|-----------|
-| `hashset_str_view` | `Set<String>` | `Map<Seq<char>, bool>` |
-| `set_new_str` / `set_insert_str` | string keys | membership + dom size on insert |
-| `hashset_u32_view` | `Set<u32>` | `Map<u32, bool>` |
+| `hashset_str_as_map` | `HashSetWithView<String>` | `Map<Seq<char>, bool>` via `Map::new(s, \|k\| true)` |
+| `set_new_str` / `set_insert_str` | string keys | membership + dom on `hashset_str_as_map(s@)` |
+| `hashset_u32_as_map` | `HashSetWithView<u32>` | `Map<u32, bool>` |
 | `set_new_u32` / `set_insert_u32` | u32 keys | same contract |
 
 `set_insert_*` returns `is_new`; when true, `dom().len()` increases by 1. Use
@@ -108,7 +119,7 @@ per-query step helpers (names keyed by `agg_suffix`, e.g. `str_str__u64_u64_u64`
 | helper | role |
 |--------|------|
 | `AggStepState_{suffix}` | `projected` HashMap + `inner` HashMap (exec tuple incl. `HashSet` for COUNT_DISTINCT slots) |
-| `agg_step_inner_{suffix}_view` | exec inner map → spec helper state map |
+| `agg_step_inner_{suffix}_spec` | open spec: exec inner map → spec helper state map (structural `@` on map slots) |
 | `agg_step_project_{suffix}` | open spec: inner state tuple → projected agg tuple (from `method_spec` `map_values`) |
 | `agg_step_apply_row_{suffix}` | open spec: one-row inner update (from fold body; row params for distinct / SUM/AVG inputs) |
 | `agg_step_state_new_{suffix}` | empty state |

@@ -27,21 +27,21 @@ pub exec fn join_right_match_exec(num: &Cols_num, pre: &Cols_pre, li: usize) -> 
 
 #[verifier::external_body]
 pub exec fn apply_having_filter_exec_q24(
-    hm: HashMap<(String, String), (u64, u64)>,
-) -> (res: HashMap<(String, String), (u64, u64)>)
+    hm: HashMapWithView<(String, String), (u64, u64)>,
+) -> (res: HashMapWithView<(String, String), (u64, u64)>)
     ensures
-        hashmap_str_str__u64_u64_view(res@)
+        res@
             == apply_having_filter(
-                hashmap_str_str__u64_u64_view(hm@),
+                hm@,
                 |kk: (Seq<char>, Seq<char>), vv: (u64, u64)| (vv.0 > 10),
             ),
 {
     hm.into_iter().filter(|(_k, v)| v.0 > 10).collect()
 }
 
-pub exec fn run_query(num: &Cols_num, pre: &Cols_pre) -> (res: HashMap<(String, String), (u64, u64)>)
+pub exec fn run_query(num: &Cols_num, pre: &Cols_pre) -> (res: HashMapWithView<(String, String), (u64, u64)>)
     requires valid_cols_num(num), valid_cols_pre(pre),
-    ensures hashmap_str_str__u64_u64_view(res@) == method_spec(num, pre),
+    ensures res@ == method_spec(num, pre),
 {
     let mut raw = agg_new_str_str__u64_u64();
     let mut i: usize = num.n;
@@ -50,7 +50,7 @@ pub exec fn run_query(num: &Cols_num, pre: &Cols_pre) -> (res: HashMap<(String, 
             i <= num.n,
             valid_cols_num(num),
             valid_cols_pre(pre),
-            hashmap_str_str__u64_u64_view(raw@)
+            raw@
                 == join_anti_multi_agg_helper(num, pre, i as int),
         decreases i,
     {
@@ -80,7 +80,7 @@ pub exec fn run_query(num: &Cols_num, pre: &Cols_pre) -> (res: HashMap<(String, 
                 );
                 assert(expected == join_anti_multi_agg_helper(num, pre, i as int)[key]);
                 assert(
-                    hashmap_str_str__u64_u64_view(raw@)
+                    raw@
                         == join_anti_multi_agg_helper(num, pre, i as int)
                 );
             }
@@ -97,10 +97,10 @@ pub exec fn run_query(num: &Cols_num, pre: &Cols_pre) -> (res: HashMap<(String, 
     proof {
         let ghost m = join_anti_multi_agg_helper(num, pre, 0);
         assert(
-            hashmap_str_str__u64_u64_view(res@)
+            res@
                 == apply_having_filter(m, |kk: (Seq<char>, Seq<char>), vv: (u64, u64)| (vv.0 > 10))
         );
-        assert(hashmap_str_str__u64_u64_view(res@) == method_spec(num, pre));
+        assert(res@ == method_spec(num, pre));
     }
     res
 }

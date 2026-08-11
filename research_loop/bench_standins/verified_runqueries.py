@@ -124,7 +124,7 @@ pub exec fn run_query(cols: &Cols) -> (res: u64)
 _GHOST_LOOP_HEAD = """
 pub exec fn run_query(cols: &Cols) -> (res: {rust_ret})
     requires valid_cols(cols),
-    ensures {view_spec}(res@) == method_spec(cols),
+    ensures res@ == method_spec(cols),
 {{
     let mut agg = agg_new_{agg_suffix}();
     let mut i: usize = cols.n;
@@ -134,7 +134,7 @@ pub exec fn run_query(cols: &Cols) -> (res: {rust_ret})
             i <= cols.n,
             valid_cols(cols),
             g == method_spec_helper(cols, i as int),
-            {view_spec}(agg@) == g,
+            agg@ == g,
         decreases i,
     {{
         i = i - 1;
@@ -146,7 +146,7 @@ pub exec fn run_query(cols: &Cols) -> (res: {rust_ret})
         }} else {{
             proof {{ }}
         }}
-        assert(g == method_spec_helper(cols, i as int) && {view_spec}(agg@) == g);
+        assert(g == method_spec_helper(cols, i as int) && agg@ == g);
     }}
     agg
 }}
@@ -157,7 +157,7 @@ def _ghost_groupby(
     *,
     rust_ret: str,
     spec_map: str,
-    view_spec: str,
+    view_spec: str = "",
     agg_suffix: str,
     filter_exec: str,
     exec_add: str,
@@ -175,10 +175,10 @@ def _ghost_groupby(
 
 
 SSB_Q4_RUNQUERY = _ghost_groupby(
-    rust_ret="HashMap<(u32, String), u64>",
+    rust_ret="HashMapWithView<(u32, String), u64>",
     spec_map="Map<(u32, Seq<char>), u64>",
     view_spec="hashmap_u32_str_u64_view",
-    agg_suffix="u32_str_u64",
+    agg_suffix="u32_str__u64",
     filter_exec='cols.eq_at_p_category(i, "MFGR#12") && cols.eq_at_s_region(i, "AMERICA")',
     exec_add="""
             let yr = cols.get_d_year_exec(i);
@@ -191,15 +191,15 @@ SSB_Q4_RUNQUERY = _ghost_groupby(
                     let key = (yr, brand@);
                     let prev = if old_g.contains_key(key) { old_g[key] } else { 0u64 };
                     g = old_g.insert(key, (prev as int + rev as int) as u64);
-                    assert(hashmap_u32_str_u64_view(agg@) == g);
+                    assert(agg@ == g);
                 }""",
 )
 
 SSB_Q5_RUNQUERY = _ghost_groupby(
-    rust_ret="HashMap<(u32, String), u64>",
+    rust_ret="HashMapWithView<(u32, String), u64>",
     spec_map="Map<(u32, Seq<char>), u64>",
     view_spec="hashmap_u32_str_u64_view",
-    agg_suffix="u32_str_u64",
+    agg_suffix="u32_str__u64",
     filter_exec=(
         'cols.eq_at_p_brand(i, "MFGR#2221") && cols.get_p_size_exec(i) >= 10 '
         '&& cols.eq_at_s_region(i, "ASIA")'
@@ -218,15 +218,15 @@ SSB_Q5_RUNQUERY = _ghost_groupby(
                     let key = (yr, brand@);
                     let prev = if old_g.contains_key(key) { old_g[key] } else { 0u64 };
                     g = old_g.insert(key, (prev as int + rev as int) as u64);
-                    assert(hashmap_u32_str_u64_view(agg@) == g);
+                    assert(agg@ == g);
                 }""",
 )
 
 SSB_Q6_RUNQUERY = _ghost_groupby(
-    rust_ret="HashMap<(u32, String), u64>",
+    rust_ret="HashMapWithView<(u32, String), u64>",
     spec_map="Map<(u32, Seq<char>), u64>",
     view_spec="hashmap_u32_str_u64_view",
-    agg_suffix="u32_str_u64",
+    agg_suffix="u32_str__u64",
     filter_exec='cols.eq_at_p_brand(i, "MFGR#2221") && cols.eq_at_s_region(i, "EUROPE")',
     exec_add="""
             let yr = cols.get_d_year_exec(i);
@@ -239,15 +239,15 @@ SSB_Q6_RUNQUERY = _ghost_groupby(
                     let key = (yr, brand@);
                     let prev = if old_g.contains_key(key) { old_g[key] } else { 0u64 };
                     g = old_g.insert(key, (prev as int + rev as int) as u64);
-                    assert(hashmap_u32_str_u64_view(agg@) == g);
+                    assert(agg@ == g);
                 }""",
 )
 
 SSB_Q7_RUNQUERY = _ghost_groupby(
-    rust_ret="HashMap<(String, String, u32), u64>",
+    rust_ret="HashMapWithView<(String, String, u32), u64>",
     spec_map="Map<(Seq<char>, Seq<char>, u32), u64>",
     view_spec="hashmap_str_str_u32_u64_view",
-    agg_suffix="str_str_u32_u64",
+    agg_suffix="str_str_u32__u64",
     filter_exec=(
         'cols.eq_at_c_region(i, "ASIA") && cols.eq_at_s_region(i, "ASIA") '
         "&& {od} >= 19920101 && {od} <= 19971231".format(od="cols.get_lo_orderdate_exec(i)")
@@ -268,15 +268,15 @@ SSB_Q7_RUNQUERY = _ghost_groupby(
                     let key = (cnation@, snation@, yr);
                     let prev = if old_g.contains_key(key) { old_g[key] } else { 0u64 };
                     g = old_g.insert(key, (prev as int + rev as int) as u64);
-                    assert(hashmap_str_str_u32_u64_view(agg@) == g);
+                    assert(agg@ == g);
                 }""",
 )
 
 SSB_Q8_RUNQUERY = _ghost_groupby(
-    rust_ret="HashMap<(String, String, u32), u64>",
+    rust_ret="HashMapWithView<(String, String, u32), u64>",
     spec_map="Map<(Seq<char>, Seq<char>, u32), u64>",
     view_spec="hashmap_str_str_u32_u64_view",
-    agg_suffix="str_str_u32_u64",
+    agg_suffix="str_str_u32__u64",
     filter_exec=(
         'cols.eq_at_c_nation(i, "UNITED STATES") && cols.eq_at_s_nation(i, "UNITED STATES") '
         "&& {od} >= 19920101 && {od} <= 19971231".format(od="cols.get_lo_orderdate_exec(i)")
@@ -297,15 +297,15 @@ SSB_Q8_RUNQUERY = _ghost_groupby(
                     let key = (ccity@, scity@, yr);
                     let prev = if old_g.contains_key(key) { old_g[key] } else { 0u64 };
                     g = old_g.insert(key, (prev as int + rev as int) as u64);
-                    assert(hashmap_str_str_u32_u64_view(agg@) == g);
+                    assert(agg@ == g);
                 }""",
 )
 
 SSB_Q9_RUNQUERY = _ghost_groupby(
-    rust_ret="HashMap<(String, String, u32), u64>",
+    rust_ret="HashMapWithView<(String, String, u32), u64>",
     spec_map="Map<(Seq<char>, Seq<char>, u32), u64>",
     view_spec="hashmap_str_str_u32_u64_view",
-    agg_suffix="str_str_u32_u64",
+    agg_suffix="str_str_u32__u64",
     filter_exec=(
         'cols.eq_at_c_city(i, "UNITED KI1") && cols.eq_at_s_city(i, "UNITED KI5") '
         "&& {od} >= 19920101 && {od} <= 19971231".format(od="cols.get_lo_orderdate_exec(i)")
@@ -326,15 +326,15 @@ SSB_Q9_RUNQUERY = _ghost_groupby(
                     let key = (ccity@, scity@, yr);
                     let prev = if old_g.contains_key(key) { old_g[key] } else { 0u64 };
                     g = old_g.insert(key, (prev as int + rev as int) as u64);
-                    assert(hashmap_str_str_u32_u64_view(agg@) == g);
+                    assert(agg@ == g);
                 }""",
 )
 
 SSB_Q12_RUNQUERY = _ghost_groupby(
-    rust_ret="HashMap<(u32, String), i64>",
+    rust_ret="HashMapWithView<(u32, String), i64>",
     spec_map="Map<(u32, Seq<char>), i64>",
     view_spec="hashmap_u32_str_i64_view",
-    agg_suffix="u32_str_i64",
+    agg_suffix="u32_str__i64",
     filter_exec=(
         'cols.eq_at_c_region(i, "AMERICA") && cols.eq_at_s_region(i, "AMERICA") '
         '&& cols.eq_at_p_mfgr(i, "MFGR#1") '
@@ -358,7 +358,7 @@ SSB_Q12_RUNQUERY = _ghost_groupby(
                     let key = (yr, nation@);
                     let prev = if old_g.contains_key(key) { old_g[key] } else { 0i64 };
                     g = old_g.insert(key, (prev + term) as i64);
-                    assert(hashmap_u32_str_i64_view(agg@) == g);
+                    assert(agg@ == g);
                 }""",
 )
 
@@ -391,10 +391,10 @@ pub exec fn run_query(cols: &Cols) -> (res: u64)
 """
 
 SSB_Q15_RUNQUERY = _ghost_groupby(
-    rust_ret="HashMap<String, u64>",
+    rust_ret="StringHashMap<u64>",
     spec_map="Map<Seq<char>, u64>",
     view_spec="hashmap_str_u64_view",
-    agg_suffix="str_u64",
+    agg_suffix="str__u64",
     filter_exec=(
         "{od} >= 19980901 && {od} <= 19981231".format(od="cols.get_lo_orderdate_exec(i)")
     ),
@@ -409,15 +409,15 @@ SSB_Q15_RUNQUERY = _ghost_groupby(
                     let key = priority@;
                     let prev = if old_g.contains_key(key) { old_g[key] } else { 0u64 };
                     g = old_g.insert(key, (prev as int + qty as int) as u64);
-                    assert(hashmap_str_u64_view(agg@) == g);
+                    assert(agg@ == g);
                 }""",
 )
 
 SSB_Q10_RUNQUERY = _ghost_groupby(
-    rust_ret="HashMap<(String, String, u32), u64>",
+    rust_ret="HashMapWithView<(String, String, u32), u64>",
     spec_map="Map<(Seq<char>, Seq<char>, u32), u64>",
     view_spec="hashmap_str_str_u32_u64_view",
-    agg_suffix="str_str_u32_u64",
+    agg_suffix="str_str_u32__u64",
     filter_exec=(
         'cols.eq_at_c_city(i, "UNITED KI1") && cols.eq_at_s_city(i, "UNITED KI5") '
         "&& {od} >= 19971201 && {od} <= 19971231".format(od="cols.get_lo_orderdate_exec(i)")
@@ -438,15 +438,15 @@ SSB_Q10_RUNQUERY = _ghost_groupby(
                     let key = (ccity@, scity@, yr);
                     let prev = if old_g.contains_key(key) { old_g[key] } else { 0u64 };
                     g = old_g.insert(key, (prev as int + rev as int) as u64);
-                    assert(hashmap_str_str_u32_u64_view(agg@) == g);
+                    assert(agg@ == g);
                 }""",
 )
 
 SSB_Q11_RUNQUERY = _ghost_groupby(
-    rust_ret="HashMap<(u32, String), i64>",
+    rust_ret="HashMapWithView<(u32, String), i64>",
     spec_map="Map<(u32, Seq<char>), i64>",
     view_spec="hashmap_u32_str_i64_view",
-    agg_suffix="u32_str_i64",
+    agg_suffix="u32_str__i64",
     filter_exec=(
         'cols.eq_at_c_region(i, "AMERICA") && cols.eq_at_s_region(i, "AMERICA") '
         '&& cols.eq_at_p_mfgr(i, "MFGR#1")'
@@ -467,15 +467,15 @@ SSB_Q11_RUNQUERY = _ghost_groupby(
                     let key = (yr, nation@);
                     let prev = if old_g.contains_key(key) { old_g[key] } else { 0i64 };
                     g = old_g.insert(key, (prev + term) as i64);
-                    assert(hashmap_u32_str_i64_view(agg@) == g);
+                    assert(agg@ == g);
                 }""",
 )
 
 SSB_Q13_RUNQUERY = _ghost_groupby(
-    rust_ret="HashMap<(u32, String, String), i64>",
+    rust_ret="HashMapWithView<(u32, String, String), i64>",
     spec_map="Map<(u32, Seq<char>, Seq<char>), i64>",
     view_spec="hashmap_u32_str_str_i64_view",
-    agg_suffix="u32_str_str_i64",
+    agg_suffix="u32_str_str__i64",
     filter_exec=(
         'cols.eq_at_c_region(i, "AMERICA") && cols.eq_at_s_nation(i, "UNITED STATES") '
         "&& {od} >= 19970101 && {od} <= 19971231 "
@@ -500,15 +500,15 @@ SSB_Q13_RUNQUERY = _ghost_groupby(
                     let key = (yr, snation@, pcat@);
                     let prev = if old_g.contains_key(key) { old_g[key] } else { 0i64 };
                     g = old_g.insert(key, (prev + term) as i64);
-                    assert(hashmap_u32_str_str_i64_view(agg@) == g);
+                    assert(agg@ == g);
                 }""",
 )
 
 TPCH_Q1_RUNQUERY = _ghost_groupby(
-    rust_ret="HashMap<(String, String), u64>",
+    rust_ret="HashMapWithView<(String, String), u64>",
     spec_map="Map<(Seq<char>, Seq<char>), u64>",
     view_spec="hashmap_str_str_u64_view",
-    agg_suffix="str_str_u64",
+    agg_suffix="str_str__u64",
     filter_exec="cols.get_l_shipdate_exec(i) <= 19980902",
     exec_add="""
             let rf = cols.get_l_returnflag_exec(i);
@@ -521,7 +521,7 @@ TPCH_Q1_RUNQUERY = _ghost_groupby(
                     let key = (rf@, ls@);
                     let prev = if old_g.contains_key(key) { old_g[key] } else { 0u64 };
                     g = old_g.insert(key, (prev + qty as int) as u64);
-                    assert(hashmap_str_str_u64_view(agg@) == g);
+                    assert(agg@ == g);
                 }""",
 )
 

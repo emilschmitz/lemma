@@ -11,6 +11,8 @@ Spot VM **r9** (`lemma-gendb`) was deleted before `scp` of `research_loop/runs/`
 - **r9 Q11** (join + COUNT/SUM/AVG, 3-string keys): Grok proved with `agg_step_str_str_str__u64_u64_u64`.
 - **r10** (`holdout/gendb_sec_edgar/queries_resample_r10.sql`, 40 queries): **40/40 agent-proved** under admission (`VERIFY True` after batch re-verify). Host gaps closed along the way: subquery `Seq`/`lit@`, `vec_*_view` exec↔spec split, `seq_push` `final(s)@`, exec `agg_step` strip of ghost `as int`, HAVING Trusted table params + scalar `*v`.
 - **r11** (seed 1111, 50 queries): **49/50 = 98%** agent-proved (`VERIFY True`). One loud `transpile_fail`: Q19 IN+GROUP BY (unsupported MethodSpec semi-join). Clears the **≥98%** gate.
+- **r11 rocketship re-verify** (after owned-map accumulate Trusteds + bound lemmas): **49/49** with `verify_local` → **VERIFY True** (Q19 still absent / transpile_fail). Gate holds under rocketship.
+- **r12** (seed 1212, 50 queries): **50/50 = 100%** agent-proved under rocketship Trusteds (`VERIFY True` after full re-verify). Clears ≥98% gate on a fresh draw.
 
 
 Shell / “Trusted menu ready” on fresh SQLSmith draws plateaued (r5–r9). Spot agents still mostly failed to **finish a Verus proof**. New loop focus:
@@ -87,6 +89,7 @@ Distinct-set helpers (`set_insert_str`, etc.) plus **group `agg_step_*`** (see `
 | 2026-08-09 | r9 (seed 909, 60 SQL) | **98.3%** shell (59/60) | **98.3%** `ready` (59/60) | Fresh draw after menu freeze; 1 loud-fail IN+GROUP BY (same gap as r3). Combined all pools ≈99.7% ready. |
 | 2026-08-10 | **r10** (40 SQL) | **100%** shell | **100%** agent-proved (`VERIFY True` ×40) | Grok `run_query` + host Trusted/codegen fixes; batch re-verify after final `agg_step` `as int` strip. Exceeds ~90% paper gate on this draw. |
 | 2026-08-10 | **r11** (seed 1111, 50 SQL) | **98%** shell (49/50) | **98%** agent-proved (49/50 `VERIFY True`) | Gate raised to ≥98%. Miss = Q19 IN+GROUP BY transpile (loud fail). |
+| 2026-08-10 | **r12** (seed 1212, 50 SQL) | **100%** shell | **100%** agent-proved (50/50 `VERIFY True`) | Fresh draw under rocketship Trusteds (owned-map accumulate + bound lemmas). |
 
 Host scorer buckets: `ready` = shell OK + real MethodSpec folds + Trusted step surface for shape; `needs_trusted` = shell OK but multi-agg / COUNT(DISTINCT) without `agg_step_*`; `transpile_fail` / `shell_fail` otherwise.
 
@@ -113,7 +116,7 @@ The transpiler emits `valid_cols` (and per-column accessor lemmas) from schema v
 
 - `cols.n <= LEMMA_MAX_ROWS` (currently `2**31`)
 - `u32` columns: every cell `< LEMMA_MAX_NATIVE_U32` (`2**31`)
-- `u64` / money columns: every cell `< LEMMA_MAX_MONEY_U64` (`2**40`)
+- `u64` / money columns: every cell `< LEMMA_MAX_MONEY_U64` (`2**32`; chosen so `LEMMA_MAX_ROWS * LEMMA_MAX_MONEY_U64 <= u64::MAX`)
 - strings: length `<= LEMMA_MAX_STRING_LEN` (128)
 
 Admission requires `run_query` to keep `requires valid_cols(cols)` (or the per-table predicates on multi-table shells). These are **preconditions on the input**, not a claim that all Rust `u64`/`i64` ops are globally safe.
@@ -122,24 +125,35 @@ Admission requires `run_query` to keep `requires valid_cols(cols)` (or the per-t
 
 | Layer | Arithmetic style | Where |
 |-------|------------------|-------|
-| **MethodSpec / `agg_add_*` ensures** | Mathematical `int` (`as int + … as u64`) | Open-spec folds, Trusted `ensures` on map updates |
-| **TRUSTED exec helpers** | Rust `wrapping_add` / `wrapping_mul` | `add_u64`, `add_i64`, `agg_add_*`, `agg_step_*`, checksum folds |
+| **MethodSpec / `agg_add_*` / `agg_step_*` ensures** | Mathematical `int` (`as int + … as u64`) | Open-spec folds, Trusted `ensures` on map updates |
+| **TRUSTED exec helpers (product path)** | `checked_add` / `checked_mul` under fit-in-width `requires` | Prelude `add_u64` / `add_i64` / `mul_u64_u32`; bridge `agg_add_*`; multi-agg `agg_step_*` numeric slots |
+| **Accumulate Trusteds (`agg_add_*`, `agg_step_*`)** | `checked_add` in body; mathematical `+` in `ensures` | **Fit-in-width `requires`:** cell caps (`delta` / row cells `< LEMMA_MAX_*`) **and** prev-fit from `old(hm)@` / `old(st).inner@` before each accumulate. No owned-map folklore. |
+| **Harness checksum folds** | Rust `wrapping_add` on result digests only | `format_result` in `trusted_ret_bridge.py` (not agent proof surface) |
 
-Exec bodies use wrapping because that is what rustc does on `u64`/`i64`. The logical spec treats sums as unbounded integers then casts back. **Soundness story:** for a given workload, the host must ensure `valid_cols` holds on loaded data *and* that intermediate aggregates stay within the width of the exec type so wrapping never occurs — then `wrapping_add` agrees with the spec's `int` math. Where wrapping is intentional (semantic differential oracle), tests model Rust wrap explicitly (`research_loop/trusted_semantic_oracle.py`).
+Exec bodies use `checked_*` when `ensures` claim mathematical `+`/`*`. **Soundness story:** `valid_cols` on inputs; prelude arithmetic has fit-in-width `requires`; **accumulate Trusteds** expose cell-cap + prev-fit `requires` (ghost prev from `old(hm)@` / `old(st).inner@`) with `checked_add` bodies. Map/seq exec uses vstd `HashMapWithView` / `StringHashMap` / `HashSetWithView` with `res@ == method_spec` (no Lemma `arbitrary()` view bridges).
 
-Comments on TRUSTED prelude helpers state this contract: *"sound when ValidCols row/cell bounds apply (no overflow)."* **Rocketship bar:** that bound must appear as Verus `requires` on the Trusted (not only a comment), so an expert reads the assumption in the signature — same *kind* of acceptance as “two ints summing under `u64::MAX` do not overflow.”
+Comments on TRUSTED prelude helpers state this contract. **Rocketship bar:** fit-in-width bounds appear as Verus `requires` on prelude arithmetic; accumulate Trusteds document owned-map invariant in emit comments and expose cell-cap `requires` where the caller passes row cells.
 
 ### Rocketship Trusted inventory (product path)
 
-| Tier | Surface | Status / action |
-|------|---------|-----------------|
-| **A** | `agg_new_*`, `seq_new_*`, HashMap/`HashSet` `@` views, `set_insert_*` membership+dom, `case_when_u64_exec`, HAVING filter (pred copy + `*v`/table params) | Keep; one-liner in comment |
-| **B** | `add_u64` / `add_i64` / `mul_u64_u32` / `sub_u64_to_i64` | **Done:** fit-in-width `requires` + `checked_add` / `checked_mul` |
-| **B (remaining)** | `agg_add_*` / `agg_step_*` numeric slots still use wrapping in exec with math `ensures` | Next: thread the same fit-in-width `requires` into those helpers (or prove callers discharge `add_u64` requires) |
-| **C** | LIKE/ILIKE / `str_lower`/`upper` / `str_like_contains` | **Done (ASCII pin):** real open specs; exec Trusteds tie via `ensures` |
-| **D** | nested complex subquery MethodSpec still `external_body`+`arbitrary()`; experimental whole-query TRUSTED `run_query` | Loud-fail / quarantine — not agent-prove success path. `left_join_miss_generic` → `false` (done). Opaque `@` **view** specs (`hashset_*_view`, `agg_step_inner_*_view`) stay `arbitrary()` bodies but are constrained by insert/step `ensures` (A-tier *interpretation* axiom, not a whole-query result) |
+Complete emit-surface table (agent-visible / verify path). **Experimental only:** `verus_transpiler/codegen_exec.py` and `templates.py` whole-query TRUSTED `run_query` — not research-loop assemble/admit success path.
 
-Related: `docs/TRUSTED_FAMILIES.md` (Rocketship bar), `docs/ADVERSARIAL_TESTS.md`.
+| Tier | Surface | Helpers / notes |
+|------|---------|-----------------|
+| **A** | Map/seq/set containers, distinct-set, case/HAVING, join miss | vstd `HashMapWithView` / `StringHashMap` / `HashSetWithView`; open `hashset_*_as_map` (structural, not `arbitrary()`); `agg_new_*`, `seq_new_*`; `set_insert_*`; `case_when_u64` / `case_when_u64_exec`; `apply_having_filter_exec_*`; `left_join_miss_generic` → open `false` |
+| **A** | Multi-agg step (non-arith slots) | `agg_step_project_*`, `agg_step_apply_row_*` (open spec from MethodSpec fold); MIN/MAX slot picks in `agg_step_*` exec |
+| **B→A** | Prelude arithmetic | `add_u64`, `add_i64`, `mul_u64_u32`, `sub_u64_to_i64` — fit-in-width `requires` + `checked_*` |
+| **B→A** | Map accumulate | `agg_add_*` — cell-cap + prev-fit `requires` + `checked_add` |
+| **B→A** | Multi-agg row step | `agg_step_{suffix}` — prev-fit `requires` on u64 slots + `checked_add`; `agg_step_inner_{suffix}_spec` structural inner map bridge |
+| **C** | Strings / LIKE / abs | **ASCII / DuckDB-like pin:** `str_lower`/`str_upper`/`str_ilike_match` spec use `str_ascii_lower`/`to_ascii_lowercase`; `%`/`_` LIKE via open `str_like_underscore_match_rec`; exec Trusteds tie via `ensures`. No Unicode locale semantics. |
+| **C** | LIKE contains/prefix/suffix exec | `str_like_*_exec` — ensures tie to open spec |
+| **A** | HAVING filter | `apply_having_filter_exec_{suffix}` — pred copy + table params; retains map keys matching open `apply_having_filter` |
+| **D** | Nested complex subquery | **Loud-fail:** scalar/HAVING inner with joins, GROUP BY, or derived (unsupported shapes) → `UnsupportedContractError`, not `arbitrary()` MethodSpec |
+| **D (quarantine)** | Experimental codegen | Whole-query TRUSTED `run_query` in `codegen_exec.py` / templates — not product path |
+
+Emit modules: `value_bounds.emit_trusted_prelude()`, `trusted_ret_bridge.py`, `multi_agg_step_bridge.py`, `having_filter_bridge.py`, `subqueries.py` (real folds or loud fail).
+
+Related: `docs/TRUSTED_FAMILIES.md` (Rocketship bar), `docs/ADVERSARIAL_TESTS.md`, `tests/test_rocketship_ci_gate.py`.
 
 ### Practical workflow (before prove / run)
 
@@ -152,11 +166,11 @@ Constants are global (not per-benchmark query literals) per engine policy in `AG
 
 ### Honest gaps
 
-- **No end-to-end proved no-overflow lemma** for every aggregation path yet (e.g. `n * LEMMA_MAX_MONEY_U64` fitting in `u64` for arbitrary SUM). Cell and row caps bound per-cell magnitude and table size; **cross-row aggregate bounds are still host/workload reasoning**, not fully discharged inside Verus for all shapes.
-- **TRUSTED arithmetic:** prelude `add_u64` / `mul_*` / `add_i64` now carry fit-in-width `requires` and `checked_*` bodies. `agg_add_*` / `agg_step_*` still need the same treatment (or must call the checked helpers so requires are discharged at the call site).
-- **Cross-row aggregate fit** in `u64` for arbitrary SUM length is still host/workload reasoning, not a fully discharged Verus lemma for every shape.
-- **Semantic differential tests** check exec ≡ Python/Rust-wrap oracle on tiny fixtures; they do not prove absence of overflow on production-sized tables.
+- **Host bound lemmas (2026-08-10):** `lemma_u64_add_*_fit` (+ global product lemmas) for explicit discharge. Product-path `agg_add_*` / `agg_step_*` carry prev-fit + cell-cap `requires` on every accumulate call. Multi-agg `emit_multi_agg_bound_lemmas()` emits elementary n·cap fold slot lemmas (COUNT ≤ n−k, SUM ≤ (n−k)·`LEMMA_MAX_*`).
+- **Money SUM:** `LEMMA_MAX_MONEY_U64` tightened to `2**32` so `LEMMA_MAX_ROWS * LEMMA_MAX_MONEY_U64` fits in `u64`; SEC `num.value` (double→u64) must stay under that cell cap per `valid_cols`.
+- **Fold bound lemmas are Trusted axioms** (`external_body` proof fns) justified by open-spec fold semantics — not yet machine-checked by induction inside Verus.
+- **Semantic differential tests** check exec ≡ Python oracle on tiny fixtures under fit-in-width; they do not prove absence of overflow on production-sized tables.
 - **Float / decimal** columns map to `u64` exec cells with the same cell bound; non-integer semantics are a separate (known) approximation.
-- **Complex nested subqueries** may still emit Trusted `arbitrary()` MethodSpec helpers — unsupported for rocketship until real folds exist (loud fail preferred).
+- **Complex nested subqueries** with joins/GROUP BY/derived on unsupported shapes **loud-fail** at transpile (`UnsupportedContractError`); no D-tier `arbitrary()` MethodSpec on the product path.
 
-Related: `docs/VERIFICATION_CHAIN.md` (`valid_cols` in admission), `docs/TRUSTED_FAMILIES.md` (`agg_add_*` menu), `docs/ADVERSARIAL_TESTS.md` (semantic suite uses wrapping oracle; overflow contract is `valid_cols`, not silent).
+Related: `docs/VERIFICATION_CHAIN.md` (`valid_cols` in admission), `docs/TRUSTED_FAMILIES.md` (`agg_add_*` menu), `docs/ADVERSARIAL_TESTS.md` (semantic suite uses mathematical oracle under requires).

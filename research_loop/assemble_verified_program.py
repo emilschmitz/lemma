@@ -23,121 +23,58 @@ RET_TYPE_CONFIG: dict[str, dict[str, str]] = {
         "format_result": 'format!("RESULT: {}", res)',
     },
     "map_u32_str_u64": {
-        "rust_ret": "HashMap<(u32, String), u64>",
-        "hm_map": "Map<(u32, String), u64>",
+        "rust_ret": "HashMapWithView<(u32, String), u64>",
         "spec_map": "Map<(u32, Seq<char>), u64>",
-        "view_spec": "hashmap_u32_str_u64_view",
         "agg_suffix": "u32_str_u64",
-        "format_result": (
-            "{\n"
-            "        let checksum: u64 = res.values().copied().fold(0u64, |a, v| a.wrapping_add(v));\n"
-            '        format!("RESULT: map_len={} checksum={}", res.len(), checksum)\n'
-            "    }"
-        ),
+        "format_result": 'format!("RESULT: map_len={}", res.len())',
     },
     "map_str_u32_u64": {
-        "rust_ret": "HashMap<(String, u32), u64>",
-        "hm_map": "Map<(String, u32), u64>",
+        "rust_ret": "HashMapWithView<(String, u32), u64>",
         "spec_map": "Map<(Seq<char>, u32), u64>",
-        "view_spec": "hashmap_str_u32_u64_view",
         "agg_suffix": "str_u32_u64",
-        "format_result": (
-            "{\n"
-            "        let checksum: u64 = res.values().copied().fold(0u64, |a, v| a.wrapping_add(v));\n"
-            '        format!("RESULT: map_len={} checksum={}", res.len(), checksum)\n'
-            "    }"
-        ),
+        "format_result": 'format!("RESULT: map_len={}", res.len())',
     },
     "map_str_str_u64": {
-        "rust_ret": "HashMap<(String, String), u64>",
-        "hm_map": "Map<(String, String), u64>",
+        "rust_ret": "HashMapWithView<(String, String), u64>",
         "spec_map": "Map<(Seq<char>, Seq<char>), u64>",
-        "view_spec": "hashmap_str_str_u64_view",
         "agg_suffix": "str_str_u64",
-        "format_result": (
-            "{\n"
-            "        let checksum: u64 = res.values().copied().fold(0u64, |a, v| a.wrapping_add(v));\n"
-            '        format!("RESULT: map_len={} checksum={}", res.len(), checksum)\n'
-            "    }"
-        ),
+        "format_result": 'format!("RESULT: map_len={}", res.len())',
     },
     "map_str_str_u32_u64": {
-        "rust_ret": "HashMap<(String, String, u32), u64>",
-        "hm_map": "Map<(String, String, u32), u64>",
+        "rust_ret": "HashMapWithView<(String, String, u32), u64>",
         "spec_map": "Map<(Seq<char>, Seq<char>, u32), u64>",
-        "view_spec": "hashmap_str_str_u32_u64_view",
         "agg_suffix": "str_str_u32_u64",
-        "format_result": (
-            "{\n"
-            "        let checksum: u64 = res.values().copied().fold(0u64, |a, v| a.wrapping_add(v));\n"
-            '        format!("RESULT: map_len={} checksum={}", res.len(), checksum)\n'
-            "    }"
-        ),
+        "format_result": 'format!("RESULT: map_len={}", res.len())',
     },
     "map_u32_str_i64": {
-        "rust_ret": "HashMap<(u32, String), i64>",
-        "hm_map": "Map<(u32, String), i64>",
+        "rust_ret": "HashMapWithView<(u32, String), i64>",
         "spec_map": "Map<(u32, Seq<char>), i64>",
-        "view_spec": "hashmap_u32_str_i64_view",
         "agg_suffix": "u32_str_i64",
-        "format_result": (
-            "{\n"
-            "        let checksum: i64 = res.values().copied().fold(0i64, |a, v| a.wrapping_add(v));\n"
-            '        format!("RESULT: map_len={} checksum={}", res.len(), checksum)\n'
-            "    }"
-        ),
+        "format_result": 'format!("RESULT: map_len={}", res.len())',
     },
     "map_u32_str_str_i64": {
-        "rust_ret": "HashMap<(u32, String, String), i64>",
-        "hm_map": "Map<(u32, String, String), i64>",
+        "rust_ret": "HashMapWithView<(u32, String, String), i64>",
         "spec_map": "Map<(u32, Seq<char>, Seq<char>), i64>",
-        "view_spec": "hashmap_u32_str_str_i64_view",
         "agg_suffix": "u32_str_str_i64",
-        "format_result": (
-            "{\n"
-            "        let checksum: i64 = res.values().copied().fold(0i64, |a, v| a.wrapping_add(v));\n"
-            '        format!("RESULT: map_len={} checksum={}", res.len(), checksum)\n'
-            "    }"
-        ),
+        "format_result": 'format!("RESULT: map_len={}", res.len())',
     },
     "map_u32_str_str_u64": {
-        "rust_ret": "HashMap<(u32, String, String), u64>",
-        "hm_map": "Map<(u32, String, String), u64>",
+        "rust_ret": "HashMapWithView<(u32, String, String), u64>",
         "spec_map": "Map<(u32, Seq<char>, Seq<char>), u64>",
-        "view_spec": "hashmap_u32_str_str_u64_view",
         "agg_suffix": "u32_str_str_u64",
-        "format_result": (
-            "{\n"
-            "        let checksum: u64 = res.values().copied().fold(0u64, |a, v| a.wrapping_add(v));\n"
-            '        format!("RESULT: map_len={} checksum={}", res.len(), checksum)\n'
-            "    }"
-        ),
+        "format_result": 'format!("RESULT: map_len={}", res.len())',
     },
     "map_u32_u64": {
-        "rust_ret": "HashMap<u32, u64>",
-        "hm_map": "Map<u32, u64>",
+        "rust_ret": "HashMapWithView<u32, u64>",
         "spec_map": "Map<u32, u64>",
-        "view_spec": "hashmap_u32_u64_view",
         "agg_suffix": "u32_u64",
-        "format_result": (
-            "{\n"
-            "        let checksum: u64 = res.values().copied().fold(0u64, |a, v| a.wrapping_add(v));\n"
-            '        format!("RESULT: map_len={} checksum={}", res.len(), checksum)\n'
-            "    }"
-        ),
+        "format_result": 'format!("RESULT: map_len={}", res.len())',
     },
     "map_str_u64": {
-        "rust_ret": "HashMap<String, u64>",
-        "hm_map": "Map<String, u64>",
+        "rust_ret": "StringHashMap<u64>",
         "spec_map": "Map<Seq<char>, u64>",
-        "view_spec": "hashmap_str_u64_view",
         "agg_suffix": "str_u64",
-        "format_result": (
-            "{\n"
-            "        let checksum: u64 = res.values().copied().fold(0u64, |a, v| a.wrapping_add(v));\n"
-            '        format!("RESULT: map_len={} checksum={}", res.len(), checksum)\n'
-            "    }"
-        ),
+        "format_result": 'format!("RESULT: map_len={}", res.len())',
     },
     "seq_u64": {
         "rust_ret": "Vec<u64>",
@@ -284,54 +221,15 @@ _AGG_HELPER_SPECS: dict[str, dict[str, str]] = {
 }
 
 
-def _agg_add_ensures(view: str, spec_map: str, spec_key: str, value_ty: str) -> str:
-    old_view = f"{view}(old(hm)@)"
-    final_view = f"{view}(final(hm)@)"
-    return f"""{final_view} == {old_view}.insert(
-        {spec_key},
-        if {old_view}.contains_key({spec_key}) {{
-            ({old_view}[{spec_key}] as int + delta as int) as {value_ty}
-        }} else {{
-            delta
-        }},
-    )"""
-
-
 def _emit_agg_helpers(ret_type: str) -> str:
     cfg = RET_TYPE_CONFIG.get(ret_type, {})
-    view = cfg.get("view_spec")
+    spec_map = cfg.get("spec_map")
     suffix = cfg.get("agg_suffix")
-    if not view or not suffix:
+    if not spec_map or not suffix:
         return ""
-    spec_map = cfg["spec_map"]
-    hm_map = cfg["hm_map"]
-    rust_ret = cfg["rust_ret"]
-    agg = _AGG_HELPER_SPECS[ret_type]
-    spec_key = agg["spec_key"]
-    value_ty = agg["value_ty"]
-    add_ensures = _agg_add_ensures(view, spec_map, spec_key, value_ty)
-    return f"""
-// === TRUSTED NativeAgg-style map helpers (view + agg_new + agg_add; same loop as ghost map) ===
-#[verifier::external_body]
-pub open spec fn {view}(hm: {hm_map}) -> {spec_map} {{
-    arbitrary()
-}}
+    from research_loop.trusted_ret_bridge import structural_bridge_for_spec_type
 
-#[verifier::external_body]
-pub exec fn agg_new_{suffix}() -> (hm: {rust_ret})
-    ensures {view}(hm@) == Map::empty(),
-{{
-    HashMap::new()
-}}
-
-#[verifier::external_body]
-pub exec fn agg_add_{suffix}(hm: &mut {rust_ret}, {agg["add_params"]})
-    ensures
-        {add_ensures},
-{{
-{agg["exec_body"].rstrip()}
-}}
-"""
+    return structural_bridge_for_spec_type(spec_map).trusted_rs
 
 
 def _cfg(ret_type: str) -> dict[str, str]:
@@ -355,9 +253,18 @@ def _ret_type_supported(ret_type: str) -> bool:
     return ret_type in dynamic_ret_type_config()
 
 
+_VSTD_CONTAINER_USE = (
+    "use vstd::hash_map::{HashMapWithView, StringHashMap};\n"
+    "use vstd::hash_set::HashSetWithView;\n\n"
+)
+
+
 def _boundary_helpers(ret_type: str, verus_spec: str | None = None) -> str:
     from research_loop.having_filter_bridge import having_filter_trusted_rs
-    from research_loop.multi_agg_step_bridge import multi_agg_step_trusted_rs
+    from research_loop.multi_agg_step_bridge import (
+        emit_scalar_fold_bound_lemmas,
+        multi_agg_step_trusted_rs,
+    )
     from research_loop.trusted_ret_bridge import (
         distinct_set_trusted_rs,
         get_bridge,
@@ -369,6 +276,20 @@ def _boundary_helpers(ret_type: str, verus_spec: str | None = None) -> str:
         b = get_bridge(ret_type)
         if b and b.trusted_rs:
             boundary = b.trusted_rs
+    if verus_spec and not multi_agg_ret_type(ret_type):
+        from research_loop.method_spec_ret_type import parse_method_spec_return_type
+        from research_loop.trusted_ret_bridge import bridge_from_method_spec_type
+
+        b = get_bridge(ret_type)
+        if b is None:
+            try:
+                b = bridge_from_method_spec_type(parse_method_spec_return_type(verus_spec))
+            except ValueError:
+                b = None
+        if b is not None:
+            scalar_bounds = emit_scalar_fold_bound_lemmas(verus_spec, b)
+            if scalar_bounds:
+                boundary = f"{boundary}{scalar_bounds}" if boundary else scalar_bounds
     if multi_agg_ret_type(ret_type):
         distinct = distinct_set_trusted_rs()
         boundary = f"{boundary}{distinct}" if boundary else distinct
@@ -380,6 +301,12 @@ def _boundary_helpers(ret_type: str, verus_spec: str | None = None) -> str:
         having = having_filter_trusted_rs(verus_spec, ret_type)
         if having:
             boundary = f"{boundary}{having}" if boundary else having
+    if boundary and (
+        "HashMapWithView" in boundary
+        or "StringHashMap" in boundary
+        or "HashSetWithView" in boundary
+    ):
+        boundary = _VSTD_CONTAINER_USE + boundary
     return boundary
 
 
@@ -411,13 +338,12 @@ def prepare_agent_visible_spec(verus_spec: str, ret_type: str) -> str:
     boundary = _boundary_helpers(ret_type, verus_spec)
     if boundary:
         agent_note = (
-            "// === Agent: use TRUSTED helpers below for opaque views.\n"
-            "// Maps: agg_new_* / agg_add_* (wrapping) / agg_put_* (set projected tuple).\n"
+            "// === Agent: use TRUSTED helpers below (vstd map/set @ views).\n"
+            "// Maps: agg_new_* / agg_add_* / agg_put_*; ensures res@ == method_spec.\n"
             "// Multi-agg steps: agg_step_state_new_* / agg_step_* (+ agg_step_apply_row_* spec).\n"
             "// HAVING: host post-filter exec helper (ensures vs apply_having_filter).\n"
-            "// Distinct sets: hashset_*_view + set_new_* / set_insert_* (COUNT_DISTINCT state).\n"
-            "// Seqs: seq_new_* / seq_push_* when present. Raw HashMap::new()/Vec::new()\n"
-            "// will not prove against opaque hashmap_*/vec_*_view.\n"
+            "// Distinct sets: hashset_*_as_map + set_new_* / set_insert_* (COUNT_DISTINCT state).\n"
+            "// Seqs: seq_new_* / seq_push_* when present; else Vec@ directly.\n"
         )
         boundary = agent_note + boundary.lstrip("\n")
     return f"{core}{boundary}}} // verus!\n"

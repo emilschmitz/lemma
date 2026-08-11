@@ -189,32 +189,34 @@ def assert_menu_complete() -> None:
             continue
 
         if fam.kind == "map":
-            if not bridge.view_spec:
-                raise AssertionError(f"{fam.id}: map missing view_spec")
+            if bridge.view_spec is not None:
+                raise AssertionError(f"{fam.id}: map must not use opaque view_spec")
+            if "arbitrary()" in bridge.trusted_rs:
+                raise AssertionError(f"{fam.id}: map trusted_rs must not contain arbitrary()")
             if "external_body" not in bridge.trusted_rs:
                 raise AssertionError(f"{fam.id}: map trusted_rs missing external_body")
-            if bridge.view_spec not in bridge.trusted_rs:
-                raise AssertionError(f"{fam.id}: trusted_rs missing view {bridge.view_spec!r}")
             suffix = bridge.agg_suffix or ""
             if f"agg_new_{suffix}" not in bridge.trusted_rs:
                 raise AssertionError(f"{fam.id}: trusted_rs missing agg_new_{suffix}")
             if "agg_add_" not in bridge.trusted_rs and "agg_put_" not in bridge.trusted_rs:
                 raise AssertionError(f"{fam.id}: trusted_rs missing agg_add_/agg_put_")
+            if bridge.ensures != "res@ == method_spec(cols),":
+                raise AssertionError(f"{fam.id}: map must use res@ ensures")
             continue
 
         if fam.kind == "seq":
             if "Seq<char>" in fam.spec_ret:
-                if not bridge.view_spec:
-                    raise AssertionError(f"{fam.id}: seq-with-strings missing view_spec")
-                if "external_body" not in bridge.trusted_rs:
-                    raise AssertionError(f"{fam.id}: seq trusted_rs missing external_body")
-                if bridge.view_spec not in bridge.trusted_rs:
-                    raise AssertionError(f"{fam.id}: trusted_rs missing view")
+                if bridge.view_spec is not None:
+                    raise AssertionError(f"{fam.id}: seq-with-strings must not use opaque view_spec")
+                if "arbitrary()" in bridge.trusted_rs:
+                    raise AssertionError(f"{fam.id}: seq trusted_rs must not contain arbitrary()")
                 suffix = bridge.agg_suffix or ""
                 if f"seq_new_{suffix}" not in bridge.trusted_rs:
                     raise AssertionError(f"{fam.id}: trusted_rs missing seq_new_{suffix}")
                 if f"seq_push_{suffix}" not in bridge.trusted_rs:
                     raise AssertionError(f"{fam.id}: trusted_rs missing seq_push_{suffix}")
+                if bridge.ensures != "res@ == method_spec(cols),":
+                    raise AssertionError(f"{fam.id}: seq-with-strings must use res@ ensures")
             else:
                 if bridge.view_spec is not None:
                     raise AssertionError(f"{fam.id}: plain seq should not have view_spec")

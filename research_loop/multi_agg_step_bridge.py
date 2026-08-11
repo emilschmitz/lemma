@@ -15,6 +15,7 @@ from research_loop.trusted_ret_bridge import (
     _key_param_specs,
     _spec_key_expr,
     parse_verus_type,
+    map_new_expr,
     spec_to_exec_type,
 )
 
@@ -311,6 +312,39 @@ def _rewrite_updates_for_apply(
     return rewritten, params
 
 
+def _slot_spec_from_exec(expr: str, slot: TypeExpr) -> str:
+    if isinstance(slot, TypeMap):
+        return f"{expr}@"
+    return expr
+
+
+def _tuple_spec_from_exec_var(var: str, state_type: TypeExpr) -> str:
+    if isinstance(state_type, TypeAtom):
+        return var
+    if isinstance(state_type, TypeTuple):
+        parts = [_slot_spec_from_exec(f"{var}.{i}", e) for i, e in enumerate(state_type.elems)]
+        return f"({', '.join(parts)})"
+    raise ValueError(f"unsupported state type for spec view: {state_type!r}")
+
+
+def _emit_inner_spec_map_fn(
+    *,
+    suffix: str,
+    key_spec: str,
+    state_type: TypeExpr,
+    inner_exec: str,
+    inner_spec: str,
+) -> str:
+    spec_val = _tuple_spec_from_exec_var("v", state_type)
+    return f"""
+pub open spec fn agg_step_inner_{suffix}_spec(
+    m: Map<{key_spec}, {inner_exec}>,
+) -> Map<{key_spec}, {inner_spec}> {{
+    m.map_values(|v: {inner_exec}| {spec_val})
+}}
+"""
+
+
 def _inner_exec_type(state_type: TypeExpr, *, ghost: bool = False) -> str:
     if isinstance(state_type, TypeAtom):
         return spec_to_exec_type(state_type)
@@ -328,9 +362,9 @@ def _inner_exec_slot_type(slot: TypeExpr, *, ghost: bool = False) -> str:
     if isinstance(slot, TypeMap):
         key = slot.key
         if isinstance(key, TypeAtom) and key.name == "Seq<char>":
-            return "std::collections::HashSet<String>"
+            return "HashMapWithView<String, bool>"
         if isinstance(key, TypeAtom) and key.name == "u32":
-            return "std::collections::HashSet<u32>"
+            return "HashMapWithView<u32, bool>"
     raise ValueError(f"unsupported inner slot: {slot!r}")
 
 
@@ -338,7 +372,7 @@ def _default_inner_exec(default_state: str, slots: list[TypeExpr]) -> str:
     if len(slots) == 1:
         slot = slots[0]
         if isinstance(slot, TypeMap):
-            return "std::collections::HashSet::new()"
+            return "HashMapWithView::new()"
         return default_state
     parts: list[str] = []
     frag = default_state.strip()
@@ -349,7 +383,7 @@ def _default_inner_exec(default_state: str, slots: list[TypeExpr]) -> str:
     )
     for i, slot in enumerate(slots):
         if isinstance(slot, TypeMap):
-            parts.append("std::collections::HashSet::new()")
+            parts.append("HashMapWithView::new()")
         else:
             parts.append(inner_parts[i] if i < len(inner_parts) else "0u64")
     return f"({', '.join(parts)})"
@@ -419,7 +453,7 @@ def _strip_row_u64_ghost_int(expr: str) -> str:
 
 
 def _spec_expr_to_exec(expr: str) -> str:
-    """Convert a spec ghost-int addend into an exec u64 addend for wrapping_add."""
+    """Convert a spec ghost-int addend into an exec u64 addend for checked_add."""
     out = _strip_row_u64_ghost_int(expr.strip())
     out = out.replace("case_when_u64(", "case_when_u64_exec(")
     while True:
@@ -431,6 +465,77 @@ def _spec_expr_to_exec(expr: str) -> str:
             out = trailing.group("inner").strip()
             continue
         return out
+
+
+def _checked_u64_add(prev_expr: str, delta_expr: str) -> str:
+    return (
+        f"{prev_expr}.checked_add({delta_expr})"
+        '.expect("Trusted overflow: ValidCols/requires violated")'
+    )
+
+
+def _prev_slot_ref(n_slots: int, slot_i: int) -> str:
+    return "prev" if n_slots == 1 else f"prev.{slot_i}"
+
+
+_ROW_U64_PARAM_RE = re.compile(r"row_u64_\d+")
+
+
+def _row_u64_param_in_delta(delta: str) -> str | None:
+    m = _ROW_U64_PARAM_RE.search(delta)
+    return m.group(0) if m else None
+
+
+def _emit_agg_step_requires(
+    layout: MultiAggLayout,
+    slots: list[TypeExpr],
+    *,
+    spec_key: str,
+) -> str:
+    """Fit-in-width requires: cell caps + prev-fit from old(st).inner@."""
+    apply_lines = [ln.strip() for ln in layout.apply_body.split("\n") if ln.strip()]
+    n_slots = len(slots)
+    seen_params: set[str] = set()
+    clauses: list[str] = []
+    for i, slot in enumerate(slots):
+        if not isinstance(slot, TypeAtom) or slot.name != "u64":
+            continue
+        s_line = next((ln for ln in apply_lines if ln.startswith(f"let s{i} =")), "")
+        kind = _classify_u64_slot(s_line, i, multi_slot=n_slots > 1)
+        if kind is None:
+            continue
+        if n_slots == 1:
+            prev_ref = (
+                f"if old(st).inner@.contains_key({spec_key}) "
+                f"{{ old(st).inner@[{spec_key}] }} else {{ 0u64 }}"
+            )
+        else:
+            prev_ref = (
+                f"(if old(st).inner@.contains_key({spec_key}) "
+                f"{{ old(st).inner@[{spec_key}].{i} }} else {{ 0u64 }})"
+            )
+        if kind == "count":
+            clauses.append(_u64_add_bound_requires(prev_ref, "1"))
+            continue
+        delta = _sum_delta_expr(s_line, i, multi_slot=n_slots > 1)
+        if delta is None:
+            continue
+        row_param = _row_u64_param_in_delta(delta)
+        if row_param is not None and row_param not in seen_params:
+            seen_params.add(row_param)
+            clauses.append(f"{row_param} < LEMMA_MAX_MONEY_U64")
+        exec_delta = _spec_expr_to_exec(delta)
+        clauses.append(_u64_add_bound_requires(prev_ref, f"({exec_delta} as int)"))
+    if not clauses:
+        return ""
+    joined = " &&\n        ".join(clauses)
+    return f"""    requires
+        {joined},
+"""
+
+
+def _u64_add_bound_requires(prev_expr: str, delta_expr: str) -> str:
+    return f"({prev_expr} as int) + {delta_expr} <= u64::MAX as int"
 
 
 def _exec_update_inner(
@@ -453,11 +558,11 @@ def _exec_update_inner(
                 f"Map<{_type_to_str(slot.key)}, {_type_to_str(slot.value)}>"
             )
             dp = distinct_params[distinct_i]
-            lines.append(f"let mut new_inner = {prev_var}.clone();")
+            lines.append(f"let mut new_inner = {prev_var};")
             if atom == "str":
-                lines.append(f"set_insert_{atom}(&mut new_inner, {dp.name});")
+                lines.append(f"new_inner.insert({dp.name}.to_string(), true);")
             else:
-                lines.append(f"set_insert_{atom}(&mut new_inner, {dp.name});")
+                lines.append(f"new_inner.insert({dp.name}, true);")
             return lines
 
     apply_lines = [ln.strip() for ln in layout.apply_body.split("\n") if ln.strip()]
@@ -470,11 +575,11 @@ def _exec_update_inner(
             )
             dp = distinct_params[distinct_i]
             distinct_i += 1
-            lines.append(f"let mut v{i} = {prev_var}.{i}.clone();")
+            lines.append(f"let mut v{i} = {prev_var}.{i};")
             if atom == "str":
-                lines.append(f"set_insert_{atom}(&mut v{i}, {dp.name});")
+                lines.append(f"v{i}.insert({dp.name}.to_string(), true);")
             else:
-                lines.append(f"set_insert_{atom}(&mut v{i}, {dp.name});")
+                lines.append(f"v{i}.insert({dp.name}, true);")
             slot_vals.append(f"v{i}")
         elif isinstance(slot, TypeAtom) and slot.name == "u64":
             s_line = next(
@@ -502,19 +607,27 @@ def _exec_update_inner(
                     f"{{ {src} }} else {{ {prev_var}.{i} }};"
                 )
             elif "as int + 1) as u64" in s_line:
-                lines.append(f"let v{i} = {prev_var}.{i}.wrapping_add(1);")
+                lines.append(
+                    f"let v{i} = {_checked_u64_add(f'{prev_var}.{i}' if len(slots) > 1 else prev_var, '1')};"
+                )
             else:
                 delta = _sum_delta_expr(s_line, i, multi_slot=len(slots) > 1)
                 if delta is not None:
+                    prev_ref = f"{prev_var}.{i}" if len(slots) > 1 else prev_var
+                    exec_delta = _spec_expr_to_exec(delta)
                     lines.append(
-                        f"let v{i} = {prev_var}.{i}.wrapping_add({_spec_expr_to_exec(delta)});"
+                        f"let v{i} = {_checked_u64_add(prev_ref, exec_delta)};"
                     )
                 elif numeric_i < len(numeric_params):
                     np = numeric_params[numeric_i]
                     numeric_i += 1
-                    lines.append(f"let v{i} = {prev_var}.{i}.wrapping_add({np.name});")
+                    prev_ref = f"{prev_var}.{i}" if len(slots) > 1 else prev_var
+                    lines.append(
+                        f"let v{i} = {_checked_u64_add(prev_ref, np.name)};"
+                    )
                 else:
-                    lines.append(f"let v{i} = {prev_var}.{i}.wrapping_add(1);")
+                    prev_ref = f"{prev_var}.{i}" if len(slots) > 1 else prev_var
+                    lines.append(f"let v{i} = {_checked_u64_add(prev_ref, '1')};")
             slot_vals.append(f"v{i}")
 
     lines.append(f"let new_inner = ({', '.join(slot_vals)});")
@@ -554,12 +667,302 @@ def parse_multi_agg_layout(spec_rs: str) -> MultiAggLayout | None:
     )
 
 
-def emit_multi_agg_step_trusted(layout: MultiAggLayout, bridge: RetBridge) -> str:
+def _classify_u64_slot(s_line: str, slot_i: int, *, multi_slot: bool) -> str | None:
+    """Return count / sum_native / sum_money for a numeric slot, or None (MIN/MAX / skip)."""
+    prev_ref = f"prev.{slot_i}" if multi_slot else "prev"
+    if re.search(rf"let s{slot_i} = if t{slot_i} [<>] {re.escape(prev_ref)}", s_line):
+        return None
+    if "as int + 1) as u64" in s_line:
+        return "count"
+    delta = _sum_delta_expr(s_line, slot_i, multi_slot=multi_slot)
+    if delta is None:
+        return None
+    if "case_when_u64" in delta:
+        return "count"
+    if re.fullmatch(r"row_u64_\d+", delta.strip()):
+        return "sum_money"
+    if "as int)" in delta or " as int" in delta:
+        return "sum_native"
+    return "sum_money"
+
+
+def _parse_helper_params(spec_rs: str, helper_name: str) -> str | None:
+    m = re.search(
+        rf"pub open spec fn {re.escape(helper_name)}\(([^)]*)\)",
+        spec_rs,
+    )
+    return m.group(1).strip() if m else None
+
+
+@dataclass(frozen=True)
+class FoldBoundContext:
+    helper: str
+    table_params: tuple[tuple[str, str], ...]
+    index_params: tuple[str, ...]
+
+    @property
+    def call_args(self) -> str:
+        parts = [p for p, _ in self.table_params]
+        parts.extend(self.index_params)
+        return ", ".join(parts)
+
+    @property
+    def valid_requires(self) -> str:
+        clauses: list[str] = []
+        for param, struct in self.table_params:
+            if struct == "Cols":
+                clauses.append(f"valid_cols({param})")
+            else:
+                suffix = struct.removeprefix("Cols_")
+                clauses.append(f"valid_cols_{suffix}({param})")
+        return ",\n        ".join(clauses)
+
+    def index_bounds_requires(self) -> str:
+        clauses: list[str] = []
+        for param, struct in self.table_params:
+            n = f"{param}.n as int"
+            clauses.append(f"0 <= {param}.n as int")
+        for idx, (param, _) in zip(self.index_params, self.table_params):
+            clauses.append(f"0 <= {idx} <= {param}.n as int")
+        return ",\n        ".join(clauses)
+
+    def suffix_remaining_u64(self) -> str:
+        """Elementary suffix size: ≤ remaining nested-loop cells from index position."""
+        tables = self.table_params
+        indices = self.index_params
+        d = len(tables)
+        if d == 0:
+            return "0u64"
+        parts: list[str] = []
+        for j in range(d - 1, -1, -1):
+            n = f"{tables[j][0]}.n"
+            idx = indices[j]
+            if j == d - 1:
+                parts.append(f"({n} - {idx})")
+            else:
+                tail_prod = " * ".join(f"{tables[k][0]}.n" for k in range(j + 1, d))
+                parts.append(f"({n} - {idx} - 1) * {tail_prod}")
+        return f"({' + '.join(parts)}) as u64"
+
+
+def _parse_fold_bound_context(spec_rs: str, helper_name: str) -> FoldBoundContext | None:
+    params = _parse_helper_params(spec_rs, helper_name)
+    if not params:
+        return None
+    tables: list[tuple[str, str]] = []
+    indices: list[str] = []
+    for part in params.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        m_table = re.match(r"(\w+):\s*&(\w+)", part)
+        m_idx = re.match(r"(\w+):\s*int", part)
+        if m_table:
+            tables.append((m_table.group(1), m_table.group(2)))
+        elif m_idx:
+            indices.append(m_idx.group(1))
+    if not tables or not indices or len(tables) != len(indices):
+        return None
+    return FoldBoundContext(
+        helper=helper_name,
+        table_params=tuple(tables),
+        index_params=tuple(indices),
+    )
+
+
+def _state_val_access(n_slots: int, slot_i: int) -> str:
+    return "" if n_slots == 1 else f".{slot_i}"
+
+
+def _emit_slot_bound_lemma(
+    *,
+    ctx: FoldBoundContext,
+    suffix: str,
+    key_spec: str,
+    slot_i: int,
+    kind: str,
+    val_access: str,
+) -> str:
+    helper = ctx.helper
+    rem = ctx.suffix_remaining_u64()
+    fname = f"lemma_{helper}_slot{slot_i}_{kind}_leq_{suffix}"
+    if kind == "count":
+        cap = rem
+        comment = (
+            f"// Elementary: ≤{rem} filtered rows add ≤1 to slot {slot_i} (COUNT)."
+        )
+    elif kind == "sum_native":
+        comment = (
+            f"// Elementary: ≤{rem} native cells each < LEMMA_MAX_NATIVE_U32 → slot {slot_i}."
+        )
+        cap = f"{rem} * (LEMMA_MAX_NATIVE_U32 as u64)"
+    else:
+        comment = (
+            f"// Elementary: ≤{rem} money cells each < LEMMA_MAX_MONEY_U64 → slot {slot_i}."
+        )
+        cap = f"{rem} * (LEMMA_MAX_MONEY_U64 as u64)"
+    if kind == "count":
+        cap = rem
+    # Bound ghost prev at call sites (0 if key absent) — no contains_key requires.
+    ensures = (
+        f"(if {helper}({ctx.call_args}).contains_key(key) {{ "
+        f"{helper}({ctx.call_args})[key]{val_access} }} else {{ 0u64 }}) <= {cap},"
+    )
+    sig_params = ",\n    ".join(
+        f"{p}: &{s}" for p, s in ctx.table_params
+    )
+    sig_params += ",\n    " + ",\n    ".join(f"{i}: int" for i in ctx.index_params)
+    sig_params += f",\n    key: {key_spec}"
+    return f"""{comment}
+#[verifier::external_body]
+pub proof fn {fname}(
+    {sig_params},
+)
+    requires
+        {ctx.valid_requires},
+        {ctx.index_bounds_requires()},
+    ensures
+        {ensures}
+{{
+}}
+"""
+
+
+def emit_multi_agg_bound_lemmas(
+    layout: MultiAggLayout,
+    bridge: RetBridge,
+    *,
+    spec_rs: str,
+) -> str:
+    """Trusted fold bound lemmas: helper slot caps discharge agg_step requires."""
+    ctx = _parse_fold_bound_context(spec_rs, layout.helper_name)
+    if ctx is None:
+        return ""
+
+    helper = layout.helper_name
+    key_spec = _type_to_str(layout.key_type)
+    slots = _state_slots(layout.state_type)
+    n_slots = len(slots)
+    suffix = bridge.agg_suffix or bridge.key.removeprefix("map_")
+    apply_lines = [ln.strip() for ln in layout.apply_body.split("\n") if ln.strip()]
+
+    blocks: list[str] = [f"\n// === Multi-agg fold bound lemmas ({suffix}) ==="]
+    for i, slot in enumerate(slots):
+        if not isinstance(slot, TypeAtom) or slot.name != "u64":
+            continue
+        s_line = next((ln for ln in apply_lines if ln.startswith(f"let s{i} =")), "")
+        kind = _classify_u64_slot(s_line, i, multi_slot=n_slots > 1)
+        if kind is None:
+            continue
+        val_access = _state_val_access(n_slots, i)
+        blocks.append(
+            _emit_slot_bound_lemma(
+                ctx=ctx,
+                suffix=suffix,
+                key_spec=key_spec,
+                slot_i=i,
+                kind=kind,
+                val_access=val_access,
+            )
+        )
+
+    return "\n".join(blocks) if len(blocks) > 1 else ""
+
+
+def _classify_scalar_map_u64(body: str) -> str | None:
+    """COUNT vs SUM for Map<K, u64> scalar fold helpers."""
+    if re.search(r"prev as int \+ 1", body) or re.search(r"\+ 1u64", body):
+        return "count"
+    if ".value[" in body or "get_value(" in body:
+        return "sum_money"
+    return None
+
+
+def emit_scalar_fold_bound_lemmas(spec_rs: str, bridge: RetBridge) -> str:
+    """Bound lemmas for scalar Map<K,u64> fold helpers (single-table or join agg_add)."""
+    for name in (
+        "join_method_spec_helper",
+        "method_spec_helper",
+        "join_multi_agg_helper",
+    ):
+        if f"pub open spec fn {name}(" not in spec_rs:
+            continue
+        head = spec_rs[spec_rs.find(f"pub open spec fn {name}(") :]
+        ret_m = re.search(
+            rf"pub open spec fn {re.escape(name)}\([^)]+\)\s*->\s*(?:\(res:\s*)?Map<",
+            head,
+        )
+        if not ret_m:
+            continue
+        start = ret_m.end()
+        depth = 1
+        i = start
+        while i < len(head) and depth > 0:
+            if head[i] == "<":
+                depth += 1
+            elif head[i] == ">":
+                depth -= 1
+            i += 1
+        inner = head[start : i - 1]
+        _, val_ty_s = _split_map_type_args(inner)
+        if val_ty_s.strip() != "u64":
+            return ""
+        ctx = _parse_fold_bound_context(spec_rs, name)
+        if ctx is None:
+            return ""
+        brace = head.find("{", i)
+        body, _ = _extract_balanced_fn_body(head, brace)
+        kind = _classify_scalar_map_u64(body)
+        if kind is None:
+            return ""
+        key_ty_s, _ = _split_map_type_args(inner)
+        key_spec = key_ty_s.strip()
+        suffix = bridge.agg_suffix or bridge.key.removeprefix("map_")
+        rem = ctx.suffix_remaining_u64()
+        if kind == "count":
+            fname = f"lemma_{name}_count_leq_{suffix}"
+            comment = f"// Elementary: ≤{rem} filtered rows (COUNT) in fold suffix."
+            bound = rem
+        else:
+            fname = f"lemma_{name}_sum_money_leq_{suffix}"
+            comment = (
+                f"// Elementary: ≤{rem} money cells each < LEMMA_MAX_MONEY_U64."
+            )
+            bound = f"{rem} * (LEMMA_MAX_MONEY_U64 as u64)"
+        # Bound the ghost prev used at call sites (0 if key absent) — no contains_key requires.
+        ensures = (
+            f"(if {name}({ctx.call_args}).contains_key(key) {{ "
+            f"{name}({ctx.call_args})[key] }} else {{ 0u64 }}) <= {bound},"
+        )
+        sig_params = ",\n    ".join(f"{p}: &{s}" for p, s in ctx.table_params)
+        sig_params += ",\n    " + ",\n    ".join(f"{idx}: int" for idx in ctx.index_params)
+        sig_params += f",\n    key: {key_spec}"
+        return f"""
+// === Scalar map fold bound lemmas ({suffix}) ===
+{comment}
+#[verifier::external_body]
+pub proof fn {fname}(
+    {sig_params},
+)
+    requires
+        {ctx.valid_requires},
+        {ctx.index_bounds_requires()},
+    ensures
+        {ensures}
+{{
+}}
+"""
+    return ""
+
+
+def emit_multi_agg_step_trusted(
+    layout: MultiAggLayout,
+    bridge: RetBridge,
+    *,
+    spec_rs: str = "",
+) -> str:
     """Emit open-spec apply/project + TRUSTED agg_step state/step for one multi-agg query."""
     suffix = bridge.agg_suffix or bridge.key.removeprefix("map_")
-    view_proj = bridge.view_spec
-    if not view_proj:
-        raise ValueError("multi-agg step requires projected map view")
 
     state_type = layout.state_type
     inner_spec = _type_to_str(state_type)
@@ -567,9 +970,10 @@ def emit_multi_agg_step_trusted(layout: MultiAggLayout, bridge: RetBridge) -> st
     key_hm = spec_to_exec_type(layout.key_type)
     key_spec = _type_to_str(layout.key_type)
     spec_map_inner = f"Map<{key_spec}, {inner_spec}>"
-    hm_inner = f"HashMap<{key_hm}, {inner_exec}>"
-    inner_hm_ghost = f"Map<{key_hm}, {_inner_exec_type(state_type, ghost=True)}>"
+    hm_inner = f"HashMapWithView<{key_hm}, {inner_exec}>"
     hm_proj = bridge.rust_ret
+    proj_new = map_new_expr(hm_proj)
+    inner_new = map_new_expr(hm_inner)
     slots = _state_slots(state_type)
     default_inner_exec = _default_inner_exec(layout.default_state, slots)
     default_inner_spec = layout.default_state
@@ -579,7 +983,6 @@ def emit_multi_agg_step_trusted(layout: MultiAggLayout, bridge: RetBridge) -> st
     spec_key = _spec_key_expr(layout.key_type)
     exec_key = _exec_key_expr(layout.key_type)
 
-    inner_view = f"agg_step_inner_{suffix}_view"
     project_fn = f"agg_step_project_{suffix}"
     apply_fn = f"agg_step_apply_row_{suffix}"
     state_ty = f"AggStepState_{suffix}"
@@ -600,20 +1003,25 @@ def emit_multi_agg_step_trusted(layout: MultiAggLayout, bridge: RetBridge) -> st
     exec_update = _exec_update_inner(layout, slots, "prev", layout.row_params)
     exec_update_block = "\n    ".join(exec_update)
     projected_expr = _projected_exec_expr(layout.project_body, "new_inner", slots)
+    agg_step_requires = _emit_agg_step_requires(layout, slots, spec_key=spec_key)
+
+    inner_spec_fn = _emit_inner_spec_map_fn(
+        suffix=suffix,
+        key_spec=key_spec,
+        state_type=state_type,
+        inner_exec=inner_exec,
+        inner_spec=inner_spec,
+    )
+    inner_spec_name = f"agg_step_inner_{suffix}_spec"
 
     head = (
         f"""
-// === Multi-agg group step ({suffix}): inner HashMap + projected map ===
+// === Multi-agg group step ({suffix}): inner + projected vstd maps (@ view) ===
 pub struct {state_ty} {{
     pub projected: {hm_proj},
     pub inner: {hm_inner},
 }}
-
-#[verifier::external_body]
-pub open spec fn {inner_view}(hm: {inner_hm_ghost}) -> {spec_map_inner} {{
-    arbitrary()
-}}
-
+{inner_spec_fn}
 pub open spec fn {project_fn}(v: {inner_spec}) -> {proj_ret} {{
     """
         + layout.project_body
@@ -629,10 +1037,10 @@ pub open spec fn {apply_fn}(prev: {inner_spec}{spec_params}) -> {inner_spec} {{
 #[verifier::external_body]
 pub exec fn agg_step_state_new_{suffix}() -> (st: {state_ty})
     ensures
-        {view_proj}(st.projected@) == Map::empty(),
-        {inner_view}(st.inner@) == Map::empty(),
+        st.projected@ == Map::empty(),
+        st.inner@ == Map::empty(),
 {{
-    {state_ty} {{ projected: HashMap::new(), inner: HashMap::new() }}
+    {state_ty} {{ projected: {proj_new}, inner: {inner_new} }}
 }}
 
 #[verifier::external_body]
@@ -640,32 +1048,34 @@ pub exec fn agg_step_{suffix}(
     st: &mut {state_ty},
     {key_sig}{exec_params},
 )
-    ensures
+{agg_step_requires}    ensures
         ({{
             let spec_key = {spec_key};
-            let old_inner = {inner_view}(old(st).inner@);
+            let old_inner = {inner_spec_name}(old(st).inner@);
             let prev_inner = if old_inner.contains_key(spec_key) {{
                 old_inner[spec_key]
             }} else {{
                 {default_inner_spec}
             }};
             let new_inner = {apply_fn}(prev_inner{ghost_apply});
-            &&& {inner_view}(final(st).inner@) == old_inner.insert(spec_key, new_inner)
-            &&& {view_proj}(final(st).projected@) == {view_proj}(old(st).projected@).insert(
+            &&& {inner_spec_name}(final(st).inner@) == old_inner.insert(spec_key, new_inner)
+            &&& final(st).projected@ == old(st).projected@.insert(
                 spec_key,
                 {project_fn}(new_inner),
             )
         }}),
 {{
     let key = {exec_key};
-    let prev = st.inner.get(&key).cloned().unwrap_or({default_inner_exec});
+    let mut prev = st.inner.remove(&key).unwrap_or({default_inner_exec});
     {exec_update_block}
-    st.inner.insert(key.clone(), new_inner.clone());
-    st.projected.insert(key, ({projected_expr}));
+    let projected_val = ({projected_expr});
+    st.inner.insert(key.clone(), new_inner);
+    st.projected.insert(key, projected_val);
 }}
 """
     )
-    return head
+    bound = emit_multi_agg_bound_lemmas(layout, bridge, spec_rs=spec_rs)
+    return head + bound
 
 
 def multi_agg_step_trusted_rs(spec_rs: str, ret_type: str) -> str:
@@ -681,6 +1091,6 @@ def multi_agg_step_trusted_rs(spec_rs: str, ret_type: str) -> str:
     if bridge is None:
         return ""
     try:
-        return emit_multi_agg_step_trusted(layout, bridge)
+        return emit_multi_agg_step_trusted(layout, bridge, spec_rs=spec_rs)
     except (ValueError, KeyError, AttributeError, IndexError):
         return ""

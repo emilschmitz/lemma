@@ -125,10 +125,10 @@ def test_emit_agg_step_stable_names() -> None:
     bridge = structural_bridge_for_spec_type(
         "Map<(Seq<char>, Seq<char>), (u64, u64, u64)>"
     )
-    rs = emit_multi_agg_step_trusted(layout, bridge)
+    rs = emit_multi_agg_step_trusted(layout, bridge, spec_rs=out)
     for name in (
         "AggStepState_str_str__u64_u64_u64",
-        "agg_step_inner_str_str__u64_u64_u64_view",
+        "agg_step_inner_str_str__u64_u64_u64_spec",
         "agg_step_project_str_str__u64_u64_u64",
         "agg_step_apply_row_str_str__u64_u64_u64",
         "agg_step_state_new_str_str__u64_u64_u64",
@@ -136,6 +136,8 @@ def test_emit_agg_step_stable_names() -> None:
     ):
         assert name in rs
     assert rs.count("external_body") >= 3
+    assert "lemma_method_spec_helper_slot0_count_leq_str_str__u64_u64_u64" in rs
+    assert "lemma_u64_add_one_fit" not in rs  # prelude lemmas live in transpiled spec
 
 
 def test_prepare_agent_visible_spec_includes_agg_step() -> None:
@@ -185,13 +187,13 @@ NUM_SCHEMA = {
 }
 
 
-def _agg_step_exec_wrapping_add_lines(rs: str, suffix: str) -> list[str]:
+def _agg_step_exec_checked_add_lines(rs: str, suffix: str) -> list[str]:
     m = re.search(
         rf"pub exec fn agg_step_{re.escape(suffix)}\([\s\S]*?\{{\n([\s\S]*?)\n\}}\n",
         rs,
     )
     assert m, f"missing agg_step_{suffix} exec body"
-    return [ln for ln in m.group(1).split("\n") if "wrapping_add" in ln]
+    return [ln for ln in m.group(1).split("\n") if "checked_add" in ln]
 
 
 def test_spec_expr_to_exec_strips_ghost_int_addends() -> None:
@@ -203,7 +205,7 @@ def test_spec_expr_to_exec_strips_ghost_int_addends() -> None:
     )
 
 
-def test_exec_wrapping_add_no_ghost_int_q1_avg() -> None:
+def test_exec_checked_add_no_ghost_int_q1_avg() -> None:
     """SUM/AVG row adds in exec agg_step must not cast through ghost int."""
     out = transpile_sql_to_verus(Q1_LIKE_SQL, {"pre": PRE_SCHEMA})
     layout = parse_multi_agg_layout(out)
@@ -212,30 +214,34 @@ def test_exec_wrapping_add_no_ghost_int_q1_avg() -> None:
         "Map<(Seq<char>, Seq<char>), (u64, u64, u64)>"
     )
     rs = emit_multi_agg_step_trusted(layout, bridge)
-    bad = _agg_step_exec_wrapping_add_lines(rs, "str_str__u64_u64_u64")
-    assert bad, "expected wrapping_add lines in agg_step exec"
+    bad = _agg_step_exec_checked_add_lines(rs, "str_str__u64_u64_u64")
+    assert bad, "expected checked_add lines in agg_step exec"
     assert all("as int" not in ln for ln in bad), bad
-    assert any("wrapping_add(row_u64_0)" in ln.replace(" ", "") for ln in bad)
+    assert any("checked_add(row_u64_0)" in ln.replace(" ", "") for ln in bad)
+    req_block = rs.split("pub exec fn agg_step_str_str__u64_u64_u64")[1].split("ensures")[0]
+    assert "row_u64_0 < LEMMA_MAX_MONEY_U64" in req_block
+    assert "(prev as int) +" not in req_block
+    assert "case_when_u64_exec" not in req_block
 
 
-def test_exec_wrapping_add_no_ghost_int_count_sum() -> None:
+def test_exec_checked_add_no_ghost_int_count_sum() -> None:
     sql = "SELECT a, b, COUNT(*) AS c, SUM(x) AS s FROM t GROUP BY a, b"
     schema = {"t": {"a": "string", "b": "string", "x": "int"}}
     out = transpile_sql_to_verus(sql, schema)
     ret_type = resolve_ret_type_from_method_spec(out)
     rs = multi_agg_step_trusted_rs(out, ret_type)
-    bad = _agg_step_exec_wrapping_add_lines(rs, "str_str__u64_u64")
-    assert bad, "expected wrapping_add lines in agg_step exec"
+    bad = _agg_step_exec_checked_add_lines(rs, "str_str__u64_u64")
+    assert bad, "expected checked_add lines in agg_step exec"
     assert all("as int" not in ln for ln in bad), bad
-    assert any("wrapping_add(row_u64_0)" in ln.replace(" ", "") for ln in bad)
+    assert any("checked_add(row_u64_0)" in ln.replace(" ", "") for ln in bad)
 
 
 R10_SQL_PATH = ROOT / "holdout/gendb_sec_edgar/queries_resample_r10.sql"
-R10_WRAPPING_ADD_QIDS = (1, 2, 4, 6, 8, 10, 12, 15, 20, 22, 26, 28, 29, 30, 32, 38)
+R10_CHECKED_ADD_QIDS = (1, 2, 4, 6, 8, 10, 12, 15, 20, 22, 26, 28, 29, 30, 32, 38)
 
 
-@pytest.mark.parametrize("qid", R10_WRAPPING_ADD_QIDS)
-def test_r10_exec_wrapping_add_has_no_ghost_int(qid: int) -> None:
+@pytest.mark.parametrize("qid", R10_CHECKED_ADD_QIDS)
+def test_r10_exec_checked_add_has_no_ghost_int(qid: int) -> None:
     if not R10_SQL_PATH.is_file():
         pytest.skip("r10 holdout SQL missing")
     schema = load_sec_schema()
@@ -249,10 +255,11 @@ def test_r10_exec_wrapping_add_has_no_ghost_int(qid: int) -> None:
     ret_type = resolve_ret_type_from_method_spec(spec_rs)
     rs = multi_agg_step_trusted_rs(spec_rs, ret_type)
     suffix = ret_type.removeprefix("map_")
-    bad = _agg_step_exec_wrapping_add_lines(rs, suffix)
+    bad = _agg_step_exec_checked_add_lines(rs, suffix)
     if not bad:
-        pytest.skip(f"Q{qid} has no wrapping_add in exec agg_step")
+        pytest.skip(f"Q{qid} has no checked_add in exec agg_step")
     assert all("as int" not in ln for ln in bad), bad
+    assert "wrapping_add" not in rs
 
 
 def test_multi_agg_case_when_cast_parentheses() -> None:
@@ -265,6 +272,18 @@ def test_multi_agg_case_when_cast_parentheses() -> None:
     assert "(row_u64_0 as int) < 0" in rs
     assert "row_u64_0 as int < 0" not in rs
     assert "row_u64_0 as int > 0" not in rs
+
+
+def test_agg_step_requires_no_case_when_exec() -> None:
+    """agg_step public requires must not embed exec helpers (case_when_u64_exec)."""
+    schema = {"num": NUM_SCHEMA, "tag": TAG_SCHEMA}
+    out = transpile_sql_to_verus(Q26_CASE_WHEN_SQL, schema)
+    ret_type = resolve_ret_type_from_method_spec(out)
+    rs = multi_agg_step_trusted_rs(out, ret_type)
+    suffix = ret_type.removeprefix("map_")
+    req_block = rs.split(f"pub exec fn agg_step_{suffix}")[1].split("ensures")[0]
+    assert "case_when_u64_exec" not in req_block
+    assert "(prev as int) +" not in req_block
 
 def test_sec_q1_agg_step_runquery_verus(tmp_path: Path) -> None:
     from research_loop.bench_standins.sec_q1_runquery import SEC_Q1_RUNQUERY

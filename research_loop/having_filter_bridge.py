@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from research_loop.trusted_ret_bridge import RetBridge, get_bridge
+from research_loop.trusted_ret_bridge import RetBridge, get_bridge, map_new_expr
 
 _APPLY_HAVING_RE = re.compile(r"apply_having_filter\s*\(")
 _IDENT_RE = re.compile(r"\b([a-z_][a-z0-9_]*)\b")
@@ -284,6 +284,47 @@ def unsupported_having_predicate_reason(
     return None
 
 
+def _having_filter_exec_body(rust_ret: str, filter_expr: str) -> str:
+    """Runtime filter body for vstd map wrappers (layout-peel; external_body only)."""
+    new_expr = map_new_expr(rust_ret)
+    if rust_ret.startswith("StringHashMap"):
+        val_ty = rust_ret[len("StringHashMap<") : -1]
+        return f"""{{
+    #[repr(C)]
+    struct _Peel {{ m: std::collections::HashMap<String, {val_ty}> }}
+    let peeled: _Peel = unsafe {{ std::mem::transmute(hm) }};
+    let std_res: std::collections::HashMap<String, {val_ty}> = peeled
+        .m
+        .into_iter()
+        .filter(|(_k, v)| {filter_expr})
+        .collect();
+    let mut out = {new_expr};
+    for (k, v) in std_res {{
+        out.insert(k, v);
+    }}
+    out
+}}"""
+    if rust_ret.startswith("HashMapWithView"):
+        inner = rust_ret[len("HashMapWithView<") : -1]
+        key_ty, val_ty = inner.split(", ", 1)
+        return f"""{{
+    #[repr(C)]
+    struct _Peel {{ m: std::collections::HashMap<{key_ty}, {val_ty}> }}
+    let peeled: _Peel = unsafe {{ std::mem::transmute(hm) }};
+    let std_res: std::collections::HashMap<{key_ty}, {val_ty}> = peeled
+        .m
+        .into_iter()
+        .filter(|(_k, v)| {filter_expr})
+        .collect();
+    let mut out = {new_expr};
+    for (k, v) in std_res {{
+        out.insert(k, v);
+    }}
+    out
+}}"""
+    return f"""hm.into_iter().filter(|(_k, v)| {filter_expr}).collect()"""
+
+
 def _having_skip_comment(reason: str) -> str:
     return f"\n// === HAVING exec skipped: {reason} ===\n"
 
@@ -295,12 +336,10 @@ def emit_having_filter_trusted(
 ) -> str:
     """Emit TRUSTED ``apply_having_filter_exec_{suffix}`` for one query."""
     suffix = bridge.agg_suffix or bridge.key.removeprefix("map_")
-    view = bridge.view_spec
-    if not view:
-        raise ValueError("HAVING filter requires map view bridge")
     fn = f"apply_having_filter_exec_{suffix}"
     pred = layout.full_closure
-    filter_body = _exec_filter_body(layout)
+    filter_expr = _exec_filter_body(layout)
+    exec_body = _having_filter_exec_body(bridge.rust_ret, filter_expr)
     table_params = table_params or []
     sig_parts = [f"hm: {bridge.rust_ret}"]
     sig_parts.extend(f"{p}: &{s}" for p, s in table_params)
@@ -312,41 +351,45 @@ def emit_having_filter_trusted(
         )
         requires = f"\n    requires\n        {preds},"
     return f"""
-// === HAVING post-filter ({suffix}): exec HashMap retain vs apply_having_filter ===
+// === HAVING post-filter ({suffix}): exec map retain vs apply_having_filter ===
 #[verifier::external_body]
 pub exec fn {fn}(
     {sig},
 ) -> (res: {bridge.rust_ret}){requires}
     ensures
-        {view}(res@)
+        res@
             == apply_having_filter(
-                {view}(hm@),
+                hm@,
                 {pred},
             ),
 {{
-    hm.into_iter()
-        .filter(|(_k, v)| {filter_body})
-        .collect()
+    {exec_body}
 }}
 """
 
 
 def _bridge_for_having(ret_type: str) -> RetBridge | None:
     bridge = get_bridge(ret_type)
-    if bridge is not None and bridge.view_spec:
+    if bridge is not None and bridge.rust_ret.startswith(
+        ("HashMapWithView", "StringHashMap", "HashMap")
+    ):
         return bridge
     from research_loop.assemble_verified_program import _cfg
 
     cfg = _cfg(ret_type)
-    view = cfg.get("view_spec")
-    if not view:
+    rust_ret = cfg["rust_ret"]
+    if not rust_ret.startswith(("HashMapWithView", "StringHashMap", "HashMap")):
         return None
+    view = cfg.get("view_spec")
+    ensures = "res@ == method_spec(cols),"
+    if view:
+        ensures = f"{view}(res@) == method_spec(cols),"
     return RetBridge(
         key=ret_type,
-        rust_ret=cfg["rust_ret"],
-        ensures=f"{view}(res@) == method_spec(cols),",
+        rust_ret=rust_ret,
+        ensures=ensures,
         trusted_rs="",
-        default_stub="HashMap::new()",
+        default_stub="HashMapWithView::new()",
         format_result="",
         needs_hashmap=True,
         view_spec=view,

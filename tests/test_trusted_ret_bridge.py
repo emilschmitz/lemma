@@ -85,31 +85,31 @@ def _load_sec_queries() -> list[tuple[str, str]]:
         (
             "Map<(Seq<char>, Seq<char>), (u64, u64)>",
             "map_str_str__u64_u64",
-            "HashMap<(String, String), (u64, u64)>",
+            "HashMapWithView<(String, String), (u64, u64)>",
             "agg_put_str_str__u64_u64",
         ),
         (
             "Seq<(Seq<char>, Seq<char>, u64)>",
             "seq_str_str_u64",
             "Vec<(String, String, u64)>",
-            "vec_str_str_u64_view",
+            "seq_push_str_str_u64",
         ),
         (
             "Map<(Seq<char>, Seq<char>), (u64, u64, u64)>",
             "map_str_str__u64_u64_u64",
-            "HashMap<(String, String), (u64, u64, u64)>",
-            "hashmap_str_str__u64_u64_u64_view",
+            "HashMapWithView<(String, String), (u64, u64, u64)>",
+            "agg_put_str_str__u64_u64_u64",
         ),
         (
             "Map<(u32, Seq<char>, Seq<char>), (u64, u64, u64)>",
             "map_u32_str_str__u64_u64_u64",
-            "HashMap<(u32, String, String), (u64, u64, u64)>",
+            "HashMapWithView<(u32, String, String), (u64, u64, u64)>",
             "agg_add_u32_str_str__u64_u64_u64",
         ),
         (
             "Map<(Seq<char>, Seq<char>, Seq<char>, Seq<char>), (u64, u64)>",
             "map_str_str_str_str__u64_u64",
-            "HashMap<(String, String, String, String), (u64, u64)>",
+            "HashMapWithView<(String, String, String, String), (u64, u64)>",
             "agg_put_str_str_str_str__u64_u64",
         ),
     ],
@@ -125,8 +125,7 @@ def test_structural_bridge_shapes(
     assert rust_fragment in bridge.rust_ret
     assert trusted_fragment in bridge.trusted_rs
     if trusted_fragment.startswith("vec_"):
-        assert f"pub open spec fn {trusted_fragment}(s: Seq<(String, String, u64)>)" in bridge.trusted_rs
-        assert "-> Seq<(Seq<char>, Seq<char>, u64)>" in bridge.trusted_rs
+        pytest.skip("seq uses Vec@ directly")
     src = build_runquery_agent_source(ret_type=bridge.key)
     assert rust_fragment in src
     assert bridge.ensures in src
@@ -136,8 +135,8 @@ def test_static_u64_and_map_str_u32_u64_still_work() -> None:
     assert ret_key_from_method_spec_type("u64") == "u64"
     assert ret_key_from_method_spec_type("Map<(Seq<char>, u32), u64>") == "map_str_u32_u64"
     src = build_runquery_agent_source(ret_type="map_str_u32_u64")
-    assert "HashMap<(String, u32), u64>" in src
-    assert "hashmap_str_u32_u64_view(res@) == method_spec(cols)," in src
+    assert "HashMapWithView<(String, u32), u64>" in src
+    assert "res@ == method_spec(cols)," in src
 
 
 def test_nested_map_unsupported() -> None:
@@ -187,13 +186,13 @@ def test_sec_holdout_resolve_ret_type(qnum: str) -> None:
 
 def test_distinct_set_trusted_rs_codegen() -> None:
     rs = distinct_set_trusted_rs()
-    assert "hashset_str_view" in rs
-    assert "hashset_u32_view" in rs
+    assert "hashset_str_as_map" in rs
+    assert "hashset_u32_as_map" in rs
     assert "set_insert_str" in rs
     assert "set_insert_u32" in rs
     assert "set_new_str" in rs
     assert "set_new_u32" in rs
-    assert rs.count("external_body") >= 6
+    assert rs.count("external_body") >= 4
     assert "dom().len()" in rs
 
 
@@ -209,9 +208,9 @@ def test_prepare_agent_visible_spec_multi_agg_includes_set_helpers() -> None:
     raw = _spec(spec_ret)
     bridge = structural_bridge_for_spec_type(spec_ret)
     out = prepare_agent_visible_spec(raw, bridge.key)
-    assert "hashset_str_view" in out
+    assert "hashset_str_as_map" in out
     assert "set_insert_str" in out
-    assert "hashset_u32_view" in out
+    assert "hashset_u32_as_map" in out
     assert "set_insert_u32" in out
     assert "agg_put_str_str__u64_u64_u64" in out
 
@@ -220,13 +219,12 @@ def test_prepare_agent_visible_spec_single_agg_no_set_helpers() -> None:
     raw = _spec("Map<(Seq<char>, u32), u64>")
     out = prepare_agent_visible_spec(raw, "map_str_u32_u64")
     assert "set_insert_str" not in out
-    assert "hashset_str_view" not in out
+    assert "hashset_str_as_map" not in out
 
 
 def test_seq_push_ensures_use_final_for_mut_receiver() -> None:
     bridge = structural_bridge_for_spec_type("Seq<(Seq<char>, Seq<char>, u32, Seq<char>)>")
     rs = bridge.trusted_rs
     assert "seq_push_str_str_u32_str" in rs
-    # mut-ref postcondition must use final(s)@, not bare s@
-    assert "ensures vec_str_str_u32_str_view(final(s)@) == vec_str_str_u32_str_view(old(s)@).push(" in rs
+    assert "vec_str_str_u32_str_view(final(s)@) ==" in rs
     assert re.search(r"seq_push_\w+.*ensures \w+\(s@\)", rs) is None

@@ -48,8 +48,8 @@ def test_parse_map_str_u32_u64_method_spec() -> None:
 
 def test_build_runquery_agent_source_map_str_u32_u64() -> None:
     src = build_runquery_agent_source(ret_type="map_str_u32_u64")
-    assert "HashMap<(String, u32), u64>" in src
-    assert "hashmap_str_u32_u64_view(res@) == method_spec(cols)," in src
+    assert "HashMapWithView<(String, u32), u64>" in src
+    assert "res@ == method_spec(cols)," in src
 
 
 def test_parse_map_u32_str_str_u64_method_spec() -> None:
@@ -60,8 +60,8 @@ def test_parse_map_u32_str_str_u64_method_spec() -> None:
 
 def test_build_runquery_agent_source_map_u32_str_str_u64() -> None:
     src = build_runquery_agent_source(ret_type="map_u32_str_str_u64")
-    assert "HashMap<(u32, String, String), u64>" in src
-    assert "hashmap_u32_str_str_u64_view(res@) == method_spec(cols)," in src
+    assert "HashMapWithView<(u32, String, String), u64>" in src
+    assert "res@ == method_spec(cols)," in src
 
 
 def test_unsupported_method_spec_return_type_raises() -> None:

@@ -11,8 +11,8 @@ Honest gaps (not failures in this suite):
   ``arbitrary()`` — only exec bodies are twin-checked here.
 - ``agg_step_*`` native Verus exec is not compiled in CI; ``AggStepOracle`` + structural
   presence in ``prepare_agent_visible_spec`` only.
-- ``ORACLE_U64_WRAP_ROWS`` exercises ``u64::wrapping_add`` near ``2^64`` without DuckDB
-  (BIGINT insert limits on in-memory fixtures).
+- ``ORACLE_U64_WRAP_ROWS`` exercises near-``u64::MAX`` inputs; oracle raises on overflow
+  (``checked_add`` contract), not DuckDB differential
 """
 
 from __future__ import annotations
@@ -69,18 +69,25 @@ class DistinctSetOracle:
 
 
 class AggMapOracle:
-    """Mirrors ``agg_new_*`` / ``agg_add_*`` for scalar ``u64`` or ``i64`` map values."""
+    """Mirrors ``agg_new_*`` / ``agg_add_*`` for scalar ``u64`` or ``i64`` map values.
+
+    Under the bridge ``requires`` (fit-in-width), accumulation is mathematical ``+``,
+    not ``wrapping_add``.
+    """
 
     def __init__(self, *, signed: bool = False) -> None:
         self._signed = signed
         self._hm: dict[Any, int] = {}
 
-    def _wrap(self, value: int) -> int:
-        return i64_wrap(value) if self._signed else u64_wrap(value)
-
     def add(self, key: Hashable, delta: int) -> None:
         prev = self._hm.get(key, 0)
-        self._hm[key] = self._wrap(prev + delta)
+        new_val = prev + delta
+        if self._signed:
+            if not (I64_MIN <= new_val <= I64_MAX):
+                raise OverflowError("i64 agg_add requires violated")
+        elif not (0 <= new_val <= U64_MASK):
+            raise OverflowError("u64 agg_add requires violated")
+        self._hm[key] = new_val
 
     def get(self, key: Hashable) -> int:
         return self._hm.get(key, 0)
@@ -153,16 +160,20 @@ class TupleAggMapOracle:
             raise ValueError("signed_slots length must match n_fields")
         self._hm: dict[Any, tuple[int, ...]] = {}
 
-    def _wrap_slot(self, idx: int, value: int) -> int:
-        return i64_wrap(value) if self._signed[idx] else u64_wrap(value)
-
     def add(self, key: Hashable, *deltas: int) -> None:
         if len(deltas) != self._n:
             raise ValueError(f"expected {self._n} deltas, got {len(deltas)}")
         prev = self._hm.get(key, tuple(0 for _ in range(self._n)))
-        self._hm[key] = tuple(
-            self._wrap_slot(i, prev[i] + deltas[i]) for i in range(self._n)
-        )
+        new_slots: list[int] = []
+        for i in range(self._n):
+            new_val = prev[i] + deltas[i]
+            if self._signed[i]:
+                if not (I64_MIN <= new_val <= I64_MAX):
+                    raise OverflowError("i64 agg_add requires violated")
+            elif not (0 <= new_val <= U64_MASK):
+                raise OverflowError("u64 agg_add requires violated")
+            new_slots.append(new_val)
+        self._hm[key] = tuple(new_slots)
 
     def put(self, key: Hashable, *values: int) -> None:
         """Mirrors ``agg_put_*`` overwrite (no accumulation)."""
@@ -215,7 +226,9 @@ class AggStepOracle:
         cnt, dset, total = self._inner.get(key, self._default_inner())
         cnt += 1
         dset.insert(distinct_val)
-        total = u64_wrap(total + sum_val)
+        total = total + sum_val
+        if not (0 <= total <= U64_MASK):
+            raise OverflowError("u64 agg_step requires violated")
         self._inner[key] = (cnt, dset, total)
         avg = total // cnt if cnt else 0
         self._projected[key] = (cnt, dset.distinct_count(), avg)
@@ -363,7 +376,7 @@ def reference_map_add_state(
     keys: Sequence[Any],
     delta: int = 1,
 ) -> dict[Any, int] | dict[Any, tuple[int, ...]]:
-    """Pure-Python reference using wrapping math (must match ``run_map_oracle_add_sequence``)."""
+    """Pure-Python reference using checked-add math (must match ``run_map_oracle_add_sequence``)."""
     return run_map_oracle_add_sequence(fam, keys, delta=delta)
 
 

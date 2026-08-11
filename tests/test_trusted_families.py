@@ -90,7 +90,7 @@ def test_rust_ret_is_exec_shaped(fam) -> None:
     if fam.kind == "scalar":
         assert bridge.rust_ret in ("u64", "i64")
     elif fam.kind == "map":
-        assert bridge.rust_ret.startswith("HashMap<")
+        assert bridge.rust_ret.startswith(("HashMapWithView<", "StringHashMap<"))
     elif fam.kind == "seq":
         assert bridge.rust_ret.startswith("Vec<")
     assert not bridge.rust_ret.startswith("Map<")
@@ -99,16 +99,16 @@ def test_rust_ret_is_exec_shaped(fam) -> None:
 @pytest.mark.parametrize("fam", TRUSTED_FAMILY_MENU, ids=_MENU_IDS)
 def test_view_and_trusted_helpers(fam) -> None:
     bridge = bridge_for_family(fam)
-    needs_view = fam.kind == "map" or (fam.kind == "seq" and "Seq<char>" in fam.spec_ret)
-    if needs_view:
-        assert bridge.view_spec
-        assert bridge.view_spec in bridge.trusted_rs
-        assert "external_body" in bridge.trusted_rs
     if fam.kind == "map":
+        assert bridge.view_spec is None
+        assert "arbitrary()" not in bridge.trusted_rs
+        assert "external_body" in bridge.trusted_rs
         suffix = bridge.agg_suffix or ""
         assert f"agg_new_{suffix}" in bridge.trusted_rs
         assert "agg_add_" in bridge.trusted_rs or "agg_put_" in bridge.trusted_rs
     if fam.kind == "seq" and "Seq<char>" in fam.spec_ret:
+        assert bridge.view_spec is None
+        assert "arbitrary()" not in bridge.trusted_rs
         suffix = bridge.agg_suffix or ""
         assert f"seq_new_{suffix}" in bridge.trusted_rs
         assert f"seq_push_{suffix}" in bridge.trusted_rs
@@ -175,4 +175,5 @@ def test_trusted_view_menu_includes_family_view() -> None:
     spec = _method_spec_fixture("Map<(Seq<char>, Seq<char>), (u64, u64)>")
     bridge = bridge_for_family(family_by_id("map_str_str__u64_u64"))
     names = {opt.name for opt in trusted_view_menu(spec)}
-    assert bridge.view_spec in names
+    # Legacy opaque views may still appear from old spec snippets; primary contract is res@.
+    assert bridge.ensures == "res@ == method_spec(cols),"

@@ -593,21 +593,10 @@ def emit_scalar_subquery_helper(
     spec_call += ")"
 
     if sub.query.derived_tables or sub.query.joins or sub.query.groupby_columns:
-        extra_sig = ""
-        if corr_params:
-            extra_sig = ", " + ", ".join(f"{n}: {t}" for n, t in corr_params)
-        helper = f"""// TRUSTED: nested scalar / HAVING subquery ({sub.alias}).
-#[verifier::external_body]
-pub open spec fn {spec_name}({param_name}: &{struct_name}{extra_sig}) -> u64 {{
-    arbitrary()
-}}"""
-        return SubqueryEmit(
-            name=spec_name,
-            helper_source=helper,
-            spec_call=spec_call,
-            inner_table=inner_table,
-            correlated=sub.correlated,
-            correlation_cols=list(sub.correlation_cols),
+        raise UnsupportedContractError(
+            f"nested scalar/HAVING subquery ({sub.alias}) with joins, GROUP BY, "
+            "or derived tables requires a real MethodSpec fold; "
+            "Trusted arbitrary() is not allowed on the product path"
         )
 
     where_at_k = None

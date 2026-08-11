@@ -41,6 +41,7 @@ from .value_bounds import (
     col_spec_accessor_return,
     col_verus_type,
     emit_bound_constants,
+    emit_bound_lemmas,
     emit_trusted_prelude,
     emit_valid_cols_accessor_lemmas,
     emit_valid_cols_predicate,
@@ -1268,6 +1269,8 @@ use std::collections::{{HashMap, HashSet}};
 verus! {{
 
 {emit_bound_constants()}
+
+{emit_bound_lemmas()}
 
 {trusted_prelude}
 

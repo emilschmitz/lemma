@@ -278,6 +278,8 @@ def _ensures_clause(ret_type: str, *, method_spec_rs: str | None = None) -> str:
     if b is not None:
         return b.ensures.replace("method_spec(cols)", call)
     cfg = _ret_type_cfg(ret_type)
+    if cfg["rust_ret"].startswith(("HashMapWithView", "StringHashMap", "Vec")):
+        return f"res@ == {call},"
     view_spec = cfg.get("view_spec")
     if view_spec:
         return f"{view_spec}(res@) == {call},"
@@ -298,6 +300,10 @@ def _default_body_stub(ret_type: str) -> str:
     rust_ret = cfg["rust_ret"]
     if rust_ret.startswith("Vec"):
         return "Vec::new()"
+    if rust_ret.startswith(("HashMapWithView", "StringHashMap")):
+        from research_loop.trusted_ret_bridge import map_new_expr
+
+        return map_new_expr(rust_ret)
     return "HashMap::new()"
 
 

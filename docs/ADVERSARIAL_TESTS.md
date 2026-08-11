@@ -37,3 +37,6 @@ with a specific violation, and prefer **loud failure** over mocks when SQL is un
 | Multi-agg / `agg_step` shell | `tests/test_multi_agg_step.py`, `tests/test_trusted_surface_adversarial.py` |
 | Holdout shell (no vacuous TRUSTED `run_query`) | `tests/test_trusted_surface_adversarial.py` |
 | Semantic exec vs oracle | `tests/test_trusted_semantic_differential.py` (parametrized over full `TRUSTED_FAMILY_MENU` + distinct-set + agg_step) |
+| Rocketship prelude emit bar | `tests/test_rocketship_trusted_adversarial.py` + `tests/test_value_bounds.py` — `requires` before `ensures`, `checked_*` scalar arithmetic, no `arbitrary()` in `emit_trusted_prelude()`, open string/LIKE specs |
+
+**Rocketship bar:** `tests/test_rocketship_trusted_adversarial.py` (with `tests/test_value_bounds.py`) locks the host prelude from `value_bounds.py`: every arithmetic Trusted has fit-in-width `requires` and `checked_add`/`checked_mul` (not `wrapping_add` on `add_u64`), the full prelude has no `arbitrary()`, and string/LIKE/`left_join_miss_generic` stay open-spec. Regressions fail loudly if someone weakens those contracts.

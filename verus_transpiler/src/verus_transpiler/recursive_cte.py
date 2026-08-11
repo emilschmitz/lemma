@@ -1,8 +1,8 @@
-"""Recursive CTE MethodSpec helper emission (depth-bounded TRUSTED fixpoint)."""
+"""Recursive CTE MethodSpec helper emission — unsupported on rocketship path."""
 
 from __future__ import annotations
 
-from .parse_sql import CTESpec
+from .parse_sql import CTESpec, UnsupportedContractError
 
 
 def emit_recursive_cte_helper(
@@ -10,10 +10,9 @@ def emit_recursive_cte_helper(
     *,
     struct_name: str = "Cols",
 ) -> str:
-    """Emit TRUSTED fixpoint helper for a recursive CTE (depth-bounded in exec)."""
-    name = cte.name
-    return f"""// TRUSTED: recursive CTE '{name}' fixpoint (exec bounded by LEMMA_MAX_ROWS).
-#[verifier::external_body]
-pub open spec fn recursive_{name}_spec(cols: &{struct_name}) -> Seq<u64> {{
-    arbitrary()
-}}"""
+    """Refuse D-tier Trusted ``arbitrary()`` CTE specs; fail loud instead."""
+    del struct_name  # unused; kept for call-site signature stability
+    raise UnsupportedContractError(
+        f"recursive CTE '{cte.name}' is unsupported on the rocketship product path "
+        "(no Trusted arbitrary() MethodSpec); implement a real open-spec fold or omit"
+    )

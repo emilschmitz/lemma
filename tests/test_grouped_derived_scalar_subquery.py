@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import pytest
-
-from verus_transpiler import transpile_sql_to_verus
 from verus_transpiler.parse_sql import (
     UnsupportedContractError,
     is_grouped_derived_scalar_subquery,
     parse_sql,
 )
+
+from verus_transpiler import transpile_sql_to_verus
 
 SEC = {
     "num": {
@@ -59,4 +59,30 @@ HAVING SUM(value) > (
     sub = q.scalar_subqueries[0]
     assert not is_grouped_derived_scalar_subquery(sub.query)
     with pytest.raises(UnsupportedContractError, match="derived/CTE"):
+        transpile_sql_to_verus(sql, SEC)
+
+
+def test_nested_complex_subquery_with_groupby_loud_fail() -> None:
+    """Scalar subquery inner with GROUP BY must not emit D-tier arbitrary MethodSpec."""
+    sql = """SELECT tag FROM num WHERE value > (
+        SELECT SUM(value) FROM num GROUP BY tag
+    )"""
+    with pytest.raises(UnsupportedContractError, match="nested scalar/HAVING subquery"):
+        transpile_sql_to_verus(sql, SEC)
+
+
+def test_correlated_grouped_derived_scalar_subquery_loud_fail() -> None:
+    """Correlated HAVING derived+join inner must loud-fail (no arbitrary MethodSpec)."""
+    sql = """SELECT n.tag, SUM(n.value) AS s
+FROM num n
+GROUP BY n.tag
+HAVING SUM(n.value) > (
+    SELECT AVG(x) FROM (
+        SELECT SUM(n2.value) AS x
+        FROM num n2 JOIN sub s ON n2.adsh = s.adsh
+        WHERE n2.tag = n.tag
+        GROUP BY s.cik
+    ) d
+)"""
+    with pytest.raises(UnsupportedContractError, match="nested scalar/HAVING subquery"):
         transpile_sql_to_verus(sql, SEC)
