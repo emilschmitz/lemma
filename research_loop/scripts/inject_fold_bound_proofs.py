@@ -640,7 +640,7 @@ def _fold_suffix_rem_lines(ctx, lemma_idx_args: list[str]) -> list[str]:
     if n_tab == 3:
         return [f"lemma_fold_suffix_rem_leq_rows_pow3({ns}, {is_});"]
     if n_tab == 4:
-        return [f"lemma_fold_suffix_rem_leq_rows_pow4({ns}, {is_});"]
+        return [f"lemma_join_nested_rem_leq_rows_4({ns}, {is_});"]
     return []
 
 

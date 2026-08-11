@@ -35,3 +35,26 @@ reinject. Append dated entries; do not rewrite history.
 
 Started loop. First commit: this file + plan. Next: prove empty fit/`prev_le`
 lemmas; fix pow4; harden HAVING peel; re-batch r13 after each host milestone.
+
+### 2026-08-11 — prove fit/prev_le + HAVING peel (landed)
+
+- Commits `63623e5`, `fb53004`: empty `*_prev_le` / `*_fit` / money wrappers
+  became real proofs; HAVING unwrap/`ensures true` removed (peel private inside
+  `apply_having_filter_exec_*`); loader documented as Layer A.
+
+### 2026-08-11 — sound ROWS_4 for legacy `*_pow4`
+
+**Finding:** `lemma_rem_cap_*_pow4` under full `LEMMA_MAX_ROWS` (65536) is
+**unsound** — ROWS⁴·NATIVE ≫ u64::MAX. Agents had been calling empty/pow4
+Trusteds that hid that.
+
+**Fix:**
+- `*_pow4` / `fold_suffix_rem_leq_rows_pow4` now use **`LEMMA_MAX_ROWS_4`** and
+  forward to proved `*_4` / `lemma_join_nested_rem_leq_rows_4`.
+- Added proved `lemma_rem_cap_native_add_fits_4`.
+- r13 agents: depth-3 → cube rem_join + `rem_cap_*_cube`; depth-4 → rem_join_4 +
+  `rem_cap_*_4` (no expand-equality fight).
+- Checkpoint before rewrite: `prove_loop_r13_pre_pow4_to_rows4.tar.gz`.
+
+Spot: q1/q2/q5/q50 VERIFY True. Full batch next.
+

@@ -218,16 +218,13 @@ pub proof fn lemma_rem_cap_money_add_fits_4(prev_cap: u64)
 
 pub proof fn lemma_rem_cap_money_add_fits_pow4(prev_cap: u64)
     requires
-        (prev_cap as int)
-            <= (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int)
-                * (LEMMA_MAX_ROWS as int),
-        (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int)
-            * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_MONEY_U64 as int)
-            <= u64::MAX as int,
+        prev_cap
+            <= (LEMMA_MAX_ROWS_4 as u64) * (LEMMA_MAX_ROWS_4 as u64)
+                * (LEMMA_MAX_ROWS_4 as u64) * (LEMMA_MAX_ROWS_4 as u64),
     ensures
         (prev_cap as int + 1) * (LEMMA_MAX_MONEY_U64 as int) <= u64::MAX as int,
 {
-    lemma_rem_cap_cell_u64_add_fits_pow4(prev_cap);
+    lemma_rem_cap_cell_u64_add_fits_4(prev_cap);
 }
 
 pub proof fn lemma_max_rows_cube_times_money_fits_u64()
@@ -367,6 +364,28 @@ pub proof fn lemma_rem_cap_native_add_fits_cube(prev_cap: u64)
                     * (LEMMA_MAX_ROWS_CUBE as u64),
             (LEMMA_MAX_ROWS_CUBE as int) * (LEMMA_MAX_ROWS_CUBE as int)
                 * (LEMMA_MAX_ROWS_CUBE as int) * (LEMMA_MAX_NATIVE_U32 as int)
+                <= u64::MAX as int,
+            {};
+}
+
+// rem_cap ≤ ROWS_4⁴ ⇒ (rem_cap+1)·NATIVE fits (4-table nested loops).
+pub proof fn lemma_rem_cap_native_add_fits_4(prev_cap: u64)
+    requires
+        prev_cap
+            <= (LEMMA_MAX_ROWS_4 as u64) * (LEMMA_MAX_ROWS_4 as u64)
+                * (LEMMA_MAX_ROWS_4 as u64) * (LEMMA_MAX_ROWS_4 as u64),
+    ensures
+        (prev_cap as int + 1) * (LEMMA_MAX_NATIVE_U32 as int) <= u64::MAX as int,
+{
+    lemma_max_rows_4_times_native_fits_u64();
+    assert((prev_cap as int + 1) * (LEMMA_MAX_NATIVE_U32 as int) <= u64::MAX as int) by (nonlinear_arith)
+        requires
+            prev_cap
+                <= (LEMMA_MAX_ROWS_4 as u64) * (LEMMA_MAX_ROWS_4 as u64)
+                    * (LEMMA_MAX_ROWS_4 as u64) * (LEMMA_MAX_ROWS_4 as u64),
+            (LEMMA_MAX_ROWS_4 as int) * (LEMMA_MAX_ROWS_4 as int)
+                * (LEMMA_MAX_ROWS_4 as int) * (LEMMA_MAX_ROWS_4 as int)
+                * (LEMMA_MAX_NATIVE_U32 as int)
                 <= u64::MAX as int,
             {};
 }
@@ -513,6 +532,21 @@ pub proof fn lemma_max_rows_4_times_cell_u64_fits_u64()
     ) by (compute_only);
 }
 
+pub proof fn lemma_max_rows_4_times_native_fits_u64()
+    ensures
+        (LEMMA_MAX_ROWS_4 as int) * (LEMMA_MAX_ROWS_4 as int)
+            * (LEMMA_MAX_ROWS_4 as int) * (LEMMA_MAX_ROWS_4 as int)
+            * (LEMMA_MAX_NATIVE_U32 as int)
+            <= u64::MAX as int,
+{
+    assert(
+        (LEMMA_MAX_ROWS_4 as int) * (LEMMA_MAX_ROWS_4 as int)
+            * (LEMMA_MAX_ROWS_4 as int) * (LEMMA_MAX_ROWS_4 as int)
+            * (LEMMA_MAX_NATIVE_U32 as int)
+            <= u64::MAX as int
+    ) by (compute_only);
+}
+
 // rem_cap ≤ CUBE³ ⇒ (rem_cap+1)·cell fits (3-table nested loops).
 pub proof fn lemma_rem_cap_cell_u64_add_fits_cube(prev_cap: u64)
     requires
@@ -627,16 +661,22 @@ pub proof fn lemma_rem_cap_one_add_fits_pow3(prev_cap: u64)
             {};
 }
 
-// rem_cap ≤ ROWS⁴ ⇒ rem_cap+1 fits (4-table suffix rem with ROWS caps).
+// rem_cap ≤ ROWS_4⁴ ⇒ rem_cap+1 fits.
+// Legacy name ``*_pow4``; ROWS⁴ at full LEMMA_MAX_ROWS is unsound for u64 product fits.
 pub proof fn lemma_rem_cap_one_add_fits_pow4(prev_cap: u64)
     requires
-        (prev_cap as int)
-            <= (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int)
-                * (LEMMA_MAX_ROWS as int),
-        (prev_cap as int) + 1 <= u64::MAX as int,
+        prev_cap
+            <= (LEMMA_MAX_ROWS_4 as u64) * (LEMMA_MAX_ROWS_4 as u64)
+                * (LEMMA_MAX_ROWS_4 as u64) * (LEMMA_MAX_ROWS_4 as u64),
     ensures
         (prev_cap as int) + 1 <= u64::MAX as int,
 {
+    assert((prev_cap as int) + 1 <= u64::MAX as int) by (nonlinear_arith)
+        requires
+            prev_cap
+                <= (LEMMA_MAX_ROWS_4 as u64) * (LEMMA_MAX_ROWS_4 as u64)
+                    * (LEMMA_MAX_ROWS_4 as u64) * (LEMMA_MAX_ROWS_4 as u64),
+            {};
 }
 
 // rem_cap ≤ CUBE³ ⇒ rem_cap+1 fits (3-table nested loops).
@@ -1140,7 +1180,7 @@ pub proof fn lemma_fold_suffix_rem_leq_rows_pow3(
             {};
 }
 
-// 4-table suffix rem ≤ ROWS⁴ (fold depth 4; same geometry as join_4 with ROWS cap).
+// 4-table suffix rem ≤ ROWS_4⁴ (legacy name ``*_pow4``; uses depth-4 row cap).
 pub proof fn lemma_fold_suffix_rem_leq_rows_pow4(
     n0: usize,
     n1: usize,
@@ -1152,10 +1192,10 @@ pub proof fn lemma_fold_suffix_rem_leq_rows_pow4(
     i3: int,
 )
     requires
-        n0 <= LEMMA_MAX_ROWS,
-        n1 <= LEMMA_MAX_ROWS,
-        n2 <= LEMMA_MAX_ROWS,
-        n3 <= LEMMA_MAX_ROWS,
+        n0 <= LEMMA_MAX_ROWS_4,
+        n1 <= LEMMA_MAX_ROWS_4,
+        n2 <= LEMMA_MAX_ROWS_4,
+        n3 <= LEMMA_MAX_ROWS_4,
         0 <= i0 <= n0 as int,
         0 <= i1 <= n1 as int,
         0 <= i2 <= n2 as int,
@@ -1166,89 +1206,35 @@ pub proof fn lemma_fold_suffix_rem_leq_rows_pow4(
     ensures
         rem_join_4(n0, n1, n2, n3, i0, i1, i2, i3) >= 0,
         rem_join_4(n0, n1, n2, n3, i0, i1, i2, i3)
-            <= (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int)
-                * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int),
+            <= (LEMMA_MAX_ROWS_4 as int) * (LEMMA_MAX_ROWS_4 as int)
+                * (LEMMA_MAX_ROWS_4 as int) * (LEMMA_MAX_ROWS_4 as int),
         (rem_join_4(n0, n1, n2, n3, i0, i1, i2, i3) as u64)
-            <= (LEMMA_MAX_ROWS as u64) * (LEMMA_MAX_ROWS as u64)
-                * (LEMMA_MAX_ROWS as u64) * (LEMMA_MAX_ROWS as u64),
+            <= (LEMMA_MAX_ROWS_4 as u64) * (LEMMA_MAX_ROWS_4 as u64)
+                * (LEMMA_MAX_ROWS_4 as u64) * (LEMMA_MAX_ROWS_4 as u64),
 {
-    if i0 < n0 as int {
-        lemma_rem_join_4_nonneg_inner(n0, n1, n2, n3, i0, i1, i2, i3);
-    } else {
-        assert(i0 == n0 as int);
-        assert(i1 == 0);
-        assert(i2 == 0);
-        assert(i3 == 0);
-        lemma_rem_join_4_nonneg_boundary(n0, n1, n2, n3);
-    }
-    assert(
-        rem_join_4(n0, n1, n2, n3, i0, i1, i2, i3)
-            <= (n0 as int) * (n1 as int) * (n2 as int) * (n3 as int)
-    ) by (nonlinear_arith)
-        requires
-            0 <= i0 <= n0 as int,
-            0 <= i1 <= n1 as int,
-            0 <= i2 <= n2 as int,
-            0 <= i3 <= n3 as int,
-            i0 < n0 as int || (i1 == 0 && i2 == 0 && i3 == 0),
-            i1 < n1 as int || (i2 == 0 && i3 == 0),
-            i2 < n2 as int || i3 == 0,
-            {};
-    assert(
-        (n0 as int) * (n1 as int) * (n2 as int) * (n3 as int)
-            <= (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int)
-                * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int)
-    ) by (nonlinear_arith)
-        requires
-            n0 <= LEMMA_MAX_ROWS,
-            n1 <= LEMMA_MAX_ROWS,
-            n2 <= LEMMA_MAX_ROWS,
-            n3 <= LEMMA_MAX_ROWS,
-            {};
+    lemma_join_nested_rem_leq_rows_4(n0, n1, n2, n3, i0, i1, i2, i3);
 }
 
 pub proof fn lemma_rem_cap_cell_u64_add_fits_pow4(prev_cap: u64)
     requires
-        (prev_cap as int)
-            <= (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int)
-                * (LEMMA_MAX_ROWS as int),
-        (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int)
-            * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_CELL_U64 as int)
-            <= u64::MAX as int,
+        prev_cap
+            <= (LEMMA_MAX_ROWS_4 as u64) * (LEMMA_MAX_ROWS_4 as u64)
+                * (LEMMA_MAX_ROWS_4 as u64) * (LEMMA_MAX_ROWS_4 as u64),
     ensures
         (prev_cap as int + 1) * (LEMMA_MAX_CELL_U64 as int) <= u64::MAX as int,
 {
-    assert((prev_cap as int + 1) * (LEMMA_MAX_CELL_U64 as int) <= u64::MAX as int) by (nonlinear_arith)
-        requires
-            (prev_cap as int)
-                <= (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int)
-                    * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int),
-            (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int)
-                * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_CELL_U64 as int)
-                <= u64::MAX as int,
-            {};
+    lemma_rem_cap_cell_u64_add_fits_4(prev_cap);
 }
 
 pub proof fn lemma_rem_cap_native_add_fits_pow4(prev_cap: u64)
     requires
-        (prev_cap as int)
-            <= (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int)
-                * (LEMMA_MAX_ROWS as int),
-        (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int)
-            * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_NATIVE_U32 as int)
-            <= u64::MAX as int,
+        prev_cap
+            <= (LEMMA_MAX_ROWS_4 as u64) * (LEMMA_MAX_ROWS_4 as u64)
+                * (LEMMA_MAX_ROWS_4 as u64) * (LEMMA_MAX_ROWS_4 as u64),
     ensures
         (prev_cap as int + 1) * (LEMMA_MAX_NATIVE_U32 as int) <= u64::MAX as int,
 {
-    assert((prev_cap as int + 1) * (LEMMA_MAX_NATIVE_U32 as int) <= u64::MAX as int) by (nonlinear_arith)
-        requires
-            (prev_cap as int)
-                <= (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int)
-                    * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int),
-            (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int)
-                * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_NATIVE_U32 as int)
-                <= u64::MAX as int,
-            {};
+    lemma_rem_cap_native_add_fits_4(prev_cap);
 }
 
 // === Discharge add_u64 / agg_add_* / agg_step_* checked_add requires ===
