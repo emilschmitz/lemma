@@ -106,17 +106,23 @@ Beyond Verus proof of `run_query ≡ method_spec`, a practical **implementation 
 
 ---
 
-## Overflow / table-bound assumptions (2026-08-09)
+## Overflow / table-bound assumptions (2026-08-09; amended 2026-08-11)
 
-Lemma does **not** assume machine integers never overflow. Soundness for aggregations and arithmetic rests on **explicit host assumptions** about the loaded table, checked via `valid_cols` and global `LEMMA_MAX_*` constants — the same Dafny-era discipline: declare bounds up front, then prove under them.
+Lemma does **not** assume machine integers never overflow. Soundness for aggregations and arithmetic rests on **explicit host assumptions** about the loaded table, checked via `valid_cols` and bound constants — declare bounds up front, then prove under them.
+
+**Default (no table assumptions):** caps come only from **SQL/DuckDB types** (INT32-ish → ~`2**31`, u64/BIGINT → **full `2**64`**). DuckDB does not assume BIGINT cells are small for `SUM`; it widens to `HUGEINT`. Lemma should match: full type width and/or a **wide accumulator**, or require caller-supplied assumptions to tighten.
+
+**Optional table assumptions:** stub in `research_loop/table_assumptions.py`. When present (e.g. “≤10M rows, this column `< 10**12`”), `valid_cols` / product lemmas may use tighter caps for fixed-width `u64` accumulate.
+
+**Current gap:** prove_loop still emits global `LEMMA_MAX_MONEY_U64 = 2**31` for all u64 cells so `ROWS²·cell` fits in `u64`. That is **not** type-legitimate without assumptions — see `docs/TODOs.md` (rename + wire assumptions / wide accumulate).
 
 ### What `valid_cols` establishes
 
 The transpiler emits `valid_cols` (and per-column accessor lemmas) from schema via `verus_transpiler/value_bounds.py` → `emit_valid_cols_predicate`. For each `Cols` (or `valid_cols_{table}` on joins):
 
-- `cols.n <= LEMMA_MAX_ROWS` (currently `2**31`)
-- `u32` columns: every cell `< LEMMA_MAX_NATIVE_U32` (`2**31`)
-- `u64` / money columns: every cell `< LEMMA_MAX_MONEY_U64` (`2**32`; chosen so `LEMMA_MAX_ROWS * LEMMA_MAX_MONEY_U64 <= u64::MAX`)
+- `cols.n <= LEMMA_MAX_ROWS` (engine policy; override via table assumptions when wired)
+- `u32` columns: every cell `< LEMMA_MAX_NATIVE_U32` (`2**31`, type-shaped)
+- `u64` columns: today still `< LEMMA_MAX_MONEY_U64` (`2**31`, **provisional folklore** — see gap); target = assumption or full type width
 - strings: length `<= LEMMA_MAX_STRING_LEN` (128)
 
 Admission requires `run_query` to keep `requires valid_cols(cols)` (or the per-table predicates on multi-table shells). These are **preconditions on the input**, not a claim that all Rust `u64`/`i64` ops are globally safe.

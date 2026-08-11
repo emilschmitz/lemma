@@ -16,12 +16,22 @@ from .rust_ident import rust_ident
 # LEMMA_MAX_ROWS**2 * LEMMA_MAX_MONEY_U64 <= u64::MAX (elementary, checkable).
 LEMMA_MAX_ROWS = 2**16
 
+# Depth-specific caps for 3- and 4-table nested-loop rem / overflow discharge only.
+# Honest: CUBE^3 * MONEY and ROWS_4^4 * MONEY fit in u64 (see tests/test_value_bounds.py).
+# CUBE must be < 2^11 so CUBE^3 * 2^31 <= u64::MAX (2^11 exactly overflows by 1).
+LEMMA_MAX_ROWS_CUBE = 2**11 - 1  # 2047
+LEMMA_MAX_ROWS_4 = 2**8  # 256; (256^4 * 2^31) == 2^63
+
 # u32 cells: keys, dates (YYYYMMDD), quantities, discounts, etc.
 LEMMA_MAX_NATIVE_U32 = 2**31
 
-# u64 money / wide metric cells (per row, before aggregation).
-# Single-table: ROWS * MONEY <= u64::MAX; join folds: ROWS**2 * MONEY <= u64::MAX.
-LEMMA_MAX_MONEY_U64 = 2**31
+# u64 / BIGINT cells (per row, before aggregation).
+# WARNING: 2**31 is NOT implied by the SQL/DuckDB u64 type (full width is 2**64).
+# Using this without an explicit TableAssumptions entry is illegitimate folklore —
+# see research_loop/table_assumptions.py and docs/TODOs.md. Default path should be
+# full type width and/or a wide (u128) accumulator; tighten only via assumptions.
+# Current prove_loop still uses this global until assumptions are wired.
+LEMMA_MAX_MONEY_U64 = 2**31  # TODO: rename; assumption-driven or full 2**64
 
 # Per-cell string length (nation names, brands, regions, …).
 LEMMA_MAX_STRING_LEN = 128
@@ -93,6 +103,8 @@ def col_spec_accessor_return(col_type: str) -> str:
 def emit_bound_constants() -> str:
     return f"""// === Lemma global input bounds (all queries) ===
 pub const LEMMA_MAX_ROWS: usize = {LEMMA_MAX_ROWS};
+pub const LEMMA_MAX_ROWS_CUBE: usize = {LEMMA_MAX_ROWS_CUBE};
+pub const LEMMA_MAX_ROWS_4: usize = {LEMMA_MAX_ROWS_4};
 pub const LEMMA_MAX_NATIVE_U32: u32 = {LEMMA_MAX_NATIVE_U32};
 pub const LEMMA_MAX_MONEY_U64: u64 = {LEMMA_MAX_MONEY_U64};
 pub const LEMMA_MAX_STRING_LEN: usize = {LEMMA_MAX_STRING_LEN};
@@ -132,7 +144,7 @@ pub proof fn lemma_max_rows_sq_times_native_fits_u64()
 {
 }
 
-// If rem_cap ≤ ROWS², then (rem_cap+1)·MONEY fits in u64 (uses join product bound).
+// rem_cap ≤ ROWS², then (rem_cap+1)·MONEY fits in u64 (uses join product bound).
 #[verifier::external_body]
 pub proof fn lemma_rem_cap_money_add_fits(prev_cap: u64)
     requires
@@ -159,6 +171,176 @@ pub proof fn lemma_join_nested_rem_leq_rows_sq(
         ((n1 as int - i1) + (n0 as int - i0 - 1) * (n1 as int)) >= 0,
         (((n1 - i1) + (n0 - i0 - 1) * n1) as u64)
             <= (LEMMA_MAX_ROWS as u64) * (LEMMA_MAX_ROWS as u64),
+{
+}
+
+#[verifier::external_body]
+pub proof fn lemma_max_rows_cube_times_money_fits_u64()
+    ensures
+        (LEMMA_MAX_ROWS_CUBE as int) * (LEMMA_MAX_ROWS_CUBE as int)
+            * (LEMMA_MAX_ROWS_CUBE as int) * (LEMMA_MAX_MONEY_U64 as int)
+            <= u64::MAX as int,
+{
+}
+
+#[verifier::external_body]
+pub proof fn lemma_max_rows_4_times_money_fits_u64()
+    ensures
+        (LEMMA_MAX_ROWS_4 as int) * (LEMMA_MAX_ROWS_4 as int)
+            * (LEMMA_MAX_ROWS_4 as int) * (LEMMA_MAX_ROWS_4 as int)
+            * (LEMMA_MAX_MONEY_U64 as int)
+            <= u64::MAX as int,
+{
+}
+
+// rem_cap ≤ CUBE³ ⇒ (rem_cap+1)·MONEY fits (3-table nested loops).
+#[verifier::external_body]
+pub proof fn lemma_rem_cap_money_add_fits_cube(prev_cap: u64)
+    requires
+        prev_cap
+            <= (LEMMA_MAX_ROWS_CUBE as u64) * (LEMMA_MAX_ROWS_CUBE as u64)
+                * (LEMMA_MAX_ROWS_CUBE as u64),
+    ensures
+        (prev_cap as int + 1) * (LEMMA_MAX_MONEY_U64 as int) <= u64::MAX as int,
+{
+}
+
+// rem_cap ≤ ROWS_4⁴ ⇒ (rem_cap+1)·MONEY fits (4-table nested loops).
+#[verifier::external_body]
+pub proof fn lemma_rem_cap_money_add_fits_4(prev_cap: u64)
+    requires
+        prev_cap
+            <= (LEMMA_MAX_ROWS_4 as u64) * (LEMMA_MAX_ROWS_4 as u64)
+                * (LEMMA_MAX_ROWS_4 as u64) * (LEMMA_MAX_ROWS_4 as u64),
+    ensures
+        (prev_cap as int + 1) * (LEMMA_MAX_MONEY_U64 as int) <= u64::MAX as int,
+{
+}
+
+// rem_cap ≤ ROWS² ⇒ rem_cap+1 fits in u64 (COUNT / prev_le discharge).
+#[verifier::external_body]
+pub proof fn lemma_rem_cap_one_add_fits(prev_cap: u64)
+    requires
+        prev_cap <= (LEMMA_MAX_ROWS as u64) * (LEMMA_MAX_ROWS as u64),
+    ensures
+        (prev_cap as int) + 1 <= u64::MAX as int,
+{
+}
+
+// rem_cap ≤ ROWS ⇒ rem_cap+1 fits (single-table suffix rem).
+#[verifier::external_body]
+pub proof fn lemma_rem_cap_one_add_fits_rows(prev_cap: u64)
+    requires
+        prev_cap <= LEMMA_MAX_ROWS as u64,
+    ensures
+        (prev_cap as int) + 1 <= u64::MAX as int,
+{
+}
+
+// rem_cap ≤ ROWS³ ⇒ rem_cap+1 fits (3-table suffix rem with ROWS caps).
+#[verifier::external_body]
+pub proof fn lemma_rem_cap_one_add_fits_pow3(prev_cap: u64)
+    requires
+        prev_cap
+            <= (LEMMA_MAX_ROWS as u64) * (LEMMA_MAX_ROWS as u64) * (LEMMA_MAX_ROWS as u64),
+    ensures
+        (prev_cap as int) + 1 <= u64::MAX as int,
+{
+}
+
+// rem_cap ≤ ROWS⁴ ⇒ rem_cap+1 fits (4-table suffix rem with ROWS caps).
+#[verifier::external_body]
+pub proof fn lemma_rem_cap_one_add_fits_pow4(prev_cap: u64)
+    requires
+        prev_cap
+            <= (LEMMA_MAX_ROWS as u64) * (LEMMA_MAX_ROWS as u64)
+                * (LEMMA_MAX_ROWS as u64) * (LEMMA_MAX_ROWS as u64),
+    ensures
+        (prev_cap as int) + 1 <= u64::MAX as int,
+{
+}
+
+// rem_cap ≤ CUBE³ ⇒ rem_cap+1 fits (3-table nested loops).
+#[verifier::external_body]
+pub proof fn lemma_rem_cap_one_add_fits_cube(prev_cap: u64)
+    requires
+        prev_cap
+            <= (LEMMA_MAX_ROWS_CUBE as u64) * (LEMMA_MAX_ROWS_CUBE as u64)
+                * (LEMMA_MAX_ROWS_CUBE as u64),
+    ensures
+        (prev_cap as int) + 1 <= u64::MAX as int,
+{
+}
+
+// rem_cap ≤ ROWS_4⁴ ⇒ rem_cap+1 fits (4-table nested loops).
+#[verifier::external_body]
+pub proof fn lemma_rem_cap_one_add_fits_4(prev_cap: u64)
+    requires
+        prev_cap
+            <= (LEMMA_MAX_ROWS_4 as u64) * (LEMMA_MAX_ROWS_4 as u64)
+                * (LEMMA_MAX_ROWS_4 as u64) * (LEMMA_MAX_ROWS_4 as u64),
+    ensures
+        (prev_cap as int) + 1 <= u64::MAX as int,
+{
+}
+
+// 3-table nested rem ≤ CUBE³ when each n ≤ LEMMA_MAX_ROWS_CUBE.
+#[verifier::external_body]
+pub proof fn lemma_join_nested_rem_leq_rows_cube(
+    n0: usize,
+    n1: usize,
+    n2: usize,
+    i0: int,
+    i1: int,
+    i2: int,
+)
+    requires
+        n0 <= LEMMA_MAX_ROWS_CUBE,
+        n1 <= LEMMA_MAX_ROWS_CUBE,
+        n2 <= LEMMA_MAX_ROWS_CUBE,
+        0 <= i0 <= n0 as int,
+        0 <= i1 <= n1 as int,
+        0 <= i2 <= n2 as int,
+    ensures
+        ((n2 as int - i2)
+            + (n1 as int - i1 - 1) * (n2 as int)
+            + (n0 as int - i0 - 1) * (n1 as int) * (n2 as int)) >= 0,
+        (((n2 - i2) + (n1 - i1 - 1) * n2 + (n0 - i0 - 1) * n1 * n2) as u64)
+            <= (LEMMA_MAX_ROWS_CUBE as u64) * (LEMMA_MAX_ROWS_CUBE as u64)
+                * (LEMMA_MAX_ROWS_CUBE as u64),
+{
+}
+
+// 4-table nested rem ≤ ROWS_4⁴ when each n ≤ LEMMA_MAX_ROWS_4.
+#[verifier::external_body]
+pub proof fn lemma_join_nested_rem_leq_rows_4(
+    n0: usize,
+    n1: usize,
+    n2: usize,
+    n3: usize,
+    i0: int,
+    i1: int,
+    i2: int,
+    i3: int,
+)
+    requires
+        n0 <= LEMMA_MAX_ROWS_4,
+        n1 <= LEMMA_MAX_ROWS_4,
+        n2 <= LEMMA_MAX_ROWS_4,
+        n3 <= LEMMA_MAX_ROWS_4,
+        0 <= i0 <= n0 as int,
+        0 <= i1 <= n1 as int,
+        0 <= i2 <= n2 as int,
+        0 <= i3 <= n3 as int,
+    ensures
+        ((n3 as int - i3)
+            + (n2 as int - i2 - 1) * (n3 as int)
+            + (n1 as int - i1 - 1) * (n2 as int) * (n3 as int)
+            + (n0 as int - i0 - 1) * (n1 as int) * (n2 as int) * (n3 as int)) >= 0,
+        (((n3 - i3) + (n2 - i2 - 1) * n3 + (n1 - i1 - 1) * n2 * n3
+            + (n0 - i0 - 1) * n1 * n2 * n3) as u64)
+            <= (LEMMA_MAX_ROWS_4 as u64) * (LEMMA_MAX_ROWS_4 as u64)
+                * (LEMMA_MAX_ROWS_4 as u64) * (LEMMA_MAX_ROWS_4 as u64),
 {
 }
 

@@ -1,5 +1,14 @@
 # Project TODOS
 
+## Bound assumptions / overflow
+- [ ] **Table assumptions (not folklore cell caps)** — Stub: `research_loop/table_assumptions.py`.
+  By default **no** extra assumptions: a `u64`/BIGINT column is full type width (`2**64`),
+  not a silent `2**31` “money” cap. Optional caller-supplied `TableAssumptions` /
+  `CatalogAssumptions` (max rows, per-column max) feed `valid_cols`. Without a tight
+  u64 cell assumption, fixed-width `u64` SUM may not fit → **wide accumulator**
+  (u128 / DuckDB-like HUGEINT) or loud fail — do not pretend `2**31`. Rename
+  `LEMMA_MAX_MONEY_*` → neutral `max_cell_u64` / assumption-driven names.
+
 ## Transpiler
 - [ ] Find out what subset of SQL queries would be nice to support and extend the transpiler accordingly
 - [ ] (Down the line) Make the transpiler support all of (ANSI) SQL
