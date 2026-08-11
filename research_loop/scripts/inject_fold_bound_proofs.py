@@ -719,17 +719,14 @@ def _build_before_proof(
     ctx = _parse_fold_bound_context(spec_rs, helper)
     if ctx is None:
         return None
-    ghost_lines, current_idx_args, lemma_idx_args, rem_tail_int, rem_u64 = (
+    ghost_lines, _current_idx_args, lemma_idx_args, rem_tail_int, rem_u64 = (
         _ghost_indices_and_rem(ctx, tail_args)
     )
     lemma_args = _lemma_args_with_ghost_indices(
         spec_rs, helper, tail_args, lemma_idx_args
     )
     if lemma_args is None:
-        lemma_args = _lemma_call_args(spec_rs, helper, tail_args)
-    if lemma_args is None:
         return None
-    nested = len(ctx.table_params) >= 2
 
     lines = ["proof {"]
     for gl in ghost_lines:
