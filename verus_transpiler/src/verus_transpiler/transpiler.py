@@ -7,8 +7,10 @@ import re
 from research_loop.table_assumptions import (
     CatalogAssumptions,
     ResolvedBounds,
+    engine_default_catalog_assumptions,
     resolve_bounds,
     table_assumptions_for,
+    with_catalog_assumptions,
 )
 
 from .agg_push import emit_cols_agg_push_verus, resolve_two_key_u32_str_groupby
@@ -1117,6 +1119,11 @@ def transpile_sql_to_verus(
     """Return a complete Verus Rust source string."""
     _validate_schema(schema)
     flat_schema, multi_schema = normalize_schema(schema)
+    # EXTERNAL assumptions: explicit engine defaults at product boundary (not Trusted folklore).
+    catalog_assumptions = with_catalog_assumptions(
+        catalog_assumptions,
+        defaults=engine_default_catalog_assumptions(),
+    )
     bounds = resolve_bounds(catalog_assumptions)
     query = parse_sql(sql, schema)
 

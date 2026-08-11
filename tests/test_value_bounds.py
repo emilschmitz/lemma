@@ -9,7 +9,7 @@ from research_loop.sec_table_assumptions import (
     sec_prove_loop_bounds,
     sec_prove_loop_catalog_assumptions,
 )
-from research_loop.table_assumptions import resolve_bounds
+from research_loop.table_assumptions import engine_default_catalog_assumptions, resolve_bounds
 from verus_transpiler.value_bounds import (
     LEMMA_MAX_NATIVE_U32,
     LEMMA_MAX_ROWS,
@@ -175,5 +175,5 @@ def test_sec_cell_native_products_fit_u64() -> None:
 
 
 def test_engine_default_no_tight_cell_u64() -> None:
-    assert resolve_bounds().max_cell_u64 is None
+    assert resolve_bounds(engine_default_catalog_assumptions()).max_cell_u64 is None
     assert LEMMA_MAX_ROWS == 2**16

@@ -29,11 +29,25 @@ Must hold **all** of:
    `HashSetWithView` / `StringHashMap`) whose insert/new match Rust maps/sets.
    **Bound caps:** rocketship base = SQL type width + checked ops + vstd `@`.
    Tighter `u64` cell caps (`LEMMA_MAX_CELL_U64`) and row-depth caps appear only
-   when the transpiler caller supplies `CatalogAssumptions` / `TableAssumptions`
-   (prove_loop uses `research_loop/sec_table_assumptions.py` explicitly). Product
-   arithmetic lemmas (`lemma_*_cell_u64_*`, `lemma_rem_cap_*`) are checkable from
-   those named caps; **fold slot/count/sum bounds** are emitted as `assume_*`
-   (auditable acceptance under catalog assumptions — not Verus-proved induction).
+   when the transpiler caller supplies external ``CatalogAssumptions`` /
+   ``TableAssumptions`` (prove_loop uses ``research_loop/sec_table_assumptions.py``
+   explicitly). Product arithmetic lemmas (`lemma_*_cell_u64_*`, `lemma_rem_cap_*`)
+   are checkable from those named caps; **fold slot/count/sum bounds** are emitted
+   as `assume_*` (auditable acceptance under catalog assumptions — not Verus-proved
+   induction).
+
+### External assumptions vs Trusteds
+
+::
+
+    [External] CatalogAssumptions (user | engine defaults | sec_prove_loop profile)
+        → resolve_bounds → LEMMA_MAX_* + valid_cols
+    [Trusteds] IF valid_cols/caps THEN checked_add / lemma_* / assume_* fold
+    [Agent]    uses assumes + lemmas under those caps
+
+Engine defaults are applied at transpile/assemble boundaries via
+``with_catalog_assumptions(..., defaults=engine_default_catalog_assumptions())`` —
+not baked into Trusted bodies.
 5. **Tested** — semantic differential (or equivalent), including precondition
    boundaries.
 

@@ -10,7 +10,9 @@ from __future__ import annotations
 from research_loop.table_assumptions import (
     CatalogAssumptions,
     ResolvedBounds,
+    engine_default_catalog_assumptions,
     resolve_bounds,
+    with_catalog_assumptions,
 )
 
 # prove_loop / SEC working caps (explicit assumptions — not type-derived).
@@ -23,14 +25,10 @@ SEC_PROVE_LOOP_MAX_STRING_LEN = 128
 
 
 def sec_prove_loop_catalog_assumptions() -> CatalogAssumptions:
-    """Catalog assumptions matching current prove_loop / SEC fixture discipline."""
-    return CatalogAssumptions(
-        max_rows=SEC_PROVE_LOOP_MAX_ROWS,
-        max_rows_cube=SEC_PROVE_LOOP_MAX_ROWS_CUBE,
-        max_rows_4=SEC_PROVE_LOOP_MAX_ROWS_4,
-        max_cell_u64=SEC_PROVE_LOOP_MAX_CELL_U64,
-        max_native_u32=SEC_PROVE_LOOP_MAX_NATIVE_U32,
-        max_string_len=SEC_PROVE_LOOP_MAX_STRING_LEN,
+    """Named external profile for prove_loop / SEC (engine defaults + tight cell cap)."""
+    return with_catalog_assumptions(
+        CatalogAssumptions(max_cell_u64=SEC_PROVE_LOOP_MAX_CELL_U64),
+        defaults=engine_default_catalog_assumptions(),
     )
 
 

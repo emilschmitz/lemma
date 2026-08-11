@@ -14,17 +14,43 @@ from research_loop.table_assumptions import (
     TableAssumptions,
     column_u64_cap_exclusive,
     empty_catalog_assumptions,
+    engine_default_catalog_assumptions,
     resolve_bounds,
+    with_catalog_assumptions,
 )
 from verus_transpiler import transpile_sql_to_verus
 from verus_transpiler.value_bounds import emit_bound_constants, emit_bound_lemmas
 
 
 def test_default_bounds_no_tight_cell_u64() -> None:
-    b = resolve_bounds(empty_catalog_assumptions())
+    b = resolve_bounds(engine_default_catalog_assumptions())
     assert b.max_cell_u64 is None
     assert not b.has_tight_cell_u64
     assert b.max_native_u32 == 2**31
+
+
+def test_empty_catalog_resolve_bounds_requires_row_caps() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="max_rows"):
+        resolve_bounds(empty_catalog_assumptions())
+
+
+def test_with_catalog_assumptions_merge_user_over_defaults() -> None:
+    defaults = engine_default_catalog_assumptions()
+    user = CatalogAssumptions(max_rows=42, max_cell_u64=2**20)
+    merged = with_catalog_assumptions(user, defaults=defaults)
+    b = resolve_bounds(merged)
+    assert b.max_rows == 42
+    assert b.max_cell_u64 == 2**20
+    assert b.max_rows_cube == defaults.max_rows_cube
+
+
+def test_sec_profile_is_defaults_plus_cell_cap() -> None:
+    cat = sec_prove_loop_catalog_assumptions()
+    defaults = engine_default_catalog_assumptions()
+    assert cat.max_rows == defaults.max_rows
+    assert cat.max_cell_u64 == SEC_PROVE_LOOP_MAX_CELL_U64
 
 
 def test_sec_prove_loop_bounds_explicit() -> None:
@@ -35,13 +61,16 @@ def test_sec_prove_loop_bounds_explicit() -> None:
 
 
 def test_column_override_beats_catalog_cap() -> None:
-    cat = CatalogAssumptions(
-        max_cell_u64=2**31,
-        tables={
-            "t": TableAssumptions(
-                columns={"v": ColumnAssumption(max_value_exclusive=2**20)}
-            )
-        },
+    cat = with_catalog_assumptions(
+        CatalogAssumptions(
+            max_cell_u64=2**31,
+            tables={
+                "t": TableAssumptions(
+                    columns={"v": ColumnAssumption(max_value_exclusive=2**20)}
+                )
+            },
+        ),
+        defaults=engine_default_catalog_assumptions(),
     )
     b = resolve_bounds(cat)
     ta = cat.tables["t"]

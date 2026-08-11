@@ -9,6 +9,9 @@
   (`max_rows=2**16`, cell `2**31`, native `2**31`, string 128) are **named assumptions**.
   Bridges / prelude use `LEMMA_MAX_CELL_U64` (legacy alias `LEMMA_MAX_MONEY_U64` when
   emitted). Still open: **wide accumulator** when no tight cell assumption.
+- [ ] **Per-table user assumptions (JSON/CLI)** — load `CatalogAssumptions` per table
+  from caller config; wire into transpile/assemble boundary (see
+  `with_catalog_assumptions` in `research_loop/table_assumptions.py`).
 - [ ] **Trusted audit follow-ups (2026-08-11)** — full inventories from value_bounds /
   ret+multi_agg+having / other-path audits:
   - `LEMMA_MAX_NATIVE_U32 = 2**31` is also tighter than full `u32` / maps signed INT→u32

@@ -1,15 +1,27 @@
 """Table / catalog bound assumptions for rocketship-honest Trusted caps.
 
+**External vs Trusted split**
+
+::
+
+    [External] CatalogAssumptions (user | engine defaults | sec_prove_loop profile)
+        → resolve_bounds → LEMMA_MAX_* + valid_cols
+    [Trusteds] IF valid_cols/caps THEN checked_add / lemma_* / assume_* fold
+    [Agent]    uses assumes + lemmas under those caps
+
 By default Lemma must **not** invent tighter-than-type cell caps. A SQL ``BIGINT`` /
 ``u64`` column has domain ``[0, 2**64)``. Silently using ``2**31`` without an
 explicit ``CatalogAssumptions.max_cell_u64`` (or column assumption) is illegitimate.
 
-Prove_loop / SEC fixtures pass ``sec_prove_loop_catalog_assumptions()`` so those
-caps are **named assumptions**, not type folklore.
+Apply assumptions at **boundaries** (transpile / assemble / prove) via
+``with_catalog_assumptions(..., defaults=engine_default_catalog_assumptions())`` or
+the named ``sec_prove_loop_catalog_assumptions()`` profile — not inside Trusted bodies.
 
 Fold slot/count/sum bounds in ``multi_agg_step_bridge`` are emitted as ``assume_*``
 when justified (cell slots only when ``has_tight_cell_u64``). Experts audit those
 under the supplied catalog/table assumptions — they are not Verus-proved induction.
+
+TODO: load per-table user assumptions from JSON/CLI (not implemented).
 """
 
 from __future__ import annotations
@@ -43,7 +55,7 @@ class TableAssumptions:
 
 @dataclass(frozen=True)
 class CatalogAssumptions:
-    """Catalog-level and optional per-table assumptions."""
+    """Catalog-level and optional per-table assumptions (external to Trusteds)."""
 
     tables: dict[str, TableAssumptions] = field(default_factory=dict)
     max_rows: int | None = None
@@ -69,23 +81,100 @@ class ResolvedBounds:
 
 
 def empty_catalog_assumptions() -> CatalogAssumptions:
-    """Default: no extra assumptions beyond SQL/DuckDB types."""
+    """No external assumptions beyond SQL/DuckDB types."""
     return CatalogAssumptions()
 
 
-def resolve_bounds(catalog: CatalogAssumptions | None = None) -> ResolvedBounds:
-    cat = catalog if catalog is not None else empty_catalog_assumptions()
-    max_rows = cat.max_rows if cat.max_rows is not None else ENGINE_DEFAULT_MAX_ROWS
-    for ta in cat.tables.values():
+def engine_default_catalog_assumptions() -> CatalogAssumptions:
+    """Explicit default *external* assumptions (rows/native/string; NO tight cell_u64)."""
+    return CatalogAssumptions(
+        max_rows=ENGINE_DEFAULT_MAX_ROWS,
+        max_rows_cube=ENGINE_DEFAULT_MAX_ROWS_CUBE,
+        max_rows_4=ENGINE_DEFAULT_MAX_ROWS_4,
+        max_native_u32=TYPE_MAX_U32_EXCLUSIVE,
+        max_string_len=DEFAULT_MAX_STRING_LEN,
+        max_cell_u64=None,
+    )
+
+
+def with_catalog_assumptions(
+    user: CatalogAssumptions | None,
+    *,
+    defaults: CatalogAssumptions | None = None,
+) -> CatalogAssumptions:
+    """Merge user over defaults. None user → defaults only (or empty if defaults None)."""
+    base = defaults if defaults is not None else empty_catalog_assumptions()
+    if user is None:
+        return base
+    merged_tables = dict(base.tables)
+    merged_tables.update(user.tables)
+    return CatalogAssumptions(
+        tables=merged_tables,
+        max_rows=user.max_rows if user.max_rows is not None else base.max_rows,
+        max_rows_cube=(
+            user.max_rows_cube if user.max_rows_cube is not None else base.max_rows_cube
+        ),
+        max_rows_4=user.max_rows_4 if user.max_rows_4 is not None else base.max_rows_4,
+        max_cell_u64=(
+            user.max_cell_u64 if user.max_cell_u64 is not None else base.max_cell_u64
+        ),
+        max_native_u32=(
+            user.max_native_u32
+            if user.max_native_u32 is not None
+            else base.max_native_u32
+        ),
+        max_string_len=(
+            user.max_string_len
+            if user.max_string_len is not None
+            else base.max_string_len
+        ),
+    )
+
+
+def resolve_bounds(catalog: CatalogAssumptions) -> ResolvedBounds:
+    """Resolve ``LEMMA_MAX_*`` from an external assumption catalog.
+
+    Row-depth caps must be set on ``catalog`` (via ``engine_default_catalog_assumptions``
+    or ``with_catalog_assumptions`` at a boundary). This function does **not** silently
+    apply ``ENGINE_DEFAULT_MAX_ROWS*`` when fields are ``None``.
+
+    ``max_native_u32`` / ``max_string_len`` fall back to SQL type/protocol width only.
+    """
+    max_rows = catalog.max_rows
+    for ta in catalog.tables.values():
         if ta.max_rows is not None:
             max_rows = ta.max_rows
+            break
+    if max_rows is None:
+        raise ValueError(
+            "resolve_bounds: catalog missing max_rows; pass "
+            "with_catalog_assumptions(..., defaults=engine_default_catalog_assumptions())"
+        )
+    if catalog.max_rows_cube is None:
+        raise ValueError(
+            "resolve_bounds: catalog missing max_rows_cube; pass "
+            "with_catalog_assumptions(..., defaults=engine_default_catalog_assumptions())"
+        )
+    if catalog.max_rows_4 is None:
+        raise ValueError(
+            "resolve_bounds: catalog missing max_rows_4; pass "
+            "with_catalog_assumptions(..., defaults=engine_default_catalog_assumptions())"
+        )
     return ResolvedBounds(
         max_rows=max_rows,
-        max_rows_cube=cat.max_rows_cube or ENGINE_DEFAULT_MAX_ROWS_CUBE,
-        max_rows_4=cat.max_rows_4 or ENGINE_DEFAULT_MAX_ROWS_4,
-        max_native_u32=cat.max_native_u32 or TYPE_MAX_U32_EXCLUSIVE,
-        max_string_len=cat.max_string_len or DEFAULT_MAX_STRING_LEN,
-        max_cell_u64=cat.max_cell_u64,
+        max_rows_cube=catalog.max_rows_cube,
+        max_rows_4=catalog.max_rows_4,
+        max_native_u32=(
+            catalog.max_native_u32
+            if catalog.max_native_u32 is not None
+            else TYPE_MAX_U32_EXCLUSIVE
+        ),
+        max_string_len=(
+            catalog.max_string_len
+            if catalog.max_string_len is not None
+            else DEFAULT_MAX_STRING_LEN
+        ),
+        max_cell_u64=catalog.max_cell_u64,
     )
 
 
@@ -133,4 +222,3 @@ def column_u64_cap_exclusive(
         if col is not None and col.max_value_exclusive is not None:
             return col.max_value_exclusive
     return bounds.max_cell_u64
-

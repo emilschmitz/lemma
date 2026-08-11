@@ -1,5 +1,13 @@
 """Global column/table bounds for Lemma (host-injected, all queries).
 
+**External assumption profile → ``LEMMA_MAX_*`` + ``valid_cols``; Trusteds consume
+those caps (IF caps THEN checked_add / ``lemma_*`` / ``assume_*`` fold).**
+
+Callers pass ``CatalogAssumptions`` resolved at a boundary
+(``with_catalog_assumptions(..., defaults=engine_default_catalog_assumptions())`` or
+``sec_prove_loop_catalog_assumptions()``). This module does not invent row caps from
+module constants when catalog fields are ``None``.
+
 Emits ``LEMMA_MAX_*`` constants, ``valid_cols`` (row count + per-cell caps),
 TRUSTED arithmetic prelude (``checked_add`` / ``checked_mul`` exec under fit-in-width
 ``requires``; spec uses unbounded ``int``), and per-column accessor lemmas. Proof
@@ -12,9 +20,11 @@ from __future__ import annotations
 from research_loop.table_assumptions import (
     CatalogAssumptions,
     ResolvedBounds,
-    column_u64_cap_exclusive,
-    resolve_bounds,
     TableAssumptions,
+    column_u64_cap_exclusive,
+    engine_default_catalog_assumptions,
+    resolve_bounds,
+    with_catalog_assumptions,
     DEFAULT_MAX_STRING_LEN as LEMMA_MAX_STRING_LEN,
     ENGINE_DEFAULT_MAX_ROWS as LEMMA_MAX_ROWS,
     ENGINE_DEFAULT_MAX_ROWS_4 as LEMMA_MAX_ROWS_4,
@@ -88,11 +98,24 @@ def col_spec_accessor_return(col_type: str) -> str:
 
 
 
+def _bounds_for_emit(
+    bounds: ResolvedBounds | None,
+    catalog: CatalogAssumptions | None,
+) -> ResolvedBounds:
+    if bounds is not None:
+        return bounds
+    resolved_catalog = with_catalog_assumptions(
+        catalog,
+        defaults=engine_default_catalog_assumptions(),
+    )
+    return resolve_bounds(resolved_catalog)
+
+
 def emit_bound_constants(
     bounds: ResolvedBounds | None = None,
     catalog: CatalogAssumptions | None = None,
 ) -> str:
-    b = bounds if bounds is not None else resolve_bounds(catalog)
+    b = _bounds_for_emit(bounds, catalog)
     lines = [
         "// === Lemma global input bounds ===",
         f"pub const LEMMA_MAX_ROWS: usize = {b.max_rows};",
@@ -118,7 +141,7 @@ def emit_bound_lemmas(
     bounds: ResolvedBounds | None = None,
     catalog: CatalogAssumptions | None = None,
 ) -> str:
-    b = bounds if bounds is not None else resolve_bounds(catalog)
+    b = _bounds_for_emit(bounds, catalog)
     raw = _emit_bound_lemmas_with_cell_cap()
     if b.has_tight_cell_u64:
         # Compatibility aliases for agent bodies / injectors still using *_money_* names.
@@ -979,7 +1002,7 @@ def emit_valid_cols_predicate(
     table_assumptions: TableAssumptions | None = None,
 ) -> str:
     """Columnar valid_cols: row count + per-column cell bounds."""
-    b = bounds if bounds is not None else resolve_bounds(catalog)
+    b = _bounds_for_emit(bounds, catalog)
     lines = [
         f"pub open spec fn valid_cols(cols: &{struct_name}) -> bool {{",
         "    &&& cols.n <= LEMMA_MAX_ROWS",
@@ -1021,7 +1044,7 @@ def emit_valid_cols_accessor_lemmas(
     table_assumptions: TableAssumptions | None = None,
 ) -> str:
     """Per-column bound lemmas (proved from valid_cols when possible)."""
-    b = bounds if bounds is not None else resolve_bounds(catalog)
+    b = _bounds_for_emit(bounds, catalog)
     blocks: list[str] = []
     for col, col_type in schema_dict.items():
         base = col.lower()
