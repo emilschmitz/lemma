@@ -19,26 +19,28 @@ def _fn_chunk(rs: str, fn_name: str) -> str:
     return rs[start:end if end != -1 else start + 1200]
 
 
-def test_agg_push_u32_str_delegates_to_agg_add_with_u64_map() -> None:
+def test_agg_push_u32_str_self_contained_checked_add_with_u64_map() -> None:
     block = emit_cols_agg_push_verus("yr", "brand", val_type="u64")
     assert "HashMapWithView<(u32, String), u64>" in block
     assert "requires" in block
     assert "ensures" in block
     assert "delta < LEMMA_MAX_CELL_U64" in block
-    assert "old(agg)@" in block
-    assert "agg_add_u32_str__u64(" in block
+    assert "old(agg)@[" in block
+    assert "checked_add(delta)" in block
+    assert "agg_add_u32_str__u64(" not in block
     assert "std::collections::HashMap" not in block
     assert "prev + delta" not in block
 
 
-def test_agg_push_str_str_delegates_to_agg_add_with_u64_map() -> None:
+def test_agg_push_str_str_self_contained_checked_add_with_u64_map() -> None:
     block = emit_cols_agg_push_str_verus("flag", "status", val_type="u64")
     assert "HashMapWithView<(String, String), u64>" in block
     assert "requires" in block
     assert "ensures" in block
     assert "delta < LEMMA_MAX_CELL_U64" in block
-    assert "old(agg)@" in block
-    assert "agg_add_str_str__u64(" in block
+    assert "old(agg)@[" in block
+    assert "checked_add(delta)" in block
+    assert "agg_add_str_str__u64(" not in block
     assert "std::collections::HashMap" not in block
 
 
@@ -49,7 +51,7 @@ def test_generate_cols_rs_picks_u64_for_unsigned_sum() -> None:
     block = _fn_chunk(out, "agg_push_yr_brand")
     assert "HashMapWithView<(u32, String), u64>" in block
     assert "delta: u64" in block
-    assert "agg_add_u32_str__u64(" in block
+    assert "checked_add(delta)" in block
 
 
 def test_generate_cols_rs_picks_i64_for_signed_expression() -> None:
@@ -59,7 +61,7 @@ def test_generate_cols_rs_picks_i64_for_signed_expression() -> None:
     block = _fn_chunk(out, "agg_push_yr_brand")
     assert "HashMapWithView<(u32, String), i64>" in block
     assert "delta: i64" in block
-    assert "agg_add_u32_str__i64(" in block
+    assert "checked_add(delta)" in block
     assert "i64::MIN" in block
 
 

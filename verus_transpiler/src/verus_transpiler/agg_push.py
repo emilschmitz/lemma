@@ -61,7 +61,7 @@ def _agg_push_u32_str_requires(
     str_base = str_col.lower()
     spec_key = f"(self.get_{u32_base}(i as int), self.get_{str_base}(i as int))"
     prev_expr = (
-        f"if old(agg)@.contains_key({spec_key}) {{ old(agg)@{spec_key} }} "
+        f"if old(agg)@.contains_key({spec_key}) {{ old(agg)@[{spec_key}] }} "
         f"else {{ 0{val_type} }}"
     )
     clauses = ["i < self.n", f"{delta_name} < LEMMA_MAX_CELL_U64"] if val_type == "u64" else ["i < self.n"]
@@ -85,7 +85,7 @@ def _agg_push_u32_str_ensures(
     return f"""final(agg)@ == old(agg)@.insert(
         {spec_key},
         if old(agg)@.contains_key({spec_key}) {{
-            (old(agg)@{spec_key} as int + {delta_name} as int) as {val_type}
+            (old(agg)@[{spec_key}] as int + {delta_name} as int) as {val_type}
         }} else {{
             {delta_name}
         }},
@@ -103,9 +103,11 @@ def emit_cols_agg_push_verus(
     name = agg_push_method_name(u32_col, str_col)
     u32_base = u32_col.lower()
     str_base = str_col.lower()
-    _, agg_add_fn, rust_map = agg_bridge_u32_str(val_type)
+    _, _, rust_map = agg_bridge_u32_str(val_type)
     requires = _agg_push_u32_str_requires(u32_col, str_col, val_type=val_type)
     ensures = _agg_push_u32_str_ensures(u32_col, str_col, val_type=val_type)
+    # Self-contained body: join queries may emit Cols.agg_push without the
+    # matching ret-type agg_add_* bridge (e.g. group key order differs from ret).
     return f"""    #[verifier::external_body]
     pub exec fn {name}(
         &self,
@@ -118,5 +120,8 @@ def emit_cols_agg_push_verus(
         ensures
             {ensures},
     {{
-        {agg_add_fn}(agg, &self.get_{u32_base}_exec(i), &self.get_{str_base}_exec(i), delta);
+        let key = (self.get_{u32_base}_exec(i), self.get_{str_base}_exec(i));
+        let prev = agg.get(&key).copied().unwrap_or(0{val_type});
+        let next = prev.checked_add(delta).expect("Trusted overflow: requires violated");
+        agg.insert(key, next);
     }}"""

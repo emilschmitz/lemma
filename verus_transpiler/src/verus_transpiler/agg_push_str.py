@@ -49,7 +49,7 @@ def _agg_push_str_str_requires(
     b_base = str_col_b.lower()
     spec_key = f"(self.get_{a_base}(i as int), self.get_{b_base}(i as int))"
     prev_expr = (
-        f"if old(agg)@.contains_key({spec_key}) {{ old(agg)@{spec_key} }} "
+        f"if old(agg)@.contains_key({spec_key}) {{ old(agg)@[{spec_key}] }} "
         f"else {{ 0{val_type} }}"
     )
     clauses = ["i < self.n"]
@@ -74,7 +74,7 @@ def _agg_push_str_str_ensures(
     return f"""final(agg)@ == old(agg)@.insert(
         {spec_key},
         if old(agg)@.contains_key({spec_key}) {{
-            (old(agg)@{spec_key} as int + {delta_name} as int) as {val_type}
+            (old(agg)@[{spec_key}] as int + {delta_name} as int) as {val_type}
         }} else {{
             {delta_name}
         }},
@@ -92,7 +92,7 @@ def emit_cols_agg_push_str_verus(
     name = agg_push_str_method_name(str_col_a, str_col_b)
     a_base = str_col_a.lower()
     b_base = str_col_b.lower()
-    _, agg_add_fn, rust_map = agg_bridge_str_str(val_type)
+    _, _, rust_map = agg_bridge_str_str(val_type)
     requires = _agg_push_str_str_requires(str_col_a, str_col_b, val_type=val_type)
     ensures = _agg_push_str_str_ensures(str_col_a, str_col_b, val_type=val_type)
     return f"""    #[verifier::external_body]
@@ -107,5 +107,8 @@ def emit_cols_agg_push_str_verus(
         ensures
             {ensures},
     {{
-        {agg_add_fn}(agg, &self.get_{a_base}_exec(i), &self.get_{b_base}_exec(i), delta);
+        let key = (self.get_{a_base}_exec(i), self.get_{b_base}_exec(i));
+        let prev = agg.get(&key).copied().unwrap_or(0{val_type});
+        let next = prev.checked_add(delta).expect("Trusted overflow: requires violated");
+        agg.insert(key, next);
     }}"""
