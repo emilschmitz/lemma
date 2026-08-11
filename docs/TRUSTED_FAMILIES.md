@@ -32,9 +32,11 @@ Must hold **all** of:
    when the transpiler caller supplies external ``CatalogAssumptions`` /
    ``TableAssumptions`` (prove_loop uses ``research_loop/sec_table_assumptions.py``
    explicitly). Product arithmetic lemmas (`lemma_*_cell_u64_*`, `lemma_rem_cap_*`)
-   are checkable from those named caps; **fold slot/count/sum bounds** remain
-   `assume_*` (auditable acceptance under catalog assumptions — Phase 1 proved
-   nested-loop **rem geometry** as `lemma_join_nested_rem_*` / `lemma_fold_suffix_rem_*`).
+   are checkable from those named caps; **fold slot/count/sum bounds** default to
+   `lemma_*` expert TCB (`external_body` under catalog assumptions); set
+   ``LEMMA_FOLD_SLOT_INDUCTIVE=1`` for experimental inductive bodies. Phase 1
+   proved nested-loop **rem geometry** as `lemma_join_nested_rem_*` /
+   `lemma_fold_suffix_rem_*`.
 
 ### External assumptions vs Trusteds
 
@@ -42,7 +44,7 @@ Must hold **all** of:
 
     [External] CatalogAssumptions (user | engine defaults | sec_prove_loop profile)
         → resolve_bounds → LEMMA_MAX_* + valid_cols
-    [Trusteds] IF valid_cols/caps THEN checked_add / lemma_* / assume_* fold
+    [Trusteds] IF valid_cols/caps THEN checked_add / lemma_* fold bounds
     [Agent]    uses assumes + lemmas under those caps
 
 Engine defaults are applied at transpile/assemble boundaries via

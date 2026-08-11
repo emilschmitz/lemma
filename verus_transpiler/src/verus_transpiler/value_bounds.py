@@ -338,6 +338,17 @@ pub proof fn lemma_rem_cap_native_add_fits(prev_cap: u64)
             {};
 }
 
+// === Map insert (fold induction helper; vstd Map one-key update) ===
+#[verifier::external_body]
+pub proof fn lemma_map_insert_preserves_other_key<K, V>(m: Map<K, V>, k1: K, k2: K, v: V)
+    requires
+        k1 != k2,
+    ensures
+        m.insert(k1, v).contains_key(k2) == m.contains_key(k2),
+        m.contains_key(k2) ==> m.insert(k1, v)[k2] == m[k2],
+{
+}
+
 // === Nested-loop suffix rem geometry (proved; suffix-start boundary requires) ===
 pub open spec fn rem_join_sq(n0: usize, n1: usize, i0: int, i1: int) -> int {
     (n1 as int - i1) + (n0 as int - i0 - 1) * (n1 as int)

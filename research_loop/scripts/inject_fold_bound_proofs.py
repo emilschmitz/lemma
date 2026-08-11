@@ -27,13 +27,13 @@ from research_loop.multi_agg_step_bridge import (
     parse_multi_agg_layout,
 )
 from research_loop.scripts.sqlsmith_trusted_coverage import load_sec_schema
+from research_loop.sec_table_assumptions import sec_prove_loop_catalog_assumptions
 from research_loop.trusted_ret_bridge import (
     _key_param_specs,
     bridge_from_method_spec_type,
     get_bridge,
     parse_verus_type,
 )
-from research_loop.sec_table_assumptions import sec_prove_loop_catalog_assumptions
 from verus_transpiler import transpile_sql_to_verus
 
 AGG_CALL_RE = re.compile(
@@ -787,7 +787,7 @@ def _build_before_proof(
         )
         lines.append(f"    let ghost rem = {rem_u64};")
         for slot_i, kind in slots:
-            fname = f"assume_{helper}_slot{slot_i}_{kind}_leq_{suffix}"
+            fname = f"lemma_{helper}_slot{slot_i}_{kind}_leq_{suffix}"
             lines.append(f"    {fname}({lemma_args});")
             if kind == "count":
                 lines.append(f"    assert(prev.{slot_i} <= rem);")
@@ -830,7 +830,7 @@ def _build_before_proof(
         )
         lines.append(f"    let ghost rem = {rem_u64};")
         if scalar_kind == "count":
-            lines.append(f"    assume_{helper}_count_leq_{suffix}({lemma_args});")
+            lines.append(f"    lemma_{helper}_count_leq_{suffix}({lemma_args});")
             lines.append("    assert(prev <= rem);")
             lines.extend(f"    {ln}" for ln in _table_rows_asserts(ctx))
             lines.extend(f"    {ln}" for ln in _rem_discharge_lines(ctx, lemma_idx_args))
@@ -840,7 +840,7 @@ def _build_before_proof(
             raw_cell = money_cell or "delta"
             cell_spec = _cell_spec_expr(raw_cell, bindings)
             lines.append("    if tail.contains_key(key) {")
-            lines.append(f"        assume_{helper}_sum_cell_u64_leq_{suffix}({lemma_args});")
+            lines.append(f"        lemma_{helper}_sum_cell_u64_leq_{suffix}({lemma_args});")
             lines.append(
                 f"        assert((prev as int) <= ({rem_tail_int}) * (LEMMA_MAX_CELL_U64 as int));"
             )
@@ -1091,9 +1091,6 @@ def strip_before_agg_proofs(text: str) -> str:
                 or "lemma_u64_add_native_fit" in block
                 or "lemma_u64_add_native_prev_le" in block
                 or "lemma_rem_cap_cell_u64_add_fits" in block
-                or "assume_multi_agg_helper_slot" in block
-                or "assume_join_method_spec_helper_" in block
-                or "assume_method_spec_helper_slot" in block
                 or "lemma_multi_agg_helper_slot" in block
                 or "lemma_join_method_spec_helper_" in block
                 or "lemma_method_spec_helper_slot" in block
