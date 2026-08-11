@@ -148,7 +148,7 @@ def test_emit_agg_step_stable_names() -> None:
         assert name in rs
     assert rs.count("external_body") >= 1  # Map insert Trusteds / having peel may remain
     assert "lemma_method_spec_helper_slot0_count_leq_str_str__u64_u64_u64" in rs
-    assert "assume_method_spec_helper_slot0_count_leq_str_str__u64_u64_u64" in rs  # compat alias
+    assert "assume_method_spec_helper_slot0_count_leq_str_str__u64_u64_u64" not in rs
     assert "ASSUMPTION" not in rs  # default is inductive, not empty assume
     assert "lemma_u64_add_one_fit" not in rs  # prelude lemmas live in transpiled spec
 

@@ -34,9 +34,10 @@ Must hold **all** of:
    explicitly). Product arithmetic lemmas (`lemma_*_cell_u64_*`, `lemma_rem_cap_*`)
    are checkable from those named caps; **rem geometry**
    (`lemma_join_nested_rem_*`, `lemma_fold_suffix_rem_*`) is **proved** (Phase 1).
-   **Fold slot/count/sum bounds** stay honest ``assume_*`` empty ``external_body``
-   under catalog; ``LEMMA_FOLD_SLOT_INDUCTIVE=1`` emits experimental inductive
-   ``lemma_*`` bodies (WIP — not default).
+   **Fold slot/count/sum bounds** default to inductive proved ``lemma_*`` bodies
+   under catalog; honest empty ``assume_*`` only with
+   ``LEMMA_FOLD_SLOT_AXIOMATIC=1``. Migration alias ``assume_*`` → ``lemma_*``
+   is ``LEMMA_FOLD_SLOT_ASSUME_ALIAS=1`` (off by default).
 
 ### External assumptions vs Trusteds
 

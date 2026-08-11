@@ -86,9 +86,10 @@ under the rocketship bar.
 
 **Rem / fold bounds in proofs:** use **int** remaining-work formulas
 (`(n as int - i) + …` or `rem_join_sq` / `rem_join_cube` / `rem_join_4`), not
-usize subtraction that can wrap. For COUNT slots call proved
-`lemma_*_slot*_count_leq_*` (compat `assume_*` aliases only forward to those
-lemmas). SUM fold-slot `assume_*` is temporary host debt — do not invent new ones.
+usize subtraction that can wrap. For fold-slot COUNT/SUM bounds call proved
+`lemma_*_slot*_…_leq_*` (multi-agg) or scalar `lemma_*_count_leq_*` /
+`lemma_*_sum_*_leq_*` — **not** `assume_*_slot*`. Empty fold assumes are out;
+opt out only via host `LEMMA_FOLD_SLOT_AXIOMATIC=1` (not agent-editable).
 
 ## Failures must be loud
 

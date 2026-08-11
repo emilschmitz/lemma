@@ -2027,6 +2027,11 @@ def _fold_slot_inductive_enabled() -> bool:
     return True
 
 
+def _fold_slot_assume_alias_enabled() -> bool:
+    """Migration escape hatch only. Default OFF — product path uses lemma_*."""
+    return os.environ.get("LEMMA_FOLD_SLOT_ASSUME_ALIAS", "") == "1"
+
+
 def _fold_bounds_allow_cell_cap(
     spec_rs: str,
     catalog: CatalogAssumptions | None,
@@ -2116,7 +2121,6 @@ def _emit_inductive_slot_bound_lemma(
     cur_call = _helper_call(ctx)
     rem_int = _rem_int_expr(ctx)
     slot_e = _slot_bound_expr(cur_call, "key", val_access, scalar_map=hit.scalar_map)
-    # Match axiomatic/agent u64 ensures so assume_* alias keeps working.
     ensures = f"{slot_e} <= {cap},"
     ensures_int = (
         f"({slot_e} as int) <= ({rem_int}),"
@@ -2199,13 +2203,13 @@ pub proof fn {fname}(
 {body}
 }}
 """
-    # Compat alias: old agent bodies call assume_*; body is one call to the proved lemma.
-    alias = f"assume_{helper}_slot{slot_i}_{kind}_leq_{suffix}"
-    call_args = ", ".join(
-        [p for p, _ in ctx.table_params] + list(ctx.index_params) + ["key"]
-    )
-    lemma_block += f"""
-// Compat alias — prefer `{fname}`; body is the proved lemma (not an axiom).
+    if _fold_slot_assume_alias_enabled():
+        alias = f"assume_{helper}_slot{slot_i}_{kind}_leq_{suffix}"
+        call_args = ", ".join(
+            [p for p, _ in ctx.table_params] + list(ctx.index_params) + ["key"]
+        )
+        lemma_block += f"""
+// Migration alias — prefer `{fname}`; set LEMMA_FOLD_SLOT_ASSUME_ALIAS=1 only while migrating.
 pub proof fn {alias}(
     {sig_params},
 )
