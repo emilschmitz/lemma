@@ -52,6 +52,38 @@ See also root **`AGENTS.md`** (pipeline contract). Summary:
   `UnsupportedContractError`. Never greenwash with `arbitrary()` MethodSpec or
   vacuous TRUSTED `run_query`.
 
+## Rocketship Trusted bar (host + agent)
+
+Trusteds must stay **expert-trustworthy** — what a careful Rust/systems reviewer
+would ship after reading `requires`/`ensures` and a short body. Same bar as
+“`checked_add` under a fit precondition” or “vstd `HashMapWithView` `@` matches
+the map.” Full policy: `docs/TRUSTED_FAMILIES.md`.
+
+**Split (do not blur):**
+
+1. **Layer A — data assumptions** (`CatalogAssumptions` / SEC profile →
+   `LEMMA_MAX_*` + `valid_cols`). Reasonable claims about the data; **not**
+   “evident.” Different datasets may use different caps.
+2. **Layer B — Trusteds** = **IF** those caps / `valid_cols` / Rust container
+   contracts **THEN** a consequence. That **implication** must meet the
+   rocketship bar (or be formally derived from facts that do).
+
+**In (rocketship Layer B):** `checked_add` / fit lemmas, vstd map/set `@`, named
+HAVING unwrap/wrap, **proved** rem-geometry / product-fit `lemma_*` (ordinary
+arith from named caps).
+
+**Out / must leave the product path:** empty `external_body` fold-slot bounds
+(`assume_*_slot*`, “partial agg ≤ rem·cap” without induction), fake `lemma_*`
+names on empty bodies, whole-query Trusteds, `arbitrary()` views, Lemma folklore.
+Do **not** “fix” a green prove_loop by corpus reinject patches or by renaming
+axioms to `lemma_*`. Host work removes non-rocketship Trusteds (real proofs or
+redesign); if agents misuse the menu, fix **prompts/docs**, not one-off body
+patches.
+
+Agent may **only call** the host Trusted menu; never invent `external_body` /
+`arbitrary` / `assume`. Prefer Trusted helpers whose contracts you can justify
+under the rocketship bar.
+
 ## Failures must be loud
 
 Never silently emit a fake “verified” program, auto-codegen a TRUSTED `run_query` that

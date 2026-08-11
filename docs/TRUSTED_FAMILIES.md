@@ -32,11 +32,11 @@ Must hold **all** of:
    when the transpiler caller supplies external ``CatalogAssumptions`` /
    ``TableAssumptions`` (prove_loop uses ``research_loop/sec_table_assumptions.py``
    explicitly). Product arithmetic lemmas (`lemma_*_cell_u64_*`, `lemma_rem_cap_*`)
-   are checkable from those named caps; **fold slot/count/sum bounds** default to
-   `lemma_*` expert TCB (`external_body` under catalog assumptions); set
-   ``LEMMA_FOLD_SLOT_INDUCTIVE=1`` for experimental inductive bodies. Phase 1
-   proved nested-loop **rem geometry** as `lemma_join_nested_rem_*` /
-   `lemma_fold_suffix_rem_*`.
+   are checkable from those named caps; **rem geometry**
+   (`lemma_join_nested_rem_*`, `lemma_fold_suffix_rem_*`) is **proved** (Phase 1).
+   **Fold slot/count/sum bounds** stay honest ``assume_*`` empty ``external_body``
+   under catalog; ``LEMMA_FOLD_SLOT_INDUCTIVE=1`` emits experimental inductive
+   ``lemma_*`` bodies (WIP — not default).
 
 ### External assumptions vs Trusteds
 

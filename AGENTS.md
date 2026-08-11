@@ -107,6 +107,9 @@ SQL + schema → MethodSpec (transpiler) → agent writes run_query → Verus pr
   NativeAgg bridges): arithmetic wrappers, string/ILIKE bridges, HashMap↔Map view lemmas, etc.
   Those are fixed APIs. **The engine must not auto-emit a TRUSTED `run_query` or a TRUSTED
   whole-query `method_spec` to “make SQL look supported.”**
+  **Rocketship bar** (expert-trustworthy IF–THEN under named data caps): see
+  `docs/TRUSTED_FAMILIES.md` and `research_loop/agents/AGENTS.md` § “Rocketship Trusted bar”.
+  Host loop removes empty fold-slot `assume_*`; do not greenwash via corpus reinject.
 - **Forbidden mocks (anywhere in the product path):**
   - `method_spec` / query helpers = `arbitrary()`
   - `run_query` = `unimplemented!` / empty `external_body` claiming `ensures ≡ method_spec`

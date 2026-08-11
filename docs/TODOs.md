@@ -18,11 +18,11 @@
   - `double`/`float`/`hugeint`/`decimal` → `u64` + cell cap (width/semantics loss)
   - `DATE` → `u32` assumes YYYYMMDD-ish, not DuckDB epoch days
   - `agg_step` requires: verify native vs cell cap per slot (partial rename to `cell_u64`)
-  - Fold bound **lemmas** (`lemma_*_slot*`, `lemma_*_count_leq_*`): renamed from
-    `assume_*`; default emit is expert TCB (`external_body`). Inductive bodies
-    behind ``LEMMA_FOLD_SLOT_INDUCTIVE=1`` (WIP). **Rem geometry**
-    (`lemma_join_nested_rem_*`, `lemma_fold_suffix_rem_*`) proved Phase 1
-    [done 2026-08-11]
+  - Fold bound **assumptions** (`assume_*_slot*`): **must leave** product path
+    (rocketship). Do not rename to fake `lemma_*` or reinject corpus to greenwash.
+    Loop: inductive proofs on MethodSpec helpers and/or overflow redesign; agent
+    confusion → prompt/`AGENTS.md` fixes. Rem geometry `lemma_*` proved Phase 1.
+    Experimental inductive emit: ``LEMMA_FOLD_SLOT_INDUCTIVE=1`` (WIP).
   - HAVING `transmute` peel → named unwrap/wrap Trusteds (`having_map_peel.rs.inc`) [done]
   - `Cols.agg_push_*` no ensures; agent_primitives weak ensures off default assemble
     (`LEMMA_EMIT_AGENT_PRIMITIVES=1` to opt in) [done]
