@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from verus_transpiler.value_bounds import emit_bound_constants, emit_bound_lemmas
+
 from research_loop.sec_table_assumptions import (
     SEC_PROVE_LOOP_MAX_CELL_U64,
     SEC_PROVE_LOOP_MAX_ROWS,
@@ -19,7 +21,6 @@ from research_loop.table_assumptions import (
     with_catalog_assumptions,
 )
 from verus_transpiler import transpile_sql_to_verus
-from verus_transpiler.value_bounds import emit_bound_constants, emit_bound_lemmas
 
 
 def test_default_bounds_no_tight_cell_u64() -> None:

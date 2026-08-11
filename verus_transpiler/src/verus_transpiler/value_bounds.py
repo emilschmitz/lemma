@@ -25,11 +25,6 @@ from research_loop.table_assumptions import (
     engine_default_catalog_assumptions,
     resolve_bounds,
     with_catalog_assumptions,
-    DEFAULT_MAX_STRING_LEN as LEMMA_MAX_STRING_LEN,
-    ENGINE_DEFAULT_MAX_ROWS as LEMMA_MAX_ROWS,
-    ENGINE_DEFAULT_MAX_ROWS_4 as LEMMA_MAX_ROWS_4,
-    ENGINE_DEFAULT_MAX_ROWS_CUBE as LEMMA_MAX_ROWS_CUBE,
-    TYPE_MAX_U32_EXCLUSIVE as LEMMA_MAX_NATIVE_U32,
 )
 
 from .rust_ident import rust_ident

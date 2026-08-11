@@ -4,17 +4,21 @@ from __future__ import annotations
 
 import re
 
-from research_loop.sec_table_assumptions import (
-    SEC_PROVE_LOOP_MAX_CELL_U64,
-    sec_prove_loop_bounds,
-    sec_prove_loop_catalog_assumptions,
-)
-from research_loop.table_assumptions import engine_default_catalog_assumptions, resolve_bounds
 from verus_transpiler.value_bounds import (
     LEMMA_MAX_NATIVE_U32,
     LEMMA_MAX_ROWS,
     emit_bound_lemmas,
     emit_trusted_prelude,
+)
+
+from research_loop.sec_table_assumptions import (
+    SEC_PROVE_LOOP_MAX_CELL_U64,
+    sec_prove_loop_bounds,
+    sec_prove_loop_catalog_assumptions,
+)
+from research_loop.table_assumptions import (
+    engine_default_catalog_assumptions,
+    resolve_bounds,
 )
 
 
