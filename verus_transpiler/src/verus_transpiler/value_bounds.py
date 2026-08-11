@@ -380,6 +380,21 @@ pub proof fn lemma_rem_join_sq_inner_step(n0: usize, n1: usize, i0: int, i1: int
     );
 }
 
+/// Innermost index at n1 rolls to the next outer row: rem(i0, n1) = rem(i0+1, 0).
+pub proof fn lemma_rem_join_sq_outer_roll(n0: usize, n1: usize, i0: int, i1: int)
+    requires
+        0 <= i0 < n0 as int,
+        i1 == n1 as int,
+    ensures
+        rem_join_sq(n0, n1, i0, i1) == rem_join_sq(n0, n1, i0 + 1, 0),
+{
+    assert(rem_join_sq(n0, n1, i0, i1) == rem_join_sq(n0, n1, i0 + 1, 0)) by (nonlinear_arith)
+        requires
+            i1 == n1 as int,
+            0 <= i0 < n0 as int,
+            {};
+}
+
 proof fn lemma_rem_join_sq_nonneg_inner(n0: usize, n1: usize, i0: int, i1: int)
     requires
         0 <= i0 < n0 as int,
@@ -391,7 +406,7 @@ proof fn lemma_rem_join_sq_nonneg_inner(n0: usize, n1: usize, i0: int, i1: int)
     assert(n1 as int - i1 >= 0);
 }
 
-proof fn lemma_rem_join_sq_nonneg_boundary(n0: usize, n1: usize)
+pub proof fn lemma_rem_join_sq_nonneg_boundary(n0: usize, n1: usize)
     ensures
         rem_join_sq(n0, n1, n0 as int, 0) == 0,
 {

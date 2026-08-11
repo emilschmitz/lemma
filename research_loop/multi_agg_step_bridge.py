@@ -728,6 +728,34 @@ class FoldBoundContext:
             clauses.append(f"0 <= {idx} <= {param}.n as int")
         return ",\n        ".join(clauses)
 
+    def suffix_start_requires(self) -> str:
+        """Indices are a nested-loop suffix start (same gate as rem ≤ ROWS^k lemmas).
+
+        For depth d: either still inside some outer row (i_j < n_j for the first
+        incomplete level), or all remaining inner indices are 0 when an outer index
+        is exhausted. Compact form used by rem lemmas: for each prefix, if outer
+        indices are at end then inners are 0 — equivalently for 2-table
+        ``i0 < n0 || i1 == 0``.
+        """
+        d = len(self.table_params)
+        if d <= 1:
+            return ""
+        if d == 2:
+            (p0, _), (p1, _) = self.table_params
+            i0, i1 = self.index_params
+            return f"{i0} < {p0}.n as int || {i1} == 0"
+        # General: for each outer level j < d-1, if i_j >= n_j then all i_k==0 for k>j
+        # — equivalent nested form matching rem_join_* callers.
+        clauses: list[str] = []
+        for j in range(d - 1):
+            pj, _ = self.table_params[j]
+            ij = self.index_params[j]
+            inner_zeros = " && ".join(
+                f"{self.index_params[k]} == 0" for k in range(j + 1, d)
+            )
+            clauses.append(f"{ij} < {pj}.n as int || ({inner_zeros})")
+        return ",\n        ".join(clauses)
+
     def suffix_remaining_u64(self) -> str:
         """Elementary suffix size: ≤ remaining nested-loop cells from index position."""
         tables = self.table_params
@@ -1047,6 +1075,156 @@ def _sanitize_fold_step_for_proof(fold_step: str) -> str:
     return s
 
 
+@dataclass(frozen=True)
+class _FoldHitSlotUpdates:
+    prev_default: str
+    slot_lets: tuple[tuple[str, str], ...]
+    insert_value: str
+
+
+def _extract_brace_block(text: str, open_pos: int) -> tuple[str, int]:
+    if open_pos >= len(text) or text[open_pos] != "{":
+        raise ValueError("expected '{'")
+    depth = 0
+    body_start = open_pos + 1
+    i = open_pos
+    while i < len(text):
+        ch = text[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[body_start:i], i + 1
+        i += 1
+    raise ValueError("unbalanced braces")
+
+
+def _strip_rust_line_comment(expr: str) -> str:
+    return re.sub(r"\s*//.*$", "", expr.strip(), flags=re.MULTILINE).strip()
+
+
+def _subst_prev_identifier(expr: str, prev_replacement: str) -> str:
+    return re.sub(r"\bprev\b", prev_replacement, expr)
+
+
+def _parse_fold_hit_slot_updates(fold_step: str) -> _FoldHitSlotUpdates | None:
+    """Parse ``let prev`` / ``let sN`` / ``tail.insert(row_key, …)`` from sanitized fold_step."""
+    s = fold_step.strip()
+    if not s.startswith("if "):
+        return None
+    brace = s.find("{")
+    if brace < 0:
+        return None
+    try:
+        hit_body, _ = _extract_brace_block(s, brace)
+    except ValueError:
+        return None
+    prev_m = re.search(
+        r"let prev = if tail\.contains_key\(row_key\) \{ tail\[row_key\] \} else \{",
+        hit_body,
+    )
+    if not prev_m:
+        return None
+    else_brace = hit_body.index("{", prev_m.end() - 1)
+    try:
+        prev_default, after_default = _extract_brace_block(hit_body, else_brace)
+    except ValueError:
+        return None
+    rest = hit_body[after_default :].lstrip()
+    if not rest.startswith(";"):
+        return None
+    rest = rest[1:].lstrip()
+    slot_lets: list[tuple[str, str]] = []
+    while True:
+        m = re.match(r"let (s\d+) = (.+?);", rest, re.DOTALL)
+        if not m:
+            break
+        slot_lets.append((m.group(1), m.group(2).strip()))
+        rest = rest[m.end() :].lstrip()
+    insert_m = re.match(r"tail\.insert\(row_key,\s*(.+?)\)\s*$", rest.strip(), re.DOTALL)
+    if not insert_m:
+        return None
+    return _FoldHitSlotUpdates(
+        prev_default=prev_default.strip(),
+        slot_lets=tuple(slot_lets),
+        insert_value=_strip_rust_line_comment(insert_m.group(1)),
+    )
+
+
+def _emit_reconstructed_insert_value(
+    *,
+    indent: str,
+    prev_var: str,
+    prev_expr: str,
+    updates: _FoldHitSlotUpdates,
+    result_var: str = "inserted_val",
+) -> list[str]:
+    lines = [f"{indent}let ghost {prev_var} = {prev_expr};"]
+    for sname, rhs in updates.slot_lets:
+        sub_rhs = _subst_prev_identifier(rhs, prev_var)
+        lines.append(f"{indent}let ghost {sname} = {sub_rhs};")
+    insert_val = _subst_prev_identifier(updates.insert_value, prev_var)
+    lines.append(f"{indent}let ghost {result_var} = {insert_val};")
+    return lines
+
+
+def _emit_count_add_one_fit_steps(
+    ctx: FoldBoundContext,
+    indent: str,
+    *,
+    rem_tail_int: str,
+) -> list[str]:
+    """Prove ``prev_slot as int + 1`` fits in u64 so MethodSpec COUNT cast is math +1."""
+    depth = len(ctx.table_params)
+    lines: list[str] = []
+    ns = [p for p, _ in ctx.table_params]
+    idxs = list(ctx.index_params)
+    if depth == 1:
+        lines.append(f"{indent}assert(0 <= {rem_tail_int});")
+        lines.append(f"{indent}assert({rem_tail_int} <= {ns[0]}.n as int);")
+        lines.append(f"{indent}assert({ns[0]}.n <= LEMMA_MAX_ROWS);")
+        lines.append(f"{indent}let ghost rem_tail_u64 = {rem_tail_int} as u64;")
+        lines.append(
+            f"{indent}assert(rem_tail_u64 <= LEMMA_MAX_ROWS as u64);"
+        )
+        lines.append(f"{indent}lemma_rem_cap_one_add_fits_rows(rem_tail_u64);")
+    elif depth == 2:
+        lines.append(
+            f"{indent}lemma_join_nested_rem_leq_rows_sq("
+            f"{ns[0]}.n, {ns[1]}.n, {idxs[0]}, {idxs[1]} + 1);"
+        )
+        lines.append(f"{indent}let ghost rem_tail_u64 = {rem_tail_int} as u64;")
+        lines.append(
+            f"{indent}assert(rem_tail_u64 <= (LEMMA_MAX_ROWS as u64) * (LEMMA_MAX_ROWS as u64));"
+        )
+        lines.append(f"{indent}lemma_rem_cap_one_add_fits(rem_tail_u64);")
+    elif depth == 3:
+        lines.append(
+            f"{indent}lemma_join_nested_rem_leq_rows_cube("
+            f"{ns[0]}.n, {ns[1]}.n, {ns[2]}.n, {idxs[0]}, {idxs[1]}, {idxs[2]} + 1);"
+        )
+        lines.append(f"{indent}let ghost rem_tail_u64 = {rem_tail_int} as u64;")
+        lines.append(f"{indent}lemma_rem_cap_one_add_fits_cube(rem_tail_u64);")
+    elif depth == 4:
+        lines.append(
+            f"{indent}lemma_join_nested_rem_leq_rows_4("
+            f"{ns[0]}.n, {ns[1]}.n, {ns[2]}.n, {ns[3]}.n, "
+            f"{idxs[0]}, {idxs[1]}, {idxs[2]}, {idxs[3]} + 1);"
+        )
+        lines.append(f"{indent}let ghost rem_tail_u64 = {rem_tail_int} as u64;")
+        lines.append(f"{indent}lemma_rem_cap_one_add_fits_4(rem_tail_u64);")
+    else:
+        lines.append(f"{indent}let ghost rem_tail_u64 = {rem_tail_int} as u64;")
+        lines.append(
+            f"{indent}assert((rem_tail_u64 as int) + 1 <= u64::MAX as int);"
+        )
+    lines.append(f"{indent}assert(prev_slot <= rem_tail_u64);")
+    lines.append(f"{indent}lemma_u64_add_one_prev_le(prev_slot, rem_tail_u64);")
+    lines.append(f"{indent}assert((prev_slot as int) + 1 <= u64::MAX as int);")
+    return lines
+
+
 def _emit_inductive_hit_branch(
     *,
     ctx: FoldBoundContext,
@@ -1067,8 +1245,10 @@ def _emit_inductive_hit_branch(
     cap = _sum_cap_const(kind)
     helper = ctx.helper
     fold_step = _parse_helper_fold_step(spec_rs, helper)
+    slot_updates: _FoldHitSlotUpdates | None = None
     if fold_step is not None:
         fold_step = _sanitize_fold_step_for_proof(fold_step)
+        slot_updates = _parse_fold_hit_slot_updates(fold_step)
     lines: list[str] = []
     if hit.scalar_map:
         prev_slot = f"if tail.contains_key({key}) {{ tail[{key}] }} else {{ 0u64 }}"
@@ -1110,6 +1290,9 @@ def _emit_inductive_hit_branch(
             f"{indent}assert(prev_slot as int <= (rem_here_int - 1) * ({cap} as int));"
         )
         lines.append(f"{indent}assert({sum_delta} < ({cap} as int));")
+    # COUNT MethodSpec uses `(prev as int + 1) as u64`; discharge cast = math +1 via rem·ROWS fit.
+    if kind == "count":
+        lines.extend(_emit_count_add_one_fit_steps(ctx, indent, rem_tail_int=rem_tail_int))
 
     if fold_step is not None:
         # Unfold one recursive step of the open helper (no key-shadowing in copied body).
@@ -1154,37 +1337,121 @@ def _emit_inductive_hit_branch(
         lines.append(f"{indent}    let ghost row_key = {hit.key_expr};")
         lines.append(f"{indent}    if row_key == {key} {{")
         lines.append(f"{indent}        assert(next_map.contains_key({key}));")
-        lines.append(
-            f"{indent}        let ghost prev_full = if tail.contains_key({key}) {{ tail[{key}] }} else {{ {hit.default_state} }};"
+        prev_default = (
+            slot_updates.prev_default if slot_updates is not None else hit.default_state
         )
+        hit_indent = indent + "        "
         if hit.scalar_map:
+            lines.append(
+                f"{indent}        let ghost prev_full = if tail.contains_key({key}) {{ tail[{key}] }} else {{ {prev_default} }};"
+            )
             lines.append(f"{indent}        assert(prev_full == prev_slot);")
             lines.append(
                 f"{indent}        let ghost s0 = (prev_full as int + 1) as u64;"
             )
+            lines.append(f"{indent}        assert(s0 as int == prev_full as int + 1);")
             lines.append(f"{indent}        assert(next_map == tail.insert({key}, s0));")
             lines.append(f"{indent}        lemma_map_insert_get(tail, {key}, s0);")
             lines.append(f"{indent}        assert(next_map[{key}] == s0);")
             lines.append(f"{indent}        assert(s0 as int == prev_slot as int + 1);")
+        elif slot_updates is not None:
+            lines.extend(
+                _emit_reconstructed_insert_value(
+                    indent=hit_indent,
+                    prev_var="prev_full",
+                    prev_expr=(
+                        f"if tail.contains_key({key}) {{ tail[{key}] }} "
+                        f"else {{ {prev_default} }}"
+                    ),
+                    updates=slot_updates,
+                )
+            )
+            if val_access:
+                lines.append(f"{hit_indent}assert(prev_full{val_access} == prev_slot);")
+            else:
+                lines.append(f"{hit_indent}assert(prev_full.0 == prev_slot);")
+            # s0 is always MethodSpec COUNT step: (prev.0 as int + 1) as u64
+            lines.append(f"{hit_indent}assert(s0 as int == prev_full.0 as int + 1);")
+            lines.append(
+                f"{hit_indent}assert(next_map == tail.insert({key}, inserted_val));"
+            )
+            lines.append(
+                f"{hit_indent}lemma_map_insert_get(tail, {key}, inserted_val);"
+            )
+            if val_access:
+                lines.append(
+                    f"{hit_indent}assert(next_map[{key}]{val_access} == inserted_val{val_access});"
+                )
+                lines.append(
+                    f"{hit_indent}assert(inserted_val{val_access} as int == prev_slot as int + 1);"
+                )
+            else:
+                lines.append(f"{hit_indent}assert(next_map[{key}] == inserted_val);")
+                lines.append(
+                    f"{hit_indent}assert(inserted_val.0 as int == prev_slot as int + 1);"
+                )
         else:
+            lines.append(
+                f"{indent}        let ghost prev_full = if tail.contains_key({key}) {{ tail[{key}] }} else {{ {hit.default_state} }};"
+            )
             lines.append(f"{indent}        assert(prev_full.0 == prev_slot);")
             lines.append(
                 f"{indent}        let ghost s0 = (prev_full.0 as int + 1) as u64;"
             )
-            # Value stored at key in next_map is the inserted tuple; read it back.
-            lines.append(f"{indent}        let ghost v = next_map[{key}];")
-            lines.append(f"{indent}        assert(next_map == tail.insert({key}, v));")
-            lines.append(f"{indent}        lemma_map_insert_get(tail, {key}, v);")
             lines.append(
-                f"{indent}        assert(v.0 as int == prev_slot as int + 1);"
+                f"{indent}        assert(s0 as int == prev_full.0 as int + 1);"
             )
+            lines.append(
+                f"{indent}        let ghost inserted_val = (s0, prev_full.1);"
+            )
+            lines.append(
+                f"{indent}        assert(next_map == tail.insert({key}, inserted_val));"
+            )
+            lines.append(
+                f"{indent}        lemma_map_insert_get(tail, {key}, inserted_val);"
+            )
+            lines.append(f"{indent}        assert(next_map[{key}].0 == s0);")
+            lines.append(f"{indent}        assert(s0 as int == prev_slot as int + 1);")
         lines.append(
             f"{indent}        assert(prev_slot as int + 1 <= rem_here_int);"
         )
         lines.append(f"{indent}    }} else {{")
-        lines.append(
-            f"{indent}        lemma_map_insert_preserves_other_key(tail, row_key, {key}, next_map[row_key]);"
-        )
+        other_indent = indent + "        "
+        if slot_updates is not None:
+            lines.extend(
+                _emit_reconstructed_insert_value(
+                    indent=other_indent,
+                    prev_var="prev_row",
+                    prev_expr=(
+                        f"if tail.contains_key(row_key) {{ tail[row_key] }} "
+                        f"else {{ {prev_default} }}"
+                    ),
+                    updates=slot_updates,
+                )
+            )
+            lines.append(
+                f"{other_indent}assert(next_map == tail.insert(row_key, inserted_val));"
+            )
+            lines.append(
+                f"{other_indent}lemma_map_insert_preserves_other_key(tail, row_key, {key}, inserted_val);"
+            )
+        elif hit.scalar_map:
+            lines.append(
+                f"{indent}        lemma_map_insert_preserves_other_key(tail, row_key, {key}, next_map[row_key]);"
+            )
+        else:
+            lines.append(
+                f"{other_indent}let ghost prev_row = if tail.contains_key(row_key) {{ tail[row_key] }} else {{ {hit.default_state} }};"
+            )
+            lines.append(
+                f"{other_indent}let ghost s0 = (prev_row.0 as int + 1) as u64;"
+            )
+            lines.append(
+                f"{other_indent}let ghost inserted_val = (s0, prev_row.1);"
+            )
+            lines.append(
+                f"{other_indent}lemma_map_insert_preserves_other_key(tail, row_key, {key}, inserted_val);"
+            )
         lines.append(
             f"{indent}        assert(next_map.contains_key({key}) == tail.contains_key({key}));"
         )
@@ -1204,6 +1471,9 @@ def _emit_inductive_hit_branch(
         lines.append(f"{indent}}}")
         lines.append(
             f"{indent}assert({_slot_bound_expr('next_map', key, val_access, scalar_map=hit.scalar_map)} as int <= rem_here_int);"
+        )
+        lines.append(
+            f"{indent}assert({_slot_bound_expr(cur_call, key, val_access, scalar_map=hit.scalar_map)} as int <= rem_here_int);"
         )
     else:
         assert sum_delta is not None
@@ -1257,10 +1527,30 @@ def _emit_nested_count_or_sum_body(
     depth = len(ctx.table_params)
     if level >= depth:
         cur_call = _helper_call(ctx)
-        return [
+        rem_here_int = _rem_int_expr(ctx)
+        lines = [
             f"{indent}assert({cur_call} =~= Map::empty());",
             f"{indent}assert({_slot_bound_expr(cur_call, key, val_access, scalar_map=hit.scalar_map)} == 0u64);",
         ]
+        if len(ctx.table_params) == 2:
+            n0, _ = ctx.table_params[0]
+            n1, _ = ctx.table_params[1]
+            i0, i1 = ctx.index_params
+            lines.append(f"{indent}assert({i0} == {n0}.n as int);")
+            lines.append(f"{indent}assert({i1} == 0);")
+            lines.append(
+                f"{indent}lemma_rem_join_sq_nonneg_boundary({n0}.n, {n1}.n);"
+            )
+            lines.append(f"{indent}assert({rem_here_int} == 0);")
+        else:
+            lines.append(f"{indent}assert(0 <= {rem_here_int});")
+            lines.append(
+                f"{indent}assert({rem_here_int} == 0) by (nonlinear_arith);"
+            )
+        lines.append(
+            f"{indent}assert({_slot_bound_expr(cur_call, key, val_access, scalar_map=hit.scalar_map)} as int <= {rem_here_int});"
+        )
+        return lines
 
     tab_param, _tab_struct = ctx.table_params[level]
     idx = ctx.index_params[level]
@@ -1297,11 +1587,39 @@ def _emit_nested_count_or_sum_body(
             lines.append(
                 f"{indent}    assert({_slot_bound_expr(cur_call, key, val_access, scalar_map=hit.scalar_map)} == 0u64);"
             )
+            lines.append(f"{indent}    assert({idx} == {tab_param}.n as int);")
+            lines.append(
+                f"{indent}    assert({rem_here_int} == 0) by (nonlinear_arith);"
+            )
+            lines.append(
+                f"{indent}    assert({_slot_bound_expr(cur_call, key, val_access, scalar_map=hit.scalar_map)} as int <= {rem_here_int});"
+            )
         else:
             parent_idx = ctx.index_params[level - 1]
             boundary_overrides = {idx: "0", parent_idx: f"{parent_idx} + 1"}
             boundary_args = _helper_call_args(ctx, boundary_overrides)
+            boundary_call = _helper_call(ctx, boundary_overrides)
+            rem_boundary_int = _rem_int_expr(ctx, boundary_overrides)
             lines.append(f"{indent}    {fname}({boundary_args}, {key});")
+            # When innermost index is at n, MethodSpec rolls to (parent+1, 0, …);
+            # rem geometry matches that boundary call.
+            lines.append(f"{indent}    reveal_with_fuel({ctx.helper}, 1);")
+            lines.append(f"{indent}    assert({idx} == {tab_param}.n as int);")
+            lines.append(f"{indent}    assert({cur_call} == {boundary_call});")
+            if depth == 2:
+                parent_tab, _ = ctx.table_params[level - 1]
+                lines.append(
+                    f"{indent}    lemma_rem_join_sq_outer_roll("
+                    f"{parent_tab}.n, {tab_param}.n, {parent_idx}, {idx});"
+                )
+            else:
+                lines.append(
+                    f"{indent}    assert({rem_here_int} == {rem_boundary_int}) by (nonlinear_arith);"
+                )
+            lines.append(
+                f"{indent}    assert({_slot_bound_expr(cur_call, key, val_access, scalar_map=hit.scalar_map)} as int "
+                f"<= {rem_here_int});"
+            )
         lines.append(f"{indent}}}")
         return lines
 
@@ -1473,13 +1791,15 @@ def _emit_inductive_slot_bound_lemma(
         spec_rs=spec_rs,
     )
     body = "\n".join(proof_body)
+    suffix_req = ctx.suffix_start_requires()
+    requires_extra = f",\n        {suffix_req}" if suffix_req else ""
     lemma_block = f"""{comment}
 pub proof fn {fname}(
     {sig_params},
 )
     requires
         {ctx.valid_requires},
-        {ctx.index_bounds_requires()},
+        {ctx.index_bounds_requires()}{requires_extra},
     ensures
         {ensures}{decreases_clause}
 {{
@@ -1498,7 +1818,7 @@ pub proof fn {alias}(
 )
     requires
         {ctx.valid_requires},
-        {ctx.index_bounds_requires()},
+        {ctx.index_bounds_requires()}{requires_extra},
     ensures
         {ensures}
 {{
