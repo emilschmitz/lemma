@@ -590,19 +590,18 @@ def _rem_int_from_subst(
 
 
 def _table_rows_asserts(ctx) -> list[str]:
-    """Assert row caps that follow from ``valid_cols`` (always ``LEMMA_MAX_ROWS`` today).
+    """Assert row caps that follow from ``valid_cols`` (depth-aware Layer A)."""
+    from verus_transpiler.value_bounds import row_cap_const_for_join_depth
 
-    Depth-specific ``ROWS_CUBE`` / ``ROWS_4`` caps are catalog constants for product
-    lemmas; they are **not** in ``valid_cols`` unless/until per-query depth caps are
-    wired into ``valid_cols``. Do not assert them here — proofs cannot discharge them.
-    """
+    depth = _join_depth(ctx)
+    cap = row_cap_const_for_join_depth(depth)
     seen: set[str] = set()
     lines: list[str] = []
     for param, _struct in ctx.table_params:
         if param in seen:
             continue
         seen.add(param)
-        lines.append(f"assert({param}.n <= LEMMA_MAX_ROWS);")
+        lines.append(f"assert({param}.n <= {cap});")
     return lines
 
 

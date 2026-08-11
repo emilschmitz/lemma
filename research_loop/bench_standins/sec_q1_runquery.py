@@ -36,6 +36,7 @@ pub exec fn run_query(cols: &Cols) -> (res: HashMapWithView<(String, String), (u
                     (0u64, Map::empty(), 0u64, 0u64)
                 };
                 valid_cols_get_line(cols, i as int);
+                let ghost rem = (cols.n as int - k) as u64;
                 if tail.contains_key(key) {
                     assume_method_spec_helper_slot0_count_leq_str_str__u64_u64_u64(
                         cols, k, key,
@@ -46,17 +47,25 @@ pub exec fn run_query(cols: &Cols) -> (res: HashMapWithView<(String, String), (u
                     assume_method_spec_helper_slot3_count_leq_str_str__u64_u64_u64(
                         cols, k, key,
                     );
-                    assert(prev.0 <= (cols.n - k) as u64);
-                    assert(prev.2 <= (cols.n - k) as u64 * (LEMMA_MAX_NATIVE_U32 as u64));
-                    assert(prev.3 <= (cols.n - k) as u64);
+                    assert(prev.0 <= rem);
+                    assert(prev.2 <= rem * (LEMMA_MAX_NATIVE_U32 as u64));
+                    assert(prev.3 <= rem);
                 }
+                assert(0 <= (cols.n as int - k));
+                assert((cols.n as int - k) <= cols.n as int);
+                assert(rem <= cols.n as u64);
+                assert(prev.0 <= rem);
+                assert(prev.2 <= rem * (LEMMA_MAX_NATIVE_U32 as u64));
+                assert(prev.3 <= rem);
                 assert(prev.0 <= cols.n as u64);
                 assert(prev.2 <= (cols.n as u64) * (LEMMA_MAX_NATIVE_U32 as u64));
                 assert(prev.3 <= cols.n as u64);
                 assert((line as u64) < LEMMA_MAX_NATIVE_U32 as u64);
-                lemma_u64_add_one_fit(prev.0, cols.n);
-                lemma_u64_add_native_fit(prev.2, line as u64, cols.n);
-                lemma_u64_add_one_fit(prev.3, cols.n);
+                lemma_rem_cap_one_add_fits_rows(rem);
+                lemma_u64_add_one_prev_le(prev.0, rem);
+                lemma_rem_cap_native_add_fits_rows(rem);
+                lemma_u64_add_native_prev_le(prev.2, line as u64, rem);
+                lemma_u64_add_one_prev_le(prev.3, rem);
             }
             agg_step_str_str__u64_u64_u64(
                 &mut st,

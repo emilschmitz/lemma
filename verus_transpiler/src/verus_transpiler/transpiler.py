@@ -54,6 +54,7 @@ from .value_bounds import (
     emit_trusted_prelude,
     emit_valid_cols_accessor_lemmas,
     emit_valid_cols_predicate,
+    row_cap_const_for_join_depth,
     spec_map_key_type,
 )
 from .windows import emit_window_spec_helper
@@ -371,6 +372,8 @@ def _emit_multi_table_cols(
     catalog: CatalogAssumptions | None = None,
 ) -> str:
     parts: list[str] = []
+    join_depth = sum(1 for table in multi_schema if table in query.tables)
+    row_cap = row_cap_const_for_join_depth(join_depth)
     for table, cols in multi_schema.items():
         if table not in query.tables:
             continue
@@ -384,6 +387,7 @@ def _emit_multi_table_cols(
                 bounds=bounds,
                 catalog=catalog,
                 table_assumptions=ta,
+                row_cap_const=row_cap,
             ).replace("valid_cols", f"valid_cols_{table}")
         )
     return "\n\n".join(parts)
