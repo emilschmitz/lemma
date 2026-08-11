@@ -11,15 +11,15 @@ reinject. Append dated entries; do not rewrite history.
 3. Loader `valid_cols` = Layer A data boundary (named), not “arith won’t wrap.”
 4. Empty `external_body` proof lemmas must leave or become real proofs.
 
-## Open gaps (start)
+## Open gaps (start → closed 2026-08-11)
 
-| Gap | Issue | Target |
-|-----|--------|--------|
-| `lemma_u64_add_*_prev_le` / `*_fit` | empty `external_body` | prove with nonlinear / delete if unused |
-| `lemma_rem_cap_*_pow4` | empty; u64 product wraps in requires | int-cap requires + prove |
-| HAVING peel | `unsafe` transmute + `ensures true` | real `@` contract or fold into HAVING Trusted only |
-| `load_cols_*` | I/O → `valid_cols` | keep as Layer A; document as boundary |
-| Map insert lemmas | container axioms | keep (expert-blind); note in inventory |
+| Gap | Issue | Target | Status |
+|-----|--------|--------|--------|
+| `lemma_u64_add_*_prev_le` / `*_fit` | empty `external_body` | prove | **done** |
+| `lemma_rem_cap_*_pow4` | empty; unsound ROWS⁴ | ROWS_4 + prove | **done** |
+| HAVING peel | `ensures true` | private in HAVING exec | **done** |
+| `load_cols_*` | I/O → `valid_cols` | Layer A doc | **accepted** |
+| Map insert lemmas | container axioms | keep | **accepted** |
 
 ## Baseline
 
@@ -57,4 +57,24 @@ Trusteds that hid that.
 - Checkpoint before rewrite: `prove_loop_r13_pre_pow4_to_rows4.tar.gz`.
 
 Spot: q1/q2/q5/q50 VERIFY True. Full batch next.
+
+### 2026-08-11 — r13 batch after ROWS_4 soundness
+
+- **r13: 50/50 = 100%** (`r13_rocketship_trusted_batch.json`)
+- Checkpoint: `prove_loop_r13_rocketship_trusted_100.tar.gz`
+- Host commit: `44c7b6f`
+
+### Remaining product-path Trusteds (accepted / expert-blind)
+
+| Surface | Status |
+|---------|--------|
+| `lemma_map_insert_*` | Container axioms (empty proof body) — expert-blind Map facts |
+| `load_cols_*` → `valid_cols` | Layer A I/O boundary |
+| `add_u64` / `agg_*` / HAVING filter exec | Fit `requires` + real bodies / `@` ensures |
+| Peel transmute | Private inside HAVING exec only — not free-standing |
+
+**Empty fold `assume_*_slot*`:** gone (inductive `lemma_*` default).
+
+Open gaps table at top of this file: fit/prev_le/pow4/HAVING peel — **closed**.
+
 
