@@ -107,11 +107,14 @@ def test_view_and_trusted_helpers(fam) -> None:
         assert f"agg_new_{suffix}" in bridge.trusted_rs
         assert "agg_add_" in bridge.trusted_rs or "agg_put_" in bridge.trusted_rs
     if fam.kind == "seq" and "Seq<char>" in fam.spec_ret:
-        assert bridge.view_spec is None
+        assert bridge.view_spec is not None
+        assert bridge.view_spec.startswith("vec_") and bridge.view_spec.endswith("_view")
+        assert f"pub open spec fn {bridge.view_spec}" in bridge.trusted_rs
         assert "arbitrary()" not in bridge.trusted_rs
         suffix = bridge.agg_suffix or ""
         assert f"seq_new_{suffix}" in bridge.trusted_rs
         assert f"seq_push_{suffix}" in bridge.trusted_rs
+        assert bridge.ensures == f"{bridge.view_spec}(res@) == method_spec(cols),"
 
 
 @pytest.mark.parametrize("fam", TRUSTED_FAMILY_MENU, ids=_MENU_IDS)

@@ -102,9 +102,11 @@ For every family in `TRUSTED_FAMILY_MENU`:
 
 1. `bridge_for_family` succeeds.
 2. Scalars: `ensures res == method_spec(cols),` and empty `trusted_rs`.
-3. Maps / seq-with-strings: `view_spec` set; `trusted_rs` contains the view name,
-   `external_body`, and `agg_new_` + (`agg_add_` or `agg_put_`) or `seq_new_` /
-   `seq_push_` as appropriate.
+3. Maps: `view_spec` is `None`; `ensures res@ == method_spec(cols),`; vstd
+   `HashMapWithView` / `StringHashMap` helpers with `external_body` and
+   `agg_new_` + (`agg_add_` or `agg_put_`). Seq-with-strings: `view_spec` set
+   to named `vec_*_view` (open spec, not `arbitrary()`); `ensures` uses that
+   view on `res@`; `trusted_rs` contains `seq_new_` / `seq_push_`.
 4. `assert_menu_complete()` validates the full menu in CI.
 
 Parametrized structural tests: `tests/test_trusted_families.py`.

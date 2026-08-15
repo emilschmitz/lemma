@@ -206,17 +206,27 @@ def assert_menu_complete() -> None:
 
         if fam.kind == "seq":
             if "Seq<char>" in fam.spec_ret:
-                if bridge.view_spec is not None:
-                    raise AssertionError(f"{fam.id}: seq-with-strings must not use opaque view_spec")
+                view_fn = bridge.view_spec
+                if view_fn is None:
+                    raise AssertionError(f"{fam.id}: seq-with-strings must have view_spec")
+                if not view_fn.startswith("vec_") or not view_fn.endswith("_view"):
+                    raise AssertionError(
+                        f"{fam.id}: seq-with-strings view_spec must be vec_*_view, got {view_fn!r}"
+                    )
                 if "arbitrary()" in bridge.trusted_rs:
                     raise AssertionError(f"{fam.id}: seq trusted_rs must not contain arbitrary()")
+                if f"pub open spec fn {view_fn}" not in bridge.trusted_rs:
+                    raise AssertionError(f"{fam.id}: trusted_rs missing open spec {view_fn}")
                 suffix = bridge.agg_suffix or ""
                 if f"seq_new_{suffix}" not in bridge.trusted_rs:
                     raise AssertionError(f"{fam.id}: trusted_rs missing seq_new_{suffix}")
                 if f"seq_push_{suffix}" not in bridge.trusted_rs:
                     raise AssertionError(f"{fam.id}: trusted_rs missing seq_push_{suffix}")
-                if bridge.ensures != "res@ == method_spec(cols),":
-                    raise AssertionError(f"{fam.id}: seq-with-strings must use res@ ensures")
+                expected_ensures = f"{view_fn}(res@) == method_spec(cols),"
+                if bridge.ensures != expected_ensures:
+                    raise AssertionError(
+                        f"{fam.id}: seq-with-strings must use {view_fn}(res@) ensures"
+                    )
             else:
                 if bridge.view_spec is not None:
                     raise AssertionError(f"{fam.id}: plain seq should not have view_spec")
