@@ -63,6 +63,18 @@ def test_ci_gate_bound_lemmas_present() -> None:
         assert "ensures" in block
 
 
+def test_ci_gate_map_insert_lemmas_proved_not_external_body() -> None:
+    from research_loop.sec_table_assumptions import sec_prove_loop_catalog_assumptions
+
+    lemmas = emit_bound_lemmas(catalog=sec_prove_loop_catalog_assumptions())
+    for name in ("lemma_map_insert_get", "lemma_map_insert_preserves_other_key"):
+        block = lemmas.split(f"pub proof fn {name}")[1].split("pub proof fn")[0]
+        assert "external_body" not in block, name
+        body = block[block.find("{") + 1 : block.rfind("}")].strip()
+        assert body, f"{name}: empty proof body"
+        assert "assert(" in body, f"{name}: expected assert in proof body"
+
+
 @pytest.mark.parametrize("name", _PRELUDE_ARITH)
 def test_ci_gate_prelude_arith_has_requires(prelude: str, name: str) -> None:
     block = _prelude_fn_chunk(prelude, name)

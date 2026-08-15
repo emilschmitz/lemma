@@ -143,6 +143,16 @@ def test_left_join_miss_not_external_body() -> None:
     assert "external_body" not in block
 
 
+def test_bound_lemmas_map_insert_proved_not_external_body() -> None:
+    lemmas = emit_bound_lemmas(catalog=sec_prove_loop_catalog_assumptions())
+    for name in ("lemma_map_insert_get", "lemma_map_insert_preserves_other_key"):
+        block = lemmas.split(f"pub proof fn {name}")[1].split("pub proof fn")[0]
+        assert "external_body" not in block, name
+        body = block[block.find("{") + 1 : block.rfind("}")].strip()
+        assert body, f"{name}: empty proof body"
+        assert "assert(" in body, f"{name}: expected assert in proof body"
+
+
 def test_bound_lemmas_emitted_with_requires_ensures() -> None:
     lemmas = emit_bound_lemmas(catalog=sec_prove_loop_catalog_assumptions())
     for name in (

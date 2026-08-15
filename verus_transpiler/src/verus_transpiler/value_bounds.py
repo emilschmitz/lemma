@@ -390,16 +390,16 @@ pub proof fn lemma_rem_cap_native_add_fits_4(prev_cap: u64)
             {};
 }
 
-// === Map insert (fold induction; vstd Map one-key update — container axioms) ===
-#[verifier::external_body]
+// === Map insert (fold induction; vstd Map insert spec + broadcast lemmas) ===
 pub proof fn lemma_map_insert_get<K, V>(m: Map<K, V>, k: K, v: V)
     ensures
         m.insert(k, v).contains_key(k),
         m.insert(k, v)[k] == v,
 {
+    assert(m.insert(k, v).contains_key(k));
+    assert(m.insert(k, v)[k] == v);
 }
 
-#[verifier::external_body]
 pub proof fn lemma_map_insert_preserves_other_key<K, V>(m: Map<K, V>, k1: K, k2: K, v: V)
     requires
         k1 != k2,
@@ -407,6 +407,10 @@ pub proof fn lemma_map_insert_preserves_other_key<K, V>(m: Map<K, V>, k1: K, k2:
         m.insert(k1, v).contains_key(k2) == m.contains_key(k2),
         m.contains_key(k2) ==> m.insert(k1, v)[k2] == m[k2],
 {
+    assert(m.insert(k1, v).contains_key(k2) == m.contains_key(k2));
+    if m.contains_key(k2) {
+        assert(m.insert(k1, v)[k2] == m[k2]);
+    }
 }
 
 // === Nested-loop suffix rem geometry (proved; suffix-start boundary requires) ===

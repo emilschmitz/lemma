@@ -19,7 +19,7 @@ reinject. Append dated entries; do not rewrite history.
 | `lemma_rem_cap_*_pow4` | empty; unsound ROWS⁴ | ROWS_4 + prove | **done** |
 | HAVING peel | `ensures true` | private in HAVING exec | **done** |
 | `load_cols_*` | I/O → `valid_cols` | Layer A doc | **accepted** |
-| Map insert lemmas | container axioms | keep | **accepted** |
+| Map insert lemmas | container axioms | prove | **done** |
 
 ## Baseline
 
@@ -68,7 +68,7 @@ Spot: q1/q2/q5/q50 VERIFY True. Full batch next.
 
 | Surface | Status |
 |---------|--------|
-| `lemma_map_insert_*` | Container axioms (empty proof body) — expert-blind Map facts |
+| `lemma_map_insert_*` | Proved from vstd `Map::insert` broadcast lemmas |
 | `load_cols_*` → `valid_cols` | Layer A I/O boundary |
 | `add_u64` / `agg_*` / HAVING filter exec | Fit `requires` + real bodies / `@` ensures |
 | Peel transmute | Private inside HAVING exec only — not free-standing |
@@ -87,4 +87,12 @@ Open gaps table at top of this file: fit/prev_le/pow4/HAVING peel — **closed**
 - DuckDB tiny session-hot rerun (GenDB protocol): Q1 `SESSION_HOT_US=17386`.
 - Local Verus smoke: r13_q11 `VERIFY True` under rocketship catalog.
 - Gate still **≥98% `VERIFY True`** on this draw — agent-prove next (local then Spot).
+
+### 2026-08-15 — prove map-insert lemmas (vstd Map)
+
+- `lemma_map_insert_get` / `lemma_map_insert_preserves_other_key`: removed
+  `external_body`; real proof bodies via vstd `Map::insert` broadcast lemmas
+  (`lemma_map_insert_domain` / `lemma_map_insert_same` / `axiom_map_insert_different`).
+- CI gate: bound-lemmas emit must not contain empty `external_body` map-insert proofs.
+- Open gaps table: map-insert row **done**.
 
