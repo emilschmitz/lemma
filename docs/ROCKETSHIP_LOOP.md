@@ -77,4 +77,14 @@ Spot: q1/q2/q5/q50 VERIFY True. Full batch next.
 
 Open gaps table at top of this file: fit/prev_le/pow4/HAVING peel — **closed**.
 
+### 2026-08-15 — r14 fresh shuffle (local, before Spot)
+
+- Seed **1414**, 50 queries, `queries_resample_r14.sql` (GenDB template generator +
+  diversity sample on **tiny** SEC DuckDB — local rehearsal; full-SEC resample
+  belongs on the n2-highmem-64 Spot box).
+- Shell: **50/50 = 100%** (`sqlsmith_trusted_coverage.py`).
+- Capability: **50/50 ready**, `fold_arbitrary=0`.
+- DuckDB tiny session-hot rerun (GenDB protocol): Q1 `SESSION_HOT_US=17386`.
+- Local Verus smoke: r13_q11 `VERIFY True` under rocketship catalog.
+- Gate still **≥98% `VERIFY True`** on this draw — agent-prove next (local then Spot).
 

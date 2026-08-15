@@ -14,6 +14,7 @@ Spot VM **r9** (`lemma-gendb`) was deleted before `scp` of `research_loop/runs/`
 - **r11 rocketship re-verify** (after owned-map accumulate Trusteds + bound lemmas): **49/49** with `verify_local` → **VERIFY True** (Q19 still absent / transpile_fail). Gate holds under rocketship.
 - **r12** (seed 1212, 50 queries): **50/50 = 100%** agent-proved under rocketship Trusteds (`VERIFY True` after full re-verify). Clears ≥98% gate on a fresh draw.
 - **r13** (seed 1313, 50 queries, `queries_resample_r13.sql`): **50/50 = 100%** shell + **50/50 agent-proved** (`VERIFY True`) under auditable Layer A/B catalog assumptions + rocketship Trusteds. Fold-slot bounds are inductive proved ``lemma_*`` (default; no product-path empty ``assume_*_slot*``). Checkpoints: `prove_loop_r13_pass50.tar.gz`, `prove_loop_r13_lemma_only_100.tar.gz`. Clears ≥98% on a fresh draw.
+- **r14** (seed 1414, 50 queries, `queries_resample_r14.sql`): **50/50 = 100%** shell + **50/50 `ready`** (host scorer; `fold_arbitrary=0`). Generated locally on tiny SEC DuckDB. Agent-prove / `VERIFY True` gate **not yet** cleared.
 
 
 Shell / “Trusted menu ready” on fresh SQLSmith draws plateaued (r5–r9). Spot agents still mostly failed to **finish a Verus proof**. New loop focus:
@@ -92,6 +93,7 @@ Distinct-set helpers (`set_insert_str`, etc.) plus **group `agg_step_*`** (see `
 | 2026-08-10 | **r11** (seed 1111, 50 SQL) | **98%** shell (49/50) | **98%** agent-proved (49/50 `VERIFY True`) | Gate raised to ≥98%. Miss = Q19 IN+GROUP BY transpile (loud fail). |
 | 2026-08-10 | **r12** (seed 1212, 50 SQL) | **100%** shell | **100%** agent-proved (50/50 `VERIFY True`) | Fresh draw under rocketship Trusteds (owned-map accumulate + bound lemmas). |
 | 2026-08-11 | **r13** (seed 1313, 50 SQL) | **100%** shell | **100%** agent-proved (50/50 `VERIFY True`) | Layer A/B + inductive fold `lemma_*` default (no empty `assume_*_slot*`); `prove_loop_r13_lemma_only_100`. |
+| 2026-08-15 | **r14** (seed 1414, 50 SQL, tiny SEC DB) | **100%** shell | **100%** `ready` (host); agent-prove TBD | Fresh shuffle before Spot; DuckDB tiny session-hot rerun. |
 
 Host scorer buckets: `ready` = shell OK + real MethodSpec folds + Trusted step surface for shape; `needs_trusted` = shell OK but multi-agg / COUNT(DISTINCT) without `agg_step_*`; `transpile_fail` / `shell_fail` otherwise.
 

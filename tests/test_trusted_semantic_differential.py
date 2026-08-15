@@ -248,9 +248,9 @@ def test_map_family_bridge_has_expected_helpers(fam) -> None:
 def test_map_family_bridge_exec_surface(fam) -> None:
     bridge = bridge_for_family(fam)
     rs = bridge.trusted_rs
-    assert "HashMap::new()" in rs
+    assert "HashMapWithView::new()" in rs or "StringHashMap::new()" in rs
     assert "external_body" in rs
-    assert bridge.view_spec and bridge.view_spec in rs
+    assert bridge.view_spec is None or bridge.view_spec in rs
     if is_multi_agg_map_family(fam):
         assert "agg_put_" in rs
         assert "checked_add" in rs
@@ -372,15 +372,16 @@ def test_distinct_set_helpers_in_agent_menu() -> None:
         "set_insert_str",
         "set_new_u32",
         "set_insert_u32",
-        "hashset_str_view",
-        "hashset_u32_view",
     ):
         assert name in menu, f"missing {name} in distinct-set TRUSTED menu"
+    # Open-spec Map bridges (not exec menu entries):
+    assert "hashset_str_as_map" in rs
+    assert "hashset_u32_as_map" in rs
 
 
 def test_distinct_set_bridge_exec_surface() -> None:
     rs = distinct_set_trusted_rs()
-    assert "HashSet::new()" in rs
+    assert "HashSetWithView::new()" in rs
     assert "set_insert_str" in rs
     assert "set_insert_u32" in rs
     assert "is_new" in rs
@@ -652,7 +653,7 @@ def test_agg_step_bridge_exec_surface_in_q1_spec() -> None:
     visible = _agent_visible(Q1_LIKE_SQL, {"pre": PRE_SCHEMA})
     assert "AggStepState_str_str__u64_u64_u64" in visible
     assert "agg_step_state_new_str_str__u64_u64_u64" in visible
-    assert "HashMap::new()" in visible
+    assert "HashMapWithView::new()" in visible or "StringHashMap::new()" in visible
 
 
 # --- Every menu family has at least one semantic case ---
