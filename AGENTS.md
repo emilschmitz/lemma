@@ -46,14 +46,32 @@ AGENTS.md” when they finish a milestone or before strip/inject.
 When booking cloud VMs for Lemma experiments:
 
 - **At most one** compute instance at a time (delete or stop the previous before create).
-- **No GPUs.** CPU/RAM only.
+- **No GPUs.** CPU/RAM only. **Never** A100/H100, TPU, multi-node, or anything in the
+  **~$100/hr** class. If a create would exceed the cap, **stop** — do not “just this once.”
 - Prefer template / known shape: Spot **`n2-highmem-64`** from snapshot
   `lemma-gendb-pre-spot-*` (or the saved `lemma-gendb-n2-highmem-64` template overrides).
-- **Hard cost cap ≈ $5/hr.** Do not book A100/H100, multi-node, or other expensive SKUs.
-  Spot `n2-highmem-64` is the default; if Spot stock fails, retry another zone — still one
-  machine, still under the cap — do not “upgrade” the machine class.
+  Target **~$2–4/hr**. On-demand n2-highmem-64 is ~$4.19/hr; **Spot** is ~$1.8–2.2/hr
+  in us-east1/us-central1. **Hard cap ≈ $5/hr** (on-demand still OK if Spot is out of
+  stock). If Spot stock fails, retry another zone — still one machine, still under the
+  cap — do not “upgrade” the machine class. **Never** ~$100/hr GPUs / multi-node.
 - Agent timeouts for paper/CLI runs stay **`AGENT_TIMEOUT_SEC=600`** (10 min) unless Emil
   overrides; model **`cursor-grok-4.5-high`** in `research_loop/config.env` `AGENT_CMD`.
+
+### Experiment harvest (non-negotiable)
+
+Every paper/Spot/`LEMMA_EXPERIMENT=1` run must be **reproducible** and **logged**:
+
+- **Clean git worktree.** Do not set `LEMMA_EXPERIMENT_ALLOW_DIRTY`. Commit first.
+  Harvest `meta/` / `hardware.json` must record **commit SHA**, branch, and `git_dirty=false`.
+- **Fresh EDGAR shuffle** for prove_loop / 98% gates — new `queries_resample_rN.sql`
+  (new seed), not a recycled r13 body corpus and not cloned `run_query` transplants.
+- Keep **full traces**: `research_loop/runs/<id>/` (workspace, logs, history, config
+  snapshot), plus `LEMMA_EXPERIMENT_EVENT_URL` stream when on Spot. rsync/gsutil the run
+  tree; do not rely on chat status.
+- If the VM SKU/zone/disk changes, **re-run DuckDB session-hot baselines** on that box
+  (machine details are part of the result).
+- Snapshot `research_loop/config.env` flags used (timeouts, model, `AGENT_CMD`) into the
+  run dir / experiment notes.
 
 ## Always read the traces on failure
 

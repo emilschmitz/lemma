@@ -81,7 +81,9 @@ Timeouts: measure 300 s / agent 30 min (align GenDB).
 
 ## Hardware
 
-Prefer **`n2-highmem-64`** while credits burn (~$4.19/hr). ≥200 GB disk. Stop when idle.
+Prefer **Spot `n2-highmem-64`** (~$1.8–2.2/hr Spot; ~$4.19/hr on-demand). **Hard
+cap ≈ $5/hr.** Never ~$100/hr SKUs / GPUs / multi-node. ≥200 GB disk. Stop/delete
+when idle. At most **one** instance.
 See prior sections for cost tables.
 
 ---
