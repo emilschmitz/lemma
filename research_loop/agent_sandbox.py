@@ -104,7 +104,7 @@ def default_agent_cmd() -> str:
     return (
         'agent -p --force --trust --model composer-2.5 '
         '--output-format stream-json --stream-partial-output '
-        '"$(cat PROMPT.txt)"'
+        '< PROMPT.txt'
     )
 
 
@@ -754,6 +754,7 @@ def run_agent_docker(
                 "allowlist": sorted(allow),
                 "image": image,
                 "query_id": query_id,
+                "container_name": container_name,
             }
             (run_logs / "docker_meta.json").write_text(
                 json.dumps(meta, indent=2) + "\n",

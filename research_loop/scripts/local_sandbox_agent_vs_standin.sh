@@ -75,7 +75,7 @@ WHERE l_quantity >= 1 AND l_quantity <= 50
   export AGENT_NETWORK=0
   export AGENT_WEB_SEARCH=0
   # Ensure approve-mcps even if config.env is stale in shell
-  export AGENT_CMD='agent -p --force --trust --approve-mcps --model cursor-grok-4.6-high --output-format stream-json --stream-partial-output "$(cat PROMPT.txt)"'
+  export AGENT_CMD='agent -p --force --trust --approve-mcps --model cursor-grok-4.6-high --output-format stream-json --stream-partial-output < PROMPT.txt'
   export AGENT_CREDENTIALS_DIR="${HOME}/.cursor"
   export AGENT_AUTH_DIR="${HOME}/.config/cursor"
   export AGENT_EGRESS_PROFILE=cursor

@@ -51,7 +51,7 @@ def _env_for_cli_agent(*, limit: int, tbl: Path, workload: str) -> None:
     os.environ["AGENT_AUTH_DIR"] = str(Path(home) / ".config" / "cursor")
     os.environ["AGENT_CMD"] = (
         'agent -p --force --trust --approve-mcps --model cursor-grok-4.6-high '
-        '--output-format stream-json --stream-partial-output "$(cat PROMPT.txt)"'
+        '--output-format stream-json --stream-partial-output < PROMPT.txt'
     )
 
 
