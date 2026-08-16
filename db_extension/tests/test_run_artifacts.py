@@ -123,3 +123,15 @@ def test_end_run_writes_result_json(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert entry["latency_us"] == 42
     assert entry["SESSION_HOT_US"] == 100
     assert entry["tokens_in"] == 1000
+
+
+def test_custom_query_artifact_dir_uses_run_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from research_loop.harness import GENERATED, custom_query_artifact_dir
+
+    monkeypatch.delenv("LEMMA_RUN_DIR", raising=False)
+    assert custom_query_artifact_dir() == GENERATED
+    run = tmp_path / "run"
+    monkeypatch.setenv("LEMMA_RUN_DIR", str(run))
+    dest = custom_query_artifact_dir()
+    assert dest == str(run / "workspace")
+    assert (run / "workspace").is_dir()

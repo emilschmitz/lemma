@@ -16,6 +16,19 @@ CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(os.path.dirname(CURRENT_DIR))
 VERUS_SRC = os.path.join(ROOT_DIR, "verus", "src")
 GENERATED = os.path.join(CURRENT_DIR, "generated")
+
+
+def custom_query_artifact_dir() -> str:
+    """Per-process assemble dir so parallel optimizer runs do not clobber ``custom_query.rs``.
+
+    ``begin_run`` sets ``LEMMA_RUN_DIR``; each process writes into that run's workspace.
+    """
+    run_dir = os.environ.get("LEMMA_RUN_DIR", "").strip()
+    if run_dir:
+        dest = os.path.join(run_dir, "workspace")
+        os.makedirs(dest, exist_ok=True)
+        return dest
+    return GENERATED
 FAILED_TRANSPILE_DIR = os.path.join(CURRENT_DIR, "agents", "failed_transpile")
 PENDING_RUNQUERY_DIR = os.path.join(CURRENT_DIR, "agents", "pending_runquery")
 WORKING = os.path.join(CURRENT_DIR, "working_query")
@@ -1700,7 +1713,8 @@ def run_custom_sql_pipeline(
 
         exec_rust_ret = rust_ret_from_run_query_fn(body)
 
-    rs_path = os.path.join(GENERATED, "custom_query.rs")
+    art_dir = custom_query_artifact_dir()
+    rs_path = os.path.join(art_dir, "custom_query.rs")
 
     try:
         if query.joins and multi:
@@ -1766,7 +1780,7 @@ def run_custom_sql_pipeline(
     if enable_verify and verus_on_path():
         proof_verified, verify_msg = run_verus_verify(rs_path, verify_timeout)
         if not proof_verified:
-            log_path = os.path.join(GENERATED, "verify_error_custom.log")
+            log_path = os.path.join(art_dir, "verify_error_custom.log")
             with open(log_path, "w") as f:
                 f.write(verify_msg)
             if require_proof:
@@ -1783,7 +1797,7 @@ def run_custom_sql_pipeline(
 
     ok, compile_msg, binary = run_verus_compile(rs_path, compile_timeout)
     if not ok or not binary:
-        log_path = os.path.join(GENERATED, "compile_error_custom.log")
+        log_path = os.path.join(art_dir, "compile_error_custom.log")
         with open(log_path, "w") as f:
             f.write(compile_msg)
         return _pipeline_failure(
