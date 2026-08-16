@@ -135,9 +135,6 @@ def _schema_for_tables(
         key = tuple(t.lower() for t in sql_tables)
         cache_path = dbp.with_name(dbp.name + ".schema_cache.json")
         lock_path = dbp.with_name(dbp.name + ".lock")
-        import fcntl
-        import json
-
         with lock_path.open("a+") as lf:
             fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
             if cache_path.is_file():

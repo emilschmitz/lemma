@@ -152,7 +152,10 @@ def main():
     # Resolve row count before opening DuckDB (avoids same-file config conflicts).
     dataset_size = effective_dataset_size()
 
-    con = duckdb.connect(spec.db_path)
+    if spec.name == "sec":
+        con = duckdb.connect(spec.db_path, read_only=True)
+    else:
+        con = duckdb.connect(spec.db_path)
     try:
         setup_workload(con, spec, quiet=demo_enabled())
     except FileNotFoundError as e:

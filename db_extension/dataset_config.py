@@ -86,7 +86,7 @@ def _count_duckdb_primary_rows() -> int | None:
     except ImportError:
         return None
     try:
-        con = duckdb.connect(db)
+        con = duckdb.connect(db, read_only=True)
         try:
             n = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
             return int(n)
