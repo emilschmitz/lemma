@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from research_loop.experiment_stream import duckdb_error_is_contention
 from research_loop.scripts.sqlsmith_trusted_coverage import parse_sql_file
 
 SQL_FILE = ROOT / "holdout/gendb_sec_edgar/queries_resample_r15.sql"
@@ -49,6 +50,10 @@ def env_for_experiment() -> dict[str, str]:
     e["AGENT_NETWORK"] = "0"
     e["LEMMA_EXPERIMENT_EVENT_FILE"] = str(
         ROOT / "research_loop/generated/experiment_events/r15.ndjson"
+    )
+    e["LEMMA_PRELIM_PROMPT"] = "1"
+    e["LEMMA_DUCKDB_CONTENTION_FILE"] = str(
+        ROOT / "research_loop/generated/r15/duckdb_contention.ndjson"
     )
     e.pop("LEMMA_EXPERIMENT_ALLOW_DIRTY", None)
     e["UV_NO_SYNC"] = "1"
@@ -103,6 +108,7 @@ def run_one(qid: str, sql: str) -> dict:
         "pid": os.getpid(),
         "use_agent_docker": True,
         "max_iterations": env_for_experiment().get("MAX_ITERATIONS"),
+        "duckdb_contention": duckdb_error_is_contention(text),
     }
     save_status_merge(qid, rec)
     print(

@@ -9,8 +9,12 @@ from pathlib import Path
 
 import duckdb
 
-from db_extension.dataset_config import effective_dataset_size, tbl_path
+from db_extension.dataset_config import tbl_path
 from db_extension.verus_bridge import extract_tables_from_sql, looks_like_ssb_sql
+from research_loop.experiment_stream import (
+    duckdb_error_is_contention,
+    emit_duckdb_contention,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 TPCH_DATA_DIR = ROOT / "data" / "tpch-sf1"
@@ -142,7 +146,12 @@ def _schema_for_tables(
                 hit = cached.get(",".join(key))
                 if hit is not None:
                     return hit
-            con = duckdb.connect(str(dbp), read_only=True)
+            try:
+                con = duckdb.connect(str(dbp), read_only=True)
+            except Exception as exc:
+                if duckdb_error_is_contention(str(exc)):
+                    emit_duckdb_contention(stage="schema", error=str(exc), db_path=str(dbp))
+                raise
             try:
                 db_tables = {r[0].lower() for r in con.execute("SHOW TABLES").fetchall()}
                 if all(t.lower() in db_tables for t in sql_tables):
@@ -337,7 +346,9 @@ def catalog_assumptions_for_workload(workload: str | None = None):
     """
     name = (workload or workload_env_name()).lower()
     if name == "sec":
-        from research_loop.sec_table_assumptions import sec_prove_loop_catalog_assumptions
+        from research_loop.sec_table_assumptions import (
+            sec_prove_loop_catalog_assumptions,
+        )
 
         return sec_prove_loop_catalog_assumptions()
     return None

@@ -236,6 +236,55 @@ def emit_query_end(
         _maybe_emit_artifacts(Path(str(run_path)))
 
 
+def duckdb_error_is_contention(msg: str) -> bool:
+    lower = msg.lower()
+    return any(
+        marker in lower
+        for marker in (
+            "conflicting lock",
+            "could not set lock",
+            "lock could not be obtained",
+            "database is locked",
+        )
+    )
+
+
+def emit_duckdb_contention(
+    *,
+    stage: str,
+    error: str,
+    db_path: str | None = None,
+    **extra: Any,
+) -> None:
+    """Record DuckDB lock/contention (best-effort; never raises)."""
+    payload: dict[str, Any] = {
+        "tag": experiment_tag(),
+        "stage": stage,
+        "error": error[:2000],
+        "db_path": db_path,
+        "pid": os.getpid(),
+        **extra,
+    }
+    emit_experiment_event("duckdb_contention", **payload)
+
+    raw = (os.environ.get("LEMMA_DUCKDB_CONTENTION_FILE") or "").strip()
+    if not raw:
+        return
+    event: dict[str, Any] = {
+        "event_type": "duckdb_contention",
+        "ts": _utc_iso(),
+        **payload,
+    }
+    line = json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
+    try:
+        path = Path(raw)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(line)
+    except OSError as exc:
+        _log.debug("duckdb contention file append failed: %s", exc)
+
+
 def emit_query_failure(
     *,
     sql_query: str,

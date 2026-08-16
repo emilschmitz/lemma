@@ -29,7 +29,12 @@ from research_loop.lemma_flags import (
     lemma_experiment,
     lemma_use_mock_agent,
 )
-from research_loop.experiment_stream import emit_experiment_hello, emit_query_failure
+from research_loop.experiment_stream import (
+    duckdb_error_is_contention,
+    emit_duckdb_contention,
+    emit_experiment_hello,
+    emit_query_failure,
+)
 from research_loop.run_artifacts import assert_experiment_git_clean
 from research_loop.pipeline_log import log_info
 from research_loop.pipeline_demo import (
@@ -152,10 +157,15 @@ def main():
     # Resolve row count before opening DuckDB (avoids same-file config conflicts).
     dataset_size = effective_dataset_size()
 
-    if spec.name == "sec":
-        con = duckdb.connect(spec.db_path, read_only=True)
-    else:
-        con = duckdb.connect(spec.db_path)
+    try:
+        if spec.name == "sec":
+            con = duckdb.connect(spec.db_path, read_only=True)
+        else:
+            con = duckdb.connect(spec.db_path)
+    except Exception as exc:
+        if duckdb_error_is_contention(str(exc)):
+            emit_duckdb_contention(stage="connect", error=str(exc), db_path=spec.db_path)
+        raise
     try:
         setup_workload(con, spec, quiet=demo_enabled())
     except FileNotFoundError as e:

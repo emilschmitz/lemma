@@ -108,6 +108,20 @@ def default_agent_cmd() -> str:
     )
 
 
+def _prelim_prompt_enabled() -> bool:
+    return os.environ.get("LEMMA_PRELIM_PROMPT", "0") not in ("0", "false", "False", "")
+
+
+def _prelim_parallel_note_section() -> str:
+    return """
+## Preliminary parallel note (observability)
+Many parallel workers may share the **same full SEC DuckDB** file.
+Open/query/measure paths can **block or fail** with a file lock / pin (e.g. `Conflicting lock`).
+That is expected under contention and is **recorded by the host**.
+Do **not** skip the data path to avoid it — still implement and prove `run_query` (**SESSION_HOT_US**).
+"""
+
+
 def _read_ro_excerpt(workspace: Path, name: str, *, max_chars: int = 2500) -> str:
     path = workspace / "context" / "ro" / name
     if not path.is_file():
@@ -183,6 +197,7 @@ def build_agent_prompt(
     budget = int(budget_sec) if budget_sec is not None else agent_timeout_sec()
     ends = _submit_ends() if submit_ends_session is None else bool(submit_ends_session)
     budget_section = session_budget_prompt_section(budget_sec=budget, submit_ends=ends)
+    prelim_section = _prelim_parallel_note_section() if _prelim_prompt_enabled() else ""
 
     return f"""# Lemma RunQuery optimizer (query_id={query_id}, iter {iteration}/{max_iterations})
 
@@ -197,7 +212,7 @@ Edit only `{body_path}` between `AGENT_EDIT_START` / `AGENT_EDIT_END`.
 Keep the host signature / `requires` / `ensures` matching `method_spec(...)` in `{ctx}/spec.rs`
 (admission rejects bare `cols` when MethodSpec is multi-table). Do not add Trusted, `assume`,
 `arbitrary`, `external_body`, or redefine `method_spec`.
-
+{prelim_section}
 {budget_section}
 {facts_block}
 ## Context to read (do not modify)

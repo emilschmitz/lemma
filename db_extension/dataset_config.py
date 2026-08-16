@@ -5,6 +5,11 @@ import json
 import os
 from pathlib import Path
 
+from research_loop.experiment_stream import (
+    duckdb_error_is_contention,
+    emit_duckdb_contention,
+)
+
 ROOT = Path(__file__).resolve().parents[1]
 SSB_DIR = ROOT / "ssb-dbgen"
 DEFAULT_TBL = SSB_DIR / "lineorder_flat.tbl"
@@ -92,7 +97,10 @@ def _count_duckdb_primary_rows() -> int | None:
             return int(n)
         finally:
             con.close()
-    except Exception:
+    except Exception as exc:
+        if duckdb_error_is_contention(str(exc)):
+            emit_duckdb_contention(stage="count_primary_rows", error=str(exc), db_path=db)
+            raise
         return None
 
 
