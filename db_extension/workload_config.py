@@ -1,6 +1,8 @@
 """Workload resolution for Lemma ONE product path (SSB / holdout / TPC-H / SEC)."""
 from __future__ import annotations
 
+import fcntl
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -129,18 +131,39 @@ def _schema_for_tables(
 ) -> dict:
     """Build flat or nested schema dict from tbl paths and/or an open DuckDB file."""
     if db_path and Path(db_path).is_file() and sql_tables:
-        con = duckdb.connect(db_path, read_only=True)
-        try:
-            db_tables = {r[0].lower() for r in con.execute("SHOW TABLES").fetchall()}
-            if all(t.lower() in db_tables for t in sql_tables):
-                if len(sql_tables) == 1:
-                    return _duckdb_describe_schema(con, sql_tables[0])
-                return {
-                    t: _duckdb_describe_schema(con, t)
-                    for t in sql_tables
-                }
-        finally:
-            con.close()
+        dbp = Path(db_path)
+        key = tuple(t.lower() for t in sql_tables)
+        cache_path = dbp.with_name(dbp.name + ".schema_cache.json")
+        lock_path = dbp.with_name(dbp.name + ".lock")
+        import fcntl
+        import json
+
+        with lock_path.open("a+") as lf:
+            fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+            if cache_path.is_file():
+                cached = json.loads(cache_path.read_text(encoding="utf-8"))
+                hit = cached.get(",".join(key))
+                if hit is not None:
+                    return hit
+            con = duckdb.connect(str(dbp), read_only=True)
+            try:
+                db_tables = {r[0].lower() for r in con.execute("SHOW TABLES").fetchall()}
+                if all(t.lower() in db_tables for t in sql_tables):
+                    if len(sql_tables) == 1:
+                        schema = _duckdb_describe_schema(con, sql_tables[0])
+                    else:
+                        schema = {t: _duckdb_describe_schema(con, t) for t in sql_tables}
+                    blob = {}
+                    if cache_path.is_file():
+                        try:
+                            blob = json.loads(cache_path.read_text(encoding="utf-8"))
+                        except json.JSONDecodeError:
+                            blob = {}
+                    blob[",".join(key)] = schema
+                    cache_path.write_text(json.dumps(blob), encoding="utf-8")
+                    return schema
+            finally:
+                con.close()
 
     if len(tables) == 1:
         name, path = next(iter(tables.items()))
