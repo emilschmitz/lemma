@@ -114,11 +114,11 @@ def _prelim_prompt_enabled() -> bool:
 
 def _prelim_parallel_note_section() -> str:
     return """
-## Preliminary parallel note (observability)
-Many parallel workers may share the **same full SEC DuckDB** file.
-Open/query/measure paths can **block or fail** with a file lock / pin (e.g. `Conflicting lock`).
-That is expected under contention and is **recorded by the host**.
-Do **not** skip the data path to avoid it — still implement and prove `run_query` (**SESSION_HOT_US**).
+## Parallel DuckDB (FYI)
+Sibling workers share the same full SEC DuckDB file.
+If open/query/measure says the DB is **pinned** or `Conflicting lock`, that is temporary:
+wait a moment and **retry** — it should be available again soon. Keep going on `run_query`.
+The host records whether a pin happened.
 """
 
 
@@ -580,15 +580,18 @@ def run_agent_docker(
     env["LEMMA_AGENT_STREAM_LOG"] = stream_container
     env["LEMMA_AGENT_STDERR_LOG"] = stderr_container
 
+    container_name = f"lemma-agent-{os.getpid()}-{query_id}-{int(time.time())}"
     log_info(
         COMPONENT,
         "agent_docker_start",
         f"docker run {image} (network none + egress={profile})",
         image=image,
+        container_name=container_name,
         allowlist=list(allow),
     )
     cmd = [
         "docker", "run", "--rm",
+        "--name", container_name,
         "--network", "none",
         "--cap-drop", "ALL",
         # Host-owned bind mounts need DAC_OVERRIDE when container runs as root.
@@ -705,6 +708,11 @@ def run_agent_docker(
                         "agent_docker_end_session",
                         "end_session sentinel after submit",
                     )
+                    subprocess.run(
+                        ["docker", "kill", container_name],
+                        capture_output=True,
+                        timeout=30,
+                    )
                     popen.kill()
                     rc = popen.wait()
                     break
@@ -716,6 +724,11 @@ def run_agent_docker(
             )
         except subprocess.TimeoutExpired:
             timed_out = True
+            subprocess.run(
+                ["docker", "kill", container_name],
+                capture_output=True,
+                timeout=30,
+            )
             popen.kill()
             popen.wait()
             proc = subprocess.CompletedProcess(

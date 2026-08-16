@@ -25,9 +25,9 @@ def test_build_agent_prompt_prelim_section(tmp_path: Path, monkeypatch: pytest.M
         iteration=1,
         max_iterations=4,
     )
-    assert "Preliminary parallel note" in prompt
-    assert "Conflicting lock" in prompt or "file lock" in prompt
-    assert "SESSION_HOT" in prompt
+    assert "Parallel DuckDB" in prompt
+    assert "Conflicting lock" in prompt or "pinned" in prompt
+    assert "retry" in prompt.lower()
 
     monkeypatch.delenv("LEMMA_PRELIM_PROMPT", raising=False)
     prompt_off = build_agent_prompt(
@@ -37,7 +37,7 @@ def test_build_agent_prompt_prelim_section(tmp_path: Path, monkeypatch: pytest.M
         iteration=1,
         max_iterations=4,
     )
-    assert "Preliminary parallel note" not in prompt_off
+    assert "Parallel DuckDB" not in prompt_off
 
     monkeypatch.setenv("LEMMA_PRELIM_PROMPT", "0")
     prompt_zero = build_agent_prompt(
@@ -47,7 +47,7 @@ def test_build_agent_prompt_prelim_section(tmp_path: Path, monkeypatch: pytest.M
         iteration=1,
         max_iterations=4,
     )
-    assert "Preliminary parallel note" not in prompt_zero
+    assert "Parallel DuckDB" not in prompt_zero
 
 
 @pytest.mark.parametrize(
