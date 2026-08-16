@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Parallel r15 agent-prove via product-path run_optimizer (Grok 4.5 CLI).
 
-Not Docker — isolated processes. Each run writes assembled Verus into its own
-``LEMMA_RUN_DIR/workspace/custom_query.rs`` so workers do not clobber each other.
+Requires Docker sandbox (``USE_AGENT_DOCKER=1``, image ``lemma-agent:cli``).
+Each run writes assembled Verus into its own ``LEMMA_RUN_DIR/workspace``.
 """
 from __future__ import annotations
 
@@ -38,15 +38,15 @@ def env_for_experiment() -> dict[str, str]:
     e["LEMMA_EXPERIMENT"] = "1"
     e["LEMMA_RESEARCH_LOG"] = "1"
     e["LEMMA_AGENT_BACKEND"] = "cli"
-    e["USE_AGENT_DOCKER"] = "0"
+    e["USE_AGENT_DOCKER"] = "1"
+    e["AGENT_IMAGE"] = "lemma-agent:cli"
     e["MOCK_AGENT"] = "0"
     e["LEMMA_ALLOW_DUCKDB_FALLBACK"] = "0"
     e["LEMMA_WORKLOAD"] = "sec"
     e["LEMMA_DUCKDB_PATH"] = str(ROOT / "holdout/gendb_sec_edgar/duckdb/sec_edgar.duckdb")
     e["AGENT_TIMEOUT_SEC"] = "600"
-    e["MAX_ITERATIONS"] = "1"
-    e["LEMMA_DATASET_SIZE"] = "65536"
-    e["AGENT_NETWORK"] = "1"
+    e["MAX_ITERATIONS"] = os.environ.get("MAX_ITERATIONS", "4")
+    e["AGENT_NETWORK"] = "0"
     e["LEMMA_EXPERIMENT_EVENT_FILE"] = str(
         ROOT / "research_loop/generated/experiment_events/r15.ndjson"
     )
@@ -101,6 +101,8 @@ def run_one(qid: str, sql: str) -> dict:
         "log": str(log),
         "verified_hint": verified,
         "pid": os.getpid(),
+        "use_agent_docker": True,
+        "max_iterations": env_for_experiment().get("MAX_ITERATIONS"),
     }
     save_status_merge(qid, rec)
     print(
@@ -111,6 +113,9 @@ def run_one(qid: str, sql: str) -> dict:
 
 
 def _keep(rec: dict) -> bool:
+    """Keep only Docker-sandboxed successes. Host-agent rehearsal rows do not count."""
+    if rec.get("use_agent_docker") is not True:
+        return False
     if not rec.get("ok") and not rec.get("verified_hint"):
         return False
     if rec.get("elapsed_s", 0) < 10:
@@ -129,9 +134,16 @@ def main() -> int:
 
     todo = [(qid, sql) for qid, sql in queries if qid not in kept]
     print(
-        f"parallel workers={n_workers} already_ok={len(kept)} todo={len(todo)} docker=0",
+        f"parallel workers={n_workers} already_ok={len(kept)} todo={len(todo)} "
+        f"USE_AGENT_DOCKER={env_for_experiment().get('USE_AGENT_DOCKER')} "
+        f"MAX_ITERATIONS={env_for_experiment().get('MAX_ITERATIONS')}",
         flush=True,
     )
+    if env_for_experiment().get("USE_AGENT_DOCKER") != "1":
+        raise SystemExit(
+            "REFUSING: LEMMA_EXPERIMENT agent-prove requires USE_AGENT_DOCKER=1 "
+            "(do not silently run host agents)."
+        )
     if not todo:
         print("nothing to do", flush=True)
         return 0
