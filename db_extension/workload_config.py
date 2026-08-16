@@ -308,6 +308,21 @@ def resolve_workload(sql: str, *, workload: str | None = None) -> WorkloadSpec:
     return spec
 
 
+def catalog_assumptions_for_workload(workload: str | None = None):
+    """Layer-A catalog profile for product-path transpile/assemble.
+
+    SEC workload uses ``sec_prove_loop_catalog_assumptions()`` (same caps as
+    prove_loop). All other workloads return ``None`` so the transpiler keeps
+    engine defaults (no ``LEMMA_MAX_CELL_U64``).
+    """
+    name = (workload or workload_env_name()).lower()
+    if name == "sec":
+        from research_loop.sec_table_assumptions import sec_prove_loop_catalog_assumptions
+
+        return sec_prove_loop_catalog_assumptions()
+    return None
+
+
 def primary_bench_tbl(spec: WorkloadSpec) -> str:
     """Best tbl path for harness benchmark (primary table)."""
     env = os.environ.get("LEMMA_BENCH_TBL", "").strip()

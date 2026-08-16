@@ -1620,6 +1620,7 @@ def run_custom_sql_pipeline(
     bench_post_timing: str = "",
     bench_main_prefix: str = "",
     rust_ret: str | None = None,
+    workload: str | None = None,
 ) -> dict:
     """Transpile MethodSpec → agent run_query → assemble → verify → compile → run.
 
@@ -1658,7 +1659,14 @@ def run_custom_sql_pipeline(
         projected = schema
 
     try:
-        spec_rs = transpile_sql_to_verus(sql, projected, enable_templates=enable_templates())
+        from db_extension.workload_config import catalog_assumptions_for_workload
+
+        spec_rs = transpile_sql_to_verus(
+            sql,
+            projected,
+            enable_templates=enable_templates(),
+            catalog_assumptions=catalog_assumptions_for_workload(workload),
+        )
     except Exception as e:
         return _pipeline_failure("transpile", sql, str(e), schema)
 

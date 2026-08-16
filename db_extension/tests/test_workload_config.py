@@ -7,10 +7,16 @@ from pathlib import Path
 import pytest
 
 from db_extension.workload_config import (
+    catalog_assumptions_for_workload,
     holdout_data_dir,
     infer_workload_from_tables,
     resolve_workload,
 )
+from research_loop.sec_table_assumptions import (
+    SEC_PROVE_LOOP_MAX_CELL_U64,
+    sec_prove_loop_catalog_assumptions,
+)
+from verus_transpiler import transpile_sql_to_verus
 
 ROOT = Path(__file__).resolve().parents[2]
 SCAN_SKEW = holdout_data_dir() / "scan_skew.tbl"
@@ -48,3 +54,33 @@ def test_experiment_fails_loud_missing_tbl(monkeypatch, tmp_path):
     monkeypatch.setenv("LEMMA_HOLDOUT_DATA", str(tmp_path))
     with pytest.raises(FileNotFoundError, match="missing required table files"):
         resolve_workload(HOLDOUT_SQL, workload="holdout")
+
+
+def test_catalog_assumptions_sec_profile():
+    cat = catalog_assumptions_for_workload("sec")
+    assert cat == sec_prove_loop_catalog_assumptions()
+    assert cat.max_cell_u64 == SEC_PROVE_LOOP_MAX_CELL_U64
+
+
+def test_catalog_assumptions_non_sec_is_none():
+    assert catalog_assumptions_for_workload("ssb") is None
+    assert catalog_assumptions_for_workload("holdout") is None
+    assert catalog_assumptions_for_workload("tpch") is None
+
+
+def test_sec_workload_transpile_emits_max_cell_u64():
+    cat = catalog_assumptions_for_workload("sec")
+    out = transpile_sql_to_verus(
+        "SELECT SUM(value) FROM num",
+        {"num": {"value": "double"}},
+        catalog_assumptions=cat,
+    )
+    assert "pub const LEMMA_MAX_CELL_U64" in out
+    assert f"LEMMA_MAX_CELL_U64: u64 = {SEC_PROVE_LOOP_MAX_CELL_U64}" in out
+
+
+def test_sec_workload_env_selects_catalog(monkeypatch):
+    monkeypatch.setenv("LEMMA_WORKLOAD", "sec")
+    cat = catalog_assumptions_for_workload()
+    assert cat is not None
+    assert cat.max_cell_u64 == SEC_PROVE_LOOP_MAX_CELL_U64

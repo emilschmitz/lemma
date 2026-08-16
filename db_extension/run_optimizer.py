@@ -132,6 +132,7 @@ def main():
         sys.exit(2)
 
     os.environ.setdefault("LEMMA_DUCKDB_PATH", spec.db_path)
+    os.environ.setdefault("LEMMA_WORKLOAD", spec.name)
     if spec.primary_table:
         os.environ["LEMMA_PRIMARY_TABLE"] = spec.primary_table
     bench_tbl = primary_bench_tbl(spec)
@@ -235,6 +236,7 @@ def main():
             model=gemini_model,
             schema=spec.schema,
             workload_tables=spec.tables,
+            workload=spec.name,
         )
 
         if res_loop["status"] == "SUCCESS":

@@ -19,6 +19,7 @@ from db_extension.verus_bridge import (
     resolve_schema_for_sql,
     write_mock_agent_body,
 )
+from db_extension.workload_config import catalog_assumptions_for_workload
 from research_loop.assemble_verified_program import prepare_agent_visible_spec
 from research_loop.lemma_flags import lemma_research_log
 from research_loop.pipeline_demo import (
@@ -178,6 +179,7 @@ def run_optimization_loop(
     model: str = None,
     schema: dict | None = None,
     workload_tables: dict | None = None,
+    workload: str | None = None,
 ) -> dict:
     """
     Runs the query optimization loop (schema-driven Verus). Prints step-by-step colored output.
@@ -260,14 +262,19 @@ def run_optimization_loop(
         # Step 1: Transpile SQL
         log_debug(COMPONENT, "transpile_start", "verus_transpiler")
         _vprint("  - Transpiling SQL query to formal Verus spec...", end="", flush=True)
+        catalog = catalog_assumptions_for_workload(workload)
         try:
             if demo_enabled():
                 with demo_live_step("🏗", "SQL → Verus spec", pass_fail=True) as transpile_step:
-                    verus_spec = transpile_sql_to_verus(sql_query, resolved_schema)
+                    verus_spec = transpile_sql_to_verus(
+                        sql_query, resolved_schema, catalog_assumptions=catalog
+                    )
                     transpile_step.set_passed(True)
             else:
                 t_start = time.perf_counter()
-                verus_spec = transpile_sql_to_verus(sql_query, resolved_schema)
+                verus_spec = transpile_sql_to_verus(
+                    sql_query, resolved_schema, catalog_assumptions=catalog
+                )
                 ms = int((time.perf_counter() - t_start) * 1000)
                 log_debug(COMPONENT, "transpile_done", f"{ms}ms", spec_bytes=len(verus_spec))
                 _vprint(f" {COLOR_GREEN}OK{COLOR_RESET} ({ms} ms)")
@@ -559,6 +566,7 @@ def run_optimization_loop(
                 runquery_path=agent_body_path,
                 dataset_size=dataset_size,
                 workload_tables=workload_tables,
+                workload=workload,
             )
 
         try:

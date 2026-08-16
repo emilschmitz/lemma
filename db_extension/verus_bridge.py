@@ -404,6 +404,7 @@ def invoke_verus_custom_pipeline(
     dataset_size: int = 50_000,
     tbl: str | None = None,
     workload_tables: dict[str, Path] | None = None,
+    workload: str | None = None,
 ) -> dict:
     """Run research_loop Verus custom SQL pipeline; normalize metrics for optimizer/MCP."""
     from research_loop.harness import run_custom_sql_pipeline
@@ -415,9 +416,14 @@ def invoke_verus_custom_pipeline(
         spec_path = runquery_path.parent / "context" / "ro" / "spec.rs"
         spec_rs = spec_path.read_text(encoding="utf-8") if spec_path.is_file() else ""
         if not spec_rs:
+            from db_extension.workload_config import catalog_assumptions_for_workload
             from verus_transpiler import transpile_sql_to_verus
 
-            spec_rs = transpile_sql_to_verus(sql, schema)
+            spec_rs = transpile_sql_to_verus(
+                sql,
+                schema,
+                catalog_assumptions=catalog_assumptions_for_workload(workload),
+            )
         ret_type = resolve_ret_type_for_spec(spec_rs)
         body = agent_file_to_run_query_body(
             agent_raw,
@@ -439,6 +445,7 @@ def invoke_verus_custom_pipeline(
         tbl=tbl_path or None,
         limit=dataset_size,
         rust_ret=admitted_rust_ret,
+        workload=workload,
         **bench_hints,
     )
     return normalize_harness_metrics(res)
