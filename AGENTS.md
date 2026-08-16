@@ -55,7 +55,7 @@ When booking cloud VMs for Lemma experiments:
   stock). If Spot stock fails, retry another zone — still one machine, still under the
   cap — do not “upgrade” the machine class. **Never** ~$100/hr GPUs / multi-node.
 - Agent timeouts for paper/CLI runs stay **`AGENT_TIMEOUT_SEC=600`** (10 min) unless Emil
-  overrides; model **`cursor-grok-4.5-high`** in `research_loop/config.env` `AGENT_CMD`.
+  overrides; model **`cursor-grok-4.6-high`** in `research_loop/config.env` `AGENT_CMD`.
 
 ### Experiment harvest (non-negotiable)
 
@@ -72,6 +72,12 @@ Every paper/Spot/`LEMMA_EXPERIMENT=1` run must be **reproducible** and **logged*
   (machine details are part of the result).
 - Snapshot `research_loop/config.env` flags used (timeouts, model, `AGENT_CMD`) into the
   run dir / experiment notes.
+- **Docker sandbox is required** for `LEMMA_EXPERIMENT=1` CLI agents:
+  `USE_AGENT_DOCKER=1`, `AGENT_IMAGE=lemma-agent:cli`, network-none + allowlisted egress
+  (see `research_loop/AGENT_SANDBOX.md`). **Never silently** set `USE_AGENT_DOCKER=0`,
+  drop `MAX_ITERATIONS` below the paper default, pin a fake `LEMMA_DATASET_SIZE`, or
+  count host-agent / measure-failed runs as the 98% gate. If the sandbox cannot be
+  brought up, **stop and tell Emil** — do not continue a watered-down protocol.
 
 ## Always read the traces on failure
 

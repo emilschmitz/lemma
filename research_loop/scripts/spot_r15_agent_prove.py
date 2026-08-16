@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Parallel r15 agent-prove via product-path run_optimizer (Grok 4.5 CLI).
+"""Parallel r15 agent-prove via product-path run_optimizer (Grok 4.6 CLI).
 
 Requires Docker sandbox (``USE_AGENT_DOCKER=1``, image ``lemma-agent:cli``).
 Each run writes assembled Verus into its own ``LEMMA_RUN_DIR/workspace``.
