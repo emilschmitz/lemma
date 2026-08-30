@@ -1,0 +1,166 @@
+% Paste this SECTION into an official VLDB Overleaf project
+% (acmart + pvldb.sty already loaded). Do NOT paste \documentclass.
+% booktabs comes with acmart; do not \usepackage{hyperref} again.
+%
+% What this is: DuckDB SQL session-hot baselines vs published GenDB
+% (arXiv:2603.02081, Fig.~2). Lemma native SESSION_HOT_US was not measured.
+%
+% Git (be precise; this was NOT a LEMMA_EXPERIMENT=1 clean-tree agent run):
+%   - Query generator on the VM: lemma-r15 checkout 7c12e43
+%     ("Pass the agent prompt on stdin so large specs do not hit ARG_MAX.")
+%   - Harvest JSON + this writeup recorded locally in 829ff15
+%     (full SHA 829ff15142d4c6a5861ca90e49880efe0a73f377).
+%   Laptop worktree during the GCP job still had unrelated untracked files;
+%   we did not set LEMMA_EXPERIMENT=1. The numbers below are DuckDB executing
+%   SQL on already-loaded databases --- they do not depend on a dirty
+%   Lemma host. Reproduce from the JSON under holdout/gendb_sec_edgar/results/.
+
+\section{Experimental Results (DuckDB vs GenDB)}
+\label{sec:eval-gendb-duckdb}
+
+We report \textbf{DuckDB SQL} latency only. We do not report Lemma-synthesized
+executors here.
+
+\paragraph{Setup.}
+All runs used GCP Spot VM \texttt{lemma-gendb-r15}: machine type
+\texttt{n2-highmem-64} (64 vCPU, 512\,GiB), zone \texttt{us-east1-b}, Debian~12
+(\texttt{Linux-6.1.0-52-cloud-amd64}). DuckDB \texttt{PRAGMA threads=64}.
+This is \emph{not} GenDB's paper server (2$\times$ Intel Xeon Gold 5218,
+384\,GB RAM). Milliseconds are the same protocol on different hardware.
+
+\paragraph{Session-hot protocol (one process).}
+Open the database once (\texttt{OPEN\_US} diagnostic). For each query: one
+timed cold execution; two untimed warmups; \textbf{median of five} timed
+executions $\rightarrow$ \texttt{SESSION\_HOT\_US}. Totals are the sum of
+per-query medians (not a single multi-query script).
+
+\paragraph{Workloads.}
+\begin{itemize}
+  \item \textbf{SEC-EDGAR Immanuel six:} frozen GenDB holdout
+        \texttt{holdout/gendb\_sec\_edgar/queries.sql}
+        (Q1, Q2, Q3, Q4, Q6, Q24). Database
+        \texttt{sec\_edgar.duckdb} on the VM:
+        \texttt{num} 39{,}401{,}761 rows, \texttt{pre} 9{,}600{,}799,
+        \texttt{sub} 86{,}135, \texttt{tag} 1{,}070{,}662
+        (SEC 2022--2024 load already on disk; 1.8\,GB DuckDB file).
+        Harvest \texttt{2026-08-30T15:36:05Z}.
+  \item \textbf{SEC-EDGAR r16 (fresh):} same generator as GenDB
+        (\texttt{generate\_queries.py}, template pool, validity filter,
+        greedy diversity sample). Seed \textbf{1616},
+        \texttt{--num-generate 1000}, \texttt{--num-select 6},
+        \texttt{--query-timeout 60}.
+        1000 raw $\rightarrow$ 673 unique $\rightarrow$ 482 valid
+        (0 errors, 0 timeouts, 191 empty) $\rightarrow$ 6 selected.
+        SQL: \texttt{queries\_resample\_r16.sql}.
+        Harvest \texttt{2026-08-30T15:41:16Z}.
+  \item \textbf{TPC-H SF10 subset:} Q1, Q3, Q6, Q9, Q18
+        (\texttt{holdout/tpch\_sf10/queries\_paper\_subset.sql}).
+        Database \texttt{tpch\_sf10.duckdb}: \texttt{lineitem} 59{,}986{,}052 rows
+        (SF10). Harvest \texttt{2026-08-30T15:41:42Z}.
+\end{itemize}
+
+JSON artifacts:
+\texttt{session\_hot\_immanuel\_fullsec.json},
+\texttt{session\_hot\_r16\_fullsec.json},
+\texttt{session\_hot\_tpch\_sf10.json}.
+
+\paragraph{Published GenDB reference} (arXiv:2603.02081 \S4.2).
+SEC-EDGAR six-query total: GenDB 328\,ms, $5.0\times$ vs DuckDB
+($\approx$1640\,ms), $3.9\times$ vs Umbra ($\approx$1280\,ms).
+Per-query GenDB on SEC: Q4 106\,ms, Q6 88\,ms (other SEC per-query
+times unpublished).
+TPC-H SF10 subset total: GenDB 214\,ms, DuckDB 594\,ms, Umbra 590\,ms.
+Per-query GenDB: Q6 17\,ms, Q9 38\,ms, Q18 74\,ms.
+
+\begin{table}[t]
+  \centering
+  \small
+  \caption{Session-hot totals (ms). Our column is DuckDB on
+    \texttt{n2-highmem-64}. GenDB / paper DuckDB are from
+    arXiv:2603.02081, different machine.}
+  \label{tab:gendb-totals}
+  \begin{tabular}{lrrr}
+    \toprule
+    Benchmark & GenDB paper & Paper DuckDB & Our DuckDB \\
+    \midrule
+    SEC-EDGAR (Immanuel 6) & 328 & $\approx$1640 & 1030.0 \\
+    TPC-H SF10 (Q1,3,6,9,18) & 214 & 594 & 436.6 \\
+    SEC-EDGAR r16 (seed 1616) & --- & --- & 3198.3 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[t]
+  \centering
+  \small
+  \caption{SEC-EDGAR Immanuel six. Our DuckDB \texttt{SESSION\_HOT\_US}
+    (ms, median of 5). GenDB per-query only where published.}
+  \label{tab:sec-immanuel}
+  \begin{tabular}{lrrr}
+    \toprule
+    Query & GenDB paper & Our DuckDB & Result rows \\
+    \midrule
+    Q1  & --- & 40.2 & 14 \\
+    Q2  & --- & 75.4 & 100 \\
+    Q3  & --- & 122.2 & 100 \\
+    Q4  & 106 & 268.8 & 500 \\
+    Q6  & 88  & 273.5 & 200 \\
+    Q24 & --- & 249.8 & 2 \\
+    \textbf{Sum} & \textbf{328} & \textbf{1030.0} & \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[t]
+  \centering
+  \small
+  \caption{Fresh SEC r16 six (seed 1616). No GenDB numbers (new draw).
+    r16 Q1 is the same \texttt{pre} GROUP BY as Immanuel Q1.}
+  \label{tab:sec-r16}
+  \begin{tabular}{lrrr}
+    \toprule
+    Query & Joins & Our DuckDB (ms) & Result rows \\
+    \midrule
+    Q1 & 0 & 37.9 & 14 \\
+    Q2 & 0 (+ subquery) & 105.5 & 500 \\
+    Q3 & 2 & 309.8 & 1000 \\
+    Q4 & 3 & 479.8 & 50 \\
+    Q5 & 1 & 565.4 & 500 \\
+    Q6 & 3 & 1699.9 & 50 \\
+    \textbf{Sum} & & \textbf{3198.3} & \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[t]
+  \centering
+  \small
+  \caption{TPC-H SF10 subset. Our DuckDB vs published GenDB.}
+  \label{tab:tpch-sf10}
+  \begin{tabular}{lrr}
+    \toprule
+    Query & GenDB paper (ms) & Our DuckDB (ms) \\
+    \midrule
+    Q1  & --- & 69.5 \\
+    Q3  & --- & 56.3 \\
+    Q6  & 17 & 15.7 \\
+    Q9  & 38 & 151.5 \\
+    Q18 & 74 & 143.6 \\
+    \textbf{Sum} & \textbf{214} & \textbf{436.6} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\noindent\textbf{Reading.}
+On this VM, DuckDB is faster than the DuckDB totals in the GenDB paper
+(1030 vs $\approx$1640\,ms SEC; 437 vs 594\,ms TPC-H), which is expected
+given different CPUs and DuckDB versions. Published GenDB C++ still wins
+the comparable totals (328 and 214\,ms). TPC-H Q6 is the exception: our
+DuckDB 15.7\,ms vs GenDB 17\,ms. Q9/Q18 remain much faster in GenDB
+(38/74 vs 152/144\,ms). The r16 draw is a harder six-query mix (3-way
+joins); it is not a drop-in substitute for Figure~2's six.
+
+\paragraph{What we did not run.}
+No Lemma \texttt{run\_query} / Verus-verified native path; no Umbra /
+MonetDB / ClickHouse / PostgreSQL; no agent optimization iterations.
+The Spot VM was stopped after harvest.
