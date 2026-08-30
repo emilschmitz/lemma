@@ -438,11 +438,17 @@ def invoke_verus_custom_pipeline(
         admitted_rust_ret = None
 
     tbl_path = tbl if tbl is not None else resolve_tbl_path(sql, schema, workload_tables)
+    tbls = None
+    if workload_tables:
+        tbls = {k: str(v) for k, v in workload_tables.items() if Path(v).is_file()}
+        if not tbls:
+            tbls = None
     res = run_custom_sql_pipeline(
         sql,
         schema,
         run_query_body=body,
         tbl=tbl_path or None,
+        tbls=tbls,
         limit=dataset_size,
         rust_ret=admitted_rust_ret,
         workload=workload,
