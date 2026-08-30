@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-15T22:34:37.981064+00:00",
+  "generated_at": "2026-08-30T15:34:19.338553+00:00",
   "protocol": "one process; open once; per query: cold query; 2 untimed warmups; median of 5 timed queries \u2192 SESSION_HOT_US (primary, GenDB-comparable); QUERY_US = SESSION_HOT_US",
   "engine": "duckdb_sql",
   "lemma": "not_run_complex_sql",
@@ -13,19 +13,19 @@
       "tag": 5
     }
   },
-  "OPEN_US": 17145,
+  "OPEN_US": 8580,
   "queries": {
     "Q1": {
-      "sql": "SELECT stmt, rfile, COUNT(*) AS cnt,\n       COUNT(DISTINCT adsh) AS num_filings,\n       AVG(line) AS avg_line_num\nFROM pre\nWHERE stmt IS NOT NULL\nGROUP BY stmt, rfile\nORDER BY cnt DESC;",
-      "COLD_QUERY_US": 17500,
-      "SESSION_HOT_US": 17386,
-      "QUERY_US": 17386,
+      "sql": "SELECT stmt, rfile, COUNT(*) AS cnt,\n       COUNT(DISTINCT adsh) AS num_filings,\n       AVG(line) AS avg_line_num\nFROM pre\nWHERE stmt IS NOT NULL\nGROUP BY stmt, rfile\nORDER BY cnt DESC",
+      "COLD_QUERY_US": 8153,
+      "SESSION_HOT_US": 8166,
+      "QUERY_US": 8166,
       "timed_samples_us": [
-        14786,
-        16326,
-        18909,
-        17386,
-        21358
+        8902,
+        8772,
+        6703,
+        8166,
+        7047
       ],
       "result": {
         "columns": [
@@ -64,15 +64,15 @@
     },
     "SMOKE2": {
       "sql": "SELECT s.form, COUNT(*) AS cnt, SUM(n.value) AS total_value\nFROM num n\nJOIN sub s ON n.adsh = s.adsh\nWHERE n.uom = 'USD' AND n.value IS NOT NULL\nGROUP BY s.form\nORDER BY total_value DESC",
-      "COLD_QUERY_US": 7239,
-      "SESSION_HOT_US": 6501,
-      "QUERY_US": 6501,
+      "COLD_QUERY_US": 3096,
+      "SESSION_HOT_US": 1885,
+      "QUERY_US": 1885,
       "timed_samples_us": [
-        6501,
-        6250,
-        8364,
-        7111,
-        4108
+        2373,
+        1885,
+        1750,
+        2005,
+        1867
       ],
       "result": {
         "columns": [

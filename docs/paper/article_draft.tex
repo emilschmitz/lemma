@@ -177,6 +177,15 @@ and reuse via a DuckDB extension.
 \section{Evaluation}
 %% =====================================================================
 
+\noindent\textbf{SEC-EDGAR vs GenDB (session-hot).}
+DuckDB SQL baselines for Immanuel's six-query SEC holdout and a fresh
+seed-1616 resample use the GenDB-aligned session-hot protocol (one process,
+DB open once; per query: cold run, two untimed warmups, median of five timed
+runs). Full tables, published GenDB reference numbers, hardware caveats, and
+harvest commands live in the working Markdown companion
+\texttt{docs/paper/article\_draft.md}; Lemma native \texttt{SESSION\_HOT\_US} is
+not claimed until measured. Tiny synthetic runs are rehearsal only, not Figure~2.
+
 \subsection{Holdout microbenchmark (agent-style kernels)}
 \label{sec:holdout-eval}
 

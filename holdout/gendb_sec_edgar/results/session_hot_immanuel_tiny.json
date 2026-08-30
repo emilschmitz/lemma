@@ -1,0 +1,281 @@
+{
+  "generated_at": "2026-08-30T15:34:16.523479+00:00",
+  "protocol": "one process; open once; per query: cold query; 2 untimed warmups; median of 5 timed queries \u2192 SESSION_HOT_US (primary, GenDB-comparable); QUERY_US = SESSION_HOT_US",
+  "engine": "duckdb_sql",
+  "lemma": "not_run_complex_sql",
+  "data": {
+    "synthetic": true,
+    "duckdb_path": "duckdb/sec_edgar_tiny.duckdb",
+    "row_counts": {
+      "sub": 500,
+      "pre": 75000,
+      "num": 8000,
+      "tag": 5
+    }
+  },
+  "OPEN_US": 9322,
+  "queries": {
+    "Q1": {
+      "sql": "SELECT stmt, rfile, COUNT(*) AS cnt,\n       COUNT(DISTINCT adsh) AS num_filings,\n       AVG(line) AS avg_line_num\nFROM pre\nWHERE stmt IS NOT NULL\nGROUP BY stmt, rfile\nORDER BY cnt DESC",
+      "COLD_QUERY_US": 9945,
+      "SESSION_HOT_US": 8660,
+      "QUERY_US": 8660,
+      "timed_samples_us": [
+        8660,
+        8698,
+        7211,
+        9159,
+        7176
+      ],
+      "result": {
+        "columns": [
+          "stmt",
+          "rfile",
+          "cnt",
+          "num_filings",
+          "avg_line_num"
+        ],
+        "row_count": 14,
+        "checksum_sha256": "52c76f9c836ecda3045d7ef3d63c21558afb7939207038b5a548acb00c82ec5a",
+        "preview": [
+          {
+            "stmt": "EQ",
+            "rfile": "H",
+            "cnt": 8743,
+            "num_filings": 500,
+            "avg_line_num": 30.697701017957222
+          },
+          {
+            "stmt": "UN",
+            "rfile": "H",
+            "cnt": 8730,
+            "num_filings": 500,
+            "avg_line_num": 30.098854524627722
+          },
+          {
+            "stmt": "BS",
+            "rfile": "H",
+            "cnt": 8647,
+            "num_filings": 500,
+            "avg_line_num": 30.252804440846536
+          }
+        ]
+      }
+    },
+    "Q2": {
+      "sql": "SELECT s.name, n.tag, n.value\nFROM num n\nJOIN sub s ON n.adsh = s.adsh\nJOIN (\n    SELECT adsh, tag, MAX(value) AS max_value\n    FROM num\n    WHERE uom = 'pure' AND value IS NOT NULL\n    GROUP BY adsh, tag\n) m ON n.adsh = m.adsh AND n.tag = m.tag AND n.value = m.max_value\nWHERE n.uom = 'pure' AND s.fy = 2022 AND n.value IS NOT NULL\nORDER BY n.value DESC, s.name, n.tag\nLIMIT 100",
+      "COLD_QUERY_US": 7662,
+      "SESSION_HOT_US": 4086,
+      "QUERY_US": 4086,
+      "timed_samples_us": [
+        4465,
+        3959,
+        4249,
+        4086,
+        3044
+      ],
+      "result": {
+        "columns": [
+          "name",
+          "tag",
+          "value"
+        ],
+        "row_count": 100,
+        "checksum_sha256": "44bf2273d0cda0306f85621cc8baa314bac1419c7ae6872ccae314e30d666dd8",
+        "preview": [
+          {
+            "name": "Synthetic Registrant 1000007",
+            "tag": "NetIncomeLoss",
+            "value": 998570.14
+          },
+          {
+            "name": "Synthetic Registrant 1000017",
+            "tag": "NetIncomeLoss",
+            "value": 995951.06
+          },
+          {
+            "name": "Synthetic Registrant 1000090",
+            "tag": "Revenues",
+            "value": 994241.56
+          }
+        ]
+      }
+    },
+    "Q3": {
+      "sql": "SELECT s.name, s.cik, SUM(n.value) AS total_value\nFROM num n\nJOIN sub s ON n.adsh = s.adsh\nWHERE n.uom = 'USD' AND s.fy = 2022 AND n.value IS NOT NULL\nGROUP BY s.name, s.cik\nHAVING SUM(n.value) > (\n    SELECT AVG(sub_total) FROM (\n        SELECT SUM(n2.value) AS sub_total\n        FROM num n2\n        JOIN sub s2 ON n2.adsh = s2.adsh\n        WHERE n2.uom = 'USD' AND s2.fy = 2022 AND n2.value IS NOT NULL\n        GROUP BY s2.cik\n    ) avg_sub\n)\nORDER BY total_value DESC\nLIMIT 100",
+      "COLD_QUERY_US": 2857,
+      "SESSION_HOT_US": 2829,
+      "QUERY_US": 2829,
+      "timed_samples_us": [
+        2829,
+        3306,
+        2691,
+        3005,
+        2629
+      ],
+      "result": {
+        "columns": [
+          "name",
+          "cik",
+          "total_value"
+        ],
+        "row_count": 61,
+        "checksum_sha256": "781bc3012e43f8e1cc9b31e03725c00d96db4801f6455a320de3f57a7f96fbed",
+        "preview": [
+          {
+            "name": "Synthetic Registrant 1000072",
+            "cik": 1000072,
+            "total_value": 13287877.34
+          },
+          {
+            "name": "Synthetic Registrant 1000068",
+            "cik": 1000068,
+            "total_value": 11334272.7
+          },
+          {
+            "name": "Synthetic Registrant 1000057",
+            "cik": 1000057,
+            "total_value": 11221672.4
+          }
+        ]
+      }
+    },
+    "Q4": {
+      "sql": "SELECT s.sic, t.tlabel, p.stmt,\n       COUNT(DISTINCT s.cik) AS num_companies,\n       SUM(n.value) AS total_value,\n       AVG(n.value) AS avg_value\nFROM num n\nJOIN sub s ON n.adsh = s.adsh\nJOIN tag t ON n.tag = t.tag AND n.version = t.version\nJOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version\nWHERE n.uom = 'USD' AND p.stmt = 'EQ'\n      AND s.sic BETWEEN 4000 AND 4999\n      AND n.value IS NOT NULL AND t.abstract = 0\nGROUP BY s.sic, t.tlabel, p.stmt\nHAVING COUNT(DISTINCT s.cik) >= 2\nORDER BY total_value DESC\nLIMIT 500",
+      "COLD_QUERY_US": 8065,
+      "SESSION_HOT_US": 6290,
+      "QUERY_US": 6290,
+      "timed_samples_us": [
+        6318,
+        6290,
+        6340,
+        6254,
+        6212
+      ],
+      "result": {
+        "columns": [
+          "sic",
+          "tlabel",
+          "stmt",
+          "num_companies",
+          "total_value",
+          "avg_value"
+        ],
+        "row_count": 2,
+        "checksum_sha256": "6e624a8e2de8df052a24ba0df1d53ba91516eb87bf89a11d54207fd95dd09516",
+        "preview": [
+          {
+            "sic": 4813,
+            "tlabel": "NetIncome Loss",
+            "stmt": "EQ",
+            "num_companies": 86,
+            "total_value": 2388559211.68001,
+            "avg_value": 505515.17707513436
+          },
+          {
+            "sic": 4512,
+            "tlabel": "NetIncome Loss",
+            "stmt": "EQ",
+            "num_companies": 78,
+            "total_value": 2197606669.4900093,
+            "avg_value": 516233.6550364128
+          }
+        ]
+      }
+    },
+    "Q6": {
+      "sql": "SELECT s.name, p.stmt, n.tag, p.plabel,\n       SUM(n.value) AS total_value, COUNT(*) AS cnt\nFROM num n\nJOIN sub s ON n.adsh = s.adsh\nJOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version\nWHERE n.uom = 'USD' AND p.stmt = 'IS' AND s.fy = 2023\n      AND n.value IS NOT NULL\nGROUP BY s.name, p.stmt, n.tag, p.plabel\nORDER BY total_value DESC\nLIMIT 200",
+      "COLD_QUERY_US": 5537,
+      "SESSION_HOT_US": 5928,
+      "QUERY_US": 5928,
+      "timed_samples_us": [
+        5652,
+        6722,
+        6126,
+        5928,
+        5580
+      ],
+      "result": {
+        "columns": [
+          "name",
+          "stmt",
+          "tag",
+          "plabel",
+          "total_value",
+          "cnt"
+        ],
+        "row_count": 200,
+        "checksum_sha256": "47ee888ee368776b46cb32756eb9afd540c582d32a3b3be38d617749263b5c65",
+        "preview": [
+          {
+            "name": "Synthetic Registrant 1000061",
+            "stmt": "IS",
+            "tag": "NetIncomeLoss",
+            "plabel": "IS line 41",
+            "total_value": 9817047.48,
+            "cnt": 18
+          },
+          {
+            "name": "Synthetic Registrant 1000077",
+            "stmt": "IS",
+            "tag": "NetIncomeLoss",
+            "plabel": "IS line 15",
+            "total_value": 9378992.28,
+            "cnt": 15
+          },
+          {
+            "name": "Synthetic Registrant 1000140",
+            "stmt": "IS",
+            "tag": "NetIncomeLoss",
+            "plabel": "IS line 12",
+            "total_value": 7542804.399999999,
+            "cnt": 14
+          }
+        ]
+      }
+    },
+    "Q24": {
+      "sql": "SELECT n.tag, n.version, COUNT(*) AS cnt, SUM(n.value) AS total\nFROM num n\nLEFT JOIN pre p ON n.tag = p.tag AND n.version = p.version AND n.adsh = p.adsh\nWHERE n.uom = 'USD' AND n.ddate BETWEEN 20230101 AND 20231231\n      AND n.value IS NOT NULL\n      AND p.adsh IS NULL\nGROUP BY n.tag, n.version\nHAVING COUNT(*) > 10\nORDER BY cnt DESC\nLIMIT 100",
+      "COLD_QUERY_US": 6388,
+      "SESSION_HOT_US": 5777,
+      "QUERY_US": 5777,
+      "timed_samples_us": [
+        6557,
+        5777,
+        5658,
+        6117,
+        5575
+      ],
+      "result": {
+        "columns": [
+          "tag",
+          "version",
+          "cnt",
+          "total"
+        ],
+        "row_count": 4,
+        "checksum_sha256": "b963fb0b8c927d756a00089bb387cb1bd32e64de09d3cb0812d760bc9269fada",
+        "preview": [
+          {
+            "tag": "EarningsPerShareBasic",
+            "version": "us-gaap/2023",
+            "cnt": 353,
+            "total": 185430037.58000004
+          },
+          {
+            "tag": "Assets",
+            "version": "us-gaap/2023",
+            "cnt": 313,
+            "total": 153119401.12000003
+          },
+          {
+            "tag": "StockholdersEquity",
+            "version": "us-gaap/2023",
+            "cnt": 313,
+            "total": 162162844.3000001
+          }
+        ]
+      }
+    }
+  }
+}
