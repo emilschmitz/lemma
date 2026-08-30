@@ -1,0 +1,49 @@
+{
+  "generated_at": "2026-08-30T20:00:39.013710+00:00",
+  "git_sha": "4fdd83a8da3122a7addf6c405d6525da697b7fc4",
+  "hostname": "lemma-gendb-lemma-duck",
+  "protocol": {
+    "duckdb": "one process per DB, open once; PRAGMA threads=N; one timed execution per query \u2192 ONE_RUN_US (no session-hot median)",
+    "lemma": "python -m db_extension.run_optimizer; MAX_ITERATIONS=1; LEMMA_EXPERIMENT=1; Docker sandbox when USE_AGENT_DOCKER=1"
+  },
+  "duckdb_threads": 64,
+  "gendb_paper_ref": "arXiv:2603.02081 \u00a74.2",
+  "sec": {
+    "sql_file": "/home/emil/lemma-r15/holdout/gendb_sec_edgar/queries.sql",
+    "duckdb_path": "/home/emil/lemma-r15/holdout/gendb_sec_edgar/duckdb/sec_edgar.duckdb",
+    "queries": {
+      "Q4": {
+        "id": "Q4",
+        "family": "sec",
+        "sql": "SELECT s.sic, t.tlabel, p.stmt,\n       COUNT(DISTINCT s.cik) AS num_companies,\n       SUM(n.value) AS total_value,\n       AVG(n.value) AS avg_value\nFROM num n\nJOIN sub s ON n.adsh = s.adsh\nJOIN tag t ON n.tag = t.tag AND n.version = t.version\nJOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version\nWHERE n.uom = 'USD' AND p.stmt = 'EQ'\n      AND s.sic BETWEEN 4000 AND 4999\n      AND n.value IS NOT NULL AND t.abstract = 0\nGROUP BY s.sic, t.tlabel, p.stmt\nHAVING COUNT(DISTINCT s.cik) >= 2\nORDER BY total_value DESC\nLIMIT 500",
+        "gendb_paper_ms": 106,
+        "lemma": {
+          "lemma_ok": false,
+          "returncode": 1,
+          "elapsed_s": 998.3,
+          "log": "/home/emil/lemma-r15/research_loop/generated/gendb_published_one_run/sec_Q4.log",
+          "max_iterations": "1",
+          "use_agent_docker": true,
+          "proof_verified": true,
+          "latency_us": -1,
+          "error": "FAILED\u001b[0m"
+        }
+      },
+      "Q6": {
+        "id": "Q6",
+        "family": "sec",
+        "sql": "SELECT s.name, p.stmt, n.tag, p.plabel,\n       SUM(n.value) AS total_value, COUNT(*) AS cnt\nFROM num n\nJOIN sub s ON n.adsh = s.adsh\nJOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version\nWHERE n.uom = 'USD' AND p.stmt = 'IS' AND s.fy = 2023\n      AND n.value IS NOT NULL\nGROUP BY s.name, p.stmt, n.tag, p.plabel\nORDER BY total_value DESC\nLIMIT 200",
+        "gendb_paper_ms": 88,
+        "lemma": {
+          "lemma_ok": false,
+          "returncode": 1,
+          "elapsed_s": 0.5,
+          "log": "/home/emil/lemma-r15/research_loop/generated/gendb_published_one_run/sec_Q6.log",
+          "max_iterations": "1",
+          "use_agent_docker": true,
+          "error": "lemma failed rc=1; log tail:\nLEMMA_EXPERIMENT=1 requires a clean git working tree.\nCommit or stash changes, or set LEMMA_EXPERIMENT_ALLOW_DIRTY=1 to override.\nDirty files (1):\n?? holdout/gendb_sec_edgar/results/session_hot_immanuel_fullsec_retry.json\n"
+        }
+      }
+    }
+  }
+}
