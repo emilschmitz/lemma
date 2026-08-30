@@ -1,0 +1,252 @@
+{
+  "generated_at": "2026-08-30T15:41:42.854472+00:00",
+  "label": "tpch_sf10_paper_subset",
+  "protocol": "one process; open once; per query: cold; 2 untimed warmups; median of 5 timed \u2192 SESSION_HOT_US",
+  "engine": "duckdb_sql",
+  "duckdb_threads": 64,
+  "hostname": "lemma-gendb-r15",
+  "platform": "Linux-6.1.0-52-cloud-amd64-x86_64-with-glibc2.36",
+  "data": {
+    "synthetic": false,
+    "duckdb_path": "/home/emil/lemma/build/tpch_sf10/tpch_sf10.duckdb",
+    "row_counts": {
+      "customer": 1500000,
+      "lineitem": 59986052,
+      "nation": 25,
+      "orders": 15000000,
+      "part": 2000000,
+      "partsupp": 8000000,
+      "region": 5,
+      "supplier": 100000
+    }
+  },
+  "OPEN_US": 14719,
+  "queries": {
+    "Q1": {
+      "sql": "SELECT\n    l_returnflag,\n    l_linestatus,\n    SUM(l_quantity) AS sum_qty,\n    SUM(l_extendedprice) AS sum_base_price,\n    SUM(l_extendedprice * (1 - l_discount)) AS sum_disc_price,\n    SUM(l_extendedprice * (1 - l_discount) * (1 + l_tax)) AS sum_charge,\n    AVG(l_quantity) AS avg_qty,\n    AVG(l_extendedprice) AS avg_price,\n    AVG(l_discount) AS avg_disc,\n    COUNT(*) AS count_order\nFROM lineitem\nWHERE l_shipdate <= DATE '1998-12-01' - INTERVAL 90 DAY\nGROUP BY l_returnflag, l_linestatus\nORDER BY l_returnflag, l_linestatus",
+      "COLD_QUERY_US": 181119,
+      "SESSION_HOT_US": 69503,
+      "QUERY_US": 69503,
+      "timed_samples_us": [
+        69503,
+        69881,
+        69303,
+        69343,
+        70315
+      ],
+      "result": {
+        "columns": [
+          "l_returnflag",
+          "l_linestatus",
+          "sum_qty",
+          "sum_base_price",
+          "sum_disc_price",
+          "sum_charge",
+          "avg_qty",
+          "avg_price",
+          "avg_disc",
+          "count_order"
+        ],
+        "row_count": 4,
+        "checksum_sha256": "f85d374988acb953db92056035fbaf381209521cab20116f635e9afc06d5c551",
+        "preview": [
+          {
+            "l_returnflag": "A",
+            "l_linestatus": "F",
+            "sum_qty": "377518399.00",
+            "sum_base_price": "566065727797.25",
+            "sum_disc_price": "537759104278.0656",
+            "sum_charge": "559276670892.116819",
+            "avg_qty": 25.500975103007097,
+            "avg_price": 38237.15100895854,
+            "avg_disc": 0.0500065745402432,
+            "count_order": 14804077
+          },
+          {
+            "l_returnflag": "N",
+            "l_linestatus": "F",
+            "sum_qty": "9851614.00",
+            "sum_base_price": "14767438399.17",
+            "sum_disc_price": "14028805792.2114",
+            "sum_charge": "14590490998.366737",
+            "avg_qty": 25.522448302840946,
+            "avg_price": 38257.81066008114,
+            "avg_disc": 0.04997336773765667,
+            "count_order": 385998
+          },
+          {
+            "l_returnflag": "N",
+            "l_linestatus": "O",
+            "sum_qty": "743124873.00",
+            "sum_base_price": "1114302286901.88",
+            "sum_disc_price": "1058580922144.9638",
+            "sum_charge": "1100937000170.591854",
+            "avg_qty": 25.498075870689316,
+            "avg_price": 38233.90292348181,
+            "avg_disc": 0.05000081182113131,
+            "count_order": 29144351
+          }
+        ]
+      }
+    },
+    "Q3": {
+      "sql": "SELECT\n    l_orderkey,\n    SUM(l_extendedprice * (1 - l_discount)) AS revenue,\n    o_orderdate,\n    o_shippriority\nFROM customer, orders, lineitem\nWHERE c_mktsegment = 'BUILDING'\n  AND c_custkey = o_custkey\n  AND l_orderkey = o_orderkey\n  AND o_orderdate < DATE '1995-03-15'\n  AND l_shipdate > DATE '1995-03-15'\nGROUP BY l_orderkey, o_orderdate, o_shippriority\nORDER BY revenue DESC, o_orderdate\nLIMIT 10",
+      "COLD_QUERY_US": 115392,
+      "SESSION_HOT_US": 56313,
+      "QUERY_US": 56313,
+      "timed_samples_us": [
+        56313,
+        56886,
+        60186,
+        54413,
+        55342
+      ],
+      "result": {
+        "columns": [
+          "l_orderkey",
+          "revenue",
+          "o_orderdate",
+          "o_shippriority"
+        ],
+        "row_count": 10,
+        "checksum_sha256": "d1fb9689968c50ba0991dbab8878243196ba8387edfe356d09f55d1023e74da1",
+        "preview": [
+          {
+            "l_orderkey": 4791171,
+            "revenue": "440715.2185",
+            "o_orderdate": "1995-02-23",
+            "o_shippriority": 0
+          },
+          {
+            "l_orderkey": 46678469,
+            "revenue": "439855.3250",
+            "o_orderdate": "1995-01-27",
+            "o_shippriority": 0
+          },
+          {
+            "l_orderkey": 23906758,
+            "revenue": "432728.5737",
+            "o_orderdate": "1995-03-14",
+            "o_shippriority": 0
+          }
+        ]
+      }
+    },
+    "Q6": {
+      "sql": "SELECT SUM(l_extendedprice * l_discount) AS revenue\nFROM lineitem\nWHERE l_shipdate >= DATE '1994-01-01'\n  AND l_shipdate < DATE '1994-01-01' + INTERVAL 1 YEAR\n  AND l_discount BETWEEN 0.06 - 0.01 AND 0.06 + 0.01\n  AND l_quantity < 24",
+      "COLD_QUERY_US": 16348,
+      "SESSION_HOT_US": 15704,
+      "QUERY_US": 15704,
+      "timed_samples_us": [
+        16146,
+        15495,
+        15488,
+        15706,
+        15704
+      ],
+      "result": {
+        "columns": [
+          "revenue"
+        ],
+        "row_count": 1,
+        "checksum_sha256": "b497341895f568f13c8577570ca3299f9e16e1d00bf1c34729a6ff538dc076e1",
+        "preview": [
+          {
+            "revenue": "1230113636.0101"
+          }
+        ]
+      }
+    },
+    "Q9": {
+      "sql": "SELECT\n    nation,\n    o_year,\n    SUM(amount) AS sum_profit\nFROM (\n    SELECT\n        n_name AS nation,\n        EXTRACT(year FROM o_orderdate) AS o_year,\n        l_extendedprice * (1 - l_discount) - ps_supplycost * l_quantity AS amount\n    FROM part, supplier, lineitem, partsupp, orders, nation\n    WHERE s_suppkey = l_suppkey\n      AND ps_suppkey = l_suppkey\n      AND ps_partkey = l_partkey\n      AND p_partkey = l_partkey\n      AND o_orderkey = l_orderkey\n      AND s_nationkey = n_nationkey\n      AND p_name LIKE '%green%'\n) AS profit\nGROUP BY nation, o_year\nORDER BY nation, o_year DESC",
+      "COLD_QUERY_US": 271488,
+      "SESSION_HOT_US": 151531,
+      "QUERY_US": 151531,
+      "timed_samples_us": [
+        151531,
+        156394,
+        145439,
+        142288,
+        153034
+      ],
+      "result": {
+        "columns": [
+          "nation",
+          "o_year",
+          "sum_profit"
+        ],
+        "row_count": 175,
+        "checksum_sha256": "86782e82658364e3e0c64a9c5be91780c4815105a025647de45362d11015a03c",
+        "preview": [
+          {
+            "nation": "ALGERIA",
+            "o_year": 1998,
+            "sum_profit": "271504046.5508"
+          },
+          {
+            "nation": "ALGERIA",
+            "o_year": 1997,
+            "sum_profit": "457035986.9555"
+          },
+          {
+            "nation": "ALGERIA",
+            "o_year": 1996,
+            "sum_profit": "457125199.0414"
+          }
+        ]
+      }
+    },
+    "Q18": {
+      "sql": "SELECT\n    c_name,\n    c_custkey,\n    o_orderkey,\n    o_orderdate,\n    o_totalprice,\n    SUM(l_quantity)\nFROM customer, orders, lineitem\nWHERE o_orderkey IN (\n    SELECT l_orderkey\n    FROM lineitem\n    GROUP BY l_orderkey\n    HAVING SUM(l_quantity) > 300\n)\n  AND c_custkey = o_custkey\n  AND o_orderkey = l_orderkey\nGROUP BY c_name, c_custkey, o_orderkey, o_orderdate, o_totalprice\nORDER BY o_totalprice DESC, o_orderdate\nLIMIT 100",
+      "COLD_QUERY_US": 153721,
+      "SESSION_HOT_US": 143581,
+      "QUERY_US": 143581,
+      "timed_samples_us": [
+        143581,
+        138793,
+        140576,
+        146492,
+        147478
+      ],
+      "result": {
+        "columns": [
+          "c_name",
+          "c_custkey",
+          "o_orderkey",
+          "o_orderdate",
+          "o_totalprice",
+          "sum(l_quantity)"
+        ],
+        "row_count": 100,
+        "checksum_sha256": "001f1b19c38fe42937a673dadae4130fc8e70dfa2edf3621870e60705b117982",
+        "preview": [
+          {
+            "c_name": "Customer#001287812",
+            "c_custkey": 1287812,
+            "o_orderkey": 42290181,
+            "o_orderdate": "1997-11-26",
+            "o_totalprice": "558289.17",
+            "sum(l_quantity)": "318.00"
+          },
+          {
+            "c_name": "Customer#000644812",
+            "c_custkey": 644812,
+            "o_orderkey": 2745894,
+            "o_orderdate": "1996-07-04",
+            "o_totalprice": "557664.53",
+            "sum(l_quantity)": "304.00"
+          },
+          {
+            "c_name": "Customer#001172513",
+            "c_custkey": 1172513,
+            "o_orderkey": 36667107,
+            "o_orderdate": "1997-06-06",
+            "o_totalprice": "550142.18",
+            "sum(l_quantity)": "322.00"
+          }
+        ]
+      }
+    }
+  },
+  "SESSION_HOT_US_SUM": 436632
+}

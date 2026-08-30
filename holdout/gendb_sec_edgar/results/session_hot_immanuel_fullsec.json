@@ -1,0 +1,287 @@
+{
+  "generated_at": "2026-08-30T15:36:05.232066+00:00",
+  "label": "immanuel_gendb_six",
+  "protocol": "one process; open once; per query: cold; 2 untimed warmups; median of 5 timed \u2192 SESSION_HOT_US",
+  "engine": "duckdb_sql",
+  "duckdb_threads": 64,
+  "hostname": "lemma-gendb-r15",
+  "platform": "Linux-6.1.0-52-cloud-amd64-x86_64-with-glibc2.36",
+  "data": {
+    "synthetic": false,
+    "duckdb_path": "/home/emil/lemma-r15/holdout/gendb_sec_edgar/duckdb/sec_edgar.duckdb",
+    "row_counts": {
+      "num": 39401761,
+      "pre": 9600799,
+      "sub": 86135,
+      "tag": 1070662
+    }
+  },
+  "OPEN_US": 14135,
+  "queries": {
+    "Q1": {
+      "sql": "SELECT stmt, rfile, COUNT(*) AS cnt,\n       COUNT(DISTINCT adsh) AS num_filings,\n       AVG(line) AS avg_line_num\nFROM pre\nWHERE stmt IS NOT NULL\nGROUP BY stmt, rfile\nORDER BY cnt DESC",
+      "COLD_QUERY_US": 179907,
+      "SESSION_HOT_US": 40233,
+      "QUERY_US": 40233,
+      "timed_samples_us": [
+        36858,
+        40233,
+        35891,
+        41102,
+        40461
+      ],
+      "result": {
+        "columns": [
+          "stmt",
+          "rfile",
+          "cnt",
+          "num_filings",
+          "avg_line_num"
+        ],
+        "row_count": 14,
+        "checksum_sha256": "2888f806895a90a49deb6bbca1c6c2932fba439f386c5284193ac8cbca6a84f8",
+        "preview": [
+          {
+            "stmt": "BS",
+            "rfile": "H",
+            "cnt": 3142998,
+            "num_filings": 86061,
+            "avg_line_num": 19.57992559969812
+          },
+          {
+            "stmt": "CF",
+            "rfile": "H",
+            "cnt": 2934522,
+            "num_filings": 85562,
+            "avg_line_num": 24.439561536768167
+          },
+          {
+            "stmt": "IS",
+            "rfile": "H",
+            "cnt": 1766995,
+            "num_filings": 86002,
+            "avg_line_num": 16.58815955902535
+          }
+        ]
+      }
+    },
+    "Q2": {
+      "sql": "SELECT s.name, n.tag, n.value\nFROM num n\nJOIN sub s ON n.adsh = s.adsh\nJOIN (\n    SELECT adsh, tag, MAX(value) AS max_value\n    FROM num\n    WHERE uom = 'pure' AND value IS NOT NULL\n    GROUP BY adsh, tag\n) m ON n.adsh = m.adsh AND n.tag = m.tag AND n.value = m.max_value\nWHERE n.uom = 'pure' AND s.fy = 2022 AND n.value IS NOT NULL\nORDER BY n.value DESC, s.name, n.tag\nLIMIT 100",
+      "COLD_QUERY_US": 4486235,
+      "SESSION_HOT_US": 75440,
+      "QUERY_US": 75440,
+      "timed_samples_us": [
+        78527,
+        77626,
+        75440,
+        72697,
+        73196
+      ],
+      "result": {
+        "columns": [
+          "name",
+          "tag",
+          "value"
+        ],
+        "row_count": 100,
+        "checksum_sha256": "22ce76b7f2d024334cd8792173dc129214381fb30fde5aa6fd5d02d28fdaf88e",
+        "preview": [
+          {
+            "name": "BITWISE 10 CRYPTO INDEX FUND",
+            "tag": "QuantityOfDigitalAssets",
+            "value": 22428062.5169
+          },
+          {
+            "name": "BITWISE 10 CRYPTO INDEX FUND",
+            "tag": "QuantityOfDigitalAssets",
+            "value": 22428062.5169
+          },
+          {
+            "name": "BITWISE 10 CRYPTO INDEX FUND",
+            "tag": "QuantityOfDigitalAssets",
+            "value": 22428062.5169
+          }
+        ]
+      }
+    },
+    "Q3": {
+      "sql": "SELECT s.name, s.cik, SUM(n.value) AS total_value\nFROM num n\nJOIN sub s ON n.adsh = s.adsh\nWHERE n.uom = 'USD' AND s.fy = 2022 AND n.value IS NOT NULL\nGROUP BY s.name, s.cik\nHAVING SUM(n.value) > (\n    SELECT AVG(sub_total) FROM (\n        SELECT SUM(n2.value) AS sub_total\n        FROM num n2\n        JOIN sub s2 ON n2.adsh = s2.adsh\n        WHERE n2.uom = 'USD' AND s2.fy = 2022 AND n2.value IS NOT NULL\n        GROUP BY s2.cik\n    ) avg_sub\n)\nORDER BY total_value DESC\nLIMIT 100",
+      "COLD_QUERY_US": 134470,
+      "SESSION_HOT_US": 122198,
+      "QUERY_US": 122198,
+      "timed_samples_us": [
+        126479,
+        121197,
+        122198,
+        119013,
+        122230
+      ],
+      "result": {
+        "columns": [
+          "name",
+          "cik",
+          "total_value"
+        ],
+        "row_count": 100,
+        "checksum_sha256": "59d43a31ad7af52d3278ab795130440c6cbcf049f86150a16ff32d4033a16201",
+        "preview": [
+          {
+            "name": "LOGISTICS INNOVATION TECHNOLOGIES CORP.",
+            "cik": 1848364,
+            "total_value": 685752270115299.5
+          },
+          {
+            "name": "FEDERAL HOME LOAN MORTGAGE CORP",
+            "cik": 1026214,
+            "total_value": 576376793000002.0
+          },
+          {
+            "name": "FEDERAL NATIONAL MORTGAGE ASSOCIATION FANNIE MAE",
+            "cik": 310522,
+            "total_value": 542945488000000.0
+          }
+        ]
+      }
+    },
+    "Q4": {
+      "sql": "SELECT s.sic, t.tlabel, p.stmt,\n       COUNT(DISTINCT s.cik) AS num_companies,\n       SUM(n.value) AS total_value,\n       AVG(n.value) AS avg_value\nFROM num n\nJOIN sub s ON n.adsh = s.adsh\nJOIN tag t ON n.tag = t.tag AND n.version = t.version\nJOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version\nWHERE n.uom = 'USD' AND p.stmt = 'EQ'\n      AND s.sic BETWEEN 4000 AND 4999\n      AND n.value IS NOT NULL AND t.abstract = 0\nGROUP BY s.sic, t.tlabel, p.stmt\nHAVING COUNT(DISTINCT s.cik) >= 2\nORDER BY total_value DESC\nLIMIT 500",
+      "COLD_QUERY_US": 1236876,
+      "SESSION_HOT_US": 268783,
+      "QUERY_US": 268783,
+      "timed_samples_us": [
+        313520,
+        282862,
+        263511,
+        268783,
+        263474
+      ],
+      "result": {
+        "columns": [
+          "sic",
+          "tlabel",
+          "stmt",
+          "num_companies",
+          "total_value",
+          "avg_value"
+        ],
+        "row_count": 500,
+        "checksum_sha256": "99fb2f2d433784d0cac5587154973e2898486d3862e515e68e7410bd160406b9",
+        "preview": [
+          {
+            "sic": 4911,
+            "tlabel": "Equity, Including Portion Attributable to Noncontrolling Interest",
+            "stmt": "EQ",
+            "num_companies": 30,
+            "total_value": 63157666077796.0,
+            "avg_value": 3456905641.9154897
+          },
+          {
+            "sic": 4911,
+            "tlabel": "Stockholders' Equity, Including Portion Attributable to Noncontrolling Interest",
+            "stmt": "EQ",
+            "num_companies": 26,
+            "total_value": 48636153312000.0,
+            "avg_value": 3149805926.5591607
+          },
+          {
+            "sic": 4931,
+            "tlabel": "Equity, Including Portion Attributable to Noncontrolling Interest",
+            "stmt": "EQ",
+            "num_companies": 23,
+            "total_value": 40956429748548.0,
+            "avg_value": 3738947393.5136023
+          }
+        ]
+      }
+    },
+    "Q6": {
+      "sql": "SELECT s.name, p.stmt, n.tag, p.plabel,\n       SUM(n.value) AS total_value, COUNT(*) AS cnt\nFROM num n\nJOIN sub s ON n.adsh = s.adsh\nJOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version\nWHERE n.uom = 'USD' AND p.stmt = 'IS' AND s.fy = 2023\n      AND n.value IS NOT NULL\nGROUP BY s.name, p.stmt, n.tag, p.plabel\nORDER BY total_value DESC\nLIMIT 200",
+      "COLD_QUERY_US": 983823,
+      "SESSION_HOT_US": 273521,
+      "QUERY_US": 273521,
+      "timed_samples_us": [
+        281892,
+        273521,
+        265120,
+        319360,
+        267925
+      ],
+      "result": {
+        "columns": [
+          "name",
+          "stmt",
+          "tag",
+          "plabel",
+          "total_value",
+          "cnt"
+        ],
+        "row_count": 200,
+        "checksum_sha256": "fedece7abb24f4116d4d8f8f725f048fd6cedbb0d38536213a7b732974ec87dd",
+        "preview": [
+          {
+            "name": "PRICE T ROWE GROUP INC",
+            "stmt": "IS",
+            "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+            "plabel": "Net revenues",
+            "total_value": 36950713800000.0,
+            "cnt": 198
+          },
+          {
+            "name": "AMAZON COM INC",
+            "stmt": "IS",
+            "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+            "plabel": "Total net sales",
+            "total_value": 15947450000000.0,
+            "cnt": 184
+          },
+          {
+            "name": "WALMART INC.",
+            "stmt": "IS",
+            "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+            "plabel": "Net sales",
+            "total_value": 12855087000000.0,
+            "cnt": 276
+          }
+        ]
+      }
+    },
+    "Q24": {
+      "sql": "SELECT n.tag, n.version, COUNT(*) AS cnt, SUM(n.value) AS total\nFROM num n\nLEFT JOIN pre p ON n.tag = p.tag AND n.version = p.version AND n.adsh = p.adsh\nWHERE n.uom = 'USD' AND n.ddate BETWEEN 20230101 AND 20231231\n      AND n.value IS NOT NULL\n      AND p.adsh IS NULL\nGROUP BY n.tag, n.version\nHAVING COUNT(*) > 10\nORDER BY cnt DESC\nLIMIT 100",
+      "COLD_QUERY_US": 500032,
+      "SESSION_HOT_US": 249793,
+      "QUERY_US": 249793,
+      "timed_samples_us": [
+        249793,
+        261042,
+        269694,
+        236010,
+        248943
+      ],
+      "result": {
+        "columns": [
+          "tag",
+          "version",
+          "cnt",
+          "total"
+        ],
+        "row_count": 2,
+        "checksum_sha256": "f3669012d97fff49aca9bf3f552369e0dbb4e1b530529376fac96175e6319405",
+        "preview": [
+          {
+            "tag": "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+            "version": "us-gaap/2024",
+            "cnt": 36,
+            "total": 8148444000.0
+          },
+          {
+            "tag": "IncomeLossFromContinuingOperationsIncludingPortionAttributableToNoncontrollingInterest",
+            "version": "us-gaap/2024",
+            "cnt": 13,
+            "total": -312998000.0
+          }
+        ]
+      }
+    }
+  },
+  "SESSION_HOT_US_SUM": 1029968
+}

@@ -121,16 +121,19 @@ def run_session_hot(
     synthetic: bool | None = None,
     hardware_hint: str | None = None,
     lemma_note: str = "not_run_complex_sql",
+    threads: int | None = None,
 ) -> dict[str, object]:
     if not db_path.is_file():
         raise FileNotFoundError(f"database not found: {db_path}")
 
+    thread_count = threads if threads is not None else (os.cpu_count() or 1)
     t_open = time.perf_counter()
     con = duckdb.connect(str(db_path), read_only=True)
+    con.execute(f"PRAGMA threads={int(thread_count)}")
     open_us = int((time.perf_counter() - t_open) * 1_000_000)
     row_counts = table_counts(con)
 
-    print("ENGINE: duckdb_sql")
+    print(f"ENGINE: duckdb_sql threads={thread_count}")
     print(f"DB: {db_path}")
     print(f"OPEN_US: {open_us}")
     print(f"PROTOCOL: {PROTOCOL}")
@@ -139,6 +142,7 @@ def run_session_hot(
         "generated_at": datetime.now(UTC).isoformat(),
         "protocol": PROTOCOL,
         "engine": "duckdb_sql",
+        "duckdb_threads": thread_count,
         "lemma": lemma_note,
         "data": {
             "synthetic": detect_synthetic(db_path, synthetic),
@@ -151,10 +155,10 @@ def run_session_hot(
     if hardware_hint:
         results["hardware_hint"] = hardware_hint
 
-    queries_out: dict[str, object] = {}
+    queries_out: dict[str, dict[str, object]] = {}
     for label, sql in query_specs:
         metrics, fingerprint = run_query_protocol(con, sql)
-        block = {
+        block: dict[str, object] = {
             "sql": sql,
             **metrics,
             "result": fingerprint,
@@ -167,13 +171,19 @@ def run_session_hot(
         )
 
     con.close()
+    hot_sum = 0
+    for block in queries_out.values():
+        hot_us = block["SESSION_HOT_US"]
+        assert isinstance(hot_us, int)
+        hot_sum += hot_us
     results["queries"] = queries_out
+    results["SESSION_HOT_US_SUM"] = hot_sum
     return results
 
 
 def write_results(results: dict[str, object], out_path: Path) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(results, indent=2) + "\n")
+    out_path.write_text(json.dumps(results, indent=2, default=str) + "\n")
     print(f"Wrote {out_path}")
 
 
@@ -214,6 +224,12 @@ def main() -> None:
         default=None,
         help="Optional hardware description for JSON metadata",
     )
+    parser.add_argument(
+        "--threads",
+        type=int,
+        default=0,
+        help="DuckDB PRAGMA threads (0 = os.cpu_count())",
+    )
     args = parser.parse_args()
 
     if not args.sql.is_file():
@@ -240,6 +256,7 @@ def main() -> None:
             query_specs,
             synthetic=synthetic_flag,
             hardware_hint=args.hardware_hint,
+            threads=args.threads or None,
         )
         write_results(results, args.out)
     except FileNotFoundError as exc:

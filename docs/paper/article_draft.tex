@@ -177,14 +177,33 @@ and reuse via a DuckDB extension.
 \section{Evaluation}
 %% =====================================================================
 
-\noindent\textbf{SEC-EDGAR vs GenDB (session-hot).}
-DuckDB SQL baselines for Immanuel's six-query SEC holdout and a fresh
-seed-1616 resample use the GenDB-aligned session-hot protocol (one process,
-DB open once; per query: cold run, two untimed warmups, median of five timed
-runs). Full tables, published GenDB reference numbers, hardware caveats, and
-harvest commands live in the working Markdown companion
-\texttt{docs/paper/article\_draft.md}; Lemma native \texttt{SESSION\_HOT\_US} is
-not claimed until measured. Tiny synthetic runs are rehearsal only, not Figure~2.
+\noindent\textbf{SEC-EDGAR / TPC-H vs GenDB (session-hot, 2026-08-30).}
+GCP Spot \texttt{n2-highmem-64} (\texttt{lemma-gendb-r15}, 64 vCPU, 512\,GiB).
+DuckDB \texttt{PRAGMA threads=64}; protocol as in
+\texttt{docs/paper/article\_draft.md}.
+Lemma native executors were \emph{not} timed.
+
+\begin{table}[t]
+  \centering
+  \small
+  \caption{Session-hot totals (ms): published GenDB vs DuckDB on our VM.
+    Hardware differs from GenDB's Xeon Gold 5218 / 384\,GB box.}
+  \label{tab:gendb-duckdb-totals}
+  \begin{tabular}{lrrr}
+    \toprule
+    Benchmark & GenDB paper & Paper DuckDB & Our DuckDB \\
+    \midrule
+    SEC-EDGAR (Immanuel 6) & 328 & $\approx$1640 & 1030 \\
+    TPC-H SF10 (Q1,3,6,9,18) & 214 & 594 & 437 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Per-query SEC (our DuckDB): Q1 40, Q2 75, Q3 122, Q4 269, Q6 274, Q24 250.
+Fresh seed-1616 six-query resample (same generator, 1000$\to$6): DuckDB total
+3198\,ms (no GenDB column). TPC-H Q6: our DuckDB 16\,ms vs GenDB 17\,ms;
+Q9 152 vs 38; Q18 144 vs 74.
+Full tables: \texttt{docs/paper/article\_draft.md}.
 
 \subsection{Holdout microbenchmark (agent-style kernels)}
 \label{sec:holdout-eval}

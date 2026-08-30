@@ -1,105 +1,94 @@
 # Lemma paper draft (working Markdown)
 
 TeX source of record: [`article_draft.tex`](article_draft.tex). This file holds
-Evaluation notes and GenDB comparison tables that are easier to edit in Markdown
-before syncing selective fragments into TeX.
+Evaluation notes and GenDB comparison tables.
 
 ## Evaluation
 
-### SEC-EDGAR session-hot protocol
+Harvested **2026-08-30** on GCP Spot VM `lemma-gendb-r15` (`n2-highmem-64`,
+64 vCPU, 512 GiB RAM, `us-east1-b`, Debian 12). DuckDB
+`PRAGMA threads=64`. Session-hot protocol (aligned with GenDB
+arXiv:2603.02081): one process, DB opened once; per query: one cold run, two
+untimed warmups, **median of five timed runs** → `SESSION_HOT_US`.
 
-We compare DuckDB SQL latency to published GenDB numbers using a **session-hot**
-protocol aligned with GenDB (arXiv:2603.02081):
+**This table is DuckDB SQL vs published GenDB.** Lemma native
+`SESSION_HOT_US` was **not** measured on this harvest — do not claim Lemma
+beats GenDB from these numbers.
 
-1. **One process**, DuckDB opened once (`OPEN_US` recorded for diagnostics).
-2. **Per query:** one cold execution (`COLD_QUERY_US`); two untimed warmups;
-   **median of five timed runs** → `SESSION_HOT_US` (primary metric;
-   `QUERY_US = SESSION_HOT_US`).
+Hardware is **not** GenDB’s paper box (2× Xeon Gold 5218, 384 GB). Treat
+cross-paper milliseconds as same-protocol, different silicon.
 
-Harness: `holdout/gendb_sec_edgar/session_hot.py` (`--db`, `--sql`, `--out`).
-Smoke default: `smoke_session_hot.py` (tiny DB, Q1 + SMOKE2).
+### Data
 
-**Hardware (Lemma full-SEC runs):** TBD — target GCP Spot VM, DB cached in
-page cache. GenDB paper used **2× Intel Xeon Gold 5218, 384 GB RAM**; our
-numbers are **not comparable across hardware** until measured on the same class
-of machine with the same cached working set.
+| Set | Location on VM | Scale |
+| --- | --- | --- |
+| SEC-EDGAR 2022–2024 | `sec_edgar.duckdb` (1.8 GB) | `num` 39,401,761; `pre` 9,600,799; `sub` 86,135; `tag` 1,070,662 |
+| TPC-H SF10 | `build/tpch_sf10/tpch_sf10.duckdb` (2.5 GB) | paper subset Q1/Q3/Q6/Q9/Q18 |
 
-**Dataset:** Full SEC 2022–2024 DuckDB (~5 GB on disk) at
-`holdout/gendb_sec_edgar/duckdb/sec_edgar.duckdb`. The tiny synthetic DB
-(`sec_edgar_tiny.duckdb`) is for harness rehearsal only — **not** Figure 2.
+JSON: `holdout/gendb_sec_edgar/results/session_hot_{immanuel_fullsec,r16_fullsec,tpch_sf10}.json`.
 
-**Caveat:** Published GenDB vs DuckDB ratios assume the full SEC database is
-already loaded and cached. Cold-start or uncached runs are out of scope for
-Figure 2-style comparison. We do **not** claim Lemma beats GenDB without Lemma
-native `SESSION_HOT_US` on the same queries.
+### Totals vs GenDB Figure 2
 
-### Published GenDB reference (arXiv:2603.02081)
+| Benchmark | GenDB paper (ms) | Paper DuckDB (ms) | Paper Umbra (ms) | **Our DuckDB** session-hot (ms) |
+| --- | ---: | ---: | ---: | ---: |
+| SEC-EDGAR Immanuel six | **328** | ≈1640 (5.0×) | ≈1280 (3.9×) | **1030.0** |
+| TPC-H SF10 subset | **214** | 594 | 590 | **436.6** |
 
-| Benchmark | GenDB total (ms) | DuckDB total (ms) | Umbra total (ms) | Notes |
-| --- | ---: | ---: | ---: | --- |
-| SEC-EDGAR (6-query subset) | 328 | ≈1640 (5.0×) | ≈1280 (3.9×) | Totals from paper |
-| TPC-H SF10 subset | 214 | 594 | 590 | Subset totals from paper |
-
-Per-query GenDB (SEC): **Q4** 106 ms (1410 ms over 3 iterations); **Q6** 88 ms
-(1121 ms over 4 iterations). Other SEC per-query GenDB and DuckDB breakdowns:
-**—** (not published).
-
-Per-query GenDB (TPC-H SF10 subset): **Q6** 17 ms; **Q9** 38 ms; **Q18** 74 ms.
-Lemma TPC-H SF10 numbers: **not measured** (do not invent).
+On this machine DuckDB is already faster than the paper’s DuckDB totals
+(1030 vs ≈1640 SEC; 437 vs 594 TPC-H). GenDB’s published C++ still wins the
+totals (328 and 214). Ratio **our DuckDB / GenDB**: SEC **3.1×**, TPC-H
+**2.0×** (paper claimed 5.0× and 2.8× vs *their* DuckDB).
 
 ### Table A — Immanuel / GenDB SEC-EDGAR six (`queries.sql`)
 
-Representative six: Q1, Q2, Q3, Q4, Q6, Q24 (Immanuel holdout / GenDB paper
-style diversity sample).
+| Query | GenDB paper (ms) | Our DuckDB (ms) | rows |
+| ---: | ---: | ---: | ---: |
+| Q1 | — | 40.2 | 14 |
+| Q2 | — | 75.4 | 100 |
+| Q3 | — | 122.2 | 100 |
+| Q4 | **106** | 268.8 | 500 |
+| Q6 | **88** | 273.5 | 200 |
+| Q24 | — | 249.8 | 2 |
+| **Total** | **328** | **1030.0** | |
 
-| Query | GenDB paper (ms) | GenDB paper DuckDB (ms) | Lemma DuckDB SESSION_HOT (ms) | Notes |
-| ---: | ---: | ---: | ---: | --- |
-| Q1 | — | — | TBD | Full SEC, cached |
-| Q2 | — | — | TBD | |
-| Q3 | — | — | TBD | |
-| Q4 | 106 | — | TBD | GenDB per-query from paper |
-| Q6 | 88 | — | TBD | GenDB per-query from paper |
-| Q24 | — | — | TBD | |
-| **Total** | **328** | **≈1640** | **TBD** | GenDB totals from paper |
+Per-query GenDB DuckDB breakdowns were not published. Q4/Q6 are the only
+SEC per-query GenDB times in §4.2.
 
-### Table B — Fresh r16 six (seed 1616, GenDB §4.1 procedure)
+### Table B — Fresh r16 six (seed **1616**, GenDB §4.1)
 
-Generated by `holdout/gendb_sec_edgar/make_r16_paper_sample.sh`
-(`--num-generate 1000`, `--num-select 6`, seed **1616**). Output:
-`queries_resample_r16.sql`. This is the **paper diversity sample**, not the
-50-query prove_loop shuffle.
+Procedure: template generator, **1000** raw → 673 unique → 482 valid →
+**diversity sample 6**. SQL: `holdout/gendb_sec_edgar/queries_resample_r16.sql`.
+No GenDB column (new draw). Q1 landed on the same `pre` GROUP BY as Immanuel Q1.
 
-| Query | Lemma DuckDB SESSION_HOT (ms) | row_count |
-| ---: | ---: | ---: |
-| Q1 | TBD | TBD |
-| Q2 | TBD | TBD |
-| Q3 | TBD | TBD |
-| Q4 | TBD | TBD |
-| Q5 | TBD | TBD |
-| Q6 | TBD | TBD |
+| Query | joins | Our DuckDB (ms) | rows |
+| ---: | ---: | ---: | ---: |
+| Q1 | 0 | 37.9 | 14 |
+| Q2 | 0 + subquery | 105.5 | 500 |
+| Q3 | 2 | 309.8 | 1000 |
+| Q4 | 3 | 479.8 | 50 |
+| Q5 | 1 | 565.4 | 500 |
+| Q6 | 3 | 1700.0 | 50 |
+| **Total** | | **3198.3** | |
 
-Harvest after full-SEC VM run:
+### Table C — TPC-H SF10 subset
 
-```bash
-uv run python holdout/gendb_sec_edgar/session_hot.py \
-  --db holdout/gendb_sec_edgar/duckdb/sec_edgar.duckdb \
-  --sql holdout/gendb_sec_edgar/queries.sql \
-  --out holdout/gendb_sec_edgar/results/session_hot_immanuel_full.json \
-  --not-synthetic
+| Query | GenDB paper (ms) | Paper DuckDB (ms) | Our DuckDB (ms) |
+| ---: | ---: | ---: | ---: |
+| Q1 | — | — | 69.5 |
+| Q3 | — | — | 56.3 |
+| Q6 | **17** | — | **15.7** |
+| Q9 | **38** | — | 151.5 |
+| Q18 | **74** | — | 143.6 |
+| **Total** | **214** | **594** | **436.6** |
 
-uv run python holdout/gendb_sec_edgar/session_hot.py \
-  --db holdout/gendb_sec_edgar/duckdb/sec_edgar.duckdb \
-  --sql holdout/gendb_sec_edgar/queries_resample_r16.sql \
-  --out holdout/gendb_sec_edgar/results/session_hot_r16_full.json \
-  --not-synthetic
-```
+Q6: DuckDB on this box already matches/beats published GenDB (15.7 vs 17 ms).
+Q9/Q18: GenDB’s instance-optimized C++ still much faster than DuckDB.
 
 ### Tiny rehearsal (not Figure 2)
 
-From `sec_edgar_tiny.duckdb` via `session_hot_immanuel_tiny.json` (2026-08-30).
-Times are **not** comparable to GenDB paper numbers.
+`sec_edgar_tiny.duckdb` via `session_hot_immanuel_tiny.json` — harness only.
 
-| Query | Lemma DuckDB SESSION_HOT (ms) | row_count |
+| Query | DuckDB SESSION_HOT (ms) | row_count |
 | ---: | ---: | ---: |
 | Q1 | 8.7 | 14 |
 | Q2 | 4.1 | 100 |
@@ -110,5 +99,5 @@ Times are **not** comparable to GenDB paper numbers.
 
 ### Holdout microbenchmark (H1–H25)
 
-Agent-style kernel holdout (zone maps, dict codes, etc.) remains in
-[`article_draft.tex`](article_draft.tex) §Evaluation — unchanged.
+Still in [`article_draft.tex`](article_draft.tex) §Evaluation (WSL laptop,
+not this GCP harvest).

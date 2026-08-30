@@ -1,0 +1,321 @@
+{
+  "generated_at": "2026-08-30T15:41:16.003400+00:00",
+  "label": "r16_seed1616_six",
+  "protocol": "one process; open once; per query: cold; 2 untimed warmups; median of 5 timed \u2192 SESSION_HOT_US",
+  "engine": "duckdb_sql",
+  "duckdb_threads": 64,
+  "hostname": "lemma-gendb-r15",
+  "platform": "Linux-6.1.0-52-cloud-amd64-x86_64-with-glibc2.36",
+  "data": {
+    "synthetic": false,
+    "duckdb_path": "/home/emil/lemma-r15/holdout/gendb_sec_edgar/duckdb/sec_edgar.duckdb",
+    "row_counts": {
+      "num": 39401761,
+      "pre": 9600799,
+      "sub": 86135,
+      "tag": 1070662
+    }
+  },
+  "OPEN_US": 13592,
+  "queries": {
+    "Q1": {
+      "sql": "SELECT stmt, rfile, COUNT(*) AS cnt,\n       COUNT(DISTINCT adsh) AS num_filings,\n       AVG(line) AS avg_line_num\nFROM pre\nWHERE stmt IS NOT NULL\nGROUP BY stmt, rfile\nORDER BY cnt DESC",
+      "COLD_QUERY_US": 381331,
+      "SESSION_HOT_US": 37859,
+      "QUERY_US": 37859,
+      "timed_samples_us": [
+        37859,
+        48137,
+        40934,
+        36379,
+        35823
+      ],
+      "result": {
+        "columns": [
+          "stmt",
+          "rfile",
+          "cnt",
+          "num_filings",
+          "avg_line_num"
+        ],
+        "row_count": 14,
+        "checksum_sha256": "2888f806895a90a49deb6bbca1c6c2932fba439f386c5284193ac8cbca6a84f8",
+        "preview": [
+          {
+            "stmt": "BS",
+            "rfile": "H",
+            "cnt": 3142998,
+            "num_filings": 86061,
+            "avg_line_num": 19.57992559969812
+          },
+          {
+            "stmt": "CF",
+            "rfile": "H",
+            "cnt": 2934522,
+            "num_filings": 85562,
+            "avg_line_num": 24.439561536768167
+          },
+          {
+            "stmt": "IS",
+            "rfile": "H",
+            "cnt": 1766995,
+            "num_filings": 86002,
+            "avg_line_num": 16.58815955902535
+          }
+        ]
+      }
+    },
+    "Q2": {
+      "sql": "SELECT n.tag, COUNT(*) AS usage_count, SUM(n.value) AS total\nFROM num n\nWHERE n.uom = 'USD' AND n.value IS NOT NULL\nGROUP BY n.tag\nHAVING COUNT(*) > (\n    SELECT AVG(cnt) FROM (\n        SELECT COUNT(*) AS cnt FROM num WHERE uom = 'USD' GROUP BY tag\n    ) sub\n)\nORDER BY usage_count DESC\nLIMIT 500",
+      "COLD_QUERY_US": 215984,
+      "SESSION_HOT_US": 105517,
+      "QUERY_US": 105517,
+      "timed_samples_us": [
+        109745,
+        104271,
+        105075,
+        105517,
+        108303
+      ],
+      "result": {
+        "columns": [
+          "tag",
+          "usage_count",
+          "total"
+        ],
+        "row_count": 500,
+        "checksum_sha256": "32b6ebe6849a6b5d013df9020d18e93caaf049dcbcb819a09ddcd160486ffe7a",
+        "preview": [
+          {
+            "tag": "StockholdersEquity",
+            "usage_count": 1628170,
+            "total": 870170846704986.1
+          },
+          {
+            "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+            "usage_count": 1182391,
+            "total": 1163114716068057.8
+          },
+          {
+            "tag": "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+            "usage_count": 884407,
+            "total": 1298277129516083.2
+          }
+        ]
+      }
+    },
+    "Q3": {
+      "sql": "SELECT s.name, p.stmt, n.tag, p.plabel,\n       SUM(n.value) AS total_value, COUNT(*) AS cnt\nFROM num n\nJOIN sub s ON n.adsh = s.adsh\nJOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version\nWHERE n.uom = 'USD' AND p.stmt = 'BS' AND s.fy = 2022\n      AND n.value IS NOT NULL\nGROUP BY s.name, p.stmt, n.tag, p.plabel\nORDER BY total_value DESC\nLIMIT 1000",
+      "COLD_QUERY_US": 320936,
+      "SESSION_HOT_US": 309810,
+      "QUERY_US": 309810,
+      "timed_samples_us": [
+        321489,
+        287922,
+        309810,
+        311430,
+        305644
+      ],
+      "result": {
+        "columns": [
+          "name",
+          "stmt",
+          "tag",
+          "plabel",
+          "total_value",
+          "cnt"
+        ],
+        "row_count": 1000,
+        "checksum_sha256": "5bd01176b47e7e803d0e97eaa9d664c5a5fd759eedeabf92b8a3b5d357fb94e9",
+        "preview": [
+          {
+            "name": "LOGISTICS INNOVATION TECHNOLOGIES CORP.",
+            "stmt": "BS",
+            "tag": "AssetsHeldInTrustNoncurrent",
+            "plabel": "Marketable securities held in Trust Account",
+            "total_value": 685738237475998.0,
+            "cnt": 12
+          },
+          {
+            "name": "10X CAPITAL VENTURE ACQUISITION CORP. II",
+            "stmt": "BS",
+            "tag": "TemporaryEquityCarryingAmountAttributableToParent",
+            "plabel": "Class A ordinary shares subject to possible redemption, $0.0001 par value; 20,000,000 shares issued and outstanding at redemption value of approximately $10.01 and $10.00 per share as of June 30, 2022 and December 31, 2021, respectively",
+            "total_value": 200000600391398.0,
+            "cnt": 4
+          },
+          {
+            "name": "FEDERAL HOME LOAN MORTGAGE CORP",
+            "stmt": "BS",
+            "tag": "DebtInstrumentFairValue",
+            "plabel": "Debt, fair value",
+            "total_value": 124376473000000.0,
+            "cnt": 192
+          }
+        ]
+      }
+    },
+    "Q4": {
+      "sql": "SELECT s.sic, t.tlabel, p.stmt,\n       COUNT(DISTINCT s.cik) AS num_companies,\n       SUM(n.value) AS total_value,\n       AVG(n.value) AS avg_value\nFROM num n\nJOIN sub s ON n.adsh = s.adsh\nJOIN tag t ON n.tag = t.tag AND n.version = t.version\nJOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version\nWHERE n.uom = 'USD' AND p.stmt = 'IS'\n      AND s.sic BETWEEN 7000 AND 8999\n      AND n.value IS NOT NULL AND t.abstract = 0\nGROUP BY s.sic, t.tlabel, p.stmt\nHAVING COUNT(DISTINCT s.cik) >= 2\nORDER BY total_value DESC\nLIMIT 50",
+      "COLD_QUERY_US": 489905,
+      "SESSION_HOT_US": 479778,
+      "QUERY_US": 479778,
+      "timed_samples_us": [
+        484238,
+        500105,
+        479778,
+        468474,
+        434560
+      ],
+      "result": {
+        "columns": [
+          "sic",
+          "tlabel",
+          "stmt",
+          "num_companies",
+          "total_value",
+          "avg_value"
+        ],
+        "row_count": 50,
+        "checksum_sha256": "f277f66e2d7d0518a6e8a27e4f57d3419393d4bc03b4d1f88a3f3f1ce16b3c66",
+        "preview": [
+          {
+            "sic": 7372,
+            "tlabel": "Revenue from Contract with Customer, Excluding Assessed Tax",
+            "stmt": "IS",
+            "num_companies": 234,
+            "total_value": 48821389948296.0,
+            "avg_value": 756932509.7799345
+          },
+          {
+            "sic": 7370,
+            "tlabel": "Revenue from Contract with Customer, Excluding Assessed Tax",
+            "stmt": "IS",
+            "num_companies": 62,
+            "total_value": 37339744422290.0,
+            "avg_value": 3201006808.597514
+          },
+          {
+            "sic": 7389,
+            "tlabel": "Revenues",
+            "stmt": "IS",
+            "num_companies": 81,
+            "total_value": 17241869702195.0,
+            "avg_value": 1256879260.9852018
+          }
+        ]
+      }
+    },
+    "Q5": {
+      "sql": "SELECT n.tag, t.tlabel, t.datatype,\n       COUNT(DISTINCT n.adsh) AS num_filings,\n       COUNT(*) AS total_entries,\n       SUM(CASE WHEN n.value > 0 THEN 1 ELSE 0 END) AS positive_count,\n       SUM(CASE WHEN n.value < 0 THEN 1 ELSE 0 END) AS negative_count\nFROM num n\nJOIN tag t ON n.tag = t.tag AND n.version = t.version\nWHERE n.ddate BETWEEN 20220101 AND 20241231 AND n.value IS NOT NULL\n      AND t.custom = 0\nGROUP BY n.tag, t.tlabel, t.datatype\nHAVING COUNT(DISTINCT n.adsh) > 100\nORDER BY num_filings DESC\nLIMIT 500",
+      "COLD_QUERY_US": 640116,
+      "SESSION_HOT_US": 565414,
+      "QUERY_US": 565414,
+      "timed_samples_us": [
+        544611,
+        515132,
+        565414,
+        574807,
+        591988
+      ],
+      "result": {
+        "columns": [
+          "tag",
+          "tlabel",
+          "datatype",
+          "num_filings",
+          "total_entries",
+          "positive_count",
+          "negative_count"
+        ],
+        "row_count": 500,
+        "checksum_sha256": "014305ad018a031556cd8720261e26c922c3bf5e55fa734aa8fc88e1d058437c",
+        "preview": [
+          {
+            "tag": "Assets",
+            "tlabel": "Assets",
+            "datatype": "monetary",
+            "num_filings": 76452,
+            "total_entries": 270672,
+            "positive_count": 260882,
+            "negative_count": 4733
+          },
+          {
+            "tag": "LiabilitiesAndStockholdersEquity",
+            "tlabel": "Liabilities and Equity",
+            "datatype": "monetary",
+            "num_filings": 73336,
+            "total_entries": 139605,
+            "positive_count": 137000,
+            "negative_count": 1128
+          },
+          {
+            "tag": "NetCashProvidedByUsedInOperatingActivities",
+            "tlabel": "Net Cash Provided by (Used in) Operating Activities",
+            "datatype": "monetary",
+            "num_filings": 73026,
+            "total_entries": 135797,
+            "positive_count": 63298,
+            "negative_count": 70698
+          }
+        ]
+      }
+    },
+    "Q6": {
+      "sql": "SELECT s.name, s.sic, t.tlabel, p.stmt, p.plabel,\n       SUM(n.value) AS total_value, COUNT(*) AS cnt\nFROM num n\nJOIN sub s ON n.adsh = s.adsh\nJOIN tag t ON n.tag = t.tag AND n.version = t.version\nJOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version\nWHERE n.uom = 'USD' AND s.form = '10-Q' AND p.stmt = 'CI'\n      AND n.value IS NOT NULL AND t.abstract = 0\nGROUP BY s.name, s.sic, t.tlabel, p.stmt, p.plabel\nHAVING COUNT(*) > 1\nORDER BY total_value DESC\nLIMIT 50",
+      "COLD_QUERY_US": 1849874,
+      "SESSION_HOT_US": 1699927,
+      "QUERY_US": 1699927,
+      "timed_samples_us": [
+        1699927,
+        1661893,
+        1716305,
+        1676876,
+        1722074
+      ],
+      "result": {
+        "columns": [
+          "name",
+          "sic",
+          "tlabel",
+          "stmt",
+          "plabel",
+          "total_value",
+          "cnt"
+        ],
+        "row_count": 50,
+        "checksum_sha256": "fea8fa29c3d32f459cf82136cf48c60b69417694ef63a548a704efcebd2c7e6e",
+        "preview": [
+          {
+            "name": "KALEYRA, INC.",
+            "sic": 7374,
+            "tlabel": "Net Income (Loss), Including Portion Attributable to Noncontrolling Interest",
+            "stmt": "CI",
+            "plabel": "Net loss",
+            "total_value": 1979639381000.0,
+            "cnt": 34
+          },
+          {
+            "name": "CONSTELLATION ENERGY CORP",
+            "sic": 4911,
+            "tlabel": "Revenues",
+            "stmt": "CI",
+            "plabel": "Total operating revenues",
+            "total_value": 1836369000000.0,
+            "cnt": 956
+          },
+          {
+            "name": "APPLE INC",
+            "sic": 3571,
+            "tlabel": "Net Income (Loss) Attributable to Parent",
+            "stmt": "CI",
+            "plabel": "Net income",
+            "total_value": 1292086000000.0,
+            "cnt": 32
+          }
+        ]
+      }
+    }
+  },
+  "SESSION_HOT_US_SUM": 3198305
+}
