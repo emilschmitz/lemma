@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Overnight Lemma batch: SEC Immanuel 6 + TPC-H Q1/Q3/Q6 (Lemma SQL).
+"""Overnight Lemma batch: fresh SEC resample r15 only (50 queries).
 
-Writes all artifacts under --out-dir (default /home/emil/lemma-overnight-out)
-so the git worktree stays clean. Parallel run_optimizer workers.
+Writes artifacts under --out-dir so the git worktree stays clean.
 """
 from __future__ import annotations
 
@@ -27,53 +26,27 @@ from gendb_published_one_run import (  # noqa: E402
     parse_queries,
 )
 
-SEC_SQL = ROOT / "holdout/gendb_sec_edgar/queries.sql"
-TPCH_LEMMA_SQL = ROOT / "holdout/tpch_sf10/queries_paper_subset_lemma.sql"
-R16_SQL = ROOT / "holdout/gendb_sec_edgar/queries_resample_r16.sql"
+R15_SQL = ROOT / "holdout/gendb_sec_edgar/queries_resample_r15.sql"
 PY = ROOT / ".venv/bin/python"
 
 
 def jobs_full(sec_db: str, tpch_db: str) -> list[dict]:
-    out: list[dict] = []
-    sec = parse_queries(SEC_SQL)
-    for qid in ["Q1", "Q2", "Q3", "Q4", "Q6", "Q24"]:
-        out.append(
-            {
-                "family": "sec",
-                "qid": qid,
-                "sql": sec[qid],
-                "workload": "sec",
-                "duckdb": sec_db,
-            }
-        )
-    tpch = parse_queries(TPCH_LEMMA_SQL)
-    for qid in ["Q1", "Q3", "Q6"]:
-        out.append(
-            {
-                "family": "tpch_lemma",
-                "qid": qid,
-                "sql": tpch[qid],
-                "workload": "tpch",
-                "duckdb": tpch_db,
-            }
-        )
-    if R16_SQL.is_file():
-        r16 = parse_queries(R16_SQL)
-        for qid in sorted(r16, key=lambda x: int(x[1:])):
-            out.append(
-                {
-                    "family": "r16",
-                    "qid": qid,
-                    "sql": r16[qid],
-                    "workload": "sec",
-                    "duckdb": sec_db,
-                }
-            )
-    return out
+    del tpch_db
+    r15 = parse_queries(R15_SQL)
+    return [
+        {
+            "family": "r15",
+            "qid": qid,
+            "sql": r15[qid],
+            "workload": "sec",
+            "duckdb": sec_db,
+        }
+        for qid in sorted(r15, key=lambda x: int(x[1:]))
+    ]
 
 
 def jobs_smoke(sec_db: str) -> list[dict]:
-    sec = parse_queries(SEC_SQL)
+    sec = parse_queries(R15_SQL)
     return [
         {
             "family": "sec",
@@ -207,8 +180,8 @@ def main() -> int:
         "AGENT_TIMEOUT_SEC": os.environ.get("AGENT_TIMEOUT_SEC"),
         "AGENT_CMD": os.environ.get("AGENT_CMD", ""),
         "note": (
-            "TPC-H Q9/Q18 omitted. SEC measure may still be latency_us=-1 "
-            "(bench wants .tbl files, SEC is DuckDB-only)."
+            "r15 only (queries_resample_r15.sql, 50 queries). "
+            "No Immanuel six, no TPC-H. SEC measure may still be latency_us=-1."
         ),
     }
     (out_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
