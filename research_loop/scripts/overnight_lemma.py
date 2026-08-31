@@ -13,7 +13,7 @@ import socket
 import subprocess
 import sys
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -85,6 +85,24 @@ def jobs_smoke(sec_db: str) -> list[dict]:
     ]
 
 
+def persist_rec(out_dir: Path, meta: dict, results: list[dict], rec: dict) -> None:
+    """Append one finished job and rewrite the partial harvest (crash-safe)."""
+    harvest = out_dir / "harvest.ndjson"
+    with harvest.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(rec, default=str) + "\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+    partial = {
+        **meta,
+        "updated_at": datetime.now(UTC).isoformat(),
+        "n_done": len(results),
+        "results": results,
+    }
+    tmp = out_dir / "results.partial.json.tmp"
+    tmp.write_text(json.dumps(partial, indent=2, default=str) + "\n")
+    tmp.replace(out_dir / "results.partial.json")
+
+
 def run_one(job: dict, log_dir: str) -> dict:
     log_dir_p = Path(log_dir)
     log_dir_p.mkdir(parents=True, exist_ok=True)
@@ -122,6 +140,36 @@ def run_one(job: dict, log_dir: str) -> dict:
     return rec
 
 
+def _fsync_write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as fh:
+        fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
+
+
+def append_harvest(out_dir: Path, rec: dict) -> None:
+    line = json.dumps(rec, ensure_ascii=False, default=str) + "\n"
+    harvest = out_dir / "harvest.ndjson"
+    with harvest.open("a", encoding="utf-8") as fh:
+        fh.write(line)
+        fh.flush()
+        os.fsync(fh.fileno())
+
+
+def write_partial(out_dir: Path, meta: dict, results: list[dict], **extra: object) -> None:
+    payload = {**meta, "results": results, **extra}
+    _fsync_write(out_dir / "results.partial.json", json.dumps(payload, indent=2, default=str) + "\n")
+
+
+def log_finished(text: str) -> bool:
+    return "--- Optimization Finished ---" in text or "CUSTOM_PIPELINE_FAILED" in text
+
+
+def rec_ok(rec: dict) -> bool:
+    return rec.get("lemma_ok") is True
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--out-dir", type=Path, default=Path("/home/emil/lemma-overnight-out"))
@@ -135,6 +183,12 @@ def main() -> int:
     )
     p.add_argument("--workers", type=int, default=3)
     p.add_argument("--smoke", action="store_true")
+    p.add_argument(
+        "--fail-streak",
+        type=int,
+        default=int(os.environ.get("LEMMA_FAIL_STREAK", "6")),
+        help="Abort after this many consecutive failed queries (0=never).",
+    )
     args = p.parse_args()
 
     out_dir = args.out_dir
@@ -161,24 +215,75 @@ def main() -> int:
     print(json.dumps({k: meta[k] for k in ("hostname", "git_sha", "smoke", "n_jobs", "workers")}), flush=True)
 
     results: list[dict] = []
+    consecutive_fail = 0
+    aborted: str | None = None
+    fail_streak = max(0, int(args.fail_streak))
     workers = 1 if args.smoke else max(1, args.workers)
+
+    def on_done(rec: dict) -> bool:
+        nonlocal consecutive_fail, aborted
+        results.append(rec)
+        persist_rec(out_dir, meta, results, rec)
+        if rec_ok(rec):
+            consecutive_fail = 0
+        else:
+            consecutive_fail += 1
+        print(
+            f"HARVEST n_done={len(results)} consecutive_fail={consecutive_fail} "
+            f"ok={rec_ok(rec)}",
+            flush=True,
+        )
+        if fail_streak and consecutive_fail >= fail_streak:
+            aborted = f"fail_streak_{fail_streak}"
+            abort_doc = {
+                **meta,
+                "aborted": aborted,
+                "consecutive_fail": consecutive_fail,
+                "finished_at": datetime.now(UTC).isoformat(),
+                "results": results,
+            }
+            _fsync_write(out_dir / "aborted.json", json.dumps(abort_doc, indent=2, default=str) + "\n")
+            print(f"ABORT {aborted} after {consecutive_fail} consecutive failures", flush=True)
+            return True
+        return False
+
     if workers == 1:
         for job in jobs:
-            results.append(run_one(job, str(log_dir)))
+            if on_done(run_one(job, str(log_dir))):
+                break
     else:
+        job_iter = iter(jobs)
         with ProcessPoolExecutor(max_workers=workers) as ex:
-            futs = {ex.submit(run_one, job, str(log_dir)): job for job in jobs}
-            for fut in as_completed(futs):
-                results.append(fut.result())
+            futs: dict = {}
+            for _ in range(min(workers, len(jobs))):
+                job = next(job_iter, None)
+                if job is None:
+                    break
+                futs[ex.submit(run_one, job, str(log_dir))] = job
+            while futs:
+                done, _pending = wait(futs, return_when=FIRST_COMPLETED)
+                stop = False
+                for fut in done:
+                    futs.pop(fut, None)
+                    if on_done(fut.result()):
+                        stop = True
+                if stop:
+                    break
+                while len(futs) < workers:
+                    job = next(job_iter, None)
+                    if job is None:
+                        break
+                    futs[ex.submit(run_one, job, str(log_dir))] = job
 
     payload = {
         **meta,
         "finished_at": datetime.now(UTC).isoformat(),
+        "aborted": aborted,
         "results": results,
     }
-    (out_dir / "results.json").write_text(json.dumps(payload, indent=2, default=str) + "\n")
+    _fsync_write(out_dir / "results.json", json.dumps(payload, indent=2, default=str) + "\n")
     print(f"Wrote {out_dir / 'results.json'}", flush=True)
-    return 0
+    return 1 if aborted else 0
 
 
 if __name__ == "__main__":
