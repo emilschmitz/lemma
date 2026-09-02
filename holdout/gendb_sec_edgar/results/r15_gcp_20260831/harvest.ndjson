@@ -1,0 +1,6 @@
+{"family": "r15", "qid": "Q2", "returncode": 1, "elapsed_s": 3589.1, "log": "/home/emil/lemma-overnight-out/r15/logs/r15_Q2.log", "lemma_ok": false, "proof_verified": true, "latency_us": -1, "error": "FAILED\u001b[0m"}
+{"family": "r15", "qid": "Q3", "returncode": 1, "elapsed_s": 3624.2, "log": "/home/emil/lemma-overnight-out/r15/logs/r15_Q3.log", "lemma_ok": false, "proof_verified": true, "latency_us": -1, "error": "FAILED\u001b[0m"}
+{"family": "r15", "qid": "Q1", "returncode": 1, "elapsed_s": 4318.2, "log": "/home/emil/lemma-overnight-out/r15/logs/r15_Q1.log", "lemma_ok": false, "proof_verified": false, "latency_us": -1, "error": "FAILED\u001b[0m"}
+{"family": "r15", "qid": "Q4", "returncode": 1, "elapsed_s": 3511.9, "log": "/home/emil/lemma-overnight-out/r15/logs/r15_Q4.log", "lemma_ok": false, "proof_verified": true, "latency_us": -1, "error": "FAILED\u001b[0m"}
+{"family": "r15", "qid": "Q5", "returncode": 1, "elapsed_s": 3521.9, "log": "/home/emil/lemma-overnight-out/r15/logs/r15_Q5.log", "lemma_ok": false, "proof_verified": true, "latency_us": -1, "error": "FAILED\u001b[0m"}
+{"family": "r15", "qid": "Q6", "returncode": 1, "elapsed_s": 3000.1, "log": "/home/emil/lemma-overnight-out/r15/logs/r15_Q6.log", "lemma_ok": false, "proof_verified": false, "latency_us": -1, "error": "FAILED\u001b[0m"}

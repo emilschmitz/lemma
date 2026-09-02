@@ -1,0 +1,82 @@
+{
+  "started_at": "2026-08-31T14:36:55.202236+00:00",
+  "git_sha": "4ee57e6e2c1640fed4e4524a2c806e0f831fbccd",
+  "hostname": "lemma-gendb-overnight",
+  "smoke": false,
+  "workers": 3,
+  "n_jobs": 50,
+  "MAX_ITERATIONS": "4",
+  "AGENT_TIMEOUT_SEC": "1200",
+  "AGENT_CMD": "",
+  "note": "r15 only (queries_resample_r15.sql, 50 queries). No Immanuel six, no TPC-H. SEC measure may still be latency_us=-1.",
+  "finished_at": "2026-08-31T17:38:23.953254+00:00",
+  "aborted": "fail_streak_6",
+  "results": [
+    {
+      "family": "r15",
+      "qid": "Q2",
+      "returncode": 1,
+      "elapsed_s": 3589.1,
+      "log": "/home/emil/lemma-overnight-out/r15/logs/r15_Q2.log",
+      "lemma_ok": false,
+      "proof_verified": true,
+      "latency_us": -1,
+      "error": "FAILED\u001b[0m"
+    },
+    {
+      "family": "r15",
+      "qid": "Q3",
+      "returncode": 1,
+      "elapsed_s": 3624.2,
+      "log": "/home/emil/lemma-overnight-out/r15/logs/r15_Q3.log",
+      "lemma_ok": false,
+      "proof_verified": true,
+      "latency_us": -1,
+      "error": "FAILED\u001b[0m"
+    },
+    {
+      "family": "r15",
+      "qid": "Q1",
+      "returncode": 1,
+      "elapsed_s": 4318.2,
+      "log": "/home/emil/lemma-overnight-out/r15/logs/r15_Q1.log",
+      "lemma_ok": false,
+      "proof_verified": false,
+      "latency_us": -1,
+      "error": "FAILED\u001b[0m"
+    },
+    {
+      "family": "r15",
+      "qid": "Q4",
+      "returncode": 1,
+      "elapsed_s": 3511.9,
+      "log": "/home/emil/lemma-overnight-out/r15/logs/r15_Q4.log",
+      "lemma_ok": false,
+      "proof_verified": true,
+      "latency_us": -1,
+      "error": "FAILED\u001b[0m"
+    },
+    {
+      "family": "r15",
+      "qid": "Q5",
+      "returncode": 1,
+      "elapsed_s": 3521.9,
+      "log": "/home/emil/lemma-overnight-out/r15/logs/r15_Q5.log",
+      "lemma_ok": false,
+      "proof_verified": true,
+      "latency_us": -1,
+      "error": "FAILED\u001b[0m"
+    },
+    {
+      "family": "r15",
+      "qid": "Q6",
+      "returncode": 1,
+      "elapsed_s": 3000.1,
+      "log": "/home/emil/lemma-overnight-out/r15/logs/r15_Q6.log",
+      "lemma_ok": false,
+      "proof_verified": false,
+      "latency_us": -1,
+      "error": "FAILED\u001b[0m"
+    }
+  ]
+}

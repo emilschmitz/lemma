@@ -1,0 +1,17 @@
+{"hostname": "lemma-gendb-overnight", "git_sha": "4ee57e6e2c1640fed4e4524a2c806e0f831fbccd", "smoke": false, "n_jobs": 50, "workers": 3}
+DONE r15_Q2 rc=1 proof=True lat=-1 3589.1s
+HARVEST n_done=1 consecutive_fail=1 ok=False
+DONE r15_Q3 rc=1 proof=True lat=-1 3624.2s
+HARVEST n_done=2 consecutive_fail=2 ok=False
+DONE r15_Q1 rc=1 proof=False lat=-1 4318.2s
+HARVEST n_done=3 consecutive_fail=3 ok=False
+DONE r15_Q4 rc=1 proof=True lat=-1 3511.9s
+HARVEST n_done=4 consecutive_fail=4 ok=False
+DONE r15_Q5 rc=1 proof=True lat=-1 3521.9s
+HARVEST n_done=5 consecutive_fail=5 ok=False
+DONE r15_Q6 rc=1 proof=False lat=-1 3000.1s
+HARVEST n_done=6 consecutive_fail=6 ok=False
+ABORT fail_streak_6 after 6 consecutive failures
+DONE r15_Q7 rc=1 proof=True lat=-1 3031.0s
+DONE r15_Q8 rc=1 proof=True lat=-1 3742.6s
+Wrote /home/emil/lemma-overnight-out/r15/results.json
