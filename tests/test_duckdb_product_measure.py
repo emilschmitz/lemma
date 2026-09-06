@@ -27,7 +27,9 @@ PRE_SCHEMA = {
 def test_generate_load_cols_duckdb_verus_has_ffi_and_valid_cols() -> None:
     load_rs = generate_load_cols_duckdb_verus(PRE_SCHEMA, table_name="pre")
     assert "lemma_duckdb_load::load_table" in load_rs
-    assert "duckdb_open" in Path(ROOT / "research_loop/duckdb_load_ffi.rs.inc").read_text()
+    ffi = Path(ROOT / "research_loop/duckdb_load_ffi.rs.inc").read_text()
+    assert "duckdb_open_ext" in ffi
+    assert "READ_ONLY" in ffi
     assert "ensures valid_cols" in load_rs
     assert 'table_name="pre"' not in load_rs
     assert '"pre"' in load_rs
@@ -87,15 +89,21 @@ def test_duckdb_loader_e2e_compile_and_bench(monkeypatch: pytest.MonkeyPatch) ->
     )
     assert "duckdb_open" in program or "lemma_duckdb_load" in program
 
-    res = run_custom_sql_pipeline(
-        sql,
-        {"pre": PRE_SCHEMA},
-        run_query_body=_stub_run_query(),
-        limit=100,
-        workload="sec",
-        duckdb_path=str(TINY_DB),
-        skip_bench=False,
-    )
+    import duckdb
+
+    held = duckdb.connect(str(TINY_DB), read_only=True)
+    try:
+        res = run_custom_sql_pipeline(
+            sql,
+            {"pre": PRE_SCHEMA},
+            run_query_body=_stub_run_query(),
+            limit=100,
+            workload="sec",
+            duckdb_path=str(TINY_DB),
+            skip_bench=False,
+        )
+    finally:
+        held.close()
     assert not res.get("bench_skipped"), res
     assert res.get("proof_verified"), res.get("verify_msg") or res.get("error")
     assert res.get("load_mode") == "duckdb", res
@@ -142,3 +150,69 @@ def test_duckdb_loader_join_e2e_compile_and_bench(monkeypatch: pytest.MonkeyPatc
     assert res.get("proof_verified"), res.get("verify_msg") or res.get("error")
     assert res.get("load_mode") == "duckdb", res
     assert res.get("latency_us", -1) >= 0, res.get("error") or res.get("bench_error")
+
+
+_AGENT_COUNT_RUNQUERY = """
+pub exec fn run_query(cols: &Cols) -> (res: u64)
+    requires valid_cols(cols),
+    ensures res == method_spec(cols),
+{
+    let mut res: u64 = 0;
+    let mut i: usize = cols.n;
+    while i > 0
+        invariant
+            i <= cols.n,
+            valid_cols(cols),
+            res == method_spec_helper(cols, i as int),
+            res <= (cols.n - i) as u64,
+        decreases i,
+    {
+        i = i - 1;
+        assert(res <= (cols.n - (i + 1)) as u64);
+        let line = cols.get_line_exec(i);
+        if line > 0 {
+            proof {
+                lemma_u64_add_one_fit(res, cols.n);
+            }
+            res = add_u64(res, 1);
+        }
+        assert(res == method_spec_helper(cols, i as int));
+    }
+    res
+}
+"""
+
+
+@pytest.mark.skipif(not TINY_DB.is_file(), reason="tiny SEC duckdb missing")
+@pytest.mark.skipif(not LIBDUCKDB.is_file(), reason="libduckdb.so missing")
+@pytest.mark.skipif(resolve_verus_bin() is None, reason="verus not found")
+def test_duckdb_agent_style_count_proves_and_matches(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LEMMA_DUCKDB_PATH", str(TINY_DB))
+    monkeypatch.setenv("LEMMA_DUCKDB_LIB_DIR", str(ROOT / "build/libduckdb"))
+    monkeypatch.setenv("REQUIRE_PROOF", "1")
+    monkeypatch.setenv("ENABLE_VERUS_VERIFY", "1")
+
+    import duckdb
+
+    sql = "SELECT COUNT(*) FROM pre WHERE line > 0"
+    held = duckdb.connect(str(TINY_DB), read_only=True)
+    expected = held.execute(
+        "SELECT COUNT(*) FROM (SELECT line FROM pre LIMIT 1000) t WHERE line > 0"
+    ).fetchone()[0]
+    try:
+        res = run_custom_sql_pipeline(
+            sql,
+            {"pre": {"line": "int"}},
+            run_query_body=_AGENT_COUNT_RUNQUERY,
+            limit=1000,
+            workload="sec",
+            duckdb_path=str(TINY_DB),
+            skip_bench=False,
+        )
+    finally:
+        held.close()
+    assert res.get("proof_verified"), res.get("verify_msg") or res.get("error")
+    assert res.get("load_mode") == "duckdb", res
+    assert res.get("latency_us", -1) >= 0, res.get("error") or res.get("bench_error")
+    stdout = res.get("stdout") or ""
+    assert f"RESULT: {expected}" in stdout, stdout

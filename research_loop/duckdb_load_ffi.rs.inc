@@ -34,6 +34,7 @@ mod lemma_duckdb_load {
     }
     type DuckDBDatabasePtr = *mut DuckDBDatabase;
     type DuckDBConnectionPtr = *mut DuckDBConnection;
+    type DuckDBConfigPtr = *mut c_void;
 
     #[repr(C)]
     #[derive(Copy, Clone)]
@@ -50,7 +51,20 @@ mod lemma_duckdb_load {
     type DuckDBVector = *mut c_void;
 
     extern "C" {
-        fn duckdb_open(path: *const c_char, out: *mut DuckDBDatabasePtr) -> DuckDBState;
+        fn duckdb_open_ext(
+            path: *const c_char,
+            out: *mut DuckDBDatabasePtr,
+            config: DuckDBConfigPtr,
+            out_error: *mut *mut c_char,
+        ) -> DuckDBState;
+        fn duckdb_create_config(out: *mut DuckDBConfigPtr) -> DuckDBState;
+        fn duckdb_set_config(
+            config: DuckDBConfigPtr,
+            name: *const c_char,
+            option: *const c_char,
+        ) -> DuckDBState;
+        fn duckdb_destroy_config(config: *mut DuckDBConfigPtr);
+        fn duckdb_free(ptr: *mut c_void);
         fn duckdb_close(db: *mut DuckDBDatabasePtr);
         fn duckdb_connect(db: DuckDBDatabasePtr, out: *mut DuckDBConnectionPtr) -> DuckDBState;
         fn duckdb_disconnect(conn: *mut DuckDBConnectionPtr);
@@ -265,8 +279,28 @@ mod lemma_duckdb_load {
         let mut db: DuckDBDatabasePtr = ptr::null_mut();
         let mut conn: DuckDBConnectionPtr = ptr::null_mut();
         unsafe {
-            if duckdb_open(c_path.as_ptr(), &mut db) != DUCKDB_SUCCESS {
-                panic!("duckdb_open failed");
+            let mut cfg: DuckDBConfigPtr = ptr::null_mut();
+            if duckdb_create_config(&mut cfg) != DUCKDB_SUCCESS {
+                panic!("duckdb_create_config failed");
+            }
+            let cfg_key = CString::new("access_mode").unwrap();
+            let cfg_val = CString::new("READ_ONLY").unwrap();
+            if duckdb_set_config(cfg, cfg_key.as_ptr(), cfg_val.as_ptr()) != DUCKDB_SUCCESS {
+                duckdb_destroy_config(&mut cfg);
+                panic!("duckdb_set_config access_mode=READ_ONLY failed");
+            }
+            let mut err: *mut c_char = ptr::null_mut();
+            let st = duckdb_open_ext(c_path.as_ptr(), &mut db, cfg, &mut err);
+            duckdb_destroy_config(&mut cfg);
+            if st != DUCKDB_SUCCESS {
+                let msg = if err.is_null() {
+                    "duckdb_open_ext failed".to_string()
+                } else {
+                    let s = CStr::from_ptr(err).to_string_lossy().into_owned();
+                    duckdb_free(err as *mut c_void);
+                    s
+                };
+                panic!("duckdb_open_ext failed: {msg}");
             }
             if duckdb_connect(db, &mut conn) != DUCKDB_SUCCESS {
                 duckdb_close(&mut db);
