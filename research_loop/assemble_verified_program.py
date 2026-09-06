@@ -498,13 +498,13 @@ def generate_load_cols_duckdb_verus(
     extracts: list[str] = []
     field_inits: list[str] = []
 
-    for i, (col, col_type) in enumerate(schema_dict.items()):
+    for col, col_type in schema_dict.items():
         field = rust_ident(col)
         kind = _col_kind_for_schema_type(col_type)
         col_specs.append(f'            ("{col}", lemma_duckdb_load::ColKind::{kind}),')
         extracts.append(
-            f"""    let {field} = match &loaded.columns[{i}] {{
-        lemma_duckdb_load::ColVec::{kind}(v) => v.clone(),
+            f"""    let {field} = match loaded_cols.next().expect("missing column {col}") {{
+        lemma_duckdb_load::ColVec::{kind}(v) => v,
         _ => panic!("column kind mismatch for {col}"),
     }};"""
         )
@@ -523,7 +523,8 @@ pub exec fn {load_fn}(db_path: &str, limit: usize) -> (cols: {struct_name})
 {chr(10).join(col_specs)}
         ],
     );
-    let n = loaded.n;
+    let lemma_duckdb_load::LoadedTable {{ n, columns: loaded_cols }} = loaded;
+    let mut loaded_cols = loaded_cols.into_iter();
 {chr(10).join(extracts)}
     {struct_name} {{
         n,

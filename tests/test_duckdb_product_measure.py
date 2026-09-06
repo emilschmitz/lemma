@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -10,7 +9,6 @@ import pytest
 from research_loop.assemble_verified_program import (
     assemble_verified_program,
     generate_load_cols_duckdb_verus,
-    generate_load_cols_verus,
 )
 from research_loop.duckdb_load_mode import should_use_duckdb_loader
 from research_loop.harness import resolve_verus_bin, run_custom_sql_pipeline
@@ -72,7 +70,7 @@ pub exec fn run_query(cols: &Cols) -> (res: u64)
 def test_duckdb_loader_e2e_compile_and_bench(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LEMMA_DUCKDB_PATH", str(TINY_DB))
     monkeypatch.setenv("LEMMA_DUCKDB_LIB_DIR", str(ROOT / "build/libduckdb"))
-    monkeypatch.setenv("REQUIRE_PROOF", "0")
+    monkeypatch.setenv("REQUIRE_PROOF", "1")
     monkeypatch.setenv("ENABLE_VERUS_VERIFY", "1")
 
     sql = "SELECT COUNT(*) FROM pre WHERE line > 0"
@@ -99,5 +97,48 @@ def test_duckdb_loader_e2e_compile_and_bench(monkeypatch: pytest.MonkeyPatch) ->
         skip_bench=False,
     )
     assert not res.get("bench_skipped"), res
-    assert res.get("proof_verified") or os.environ.get("REQUIRE_PROOF") == "0"
+    assert res.get("proof_verified"), res.get("verify_msg") or res.get("error")
+    assert res.get("load_mode") == "duckdb", res
+    assert res.get("latency_us", -1) >= 0, res.get("error") or res.get("bench_error")
+
+
+def _join_stub() -> str:
+    return """#[verifier::external_body]
+pub exec fn run_query(pre: &Cols_pre, sub: &Cols_sub) -> (res: u64)
+    requires valid_cols_pre(pre) && valid_cols_sub(sub),
+    ensures res == method_spec(pre, sub),
+{
+    (pre.n as u64).saturating_add(sub.n as u64)
+}"""
+
+
+@pytest.mark.skipif(not TINY_DB.is_file(), reason="tiny SEC duckdb missing")
+@pytest.mark.skipif(not LIBDUCKDB.is_file(), reason="libduckdb.so missing")
+@pytest.mark.skipif(resolve_verus_bin() is None, reason="verus not found")
+def test_duckdb_loader_join_e2e_compile_and_bench(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LEMMA_DUCKDB_PATH", str(TINY_DB))
+    monkeypatch.setenv("LEMMA_DUCKDB_LIB_DIR", str(ROOT / "build/libduckdb"))
+    monkeypatch.setenv("REQUIRE_PROOF", "1")
+    monkeypatch.setenv("ENABLE_VERUS_VERIFY", "1")
+
+    sql = (
+        "SELECT COUNT(*) FROM pre JOIN sub ON pre.adsh = sub.adsh "
+        "WHERE pre.line > 0"
+    )
+    schema = {
+        "pre": {"adsh": "string", "line": "int"},
+        "sub": {"adsh": "string"},
+    }
+    res = run_custom_sql_pipeline(
+        sql,
+        schema,
+        run_query_body=_join_stub(),
+        limit=100,
+        workload="sec",
+        duckdb_path=str(TINY_DB),
+        skip_bench=False,
+    )
+    assert not res.get("bench_skipped"), res
+    assert res.get("proof_verified"), res.get("verify_msg") or res.get("error")
+    assert res.get("load_mode") == "duckdb", res
     assert res.get("latency_us", -1) >= 0, res.get("error") or res.get("bench_error")

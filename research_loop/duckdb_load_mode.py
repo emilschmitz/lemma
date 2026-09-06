@@ -62,16 +62,10 @@ def should_use_duckdb_loader(
     tbl_path: str | None = None,
     tbls: dict[str, str] | None = None,
 ) -> bool:
-    """Prefer tbl when files exist; otherwise SEC / missing tbl + real DuckDB path."""
-    db = duckdb_path_from_env(duckdb_path)
-    if db is None:
+    """Prefer tbl when files exist; else any real DuckDB file (SEC has no .tbl)."""
+    if duckdb_path_from_env(duckdb_path) is None:
         return False
-    if _tbl_paths_satisfied(tbl_path=tbl_path, tbls=tbls):
-        return False
-    wl = (workload or "").strip().lower()
-    if wl == "sec":
-        return True
-    return True
+    return not _tbl_paths_satisfied(tbl_path=tbl_path, tbls=tbls)
 
 
 def duckdb_run_env() -> dict[str, str]:
