@@ -75,12 +75,18 @@ pub exec fn run_query(cols: &Cols) -> (res: {bridge.rust_ret})
     requires valid_cols(cols),
     ensures {bridge.ensures}
 {{
-    HashMap::new()
+    HashMapWithView::new()
 }}"""
 
 
 def test_sec_q1_assemble_verus_smoke(tmp_path: Path) -> None:
-    spec_rs = transpile_sql_to_verus(Q1_LIKE_SQL, {"pre": PRE_SCHEMA})
+    from db_extension.workload_config import catalog_assumptions_for_workload
+
+    spec_rs = transpile_sql_to_verus(
+        Q1_LIKE_SQL,
+        {"pre": PRE_SCHEMA},
+        catalog_assumptions=catalog_assumptions_for_workload("sec"),
+    )
     ret_type = resolve_ret_type_for_spec(spec_rs)
     assert ret_type == "map_str_str__u64_u64_u64"
 

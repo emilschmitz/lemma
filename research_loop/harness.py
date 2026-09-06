@@ -347,20 +347,22 @@ def run_verus_verify(rs_path: str, timeout: int) -> tuple[bool, str]:
         return False, "verus binary not found"
 
 
-def run_verus_compile(rs_path: str, timeout: int) -> tuple[bool, str, str | None]:
+def run_verus_compile(
+    rs_path: str,
+    timeout: int,
+    *,
+    link_duckdb: bool = False,
+) -> tuple[bool, str, str | None]:
     """Verify + compile; binary basename matches .rs stem next to source.
 
     Pass rustc release-ish flags after ``--``: bare ``verus --compile`` defaults to
     unoptimized codegen (~10–20× slower than cargo release on join hot paths).
+    When ``link_duckdb``, link prebuilt ``libduckdb.so`` (compile-only; verify unchanged).
     """
     verus_bin = resolve_verus_bin()
     if not verus_bin:
         return False, "verus binary not found", None
-    cmd = [
-        verus_bin,
-        rs_path,
-        "--compile",
-        "--",
+    rustc_tail = [
         "-C",
         "opt-level=3",
         "-C",
@@ -369,6 +371,30 @@ def run_verus_compile(rs_path: str, timeout: int) -> tuple[bool, str, str | None
         "panic=abort",
         "-C",
         "codegen-units=1",
+    ]
+    if link_duckdb:
+        try:
+            from research_loop.duckdb_load_mode import require_duckdb_lib_dir
+
+            lib_dir = require_duckdb_lib_dir()
+        except FileNotFoundError as exc:
+            return False, str(exc), None
+        rustc_tail.extend(
+            [
+                "-L",
+                f"native={lib_dir}",
+                "-l",
+                "dylib=duckdb",
+                "-C",
+                f"link-arg=-Wl,-rpath,{lib_dir}",
+            ]
+        )
+    cmd = [
+        verus_bin,
+        rs_path,
+        "--compile",
+        "--",
+        *rustc_tail,
     ]
     rs_dir = os.path.dirname(os.path.abspath(rs_path))
     try:
@@ -482,8 +508,15 @@ def bench_ssb_paired(
     return _median_us(verus_lats), _median_us(bare_lats), out, stderr
 
 
-def run_binary(binary: str, tbl: str, limit: int) -> tuple[int, str, str]:
-    _warmup_binary([binary, tbl, str(limit)])
+def run_binary(
+    binary: str,
+    tbl: str,
+    limit: int,
+    *,
+    env: dict[str, str] | None = None,
+) -> tuple[int, str, str]:
+    run_env = env if env is not None else os.environ
+    _warmup_binary([binary, tbl, str(limit)], env=run_env)
     lats: list[int] = []
     out = ""
     stderr = ""
@@ -494,6 +527,7 @@ def run_binary(binary: str, tbl: str, limit: int) -> tuple[int, str, str]:
             capture_output=True,
             text=True,
             timeout=120,
+            env=run_env,
         )
         out = res.stdout.strip()
         stderr = res.stderr
@@ -505,18 +539,30 @@ def run_binary(binary: str, tbl: str, limit: int) -> tuple[int, str, str]:
 
 
 def run_binary_join(
-    binary: str, left_tbl: str, right_tbl: str, limit: int
+    binary: str,
+    left_tbl: str,
+    right_tbl: str,
+    limit: int,
+    *,
+    duckdb_path: str | None = None,
+    env: dict[str, str] | None = None,
 ) -> tuple[int, str, str]:
+    run_env = env if env is not None else os.environ
+    if duckdb_path:
+        cmd = [binary, duckdb_path, str(limit)]
+    else:
+        cmd = [binary, left_tbl, right_tbl, str(limit)]
     lats: list[int] = []
     out = ""
     stderr = ""
     for _ in range(_BENCH_BINARY_RUNS):
         res = subprocess.run(
-            [binary, left_tbl, right_tbl, str(limit)],
+            cmd,
             cwd=ROOT_DIR,
             capture_output=True,
             text=True,
             timeout=120,
+            env=run_env,
         )
         out = res.stdout.strip()
         stderr = res.stderr
@@ -570,8 +616,14 @@ def run_binary_nway(
     limit: int,
     *,
     table_order: tuple[str, ...],
+    duckdb_path: str | None = None,
+    env: dict[str, str] | None = None,
 ) -> tuple[int, str, str]:
-    args = [binary, str(limit)] + [tbls[t] for t in table_order]
+    if duckdb_path:
+        args = [binary, duckdb_path, str(limit)]
+    else:
+        args = [binary, str(limit)] + [tbls[t] for t in table_order]
+    run_env = env if env is not None else os.environ
     lats: list[int] = []
     out = ""
     stderr = ""
@@ -582,6 +634,7 @@ def run_binary_nway(
             capture_output=True,
             text=True,
             timeout=120,
+            env=run_env,
         )
         out = res.stdout.strip()
         stderr = res.stderr
@@ -1634,6 +1687,7 @@ def run_custom_sql_pipeline(
     bench_main_prefix: str = "",
     rust_ret: str | None = None,
     workload: str | None = None,
+    duckdb_path: str | None = None,
 ) -> dict:
     """Transpile MethodSpec → agent run_query → assemble → verify → compile → run.
 
@@ -1713,6 +1767,22 @@ def run_custom_sql_pipeline(
 
         exec_rust_ret = rust_ret_from_run_query_fn(body)
 
+    from research_loop.duckdb_load_mode import (
+        duckdb_path_from_env,
+        duckdb_run_env,
+        should_use_duckdb_loader,
+    )
+
+    resolved_db = duckdb_path_from_env(duckdb_path)
+    use_duckdb = should_use_duckdb_loader(
+        workload=workload,
+        duckdb_path=resolved_db,
+        tbl_path=tbl,
+        tbls=tbls,
+    )
+    load_mode = "duckdb" if use_duckdb else "tbl"
+    default_db = resolved_db or ""
+
     art_dir = custom_query_artifact_dir()
     rs_path = os.path.join(art_dir, "custom_query.rs")
 
@@ -1732,6 +1802,8 @@ def run_custom_sql_pipeline(
                     table_order=(left_t, right_t),
                     ret_type=ret_type,
                     default_tbls=default_tbls,
+                    load_mode=load_mode,
+                    default_db=default_db,
                 )
             elif len(tables) >= 3:
                 order = table_order or tables
@@ -1744,6 +1816,8 @@ def run_custom_sql_pipeline(
                     table_order=order,
                     ret_type=ret_type,
                     default_tbls=default_tbls,
+                    load_mode=load_mode,
+                    default_db=default_db,
                 )
             else:
                 return _pipeline_failure(
@@ -1755,6 +1829,9 @@ def run_custom_sql_pipeline(
             else:
                 schema_dict = projected if isinstance(projected, dict) else _flat
             default_tbl = tbl or ""
+            primary_table = (
+                query.tables[0] if query.tables else next(iter(schema_dict), "t")
+            )
             program = assemble_verified_program(
                 spec_rs=spec_rs,
                 run_query_body=body,
@@ -1767,6 +1844,9 @@ def run_custom_sql_pipeline(
                 bench_post_timing=bench_post_timing,
                 bench_main_prefix=bench_main_prefix,
                 rust_ret=exec_rust_ret,
+                load_mode=load_mode,
+                table_name=primary_table,
+                default_db=default_db,
             )
     except Exception as e:
         return _pipeline_failure("assemble", sql, str(e), schema)
@@ -1795,7 +1875,9 @@ def run_custom_sql_pipeline(
     elif enable_verify and require_proof:
         return _pipeline_failure("verify", sql, "verus not on PATH", schema)
 
-    ok, compile_msg, binary = run_verus_compile(rs_path, compile_timeout)
+    ok, compile_msg, binary = run_verus_compile(
+        rs_path, compile_timeout, link_duckdb=use_duckdb
+    )
     if not ok or not binary:
         log_path = os.path.join(art_dir, "compile_error_custom.log")
         with open(log_path, "w") as f:
@@ -1816,53 +1898,108 @@ def run_custom_sql_pipeline(
         "ret_type": ret_type,
         "rs_path": rs_path,
         "binary": binary,
+        "load_mode": load_mode,
+        "duckdb_path": resolved_db,
     }
 
     if skip_bench:
         return result
 
+    bench_env = duckdb_run_env() if use_duckdb else None
+
     if query.joins and multi:
         tables = tuple(query.tables)
         if len(tables) == 2:
             order = table_order or tables
-            resolved = tbls or {}
-            left_p = resolved.get(order[0], "")
-            right_p = resolved.get(order[1], "")
-            if (
-                not left_p
-                or not right_p
-                or not os.path.exists(left_p)
-                or not os.path.exists(right_p)
-            ):
-                result["bench_skipped"] = True
-                return result
-            latency, stdout, stderr = run_binary_join(
-                binary, left_p, right_p, limit
-            )
+            if use_duckdb:
+                if not resolved_db:
+                    return _pipeline_failure(
+                        "bench",
+                        sql,
+                        "DuckDB measure path requires LEMMA_DUCKDB_PATH",
+                        schema,
+                        proof_verified=proof_verified,
+                    )
+                latency, stdout, stderr = run_binary_join(
+                    binary,
+                    "",
+                    "",
+                    limit,
+                    duckdb_path=resolved_db,
+                    env=bench_env,
+                )
+            else:
+                resolved = tbls or {}
+                left_p = resolved.get(order[0], "")
+                right_p = resolved.get(order[1], "")
+                if (
+                    not left_p
+                    or not right_p
+                    or not os.path.exists(left_p)
+                    or not os.path.exists(right_p)
+                ):
+                    result["bench_skipped"] = True
+                    return result
+                latency, stdout, stderr = run_binary_join(
+                    binary, left_p, right_p, limit
+                )
         elif len(tables) >= 3:
             order = table_order or tables
-            resolved = tbls or {}
-            paths = [resolved.get(t, "") for t in order]
-            if any(not p or not os.path.exists(p) for p in paths):
-                result["bench_skipped"] = True
-                return result
-            latency, stdout, stderr = run_binary_nway(
-                binary, resolved, limit, table_order=order
-            )
+            if use_duckdb:
+                if not resolved_db:
+                    return _pipeline_failure(
+                        "bench",
+                        sql,
+                        "DuckDB measure path requires LEMMA_DUCKDB_PATH",
+                        schema,
+                        proof_verified=proof_verified,
+                    )
+                latency, stdout, stderr = run_binary_nway(
+                    binary,
+                    tbls or {},
+                    limit,
+                    table_order=order,
+                    duckdb_path=resolved_db,
+                    env=bench_env,
+                )
+            else:
+                resolved = tbls or {}
+                paths = [resolved.get(t, "") for t in order]
+                if any(not p or not os.path.exists(p) for p in paths):
+                    result["bench_skipped"] = True
+                    return result
+                latency, stdout, stderr = run_binary_nway(
+                    binary, resolved, limit, table_order=order
+                )
         else:
             result["bench_skipped"] = True
             return result
     else:
-        tbl_path = tbl or ""
-        if not tbl_path or not os.path.exists(tbl_path):
-            result["bench_skipped"] = True
-            return result
-        latency, stdout, stderr = run_binary(binary, tbl_path, limit)
+        if use_duckdb:
+            if not resolved_db:
+                return _pipeline_failure(
+                    "bench",
+                    sql,
+                    "DuckDB measure path requires LEMMA_DUCKDB_PATH",
+                    schema,
+                    proof_verified=proof_verified,
+                )
+            latency, stdout, stderr = run_binary(
+                binary, resolved_db, limit, env=bench_env
+            )
+        else:
+            tbl_path = tbl or ""
+            if not tbl_path or not os.path.exists(tbl_path):
+                result["bench_skipped"] = True
+                return result
+            latency, stdout, stderr = run_binary(binary, tbl_path, limit)
 
     if latency >= 0:
         result["latency_us"] = latency
         result["stdout"] = stdout
     else:
+        result["status"] = "FAILURE"
+        result["error"] = f"bench exec failed\n{stdout}\n{stderr}"
         result["bench_error"] = stderr
     return result
 

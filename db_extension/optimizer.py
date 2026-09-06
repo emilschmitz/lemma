@@ -527,7 +527,7 @@ def run_optimization_loop(
             proof_verified = metrics["proof_verified"]
             latency = metrics["latency_us"]
             _vprint(f" {COLOR_GREEN}OK{COLOR_RESET} (marked run)")
-            if status == "SUCCESS" and proof_verified:
+            if status == "SUCCESS" and proof_verified and latency >= 0:
                 if best_latency == -1 or latency < best_latency:
                     best_latency = latency
                     best_iteration = iteration
@@ -611,7 +611,7 @@ def run_optimization_loop(
 
             metrics = _maybe_merge_lease_metrics(metrics)
 
-            if status == "SUCCESS" and proof_verified:
+            if status == "SUCCESS" and proof_verified and latency >= 0:
                 if best_latency == -1 or latency < best_latency:
                     best_latency = latency
                     best_iteration = iteration
@@ -658,7 +658,18 @@ def run_optimization_loop(
         if best_latency != -1:
             _vprint(f"Best iteration: {COLOR_GREEN}{best_iteration}{COLOR_RESET} with latency: {COLOR_GREEN}{best_latency} us{COLOR_RESET}")
         else:
-            _vprint(f"{COLOR_RED}No iteration succeeded in verification and compilation.{COLOR_RESET}")
+            proved = any(
+                h.get("status") == "SUCCESS"
+                and h.get("proof_verified")
+                for h in history
+            )
+            if proved:
+                _vprint(
+                    f"{COLOR_RED}Iterations verified but none produced a timed bench "
+                    f"(latency_us >= 0).{COLOR_RESET}"
+                )
+            else:
+                _vprint(f"{COLOR_RED}No iteration succeeded in verification and compilation.{COLOR_RESET}")
 
     if best_latency != -1:
         return _finish_run(run, {

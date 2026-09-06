@@ -443,6 +443,19 @@ def invoke_verus_custom_pipeline(
         tbls = {k: str(v) for k, v in workload_tables.items() if Path(v).is_file()}
         if not tbls:
             tbls = None
+    duckdb_path: str | None = None
+    raw_duck = (os.environ.get("LEMMA_DUCKDB_PATH") or "").strip()
+    if raw_duck and raw_duck not in (":memory:",) and Path(raw_duck).is_file():
+        duckdb_path = str(Path(raw_duck).resolve())
+    if workload == "sec" and duckdb_path is None:
+        try:
+            from db_extension.workload_config import resolve_workload
+
+            spec = resolve_workload(sql, workload="sec")
+            if Path(spec.db_path).is_file():
+                duckdb_path = str(Path(spec.db_path).resolve())
+        except (FileNotFoundError, ValueError):
+            pass
     res = run_custom_sql_pipeline(
         sql,
         schema,
@@ -452,6 +465,7 @@ def invoke_verus_custom_pipeline(
         limit=dataset_size,
         rust_ret=admitted_rust_ret,
         workload=workload,
+        duckdb_path=duckdb_path,
         **bench_hints,
     )
     return normalize_harness_metrics(res)

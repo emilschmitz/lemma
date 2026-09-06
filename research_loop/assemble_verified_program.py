@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from verus_transpiler.rust_ident import rust_ident
 
 from research_loop.agent_primitives.emit_externs import maybe_emit_agent_externs
 from research_loop.exec_cols import _rust_vec_type
 from research_loop.lemma_flags import lemma_load_format
+
+_DUCKDB_FFI_INC = Path(__file__).resolve().parent / "duckdb_load_ffi.rs.inc"
 
 RUNQUERY_SKELETON_MARKER = "// === RunQuery skeleton"
 
@@ -375,7 +378,29 @@ def _prepare_spec_rs(spec_rs: str, schema_dict: dict[str, str] | None = None) ->
     return core
 
 
-def _select_load_generator(load_format: str | None = None):
+def duckdb_ffi_prelude() -> str:
+    """FFI + chunk loader module (included once outside ``verus!``)."""
+    return _DUCKDB_FFI_INC.read_text(encoding="utf-8")
+
+
+def _col_kind_for_schema_type(col_type: str) -> str:
+    rust_ty = _rust_vec_type(col_type)
+    if rust_ty == "String":
+        return "String"
+    if rust_ty == "bool":
+        return "Bool"
+    if rust_ty == "u32":
+        return "U32"
+    return "U64"
+
+
+def _select_load_generator(
+    load_format: str | None = None,
+    *,
+    load_mode: str = "tbl",
+):
+    if load_mode == "duckdb":
+        return generate_load_cols_duckdb_verus
     fmt = load_format or lemma_load_format()
     if fmt == "duckdb_like":
         return generate_load_cols_duckdb_like_verus
@@ -455,6 +480,54 @@ pub exec fn {load_fn}(path: &str, limit: usize) -> (cols: {struct_name})
     {struct_name} {{
         n,
 {field_inits}
+    }}
+}}
+"""
+
+
+def generate_load_cols_duckdb_verus(
+    schema_dict: dict[str, str],
+    *,
+    table_name: str,
+    struct_name: str = "Cols",
+    valid_fn: str = "valid_cols",
+    load_fn: str = "load_cols",
+) -> str:
+    """Trusted DuckDB loader: copy column chunks into owned Vec Cols (Layer A I/O)."""
+    col_specs: list[str] = []
+    extracts: list[str] = []
+    field_inits: list[str] = []
+
+    for i, (col, col_type) in enumerate(schema_dict.items()):
+        field = rust_ident(col)
+        kind = _col_kind_for_schema_type(col_type)
+        col_specs.append(f'            ("{col}", lemma_duckdb_load::ColKind::{kind}),')
+        extracts.append(
+            f"""    let {field} = match &loaded.columns[{i}] {{
+        lemma_duckdb_load::ColVec::{kind}(v) => v.clone(),
+        _ => panic!("column kind mismatch for {col}"),
+    }};"""
+        )
+        field_inits.append(f"            {field},")
+
+    return f"""
+#[verifier::external_body]
+pub exec fn {load_fn}(db_path: &str, limit: usize) -> (cols: {struct_name})
+    ensures {valid_fn}(&cols),
+{{
+    let loaded = lemma_duckdb_load::load_table(
+        db_path,
+        "{table_name}",
+        limit,
+        &[
+{chr(10).join(col_specs)}
+        ],
+    );
+    let n = loaded.n;
+{chr(10).join(extracts)}
+    {struct_name} {{
+        n,
+{chr(10).join(field_inits)}
     }}
 }}
 """
@@ -642,6 +715,8 @@ def generate_main_rs(
     bench_post_timing: str = "",
     bench_main_prefix: str = "",
     rust_ret: str | None = None,
+    load_mode: str = "tbl",
+    default_db: str = "",
 ) -> str:
     if rust_ret is not None:
         from research_loop.format_result_from_type import format_result_for_exec_type
@@ -658,22 +733,33 @@ def generate_main_rs(
         bench_timing_body=bench_timing_body,
         bench_post_timing=bench_post_timing,
     )
+    if load_mode == "duckdb":
+        path_arg = f'        .unwrap_or("{default_db}");'
+        load_line = "    let cols = load_cols(db_path, limit);"
+        path_decl = """    let db_path = args
+        .get(1)
+        .map(|s| s.as_str())"""
+    else:
+        path_arg = f'        .unwrap_or("{default_tbl}");'
+        load_line = "    let cols = load_cols(tbl_path, limit);"
+        path_decl = """    let tbl_path = args
+        .get(1)
+        .map(|s| s.as_str())"""
+
     return f"""
 fn main() {{
     use std::env;
     use std::time::Instant;
 
     let args: Vec<String> = env::args().collect();
-    let tbl_path = args
-        .get(1)
-        .map(|s| s.as_str())
-        .unwrap_or("{default_tbl}");
+{path_decl}
+{path_arg}
     let limit: usize = args
         .get(2)
         .and_then(|s| s.parse().ok())
         .unwrap_or(50_000);
 
-    let cols = load_cols(tbl_path, limit);
+{load_line}
 {bench_main_prefix}
 
     {timing}
@@ -690,18 +776,27 @@ def generate_main_join_rs(
     default_right_tbl: str,
     ret_type: str,
     bench_exec: str = "run_query(&left, &right)",
+    load_mode: str = "tbl",
+    default_db: str = "",
 ) -> str:
     cfg = _cfg(ret_type)
     fmt = cfg["format_result"]
     load_left = f"load_cols_{left_table}"
     load_right = f"load_cols_{right_table}"
-    return f"""
-fn main() {{
-    use std::env;
-    use std::time::Instant;
+    if load_mode == "duckdb":
+        path_setup = f"""    let db_path = args
+        .get(1)
+        .map(|s| s.as_str())
+        .unwrap_or("{default_db}");
+    let limit: usize = args
+        .get(2)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(50_000);
 
-    let args: Vec<String> = env::args().collect();
-    let left_path = args
+    let left = {load_left}(db_path, limit);
+    let right = {load_right}(db_path, limit);"""
+    else:
+        path_setup = f"""    let left_path = args
         .get(1)
         .map(|s| s.as_str())
         .unwrap_or("{default_left_tbl}");
@@ -715,7 +810,14 @@ fn main() {{
         .unwrap_or(50_000);
 
     let left = {load_left}(left_path, limit);
-    let right = {load_right}(right_path, limit);
+    let right = {load_right}(right_path, limit);"""
+    return f"""
+fn main() {{
+    use std::env;
+    use std::time::Instant;
+
+    let args: Vec<String> = env::args().collect();
+{path_setup}
 
     {_median_bench_loop(fmt=fmt, ret_type=ret_type, bench_call=bench_exec)}
     println!("{{}}", last);
@@ -733,6 +835,8 @@ def assemble_verified_join_program(
     default_tbls: dict[str, str],
     hot_path_rs: str = "",
     bench_exec: str = "",
+    load_mode: str = "tbl",
+    default_db: str = "",
 ) -> str:
     """Build one `.rs` file for a two-table join query."""
     if not _ret_type_supported(ret_type):
@@ -747,13 +851,18 @@ def assemble_verified_join_program(
     core = _prepare_spec_rs(spec_rs, None)
     boundary = _boundary_helpers(ret_type, spec_rs)
     agent_externs = maybe_emit_agent_externs(run_query_body)
-    load_gen = _select_load_generator()
+    load_gen = _select_load_generator(load_mode=load_mode)
     loaders = "\n".join(
         load_gen(
             cols,
             struct_name=f"Cols_{table}",
             valid_fn=f"valid_cols_{table}",
             load_fn=f"load_cols_{table}",
+            **(
+                {"table_name": table}
+                if load_mode == "duckdb"
+                else {}
+            ),
         ).strip()
         for table, cols in multi_schema.items()
     )
@@ -764,10 +873,14 @@ def assemble_verified_join_program(
         default_right_tbl=default_tbls[right_table],
         ret_type=ret_type,
         bench_exec=bench_exec or "run_query(&left, &right)",
+        load_mode=load_mode,
+        default_db=default_db,
     )
 
     hot = f"{hot_path_rs.rstrip()}\n\n" if hot_path_rs else ""
+    duckdb_prelude = f"{duckdb_ffi_prelude()}\n\n" if load_mode == "duckdb" else ""
     return (
+        f"{duckdb_prelude}"
         f"{core}\n"
         f"{boundary}\n"
         f"{agent_externs.rstrip()}\n\n"
@@ -785,21 +898,40 @@ def generate_main_nway_rs(
     default_tbls: dict[str, str],
     ret_type: str,
     bench_exec: str = "",
+    load_mode: str = "tbl",
+    default_db: str = "",
 ) -> str:
     cfg = _cfg(ret_type)
     fmt = cfg["format_result"]
     load_lines = []
     arg_names = []
-    for i, table in enumerate(table_order):
-        idx = i + 2
-        default = default_tbls[table]
-        load_lines.append(
-            f"    let {table}_path = args.get({idx}).map(|s| s.as_str()).unwrap_or(\"{default}\");"
-        )
-        load_lines.append(
-            f"    let {table} = load_cols_{table}({table}_path, limit);"
-        )
-        arg_names.append(f"&{table}")
+    if load_mode == "duckdb":
+        load_lines.append(f"""    let db_path = args
+        .get(1)
+        .map(|s| s.as_str())
+        .unwrap_or("{default_db}");""")
+        load_lines.append("""    let limit: usize = args
+        .get(2)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(50_000);""")
+        for table in table_order:
+            load_lines.append(f"    let {table} = load_cols_{table}(db_path, limit);")
+            arg_names.append(f"&{table}")
+    else:
+        load_lines.append("""    let limit: usize = args
+        .get(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(50_000);""")
+        for i, table in enumerate(table_order):
+            idx = i + 2
+            default = default_tbls[table]
+            load_lines.append(
+                f"    let {table}_path = args.get({idx}).map(|s| s.as_str()).unwrap_or(\"{default}\");"
+            )
+            load_lines.append(
+                f"    let {table} = load_cols_{table}({table}_path, limit);"
+            )
+            arg_names.append(f"&{table}")
     bench_call = bench_exec or f"run_query({', '.join(arg_names)})"
     return f"""
 fn main() {{
@@ -807,10 +939,6 @@ fn main() {{
     use std::time::Instant;
 
     let args: Vec<String> = env::args().collect();
-    let limit: usize = args
-        .get(1)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(50_000);
 
 {chr(10).join(load_lines)}
 
@@ -830,6 +958,8 @@ def assemble_verified_nway_program(
     default_tbls: dict[str, str],
     hot_path_rs: str = "",
     bench_exec: str = "",
+    load_mode: str = "tbl",
+    default_db: str = "",
 ) -> str:
     """Build one `.rs` file for an N-table (3+) join query."""
     if not _ret_type_supported(ret_type):
@@ -844,13 +974,18 @@ def assemble_verified_nway_program(
     core = _prepare_spec_rs(spec_rs, None)
     boundary = _boundary_helpers(ret_type, spec_rs)
     agent_externs = maybe_emit_agent_externs(run_query_body)
-    load_gen = _select_load_generator()
+    load_gen = _select_load_generator(load_mode=load_mode)
     loaders = "\n".join(
         load_gen(
             cols,
             struct_name=f"Cols_{table}",
             valid_fn=f"valid_cols_{table}",
             load_fn=f"load_cols_{table}",
+            **(
+                {"table_name": table}
+                if load_mode == "duckdb"
+                else {}
+            ),
         ).strip()
         for table, cols in multi_schema.items()
     )
@@ -859,9 +994,13 @@ def assemble_verified_nway_program(
         default_tbls=default_tbls,
         ret_type=ret_type,
         bench_exec=bench_exec,
+        load_mode=load_mode,
+        default_db=default_db,
     )
     hot = f"{hot_path_rs.rstrip()}\n\n" if hot_path_rs else ""
+    duckdb_prelude = f"{duckdb_ffi_prelude()}\n\n" if load_mode == "duckdb" else ""
     return (
+        f"{duckdb_prelude}"
         f"{core}\n"
         f"{boundary}\n"
         f"{agent_externs.rstrip()}\n\n"
@@ -886,6 +1025,9 @@ def assemble_verified_program(
     bench_post_timing: str = "",
     bench_main_prefix: str = "",
     rust_ret: str | None = None,
+    load_mode: str = "tbl",
+    table_name: str = "t",
+    default_db: str = "",
 ) -> str:
     """Build one `.rs` file: spec + proved run_query + load_cols + main."""
     if not _ret_type_supported(ret_type):
@@ -896,8 +1038,11 @@ def assemble_verified_program(
     core = _prepare_spec_rs(spec_rs, schema_dict)
     boundary = _boundary_helpers(ret_type, spec_rs)
     agent_externs = maybe_emit_agent_externs(run_query_body)
-    load_gen = _select_load_generator()
-    load_cols = load_gen(schema_dict)
+    load_gen = _select_load_generator(load_mode=load_mode)
+    load_cols = load_gen(
+        schema_dict,
+        **({"table_name": table_name} if load_mode == "duckdb" else {}),
+    )
     main_rs = generate_main_rs(
         default_tbl=default_tbl,
         ret_type=ret_type,
@@ -906,10 +1051,14 @@ def assemble_verified_program(
         bench_post_timing=bench_post_timing,
         bench_main_prefix=bench_main_prefix,
         rust_ret=rust_ret,
+        load_mode=load_mode,
+        default_db=default_db,
     )
     hot = f"{hot_path_rs.rstrip()}\n\n" if hot_path_rs else ""
+    duckdb_prelude = f"{duckdb_ffi_prelude()}\n\n" if load_mode == "duckdb" else ""
 
     return (
+        f"{duckdb_prelude}"
         f"{core}\n"
         f"{boundary}\n"
         f"{agent_externs.rstrip()}\n\n"
