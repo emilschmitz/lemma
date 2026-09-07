@@ -321,3 +321,67 @@ def test_main_explicit_fail_streak_zero_never_aborts(tmp_path: Path, monkeypatch
     results = json.loads((out_dir / "results.json").read_text())
     assert results["aborted"] is None
     assert len(results["results"]) == 8
+
+
+OVERNIGHT_SH = ROOT / "research_loop" / "scripts" / "overnight_lemma.sh"
+
+
+def test_overnight_sh_gates_session_hot_on_lemma_serious():
+    text = OVERNIGHT_SH.read_text()
+    assert "LEMMA_SERIOUS" in text
+    assert "duckdb_session_hot.skipped.json" in text
+    assert "session_hot.py" in text
+
+
+def _load_query_filter():
+    gendb_dir = ROOT / "holdout" / "gendb_sec_edgar"
+    if str(gendb_dir) not in sys.path:
+        sys.path.insert(0, str(gendb_dir))
+    import query_filter
+
+    return query_filter
+
+
+def test_resolve_shuffle_filter_workers_env(monkeypatch):
+    mod = _load_query_filter()
+    monkeypatch.setenv("LEMMA_SHUFFLE_FILTER_WORKERS", "4")
+    assert mod.resolve_shuffle_filter_workers() == 4
+
+
+def test_resolve_shuffle_filter_workers_default_capped(monkeypatch):
+    mod = _load_query_filter()
+    monkeypatch.delenv("LEMMA_SHUFFLE_FILTER_WORKERS", raising=False)
+    n = mod.resolve_shuffle_filter_workers()
+    assert 1 <= n <= 32
+
+
+def test_filter_query_candidates_tiny_db(tmp_path: Path):
+    mod = _load_query_filter()
+    import duckdb
+
+    db_path = tmp_path / "tiny.duckdb"
+    con = duckdb.connect(str(db_path))
+    con.execute("CREATE TABLE t AS SELECT i FROM range(10) t(i)")
+    con.close()
+
+    unique = [
+        "SELECT i FROM t",
+        "SELECT i FROM t WHERE i > 100",
+        "SELECT no_such_col FROM t",
+    ]
+    candidates, counts = mod.filter_query_candidates(
+        unique, db_path, query_timeout=60, workers=1
+    )
+    assert len(candidates) == 1
+    assert candidates[0][0] == "SELECT i FROM t"
+    assert counts["empty"] == 1
+    assert counts["errors"] == 1
+
+
+def test_generate_queries_filter_importable():
+    gendb_dir = ROOT / "holdout" / "gendb_sec_edgar"
+    if str(gendb_dir) not in sys.path:
+        sys.path.insert(0, str(gendb_dir))
+    import generate_queries
+
+    assert generate_queries.filter_query_candidates is not None

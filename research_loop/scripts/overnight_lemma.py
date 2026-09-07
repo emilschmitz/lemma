@@ -253,10 +253,11 @@ def main() -> int:
         "AGENT_CMD": os.environ.get("AGENT_CMD", ""),
         "note": (
             f"SEC product path ({args.family}); sql_file outside git tree when "
-            "launched via overnight_lemma.sh. DuckDB session-hot baseline pinned "
-            "on same hardware before agents. MCP iterate proves on capped rows; "
-            "official harvest latency_us is full-table execute after marked submit. "
-            "Success requires proof_verified, returncode=0, and latency_us int >= 0."
+            "launched via overnight_lemma.sh. DuckDB session-hot baseline runs "
+            "only when LEMMA_SERIOUS=1 (skipped in dev overnights). MCP iterate "
+            "proves on capped rows; official harvest latency_us is full-table "
+            "execute after marked submit. Success requires proof_verified, "
+            "returncode=0, and latency_us int >= 0."
         ),
     }
     (out_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")

@@ -51,7 +51,7 @@ if [[ "$MODE" == "smoke" ]]; then
   exit 0
 fi
 
-# --- budget / halt (computed now; shutdown scheduled after baseline passes) ---
+# --- budget / halt (computed now; shutdown scheduled after shuffle/baseline) ---
 BUDGET_USD="${LEMMA_BUDGET_USD:-20}"
 USD_PER_HR="${LEMMA_VM_USD_PER_HR:-2.0}"
 STARTED_UTC="$(cat "$OUT/started_utc.txt")"
@@ -139,14 +139,27 @@ uv run python holdout/gendb_sec_edgar/generate_queries.py \
   --db-path "$SEC_DB" \
   --output "$SQL_OUT"
 
-# --- DuckDB session-hot baseline on this hardware (fatal if it fails) ---
-echo "=== DuckDB session-hot baseline ==="
-uv run python holdout/gendb_sec_edgar/session_hot.py \
-  --db "$SEC_DB" \
-  --sql "$SQL_OUT" \
-  --out "$OUT/duckdb_session_hot.json" \
-  --not-synthetic \
-  --hardware-hint "n2-highmem-64 same-box as lemma overnight"
+# --- DuckDB session-hot baseline (paper/serious only; dev skips) ---
+LEMMA_SERIOUS_VAL="${LEMMA_SERIOUS:-0}"
+if [[ "$LEMMA_SERIOUS_VAL" == "1" || "$LEMMA_SERIOUS_VAL" == "true" || "$LEMMA_SERIOUS_VAL" == "yes" ]]; then
+  echo "=== DuckDB session-hot baseline (LEMMA_SERIOUS=$LEMMA_SERIOUS_VAL) ==="
+  uv run python holdout/gendb_sec_edgar/session_hot.py \
+    --db "$SEC_DB" \
+    --sql "$SQL_OUT" \
+    --out "$OUT/duckdb_session_hot.json" \
+    --not-synthetic \
+    --hardware-hint "n2-highmem-64 same-box as lemma overnight"
+else
+  echo "DuckDB session-hot baseline skipped (dev; set LEMMA_SERIOUS=1 for paper protocol)"
+  python3 -c "
+import json
+print(json.dumps({
+    'skipped': True,
+    'reason': 'dev',
+    'LEMMA_SERIOUS': '${LEMMA_SERIOUS_VAL}',
+}, indent=2) + '\n')
+" >"$OUT/duckdb_session_hot.skipped.json"
+fi
 
 # --- agent driver env ---
 export MAX_ITERATIONS="${MAX_ITERATIONS:-4}"

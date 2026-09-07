@@ -18,12 +18,15 @@ Usage:
 
 import argparse
 import random
-import re
 import sys
 import time
 from pathlib import Path
 
-import duckdb
+_SCRIPT_DIR = Path(__file__).resolve().parent
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
+
+from query_filter import filter_query_candidates
 
 # ---------------------------------------------------------------------------
 # Template-based random SQL query generator for SEC EDGAR schema
@@ -674,75 +677,6 @@ LIMIT {rand_limit()}
     return templates
 
 
-def extract_features(sql: str, exec_time_ms: float, row_count: int, col_count: int) -> dict:
-    """Extract structural features from a SQL query."""
-    sql_upper = sql.upper()
-
-    join_count = len(re.findall(r'\bJOIN\b', sql_upper))
-
-    if exec_time_ms < 100:
-        time_bucket = "fast"
-    elif exec_time_ms < 1000:
-        time_bucket = "medium"
-    elif exec_time_ms < 10000:
-        time_bucket = "slow"
-    else:
-        time_bucket = "very_slow"
-
-    if join_count == 0:
-        join_bucket = "0_joins"
-    elif join_count == 1:
-        join_bucket = "1_join"
-    elif join_count == 2:
-        join_bucket = "2_joins"
-    else:
-        join_bucket = "3plus_joins"
-
-    tables = set()
-    for t in ["sub", "num", "tag", "pre"]:
-        if re.search(r'\b' + t + r'\b', sql, re.IGNORECASE):
-            tables.add(t)
-
-    features = {
-        "join_count": join_count,
-        "join_bucket": join_bucket,
-        "has_group_by": bool(re.search(r'\bGROUP\s+BY\b', sql_upper)),
-        "has_subquery": sql_upper.count("SELECT") > 1,
-        "has_order_by": bool(re.search(r'\bORDER\s+BY\b', sql_upper)),
-        "has_having": bool(re.search(r'\bHAVING\b', sql_upper)),
-        "has_distinct": bool(re.search(r'\bDISTINCT\b', sql_upper)),
-        "has_aggregation": bool(re.search(r'\b(COUNT|SUM|AVG|MIN|MAX)\s*\(', sql_upper)),
-        "num_tables": len(tables),
-        "tables": tables,
-        "time_bucket": time_bucket,
-        "exec_time_ms": exec_time_ms,
-        "row_count": row_count,
-        "col_count": col_count,
-    }
-
-    feature_set = set()
-    feature_set.add(f"time:{time_bucket}")
-    feature_set.add(f"joins:{join_bucket}")
-    feature_set.add(f"tables:{len(tables)}")
-    if features["has_group_by"]:
-        feature_set.add("group_by")
-    if features["has_subquery"]:
-        feature_set.add("subquery")
-    if features["has_order_by"]:
-        feature_set.add("order_by")
-    if features["has_having"]:
-        feature_set.add("having")
-    if features["has_distinct"]:
-        feature_set.add("distinct")
-    if features["has_aggregation"]:
-        feature_set.add("aggregation")
-    for t in tables:
-        feature_set.add(f"uses:{t}")
-
-    features["feature_set"] = feature_set
-    return features
-
-
 def greedy_diversity_sample(candidates: list, num_select: int) -> list:
     """Select queries maximizing feature diversity via greedy set-cover."""
     if len(candidates) <= num_select:
@@ -832,54 +766,19 @@ def main():
             unique_queries.append(sql)
     print(f"  {len(unique_queries)} unique queries after dedup")
 
-    # Filter and evaluate queries
-    print(f"\nFiltering queries (timeout={args.query_timeout}s per query)...")
-    candidates = []
-    errors = 0
-    timeouts = 0
-    empty = 0
-    too_large = 0
+    # Filter and evaluate queries (parallel DuckDB connections)
+    try:
+        candidates, filter_counts = filter_query_candidates(
+            unique_queries, db_path, args.query_timeout
+        )
+    except KeyboardInterrupt:
+        print("\nInterrupted by user.")
+        sys.exit(130)
 
-    con = duckdb.connect(str(db_path), read_only=True)
-
-    for i, sql in enumerate(unique_queries):
-        if (i + 1) % 200 == 0:
-            print(f"  Evaluated {i + 1}/{len(unique_queries)} "
-                  f"(valid: {len(candidates)}, errors: {errors}, "
-                  f"empty: {empty}, too_large: {too_large})")
-
-        try:
-            start = time.perf_counter()
-            result = con.execute(sql)
-            columns = [desc[0] for desc in result.description]
-            rows = result.fetchall()
-            elapsed_ms = (time.perf_counter() - start) * 1000
-
-            if elapsed_ms > args.query_timeout * 1000:
-                timeouts += 1
-                continue
-
-            row_count = len(rows)
-            col_count = len(columns)
-
-            if row_count == 0:
-                empty += 1
-                continue
-            if row_count > 100000:
-                too_large += 1
-                continue
-
-            features = extract_features(sql, elapsed_ms, row_count, col_count)
-            candidates.append((sql, features))
-
-        except KeyboardInterrupt:
-            print("\nInterrupted by user.")
-            break
-        except Exception:
-            errors += 1
-            continue
-
-    con.close()
+    errors = filter_counts["errors"]
+    timeouts = filter_counts["timeouts"]
+    empty = filter_counts["empty"]
+    too_large = filter_counts["too_large"]
 
     print(f"\nFiltering complete:")
     print(f"  Valid candidates: {len(candidates)}")
