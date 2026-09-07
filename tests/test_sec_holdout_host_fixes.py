@@ -119,7 +119,7 @@ pub exec fn run_query(cols: &Cols) -> (res: {bridge.rust_ret})
     requires valid_cols(cols),
     ensures {bridge.ensures}
 {{
-    std::collections::HashMap::new()
+    HashMapWithView::new()
 }}"""
     res = run_custom_sql_pipeline(
         sql,
