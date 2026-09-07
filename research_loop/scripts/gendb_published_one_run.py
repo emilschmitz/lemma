@@ -179,9 +179,16 @@ def parse_optimizer_output(text: str) -> dict[str, Any]:
     """Extract proof/latency fields from run_optimizer stdout+stderr."""
     parsed: dict[str, Any] = {}
 
-    m = re.search(r"proof_verified=(True|False)", text)
-    if m:
-        parsed["proof_verified"] = _parse_bool(m.group(1))
+    # Last assignment wins: an early CUSTOM_PIPELINE_FAILED / proof_verified=False
+    # must not hide a later marked-submit success.
+    found = list(re.finditer(r"proof_verified=(True|False)", text))
+    if found:
+        parsed["proof_verified"] = _parse_bool(found[-1].group(1))
+    elif (
+        "Using marked submit metrics" in text
+        and "(marked run)" in text
+    ):
+        parsed["proof_verified"] = True
 
     for line in text.splitlines():
         if line.startswith("LEMMA_METRICS_JSON:"):

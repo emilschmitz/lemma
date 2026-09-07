@@ -597,6 +597,15 @@ def run_optimization_loop(
             proof_verified = metrics["proof_verified"]
             latency = metrics["latency_us"]
             _vprint(f" {COLOR_GREEN}OK{COLOR_RESET} (marked run)")
+            # Overnight harvest greps these tokens; do not rely on harness JSON alone.
+            print(
+                f"proof_verified={bool(proof_verified)} latency_us={latency}",
+                flush=True,
+            )
+            print(
+                f"{_HARNESS_METRICS_PREFIX}{json.dumps(metrics)}",
+                flush=True,
+            )
             if status == "SUCCESS" and proof_verified and latency >= 0:
                 if best_latency == -1 or latency < best_latency:
                     best_latency = latency

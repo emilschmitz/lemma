@@ -49,6 +49,62 @@ def _write_multi_query_sql(path: Path, n: int) -> None:
     path.write_text("\n".join(parts))
 
 
+def _load_parse():
+    path = ROOT / "research_loop" / "scripts" / "gendb_published_one_run.py"
+    spec = importlib.util.spec_from_file_location("gendb_published_one_run", path)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+    return mod.parse_optimizer_output
+
+
+_R19_MARKED_LOG = """
+CUSTOM_PIPELINE_FAILED [verify]: verus verify failed: see /tmp/verify_error_custom.log
+  - Using marked submit metrics (skipping duplicate harness)... \x1b[92mOK\x1b[0m (marked run)
+proof_verified=True latency_us=19628
+LEMMA_METRICS_JSON: {"status": "SUCCESS", "proof_verified": true, "latency_us": 19628}
+"""
+
+_R19_MARKED_LOG_NO_TOKEN = """
+CUSTOM_PIPELINE_FAILED [verify]: verus verify failed: see /tmp/verify_error_custom.log
+  - Using marked submit metrics (skipping duplicate harness)... \x1b[92mOK\x1b[0m (marked run)
+latency_us=19628
+"""
+
+
+def test_e2e_marked_submit_log_is_lemma_ok():
+    """Harvest path: r19-shaped marked-submit log must be lemma_ok, not a fail-streak miss."""
+    parse = _load_parse()
+    overnight = _load_module()
+    fields = parse(_R19_MARKED_LOG)
+    rec = {"returncode": 0, **fields}
+    assert rec.get("proof_verified") is True
+    assert rec.get("latency_us") == 19628
+    assert overnight.lemma_job_ok(rec) is True
+    tracker = overnight.FailStreakTracker(6)
+    for _ in range(5):
+        assert tracker.record(rec) is False
+    assert tracker.consecutive_fail == 0
+    assert tracker.aborted is None
+
+
+def test_e2e_marked_submit_without_proof_token_still_lemma_ok():
+    """Old r19 logs had no proof_verified= line; parser must still see the marked run."""
+    parse = _load_parse()
+    overnight = _load_module()
+    fields = parse(_R19_MARKED_LOG_NO_TOKEN)
+    rec = {"returncode": 0, **fields}
+    assert rec.get("proof_verified") is True
+    assert rec.get("latency_us") == 19628
+    assert overnight.lemma_job_ok(rec) is True
+
+
+def test_parse_last_proof_verified_wins():
+    parse = _load_parse()
+    text = "proof_verified=False\nUsing marked submit metrics\n(marked run)\nproof_verified=True latency_us=8\n"
+    assert parse(text).get("proof_verified") is True
+
+
 def test_lemma_job_ok_requires_timed_latency():
     mod = _load_module()
     ok = mod.lemma_job_ok
@@ -104,6 +160,56 @@ def test_fail_streak_tracker_resets_after_success():
     for _ in range(5):
         assert tracker.record(_fail_rec()) is False
     assert tracker.aborted is None
+
+
+def test_e2e_overnight_main_marked_submit_does_not_fail_streak(
+    tmp_path: Path, monkeypatch
+):
+    """Driver harvest of five marked-submit jobs must not abort (r19 false streak)."""
+    mod = _load_module()
+    parse = _load_parse()
+    sql = tmp_path / "queries.sql"
+    _write_multi_query_sql(sql, 5)
+    out_dir = tmp_path / "out"
+
+    def fake_run_one(job: dict, log_dir: str) -> dict:
+        fields = parse(_R19_MARKED_LOG)
+        rec = {
+            "family": job["family"],
+            "qid": job["qid"],
+            "returncode": 0,
+            "elapsed_s": 1.0,
+            "log": str(Path(log_dir) / f"{job['family']}_{job['qid']}.log"),
+            **fields,
+        }
+        rec["lemma_ok"] = mod.lemma_job_ok(rec)
+        return rec
+
+    monkeypatch.setattr(mod, "run_one", fake_run_one)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "overnight_lemma.py",
+            "--sql-file",
+            str(sql),
+            "--out-dir",
+            str(out_dir),
+            "--workers",
+            "1",
+            "--fail-streak",
+            "6",
+            "--family",
+            "r19",
+        ],
+    )
+    rc = mod.main()
+    assert rc == 0
+    assert not (out_dir / "aborted.json").exists()
+    results = json.loads((out_dir / "results.json").read_text())
+    assert results["aborted"] is None
+    assert all(r["lemma_ok"] for r in results["results"])
+    assert all(r["proof_verified"] is True for r in results["results"])
 
 
 def test_main_aborts_after_six_consecutive_failures(tmp_path: Path, monkeypatch):
