@@ -106,15 +106,23 @@ traces first.** A driver line `TIMEOUT after Ns` is **not** proof that Verus tim
 Verus **finished** (proof error, not a timeout). Only treat it as a timeout if that file
 (or Verus stderr) says timed out / no `verification results`.
 
-**Open the traces and identify the concrete error:**
+**Open the traces and identify the concrete error. Order is mandatory:**
 
-- Experiment / optimizer logs: `experiment_data/logs/*.log`, `nohup.out`
-- Verify: `research_loop/generated/verify_error_custom.log` and
-  `research_loop/agents/failed_transpile/verify_*.json`
-- Agent session: run dir under `research_loop/runs/<id>/` — especially
-  `workspace/runquery_agent.rs`, `workspace/logs/agent_stream.jsonl`,
-  `workspace/logs/agent_stderr.log`, MCP result JSON under `workspace/mcp_results/`
-- Harness / assemble output referenced in `CUSTOM_PIPELINE_FAILED [...]` lines
+1. **`workspace/mcp_results/runs/*.json`** — every MCP `run_runquery`. Record
+   `proof_verified`, `ok`, `latency_us`, `dataset_size`, and the `compiler_error`
+   excerpt (`verification results:: N verified, M errors` or rustc).
+2. **`workspace/mcp_results/submitted.json`** — if it exists, that marked run is
+   the official prove. Do **not** contradict it with a later leftover file.
+3. Only then leftover `workspace/verify_error_custom.log` and
+   `workspace/runquery_agent.rs` (last edit; often a speed-chase overwrite).
+4. Experiment / optimizer logs: `experiment_data/logs/*.log`, `nohup.out`,
+   harvest `r18_Q*.log`. A `TIMEOUT after Ns` line is the **host harness wall**,
+   not a Verus verdict.
+5. `research_loop/generated/verify_error_custom.log` and
+   `research_loop/agents/failed_transpile/verify_*.json` for local prove_loop.
+
+Do **not** classify “agent could not prove” from leftover verify / `runquery_agent.rs`
+alone. r18 Q2 leftover was 123/1 after they had already submitted **124/0**.
 
 Report **`step N (name):`** from § Product path, then the concrete error from those files.
 Fix host bugs when the trace shows spec/assemble/execute errors; do not blame the agent

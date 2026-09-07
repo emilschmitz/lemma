@@ -1,11 +1,15 @@
 # r18 overnight traces (SHA `1bfd7df`)
 
-Do **not** classify from `driver.out` / `TIMEOUT after` / `timed_out=True` alone.
-If you suspect an **agent fail** or a **prove timeout**, open:
+Do **not** classify from `driver.out` / `TIMEOUT after` / `timed_out=True` /
+leftover `verify_error_custom.log` alone. **Mandatory order** (also `AGENTS.md`
+§ Always read the traces):
 
-- `lemma-overnight-out-r18/logs/r18_Q*.log`
-- `research_loop/runs/<id>/workspace/verify_error_custom.log`
-- `research_loop/runs/<id>/workspace/runquery_agent.rs`
+1. `workspace/mcp_results/runs/*.json` (every run: `proof_verified`, excerpt)
+2. `workspace/mcp_results/submitted.json` (official prove if present)
+3. Then leftover `verify_error_custom.log` / `runquery_agent.rs`
+4. Then harvest `r18_Q*.log` (300s = host wall)
+
+Leftover file is the last edit, not the session verdict.
 
 Harvest: `/home/emil/lemma-overnight-out-r18` on `lemma-gendb-overnight`.
 VM git + `driver.out` `git_sha` = **`1bfd7dfd13c425690749f7b8614449fd2ba55244`** (current `main` at launch).
@@ -64,25 +68,33 @@ Verifying and compiling Verus program... TIMEOUT after 300s
 
 Classes: **step 3** they *could* prove (they did). **step 7/infra** threw the prove away. **step 3** again they overwrote a live proof.
 
-## Q3 — Docker 600s; when verify ran, it finished with proof errors
+## Q3 — only abort-wave query that never proved (MCP: 0/4)
 
-Run: `20260907T122251Z_q926930_cff48c74`
+Run: `20260907T122251Z_q926930_cff48c74`. **No** `submitted.json`. Four MCP runs, all
+`proof_verified=False`. SQL: `num ⋈ tag` on tag/version, `ddate` 2024, `custom=0`,
+`GROUP BY tag, tlabel, datatype` with `COUNT(DISTINCT adsh)`, `COUNT(*)`,
+`SUM(value>0)`, `SUM(value<0)`, `HAVING distinct > 100`.
 
-`r18_Q3.log`: `agent_docker_end: exit=-1 timed_out=True` on multiple iters. **step 3 / infra** (agent budget).
+| run | Verus |
+|---|---|
+| `T123158` | rustc **E0277** `assert((nval as int) < 0 == false)` — `bool: Chainable` |
+| `T123215` | **123/3** |
+| `T124139` | `cannot use while in proof or spec mode` |
+| `T125136` | **124/3** (leftover) |
 
-Same run `verify_error_custom.log` **starts with**:
+Leftover `AGENT_EDIT` is a reverse nested join + `agg_step_*` + `rem_join_sq` lemmas
+(helpers **are** in the assemble). The three leftover errors are all in their ghost:
 
 ```
-verification results:: 124 verified, 3 errors
-error: assertion failed
-    --> custom_query.rs:2798  assert(s2 as int == prev_full.2 as int + 1);
-error: assertion failed
-    --> custom_query.rs:2934  assert(s3 as int == prev_full.3 as int + 1);
-error: invariant not satisfied at end of loop body
-    --> rem_join_sq / st.inner@ bound forall
+assert(s2 as int == prev_full.2 as int + 1);   // positive CASE
+assert(s3 as int == prev_full.3 as int + 1);   // negative CASE
+forall k: st.inner@[k].1 <= rem_join_sq(...) && .2/.3 <= .1   // invariant
 ```
 
-Also `case_when_u64` in **exec** `run_query` body (agent), not a missing host `case_when_u64` spec. **step 3 (agent).**
+`s2` / `s3` are `prev + case_when_u64(value ≷ 0, 1, 0)`, **not** always `+ 1`.
+They asserted the unconditional increment. First attempt also claimed
+`(nval as int) < 0 == false`. **step 3 (agent):** wrong CASE ghost + rem bound
+did not close. Not missing Trusteds. Not a timeout (Verus finished on 3 of 4).
 
 ## Q4 — missing helpers, not timeout
 

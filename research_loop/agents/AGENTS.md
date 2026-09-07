@@ -3,8 +3,9 @@
 ## Always read the traces on failure
 
 On any loud fail (`CUSTOM_PIPELINE_FAILED`, experiment `exit=1`, MCP verify error): open the
-cited logs/artifacts (`verify_error_custom.log`, `failed_transpile/verify_*.json`, run-dir
-`agent_stream.jsonl` / `runquery_agent.rs`) and state the **concrete** error before guessing.
+traces **in this order** before guessing: `mcp_results/runs/*.json`, then
+`mcp_results/submitted.json`, then leftover `verify_error_custom.log` /
+`runquery_agent.rs`. Leftover verify is the last edit, not the official prove.
 Host codegen bugs and agent proof failures look the same at the one-line summary.
 
 ### Always name the failure type
