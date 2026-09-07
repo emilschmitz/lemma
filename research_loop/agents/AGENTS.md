@@ -12,15 +12,15 @@ Host codegen bugs and agent proof failures look the same at the one-line summary
 After reading the traces, **label the failure** (one primary type). Say whether a smarter
 agent using only its allowed tools / `AGENT_EDIT` region could have fixed it.
 
-| Label | Meaning | Smarter agent could fix? |
-|-------|---------|--------------------------|
-| `transpile_fail` | SQL/schema unsupported or transpiler error before a real MethodSpec shell | No |
-| `host_codegen` | Assembled MethodSpec / loaders / harness outside `AGENT_EDIT` does not typecheck or compile | No |
-| `admission` | Agent edit rejected (fingerprint, forbidden TRUSTED/`assume`, bad `ensures`) | Usually yes — rewrite within contract |
-| `agent_verify` | Host program OK; Verus fails on the agent `run_query` body / proof | Yes — better body, invariants, Trusted menu use |
-| `agent_timeout` / `agent_crash` | Sandbox timed out or exited before a valid submit | Maybe — simpler approach or fewer verify loops |
-| `measure_harness` | Verified binary fails at timed measure / data path | Rarely via `run_query` alone; often host/data |
-| `infra` | Docker, MCP, credentials, preempt, disk | No |
+| Label | Product path step | Meaning | Smarter agent could fix? |
+|-------|-------------------|---------|--------------------------|
+| `transpile_fail` | **2 transpile** | SQL/schema unsupported or spec ill-typed / incomplete (**transpiler coverage**) | No |
+| `host_codegen` | **4 assemble** (or 2 if the spec file itself is wrong) | Loaders/`main`/stitch outside `AGENT_EDIT` does not typecheck | No |
+| `admission` | **3 agent** | Agent edit rejected (fingerprint, forbidden TRUSTED/`assume`, bad `ensures`) | Usually yes |
+| `agent_verify` | **3 agent** / **5 verify** | Spec+assemble OK; Verus fails on `run_query` (**agent stupidity**) | Yes |
+| `agent_timeout` / `agent_crash` | **3 agent** | Timed out or crashed before a valid submit | Maybe |
+| `measure_harness` | **7 execute** | Verified binary fails at pin/time (**failed to execute**) | Rarely via `run_query` |
+| `infra` | (outside path) | Docker, MCP, credentials, preempt, disk | No |
 
 **Rule:** If the first compile/verify errors point at generated `method_spec`, loaders, or
 other non-editable scaffolding → `host_codegen` (or `transpile_fail`), **not**
@@ -33,9 +33,9 @@ fair shot at proving its body.
 down, just save the file”) without Emil’s **explicit approval** of that specific
 fallback — **especially** for scientific / `LEMMA_EXPERIMENT` runs. Prefer loud failure.
 
-The research loop contract for ad-hoc Lemma Basic SQL is:
-
-**SQL → MethodSpec (transpiler) → agent `run_query` → verify → compile → run**
+The research loop contract for ad-hoc Lemma Basic SQL is the **product path** in
+root **`AGENTS.md`**: sql → transpile → agent → assemble → verify → compile → execute
+(DuckDB pin at execute only).
 
 See also root **`AGENTS.md`** (pipeline contract). Summary:
 

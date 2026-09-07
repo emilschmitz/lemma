@@ -1,5 +1,21 @@
 # Lemma agent & engine rules
 
+## Product path (report every failure against one step)
+
+DuckDB is **not** a second engine. It is the pinned column store at **execute**.
+
+| Step | Name | What happens |
+|------|------|----------------|
+| 1 | **sql** | Query + catalog schema |
+| 2 | **transpile** | SQL → MethodSpec (`spec.rs`). Spec must be internally typed and complete. Holes here = **transpiler coverage failure**. |
+| 3 | **agent** | Writes `run_query` so Verus can prove `≡ method_spec`. Only `AGENT_EDIT`. Agent cannot prove an ill-typed spec. Failures here with a fair spec = **agent stupidity** (or timeout). |
+| 4 | **assemble** | Host stitches spec + agent body + loaders/`main`. Must not invent a second spec or drop types the spec uses. |
+| 5 | **verify** | Verus on the assembled `.rs`. If errors are in generated spec/loaders → step 2 or 4, **not** 3. If errors are in `AGENT_EDIT` and spec is sound → step 3. |
+| 6 | **compile** | Native binary. |
+| 7 | **execute** | Run binary; **pin** DuckDB columns; time it. Failures here = **failed to execute** (pin, harness timeout, binary crash). |
+
+When telling Emil about a problem, lead with **`step N (name):`** and the one-liner class (`transpiler coverage` / `assemble` / `agent stupidity` / `failed to execute` / `infra`). Do not mix stages.
+
 ## Git checkpoints (overrides “commit only when asked”)
 
 For **this repo**, agents **must** create git commits as rollback points. Do **not**
