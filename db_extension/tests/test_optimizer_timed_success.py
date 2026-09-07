@@ -4,7 +4,11 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from db_extension.optimizer import harness_timeout_sec, is_timed_verified_success
+from db_extension.optimizer import (
+    agent_meta_from_workspace_submit,
+    harness_timeout_sec,
+    is_timed_verified_success,
+)
 
 _OPTIMIZER_PY = Path(__file__).resolve().parents[1] / "optimizer.py"
 
@@ -112,3 +116,19 @@ def test_is_timed_verified_success_rejects_failure_status() -> None:
             "latency_us": 8,
         }
     )
+
+
+def test_agent_meta_from_workspace_submit(tmp_path: Path) -> None:
+    assert agent_meta_from_workspace_submit(tmp_path) is None
+    submitted = tmp_path / "mcp_results" / "submitted.json"
+    submitted.parent.mkdir(parents=True, exist_ok=True)
+    submitted.write_text(
+        '{"run_id": "r1", "ok": true, "latency_us": 66, '
+        '"metrics": {"status": "SUCCESS", "proof_verified": true, "latency_us": 66}}\n'
+    )
+    meta = agent_meta_from_workspace_submit(tmp_path)
+    assert meta is not None
+    assert meta["ok"] is True
+    assert meta["submitted_run_id"] == "r1"
+    assert meta["submitted_metrics"]["proof_verified"] is True
+    assert meta["latency_us"] == 66

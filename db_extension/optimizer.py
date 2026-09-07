@@ -62,6 +62,32 @@ def _parse_harness_metrics(stderr: str) -> dict:
     return {}
 
 
+def agent_meta_from_workspace_submit(workspace: Path) -> dict | None:
+    """CLI Docker path has no OpenRouter meta; honor mcp_results/submitted.json."""
+    from db_extension.agent.measure_core import get_submitted
+
+    submitted = get_submitted(ws=workspace)
+    if submitted is None:
+        return None
+    metrics = submitted.get("metrics") or {}
+    lat = submitted.get("latency_us", metrics.get("latency_us", -1))
+    try:
+        latency_us = int(lat)
+    except (TypeError, ValueError):
+        latency_us = -1
+    return {
+        "ok": bool(submitted.get("ok")),
+        "submitted": True,
+        "submitted_run_id": submitted.get("run_id"),
+        "submitted_metrics": metrics,
+        "latency_us": latency_us,
+        "error": "" if submitted.get("ok") else (
+            metrics.get("compiler_error")
+            or "marked run failed verification"
+        ),
+    }
+
+
 def is_timed_verified_success(metrics: dict) -> bool:
     """True when harness/agent metrics are verified with a real timed bench."""
     if metrics.get("status") != "SUCCESS":
@@ -431,6 +457,7 @@ def run_optimization_loop(
                         workspace=workspace,
                         cfg=cfg,
                     )
+                    agent_meta = agent_meta_from_workspace_submit(workspace)
                     return body, proc
 
                 from db_extension.agent import run_openrouter_agent_iteration

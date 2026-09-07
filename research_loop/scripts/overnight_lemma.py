@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import multiprocessing
 import os
 import socket
 import subprocess
@@ -316,7 +317,8 @@ def main() -> int:
                 break
     else:
         job_iter = iter(jobs)
-        with ProcessPoolExecutor(max_workers=workers) as ex:
+        ex = ProcessPoolExecutor(max_workers=workers)
+        try:
             futs: dict = {}
             for _ in range(min(workers, len(jobs))):
                 job = next(job_iter, None)
@@ -331,12 +333,21 @@ def main() -> int:
                     if on_done(fut.result()):
                         stop = True
                 if stop:
+                    # Do not join in-flight workers: `with` shutdown(wait=True)
+                    # kept the VM up ~40min after fail_streak_6 on r18.
                     break
                 while len(futs) < workers:
                     job = next(job_iter, None)
                     if job is None:
                         break
                     futs[ex.submit(run_one, job, str(log_dir))] = job
+        finally:
+            if streak.aborted:
+                ex.shutdown(wait=False, cancel_futures=True)
+                for proc in multiprocessing.active_children():
+                    proc.terminate()
+            else:
+                ex.shutdown(wait=True)
 
     payload = {
         **meta,
