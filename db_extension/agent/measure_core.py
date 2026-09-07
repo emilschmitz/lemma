@@ -11,7 +11,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from db_extension.agent.extract import admit_workspace_runquery, extract_marked_body, validate_runquery_body
-from db_extension.agent.lease_measure import lease_measure_enabled, merge_lease_into_metrics
+from db_extension.agent.lease_measure import (
+    fallback_measure_path,
+    lease_measure_enabled,
+    merge_lease_into_metrics,
+)
 from db_extension.dataset_config import effective_dataset_size
 from db_extension.verus_bridge import (
     invoke_verus_custom_pipeline,
@@ -346,12 +350,9 @@ def run_solution(
         except (FileNotFoundError, RuntimeError, ValueError) as exc:
             metrics = dict(metrics)
             metrics["lease_measure_error"] = str(exc)
-            metrics.setdefault("measure_path", "lease")
     else:
         metrics = dict(metrics)
-        from db_extension.agent.lease_measure import resolve_measure_path
-
-        metrics.setdefault("measure_path", resolve_measure_path())
+        metrics.setdefault("measure_path", fallback_measure_path())
     latency_us = int(metrics.get("latency_us", -1))
     run_path = runs_dir(base) / f"{run_id}.json"
     out = {

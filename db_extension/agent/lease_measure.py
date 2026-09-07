@@ -37,6 +37,19 @@ def default_duckdb_path() -> Path:
     return DEFAULT_DUCKDB
 
 
+def is_h1_scan_duckdb(duckdb_path: Path | str | None = None) -> bool:
+    """True only for the H1 scan_skew lease e2e DuckDB (not SEC product DBs)."""
+    db = Path(duckdb_path) if duckdb_path is not None else default_duckdb_path()
+    db = db.resolve()
+    if db == DEFAULT_DUCKDB.resolve():
+        return True
+    return db.name == "scan.duckdb" and "duckdb_pin_session" in db.parts
+
+
+def is_sec_workload() -> bool:
+    return os.environ.get("LEMMA_WORKLOAD", "").strip().lower() == "sec"
+
+
 def parse_h1_stdout(stdout: str) -> dict[str, int | str]:
     """Parse H1 e2e binary stdout (same format as measure_e2e_paths.py)."""
     meta: dict[str, int | str] = {}
@@ -55,7 +68,11 @@ def parse_h1_stdout(stdout: str) -> dict[str, int | str]:
 
 
 def lease_measure_available(*, duckdb_path: Path | None = None) -> bool:
+    if is_sec_workload():
+        return False
     db = duckdb_path or default_duckdb_path()
+    if not is_h1_scan_duckdb(db):
+        return False
     return find_lease_binary().is_file() and db.is_file()
 
 
@@ -63,11 +80,17 @@ def resolve_measure_path() -> str:
     return os.environ.get("LEMMA_MEASURE_PATH", "auto").strip().lower() or "auto"
 
 
+def fallback_measure_path(*, duckdb_path: Path | None = None) -> str:
+    """measure_path when the H1 lease sidecar is skipped (never ``lease``)."""
+    resolved = resolve_measure_path()
+    if resolved in ("lease", "both", "auto"):
+        return "kernel"
+    return resolved
+
+
 def lease_measure_enabled(*, duckdb_path: Path | None = None) -> bool:
     path = resolve_measure_path()
-    if path in ("lease", "both"):
-        return True
-    if path == "auto":
+    if path in ("lease", "both", "auto"):
         return lease_measure_available(duckdb_path=duckdb_path)
     return False
 
@@ -128,8 +151,9 @@ def run_lease_h1_measure(
 def merge_lease_into_metrics(metrics: dict) -> dict:
     """If lease measure is enabled, run it and merge fields into *metrics*."""
     if not lease_measure_enabled():
-        metrics.setdefault("measure_path", resolve_measure_path())
-        return metrics
+        out = dict(metrics)
+        out.setdefault("measure_path", fallback_measure_path())
+        return out
     lease = run_lease_h1_measure()
     out = dict(metrics)
     for key, val in lease.items():

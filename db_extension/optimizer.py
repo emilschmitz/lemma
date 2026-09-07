@@ -61,6 +61,33 @@ def _parse_harness_metrics(stderr: str) -> dict:
     return {}
 
 
+def is_timed_verified_success(metrics: dict) -> bool:
+    """True when harness/agent metrics are verified with a real timed bench."""
+    if metrics.get("status") != "SUCCESS":
+        return False
+    if not metrics.get("proof_verified"):
+        return False
+    try:
+        latency = int(metrics.get("latency_us", -1))
+    except (TypeError, ValueError):
+        return False
+    if latency < 0:
+        return False
+    return metrics.get("bench_skipped") is not True
+
+
+def _keep_optimizing() -> bool:
+    raw = os.environ.get("LEMMA_KEEP_OPTIMIZING", "").strip().lower()
+    return raw in ("1", "true", "yes")
+
+
+def _maybe_stop_on_timed_success(*, metrics: dict, iteration: int) -> bool:
+    if is_timed_verified_success(metrics) and not _keep_optimizing():
+        log_info(COMPONENT, "stop_on_timed_success", f"iter={iteration}")
+        return True
+    return False
+
+
 def _history_entry(
     *,
     iteration: int,
@@ -545,6 +572,8 @@ def run_optimization_loop(
             ))
             _save_harness_metrics(iteration, metrics)
             _snapshot_history()
+            if _maybe_stop_on_timed_success(metrics=metrics, iteration=iteration):
+                break
             continue
 
         log_debug(COMPONENT, "harness_start", f"custom sql query_id={query_id}", dataset_size=dataset_size)
@@ -630,6 +659,8 @@ def run_optimization_loop(
             ))
             _save_harness_metrics(iteration, metrics)
             _snapshot_history()
+            if _maybe_stop_on_timed_success(metrics=metrics, iteration=iteration):
+                break
 
         except subprocess.TimeoutExpired:
             if demo_enabled():
