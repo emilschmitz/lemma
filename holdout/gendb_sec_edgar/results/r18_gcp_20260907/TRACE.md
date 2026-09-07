@@ -117,3 +117,14 @@ The join menu **was** in the assembled file for Q2 (`join_method_spec_helper`, `
 | Q5 | Four Docker `timed_out=True`. **No** `verify_error_custom.log` | Never got a Verus verdict. Not a missing-Trusted line. |
 | Q7 | E0308: `i0 = i0 - 1` — `usize` vs `int` in the agent loop | Type mix in the body, not a missing lemma. |
 | Q8 | Verus finished: 124 ok, 2 fail — `lemma_multi_agg_helper_slot0_sum_native_leq_*` **precondition** `valid_cols_num(num)` | Lemma **exists**. Call site did not keep `valid_cols_num`. |
+
+## Slow body that does prove r18 Q2
+
+r18 Q2 is r13 Q1 with `fy = 2024` and `LIMIT 500`. Copying the r13 Q1 nested-loop body (reverse scan, rem/cell lemmas, `apply_having_filter_exec_*`) and changing `2022` → `2024`:
+
+```
+ADMIT True
+VERIFY True
+```
+
+in ~6s (`/tmp/lemma-r18-q2-diag`, 2026-09-07). So a **slow** join that matches `join_method_spec_helper` **is** possible on this spec. The overnight agent’s Q2 file failed one invariant on that same helper; they did not land this loop. Hard part is the **proof steps** (reverse indices, rem lemmas, HAVING), not “Verus cannot prove any implementation.”
