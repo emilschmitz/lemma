@@ -724,6 +724,7 @@ def run_agent_docker(
             )
         except subprocess.TimeoutExpired:
             timed_out = True
+            mcp_server.stop()
             subprocess.run(
                 ["docker", "kill", container_name],
                 capture_output=True,

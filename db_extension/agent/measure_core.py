@@ -10,13 +10,17 @@ from concurrent import futures
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from db_extension.agent.extract import admit_workspace_runquery, extract_marked_body, validate_runquery_body
+from db_extension.agent.extract import (
+    admit_workspace_runquery,
+    extract_marked_body,
+    validate_runquery_body,
+)
 from db_extension.agent.lease_measure import (
     fallback_measure_path,
     lease_measure_enabled,
     merge_lease_into_metrics,
 )
-from db_extension.dataset_config import effective_dataset_size
+from db_extension.dataset_config import mcp_iterate_dataset_size
 from db_extension.verus_bridge import (
     invoke_verus_custom_pipeline,
     resolve_schema_for_sql,
@@ -303,7 +307,7 @@ def run_solution(
 
     base = ws or workspace()
     rq_path = Path(validated["runquery_path"])
-    size = dataset_size if dataset_size is not None else effective_dataset_size()
+    size = dataset_size if dataset_size is not None else mcp_iterate_dataset_size()
     run_id = f"{time.strftime('%Y%m%dT%H%M%S', time.gmtime())}_{uuid.uuid4().hex[:8]}"
     t0 = time.perf_counter()
     try:

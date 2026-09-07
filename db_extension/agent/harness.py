@@ -150,7 +150,7 @@ data profile, and hardware — not canned loop recipes.
 - Do NOT weaken `ensures` away from the MethodSpec call in `spec.rs`.
 - Read `/context/ro/spec.rs`, `data_profile.md`, `hardware.md`, and `COMPILATION_GUIDE.md` as needed.
 - Use `duckdb_sql` per AGENT_DATA_MODE=`{flags.agent_data_mode}` (see data_profile.md).
-- Prefer `run_runquery` without `dataset_size` (host default); smaller size only while iterating if needed.
+- Prefer `run_runquery` without `dataset_size` (host MCP iterate cap, not full table); pass an explicit smaller `dataset_size` only for quick probes.
 - {submit_line}
 - Check time: MCP `session_status` or `python3 check_session_time`.
 
@@ -178,7 +178,11 @@ def _build_user_prompt(
         feedback = (
             f"\n## Previous iteration\nVerified OK at {last_latency_us} µs — try to beat that.\n"
         )
-    from research_loop.agent_sandbox import SPEC_NAME, _extract_spec_excerpt, _read_ro_excerpt
+    from research_loop.agent_sandbox import (
+        SPEC_NAME,
+        _extract_spec_excerpt,
+        _read_ro_excerpt,
+    )
 
     spec_file = workspace / "context" / "ro" / SPEC_NAME
     spec_excerpt = _extract_spec_excerpt(spec_file.read_text()) if spec_file.is_file() else ""

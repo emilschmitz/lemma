@@ -30,6 +30,7 @@ export AGENT_NETWORK=0
 export UV_NO_SYNC=1
 export PYTHONUNBUFFERED=1
 export LEMMA_EXPERIMENT_EVENT_FILE="$OUT/events.ndjson"
+export LEMMA_MCP_ITERATE_ROWS="${LEMMA_MCP_ITERATE_ROWS:-50000}"
 unset LEMMA_EXPERIMENT_ALLOW_DIRTY
 
 git rev-parse HEAD >"$OUT/git_sha.txt"
@@ -193,6 +194,7 @@ export LEMMA_WORKLOAD=sec
 export LEMMA_DUCKDB_PATH="${SEC_DB}"
 export LEMMA_PARALLEL="${WORKERS}"
 export LEMMA_EXPERIMENT_EVENT_FILE="$OUT/events.ndjson"
+export LEMMA_MCP_ITERATE_ROWS="${LEMMA_MCP_ITERATE_ROWS:-50000}"
 unset LEMMA_EXPERIMENT_ALLOW_DIRTY
 .venv/bin/python research_loop/scripts/overnight_lemma.py \\
   --sql-file "$SQL_OUT" \\

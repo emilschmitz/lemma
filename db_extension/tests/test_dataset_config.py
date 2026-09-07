@@ -5,7 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from db_extension.dataset_config import dataset_size_limit, effective_dataset_size
+from db_extension.agent import measure_core as mc
+from db_extension.dataset_config import (
+    dataset_size_limit,
+    effective_dataset_size,
+    mcp_iterate_dataset_size,
+)
 from db_extension_paths.dataset_config import (
     effective_dataset_size as paths_effective_dataset_size,
 )
@@ -90,3 +95,107 @@ def test_effective_size_from_duckdb_primary(
     monkeypatch.setenv("LEMMA_DUCKDB_PATH", str(db))
     monkeypatch.setenv("LEMMA_PRIMARY_TABLE", "pre")
     assert effective_dataset_size() == 5
+
+
+def test_mcp_iterate_cap_default(
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_ssb: Path,
+) -> None:
+    monkeypatch.delenv("LEMMA_DATASET_SIZE", raising=False)
+    monkeypatch.delenv("LEMMA_BENCH_TBL", raising=False)
+    monkeypatch.delenv("LEMMA_MCP_ITERATE_ROWS", raising=False)
+    monkeypatch.setenv("LEMMA_DUCKDB_PATH", "/unused/sec_edgar.duckdb")
+    monkeypatch.setenv("LEMMA_PRIMARY_TABLE", "pre")
+    monkeypatch.setattr(
+        "db_extension.dataset_config._count_duckdb_primary_rows",
+        lambda: 6_001_215,
+    )
+    assert effective_dataset_size() == 6_001_215
+    assert mcp_iterate_dataset_size() == 50_000
+
+
+def test_mcp_iterate_respects_dataset_size_env(
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_ssb: Path,
+) -> None:
+    monkeypatch.delenv("LEMMA_BENCH_TBL", raising=False)
+    monkeypatch.delenv("LEMMA_MCP_ITERATE_ROWS", raising=False)
+    monkeypatch.setenv("LEMMA_DATASET_SIZE", "500")
+    monkeypatch.setenv("LEMMA_DUCKDB_PATH", "/unused/sec_edgar.duckdb")
+    monkeypatch.setenv("LEMMA_PRIMARY_TABLE", "pre")
+    monkeypatch.setattr(
+        "db_extension.dataset_config._count_duckdb_primary_rows",
+        lambda: 6_001_215,
+    )
+    assert effective_dataset_size() == 500
+    assert mcp_iterate_dataset_size() == 500
+
+
+def test_mcp_iterate_custom_env_cap(
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_ssb: Path,
+) -> None:
+    monkeypatch.delenv("LEMMA_DATASET_SIZE", raising=False)
+    monkeypatch.delenv("LEMMA_BENCH_TBL", raising=False)
+    monkeypatch.setenv("LEMMA_MCP_ITERATE_ROWS", "1000")
+    monkeypatch.setenv("LEMMA_DUCKDB_PATH", "/unused/sec_edgar.duckdb")
+    monkeypatch.setenv("LEMMA_PRIMARY_TABLE", "pre")
+    monkeypatch.setattr(
+        "db_extension.dataset_config._count_duckdb_primary_rows",
+        lambda: 6_001_215,
+    )
+    assert effective_dataset_size() == 6_001_215
+    assert mcp_iterate_dataset_size() == 1000
+
+
+def test_optimizer_path_unchanged_when_only_iterate_cap_set(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    isolated_ssb: Path,
+) -> None:
+    tbl = tmp_path / "bench.tbl"
+    _write_tbl(tbl, 6_001_215)
+    monkeypatch.delenv("LEMMA_DATASET_SIZE", raising=False)
+    monkeypatch.delenv("LEMMA_BENCH_TBL", raising=False)
+    monkeypatch.setenv("LEMMA_MCP_ITERATE_ROWS", "50000")
+    monkeypatch.setattr(
+        "db_extension.dataset_config._count_duckdb_primary_rows",
+        lambda: 6_001_215,
+    )
+    monkeypatch.setenv("LEMMA_BENCH_TBL", str(tbl))
+    assert effective_dataset_size() == 6_001_215
+    assert mcp_iterate_dataset_size() == 50_000
+
+
+def test_run_solution_default_passes_iterate_dataset_size(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rq = tmp_path / "runquery_agent.rs"
+    rq.write_text("stub")
+
+    seen: list[int] = []
+
+    def fake_harness(*, query_id: int, dataset_size: int, ws: Path, sql=None, schema=None):
+        seen.append(dataset_size)
+        return (
+            {
+                "status": "SUCCESS",
+                "proof_verified": True,
+                "latency_us": 12,
+                "compiler_error": "",
+            },
+            0,
+        )
+
+    monkeypatch.setattr(
+        mc,
+        "validate_solution",
+        lambda **kwargs: {"ok": True, "runquery_path": str(rq)},
+    )
+    monkeypatch.setattr(mc, "_invoke_harness", fake_harness)
+    monkeypatch.setattr(mc, "mcp_iterate_dataset_size", lambda: 50_000)
+    out = mc.run_solution(path="runquery_agent.rs", query_id=1, ws=tmp_path)
+    assert out["ok"] is True
+    assert seen == [50_000]
+    assert out["dataset_size"] == 50_000

@@ -17,6 +17,7 @@ META_PATH = SSB_DIR / "dataset_meta.json"
 
 # SSB lineorder ≈ scale × 1.5M rows → 1.333 ≈ 2M fact rows.
 DEFAULT_SSB_SCALE = 1.333
+DEFAULT_MCP_ITERATE_ROWS = 50_000
 
 _NO_DATASET_SIZE_MSG = (
     "Cannot determine dataset row count: set LEMMA_DATASET_SIZE or provide "
@@ -128,3 +129,16 @@ def effective_dataset_size() -> int:
     if available is None:
         raise RuntimeError(_NO_DATASET_SIZE_MSG)
     return available
+
+
+def mcp_iterate_rows_cap() -> int:
+    """Row cap for MCP ``run_runquery`` when ``dataset_size`` is omitted (not official latency)."""
+    raw = os.environ.get("LEMMA_MCP_ITERATE_ROWS", "").strip()
+    if not raw:
+        return DEFAULT_MCP_ITERATE_ROWS
+    return max(1, int(raw))
+
+
+def mcp_iterate_dataset_size() -> int:
+    """MCP iterate rows: min(full effective size, ``LEMMA_MCP_ITERATE_ROWS`` cap)."""
+    return min(effective_dataset_size(), mcp_iterate_rows_cap())

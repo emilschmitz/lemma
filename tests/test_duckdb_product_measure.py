@@ -327,3 +327,46 @@ def test_duckdb_q1_standin_proves_and_times(monkeypatch: pytest.MonkeyPatch) -> 
     stdout = res.get("stdout") or ""
     assert "RESULT: map_len=" in stdout, stdout
     assert "SESSION_HOT_US:" in stdout
+
+
+_EXISTS_NUM_PRE_SQL = """SELECT DISTINCT n.tag, n.version, COUNT(*) AS cnt
+FROM num n
+WHERE n.uom = 'shares' AND n.value IS NOT NULL
+      AND EXISTS (SELECT 1 FROM pre p WHERE p.tag = n.tag AND p.version = n.version AND p.stmt = 'IS')
+GROUP BY n.tag, n.version"""
+
+
+def _quote_ident(name: str) -> str:
+    escaped = name.replace('"', '""')
+    return f'"{escaped}"'
+
+
+@pytest.mark.skipif(not TINY_DB.is_file(), reason="tiny SEC duckdb missing")
+def test_exists_pin_sql_runs_on_tiny_duckdb() -> None:
+    """Pinned num columns (no stmt) must load from tiny SEC duckdb."""
+    from verus_transpiler.column_projection import (
+        pin_schema_for_table,
+        project_multi_schema_for_query,
+    )
+
+    from tests.test_sec_holdout_parse import SEC_SCHEMA
+
+    catalog = {"num": SEC_SCHEMA["num"], "pre": SEC_SCHEMA["pre"]}
+    projected = project_multi_schema_for_query(_EXISTS_NUM_PRE_SQL, catalog)
+    flat_merged = {**projected["num"], **projected["pre"]}
+    pinned_num = pin_schema_for_table("num", flat_merged, catalog)
+    assert "stmt" not in pinned_num
+    assert {"tag", "version", "uom", "value"}.issubset(set(pinned_num))
+
+    col_sql = ", ".join(_quote_ident(col) for col in pinned_num)
+    sql = f"SELECT {col_sql} FROM {_quote_ident('num')} LIMIT 100"
+
+    import duckdb
+
+    con = duckdb.connect(str(TINY_DB), read_only=True)
+    try:
+        rows = con.execute(sql).fetchall()
+        assert len(rows) > 0
+        assert len(rows[0]) == len(pinned_num)
+    finally:
+        con.close()

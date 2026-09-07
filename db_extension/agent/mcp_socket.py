@@ -5,6 +5,7 @@ Tool semantics come from ``mcp_tool_registry.dispatch_host_tool``.
 """
 from __future__ import annotations
 
+import errno
 import json
 import os
 import socket
@@ -35,6 +36,19 @@ def _dispatch(tool: str, args: dict, ctx: MeasureContext) -> dict:
     return dispatch_host_tool(tool, args, ctx)
 
 
+def _send_jsonl(conn: socket.socket, payload: dict) -> bool:
+    """Send one JSONL response; return False if the client disconnected."""
+    try:
+        conn.sendall((json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8"))
+    except (BrokenPipeError, ConnectionResetError):
+        return False
+    except OSError as exc:
+        if exc.errno in (errno.EPIPE, errno.ECONNRESET):
+            return False
+        raise
+    return True
+
+
 def _safe_unlink(sock_path: Path) -> None:
     try:
         sock_path.unlink()
@@ -58,8 +72,8 @@ def _handle_connection(conn: socket.socket, ctx: MeasureContext) -> None:
                 try:
                     req = json.loads(line.decode("utf-8"))
                 except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-                    resp = {"id": None, "ok": False, "result": str(exc)}
-                    conn.sendall((json.dumps(resp, ensure_ascii=False) + "\n").encode("utf-8"))
+                    if not _send_jsonl(conn, {"id": None, "ok": False, "result": str(exc)}):
+                        break
                     continue
                 req_id = req.get("id")
                 tool = req.get("tool")
@@ -69,7 +83,8 @@ def _handle_connection(conn: socket.socket, ctx: MeasureContext) -> None:
                     resp = {"id": req_id, "ok": True, "result": result}
                 except Exception as exc:
                     resp = {"id": req_id, "ok": False, "result": str(exc)}
-                conn.sendall((json.dumps(resp, ensure_ascii=False) + "\n").encode("utf-8"))
+                if not _send_jsonl(conn, resp):
+                    break
 
 
 class McpSocketServer:

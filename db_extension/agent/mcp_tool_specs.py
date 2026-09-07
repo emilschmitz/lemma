@@ -38,7 +38,8 @@ HOST_TOOL_SPECS: tuple[HostToolSpec, ...] = (
         name="run_runquery",
         description=(
             "Validate and run the Verus harness on a run_query solution. "
-            "Returns run_id and metrics. Use a small dataset_size to iterate quickly."
+            "Returns run_id and metrics. Omit dataset_size for the host MCP iterate cap "
+            "(not full table); pass an explicit smaller dataset_size for quick probes."
         ),
         parameters={
             "type": "object",
@@ -46,7 +47,7 @@ HOST_TOOL_SPECS: tuple[HostToolSpec, ...] = (
                 "path": {"type": "string"},
                 "dataset_size": {
                     "type": "integer",
-                    "description": "Row limit for harness (-d); omit for default dataset size",
+                    "description": "Row limit for harness (-d); omit for MCP iterate cap (not full table)",
                 },
                 "query_id": {"type": "integer"},
             },
