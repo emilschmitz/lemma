@@ -100,7 +100,13 @@ Every paper/Spot/`LEMMA_EXPERIMENT=1` run must be **reproducible** and **logged*
 ## Always read the traces on failure
 
 When a run, experiment, verify, assemble, or agent session **fails**, do **not** guess from the
-one-line summary alone. **Open the traces and identify the concrete error:**
+one-line summary alone. **If you even suspect an agent fail or a prove timeout, open the
+traces first.** A driver line `TIMEOUT after Ns` is **not** proof that Verus timed out.
+`verify_error_custom.log` starting with `verification results:: N verified, M errors` means
+Verus **finished** (proof error, not a timeout). Only treat it as a timeout if that file
+(or Verus stderr) says timed out / no `verification results`.
+
+**Open the traces and identify the concrete error:**
 
 - Experiment / optimizer logs: `experiment_data/logs/*.log`, `nohup.out`
 - Verify: `research_loop/generated/verify_error_custom.log` and
