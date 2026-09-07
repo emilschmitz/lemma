@@ -225,3 +225,105 @@ def test_duckdb_agent_style_count_proves_and_matches(monkeypatch: pytest.MonkeyP
     stdout = res.get("stdout") or ""
     assert f"RESULT: {expected}" in stdout, stdout
     assert "SESSION_HOT_US:" in stdout
+
+
+Q1_LIKE_SQL = """SELECT stmt, rfile, COUNT(*) AS cnt,
+       COUNT(DISTINCT adsh) AS num_filings,
+       AVG(line) AS avg_line_num
+FROM pre
+WHERE stmt IS NOT NULL
+GROUP BY stmt, rfile"""
+
+Q1_SCHEMA = {
+    "stmt": "string",
+    "rfile": "string",
+    "adsh": "string",
+    "line": "int",
+}
+
+
+def _q1_empty_map_stub() -> str:
+    from db_extension.verus_bridge import resolve_ret_type_for_spec
+    from db_extension.workload_config import catalog_assumptions_for_workload
+    from research_loop.trusted_ret_bridge import get_bridge
+    from verus_transpiler import transpile_sql_to_verus
+
+    spec_rs = transpile_sql_to_verus(
+        Q1_LIKE_SQL,
+        {"pre": Q1_SCHEMA},
+        catalog_assumptions=catalog_assumptions_for_workload("sec"),
+    )
+    ret_type = resolve_ret_type_for_spec(spec_rs)
+    bridge = get_bridge(ret_type)
+    assert bridge is not None
+    return f"""#[verifier::external_body]
+pub exec fn run_query(cols: &Cols) -> (res: {bridge.rust_ret})
+    requires valid_cols(cols),
+    ensures {bridge.ensures}
+{{
+    HashMapWithView::new()
+}}"""
+
+
+@pytest.mark.skipif(not TINY_DB.is_file(), reason="tiny SEC duckdb missing")
+@pytest.mark.skipif(not LIBDUCKDB.is_file(), reason="libduckdb.so missing")
+@pytest.mark.skipif(resolve_verus_bin() is None, reason="verus not found")
+def test_duckdb_q1_hashmap_with_view_assembles_and_times(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LEMMA_DUCKDB_PATH", str(TINY_DB))
+    monkeypatch.setenv("LEMMA_DUCKDB_LIB_DIR", str(ROOT / "build/libduckdb"))
+    monkeypatch.setenv("REQUIRE_PROOF", "1")
+    monkeypatch.setenv("ENABLE_VERUS_VERIFY", "1")
+
+    import duckdb
+
+    held = duckdb.connect(str(TINY_DB), read_only=True)
+    try:
+        res = run_custom_sql_pipeline(
+            Q1_LIKE_SQL,
+            {"pre": Q1_SCHEMA},
+            run_query_body=_q1_empty_map_stub(),
+            limit=200,
+            workload="sec",
+            duckdb_path=str(TINY_DB),
+            skip_bench=False,
+        )
+    finally:
+        held.close()
+    assert res.get("stage") != "assemble", res.get("error")
+    assert res.get("proof_verified"), res.get("verify_msg") or res.get("error")
+    assert res.get("load_mode") == "duckdb", res
+    assert res.get("latency_us", -1) >= 0, res.get("error") or res.get("bench_error")
+    stdout = res.get("stdout") or ""
+    assert "RESULT: map_len=" in stdout, stdout
+    assert "SESSION_HOT_US:" in stdout
+
+
+@pytest.mark.skipif(not TINY_DB.is_file(), reason="tiny SEC duckdb missing")
+@pytest.mark.skipif(not LIBDUCKDB.is_file(), reason="libduckdb.so missing")
+@pytest.mark.skipif(resolve_verus_bin() is None, reason="verus not found")
+def test_duckdb_q1_standin_proves_and_times(monkeypatch: pytest.MonkeyPatch) -> None:
+    from research_loop.bench_standins.sec_q1_runquery import SEC_Q1_RUNQUERY
+
+    monkeypatch.setenv("LEMMA_DUCKDB_PATH", str(TINY_DB))
+    monkeypatch.setenv("LEMMA_DUCKDB_LIB_DIR", str(ROOT / "build/libduckdb"))
+    monkeypatch.setenv("REQUIRE_PROOF", "1")
+    monkeypatch.setenv("ENABLE_VERUS_VERIFY", "1")
+
+    res = run_custom_sql_pipeline(
+        Q1_LIKE_SQL,
+        {"pre": Q1_SCHEMA},
+        run_query_body=SEC_Q1_RUNQUERY,
+        limit=200,
+        workload="sec",
+        duckdb_path=str(TINY_DB),
+        skip_bench=False,
+    )
+    assert res.get("stage") != "assemble", res.get("error")
+    assert res.get("proof_verified"), res.get("verify_msg") or res.get("error")
+    assert res.get("load_mode") == "duckdb", res
+    assert res.get("latency_us", -1) >= 0, res.get("error") or res.get("bench_error")
+    stdout = res.get("stdout") or ""
+    assert "RESULT: map_len=" in stdout, stdout
+    assert "SESSION_HOT_US:" in stdout
