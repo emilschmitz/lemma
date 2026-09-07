@@ -28,6 +28,7 @@ from gendb_published_one_run import (
 
 DEFAULT_SQL = ROOT / "holdout/gendb_sec_edgar/queries_resample_r15.sql"
 PY = ROOT / ".venv/bin/python"
+DEFAULT_FAIL_STREAK = 6
 
 
 def lemma_job_ok(rec: dict) -> bool:
@@ -160,6 +161,43 @@ def rec_ok(rec: dict) -> bool:
     return lemma_job_ok(rec)
 
 
+def resolve_fail_streak(raw: str | int | None = None) -> int:
+    """Parse fail-streak limit; 0 means never abort."""
+    if raw is None:
+        raw = os.environ.get("LEMMA_FAIL_STREAK", str(DEFAULT_FAIL_STREAK))
+    return max(0, int(raw))
+
+
+def next_consecutive_fail(consecutive_fail: int, rec: dict) -> int:
+    if rec_ok(rec):
+        return 0
+    return consecutive_fail + 1
+
+
+def fail_streak_abort_reason(fail_streak: int, consecutive_fail: int) -> str | None:
+    if fail_streak and consecutive_fail >= fail_streak:
+        return f"fail_streak_{fail_streak}"
+    return None
+
+
+class FailStreakTracker:
+    """Tracks consecutive lemma_ok=false results and abort threshold."""
+
+    def __init__(self, fail_streak: int) -> None:
+        self.fail_streak = max(0, int(fail_streak))
+        self.consecutive_fail = 0
+        self.aborted: str | None = None
+
+    def record(self, rec: dict) -> bool:
+        """Update streak from one finished job; return True if abort threshold hit."""
+        self.consecutive_fail = next_consecutive_fail(self.consecutive_fail, rec)
+        reason = fail_streak_abort_reason(self.fail_streak, self.consecutive_fail)
+        if reason is not None:
+            self.aborted = reason
+            return True
+        return False
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--out-dir", type=Path, default=Path("/home/emil/lemma-overnight-out"))
@@ -178,8 +216,8 @@ def main() -> int:
     p.add_argument(
         "--fail-streak",
         type=int,
-        default=int(os.environ.get("LEMMA_FAIL_STREAK", "0")),
-        help="Abort after this many consecutive failed queries (0=never).",
+        default=resolve_fail_streak(),
+        help=f"Abort after this many consecutive failed queries (0=never; default {DEFAULT_FAIL_STREAK}).",
     )
     args = p.parse_args()
 
@@ -240,36 +278,35 @@ def main() -> int:
     )
 
     results: list[dict] = []
-    consecutive_fail = 0
-    aborted: str | None = None
-    fail_streak = max(0, int(args.fail_streak))
+    streak = FailStreakTracker(args.fail_streak)
     workers = 1 if args.smoke else max(1, args.workers)
 
     def on_done(rec: dict) -> bool:
-        nonlocal consecutive_fail, aborted
         results.append(rec)
         persist_rec(out_dir, meta, results, rec)
         append_progress(out_dir, rec)
-        if rec_ok(rec):
-            consecutive_fail = 0
-        else:
-            consecutive_fail += 1
+        should_abort = streak.record(rec)
         print(
-            f"HARVEST n_done={len(results)} consecutive_fail={consecutive_fail} "
+            f"HARVEST n_done={len(results)} consecutive_fail={streak.consecutive_fail} "
             f"ok={rec_ok(rec)}",
             flush=True,
         )
-        if fail_streak and consecutive_fail >= fail_streak:
-            aborted = f"fail_streak_{fail_streak}"
+        if should_abort:
             abort_doc = {
                 **meta,
-                "aborted": aborted,
-                "consecutive_fail": consecutive_fail,
+                "aborted": streak.aborted,
+                "consecutive_fail": streak.consecutive_fail,
                 "finished_at": datetime.now(UTC).isoformat(),
                 "results": results,
             }
-            _fsync_write(out_dir / "aborted.json", json.dumps(abort_doc, indent=2, default=str) + "\n")
-            print(f"ABORT {aborted} after {consecutive_fail} consecutive failures", flush=True)
+            _fsync_write(
+                out_dir / "aborted.json",
+                json.dumps(abort_doc, indent=2, default=str) + "\n",
+            )
+            print(
+                f"ABORT {streak.aborted} after {streak.consecutive_fail} consecutive failures",
+                flush=True,
+            )
             return True
         return False
 
@@ -304,12 +341,12 @@ def main() -> int:
     payload = {
         **meta,
         "finished_at": datetime.now(UTC).isoformat(),
-        "aborted": aborted,
+        "aborted": streak.aborted,
         "results": results,
     }
     _fsync_write(out_dir / "results.json", json.dumps(payload, indent=2, default=str) + "\n")
     print(f"Wrote {out_dir / 'results.json'}", flush=True)
-    return 1 if aborted else 0
+    return 1 if streak.aborted else 0
 
 
 if __name__ == "__main__":

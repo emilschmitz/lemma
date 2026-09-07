@@ -151,7 +151,8 @@ uv run python holdout/gendb_sec_edgar/session_hot.py \
 # --- agent driver env ---
 export MAX_ITERATIONS="${MAX_ITERATIONS:-4}"
 export AGENT_TIMEOUT_SEC="${AGENT_TIMEOUT_SEC:-600}"
-export LEMMA_FAIL_STREAK="${LEMMA_FAIL_STREAK:-0}"
+# Default: 6 consecutive lemma_ok=false jobs → aborted.json → guest halt (run_and_halt.sh).
+export LEMMA_FAIL_STREAK="${LEMMA_FAIL_STREAK:-6}"
 export LEMMA_WORKLOAD=sec
 export LEMMA_DUCKDB_PATH="$SEC_DB"
 WORKERS="${LEMMA_PARALLEL:-8}"
