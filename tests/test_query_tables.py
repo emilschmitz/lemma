@@ -19,6 +19,9 @@ GROUP BY n.tag, n.version"""
 
 _SINGLE_PRE_SQL = "SELECT COUNT(*) FROM pre WHERE line > 0"
 
+_IN_NUM_PRE_SQL = """SELECT COUNT(*) FROM num n
+WHERE n.tag IN (SELECT p.tag FROM pre p WHERE p.stmt = 'IS')"""
+
 _FOUR_TABLE_JOIN_SQL = """SELECT s.name, s.sic, t.tlabel, p.stmt, p.plabel,
        SUM(n.value) AS total_value, COUNT(*) AS cnt
 FROM num n
@@ -53,6 +56,17 @@ def test_four_table_join_lists_all_catalog_tables() -> None:
     assert set(tables) == {"num", "sub", "tag", "pre"}
     assert len(tables) == 4
     catalog = {t: SEC_SCHEMA[t] for t in ("num", "sub", "tag", "pre")}
+    assert uses_multi_table_program(query, catalog) is True
+
+
+_IN_NUM_PRE_SQL = """SELECT COUNT(*) FROM num n
+WHERE n.tag IN (SELECT p.tag FROM pre p WHERE p.stmt = 'IS')"""
+
+
+def test_in_subquery_uses_multi_table_program() -> None:
+    query = parse_sql(_IN_NUM_PRE_SQL, SEC_SCHEMA)
+    catalog = {t: SEC_SCHEMA[t] for t in ("num", "pre")}
+    assert catalog_tables_in_query(query) == ("num", "pre")
     assert uses_multi_table_program(query, catalog) is True
 
 
