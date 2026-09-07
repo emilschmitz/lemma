@@ -82,19 +82,25 @@ Run: `20260907T122251Z_q926930_cff48c74`. **No** `submitted.json`. Four MCP runs
 | `T124139` | `cannot use while in proof or spec mode` |
 | `T125136` | **124/3** (leftover) |
 
-Leftover `AGENT_EDIT` is a reverse nested join + `agg_step_*` + `rem_join_sq` lemmas
-(helpers **are** in the assemble). The three leftover errors are all in their ghost:
+Leftover file has a reverse nested join + `agg_step_*` + rem lemmas. The **124/3**
+errors are:
 
 ```
-assert(s2 as int == prev_full.2 as int + 1);   // positive CASE
-assert(s3 as int == prev_full.3 as int + 1);   // negative CASE
-forall k: st.inner@[k].1 <= rem_join_sq(...) && .2/.3 <= .1   // invariant
+assert(s2 as int == prev_full.2 as int + 1);   // in host lemma_multi_agg_helper_slot2_count_leq
+assert(s3 as int == prev_full.3 as int + 1);   // in host lemma_multi_agg_helper_slot3_count_leq
+forall k: rem_join_sq bound on st.inner@     // agent loop invariant
 ```
 
-`s2` / `s3` are `prev + case_when_u64(value ≷ 0, 1, 0)`, **not** always `+ 1`.
-They asserted the unconditional increment. First attempt also claimed
-`(nval as int) < 0 == false`. **step 3 (agent):** wrong CASE ghost + rem bound
-did not close. Not missing Trusteds. Not a timeout (Verus finished on 3 of 4).
+`s2`/`s3` in MethodSpec are `prev + case_when_u64(value ≷ 0, 1, 0)`, not always `+1`.
+The host still emits those lemmas as **COUNT +1**. r12 proved this SQL with
+`assume_*` aliases. On this SHA those assumes are gone (`lemma_*` only).
+
+**Tried locally 2026-09-07** (`/tmp/lemma-r18-q3-diag`): r12 nested-loop body, dates
+`20240101`, `assume_*` → `lemma_*`. **ADMIT True. VERIFY 124/2** — same two host
+asserts, **no** agent invariant fail. So Q3 is **not** “missing helpers” and **not**
+unprovable in principle. **step 4 (assemble) / host_codegen:** CASE slots classified
+as COUNT. Overnight leftover third error is still **step 3**. First MCP rustc / `while
+in proof` were agent.
 
 ## Q4 — missing helpers, not timeout
 
