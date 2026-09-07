@@ -435,6 +435,14 @@ _BENCH_BINARY_RUNS = 5
 _BENCH_WARMUP_RUNS = 2
 
 
+def _bench_timeout_sec() -> int:
+    raw = os.environ.get("LEMMA_BENCH_TIMEOUT_SEC", "120").strip()
+    try:
+        return max(30, int(raw))
+    except ValueError:
+        return 120
+
+
 def _warmup_binary(cmd: list[str], *, env: dict[str, str] | None = None) -> None:
     run_env = env if env is not None else os.environ
     for _ in range(_BENCH_WARMUP_RUNS):
@@ -443,7 +451,7 @@ def _warmup_binary(cmd: list[str], *, env: dict[str, str] | None = None) -> None
             cwd=ROOT_DIR,
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=_bench_timeout_sec(),
             env=run_env,
         )
 
@@ -464,7 +472,7 @@ def _run_binary_once(binary: str, tbl: str, limit: int) -> tuple[int, str, str]:
         cwd=ROOT_DIR,
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=_bench_timeout_sec(),
     )
     out = res.stdout.strip()
     stderr = res.stderr
@@ -484,7 +492,7 @@ def _bench_bare_ssb_once(query_idx: int, tbl: str, limit: int) -> int:
         cwd=ROOT_DIR,
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=_bench_timeout_sec(),
         env=bare_env,
     )
     if res.returncode != 0:
@@ -539,7 +547,7 @@ def run_binary(
             cwd=ROOT_DIR,
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=_bench_timeout_sec(),
             env=run_env,
         )
         out = res.stdout.strip()
@@ -574,7 +582,7 @@ def run_binary_join(
             cwd=ROOT_DIR,
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=_bench_timeout_sec(),
             env=run_env,
         )
         out = res.stdout.strip()
@@ -611,7 +619,7 @@ def bench_bare_ssb(query_idx: int, tbl: str, limit: int) -> int:
             cwd=ROOT_DIR,
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=_bench_timeout_sec(),
             env=bare_env,
         )
         if res.returncode != 0:
@@ -646,7 +654,7 @@ def run_binary_nway(
             cwd=ROOT_DIR,
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=_bench_timeout_sec(),
             env=run_env,
         )
         out = res.stdout.strip()
@@ -688,7 +696,7 @@ def bench_bare_tpch(query_name: str, tbl: str, limit: int) -> int:
             cwd=ROOT_DIR,
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=_bench_timeout_sec(),
             env=bare_env,
         )
         if res.returncode != 0:
@@ -720,7 +728,7 @@ def bench_bare_join(feature_key: str, left_tbl: str, right_tbl: str, limit: int)
             cwd=ROOT_DIR,
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=_bench_timeout_sec(),
             env={**os.environ, "RUSTFLAGS": "-C target-cpu=native"},
         )
         if res.returncode != 0:
