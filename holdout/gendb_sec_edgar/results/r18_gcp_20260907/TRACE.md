@@ -104,3 +104,16 @@ Log also has one `TIMEOUT after 300s` after agent `OK (517 s)` — same harness 
 ```
 
 Not a regression of r13 join `verify_local` (32/32 still `VERIFY True`). Not r17 90s. Not `stmt` on `num` Binder pin.
+
+## Tools vs proof (r18 abort wave)
+
+The join menu **was** in the assembled file for Q2 (`join_method_spec_helper`, `rem_join`, `lemma_rem_join`, `agg_step`). `skip_*_dead` **does not exist** anywhere in the host (r13 four-table bodies use `rem_join_4`, not those names).
+
+| Query | Trace | Tools? |
+|---|---|---|
+| Q2 | Verus finished: 123 ok, 1 fail — loop invariant `acc@ == join_method_spec_helper(...)` | Helpers present. Proof of the loop did not go through. |
+| Q3 | Verus finished: 124 ok, 3 fail — asserts in `run_query` + invariant | Same. |
+| Q4 | rustc E0425 `skip_pre_dead` / `skip_tag_dead` / `skip_sub_dead` | Agent invented names. Real four-table helpers are `rem_join_4` / `lemma_rem_join_4_*`. |
+| Q5 | Four Docker `timed_out=True`. **No** `verify_error_custom.log` | Never got a Verus verdict. Not a missing-Trusted line. |
+| Q7 | E0308: `i0 = i0 - 1` — `usize` vs `int` in the agent loop | Type mix in the body, not a missing lemma. |
+| Q8 | Verus finished: 124 ok, 2 fail — `lemma_multi_agg_helper_slot0_sum_native_leq_*` **precondition** `valid_cols_num(num)` | Lemma **exists**. Call site did not keep `valid_cols_num`. |
