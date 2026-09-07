@@ -28,36 +28,41 @@ VM git + `driver.out` `git_sha` = **`1bfd7dfd13c425690749f7b8614449fd2ba55244`**
 | Q5 | false | 2517s | |
 | Q8 | false | 2518s | |
 | Q4 | false | 2551s | Agent `OK` then host 300s wall; later MCP verify is **E0425** missing `skip_*_dead` |
-| Q2 | false | 2616s | Mix: Docker 600s, MCP verify **finished** 123/1, then one iter host **300s wall** |
+| Q2 | false | 2616s | MCP **proved** (124/0) + submit; leftover file is a later broken edit; host CLI 300s wall ignored submit |
 | abort | `fail_streak_6` | | After Q3,Q7,Q5,Q8,Q4,Q2 |
 
-## Q2 — not “Verus timed out” on the MCP verifies
+## Q2 — they proved inside the container; the leftover file is the later break
 
-Run: `research_loop/runs/20260907T122251Z_q377825_424d6dc4`
+Run: `/home/emil/lemma-r15/research_loop/runs/20260907T122251Z_q377825_424d6dc4` on the VM.
 
-`verify_error_custom.log` **starts with**:
+MCP `run_runquery` is host-side Verus (workspace bind-mounted into Docker). The agent is locked in the container; the **proofs are on the host socket**. Re-checked 2026-09-07: 11 run JSONs + `submitted.json`.
 
-```
-verification results:: 123 verified, 1 errors
-error: invariant not satisfied at end of loop body
-    --> .../custom_query.rs:2885:21
-    acc@ == join_method_spec_helper(num, sub, i0 as int, i1 as int),
-```
+| run_id | proof | lat | what happened |
+|---|---|---|---|
+| `T122848` | False | | first verify fail |
+| `T122949` | False | | 121/1 |
+| `T123029` | **True** | 2387 | first 124/0 |
+| `T123123` | False | | **exec** timed out 120s on 50k rows (proof already existed) |
+| `T123843` | **True** | 2439 | proved again |
+| `T123959` / `T124029` | False | | 122/1 after speed edits |
+| `T124131` | **True** | 1064 | proved again |
+| `T124930` | True then **panic** | | `index out of bounds` on `fy_ok` (len 0, idx 255) |
+| `T125218` | False | | 123/1 leftover invariant on `fy_ok` |
+| `T125313` | **True** | **66** | **submitted** (`submitted.json`); `dataset_size=256`; `compiler_error` excerpt `124 verified, 0 errors`; `wall_harness_ms=12829` |
 
-Signature in `runquery_agent.rs`: `run_query(num: &Cols_num, sub: &Cols_sub)` / `method_spec(num, sub)`.
+`submitted.json`: `ok True`, `proof_verified True`, `bench_skipped false`, `measure_path=kernel`. That 66 µs is **256 rows**, not full SEC.
 
-**step 3 (agent):** loop invariant in `AGENT_EDIT` failed. Verus completed. A smarter agent could fix this inside `AGENT_EDIT` (r13_q1 proved this join+HAVING shape on the same host).
+Workspace `runquery_agent.rs` on disk **now** is the later `fy_ok` body (`123 verified, 1 errors` in `verify_error_custom.log`). That is **not** the winning submit body. They kept editing for SESSION_HOT after a good prove.
 
-`r18_Q2.log` **also** has, after an agent `OK (594 s)`:
+`r18_Q2.log` host line:
 
 ```
 Verifying and compiling Verus program... TIMEOUT after 300s
 ```
 
-That line is the **optimizer harness wall**, not a line in `verify_error_custom.log`. The file we have is the earlier MCP verify (finished, 1 error). The 300s pass did **not** write a `verification results` line into that same log. So:
+**step 7 / infra:** Docker CLI `run_agent_iteration` returns `(body, proc)` only. It never sets `agent_meta["submitted_metrics"]`. OpenRouter does. Optimizer therefore **always** re-runs verify+compile+full-table execute (300s wall) and ignores the marked 124/0. Last Docker session `timed_out=True` (iter 4, 600s) after they broke the body.
 
-- MCP prove: **not a timeout** (trace above).
-- Post-submit host verify+compile: **real 300s wall** (no Verus result recorded there). **step 5/7** harness.
+Classes: **step 3** they *could* prove (they did). **step 7/infra** threw the prove away. **step 3** again they overwrote a live proof.
 
 ## Q3 — Docker 600s; when verify ran, it finished with proof errors
 
@@ -111,7 +116,7 @@ The join menu **was** in the assembled file for Q2 (`join_method_spec_helper`, `
 
 | Query | Trace | Tools? |
 |---|---|---|
-| Q2 | Verus finished: 123 ok, 1 fail — loop invariant `acc@ == join_method_spec_helper(...)` | Helpers present. Proof of the loop did not go through. |
+| Q2 | MCP proved **4 times** (124/0); submit `T125313`; leftover log is 123/1 `fy_ok`; host 300s ignore-submit | Helpers present. Not “unable to prove.” |
 | Q3 | Verus finished: 124 ok, 3 fail — asserts in `run_query` + invariant | Same. |
 | Q4 | rustc E0425 `skip_pre_dead` / `skip_tag_dead` / `skip_sub_dead` | Agent invented names. Real four-table helpers are `rem_join_4` / `lemma_rem_join_4_*`. |
 | Q5 | Four Docker `timed_out=True`. **No** `verify_error_custom.log` | Never got a Verus verdict. Not a missing-Trusted line. |
