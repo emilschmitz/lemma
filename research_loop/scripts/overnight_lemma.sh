@@ -31,6 +31,7 @@ export UV_NO_SYNC=1
 export PYTHONUNBUFFERED=1
 export LEMMA_EXPERIMENT_EVENT_FILE="$OUT/events.ndjson"
 export LEMMA_MCP_ITERATE_ROWS="${LEMMA_MCP_ITERATE_ROWS:-50000}"
+export LEMMA_KEEP_OPTIMIZING="${LEMMA_KEEP_OPTIMIZING:-1}"
 unset LEMMA_EXPERIMENT_ALLOW_DIRTY
 
 git rev-parse HEAD >"$OUT/git_sha.txt"
@@ -164,6 +165,7 @@ fi
 # --- agent driver env ---
 export MAX_ITERATIONS="${MAX_ITERATIONS:-4}"
 export AGENT_TIMEOUT_SEC="${AGENT_TIMEOUT_SEC:-600}"
+export LEMMA_KEEP_OPTIMIZING="${LEMMA_KEEP_OPTIMIZING:-1}"
 # Default: 6 consecutive lemma_ok=false jobs → aborted.json → guest halt (run_and_halt.sh).
 export LEMMA_FAIL_STREAK="${LEMMA_FAIL_STREAK:-6}"
 export LEMMA_WORKLOAD=sec
@@ -209,6 +211,7 @@ export LEMMA_DUCKDB_PATH="${SEC_DB}"
 export LEMMA_PARALLEL="${WORKERS}"
 export LEMMA_EXPERIMENT_EVENT_FILE="$OUT/events.ndjson"
 export LEMMA_MCP_ITERATE_ROWS="${LEMMA_MCP_ITERATE_ROWS:-50000}"
+export LEMMA_KEEP_OPTIMIZING="${LEMMA_KEEP_OPTIMIZING:-1}"
 unset LEMMA_EXPERIMENT_ALLOW_DIRTY
 .venv/bin/python research_loop/scripts/overnight_lemma.py \\
   --sql-file "$SQL_OUT" \\

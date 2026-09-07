@@ -158,6 +158,7 @@ def env_for_lemma(*, workload: str, duckdb_path: str) -> dict[str, str]:
     e.setdefault("LEMMA_AGENT_BACKEND", "cli")
     e.setdefault("AGENT_TIMEOUT_SEC", "600")
     e.setdefault("LEMMA_MCP_ITERATE_ROWS", "50000")
+    e.setdefault("LEMMA_KEEP_OPTIMIZING", "1")
     e.setdefault("LEMMA_RESEARCH_LOG", "1")
     e["LEMMA_WORKLOAD"] = workload
     e["LEMMA_DUCKDB_PATH"] = duckdb_path
@@ -191,23 +192,60 @@ def parse_optimizer_output(text: str) -> dict[str, Any]:
     ):
         parsed["proof_verified"] = True
 
+    metrics_objects: list[dict[str, Any]] = []
     for line in text.splitlines():
         if line.startswith("LEMMA_METRICS_JSON:"):
             try:
                 metrics = json.loads(line[len("LEMMA_METRICS_JSON:") :].strip())
                 if isinstance(metrics, dict):
-                    for key in (
-                        "SESSION_HOT_US",
-                        "latency_us",
-                        "proof_verified",
-                        "PREP_US",
-                        "OPEN_US",
-                        "COLD_QUERY_US",
-                    ):
-                        if key in metrics and key not in parsed:
-                            parsed[key] = metrics[key]
+                    metrics_objects.append(metrics)
             except json.JSONDecodeError:
                 pass
+
+    for metrics in metrics_objects:
+        for key in (
+            "SESSION_HOT_US",
+            "PREP_US",
+            "OPEN_US",
+            "COLD_QUERY_US",
+        ):
+            if key in metrics:
+                parsed[key] = metrics[key]
+
+    best_m = re.search(r"best_latency_us=(\d+)", text)
+    if best_m:
+        parsed["latency_us"] = int(best_m.group(1))
+    else:
+        official_full_latencies: list[int] = []
+        official_latencies: list[int] = []
+        fallback_latencies: list[int] = []
+        all_timed: list[int] = []
+        for metrics in metrics_objects:
+            if metrics.get("proof_verified") is not True:
+                continue
+            if metrics.get("status") != "SUCCESS":
+                continue
+            try:
+                lat = int(metrics.get("latency_us", -1))
+            except (TypeError, ValueError):
+                continue
+            if lat < 0:
+                continue
+            all_timed.append(lat)
+            if metrics.get("official_measure_error"):
+                fallback_latencies.append(lat)
+            elif metrics.get("measure_path") == "official_full":
+                official_full_latencies.append(lat)
+            else:
+                official_latencies.append(lat)
+        if official_full_latencies:
+            parsed["latency_us"] = min(official_full_latencies)
+        elif official_latencies:
+            parsed["latency_us"] = min(official_latencies)
+        elif fallback_latencies:
+            parsed["latency_us"] = min(fallback_latencies)
+        elif all_timed:
+            parsed["latency_us"] = min(all_timed)
 
     for key in ("SESSION_HOT_US", "QUERY_LATENCY_US", "QUERY_US"):
         m = re.search(rf"{key}:\s*(\d+)", text)
@@ -215,15 +253,15 @@ def parse_optimizer_output(text: str) -> dict[str, Any]:
             parsed["SESSION_HOT_US"] = int(m.group(1))
             break
 
-    for pattern in (
-        r"best_latency_us[=:\s]+(-?\d+)",
-        r"Executed in (\d+) us",
-        r"latency_us[=:\s]+(-?\d+)",
-    ):
-        m = re.search(pattern, text)
-        if m:
-            parsed.setdefault("latency_us", int(m.group(1)))
-            break
+    if "latency_us" not in parsed:
+        for pattern in (
+            r"Executed in (\d+) us",
+            r"latency_us[=:\s]+(-?\d+)",
+        ):
+            m = re.search(pattern, text)
+            if m:
+                parsed["latency_us"] = int(m.group(1))
+                break
 
     fail_m = re.search(r"CUSTOM_PIPELINE_FAILED:\s*(.+)", text)
     if fail_m:

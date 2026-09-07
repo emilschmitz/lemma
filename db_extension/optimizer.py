@@ -255,11 +255,58 @@ def _keep_optimizing() -> bool:
     return raw in ("1", "true", "yes")
 
 
+def _stop_on_timed_success_enabled() -> bool:
+    raw = os.environ.get("LEMMA_STOP_ON_TIMED_SUCCESS", "").strip().lower()
+    return raw in ("1", "true", "yes")
+
+
 def _maybe_stop_on_timed_success(*, metrics: dict, iteration: int) -> bool:
-    if is_timed_verified_success(metrics) and not _keep_optimizing():
+    if _keep_optimizing():
+        return False
+    if not _stop_on_timed_success_enabled():
+        return False
+    if is_timed_verified_success(metrics):
         log_info(COMPONENT, "stop_on_timed_success", f"iter={iteration}")
         return True
     return False
+
+
+def _record_timed_best(
+    *,
+    metrics: dict,
+    latency: int,
+    iteration: int,
+    official_full_bests: list[tuple[int, int]],
+    official_bests: list[tuple[int, int]],
+    fallback_bests: list[tuple[int, int]],
+) -> None:
+    """Track best latency; prefer official-full rows over iterate fallback at harvest."""
+    if metrics.get("status") != "SUCCESS":
+        return
+    if not metrics.get("proof_verified"):
+        return
+    if latency < 0:
+        return
+    if metrics.get("official_measure_error"):
+        fallback_bests.append((latency, iteration))
+    elif metrics.get("measure_path") == "official_full":
+        official_full_bests.append((latency, iteration))
+    else:
+        official_bests.append((latency, iteration))
+
+
+def _resolve_best_latency(
+    official_full_bests: list[tuple[int, int]],
+    official_bests: list[tuple[int, int]],
+    fallback_bests: list[tuple[int, int]],
+) -> tuple[int, int]:
+    if official_full_bests:
+        return min(official_full_bests, key=lambda pair: pair[0])
+    if official_bests:
+        return min(official_bests, key=lambda pair: pair[0])
+    if fallback_bests:
+        return min(fallback_bests, key=lambda pair: pair[0])
+    return -1, -1
 
 
 def _history_entry(
@@ -429,6 +476,9 @@ def run_optimization_loop(
         if ssb_match is not None:
             _vprint(f"    SSB harness match: Q{ssb_match} (optional convenience)")
     
+    official_full_bests: list[tuple[int, int]] = []
+    official_bests: list[tuple[int, int]] = []
+    fallback_bests: list[tuple[int, int]] = []
     best_latency = -1
     best_iteration = -1
     history = []
@@ -773,10 +823,14 @@ def run_optimization_loop(
                 f"{_HARNESS_METRICS_PREFIX}{json.dumps(metrics)}",
                 flush=True,
             )
-            if status == "SUCCESS" and proof_verified and latency >= 0:
-                if best_latency == -1 or latency < best_latency:
-                    best_latency = latency
-                    best_iteration = iteration
+            _record_timed_best(
+                metrics=metrics,
+                latency=latency,
+                iteration=iteration,
+                official_full_bests=official_full_bests,
+                official_bests=official_bests,
+                fallback_bests=fallback_bests,
+            )
             history.append(_history_entry(
                 iteration=iteration,
                 status=status,
@@ -853,10 +907,14 @@ def run_optimization_loop(
 
             metrics = _maybe_merge_lease_metrics(metrics)
 
-            if status == "SUCCESS" and proof_verified and latency >= 0:
-                if best_latency == -1 or latency < best_latency:
-                    best_latency = latency
-                    best_iteration = iteration
+            _record_timed_best(
+                metrics=metrics,
+                latency=latency,
+                iteration=iteration,
+                official_full_bests=official_full_bests,
+                official_bests=official_bests,
+                fallback_bests=fallback_bests,
+            )
 
             history.append(_history_entry(
                 iteration=iteration,
@@ -891,6 +949,10 @@ def run_optimization_loop(
             ))
             _snapshot_history()
 
+    best_latency, best_iteration = _resolve_best_latency(
+        official_full_bests, official_bests, fallback_bests
+    )
+
     if demo_enabled():
         if best_latency != -1:
             demo_note(
@@ -914,6 +976,9 @@ def run_optimization_loop(
                 )
             else:
                 _vprint(f"{COLOR_RED}No iteration succeeded in verification and compilation.{COLOR_RESET}")
+
+    if best_latency != -1:
+        print(f"best_latency_us={best_latency}", flush=True)
 
     if best_latency != -1:
         return _finish_run(run, {

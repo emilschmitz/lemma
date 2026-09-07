@@ -105,6 +105,27 @@ def test_parse_last_proof_verified_wins():
     assert parse(text).get("proof_verified") is True
 
 
+def test_parse_best_official_latency_from_multiple_metrics():
+    parse = _load_parse()
+    text = """
+LEMMA_METRICS_JSON: {"status": "SUCCESS", "proof_verified": true, "latency_us": 100, "measure_path": "kernel"}
+LEMMA_METRICS_JSON: {"status": "SUCCESS", "proof_verified": true, "latency_us": 2000000, "measure_path": "official_full"}
+LEMMA_METRICS_JSON: {"status": "SUCCESS", "proof_verified": true, "latency_us": 1500000, "measure_path": "official_full"}
+proof_verified=True latency_us=1500000
+"""
+    assert parse(text).get("latency_us") == 1_500_000
+
+
+def test_parse_prefers_best_latency_us_line():
+    parse = _load_parse()
+    text = """
+LEMMA_METRICS_JSON: {"status": "SUCCESS", "proof_verified": true, "latency_us": 2000000}
+LEMMA_METRICS_JSON: {"status": "SUCCESS", "proof_verified": true, "latency_us": 1500000}
+best_latency_us=900000
+"""
+    assert parse(text).get("latency_us") == 900_000
+
+
 def test_lemma_job_ok_requires_timed_latency():
     mod = _load_module()
     ok = mod.lemma_job_ok

@@ -8,6 +8,7 @@ from db_extension.optimizer import (
     agent_meta_from_workspace_submit,
     harness_timeout_sec,
     is_timed_verified_success,
+    _maybe_stop_on_timed_success,
 )
 
 _OPTIMIZER_PY = Path(__file__).resolve().parents[1] / "optimizer.py"
@@ -132,3 +133,29 @@ def test_agent_meta_from_workspace_submit(tmp_path: Path) -> None:
     assert meta["submitted_run_id"] == "r1"
     assert meta["submitted_metrics"]["proof_verified"] is True
     assert meta["latency_us"] == 66
+
+
+_TIMED_SUCCESS = {
+    "status": "SUCCESS",
+    "proof_verified": True,
+    "latency_us": 8,
+    "bench_skipped": False,
+}
+
+
+def test_maybe_stop_on_timed_success_false_by_default(monkeypatch) -> None:
+    monkeypatch.delenv("LEMMA_STOP_ON_TIMED_SUCCESS", raising=False)
+    monkeypatch.delenv("LEMMA_KEEP_OPTIMIZING", raising=False)
+    assert _maybe_stop_on_timed_success(metrics=_TIMED_SUCCESS, iteration=1) is False
+
+
+def test_maybe_stop_on_timed_success_true_with_stop_flag(monkeypatch) -> None:
+    monkeypatch.setenv("LEMMA_STOP_ON_TIMED_SUCCESS", "1")
+    monkeypatch.delenv("LEMMA_KEEP_OPTIMIZING", raising=False)
+    assert _maybe_stop_on_timed_success(metrics=_TIMED_SUCCESS, iteration=1) is True
+
+
+def test_maybe_stop_on_timed_success_keep_wins_over_stop(monkeypatch) -> None:
+    monkeypatch.setenv("LEMMA_STOP_ON_TIMED_SUCCESS", "1")
+    monkeypatch.setenv("LEMMA_KEEP_OPTIMIZING", "1")
+    assert _maybe_stop_on_timed_success(metrics=_TIMED_SUCCESS, iteration=1) is False
