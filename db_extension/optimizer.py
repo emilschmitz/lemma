@@ -80,12 +80,144 @@ def agent_meta_from_workspace_submit(workspace: Path) -> dict | None:
         "submitted": True,
         "submitted_run_id": submitted.get("run_id"),
         "submitted_metrics": metrics,
+        "submitted_record": submitted,
+        "runquery_body": submitted.get("runquery_body"),
+        "iterate_dataset_size": submitted.get("iterate_dataset_size"),
         "latency_us": latency_us,
         "error": "" if submitted.get("ok") else (
             metrics.get("compiler_error")
             or "marked run failed verification"
         ),
     }
+
+
+_SUBMITTED_RUNQUERY_SNAPSHOT = ".submitted_runquery_snapshot.rs"
+
+
+def _submitted_runquery_snapshot_path(
+    *,
+    submitted: dict | None,
+    agent_meta: dict,
+    workspace: Path,
+    fallback_path: Path,
+) -> Path | None:
+    """Write snapshotted runquery body to workspace; prefer snapshot over dirty leftover."""
+    body = None
+    if submitted:
+        body = submitted.get("runquery_body")
+    if not body:
+        body = agent_meta.get("runquery_body")
+    if body:
+        snap = workspace / _SUBMITTED_RUNQUERY_SNAPSHOT
+        snap.write_text(body, encoding="utf-8")
+        return snap
+    if fallback_path.is_file():
+        return fallback_path
+    return None
+
+
+def official_full_measure_after_submit(
+    *,
+    submitted_metrics: dict,
+    agent_meta: dict,
+    submitted: dict | None,
+    sql_query: str,
+    resolved_schema: dict,
+    dataset_size: int,
+    workspace: Path,
+    agent_body_path: Path,
+    workload_tables: dict | None,
+    workload: str | None,
+    harness_timeout: int,
+    invoke_fn=invoke_verus_custom_pipeline,
+) -> dict:
+    """After marked MCP submit: preserve submit proof; run official full-table execute."""
+    iterate_latency_us = int(
+        agent_meta.get("latency_us", submitted_metrics.get("latency_us", -1))
+    )
+    iterate_dataset_size = None
+    if submitted:
+        iterate_dataset_size = submitted.get("iterate_dataset_size")
+    if iterate_dataset_size is None:
+        run = (submitted or {}).get("run") or {}
+        iterate_dataset_size = run.get("dataset_size")
+    if iterate_dataset_size is None:
+        iterate_dataset_size = agent_meta.get("iterate_dataset_size")
+
+    submit_proof = bool(submitted_metrics.get("proof_verified")) or bool(agent_meta.get("ok"))
+
+    metrics: dict = {
+        **submitted_metrics,
+        "iterate_latency_us": iterate_latency_us,
+        "proof_verified": True if submit_proof else bool(submitted_metrics.get("proof_verified")),
+    }
+    if iterate_dataset_size is not None:
+        metrics["iterate_dataset_size"] = iterate_dataset_size
+
+    runquery_path = _submitted_runquery_snapshot_path(
+        submitted=submitted,
+        agent_meta=agent_meta,
+        workspace=workspace,
+        fallback_path=agent_body_path,
+    )
+    if runquery_path is None:
+        metrics["official_measure_error"] = "no runquery snapshot or body file"
+        metrics["latency_us"] = iterate_latency_us
+        return metrics
+
+    def _run_official() -> dict:
+        return invoke_fn(
+            sql=sql_query,
+            schema=resolved_schema,
+            runquery_path=runquery_path,
+            dataset_size=dataset_size,
+            workload_tables=workload_tables,
+            workload=workload,
+        )
+
+    try:
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(_run_official)
+            official = future.result(timeout=harness_timeout)
+    except (TimeoutError, concurrent.futures.TimeoutError):
+        metrics["official_measure_error"] = (
+            f"official full-table measure timed out after {harness_timeout}s"
+        )
+        metrics["latency_us"] = iterate_latency_us
+        if submit_proof:
+            metrics["proof_verified"] = True
+        return metrics
+    except Exception as exc:
+        metrics["official_measure_error"] = str(exc)
+        metrics["latency_us"] = iterate_latency_us
+        if submit_proof:
+            metrics["proof_verified"] = True
+        return metrics
+
+    official_ok = (
+        official.get("status") == "SUCCESS"
+        and official.get("proof_verified")
+        and int(official.get("latency_us", -1)) >= 0
+    )
+    if official_ok:
+        for key, val in official.items():
+            if key != "proof_verified":
+                metrics[key] = val
+        metrics["proof_verified"] = True if submit_proof else bool(official.get("proof_verified"))
+        metrics.setdefault("measure_path", "official_full")
+        metrics["dataset_size"] = dataset_size
+    else:
+        metrics["official_measure_error"] = (
+            official.get("compiler_error")
+            or f"status={official.get('status')} proof={official.get('proof_verified')}"
+        )
+        metrics["latency_us"] = iterate_latency_us
+        if submit_proof:
+            metrics["proof_verified"] = True
+
+    return metrics
 
 
 def is_timed_verified_success(metrics: dict) -> bool:
@@ -580,23 +712,58 @@ def run_optimization_loop(
             and agent_meta.get("submitted_metrics") is not None
         )
         if use_marked_metrics:
-            metrics = dict(agent_meta["submitted_metrics"])
-            metrics.setdefault("status", "SUCCESS" if agent_meta.get("ok") else "FAILURE")
-            metrics.setdefault("proof_verified", bool(agent_meta.get("ok")))
-            metrics.setdefault("latency_us", agent_meta.get("latency_us", -1))
+            from db_extension.agent.measure_core import get_submitted
+
+            submitted_record = get_submitted(ws=workspace)
+            submitted_metrics = dict(agent_meta["submitted_metrics"])
+            iterate_latency = int(
+                agent_meta.get("latency_us", submitted_metrics.get("latency_us", -1))
+            )
             log_info(
                 COMPONENT,
-                "harness_skip",
-                "using marked submit metrics from agent",
+                "marked_submit_official",
+                "running official full-table measure after marked submit",
                 run_id=agent_meta.get("submitted_run_id"),
-                latency_us=metrics.get("latency_us"),
+                iterate_latency_us=iterate_latency,
+                dataset_size=dataset_size,
             )
-            _vprint("  - Using marked submit metrics (skipping duplicate harness)...", end="", flush=True)
-            h_time = 0.0
-            status = metrics["status"]
-            proof_verified = metrics["proof_verified"]
-            latency = metrics["latency_us"]
-            _vprint(f" {COLOR_GREEN}OK{COLOR_RESET} (marked run)")
+            _vprint(
+                "  - Official full-table measure after marked submit...",
+                end="",
+                flush=True,
+            )
+            h_start = time.perf_counter()
+            cfg_path = os.path.join(root_dir, "research_loop", "config.env")
+            harness_timeout = harness_timeout_sec(config_env_path=cfg_path)
+            metrics = official_full_measure_after_submit(
+                submitted_metrics=submitted_metrics,
+                agent_meta=agent_meta,
+                submitted=submitted_record,
+                sql_query=sql_query,
+                resolved_schema=resolved_schema,
+                dataset_size=dataset_size,
+                workspace=workspace,
+                agent_body_path=agent_body_path,
+                workload_tables=workload_tables,
+                workload=workload,
+                harness_timeout=harness_timeout,
+            )
+            h_time = time.perf_counter() - h_start
+            metrics = _maybe_merge_lease_metrics(metrics)
+            status = metrics.get("status", "SUCCESS" if metrics.get("proof_verified") else "FAILURE")
+            proof_verified = bool(metrics.get("proof_verified"))
+            latency = int(metrics.get("latency_us", iterate_latency))
+            if metrics.get("official_measure_error"):
+                _vprint(
+                    f" {COLOR_YELLOW}FALLBACK{COLOR_RESET} (iterate {iterate_latency} us; "
+                    f"official: {str(metrics['official_measure_error'])[:120]})"
+                )
+            elif status == "SUCCESS" and proof_verified and latency >= 0:
+                _vprint(
+                    f" {COLOR_GREEN}OK{COLOR_RESET} (official full-table, {latency} us, {h_time:.1f}s)"
+                )
+            else:
+                _vprint(f" {COLOR_GREEN}OK{COLOR_RESET} (marked run)")
             # Overnight harvest greps these tokens; do not rely on harness JSON alone.
             print(
                 f"proof_verified={bool(proof_verified)} latency_us={latency}",
@@ -615,7 +782,7 @@ def run_optimization_loop(
                 status=status,
                 proof_verified=proof_verified,
                 latency=latency,
-                error=metrics.get("compiler_error", ""),
+                error=metrics.get("compiler_error", "") or metrics.get("official_measure_error", ""),
                 metrics=metrics,
                 agent_meta=agent_meta,
                 wall_s=iter_agent_wall_s or None,

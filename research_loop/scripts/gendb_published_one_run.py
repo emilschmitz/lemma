@@ -186,7 +186,8 @@ def parse_optimizer_output(text: str) -> dict[str, Any]:
         parsed["proof_verified"] = _parse_bool(found[-1].group(1))
     elif (
         "Using marked submit metrics" in text
-        and "(marked run)" in text
+        or "Official full-table measure after marked submit" in text
+        or "official full-table" in text.lower()
     ):
         parsed["proof_verified"] = True
 

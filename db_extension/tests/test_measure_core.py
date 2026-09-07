@@ -43,11 +43,15 @@ def test_mark_submit_unknown_run(tmp_path: Path, monkeypatch) -> None:
 def test_mark_submit_roundtrip(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("LEMMA_AGENT_WORKSPACE", str(tmp_path))
     run_id = "testrun001"
+    rq = tmp_path / "runquery_agent.rs"
+    rq.write_text("// winning body\nlet x = 1;", encoding="utf-8")
     record = {
         "ok": True,
         "run_id": run_id,
         "metrics": {"status": "SUCCESS", "proof_verified": True, "latency_us": 42},
         "latency_us": 42,
+        "dataset_size": 50_000,
+        "runquery_path": str(rq),
     }
     mc.runs_dir(tmp_path).mkdir(parents=True, exist_ok=True)
     (mc.runs_dir(tmp_path) / f"{run_id}.json").write_text(json.dumps(record))
@@ -58,6 +62,8 @@ def test_mark_submit_roundtrip(tmp_path: Path, monkeypatch) -> None:
     assert submitted is not None
     assert submitted["run_id"] == run_id
     assert submitted["latency_us"] == 42
+    assert submitted["runquery_body"] == "// winning body\nlet x = 1;"
+    assert submitted["iterate_dataset_size"] == 50_000
 
 
 def test_run_solution_mock_harness(tmp_path: Path, monkeypatch) -> None:

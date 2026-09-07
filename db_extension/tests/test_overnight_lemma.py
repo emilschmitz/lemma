@@ -60,14 +60,14 @@ def _load_parse():
 
 _R19_MARKED_LOG = """
 CUSTOM_PIPELINE_FAILED [verify]: verus verify failed: see /tmp/verify_error_custom.log
-  - Using marked submit metrics (skipping duplicate harness)... \x1b[92mOK\x1b[0m (marked run)
+  - Official full-table measure after marked submit... \x1b[92mOK\x1b[0m (official full-table, 19628 us, 1.2s)
 proof_verified=True latency_us=19628
 LEMMA_METRICS_JSON: {"status": "SUCCESS", "proof_verified": true, "latency_us": 19628}
 """
 
 _R19_MARKED_LOG_NO_TOKEN = """
 CUSTOM_PIPELINE_FAILED [verify]: verus verify failed: see /tmp/verify_error_custom.log
-  - Using marked submit metrics (skipping duplicate harness)... \x1b[92mOK\x1b[0m (marked run)
+  - Official full-table measure after marked submit... \x1b[92mOK\x1b[0m (official full-table, 19628 us, 1.2s)
 latency_us=19628
 """
 

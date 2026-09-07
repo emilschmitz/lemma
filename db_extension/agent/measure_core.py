@@ -402,6 +402,20 @@ def load_run(run_id: str, *, ws: Path | None = None) -> dict | None:
     return json.loads(path.read_text())
 
 
+def _read_runquery_snapshot_for_run(run: dict, base: Path) -> str | None:
+    """Read winning runquery file text for submit snapshot (survives later overwrites)."""
+    rq_path = run.get("runquery_path")
+    if rq_path:
+        candidate = Path(rq_path)
+        target = candidate if candidate.is_absolute() else (base / candidate)
+        if target.is_file():
+            return target.read_text(encoding="utf-8")
+    default = base / DEFAULT_RUNQUERY
+    if default.is_file():
+        return default.read_text(encoding="utf-8")
+    return None
+
+
 def mark_submit(run_id: str, *, ws: Path | None = None) -> dict:
     """Mark a prior run_id as the official submission (does not run harness)."""
     base = ws or workspace()
@@ -422,6 +436,11 @@ def mark_submit(run_id: str, *, ws: Path | None = None) -> dict:
         "latency_us": run.get("latency_us"),
         "ok": bool(run.get("ok")),
     }
+    body = _read_runquery_snapshot_for_run(run, base)
+    if body:
+        submitted["runquery_body"] = body
+    if run.get("dataset_size") is not None:
+        submitted["iterate_dataset_size"] = run["dataset_size"]
     out_path = results_dir(base) / "submitted.json"
     out_path.write_text(json.dumps(submitted, indent=2) + "\n")
     return {
@@ -430,7 +449,7 @@ def mark_submit(run_id: str, *, ws: Path | None = None) -> dict:
         "submitted_path": str(out_path),
         "latency_us": run.get("latency_us"),
         "metrics": run.get("metrics"),
-        "note": "Marked run as official submit; harness not re-run.",
+        "note": "Marked run as official submit; host runs full-table measure after agent loop.",
     }
 
 
