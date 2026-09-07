@@ -139,8 +139,11 @@ def _assemble_program(
     projected: dict,
     ret_type: str,
 ) -> str:
+    import inspect
+
     from verus_transpiler.column_projection import project_schema_for_query
     from verus_transpiler.parse_sql import normalize_schema, parse_sql
+    from verus_transpiler.query_tables import program_table_order
 
     from research_loop.assemble_verified_program import (
         assemble_verified_join_program,
@@ -150,22 +153,21 @@ def _assemble_program(
 
     _flat, multi = normalize_schema(schema)
     query = parse_sql(sql, schema)
+    multi_schema = projected if isinstance(projected, dict) else schema
 
     if query.joins and multi:
-        derived_aliases = {d.alias for d in query.derived_tables}
-        tables = tuple(t for t in query.tables if t not in derived_aliases)
-        multi_schema = projected if isinstance(projected, dict) else schema
-        if len(tables) == 2:
-            left_t, right_t = tables[0], tables[1]
-            return assemble_verified_join_program(
-                spec_rs=spec_rs,
-                run_query_body=run_query_body,
-                multi_schema=multi_schema,
-                table_order=(left_t, right_t),
-                ret_type=ret_type,
-                default_tbls={left_t: "", right_t: ""},
-            )
-        if len(tables) >= 3:
+        tables = program_table_order(query, multi)
+        if len(tables) >= 2:
+            if len(tables) == 2:
+                left_t, right_t = tables[0], tables[1]
+                return assemble_verified_join_program(
+                    spec_rs=spec_rs,
+                    run_query_body=run_query_body,
+                    multi_schema=multi_schema,
+                    table_order=(left_t, right_t),
+                    ret_type=ret_type,
+                    default_tbls={left_t: "", right_t: ""},
+                )
             return assemble_verified_nway_program(
                 spec_rs=spec_rs,
                 run_query_body=run_query_body,
@@ -176,17 +178,40 @@ def _assemble_program(
             )
         raise ValueError("join requires at least two tables")
 
-    if multi:
+    order = program_table_order(query, multi)
+    if multi and order:
+        primary = order[0]
+        if (
+            isinstance(projected, dict)
+            and primary in projected
+            and isinstance(projected[primary], dict)
+        ):
+            schema_dict = projected[primary]
+        else:
+            schema_dict = project_schema_for_query(sql, schema)
+    elif multi:
         schema_dict = project_schema_for_query(sql, schema)
     else:
         schema_dict = projected if isinstance(projected, dict) else _flat
-    return assemble_verified_program(
-        spec_rs=spec_rs,
-        run_query_body=run_query_body,
-        schema_dict=schema_dict,
-        ret_type=ret_type,
-        default_tbl="",
-    )
+
+    assemble_kwargs: dict = {
+        "spec_rs": spec_rs,
+        "run_query_body": run_query_body,
+        "schema_dict": schema_dict,
+        "ret_type": ret_type,
+        "default_tbl": "",
+    }
+    sig = inspect.signature(assemble_verified_program)
+    if "support_tables" in sig.parameters and multi and order and isinstance(projected, dict):
+        support_tables = {
+            t: projected[t]
+            for t in order[1:]
+            if t in projected and isinstance(projected[t], dict)
+        }
+        if support_tables:
+            assemble_kwargs["support_tables"] = support_tables
+
+    return assemble_verified_program(**assemble_kwargs)
 
 
 def classify_query(sql: str, qid: str, schema: dict) -> QueryResult:

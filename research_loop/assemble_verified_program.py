@@ -763,6 +763,67 @@ def _median_bench_loop(
     println!("QUERY_LATENCY_US: {{}}", times[times.len() / 2]);"""
 
 
+def _emit_table_cols_and_loader(
+    table: str,
+    cols: dict[str, str],
+    *,
+    load_mode: str = "tbl",
+    catalog_multi: dict[str, dict[str, str]] | None = None,
+) -> tuple[str, str]:
+    """Emit ``Cols_<table>`` struct, ``valid_cols_<table>``, and ``load_cols_<table>``."""
+    from verus_transpiler.value_bounds import emit_valid_cols_predicate
+
+    from verus_transpiler import generate_cols_rs
+
+    struct_name = f"Cols_{table}"
+    valid_fn = f"valid_cols_{table}"
+    load_fn = f"load_cols_{table}"
+
+    cols_block = generate_cols_rs(cols, struct_name=struct_name)
+    valid_block = emit_valid_cols_predicate(
+        cols, struct_name=struct_name
+    ).replace("valid_cols", valid_fn)
+    combined = f"{cols_block}\n\n{valid_block}"
+    if load_mode == "duckdb":
+        combined = rewrite_cols_getters_for_pin(
+            combined,
+            table_name=table,
+            schema_dict=cols,
+            struct_name=struct_name,
+        )
+
+    load_gen = _select_load_generator(load_mode=load_mode)
+    duckdb_kwargs: dict[str, object] = {}
+    if load_mode == "duckdb":
+        duckdb_kwargs = {
+            "table_name": table,
+            "catalog_multi": catalog_multi,
+        }
+    loader = load_gen(
+        cols,
+        struct_name=struct_name,
+        valid_fn=valid_fn,
+        load_fn=load_fn,
+        **duckdb_kwargs,
+    )
+    return combined, loader
+
+
+def _inject_support_table_defs(spec_rs: str, support_defs: str) -> str:
+    """Insert support-table Cols/valid_cols before spec helpers that may reference them."""
+    if not support_defs.strip():
+        return spec_rs
+    for marker in (
+        "pub open spec fn method_spec_helper",
+        "pub open spec fn exists_corr",
+        "pub open spec fn scalar_subquery",
+        "pub open spec fn in_subquery",
+    ):
+        if marker in spec_rs:
+            return spec_rs.replace(marker, f"{support_defs}\n\n{marker}", 1)
+    return f"{spec_rs.rstrip()}\n\n{support_defs}\n"
+
+
 def generate_main_rs(
     *,
     default_tbl: str,
@@ -774,6 +835,7 @@ def generate_main_rs(
     rust_ret: str | None = None,
     load_mode: str = "tbl",
     default_db: str = "",
+    support_tables: tuple[str, ...] | None = None,
 ) -> str:
     if rust_ret is not None:
         from research_loop.format_result_from_type import format_result_for_exec_type
@@ -790,9 +852,13 @@ def generate_main_rs(
         bench_timing_body=bench_timing_body,
         bench_post_timing=bench_post_timing,
     )
+    support = support_tables or ()
     if load_mode == "duckdb":
         path_arg = f'        .unwrap_or("{default_db}");'
         load_line = "    let cols = load_cols(db_path, limit);"
+        support_loads = "\n".join(
+            f"    let _{table} = load_cols_{table}(db_path, limit);" for table in support
+        )
         path_decl = """    let db_path = args
         .get(1)
         .map(|s| s.as_str())"""
@@ -801,10 +867,15 @@ def generate_main_rs(
     else:
         path_arg = f'        .unwrap_or("{default_tbl}");'
         load_line = "    let cols = load_cols(tbl_path, limit);"
+        support_loads = "\n".join(
+            f"    let _{table} = load_cols_{table}(tbl_path, limit);" for table in support
+        )
         path_decl = """    let tbl_path = args
         .get(1)
         .map(|s| s.as_str())"""
         epilogue = ""
+    if support_loads:
+        support_loads = f"\n{support_loads}"
 
     return f"""
 fn main() {{
@@ -819,7 +890,7 @@ fn main() {{
         .and_then(|s| s.parse().ok())
         .unwrap_or(50_000);
 
-{load_line}
+{load_line}{support_loads}
 {bench_main_prefix}
 
     {timing}
@@ -1117,6 +1188,7 @@ def assemble_verified_program(
     table_name: str = "t",
     default_db: str = "",
     catalog_multi: dict[str, dict[str, str]] | None = None,
+    support_tables: dict[str, dict[str, str]] | None = None,
 ) -> str:
     """Build one `.rs` file: spec + proved run_query + load_cols + main."""
     if not _ret_type_supported(ret_type):
@@ -1124,7 +1196,30 @@ def assemble_verified_program(
             f"unsupported MethodSpec return type key (no Trusted/shell wiring): {ret_type}"
         )
 
+    effective_catalog: dict[str, dict[str, str]] = dict(catalog_multi or {})
+    effective_catalog.setdefault(table_name, schema_dict)
+    support = support_tables or {}
+    if support:
+        effective_catalog.update(support)
+
     core = _prepare_spec_rs(spec_rs, schema_dict)
+    support_defs = ""
+    support_loaders = ""
+    if support:
+        defs: list[str] = []
+        loaders: list[str] = []
+        for st, cols in support.items():
+            cols_block, loader = _emit_table_cols_and_loader(
+                st,
+                cols,
+                load_mode=load_mode,
+                catalog_multi=effective_catalog,
+            )
+            defs.append(cols_block.strip())
+            loaders.append(loader.strip())
+        support_defs = "\n\n".join(defs)
+        support_loaders = "\n".join(loaders)
+        core = _inject_support_table_defs(core, support_defs)
     if load_mode == "duckdb":
         core = rewrite_cols_getters_for_pin(
             core,
@@ -1139,12 +1234,15 @@ def assemble_verified_program(
     if load_mode == "duckdb":
         duckdb_kwargs = {
             "table_name": table_name,
-            "catalog_multi": catalog_multi,
+            "catalog_multi": effective_catalog,
         }
     load_cols = load_gen(
         schema_dict,
         **duckdb_kwargs,
     )
+    all_loaders = load_cols.rstrip()
+    if support_loaders:
+        all_loaders = f"{all_loaders}\n\n{support_loaders}"
     main_rs = generate_main_rs(
         default_tbl=default_tbl,
         ret_type=ret_type,
@@ -1155,6 +1253,7 @@ def assemble_verified_program(
         rust_ret=rust_ret,
         load_mode=load_mode,
         default_db=default_db,
+        support_tables=tuple(support.keys()),
     )
     hot = f"{hot_path_rs.rstrip()}\n\n" if hot_path_rs else ""
     duckdb_prelude = f"{duckdb_ffi_prelude()}\n\n" if load_mode == "duckdb" else ""
@@ -1165,7 +1264,7 @@ def assemble_verified_program(
         f"{boundary}\n"
         f"{agent_externs.rstrip()}\n\n"
         f"{run_query_body.rstrip()}\n\n"
-        f"{load_cols}\n"
+        f"{all_loaders}\n"
         f"}} // verus!\n"
         f"{hot}"
         f"{main_rs}"

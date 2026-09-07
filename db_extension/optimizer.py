@@ -10,6 +10,7 @@ from verus_transpiler.column_projection import (
     project_schema_for_query,
 )
 from verus_transpiler.parse_sql import normalize_schema, parse_sql
+from verus_transpiler.query_tables import uses_multi_table_program
 
 from db_extension.verus_bridge import (
     invoke_verus_custom_pipeline,
@@ -232,7 +233,7 @@ def run_optimization_loop(
         try:
             _flat, multi = normalize_schema(catalog_schema)
             parsed = parse_sql(sql_query, catalog_schema)
-            if multi is not None and parsed.joins:
+            if multi is not None and uses_multi_table_program(parsed, multi):
                 resolved_schema = project_multi_schema_for_query(sql_query, multi)
             else:
                 resolved_schema = project_schema_for_query(sql_query, catalog_schema)

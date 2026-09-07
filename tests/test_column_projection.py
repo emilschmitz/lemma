@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-from research_loop.assemble_verified_program import generate_load_cols_duckdb_verus
-from verus_transpiler import transpile_sql_to_verus
 from verus_transpiler.column_projection import (
     pin_schema_for_table,
     project_multi_schema_for_query,
     project_schema_for_query,
 )
+
+from research_loop.assemble_verified_program import generate_load_cols_duckdb_verus
 from tests.test_sec_holdout_parse import SEC_SCHEMA
+from verus_transpiler import transpile_sql_to_verus
 
 Q1_LIKE_SQL = """SELECT stmt, rfile, COUNT(*) AS cnt,
        COUNT(DISTINCT adsh) AS num_filings,
@@ -102,3 +103,25 @@ def test_exists_pin_load_cols_omits_inner_stmt_on_num() -> None:
     assert '("STMT"' not in load_rs.upper()
     assert '("TAG"' in load_rs.upper()
     assert '("UOM"' in load_rs.upper()
+
+
+def test_exists_transpile_uses_multi_schema_not_flat_num_only() -> None:
+    """Optimizer must transpile EXISTS against per-table projection, not flat num."""
+    catalog = {"num": SEC_SCHEMA["num"], "pre": SEC_SCHEMA["pre"]}
+    projected = project_multi_schema_for_query(_EXISTS_NUM_PRE_SQL, catalog)
+    spec = transpile_sql_to_verus(_EXISTS_NUM_PRE_SQL, projected)
+    assert "fn method_spec" in spec
+    assert "stmt" in spec.lower()
+
+
+def test_exists_catalog_tables_for_projection() -> None:
+    from verus_transpiler.parse_sql import parse_sql
+    from verus_transpiler.query_tables import (
+        catalog_tables_in_query,
+        uses_multi_table_program,
+    )
+
+    query = parse_sql(_EXISTS_NUM_PRE_SQL, SEC_SCHEMA)
+    assert catalog_tables_in_query(query) == ("num", "pre")
+    catalog = {"num": SEC_SCHEMA["num"], "pre": SEC_SCHEMA["pre"]}
+    assert uses_multi_table_program(query, catalog) is True

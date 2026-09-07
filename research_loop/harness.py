@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import os
 import re
@@ -10,7 +11,7 @@ import shutil
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(os.path.dirname(CURRENT_DIR))
@@ -40,19 +41,41 @@ if ROOT_DIR not in sys.path:
 if VERUS_SRC not in sys.path:
     sys.path.insert(0, VERUS_SRC)
 
-from research_loop._transpiler import (  # noqa: E402
+from verus_transpiler.query_tables import program_table_order
+
+from research_loop._transpiler import (
     project_multi_schema_for_query,
     project_schema_for_query,
     transpile_sql_to_verus,
 )
-from research_loop.assemble_verified_program import (  # noqa: E402
+from research_loop.assemble_verified_program import (
     assemble_verified_join_program,
     assemble_verified_nway_program,
     assemble_verified_program,
 )
-from research_loop.ssb_queries import load_schema, queries as ssb_queries  # noqa: E402
-from research_loop.bench_standins.tpch_runqueries import (  # noqa: E402
+
+_ASSEMBLE_SUPPORTS_SUPPORT_TABLES = (
+    "support_tables" in inspect.signature(assemble_verified_program).parameters
+)
+from research_loop.bench_standins.basic_sql_extended_fixtures import (
+    BASIC_SQL_EXTENDED_FIXTURES,
+)
+from research_loop.bench_standins.basic_sql_fixtures import (
+    BASIC_SQL_FIXTURES,
+)
+from research_loop.bench_standins.basic_sql_join_fixtures import (
+    BASIC_SQL_JOIN_FIXTURES,
+)
+from research_loop.bench_standins.basic_sql_proj_order_fixtures import (
+    BASIC_SQL_PROJ_ORDER_FIXTURES,
+)
+from research_loop.bench_standins.basic_sql_set_cte_fixtures import (
+    BASIC_SQL_SET_CTE_FIXTURES,
+)
+from research_loop.bench_standins.tpch_runqueries import (
     DEFAULT_TBL as DEFAULT_TPCH_TBL,
+)
+from research_loop.bench_standins.tpch_runqueries import (
     TPCH_BENCH_EXEC,
     TPCH_BENCH_MAIN_PREFIX,
     TPCH_BENCH_POST_TIMING,
@@ -62,10 +85,14 @@ from research_loop.bench_standins.tpch_runqueries import (  # noqa: E402
     TPCH_NWAY_SCHEMA,
     TPCH_NWAY_TABLE_ORDER,
     TPCH_QUERY_KIND,
+)
+from research_loop.bench_standins.tpch_runqueries import (
     queries as tpch_queries,
+)
+from research_loop.bench_standins.tpch_runqueries import (
     schema as tpch_schema,
 )
-from research_loop.bench_standins.verified_runqueries import (  # noqa: E402
+from research_loop.bench_standins.verified_runqueries import (
     SSB_BENCH_EXEC,
     SSB_BENCH_TIMING_BODY,
     SSB_HOT_PATHS,
@@ -74,22 +101,9 @@ from research_loop.bench_standins.verified_runqueries import (  # noqa: E402
     TPCH_RETURN_TYPES,
     TPCH_RUNQUERIES,
 )
-from research_loop.bench_standins.basic_sql_fixtures import (  # noqa: E402
-    BASIC_SQL_FIXTURES,
-)
-from research_loop.bench_standins.basic_sql_join_fixtures import (  # noqa: E402
-    BASIC_SQL_JOIN_FIXTURES,
-)
-from research_loop.bench_standins.basic_sql_set_cte_fixtures import (  # noqa: E402
-    BASIC_SQL_SET_CTE_FIXTURES,
-)
-from research_loop.bench_standins.basic_sql_proj_order_fixtures import (  # noqa: E402
-    BASIC_SQL_PROJ_ORDER_FIXTURES,
-)
-from research_loop.bench_standins.basic_sql_extended_fixtures import (  # noqa: E402
-    BASIC_SQL_EXTENDED_FIXTURES,
-)
-from research_loop.lemma_flags import enable_templates  # noqa: E402
+from research_loop.lemma_flags import enable_templates
+from research_loop.ssb_queries import load_schema
+from research_loop.ssb_queries import queries as ssb_queries
 
 ALL_BASIC_SQL_FIXTURES: dict = {
     **BASIC_SQL_FIXTURES,
@@ -124,7 +138,7 @@ def _record_pipeline_json(
 ) -> str:
     """Write a JSON artifact for agent follow-up. Returns path."""
     os.makedirs(dest_dir, exist_ok=True)
-    ts = datetime.now(timezone.utc)
+    ts = datetime.now(UTC)
     stamp = ts.strftime("%Y%m%d_%H%M%S")
     digest = abs(hash((sql, stage, error))) % 1_000_000
     path = os.path.join(dest_dir, f"{stage}_{stamp}_{digest:06d}.json")
@@ -156,7 +170,7 @@ def _record_pending_runquery(
     from research_loop.agent_context import build_agent_context, write_agent_context
 
     os.makedirs(PENDING_RUNQUERY_DIR, exist_ok=True)
-    ts = datetime.now(timezone.utc)
+    ts = datetime.now(UTC)
     stamp = ts.strftime("%Y%m%d_%H%M%S")
     digest = abs(hash((sql, error))) % 1_000_000
     artifact_dir = os.path.join(
@@ -245,7 +259,6 @@ def _resolve_custom_ret_type(
         _resolve_join_groupby_ret_type_key,
         resolve_ret_type_key,
     )
-    from verus_transpiler.col_exprs import to_col_expr
     from verus_transpiler.joins import emit_join_spec_helpers
     from verus_transpiler.parse_sql import SQLQuery, _agg_value_type
     from verus_transpiler.transpiler import _emit_set_op_helpers, _emit_union_helpers
@@ -1787,11 +1800,9 @@ def run_custom_sql_pipeline(
     rs_path = os.path.join(art_dir, "custom_query.rs")
 
     try:
-        if query.joins and multi:
-            derived_aliases = {d.alias for d in query.derived_tables}
-            tables = tuple(t for t in query.tables if t not in derived_aliases)
-            if len(tables) == 2:
-                order = table_order or tables
+        order = program_table_order(query, multi, table_order=table_order)
+        if query.joins and len(order) >= 2:
+            if len(order) == 2:
                 left_t, right_t = order[0], order[1]
                 default_tbls = tbls or {left_t: "", right_t: ""}
                 multi_schema = projected if isinstance(projected, dict) else schema
@@ -1805,8 +1816,7 @@ def run_custom_sql_pipeline(
                     load_mode=load_mode,
                     default_db=default_db,
                 )
-            elif len(tables) >= 3:
-                order = table_order or tables
+            else:
                 default_tbls = tbls or {t: "" for t in order}
                 multi_schema = projected if isinstance(projected, dict) else schema
                 program = assemble_verified_nway_program(
@@ -1819,15 +1829,13 @@ def run_custom_sql_pipeline(
                     load_mode=load_mode,
                     default_db=default_db,
                 )
-            else:
-                return _pipeline_failure(
-                    "assemble", sql, "join requires at least two tables", schema
-                )
         else:
             derived_aliases = {d.alias for d in query.derived_tables}
             base_tables = [t for t in query.tables if t not in derived_aliases]
-            primary_table = base_tables[0] if base_tables else (
-                query.tables[0] if query.tables else "t"
+            primary_table = order[0] if order else (
+                base_tables[0] if base_tables else (
+                    query.tables[0] if query.tables else "t"
+                )
             )
             if multi:
                 from verus_transpiler.column_projection import pin_schema_for_table
@@ -1844,23 +1852,32 @@ def run_custom_sql_pipeline(
             else:
                 schema_dict = projected if isinstance(projected, dict) else _flat
             default_tbl = tbl or ""
-            program = assemble_verified_program(
-                spec_rs=spec_rs,
-                run_query_body=body,
-                schema_dict=schema_dict,
-                ret_type=ret_type,
-                default_tbl=default_tbl,
-                hot_path_rs=hot_path_rs,
-                bench_exec=bench_exec,
-                bench_timing_body=bench_timing_body,
-                bench_post_timing=bench_post_timing,
-                bench_main_prefix=bench_main_prefix,
-                rust_ret=exec_rust_ret,
-                load_mode=load_mode,
-                table_name=primary_table,
-                default_db=default_db,
-                catalog_multi=multi,
-            )
+            assemble_kwargs: dict = {
+                "spec_rs": spec_rs,
+                "run_query_body": body,
+                "schema_dict": schema_dict,
+                "ret_type": ret_type,
+                "default_tbl": default_tbl,
+                "hot_path_rs": hot_path_rs,
+                "bench_exec": bench_exec,
+                "bench_timing_body": bench_timing_body,
+                "bench_post_timing": bench_post_timing,
+                "bench_main_prefix": bench_main_prefix,
+                "rust_ret": exec_rust_ret,
+                "load_mode": load_mode,
+                "table_name": primary_table,
+                "default_db": default_db,
+                "catalog_multi": multi,
+            }
+            if _ASSEMBLE_SUPPORTS_SUPPORT_TABLES and isinstance(projected, dict):
+                support_tables = {
+                    t: projected[t]
+                    for t in order[1:]
+                    if t in projected and isinstance(projected[t], dict)
+                }
+                if support_tables:
+                    assemble_kwargs["support_tables"] = support_tables
+            program = assemble_verified_program(**assemble_kwargs)
     except Exception as e:
         return _pipeline_failure("assemble", sql, str(e), schema)
 
@@ -1920,10 +1937,9 @@ def run_custom_sql_pipeline(
 
     bench_env = duckdb_run_env() if use_duckdb else None
 
-    if query.joins and multi:
-        tables = tuple(query.tables)
-        if len(tables) == 2:
-            order = table_order or tables
+    if query.joins:
+        order = program_table_order(query, multi, table_order=table_order)
+        if len(order) == 2:
             if use_duckdb:
                 if not resolved_db:
                     return _pipeline_failure(
@@ -1956,8 +1972,7 @@ def run_custom_sql_pipeline(
                 latency, stdout, stderr = run_binary_join(
                     binary, left_p, right_p, limit
                 )
-        elif len(tables) >= 3:
-            order = table_order or tables
+        elif len(order) >= 3:
             if use_duckdb:
                 if not resolved_db:
                     return _pipeline_failure(
