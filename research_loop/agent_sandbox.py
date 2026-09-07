@@ -210,7 +210,8 @@ def build_agent_prompt(
 Implement a **fast, Verus-provable** `run_query` for that SQL. Primary metric: **SESSION_HOT_US**.
 Edit only `{body_path}` between `AGENT_EDIT_START` / `AGENT_EDIT_END`.
 Keep the host signature / `requires` / `ensures` matching `method_spec(...)` in `{ctx}/spec.rs`
-(admission rejects bare `cols` when MethodSpec is multi-table). Do not add Trusted, `assume`,
+(same parameter list and `valid_cols*` predicates as MethodSpec — one table, extra inner tables,
+or join tables). Do not add Trusted, `assume`,
 `arbitrary`, `external_body`, or redefine `method_spec`.
 {prelim_section}
 {budget_section}

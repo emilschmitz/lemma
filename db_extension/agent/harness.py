@@ -139,7 +139,7 @@ Edit **only** `/workspace/runquery_agent.rs` **between** the markers:
 ```
 
 Host-owned Verus shell: keep signature / `requires` / `ensures` matched to `method_spec(...)` in
-`/context/ro/spec.rs` (admission rejects bare `cols` when MethodSpec is multi-table).
+`/context/ro/spec.rs` (same parameter list and `valid_cols*` predicates as MethodSpec).
 MethodSpec + Trusted are read-only in that file. Optimize **SESSION_HOT_US** from the SQL,
 data profile, and hardware — not canned loop recipes.
 
