@@ -46,7 +46,7 @@ if [[ "$MODE" == "smoke" ]]; then
     --smoke \
     --out-dir "$OUT/smoke" \
     --workers 1 \
-    --family r17
+    --family "${LEMMA_FAMILY:-r18}"
   echo "smoke exit=$?"
   exit 0
 fi
@@ -199,7 +199,7 @@ export LEMMA_MCP_ITERATE_ROWS="${LEMMA_MCP_ITERATE_ROWS:-50000}"
 unset LEMMA_EXPERIMENT_ALLOW_DIRTY
 .venv/bin/python research_loop/scripts/overnight_lemma.py \\
   --sql-file "$SQL_OUT" \\
-  --family r17 \\
+  --family "${LEMMA_FAMILY:-r18}" \\
   --out-dir "$OUT" \\
   --workers "$WORKERS" \\
   --fail-streak "${LEMMA_FAIL_STREAK}" \\
