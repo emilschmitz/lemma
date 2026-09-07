@@ -4,8 +4,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from db_extension.agent.extract import wrap_body_with_markers
 from db_extension.agent import measure_core as mc
+from db_extension.agent.extract import wrap_body_with_markers
 from verus_transpiler import transpile_sql_to_verus
 
 

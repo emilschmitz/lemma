@@ -729,6 +729,7 @@ def run_agent_docker(
                 ["docker", "kill", container_name],
                 capture_output=True,
                 timeout=30,
+                check=False,
             )
             popen.kill()
             popen.wait()

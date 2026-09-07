@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from db_extension.optimizer import harness_timeout_sec, is_timed_verified_success
+
+_OPTIMIZER_PY = Path(__file__).resolve().parents[1] / "optimizer.py"
 
 
 def test_harness_timeout_sec_defaults() -> None:
@@ -12,6 +15,21 @@ def test_harness_timeout_sec_defaults() -> None:
     old_verify = env.pop("VERUS_VERIFY_TIMEOUT_SEC", None)
     try:
         assert harness_timeout_sec(config_env_path="/nonexistent") == max(180, 120) + 120
+    finally:
+        if old_compile is not None:
+            env["COMPILE_TIMEOUT_SEC"] = old_compile
+        if old_verify is not None:
+            env["VERUS_VERIFY_TIMEOUT_SEC"] = old_verify
+
+
+def test_harness_timeout_sec_config_env_file(tmp_path: Path) -> None:
+    env = os.environ
+    old_compile = env.pop("COMPILE_TIMEOUT_SEC", None)
+    old_verify = env.pop("VERUS_VERIFY_TIMEOUT_SEC", None)
+    cfg = tmp_path / "config.env"
+    cfg.write_text("COMPILE_TIMEOUT_SEC=180\n# verify uses default\n")
+    try:
+        assert harness_timeout_sec(config_env_path=str(cfg)) == 300
     finally:
         if old_compile is not None:
             env["COMPILE_TIMEOUT_SEC"] = old_compile
@@ -36,6 +54,12 @@ def test_harness_timeout_sec_env_override() -> None:
             env.pop("VERUS_VERIFY_TIMEOUT_SEC", None)
         else:
             env["VERUS_VERIFY_TIMEOUT_SEC"] = old_verify
+
+
+def test_optimizer_timeout_message_uses_dynamic_harness_timeout() -> None:
+    text = _OPTIMIZER_PY.read_text(encoding="utf-8")
+    assert "after 90s" not in text
+    assert "after {harness_timeout}s" in text
 
 
 def test_is_timed_verified_success_happy_path() -> None:
