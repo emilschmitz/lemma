@@ -157,6 +157,7 @@ def env_for_lemma(*, workload: str, duckdb_path: str) -> dict[str, str]:
     e.setdefault("AGENT_IMAGE", "lemma-agent:cli")
     e.setdefault("LEMMA_AGENT_BACKEND", "cli")
     e.setdefault("AGENT_TIMEOUT_SEC", "600")
+    e.setdefault("LEMMA_MCP_ITERATE_ROWS", "50000")
     e.setdefault("LEMMA_RESEARCH_LOG", "1")
     e["LEMMA_WORKLOAD"] = workload
     e["LEMMA_DUCKDB_PATH"] = duckdb_path

@@ -123,6 +123,52 @@ def test_rejects_shell_tamper_with_fingerprint_legacy(tmp_path):
         extract_marked_body(tampered, agent_path=dest)
 
 
+def test_join_shell_matches_method_spec_table_params(tmp_path):
+    from verus_transpiler.column_projection import project_multi_schema_for_query
+
+    from research_loop.method_spec_ret_type import resolve_ret_type_from_method_spec
+    from tests.test_harness_exists_vs_join import _SIMPLE_JOIN_SQL
+    from tests.test_sec_holdout_parse import SEC_SCHEMA
+
+    catalog = {"num": SEC_SCHEMA["num"], "sub": SEC_SCHEMA["sub"]}
+    projected = project_multi_schema_for_query(_SIMPLE_JOIN_SQL, catalog)
+    spec = transpile_sql_to_verus(_SIMPLE_JOIN_SQL, projected)
+    ret_type = resolve_ret_type_from_method_spec(spec)
+    dest = tmp_path / "runquery_agent.rs"
+    write_runquery_agent_file(
+        dest,
+        ret_type=ret_type,
+        body_inner="HashMapWithView::new()",
+        method_spec_rs=spec,
+    )
+    text = dest.read_text(encoding="utf-8")
+    assert "fn run_query(num: &Cols_num, sub: &Cols_sub)" in text
+    assert "method_spec(num, sub)" in text
+    assert "fn run_query(cols: &Cols, pre: &Cols_pre)" not in text
+
+
+def test_exists_shell_matches_method_spec_cols_and_pre(tmp_path):
+    from verus_transpiler.column_projection import project_multi_schema_for_query
+
+    from tests.test_exists_assemble_support_tables import _EXISTS_NUM_PRE_SQL
+    from tests.test_sec_holdout_parse import SEC_SCHEMA
+
+    catalog = {"num": SEC_SCHEMA["num"], "pre": SEC_SCHEMA["pre"]}
+    projected = project_multi_schema_for_query(_EXISTS_NUM_PRE_SQL, catalog)
+    spec = transpile_sql_to_verus(_EXISTS_NUM_PRE_SQL, projected)
+    dest = tmp_path / "runquery_agent.rs"
+    write_runquery_agent_file(
+        dest,
+        ret_type="map_str_str_u64",
+        body_inner="HashMapWithView::new()",
+        method_spec_rs=spec,
+    )
+    text = dest.read_text(encoding="utf-8")
+    assert "fn run_query(cols: &Cols, pre: &Cols_pre)" in text
+    assert "valid_cols(cols)" in text and "valid_cols_pre(pre)" in text
+    assert "method_spec(cols, pre)" in text
+
+
 def test_rejects_edit_shell_tamper(tmp_path):
     spec = _scalar_spec()
     _write_spec(tmp_path, spec)
