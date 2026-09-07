@@ -17,6 +17,8 @@ from research_loop.assemble_verified_program import (
 from research_loop.harness import resolve_verus_bin, run_verus_verify
 from research_loop.method_spec_ret_type import resolve_ret_type_from_method_spec
 from research_loop.multi_agg_step_bridge import (
+    CountSlotAddend,
+    _parse_count_slot_addend,
     _spec_expr_to_exec,
     emit_multi_agg_step_trusted,
     multi_agg_step_trusted_rs,
@@ -315,6 +317,97 @@ def test_agg_step_requires_no_case_when_exec() -> None:
     req_block = rs.split(f"pub exec fn agg_step_{suffix}")[1].split("ensures")[0]
     assert "case_when_u64_exec" not in req_block
     assert "(prev as int) +" not in req_block
+
+
+def test_parse_count_slot_addend_literals() -> None:
+    assert _parse_count_slot_addend(
+        "let s1 = (prev.1 as int + 1) as u64", 1, multi_slot=True
+    ) == CountSlotAddend("1", 1)
+    cw = _parse_count_slot_addend(
+        "let s2 = (prev.2 as int + case_when_u64((num.value[i0 as int] > 0), 1, 0) as int) as u64",
+        2,
+        multi_slot=True,
+    )
+    assert cw is not None
+    assert cw.ub == 1
+    assert "case_when_u64" in cw.addend
+    cw5 = _parse_count_slot_addend(
+        "let s0 = (prev as int + case_when_u64(x, 5, 0) as int) as u64",
+        0,
+        multi_slot=False,
+    )
+    assert cw5 is not None
+    assert cw5.ub == 5
+
+
+Q3_LIKE_SQL = """SELECT n.tag, t.tlabel, t.datatype,
+       COUNT(DISTINCT n.adsh) AS num_filings,
+       COUNT(*) AS total_entries,
+       SUM(CASE WHEN n.value > 0 THEN 1 ELSE 0 END) AS positive_count,
+       SUM(CASE WHEN n.value < 0 THEN 1 ELSE 0 END) AS negative_count
+FROM num n
+JOIN tag t ON n.tag = t.tag AND n.version = t.version
+WHERE n.ddate BETWEEN 20240101 AND 20241231 AND n.value IS NOT NULL
+      AND t.custom = 0
+GROUP BY n.tag, t.tlabel, t.datatype
+HAVING COUNT(DISTINCT n.adsh) > 100
+LIMIT 500"""
+
+
+def test_q3_like_fold_slot_lemmas_use_case_when_addend() -> None:
+    """CASE 1/0 SUM slots classified as count must step by case_when, not hardcoded +1."""
+    schema = {"num": NUM_SCHEMA, "tag": TAG_SCHEMA}
+    out = transpile_sql_to_verus(
+        Q3_LIKE_SQL,
+        schema,
+        catalog_assumptions=sec_prove_loop_catalog_assumptions(),
+    )
+    ret_type = resolve_ret_type_from_method_spec(out)
+    rs = multi_agg_step_trusted_rs(out, ret_type)
+    assert "s2 as int == prev_full.2 as int + 1" not in rs
+    assert "s3 as int == prev_full.3 as int + 1" not in rs
+    assert "case_when_u64((num.value[i0 as int] > 0), 1, 0)" in rs
+    assert "case_when_u64((num.value[i0 as int] < 0), 1, 0)" in rs
+    # COUNT(*) slot may still use literal +1
+    assert "s1 as int == prev_full.1 as int + (1)" in rs
+
+
+@pytest.mark.skipif(
+    not Path("/tmp/lemma-r18-q3-diag/runquery_agent.rs").is_file(),
+    reason="r18 Q3 diag transplant missing",
+)
+def test_r18_q3_diag_transplant_verus(tmp_path: Path) -> None:
+    """Re-assemble r18 Q3 r12 body with current host lemmas; expect VERIFY True."""
+    from verus_transpiler.column_projection import project_multi_schema_for_query
+
+    from research_loop.assemble_verified_program import assemble_verified_join_program
+
+    raw = Path("/tmp/lemma-r18-q3-diag/runquery_agent.rs").read_text(encoding="utf-8")
+    agent_body = raw.split("// AGENT_EDIT_START", 1)[1].split("// AGENT_EDIT_END", 1)[0].strip()
+    catalog = {"num": NUM_SCHEMA, "tag": TAG_SCHEMA}
+    projected = project_multi_schema_for_query(Q3_LIKE_SQL, catalog)
+    spec_rs = transpile_sql_to_verus(
+        Q3_LIKE_SQL,
+        projected,
+        catalog_assumptions=sec_prove_loop_catalog_assumptions(),
+    )
+    ret_type = resolve_ret_type_from_method_spec(spec_rs)
+    program = assemble_verified_join_program(
+        spec_rs=spec_rs,
+        run_query_body=agent_body,
+        multi_schema=projected,
+        table_order=("num", "tag"),
+        ret_type=ret_type,
+        default_tbls={"num": "", "tag": ""},
+    )
+    rs_path = tmp_path / "r18_q3_diag.rs"
+    rs_path.write_text(program, encoding="utf-8")
+    if resolve_verus_bin() is None:
+        pytest.skip("verus not found")
+    ok, log = run_verus_verify(str(rs_path), timeout=360)
+    if not ok:
+        pytest.fail(f"verus verify failed:\n{log[-8000:]}")
+
 
 def test_sec_q1_agg_step_runquery_verus(tmp_path: Path) -> None:
     from research_loop.bench_standins.sec_q1_runquery import SEC_Q1_RUNQUERY
