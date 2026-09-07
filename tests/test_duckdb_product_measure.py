@@ -26,10 +26,15 @@ PRE_SCHEMA = {
 
 def test_generate_load_cols_duckdb_verus_has_ffi_and_valid_cols() -> None:
     load_rs = generate_load_cols_duckdb_verus(PRE_SCHEMA, table_name="pre")
-    assert "lemma_duckdb_load::load_table" in load_rs
+    assert "lemma_duckdb_load::pin_table" in load_rs
+    assert "ColVec" not in load_rs
     ffi = Path(ROOT / "research_loop/duckdb_load_ffi.rs.inc").read_text()
     assert "duckdb_open_ext" in ffi
     assert "READ_ONLY" in ffi
+    assert "fn pin_table" in ffi
+    assert "append_chunk_col" not in ffi
+    assert "ensures valid_cols" in load_rs
+    assert '"pre"' in load_rs
     assert "ensures valid_cols" in load_rs
     assert 'table_name="pre"' not in load_rs
     assert '"pre"' in load_rs
@@ -88,6 +93,9 @@ def test_duckdb_loader_e2e_compile_and_bench(monkeypatch: pytest.MonkeyPatch) ->
         default_db=str(TINY_DB),
     )
     assert "duckdb_open" in program or "lemma_duckdb_load" in program
+    assert "pin_table" in program
+    assert "read_u32" in program
+    assert "ColVec" not in program
 
     import duckdb
 
@@ -216,3 +224,4 @@ def test_duckdb_agent_style_count_proves_and_matches(monkeypatch: pytest.MonkeyP
     assert res.get("latency_us", -1) >= 0, res.get("error") or res.get("bench_error")
     stdout = res.get("stdout") or ""
     assert f"RESULT: {expected}" in stdout, stdout
+    assert "SESSION_HOT_US:" in stdout

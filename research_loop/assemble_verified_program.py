@@ -394,6 +394,66 @@ def _col_kind_for_schema_type(col_type: str) -> str:
     return "U64"
 
 
+def _impl_span(src: str, struct_name: str) -> tuple[int, int] | None:
+    needle = f"impl {struct_name} {{"
+    start = src.find(needle)
+    if start < 0:
+        return None
+    brace = src.find("{", start)
+    depth = 0
+    for j in range(brace, len(src)):
+        if src[j] == "{":
+            depth += 1
+        elif src[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return start, j + 1
+    return None
+
+
+def rewrite_cols_getters_for_pin(
+    spec_rs: str,
+    *,
+    table_name: str,
+    schema_dict: dict[str, str],
+    struct_name: str = "Cols",
+) -> str:
+    """Point exec getters at pinned DuckDB vectors (spec still uses Vec model)."""
+    span = _impl_span(spec_rs, struct_name)
+    if span is None:
+        return spec_rs
+    lo, hi = span
+    impl = spec_rs[lo:hi]
+    for i, (col, col_type) in enumerate(schema_dict.items()):
+        field = rust_ident(col)
+        kind = _col_kind_for_schema_type(col_type)
+        if kind == "String":
+            impl = impl.replace(
+                f"        self.{field}[i].clone()",
+                f'        lemma_duckdb_load::read_string("{table_name}", {i}usize, i)',
+            )
+            impl = impl.replace(
+                f"        self.{field}[i] == lit",
+                f'        lemma_duckdb_load::eq_str("{table_name}", {i}usize, i, lit)',
+            )
+        elif kind == "Bool":
+            impl = impl.replace(
+                f"        self.{field}[i]",
+                f'        lemma_duckdb_load::read_bool("{table_name}", {i}usize, i)',
+            )
+        elif kind == "U32":
+            impl = impl.replace(
+                f"        self.{field}[i]",
+                f'        lemma_duckdb_load::read_u32("{table_name}", {i}usize, i)',
+            )
+        else:
+            impl = impl.replace(
+                f"        self.{field}[i]",
+                f'        lemma_duckdb_load::read_u64("{table_name}", {i}usize, i)',
+            )
+    return spec_rs[:lo] + impl + spec_rs[hi:]
+
+
 def _select_load_generator(
     load_format: str | None = None,
     *,
@@ -493,29 +553,24 @@ def generate_load_cols_duckdb_verus(
     valid_fn: str = "valid_cols",
     load_fn: str = "load_cols",
 ) -> str:
-    """Trusted DuckDB loader: copy column chunks into owned Vec Cols (Layer A I/O)."""
+    """Trusted DuckDB loader: pin result vectors; Cols getters read pointers (no memcpy)."""
     col_specs: list[str] = []
-    extracts: list[str] = []
     field_inits: list[str] = []
 
     for col, col_type in schema_dict.items():
         field = rust_ident(col)
         kind = _col_kind_for_schema_type(col_type)
         col_specs.append(f'            ("{col}", lemma_duckdb_load::ColKind::{kind}),')
-        extracts.append(
-            f"""    let {field} = match loaded_cols.next().expect("missing column {col}") {{
-        lemma_duckdb_load::ColVec::{kind}(v) => v,
-        _ => panic!("column kind mismatch for {col}"),
-    }};"""
-        )
-        field_inits.append(f"            {field},")
+        rust_ty = _rust_vec_type(col_type)
+        field_inits.append(f"            {field}: Vec::<{rust_ty}>::new(),")
 
     return f"""
 #[verifier::external_body]
 pub exec fn {load_fn}(db_path: &str, limit: usize) -> (cols: {struct_name})
     ensures {valid_fn}(&cols),
 {{
-    let loaded = lemma_duckdb_load::load_table(
+    let n = lemma_duckdb_load::pin_table(
+        "{table_name}",
         db_path,
         "{table_name}",
         limit,
@@ -523,9 +578,6 @@ pub exec fn {load_fn}(db_path: &str, limit: usize) -> (cols: {struct_name})
 {chr(10).join(col_specs)}
         ],
     );
-    let lemma_duckdb_load::LoadedTable {{ n, columns: loaded_cols }} = loaded;
-    let mut loaded_cols = loaded_cols.into_iter();
-{chr(10).join(extracts)}
     {struct_name} {{
         n,
 {chr(10).join(field_inits)}
@@ -740,12 +792,15 @@ def generate_main_rs(
         path_decl = """    let db_path = args
         .get(1)
         .map(|s| s.as_str())"""
+        timing += '\n    println!("SESSION_HOT_US: {}", times[times.len() / 2]);'
+        epilogue = "    lemma_duckdb_load::unpin_all();\n"
     else:
         path_arg = f'        .unwrap_or("{default_tbl}");'
         load_line = "    let cols = load_cols(tbl_path, limit);"
         path_decl = """    let tbl_path = args
         .get(1)
         .map(|s| s.as_str())"""
+        epilogue = ""
 
     return f"""
 fn main() {{
@@ -765,7 +820,7 @@ fn main() {{
 
     {timing}
     println!("{{}}", last);
-}}
+{epilogue}}}
 """
 
 
@@ -812,6 +867,12 @@ def generate_main_join_rs(
 
     let left = {load_left}(left_path, limit);
     let right = {load_right}(right_path, limit);"""
+    timing = _median_bench_loop(fmt=fmt, ret_type=ret_type, bench_call=bench_exec)
+    if load_mode == "duckdb":
+        timing += '\n    println!("SESSION_HOT_US: {}", times[times.len() / 2]);'
+        epilogue = "    lemma_duckdb_load::unpin_all();\n"
+    else:
+        epilogue = ""
     return f"""
 fn main() {{
     use std::env;
@@ -820,9 +881,9 @@ fn main() {{
     let args: Vec<String> = env::args().collect();
 {path_setup}
 
-    {_median_bench_loop(fmt=fmt, ret_type=ret_type, bench_call=bench_exec)}
+    {timing}
     println!("{{}}", last);
-}}
+{epilogue}}}
 """
 
 
@@ -850,6 +911,14 @@ def assemble_verified_join_program(
         raise ValueError(f"table_order {table_order} not in multi_schema keys")
 
     core = _prepare_spec_rs(spec_rs, None)
+    if load_mode == "duckdb":
+        for table, cols in multi_schema.items():
+            core = rewrite_cols_getters_for_pin(
+                core,
+                table_name=table,
+                schema_dict=cols,
+                struct_name=f"Cols_{table}",
+            )
     boundary = _boundary_helpers(ret_type, spec_rs)
     agent_externs = maybe_emit_agent_externs(run_query_body)
     load_gen = _select_load_generator(load_mode=load_mode)
@@ -934,6 +1003,12 @@ def generate_main_nway_rs(
             )
             arg_names.append(f"&{table}")
     bench_call = bench_exec or f"run_query({', '.join(arg_names)})"
+    timing = _median_bench_loop(fmt=fmt, ret_type=ret_type, bench_call=bench_call)
+    if load_mode == "duckdb":
+        timing += '\n    println!("SESSION_HOT_US: {}", times[times.len() / 2]);'
+        epilogue = "    lemma_duckdb_load::unpin_all();\n"
+    else:
+        epilogue = ""
     return f"""
 fn main() {{
     use std::env;
@@ -943,9 +1018,9 @@ fn main() {{
 
 {chr(10).join(load_lines)}
 
-    {_median_bench_loop(fmt=fmt, ret_type=ret_type, bench_call=bench_call)}
+    {timing}
     println!("{{}}", last);
-}}
+{epilogue}}}
 """
 
 
@@ -973,6 +1048,14 @@ def assemble_verified_nway_program(
             raise ValueError(f"table {table!r} not in multi_schema")
 
     core = _prepare_spec_rs(spec_rs, None)
+    if load_mode == "duckdb":
+        for table, cols in multi_schema.items():
+            core = rewrite_cols_getters_for_pin(
+                core,
+                table_name=table,
+                schema_dict=cols,
+                struct_name=f"Cols_{table}",
+            )
     boundary = _boundary_helpers(ret_type, spec_rs)
     agent_externs = maybe_emit_agent_externs(run_query_body)
     load_gen = _select_load_generator(load_mode=load_mode)
@@ -1037,6 +1120,13 @@ def assemble_verified_program(
         )
 
     core = _prepare_spec_rs(spec_rs, schema_dict)
+    if load_mode == "duckdb":
+        core = rewrite_cols_getters_for_pin(
+            core,
+            table_name=table_name,
+            schema_dict=schema_dict,
+            struct_name="Cols",
+        )
     boundary = _boundary_helpers(ret_type, spec_rs)
     agent_externs = maybe_emit_agent_externs(run_query_body)
     load_gen = _select_load_generator(load_mode=load_mode)

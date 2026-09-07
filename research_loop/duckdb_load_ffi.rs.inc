@@ -1,6 +1,7 @@
-// Layer A DuckDB → owned Vec Cols (libduckdb C API). Included once in assembled programs.
+// Layer A DuckDB pin/lease: keep result chunks alive; getters read vector pointers (no column memcpy).
 #[allow(dead_code, non_snake_case, non_camel_case_types)]
 mod lemma_duckdb_load {
+    use std::collections::HashMap;
     use std::ffi::{CStr, CString};
     use std::os::raw::{c_char, c_void};
     use std::ptr;
@@ -86,25 +87,6 @@ mod lemma_duckdb_load {
         fn duckdb_validity_row_is_valid(validity: *mut u64, row: idx_t) -> bool;
     }
 
-    /// duckdb_string_t is 16 bytes; parse without a Rust union (layout host).
-    unsafe fn read_varchar_at(ptr: *const u8) -> String {
-        let len = *(ptr as *const u32) as usize;
-        if len == 0 {
-            return String::new();
-        }
-        if len <= 12 {
-            let bytes = std::slice::from_raw_parts(ptr.add(4), len);
-            String::from_utf8_lossy(bytes).into_owned()
-        } else {
-            let data_ptr = *(ptr.add(8) as *const *const u8);
-            if data_ptr.is_null() {
-                return String::new();
-            }
-            let bytes = std::slice::from_raw_parts(data_ptr, len);
-            String::from_utf8_lossy(bytes).into_owned()
-        }
-    }
-
     #[derive(Clone, Copy, Debug)]
     pub enum ColKind {
         U32,
@@ -113,16 +95,57 @@ mod lemma_duckdb_load {
         Bool,
     }
 
-    pub struct LoadedTable {
-        pub n: usize,
-        pub columns: Vec<ColVec>,
+    #[derive(Clone, Copy)]
+    struct ChunkVec {
+        data: *mut c_void,
+        validity: *mut u64,
+        duck_ty: DuckDBType,
     }
 
-    pub enum ColVec {
-        U32(Vec<u32>),
-        U64(Vec<u64>),
-        String(Vec<String>),
-        Bool(Vec<bool>),
+    struct PinnedTable {
+        db: DuckDBDatabasePtr,
+        conn: DuckDBConnectionPtr,
+        result: DuckdbResult,
+        chunks: Vec<DuckDBDataChunk>,
+        chunk_starts: Vec<usize>,
+        chunk_lens: Vec<usize>,
+        n: usize,
+        kinds: Vec<ColKind>,
+        // [chunk][col]
+        vecs: Vec<Vec<ChunkVec>>,
+    }
+
+    struct PinWorld {
+        tables: HashMap<String, PinnedTable>,
+    }
+
+    fn world() -> &'static mut PinWorld {
+        static mut WORLD: *mut PinWorld = ptr::null_mut();
+        unsafe {
+            if WORLD.is_null() {
+                WORLD = Box::into_raw(Box::new(PinWorld {
+                    tables: HashMap::new(),
+                }));
+            }
+            &mut *WORLD
+        }
+    }
+
+    unsafe fn varchar_bytes_at(ptr: *const u8) -> &'static [u8] {
+        let len = *(ptr as *const u32) as usize;
+        if len == 0 {
+            return b"";
+        }
+        if len <= 12 {
+            std::slice::from_raw_parts(ptr.add(4), len)
+        } else {
+            let data_ptr = *(ptr.add(8) as *const *const u8);
+            if data_ptr.is_null() {
+                b""
+            } else {
+                std::slice::from_raw_parts(data_ptr, len)
+            }
+        }
     }
 
     fn quote_ident(name: &str) -> String {
@@ -188,94 +211,8 @@ mod lemma_duckdb_load {
         }
     }
 
-    unsafe fn append_chunk_col(
-        kind: ColKind,
-        chunk: DuckDBDataChunk,
-        col_idx: idx_t,
-        duck_ty: DuckDBType,
-        col_name: &str,
-        out: &mut ColVec,
-    ) {
-        check_duck_type(kind, duck_ty, col_name);
-        let chunk_size = duckdb_data_chunk_get_size(chunk);
-        let vec = duckdb_data_chunk_get_vector(chunk, col_idx);
-        let data = duckdb_vector_get_data(vec);
-        let validity = duckdb_vector_get_validity(vec);
-        match out {
-            ColVec::U32(v) => {
-                let ptr = data as *const i32;
-                for row in 0..chunk_size {
-                    if !row_valid(validity, row) {
-                        v.push(0);
-                    } else {
-                        // DATE columns store days since epoch as i32; SEC int cols are plain INTEGER.
-                        v.push(*ptr.add(row as usize) as u32);
-                    }
-                }
-            }
-            ColVec::U64(v) => {
-                match duck_ty {
-                    DUCKDB_TYPE_FLOAT | DUCKDB_TYPE_DOUBLE => {
-                        let ptr = data as *const f64;
-                        for row in 0..chunk_size {
-                            if !row_valid(validity, row) {
-                                v.push(0);
-                            } else {
-                                // Truncate toward zero (matches tbl parse for numeric money cols).
-                                v.push(*ptr.add(row as usize) as u64);
-                            }
-                        }
-                    }
-                    _ => {
-                        let ptr = data as *const i64;
-                        for row in 0..chunk_size {
-                            if !row_valid(validity, row) {
-                                v.push(0);
-                            } else {
-                                v.push(*ptr.add(row as usize) as u64);
-                            }
-                        }
-                    }
-                }
-            }
-            ColVec::String(v) => {
-                const STRING_T_BYTES: usize = 16;
-                let base = data as *const u8;
-                for row in 0..chunk_size {
-                    if !row_valid(validity, row) {
-                        v.push(String::new());
-                    } else {
-                        let st_ptr = base.add(row as usize * STRING_T_BYTES);
-                        v.push(read_varchar_at(st_ptr));
-                    }
-                }
-            }
-            ColVec::Bool(v) => {
-                let ptr = data as *const bool;
-                for row in 0..chunk_size {
-                    if !row_valid(validity, row) {
-                        v.push(false);
-                    } else {
-                        v.push(*ptr.add(row as usize));
-                    }
-                }
-            }
-        }
-    }
-
-    pub fn load_table(
-        db_path: &str,
-        table: &str,
-        limit: usize,
-        columns: &[(&str, ColKind)],
-    ) -> LoadedTable {
-        if columns.is_empty() {
-            return LoadedTable {
-                n: 0,
-                columns: Vec::new(),
-            };
-        }
-        let c_path = CString::new(db_path).expect("db path");
+    fn open_readonly(path: &str) -> (DuckDBDatabasePtr, DuckDBConnectionPtr) {
+        let c_path = CString::new(path).expect("db path");
         let mut db: DuckDBDatabasePtr = ptr::null_mut();
         let mut conn: DuckDBConnectionPtr = ptr::null_mut();
         unsafe {
@@ -307,7 +244,43 @@ mod lemma_duckdb_load {
                 panic!("duckdb_connect failed");
             }
         }
+        (db, conn)
+    }
 
+    fn locate_row(pin: &PinnedTable, row: usize) -> (usize, usize) {
+        if row >= pin.n {
+            panic!("row {row} out of pin n={}", pin.n);
+        }
+        let mut lo = 0usize;
+        let mut hi = pin.chunk_starts.len();
+        while lo + 1 < hi {
+            let mid = (lo + hi) / 2;
+            if pin.chunk_starts[mid] <= row {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        (lo, row - pin.chunk_starts[lo])
+    }
+
+    fn vec_at(pin: &PinnedTable, col: usize, row: usize) -> (ChunkVec, usize) {
+        let (ci, local) = locate_row(pin, row);
+        (pin.vecs[ci][col], local)
+    }
+
+    /// Pin `SELECT cols FROM table LIMIT n` and retain DuckDB vector buffers (lease).
+    pub fn pin_table(
+        key: &str,
+        db_path: &str,
+        table: &str,
+        limit: usize,
+        columns: &[(&str, ColKind)],
+    ) -> usize {
+        if columns.is_empty() {
+            return 0;
+        }
+        let (mut db, mut conn) = open_readonly(db_path);
         let col_sql: Vec<String> = columns.iter().map(|(n, _)| quote_ident(n)).collect();
         let sql = format!(
             "SELECT {} FROM {} LIMIT {}",
@@ -339,54 +312,135 @@ mod lemma_duckdb_load {
             }
         }
 
-        let mut outs: Vec<ColVec> = columns
-            .iter()
-            .map(|(_, k)| match k {
-                ColKind::U32 => ColVec::U32(Vec::new()),
-                ColKind::U64 => ColVec::U64(Vec::new()),
-                ColKind::String => ColVec::String(Vec::new()),
-                ColKind::Bool => ColVec::Bool(Vec::new()),
-            })
-            .collect();
-
+        let kinds: Vec<ColKind> = columns.iter().map(|(_, k)| *k).collect();
         let n_chunks = unsafe { duckdb_result_chunk_count(result) };
+        let mut chunks: Vec<DuckDBDataChunk> = Vec::new();
+        let mut chunk_starts: Vec<usize> = Vec::new();
+        let mut chunk_lens: Vec<usize> = Vec::new();
+        let mut vecs: Vec<Vec<ChunkVec>> = Vec::new();
         let mut total_rows: usize = 0;
         for ci in 0..n_chunks {
             let chunk = unsafe { duckdb_result_get_chunk(result, ci) };
             if chunk.is_null() {
                 continue;
             }
-            let chunk_size = unsafe { duckdb_data_chunk_get_size(chunk) };
+            let chunk_size = unsafe { duckdb_data_chunk_get_size(chunk) } as usize;
+            let mut col_vecs: Vec<ChunkVec> = Vec::with_capacity(columns.len());
             for (col_idx, (col_name, kind)) in columns.iter().enumerate() {
-                let duck_ty =
-                    unsafe { duckdb_column_type(&mut result, col_idx as idx_t) };
-                unsafe {
-                    append_chunk_col(
-                        *kind,
-                        chunk,
-                        col_idx as idx_t,
-                        duck_ty,
-                        col_name,
-                        &mut outs[col_idx],
-                    );
-                }
+                let duck_ty = unsafe { duckdb_column_type(&mut result, col_idx as idx_t) };
+                check_duck_type(*kind, duck_ty, col_name);
+                let vector = unsafe { duckdb_data_chunk_get_vector(chunk, col_idx as idx_t) };
+                let data = unsafe { duckdb_vector_get_data(vector) };
+                let validity = unsafe { duckdb_vector_get_validity(vector) };
+                col_vecs.push(ChunkVec {
+                    data,
+                    validity,
+                    duck_ty,
+                });
             }
-            total_rows += chunk_size as usize;
-            unsafe {
-                let mut destroy = chunk;
-                duckdb_destroy_data_chunk(&mut destroy);
-            }
+            chunk_starts.push(total_rows);
+            chunk_lens.push(chunk_size);
+            total_rows += chunk_size;
+            chunks.push(chunk);
+            vecs.push(col_vecs);
         }
 
-        unsafe {
-            duckdb_destroy_result(&mut result);
-            duckdb_disconnect(&mut conn);
-            duckdb_close(&mut db);
-        }
-
-        LoadedTable {
+        let pin = PinnedTable {
+            db,
+            conn,
+            result,
+            chunks,
+            chunk_starts,
+            chunk_lens,
             n: total_rows,
-            columns: outs,
+            kinds,
+            vecs,
+        };
+        world().tables.insert(key.to_string(), pin);
+        total_rows
+    }
+
+    fn pin_ref(key: &str) -> &'static PinnedTable {
+        world()
+            .tables
+            .get(key)
+            .unwrap_or_else(|| panic!("no pin for table {key}"))
+    }
+
+    pub fn read_u32(key: &str, col: usize, row: usize) -> u32 {
+        let pin = pin_ref(key);
+        let (v, local) = vec_at(pin, col, row);
+        if !row_valid(v.validity, local as idx_t) {
+            return 0;
+        }
+        unsafe { *(v.data as *const i32).add(local) as u32 }
+    }
+
+    pub fn read_u64(key: &str, col: usize, row: usize) -> u64 {
+        let pin = pin_ref(key);
+        let (v, local) = vec_at(pin, col, row);
+        if !row_valid(v.validity, local as idx_t) {
+            return 0;
+        }
+        unsafe {
+            match v.duck_ty {
+                DUCKDB_TYPE_FLOAT | DUCKDB_TYPE_DOUBLE => {
+                    *(v.data as *const f64).add(local) as u64
+                }
+                _ => *(v.data as *const i64).add(local) as u64,
+            }
+        }
+    }
+
+    pub fn read_bool(key: &str, col: usize, row: usize) -> bool {
+        let pin = pin_ref(key);
+        let (v, local) = vec_at(pin, col, row);
+        if !row_valid(v.validity, local as idx_t) {
+            return false;
+        }
+        unsafe { *(v.data as *const bool).add(local) }
+    }
+
+    pub fn read_string(key: &str, col: usize, row: usize) -> String {
+        let pin = pin_ref(key);
+        let (v, local) = vec_at(pin, col, row);
+        if !row_valid(v.validity, local as idx_t) {
+            return String::new();
+        }
+        const STRING_T_BYTES: usize = 16;
+        unsafe {
+            let st = (v.data as *const u8).add(local * STRING_T_BYTES);
+            let bytes = varchar_bytes_at(st);
+            String::from_utf8_lossy(bytes).into_owned()
+        }
+    }
+
+    pub fn eq_str(key: &str, col: usize, row: usize, lit: &str) -> bool {
+        let pin = pin_ref(key);
+        let (v, local) = vec_at(pin, col, row);
+        if !row_valid(v.validity, local as idx_t) {
+            return lit.is_empty();
+        }
+        const STRING_T_BYTES: usize = 16;
+        unsafe {
+            let st = (v.data as *const u8).add(local * STRING_T_BYTES);
+            varchar_bytes_at(st) == lit.as_bytes()
+        }
+    }
+
+    pub fn unpin_all() {
+        let w = world();
+        let tables = std::mem::take(&mut w.tables);
+        for mut pin in tables.into_values() {
+            unsafe {
+                for chunk in pin.chunks.drain(..) {
+                    let mut destroy = chunk;
+                    duckdb_destroy_data_chunk(&mut destroy);
+                }
+                duckdb_destroy_result(&mut pin.result);
+                duckdb_disconnect(&mut pin.conn);
+                duckdb_close(&mut pin.db);
+            }
         }
     }
 }
