@@ -112,6 +112,15 @@ def test_exists_transpile_uses_multi_schema_not_flat_num_only() -> None:
     spec = transpile_sql_to_verus(_EXISTS_NUM_PRE_SQL, projected)
     assert "fn method_spec" in spec
     assert "stmt" in spec.lower()
+    assert "exists_corr_exists_1_spec(pre," in spec
+    assert "exists_corr_exists_1_spec(cols," not in spec
+    assert "method_spec(cols: &Cols, pre: &Cols_pre)" in spec
+    assert "method_spec_helper(cols, pre," in spec
+    import re as _re
+    cols_fields = _re.search(r"pub struct Cols \{([^}]+)\}", spec)
+    assert cols_fields is not None
+    assert "stmt" not in cols_fields.group(1)
+    assert "pre: &Cols_pre" in spec
 
 
 def test_exists_catalog_tables_for_projection() -> None:

@@ -844,7 +844,14 @@ def generate_main_rs(
     else:
         cfg = _cfg(ret_type)
         fmt = cfg["format_result"]
-    bench_call = bench_exec or "run_query(&cols)"
+    support = support_tables or ()
+    if bench_exec:
+        bench_call = bench_exec
+    elif support:
+        args = ", ".join(["&cols", *[f"&{t}" for t in support]])
+        bench_call = f"run_query({args})"
+    else:
+        bench_call = "run_query(&cols)"
     timing = _median_bench_loop(
         fmt=fmt,
         ret_type=ret_type,
@@ -852,12 +859,11 @@ def generate_main_rs(
         bench_timing_body=bench_timing_body,
         bench_post_timing=bench_post_timing,
     )
-    support = support_tables or ()
     if load_mode == "duckdb":
         path_arg = f'        .unwrap_or("{default_db}");'
         load_line = "    let cols = load_cols(db_path, limit);"
         support_loads = "\n".join(
-            f"    let _{table} = load_cols_{table}(db_path, limit);" for table in support
+            f"    let {table} = load_cols_{table}(db_path, limit);" for table in support
         )
         path_decl = """    let db_path = args
         .get(1)
@@ -868,7 +874,7 @@ def generate_main_rs(
         path_arg = f'        .unwrap_or("{default_tbl}");'
         load_line = "    let cols = load_cols(tbl_path, limit);"
         support_loads = "\n".join(
-            f"    let _{table} = load_cols_{table}(tbl_path, limit);" for table in support
+            f"    let {table} = load_cols_{table}(tbl_path, limit);" for table in support
         )
         path_decl = """    let tbl_path = args
         .get(1)

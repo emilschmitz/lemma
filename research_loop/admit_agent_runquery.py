@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 from research_loop.assemble_runquery import (
     AGENT_EDIT_END,
     AGENT_EDIT_START,
-    AGENT_END,
     AGENT_START,
     _ensures_clause,
     _ret_type_cfg,
@@ -519,7 +518,8 @@ def _check_valid_cols_requires(
         return "requires clause missing"
     collapsed = re.sub(r"\s+", "", requires)
     is_multi = len(spec_params) > 1 or any(s != "Cols" for _, s in spec_params)
-    if is_multi and "valid_cols(cols)" in collapsed:
+    has_outer_cols = any(p == "cols" and s == "Cols" for p, s in spec_params)
+    if is_multi and "valid_cols(cols)" in collapsed and not has_outer_cols:
         return "multi-table MethodSpec must not use bare valid_cols(cols)"
     for param, struct in spec_params:
         pred = _valid_cols_predicate(struct, param)
@@ -750,7 +750,9 @@ def admit_or_extract_legacy(
     if AGENT_START in source:
         inner = extract_agent_body_checked(source, expected_fingerprint=expected_fingerprint)
         if ret_type is None:
-            from research_loop.method_spec_ret_type import resolve_ret_type_from_method_spec
+            from research_loop.method_spec_ret_type import (
+                resolve_ret_type_from_method_spec,
+            )
 
             ret_type = resolve_ret_type_from_method_spec(method_spec_rs)
         return build_exec_run_query_from_body(

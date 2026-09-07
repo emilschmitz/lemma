@@ -33,6 +33,7 @@ from .parse_sql import (
     is_grouped_derived_scalar_subquery,
     normalize_schema,
     parse_sql,
+    support_spec_params,
 )
 from .recursive_cte import emit_recursive_cte_helper
 from .rust_ident import rust_ident
@@ -60,6 +61,22 @@ from .value_bounds import (
 from .windows import emit_window_spec_helper
 
 _SUPPORTED_TYPES = SUPPORTED_SCHEMA_TYPES
+
+
+def _outer_cols_schema(
+    query: SQLQuery,
+    flat_schema: dict[str, str],
+    multi_schema: dict[str, dict[str, str]] | None,
+) -> dict[str, str]:
+    """Columns for the outer ``Cols`` struct — not inner-only EXISTS/IN columns."""
+    if not multi_schema:
+        return flat_schema
+    derived = {d.alias for d in query.derived_tables}
+    base = [t for t in query.tables if t not in derived]
+    outer = base[0] if base else (query.tables[0] if query.tables else None)
+    if outer and outer in multi_schema:
+        return multi_schema[outer]
+    return flat_schema
 
 
 def _flat_outer_schema(
@@ -236,6 +253,32 @@ def _groupby_key_expr(
     return f"({', '.join(parts)})"
 
 
+def _support_spec_params(query: SQLQuery) -> list[tuple[str, str, str]]:
+    return support_spec_params(query)
+
+
+def _extra_param_sig(extras: list[tuple[str, str, str]]) -> str:
+    return "".join(f", {name}: &{struct}" for name, struct, _ in extras)
+
+
+def _extra_param_call(extras: list[tuple[str, str, str]]) -> str:
+    return "".join(f", {name}" for name, _, _ in extras)
+
+
+def _extra_param_recommends(extras: list[tuple[str, str, str]]) -> str:
+    return "".join(f",\n        {valid}({name})" for name, _, valid in extras)
+
+
+def _method_spec_fn(ret_type: str, spec_body: str, extras: list[tuple[str, str, str]]) -> str:
+    extra_sig = _extra_param_sig(extras)
+    extra_rec = _extra_param_recommends(extras)
+    return f"""pub open spec fn method_spec(cols: &Cols{extra_sig}) -> {ret_type}
+    recommends valid_cols(cols){extra_rec},
+{{
+    {spec_body}
+}}"""
+
+
 def _build_col_helper(
     func_name: str,
     query: SQLQuery,
@@ -244,7 +287,13 @@ def _build_col_helper(
     *,
     is_sum: bool,
     agg_type: str | None = None,
+    extras: list[tuple[str, str, str]] | None = None,
 ) -> str:
+    extras = extras or []
+    extra_sig = _extra_param_sig(extras)
+    extra_call = _extra_param_call(extras)
+    extra_rec = _extra_param_recommends(extras)
+    rec = f"{func_name}(cols{extra_call}, {idx_var} + 1)"
     agg = agg_type or query.agg_type
     cond = (
         spec_where_cond(to_col_expr(query.where_expr, idx_var), idx_var, schema_dict)
@@ -274,7 +323,7 @@ def _build_col_helper(
         zero = f"0{val_type}"
         if cond:
             body_inner = (
-                f"let tail = {func_name}(cols, {idx_var} + 1);\n"
+                f"let tail = {rec};\n"
                 f"        if {cond} {{\n"
                 f"            let key = {key_expr};\n"
                 f"            let prev = if tail.contains_key(key) {{ tail[key] }} else {{ {zero} }};\n"
@@ -285,16 +334,16 @@ def _build_col_helper(
             )
         else:
             body_inner = (
-                f"let tail = {func_name}(cols, {idx_var} + 1);\n"
+                f"let tail = {rec};\n"
                 f"        let key = {key_expr};\n"
                 f"        let prev = if tail.contains_key(key) {{ tail[key] }} else {{ {zero} }};\n"
                 f"        tail.insert(key, (prev as int + {term} as int) as {val_type})"
             )
         base_val = "Map::empty()"
-        return f"""pub open spec fn {func_name}(cols: &Cols, {idx_var}: int) -> {ret_type}
+        return f"""pub open spec fn {func_name}(cols: &Cols{extra_sig}, {idx_var}: int) -> {ret_type}
     recommends
         0 <= {idx_var} && {idx_var} <= cols.n,
-        valid_cols(cols),
+        valid_cols(cols){extra_rec},
     decreases cols.n - {idx_var},
 {{
     if {idx_var} < cols.n {{
@@ -310,7 +359,7 @@ def _build_col_helper(
         base_val = "u64::MAX"
         if cond:
             body_inner = (
-                f"let tail = {func_name}(cols, {idx_var} + 1);\n"
+                f"let tail = {rec};\n"
                 f"        if {cond} {{\n"
                 f"            let t = {term};\n"
                 f"            if t < tail {{ t }} else {{ tail }}\n"
@@ -318,7 +367,7 @@ def _build_col_helper(
             )
         else:
             body_inner = (
-                f"let tail = {func_name}(cols, {idx_var} + 1);\n"
+                f"let tail = {rec};\n"
                 f"        let t = {term};\n"
                 f"        if t < tail {{ t }} else {{ tail }}"
             )
@@ -326,7 +375,7 @@ def _build_col_helper(
         base_val = "0u64"
         if cond:
             body_inner = (
-                f"let tail = {func_name}(cols, {idx_var} + 1);\n"
+                f"let tail = {rec};\n"
                 f"        if {cond} {{\n"
                 f"            let t = {term};\n"
                 f"            if t > tail {{ t }} else {{ tail }}\n"
@@ -334,26 +383,26 @@ def _build_col_helper(
             )
         else:
             body_inner = (
-                f"let tail = {func_name}(cols, {idx_var} + 1);\n"
+                f"let tail = {rec};\n"
                 f"        let t = {term};\n"
                 f"        if t > tail {{ t }} else {{ tail }}"
             )
     elif cond:
         body_inner = (
-            f"if {cond} {{ ({func_name}(cols, {idx_var} + 1) as int + {term} as int) as u64 }}"
-            f" else {{ {func_name}(cols, {idx_var} + 1) }}"
+            f"if {cond} {{ ({rec} as int + {term} as int) as u64 }}"
+            f" else {{ {rec} }}"
         )
         base_val = "0u64"
     else:
         body_inner = (
-            f"({func_name}(cols, {idx_var} + 1) as int + {term} as int) as u64"
+            f"({rec} as int + {term} as int) as u64"
         )
         base_val = "0u64"
 
-    return f"""pub open spec fn {func_name}(cols: &Cols, {idx_var}: int) -> {ret_type}
+    return f"""pub open spec fn {func_name}(cols: &Cols{extra_sig}, {idx_var}: int) -> {ret_type}
     recommends
         0 <= {idx_var} && {idx_var} <= cols.n,
-        valid_cols(cols),
+        valid_cols(cols){extra_rec},
     decreases cols.n - {idx_var},
 {{
     if {idx_var} < cols.n {{
@@ -712,6 +761,11 @@ def _emit_multi_agg_spec(
 ) -> tuple[str, str, str]:
     """Multi-aggregate group-by spec: recursive fold with Map<Key, state tuple>."""
     idx_var = "k"
+    extras = _support_spec_params(query)
+    extra_sig = _extra_param_sig(extras)
+    extra_call = _extra_param_call(extras)
+    extra_rec = _extra_param_recommends(extras)
+    rec = f"{helper_name}(cols{extra_call}, {idx_var} + 1)"
     cond = (
         spec_where_cond(to_col_expr(query.where_expr, idx_var), idx_var, flat_schema)
         if query.where_expr
@@ -841,7 +895,7 @@ def _emit_multi_agg_spec(
 
     if cond:
         body_inner = (
-            f"let tail = {helper_name}(cols, {idx_var} + 1);\n"
+            f"let tail = {rec};\n"
             f"        if {cond} {{\n"
             f"            let key = {key_expr};\n"
             f"            let prev = if tail.contains_key(key) {{ tail[key] }} else {{ {default_state} }};\n"
@@ -853,7 +907,7 @@ def _emit_multi_agg_spec(
         )
     else:
         body_inner = (
-            f"let tail = {helper_name}(cols, {idx_var} + 1);\n"
+            f"let tail = {rec};\n"
             f"        let key = {key_expr};\n"
             f"        let prev = if tail.contains_key(key) {{ tail[key] }} else {{ {default_state} }};\n"
             f"        {update_block}\n"
@@ -868,10 +922,10 @@ def _emit_multi_agg_spec(
     ret_type = f"Map<{map_key_ty}, {_multi_agg_tuple_type(query)}>"
     map_state_ret = f"Map<{map_key_ty}, {state_tuple_type}>"
 
-    helper = f"""pub open spec fn {helper_name}(cols: &Cols, {idx_var}: int) -> {map_state_ret}
+    helper = f"""pub open spec fn {helper_name}(cols: &Cols{extra_sig}, {idx_var}: int) -> {map_state_ret}
     recommends
         0 <= {idx_var} && {idx_var} <= cols.n,
-        valid_cols(cols),
+        valid_cols(cols){extra_rec},
     decreases cols.n - {idx_var},
 {{
     if {idx_var} < cols.n {{
@@ -882,7 +936,7 @@ def _emit_multi_agg_spec(
 }}"""
 
     spec_body = (
-        f"let raw = {helper_name}(cols, 0);\n"
+        f"let raw = {helper_name}(cols{extra_call}, 0);\n"
         f"    raw.map_values(|{val_bind}: {state_tuple_type}| {project_expr})"
     )
     extra = ""
@@ -890,11 +944,7 @@ def _emit_multi_agg_spec(
         extra = "\n\n" + _emit_having_helper()
         spec_body = _emit_having_filter(spec_body, query, flat_schema).strip()
 
-    spec_fn = f"""pub open spec fn method_spec(cols: &Cols) -> {ret_type}
-    recommends valid_cols(cols),
-{{
-    {spec_body}
-}}"""
+    spec_fn = _method_spec_fn(ret_type, spec_body, extras)
     return helper + extra, spec_fn, ret_type
 
 
@@ -905,6 +955,8 @@ def _emit_single_table_spec(
     helper_name: str = "method_spec_helper",
 ) -> tuple[str, str, str]:
     """Return (helpers, spec_fn, ret_type)."""
+    extras = _support_spec_params(query)
+    extra_call = _extra_param_call(extras)
     extra_helpers: list[str] = []
 
     if query.is_projection:
@@ -915,11 +967,7 @@ def _emit_single_table_spec(
 
     if query.agg_type == "SELECT_SUBQUERY":
         ret_type = "u64"
-        spec_fn = f"""pub open spec fn method_spec(cols: &Cols) -> {ret_type}
-    recommends valid_cols(cols),
-{{
-    {query.agg_expr}
-}}"""
+        spec_fn = _method_spec_fn(ret_type, query.agg_expr, extras)
         return "", spec_fn, ret_type
 
     if query.derived_tables:
@@ -979,12 +1027,12 @@ def _emit_single_table_spec(
     if query.agg_type == "AVG":
         if query.groupby_columns:
             helpers = "\n\n".join([
-                _build_col_helper("sum_map_helper", query, "k", flat_schema, is_sum=True),
-                _build_col_helper("count_map_helper", query, "k", flat_schema, is_sum=False),
+                _build_col_helper("sum_map_helper", query, "k", flat_schema, is_sum=True, extras=extras),
+                _build_col_helper("count_map_helper", query, "k", flat_schema, is_sum=False, extras=extras),
             ])
             spec_body = (
-                "let sums = sum_map_helper(cols, 0);\n"
-                "    let counts = count_map_helper(cols, 0);\n"
+                f"let sums = sum_map_helper(cols{extra_call}, 0);\n"
+                f"    let counts = count_map_helper(cols{extra_call}, 0);\n"
                 "    sums.filter(|k, _| counts.contains_key(k)).map_values(|k| {\n"
                 "        let c = counts[k];\n"
                 "        if c == 0 { 0 } else { sums[k] / c }\n"
@@ -993,32 +1041,28 @@ def _emit_single_table_spec(
             ret_type = "Map<_, u64>"
         else:
             helpers = "\n\n".join([
-                _build_col_helper("sum_helper", query, "k", flat_schema, is_sum=True),
-                _build_col_helper("count_helper", query, "k", flat_schema, is_sum=False),
+                _build_col_helper("sum_helper", query, "k", flat_schema, is_sum=True, extras=extras),
+                _build_col_helper("count_helper", query, "k", flat_schema, is_sum=False, extras=extras),
             ])
             spec_body = (
-                "let sum = sum_helper(cols, 0);\n"
-                "    let count = count_helper(cols, 0);\n"
+                f"let sum = sum_helper(cols{extra_call}, 0);\n"
+                f"    let count = count_helper(cols{extra_call}, 0);\n"
                 "    if count == 0 { 0 } else { sum / count }"
             )
             ret_type = "u64"
         if query.having_expr:
             extra_helpers.append(_emit_having_helper())
             spec_body = _emit_having_filter(spec_body, query, flat_schema).strip()
-        spec_fn = f"""pub open spec fn method_spec(cols: &Cols) -> {ret_type}
-    recommends valid_cols(cols),
-{{
-    {spec_body}
-}}"""
+        spec_fn = _method_spec_fn(ret_type, spec_body, extras)
         all_helpers = "\n\n".join([helpers] + extra_helpers) if extra_helpers else helpers
         return all_helpers, spec_fn, ret_type
 
     is_sum = query.agg_type in ("SUM", "MIN", "MAX")
     helpers = _build_col_helper(
         helper_name, query, "k", flat_schema,
-        is_sum=is_sum, agg_type=query.agg_type,
+        is_sum=is_sum, agg_type=query.agg_type, extras=extras,
     )
-    spec_body = f"{helper_name}(cols, 0)"
+    spec_body = f"{helper_name}(cols{extra_call}, 0)"
     if query.groupby_columns:
         val_type = _agg_value_type(query.agg_expr)
         if len(query.groupby_columns) == 1:
@@ -1035,11 +1079,7 @@ def _emit_single_table_spec(
     else:
         ret_type = _agg_value_type(query.agg_expr)
 
-    spec_fn = f"""pub open spec fn method_spec(cols: &Cols) -> {ret_type}
-    recommends valid_cols(cols),
-{{
-    {spec_body}
-}}"""
+    spec_fn = _method_spec_fn(ret_type, spec_body, extras)
     all_helpers = "\n\n".join([helpers] + extra_helpers) if extra_helpers else helpers
     return all_helpers, spec_fn, ret_type
 
@@ -1283,19 +1323,19 @@ def transpile_sql_to_verus(
                 "INNER JOIN requires multi-table schema dict[table, dict[col, type]]"
             )
 
+        outer_schema = _outer_cols_schema(query, flat_schema, multi_schema)
         cols_block = generate_cols_rs(
-            flat_schema,
-            sql_str=sql,
+            outer_schema,
             groupby_columns=query.groupby_columns,
         )
         valid_cols = emit_valid_cols_predicate(
-            flat_schema, bounds=bounds, catalog=catalog_assumptions
+            outer_schema, bounds=bounds, catalog=catalog_assumptions
         )
         accessor_lemmas = emit_valid_cols_accessor_lemmas(
-            flat_schema, bounds=bounds, catalog=catalog_assumptions
+            outer_schema, bounds=bounds, catalog=catalog_assumptions
         )
 
-        helpers, spec_fn, ret_type = _emit_single_table_spec(query, flat_schema)
+        helpers, spec_fn, ret_type = _emit_single_table_spec(query, outer_schema)
         result_spec = _emit_method_spec_result(query, ret_type)
 
         where_at_k = to_col_expr(query.where_expr, "i") if query.where_expr else None

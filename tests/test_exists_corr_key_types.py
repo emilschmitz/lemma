@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import re
 
-from verus_transpiler import transpile_sql_to_verus
 from verus_transpiler.column_projection import project_multi_schema_for_query
+
 from tests.test_sec_holdout_parse import SEC_SCHEMA
+from verus_transpiler import transpile_sql_to_verus
 
 _Q4_SHAPED_SQL = """SELECT n.tag, n.version, COUNT(*) AS cnt, SUM(n.value) AS total
 FROM num n
@@ -29,9 +30,9 @@ def test_exists_corr_multi_string_keys_use_seq_char_tuple() -> None:
     ), "expected 3-way Seq<char> outer_key in exists_corr helper"
     assert "outer_key: u32" not in out
     assert re.search(
-        r"exists_corr_\w+_spec\(\s*cols,\s*\(cols\.get_\w+\(k\),\s*cols\.get_\w+\(k\),\s*cols\.get_\w+\(k\)\)\s*\)",
+        r"exists_corr_\w+_spec\(\s*pre,\s*\(cols\.get_\w+\(k\),\s*cols\.get_\w+\(k\),\s*cols\.get_\w+\(k\)\)\s*\)",
         out,
-    ), "call site must pass all corr keys"
+    ), "call site must pass inner table and all corr keys"
 
 
 def test_multi_agg_having_projects_count_via_v_dot_zero() -> None:

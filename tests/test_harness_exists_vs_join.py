@@ -75,6 +75,7 @@ def test_harness_exists_assembles_support_tables_not_join(monkeypatch, tmp_path)
     program = (tmp_path / "workspace" / "custom_query.rs").read_text()
     assert "struct Cols_pre" in program or "pub struct Cols_pre" in program
     assert "fn run_query(num:" not in program
+    assert "run_query(&cols, &pre)" in program
 
 
 def test_harness_real_join_still_uses_join_assemble(monkeypatch, tmp_path) -> None:

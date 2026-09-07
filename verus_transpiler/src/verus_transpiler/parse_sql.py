@@ -123,7 +123,7 @@ class JoinSpec:
 @dataclass
 class ScalarSubquery:
     alias: str
-    query: "SQLQuery"
+    query: SQLQuery
     inner_table: str = ""
     inner_tables: list[str] = field(default_factory=list)
     correlated: bool = False
@@ -158,7 +158,7 @@ def grouped_derived_scalar_inner_tables(query: SQLQuery) -> list[str]:
 @dataclass
 class DerivedTable:
     alias: str
-    query: "SQLQuery"
+    query: SQLQuery
     columns: dict[str, str] = field(default_factory=dict)
     source_column: str | None = None
 
@@ -182,7 +182,7 @@ class WindowSpec:
 @dataclass
 class CTESpec:
     name: str
-    query: "SQLQuery"
+    query: SQLQuery
     columns: dict[str, str] = field(default_factory=dict)
     recursive: bool = False
 
@@ -190,7 +190,7 @@ class CTESpec:
 @dataclass
 class ExistsSubquery:
     alias: str
-    query: "SQLQuery"
+    query: SQLQuery
     negated: bool = False
     correlated: bool = False
     correlation_cols: list[str] = field(default_factory=list)
@@ -200,7 +200,7 @@ class ExistsSubquery:
 class InSubquerySpec:
     alias: str
     column: str
-    query: "SQLQuery"
+    query: SQLQuery
     correlated: bool = False
     correlation_cols: list[str] = field(default_factory=list)
 
@@ -227,11 +227,11 @@ class SQLQuery:
     offset: int | None = None
     distinct: bool = False
     union_all: bool | None = None
-    union_query: "SQLQuery | None" = None
+    union_query: SQLQuery | None = None
     intersect_all: bool | None = None
-    intersect_query: "SQLQuery | None" = None
+    intersect_query: SQLQuery | None = None
     except_all: bool | None = None
-    except_query: "SQLQuery | None" = None
+    except_query: SQLQuery | None = None
     correlated: bool = False
     ctes: list[CTESpec] = field(default_factory=list)
     exists_subqueries: list[ExistsSubquery] = field(default_factory=list)
@@ -753,9 +753,66 @@ def _detect_correlation(
     return [c for c in refs if c not in schema_cols]
 
 
-def _scalar_subquery_spec_call(sub: ScalarSubquery, *, join_context: bool = False) -> str:
+def _outer_base_table(query: SQLQuery) -> str | None:
+    derived = {d.alias for d in query.derived_tables}
+    base = [t for t in query.tables if t not in derived]
+    if base:
+        return base[0]
+    return query.tables[0] if query.tables else None
+
+
+def support_spec_params(query: SQLQuery) -> list[tuple[str, str, str]]:
+    """Inner catalog tables (not the outer FROM) that MethodSpec must take as extra args."""
+    derived = {d.alias for d in query.derived_tables}
+    outer = {t for t in query.tables if t not in derived}
+    extras: list[tuple[str, str, str]] = []
+    seen: set[str] = set()
+
+    def add_inner(inner: SQLQuery) -> None:
+        for table in inner.tables:
+            if table in derived or table in outer or table in seen:
+                continue
+            seen.add(table)
+            extras.append((table, f"Cols_{table}", f"valid_cols_{table}"))
+
+    for exists in query.exists_subqueries:
+        add_inner(exists.query)
+    for in_sub in query.in_subqueries:
+        add_inner(in_sub.query)
+    for sub in query.scalar_subqueries:
+        inner_tables = sub.inner_tables or (
+            [sub.inner_table] if sub.inner_table else list(sub.query.tables)
+        )
+        dummy = SQLQuery(tables=list(inner_tables))
+        add_inner(dummy)
+    return extras
+
+
+def _inner_spec_arg(
+    inner_tables: list[str],
+    *,
+    join_context: bool,
+    outer_table: str | None,
+) -> str:
+    """Inner table ident for EXISTS/IN/scalar calls; ``cols`` only if inner is the outer table."""
+    if join_context:
+        return "__INNER__"
+    if inner_tables:
+        inner = inner_tables[0]
+        if outer_table is None or inner != outer_table:
+            return inner
+    return "cols"
+
+
+def _scalar_subquery_spec_call(
+    sub: ScalarSubquery,
+    *,
+    join_context: bool = False,
+    outer_table: str | None = None,
+) -> str:
     """Placeholder call for join rewriter: __INNER__ table param, outer.{col} accessors."""
-    inner_arg = "__INNER__" if join_context else "cols"
+    tables = list(sub.inner_tables) or ([sub.inner_table] if sub.inner_table else list(sub.query.tables))
+    inner_arg = _inner_spec_arg(tables, join_context=join_context, outer_table=outer_table)
     if sub.correlated:
         outer_args = ", ".join(f"outer.{c}" for c in sub.correlation_cols)
         return f"subquery_{sub.alias}_spec({inner_arg}, {outer_args})"
@@ -772,8 +829,15 @@ def _corr_outer_key_expr(correlation_cols: list[str], *, join_context: bool) -> 
     return f"({', '.join(parts)})"
 
 
-def _exists_subquery_spec_call(exists: ExistsSubquery, *, join_context: bool = False) -> str:
-    inner_arg = "__INNER__" if join_context else "cols"
+def _exists_subquery_spec_call(
+    exists: ExistsSubquery,
+    *,
+    join_context: bool = False,
+    outer_table: str | None = None,
+) -> str:
+    inner_arg = _inner_spec_arg(
+        list(exists.query.tables), join_context=join_context, outer_table=outer_table,
+    )
     if exists.correlated:
         outer_key = _corr_outer_key_expr(
             exists.correlation_cols, join_context=join_context,
@@ -782,8 +846,15 @@ def _exists_subquery_spec_call(exists: ExistsSubquery, *, join_context: bool = F
     return f"exists_{exists.alias}_spec({inner_arg})"
 
 
-def _in_subquery_contains_call(in_spec: InSubquerySpec, *, join_context: bool = False) -> str:
-    inner_arg = "__INNER__" if join_context else "cols"
+def _in_subquery_contains_call(
+    in_spec: InSubquerySpec,
+    *,
+    join_context: bool = False,
+    outer_table: str | None = None,
+) -> str:
+    inner_arg = _inner_spec_arg(
+        list(in_spec.query.tables), join_context=join_context, outer_table=outer_table,
+    )
     if in_spec.correlated:
         outer_key = _corr_outer_key_expr(
             in_spec.correlation_cols, join_context=join_context,
@@ -989,7 +1060,7 @@ def _compile_where_expr(
             query.exists_subqueries.append(exists)
             if exists.correlated:
                 query.correlated = True
-            return f"!{_exists_subquery_spec_call(exists, join_context=join_context)}"
+            return f"!{_exists_subquery_spec_call(exists, join_context=join_context, outer_table=_outer_base_table(query))}"
         if isinstance(inner, exp.Is):
             col_node = inner.this
             if not isinstance(col_node, exp.Column):
@@ -1005,7 +1076,7 @@ def _compile_where_expr(
         query.exists_subqueries.append(exists)
         if exists.correlated:
             query.correlated = True
-        return _exists_subquery_spec_call(exists, join_context=join_context)
+        return _exists_subquery_spec_call(exists, join_context=join_context, outer_table=_outer_base_table(query))
     if isinstance(node, exp.Between):
         if not isinstance(node.this, exp.Column):
             raise UnsupportedContractError("BETWEEN left-hand side must be a column.")
@@ -1029,7 +1100,7 @@ def _compile_where_expr(
             query.in_subqueries.append(in_spec)
             if in_spec.correlated:
                 query.correlated = True
-            return _in_subquery_contains_call(in_spec, join_context=join_context)
+            return _in_subquery_contains_call(in_spec, join_context=join_context, outer_table=_outer_base_table(query))
         if not node.expressions:
             raise UnsupportedContractError("IN () with empty list is not supported.")
         if not isinstance(node.this, exp.Column):
@@ -1080,7 +1151,7 @@ def _compile_where_expr(
             )
             scalar_subqueries[inner.alias] = inner
             left_expr = f"row.{real_col}"
-            val_resolved = _scalar_subquery_spec_call(inner, join_context=join_context)
+            val_resolved = _scalar_subquery_spec_call(inner, join_context=join_context, outer_table=_outer_base_table(query))
             kind = _kind_of(col_type)
             val_type = "int"
         elif isinstance(node.left, exp.Column):
@@ -1210,7 +1281,7 @@ def _compile_having_expr_side(
             alias_prefix="having_sq",
         )
         query.scalar_subqueries.append(inner)
-        return _scalar_subquery_spec_call(inner, join_context=False)
+        return _scalar_subquery_spec_call(inner, join_context=False, outer_table=_outer_base_table(query))
     if isinstance(node, (exp.Sum, exp.Count, exp.Avg, exp.Min, exp.Max)):
         inner = _unwrap_alias(node)
         if isinstance(inner, exp.Count) and isinstance(inner.this, exp.Distinct):
@@ -1931,7 +2002,9 @@ def _parse_select(
                 query.scalar_subqueries.append(inner)
                 query.agg_type = "SELECT_SUBQUERY"
                 query.agg_expr = _scalar_subquery_spec_call(
-                    inner, join_context=bool(query.joins),
+                    inner,
+                    join_context=bool(query.joins),
+                    outer_table=_outer_base_table(query),
                 )
                 query.agg_column = inner.alias
                 where_clause = expression.args.get("where")

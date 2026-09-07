@@ -16,6 +16,8 @@ DuckDB is **not** a second engine. It is the pinned column store at **execute**.
 
 When telling Emil about a problem, lead with **`step N (name):`** and the one-liner class (`transpiler coverage` / `assemble` / `agent stupidity` / `failed to execute` / `infra`). Do not mix stages.
 
+**Proofs are the agent’s job** (`AGENT_EDIT` only). Host work is the harness: steps **2, 4, 6, 7** (typed spec, assemble, compile, pin/execute). Do not hand-write or patch proofs. If the agent fails on a **sound** spec, a **general** prompt tweak is allowed; query-specific prompt hacks are not.
+
 ## Git checkpoints (overrides “commit only when asked”)
 
 For **this repo**, agents **must** create git commits as rollback points. Do **not**
@@ -108,9 +110,9 @@ one-line summary alone. **Open the traces and identify the concrete error:**
   `workspace/logs/agent_stderr.log`, MCP result JSON under `workspace/mcp_results/`
 - Harness / assemble output referenced in `CUSTOM_PIPELINE_FAILED [...]` lines
 
-Report **what failed** (stage + root cause from those files), not only “exit 1” or
-“verification failed.” Fix host bugs when the trace shows host/codegen errors; do not
-blame the agent body until the traces say so.
+Report **`step N (name):`** from § Product path, then the concrete error from those files.
+Fix host bugs when the trace shows spec/assemble/execute errors; do not blame the agent
+until errors are inside `AGENT_EDIT` on a sound spec.
 
 **Always name the failure type** (see `research_loop/agents/AGENTS.md`): e.g.
 `transpile_fail`, `host_codegen`, `admission`, `agent_verify`, `agent_timeout`,

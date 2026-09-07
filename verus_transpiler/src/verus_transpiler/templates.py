@@ -6,7 +6,7 @@ import re
 
 from .agg_push import agg_bridge_u32_str
 from .agg_push_str import agg_bridge_str_str
-from .parse_sql import SQLQuery
+from .parse_sql import SQLQuery, support_spec_params
 
 
 def emit_run_query_skeleton(
@@ -24,9 +24,13 @@ def emit_run_query_skeleton(
         req = "    requires valid_cols_left(left), valid_cols_right(right),"
         ens = "    ensures res == method_spec(left, right),"
     else:
-        sig = f"pub exec fn run_query(cols: &Cols) -> (res: {ret_type})"
-        req = "    requires valid_cols(cols),"
-        ens = "    ensures res == method_spec(cols),"
+        extras = support_spec_params(query)
+        extra_sig = "".join(f", {n}: &{s}" for n, s, _ in extras)
+        extra_req = "".join(f" && {v}({n})" for n, _, v in extras)
+        extra_ens = "".join(f", {n}" for n, _, _ in extras)
+        sig = f"pub exec fn run_query(cols: &Cols{extra_sig}) -> (res: {ret_type})"
+        req = f"    requires valid_cols(cols){extra_req},"
+        ens = f"    ensures res == method_spec(cols{extra_ens}),"
 
     if query.groupby_columns:
         inv = (
