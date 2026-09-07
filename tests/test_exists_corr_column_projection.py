@@ -51,10 +51,13 @@ def _exists_helper_section(out: str) -> str:
 
 
 def test_exists_inner_stmt_column_in_projected_schema() -> None:
-    """Inner-only column ``stmt`` must be kept when projecting outer single-table query."""
+    """Inner-only column ``stmt`` belongs on inner table, not outer flat projection."""
     projected = project_multi_schema_for_query(_EXISTS_STMT_SQL, _CATALOG)
-    assert "stmt" in projected, "projection must retain inner EXISTS column stmt"
-    assert "tag" in projected and "version" in projected
+    assert isinstance(projected["facts"], dict)
+    assert isinstance(projected["docs"], dict)
+    assert "stmt" not in projected["facts"]
+    assert "stmt" in projected["docs"]
+    assert "tag" in projected["facts"] and "version" in projected["facts"]
 
     out = transpile_sql_to_verus(_EXISTS_STMT_SQL, projected)
     assert "exists_corr_" in out

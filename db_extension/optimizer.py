@@ -76,6 +76,21 @@ def is_timed_verified_success(metrics: dict) -> bool:
     return metrics.get("bench_skipped") is not True
 
 
+def harness_timeout_sec(*, config_env_path: str | None = None) -> int:
+    """Wall-clock budget for verify+compile harness (compile/verify max + buffer)."""
+    compile_timeout = int(os.environ.get("COMPILE_TIMEOUT_SEC", "180"))
+    verify_timeout = int(os.environ.get("VERUS_VERIFY_TIMEOUT_SEC", "120"))
+    if config_env_path and os.path.isfile(config_env_path):
+        with open(config_env_path) as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("COMPILE_TIMEOUT_SEC="):
+                    compile_timeout = int(line.split("=", 1)[1].strip())
+                elif line.startswith("VERUS_VERIFY_TIMEOUT_SEC="):
+                    verify_timeout = int(line.split("=", 1)[1].strip())
+    return max(compile_timeout, verify_timeout) + 120
+
+
 def _keep_optimizing() -> bool:
     raw = os.environ.get("LEMMA_KEEP_OPTIMIZING", "").strip().lower()
     return raw in ("1", "true", "yes")
@@ -579,14 +594,8 @@ def run_optimization_loop(
         log_debug(COMPONENT, "harness_start", f"custom sql query_id={query_id}", dataset_size=dataset_size)
         _vprint("  - Verifying and compiling Verus program...", end="", flush=True)
         h_start = time.perf_counter()
-        harness_timeout = 90
         cfg_path = os.path.join(root_dir, "research_loop", "config.env")
-        if os.path.exists(cfg_path):
-            with open(cfg_path) as f:
-                for line in f:
-                    if line.strip().startswith("COMPILE_TIMEOUT_SEC="):
-                        harness_timeout = int(line.split("=", 1)[1].strip()) + 120
-                        break
+        harness_timeout = harness_timeout_sec(config_env_path=cfg_path)
 
         def _run_verus_harness() -> dict:
             return invoke_verus_custom_pipeline(
@@ -662,10 +671,10 @@ def run_optimization_loop(
             if _maybe_stop_on_timed_success(metrics=metrics, iteration=iteration):
                 break
 
-        except subprocess.TimeoutExpired:
+        except (subprocess.TimeoutExpired, TimeoutError):
             if demo_enabled():
                 demo_step_pass_fail("✅", "Verifying against spec", int(harness_timeout * 1000), False)
-            _vprint(f" {COLOR_RED}TIMEOUT{COLOR_RESET} after 90s")
+            _vprint(f" {COLOR_RED}TIMEOUT{COLOR_RESET} after {harness_timeout}s")
             history.append(_history_entry(
                 iteration=iteration,
                 status="TIMEOUT",

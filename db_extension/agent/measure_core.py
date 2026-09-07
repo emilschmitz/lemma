@@ -72,14 +72,9 @@ def _resolve_under_workspace(path: str, ws: Path | None = None) -> Path:
 
 
 def _harness_timeout_sec() -> int:
-    timeout = 90
-    if CONFIG_ENV.is_file():
-        for line in CONFIG_ENV.read_text().splitlines():
-            line = line.strip()
-            if line.startswith("COMPILE_TIMEOUT_SEC="):
-                timeout = int(line.split("=", 1)[1].strip()) + 120
-                break
-    return timeout
+    from db_extension.optimizer import harness_timeout_sec
+
+    return harness_timeout_sec(config_env_path=str(CONFIG_ENV))
 
 
 def _read_workspace_sql_schema(ws: Path) -> tuple[str, dict]:

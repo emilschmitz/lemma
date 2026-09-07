@@ -1,7 +1,41 @@
 """Unit tests for optimizer timed-success stop helper."""
 from __future__ import annotations
 
-from db_extension.optimizer import is_timed_verified_success
+import os
+
+from db_extension.optimizer import harness_timeout_sec, is_timed_verified_success
+
+
+def test_harness_timeout_sec_defaults() -> None:
+    env = os.environ
+    old_compile = env.pop("COMPILE_TIMEOUT_SEC", None)
+    old_verify = env.pop("VERUS_VERIFY_TIMEOUT_SEC", None)
+    try:
+        assert harness_timeout_sec(config_env_path="/nonexistent") == max(180, 120) + 120
+    finally:
+        if old_compile is not None:
+            env["COMPILE_TIMEOUT_SEC"] = old_compile
+        if old_verify is not None:
+            env["VERUS_VERIFY_TIMEOUT_SEC"] = old_verify
+
+
+def test_harness_timeout_sec_env_override() -> None:
+    env = os.environ
+    old_compile = env.get("COMPILE_TIMEOUT_SEC")
+    old_verify = env.get("VERUS_VERIFY_TIMEOUT_SEC")
+    env["COMPILE_TIMEOUT_SEC"] = "200"
+    env["VERUS_VERIFY_TIMEOUT_SEC"] = "90"
+    try:
+        assert harness_timeout_sec(config_env_path="/nonexistent") == 320
+    finally:
+        if old_compile is None:
+            env.pop("COMPILE_TIMEOUT_SEC", None)
+        else:
+            env["COMPILE_TIMEOUT_SEC"] = old_compile
+        if old_verify is None:
+            env.pop("VERUS_VERIFY_TIMEOUT_SEC", None)
+        else:
+            env["VERUS_VERIFY_TIMEOUT_SEC"] = old_verify
 
 
 def test_is_timed_verified_success_happy_path() -> None:

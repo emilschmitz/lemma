@@ -1824,14 +1824,26 @@ def run_custom_sql_pipeline(
                     "assemble", sql, "join requires at least two tables", schema
                 )
         else:
+            derived_aliases = {d.alias for d in query.derived_tables}
+            base_tables = [t for t in query.tables if t not in derived_aliases]
+            primary_table = base_tables[0] if base_tables else (
+                query.tables[0] if query.tables else "t"
+            )
             if multi:
-                schema_dict = project_schema_for_query(sql, schema)
+                from verus_transpiler.column_projection import pin_schema_for_table
+
+                if (
+                    isinstance(projected, dict)
+                    and primary_table in projected
+                    and isinstance(projected[primary_table], dict)
+                ):
+                    schema_dict = projected[primary_table]
+                else:
+                    flat_used = project_schema_for_query(sql, schema)
+                    schema_dict = pin_schema_for_table(primary_table, flat_used, multi)
             else:
                 schema_dict = projected if isinstance(projected, dict) else _flat
             default_tbl = tbl or ""
-            primary_table = (
-                query.tables[0] if query.tables else next(iter(schema_dict), "t")
-            )
             program = assemble_verified_program(
                 spec_rs=spec_rs,
                 run_query_body=body,
@@ -1847,6 +1859,7 @@ def run_custom_sql_pipeline(
                 load_mode=load_mode,
                 table_name=primary_table,
                 default_db=default_db,
+                catalog_multi=multi,
             )
     except Exception as e:
         return _pipeline_failure("assemble", sql, str(e), schema)

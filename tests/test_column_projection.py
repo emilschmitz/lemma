@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+from research_loop.assemble_verified_program import generate_load_cols_duckdb_verus
 from verus_transpiler import transpile_sql_to_verus
-from verus_transpiler.column_projection import project_schema_for_query
+from verus_transpiler.column_projection import (
+    pin_schema_for_table,
+    project_multi_schema_for_query,
+    project_schema_for_query,
+)
+from tests.test_sec_holdout_parse import SEC_SCHEMA
 
 Q1_LIKE_SQL = """SELECT stmt, rfile, COUNT(*) AS cnt,
        COUNT(DISTINCT adsh) AS num_filings,
@@ -61,3 +67,38 @@ def test_transpile_with_projected_schema_lowercase() -> None:
     out = transpile_sql_to_verus(Q1_LIKE_SQL, projected)
     assert "method_spec" in out
     assert "unimplemented!" not in out
+
+
+_EXISTS_NUM_PRE_SQL = """SELECT DISTINCT n.tag, n.version, COUNT(*) AS cnt
+FROM num n
+WHERE n.uom = 'shares' AND n.value IS NOT NULL
+      AND EXISTS (SELECT 1 FROM pre p WHERE p.tag = n.tag AND p.version = n.version AND p.stmt = 'IS')
+GROUP BY n.tag, n.version"""
+
+
+def test_exists_single_table_projection_nested_per_table() -> None:
+    catalog = {"num": SEC_SCHEMA["num"], "pre": SEC_SCHEMA["pre"]}
+    projected = project_multi_schema_for_query(_EXISTS_NUM_PRE_SQL, catalog)
+    assert isinstance(projected, dict)
+    assert "num" in projected and "pre" in projected
+    num_cols = set(projected["num"])
+    pre_cols = set(projected["pre"])
+    assert "stmt" not in num_cols
+    assert "stmt" in pre_cols
+    assert {"tag", "version", "uom", "value"}.issubset(num_cols)
+
+
+def test_exists_pin_load_cols_omits_inner_stmt_on_num() -> None:
+    catalog = {"num": SEC_SCHEMA["num"], "pre": SEC_SCHEMA["pre"]}
+    projected = project_multi_schema_for_query(_EXISTS_NUM_PRE_SQL, catalog)
+    flat_merged = {**projected["num"], **projected["pre"]}
+    pinned = pin_schema_for_table("num", flat_merged, catalog)
+    assert "stmt" not in pinned
+    load_rs = generate_load_cols_duckdb_verus(
+        flat_merged,
+        table_name="num",
+        catalog_multi=catalog,
+    )
+    assert '("STMT"' not in load_rs.upper()
+    assert '("TAG"' in load_rs.upper()
+    assert '("UOM"' in load_rs.upper()

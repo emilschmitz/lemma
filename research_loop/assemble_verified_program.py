@@ -552,12 +552,16 @@ def generate_load_cols_duckdb_verus(
     struct_name: str = "Cols",
     valid_fn: str = "valid_cols",
     load_fn: str = "load_cols",
+    catalog_multi: dict[str, dict[str, str]] | None = None,
 ) -> str:
     """Trusted DuckDB loader: pin result vectors; Cols getters read pointers (no memcpy)."""
+    from verus_transpiler.column_projection import pin_schema_for_table
+
+    pinned = pin_schema_for_table(table_name, schema_dict, catalog_multi)
     col_specs: list[str] = []
     field_inits: list[str] = []
 
-    for col, col_type in schema_dict.items():
+    for col, col_type in pinned.items():
         field = rust_ident(col)
         kind = _col_kind_for_schema_type(col_type)
         col_specs.append(f'            ("{col}", lemma_duckdb_load::ColKind::{kind}),')
@@ -1112,6 +1116,7 @@ def assemble_verified_program(
     load_mode: str = "tbl",
     table_name: str = "t",
     default_db: str = "",
+    catalog_multi: dict[str, dict[str, str]] | None = None,
 ) -> str:
     """Build one `.rs` file: spec + proved run_query + load_cols + main."""
     if not _ret_type_supported(ret_type):
@@ -1130,9 +1135,15 @@ def assemble_verified_program(
     boundary = _boundary_helpers(ret_type, spec_rs)
     agent_externs = maybe_emit_agent_externs(run_query_body)
     load_gen = _select_load_generator(load_mode=load_mode)
+    duckdb_kwargs: dict[str, object] = {}
+    if load_mode == "duckdb":
+        duckdb_kwargs = {
+            "table_name": table_name,
+            "catalog_multi": catalog_multi,
+        }
     load_cols = load_gen(
         schema_dict,
-        **({"table_name": table_name} if load_mode == "duckdb" else {}),
+        **duckdb_kwargs,
     )
     main_rs = generate_main_rs(
         default_tbl=default_tbl,
