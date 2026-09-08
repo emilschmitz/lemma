@@ -158,6 +158,15 @@ When the shell ret_type is a projected multi-agg map (`map_*__u64_…` keys),
 with ghost `method_spec_helper` folds that track `Map<K, bool>` distinct state
 then project via `dom().len() as u64`.
 
+## Correlated EXISTS keys map (transpiler companion)
+
+For each `exists_corr_{alias}_spec` semi-join fold, the transpiler also emits
+`exists_corr_{alias}_keys_map` (inner keys matching the non-correlation WHERE
+slice) and proved `lemma_exists_corr_{alias}_spec_contains`, which shows
+`exists_corr_{alias}_spec(inner, outer_key)` equals `keys_map(inner, 0).contains_key(outer_key)`;
+for u32 / `Seq<char>` keys this is the spec-side counterpart of
+`hashset_{u32|str}_as_map` membership after an exec HashSet build.
+
 ## Multi-agg group step (`agg_step_*`)
 
 When `prepare_agent_visible_spec` / assembly sees a projected multi-agg map

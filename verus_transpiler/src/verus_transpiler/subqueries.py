@@ -169,10 +169,10 @@ def _rewrite_outer_refs_to_tuple_key(
     inner_schema: dict[str, str],
     outer_schema: dict[str, str] | None = None,
 ) -> str:
-    """Map ``outer.col`` refs to ``outer_key.i`` for correlated EXISTS/IN tuple keys."""
+    """Map ``outer.col`` refs to ``outer_key`` / ``outer_key.i`` for correlated EXISTS/IN keys."""
     out = where_at_k
     for i, col in enumerate(correlation_cols):
-        replacement = f"outer_key.{i}"
+        replacement = "outer_key" if len(correlation_cols) == 1 else f"outer_key.{i}"
         out = re.sub(
             rf"\bouter\.{re.escape(col)}\b",
             replacement,
@@ -185,6 +185,209 @@ def _rewrite_outer_refs_to_tuple_key(
             out = re.sub(rf"\b{re.escape(pname)}@\b", replacement, out)
         out = re.sub(rf"\b{re.escape(pname)}\b", replacement, out)
     return out
+
+
+def _split_top_level_and(expr: str) -> list[str]:
+    """Split a spec bool on top-level ``&&`` (paren-aware)."""
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    i = 0
+    while i < len(expr):
+        ch = expr[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif depth == 0 and expr[i : i + 4] == " && ":
+            parts.append(expr[start:i].strip())
+            start = i + 4
+            i += 3
+        i += 1
+    tail = expr[start:].strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+def _is_corr_row_outer_equality(part: str, correlation_cols: list[str]) -> bool:
+    m = re.fullmatch(r"row\.(\w+)\s*==\s*outer\.(\w+)", part.strip())
+    if not m:
+        return False
+    inner_col, outer_col = m.group(1).lower(), m.group(2).lower()
+    if inner_col != outer_col:
+        return False
+    return inner_col in {c.lower() for c in correlation_cols}
+
+
+def _strip_correlation_equalities(
+    where_expr: str | None,
+    correlation_cols: list[str],
+) -> str | None:
+    """Drop ``row.col == outer.col`` correlation conjuncts from a where expr."""
+    if not where_expr or not correlation_cols:
+        return where_expr
+    expr = where_expr.strip()
+    if expr.startswith("(") and expr.endswith(")"):
+        inner = _strip_correlation_equalities(expr[1:-1], correlation_cols)
+        return f"({inner})" if inner else None
+    parts = _split_top_level_and(expr)
+    if len(parts) > 1:
+        kept: list[str] = []
+        for part in parts:
+            if _is_corr_row_outer_equality(part, correlation_cols):
+                continue
+            stripped = _strip_correlation_equalities(part, correlation_cols)
+            if stripped:
+                kept.append(stripped)
+        if not kept:
+            return None
+        if len(kept) == 1:
+            return kept[0]
+        return "(" + " && ".join(f"({k})" if " && " in k else k for k in kept) + ")"
+    if _is_corr_row_outer_equality(expr, correlation_cols):
+        return None
+    return expr
+
+
+def _emit_corr_key_at_k(
+    correlation_cols: list[str],
+    *,
+    param_name: str,
+    inner_schema: dict[str, str],
+    idx: str = "k",
+) -> str:
+    parts = [
+        _spec_col_at_k(col, idx, inner_schema, param_name=param_name)
+        for col in correlation_cols
+    ]
+    if not parts:
+        return "0u32"
+    if len(parts) == 1:
+        return parts[0]
+    return f"({', '.join(parts)})"
+
+
+def _emit_keys_map_fold(
+    map_name: str,
+    *,
+    struct_name: str,
+    param_name: str,
+    valid_fn: str,
+    key_ty: str,
+    key_at_k: str,
+    base_pred_at_k: str | None,
+) -> str:
+    insert_guard = base_pred_at_k if base_pred_at_k else "true"
+    body = f"""if k < {param_name}.n {{
+        let tail = {map_name}({param_name}, k + 1);
+        if {insert_guard} {{
+            tail.insert({key_at_k}, true)
+        }} else {{
+            tail
+        }}
+    }} else {{
+        Map::<{key_ty}, bool>::empty()
+    }}"""
+    return f"""pub open spec fn {map_name}({param_name}: &{struct_name}, k: int) -> Map<{key_ty}, bool>
+    recommends {valid_fn}({param_name}),
+    decreases {param_name}.n - k,
+{{
+    {body}
+}}"""
+
+
+def _hashset_as_map_fn(key_ty: str) -> str | None:
+    if key_ty == "u32":
+        return "hashset_u32_as_map"
+    if key_ty == "Seq<char>":
+        return "hashset_str_as_map"
+    return None
+
+
+def _emit_exists_corr_membership_lemma(
+    *,
+    alias: str,
+    struct_name: str,
+    param_name: str,
+    valid_fn: str,
+    key_ty: str,
+    helper_name: str,
+    spec_name: str,
+    map_name: str,
+    key_at_k: str,
+    row_match_at_k: str | None,
+    base_pred_at_k: str | None,
+) -> str:
+    lemma = f"lemma_exists_corr_{alias}_spec_contains"
+    helper_lemma = f"{lemma}_helper"
+    row_match = row_match_at_k if row_match_at_k else "true"
+    base_pred = base_pred_at_k if base_pred_at_k else "true"
+    hashset_view = _hashset_as_map_fn(key_ty)
+    hashset_note = ""
+    if hashset_view:
+        hashset_note = (
+            f"\n// HashSetWithView bridge: after exec build, "
+            f"{hashset_view}(s@) == {map_name}({param_name}, 0) "
+            f"⇒ membership via {hashset_view}(s@).contains_key(outer_key)."
+        )
+    return f"""{hashset_note}
+pub proof fn {lemma}(
+    {param_name}: &{struct_name},
+    outer_key: {key_ty},
+)
+    requires
+        {valid_fn}({param_name}),
+    ensures
+        {spec_name}({param_name}, outer_key) == {map_name}({param_name}, 0).contains_key(outer_key),
+{{
+    {helper_lemma}({param_name}, outer_key, 0);
+}}
+
+pub proof fn {helper_lemma}(
+    {param_name}: &{struct_name},
+    outer_key: {key_ty},
+    k: int,
+)
+    requires
+        {valid_fn}({param_name}),
+        0 <= k <= {param_name}.n as int,
+    ensures
+        {helper_name}({param_name}, outer_key, k)
+            == {map_name}({param_name}, k).contains_key(outer_key),
+    decreases {param_name}.n as int - k,
+{{
+    if k < {param_name}.n as int {{
+        if {row_match} {{
+            assert({helper_name}({param_name}, outer_key, k) == true);
+            assert({map_name}({param_name}, k)
+                == {map_name}({param_name}, k + 1).insert({key_at_k}, true));
+            lemma_map_insert_get({map_name}({param_name}, k + 1), {key_at_k}, true);
+            assert({map_name}({param_name}, k).contains_key(outer_key));
+        }} else {{
+            {helper_lemma}({param_name}, outer_key, k + 1);
+            if {base_pred} {{
+                assert({key_at_k} != outer_key);
+                assert({map_name}({param_name}, k)
+                    == {map_name}({param_name}, k + 1).insert({key_at_k}, true));
+                lemma_map_insert_preserves_other_key(
+                    {map_name}({param_name}, k + 1),
+                    {key_at_k},
+                    outer_key,
+                    true,
+                );
+            }} else {{
+                assert({map_name}({param_name}, k) == {map_name}({param_name}, k + 1));
+            }}
+            assert({helper_name}({param_name}, outer_key, k)
+                == {map_name}({param_name}, k).contains_key(outer_key));
+        }}
+    }} else {{
+        assert({helper_name}({param_name}, outer_key, k) == false);
+        assert({map_name}({param_name}, k) == Map::<{key_ty}, bool>::empty());
+        assert(!{map_name}({param_name}, k).contains_key(outer_key));
+    }}
+}}"""
 
 
 def _build_semi_join_where_at_k(
@@ -786,7 +989,45 @@ def emit_exists_corr_subquery_helper(
         ret_type="bool",
         extra_params=[("outer_key", key_ty)],
     )
-    return helper + "\n\n" + spec
+    key_at_k = _emit_corr_key_at_k(
+        exists.correlation_cols,
+        param_name=param_name,
+        inner_schema=inner_schema,
+    )
+    base_where = _strip_correlation_equalities(
+        exists.query.where_expr, exists.correlation_cols,
+    )
+    if base_where:
+        where_row = to_col_expr(base_where, "k")
+        if param_name != "cols":
+            where_row = where_row.replace("cols.", f"{param_name}.")
+        base_pred_at_k = spec_where_cond(where_row, "k", inner_schema)
+    else:
+        base_pred_at_k = None
+    map_name = f"exists_corr_{exists.alias}_keys_map"
+    keys_map = _emit_keys_map_fold(
+        map_name,
+        struct_name=struct_name,
+        param_name=param_name,
+        valid_fn=valid_fn,
+        key_ty=key_ty,
+        key_at_k=key_at_k,
+        base_pred_at_k=base_pred_at_k,
+    )
+    lemma = _emit_exists_corr_membership_lemma(
+        alias=exists.alias,
+        struct_name=struct_name,
+        param_name=param_name,
+        valid_fn=valid_fn,
+        key_ty=key_ty,
+        helper_name=helper_name,
+        spec_name=spec_name,
+        map_name=map_name,
+        key_at_k=key_at_k,
+        row_match_at_k=where_at_k,
+        base_pred_at_k=base_pred_at_k,
+    )
+    return helper + "\n\n" + spec + "\n\n" + keys_map + "\n\n" + lemma
 
 
 def emit_in_subquery_helper(
