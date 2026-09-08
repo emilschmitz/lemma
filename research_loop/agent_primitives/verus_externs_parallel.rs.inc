@@ -15,7 +15,7 @@ pub open spec fn par_sum_u64_fold(vals: Seq<u64>, i: int, acc: u64) -> u64
     if i >= vals.len() {
         acc
     } else {
-        par_sum_u64_fold(vals, i + 1, acc + vals[i])
+        par_sum_u64_fold(vals, i + 1, wrapping_add_u64(acc, vals[i]))
     }
 }
 
@@ -43,7 +43,7 @@ pub open spec fn par_filter_sum_u64_fold(
     if i >= n {
         acc
     } else if mask[i] {
-        par_filter_sum_u64_fold(col, mask, i + 1, acc + col[i])
+        par_filter_sum_u64_fold(col, mask, i + 1, wrapping_add_u64(acc, col[i]))
     } else {
         par_filter_sum_u64_fold(col, mask, i + 1, acc)
     }

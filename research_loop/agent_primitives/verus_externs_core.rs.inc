@@ -53,6 +53,10 @@ pub open spec fn probe_sum_u64_pair_len(probe_keys: Seq<u32>, values: Seq<u64>) 
     }
 }
 
+pub open spec fn wrapping_add_u64(a: u64, b: u64) -> u64 {
+    ((a as int + b as int) % (u64::MAX as int + 1)) as u64
+}
+
 pub open spec fn probe_sum_u64_spec(
     probe_keys: Seq<u32>,
     values: Seq<u64>,
@@ -74,7 +78,7 @@ pub open spec fn probe_sum_u64_fold(
     if i >= n {
         acc
     } else if build.contains(probe_keys[i]) {
-        probe_sum_u64_fold(probe_keys, values, build, i + 1, acc + values[i])
+        probe_sum_u64_fold(probe_keys, values, build, i + 1, wrapping_add_u64(acc, values[i]))
     } else {
         probe_sum_u64_fold(probe_keys, values, build, i + 1, acc)
     }
