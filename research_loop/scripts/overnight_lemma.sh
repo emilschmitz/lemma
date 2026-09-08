@@ -180,12 +180,16 @@ WORKERS="${LEMMA_PARALLEL:-8}"
 
 echo "=== overnight workers=$WORKERS MAX_ITERATIONS=$MAX_ITERATIONS TIMEOUT=$AGENT_TIMEOUT_SEC stop_in=${STOP_MIN}min budget=\$${BUDGET_USD} rate=\$${USD_PER_HR}/hr planned~\$${PLANNED_USD} ==="
 
-if command -v sudo >/dev/null && sudo -n true 2>/dev/null; then
-  sudo shutdown -h "+${STOP_MIN}" || shutdown -h "+${STOP_MIN}" || true
+if [[ "${LEMMA_SCHEDULE_ACPI:-1}" == "1" ]]; then
+  if command -v sudo >/dev/null && sudo -n true 2>/dev/null; then
+    sudo shutdown -h "+${STOP_MIN}" || shutdown -h "+${STOP_MIN}" || true
+  else
+    shutdown -h "+${STOP_MIN}" || true
+  fi
+  echo "self-destruct scheduled at +${STOP_MIN} min (guest halt → GCE STOP)" | tee -a "$OUT/watchdog.log"
 else
-  shutdown -h "+${STOP_MIN}" || true
+  echo "LEMMA_SCHEDULE_ACPI=0 skip budget ACPI (caller owns halt)" | tee -a "$OUT/watchdog.log"
 fi
-echo "self-destruct scheduled at +${STOP_MIN} min (guest halt → GCE STOP)" | tee -a "$OUT/watchdog.log"
 
 # --- resource monitor (background) ---
 bash research_loop/scripts/spot_resource_monitor.sh "$OUT/resource_metrics.ndjson" &
@@ -235,7 +239,11 @@ unset LEMMA_FOLD_SLOT_ASSUME_ALIAS
   >"$OUT/driver.out" 2>&1
 git rev-parse HEAD >"$OUT/git_sha.txt"
 echo "finished_utc=\$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$OUT/watchdog.log"
-bash "$REPO/research_loop/scripts/lemma_guest_halt.sh" >>"$OUT/watchdog.log" 2>&1 || true
+if [[ "${LEMMA_HALT_ON_FINISH:-1}" == "1" ]]; then
+  bash "$REPO/research_loop/scripts/lemma_guest_halt.sh" >>"$OUT/watchdog.log" 2>&1 || true
+else
+  echo "LEMMA_HALT_ON_FINISH=0 skip guest halt" >>"$OUT/watchdog.log"
+fi
 EOF
 chmod +x "$OUT/run_and_halt.sh"
 nohup "$OUT/run_and_halt.sh" >/dev/null 2>&1 &
