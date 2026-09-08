@@ -78,7 +78,7 @@ cargo test --features 'vector_scan,simd'
 |--------|----------------|
 | `build_zone_map_u32` | Segment min/max zone maps for selective scans |
 | `may_satisfy_range_u32` | Prune segments before row-level filter |
-| `build_hashset_u32` | Hash-join build side with capacity hint |
+| `build_hashset_u32` | Hash-join build side with capacity hint; `ensures s@ == hashset_u32_keys_from_seq(keys@)` |
 | `probe_sum_u64` | Probe-side aggregation |
 | `decode_dict_str` | Decode dictionary string column (`duckdb_like` load) |
 | `add_u64`, `agg_new_*`, `agg_add_*` | Existing NativeAgg / arithmetic (transpiler prelude) |

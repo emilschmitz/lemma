@@ -41,13 +41,16 @@ pub exec fn may_satisfy_range_u32(seg: &ZoneSegmentU32, lo: u32, hi: u32) -> (b:
 }
 
 // === Agent primitives: hash-join build/probe (capacity-hinted HashSet) ===
+pub open spec fn hashset_u32_keys_from_seq(keys: Seq<u32>) -> Set<u32> {
+    Set::new(|k: u32| exists|i: int| 0 <= i < keys.len() && #[trigger] keys[i] == k)
+}
+
 #[verifier::external_body]
-pub exec fn build_hashset_u32(keys: &Vec<u32>, capacity_hint: usize) -> (s: std::collections::HashSet<u32>)
-    ensures true,
+pub exec fn build_hashset_u32(keys: &Vec<u32>, capacity_hint: usize) -> (s: HashSetWithView<u32>)
+    ensures s@ == hashset_u32_keys_from_seq(keys@),
 {
-    use std::collections::HashSet;
     let cap = if capacity_hint > keys.len() { capacity_hint } else { keys.len() };
-    let mut set = HashSet::with_capacity(cap);
+    let mut set = HashSetWithView::with_capacity(cap);
     let mut i: usize = 0;
     while i < keys.len() {
         set.insert(keys[i]);
@@ -60,7 +63,7 @@ pub exec fn build_hashset_u32(keys: &Vec<u32>, capacity_hint: usize) -> (s: std:
 pub exec fn probe_sum_u64(
     probe_keys: &Vec<u32>,
     values: &Vec<u64>,
-    build: &std::collections::HashSet<u32>,
+    build: &HashSetWithView<u32>,
 ) -> (sum: u64)
     ensures sum <= probe_keys@.len() as u64 * u64::MAX,
 {

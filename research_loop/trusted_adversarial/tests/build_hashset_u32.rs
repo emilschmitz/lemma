@@ -1,6 +1,7 @@
-//! Adversarial tests for TRUSTED `build_hashset_u32` (`ensures true` — weak contract).
+//! Adversarial tests for TRUSTED `build_hashset_u32`.
 //!
-//! We try to falsify membership / completeness vs input keys; capacity_hint is advisory only.
+//! Verus contract: `s@ == hashset_u32_keys_from_seq(keys@)` (unique keys from input seq).
+//! Capacity hint is advisory only — must not change membership.
 
 use lemma_agent_primitives::hash_join::build_hashset_u32;
 use std::collections::HashSet;

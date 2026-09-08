@@ -7,6 +7,7 @@ from pathlib import Path
 
 _INC_PATH = Path(__file__).resolve().parent / "verus_externs_core.rs.inc"
 _PARALLEL_PATH = Path(__file__).resolve().parent / "verus_externs_parallel.rs.inc"
+_VSTD_HASHSET_USE = "use vstd::hash_set::HashSetWithView;\n\n"
 
 
 def lemma_enable_parallel() -> bool:
@@ -48,6 +49,8 @@ def maybe_emit_agent_externs(run_query_body: str = "") -> str:
 def emit_agent_externs(*, enable_parallel: bool | None = None) -> str:
     """Return Verus TRUSTED declarations spliced before run_query in assembled programs."""
     core = _INC_PATH.read_text(encoding="utf-8")
+    if "HashSetWithView" in core:
+        core = _VSTD_HASHSET_USE + core
     if enable_parallel is None:
         enable_parallel = lemma_enable_parallel()
     if not enable_parallel:
