@@ -166,6 +166,12 @@ fi
 export MAX_ITERATIONS="${MAX_ITERATIONS:-4}"
 export AGENT_TIMEOUT_SEC="${AGENT_TIMEOUT_SEC:-600}"
 export LEMMA_KEEP_OPTIMIZING="${LEMMA_KEEP_OPTIMIZING:-1}"
+export LEMMA_BENCH_TIMEOUT_SEC="${LEMMA_BENCH_TIMEOUT_SEC:-120}"
+export LEMMA_EMIT_AGENT_PRIMITIVES="${LEMMA_EMIT_AGENT_PRIMITIVES:-0}"
+export LEMMA_ENABLE_PARALLEL="${LEMMA_ENABLE_PARALLEL:-0}"
+export ENABLE_TEMPLATES="${ENABLE_TEMPLATES:-0}"
+unset LEMMA_FOLD_SLOT_AXIOMATIC
+unset LEMMA_FOLD_SLOT_ASSUME_ALIAS
 # Default: 6 consecutive lemma_ok=false jobs → aborted.json → guest halt (run_and_halt.sh).
 export LEMMA_FAIL_STREAK="${LEMMA_FAIL_STREAK:-6}"
 export LEMMA_WORKLOAD=sec
@@ -212,7 +218,14 @@ export LEMMA_PARALLEL="${WORKERS}"
 export LEMMA_EXPERIMENT_EVENT_FILE="$OUT/events.ndjson"
 export LEMMA_MCP_ITERATE_ROWS="${LEMMA_MCP_ITERATE_ROWS:-50000}"
 export LEMMA_KEEP_OPTIMIZING="${LEMMA_KEEP_OPTIMIZING:-1}"
+export LEMMA_BENCH_TIMEOUT_SEC="${LEMMA_BENCH_TIMEOUT_SEC:-120}"
+export LEMMA_EMIT_AGENT_PRIMITIVES="${LEMMA_EMIT_AGENT_PRIMITIVES:-0}"
+export LEMMA_ENABLE_PARALLEL="${LEMMA_ENABLE_PARALLEL:-0}"
+export ENABLE_TEMPLATES="${ENABLE_TEMPLATES:-0}"
+export LEMMA_HALT_LOG="$OUT/watchdog.log"
 unset LEMMA_EXPERIMENT_ALLOW_DIRTY
+unset LEMMA_FOLD_SLOT_AXIOMATIC
+unset LEMMA_FOLD_SLOT_ASSUME_ALIAS
 .venv/bin/python research_loop/scripts/overnight_lemma.py \\
   --sql-file "$SQL_OUT" \\
   --family "${LEMMA_FAMILY:-r18}" \\
@@ -222,13 +235,7 @@ unset LEMMA_EXPERIMENT_ALLOW_DIRTY
   >"$OUT/driver.out" 2>&1
 git rev-parse HEAD >"$OUT/git_sha.txt"
 echo "finished_utc=\$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$OUT/watchdog.log"
-if command -v sudo >/dev/null && sudo -n true 2>/dev/null; then
-  sudo shutdown -c || true
-  sudo shutdown -h now || shutdown -h now
-else
-  shutdown -c || true
-  shutdown -h now || true
-fi
+bash "$REPO/research_loop/scripts/lemma_guest_halt.sh" >>"$OUT/watchdog.log" 2>&1 || true
 EOF
 chmod +x "$OUT/run_and_halt.sh"
 nohup "$OUT/run_and_halt.sh" >/dev/null 2>&1 &

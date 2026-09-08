@@ -67,6 +67,28 @@ plus smaller row caps for 3-/4-table joins (≤2047 / ≤256) so rem·cell fits 
 `agg_step_inner_*_view` with `arbitrary()`; owned-map overflow handwaves;
 empty-body fold axioms that smuggle MethodSpec shape; whole-query Trusteds.
 
+### Say “not proving” when we are not proving
+
+Do **not** paper over a missing proof with “weak contract”, “opt-in primitive”,
+“fast path”, “stand-in”, or “alias”. Name the skip.
+
+| What we did | What to say | Still a `run_query ≡ method_spec` proof? |
+|-------------|-------------|----------------------------------------|
+| Empty `assume_*_slot*` (`LEMMA_FOLD_SLOT_AXIOMATIC=1`) | **Axiom, not a proof** of that COUNT/SUM ≤ rem·cap bound. Verus is told the inequality. | The body may still be proved *using* that axiom. We did **not** prove the bound. |
+| `ensures true` on a helper, whole-query Trusted, Trusted `run_query`, or `external_body` that claims the query result | **We are not proving this implementation.** | No. That is skipping the implementation proof. |
+| `par_*` Verus extern (`external_body` + serial stub; rayon only in the holdout crate) | **We are not proving the parallel implementation.** The verified body is a serial loop. Rayon is a different program. | Proving a call to `par_sum_u64` does not prove rayon. |
+
+**Why `LEMMA_ENABLE_PARALLEL` is off on rocketship:** not because rayon lost a
+bake-off. Because turning it on would either (a) still execute the serial stub
+in the assembled binary (no speed), or (b) swap in an unproved rayon body
+behind `external_body`. That is skip-impl-proof. Query-level `LEMMA_PARALLEL`
+(many `run_optimizer` workers) is process parallelism and does not change the
+proof bar.
+
+**Empty assume ≠ skip the whole query.** It skips **one bound lemma**. Do not
+call that “rocketship.” Do not rename `assume_*` to `lemma_*` without a proof
+(`LEMMA_FOLD_SLOT_ASSUME_ALIAS` is a workaround — leave it off).
+
 **HAVING map peel:** vstd `HashMapWithView` / `StringHashMap` peel is **private** inside
 `apply_having_filter_exec_*` only (`having_map_peel.rs.inc` layout structs + inline
 transmute). One Trusted per query with real `res@ == apply_having_filter(hm@, …)`;

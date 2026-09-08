@@ -92,6 +92,15 @@ usize subtraction that can wrap. For fold-slot COUNT/SUM bounds call proved
 `lemma_*_sum_*_leq_*` — **not** `assume_*_slot*`. Empty fold assumes are out;
 opt out only via host `LEMMA_FOLD_SLOT_AXIOMATIC=1` (not agent-editable).
 
+**Vocabulary (mandatory):** If we skip proving an *implementation* (whole-query
+Trusted, `ensures true` claiming the result, rayon behind `par_*`
+`external_body`), say **“we are not proving this implementation.”** Do not say
+“weak / opt-in / fast path.” Empty `assume_*` is different: that bound is an
+**axiom, not a proof** — the rest of `run_query` may still be proved. See
+`docs/TRUSTED_FAMILIES.md` § “Say not proving when we are not proving”.
+`LEMMA_ENABLE_PARALLEL` stays off on rocketship for that reason; use
+`LEMMA_PARALLEL` workers for speed instead.
+
 ## Failures must be loud
 
 Never silently emit a fake “verified” program, auto-codegen a TRUSTED `run_query` that
