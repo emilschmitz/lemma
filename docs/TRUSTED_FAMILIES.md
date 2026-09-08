@@ -10,6 +10,41 @@ agg accumulate, distinct-set, one-row `agg_step`, HAVING filter) so a human can
 audit them. Suffixes encode key/value shape; they are not separate Trusted
 ideas. Prefer fixing MethodSpec/docs over inventing another opaque helper.
 
+### Expert card (what you are asked to accept)
+
+Two menus. Neither uses empty `assume_*`. Neither is a whole-query Trusted.
+
+**A — product path (always on; `r23rocket`):** an expert can treat these like
+Rust/`vstd` facts.
+
+| Family | One sentence |
+|--------|----------------|
+| Loader `load_cols_*` | I/O established `valid_cols` (Layer A data boundary, not arithmetic). |
+| `checked_add` / `add_u64` + fit lemmas | Under named caps, this add does not overflow / matches wrap as specified. |
+| vstd `HashMap` / `HashSet` / `StringHashMap` `@` | Exec container view is the spec map/set. |
+| `agg_new_*` / `agg_add_*` / `agg_step_*` | One-row accumulate; inner view stays `≡` the MethodSpec helper. |
+| HAVING peel | `res@ == apply_having_filter(...)` (peel private; no `ensures true`). |
+| Proved `lemma_*` rem / fold-slot bounds | Induction from catalog caps. **Not** empty `assume_*`. |
+
+**B — speed menu (`LEMMA_FAST_TRUSTEDS=1`; `r23fast`):** still local IF–THEN.
+`run_query ≡ method_spec` is still proved. Extra Trusteds:
+
+| Helper | One sentence | Honest skip |
+|--------|----------------|-------------|
+| `build_hashset_u32` | `s@` is the set of keys in the vec. | None. |
+| `probe_sum_u64` | Sum is the wrapping fold over hash hits (`probe_sum_u64_spec`). | `external_body` (body is that fold). |
+| `par_sum_u64` / `par_filter_sum_u64` | Result equals the **serial** wrapping spec. | **We are not proving the parallel implementation** (rayon). |
+| `may_satisfy_range_u32` | `b == (seg.max >= lo && seg.min <= hi)`. | None. |
+| `decode_dict_str` | `s == dict[code]` when code in range. | None. |
+| `build_zone_map_u32` | Zones non-empty only if `zone_rows > 0`. | **Weak** — not per-segment min/max. Do not sell as rocketship. |
+
+**Not on either menu:** `ensures true`, whole-query EXISTS Trusted, empty
+`assume_*_slot*`, `LEMMA_FOLD_SLOT_ASSUME_ALIAS`.
+
+**Live `r23sloppy` (`EMIT=1` on `b5c838e`):** same as A **plus** hashset (good)
+and **probe/zone with the older loose ensures** (`sum <= n·MAX`). That probe
+bound is **not** the expert card. `r23fast` is the named speed menu.
+
 ### Rocketship bar (NASA / Rust-evident)
 
 A product-path Trusted may stay only if a careful Rust/systems reviewer would
