@@ -1,6 +1,7 @@
 //! Adversarial tests for TRUSTED `probe_sum_u64`.
 //!
-//! Contract: wrapping sum of `values[i]` where `probe_keys[i]` ∈ `build`, over `0..min(len)`.
+//! Contract: `ensures sum == probe_sum_u64_spec(...)` — wrapping sum of `values[i]`
+//! where `probe_keys[i]` ∈ `build`, over `0..min(len)`.
 
 use lemma_agent_primitives::hash_join::probe_sum_u64;
 use std::collections::HashSet;

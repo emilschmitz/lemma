@@ -36,6 +36,11 @@ def lemma_enable_parallel() -> bool:
     return env_bool("LEMMA_ENABLE_PARALLEL", "0")
 
 
+def lemma_fast_trusteds() -> bool:
+    """Speed Trusted menu (hashset/probe/zone/par_*): trust result ≡ named serial spec."""
+    return env_bool("LEMMA_FAST_TRUSTEDS", "0")
+
+
 def lemma_agent_stats() -> bool:
     return env_bool("LEMMA_AGENT_STATS", "1")
 

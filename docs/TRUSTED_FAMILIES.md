@@ -76,14 +76,19 @@ Do **not** paper over a missing proof with “weak contract”, “opt-in primit
 |-------------|-------------|----------------------------------------|
 | Empty `assume_*_slot*` (`LEMMA_FOLD_SLOT_AXIOMATIC=1`) | **Axiom, not a proof** of that COUNT/SUM ≤ rem·cap bound. Verus is told the inequality. | The body may still be proved *using* that axiom. We did **not** prove the bound. |
 | `ensures true` on a helper, whole-query Trusted, Trusted `run_query`, or `external_body` that claims the query result | **We are not proving this implementation.** | No. That is skipping the implementation proof. |
-| `par_*` Verus extern (`external_body` + serial stub; rayon only in the holdout crate) | **We are not proving the parallel implementation.** The verified body is a serial loop. Rayon is a different program. | Proving a call to `par_sum_u64` does not prove rayon. |
+| `par_*` Verus extern (`external_body` + serial stub; rayon only in the holdout crate) | **We are not proving the parallel implementation.** We trust `result == serial_wrapping_spec(...)`. The verified body is a serial loop. Rayon is a different program. | Proving a call to `par_sum_u64` does not prove rayon. |
+| `LEMMA_FAST_TRUSTEDS=1` speed menu (hashset / probe / zone / `par_*`) | **Trust result ≡ a named serial spec** (wrapping fold / set membership). Local, one idea, IF–THEN. Does **not** enable empty `assume_*` or `LEMMA_FOLD_SLOT_AXIOMATIC`. | Yes — `run_query ≡ method_spec` using these helpers under the named specs. |
 
-**Why `LEMMA_ENABLE_PARALLEL` is off on rocketship:** not because rayon lost a
-bake-off. Because turning it on would either (a) still execute the serial stub
-in the assembled binary (no speed), or (b) swap in an unproved rayon body
-behind `external_body`. That is skip-impl-proof. Query-level `LEMMA_PARALLEL`
-(many `run_optimizer` workers) is process parallelism and does not change the
-proof bar.
+**Why `LEMMA_ENABLE_PARALLEL` alone is off on rocketship:** not because rayon lost a
+bake-off. Because turning it on without the speed Trusted menu still requires opting
+into core primitives separately. Prefer **`LEMMA_FAST_TRUSTEDS=1`** as the one flag for
+“speed Trusteds, still proving `run_query ≡ method_spec` using these helpers.” Turning
+on parallel without FAST_TRUSTEDS would either (a) still execute the serial stub in the
+assembled binary (no speed), or (b) swap in an unproved rayon body behind `external_body`.
+That is skip-impl-proof unless the Verus contract names the serial wrapping spec.
+
+Query-level `LEMMA_PARALLEL` (many `run_optimizer` workers) is process parallelism and
+does not change the proof bar.
 
 **Empty assume ≠ skip the whole query.** It skips **one bound lemma**. Do not
 call that “rocketship.” Do not rename `assume_*` to `lemma_*` without a proof
@@ -99,8 +104,9 @@ no standalone unwrap/wrap helpers with `ensures true`.
 Keep it; do not invent a proof — document and audit as named assumption surface.
 
 **Agent primitives (opt-in):** `emit_agent_externs()` is **not** on the default product
-assemble path. Set `LEMMA_EMIT_AGENT_PRIMITIVES=1` (or reference symbols in `run_query`)
-to splice hash-join / zone-map / dict helpers from `agent_primitives/`.
+assemble path. Set `LEMMA_EMIT_AGENT_PRIMITIVES=1` for core helpers only, or
+`LEMMA_FAST_TRUSTEDS=1` for core + parallel with result ≡ serial wrapping specs (or
+reference symbols in `run_query`) from `agent_primitives/`.
 
 **String dialect:** LIKE / ILIKE / `str_lower` / `str_upper` = **ASCII /
 DuckDB-like** only (`to_ascii_lowercase`, open `%`/`_` specs). Non-ASCII

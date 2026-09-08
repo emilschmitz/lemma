@@ -13,6 +13,7 @@ from research_loop.lemma_flags import (
     lemma_enable_parallel as _lemma_enable_parallel_flag,
     lemma_enable_spill_hash,
     lemma_enable_vector_scan,
+    lemma_fast_trusteds,
     lemma_hash_spill_bytes,
     lemma_load_from_duckdb,
 )
@@ -315,6 +316,7 @@ def build_agent_context(
             ctx["duckdb_hints"] = hints
     ctx["flags"] = {
         "LEMMA_ENABLE_PARALLEL": _lemma_enable_parallel_flag(),
+        "LEMMA_FAST_TRUSTEDS": lemma_fast_trusteds(),
         "LEMMA_ENABLE_VECTOR_SCAN": lemma_enable_vector_scan(),
         "LEMMA_ENABLE_SPILL_HASH": lemma_enable_spill_hash(),
         "LEMMA_HASH_SPILL_BYTES": lemma_hash_spill_bytes(),

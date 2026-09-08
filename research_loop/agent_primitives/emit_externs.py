@@ -14,8 +14,20 @@ def lemma_enable_parallel() -> bool:
     return os.environ.get("LEMMA_ENABLE_PARALLEL", "0") == "1"
 
 
+def lemma_fast_trusteds() -> bool:
+    return os.environ.get("LEMMA_FAST_TRUSTEDS", "0") == "1"
+
+
 def lemma_emit_agent_primitives() -> bool:
     return os.environ.get("LEMMA_EMIT_AGENT_PRIMITIVES", "0") == "1"
+
+
+def _emit_core_primitives() -> bool:
+    return lemma_emit_agent_primitives() or lemma_fast_trusteds()
+
+
+def _emit_parallel_primitives() -> bool:
+    return lemma_enable_parallel() or lemma_fast_trusteds()
 
 
 _AGENT_PRIMITIVE_SYMBOLS = frozenset(
@@ -39,7 +51,7 @@ def run_query_references_agent_primitives(run_query_body: str) -> bool:
 
 def maybe_emit_agent_externs(run_query_body: str = "") -> str:
     """Emit agent primitive Trusteds only when opted in or referenced in run_query."""
-    if lemma_emit_agent_primitives():
+    if _emit_core_primitives():
         return emit_agent_externs()
     if run_query_body and run_query_references_agent_primitives(run_query_body):
         return emit_agent_externs()
@@ -52,7 +64,7 @@ def emit_agent_externs(*, enable_parallel: bool | None = None) -> str:
     if "HashSetWithView" in core:
         core = _VSTD_HASHSET_USE + core
     if enable_parallel is None:
-        enable_parallel = lemma_enable_parallel()
+        enable_parallel = _emit_parallel_primitives()
     if not enable_parallel:
         return core
     parallel = _PARALLEL_PATH.read_text(encoding="utf-8")

@@ -41,7 +41,9 @@ builds per-partition sets (optionally in parallel), then merges. Behind Cargo fe
 
 | Flag | Default | Effect |
 |------|---------|--------|
-| `LEMMA_ENABLE_PARALLEL` | `0` | When `1`, emit `par_sum_u64` / `par_filter_sum_u64` Verus externs |
+| `LEMMA_EMIT_AGENT_PRIMITIVES` | `0` | Emit **core** speed helpers only (`build_hashset_u32`, `probe_sum_u64`, zone map, `decode_dict_str`) |
+| `LEMMA_FAST_TRUSTEDS` | `0` | Emit **core + parallel** speed Trusteds; trust `result == serial_wrapping_spec(...)` (IF–THEN). Preferred flag for “speed menu, still proving `run_query ≡ method_spec` using these helpers.” |
+| `LEMMA_ENABLE_PARALLEL` | `0` | When `1` (with core emit path), also emit `par_sum_u64` / `par_filter_sum_u64` Verus externs |
 | `LEMMA_ENABLE_VECTOR_SCAN` | `0` | Document/agent hint: build crate with `--features vector_scan` |
 | `LEMMA_ENABLE_SPILL_HASH` | `0` | Document/agent hint: build crate with `--features spill_hash` |
 | `LEMMA_HASH_SPILL_BYTES` | `1073741824` | Estimated HashSet bytes before spill stub writes keys to tempfile |
@@ -51,6 +53,15 @@ builds per-partition sets (optionally in parallel), then merges. Behind Cargo fe
 | `LEMMA_AGENT_HARDWARE` | `1` | Hardware profile in `context.json` |
 | `LEMMA_AGENT_DUCK_EXPLAIN` | `0` | DuckDB EXPLAIN/SUMMARIZE hints (never executes analytical query) |
 | `ENABLE_TEMPLATES` | `0` | Transpiler scalar template body vs RunQuery skeleton |
+
+### `LEMMA_FAST_TRUSTEDS` naming (required vocabulary)
+
+| Topic | What to say |
+|-------|-------------|
+| **`LEMMA_FAST_TRUSTEDS=1`** | We **trust result ≡ a named serial spec** (wrapping fold / set membership). Local, one idea, IF–THEN. |
+| Parallel `par_*` exec | **We are not proving the parallel implementation**; we trust `result == serial_wrapping_spec(...)`. Rayon in the reference crate is result-equivalent (`equiv.rs`), not proved. |
+| Empty `assume_*` / `LEMMA_FOLD_SLOT_AXIOMATIC` | Different skip (bound axiom). **FAST_TRUSTEDS does not turn that on.** |
+| vs `LEMMA_EMIT_AGENT_PRIMITIVES=1` | Emits **core** speed helpers only. **FAST_TRUSTEDS implies core + parallel externs.** |
 
 ### Cargo features (Rust crate `lemma_agent_primitives`)
 
@@ -79,8 +90,8 @@ cargo test --features 'vector_scan,simd'
 | `build_zone_map_u32` | Segment min/max zone maps for selective scans |
 | `may_satisfy_range_u32` | Prune segments before row-level filter |
 | `build_hashset_u32` | Hash-join build side with capacity hint; `ensures s@ == hashset_u32_keys_from_seq(keys@)` |
-| `probe_sum_u64` | Probe-side aggregation |
-| `decode_dict_str` | Decode dictionary string column (`duckdb_like` load) |
+| `probe_sum_u64` | Probe-side aggregation; `ensures sum == probe_sum_u64_spec(...)` (wrapping fold over hits) |
+| `decode_dict_str` | Decode dictionary string column (`duckdb_like` load); `ensures s == dict[codes[i]]` when code in range |
 | `add_u64`, `agg_new_*`, `agg_add_*` | Existing NativeAgg / arithmetic (transpiler prelude) |
 
 ### Dictionary encoding (ingest)
@@ -100,12 +111,12 @@ No separate Verus extern: use a fixed `[u64; N]` or `SmallCardBuckets<N>` patter
 - `par_small_card_filter_sum` / `small_card_filter_sum` — Rust crate only; parallel uses thread-local
   buckets + merge. Keys `>= n_buckets` skipped (same as `try_add` false).
 
-## Parallel externs (`LEMMA_ENABLE_PARALLEL=1`)
+## Parallel externs (`LEMMA_ENABLE_PARALLEL=1` or `LEMMA_FAST_TRUSTEDS=1`)
 
 | Extern | Use (GenDB) |
 |--------|----------------|
-| `par_sum_u64` | Chunked parallel scan reduce (rayon in crate; serial body in Verus) |
-| `par_filter_sum_u64` | Chunked masked parallel sum |
+| `par_sum_u64` | Chunked parallel scan reduce; `ensures sum == par_sum_u64_spec(vals@)` |
+| `par_filter_sum_u64` | Chunked masked parallel sum; `ensures sum == par_filter_sum_u64_spec(col@, mask@)` |
 
 `par_probe_sum_u64`, `par_probe_sum_u64_morsel`, `par_probe_sum_u64_multi`, and
 `par_small_card_filter_sum` are available in the Rust reference crate for holdout/bench; Verus

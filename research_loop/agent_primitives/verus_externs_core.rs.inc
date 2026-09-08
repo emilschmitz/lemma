@@ -45,6 +45,41 @@ pub open spec fn hashset_u32_keys_from_seq(keys: Seq<u32>) -> Set<u32> {
     Set::new(|k: u32| exists|i: int| 0 <= i < keys.len() && #[trigger] keys[i] == k)
 }
 
+pub open spec fn probe_sum_u64_pair_len(probe_keys: Seq<u32>, values: Seq<u64>) -> int {
+    if probe_keys.len() < values.len() {
+        probe_keys.len()
+    } else {
+        values.len()
+    }
+}
+
+pub open spec fn probe_sum_u64_spec(
+    probe_keys: Seq<u32>,
+    values: Seq<u64>,
+    build: Set<u32>,
+) -> u64 {
+    probe_sum_u64_fold(probe_keys, values, build, 0, 0)
+}
+
+pub open spec fn probe_sum_u64_fold(
+    probe_keys: Seq<u32>,
+    values: Seq<u64>,
+    build: Set<u32>,
+    i: int,
+    acc: u64,
+) -> u64
+    decreases probe_sum_u64_pair_len(probe_keys, values) - i,
+{
+    let n = probe_sum_u64_pair_len(probe_keys, values);
+    if i >= n {
+        acc
+    } else if build.contains(probe_keys[i]) {
+        probe_sum_u64_fold(probe_keys, values, build, i + 1, acc + values[i])
+    } else {
+        probe_sum_u64_fold(probe_keys, values, build, i + 1, acc)
+    }
+}
+
 #[verifier::external_body]
 pub exec fn build_hashset_u32(keys: &Vec<u32>, capacity_hint: usize) -> (s: HashSetWithView<u32>)
     ensures s@ == hashset_u32_keys_from_seq(keys@),
@@ -65,7 +100,7 @@ pub exec fn probe_sum_u64(
     values: &Vec<u64>,
     build: &HashSetWithView<u32>,
 ) -> (sum: u64)
-    ensures sum <= probe_keys@.len() as u64 * u64::MAX,
+    ensures sum == probe_sum_u64_spec(probe_keys@, values@, build@),
 {
     let n = if probe_keys.len() < values.len() { probe_keys.len() } else { values.len() };
     let mut sum: u64 = 0;
@@ -86,8 +121,10 @@ pub exec fn probe_sum_u64(
 // === Agent primitives: dictionary string decode (duckdb_like load format) ===
 #[verifier::external_body]
 pub exec fn decode_dict_str(codes: &Vec<u32>, dict: &Vec<String>, i: usize) -> (s: String)
-    requires i < codes@.len(),
-    ensures (codes[i as int] as int) < dict@.len(),
+    requires
+        i < codes@.len(),
+        (codes[i as int] as int) < dict@.len(),
+    ensures s == dict[codes[i as int] as int],
 {
     dict[codes[i] as usize].clone()
 }

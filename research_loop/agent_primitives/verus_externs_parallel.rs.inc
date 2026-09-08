@@ -1,12 +1,57 @@
-// === Agent primitives: parallel scan/agg (requires LEMMA_ENABLE_PARALLEL=1) ===
+// === Agent primitives: parallel scan/agg (LEMMA_ENABLE_PARALLEL=1 or LEMMA_FAST_TRUSTEDS=1) ===
 //
 // Bodies below are serial for Verus verification. At exec time the Rust reference crate
 // may parallelize (rayon chunked reduce) with identical wrapping-u64 semantics — see
-// agent_primitives/tests/equiv.rs. The agent chooses ST vs MT; there is no auto-threshold.
+// agent_primitives/tests/equiv.rs. We are not proving the parallel implementation; we
+// trust result == serial_wrapping_spec(...).
+
+pub open spec fn par_sum_u64_spec(vals: Seq<u64>) -> u64 {
+    par_sum_u64_fold(vals, 0, 0)
+}
+
+pub open spec fn par_sum_u64_fold(vals: Seq<u64>, i: int, acc: u64) -> u64
+    decreases vals.len() - i,
+{
+    if i >= vals.len() {
+        acc
+    } else {
+        par_sum_u64_fold(vals, i + 1, acc + vals[i])
+    }
+}
+
+pub open spec fn par_filter_sum_u64_pair_len(col: Seq<u64>, mask: Seq<bool>) -> int {
+    if col.len() < mask.len() {
+        col.len()
+    } else {
+        mask.len()
+    }
+}
+
+pub open spec fn par_filter_sum_u64_spec(col: Seq<u64>, mask: Seq<bool>) -> u64 {
+    par_filter_sum_u64_fold(col, mask, 0, 0)
+}
+
+pub open spec fn par_filter_sum_u64_fold(
+    col: Seq<u64>,
+    mask: Seq<bool>,
+    i: int,
+    acc: u64,
+) -> u64
+    decreases par_filter_sum_u64_pair_len(col, mask) - i,
+{
+    let n = par_filter_sum_u64_pair_len(col, mask);
+    if i >= n {
+        acc
+    } else if mask[i] {
+        par_filter_sum_u64_fold(col, mask, i + 1, acc + col[i])
+    } else {
+        par_filter_sum_u64_fold(col, mask, i + 1, acc)
+    }
+}
 
 #[verifier::external_body]
 pub exec fn par_sum_u64(vals: &Vec<u64>) -> (sum: u64)
-    ensures sum <= vals@.len() as u64 * u64::MAX,
+    ensures sum == par_sum_u64_spec(vals@),
 {
     let mut sum: u64 = 0;
     let mut i: usize = 0;
@@ -19,7 +64,7 @@ pub exec fn par_sum_u64(vals: &Vec<u64>) -> (sum: u64)
 
 #[verifier::external_body]
 pub exec fn par_filter_sum_u64(col: &Vec<u64>, mask: &Vec<bool>) -> (sum: u64)
-    ensures col@.len() == mask@.len() ==> sum <= col@.len() as u64 * u64::MAX,
+    ensures sum == par_filter_sum_u64_spec(col@, mask@),
 {
     let n = if col.len() < mask.len() { col.len() } else { mask.len() };
     let mut sum: u64 = 0;

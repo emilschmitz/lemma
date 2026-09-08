@@ -4,11 +4,11 @@
 //! `Cargo.toml` already turns it on via `[dev-dependencies]`; if you compile this file
 //! standalone, pass `--features parallel` on the dependency.
 //!
-//! **Holes (documented semantics, not bugs under test):**
+//! **Semantics (documented, not bugs under test):**
 //! - Wrapping `u64` addition — mathematical sum of selected elements may exceed `u64::MAX`.
 //! - Length skew: only `0..min(col.len(), mask.len())` participates; trailing slice tail ignored.
-//! - Verus `ensures` is a loose upper bound when `col@.len() == mask@.len()`, not exact fold equality.
-//! - No ordering guarantee beyond left-to-right fold equivalence with the serial oracle.
+//! - Verus contract: `ensures sum == par_filter_sum_u64_spec(col@, mask@)`.
+//! - We are not proving the parallel implementation; rayon must match the serial oracle (`equiv.rs`).
 
 use lemma_agent_primitives::{par_filter_sum_u64, serial_filter_sum_u64};
 
@@ -76,7 +76,7 @@ fn adversarial_col_longer_than_mask() {
     let col = vec![100u64, 200, 300, 400, 500];
     let mask = vec![true, false];
     assert_par_matches_serial(&col, &mask, "col_longer_than_mask");
-    // Trailing col[2..] ignored — HOLE: Verus ensures only when lengths match.
+    // Trailing col[2..] ignored — only min(len) participates in spec.
     assert_eq!(par_filter_sum_u64(&col, &mask), 100);
 }
 
