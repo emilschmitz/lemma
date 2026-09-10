@@ -92,6 +92,9 @@ def classify_optimizer_log(text: str) -> dict[str, Any]:
     if not text:
         return _result(5, "agent stupidity", detail="empty log")
 
+    if re.search(r"no marked submit", text, re.I):
+        return _result(3, "agent stupidity", detail="no marked submit")
+
     # Step 7 — harness verify/compile wall timeout (not agent docker).
     if _HARNESS_TIMEOUT.search(text):
         return _result(7, "failed to execute", detail="harness timeout")

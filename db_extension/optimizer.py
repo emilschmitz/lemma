@@ -94,15 +94,32 @@ def agent_meta_from_workspace_submit(workspace: Path) -> dict | None:
 _SUBMITTED_RUNQUERY_SNAPSHOT = ".submitted_runquery_snapshot.rs"
 
 
+def post_agent_next_step(*, use_mock: bool, submitted: dict | None) -> str:
+    """What the host may do after the agent process exits.
+
+    ``assemble_leftover`` — mock only (legacy leftover file).
+    ``official_measure`` — marked verified snapshot.
+    ``no_submit_fail`` — non-mock with no verified submit; do not touch leftover.
+    """
+    if use_mock:
+        return "assemble_leftover"
+    if (
+        submitted
+        and submitted.get("ok")
+        and submitted.get("runquery_body")
+        and submitted.get("runquery_sha256")
+    ):
+        return "official_measure"
+    return "no_submit_fail"
+
+
 def should_assemble_leftover_after_agent(
     *,
     use_mock: bool,
     submitted: dict | None,
 ) -> bool:
-    """Non-mock agents must submit a verified run; mock may still verify leftover body."""
-    if use_mock:
-        return True
-    return submitted is not None
+    """True only for mock leftover assemble. Real agents never stitch leftover."""
+    return post_agent_next_step(use_mock=use_mock, submitted=submitted) == "assemble_leftover"
 
 
 def _submitted_runquery_snapshot_path(
@@ -780,12 +797,16 @@ def run_optimization_loop(
         from db_extension.agent.measure_core import get_submitted
 
         submitted_record = get_submitted(ws=workspace) if not use_mock else None
-        use_marked_metrics = should_assemble_leftover_after_agent(
-            use_mock=use_mock,
-            submitted=submitted_record,
-        ) and not use_mock
+        post_step = post_agent_next_step(use_mock=use_mock, submitted=submitted_record)
+        use_marked_metrics = post_step == "official_measure"
         if use_marked_metrics:
-            submitted_metrics = dict(agent_meta["submitted_metrics"])
+            if agent_meta is None or agent_meta.get("submitted_metrics") is None:
+                agent_meta = agent_meta_from_workspace_submit(workspace) or {}
+            submitted_metrics = dict(
+                agent_meta.get("submitted_metrics")
+                or (submitted_record or {}).get("metrics")
+                or {}
+            )
             iterate_latency = int(
                 agent_meta.get("latency_us", submitted_metrics.get("latency_us", -1))
             )
@@ -872,7 +893,7 @@ def run_optimization_loop(
                 break
             continue
 
-        if not use_mock and submitted_record is None:
+        if post_step == "no_submit_fail":
             err = "no marked submit"
             _vprint(f" {COLOR_RED}FAILED{COLOR_RESET}")
             _vprint(f"    {err}")

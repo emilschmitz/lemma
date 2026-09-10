@@ -158,6 +158,25 @@ LEMMA_METRICS_JSON: {"status": "SUCCESS", "proof_verified": true, "latency_us": 
 """
 
 
+_NO_MARKED_SUBMIT_LOG = """
+  - Running agent in Docker sandbox... OK (10 s)
+FAILED
+    no marked submit
+proof_verified=False latency_us=-1
+LEMMA_METRICS_JSON: {"status": "FAILURE", "proof_verified": false, "latency_us": -1, "compiler_error": "no marked submit"}
+--- Optimization Finished ---
+"""
+
+
+def test_harvest_no_marked_submit_not_lemma_ok():
+    mod = _load_module()
+    fields = mod.harvest_optimizer_output(_NO_MARKED_SUBMIT_LOG)
+    rec = {"returncode": 0, **fields}
+    rec["lemma_ok"] = mod.lemma_job_ok(rec)
+    assert rec["lemma_ok"] is False
+    assert rec.get("proof_verified") is False
+
+
 def test_harvest_proved_measure_timeout_not_lemma_ok():
     mod = _load_module()
     fields = mod.harvest_optimizer_output(_PROVED_MEASURE_TIMEOUT_LOG)

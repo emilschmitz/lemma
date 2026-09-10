@@ -137,6 +137,16 @@ def test_classify_unbalanced_run_query_braces() -> None:
     assert "brace" in out.get("detail", "")
 
 
+def test_classify_no_marked_submit_agent() -> None:
+    out = classify_optimizer_log(
+        "FAILED\n    no marked submit\n"
+        'LEMMA_METRICS_JSON: {"compiler_error": "no marked submit"}\n'
+    )
+    assert out["step"] == 3
+    assert out["class"] == "agent stupidity"
+    assert "no marked submit" in out.get("detail", "")
+
+
 def test_classify_official_measure_timeout() -> None:
     out = classify_optimizer_log(_OFFICIAL_MEASURE)
     assert out["step"] == 7
