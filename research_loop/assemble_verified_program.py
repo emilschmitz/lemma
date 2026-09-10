@@ -1001,7 +1001,7 @@ def assemble_verified_join_program(
                 struct_name=f"Cols_{table}",
             )
     boundary = _boundary_helpers(ret_type, spec_rs)
-    agent_externs = maybe_emit_agent_externs(run_query_body)
+    agent_externs = maybe_emit_agent_externs(run_query_body, context=boundary)
     load_gen = _select_load_generator(load_mode=load_mode)
     loaders = "\n".join(
         load_gen(
@@ -1138,7 +1138,7 @@ def assemble_verified_nway_program(
                 struct_name=f"Cols_{table}",
             )
     boundary = _boundary_helpers(ret_type, spec_rs)
-    agent_externs = maybe_emit_agent_externs(run_query_body)
+    agent_externs = maybe_emit_agent_externs(run_query_body, context=boundary)
     load_gen = _select_load_generator(load_mode=load_mode)
     loaders = "\n".join(
         load_gen(
@@ -1234,7 +1234,7 @@ def assemble_verified_program(
             struct_name="Cols",
         )
     boundary = _boundary_helpers(ret_type, spec_rs)
-    agent_externs = maybe_emit_agent_externs(run_query_body)
+    agent_externs = maybe_emit_agent_externs(run_query_body, context=boundary)
     load_gen = _select_load_generator(load_mode=load_mode)
     duckdb_kwargs: dict[str, object] = {}
     if load_mode == "duckdb":

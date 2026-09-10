@@ -42,7 +42,17 @@ pub exec fn may_satisfy_range_u32(seg: &ZoneSegmentU32, lo: u32, hi: u32) -> (b:
 
 // === Agent primitives: hash-join build/probe (capacity-hinted HashSet) ===
 pub open spec fn hashset_u32_keys_from_seq(keys: Seq<u32>) -> Set<u32> {
-    Set::new(|k: u32| exists|i: int| 0 <= i < keys.len() && #[trigger] keys[i] == k)
+    hashset_u32_keys_from_seq_fold(keys, 0)
+}
+
+pub open spec fn hashset_u32_keys_from_seq_fold(keys: Seq<u32>, i: int) -> Set<u32>
+    decreases keys.len() - i,
+{
+    if i >= keys.len() {
+        Set::empty()
+    } else {
+        hashset_u32_keys_from_seq_fold(keys, i + 1).insert(keys[i])
+    }
 }
 
 pub open spec fn probe_sum_u64_pair_len(probe_keys: Seq<u32>, values: Seq<u64>) -> int {
