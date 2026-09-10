@@ -60,3 +60,85 @@ def test_classify_agent_invariant_fail() -> None:
     out = classify_optimizer_log(_AGENT_INVARIANT)
     assert out["step"] == 3
     assert out["class"] == "agent stupidity"
+
+
+_DIRTY_TREE = """
+LEMMA_EXPERIMENT=1 requires a clean git working tree.
+Commit or stash changes, or set LEMMA_EXPERIMENT_ALLOW_DIRTY=1 to override.
+Dirty files (2):
+ M research_loop/foo.py
+?? scratch.txt
+"""
+
+_IN_INNER_GB = """
+Transpilation failed: IN inner GROUP BY is not supported in MethodSpec semi-join fold
+CUSTOM_PIPELINE_FAILED: FAILED
+"""
+
+_COUNT_ADDEND_ASSERT = """
+Traceback (most recent call last):
+  File "multi_agg_step_bridge.py", line 2565, in multi_agg_step_trusted_rs
+    count_addend = _resolve_count_addend(...)
+AssertionError: count_addend unresolved for slot 3
+"""
+
+_E0252_HASHSET = """
+error[E0252]: the name `HashSetWithView` is defined multiple times
+    --> custom_query.rs:2839:5
+2146 | use vstd::hash_set::HashSetWithView;
+2839 | use vstd::hash_set::HashSetWithView;
+"""
+
+_UNBALANCED_BRACES = """
+ValueError: unbalanced braces in run_query
+  at admit_or_extract_legacy / agent_file_to_run_query_body
+"""
+
+_OFFICIAL_MEASURE = """
+LEMMA_METRICS_JSON: {"status": "SUCCESS", "proof_verified": true,
+  "official_measure_error": "official full-table measure timed out after 300s"}
+lemma_ok=false
+"""
+
+
+def test_classify_dirty_experiment_tree() -> None:
+    out = classify_optimizer_log(_DIRTY_TREE)
+    assert out["step"] == 1
+    assert out["class"] == "infra"
+    assert "dirty" in out.get("detail", "")
+
+
+def test_classify_in_inner_groupby_transpile() -> None:
+    out = classify_optimizer_log(_IN_INNER_GB)
+    assert out["step"] == 2
+    assert out["class"] == "transpiler coverage"
+    assert "IN" in out.get("detail", "") or "transpile" in out.get("detail", "")
+
+
+def test_classify_count_addend_assertion_assemble() -> None:
+    out = classify_optimizer_log(_COUNT_ADDEND_ASSERT)
+    assert out["step"] == 4
+    assert out["class"] == "assemble"
+    assert "count_addend" in out.get("detail", "")
+
+
+def test_classify_e0252_hashset_assemble() -> None:
+    out = classify_optimizer_log(_E0252_HASHSET)
+    assert out["step"] == 4
+    assert out["class"] == "assemble"
+    detail = out.get("detail", "")
+    assert "E0252" in detail or "HashSet" in detail
+
+
+def test_classify_unbalanced_run_query_braces() -> None:
+    out = classify_optimizer_log(_UNBALANCED_BRACES)
+    assert out["step"] == 4
+    assert out["class"] == "assemble"
+    assert "brace" in out.get("detail", "")
+
+
+def test_classify_official_measure_timeout() -> None:
+    out = classify_optimizer_log(_OFFICIAL_MEASURE)
+    assert out["step"] == 7
+    assert out["class"] == "failed to execute"
+    assert "official measure" in out.get("detail", "")

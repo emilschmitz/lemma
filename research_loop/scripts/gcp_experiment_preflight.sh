@@ -47,6 +47,15 @@ if [[ "$ON_ORIGIN" -eq 0 ]]; then
   exit 1
 fi
 
+LOCK="${LEMMA_OVERNIGHT_LOCK_FILE:-}"
+if [[ -n "$LOCK" && -f "$LOCK" ]]; then
+  pid=$(tr -d ' \n' < "$LOCK" || true)
+  if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+    err "another overnight is running (pid $pid lock $LOCK); one family at a time"
+    exit 1
+  fi
+fi
+
 family_lc="$(printf '%s' "$LEMMA_FAMILY" | tr '[:upper:]' '[:lower:]')"
 card=""
 if [[ "$family_lc" == *rocket* ]]; then

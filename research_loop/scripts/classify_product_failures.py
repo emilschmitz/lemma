@@ -55,6 +55,25 @@ _VERIFY_FAIL = re.compile(
     r"verify_fails|verification and compilation|CUSTOM_PIPELINE_FAILED|No iteration succeeded",
     re.I,
 )
+_DIRTY = re.compile(
+    r"Dirty files|LEMMA_EXPERIMENT=1 requires a clean git working tree",
+    re.I,
+)
+_IN_INNER_GB = re.compile(
+    r"IN inner GROUP BY|Transpilation failed",
+    re.I,
+)
+_COUNT_ADDEND = re.compile(r"count_addend", re.I)
+_E0252 = re.compile(r"error\[E0252\]", re.I)
+_HASHSET_VIEW = re.compile(r"HashSetWithView", re.I)
+_UNBALANCED_RUN_QUERY = re.compile(
+    r"ValueError: unbalanced braces in run_query",
+    re.I,
+)
+_OFFICIAL_MEASURE = re.compile(
+    r"official_measure_error|official full-table measure timed out",
+    re.I,
+)
 
 
 def _result(step: int, cls: str, *, detail: str = "") -> dict[str, Any]:
@@ -76,6 +95,31 @@ def classify_optimizer_log(text: str) -> dict[str, Any]:
     # Step 7 — harness verify/compile wall timeout (not agent docker).
     if _HARNESS_TIMEOUT.search(text):
         return _result(7, "failed to execute", detail="harness timeout")
+
+    # Step 7 — official full-table measure timeout (no harness TIMEOUT after Ns).
+    if _OFFICIAL_MEASURE.search(text):
+        return _result(7, "failed to execute", detail="official measure")
+
+    # Step 1 — experiment git cleanliness / preflight dirty tree.
+    if _DIRTY.search(text):
+        return _result(1, "infra", detail="dirty")
+
+    # Step 2 — transpiler loud-fail (IN inner GROUP BY, etc.).
+    if _IN_INNER_GB.search(text):
+        detail = "IN inner GROUP BY" if "IN inner GROUP BY" in text else "transpile"
+        return _result(2, "transpiler coverage", detail=detail)
+
+    # Step 4 — host fold emit AssertionError on count_addend resolution.
+    if "AssertionError" in text and _COUNT_ADDEND.search(text):
+        return _result(4, "assemble", detail="count_addend")
+
+    # Step 4 — duplicate HashSetWithView import at assemble.
+    if _E0252.search(text) and _HASHSET_VIEW.search(text):
+        return _result(4, "assemble", detail="E0252 HashSet")
+
+    # Step 4 — agent run_query brace extraction during assemble.
+    if _UNBALANCED_RUN_QUERY.search(text):
+        return _result(4, "assemble", detail="brace")
 
     # Step 7 — DuckDB pin after proof.
     if _BINDER_PIN.search(text) and (

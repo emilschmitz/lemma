@@ -79,7 +79,7 @@ def test_allowed_contract_scalar() -> None:
 def test_allowed_contract_map() -> None:
     contract = allowed_contract_from_method_spec(_MAP_STR_U32_SPEC)
     assert "HashMap" in contract.rust_ret
-    assert "hashmap_str_u32_u64_view" in contract.ensures_line
+    assert "res@ == method_spec(cols)" in contract.ensures_line
 
 
 def test_accepts_default_u64_template() -> None:
@@ -104,7 +104,7 @@ def test_accepts_map_hashmap_stub() -> None:
     src = build_runquery_agent_source(ret_type="map_u32_str_u64")
     result = _admit(src, spec)
     assert result.ok, result.violations
-    assert "HashMap::new()" in (result.run_query_fn or "")
+    assert "HashMapWithView::new()" in (result.run_query_fn or "")
 
 
 def test_accepts_proof_block() -> None:
@@ -286,6 +286,49 @@ def test_parse_run_query_fn_rejects_zero_or_many() -> None:
         parse_run_query_fn(two)
 
 
+def test_parse_run_query_fn_rejects_unbalanced_brace() -> None:
+    fn = (
+        "pub exec fn run_query(cols: &Cols) -> (res: u64)\n"
+        "    requires valid_cols(cols),\n"
+        "    ensures res == method_spec(cols),\n"
+        "{\n    { 0u64\n}"
+    )
+    with pytest.raises(ValueError, match="unbalanced braces"):
+        parse_run_query_fn(fn)
+
+
+def test_admit_or_extract_legacy_rejects_unbalanced_brace() -> None:
+    from research_loop.admit_agent_runquery import admit_or_extract_legacy
+
+    spec = _scalar_spec()
+    src = build_runquery_agent_source(ret_type="u64")
+    bad_fn = (
+        "pub exec fn run_query(cols: &Cols) -> (res: u64)\n"
+        "    requires valid_cols(cols),\n"
+        "    ensures res == method_spec(cols),\n"
+        "{\n    { 0u64\n}"
+    )
+    src = _replace_edit_region(src, bad_fn)
+    with pytest.raises(ValueError, match="unbalanced braces"):
+        admit_or_extract_legacy(src, method_spec_rs=spec, ret_type="u64")
+
+
+def test_agent_file_to_run_query_body_rejects_unbalanced_brace() -> None:
+    from db_extension.verus_bridge import agent_file_to_run_query_body
+
+    spec = _scalar_spec()
+    src = build_runquery_agent_source(ret_type="u64")
+    bad_fn = (
+        "pub exec fn run_query(cols: &Cols) -> (res: u64)\n"
+        "    requires valid_cols(cols),\n"
+        "    ensures res == method_spec(cols),\n"
+        "{\n    { 0u64\n}"
+    )
+    src = _replace_edit_region(src, bad_fn)
+    with pytest.raises(ValueError, match="unbalanced braces"):
+        agent_file_to_run_query_body(src, spec, ret_type="u64")
+
+
 def test_extract_agent_edit_region() -> None:
     src = build_runquery_agent_source(ret_type="u64")
     region = extract_agent_edit_region(src)
@@ -306,8 +349,8 @@ def test_map_wrong_view_ensures_rejected() -> None:
     spec = _map_spec()
     src = build_runquery_agent_source(ret_type="map_u32_str_u64")
     fn = re.sub(
-        r"hashmap_u32_str_u64_view",
-        "hashmap_str_u32_u64_view",
+        r"res@ == method_spec\(cols\)",
+        "ensures true",
         extract_agent_edit_region(src),
     )
     result = _admit(_replace_edit_region(src, fn), spec)
