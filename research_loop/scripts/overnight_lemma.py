@@ -9,6 +9,7 @@ import argparse
 import json
 import multiprocessing
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -16,6 +17,7 @@ import time
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "research_loop" / "scripts"))
@@ -33,13 +35,87 @@ DEFAULT_FAIL_STREAK = 6
 
 
 def lemma_job_ok(rec: dict) -> bool:
-    """Success: verified proof, rc=0, and timed latency (int >= 0)."""
+    """Success: verified proof, rc=0, full-table latency (int >= 0), no measure error."""
+    if rec.get("official_measure_error"):
+        return False
     if rec.get("proof_verified") is not True:
         return False
     if rec.get("returncode") != 0:
         return False
     lat = rec.get("latency_us")
     return isinstance(lat, int) and lat >= 0
+
+
+def _metrics_objects_from_log(text: str) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for line in text.splitlines():
+        if not line.startswith("LEMMA_METRICS_JSON:"):
+            continue
+        try:
+            metrics = json.loads(line[len("LEMMA_METRICS_JSON:") :].strip())
+        except json.JSONDecodeError:
+            continue
+        if isinstance(metrics, dict):
+            out.append(metrics)
+    return out
+
+
+def harvest_optimizer_output(text: str) -> dict[str, Any]:
+    """Parse optimizer log for overnight harvest; never treat iterate-only as full-table win."""
+    fields = parse_optimizer_output(text)
+    metrics_objects = _metrics_objects_from_log(text)
+
+    official_full_latencies: list[int] = []
+    official_latencies: list[int] = []
+    proved_measure_errors: list[dict[str, Any]] = []
+
+    for metrics in metrics_objects:
+        if metrics.get("proof_verified") is not True:
+            continue
+        if metrics.get("official_measure_error"):
+            proved_measure_errors.append(metrics)
+            continue
+        if metrics.get("status") != "SUCCESS":
+            continue
+        try:
+            lat = int(metrics.get("latency_us", -1))
+        except (TypeError, ValueError):
+            continue
+        if lat < 0:
+            continue
+        if metrics.get("measure_path") == "official_full":
+            official_full_latencies.append(lat)
+        else:
+            official_latencies.append(lat)
+
+    if official_full_latencies:
+        fields["latency_us"] = min(official_full_latencies)
+        fields.pop("official_measure_error", None)
+        fields.pop("iterate_latency_us", None)
+    elif official_latencies:
+        fields["latency_us"] = min(official_latencies)
+        fields.pop("official_measure_error", None)
+    elif proved_measure_errors:
+        err_metrics = proved_measure_errors[-1]
+        fields["official_measure_error"] = err_metrics["official_measure_error"]
+        fields["proof_verified"] = True
+        iterate_lat = err_metrics.get("iterate_latency_us", err_metrics.get("latency_us"))
+        if iterate_lat is not None:
+            try:
+                fields["iterate_latency_us"] = int(iterate_lat)
+            except (TypeError, ValueError):
+                pass
+        fields["latency_us"] = -1
+
+    if fields.get("official_measure_error"):
+        fields["latency_us"] = -1
+
+    if fields.get("proof_verified") is not True:
+        found = list(re.finditer(r"proof_verified=(True|False)", text))
+        if (found and found[-1].group(1) == "True") or proved_measure_errors:
+            fields["proof_verified"] = True
+
+    return fields
 
 
 def jobs_from_sql(sql_file: Path, family: str, sec_db: str) -> list[dict]:
@@ -128,7 +204,7 @@ def run_one(job: dict, log_dir: str) -> dict:
         )
     elapsed = round(time.perf_counter() - t0, 1)
     text = log_path.read_text(encoding="utf-8", errors="replace")
-    fields = parse_optimizer_output(text)
+    fields = harvest_optimizer_output(text)
     rec = {
         "family": job["family"],
         "qid": job["qid"],

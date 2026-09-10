@@ -162,7 +162,7 @@ def official_full_measure_after_submit(
     )
     if runquery_path is None:
         metrics["official_measure_error"] = "no runquery snapshot or body file"
-        metrics["latency_us"] = iterate_latency_us
+        metrics["latency_us"] = -1
         return metrics
 
     def _run_official() -> dict:
@@ -185,13 +185,13 @@ def official_full_measure_after_submit(
         metrics["official_measure_error"] = (
             f"official full-table measure timed out after {harness_timeout}s"
         )
-        metrics["latency_us"] = iterate_latency_us
+        metrics["latency_us"] = -1
         if submit_proof:
             metrics["proof_verified"] = True
         return metrics
     except Exception as exc:
         metrics["official_measure_error"] = str(exc)
-        metrics["latency_us"] = iterate_latency_us
+        metrics["latency_us"] = -1
         if submit_proof:
             metrics["proof_verified"] = True
         return metrics
@@ -213,7 +213,7 @@ def official_full_measure_after_submit(
             official.get("compiler_error")
             or f"status={official.get('status')} proof={official.get('proof_verified')}"
         )
-        metrics["latency_us"] = iterate_latency_us
+        metrics["latency_us"] = -1
         if submit_proof:
             metrics["proof_verified"] = True
 
@@ -232,6 +232,8 @@ def is_timed_verified_success(metrics: dict) -> bool:
         return False
     if latency < 0:
         return False
+    if metrics.get("official_measure_error"):
+        return False
     return metrics.get("bench_skipped") is not True
 
 
@@ -248,6 +250,20 @@ def harness_timeout_sec(*, config_env_path: str | None = None) -> int:
                 elif line.startswith("VERUS_VERIFY_TIMEOUT_SEC="):
                     verify_timeout = int(line.split("=", 1)[1].strip())
     return max(compile_timeout, verify_timeout) + 120
+
+
+def bench_timeout_sec() -> int:
+    """Wall-clock budget for binary execute/bench runs (``LEMMA_BENCH_TIMEOUT_SEC``)."""
+    raw = os.environ.get("LEMMA_BENCH_TIMEOUT_SEC", "120").strip()
+    try:
+        return max(30, int(raw))
+    except ValueError:
+        return 120
+
+
+def official_measure_timeout_sec(*, config_env_path: str | None = None) -> int:
+    """Post-submit full-table measure wall: verify+compile budget or bench, whichever is larger."""
+    return max(harness_timeout_sec(config_env_path=config_env_path), bench_timeout_sec())
 
 
 def _keep_optimizing() -> bool:
@@ -288,7 +304,7 @@ def _record_timed_best(
     if latency < 0:
         return
     if metrics.get("official_measure_error"):
-        fallback_bests.append((latency, iteration))
+        return
     elif metrics.get("measure_path") == "official_full":
         official_full_bests.append((latency, iteration))
     else:
@@ -304,8 +320,6 @@ def _resolve_best_latency(
         return min(official_full_bests, key=lambda pair: pair[0])
     if official_bests:
         return min(official_bests, key=lambda pair: pair[0])
-    if fallback_bests:
-        return min(fallback_bests, key=lambda pair: pair[0])
     return -1, -1
 
 
@@ -784,7 +798,7 @@ def run_optimization_loop(
             )
             h_start = time.perf_counter()
             cfg_path = os.path.join(root_dir, "research_loop", "config.env")
-            harness_timeout = harness_timeout_sec(config_env_path=cfg_path)
+            measure_timeout = official_measure_timeout_sec(config_env_path=cfg_path)
             metrics = official_full_measure_after_submit(
                 submitted_metrics=submitted_metrics,
                 agent_meta=agent_meta,
@@ -796,13 +810,16 @@ def run_optimization_loop(
                 agent_body_path=agent_body_path,
                 workload_tables=workload_tables,
                 workload=workload,
-                harness_timeout=harness_timeout,
+                harness_timeout=measure_timeout,
             )
             h_time = time.perf_counter() - h_start
             metrics = _maybe_merge_lease_metrics(metrics)
             status = metrics.get("status", "SUCCESS" if metrics.get("proof_verified") else "FAILURE")
             proof_verified = bool(metrics.get("proof_verified"))
-            latency = int(metrics.get("latency_us", iterate_latency))
+            try:
+                latency = int(metrics.get("latency_us", -1))
+            except (TypeError, ValueError):
+                latency = -1
             if metrics.get("official_measure_error"):
                 _vprint(
                     f" {COLOR_YELLOW}FALLBACK{COLOR_RESET} (iterate {iterate_latency} us; "

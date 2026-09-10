@@ -139,6 +139,114 @@ def test_lemma_job_ok_requires_timed_latency():
     assert ok({**base, "returncode": 1}) is False
 
 
+def test_lemma_job_ok_false_when_official_measure_error():
+    mod = _load_module()
+    rec = {
+        "proof_verified": True,
+        "returncode": 0,
+        "latency_us": 100,
+        "official_measure_error": "official full-table measure timed out after 300s",
+    }
+    assert mod.lemma_job_ok(rec) is False
+
+
+_PROVED_MEASURE_TIMEOUT_LOG = """
+  - Official full-table measure after marked submit... FALLBACK (iterate 66 us; official: timed out)
+proof_verified=True latency_us=-1
+LEMMA_METRICS_JSON: {"status": "SUCCESS", "proof_verified": true, "latency_us": -1, "iterate_latency_us": 66, "official_measure_error": "official full-table measure timed out after 300s"}
+--- Optimization Finished ---
+"""
+
+
+def test_harvest_proved_measure_timeout_not_lemma_ok():
+    mod = _load_module()
+    fields = mod.harvest_optimizer_output(_PROVED_MEASURE_TIMEOUT_LOG)
+    rec = {"returncode": 0, **fields}
+    rec["lemma_ok"] = mod.lemma_job_ok(rec)
+    assert rec["proof_verified"] is True
+    assert rec["official_measure_error"]
+    assert rec["iterate_latency_us"] == 66
+    assert rec["latency_us"] == -1
+    assert rec["lemma_ok"] is False
+
+
+def test_harvest_prefers_official_full_over_iterate():
+    mod = _load_module()
+    text = """
+LEMMA_METRICS_JSON: {"status": "SUCCESS", "proof_verified": true, "latency_us": 66, "iterate_latency_us": 66, "official_measure_error": "timed out"}
+LEMMA_METRICS_JSON: {"status": "SUCCESS", "proof_verified": true, "latency_us": 9000000, "measure_path": "official_full"}
+proof_verified=True latency_us=9000000
+"""
+    fields = mod.harvest_optimizer_output(text)
+    assert fields["latency_us"] == 9_000_000
+    assert "official_measure_error" not in fields
+
+
+def test_harvest_writes_row_on_process_exit(tmp_path: Path, monkeypatch):
+    """Every finished optimizer subprocess must land in partial harvest."""
+    mod = _load_module()
+    sql = tmp_path / "queries.sql"
+    _write_multi_query_sql(sql, 2)
+    out_dir = tmp_path / "out"
+
+    def fake_run_one(job: dict, log_dir: str) -> dict:
+        if job["qid"] == "Q1":
+            fields = mod.harvest_optimizer_output(_PROVED_MEASURE_TIMEOUT_LOG)
+        else:
+            fields = {"proof_verified": True, "latency_us": 500, "returncode": 0}
+        rec = {
+            "family": job["family"],
+            "qid": job["qid"],
+            "returncode": 0,
+            "elapsed_s": 1.0,
+            "log": str(Path(log_dir) / f"{job['family']}_{job['qid']}.log"),
+            **fields,
+        }
+        rec["lemma_ok"] = mod.lemma_job_ok(rec)
+        return rec
+
+    monkeypatch.setattr(mod, "run_one", fake_run_one)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "overnight_lemma.py",
+            "--sql-file",
+            str(sql),
+            "--out-dir",
+            str(out_dir),
+            "--workers",
+            "1",
+            "--family",
+            "r23rocket",
+        ],
+    )
+    rc = mod.main()
+    assert rc == 0
+    partial = json.loads((out_dir / "results.partial.json").read_text())
+    assert len(partial["results"]) == 2
+    q1 = next(r for r in partial["results"] if r["qid"] == "Q1")
+    assert q1["proof_verified"] is True
+    assert q1["lemma_ok"] is False
+    assert q1["official_measure_error"]
+
+
+def test_keep_optimizing_does_not_drop_completed_harvest_row(tmp_path: Path, monkeypatch):
+    """Later iterate metrics must not erase a completed proved+timeout harvest row."""
+    mod = _load_module()
+    log = _PROVED_MEASURE_TIMEOUT_LOG + """
+Iteration 2 failed
+proof_verified=False latency_us=-1
+LEMMA_METRICS_JSON: {"status": "FAILURE", "proof_verified": false, "latency_us": -1}
+"""
+    fields = mod.harvest_optimizer_output(log)
+    rec = {"returncode": 0, **fields}
+    rec["lemma_ok"] = mod.lemma_job_ok(rec)
+    assert rec["proof_verified"] is True
+    assert rec["official_measure_error"]
+    assert rec["lemma_ok"] is False
+
+
 def test_jobs_from_temp_sql(tmp_path: Path):
     mod = _load_module()
     sql = tmp_path / "queries.sql"

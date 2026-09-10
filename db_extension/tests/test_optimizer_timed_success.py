@@ -8,6 +8,7 @@ from db_extension.optimizer import (
     agent_meta_from_workspace_submit,
     harness_timeout_sec,
     is_timed_verified_success,
+    official_measure_timeout_sec,
     _maybe_stop_on_timed_success,
 )
 
@@ -159,3 +160,12 @@ def test_maybe_stop_on_timed_success_keep_wins_over_stop(monkeypatch) -> None:
     monkeypatch.setenv("LEMMA_STOP_ON_TIMED_SUCCESS", "1")
     monkeypatch.setenv("LEMMA_KEEP_OPTIMIZING", "1")
     assert _maybe_stop_on_timed_success(metrics=_TIMED_SUCCESS, iteration=1) is False
+
+
+def test_official_measure_timeout_at_least_harness(monkeypatch) -> None:
+    monkeypatch.setenv("LEMMA_BENCH_TIMEOUT_SEC", "600")
+    monkeypatch.setenv("COMPILE_TIMEOUT_SEC", "180")
+    monkeypatch.setenv("VERUS_VERIFY_TIMEOUT_SEC", "120")
+    harness = harness_timeout_sec(config_env_path="/nonexistent")
+    assert official_measure_timeout_sec(config_env_path="/nonexistent") >= harness
+    assert official_measure_timeout_sec(config_env_path="/nonexistent") >= 600
