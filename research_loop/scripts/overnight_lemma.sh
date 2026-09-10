@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Overnight Lemma batch + ACPI self-stop (fresh shuffle outside git, DuckDB baseline, agents).
+# Before GCP Spot launch: bash research_loop/scripts/gcp_experiment_preflight.sh
 # Usage:
 #   bash research_loop/scripts/overnight_lemma.sh smoke
 #   bash research_loop/scripts/overnight_lemma.sh
@@ -197,10 +198,37 @@ bash research_loop/scripts/spot_resource_monitor.sh "$OUT/resource_metrics.ndjso
 echo $! >"$OUT/resource_monitor.pid"
 echo "resource monitor pid=$(cat "$OUT/resource_monitor.pid")"
 
+maybe_gsutil_rsync_harvest() {
+  local out_dir="${1:-}"
+  local gs_uri="${LEMMA_HARVEST_GS_URI:-}"
+  if [[ -z "$gs_uri" || -z "$out_dir" ]]; then
+    return 0
+  fi
+  if ! command -v gsutil >/dev/null 2>&1; then
+    echo "ERROR: LEMMA_HARVEST_GS_URI=$gs_uri but gsutil not found" >&2
+    return 1
+  fi
+  echo "=== optional GCS harvest rsync $out_dir -> $gs_uri ==="
+  gsutil -m rsync -r "$out_dir" "$gs_uri"
+}
+
 REPO="$(pwd)"
 cat >"$OUT/run_and_halt.sh" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
+maybe_gsutil_rsync_harvest() {
+  local out_dir="\${1:-}"
+  local gs_uri="\${LEMMA_HARVEST_GS_URI:-}"
+  if [[ -z "\$gs_uri" || -z "\$out_dir" ]]; then
+    return 0
+  fi
+  if ! command -v gsutil >/dev/null 2>&1; then
+    echo "ERROR: LEMMA_HARVEST_GS_URI=\$gs_uri but gsutil not found" >&2
+    return 1
+  fi
+  echo "=== optional GCS harvest rsync \$out_dir -> \$gs_uri ==="
+  gsutil -m rsync -r "\$out_dir" "\$gs_uri"
+}
 cd "$REPO"
 export PATH="$PATH"
 export VERUS_Z3_PATH="${VERUS_Z3_PATH}"
@@ -246,9 +274,12 @@ if [[ "${LEMMA_HALT_ON_FINISH:-1}" == "1" ]]; then
 else
   echo "LEMMA_HALT_ON_FINISH=0 skip guest halt" >>"$OUT/watchdog.log"
 fi
+# Optional extra GCS copy (does not replace local $OUT harvest).
+maybe_gsutil_rsync_harvest "$OUT"
 EOF
 chmod +x "$OUT/run_and_halt.sh"
 nohup "$OUT/run_and_halt.sh" >/dev/null 2>&1 &
 echo $! >"$OUT/wrapper.pid"
 echo "wrapper pid=$(cat "$OUT/wrapper.pid") logs=$OUT"
 echo "tail: tail -f $OUT/driver.out"
+# Set LEMMA_HARVEST_GS_URI=gs://bucket/path before launch to rsync $OUT after halt.
