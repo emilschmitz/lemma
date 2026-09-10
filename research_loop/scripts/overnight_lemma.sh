@@ -282,4 +282,9 @@ nohup "$OUT/run_and_halt.sh" >/dev/null 2>&1 &
 echo $! >"$OUT/wrapper.pid"
 echo "wrapper pid=$(cat "$OUT/wrapper.pid") logs=$OUT"
 echo "tail: tail -f $OUT/driver.out"
+if [[ "${LEMMA_WAIT_FOR_WRAPPER:-0}" == "1" ]]; then
+  echo "waiting for wrapper pid=$(cat "$OUT/wrapper.pid")"
+  wait "$(cat "$OUT/wrapper.pid")" || true
+  echo "wrapper exited"
+fi
 # Set LEMMA_HARVEST_GS_URI=gs://bucket/path before launch to rsync $OUT after halt.
