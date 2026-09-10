@@ -19,6 +19,7 @@ from research_loop.method_spec_ret_type import resolve_ret_type_from_method_spec
 from research_loop.multi_agg_step_bridge import (
     CountSlotAddend,
     _parse_count_slot_addend,
+    _parse_scalar_count_addend,
     _spec_expr_to_exec,
     emit_multi_agg_step_trusted,
     multi_agg_step_trusted_rs,
@@ -323,6 +324,12 @@ def test_parse_count_slot_addend_literals() -> None:
     assert _parse_count_slot_addend(
         "let s1 = (prev.1 as int + 1) as u64", 1, multi_slot=True
     ) == CountSlotAddend("1", 1)
+    assert _parse_count_slot_addend(
+        "let s0 = (prev as int + 1u64 as int) as u64", 0, multi_slot=False
+    ) == CountSlotAddend("1", 1)
+    assert _parse_scalar_count_addend(
+        "tail.insert(row_key, (prev as int + 1u64 as int) as u64)"
+    ) == CountSlotAddend("1", 1)
     cw = _parse_count_slot_addend(
         "let s2 = (prev.2 as int + case_when_u64((num.value[i0 as int] > 0), 1, 0) as int) as u64",
         2,
@@ -352,6 +359,21 @@ WHERE n.ddate BETWEEN 20240101 AND 20241231 AND n.value IS NOT NULL
 GROUP BY n.tag, t.tlabel, t.datatype
 HAVING COUNT(DISTINCT n.adsh) > 100
 LIMIT 500"""
+
+
+def test_q1_like_fold_lemmas_never_plus_one_on_distinct_map_slot() -> None:
+    """COUNT(DISTINCT) map slot must not get u64 +1 fold-bound proof steps."""
+    out = transpile_sql_to_verus(
+        Q1_LIKE_SQL,
+        {"pre": PRE_SCHEMA},
+        catalog_assumptions=sec_prove_loop_catalog_assumptions(),
+    )
+    ret_type = resolve_ret_type_from_method_spec(out)
+    rs = multi_agg_step_trusted_rs(out, ret_type)
+    assert "lemma_method_spec_helper_slot0_count_leq_" in rs
+    assert "lemma_method_spec_helper_slot1_count_leq_" not in rs
+    assert "prev_full.1 as int + 1" not in rs
+    assert "prev.1 as int + 1" not in rs
 
 
 def test_q3_like_fold_slot_lemmas_use_case_when_addend() -> None:

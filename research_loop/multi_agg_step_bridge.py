@@ -492,21 +492,68 @@ def _parse_case_when_u64_addend(delta: str) -> CountSlotAddend | None:
     return CountSlotAddend(expr, max(then_lit, else_lit))
 
 
+_COUNT_PLUS_ONE_LINE_RE = re.compile(
+    r"as int \+ (?:1(?:u64 as int|\))|\d+u64 as int|\d+\))"
+)
+
+
+def _is_literal_one_delta(delta: str) -> bool:
+    return _parse_int_literal(delta.strip()) == 1
+
+
 def _parse_count_slot_addend(
     s_line: str, slot_i: int, *, multi_slot: bool
 ) -> CountSlotAddend | None:
     """Parse COUNT/CASE per-step addend from ``let s{i} = (prev[.i] as int + DELTA) as u64``."""
     delta = _sum_delta_expr(s_line, slot_i, multi_slot=multi_slot)
-    if "as int + 1) as u64" in s_line:
+    if _COUNT_PLUS_ONE_LINE_RE.search(s_line):
         if delta and "case_when_u64" in delta:
             return _parse_case_when_u64_addend(delta)
         return CountSlotAddend("1", 1)
     if delta is None:
         return None
-    if delta in ("1", "1 as int"):
+    if _is_literal_one_delta(delta):
         return CountSlotAddend("1", 1)
     if "case_when_u64" in delta:
         return _parse_case_when_u64_addend(delta)
+    return None
+
+
+def _parse_scalar_count_addend(body: str) -> CountSlotAddend | None:
+    """Parse COUNT +1 addend from scalar Map insert RHS (no ``let sN`` binder)."""
+    for line in body.split("\n"):
+        st = line.strip()
+        if "insert(" not in st:
+            continue
+        m = re.search(r"insert\(\s*[^,]+\s*,\s*(.+?)\)\s*$", st)
+        if not m:
+            continue
+        fake = f"let s0 = {m.group(1).strip()};"
+        info = _parse_count_slot_addend(fake, 0, multi_slot=False)
+        if info is not None:
+            return info
+    return None
+
+
+def _resolve_count_addend(
+    *,
+    spec_rs: str,
+    helper: str,
+    slot_i: int,
+    s_line: str,
+    multi_slot: bool,
+    scalar_body: str | None = None,
+) -> CountSlotAddend | None:
+    """Resolve CountSlotAddend for a count-classified slot; None if not a COUNT step."""
+    if s_line:
+        info = _parse_count_slot_addend(s_line, slot_i, multi_slot=multi_slot)
+        if info is not None:
+            return info
+    info = _parse_count_slot_addend_from_spec(spec_rs, helper, slot_i)
+    if info is not None:
+        return info
+    if scalar_body is not None:
+        return _parse_scalar_count_addend(scalar_body)
     return None
 
 
@@ -801,7 +848,7 @@ def _classify_u64_slot(s_line: str, slot_i: int, *, multi_slot: bool) -> str | N
     prev_ref = f"prev.{slot_i}" if multi_slot else "prev"
     if re.search(rf"let s{slot_i} = if t{slot_i} [<>] {re.escape(prev_ref)}", s_line):
         return None
-    if "as int + 1) as u64" in s_line:
+    if _COUNT_PLUS_ONE_LINE_RE.search(s_line):
         delta = _sum_delta_expr(s_line, slot_i, multi_slot=multi_slot)
         if delta and "case_when_u64" in delta:
             return "count" if _parse_case_when_u64_addend(delta) else None
@@ -1273,12 +1320,17 @@ def _parse_fold_hit_slot_updates(fold_step: str) -> _FoldHitSlotUpdates | None:
         return None
     rest = rest[1:].lstrip()
     slot_lets: list[tuple[str, str]] = []
-    while True:
+    while rest:
         m = re.match(r"let (s\d+) = (.+?);", rest, re.DOTALL)
-        if not m:
-            break
-        slot_lets.append((m.group(1), m.group(2).strip()))
-        rest = rest[m.end() :].lstrip()
+        if m:
+            slot_lets.append((m.group(1), m.group(2).strip()))
+            rest = rest[m.end() :].lstrip()
+            continue
+        t_m = re.match(r"let t\d+ = (.+?);", rest, re.DOTALL)
+        if t_m:
+            rest = rest[t_m.end() :].lstrip()
+            continue
+        break
     insert_m = re.match(r"tail\.insert\(row_key,\s*(.+?)\)\s*$", rest.strip(), re.DOTALL)
     if not insert_m:
         return None
@@ -1524,10 +1576,11 @@ def _emit_inductive_hit_branch(
         fold_step = _sanitize_fold_step_for_proof(fold_step)
         slot_updates = _parse_fold_hit_slot_updates(fold_step)
     lines: list[str] = []
+    if kind == "count" and count_addend is None:
+        count_addend = CountSlotAddend("1", 1)
     addend_proof = "1"
     count_ub = 1
     if kind == "count":
-        assert count_addend is not None
         addend_proof = _count_addend_proof_expr(count_addend)
         count_ub = count_addend.ub
     if hit.scalar_map:
@@ -1585,7 +1638,6 @@ def _emit_inductive_hit_branch(
             f"{indent}assert(rem_here_int == rem_tail_int + 1) by (nonlinear_arith);"
         )
     if kind == "count":
-        assert count_addend is not None
         if count_ub == 1:
             lines.append(f"{indent}assert(prev_slot as int <= rem_tail_int);")
             lines.append(f"{indent}assert(prev_slot as int <= rem_here_int - 1);")
@@ -1596,7 +1648,7 @@ def _emit_inductive_hit_branch(
             lines.append(
                 f"{indent}assert(prev_slot as int <= (rem_here_int - 1) * ({count_ub} as int));"
             )
-        if count_addend.addend != "1":
+        if count_addend is not None and count_addend.addend != "1":
             lines.append(f"{indent}assert(({addend_proof}) <= ({count_ub} as int));")
         lines.extend(
             _emit_count_add_fit_steps(
@@ -1731,27 +1783,57 @@ def _emit_inductive_hit_branch(
                     f"{hit_indent}assert(inserted_val.0 as int == prev_slot as int + ({addend_proof}));"
                 )
         else:
+            slot_field = val_access if val_access else ".0"
+            slot_binder = (
+                f"s{slot_field.lstrip('.')}"
+                if slot_field.startswith(".") and slot_field[1:].isdigit()
+                else "s0"
+            )
             lines.append(
                 f"{indent}        let ghost prev_full = if tail.contains_key({key}) {{ tail[{key}] }} else {{ {hit.default_state} }};"
             )
-            lines.append(f"{indent}        assert(prev_full.0 == prev_slot);")
             lines.append(
-                f"{indent}        let ghost s0 = (prev_full.0 as int + 1) as u64;"
+                f"{indent}        assert(prev_full{slot_field} == prev_slot);"
             )
             lines.append(
-                f"{indent}        assert(s0 as int == prev_full.0 as int + 1);"
+                f"{indent}        let ghost {slot_binder} = (prev_full{slot_field} as int + ({addend_proof})) as u64;"
             )
             lines.append(
-                f"{indent}        let ghost inserted_val = (s0, prev_full.1);"
+                f"{indent}        assert({slot_binder} as int == prev_full{slot_field} as int + ({addend_proof}));"
             )
-            lines.append(
-                f"{indent}        assert(next_map == tail.insert({key}, inserted_val));"
-            )
-            lines.append(
-                f"{indent}        lemma_map_insert_get(tail, {key}, inserted_val);"
-            )
-            lines.append(f"{indent}        assert(next_map[{key}].0 == s0);")
-            lines.append(f"{indent}        assert(s0 as int == prev_slot as int + 1);")
+            if val_access:
+                lines.append(
+                    f"{indent}        // fold-step parse miss: rebuild tuple with only slot{slot_field} COUNT step"
+                )
+                lines.append(
+                    f"{indent}        let ghost inserted_val = prev_full;"
+                )
+                lines.append(
+                    f"{indent}        assert(next_map == tail.insert({key}, inserted_val));"
+                )
+                lines.append(
+                    f"{indent}        lemma_map_insert_get(tail, {key}, inserted_val);"
+                )
+                lines.append(
+                    f"{indent}        assert(next_map[{key}]{val_access} == {slot_binder});"
+                )
+                lines.append(
+                    f"{indent}        assert({slot_binder} as int == prev_slot as int + ({addend_proof}));"
+                )
+            else:
+                lines.append(
+                    f"{indent}        let ghost inserted_val = ({slot_binder}, prev_full.1);"
+                )
+                lines.append(
+                    f"{indent}        assert(next_map == tail.insert({key}, inserted_val));"
+                )
+                lines.append(
+                    f"{indent}        lemma_map_insert_get(tail, {key}, inserted_val);"
+                )
+                lines.append(f"{indent}        assert(next_map[{key}].0 == {slot_binder});")
+                lines.append(
+                    f"{indent}        assert({slot_binder} as int == prev_slot as int + ({addend_proof}));"
+                )
         if count_ub == 1:
             lines.append(
                 f"{indent}        assert(prev_slot as int + 1 <= rem_here_int);"
@@ -2313,7 +2395,8 @@ def _emit_inductive_slot_bound_lemma(
     rem = ctx.suffix_remaining_u64()
     fname = f"lemma_{helper}_slot{slot_i}_{kind}_leq_{suffix}"
     if kind == "count":
-        assert count_addend is not None
+        if count_addend is None:
+            count_addend = CountSlotAddend("1", 1)
         if count_addend.ub == 1:
             detail = f"COUNT slot {slot_i}: ≤{rem} filtered rows add ≤1 each."
             cap = rem
@@ -2337,7 +2420,8 @@ def _emit_inductive_slot_bound_lemma(
     slot_e = _slot_bound_expr(cur_call, "key", val_access, scalar_map=hit.scalar_map)
     ensures = f"{slot_e} <= {cap},"
     if kind == "count":
-        assert count_addend is not None
+        if count_addend is None:
+            count_addend = CountSlotAddend("1", 1)
         if count_addend.ub == 1:
             ensures_int = f"({slot_e} as int) <= ({rem_int}),"
         else:
@@ -2394,7 +2478,8 @@ def _emit_inductive_slot_bound_lemma(
     proof_body.append(f"    assert(({rem_int}) as u64 == {rem});")
     proof_body.append(f"    assert(({rem}) as int == ({rem_int}));")
     if kind == "count":
-        assert count_addend is not None
+        if count_addend is None:
+            count_addend = CountSlotAddend("1", 1)
         if count_addend.ub == 1:
             proof_body.append(
                 f"    assert(({slot_e}) as int <= ({rem}) as int);"
@@ -2468,10 +2553,22 @@ def _emit_slot_bound_lemma(
     hit = _parse_helper_hit_branch(spec_rs, helper)
     if hit is None:
         return ""
+    found = _find_helper(spec_rs)
+    apply_lines = (
+        [ln.strip() for ln in found[3].split("\n") if ln.strip()] if found else []
+    )
+    s_line = next((ln for ln in apply_lines if ln.startswith(f"let s{slot_i} =")), "")
+    multi_slot = _helper_state_multi_slot(found[2] if found else "u64")
     sum_delta = _parse_slot_sum_delta(spec_rs, helper, slot_i) if kind != "count" else None
     count_addend: CountSlotAddend | None = None
     if kind == "count":
-        count_addend = _parse_count_slot_addend_from_spec(spec_rs, helper, slot_i)
+        count_addend = _resolve_count_addend(
+            spec_rs=spec_rs,
+            helper=helper,
+            slot_i=slot_i,
+            s_line=s_line,
+            multi_slot=multi_slot,
+        )
         if count_addend is None:
             return ""
     if kind != "count" and sum_delta is None:
@@ -2610,9 +2707,20 @@ def emit_scalar_fold_bound_lemmas(
         if hit is None:
             return ""
         sum_delta = _parse_slot_sum_delta(spec_rs, name, 0) if kind != "count" else None
+        count_addend: CountSlotAddend | None = None
         if kind != "count" and sum_delta is None:
             return ""
         if kind == "count":
+            count_addend = _resolve_count_addend(
+                spec_rs=spec_rs,
+                helper=name,
+                slot_i=0,
+                s_line="",
+                multi_slot=False,
+                scalar_body=body,
+            )
+            if count_addend is None:
+                return ""
             fname = f"lemma_{name}_count_leq_{suffix}"
             detail = f"COUNT: ≤{rem} filtered rows in fold suffix."
             bound = rem
@@ -2656,6 +2764,7 @@ pub proof fn {fname}(
             hit=hit,
             kind=kind,
             sum_delta=sum_delta,
+            count_addend=count_addend,
             level=0,
             indent="    ",
             spec_rs=spec_rs,
