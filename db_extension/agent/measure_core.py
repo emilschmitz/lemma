@@ -1,6 +1,7 @@
 """Host-side measure/validate library for Lemma agent MCP (schema-general Verus)."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -368,6 +369,10 @@ def run_solution(
         "wall_run_us": elapsed_us,
         "harness_returncode": returncode,
     }
+    if ok:
+        runquery_body = rq_path.read_text(encoding="utf-8")
+        out["runquery_body"] = runquery_body
+        out["runquery_sha256"] = runquery_sha256(runquery_body)
     _store_run(out, ws=base)
     return out
 
@@ -402,22 +407,13 @@ def load_run(run_id: str, *, ws: Path | None = None) -> dict | None:
     return json.loads(path.read_text())
 
 
-def _read_runquery_snapshot_for_run(run: dict, base: Path) -> str | None:
-    """Read winning runquery file text for submit snapshot (survives later overwrites)."""
-    rq_path = run.get("runquery_path")
-    if rq_path:
-        candidate = Path(rq_path)
-        target = candidate if candidate.is_absolute() else (base / candidate)
-        if target.is_file():
-            return target.read_text(encoding="utf-8")
-    default = base / DEFAULT_RUNQUERY
-    if default.is_file():
-        return default.read_text(encoding="utf-8")
-    return None
+def runquery_sha256(text: str) -> str:
+    """SHA-256 hex digest of UTF-8 runquery text."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def mark_submit(run_id: str, *, ws: Path | None = None) -> dict:
-    """Mark a prior run_id as the official submission (does not run harness)."""
+    """Mark a prior verified run_id as the official submission (does not run harness)."""
     base = ws or workspace()
     run = load_run(run_id, ws=base)
     if run is None:
@@ -427,18 +423,42 @@ def mark_submit(run_id: str, *, ws: Path | None = None) -> dict:
             "run_id": run_id,
             "submitted_path": None,
         }
+    metrics = run.get("metrics") or {}
+    proof_verified = bool(run.get("ok")) and bool(metrics.get("proof_verified"))
+    if not proof_verified:
+        return {
+            "ok": False,
+            "error": f"run_id {run_id} is not verified (ok and proof_verified required)",
+            "run_id": run_id,
+            "submitted_path": None,
+        }
+    body = run.get("runquery_body")
+    body_hash = run.get("runquery_sha256")
+    if not body or not body_hash:
+        return {
+            "ok": False,
+            "error": f"run_id {run_id} missing frozen runquery snapshot (legacy or incomplete run)",
+            "run_id": run_id,
+            "submitted_path": None,
+        }
+    if runquery_sha256(body) != body_hash:
+        return {
+            "ok": False,
+            "error": f"run_id {run_id} has corrupt frozen runquery record (sha256 mismatch)",
+            "run_id": run_id,
+            "submitted_path": None,
+        }
     submitted = {
         "run_id": run_id,
         "marked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "run_path": str(runs_dir(base) / f"{run_id}.json"),
         "run": run,
-        "metrics": run.get("metrics"),
+        "metrics": metrics,
         "latency_us": run.get("latency_us"),
-        "ok": bool(run.get("ok")),
+        "ok": True,
+        "runquery_body": body,
+        "runquery_sha256": body_hash,
     }
-    body = _read_runquery_snapshot_for_run(run, base)
-    if body:
-        submitted["runquery_body"] = body
     if run.get("dataset_size") is not None:
         submitted["iterate_dataset_size"] = run["dataset_size"]
     out_path = results_dir(base) / "submitted.json"
@@ -448,8 +468,8 @@ def mark_submit(run_id: str, *, ws: Path | None = None) -> dict:
         "run_id": run_id,
         "submitted_path": str(out_path),
         "latency_us": run.get("latency_us"),
-        "metrics": run.get("metrics"),
-        "note": "Marked run as official submit; host runs full-table measure after agent loop.",
+        "metrics": metrics,
+        "note": "Marked verified run as official submit; host runs full-table measure after agent loop.",
     }
 
 

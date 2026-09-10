@@ -56,7 +56,8 @@ HOST_TOOL_SPECS: tuple[HostToolSpec, ...] = (
     HostToolSpec(
         name="submit_runquery",
         description=(
-            "Mark a prior run_id as the official submission (does not re-run harness). "
+            "Mark a prior **verified** run_id as the official submission (rejects unverified runs; "
+            "snapshots the frozen body from verify, not the live file). "
             "Call run_runquery first to obtain run_id. "
             "When AGENT_SUBMIT_ENDS_SESSION=1 the host ends the agent session after a successful mark."
         ),

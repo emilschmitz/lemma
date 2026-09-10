@@ -94,6 +94,17 @@ def agent_meta_from_workspace_submit(workspace: Path) -> dict | None:
 _SUBMITTED_RUNQUERY_SNAPSHOT = ".submitted_runquery_snapshot.rs"
 
 
+def should_assemble_leftover_after_agent(
+    *,
+    use_mock: bool,
+    submitted: dict | None,
+) -> bool:
+    """Non-mock agents must submit a verified run; mock may still verify leftover body."""
+    if use_mock:
+        return True
+    return submitted is not None
+
+
 def _submitted_runquery_snapshot_path(
     *,
     submitted: dict | None,
@@ -691,11 +702,11 @@ def run_optimization_loop(
                     with demo_live_step("🦾", "Generating RunQuery", pass_fail=True) as gen_step:
                         body, proc = _run_agent()
                         log_trace(COMPONENT, "agent_body_preview", body[:200])
-                        has_marked = bool(
-                            agent_meta and agent_meta.get("submitted_metrics") is not None
+                        has_verified_submit = bool(
+                            agent_meta and agent_meta.get("ok") and agent_meta.get("submitted")
                         )
-                        gen_step.set_passed(proc.returncode == 0 or has_marked)
-                        if proc.returncode != 0 and not has_marked:
+                        gen_step.set_passed(proc.returncode == 0 or has_verified_submit)
+                        if proc.returncode != 0 and not has_verified_submit:
                             err = (proc.stderr or proc.stdout or "agent exited non-zero").strip()
                             if not demo_enabled():
                                 _vprint(f" {COLOR_RED}FAILED{COLOR_RESET}")
@@ -714,11 +725,10 @@ def run_optimization_loop(
                 else:
                     body, proc = _run_agent()
                     log_trace(COMPONENT, "agent_body_preview", body[:200])
-                    # Marked submit (even failed verify) still has metrics — do not drop them.
-                    has_marked = bool(
-                        agent_meta and agent_meta.get("submitted_metrics") is not None
+                    has_verified_submit = bool(
+                        agent_meta and agent_meta.get("ok") and agent_meta.get("submitted")
                     )
-                    if proc.returncode != 0 and not has_marked:
+                    if proc.returncode != 0 and not has_verified_submit:
                         err = (proc.stderr or proc.stdout or "agent exited non-zero").strip()
                         _vprint(f" {COLOR_RED}FAILED{COLOR_RESET}")
                         _vprint(f"    {err[:500]}")
@@ -734,10 +744,7 @@ def run_optimization_loop(
                         _snapshot_history()
                         continue
                     write_ms = int((time.perf_counter() - a_start) * 1000)
-                    if has_marked and proc.returncode != 0:
-                        _vprint(f" {COLOR_GREEN}OK{COLOR_RESET} (marked run; verify failed)")
-                    else:
-                        _vprint(f" {COLOR_GREEN}OK{COLOR_RESET} ({write_ms // 1000} s)")
+                    _vprint(f" {COLOR_GREEN}OK{COLOR_RESET} ({write_ms // 1000} s)")
             except subprocess.TimeoutExpired:
                 iter_agent_wall_s = time.perf_counter() - a_start
                 agent_gen_wall_s += iter_agent_wall_s
@@ -770,15 +777,14 @@ def run_optimization_loop(
             spec_rs=agent_spec,
             run=run,
         )
-        use_marked_metrics = (
-            not use_mock
-            and agent_meta is not None
-            and agent_meta.get("submitted_metrics") is not None
-        )
-        if use_marked_metrics:
-            from db_extension.agent.measure_core import get_submitted
+        from db_extension.agent.measure_core import get_submitted
 
-            submitted_record = get_submitted(ws=workspace)
+        submitted_record = get_submitted(ws=workspace) if not use_mock else None
+        use_marked_metrics = should_assemble_leftover_after_agent(
+            use_mock=use_mock,
+            submitted=submitted_record,
+        ) and not use_mock
+        if use_marked_metrics:
             submitted_metrics = dict(agent_meta["submitted_metrics"])
             iterate_latency = int(
                 agent_meta.get("latency_us", submitted_metrics.get("latency_us", -1))
@@ -864,6 +870,29 @@ def run_optimization_loop(
             _snapshot_history()
             if _maybe_stop_on_timed_success(metrics=metrics, iteration=iteration):
                 break
+            continue
+
+        if not use_mock and submitted_record is None:
+            err = "no marked submit"
+            _vprint(f" {COLOR_RED}FAILED{COLOR_RESET}")
+            _vprint(f"    {err}")
+            print(f"proof_verified={False} latency_us={-1}", flush=True)
+            print(
+                f"{_HARNESS_METRICS_PREFIX}{json.dumps({'status': 'FAILURE', 'proof_verified': False, 'latency_us': -1, 'compiler_error': err})}",
+                flush=True,
+            )
+            history.append(_history_entry(
+                iteration=iteration,
+                status="FAILURE",
+                proof_verified=False,
+                latency=-1,
+                error=err,
+                agent_meta=agent_meta,
+                wall_s=iter_agent_wall_s or None,
+                agent_gen_wall_s=agent_gen_wall_s,
+                extra=usage_extra or None,
+            ))
+            _snapshot_history()
             continue
 
         log_debug(COMPONENT, "harness_start", f"custom sql query_id={query_id}", dataset_size=dataset_size)

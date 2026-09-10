@@ -44,12 +44,28 @@ def test_socket_validate_runquery(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_socket_mark_submit(tmp_path: Path, monkeypatch) -> None:
+    from db_extension.agent.measure_core import runquery_sha256
+
     monkeypatch.setenv("LEMMA_AGENT_WORKSPACE", str(tmp_path))
     run_id = "sockrun1"
+    body = "// verified\nlet x = 1;"
     runs = tmp_path / "mcp_results" / "runs"
     runs.mkdir(parents=True)
     (runs / f"{run_id}.json").write_text(
-        json.dumps({"ok": True, "run_id": run_id, "latency_us": 7, "metrics": {"latency_us": 7}})
+        json.dumps(
+            {
+                "ok": True,
+                "run_id": run_id,
+                "latency_us": 7,
+                "metrics": {
+                    "status": "SUCCESS",
+                    "proof_verified": True,
+                    "latency_us": 7,
+                },
+                "runquery_body": body,
+                "runquery_sha256": runquery_sha256(body),
+            }
+        )
     )
     sock_path = tmp_path / "test.sock"
     server = McpSocketServer(sock_path, MeasureContext(query_id=2, workspace=tmp_path))
