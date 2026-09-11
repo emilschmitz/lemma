@@ -66,6 +66,7 @@ def _stub_run_query(ret_type: str, *, multi: bool = False) -> str:
         stub_expr = body
     ensures = bridge.ensures.rstrip().removesuffix(",")
     if multi:
+        ensures = ensures.replace("method_spec(cols)", "method_spec(cols, pre)")
         return f"""#[verifier::external_body]
 pub exec fn run_query(cols: &Cols, pre: &Cols_pre) -> (res: {bridge.rust_ret})
     requires valid_cols(cols) && valid_cols_pre(pre),
@@ -170,12 +171,6 @@ def test_q1_host_pipeline_verify_compile_pin_execute(tmp_path, monkeypatch) -> N
     assert res.get("latency_us", -1) >= 0, res.get("error") or res.get("bench_error")
 
 
-@pytest.mark.skip(
-    reason=(
-        "step 2 transpiler: IN+GROUP BY emits in_in_1_* on Cols_<table> but method_spec "
-        "is single-param; host verify fails until multi-table IN wiring lands"
-    ),
-)
 @pytest.mark.skipif(not TINY_DB.is_file(), reason="tiny SEC duckdb missing")
 @pytest.mark.skipif(not LIBDUCKDB.is_file(), reason="libduckdb.so missing")
 def test_q3_host_pipeline_verify_compile_pin_execute(tmp_path, monkeypatch) -> None:

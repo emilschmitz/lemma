@@ -581,8 +581,13 @@ def _emit_projection_branch(
     helper_name: str = "projection_helper",
     spec_name: str | None = None,
     struct_name: str = "Cols",
+    extras: list[tuple[str, str, str]] | None = None,
 ) -> tuple[str, str, str]:
     """Projection fold; returns (helpers, spec_call, ret_type)."""
+    extras = extras if extras is not None else _support_spec_params(query)
+    extra_sig = _extra_param_sig(extras)
+    extra_call = _extra_param_call(extras)
+    extra_rec = _extra_param_recommends(extras)
     idx_var = "k"
     where_at_k = (
         spec_where_cond(to_col_expr(query.where_expr, idx_var), idx_var, flat_schema)
@@ -613,9 +618,10 @@ def _emit_projection_branch(
     ret_type = container_ty
     ret_base = "Seq::empty()"
 
+    rec = f"{helper_name}(cols{extra_call}, {idx_var} + 1)"
     if where_at_k:
         body_inner = (
-            f"let tail = {helper_name}(cols, {idx_var} + 1);\n"
+            f"let tail = {rec};\n"
             f"        if {where_at_k} {{\n"
             f"            {update_expr}\n"
             f"        }} else {{\n"
@@ -624,14 +630,14 @@ def _emit_projection_branch(
         )
     else:
         body_inner = (
-            f"let tail = {helper_name}(cols, {idx_var} + 1);\n"
+            f"let tail = {rec};\n"
             f"        {update_expr}"
         )
 
-    helper = f"""pub open spec fn {helper_name}(cols: &{struct_name}, {idx_var}: int) -> {container_ty}
+    helper = f"""pub open spec fn {helper_name}(cols: &{struct_name}{extra_sig}, {idx_var}: int) -> {container_ty}
     recommends
         0 <= {idx_var} && {idx_var} <= cols.n,
-        valid_cols(cols),
+        valid_cols(cols){extra_rec},
     decreases cols.n - {idx_var},
 {{
     if {idx_var} < cols.n {{
@@ -641,30 +647,30 @@ def _emit_projection_branch(
     }}
 }}"""
 
-    body = f"{helper_name}(cols, 0)"
+    body = f"{helper_name}(cols{extra_call}, 0)"
     if query.limit is not None:
         body = f"spec_seq_take({body}, {query.limit})"
 
     if spec_name:
-        spec = f"""pub open spec fn {spec_name}(cols: &{struct_name}) -> {ret_type}
-    recommends valid_cols(cols),
+        spec = f"""pub open spec fn {spec_name}(cols: &{struct_name}{extra_sig}) -> {ret_type}
+    recommends valid_cols(cols){extra_rec},
 {{
     {body}
 }}"""
-        return helper + "\n\n" + spec, f"{spec_name}(cols)", ret_type
+        return helper + "\n\n" + spec, f"{spec_name}(cols{extra_call})", ret_type
     return helper, body, ret_type
 
 
 def _emit_projection_spec(query: SQLQuery, flat_schema: dict[str, str]) -> tuple[str, str, str]:
     """Single-table SELECT projection: recursive Seq fold + optional LIMIT."""
+    extras = _support_spec_params(query)
     helpers, spec_body, ret_type = _emit_projection_branch(
-        query, flat_schema, helper_name="projection_helper",
+        query,
+        flat_schema,
+        helper_name="projection_helper",
+        extras=extras,
     )
-    spec_fn = f"""pub open spec fn method_spec(cols: &Cols) -> {ret_type}
-    recommends valid_cols(cols),
-{{
-    {spec_body}
-}}"""
+    spec_fn = _method_spec_fn(ret_type, spec_body, extras)
     return helpers, spec_fn, ret_type
 
 

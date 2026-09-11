@@ -78,3 +78,32 @@ def test_in_inner_groupby_join_transpiles() -> None:
     assert "in_in_1_contains" in out
     assert "decreases" in out
     assert "arbitrary()" not in out
+    assert "method_spec(cols: &Cols, fact: &Cols_fact, dim: &Cols_dim)" in out
+    assert "projection_helper(cols, fact, dim," in out
+
+
+def test_in_inner_groupby_other_table_threads_support_params() -> None:
+    sql = """SELECT n.tag, n.version
+FROM num n
+WHERE n.uom = 'USD' AND n.value IS NOT NULL
+      AND n.tag IN (
+          SELECT tag FROM pre
+          WHERE stmt = 'IS'
+          GROUP BY tag
+          HAVING COUNT(*) > 1
+      )
+LIMIT 20"""
+    schema = {
+        "num": {
+            "tag": "string",
+            "version": "string",
+            "uom": "string",
+            "value": "double",
+        },
+        "pre": {"tag": "string", "stmt": "string"},
+    }
+    out = transpile_sql_to_verus(sql, schema)
+    assert "method_spec(cols: &Cols, pre: &Cols_pre)" in out
+    assert "projection_helper(cols, pre," in out
+    assert "in_in_1_contains(pre," in out
+    assert "arbitrary()" not in out

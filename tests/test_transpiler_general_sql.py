@@ -115,6 +115,8 @@ WHERE entity_id IN (
 )"""
     out = transpile_sql_to_verus(sql, GENERIC_SCHEMA)
     assert "in_in_1_contains(fact, dim," in out
+    assert "method_spec(cols: &Cols, fact: &Cols_fact, dim: &Cols_dim)" in out
+    assert "projection_helper(cols, fact, dim," in out
     assert "decreases" in out
     assert "arbitrary()" not in out
 
@@ -122,6 +124,8 @@ WHERE entity_id IN (
 def test_in_inner_join_tpch_q18_shape() -> None:
     out = transpile_sql_to_verus(TPCH_Q18_INNER_JOIN, SEC_SCHEMA)
     assert "in_in_1_contains(num, sub," in out
+    assert "method_spec(cols: &Cols, num: &Cols_num, sub: &Cols_sub)" in out
+    assert "projection_helper(cols, num, sub," in out
     assert "Cols_num" in out
     assert "Cols_sub" in out
     assert "v > 10" in out
