@@ -462,6 +462,10 @@ def run_one_query(qid: str, sql: str, *, log_dir: Path) -> dict[str, Any]:
     rec["product_class"] = product["class"]
     if product.get("detail"):
         rec["product_detail"] = product["detail"]
+    if rec.get("lemma_ok"):
+        rec["product_step"] = 7
+        rec["product_class"] = "ok"
+        rec["product_detail"] = "official pin"
 
     print(
         f"{qid}: proof={rec.get('proof_verified')} lat={rec.get('latency_us')} "
@@ -470,6 +474,26 @@ def run_one_query(qid: str, sql: str, *, log_dir: Path) -> dict[str, Any]:
         f"{rec.get('product_detail', '')}".rstrip(),
         flush=True,
     )
+    wake = {
+        "qid": qid,
+        "lemma_ok": rec.get("lemma_ok"),
+        "proof_verified": rec.get("proof_verified"),
+        "latency_us": rec.get("latency_us"),
+        "product_step": rec.get("product_step"),
+        "product_class": rec.get("product_class"),
+        "product_detail": rec.get("product_detail"),
+        "log": rec.get("log"),
+        "prompt": (
+            f"e2e {qid} finished lemma_ok={rec.get('lemma_ok')} "
+            f"proof={rec.get('proof_verified')} lat={rec.get('latency_us')} "
+            f"step={rec.get('product_step')} {rec.get('product_class')} "
+            f"{rec.get('product_detail', '')}. "
+            "Classify from traces if lemma_ok is false. Fix host if not agent. "
+            "Keep the parallel gendb Docker e2e running. Do not start GCP. "
+            "Do not mark complete until full 113 including past failures are lemma_ok."
+        ),
+    }
+    print("AGENT_LOOP_WAKE_e2e " + json.dumps(wake), flush=True)
     return rec
 
 

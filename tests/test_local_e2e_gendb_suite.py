@@ -95,9 +95,10 @@ def test_observed_e2e_jobs_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_parallel_round_runs_pending_together(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from research_loop.scripts import local_e2e_tiny_docker as e2e
-    import time
     import threading
+    import time
+
+    from research_loop.scripts import local_e2e_tiny_docker as e2e
 
     inflight = 0
     peak = 0
@@ -142,3 +143,35 @@ def test_parse_run_dir(tmp_path: Path) -> None:
     text = f"optimizer loop_start: run_dir='{run}' mock=False\n"
     assert parse_run_dir(text) == run
     assert parse_run_dir("no dir") is None
+
+
+def test_run_one_query_wake_and_ok_class(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from research_loop.scripts import classify_product_failures as clf
+    from research_loop.scripts import local_e2e_tiny_docker as e2e
+
+    class Proc:
+        returncode = 0
+
+    monkeypatch.setattr(e2e.subprocess, "run", lambda *a, **k: Proc())
+    monkeypatch.setattr(
+        e2e, "parse_optimizer_log", lambda t: {"proof_verified": True, "latency_us": 12}
+    )
+    monkeypatch.setattr(e2e, "lemma_job_ok", lambda rec: True)
+    monkeypatch.setattr(e2e, "parse_run_dir", lambda t: None)
+    monkeypatch.setattr(e2e, "find_latest_runquery_agent", lambda: None)
+    monkeypatch.setattr(e2e, "copy_latest_result_json", lambda d: None)
+    monkeypatch.setattr(clf, "classify_run_dir", lambda d: None)
+    monkeypatch.setattr(
+        clf,
+        "classify_optimizer_log",
+        lambda t: {"step": 3, "class": "infra", "detail": "agent timeout"},
+    )
+    rec = e2e.run_one_query("Q99", "SELECT 1", log_dir=tmp_path)
+    assert rec["lemma_ok"] is True
+    assert rec["product_class"] == "ok"
+    assert rec["product_step"] == 7
+    out = capsys.readouterr().out
+    assert "AGENT_LOOP_WAKE_e2e" in out
+    assert '"qid": "Q99"' in out
