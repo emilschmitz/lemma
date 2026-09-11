@@ -9,7 +9,9 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -24,10 +26,40 @@ LIBDUCKDB = ROOT / "build/libduckdb/libduckdb.so"
 AGENT_IMAGE = "lemma-agent:cli"
 
 _ALL_QIDS = ("Q1", "Q2", "Q3")
+# Observed live slot: docker agent ~260Mi + host run_optimizer ~180Mi.
+# Verus verify/measure spikes higher; leave headroom on a 15Gi box already in swap.
+_OBS_SLOT_MIB = 1100
+_JOBS_CAP = 6
 
 
 def repo_root() -> Path:
     return ROOT
+
+
+def mem_available_kb() -> int:
+    try:
+        for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1])
+    except OSError:
+        return 0
+    return 0
+
+
+def observed_e2e_jobs() -> int:
+    """Parallelism from LEMMA_E2E_JOBS, else min(nproc, MemAvailable / observed slot)."""
+    override = os.environ.get("LEMMA_E2E_JOBS", "").strip()
+    if override.isdigit():
+        return max(1, int(override))
+    nproc = os.cpu_count() or 2
+    avail_kb = mem_available_kb()
+    from_ram = max(1, avail_kb // (_OBS_SLOT_MIB * 1024)) if avail_kb else 2
+    return max(1, min(nproc, from_ram, _JOBS_CAP))
+
+
+def _qid_sort(qid: str) -> tuple[int, str]:
+    m = re.match(r"Q(\d+)$", qid)
+    return (int(m.group(1)), qid) if m else (10**9, qid)
 
 
 def load_queries(sql_file: Path = SQL_FILE) -> dict[str, str]:
@@ -293,6 +325,14 @@ def check_runquery_agent_quality(text: str) -> list[str]:
     return violations
 
 
+def parse_run_dir(text: str) -> Path | None:
+    m = re.search(r"run_dir='([^']+)'", text)
+    if not m:
+        return None
+    path = Path(m.group(1))
+    return path if path.is_dir() else None
+
+
 def find_latest_runquery_agent() -> Path | None:
     candidates: list[Path] = []
     runs = ROOT / "research_loop/runs"
@@ -310,6 +350,17 @@ def find_latest_runquery_agent() -> Path | None:
     return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
+def copy_run_dir(log_dir: Path, run_dir: Path) -> Path | None:
+    src = run_dir / "result.json"
+    if not src.is_file():
+        return None
+    dest = log_dir / f"run_{run_dir.name}"
+    if dest.exists():
+        shutil.rmtree(dest)
+    shutil.copytree(run_dir, dest)
+    return dest / "result.json"
+
+
 def copy_latest_result_json(log_dir: Path) -> Path | None:
     runs = ROOT / "research_loop/runs"
     if not runs.is_dir():
@@ -321,12 +372,32 @@ def copy_latest_result_json(log_dir: Path) -> Path | None:
     )
     if not result_dirs:
         return None
-    src_run = result_dirs[0].parent
-    dest = log_dir / f"run_{src_run.name}"
-    if dest.exists():
-        shutil.rmtree(dest)
-    shutil.copytree(src_run, dest)
-    return dest / "result.json"
+    return copy_run_dir(log_dir, result_dirs[0].parent)
+
+
+def resume_ok_qids(log_dir: Path, query_ids: list[str]) -> set[str]:
+    ok: set[str] = set()
+    results_path = log_dir / "results.json"
+    if results_path.is_file():
+        try:
+            data = json.loads(results_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            data = {}
+        for rec in data.get("results") or []:
+            qid = rec.get("qid")
+            if rec.get("lemma_ok") and isinstance(qid, str):
+                ok.add(qid)
+    for qid in query_ids:
+        if qid in ok:
+            continue
+        log_path = log_dir / f"{qid.lower()}.log"
+        if not log_path.is_file():
+            continue
+        fields = parse_optimizer_log(log_path.read_text(encoding="utf-8", errors="replace"))
+        rec = {**fields, "qid": qid, "returncode": 0}
+        if lemma_job_ok(rec):
+            ok.add(qid)
+    return ok
 
 
 def run_one_query(qid: str, sql: str, *, log_dir: Path) -> dict[str, Any]:
@@ -355,7 +426,14 @@ def run_one_query(qid: str, sql: str, *, log_dir: Path) -> dict[str, Any]:
     }
     rec["lemma_ok"] = lemma_job_ok({**rec, "returncode": proc.returncode})
 
-    agent_path = find_latest_runquery_agent()
+    run_dir = parse_run_dir(text)
+    agent_path = None
+    if run_dir is not None:
+        candidate = run_dir / "workspace" / "runquery_agent.rs"
+        if candidate.is_file():
+            agent_path = candidate
+    if agent_path is None:
+        agent_path = find_latest_runquery_agent()
     if agent_path is not None:
         agent_text = agent_path.read_text(encoding="utf-8", errors="replace")
         rec["runquery_agent"] = str(agent_path)
@@ -364,11 +442,13 @@ def run_one_query(qid: str, sql: str, *, log_dir: Path) -> dict[str, Any]:
             rec["agent_quality_violations"] = quality
             rec["lemma_ok"] = False
 
-    result_json = copy_latest_result_json(log_dir)
-    run_dir: Path | None = None
+    result_json = copy_run_dir(log_dir, run_dir) if run_dir is not None else None
+    if result_json is None:
+        result_json = copy_latest_result_json(log_dir)
+        if result_json is not None:
+            run_dir = result_json.parent
     if result_json is not None:
         rec["result_json"] = str(result_json)
-        run_dir = result_json.parent
 
     from research_loop.scripts.classify_product_failures import (
         classify_optimizer_log,
@@ -464,24 +544,55 @@ def _run_local_e2e_impl(
     dest.mkdir(parents=True, exist_ok=True)
     latest: dict[str, dict[str, Any]] = {}
     pending = list(query_ids)
+    if os.environ.get("LEMMA_E2E_FORCE_ALL", "").strip() != "1":
+        already = resume_ok_qids(dest, query_ids)
+        if already:
+            print(f"resume skip ok: {sorted(already, key=_qid_sort)}", flush=True)
+            pending = [qid for qid in pending if qid not in already]
+            for qid in already:
+                latest[qid] = {
+                    "qid": qid,
+                    "lemma_ok": True,
+                    "resumed": True,
+                }
+    jobs = observed_e2e_jobs()
+    avail_gi = mem_available_kb() / (1024 * 1024)
+    print(
+        f"e2e jobs={jobs} (nproc={os.cpu_count()} "
+        f"MemAvailable={avail_gi:.1f}Gi slot={_OBS_SLOT_MIB}Mi cap={_JOBS_CAP})",
+        flush=True,
+    )
+    progress_lock = threading.Lock()
     rounds = max(1, int(retry_rounds))
     for round_i in range(1, rounds + 1):
         if not pending:
             break
         print(
-            f"=== e2e round {round_i}/{rounds} pending={len(pending)} ===",
+            f"=== e2e round {round_i}/{rounds} pending={len(pending)} jobs={jobs} ===",
             flush=True,
         )
-        still: list[str] = []
-        for qid in pending:
+
+        def _one(qid: str) -> dict[str, Any]:
             rec = run_one_query(qid, queries[qid], log_dir=dest)
             rec["round"] = round_i
-            latest[qid] = rec
-            if not rec.get("lemma_ok"):
-                still.append(qid)
-        _write_e2e_progress(
-            dest, [latest[qid] for qid in query_ids if qid in latest], round_i=round_i
-        )
+            with progress_lock:
+                latest[qid] = rec
+                _write_e2e_progress(
+                    dest,
+                    [latest[qid2] for qid2 in query_ids if qid2 in latest],
+                    round_i=round_i,
+                )
+            return rec
+
+        if jobs <= 1 or len(pending) <= 1:
+            round_recs = [_one(qid) for qid in pending]
+        else:
+            round_recs = []
+            with ThreadPoolExecutor(max_workers=jobs) as pool:
+                futs = {pool.submit(_one, qid): qid for qid in pending}
+                for fut in as_completed(futs):
+                    round_recs.append(fut.result())
+        still = [rec["qid"] for rec in round_recs if not rec.get("lemma_ok")]
         pending = still
         if pending and round_i < rounds:
             print(f"retrying failed: {pending}", flush=True)

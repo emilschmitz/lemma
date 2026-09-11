@@ -81,3 +81,64 @@ def test_retry_rounds_reruns_failures(tmp_path: Path, monkeypatch: pytest.Monkey
     assert calls == ["Q1", "Q1"]
     assert code == 0
     assert results[0]["lemma_ok"] is True
+
+
+def test_observed_e2e_jobs_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    from research_loop.scripts.local_e2e_tiny_docker import observed_e2e_jobs
+
+    monkeypatch.setenv("LEMMA_E2E_JOBS", "4")
+    assert observed_e2e_jobs() == 4
+    monkeypatch.setenv("LEMMA_E2E_JOBS", "0")
+    assert observed_e2e_jobs() == 1
+
+
+def test_parallel_round_runs_pending_together(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from research_loop.scripts import local_e2e_tiny_docker as e2e
+    import time
+    import threading
+
+    inflight = 0
+    peak = 0
+    lock = threading.Lock()
+
+    def fake_run(qid: str, sql: str, *, log_dir: Path) -> dict:
+        nonlocal inflight, peak
+        with lock:
+            inflight += 1
+            peak = max(peak, inflight)
+        time.sleep(0.15)
+        with lock:
+            inflight -= 1
+        return {"qid": qid, "lemma_ok": True, "proof_verified": True, "latency_us": 1}
+
+    monkeypatch.setenv("LEMMA_E2E_JOBS", "3")
+    monkeypatch.setattr(e2e, "preflight_errors", lambda **kwargs: [])
+    monkeypatch.setattr(e2e, "ensure_agent_image", lambda: None)
+    monkeypatch.setattr(e2e, "apply_product_env", lambda **kwargs: None)
+    monkeypatch.setattr(
+        e2e, "load_queries", lambda _p: {"Q1": "SELECT 1", "Q2": "SELECT 2", "Q3": "SELECT 3"}
+    )
+    monkeypatch.setattr(e2e, "run_one_query", fake_run)
+    monkeypatch.setattr(e2e, "resolve_tiny_db", lambda: tmp_path / "t.duckdb")
+    results, code = e2e.run_local_e2e(
+        ["Q1", "Q2", "Q3"],
+        skip_docker_build=True,
+        sql_file=tmp_path / "x.sql",
+        log_dir=tmp_path,
+        retry_rounds=1,
+    )
+    assert code == 0
+    assert {r["qid"] for r in results} == {"Q1", "Q2", "Q3"}
+    assert peak >= 2
+
+
+def test_parse_run_dir(tmp_path: Path) -> None:
+    from research_loop.scripts.local_e2e_tiny_docker import parse_run_dir
+
+    run = tmp_path / "run"
+    run.mkdir()
+    text = f"optimizer loop_start: run_dir='{run}' mock=False\n"
+    assert parse_run_dir(text) == run
+    assert parse_run_dir("no dir") is None
