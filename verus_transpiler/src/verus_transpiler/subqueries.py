@@ -139,13 +139,15 @@ def _correlated_param_specs(
     return specs
 
 
-def _validate_simple_semi_join_inner(query: SQLQuery, *, label: str) -> None:
+def _validate_simple_semi_join_inner(
+    query: SQLQuery, *, label: str, allow_groupby: bool = False,
+) -> None:
     """Reject EXISTS/IN inner shapes that lack a single-table scan fold."""
     if query.joins:
         raise UnsupportedContractError(
             f"{label} inner JOIN is not supported in MethodSpec semi-join fold"
         )
-    if query.groupby_columns:
+    if query.groupby_columns and not allow_groupby:
         raise UnsupportedContractError(
             f"{label} inner GROUP BY is not supported in MethodSpec semi-join fold"
         )
@@ -551,17 +553,82 @@ def _groupby_key_expr(
     groupby_columns: list[str],
     idx_var: str,
     schema_dict: dict[str, str],
+    *,
+    param_name: str = "cols",
 ) -> str:
     parts: list[str] = []
     for col in groupby_columns:
         field = rust_ident(col)
         if col_verus_type(schema_dict[col]) == "String":
-            parts.append(f"cols.{field}[{idx_var} as int]@")
+            parts.append(f"{param_name}.{field}[{idx_var} as int]@")
         else:
-            parts.append(f"cols.{field}[{idx_var} as int]")
+            parts.append(f"{param_name}.{field}[{idx_var} as int]")
     if len(parts) == 1:
         return parts[0]
     return f"({', '.join(parts)})"
+
+
+def _validate_in_grouped_inner(in_spec: InSubquerySpec) -> None:
+    """Validate uncorrelated IN inner GROUP BY shapes we can fold."""
+    inner = in_spec.query
+    _validate_simple_semi_join_inner(inner, label="IN", allow_groupby=True)
+    if len(inner.groupby_columns) != 1:
+        raise UnsupportedContractError(
+            "IN inner GROUP BY with multiple keys is not supported in MethodSpec semi-join fold"
+        )
+    proj = _in_projection_column(in_spec)
+    if proj.lower() != inner.groupby_columns[0].lower():
+        raise UnsupportedContractError(
+            f"IN inner GROUP BY projection {proj!r} must match GROUP BY key "
+            f"{inner.groupby_columns[0]!r}"
+        )
+    if inner.is_multi_agg:
+        raise UnsupportedContractError(
+            "IN inner GROUP BY with multiple aggregates is not supported "
+            "in MethodSpec semi-join fold"
+        )
+    if inner.agg_type == "AVG" or any(a.agg_type == "AVG" for a in inner.agg_specs):
+        raise UnsupportedContractError(
+            "IN inner GROUP BY with AVG is not supported in MethodSpec semi-join fold"
+        )
+
+
+def _in_grouped_having_types(inner: SQLQuery, schema: dict[str, str]) -> tuple[str, str]:
+    c = inner.groupby_columns[0]
+    key_ty = spec_map_key_type(schema[c])
+    if inner.agg_type == "COUNT_DISTINCT" or any(
+        a.agg_type == "COUNT_DISTINCT" for a in inner.agg_specs
+    ):
+        return key_ty, "u64"
+    if inner.agg_type == "SUM":
+        val_ty = _agg_value_type(inner.agg_expr)
+        return key_ty, val_ty
+    return key_ty, "u64"
+
+
+def _inline_having_filter(map_expr: str, having_expr: str, key_ty: str, val_ty: str) -> str:
+    if not having_expr:
+        return map_expr
+    return f"""{{
+        let m = {map_expr};
+        m.filter_keys(|k| {{
+            let v: {val_ty} = m[k];
+            {having_expr}
+        }})
+    }}"""
+
+
+def _distinct_val_at_k(
+    col: str,
+    idx_var: str,
+    schema: dict[str, str],
+    *,
+    param_name: str = "cols",
+) -> str:
+    field = rust_ident(col)
+    if col_verus_type(schema[col]) == "String":
+        return f"{param_name}.{field}[{idx_var} as int]@"
+    return f"{param_name}.{field}[{idx_var} as int]"
 
 
 def _wrap_spec(
@@ -602,15 +669,20 @@ def _emit_groupby_map_helper(
     schema: dict[str, str],
     *,
     struct_name: str = "Cols",
+    param_name: str = "cols",
+    valid_fn: str = "valid_cols",
 ) -> tuple[str, str, str]:
     """Single-aggregate group-by fold -> Map<Key, Val>."""
     helper_name = f"{prefix}_helper"
     spec_name = f"{prefix}_spec"
     idx_var = "k"
+    where_row = (
+        to_col_expr(inner.where_expr, idx_var) if inner.where_expr else None
+    )
+    if where_row and param_name != "cols":
+        where_row = where_row.replace("cols.", f"{param_name}.")
     where_at_k = (
-        spec_where_cond(to_col_expr(inner.where_expr, idx_var), idx_var, schema)
-        if inner.where_expr
-        else None
+        spec_where_cond(where_row, idx_var, schema) if where_row else None
     )
     combine = _agg_combine(inner.agg_type)
     is_sum = inner.agg_type == "SUM"
@@ -626,6 +698,8 @@ def _emit_groupby_map_helper(
             else "1"
         )
     )
+    if param_name != "cols":
+        term_at_k = term_at_k.replace("cols.", f"{param_name}.")
 
     if len(inner.groupby_columns) == 1:
         c = inner.groupby_columns[0]
@@ -633,12 +707,14 @@ def _emit_groupby_map_helper(
     else:
         map_key_ty = f"({', '.join(spec_map_key_type(schema[c]) for c in inner.groupby_columns)})"
     map_ret = f"Map<{map_key_ty}, {val_type}>"
-    key_expr = _groupby_key_expr(inner.groupby_columns, idx_var, schema)
+    key_expr = _groupby_key_expr(
+        inner.groupby_columns, idx_var, schema, param_name=param_name,
+    )
     zero = f"0{val_type}"
 
     if where_at_k:
         body_inner = (
-            f"let tail = {helper_name}(cols, {idx_var} + 1);\n"
+            f"let tail = {helper_name}({param_name}, {idx_var} + 1);\n"
             f"        if {where_at_k} {{\n"
             f"            let key = {key_expr};\n"
             f"            let prev = if tail.contains_key(key) {{ tail[key] }} else {{ {zero} }};\n"
@@ -649,7 +725,7 @@ def _emit_groupby_map_helper(
         )
     elif combine == "max":
         body_inner = (
-            f"let tail = {helper_name}(cols, {idx_var} + 1);\n"
+            f"let tail = {helper_name}({param_name}, {idx_var} + 1);\n"
             f"        let key = {key_expr};\n"
             f"        let prev = if tail.contains_key(key) {{ tail[key] }} else {{ 0u64 }};\n"
             f"        let t = {term_at_k};\n"
@@ -657,7 +733,7 @@ def _emit_groupby_map_helper(
         )
     elif combine == "min":
         body_inner = (
-            f"let tail = {helper_name}(cols, {idx_var} + 1);\n"
+            f"let tail = {helper_name}({param_name}, {idx_var} + 1);\n"
             f"        let key = {key_expr};\n"
             f"        let prev = if tail.contains_key(key) {{ tail[key] }} else {{ u64::MAX }};\n"
             f"        let t = {term_at_k};\n"
@@ -665,26 +741,118 @@ def _emit_groupby_map_helper(
         )
     else:
         body_inner = (
-            f"let tail = {helper_name}(cols, {idx_var} + 1);\n"
+            f"let tail = {helper_name}({param_name}, {idx_var} + 1);\n"
             f"        let key = {key_expr};\n"
             f"        let prev = if tail.contains_key(key) {{ tail[key] }} else {{ {zero} }};\n"
             f"        tail.insert(key, (prev as int + {term_at_k} as int) as {val_type})"
         )
 
-    helper = f"""pub open spec fn {helper_name}(cols: &{struct_name}, {idx_var}: int) -> {map_ret}
+    helper = f"""pub open spec fn {helper_name}({param_name}: &{struct_name}, {idx_var}: int) -> {map_ret}
     recommends
-        0 <= {idx_var} && {idx_var} <= cols.n,
-        valid_cols(cols),
-    decreases cols.n - {idx_var},
+        0 <= {idx_var} && {idx_var} <= {param_name}.n,
+        {valid_fn}({param_name}),
+    decreases {param_name}.n - {idx_var},
 {{
-    if {idx_var} < cols.n {{
+    if {idx_var} < {param_name}.n {{
         {body_inner}
     }} else {{
         Map::empty()
     }}
 }}"""
-    spec = _wrap_spec(spec_name, helper_name, struct_name=struct_name, ret_type=map_ret)
-    return helper + "\n\n" + spec, f"{spec_name}(cols)", map_ret
+    spec = _wrap_spec(
+        spec_name,
+        helper_name,
+        struct_name=struct_name,
+        param_name=param_name,
+        valid_fn=valid_fn,
+        ret_type=map_ret,
+    )
+    return helper + "\n\n" + spec, f"{spec_name}({param_name})", map_ret
+
+
+def _emit_count_distinct_groupby_map_helper(
+    prefix: str,
+    inner: SQLQuery,
+    schema: dict[str, str],
+    *,
+    struct_name: str = "Cols",
+    param_name: str = "cols",
+    valid_fn: str = "valid_cols",
+) -> tuple[str, str, str]:
+    """COUNT(DISTINCT) group-by fold -> Map<Key, u64> (distinct count per key)."""
+    if not inner.agg_specs or inner.agg_specs[0].agg_type != "COUNT_DISTINCT":
+        raise UnsupportedContractError(
+            "IN inner COUNT(DISTINCT) GROUP BY requires a COUNT(DISTINCT) aggregate"
+        )
+    spec = inner.agg_specs[0]
+    helper_name = f"{prefix}_helper"
+    spec_name = f"{prefix}_spec"
+    idx_var = "k"
+    where_row = (
+        to_col_expr(inner.where_expr, idx_var) if inner.where_expr else None
+    )
+    if where_row and param_name != "cols":
+        where_row = where_row.replace("cols.", f"{param_name}.")
+    where_at_k = (
+        spec_where_cond(where_row, idx_var, schema) if where_row else None
+    )
+    c = inner.groupby_columns[0]
+    map_key_ty = spec_map_key_type(schema[c])
+    dist_ty = spec_map_key_type(schema[spec.agg_column])
+    state_ret = f"Map<{map_key_ty}, Map<{dist_ty}, bool>>"
+    count_ret = f"Map<{map_key_ty}, u64>"
+    key_expr = _groupby_key_expr(
+        inner.groupby_columns, idx_var, schema, param_name=param_name,
+    )
+    val_expr = _distinct_val_at_k(
+        spec.agg_column, idx_var, schema, param_name=param_name,
+    )
+
+    if where_at_k:
+        body_inner = (
+            f"let tail = {helper_name}({param_name}, {idx_var} + 1);\n"
+            f"        if {where_at_k} {{\n"
+            f"            let key = {key_expr};\n"
+            f"            let prev = if tail.contains_key(key) {{ tail[key] }} else {{ Map::empty() }};\n"
+            f"            let seen = if prev.contains_key({val_expr}) {{ prev }} "
+            f"else {{ prev.insert({val_expr}, true) }};\n"
+            f"            tail.insert(key, seen)\n"
+            f"        }} else {{\n"
+            f"            tail\n"
+            f"        }}"
+        )
+    else:
+        body_inner = (
+            f"let tail = {helper_name}({param_name}, {idx_var} + 1);\n"
+            f"        let key = {key_expr};\n"
+            f"        let prev = if tail.contains_key(key) {{ tail[key] }} else {{ Map::empty() }};\n"
+            f"        let seen = if prev.contains_key({val_expr}) {{ prev }} "
+            f"else {{ prev.insert({val_expr}, true) }};\n"
+            f"        tail.insert(key, seen)"
+        )
+
+    helper = f"""pub open spec fn {helper_name}({param_name}: &{struct_name}, {idx_var}: int) -> {state_ret}
+    recommends
+        0 <= {idx_var} && {idx_var} <= {param_name}.n,
+        {valid_fn}({param_name}),
+    decreases {param_name}.n - {idx_var},
+{{
+    if {idx_var} < {param_name}.n {{
+        {body_inner}
+    }} else {{
+        Map::empty()
+    }}
+}}"""
+    spec_body = (
+        f"    {helper_name}({param_name}, 0)"
+        f".map_values(|seen: Map<{dist_ty}, bool>| seen.dom().len() as u64)"
+    )
+    spec = f"""pub open spec fn {spec_name}({param_name}: &{struct_name}) -> {count_ret}
+    recommends {valid_fn}({param_name}),
+{{
+{spec_body}
+}}"""
+    return helper + "\n\n" + spec, f"{spec_name}({param_name})", count_ret
 
 
 def emit_scalar_subquery_helper(
@@ -1030,6 +1198,57 @@ def emit_exists_corr_subquery_helper(
     return helper + "\n\n" + spec + "\n\n" + keys_map + "\n\n" + lemma
 
 
+def emit_in_grouped_subquery_helper(
+    in_spec: InSubquerySpec,
+    inner_schema: dict[str, str],
+    *,
+    struct_name: str = "Cols",
+    valid_fn: str = "valid_cols",
+    param_name: str = "cols",
+) -> str:
+    """Emit IN (subquery) membership over inner GROUP BY map (+ optional HAVING)."""
+    _validate_in_grouped_inner(in_spec)
+    inner = in_spec.query
+    prefix = f"in_{in_spec.alias}"
+    contains_name = f"{prefix}_contains"
+    proj_col = _in_projection_column(in_spec)
+    val_ty = spec_map_key_type(inner_schema.get(proj_col.lower(), "int"))
+    key_ty, having_val_ty = _in_grouped_having_types(inner, inner_schema)
+
+    is_count_distinct = inner.agg_type == "COUNT_DISTINCT" or any(
+        a.agg_type == "COUNT_DISTINCT" for a in inner.agg_specs
+    )
+    if is_count_distinct:
+        map_helpers, map_call, _map_ret = _emit_count_distinct_groupby_map_helper(
+            prefix,
+            inner,
+            inner_schema,
+            struct_name=struct_name,
+            param_name=param_name,
+            valid_fn=valid_fn,
+        )
+    else:
+        map_helpers, map_call, _map_ret = _emit_groupby_map_helper(
+            prefix,
+            inner,
+            inner_schema,
+            struct_name=struct_name,
+            param_name=param_name,
+            valid_fn=valid_fn,
+        )
+
+    filtered = _inline_having_filter(
+        map_call, inner.having_expr, key_ty, having_val_ty,
+    )
+    contains = f"""pub open spec fn {contains_name}({param_name}: &{struct_name}, val: {val_ty}) -> bool
+    recommends {valid_fn}({param_name}),
+{{
+    let filtered = {filtered};
+    filtered.contains_key(val)
+}}"""
+    return map_helpers + "\n\n" + contains
+
+
 def emit_in_subquery_helper(
     in_spec: InSubquerySpec,
     inner_schema: dict[str, str],
@@ -1048,6 +1267,14 @@ def emit_in_subquery_helper(
             valid_fn=valid_fn,
             param_name=param_name,
             outer_schema=outer_schema,
+        )
+    if in_spec.query.groupby_columns:
+        return emit_in_grouped_subquery_helper(
+            in_spec,
+            inner_schema,
+            struct_name=struct_name,
+            valid_fn=valid_fn,
+            param_name=param_name,
         )
     _validate_simple_semi_join_inner(in_spec.query, label="IN")
     helper_name = f"in_{in_spec.alias}_helper"

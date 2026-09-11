@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-from verus_transpiler import transpile_sql_to_verus
-from verus_transpiler.parse_sql import UnsupportedContractError
-
 from research_loop.method_spec_ret_type import (
     parse_method_spec_return_type,
     resolve_ret_type_from_method_spec,
@@ -23,6 +19,7 @@ from tests.test_fold_bound_slot_kinds import (
     SUB_Q7_SCHEMA,
     SUB_SCHEMA,
 )
+from verus_transpiler import transpile_sql_to_verus
 
 R23SLOPPY_Q1_SQL = """SELECT s.name, s.cik, s.countryba, s.sic
 FROM sub s
@@ -52,11 +49,14 @@ def _bridge_for_spec(spec_rs: str):
     return bridge_from_method_spec_type(ty), ret_type
 
 
-def test_r23sloppy_q1_in_inner_groupby_still_unsupported() -> None:
-    """Known remaining step 2: r23sloppy Q1 IN inner GROUP BY loud-fails."""
+def test_r23sloppy_q1_in_inner_groupby_transpiles() -> None:
+    """r23sloppy Q1: uncorrelated IN inner GROUP BY + HAVING COUNT(*) fold."""
     schema = load_sec_schema()
-    with pytest.raises(UnsupportedContractError, match="IN inner GROUP BY"):
-        _transpile(R23SLOPPY_Q1_SQL, {"sub": schema["sub"]})
+    spec = _transpile(R23SLOPPY_Q1_SQL, {"sub": schema["sub"]})
+    assert "in_in_1_contains" in spec
+    assert "decreases" in spec
+    assert "v > 3" in spec or "> 3" in spec
+    assert "arbitrary()" not in spec
 
 
 def test_r23rocket_q1_transpile_and_fold_emit_smoke() -> None:

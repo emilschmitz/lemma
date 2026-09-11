@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from verus_transpiler import transpile_sql_to_verus
 from verus_transpiler.parse_sql import parse_sql
+
+from verus_transpiler import transpile_sql_to_verus
 
 GENERIC_SCHEMA: dict[str, dict[str, str]] = {
     "events": {
@@ -65,9 +66,9 @@ GROUP BY e.entity_id, e.name"""
     inner = q.in_subqueries[0].query
     assert inner.groupby_columns == ["entity_id"]
     assert any(a.agg_type == "COUNT_DISTINCT" for a in inner.agg_specs)
-    import pytest
-
-    from verus_transpiler.parse_sql import UnsupportedContractError
-
-    with pytest.raises(UnsupportedContractError, match="IN inner GROUP BY"):
-        transpile_sql_to_verus(sql, GENERIC_SCHEMA)
+    out = transpile_sql_to_verus(sql, GENERIC_SCHEMA)
+    assert "in_in_1_contains" in out
+    assert "decreases" in out
+    assert "v > 1" in out
+    assert "arbitrary()" not in out
+    assert "dom().len() as u64" in out

@@ -15,7 +15,7 @@ from verus_transpiler.column_projection import (
     project_multi_schema_for_query,
     project_schema_for_query,
 )
-from verus_transpiler.parse_sql import UnsupportedContractError, normalize_schema
+from verus_transpiler.parse_sql import normalize_schema
 
 from research_loop.admit_agent_runquery import admit_agent_runquery
 from research_loop.assemble_runquery import (
@@ -250,7 +250,7 @@ def test_holdout_shell_builds_without_vacuous_trusted_run_query(qnum: str, sql: 
 # --- Loud fail preferred (no re-mocking unsupported shapes) ---
 
 
-def test_in_inner_groupby_still_raises_unsupported() -> None:
+def test_in_inner_groupby_count_distinct_transpiles() -> None:
     sql = """SELECT e.entity_id, e.name,
        COUNT(DISTINCT e.kind) AS kinds,
        COUNT(*) AS total
@@ -270,8 +270,13 @@ GROUP BY e.entity_id, e.name"""
             "year": "int",
         },
     }
-    with pytest.raises(UnsupportedContractError, match="IN inner GROUP BY"):
-        transpile_sql_to_verus(sql, schema)
+    spec_rs = transpile_sql_to_verus(sql, schema)
+    assert "in_in_1_contains" in spec_rs
+    helpers = _fold_helpers(spec_rs)
+    assert helpers, "IN inner GROUP BY must emit recursive fold helpers"
+    assert _fold_helpers_have_no_arbitrary(spec_rs)
+    assert "v > 1" in spec_rs
+    assert "dom().len() as u64" in spec_rs
 
 
 def test_multi_agg_visible_spec_bridge_is_structural_not_arbitrary() -> None:
@@ -327,16 +332,19 @@ def test_resample_pool_shell_ok_adversarial(pool: str, qid: str, sql: str) -> No
     assert _fold_helpers_have_no_arbitrary(spec_rs)
 
 
-def test_resample_r3_q10_in_inner_groupby_still_raises_unsupported() -> None:
-    """Known loud-fail: IN subquery with inner GROUP BY (r3 Q10)."""
+def test_resample_r3_q10_in_inner_groupby_transpiles() -> None:
+    """r3 Q10: IN subquery with inner GROUP BY COUNT(DISTINCT) + HAVING."""
     r3_path = HOLDOUT / "queries_resample_r3.sql"
     queries = dict(parse_sql_file(r3_path))
     sql = queries["Q10"]
     schema = load_sec_schema()
 
     shell = classify_query(sql, "Q10", schema)
-    assert shell.status == "transpile_fail"
-    assert "IN inner GROUP BY" in shell.reason
+    assert shell.status == "ok_shell", shell.reason
 
-    with pytest.raises(UnsupportedContractError, match="IN inner GROUP BY"):
-        transpile_sql_to_verus(sql, _projected_sec_schema(sql))
+    spec_rs = transpile_sql_to_verus(sql, _projected_sec_schema(sql))
+    assert "in_in_1_contains" in spec_rs
+    helpers = _fold_helpers(spec_rs)
+    assert helpers
+    assert _fold_helpers_have_no_arbitrary(spec_rs)
+    assert "v > 1" in spec_rs
