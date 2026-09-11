@@ -97,6 +97,7 @@ def test_apply_product_env_submit_ends_session(
     assert os.environ["AGENT_SUBMIT_ENDS_SESSION"] == "1"
     assert os.environ["LEMMA_STOP_ON_TIMED_SUCCESS"] == "1"
     assert os.environ["MOCK_AGENT"] == "0"
+    assert os.environ["LEMMA_BENCH_TIMEOUT_SEC"] == "600"
     assert "LEMMA_DATASET_SIZE" not in os.environ
 
 
@@ -107,6 +108,26 @@ def test_observed_e2e_jobs_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert observed_e2e_jobs() == 4
     monkeypatch.setenv("LEMMA_E2E_JOBS", "0")
     assert observed_e2e_jobs() == 1
+
+
+def test_observed_e2e_jobs_follows_ram_oversubscribes_cpu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import os
+
+    from research_loop.scripts import local_e2e_tiny_docker as e2e
+
+    monkeypatch.delenv("LEMMA_E2E_JOBS", raising=False)
+    monkeypatch.setattr(e2e, "mem_available_kb", lambda: 8 * 1024 * 1024)
+    monkeypatch.setattr(os, "cpu_count", lambda: 8)
+    jobs = e2e.observed_e2e_jobs()
+    assert jobs >= 8
+    assert jobs <= e2e._JOBS_CAP
+    assert jobs == min(
+        8 * 1024 * 1024 // (e2e._OBS_SLOT_MIB * 1024),
+        8 * e2e._CPU_OVERSUBSCRIBE,
+        e2e._JOBS_CAP,
+    )
 
 
 def test_parallel_round_runs_pending_together(

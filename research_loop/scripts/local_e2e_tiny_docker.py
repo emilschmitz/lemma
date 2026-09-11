@@ -26,10 +26,13 @@ LIBDUCKDB = ROOT / "build/libduckdb/libduckdb.so"
 AGENT_IMAGE = "lemma-agent:cli"
 
 _ALL_QIDS = ("Q1", "Q2", "Q3")
-# Observed live slot: docker agent ~260Mi + host run_optimizer ~180Mi.
-# Verus verify/measure spikes higher; leave headroom on a 15Gi box already in swap.
-_OBS_SLOT_MIB = 1100
-_JOBS_CAP = 6
+# Live 75k Docker e2e on this 15Gi / 8-cpu box (2026-09-11):
+#   run_optimizer ~170–220Mi, lemma-agent cgroup 225–360Mi, ~430Mi mean RSS/job.
+#   6 jobs left ~7Gi MemAvailable, load ~2, memory pressure ~0 — agents are LLM-bound.
+# Slot keeps verify/measure spike headroom; do not clamp to nproc.
+_OBS_SLOT_MIB = 650
+_JOBS_CAP = 12
+_CPU_OVERSUBSCRIBE = 2
 
 
 def repo_root() -> Path:
@@ -47,14 +50,15 @@ def mem_available_kb() -> int:
 
 
 def observed_e2e_jobs() -> int:
-    """Parallelism from LEMMA_E2E_JOBS, else min(nproc, MemAvailable / observed slot)."""
+    """Parallelism from LEMMA_E2E_JOBS, else MemAvailable / observed slot (CPU oversub)."""
     override = os.environ.get("LEMMA_E2E_JOBS", "").strip()
     if override.isdigit():
         return max(1, int(override))
     nproc = os.cpu_count() or 2
     avail_kb = mem_available_kb()
     from_ram = max(1, avail_kb // (_OBS_SLOT_MIB * 1024)) if avail_kb else 2
-    return max(1, min(nproc, from_ram, _JOBS_CAP))
+    io_oversub = max(nproc, nproc * _CPU_OVERSUBSCRIBE)
+    return max(1, min(from_ram, io_oversub, _JOBS_CAP))
 
 
 def _qid_sort(qid: str) -> tuple[int, str]:
@@ -264,6 +268,7 @@ def apply_product_env(*, duckdb_path: Path) -> None:
     os.environ["AGENT_SUBMIT_ENDS_SESSION"] = "1"
     os.environ.setdefault("MAX_ITERATIONS", "1")
     os.environ.setdefault("AGENT_TIMEOUT_SEC", "600")
+    os.environ.setdefault("LEMMA_BENCH_TIMEOUT_SEC", "600")
     os.environ["AGENT_NETWORK"] = "0"
     os.environ["AGENT_WEB_SEARCH"] = "0"
     os.environ["AGENT_EGRESS_PROFILE"] = "cursor"
@@ -673,8 +678,9 @@ def _run_local_e2e_impl(
                 latest[qid] = resume_record(qid, dest)
     jobs = observed_e2e_jobs()
     avail_gi = mem_available_kb() / (1024 * 1024)
+    nproc = os.cpu_count()
     print(
-        f"e2e jobs={jobs} (nproc={os.cpu_count()} "
+        f"e2e jobs={jobs} (nproc={nproc} oversub={_CPU_OVERSUBSCRIBE} "
         f"MemAvailable={avail_gi:.1f}Gi slot={_OBS_SLOT_MIB}Mi cap={_JOBS_CAP})",
         flush=True,
     )
@@ -748,7 +754,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         os.environ.setdefault("MAX_ITERATIONS", "4")
-        retry_rounds = 1
+        retry_rounds = 3
         sql_file = write_suite_sql()
         log_dir = GENDB_LOG
         query_args = query_args[1:]
