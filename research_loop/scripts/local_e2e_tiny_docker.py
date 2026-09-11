@@ -30,11 +30,15 @@ def repo_root() -> Path:
     return ROOT
 
 
-def load_tiny_queries() -> dict[str, str]:
+def load_queries(sql_file: Path = SQL_FILE) -> dict[str, str]:
     from research_loop.scripts.sqlsmith_trusted_coverage import parse_sql_file
 
-    pairs = parse_sql_file(SQL_FILE)
+    pairs = parse_sql_file(sql_file)
     return {qid: sql for qid, sql in pairs}
+
+
+def load_tiny_queries() -> dict[str, str]:
+    return load_queries(SQL_FILE)
 
 
 def resolve_tiny_db() -> Path:
@@ -185,23 +189,29 @@ def preflight_errors(
     return errors
 
 
-def select_query_ids(argv: list[str]) -> list[str]:
+def select_query_ids(
+    argv: list[str],
+    *,
+    available: tuple[str, ...] | None = None,
+    default_all: bool = False,
+) -> list[str]:
+    catalog = available if available is not None else _ALL_QIDS
     if not argv:
-        return ["Q1"]
-    if len(argv) == 1 and argv[0].lower() in {"q1", "1"}:
+        return list(catalog) if default_all else ["Q1"]
+    if len(argv) == 1 and argv[0].lower() in {"q1", "1"} and available is None:
         return ["Q1"]
     if len(argv) == 1 and argv[0].lower() == "all":
-        return list(_ALL_QIDS)
+        return list(catalog)
     out: list[str] = []
     for arg in argv:
         qid = arg.upper()
         if not qid.startswith("Q"):
             qid = f"Q{qid}"
-        if qid not in _ALL_QIDS:
-            raise ValueError(f"unknown query {arg!r}; expected Q1, Q2, Q3, or all")
+        if qid not in catalog:
+            raise ValueError(f"unknown query {arg!r}; expected one of {list(catalog)} or all")
         if qid not in out:
             out.append(qid)
-    return out or ["Q1"]
+    return out or (list(catalog) if default_all else ["Q1"])
 
 
 def apply_product_env(*, duckdb_path: Path) -> None:
@@ -369,6 +379,8 @@ def run_local_e2e(
     *,
     path_env: str | None = None,
     skip_docker_build: bool = False,
+    sql_file: Path | None = None,
+    log_dir: Path | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     saved_path = os.environ.get("PATH")
     if path_env is not None:
@@ -378,6 +390,8 @@ def run_local_e2e(
             query_ids,
             path_env=path_env,
             skip_docker_build=skip_docker_build,
+            sql_file=sql_file,
+            log_dir=log_dir,
         )
     finally:
         if saved_path is None:
@@ -391,6 +405,8 @@ def _run_local_e2e_impl(
     *,
     path_env: str | None = None,
     skip_docker_build: bool = False,
+    sql_file: Path | None = None,
+    log_dir: Path | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     errors = preflight_errors(path_env=path_env)
     if errors:
@@ -403,16 +419,18 @@ def _run_local_e2e_impl(
 
     duckdb_path = resolve_tiny_db()
     apply_product_env(duckdb_path=duckdb_path)
-    queries = load_tiny_queries()
+    source = sql_file if sql_file is not None else SQL_FILE
+    queries = load_queries(source)
     missing = [qid for qid in query_ids if qid not in queries]
     if missing:
-        print(f"queries missing from {SQL_FILE}: {missing}", file=sys.stderr)
+        print(f"queries missing from {source}: {missing}", file=sys.stderr)
         return [], 1
 
+    dest = log_dir if log_dir is not None else LOG_DIR
     results: list[dict[str, Any]] = []
     exit_code = 0
     for qid in query_ids:
-        rec = run_one_query(qid, queries[qid], log_dir=LOG_DIR)
+        rec = run_one_query(qid, queries[qid], log_dir=dest)
         results.append(rec)
         if not rec.get("lemma_ok"):
             exit_code = 1
@@ -422,22 +440,57 @@ def _run_local_e2e_impl(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Local SEC tiny Docker e2e product path")
     parser.add_argument(
+        "--sql-file",
+        type=Path,
+        default=None,
+        help="Labeled -- Qn: SQL file (default: smoke Q1–Q3)",
+    )
+    parser.add_argument(
         "queries",
         nargs="*",
-        help="Q1 (default), all, or explicit Q1 Q2 Q3",
+        help="Q1 (default), all, gendb (T1–T30 + failed historical), or explicit ids",
     )
     args = parser.parse_args(argv)
+    reexec_argv = list(sys.argv[1:] if argv is None else argv)
+
+    sql_file = args.sql_file
+    log_dir = LOG_DIR
+    query_args = list(args.queries)
+    default_all = False
+    if query_args and query_args[0].lower() == "gendb":
+        from research_loop.scripts.local_e2e_gendb_suite import (
+            OUT_DIR as GENDB_LOG,
+            write_suite_sql,
+        )
+
+        sql_file = write_suite_sql()
+        log_dir = GENDB_LOG
+        query_args = query_args[1:]
+        default_all = True
+    elif sql_file is not None:
+        default_all = True
+        log_dir = sql_file.resolve().parent
+
+    queries = load_queries(sql_file if sql_file is not None else SQL_FILE)
     try:
-        query_ids = select_query_ids(args.queries)
+        query_ids = select_query_ids(
+            query_args,
+            available=tuple(queries),
+            default_all=default_all,
+        )
     except ValueError as exc:
         print(exc, file=sys.stderr)
         return 2
 
     os.chdir(ROOT)
-    maybe_reexec_with_docker_group(list(args.queries))
-    _, code = run_local_e2e(query_ids)
+    maybe_reexec_with_docker_group(reexec_argv)
+    _, code = run_local_e2e(
+        query_ids,
+        sql_file=sql_file,
+        log_dir=log_dir,
+    )
     if code == 0:
-        print(f"logs under {LOG_DIR}", flush=True)
+        print(f"logs under {log_dir}", flush=True)
     return code
 
 
