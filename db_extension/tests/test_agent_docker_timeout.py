@@ -101,3 +101,85 @@ def test_run_agent_docker_timeout_stops_mcp(monkeypatch: pytest.MonkeyPatch, tmp
     assert proc.returncode == -1
     assert stop_calls, "McpSocketServer.stop must run on agent docker timeout"
     assert stop_calls.count("stop") >= 1
+
+
+def test_run_agent_docker_mounts_host_entrypoint_when_present(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    stop_calls: list[str] = []
+
+    class FakeMcpServer:
+        def __init__(self, sock_path, ctx) -> None:
+            self.sock_path = sock_path
+
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            stop_calls.append("stop")
+
+    class FakeEgress:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            pass
+
+    captured_cmd: list[list[str]] = []
+
+    class _QuickExitPopen:
+        def __init__(self, cmd, *args, **kwargs) -> None:
+            captured_cmd.append(list(cmd))
+            self.stdout = io.StringIO("")
+            self.stderr = io.StringIO("")
+
+        def poll(self) -> int:
+            return 0
+
+        def wait(self) -> int:
+            return 0
+
+    monkeypatch.setattr(
+        "db_extension.agent.mcp_socket.McpSocketServer",
+        FakeMcpServer,
+    )
+    monkeypatch.setattr(
+        "db_extension.agent.egress_bridge.EgressBridge",
+        FakeEgress,
+    )
+    monkeypatch.setattr("research_loop.agent_sandbox.subprocess.Popen", _QuickExitPopen)
+    monkeypatch.setattr(
+        "db_extension.agent.session_clock.end_session_requested",
+        lambda _ws: False,
+    )
+    monkeypatch.setattr(
+        "research_loop.agent_sandbox.subprocess.run",
+        lambda *a, **k: subprocess.CompletedProcess(list(a[0]) if a else [], 0, "", ""),
+    )
+
+    ws = tmp_path / "workspace"
+    (ws / "context" / "ro").mkdir(parents=True)
+    (ws / "context" / "ro" / "spec.rs").write_text("// stub spec", encoding="utf-8")
+
+    entrypoint = tmp_path / "entrypoint.sh"
+    entrypoint.write_text("#!/bin/bash\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "research_loop.agent_sandbox.ROOT",
+        tmp_path,
+    )
+    (tmp_path / "docker" / "agent").mkdir(parents=True)
+    (tmp_path / "docker" / "agent" / "entrypoint.sh").write_text(
+        entrypoint.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    cfg = {"AGENT_TIMEOUT_SEC": "30", "AGENT_IMAGE": "lemma-agent:cli", "AGENT_CMD": "echo"}
+    run_agent_docker(ws, "prompt", cfg=cfg, query_id=7)
+
+    assert captured_cmd, "docker argv must be captured"
+    flat = " ".join(captured_cmd[0])
+    assert "/app/entrypoint.sh:ro" in flat
+    assert "entrypoint.sh" in flat

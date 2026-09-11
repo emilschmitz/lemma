@@ -80,6 +80,17 @@ def test_exists_assemble_emits_support_tables_single_param_run_query() -> None:
     assert pre_pin is not None, "missing pre load_cols_pre pin_table block"
     assert "STMT" in pre_pin.group(1).upper()
 
+    assert 'lemma_duckdb_load::read_string("num"' in program
+    assert 'lemma_duckdb_load::read_string("pre"' in program
+    assert "impl Cols_pre" in program
+    pre_impl = re.search(
+        r"impl Cols_pre\s*\{.*?^\}",
+        program,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert pre_impl is not None, "missing impl Cols_pre block"
+    assert "self.tag[i].clone()" not in pre_impl.group(0)
+
 
 @pytest.mark.skipif(
     not Path("/home/emil/projects/lemma-db/holdout/gendb_sec_edgar/duckdb/sec_edgar_tiny.duckdb").is_file(),

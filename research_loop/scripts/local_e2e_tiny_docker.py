@@ -365,8 +365,23 @@ def run_one_query(qid: str, sql: str, *, log_dir: Path) -> dict[str, Any]:
             rec["lemma_ok"] = False
 
     result_json = copy_latest_result_json(log_dir)
+    run_dir: Path | None = None
     if result_json is not None:
         rec["result_json"] = str(result_json)
+        run_dir = result_json.parent
+
+    from research_loop.scripts.classify_product_failures import (
+        classify_optimizer_log,
+        classify_run_dir,
+    )
+
+    product = classify_run_dir(run_dir) if run_dir is not None else None
+    if product is None:
+        product = classify_optimizer_log(text)
+    rec["product_step"] = product["step"]
+    rec["product_class"] = product["class"]
+    if product.get("detail"):
+        rec["product_detail"] = product["detail"]
 
     print(
         f"{qid}: proof={rec.get('proof_verified')} lat={rec.get('latency_us')} "

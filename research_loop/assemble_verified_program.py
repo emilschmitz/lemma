@@ -1241,6 +1241,13 @@ def assemble_verified_program(
             schema_dict=schema_dict,
             struct_name="Cols",
         )
+        for st, cols in support.items():
+            core = rewrite_cols_getters_for_pin(
+                core,
+                table_name=st,
+                schema_dict=cols,
+                struct_name=f"Cols_{st}",
+            )
     boundary = _boundary_helpers(ret_type, spec_rs)
     agent_externs = maybe_emit_agent_externs(run_query_body, context=boundary)
     load_gen = _select_load_generator(load_mode=load_mode)

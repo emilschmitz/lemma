@@ -77,9 +77,29 @@ EOF
       cp "$CURSOR_PROJECT_DIR/mcp.json" "$CURSOR_CONFIG_DIR/mcp.json"
     fi
     # Pre-approve for this project (AGENT_CMD should also pass --approve-mcps).
+    # Must not block AGENT_CMD if enable hangs (observed full-session timeout).
     if command -v agent >/dev/null 2>&1; then
-      (cd /workspace && agent mcp enable lemma-host) >/tmp/lemma-mcp-enable.log 2>&1 \
-        || echo "WARN: agent mcp enable lemma-host failed (see /tmp/lemma-mcp-enable.log)" >&2
+      MCP_ENABLE_LOG="/tmp/lemma-mcp-enable.log"
+      if command -v timeout >/dev/null 2>&1; then
+        (cd /workspace && timeout 8 agent mcp enable lemma-host) >"$MCP_ENABLE_LOG" 2>&1 \
+          || echo "WARN: agent mcp enable lemma-host failed or timed out (see $MCP_ENABLE_LOG)" >&2
+      else
+        (cd /workspace && agent mcp enable lemma-host) >"$MCP_ENABLE_LOG" 2>&1 &
+        MCP_ENABLE_PID=$!
+        for _ in $(seq 1 80); do
+          if ! kill -0 "$MCP_ENABLE_PID" 2>/dev/null; then
+            wait "$MCP_ENABLE_PID" || echo "WARN: agent mcp enable lemma-host failed (see $MCP_ENABLE_LOG)" >&2
+            MCP_ENABLE_PID=
+            break
+          fi
+          sleep 0.1
+        done
+        if [[ -n "${MCP_ENABLE_PID:-}" ]]; then
+          kill "$MCP_ENABLE_PID" 2>/dev/null || true
+          wait "$MCP_ENABLE_PID" 2>/dev/null || true
+          echo "WARN: agent mcp enable lemma-host timed out after 8s (see $MCP_ENABLE_LOG)" >&2
+        fi
+      fi
     fi
   fi
   # Project CLI overrides: deny web tools when network is restricted (egress sock present).

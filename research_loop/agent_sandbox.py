@@ -662,6 +662,10 @@ def run_agent_docker(
         "-e", f"LEMMA_AGENT_STREAM_LOG={stream_container}",
         "-e", f"LEMMA_AGENT_STDERR_LOG={stderr_container}",
     ]
+    entrypoint_host = ROOT / "docker" / "agent" / "entrypoint.sh"
+    if entrypoint_host.is_file():
+        cmd.extend(["-v", f"{entrypoint_host.resolve()}:/app/entrypoint.sh:ro"])
+        log_info(COMPONENT, "entrypoint_mount", str(entrypoint_host))
     if cli_dir is not None:
         cmd.extend(["-v", f"{cli_dir}:/opt/cursor-agent:ro"])
         cmd.extend(["-e", "PATH=/opt/cursor-agent:/root/.local/bin:/root/.cursor/bin:/usr/local/bin:/usr/bin:/bin"])

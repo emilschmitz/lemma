@@ -1,7 +1,12 @@
 """Unit tests for overnight harvest failure classifier."""
 from __future__ import annotations
 
-from research_loop.scripts.classify_product_failures import classify_optimizer_log
+from pathlib import Path
+
+from research_loop.scripts.classify_product_failures import (
+    classify_optimizer_log,
+    classify_run_dir,
+)
 
 _HARNESS_90S = """
 2026-09-07T02:33:45.211Z [INFO] agent_sandbox agent_docker_end: exit=0 timed_out=False
@@ -251,6 +256,66 @@ def test_classify_official_measure_timeout() -> None:
     assert out["step"] == 7
     assert out["class"] == "failed to execute"
     assert "official measure" in out.get("detail", "")
+
+
+def test_classify_run_dir_cli_never_started(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    ws = run_dir / "workspace"
+    ws.mkdir(parents=True)
+    (ws / "mcp_results" / "runs").mkdir(parents=True)
+    (ws / "logs").mkdir()
+    (ws / "runquery_agent.rs").write_text(
+        "// AGENT_EDIT_START\n"
+        "pub exec fn run_query(cols: &Cols) -> (res: Vec<u64>) {\n"
+        "    // TODO: implement hot path to match method_spec (see context/ro/spec.rs)\n"
+        "    Vec::new()\n"
+        "}\n"
+        "// AGENT_EDIT_END\n",
+        encoding="utf-8",
+    )
+    out = classify_run_dir(run_dir)
+    assert out is not None
+    assert out["step"] == 3
+    assert out["class"] == "infra"
+    assert out["detail"] == "cli never started"
+
+
+def test_classify_run_dir_with_mcp_submit_not_cli_never_started(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    ws = run_dir / "workspace"
+    runs = ws / "mcp_results" / "runs"
+    runs.mkdir(parents=True)
+    (runs / "001.json").write_text("{}", encoding="utf-8")
+    (ws / "runquery_agent.rs").write_text(
+        "// AGENT_EDIT_START\n"
+        "pub exec fn run_query(cols: &Cols) -> (res: u64) {\n"
+        "    // TODO: implement hot path\n"
+        "    Vec::new()\n"
+        "}\n"
+        "// AGENT_EDIT_END\n",
+        encoding="utf-8",
+    )
+    assert classify_run_dir(run_dir) is None
+
+
+def test_classify_run_dir_stub_with_agent_stream_not_cli_never_started(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    ws = run_dir / "workspace"
+    (ws / "mcp_results" / "runs").mkdir(parents=True)
+    (ws / "logs").mkdir()
+    (ws / "logs" / "agent_stream.jsonl").write_text('{"type":"init"}\n', encoding="utf-8")
+    (ws / "runquery_agent.rs").write_text(
+        "// AGENT_EDIT_START\n"
+        "pub exec fn run_query(cols: &Cols) -> (res: Vec<u64>) {\n"
+        "    // TODO: implement hot path to match method_spec\n"
+        "    Vec::new()\n"
+        "}\n"
+        "// AGENT_EDIT_END\n",
+        encoding="utf-8",
+    )
+    assert classify_run_dir(run_dir) is None
 
 
 def test_classify_official_full_table_600s_is_execute_not_fake_time() -> None:

@@ -13,6 +13,7 @@ import argparse
 import json
 import re
 import sys
+from pathlib import Path
 from typing import Any
 
 STEP_NAMES = (
@@ -85,6 +86,57 @@ _OFFICIAL_MEASURE = re.compile(
     r"official_measure_error|official full-table measure timed out",
     re.I,
 )
+
+
+_STUB_TODO = re.compile(r"TODO:\s*implement hot path", re.I)
+_STUB_RETURN = re.compile(
+    r"(Vec::new\(\)|HashMapWithView::new\(\)|StringHashMap::new\(\)|HashMap::new\(\))",
+)
+
+
+def _is_unedited_agent_stub(text: str) -> bool:
+    """True when AGENT_EDIT block still contains the host default TODO stub."""
+    if "AGENT_EDIT_START" not in text:
+        return False
+    start = text.find("AGENT_EDIT_START")
+    end = text.find("AGENT_EDIT_END", start)
+    if end < 0:
+        return False
+    block = text[start:end]
+    return bool(_STUB_TODO.search(block)) and bool(_STUB_RETURN.search(block))
+
+
+def classify_run_dir(run_dir: Path) -> dict[str, Any] | None:
+    """Classify infra when agent Docker timed out but CLI never started.
+
+    Returns ``{step, class, detail}`` when the run dir shows no MCP submit and an
+    unedited host stub; otherwise ``None`` (caller should use log classification).
+    """
+    ws = run_dir / "workspace" if (run_dir / "workspace").is_dir() else run_dir
+    mcp = ws / "mcp_results"
+    runs_dir = mcp / "runs"
+    has_run_json = runs_dir.is_dir() and any(runs_dir.glob("*.json"))
+    has_submitted = (mcp / "submitted.json").is_file()
+    if has_run_json or has_submitted:
+        return None
+
+    agent_path = ws / "runquery_agent.rs"
+    if not agent_path.is_file():
+        return None
+    agent_text = agent_path.read_text(encoding="utf-8", errors="replace")
+    if not _is_unedited_agent_stub(agent_text):
+        return None
+
+    stream_path = ws / "logs" / "agent_stream.jsonl"
+    stream_empty = (
+        not stream_path.is_file()
+        or stream_path.stat().st_size == 0
+        or not stream_path.read_text(encoding="utf-8", errors="replace").strip()
+    )
+    if not stream_empty:
+        return None
+
+    return _result(3, "infra", detail="cli never started")
 
 
 def _result(step: int, cls: str, *, detail: str = "") -> dict[str, Any]:
