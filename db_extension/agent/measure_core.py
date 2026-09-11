@@ -412,6 +412,45 @@ def runquery_sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def is_verified_frozen_run(run: dict) -> bool:
+    """True when MCP run has ok, proof_verified, and matching frozen runquery body."""
+    if not run.get("ok"):
+        return False
+    metrics = run.get("metrics") or {}
+    if not metrics.get("proof_verified"):
+        return False
+    body = run.get("runquery_body")
+    body_hash = run.get("runquery_sha256")
+    if not body or not body_hash:
+        return False
+    return runquery_sha256(body) == body_hash
+
+
+def latest_verified_frozen_run(*, ws: Path) -> dict | None:
+    """Latest stored MCP run passing ``is_verified_frozen_run`` (newest run_id first)."""
+    for run in list_runs(ws=ws):
+        if is_verified_frozen_run(run):
+            return run
+    return None
+
+
+def harvest_verified_submit(*, ws: Path) -> dict | None:
+    """If agent did not mark submit, promote latest verified MCP run to submitted.json."""
+    existing = get_submitted(ws=ws)
+    if existing is not None:
+        return existing
+    run = latest_verified_frozen_run(ws=ws)
+    if run is None:
+        return None
+    run_id = run.get("run_id")
+    if not run_id:
+        return None
+    marked = mark_submit(str(run_id), ws=ws)
+    if not marked.get("ok"):
+        return None
+    return get_submitted(ws=ws)
+
+
 def mark_submit(run_id: str, *, ws: Path | None = None) -> dict:
     """Mark a prior verified run_id as the official submission (does not run harness)."""
     base = ws or workspace()

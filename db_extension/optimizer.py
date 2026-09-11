@@ -62,6 +62,21 @@ def _parse_harness_metrics(stderr: str) -> dict:
     return {}
 
 
+def _maybe_harvest_verified_submit(workspace: Path) -> dict | None:
+    """Honor verified MCP runs when agent exited without submit_runquery."""
+    from db_extension.agent.measure_core import get_submitted, harvest_verified_submit
+
+    if get_submitted(ws=workspace) is not None:
+        return agent_meta_from_workspace_submit(workspace)
+    if harvest_verified_submit(ws=workspace) is None:
+        return None
+    return agent_meta_from_workspace_submit(workspace)
+
+
+def _has_verified_submit(agent_meta: dict | None) -> bool:
+    return bool(agent_meta and agent_meta.get("ok") and agent_meta.get("submitted"))
+
+
 def agent_meta_from_workspace_submit(workspace: Path) -> dict | None:
     """CLI Docker path has no OpenRouter meta; honor mcp_results/submitted.json."""
     from db_extension.agent.measure_core import get_submitted
@@ -739,10 +754,12 @@ def run_optimization_loop(
                 if demo_enabled():
                     with demo_live_step("🦾", "Generating RunQuery", pass_fail=True) as gen_step:
                         body, proc = _run_agent()
+                        if not use_mock:
+                            harvested = _maybe_harvest_verified_submit(workspace)
+                            if harvested is not None:
+                                agent_meta = harvested
                         log_trace(COMPONENT, "agent_body_preview", body[:200])
-                        has_verified_submit = bool(
-                            agent_meta and agent_meta.get("ok") and agent_meta.get("submitted")
-                        )
+                        has_verified_submit = _has_verified_submit(agent_meta)
                         gen_step.set_passed(proc.returncode == 0 or has_verified_submit)
                         if proc.returncode != 0 and not has_verified_submit:
                             err = (proc.stderr or proc.stdout or "agent exited non-zero").strip()
@@ -762,10 +779,12 @@ def run_optimization_loop(
                             continue
                 else:
                     body, proc = _run_agent()
+                    if not use_mock:
+                        harvested = _maybe_harvest_verified_submit(workspace)
+                        if harvested is not None:
+                            agent_meta = harvested
                     log_trace(COMPONENT, "agent_body_preview", body[:200])
-                    has_verified_submit = bool(
-                        agent_meta and agent_meta.get("ok") and agent_meta.get("submitted")
-                    )
+                    has_verified_submit = _has_verified_submit(agent_meta)
                     if proc.returncode != 0 and not has_verified_submit:
                         err = (proc.stderr or proc.stdout or "agent exited non-zero").strip()
                         _vprint(f" {COLOR_RED}FAILED{COLOR_RESET}")
@@ -782,24 +801,47 @@ def run_optimization_loop(
                         _snapshot_history()
                         continue
                     write_ms = int((time.perf_counter() - a_start) * 1000)
-                    _vprint(f" {COLOR_GREEN}OK{COLOR_RESET} ({write_ms // 1000} s)")
+                    if has_verified_submit and proc.returncode != 0:
+                        _vprint(
+                            f" {COLOR_YELLOW}HARVESTED{COLOR_RESET} "
+                            f"(verified MCP submit; agent rc={proc.returncode}, {write_ms // 1000} s)"
+                        )
+                    else:
+                        _vprint(f" {COLOR_GREEN}OK{COLOR_RESET} ({write_ms // 1000} s)")
             except subprocess.TimeoutExpired:
                 iter_agent_wall_s = time.perf_counter() - a_start
                 agent_gen_wall_s += iter_agent_wall_s
+                harvested = None
+                if not use_mock:
+                    harvested = _maybe_harvest_verified_submit(workspace)
+                    if harvested is not None:
+                        agent_meta = harvested
+                has_verified_submit = _has_verified_submit(agent_meta)
                 if demo_enabled():
-                    demo_step_pass_fail("🦾", "Generating RunQuery", int(iter_agent_wall_s * 1000), False)
-                _vprint(f" {COLOR_RED}TIMEOUT{COLOR_RESET}")
-                history.append(_history_entry(
-                    iteration=iteration,
-                    status="TIMEOUT",
-                    proof_verified=False,
-                    latency=-1,
-                    error="Agent timed out",
-                    wall_s=iter_agent_wall_s,
-                    agent_gen_wall_s=agent_gen_wall_s,
-                ))
-                _snapshot_history()
-                continue
+                    demo_step_pass_fail(
+                        "🦾",
+                        "Generating RunQuery",
+                        int(iter_agent_wall_s * 1000),
+                        has_verified_submit,
+                    )
+                if has_verified_submit:
+                    _vprint(
+                        f" {COLOR_YELLOW}TIMEOUT{COLOR_RESET} "
+                        "(harvested verified MCP submit; proceeding to official measure)"
+                    )
+                else:
+                    _vprint(f" {COLOR_RED}TIMEOUT{COLOR_RESET}")
+                    history.append(_history_entry(
+                        iteration=iteration,
+                        status="TIMEOUT",
+                        proof_verified=False,
+                        latency=-1,
+                        error="Agent timed out",
+                        wall_s=iter_agent_wall_s,
+                        agent_gen_wall_s=agent_gen_wall_s,
+                    ))
+                    _snapshot_history()
+                    continue
             except Exception as e:
                 _vprint(f" {COLOR_RED}FAILED{COLOR_RESET}")
                 _vprint(f"    {e}")
@@ -921,7 +963,7 @@ def run_optimization_loop(
             if leftover:
                 err = f"no marked submit; leftover verify:\n{leftover}"
             _vprint(f" {COLOR_RED}FAILED{COLOR_RESET}")
-            _vprint(f"    no marked submit")
+            _vprint("    no marked submit")
             if leftover:
                 _vprint("    LEFTOVER_VERIFY_BEGIN")
                 _vprint(leftover)

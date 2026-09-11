@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -143,6 +144,53 @@ def test_parse_run_dir(tmp_path: Path) -> None:
     text = f"optimizer loop_start: run_dir='{run}' mock=False\n"
     assert parse_run_dir(text) == run
     assert parse_run_dir("no dir") is None
+
+
+def test_resume_ok_qids_skips_truncated_pins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from research_loop.scripts import local_e2e_tiny_docker as e2e
+
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    results = {
+        "results": [
+            {
+                "qid": "Q1",
+                "lemma_ok": True,
+                "dataset_size": 500,
+            },
+            {
+                "qid": "Q2",
+                "lemma_ok": True,
+                "dataset_size": 75_000,
+            },
+        ]
+    }
+    (log_dir / "results.json").write_text(json.dumps(results) + "\n")
+    monkeypatch.setattr(
+        "db_extension.dataset_config.effective_dataset_size",
+        lambda: 75_000,
+    )
+    ok = e2e.resume_ok_qids(log_dir, ["Q1", "Q2", "Q3"])
+    assert ok == {"Q2"}
+
+
+def test_resume_ok_qids_missing_dataset_size_not_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from research_loop.scripts import local_e2e_tiny_docker as e2e
+
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    results = {"results": [{"qid": "Q1", "lemma_ok": True}]}
+    (log_dir / "results.json").write_text(json.dumps(results) + "\n")
+    monkeypatch.setattr(
+        "db_extension.dataset_config.effective_dataset_size",
+        lambda: 75_000,
+    )
+    ok = e2e.resume_ok_qids(log_dir, ["Q1"])
+    assert ok == set()
 
 
 def test_run_one_query_wake_and_ok_class(

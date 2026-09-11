@@ -375,7 +375,66 @@ def copy_latest_result_json(log_dir: Path) -> Path | None:
     return copy_run_dir(log_dir, result_dirs[0].parent)
 
 
+def recorded_dataset_size(rec: dict[str, Any], log_dir: Path) -> int | None:
+    """Dataset size used for a prior e2e run (manifest, rec field, or optimizer log)."""
+    raw = rec.get("dataset_size")
+    if raw is not None:
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            pass
+    result_json = rec.get("result_json")
+    if result_json:
+        manifest = Path(result_json).parent / "manifest.json"
+        if manifest.is_file():
+            try:
+                data = json.loads(manifest.read_text(encoding="utf-8"))
+                n = data.get("dataset_size")
+                if n is not None:
+                    return int(n)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+    log_path = rec.get("log")
+    if log_path:
+        text = Path(log_path).read_text(encoding="utf-8", errors="replace")
+    else:
+        qid = rec.get("qid")
+        if isinstance(qid, str):
+            candidate = log_dir / f"{qid.lower()}.log"
+            text = candidate.read_text(encoding="utf-8", errors="replace") if candidate.is_file() else ""
+        else:
+            text = ""
+    if text:
+        m = re.search(r'"step":\s*"loop_start"[^}]*"dataset_size":\s*(\d+)', text)
+        if m:
+            return int(m.group(1))
+        m = re.search(r"loop_start[^}]*dataset_size=(\d+)", text)
+        if m:
+            return int(m.group(1))
+    return None
+
+
 def resume_ok_qids(log_dir: Path, query_ids: list[str]) -> set[str]:
+    from db_extension.dataset_config import effective_dataset_size
+
+    try:
+        expected_size = effective_dataset_size()
+    except RuntimeError:
+        expected_size = None
+
+    def _resume_ok(rec: dict[str, Any]) -> bool:
+        if not rec.get("lemma_ok"):
+            return False
+        qid = rec.get("qid")
+        if not isinstance(qid, str):
+            return False
+        recorded = recorded_dataset_size(rec, log_dir)
+        if recorded is None:
+            return False
+        if expected_size is not None and recorded < expected_size:
+            return False
+        return True
+
     ok: set[str] = set()
     results_path = log_dir / "results.json"
     if results_path.is_file():
@@ -385,7 +444,7 @@ def resume_ok_qids(log_dir: Path, query_ids: list[str]) -> set[str]:
             data = {}
         for rec in data.get("results") or []:
             qid = rec.get("qid")
-            if rec.get("lemma_ok") and isinstance(qid, str):
+            if isinstance(qid, str) and _resume_ok(rec):
                 ok.add(qid)
     for qid in query_ids:
         if qid in ok:
@@ -394,8 +453,8 @@ def resume_ok_qids(log_dir: Path, query_ids: list[str]) -> set[str]:
         if not log_path.is_file():
             continue
         fields = parse_optimizer_log(log_path.read_text(encoding="utf-8", errors="replace"))
-        rec = {**fields, "qid": qid, "returncode": 0}
-        if lemma_job_ok(rec):
+        rec = {**fields, "qid": qid, "returncode": 0, "log": str(log_path)}
+        if lemma_job_ok(rec) and _resume_ok(rec):
             ok.add(qid)
     return ok
 
@@ -650,6 +709,8 @@ def main(argv: list[str] | None = None) -> int:
     if query_args and query_args[0].lower() == "gendb":
         from research_loop.scripts.local_e2e_gendb_suite import (
             OUT_DIR as GENDB_LOG,
+        )
+        from research_loop.scripts.local_e2e_gendb_suite import (
             write_suite_sql,
         )
 

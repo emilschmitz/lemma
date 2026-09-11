@@ -75,6 +75,10 @@ def file_row_count() -> int | None:
     return _count_tbl_rows(path)
 
 
+def _safe_duckdb_table_name(table: str) -> bool:
+    return bool(table) and table.replace("_", "").isalnum()
+
+
 def _count_duckdb_primary_rows() -> int | None:
     """Row count from LEMMA_DUCKDB_PATH primary table (SEC / DuckDB workloads)."""
     db = os.environ.get("LEMMA_DUCKDB_PATH", "").strip()
@@ -85,7 +89,7 @@ def _count_duckdb_primary_rows() -> int | None:
         table = (os.environ.get("LEMMA_BENCH_TABLE") or "").strip()
     if not table:
         return None
-    if not table.replace("_", "").isalnum():
+    if not _safe_duckdb_table_name(table):
         return None
     try:
         import duckdb
@@ -105,6 +109,39 @@ def _count_duckdb_primary_rows() -> int | None:
         return None
 
 
+def _count_duckdb_max_table_rows() -> int | None:
+    """Max row count across user tables in LEMMA_DUCKDB_PATH (official pin limit)."""
+    db = os.environ.get("LEMMA_DUCKDB_PATH", "").strip()
+    if not db or not Path(db).is_file():
+        return None
+    try:
+        import duckdb
+    except ImportError:
+        return None
+    try:
+        con = duckdb.connect(db, read_only=True)
+        try:
+            rows = con.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = 'main' AND table_type = 'BASE TABLE'"
+            ).fetchall()
+            max_rows: int | None = None
+            for (table,) in rows:
+                name = str(table)
+                if not _safe_duckdb_table_name(name):
+                    continue
+                n = int(con.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0])
+                max_rows = n if max_rows is None else max(max_rows, n)
+            return max_rows
+        finally:
+            con.close()
+    except Exception as exc:
+        if duckdb_error_is_contention(str(exc)):
+            emit_duckdb_contention(stage="count_max_table_rows", error=str(exc), db_path=db)
+            raise
+        return None
+
+
 def effective_dataset_size() -> int:
     """Rows to load/run against: env limit if set, else all available rows."""
     limit = dataset_size_limit()
@@ -118,8 +155,11 @@ def effective_dataset_size() -> int:
             return available
 
     # DuckDB before SSB meta: leftover ssb-dbgen/dataset_meta.json must not
-    # pin a 6M row count onto a tiny SEC experiment.
-    available = _count_duckdb_primary_rows()
+    # pin a 6M row count onto a tiny SEC experiment. Official measure pins every
+    # table with the same LIMIT, so use max table count (not primary only).
+    available = _count_duckdb_max_table_rows()
+    if available is None:
+        available = _count_duckdb_primary_rows()
     if available is None:
         available = file_row_count()
 

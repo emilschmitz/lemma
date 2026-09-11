@@ -101,6 +101,24 @@ def test_sec_duckdb_count_beats_ssb_meta(
     assert effective_dataset_size() == 7
 
 
+def test_effective_size_uses_max_table_not_primary_only(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    isolated_ssb: Path,
+) -> None:
+    duckdb = pytest.importorskip("duckdb")
+    db = tmp_path / "two_tables.duckdb"
+    con = duckdb.connect(str(db))
+    con.execute("CREATE TABLE a AS SELECT * FROM range(10) t(x)")
+    con.execute("CREATE TABLE b AS SELECT * FROM range(100) t(x)")
+    con.close()
+    monkeypatch.delenv("LEMMA_DATASET_SIZE", raising=False)
+    monkeypatch.delenv("LEMMA_BENCH_TBL", raising=False)
+    monkeypatch.setenv("LEMMA_DUCKDB_PATH", str(db))
+    monkeypatch.setenv("LEMMA_PRIMARY_TABLE", "a")
+    assert effective_dataset_size() == 100
+
+
 def test_effective_size_from_duckdb_primary(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
