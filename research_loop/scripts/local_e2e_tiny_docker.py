@@ -460,6 +460,42 @@ def resume_ok_qids(log_dir: Path, query_ids: list[str]) -> set[str]:
     return ok
 
 
+def resume_record(qid: str, log_dir: Path) -> dict[str, Any]:
+    """Progress row for a resume-skipped ok qid, hydrated from its optimizer log."""
+    stub: dict[str, Any] = {
+        "qid": qid,
+        "lemma_ok": True,
+        "resumed": True,
+    }
+    log_path = log_dir / f"{qid.lower()}.log"
+    if not log_path.is_file():
+        return stub
+    text = log_path.read_text(encoding="utf-8", errors="replace")
+    fields = parse_optimizer_log(text)
+    rec: dict[str, Any] = {
+        "qid": qid,
+        "log": str(log_path),
+        **fields,
+    }
+    ok = lemma_job_ok({**rec, "returncode": 0})
+    rec["returncode"] = 0 if ok else rec.get("returncode", 0)
+    rec["lemma_ok"] = ok
+    rec["resumed"] = True
+    dataset_size = recorded_dataset_size(rec, log_dir)
+    if dataset_size is not None:
+        rec["dataset_size"] = dataset_size
+    run_dir = parse_run_dir(text)
+    if run_dir is not None:
+        result_json = log_dir / f"run_{run_dir.name}" / "result.json"
+        if result_json.is_file():
+            rec["result_json"] = str(result_json)
+    if ok:
+        rec["product_step"] = 7
+        rec["product_class"] = "ok"
+        rec["product_detail"] = "official pin"
+    return rec
+
+
 def run_one_query(qid: str, sql: str, *, log_dir: Path) -> dict[str, Any]:
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{qid.lower()}.log"
@@ -634,11 +670,7 @@ def _run_local_e2e_impl(
             print(f"resume skip ok: {sorted(already, key=_qid_sort)}", flush=True)
             pending = [qid for qid in pending if qid not in already]
             for qid in already:
-                latest[qid] = {
-                    "qid": qid,
-                    "lemma_ok": True,
-                    "resumed": True,
-                }
+                latest[qid] = resume_record(qid, dest)
     jobs = observed_e2e_jobs()
     avail_gi = mem_available_kb() / (1024 * 1024)
     print(

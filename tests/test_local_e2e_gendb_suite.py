@@ -209,6 +209,68 @@ def test_resume_ok_qids_missing_dataset_size_not_skipped(
     assert ok == set()
 
 
+def test_resume_skip_hydrates_from_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from research_loop.scripts import local_e2e_tiny_docker as e2e
+
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    q1_log = """\
+optimizer loop_start: run_dir='/tmp/run_q1' mock=False dataset_size=75000
+  - Official full-table measure after marked submit... OK (official full-table, 19628 us, 1.2s)
+proof_verified=True latency_us=19628
+LEMMA_METRICS_JSON: {"status": "SUCCESS", "proof_verified": true, "latency_us": 19628}
+"""
+    (log_dir / "q1.log").write_text(q1_log, encoding="utf-8")
+    results = {
+        "results": [
+            {
+                "qid": "Q1",
+                "lemma_ok": True,
+                "dataset_size": 75_000,
+            },
+        ]
+    }
+    (log_dir / "results.json").write_text(json.dumps(results) + "\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "db_extension.dataset_config.effective_dataset_size",
+        lambda: 75_000,
+    )
+    monkeypatch.setattr(e2e, "preflight_errors", lambda **kwargs: [])
+    monkeypatch.setattr(e2e, "ensure_agent_image", lambda: None)
+    monkeypatch.setattr(e2e, "apply_product_env", lambda **kwargs: None)
+    monkeypatch.setattr(e2e, "load_queries", lambda _p: {"Q1": "SELECT 1", "Q2": "SELECT 2"})
+    monkeypatch.setattr(e2e, "resolve_tiny_db", lambda: tmp_path / "t.duckdb")
+
+    calls: list[str] = []
+
+    def fake_run(qid: str, sql: str, *, log_dir: Path) -> dict:
+        calls.append(qid)
+        return {"qid": qid, "lemma_ok": True, "proof_verified": True, "latency_us": 1}
+
+    monkeypatch.setattr(e2e, "run_one_query", fake_run)
+    results_out, code = e2e.run_local_e2e(
+        ["Q1", "Q2"],
+        skip_docker_build=True,
+        sql_file=tmp_path / "x.sql",
+        log_dir=log_dir,
+        retry_rounds=1,
+    )
+    assert calls == ["Q2"]
+    assert code == 0
+    q1 = next(r for r in results_out if r["qid"] == "Q1")
+    assert q1["lemma_ok"] is True
+    assert q1["resumed"] is True
+    assert q1["proof_verified"] is True
+    assert q1["latency_us"] == 19628
+    assert q1["dataset_size"] == 75_000
+    assert q1["product_step"] == 7
+    assert q1["product_class"] == "ok"
+    assert q1["product_detail"] == "official pin"
+    assert q1["returncode"] == 0
+
+
 def test_run_one_query_wake_and_ok_class(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
