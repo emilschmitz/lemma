@@ -251,6 +251,17 @@ def test_classify_default_unclassified_not_agent() -> None:
     assert "unclassified" in out.get("detail", "")
 
 
+def test_classify_entrypoint_permission_denied_is_infra() -> None:
+    text = (
+        "exec: \"/app/entrypoint.sh\": permission denied\n"
+        "agent_sandbox agent_docker_end: exit=126 timed_out=False\n"
+    )
+    out = classify_optimizer_log(text)
+    assert out["step"] == 3
+    assert out["class"] == "infra"
+    assert "permission denied" in out.get("detail", "")
+
+
 def test_classify_official_measure_timeout() -> None:
     out = classify_optimizer_log(_OFFICIAL_MEASURE)
     assert out["step"] == 7

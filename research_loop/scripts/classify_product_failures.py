@@ -155,6 +155,10 @@ def classify_optimizer_log(text: str) -> dict[str, Any]:
     if not text:
         return _result(5, "infra", detail="unclassified_empty_log_open_traces")
 
+    # Step 3 infra — bind-mounted entrypoint not executable (docker exit 126).
+    if "entrypoint.sh" in text and "permission denied" in text.lower():
+        return _result(3, "infra", detail="entrypoint permission denied")
+
     # Step 7 — harness verify/compile wall timeout (not agent docker).
     if _HARNESS_TIMEOUT.search(text):
         return _result(7, "failed to execute", detail="harness timeout")

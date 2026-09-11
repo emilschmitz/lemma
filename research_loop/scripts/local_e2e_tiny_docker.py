@@ -385,7 +385,9 @@ def run_one_query(qid: str, sql: str, *, log_dir: Path) -> dict[str, Any]:
 
     print(
         f"{qid}: proof={rec.get('proof_verified')} lat={rec.get('latency_us')} "
-        f"lemma_ok={rec.get('lemma_ok')}",
+        f"lemma_ok={rec.get('lemma_ok')} "
+        f"step={rec.get('product_step')} {rec.get('product_class')} "
+        f"{rec.get('product_detail', '')}".rstrip(),
         flush=True,
     )
     return rec

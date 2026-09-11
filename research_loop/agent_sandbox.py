@@ -662,9 +662,13 @@ def run_agent_docker(
         "-e", f"LEMMA_AGENT_STREAM_LOG={stream_container}",
         "-e", f"LEMMA_AGENT_STDERR_LOG={stderr_container}",
     ]
+    # Host bind-mounts are often noexec; copy into container /tmp then exec.
+    use_host_entrypoint = False
     entrypoint_host = ROOT / "docker" / "agent" / "entrypoint.sh"
     if entrypoint_host.is_file():
-        cmd.extend(["-v", f"{entrypoint_host.resolve()}:/app/entrypoint.sh:ro"])
+        cmd.extend(["-v", f"{entrypoint_host.resolve()}:/app/entrypoint.host.sh:ro"])
+        cmd.extend(["--entrypoint", "/bin/bash"])
+        use_host_entrypoint = True
         log_info(COMPONENT, "entrypoint_mount", str(entrypoint_host))
     if cli_dir is not None:
         cmd.extend(["-v", f"{cli_dir}:/opt/cursor-agent:ro"])
@@ -708,6 +712,17 @@ def run_agent_docker(
             continue
         cmd.extend(["-e", f"{k}={v}"])
     cmd.append(image)
+    if use_host_entrypoint:
+        cmd.extend(
+            [
+                "-c",
+                (
+                    "cp /app/entrypoint.host.sh /tmp/lemma-entrypoint.sh "
+                    "&& chmod +x /tmp/lemma-entrypoint.sh "
+                    "&& exec /tmp/lemma-entrypoint.sh"
+                ),
+            ]
+        )
 
     proc = subprocess.CompletedProcess(cmd, -1, "", "")
     timed_out = False

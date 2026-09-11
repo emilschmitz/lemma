@@ -171,15 +171,20 @@ def test_run_agent_docker_mounts_host_entrypoint_when_present(
         tmp_path,
     )
     (tmp_path / "docker" / "agent").mkdir(parents=True)
-    (tmp_path / "docker" / "agent" / "entrypoint.sh").write_text(
+    host_ep = tmp_path / "docker" / "agent" / "entrypoint.sh"
+    host_ep.write_text(
         entrypoint.read_text(encoding="utf-8"),
         encoding="utf-8",
     )
+    host_ep.chmod(0o644)
 
     cfg = {"AGENT_TIMEOUT_SEC": "30", "AGENT_IMAGE": "lemma-agent:cli", "AGENT_CMD": "echo"}
     run_agent_docker(ws, "prompt", cfg=cfg, query_id=7)
 
     assert captured_cmd, "docker argv must be captured"
-    flat = " ".join(captured_cmd[0])
-    assert "/app/entrypoint.sh:ro" in flat
-    assert "entrypoint.sh" in flat
+    argv = captured_cmd[0]
+    flat = " ".join(argv)
+    assert "/app/entrypoint.host.sh:ro" in flat
+    assert "--entrypoint" in argv
+    assert "/bin/bash" in argv
+    assert "/tmp/lemma-entrypoint.sh" in flat
