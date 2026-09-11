@@ -34,3 +34,22 @@ def test_profile_none_without_duck_explain_is_minimal(
     assert "SUMMARIZE" not in md
     assert "EXPLAIN" not in md
     assert "Target SQL (reference)" in md
+
+
+def test_profile_duckdb_beats_ssb_tbl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    duckdb = pytest.importorskip("duckdb")
+    db = tmp_path / "sec.duckdb"
+    con = duckdb.connect(str(db))
+    con.execute("CREATE TABLE pre AS SELECT * FROM range(4) t(x)")
+    con.close()
+    ssb = tmp_path / "lineorder_flat.tbl"
+    ssb.write_text("LO_ORDERKEY|LO_REVENUE\n1|10\n")
+    monkeypatch.setenv("LEMMA_AGENT_DUCK_EXPLAIN", "1")
+    monkeypatch.setenv("LEMMA_DUCKDB_PATH", str(db))
+    monkeypatch.setenv("LEMMA_PRIMARY_TABLE", "pre")
+    md = build_data_profile(ssb, "SELECT COUNT(*) FROM pre", "none")
+    assert "lineorder_flat" not in md
+    assert "**Table**: `pre`" in md
+    assert "SUMMARIZE pre" in md

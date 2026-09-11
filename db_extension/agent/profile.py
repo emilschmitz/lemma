@@ -38,6 +38,67 @@ def _table_name_for_path(data_path: Path) -> str:
     return cleaned or "data_table"
 
 
+def _lemma_duckdb_path() -> Path | None:
+    raw = os.environ.get("LEMMA_DUCKDB_PATH", "").strip()
+    if not raw:
+        return None
+    p = Path(raw)
+    if p.is_file() and p.suffix.lower() in {".duckdb", ".db"}:
+        return p
+    return None
+
+
+def _sql_mentions_table(sql: str, table: str) -> bool:
+    return re.search(rf"\b{re.escape(table)}\b", sql, flags=re.IGNORECASE) is not None
+
+
+def _profile_duckdb_file(db_path: Path, sql_query: str, *, duck_explain: bool, mode: str) -> str:
+    """SUMMARIZE/EXPLAIN the experiment DuckDB, not leftover SSB tbl."""
+    duckdb = _try_duckdb()
+    if duckdb is None:
+        return "_duckdb not available on host; profile is schema-only._\n"
+    lines: list[str] = []
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        available = [r[0] for r in con.execute("SHOW TABLES").fetchall()]
+        primary = os.environ.get("LEMMA_PRIMARY_TABLE", "").strip()
+        tables = [t for t in available if _sql_mentions_table(sql_query, t)]
+        if primary and primary in available and primary not in tables:
+            tables.insert(0, primary)
+        if not tables:
+            tables = [primary] if primary in available else available[:1]
+        lines.extend([
+            f"**DuckDB**: `{db_path}`",
+            f"**Tables**: {', '.join(f'`{t}`' for t in tables) if tables else '(none)'}",
+            "",
+        ])
+        include_duck_hints = mode in ("stats", "full") or (mode == "none" and duck_explain)
+        for table in tables:
+            n = con.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+            lines.extend([f"**Table**: `{table}`", f"**Rows**: {n:,}", ""])
+            if include_duck_hints:
+                try:
+                    summary = con.execute(f'SUMMARIZE "{table}"').fetchdf()
+                    lines.extend(
+                        ["## SUMMARIZE " + table, "```", summary.to_string(index=False), "```", ""]
+                    )
+                except Exception as e:
+                    lines.append(f"_SUMMARIZE {table} failed: {e}_")
+                    lines.append("")
+        if include_duck_hints:
+            try:
+                explain = con.execute(f"EXPLAIN {sql_query}").fetchdf()
+                lines.extend(
+                    ["## EXPLAIN (target SQL)", "```", explain.to_string(index=False), "```", ""]
+                )
+            except Exception as e:
+                lines.extend([f"_EXPLAIN failed: {e}_", ""])
+        lines.extend(["## Target SQL", "```sql", sql_query.strip(), "```"])
+    finally:
+        con.close()
+    return "\n".join(lines) + "\n"
+
+
 def _load_table(con, data_path: Path, table: str, row_limit: int | None) -> bool:
     if not data_path.is_file():
         return False
@@ -71,6 +132,12 @@ def build_data_profile(data_path: Path | None, sql_query: str, mode: str) -> str
             "Interactive DuckDB tool is disabled in the container; host injected EXPLAIN/SUMMARIZE below."
         )
         lines.append("")
+
+    duckdb_file = _lemma_duckdb_path()
+    if duckdb_file is not None:
+        return "\n".join(lines) + _profile_duckdb_file(
+            duckdb_file, sql_query, duck_explain=duck_explain, mode=mode
+        )
 
     duckdb = _try_duckdb()
     if duckdb is None:

@@ -227,6 +227,8 @@ def apply_product_env(*, duckdb_path: Path) -> None:
     os.environ["LEMMA_WORKLOAD"] = "sec"
     os.environ["LEMMA_DUCKDB_PATH"] = str(duckdb_path)
     os.environ["LEMMA_DUCKDB_LIB_DIR"] = str(ROOT / "build/libduckdb")
+    os.environ["LEMMA_STOP_ON_TIMED_SUCCESS"] = "1"
+    os.environ["LEMMA_KEEP_OPTIMIZING"] = "0"
     os.environ.setdefault("MAX_ITERATIONS", "1")
     os.environ.setdefault("AGENT_TIMEOUT_SEC", "600")
     os.environ["AGENT_NETWORK"] = "0"
@@ -500,7 +502,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         os.environ.setdefault("MAX_ITERATIONS", "4")
-        retry_rounds = int(os.environ.get("LEMMA_E2E_RETRY_ROUNDS", "8"))
+        retry_rounds = 1
         sql_file = write_suite_sql()
         log_dir = GENDB_LOG
         query_args = query_args[1:]

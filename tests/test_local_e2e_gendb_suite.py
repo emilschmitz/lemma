@@ -13,12 +13,6 @@ from research_loop.scripts.local_e2e_gendb_suite import (
     failed_r23_qids,
 )
 from research_loop.scripts.local_e2e_tiny_docker import select_query_ids
-    PAPER_FAILED_QIDS,
-    build_suite_entries,
-    failed_r17_qids,
-    failed_r23_qids,
-)
-from research_loop.scripts.local_e2e_tiny_docker import select_query_ids
 
 
 def test_suite_starts_with_gendb_t1_t30() -> None:
