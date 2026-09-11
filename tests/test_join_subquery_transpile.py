@@ -184,7 +184,7 @@ HAVING COUNT(*) > (
 LIMIT 1000"""
     schema = {"num": SEC_NUM, "sub": SEC_SUB}
     out = transpile_sql_to_verus(sql, schema)
-    assert "subquery_having_sq1_spec(num)" in out
+    assert "subquery_having_sq1_spec(cols)" in out
     assert "subquery_having_sq1_derived_sub_helper" in out
     section = out[out.find("subquery_having_sq1_derived_sub_helper") : out.find("pub open spec fn method_spec")]
     assert "arbitrary()" not in section
