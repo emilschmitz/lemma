@@ -456,11 +456,14 @@ def _spec_term_to_exec(term: str) -> str:
     term = _spec_expr_to_exec(term)
     term = re.sub(r" as int\)", ")", term)
     term = re.sub(r" as int", "", term)
+    term = term.strip()
     if term.isdigit():
         return f"{term}u64"
-    if not term.endswith("u64"):
-        return f"({term} as u64)"
-    return term
+    if term.endswith("u64"):
+        return term
+    if re.fullmatch(r"\w+\.get_\w+_exec\([^)]+\)", term):
+        return term
+    return f"({term} as u64)"
 
 
 def _exec_hashmap_type_from_map_ret(ret_type: str) -> str | None:
@@ -504,7 +507,7 @@ def _lower_map_helper_to_exec(helper_name: str, spec_rs: str) -> str | None:
     key_exec = _bind_loop_index(_spec_expr_to_exec(m.group(2)), idx, loop_var)
     term_exec = _spec_term_to_exec(_table_param_ref(m.group(4), table_param))
     zero = m.group(3).strip()
-    return f"""let mut groups: {hm_ty} = {hm_ty}::new();
+    return f"""let mut groups: {hm_ty} = ::std::collections::HashMap::new();
     let mut {loop_var} = 0usize;
     while {loop_var} < {table_param}.n {{
         if {where_exec} {{
@@ -526,9 +529,12 @@ def _lower_join_map_helper_to_exec(helper_name: str, spec_rs: str) -> str | None
     body: str = info["body"]  # type: ignore[assignment]
     ret_type: str = info["ret_type"]  # type: ignore[assignment]
     hm_ty = _exec_hashmap_type_from_map_ret(ret_type)
-    if hm_ty is None or len(params) != 4:
+    tables = [name for name, typ in params if typ != "int"]
+    idxs = [name for name, typ in params if typ == "int"]
+    if hm_ty is None or len(tables) != 2 or len(idxs) != 2:
         return None
-    p0, i0, p1, i1 = params[0][0], params[1][0], params[2][0], params[3][0]
+    p0, p1 = tables[0], tables[1]
+    i0, i1 = idxs[0], idxs[1]
     where_m = re.search(
         rf"let tail = {re.escape(helper_name)}\([^)]+\);\s*if\s+(.+?)\s+\{{",
         body,
@@ -539,7 +545,7 @@ def _lower_join_map_helper_to_exec(helper_name: str, spec_rs: str) -> str | None
         r"let val = if tail\.contains_key\(key\) \{ tail\[key\] \} else \{ ([^}]+) \};",
         body,
     )
-    term_m = re.search(r"tail\.insert\(key, \(val as int \+ (.+\)) as u64\)", body, re.DOTALL)
+    term_m = re.search(r"tail\.insert\(key, \(val as int \+ (.+?)\) as u64\)", body, re.DOTALL)
     if where_m is None or key_m is None or zero_m is None or term_m is None:
         return None
     i0_loop, i1_loop = f"{i0}_loop", f"{i1}_loop"
@@ -561,7 +567,7 @@ def _lower_join_map_helper_to_exec(helper_name: str, spec_rs: str) -> str | None
         )
     )
     zero = zero_m.group(1).strip()
-    return f"""let mut groups: {hm_ty} = {hm_ty}::new();
+    return f"""let mut groups: {hm_ty} = ::std::collections::HashMap::new();
     let mut {i0_loop} = 0usize;
     while {i0_loop} < {p0}.n {{
         let mut {i1_loop} = 0usize;
@@ -647,8 +653,10 @@ def _lower_recursive_u64_helper_to_exec(helper_name: str, spec_rs: str) -> str |
 
 def _avg_over_map_exec(map_expr: str) -> str:
     return f"""{{
-    let m = {map_expr};
-    let s: u64 = m.values().sum();
+    let m = {{
+        {map_expr}
+    }};
+    let s: u64 = m.values().copied().sum();
     let c = m.len() as u64;
     if c == 0 {{ 0u64 }} else {{ s / c }}
 }}"""

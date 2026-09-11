@@ -261,6 +261,14 @@ def test_join_having_scalar_subquery_exec_binds_table_params() -> None:
     assert _having_exec_unbound_identifiers(visible) == []
     assert ".filter(|(_k, v)| (*v > having_thresh))" in visible
     assert "let having_thresh = subquery_having_sq1_exec(num, sub);" in exec_block
+    idx = visible.find("pub exec fn subquery_having_sq1_exec")
+    join_fn = visible[idx : visible.find("\n// === HAVING post-filter", idx)]
+    join_rt = _exec_fn_runtime_body(join_fn)
+    assert "let m = let mut" not in join_rt
+    assert "num.n" in join_rt and "sub.n" in join_rt
+    assert "i0.n" not in join_rt
+    assert "sub_loop.get_" not in join_rt
+    assert "get_cik_exec" in join_rt or "get_adsh_exec" in join_rt
 
 
 def test_scalar_having_exec_derefs_map_value() -> None:
@@ -341,9 +349,12 @@ LIMIT 1000"""
     exec_fn = visible[idx : visible.find("\n// === HAVING post-filter", idx)]
     runtime = _exec_fn_runtime_body(exec_fn)
     assert "subquery_having_sq1_spec(" not in runtime
+    assert "let m = let mut" not in runtime
+    assert "::std::collections::HashMap::new()" in runtime
     assert "HashMap" in runtime
     assert "while" in runtime
     assert "eq_at_uom" in runtime or "get_uom_exec" in runtime
+    assert "copied().sum()" in runtime
     assert "let having_thresh = subquery_having_sq1_exec(cols);" in _apply_having_exec_block(
         visible
     )
