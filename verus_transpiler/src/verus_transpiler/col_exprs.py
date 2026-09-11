@@ -8,6 +8,118 @@ from .rust_ident import rust_ident
 from .value_bounds import col_verus_type
 
 
+def _matching_paren(text: str, open_pos: int) -> int:
+    if open_pos >= len(text) or text[open_pos] != "(":
+        raise ValueError("expected '('")
+    depth = 0
+    for i in range(open_pos, len(text)):
+        if text[i] == "(":
+            depth += 1
+        elif text[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+    raise ValueError("unbalanced parentheses")
+
+
+def _split_top_level_commas(inner: str) -> list[str]:
+    args: list[str] = []
+    depth = 0
+    start = 0
+    for i, ch in enumerate(inner):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            args.append(inner[start:i].strip())
+            start = i + 1
+    args.append(inner[start:].strip())
+    return args
+
+
+def coerce_u64_case_arg(arg: str) -> str:
+    """then/else of case_when_u64 must be u64, not ghost int or unsuffixed literals."""
+    a = arg.strip()
+    m = re.fullmatch(r"\((row_u64_\d+) as int\)", a)
+    if m:
+        return m.group(1)
+    m = re.fullmatch(r"(row_u64_\d+) as int", a)
+    if m:
+        return m.group(1)
+    m = re.fullmatch(r"\(row\.([A-Za-z_][A-Za-z0-9_]*) as int\)", a)
+    if m:
+        return f"row.{m.group(1)}"
+    m = re.fullmatch(r"row\.([A-Za-z_][A-Za-z0-9_]*) as int", a)
+    if m:
+        return f"row.{m.group(1)}"
+    if re.fullmatch(r"-?\d+u64", a):
+        return a
+    if re.fullmatch(r"-?\d+", a):
+        return f"{a}u64"
+    return a
+
+
+def coerce_case_when_u64_args(text: str) -> str:
+    """Rewrite case_when_u64 then/else to u64. Does not touch case_when_u64_exec."""
+    i = 0
+    out: list[str] = []
+    key = "case_when_u64("
+    while i < len(text):
+        if text.startswith("case_when_u64_exec(", i):
+            out.append("case_when_u64_exec(")
+            i += len("case_when_u64_exec(")
+            continue
+        if text.startswith(key, i):
+            open_idx = i + len("case_when_u64")
+            close = _matching_paren(text, open_idx)
+            inner = text[open_idx + 1 : close]
+            args = _split_top_level_commas(inner)
+            if len(args) != 3:
+                out.append(text[i : close + 1])
+                i = close + 1
+                continue
+            cond, then_v, else_v = args
+            cond = coerce_case_when_u64_args(cond)
+            then_v = coerce_case_when_u64_args(coerce_u64_case_arg(then_v))
+            else_v = coerce_case_when_u64_args(coerce_u64_case_arg(else_v))
+            out.append(f"case_when_u64({cond}, {then_v}, {else_v})")
+            i = close + 1
+            continue
+        out.append(text[i])
+        i += 1
+    return "".join(out)
+
+
+def assert_case_when_u64_then_else_u64(text: str) -> None:
+    """Loud fail if then/else still look like ghost int (r24 leftover E0308)."""
+    i = 0
+    key = "case_when_u64("
+    while i < len(text):
+        if text.startswith("case_when_u64_exec(", i):
+            i += len("case_when_u64_exec(")
+            continue
+        if text.startswith(key, i):
+            open_idx = i + len("case_when_u64")
+            close = _matching_paren(text, open_idx)
+            inner = text[open_idx + 1 : close]
+            args = _split_top_level_commas(inner)
+            if len(args) == 3:
+                for label, arg in (("then", args[1]), ("else", args[2])):
+                    stripped = arg.strip()
+                    if re.fullmatch(r"\(?row_u64_\d+ as int\)?", stripped):
+                        raise AssertionError(
+                            f"case_when_u64 {label} is ghost int ({stripped}); expected u64"
+                        )
+                    if re.fullmatch(r"-?\d+", stripped):
+                        raise AssertionError(
+                            f"case_when_u64 {label} is unsuffixed literal {stripped}; use {stripped}u64"
+                        )
+            i = close + 1
+            continue
+        i += 1
+
+
 def to_col_expr(expr: str, idx: str) -> str:
     return re.sub(
         r"\brow\.([A-Za-z_][A-Za-z0-9_]*)",
@@ -110,7 +222,7 @@ def spec_u64_term(term_row_expr: str, idx: str) -> str:
     )
     if m:
         cond, then_v, else_v = m.group(1), m.group(2), m.group(3)
-        return (
+        return coerce_case_when_u64_args(
             f"case_when_u64({row_cond_to_spec(cond)}, "
             f"{spec_u64_term(then_v, idx)}, {spec_u64_term(else_v, idx)})"
         )

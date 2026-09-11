@@ -863,7 +863,14 @@ def test_gcp_preflight_documents_halt_on_finish_for_chains():
     assert "non-final" in text.lower() or "last family" in text.lower()
 
 
-def test_overnight_sh_documents_halt_on_finish_for_chains():
+def test_overnight_py_wait_timeout_matches_heartbeat():
+    """Heartbeat must tick while official measure runs; wait() without timeout was silent."""
+    text = (ROOT / "research_loop" / "scripts" / "overnight_lemma.py").read_text()
+    assert "timeout=tracker.heartbeat_interval_sec" in text
+    assert "if not done:" in text
+
+
+def test_overnight_sh_writes_harvest_rsync_error_log():
     text = OVERNIGHT_SH.read_text()
-    assert "LEMMA_HALT_ON_FINISH=0" in text
-    assert "non-final" in text.lower() or "last family" in text.lower()
+    assert "harvest_rsync_error.log" in text
+    assert "periodic GCS harvest failed" in text

@@ -315,9 +315,12 @@ def _resolve_row_expr(
         return f"row.{col}"
 
     out = re.sub(r"\brow\.([A-Za-z_][A-Za-z0-9_]*)", repl_col, stripped)
-    return _resolve_subquery_calls(
+    resolved = _resolve_subquery_calls(
         out, query, slots, schemas_by_table, derived_by_alias,
     )
+    from .col_exprs import coerce_case_when_u64_args
+
+    return coerce_case_when_u64_args(resolved)
 
 
 def _join_equalities_expr(

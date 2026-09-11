@@ -593,7 +593,13 @@ def main() -> int:
                     futs[ex.submit(run_one, job, str(log_dir))] = job
                 while futs:
                     tracker.maybe_timer_heartbeat()
-                    done, _pending = wait(futs, return_when=FIRST_COMPLETED)
+                    done, _pending = wait(
+                        futs,
+                        timeout=tracker.heartbeat_interval_sec,
+                        return_when=FIRST_COMPLETED,
+                    )
+                    if not done:
+                        continue
                     stop = False
                     for fut in done:
                         futs.pop(fut, None)

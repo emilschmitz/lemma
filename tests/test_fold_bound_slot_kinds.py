@@ -307,7 +307,7 @@ def test_q26_case_when_fold_lemma_uses_case_addend_not_literal_plus_one() -> Non
     rs = multi_agg_step_trusted_rs(spec, ret_type)
     assert "s2 as int == prev_full.2 as int + 1" not in rs
     assert "s3 as int == prev_full.3 as int + 1" not in rs
-    assert "case_when_u64((num.value[i0 as int] > 0), 1, 0)" in rs
+    assert "case_when_u64((num.value[i0 as int] > 0), 1u64, 0u64)" in rs
 
 
 def test_product_path_multi_agg_lemma_not_assume(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -330,14 +330,20 @@ def test_parse_count_slot_addend_literals() -> None:
     assert _parse_scalar_count_addend(
         "tail.insert(row_key, (prev as int + 1u64 as int) as u64)"
     ) == CountSlotAddend("1", 1)
-    cw = _parse_count_slot_addend(
+    cw_u64 = _parse_count_slot_addend(
+        "let s2 = (prev.2 as int + case_when_u64((num.value[i0 as int] > 0), 1u64, 0u64) as int) as u64",
+        2,
+        multi_slot=True,
+    )
+    assert cw_u64 is not None
+    assert cw_u64.ub == 1
+    cw_old = _parse_count_slot_addend(
         "let s2 = (prev.2 as int + case_when_u64((num.value[i0 as int] > 0), 1, 0) as int) as u64",
         2,
         multi_slot=True,
     )
-    assert cw is not None
-    assert cw.ub == 1
-    assert "case_when_u64" in cw.addend
+    assert cw_old is not None
+    assert cw_old.ub == 1
     cw5 = _parse_count_slot_addend(
         "let s0 = (prev as int + case_when_u64(x, 5, 0) as int) as u64",
         0,
@@ -388,8 +394,8 @@ def test_q3_like_fold_slot_lemmas_use_case_when_addend() -> None:
     rs = multi_agg_step_trusted_rs(out, ret_type)
     assert "s2 as int == prev_full.2 as int + 1" not in rs
     assert "s3 as int == prev_full.3 as int + 1" not in rs
-    assert "case_when_u64((num.value[i0 as int] > 0), 1, 0)" in rs
-    assert "case_when_u64((num.value[i0 as int] < 0), 1, 0)" in rs
+    assert "case_when_u64((num.value[i0 as int] > 0), 1u64, 0u64)" in rs
+    assert "case_when_u64((num.value[i0 as int] < 0), 1u64, 0u64)" in rs
     # COUNT(*) slot may still use literal +1
     assert "s1 as int == prev_full.1 as int + (1)" in rs
 

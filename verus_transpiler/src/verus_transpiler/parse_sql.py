@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 import sqlglot
 from sqlglot import exp
 
+from .col_exprs import coerce_case_when_u64_args
 from .dialect_flags import require_trusted
 from .value_bounds import col_verus_type
 
@@ -643,7 +644,7 @@ def _compile_case_expr(
         cond = _compile_row_bool_expr(if_node.this, resolver)
         then_expr = _to_row_expr(if_node.args["true"], resolver)
         result = f"case_when_u64({cond}, {then_expr}, {result})"
-    return result
+    return coerce_case_when_u64_args(result)
 
 
 def _to_row_expr(

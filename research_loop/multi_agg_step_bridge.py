@@ -6,6 +6,10 @@ import os
 import re
 from dataclasses import dataclass, field
 
+from verus_transpiler.col_exprs import (
+    assert_case_when_u64_then_else_u64,
+    coerce_case_when_u64_args,
+)
 from research_loop.table_assumptions import CatalogAssumptions, resolve_bounds
 from research_loop.trusted_ret_bridge import (
     RetBridge,
@@ -311,7 +315,10 @@ def _rewrite_updates_for_apply(
             pname = col_param(expr, usage)
             out = out.replace(expr, spec_ref_for(pname, usage, minmax=minmax))
         rewritten.append(out)
-    return rewritten, params
+    coerced = [coerce_case_when_u64_args(line) for line in rewritten]
+    for line in coerced:
+        assert_case_when_u64_then_else_u64(line)
+    return coerced, params
 
 
 def _slot_spec_from_exec(expr: str, slot: TypeExpr) -> str:
@@ -1367,7 +1374,7 @@ def _emit_reconstructed_insert_value(
 ) -> list[str]:
     lines = [f"{indent}let ghost {prev_var} = {prev_expr};"]
     for sname, rhs in updates.slot_lets:
-        sub_rhs = _subst_prev_identifier(rhs, prev_var)
+        sub_rhs = coerce_case_when_u64_args(_subst_prev_identifier(rhs, prev_var))
         lines.append(f"{indent}let ghost {sname} = {sub_rhs};")
     insert_val = _subst_prev_identifier(updates.insert_value, prev_var)
     lines.append(f"{indent}let ghost {result_var} = {insert_val};")

@@ -298,7 +298,7 @@ else
       break
     fi
     if ! maybe_gsutil_rsync_harvest "$OUT"; then
-      echo "ERROR: periodic GCS harvest failed (LEMMA_HARVEST_GS_URI=${LEMMA_HARVEST_GS_URI:-})" >&2
+      echo "ERROR: periodic GCS harvest failed (LEMMA_HARVEST_GS_URI=${LEMMA_HARVEST_GS_URI:-})" | tee -a "$OUT/harvest_rsync_error.log" >&2
     fi
   done
   wait "$wrapper_pid" || true
