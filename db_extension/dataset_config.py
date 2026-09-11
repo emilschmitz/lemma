@@ -117,9 +117,11 @@ def effective_dataset_size() -> int:
                 return min(limit, available)
             return available
 
-    available = file_row_count()
+    # DuckDB before SSB meta: leftover ssb-dbgen/dataset_meta.json must not
+    # pin a 6M row count onto a tiny SEC experiment.
+    available = _count_duckdb_primary_rows()
     if available is None:
-        available = _count_duckdb_primary_rows()
+        available = file_row_count()
 
     if limit is not None:
         if available is None:

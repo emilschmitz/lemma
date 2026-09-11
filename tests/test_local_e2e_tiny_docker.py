@@ -107,23 +107,58 @@ def test_select_query_ids_defaults_to_q1() -> None:
     assert select_query_ids(["Q1", "Q3"]) == ["Q1", "Q3"]
 
 
-def test_preflight_fails_loud_without_docker() -> None:
-    msg = docker_preflight_error("/usr/bin:/bin")
+def test_preflight_fails_loud_without_docker(tmp_path: Path) -> None:
+    msg = docker_preflight_error(str(tmp_path))
     assert msg is not None
     assert "docker" in msg.lower()
     assert "USE_AGENT_DOCKER" in msg
 
 
-def test_run_local_e2e_preflight_exits_without_docker() -> None:
-    _, code = run_local_e2e(["Q1"], path_env="/usr/bin:/bin", skip_docker_build=True)
+def test_preflight_fails_loud_when_docker_sock_denied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    docker = tmp_path / "docker"
+    docker.write_text("#!/bin/sh\nexit 1\n")
+    docker.chmod(0o755)
+
+    def fake_run(args, **kwargs):
+        combined = " ".join(str(a) for a in args)
+        if "info" in combined:
+            return subprocess.CompletedProcess(
+                args,
+                1,
+                "",
+                "permission denied while trying to connect to the docker API at unix:///var/run/docker.sock",
+            )
+        raise AssertionError(f"unexpected subprocess: {args}")
+
+    monkeypatch.setattr(
+        "research_loop.scripts.local_e2e_tiny_docker.subprocess.run",
+        fake_run,
+    )
+    msg = docker_preflight_error(str(tmp_path))
+    assert msg is not None
+    assert "permission denied" in msg.lower()
+    assert "newgrp docker" in msg
+
+
+def test_run_local_e2e_preflight_exits_without_docker(tmp_path: Path) -> None:
+    _, code = run_local_e2e(["Q1"], path_env=str(tmp_path), skip_docker_build=True)
     assert code != 0
 
 
-def test_shell_script_preflight_without_docker() -> None:
+def test_shell_script_preflight_without_docker(tmp_path: Path) -> None:
     script = ROOT / "research_loop/scripts/local_e2e_tiny_docker.sh"
-    env = {**os.environ, "PATH": "/usr/bin:/bin"}
+    # Isolate docker off PATH without hiding bash/git (same dir as docker on many distros).
+    for name in ("bash", "git", "dirname"):
+        src = shutil.which(name)
+        if src:
+            dest = tmp_path / name
+            if not dest.exists():
+                dest.symlink_to(src)
+    env = {**os.environ, "PATH": str(tmp_path)}
     proc = subprocess.run(
-        ["bash", str(script)],
+        [str(tmp_path / "bash"), str(script)],
         cwd=ROOT,
         env=env,
         capture_output=True,

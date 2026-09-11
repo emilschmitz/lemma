@@ -55,6 +55,50 @@ def use_docker(cfg: dict[str, str]) -> bool:
     return cfg.get("USE_AGENT_DOCKER", "0") not in ("0", "false", "False", "")
 
 
+def host_agent_cli_dir() -> Path | None:
+    """Directory that contains the Cursor CLI (``agent`` or ``cursor-agent`` + node)."""
+    raw = os.environ.get("AGENT_CLI_DIR", "").strip()
+    if raw:
+        p = Path(raw).expanduser()
+        if p.is_dir() and (
+            (p / "cursor-agent").is_file() or (p / "agent").is_file() or (p / "index.js").is_file()
+        ):
+            return p.resolve()
+    which = shutil.which("agent")
+    if which:
+        resolved = Path(which).resolve()
+        parent = resolved.parent
+        if (parent / "index.js").is_file() and (
+            (parent / "cursor-agent").is_file() or (parent / "agent").is_file() or resolved.is_file()
+        ):
+            return parent
+    versions = Path.home() / ".local/share/cursor-agent/versions"
+    if versions.is_dir():
+        dirs = sorted(
+            (p for p in versions.iterdir() if p.is_dir()),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        for d in dirs:
+            if (d / "index.js").is_file() and (
+                (d / "cursor-agent").is_file() or (d / "agent").is_file()
+            ):
+                return d.resolve()
+    return None
+
+
+def rewrite_agent_cmd_for_container(agent_cmd: str, cli_dir: Path | None) -> str:
+    """Point ``agent`` at the mounted host CLI (image often lacks INSTALL_AGENT_CLI)."""
+    if cli_dir is None:
+        return agent_cmd
+    exe = "agent" if (cli_dir / "agent").is_file() else "cursor-agent"
+    container_bin = f"/opt/cursor-agent/{exe}"
+    parts = agent_cmd.split(None, 1)
+    if parts and parts[0] == "agent":
+        return container_bin if len(parts) == 1 else f"{container_bin} {parts[1]}"
+    return agent_cmd
+
+
 def parse_agent_env(cfg: dict[str, str], base: dict[str, str] | None = None) -> dict[str, str]:
     """Pass named vars from host into agent subprocess (AGENT_ENV=CURSOR_API_KEY,...)."""
     if base is None:
@@ -512,7 +556,11 @@ def run_agent_docker(
     """
     cfg = load_agent_config(cfg)
     image = cfg.get("AGENT_IMAGE", DEFAULT_IMAGE)
-    agent_cmd = cfg.get("AGENT_CMD", default_agent_cmd())
+    cli_dir = host_agent_cli_dir()
+    agent_cmd = rewrite_agent_cmd_for_container(
+        cfg.get("AGENT_CMD", default_agent_cmd()),
+        cli_dir,
+    )
     timeout = int(cfg.get("AGENT_TIMEOUT_SEC", "600"))
     (workspace / "PROMPT.txt").write_text(prompt)
 
@@ -614,6 +662,10 @@ def run_agent_docker(
         "-e", f"LEMMA_AGENT_STREAM_LOG={stream_container}",
         "-e", f"LEMMA_AGENT_STDERR_LOG={stderr_container}",
     ]
+    if cli_dir is not None:
+        cmd.extend(["-v", f"{cli_dir}:/opt/cursor-agent:ro"])
+        cmd.extend(["-e", "PATH=/opt/cursor-agent:/root/.local/bin:/root/.cursor/bin:/usr/local/bin:/usr/bin:/bin"])
+        log_info(COMPONENT, "agent_cli_mount", str(cli_dir))
     if cred_path.is_dir():
         # Mount RO elsewhere; entrypoint copies into writable /root/.cursor.
         cmd.extend(["-v", f"{cred_path.resolve()}:/root/.cursor-host:ro"])
@@ -645,6 +697,7 @@ def run_agent_docker(
         "CURSOR_CONFIG_DIR",
         "LEMMA_AGENT_STREAM_LOG",
         "LEMMA_AGENT_STDERR_LOG",
+        "PATH",
     }
     for k, v in env.items():
         if k in skip_env:

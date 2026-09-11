@@ -80,6 +80,27 @@ def test_effective_size_raises_without_tbl_or_env(
         paths_effective_dataset_size()
 
 
+def test_sec_duckdb_count_beats_ssb_meta(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Tiny SEC DuckDB must not inherit leftover ssb-dbgen dataset_meta.json (6M)."""
+    duckdb = pytest.importorskip("duckdb")
+    ssb = tmp_path / "ssb"
+    ssb.mkdir()
+    (ssb / "dataset_meta.json").write_text('{"row_count": 6001215}\n')
+    db = tmp_path / "tiny.duckdb"
+    con = duckdb.connect(str(db))
+    con.execute("CREATE TABLE pre AS SELECT * FROM range(7) t(x)")
+    con.close()
+    monkeypatch.delenv("LEMMA_DATASET_SIZE", raising=False)
+    monkeypatch.delenv("LEMMA_BENCH_TBL", raising=False)
+    monkeypatch.setenv("LEMMA_SSB_DIR", str(ssb))
+    monkeypatch.setenv("LEMMA_DUCKDB_PATH", str(db))
+    monkeypatch.setenv("LEMMA_PRIMARY_TABLE", "pre")
+    assert effective_dataset_size() == 7
+
+
 def test_effective_size_from_duckdb_primary(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

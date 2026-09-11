@@ -68,18 +68,86 @@ def augmented_path(base_path: str | None = None) -> str:
     return ":".join(p for p in parts if p)
 
 
+def maybe_reexec_with_docker_group(argv: list[str]) -> None:
+    """Activate supplementary group docker (Cursor login sessions often miss it)."""
+    if os.environ.get("LEMMA_DOCKER_NEWGRP") == "1":
+        return
+    if shutil.which("docker") is None:
+        return
+    proc = subprocess.run(
+        ["docker", "info"],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    if proc.returncode == 0:
+        return
+    err = (proc.stderr or proc.stdout or "")
+    if "permission denied" not in err.lower():
+        return
+    import grp
+    import pwd
+    import shlex
+
+    try:
+        g = grp.getgrnam("docker")
+    except KeyError:
+        return
+    user = pwd.getpwuid(os.getuid()).pw_name
+    if user not in g.gr_mem:
+        return
+    newgrp = Path("/usr/bin/newgrp")
+    if not newgrp.is_file():
+        return
+    inner = [sys.executable, str(Path(__file__).resolve()), *argv]
+    script = (
+        "export LEMMA_DOCKER_NEWGRP=1\nexec "
+        + " ".join(shlex.quote(a) for a in inner)
+        + "\n"
+    )
+    print("re-exec via newgrp docker (session missing docker group)", flush=True)
+    completed = subprocess.run(
+        [str(newgrp), "docker"],
+        input=script,
+        text=True,
+        check=False,
+    )
+    raise SystemExit(completed.returncode)
+
+
 def docker_on_path(path_env: str | None = None) -> bool:
     path = path_env if path_env is not None else os.environ.get("PATH", "")
     return shutil.which("docker", path=path) is not None
 
 
 def docker_preflight_error(path_env: str | None = None) -> str | None:
-    if docker_on_path(path_env):
+    path = path_env if path_env is not None else os.environ.get("PATH", "")
+    docker_bin = shutil.which("docker", path=path)
+    if docker_bin is None:
+        return (
+            "ERROR: USE_AGENT_DOCKER=1 requires docker on PATH "
+            f"(install docker and build {AGENT_IMAGE})"
+        )
+    try:
+        proc = subprocess.run(
+            [docker_bin, "info"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except OSError as exc:
+        return f"ERROR: docker info failed: {exc}"
+    if proc.returncode == 0:
         return None
-    return (
-        "ERROR: USE_AGENT_DOCKER=1 requires docker on PATH "
-        f"(install docker and build {AGENT_IMAGE})"
-    )
+    err = (proc.stderr or proc.stdout or "").strip()
+    if "permission denied" in err.lower():
+        return (
+            "ERROR: docker daemon permission denied (this session is not in group docker). "
+            "Relogin, or: newgrp docker"
+        )
+    return f"ERROR: docker info failed: {err[:400]}"
 
 
 def verus_available(path_env: str | None = None) -> bool:
@@ -366,6 +434,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     os.chdir(ROOT)
+    maybe_reexec_with_docker_group(list(args.queries))
     _, code = run_local_e2e(query_ids)
     if code == 0:
         print(f"logs under {LOG_DIR}", flush=True)

@@ -28,6 +28,19 @@ class _HangPopen:
         return -1
 
 
+def test_rewrite_agent_cmd_uses_mounted_cursor_agent(tmp_path: Path) -> None:
+    from research_loop.agent_sandbox import rewrite_agent_cmd_for_container
+
+    cli = tmp_path / "cli"
+    cli.mkdir()
+    (cli / "cursor-agent").write_text("x")
+    (cli / "index.js").write_text("")
+    cmd = "agent -p --force --trust < PROMPT.txt"
+    out = rewrite_agent_cmd_for_container(cmd, cli)
+    assert out.startswith("/opt/cursor-agent/cursor-agent ")
+    assert "--force" in out
+
+
 def test_run_agent_docker_timeout_stops_mcp(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     stop_calls: list[str] = []
 
