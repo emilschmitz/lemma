@@ -809,6 +809,11 @@ def _emit_table_cols_and_loader(
     return combined, loader
 
 
+def _support_table_defs_in_spec(spec_rs: str, table: str) -> bool:
+    """True when transpiled spec already defines ``Cols_<table>`` (IN/EXISTS wiring)."""
+    return re.search(rf"pub struct Cols_{re.escape(table)}\b", spec_rs) is not None
+
+
 def _inject_support_table_defs(spec_rs: str, support_defs: str) -> str:
     """Insert support-table Cols/valid_cols before spec helpers that may reference them."""
     if not support_defs.strip():
@@ -1221,8 +1226,11 @@ def assemble_verified_program(
                 load_mode=load_mode,
                 catalog_multi=effective_catalog,
             )
-            defs.append(cols_block.strip())
-            loaders.append(loader.strip())
+            if _support_table_defs_in_spec(spec_rs, st):
+                loaders.append(loader.strip())
+            else:
+                defs.append(cols_block.strip())
+                loaders.append(loader.strip())
         support_defs = "\n\n".join(defs)
         support_loaders = "\n".join(loaders)
         core = _inject_support_table_defs(core, support_defs)

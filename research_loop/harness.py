@@ -335,9 +335,17 @@ def verus_on_path() -> bool:
 def _verus_env() -> dict[str, str]:
     env = os.environ.copy()
     verus_bin = resolve_verus_bin()
+    prefix: list[str] = []
     if verus_bin:
-        verus_dir = os.path.dirname(verus_bin)
-        env["PATH"] = verus_dir + os.pathsep + env.get("PATH", "")
+        prefix.append(os.path.dirname(verus_bin))
+    home = os.path.expanduser("~")
+    prefix.extend(
+        [
+            os.path.join(home, ".cargo", "bin"),
+            os.path.join(home, ".local", "bin"),
+        ]
+    )
+    env["PATH"] = os.pathsep.join(prefix + [env.get("PATH", "")])
     env.setdefault("RUSTFLAGS", "-C target-cpu=native")
     return env
 

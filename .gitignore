@@ -62,6 +62,7 @@ duckdb
 verus/research_loop/working_query/verify_error_*.log
 
 # Verus research artifacts / large data
+research_loop/generated/
 verus/research_loop/generated/
 verus/research_loop/**/target/
 research_loop/holdout/data/*.tbl
