@@ -2,7 +2,17 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
 from research_loop.scripts.local_e2e_gendb_suite import (
+    PAPER_FAILED_QIDS,
+    build_suite_entries,
+    failed_r17_qids,
+    failed_r23_qids,
+)
+from research_loop.scripts.local_e2e_tiny_docker import select_query_ids
     PAPER_FAILED_QIDS,
     build_suite_entries,
     failed_r17_qids,
@@ -49,3 +59,31 @@ def test_select_query_ids_suite_default_all() -> None:
         "Q30",
     ]
     assert select_query_ids(["Q30"], available=available, default_all=True) == ["Q30"]
+
+
+def test_retry_rounds_reruns_failures(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from research_loop.scripts import local_e2e_tiny_docker as e2e
+
+    calls: list[str] = []
+
+    def fake_run(qid: str, sql: str, *, log_dir: Path) -> dict:
+        calls.append(qid)
+        ok = len(calls) >= 2
+        return {"qid": qid, "lemma_ok": ok, "proof_verified": ok, "latency_us": 1 if ok else None}
+
+    monkeypatch.setattr(e2e, "preflight_errors", lambda **kwargs: [])
+    monkeypatch.setattr(e2e, "ensure_agent_image", lambda: None)
+    monkeypatch.setattr(e2e, "apply_product_env", lambda **kwargs: None)
+    monkeypatch.setattr(e2e, "load_queries", lambda _p: {"Q1": "SELECT 1"})
+    monkeypatch.setattr(e2e, "run_one_query", fake_run)
+    monkeypatch.setattr(e2e, "resolve_tiny_db", lambda: tmp_path / "t.duckdb")
+    results, code = e2e.run_local_e2e(
+        ["Q1"],
+        skip_docker_build=True,
+        sql_file=tmp_path / "x.sql",
+        log_dir=tmp_path,
+        retry_rounds=3,
+    )
+    assert calls == ["Q1", "Q1"]
+    assert code == 0
+    assert results[0]["lemma_ok"] is True

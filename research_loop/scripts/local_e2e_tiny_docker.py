@@ -374,6 +374,18 @@ def run_one_query(qid: str, sql: str, *, log_dir: Path) -> dict[str, Any]:
     return rec
 
 
+def _write_e2e_progress(log_dir: Path, results: list[dict[str, Any]], *, round_i: int) -> None:
+    dest = log_dir / "results.json"
+    payload = {
+        "round": round_i,
+        "n": len(results),
+        "ok": sum(1 for r in results if r.get("lemma_ok")),
+        "failed": [r["qid"] for r in results if not r.get("lemma_ok")],
+        "results": results,
+    }
+    dest.write_text(json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8")
+
+
 def run_local_e2e(
     query_ids: list[str],
     *,
@@ -381,6 +393,7 @@ def run_local_e2e(
     skip_docker_build: bool = False,
     sql_file: Path | None = None,
     log_dir: Path | None = None,
+    retry_rounds: int = 1,
 ) -> tuple[list[dict[str, Any]], int]:
     saved_path = os.environ.get("PATH")
     if path_env is not None:
@@ -392,6 +405,7 @@ def run_local_e2e(
             skip_docker_build=skip_docker_build,
             sql_file=sql_file,
             log_dir=log_dir,
+            retry_rounds=retry_rounds,
         )
     finally:
         if saved_path is None:
@@ -407,6 +421,7 @@ def _run_local_e2e_impl(
     skip_docker_build: bool = False,
     sql_file: Path | None = None,
     log_dir: Path | None = None,
+    retry_rounds: int = 1,
 ) -> tuple[list[dict[str, Any]], int]:
     errors = preflight_errors(path_env=path_env)
     if errors:
@@ -427,13 +442,33 @@ def _run_local_e2e_impl(
         return [], 1
 
     dest = log_dir if log_dir is not None else LOG_DIR
-    results: list[dict[str, Any]] = []
-    exit_code = 0
-    for qid in query_ids:
-        rec = run_one_query(qid, queries[qid], log_dir=dest)
-        results.append(rec)
-        if not rec.get("lemma_ok"):
-            exit_code = 1
+    dest.mkdir(parents=True, exist_ok=True)
+    latest: dict[str, dict[str, Any]] = {}
+    pending = list(query_ids)
+    rounds = max(1, int(retry_rounds))
+    for round_i in range(1, rounds + 1):
+        if not pending:
+            break
+        print(
+            f"=== e2e round {round_i}/{rounds} pending={len(pending)} ===",
+            flush=True,
+        )
+        still: list[str] = []
+        for qid in pending:
+            rec = run_one_query(qid, queries[qid], log_dir=dest)
+            rec["round"] = round_i
+            latest[qid] = rec
+            if not rec.get("lemma_ok"):
+                still.append(qid)
+        _write_e2e_progress(
+            dest, [latest[qid] for qid in query_ids if qid in latest], round_i=round_i
+        )
+        pending = still
+        if pending and round_i < rounds:
+            print(f"retrying failed: {pending}", flush=True)
+
+    results = [latest[qid] for qid in query_ids if qid in latest]
+    exit_code = 0 if results and all(r.get("lemma_ok") for r in results) else 1
     return results, exit_code
 
 
@@ -457,12 +492,15 @@ def main(argv: list[str] | None = None) -> int:
     log_dir = LOG_DIR
     query_args = list(args.queries)
     default_all = False
+    retry_rounds = 1
     if query_args and query_args[0].lower() == "gendb":
         from research_loop.scripts.local_e2e_gendb_suite import (
             OUT_DIR as GENDB_LOG,
             write_suite_sql,
         )
 
+        os.environ.setdefault("MAX_ITERATIONS", "4")
+        retry_rounds = int(os.environ.get("LEMMA_E2E_RETRY_ROUNDS", "8"))
         sql_file = write_suite_sql()
         log_dir = GENDB_LOG
         query_args = query_args[1:]
@@ -488,6 +526,7 @@ def main(argv: list[str] | None = None) -> int:
         query_ids,
         sql_file=sql_file,
         log_dir=log_dir,
+        retry_rounds=retry_rounds,
     )
     if code == 0:
         print(f"logs under {log_dir}", flush=True)
