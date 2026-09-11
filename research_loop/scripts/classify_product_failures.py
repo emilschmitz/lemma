@@ -1,4 +1,12 @@
-"""Classify optimizer / experiment log tails by product-path step (AGENTS.md)."""
+"""Classify optimizer / experiment log tails by product-path step (AGENTS.md).
+
+Loud remaining classes (not host leftover bugs):
+
+- step 7 execute: official full-table 600s → proved + lat=-1 / lemma_ok=false.
+  Iterate µs is not a fake official time.
+- step 3 agent: no marked submit is a prove miss, unless leftover shows host
+  E0425 tN / E0308 case_when (those stay assemble/transpile).
+"""
 from __future__ import annotations
 
 import argparse
@@ -182,11 +190,12 @@ def classify_optimizer_log(text: str) -> dict[str, Any]:
             return _result(3, "agent stupidity", detail="run_query verify")
         return _result(5, "infra", detail="unclassified_verify_open_traces")
 
-    # Harvest one-liner only. Not an agent verdict — leftover/MCP must be in the log.
+    # Step 3 — agent never marked a verified submit. That is a prove miss.
+    # Host leftover tN (E0425) / case_when E0308 already matched above as assemble/transpile.
     if _NO_MARKED.search(text):
         if _LEFTOVER_MISSING.search(text):
-            return _result(5, "infra", detail="unclassified_no_marked_submit_leftover_missing")
-        return _result(5, "infra", detail="unclassified_no_marked_submit_open_traces")
+            return _result(3, "agent stupidity", detail="no marked submit (leftover missing)")
+        return _result(3, "agent stupidity", detail="no marked submit")
 
     return _result(5, "infra", detail="unclassified_open_traces")
 

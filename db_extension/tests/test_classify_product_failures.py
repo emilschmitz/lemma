@@ -137,15 +137,14 @@ def test_classify_unbalanced_run_query_braces() -> None:
     assert "brace" in out.get("detail", "")
 
 
-def test_classify_no_marked_submit_is_not_agent() -> None:
+def test_classify_no_marked_submit_is_agent_prove_miss() -> None:
     out = classify_optimizer_log(
         "FAILED\n    no marked submit\n"
         'LEMMA_METRICS_JSON: {"compiler_error": "no marked submit"}\n'
     )
-    assert out["step"] == 5
-    assert out["class"] == "infra"
-    assert "unclassified" in out.get("detail", "")
-    assert "agent" not in out["class"]
+    assert out["step"] == 3
+    assert out["class"] == "agent stupidity"
+    assert "no marked submit" in out.get("detail", "")
 
 
 def test_classify_empty_log_is_not_agent() -> None:
@@ -212,7 +211,7 @@ LEFTOVER_VERIFY_END
     assert out["class"] == "assemble"
 
 
-def test_classify_leftover_missing_is_loud_infra() -> None:
+def test_classify_leftover_missing_is_agent_prove_miss() -> None:
     text = """
 FAILED
     no marked submit
@@ -220,8 +219,25 @@ FAILED
 LEMMA_METRICS_JSON: {"compiler_error": "no marked submit"}
 """
     out = classify_optimizer_log(text)
-    assert out["class"] == "infra"
-    assert "leftover_missing" in out.get("detail", "")
+    assert out["step"] == 3
+    assert out["class"] == "agent stupidity"
+    assert "leftover missing" in out.get("detail", "")
+
+
+def test_classify_no_marked_plus_agent_edit_leftover_is_agent() -> None:
+    text = """
+FAILED
+    no marked submit
+LEFTOVER_VERIFY_BEGIN
+// AGENT_EDIT_START
+pub exec fn run_query(cols: &Cols) -> (res: u64)
+error: invariant not satisfied at end of loop body
+verification failed: 1 errors
+LEFTOVER_VERIFY_END
+"""
+    out = classify_optimizer_log(text)
+    assert out["step"] == 3
+    assert out["class"] == "agent stupidity"
 
 
 def test_classify_default_unclassified_not_agent() -> None:
@@ -232,6 +248,19 @@ def test_classify_default_unclassified_not_agent() -> None:
 
 def test_classify_official_measure_timeout() -> None:
     out = classify_optimizer_log(_OFFICIAL_MEASURE)
+    assert out["step"] == 7
+    assert out["class"] == "failed to execute"
+    assert "official measure" in out.get("detail", "")
+
+
+def test_classify_official_full_table_600s_is_execute_not_fake_time() -> None:
+    text = """
+LEMMA_METRICS_JSON: {"status": "SUCCESS", "proof_verified": true,
+  "latency_us": -1, "iterate_latency_us": 88,
+  "official_measure_error": "official full-table measure timed out after 600s"}
+lemma_ok=false
+"""
+    out = classify_optimizer_log(text)
     assert out["step"] == 7
     assert out["class"] == "failed to execute"
     assert "official measure" in out.get("detail", "")

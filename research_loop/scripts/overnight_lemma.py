@@ -94,20 +94,20 @@ def harvest_optimizer_output(text: str) -> dict[str, Any]:
         fields["latency_us"] = min(official_full_latencies)
         fields.pop("official_measure_error", None)
         fields.pop("iterate_latency_us", None)
-    elif official_latencies:
-        fields["latency_us"] = min(official_latencies)
-        fields.pop("official_measure_error", None)
     elif proved_measure_errors:
         err_metrics = proved_measure_errors[-1]
         fields["official_measure_error"] = err_metrics["official_measure_error"]
         fields["proof_verified"] = True
-        iterate_lat = err_metrics.get("iterate_latency_us", err_metrics.get("latency_us"))
+        iterate_lat = err_metrics.get("iterate_latency_us")
         if iterate_lat is not None:
             try:
                 fields["iterate_latency_us"] = int(iterate_lat)
             except (TypeError, ValueError):
                 pass
         fields["latency_us"] = -1
+    elif official_latencies:
+        fields["latency_us"] = min(official_latencies)
+        fields.pop("official_measure_error", None)
 
     if fields.get("official_measure_error"):
         fields["latency_us"] = -1
@@ -326,7 +326,12 @@ def write_unfinished_json(
 
 
 def write_failure_classify(out_dir: Path, results: list[dict]) -> dict[str, Any]:
-    """Classify finished harvest rows from optimizer logs (never agent for bare no_submit)."""
+    """Classify finished harvest rows from optimizer logs.
+
+    Bare no-submit is step 3 (prove miss). Leftover host E0425 tN / E0308
+    case_when stay assemble/transpile. Official 600s measure is step 7,
+    proved + lat=-1, not a fake time.
+    """
     entries: list[dict[str, Any]] = []
     for rec in results:
         log_path = rec.get("log")

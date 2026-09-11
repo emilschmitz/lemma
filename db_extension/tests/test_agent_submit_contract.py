@@ -262,7 +262,7 @@ def test_workspace_meta_from_submit_does_not_use_leftover_file(tmp_path: Path) -
     )
 
 
-def test_classify_no_marked_submit_is_not_agent_step() -> None:
+def test_classify_no_marked_submit_is_agent_prove_miss() -> None:
     log = (
         "  - Running agent in Docker sandbox... OK (10 s)\n"
         "FAILED\n"
@@ -272,6 +272,6 @@ def test_classify_no_marked_submit_is_not_agent_step() -> None:
         '"latency_us": -1, "compiler_error": "no marked submit"}\n'
     )
     out = classify_optimizer_log(log)
-    assert out["class"] == "infra"
-    assert out["step"] == 5
-    assert "unclassified" in out.get("detail", "")
+    assert out["class"] == "agent stupidity"
+    assert out["step"] == 3
+    assert "no marked submit" in out.get("detail", "")

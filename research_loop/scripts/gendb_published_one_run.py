@@ -218,12 +218,13 @@ def parse_optimizer_output(text: str) -> dict[str, Any]:
     else:
         official_full_latencies: list[int] = []
         official_latencies: list[int] = []
-        fallback_latencies: list[int] = []
         all_timed: list[int] = []
         for metrics in metrics_objects:
             if metrics.get("proof_verified") is not True:
                 continue
             if metrics.get("status") != "SUCCESS":
+                continue
+            if metrics.get("official_measure_error"):
                 continue
             try:
                 lat = int(metrics.get("latency_us", -1))
@@ -232,18 +233,22 @@ def parse_optimizer_output(text: str) -> dict[str, Any]:
             if lat < 0:
                 continue
             all_timed.append(lat)
-            if metrics.get("official_measure_error"):
-                fallback_latencies.append(lat)
-            elif metrics.get("measure_path") == "official_full":
+            if metrics.get("measure_path") == "official_full":
                 official_full_latencies.append(lat)
             else:
                 official_latencies.append(lat)
+        measure_errs = [
+            m.get("official_measure_error")
+            for m in metrics_objects
+            if m.get("proof_verified") is True and m.get("official_measure_error")
+        ]
         if official_full_latencies:
             parsed["latency_us"] = min(official_full_latencies)
+        elif measure_errs:
+            parsed["official_measure_error"] = measure_errs[-1]
+            parsed["latency_us"] = -1
         elif official_latencies:
             parsed["latency_us"] = min(official_latencies)
-        elif fallback_latencies:
-            parsed["latency_us"] = min(fallback_latencies)
         elif all_timed:
             parsed["latency_us"] = min(all_timed)
 

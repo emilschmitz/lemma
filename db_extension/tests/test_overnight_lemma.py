@@ -151,10 +151,16 @@ def test_lemma_job_ok_false_when_official_measure_error():
 
 
 _PROVED_MEASURE_TIMEOUT_LOG = """
-  - Official full-table measure after marked submit... FALLBACK (iterate 66 us; official: timed out)
+  - Official full-table measure after marked submit... TIMEOUT (proved; official full-table timed out; lat=-1; iterate 66 us is not official: timed out)
 proof_verified=True latency_us=-1
 LEMMA_METRICS_JSON: {"status": "SUCCESS", "proof_verified": true, "latency_us": -1, "iterate_latency_us": 66, "official_measure_error": "official full-table measure timed out after 300s"}
 --- Optimization Finished ---
+"""
+
+_PROVED_600S_WITH_ITERATE_JSON = """
+LEMMA_METRICS_JSON: {"status": "SUCCESS", "proof_verified": true, "latency_us": 66, "iterate_latency_us": 66}
+LEMMA_METRICS_JSON: {"status": "SUCCESS", "proof_verified": true, "latency_us": -1, "iterate_latency_us": 66, "official_measure_error": "official full-table measure timed out after 600s"}
+proof_verified=True latency_us=-1
 """
 
 
@@ -185,6 +191,18 @@ def test_harvest_proved_measure_timeout_not_lemma_ok():
     assert rec["proof_verified"] is True
     assert rec["official_measure_error"]
     assert rec["iterate_latency_us"] == 66
+    assert rec["latency_us"] == -1
+    assert rec["lemma_ok"] is False
+
+
+def test_harvest_official_600s_does_not_use_iterate_as_latency():
+    """Iterate µs must not become official time when full-table measure hits 600s."""
+    mod = _load_module()
+    fields = mod.harvest_optimizer_output(_PROVED_600S_WITH_ITERATE_JSON)
+    rec = {"returncode": 0, **fields}
+    rec["lemma_ok"] = mod.lemma_job_ok(rec)
+    assert rec["proof_verified"] is True
+    assert "600s" in rec["official_measure_error"]
     assert rec["latency_us"] == -1
     assert rec["lemma_ok"] is False
 
@@ -747,12 +765,12 @@ def test_failure_classify_written_at_end(tmp_path: Path, monkeypatch):
     assert fc["n_results"] == 1
     entry = fc["entries"][0]
     assert entry["qid"] == "Q1"
-    assert entry["class"] == "infra"
-    assert "agent" not in entry["class"]
-    assert "unclassified" in entry.get("detail", "")
+    assert entry["step"] == 3
+    assert entry["class"] == "agent stupidity"
+    assert "no marked submit" in entry.get("detail", "")
 
 
-def test_failure_classify_no_marked_submit_never_agent(tmp_path: Path):
+def test_failure_classify_no_marked_submit_is_agent_prove_miss(tmp_path: Path):
     mod = _load_module()
     out_dir = tmp_path / "out"
     out_dir.mkdir()
@@ -765,8 +783,8 @@ def test_failure_classify_no_marked_submit_never_agent(tmp_path: Path):
         "lemma_ok": False,
     }
     doc = mod.write_failure_classify(out_dir, [rec])
-    assert doc["entries"][0]["class"] == "infra"
-    assert doc["entries"][0]["step"] == 5
+    assert doc["entries"][0]["class"] == "agent stupidity"
+    assert doc["entries"][0]["step"] == 3
 
 
 def test_finalize_run_loud_error_on_unfinished(tmp_path: Path, capsys):

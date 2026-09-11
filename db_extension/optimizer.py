@@ -870,8 +870,9 @@ def run_optimization_loop(
                 latency = -1
             if metrics.get("official_measure_error"):
                 _vprint(
-                    f" {COLOR_YELLOW}FALLBACK{COLOR_RESET} (iterate {iterate_latency} us; "
-                    f"official: {str(metrics['official_measure_error'])[:120]})"
+                    f" {COLOR_YELLOW}TIMEOUT{COLOR_RESET} (proved; official full-table timed out; "
+                    f"lat=-1; iterate {iterate_latency} us is not official: "
+                    f"{str(metrics['official_measure_error'])[:120]})"
                 )
             elif status == "SUCCESS" and proof_verified and latency >= 0:
                 _vprint(
@@ -918,7 +919,7 @@ def run_optimization_loop(
             leftover = leftover_verify_excerpt(workspace)
             err = "no marked submit"
             if leftover:
-                err = f"no marked submit; leftover verify (not an agent verdict):\n{leftover}"
+                err = f"no marked submit; leftover verify:\n{leftover}"
             _vprint(f" {COLOR_RED}FAILED{COLOR_RESET}")
             _vprint(f"    no marked submit")
             if leftover:
