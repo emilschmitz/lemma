@@ -47,9 +47,9 @@ LIMIT 10"""
 
 IN_INNER_JOIN = """SELECT entity_id FROM events
 WHERE entity_id IN (
-    SELECT e.entity_id FROM events e JOIN events e2 ON e.kind = e2.kind
-    GROUP BY e.entity_id
-    HAVING COUNT(*) > 1
+    SELECT f.entity_id FROM fact f JOIN dim d ON f.tag = d.tag
+    GROUP BY f.entity_id
+    HAVING SUM(f.val) > 10
 )"""
 
 
@@ -73,6 +73,8 @@ def test_in_inner_groupby_count_distinct_contains() -> None:
     assert "arbitrary()" not in out
 
 
-def test_in_inner_groupby_join_still_unsupported() -> None:
-    with pytest.raises(UnsupportedContractError, match="JOIN"):
-        transpile_sql_to_verus(IN_INNER_JOIN, {"events": GENERIC_SCHEMA["events"]})
+def test_in_inner_groupby_join_transpiles() -> None:
+    out = transpile_sql_to_verus(IN_INNER_JOIN, GENERIC_SCHEMA)
+    assert "in_in_1_contains" in out
+    assert "decreases" in out
+    assert "arbitrary()" not in out

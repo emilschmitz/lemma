@@ -30,6 +30,7 @@ from .parse_sql import (
     UnsupportedContractError,
     _agg_value_type,
     grouped_derived_scalar_inner_tables,
+    inner_base_tables,
     is_grouped_derived_scalar_subquery,
     normalize_schema,
     parse_sql,
@@ -136,9 +137,24 @@ def _assert_join_subquery_supported(query: SQLQuery) -> None:
             continue
         _subquery_inner_table_name(sub.query)
     for exists in query.exists_subqueries:
+        if not exists.correlated and exists.query.joins:
+            continue
         _subquery_inner_table_name(exists.query)
     for in_sub in query.in_subqueries:
+        if not in_sub.correlated and in_sub.query.joins:
+            continue
         _subquery_inner_table_name(in_sub.query)
+
+
+def _merged_table_schema(
+    tables: list[str],
+    multi_schema: dict[str, dict[str, str]],
+) -> dict[str, str]:
+    merged: dict[str, str] = {}
+    for table in tables:
+        for col, typ in multi_schema[table].items():
+            merged[col] = typ
+    return merged
 
 
 def _validate_schema(schema: dict[str, str] | dict[str, dict[str, str]]) -> None:
@@ -442,6 +458,38 @@ def _emit_multi_table_cols(
     return "\n\n".join(parts)
 
 
+def _emit_support_spec_table_cols(
+    query: SQLQuery,
+    multi_schema: dict[str, dict[str, str]] | None,
+    *,
+    bounds: ResolvedBounds,
+    catalog: CatalogAssumptions | None = None,
+) -> str:
+    """Emit Cols_{table} + valid_cols_{table} for inner catalog tables in subqueries."""
+    if not multi_schema:
+        return ""
+    extras = support_spec_params(query)
+    if not extras:
+        return ""
+    parts: list[str] = []
+    for table, struct, valid in extras:
+        cols = multi_schema.get(table)
+        if cols is None:
+            continue
+        parts.append(generate_cols_rs(cols, struct_name=struct))
+        ta = table_assumptions_for(catalog, table)
+        parts.append(
+            emit_valid_cols_predicate(
+                cols,
+                struct_name=struct,
+                bounds=bounds,
+                catalog=catalog,
+                table_assumptions=ta,
+            ).replace("valid_cols", valid)
+        )
+    return "\n\n".join(parts)
+
+
 def _having_closure_types(query: SQLQuery, flat_schema: dict[str, str]) -> tuple[str, str]:
     if len(query.groupby_columns) == 1:
         key_ty = spec_map_key_type(flat_schema[query.groupby_columns[0]])
@@ -717,9 +765,66 @@ def _emit_set_op_helpers(
     op: str,
 ) -> tuple[str, str, str]:
     """Emit INTERSECT / EXCEPT / UNION composition over two branch specs."""
-    _ = query, flat_schema, op
+    if op == "union":
+        right = query.union_query
+        distinct = not query.union_all
+    elif op == "intersect":
+        if query.intersect_all:
+            raise UnsupportedContractError(
+                "INTERSECT ALL set operation needs real MethodSpec bag fold; not yet supported"
+            )
+        right = query.intersect_query
+        distinct = True
+    elif op == "except":
+        if query.except_all:
+            raise UnsupportedContractError(
+                "EXCEPT ALL set operation needs real MethodSpec bag fold; not yet supported"
+            )
+        right = query.except_query
+        distinct = True
+    else:
+        raise UnsupportedContractError(f"unknown set operation {op!r}")
+
+    if right is None:
+        raise UnsupportedContractError(f"{op.upper()} set operation missing right branch")
+
+    left = query
+    prefix_l = f"setop_{op}_left"
+    prefix_r = f"setop_{op}_right"
+
+    if left.is_projection:
+        left_helpers, left_call, ret_type = _emit_projection_branch(
+            left,
+            flat_schema,
+            helper_name=f"{prefix_l}_helper",
+            spec_name=f"{prefix_l}_spec",
+        )
+        right_helpers, right_call, _ = _emit_projection_branch(
+            right,
+            flat_schema,
+            helper_name=f"{prefix_r}_helper",
+            spec_name=f"{prefix_r}_spec",
+        )
+        if op == "union":
+            combined = (
+                f"spec_seq_concat({left_call}, {right_call})"
+                if query.union_all
+                else f"spec_seq_union_distinct({left_call}, {right_call})"
+            )
+        elif op == "intersect":
+            combined = f"spec_seq_intersect({left_call}, {right_call})"
+        else:
+            combined = f"spec_seq_except({left_call}, {right_call})"
+        helpers = "\n\n".join([left_helpers, right_helpers])
+        spec_fn = f"""pub open spec fn method_spec(cols: &Cols) -> {ret_type}
+    recommends valid_cols(cols),
+{{
+    {combined}
+}}"""
+        return helpers, spec_fn, ret_type
+
     raise UnsupportedContractError(
-        f"{op.upper()} set operation needs real MethodSpec fold; not yet supported"
+        f"{op.upper()} set operation shape needs real MethodSpec fold; not yet supported"
     )
 
 
@@ -1205,7 +1310,24 @@ def transpile_sql_to_verus(
             )
         query.having_expr = resolved_having
     for exists in query.exists_subqueries:
-        inner_table = _subquery_inner_table_name(exists.query)
+        inner_tables = inner_base_tables(exists.query)
+        if exists.query.joins:
+            if not multi_for_subqueries:
+                raise UnsupportedContractError(
+                    "EXISTS inner JOIN requires multi-table schema dict[table, dict[col, type]]"
+                )
+            inner_schema = _merged_table_schema(inner_tables, multi_for_subqueries)
+            subquery_blocks.append(
+                emit_exists_subquery_helper(
+                    exists,
+                    inner_schema,
+                    schemas_by_table=multi_for_subqueries,
+                    inner_tables=inner_tables,
+                    outer_schema=outer_schema,
+                )
+            )
+            continue
+        inner_table = inner_tables[0]
         struct_name, valid_fn, param_name, inner_schema = _subquery_emit_binding(
             inner_table, flat_schema, multi_for_subqueries,
         )
@@ -1222,7 +1344,24 @@ def transpile_sql_to_verus(
     for win in query.window_specs:
         subquery_blocks.append(emit_window_spec_helper(win, schema=flat_schema))
     for in_sub in query.in_subqueries:
-        inner_table = _subquery_inner_table_name(in_sub.query)
+        inner_tables = inner_base_tables(in_sub.query)
+        if in_sub.query.joins:
+            if not multi_for_subqueries:
+                raise UnsupportedContractError(
+                    "IN inner JOIN requires multi-table schema dict[table, dict[col, type]]"
+                )
+            inner_schema = _merged_table_schema(inner_tables, multi_for_subqueries)
+            subquery_blocks.append(
+                emit_in_subquery_helper(
+                    in_sub,
+                    inner_schema,
+                    schemas_by_table=multi_for_subqueries,
+                    inner_tables=inner_tables,
+                    outer_schema=outer_schema,
+                )
+            )
+            continue
+        inner_table = inner_tables[0]
         struct_name, valid_fn, param_name, inner_schema = _subquery_emit_binding(
             inner_table, flat_schema, multi_for_subqueries,
         )
@@ -1328,6 +1467,11 @@ def transpile_sql_to_verus(
             outer_schema,
             groupby_columns=query.groupby_columns,
         )
+        support_cols = _emit_support_spec_table_cols(
+            query, multi_schema, bounds=bounds, catalog=catalog_assumptions,
+        )
+        if support_cols:
+            cols_block = f"{cols_block}\n\n{support_cols}"
         valid_cols = emit_valid_cols_predicate(
             outer_schema, bounds=bounds, catalog=catalog_assumptions
         )

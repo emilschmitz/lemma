@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from .col_exprs import (
     native_u64_term,
@@ -20,6 +20,7 @@ from .parse_sql import (
     UnsupportedContractError,
     _agg_value_type,
     grouped_derived_scalar_inner_tables,
+    inner_base_tables,
     is_grouped_derived_scalar_subquery,
 )
 from .rust_ident import rust_ident
@@ -571,7 +572,23 @@ def _groupby_key_expr(
 def _validate_in_grouped_inner(in_spec: InSubquerySpec) -> None:
     """Validate uncorrelated IN inner GROUP BY shapes we can fold."""
     inner = in_spec.query
-    _validate_simple_semi_join_inner(inner, label="IN", allow_groupby=True)
+    if inner.derived_tables:
+        raise UnsupportedContractError(
+            "IN inner derived table is not supported in MethodSpec semi-join fold"
+        )
+    if inner.scalar_subqueries or inner.exists_subqueries or inner.in_subqueries:
+        raise UnsupportedContractError(
+            "nested subqueries inside IN are not supported"
+        )
+    if inner.joins:
+        if len(inner_base_tables(inner)) < 2:
+            raise UnsupportedContractError(
+                "IN inner JOIN requires at least two base tables"
+            )
+    elif len(inner_base_tables(inner)) != 1:
+        raise UnsupportedContractError(
+            "IN requires exactly one inner table"
+        )
     if len(inner.groupby_columns) != 1:
         raise UnsupportedContractError(
             "IN inner GROUP BY with multiple keys is not supported in MethodSpec semi-join fold"
@@ -587,9 +604,36 @@ def _validate_in_grouped_inner(in_spec: InSubquerySpec) -> None:
             "IN inner GROUP BY with multiple aggregates is not supported "
             "in MethodSpec semi-join fold"
         )
-    if inner.agg_type == "AVG" or any(a.agg_type == "AVG" for a in inner.agg_specs):
+
+
+def _validate_exists_grouped_inner(exists: ExistsSubquery) -> None:
+    """Validate uncorrelated EXISTS inner GROUP BY shapes we can fold."""
+    inner = exists.query
+    if inner.derived_tables:
         raise UnsupportedContractError(
-            "IN inner GROUP BY with AVG is not supported in MethodSpec semi-join fold"
+            "EXISTS inner derived table is not supported in MethodSpec semi-join fold"
+        )
+    if inner.scalar_subqueries or inner.exists_subqueries or inner.in_subqueries:
+        raise UnsupportedContractError(
+            "nested subqueries inside EXISTS are not supported"
+        )
+    if inner.joins:
+        if len(inner_base_tables(inner)) < 2:
+            raise UnsupportedContractError(
+                "EXISTS inner JOIN requires at least two base tables"
+            )
+    elif len(inner_base_tables(inner)) != 1:
+        raise UnsupportedContractError(
+            "EXISTS requires exactly one inner table"
+        )
+    if len(inner.groupby_columns) != 1:
+        raise UnsupportedContractError(
+            "EXISTS inner GROUP BY with multiple keys is not supported in MethodSpec semi-join fold"
+        )
+    if inner.is_multi_agg:
+        raise UnsupportedContractError(
+            "EXISTS inner GROUP BY with multiple aggregates is not supported "
+            "in MethodSpec semi-join fold"
         )
 
 
@@ -599,6 +643,8 @@ def _in_grouped_having_types(inner: SQLQuery, schema: dict[str, str]) -> tuple[s
     if inner.agg_type == "COUNT_DISTINCT" or any(
         a.agg_type == "COUNT_DISTINCT" for a in inner.agg_specs
     ):
+        return key_ty, "u64"
+    if inner.agg_type == "AVG":
         return key_ty, "u64"
     if inner.agg_type == "SUM":
         val_ty = _agg_value_type(inner.agg_expr)
@@ -1071,6 +1117,262 @@ def emit_scalar_subquery_helper(
     )
 
 
+def _join_semi_param_block(
+    inner_tables: list[str],
+) -> tuple[str, str, str]:
+    from .joins import _table_struct_name
+
+    param_decls = ", ".join(
+        f"{t}: &{_table_struct_name(t)}" for t in inner_tables
+    )
+    valid_recommends = ", ".join(f"valid_cols_{t}({t})" for t in inner_tables)
+    param_names = ", ".join(inner_tables)
+    return param_decls, valid_recommends, param_names
+
+
+def _emit_in_avg_grouped_helper(
+    in_spec: InSubquerySpec,
+    inner_schema: dict[str, str],
+    *,
+    struct_name: str = "Cols",
+    param_name: str = "cols",
+    valid_fn: str = "valid_cols",
+) -> str:
+    """IN inner GROUP BY with AVG HAVING via sum/count maps."""
+    inner = in_spec.query
+    prefix = f"in_{in_spec.alias}"
+    contains_name = f"{prefix}_contains"
+    proj_col = _in_projection_column(in_spec)
+    val_ty = spec_map_key_type(inner_schema.get(proj_col.lower(), "int"))
+    key_ty, _ = _in_grouped_having_types(inner, inner_schema)
+    sum_inner = replace(inner, agg_type="SUM")
+    count_inner = replace(inner, agg_type="COUNT", agg_expr="1", agg_column="*")
+    sum_helpers, sum_call, _ = _emit_groupby_map_helper(
+        f"{prefix}_sum",
+        sum_inner,
+        inner_schema,
+        struct_name=struct_name,
+        param_name=param_name,
+        valid_fn=valid_fn,
+    )
+    count_helpers, count_call, _ = _emit_groupby_map_helper(
+        f"{prefix}_count",
+        count_inner,
+        inner_schema,
+        struct_name=struct_name,
+        param_name=param_name,
+        valid_fn=valid_fn,
+    )
+    if inner.having_expr:
+        filtered = f"""{{
+        let sums = {sum_call};
+        let counts = {count_call};
+        sums.filter_keys(|k| {{
+            let c: u64 = counts[k];
+            let s: u64 = sums[k];
+            let v: u64 = if c == 0 {{ 0 }} else {{ s / c }};
+            {inner.having_expr}
+        }})
+    }}"""
+    else:
+        filtered = sum_call
+    contains = f"""pub open spec fn {contains_name}({param_name}: &{struct_name}, val: {val_ty}) -> bool
+    recommends {valid_fn}({param_name}),
+{{
+    let filtered = {filtered};
+    filtered.contains_key(val)
+}}"""
+    return sum_helpers + "\n\n" + count_helpers + "\n\n" + contains
+
+
+def _emit_exists_avg_grouped_helper(
+    exists: ExistsSubquery,
+    inner_schema: dict[str, str],
+    *,
+    struct_name: str = "Cols",
+    param_name: str = "cols",
+    valid_fn: str = "valid_cols",
+) -> str:
+    inner = exists.query
+    prefix = f"exists_{exists.alias}"
+    spec_name = f"{prefix}_spec"
+    sum_inner = replace(inner, agg_type="SUM")
+    count_inner = replace(inner, agg_type="COUNT", agg_expr="1", agg_column="*")
+    sum_helpers, sum_call, _ = _emit_groupby_map_helper(
+        f"{prefix}_sum",
+        sum_inner,
+        inner_schema,
+        struct_name=struct_name,
+        param_name=param_name,
+        valid_fn=valid_fn,
+    )
+    count_helpers, count_call, _ = _emit_groupby_map_helper(
+        f"{prefix}_count",
+        count_inner,
+        inner_schema,
+        struct_name=struct_name,
+        param_name=param_name,
+        valid_fn=valid_fn,
+    )
+    if inner.having_expr:
+        body = f"""{{
+    let sums = {sum_call};
+    let counts = {count_call};
+    let filtered = sums.filter_keys(|k| {{
+        let c: u64 = counts[k];
+        let s: u64 = sums[k];
+        let v: u64 = if c == 0 {{ 0 }} else {{ s / c }};
+        {inner.having_expr}
+    }});
+    !filtered.is_empty()
+}}"""
+    else:
+        body = f"!{sum_call}.is_empty()"
+    spec = f"""pub open spec fn {spec_name}({param_name}: &{struct_name}) -> bool
+    recommends {valid_fn}({param_name}),
+{body}"""
+    return sum_helpers + "\n\n" + count_helpers + "\n\n" + spec
+
+
+def _emit_join_grouped_semi_join(
+    inner: SQLQuery,
+    *,
+    prefix: str,
+    schemas_by_table: dict[str, dict[str, str]],
+    inner_tables: list[str],
+    inner_schema: dict[str, str],
+    having_expr: str,
+    mode: str,
+    val_ty: str | None = None,
+) -> str:
+    from .joins import emit_join_grouped_map_spec
+
+    key_ty, having_val_ty = _in_grouped_having_types(inner, inner_schema)
+    if inner.agg_type == "AVG":
+        val_type = _agg_value_type(inner.agg_expr)
+        sum_prefix = f"{prefix}_sum"
+        count_prefix = f"{prefix}_count"
+        sum_inner = replace(inner, agg_type="SUM")
+        count_inner = replace(inner, agg_type="COUNT", agg_expr="1", agg_column="*")
+        sum_helpers, sum_call, _ = emit_join_grouped_map_spec(
+            sum_inner,
+            schemas_by_table,
+            where_expr=inner.where_expr,
+            agg_expr=sum_inner.agg_expr,
+            is_sum=True,
+            val_type=val_type,
+            prefix=sum_prefix,
+        )
+        count_helpers, count_call, _ = emit_join_grouped_map_spec(
+            count_inner,
+            schemas_by_table,
+            where_expr=inner.where_expr,
+            agg_expr="1",
+            is_sum=False,
+            val_type="u64",
+            prefix=count_prefix,
+        )
+        helpers = sum_helpers + "\n\n" + count_helpers
+        if having_expr:
+            filtered = f"""{{
+        let sums = {sum_call};
+        let counts = {count_call};
+        sums.filter_keys(|k| {{
+            let c: u64 = counts[k];
+            let s: u64 = sums[k];
+            let v: u64 = if c == 0 {{ 0 }} else {{ s / c }};
+            {having_expr}
+        }})
+    }}"""
+        else:
+            filtered = sum_call
+    else:
+        is_sum = inner.agg_type == "SUM"
+        val_type = _agg_value_type(inner.agg_expr) if is_sum else "u64"
+        helpers, map_call, _map_ret = emit_join_grouped_map_spec(
+            inner,
+            schemas_by_table,
+            where_expr=inner.where_expr,
+            agg_expr=inner.agg_expr,
+            is_sum=is_sum,
+            val_type=val_type,
+            prefix=prefix,
+        )
+        filtered = _inline_having_filter(map_call, having_expr, key_ty, having_val_ty)
+    param_decls, valid_recommends, param_names = _join_semi_param_block(inner_tables)
+    if mode == "in":
+        contains_name = f"{prefix}_contains"
+        return helpers + "\n\n" + f"""pub open spec fn {contains_name}({param_decls}, val: {val_ty}) -> bool
+    recommends {valid_recommends},
+{{
+    let filtered = {filtered};
+    filtered.contains_key(val)
+}}"""
+    spec_name = f"{prefix}_spec"
+    return helpers + "\n\n" + f"""pub open spec fn {spec_name}({param_decls}) -> bool
+    recommends {valid_recommends},
+{{
+    let filtered = {filtered};
+    !filtered.is_empty()
+}}"""
+
+
+def _emit_join_scan_semi_join(
+    inner: SQLQuery,
+    *,
+    prefix: str,
+    schemas_by_table: dict[str, dict[str, str]],
+    inner_tables: list[str],
+    inner_schema: dict[str, str],
+    mode: str,
+    val_ty: str | None = None,
+    proj_col: str | None = None,
+) -> str:
+    from .joins import (
+        _Slot,
+        _emit_join_projection,
+        _init_indices,
+        _table_struct_name,
+    )
+
+    slots = [
+        _Slot(
+            table=t,
+            param=t,
+            idx=f"i{i}",
+            struct=_table_struct_name(t),
+        )
+        for i, t in enumerate(inner_tables)
+    ]
+    derived_by_alias = {d.alias: d for d in inner.derived_tables}
+    helper_name = f"{prefix}_projection_helper"
+    proj_helper, seq_body, _ret = _emit_join_projection(
+        inner,
+        slots,
+        schemas_by_table,
+        derived_by_alias,
+        {},
+        where_expr=inner.where_expr,
+        helper_name=helper_name,
+    )
+    init_args = ", ".join([*(s.param for s in slots), _init_indices(slots)])
+    seq_call = f"{helper_name}({init_args})"
+    param_decls, valid_recommends, _param_names = _join_semi_param_block(inner_tables)
+    if mode == "in":
+        contains_name = f"{prefix}_contains"
+        return proj_helper + "\n\n" + f"""pub open spec fn {contains_name}({param_decls}, val: {val_ty}) -> bool
+    recommends {valid_recommends},
+{{
+    {seq_call}.contains(val)
+}}"""
+    spec_name = f"{prefix}_spec"
+    return proj_helper + "\n\n" + f"""pub open spec fn {spec_name}({param_decls}) -> bool
+    recommends {valid_recommends},
+{{
+    {seq_call}.len() > 0
+}}"""
+
+
 def emit_exists_subquery_helper(
     exists: ExistsSubquery,
     inner_schema: dict[str, str],
@@ -1079,6 +1381,8 @@ def emit_exists_subquery_helper(
     valid_fn: str = "valid_cols",
     param_name: str = "cols",
     outer_schema: dict[str, str] | None = None,
+    schemas_by_table: dict[str, dict[str, str]] | None = None,
+    inner_tables: list[str] | None = None,
 ) -> str:
     """Emit EXISTS (or NOT EXISTS) semi-join spec helper."""
     if exists.correlated:
@@ -1089,6 +1393,52 @@ def emit_exists_subquery_helper(
             valid_fn=valid_fn,
             param_name=param_name,
             outer_schema=outer_schema,
+        )
+    inner = exists.query
+    prefix = f"exists_{exists.alias}"
+    if inner.groupby_columns:
+        _validate_exists_grouped_inner(exists)
+        if inner.joins:
+            if schemas_by_table is None or inner_tables is None:
+                raise UnsupportedContractError(
+                    "EXISTS inner JOIN GROUP BY requires multi-table schema"
+                )
+            return _emit_join_grouped_semi_join(
+                inner,
+                prefix=prefix,
+                schemas_by_table=schemas_by_table,
+                inner_tables=inner_tables,
+                inner_schema=inner_schema,
+                having_expr=inner.having_expr,
+                mode="exists",
+            )
+        if inner.agg_type == "AVG":
+            return _emit_exists_avg_grouped_helper(
+                exists,
+                inner_schema,
+                struct_name=struct_name,
+                param_name=param_name,
+                valid_fn=valid_fn,
+            )
+        return emit_exists_grouped_subquery_helper(
+            exists,
+            inner_schema,
+            struct_name=struct_name,
+            param_name=param_name,
+            valid_fn=valid_fn,
+        )
+    if inner.joins:
+        if schemas_by_table is None or inner_tables is None:
+            raise UnsupportedContractError(
+                "EXISTS inner JOIN requires multi-table schema"
+            )
+        return _emit_join_scan_semi_join(
+            inner,
+            prefix=prefix,
+            schemas_by_table=schemas_by_table,
+            inner_tables=inner_tables,
+            inner_schema=inner_schema,
+            mode="exists",
         )
     _validate_simple_semi_join_inner(exists.query, label="EXISTS")
     helper_name = f"exists_{exists.alias}_helper"
@@ -1114,6 +1464,54 @@ def emit_exists_subquery_helper(
         ret_type="bool",
     )
     return helper + "\n\n" + spec
+
+
+def emit_exists_grouped_subquery_helper(
+    exists: ExistsSubquery,
+    inner_schema: dict[str, str],
+    *,
+    struct_name: str = "Cols",
+    valid_fn: str = "valid_cols",
+    param_name: str = "cols",
+) -> str:
+    """Emit EXISTS over inner GROUP BY map (+ optional HAVING)."""
+    inner = exists.query
+    prefix = f"exists_{exists.alias}"
+    spec_name = f"{prefix}_spec"
+    key_ty, having_val_ty = _in_grouped_having_types(inner, inner_schema)
+
+    is_count_distinct = inner.agg_type == "COUNT_DISTINCT" or any(
+        a.agg_type == "COUNT_DISTINCT" for a in inner.agg_specs
+    )
+    if is_count_distinct:
+        map_helpers, map_call, _map_ret = _emit_count_distinct_groupby_map_helper(
+            prefix,
+            inner,
+            inner_schema,
+            struct_name=struct_name,
+            param_name=param_name,
+            valid_fn=valid_fn,
+        )
+    else:
+        map_helpers, map_call, _map_ret = _emit_groupby_map_helper(
+            prefix,
+            inner,
+            inner_schema,
+            struct_name=struct_name,
+            param_name=param_name,
+            valid_fn=valid_fn,
+        )
+
+    filtered = _inline_having_filter(
+        map_call, inner.having_expr, key_ty, having_val_ty,
+    )
+    spec = f"""pub open spec fn {spec_name}({param_name}: &{struct_name}) -> bool
+    recommends {valid_fn}({param_name}),
+{{
+    let filtered = {filtered};
+    !filtered.is_empty()
+}}"""
+    return map_helpers + "\n\n" + spec
 
 
 def emit_exists_corr_subquery_helper(
@@ -1205,14 +1603,39 @@ def emit_in_grouped_subquery_helper(
     struct_name: str = "Cols",
     valid_fn: str = "valid_cols",
     param_name: str = "cols",
+    schemas_by_table: dict[str, dict[str, str]] | None = None,
+    inner_tables: list[str] | None = None,
 ) -> str:
     """Emit IN (subquery) membership over inner GROUP BY map (+ optional HAVING)."""
     _validate_in_grouped_inner(in_spec)
     inner = in_spec.query
     prefix = f"in_{in_spec.alias}"
-    contains_name = f"{prefix}_contains"
     proj_col = _in_projection_column(in_spec)
     val_ty = spec_map_key_type(inner_schema.get(proj_col.lower(), "int"))
+    if inner.joins:
+        if schemas_by_table is None or inner_tables is None:
+            raise UnsupportedContractError(
+                "IN inner JOIN GROUP BY requires multi-table schema"
+            )
+        return _emit_join_grouped_semi_join(
+            inner,
+            prefix=prefix,
+            schemas_by_table=schemas_by_table,
+            inner_tables=inner_tables,
+            inner_schema=inner_schema,
+            having_expr=inner.having_expr,
+            mode="in",
+            val_ty=val_ty,
+        )
+    if inner.agg_type == "AVG":
+        return _emit_in_avg_grouped_helper(
+            in_spec,
+            inner_schema,
+            struct_name=struct_name,
+            param_name=param_name,
+            valid_fn=valid_fn,
+        )
+    contains_name = f"{prefix}_contains"
     key_ty, having_val_ty = _in_grouped_having_types(inner, inner_schema)
 
     is_count_distinct = inner.agg_type == "COUNT_DISTINCT" or any(
@@ -1257,6 +1680,8 @@ def emit_in_subquery_helper(
     valid_fn: str = "valid_cols",
     param_name: str = "cols",
     outer_schema: dict[str, str] | None = None,
+    schemas_by_table: dict[str, dict[str, str]] | None = None,
+    inner_tables: list[str] | None = None,
 ) -> str:
     """Emit IN (subquery) membership helper."""
     if in_spec.correlated:
@@ -1275,6 +1700,25 @@ def emit_in_subquery_helper(
             struct_name=struct_name,
             valid_fn=valid_fn,
             param_name=param_name,
+            schemas_by_table=schemas_by_table,
+            inner_tables=inner_tables,
+        )
+    if in_spec.query.joins:
+        if schemas_by_table is None or inner_tables is None:
+            raise UnsupportedContractError(
+                "IN inner JOIN requires multi-table schema"
+            )
+        proj_col = _in_projection_column(in_spec)
+        val_ty = spec_map_key_type(inner_schema.get(proj_col.lower(), "int"))
+        return _emit_join_scan_semi_join(
+            in_spec.query,
+            prefix=f"in_{in_spec.alias}",
+            schemas_by_table=schemas_by_table,
+            inner_tables=inner_tables,
+            inner_schema=inner_schema,
+            mode="in",
+            val_ty=val_ty,
+            proj_col=proj_col,
         )
     _validate_simple_semi_join_inner(in_spec.query, label="IN")
     helper_name = f"in_{in_spec.alias}_helper"

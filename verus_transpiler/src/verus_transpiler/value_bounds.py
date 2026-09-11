@@ -1665,6 +1665,44 @@ pub open spec fn spec_seq_union_distinct_helper<A>(a: Seq<A>, b: Seq<A>, i: int)
     }
 }
 
+pub open spec fn spec_seq_intersect<A>(a: Seq<A>, b: Seq<A>) -> Seq<A> {
+    spec_seq_intersect_helper(a, b, 0)
+}
+
+pub open spec fn spec_seq_intersect_helper<A>(a: Seq<A>, b: Seq<A>, i: int) -> Seq<A>
+    decreases a.len() - i,
+{
+    if i < a.len() {
+        let tail = spec_seq_intersect_helper(a, b, i + 1);
+        if b.contains(a[i]) && !tail.contains(a[i]) {
+            tail.push(a[i])
+        } else {
+            tail
+        }
+    } else {
+        Seq::empty()
+    }
+}
+
+pub open spec fn spec_seq_except<A>(a: Seq<A>, b: Seq<A>) -> Seq<A> {
+    spec_seq_except_helper(a, b, 0)
+}
+
+pub open spec fn spec_seq_except_helper<A>(a: Seq<A>, b: Seq<A>, i: int) -> Seq<A>
+    decreases a.len() - i,
+{
+    if i < a.len() {
+        let tail = spec_seq_except_helper(a, b, i + 1);
+        if !b.contains(a[i]) && !tail.contains(a[i]) {
+            tail.push(a[i])
+        } else {
+            tail
+        }
+    } else {
+        Seq::empty()
+    }
+}
+
 pub open spec fn seq_sum_u64(s: Seq<u64>) -> u64 {
     seq_sum_u64_helper(s, 0)
 }

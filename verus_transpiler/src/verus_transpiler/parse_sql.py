@@ -762,6 +762,37 @@ def _outer_base_table(query: SQLQuery) -> str | None:
     return query.tables[0] if query.tables else None
 
 
+def inner_base_tables(query: SQLQuery) -> list[str]:
+    """Catalog base tables in a subquery FROM (+ JOIN), excluding derived aliases."""
+    derived = {d.alias for d in query.derived_tables}
+    return [t for t in query.tables if t not in derived]
+
+
+def _select_base_table_names(select: exp.Select) -> list[str]:
+    """Base catalog table names from a SELECT's FROM + JOIN clauses (AST)."""
+    names: list[str] = []
+    from_clause = select.args.get("from_")
+    if not from_clause:
+        return names
+    from_this = from_clause.this
+    if isinstance(from_this, exp.Subquery):
+        return names
+    try:
+        table_name, _alias = _parse_table_ref(from_this)
+        names.append(table_name)
+    except UnsupportedContractError:
+        pass
+    for join in select.args.get("joins") or []:
+        if isinstance(join.this, exp.Subquery):
+            continue
+        try:
+            jtable, _jalias = _parse_table_ref(join.this)
+            names.append(jtable)
+        except UnsupportedContractError:
+            continue
+    return names
+
+
 def support_spec_params(query: SQLQuery) -> list[tuple[str, str, str]]:
     """Inner catalog tables (not the outer FROM) that MethodSpec must take as extra args."""
     derived = {d.alias for d in query.derived_tables}
@@ -770,8 +801,13 @@ def support_spec_params(query: SQLQuery) -> list[tuple[str, str, str]]:
     seen: set[str] = set()
 
     def add_inner(inner: SQLQuery) -> None:
-        for table in inner.tables:
-            if table in derived or table in outer or table in seen:
+        include_overlap = bool(inner.joins)
+        for table in inner_base_tables(inner):
+            if table in derived:
+                continue
+            if table in outer and not include_overlap:
+                continue
+            if table in seen:
                 continue
             seen.add(table)
             extras.append((table, f"Cols_{table}", f"valid_cols_{table}"))
@@ -798,8 +834,14 @@ def _inner_spec_arg(
     """Inner table ident for EXISTS/IN/scalar calls; ``cols`` only if inner is the outer table."""
     if join_context:
         return "__INNER__"
-    if inner_tables:
-        inner = inner_tables[0]
+    deduped: list[str] = []
+    for table in inner_tables:
+        if table not in deduped:
+            deduped.append(table)
+    if len(deduped) > 1:
+        return ", ".join(deduped)
+    if deduped:
+        inner = deduped[0]
         if outer_table is None or inner != outer_table:
             return inner
     return "cols"
@@ -837,7 +879,9 @@ def _exists_subquery_spec_call(
     outer_table: str | None = None,
 ) -> str:
     inner_arg = _inner_spec_arg(
-        list(exists.query.tables), join_context=join_context, outer_table=outer_table,
+        inner_base_tables(exists.query),
+        join_context=join_context,
+        outer_table=outer_table,
     )
     if exists.correlated:
         outer_key = _corr_outer_key_expr(
@@ -854,7 +898,9 @@ def _in_subquery_contains_call(
     outer_table: str | None = None,
 ) -> str:
     inner_arg = _inner_spec_arg(
-        list(in_spec.query.tables), join_context=join_context, outer_table=outer_table,
+        inner_base_tables(in_spec.query),
+        join_context=join_context,
+        outer_table=outer_table,
     )
     if in_spec.correlated:
         outer_key = _corr_outer_key_expr(
@@ -888,17 +934,25 @@ def _subquery_inner_schema(
     select: exp.Select,
     schema: dict[str, str] | dict[str, dict[str, str]],
 ) -> dict[str, str]:
-    """Columns visible from the subquery's own FROM (not outer)."""
+    """Columns visible from the subquery's own FROM + JOIN base tables (not outer)."""
     flat, multi = normalize_schema(schema)
-    from_clause = select.args.get("from_")
-    if not from_clause:
+    if not multi:
         return dict(flat)
-    try:
-        table_name, _alias = _parse_table_ref(from_clause.this)
-    except UnsupportedContractError:
+    table_names = _select_base_table_names(select)
+    if not table_names:
         return dict(flat)
-    if multi and table_name in multi:
-        return dict(multi[table_name])
+    merged: dict[str, str] = {}
+    for table_name in table_names:
+        if table_name not in multi:
+            continue
+        for col, typ in multi[table_name].items():
+            if col in merged and merged[col] != typ:
+                raise UnsupportedContractError(
+                    f"ambiguous column {col!r} across inner join tables with different types"
+                )
+            merged[col] = typ
+    if merged:
+        return merged
     return dict(flat)
 
 

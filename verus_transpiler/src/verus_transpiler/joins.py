@@ -191,7 +191,27 @@ def _resolve_subquery_calls(
             out = out.replace(legacy, f"subquery_{sub.alias}_spec({inner_param})")
 
     for exists in query.exists_subqueries:
-        inner_table = exists.query.tables[0]
+        inner_tables = [
+            t for t in exists.query.tables
+            if t not in {d.alias for d in exists.query.derived_tables}
+        ]
+        if len(inner_tables) > 1:
+            params = ", ".join(inner_param_for_table(t) for t in inner_tables)
+            if exists.correlated:
+                out = out.replace(
+                    f"exists_corr_{exists.alias}_spec(__INNER__,",
+                    f"exists_corr_{exists.alias}_spec({params},",
+                )
+            else:
+                out = out.replace(
+                    f"exists_{exists.alias}_spec(__INNER__)",
+                    f"exists_{exists.alias}_spec({params})",
+                )
+                legacy = f"exists_{exists.alias}_spec(cols)"
+                if legacy in out:
+                    out = out.replace(legacy, f"exists_{exists.alias}_spec({params})")
+            continue
+        inner_table = inner_tables[0] if inner_tables else exists.query.tables[0]
         inner_param = inner_param_for_table(inner_table)
         if exists.correlated:
             out = out.replace(
@@ -234,7 +254,32 @@ def _resolve_subquery_calls(
             )
 
     for in_spec in query.in_subqueries:
-        inner_table = in_spec.query.tables[0]
+        inner_tables = [
+            t for t in in_spec.query.tables
+            if t not in {d.alias for d in in_spec.query.derived_tables}
+        ]
+        if len(inner_tables) > 1:
+            params = ", ".join(inner_param_for_table(t) for t in inner_tables)
+            if in_spec.correlated:
+                out = out.replace(
+                    f"in_corr_{in_spec.alias}_contains(__INNER__,",
+                    f"in_corr_{in_spec.alias}_contains({params},",
+                )
+            else:
+                out = re.sub(
+                    rf"in_{re.escape(in_spec.alias)}_contains\(__INNER__, ([^)]+)\)",
+                    rf"in_{in_spec.alias}_contains({params}, \1)",
+                    out,
+                )
+                val_access = _col_access_for_col(
+                    in_spec.column, query, slots, schemas_by_table, derived_by_alias,
+                )
+                out = out.replace(
+                    f"in_{in_spec.alias}_contains(cols, row.{in_spec.column})",
+                    f"in_{in_spec.alias}_contains({params}, {val_access})",
+                )
+            continue
+        inner_table = inner_tables[0] if inner_tables else in_spec.query.tables[0]
         inner_param = inner_param_for_table(inner_table)
         if in_spec.correlated:
             out = out.replace(
@@ -1073,6 +1118,7 @@ def _emit_join_projection(
     derived_map_vars: dict[str, str],
     *,
     where_expr: str | None,
+    helper_name: str = "join_projection_helper",
 ) -> tuple[str, str, str]:
     filter_raw, _ = _strip_anti_join_predicates(where_expr)
     filter_cond = _resolve_filter_expr(
@@ -1112,7 +1158,6 @@ def _emit_join_projection(
         row_ty = f"({', '.join(row_types)})" if row_types else "(u64, u64, u64)"
 
     update_expr = f"tail.push({row_expr})"
-    helper_name = "join_projection_helper"
     helper = _gen_nested_loop(
         helper_name,
         slots,
