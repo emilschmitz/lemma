@@ -130,6 +130,22 @@ def test_preflight_fast_without_fast_trusteds_exits_1(tmp_path: Path) -> None:
     assert "fast" in proc.stderr.lower()
 
 
+def test_preflight_wait_disabled_exits_1(tmp_path: Path) -> None:
+    repo = _init_pushed_repo(tmp_path)
+    proc = _run_preflight(
+        repo,
+        env={
+            "LEMMA_FAMILY": "r23rocket",
+            "LEMMA_EMIT_AGENT_PRIMITIVES": "0",
+            "LEMMA_FAST_TRUSTEDS": "0",
+            "LEMMA_WAIT_FOR_WRAPPER": "0",
+        },
+    )
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "WAIT_FOR_WRAPPER" in proc.stderr
+    assert "overlap" in proc.stderr.lower() or "wait" in proc.stderr.lower()
+
+
 def test_preflight_clean_rocket_exits_0(tmp_path: Path) -> None:
     repo = _init_pushed_repo(tmp_path)
     proc = _run_preflight(

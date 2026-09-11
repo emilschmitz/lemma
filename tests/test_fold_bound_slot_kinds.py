@@ -141,14 +141,84 @@ def test_classify_u64_slot_recognizes_u64_literal_plus_one() -> None:
     assert _classify_u64_slot(line, 3, multi_slot=True) == "count"
 
 
-def test_parse_fold_hit_slot_updates_skips_minmax_t_binders() -> None:
+def test_parse_fold_hit_slot_updates_keeps_minmax_t_binders() -> None:
+    """r24 leftover E0425: ghost s1 used t1 after parse dropped let t1."""
     spec = _transpile(Q7_LIKE_SQL, {"sub": SUB_Q7_SCHEMA})
     fold = _parse_helper_fold_step(spec, "method_spec_helper")
     assert fold is not None
     sanitized = _sanitize_fold_step_for_proof(fold)
     updates = _parse_fold_hit_slot_updates(sanitized)
     assert updates is not None
-    assert [name for name, _ in updates.slot_lets] == ["s0", "s1", "s2", "s3"]
+    names = [name for name, _ in updates.slot_lets]
+    assert names == ["s0", "t1", "s1", "t2", "s2", "s3"]
+
+
+def test_parse_fold_hit_slot_updates_keeps_t_before_s_minmax() -> None:
+    fold = """
+if (true) {
+    let row_key = k;
+    let prev = if tail.contains_key(row_key) { tail[row_key] } else { (Map::empty(), 0u64, 0u64, 0u64) };
+    let s0 = prev.0;
+    let t1 = row_u64_0;
+    let s1 = if t1 < prev.1 { t1 } else { prev.1 };
+    let t2 = row_u64_0;
+    let s2 = if t2 > prev.2 { t2 } else { prev.2 };
+    let s3 = (prev.3 as int + 1) as u64;
+    tail.insert(row_key, (s0, s1, s2, s3))
+} else { tail }
+"""
+    updates = _parse_fold_hit_slot_updates(fold)
+    assert updates is not None
+    assert [n for n, _ in updates.slot_lets] == ["s0", "t1", "s1", "t2", "s2", "s3"]
+    from research_loop.multi_agg_step_bridge import _emit_reconstructed_insert_value
+
+    lines = _emit_reconstructed_insert_value(
+        indent="",
+        prev_var="prev_full",
+        prev_expr="prev",
+        updates=updates,
+    )
+    text = "\n".join(lines)
+    assert "let ghost t1 =" in text
+    assert text.index("let ghost t1 =") < text.index("let ghost s1 =")
+    assert "let ghost t2 =" in text
+    assert text.index("let ghost t2 =") < text.index("let ghost s2 =")
+
+
+def test_parse_fold_hit_unbound_tn_is_loud() -> None:
+    from research_loop.multi_agg_step_bridge import _assert_fold_slot_lets_self_bound
+
+    with pytest.raises(AssertionError, match="unbound t1"):
+        _assert_fold_slot_lets_self_bound(
+            [("s1", "if t1 < prev.1 { t1 } else { prev.1 }")]
+        )
+
+
+def test_r24_q4_trusted_ghost_binds_tn() -> None:
+    spec = _transpile(Q7_LIKE_SQL, {"sub": SUB_Q7_SCHEMA})
+    ret_type = resolve_ret_type_from_method_spec(spec)
+    rs = multi_agg_step_trusted_rs(spec, ret_type)
+    # Host lemmas must bind tN in the same ghost block as sN (r24 Q4/Q18 E0425).
+    assert re.search(r"let ghost t1 =", rs)
+    assert re.search(r"let ghost t2 =", rs)
+    ghost_s1 = [ln for ln in rs.splitlines() if "let ghost s1 =" in ln]
+    assert ghost_s1
+    for ln in ghost_s1:
+        if "t1" in ln:
+            # If s1 mentions t1, a t1 binder exists earlier in the file.
+            assert "let ghost t1 =" in rs.split(ln)[0]
+
+
+def test_r24_q4_visible_spec_ghost_tn_bound() -> None:
+    spec = _transpile(Q7_LIKE_SQL, {"sub": SUB_Q7_SCHEMA})
+    ret_type = resolve_ret_type_from_method_spec(spec)
+    visible = prepare_agent_visible_spec(spec, ret_type)
+    assert "let ghost s1 = if t1 < prev_full.1" not in visible or "let ghost t1 =" in visible
+    # Stronger: every ghost s1 that uses t1 is preceded by ghost t1 in that region.
+    chunks = visible.split("let ghost prev_full")
+    for chunk in chunks[1:]:
+        if "let ghost s1 = if t1" in chunk:
+            assert "let ghost t1 =" in chunk.split("let ghost s1 = if t1")[0]
 
 
 def test_resolve_count_addend_multi_agg_slot3() -> None:

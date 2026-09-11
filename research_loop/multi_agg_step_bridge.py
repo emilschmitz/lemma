@@ -1321,16 +1321,15 @@ def _parse_fold_hit_slot_updates(fold_step: str) -> _FoldHitSlotUpdates | None:
     rest = rest[1:].lstrip()
     slot_lets: list[tuple[str, str]] = []
     while rest:
-        m = re.match(r"let (s\d+) = (.+?);", rest, re.DOTALL)
+        # Keep let tN (MIN/MAX temps). Dropping them was r24 E0425: ghost sN
+        # still referenced tN with no binder in that scope.
+        m = re.match(r"let ([st]\d+) = (.+?);", rest, re.DOTALL)
         if m:
             slot_lets.append((m.group(1), m.group(2).strip()))
             rest = rest[m.end() :].lstrip()
             continue
-        t_m = re.match(r"let t\d+ = (.+?);", rest, re.DOTALL)
-        if t_m:
-            rest = rest[t_m.end() :].lstrip()
-            continue
         break
+    _assert_fold_slot_lets_self_bound(slot_lets)
     insert_m = re.match(r"tail\.insert\(row_key,\s*(.+?)\)\s*$", rest.strip(), re.DOTALL)
     if not insert_m:
         return None
@@ -1339,6 +1338,23 @@ def _parse_fold_hit_slot_updates(fold_step: str) -> _FoldHitSlotUpdates | None:
         slot_lets=tuple(slot_lets),
         insert_value=_strip_rust_line_comment(insert_m.group(1)),
     )
+
+
+_TN_TOKEN = re.compile(r"\bt(\d+)\b")
+
+
+def _assert_fold_slot_lets_self_bound(slot_lets: list[tuple[str, str]]) -> None:
+    """Loud fail if a reconstructed ghost let uses tN that was never bound."""
+    bound: set[str] = set()
+    for name, rhs in slot_lets:
+        for m in _TN_TOKEN.finditer(rhs):
+            tok = f"t{m.group(1)}"
+            if tok not in bound:
+                raise AssertionError(
+                    f"host fold reconstruct: {name} rhs uses unbound {tok}; "
+                    f"do not drop let tN when parsing fold_step"
+                )
+        bound.add(name)
 
 
 def _emit_reconstructed_insert_value(

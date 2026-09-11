@@ -74,3 +74,5 @@ def test_r23rocket_q7_transpile_and_multi_agg_smoke() -> None:
     rs = multi_agg_step_trusted_rs(spec, ret_type)
     assert "lemma_method_spec_helper_slot3_count_leq_" in rs
     assert len(rs) > 500
+    assert "let ghost t1 =" in rs
+    assert "let ghost t2 =" in rs
