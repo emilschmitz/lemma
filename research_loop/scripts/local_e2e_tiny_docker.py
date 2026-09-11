@@ -261,6 +261,7 @@ def apply_product_env(*, duckdb_path: Path) -> None:
     os.environ["LEMMA_DUCKDB_LIB_DIR"] = str(ROOT / "build/libduckdb")
     os.environ["LEMMA_STOP_ON_TIMED_SUCCESS"] = "1"
     os.environ["LEMMA_KEEP_OPTIMIZING"] = "0"
+    os.environ["AGENT_SUBMIT_ENDS_SESSION"] = "1"
     os.environ.setdefault("MAX_ITERATIONS", "1")
     os.environ.setdefault("AGENT_TIMEOUT_SEC", "600")
     os.environ["AGENT_NETWORK"] = "0"

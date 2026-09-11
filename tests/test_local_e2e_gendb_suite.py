@@ -84,6 +84,22 @@ def test_retry_rounds_reruns_failures(tmp_path: Path, monkeypatch: pytest.Monkey
     assert results[0]["lemma_ok"] is True
 
 
+def test_apply_product_env_submit_ends_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    from research_loop.scripts import local_e2e_tiny_docker as e2e
+
+    monkeypatch.setenv("AGENT_SUBMIT_ENDS_SESSION", "0")
+    monkeypatch.setenv("LEMMA_DATASET_SIZE", "500")
+    e2e.apply_product_env(duckdb_path=tmp_path / "t.duckdb")
+    assert os.environ["AGENT_SUBMIT_ENDS_SESSION"] == "1"
+    assert os.environ["LEMMA_STOP_ON_TIMED_SUCCESS"] == "1"
+    assert os.environ["MOCK_AGENT"] == "0"
+    assert "LEMMA_DATASET_SIZE" not in os.environ
+
+
 def test_observed_e2e_jobs_env(monkeypatch: pytest.MonkeyPatch) -> None:
     from research_loop.scripts.local_e2e_tiny_docker import observed_e2e_jobs
 
