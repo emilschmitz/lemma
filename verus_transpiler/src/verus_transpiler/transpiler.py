@@ -35,6 +35,7 @@ from .parse_sql import (
     normalize_schema,
     parse_sql,
     support_spec_params,
+    _outer_base_table,
 )
 from .recursive_cte import emit_recursive_cte_helper
 from .rust_ident import rust_ident
@@ -96,15 +97,33 @@ def _subquery_emit_binding(
     inner_table: str,
     flat_schema: dict[str, str],
     multi_schema: dict[str, dict[str, str]] | None,
+    *,
+    outer_table: str | None = None,
+    is_join: bool = False,
 ) -> tuple[str, str, str, dict[str, str]]:
-    if multi_schema and inner_table in multi_schema:
+    """Bind inner helper to ``Cols`` only on a single-table outer program.
+
+    Join programs have ``Cols_<table>`` per base table and no unified ``Cols``.
+    Same-table IN/EXISTS on a single-table outer still shares ``cols: &Cols``.
+    """
+    use_table_struct = bool(
+        multi_schema
+        and inner_table in multi_schema
+        and (is_join or inner_table != outer_table)
+    )
+    if use_table_struct:
         return (
             _table_struct_name(inner_table),
             f"valid_cols_{inner_table}",
             inner_table,
             multi_schema[inner_table],
         )
-    return "Cols", "valid_cols", "cols", flat_schema
+    schema = (
+        multi_schema[inner_table]
+        if multi_schema and inner_table in multi_schema
+        else flat_schema
+    )
+    return "Cols", "valid_cols", "cols", schema
 
 
 def _subquery_inner_table_name(query: SQLQuery) -> str:
@@ -1291,11 +1310,12 @@ def transpile_sql_to_verus(
         _assert_join_subquery_supported(query)
     subquery_blocks: list[str] = []
     outer_schema = _flat_outer_schema(flat_schema, multi_for_subqueries)
+    outer_table = _outer_base_table(query)
     sub_spec_calls: dict[str, str] = {}
     for sub in query.scalar_subqueries:
         inner_table = sub.inner_table or _subquery_inner_table_name(sub.query)
         struct_name, valid_fn, param_name, inner_schema = _subquery_emit_binding(
-            inner_table, flat_schema, multi_for_subqueries,
+            inner_table, flat_schema, multi_for_subqueries, outer_table=outer_table, is_join=is_join,
         )
         emitted = emit_scalar_subquery_helper(
             sub,
@@ -1335,7 +1355,7 @@ def transpile_sql_to_verus(
             continue
         inner_table = inner_tables[0]
         struct_name, valid_fn, param_name, inner_schema = _subquery_emit_binding(
-            inner_table, flat_schema, multi_for_subqueries,
+            inner_table, flat_schema, multi_for_subqueries, outer_table=outer_table, is_join=is_join,
         )
         subquery_blocks.append(
             emit_exists_subquery_helper(
@@ -1369,7 +1389,7 @@ def transpile_sql_to_verus(
             continue
         inner_table = inner_tables[0]
         struct_name, valid_fn, param_name, inner_schema = _subquery_emit_binding(
-            inner_table, flat_schema, multi_for_subqueries,
+            inner_table, flat_schema, multi_for_subqueries, outer_table=outer_table, is_join=is_join,
         )
         subquery_blocks.append(
             emit_in_subquery_helper(

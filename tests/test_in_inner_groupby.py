@@ -61,6 +61,8 @@ def test_in_inner_groupby_count_star_contains() -> None:
     assert "v > 3" in out
     assert "filter_keys" in out
     assert "arbitrary()" not in out
+    assert "in_in_1_contains(cols:" in out
+    assert "Cols_events" not in out
 
 
 def test_in_inner_groupby_count_distinct_contains() -> None:
@@ -71,6 +73,8 @@ def test_in_inner_groupby_count_distinct_contains() -> None:
     assert "v > 1" in out
     assert "dom().len() as u64" in out
     assert "arbitrary()" not in out
+    assert "in_in_1_contains(cols:" in out
+    assert "Cols_events" not in out
 
 
 def test_in_inner_groupby_join_transpiles() -> None:
