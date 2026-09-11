@@ -282,9 +282,26 @@ nohup "$OUT/run_and_halt.sh" >/dev/null 2>&1 &
 echo $! >"$OUT/wrapper.pid"
 echo "wrapper pid=$(cat "$OUT/wrapper.pid") logs=$OUT"
 echo "tail: tail -f $OUT/driver.out"
-if [[ "${LEMMA_WAIT_FOR_WRAPPER:-0}" == "1" ]]; then
+# Default wait=1. r23 overlapped families because this returned after nohup.
+# Set LEMMA_WAIT_FOR_WRAPPER=0 only for a detached single-family launch (loud).
+# LEMMA_HALT_ON_FINISH=1 stops the VM after each family; use 0 on non-final
+# families when chaining multiple overnights on one Spot box.
+if [[ "${LEMMA_WAIT_FOR_WRAPPER:-1}" != "1" ]]; then
+  echo "WARNING: LEMMA_WAIT_FOR_WRAPPER=${LEMMA_WAIT_FOR_WRAPPER} — overnight.sh returns after nohup; chain will overlap" | tee -a "$OUT/watchdog.log"
+else
   echo "waiting for wrapper pid=$(cat "$OUT/wrapper.pid")"
-  wait "$(cat "$OUT/wrapper.pid")" || true
+  wrapper_pid="$(cat "$OUT/wrapper.pid")"
+  harvest_interval="${LEMMA_HARVEST_INTERVAL_SEC:-300}"
+  while kill -0 "$wrapper_pid" 2>/dev/null; do
+    sleep "$harvest_interval"
+    if ! kill -0 "$wrapper_pid" 2>/dev/null; then
+      break
+    fi
+    if ! maybe_gsutil_rsync_harvest "$OUT"; then
+      echo "ERROR: periodic GCS harvest failed (LEMMA_HARVEST_GS_URI=${LEMMA_HARVEST_GS_URI:-})" >&2
+    fi
+  done
+  wait "$wrapper_pid" || true
   echo "wrapper exited"
 fi
-# Set LEMMA_HARVEST_GS_URI=gs://bucket/path before launch to rsync $OUT after halt.
+# Set LEMMA_HARVEST_GS_URI=gs://bucket/path before launch to rsync $OUT during wait and after halt.

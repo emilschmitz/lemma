@@ -92,6 +92,27 @@ def agent_meta_from_workspace_submit(workspace: Path) -> dict | None:
 
 
 _SUBMITTED_RUNQUERY_SNAPSHOT = ".submitted_runquery_snapshot.rs"
+_LEFTOVER_VERIFY_MAX_CHARS = 4000
+
+
+def leftover_verify_excerpt(workspace: Path, *, max_chars: int = _LEFTOVER_VERIFY_MAX_CHARS) -> str:
+    """Leftover Verus/rustc log after a session. Not an agent verdict (AGENTS.md traces).
+
+    Missing file is a loud empty string so harvest can say LEFTOVER_VERIFY_MISSING.
+    """
+    path = Path(workspace) / "verify_error_custom.log"
+    if not path.is_file():
+        return ""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    text = text.strip()
+    if not text:
+        return ""
+    if len(text) > max_chars:
+        return text[:max_chars] + "\n... [leftover verify truncated]"
+    return text
 
 
 def post_agent_next_step(*, use_mock: bool, submitted: dict | None) -> str:
@@ -894,12 +915,21 @@ def run_optimization_loop(
             continue
 
         if post_step == "no_submit_fail":
+            leftover = leftover_verify_excerpt(workspace)
             err = "no marked submit"
+            if leftover:
+                err = f"no marked submit; leftover verify (not an agent verdict):\n{leftover}"
             _vprint(f" {COLOR_RED}FAILED{COLOR_RESET}")
-            _vprint(f"    {err}")
+            _vprint(f"    no marked submit")
+            if leftover:
+                _vprint("    LEFTOVER_VERIFY_BEGIN")
+                _vprint(leftover)
+                _vprint("    LEFTOVER_VERIFY_END")
+            else:
+                _vprint("    LEFTOVER_VERIFY_MISSING (no leftover verify_error_custom.log)")
             print(f"proof_verified={False} latency_us={-1}", flush=True)
             print(
-                f"{_HARNESS_METRICS_PREFIX}{json.dumps({'status': 'FAILURE', 'proof_verified': False, 'latency_us': -1, 'compiler_error': err})}",
+                f"{_HARNESS_METRICS_PREFIX}{json.dumps({'status': 'FAILURE', 'proof_verified': False, 'latency_us': -1, 'compiler_error': err, 'leftover_verify': leftover})}",
                 flush=True,
             )
             history.append(_history_entry(

@@ -40,6 +40,9 @@ _AGENT_DOCKER_CTX = re.compile(
     re.I,
 )
 _E0308 = re.compile(r"error\[E0308\]|E0308:", re.I)
+_E0425 = re.compile(r"error\[E0425\]|cannot find value `t\d+`", re.I)
+_NO_MARKED = re.compile(r"no marked submit", re.I)
+_LEFTOVER_MISSING = re.compile(r"LEFTOVER_VERIFY_MISSING", re.I)
 _VERUS_ERR = re.compile(
     r"error:\s|verification failed|Verus errors",
     re.I,
@@ -90,10 +93,7 @@ def _result(step: int, cls: str, *, detail: str = "") -> dict[str, Any]:
 def classify_optimizer_log(text: str) -> dict[str, Any]:
     """Return ``{step, class[, detail]}`` for optimizer stdout/stderr (first match wins)."""
     if not text:
-        return _result(5, "agent stupidity", detail="empty log")
-
-    if re.search(r"no marked submit", text, re.I):
-        return _result(3, "agent stupidity", detail="no marked submit")
+        return _result(5, "infra", detail="unclassified_empty_log_open_traces")
 
     # Step 7 — harness verify/compile wall timeout (not agent docker).
     if _HARNESS_TIMEOUT.search(text):
@@ -147,6 +147,13 @@ def classify_optimizer_log(text: str) -> dict[str, Any]:
     if re.search(r"TimeoutExpired", text) and not _HARNESS_TIMEOUT.search(text):
         return _result(3, "infra", detail="agent timeout")
 
+    # Step 4 — leftover rustc E0425 host temps (tN) in custom_query.rs, not AGENT_EDIT.
+    if _E0425.search(text) and _ASSEMBLE_HOST.search(text) and not _AGENT_EDIT.search(text):
+        return _result(4, "assemble", detail="E0425 host tN")
+
+    if _E0425.search(text) and not _AGENT_EDIT.search(text):
+        return _result(4, "assemble", detail="E0425")
+
     # Step 2 / 4 — host codegen (E0308 outside AGENT_EDIT).
     if _E0308.search(text) and not _AGENT_EDIT.search(text):
         if _SPEC_RS.search(text):
@@ -173,9 +180,15 @@ def classify_optimizer_log(text: str) -> dict[str, Any]:
             return _result(4, "assemble", detail="host scaffold")
         if _RUN_QUERY.search(text) and _AGENT_EDIT.search(text):
             return _result(3, "agent stupidity", detail="run_query verify")
-        return _result(5, "agent stupidity", detail="verify")
+        return _result(5, "infra", detail="unclassified_verify_open_traces")
 
-    return _result(5, "agent stupidity", detail="default verify")
+    # Harvest one-liner only. Not an agent verdict — leftover/MCP must be in the log.
+    if _NO_MARKED.search(text):
+        if _LEFTOVER_MISSING.search(text):
+            return _result(5, "infra", detail="unclassified_no_marked_submit_leftover_missing")
+        return _result(5, "infra", detail="unclassified_no_marked_submit_open_traces")
+
+    return _result(5, "infra", detail="unclassified_open_traces")
 
 
 def main(argv: list[str] | None = None) -> int:

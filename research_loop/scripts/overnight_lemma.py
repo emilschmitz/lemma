@@ -22,6 +22,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "research_loop" / "scripts"))
 
+from classify_product_failures import classify_optimizer_log
 from gendb_published_one_run import (
     env_for_lemma,
     git_sha,
@@ -32,6 +33,7 @@ from gendb_published_one_run import (
 DEFAULT_SQL = ROOT / "holdout/gendb_sec_edgar/queries_resample_r15.sql"
 PY = ROOT / ".venv/bin/python"
 DEFAULT_FAIL_STREAK = 6
+DEFAULT_HEARTBEAT_INTERVAL_SEC = 60
 
 
 def lemma_job_ok(rec: dict) -> bool:
@@ -230,6 +232,182 @@ def _fsync_write(path: Path, text: str) -> None:
         os.fsync(fh.fileno())
 
 
+def _append_ndjson_fsync(path: Path, obj: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(obj, default=str) + "\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+
+
+def resolve_heartbeat_interval_sec(raw: str | int | None = None) -> int:
+    if raw is None:
+        raw = os.environ.get(
+            "LEMMA_HEARTBEAT_INTERVAL_SEC",
+            str(DEFAULT_HEARTBEAT_INTERVAL_SEC),
+        )
+    return max(1, int(raw))
+
+
+class JobTracker:
+    """Track submitted vs persisted jobs; crash-safe heartbeat.ndjson."""
+
+    def __init__(
+        self,
+        out_dir: Path,
+        meta: dict,
+        *,
+        heartbeat_interval_sec: int = DEFAULT_HEARTBEAT_INTERVAL_SEC,
+    ) -> None:
+        self.out_dir = out_dir
+        self.meta = meta
+        self.heartbeat_interval_sec = max(1, int(heartbeat_interval_sec))
+        self.in_flight: list[dict[str, Any]] = []
+        self.submitted_jobs: list[dict] = []
+        self.finished_qids: set[str] = set()
+        self._last_heartbeat_mono = 0.0
+
+    def job_started(self, job: dict) -> None:
+        self.submitted_jobs.append(job)
+        self.in_flight.append(
+            {
+                "qid": job["qid"],
+                "family": job.get("family"),
+                "started_at": datetime.now(UTC).isoformat(),
+                "pid": os.getpid(),
+            }
+        )
+        self.write_heartbeat()
+
+    def job_finished(self, qid: str) -> None:
+        self.finished_qids.add(qid)
+        self.in_flight = [entry for entry in self.in_flight if entry["qid"] != qid]
+        self.write_heartbeat()
+
+    def maybe_timer_heartbeat(self) -> None:
+        now = time.monotonic()
+        if now - self._last_heartbeat_mono >= self.heartbeat_interval_sec:
+            self.write_heartbeat()
+
+    def write_heartbeat(self) -> None:
+        doc = {
+            "ts": datetime.now(UTC).isoformat(),
+            "host_pid": os.getpid(),
+            "family": self.meta.get("family"),
+            "in_flight": list(self.in_flight),
+        }
+        _append_ndjson_fsync(self.out_dir / "heartbeat.ndjson", doc)
+        self._last_heartbeat_mono = time.monotonic()
+
+    def unfinished_jobs(self) -> list[dict]:
+        finished = self.finished_qids
+        return [job for job in self.submitted_jobs if job["qid"] not in finished]
+
+
+def write_unfinished_json(
+    out_dir: Path,
+    meta: dict,
+    unfinished: list[dict],
+) -> None:
+    doc = {
+        **meta,
+        "written_at": datetime.now(UTC).isoformat(),
+        "n_unfinished": len(unfinished),
+        "jobs": [
+            {
+                "family": job.get("family"),
+                "qid": job.get("qid"),
+                "workload": job.get("workload"),
+            }
+            for job in unfinished
+        ],
+    }
+    _fsync_write(out_dir / "unfinished.json", json.dumps(doc, indent=2, default=str) + "\n")
+
+
+def write_failure_classify(out_dir: Path, results: list[dict]) -> dict[str, Any]:
+    """Classify finished harvest rows from optimizer logs (never agent for bare no_submit)."""
+    entries: list[dict[str, Any]] = []
+    for rec in results:
+        log_path = rec.get("log")
+        base: dict[str, Any] = {
+            "family": rec.get("family"),
+            "qid": rec.get("qid"),
+            "log": log_path,
+        }
+        if not log_path:
+            cls = classify_optimizer_log("")
+            entries.append({**base, **cls})
+            continue
+        path = Path(str(log_path))
+        if not path.is_file():
+            cls = classify_optimizer_log("")
+            entries.append({**base, **cls, "detail": f"missing_log:{path}"})
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        cls = classify_optimizer_log(text)
+        entries.append({**base, **cls})
+    doc: dict[str, Any] = {
+        "written_at": datetime.now(UTC).isoformat(),
+        "n_results": len(results),
+        "entries": entries,
+    }
+    _fsync_write(out_dir / "failure_classify.json", json.dumps(doc, indent=2, default=str) + "\n")
+    return doc
+
+
+def finalize_run(
+    out_dir: Path,
+    meta: dict,
+    results: list[dict],
+    tracker: JobTracker,
+    streak: FailStreakTracker,
+    *,
+    exit_error: str | None = None,
+) -> int:
+    """Write results.json, unfinished.json, failure_classify.json; loud on gaps."""
+    unfinished = tracker.unfinished_jobs()
+    if unfinished:
+        write_unfinished_json(out_dir, meta, unfinished)
+        print(
+            f"ERROR: {len(unfinished)} jobs never persisted harvest: "
+            f"{[j['qid'] for j in unfinished]}",
+            file=sys.stderr,
+        )
+
+    write_failure_classify(out_dir, results)
+
+    payload: dict[str, Any] = {
+        **meta,
+        "finished_at": datetime.now(UTC).isoformat(),
+        "aborted": streak.aborted,
+        "results": results,
+        "n_unfinished": len(unfinished),
+    }
+    if unfinished:
+        payload["unfinished"] = [
+            {"family": j.get("family"), "qid": j.get("qid")} for j in unfinished
+        ]
+        payload["error"] = (
+            exit_error
+            or f"{len(unfinished)} jobs never persisted harvest (see unfinished.json)"
+        )
+    elif exit_error:
+        payload["error"] = exit_error
+
+    _fsync_write(out_dir / "results.json", json.dumps(payload, indent=2, default=str) + "\n")
+    print(f"Wrote {out_dir / 'results.json'}", flush=True)
+
+    rc = 0
+    if streak.aborted:
+        rc = 1
+    if unfinished:
+        rc = 1
+    if exit_error and not unfinished:
+        rc = 1
+    return rc
+
+
 def log_finished(text: str) -> bool:
     return "--- Optimization Finished ---" in text or "CUSTOM_PIPELINE_FAILED" in text
 
@@ -359,11 +537,18 @@ def main() -> int:
     results: list[dict] = []
     streak = FailStreakTracker(args.fail_streak)
     workers = 1 if args.smoke else max(1, args.workers)
+    tracker = JobTracker(
+        out_dir,
+        meta,
+        heartbeat_interval_sec=resolve_heartbeat_interval_sec(),
+    )
+    exit_error: str | None = None
 
     def on_done(rec: dict) -> bool:
         results.append(rec)
         persist_rec(out_dir, meta, results, rec)
         append_progress(out_dir, rec)
+        tracker.job_finished(rec["qid"])
         should_abort = streak.record(rec)
         print(
             f"HARVEST n_done={len(results)} consecutive_fail={streak.consecutive_fail} "
@@ -389,53 +574,64 @@ def main() -> int:
             return True
         return False
 
-    if workers == 1:
-        for job in jobs:
-            if on_done(run_one(job, str(log_dir))):
-                break
-    else:
-        job_iter = iter(jobs)
-        ex = ProcessPoolExecutor(max_workers=workers)
-        try:
-            futs: dict = {}
-            for _ in range(min(workers, len(jobs))):
-                job = next(job_iter, None)
-                if job is None:
+    try:
+        if workers == 1:
+            for job in jobs:
+                tracker.job_started(job)
+                if on_done(run_one(job, str(log_dir))):
                     break
-                futs[ex.submit(run_one, job, str(log_dir))] = job
-            while futs:
-                done, _pending = wait(futs, return_when=FIRST_COMPLETED)
-                stop = False
-                for fut in done:
-                    futs.pop(fut, None)
-                    if on_done(fut.result()):
-                        stop = True
-                if stop:
-                    # Do not join in-flight workers: `with` shutdown(wait=True)
-                    # kept the VM up ~40min after fail_streak_6 on r18.
-                    break
-                while len(futs) < workers:
+        else:
+            job_iter = iter(jobs)
+            ex = ProcessPoolExecutor(max_workers=workers)
+            try:
+                futs: dict = {}
+                for _ in range(min(workers, len(jobs))):
                     job = next(job_iter, None)
                     if job is None:
                         break
+                    tracker.job_started(job)
                     futs[ex.submit(run_one, job, str(log_dir))] = job
-        finally:
-            if streak.aborted:
-                ex.shutdown(wait=False, cancel_futures=True)
-                for proc in multiprocessing.active_children():
-                    proc.terminate()
-            else:
-                ex.shutdown(wait=True)
+                while futs:
+                    tracker.maybe_timer_heartbeat()
+                    done, _pending = wait(futs, return_when=FIRST_COMPLETED)
+                    stop = False
+                    for fut in done:
+                        futs.pop(fut, None)
+                        if on_done(fut.result()):
+                            stop = True
+                    if stop:
+                        # Do not join in-flight workers: `with` shutdown(wait=True)
+                        # kept the VM up ~40min after fail_streak_6 on r18.
+                        break
+                    while len(futs) < workers:
+                        job = next(job_iter, None)
+                        if job is None:
+                            break
+                        tracker.job_started(job)
+                        futs[ex.submit(run_one, job, str(log_dir))] = job
+            finally:
+                if streak.aborted:
+                    ex.shutdown(wait=False, cancel_futures=True)
+                    for proc in multiprocessing.active_children():
+                        proc.terminate()
+                else:
+                    ex.shutdown(wait=True)
+    except KeyboardInterrupt:
+        exit_error = "KeyboardInterrupt"
+    except Exception as exc:
+        exit_error = f"driver exception: {type(exc).__name__}: {exc}"
+        raise
+    finally:
+        rc = finalize_run(
+            out_dir,
+            meta,
+            results,
+            tracker,
+            streak,
+            exit_error=exit_error,
+        )
 
-    payload = {
-        **meta,
-        "finished_at": datetime.now(UTC).isoformat(),
-        "aborted": streak.aborted,
-        "results": results,
-    }
-    _fsync_write(out_dir / "results.json", json.dumps(payload, indent=2, default=str) + "\n")
-    print(f"Wrote {out_dir / 'results.json'}", flush=True)
-    return 1 if streak.aborted else 0
+    return rc
 
 
 if __name__ == "__main__":

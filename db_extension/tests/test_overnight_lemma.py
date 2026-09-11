@@ -481,6 +481,19 @@ def test_overnight_sh_gates_session_hot_on_lemma_serious():
     assert "session_hot.py" in text
 
 
+def test_overnight_sh_defaults_wait_for_wrapper():
+    text = OVERNIGHT_SH.read_text()
+    assert 'LEMMA_WAIT_FOR_WRAPPER:-1' in text
+    assert 'LEMMA_WAIT_FOR_WRAPPER:-0' not in text
+    assert "WARNING: LEMMA_WAIT_FOR_WRAPPER=" in text
+    assert 'wait "$wrapper_pid"' in text
+
+
+def test_overnight_sh_warns_if_wait_disabled():
+    text = OVERNIGHT_SH.read_text()
+    assert "chain will overlap" in text
+
+
 def _load_query_filter():
     gendb_dir = ROOT / "holdout" / "gendb_sec_edgar"
     if str(gendb_dir) not in sys.path:
@@ -533,3 +546,324 @@ def test_generate_queries_filter_importable():
     import generate_queries
 
     assert generate_queries.filter_query_candidates is not None
+
+
+# --- host robustness: heartbeat, unfinished, failure_classify ---
+
+
+def test_heartbeat_interval_default(monkeypatch):
+    monkeypatch.delenv("LEMMA_HEARTBEAT_INTERVAL_SEC", raising=False)
+    mod = _load_module()
+    assert mod.resolve_heartbeat_interval_sec() == 60
+
+
+def test_job_tracker_writes_heartbeat_on_start(tmp_path: Path):
+    mod = _load_module()
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    meta = {"family": "r18"}
+    tracker = mod.JobTracker(out_dir, meta, heartbeat_interval_sec=3600)
+    tracker.job_started({"qid": "Q1", "family": "r18", "workload": "sec"})
+    hb_path = out_dir / "heartbeat.ndjson"
+    assert hb_path.is_file()
+    line = hb_path.read_text().strip().splitlines()[-1]
+    doc = json.loads(line)
+    assert doc["family"] == "r18"
+    assert doc["host_pid"] > 0
+    assert len(doc["in_flight"]) == 1
+    assert doc["in_flight"][0]["qid"] == "Q1"
+    assert "started_at" in doc["in_flight"][0]
+    assert "pid" in doc["in_flight"][0]
+
+
+def test_job_tracker_timer_heartbeat(tmp_path: Path, monkeypatch):
+    mod = _load_module()
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    tracker = mod.JobTracker(out_dir, {"family": "r18"}, heartbeat_interval_sec=1)
+    tracker.job_started({"qid": "Q1", "family": "r18"})
+    tracker._last_heartbeat_mono = 0.0
+    tracker.maybe_timer_heartbeat()
+    lines = (out_dir / "heartbeat.ndjson").read_text().strip().splitlines()
+    assert len(lines) >= 2
+
+
+def test_heartbeat_written_during_main_run(tmp_path: Path, monkeypatch):
+    mod = _load_module()
+    sql = tmp_path / "queries.sql"
+    _write_multi_query_sql(sql, 1)
+    out_dir = tmp_path / "out"
+
+    def fake_run_one(job: dict, log_dir: str) -> dict:
+        assert (out_dir / "heartbeat.ndjson").is_file()
+        return _ok_rec(qid=job["qid"], family=job["family"])
+
+    monkeypatch.setattr(mod, "run_one", fake_run_one)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "overnight_lemma.py",
+            "--sql-file",
+            str(sql),
+            "--out-dir",
+            str(out_dir),
+            "--workers",
+            "1",
+            "--family",
+            "r18",
+        ],
+    )
+    assert mod.main() == 0
+    assert (out_dir / "heartbeat.ndjson").is_file()
+
+
+def test_unfinished_job_still_in_run_one_at_exit(tmp_path: Path, monkeypatch):
+    """A job started but never persist_rec must land in unfinished.json (mock interrupt)."""
+    mod = _load_module()
+    sql = tmp_path / "queries.sql"
+    _write_multi_query_sql(sql, 2)
+    out_dir = tmp_path / "out"
+
+    def fake_run_one(job: dict, log_dir: str) -> dict:
+        if job["qid"] == "Q2":
+            raise KeyboardInterrupt()
+        return _ok_rec(qid=job["qid"], family=job["family"])
+
+    monkeypatch.setattr(mod, "run_one", fake_run_one)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "overnight_lemma.py",
+            "--sql-file",
+            str(sql),
+            "--out-dir",
+            str(out_dir),
+            "--workers",
+            "1",
+            "--family",
+            "r18",
+        ],
+    )
+    rc = mod.main()
+    assert rc == 1
+    unfinished = json.loads((out_dir / "unfinished.json").read_text())
+    assert unfinished["n_unfinished"] == 1
+    assert unfinished["jobs"][0]["qid"] == "Q2"
+    results = json.loads((out_dir / "results.json").read_text())
+    assert results["n_unfinished"] == 1
+    assert results["unfinished"][0]["qid"] == "Q2"
+    assert "error" in results
+    assert all(r["qid"] != "Q2" for r in results["results"])
+
+
+def test_unfinished_on_parallel_fail_streak_abort(tmp_path: Path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    mod = _load_module()
+    sql = tmp_path / "queries.sql"
+    _write_multi_query_sql(sql, 10)
+    out_dir = tmp_path / "out"
+
+    def slow_fail(job: dict, log_dir: str) -> dict:
+        import time
+
+        time.sleep(0.05)
+        return _fail_rec(qid=job["qid"], family=job["family"])
+
+    monkeypatch.setattr(mod, "ProcessPoolExecutor", ThreadPoolExecutor)
+    monkeypatch.setattr(mod, "run_one", slow_fail)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "overnight_lemma.py",
+            "--sql-file",
+            str(sql),
+            "--out-dir",
+            str(out_dir),
+            "--workers",
+            "4",
+            "--fail-streak",
+            "6",
+            "--family",
+            "r18",
+        ],
+    )
+    rc = mod.main()
+    assert rc == 1
+    assert (out_dir / "unfinished.json").is_file()
+    unfinished = json.loads((out_dir / "unfinished.json").read_text())
+    assert unfinished["n_unfinished"] >= 1
+    results = json.loads((out_dir / "results.json").read_text())
+    assert results["n_unfinished"] >= 1
+    unfinished_qids = {j["qid"] for j in results["unfinished"]}
+    result_qids = {r["qid"] for r in results["results"]}
+    assert unfinished_qids.isdisjoint(result_qids)
+
+
+def test_failure_classify_written_at_end(tmp_path: Path, monkeypatch):
+    mod = _load_module()
+    sql = tmp_path / "queries.sql"
+    _write_multi_query_sql(sql, 1)
+    out_dir = tmp_path / "out"
+    log_dir = out_dir / "logs"
+    log_dir.mkdir(parents=True)
+
+    def fake_run_one(job: dict, log_dir_str: str) -> dict:
+        log_path = Path(log_dir_str) / f"{job['family']}_{job['qid']}.log"
+        log_path.write_text(_NO_MARKED_SUBMIT_LOG)
+        fields = mod.harvest_optimizer_output(_NO_MARKED_SUBMIT_LOG)
+        rec = {
+            "family": job["family"],
+            "qid": job["qid"],
+            "returncode": 0,
+            "elapsed_s": 1.0,
+            "log": str(log_path),
+            **fields,
+        }
+        rec["lemma_ok"] = mod.lemma_job_ok(rec)
+        return rec
+
+    monkeypatch.setattr(mod, "run_one", fake_run_one)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "overnight_lemma.py",
+            "--sql-file",
+            str(sql),
+            "--out-dir",
+            str(out_dir),
+            "--workers",
+            "1",
+            "--family",
+            "r18",
+        ],
+    )
+    mod.main()
+    fc = json.loads((out_dir / "failure_classify.json").read_text())
+    assert fc["n_results"] == 1
+    entry = fc["entries"][0]
+    assert entry["qid"] == "Q1"
+    assert entry["class"] == "infra"
+    assert "agent" not in entry["class"]
+    assert "unclassified" in entry.get("detail", "")
+
+
+def test_failure_classify_no_marked_submit_never_agent(tmp_path: Path):
+    mod = _load_module()
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    log_path = out_dir / "Q1.log"
+    log_path.write_text(_NO_MARKED_SUBMIT_LOG)
+    rec = {
+        "family": "r18",
+        "qid": "Q1",
+        "log": str(log_path),
+        "lemma_ok": False,
+    }
+    doc = mod.write_failure_classify(out_dir, [rec])
+    assert doc["entries"][0]["class"] == "infra"
+    assert doc["entries"][0]["step"] == 5
+
+
+def test_finalize_run_loud_error_on_unfinished(tmp_path: Path, capsys):
+    mod = _load_module()
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    meta = {"family": "r18", "started_at": "2026-01-01T00:00:00+00:00"}
+    tracker = mod.JobTracker(out_dir, meta)
+    tracker.job_started({"qid": "Q9", "family": "r18", "workload": "sec"})
+    streak = mod.FailStreakTracker(6)
+    rc = mod.finalize_run(out_dir, meta, [], tracker, streak)
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert "ERROR:" in captured.err
+    assert "Q9" in captured.err
+
+
+def test_overnight_sh_periodic_harvest_during_wait():
+    text = OVERNIGHT_SH.read_text()
+    assert "LEMMA_HARVEST_INTERVAL_SEC" in text
+    assert "periodic GCS harvest failed" in text
+    assert 'while kill -0 "$wrapper_pid"' in text
+    assert "maybe_gsutil_rsync_harvest" in text
+
+
+def _harvest_fn_body() -> str:
+    return OVERNIGHT_SH.read_text().split("maybe_gsutil_rsync_harvest() {", 1)[1].split(
+        "}\n\nREPO=", 1
+    )[0]
+
+
+def test_overnight_sh_harvest_loud_on_gsutil_missing(tmp_path: Path):
+    import subprocess
+
+    out_arg = str(tmp_path / "out")
+    body = _harvest_fn_body()
+    proc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "maybe_gsutil_rsync_harvest() {\n"
+            + body
+            + "}\n"
+            + "export LEMMA_HARVEST_GS_URI=gs://bucket/path\n"
+            + "export PATH=/usr/bin:/bin\n"
+            + f'maybe_gsutil_rsync_harvest "{out_arg}"\n',
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 1
+    assert "ERROR:" in proc.stderr
+    assert "gsutil not found" in proc.stderr
+
+
+def test_overnight_sh_harvest_noops_without_uri(tmp_path: Path):
+    import subprocess
+
+    out_arg = str(tmp_path / "out")
+    body = _harvest_fn_body()
+    proc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "maybe_gsutil_rsync_harvest() {\n"
+            + body
+            + "}\n"
+            + "unset LEMMA_HARVEST_GS_URI\n"
+            + f'maybe_gsutil_rsync_harvest "{out_arg}"\n'
+            + "echo OK\n",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0
+    assert "OK" in proc.stdout
+    assert "ERROR:" not in proc.stderr
+
+
+def test_gcp_preflight_wait_zero_is_error_string():
+    preflight = ROOT / "research_loop" / "scripts" / "gcp_experiment_preflight.sh"
+    text = preflight.read_text()
+    assert "LEMMA_WAIT_FOR_WRAPPER" in text
+    assert 'if [[ "$WAIT" != "1" ]]; then' in text
+    assert "experiments must wait for run_and_halt" in text
+
+
+def test_gcp_preflight_documents_halt_on_finish_for_chains():
+    preflight = ROOT / "research_loop" / "scripts" / "gcp_experiment_preflight.sh"
+    text = preflight.read_text()
+    assert "LEMMA_HALT_ON_FINISH=0" in text
+    assert "non-final" in text.lower() or "last family" in text.lower()
+
+
+def test_overnight_sh_documents_halt_on_finish_for_chains():
+    text = OVERNIGHT_SH.read_text()
+    assert "LEMMA_HALT_ON_FINISH=0" in text
+    assert "non-final" in text.lower() or "last family" in text.lower()

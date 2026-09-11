@@ -137,14 +137,97 @@ def test_classify_unbalanced_run_query_braces() -> None:
     assert "brace" in out.get("detail", "")
 
 
-def test_classify_no_marked_submit_agent() -> None:
+def test_classify_no_marked_submit_is_not_agent() -> None:
     out = classify_optimizer_log(
         "FAILED\n    no marked submit\n"
         'LEMMA_METRICS_JSON: {"compiler_error": "no marked submit"}\n'
     )
-    assert out["step"] == 3
-    assert out["class"] == "agent stupidity"
-    assert "no marked submit" in out.get("detail", "")
+    assert out["step"] == 5
+    assert out["class"] == "infra"
+    assert "unclassified" in out.get("detail", "")
+    assert "agent" not in out["class"]
+
+
+def test_classify_empty_log_is_not_agent() -> None:
+    out = classify_optimizer_log("")
+    assert out["class"] == "infra"
+    assert "unclassified" in out.get("detail", "")
+
+
+def test_classify_e0425_tn_custom_query_is_assemble() -> None:
+    text = """
+error[E0425]: cannot find value `t5` in this scope
+    --> custom_query.rs:412:17
+LEFTOVER_VERIFY_BEGIN
+error[E0425]: cannot find value `t1` in this scope
+LEFTOVER_VERIFY_END
+"""
+    out = classify_optimizer_log(text)
+    assert out["step"] == 4
+    assert out["class"] == "assemble"
+    assert "E0425" in out.get("detail", "")
+
+
+def test_classify_e0425_without_agent_edit_is_assemble() -> None:
+    text = "error[E0425]: cannot find value `t4` in this scope\n"
+    out = classify_optimizer_log(text)
+    assert out["step"] == 4
+    assert out["class"] == "assemble"
+
+
+def test_classify_e0308_custom_query_not_agent_edit() -> None:
+    text = """
+error[E0308]: mismatched types
+    --> custom_query.rs:88:9
+    expected `u64`, found `int`
+"""
+    out = classify_optimizer_log(text)
+    assert out["step"] == 4
+    assert out["class"] == "assemble"
+    assert "E0308" in out.get("detail", "")
+
+
+def test_classify_e0308_spec_rs_is_transpile() -> None:
+    text = """
+error[E0308]: mismatched types
+    --> spec.rs:12:5
+    expected u64 found int
+"""
+    out = classify_optimizer_log(text)
+    assert out["step"] == 2
+    assert out["class"] == "transpiler coverage"
+
+
+def test_classify_no_marked_plus_e0425_prefers_assemble() -> None:
+    text = """
+FAILED
+    no marked submit
+LEFTOVER_VERIFY_BEGIN
+error[E0425]: cannot find value `t2` in this scope
+    --> custom_query.rs:200:9
+LEFTOVER_VERIFY_END
+"""
+    out = classify_optimizer_log(text)
+    assert out["step"] == 4
+    assert out["class"] == "assemble"
+
+
+def test_classify_leftover_missing_is_loud_infra() -> None:
+    text = """
+FAILED
+    no marked submit
+    LEFTOVER_VERIFY_MISSING (no leftover verify_error_custom.log)
+LEMMA_METRICS_JSON: {"compiler_error": "no marked submit"}
+"""
+    out = classify_optimizer_log(text)
+    assert out["class"] == "infra"
+    assert "leftover_missing" in out.get("detail", "")
+
+
+def test_classify_default_unclassified_not_agent() -> None:
+    out = classify_optimizer_log("something went sideways with no known tokens")
+    assert out["class"] == "infra"
+    assert "unclassified" in out.get("detail", "")
 
 
 def test_classify_official_measure_timeout() -> None:

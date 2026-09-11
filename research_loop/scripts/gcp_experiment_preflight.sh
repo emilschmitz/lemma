@@ -81,7 +81,15 @@ else
   exit 1
 fi
 
-echo "preflight OK: family=$LEMMA_FAMILY card=$card EMIT=$EMIT FAST=$FAST sha=$LOCAL_SHA"
+WAIT="${LEMMA_WAIT_FOR_WRAPPER:-1}"
+if [[ "$WAIT" != "1" ]]; then
+  err "LEMMA_WAIT_FOR_WRAPPER=$WAIT; experiments must wait for run_and_halt (r23 overlapped families when this was 0)."
+  exit 1
+fi
+# Multi-family Spot chains: set LEMMA_HALT_ON_FINISH=0 on non-final families so only
+# the last family's run_and_halt.sh stops the VM (see overnight_lemma.sh).
+
+echo "preflight OK: family=$LEMMA_FAMILY card=$card EMIT=$EMIT FAST=$FAST WAIT=$WAIT sha=$LOCAL_SHA"
 echo "  rocket     -> EMIT=0 FAST=0"
 echo "  fast       -> FAST_TRUSTEDS=1"
 echo "  sloppy/emit -> EMIT=1 FAST=0"
