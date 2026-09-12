@@ -19,6 +19,8 @@ RESEARCH = Path(__file__).resolve().parent
 DEFAULT_IMAGE = "lemma-agent:latest"
 DEFAULT_WORKSPACE = RESEARCH / "agent_workspace"
 COMPONENT = "agent_sandbox"
+DOCKER_KILL_TIMEOUT_SEC = 30
+POPEN_POST_KILL_GRACE_SEC = 5.0
 BODY_NAME = "runquery_agent.rs"
 SPEC_NAME = "spec.rs"
 SPEC_EXCERPT_MAX_CHARS = 12000
@@ -498,6 +500,44 @@ def prepare_workspace(
     return body_path
 
 
+def _docker_kill_container(container_name: str) -> None:
+    subprocess.run(
+        ["docker", "kill", container_name],
+        capture_output=True,
+        timeout=DOCKER_KILL_TIMEOUT_SEC,
+        check=False,
+    )
+
+
+def _kill_and_reap_popen(
+    popen: subprocess.Popen[str],
+    *,
+    deadline: float,
+    grace_sec: float = POPEN_POST_KILL_GRACE_SEC,
+) -> int:
+    """Kill the docker-cli Popen and wait with a grace bounded by the session deadline."""
+    rc = popen.poll()
+    if rc is not None:
+        return int(rc)
+    popen.kill()
+    remaining = deadline - time.monotonic()
+    wait_budget = min(grace_sec, max(0.0, remaining))
+    if wait_budget <= 0:
+        return -1
+    try:
+        return int(popen.wait(timeout=wait_budget))
+    except subprocess.TimeoutExpired:
+        popen.kill()
+        remaining = deadline - time.monotonic()
+        wait_budget = min(grace_sec, max(0.0, remaining))
+        if wait_budget <= 0:
+            return -1
+        try:
+            return int(popen.wait(timeout=wait_budget))
+        except subprocess.TimeoutExpired:
+            return -1
+
+
 def run_agent_local(
     workspace: Path,
     prompt: str,
@@ -775,39 +815,28 @@ def run_agent_docker(
                 rc = popen.poll()
                 if rc is not None:
                     break
+                now = time.monotonic()
+                if now > deadline:
+                    timed_out = True
+                    mcp_server.stop()
+                    _docker_kill_container(container_name)
+                    rc = _kill_and_reap_popen(popen, deadline=deadline)
+                    break
                 if end_session_requested(workspace):
                     log_info(
                         COMPONENT,
                         "agent_docker_end_session",
                         "end_session sentinel after submit",
                     )
-                    subprocess.run(
-                        ["docker", "kill", container_name],
-                        capture_output=True,
-                        timeout=30,
-                    )
-                    popen.kill()
-                    rc = popen.wait()
+                    _docker_kill_container(container_name)
+                    rc = _kill_and_reap_popen(popen, deadline=deadline)
                     break
-                if time.monotonic() > deadline:
-                    raise subprocess.TimeoutExpired(cmd, timeout)
-                time.sleep(0.5)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    continue
+                time.sleep(min(0.5, remaining))
             proc = subprocess.CompletedProcess(
                 cmd, int(rc if rc is not None else -1), "".join(stdout_chunks), "".join(stderr_chunks)
-            )
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            mcp_server.stop()
-            subprocess.run(
-                ["docker", "kill", container_name],
-                capture_output=True,
-                timeout=30,
-                check=False,
-            )
-            popen.kill()
-            popen.wait()
-            proc = subprocess.CompletedProcess(
-                cmd, -1, "".join(stdout_chunks), "".join(stderr_chunks)
             )
         finally:
             for t in threads:

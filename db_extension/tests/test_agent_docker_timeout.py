@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import io
 import subprocess
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -24,7 +26,34 @@ class _HangPopen:
     def kill(self) -> None:
         self._killed = True
 
-    def wait(self) -> int:
+    def wait(self, timeout: float | None = None) -> int:
+        return -1
+
+
+class _BlockWaitUntilKillPopen:
+    """Popen whose unbounded wait() blocks until kill(); supports wait(timeout=)."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        self.stdout = io.StringIO("")
+        self.stderr = io.StringIO("")
+        self._killed = False
+        self._done = threading.Event()
+
+    def poll(self) -> int | None:
+        return None if not self._killed else -1
+
+    def kill(self) -> None:
+        self._killed = True
+        self._done.set()
+
+    def wait(self, timeout: float | None = None) -> int:
+        if self._killed:
+            return -1
+        if timeout is None:
+            self._done.wait()
+            return -1
+        if not self._done.wait(timeout=timeout):
+            raise subprocess.TimeoutExpired(cmd=[], timeout=timeout)
         return -1
 
 
@@ -101,6 +130,73 @@ def test_run_agent_docker_timeout_stops_mcp(monkeypatch: pytest.MonkeyPatch, tmp
     assert proc.returncode == -1
     assert stop_calls, "McpSocketServer.stop must run on agent docker timeout"
     assert stop_calls.count("stop") >= 1
+
+
+def test_run_agent_docker_end_session_stale_sentinel_bounded_wait(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Stale end_session sentinel + hanging docker-cli must not block past AGENT_TIMEOUT_SEC."""
+    stop_calls: list[str] = []
+    kill_calls: list[str] = []
+
+    class FakeMcpServer:
+        def __init__(self, sock_path, ctx) -> None:
+            self.sock_path = sock_path
+
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            stop_calls.append("stop")
+
+    class FakeEgress:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            pass
+
+    monkeypatch.delenv("AGENT_TIMEOUT_SEC", raising=False)
+    monkeypatch.setattr(
+        "db_extension.agent.mcp_socket.McpSocketServer",
+        FakeMcpServer,
+    )
+    monkeypatch.setattr(
+        "db_extension.agent.egress_bridge.EgressBridge",
+        FakeEgress,
+    )
+    monkeypatch.setattr(
+        "research_loop.agent_sandbox.subprocess.Popen",
+        _BlockWaitUntilKillPopen,
+    )
+    monkeypatch.setattr("research_loop.agent_sandbox.time.sleep", lambda _s: None)
+    monkeypatch.setattr(
+        "db_extension.agent.session_clock.end_session_requested",
+        lambda _ws: True,
+    )
+
+    def fake_docker_kill(*args, **kwargs) -> subprocess.CompletedProcess[str]:
+        kill_calls.append("docker_kill")
+        return subprocess.CompletedProcess(list(args[0]) if args else [], 0, "", "")
+
+    monkeypatch.setattr("research_loop.agent_sandbox.subprocess.run", fake_docker_kill)
+
+    ws = tmp_path / "workspace"
+    (ws / "context" / "ro").mkdir(parents=True)
+    (ws / "context" / "ro" / "spec.rs").write_text("// stub spec", encoding="utf-8")
+
+    cfg = {"AGENT_TIMEOUT_SEC": "1", "AGENT_IMAGE": "lemma-agent:cli", "AGENT_CMD": "echo"}
+    started = time.monotonic()
+    proc = run_agent_docker(ws, "prompt", cfg=cfg, query_id=42)
+    elapsed = time.monotonic() - started
+
+    assert proc.returncode == -1
+    assert kill_calls == ["docker_kill"]
+    assert stop_calls, "McpSocketServer.stop must run on end_session teardown"
+    assert elapsed < 2.0, f"end_session path must not wait forever (took {elapsed:.1f}s)"
 
 
 def test_run_agent_docker_mounts_host_entrypoint_when_present(
