@@ -108,10 +108,11 @@ def test_run_runquery_success_does_not_mark_submit(tmp_path: Path, monkeypatch) 
 
 def test_run_runquery_then_submit_uses_frozen_hash(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("LEMMA_AGENT_WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(mc, "mcp_iterate_dataset_size", lambda: 50_000)
     _write_workspace_spec(tmp_path)
     (tmp_path / "runquery_agent.rs").write_text(wrap_body_with_markers("let x = 1;"))
     monkeypatch.setattr(mc, "_invoke_harness", _fake_ok_harness())
-    out = mc.run_solution(path="runquery_agent.rs", query_id=1, dataset_size=100, ws=tmp_path)
+    out = mc.run_solution(path="runquery_agent.rs", query_id=1, dataset_size=50_000, ws=tmp_path)
     frozen = out["runquery_body"]
     (tmp_path / "runquery_agent.rs").write_text("// leftover unbalanced {\n", encoding="utf-8")
     marked = mc.mark_submit(out["run_id"], ws=tmp_path)
@@ -190,12 +191,13 @@ def test_timeout_run_is_not_submittable(tmp_path: Path, monkeypatch) -> None:
 
 def test_two_verifies_submit_either_run_id(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("LEMMA_AGENT_WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(mc, "mcp_iterate_dataset_size", lambda: 50_000)
     _write_workspace_spec(tmp_path)
     monkeypatch.setattr(mc, "_invoke_harness", _fake_ok_harness())
     (tmp_path / "runquery_agent.rs").write_text(wrap_body_with_markers("let a = 1;"))
-    first = mc.run_solution(path="runquery_agent.rs", query_id=1, dataset_size=10, ws=tmp_path)
+    first = mc.run_solution(path="runquery_agent.rs", query_id=1, dataset_size=50_000, ws=tmp_path)
     (tmp_path / "runquery_agent.rs").write_text(wrap_body_with_markers("let b = 2;"))
-    second = mc.run_solution(path="runquery_agent.rs", query_id=1, dataset_size=10, ws=tmp_path)
+    second = mc.run_solution(path="runquery_agent.rs", query_id=1, dataset_size=50_000, ws=tmp_path)
     assert first["runquery_sha256"] != second["runquery_sha256"]
     assert mc.mark_submit(second["run_id"], ws=tmp_path)["ok"] is True
     assert mc.get_submitted(ws=tmp_path)["runquery_body"] == second["runquery_body"]

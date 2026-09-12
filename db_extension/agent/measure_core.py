@@ -487,6 +487,18 @@ def mark_submit(run_id: str, *, ws: Path | None = None) -> dict:
             "run_id": run_id,
             "submitted_path": None,
         }
+    ds = run.get("dataset_size")
+    iterate_cap = mcp_iterate_dataset_size()
+    if isinstance(ds, int) and ds < iterate_cap:
+        return {
+            "ok": False,
+            "error": (
+                f"run_id {run_id} is a probe pin (dataset_size={ds} < iterate cap {iterate_cap}); "
+                "re-run run_runquery without dataset_size (or at the iterate cap) before submit_runquery"
+            ),
+            "run_id": run_id,
+            "submitted_path": None,
+        }
     submitted = {
         "run_id": run_id,
         "marked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),

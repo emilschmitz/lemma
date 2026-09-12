@@ -7,6 +7,7 @@ from pathlib import Path
 from db_extension.optimizer import (
     _submitted_runquery_snapshot_path,
     bench_timeout_sec,
+    clear_official_measure_timeout_cache,
     harness_timeout_sec,
     is_timed_verified_success,
     official_full_measure_after_submit,
@@ -124,7 +125,54 @@ def test_official_failure_keeps_submit_proof_and_iterate_latency(tmp_path: Path)
     assert "official_measure_error" in metrics
 
 
+def test_second_official_measure_skips_cached_timeout(tmp_path: Path) -> None:
+    clear_official_measure_timeout_cache()
+    submitted = {
+        "runquery_body": "// winner\nlet sum = 0;",
+        "runquery_sha256": "abc123deadbeef",
+        "run_id": "submit_timeout_once",
+        "iterate_dataset_size": 50_000,
+        "ok": True,
+    }
+    submitted_metrics = {"status": "SUCCESS", "proof_verified": True, "latency_us": 66}
+    agent_meta = {"ok": True, "latency_us": 66, "submitted_run_id": "submit_timeout_once"}
+    calls: list[dict] = []
+
+    def slow_invoke(**kwargs):
+        calls.append(kwargs)
+        import time
+
+        time.sleep(2)
+        return {"status": "SUCCESS", "proof_verified": True, "latency_us": 1}
+
+    kwargs = dict(
+        submitted_metrics=submitted_metrics,
+        agent_meta=agent_meta,
+        submitted=submitted,
+        sql_query="SELECT SUM(V) FROM t",
+        resolved_schema={"V": "bigint"},
+        dataset_size=6_000_000,
+        workspace=tmp_path,
+        agent_body_path=tmp_path / "missing.rs",
+        workload_tables=None,
+        workload="sec",
+        harness_timeout=1,
+        invoke_fn=slow_invoke,
+    )
+    first = official_full_measure_after_submit(**kwargs)
+    assert len(calls) == 1
+    assert "timed out after 1s" in first["official_measure_error"]
+    assert first["proof_verified"] is True
+
+    second = official_full_measure_after_submit(**kwargs)
+    assert len(calls) == 1
+    assert "timed out after 1s" in second["official_measure_error"]
+    assert second["proof_verified"] is True
+    assert second["iterate_latency_us"] == 66
+
+
 def test_official_measure_timeout_preserves_submit_proof(tmp_path: Path) -> None:
+    clear_official_measure_timeout_cache()
     submitted = {"runquery_body": "// winner\nlet sum = 0;", "iterate_dataset_size": 50_000, "ok": True}
     submitted_metrics = {"status": "SUCCESS", "proof_verified": True, "latency_us": 66}
     agent_meta = {"ok": True, "latency_us": 66}

@@ -108,6 +108,56 @@ def agent_meta_from_workspace_submit(workspace: Path) -> dict | None:
 
 _SUBMITTED_RUNQUERY_SNAPSHOT = ".submitted_runquery_snapshot.rs"
 _LEFTOVER_VERIFY_MAX_CHARS = 4000
+_OFFICIAL_MEASURE_TIMEOUT_CACHE: dict[str, dict] = {}
+
+
+def _official_measure_submit_keys(
+    *,
+    submitted: dict | None,
+    agent_meta: dict,
+) -> list[str]:
+    keys: list[str] = []
+    run_id = (submitted or {}).get("run_id") or agent_meta.get("submitted_run_id")
+    if run_id:
+        keys.append(f"run_id:{run_id}")
+    body_hash = (submitted or {}).get("runquery_sha256")
+    if body_hash:
+        keys.append(f"runquery_sha256:{body_hash}")
+    return keys
+
+
+def _cached_official_measure_timeout(
+    *,
+    submitted: dict | None,
+    agent_meta: dict,
+) -> dict | None:
+    for key in _official_measure_submit_keys(submitted=submitted, agent_meta=agent_meta):
+        cached = _OFFICIAL_MEASURE_TIMEOUT_CACHE.get(key)
+        if cached is None:
+            continue
+        err = cached.get("official_measure_error") or ""
+        if "timed out" in err:
+            return dict(cached)
+    return None
+
+
+def _remember_official_measure_timeout(
+    *,
+    metrics: dict,
+    submitted: dict | None,
+    agent_meta: dict,
+) -> None:
+    err = metrics.get("official_measure_error") or ""
+    if "timed out" not in err:
+        return
+    snapshot = dict(metrics)
+    for key in _official_measure_submit_keys(submitted=submitted, agent_meta=agent_meta):
+        _OFFICIAL_MEASURE_TIMEOUT_CACHE[key] = snapshot
+
+
+def clear_official_measure_timeout_cache() -> None:
+    """Test helper: reset per-process official-measure timeout memo."""
+    _OFFICIAL_MEASURE_TIMEOUT_CACHE.clear()
 
 
 def leftover_verify_excerpt(workspace: Path, *, max_chars: int = _LEFTOVER_VERIFY_MAX_CHARS) -> str:
@@ -229,6 +279,16 @@ def official_full_measure_after_submit(
         metrics["latency_us"] = -1
         return metrics
 
+    cached_timeout = _cached_official_measure_timeout(
+        submitted=submitted,
+        agent_meta=agent_meta,
+    )
+    if cached_timeout is not None:
+        out = dict(cached_timeout)
+        if submit_proof:
+            out["proof_verified"] = True
+        return out
+
     def _run_official() -> dict:
         return invoke_fn(
             sql=sql_query,
@@ -252,6 +312,11 @@ def official_full_measure_after_submit(
         metrics["latency_us"] = -1
         if submit_proof:
             metrics["proof_verified"] = True
+        _remember_official_measure_timeout(
+            metrics=metrics,
+            submitted=submitted,
+            agent_meta=agent_meta,
+        )
         return metrics
     except Exception as exc:
         metrics["official_measure_error"] = str(exc)

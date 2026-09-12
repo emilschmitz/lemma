@@ -66,6 +66,44 @@ def test_mark_submit_unknown_run(tmp_path: Path, monkeypatch) -> None:
     assert out["ok"] is False
 
 
+def test_mark_submit_rejects_probe_dataset_size(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("LEMMA_AGENT_WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(mc, "mcp_iterate_dataset_size", lambda: 50_000)
+    run_id = "probe_run"
+    rq = tmp_path / "runquery_agent.rs"
+    body = "// probe body\nlet x = 1;"
+    rq.write_text(body, encoding="utf-8")
+    record = _verified_run_record(run_id=run_id, body=body, rq_path=rq)
+    record["dataset_size"] = 8
+    mc.runs_dir(tmp_path).mkdir(parents=True, exist_ok=True)
+    (mc.runs_dir(tmp_path) / f"{run_id}.json").write_text(json.dumps(record))
+
+    out = mc.mark_submit(run_id, ws=tmp_path)
+    assert out["ok"] is False
+    assert "probe pin" in out["error"]
+    assert "without dataset_size" in out["error"]
+    assert mc.get_submitted(ws=tmp_path) is None
+
+
+def test_mark_submit_accepts_iterate_cap_dataset_size(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("LEMMA_AGENT_WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(mc, "mcp_iterate_dataset_size", lambda: 50_000)
+    run_id = "full_run"
+    rq = tmp_path / "runquery_agent.rs"
+    body = "// full cap body\nlet x = 1;"
+    rq.write_text(body, encoding="utf-8")
+    record = _verified_run_record(run_id=run_id, body=body, rq_path=rq)
+    record["dataset_size"] = 50_000
+    mc.runs_dir(tmp_path).mkdir(parents=True, exist_ok=True)
+    (mc.runs_dir(tmp_path) / f"{run_id}.json").write_text(json.dumps(record))
+
+    out = mc.mark_submit(run_id, ws=tmp_path)
+    assert out["ok"] is True
+    submitted = mc.get_submitted(ws=tmp_path)
+    assert submitted is not None
+    assert submitted["run_id"] == run_id
+
+
 def test_mark_submit_roundtrip(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("LEMMA_AGENT_WORKSPACE", str(tmp_path))
     run_id = "testrun001"
