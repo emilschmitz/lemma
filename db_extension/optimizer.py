@@ -345,6 +345,11 @@ def official_full_measure_after_submit(
         metrics["latency_us"] = -1
         if submit_proof:
             metrics["proof_verified"] = True
+        _remember_official_measure_timeout(
+            metrics=metrics,
+            submitted=submitted,
+            agent_meta=agent_meta,
+        )
 
     return metrics
 
