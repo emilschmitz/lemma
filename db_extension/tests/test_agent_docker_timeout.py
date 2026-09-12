@@ -194,7 +194,7 @@ def test_run_agent_docker_end_session_stale_sentinel_bounded_wait(
     elapsed = time.monotonic() - started
 
     assert proc.returncode == -1
-    assert kill_calls == ["docker_kill"]
+    assert kill_calls, "docker kill must run on end_session"
     assert stop_calls, "McpSocketServer.stop must run on end_session teardown"
     assert elapsed < 2.0, f"end_session path must not wait forever (took {elapsed:.1f}s)"
 
@@ -235,7 +235,10 @@ def test_run_agent_docker_mounts_host_entrypoint_when_present(
         def poll(self) -> int:
             return 0
 
-        def wait(self) -> int:
+        def kill(self) -> None:
+            return None
+
+        def wait(self, timeout: float | None = None) -> int:
             return 0
 
     monkeypatch.setattr(
@@ -284,3 +287,79 @@ def test_run_agent_docker_mounts_host_entrypoint_when_present(
     assert "--entrypoint" in argv
     assert "/bin/bash" in argv
     assert "/tmp/lemma-entrypoint.sh" in flat
+
+
+def test_run_agent_docker_wraps_coreutils_timeout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured_cmd: list[list[str]] = []
+
+    class FakeMcpServer:
+        def __init__(self, sock_path, ctx) -> None:
+            self.sock_path = sock_path
+
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            pass
+
+    class FakeEgress:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            pass
+
+    class _QuickExitPopen:
+        def __init__(self, cmd, *args, **kwargs) -> None:
+            captured_cmd.append(list(cmd))
+            self.stdout = io.StringIO("")
+            self.stderr = io.StringIO("")
+
+        def poll(self) -> int:
+            return 0
+
+        def kill(self) -> None:
+            return None
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+    monkeypatch.setattr(
+        "db_extension.agent.mcp_socket.McpSocketServer",
+        FakeMcpServer,
+    )
+    monkeypatch.setattr(
+        "db_extension.agent.egress_bridge.EgressBridge",
+        FakeEgress,
+    )
+    monkeypatch.setattr("research_loop.agent_sandbox.subprocess.Popen", _QuickExitPopen)
+    monkeypatch.setattr(
+        "db_extension.agent.session_clock.end_session_requested",
+        lambda _ws: False,
+    )
+    monkeypatch.setattr(
+        "research_loop.agent_sandbox.subprocess.run",
+        lambda *a, **k: subprocess.CompletedProcess(list(a[0]) if a else [], 0, "", ""),
+    )
+    monkeypatch.setattr(
+        "research_loop.agent_sandbox.shutil.which",
+        lambda name: "/usr/bin/timeout" if name == "timeout" else None,
+    )
+
+    ws = tmp_path / "workspace"
+    (ws / "context" / "ro").mkdir(parents=True)
+    (ws / "context" / "ro" / "spec.rs").write_text("// stub spec", encoding="utf-8")
+    cfg = {"AGENT_TIMEOUT_SEC": "12", "AGENT_IMAGE": "lemma-agent:cli", "AGENT_CMD": "echo"}
+    run_agent_docker(ws, "prompt", cfg=cfg, query_id=3)
+
+    assert captured_cmd, "argv must be captured"
+    argv = captured_cmd[0]
+    assert argv[0] == "/usr/bin/timeout"
+    assert argv[1] == "--kill-after=15"
+    assert argv[2] == "12"
+    assert "docker" in argv

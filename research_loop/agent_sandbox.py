@@ -196,6 +196,8 @@ def build_agent_prompt(
     from db_extension.agent.session_clock import (
         agent_timeout_sec,
         session_budget_prompt_section,
+    )
+    from db_extension.agent.session_clock import (
         submit_ends_session as _submit_ends,
     )
 
@@ -472,7 +474,10 @@ def prepare_workspace(
     from research_loop.lemma_flags import lemma_agent_hardware
 
     if lemma_agent_hardware():
-        from research_loop.agent_context import hardware_profile, hardware_profile_markdown
+        from research_loop.agent_context import (
+            hardware_profile,
+            hardware_profile_markdown,
+        )
 
         hw = hardware_profile()
         (ro / "hardware.json").write_text(json.dumps(hw, indent=2) + "\n")
@@ -507,6 +512,15 @@ def _docker_kill_container(container_name: str) -> None:
         timeout=DOCKER_KILL_TIMEOUT_SEC,
         check=False,
     )
+
+
+def _wrap_cmd_with_coreutils_timeout(cmd: list[str], timeout_sec: int) -> list[str]:
+    """OS-level cap so a wedged Python poll loop cannot leave docker run alive for hours."""
+    timeout_bin = shutil.which("timeout")
+    if timeout_bin is None:
+        return cmd
+    budget = max(1, int(timeout_sec))
+    return [timeout_bin, "--kill-after=15", str(budget), *cmd]
 
 
 def _kill_and_reap_popen(
@@ -764,10 +778,21 @@ def run_agent_docker(
             ]
         )
 
+    wrapped = _wrap_cmd_with_coreutils_timeout(cmd, timeout)
+    if wrapped is not cmd:
+        log_info(
+            COMPONENT,
+            "agent_docker_coreutils_timeout",
+            f"timeout --kill-after=15 {int(timeout)}s",
+        )
+    cmd = wrapped
+
     proc = subprocess.CompletedProcess(cmd, -1, "", "")
     timed_out = False
     docker_stdout_path = run_logs / "docker_agent.stdout" if run_logs else None
     docker_stderr_path = run_logs / "docker_agent.stderr" if run_logs else None
+    popen: subprocess.Popen[str] | None = None
+    deadline_timer: threading.Timer | None = None
     try:
         popen = subprocess.Popen(
             cmd,
@@ -775,6 +800,15 @@ def run_agent_docker(
             stderr=subprocess.PIPE,
             text=True,
         )
+
+        def _deadline_kill() -> None:
+            _docker_kill_container(container_name)
+            if popen is not None and popen.poll() is None:
+                popen.kill()
+
+        deadline_timer = threading.Timer(float(timeout), _deadline_kill)
+        deadline_timer.daemon = True
+        deadline_timer.start()
         stdout_chunks: list[str] = []
         stderr_chunks: list[str] = []
 
@@ -842,6 +876,9 @@ def run_agent_docker(
             for t in threads:
                 t.join(timeout=5)
     finally:
+        if deadline_timer is not None:
+            deadline_timer.cancel()
+        _docker_kill_container(container_name)
         mcp_server.stop()
         egress_server.stop()
         _sync_agent_logs(workspace_logs, run_logs)
