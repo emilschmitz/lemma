@@ -375,6 +375,7 @@ def _join_equalities_expr(
     schemas_by_table: dict[str, dict[str, str]],
     derived_by_alias: dict[str, DerivedTable],
     derived_map_vars: dict[str, str],
+    derived_key_exprs: dict[str, str] | None = None,
 ) -> str:
     parts: list[str] = []
     derived = _derived_aliases(query)
@@ -387,7 +388,16 @@ def _join_equalities_expr(
             l_expr = _col_access_ref(left_ref, query, slots, schemas_by_table, derived_by_alias)
             if r_col in {c.lower() for c in d.query.groupby_columns}:
                 continue
-            parts.append(f"{map_var}[key] == {l_expr}")
+            key_expr = (
+                derived_key_exprs.get(d.alias)
+                if derived_key_exprs
+                else None
+            )
+            if key_expr is None:
+                key_expr = _derived_key_expr(
+                    equalities, d, query, slots, schemas_by_table, derived_by_alias,
+                )
+            parts.append(f"{map_var}[{key_expr}] == {l_expr}")
         else:
             l_expr = _col_access_ref(left_ref, query, slots, schemas_by_table, derived_by_alias)
             r_expr = _col_access_ref(right_ref, query, slots, schemas_by_table, derived_by_alias)
@@ -445,6 +455,7 @@ def _all_join_conds(
             val_part = _join_equalities_expr(
                 join.on_equalities, query, slots, schemas_by_table,
                 derived_by_alias, derived_map_vars,
+                derived_key_exprs={d.alias: key_expr},
             )
             base_parts.append(f"{map_var}.contains_key({key_expr})")
             if val_part != "true":
@@ -1200,7 +1211,10 @@ def _raw_join_equalities(
             l_expr = _col_access_ref(left_ref, query, slots, schemas_by_table, derived_by_alias)
             if r_col in {c.lower() for c in d.query.groupby_columns}:
                 continue
-            parts.append(f"{map_var}[key] == {l_expr}")
+            key_expr = _derived_key_expr(
+                equalities, d, query, slots, schemas_by_table, derived_by_alias,
+            )
+            parts.append(f"{map_var}[{key_expr}] == {l_expr}")
         else:
             l_expr = _col_access_ref(left_ref, query, slots, schemas_by_table, derived_by_alias)
             r_expr = _col_access_ref(right_ref, query, slots, schemas_by_table, derived_by_alias)

@@ -242,7 +242,7 @@ GROUP BY n.tag"""
 
 
 def test_derived_join_projection() -> None:
-    """Derived JOIN + projection (simplified Q2)."""
+    """Derived JOIN + projection (Q110 / paper-Q2 shape)."""
     sql = """SELECT s.name, n.tag, n.value
 FROM num n
 JOIN sub s ON n.adsh = s.adsh
@@ -252,8 +252,9 @@ JOIN (
     WHERE uom = 'pure' AND value IS NOT NULL
     GROUP BY adsh, tag
 ) m ON n.adsh = m.adsh AND n.tag = m.tag AND n.value = m.max_value
-WHERE n.uom = 'pure' AND n.value IS NOT NULL
-LIMIT 10"""
+WHERE n.uom = 'pure' AND s.fy = 2022 AND n.value IS NOT NULL
+ORDER BY n.value DESC, s.name, n.tag
+LIMIT 100"""
     out = transpile_sql_to_verus(sql, {"num": SEC_SCHEMA["num"], "sub": SEC_SCHEMA["sub"]})
     assert "derived_m_helper" in out
     assert "join_projection_helper" in out
@@ -262,3 +263,10 @@ LIMIT 10"""
     helpers = _fold_helpers(out)
     assert helpers
     assert _fold_helpers_have_no_arbitrary(out)
+    join_section = out[out.find("join_projection_helper") : out.find("pub open spec fn method_spec")]
+    assert "derived_m_map.contains_key((num.adsh[i0 as int]@, num.tag[i0 as int]@))" in join_section
+    assert (
+        "derived_m_map[(num.adsh[i0 as int]@, num.tag[i0 as int]@)] == num.value[i0 as int]"
+        in join_section
+    )
+    assert "derived_m_map[key]" not in join_section
