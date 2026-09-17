@@ -264,6 +264,8 @@ LIMIT 100"""
     assert helpers
     assert _fold_helpers_have_no_arbitrary(out)
     join_section = out[out.find("join_projection_helper") : out.find("pub open spec fn method_spec")]
+    assert "Map<_, _>" not in join_section
+    assert "derived_m_map: Map<(Seq<char>, Seq<char>), u64>" in join_section
     assert "derived_m_map.contains_key((num.adsh[i0 as int]@, num.tag[i0 as int]@))" in join_section
     assert (
         "derived_m_map[(num.adsh[i0 as int]@, num.tag[i0 as int]@)] == num.value[i0 as int]"

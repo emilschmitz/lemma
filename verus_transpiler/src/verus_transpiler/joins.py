@@ -433,6 +433,18 @@ def _derived_key_expr(
     return f"({', '.join(key_parts)})"
 
 
+def _derived_map_extra_params(
+    derived_map_vars: dict[str, str],
+    derived_map_types: dict[str, str],
+) -> list[tuple[str, str]] | None:
+    if not derived_map_vars:
+        return None
+    return [
+        (derived_map_vars[alias], derived_map_types[alias])
+        for alias in derived_map_vars
+    ]
+
+
 def _all_join_conds(
     query: SQLQuery,
     slots: list[_Slot],
@@ -748,6 +760,7 @@ def _emit_join_multi_agg(
     schemas_by_table: dict[str, dict[str, str]],
     derived_by_alias: dict[str, DerivedTable],
     derived_map_vars: dict[str, str],
+    derived_map_types: dict[str, str],
     *,
     where_expr: str | None,
     helper_name: str = "multi_agg_helper",
@@ -901,7 +914,7 @@ def _emit_join_multi_agg(
         update_expr=update_expr,
         ret_type=map_ret,
         ret_base="Map::empty()",
-        extra_params=[(v, "Map<_, _>") for v in derived_map_vars.values()] if derived_map_vars else None,
+        extra_params=_derived_map_extra_params(derived_map_vars, derived_map_types),
     )
 
     spec_body = (
@@ -1127,6 +1140,7 @@ def _emit_join_projection(
     schemas_by_table: dict[str, dict[str, str]],
     derived_by_alias: dict[str, DerivedTable],
     derived_map_vars: dict[str, str],
+    derived_map_types: dict[str, str],
     *,
     where_expr: str | None,
     helper_name: str = "join_projection_helper",
@@ -1177,7 +1191,7 @@ def _emit_join_projection(
         update_expr=update_expr,
         ret_type=f"Seq<{row_ty}>",
         ret_base="Seq::empty()",
-        extra_params=[(v, t) for v, t in zip(derived_map_vars.values(), ["Map<_, _>"] * len(derived_map_vars))] if derived_map_vars else None,
+        extra_params=_derived_map_extra_params(derived_map_vars, derived_map_types),
     )
 
     ret_type = f"Seq<{row_ty}>"
@@ -1228,6 +1242,7 @@ def _emit_full_outer_scalar_sum(
     schemas_by_table: dict[str, dict[str, str]],
     derived_by_alias: dict[str, DerivedTable],
     derived_map_vars: dict[str, str],
+    derived_map_types: dict[str, str],
     *,
     where_expr: str | None,
     agg_expr: str,
@@ -1266,7 +1281,7 @@ def _emit_full_outer_scalar_sum(
         update_expr=f"(tail as int + ({term}) as int) as {val_type}",
         ret_type=val_type,
         ret_base=f"0{val_type}",
-        extra_params=[(v, "Map<_, _>") for v in derived_map_vars.values()] if derived_map_vars else None,
+        extra_params=_derived_map_extra_params(derived_map_vars, derived_map_types),
     )
 
     left_only_helper = "full_join_left_unmatched_helper"
@@ -1334,6 +1349,7 @@ def _emit_single_agg_nway(
     schemas_by_table: dict[str, dict[str, str]],
     derived_by_alias: dict[str, DerivedTable],
     derived_map_vars: dict[str, str],
+    derived_map_types: dict[str, str],
     *,
     where_expr: str | None,
     agg_expr: str,
@@ -1378,7 +1394,7 @@ def _emit_single_agg_nway(
         update_expr=update_expr,
         ret_type=ret_type,
         ret_base=ret_base,
-        extra_params=[(v, "Map<_, _>") for v in derived_map_vars.values()] if derived_map_vars else None,
+        extra_params=_derived_map_extra_params(derived_map_vars, derived_map_types),
     )
     init_args = ", ".join(
         [*(s.param for s in slots)]
@@ -1428,6 +1444,7 @@ def emit_join_spec_helpers(
 
     derived_helpers: list[str] = []
     derived_map_vars: dict[str, str] = {}
+    derived_map_types: dict[str, str] = {}
     for d in query.derived_tables:
         if not d.query.groupby_columns:
             raise UnsupportedContractError(
@@ -1435,7 +1452,7 @@ def emit_join_spec_helpers(
             )
         src_table = d.query.tables[0] if d.query.tables else base[0]
         src_struct = _table_struct_name(src_table)
-        inner_helpers, spec_call, _ = emit_derived_grouped_inner_spec(
+        inner_helpers, spec_call, map_ret_type = emit_derived_grouped_inner_spec(
             d.alias,
             d.query,
             schemas_by_table[src_table],
@@ -1444,6 +1461,7 @@ def emit_join_spec_helpers(
         derived_helpers.append(inner_helpers.replace("valid_cols", f"valid_cols_{src_table}"))
         map_var = f"derived_{d.alias}_map"
         derived_map_vars[d.alias] = map_var
+        derived_map_types[d.alias] = map_ret_type
 
     _, is_anti = _strip_anti_join_predicates(where_expr)
     is_left = any(j.join_type == "LEFT" for j in query.joins)
@@ -1472,7 +1490,12 @@ def emit_join_spec_helpers(
 
     if query.is_projection:
         proj_helper, spec_body, ret_type = _emit_join_projection(
-            query, slots, schemas_by_table, derived_by_alias, derived_map_vars,
+            query,
+            slots,
+            schemas_by_table,
+            derived_by_alias,
+            derived_map_vars,
+            derived_map_types,
             where_expr=where_expr,
         )
         helpers = "\n\n".join(derived_helpers + [proj_helper])
@@ -1484,7 +1507,12 @@ def emit_join_spec_helpers(
         spec_body = _apply_join_having_filter(spec_body)
     elif query.is_multi_agg and query.groupby_columns:
         ma_helper, spec_body, ret_type = _emit_join_multi_agg(
-            query, slots, schemas_by_table, derived_by_alias, derived_map_vars,
+            query,
+            slots,
+            schemas_by_table,
+            derived_by_alias,
+            derived_map_vars,
+            derived_map_types,
             where_expr=where_expr,
         )
         helpers = "\n\n".join(derived_helpers + [ma_helper])
@@ -1496,6 +1524,7 @@ def emit_join_spec_helpers(
             schemas_by_table,
             derived_by_alias,
             derived_map_vars,
+            derived_map_types,
             where_expr=where_expr,
             agg_expr=agg_expr,
             val_type=val_type,
@@ -1503,7 +1532,12 @@ def emit_join_spec_helpers(
         helpers = "\n\n".join(derived_helpers + [full_helpers])
     else:
         loop_helper, spec_body, ret_type = _emit_single_agg_nway(
-            query, slots, schemas_by_table, derived_by_alias, derived_map_vars,
+            query,
+            slots,
+            schemas_by_table,
+            derived_by_alias,
+            derived_map_vars,
+            derived_map_types,
             where_expr=where_expr,
             agg_expr=agg_expr,
             is_sum=is_sum,
@@ -1568,6 +1602,7 @@ def emit_join_grouped_map_spec(
         slots,
         schemas_by_table,
         derived_by_alias,
+        {},
         {},
         where_expr=where_expr,
         agg_expr=agg_expr,

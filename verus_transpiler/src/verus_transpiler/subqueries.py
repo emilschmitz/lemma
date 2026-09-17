@@ -1352,6 +1352,7 @@ def _emit_join_scan_semi_join(
         schemas_by_table,
         derived_by_alias,
         {},
+        {},
         where_expr=inner.where_expr,
         helper_name=helper_name,
     )
