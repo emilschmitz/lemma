@@ -350,6 +350,7 @@ def test_run_agent_docker_wraps_coreutils_timeout(
         "research_loop.agent_sandbox.shutil.which",
         lambda name: "/usr/bin/timeout" if name == "timeout" else None,
     )
+    monkeypatch.delenv("AGENT_TIMEOUT_SEC", raising=False)
 
     ws = tmp_path / "workspace"
     (ws / "context" / "ro").mkdir(parents=True)
@@ -360,6 +361,7 @@ def test_run_agent_docker_wraps_coreutils_timeout(
     assert captured_cmd, "argv must be captured"
     argv = captured_cmd[0]
     assert argv[0] == "/usr/bin/timeout"
-    assert argv[1] == "--kill-after=15"
-    assert argv[2] == "12"
+    assert argv[1] == "--signal=KILL"
+    assert argv[2] == "--kill-after=15"
+    assert argv[3] == "12s"
     assert "docker" in argv

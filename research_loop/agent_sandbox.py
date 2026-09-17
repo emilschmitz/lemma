@@ -515,12 +515,16 @@ def _docker_kill_container(container_name: str) -> None:
 
 
 def _wrap_cmd_with_coreutils_timeout(cmd: list[str], timeout_sec: int) -> list[str]:
-    """OS-level cap so a wedged Python poll loop cannot leave docker run alive for hours."""
+    """OS-level cap so a wedged Python poll loop cannot leave docker run alive for hours.
+
+    SIGKILL first: ``docker`` CLI often ignores SIGTERM, so TERM+kill-after left
+    ``timeout`` in sigsuspend for hours. Suffix ``s`` so units cannot be misread.
+    """
     timeout_bin = shutil.which("timeout")
     if timeout_bin is None:
         return cmd
     budget = max(1, int(timeout_sec))
-    return [timeout_bin, "--kill-after=15", str(budget), *cmd]
+    return [timeout_bin, "--signal=KILL", "--kill-after=15", f"{budget}s", *cmd]
 
 
 def _kill_and_reap_popen(
@@ -783,7 +787,7 @@ def run_agent_docker(
         log_info(
             COMPONENT,
             "agent_docker_coreutils_timeout",
-            f"timeout --kill-after=15 {int(timeout)}s",
+            f"timeout --signal=KILL --kill-after=15 {int(timeout)}s",
         )
     cmd = wrapped
 
@@ -844,13 +848,16 @@ def run_agent_docker(
             from db_extension.agent.session_clock import end_session_requested
 
             deadline = time.monotonic() + timeout
+            # Wall clock too: CLOCK_MONOTONIC (and GNU timeout) pause across
+            # suspend, which extended sessions to hours when inhibit dropped.
+            wall_deadline = time.time() + timeout
             rc: int | None = None
             while True:
                 rc = popen.poll()
                 if rc is not None:
                     break
                 now = time.monotonic()
-                if now > deadline:
+                if now > deadline or time.time() > wall_deadline:
                     timed_out = True
                     mcp_server.stop()
                     _docker_kill_container(container_name)
@@ -865,7 +872,10 @@ def run_agent_docker(
                     _docker_kill_container(container_name)
                     rc = _kill_and_reap_popen(popen, deadline=deadline)
                     break
-                remaining = deadline - time.monotonic()
+                remaining = min(
+                    deadline - time.monotonic(),
+                    wall_deadline - time.time(),
+                )
                 if remaining <= 0:
                     continue
                 time.sleep(min(0.5, remaining))
