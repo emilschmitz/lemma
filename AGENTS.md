@@ -98,6 +98,32 @@ Every paper/Spot/`LEMMA_EXPERIMENT=1` run must be **reproducible** and **logged*
   count host-agent / measure-failed runs as the 98% gate. If the sandbox cannot be
   brought up, **stop and tell Emil** — do not continue a watered-down protocol.
 
+## Fail loop (overnight / Spot) — wake, check, repair or leave, retry marked
+
+Keep a **monitored loop** armed for the live family (`AGENT_LOOP_WAKE_*` on new
+`lemma_ok=false` rows and on abort). **Every fail wakes you. Do not skip the
+trace checklist because you already have a theory.**
+
+On each wake:
+
+1. **Pull** harvest + `traces/<qid>/` (GCS rsync). If `mcp_results/runs` or leftover
+   verify are missing → **harness / software failed** (harvest), not agent. Fix harvest.
+2. **Open traces in order** (this section below). Report **`step N (name):`** and
+   **one primary blame class**.
+3. **If software / host failed** (transpile, assemble, inject calling an omitted
+   lemma, pin, timeout policy, missing traces, classifier): **repair the host**,
+   commit + push, **retry**. Do **not** leave a known host hole in a live SHA.
+4. **If the agent was too stupid to prove** (errors inside `AGENT_EDIT` on a **sound**
+   spec; a smarter agent could have submitted `N verified, 0 errors`): **do not
+   water down** (no FAST on rocket, no `ensures true`, no row-cap rewind). Record
+   the fail. Do **not** “repair” by weakening the proof bar.
+5. **Retries are a new family**, never mixed into the failed harvest SHA.
+   Example: r26rocket SHA `e445686` host-fail Q11 → fix on `main` → **r27rocket**
+   with `retry.json`:
+   `{ "retry_of": "r26rocket", "from_sha": "…", "to_sha": "…", "reason": "…", "step": 4 }`.
+   Frozen SQL may be reused (`LEMMA_SQL_FILE`) so the retry is the same queries.
+   Do not overwrite `gs://…/r26rocket/`.
+
 ## Always read the traces on failure
 
 When a run, experiment, verify, assemble, or agent session **fails**, do **not** guess from the
