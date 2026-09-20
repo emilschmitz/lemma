@@ -117,6 +117,11 @@ On each wake:
    spec; a smarter agent could have submitted `N verified, 0 errors`): **do not
    water down** (no FAST on rocket, no `ensures true`, no row-cap rewind). Record
    the fail. Do **not** “repair” by weakening the proof bar.
+   **Notify Emil bigly** — first line of the message, not buried. Use:
+   **`AGENT TOO STUPID:`** `step 3 (agent)` / `qid` / one-line evidence from
+   `AGENT_EDIT` (e.g. `assert forall` with no `by`, invented `step_row`,
+   `assert("US"@ != ""@)`). Only after the trace checklist. Do **not** use this
+   label for host/assemble holes.
 5. **Retries are a new family**, never mixed into the failed harvest SHA.
    Example: r26rocket SHA `e445686` host-fail Q11 → fix on `main` → **r27rocket**
    with `retry.json`:
