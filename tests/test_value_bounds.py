@@ -17,6 +17,7 @@ from research_loop.sec_table_assumptions import (
     sec_prove_loop_catalog_assumptions,
 )
 from research_loop.table_assumptions import (
+    CatalogAssumptions,
     engine_default_catalog_assumptions,
     resolve_bounds,
 )
@@ -200,3 +201,32 @@ def test_sec_cell_native_products_fit_u64() -> None:
 def test_engine_default_no_tight_cell_u64() -> None:
     assert resolve_bounds(engine_default_catalog_assumptions()).max_cell_u64 is None
     assert LEMMA_MAX_ROWS == 2**16
+
+
+def test_large_sec_rows_omit_false_sq_cell_lemma() -> None:
+    large_rows = 39_401_761
+    bounds = resolve_bounds(
+        CatalogAssumptions(
+            max_rows=large_rows,
+            max_rows_cube=large_rows,
+            max_rows_4=large_rows,
+            max_cell_u64=SEC_PROVE_LOOP_MAX_CELL_U64,
+            max_native_u32=2**31,
+            max_string_len=128,
+        )
+    )
+    lemmas = emit_bound_lemmas(bounds=bounds)
+    assert "lemma_max_rows_times_cell_u64_fits_u64" in lemmas
+    assert "lemma_max_rows_sq_times_cell_u64_fits_u64" not in lemmas
+    assert "pub proof fn lemma_rem_cap_cell_u64_add_fits(" not in lemmas
+    assert "lemma_rem_cap_cell_u64_add_fits_rows" in lemmas
+    assert "lemma_max_rows_cube_times_cell_u64_fits_u64" not in lemmas
+    assert "lemma_max_rows_4_times_cell_u64_fits_u64" not in lemmas
+    assert bounds.max_rows * bounds.max_cell_u64 <= 2**64 - 1
+    assert bounds.max_rows * bounds.max_rows * bounds.max_cell_u64 > 2**64 - 1
+
+
+def test_prove_loop_profile_keeps_sq_cell_lemma() -> None:
+    lemmas = emit_bound_lemmas(catalog=sec_prove_loop_catalog_assumptions())
+    assert "lemma_max_rows_sq_times_cell_u64_fits_u64" in lemmas
+    assert "lemma_max_rows_times_cell_u64_fits_u64" in lemmas

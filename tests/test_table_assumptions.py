@@ -108,6 +108,20 @@ def test_sec_assumptions_emit_cell_u64_constant_and_lemmas() -> None:
     assert "lemma_max_rows_times_cell_u64_fits_u64" in lemmas
 
 
+def test_resolve_bounds_max_across_catalog_and_tables() -> None:
+    cat = CatalogAssumptions(
+        max_rows=100,
+        max_rows_cube=2047,
+        max_rows_4=256,
+        tables={
+            "small": TableAssumptions(max_rows=50),
+            "large": TableAssumptions(max_rows=500),
+        },
+    )
+    b = resolve_bounds(cat)
+    assert b.max_rows == 500
+
+
 def test_sec_transpile_valid_cols_uses_assumed_cell_cap() -> None:
     out = transpile_sql_to_verus(
         "SELECT SUM(value) FROM num",

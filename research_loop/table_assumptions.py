@@ -151,11 +151,16 @@ def resolve_bounds(catalog: CatalogAssumptions) -> ResolvedBounds:
 
     ``max_native_u32`` / ``max_string_len`` fall back to SQL type/protocol width only.
     """
-    max_rows = catalog.max_rows
+    row_caps: list[int] = []
+    if catalog.max_rows is not None:
+        row_caps.append(catalog.max_rows)
     for ta in catalog.tables.values():
         if ta.max_rows is not None:
-            max_rows = ta.max_rows
-            break
+            row_caps.append(ta.max_rows)
+    if not row_caps:
+        max_rows = None
+    else:
+        max_rows = max(row_caps)
     if max_rows is None:
         raise ValueError(
             "resolve_bounds: catalog missing max_rows; pass "

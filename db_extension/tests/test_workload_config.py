@@ -1,7 +1,6 @@
 """Tests for workload resolution (holdout / SSB / experiment fail-loud)."""
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -14,6 +13,8 @@ from db_extension.workload_config import (
 )
 from research_loop.sec_table_assumptions import (
     SEC_PROVE_LOOP_MAX_CELL_U64,
+    SEC_PROVE_LOOP_MAX_ROWS,
+    sec_product_catalog_assumptions,
     sec_prove_loop_catalog_assumptions,
 )
 from verus_transpiler import transpile_sql_to_verus
@@ -56,10 +57,48 @@ def test_experiment_fails_loud_missing_tbl(monkeypatch, tmp_path):
         resolve_workload(HOLDOUT_SQL, workload="holdout")
 
 
-def test_catalog_assumptions_sec_profile():
+def test_catalog_assumptions_sec_profile(monkeypatch):
+    monkeypatch.delenv("LEMMA_DUCKDB_PATH", raising=False)
     cat = catalog_assumptions_for_workload("sec")
     assert cat == sec_prove_loop_catalog_assumptions()
     assert cat.max_cell_u64 == SEC_PROVE_LOOP_MAX_CELL_U64
+
+
+def test_catalog_assumptions_sec_product_from_duckdb_counts(monkeypatch):
+    sample_counts = {
+        "num": 39_401_761,
+        "pre": 9_600_799,
+        "sub": 86_135,
+        "tag": 1_070_662,
+    }
+    monkeypatch.setattr(
+        "db_extension.dataset_config.table_row_counts",
+        lambda: sample_counts,
+    )
+    cat = catalog_assumptions_for_workload("sec")
+    assert cat.max_rows == max(sample_counts.values())
+    assert cat.max_rows_cube == cat.max_rows
+    assert cat.max_rows_4 == cat.max_rows
+    assert cat.max_cell_u64 == SEC_PROVE_LOOP_MAX_CELL_U64
+    assert cat.tables["num"].max_rows == 39_401_761
+    assert cat.tables["pre"].max_rows == 9_600_799
+
+    out = transpile_sql_to_verus(
+        "SELECT SUM(value) FROM num",
+        {"num": {"value": "double"}},
+        catalog_assumptions=cat,
+    )
+    assert f"pub const LEMMA_MAX_ROWS: usize = {max(sample_counts.values())};" in out
+    assert f"LEMMA_MAX_CELL_U64: u64 = {SEC_PROVE_LOOP_MAX_CELL_U64}" in out
+
+
+def test_sec_product_catalog_fallback_matches_prove_loop(monkeypatch):
+    monkeypatch.setattr(
+        "db_extension.dataset_config.table_row_counts",
+        lambda: None,
+    )
+    assert sec_product_catalog_assumptions() == sec_prove_loop_catalog_assumptions()
+    assert sec_product_catalog_assumptions().max_rows == SEC_PROVE_LOOP_MAX_ROWS
 
 
 def test_catalog_assumptions_non_sec_is_none():

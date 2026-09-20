@@ -18,19 +18,25 @@ assumptions).
 from __future__ import annotations
 
 from research_loop.table_assumptions import (
+    DEFAULT_MAX_STRING_LEN,
+    ENGINE_DEFAULT_MAX_ROWS,
+    ENGINE_DEFAULT_MAX_ROWS_4,
+    ENGINE_DEFAULT_MAX_ROWS_CUBE,
+    TYPE_MAX_U32_EXCLUSIVE,
     CatalogAssumptions,
     ResolvedBounds,
     TableAssumptions,
-    TYPE_MAX_U32_EXCLUSIVE as LEMMA_MAX_NATIVE_U32,
-    ENGINE_DEFAULT_MAX_ROWS as LEMMA_MAX_ROWS,
-    ENGINE_DEFAULT_MAX_ROWS_4 as LEMMA_MAX_ROWS_4,
-    ENGINE_DEFAULT_MAX_ROWS_CUBE as LEMMA_MAX_ROWS_CUBE,
-    DEFAULT_MAX_STRING_LEN as LEMMA_MAX_STRING_LEN,
     column_u64_cap_exclusive,
     engine_default_catalog_assumptions,
     resolve_bounds,
     with_catalog_assumptions,
 )
+
+LEMMA_MAX_ROWS = ENGINE_DEFAULT_MAX_ROWS
+LEMMA_MAX_ROWS_CUBE = ENGINE_DEFAULT_MAX_ROWS_CUBE
+LEMMA_MAX_ROWS_4 = ENGINE_DEFAULT_MAX_ROWS_4
+LEMMA_MAX_NATIVE_U32 = TYPE_MAX_U32_EXCLUSIVE
+LEMMA_MAX_STRING_LEN = DEFAULT_MAX_STRING_LEN
 
 from .rust_ident import rust_ident
 
@@ -98,6 +104,127 @@ def col_spec_accessor_return(col_type: str) -> str:
 
 
 
+U64_MAX = 2**64 - 1
+
+
+def _int_product_fits_u64(*factors: int) -> bool:
+    product = 1
+    for factor in factors:
+        product *= factor
+        if product > U64_MAX:
+            return False
+    return True
+
+
+def _skip_u64_product_lemma_names(bounds: ResolvedBounds) -> frozenset[str]:
+    """Lemma proof fns to omit when their global product claim is numerically false."""
+    skip: set[str] = set()
+    rows = bounds.max_rows
+    cube = bounds.max_rows_cube
+    rows_4 = bounds.max_rows_4
+    native = bounds.max_native_u32
+
+    if not _int_product_fits_u64(rows, native):
+        skip.add("lemma_max_rows_times_native_fits_u64")
+    if not _int_product_fits_u64(rows, rows, native):
+        skip.update(
+            {
+                "lemma_max_rows_sq_times_native_fits_u64",
+                "lemma_rem_cap_native_add_fits",
+            }
+        )
+    if not _int_product_fits_u64(cube, cube, cube, native):
+        skip.update(
+            {
+                "lemma_max_rows_cube_times_native_fits_u64",
+                "lemma_rem_cap_native_add_fits_cube",
+            }
+        )
+    if not _int_product_fits_u64(rows_4, rows_4, rows_4, rows_4, native):
+        skip.update(
+            {
+                "lemma_max_rows_4_times_native_fits_u64",
+                "lemma_rem_cap_native_add_fits_4",
+                "lemma_rem_cap_native_add_fits_pow4",
+            }
+        )
+
+    if bounds.has_tight_cell_u64:
+        cell = bounds.max_cell_u64
+        assert cell is not None
+        if not _int_product_fits_u64(rows, cell):
+            skip.update(
+                {
+                    "lemma_max_rows_times_cell_u64_fits_u64",
+                    "lemma_rem_cap_cell_u64_add_fits_rows",
+                    "lemma_u64_add_cell_u64_fit",
+                    "lemma_max_rows_times_money_fits_u64",
+                }
+            )
+        if not _int_product_fits_u64(rows, rows, cell):
+            skip.update(
+                {
+                    "lemma_max_rows_sq_times_cell_u64_fits_u64",
+                    "lemma_rem_cap_cell_u64_add_fits",
+                    "lemma_max_rows_sq_times_money_fits_u64",
+                    "lemma_rem_cap_money_add_fits",
+                }
+            )
+        if not _int_product_fits_u64(cube, cube, cube, cell):
+            skip.update(
+                {
+                    "lemma_max_rows_cube_times_cell_u64_fits_u64",
+                    "lemma_rem_cap_cell_u64_add_fits_cube",
+                    "lemma_rem_cap_money_add_fits_cube",
+                    "lemma_max_rows_cube_times_money_fits_u64",
+                }
+            )
+        if not _int_product_fits_u64(rows_4, rows_4, rows_4, rows_4, cell):
+            skip.update(
+                {
+                    "lemma_max_rows_4_times_cell_u64_fits_u64",
+                    "lemma_rem_cap_cell_u64_add_fits_4",
+                    "lemma_rem_cap_cell_u64_add_fits_pow4",
+                    "lemma_rem_cap_money_add_fits_4",
+                    "lemma_rem_cap_money_add_fits_pow4",
+                    "lemma_max_rows_4_times_money_fits_u64",
+                }
+            )
+        if "lemma_max_rows_sq_times_cell_u64_fits_u64" in skip:
+            skip.update(
+                {
+                    "lemma_u64_add_money_fit",
+                    "lemma_u64_add_money_prev_le",
+                }
+            )
+        if "lemma_max_rows_times_cell_u64_fits_u64" in skip:
+            skip.add("lemma_u64_add_money_fit")
+
+    return frozenset(skip)
+
+
+def _filter_proof_fns_by_name(source: str, skip: frozenset[str]) -> str:
+    if not skip:
+        return source
+    out: list[str] = []
+    skip_fn: str | None = None
+    for line in source.splitlines():
+        if line.startswith("pub proof fn "):
+            name = line.split("pub proof fn ")[1].split("(")[0]
+            if name in skip:
+                skip_fn = name
+                continue
+            skip_fn = None
+            out.append(line)
+            continue
+        if skip_fn is not None:
+            if line.strip() == "}":
+                skip_fn = None
+            continue
+        out.append(line)
+    return "\n".join(out) + "\n"
+
+
 def _bounds_for_emit(
     bounds: ResolvedBounds | None,
     catalog: CatalogAssumptions | None,
@@ -142,7 +269,8 @@ def emit_bound_lemmas(
     catalog: CatalogAssumptions | None = None,
 ) -> str:
     b = _bounds_for_emit(bounds, catalog)
-    raw = _emit_bound_lemmas_with_cell_cap()
+    skip = _skip_u64_product_lemma_names(b)
+    raw = _filter_proof_fns_by_name(_emit_bound_lemmas_with_cell_cap(), skip)
     if b.has_tight_cell_u64:
         # Compatibility aliases for agent bodies / injectors still using *_money_* names.
         aliases = """
@@ -246,6 +374,7 @@ pub proof fn lemma_max_rows_4_times_money_fits_u64()
     lemma_max_rows_4_times_cell_u64_fits_u64();
 }
 """
+        aliases = _filter_proof_fns_by_name(aliases, skip)
         return raw + "\n" + aliases
     skip_fn: str | None = None
     out: list[str] = []
