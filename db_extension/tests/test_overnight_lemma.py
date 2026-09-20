@@ -1205,6 +1205,57 @@ def test_r25_chain_exists_and_configured():
     assert "LEMMA_FAST_TRUSTEDS=0" in rocket_block
 
 
+R26_CHAIN = ROOT / "research_loop" / "scripts" / "r26_rocket_fast_mid_chain.sh"
+
+
+def test_r26_chain_exists_and_configured():
+    assert R26_CHAIN.is_file()
+    text = R26_CHAIN.read_text()
+    assert "r26rocket" in text
+    assert "r26fast" in text
+    assert "r26mid" in text
+    assert re.search(r"LEMMA_FAMILY=\S*sloppy", text) is None
+    assert "never sloppy" in text
+    assert "LEMMA_FAIL_STREAK=6" in text
+    assert "LEMMA_PARALLEL=16" in text
+    assert "LEMMA_SERIOUS=1" in text
+    assert "LEMMA_WAIT_FOR_WRAPPER=1" in text
+    assert "LEMMA_SHUFFLE_SEED=2409" in text
+    assert "LEMMA_EMIT_AGENT_PRIMITIVES=0" in text
+    assert "LEMMA_SQL_FILE" in text
+    assert "skip fast and mid; halt" in text
+    assert "skip mid; halt" in text
+    assert "poema-496023-lemma-harvest/r26rocket/" in text
+    assert "poema-496023-lemma-harvest/r26fast/" in text
+    assert "poema-496023-lemma-harvest/r26mid/" in text
+    assert re.search(r"LEMMA_MCP_ITERATE_ROWS=(0|full|unlimited)", text, re.IGNORECASE)
+    fast_start = text.index("export LEMMA_FAMILY=r26fast")
+    mid_start = text.index("export LEMMA_FAMILY=r26mid")
+    rocket_block = text[:fast_start]
+    fast_block = text[fast_start:mid_start]
+    mid_block = text[mid_start:]
+    assert "export LEMMA_ENABLE_PARALLEL=1" in fast_block
+    assert "export LEMMA_ENABLE_PARALLEL=1" not in rocket_block
+    assert "export LEMMA_ENABLE_PARALLEL=1" in mid_block
+    assert "LEMMA_FAST_TRUSTEDS=1" in fast_block
+    assert "LEMMA_FAST_TRUSTEDS=0" in rocket_block
+    assert "LEMMA_FAST_TRUSTEDS=1" in mid_block
+    assert "export LEMMA_ENABLE_VECTOR_SCAN=1" in mid_block
+    assert "export LEMMA_ENABLE_SPILL_HASH=1" in mid_block
+    assert "export LEMMA_ENABLE_VECTOR_SCAN=0" in rocket_block
+    assert "export LEMMA_ENABLE_SPILL_HASH=0" in rocket_block
+    assert "export LEMMA_ENABLE_VECTOR_SCAN=1" not in rocket_block
+    assert "export LEMMA_ENABLE_SPILL_HASH=1" not in rocket_block
+    assert "export LEMMA_ENABLE_VECTOR_SCAN=1" not in fast_block
+    assert "export LEMMA_ENABLE_SPILL_HASH=1" not in fast_block
+    assert "LEMMA_HALT_ON_FINISH=0" in rocket_block
+    assert "LEMMA_HALT_ON_FINISH=0" in fast_block
+    assert "LEMMA_HALT_ON_FINISH=1" in mid_block
+    assert "LEMMA_SCHEDULE_ACPI=1" in rocket_block
+    assert "LEMMA_SCHEDULE_ACPI=0" in fast_block
+    assert "LEMMA_SCHEDULE_ACPI=0" in mid_block
+
+
 def test_harvest_job_traces_copies_into_out_traces(tmp_path: Path) -> None:
     mod = _load_module()
     out_dir = tmp_path / "out"

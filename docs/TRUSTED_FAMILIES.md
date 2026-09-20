@@ -12,7 +12,7 @@ ideas. Prefer fixing MethodSpec/docs over inventing another opaque helper.
 
 ### Expert card (what you are asked to accept)
 
-Two menus. Neither uses empty `assume_*`. Neither is a whole-query Trusted.
+Three menus. None uses empty `assume_*`. None is a whole-query Trusted.
 
 **A — product path (always on; `r23rocket`):** an expert can treat these like
 Rust/`vstd` facts.
@@ -40,7 +40,17 @@ Rust/`vstd` facts.
 | `decode_dict_str` | `s == dict[code]` when code in range. | None. |
 | `build_zone_map_u32` | Zones non-empty only if `zone_rows > 0`. | **Weak** — not per-segment min/max. Do not sell as rocketship. |
 
-**Not on either menu:** `ensures true`, whole-query EXISTS Trusted, empty
+**C — mid menu (`LEMMA_ENABLE_VECTOR_SCAN=1` + `LEMMA_ENABLE_SPILL_HASH=1` on top of B;
+`r26mid`):** same proof bar — `run_query ≡ method_spec`. Extra build features unlock
+Trusteds agents may call; SIMD/spill **schedule** is not proved, result ≡ serial
+wrapping spec:
+
+| Helper | One sentence | Honest skip |
+|--------|----------------|-------------|
+| `vector_filter_sum_u64` | Wrapping sum of amounts where date in `[lo, hi]`. | **We are not proving the SIMD/vector scan schedule** (feature `vector_scan`). |
+| `build_hashset_u32_spill` | `s@` is the set of keys (spills when estimate > threshold). | **We are not proving spill I/O schedule** (feature `spill_hash`). |
+
+**Not on any menu:** `ensures true`, whole-query EXISTS Trusted, empty
 `assume_*_slot*`, `LEMMA_FOLD_SLOT_ASSUME_ALIAS`.
 
 **Live `r23sloppy` (`EMIT=1` on `b5c838e`):** same as A **plus** hashset (good)

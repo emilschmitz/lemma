@@ -163,10 +163,11 @@ def test_preflight_clean_rocket_exits_0(tmp_path: Path) -> None:
 
 def test_preflight_unknown_family_exits_1(tmp_path: Path) -> None:
     repo = _init_pushed_repo(tmp_path)
-    proc = _run_preflight(repo, env={"LEMMA_FAMILY": "r23mid"})
+    proc = _run_preflight(repo, env={"LEMMA_FAMILY": "r23unknown"})
     assert proc.returncode == 1
     assert "ERROR:" in proc.stderr
     assert "unknown" in proc.stderr.lower() or "LEMMA_FAMILY" in proc.stderr
+    assert "mid" in proc.stderr.lower()
 
 
 def test_preflight_empty_family_exits_1(tmp_path: Path) -> None:
@@ -248,6 +249,74 @@ def test_preflight_fast_with_fast_trusteds_exits_0(tmp_path: Path) -> None:
     )
     assert proc.returncode == 0, proc.stderr
     assert "preflight OK" in proc.stdout
+
+
+def test_preflight_mid_without_vector_scan_exits_1(tmp_path: Path) -> None:
+    repo = _init_pushed_repo(tmp_path)
+    proc = _run_preflight(
+        repo,
+        env={
+            "LEMMA_FAMILY": "r26mid",
+            "LEMMA_FAST_TRUSTEDS": "1",
+            "LEMMA_EMIT_AGENT_PRIMITIVES": "0",
+            "LEMMA_ENABLE_VECTOR_SCAN": "0",
+            "LEMMA_ENABLE_SPILL_HASH": "1",
+        },
+    )
+    assert proc.returncode == 1
+    assert "ERROR:" in proc.stderr
+    assert "VECTOR" in proc.stderr or "vector" in proc.stderr.lower()
+
+
+def test_preflight_mid_without_spill_hash_exits_1(tmp_path: Path) -> None:
+    repo = _init_pushed_repo(tmp_path)
+    proc = _run_preflight(
+        repo,
+        env={
+            "LEMMA_FAMILY": "r26mid",
+            "LEMMA_FAST_TRUSTEDS": "1",
+            "LEMMA_EMIT_AGENT_PRIMITIVES": "0",
+            "LEMMA_ENABLE_VECTOR_SCAN": "1",
+            "LEMMA_ENABLE_SPILL_HASH": "0",
+        },
+    )
+    assert proc.returncode == 1
+    assert "ERROR:" in proc.stderr
+    assert "SPILL" in proc.stderr or "spill" in proc.stderr.lower()
+
+
+def test_preflight_mid_emit_on_exits_1(tmp_path: Path) -> None:
+    repo = _init_pushed_repo(tmp_path)
+    proc = _run_preflight(
+        repo,
+        env={
+            "LEMMA_FAMILY": "r26mid",
+            "LEMMA_FAST_TRUSTEDS": "1",
+            "LEMMA_EMIT_AGENT_PRIMITIVES": "1",
+            "LEMMA_ENABLE_VECTOR_SCAN": "1",
+            "LEMMA_ENABLE_SPILL_HASH": "1",
+        },
+    )
+    assert proc.returncode == 1
+    assert "ERROR:" in proc.stderr
+    assert "mid" in proc.stderr.lower() or "EMIT" in proc.stderr
+
+
+def test_preflight_mid_with_flags_exits_0(tmp_path: Path) -> None:
+    repo = _init_pushed_repo(tmp_path)
+    proc = _run_preflight(
+        repo,
+        env={
+            "LEMMA_FAMILY": "r26mid",
+            "LEMMA_FAST_TRUSTEDS": "1",
+            "LEMMA_EMIT_AGENT_PRIMITIVES": "0",
+            "LEMMA_ENABLE_VECTOR_SCAN": "1",
+            "LEMMA_ENABLE_SPILL_HASH": "1",
+        },
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "preflight OK" in proc.stdout
+    assert "mid" in proc.stdout.lower()
 
 
 def test_preflight_alive_overnight_lock_exits_1(tmp_path: Path) -> None:

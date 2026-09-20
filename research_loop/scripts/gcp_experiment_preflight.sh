@@ -13,6 +13,8 @@ LEMMA_PREFLIGHT_SSH="${LEMMA_PREFLIGHT_SSH:-0}"
 
 EMIT="${LEMMA_EMIT_AGENT_PRIMITIVES:-0}"
 FAST="${LEMMA_FAST_TRUSTEDS:-0}"
+VECTOR="${LEMMA_ENABLE_VECTOR_SCAN:-0}"
+SPILL="${LEMMA_ENABLE_SPILL_HASH:-0}"
 
 err() {
   echo "ERROR: $*" >&2
@@ -64,6 +66,24 @@ if [[ "$family_lc" == *rocket* ]]; then
     err "family $LEMMA_FAMILY (rocket) requires LEMMA_EMIT_AGENT_PRIMITIVES=0 and LEMMA_FAST_TRUSTEDS=0 (got EMIT=$EMIT FAST=$FAST)."
     exit 1
   fi
+elif [[ "$family_lc" == *mid* ]]; then
+  card="mid"
+  if [[ "$FAST" != "1" ]]; then
+    err "family $LEMMA_FAMILY (mid) requires LEMMA_FAST_TRUSTEDS=1 (got FAST=$FAST)."
+    exit 1
+  fi
+  if [[ "$EMIT" != "0" ]]; then
+    err "family $LEMMA_FAMILY (mid) requires LEMMA_EMIT_AGENT_PRIMITIVES=0 (got EMIT=$EMIT)."
+    exit 1
+  fi
+  if [[ "$VECTOR" != "1" ]]; then
+    err "family $LEMMA_FAMILY (mid) requires LEMMA_ENABLE_VECTOR_SCAN=1 (got VECTOR=$VECTOR)."
+    exit 1
+  fi
+  if [[ "$SPILL" != "1" ]]; then
+    err "family $LEMMA_FAMILY (mid) requires LEMMA_ENABLE_SPILL_HASH=1 (got SPILL=$SPILL)."
+    exit 1
+  fi
 elif [[ "$family_lc" == *fast* ]]; then
   card="fast"
   if [[ "$FAST" != "1" ]]; then
@@ -77,7 +97,7 @@ elif [[ "$family_lc" == *sloppy* ]]; then
     exit 1
   fi
 else
-  err "unknown LEMMA_FAMILY=$LEMMA_FAMILY; expected rocket, fast, or sloppy in the name."
+  err "unknown LEMMA_FAMILY=$LEMMA_FAMILY; expected rocket, fast, mid, or sloppy in the name."
   exit 1
 fi
 
@@ -89,9 +109,10 @@ fi
 # Multi-family Spot chains: set LEMMA_HALT_ON_FINISH=0 on non-final families so only
 # the last family's run_and_halt.sh stops the VM (see overnight_lemma.sh).
 
-echo "preflight OK: family=$LEMMA_FAMILY card=$card EMIT=$EMIT FAST=$FAST WAIT=$WAIT sha=$LOCAL_SHA"
+echo "preflight OK: family=$LEMMA_FAMILY card=$card EMIT=$EMIT FAST=$FAST VECTOR=$VECTOR SPILL=$SPILL WAIT=$WAIT sha=$LOCAL_SHA"
 echo "  rocket     -> EMIT=0 FAST=0"
 echo "  fast       -> FAST_TRUSTEDS=1"
+echo "  mid        -> FAST=1 EMIT=0 VECTOR=1 SPILL=1"
 echo "  sloppy/emit -> EMIT=1 FAST=0"
 
 if [[ "$LEMMA_PREFLIGHT_SSH" != "1" ]]; then
