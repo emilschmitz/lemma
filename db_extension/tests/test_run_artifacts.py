@@ -10,7 +10,12 @@ import pytest
 
 from research_loop.lemma_flags import lemma_research_log
 from research_loop.pipeline_log import log_info
-from research_loop.run_artifacts import RunArtifacts, begin_run, end_run, research_logging_enabled
+from research_loop.run_artifacts import (
+    RunArtifacts,
+    begin_run,
+    end_run,
+    research_logging_enabled,
+)
 
 
 def _init_git_repo(path: Path) -> None:

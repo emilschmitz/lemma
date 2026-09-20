@@ -1,13 +1,9 @@
 """Unit tests for compact workspace trace harvest."""
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from research_loop.harvest_traces import copy_workspace_traces
-
-_HEAD = 128 * 1024
-_TAIL = 64 * 1024
 
 
 def test_copy_workspace_traces_copies_present_files(tmp_path: Path) -> None:

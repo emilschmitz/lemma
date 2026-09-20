@@ -12,7 +12,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from research_loop.experiment_stream import emit_query_artifact, emit_query_end, emit_query_start
+from research_loop.experiment_stream import (
+    emit_query_artifact,
+    emit_query_end,
+    emit_query_start,
+)
 from research_loop.harvest_traces import copy_workspace_traces
 from research_loop.lemma_flags import lemma_experiment, lemma_research_log
 

@@ -25,15 +25,15 @@ if str(ROOT) not in sys.path:
 sys.path.insert(0, str(ROOT / "research_loop" / "scripts"))
 
 from classify_product_failures import classify_optimizer_log
-
-from research_loop.harvest_traces import copy_workspace_traces
-from research_loop.scripts.local_e2e_tiny_docker import parse_run_dir
 from gendb_published_one_run import (
     env_for_lemma,
     git_sha,
     parse_optimizer_output,
     parse_queries,
 )
+
+from research_loop.harvest_traces import copy_workspace_traces
+from research_loop.scripts.local_e2e_tiny_docker import parse_run_dir
 
 DEFAULT_SQL = ROOT / "holdout/gendb_sec_edgar/queries_resample_r15.sql"
 IMMANUEL_SQL = ROOT / "holdout/gendb_sec_edgar/queries.sql"
