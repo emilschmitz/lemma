@@ -155,22 +155,36 @@ off. That is **setup didn’t give the ability**. Do **not** call an official
 
 Harvest: `~/lemma-harvest/r24rocket`. SHA `c818042`. Official pin
 `dataset_size=39401761` = **max COUNT(*) of every DuckDB table** (`num`),
-applied as the **same LIMIT on every table** (`dataset_config.effective_dataset_size`).
-Iterate cap 50k. `LEMMA_FAST_TRUSTEDS=0`, `LEMMA_ENABLE_PARALLEL=0`.
+applied as the **same `LIMIT` on every table** (`pin_table`:
+`SELECT cols FROM t LIMIT n`). Real SEC sizes: `num` 39,401,761, `pre`
+9,600,799, `sub` 86,135, `tag` 1,070,662. Iterate cap 50k.
+`LEMMA_FAST_TRUSTEDS=0`, `LEMMA_ENABLE_PARALLEL=0`.
 
 | Job | Step | Primary blame | What happened |
 |-----|------|---------------|----------------|
-| **Q25** | **5 verify** | **agent too stupid to prove** | Four Docker iters, each `exit=-9` ~10min, `timed_out=False` (SIGKILL, not a Verus timeout). Never submitted. Secondary: harness should classify `-9` / OOM instead of `unclassified_verify_open_traces`. |
-| **Q18, Q20, Q21, Q16, Q23** | **7 execute** | **harness failed — make it resilient** | Agent **did prove** (127–130/0). Iterate 50k ran (0.4–9s). Official pin 39M × nested `rem_join` hit **600s wall**. DuckDB hash-join of the same SQL is ~0.4–0.6s. Pin uses `num`’s 39M even when the SQL is `pre ⋈ sub` / `pre ⋈ sub ⋈ tag` (no `num`). Overnight treats proved+unmeasured as **fail** and `fail_streak_6` aborted 41 remaining jobs. Same official TIMEOUT **retried 3×** on the same `run_id` (Q18). |
-| same jobs, secondary | flags / iterate | **setup didn’t give the ability to write something fast** | Speed Trusteds off. Agent never times 39M before submit. Join spec is nested-loop. |
-| same jobs, **not** primary | — | **not** “agent too stupid to write something fast” | A nested loop that is 5s @ 50k is ~4000s @ 39M. Even a genius nested-loop body loses the 600s pin. Hash join was not on the rocket menu. |
+| **Q25** | **5 verify** | **agent too stupid to prove** | Followed trace order. Harvest has **no** `workspace/mcp_results/runs/*.json` and **no** `submitted.json` (overnight rsyncs `$OUT` logs only; run dir stayed on the VM). Driver log is what exists: four iters each hit `CUSTOM_PIPELINE_FAILED [verify]` (`verify_error_custom.log` → `failed_transpile/verify_20260920_15{58,11,23,32}*.json` on the VM), then Docker `exit=-9 timed_out=False` at ~600s (`timeout --signal=KILL`). Host RAM was ~490 GiB free — **not OOM**. Never a marked submit. Exact Verus `N verified, M errors` is on the dead VM disk. Secondary: **harness** — classify GNU-timeout `-9` as `agent_timeout`; ship `mcp_results` + leftover verify with the harvest. |
+| **Q18, Q20, Q21, Q16, Q23** | **7 execute** | **harness failed — make it resilient** | Agent **did prove** (127–130/0). MCP iterate `dataset_size=50000` ran (0.4–9s). Official `SELECT … LIMIT 39401761` on each table → nested `rem_join` over real `pre`×`sub` (~9.6M×86k, ~330× iterate join work) hit **600s wall**. DuckDB hash-join of the same SQL is ~0.4–0.6s. Overnight treats proved+unmeasured as **fail** and `fail_streak_6` aborted 41 remaining jobs. Same official TIMEOUT **retried 3×** on the same `run_id` (Q18). |
+| same jobs, secondary | flags / iterate | **setup didn’t give the ability to write something fast** | Speed Trusteds off. Join spec is nested `rem_join`. `run_runquery` without `dataset_size` is the 50k cap (**not** full table). |
+| same jobs, **not** primary | — | **not** “agent too stupid to write something fast” | Nested loop that is 5s @ 50k×50k is hundreds of seconds–hours @ 9.6M×86k. Hash join was not on the rocket menu. |
 | same jobs, **not** | — | **not** “agent too stupid to prove” | Proof already finished. |
+
+**Did the agent know official is the large tables?** Yes, the **sizes**.
+`data_profile.md` (injected; `LEMMA_AGENT_DUCK_EXPLAIN=1`) prints actual
+`COUNT(*)` (`num` 39,401,761, …). The prompt also says: prefer
+`run_runquery` **without** `dataset_size` = “host MCP iterate cap, **not
+full table**”; `submit_runquery` then the host times full table. They
+were **told** 39M exists. They were **told not to time it** while
+iterating. They had **no** in-session 39M stopwatch (600s agent wall;
+default MCP is 50k). So they could pick a nested-loop body that looked
+fast at 50k and still die on the official pin.
 
 **Host work this implies (do not wait for a smarter agent):** pin LIMIT per
 table the query actually reads (not global max); don’t count official TIMEOUT
 as a prove-fail for `fail_streak`; don’t re-run a cached official timeout;
 emit hash/parallel Trusteds on the rocket path **or** stop scoring nested-loop
-kernels against 39M @ 600s; classify Docker `exit=-9`.
+kernels against full SEC @ 600s; classify Docker `exit=-9` as timeout; rsync
+`research_loop/runs/*/workspace/mcp_results` + leftover verify, not just
+overnight `$OUT` logs.
 
 ## No fallbacks without explicit approval
 
