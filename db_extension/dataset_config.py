@@ -224,7 +224,7 @@ def _resolve_row_budget_sizes() -> tuple[int | None, int]:
             official = limit
             iterate_max = official if uncapped else min(official, mcp_iterate_rows_cap())
             return official, iterate_max
-        iterate_max = effective_dataset_size() if uncapped else mcp_iterate_rows_cap()
+        iterate_max = 0 if uncapped else mcp_iterate_rows_cap()
         return None, iterate_max
 
 
@@ -274,7 +274,11 @@ def row_budget_prompt_section() -> str:
             f"`SELECT … LIMIT {official}`. Your `run_query` must finish on that pin.{cap_note}"
         )
         nested_note = (
-            f"Fast at {iterate_max}×{iterate_max} can miss the 600s official wall at the pin."
+            "At this pin, nested rem_join visits ~n0×n1 cells and can miss the 600s wall."
+            if iterate_matches_official
+            else (
+                f"Fast at {iterate_max}×{iterate_max} can miss the 600s official wall at the pin."
+            )
         )
     else:
         official_bullet = (

@@ -250,6 +250,20 @@ def test_mcp_iterate_uncapped_matches_official(
     assert mcp_iterate_dataset_size() == 6_001_215
 
 
+def test_row_budget_uncapped_without_dataset_does_not_raise(
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_ssb: Path,
+) -> None:
+    monkeypatch.delenv("LEMMA_DATASET_SIZE", raising=False)
+    monkeypatch.delenv("LEMMA_BENCH_TBL", raising=False)
+    monkeypatch.delenv("LEMMA_DUCKDB_PATH", raising=False)
+    monkeypatch.setenv("LEMMA_MCP_ITERATE_ROWS", "0")
+    section = row_budget_prompt_section()
+    assert "Row budgets" in section
+    blurb = run_runquery_iterate_tool_blurb()
+    assert "dataset_size" in blurb.lower()
+
+
 def test_row_budget_prompt_when_iterate_equals_official(
     monkeypatch: pytest.MonkeyPatch,
     isolated_ssb: Path,
