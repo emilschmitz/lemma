@@ -34,6 +34,7 @@ def test_build_agent_prompt_row_budgets(tmp_path: Path, monkeypatch: pytest.Monk
     assert "1000" in prompt
     assert "Row budgets" in prompt
     assert "row_budgets.md" in prompt
+    assert "not official" in prompt.lower()
     assert "not full table" not in prompt.lower()
 
 
@@ -47,6 +48,7 @@ def test_build_system_prompt_row_budgets(monkeypatch: pytest.MonkeyPatch) -> Non
     assert "12345" in prompt
     assert "1000" in prompt
     assert "Row budgets" in prompt
+    assert "not official" in prompt.lower()
     assert "not full table" not in prompt.lower()
 
 

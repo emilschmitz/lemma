@@ -8,9 +8,14 @@ import re
 from pathlib import Path
 from typing import Any
 
-from research_loop.agent_primitives.emit_externs import lemma_enable_parallel
+from research_loop.agent_primitives.emit_externs import (
+    lemma_emit_agent_primitives,
+    lemma_enable_parallel,
+)
 from research_loop.lemma_flags import (
     lemma_enable_parallel as _lemma_enable_parallel_flag,
+)
+from research_loop.lemma_flags import (
     lemma_enable_spill_hash,
     lemma_enable_vector_scan,
     lemma_fast_trusteds,
@@ -46,11 +51,18 @@ def _mem_total_kb() -> int | None:
     return None
 
 
+def _parallel_externs_emitted() -> bool:
+    return lemma_enable_parallel() or lemma_fast_trusteds()
+
+
 def hardware_profile() -> dict[str, Any]:
     """CPU count and optional cache sizes (sysfs or LEMMA_ASSUMED_L* overrides)."""
     profile: dict[str, Any] = {
         "cpu_count": os.cpu_count() or 1,
         "parallel_enabled": lemma_enable_parallel(),
+        "parallel_externs": _parallel_externs_emitted(),
+        "fast_trusteds": lemma_fast_trusteds(),
+        "emit_agent_primitives": lemma_emit_agent_primitives(),
     }
     mem_kb = _mem_total_kb()
     if mem_kb is not None:
@@ -78,6 +90,10 @@ def hardware_profile_markdown(profile: dict[str, Any] | None = None) -> str:
     lines = ["# Hardware profile", ""]
     for key in sorted(hw.keys()):
         lines.append(f"- **{key}**: `{hw[key]}`")
+    lines.append(
+        "- **rocket mode note:** when `fast_trusteds` and `emit_agent_primitives` are both "
+        "false, only Trusteds already in `spec.rs` are available — do not invent hash/par helpers."
+    )
     lines.append("")
     return "\n".join(lines)
 

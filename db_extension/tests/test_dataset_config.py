@@ -6,11 +6,14 @@ from pathlib import Path
 import pytest
 
 from db_extension.agent import measure_core as mc
+from db_extension.agent.mcp_tool_specs import openai_host_tool_definitions
 from db_extension.dataset_config import (
     dataset_size_limit,
     effective_dataset_size,
     mcp_iterate_dataset_size,
+    mcp_iterate_is_uncapped,
     row_budget_prompt_section,
+    run_runquery_iterate_tool_blurb,
     table_row_counts,
 )
 from db_extension_paths.dataset_config import (
@@ -220,10 +223,86 @@ def test_row_budget_prompt_section_from_env(
     assert "12345" in section
     assert "1000" in section
     assert "Row budgets" in section
+    assert "not official" in section.lower()
     assert "not full table" not in section.lower()
     assert "Official pin" in section
     assert "MCP iterate max" in section
     assert "rem_join" in section
+
+
+@pytest.mark.parametrize("uncapped_value", ["0", "full", "FULL", "unlimited"])
+def test_mcp_iterate_uncapped_matches_official(
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_ssb: Path,
+    uncapped_value: str,
+) -> None:
+    monkeypatch.delenv("LEMMA_DATASET_SIZE", raising=False)
+    monkeypatch.delenv("LEMMA_BENCH_TBL", raising=False)
+    monkeypatch.setenv("LEMMA_MCP_ITERATE_ROWS", uncapped_value)
+    monkeypatch.setenv("LEMMA_DUCKDB_PATH", "/unused/sec_edgar.duckdb")
+    monkeypatch.setenv("LEMMA_PRIMARY_TABLE", "pre")
+    monkeypatch.setattr(
+        "db_extension.dataset_config._count_duckdb_primary_rows",
+        lambda: 6_001_215,
+    )
+    assert mcp_iterate_is_uncapped()
+    assert effective_dataset_size() == 6_001_215
+    assert mcp_iterate_dataset_size() == 6_001_215
+
+
+def test_row_budget_prompt_when_iterate_equals_official(
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_ssb: Path,
+) -> None:
+    monkeypatch.delenv("LEMMA_BENCH_TBL", raising=False)
+    monkeypatch.delenv("LEMMA_DUCKDB_PATH", raising=False)
+    monkeypatch.setenv("LEMMA_DATASET_SIZE", "12345")
+    monkeypatch.setenv("LEMMA_MCP_ITERATE_ROWS", "full")
+    section = row_budget_prompt_section()
+    assert "12345" in section
+    assert "same pin submit is scored on" in section
+    assert "not official" not in section.lower()
+    assert "not full table" not in section.lower()
+
+
+def test_row_budget_prompt_when_iterate_below_official(
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_ssb: Path,
+) -> None:
+    monkeypatch.delenv("LEMMA_DATASET_SIZE", raising=False)
+    monkeypatch.delenv("LEMMA_BENCH_TBL", raising=False)
+    monkeypatch.setenv("LEMMA_MCP_ITERATE_ROWS", "50000")
+    monkeypatch.setenv("LEMMA_DUCKDB_PATH", "/unused/sec_edgar.duckdb")
+    monkeypatch.setenv("LEMMA_PRIMARY_TABLE", "pre")
+    monkeypatch.setattr(
+        "db_extension.dataset_config._count_duckdb_primary_rows",
+        lambda: 6_001_215,
+    )
+    section = row_budget_prompt_section()
+    assert "50000" in section
+    assert "6001215" in section.replace("_", "").replace(",", "")
+    assert "not official" in section.lower()
+
+
+def test_run_runquery_iterate_tool_blurb_matches_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_ssb: Path,
+) -> None:
+    monkeypatch.delenv("LEMMA_BENCH_TBL", raising=False)
+    monkeypatch.delenv("LEMMA_DUCKDB_PATH", raising=False)
+    monkeypatch.setenv("LEMMA_DATASET_SIZE", "12345")
+    monkeypatch.setenv("LEMMA_MCP_ITERATE_ROWS", "full")
+    blurb = run_runquery_iterate_tool_blurb()
+    assert "official pin" in blurb.lower()
+    assert "not official" not in blurb.lower()
+
+    monkeypatch.setenv("LEMMA_MCP_ITERATE_ROWS", "1000")
+    blurb_capped = run_runquery_iterate_tool_blurb()
+    assert "not official pin" in blurb_capped.lower()
+
+    defs = openai_host_tool_definitions(include_aliases=False)
+    run_def = next(d for d in defs if d["function"]["name"] == "run_runquery")
+    assert blurb_capped.split(".")[0] in run_def["function"]["description"]
 
 
 def test_table_row_counts_returns_none_without_duckdb(

@@ -38,8 +38,9 @@ HOST_TOOL_SPECS: tuple[HostToolSpec, ...] = (
         name="run_runquery",
         description=(
             "Validate and run the Verus harness on a run_query solution. "
-            "Returns run_id and metrics. Omit dataset_size for the host MCP iterate cap "
-            "(not full table); pass an explicit smaller dataset_size for quick probes."
+            "Returns run_id and metrics. Omit dataset_size for the host iterate row budget "
+            "(see Row budgets in prompt; may match the official pin). Pass an explicit "
+            "smaller dataset_size for quick probes."
         ),
         parameters={
             "type": "object",
@@ -47,7 +48,10 @@ HOST_TOOL_SPECS: tuple[HostToolSpec, ...] = (
                 "path": {"type": "string"},
                 "dataset_size": {
                     "type": "integer",
-                    "description": "Row limit for harness (-d); omit for MCP iterate cap (not full table)",
+                    "description": (
+                        "Row limit for harness (-d); omit for host iterate row budget "
+                        "(see Row budgets — may match official pin)"
+                    ),
                 },
                 "query_id": {"type": "integer"},
             },
@@ -114,15 +118,9 @@ def host_tool_names() -> set[str]:
 
 def openai_host_tool_definitions(*, include_aliases: bool = True) -> list[dict]:
     """OpenAI function-calling tool list derived from HOST_TOOL_SPECS."""
-    from db_extension.dataset_config import (
-        mcp_iterate_dataset_size,
-        mcp_iterate_rows_cap,
-    )
+    from db_extension.dataset_config import run_runquery_iterate_tool_blurb
 
-    try:
-        iterate_y = mcp_iterate_dataset_size()
-    except RuntimeError:
-        iterate_y = mcp_iterate_rows_cap()
+    iterate_blurb = run_runquery_iterate_tool_blurb()
 
     out: list[dict] = []
     for spec in HOST_TOOL_SPECS:
@@ -133,9 +131,7 @@ def openai_host_tool_definitions(*, include_aliases: bool = True) -> list[dict]:
             if spec.name == "run_runquery":
                 desc = (
                     "Validate and run the Verus harness on a run_query solution. "
-                    f"Returns run_id and metrics. Omit dataset_size for the host MCP iterate cap "
-                    f"({iterate_y} rows max; not official pin — see Row budgets in prompt). "
-                    "Pass an explicit smaller dataset_size for quick probes."
+                    f"Returns run_id and metrics. {iterate_blurb}"
                 )
             if name == "submit":
                 desc = (

@@ -52,4 +52,4 @@ Use the helper name and params from **this query's** `spec.rs` (joins use `Cols_
 
 - Read the Verus error: usually a failed `invariant` or type mismatch.
 - Compare your update step to one iteration of `method_spec` on paper.
-- Omit `dataset_size` on MCP `run_runquery` for the host iterate cap; pass an explicit smaller value only for quick probes.
+- Omit `dataset_size` on MCP `run_runquery` for the host iterate size from **Row budgets** (may be the official pin); pass an explicit smaller value only for quick probes.

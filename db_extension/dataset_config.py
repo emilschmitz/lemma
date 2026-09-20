@@ -181,8 +181,22 @@ def effective_dataset_size() -> int:
     return available
 
 
+_MCP_ITERATE_UNCAPPED_VALUES = frozenset({"0", "full", "unlimited"})
+
+
+def mcp_iterate_is_uncapped() -> bool:
+    """True when ``LEMMA_MCP_ITERATE_ROWS`` is ``0``, ``full``, or ``unlimited`` (case-insensitive)."""
+    raw = os.environ.get("LEMMA_MCP_ITERATE_ROWS", "").strip()
+    return raw.lower() in _MCP_ITERATE_UNCAPPED_VALUES if raw else False
+
+
 def mcp_iterate_rows_cap() -> int:
-    """Row cap for MCP ``run_runquery`` when ``dataset_size`` is omitted (not official latency)."""
+    """Row cap for MCP ``run_runquery`` when ``dataset_size`` is omitted (capped mode only)."""
+    if mcp_iterate_is_uncapped():
+        raise RuntimeError(
+            "mcp_iterate_rows_cap() is undefined when LEMMA_MCP_ITERATE_ROWS is uncapped "
+            "(0/full/unlimited); use mcp_iterate_is_uncapped() and mcp_iterate_dataset_size()."
+        )
     raw = os.environ.get("LEMMA_MCP_ITERATE_ROWS", "").strip()
     if not raw:
         return DEFAULT_MCP_ITERATE_ROWS
@@ -190,32 +204,74 @@ def mcp_iterate_rows_cap() -> int:
 
 
 def mcp_iterate_dataset_size() -> int:
-    """MCP iterate rows: min(full effective size, ``LEMMA_MCP_ITERATE_ROWS`` cap)."""
-    return min(effective_dataset_size(), mcp_iterate_rows_cap())
+    """MCP iterate rows: official pin when uncapped, else min(official, cap)."""
+    official = effective_dataset_size()
+    if mcp_iterate_is_uncapped():
+        return official
+    return min(official, mcp_iterate_rows_cap())
 
 
-def row_budget_prompt_section() -> str:
-    """Markdown section with official pin X, MCP iterate max Y, and optional table counts."""
-    iterate_cap = mcp_iterate_rows_cap()
-    official: int | None
-    iterate_max: int
+def _resolve_row_budget_sizes() -> tuple[int | None, int]:
+    """Return (official pin rows or None, MCP iterate rows when dataset_size omitted)."""
+    uncapped = mcp_iterate_is_uncapped()
     try:
         official = effective_dataset_size()
-        iterate_max = min(official, iterate_cap)
+        iterate_max = official if uncapped else min(official, mcp_iterate_rows_cap())
+        return official, iterate_max
     except RuntimeError:
         limit = dataset_size_limit()
         if limit is not None:
             official = limit
-            iterate_max = min(official, iterate_cap)
-        else:
-            official = None
-            iterate_max = iterate_cap
+            iterate_max = official if uncapped else min(official, mcp_iterate_rows_cap())
+            return official, iterate_max
+        iterate_max = effective_dataset_size() if uncapped else mcp_iterate_rows_cap()
+        return None, iterate_max
+
+
+def run_runquery_iterate_tool_blurb(
+    *,
+    iterate_rows: int | None = None,
+    official_rows: int | None = None,
+) -> str:
+    """Shared omit-``dataset_size`` wording for MCP tool descriptions."""
+    if iterate_rows is None:
+        try:
+            iterate_rows = mcp_iterate_dataset_size()
+        except RuntimeError:
+            iterate_rows = (
+                mcp_iterate_rows_cap() if not mcp_iterate_is_uncapped() else 0
+            )
+    if official_rows is None:
+        try:
+            official_rows = effective_dataset_size()
+        except RuntimeError:
+            official_rows = None
+
+    if official_rows is not None and iterate_rows == official_rows:
+        return (
+            f"Omit dataset_size for the official pin ({iterate_rows} rows — same as submit "
+            f"scoring; see Row budgets). Pass an explicit smaller dataset_size for quick probes."
+        )
+    return (
+        f"Omit dataset_size for MCP iterate max ({iterate_rows} rows; not official pin — "
+        f"see Row budgets). Pass an explicit smaller dataset_size for quick probes."
+    )
+
+
+def row_budget_prompt_section() -> str:
+    """Markdown section with official pin X, MCP iterate max Y, and optional table counts."""
+    official, iterate_max = _resolve_row_budget_sizes()
+    iterate_matches_official = official is not None and iterate_max == official
 
     if official is not None:
+        cap_note = (
+            ""
+            if iterate_matches_official
+            else f" Optimize for **{official}**, not for the iterate cap."
+        )
         official_bullet = (
             f"- **Official pin (submit is scored on this):** each table "
-            f"`SELECT … LIMIT {official}`. Your `run_query` must finish on that pin. "
-            f"Optimize for **{official}**, not for the iterate cap."
+            f"`SELECT … LIMIT {official}`. Your `run_query` must finish on that pin.{cap_note}"
         )
         nested_note = (
             f"Fast at {iterate_max}×{iterate_max} can miss the 600s official wall at the pin."
@@ -231,14 +287,23 @@ def row_budget_prompt_section() -> str:
             f"Fast at {iterate_max}×{iterate_max} can miss the official wall at the pin."
         )
 
-    lines = [
-        "## Row budgets (this run, host)",
-        official_bullet,
-        (
+    if iterate_matches_official:
+        iterate_bullet = (
+            f"- **MCP iterate max:** omit `dataset_size` on `run_runquery` → "
+            f"**{iterate_max}** rows (same pin submit is scored on). "
+            f"Smaller `dataset_size` = probes only."
+        )
+    else:
+        iterate_bullet = (
             f"- **MCP iterate max:** omit `dataset_size` on `run_runquery` → "
             f"**{iterate_max}** rows (the maximum you can time while iterating). "
             f"Smaller `dataset_size` = probes only. Iterate time at {iterate_max} is not official."
-        ),
+        )
+
+    lines = [
+        "## Row budgets (this run, host)",
+        official_bullet,
+        iterate_bullet,
         (
             f"- Nested-loop joins (`rem_join_*` / "
             f"`while i0 < n0 {{ while i1 < n1 }}`) visit ~n0×n1 cells. {nested_note}"

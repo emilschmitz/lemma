@@ -1137,6 +1137,7 @@ def test_r24_chain_exists_and_configured():
     assert "LEMMA_EMIT_AGENT_PRIMITIVES=0" in text
     assert "skip fast; halt" in text
     assert "poema-496023-lemma-harvest" in text
+    assert re.search(r"LEMMA_MCP_ITERATE_ROWS=(0|full|unlimited)", text, re.IGNORECASE)
 
 
 def test_harvest_job_traces_copies_into_out_traces(tmp_path: Path) -> None:

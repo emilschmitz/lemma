@@ -58,15 +58,9 @@ def _proxy(tool: str, args: dict) -> str:
 
 
 def build_proxy_mcp() -> FastMCP:
-    from db_extension.dataset_config import (
-        mcp_iterate_dataset_size,
-        mcp_iterate_rows_cap,
-    )
+    from db_extension.dataset_config import run_runquery_iterate_tool_blurb
 
-    try:
-        iterate_y = mcp_iterate_dataset_size()
-    except RuntimeError:
-        iterate_y = mcp_iterate_rows_cap()
+    iterate_blurb = run_runquery_iterate_tool_blurb()
 
     mcp = FastMCP(
         "lemma-sandbox",
@@ -98,9 +92,7 @@ def build_proxy_mcp() -> FastMCP:
         return _proxy("run_runquery", args)
 
     run_runquery.__doc__ = (
-        f"Run host harness; returns run_id and metrics. "
-        f"Omit dataset_size for MCP iterate max ({iterate_y} rows; not official pin). "
-        "See prompt Row budgets. Smaller dataset_size for probes only."
+        f"Run host harness; returns run_id and metrics. {iterate_blurb}"
     )
     mcp.tool()(run_runquery)
 
