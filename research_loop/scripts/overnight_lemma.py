@@ -237,7 +237,7 @@ def append_progress(out_dir: Path, rec: dict) -> None:
 
 
 def harvest_job_traces(log_text: str, log_dir: Path, qid: str) -> dict[str, Any] | None:
-    """Copy compact workspace traces under ``{log_dir.parent}/traces/{qid}/``."""
+    """Copy the full run tree under ``{log_dir.parent}/traces/{qid}/``."""
     run_dir = parse_run_dir(log_text)
     if run_dir is None:
         return None

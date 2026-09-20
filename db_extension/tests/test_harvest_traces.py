@@ -1,4 +1,4 @@
-"""Unit tests for compact workspace trace harvest."""
+"""Unit tests for full run-tree trace harvest."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -17,13 +17,14 @@ def test_copy_workspace_traces_copies_present_files(tmp_path: Path) -> None:
     dest = tmp_path / "harvest"
     index = copy_workspace_traces(workspace=workspace, run_dir=None, dest=dest)
 
-    assert (dest / "mcp_results" / "submitted.json").is_file()
-    assert (dest / "mcp_results" / "runs" / "001.json").is_file()
-    assert (dest / "verify_error_custom.log").read_text() == "verus error\n"
+    assert (dest / "workspace" / "mcp_results" / "submitted.json").is_file()
+    assert (dest / "workspace" / "mcp_results" / "runs" / "001.json").is_file()
+    assert (dest / "workspace" / "verify_error_custom.log").read_text() == "verus error\n"
     names = {entry["name"] for entry in index["copied"]}
-    assert "mcp_results/submitted.json" in names
-    assert "mcp_results/runs/001.json" in names
-    assert "verify_error_custom.log" in names
+    assert "workspace/mcp_results/submitted.json" in names
+    assert "workspace/mcp_results/runs/001.json" in names
+    assert "workspace/verify_error_custom.log" in names
+    assert index["truncated"] is False
     assert (dest / "traces_index.json").is_file()
 
 
@@ -53,9 +54,9 @@ def test_copy_workspace_traces_keeps_large_files(tmp_path: Path) -> None:
     dest = tmp_path / "harvest"
     index = copy_workspace_traces(workspace=workspace, run_dir=None, dest=dest)
 
-    out = (dest / "mcp_results" / "runs" / "big.json").read_bytes()
+    out = (dest / "workspace" / "mcp_results" / "runs" / "big.json").read_bytes()
     assert out == big
-    copied = next(c for c in index["copied"] if c["name"] == "mcp_results/runs/big.json")
+    copied = next(c for c in index["copied"] if c["name"] == "workspace/mcp_results/runs/big.json")
     assert "truncated" not in copied
 
 
@@ -71,8 +72,36 @@ def test_copy_workspace_traces_copies_custom_query_and_failed_transpile(
     dest = tmp_path / "harvest"
     index = copy_workspace_traces(workspace=workspace, run_dir=None, dest=dest)
 
-    assert (dest / "custom_query.rs").read_text() == "fn main() {}\n"
-    assert (dest / "agents" / "failed_transpile" / "one.json").is_file()
+    assert (dest / "workspace" / "custom_query.rs").read_text() == "fn main() {}\n"
+    assert (dest / "workspace" / "agents" / "failed_transpile" / "one.json").is_file()
     names = {entry["name"] for entry in index["copied"]}
-    assert "custom_query.rs" in names
-    assert "agents/failed_transpile/one.json" in names
+    assert "workspace/custom_query.rs" in names
+    assert "workspace/agents/failed_transpile/one.json" in names
+
+
+def test_copy_workspace_traces_copies_entire_run_dir(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    workspace = run_dir / "workspace"
+    extra = workspace / "context" / "ro"
+    extra.mkdir(parents=True)
+    (extra / "spec.rs").write_text("spec\n", encoding="utf-8")
+    (run_dir / "manifest.json").write_text("{}\n", encoding="utf-8")
+    (run_dir / "history.json").write_text("{}\n", encoding="utf-8")
+    logs = run_dir / "logs"
+    logs.mkdir()
+    (logs / "docker_agent.stdout").write_text("docker\n", encoding="utf-8")
+    (run_dir / "target" / "skip").mkdir(parents=True)
+    (run_dir / "target" / "skip").joinpath("x").write_text("nope\n", encoding="utf-8")
+
+    dest = tmp_path / "harvest"
+    index = copy_workspace_traces(workspace=workspace, run_dir=run_dir, dest=dest)
+
+    assert (dest / "workspace" / "context" / "ro" / "spec.rs").read_text() == "spec\n"
+    assert (dest / "manifest.json").read_text() == "{}\n"
+    assert (dest / "history.json").read_text() == "{}\n"
+    assert (dest / "logs" / "docker_agent.stdout").read_text() == "docker\n"
+    assert not (dest / "target").exists()
+    names = {entry["name"] for entry in index["copied"]}
+    assert "workspace/context/ro/spec.rs" in names
+    assert "manifest.json" in names
+    assert index["truncated"] is False

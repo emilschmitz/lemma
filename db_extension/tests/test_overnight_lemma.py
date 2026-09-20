@@ -1277,8 +1277,8 @@ def test_harvest_job_traces_copies_into_out_traces(tmp_path: Path) -> None:
     assert traces_dir == out_dir / "traces" / "Q1"
     index = json.loads((traces_dir / "traces_index.json").read_text())
     copied_names = {c["name"] for c in index["copied"]}
-    assert "mcp_results/runs/001.json" in copied_names
-    assert "verify_error_custom.log" in copied_names
+    assert "workspace/mcp_results/runs/001.json" in copied_names
+    assert "workspace/verify_error_custom.log" in copied_names
     assert "workspace/mcp_results/submitted.json" in index["missing"]
 
 
@@ -1331,7 +1331,7 @@ def test_finalize_run_backfills_traces_from_log(tmp_path: Path) -> None:
     assert index_path.is_file()
     index = json.loads(index_path.read_text())
     copied_names = {c["name"] for c in index["copied"]}
-    assert "mcp_results/runs/001.json" in copied_names
+    assert "workspace/mcp_results/runs/001.json" in copied_names
 
 
 def test_overnight_sh_passes_sec_and_tpch_db_and_keeps_driver_rc():
