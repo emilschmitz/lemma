@@ -1299,6 +1299,39 @@ def test_harvest_job_traces_missing_mcp_still_writes_index(tmp_path: Path) -> No
     index = json.loads(index_path.read_text())
     assert "workspace/mcp_results/runs/*.json" in index["missing"]
     assert "workspace/mcp_results/submitted.json" in index["missing"]
+    assert "workspace/custom_query.rs" in index["missing"]
+    assert "workspace/agents/failed_transpile/*.json" in index["missing"]
+
+
+def test_finalize_run_backfills_traces_from_log(tmp_path: Path) -> None:
+    """fail_streak abort can terminate workers before run_one harvests."""
+    mod = _load_module()
+    out_dir = tmp_path / "out"
+    log_dir = out_dir / "logs"
+    log_dir.mkdir(parents=True)
+
+    run_dir = tmp_path / "run"
+    workspace = run_dir / "workspace"
+    runs = workspace / "mcp_results" / "runs"
+    runs.mkdir(parents=True)
+    (runs / "001.json").write_text('{"iteration": 1}\n', encoding="utf-8")
+
+    log_path = log_dir / "r18_Q7.log"
+    log_path.write_text(f"--- Optimization Finished ---\nrun_dir='{run_dir}'\n")
+
+    meta = {"family": "r18", "started_at": "2026-01-01T00:00:00+00:00"}
+    tracker = mod.JobTracker(out_dir, meta)
+    streak = mod.FailStreakTracker(6)
+    assert not (out_dir / "traces" / "Q7" / "traces_index.json").exists()
+
+    rc = mod.finalize_run(out_dir, meta, [], tracker, streak)
+    assert rc == 0
+
+    index_path = out_dir / "traces" / "Q7" / "traces_index.json"
+    assert index_path.is_file()
+    index = json.loads(index_path.read_text())
+    copied_names = {c["name"] for c in index["copied"]}
+    assert "mcp_results/runs/001.json" in copied_names
 
 
 def test_overnight_sh_passes_sec_and_tpch_db_and_keeps_driver_rc():

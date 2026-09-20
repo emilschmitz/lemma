@@ -243,8 +243,31 @@ def harvest_job_traces(log_text: str, log_dir: Path, qid: str) -> dict[str, Any]
         return None
     traces_dest = log_dir.parent / "traces" / qid
     workspace = run_dir / "workspace"
-    copy_workspace_traces(workspace=workspace, run_dir=run_dir, dest=traces_dest)
+    try:
+        copy_workspace_traces(workspace=workspace, run_dir=run_dir, dest=traces_dest)
+    except OSError:
+        pass
     return {"traces": str(traces_dest), "run_dir": str(run_dir)}
+
+
+def _backfill_traces_from_logs(out_dir: Path, log_dir: Path) -> None:
+    """Harvest traces for logs whose workers were terminated before run_one finished."""
+    qid_re = re.compile(r"_(Q\d+)\.log$")
+    if not log_dir.is_dir():
+        return
+    for log_path in sorted(log_dir.glob("*.log")):
+        m = qid_re.search(log_path.name)
+        if not m:
+            continue
+        qid = m.group(1)
+        index_path = out_dir / "traces" / qid / "traces_index.json"
+        if index_path.is_file():
+            continue
+        try:
+            log_text = log_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        harvest_job_traces(log_text, log_dir, qid)
 
 
 def run_one(job: dict, log_dir: str) -> dict:
@@ -434,6 +457,7 @@ def finalize_run(
     exit_error: str | None = None,
 ) -> int:
     """Write results.json, unfinished.json, failure_classify.json; loud on gaps."""
+    _backfill_traces_from_logs(out_dir, out_dir / "logs")
     unfinished = tracker.unfinished_jobs()
     if unfinished:
         write_unfinished_json(out_dir, meta, unfinished)

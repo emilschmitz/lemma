@@ -4,25 +4,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-_MAX_FILE_BYTES = 256 * 1024
-_HEAD_BYTES = 128 * 1024
-_TAIL_BYTES = 64 * 1024
 
-
-def _truncate_bytes(data: bytes) -> tuple[bytes, bool]:
-    if len(data) <= _MAX_FILE_BYTES:
-        return data, False
-    omitted = len(data) - _HEAD_BYTES - _TAIL_BYTES
-    msg = f"\n...[truncated {omitted} bytes]...\n".encode()
-    return data[:_HEAD_BYTES] + msg + data[-_TAIL_BYTES:], True
-
-
-def _copy_one(src: Path, dest: Path) -> tuple[int, bool]:
+def _copy_one(src: Path, dest: Path) -> int:
     raw = src.read_bytes()
-    body, truncated = _truncate_bytes(raw)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(body)
-    return len(body), truncated
+    dest.write_bytes(raw)
+    return len(raw)
 
 
 def copy_workspace_traces(
@@ -52,8 +39,24 @@ def copy_workspace_traces(
     else:
         missing.append("workspace/mcp_results/runs/*.json")
 
+    failed_dir = workspace / "agents" / "failed_transpile"
+    failed_jsons: list[Path] = []
+    if failed_dir.is_dir():
+        failed_jsons = sorted(failed_dir.glob("*.json"))
+    if failed_jsons:
+        for path in failed_jsons:
+            rel = f"agents/failed_transpile/{path.name}"
+            planned.append((rel, path, f"workspace/{rel}"))
+    else:
+        missing.append("workspace/agents/failed_transpile/*.json")
+
     planned.extend(
         [
+            (
+                "custom_query.rs",
+                workspace / "custom_query.rs",
+                "workspace/custom_query.rs",
+            ),
             (
                 "verify_error_custom.log",
                 workspace / "verify_error_custom.log",
@@ -83,14 +86,11 @@ def copy_workspace_traces(
             missing.append(missing_label)
             continue
         try:
-            nbytes, truncated = _copy_one(src, dest / dest_name)
+            nbytes = _copy_one(src, dest / dest_name)
         except OSError:
             missing.append(missing_label)
             continue
-        entry: dict = {"name": dest_name, "bytes": nbytes}
-        if truncated:
-            entry["truncated"] = True
-        copied.append(entry)
+        copied.append({"name": dest_name, "bytes": nbytes})
 
     index = {"copied": copied, "missing": missing}
     (dest / "traces_index.json").write_text(
