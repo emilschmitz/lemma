@@ -123,6 +123,11 @@ def test_end_run_writes_result_json(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert entry["latency_us"] == 42
     assert entry["SESSION_HOT_US"] == 100
     assert entry["tokens_in"] == 1000
+    harvest_index = run.path / "harvest_traces" / "traces_index.json"
+    assert harvest_index.is_file()
+    traces = json.loads(harvest_index.read_text())
+    assert "copied" in traces
+    assert "missing" in traces
 
 
 def test_custom_query_artifact_dir_uses_run_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

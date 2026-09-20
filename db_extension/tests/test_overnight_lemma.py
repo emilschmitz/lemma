@@ -1139,6 +1139,51 @@ def test_r24_chain_exists_and_configured():
     assert "poema-496023-lemma-harvest" in text
 
 
+def test_harvest_job_traces_copies_into_out_traces(tmp_path: Path) -> None:
+    mod = _load_module()
+    out_dir = tmp_path / "out"
+    log_dir = out_dir / "logs"
+    log_dir.mkdir(parents=True)
+
+    run_dir = tmp_path / "run"
+    workspace = run_dir / "workspace"
+    runs = workspace / "mcp_results" / "runs"
+    runs.mkdir(parents=True)
+    (runs / "001.json").write_text('{"iteration": 1}\n', encoding="utf-8")
+    (workspace / "verify_error_custom.log").write_text("leftover verify\n", encoding="utf-8")
+
+    log_text = f"--- Optimization Finished ---\nrun_dir='{run_dir}'\n"
+    info = mod.harvest_job_traces(log_text, log_dir, "Q1")
+    assert info is not None
+    assert info["run_dir"] == str(run_dir)
+    traces_dir = Path(info["traces"])
+    assert traces_dir == out_dir / "traces" / "Q1"
+    index = json.loads((traces_dir / "traces_index.json").read_text())
+    copied_names = {c["name"] for c in index["copied"]}
+    assert "mcp_results/runs/001.json" in copied_names
+    assert "verify_error_custom.log" in copied_names
+    assert "workspace/mcp_results/submitted.json" in index["missing"]
+
+
+def test_harvest_job_traces_missing_mcp_still_writes_index(tmp_path: Path) -> None:
+    mod = _load_module()
+    out_dir = tmp_path / "out"
+    log_dir = out_dir / "logs"
+    log_dir.mkdir(parents=True)
+
+    run_dir = tmp_path / "run"
+    (run_dir / "workspace").mkdir(parents=True)
+
+    log_text = f"run_dir='{run_dir}'\n"
+    info = mod.harvest_job_traces(log_text, log_dir, "Q25")
+    assert info is not None
+    index_path = out_dir / "traces" / "Q25" / "traces_index.json"
+    assert index_path.is_file()
+    index = json.loads(index_path.read_text())
+    assert "workspace/mcp_results/runs/*.json" in index["missing"]
+    assert "workspace/mcp_results/submitted.json" in index["missing"]
+
+
 def test_overnight_sh_passes_sec_and_tpch_db_and_keeps_driver_rc():
     text = OVERNIGHT_SH.read_text()
     wrapper = text.split('cat >"$OUT/run_and_halt.sh" <<EOF', 1)[1].split("EOF", 1)[0]

@@ -48,6 +48,9 @@ _AGENT_DOCKER_CTX = re.compile(
     r"agent_docker|run_agent_docker|docker_agent",
     re.I,
 )
+_AGENT_DOCKER_SIGKILL = re.compile(
+    r"agent_docker_end:\s*exit=-9\b|agent_docker_end:\s*exit=137\b",
+)
 _E0308 = re.compile(r"error\[E0308\]|E0308:", re.I)
 _E0425 = re.compile(r"error\[E0425\]|cannot find value `t\d+`", re.I)
 _NO_MARKED = re.compile(r"no marked submit", re.I)
@@ -205,6 +208,10 @@ def classify_optimizer_log(text: str) -> dict[str, Any]:
 
     # Step 3 — agent docker timeout (before harness verify).
     if _AGENT_TIMEOUT.search(text) and _AGENT_DOCKER_CTX.search(text):
+        return _result(3, "infra", detail="agent timeout")
+
+    # GNU timeout --signal=KILL → exit -9/137 even when timed_out=False.
+    if _AGENT_DOCKER_SIGKILL.search(text):
         return _result(3, "infra", detail="agent timeout")
 
     # Standalone TimeoutExpired / timed_out without harness "after Ns" — agent path.

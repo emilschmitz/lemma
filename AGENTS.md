@@ -151,6 +151,11 @@ off. That is **setup didn’t give the ability**. Do **not** call an official
 600s kill “agent too stupid to prove” when `verification results:: N verified,
 0 errors` already exists.
 
+**Hard rule — missing traces:** If `workspace/mcp_results` (runs/*.json,
+submitted.json) or leftover `verify_error_custom.log` were **not harvested** off
+the VM, do **not** classify “agent too stupid to prove”. Default to **harness /
+software failed** (traces not saved; fix harvest before blaming the agent).
+
 ### Worked example — r24rocket 2026-09-20 (`fail_streak_6`)
 
 Harvest: `~/lemma-harvest/r24rocket`. SHA `c818042`. Official pin
@@ -162,7 +167,7 @@ applied as the **same `LIMIT` on every table** (`pin_table`:
 
 | Job | Step | Primary blame | What happened |
 |-----|------|---------------|----------------|
-| **Q25** | **5 verify** | **agent too stupid to prove** | Followed trace order. Harvest has **no** `workspace/mcp_results/runs/*.json` and **no** `submitted.json` (overnight rsyncs `$OUT` logs only; run dir stayed on the VM). Driver log is what exists: four iters each hit `CUSTOM_PIPELINE_FAILED [verify]` (`verify_error_custom.log` → `failed_transpile/verify_20260920_15{58,11,23,32}*.json` on the VM), then Docker `exit=-9 timed_out=False` at ~600s (`timeout --signal=KILL`). Host RAM was ~490 GiB free — **not OOM**. Never a marked submit. Exact Verus `N verified, M errors` is on the dead VM disk. Secondary: **harness** — classify GNU-timeout `-9` as `agent_timeout`; ship `mcp_results` + leftover verify with the harvest. |
+| **Q25** | **5 verify / 3 agent** | **harness / software failed** | **Primary blame is the host**, not the agent. Harvest has **no** `workspace/mcp_results/runs/*.json`, **no** `submitted.json`, and **no** leftover `verify_error_custom.log` (overnight rsyncs `$OUT` logs only; run dir stayed on the VM). Without those traces we **cannot** call “agent too stupid to prove”. Driver log only: four iters each hit `CUSTOM_PIPELINE_FAILED [verify]`, then Docker `exit=-9 timed_out=False` at ~600s (`timeout --signal=KILL`). Host RAM was ~490 GiB free — **not OOM**. Never a marked submit. Exact Verus `N verified, M errors` was on the dead VM disk. Fix: classify GNU-timeout `-9` as `agent_timeout`; **always** ship `mcp_results` + leftover verify with the harvest (`harvest_traces`). |
 | **Q18, Q20, Q21, Q16, Q23** | **7 execute** | **harness failed — make it resilient** | Agent **did prove** (127–130/0). MCP iterate `dataset_size=50000` ran (0.4–9s). Official `SELECT … LIMIT 39401761` on each table → nested `rem_join` over real `pre`×`sub` (~9.6M×86k, ~330× iterate join work) hit **600s wall**. DuckDB hash-join of the same SQL is ~0.4–0.6s. Overnight treats proved+unmeasured as **fail** and `fail_streak_6` aborted 41 remaining jobs. Same official TIMEOUT **retried 3×** on the same `run_id` (Q18). |
 | same jobs, secondary | flags / iterate | **setup didn’t give the ability to write something fast** | Speed Trusteds off. Join spec is nested `rem_join`. `run_runquery` without `dataset_size` is the 50k cap (**not** full table). |
 | same jobs, **not** primary | — | **not** “agent too stupid to write something fast” | Nested loop that is 5s @ 50k×50k is hundreds of seconds–hours @ 9.6M×86k. Hash join was not on the rocket menu. |

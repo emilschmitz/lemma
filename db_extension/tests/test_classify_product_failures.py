@@ -61,6 +61,19 @@ def test_classify_broken_pipe_agent_infra() -> None:
     assert out["class"] == "infra"
 
 
+def test_classify_docker_exit_minus9_timed_out_false_is_agent_timeout() -> None:
+    text = """
+CUSTOM_PIPELINE_FAILED [verify]: verus verify failed
+error: invariant not satisfied
+// AGENT_EDIT_START
+agent_docker_end: exit=-9 timed_out=False
+"""
+    out = classify_optimizer_log(text)
+    assert out["step"] == 3
+    assert out["class"] == "infra"
+    assert out.get("detail") == "agent timeout"
+
+
 def test_classify_agent_invariant_fail() -> None:
     out = classify_optimizer_log(_AGENT_INVARIANT)
     assert out["step"] == 3

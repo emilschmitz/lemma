@@ -20,9 +20,14 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "research_loop" / "scripts"))
 
 from classify_product_failures import classify_optimizer_log
+
+from research_loop.harvest_traces import copy_workspace_traces
+from research_loop.scripts.local_e2e_tiny_docker import parse_run_dir
 from gendb_published_one_run import (
     env_for_lemma,
     git_sha,
@@ -231,6 +236,17 @@ def append_progress(out_dir: Path, rec: dict) -> None:
         os.fsync(fh.fileno())
 
 
+def harvest_job_traces(log_text: str, log_dir: Path, qid: str) -> dict[str, Any] | None:
+    """Copy compact workspace traces under ``{log_dir.parent}/traces/{qid}/``."""
+    run_dir = parse_run_dir(log_text)
+    if run_dir is None:
+        return None
+    traces_dest = log_dir.parent / "traces" / qid
+    workspace = run_dir / "workspace"
+    copy_workspace_traces(workspace=workspace, run_dir=run_dir, dest=traces_dest)
+    return {"traces": str(traces_dest), "run_dir": str(run_dir)}
+
+
 def run_one(job: dict, log_dir: str) -> dict:
     log_dir_p = Path(log_dir)
     log_dir_p.mkdir(parents=True, exist_ok=True)
@@ -260,6 +276,9 @@ def run_one(job: dict, log_dir: str) -> dict:
         **fields,
     }
     rec["lemma_ok"] = lemma_job_ok(rec)
+    trace_info = harvest_job_traces(text, log_dir_p, job["qid"])
+    if trace_info:
+        rec.update(trace_info)
     print(
         f"DONE {tag} rc={proc.returncode} proof={fields.get('proof_verified')} "
         f"lat={fields.get('latency_us')} {elapsed}s ok={rec['lemma_ok']}",

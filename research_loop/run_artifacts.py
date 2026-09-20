@@ -12,7 +12,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from research_loop.experiment_stream import emit_query_end, emit_query_start
+from research_loop.experiment_stream import emit_query_artifact, emit_query_end, emit_query_start
+from research_loop.harvest_traces import copy_workspace_traces
 from research_loop.lemma_flags import lemma_experiment, lemma_research_log
 
 _ENV_KEYS = (
@@ -322,6 +323,18 @@ def end_run(run: RunArtifacts, result: dict[str, Any]) -> dict[str, Any]:
     out["run_dir"] = str(run.path)
     _write_hardware_profile(run)
     run.finalize(out)
+    harvest_dest = run.path / "harvest_traces"
+    copy_workspace_traces(workspace=run.workspace, run_dir=run.path, dest=harvest_dest)
+    index_path = harvest_dest / "traces_index.json"
+    if index_path.is_file():
+        try:
+            emit_query_artifact(
+                run_dir=run.path,
+                name="harvest_traces/traces_index.json",
+                content=index_path.read_text(encoding="utf-8"),
+            )
+        except OSError:
+            pass
     emit_query_end(
         query_id=run._manifest.get("query_id"),
         sql_query=run._manifest.get("sql"),
