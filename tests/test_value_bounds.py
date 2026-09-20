@@ -9,6 +9,7 @@ from verus_transpiler.value_bounds import (
     LEMMA_MAX_ROWS,
     emit_bound_lemmas,
     emit_trusted_prelude,
+    skip_u64_product_lemma_names,
 )
 
 from research_loop.sec_table_assumptions import (
@@ -255,6 +256,32 @@ def test_large_sec_rows_one_add_fits() -> None:
     ):
         block = lemmas.split(f"pub proof fn {name}(")[1].split("pub proof fn")[0]
         assert helper in block
+
+
+def _large_sec_product_catalog() -> CatalogAssumptions:
+    large_rows = 39_401_761
+    return CatalogAssumptions(
+        max_rows=large_rows,
+        max_rows_cube=large_rows,
+        max_rows_4=large_rows,
+        max_cell_u64=SEC_PROVE_LOOP_MAX_CELL_U64,
+        max_native_u32=2**31,
+        max_string_len=128,
+    )
+
+
+def test_large_sec_skip_set_omits_sq_native_rem_cap() -> None:
+    skip = skip_u64_product_lemma_names(catalog=_large_sec_product_catalog())
+    assert "lemma_rem_cap_native_add_fits" in skip
+    assert "lemma_rem_cap_native_add_fits_rows" not in skip
+    assert "lemma_rem_cap_cell_u64_add_fits" in skip
+    assert "lemma_rem_cap_cell_u64_add_fits_rows" not in skip
+
+
+def test_prove_loop_skip_set_keeps_sq_native_rem_cap() -> None:
+    skip = skip_u64_product_lemma_names(catalog=sec_prove_loop_catalog_assumptions())
+    assert "lemma_rem_cap_native_add_fits" not in skip
+    assert "lemma_rem_cap_cell_u64_add_fits" not in skip
 
 
 def test_prove_loop_profile_keeps_sq_cell_lemma() -> None:

@@ -13,6 +13,10 @@ sys.path.insert(0, str(ROOT))
 
 from verus_transpiler.column_projection import project_multi_schema_for_query
 from verus_transpiler.parse_sql import normalize_schema
+from verus_transpiler.value_bounds import (
+    rem_cap_add_fits_lemma_name,
+    skip_u64_product_lemma_names,
+)
 
 from research_loop.method_spec_ret_type import (
     parse_method_spec_return_type,
@@ -28,6 +32,7 @@ from research_loop.multi_agg_step_bridge import (
 )
 from research_loop.scripts.sqlsmith_trusted_coverage import load_sec_schema
 from research_loop.sec_table_assumptions import sec_prove_loop_catalog_assumptions
+from research_loop.table_assumptions import CatalogAssumptions
 from research_loop.trusted_ret_bridge import (
     _key_param_specs,
     bridge_from_method_spec_type,
@@ -644,29 +649,29 @@ def _fold_suffix_rem_lines(ctx, lemma_idx_args: list[str]) -> list[str]:
     return []
 
 
-def _rem_cap_lines(ctx, kind: str) -> list[str]:
+def _rem_cap_lines(
+    ctx,
+    kind: str,
+    *,
+    skip: frozenset[str] = frozenset(),
+) -> list[str]:
     n_tab = len(ctx.table_params)
-    if n_tab <= 2:
-        if kind == "native":
-            return ["lemma_rem_cap_native_add_fits(rem);"]
-        return ["lemma_rem_cap_cell_u64_add_fits(rem);"]
-    if n_tab == 3:
-        if kind == "native":
-            return ["lemma_rem_cap_native_add_fits_cube(rem);"]
-        return ["lemma_rem_cap_cell_u64_add_fits_cube(rem);"]
-    if n_tab == 4:
-        if kind == "native":
-            return ["lemma_rem_cap_native_add_fits_4(rem);"]
-        return ["lemma_rem_cap_cell_u64_add_fits_4(rem);"]
-    lines = [
-        "assert((rem as int) <= (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int)"
-        " * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int));",
-    ]
-    if kind == "native":
-        lines.append("lemma_rem_cap_native_add_fits_pow4(rem);")
-    else:
-        lines.append("lemma_rem_cap_cell_u64_add_fits_pow4(rem);")
-    return lines
+    cap = "native" if kind == "native" else "cell_u64"
+    depth = max(2, n_tab)
+    lemma = rem_cap_add_fits_lemma_name(
+        depth, cap=cap, pow4_beyond_4=n_tab > 4
+    )
+    if lemma in skip:
+        return []
+    if n_tab > 4:
+        return [
+            (
+                "assert((rem as int) <= (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int)"
+                " * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int));"
+            ),
+            f"{lemma}(rem);",
+        ]
+    return [f"{lemma}(rem);"]
 
 
 def _join_depth(ctx) -> int:
@@ -688,9 +693,13 @@ def _rem_cap_one_add_lemma_for_ctx(ctx) -> str | None:
     return "lemma_rem_cap_one_add_fits"
 
 
-def _rem_cap_one_add_lines(ctx) -> list[str]:
+def _rem_cap_one_add_lines(
+    ctx,
+    *,
+    skip: frozenset[str] = frozenset(),
+) -> list[str]:
     lemma = _rem_cap_one_add_lemma_for_ctx(ctx)
-    if lemma is None:
+    if lemma is None or lemma in skip:
         return []
     lines = [f"{lemma}(rem);"]
     if lemma == "lemma_rem_cap_one_add_fits_rows":
@@ -769,10 +778,12 @@ def _build_before_proof(
     prev_zero: str,
     money_cell: str | None,
     bindings: dict[str, tuple[str, str, str, bool]],
+    catalog_assumptions: CatalogAssumptions | None = None,
 ) -> str | None:
     ctx = _parse_fold_bound_context(spec_rs, helper)
     if ctx is None:
         return None
+    skip = skip_u64_product_lemma_names(catalog=catalog_assumptions)
     ghost_lines, _current_idx_args, lemma_idx_args, rem_tail_int, rem_u64 = (
         _ghost_indices_and_rem(ctx, tail_args)
     )
@@ -806,8 +817,10 @@ def _build_before_proof(
                 lines.append(f"    assert(prev.{slot_i} <= rem);")
                 lines.extend(f"    {ln}" for ln in _table_rows_asserts(ctx))
                 lines.extend(f"    {ln}" for ln in _rem_discharge_lines(ctx, lemma_idx_args))
-                lines.extend(f"    {ln}" for ln in _rem_cap_one_add_lines(ctx))
-                lines.append(f"    lemma_u64_add_one_prev_le(prev.{slot_i}, rem);")
+                one_add = _rem_cap_one_add_lines(ctx, skip=skip)
+                lines.extend(f"    {ln}" for ln in one_add)
+                if one_add:
+                    lines.append(f"    lemma_u64_add_one_prev_le(prev.{slot_i}, rem);")
             elif kind == "sum_native":
                 raw_cell = money_cell or "0u64"
                 cell_spec = _cell_spec_expr(raw_cell, bindings)
@@ -819,10 +832,12 @@ def _build_before_proof(
                 )
                 lines.extend(f"    {ln}" for ln in _table_rows_asserts(ctx))
                 lines.extend(f"    {ln}" for ln in _rem_discharge_lines(ctx, lemma_idx_args))
-                lines.extend(f"    {ln}" for ln in _rem_cap_lines(ctx, "native"))
-                lines.append(
-                    f"    lemma_u64_add_native_prev_le(prev.{slot_i}, ({cell_spec}) as u64, rem);"
-                )
+                rem_cap = _rem_cap_lines(ctx, "native", skip=skip)
+                lines.extend(f"    {ln}" for ln in rem_cap)
+                if rem_cap:
+                    lines.append(
+                        f"    lemma_u64_add_native_prev_le(prev.{slot_i}, ({cell_spec}) as u64, rem);"
+                    )
             else:
                 raw_cell = money_cell or "0u64"
                 cell_spec = _cell_spec_expr(raw_cell, bindings)
@@ -832,10 +847,12 @@ def _build_before_proof(
                 lines.append(f"    assert({cell_spec} < LEMMA_MAX_CELL_U64);")
                 lines.extend(f"    {ln}" for ln in _table_rows_asserts(ctx))
                 lines.extend(f"    {ln}" for ln in _rem_discharge_lines(ctx, lemma_idx_args))
-                lines.extend(f"    {ln}" for ln in _rem_cap_lines(ctx, "cell_u64"))
-                lines.append(
-                    f"    lemma_u64_add_cell_u64_prev_le(prev.{slot_i}, {cell_spec}, rem);"
-                )
+                rem_cap = _rem_cap_lines(ctx, "cell_u64", skip=skip)
+                lines.extend(f"    {ln}" for ln in rem_cap)
+                if rem_cap:
+                    lines.append(
+                        f"    lemma_u64_add_cell_u64_prev_le(prev.{slot_i}, {cell_spec}, rem);"
+                    )
     else:
         zero = prev_zero if prev_zero != "0u64" else "0u64"
         lines.append(
@@ -847,8 +864,10 @@ def _build_before_proof(
             lines.append("    assert(prev <= rem);")
             lines.extend(f"    {ln}" for ln in _table_rows_asserts(ctx))
             lines.extend(f"    {ln}" for ln in _rem_discharge_lines(ctx, lemma_idx_args))
-            lines.extend(f"    {ln}" for ln in _rem_cap_one_add_lines(ctx))
-            lines.append("    lemma_u64_add_one_prev_le(prev, rem);")
+            one_add = _rem_cap_one_add_lines(ctx, skip=skip)
+            lines.extend(f"    {ln}" for ln in one_add)
+            if one_add:
+                lines.append("    lemma_u64_add_one_prev_le(prev, rem);")
         elif scalar_kind == "sum_cell_u64":
             raw_cell = money_cell or "delta"
             cell_spec = _cell_spec_expr(raw_cell, bindings)
@@ -861,8 +880,10 @@ def _build_before_proof(
             lines.append("        assert(prev == 0u64);")
             lines.append("    }")
             lines.append(f"    assert({cell_spec} < LEMMA_MAX_CELL_U64);")
-            lines.extend(f"    {ln}" for ln in _rem_cap_lines(ctx, "cell_u64"))
-            lines.append(f"    lemma_u64_add_cell_u64_prev_le(prev, {cell_spec}, rem);")
+            rem_cap = _rem_cap_lines(ctx, "cell_u64", skip=skip)
+            lines.extend(f"    {ln}" for ln in rem_cap)
+            if rem_cap:
+                lines.append(f"    lemma_u64_add_cell_u64_prev_le(prev, {cell_spec}, rem);")
         else:
             return None
     lines.append("}")
@@ -1124,6 +1145,7 @@ def inject_file(
     strip_only: bool = False,
     repair_only: bool = False,
     repair_proofs_only: bool = False,
+    catalog_assumptions: CatalogAssumptions | None = None,
 ) -> bool:
     agent_path = dir_path / "runquery_agent.rs"
     if not agent_path.is_file():
@@ -1235,6 +1257,7 @@ def inject_file(
             prev_zero=prev_zero,
             money_cell=money_cell,
             bindings=bindings,
+            catalog_assumptions=catalog_assumptions,
         )
         if before is None:
             out.append(call_line)

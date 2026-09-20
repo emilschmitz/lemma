@@ -245,6 +245,52 @@ def _skip_u64_product_lemma_names(bounds: ResolvedBounds) -> frozenset[str]:
     return frozenset(skip)
 
 
+def skip_u64_product_lemma_names(
+    bounds: ResolvedBounds | None = None,
+    catalog: CatalogAssumptions | None = None,
+) -> frozenset[str]:
+    """Lemma proof fn names omitted from ``emit_bound_lemmas`` at these bounds."""
+    return _skip_u64_product_lemma_names(_bounds_for_emit(bounds, catalog))
+
+
+def rem_cap_add_fits_lemma_name(
+    depth: int,
+    *,
+    cap: str,
+    rows_depth1: bool = False,
+    pow4_beyond_4: bool = False,
+) -> str:
+    """Host rem·cap add-fits lemma for join depth (native or cell_u64 cap)."""
+    if cap == "native":
+        base = "lemma_rem_cap_native_add_fits"
+    else:
+        base = "lemma_rem_cap_cell_u64_add_fits"
+    if rows_depth1 or depth == 1:
+        return f"{base}_rows"
+    if depth == 2:
+        return base
+    if depth == 3:
+        return f"{base}_cube"
+    if depth == 4:
+        return f"{base}_4"
+    if pow4_beyond_4:
+        return f"{base}_pow4"
+    return base
+
+
+def rem_cap_one_add_fits_lemma_name(depth: int) -> str | None:
+    """Host rem_cap+1 lemma for join depth, or None when inject skips depth ≥3."""
+    if depth <= 1:
+        return "lemma_rem_cap_one_add_fits_rows"
+    if depth == 2:
+        return "lemma_rem_cap_one_add_fits"
+    if depth == 3:
+        return "lemma_rem_cap_one_add_fits_cube"
+    if depth == 4:
+        return "lemma_rem_cap_one_add_fits_4"
+    return None
+
+
 def _filter_proof_fns_by_name(source: str, skip: frozenset[str]) -> str:
     if not skip:
         return source

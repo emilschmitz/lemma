@@ -10,6 +10,12 @@ from verus_transpiler.col_exprs import (
     assert_case_when_u64_then_else_u64,
     coerce_case_when_u64_args,
 )
+from verus_transpiler.value_bounds import (
+    rem_cap_add_fits_lemma_name,
+    rem_cap_one_add_fits_lemma_name,
+    skip_u64_product_lemma_names,
+)
+
 from research_loop.table_assumptions import CatalogAssumptions, resolve_bounds
 from research_loop.trusted_ret_bridge import (
     RetBridge,
@@ -1386,12 +1392,14 @@ def _emit_count_add_one_fit_steps(
     indent: str,
     *,
     rem_tail_int: str,
+    skip: frozenset[str] = frozenset(),
 ) -> list[str]:
     """Prove ``prev_slot as int + 1`` fits in u64 so MethodSpec COUNT cast is math +1."""
     depth = len(ctx.table_params)
     lines: list[str] = []
     ns = [p for p, _ in ctx.table_params]
     idxs = list(ctx.index_params)
+    one_add_lemma: str | None = None
     if depth == 1:
         lines.append(f"{indent}assert(0 <= {rem_tail_int});")
         lines.append(f"{indent}assert({rem_tail_int} <= {ns[0]}.n as int);")
@@ -1400,7 +1408,7 @@ def _emit_count_add_one_fit_steps(
         lines.append(
             f"{indent}assert(rem_tail_u64 <= LEMMA_MAX_ROWS as u64);"
         )
-        lines.append(f"{indent}lemma_rem_cap_one_add_fits_rows(rem_tail_u64);")
+        one_add_lemma = rem_cap_one_add_fits_lemma_name(depth)
     elif depth == 2:
         lines.append(
             f"{indent}lemma_join_nested_rem_leq_rows_sq("
@@ -1410,14 +1418,14 @@ def _emit_count_add_one_fit_steps(
         lines.append(
             f"{indent}assert(rem_tail_u64 <= (LEMMA_MAX_ROWS as u64) * (LEMMA_MAX_ROWS as u64));"
         )
-        lines.append(f"{indent}lemma_rem_cap_one_add_fits(rem_tail_u64);")
+        one_add_lemma = rem_cap_one_add_fits_lemma_name(depth)
     elif depth == 3:
         lines.append(
             f"{indent}lemma_join_nested_rem_leq_rows_cube("
             f"{ns[0]}.n, {ns[1]}.n, {ns[2]}.n, {idxs[0]}, {idxs[1]}, {idxs[2]} + 1);"
         )
         lines.append(f"{indent}let ghost rem_tail_u64 = {rem_tail_int} as u64;")
-        lines.append(f"{indent}lemma_rem_cap_one_add_fits_cube(rem_tail_u64);")
+        one_add_lemma = rem_cap_one_add_fits_lemma_name(depth)
     elif depth == 4:
         lines.append(
             f"{indent}lemma_join_nested_rem_leq_rows_4("
@@ -1425,14 +1433,17 @@ def _emit_count_add_one_fit_steps(
             f"{idxs[0]}, {idxs[1]}, {idxs[2]}, {idxs[3]} + 1);"
         )
         lines.append(f"{indent}let ghost rem_tail_u64 = {rem_tail_int} as u64;")
-        lines.append(f"{indent}lemma_rem_cap_one_add_fits_4(rem_tail_u64);")
+        one_add_lemma = rem_cap_one_add_fits_lemma_name(depth)
     else:
         lines.append(f"{indent}let ghost rem_tail_u64 = {rem_tail_int} as u64;")
         lines.append(
             f"{indent}assert((rem_tail_u64 as int) + 1 <= u64::MAX as int);"
         )
+    if one_add_lemma is not None and one_add_lemma not in skip:
+        lines.append(f"{indent}{one_add_lemma}(rem_tail_u64);")
     lines.append(f"{indent}assert(prev_slot <= rem_tail_u64);")
-    lines.append(f"{indent}lemma_u64_add_one_prev_le(prev_slot, rem_tail_u64);")
+    if one_add_lemma is None or one_add_lemma not in skip:
+        lines.append(f"{indent}lemma_u64_add_one_prev_le(prev_slot, rem_tail_u64);")
     lines.append(f"{indent}assert((prev_slot as int) + 1 <= u64::MAX as int);")
     return lines
 
@@ -1443,10 +1454,13 @@ def _emit_count_add_fit_steps(
     *,
     rem_tail_int: str,
     count_addend: CountSlotAddend,
+    skip: frozenset[str] = frozenset(),
 ) -> list[str]:
     """Prove ``prev_slot + count addend`` fits in u64 under rem·ub (COUNT / CASE fold step)."""
     if count_addend.ub == 1:
-        return _emit_count_add_one_fit_steps(ctx, indent, rem_tail_int=rem_tail_int)
+        return _emit_count_add_one_fit_steps(
+            ctx, indent, rem_tail_int=rem_tail_int, skip=skip
+        )
     ub = count_addend.ub
     addend_proof = _count_addend_proof_expr(count_addend)
     depth = len(ctx.table_params)
@@ -1498,12 +1512,16 @@ def _emit_sum_add_fit_steps(
     kind: str,
     rem_tail_int: str,
     sum_delta: str,
+    skip: frozenset[str] = frozenset(),
 ) -> list[str]:
     """Prove ``prev_slot + sum_delta`` fits in u64 under rem·cap (SUM fold step)."""
     depth = len(ctx.table_params)
     lines: list[str] = []
     ns = [p for p, _ in ctx.table_params]
     idxs = list(ctx.index_params)
+    cap_kind = "native" if kind == "sum_native" else "cell_u64"
+    rem_cap_lemma = rem_cap_add_fits_lemma_name(depth, cap=cap_kind)
+    emit_rem_cap = rem_cap_lemma not in skip
     if depth == 1:
         lines.append(f"{indent}assert(0 <= {rem_tail_int});")
         lines.append(f"{indent}assert({rem_tail_int} <= {ns[0]}.n as int);")
@@ -1533,34 +1551,17 @@ def _emit_sum_add_fit_steps(
         lines.append(f"{indent}let ghost rem_tail_u64 = {rem_tail_int} as u64;")
     else:
         lines.append(f"{indent}let ghost rem_tail_u64 = {rem_tail_int} as u64;")
+    if emit_rem_cap:
+        lines.append(f"{indent}{rem_cap_lemma}(rem_tail_u64);")
     if kind == "sum_native":
-        if depth == 1:
-            lines.append(f"{indent}lemma_rem_cap_native_add_fits_rows(rem_tail_u64);")
-        elif depth == 2:
-            lines.append(f"{indent}lemma_rem_cap_native_add_fits(rem_tail_u64);")
-        elif depth == 3:
-            lines.append(f"{indent}lemma_rem_cap_native_add_fits_cube(rem_tail_u64);")
-        elif depth == 4:
-            lines.append(f"{indent}lemma_rem_cap_native_add_fits_4(rem_tail_u64);")
-        else:
-            lines.append(f"{indent}lemma_rem_cap_native_add_fits(rem_tail_u64);")
-        lines.append(
-            f"{indent}assert(prev_slot <= rem_tail_u64 * (LEMMA_MAX_NATIVE_U32 as u64));"
-        )
-        lines.append(
-            f"{indent}lemma_u64_add_native_prev_le(prev_slot, ({sum_delta}) as u64, rem_tail_u64);"
-        )
-    else:
-        if depth == 1:
-            lines.append(f"{indent}lemma_rem_cap_cell_u64_add_fits_rows(rem_tail_u64);")
-        elif depth == 2:
-            lines.append(f"{indent}lemma_rem_cap_cell_u64_add_fits(rem_tail_u64);")
-        elif depth == 3:
-            lines.append(f"{indent}lemma_rem_cap_cell_u64_add_fits_cube(rem_tail_u64);")
-        elif depth == 4:
-            lines.append(f"{indent}lemma_rem_cap_cell_u64_add_fits_4(rem_tail_u64);")
-        else:
-            lines.append(f"{indent}lemma_rem_cap_cell_u64_add_fits(rem_tail_u64);")
+        if emit_rem_cap:
+            lines.append(
+                f"{indent}assert(prev_slot <= rem_tail_u64 * (LEMMA_MAX_NATIVE_U32 as u64));"
+            )
+            lines.append(
+                f"{indent}lemma_u64_add_native_prev_le(prev_slot, ({sum_delta}) as u64, rem_tail_u64);"
+            )
+    elif emit_rem_cap:
         lines.append(
             f"{indent}assert(prev_slot <= rem_tail_u64 * (LEMMA_MAX_CELL_U64 as u64));"
         )
@@ -1590,6 +1591,7 @@ def _emit_inductive_hit_branch(
     tail_call: str,
     tail_rec_args: str,
     spec_rs: str,
+    skip: frozenset[str] = frozenset(),
 ) -> list[str]:
     cap = _sum_cap_const(kind)
     helper = ctx.helper
@@ -1679,6 +1681,7 @@ def _emit_inductive_hit_branch(
                 indent,
                 rem_tail_int=rem_tail_int,
                 count_addend=count_addend,
+                skip=skip,
             )
         )
     else:
@@ -1692,7 +1695,12 @@ def _emit_inductive_hit_branch(
         lines.append(f"{indent}assert({sum_delta} < ({cap} as int));")
         lines.extend(
             _emit_sum_add_fit_steps(
-                ctx, indent, kind=kind, rem_tail_int=rem_tail_int, sum_delta=sum_delta
+                ctx,
+                indent,
+                kind=kind,
+                rem_tail_int=rem_tail_int,
+                sum_delta=sum_delta,
+                skip=skip,
             )
         )
 
@@ -2066,6 +2074,7 @@ def _emit_nested_count_or_sum_body(
     level: int,
     indent: str,
     spec_rs: str,
+    skip: frozenset[str] = frozenset(),
 ) -> list[str]:
     depth = len(ctx.table_params)
     if level >= depth:
@@ -2151,6 +2160,7 @@ def _emit_nested_count_or_sum_body(
                 tail_call=tail_call,
                 tail_rec_args=tail_rec_args,
                 spec_rs=spec_rs,
+                skip=skip,
             )
         )
         lines.append(f"{indent}}} else {{")
@@ -2228,6 +2238,7 @@ def _emit_nested_count_or_sum_body(
             level=level + 1,
             indent=indent + "    ",
             spec_rs=spec_rs,
+            skip=skip,
         )
     )
     boundary_overrides: dict[str, str] = {}
@@ -2257,6 +2268,7 @@ def _emit_nested_count_or_sum_body(
                 level=depth,
                 indent=indent + "    ",
                 spec_rs=spec_rs,
+                skip=skip,
             )
         )
     else:
@@ -2413,6 +2425,7 @@ def _emit_inductive_slot_bound_lemma(
     hit: _HelperHitBranch,
     sum_delta: str | None,
     count_addend: CountSlotAddend | None = None,
+    skip: frozenset[str] = frozenset(),
 ) -> str:
     helper = ctx.helper
     rem = ctx.suffix_remaining_u64()
@@ -2470,6 +2483,7 @@ def _emit_inductive_slot_bound_lemma(
         level=0,
         indent="    ",
         spec_rs=spec_rs,
+        skip=skip,
     )
     # Bridge int rem bound → u64 ensures used by agent bodies.
     rem_expand = ctx.suffix_remaining_int_expr()
@@ -2571,6 +2585,7 @@ def _emit_slot_bound_lemma(
     kind: str,
     val_access: str,
     spec_rs: str,
+    catalog_assumptions: CatalogAssumptions | None = None,
 ) -> str:
     helper = ctx.helper
     hit = _parse_helper_hit_branch(spec_rs, helper)
@@ -2596,6 +2611,7 @@ def _emit_slot_bound_lemma(
             return ""
     if kind != "count" and sum_delta is None:
         return ""
+    skip = skip_u64_product_lemma_names(catalog=catalog_assumptions)
     # Default: inductive proved lemma_* (rocketship). Opt out: LEMMA_FOLD_SLOT_AXIOMATIC=1.
     use_inductive = _fold_slot_inductive_enabled()
     if use_inductive:
@@ -2610,6 +2626,7 @@ def _emit_slot_bound_lemma(
             hit=hit,
             sum_delta=sum_delta,
             count_addend=count_addend,
+            skip=skip,
         )
     return _emit_axiomatic_slot_bound_lemma(
         ctx=ctx,
@@ -2660,6 +2677,7 @@ def emit_multi_agg_bound_lemmas(
             kind=kind,
             val_access=val_access,
             spec_rs=spec_rs,
+            catalog_assumptions=catalog_assumptions,
         )
         if block:
             blocks.append(block)
@@ -2779,6 +2797,7 @@ pub proof fn {fname}(
         comment = f"{_FOLD_LEMMA_HEADER}\n// {detail}"
         decreases = _parse_helper_decreases(spec_rs, name)
         decreases_clause = f"\n    decreases {decreases}," if decreases else ""
+        skip = skip_u64_product_lemma_names(catalog=catalog_assumptions)
         proof_body = _emit_nested_count_or_sum_body(
             ctx=ctx,
             fname=fname,
@@ -2791,6 +2810,7 @@ pub proof fn {fname}(
             level=0,
             indent="    ",
             spec_rs=spec_rs,
+            skip=skip,
         )
         body = "\n".join(proof_body)
         suffix_req = ctx.suffix_start_requires()

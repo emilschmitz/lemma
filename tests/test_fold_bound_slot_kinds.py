@@ -6,7 +6,6 @@ import re
 from pathlib import Path
 
 import pytest
-from verus_transpiler import transpile_sql_to_verus
 
 from research_loop.assemble_verified_program import prepare_agent_visible_spec
 from research_loop.harness import resolve_verus_bin, run_verus_verify
@@ -15,7 +14,9 @@ from research_loop.multi_agg_step_bridge import (
     CountSlotAddend,
     _classify_u64_slot,
     _parse_count_slot_addend,
+    _parse_fold_bound_context,
     _parse_fold_hit_slot_updates,
+    _parse_helper_fold_step,
     _parse_scalar_count_addend,
     _resolve_count_addend,
     _sanitize_fold_step_for_proof,
@@ -23,9 +24,17 @@ from research_loop.multi_agg_step_bridge import (
     multi_agg_step_trusted_rs,
     parse_multi_agg_layout,
 )
-from research_loop.multi_agg_step_bridge import _parse_helper_fold_step
-from research_loop.sec_table_assumptions import sec_prove_loop_catalog_assumptions
-from research_loop.trusted_ret_bridge import get_bridge, structural_bridge_for_spec_type
+from research_loop.scripts.inject_fold_bound_proofs import (
+    _build_before_proof,
+    _rem_cap_lines,
+)
+from research_loop.sec_table_assumptions import (
+    SEC_PROVE_LOOP_MAX_CELL_U64,
+    sec_prove_loop_catalog_assumptions,
+)
+from research_loop.table_assumptions import CatalogAssumptions
+from research_loop.trusted_ret_bridge import get_bridge
+from verus_transpiler import transpile_sql_to_verus
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -107,10 +116,29 @@ TAG_SCHEMA = {
     "abstract": "int",
 }
 
+TWO_TABLE_SUM_SQL = """SELECT s.name, SUM(n.value) AS total, COUNT(*) AS cnt
+FROM num n JOIN sub s ON n.adsh = s.adsh
+WHERE n.uom = 'USD'
+GROUP BY s.name"""
 
-def _transpile(sql: str, schema: dict) -> str:
+
+def _large_sec_product_catalog() -> CatalogAssumptions:
+    large_rows = 39_401_761
+    return CatalogAssumptions(
+        max_rows=large_rows,
+        max_rows_cube=large_rows,
+        max_rows_4=large_rows,
+        max_cell_u64=SEC_PROVE_LOOP_MAX_CELL_U64,
+        max_native_u32=2**31,
+        max_string_len=128,
+    )
+
+
+def _transpile(sql: str, schema: dict, *, catalog=None) -> str:
     return transpile_sql_to_verus(
-        sql, schema, catalog_assumptions=sec_prove_loop_catalog_assumptions()
+        sql,
+        schema,
+        catalog_assumptions=catalog or sec_prove_loop_catalog_assumptions(),
     )
 
 
@@ -382,3 +410,70 @@ def test_q1_like_fold_bound_lemmas_verus_smoke(tmp_path: Path) -> None:
     ok, log = run_verus_verify(str(rs_path), timeout=180)
     if not ok:
         pytest.fail(f"verus verify failed:\n{log[-6000:]}")
+
+
+def test_large_sec_multi_agg_omits_sq_native_rem_cap_calls() -> None:
+    from tests.test_sec_holdout_parse import SEC_SCHEMA
+
+    schema = {"num": SEC_SCHEMA["num"], "sub": SEC_SCHEMA["sub"]}
+    catalog = _large_sec_product_catalog()
+    spec = _transpile(TWO_TABLE_SUM_SQL, schema, catalog=catalog)
+    ret_type = resolve_ret_type_from_method_spec(spec)
+    rs = multi_agg_step_trusted_rs(spec, ret_type, catalog_assumptions=catalog)
+    assert "lemma_rem_cap_native_add_fits(" not in rs
+    assert "lemma_u64_add_native_prev_le" not in rs
+    assert "lemma_rem_cap_cell_u64_add_fits(" not in rs
+    assert "lemma_u64_add_cell_u64_prev_le" not in rs
+
+
+def test_prove_loop_multi_agg_keeps_sq_native_rem_cap_calls() -> None:
+    from tests.test_sec_holdout_parse import SEC_SCHEMA
+
+    schema = {"num": SEC_SCHEMA["num"], "sub": SEC_SCHEMA["sub"]}
+    spec = _transpile(TWO_TABLE_SUM_SQL, schema)
+    ret_type = resolve_ret_type_from_method_spec(spec)
+    rs = multi_agg_step_trusted_rs(spec, ret_type, catalog_assumptions=sec_prove_loop_catalog_assumptions())
+    assert "lemma_rem_cap_native_add_fits(" in rs
+    assert "lemma_u64_add_native_prev_le" in rs
+
+
+def test_large_sec_inject_rem_cap_lines_omit_sq_native() -> None:
+    from verus_transpiler.value_bounds import skip_u64_product_lemma_names
+
+    from tests.test_sec_holdout_parse import SEC_SCHEMA
+
+    schema = {"num": SEC_SCHEMA["num"], "sub": SEC_SCHEMA["sub"]}
+    catalog = _large_sec_product_catalog()
+    spec = _transpile(TWO_TABLE_SUM_SQL, schema, catalog=catalog)
+    ctx = _parse_fold_bound_context(spec, "multi_agg_helper")
+    assert ctx is not None
+    skip = skip_u64_product_lemma_names(catalog=catalog)
+    assert _rem_cap_lines(ctx, "native", skip=skip) == []
+    assert "lemma_rem_cap_native_add_fits(" not in (
+        _build_before_proof(
+            spec_rs=spec,
+            helper="multi_agg_helper",
+            tail_args="&num, &sub, i0, i1",
+            key="key",
+            suffix="str__u64_u64",
+            slots=[(0, "sum_native")],
+            scalar_kind=None,
+            tuple_prev=True,
+            prev_zero="(0u64, 0u64)",
+            money_cell="n.value[i0 as int]",
+            bindings={},
+            catalog_assumptions=catalog,
+        )
+        or ""
+    )
+
+
+def test_prove_loop_inject_rem_cap_lines_keep_sq_native() -> None:
+    from tests.test_sec_holdout_parse import SEC_SCHEMA
+
+    schema = {"num": SEC_SCHEMA["num"], "sub": SEC_SCHEMA["sub"]}
+    spec = _transpile(TWO_TABLE_SUM_SQL, schema)
+    ctx = _parse_fold_bound_context(spec, "multi_agg_helper")
+    assert ctx is not None
+    lines = _rem_cap_lines(ctx, "native")
+    assert lines == ["lemma_rem_cap_native_add_fits(rem);"]
