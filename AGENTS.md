@@ -24,8 +24,8 @@ For **this repo**, agents **must** create git commits as rollback points. Do **n
 wait for Emil to say “commit” on routine milestones. (Global Cursor “ask before
 commit” does **not** apply here.)
 
-**When to commit (local `git commit`; push when Emil asks or when a clean tree is
-needed for `LEMMA_EXPERIMENT`):**
+**When to commit (local `git commit`) and push (`git push origin HEAD` by default;
+do not wait for Emil to say “push”):**
 
 1. After a **coherent host milestone** lands (Trusted/bridge/transpiler/injector/
    tests) and the relevant pytest slice is green — or after an intentional policy
@@ -40,7 +40,8 @@ needed for `LEMMA_EXPERIMENT`):**
 - Focused commits; message states **why** (milestone / checkpoint / recovery).
 - Do not commit secrets, `.env`, credentials, or huge binaries.
 - Do not commit paper TeX / Overleaf drafts unless Emil asks.
-- Do not `--amend` / force-push unless Emil explicitly asks.
+- After each checkpoint commit, **`git push origin HEAD`** (fast-forward). Do not
+  wait to be asked. Still do not `--amend` / force-push unless Emil explicitly asks.
 - Prefer green tests for the touched slice; if committing a known-broken WIP
   checkpoint, say so in the message (`WIP checkpoint: …`).
 
