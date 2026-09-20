@@ -66,6 +66,7 @@ COMMON
 export LEMMA_FAMILY=r24fast
 export LEMMA_OVERNIGHT_OUT=/home/emil/lemma-overnight-out-r24fast
 export LEMMA_FAST_TRUSTEDS=1
+export LEMMA_ENABLE_PARALLEL=1
 export LEMMA_SQL_FILE="$SQL_FROZEN"
 export LEMMA_HALT_ON_FINISH=1
 export LEMMA_SCHEDULE_ACPI=0

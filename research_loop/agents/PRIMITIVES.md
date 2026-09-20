@@ -59,7 +59,7 @@ builds per-partition sets (optionally in parallel), then merges. Behind Cargo fe
 | Topic | What to say |
 |-------|-------------|
 | **`LEMMA_FAST_TRUSTEDS=1`** | We **trust result ≡ a named serial spec** (wrapping fold / set membership). Local, one idea, IF–THEN. |
-| Parallel `par_*` exec | **We are not proving the parallel implementation**; we trust `result == serial_wrapping_spec(...)`. Rayon in the reference crate is result-equivalent (`equiv.rs`), not proved. |
+| Parallel `par_*` exec | **We are not proving the parallel implementation**; we trust `result == serial_wrapping_spec(...)`. Product path (`verus_externs_parallel.rs.inc`) uses `std::thread`; holdout crate uses rayon — both result-equivalent (`equiv.rs`), not proved. |
 | Empty `assume_*` / `LEMMA_FOLD_SLOT_AXIOMATIC` | Different skip (bound axiom). **FAST_TRUSTEDS does not turn that on.** |
 | vs `LEMMA_EMIT_AGENT_PRIMITIVES=1` | Emits **core** speed helpers only. **FAST_TRUSTEDS implies core + parallel externs.** |
 
@@ -117,10 +117,11 @@ No separate Verus extern: use a fixed `[u64; N]` or `SmallCardBuckets<N>` patter
 |--------|----------------|
 | `par_sum_u64` | Chunked parallel scan reduce; `ensures sum == par_sum_u64_spec(vals@)` |
 | `par_filter_sum_u64` | Chunked masked parallel sum; `ensures sum == par_filter_sum_u64_spec(col@, mask@)` |
+| `par_probe_sum_u64` | Threaded hash probe; `ensures sum == probe_sum_u64_spec(...)` |
+| `vector_filter_sum_u64` | Threaded date-range filter+sum; `ensures sum == vector_filter_sum_u64_spec(...)` |
 
-`par_probe_sum_u64`, `par_probe_sum_u64_morsel`, `par_probe_sum_u64_multi`, and
-`par_small_card_filter_sum` are available in the Rust reference crate for holdout/bench; Verus
-bodies are serial loops or `SmallCardBuckets` patterns until dedicated externs are added.
+`par_probe_sum_u64_morsel`, `par_probe_sum_u64_multi`, and `par_small_card_filter_sum` remain
+Rust reference-crate only for holdout/bench.
 
 ## Experimental Rust-only primitives
 

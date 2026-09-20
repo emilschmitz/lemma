@@ -44,7 +44,9 @@ _AGENT_PRIMITIVE_SYMBOLS = frozenset(
         "build_zone_map_u32",
         "may_satisfy_range_u32",
         "par_filter_sum_u64",
+        "par_sum_u64",
         "par_probe_sum_u64",
+        "vector_filter_sum_u64",
         "par_probe_sum_u64_multi",
         "partitioned_build_hashset_u32",
     }

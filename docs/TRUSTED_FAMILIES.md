@@ -33,7 +33,9 @@ Rust/`vstd` facts.
 |--------|----------------|-------------|
 | `build_hashset_u32` | `s@` is the set of keys in the vec. | None. |
 | `probe_sum_u64` | Sum is the wrapping fold over hash hits (`probe_sum_u64_spec`). | `external_body` (body is that fold). |
-| `par_sum_u64` / `par_filter_sum_u64` | Result equals the **serial** wrapping spec. | **We are not proving the parallel implementation** (rayon). |
+| `par_probe_sum_u64` | Same wrapping spec as `probe_sum_u64` (`probe_sum_u64_spec`). | **We are not proving the parallel implementation** (std threads). |
+| `par_sum_u64` / `par_filter_sum_u64` | Result equals the **serial** wrapping spec. | **We are not proving the parallel implementation** (std threads). |
+| `vector_filter_sum_u64` | Wrapping sum of amounts where date in `[lo, hi]`. | **We are not proving the parallel implementation** (std threads). |
 | `may_satisfy_range_u32` | `b == (seg.max >= lo && seg.min <= hi)`. | None. |
 | `decode_dict_str` | `s == dict[code]` when code in range. | None. |
 | `build_zone_map_u32` | Zones non-empty only if `zone_rows > 0`. | **Weak** — not per-segment min/max. Do not sell as rocketship. |
@@ -111,7 +113,7 @@ Do **not** paper over a missing proof with “weak contract”, “opt-in primit
 |-------------|-------------|----------------------------------------|
 | Empty `assume_*_slot*` (`LEMMA_FOLD_SLOT_AXIOMATIC=1`) | **Axiom, not a proof** of that COUNT/SUM ≤ rem·cap bound. Verus is told the inequality. | The body may still be proved *using* that axiom. We did **not** prove the bound. |
 | `ensures true` on a helper, whole-query Trusted, Trusted `run_query`, or `external_body` that claims the query result | **We are not proving this implementation.** | No. That is skipping the implementation proof. |
-| `par_*` Verus extern (`external_body` + serial stub; rayon only in the holdout crate) | **We are not proving the parallel implementation.** We trust `result == serial_wrapping_spec(...)`. The verified body is a serial loop. Rayon is a different program. | Proving a call to `par_sum_u64` does not prove rayon. |
+| `par_*` Verus extern (`external_body` + std-thread exec; rayon in the holdout crate) | **We are not proving the parallel implementation.** We trust `result == serial_wrapping_spec(...)`. Product path uses `std::thread`; holdout crate uses rayon. | Proving a call to `par_sum_u64` does not prove threads or rayon. |
 | `LEMMA_FAST_TRUSTEDS=1` speed menu (hashset / probe / zone / `par_*`) | **Trust result ≡ a named serial spec** (wrapping fold / set membership). Local, one idea, IF–THEN. Does **not** enable empty `assume_*` or `LEMMA_FOLD_SLOT_AXIOMATIC`. | Yes — `run_query ≡ method_spec` using these helpers under the named specs. |
 
 **Why `LEMMA_ENABLE_PARALLEL` alone is off on rocketship:** not because rayon lost a

@@ -930,12 +930,50 @@ def test_jobs_full_includes_shuffle_immanuel_tpch(tmp_path: Path):
     assert [j["qid"] for j in tpch] == list(mod.TPCH_PAPER_JOB_QIDS)
 
 
+def _proved_timeout_rec(qid: str = "Q1", family: str = "r17") -> dict:
+    return {
+        "family": family,
+        "qid": qid,
+        "proof_verified": True,
+        "returncode": 0,
+        "latency_us": -1,
+        "official_measure_error": "official full-table measure timed out after 600s",
+        "elapsed_s": 0.1,
+        "lemma_ok": False,
+    }
+
+
 def test_consecutive_fail_from_tail():
     mod = _load_module()
     results = [_ok_rec("Q1"), _fail_rec("Q2"), _fail_rec("Q3")]
     assert mod.consecutive_fail_from_tail(results) == 2
     assert mod.consecutive_fail_from_tail([_ok_rec("Q1"), _ok_rec("Q2")]) == 0
     assert mod.consecutive_fail_from_tail([_fail_rec("Q1")]) == 1
+
+
+def test_consecutive_fail_from_tail_skips_proved_timeouts():
+    mod = _load_module()
+    timeouts = [_proved_timeout_rec(f"Q{i}") for i in range(1, 8)]
+    assert mod.consecutive_fail_from_tail(timeouts) == 0
+    mixed = [_fail_rec("Q1"), _fail_rec("Q2"), _proved_timeout_rec("Q3")]
+    assert mod.consecutive_fail_from_tail(mixed) == 2
+
+
+def test_next_consecutive_fail_proved_timeout_does_not_increment():
+    mod = _load_module()
+    assert mod.next_consecutive_fail(3, _proved_timeout_rec()) == 3
+    assert mod.next_consecutive_fail(0, _proved_timeout_rec()) == 0
+    assert mod.next_consecutive_fail(5, _fail_rec()) == 6
+    assert mod.next_consecutive_fail(5, _ok_rec()) == 0
+
+
+def test_fail_streak_tracker_proved_timeout_does_not_abort():
+    mod = _load_module()
+    tracker = mod.FailStreakTracker(6)
+    for _ in range(10):
+        assert tracker.record(_proved_timeout_rec()) is False
+    assert tracker.consecutive_fail == 0
+    assert tracker.aborted is None
 
 
 def test_load_partial_resume_skips_lemma_ok(tmp_path: Path):
@@ -1138,6 +1176,12 @@ def test_r24_chain_exists_and_configured():
     assert "skip fast; halt" in text
     assert "poema-496023-lemma-harvest" in text
     assert re.search(r"LEMMA_MCP_ITERATE_ROWS=(0|full|unlimited)", text, re.IGNORECASE)
+    fast_start = text.index("export LEMMA_FAMILY=r24fast")
+    rocket_block = text[:fast_start]
+    fast_block = text[fast_start:]
+    assert "export LEMMA_ENABLE_PARALLEL=1" in fast_block
+    assert "export LEMMA_ENABLE_PARALLEL=1" not in rocket_block
+    assert "LEMMA_ENABLE_PARALLEL=0" in text
 
 
 def test_harvest_job_traces_copies_into_out_traces(tmp_path: Path) -> None:

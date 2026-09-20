@@ -39,6 +39,10 @@ Use the helper name and params from **this query's** `spec.rs` (joins use `Cols_
 
 - Use TRUSTED helpers already in scope (`add_u64`, column `get_*_exec` accessors, NativeAgg bridges).
 - For map returns, use `agg_new_*` / `agg_add_*` from `spec.rs` (TRUSTED); do not prove `HashMap::new()` against `hashmap_*_view`.
+- When speed Trusteds are emitted (`LEMMA_FAST_TRUSTEDS=1` or referenced in `run_query`), prefer
+  `build_hashset_u32` + `probe_sum_u64` / `par_probe_sum_u64`, `par_sum_u64`, `par_filter_sum_u64`,
+  or `vector_filter_sum_u64` instead of nested `rem_join` loops — still no invented
+  `#[verifier::external_body]` in your edit region.
 
 ## Forbidden
 

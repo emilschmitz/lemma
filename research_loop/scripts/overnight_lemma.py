@@ -491,9 +491,23 @@ def resolve_fail_streak(raw: str | int | None = None) -> int:
     return max(0, int(raw))
 
 
+def rec_fail_streak_increments(rec: dict) -> bool:
+    """True when a finished job should count toward consecutive fail streak."""
+    if rec_ok(rec):
+        return False
+    # Proved but official/iterate timeout: continue overnight, not abort streak.
+    if rec.get("proof_verified") is True:
+        lat = rec.get("latency_us")
+        if isinstance(lat, int) and lat < 0:
+            return False
+    return True
+
+
 def next_consecutive_fail(consecutive_fail: int, rec: dict) -> int:
     if rec_ok(rec):
         return 0
+    if not rec_fail_streak_increments(rec):
+        return consecutive_fail
     return consecutive_fail + 1
 
 
@@ -509,6 +523,8 @@ def consecutive_fail_from_tail(results: list[dict]) -> int:
     for rec in reversed(results):
         if rec_ok(rec):
             break
+        if not rec_fail_streak_increments(rec):
+            continue
         streak += 1
     return streak
 
