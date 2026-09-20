@@ -238,17 +238,7 @@ pub exec fn par_probe_sum_u64(
         }
         sum
     } else {
-        // HashSetWithView is not Sync; mirror build membership in std HashSet for threaded probe.
-        let mut std_build: std::collections::HashSet<u32> =
-            std::collections::HashSet::with_capacity(n.min(4096));
-        let mut j: usize = 0;
-        while j < n {
-            let k = probe_keys[j];
-            if build.contains(&k) {
-                std_build.insert(k);
-            }
-            j = j + 1;
-        }
+        // Read-only contains across std threads; wrapping reduce ≡ serial probe_sum_u64_spec.
         let threads = par_exec_thread_count(n);
         std::thread::scope(|scope| {
             let chunk = (n + threads - 1) / threads;
@@ -264,7 +254,7 @@ pub exec fn par_probe_sum_u64(
                     let mut partial: u64 = 0;
                     let mut i = start;
                     while i < end {
-                        if std_build.contains(&probe_keys[i]) {
+                        if build.contains(&probe_keys[i]) {
                             partial = partial.wrapping_add(values[i]);
                         }
                         i = i + 1;

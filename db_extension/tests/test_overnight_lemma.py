@@ -1184,6 +1184,27 @@ def test_r24_chain_exists_and_configured():
     assert "LEMMA_ENABLE_PARALLEL=0" in text
 
 
+R25_CHAIN = ROOT / "research_loop" / "scripts" / "r25_rocket_fast_chain.sh"
+
+
+def test_r25_chain_exists_and_configured():
+    assert R25_CHAIN.is_file()
+    text = R25_CHAIN.read_text()
+    assert "r25rocket" in text
+    assert "r25fast" in text
+    assert re.search(r"LEMMA_FAMILY=\S*sloppy", text) is None
+    assert "never sloppy" in text
+    assert "LEMMA_FAIL_STREAK=6" in text
+    assert re.search(r"LEMMA_MCP_ITERATE_ROWS=(0|full|unlimited)", text, re.IGNORECASE)
+    fast_start = text.index("export LEMMA_FAMILY=r25fast")
+    rocket_block = text[:fast_start]
+    fast_block = text[fast_start:]
+    assert "export LEMMA_ENABLE_PARALLEL=1" in fast_block
+    assert "export LEMMA_ENABLE_PARALLEL=1" not in rocket_block
+    assert "LEMMA_FAST_TRUSTEDS=1" in fast_block
+    assert "LEMMA_FAST_TRUSTEDS=0" in rocket_block
+
+
 def test_harvest_job_traces_copies_into_out_traces(tmp_path: Path) -> None:
     mod = _load_module()
     out_dir = tmp_path / "out"
