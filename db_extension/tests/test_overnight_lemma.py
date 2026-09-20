@@ -1039,6 +1039,7 @@ def test_main_resume_reruns_lemma_ok_false(tmp_path: Path, monkeypatch):
 def test_main_resume_fail_streak_from_partial_tail_aborts(
     tmp_path: Path, monkeypatch
 ):
+    monkeypatch.delenv("LEMMA_RESUME_AFTER_ABORT", raising=False)
     mod = _load_module()
     sql = tmp_path / "queries.sql"
     _write_multi_query_sql(sql, 8)
@@ -1076,7 +1077,8 @@ def test_main_resume_fail_streak_from_partial_tail_aborts(
     assert (out_dir / "aborted.json").exists()
     aborted = json.loads((out_dir / "aborted.json").read_text())
     assert aborted["aborted"] == "fail_streak_6"
-    assert len(run_qids) == 1
+    assert aborted.get("resume_immediate_abort") is True
+    assert run_qids == []
 
 
 def test_overnight_sh_bench_timeout_default_600():
@@ -1133,3 +1135,15 @@ def test_r24_chain_exists_and_configured():
     assert "LEMMA_SCHEDULE_ACPI=0" in text
     assert "LEMMA_SHUFFLE_SEED=2409" in text
     assert "LEMMA_EMIT_AGENT_PRIMITIVES=0" in text
+    assert "skip fast; halt" in text
+    assert "poema-496023-lemma-harvest" in text
+
+
+def test_overnight_sh_passes_sec_and_tpch_db_and_keeps_driver_rc():
+    text = OVERNIGHT_SH.read_text()
+    wrapper = text.split('cat >"$OUT/run_and_halt.sh" <<EOF', 1)[1].split("EOF", 1)[0]
+    assert '--sec-db "${SEC_DB}"' in wrapper
+    assert '--tpch-db "${TPCH_DB}"' in wrapper
+    assert "exit \\$driver_rc" in wrapper
+    assert "wait \"$wrapper_pid\"" in text
+    assert "exit \"$wrapper_rc\"" in text

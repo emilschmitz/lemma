@@ -144,6 +144,17 @@ else
     --output "$SQL_OUT"
 fi
 
+# TPC-H paper subset DB (jobs_full Q201–Q205). Resolve even when LEMMA_SERIOUS=0.
+TPCH_PAPER_SQL="holdout/tpch_sf10/queries_paper_subset.sql"
+TPCH_DB="${LEMMA_TPCH_DUCKDB_PATH:-}"
+if [[ -z "$TPCH_DB" ]]; then
+  if [[ -f "build/tpch_sf10/tpch_sf10.duckdb" ]]; then
+    TPCH_DB="$(pwd)/build/tpch_sf10/tpch_sf10.duckdb"
+  else
+    TPCH_DB="/home/emil/lemma/build/tpch_sf10/tpch_sf10.duckdb"
+  fi
+fi
+
 # --- DuckDB session-hot baseline (paper/serious only; dev skips) ---
 LEMMA_SERIOUS_VAL="${LEMMA_SERIOUS:-0}"
 if [[ "$LEMMA_SERIOUS_VAL" == "1" || "$LEMMA_SERIOUS_VAL" == "true" || "$LEMMA_SERIOUS_VAL" == "yes" ]]; then
@@ -164,9 +175,11 @@ if [[ "$LEMMA_SERIOUS_VAL" == "1" || "$LEMMA_SERIOUS_VAL" == "true" || "$LEMMA_S
       --not-synthetic \
       --hardware-hint "n2-highmem-64 same-box as lemma overnight"
   fi
-  TPCH_PAPER_SQL="holdout/tpch_sf10/queries_paper_subset.sql"
-  TPCH_DB="${LEMMA_TPCH_DUCKDB_PATH:-/home/emil/lemma/build/tpch_sf10/tpch_sf10.duckdb}"
   if [[ -f "$TPCH_PAPER_SQL" ]]; then
+    if [[ ! -f "$TPCH_DB" ]]; then
+      echo "ERROR: TPC-H SF10 duckdb missing at $TPCH_DB (GenDB paper subset)." >&2
+      exit 1
+    fi
     echo "=== DuckDB session-hot TPC-H SF10 paper subset ($TPCH_PAPER_SQL) ==="
     uv run python holdout/gendb_sec_edgar/session_hot.py \
       --db "$TPCH_DB" \
@@ -284,21 +297,27 @@ export LEMMA_HALT_LOG="$OUT/watchdog.log"
 unset LEMMA_EXPERIMENT_ALLOW_DIRTY
 unset LEMMA_FOLD_SLOT_AXIOMATIC
 unset LEMMA_FOLD_SLOT_ASSUME_ALIAS
+set +e
 .venv/bin/python research_loop/scripts/overnight_lemma.py \\
   --sql-file "$SQL_OUT" \\
   --family "${LEMMA_FAMILY:-r18}" \\
   --out-dir "$OUT" \\
   --workers "$WORKERS" \\
   --fail-streak "${LEMMA_FAIL_STREAK}" \\
+  --sec-db "${SEC_DB}" \\
+  --tpch-db "${TPCH_DB}" \\
   >"$OUT/driver.out" 2>&1
+driver_rc=\$?
+set -e
 git rev-parse HEAD >"$OUT/git_sha.txt"
-echo "finished_utc=\$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$OUT/watchdog.log"
+echo "finished_utc=\$(date -u +%Y-%m-%dT%H:%M:%SZ) driver_rc=\$driver_rc" >>"$OUT/watchdog.log"
 maybe_gsutil_rsync_harvest "$OUT"
 if [[ "${LEMMA_HALT_ON_FINISH:-1}" == "1" ]]; then
   bash "$REPO/research_loop/scripts/lemma_guest_halt.sh" >>"$OUT/watchdog.log" 2>&1 || true
 else
   echo "LEMMA_HALT_ON_FINISH=0 skip guest halt" >>"$OUT/watchdog.log"
 fi
+exit \$driver_rc
 EOF
 chmod +x "$OUT/run_and_halt.sh"
 nohup "$OUT/run_and_halt.sh" >/dev/null 2>&1 &
@@ -324,7 +343,9 @@ else
       echo "ERROR: periodic GCS harvest failed (LEMMA_HARVEST_GS_URI=${LEMMA_HARVEST_GS_URI:-})" | tee -a "$OUT/harvest_rsync_error.log" >&2
     fi
   done
-  wait "$wrapper_pid" || true
-  echo "wrapper exited"
+  wait "$wrapper_pid"
+  wrapper_rc=$?
+  echo "wrapper exited rc=$wrapper_rc"
+  exit "$wrapper_rc"
 fi
 # Set LEMMA_HARVEST_GS_URI=gs://bucket/path before launch to rsync $OUT during wait and after halt.

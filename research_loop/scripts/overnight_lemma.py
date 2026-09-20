@@ -642,6 +642,45 @@ def main() -> int:
             f"RESUME fail_streak tail={resume_streak} (from partial results)",
             flush=True,
         )
+    resume_after_abort = os.environ.get("LEMMA_RESUME_AFTER_ABORT", "").strip() == "1"
+    already_aborted = fail_streak_abort_reason(args.fail_streak, resume_streak)
+    if resume_after_abort and already_aborted:
+        print(
+            "RESUME_AFTER_ABORT=1: reset fail streak after host fix; will retry lemma_ok=false",
+            flush=True,
+        )
+        streak.consecutive_fail = 0
+        abort_path = out_dir / "aborted.json"
+        if abort_path.is_file():
+            abort_path.unlink()
+        already_aborted = None
+    if already_aborted:
+        streak.aborted = already_aborted
+        abort_doc = {
+            **meta,
+            "aborted": streak.aborted,
+            "consecutive_fail": streak.consecutive_fail,
+            "finished_at": datetime.now(UTC).isoformat(),
+            "results": results,
+            "resume_immediate_abort": True,
+        }
+        _fsync_write(
+            out_dir / "aborted.json",
+            json.dumps(abort_doc, indent=2, default=str) + "\n",
+        )
+        print(
+            f"ABORT on resume {streak.aborted} after {streak.consecutive_fail} "
+            "consecutive failures (no new jobs)",
+            flush=True,
+        )
+        return finalize_run(
+            out_dir,
+            meta,
+            results,
+            tracker,
+            streak,
+            exit_error=None,
+        )
 
     def on_done(rec: dict) -> bool:
         results.append(rec)

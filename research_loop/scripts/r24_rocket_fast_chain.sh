@@ -11,6 +11,7 @@ set -euo pipefail
 export PATH="${HOME}/.local/bin:${HOME}/src/verus/source/target-verus/release:${HOME}/.cargo/bin:${PATH}"
 export VERUS_Z3_PATH="${HOME}/src/verus/source/z3"
 cd "$(git rev-parse --show-toplevel)"
+mkdir -p /home/emil/lemma-overnight-out-r24rocket /home/emil/lemma-overnight-out-r24fast
 
 COMMON() {
   export LEMMA_EXPERIMENT=1
@@ -33,6 +34,7 @@ COMMON() {
   export LEMMA_WAIT_FOR_WRAPPER=1
   export LEMMA_SERIOUS=1
   export LEMMA_EMIT_AGENT_PRIMITIVES=0
+  export LEMMA_HARVEST_INTERVAL_SEC="${LEMMA_HARVEST_INTERVAL_SEC:-300}"
   unset LEMMA_FOLD_SLOT_AXIOMATIC
   unset LEMMA_FOLD_SLOT_ASSUME_ALIAS
   unset LEMMA_EXPERIMENT_ALLOW_DIRTY
@@ -44,11 +46,21 @@ export LEMMA_OVERNIGHT_OUT=/home/emil/lemma-overnight-out-r24rocket
 export LEMMA_FAST_TRUSTEDS=0
 export LEMMA_HALT_ON_FINISH=0
 export LEMMA_SCHEDULE_ACPI=1
+export LEMMA_HARVEST_GS_URI="${LEMMA_HARVEST_GS_URI_ROCKET:-gs://poema-496023-lemma-harvest/r24rocket/}"
 echo "=== START r24rocket $(date -u +%Y-%m-%dT%H:%M:%SZ) ===" | tee -a "$LEMMA_OVERNIGHT_OUT/chain.log"
-bash research_loop/scripts/overnight_lemma.sh
+if ! bash research_loop/scripts/overnight_lemma.sh; then
+  echo "=== FAIL r24rocket; skip fast; halt ===" | tee -a "$LEMMA_OVERNIGHT_OUT/chain.log"
+  bash research_loop/scripts/lemma_guest_halt.sh >>"$LEMMA_OVERNIGHT_OUT/watchdog.log" 2>&1 || true
+  exit 1
+fi
 echo "=== DONE r24rocket $(date -u +%Y-%m-%dT%H:%M:%SZ) ===" | tee -a "$LEMMA_OVERNIGHT_OUT/chain.log"
 
 SQL_FROZEN="$LEMMA_OVERNIGHT_OUT/queries_resample.sql"
+if [[ ! -f "$SQL_FROZEN" ]]; then
+  echo "ERROR: frozen shuffle missing at $SQL_FROZEN" >&2
+  bash research_loop/scripts/lemma_guest_halt.sh >>"$LEMMA_OVERNIGHT_OUT/watchdog.log" 2>&1 || true
+  exit 1
+fi
 
 COMMON
 export LEMMA_FAMILY=r24fast
@@ -58,6 +70,7 @@ export LEMMA_SQL_FILE="$SQL_FROZEN"
 export LEMMA_HALT_ON_FINISH=1
 export LEMMA_SCHEDULE_ACPI=0
 export LEMMA_SERIOUS=1
+export LEMMA_HARVEST_GS_URI="${LEMMA_HARVEST_GS_URI_FAST:-gs://poema-496023-lemma-harvest/r24fast/}"
 echo "=== START r24fast $(date -u +%Y-%m-%dT%H:%M:%SZ) ===" | tee -a "$LEMMA_OVERNIGHT_OUT/chain.log"
 bash research_loop/scripts/overnight_lemma.sh
 echo "=== DONE r24fast $(date -u +%Y-%m-%dT%H:%M:%SZ) ===" | tee -a "$LEMMA_OVERNIGHT_OUT/chain.log"
