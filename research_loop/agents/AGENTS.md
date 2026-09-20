@@ -33,6 +33,15 @@ too stupid to write something fast / setup didn’t give the ability to write
 something fast / harness failed — program it to be more resilient). r24rocket
 official-pin TIMEOUT is **harness** + **setup**, not prove-stupidity.
 
+**If after the trace checklist the primary class really is agent too stupid to
+prove** (errors inside `AGENT_EDIT` on a sound spec): **notify Emil bigly**.
+First line of the message, not buried:
+
+`AGENT TOO STUPID: step 3 (agent) / <qid> / <one-line AGENT_EDIT evidence>`
+
+Do **not** use that label for `host_codegen` / assemble / omitted-lemma calls.
+Do **not** water down the proof bar to make the agent look better.
+
 ## No fallbacks without explicit approval
 
 **Never** add a fallback or silent alternate path (including prompt text like “if MCP is
