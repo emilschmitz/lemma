@@ -28,6 +28,11 @@ other non-editable scaffolding → `host_codegen` (or `transpile_fail`), **not**
 `agent_verify`. Do not say “the agent failed verification” when the agent never got a
 fair shot at proving its body.
 
+Also name the **blame class** from root `AGENTS.md` (agent too stupid to prove /
+too stupid to write something fast / setup didn’t give the ability to write
+something fast / harness failed — program it to be more resilient). r24rocket
+official-pin TIMEOUT is **harness** + **setup**, not prove-stupidity.
+
 ## No fallbacks without explicit approval
 
 **Never** add a fallback or silent alternate path (including prompt text like “if MCP is
