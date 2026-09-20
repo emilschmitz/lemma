@@ -226,7 +226,50 @@ def test_large_sec_rows_omit_false_sq_cell_lemma() -> None:
     assert bounds.max_rows * bounds.max_rows * bounds.max_cell_u64 > 2**64 - 1
 
 
+def test_large_sec_rows_one_add_fits() -> None:
+    large_rows = 39_401_761
+    bounds = resolve_bounds(
+        CatalogAssumptions(
+            max_rows=large_rows,
+            max_rows_cube=large_rows,
+            max_rows_4=large_rows,
+            max_cell_u64=SEC_PROVE_LOOP_MAX_CELL_U64,
+            max_native_u32=2**31,
+            max_string_len=128,
+        )
+    )
+    lemmas = emit_bound_lemmas(bounds=bounds)
+    assert "pub proof fn lemma_rem_cap_one_add_fits(" in lemmas
+    assert "lemma_rem_cap_one_add_fits_rows" in lemmas
+    assert "lemma_rem_cap_one_add_fits_pow3" not in lemmas
+    assert "lemma_rem_cap_one_add_fits_cube" not in lemmas
+    assert "lemma_rem_cap_one_add_fits_4" not in lemmas
+    assert "lemma_rem_cap_one_add_fits_pow4" not in lemmas
+    assert "lemma_max_rows_cube_plus_one_fits_u64" not in lemmas
+    assert "lemma_max_rows_4_plus_one_fits_u64" not in lemmas
+    assert bounds.max_rows * bounds.max_rows + 1 <= 2**64 - 1
+    assert bounds.max_rows**3 + 1 > 2**64 - 1
+    for name, helper in (
+        ("lemma_rem_cap_one_add_fits", "lemma_max_rows_sq_plus_one_fits_u64"),
+        ("lemma_rem_cap_one_add_fits_rows", "lemma_max_rows_plus_one_fits_u64"),
+    ):
+        block = lemmas.split(f"pub proof fn {name}(")[1].split("pub proof fn")[0]
+        assert helper in block
+
+
 def test_prove_loop_profile_keeps_sq_cell_lemma() -> None:
     lemmas = emit_bound_lemmas(catalog=sec_prove_loop_catalog_assumptions())
     assert "lemma_max_rows_sq_times_cell_u64_fits_u64" in lemmas
     assert "lemma_max_rows_times_cell_u64_fits_u64" in lemmas
+    assert "lemma_rem_cap_one_add_fits_pow3" in lemmas
+    assert "lemma_rem_cap_one_add_fits_cube" in lemmas
+    assert "lemma_rem_cap_one_add_fits_4" in lemmas
+    for name, helper in (
+        ("lemma_rem_cap_one_add_fits", "lemma_max_rows_sq_plus_one_fits_u64"),
+        ("lemma_rem_cap_one_add_fits_rows", "lemma_max_rows_plus_one_fits_u64"),
+        ("lemma_rem_cap_one_add_fits_pow3", None),
+    ):
+        block = lemmas.split(f"pub proof fn {name}(")[1].split("pub proof fn")[0]
+        if helper is not None:
+            assert helper in block
+        assert "compute_only" in block or helper is not None

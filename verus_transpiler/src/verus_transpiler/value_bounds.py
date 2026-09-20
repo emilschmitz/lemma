@@ -116,6 +116,16 @@ def _int_product_fits_u64(*factors: int) -> bool:
     return True
 
 
+def _int_product_plus_one_fits_u64(*factors: int) -> bool:
+    """True when ∏factors and ∏factors+1 both fit in u64 (rem_cap+1 lemmas)."""
+    product = 1
+    for factor in factors:
+        product *= factor
+        if product > U64_MAX:
+            return False
+    return product + 1 <= U64_MAX
+
+
 def _skip_u64_product_lemma_names(bounds: ResolvedBounds) -> frozenset[str]:
     """Lemma proof fns to omit when their global product claim is numerically false."""
     skip: set[str] = set()
@@ -199,6 +209,38 @@ def _skip_u64_product_lemma_names(bounds: ResolvedBounds) -> frozenset[str]:
             )
         if "lemma_max_rows_times_cell_u64_fits_u64" in skip:
             skip.add("lemma_u64_add_money_fit")
+
+    if not _int_product_plus_one_fits_u64(rows):
+        skip.update(
+            {
+                "lemma_max_rows_plus_one_fits_u64",
+                "lemma_rem_cap_one_add_fits_rows",
+            }
+        )
+    if not _int_product_plus_one_fits_u64(rows, rows):
+        skip.update(
+            {
+                "lemma_max_rows_sq_plus_one_fits_u64",
+                "lemma_rem_cap_one_add_fits",
+            }
+        )
+    if not _int_product_plus_one_fits_u64(rows, rows, rows):
+        skip.add("lemma_rem_cap_one_add_fits_pow3")
+    if not _int_product_plus_one_fits_u64(cube, cube, cube):
+        skip.update(
+            {
+                "lemma_max_rows_cube_plus_one_fits_u64",
+                "lemma_rem_cap_one_add_fits_cube",
+            }
+        )
+    if not _int_product_plus_one_fits_u64(rows_4, rows_4, rows_4, rows_4):
+        skip.update(
+            {
+                "lemma_max_rows_4_plus_one_fits_u64",
+                "lemma_rem_cap_one_add_fits_4",
+                "lemma_rem_cap_one_add_fits_pow4",
+            }
+        )
 
     return frozenset(skip)
 
@@ -723,6 +765,48 @@ pub proof fn lemma_rem_cap_cell_u64_add_fits_4(prev_cap: u64)
             {};
 }
 
+pub proof fn lemma_max_rows_plus_one_fits_u64()
+    ensures
+        (LEMMA_MAX_ROWS as int) + 1 <= u64::MAX as int,
+{
+    assert((LEMMA_MAX_ROWS as int) + 1 <= u64::MAX as int) by (compute_only);
+}
+
+pub proof fn lemma_max_rows_sq_plus_one_fits_u64()
+    ensures
+        (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int) + 1 <= u64::MAX as int,
+{
+    assert(
+        (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int) + 1 <= u64::MAX as int
+    ) by (compute_only);
+}
+
+pub proof fn lemma_max_rows_cube_plus_one_fits_u64()
+    ensures
+        (LEMMA_MAX_ROWS_CUBE as int) * (LEMMA_MAX_ROWS_CUBE as int)
+            * (LEMMA_MAX_ROWS_CUBE as int) + 1
+            <= u64::MAX as int,
+{
+    assert(
+        (LEMMA_MAX_ROWS_CUBE as int) * (LEMMA_MAX_ROWS_CUBE as int)
+            * (LEMMA_MAX_ROWS_CUBE as int) + 1
+            <= u64::MAX as int
+    ) by (compute_only);
+}
+
+pub proof fn lemma_max_rows_4_plus_one_fits_u64()
+    ensures
+        (LEMMA_MAX_ROWS_4 as int) * (LEMMA_MAX_ROWS_4 as int)
+            * (LEMMA_MAX_ROWS_4 as int) * (LEMMA_MAX_ROWS_4 as int) + 1
+            <= u64::MAX as int,
+{
+    assert(
+        (LEMMA_MAX_ROWS_4 as int) * (LEMMA_MAX_ROWS_4 as int)
+            * (LEMMA_MAX_ROWS_4 as int) * (LEMMA_MAX_ROWS_4 as int) + 1
+            <= u64::MAX as int
+    ) by (compute_only);
+}
+
 // rem_cap ≤ ROWS² ⇒ rem_cap+1 fits in u64 (COUNT / prev_le discharge).
 pub proof fn lemma_rem_cap_one_add_fits(prev_cap: u64)
     requires
@@ -730,9 +814,11 @@ pub proof fn lemma_rem_cap_one_add_fits(prev_cap: u64)
     ensures
         (prev_cap as int) + 1 <= u64::MAX as int,
 {
+    lemma_max_rows_sq_plus_one_fits_u64();
     assert((prev_cap as int) + 1 <= u64::MAX as int) by (nonlinear_arith)
         requires
             prev_cap <= (LEMMA_MAX_ROWS as u64) * (LEMMA_MAX_ROWS as u64),
+            (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int) + 1 <= u64::MAX as int,
             {};
 }
 
@@ -743,9 +829,11 @@ pub proof fn lemma_rem_cap_one_add_fits_rows(prev_cap: u64)
     ensures
         (prev_cap as int) + 1 <= u64::MAX as int,
 {
+    lemma_max_rows_plus_one_fits_u64();
     assert((prev_cap as int) + 1 <= u64::MAX as int) by (nonlinear_arith)
         requires
             prev_cap <= LEMMA_MAX_ROWS as u64,
+            (LEMMA_MAX_ROWS as int) + 1 <= u64::MAX as int,
             {};
 }
 
@@ -787,10 +875,16 @@ pub proof fn lemma_rem_cap_one_add_fits_pow3(prev_cap: u64)
     ensures
         (prev_cap as int) + 1 <= u64::MAX as int,
 {
+    assert(
+        (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int) + 1
+            <= u64::MAX as int
+    ) by (compute_only);
     assert((prev_cap as int) + 1 <= u64::MAX as int) by (nonlinear_arith)
         requires
             prev_cap
                 <= (LEMMA_MAX_ROWS as u64) * (LEMMA_MAX_ROWS as u64) * (LEMMA_MAX_ROWS as u64),
+            (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int) * (LEMMA_MAX_ROWS as int) + 1
+                <= u64::MAX as int,
             {};
 }
 
@@ -804,11 +898,15 @@ pub proof fn lemma_rem_cap_one_add_fits_pow4(prev_cap: u64)
     ensures
         (prev_cap as int) + 1 <= u64::MAX as int,
 {
+    lemma_max_rows_4_plus_one_fits_u64();
     assert((prev_cap as int) + 1 <= u64::MAX as int) by (nonlinear_arith)
         requires
             prev_cap
                 <= (LEMMA_MAX_ROWS_4 as u64) * (LEMMA_MAX_ROWS_4 as u64)
                     * (LEMMA_MAX_ROWS_4 as u64) * (LEMMA_MAX_ROWS_4 as u64),
+            (LEMMA_MAX_ROWS_4 as int) * (LEMMA_MAX_ROWS_4 as int)
+                * (LEMMA_MAX_ROWS_4 as int) * (LEMMA_MAX_ROWS_4 as int) + 1
+                <= u64::MAX as int,
             {};
 }
 
@@ -821,11 +919,15 @@ pub proof fn lemma_rem_cap_one_add_fits_cube(prev_cap: u64)
     ensures
         (prev_cap as int) + 1 <= u64::MAX as int,
 {
+    lemma_max_rows_cube_plus_one_fits_u64();
     assert((prev_cap as int) + 1 <= u64::MAX as int) by (nonlinear_arith)
         requires
             prev_cap
                 <= (LEMMA_MAX_ROWS_CUBE as u64) * (LEMMA_MAX_ROWS_CUBE as u64)
                     * (LEMMA_MAX_ROWS_CUBE as u64),
+            (LEMMA_MAX_ROWS_CUBE as int) * (LEMMA_MAX_ROWS_CUBE as int)
+                * (LEMMA_MAX_ROWS_CUBE as int) + 1
+                <= u64::MAX as int,
             {};
 }
 
@@ -838,11 +940,15 @@ pub proof fn lemma_rem_cap_one_add_fits_4(prev_cap: u64)
     ensures
         (prev_cap as int) + 1 <= u64::MAX as int,
 {
+    lemma_max_rows_4_plus_one_fits_u64();
     assert((prev_cap as int) + 1 <= u64::MAX as int) by (nonlinear_arith)
         requires
             prev_cap
                 <= (LEMMA_MAX_ROWS_4 as u64) * (LEMMA_MAX_ROWS_4 as u64)
                     * (LEMMA_MAX_ROWS_4 as u64) * (LEMMA_MAX_ROWS_4 as u64),
+            (LEMMA_MAX_ROWS_4 as int) * (LEMMA_MAX_ROWS_4 as int)
+                * (LEMMA_MAX_ROWS_4 as int) * (LEMMA_MAX_ROWS_4 as int) + 1
+                <= u64::MAX as int,
             {};
 }
 
