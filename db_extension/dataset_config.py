@@ -109,8 +109,8 @@ def _count_duckdb_primary_rows() -> int | None:
         return None
 
 
-def _count_duckdb_max_table_rows() -> int | None:
-    """Max row count across user tables in LEMMA_DUCKDB_PATH (official pin limit)."""
+def table_row_counts() -> dict[str, int] | None:
+    """Per-table ``COUNT(*)`` from ``LEMMA_DUCKDB_PATH``, or None if unavailable."""
     db = os.environ.get("LEMMA_DUCKDB_PATH", "").strip()
     if not db or not Path(db).is_file():
         return None
@@ -125,21 +125,29 @@ def _count_duckdb_max_table_rows() -> int | None:
                 "SELECT table_name FROM information_schema.tables "
                 "WHERE table_schema = 'main' AND table_type = 'BASE TABLE'"
             ).fetchall()
-            max_rows: int | None = None
+            counts: dict[str, int] = {}
             for (table,) in rows:
                 name = str(table)
                 if not _safe_duckdb_table_name(name):
                     continue
                 n = int(con.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0])
-                max_rows = n if max_rows is None else max(max_rows, n)
-            return max_rows
+                counts[name] = n
+            return counts or None
         finally:
             con.close()
     except Exception as exc:
         if duckdb_error_is_contention(str(exc)):
-            emit_duckdb_contention(stage="count_max_table_rows", error=str(exc), db_path=db)
+            emit_duckdb_contention(stage="count_table_rows", error=str(exc), db_path=db)
             raise
         return None
+
+
+def _count_duckdb_max_table_rows() -> int | None:
+    """Max row count across user tables in LEMMA_DUCKDB_PATH (official pin limit)."""
+    counts = table_row_counts()
+    if not counts:
+        return None
+    return max(counts.values())
 
 
 def effective_dataset_size() -> int:
@@ -184,3 +192,62 @@ def mcp_iterate_rows_cap() -> int:
 def mcp_iterate_dataset_size() -> int:
     """MCP iterate rows: min(full effective size, ``LEMMA_MCP_ITERATE_ROWS`` cap)."""
     return min(effective_dataset_size(), mcp_iterate_rows_cap())
+
+
+def row_budget_prompt_section() -> str:
+    """Markdown section with official pin X, MCP iterate max Y, and optional table counts."""
+    iterate_cap = mcp_iterate_rows_cap()
+    official: int | None
+    iterate_max: int
+    try:
+        official = effective_dataset_size()
+        iterate_max = min(official, iterate_cap)
+    except RuntimeError:
+        limit = dataset_size_limit()
+        if limit is not None:
+            official = limit
+            iterate_max = min(official, iterate_cap)
+        else:
+            official = None
+            iterate_max = iterate_cap
+
+    if official is not None:
+        official_bullet = (
+            f"- **Official pin (submit is scored on this):** each table "
+            f"`SELECT … LIMIT {official}`. Your `run_query` must finish on that pin. "
+            f"Optimize for **{official}**, not for the iterate cap."
+        )
+        nested_note = (
+            f"Fast at {iterate_max}×{iterate_max} can miss the 600s official wall at the pin."
+        )
+    else:
+        official_bullet = (
+            "- **Official pin (submit is scored on this):** unknown — set "
+            "`LEMMA_DATASET_SIZE` or provide a readable bench table / DuckDB file. "
+            "The host loads **every table** with `SELECT … LIMIT X` where X is the max "
+            "table row count (capped by env)."
+        )
+        nested_note = (
+            f"Fast at {iterate_max}×{iterate_max} can miss the official wall at the pin."
+        )
+
+    lines = [
+        "## Row budgets (this run, host)",
+        official_bullet,
+        (
+            f"- **MCP iterate max:** omit `dataset_size` on `run_runquery` → "
+            f"**{iterate_max}** rows (the maximum you can time while iterating). "
+            f"Smaller `dataset_size` = probes only. Iterate time at {iterate_max} is not official."
+        ),
+        (
+            f"- Nested-loop joins (`rem_join_*` / "
+            f"`while i0 < n0 {{ while i1 < n1 }}`) visit ~n0×n1 cells. {nested_note}"
+        ),
+    ]
+
+    counts = table_row_counts()
+    if counts:
+        table_bits = ", ".join(f"{name}={n}" for name, n in sorted(counts.items()))
+        lines.append(f"- **Table row counts (DuckDB):** {table_bits}")
+
+    return "\n".join(lines)

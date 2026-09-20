@@ -114,12 +114,29 @@ def host_tool_names() -> set[str]:
 
 def openai_host_tool_definitions(*, include_aliases: bool = True) -> list[dict]:
     """OpenAI function-calling tool list derived from HOST_TOOL_SPECS."""
+    from db_extension.dataset_config import (
+        mcp_iterate_dataset_size,
+        mcp_iterate_rows_cap,
+    )
+
+    try:
+        iterate_y = mcp_iterate_dataset_size()
+    except RuntimeError:
+        iterate_y = mcp_iterate_rows_cap()
+
     out: list[dict] = []
     for spec in HOST_TOOL_SPECS:
         names = (spec.name,) + (spec.aliases if include_aliases else ())
         for name in names:
             # Prefer short `submit` description already on submit_runquery for alias.
             desc = spec.description
+            if spec.name == "run_runquery":
+                desc = (
+                    "Validate and run the Verus harness on a run_query solution. "
+                    f"Returns run_id and metrics. Omit dataset_size for the host MCP iterate cap "
+                    f"({iterate_y} rows max; not official pin — see Row budgets in prompt). "
+                    "Pass an explicit smaller dataset_size for quick probes."
+                )
             if name == "submit":
                 desc = (
                     "Mark a prior run_id as the official submission (does not re-run harness). "

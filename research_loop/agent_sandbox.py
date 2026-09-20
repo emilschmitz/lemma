@@ -245,6 +245,9 @@ def build_agent_prompt(
     budget = int(budget_sec) if budget_sec is not None else agent_timeout_sec()
     ends = _submit_ends() if submit_ends_session is None else bool(submit_ends_session)
     budget_section = session_budget_prompt_section(budget_sec=budget, submit_ends=ends)
+    from db_extension.dataset_config import row_budget_prompt_section
+
+    row_budget_section = row_budget_prompt_section()
     prelim_section = _prelim_parallel_note_section() if _prelim_prompt_enabled() else ""
 
     return f"""# Lemma RunQuery optimizer (query_id={query_id}, iter {iteration}/{max_iterations})
@@ -263,10 +266,11 @@ or join tables). Do not add Trusted, `assume`,
 `arbitrary`, `external_body`, or redefine `method_spec`.
 {prelim_section}
 {budget_section}
+{row_budget_section}
 {facts_block}
 ## Context to read (do not modify)
 - `{ctx}/query.sql`, `{ctx}/schema.json`, `{ctx}/spec.rs`
-- `{ctx}/data_profile.md` (AGENT_DATA_MODE=`{agent_data_mode}`), `{ctx}/hardware.md` (if present)
+- `{ctx}/data_profile.md` (AGENT_DATA_MODE=`{agent_data_mode}`), `{ctx}/row_budgets.md`, `{ctx}/hardware.md` (if present)
 - `{ctx}/COMPILATION_GUIDE.md`, `{ctx}/AGENTS.md`, `{ctx}/PRIMITIVES.md` — contract + Trusted menu only
 
 ## Tools
@@ -471,6 +475,9 @@ def prepare_workspace(
     (ro / "data_profile.md").write_text(
         build_data_profile(data_path, sql_query, agent_data_mode)
     )
+    from db_extension.dataset_config import row_budget_prompt_section
+
+    (ro / "row_budgets.md").write_text(row_budget_prompt_section() + "\n")
     from research_loop.lemma_flags import lemma_agent_hardware
 
     if lemma_agent_hardware():

@@ -6,11 +6,48 @@ from pathlib import Path
 
 import pytest
 
+from db_extension.agent.config import AgentFlags
+from db_extension.agent.harness import _build_system_prompt
 from research_loop.agent_sandbox import build_agent_prompt
 from research_loop.experiment_stream import (
     duckdb_error_is_contention,
     emit_duckdb_contention,
 )
+
+
+def test_build_agent_prompt_row_budgets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    ws = tmp_path / "workspace"
+    (ws / "context" / "ro").mkdir(parents=True)
+    monkeypatch.delenv("LEMMA_BENCH_TBL", raising=False)
+    monkeypatch.delenv("LEMMA_DUCKDB_PATH", raising=False)
+    monkeypatch.setenv("LEMMA_DATASET_SIZE", "12345")
+    monkeypatch.setenv("LEMMA_MCP_ITERATE_ROWS", "1000")
+
+    prompt = build_agent_prompt(
+        workspace=ws,
+        query_id=1,
+        sql_query="SELECT 1",
+        iteration=1,
+        max_iterations=4,
+    )
+    assert "12345" in prompt
+    assert "1000" in prompt
+    assert "Row budgets" in prompt
+    assert "row_budgets.md" in prompt
+    assert "not full table" not in prompt.lower()
+
+
+def test_build_system_prompt_row_budgets(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LEMMA_BENCH_TBL", raising=False)
+    monkeypatch.delenv("LEMMA_DUCKDB_PATH", raising=False)
+    monkeypatch.setenv("LEMMA_DATASET_SIZE", "12345")
+    monkeypatch.setenv("LEMMA_MCP_ITERATE_ROWS", "1000")
+    flags = AgentFlags.from_mapping({"AGENT_DATA_MODE": "none"})
+    prompt = _build_system_prompt(flags)
+    assert "12345" in prompt
+    assert "1000" in prompt
+    assert "Row budgets" in prompt
+    assert "not full table" not in prompt.lower()
 
 
 def test_build_agent_prompt_prelim_section(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

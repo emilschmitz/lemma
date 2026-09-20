@@ -113,11 +113,13 @@ TOOL_DEFINITIONS = SANDBOX_TOOL_DEFINITIONS + openai_host_tool_definitions(inclu
 
 def _build_system_prompt(flags: AgentFlags) -> str:
     from db_extension.agent.session_clock import session_budget_prompt_section
+    from db_extension.dataset_config import row_budget_prompt_section
 
     budget = session_budget_prompt_section(
         budget_sec=flags.agent_timeout_sec,
         submit_ends=flags.agent_submit_ends_session,
     )
+    row_budgets = row_budget_prompt_section()
     submit_line = (
         "Call `submit_runquery(run_id=...)` on a **verified** run that is **better than** your "
         "current official mark (or your first verified success) — that **ends the session** "
@@ -144,13 +146,14 @@ MethodSpec + Trusted are read-only in that file. Optimize **SESSION_HOT_US** fro
 data profile, and hardware — not canned loop recipes.
 
 {budget}
+{row_budgets}
 ## Rules
 - Do NOT add `mod`, `struct`, `enum`, `trait`, `impl`, `lemma`, or new Trusted `spec fn` items.
 - Do NOT use `assume`, `arbitrary`, `#[verifier::external_body]`, or `unimplemented!`.
 - Do NOT weaken `ensures` away from the MethodSpec call in `spec.rs`.
-- Read `/context/ro/spec.rs`, `data_profile.md`, `hardware.md`, and `COMPILATION_GUIDE.md` as needed.
+- Read `/context/ro/spec.rs`, `data_profile.md`, `row_budgets.md`, `hardware.md`, and `COMPILATION_GUIDE.md` as needed.
 - Use `duckdb_sql` per AGENT_DATA_MODE=`{flags.agent_data_mode}` (see data_profile.md).
-- Prefer `run_runquery` without `dataset_size` (host MCP iterate cap, not full table); pass an explicit smaller `dataset_size` only for quick probes.
+- MCP timing: see **Row budgets** above; omit `dataset_size` on `run_runquery` for iterate max; smaller `dataset_size` for probes only.
 - {submit_line}
 - Check time: MCP `session_status` or `python3 check_session_time`.
 
@@ -217,6 +220,9 @@ def _build_user_prompt(
     budget_sec = flags.agent_timeout_sec if flags else agent_timeout_sec()
     ends = flags.agent_submit_ends_session if flags else submit_ends_session()
     budget_section = session_budget_prompt_section(budget_sec=budget_sec, submit_ends=ends)
+    from db_extension.dataset_config import row_budget_prompt_section
+
+    row_budget_section = row_budget_prompt_section()
 
     return f"""# Lemma RunQuery optimizer (query_id={query_id}, iter {iteration}/{max_iterations})
 
@@ -226,10 +232,11 @@ def _build_user_prompt(
 ```
 
 {budget_section}
+{row_budget_section}
 {facts_block}
 ## Context files (read-only)
 - `/context/ro/query.sql`, `schema.json`, `spec.rs`
-- `/context/ro/data_profile.md`, `/context/ro/hardware.md`
+- `/context/ro/data_profile.md`, `/context/ro/row_budgets.md`, `/context/ro/hardware.md`
 - `/context/ro/COMPILATION_GUIDE.md`, `AGENTS.md`, `PRIMITIVES.md` — contract + Trusted menu
 
 ## Workspace
@@ -266,6 +273,9 @@ def _prepare_workspace(
     (ro / "data_profile.md").write_text(
         build_data_profile(data_path, sql_query, flags.agent_data_mode)
     )
+    from db_extension.dataset_config import row_budget_prompt_section
+
+    (ro / "row_budgets.md").write_text(row_budget_prompt_section() + "\n")
     if lemma_agent_hardware():
         hw = hardware_profile()
         (ro / "hardware.json").write_text(json.dumps(hw, indent=2) + "\n")

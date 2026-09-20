@@ -165,6 +165,10 @@ applied as the **same `LIMIT` on every table** (`pin_table`:
 9,600,799, `sub` 86,135, `tag` 1,070,662. Iterate cap 50k.
 `LEMMA_FAST_TRUSTEDS=0`, `LEMMA_ENABLE_PARALLEL=0`.
 
+**Note:** r24rocket agent prompts did **not** inject official pin X and MCP iterate
+max Y at run time (hardcoded “not full table” wording). Current harness/CLI prompts
+and `context/ro/row_budgets.md` now insert those numbers from host config dynamically.
+
 | Job | Step | Primary blame | What happened |
 |-----|------|---------------|----------------|
 | **Q25** | **5 verify / 3 agent** | **harness / software failed** | **Primary blame is the host**, not the agent. Harvest has **no** `workspace/mcp_results/runs/*.json`, **no** `submitted.json`, and **no** leftover `verify_error_custom.log` (overnight rsyncs `$OUT` logs only; run dir stayed on the VM). Without those traces we **cannot** call “agent too stupid to prove”. Driver log only: four iters each hit `CUSTOM_PIPELINE_FAILED [verify]`, then Docker `exit=-9 timed_out=False` at ~600s (`timeout --signal=KILL`). Host RAM was ~490 GiB free — **not OOM**. Never a marked submit. Exact Verus `N verified, M errors` was on the dead VM disk. Fix: classify GNU-timeout `-9` as `agent_timeout`; **always** ship `mcp_results` + leftover verify with the harvest (`harvest_traces`). |

@@ -20,11 +20,11 @@ from mcp.server.fastmcp import FastMCP
 
 # Prefer package-local imports (Docker: /app/lemma_agent).
 try:
-    from db_extension.agent.mcp_tool_specs import HOST_TOOL_SPECS
     from db_extension.agent.mcp_socket import DEFAULT_SOCK, call_mcp_socket
+    from db_extension.agent.mcp_tool_specs import HOST_TOOL_SPECS
 except ImportError:
-    from lemma_agent.mcp_tool_specs import HOST_TOOL_SPECS
     from lemma_agent.mcp_socket import DEFAULT_SOCK, call_mcp_socket
+    from lemma_agent.mcp_tool_specs import HOST_TOOL_SPECS
 
 
 def _sock() -> Path:
@@ -58,11 +58,22 @@ def _proxy(tool: str, args: dict) -> str:
 
 
 def build_proxy_mcp() -> FastMCP:
+    from db_extension.dataset_config import (
+        mcp_iterate_dataset_size,
+        mcp_iterate_rows_cap,
+    )
+
+    try:
+        iterate_y = mcp_iterate_dataset_size()
+    except RuntimeError:
+        iterate_y = mcp_iterate_rows_cap()
+
     mcp = FastMCP(
         "lemma-sandbox",
         instructions=(
             "Lemma sandbox MCP: proxies validate/run/submit to the host over a Unix socket. "
-            "Use run_runquery (optional small dataset_size), then submit_runquery(run_id) to mark."
+            "Use run_runquery (optional small dataset_size), then submit_runquery(run_id) to mark. "
+            "See prompt Row budgets for official pin vs iterate max."
         ),
     )
 
@@ -74,19 +85,24 @@ def build_proxy_mcp() -> FastMCP:
             args["body"] = body
         return _proxy("validate_runquery", args)
 
-    @mcp.tool()
     def run_runquery(
         path: str = "runquery_agent.rs",
         dataset_size: int | None = None,
         query_id: int | None = None,
     ) -> str:
-        """Run host harness; returns run_id and metrics. Prefer small dataset_size while iterating."""
         args: dict = {"path": path}
         if dataset_size is not None:
             args["dataset_size"] = dataset_size
         if query_id is not None:
             args["query_id"] = query_id
         return _proxy("run_runquery", args)
+
+    run_runquery.__doc__ = (
+        f"Run host harness; returns run_id and metrics. "
+        f"Omit dataset_size for MCP iterate max ({iterate_y} rows; not official pin). "
+        "See prompt Row budgets. Smaller dataset_size for probes only."
+    )
+    mcp.tool()(run_runquery)
 
     @mcp.tool()
     def submit_runquery(run_id: str) -> str:

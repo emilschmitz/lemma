@@ -10,6 +10,8 @@ from db_extension.dataset_config import (
     dataset_size_limit,
     effective_dataset_size,
     mcp_iterate_dataset_size,
+    row_budget_prompt_section,
+    table_row_counts,
 )
 from db_extension_paths.dataset_config import (
     effective_dataset_size as paths_effective_dataset_size,
@@ -204,6 +206,48 @@ def test_optimizer_path_unchanged_when_only_iterate_cap_set(
     monkeypatch.setenv("LEMMA_BENCH_TBL", str(tbl))
     assert effective_dataset_size() == 6_001_215
     assert mcp_iterate_dataset_size() == 50_000
+
+
+def test_row_budget_prompt_section_from_env(
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_ssb: Path,
+) -> None:
+    monkeypatch.delenv("LEMMA_BENCH_TBL", raising=False)
+    monkeypatch.delenv("LEMMA_DUCKDB_PATH", raising=False)
+    monkeypatch.setenv("LEMMA_DATASET_SIZE", "12345")
+    monkeypatch.setenv("LEMMA_MCP_ITERATE_ROWS", "1000")
+    section = row_budget_prompt_section()
+    assert "12345" in section
+    assert "1000" in section
+    assert "Row budgets" in section
+    assert "not full table" not in section.lower()
+    assert "Official pin" in section
+    assert "MCP iterate max" in section
+    assert "rem_join" in section
+
+
+def test_table_row_counts_returns_none_without_duckdb(
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_ssb: Path,
+) -> None:
+    monkeypatch.delenv("LEMMA_DUCKDB_PATH", raising=False)
+    assert table_row_counts() is None
+
+
+def test_table_row_counts_per_table(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    isolated_ssb: Path,
+) -> None:
+    duckdb = pytest.importorskip("duckdb")
+    db = tmp_path / "counts.duckdb"
+    con = duckdb.connect(str(db))
+    con.execute("CREATE TABLE pre AS SELECT * FROM range(7) t(x)")
+    con.execute("CREATE TABLE num AS SELECT * FROM range(100) t(x)")
+    con.close()
+    monkeypatch.setenv("LEMMA_DUCKDB_PATH", str(db))
+    counts = table_row_counts()
+    assert counts == {"num": 100, "pre": 7}
 
 
 def test_run_solution_default_passes_iterate_dataset_size(
