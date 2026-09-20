@@ -4,20 +4,35 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "research_loop" / "scripts" / "overnight_lemma.py"
 
 
 def _load_module():
-    spec = importlib.util.spec_from_file_location("overnight_lemma", SCRIPT)
+    name = "overnight_lemma"
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(name, SCRIPT)
     mod = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
-    sys.modules["overnight_lemma"] = mod
+    sys.modules[name] = mod
     spec.loader.exec_module(mod)
     return mod
+
+
+@pytest.fixture(autouse=True)
+def _limit_jobs_full_to_shuffle_only(request, monkeypatch):
+    """Tiny-SQL main() tests should not pull in holdout paper extras."""
+    if "jobs_full" in request.node.name:
+        return
+    mod = _load_module()
+    monkeypatch.setattr(mod, "_append_paper_jobs", lambda *args, **kwargs: None)
 
 
 def _fail_rec(qid: str = "Q1", family: str = "r17") -> dict:
@@ -892,3 +907,229 @@ def test_overnight_sh_writes_harvest_rsync_error_log():
     text = OVERNIGHT_SH.read_text()
     assert "harvest_rsync_error.log" in text
     assert "periodic GCS harvest failed" in text
+
+
+def test_jobs_full_includes_shuffle_immanuel_tpch(tmp_path: Path):
+    mod = _load_module()
+    sql = tmp_path / "shuffle.sql"
+    _write_multi_query_sql(sql, 3)
+    jobs = mod.jobs_full(sql, "r24rocket", "/tmp/sec.duckdb", "/tmp/tpch.duckdb")
+    shuffle = [j for j in jobs if j["qid"] in {"Q1", "Q2", "Q3"}]
+    immanuel = [j for j in jobs if j["qid"].startswith("Q10")]
+    tpch = [j for j in jobs if j["qid"].startswith("Q20")]
+    assert len(shuffle) == 3
+    assert len(immanuel) == 6
+    assert len(tpch) == 5
+    assert {j["qid"] for j in shuffle}.isdisjoint({j["qid"] for j in immanuel})
+    assert {j["qid"] for j in shuffle}.isdisjoint({j["qid"] for j in tpch})
+    assert {j["qid"] for j in immanuel}.isdisjoint({j["qid"] for j in tpch})
+    assert all(j["workload"] == "sec" and j["duckdb"] == "/tmp/sec.duckdb" for j in shuffle)
+    assert all(j["workload"] == "sec" and j["duckdb"] == "/tmp/sec.duckdb" for j in immanuel)
+    assert all(j["workload"] == "tpch" and j["duckdb"] == "/tmp/tpch.duckdb" for j in tpch)
+    assert [j["qid"] for j in immanuel] == list(mod.IMMANUEL_JOB_QIDS)
+    assert [j["qid"] for j in tpch] == list(mod.TPCH_PAPER_JOB_QIDS)
+
+
+def test_consecutive_fail_from_tail():
+    mod = _load_module()
+    results = [_ok_rec("Q1"), _fail_rec("Q2"), _fail_rec("Q3")]
+    assert mod.consecutive_fail_from_tail(results) == 2
+    assert mod.consecutive_fail_from_tail([_ok_rec("Q1"), _ok_rec("Q2")]) == 0
+    assert mod.consecutive_fail_from_tail([_fail_rec("Q1")]) == 1
+
+
+def test_load_partial_resume_skips_lemma_ok(tmp_path: Path):
+    mod = _load_module()
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    partial = {
+        "results": [
+            _ok_rec("Q1", "r24rocket"),
+            _fail_rec("Q2", "r24rocket"),
+            _ok_rec("Q1", "other"),
+        ],
+    }
+    (out_dir / "results.partial.json").write_text(json.dumps(partial))
+    seeded, skip, streak = mod.load_partial_resume(out_dir, "r24rocket")
+    assert skip == {"Q1"}
+    assert len(seeded) == 1
+    assert seeded[0]["qid"] == "Q1"
+    assert streak == 1
+
+
+def test_main_resume_skips_lemma_ok_qids(tmp_path: Path, monkeypatch):
+    mod = _load_module()
+    sql = tmp_path / "queries.sql"
+    _write_multi_query_sql(sql, 3)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    partial = {
+        "results": [_ok_rec("Q1", "r24rocket"), _fail_rec("Q2", "r24rocket")],
+    }
+    (out_dir / "results.partial.json").write_text(json.dumps(partial))
+    run_qids: list[str] = []
+
+    def fake_run_one(job: dict, log_dir: str) -> dict:
+        run_qids.append(job["qid"])
+        return _ok_rec(qid=job["qid"], family=job["family"])
+
+    monkeypatch.setattr(mod, "run_one", fake_run_one)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "overnight_lemma.py",
+            "--sql-file",
+            str(sql),
+            "--out-dir",
+            str(out_dir),
+            "--workers",
+            "1",
+            "--family",
+            "r24rocket",
+        ],
+    )
+    rc = mod.main()
+    assert rc == 0
+    assert "Q1" not in run_qids
+    assert run_qids == ["Q2", "Q3"]
+    results = json.loads((out_dir / "results.json").read_text())
+    assert len(results["results"]) == 3
+    assert results["results"][0]["qid"] == "Q1"
+
+
+def test_main_resume_reruns_lemma_ok_false(tmp_path: Path, monkeypatch):
+    mod = _load_module()
+    sql = tmp_path / "queries.sql"
+    _write_multi_query_sql(sql, 2)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    partial = {"results": [_fail_rec("Q1", "r17"), _ok_rec("Q2", "r17")]}
+    (out_dir / "results.partial.json").write_text(json.dumps(partial))
+    run_qids: list[str] = []
+
+    def fake_run_one(job: dict, log_dir: str) -> dict:
+        run_qids.append(job["qid"])
+        return _ok_rec(qid=job["qid"], family=job["family"])
+
+    monkeypatch.setattr(mod, "run_one", fake_run_one)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "overnight_lemma.py",
+            "--sql-file",
+            str(sql),
+            "--out-dir",
+            str(out_dir),
+            "--workers",
+            "1",
+            "--family",
+            "r17",
+        ],
+    )
+    assert mod.main() == 0
+    assert run_qids == ["Q1"]
+    results = json.loads((out_dir / "results.json").read_text())
+    assert len(results["results"]) == 2
+    q1 = next(r for r in results["results"] if r["qid"] == "Q1")
+    assert q1["lemma_ok"] is True
+
+
+def test_main_resume_fail_streak_from_partial_tail_aborts(
+    tmp_path: Path, monkeypatch
+):
+    mod = _load_module()
+    sql = tmp_path / "queries.sql"
+    _write_multi_query_sql(sql, 8)
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    prior = [_ok_rec(f"Q{i}", "r17") for i in range(1, 4)]
+    prior.extend(_fail_rec(f"Q{i}", "r17") for i in range(4, 10))
+    (out_dir / "results.partial.json").write_text(
+        json.dumps({"results": prior[:9]})
+    )
+    run_qids: list[str] = []
+
+    def fake_run_one(job: dict, log_dir: str) -> dict:
+        run_qids.append(job["qid"])
+        return _fail_rec(qid=job["qid"], family=job["family"])
+
+    monkeypatch.setattr(mod, "run_one", fake_run_one)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "overnight_lemma.py",
+            "--sql-file",
+            str(sql),
+            "--out-dir",
+            str(out_dir),
+            "--workers",
+            "1",
+            "--family",
+            "r17",
+        ],
+    )
+    rc = mod.main()
+    assert rc == 1
+    assert (out_dir / "aborted.json").exists()
+    aborted = json.loads((out_dir / "aborted.json").read_text())
+    assert aborted["aborted"] == "fail_streak_6"
+    assert len(run_qids) == 1
+
+
+def test_overnight_sh_bench_timeout_default_600():
+    text = OVERNIGHT_SH.read_text()
+    assert 'LEMMA_BENCH_TIMEOUT_SEC="${LEMMA_BENCH_TIMEOUT_SEC:-600}"' in text
+    assert 'LEMMA_BENCH_TIMEOUT_SEC="${LEMMA_BENCH_TIMEOUT_SEC:-120}"' not in text
+
+
+def test_overnight_sh_parallel_default_16():
+    text = OVERNIGHT_SH.read_text()
+    assert 'LEMMA_PARALLEL:-16' in text
+    assert 'LEMMA_PARALLEL:-8' not in text
+
+
+def test_overnight_sh_lemma_sql_file_reuse():
+    text = OVERNIGHT_SH.read_text()
+    assert "LEMMA_SQL_FILE" in text
+    assert "skip generate_queries" in text
+
+
+def test_overnight_sh_session_hot_immanuel_tpch():
+    text = OVERNIGHT_SH.read_text()
+    assert "duckdb_session_hot_immanuel.json" in text
+    assert "duckdb_session_hot_tpch_sf10.json" in text
+    assert "holdout/gendb_sec_edgar/queries.sql" in text
+    assert "holdout/tpch_sf10/queries_paper_subset.sql" in text
+
+
+def test_overnight_sh_rsync_before_halt():
+    text = OVERNIGHT_SH.read_text()
+    wrapper = text.split('cat >"$OUT/run_and_halt.sh" <<EOF', 1)[1].split("EOF", 1)[0]
+    rsync_pos = wrapper.index('maybe_gsutil_rsync_harvest "$OUT"')
+    halt_pos = wrapper.index("lemma_guest_halt.sh")
+    assert rsync_pos < halt_pos
+
+
+R24_CHAIN = ROOT / "research_loop" / "scripts" / "r24_rocket_fast_chain.sh"
+
+
+def test_r24_chain_exists_and_configured():
+    assert R24_CHAIN.is_file()
+    text = R24_CHAIN.read_text()
+    assert "r24rocket" in text
+    assert "r24fast" in text
+    assert re.search(r"LEMMA_FAMILY=\S*sloppy", text) is None
+    assert "never sloppy" in text
+    assert "LEMMA_FAIL_STREAK=6" in text
+    assert "LEMMA_PARALLEL=16" in text
+    assert "LEMMA_SERIOUS=1" in text
+    assert "LEMMA_BENCH_TIMEOUT_SEC=600" in text
+    assert "LEMMA_SQL_FILE" in text
+    assert "LEMMA_HALT_ON_FINISH=0" in text
+    assert "LEMMA_HALT_ON_FINISH=1" in text
+    assert "LEMMA_SCHEDULE_ACPI=0" in text
+    assert "LEMMA_SHUFFLE_SEED=2409" in text
+    assert "LEMMA_EMIT_AGENT_PRIMITIVES=0" in text

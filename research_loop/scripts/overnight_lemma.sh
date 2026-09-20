@@ -123,23 +123,26 @@ print(json.dumps(profile, indent=2) + "\n")
 PY
 echo "Wrote $OUT/hardware.json"
 
-# --- fresh shuffle outside git tree ---
+# --- fresh shuffle outside git tree (or reuse frozen SQL) ---
 SHUFFLE_SEED="${LEMMA_SHUFFLE_SEED:-1707}"
 SHUFFLE_N="${LEMMA_SHUFFLE_N:-50}"
 SQL_OUT="$OUT/queries_resample.sql"
 
-if [[ ! -f "$SEC_DB" ]]; then
+if [[ -n "${LEMMA_SQL_FILE:-}" && -f "${LEMMA_SQL_FILE}" ]]; then
+  SQL_OUT="${LEMMA_SQL_FILE}"
+  echo "=== reuse LEMMA_SQL_FILE=$SQL_OUT (skip generate_queries) ==="
+elif [[ ! -f "$SEC_DB" ]]; then
   echo "ERROR: SEC DuckDB missing at $SEC_DB; cannot generate shuffle." >&2
   exit 1
+else
+  echo "=== generate_queries seed=$SHUFFLE_SEED n=$SHUFFLE_N -> $SQL_OUT ==="
+  uv run python holdout/gendb_sec_edgar/generate_queries.py \
+    --seed "$SHUFFLE_SEED" \
+    --num-generate 600 \
+    --num-select "$SHUFFLE_N" \
+    --db-path "$SEC_DB" \
+    --output "$SQL_OUT"
 fi
-
-echo "=== generate_queries seed=$SHUFFLE_SEED n=$SHUFFLE_N -> $SQL_OUT ==="
-uv run python holdout/gendb_sec_edgar/generate_queries.py \
-  --seed "$SHUFFLE_SEED" \
-  --num-generate 600 \
-  --num-select "$SHUFFLE_N" \
-  --db-path "$SEC_DB" \
-  --output "$SQL_OUT"
 
 # --- DuckDB session-hot baseline (paper/serious only; dev skips) ---
 LEMMA_SERIOUS_VAL="${LEMMA_SERIOUS:-0}"
@@ -151,6 +154,27 @@ if [[ "$LEMMA_SERIOUS_VAL" == "1" || "$LEMMA_SERIOUS_VAL" == "true" || "$LEMMA_S
     --out "$OUT/duckdb_session_hot.json" \
     --not-synthetic \
     --hardware-hint "n2-highmem-64 same-box as lemma overnight"
+  IMMANUEL_SQL="holdout/gendb_sec_edgar/queries.sql"
+  if [[ -f "$IMMANUEL_SQL" ]]; then
+    echo "=== DuckDB session-hot Immanuel SEC ($IMMANUEL_SQL) ==="
+    uv run python holdout/gendb_sec_edgar/session_hot.py \
+      --db "$SEC_DB" \
+      --sql "$IMMANUEL_SQL" \
+      --out "$OUT/duckdb_session_hot_immanuel.json" \
+      --not-synthetic \
+      --hardware-hint "n2-highmem-64 same-box as lemma overnight"
+  fi
+  TPCH_PAPER_SQL="holdout/tpch_sf10/queries_paper_subset.sql"
+  TPCH_DB="${LEMMA_TPCH_DUCKDB_PATH:-/home/emil/lemma/build/tpch_sf10/tpch_sf10.duckdb}"
+  if [[ -f "$TPCH_PAPER_SQL" ]]; then
+    echo "=== DuckDB session-hot TPC-H SF10 paper subset ($TPCH_PAPER_SQL) ==="
+    uv run python holdout/gendb_sec_edgar/session_hot.py \
+      --db "$TPCH_DB" \
+      --sql "$TPCH_PAPER_SQL" \
+      --out "$OUT/duckdb_session_hot_tpch_sf10.json" \
+      --not-synthetic \
+      --hardware-hint "n2-highmem-64 same-box as lemma overnight"
+  fi
 else
   echo "DuckDB session-hot baseline skipped (dev; set LEMMA_SERIOUS=1 for paper protocol)"
   python3 -c "
@@ -167,7 +191,7 @@ fi
 export MAX_ITERATIONS="${MAX_ITERATIONS:-4}"
 export AGENT_TIMEOUT_SEC="${AGENT_TIMEOUT_SEC:-600}"
 export LEMMA_KEEP_OPTIMIZING="${LEMMA_KEEP_OPTIMIZING:-1}"
-export LEMMA_BENCH_TIMEOUT_SEC="${LEMMA_BENCH_TIMEOUT_SEC:-120}"
+export LEMMA_BENCH_TIMEOUT_SEC="${LEMMA_BENCH_TIMEOUT_SEC:-600}"
 export LEMMA_EMIT_AGENT_PRIMITIVES="${LEMMA_EMIT_AGENT_PRIMITIVES:-0}"
 export LEMMA_ENABLE_PARALLEL="${LEMMA_ENABLE_PARALLEL:-0}"
 export LEMMA_FAST_TRUSTEDS="${LEMMA_FAST_TRUSTEDS:-0}"
@@ -178,7 +202,7 @@ unset LEMMA_FOLD_SLOT_ASSUME_ALIAS
 export LEMMA_FAIL_STREAK="${LEMMA_FAIL_STREAK:-6}"
 export LEMMA_WORKLOAD=sec
 export LEMMA_DUCKDB_PATH="$SEC_DB"
-WORKERS="${LEMMA_PARALLEL:-8}"
+WORKERS="${LEMMA_PARALLEL:-16}"
 
 echo "=== overnight workers=$WORKERS MAX_ITERATIONS=$MAX_ITERATIONS TIMEOUT=$AGENT_TIMEOUT_SEC stop_in=${STOP_MIN}min budget=\$${BUDGET_USD} rate=\$${USD_PER_HR}/hr planned~\$${PLANNED_USD} ==="
 
@@ -251,7 +275,7 @@ export LEMMA_PARALLEL="${WORKERS}"
 export LEMMA_EXPERIMENT_EVENT_FILE="$OUT/events.ndjson"
 export LEMMA_MCP_ITERATE_ROWS="${LEMMA_MCP_ITERATE_ROWS:-50000}"
 export LEMMA_KEEP_OPTIMIZING="${LEMMA_KEEP_OPTIMIZING:-1}"
-export LEMMA_BENCH_TIMEOUT_SEC="${LEMMA_BENCH_TIMEOUT_SEC:-120}"
+export LEMMA_BENCH_TIMEOUT_SEC="${LEMMA_BENCH_TIMEOUT_SEC:-600}"
 export LEMMA_EMIT_AGENT_PRIMITIVES="${LEMMA_EMIT_AGENT_PRIMITIVES:-0}"
 export LEMMA_ENABLE_PARALLEL="${LEMMA_ENABLE_PARALLEL:-0}"
 export LEMMA_FAST_TRUSTEDS="${LEMMA_FAST_TRUSTEDS:-0}"
@@ -269,13 +293,12 @@ unset LEMMA_FOLD_SLOT_ASSUME_ALIAS
   >"$OUT/driver.out" 2>&1
 git rev-parse HEAD >"$OUT/git_sha.txt"
 echo "finished_utc=\$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$OUT/watchdog.log"
+maybe_gsutil_rsync_harvest "$OUT"
 if [[ "${LEMMA_HALT_ON_FINISH:-1}" == "1" ]]; then
   bash "$REPO/research_loop/scripts/lemma_guest_halt.sh" >>"$OUT/watchdog.log" 2>&1 || true
 else
   echo "LEMMA_HALT_ON_FINISH=0 skip guest halt" >>"$OUT/watchdog.log"
 fi
-# Optional extra GCS copy (does not replace local $OUT harvest).
-maybe_gsutil_rsync_harvest "$OUT"
 EOF
 chmod +x "$OUT/run_and_halt.sh"
 nohup "$OUT/run_and_halt.sh" >/dev/null 2>&1 &

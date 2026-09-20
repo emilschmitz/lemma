@@ -31,6 +31,12 @@ from gendb_published_one_run import (
 )
 
 DEFAULT_SQL = ROOT / "holdout/gendb_sec_edgar/queries_resample_r15.sql"
+IMMANUEL_SQL = ROOT / "holdout/gendb_sec_edgar/queries.sql"
+IMMANUEL_SOURCE_QIDS = ("Q1", "Q2", "Q3", "Q4", "Q6", "Q24")
+IMMANUEL_JOB_QIDS = ("Q101", "Q102", "Q103", "Q104", "Q105", "Q106")
+TPCH_PAPER_SQL = ROOT / "holdout/tpch_sf10/queries_paper_subset.sql"
+TPCH_PAPER_SOURCE_QIDS = ("Q1", "Q3", "Q6", "Q9", "Q18")
+TPCH_PAPER_JOB_QIDS = ("Q201", "Q202", "Q203", "Q204", "Q205")
 PY = ROOT / ".venv/bin/python"
 DEFAULT_FAIL_STREAK = 6
 DEFAULT_HEARTBEAT_INTERVAL_SEC = 60
@@ -134,9 +140,47 @@ def jobs_from_sql(sql_file: Path, family: str, sec_db: str) -> list[dict]:
     ]
 
 
+def _append_paper_jobs(
+    jobs: list[dict],
+    *,
+    family: str,
+    sec_db: str,
+    tpch_db: str,
+) -> None:
+    if IMMANUEL_SQL.is_file():
+        immanuel = parse_queries(IMMANUEL_SQL)
+        for src_qid, job_qid in zip(IMMANUEL_SOURCE_QIDS, IMMANUEL_JOB_QIDS, strict=True):
+            sql = immanuel.get(src_qid)
+            if sql:
+                jobs.append(
+                    {
+                        "family": family,
+                        "qid": job_qid,
+                        "sql": sql,
+                        "workload": "sec",
+                        "duckdb": sec_db,
+                    }
+                )
+    if TPCH_PAPER_SQL.is_file():
+        tpch = parse_queries(TPCH_PAPER_SQL)
+        for src_qid, job_qid in zip(TPCH_PAPER_SOURCE_QIDS, TPCH_PAPER_JOB_QIDS, strict=True):
+            sql = tpch.get(src_qid)
+            if sql:
+                jobs.append(
+                    {
+                        "family": family,
+                        "qid": job_qid,
+                        "sql": sql,
+                        "workload": "tpch",
+                        "duckdb": tpch_db,
+                    }
+                )
+
+
 def jobs_full(sql_file: Path, family: str, sec_db: str, tpch_db: str) -> list[dict]:
-    del tpch_db
-    return jobs_from_sql(sql_file, family, sec_db)
+    jobs = jobs_from_sql(sql_file, family, sec_db)
+    _append_paper_jobs(jobs, family=family, sec_db=sec_db, tpch_db=tpch_db)
+    return jobs
 
 
 def jobs_smoke(sql_file: Path, family: str, sec_db: str) -> list[dict]:
@@ -440,6 +484,34 @@ def fail_streak_abort_reason(fail_streak: int, consecutive_fail: int) -> str | N
     return None
 
 
+def consecutive_fail_from_tail(results: list[dict]) -> int:
+    """Count consecutive lemma_ok=false at the end of a prior results list."""
+    streak = 0
+    for rec in reversed(results):
+        if rec_ok(rec):
+            break
+        streak += 1
+    return streak
+
+
+def load_partial_resume(
+    out_dir: Path,
+    family: str,
+) -> tuple[list[dict], set[str], int]:
+    """Load prior partial harvest; return (seeded_ok_results, skip_qids, fail_streak)."""
+    partial_path = out_dir / "results.partial.json"
+    if not partial_path.is_file():
+        return [], set(), 0
+    try:
+        data = json.loads(partial_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return [], set(), 0
+    prior = [r for r in data.get("results") or [] if r.get("family") == family]
+    skip_qids = {r["qid"] for r in prior if r.get("lemma_ok") is True and isinstance(r.get("qid"), str)}
+    seeded = [r for r in prior if r.get("qid") in skip_qids]
+    return seeded, skip_qids, consecutive_fail_from_tail(prior)
+
+
 class FailStreakTracker:
     """Tracks consecutive lemma_ok=false results and abort threshold."""
 
@@ -489,11 +561,24 @@ def main() -> int:
     out_dir = args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
     log_dir = out_dir / "logs"
-    jobs = (
+    all_jobs = (
         jobs_smoke(sql_file, args.family, args.sec_db)
         if args.smoke
         else jobs_full(sql_file, args.family, args.sec_db, args.tpch_db)
     )
+
+    resume_seeded: list[dict] = []
+    resume_skip: set[str] = set()
+    resume_streak = 0
+    if not args.smoke:
+        resume_seeded, resume_skip, resume_streak = load_partial_resume(out_dir, args.family)
+        if resume_skip:
+            print(
+                f"RESUME skip {len(resume_skip)} lemma_ok qids: "
+                f"{sorted(resume_skip, key=lambda x: int(x[1:]))}",
+                flush=True,
+            )
+    jobs = [job for job in all_jobs if job["qid"] not in resume_skip]
 
     workers_env = os.environ.get("LEMMA_PARALLEL")
     meta = {
@@ -506,7 +591,9 @@ def main() -> int:
         "workers": args.workers,
         "LEMMA_PARALLEL": workers_env,
         "fail_streak": max(0, int(args.fail_streak)),
-        "n_jobs": len(jobs),
+        "n_jobs": len(all_jobs),
+        "n_jobs_remaining": len(jobs),
+        "resume_skipped": sorted(resume_skip, key=lambda x: int(x[1:])),
         "MAX_ITERATIONS": os.environ.get("MAX_ITERATIONS"),
         "AGENT_TIMEOUT_SEC": os.environ.get("AGENT_TIMEOUT_SEC"),
         "AGENT_CMD": os.environ.get("AGENT_CMD", ""),
@@ -539,15 +626,22 @@ def main() -> int:
         flush=True,
     )
 
-    results: list[dict] = []
+    results: list[dict] = list(resume_seeded)
     streak = FailStreakTracker(args.fail_streak)
+    streak.consecutive_fail = resume_streak
     workers = 1 if args.smoke else max(1, args.workers)
     tracker = JobTracker(
         out_dir,
         meta,
         heartbeat_interval_sec=resolve_heartbeat_interval_sec(),
     )
+    tracker.finished_qids.update(resume_skip)
     exit_error: str | None = None
+    if resume_streak:
+        print(
+            f"RESUME fail_streak tail={resume_streak} (from partial results)",
+            flush=True,
+        )
 
     def on_done(rec: dict) -> bool:
         results.append(rec)
