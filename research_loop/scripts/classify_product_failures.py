@@ -51,6 +51,10 @@ _AGENT_DOCKER_CTX = re.compile(
 _AGENT_DOCKER_SIGKILL = re.compile(
     r"agent_docker_end:\s*exit=-9\b|agent_docker_end:\s*exit=137\b",
 )
+_RESOURCE_EXHAUSTED = re.compile(
+    r"agent_resource_exhausted|RetriableError:\s*\[resource_exhausted\]|\[resource_exhausted\]",
+    re.I,
+)
 _E0308 = re.compile(r"error\[E0308\]|E0308:", re.I)
 _E0425 = re.compile(r"error\[E0425\]|cannot find value `t\d+`", re.I)
 _NO_MARKED = re.compile(r"no marked submit", re.I)
@@ -205,6 +209,10 @@ def classify_optimizer_log(text: str) -> dict[str, Any]:
         _AGENT_DOCKER_CTX.search(text) or _AGENT_TIMEOUT.search(text)
     ):
         return _result(3, "infra", detail="sandbox/MCP")
+
+    # Step 3 — Cursor API quota (RetriableError resource_exhausted), not agent timeout.
+    if _RESOURCE_EXHAUSTED.search(text):
+        return _result(3, "infra", detail="resource_exhausted")
 
     # Step 3 — agent docker timeout (before harness verify).
     if _AGENT_TIMEOUT.search(text) and _AGENT_DOCKER_CTX.search(text):

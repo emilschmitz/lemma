@@ -61,6 +61,18 @@ def test_classify_broken_pipe_agent_infra() -> None:
     assert out["class"] == "infra"
 
 
+def test_classify_resource_exhausted_agent_infra() -> None:
+    text = """
+agent_docker_end: exit=1 timed_out=False
+RetriableError: [resource_exhausted] Error
+agent_resource_exhausted: retry 1/8 iter=1 wait_s=30 (Cursor API quota; not consuming iteration)
+"""
+    out = classify_optimizer_log(text)
+    assert out["step"] == 3
+    assert out["class"] == "infra"
+    assert out.get("detail") == "resource_exhausted"
+
+
 def test_classify_docker_exit_minus9_timed_out_false_is_agent_timeout() -> None:
     text = """
 CUSTOM_PIPELINE_FAILED [verify]: verus verify failed

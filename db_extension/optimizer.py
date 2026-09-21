@@ -567,6 +567,73 @@ def _finish_run(run: RunArtifacts | None, result: dict) -> dict:
     return end_run(run, result)
 
 
+def _execute_agent_with_resource_exhausted_retries(
+    *,
+    run_agent_fn,
+    workspace: Path,
+    iteration: int,
+    harvest_fn,
+    has_verified_submit_fn,
+    sleep_fn=time.sleep,
+) -> tuple[str, object, dict | None, bool]:
+    """Run agent; on Cursor resource_exhausted retry with backoff without advancing iteration.
+
+    Returns ``(body, proc, agent_meta, resource_exhausted_exhausted)``.
+    When ``resource_exhausted_exhausted`` is True, retries were bounded and failed.
+    """
+    from research_loop.agent_sandbox import (
+        agent_run_resource_exhausted,
+        max_agent_resource_exhausted_retries,
+        resource_exhausted_backoff_sec,
+    )
+
+    max_retries = max_agent_resource_exhausted_retries()
+    resource_retry = 0
+    agent_meta: dict | None = None
+
+    while True:
+        body, proc = run_agent_fn()
+        harvested = harvest_fn()
+        if harvested is not None:
+            agent_meta = harvested
+
+        if has_verified_submit_fn(agent_meta):
+            return body, proc, agent_meta, False
+
+        if not agent_run_resource_exhausted(proc, workspace):
+            return body, proc, agent_meta, False
+
+        resource_retry += 1
+        if resource_retry > max_retries:
+            log_info(
+                COMPONENT,
+                "agent_resource_exhausted_exhausted",
+                f"iter={iteration} retries={max_retries}",
+                infra="resource_exhausted",
+            )
+            print(
+                f"agent_resource_exhausted_exhausted: iter={iteration} "
+                f"retries={max_retries} (infra failure after backoff)",
+                flush=True,
+            )
+            return body, proc, agent_meta, True
+
+        wait = resource_exhausted_backoff_sec(resource_retry)
+        log_info(
+            COMPONENT,
+            "agent_resource_exhausted",
+            f"retry={resource_retry}/{max_retries} iter={iteration} wait_s={wait:.0f}",
+            infra="resource_exhausted",
+        )
+        print(
+            f"agent_resource_exhausted: retry {resource_retry}/{max_retries} "
+            f"iter={iteration} wait_s={wait:.0f} "
+            f"(Cursor API quota; not consuming iteration)",
+            flush=True,
+        )
+        sleep_fn(wait)
+
+
 def run_optimization_loop(
     sql_query: str,
     dataset_size: int = 50000,
@@ -824,64 +891,78 @@ def run_optimization_loop(
                 return body, proc
 
             a_start = time.perf_counter()
+            resource_exhausted_exhausted = False
             try:
+                def _agent_run_with_retries() -> tuple[str, object, dict | None, bool]:
+                    return _execute_agent_with_resource_exhausted_retries(
+                        run_agent_fn=_run_agent,
+                        workspace=workspace,
+                        iteration=iteration,
+                        harvest_fn=lambda: _maybe_harvest_verified_submit(workspace),
+                        has_verified_submit_fn=_has_verified_submit,
+                    )
+
                 if demo_enabled():
                     with demo_live_step("🦾", "Generating RunQuery", pass_fail=True) as gen_step:
-                        body, proc = _run_agent()
-                        if not use_mock:
-                            harvested = _maybe_harvest_verified_submit(workspace)
-                            if harvested is not None:
-                                agent_meta = harvested
+                        body, proc, agent_meta, resource_exhausted_exhausted = (
+                            _agent_run_with_retries()
+                        )
                         log_trace(COMPONENT, "agent_body_preview", body[:200])
                         has_verified_submit = _has_verified_submit(agent_meta)
                         gen_step.set_passed(proc.returncode == 0 or has_verified_submit)
-                        if proc.returncode != 0 and not has_verified_submit:
-                            err = (proc.stderr or proc.stdout or "agent exited non-zero").strip()
-                            if not demo_enabled():
-                                _vprint(f" {COLOR_RED}FAILED{COLOR_RESET}")
-                                _vprint(f"    {err[:500]}")
-                            history.append(_history_entry(
-                                iteration=iteration,
-                                status="FAILURE",
-                                proof_verified=False,
-                                latency=-1,
-                                error=f"Agent failed: {err}",
-                                wall_s=time.perf_counter() - a_start,
-                                agent_gen_wall_s=agent_gen_wall_s + (time.perf_counter() - a_start),
-                            ))
-                            _snapshot_history()
-                            continue
                 else:
-                    body, proc = _run_agent()
-                    if not use_mock:
-                        harvested = _maybe_harvest_verified_submit(workspace)
-                        if harvested is not None:
-                            agent_meta = harvested
+                    body, proc, agent_meta, resource_exhausted_exhausted = (
+                        _agent_run_with_retries()
+                    )
                     log_trace(COMPONENT, "agent_body_preview", body[:200])
                     has_verified_submit = _has_verified_submit(agent_meta)
-                    if proc.returncode != 0 and not has_verified_submit:
-                        err = (proc.stderr or proc.stdout or "agent exited non-zero").strip()
-                        _vprint(f" {COLOR_RED}FAILED{COLOR_RESET}")
-                        _vprint(f"    {err[:500]}")
-                        history.append(_history_entry(
-                            iteration=iteration,
-                            status="FAILURE",
-                            proof_verified=False,
-                            latency=-1,
-                            error=f"Agent failed: {err}",
-                            wall_s=time.perf_counter() - a_start,
-                            agent_gen_wall_s=agent_gen_wall_s + (time.perf_counter() - a_start),
-                        ))
-                        _snapshot_history()
-                        continue
-                    write_ms = int((time.perf_counter() - a_start) * 1000)
-                    if has_verified_submit and proc.returncode != 0:
-                        _vprint(
-                            f" {COLOR_YELLOW}HARVESTED{COLOR_RESET} "
-                            f"(verified MCP submit; agent rc={proc.returncode}, {write_ms // 1000} s)"
+                    if not resource_exhausted_exhausted:
+                        write_ms = int((time.perf_counter() - a_start) * 1000)
+                        if has_verified_submit and proc.returncode != 0:
+                            _vprint(
+                                f" {COLOR_YELLOW}HARVESTED{COLOR_RESET} "
+                                f"(verified MCP submit; agent rc={proc.returncode}, "
+                                f"{write_ms // 1000} s)"
+                            )
+                        elif proc.returncode == 0 or has_verified_submit:
+                            _vprint(f" {COLOR_GREEN}OK{COLOR_RESET} ({write_ms // 1000} s)")
+
+                if resource_exhausted_exhausted or (
+                    proc.returncode != 0 and not _has_verified_submit(agent_meta)
+                ):
+                    if resource_exhausted_exhausted:
+                        from research_loop.agent_sandbox import (
+                            max_agent_resource_exhausted_retries,
+                        )
+
+                        err = (
+                            f"Agent failed: Cursor resource_exhausted after "
+                            f"{max_agent_resource_exhausted_retries()} retries"
                         )
                     else:
-                        _vprint(f" {COLOR_GREEN}OK{COLOR_RESET} ({write_ms // 1000} s)")
+                        err = (
+                            proc.stderr or proc.stdout or "agent exited non-zero"
+                        ).strip()
+                        err = f"Agent failed: {err}"
+                    if not demo_enabled():
+                        _vprint(f" {COLOR_RED}FAILED{COLOR_RESET}")
+                        _vprint(f"    {err[:500]}")
+                    history.append(_history_entry(
+                        iteration=iteration,
+                        status="FAILURE",
+                        proof_verified=False,
+                        latency=-1,
+                        error=err,
+                        wall_s=time.perf_counter() - a_start,
+                        agent_gen_wall_s=agent_gen_wall_s + (time.perf_counter() - a_start),
+                        extra=(
+                            {"resource_exhausted": True}
+                            if resource_exhausted_exhausted
+                            else None
+                        ),
+                    ))
+                    _snapshot_history()
+                    continue
             except subprocess.TimeoutExpired:
                 iter_agent_wall_s = time.perf_counter() - a_start
                 agent_gen_wall_s += iter_agent_wall_s

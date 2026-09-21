@@ -21,6 +21,14 @@ DEFAULT_IMAGE = "lemma-agent:latest"
 DEFAULT_WORKSPACE = RESEARCH / "agent_workspace"
 COMPONENT = "agent_sandbox"
 DOCKER_KILL_TIMEOUT_SEC = 30
+AGENT_RESOURCE_EXHAUSTED_RETRIES_DEFAULT = 8
+AGENT_RESOURCE_EXHAUSTED_BACKOFF_INITIAL_SEC = 30.0
+AGENT_RESOURCE_EXHAUSTED_BACKOFF_CAP_SEC = 180.0
+
+_RESOURCE_EXHAUSTED_RE = re.compile(
+    r"RetriableError:\s*\[resource_exhausted\]|\[resource_exhausted\]",
+    re.I,
+)
 POPEN_POST_KILL_GRACE_SEC = 5.0
 BODY_NAME = "runquery_agent.rs"
 SPEC_NAME = "spec.rs"
@@ -395,6 +403,63 @@ def _sync_agent_logs(workspace_logs: Path, run_logs: Path | None) -> None:
         src = workspace_logs / name
         if src.is_file():
             shutil.copy2(src, run_logs / name)
+
+
+def _read_agent_log_snippet(path: Path) -> str:
+    if not path.is_file():
+        return ""
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def collect_agent_run_output_text(
+    proc: subprocess.CompletedProcess[str],
+    workspace: Path | None = None,
+) -> str:
+    """Merge Docker/local agent stdout, stderr, and workspace harvest logs."""
+    parts = [proc.stdout or "", proc.stderr or ""]
+    if workspace is not None:
+        ws = Path(workspace)
+        ws_logs = ws / "logs"
+        for name in ("agent_stderr.log", "agent_stream.jsonl"):
+            parts.append(_read_agent_log_snippet(ws_logs / name))
+        _, run_logs = _agent_log_dirs(ws)
+        if run_logs is not None:
+            for name in ("docker_agent.stdout", "docker_agent.stderr"):
+                parts.append(_read_agent_log_snippet(run_logs / name))
+    return "\n".join(parts)
+
+
+def agent_run_resource_exhausted(
+    proc: subprocess.CompletedProcess[str],
+    workspace: Path | None = None,
+) -> bool:
+    """True when Cursor agent hit API quota (RetriableError resource_exhausted)."""
+    return bool(_RESOURCE_EXHAUSTED_RE.search(collect_agent_run_output_text(proc, workspace)))
+
+
+def resource_exhausted_backoff_sec(
+    retry_attempt: int,
+    *,
+    initial_sec: float = AGENT_RESOURCE_EXHAUSTED_BACKOFF_INITIAL_SEC,
+    cap_sec: float = AGENT_RESOURCE_EXHAUSTED_BACKOFF_CAP_SEC,
+) -> float:
+    """Exponential backoff for resource_exhausted retries (attempt is 1-based)."""
+    if retry_attempt < 1:
+        return initial_sec
+    return min(cap_sec, initial_sec * (2 ** (retry_attempt - 1)))
+
+
+def max_agent_resource_exhausted_retries() -> int:
+    raw = os.environ.get("AGENT_RESOURCE_EXHAUSTED_RETRIES", "").strip()
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass
+    return AGENT_RESOURCE_EXHAUSTED_RETRIES_DEFAULT
 
 
 def _run_subprocess_tee_agent_log(
