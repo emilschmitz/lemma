@@ -412,6 +412,58 @@ def test_q1_like_fold_bound_lemmas_verus_smoke(tmp_path: Path) -> None:
         pytest.fail(f"verus verify failed:\n{log[-6000:]}")
 
 
+def _join_run_query_stub(ret_type: str) -> str:
+    bridge = get_bridge(ret_type)
+    assert bridge is not None, f"missing bridge for {ret_type}"
+    return f"""#[verifier::external_body]
+pub exec fn run_query(left: &Cols_num, right: &Cols_sub) -> (res: {bridge.rust_ret})
+{{
+    HashMapWithView::new()
+}}"""
+
+
+def test_large_sec_assemble_omits_sq_native_rem_cap_calls() -> None:
+    """Assembled boundary helpers must honor transpile catalog skip (not only direct emit)."""
+    from research_loop.assemble_verified_program import assemble_verified_program
+
+    from tests.test_sec_holdout_parse import SEC_SCHEMA
+
+    schema = {"num": SEC_SCHEMA["num"], "sub": SEC_SCHEMA["sub"]}
+    catalog = _large_sec_product_catalog()
+    spec = _transpile(TWO_TABLE_SUM_SQL, schema, catalog=catalog)
+    ret_type = resolve_ret_type_from_method_spec(spec)
+    program = assemble_verified_program(
+        spec_rs=spec,
+        run_query_body=_join_run_query_stub(ret_type),
+        schema_dict=SEC_SCHEMA["num"],
+        ret_type=ret_type,
+        default_tbl="",
+        catalog_assumptions=catalog,
+    )
+    assert "lemma_rem_cap_native_add_fits(" not in program
+    assert "lemma_rem_cap_native_add_fits_rows" in program
+
+
+def test_prove_loop_assemble_keeps_sq_native_rem_cap_calls() -> None:
+    from research_loop.assemble_verified_program import assemble_verified_program
+
+    from tests.test_sec_holdout_parse import SEC_SCHEMA
+
+    schema = {"num": SEC_SCHEMA["num"], "sub": SEC_SCHEMA["sub"]}
+    catalog = sec_prove_loop_catalog_assumptions()
+    spec = _transpile(TWO_TABLE_SUM_SQL, schema)
+    ret_type = resolve_ret_type_from_method_spec(spec)
+    program = assemble_verified_program(
+        spec_rs=spec,
+        run_query_body=_join_run_query_stub(ret_type),
+        schema_dict=SEC_SCHEMA["num"],
+        ret_type=ret_type,
+        default_tbl="",
+        catalog_assumptions=catalog,
+    )
+    assert "lemma_rem_cap_native_add_fits(" in program
+
+
 def test_large_sec_multi_agg_omits_sq_native_rem_cap_calls() -> None:
     from tests.test_sec_holdout_parse import SEC_SCHEMA
 

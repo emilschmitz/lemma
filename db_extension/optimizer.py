@@ -687,7 +687,9 @@ def run_optimization_loop(
         schema_json_path.parent.mkdir(parents=True, exist_ok=True)
         schema_json_path.write_text(json.dumps(resolved_schema, indent=2) + "\n")
         ret_type = resolve_ret_type_for_spec(verus_spec)
-        agent_spec = prepare_agent_visible_spec(verus_spec, ret_type)
+        agent_spec = prepare_agent_visible_spec(
+            verus_spec, ret_type, catalog_assumptions=catalog
+        )
         view_raw = os.environ.get("LEMMA_DEMO_VIEW_DIR", "").strip()
         if view_raw:
             view_p = Path(view_raw)

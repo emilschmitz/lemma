@@ -1757,11 +1757,12 @@ def run_custom_sql_pipeline(
     try:
         from db_extension.workload_config import catalog_assumptions_for_workload
 
+        catalog_assumptions = catalog_assumptions_for_workload(workload)
         spec_rs = transpile_sql_to_verus(
             sql,
             projected,
             enable_templates=enable_templates(),
-            catalog_assumptions=catalog_assumptions_for_workload(workload),
+            catalog_assumptions=catalog_assumptions,
         )
     except Exception as e:
         return _pipeline_failure("transpile", sql, str(e), schema)
@@ -1831,6 +1832,7 @@ def run_custom_sql_pipeline(
                     default_tbls=default_tbls,
                     load_mode=load_mode,
                     default_db=default_db,
+                    catalog_assumptions=catalog_assumptions,
                 )
             else:
                 default_tbls = tbls or {t: "" for t in order}
@@ -1844,6 +1846,7 @@ def run_custom_sql_pipeline(
                     default_tbls=default_tbls,
                     load_mode=load_mode,
                     default_db=default_db,
+                    catalog_assumptions=catalog_assumptions,
                 )
         else:
             derived_aliases = {d.alias for d in query.derived_tables}
@@ -1884,6 +1887,7 @@ def run_custom_sql_pipeline(
                 "table_name": primary_table,
                 "default_db": default_db,
                 "catalog_multi": multi,
+                "catalog_assumptions": catalog_assumptions,
             }
             if _ASSEMBLE_SUPPORTS_SUPPORT_TABLES and isinstance(projected, dict):
                 support_tables = {

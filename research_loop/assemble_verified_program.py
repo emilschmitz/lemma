@@ -10,6 +10,7 @@ from verus_transpiler.rust_ident import rust_ident
 from research_loop.agent_primitives.emit_externs import maybe_emit_agent_externs
 from research_loop.exec_cols import _rust_vec_type
 from research_loop.lemma_flags import lemma_load_format
+from research_loop.table_assumptions import CatalogAssumptions
 
 _DUCKDB_FFI_INC = Path(__file__).resolve().parent / "duckdb_load_ffi.rs.inc"
 
@@ -262,7 +263,12 @@ _VSTD_CONTAINER_USE = (
 )
 
 
-def _boundary_helpers(ret_type: str, verus_spec: str | None = None) -> str:
+def _boundary_helpers(
+    ret_type: str,
+    verus_spec: str | None = None,
+    *,
+    catalog_assumptions: CatalogAssumptions | None = None,
+) -> str:
     from research_loop.having_filter_bridge import having_filter_trusted_rs
     from research_loop.multi_agg_step_bridge import (
         emit_scalar_fold_bound_lemmas,
@@ -290,14 +296,18 @@ def _boundary_helpers(ret_type: str, verus_spec: str | None = None) -> str:
             except ValueError:
                 b = None
         if b is not None:
-            scalar_bounds = emit_scalar_fold_bound_lemmas(verus_spec, b)
+            scalar_bounds = emit_scalar_fold_bound_lemmas(
+                verus_spec, b, catalog_assumptions=catalog_assumptions
+            )
             if scalar_bounds:
                 boundary = f"{boundary}{scalar_bounds}" if boundary else scalar_bounds
     if multi_agg_ret_type(ret_type):
         distinct = distinct_set_trusted_rs()
         boundary = f"{boundary}{distinct}" if boundary else distinct
         if verus_spec:
-            step = multi_agg_step_trusted_rs(verus_spec, ret_type)
+            step = multi_agg_step_trusted_rs(
+                verus_spec, ret_type, catalog_assumptions=catalog_assumptions
+            )
             if step:
                 boundary = f"{boundary}{step}" if boundary else step
     if verus_spec:
@@ -335,10 +345,17 @@ def _trim_verus_close(spec_rs: str) -> str:
     return spec_rs.rstrip() + "\n"
 
 
-def prepare_agent_visible_spec(verus_spec: str, ret_type: str) -> str:
+def prepare_agent_visible_spec(
+    verus_spec: str,
+    ret_type: str,
+    *,
+    catalog_assumptions: CatalogAssumptions | None = None,
+) -> str:
     """Spec the sandbox agent may read: MethodSpec + TRUSTED agg API for ret_type; no RunQuery skeleton."""
     core = _trim_verus_close(_strip_skeleton(verus_spec))
-    boundary = _boundary_helpers(ret_type, verus_spec)
+    boundary = _boundary_helpers(
+        ret_type, verus_spec, catalog_assumptions=catalog_assumptions
+    )
     if boundary:
         agent_note = (
             "// === Agent: use TRUSTED helpers below (vstd map/set @ views).\n"
@@ -985,6 +1002,7 @@ def assemble_verified_join_program(
     bench_exec: str = "",
     load_mode: str = "tbl",
     default_db: str = "",
+    catalog_assumptions: CatalogAssumptions | None = None,
 ) -> str:
     """Build one `.rs` file for a two-table join query."""
     if not _ret_type_supported(ret_type):
@@ -1005,7 +1023,9 @@ def assemble_verified_join_program(
                 schema_dict=cols,
                 struct_name=f"Cols_{table}",
             )
-    boundary = _boundary_helpers(ret_type, spec_rs)
+    boundary = _boundary_helpers(
+        ret_type, spec_rs, catalog_assumptions=catalog_assumptions
+    )
     agent_externs = maybe_emit_agent_externs(run_query_body, context=boundary)
     load_gen = _select_load_generator(load_mode=load_mode)
     loaders = "\n".join(
@@ -1122,6 +1142,7 @@ def assemble_verified_nway_program(
     bench_exec: str = "",
     load_mode: str = "tbl",
     default_db: str = "",
+    catalog_assumptions: CatalogAssumptions | None = None,
 ) -> str:
     """Build one `.rs` file for an N-table (3+) join query."""
     if not _ret_type_supported(ret_type):
@@ -1142,7 +1163,9 @@ def assemble_verified_nway_program(
                 schema_dict=cols,
                 struct_name=f"Cols_{table}",
             )
-    boundary = _boundary_helpers(ret_type, spec_rs)
+    boundary = _boundary_helpers(
+        ret_type, spec_rs, catalog_assumptions=catalog_assumptions
+    )
     agent_externs = maybe_emit_agent_externs(run_query_body, context=boundary)
     load_gen = _select_load_generator(load_mode=load_mode)
     loaders = "\n".join(
@@ -1200,6 +1223,7 @@ def assemble_verified_program(
     default_db: str = "",
     catalog_multi: dict[str, dict[str, str]] | None = None,
     support_tables: dict[str, dict[str, str]] | None = None,
+    catalog_assumptions: CatalogAssumptions | None = None,
 ) -> str:
     """Build one `.rs` file: spec + proved run_query + load_cols + main."""
     if not _ret_type_supported(ret_type):
@@ -1248,7 +1272,9 @@ def assemble_verified_program(
                 schema_dict=cols,
                 struct_name=f"Cols_{st}",
             )
-    boundary = _boundary_helpers(ret_type, spec_rs)
+    boundary = _boundary_helpers(
+        ret_type, spec_rs, catalog_assumptions=catalog_assumptions
+    )
     agent_externs = maybe_emit_agent_externs(run_query_body, context=boundary)
     load_gen = _select_load_generator(load_mode=load_mode)
     duckdb_kwargs: dict[str, object] = {}
