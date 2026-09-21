@@ -425,7 +425,6 @@ pub exec fn run_query(left: &Cols_num, right: &Cols_sub) -> (res: {bridge.rust_r
 def test_large_sec_assemble_omits_sq_native_rem_cap_calls() -> None:
     """Assembled boundary helpers must honor transpile catalog skip (not only direct emit)."""
     from research_loop.assemble_verified_program import assemble_verified_program
-
     from tests.test_sec_holdout_parse import SEC_SCHEMA
 
     schema = {"num": SEC_SCHEMA["num"], "sub": SEC_SCHEMA["sub"]}
@@ -446,7 +445,6 @@ def test_large_sec_assemble_omits_sq_native_rem_cap_calls() -> None:
 
 def test_prove_loop_assemble_keeps_sq_native_rem_cap_calls() -> None:
     from research_loop.assemble_verified_program import assemble_verified_program
-
     from tests.test_sec_holdout_parse import SEC_SCHEMA
 
     schema = {"num": SEC_SCHEMA["num"], "sub": SEC_SCHEMA["sub"]}
@@ -462,6 +460,26 @@ def test_prove_loop_assemble_keeps_sq_native_rem_cap_calls() -> None:
         catalog_assumptions=catalog,
     )
     assert "lemma_rem_cap_native_add_fits(" in program
+
+
+def test_large_sec_prepare_workspace_omits_sq_native_rem_cap_calls(tmp_path: Path) -> None:
+    """Sandbox rewrite of spec.rs must keep the transpile catalog skip."""
+    from research_loop.agent_sandbox import prepare_workspace
+    from tests.test_sec_holdout_parse import SEC_SCHEMA
+
+    schema = {"num": SEC_SCHEMA["num"], "sub": SEC_SCHEMA["sub"]}
+    catalog = _large_sec_product_catalog()
+    spec = _transpile(TWO_TABLE_SUM_SQL, schema, catalog=catalog)
+    prepare_workspace(
+        tmp_path,
+        verus_spec=spec,
+        sql_query=TWO_TABLE_SUM_SQL,
+        schema=schema,
+        catalog_assumptions=catalog,
+    )
+    visible = (tmp_path / "context" / "ro" / "spec.rs").read_text(encoding="utf-8")
+    assert "lemma_rem_cap_native_add_fits(" not in visible
+    assert "lemma_rem_cap_native_add_fits_rows" in visible
 
 
 def test_large_sec_multi_agg_omits_sq_native_rem_cap_calls() -> None:

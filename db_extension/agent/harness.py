@@ -16,6 +16,7 @@ from db_extension.agent.measure_core import MeasureContext, get_submitted
 from db_extension.agent.profile import build_data_profile
 from research_loop.agent_context import hardware_profile, hardware_profile_markdown
 from research_loop.lemma_flags import lemma_agent_hardware
+from research_loop.table_assumptions import CatalogAssumptions
 
 ROOT = Path(__file__).resolve().parents[2]
 RESEARCH = ROOT / "research_loop"
@@ -257,6 +258,7 @@ def _prepare_workspace(
     data_path: Path | None,
     flags: AgentFlags,
     reset_body: bool,
+    catalog_assumptions: CatalogAssumptions | None = None,
 ) -> Path:
     workspace.mkdir(parents=True, exist_ok=True)
     from research_loop.method_spec_ret_type import resolve_ret_type_from_method_spec
@@ -264,7 +266,9 @@ def _prepare_workspace(
     ret_type = resolve_ret_type_from_method_spec(verus_spec)
     from research_loop.assemble_verified_program import prepare_agent_visible_spec
 
-    agent_spec = prepare_agent_visible_spec(verus_spec, ret_type)
+    agent_spec = prepare_agent_visible_spec(
+        verus_spec, ret_type, catalog_assumptions=catalog_assumptions
+    )
     ro = workspace / "context" / "ro"
     ro.mkdir(parents=True, exist_ok=True)
     (ro / "spec.rs").write_text(agent_spec)
@@ -328,6 +332,7 @@ def run_openrouter_agent_iteration(
     workspace: Path | None = None,
     data_path: Path | None = None,
     flags: AgentFlags | None = None,
+    catalog_assumptions: CatalogAssumptions | None = None,
 ) -> tuple[str, dict]:
     if not verus_spec:
         raise ValueError("verus_spec is required")
@@ -350,6 +355,7 @@ def run_openrouter_agent_iteration(
         data_path=data_path,
         flags=flags,
         reset_body=iteration == 1,
+        catalog_assumptions=catalog_assumptions,
     )
     trace_path = ws / "trace.jsonl"
     meta: dict = {

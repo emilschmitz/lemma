@@ -788,6 +788,7 @@ def run_optimization_loop(
                         last_latency_us=last_lat,
                         workspace=workspace,
                         cfg=cfg,
+                        catalog_assumptions=catalog,
                     )
                     agent_meta = agent_meta_from_workspace_submit(workspace)
                     return body, proc
@@ -810,6 +811,7 @@ def run_optimization_loop(
                     workspace=workspace,
                     data_path=data_path,
                     flags=agent_flags,
+                    catalog_assumptions=catalog,
                 )
                 agent_meta = meta
                 ok = bool(meta.get("ok"))

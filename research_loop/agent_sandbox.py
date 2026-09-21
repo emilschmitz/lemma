@@ -13,6 +13,7 @@ from pathlib import Path
 
 from research_loop.pipeline_demo import resolve_demo_view_dir
 from research_loop.pipeline_log import log_debug, log_info, log_trace, log_warn
+from research_loop.table_assumptions import CatalogAssumptions
 
 ROOT = Path(__file__).resolve().parents[1]
 RESEARCH = Path(__file__).resolve().parent
@@ -457,6 +458,7 @@ def prepare_workspace(
     data_path: Path | None = None,
     agent_data_mode: str = "stats",
     reset_body: bool = True,
+    catalog_assumptions: CatalogAssumptions | None = None,
 ) -> Path:
     workspace.mkdir(parents=True, exist_ok=True)
     from research_loop.method_spec_ret_type import resolve_ret_type_from_method_spec
@@ -464,7 +466,9 @@ def prepare_workspace(
     ret_type = resolve_ret_type_from_method_spec(verus_spec)
     from research_loop.assemble_verified_program import prepare_agent_visible_spec
 
-    agent_spec = prepare_agent_visible_spec(verus_spec, ret_type)
+    agent_spec = prepare_agent_visible_spec(
+        verus_spec, ret_type, catalog_assumptions=catalog_assumptions
+    )
     ro = workspace / "context" / "ro"
     ro.mkdir(parents=True, exist_ok=True)
     (ro / SPEC_NAME).write_text(agent_spec)
@@ -948,6 +952,7 @@ def run_agent_iteration(
     workspace: Path | None = None,
     reset_body: bool = False,
     cfg: dict[str, str] | None = None,
+    catalog_assumptions: CatalogAssumptions | None = None,
 ) -> tuple[str, subprocess.CompletedProcess[str]]:
     if not verus_spec:
         raise ValueError("verus_spec is required")
@@ -968,6 +973,7 @@ def run_agent_iteration(
         data_path=data_path,
         agent_data_mode=flags.agent_data_mode,
         reset_body=reset_body or iteration == 1,
+        catalog_assumptions=catalog_assumptions,
     )
     prompt = build_agent_prompt(
         workspace=ws,
