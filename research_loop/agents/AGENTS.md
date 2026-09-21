@@ -26,7 +26,12 @@ agent using only its allowed tools / `AGENT_EDIT` region could have fixed it.
 **Rule:** If the first compile/verify errors point at generated `method_spec`, loaders, or
 other non-editable scaffolding → `host_codegen` (or `transpile_fail`), **not**
 `agent_verify`. Do not say “the agent failed verification” when the agent never got a
-fair shot at proving its body.
+fair shot at proving its body. A host inductive/Trusted lemma that **calls a
+lemma the catalog omitted** is `host_codegen` even if the agent also called it
+from `AGENT_EDIT`. Nested `proof fn` inside `run_query` does not fix a host call.
+
+**Fail messages need Reason + Response** for every qid (root `AGENTS.md` § Fail
+loop). Driver `FAILED` is not a report.
 
 Also name the **blame class** from root `AGENTS.md` (agent too stupid to prove /
 too stupid to write something fast / setup didn’t give the ability to write

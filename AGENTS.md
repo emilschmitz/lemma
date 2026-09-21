@@ -110,10 +110,23 @@ On each wake:
    verify are missing → **harness / software failed** (harvest), not agent. Fix harvest.
 2. **Open traces in order** (this section below). Report **`step N (name):`** and
    **one primary blame class**.
-3. **If software / host failed** (transpile, assemble, inject calling an omitted
+3. **Fail report is the deliverable.** Driver `FAILED` / `fail_streak_N` /
+   `lemma_ok=false` is **not** a report. Every wake, and every status that mentions
+   fails, **must** include **Reason** and **Response** for **each** new fail qid.
+   Do **not** stop at a one-line `FAILED` table. Do **not** end the turn on
+   “analysis in progress” / “still looking.” If context is tight, ship the table
+   for every qid you opened this wake. Copy it into `~/lemma-harvest/STATUS.md`.
+
+   | Job | SQL (one line) | step N (name) | type | primary blame | smarter agent in `AGENT_EDIT`? | evidence (MCP run + rustc/verus) | **Reason** | **Response** |
+
+   - **Reason** = the concrete hole. Quote the error. Name host line vs `AGENT_EDIT`.
+   - **Response** = the next action: repair host + new family `retry.json`; record
+     `AGENT TOO STUPID` (do not water down); fix harvest; do not mix SHA into the
+     dead family.
+4. **If software / host failed** (transpile, assemble, inject calling an omitted
    lemma, pin, timeout policy, missing traces, classifier): **repair the host**,
    commit + push, **retry**. Do **not** leave a known host hole in a live SHA.
-4. **If the agent was too stupid to prove** (errors inside `AGENT_EDIT` on a **sound**
+5. **If the agent was too stupid to prove** (errors inside `AGENT_EDIT` on a **sound**
    spec; a smarter agent could have submitted `N verified, 0 errors`): **do not
    water down** (no FAST on rocket, no `ensures true`, no row-cap rewind). Record
    the fail. Do **not** “repair” by weakening the proof bar.
@@ -121,8 +134,10 @@ On each wake:
    **`AGENT TOO STUPID:`** `step 3 (agent)` / `qid` / one-line evidence from
    `AGENT_EDIT` (e.g. `assert forall` with no `by`, invented `step_row`,
    `assert("US"@ != ""@)`). Only after the trace checklist. Do **not** use this
-   label for host/assemble holes.
-5. **Retries are a new family**, never mixed into the failed harvest SHA.
+   label for host/assemble holes (omitted-lemma **calls in generated spec /
+   Trusted**, loaders, stitch). Nested `proof fn` inside `run_query` does **not**
+   put a name in scope for a host lemma.
+6. **Retries are a new family**, never mixed into the failed harvest SHA.
    Example: r26rocket SHA `e445686` host-fail Q11 → fix on `main` → **r27rocket**
    with `retry.json`:
    `{ "retry_of": "r26rocket", "from_sha": "…", "to_sha": "…", "reason": "…", "step": 4 }`.
@@ -226,6 +241,41 @@ emit hash/parallel Trusteds on the rocket path **or** stop scoring nested-loop
 kernels against full SEC @ 600s; classify Docker `exit=-9` as timeout; rsync
 `research_loop/runs/*/workspace/mcp_results` + leftover verify, not just
 overnight `$OUT` logs.
+
+### Worked example — r26rocket 2026-09-20 abort (`fail_streak_6`)
+
+Harvest: `~/lemma-harvest/r26rocket`. SHA `e445686`. Consecutive misses (resume
+retry): **Q11, Q24, Q28, Q26, Q16, Q29**. No `submitted.json` on any of the six.
+Transpile OK. Official pin never ran. Fast never started.
+
+**Cluster (Q11/Q24/Q28/Q26/Q16 + in-flight Q27):** `host_codegen` **step 4 assemble**.
+Product transpile uses large-SEC catalog → spec emits only
+`lemma_rem_cap_native_add_fits_rows` (ROWS²·NATIVE does not fit u64 at 39M).
+`assemble_verified_program._boundary_helpers` calls `multi_agg_step_trusted_rs`
+**without** that catalog → skip empty → host inductive slot lemma still calls
+`lemma_rem_cap_native_add_fits(rem_tail_u64)` at assembled `custom_query.rs:2694`
+(Q26: 2654 and 2789). rustc E0425, help names `_rows`. **Smarter agent: no** —
+that call is outside `AGENT_EDIT`. Nested `proof fn` inside `run_query` is not
+in scope for the host lemma. Tests that pass `catalog=` into
+`multi_agg_step_trusted_rs` miss this because assemble drops it.
+**Response:** thread the transpile catalog into assemble; test assembled RS
+omits the unsuffixed call; do **not** put the unsound lemma back; **r27rocket**
+`retry.json` step 4. Do not mix into r26.
+
+**Q29:** different SQL (3-table join LIMIT 50). No host rem_cap call.
+**AGENT TOO STUPID:** `step 3 (agent)` / Q29 / `while` in proof mode, then
+invented `lemma_take50_to_origin` / leftover `i0 = i0 - 1` usize vs int.
+**Smarter agent: yes.** Record; do not water down. Retry on r27 only because
+the family is already dead from the host cluster.
+
+| Job | SQL | Step | Type | Primary | Smarter? | Evidence | Reason | Response |
+|-----|-----|------|------|---------|----------|----------|--------|----------|
+| **Q11** | pre⋈sub `stmt='CI'` COUNT/COUNT DISTINCT/AVG line LIMIT 500 | **4 assemble** / 5 verify | `host_codegen` | **harness — omitted-lemma call** | **no** | MCP last `…T234041_461dbd4a` E0425 `custom_query.rs:2694` host `lemma_multi_agg_helper_slot2_*` | Spec has `_rows` only; assemble still calls unsuffixed rem_cap | Repair assemble catalog; r27rocket `retry.json` step 4 |
+| **Q24** | same join-agg `stmt='EQ'` LIMIT 100 | **4 assemble** | `host_codegen` | **harness** | **no** | 4/4 MCP E0425 at **2694**; agent also nested-def the omitted lemma in `AGENT_EDIT` | Host call at 2694; agent leftover at 2936/3112 is secondary stupidity | Same host repair. Do not treat nested def as a fix. |
+| **Q28** | same `stmt='BS'` LIMIT 1000 | **4 assemble** | `host_codegen` | **harness** | **no** | first MCP `expected ','`; then 4× E0425 at **2694** | Same host hole; early parse is secondary | Same. |
+| **Q26** | num⋈sub SUM/AVG `uom='shares'` fy=2023 | **4 assemble** | `host_codegen` | **harness** | **no** | 5/5 MCP E0425 at **2654 and 2789** (two SUM slots) | Same omit/call split, two host sites | Same. |
+| **Q16** | same as Q11 LIMIT 1000 | **4 assemble** | `host_codegen` | **harness** | **no** | leftover E0425 ×2: host **2694** + agent call 3128; agent **redefines** omitted lemma with false ROWS²·NATIVE | Host still blocks N/0 even if agent deleted their call | Same. Do not restore unsound lemma. |
+| **Q29** | pre⋈sub⋈tag `10-Q/A` EQ custom=0 LIMIT 50 | **3 agent / 5 verify** | `agent_verify` | **agent too stupid to prove** | **yes** | MCP `…T231313_f9e9d152` `cannot use while in proof`; later E0425 `lemma_take50_to_origin`; leftover E0308 `i0 = i0 - 1` | Errors inside `AGENT_EDIT` on a sound spec | Record. No FAST / no `ensures true`. r27 only because family already aborted. |
 
 ## No fallbacks without explicit approval
 
