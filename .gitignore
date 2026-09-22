@@ -74,3 +74,7 @@ verus/db_extension_runtime/rust_bridge/target/
 verus/db_extension_lease/rust_bridge/target/
 verus/db_extension_storage/rust_bridge/target/
 verus/db_extension/rust_bridge/target/
+
+# Paper harvest data (traces, overnight logs, watch state). Symlink to ~/lemma-harvest.
+# Never commit or push this tree.
+/harvest

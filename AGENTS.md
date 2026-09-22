@@ -98,11 +98,53 @@ Every paper/Spot/`LEMMA_EXPERIMENT=1` run must be **reproducible** and **logged*
   count host-agent / measure-failed runs as the 98% gate. If the sandbox cannot be
   brought up, **stop and tell Emil** — do not continue a watered-down protocol.
 
+## Paper loop (the only overnight protocol)
+
+One project: **this repo** (`/home/emil/projects/lemma-db`). Harvest blobs live
+in `harvest/` (symlink to `~/lemma-harvest`, gitignored). Do not commit traces,
+overnight outputs, credentials, or `harvest/`. Home `~/AGENTS.md` only points
+here. Do not keep a second instruction set.
+
+**Local r12/r13 50/50 is a different experiment.** August 2026, 50-query
+resample, rocketship Trusteds, `VERIFY True`. r14 was a local tiny-SEC
+rehearsal; agent-prove was not cleared. A Spot `n2-highmem-64` does **not**
+replay that. The paper card is 61 jobs, fresh full-SEC shuffle, Docker CLI
+(`USE_AGENT_DOCKER=1`, `AGENT_IMAGE=lemma-agent:cli`, `LEMMA_AGENT_BACKEND=cli`),
+`LEMMA_SERIOUS=1`, `EMIT=0`, `FAST=0`, official full-table measure, fail-streak
+6. Bigger CPU does not turn a new shuffle into r13.
+
+Loop, in order:
+
+1. **Run on the Spot VM** with the paper launcher
+   (`harvest/watch/launch_paper.sh`). Clean git, tracked SHA, fresh shuffle,
+   one VM. The launcher must refuse to return until config verify passes
+   (Docker CLI, not local `AGENT_CMD` / OpenRouter).
+2. **Every 5 minutes, wake and check status** (VM up, family pid, ok/fail
+   counts, streak). The wake is a monitored shell **in the open Cursor chat**
+   (`notify_on_output` on `AGENT_LOOP_TICK_lemma`). It is not cron on the VM.
+   It dies when that chat closes, the laptop sleeps, or the shell is not
+   actually monitored. Arm it at the start of the session. Do not claim a wake
+   exists if that shell is not running. A bare `sleep` with no
+   `notify_on_output` does not create a turn.
+3. **On any fail, open traces before naming a cause.** If the hole is host /
+   harness / software (transpile, assemble, omitted-lemma call, pin, quota
+   counted as a proof fail, missing traces, wrong backend): **fix it**, commit,
+   push, **rerun the failed queries** as a **new family** (`retry.json`, same
+   SQL via `LEMMA_SQL_FILE` when the fix is host-side). Do not mix SHAs into
+   the dead family.
+4. **If the agent was too stupid** (errors inside `AGENT_EDIT` on a **sound**
+   spec, no marked `N verified, 0 errors`): record it, notify with
+   `AGENT TOO STUPID:` first line, **do not water down**, do not “fix” by
+   weakening the bar. No `submitted.json` means you **cannot** use that label
+   yet — treat missing submit + missing MCP runs as a harvest bug.
+5. After a host fix, start the new family from step 1. After an agent-stupid
+   record, leave the bar and continue only with a fresh family that does not
+   pretend the miss was a pass.
+
 ## Fail loop (overnight / Spot) — wake, check, repair or leave, retry marked
 
-Keep a **monitored loop** armed for the live family (`AGENT_LOOP_WAKE_*` on new
-`lemma_ok=false` rows and on abort). **Every fail wakes you. Do not skip the
-trace checklist because you already have a theory.**
+Keep the **5-minute paper loop** armed for the live family. **Every fail wakes
+you. Do not skip the trace checklist because you already have a theory.**
 
 On each wake:
 
