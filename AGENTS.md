@@ -74,7 +74,9 @@ When booking cloud VMs for Lemma experiments:
   Spot is out of stock. If Spot stock fails, retry another zone — still ≤2 machines, still
   under the cap — do not “upgrade” the machine class. **Never** ~$100/hr GPUs / multi-node.
 - Agent timeouts for paper/CLI runs stay **`AGENT_TIMEOUT_SEC=600`** (10 min) unless Emil
-  overrides; model **`cursor-grok-4.6-high`** in `research_loop/config.env` `AGENT_CMD`.
+  overrides. Model is **Grok 4.7 high**: slug **`grok-4.7-high`** in
+  `research_loop/config.env` `AGENT_CMD` (`agent … --model grok-4.7-high`).
+  Do not launch paper runs on `cursor-grok-4.6-high`.
 
 ### Experiment harvest (non-negotiable)
 
@@ -110,8 +112,8 @@ resample, rocketship Trusteds, `VERIFY True`. r14 was a local tiny-SEC
 rehearsal; agent-prove was not cleared. A Spot `n2-highmem-64` does **not**
 replay that. The paper card is 61 jobs, fresh full-SEC shuffle, Docker CLI
 (`USE_AGENT_DOCKER=1`, `AGENT_IMAGE=lemma-agent:cli`, `LEMMA_AGENT_BACKEND=cli`),
-`LEMMA_SERIOUS=1`, `EMIT=0`, `FAST=0`, official full-table measure, fail-streak
-6. Bigger CPU does not turn a new shuffle into r13.
+model **`grok-4.7-high`**, `LEMMA_SERIOUS=1`, `EMIT=0`, `FAST=0`, official
+full-table measure, fail-streak 6. Bigger CPU does not turn a new shuffle into r13.
 
 Loop, in order:
 
