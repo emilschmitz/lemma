@@ -317,6 +317,24 @@ def test_valid_cols_u32_column_assumption_emits_per_column_cap() -> None:
     assert "pub const LEMMA_MAX_pre_line: u32 = 483;" in consts
 
 
+def test_emit_bound_constants_includes_abs_sum() -> None:
+    cat = CatalogAssumptions(
+        max_rows=100,
+        max_rows_cube=100,
+        max_rows_4=100,
+        tables={
+            "num": TableAssumptions(
+                columns={"value": ColumnAssumption(abs_sum_exclusive=10**18)}
+            )
+        },
+    )
+    bounds = resolve_bounds(
+        with_catalog_assumptions(cat, defaults=engine_default_catalog_assumptions())
+    )
+    consts = emit_bound_constants(bounds=bounds, catalog=cat)
+    assert "pub const LEMMA_ABS_SUM_num_value: u64 = 1000000000000000000;" in consts
+
+
 def test_valid_cols_u64_column_above_global_cell_cap_omits_false_bound() -> None:
     huge = SEC_PROVE_LOOP_MAX_CELL_U64 + 1
     cat = CatalogAssumptions(

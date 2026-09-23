@@ -26,6 +26,8 @@ from research_loop.table_assumptions import (
     CatalogAssumptions,
     ResolvedBounds,
     TableAssumptions,
+    column_abs_sum_const_name,
+    column_abs_sum_exclusive,
     column_assumption_exclusive,
     column_cap_const_name,
     engine_default_catalog_assumptions,
@@ -412,6 +414,15 @@ def emit_bound_constants(
         lines.append(
             f"pub const {const_name}: {ty} = {cap};"
         )
+    if catalog is not None:
+        for table, ta in catalog.tables.items():
+            for column in ta.columns:
+                abs_sum = column_abs_sum_exclusive(column, ta)
+                if abs_sum is None or abs_sum >= 2**64:
+                    continue
+                lines.append(
+                    f"pub const {column_abs_sum_const_name(table, column)}: u64 = {abs_sum};"
+                )
     return "\n".join(lines) + "\n"
 
 

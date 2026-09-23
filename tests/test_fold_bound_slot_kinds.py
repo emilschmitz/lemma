@@ -536,6 +536,43 @@ def test_large_sec_sum_without_column_cap_raises_host_codegen() -> None:
         multi_agg_step_trusted_rs(spec, ret_type, catalog_assumptions=catalog)
 
 
+def test_large_sec_sum_uses_measured_abs_total_when_cell_product_overflows() -> None:
+    """Full-table num.value does not fit rows*max(cell); the measured abs total does."""
+    from tests.test_sec_holdout_parse import SEC_SCHEMA
+
+    large_rows = 39_401_761
+    abs_total = 10**18
+    catalog = CatalogAssumptions(
+        max_rows=large_rows,
+        max_rows_cube=large_rows,
+        max_rows_4=large_rows,
+        max_cell_u64=SEC_PROVE_LOOP_MAX_CELL_U64,
+        max_native_u32=2**31,
+        max_string_len=128,
+        tables={
+            "num": TableAssumptions(
+                max_rows=large_rows,
+                columns={
+                    "value": ColumnAssumption(
+                        max_value_exclusive=2**60,
+                        abs_sum_exclusive=abs_total,
+                    )
+                },
+            ),
+            "sub": TableAssumptions(max_rows=86_135),
+        },
+    )
+    schema = {"num": SEC_SCHEMA["num"], "sub": SEC_SCHEMA["sub"]}
+    spec = _transpile(TWO_TABLE_SUM_SQL, schema, catalog=catalog)
+    ret_type = resolve_ret_type_from_method_spec(spec)
+    rs = multi_agg_step_trusted_rs(spec, ret_type, catalog_assumptions=catalog)
+    assert "LEMMA_ABS_SUM_num_value" in rs
+    assert "assume((prev_slot as int) + (" in rs
+    assert "<= u64::MAX as int" in rs
+    assert "lemma_rem_cap_native_add_fits(" not in rs
+    assert "lemma_rem_cap_cell_u64_add_fits(" not in rs
+
+
 def test_large_sec_sum_overflowing_column_cap_raises_host_codegen() -> None:
     from tests.test_sec_holdout_parse import SEC_SCHEMA
 

@@ -132,6 +132,67 @@ _INTEGER_DUCKDB_TYPES = frozenset(
 _FLOAT_DUCKDB_TYPES = frozenset({"double", "float8", "float", "real"})
 
 
+def table_column_abs_sum_caps() -> dict[str, dict[str, int]] | None:
+    """Exclusive bound on ``sum(abs(col))``: ``sum(ceil(abs))+1`` when it fits in u64.
+
+    Returns None when the database is missing. A column is omitted when the sum
+    overflows u64 or cannot be computed. The number is an input to the catalog,
+    not a proof constant chosen in software.
+    """
+    db = os.environ.get("LEMMA_DUCKDB_PATH", "").strip()
+    if not db or not Path(db).is_file():
+        return None
+    try:
+        import duckdb
+    except ImportError:
+        return None
+    try:
+        con = duckdb.connect(db, read_only=True)
+        try:
+            rows = con.execute(
+                "SELECT table_name, column_name, data_type "
+                "FROM information_schema.columns "
+                "WHERE table_schema = 'main'"
+            ).fetchall()
+            caps: dict[str, dict[str, int]] = {}
+            for table, column, dtype in rows:
+                table_name = str(table)
+                column_name = str(column)
+                if not _safe_duckdb_table_name(table_name):
+                    continue
+                base = str(dtype).lower().split("(")[0]
+                if base not in _INTEGER_DUCKDB_TYPES | _FLOAT_DUCKDB_TYPES:
+                    continue
+                sum_row = con.execute(
+                    f'SELECT CASE '
+                    f'WHEN COUNT(*) FILTER ('
+                    f'WHERE "{column_name}" IS NOT NULL '
+                    f'AND ABS("{column_name}") >= {_U64_MAX_EXCLUSIVE}'
+                    f') > 0 THEN NULL '
+                    f'ELSE SUM(CAST(CEIL(ABS("{column_name}")) AS HUGEINT)) '
+                    f'FILTER (WHERE "{column_name}" IS NOT NULL) '
+                    f'END FROM {table_name}'
+                ).fetchone()
+                if sum_row is None or sum_row[0] is None:
+                    continue
+                total = int(sum_row[0])
+                if total < 0:
+                    continue
+                # Exclusive bound must itself fit in a u64 const (strictly below 2^64).
+                exclusive = total + 1
+                if exclusive >= _U64_MAX_EXCLUSIVE:
+                    continue
+                caps.setdefault(table_name, {})[column_name] = exclusive
+            return caps or None
+        finally:
+            con.close()
+    except Exception as exc:
+        if duckdb_error_is_contention(str(exc)):
+            emit_duckdb_contention(stage="column_abs_sum_caps", error=str(exc), db_path=db)
+            raise
+        return None
+
+
 def table_column_value_caps() -> dict[str, dict[str, int]] | None:
     """Per-table per-column exclusive upper bounds from ``LEMMA_DUCKDB_PATH``.
 

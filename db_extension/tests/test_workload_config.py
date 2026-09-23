@@ -79,6 +79,10 @@ def test_catalog_assumptions_sec_product_from_duckdb_counts(monkeypatch):
         "db_extension.dataset_config.table_column_value_caps",
         lambda: None,
     )
+    monkeypatch.setattr(
+        "db_extension.dataset_config.table_column_abs_sum_caps",
+        lambda: None,
+    )
     cat = catalog_assumptions_for_workload("sec")
     assert cat.max_rows == max(sample_counts.values())
     assert cat.max_rows_cube == cat.max_rows

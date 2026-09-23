@@ -40,10 +40,13 @@ DEFAULT_MAX_STRING_LEN = 128
 
 @dataclass(frozen=True)
 class ColumnAssumption:
-    """Optional exclusive upper bound on a column's cell values (exec domain)."""
+    """Optional exclusive upper bounds on a column (exec domain, catalog input)."""
 
     max_value_exclusive: int | None = None
     max_string_len: int | None = None
+    # Exclusive upper bound on the sum of absolute cell values, when that total
+    # fits in u64. A single pass that adds each cell at most once stays below it.
+    abs_sum_exclusive: int | None = None
 
 
 @dataclass(frozen=True)
@@ -226,6 +229,28 @@ def table_assumptions_for(
     if catalog is None:
         return None
     return catalog.tables.get(table)
+
+
+def column_abs_sum_const_name(table: str, column: str) -> str:
+    """Rust const for a catalog-measured exclusive bound on sum(abs(column))."""
+
+    def _seg(part: str) -> str:
+        return re.sub(r"[^a-z0-9_]", "_", part.lower())
+
+    return f"LEMMA_ABS_SUM_{_seg(table)}_{_seg(column)}"
+
+
+def column_abs_sum_exclusive(
+    column: str,
+    table: TableAssumptions | None,
+) -> int | None:
+    """Measured sum(abs) exclusive bound, or None when the column has no such cap."""
+    if table is None:
+        return None
+    col = table.columns.get(column)
+    if col is None or col.abs_sum_exclusive is None:
+        return None
+    return col.abs_sum_exclusive
 
 
 def column_cap_const_name(table: str, column: str) -> str:

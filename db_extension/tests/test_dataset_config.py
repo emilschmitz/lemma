@@ -14,6 +14,7 @@ from db_extension.dataset_config import (
     mcp_iterate_is_uncapped,
     row_budget_prompt_section,
     run_runquery_iterate_tool_blurb,
+    table_column_abs_sum_caps,
     table_column_value_caps,
     table_row_counts,
 )
@@ -356,6 +357,8 @@ def test_table_column_value_caps_integer_and_double(
     con.execute("INSERT INTO pre VALUES (-482, 10.0), (100, 20.0)")
     con.execute("CREATE TABLE messy (value DOUBLE)")
     con.execute("INSERT INTO messy VALUES (1.5)")
+    con.execute("CREATE TABLE huge (value DOUBLE)")
+    con.execute("INSERT INTO huge VALUES (18446744073709551616)")
     con.execute("CREATE TABLE num (value DOUBLE)")
     # Above 2^53. The DOUBLE column stores the nearest float64, not this literal.
     con.execute("INSERT INTO num VALUES (188446126794000001)")
@@ -369,6 +372,11 @@ def test_table_column_value_caps_integer_and_double(
     assert int(stored) > 2**53
     assert caps["num"]["value"] == int(stored) + 1
     assert "messy" not in caps or "value" not in caps.get("messy", {})
+    sums = table_column_abs_sum_caps()
+    assert sums is not None
+    assert sums["pre"]["line"] == 582 + 1
+    assert sums["messy"]["value"] == 2 + 1
+    assert "huge" not in sums or "value" not in sums.get("huge", {})
 
 
 def test_run_solution_default_passes_iterate_dataset_size(

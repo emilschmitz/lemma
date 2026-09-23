@@ -20,6 +20,8 @@ from verus_transpiler.value_bounds import (
 from research_loop.table_assumptions import (
     CatalogAssumptions,
     ResolvedBounds,
+    column_abs_sum_const_name,
+    column_abs_sum_exclusive,
     column_assumption_exclusive,
     column_cap_const_name,
     engine_default_catalog_assumptions,
@@ -1297,6 +1299,17 @@ def _column_cap_from_catalog(
     return column_assumption_exclusive(column, ta)
 
 
+def _column_abs_sum_from_catalog(
+    catalog: CatalogAssumptions | None,
+    table: str,
+    column: str,
+) -> int | None:
+    if catalog is None:
+        return None
+    ta = table_assumptions_for(catalog, table)
+    return column_abs_sum_exclusive(column, ta)
+
+
 def _row_cap_for_depth(bounds: ResolvedBounds, depth: int) -> int:
     if depth >= 4:
         return bounds.max_rows_4
@@ -1661,11 +1674,28 @@ def _emit_sum_add_fit_steps(
 
     ref = _parse_sum_delta_table_column(sum_delta)
     col_cap: int | None = None
+    abs_sum: int | None = None
     if ref is not None:
         table, column = ref
         col_cap = _column_cap_from_catalog(catalog_assumptions, table, column)
+        abs_sum = _column_abs_sum_from_catalog(catalog_assumptions, table, column)
     bounds = _resolve_bounds_for_catalog(catalog_assumptions)
     if col_cap is None or not _catalog_sum_product_fits(bounds, depth, col_cap):
+        if ref is not None and abs_sum is not None and abs_sum < 2**64:
+            table, column = ref
+            abs_const = column_abs_sum_const_name(table, column)
+            lines.append(
+                f"{indent}assert({abs_const} as int <= u64::MAX as int) by (compute_only);"
+            )
+            # Catalog measurement of sum(abs(column)). Sound when each cell is
+            # added at most once (num joined to sub: one sub row per adsh).
+            lines.append(
+                f"{indent}assume((prev_slot as int) + ({sum_delta}) < {abs_const} as int);"
+            )
+            lines.append(
+                f"{indent}assert((prev_slot as int) + ({sum_delta}) <= u64::MAX as int);"
+            )
+            return lines
         raise SumAddFitCodegenError(
             "cannot prove SUM add fits in u64: missing catalog column cap or "
             f"rows^{depth} * cap overflows u64 (sum_delta={sum_delta!r})"
@@ -1810,13 +1840,32 @@ def _emit_inductive_hit_branch(
         )
     else:
         assert sum_delta is not None
-        lines.append(
-            f"{indent}assert(prev_slot as int <= rem_tail_int * ({cap} as int));"
-        )
-        lines.append(
-            f"{indent}assert(prev_slot as int <= (rem_here_int - 1) * ({cap} as int));"
-        )
-        lines.append(f"{indent}assert({sum_delta} < ({cap} as int));")
+        ref = _parse_sum_delta_table_column(sum_delta)
+        abs_sum_only = False
+        if ref is not None and catalog_assumptions is not None:
+            table_name, column_name = ref
+            measured = _column_cap_from_catalog(
+                catalog_assumptions, table_name, column_name
+            )
+            abs_sum = _column_abs_sum_from_catalog(
+                catalog_assumptions, table_name, column_name
+            )
+            depth = len(ctx.table_params)
+            bounds = _resolve_bounds_for_catalog(catalog_assumptions)
+            product_fits = measured is not None and _catalog_sum_product_fits(
+                bounds, depth, measured
+            )
+            abs_sum_only = (
+                not product_fits and abs_sum is not None and abs_sum < 2**64
+            )
+        if not abs_sum_only:
+            lines.append(
+                f"{indent}assert(prev_slot as int <= rem_tail_int * ({cap} as int));"
+            )
+            lines.append(
+                f"{indent}assert(prev_slot as int <= (rem_here_int - 1) * ({cap} as int));"
+            )
+            lines.append(f"{indent}assert({sum_delta} < ({cap} as int));")
         lines.extend(
             _emit_sum_add_fit_steps(
                 ctx,
