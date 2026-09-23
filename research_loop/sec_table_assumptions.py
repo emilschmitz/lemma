@@ -50,6 +50,7 @@ def sec_product_catalog_assumptions() -> CatalogAssumptions:
         table_column_abs_sum_caps,
         table_column_value_caps,
         table_row_counts,
+        tables_one_row_per_adsh,
     )
 
     counts = table_row_counts()
@@ -58,6 +59,7 @@ def sec_product_catalog_assumptions() -> CatalogAssumptions:
 
     column_caps = table_column_value_caps()
     abs_sums = table_column_abs_sum_caps()
+    one_row = tables_one_row_per_adsh() or set()
     prove = sec_prove_loop_catalog_assumptions()
     max_rows = max(counts.values())
     tables: dict[str, TableAssumptions] = {}
@@ -70,7 +72,11 @@ def sec_product_catalog_assumptions() -> CatalogAssumptions:
                 max_value_exclusive=cap_cols.get(col),
                 abs_sum_exclusive=sum_cols.get(col),
             )
-        tables[name] = TableAssumptions(max_rows=n, columns=col_assumptions)
+        tables[name] = TableAssumptions(
+            max_rows=n,
+            columns=col_assumptions,
+            one_row_per_adsh=name in one_row,
+        )
     return CatalogAssumptions(
         tables=tables,
         max_rows=max_rows,

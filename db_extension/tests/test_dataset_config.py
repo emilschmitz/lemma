@@ -17,6 +17,7 @@ from db_extension.dataset_config import (
     table_column_abs_sum_caps,
     table_column_value_caps,
     table_row_counts,
+    tables_one_row_per_adsh,
 )
 from db_extension_paths.dataset_config import (
     effective_dataset_size as paths_effective_dataset_size,
@@ -377,6 +378,24 @@ def test_table_column_value_caps_integer_and_double(
     assert sums["pre"]["line"] == 582 + 1
     assert sums["messy"]["value"] == 2 + 1
     assert "huge" not in sums or "value" not in sums.get("huge", {})
+
+
+def test_tables_one_row_per_adsh(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    isolated_ssb: Path,
+) -> None:
+    duckdb = pytest.importorskip("duckdb")
+    db = tmp_path / "adsh.duckdb"
+    con = duckdb.connect(str(db))
+    con.execute("CREATE TABLE sub (adsh VARCHAR)")
+    con.execute("INSERT INTO sub VALUES ('a'), ('b')")
+    con.execute("CREATE TABLE num (adsh VARCHAR)")
+    con.execute("INSERT INTO num VALUES ('a'), ('a')")
+    con.close()
+    monkeypatch.setenv("LEMMA_DUCKDB_PATH", str(db))
+    unique = tables_one_row_per_adsh()
+    assert unique == {"sub"}
 
 
 def test_run_solution_default_passes_iterate_dataset_size(

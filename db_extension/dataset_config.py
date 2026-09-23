@@ -132,6 +132,50 @@ _INTEGER_DUCKDB_TYPES = frozenset(
 _FLOAT_DUCKDB_TYPES = frozenset({"double", "float8", "float", "real"})
 
 
+def tables_one_row_per_adsh() -> set[str] | None:
+    """Tables whose ``adsh`` column has at most one row per value.
+
+    Returns None when the database is missing. A table without ``adsh``, or with
+    any repeated ``adsh``, is omitted.
+    """
+    db = os.environ.get("LEMMA_DUCKDB_PATH", "").strip()
+    if not db or not Path(db).is_file():
+        return None
+    try:
+        import duckdb
+    except ImportError:
+        return None
+    try:
+        con = duckdb.connect(db, read_only=True)
+        try:
+            rows = con.execute(
+                "SELECT table_name FROM information_schema.columns "
+                "WHERE table_schema = 'main' AND column_name = 'adsh'"
+            ).fetchall()
+            unique: set[str] = set()
+            for (table,) in rows:
+                table_name = str(table)
+                if not _safe_duckdb_table_name(table_name):
+                    continue
+                max_row = con.execute(
+                    f'SELECT MAX(c) FROM ('
+                    f'SELECT COUNT(*) AS c FROM {table_name} GROUP BY adsh'
+                    f')'
+                ).fetchone()
+                if max_row is None or max_row[0] is None:
+                    continue
+                if int(max_row[0]) == 1:
+                    unique.add(table_name)
+            return unique or None
+        finally:
+            con.close()
+    except Exception as exc:
+        if duckdb_error_is_contention(str(exc)):
+            emit_duckdb_contention(stage="one_row_per_adsh", error=str(exc), db_path=db)
+            raise
+        return None
+
+
 def table_column_abs_sum_caps() -> dict[str, dict[str, int]] | None:
     """Exclusive bound on ``sum(abs(col))``: ``sum(ceil(abs))+1`` when it fits in u64.
 

@@ -1310,6 +1310,35 @@ def _column_abs_sum_from_catalog(
     return column_abs_sum_exclusive(column, ta)
 
 
+def _table_name_from_fold_param(param: str, struct: str) -> str:
+    if struct.startswith("Cols_"):
+        return struct[len("Cols_") :]
+    return param
+
+
+def _abs_sum_covers_fold(
+    ctx: FoldBoundContext,
+    source_table: str,
+    catalog: CatalogAssumptions | None,
+) -> bool:
+    """True when the fold adds each source cell at most once.
+
+    A lone scan does. A join does only when every other table is one row per
+    ``adsh`` (the SEC join key). ``pre`` joined to ``tag`` repeats cells and
+    must not use the column's absolute total.
+    """
+    if catalog is None:
+        return False
+    for param, struct in ctx.table_params:
+        name = _table_name_from_fold_param(param, struct)
+        if name == source_table:
+            continue
+        ta = table_assumptions_for(catalog, name)
+        if ta is None or not ta.one_row_per_adsh:
+            return False
+    return True
+
+
 def _row_cap_for_depth(bounds: ResolvedBounds, depth: int) -> int:
     if depth >= 4:
         return bounds.max_rows_4
@@ -1681,7 +1710,12 @@ def _emit_sum_add_fit_steps(
         abs_sum = _column_abs_sum_from_catalog(catalog_assumptions, table, column)
     bounds = _resolve_bounds_for_catalog(catalog_assumptions)
     if col_cap is None or not _catalog_sum_product_fits(bounds, depth, col_cap):
-        if ref is not None and abs_sum is not None and abs_sum < 2**64:
+        if (
+            ref is not None
+            and abs_sum is not None
+            and abs_sum < 2**64
+            and _abs_sum_covers_fold(ctx, table, catalog_assumptions)
+        ):
             table, column = ref
             abs_const = column_abs_sum_const_name(table, column)
             lines.append(
@@ -1856,7 +1890,10 @@ def _emit_inductive_hit_branch(
                 bounds, depth, measured
             )
             abs_sum_only = (
-                not product_fits and abs_sum is not None and abs_sum < 2**64
+                not product_fits
+                and abs_sum is not None
+                and abs_sum < 2**64
+                and _abs_sum_covers_fold(ctx, table_name, catalog_assumptions)
             )
         if not abs_sum_only:
             lines.append(

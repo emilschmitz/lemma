@@ -55,6 +55,9 @@ class TableAssumptions:
 
     max_rows: int | None = None
     columns: dict[str, ColumnAssumption] = field(default_factory=dict)
+    # True when DuckDB shows at most one row per ``adsh``. A join to this table
+    # on adsh adds each outer cell at most once.
+    one_row_per_adsh: bool = False
 
 
 @dataclass(frozen=True)

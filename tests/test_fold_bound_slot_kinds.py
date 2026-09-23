@@ -559,7 +559,7 @@ def test_large_sec_sum_uses_measured_abs_total_when_cell_product_overflows() -> 
                     )
                 },
             ),
-            "sub": TableAssumptions(max_rows=86_135),
+            "sub": TableAssumptions(max_rows=86_135, one_row_per_adsh=True),
         },
     )
     schema = {"num": SEC_SCHEMA["num"], "sub": SEC_SCHEMA["sub"]}
@@ -571,6 +571,35 @@ def test_large_sec_sum_uses_measured_abs_total_when_cell_product_overflows() -> 
     assert "<= u64::MAX as int" in rs
     assert "lemma_rem_cap_native_add_fits(" not in rs
     assert "lemma_rem_cap_cell_u64_add_fits(" not in rs
+
+
+def test_abs_sum_not_used_when_join_can_repeat_cells() -> None:
+    from tests.test_sec_holdout_parse import SEC_SCHEMA
+
+    large_rows = 39_401_761
+    catalog = CatalogAssumptions(
+        max_rows=large_rows,
+        max_rows_cube=large_rows,
+        max_rows_4=large_rows,
+        max_cell_u64=SEC_PROVE_LOOP_MAX_CELL_U64,
+        max_native_u32=2**31,
+        tables={
+            "num": TableAssumptions(
+                columns={
+                    "value": ColumnAssumption(
+                        max_value_exclusive=2**60,
+                        abs_sum_exclusive=10**18,
+                    )
+                },
+            ),
+            "sub": TableAssumptions(one_row_per_adsh=False),
+        },
+    )
+    schema = {"num": SEC_SCHEMA["num"], "sub": SEC_SCHEMA["sub"]}
+    spec = _transpile(TWO_TABLE_SUM_SQL, schema, catalog=catalog)
+    ret_type = resolve_ret_type_from_method_spec(spec)
+    with pytest.raises(SumAddFitCodegenError):
+        multi_agg_step_trusted_rs(spec, ret_type, catalog_assumptions=catalog)
 
 
 def test_large_sec_sum_overflowing_column_cap_raises_host_codegen() -> None:
