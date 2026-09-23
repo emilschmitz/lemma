@@ -14,7 +14,15 @@ DuckDB is **not** a second engine. It is the pinned column store at **execute**.
 | 6 | **compile** | Native binary. |
 | 7 | **execute** | Run binary; **pin** DuckDB columns; time it. Failures here = **failed to execute** (pin, harness timeout, binary crash). |
 
-When telling Emil about a problem, lead with **`step N (name):`** and the one-liner class (`transpiler coverage` / `assemble` / `agent stupidity` / `failed to execute` / `infra`). Do not mix stages.
+When telling Emil about a problem, lead with **`step N (name):`** and **one** of these words. Do not mix stages. Do not invent a third label.
+
+| What you say | When it is true |
+|---|---|
+| **The agent was too stupid** | You opened the traces. The spec is sound. The broken lines are inside `AGENT_EDIT`. Quote the file, the line, and the Verus/rustc error. A marked submit that is not `N verified, 0 errors` counts. No traces, no this label. |
+| **Software fail** | Assemble, transpile, a call to a lemma the host deleted, a pin, a scorer, or missing traces. These should be impossible once the host is finished. Fix the software. Do not call this agent stupidity. |
+| **It proved and then did not run** | Verus already said `N verified, 0 errors`, and step 7 (the timed run) died. That is a run fail, not a proof fail. |
+
+**Traces before any claim about the agent.** If you are about to say the agent caused something, or you only suspect that, open the traces first. A driver line (`FAILED`, `TIMEOUT`, `fail_streak`) is not a trace. The trace is `mcp_results/runs/*.json`, `submitted.json`, and `verify_error_custom.log`.
 
 **Proofs are the agent’s job** (`AGENT_EDIT` only). Host work is the harness: steps **2, 4, 6, 7** (typed spec, assemble, compile, pin/execute). Do not hand-write or patch proofs. If the agent fails on a **sound** spec, a **general** prompt tweak is allowed; query-specific prompt hacks are not.
 
@@ -101,6 +109,8 @@ Every paper/Spot/`LEMMA_EXPERIMENT=1` run must be **reproducible** and **logged*
   brought up, **stop and tell Emil** — do not continue a watered-down protocol.
 
 ## Paper loop (the only overnight protocol)
+
+**Prove agent from now on: Grok 4.7** (`grok-4.7-high` in `research_loop/config.env` `AGENT_CMD`). It is the new model. Do not launch on `cursor-grok-4.6-high`.
 
 One project: **this repo** (`/home/emil/projects/lemma-db`). Harvest blobs live
 in `harvest/` (symlink to `~/lemma-harvest`, gitignored). Do not commit traces,
@@ -190,9 +200,10 @@ On each wake:
 
 ## Always read the traces on failure
 
+**Always. Including when you only suspect the agent.** Any claim that agent behavior caused a fail, a timeout, a streak, or a bad score starts from the traces. Do not suspect out loud and then skip the files.
+
 When a run, experiment, verify, assemble, or agent session **fails**, do **not** guess from the
-one-line summary alone. **If you even suspect an agent fail or a prove timeout, open the
-traces first.** A driver line `TIMEOUT after Ns` is **not** proof that Verus timed out.
+one-line summary alone. A driver line `TIMEOUT after Ns` is **not** proof that Verus timed out.
 `verify_error_custom.log` starting with `verification results:: N verified, M errors` means
 Verus **finished** (proof error, not a timeout). Only treat it as a timeout if that file
 (or Verus stderr) says timed out / no `verification results`.
