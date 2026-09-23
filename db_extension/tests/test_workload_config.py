@@ -84,7 +84,7 @@ def test_catalog_assumptions_sec_product_from_duckdb_counts(monkeypatch):
         lambda: None,
     )
     monkeypatch.setattr(
-        "db_extension.dataset_config.tables_one_row_per_adsh",
+        "db_extension.dataset_config.table_unique_keys",
         lambda: None,
     )
     cat = catalog_assumptions_for_workload("sec")

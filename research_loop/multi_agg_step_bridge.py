@@ -1316,16 +1316,35 @@ def _table_name_from_fold_param(param: str, struct: str) -> str:
     return param
 
 
+def _filter_equates_column(filter_expr: str, table: str, column: str) -> bool:
+    """True when the fold filter equates ``table.column`` to the same column elsewhere."""
+    col = re.escape(column)
+    tbl = re.escape(table)
+    pat = re.compile(
+        rf"(?:{tbl}\.{col}\[[^\]]*\]@\s*==\s*\w+\.{col}\[[^\]]*\]@"
+        rf"|\w+\.{col}\[[^\]]*\]@\s*==\s*{tbl}\.{col}\[[^\]]*\]@)"
+    )
+    return pat.search(filter_expr) is not None
+
+
+def _unique_keys_for(table: TableAssumptions) -> tuple[tuple[str, ...], ...]:
+    keys = list(table.unique_keys)
+    if table.one_row_per_adsh and ("adsh",) not in keys:
+        keys.append(("adsh",))
+    return tuple(keys)
+
+
 def _abs_sum_covers_fold(
     ctx: FoldBoundContext,
     source_table: str,
     catalog: CatalogAssumptions | None,
+    join_filter: str,
 ) -> bool:
     """True when the fold adds each source cell at most once.
 
-    A lone scan does. A join does only when every other table is one row per
-    ``adsh`` (the SEC join key). ``pre`` joined to ``tag`` repeats cells and
-    must not use the column's absolute total.
+    A lone scan does. A join does only when every other table is joined on a
+    column group DuckDB showed is unique (``sub.adsh``, or ``tag`` plus
+    ``version``). A join that repeats a cell does not get the absolute total.
     """
     if catalog is None:
         return False
@@ -1334,7 +1353,15 @@ def _abs_sum_covers_fold(
         if name == source_table:
             continue
         ta = table_assumptions_for(catalog, name)
-        if ta is None or not ta.one_row_per_adsh:
+        if ta is None:
+            return False
+        keys = _unique_keys_for(ta)
+        if not keys:
+            return False
+        if not any(
+            all(_filter_equates_column(join_filter, name, column) for column in key)
+            for key in keys
+        ):
             return False
     return True
 
@@ -1641,6 +1668,7 @@ def _emit_sum_add_fit_steps(
     sum_delta: str,
     skip: frozenset[str] = frozenset(),
     catalog_assumptions: CatalogAssumptions | None = None,
+    join_filter: str = "",
 ) -> list[str]:
     """Prove ``prev_slot + sum_delta`` fits in u64 under rem·cap (SUM fold step)."""
     depth = len(ctx.table_params)
@@ -1714,7 +1742,9 @@ def _emit_sum_add_fit_steps(
             ref is not None
             and abs_sum is not None
             and abs_sum < 2**64
-            and _abs_sum_covers_fold(ctx, table, catalog_assumptions)
+            and _abs_sum_covers_fold(
+                ctx, table, catalog_assumptions, join_filter
+            )
         ):
             table, column = ref
             abs_const = column_abs_sum_const_name(table, column)
@@ -1893,7 +1923,9 @@ def _emit_inductive_hit_branch(
                 not product_fits
                 and abs_sum is not None
                 and abs_sum < 2**64
-                and _abs_sum_covers_fold(ctx, table_name, catalog_assumptions)
+                and _abs_sum_covers_fold(
+                    ctx, table_name, catalog_assumptions, hit.filter_expr
+                )
             )
         if not abs_sum_only:
             lines.append(
@@ -1912,6 +1944,7 @@ def _emit_inductive_hit_branch(
                 sum_delta=sum_delta,
                 skip=skip,
                 catalog_assumptions=catalog_assumptions,
+                join_filter=hit.filter_expr,
             )
         )
 

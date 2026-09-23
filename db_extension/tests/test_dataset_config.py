@@ -17,6 +17,7 @@ from db_extension.dataset_config import (
     table_column_abs_sum_caps,
     table_column_value_caps,
     table_row_counts,
+    table_unique_keys,
     tables_one_row_per_adsh,
 )
 from db_extension_paths.dataset_config import (
@@ -392,10 +393,22 @@ def test_tables_one_row_per_adsh(
     con.execute("INSERT INTO sub VALUES ('a'), ('b')")
     con.execute("CREATE TABLE num (adsh VARCHAR)")
     con.execute("INSERT INTO num VALUES ('a'), ('a')")
+    con.execute("CREATE TABLE tag (tag VARCHAR, version VARCHAR)")
+    con.execute("INSERT INTO tag VALUES ('Assets', 'us-gaap/2024'), ('Assets', 'us-gaap/2023')")
+    con.execute("CREATE TABLE pre (adsh VARCHAR, tag VARCHAR, version VARCHAR)")
+    con.execute(
+        "INSERT INTO pre VALUES ('a', 'Assets', 'us-gaap/2024'), ('a', 'Assets', 'us-gaap/2024')"
+    )
     con.close()
     monkeypatch.setenv("LEMMA_DUCKDB_PATH", str(db))
     unique = tables_one_row_per_adsh()
     assert unique == {"sub"}
+    keys = table_unique_keys()
+    assert keys is not None
+    assert keys["sub"] == (("adsh",),)
+    assert keys["tag"] == (("tag", "version"),)
+    assert "pre" not in keys
+    assert "num" not in keys
 
 
 def test_run_solution_default_passes_iterate_dataset_size(

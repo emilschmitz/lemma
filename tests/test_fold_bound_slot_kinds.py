@@ -12,7 +12,9 @@ from research_loop.harness import resolve_verus_bin, run_verus_verify
 from research_loop.method_spec_ret_type import resolve_ret_type_from_method_spec
 from research_loop.multi_agg_step_bridge import (
     CountSlotAddend,
+    FoldBoundContext,
     SumAddFitCodegenError,
+    _abs_sum_covers_fold,
     _classify_u64_slot,
     _parse_count_slot_addend,
     _parse_fold_bound_context,
@@ -571,6 +573,37 @@ def test_large_sec_sum_uses_measured_abs_total_when_cell_product_overflows() -> 
     assert "<= u64::MAX as int" in rs
     assert "lemma_rem_cap_native_add_fits(" not in rs
     assert "lemma_rem_cap_cell_u64_add_fits(" not in rs
+
+
+def test_abs_sum_requires_the_join_to_use_the_unique_key() -> None:
+    ctx = FoldBoundContext(
+        helper="multi_agg_helper",
+        table_params=(("num", "Cols_num"), ("sub", "Cols_sub")),
+        index_params=("i0", "i1"),
+    )
+    catalog = CatalogAssumptions(
+        tables={"sub": TableAssumptions(one_row_per_adsh=True)},
+    )
+    on_adsh = "num.adsh[i0 as int]@ == sub.adsh[i1 as int]@"
+    on_name = "num.name[i0 as int]@ == sub.name[i1 as int]@"
+    assert _abs_sum_covers_fold(ctx, "num", catalog, on_adsh)
+    assert not _abs_sum_covers_fold(ctx, "num", catalog, on_name)
+
+    tag_ctx = FoldBoundContext(
+        helper="multi_agg_helper",
+        table_params=(("num", "Cols_num"), ("tag", "Cols_tag")),
+        index_params=("i0", "i1"),
+    )
+    tag_catalog = CatalogAssumptions(
+        tables={"tag": TableAssumptions(unique_keys=(("tag", "version"),))},
+    )
+    both = (
+        "num.tag[i0 as int]@ == tag.tag[i1 as int]@ && "
+        "num.version[i0 as int]@ == tag.version[i1 as int]@"
+    )
+    only_tag = "num.tag[i0 as int]@ == tag.tag[i1 as int]@"
+    assert _abs_sum_covers_fold(tag_ctx, "num", tag_catalog, both)
+    assert not _abs_sum_covers_fold(tag_ctx, "num", tag_catalog, only_tag)
 
 
 def test_abs_sum_not_used_when_join_can_repeat_cells() -> None:

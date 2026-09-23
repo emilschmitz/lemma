@@ -132,11 +132,19 @@ _INTEGER_DUCKDB_TYPES = frozenset(
 _FLOAT_DUCKDB_TYPES = frozenset({"double", "float8", "float", "real"})
 
 
-def tables_one_row_per_adsh() -> set[str] | None:
-    """Tables whose ``adsh`` column has at most one row per value.
+# Candidate keys from the SEC filing layout. A key is recorded only when a
+# GROUP BY on the real table has max count 1. Repeated keys are omitted.
+_UNIQUE_KEY_CANDIDATES: tuple[tuple[str, ...], ...] = (
+    ("adsh",),
+    ("tag", "version"),
+)
 
-    Returns None when the database is missing. A table without ``adsh``, or with
-    any repeated ``adsh``, is omitted.
+
+def table_unique_keys() -> dict[str, tuple[tuple[str, ...], ...]] | None:
+    """Unique column groups measured from ``LEMMA_DUCKDB_PATH``.
+
+    Returns None when the database is missing. A candidate is stored only when
+    every column exists and no group has more than one row.
     """
     db = os.environ.get("LEMMA_DUCKDB_PATH", "").strip()
     if not db or not Path(db).is_file():
@@ -149,31 +157,51 @@ def tables_one_row_per_adsh() -> set[str] | None:
         con = duckdb.connect(db, read_only=True)
         try:
             rows = con.execute(
-                "SELECT table_name FROM information_schema.columns "
-                "WHERE table_schema = 'main' AND column_name = 'adsh'"
+                "SELECT table_name, column_name "
+                "FROM information_schema.columns "
+                "WHERE table_schema = 'main'"
             ).fetchall()
-            unique: set[str] = set()
-            for (table,) in rows:
+            cols_by_table: dict[str, set[str]] = {}
+            for table, column in rows:
                 table_name = str(table)
                 if not _safe_duckdb_table_name(table_name):
                     continue
-                max_row = con.execute(
-                    f'SELECT MAX(c) FROM ('
-                    f'SELECT COUNT(*) AS c FROM {table_name} GROUP BY adsh'
-                    f')'
-                ).fetchone()
-                if max_row is None or max_row[0] is None:
-                    continue
-                if int(max_row[0]) == 1:
-                    unique.add(table_name)
-            return unique or None
+                cols_by_table.setdefault(table_name, set()).add(str(column))
+            found: dict[str, tuple[tuple[str, ...], ...]] = {}
+            for table_name, columns in cols_by_table.items():
+                unique: list[tuple[str, ...]] = []
+                for key in _UNIQUE_KEY_CANDIDATES:
+                    if not set(key).issubset(columns):
+                        continue
+                    group = ", ".join(key)
+                    max_row = con.execute(
+                        f"SELECT MAX(c) FROM ("
+                        f"SELECT COUNT(*) AS c FROM {table_name} GROUP BY {group}"
+                        f")"
+                    ).fetchone()
+                    if max_row is None or max_row[0] is None:
+                        continue
+                    if int(max_row[0]) == 1:
+                        unique.append(key)
+                if unique:
+                    found[table_name] = tuple(unique)
+            return found or None
         finally:
             con.close()
     except Exception as exc:
         if duckdb_error_is_contention(str(exc)):
-            emit_duckdb_contention(stage="one_row_per_adsh", error=str(exc), db_path=db)
+            emit_duckdb_contention(stage="unique_keys", error=str(exc), db_path=db)
             raise
         return None
+
+
+def tables_one_row_per_adsh() -> set[str] | None:
+    """Tables whose ``adsh`` column has at most one row per value."""
+    keys = table_unique_keys()
+    if not keys:
+        return None
+    unique = {name for name, groups in keys.items() if ("adsh",) in groups}
+    return unique or None
 
 
 def table_column_abs_sum_caps() -> dict[str, dict[str, int]] | None:
