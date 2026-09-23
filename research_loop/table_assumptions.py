@@ -26,6 +26,7 @@ TODO: load per-table user assumptions from JSON/CLI (not implemented).
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 TYPE_MAX_U32_EXCLUSIVE = 2**31
@@ -227,14 +228,35 @@ def table_assumptions_for(
     return catalog.tables.get(table)
 
 
+def column_cap_const_name(table: str, column: str) -> str:
+    """Rust const name for a catalog-measured per-column exclusive cap."""
+
+    def _seg(part: str) -> str:
+        return re.sub(r"[^a-z0-9_]", "_", part.lower())
+
+    return f"LEMMA_MAX_{_seg(table)}_{_seg(column)}"
+
+
+def column_assumption_exclusive(
+    column: str,
+    table: TableAssumptions | None,
+) -> int | None:
+    """Exclusive cap from ``ColumnAssumption`` only (not catalog-wide cell cap)."""
+    if table is None:
+        return None
+    col = table.columns.get(column)
+    if col is None or col.max_value_exclusive is None:
+        return None
+    return col.max_value_exclusive
+
+
 def column_u64_cap_exclusive(
     column: str,
     table: TableAssumptions | None,
     bounds: ResolvedBounds,
 ) -> int | None:
     """Per-column u64 cap: column override, else catalog ``max_cell_u64``, else None (full width)."""
-    if table is not None:
-        col = table.columns.get(column)
-        if col is not None and col.max_value_exclusive is not None:
-            return col.max_value_exclusive
+    col_cap = column_assumption_exclusive(column, table)
+    if col_cap is not None:
+        return col_cap
     return bounds.max_cell_u64

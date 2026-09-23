@@ -26,7 +26,8 @@ from research_loop.table_assumptions import (
     CatalogAssumptions,
     ResolvedBounds,
     TableAssumptions,
-    column_u64_cap_exclusive,
+    column_assumption_exclusive,
+    column_cap_const_name,
     engine_default_catalog_assumptions,
     resolve_bounds,
     with_catalog_assumptions,
@@ -326,6 +327,62 @@ def _bounds_for_emit(
     return resolve_bounds(resolved_catalog)
 
 
+def _column_cap_const_entries(
+    catalog: CatalogAssumptions | None,
+    bounds: ResolvedBounds,
+) -> list[tuple[str, str, int]]:
+    """(table, column, cap) entries needing a per-column ``LEMMA_MAX_*`` const."""
+    if catalog is None:
+        return []
+    out: list[tuple[str, str, int]] = []
+    for table, ta in catalog.tables.items():
+        for column, col_assumption in ta.columns.items():
+            cap = col_assumption.max_value_exclusive
+            if cap is None:
+                continue
+            if cap <= bounds.max_native_u32 or (
+                bounds.has_tight_cell_u64
+                and bounds.max_cell_u64 is not None
+                and cap <= bounds.max_cell_u64
+            ):
+                out.append((table, column, cap))
+    return out
+
+
+def _column_valid_cols_bound(
+    column: str,
+    col_type: str,
+    *,
+    table_name: str | None,
+    table_assumptions: TableAssumptions | None,
+    bounds: ResolvedBounds,
+) -> tuple[str, int] | None:
+    """Return ``(const_name, exclusive_cap)`` for valid_cols, or None when unbounded."""
+    vt = col_verus_type(col_type)
+    col_cap = column_assumption_exclusive(column, table_assumptions)
+    if vt == "u32":
+        global_cap = bounds.max_native_u32
+        if col_cap is not None:
+            if col_cap <= global_cap and table_name is not None:
+                return column_cap_const_name(table_name, column), col_cap
+            return None
+        return "LEMMA_MAX_NATIVE_U32", global_cap
+    if vt == "u64":
+        if col_cap is not None:
+            if (
+                bounds.has_tight_cell_u64
+                and bounds.max_cell_u64 is not None
+                and col_cap <= bounds.max_cell_u64
+                and table_name is not None
+            ):
+                return column_cap_const_name(table_name, column), col_cap
+            return None
+        if bounds.has_tight_cell_u64 and bounds.max_cell_u64 is not None:
+            return "LEMMA_MAX_CELL_U64", bounds.max_cell_u64
+        return None
+    return None
+
+
 def emit_bound_constants(
     bounds: ResolvedBounds | None = None,
     catalog: CatalogAssumptions | None = None,
@@ -349,6 +406,12 @@ def emit_bound_constants(
         )
     else:
         lines.append("// No LEMMA_MAX_CELL_U64: full u64 type width without assumptions.")
+    for table, column, cap in _column_cap_const_entries(catalog, b):
+        const_name = column_cap_const_name(table, column)
+        ty = "u32" if cap <= b.max_native_u32 else "u64"
+        lines.append(
+            f"pub const {const_name}: {ty} = {cap};"
+        )
     return "\n".join(lines) + "\n"
 
 
@@ -2027,6 +2090,7 @@ def emit_valid_cols_predicate(
     bounds: ResolvedBounds | None = None,
     catalog: CatalogAssumptions | None = None,
     table_assumptions: TableAssumptions | None = None,
+    table_name: str | None = None,
     row_cap_const: str | None = None,
 ) -> str:
     """Columnar valid_cols: row count + per-column cell bounds."""
@@ -2043,18 +2107,20 @@ def emit_valid_cols_predicate(
     for col, col_type in schema_dict.items():
         field = rust_ident(col)
         vt = col_verus_type(col_type)
-        if vt == "u32":
+        if vt == "u32" or vt == "u64":
             lines.append(f"    &&& cols.{field}.len() == cols.n")
-            lines.append(
-                f"    &&& forall|i: int| 0 <= i && i < cols.n as int ==>"
-                f" cols.{field}[i] < LEMMA_MAX_NATIVE_U32"
+            bound = _column_valid_cols_bound(
+                col,
+                col_type,
+                table_name=table_name,
+                table_assumptions=table_assumptions,
+                bounds=b,
             )
-        elif vt == "u64":
-            lines.append(f"    &&& cols.{field}.len() == cols.n")
-            if column_u64_cap_exclusive(col, table_assumptions, b) is not None:
+            if bound is not None:
+                const_name, _ = bound
                 lines.append(
                     f"    &&& forall|i: int| 0 <= i && i < cols.n as int ==>"
-                    f" cols.{field}[i] < LEMMA_MAX_CELL_U64"
+                    f" cols.{field}[i] < {const_name}"
                 )
         elif vt == "bool":
             lines.append(f"    &&& cols.{field}.len() == cols.n")
@@ -2075,6 +2141,7 @@ def emit_valid_cols_accessor_lemmas(
     bounds: ResolvedBounds | None = None,
     catalog: CatalogAssumptions | None = None,
     table_assumptions: TableAssumptions | None = None,
+    table_name: str | None = None,
 ) -> str:
     """Per-column bound lemmas (proved from valid_cols when possible)."""
     b = _bounds_for_emit(bounds, catalog)
@@ -2083,12 +2150,18 @@ def emit_valid_cols_accessor_lemmas(
         base = col.lower()
         field = rust_ident(col)
         vt = col_verus_type(col_type)
-        if vt == "u32":
-            ensures = f"cols.{field}[i as int] < LEMMA_MAX_NATIVE_U32"
-        elif vt == "u64":
-            if column_u64_cap_exclusive(col, table_assumptions, b) is None:
+        if vt in ("u32", "u64"):
+            bound = _column_valid_cols_bound(
+                col,
+                col_type,
+                table_name=table_name,
+                table_assumptions=table_assumptions,
+                bounds=b,
+            )
+            if bound is None:
                 continue
-            ensures = f"cols.{field}[i as int] < LEMMA_MAX_CELL_U64"
+            const_name, _ = bound
+            ensures = f"cols.{field}[i as int] < {const_name}"
         elif vt == "bool":
             ensures = "true"
         else:

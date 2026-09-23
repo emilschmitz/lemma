@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from research_loop.table_assumptions import (
     CatalogAssumptions,
+    ColumnAssumption,
     ResolvedBounds,
     TableAssumptions,
     engine_default_catalog_assumptions,
@@ -45,16 +46,24 @@ SEC_PROVE_LOOP_MAX_STRING_LEN = 128
 
 def sec_product_catalog_assumptions() -> CatalogAssumptions:
     """Product-path SEC profile: per-table DuckDB counts when available, else prove_loop."""
-    from db_extension.dataset_config import table_row_counts
+    from db_extension.dataset_config import table_column_value_caps, table_row_counts
 
     counts = table_row_counts()
     if not counts:
         return sec_prove_loop_catalog_assumptions()
 
+    column_caps = table_column_value_caps()
     prove = sec_prove_loop_catalog_assumptions()
     max_rows = max(counts.values())
+    tables: dict[str, TableAssumptions] = {}
+    for name, n in counts.items():
+        col_assumptions: dict[str, ColumnAssumption] = {}
+        if column_caps and name in column_caps:
+            for col, cap in column_caps[name].items():
+                col_assumptions[col] = ColumnAssumption(max_value_exclusive=cap)
+        tables[name] = TableAssumptions(max_rows=n, columns=col_assumptions)
     return CatalogAssumptions(
-        tables={name: TableAssumptions(max_rows=n) for name, n in counts.items()},
+        tables=tables,
         max_rows=max_rows,
         max_rows_cube=max_rows,
         max_rows_4=max_rows,

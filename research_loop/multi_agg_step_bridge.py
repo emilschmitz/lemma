@@ -11,12 +11,22 @@ from verus_transpiler.col_exprs import (
     coerce_case_when_u64_args,
 )
 from verus_transpiler.value_bounds import (
+    _int_product_fits_u64,
     rem_cap_add_fits_lemma_name,
     rem_cap_one_add_fits_lemma_name,
     skip_u64_product_lemma_names,
 )
 
-from research_loop.table_assumptions import CatalogAssumptions, resolve_bounds
+from research_loop.table_assumptions import (
+    CatalogAssumptions,
+    ResolvedBounds,
+    column_assumption_exclusive,
+    column_cap_const_name,
+    engine_default_catalog_assumptions,
+    resolve_bounds,
+    table_assumptions_for,
+    with_catalog_assumptions,
+)
 from research_loop.trusted_ret_bridge import (
     RetBridge,
     TypeAtom,
@@ -30,6 +40,13 @@ from research_loop.trusted_ret_bridge import (
     parse_verus_type,
     spec_to_exec_type,
 )
+
+
+class SumAddFitCodegenError(RuntimeError):
+    """Host fold emitter cannot prove SUM slot add fits in u64 from catalog bounds."""
+
+
+_SUM_DELTA_COL_RE = re.compile(r"(\w+)\.(\w+)\[")
 
 _HELPER_NAMES = (
     "method_spec_helper",
@@ -1262,6 +1279,74 @@ def _sum_cap_const(kind: str) -> str:
     return "LEMMA_MAX_NATIVE_U32" if kind == "sum_native" else "LEMMA_MAX_CELL_U64"
 
 
+def _parse_sum_delta_table_column(sum_delta: str) -> tuple[str, str] | None:
+    m = _SUM_DELTA_COL_RE.search(sum_delta)
+    if m is None:
+        return None
+    return m.group(1), m.group(2)
+
+
+def _column_cap_from_catalog(
+    catalog: CatalogAssumptions | None,
+    table: str,
+    column: str,
+) -> int | None:
+    if catalog is None:
+        return None
+    ta = table_assumptions_for(catalog, table)
+    return column_assumption_exclusive(column, ta)
+
+
+def _row_cap_for_depth(bounds: ResolvedBounds, depth: int) -> int:
+    if depth >= 4:
+        return bounds.max_rows_4
+    if depth >= 3:
+        return bounds.max_rows_cube
+    return bounds.max_rows
+
+
+def _resolve_bounds_for_catalog(
+    catalog: CatalogAssumptions | None,
+) -> ResolvedBounds:
+    return resolve_bounds(
+        with_catalog_assumptions(
+            catalog,
+            defaults=engine_default_catalog_assumptions(),
+        )
+    )
+
+
+def _resolve_sum_cap_const(
+    kind: str,
+    sum_delta: str | None,
+    catalog: CatalogAssumptions | None,
+) -> str:
+    if sum_delta and catalog:
+        ref = _parse_sum_delta_table_column(sum_delta)
+        if ref is not None:
+            table, column = ref
+            cap = _column_cap_from_catalog(catalog, table, column)
+            if cap is not None:
+                bounds = _resolve_bounds_for_catalog(catalog)
+                global_cap = (
+                    bounds.max_native_u32
+                    if kind == "sum_native"
+                    else bounds.max_cell_u64
+                )
+                if global_cap is not None and cap <= global_cap:
+                    return column_cap_const_name(table, column)
+    return _sum_cap_const(kind)
+
+
+def _catalog_sum_product_fits(
+    bounds: ResolvedBounds,
+    depth: int,
+    col_cap: int,
+) -> bool:
+    row_cap = _row_cap_for_depth(bounds, depth)
+    return _int_product_fits_u64(*([row_cap] * depth), col_cap)
+
+
 def _sanitize_fold_step_for_proof(fold_step: str) -> str:
     """Rename MethodSpec ``let key =`` binder so it does not shadow the lemma ``key`` param."""
     s = fold_step
@@ -1513,6 +1598,7 @@ def _emit_sum_add_fit_steps(
     rem_tail_int: str,
     sum_delta: str,
     skip: frozenset[str] = frozenset(),
+    catalog_assumptions: CatalogAssumptions | None = None,
 ) -> list[str]:
     """Prove ``prev_slot + sum_delta`` fits in u64 under rem·cap (SUM fold step)."""
     depth = len(ctx.table_params)
@@ -1522,6 +1608,7 @@ def _emit_sum_add_fit_steps(
     cap_kind = "native" if kind == "sum_native" else "cell_u64"
     rem_cap_lemma = rem_cap_add_fits_lemma_name(depth, cap=cap_kind)
     emit_rem_cap = rem_cap_lemma not in skip
+    cap_const = _resolve_sum_cap_const(kind, sum_delta, catalog_assumptions)
     if depth == 1:
         lines.append(f"{indent}assert(0 <= {rem_tail_int});")
         lines.append(f"{indent}assert({rem_tail_int} <= {ns[0]}.n as int);")
@@ -1553,23 +1640,59 @@ def _emit_sum_add_fit_steps(
         lines.append(f"{indent}let ghost rem_tail_u64 = {rem_tail_int} as u64;")
     if emit_rem_cap:
         lines.append(f"{indent}{rem_cap_lemma}(rem_tail_u64);")
-    if kind == "sum_native":
-        if emit_rem_cap:
+        if kind == "sum_native":
             lines.append(
-                f"{indent}assert(prev_slot <= rem_tail_u64 * (LEMMA_MAX_NATIVE_U32 as u64));"
+                f"{indent}assert(prev_slot <= rem_tail_u64 * ({cap_const} as u64));"
             )
             lines.append(
                 f"{indent}lemma_u64_add_native_prev_le(prev_slot, ({sum_delta}) as u64, rem_tail_u64);"
             )
-    elif emit_rem_cap:
+        else:
+            lines.append(
+                f"{indent}assert(prev_slot <= rem_tail_u64 * ({cap_const} as u64));"
+            )
+            lines.append(
+                f"{indent}lemma_u64_add_cell_u64_prev_le(prev_slot, ({sum_delta}) as u64, rem_tail_u64);"
+            )
         lines.append(
-            f"{indent}assert(prev_slot <= rem_tail_u64 * (LEMMA_MAX_CELL_U64 as u64));"
+            f"{indent}assert((prev_slot as int) + ({sum_delta}) <= u64::MAX as int);"
         )
-        lines.append(
-            f"{indent}lemma_u64_add_cell_u64_prev_le(prev_slot, ({sum_delta}) as u64, rem_tail_u64);"
+        return lines
+
+    ref = _parse_sum_delta_table_column(sum_delta)
+    col_cap: int | None = None
+    if ref is not None:
+        table, column = ref
+        col_cap = _column_cap_from_catalog(catalog_assumptions, table, column)
+    bounds = _resolve_bounds_for_catalog(catalog_assumptions)
+    if col_cap is None or not _catalog_sum_product_fits(bounds, depth, col_cap):
+        raise SumAddFitCodegenError(
+            "cannot prove SUM add fits in u64: missing catalog column cap or "
+            f"rows^{depth} * cap overflows u64 (sum_delta={sum_delta!r})"
         )
+
+    row_cap = _row_cap_for_depth(bounds, depth)
+    row_factors = " * ".join(f"({row_cap} as int)" for _ in range(depth))
     lines.append(
-        f"{indent}assert((prev_slot as int) + ({sum_delta}) <= u64::MAX as int);"
+        f"{indent}assert(prev_slot <= rem_tail_u64 * ({cap_const} as u64));"
+    )
+    lines.append(
+        f"{indent}assert(({row_factors}) * ({col_cap} as int) <= u64::MAX as int) by (compute_only);"
+    )
+    lines.append(
+        f"{indent}assert(({rem_tail_int} + 1) * ({col_cap} as int) <= u64::MAX as int) by (nonlinear_arith)"
+        f"\n{indent}    requires"
+        f"\n{indent}        {rem_tail_int} <= ({row_factors}),"
+        f"\n{indent}        ({row_factors}) * ({col_cap} as int) <= u64::MAX as int,"
+        f"\n{indent}        {{}};"
+    )
+    lines.append(
+        f"{indent}assert((prev_slot as int) + ({sum_delta}) <= u64::MAX as int) by (nonlinear_arith)"
+        f"\n{indent}    requires"
+        f"\n{indent}        prev_slot <= rem_tail_u64 * ({cap_const} as u64),"
+        f"\n{indent}        ({sum_delta}) < ({cap_const} as int),"
+        f"\n{indent}        ({rem_tail_int} + 1) * ({col_cap} as int) <= u64::MAX as int,"
+        f"\n{indent}        {{}};"
     )
     return lines
 
@@ -1592,8 +1715,9 @@ def _emit_inductive_hit_branch(
     tail_rec_args: str,
     spec_rs: str,
     skip: frozenset[str] = frozenset(),
+    catalog_assumptions: CatalogAssumptions | None = None,
 ) -> list[str]:
-    cap = _sum_cap_const(kind)
+    cap = _resolve_sum_cap_const(kind, sum_delta, catalog_assumptions)
     helper = ctx.helper
     fold_step = _parse_helper_fold_step(spec_rs, helper)
     slot_updates: _FoldHitSlotUpdates | None = None
@@ -1701,6 +1825,7 @@ def _emit_inductive_hit_branch(
                 rem_tail_int=rem_tail_int,
                 sum_delta=sum_delta,
                 skip=skip,
+                catalog_assumptions=catalog_assumptions,
             )
         )
 
@@ -2075,6 +2200,7 @@ def _emit_nested_count_or_sum_body(
     indent: str,
     spec_rs: str,
     skip: frozenset[str] = frozenset(),
+    catalog_assumptions: CatalogAssumptions | None = None,
 ) -> list[str]:
     depth = len(ctx.table_params)
     if level >= depth:
@@ -2161,6 +2287,7 @@ def _emit_nested_count_or_sum_body(
                 tail_rec_args=tail_rec_args,
                 spec_rs=spec_rs,
                 skip=skip,
+                catalog_assumptions=catalog_assumptions,
             )
         )
         lines.append(f"{indent}}} else {{")
@@ -2239,6 +2366,7 @@ def _emit_nested_count_or_sum_body(
             indent=indent + "    ",
             spec_rs=spec_rs,
             skip=skip,
+            catalog_assumptions=catalog_assumptions,
         )
     )
     boundary_overrides: dict[str, str] = {}
@@ -2269,6 +2397,7 @@ def _emit_nested_count_or_sum_body(
                 indent=indent + "    ",
                 spec_rs=spec_rs,
                 skip=skip,
+                catalog_assumptions=catalog_assumptions,
             )
         )
     else:
@@ -2426,6 +2555,7 @@ def _emit_inductive_slot_bound_lemma(
     sum_delta: str | None,
     count_addend: CountSlotAddend | None = None,
     skip: frozenset[str] = frozenset(),
+    catalog_assumptions: CatalogAssumptions | None = None,
 ) -> str:
     helper = ctx.helper
     rem = ctx.suffix_remaining_u64()
@@ -2465,7 +2595,8 @@ def _emit_inductive_slot_bound_lemma(
                 f"({slot_e} as int) <= ({rem_int}) * ({count_addend.ub} as int),"
             )
     else:
-        ensures_int = f"({slot_e} as int) <= ({rem_int}) * ({_sum_cap_const(kind)} as int),"
+        cap_c = _resolve_sum_cap_const(kind, sum_delta, catalog_assumptions)
+        ensures_int = f"({slot_e} as int) <= ({rem_int}) * ({cap_c} as int),"
     sig_params = ",\n    ".join(f"{p}: &{s}" for p, s in ctx.table_params)
     sig_params += ",\n    " + ",\n    ".join(f"{i}: int" for i in ctx.index_params)
     sig_params += f",\n    key: {key_spec}"
@@ -2484,6 +2615,7 @@ def _emit_inductive_slot_bound_lemma(
         indent="    ",
         spec_rs=spec_rs,
         skip=skip,
+        catalog_assumptions=catalog_assumptions,
     )
     # Bridge int rem bound → u64 ensures used by agent bodies.
     rem_expand = ctx.suffix_remaining_int_expr()
@@ -2529,7 +2661,7 @@ def _emit_inductive_slot_bound_lemma(
             )
             proof_body.append(f"    assert({slot_e} <= {rem} * ({ub} as u64));")
     else:
-        cap_c = _sum_cap_const(kind)
+        cap_c = _resolve_sum_cap_const(kind, sum_delta, catalog_assumptions)
         proof_body.append(
             f"    assert(({slot_e}) as int <= (({rem}) as int) * ({cap_c} as int));"
         )
@@ -2627,6 +2759,7 @@ def _emit_slot_bound_lemma(
             sum_delta=sum_delta,
             count_addend=count_addend,
             skip=skip,
+            catalog_assumptions=catalog_assumptions,
         )
     return _emit_axiomatic_slot_bound_lemma(
         ctx=ctx,
@@ -2766,7 +2899,7 @@ def emit_scalar_fold_bound_lemmas(
             detail = f"COUNT: ≤{rem} filtered rows in fold suffix."
             bound = rem
         else:
-            cap = _sum_cap_const(kind)
+            cap = _resolve_sum_cap_const(kind, sum_delta, catalog_assumptions)
             fname = f"lemma_{name}_sum_cell_u64_leq_{suffix}"
             detail = f"SUM(u64 cell): ≤{rem} cells each < {cap}."
             bound = f"{rem} * ({cap} as u64)"
@@ -2811,6 +2944,7 @@ pub proof fn {fname}(
             indent="    ",
             spec_rs=spec_rs,
             skip=skip,
+            catalog_assumptions=catalog_assumptions,
         )
         body = "\n".join(proof_body)
         suffix_req = ctx.suffix_start_requires()
@@ -2986,5 +3120,7 @@ def multi_agg_step_trusted_rs(
             spec_rs=spec_rs,
             catalog_assumptions=catalog_assumptions,
         )
+    except SumAddFitCodegenError:
+        raise
     except (ValueError, KeyError, AttributeError, IndexError):
         return ""

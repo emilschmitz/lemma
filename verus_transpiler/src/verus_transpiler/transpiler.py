@@ -471,6 +471,7 @@ def _emit_multi_table_cols(
                 bounds=bounds,
                 catalog=catalog,
                 table_assumptions=ta,
+                table_name=table,
                 row_cap_const=row_cap,
             ).replace("valid_cols", f"valid_cols_{table}")
         )
@@ -504,6 +505,7 @@ def _emit_support_spec_table_cols(
                 bounds=bounds,
                 catalog=catalog,
                 table_assumptions=ta,
+                table_name=table,
             ).replace("valid_cols", valid)
         )
     return "\n\n".join(parts)
@@ -1498,11 +1500,25 @@ def transpile_sql_to_verus(
         )
         if support_cols:
             cols_block = f"{cols_block}\n\n{support_cols}"
+        single_table = query.tables[0] if len(query.tables) == 1 else None
+        single_ta = (
+            table_assumptions_for(catalog_assumptions, single_table)
+            if single_table
+            else None
+        )
         valid_cols = emit_valid_cols_predicate(
-            outer_schema, bounds=bounds, catalog=catalog_assumptions
+            outer_schema,
+            bounds=bounds,
+            catalog=catalog_assumptions,
+            table_assumptions=single_ta,
+            table_name=single_table,
         )
         accessor_lemmas = emit_valid_cols_accessor_lemmas(
-            outer_schema, bounds=bounds, catalog=catalog_assumptions
+            outer_schema,
+            bounds=bounds,
+            catalog=catalog_assumptions,
+            table_assumptions=single_ta,
+            table_name=single_table,
         )
 
         helpers, spec_fn, ret_type = _emit_single_table_spec(query, outer_schema)
@@ -1541,9 +1557,9 @@ use std::collections::{{HashMap, HashSet}};
 
 verus! {{
 
-{emit_bound_constants(bounds=bounds)}
+{emit_bound_constants(bounds=bounds, catalog=catalog_assumptions)}
 
-{emit_bound_lemmas(bounds=bounds)}
+{emit_bound_lemmas(bounds=bounds, catalog=catalog_assumptions)}
 
 {trusted_prelude}
 

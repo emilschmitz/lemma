@@ -7,8 +7,10 @@ import re
 from verus_transpiler.value_bounds import (
     LEMMA_MAX_NATIVE_U32,
     LEMMA_MAX_ROWS,
+    emit_bound_constants,
     emit_bound_lemmas,
     emit_trusted_prelude,
+    emit_valid_cols_predicate,
     skip_u64_product_lemma_names,
 )
 
@@ -19,8 +21,11 @@ from research_loop.sec_table_assumptions import (
 )
 from research_loop.table_assumptions import (
     CatalogAssumptions,
+    ColumnAssumption,
+    TableAssumptions,
     engine_default_catalog_assumptions,
     resolve_bounds,
+    with_catalog_assumptions,
 )
 
 
@@ -282,6 +287,60 @@ def test_prove_loop_skip_set_keeps_sq_native_rem_cap() -> None:
     skip = skip_u64_product_lemma_names(catalog=sec_prove_loop_catalog_assumptions())
     assert "lemma_rem_cap_native_add_fits" not in skip
     assert "lemma_rem_cap_cell_u64_add_fits" not in skip
+
+
+def test_valid_cols_u32_column_assumption_emits_per_column_cap() -> None:
+    cat = CatalogAssumptions(
+        max_rows=100,
+        max_rows_cube=100,
+        max_rows_4=100,
+        tables={
+            "pre": TableAssumptions(
+                columns={"line": ColumnAssumption(max_value_exclusive=483)}
+            )
+        },
+    )
+    bounds = resolve_bounds(
+        with_catalog_assumptions(cat, defaults=engine_default_catalog_assumptions())
+    )
+    text = emit_valid_cols_predicate(
+        {"line": "int"},
+        struct_name="Cols_pre",
+        bounds=bounds,
+        catalog=cat,
+        table_assumptions=cat.tables["pre"],
+        table_name="pre",
+    )
+    assert "LEMMA_MAX_pre_line" in text
+    assert "LEMMA_MAX_NATIVE_U32" not in text
+    consts = emit_bound_constants(bounds=bounds, catalog=cat)
+    assert "pub const LEMMA_MAX_pre_line: u32 = 483;" in consts
+
+
+def test_valid_cols_u64_column_above_global_cell_cap_omits_false_bound() -> None:
+    huge = SEC_PROVE_LOOP_MAX_CELL_U64 + 1
+    cat = CatalogAssumptions(
+        max_rows=100,
+        max_rows_cube=100,
+        max_rows_4=100,
+        max_cell_u64=SEC_PROVE_LOOP_MAX_CELL_U64,
+        tables={
+            "num": TableAssumptions(
+                columns={"value": ColumnAssumption(max_value_exclusive=huge)}
+            )
+        },
+    )
+    bounds = resolve_bounds(cat)
+    text = emit_valid_cols_predicate(
+        {"value": "double"},
+        struct_name="Cols_num",
+        bounds=bounds,
+        catalog=cat,
+        table_assumptions=cat.tables["num"],
+        table_name="num",
+    )
+    assert "LEMMA_MAX_CELL_U64" not in text
+    assert str(huge) not in text
 
 
 def test_prove_loop_profile_keeps_sq_cell_lemma() -> None:

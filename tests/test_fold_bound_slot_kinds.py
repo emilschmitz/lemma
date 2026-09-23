@@ -12,6 +12,7 @@ from research_loop.harness import resolve_verus_bin, run_verus_verify
 from research_loop.method_spec_ret_type import resolve_ret_type_from_method_spec
 from research_loop.multi_agg_step_bridge import (
     CountSlotAddend,
+    SumAddFitCodegenError,
     _classify_u64_slot,
     _parse_count_slot_addend,
     _parse_fold_bound_context,
@@ -32,7 +33,11 @@ from research_loop.sec_table_assumptions import (
     SEC_PROVE_LOOP_MAX_CELL_U64,
     sec_prove_loop_catalog_assumptions,
 )
-from research_loop.table_assumptions import CatalogAssumptions
+from research_loop.table_assumptions import (
+    CatalogAssumptions,
+    ColumnAssumption,
+    TableAssumptions,
+)
 from research_loop.trusted_ret_bridge import get_bridge
 from verus_transpiler import transpile_sql_to_verus
 
@@ -121,6 +126,10 @@ FROM num n JOIN sub s ON n.adsh = s.adsh
 WHERE n.uom = 'USD'
 GROUP BY s.name"""
 
+TWO_TABLE_SUM_LINE_SQL = """SELECT s.name, SUM(p.line) AS total, COUNT(*) AS cnt
+FROM pre p JOIN sub s ON p.adsh = s.adsh
+GROUP BY s.name"""
+
 
 def _large_sec_product_catalog() -> CatalogAssumptions:
     large_rows = 39_401_761
@@ -131,6 +140,25 @@ def _large_sec_product_catalog() -> CatalogAssumptions:
         max_cell_u64=SEC_PROVE_LOOP_MAX_CELL_U64,
         max_native_u32=2**31,
         max_string_len=128,
+    )
+
+
+def _large_sec_pre_line_catalog() -> CatalogAssumptions:
+    large_rows = 39_401_761
+    return CatalogAssumptions(
+        max_rows=large_rows,
+        max_rows_cube=large_rows,
+        max_rows_4=large_rows,
+        max_cell_u64=SEC_PROVE_LOOP_MAX_CELL_U64,
+        max_native_u32=2**31,
+        max_string_len=128,
+        tables={
+            "pre": TableAssumptions(
+                max_rows=9_600_799,
+                columns={"line": ColumnAssumption(max_value_exclusive=483)},
+            ),
+            "sub": TableAssumptions(max_rows=86_135),
+        },
     )
 
 
@@ -427,20 +455,20 @@ def test_large_sec_assemble_omits_sq_native_rem_cap_calls() -> None:
     from research_loop.assemble_verified_program import assemble_verified_program
     from tests.test_sec_holdout_parse import SEC_SCHEMA
 
-    schema = {"num": SEC_SCHEMA["num"], "sub": SEC_SCHEMA["sub"]}
-    catalog = _large_sec_product_catalog()
-    spec = _transpile(TWO_TABLE_SUM_SQL, schema, catalog=catalog)
+    schema = {"pre": SEC_SCHEMA["pre"], "sub": SEC_SCHEMA["sub"]}
+    catalog = _large_sec_pre_line_catalog()
+    spec = _transpile(TWO_TABLE_SUM_LINE_SQL, schema, catalog=catalog)
     ret_type = resolve_ret_type_from_method_spec(spec)
     program = assemble_verified_program(
         spec_rs=spec,
         run_query_body=_join_run_query_stub(ret_type),
-        schema_dict=SEC_SCHEMA["num"],
+        schema_dict=SEC_SCHEMA["pre"],
         ret_type=ret_type,
         default_tbl="",
         catalog_assumptions=catalog,
     )
     assert "lemma_rem_cap_native_add_fits(" not in program
-    assert "lemma_rem_cap_native_add_fits_rows" in program
+    assert "483" in program
 
 
 def test_prove_loop_assemble_keeps_sq_native_rem_cap_calls() -> None:
@@ -467,33 +495,70 @@ def test_large_sec_prepare_workspace_omits_sq_native_rem_cap_calls(tmp_path: Pat
     from research_loop.agent_sandbox import prepare_workspace
     from tests.test_sec_holdout_parse import SEC_SCHEMA
 
-    schema = {"num": SEC_SCHEMA["num"], "sub": SEC_SCHEMA["sub"]}
-    catalog = _large_sec_product_catalog()
-    spec = _transpile(TWO_TABLE_SUM_SQL, schema, catalog=catalog)
+    schema = {"pre": SEC_SCHEMA["pre"], "sub": SEC_SCHEMA["sub"]}
+    catalog = _large_sec_pre_line_catalog()
+    spec = _transpile(TWO_TABLE_SUM_LINE_SQL, schema, catalog=catalog)
     prepare_workspace(
         tmp_path,
         verus_spec=spec,
-        sql_query=TWO_TABLE_SUM_SQL,
+        sql_query=TWO_TABLE_SUM_LINE_SQL,
         schema=schema,
         catalog_assumptions=catalog,
     )
     visible = (tmp_path / "context" / "ro" / "spec.rs").read_text(encoding="utf-8")
     assert "lemma_rem_cap_native_add_fits(" not in visible
-    assert "lemma_rem_cap_native_add_fits_rows" in visible
+    assert "483" in visible
 
 
-def test_large_sec_multi_agg_omits_sq_native_rem_cap_calls() -> None:
+def test_large_sec_sum_pre_line_catalog_fit_proof() -> None:
+    from tests.test_sec_holdout_parse import SEC_SCHEMA
+
+    schema = {"pre": SEC_SCHEMA["pre"], "sub": SEC_SCHEMA["sub"]}
+    catalog = _large_sec_pre_line_catalog()
+    spec = _transpile(TWO_TABLE_SUM_LINE_SQL, schema, catalog=catalog)
+    ret_type = resolve_ret_type_from_method_spec(spec)
+    rs = multi_agg_step_trusted_rs(spec, ret_type, catalog_assumptions=catalog)
+    assert "assert((prev_slot as int) + (" in rs
+    assert "<= u64::MAX as int" in rs
+    assert "483" in rs
+    assert "compute_only" in rs or "nonlinear_arith" in rs
+    assert "lemma_rem_cap_native_add_fits(" not in rs
+
+
+def test_large_sec_sum_without_column_cap_raises_host_codegen() -> None:
     from tests.test_sec_holdout_parse import SEC_SCHEMA
 
     schema = {"num": SEC_SCHEMA["num"], "sub": SEC_SCHEMA["sub"]}
     catalog = _large_sec_product_catalog()
     spec = _transpile(TWO_TABLE_SUM_SQL, schema, catalog=catalog)
     ret_type = resolve_ret_type_from_method_spec(spec)
-    rs = multi_agg_step_trusted_rs(spec, ret_type, catalog_assumptions=catalog)
-    assert "lemma_rem_cap_native_add_fits(" not in rs
-    assert "lemma_u64_add_native_prev_le" not in rs
-    assert "lemma_rem_cap_cell_u64_add_fits(" not in rs
-    assert "lemma_u64_add_cell_u64_prev_le" not in rs
+    with pytest.raises(SumAddFitCodegenError):
+        multi_agg_step_trusted_rs(spec, ret_type, catalog_assumptions=catalog)
+
+
+def test_large_sec_sum_overflowing_column_cap_raises_host_codegen() -> None:
+    from tests.test_sec_holdout_parse import SEC_SCHEMA
+
+    large_rows = 39_401_761
+    huge_cap = (2**64 - 1) // (large_rows**2) + 1
+    catalog = CatalogAssumptions(
+        max_rows=large_rows,
+        max_rows_cube=large_rows,
+        max_rows_4=large_rows,
+        max_cell_u64=SEC_PROVE_LOOP_MAX_CELL_U64,
+        max_native_u32=2**31,
+        max_string_len=128,
+        tables={
+            "pre": TableAssumptions(
+                columns={"line": ColumnAssumption(max_value_exclusive=huge_cap)}
+            ),
+        },
+    )
+    schema = {"pre": SEC_SCHEMA["pre"], "sub": SEC_SCHEMA["sub"]}
+    spec = _transpile(TWO_TABLE_SUM_LINE_SQL, schema, catalog=catalog)
+    ret_type = resolve_ret_type_from_method_spec(spec)
+    with pytest.raises(SumAddFitCodegenError):
+        multi_agg_step_trusted_rs(spec, ret_type, catalog_assumptions=catalog)
 
 
 def test_prove_loop_multi_agg_keeps_sq_native_rem_cap_calls() -> None:
@@ -512,30 +577,29 @@ def test_large_sec_inject_rem_cap_lines_omit_sq_native() -> None:
 
     from tests.test_sec_holdout_parse import SEC_SCHEMA
 
-    schema = {"num": SEC_SCHEMA["num"], "sub": SEC_SCHEMA["sub"]}
-    catalog = _large_sec_product_catalog()
-    spec = _transpile(TWO_TABLE_SUM_SQL, schema, catalog=catalog)
+    schema = {"pre": SEC_SCHEMA["pre"], "sub": SEC_SCHEMA["sub"]}
+    catalog = _large_sec_pre_line_catalog()
+    spec = _transpile(TWO_TABLE_SUM_LINE_SQL, schema, catalog=catalog)
     ctx = _parse_fold_bound_context(spec, "multi_agg_helper")
     assert ctx is not None
     skip = skip_u64_product_lemma_names(catalog=catalog)
     assert _rem_cap_lines(ctx, "native", skip=skip) == []
-    assert "lemma_rem_cap_native_add_fits(" not in (
-        _build_before_proof(
-            spec_rs=spec,
-            helper="multi_agg_helper",
-            tail_args="&num, &sub, i0, i1",
-            key="key",
-            suffix="str__u64_u64",
-            slots=[(0, "sum_native")],
-            scalar_kind=None,
-            tuple_prev=True,
-            prev_zero="(0u64, 0u64)",
-            money_cell="n.value[i0 as int]",
-            bindings={},
-            catalog_assumptions=catalog,
-        )
-        or ""
+    proof = _build_before_proof(
+        spec_rs=spec,
+        helper="multi_agg_helper",
+        tail_args="&pre, &sub, i0, i1",
+        key="key",
+        suffix="str__u64_u64",
+        slots=[(0, "sum_native")],
+        scalar_kind=None,
+        tuple_prev=True,
+        prev_zero="(0u64, 0u64)",
+        money_cell="p.line[i0 as int]",
+        bindings={},
+        catalog_assumptions=catalog,
     )
+    assert proof is not None
+    assert "lemma_rem_cap_native_add_fits(" not in proof
 
 
 def test_prove_loop_inject_rem_cap_lines_keep_sq_native() -> None:

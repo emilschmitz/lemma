@@ -14,6 +14,7 @@ from db_extension.dataset_config import (
     mcp_iterate_is_uncapped,
     row_budget_prompt_section,
     run_runquery_iterate_tool_blurb,
+    table_column_value_caps,
     table_row_counts,
 )
 from db_extension_paths.dataset_config import (
@@ -341,6 +342,33 @@ def test_table_row_counts_per_table(
     monkeypatch.setenv("LEMMA_DUCKDB_PATH", str(db))
     counts = table_row_counts()
     assert counts == {"num": 100, "pre": 7}
+
+
+def test_table_column_value_caps_integer_and_double(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    isolated_ssb: Path,
+) -> None:
+    duckdb = pytest.importorskip("duckdb")
+    db = tmp_path / "caps.duckdb"
+    con = duckdb.connect(str(db))
+    con.execute("CREATE TABLE pre (line INTEGER, tag DOUBLE)")
+    con.execute("INSERT INTO pre VALUES (-482, 10.0), (100, 20.0)")
+    con.execute("CREATE TABLE messy (value DOUBLE)")
+    con.execute("INSERT INTO messy VALUES (1.5)")
+    con.execute("CREATE TABLE num (value DOUBLE)")
+    # Above 2^53. The DOUBLE column stores the nearest float64, not this literal.
+    con.execute("INSERT INTO num VALUES (188446126794000001)")
+    stored = con.execute("SELECT CAST(MAX(ABS(value)) AS HUGEINT) FROM num").fetchone()[0]
+    con.close()
+    monkeypatch.setenv("LEMMA_DUCKDB_PATH", str(db))
+    caps = table_column_value_caps()
+    assert caps is not None
+    assert caps["pre"]["line"] == 483
+    assert caps["pre"]["tag"] == 21
+    assert int(stored) > 2**53
+    assert caps["num"]["value"] == int(stored) + 1
+    assert "messy" not in caps or "value" not in caps.get("messy", {})
 
 
 def test_run_solution_default_passes_iterate_dataset_size(

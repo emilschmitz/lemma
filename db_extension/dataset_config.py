@@ -109,6 +109,99 @@ def _count_duckdb_primary_rows() -> int | None:
         return None
 
 
+_U64_MAX_EXCLUSIVE = 2**64
+
+_INTEGER_DUCKDB_TYPES = frozenset(
+    {
+        "integer",
+        "int",
+        "int4",
+        "int32",
+        "smallint",
+        "int2",
+        "int16",
+        "bigint",
+        "int64",
+        "int8",
+        "hugeint",
+        "tinyint",
+        "int1",
+    }
+)
+
+_FLOAT_DUCKDB_TYPES = frozenset({"double", "float8", "float", "real"})
+
+
+def table_column_value_caps() -> dict[str, dict[str, int]] | None:
+    """Per-table per-column exclusive upper bounds from ``LEMMA_DUCKDB_PATH``.
+
+    INTEGER/BIGINT: ``max(abs(col)) + 1``. DOUBLE: same only when the column max is
+    integral, equals ``trunc(max)``, and fits in ``u64``. Returns None when the DB
+    is missing or unreadable.
+    """
+    db = os.environ.get("LEMMA_DUCKDB_PATH", "").strip()
+    if not db or not Path(db).is_file():
+        return None
+    try:
+        import duckdb
+    except ImportError:
+        return None
+    try:
+        con = duckdb.connect(db, read_only=True)
+        try:
+            rows = con.execute(
+                "SELECT table_name, column_name, data_type "
+                "FROM information_schema.columns "
+                "WHERE table_schema = 'main'"
+            ).fetchall()
+            caps: dict[str, dict[str, int]] = {}
+            for table, column, dtype in rows:
+                table_name = str(table)
+                column_name = str(column)
+                if not _safe_duckdb_table_name(table_name):
+                    continue
+                base = str(dtype).lower().split("(")[0]
+                if base not in _INTEGER_DUCKDB_TYPES | _FLOAT_DUCKDB_TYPES:
+                    continue
+                max_row = con.execute(
+                    f'SELECT MAX(ABS("{column_name}")) FROM {table_name}'
+                ).fetchone()
+                if max_row is None or max_row[0] is None:
+                    continue
+                max_abs = max_row[0]
+                if base in _FLOAT_DUCKDB_TYPES:
+                    # Stay in HUGEINT. float64 cannot represent integers above 2^53,
+                    # so a Python float round-trip can publish a cap below the real max.
+                    exact_row = con.execute(
+                        f'SELECT CASE '
+                        f'WHEN MAX(ABS("{column_name}")) IS NULL THEN NULL '
+                        f'WHEN MAX(ABS("{column_name}")) <> TRUNC(MAX(ABS("{column_name}"))) THEN NULL '
+                        f'WHEN MAX(ABS("{column_name}")) < 0 THEN NULL '
+                        f'WHEN MAX(ABS("{column_name}")) >= {_U64_MAX_EXCLUSIVE} THEN NULL '
+                        f'ELSE CAST(TRUNC(MAX(ABS("{column_name}"))) AS HUGEINT) '
+                        f'END FROM {table_name}'
+                    ).fetchone()
+                    exact = None if exact_row is None else exact_row[0]
+                    if exact is None:
+                        continue
+                    exclusive = int(exact) + 1
+                    if exclusive > _U64_MAX_EXCLUSIVE:
+                        continue
+                else:
+                    exclusive = int(max_abs) + 1
+                caps.setdefault(table_name, {})[column_name] = exclusive
+            return caps or None
+        finally:
+            con.close()
+    except Exception as exc:
+        if duckdb_error_is_contention(str(exc)):
+            emit_duckdb_contention(
+                stage="column_value_caps", error=str(exc), db_path=db
+            )
+            raise
+        return None
+
+
 def table_row_counts() -> dict[str, int] | None:
     """Per-table ``COUNT(*)`` from ``LEMMA_DUCKDB_PATH``, or None if unavailable."""
     db = os.environ.get("LEMMA_DUCKDB_PATH", "").strip()
