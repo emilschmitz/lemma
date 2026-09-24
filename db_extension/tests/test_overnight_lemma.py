@@ -930,6 +930,43 @@ def test_jobs_full_includes_shuffle_immanuel_tpch(tmp_path: Path):
     assert [j["qid"] for j in tpch] == list(mod.TPCH_PAPER_JOB_QIDS)
 
 
+def test_jobs_for_run_jobs_full_respects_lemma_sql_only(tmp_path: Path, monkeypatch):
+    mod = _load_module()
+    sql = tmp_path / "shuffle.sql"
+    _write_multi_query_sql(sql, 3)
+    sec_db = "/tmp/sec.duckdb"
+    tpch_db = "/tmp/tpch.duckdb"
+
+    monkeypatch.delenv("LEMMA_SQL_ONLY", raising=False)
+    jobs, sql_only = mod.jobs_for_run(sql, "r27rocket", sec_db, tpch_db)
+    assert sql_only is False
+    shuffle = [j for j in jobs if j["qid"] in {"Q1", "Q2", "Q3"}]
+    immanuel = [j for j in jobs if j["qid"].startswith("Q10")]
+    tpch = [j for j in jobs if j["qid"].startswith("Q20")]
+    assert len(shuffle) == 3
+    assert len(immanuel) == 6
+    assert len(tpch) == 5
+
+    monkeypatch.setenv("LEMMA_SQL_ONLY", "1")
+    jobs_only, sql_only = mod.jobs_for_run(sql, "r27rocket", sec_db, tpch_db)
+    assert sql_only is True
+    assert len(jobs_only) == 3
+    assert {j["qid"] for j in jobs_only} == {"Q1", "Q2", "Q3"}
+
+    monkeypatch.delenv("LEMMA_SQL_ONLY", raising=False)
+
+
+def test_overnight_sh_lemma_sql_only_gates_session_hot():
+    text = OVERNIGHT_SH.read_text()
+    wrapper = text.split('cat >"$OUT/run_and_halt.sh" <<EOF', 1)[1].split("EOF", 1)[0]
+    assert 'export LEMMA_SQL_ONLY="${LEMMA_SQL_ONLY:-}"' in wrapper
+    assert "LEMMA_SQL_ONLY_VAL" in text
+    assert "DuckDB session-hot Immanuel/TPC-H skipped (LEMMA_SQL_ONLY=" in text
+    immanuel_block = text.split("LEMMA_SQL_ONLY_VAL", 1)[1]
+    assert "duckdb_session_hot_immanuel.json" in immanuel_block
+    assert "duckdb_session_hot_tpch_sf10.json" in immanuel_block
+
+
 def _proved_timeout_rec(qid: str = "Q1", family: str = "r17") -> dict:
     return {
         "family": family,

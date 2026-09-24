@@ -127,10 +127,10 @@ full-table measure, fail-streak 6. Bigger CPU does not turn a new shuffle into r
 
 Loop, in order:
 
-1. **Run on the Spot VM** with the paper launcher
-   (`harvest/watch/launch_paper.sh`). Clean git, tracked SHA, fresh shuffle,
-   one VM. The launcher must refuse to return until config verify passes
-   (Docker CLI, not local `AGENT_CMD` / OpenRouter).
+1. A **paper card** is a fresh SEC shuffle (new seed) plus Immanuel plus TPC-H.
+   Launcher: `harvest/watch/launch_paper.sh`. Clean git, tracked SHA, one VM.
+   Config verify must pass (Docker CLI, `grok-4.7-high`, not local `AGENT_CMD` /
+   OpenRouter).
 2. **Every 5 minutes, wake and check status** (VM up, family pid, ok/fail
    counts, streak). The wake is a monitored shell **in the open Cursor chat**
    (`notify_on_output` on `AGENT_LOOP_TICK_lemma`). It is not cron on the VM.
@@ -138,20 +138,21 @@ Loop, in order:
    actually monitored. Arm it at the start of the session. Do not claim a wake
    exists if that shell is not running. A bare `sleep` with no
    `notify_on_output` does not create a turn.
-3. **On any fail, open traces before naming a cause.** If the hole is host /
-   harness / software (transpile, assemble, omitted-lemma call, pin, quota
-   counted as a proof fail, missing traces, wrong backend): **fix it**, commit,
-   push, **rerun the failed queries** as a **new family** (`retry.json`, same
-   SQL via `LEMMA_SQL_FILE` when the fix is host-side). Do not mix SHAs into
-   the dead family.
+3. A **retry family** is not a paper card. After a host/harness fix: commit,
+   push, rerun **only the qids that failed** in the dead family. Same SQL text,
+   new family, `retry.json`, `LEMMA_SQL_FILE` + `LEMMA_SQL_ONLY=1`. Do not
+   re-run greens. Do not append Immanuel/TPC-H unless one of those qids failed.
+   Do not generate a new shuffle. Do not mix SHAs into the dead family.
 4. **If the agent was too stupid** (errors inside `AGENT_EDIT` on a **sound**
    spec, no marked `N verified, 0 errors`): record it, notify with
    `AGENT TOO STUPID:` first line, **do not water down**, do not “fix” by
    weakening the bar. No `submitted.json` means you **cannot** use that label
    yet — treat missing submit + missing MCP runs as a harvest bug.
-5. After a host fix, start the new family from step 1. After an agent-stupid
-   record, leave the bar and continue only with a fresh family that does not
-   pretend the miss was a pass.
+5. Do not start the next fresh paper card until that retry family finishes
+   without a host abort (driver exit 0, or the only remaining misses are
+   agent-stupid on a sound spec). A `fail_streak` abort or a still-open host
+   hole does not start the fresh shuffle. After an agent-stupid record, do not
+   water down. The later fresh card must not count that miss as a pass.
 
 ## Fail loop (overnight / Spot) — wake, check, repair or leave, retry marked
 
@@ -195,8 +196,8 @@ On each wake:
    Example: r26rocket SHA `e445686` host-fail Q11 → fix on `main` → **r27rocket**
    with `retry.json`:
    `{ "retry_of": "r26rocket", "from_sha": "…", "to_sha": "…", "reason": "…", "step": 4 }`.
-   Frozen SQL may be reused (`LEMMA_SQL_FILE`) so the retry is the same queries.
-   Do not overwrite `gs://…/r26rocket/`.
+   The retry SQL file contains only the failed qids; launch with `LEMMA_SQL_FILE`
+   and `LEMMA_SQL_ONLY=1`. Do not overwrite `gs://…/r26rocket/`.
 
 ## Always read the traces on failure
 
@@ -315,7 +316,8 @@ in scope for the host lemma. Tests that pass `catalog=` into
 `multi_agg_step_trusted_rs` miss this because assemble drops it.
 **Response:** thread the transpile catalog into assemble; test assembled RS
 omits the unsuffixed call; do **not** put the unsound lemma back; **r27rocket**
-`retry.json` step 4. Do not mix into r26.
+`retry.json` step 4 with retry SQL (failed qids only) and `LEMMA_SQL_ONLY=1`.
+Do not mix into r26.
 
 **Q29:** different SQL (3-table join LIMIT 50). No host rem_cap call.
 **AGENT TOO STUPID:** `step 3 (agent)` / Q29 / `while` in proof mode, then

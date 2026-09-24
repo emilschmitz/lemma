@@ -182,10 +182,29 @@ def _append_paper_jobs(
                 )
 
 
+def sql_only_mode() -> bool:
+    """True when LEMMA_SQL_ONLY is 1/true/yes (retry family: SQL file qids only)."""
+    val = os.environ.get("LEMMA_SQL_ONLY", "").strip().lower()
+    return val in {"1", "true", "yes"}
+
+
 def jobs_full(sql_file: Path, family: str, sec_db: str, tpch_db: str) -> list[dict]:
     jobs = jobs_from_sql(sql_file, family, sec_db)
     _append_paper_jobs(jobs, family=family, sec_db=sec_db, tpch_db=tpch_db)
     return jobs
+
+
+def jobs_for_run(
+    sql_file: Path,
+    family: str,
+    sec_db: str,
+    tpch_db: str,
+) -> tuple[list[dict], bool]:
+    """Build job list for this run; sql_only reads LEMMA_SQL_ONLY at call time."""
+    sql_only = sql_only_mode()
+    if sql_only:
+        return jobs_from_sql(sql_file, family, sec_db), True
+    return jobs_full(sql_file, family, sec_db, tpch_db), False
 
 
 def jobs_smoke(sql_file: Path, family: str, sec_db: str) -> list[dict]:
@@ -620,11 +639,13 @@ def main() -> int:
     out_dir = args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
     log_dir = out_dir / "logs"
-    all_jobs = (
-        jobs_smoke(sql_file, args.family, args.sec_db)
-        if args.smoke
-        else jobs_full(sql_file, args.family, args.sec_db, args.tpch_db)
-    )
+    sql_only = False
+    if args.smoke:
+        all_jobs = jobs_smoke(sql_file, args.family, args.sec_db)
+    else:
+        all_jobs, sql_only = jobs_for_run(
+            sql_file, args.family, args.sec_db, args.tpch_db
+        )
 
     resume_seeded: list[dict] = []
     resume_skip: set[str] = set()
@@ -645,6 +666,7 @@ def main() -> int:
         "git_sha": git_sha(),
         "hostname": socket.gethostname(),
         "smoke": args.smoke,
+        "sql_only": sql_only,
         "sql_file": str(sql_file),
         "family": args.family,
         "workers": args.workers,

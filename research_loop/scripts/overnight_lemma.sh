@@ -165,28 +165,33 @@ if [[ "$LEMMA_SERIOUS_VAL" == "1" || "$LEMMA_SERIOUS_VAL" == "true" || "$LEMMA_S
     --out "$OUT/duckdb_session_hot.json" \
     --not-synthetic \
     --hardware-hint "n2-highmem-64 same-box as lemma overnight"
-  IMMANUEL_SQL="holdout/gendb_sec_edgar/queries.sql"
-  if [[ -f "$IMMANUEL_SQL" ]]; then
-    echo "=== DuckDB session-hot Immanuel SEC ($IMMANUEL_SQL) ==="
-    uv run python holdout/gendb_sec_edgar/session_hot.py \
-      --db "$SEC_DB" \
-      --sql "$IMMANUEL_SQL" \
-      --out "$OUT/duckdb_session_hot_immanuel.json" \
-      --not-synthetic \
-      --hardware-hint "n2-highmem-64 same-box as lemma overnight"
-  fi
-  if [[ -f "$TPCH_PAPER_SQL" ]]; then
-    if [[ ! -f "$TPCH_DB" ]]; then
-      echo "ERROR: TPC-H SF10 duckdb missing at $TPCH_DB (GenDB paper subset)." >&2
-      exit 1
+  LEMMA_SQL_ONLY_VAL="${LEMMA_SQL_ONLY:-}"
+  if [[ "$LEMMA_SQL_ONLY_VAL" == "1" || "$LEMMA_SQL_ONLY_VAL" == "true" || "$LEMMA_SQL_ONLY_VAL" == "yes" ]]; then
+    echo "=== DuckDB session-hot Immanuel/TPC-H skipped (LEMMA_SQL_ONLY=$LEMMA_SQL_ONLY_VAL) ==="
+  else
+    IMMANUEL_SQL="holdout/gendb_sec_edgar/queries.sql"
+    if [[ -f "$IMMANUEL_SQL" ]]; then
+      echo "=== DuckDB session-hot Immanuel SEC ($IMMANUEL_SQL) ==="
+      uv run python holdout/gendb_sec_edgar/session_hot.py \
+        --db "$SEC_DB" \
+        --sql "$IMMANUEL_SQL" \
+        --out "$OUT/duckdb_session_hot_immanuel.json" \
+        --not-synthetic \
+        --hardware-hint "n2-highmem-64 same-box as lemma overnight"
     fi
-    echo "=== DuckDB session-hot TPC-H SF10 paper subset ($TPCH_PAPER_SQL) ==="
-    uv run python holdout/gendb_sec_edgar/session_hot.py \
-      --db "$TPCH_DB" \
-      --sql "$TPCH_PAPER_SQL" \
-      --out "$OUT/duckdb_session_hot_tpch_sf10.json" \
-      --not-synthetic \
-      --hardware-hint "n2-highmem-64 same-box as lemma overnight"
+    if [[ -f "$TPCH_PAPER_SQL" ]]; then
+      if [[ ! -f "$TPCH_DB" ]]; then
+        echo "ERROR: TPC-H SF10 duckdb missing at $TPCH_DB (GenDB paper subset)." >&2
+        exit 1
+      fi
+      echo "=== DuckDB session-hot TPC-H SF10 paper subset ($TPCH_PAPER_SQL) ==="
+      uv run python holdout/gendb_sec_edgar/session_hot.py \
+        --db "$TPCH_DB" \
+        --sql "$TPCH_PAPER_SQL" \
+        --out "$OUT/duckdb_session_hot_tpch_sf10.json" \
+        --not-synthetic \
+        --hardware-hint "n2-highmem-64 same-box as lemma overnight"
+    fi
   fi
 else
   echo "DuckDB session-hot baseline skipped (dev; set LEMMA_SERIOUS=1 for paper protocol)"
@@ -285,6 +290,7 @@ export LEMMA_FAIL_STREAK="${LEMMA_FAIL_STREAK}"
 export LEMMA_WORKLOAD=sec
 export LEMMA_DUCKDB_PATH="${SEC_DB}"
 export LEMMA_PARALLEL="${WORKERS}"
+export LEMMA_SQL_ONLY="${LEMMA_SQL_ONLY:-}"
 export LEMMA_EXPERIMENT_EVENT_FILE="$OUT/events.ndjson"
 export LEMMA_MCP_ITERATE_ROWS="${LEMMA_MCP_ITERATE_ROWS:-50000}"
 export LEMMA_KEEP_OPTIMIZING="${LEMMA_KEEP_OPTIMIZING:-1}"
