@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import re
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -1180,6 +1183,39 @@ def test_overnight_sh_session_hot_immanuel_tpch():
     assert "duckdb_session_hot_tpch_sf10.json" in text
     assert "holdout/gendb_sec_edgar/queries.sql" in text
     assert "holdout/tpch_sf10/queries_paper_subset.sql" in text
+
+
+def test_overnight_sh_starts_laptop_lease_watch():
+    text = OVERNIGHT_SH.read_text()
+    assert "lemma_laptop_lease_watch.sh" in text
+    assert "LEMMA_LAPTOP_LEASE" in text
+    assert "laptop_lease.pid" in text
+
+
+def test_laptop_lease_watch_halts_when_stale(tmp_path: Path):
+    script = ROOT / "research_loop" / "scripts" / "lemma_laptop_lease_watch.sh"
+    out = tmp_path / "out"
+    out.mkdir()
+    lease = out / "laptop_lease"
+    lease.write_text("stale\n")
+    old = time.time() - 3600
+    os.utime(lease, (old, old))
+    marker = tmp_path / "halted"
+    env = os.environ.copy()
+    env["LEMMA_LAPTOP_LEASE_SEC"] = "10"
+    env["LEMMA_LAPTOP_LEASE_POLL_SEC"] = "1"
+    env["LEMMA_LAPTOP_LEASE_HALT_CMD"] = f"echo HALTED > {marker}"
+    env["LEMMA_HALT_LOG"] = str(tmp_path / "watchdog.log")
+    proc = subprocess.run(
+        ["bash", str(script), str(out)],
+        env=env,
+        timeout=15,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert marker.read_text().strip() == "HALTED"
 
 
 def test_overnight_sh_rsync_before_halt():

@@ -132,12 +132,18 @@ Loop, in order:
    Config verify must pass (Docker CLI, `grok-4.7-high`, not local `AGENT_CMD` /
    OpenRouter).
 2. **Every 5 minutes, wake and check status** (VM up, family pid, ok/fail
-   counts, streak). The wake is a monitored shell **in the open Cursor chat**
-   (`notify_on_output` on `AGENT_LOOP_TICK_lemma`). It is not cron on the VM.
+   counts, streak). The wake is one monitored shell **in the open Cursor chat**
+   (`research_loop/scripts/lemma_fail_wake.py`, `notify_on_output` on
+   `AGENT_LOOP_TICK_lemma` and `AGENT_LOOP_WAKE`). It is not cron on the VM.
    It dies when that chat closes, the laptop sleeps, or the shell is not
    actually monitored. Arm it at the start of the session. Do not claim a wake
    exists if that shell is not running. A bare `sleep` with no
    `notify_on_output` does not create a turn.
+   That same shell refreshes `$OUT/laptop_lease` on every poll. The guest
+   `lemma_laptop_lease_watch.sh` (started by `overnight_lemma.sh`) halts the
+   VM when the file is older than `LEMMA_LAPTOP_LEASE_SEC` (default 720).
+   Chat death stops the refresher, so the Spot VM stops. Do not launch a
+   paper family without that lease watch.
 3. A **retry family** is not a paper card. After a host/harness fix: commit,
    push, rerun **only the qids that failed** in the dead family. Same SQL text,
    new family, `retry.json`, `LEMMA_SQL_FILE` + `LEMMA_SQL_ONLY=1`. Do not

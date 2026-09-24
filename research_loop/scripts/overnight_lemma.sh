@@ -240,6 +240,13 @@ bash research_loop/scripts/spot_resource_monitor.sh "$OUT/resource_metrics.ndjso
 echo $! >"$OUT/resource_monitor.pid"
 echo "resource monitor pid=$(cat "$OUT/resource_monitor.pid")"
 
+# Guest halts if the Cursor chat stops touching laptop_lease (default 12 min).
+if [[ "${LEMMA_LAPTOP_LEASE:-1}" != "0" ]]; then
+  bash research_loop/scripts/lemma_laptop_lease_watch.sh "$OUT" >>"$OUT/watchdog.log" 2>&1 &
+  echo $! >"$OUT/laptop_lease.pid"
+  echo "laptop lease watch pid=$(cat "$OUT/laptop_lease.pid") sec=${LEMMA_LAPTOP_LEASE_SEC:-720}"
+fi
+
 maybe_gsutil_rsync_harvest() {
   local out_dir="${1:-}"
   local gs_uri="${LEMMA_HARVEST_GS_URI:-}"
