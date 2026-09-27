@@ -1511,6 +1511,19 @@ def _fold_lemma(
     )
     if star is not None:
         return star
+    # shape: chain
+    chain = _chain_fold_lemma(
+        helper_name,
+        slots,
+        join_cond=join_cond,
+        filter_cond=filter_cond,
+        update_expr=update_expr,
+        ret_type=ret_type,
+        ret_base=ret_base,
+        extra_params=extra_params,
+    )
+    if chain is not None:
+        return chain
     # shape: 4table
     return _quad_fold_lemma(
         helper_name,
@@ -1712,6 +1725,192 @@ pub proof fn {pairs}({params}{xsig})
         helper_zeros=helper_zeros,
         fold_rhs=fold_rhs,
         extra_params=extras,
+    )
+    return text, bridge
+
+
+def _chain_fold_lemma(
+    helper_name: str,
+    slots: list[_Slot],
+    *,
+    join_cond: str,
+    filter_cond: str | None,
+    update_expr: str,
+    ret_type: str,
+    ret_base: str,
+    extra_params: list[tuple[str, str]] | None,
+) -> tuple[str, _FoldBridge] | None:
+    """Proof that a 3-table chain helper equals ``loop_acc_chain``.
+
+    Outer⋈middle on one string key and middle⋈inner on a *different* string key
+    (``A.k = B.k AND B.m = C.m``). Star needs outer→inner equalities instead.
+    ``lemma_chain_acc`` equates the fold to ``nested_chain``.
+    """
+    if extra_params or len(slots) != 3:
+        return None
+    base_cond, derived_filt = _split_join_for_fold(join_cond)
+    filter_cond = _merge_step_filters(derived_filt, filter_cond)
+    parsed: list[tuple[re.Match[str], re.Match[str]]] = []
+    for part in base_cond.split(" && "):
+        left_txt, sep, right_txt = part.strip().partition(" == ")
+        if sep != " == ":
+            return None
+        left = _JOIN_SIDE.fullmatch(left_txt.strip())
+        right = _JOIN_SIDE.fullmatch(right_txt.strip())
+        if left is None or right is None or not left.group("view") or not right.group("view"):
+            return None
+        parsed.append((left, right))
+    if len(parsed) != 2:
+        return None
+    outer, mid, inner = slots
+
+    def orient(
+        left: re.Match[str], right: re.Match[str], idx_a: str, idx_b: str,
+    ) -> tuple[re.Match[str], re.Match[str]] | None:
+        if left.group("idx") == idx_a and right.group("idx") == idx_b:
+            return left, right
+        if right.group("idx") == idx_a and left.group("idx") == idx_b:
+            return right, left
+        return None
+
+    om: tuple[re.Match[str], re.Match[str]] | None = None
+    mi: tuple[re.Match[str], re.Match[str]] | None = None
+    for left, right in parsed:
+        idxs = {left.group("idx"), right.group("idx")}
+        if idxs == {outer.idx, mid.idx}:
+            got = orient(left, right, outer.idx, mid.idx)
+            if got is None or om is not None:
+                return None
+            om = got
+        elif idxs == {mid.idx, inner.idx}:
+            got = orient(left, right, mid.idx, inner.idx)
+            if got is None or mi is not None:
+                return None
+            mi = got
+        else:
+            return None
+    if om is None or mi is None:
+        return None
+    a_outer, a_mid = om
+    m_mid, m_inner = mi
+    # Different keys on the middle table (k vs m).
+    if a_mid.group("field") == m_mid.group("field"):
+        return None
+
+    def seq_of(side: re.Match[str]) -> str:
+        return f"key_views({side.group('param')}.{side.group('field')}@)"
+
+    def key_assert(side: re.Match[str]) -> str:
+        param, field, idx = side.group("param"), side.group("field"), side.group("idx")
+        return f"assert(key_views({param}.{field}@)[{idx}] == {param}.{field}[{idx} as int]@);"
+
+    step_body = re.sub(r"\btail\b", "acc", update_expr)
+    if filter_cond:
+        step = f"if {filter_cond} {{\n        {step_body}\n    }} else {{\n        acc\n    }}"
+    else:
+        step = step_body
+    asserts = "\n            ".join(
+        key_assert(side) for side in (a_outer, a_mid, m_mid, m_inner)
+    )
+    lemma = f"lemma_{helper_name}_is_chain"
+    pairs = f"lemma_{helper_name}_is_chain_pairs"
+    params = ", ".join(f"{s.param}: &{s.struct}" for s in slots)
+    recurse = ", ".join(s.param for s in slots)
+    step_closure = (
+        f"|acc: {ret_type}, {outer.idx}: int, {mid.idx}: int, {inner.idx}: int| {{\n"
+        f"                {step}\n"
+        f"            }}"
+    )
+    helper_zeros = f"{helper_name}({recurse}, {_init_indices(slots)})"
+    fold_rhs = (
+        f"triple_acc(\n"
+        f"            nested_chain(\n"
+        f"                {seq_of(a_outer)},\n"
+        f"                {seq_of(a_mid)},\n"
+        f"                {seq_of(m_mid)},\n"
+        f"                {seq_of(m_inner)},\n"
+        f"                {outer.param}.n as int,\n"
+        f"            ),\n"
+        f"            {step_closure},\n"
+        f"            {ret_base},\n"
+        f"            0,\n"
+        f"        )"
+    )
+    # shape: chain
+    text = f"""// shape: chain
+pub proof fn {lemma}({params}, {outer.idx}: int, {mid.idx}: int, {inner.idx}: int)
+    requires
+        valid_cols_{outer.table}({outer.param}),
+        valid_cols_{mid.table}({mid.param}),
+        valid_cols_{inner.table}({inner.param}),
+        {outer.param}.n <= usize::MAX,
+        {mid.param}.n <= usize::MAX,
+        {inner.param}.n <= usize::MAX,
+        0 <= {outer.idx} <= {outer.param}.n,
+        0 <= {mid.idx} <= {mid.param}.n,
+        0 <= {inner.idx} <= {inner.param}.n,
+    ensures
+        {helper_name}({recurse}, {outer.idx}, {mid.idx}, {inner.idx}) == loop_acc_chain(
+            {seq_of(a_outer)},
+            {seq_of(a_mid)},
+            {seq_of(m_mid)},
+            {seq_of(m_inner)},
+            {step_closure},
+            {ret_base},
+            {outer.param}.n as int,
+            {mid.param}.n as int,
+            {inner.param}.n as int,
+            {outer.idx},
+            {mid.idx},
+            {inner.idx},
+        ),
+    decreases {outer.param}.n - {outer.idx}, {mid.param}.n - {mid.idx}, {inner.param}.n - {inner.idx},
+{{
+    if {outer.idx} < {outer.param}.n {{
+        if {mid.idx} < {mid.param}.n {{
+            if {inner.idx} < {inner.param}.n {{
+                {lemma}({recurse}, {outer.idx}, {mid.idx}, {inner.idx} + 1);
+                {asserts}
+            }} else {{
+                {lemma}({recurse}, {outer.idx}, {mid.idx} + 1, 0);
+            }}
+        }} else {{
+            {lemma}({recurse}, {outer.idx} + 1, 0, 0);
+        }}
+    }}
+}}
+
+pub proof fn {pairs}({params})
+    requires
+        valid_cols_{outer.table}({outer.param}),
+        valid_cols_{mid.table}({mid.param}),
+        valid_cols_{inner.table}({inner.param}),
+        {outer.param}.n <= usize::MAX,
+        {mid.param}.n <= usize::MAX,
+        {inner.param}.n <= usize::MAX,
+    ensures
+        {helper_zeros} == {fold_rhs},
+{{
+    {lemma}({recurse}, 0, 0, 0);
+    lemma_chain_at_origin(
+        {seq_of(a_outer)},
+        {seq_of(a_mid)},
+        {seq_of(m_mid)},
+        {seq_of(m_inner)},
+        {step_closure},
+        {ret_base},
+        {outer.param}.n as int,
+        {mid.param}.n as int,
+        {inner.param}.n as int,
+    );
+}}"""
+    bridge = _FoldBridge(
+        helper_name=helper_name,
+        pairs_lemma=pairs,
+        slots=list(slots),
+        helper_zeros=helper_zeros,
+        fold_rhs=fold_rhs,
+        extra_params=[],
     )
     return text, bridge
 
