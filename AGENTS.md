@@ -125,6 +125,33 @@ replay that. The paper card is 61 jobs, fresh full-SEC shuffle, Docker CLI
 model **`grok-4.7-high`**, `LEMMA_SERIOUS=1`, `EMIT=0`, `FAST=0`, official
 full-table measure, fail-streak 6. Bigger CPU does not turn a new shuffle into r13.
 
+**The near-complete verify-and-run is r24 on the GCP VM** (SHA `c818042`):
+25 jobs proved and executed, 5 proved then the official pin timed out.
+Local r12/r13 did not execute that card.
+
+**A later SHA can be fully synced and still be the wrong code.** r25
+(SHA `1af47d4`) checked out `d5cd70c` (real DuckDB row caps). The VM ran
+that SHA. Host lemmas still contained
+`assert((prev_cap as int) + 1 <= u64::MAX)` and, on r31,
+`assert(pre.line[i] < LEMMA_MAX_pre_line)` above `run_query`. Those are
+proof obligations. A catalog cap is an assumption (`requires` / `valid_cols`
+/ `assume`): Verus checks the query against it and does not re-prove the
+measured max. An `assert` failure above `run_query` is a host bug. Do not
+launch, and do not call it an unsynced laptop or an agent miss.
+
+**Before any paper/Spot family**, both gates. Skip either and stop:
+
+1. **SHA sync.** `LEMMA_PREFLIGHT_SSH=1`. Remote `HEAD` must equal the local
+   SHA you mean to run. Recording `git_sha` after the fact is not the gate.
+   The SSH half of `research_loop/scripts/gcp_experiment_preflight.sh` is
+   off unless that flag is set.
+2. **Host scaffold on the product catalog.** After any change under
+   `research_loop/sec_table_assumptions.py`, `db_extension/dataset_config.py`,
+   `verus_transpiler/` value bounds, or assemble: transpile one query with
+   the real SEC counts and Verus the assembled file with the `run_query`
+   skeleton. Host `proof fn`s must be `N verified, 0 errors` before the
+   61-job card. One such query would have stopped r25.
+
 Loop, in order:
 
 1. A **paper card** is a fresh SEC shuffle (new seed) plus Immanuel plus TPC-H.
