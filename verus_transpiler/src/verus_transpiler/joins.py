@@ -4596,6 +4596,243 @@ def _emit_loj_projection(
     return helpers_out, spec_body, ret_type, bridge
 
 
+def _null_pad_for_spec_type(spec_ty: str) -> str:
+    """Lemma null stand-in for outer-join miss (empty string / zero)."""
+    if spec_ty == "Seq<char>":
+        return "Seq::<char>::empty()"
+    if spec_ty == "u64":
+        return "0u64"
+    if spec_ty == "u32":
+        return "0u32"
+    if spec_ty == "int":
+        return "0"
+    raise UnsupportedContractError(
+        f"RIGHT OUTER null pad for type {spec_ty!r} not supported"
+    )
+
+def _right_fold_lemma(
+    helper_name: str,
+    slots: list[_Slot],
+    *,
+    outer_seq: str,
+    inner_seq: str,
+    match_row: str,
+    miss_row: str,
+    ret_type: str,
+    ret_base: str,
+) -> tuple[str, _FoldBridge]:
+    """Proof that a RIGHT-outer helper equals ``right_acc`` of ``nested_right_pairs``.
+
+    // shape: right
+    One equality. Preserved side is ``slots[0]`` (after honest RIGHT side-swap).
+    The helper body *is* that fold; lemmas are the origin bridge for agents.
+    """
+    o, i = slots
+    params = f"{o.param}: &{o.struct}, {i.param}: &{i.struct}"
+    helper_zeros = f"{helper_name}({o.param}, {i.param})"
+    step_hit = (
+        f"|acc: {ret_type}, i0: int, i1: int| {{\n"
+        f"                acc.push({match_row})\n"
+        f"            }}"
+    )
+    step_miss = (
+        f"|acc: {ret_type}, i0: int| {{\n"
+        f"                acc.push({miss_row})\n"
+        f"            }}"
+    )
+    fold_rhs = (
+        f"right_acc(\n"
+        f"            nested_right_pairs({outer_seq}, {inner_seq}, {o.param}.n as int),\n"
+        f"            {step_hit},\n"
+        f"            {step_miss},\n"
+        f"            {ret_base},\n"
+        f"            0,\n"
+        f"        )"
+    )
+    loop_lemma = f"lemma_{helper_name}_is_right_loop"
+    right_lemma = f"lemma_{helper_name}_is_right"
+    text = f"""// shape: right
+pub proof fn {loop_lemma}({params})
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+    ensures
+        {helper_zeros} == right_loop_acc(
+            {outer_seq},
+            {inner_seq},
+            {step_hit},
+            {step_miss},
+            {ret_base},
+            {o.param}.n as int,
+            0,
+        ),
+{{
+    lemma_right_at_origin(
+        {outer_seq},
+        {inner_seq},
+        {step_hit},
+        {step_miss},
+        {ret_base},
+        {o.param}.n as int,
+    );
+}}
+
+pub proof fn {right_lemma}({params})
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+    ensures
+        {helper_zeros} == {fold_rhs},
+{{
+    {loop_lemma}({o.param}, {i.param});
+}}"""
+    bridge = _FoldBridge(
+        helper_name=helper_name,
+        pairs_lemma=right_lemma,
+        slots=list(slots),
+        helper_zeros=helper_zeros,
+        fold_rhs=fold_rhs,
+    )
+    return text, bridge
+
+def _emit_right_outer_projection(
+    query: SQLQuery,
+    slots: list[_Slot],
+    schemas_by_table: dict[str, dict[str, str]],
+    *,
+    where_expr: str | None,
+    helper_name: str = "join_right_projection_helper",
+) -> tuple[str, str, str, _FoldBridge | None]:
+    """RIGHT OUTER projection: keep unmatched preserved-side rows (null-pad inner).
+
+    After parse side-swap, ``slots[0]`` is the SQL RIGHT table. One equality only.
+    MethodSpec is the real ``right_acc(nested_right_pairs(...))`` fold.
+    """
+    if len(slots) != 2:
+        raise UnsupportedContractError("RIGHT OUTER projection supports exactly two tables")
+    if where_expr:
+        raise UnsupportedContractError(
+            "RIGHT OUTER projection with WHERE needs real MethodSpec; not yet supported"
+        )
+    if query.derived_tables:
+        raise UnsupportedContractError(
+            "RIGHT OUTER projection with derived tables is not yet supported"
+        )
+    o, inn = slots
+    join = query.joins[0]
+    if len(join.on_equalities) != 1:
+        raise UnsupportedContractError(
+            "RIGHT OUTER projection supports exactly one equality"
+        )
+    left_ref, right_ref = join.on_equalities[0]
+    l_expr = _col_access_ref(left_ref, query, slots, schemas_by_table, {})
+    r_expr = _col_access_ref(right_ref, query, slots, schemas_by_table, {})
+    m = re.fullmatch(
+        r"(?P<lp>\w+)\.(?P<lf>\w+)\[(?P<li>\w+) as int\](?P<lv>@?)\s*==\s*"
+        r"(?P<rp>\w+)\.(?P<rf>\w+)\[(?P<ri>\w+) as int\](?P<rv>@?)",
+        f"{l_expr} == {r_expr}".replace(f"{o.idx} as int", "i0 as int").replace(
+            f"{inn.idx} as int", "i1 as int"
+        ),
+    )
+    if m is None or bool(m.group("lv")) != bool(m.group("rv")):
+        raise UnsupportedContractError(
+            "RIGHT OUTER projection requires a single column equality"
+        )
+    if m.group("lp") != o.param or m.group("rp") != inn.param:
+        raise UnsupportedContractError(
+            "RIGHT OUTER projection equality must be preserved-side == nullable-side"
+        )
+
+    def seq_expr(param: str, field: str, view: str) -> str:
+        col = f"{param}.{field}"
+        return f"key_views({col}@)" if view else f"{col}@"
+
+    outer_seq = seq_expr(m.group("lp"), m.group("lf"), m.group("lv"))
+    inner_seq = seq_expr(m.group("rp"), m.group("rf"), m.group("rv"))
+
+    row_parts_match: list[str] = []
+    row_parts_miss: list[str] = []
+    row_types: list[str] = []
+    for col, expr in zip(query.projection_columns, query.projection_exprs, strict=True):
+        resolved = _resolve_row_expr(expr, query, slots, schemas_by_table, {})
+        match_expr = resolved.replace(f"{o.idx} as int", "i0 as int").replace(
+            f"{inn.idx} as int", "i1 as int"
+        )
+        row_parts_match.append(match_expr)
+        if f"{inn.param}." in resolved:
+            spec_ty = "Seq<char>"
+            for k, v in schemas_by_table[inn.table].items():
+                if k.lower() == col.lower() or expr.lower().endswith(k.lower()):
+                    spec_ty = spec_map_key_type(v)
+                    break
+            row_parts_miss.append(_null_pad_for_spec_type(spec_ty))
+            row_types.append(spec_ty)
+        else:
+            miss_expr = resolved.replace(f"{o.idx} as int", "i0 as int")
+            row_parts_miss.append(miss_expr)
+            spec_ty = "Seq<char>"
+            for k, v in schemas_by_table[o.table].items():
+                if k.lower() == col.lower() or expr.lower().endswith(k.lower()):
+                    spec_ty = spec_map_key_type(v)
+                    break
+            row_types.append(spec_ty)
+
+    if len(row_parts_match) == 1:
+        match_row = row_parts_match[0]
+        miss_row = row_parts_miss[0]
+        row_ty = row_types[0] if row_types else "u64"
+    else:
+        match_row = f"({', '.join(row_parts_match)})"
+        miss_row = f"({', '.join(row_parts_miss)})"
+        row_ty = f"({', '.join(row_types)})" if row_types else "(u64, u64)"
+
+    ret_type = f"Seq<{row_ty}>"
+    ret_base = "Seq::empty()"
+    step_hit = (
+        f"|acc: {ret_type}, i0: int, i1: int| {{\n"
+        f"            acc.push({match_row})\n"
+        f"        }}"
+    )
+    step_miss = (
+        f"|acc: {ret_type}, i0: int| {{\n"
+        f"            acc.push({miss_row})\n"
+        f"        }}"
+    )
+
+    helper = f"""pub open spec fn {helper_name}(
+    {o.param}: &{o.struct},
+    {inn.param}: &{inn.struct},
+) -> (res: {ret_type})
+{{
+    right_acc(
+        nested_right_pairs({outer_seq}, {inner_seq}, {o.param}.n as int),
+        {step_hit},
+        {step_miss},
+        {ret_base},
+        0,
+    )
+}}"""
+
+    fold_text, bridge = _right_fold_lemma(
+        helper_name,
+        slots,
+        outer_seq=outer_seq,
+        inner_seq=inner_seq,
+        match_row=match_row,
+        miss_row=miss_row,
+        ret_type=ret_type,
+        ret_base=ret_base,
+    )
+    helpers_out = helper + "\n\n" + fold_text
+    spec_body = f"{helper_name}({o.param}, {inn.param})"
+    if query.limit is not None:
+        spec_body = f"spec_seq_take({spec_body}, {query.limit})"
+    return helpers_out, spec_body, ret_type, bridge
+
 def _emit_loj_agg(
     query: SQLQuery,
     slots: list[_Slot],
@@ -5133,6 +5370,7 @@ def emit_join_spec_helpers(
     is_left = any(j.join_type == "LEFT" for j in query.joins)
     is_semi = any(j.join_type == "SEMI" for j in query.joins)
     is_plain_left = is_left and not is_left_anti and not is_keyword_anti and not is_keyword_semi
+    is_right = any(j.join_type == "RIGHT" for j in query.joins)
 
     extra_having = ""
     spec_body: str
@@ -5157,6 +5395,11 @@ def emit_join_spec_helpers(
             derived_by_alias=derived_by_alias,
         )
 
+    if is_right and not query.is_projection:
+        raise UnsupportedContractError(
+            "RIGHT JOIN group-by / aggregate needs real MethodSpec; not yet supported"
+        )
+
     if is_keyword_semi and query.is_projection:
         proj_helper, spec_body, ret_type, fold_bridge = _emit_existence_projection(
             query, slots, schemas_by_table, where_expr=where_expr,
@@ -5175,6 +5418,11 @@ def emit_join_spec_helpers(
         )
         helpers = "\n\n".join(derived_helpers + [full_helpers])
         fold_bridge = None
+    elif query.is_projection and is_right and len(slots) == 2:
+        proj_helper, spec_body, ret_type, fold_bridge = _emit_right_outer_projection(
+            query, slots, schemas_by_table, where_expr=where_expr,
+        )
+        helpers = "\n\n".join(derived_helpers + [proj_helper])
     elif is_plain_left and query.is_projection and len(slots) == 2:
         proj_helper, spec_body, ret_type, fold_bridge = _emit_loj_projection(
             query, slots, schemas_by_table, where_expr=where_expr,
