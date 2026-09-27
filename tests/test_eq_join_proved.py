@@ -108,13 +108,16 @@ def test_join_transpile_includes_proved_equijoin_and_single_table_does_not() -> 
         assert "let mut i = cols.n" not in out
     assert "lemma_join_method_spec_helper_is_loop(" in adsh
     assert "lemma_join_method_spec_helper_is_pairs(" in adsh
+    assert "lemma_join_method_spec_helper_method_is_fold(" in adsh
     assert "lemma_join_method_spec_helper_is_loop(" not in star
     assert "lemma_join_method_spec_helper_is_pairs(" not in star
     assert "lemma_join_method_spec_helper_is_loop2(" not in adsh
     assert "lemma_join_method_spec_helper_is_loop2(" in tag
     assert "lemma_join_method_spec_helper_is_pairs2(" in tag
+    assert "lemma_join_method_spec_helper_method_is_fold(" in tag
     assert "lemma_join_projection_helper_is_star" in star
     assert "lemma_join_projection_helper_is_star_pairs" in star
+    assert "lemma_join_projection_helper_method_is_fold(" in star
     assert "pub fn build_eq_index_str(" not in single
     assert "pub fn equijoin_pairs_str(" not in single
     assert "let mut i = cols.n" in single
@@ -162,7 +165,7 @@ pub exec fn run_query(pre: &Cols_pre, sub: &Cols_sub) -> (res: {ret})
 
 
 @pytest.mark.parametrize(
-    ("sql", "lemma", "pairs_lemma", "ret", "body", "ensures"),
+    ("sql", "lemma", "pairs_lemma", "method_lemma", "ret", "body", "ensures"),
     [
         (
             """
@@ -173,6 +176,7 @@ pub exec fn run_query(pre: &Cols_pre, sub: &Cols_sub) -> (res: {ret})
             """,
             "lemma_join_method_spec_helper_is_loop",
             "lemma_join_method_spec_helper_is_pairs",
+            "lemma_join_method_spec_helper_method_is_fold",
             "HashMap<u32, u64>",
             "HashMap::new()",
             "res@ == method_spec(pre, sub)",
@@ -186,6 +190,7 @@ pub exec fn run_query(pre: &Cols_pre, sub: &Cols_sub) -> (res: {ret})
             """,
             "lemma_multi_agg_helper_is_loop",
             "lemma_multi_agg_helper_is_pairs",
+            "lemma_multi_agg_helper_method_is_fold",
             "HashMap<u32, (u64, u64)>",
             "HashMap::new()",
             "res@ == method_spec(pre, sub)",
@@ -197,6 +202,7 @@ pub exec fn run_query(pre: &Cols_pre, sub: &Cols_sub) -> (res: {ret})
             """,
             "lemma_join_method_spec_helper_is_loop",
             "lemma_join_method_spec_helper_is_pairs",
+            "lemma_join_method_spec_helper_method_is_fold",
             "u64",
             "0u64",
             "res == method_spec(pre, sub)",
@@ -208,6 +214,7 @@ pub exec fn run_query(pre: &Cols_pre, sub: &Cols_sub) -> (res: {ret})
             """,
             "lemma_join_projection_helper_is_loop",
             "lemma_join_projection_helper_is_pairs",
+            "lemma_join_projection_helper_method_is_fold",
             "Vec<u32>",
             "Vec::new()",
             "res@ == res@",
@@ -218,6 +225,7 @@ def test_pair_fold_lemma_verifies(
     sql: str,
     lemma: str,
     pairs_lemma: str,
+    method_lemma: str,
     ret: str,
     body: str,
     ensures: str,
@@ -231,6 +239,7 @@ def test_pair_fold_lemma_verifies(
     spec_rs = transpile_sql_to_verus(sql, projected, catalog_assumptions=catalog)
     assert lemma in spec_rs
     assert pairs_lemma in spec_rs
+    assert method_lemma in spec_rs
     ret_type = resolve_ret_type_from_method_spec(spec_rs)
     program = assemble_verified_join_program(
         spec_rs=spec_rs,
@@ -242,6 +251,7 @@ def test_pair_fold_lemma_verifies(
         catalog_assumptions=catalog,
     )
     assert pairs_lemma in program
+    assert method_lemma in program
     rs_path = tmp_path / "fold.rs"
     rs_path.write_text(program, encoding="utf-8")
     ok, log = run_verus_verify(str(rs_path), timeout=180)
@@ -264,6 +274,7 @@ def test_two_column_fold_lemma_verifies(tmp_path: Path) -> None:
     spec_rs = transpile_sql_to_verus(_TAG_SQL, projected, catalog_assumptions=catalog)
     assert "lemma_join_method_spec_helper_is_loop2(" in spec_rs
     assert "lemma_join_method_spec_helper_is_pairs2(" in spec_rs
+    assert "lemma_join_method_spec_helper_method_is_fold(" in spec_rs
     ret_type = resolve_ret_type_from_method_spec(spec_rs)
     assert ret_type == "u64"
     stub = """#[verifier::external_body]
@@ -283,6 +294,7 @@ pub exec fn run_query(pre: &Cols_pre, tag: &Cols_tag) -> (res: u64)
         catalog_assumptions=catalog,
     )
     assert "lemma_join_method_spec_helper_is_pairs2(" in program
+    assert "lemma_join_method_spec_helper_method_is_fold(" in program
     rs_path = tmp_path / "tag_fold.rs"
     rs_path.write_text(program, encoding="utf-8")
     ok, log = run_verus_verify(str(rs_path), timeout=180)
@@ -314,6 +326,7 @@ def test_previous_failure_joins_fold(tmp_path: Path) -> None:
             """,
             "lemma_multi_agg_helper_is_loop",
             "lemma_multi_agg_helper_is_pairs",
+            "lemma_multi_agg_helper_method_is_fold",
             ("pre", "sub"),
             False,
         ),
@@ -328,11 +341,12 @@ def test_previous_failure_joins_fold(tmp_path: Path) -> None:
             """,
             "lemma_join_projection_helper_is_star",
             "lemma_join_projection_helper_is_star_pairs",
+            "lemma_join_projection_helper_method_is_fold",
             ("pre", "sub", "tag"),
             True,
         ),
     ]
-    for sql, lemma, pairs_lemma, order, nway in cases:
+    for sql, lemma, pairs_lemma, method_lemma, order, nway in cases:
         projected = project_multi_schema_for_query(sql, multi)
         if any(not isinstance(cols, dict) for cols in projected.values()):
             raise TypeError("expected a per-table schema")
@@ -340,6 +354,7 @@ def test_previous_failure_joins_fold(tmp_path: Path) -> None:
         spec_rs = transpile_sql_to_verus(sql, projected, catalog_assumptions=catalog)
         assert lemma in spec_rs
         assert pairs_lemma in spec_rs
+        assert method_lemma in spec_rs
         ret_type = resolve_ret_type_from_method_spec(spec_rs)
         rust = dynamic_ret_type_config()[ret_type]["rust_ret"]
         params = ", ".join(f"{t}: &Cols_{t}" for t in order)
@@ -379,6 +394,7 @@ pub exec fn run_query({params}) -> (res: {rust})
                 default_tbls={t: "" for t in order},
                 catalog_assumptions=catalog,
             )
+        assert method_lemma in program
         rs_path = tmp_path / f"{lemma}.rs"
         rs_path.write_text(program, encoding="utf-8")
         ok, log = run_verus_verify(str(rs_path), timeout=180)

@@ -29,6 +29,17 @@ class _Slot:
     struct: str
 
 
+@dataclass
+class _FoldBridge:
+    """Origin fold fact: helper at zeros equals pair_acc / triple_acc at 0."""
+
+    helper_name: str
+    pairs_lemma: str
+    slots: list[_Slot]
+    helper_zeros: str
+    fold_rhs: str
+
+
 def _derived_aliases(query: SQLQuery) -> set[str]:
     return {d.alias for d in query.derived_tables}
 
@@ -628,7 +639,7 @@ def _pair_fold_lemma(
     ret_type: str,
     ret_base: str,
     extra_params: list[tuple[str, str]] | None,
-) -> str | None:
+) -> tuple[str, _FoldBridge] | None:
     """Proof that a 2-table equijoin helper equals ``loop_acc`` on its key columns.
 
     One equality only. The filter and aggregate stay in the step closure, which
@@ -679,7 +690,17 @@ def _pair_fold_lemma(
         f"                {step}\n"
         f"            }}"
     )
-    return f"""pub proof fn {lemma}({params}, {o.idx}: int, {i.idx}: int)
+    helper_zeros = f"{helper_name}({recurse_args}, {_init_indices(slots)})"
+    fold_rhs = (
+        f"pair_acc(\n"
+        f"            nested_eq_pairs({seq_expr(outer)}, {seq_expr(inner)},"
+        f" {o.param}.n as int),\n"
+        f"            {step_closure},\n"
+        f"            {ret_base},\n"
+        f"            0,\n"
+        f"        )"
+    )
+    text = f"""pub proof fn {lemma}({params}, {o.idx}: int, {i.idx}: int)
     requires
         valid_cols_{o.table}({o.param}),
         valid_cols_{i.table}({i.param}),
@@ -718,12 +739,7 @@ pub proof fn {pairs}({params})
         {o.param}.n <= usize::MAX,
         {i.param}.n <= usize::MAX,
     ensures
-        {helper_name}({recurse_args}, 0, 0) == pair_acc(
-            nested_eq_pairs({seq_expr(outer)}, {seq_expr(inner)}, {o.param}.n as int),
-            {step_closure},
-            {ret_base},
-            0,
-        ),
+        {helper_zeros} == {fold_rhs},
 {{
     {lemma}({recurse_args}, 0, 0);
     lemma_loop_at_origin(
@@ -735,6 +751,14 @@ pub proof fn {pairs}({params})
         {i.param}.n as int,
     );
 }}"""
+    bridge = _FoldBridge(
+        helper_name=helper_name,
+        pairs_lemma=pairs,
+        slots=list(slots),
+        helper_zeros=helper_zeros,
+        fold_rhs=fold_rhs,
+    )
+    return text, bridge
 
 
 def _pair2_fold_lemma(
@@ -747,7 +771,7 @@ def _pair2_fold_lemma(
     ret_type: str,
     ret_base: str,
     extra_params: list[tuple[str, str]] | None,
-) -> str | None:
+) -> tuple[str, _FoldBridge] | None:
     """Proof that a 2-table, two-equality helper equals ``loop_acc2``.
 
     Both equalities join the same outer row to the same inner row. The filter
@@ -809,7 +833,22 @@ def _pair2_fold_lemma(
         f"                {step}\n"
         f"            }}"
     )
-    return f"""pub proof fn {lemma}({params}, {o.idx}: int, {i.idx}: int)
+    helper_zeros = f"{helper_name}({recurse_args}, {_init_indices(slots)})"
+    fold_rhs = (
+        f"pair_acc(\n"
+        f"            nested_eq_pairs2(\n"
+        f"                {seq_expr(a_outer)},\n"
+        f"                {seq_expr(b_outer)},\n"
+        f"                {seq_expr(a_inner)},\n"
+        f"                {seq_expr(b_inner)},\n"
+        f"                {o.param}.n as int,\n"
+        f"            ),\n"
+        f"            {step_closure},\n"
+        f"            {ret_base},\n"
+        f"            0,\n"
+        f"        )"
+    )
+    text = f"""pub proof fn {lemma}({params}, {o.idx}: int, {i.idx}: int)
     requires
         valid_cols_{o.table}({o.param}),
         valid_cols_{i.table}({i.param}),
@@ -849,18 +888,7 @@ pub proof fn {pairs}({params})
         {o.param}.n <= usize::MAX,
         {i.param}.n <= usize::MAX,
     ensures
-        {helper_name}({recurse_args}, 0, 0) == pair_acc(
-            nested_eq_pairs2(
-                {seq_expr(a_outer)},
-                {seq_expr(b_outer)},
-                {seq_expr(a_inner)},
-                {seq_expr(b_inner)},
-                {o.param}.n as int,
-            ),
-            {step_closure},
-            {ret_base},
-            0,
-        ),
+        {helper_zeros} == {fold_rhs},
 {{
     {lemma}({recurse_args}, 0, 0);
     lemma_loop2_at_origin(
@@ -874,6 +902,14 @@ pub proof fn {pairs}({params})
         {i.param}.n as int,
     );
 }}"""
+    bridge = _FoldBridge(
+        helper_name=helper_name,
+        pairs_lemma=pairs,
+        slots=list(slots),
+        helper_zeros=helper_zeros,
+        fold_rhs=fold_rhs,
+    )
+    return text, bridge
 
 
 def _fold_lemma(
@@ -886,7 +922,7 @@ def _fold_lemma(
     ret_type: str,
     ret_base: str,
     extra_params: list[tuple[str, str]] | None,
-) -> str | None:
+) -> tuple[str, _FoldBridge] | None:
     pair = _pair_fold_lemma(
         helper_name,
         slots,
@@ -933,7 +969,7 @@ def _star_fold_lemma(
     ret_type: str,
     ret_base: str,
     extra_params: list[tuple[str, str]] | None,
-) -> str | None:
+) -> tuple[str, _FoldBridge] | None:
     """Proof that a 3-table star helper equals ``loop_acc3``.
 
     One equality to the middle table and two equalities to the inner table,
@@ -1010,7 +1046,24 @@ def _star_fold_lemma(
         f"                {step}\n"
         f"            }}"
     )
-    return f"""pub proof fn {lemma}({params}, {outer.idx}: int, {mid.idx}: int, {inner.idx}: int)
+    helper_zeros = f"{helper_name}({recurse}, {_init_indices(slots)})"
+    fold_rhs = (
+        f"triple_acc(\n"
+        f"            nested_star(\n"
+        f"                {seq_of(a_outer)},\n"
+        f"                {seq_of(t_outer)},\n"
+        f"                {seq_of(v_outer)},\n"
+        f"                {seq_of(a_mid)},\n"
+        f"                {seq_of(t_inner)},\n"
+        f"                {seq_of(v_inner)},\n"
+        f"                {outer.param}.n as int,\n"
+        f"            ),\n"
+        f"            {step_closure},\n"
+        f"            {ret_base},\n"
+        f"            0,\n"
+        f"        )"
+    )
+    text = f"""pub proof fn {lemma}({params}, {outer.idx}: int, {mid.idx}: int, {inner.idx}: int)
     requires
         valid_cols_{outer.table}({outer.param}),
         valid_cols_{mid.table}({mid.param}),
@@ -1063,20 +1116,7 @@ pub proof fn {pairs}({params})
         {mid.param}.n <= usize::MAX,
         {inner.param}.n <= usize::MAX,
     ensures
-        {helper_name}({recurse}, 0, 0, 0) == triple_acc(
-            nested_star(
-                {seq_of(a_outer)},
-                {seq_of(t_outer)},
-                {seq_of(v_outer)},
-                {seq_of(a_mid)},
-                {seq_of(t_inner)},
-                {seq_of(v_inner)},
-                {outer.param}.n as int,
-            ),
-            {step_closure},
-            {ret_base},
-            0,
-        ),
+        {helper_zeros} == {fold_rhs},
 {{
     {lemma}({recurse}, 0, 0, 0);
     lemma_star_at_origin(
@@ -1092,6 +1132,52 @@ pub proof fn {pairs}({params})
         {mid.param}.n as int,
         {inner.param}.n as int,
     );
+}}"""
+    bridge = _FoldBridge(
+        helper_name=helper_name,
+        pairs_lemma=pairs,
+        slots=list(slots),
+        helper_zeros=helper_zeros,
+        fold_rhs=fold_rhs,
+    )
+    return text, bridge
+
+
+def _emit_method_is_fold(bridge: _FoldBridge, method_body: str) -> str:
+    """``method_spec`` equals the method_spec wrapper of the pair/triple fold at 0."""
+    if bridge.helper_zeros not in method_body:
+        raise ValueError(
+            f"method_spec body does not contain {bridge.helper_zeros!r}"
+        )
+    body_with_fold = method_body.replace(bridge.helper_zeros, bridge.fold_rhs, 1)
+    stripped = body_with_fold.strip()
+    if method_body.strip() == bridge.helper_zeros:
+        rhs = bridge.fold_rhs
+    elif stripped.startswith("{"):
+        rhs = stripped
+    elif "\n" in stripped or stripped.startswith("let "):
+        indented = "\n".join(
+            f"        {line}" if line else "" for line in stripped.split("\n")
+        )
+        rhs = f"{{\n{indented}\n    }}"
+    else:
+        rhs = stripped
+    params = ", ".join(f"{s.param}: &{s.struct}" for s in bridge.slots)
+    recurse = ", ".join(s.param for s in bridge.slots)
+    req_lines: list[str] = []
+    for s in bridge.slots:
+        req_lines.append(f"valid_cols_{s.table}({s.param}),")
+        req_lines.append(f"{s.param}.n <= usize::MAX,")
+    requires = "\n        ".join(req_lines)
+    name = f"lemma_{bridge.helper_name}_method_is_fold"
+    return f"""pub proof fn {name}({params})
+    requires
+        {requires}
+    ensures
+        method_spec({recurse}) == {rhs},
+{{
+    {bridge.pairs_lemma}({recurse});
+    assert(method_spec({recurse}) == {rhs});
 }}"""
 
 
@@ -1246,7 +1332,7 @@ def _emit_join_multi_agg(
     *,
     where_expr: str | None,
     helper_name: str = "multi_agg_helper",
-) -> tuple[str, str, str]:
+) -> tuple[str, str, str, _FoldBridge | None]:
     from .parse_sql import _agg_value_type
 
     filter_raw, _ = _strip_anti_join_predicates(where_expr)
@@ -1408,8 +1494,10 @@ def _emit_join_multi_agg(
         ret_base="Map::empty()",
         extra_params=_derived_map_extra_params(derived_map_vars, derived_map_types),
     )
+    bridge: _FoldBridge | None = None
     if fold is not None:
-        helper = helper + "\n\n" + fold
+        fold_text, bridge = fold
+        helper = helper + "\n\n" + fold_text
 
     spec_body = (
         f"let raw = {helper_name}({', '.join(s.param for s in slots)}"
@@ -1417,7 +1505,7 @@ def _emit_join_multi_agg(
         f", {_init_indices(slots)});\n"
         f"    raw.map_values(|v: {state_tuple_type}| {project_expr})"
     )
-    return helper, spec_body, ret_type
+    return helper, spec_body, ret_type, bridge
 
 
 def _having_closure_types(query: SQLQuery, flat_schema: dict[str, str]) -> tuple[str, str]:
@@ -1638,7 +1726,7 @@ def _emit_join_projection(
     *,
     where_expr: str | None,
     helper_name: str = "join_projection_helper",
-) -> tuple[str, str, str]:
+) -> tuple[str, str, str, _FoldBridge | None]:
     filter_raw, _ = _strip_anti_join_predicates(where_expr)
     filter_cond = _resolve_filter_expr(
         filter_raw, query, slots, schemas_by_table, derived_by_alias,
@@ -1697,8 +1785,10 @@ def _emit_join_projection(
         ret_base="Seq::empty()",
         extra_params=_derived_map_extra_params(derived_map_vars, derived_map_types),
     )
+    bridge: _FoldBridge | None = None
     if fold is not None:
-        helper = helper + "\n\n" + fold
+        fold_text, bridge = fold
+        helper = helper + "\n\n" + fold_text
 
     ret_type = f"Seq<{row_ty}>"
     init_args = ", ".join(
@@ -1709,7 +1799,7 @@ def _emit_join_projection(
     spec_body = f"{helper_name}({init_args})"
     if query.limit is not None:
         spec_body = f"spec_seq_take({spec_body}, {query.limit})"
-    return helper, spec_body, ret_type
+    return helper, spec_body, ret_type, bridge
 
 
 def _raw_join_equalities(
@@ -1862,7 +1952,7 @@ def _emit_single_agg_nway(
     is_sum: bool,
     val_type: str,
     helper_name: str = "join_method_spec_helper",
-) -> tuple[str, str, str]:
+) -> tuple[str, str, str, _FoldBridge | None]:
     filter_raw, _ = _strip_anti_join_predicates(where_expr)
     filter_cond = _resolve_filter_expr(
         filter_raw, query, slots, schemas_by_table, derived_by_alias,
@@ -1912,14 +2002,16 @@ def _emit_single_agg_nway(
         ret_base=ret_base,
         extra_params=_derived_map_extra_params(derived_map_vars, derived_map_types),
     )
+    bridge: _FoldBridge | None = None
     if fold is not None:
-        helper = helper + "\n\n" + fold
+        fold_text, bridge = fold
+        helper = helper + "\n\n" + fold_text
     init_args = ", ".join(
         [*(s.param for s in slots)]
         + list(derived_map_vars.values())
         + [_init_indices(slots)]
     )
-    return helper, f"{helper_name}({init_args})", ret_type
+    return helper, f"{helper_name}({init_args})", ret_type, bridge
 
 
 def emit_join_spec_helpers(
@@ -1988,6 +2080,7 @@ def emit_join_spec_helpers(
     spec_body: str
     ret_type: str
     helpers: str
+    fold_bridge: _FoldBridge | None = None
 
     def _apply_join_having_filter(body: str) -> str:
         nonlocal extra_having
@@ -2007,7 +2100,7 @@ def emit_join_spec_helpers(
         )
 
     if query.is_projection:
-        proj_helper, spec_body, ret_type = _emit_join_projection(
+        proj_helper, spec_body, ret_type, fold_bridge = _emit_join_projection(
             query,
             slots,
             schemas_by_table,
@@ -2024,7 +2117,7 @@ def emit_join_spec_helpers(
         helpers = anti_helper
         spec_body = _apply_join_having_filter(spec_body)
     elif query.is_multi_agg and query.groupby_columns:
-        ma_helper, spec_body, ret_type = _emit_join_multi_agg(
+        ma_helper, spec_body, ret_type, fold_bridge = _emit_join_multi_agg(
             query,
             slots,
             schemas_by_table,
@@ -2049,7 +2142,7 @@ def emit_join_spec_helpers(
         )
         helpers = "\n\n".join(derived_helpers + [full_helpers])
     else:
-        loop_helper, spec_body, ret_type = _emit_single_agg_nway(
+        loop_helper, spec_body, ret_type, fold_bridge = _emit_single_agg_nway(
             query,
             slots,
             schemas_by_table,
@@ -2074,6 +2167,8 @@ def emit_join_spec_helpers(
 
     if derived_prelude:
         spec_body = derived_prelude + "    " + spec_body
+        # Derived maps change the helper call shape; fold bridge is None there.
+        fold_bridge = None
 
     param_list = ", ".join(f"{s.param}: &{s.struct}" for s in slots)
     recommends = "\n        ".join(
@@ -2085,6 +2180,8 @@ def emit_join_spec_helpers(
 {{
     {spec_body}
 }}"""
+    if fold_bridge is not None:
+        spec_fn = spec_fn + "\n\n" + _emit_method_is_fold(fold_bridge, spec_body)
 
     return helpers + extra_having, spec_fn, ret_type
 
@@ -2115,7 +2212,7 @@ def emit_join_grouped_map_spec(
     ]
     helper_name = f"{prefix}_helper"
     spec_name = f"{prefix}_spec"
-    loop_helper, loop_call, ret_type = _emit_single_agg_nway(
+    loop_helper, loop_call, ret_type, _bridge = _emit_single_agg_nway(
         query,
         slots,
         schemas_by_table,
