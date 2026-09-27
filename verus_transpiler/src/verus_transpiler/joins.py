@@ -1,13 +1,18 @@
-"""JOIN MethodSpec helper emission (2-table, N-way, LEFT anti-join, derived, multi-agg)."""
+"""JOIN MethodSpec helper emission (2-table, N-way, LEFT anti-join, derived, multi-agg).
+
+// transpiler: joins
+"""
 
 from __future__ import annotations
 
+import copy
 import re
 from dataclasses import dataclass, field, replace
 
 from .parse_sql import (
     AggSpec,
     DerivedTable,
+    JoinSpec,
     SQLQuery,
     UnsupportedContractError,
     _corr_outer_key_expr,
@@ -3163,7 +3168,8 @@ def _emit_left_anti_multi_agg(
     )
 
     helper_name = "join_anti_multi_agg_helper"
-    helper = f"""pub open spec fn {helper_name}(
+    helper = f"""// shape: {shape}
+pub open spec fn {helper_name}(
     {left.param}: &{left.struct},
     {right.param}: &{right.struct},
     li: int,
@@ -3502,20 +3508,29 @@ def _emit_full_outer_scalar_sum(
     agg_expr: str,
     val_type: str,
 ) -> tuple[str, str, str]:
-    """FULL OUTER JOIN scalar SUM: matched pairs + unmatched left rows."""
+    """FULL OUTER JOIN scalar SUM: matched + unmatched left + unmatched right.
+
+    // shape: full
+    """
     if len(slots) != 2:
         raise UnsupportedContractError("FULL OUTER JOIN spec supports exactly two tables")
     left, right = slots[0], slots[1]
     join = query.joins[0]
-    match_parts: list[str] = []
+    match_conds = _li_ri_match_conds(query, slots, schemas_by_table, derived_by_alias)
+    match_helper = _emit_match_helper(left, right, match_conds)
+    # Existence of a left row for a fixed right row: helper(right, left, li, ri)
+    # uses li on the right table and ri while scanning the left table.
+    rev_parts: list[str] = []
     for left_ref, right_ref in join.on_equalities:
         l_expr = _col_access_ref(left_ref, query, slots, schemas_by_table, derived_by_alias)
         r_expr = _col_access_ref(right_ref, query, slots, schemas_by_table, derived_by_alias)
-        r_expr = r_expr.replace(f"{right.idx} as int", "ri as int")
-        l_expr = l_expr.replace(f"{left.idx} as int", "li as int")
-        match_parts.append(f"{l_expr} == {r_expr}")
-    match_conds = " && ".join(match_parts) if match_parts else "false"
-    match_helper = _emit_match_helper(left, right, match_conds)
+        r_as_outer = r_expr.replace(f"{right.idx} as int", "li as int")
+        l_as_inner = l_expr.replace(f"{left.idx} as int", "ri as int")
+        rev_parts.append(f"{r_as_outer} == {l_as_inner}")
+    rev_conds = " && ".join(rev_parts) if rev_parts else "false"
+    left_match = _emit_match_helper(
+        right, left, rev_conds, helper_name="join_left_match_helper",
+    )
 
     filter_raw, _ = _strip_anti_join_predicates(where_expr)
     filter_cond = _resolve_filter_expr(
@@ -3539,13 +3554,17 @@ def _emit_full_outer_scalar_sum(
     )
 
     left_only_helper = "full_join_left_unmatched_helper"
-    left_slots = [left]
     filter_left = _resolve_filter_expr(
-        filter_raw, query, left_slots, schemas_by_table, derived_by_alias,
+        filter_raw, query, [left], schemas_by_table, derived_by_alias,
     )
-    term_left = _resolve_row_expr(agg_expr, query, left_slots, schemas_by_table, derived_by_alias)
-    left_update = (
-        f"if !{match_helper}({left.param}, {right.param}, {left.idx}, 0) {{\n"
+    try:
+        term_left = _resolve_row_expr(
+            agg_expr, query, [left], schemas_by_table, derived_by_alias,
+        )
+    except UnsupportedContractError:
+        term_left = f"0{val_type}"
+    left_inner = (
+        f"if !join_right_match_helper({left.param}, {right.param}, {left.idx}, 0) {{\n"
         f"            (tail as int + ({term_left}) as int) as {val_type}\n"
         f"        }} else {{\n"
         f"            tail\n"
@@ -3556,7 +3575,7 @@ def _emit_full_outer_scalar_sum(
             f"if {left.idx} < {left.param}.n {{\n"
             f"        let tail = {left_only_helper}({left.param}, {right.param}, {left.idx} + 1);\n"
             f"        if {filter_left} {{\n"
-            f"            {left_update}\n"
+            f"            {left_inner}\n"
             f"        }} else {{\n"
             f"            tail\n"
             f"        }}\n"
@@ -3568,12 +3587,13 @@ def _emit_full_outer_scalar_sum(
         left_body = (
             f"if {left.idx} < {left.param}.n {{\n"
             f"        let tail = {left_only_helper}({left.param}, {right.param}, {left.idx} + 1);\n"
-            f"        {left_update}\n"
+            f"        {left_inner}\n"
             f"    }} else {{\n"
             f"        0{val_type}\n"
             f"    }}"
         )
-    left_only = f"""pub open spec fn {left_only_helper}(
+    left_only = f"""// shape: full
+pub open spec fn {left_only_helper}(
     {left.param}: &{left.struct},
     {right.param}: &{right.struct},
     {left.idx}: int,
@@ -3581,6 +3601,56 @@ def _emit_full_outer_scalar_sum(
     decreases {left.param}.n - {left.idx},
 {{
     {left_body}
+}}"""
+
+    right_only_helper = "full_join_right_unmatched_helper"
+    filter_right = _resolve_filter_expr(
+        filter_raw, query, [right], schemas_by_table, derived_by_alias,
+    )
+    try:
+        term_right = _resolve_row_expr(
+            agg_expr, query, [right], schemas_by_table, derived_by_alias,
+        )
+    except UnsupportedContractError:
+        term_right = f"0{val_type}"
+    right_inner = (
+        f"if !join_left_match_helper({right.param}, {left.param}, {right.idx}, 0) {{\n"
+        f"            (tail as int + ({term_right}) as int) as {val_type}\n"
+        f"        }} else {{\n"
+        f"            tail\n"
+        f"        }}"
+    )
+    if filter_right:
+        right_body = (
+            f"if {right.idx} < {right.param}.n {{\n"
+            f"        let tail = {right_only_helper}({left.param}, {right.param}, {right.idx} + 1);\n"
+            f"        if {filter_right} {{\n"
+            f"            {right_inner}\n"
+            f"        }} else {{\n"
+            f"            tail\n"
+            f"        }}\n"
+            f"    }} else {{\n"
+            f"        0{val_type}\n"
+            f"    }}"
+        )
+    else:
+        right_body = (
+            f"if {right.idx} < {right.param}.n {{\n"
+            f"        let tail = {right_only_helper}({left.param}, {right.param}, {right.idx} + 1);\n"
+            f"        {right_inner}\n"
+            f"    }} else {{\n"
+            f"        0{val_type}\n"
+            f"    }}"
+        )
+    right_only = f"""// shape: full
+pub open spec fn {right_only_helper}(
+    {left.param}: &{left.struct},
+    {right.param}: &{right.struct},
+    {right.idx}: int,
+) -> (res: {val_type})
+    decreases {right.param}.n - {right.idx},
+{{
+    {right_body}
 }}"""
 
     init_args = ", ".join(
@@ -3591,9 +3661,10 @@ def _emit_full_outer_scalar_sum(
     spec_body = (
         f"let matched = {matched_helper}({init_args});\n"
         f"    let left_only = {left_only_helper}({left.param}, {right.param}, 0);\n"
-        f"    (matched as int + left_only as int) as {val_type}"
+        f"    let right_only = {right_only_helper}({left.param}, {right.param}, 0);\n"
+        f"    ((matched as int + left_only as int) + right_only as int) as {val_type}"
     )
-    helpers = "\n\n".join([match_helper, matched_loop, left_only])
+    helpers = "\n\n".join([match_helper, left_match, matched_loop, left_only, right_only])
     return helpers, spec_body, val_type
 
 
@@ -3673,6 +3744,856 @@ def _emit_single_agg_nway(
     return helper, f"{helper_name}({init_args})", ret_type, bridge
 
 
+def _li_ri_match_conds(
+    query: SQLQuery,
+    slots: list[_Slot],
+    schemas_by_table: dict[str, dict[str, str]],
+    derived_by_alias: dict[str, DerivedTable],
+) -> str:
+    """Join ON equalities rewritten to ``li`` / ``ri`` for match helpers."""
+    if len(slots) != 2 or not query.joins:
+        raise UnsupportedContractError("match helper requires exactly two base tables")
+    left, right = slots[0], slots[1]
+    join = query.joins[0]
+    parts: list[str] = []
+    for left_ref, right_ref in join.on_equalities:
+        l_expr = _col_access_ref(left_ref, query, slots, schemas_by_table, derived_by_alias)
+        r_expr = _col_access_ref(right_ref, query, slots, schemas_by_table, derived_by_alias)
+        l_expr = l_expr.replace(f"{left.idx} as int", "li as int")
+        r_expr = r_expr.replace(f"{right.idx} as int", "ri as int")
+        parts.append(f"{l_expr} == {r_expr}")
+    return " && ".join(parts) if parts else "false"
+
+def _proj_side(
+    col: str,
+    expr: str,
+    query: SQLQuery,
+    slots: list[_Slot],
+    schemas_by_table: dict[str, dict[str, str]],
+) -> str:
+    """Return ``left`` or ``right`` for a projected column (two-slot joins)."""
+    aliases = _alias_map(query)
+    tbl = query.table_aliases.get(col, col)
+    if isinstance(tbl, str) and tbl.lower() in {s.table.lower() for s in slots}:
+        for s in slots:
+            if s.table.lower() == tbl.lower():
+                return "left" if s is slots[0] else "right"
+    m = re.search(r"\brow\.([A-Za-z_][A-Za-z0-9_]*)", expr)
+    name = (m.group(1) if m else col).lower()
+    for s in slots:
+        if name in {c.lower() for c in schemas_by_table.get(s.table, {})}:
+            return "left" if s is slots[0] else "right"
+    for alias, table in aliases.items():
+        if alias.lower() == name or table.lower() == name:
+            return "left" if table == slots[0].table else "right"
+    return "left"
+
+def _emit_existence_scan_agg(
+    query: SQLQuery,
+    slots: list[_Slot],
+    schemas_by_table: dict[str, dict[str, str]],
+    *,
+    where_expr: str | None,
+    mode: str,
+    helper_name: str,
+) -> tuple[str, str, str, _FoldBridge | None]:
+    """SEMI (match) or ANTI (!match) left-scan group-by MethodSpec.
+
+    // shape: semi  /  // shape: anti
+    """
+    if mode not in ("semi", "anti"):
+        raise ValueError(mode)
+    if len(slots) != 2 or not query.groupby_columns:
+        raise UnsupportedContractError(
+            f"{mode.upper()} JOIN MethodSpec requires two-table GROUP BY"
+        )
+    left, right = slots[0], slots[1]
+    match_conds = _li_ri_match_conds(query, slots, schemas_by_table, {})
+    match_helper = _emit_match_helper(left, right, match_conds)
+    filter_raw, _ = _strip_anti_join_predicates(where_expr)
+    filter_cond = (
+        _anti_left_li(
+            _resolve_filter_expr(filter_raw, query, [left], schemas_by_table, {}) or "",
+            left,
+        )
+        if filter_raw
+        else None
+    )
+    key_expr, key_ty = _groupby_key_parts(query, slots, schemas_by_table, {})
+    key_expr = _anti_left_li(key_expr, left)
+
+    specs = query.agg_specs if query.agg_specs else [
+        AggSpec(query.agg_type, query.agg_column, query.agg_expr, ""),
+    ]
+    state_types: list[str] = []
+    state_defaults: list[str] = []
+    update_stmts: list[str] = []
+    project_parts: list[str] = []
+    for i, spec in enumerate(specs):
+        if spec.agg_type == "COUNT":
+            state_types.append("u64")
+            state_defaults.append("0u64")
+            prev_ref = "prev" if len(specs) == 1 else f"prev.{i}"
+            update_stmts.append(f"let s{i} = ({prev_ref} as int + 1) as u64;")
+            project_parts.append(f"s{i}" if len(specs) > 1 else "s0")
+        elif spec.agg_type == "SUM":
+            from .parse_sql import _agg_value_type
+            vt = _agg_value_type(spec.agg_expr)
+            state_types.append(vt)
+            state_defaults.append(f"0{vt}")
+            term = _anti_left_li(
+                _agg_term_expr(spec, query, [left], schemas_by_table, {}),
+                left,
+            )
+            prev_ref = "prev" if len(specs) == 1 else f"prev.{i}"
+            update_stmts.append(
+                f"let s{i} = ({prev_ref} as int + {term} as int) as {vt};"
+            )
+            project_parts.append(f"s{i}" if len(specs) > 1 else "s0")
+        else:
+            raise UnsupportedContractError(
+                f"{mode.upper()} JOIN agg {spec.agg_type!r} not supported"
+            )
+
+    n_state = len(state_types)
+    state_tuple_type = state_types[0] if n_state == 1 else f"({', '.join(state_types)})"
+    default_state = state_defaults[0] if n_state == 1 else f"({', '.join(state_defaults)})"
+    rebuild = "s0" if n_state == 1 else f"({', '.join(f's{i}' for i in range(n_state))})"
+    rendered = update_stmts[0] if n_state == 1 else "\n            ".join(update_stmts)
+    filter_part = f" && {filter_cond}" if filter_cond else ""
+    match_test = (
+        f"join_right_match_helper({left.param}, {right.param}, li, 0)"
+        if mode == "semi"
+        else f"!join_right_match_helper({left.param}, {right.param}, li, 0)"
+    )
+    update_body = (
+        f"let key = {key_expr};\n"
+        f"            let prev = if tail.contains_key(key) {{ tail[key] }} else {{ {default_state} }};\n"
+        f"            {rendered}\n"
+        f"            tail.insert(key, {rebuild})"
+    )
+    # // shape: semi  /  // shape: anti
+    helper = f"""// shape: {mode}
+pub open spec fn {helper_name}(
+    {left.param}: &{left.struct},
+    {right.param}: &{right.struct},
+    li: int,
+) -> (res: Map<{key_ty}, {state_tuple_type}>)
+    decreases {left.param}.n - li,
+{{
+    if li < {left.param}.n {{
+        let tail = {helper_name}({left.param}, {right.param}, li + 1);
+        if {match_test}{filter_part} {{
+            {update_body}
+        }} else {{
+            tail
+        }}
+    }} else {{
+        Map::empty()
+    }}
+}}"""
+
+    def _project_from_v(expr: str) -> str:
+        out = expr
+        if n_state == 1:
+            return out.replace("s0", "v")
+        for i in range(n_state - 1, -1, -1):
+            out = out.replace(f"s{i}", f"v.{i}")
+        return out
+
+    if n_state == 1 and not query.is_multi_agg:
+        ret_type = f"Map<{key_ty}, u64>"
+        spec_body = (
+            f"let raw = {helper_name}({left.param}, {right.param}, 0);\n"
+            f"    raw"
+        )
+    else:
+        project_expr = (
+            _project_from_v(project_parts[0])
+            if len(project_parts) == 1
+            else f"({', '.join(_project_from_v(p) for p in project_parts)})"
+        )
+        ret_type = f"Map<{key_ty}, {_multi_agg_tuple_type(query)}>"
+        spec_body = (
+            f"let raw = {helper_name}({left.param}, {right.param}, 0);\n"
+            f"    raw.map_values(|v: {state_tuple_type}| {project_expr})"
+        )
+    fold: tuple[str, _FoldBridge] | None = None
+    if mode == "anti":
+        fold = _left_fold_lemma(
+            helper_name,
+            slots,
+            match_conds=match_conds,
+            filter_cond=filter_cond,
+            update_body=update_body,
+            ret_type=f"Map<{key_ty}, {state_tuple_type}>",
+            ret_base="Map::empty()",
+            shape="anti",
+        )
+    helpers_out = match_helper + "\n\n" + helper
+    bridge: _FoldBridge | None = None
+    if fold is not None:
+        fold_text, bridge = fold
+        helpers_out = helpers_out + "\n\n" + fold_text
+    return helpers_out, spec_body, ret_type, bridge
+
+def _emit_existence_projection(
+    query: SQLQuery,
+    slots: list[_Slot],
+    schemas_by_table: dict[str, dict[str, str]],
+    *,
+    where_expr: str | None,
+    mode: str,
+    helper_name: str,
+) -> tuple[str, str, str, _FoldBridge | None]:
+    """SEMI/ANTI projection of left-side columns only."""
+    if mode not in ("semi", "anti"):
+        raise ValueError(mode)
+    if len(slots) != 2:
+        raise UnsupportedContractError(
+            f"{mode.upper()} JOIN projection requires exactly two tables"
+        )
+    left, right = slots[0], slots[1]
+    for col, expr in zip(query.projection_columns, query.projection_exprs, strict=True):
+        if _proj_side(col, expr, query, slots, schemas_by_table) == "right":
+            raise UnsupportedContractError(
+                f"{mode.upper()} JOIN projection cannot select right-side columns"
+            )
+    match_conds = _li_ri_match_conds(query, slots, schemas_by_table, {})
+    match_helper = _emit_match_helper(left, right, match_conds)
+    filter_raw, _ = _strip_anti_join_predicates(where_expr)
+    filter_cond = (
+        _anti_left_li(
+            _resolve_filter_expr(filter_raw, query, [left], schemas_by_table, {}) or "",
+            left,
+        )
+        if filter_raw
+        else None
+    )
+    row_parts: list[str] = []
+    row_types: list[str] = []
+    for col, expr in zip(query.projection_columns, query.projection_exprs, strict=True):
+        resolved = _anti_left_li(
+            _resolve_row_expr(expr, query, [left], schemas_by_table, {}),
+            left,
+        )
+        row_parts.append(resolved)
+        schema = schemas_by_table[left.table]
+        for k, v in schema.items():
+            if k.lower() == col.lower() or expr.endswith(k):
+                row_types.append(spec_map_key_type(v))
+                break
+        else:
+            row_types.append("Seq<char>")
+    row_expr = row_parts[0] if len(row_parts) == 1 else f"({', '.join(row_parts)})"
+    row_ty = row_types[0] if len(row_types) == 1 else f"({', '.join(row_types)})"
+    filter_part = f" && {filter_cond}" if filter_cond else ""
+    match_test = (
+        f"join_right_match_helper({left.param}, {right.param}, li, 0)"
+        if mode == "semi"
+        else f"!join_right_match_helper({left.param}, {right.param}, li, 0)"
+    )
+    helper = f"""// shape: {mode}
+pub open spec fn {helper_name}(
+    {left.param}: &{left.struct},
+    {right.param}: &{right.struct},
+    li: int,
+) -> (res: Seq<{row_ty}>)
+    decreases {left.param}.n - li,
+{{
+    if li < {left.param}.n {{
+        let tail = {helper_name}({left.param}, {right.param}, li + 1);
+        if {match_test}{filter_part} {{
+            tail.push({row_expr})
+        }} else {{
+            tail
+        }}
+    }} else {{
+        Seq::empty()
+    }}
+}}"""
+    spec_body = f"{helper_name}({left.param}, {right.param}, 0)"
+    if query.limit is not None:
+        spec_body = f"spec_seq_take({spec_body}, {query.limit})"
+    return match_helper + "\n\n" + helper, spec_body, f"Seq<{row_ty}>", None
+
+def _emit_loj_projection(
+    query: SQLQuery,
+    slots: list[_Slot],
+    schemas_by_table: dict[str, dict[str, str]],
+    *,
+    where_expr: str | None,
+    helper_name: str = "join_loj_projection_helper",
+) -> tuple[str, str, str, _FoldBridge | None]:
+    """Plain LEFT OUTER projection: matches + unmatched left (Option on right cols).
+
+    // shape: loj
+    """
+    if len(slots) != 2:
+        raise UnsupportedContractError("LEFT OUTER JOIN projection requires two tables")
+    left, right = slots[0], slots[1]
+    join_cond, _ = _all_join_conds(query, slots, schemas_by_table, {}, {})
+    filter_raw, _ = _strip_anti_join_predicates(where_expr)
+    filter_both = _resolve_filter_expr(
+        filter_raw, query, slots, schemas_by_table, {},
+    )
+    filter_left = _resolve_filter_expr(
+        filter_raw, query, [left], schemas_by_table, {},
+    )
+
+    row_parts_match: list[str] = []
+    row_parts_miss: list[str] = []
+    row_types: list[str] = []
+    for col, expr in zip(query.projection_columns, query.projection_exprs, strict=True):
+        side = _proj_side(col, expr, query, slots, schemas_by_table)
+        resolved = _resolve_row_expr(expr, query, slots, schemas_by_table, {})
+        schema_side = left if side == "left" else right
+        schema = schemas_by_table[schema_side.table]
+        ty = "Seq<char>"
+        for k, v in schema.items():
+            if k.lower() == col.lower() or expr.rstrip().endswith(k):
+                ty = spec_map_key_type(v)
+                break
+        if side == "right":
+            row_parts_match.append(f"Some({resolved})")
+            row_parts_miss.append("None")
+            row_types.append(f"Option<{ty}>")
+        else:
+            row_parts_match.append(resolved)
+            # left index stays i0 in both branches
+            miss = resolved.replace(f"{left.idx} as int", f"{left.idx} as int")
+            row_parts_miss.append(miss)
+            row_types.append(ty)
+    row_match = (
+        row_parts_match[0]
+        if len(row_parts_match) == 1
+        else f"({', '.join(row_parts_match)})"
+    )
+    row_miss = (
+        row_parts_miss[0]
+        if len(row_parts_miss) == 1
+        else f"({', '.join(row_parts_miss)})"
+    )
+    row_ty = row_types[0] if len(row_types) == 1 else f"({', '.join(row_types)})"
+    match_push = (
+        f"if {filter_both} {{\n"
+        f"                tail.push({row_match})\n"
+        f"            }} else {{\n"
+        f"                tail\n"
+        f"            }}"
+        if filter_both
+        else f"tail.push({row_match})"
+    )
+    miss_push = (
+        f"if {filter_left} {{\n"
+        f"            rest.push({row_miss})\n"
+        f"        }} else {{\n"
+        f"            rest\n"
+        f"        }}"
+        if filter_left
+        else f"rest.push({row_miss})"
+    )
+    # // shape: loj
+    helper = f"""// shape: loj
+pub open spec fn {helper_name}(
+    {left.param}: &{left.struct},
+    {right.param}: &{right.struct},
+    {left.idx}: int,
+    {right.idx}: int,
+    saw: bool,
+) -> (res: Seq<{row_ty}>)
+    decreases {left.param}.n - {left.idx}, {right.param}.n - {right.idx},
+{{
+    if {left.idx} < {left.param}.n {{
+        if {right.idx} < {right.param}.n {{
+            if {join_cond} {{
+                let tail = {helper_name}(
+                    {left.param}, {right.param}, {left.idx}, {right.idx} + 1, true,
+                );
+                {match_push}
+            }} else {{
+                {helper_name}(
+                    {left.param}, {right.param}, {left.idx}, {right.idx} + 1, saw,
+                )
+            }}
+        }} else {{
+            let rest = {helper_name}({left.param}, {right.param}, {left.idx} + 1, 0, false);
+            if !saw {{
+                {miss_push}
+            }} else {{
+                rest
+            }}
+        }}
+    }} else {{
+        Seq::empty()
+    }}
+}}"""
+    spec_body = f"{helper_name}({left.param}, {right.param}, 0, 0, false)"
+    if query.limit is not None:
+        spec_body = f"spec_seq_take({spec_body}, {query.limit})"
+    return helper, spec_body, f"Seq<{row_ty}>", None
+
+def _emit_loj_agg(
+    query: SQLQuery,
+    slots: list[_Slot],
+    schemas_by_table: dict[str, dict[str, str]],
+    *,
+    where_expr: str | None,
+    agg_expr: str,
+    is_sum: bool,
+    val_type: str,
+) -> tuple[str, str, str, _FoldBridge | None]:
+    """Plain LEFT OUTER agg: matched pairs + unmatched left rows.
+
+    // shape: loj
+    """
+    if len(slots) != 2:
+        raise UnsupportedContractError("LEFT OUTER JOIN agg requires two tables")
+    left, right = slots[0], slots[1]
+    match_conds = _li_ri_match_conds(query, slots, schemas_by_table, {})
+    match_fn = _emit_match_helper(left, right, match_conds)
+    filter_raw, _ = _strip_anti_join_predicates(where_expr)
+    filter_both = _resolve_filter_expr(
+        filter_raw, query, slots, schemas_by_table, {},
+    )
+    filter_left_raw = _resolve_filter_expr(
+        filter_raw, query, [left], schemas_by_table, {},
+    )
+    filter_left = (
+        _anti_left_li(filter_left_raw, left) if filter_left_raw else None
+    )
+    join_cond, _ = _all_join_conds(query, slots, schemas_by_table, {}, {})
+    term_match = (
+        _resolve_row_expr(agg_expr, query, slots, schemas_by_table, {})
+        if is_sum
+        else "1"
+    )
+    if is_sum:
+        try:
+            term_left = _anti_left_li(
+                _resolve_row_expr(agg_expr, query, [left], schemas_by_table, {}),
+                left,
+            )
+        except UnsupportedContractError:
+            term_left = f"0{val_type}"
+    else:
+        term_left = "1"
+
+    if query.groupby_columns:
+        for col, _tbl in zip(query.groupby_columns, query.groupby_tables, strict=True):
+            if _proj_side(col, f"row.{col}", query, slots, schemas_by_table) == "right":
+                raise UnsupportedContractError(
+                    "LEFT OUTER JOIN GROUP BY right-side key needs null keys; not yet supported"
+                )
+        key_expr, key_ty = _groupby_key_parts(query, slots, schemas_by_table, {})
+        key_left = _anti_left_li(key_expr, left)
+        matched_update = (
+            f"let key = {key_expr};\n"
+            f"            let val = if tail.contains_key(key) {{ tail[key] }} else {{ 0{val_type} }};\n"
+            f"            tail.insert(key, (val as int + ({term_match}) as int) as {val_type})"
+        )
+        miss_update = (
+            f"let key = {key_left};\n"
+            f"            let val = if tail.contains_key(key) {{ tail[key] }} else {{ 0{val_type} }};\n"
+            f"            tail.insert(key, (val as int + ({term_left}) as int) as {val_type})"
+        )
+        ret_type = f"Map<{key_ty}, {val_type}>"
+        ret_base = "Map::empty()"
+        miss_body = (
+            f"if {filter_left} {{\n"
+            f"            {miss_update}\n"
+            f"        }} else {{\n"
+            f"            tail\n"
+            f"        }}"
+            if filter_left
+            else miss_update
+        )
+        left_only = "join_loj_left_unmatched_helper"
+        left_helper = f"""// shape: loj
+pub open spec fn {left_only}(
+    {left.param}: &{left.struct},
+    {right.param}: &{right.struct},
+    li: int,
+    acc: {ret_type},
+) -> (res: {ret_type})
+    decreases {left.param}.n - li,
+{{
+    if li < {left.param}.n {{
+        let tail = {left_only}({left.param}, {right.param}, li + 1, acc);
+        if !join_right_match_helper({left.param}, {right.param}, li, 0) {{
+            {miss_body}
+        }} else {{
+            tail
+        }}
+    }} else {{
+        acc
+    }}
+}}"""
+        matched_helper = "join_loj_matched_helper"
+        matched_loop = _gen_nested_loop(
+            matched_helper,
+            slots,
+            join_cond=join_cond,
+            filter_cond=filter_both,
+            update_expr=matched_update,
+            ret_type=ret_type,
+            ret_base=ret_base,
+        )
+        spec_body = (
+            f"let matched = {matched_helper}({left.param}, {right.param}, 0, 0);\n"
+            f"    {left_only}({left.param}, {right.param}, 0, matched)"
+        )
+    else:
+        matched_update = f"(tail as int + ({term_match}) as int) as {val_type}"
+        miss_update = f"(tail as int + ({term_left}) as int) as {val_type}"
+        ret_type = val_type
+        ret_base = f"0{val_type}"
+        miss_body = (
+            f"if {filter_left} {{\n"
+            f"            {miss_update}\n"
+            f"        }} else {{\n"
+            f"            tail\n"
+            f"        }}"
+            if filter_left
+            else miss_update
+        )
+        left_only = "join_loj_left_unmatched_helper"
+        left_helper = f"""// shape: loj
+pub open spec fn {left_only}(
+    {left.param}: &{left.struct},
+    {right.param}: &{right.struct},
+    li: int,
+) -> (res: {ret_type})
+    decreases {left.param}.n - li,
+{{
+    if li < {left.param}.n {{
+        let tail = {left_only}({left.param}, {right.param}, li + 1);
+        if !join_right_match_helper({left.param}, {right.param}, li, 0) {{
+            {miss_body}
+        }} else {{
+            tail
+        }}
+    }} else {{
+        {ret_base}
+    }}
+}}"""
+        matched_helper = "join_loj_matched_helper"
+        matched_loop = _gen_nested_loop(
+            matched_helper,
+            slots,
+            join_cond=join_cond,
+            filter_cond=filter_both,
+            update_expr=matched_update,
+            ret_type=ret_type,
+            ret_base=ret_base,
+        )
+        spec_body = (
+            f"let matched = {matched_helper}({left.param}, {right.param}, 0, 0);\n"
+            f"    let left_only = {left_only}({left.param}, {right.param}, 0);\n"
+            f"    (matched as int + left_only as int) as {val_type}"
+        )
+    helpers = "\n\n".join([match_fn, matched_loop, left_helper])
+    return helpers, spec_body, ret_type, None
+
+def _emit_full_outer_projection(
+    query: SQLQuery,
+    slots: list[_Slot],
+    schemas_by_table: dict[str, dict[str, str]],
+    *,
+    where_expr: str | None,
+) -> tuple[str, str, str]:
+    """FULL OUTER projection: matches + left-miss + right-miss (Option null-extend).
+
+    // shape: full
+    """
+    if len(slots) != 2:
+        raise UnsupportedContractError("FULL OUTER JOIN projection requires two tables")
+    left, right = slots[0], slots[1]
+    join = query.joins[0]
+    match_conds = _li_ri_match_conds(query, slots, schemas_by_table, {})
+    match_helper = _emit_match_helper(left, right, match_conds)
+    rev_parts: list[str] = []
+    for left_ref, right_ref in join.on_equalities:
+        l_expr = _col_access_ref(left_ref, query, slots, schemas_by_table, {})
+        r_expr = _col_access_ref(right_ref, query, slots, schemas_by_table, {})
+        r_as_outer = r_expr.replace(f"{right.idx} as int", "li as int")
+        l_as_inner = l_expr.replace(f"{left.idx} as int", "ri as int")
+        rev_parts.append(f"{r_as_outer} == {l_as_inner}")
+    left_match = _emit_match_helper(
+        right, left, " && ".join(rev_parts) if rev_parts else "false",
+        helper_name="join_left_match_helper",
+    )
+    join_cond, _ = _all_join_conds(query, slots, schemas_by_table, {}, {})
+    filter_raw, _ = _strip_anti_join_predicates(where_expr)
+    filter_both = _resolve_filter_expr(filter_raw, query, slots, schemas_by_table, {})
+
+    parts_m: list[str] = []
+    parts_l: list[str] = []
+    parts_r: list[str] = []
+    row_types: list[str] = []
+    for col, expr in zip(query.projection_columns, query.projection_exprs, strict=True):
+        side = _proj_side(col, expr, query, slots, schemas_by_table)
+        resolved = _resolve_row_expr(expr, query, slots, schemas_by_table, {})
+        schema = schemas_by_table[(left if side == "left" else right).table]
+        ty = "Seq<char>"
+        for k, v in schema.items():
+            if k.lower() == col.lower() or expr.rstrip().endswith(k):
+                ty = spec_map_key_type(v)
+                break
+        row_types.append(f"Option<{ty}>")
+        if side == "left":
+            parts_m.append(f"Some({resolved})")
+            parts_l.append(f"Some({resolved})")
+            parts_r.append("None")
+        else:
+            parts_m.append(f"Some({resolved})")
+            parts_l.append("None")
+            parts_r.append(f"Some({resolved})")
+    row_ty = row_types[0] if len(row_types) == 1 else f"({', '.join(row_types)})"
+    row_m = parts_m[0] if len(parts_m) == 1 else f"({', '.join(parts_m)})"
+    row_l = parts_l[0] if len(parts_l) == 1 else f"({', '.join(parts_l)})"
+    row_r = parts_r[0] if len(parts_r) == 1 else f"({', '.join(parts_r)})"
+
+    matched = "full_join_proj_matched_helper"
+    matched_loop = _gen_nested_loop(
+        matched,
+        slots,
+        join_cond=join_cond,
+        filter_cond=filter_both,
+        update_expr=f"tail.push({row_m})",
+        ret_type=f"Seq<{row_ty}>",
+        ret_base="Seq::empty()",
+    )
+    left_h = "full_join_proj_left_helper"
+    left_only = f"""// shape: full
+pub open spec fn {left_h}(
+    {left.param}: &{left.struct},
+    {right.param}: &{right.struct},
+    li: int,
+) -> (res: Seq<{row_ty}>)
+    decreases {left.param}.n - li,
+{{
+    if li < {left.param}.n {{
+        let tail = {left_h}({left.param}, {right.param}, li + 1);
+        if !join_right_match_helper({left.param}, {right.param}, li, 0) {{
+            tail.push({_anti_left_li(row_l, left)})
+        }} else {{
+            tail
+        }}
+    }} else {{
+        Seq::empty()
+    }}
+}}"""
+    right_h = "full_join_proj_right_helper"
+    row_r_ri = row_r.replace(f"{right.idx} as int", "ri as int")
+    right_only = f"""// shape: full
+pub open spec fn {right_h}(
+    {left.param}: &{left.struct},
+    {right.param}: &{right.struct},
+    ri: int,
+) -> (res: Seq<{row_ty}>)
+    decreases {right.param}.n - ri,
+{{
+    if ri < {right.param}.n {{
+        let tail = {right_h}({left.param}, {right.param}, ri + 1);
+        if !join_left_match_helper({right.param}, {left.param}, ri, 0) {{
+            tail.push({row_r_ri})
+        }} else {{
+            tail
+        }}
+    }} else {{
+        Seq::empty()
+    }}
+}}"""
+    spec_body = (
+        f"let matched = {matched}({left.param}, {right.param}, 0, 0);\n"
+        f"    let left_only = {left_h}({left.param}, {right.param}, 0);\n"
+        f"    let right_only = {right_h}({left.param}, {right.param}, 0);\n"
+        f"    matched.add(left_only).add(right_only)"
+    )
+    if query.limit is not None:
+        spec_body = f"spec_seq_take({spec_body}, {query.limit})"
+    helpers = "\n\n".join([match_helper, left_match, matched_loop, left_only, right_only])
+    return helpers, spec_body, f"Seq<{row_ty}>"
+
+def try_decorrelate_anti_subqueries(query: SQLQuery) -> SQLQuery | None:
+    """Rewrite NOT EXISTS / NOT IN into a two-table ANTI JOIN MethodSpec shape.
+
+    Holdout Q24 original SQL uses NOT EXISTS; LEFT JOIN + IS NULL is a separate path.
+    """
+    if query.joins or len(_base_tables(query)) != 1:
+        return None
+    if query.derived_tables or query.scalar_subqueries or query.window_specs:
+        return None
+
+    # NOT EXISTS (correlated, equality-only)
+    if (
+        len(query.exists_subqueries) == 1
+        and not query.in_subqueries
+        and query.exists_subqueries[0].negated
+        and query.exists_subqueries[0].correlated
+    ):
+        exists = query.exists_subqueries[0]
+        if exists.query.joins or len(exists.query.tables) != 1:
+            return None
+        if not exists.correlation_cols:
+            return None
+        inner_where = exists.query.where_expr or ""
+        # Only outer.col == row.col style equalities (no residual inner filter).
+        stripped = inner_where
+        for col in exists.correlation_cols:
+            stripped = re.sub(
+                rf"row\.{re.escape(col)}\s*==\s*outer\.{re.escape(col)}",
+                "true",
+                stripped,
+            )
+            stripped = re.sub(
+                rf"outer\.{re.escape(col)}\s*==\s*row\.{re.escape(col)}",
+                "true",
+                stripped,
+            )
+        # Collapse `(true && true) && true` residue.
+        prev = None
+        while prev != stripped:
+            prev = stripped
+            stripped = re.sub(r"\s*&&\s*true\b", "", stripped)
+            stripped = re.sub(r"\btrue\s*&&\s*", "", stripped)
+            stripped = re.sub(r"\(\s*true\s*\)", "true", stripped)
+            stripped = stripped.strip()
+        if stripped not in ("", "true"):
+            return None
+        outer = query.tables[0]
+        inner = exists.query.tables[0]
+        outer_alias = next(
+            (a for a, t in query.table_aliases.items() if t == outer), outer,
+        )
+        inner_alias = next(
+            (a for a, t in exists.query.table_aliases.items() if t == inner),
+            next(iter(exists.query.table_aliases), inner),
+        )
+        on_eq = [
+            (f"{outer_alias}.{c}", f"{inner_alias}.{c}")
+            for c in exists.correlation_cols
+        ]
+        new_q = copy.deepcopy(query)
+        new_q.tables = [outer, inner]
+        new_q.table_aliases = dict(query.table_aliases)
+        new_q.table_aliases[inner_alias] = inner
+        new_q.joins = [
+            JoinSpec(
+                join_type="ANTI",
+                table=inner,
+                alias=inner_alias,
+                on_equalities=on_eq,
+            )
+        ]
+        # Drop the exists call from WHERE.
+        where = query.where_expr or ""
+        where = re.sub(
+            rf"\s*&&\s*!\s*exists_corr_{re.escape(exists.alias)}_spec\([^)]*\)",
+            "",
+            where,
+        )
+        where = re.sub(
+            rf"!\s*exists_corr_{re.escape(exists.alias)}_spec\([^)]*\)\s*&&\s*",
+            "",
+            where,
+        )
+        where = re.sub(
+            rf"!\s*exists_corr_{re.escape(exists.alias)}_spec\([^)]*\)",
+            "true",
+            where,
+        )
+        where = re.sub(r"\s*&&\s*true\b", "", where)
+        where = re.sub(r"\btrue\s*&&\s*", "", where)
+        # Trim a wrapping paren layer left by `(pred && !exists)`.
+        where = where.strip()
+        while where.startswith("(") and where.endswith(")"):
+            depth = 0
+            balanced = True
+            for i, ch in enumerate(where):
+                if ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+                    if depth == 0 and i != len(where) - 1:
+                        balanced = False
+                        break
+            if balanced and depth == 0:
+                where = where[1:-1].strip()
+            else:
+                break
+        new_q.where_expr = where
+        new_q.exists_subqueries = []
+        return new_q
+
+    # NOT IN (uncorrelated single-column)
+    if (
+        len(query.in_subqueries) == 1
+        and not query.exists_subqueries
+        and "!(" in (query.where_expr or "")
+        and f"in_{query.in_subqueries[0].alias}_contains" in (query.where_expr or "")
+    ):
+        in_spec = query.in_subqueries[0]
+        if in_spec.correlated or in_spec.query.joins or len(in_spec.query.tables) != 1:
+            return None
+        if not in_spec.query.is_projection or len(in_spec.query.projection_columns) != 1:
+            return None
+        outer = query.tables[0]
+        inner = in_spec.query.tables[0]
+        outer_alias = next(
+            (a for a, t in query.table_aliases.items() if t == outer), outer,
+        )
+        inner_alias = next(
+            (a for a, t in in_spec.query.table_aliases.items() if t == inner),
+            next(iter(in_spec.query.table_aliases), inner),
+        )
+        outer_col = in_spec.column
+        inner_col = in_spec.query.projection_columns[0]
+        new_q = copy.deepcopy(query)
+        new_q.tables = [outer, inner]
+        new_q.table_aliases = dict(query.table_aliases)
+        new_q.table_aliases[inner_alias] = inner
+        new_q.joins = [
+            JoinSpec(
+                join_type="ANTI",
+                table=inner,
+                alias=inner_alias,
+                on_equalities=[(f"{outer_alias}.{outer_col}", f"{inner_alias}.{inner_col}")],
+            )
+        ]
+        where = query.where_expr or ""
+        where = re.sub(
+            rf"\s*&&\s*!\s*\(\s*in_{re.escape(in_spec.alias)}_contains\([^)]*\)\s*\)",
+            "",
+            where,
+        )
+        where = re.sub(
+            rf"!\s*\(\s*in_{re.escape(in_spec.alias)}_contains\([^)]*\)\s*\)\s*&&\s*",
+            "",
+            where,
+        )
+        where = re.sub(
+            rf"!\s*\(\s*in_{re.escape(in_spec.alias)}_contains\([^)]*\)\s*\)",
+            "true",
+            where,
+        )
+        where = re.sub(
+            rf"\s*&&\s*!\s*in_{re.escape(in_spec.alias)}_contains\([^)]*\)",
+            "",
+            where,
+        )
+        where = re.sub(
+            rf"!\s*in_{re.escape(in_spec.alias)}_contains\([^)]*\)",
+            "true",
+            where,
+        )
+        new_q.where_expr = where.strip()
+        new_q.in_subqueries = []
+        return new_q
+
+    return None
+
 def emit_join_spec_helpers(
     query: SQLQuery,
     schemas_by_table: dict[str, dict[str, str]],
@@ -3693,26 +4614,35 @@ def emit_join_spec_helpers(
     slots = _build_join_slots(query)
 
     join_types = {j.join_type for j in query.joins}
+    is_keyword_semi = "SEMI" in join_types
     is_keyword_anti = "ANTI" in join_types
+    is_full = "FULL" in join_types
     for jt in join_types:
-        if jt == "SEMI" and (
-            len(slots) != 2
-            or not query.groupby_columns
-            or query.is_projection
-            or len(query.joins) != 1
+        if jt == "SEMI" and not (
+            len(slots) == 2 and len(query.joins) == 1
+            and (query.groupby_columns or query.is_projection)
         ):
             raise UnsupportedContractError(
-                "SEMI JOIN needs real MethodSpec; not yet supported"
+                "SEMI JOIN needs real MethodSpec; two-table group-by/projection only"
             )
         if jt == "ANTI" and not (
-            query.groupby_columns and len(slots) == 2 and len(query.joins) == 1
+            len(slots) == 2 and len(query.joins) == 1
+            and (query.groupby_columns or query.is_projection)
         ):
             raise UnsupportedContractError(
-                "ANTI JOIN needs real MethodSpec; two-table group-by only"
+                "ANTI JOIN needs real MethodSpec; two-table group-by/projection only"
             )
-        if jt == "FULL" and (query.groupby_columns or query.is_projection or not is_sum):
+        if jt == "FULL" and query.groupby_columns:
             raise UnsupportedContractError(
-                "FULL OUTER JOIN group-by / projection needs real MethodSpec; not yet supported"
+                "FULL OUTER JOIN group-by needs null-key groups for unmatched right; not yet supported"
+            )
+        if jt == "FULL" and not is_sum and not query.is_projection:
+            raise UnsupportedContractError(
+                "FULL OUTER JOIN needs real MethodSpec; scalar SUM / projection only"
+            )
+        if jt == "FULL" and query.is_multi_agg:
+            raise UnsupportedContractError(
+                "FULL OUTER JOIN multi-agg needs real MethodSpec; not yet supported"
             )
 
     derived_helpers: list[str] = []
@@ -3739,6 +4669,7 @@ def emit_join_spec_helpers(
     _, is_left_anti = _strip_anti_join_predicates(where_expr)
     is_left = any(j.join_type == "LEFT" for j in query.joins)
     is_semi = any(j.join_type == "SEMI" for j in query.joins)
+    is_plain_left = is_left and not is_left_anti and not is_keyword_anti and not is_keyword_semi
 
     extra_having = ""
     spec_body: str
@@ -3763,7 +4694,30 @@ def emit_join_spec_helpers(
             derived_by_alias=derived_by_alias,
         )
 
-    if query.is_projection:
+    if is_keyword_semi and query.is_projection:
+        proj_helper, spec_body, ret_type, fold_bridge = _emit_existence_projection(
+            query, slots, schemas_by_table, where_expr=where_expr,
+            mode="semi", helper_name="join_semi_projection_helper",
+        )
+        helpers = proj_helper
+    elif is_keyword_anti and query.is_projection:
+        proj_helper, spec_body, ret_type, fold_bridge = _emit_existence_projection(
+            query, slots, schemas_by_table, where_expr=where_expr,
+            mode="anti", helper_name="join_anti_projection_helper",
+        )
+        helpers = proj_helper
+    elif is_full and query.is_projection:
+        full_helpers, spec_body, ret_type = _emit_full_outer_projection(
+            query, slots, schemas_by_table, where_expr=where_expr,
+        )
+        helpers = "\n\n".join(derived_helpers + [full_helpers])
+        fold_bridge = None
+    elif is_plain_left and query.is_projection and len(slots) == 2:
+        proj_helper, spec_body, ret_type, fold_bridge = _emit_loj_projection(
+            query, slots, schemas_by_table, where_expr=where_expr,
+        )
+        helpers = "\n\n".join(derived_helpers + [proj_helper])
+    elif query.is_projection:
         proj_helper, spec_body, ret_type, fold_bridge = _emit_join_projection(
             query,
             slots,
@@ -3775,6 +4729,7 @@ def emit_join_spec_helpers(
         )
         helpers = "\n\n".join(derived_helpers + [proj_helper])
     elif query.groupby_columns and is_semi and len(slots) == 2:
+        # Keep proved is_semi fold (not weaker existence_scan without lemma).
         semi_helper, spec_body, ret_type, fold_bridge = _emit_semi_multi_agg(
             query, slots, schemas_by_table, where_expr=where_expr,
         )
@@ -3793,7 +4748,23 @@ def emit_join_spec_helpers(
         )
         helpers = anti_helper
         spec_body = _apply_join_having_filter(spec_body)
+    elif is_plain_left and len(slots) == 2 and not query.is_multi_agg:
+        loj_helper, spec_body, ret_type, fold_bridge = _emit_loj_agg(
+            query,
+            slots,
+            schemas_by_table,
+            where_expr=where_expr,
+            agg_expr=agg_expr,
+            is_sum=is_sum,
+            val_type=val_type,
+        )
+        helpers = "\n\n".join(derived_helpers + [loj_helper])
+        spec_body = _apply_join_having_filter(spec_body)
     elif query.is_multi_agg and query.groupby_columns:
+        if is_plain_left:
+            raise UnsupportedContractError(
+                "LEFT OUTER JOIN multi-agg needs real MethodSpec; not yet supported"
+            )
         ma_helper, spec_body, ret_type, fold_bridge = _emit_join_multi_agg(
             query,
             slots,
@@ -3805,7 +4776,7 @@ def emit_join_spec_helpers(
         )
         helpers = "\n\n".join(derived_helpers + [ma_helper])
         spec_body = _apply_join_having_filter(spec_body)
-    elif "FULL" in join_types and not query.groupby_columns:
+    elif is_full and not query.groupby_columns:
         full_helpers, spec_body, ret_type = _emit_full_outer_scalar_sum(
             query,
             slots,
