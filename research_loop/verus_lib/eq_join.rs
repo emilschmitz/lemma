@@ -3233,6 +3233,331 @@ pub proof fn lemma_star_at_origin<A>(
     lemma_star_pos_origin(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v);
 }
 
+// SHAPE_LEFT_BEGIN
+// LEFT anti-join miss list: outer rows with no equijoin match (existence-only).
+// Same order as join_anti_multi_agg_helper: increasing ids; fold from the end.
+
+/// Outer row ids in `0..n` with no matching inner key, increasing.
+pub open spec fn nested_anti_misses<K>(outer: Seq<K>, inner: Seq<K>, n: int) -> Seq<usize>
+    decreases n,
+{
+    if n <= 0 {
+        Seq::<usize>::empty()
+    } else if n - 1 >= outer.len() {
+        nested_anti_misses(outer, inner, n - 1)
+    } else {
+        let prev = nested_anti_misses(outer, inner, n - 1);
+        if eq_row_ids(inner, outer[n - 1], inner.len() as int).len() == 0 {
+            prev.push((n - 1) as usize)
+        } else {
+            prev
+        }
+    }
+}
+
+pub proof fn lemma_nested_anti_misses_step<K>(outer: Seq<K>, inner: Seq<K>, n: int)
+    requires
+        0 < n <= outer.len(),
+    ensures
+        eq_row_ids(inner, outer[n - 1], inner.len() as int).len() == 0 ==> nested_anti_misses(
+            outer,
+            inner,
+            n,
+        ) == nested_anti_misses(outer, inner, n - 1).push((n - 1) as usize),
+        eq_row_ids(inner, outer[n - 1], inner.len() as int).len() > 0 ==> nested_anti_misses(
+            outer,
+            inner,
+            n,
+        ) == nested_anti_misses(outer, inner, n - 1),
+{
+    if eq_row_ids(inner, outer[n - 1], inner.len() as int).len() == 0 {
+        assert(nested_anti_misses(outer, inner, n) == nested_anti_misses(outer, inner, n - 1).push(
+            (n - 1) as usize,
+        ));
+    } else {
+        assert(nested_anti_misses(outer, inner, n) == nested_anti_misses(outer, inner, n - 1));
+    }
+}
+
+/// Nested-loop LEFT-anti fold: on a miss, apply `step`; matches MethodSpec order.
+pub open spec fn anti_loop_acc<K, A>(
+    outer: Seq<K>,
+    inner: Seq<K>,
+    step: spec_fn(A, int) -> A,
+    base: A,
+    n_outer: int,
+    i: int,
+) -> A
+    decreases n_outer - i,
+{
+    if i < n_outer {
+        let tail = anti_loop_acc(outer, inner, step, base, n_outer, i + 1);
+        if 0 <= i < outer.len() && eq_row_ids(inner, outer[i], inner.len() as int).len() == 0 {
+            step(tail, i)
+        } else {
+            tail
+        }
+    } else {
+        base
+    }
+}
+
+/// Fold a miss-id list from the high index downward (same direction as MethodSpec).
+pub open spec fn miss_acc<A>(
+    misses: Seq<usize>,
+    step: spec_fn(A, int) -> A,
+    base: A,
+    k: int,
+) -> A
+    decreases misses.len() - k,
+{
+    if k >= misses.len() {
+        base
+    } else {
+        let tail = miss_acc(misses, step, base, k + 1);
+        step(tail, misses[k] as int)
+    }
+}
+
+pub proof fn lemma_eq_row_ids_nonempty_iff<K>(keys: Seq<K>, k: K, end: int)
+    requires
+        0 <= end <= keys.len(),
+        end <= usize::MAX as int,
+    ensures
+        (eq_row_ids(keys, k, end).len() > 0) <==> (exists|j: int|
+            0 <= j < end && keys[j] == k),
+    decreases end,
+{
+    if end > 0 {
+        lemma_eq_row_ids_nonempty_iff(keys, k, end - 1);
+        lemma_eq_row_ids_step(keys, k, end - 1, (end - 1) as usize);
+        if keys[end - 1] == k {
+            assert(eq_row_ids(keys, k, end).len() > 0);
+            assert(exists|j: int| 0 <= j < end && keys[j] == k) by {
+                assert(0 <= end - 1 < end && keys[end - 1] == k);
+            };
+        } else {
+            assert(eq_row_ids(keys, k, end) == eq_row_ids(keys, k, end - 1));
+            assert((eq_row_ids(keys, k, end).len() > 0) <==> (exists|j: int|
+                0 <= j < end - 1 && keys[j] == k));
+            assert((exists|j: int| 0 <= j < end && keys[j] == k) <==> (exists|j: int|
+                0 <= j < end - 1 && keys[j] == k)) by {
+                if exists|j: int| 0 <= j < end && keys[j] == k {
+                    let j = choose|j: int| 0 <= j < end && keys[j] == k;
+                    if j == end - 1 {
+                        assert(keys[end - 1] == k);
+                        assert(false);
+                    } else {
+                        assert(0 <= j < end - 1 && keys[j] == k);
+                    }
+                }
+            };
+        }
+    } else {
+        assert(eq_row_ids(keys, k, 0).len() == 0);
+        assert(!(exists|j: int| 0 <= j < 0 && keys[j] == k));
+    }
+}
+
+/// Miss list for `a` is a prefix of the miss list for `b` (`a <= b`).
+pub proof fn lemma_anti_miss_prefix<K>(outer: Seq<K>, inner: Seq<K>, a: int, b: int)
+    requires
+        0 <= a <= b <= outer.len(),
+        b <= usize::MAX as int,
+    ensures
+        nested_anti_misses(outer, inner, a).len() <= nested_anti_misses(outer, inner, b).len(),
+        forall|p: int|
+            0 <= p < nested_anti_misses(outer, inner, a).len() ==> (#[trigger] nested_anti_misses(
+                outer,
+                inner,
+                b,
+            )[p]) == nested_anti_misses(outer, inner, a)[p],
+    decreases b - a,
+{
+    if a < b {
+        lemma_anti_miss_prefix(outer, inner, a, b - 1);
+        lemma_nested_anti_misses_step(outer, inner, b);
+        let at_a = nested_anti_misses(outer, inner, a);
+        let at_prev = nested_anti_misses(outer, inner, b - 1);
+        let at_b = nested_anti_misses(outer, inner, b);
+        let ids = eq_row_ids(inner, outer[b - 1], inner.len() as int);
+        if ids.len() == 0 {
+            assert(at_b == at_prev.push((b - 1) as usize));
+            assert(at_a.len() <= at_prev.len());
+            assert(at_a.len() <= at_b.len());
+            assert forall|p: int| 0 <= p < at_a.len() implies at_b[p] == at_a[p] by {
+                lemma_seq_push_index_different(at_prev, (b - 1) as usize, p);
+                assert(at_b[p] == at_prev[p]);
+                assert(at_prev[p] == at_a[p]);
+            };
+        } else {
+            assert(at_b == at_prev);
+        }
+    }
+}
+
+pub proof fn lemma_anti_miss_at<K>(outer: Seq<K>, inner: Seq<K>, n: int, i: int)
+    requires
+        0 <= i < n <= outer.len(),
+        n <= usize::MAX as int,
+        eq_row_ids(inner, outer[i], inner.len() as int).len() == 0,
+    ensures
+        (nested_anti_misses(outer, inner, i).len() as int) < nested_anti_misses(
+            outer,
+            inner,
+            n,
+        ).len(),
+        nested_anti_misses(outer, inner, n)[nested_anti_misses(outer, inner, i).len() as int]
+            == i as usize,
+{
+    lemma_nested_anti_misses_step(outer, inner, i + 1);
+    assert(nested_anti_misses(outer, inner, i + 1) == nested_anti_misses(outer, inner, i).push(
+        i as usize,
+    ));
+    lemma_anti_miss_prefix(outer, inner, i + 1, n);
+    let k = nested_anti_misses(outer, inner, i).len() as int;
+    assert(nested_anti_misses(outer, inner, i + 1)[k] == i as usize);
+    assert(nested_anti_misses(outer, inner, n)[k] == nested_anti_misses(outer, inner, i + 1)[k]);
+}
+
+/// `anti_loop_acc` from left index `i` equals `miss_acc` from the miss-list suffix.
+pub proof fn lemma_anti_acc<K, A>(
+    outer: Seq<K>,
+    inner: Seq<K>,
+    step: spec_fn(A, int) -> A,
+    base: A,
+    n_outer: int,
+    i: int,
+)
+    requires
+        outer.len() == n_outer,
+        n_outer <= usize::MAX as int,
+        0 <= i <= n_outer,
+    ensures
+        anti_loop_acc(outer, inner, step, base, n_outer, i) == miss_acc(
+            nested_anti_misses(outer, inner, n_outer),
+            step,
+            base,
+            nested_anti_misses(outer, inner, i).len() as int,
+        ),
+    decreases n_outer - i,
+{
+    if i < n_outer {
+        lemma_anti_acc(outer, inner, step, base, n_outer, i + 1);
+        lemma_nested_anti_misses_step(outer, inner, i + 1);
+        let misses = nested_anti_misses(outer, inner, n_outer);
+        let k_i = nested_anti_misses(outer, inner, i).len() as int;
+        let ids = eq_row_ids(inner, outer[i], inner.len() as int);
+        if ids.len() == 0 {
+            lemma_anti_miss_at(outer, inner, n_outer, i);
+            assert(misses[k_i] == i as usize);
+            assert(0 <= k_i < misses.len());
+            assert(anti_loop_acc(outer, inner, step, base, n_outer, i) == step(
+                anti_loop_acc(outer, inner, step, base, n_outer, i + 1),
+                i,
+            ));
+            assert(miss_acc(misses, step, base, k_i) == step(
+                miss_acc(misses, step, base, k_i + 1),
+                misses[k_i] as int,
+            ));
+        } else {
+            assert(nested_anti_misses(outer, inner, i + 1) == nested_anti_misses(outer, inner, i));
+        }
+    }
+}
+
+/// Origin: anti helper fold equals miss_acc of the full miss list at 0.
+pub proof fn lemma_anti_at_origin<K, A>(
+    outer: Seq<K>,
+    inner: Seq<K>,
+    step: spec_fn(A, int) -> A,
+    base: A,
+    n_outer: int,
+)
+    requires
+        outer.len() == n_outer,
+        n_outer <= usize::MAX as int,
+    ensures
+        anti_loop_acc(outer, inner, step, base, n_outer, 0) == miss_acc(
+            nested_anti_misses(outer, inner, n_outer),
+            step,
+            base,
+            0,
+        ),
+{
+    assert(nested_anti_misses(outer, inner, 0) =~= Seq::<usize>::empty());
+    lemma_anti_acc(outer, inner, step, base, n_outer, 0);
+}
+
+/// LEFT-anti miss ids for one `String` key column. View equals [`nested_anti_misses`].
+pub fn anti_miss_rows_str(outer: &Vec<String>, inner: &Vec<String>) -> (misses: Vec<usize>)
+    ensures
+        misses@ == nested_anti_misses(key_views(outer@), key_views(inner@), outer@.len() as int),
+{
+    let idx = build_eq_index_str(inner);
+    let ghost ov = key_views(outer@);
+    let ghost iv = key_views(inner@);
+    let mut misses: Vec<usize> = Vec::new();
+    let mut i: usize = 0;
+    while i < outer.len()
+        invariant
+            i <= outer.len(),
+            outer@.len() == outer.len() as int,
+            inner@.len() == inner.len() as int,
+            ov == key_views(outer@),
+            iv == key_views(inner@),
+            index_ok(iv, idx.buckets@, idx.map@, inner@.len() as int),
+            misses@ == nested_anti_misses(ov, iv, i as int),
+        decreases outer.len() - i,
+    {
+        let key = outer[i].clone();
+        let ghost end = i as int;
+        proof {
+            lemma_key_view_at(outer@, end);
+            broadcast use vstd::std_specs::vec::axiom_spec_len;
+            assert(ov[end] == key@);
+        }
+        let ghost before = misses@;
+        let hit = probe_eq_str(&idx, inner, key.as_str());
+        match hit {
+            Some(v) => {
+                if v.len() == 0 {
+                    misses.push(i);
+                    proof {
+                        assert(v@ == eq_row_ids(iv, key@, iv.len() as int));
+                        assert(eq_row_ids(iv, key@, iv.len() as int).len() == 0);
+                        lemma_eq_row_ids_len0(iv, key@, iv.len() as int);
+                        lemma_nested_anti_misses_step(ov, iv, end + 1);
+                        assert(misses@ == before.push(i));
+                        assert(misses@ == nested_anti_misses(ov, iv, end + 1));
+                    }
+                } else {
+                    proof {
+                        assert(v@ == eq_row_ids(iv, key@, iv.len() as int));
+                        assert(eq_row_ids(iv, key@, iv.len() as int).len() > 0);
+                        lemma_nested_anti_misses_step(ov, iv, end + 1);
+                        assert(misses@ == nested_anti_misses(ov, iv, end + 1));
+                    }
+                }
+            },
+            None => {
+                misses.push(i);
+                proof {
+                    assert(eq_row_ids(iv, key@, iv.len() as int).len() == 0);
+                    lemma_eq_row_ids_len0(iv, key@, iv.len() as int);
+                    lemma_nested_anti_misses_step(ov, iv, end + 1);
+                    assert(misses@ == before.push(i));
+                    assert(misses@ == nested_anti_misses(ov, iv, end + 1));
+                }
+            },
+        }
+        i = i + 1;
+    }
+    misses
+}
+
+// SHAPE_LEFT_END
+
 // EQ_JOIN_PROVED_END
 
 #[verifier::external_body]
