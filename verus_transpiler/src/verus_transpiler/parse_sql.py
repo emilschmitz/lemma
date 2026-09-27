@@ -119,6 +119,8 @@ class JoinSpec:
     table: str
     alias: str | None
     on_equalities: list[tuple[str, str]]
+    # "and" (default equijoin) or "or" (disjunction of equalities).
+    on_combiner: str = "and"
 
 
 @dataclass
@@ -464,29 +466,76 @@ def _parse_on_equalities(
     *,
     allow_missing: bool = False,
 ) -> list[tuple[str, str]]:
+    """Parse ON equalities (AND or OR). Prefer ``_parse_on_clause`` for combiner."""
+    eqs, _combiner = _parse_on_clause(on_expr, allow_missing=allow_missing)
+    return eqs
+
+
+def _parse_on_clause(
+    on_expr: exp.Expression | None,
+    *,
+    allow_missing: bool = False,
+) -> tuple[list[tuple[str, str]], str]:
+    """Return (equalities, combiner) where combiner is ``and`` or ``or``."""
     if on_expr is None:
         if allow_missing:
-            return []
+            return [], "and"
         raise UnsupportedContractError("JOIN requires ON clause with equality predicates.")
-    equalities: list[tuple[str, str]] = []
 
-    def collect(node: exp.Expression) -> None:
+    def eq_pair(node: exp.EQ) -> tuple[str, str]:
+        if not isinstance(node.left, exp.Column) or not isinstance(node.right, exp.Column):
+            raise UnsupportedContractError("JOIN ON must be column equality.")
+        left_ref = ".".join(p for p in (node.left.table, node.left.name) if p)
+        right_ref = ".".join(p for p in (node.right.table, node.right.name) if p)
+        return (left_ref or node.left.name, right_ref or node.right.name)
+
+    def collect_and(node: exp.Expression, out: list[tuple[str, str]]) -> None:
         if isinstance(node, exp.And):
-            collect(node.left)
-            collect(node.right)
+            collect_and(node.left, out)
+            collect_and(node.right, out)
         elif isinstance(node, exp.EQ):
-            if not isinstance(node.left, exp.Column) or not isinstance(node.right, exp.Column):
-                raise UnsupportedContractError("JOIN ON must be column equality.")
-            left_ref = ".".join(p for p in (node.left.table, node.left.name) if p)
-            right_ref = ".".join(p for p in (node.right.table, node.right.name) if p)
-            equalities.append((left_ref or node.left.name, right_ref or node.right.name))
+            out.append(eq_pair(node))
+        elif isinstance(node, exp.Or):
+            raise UnsupportedContractError(
+                "JOIN ON does not mix AND and OR; use OR of equalities alone."
+            )
+        elif isinstance(node, exp.Paren):
+            collect_and(node.this, out)
         else:
-            raise UnsupportedContractError("JOIN ON supports only = and AND of =.")
+            raise UnsupportedContractError("JOIN ON supports only =, AND of =, or OR of =.")
 
-    collect(on_expr)
+    def collect_or(node: exp.Expression, out: list[tuple[str, str]]) -> None:
+        if isinstance(node, exp.Or):
+            collect_or(node.left, out)
+            collect_or(node.right, out)
+        elif isinstance(node, exp.EQ):
+            out.append(eq_pair(node))
+        elif isinstance(node, exp.And):
+            raise UnsupportedContractError(
+                "JOIN ON does not mix AND and OR; use OR of equalities alone."
+            )
+        elif isinstance(node, exp.Paren):
+            collect_or(node.this, out)
+        else:
+            raise UnsupportedContractError("JOIN ON supports only =, AND of =, or OR of =.")
+
+    # Peel top-level parens to choose combiner.
+    root = on_expr
+    while isinstance(root, exp.Paren):
+        root = root.this
+
+    equalities: list[tuple[str, str]] = []
+    if isinstance(root, exp.Or):
+        collect_or(root, equalities)
+        combiner = "or"
+    else:
+        collect_and(root, equalities)
+        combiner = "and"
     if not equalities:
         raise UnsupportedContractError("JOIN requires at least one equality predicate.")
-    return equalities
+    if combiner == "or" and len(equalities) < 2:
+        raise UnsupportedContractError("JOIN ON OR requires at least two equalities.")
+    return equalities, combiner
 
 
 def _unwrap_alias(node: exp.Expression) -> exp.Expression:
@@ -1953,21 +2002,22 @@ def _parse_select(
             swap_right = side == "RIGHT"
             if side == "RIGHT":
                 side = "LEFT"
+            on_combiner = "and"
             if side == "CROSS":
                 join_type = "CROSS"
                 on_equalities: list[tuple[str, str]] = []
             elif side == "FULL":
                 join_type = "FULL"
-                on_equalities = _parse_on_equalities(join.args.get("on"))
+                on_equalities, on_combiner = _parse_on_clause(join.args.get("on"))
             elif side in ("SEMI", "ANTI"):
                 join_type = side
-                on_equalities = _parse_on_equalities(join.args.get("on"))
+                on_equalities, on_combiner = _parse_on_clause(join.args.get("on"))
             elif side == "LEFT":
                 join_type = "LEFT"
-                on_equalities = _parse_on_equalities(join.args.get("on"))
+                on_equalities, on_combiner = _parse_on_clause(join.args.get("on"))
             else:
                 join_type = "INNER"
-                on_equalities = _parse_on_equalities(join.args.get("on"))
+                on_equalities, on_combiner = _parse_on_clause(join.args.get("on"))
 
             if swap_right:
                 base_table = query.tables[0]
@@ -1995,6 +2045,7 @@ def _parse_select(
                 table=jtable if not swap_right else query.tables[0],
                 alias=jalias,
                 on_equalities=on_equalities,
+                on_combiner=on_combiner,
             ))
 
     resolver = derived_resolver if (query.derived_tables or cte_map) else _build_schema_resolver(
