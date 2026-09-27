@@ -20,14 +20,15 @@ INSTANCE = os.environ.get("LEMMA_GCE_INSTANCE", "lemma-gendb-overnight")
 VM_OUT = os.environ.get(
     "LEMMA_VM_OUT", f"/home/emil/lemma-overnight-out-{FAMILY}"
 )
-LOCAL = Path(os.environ.get("LEMMA_HARVEST_LOCAL", f"/home/emil/lemma-harvest/{FAMILY}"))
+_HARVEST = Path(__file__).resolve().parents[2] / "harvest"
+LOCAL = Path(os.environ.get("LEMMA_HARVEST_LOCAL", str(_HARVEST / FAMILY)))
 GS = os.environ.get(
     "LEMMA_HARVEST_GS", f"gs://poema-496023-lemma-harvest/{FAMILY}/"
 )
 STATE = Path(
     os.environ.get(
         "LEMMA_WAKE_STATE",
-        f"/home/emil/lemma-harvest/watch/fail_wake_{FAMILY}.state.json",
+        str(_HARVEST / "watch" / f"fail_wake_{FAMILY}.state.json"),
     )
 )
 POLL_SEC = int(os.environ.get("LEMMA_WAKE_POLL_SEC", "20"))

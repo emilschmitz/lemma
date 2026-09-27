@@ -113,7 +113,7 @@ Every paper/Spot/`LEMMA_EXPERIMENT=1` run must be **reproducible** and **logged*
 **Prove agent from now on: Grok 4.7** (`grok-4.7-high` in `research_loop/config.env` `AGENT_CMD`). It is the new model. Do not launch on `cursor-grok-4.6-high`.
 
 One project: **this repo** (`/home/emil/projects/lemma-db`). Harvest blobs live
-in `harvest/` (symlink to `~/lemma-harvest`, gitignored). Do not commit traces,
+in `harvest/` (a real directory inside this repo, gitignored). Do not commit traces,
 overnight outputs, credentials, or `harvest/`. Home `~/AGENTS.md` only points
 here. Do not keep a second instruction set.
 
@@ -176,7 +176,7 @@ On each wake:
    fails, **must** include **Reason** and **Response** for **each** new fail qid.
    Do **not** stop at a one-line `FAILED` table. Do **not** end the turn on
    “analysis in progress” / “still looking.” If context is tight, ship the table
-   for every qid you opened this wake. Copy it into `~/lemma-harvest/STATUS.md`.
+   for every qid you opened this wake. Copy it into `harvest/STATUS.md`.
 
    | Job | SQL (one line) | step N (name) | type | primary blame | smarter agent in `AGENT_EDIT`? | evidence (MCP run + rustc/verus) | **Reason** | **Response** |
 
@@ -267,7 +267,7 @@ software failed** (traces not saved; fix harvest before blaming the agent).
 
 ### Worked example — r24rocket 2026-09-20 (`fail_streak_6`)
 
-Harvest: `~/lemma-harvest/r24rocket`. SHA `c818042`. Official pin
+Harvest: `harvest/r24rocket`. SHA `c818042`. Official pin
 `dataset_size=39401761` = **max COUNT(*) of every DuckDB table** (`num`),
 applied as the **same `LIMIT` on every table** (`pin_table`:
 `SELECT cols FROM t LIMIT n`). Real SEC sizes: `num` 39,401,761, `pre`
@@ -306,7 +306,7 @@ overnight `$OUT` logs.
 
 ### Worked example — r26rocket 2026-09-20 abort (`fail_streak_6`)
 
-Harvest: `~/lemma-harvest/r26rocket`. SHA `e445686`. Consecutive misses (resume
+Harvest: `harvest/r26rocket`. SHA `e445686`. Consecutive misses (resume
 retry): **Q11, Q24, Q28, Q26, Q16, Q29**. No `submitted.json` on any of the six.
 Transpile OK. Official pin never ran. Fast never started.
 
