@@ -41,6 +41,13 @@ JOIN tag t ON p.tag = t.tag AND p.version = t.version
 LIMIT 50
 """
 
+_TAG_SQL = """
+SELECT COUNT(*)
+FROM pre p
+JOIN tag t ON p.tag = t.tag AND p.version = t.version
+WHERE p.stmt = 'CI'
+"""
+
 _SINGLE_SQL = "SELECT COUNT(*) FROM pre p WHERE p.stmt = 'CI'"
 
 
@@ -62,6 +69,8 @@ def test_proved_slice_is_rocketship_clean() -> None:
     assert "pub fn star_eq_triples_str(" in body
     assert "pub open spec fn loop_acc<" in body
     assert "pub proof fn lemma_acc<" in body
+    assert "pub open spec fn loop_acc2<" in body
+    assert "pub proof fn lemma_acc2<" in body
     assert "arbitrary()" not in body
     assert "external_body" not in body
     assert "assume(" not in body
@@ -76,13 +85,19 @@ def test_join_transpile_includes_proved_equijoin_and_single_table_does_not() -> 
         _STAR_SQL,
         {"pre": SEC_SCHEMA["pre"], "sub": SEC_SCHEMA["sub"], "tag": SEC_SCHEMA["tag"]},
     )
+    tag = transpile_sql_to_verus(
+        _TAG_SQL,
+        {"pre": SEC_SCHEMA["pre"], "tag": SEC_SCHEMA["tag"]},
+    )
     single = transpile_sql_to_verus(_SINGLE_SQL, {"pre": SEC_SCHEMA["pre"]})
-    for out in (adsh, star):
+    for out in (adsh, star, tag):
         assert "pub fn equijoin_pairs_str(" in out
         assert "pub fn star_eq_triples_str(" in out
         assert "walk pairs from the end" in out
-    assert "lemma_join_method_spec_helper_is_loop" in adsh
-    assert "lemma_join_method_spec_helper_is_loop" not in star
+    assert "lemma_join_method_spec_helper_is_loop(" in adsh
+    assert "lemma_join_method_spec_helper_is_loop(" not in star
+    assert "lemma_join_method_spec_helper_is_loop2(" not in adsh
+    assert "lemma_join_method_spec_helper_is_loop2(" in tag
     assert "lemma_join_projection_helper_is_star" in star
     assert "pub fn build_eq_index_str(" not in single
     assert "pub fn equijoin_pairs_str(" not in single
@@ -199,6 +214,43 @@ def test_pair_fold_lemma_verifies(
         catalog_assumptions=catalog,
     )
     rs_path = tmp_path / "fold.rs"
+    rs_path.write_text(program, encoding="utf-8")
+    ok, log = run_verus_verify(str(rs_path), timeout=180)
+    assert ok, log[-5000:]
+    assert "0 errors" in log
+
+
+def test_two_column_fold_lemma_verifies(tmp_path: Path) -> None:
+    """tag AND version: the helper equals loop_acc2, and that file verifies."""
+    if resolve_verus_bin() is None:
+        pytest.skip("verus not found")
+    _, multi = normalize_schema({"pre": SEC_SCHEMA["pre"], "tag": SEC_SCHEMA["tag"]})
+    if not isinstance(multi, dict):
+        raise TypeError("expected a per-table schema")
+    projected = project_multi_schema_for_query(_TAG_SQL, multi)
+    if any(not isinstance(cols, dict) for cols in projected.values()):
+        raise TypeError("expected a per-table schema")
+    projected = cast(dict[str, dict[str, str]], projected)
+    spec_rs = transpile_sql_to_verus(_TAG_SQL, projected)
+    assert "lemma_join_method_spec_helper_is_loop2(" in spec_rs
+    ret_type = resolve_ret_type_from_method_spec(spec_rs)
+    assert ret_type == "u64"
+    stub = """#[verifier::external_body]
+pub exec fn run_query(pre: &Cols_pre, tag: &Cols_tag) -> (res: u64)
+    requires valid_cols_pre(pre), valid_cols_tag(tag),
+    ensures res == method_spec(pre, tag),
+{
+    0u64
+}"""
+    program = assemble_verified_join_program(
+        spec_rs=spec_rs,
+        run_query_body=stub,
+        multi_schema=projected,
+        table_order=("pre", "tag"),
+        ret_type=ret_type,
+        default_tbls={"pre": "", "tag": ""},
+    )
+    rs_path = tmp_path / "tag_fold.rs"
     rs_path.write_text(program, encoding="utf-8")
     ok, log = run_verus_verify(str(rs_path), timeout=180)
     assert ok, log[-5000:]

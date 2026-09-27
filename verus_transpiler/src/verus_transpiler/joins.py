@@ -708,6 +708,108 @@ def _pair_fold_lemma(
 }}"""
 
 
+def _pair2_fold_lemma(
+    helper_name: str,
+    slots: list[_Slot],
+    *,
+    join_cond: str,
+    filter_cond: str | None,
+    update_expr: str,
+    ret_type: str,
+    ret_base: str,
+    extra_params: list[tuple[str, str]] | None,
+) -> str | None:
+    """Proof that a 2-table, two-equality helper equals ``loop_acc2``.
+
+    Both equalities join the same outer row to the same inner row. The filter
+    stays in the step closure. ``lemma_acc2`` equates that to ``equijoin_pairs_str2``.
+    """
+    if extra_params or len(slots) != 2:
+        return None
+    parts = [part.strip() for part in join_cond.split(" && ")]
+    if len(parts) != 2:
+        return None
+    outer_idx, inner_idx = slots[0].idx, slots[1].idx
+    oriented: list[tuple[re.Match[str], re.Match[str]]] = []
+    for part in parts:
+        left_txt, sep, right_txt = part.partition(" == ")
+        if sep != " == ":
+            return None
+        left = _JOIN_SIDE.fullmatch(left_txt.strip())
+        right = _JOIN_SIDE.fullmatch(right_txt.strip())
+        if left is None or right is None or bool(left.group("view")) != bool(right.group("view")):
+            return None
+        if left.group("idx") == outer_idx and right.group("idx") == inner_idx:
+            oriented.append((left, right))
+        elif right.group("idx") == outer_idx and left.group("idx") == inner_idx:
+            oriented.append((right, left))
+        else:
+            return None
+
+    def seq_expr(side: re.Match[str]) -> str:
+        col = f"{side.group('param')}.{side.group('field')}"
+        if side.group("view"):
+            return f"key_views({col}@)"
+        return f"{col}@"
+
+    def key_assert(side: re.Match[str]) -> str:
+        param, field, idx = side.group("param"), side.group("field"), side.group("idx")
+        if side.group("view"):
+            return (
+                f"assert(key_views({param}.{field}@)[{idx}]"
+                f" == {param}.{field}[{idx} as int]@);"
+            )
+        return f"assert({param}.{field}@[{idx}] == {param}.{field}[{idx} as int]);"
+
+    step_body = re.sub(r"\btail\b", "acc", update_expr)
+    if filter_cond:
+        step = f"if {filter_cond} {{\n        {step_body}\n    }} else {{\n        acc\n    }}"
+    else:
+        step = step_body
+    o, i = slots
+    (a_outer, a_inner), (b_outer, b_inner) = oriented
+    asserts = "\n            ".join(
+        key_assert(side) for side in (a_outer, a_inner, b_outer, b_inner)
+    )
+    params = ", ".join(f"{s.param}: &{s.struct}" for s in slots)
+    recurse_args = ", ".join(s.param for s in slots)
+    lemma = f"lemma_{helper_name}_is_loop2"
+    return f"""pub proof fn {lemma}({params}, {o.idx}: int, {i.idx}: int)
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+        0 <= {o.idx} <= {o.param}.n,
+        0 <= {i.idx} <= {i.param}.n,
+    ensures
+        {helper_name}({recurse_args}, {o.idx}, {i.idx}) == loop_acc2(
+            {seq_expr(a_outer)},
+            {seq_expr(b_outer)},
+            {seq_expr(a_inner)},
+            {seq_expr(b_inner)},
+            |acc: {ret_type}, {o.idx}: int, {i.idx}: int| {{
+                {step}
+            }},
+            {ret_base},
+            {o.param}.n as int,
+            {i.param}.n as int,
+            {o.idx},
+            {i.idx},
+        ),
+    decreases {o.param}.n - {o.idx}, {i.param}.n - {i.idx},
+{{
+    if {o.idx} < {o.param}.n {{
+        if {i.idx} < {i.param}.n {{
+            {lemma}({recurse_args}, {o.idx}, {i.idx} + 1);
+            {asserts}
+        }} else {{
+            {lemma}({recurse_args}, {o.idx} + 1, 0);
+        }}
+    }}
+}}"""
+
+
 def _fold_lemma(
     helper_name: str,
     slots: list[_Slot],
@@ -731,6 +833,18 @@ def _fold_lemma(
     )
     if pair is not None:
         return pair
+    pair2 = _pair2_fold_lemma(
+        helper_name,
+        slots,
+        join_cond=join_cond,
+        filter_cond=filter_cond,
+        update_expr=update_expr,
+        ret_type=ret_type,
+        ret_base=ret_base,
+        extra_params=extra_params,
+    )
+    if pair2 is not None:
+        return pair2
     return _star_fold_lemma(
         helper_name,
         slots,

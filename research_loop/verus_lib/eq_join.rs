@@ -2731,6 +2731,341 @@ pub proof fn lemma_sub_product_at(
     }
 }
 
+/// Position of `(i0, i1)` in a two-column nested match list.
+pub open spec fn pair_pos2<A, B>(
+    outer_a: Seq<A>,
+    outer_b: Seq<B>,
+    inner_a: Seq<A>,
+    inner_b: Seq<B>,
+    i0: int,
+    i1: int,
+) -> int {
+    if !(0 <= i0 < outer_a.len() && i0 < outer_b.len()) {
+        nested_eq_pairs2(outer_a, outer_b, inner_a, inner_b, i0).len() as int
+    } else {
+        let ids = eq_row_ids2(inner_a, inner_b, outer_a[i0], outer_b[i0], inner_a.len() as int);
+        nested_eq_pairs2(outer_a, outer_b, inner_a, inner_b, i0).len() as int + ids_lt(
+            ids,
+            ids.len() as int,
+            i1,
+        )
+    }
+}
+
+/// Nested loop over two equalities, same order as a two-table helper.
+pub open spec fn loop_acc2<A, B, C>(
+    outer_a: Seq<A>,
+    outer_b: Seq<B>,
+    inner_a: Seq<A>,
+    inner_b: Seq<B>,
+    step: spec_fn(C, int, int) -> C,
+    base: C,
+    n_outer: int,
+    n_inner: int,
+    i0: int,
+    i1: int,
+) -> C
+    decreases n_outer - i0, n_inner - i1,
+{
+    if i0 < n_outer {
+        if i1 < n_inner {
+            let tail = loop_acc2(
+                outer_a,
+                outer_b,
+                inner_a,
+                inner_b,
+                step,
+                base,
+                n_outer,
+                n_inner,
+                i0,
+                i1 + 1,
+            );
+            if 0 <= i0 < outer_a.len() && 0 <= i0 < outer_b.len() && 0 <= i1 < inner_a.len()
+                && 0 <= i1 < inner_b.len() && outer_a[i0] == inner_a[i1] && outer_b[i0] == inner_b[i1] {
+                step(tail, i0, i1)
+            } else {
+                tail
+            }
+        } else {
+            loop_acc2(
+                outer_a,
+                outer_b,
+                inner_a,
+                inner_b,
+                step,
+                base,
+                n_outer,
+                n_inner,
+                i0 + 1,
+                0,
+            )
+        }
+    } else {
+        base
+    }
+}
+
+pub proof fn lemma_nested_len_mono2<A, B>(
+    outer_a: Seq<A>,
+    outer_b: Seq<B>,
+    inner_a: Seq<A>,
+    inner_b: Seq<B>,
+    n: int,
+    m: int,
+)
+    requires
+        0 <= n <= m,
+    ensures
+        nested_eq_pairs2(outer_a, outer_b, inner_a, inner_b, n).len() <= nested_eq_pairs2(
+            outer_a,
+            outer_b,
+            inner_a,
+            inner_b,
+            m,
+        ).len(),
+    decreases m - n,
+{
+    if n < m {
+        lemma_nested_len_mono2(outer_a, outer_b, inner_a, inner_b, n, m - 1);
+        let cur = nested_eq_pairs2(outer_a, outer_b, inner_a, inner_b, m);
+        let prev = nested_eq_pairs2(outer_a, outer_b, inner_a, inner_b, m - 1);
+        if m - 1 >= outer_a.len() || m - 1 >= outer_b.len() {
+            assert(cur == prev);
+        } else {
+            let ids = eq_row_ids2(
+                inner_a,
+                inner_b,
+                outer_a[m - 1],
+                outer_b[m - 1],
+                inner_a.len() as int,
+            );
+            let extra = prefix_pairs((m - 1) as usize, ids, ids.len() as int);
+            assert(cur == prev + extra);
+            assert(prev.len() <= cur.len());
+        }
+    }
+}
+
+pub proof fn lemma_nested_index2<A, B>(
+    outer_a: Seq<A>,
+    outer_b: Seq<B>,
+    inner_a: Seq<A>,
+    inner_b: Seq<B>,
+    n: int,
+    m: int,
+    p: int,
+)
+    requires
+        0 <= n <= m,
+        0 <= p < nested_eq_pairs2(outer_a, outer_b, inner_a, inner_b, n).len(),
+    ensures
+        nested_eq_pairs2(outer_a, outer_b, inner_a, inner_b, m)[p] == nested_eq_pairs2(
+            outer_a,
+            outer_b,
+            inner_a,
+            inner_b,
+            n,
+        )[p],
+    decreases m - n,
+{
+    if n < m {
+        let cur = nested_eq_pairs2(outer_a, outer_b, inner_a, inner_b, m);
+        let prev = nested_eq_pairs2(outer_a, outer_b, inner_a, inner_b, m - 1);
+        lemma_nested_len_mono2(outer_a, outer_b, inner_a, inner_b, n, m - 1);
+        if m - 1 >= outer_a.len() || m - 1 >= outer_b.len() {
+            assert(cur == prev);
+        } else {
+            let i = (m - 1) as usize;
+            let ids = eq_row_ids2(
+                inner_a,
+                inner_b,
+                outer_a[m - 1],
+                outer_b[m - 1],
+                inner_a.len() as int,
+            );
+            let extra = prefix_pairs(i, ids, ids.len() as int);
+            assert(cur == prev + extra);
+            assert(p < prev.len());
+            lemma_left_index(prev, extra, p);
+        }
+        lemma_nested_index2(outer_a, outer_b, inner_a, inner_b, n, m - 1, p);
+    }
+}
+
+pub proof fn lemma_acc2<A, B, C>(
+    outer_a: Seq<A>,
+    outer_b: Seq<B>,
+    inner_a: Seq<A>,
+    inner_b: Seq<B>,
+    step: spec_fn(C, int, int) -> C,
+    base: C,
+    n_outer: int,
+    n_inner: int,
+    i0: int,
+    i1: int,
+)
+    requires
+        outer_a.len() == n_outer,
+        outer_b.len() == n_outer,
+        inner_a.len() == n_inner,
+        inner_b.len() == n_inner,
+        n_outer <= usize::MAX as int,
+        n_inner <= usize::MAX as int,
+        0 <= i0 <= n_outer,
+        0 <= i1 <= n_inner,
+    ensures
+        loop_acc2(
+            outer_a,
+            outer_b,
+            inner_a,
+            inner_b,
+            step,
+            base,
+            n_outer,
+            n_inner,
+            i0,
+            i1,
+        ) == pair_acc(
+            nested_eq_pairs2(outer_a, outer_b, inner_a, inner_b, n_outer),
+            step,
+            base,
+            pair_pos2(outer_a, outer_b, inner_a, inner_b, i0, i1),
+        ),
+    decreases n_outer - i0, n_inner - i1,
+{
+    let pairs = nested_eq_pairs2(outer_a, outer_b, inner_a, inner_b, n_outer);
+    let pos = pair_pos2(outer_a, outer_b, inner_a, inner_b, i0, i1);
+    if i0 >= n_outer {
+        assert(nested_eq_pairs2(outer_a, outer_b, inner_a, inner_b, i0) =~= pairs);
+        assert(pos == pairs.len() as int);
+    } else if i1 >= n_inner {
+        lemma_acc2(
+            outer_a,
+            outer_b,
+            inner_a,
+            inner_b,
+            step,
+            base,
+            n_outer,
+            n_inner,
+            i0 + 1,
+            0,
+        );
+        let ids = eq_row_ids2(inner_a, inner_b, outer_a[i0], outer_b[i0], n_inner);
+        lemma_eq2_members(inner_a, inner_b, outer_a[i0], outer_b[i0], n_inner);
+        assert forall|p: int| 0 <= p < ids.len() implies (ids[p] as int) < n_inner by {
+            assert(0 <= (ids[p] as int) < n_inner);
+        };
+        assert forall|p: int| 0 <= p < ids.len() implies (ids[p] as int) < i1 by {
+            assert((ids[p] as int) < n_inner);
+            assert(n_inner <= i1);
+        };
+        lemma_ids_lt_all(ids, ids.len() as int, i1);
+        let i0u = i0 as usize;
+        assert(i0u as int == i0);
+        lemma_prefix_len(i0u, ids, ids.len() as int);
+        lemma_nested_eq_pairs2_step(outer_a, outer_b, inner_a, inner_b, i0 + 1);
+        assert(nested_eq_pairs2(outer_a, outer_b, inner_a, inner_b, i0 + 1).len()
+            == nested_eq_pairs2(outer_a, outer_b, inner_a, inner_b, i0).len() + ids.len());
+        if i0 + 1 < outer_a.len() {
+            let next_ids = eq_row_ids2(inner_a, inner_b, outer_a[i0 + 1], outer_b[i0 + 1], n_inner);
+            lemma_ids_lt_zero(next_ids, next_ids.len() as int);
+        }
+        assert(pair_pos2(outer_a, outer_b, inner_a, inner_b, i0 + 1, 0) == pos);
+    } else if outer_a[i0] == inner_a[i1] && outer_b[i0] == inner_b[i1] {
+        lemma_acc2(
+            outer_a,
+            outer_b,
+            inner_a,
+            inner_b,
+            step,
+            base,
+            n_outer,
+            n_inner,
+            i0,
+            i1 + 1,
+        );
+        lemma_eq2_rank(inner_a, inner_b, outer_a[i0], outer_b[i0], n_inner, i1);
+        let ids = eq_row_ids2(inner_a, inner_b, outer_a[i0], outer_b[i0], n_inner);
+        let r = ids_lt(ids, ids.len() as int, i1);
+        let i0u = i0 as usize;
+        assert(i0u as int == i0);
+        lemma_prefix_len(i0u, ids, ids.len() as int);
+        lemma_prefix_at(i0u, ids, ids.len() as int, r);
+        let row_pairs = prefix_pairs(i0u, ids, ids.len() as int);
+        let earlier = nested_eq_pairs2(outer_a, outer_b, inner_a, inner_b, i0);
+        let through = nested_eq_pairs2(outer_a, outer_b, inner_a, inner_b, i0 + 1);
+        lemma_nested_eq_pairs2_step(outer_a, outer_b, inner_a, inner_b, i0 + 1);
+        assert(through == earlier + row_pairs);
+        assert(i1 <= usize::MAX as int);
+        let i1u = i1 as usize;
+        assert(i1u as int == i1);
+        assert(row_pairs[r] == (i0u, i1u));
+        assert(0 <= r < row_pairs.len());
+        lemma_right_index(earlier, row_pairs, r);
+        assert(pos == earlier.len() as int + r);
+        assert(through.len() == earlier.len() + row_pairs.len());
+        assert(pos < through.len());
+        lemma_nested_len_mono2(outer_a, outer_b, inner_a, inner_b, i0 + 1, n_outer);
+        assert(through.len() <= pairs.len());
+        assert(pos < pairs.len());
+        lemma_nested_index2(outer_a, outer_b, inner_a, inner_b, i0 + 1, n_outer, pos);
+        assert(through[pos] == (i0u, i1u));
+        assert(pairs[pos] == (i0u, i1u));
+        assert(pos + 1 == pair_pos2(outer_a, outer_b, inner_a, inner_b, i0, i1 + 1));
+        assert(loop_acc2(
+            outer_a,
+            outer_b,
+            inner_a,
+            inner_b,
+            step,
+            base,
+            n_outer,
+            n_inner,
+            i0,
+            i1,
+        ) == step(
+            loop_acc2(
+                outer_a,
+                outer_b,
+                inner_a,
+                inner_b,
+                step,
+                base,
+                n_outer,
+                n_inner,
+                i0,
+                i1 + 1,
+            ),
+            i0,
+            i1,
+        ));
+        assert(pair_acc(pairs, step, base, pos) == step(pair_acc(pairs, step, base, pos + 1), i0, i1));
+    } else {
+        lemma_acc2(
+            outer_a,
+            outer_b,
+            inner_a,
+            inner_b,
+            step,
+            base,
+            n_outer,
+            n_inner,
+            i0,
+            i1 + 1,
+        );
+        let ids = eq_row_ids2(inner_a, inner_b, outer_a[i0], outer_b[i0], n_inner);
+        lemma_eq2_members(inner_a, inner_b, outer_a[i0], outer_b[i0], n_inner);
+        assert forall|p: int| 0 <= p < ids.len() implies (#[trigger] ids[p] as int) != i1 by {
+            assert(inner_a[(ids[p] as int)] == outer_a[i0]);
+            assert(inner_b[(ids[p] as int)] == outer_b[i0]);
+        };
+        lemma_ids_lt_skip(ids, ids.len() as int, i1);
+        assert(pos == pair_pos2(outer_a, outer_b, inner_a, inner_b, i0, i1 + 1));
+    }
+}
+
 // EQ_JOIN_PROVED_END
 
 #[verifier::external_body]
