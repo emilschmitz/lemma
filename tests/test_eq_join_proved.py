@@ -18,13 +18,56 @@ from research_loop.assemble_verified_program import (
 )
 from research_loop.harness import resolve_verus_bin, run_verus_compile, run_verus_verify
 from research_loop.method_spec_ret_type import resolve_ret_type_from_method_spec
-from research_loop.sec_table_assumptions import sec_prove_loop_catalog_assumptions
+from research_loop.sec_table_assumptions import SEC_PROVE_LOOP_MAX_CELL_U64
+from research_loop.table_assumptions import (
+    CatalogAssumptions,
+    ColumnAssumption,
+    TableAssumptions,
+)
 from research_loop.trusted_ret_bridge import dynamic_ret_type_config, map_new_expr
 from tests.test_sec_holdout_parse import SEC_SCHEMA
 from verus_transpiler import transpile_sql_to_verus
 
 ROOT = Path(__file__).resolve().parents[1]
 EQ_JOIN_RS = ROOT / "research_loop" / "verus_lib" / "eq_join.rs"
+
+# Full SEC product caps (num global max). Not the 65536 prove_loop profile.
+_SEC_PRODUCT_MAX_ROWS = 39_401_761
+
+
+def _large_sec_product_catalog() -> CatalogAssumptions:
+    """Full-table SEC product catalog for join fold proofs under real row caps."""
+    return CatalogAssumptions(
+        max_rows=_SEC_PRODUCT_MAX_ROWS,
+        max_rows_cube=_SEC_PRODUCT_MAX_ROWS,
+        max_rows_4=_SEC_PRODUCT_MAX_ROWS,
+        max_cell_u64=SEC_PROVE_LOOP_MAX_CELL_U64,
+        max_native_u32=2**31,
+        max_string_len=128,
+        tables={
+            "pre": TableAssumptions(
+                max_rows=9_600_799,
+                columns={"line": ColumnAssumption(max_value_exclusive=483)},
+            ),
+            "sub": TableAssumptions(max_rows=86_135),
+            "tag": TableAssumptions(max_rows=1_070_662),
+            "num": TableAssumptions(max_rows=39_401_761),
+        },
+    )
+
+
+def _assert_full_sec_caps(text: str, *, reads_pre_line: bool) -> None:
+    assert "pub const LEMMA_MAX_ROWS: usize = 39401761;" in text
+    if reads_pre_line:
+        assert "LEMMA_MAX_pre_line" in text
+        assert "483" in text
+
+
+def _sql_reads_pre_line(sql: str, projected: dict[str, dict[str, str]]) -> bool:
+    if "line" not in projected.get("pre", {}):
+        return False
+    lowered = sql.lower()
+    return "p.line" in lowered or "pre.line" in lowered
 
 _ADSH_SQL = """
 SELECT COUNT(*)
@@ -231,15 +274,16 @@ def test_pair_fold_lemma_verifies(
     ensures: str,
     tmp_path: Path,
 ) -> None:
-    """Generated helper==loop_acc and helper==pair_acc proofs verify under big SEC caps."""
+    """Generated helper==loop_acc / pair_acc proofs verify under full SEC product caps."""
     if resolve_verus_bin() is None:
         pytest.skip("verus not found")
     projected = _projected(sql)
-    catalog = sec_prove_loop_catalog_assumptions()
+    catalog = _large_sec_product_catalog()
     spec_rs = transpile_sql_to_verus(sql, projected, catalog_assumptions=catalog)
     assert lemma in spec_rs
     assert pairs_lemma in spec_rs
     assert method_lemma in spec_rs
+    _assert_full_sec_caps(spec_rs, reads_pre_line=_sql_reads_pre_line(sql, projected))
     ret_type = resolve_ret_type_from_method_spec(spec_rs)
     program = assemble_verified_join_program(
         spec_rs=spec_rs,
@@ -252,6 +296,7 @@ def test_pair_fold_lemma_verifies(
     )
     assert pairs_lemma in program
     assert method_lemma in program
+    _assert_full_sec_caps(program, reads_pre_line=_sql_reads_pre_line(sql, projected))
     rs_path = tmp_path / "fold.rs"
     rs_path.write_text(program, encoding="utf-8")
     ok, log = run_verus_verify(str(rs_path), timeout=180)
@@ -260,7 +305,7 @@ def test_pair_fold_lemma_verifies(
 
 
 def test_two_column_fold_lemma_verifies(tmp_path: Path) -> None:
-    """tag AND version: the helper equals loop_acc2, and that file verifies."""
+    """tag AND version: helper==loop_acc2 verifies under full SEC product caps."""
     if resolve_verus_bin() is None:
         pytest.skip("verus not found")
     _, multi = normalize_schema({"pre": SEC_SCHEMA["pre"], "tag": SEC_SCHEMA["tag"]})
@@ -270,11 +315,14 @@ def test_two_column_fold_lemma_verifies(tmp_path: Path) -> None:
     if any(not isinstance(cols, dict) for cols in projected.values()):
         raise TypeError("expected a per-table schema")
     projected = cast(dict[str, dict[str, str]], projected)
-    catalog = sec_prove_loop_catalog_assumptions()
+    catalog = _large_sec_product_catalog()
     spec_rs = transpile_sql_to_verus(_TAG_SQL, projected, catalog_assumptions=catalog)
     assert "lemma_join_method_spec_helper_is_loop2(" in spec_rs
     assert "lemma_join_method_spec_helper_is_pairs2(" in spec_rs
     assert "lemma_join_method_spec_helper_method_is_fold(" in spec_rs
+    _assert_full_sec_caps(
+        spec_rs, reads_pre_line=_sql_reads_pre_line(_TAG_SQL, projected)
+    )
     ret_type = resolve_ret_type_from_method_spec(spec_rs)
     assert ret_type == "u64"
     stub = """#[verifier::external_body]
@@ -295,6 +343,9 @@ pub exec fn run_query(pre: &Cols_pre, tag: &Cols_tag) -> (res: u64)
     )
     assert "lemma_join_method_spec_helper_is_pairs2(" in program
     assert "lemma_join_method_spec_helper_method_is_fold(" in program
+    _assert_full_sec_caps(
+        program, reads_pre_line=_sql_reads_pre_line(_TAG_SQL, projected)
+    )
     rs_path = tmp_path / "tag_fold.rs"
     rs_path.write_text(program, encoding="utf-8")
     ok, log = run_verus_verify(str(rs_path), timeout=180)
@@ -303,7 +354,7 @@ pub exec fn run_query(pre: &Cols_pre, tag: &Cols_tag) -> (res: u64)
 
 
 def test_previous_failure_joins_fold(tmp_path: Path) -> None:
-    """r24 Q16 group-by and r24 Q18 star: the generated fold lemma verifies."""
+    """r24 Q16 / Q18 star fold lemmas verify under full SEC product caps."""
     if resolve_verus_bin() is None:
         pytest.skip("verus not found")
     schema = {name: dict(cols) for name, cols in SEC_SCHEMA.items()}
@@ -312,7 +363,7 @@ def test_previous_failure_joins_fold(tmp_path: Path) -> None:
     _, multi = normalize_schema(schema)
     if not isinstance(multi, dict):
         raise TypeError("expected a per-table schema")
-    catalog = sec_prove_loop_catalog_assumptions()
+    catalog = _large_sec_product_catalog()
     cases = [
         (
             """
@@ -355,6 +406,9 @@ def test_previous_failure_joins_fold(tmp_path: Path) -> None:
         assert lemma in spec_rs
         assert pairs_lemma in spec_rs
         assert method_lemma in spec_rs
+        _assert_full_sec_caps(
+            spec_rs, reads_pre_line=_sql_reads_pre_line(sql, projected)
+        )
         ret_type = resolve_ret_type_from_method_spec(spec_rs)
         rust = dynamic_ret_type_config()[ret_type]["rust_ret"]
         params = ", ".join(f"{t}: &Cols_{t}" for t in order)
@@ -395,6 +449,9 @@ pub exec fn run_query({params}) -> (res: {rust})
                 catalog_assumptions=catalog,
             )
         assert method_lemma in program
+        _assert_full_sec_caps(
+            program, reads_pre_line=_sql_reads_pre_line(sql, projected)
+        )
         rs_path = tmp_path / f"{lemma}.rs"
         rs_path.write_text(program, encoding="utf-8")
         ok, log = run_verus_verify(str(rs_path), timeout=180)
