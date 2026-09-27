@@ -45,6 +45,7 @@ Call them from `AGENT_EDIT`. Do not rebuild a `HashMap` proof, and do not add
 - `equijoin_pairs_str2(o0, o1, i0, i1)` — two `String` columns, both equal (`tag` and `version`).
 - `equijoin_pairs_u64` / `equijoin_pairs_u32` — one integer column.
 - `star_eq_triples_str(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v)` — one outer table matched to a one-column inner and a two-column inner.
+- `star_eq_quads_str(hub_a, hub_t, hub_v, sub_a, tag_t, tag_v, pre_a, pre_t, pre_v)` — 4-table star (hub ⋈ 1-col ⋈ 2-col ⋈ 3-col); walk with `quad_acc` then `lemma_<helper>_is_quad_pairs`. <!-- shape: 4table -->
 
 `pairs@` (or `triples@`) is the forward nested match list: outer-major, inner row ids increasing. `method_spec` folds from the high index downward, so walk the pair list from the end. Filters and aggregates stay in that loop. The pair list is the equijoin matches, not the whole query result.
 

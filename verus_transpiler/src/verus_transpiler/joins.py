@@ -947,7 +947,20 @@ def _fold_lemma(
     )
     if pair2 is not None:
         return pair2
-    return _star_fold_lemma(
+    star = _star_fold_lemma(
+        helper_name,
+        slots,
+        join_cond=join_cond,
+        filter_cond=filter_cond,
+        update_expr=update_expr,
+        ret_type=ret_type,
+        ret_base=ret_base,
+        extra_params=extra_params,
+    )
+    if star is not None:
+        return star
+    # shape: 4table
+    return _quad_fold_lemma(
         helper_name,
         slots,
         join_cond=join_cond,
@@ -1131,6 +1144,252 @@ pub proof fn {pairs}({params})
         {outer.param}.n as int,
         {mid.param}.n as int,
         {inner.param}.n as int,
+    );
+}}"""
+    bridge = _FoldBridge(
+        helper_name=helper_name,
+        pairs_lemma=pairs,
+        slots=list(slots),
+        helper_zeros=helper_zeros,
+        fold_rhs=fold_rhs,
+    )
+    return text, bridge
+
+
+def _quad_fold_lemma(
+    helper_name: str,
+    slots: list[_Slot],
+    *,
+    join_cond: str,
+    filter_cond: str | None,
+    update_expr: str,
+    ret_type: str,
+    ret_base: str,
+    extra_params: list[tuple[str, str]] | None,
+) -> tuple[str, _FoldBridge] | None:
+    """Proof that a 4-table star helper equals ``loop_acc4``.
+
+    Hub ⋈ 1-col ⋈ 2-col ⋈ 3-col (typical SEC ``num⋈sub⋈tag⋈pre``).
+    ``lemma_quad_acc`` equates that to ``nested_quad``.
+    """
+    if extra_params or len(slots) != 4:
+        return None
+    parsed: list[tuple[re.Match[str], re.Match[str]]] = []
+    for part in join_cond.split(" && "):
+        left_txt, sep, right_txt = part.strip().partition(" == ")
+        if sep != " == ":
+            return None
+        left = _JOIN_SIDE.fullmatch(left_txt.strip())
+        right = _JOIN_SIDE.fullmatch(right_txt.strip())
+        if left is None or right is None or not left.group("view") or not right.group("view"):
+            return None
+        parsed.append((left, right))
+    if len(parsed) != 6:
+        return None
+    hub, arm1, arm2, arm3 = slots
+
+    def orient(
+        left: re.Match[str], right: re.Match[str], idx_a: str, idx_b: str,
+    ) -> tuple[re.Match[str], re.Match[str]] | None:
+        if left.group("idx") == idx_a and right.group("idx") == idx_b:
+            return left, right
+        if right.group("idx") == idx_a and left.group("idx") == idx_b:
+            return right, left
+        return None
+
+    by_arm: dict[str, list[tuple[re.Match[str], re.Match[str]]]] = {
+        arm1.idx: [],
+        arm2.idx: [],
+        arm3.idx: [],
+    }
+    for left, right in parsed:
+        idxs = {left.group("idx"), right.group("idx")}
+        if hub.idx not in idxs:
+            return None
+        other = (idxs - {hub.idx}).pop() if len(idxs) == 2 else None
+        if other not in by_arm:
+            return None
+        got = orient(left, right, hub.idx, other)
+        if got is None:
+            return None
+        by_arm[other].append(got)
+    if (
+        len(by_arm[arm1.idx]) != 1
+        or len(by_arm[arm2.idx]) != 2
+        or len(by_arm[arm3.idx]) != 3
+    ):
+        return None
+
+    a_hub, a_arm1 = by_arm[arm1.idx][0]
+    t_hub, t_arm2 = by_arm[arm2.idx][0]
+    v_hub, v_arm2 = by_arm[arm2.idx][1]
+
+    def side_key(side: re.Match[str]) -> str:
+        return f"{side.group('param')}.{side.group('field')}"
+
+    hub_fields = {side_key(a_hub): ("a", a_hub), side_key(t_hub): ("t", t_hub), side_key(v_hub): ("v", v_hub)}
+    if len(hub_fields) != 3:
+        return None
+    pre_by_role: dict[str, re.Match[str]] = {}
+    for h_side, p_side in by_arm[arm3.idx]:
+        role_pair = hub_fields.get(side_key(h_side))
+        if role_pair is None:
+            return None
+        role, _ = role_pair
+        if role in pre_by_role:
+            return None
+        pre_by_role[role] = p_side
+    if set(pre_by_role) != {"a", "t", "v"}:
+        return None
+    p_a, p_t, p_v = pre_by_role["a"], pre_by_role["t"], pre_by_role["v"]
+
+    def seq_of(side: re.Match[str]) -> str:
+        return f"key_views({side.group('param')}.{side.group('field')}@)"
+
+    def key_assert(side: re.Match[str]) -> str:
+        param, field, idx = side.group("param"), side.group("field"), side.group("idx")
+        return f"assert(key_views({param}.{field}@)[{idx}] == {param}.{field}[{idx} as int]@);"
+
+    step_body = re.sub(r"\btail\b", "acc", update_expr)
+    if filter_cond:
+        step = f"if {filter_cond} {{\n        {step_body}\n    }} else {{\n        acc\n    }}"
+    else:
+        step = step_body
+    # de-dupe hub sides for asserts while keeping arm sides
+    seen: set[str] = set()
+    assert_sides: list[re.Match[str]] = []
+    for side in (a_hub, a_arm1, t_hub, t_arm2, v_hub, v_arm2, p_a, p_t, p_v):
+        k = f"{side.group('param')}.{side.group('field')}.{side.group('idx')}"
+        if k not in seen:
+            seen.add(k)
+            assert_sides.append(side)
+    asserts = "\n            ".join(key_assert(side) for side in assert_sides)
+    lemma = f"lemma_{helper_name}_is_quad"
+    pairs = f"lemma_{helper_name}_is_quad_pairs"
+    params = ", ".join(f"{s.param}: &{s.struct}" for s in slots)
+    recurse = ", ".join(s.param for s in slots)
+    step_closure = (
+        f"|acc: {ret_type}, {hub.idx}: int, {arm1.idx}: int, {arm2.idx}: int, {arm3.idx}: int| {{\n"
+        f"                {step}\n"
+        f"            }}"
+    )
+    helper_zeros = f"{helper_name}({recurse}, {_init_indices(slots)})"
+    seqs = (
+        seq_of(a_hub),
+        seq_of(t_hub),
+        seq_of(v_hub),
+        seq_of(a_arm1),
+        seq_of(t_arm2),
+        seq_of(v_arm2),
+        seq_of(p_a),
+        seq_of(p_t),
+        seq_of(p_v),
+    )
+    fold_rhs = (
+        f"quad_acc(\n"
+        f"            nested_quad(\n"
+        f"                {seqs[0]},\n"
+        f"                {seqs[1]},\n"
+        f"                {seqs[2]},\n"
+        f"                {seqs[3]},\n"
+        f"                {seqs[4]},\n"
+        f"                {seqs[5]},\n"
+        f"                {seqs[6]},\n"
+        f"                {seqs[7]},\n"
+        f"                {seqs[8]},\n"
+        f"                {hub.param}.n as int,\n"
+        f"            ),\n"
+        f"            {step_closure},\n"
+        f"            {ret_base},\n"
+        f"            0,\n"
+        f"        )"
+    )
+    text = f"""pub proof fn {lemma}({params}, {hub.idx}: int, {arm1.idx}: int, {arm2.idx}: int, {arm3.idx}: int)
+    requires
+        valid_cols_{hub.table}({hub.param}),
+        valid_cols_{arm1.table}({arm1.param}),
+        valid_cols_{arm2.table}({arm2.param}),
+        valid_cols_{arm3.table}({arm3.param}),
+        {hub.param}.n <= usize::MAX,
+        {arm1.param}.n <= usize::MAX,
+        {arm2.param}.n <= usize::MAX,
+        {arm3.param}.n <= usize::MAX,
+        0 <= {hub.idx} <= {hub.param}.n,
+        0 <= {arm1.idx} <= {arm1.param}.n,
+        0 <= {arm2.idx} <= {arm2.param}.n,
+        0 <= {arm3.idx} <= {arm3.param}.n,
+    ensures
+        {helper_name}({recurse}, {hub.idx}, {arm1.idx}, {arm2.idx}, {arm3.idx}) == loop_acc4(
+            {seqs[0]},
+            {seqs[1]},
+            {seqs[2]},
+            {seqs[3]},
+            {seqs[4]},
+            {seqs[5]},
+            {seqs[6]},
+            {seqs[7]},
+            {seqs[8]},
+            {step_closure},
+            {ret_base},
+            {hub.param}.n as int,
+            {arm1.param}.n as int,
+            {arm2.param}.n as int,
+            {arm3.param}.n as int,
+            {hub.idx},
+            {arm1.idx},
+            {arm2.idx},
+            {arm3.idx},
+        ),
+    decreases {hub.param}.n - {hub.idx}, {arm1.param}.n - {arm1.idx}, {arm2.param}.n - {arm2.idx}, {arm3.param}.n - {arm3.idx},
+{{
+    if {hub.idx} < {hub.param}.n {{
+        if {arm1.idx} < {arm1.param}.n {{
+            if {arm2.idx} < {arm2.param}.n {{
+                if {arm3.idx} < {arm3.param}.n {{
+                    {lemma}({recurse}, {hub.idx}, {arm1.idx}, {arm2.idx}, {arm3.idx} + 1);
+                    {asserts}
+                }} else {{
+                    {lemma}({recurse}, {hub.idx}, {arm1.idx}, {arm2.idx} + 1, 0);
+                }}
+            }} else {{
+                {lemma}({recurse}, {hub.idx}, {arm1.idx} + 1, 0, 0);
+            }}
+        }} else {{
+            {lemma}({recurse}, {hub.idx} + 1, 0, 0, 0);
+        }}
+    }}
+}}
+
+pub proof fn {pairs}({params})
+    requires
+        valid_cols_{hub.table}({hub.param}),
+        valid_cols_{arm1.table}({arm1.param}),
+        valid_cols_{arm2.table}({arm2.param}),
+        valid_cols_{arm3.table}({arm3.param}),
+        {hub.param}.n <= usize::MAX,
+        {arm1.param}.n <= usize::MAX,
+        {arm2.param}.n <= usize::MAX,
+        {arm3.param}.n <= usize::MAX,
+    ensures
+        {helper_zeros} == {fold_rhs},
+{{
+    {lemma}({recurse}, 0, 0, 0, 0);
+    lemma_quad_at_origin(
+        {seqs[0]},
+        {seqs[1]},
+        {seqs[2]},
+        {seqs[3]},
+        {seqs[4]},
+        {seqs[5]},
+        {seqs[6]},
+        {seqs[7]},
+        {seqs[8]},
+        {step_closure},
+        {ret_base},
+        {hub.param}.n as int,
+        {arm1.param}.n as int,
+        {arm2.param}.n as int,
+        {arm3.param}.n as int,
     );
 }}"""
     bridge = _FoldBridge(
