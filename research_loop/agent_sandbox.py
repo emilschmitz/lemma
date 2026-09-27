@@ -202,8 +202,23 @@ def _rocketship_exec_section() -> str:
 ## Exec shape
 `LEMMA_FAST_TRUSTEDS` is off. `build_hashset_u32`, `probe_sum_u64`, and `par_*` are not in scope.
 Join MethodSpec is still the nested `rem_join` / `rem_join_sq` fold in `spec.rs`. Prove `ensures res == method_spec(...)`.
-Join files already contain `equijoin_pairs_str`, `equijoin_pairs_str2`, `equijoin_pairs_u64`, `equijoin_pairs_u32`, `star_eq_triples_str`, `chain_eq_triples_str`, `star_eq_quads_str`, `anti_miss_rows_str`, and `anti_miss_rows_str3`, plus `lemma_<helper>_is_loop`, `lemma_<helper>_is_loop2`, `lemma_<helper>_is_star`, `lemma_<helper>_is_chain`, `lemma_<helper>_is_quad`, or `lemma_<helper>_is_left` when that shape applies. Call those. Walk the pair, triple, quad, or miss list from the end.
-Do not invent a HashMap or HashSet index of your own. Do not rebuild the correspondence those lemmas already prove.
+Join files already contain proved exec helpers — call the matching one for this query's shape, then the matching `lemma_<helper>_is_*` / `lemma_<helper>_method_is_fold` this file emits:
+- one equality — `equijoin_pairs_str` / `equijoin_pairs_u64` / `equijoin_pairs_u32` → `lemma_<helper>_is_pairs` (via `_is_loop`)
+- two string equalities — `equijoin_pairs_str2` → `lemma_<helper>_is_pairs2`
+- three string equalities — `equijoin_pairs_str3` → `lemma_<helper>_is_pairs3`
+- OR equalities — `orjoin_pairs_str` → `lemma_<helper>_is_or`
+- 3-table star — `star_eq_triples_str` → `lemma_<helper>_is_star_pairs`
+- 3-table chain — `chain_eq_triples_str` → `lemma_<helper>_is_chain_pairs`
+- 3-table Q6 (1+3) — `q6_eq_triples_str` → `lemma_<helper>_is_q6_pairs`
+- 4-table star — `star_eq_quads_str` → `lemma_<helper>_is_quad_pairs`
+- LEFT/ANTI miss — `anti_miss_rows_str` / `anti_miss_rows_str3` → `lemma_<helper>_is_left` or `_is_anti`
+- SEMI hits — `semi_hit_rows_str` → `lemma_<helper>_is_semi`
+- LEFT OUTER — `left_outer_pairs_str` / `left_outer_pairs_u64` → `lemma_<helper>_is_loj`
+- RIGHT OUTER — `right_outer_pairs_str` → `lemma_<helper>_is_right`
+- FULL OUTER — `full_outer_parts_str` → `lemma_<helper>_is_full`
+Walk the pair, triple, quad, miss, hit, or LOJ/right slot list from the end. Self-joins use the same helpers; `run_query` params are SQL aliases (`Cols_<alias>`).
+After the backward walk, call `lemma_<helper>_method_is_fold` so `ensures res == method_spec` follows without re-deriving wrappers.
+Do not invent a HashMap or HashSet index of your own. Do not call `build_hashset_u32` / `probe_sum_u64`. Do not build a second index of a derived-table Map. Do not rebuild the correspondence those lemmas already prove.
 """
 
 
