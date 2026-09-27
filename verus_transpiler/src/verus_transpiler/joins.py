@@ -2383,7 +2383,682 @@ def _raw_join_equalities(
     return " && ".join(parts) if parts else "true"
 
 
-def _emit_full_outer_scalar_sum(
+def _full_side_term(
+    agg_expr: str,
+    query: SQLQuery,
+    side_slots: list[_Slot],
+    schemas_by_table: dict[str, dict[str, str]],
+    derived_by_alias: dict[str, DerivedTable],
+    *,
+    is_sum: bool,
+    val_type: str,
+) -> str:
+    """Agg term on one FULL OUTER side; other-side columns are NULL → 0 for SUM."""
+    if not is_sum:
+        return "1"
+    side_tables = {s.table for s in side_slots}
+    aliases = _alias_map(query)
+    # Prefer qualified agg_column (e.g. a.v) so right-miss does not pick left.v by name.
+    col_ref = (query.agg_column or "").strip()
+    if col_ref and "." in col_ref:
+        tbl_alias, _col = col_ref.split(".", 1)
+        table = aliases.get(tbl_alias.lower(), tbl_alias)
+        if table not in side_tables:
+            return f"0{val_type}"
+        return _col_access_ref(
+            col_ref, query, side_slots, schemas_by_table, derived_by_alias,
+        )
+    term = _resolve_row_expr(
+        agg_expr, query, side_slots, schemas_by_table, derived_by_alias,
+    )
+    if "row." in term:
+        return f"0{val_type}"
+    return term
+
+
+def _full_match_conds(
+    query: SQLQuery,
+    slots: list[_Slot],
+    schemas_by_table: dict[str, dict[str, str]],
+    derived_by_alias: dict[str, DerivedTable],
+) -> str:
+    left, right = slots[0], slots[1]
+    join = query.joins[0]
+    parts: list[str] = []
+    for left_ref, right_ref in join.on_equalities:
+        l_expr = _col_access_ref(left_ref, query, slots, schemas_by_table, derived_by_alias)
+        r_expr = _col_access_ref(right_ref, query, slots, schemas_by_table, derived_by_alias)
+        r_expr = r_expr.replace(f"{right.idx} as int", "ri as int")
+        l_expr = l_expr.replace(f"{left.idx} as int", "li as int")
+        parts.append(f"{l_expr} == {r_expr}")
+    return " && ".join(parts) if parts else "false"
+
+
+def _emit_left_match_helper(
+    left_slot: _Slot,
+    right_slot: _Slot,
+    join_conds: str,
+    helper_name: str = "join_left_match_helper",
+) -> str:
+    """Exists left row matching fixed ``ri`` (right-anti / FULL right-miss)."""
+    return f"""pub open spec fn {helper_name}(
+    {left_slot.param}: &{left_slot.struct},
+    {right_slot.param}: &{right_slot.struct},
+    li: int,
+    ri: int,
+) -> (res: bool)
+    decreases {left_slot.param}.n - li,
+{{
+    if li < {left_slot.param}.n {{
+        if {join_conds} {{
+            true
+        }} else {{
+            {helper_name}({left_slot.param}, {right_slot.param}, li + 1, ri)
+        }}
+    }} else {{
+        false
+    }}
+}}"""
+
+
+def _full_key_seqs(
+    match_conds: str,
+    slots: list[_Slot],
+) -> tuple[str, str, str, str, str, str] | None:
+    """Parse one equality into (outer_seq, inner_seq, l_access, r_access, lp, rp)."""
+    if "&&" in match_conds:
+        return None
+    m = re.fullmatch(
+        r"(?P<lp>\w+)\.(?P<lf>\w+)\[li as int\](?P<lv>@?)\s*==\s*"
+        r"(?P<rp>\w+)\.(?P<rf>\w+)\[ri as int\](?P<rv>@?)",
+        match_conds.strip(),
+    )
+    if m is None or bool(m.group("lv")) != bool(m.group("rv")):
+        return None
+    o, i = slots
+    if m.group("lp") != o.param or m.group("rp") != i.param:
+        return None
+
+    def seq_expr(param: str, field: str, view: str) -> str:
+        col = f"{param}.{field}"
+        return f"key_views({col}@)" if view else f"{col}@"
+
+    outer_seq = seq_expr(m.group("lp"), m.group("lf"), m.group("lv"))
+    inner_seq = seq_expr(m.group("rp"), m.group("rf"), m.group("rv"))
+    l_access = f"{m.group('lp')}.{m.group('lf')}[li as int]{m.group('lv')}"
+    r_access = f"{m.group('rp')}.{m.group('rf')}[ri as int]{m.group('rv')}"
+    return outer_seq, inner_seq, l_access, r_access, m.group("lv"), m.group("rv")
+
+
+def _full_groupby_key_on_side(
+    query: SQLQuery,
+    slots: list[_Slot],
+    side: _Slot,
+    schemas_by_table: dict[str, dict[str, str]],
+    derived_by_alias: dict[str, DerivedTable],
+    match_conds: str,
+) -> tuple[str, str]:
+    """Group-by key on one FULL OUTER side; join-key cols remap across the equality."""
+    key_expr, key_ty = _groupby_key_parts(query, slots, schemas_by_table, derived_by_alias)
+    if side == slots[0]:
+        return _anti_left_li(key_expr, slots[0]).replace(
+            f"{slots[1].idx} as int", "ri as int"
+        ), key_ty
+    # Right miss: rewrite left join-key accesses to the matched right column.
+    parsed = _full_key_seqs(match_conds, slots)
+    if parsed is None:
+        raise UnsupportedContractError(
+            "FULL OUTER JOIN group-by needs one equality to remap right-miss keys"
+        )
+    _outer_seq, _inner_seq, l_access, r_access, _lv, _rv = parsed
+    # key_expr uses left.idx / right.idx; force right-side join key when groupby is join key.
+    right_key = key_expr
+    for left_ref, right_ref in query.joins[0].on_equalities:
+        l_col = left_ref.split(".")[-1].lower()
+        r_col = right_ref.split(".")[-1].lower()
+        for gb in query.groupby_columns:
+            if gb.lower() == l_col or gb.lower() == r_col:
+                right_key = r_access.replace("ri as int", f"{side.idx} as int")
+                right_key = _anti_left_li(right_key, slots[0]).replace(
+                    f"{slots[0].idx} as int", "li as int"
+                )
+                # side index is right.idx (i1); normalize to ri in helper bodies later.
+                return right_key.replace(f"{side.idx} as int", "ri as int"), key_ty
+    if slots[0].param in right_key or f"{slots[0].idx} as int" in right_key:
+        raise UnsupportedContractError(
+            "FULL OUTER JOIN group-by on left-only cols has NULL keys on right miss"
+        )
+    return right_key.replace(f"{side.idx} as int", "ri as int"), key_ty
+
+
+def _emit_full_unmatched_scalar(
+    helper_name: str,
+    scan: _Slot,
+    other: _Slot,
+    *,
+    match_call: str,
+    filter_cond: str | None,
+    term: str,
+    val_type: str,
+    idx_name: str,
+) -> str:
+    update = (
+        f"if !{match_call} {{\n"
+        f"            (tail as int + ({term}) as int) as {val_type}\n"
+        f"        }} else {{\n"
+        f"            tail\n"
+        f"        }}"
+    )
+    if filter_cond:
+        body = (
+            f"if {idx_name} < {scan.param}.n {{\n"
+            f"        let tail = {helper_name}({scan.param}, {other.param}, {idx_name} + 1);\n"
+            f"        if {filter_cond} {{\n"
+            f"            {update}\n"
+            f"        }} else {{\n"
+            f"            tail\n"
+            f"        }}\n"
+            f"    }} else {{\n"
+            f"        0{val_type}\n"
+            f"    }}"
+        )
+    else:
+        body = (
+            f"if {idx_name} < {scan.param}.n {{\n"
+            f"        let tail = {helper_name}({scan.param}, {other.param}, {idx_name} + 1);\n"
+            f"        {update}\n"
+            f"    }} else {{\n"
+            f"        0{val_type}\n"
+            f"    }}"
+        )
+    # Param order is always (left, right) for FULL helpers.
+    left_p, right_p = (
+        (scan, other) if scan.param <= other.param else (other, scan)
+    )
+    # Keep declaration order as table order: first slot then second — caller passes names.
+    return f"""pub open spec fn {helper_name}(
+    {scan.param if scan.table else scan.param}: &{scan.struct},
+    {other.param}: &{other.struct},
+    {idx_name}: int,
+) -> (res: {val_type})
+    decreases {scan.param}.n - {idx_name},
+{{
+    {body}
+}}"""
+
+
+def _full_fold_lemma(
+    *,
+    matched_name: str,
+    left_name: str,
+    right_name: str,
+    slots: list[_Slot],
+    match_conds: str,
+    filter_matched: str | None,
+    filter_left: str | None,
+    filter_right: str | None,
+    update_matched: str,
+    update_left: str,
+    update_right: str,
+    ret_type: str,
+    ret_base: str,
+    combine_kind: str,
+) -> tuple[str, _FoldBridge] | None:
+    """Proof that FULL OUTER helpers equal ``full_acc`` of pairs + left/right misses.
+
+    // shape: full
+    """
+    parsed = _full_key_seqs(match_conds, slots)
+    if parsed is None:
+        return None
+    outer_seq, inner_seq, l_access, r_access, lv, rv = parsed
+    o, i = slots
+    params = f"{o.param}: &{o.struct}, {i.param}: &{i.struct}"
+
+    def step_pair() -> str:
+        # Use i0/i1 to match loop_acc / pair_acc binders in matched lemmas.
+        body = re.sub(r"\btail\b", "acc", update_matched)
+        body = body.replace(f"{o.idx} as int", "i0 as int").replace(
+            f"{i.idx} as int", "i1 as int"
+        )
+        if filter_matched:
+            filt = filter_matched.replace(f"{o.idx} as int", "i0 as int").replace(
+                f"{i.idx} as int", "i1 as int"
+            )
+            return (
+                f"|acc: {ret_type}, i0: int, i1: int| {{\n"
+                f"                if {filt} {{\n"
+                f"                    {body}\n"
+                f"                }} else {{ acc }}\n"
+                f"            }}"
+            )
+        return (
+            f"|acc: {ret_type}, i0: int, i1: int| {{\n"
+            f"                {body}\n"
+            f"            }}"
+        )
+
+    def step_side(update: str, filter_cond: str | None, idx: str) -> str:
+        body = re.sub(r"\btail\b", "acc", update)
+        if filter_cond:
+            return (
+                f"|acc: {ret_type}, {idx}: int| {{\n"
+                f"                if {filter_cond} {{\n"
+                f"                    {body}\n"
+                f"                }} else {{ acc }}\n"
+                f"            }}"
+            )
+        return (
+            f"|acc: {ret_type}, {idx}: int| {{\n"
+            f"                {body}\n"
+            f"            }}"
+        )
+
+    sp = step_pair()
+    sl = step_side(update_left, filter_left, "li")
+    sr = step_side(update_right, filter_right, "ri")
+    pairs_expr = f"nested_eq_pairs({outer_seq}, {inner_seq}, {o.param}.n as int)"
+    left_miss_expr = f"nested_anti_misses({outer_seq}, {inner_seq}, {o.param}.n as int)"
+    right_miss_expr = f"nested_anti_misses({inner_seq}, {outer_seq}, {i.param}.n as int)"
+    # Independent folds combined in FULL order (matched + left miss + right miss).
+    if combine_kind == "scalar":
+        fold_rhs = (
+            f"(pair_acc({pairs_expr}, {sp}, {ret_base}, 0) as int\n"
+            f"            + miss_acc({left_miss_expr}, {sl}, {ret_base}, 0) as int\n"
+            f"            + miss_acc({right_miss_expr}, {sr}, {ret_base}, 0) as int) as {ret_type}"
+        )
+    elif combine_kind == "seq":
+        fold_rhs = (
+            f"pair_acc({pairs_expr}, {sp}, {ret_base}, 0)\n"
+            f"            + miss_acc({left_miss_expr}, {sl}, {ret_base}, 0)\n"
+            f"            + miss_acc({right_miss_expr}, {sr}, {ret_base}, 0)"
+        )
+    else:
+        fold_rhs = (
+            f"full_acc(\n"
+            f"            {pairs_expr},\n"
+            f"            {left_miss_expr},\n"
+            f"            {right_miss_expr},\n"
+            f"            {sp},\n"
+            f"            {sl},\n"
+            f"            {sr},\n"
+            f"            {ret_base},\n"
+            f"        )"
+        )
+    helper_zeros = (
+        f"let matched = {matched_name}({o.param}, {i.param}, 0, 0);\n"
+        f"    let left_only = {left_name}({o.param}, {i.param}, 0);\n"
+        f"    let right_only = {right_name}({o.param}, {i.param}, 0);\n"
+        f"    {_full_combine_expr('matched', 'left_only', 'right_only', combine_kind, ret_type)}"
+    )
+    matched_loop = f"lemma_{matched_name}_is_full_matched_loop"
+    matched_pairs = f"lemma_{matched_name}_is_full_matched"
+    left_lemma = f"lemma_{left_name}_is_full_left"
+    right_lemma = f"lemma_{right_name}_is_full_right"
+    full_lemma = f"lemma_{matched_name}_is_full"
+    r_access_j = r_access.replace("[ri as int]", "[j as int]")
+    l_access_j = l_access.replace("[li as int]", "[j as int]")
+    key_at_li = f"assert({outer_seq}[li] == {l_access});"
+    key_at_ri = f"assert({inner_seq}[ri] == {r_access});"
+    mf = re.fullmatch(
+        r"(?P<lp>\w+)\.(?P<lf>\w+)\[li as int\](?P<lv>@?)\s*==\s*"
+        r"(?P<rp>\w+)\.(?P<rf>\w+)\[ri as int\](?P<rv>@?)",
+        match_conds.strip(),
+    )
+    assert mf is not None
+    if lv:
+        inner_at_j = (
+            f"assert(key_views({mf.group('rp')}.{mf.group('rf')}@)[j] == {r_access_j});"
+        )
+        outer_at_j = (
+            f"assert(key_views({mf.group('lp')}.{mf.group('lf')}@)[j] == {l_access_j});"
+        )
+    else:
+        inner_at_j = f"assert({inner_seq}[j] == {r_access_j});"
+        outer_at_j = f"assert({outer_seq}[j] == {l_access_j});"
+
+    # Left/right unmatched updates use li/ri already in update_* strings.
+    # Matched step closure is ``sp`` (i0/i1) — shared with fold_rhs.
+    text = f"""// shape: full
+pub proof fn {matched_loop}({params}, i0: int, i1: int)
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+        0 <= i0 <= {o.param}.n,
+        0 <= i1 <= {i.param}.n,
+    ensures
+        {matched_name}({o.param}, {i.param}, i0, i1) == loop_acc(
+            {outer_seq},
+            {inner_seq},
+            {sp},
+            {ret_base},
+            {o.param}.n as int,
+            {i.param}.n as int,
+            i0,
+            i1,
+        ),
+    decreases {o.param}.n - i0, {i.param}.n - i1,
+{{
+    if i0 < {o.param}.n {{
+        if i1 < {i.param}.n {{
+            {matched_loop}({o.param}, {i.param}, i0, i1 + 1);
+            assert({outer_seq}[i0] == {o.param}.{mf.group('lf')}[i0 as int]{lv});
+            assert({inner_seq}[i1] == {i.param}.{mf.group('rf')}[i1 as int]{rv});
+        }} else {{
+            {matched_loop}({o.param}, {i.param}, i0 + 1, 0);
+        }}
+    }}
+}}
+
+pub proof fn {matched_pairs}({params})
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+    ensures
+        {matched_name}({o.param}, {i.param}, 0, 0) == pair_acc(
+            nested_eq_pairs({outer_seq}, {inner_seq}, {o.param}.n as int),
+            {sp},
+            {ret_base},
+            0,
+        ),
+{{
+    {matched_loop}({o.param}, {i.param}, 0, 0);
+    lemma_loop_at_origin(
+        {outer_seq},
+        {inner_seq},
+        {sp},
+        {ret_base},
+        {o.param}.n as int,
+        {i.param}.n as int,
+    );
+}}
+
+pub proof fn lemma_join_right_match_helper_full_suffix(
+    {params},
+    li: int,
+    ri: int,
+)
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        0 <= li < {o.param}.n,
+        0 <= ri <= {i.param}.n,
+    ensures
+        join_right_match_helper({o.param}, {i.param}, li, ri) <==> exists|j: int|
+            ri <= j < {i.param}.n && {l_access} == {r_access_j},
+    decreases {i.param}.n - ri,
+{{
+    if ri < {i.param}.n {{
+        if {l_access} == {r_access} {{
+            assert(exists|j: int| ri <= j < {i.param}.n && {l_access} == {r_access_j}) by {{
+                assert(ri <= ri < {i.param}.n && {l_access} == {r_access});
+            }};
+        }} else {{
+            lemma_join_right_match_helper_full_suffix({o.param}, {i.param}, li, ri + 1);
+        }}
+    }}
+}}
+
+pub proof fn lemma_join_right_match_helper_full_iff({params}, li: int)
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        0 <= li < {o.param}.n,
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+    ensures
+        !join_right_match_helper({o.param}, {i.param}, li, 0) <==> eq_row_ids(
+            {inner_seq},
+            {outer_seq}[li],
+            {i.param}.n as int,
+        ).len() == 0,
+{{
+    lemma_join_right_match_helper_full_suffix({o.param}, {i.param}, li, 0);
+    {key_at_li}
+    lemma_eq_row_ids_nonempty_iff({inner_seq}, {outer_seq}[li], {i.param}.n as int);
+    assert((exists|j: int| 0 <= j < {i.param}.n && {l_access} == {r_access_j}) <==> (exists|j: int|
+        0 <= j < {i.param}.n && {inner_seq}[j] == {outer_seq}[li])) by {{
+        if exists|j: int| 0 <= j < {i.param}.n && {l_access} == {r_access_j} {{
+            let j = choose|j: int| 0 <= j < {i.param}.n && {l_access} == {r_access_j};
+            {inner_at_j}
+            assert({inner_seq}[j] == {outer_seq}[li]);
+            assert(exists|j2: int|
+                #![trigger {inner_seq}[j2]]
+                0 <= j2 < {i.param}.n && {inner_seq}[j2] == {outer_seq}[li]) by {{
+                assert(0 <= j < {i.param}.n && {inner_seq}[j] == {outer_seq}[li]);
+            }};
+        }}
+        if exists|j: int| 0 <= j < {i.param}.n && {inner_seq}[j] == {outer_seq}[li] {{
+            let j = choose|j: int| 0 <= j < {i.param}.n && {inner_seq}[j] == {outer_seq}[li];
+            {inner_at_j}
+            assert({l_access} == {r_access_j});
+            assert(exists|j2: int|
+                #![trigger {i.param}.{mf.group('rf')}[j2 as int]{rv}]
+                0 <= j2 < {i.param}.n && {l_access} == {i.param}.{mf.group('rf')}[j2 as int]{rv}) by {{
+                assert(0 <= j < {i.param}.n && {l_access} == {r_access_j});
+            }};
+        }}
+    }};
+}}
+
+pub proof fn lemma_join_left_match_helper_full_suffix(
+    {params},
+    li: int,
+    ri: int,
+)
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        0 <= ri < {i.param}.n,
+        0 <= li <= {o.param}.n,
+    ensures
+        join_left_match_helper({o.param}, {i.param}, li, ri) <==> exists|j: int|
+            li <= j < {o.param}.n && {l_access_j} == {r_access},
+    decreases {o.param}.n - li,
+{{
+    if li < {o.param}.n {{
+        if {l_access} == {r_access} {{
+            assert(exists|j: int| li <= j < {o.param}.n && {l_access_j} == {r_access}) by {{
+                assert(li <= li < {o.param}.n && {l_access} == {r_access});
+            }};
+        }} else {{
+            lemma_join_left_match_helper_full_suffix({o.param}, {i.param}, li + 1, ri);
+        }}
+    }}
+}}
+
+pub proof fn lemma_join_left_match_helper_full_iff({params}, ri: int)
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        0 <= ri < {i.param}.n,
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+    ensures
+        !join_left_match_helper({o.param}, {i.param}, 0, ri) <==> eq_row_ids(
+            {outer_seq},
+            {inner_seq}[ri],
+            {o.param}.n as int,
+        ).len() == 0,
+{{
+    lemma_join_left_match_helper_full_suffix({o.param}, {i.param}, 0, ri);
+    {key_at_ri}
+    lemma_eq_row_ids_nonempty_iff({outer_seq}, {inner_seq}[ri], {o.param}.n as int);
+    assert((exists|j: int| 0 <= j < {o.param}.n && {l_access_j} == {r_access}) <==> (exists|j: int|
+        0 <= j < {o.param}.n && {outer_seq}[j] == {inner_seq}[ri])) by {{
+        if exists|j: int| 0 <= j < {o.param}.n && {l_access_j} == {r_access} {{
+            let j = choose|j: int| 0 <= j < {o.param}.n && {l_access_j} == {r_access};
+            {outer_at_j}
+            assert({outer_seq}[j] == {inner_seq}[ri]);
+            assert(exists|j2: int|
+                #![trigger {outer_seq}[j2]]
+                0 <= j2 < {o.param}.n && {outer_seq}[j2] == {inner_seq}[ri]) by {{
+                assert(0 <= j < {o.param}.n && {outer_seq}[j] == {inner_seq}[ri]);
+            }};
+        }}
+        if exists|j: int| 0 <= j < {o.param}.n && {outer_seq}[j] == {inner_seq}[ri] {{
+            let j = choose|j: int| 0 <= j < {o.param}.n && {outer_seq}[j] == {inner_seq}[ri];
+            {outer_at_j}
+            assert({l_access_j} == {r_access});
+            assert(exists|j2: int|
+                #![trigger {o.param}.{mf.group('lf')}[j2 as int]{lv}]
+                0 <= j2 < {o.param}.n && {o.param}.{mf.group('lf')}[j2 as int]{lv} == {r_access}) by {{
+                assert(0 <= j < {o.param}.n && {l_access_j} == {r_access});
+            }};
+        }}
+    }};
+}}
+
+pub proof fn lemma_{left_name}_is_full_left_loop({params}, li: int)
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+        0 <= li <= {o.param}.n,
+    ensures
+        {left_name}({o.param}, {i.param}, li) == anti_loop_acc(
+            {outer_seq},
+            {inner_seq},
+            {sl},
+            {ret_base},
+            {o.param}.n as int,
+            li,
+        ),
+    decreases {o.param}.n - li,
+{{
+    if li < {o.param}.n {{
+        lemma_{left_name}_is_full_left_loop({o.param}, {i.param}, li + 1);
+        lemma_join_right_match_helper_full_iff({o.param}, {i.param}, li);
+        assert({outer_seq}[li] == {l_access});
+    }}
+}}
+
+pub proof fn {left_lemma}({params})
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+    ensures
+        {left_name}({o.param}, {i.param}, 0) == miss_acc(
+            nested_anti_misses({outer_seq}, {inner_seq}, {o.param}.n as int),
+            {sl},
+            {ret_base},
+            0,
+        ),
+{{
+    lemma_{left_name}_is_full_left_loop({o.param}, {i.param}, 0);
+    lemma_anti_at_origin(
+        {outer_seq},
+        {inner_seq},
+        {sl},
+        {ret_base},
+        {o.param}.n as int,
+    );
+}}
+
+pub proof fn lemma_{right_name}_is_full_right_loop({params}, ri: int)
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+        0 <= ri <= {i.param}.n,
+    ensures
+        {right_name}({o.param}, {i.param}, ri) == anti_loop_acc(
+            {inner_seq},
+            {outer_seq},
+            {sr},
+            {ret_base},
+            {i.param}.n as int,
+            ri,
+        ),
+    decreases {i.param}.n - ri,
+{{
+    if ri < {i.param}.n {{
+        lemma_{right_name}_is_full_right_loop({o.param}, {i.param}, ri + 1);
+        lemma_join_left_match_helper_full_iff({o.param}, {i.param}, ri);
+        assert({inner_seq}[ri] == {r_access});
+    }}
+}}
+
+pub proof fn {right_lemma}({params})
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+    ensures
+        {right_name}({o.param}, {i.param}, 0) == miss_acc(
+            nested_anti_misses({inner_seq}, {outer_seq}, {i.param}.n as int),
+            {sr},
+            {ret_base},
+            0,
+        ),
+{{
+    lemma_{right_name}_is_full_right_loop({o.param}, {i.param}, 0);
+    lemma_anti_at_origin(
+        {inner_seq},
+        {outer_seq},
+        {sr},
+        {ret_base},
+        {i.param}.n as int,
+    );
+}}
+
+pub proof fn {full_lemma}({params})
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+    ensures
+        {{
+            let matched = {matched_name}({o.param}, {i.param}, 0, 0);
+            let left_only = {left_name}({o.param}, {i.param}, 0);
+            let right_only = {right_name}({o.param}, {i.param}, 0);
+            {_full_combine_expr('matched', 'left_only', 'right_only', combine_kind, ret_type)}
+        }} == {fold_rhs},
+{{
+    {matched_pairs}({o.param}, {i.param});
+    {left_lemma}({o.param}, {i.param});
+    {right_lemma}({o.param}, {i.param});
+}}"""
+    bridge = _FoldBridge(
+        helper_name=matched_name,
+        pairs_lemma=full_lemma,
+        slots=list(slots),
+        helper_zeros=helper_zeros.strip(),
+        fold_rhs=fold_rhs,
+    )
+    return text, bridge
+
+
+def _full_combine_expr(
+    matched: str,
+    left_only: str,
+    right_only: str,
+    kind: str,
+    ret_type: str,
+) -> str:
+    if kind == "scalar":
+        return (
+            f"({matched} as int + {left_only} as int + {right_only} as int) as {ret_type}"
+        )
+    if kind == "seq":
+        return f"{matched} + {left_only} + {right_only}"
+    if kind == "map":
+        # Chained: matched base → left from → right from (caller emits that shape).
+        return matched
+    raise ValueError(kind)
+
+
+def _emit_full_outer(
     query: SQLQuery,
     slots: list[_Slot],
     schemas_by_table: dict[str, dict[str, str]],
@@ -2393,101 +3068,851 @@ def _emit_full_outer_scalar_sum(
     *,
     where_expr: str | None,
     agg_expr: str,
+    is_sum: bool,
     val_type: str,
-) -> tuple[str, str, str]:
-    """FULL OUTER JOIN scalar SUM: matched pairs + unmatched left rows."""
+) -> tuple[str, str, str, _FoldBridge | None]:
+    """FULL OUTER JOIN MethodSpec: matched + unmatched left + unmatched right.
+
+    // shape: full
+    """
     if len(slots) != 2:
         raise UnsupportedContractError("FULL OUTER JOIN spec supports exactly two tables")
+    if derived_map_vars:
+        raise UnsupportedContractError(
+            "FULL OUTER JOIN with derived tables needs real MethodSpec; not yet supported"
+        )
+    if query.is_multi_agg:
+        raise UnsupportedContractError(
+            "FULL OUTER JOIN multi-agg needs real MethodSpec; not yet supported"
+        )
+    if len(query.joins) != 1 or len(query.joins[0].on_equalities) != 1:
+        raise UnsupportedContractError(
+            "FULL OUTER JOIN fold supports exactly one equality"
+        )
+
     left, right = slots[0], slots[1]
-    join = query.joins[0]
-    match_parts: list[str] = []
-    for left_ref, right_ref in join.on_equalities:
-        l_expr = _col_access_ref(left_ref, query, slots, schemas_by_table, derived_by_alias)
-        r_expr = _col_access_ref(right_ref, query, slots, schemas_by_table, derived_by_alias)
-        r_expr = r_expr.replace(f"{right.idx} as int", "ri as int")
-        l_expr = l_expr.replace(f"{left.idx} as int", "li as int")
-        match_parts.append(f"{l_expr} == {r_expr}")
-    match_conds = " && ".join(match_parts) if match_parts else "false"
-    match_helper = _emit_match_helper(left, right, match_conds)
+    match_conds = _full_match_conds(query, slots, schemas_by_table, derived_by_alias)
+    right_match = _emit_match_helper(left, right, match_conds)
+    left_match = _emit_left_match_helper(left, right, match_conds)
 
     filter_raw, _ = _strip_anti_join_predicates(where_expr)
-    filter_cond = _resolve_filter_expr(
+    filter_matched = _resolve_filter_expr(
         filter_raw, query, slots, schemas_by_table, derived_by_alias,
     )
-    join_cond = _raw_join_equalities(
-        join.on_equalities, slots, schemas_by_table, derived_by_alias, derived_map_vars, query,
-    )
-    term = _resolve_row_expr(agg_expr, query, slots, schemas_by_table, derived_by_alias)
-
-    matched_helper = "full_join_matched_helper"
-    matched_loop = _gen_nested_loop(
-        matched_helper,
-        slots,
-        join_cond=join_cond,
-        filter_cond=filter_cond,
-        update_expr=f"(tail as int + ({term}) as int) as {val_type}",
-        ret_type=val_type,
-        ret_base=f"0{val_type}",
-        extra_params=_derived_map_extra_params(derived_map_vars, derived_map_types),
-    )
-
-    left_only_helper = "full_join_left_unmatched_helper"
-    left_slots = [left]
     filter_left = _resolve_filter_expr(
-        filter_raw, query, left_slots, schemas_by_table, derived_by_alias,
+        filter_raw, query, [left], schemas_by_table, derived_by_alias,
     )
-    term_left = _resolve_row_expr(agg_expr, query, left_slots, schemas_by_table, derived_by_alias)
-    left_update = (
-        f"if !{match_helper}({left.param}, {right.param}, {left.idx}, 0) {{\n"
-        f"            (tail as int + ({term_left}) as int) as {val_type}\n"
-        f"        }} else {{\n"
-        f"            tail\n"
-        f"        }}"
+    filter_right = _resolve_filter_expr(
+        filter_raw, query, [right], schemas_by_table, derived_by_alias,
     )
     if filter_left:
-        left_body = (
-            f"if {left.idx} < {left.param}.n {{\n"
-            f"        let tail = {left_only_helper}({left.param}, {right.param}, {left.idx} + 1);\n"
-            f"        if {filter_left} {{\n"
-            f"            {left_update}\n"
-            f"        }} else {{\n"
-            f"            tail\n"
-            f"        }}\n"
-            f"    }} else {{\n"
-            f"        0{val_type}\n"
-            f"    }}"
+        filter_left = filter_left.replace(f"{left.idx} as int", "li as int")
+    if filter_right:
+        filter_right = filter_right.replace(f"{right.idx} as int", "ri as int")
+
+    join_cond = _raw_join_equalities(
+        query.joins[0].on_equalities,
+        slots,
+        schemas_by_table,
+        derived_by_alias,
+        derived_map_vars,
+        query,
+    )
+
+    matched_name = "full_join_matched_helper"
+    left_name = "full_join_left_unmatched_helper"
+    right_name = "full_join_right_unmatched_helper"
+
+    if query.is_projection:
+        return _emit_full_outer_projection(
+            query,
+            slots,
+            schemas_by_table,
+            derived_by_alias,
+            match_conds=match_conds,
+            right_match=right_match,
+            left_match=left_match,
+            filter_matched=filter_matched,
+            filter_left=filter_left,
+            filter_right=filter_right,
+            join_cond=join_cond,
+            matched_name=matched_name,
+            left_name=left_name,
+            right_name=right_name,
         )
-    else:
-        left_body = (
-            f"if {left.idx} < {left.param}.n {{\n"
-            f"        let tail = {left_only_helper}({left.param}, {right.param}, {left.idx} + 1);\n"
-            f"        {left_update}\n"
-            f"    }} else {{\n"
-            f"        0{val_type}\n"
-            f"    }}"
+
+    term_m = _full_side_term(
+        agg_expr, query, slots, schemas_by_table, derived_by_alias,
+        is_sum=is_sum, val_type=val_type,
+    )
+    term_l = _full_side_term(
+        agg_expr, query, [left], schemas_by_table, derived_by_alias,
+        is_sum=is_sum, val_type=val_type,
+    )
+    term_r = _full_side_term(
+        agg_expr, query, [right], schemas_by_table, derived_by_alias,
+        is_sum=is_sum, val_type=val_type,
+    )
+    term_l = term_l.replace(f"{left.idx} as int", "li as int")
+    term_r = term_r.replace(f"{right.idx} as int", "ri as int")
+
+    if query.groupby_columns:
+        return _emit_full_outer_groupby(
+            query,
+            slots,
+            schemas_by_table,
+            derived_by_alias,
+            match_conds=match_conds,
+            right_match=right_match,
+            left_match=left_match,
+            filter_matched=filter_matched,
+            filter_left=filter_left,
+            filter_right=filter_right,
+            join_cond=join_cond,
+            term_m=term_m,
+            term_l=term_l,
+            term_r=term_r,
+            val_type=val_type,
+            matched_name=matched_name,
+            left_name=left_name,
+            right_name=right_name,
         )
-    left_only = f"""pub open spec fn {left_only_helper}(
+
+    # Scalar COUNT / SUM
+    update_m = f"(tail as int + ({term_m}) as int) as {val_type}"
+    matched_loop = _gen_nested_loop(
+        matched_name,
+        slots,
+        join_cond=join_cond,
+        filter_cond=filter_matched,
+        update_expr=update_m,
+        ret_type=val_type,
+        ret_base=f"0{val_type}",
+    )
+    update_l = f"(tail as int + ({term_l}) as int) as {val_type}"
+    update_r = f"(tail as int + ({term_r}) as int) as {val_type}"
+    left_only = _emit_full_unmatched_scalar(
+        left_name,
+        left,
+        right,
+        match_call=f"join_right_match_helper({left.param}, {right.param}, li, 0)",
+        filter_cond=filter_left,
+        term=term_l,
+        val_type=val_type,
+        idx_name="li",
+    )
+    # Fix param order: always (left, right)
+    left_only = f"""pub open spec fn {left_name}(
     {left.param}: &{left.struct},
     {right.param}: &{right.struct},
-    {left.idx}: int,
+    li: int,
 ) -> (res: {val_type})
-    decreases {left.param}.n - {left.idx},
+    decreases {left.param}.n - li,
 {{
-    {left_body}
+    if li < {left.param}.n {{
+        let tail = {left_name}({left.param}, {right.param}, li + 1);
+        {f"if {filter_left} {{" if filter_left else ""}
+        if !join_right_match_helper({left.param}, {right.param}, li, 0) {{
+            (tail as int + ({term_l}) as int) as {val_type}
+        }} else {{
+            tail
+        }}
+        {f"}} else {{ tail }}" if filter_left else ""}
+    }} else {{
+        0{val_type}
+    }}
+}}"""
+    right_only = f"""pub open spec fn {right_name}(
+    {left.param}: &{left.struct},
+    {right.param}: &{right.struct},
+    ri: int,
+) -> (res: {val_type})
+    decreases {right.param}.n - ri,
+{{
+    if ri < {right.param}.n {{
+        let tail = {right_name}({left.param}, {right.param}, ri + 1);
+        {f"if {filter_right} {{" if filter_right else ""}
+        if !join_left_match_helper({left.param}, {right.param}, 0, ri) {{
+            (tail as int + ({term_r}) as int) as {val_type}
+        }} else {{
+            tail
+        }}
+        {f"}} else {{ tail }}" if filter_right else ""}
+    }} else {{
+        0{val_type}
+    }}
 }}"""
 
-    init_args = ", ".join(
-        [*(s.param for s in slots)]
-        + list(derived_map_vars.values())
-        + [_init_indices(slots)]
-    )
     spec_body = (
-        f"let matched = {matched_helper}({init_args});\n"
-        f"    let left_only = {left_only_helper}({left.param}, {right.param}, 0);\n"
-        f"    (matched as int + left_only as int) as {val_type}"
+        f"let matched = {matched_name}({left.param}, {right.param}, 0, 0);\n"
+        f"    let left_only = {left_name}({left.param}, {right.param}, 0);\n"
+        f"    let right_only = {right_name}({left.param}, {right.param}, 0);\n"
+        f"    (matched as int + left_only as int + right_only as int) as {val_type}"
     )
-    helpers = "\n\n".join([match_helper, matched_loop, left_only])
-    return helpers, spec_body, val_type
+    fold = _full_fold_lemma(
+        matched_name=matched_name,
+        left_name=left_name,
+        right_name=right_name,
+        slots=slots,
+        match_conds=match_conds,
+        filter_matched=filter_matched,
+        filter_left=filter_left,
+        filter_right=filter_right,
+        update_matched=update_m,
+        update_left=update_l,
+        update_right=update_r,
+        ret_type=val_type,
+        ret_base=f"0{val_type}",
+        combine_kind="scalar",
+    )
+    helpers = "\n\n".join([right_match, left_match, matched_loop, left_only, right_only])
+    bridge: _FoldBridge | None = None
+    if fold is not None:
+        fold_text, bridge = fold
+        helpers = helpers + "\n\n" + fold_text
+    return helpers, spec_body, val_type, bridge
+
+
+def _emit_full_outer_groupby(
+    query: SQLQuery,
+    slots: list[_Slot],
+    schemas_by_table: dict[str, dict[str, str]],
+    derived_by_alias: dict[str, DerivedTable],
+    *,
+    match_conds: str,
+    right_match: str,
+    left_match: str,
+    filter_matched: str | None,
+    filter_left: str | None,
+    filter_right: str | None,
+    join_cond: str,
+    term_m: str,
+    term_l: str,
+    term_r: str,
+    val_type: str,
+    matched_name: str,
+    left_name: str,
+    right_name: str,
+) -> tuple[str, str, str, _FoldBridge | None]:
+    left, right = slots[0], slots[1]
+    key_m, key_ty = _groupby_key_parts(query, slots, schemas_by_table, derived_by_alias)
+    key_l = _anti_left_li(key_m, left)
+    key_r, _ = _full_groupby_key_on_side(
+        query, slots, right, schemas_by_table, derived_by_alias, match_conds,
+    )
+    ret_type = f"Map<{key_ty}, {val_type}>"
+    ret_base = "Map::empty()"
+
+    def map_update(key: str, term: str) -> str:
+        return (
+            f"let key = {key};\n"
+            f"            let val = if tail.contains_key(key) {{ tail[key] }} else {{ 0{val_type} }};\n"
+            f"            tail.insert(key, (val as int + ({term}) as int) as {val_type})"
+        )
+
+    update_m = map_update(key_m, term_m)
+    update_l = map_update(key_l, term_l)
+    update_r = map_update(key_r, term_r)
+
+    matched_loop = _gen_nested_loop(
+        matched_name,
+        slots,
+        join_cond=join_cond,
+        filter_cond=filter_matched,
+        update_expr=update_m,
+        ret_type=ret_type,
+        ret_base=ret_base,
+    )
+
+    # Chain: matched → left_from(acc) → right_from(acc) so order matches full_acc.
+    left_from = f"""pub open spec fn {left_name}(
+    {left.param}: &{left.struct},
+    {right.param}: &{right.struct},
+    acc: {ret_type},
+    li: int,
+) -> (res: {ret_type})
+    decreases {left.param}.n - li,
+{{
+    if li < {left.param}.n {{
+        let tail = {left_name}({left.param}, {right.param}, acc, li + 1);
+        {f"if {filter_left} {{" if filter_left else ""}
+        if !join_right_match_helper({left.param}, {right.param}, li, 0) {{
+            {update_l.replace('tail', 'tail') if True else ''}
+        }} else {{
+            tail
+        }}
+        {f"}} else {{ tail }}" if filter_left else ""}
+    }} else {{
+        acc
+    }}
+}}"""
+    # Fix: update_l uses `tail` — good.
+    right_from = f"""pub open spec fn {right_name}(
+    {left.param}: &{left.struct},
+    {right.param}: &{right.struct},
+    acc: {ret_type},
+    ri: int,
+) -> (res: {ret_type})
+    decreases {right.param}.n - ri,
+{{
+    if ri < {right.param}.n {{
+        let tail = {right_name}({left.param}, {right.param}, acc, ri + 1);
+        {f"if {filter_right} {{" if filter_right else ""}
+        if !join_left_match_helper({left.param}, {right.param}, 0, ri) {{
+            {update_r}
+        }} else {{
+            tail
+        }}
+        {f"}} else {{ tail }}" if filter_right else ""}
+    }} else {{
+        acc
+    }}
+}}"""
+
+    chain_name = "full_join_groupby_helper"
+    chain_helper = f"""pub open spec fn {chain_name}(
+    {left.param}: &{left.struct},
+    {right.param}: &{right.struct},
+) -> (res: {ret_type})
+{{
+    let matched = {matched_name}({left.param}, {right.param}, 0, 0);
+    let after_left = {left_name}({left.param}, {right.param}, matched, 0);
+    {right_name}({left.param}, {right.param}, after_left, 0)
+}}"""
+    spec_body = f"{chain_name}({left.param}, {right.param})"
+
+    # Fold lemma for map: named chain == full_acc.
+    fold = _full_fold_lemma_map_chain(
+        matched_name=matched_name,
+        left_name=left_name,
+        right_name=right_name,
+        chain_name=chain_name,
+        slots=slots,
+        match_conds=match_conds,
+        filter_matched=filter_matched,
+        filter_left=filter_left,
+        filter_right=filter_right,
+        update_matched=update_m,
+        update_left=update_l,
+        update_right=update_r,
+        ret_type=ret_type,
+        ret_base=ret_base,
+    )
+    helpers = "\n\n".join(
+        [right_match, left_match, matched_loop, left_from, right_from, chain_helper]
+    )
+    bridge: _FoldBridge | None = None
+    if fold is not None:
+        fold_text, bridge = fold
+        helpers = helpers + "\n\n" + fold_text
+    return helpers, spec_body, ret_type, bridge
+
+
+def _full_fold_lemma_map_chain(
+    *,
+    matched_name: str,
+    left_name: str,
+    right_name: str,
+    chain_name: str,
+    slots: list[_Slot],
+    match_conds: str,
+    filter_matched: str | None,
+    filter_left: str | None,
+    filter_right: str | None,
+    update_matched: str,
+    update_left: str,
+    update_right: str,
+    ret_type: str,
+    ret_base: str,
+) -> tuple[str, _FoldBridge] | None:
+    """Map FULL OUTER: chained helpers == full_acc. // shape: full"""
+    parsed = _full_key_seqs(match_conds, slots)
+    if parsed is None:
+        return None
+    outer_seq, inner_seq, l_access, r_access, lv, rv = parsed
+    o, i = slots
+    mf = re.fullmatch(
+        r"(?P<lp>\w+)\.(?P<lf>\w+)\[li as int\](?P<lv>@?)\s*==\s*"
+        r"(?P<rp>\w+)\.(?P<rf>\w+)\[ri as int\](?P<rv>@?)",
+        match_conds.strip(),
+    )
+    if mf is None:
+        return None
+    params = f"{o.param}: &{o.struct}, {i.param}: &{i.struct}"
+    r_access_j = r_access.replace("[ri as int]", "[j as int]")
+    l_access_j = l_access.replace("[li as int]", "[j as int]")
+
+    def step_pair() -> str:
+        body = re.sub(r"\btail\b", "acc", update_matched)
+        body = body.replace(f"{o.idx} as int", "i0 as int").replace(
+            f"{i.idx} as int", "i1 as int"
+        )
+        if filter_matched:
+            filt = filter_matched.replace(f"{o.idx} as int", "i0 as int").replace(
+                f"{i.idx} as int", "i1 as int"
+            )
+            return (
+                f"|acc: {ret_type}, i0: int, i1: int| {{\n"
+                f"                if {filt} {{\n"
+                f"                    {body}\n"
+                f"                }} else {{ acc }}\n"
+                f"            }}"
+            )
+        return (
+            f"|acc: {ret_type}, i0: int, i1: int| {{\n"
+            f"                {body}\n"
+            f"            }}"
+        )
+
+    def step_side(update: str, filter_cond: str | None, idx: str) -> str:
+        body = re.sub(r"\btail\b", "acc", update)
+        if filter_cond:
+            return (
+                f"|acc: {ret_type}, {idx}: int| {{\n"
+                f"                if {filter_cond} {{\n"
+                f"                    {body}\n"
+                f"                }} else {{ acc }}\n"
+                f"            }}"
+            )
+        return (
+            f"|acc: {ret_type}, {idx}: int| {{\n"
+            f"                {body}\n"
+            f"            }}"
+        )
+
+    sp, sl, sr = step_pair(), step_side(update_left, filter_left, "li"), step_side(
+        update_right, filter_right, "ri"
+    )
+    fold_rhs = (
+        f"full_acc(\n"
+        f"            nested_eq_pairs({outer_seq}, {inner_seq}, {o.param}.n as int),\n"
+        f"            nested_anti_misses({outer_seq}, {inner_seq}, {o.param}.n as int),\n"
+        f"            nested_anti_misses({inner_seq}, {outer_seq}, {i.param}.n as int),\n"
+        f"            {sp},\n"
+        f"            {sl},\n"
+        f"            {sr},\n"
+        f"            {ret_base},\n"
+        f"        )"
+    )
+
+    if lv:
+        inner_at_j = (
+            f"assert(key_views({mf.group('rp')}.{mf.group('rf')}@)[j] == {r_access_j});"
+        )
+        outer_at_j = (
+            f"assert(key_views({mf.group('lp')}.{mf.group('lf')}@)[j] == {l_access_j});"
+        )
+    else:
+        inner_at_j = f"assert({inner_seq}[j] == {r_access_j});"
+        outer_at_j = f"assert({outer_seq}[j] == {l_access_j});"
+
+    matched_loop = f"lemma_{matched_name}_is_full_matched_loop"
+    matched_pairs = f"lemma_{matched_name}_is_full_matched"
+    full_lemma = f"lemma_{matched_name}_is_full"
+    text = f"""// shape: full
+pub proof fn {matched_loop}({params}, i0: int, i1: int)
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+        0 <= i0 <= {o.param}.n,
+        0 <= i1 <= {i.param}.n,
+    ensures
+        {matched_name}({o.param}, {i.param}, i0, i1) == loop_acc(
+            {outer_seq},
+            {inner_seq},
+            {sp},
+            {ret_base},
+            {o.param}.n as int,
+            {i.param}.n as int,
+            i0,
+            i1,
+        ),
+    decreases {o.param}.n - i0, {i.param}.n - i1,
+{{
+    if i0 < {o.param}.n {{
+        if i1 < {i.param}.n {{
+            {matched_loop}({o.param}, {i.param}, i0, i1 + 1);
+            assert({outer_seq}[i0] == {o.param}.{mf.group('lf')}[i0 as int]{lv});
+            assert({inner_seq}[i1] == {i.param}.{mf.group('rf')}[i1 as int]{rv});
+        }} else {{
+            {matched_loop}({o.param}, {i.param}, i0 + 1, 0);
+        }}
+    }}
+}}
+
+pub proof fn {matched_pairs}({params})
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+    ensures
+        {matched_name}({o.param}, {i.param}, 0, 0) == pair_acc(
+            nested_eq_pairs({outer_seq}, {inner_seq}, {o.param}.n as int),
+            {sp},
+            {ret_base},
+            0,
+        ),
+{{
+    {matched_loop}({o.param}, {i.param}, 0, 0);
+    lemma_loop_at_origin(
+        {outer_seq},
+        {inner_seq},
+        {sp},
+        {ret_base},
+        {o.param}.n as int,
+        {i.param}.n as int,
+    );
+}}
+
+pub proof fn lemma_join_right_match_helper_full_suffix(
+    {params}, li: int, ri: int,
+)
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        0 <= li < {o.param}.n,
+        0 <= ri <= {i.param}.n,
+    ensures
+        join_right_match_helper({o.param}, {i.param}, li, ri) <==> exists|j: int|
+            ri <= j < {i.param}.n && {l_access} == {r_access_j},
+    decreases {i.param}.n - ri,
+{{
+    if ri < {i.param}.n {{
+        if {l_access} == {r_access} {{
+            assert(exists|j: int| ri <= j < {i.param}.n && {l_access} == {r_access_j}) by {{
+                assert(ri <= ri < {i.param}.n && {l_access} == {r_access});
+            }};
+        }} else {{
+            lemma_join_right_match_helper_full_suffix({o.param}, {i.param}, li, ri + 1);
+        }}
+    }}
+}}
+
+pub proof fn lemma_join_right_match_helper_full_iff({params}, li: int)
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        0 <= li < {o.param}.n,
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+    ensures
+        !join_right_match_helper({o.param}, {i.param}, li, 0) <==> eq_row_ids(
+            {inner_seq}, {outer_seq}[li], {i.param}.n as int,
+        ).len() == 0,
+{{
+    lemma_join_right_match_helper_full_suffix({o.param}, {i.param}, li, 0);
+    assert({outer_seq}[li] == {l_access});
+    lemma_eq_row_ids_nonempty_iff({inner_seq}, {outer_seq}[li], {i.param}.n as int);
+    assert((exists|j: int| 0 <= j < {i.param}.n && {l_access} == {r_access_j}) <==> (exists|j: int|
+        0 <= j < {i.param}.n && {inner_seq}[j] == {outer_seq}[li])) by {{
+        if exists|j: int| 0 <= j < {i.param}.n && {l_access} == {r_access_j} {{
+            let j = choose|j: int| 0 <= j < {i.param}.n && {l_access} == {r_access_j};
+            {inner_at_j}
+            assert(exists|j2: int|
+                #![trigger {inner_seq}[j2]]
+                0 <= j2 < {i.param}.n && {inner_seq}[j2] == {outer_seq}[li]) by {{
+                assert(0 <= j < {i.param}.n && {inner_seq}[j] == {outer_seq}[li]);
+            }};
+        }}
+        if exists|j: int| 0 <= j < {i.param}.n && {inner_seq}[j] == {outer_seq}[li] {{
+            let j = choose|j: int| 0 <= j < {i.param}.n && {inner_seq}[j] == {outer_seq}[li];
+            {inner_at_j}
+            assert(exists|j2: int|
+                #![trigger {i.param}.{mf.group('rf')}[j2 as int]{rv}]
+                0 <= j2 < {i.param}.n && {l_access} == {i.param}.{mf.group('rf')}[j2 as int]{rv}) by {{
+                assert(0 <= j < {i.param}.n && {l_access} == {r_access_j});
+            }};
+        }}
+    }};
+}}
+
+pub proof fn lemma_join_left_match_helper_full_suffix(
+    {params}, li: int, ri: int,
+)
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        0 <= ri < {i.param}.n,
+        0 <= li <= {o.param}.n,
+    ensures
+        join_left_match_helper({o.param}, {i.param}, li, ri) <==> exists|j: int|
+            li <= j < {o.param}.n && {l_access_j} == {r_access},
+    decreases {o.param}.n - li,
+{{
+    if li < {o.param}.n {{
+        if {l_access} == {r_access} {{
+            assert(exists|j: int| li <= j < {o.param}.n && {l_access_j} == {r_access}) by {{
+                assert(li <= li < {o.param}.n && {l_access} == {r_access});
+            }};
+        }} else {{
+            lemma_join_left_match_helper_full_suffix({o.param}, {i.param}, li + 1, ri);
+        }}
+    }}
+}}
+
+pub proof fn lemma_join_left_match_helper_full_iff({params}, ri: int)
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        0 <= ri < {i.param}.n,
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+    ensures
+        !join_left_match_helper({o.param}, {i.param}, 0, ri) <==> eq_row_ids(
+            {outer_seq}, {inner_seq}[ri], {o.param}.n as int,
+        ).len() == 0,
+{{
+    lemma_join_left_match_helper_full_suffix({o.param}, {i.param}, 0, ri);
+    assert({inner_seq}[ri] == {r_access});
+    lemma_eq_row_ids_nonempty_iff({outer_seq}, {inner_seq}[ri], {o.param}.n as int);
+    assert((exists|j: int| 0 <= j < {o.param}.n && {l_access_j} == {r_access}) <==> (exists|j: int|
+        0 <= j < {o.param}.n && {outer_seq}[j] == {inner_seq}[ri])) by {{
+        if exists|j: int| 0 <= j < {o.param}.n && {l_access_j} == {r_access} {{
+            let j = choose|j: int| 0 <= j < {o.param}.n && {l_access_j} == {r_access};
+            {outer_at_j}
+            assert(exists|j2: int|
+                #![trigger {outer_seq}[j2]]
+                0 <= j2 < {o.param}.n && {outer_seq}[j2] == {inner_seq}[ri]) by {{
+                assert(0 <= j < {o.param}.n && {outer_seq}[j] == {inner_seq}[ri]);
+            }};
+        }}
+        if exists|j: int| 0 <= j < {o.param}.n && {outer_seq}[j] == {inner_seq}[ri] {{
+            let j = choose|j: int| 0 <= j < {o.param}.n && {outer_seq}[j] == {inner_seq}[ri];
+            {outer_at_j}
+            assert(exists|j2: int|
+                #![trigger {o.param}.{mf.group('lf')}[j2 as int]{lv}]
+                0 <= j2 < {o.param}.n && {o.param}.{mf.group('lf')}[j2 as int]{lv} == {r_access}) by {{
+                assert(0 <= j < {o.param}.n && {l_access_j} == {r_access});
+            }};
+        }}
+    }};
+}}
+
+pub proof fn lemma_{left_name}_is_full_left_loop({params}, acc: {ret_type}, li: int)
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+        0 <= li <= {o.param}.n,
+    ensures
+        {left_name}({o.param}, {i.param}, acc, li) == anti_loop_acc(
+            {outer_seq}, {inner_seq}, {sl}, acc, {o.param}.n as int, li,
+        ),
+    decreases {o.param}.n - li,
+{{
+    if li < {o.param}.n {{
+        lemma_{left_name}_is_full_left_loop({o.param}, {i.param}, acc, li + 1);
+        lemma_join_right_match_helper_full_iff({o.param}, {i.param}, li);
+        assert({outer_seq}[li] == {l_access});
+    }}
+}}
+
+pub proof fn lemma_{right_name}_is_full_right_loop({params}, acc: {ret_type}, ri: int)
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+        0 <= ri <= {i.param}.n,
+    ensures
+        {right_name}({o.param}, {i.param}, acc, ri) == anti_loop_acc(
+            {inner_seq}, {outer_seq}, {sr}, acc, {i.param}.n as int, ri,
+        ),
+    decreases {i.param}.n - ri,
+{{
+    if ri < {i.param}.n {{
+        lemma_{right_name}_is_full_right_loop({o.param}, {i.param}, acc, ri + 1);
+        lemma_join_left_match_helper_full_iff({o.param}, {i.param}, ri);
+        assert({inner_seq}[ri] == {r_access});
+    }}
+}}
+
+pub proof fn {full_lemma}({params})
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+    ensures
+        {chain_name}({o.param}, {i.param}) == {fold_rhs},
+{{
+    {matched_pairs}({o.param}, {i.param});
+    let matched = {matched_name}({o.param}, {i.param}, 0, 0);
+    lemma_{left_name}_is_full_left_loop({o.param}, {i.param}, matched, 0);
+    lemma_anti_at_origin(
+        {outer_seq}, {inner_seq}, {sl}, matched, {o.param}.n as int,
+    );
+    let after_left = {left_name}({o.param}, {i.param}, matched, 0);
+    lemma_{right_name}_is_full_right_loop({o.param}, {i.param}, after_left, 0);
+    lemma_anti_at_origin(
+        {inner_seq}, {outer_seq}, {sr}, after_left, {i.param}.n as int,
+    );
+    lemma_full_at_origin(
+        nested_eq_pairs({outer_seq}, {inner_seq}, {o.param}.n as int),
+        nested_anti_misses({outer_seq}, {inner_seq}, {o.param}.n as int),
+        nested_anti_misses({inner_seq}, {outer_seq}, {i.param}.n as int),
+        {sp}, {sl}, {sr}, {ret_base},
+    );
+}}"""
+    helper_zeros = f"{chain_name}({o.param}, {i.param})"
+    bridge = _FoldBridge(
+        helper_name=matched_name,
+        pairs_lemma=full_lemma,
+        slots=list(slots),
+        helper_zeros=helper_zeros,
+        fold_rhs=fold_rhs,
+    )
+    return text, bridge
+
+
+def _emit_full_outer_projection(
+    query: SQLQuery,
+    slots: list[_Slot],
+    schemas_by_table: dict[str, dict[str, str]],
+    derived_by_alias: dict[str, DerivedTable],
+    *,
+    match_conds: str,
+    right_match: str,
+    left_match: str,
+    filter_matched: str | None,
+    filter_left: str | None,
+    filter_right: str | None,
+    join_cond: str,
+    matched_name: str,
+    left_name: str,
+    right_name: str,
+) -> tuple[str, str, str, _FoldBridge | None]:
+    left, right = slots[0], slots[1]
+    parsed = _full_key_seqs(match_conds, slots)
+    if parsed is None:
+        raise UnsupportedContractError(
+            "FULL OUTER JOIN projection fold needs one equality"
+        )
+    _os, _is, l_access, r_access, lv, rv = parsed
+
+    # Coalesce join-key projection: matched/left use left key, right-miss uses right key.
+    # Only support projecting the join key column(s) (same semantic value).
+    if len(query.projection_columns) != 1:
+        raise UnsupportedContractError(
+            "FULL OUTER JOIN projection MethodSpec supports one join-key column"
+        )
+    row_ty = "Seq<char>" if lv else "u64"
+    # Detect integer vs string from access
+    if lv:
+        row_ty = "Seq<char>"
+        expr_m = l_access.replace("li as int", f"{left.idx} as int")
+        expr_l = l_access
+        expr_r = r_access
+    else:
+        # Infer type from schema of left join col
+        mf = re.fullmatch(
+            r"(?P<lp>\w+)\.(?P<lf>\w+)\[li as int\](?P<lv>@?)\s*==\s*"
+            r"(?P<rp>\w+)\.(?P<rf>\w+)\[ri as int\](?P<rv>@?)",
+            match_conds.strip(),
+        )
+        assert mf is not None
+        schema = schemas_by_table[left.table]
+        col = mf.group("lf")
+        row_ty = spec_map_key_type(schema.get(col, schema[next(iter(schema))]))
+        expr_m = l_access.replace("li as int", f"{left.idx} as int")
+        expr_l = l_access
+        expr_r = r_access
+
+    ret_type = f"Seq<{row_ty}>"
+    update_m = f"tail.push({expr_m})"
+    matched_loop = _gen_nested_loop(
+        matched_name,
+        slots,
+        join_cond=join_cond,
+        filter_cond=filter_matched,
+        update_expr=update_m,
+        ret_type=ret_type,
+        ret_base="Seq::empty()",
+    )
+    left_only = f"""pub open spec fn {left_name}(
+    {left.param}: &{left.struct},
+    {right.param}: &{right.struct},
+    li: int,
+) -> (res: {ret_type})
+    decreases {left.param}.n - li,
+{{
+    if li < {left.param}.n {{
+        let tail = {left_name}({left.param}, {right.param}, li + 1);
+        {f"if {filter_left} {{" if filter_left else ""}
+        if !join_right_match_helper({left.param}, {right.param}, li, 0) {{
+            tail.push({expr_l})
+        }} else {{
+            tail
+        }}
+        {f"}} else {{ tail }}" if filter_left else ""}
+    }} else {{
+        Seq::empty()
+    }}
+}}"""
+    right_only = f"""pub open spec fn {right_name}(
+    {left.param}: &{left.struct},
+    {right.param}: &{right.struct},
+    ri: int,
+) -> (res: {ret_type})
+    decreases {right.param}.n - ri,
+{{
+    if ri < {right.param}.n {{
+        let tail = {right_name}({left.param}, {right.param}, ri + 1);
+        {f"if {filter_right} {{" if filter_right else ""}
+        if !join_left_match_helper({left.param}, {right.param}, 0, ri) {{
+            tail.push({expr_r})
+        }} else {{
+            tail
+        }}
+        {f"}} else {{ tail }}" if filter_right else ""}
+    }} else {{
+        Seq::empty()
+    }}
+}}"""
+    spec_body = (
+        f"let matched = {matched_name}({left.param}, {right.param}, 0, 0);\n"
+        f"    let left_only = {left_name}({left.param}, {right.param}, 0);\n"
+        f"    let right_only = {right_name}({left.param}, {right.param}, 0);\n"
+        f"    matched + left_only + right_only"
+    )
+    if query.limit is not None:
+        spec_body = (
+            f"spec_seq_take({{\n"
+            f"        let matched = {matched_name}({left.param}, {right.param}, 0, 0);\n"
+            f"        let left_only = {left_name}({left.param}, {right.param}, 0);\n"
+            f"        let right_only = {right_name}({left.param}, {right.param}, 0);\n"
+            f"        matched + left_only + right_only\n"
+            f"    }}, {query.limit})"
+        )
+
+    update_l = f"tail.push({expr_l})"
+    update_r = f"tail.push({expr_r})"
+    fold = _full_fold_lemma(
+        matched_name=matched_name,
+        left_name=left_name,
+        right_name=right_name,
+        slots=slots,
+        match_conds=match_conds,
+        filter_matched=filter_matched,
+        filter_left=filter_left,
+        filter_right=filter_right,
+        update_matched=update_m,
+        update_left=update_l,
+        update_right=update_r,
+        ret_type=ret_type,
+        ret_base="Seq::empty()",
+        combine_kind="seq",
+    )
+    helpers = "\n\n".join([right_match, left_match, matched_loop, left_only, right_only])
+    bridge: _FoldBridge | None = None
+    if fold is not None:
+        fold_text, bridge = fold
+        helpers = helpers + "\n\n" + fold_text
+    return helpers, spec_body, ret_type, bridge
 
 
 def _emit_single_agg_nway(
@@ -2599,10 +4024,6 @@ def emit_join_spec_helpers(
             raise UnsupportedContractError(
                 f"{jt} JOIN needs real MethodSpec; not yet supported"
             )
-        if jt == "FULL" and (query.groupby_columns or query.is_projection or not is_sum):
-            raise UnsupportedContractError(
-                "FULL OUTER JOIN group-by / projection needs real MethodSpec; not yet supported"
-            )
 
     derived_helpers: list[str] = []
     derived_map_vars: dict[str, str] = {}
@@ -2651,7 +4072,22 @@ def emit_join_spec_helpers(
             derived_by_alias=derived_by_alias,
         )
 
-    if query.is_projection:
+    if "FULL" in join_types:
+        # // shape: full
+        full_helpers, spec_body, ret_type, fold_bridge = _emit_full_outer(
+            query,
+            slots,
+            schemas_by_table,
+            derived_by_alias,
+            derived_map_vars,
+            derived_map_types,
+            where_expr=where_expr,
+            agg_expr=agg_expr,
+            is_sum=is_sum,
+            val_type=val_type,
+        )
+        helpers = "\n\n".join(derived_helpers + [full_helpers])
+    elif query.is_projection:
         proj_helper, spec_body, ret_type, fold_bridge = _emit_join_projection(
             query,
             slots,
@@ -2680,19 +4116,6 @@ def emit_join_spec_helpers(
         )
         helpers = "\n\n".join(derived_helpers + [ma_helper])
         spec_body = _apply_join_having_filter(spec_body)
-    elif "FULL" in join_types and not query.groupby_columns:
-        full_helpers, spec_body, ret_type = _emit_full_outer_scalar_sum(
-            query,
-            slots,
-            schemas_by_table,
-            derived_by_alias,
-            derived_map_vars,
-            derived_map_types,
-            where_expr=where_expr,
-            agg_expr=agg_expr,
-            val_type=val_type,
-        )
-        helpers = "\n\n".join(derived_helpers + [full_helpers])
     else:
         loop_helper, spec_body, ret_type, fold_bridge = _emit_single_agg_nway(
             query,
