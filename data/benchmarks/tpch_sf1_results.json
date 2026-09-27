@@ -1,10 +1,10 @@
 {
-  "table": "/home/emil/projects/verified-hillclimbing-db/data/tpch-sf1/lineitem.tbl",
+  "table": "/home/emil/projects/lemma-db/data/tpch-sf1/lineitem.tbl",
   "meta": {
     "scale_factor": 1.0,
     "row_count": 6001215,
     "table": "lineitem",
-    "path": "/home/emil/projects/verified-hillclimbing-db/data/tpch-sf1/lineitem.tbl"
+    "path": "/home/emil/projects/lemma-db/data/tpch-sf1/lineitem.tbl"
   },
   "queries": {
     "Q1": {
