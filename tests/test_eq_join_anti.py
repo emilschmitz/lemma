@@ -13,7 +13,10 @@ from verus_transpiler.parse_sql import normalize_schema
 from research_loop.assemble_verified_program import assemble_verified_join_program
 from research_loop.harness import resolve_verus_bin, run_verus_verify
 from research_loop.method_spec_ret_type import resolve_ret_type_from_method_spec
-from research_loop.sec_table_assumptions import SEC_PROVE_LOOP_MAX_CELL_U64
+from research_loop.sec_table_assumptions import (
+    SEC_PROVE_LOOP_MAX_CELL_U64,
+    round_rows_up,
+)
 from research_loop.table_assumptions import (
     CatalogAssumptions,
     ColumnAssumption,
@@ -25,8 +28,8 @@ from verus_transpiler import transpile_sql_to_verus
 ROOT = Path(__file__).resolve().parents[1]
 EQ_JOIN_RS = ROOT / "research_loop" / "verus_lib" / "eq_join.rs"
 
-# Full SEC product caps (num global max). Not the 65536 prove_loop profile.
-_SEC_PRODUCT_MAX_ROWS = 39_401_761
+# Measured SEC counts, rounded up to next power of two (catalog upper bounds).
+_SEC_PRODUCT_MAX_ROWS = round_rows_up(39_401_761)
 
 # ANTI JOIN keyword (not LEFT JOIN … IS NULL). Two-table, one equality.
 _ANTI_SQL = """
@@ -49,18 +52,18 @@ def _large_sec_product_catalog() -> CatalogAssumptions:
         max_string_len=128,
         tables={
             "pre": TableAssumptions(
-                max_rows=9_600_799,
+                max_rows=round_rows_up(9_600_799),
                 columns={"line": ColumnAssumption(max_value_exclusive=483)},
             ),
-            "sub": TableAssumptions(max_rows=86_135),
-            "tag": TableAssumptions(max_rows=1_070_662),
-            "num": TableAssumptions(max_rows=39_401_761),
+            "sub": TableAssumptions(max_rows=round_rows_up(86_135)),
+            "tag": TableAssumptions(max_rows=round_rows_up(1_070_662)),
+            "num": TableAssumptions(max_rows=round_rows_up(39_401_761)),
         },
     )
 
 
 def _assert_full_sec_caps(text: str) -> None:
-    assert "pub const LEMMA_MAX_ROWS: usize = 39401761;" in text
+    assert f"pub const LEMMA_MAX_ROWS: usize = {_SEC_PRODUCT_MAX_ROWS};" in text
 
 
 def _projected(sql: str) -> dict[str, dict[str, str]]:

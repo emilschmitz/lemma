@@ -44,6 +44,17 @@ SEC_PROVE_LOOP_MAX_NATIVE_U32 = 2**31
 SEC_PROVE_LOOP_MAX_STRING_LEN = 128
 
 
+def round_rows_up(n: int) -> int:
+    """Smallest power of two ``>= n`` (``n < 1`` → 1).
+
+    Catalog row caps are upper bounds: a proof at the rounded cap covers the
+    measured table and every smaller one. Rounding only goes up.
+    """
+    if n < 1:
+        return 1
+    return 1 << (n - 1).bit_length()
+
+
 def sec_product_catalog_assumptions() -> CatalogAssumptions:
     """Product-path SEC profile: per-table DuckDB counts when available, else prove_loop."""
     from db_extension.dataset_config import (
@@ -61,9 +72,12 @@ def sec_product_catalog_assumptions() -> CatalogAssumptions:
     abs_sums = table_column_abs_sum_caps()
     unique_keys = table_unique_keys() or {}
     prove = sec_prove_loop_catalog_assumptions()
-    max_rows = max(counts.values())
+    # Round each measured COUNT(*) up to the next power of two; global / cube / 4
+    # caps stay the max of those (product profile — do not shrink to prove_loop).
+    rounded = {name: round_rows_up(n) for name, n in counts.items()}
+    max_rows = max(rounded.values())
     tables: dict[str, TableAssumptions] = {}
-    for name, n in counts.items():
+    for name, n in rounded.items():
         col_assumptions: dict[str, ColumnAssumption] = {}
         cap_cols = column_caps.get(name, {}) if column_caps else {}
         sum_cols = abs_sums.get(name, {}) if abs_sums else {}

@@ -14,6 +14,7 @@ from db_extension.workload_config import (
 from research_loop.sec_table_assumptions import (
     SEC_PROVE_LOOP_MAX_CELL_U64,
     SEC_PROVE_LOOP_MAX_ROWS,
+    round_rows_up,
     sec_product_catalog_assumptions,
     sec_prove_loop_catalog_assumptions,
 )
@@ -71,6 +72,7 @@ def test_catalog_assumptions_sec_product_from_duckdb_counts(monkeypatch):
         "sub": 86_135,
         "tag": 1_070_662,
     }
+    rounded = {name: round_rows_up(n) for name, n in sample_counts.items()}
     monkeypatch.setattr(
         "db_extension.dataset_config.table_row_counts",
         lambda: sample_counts,
@@ -88,19 +90,22 @@ def test_catalog_assumptions_sec_product_from_duckdb_counts(monkeypatch):
         lambda: None,
     )
     cat = catalog_assumptions_for_workload("sec")
-    assert cat.max_rows == max(sample_counts.values())
+    assert cat.max_rows == max(rounded.values())
     assert cat.max_rows_cube == cat.max_rows
     assert cat.max_rows_4 == cat.max_rows
     assert cat.max_cell_u64 == SEC_PROVE_LOOP_MAX_CELL_U64
-    assert cat.tables["num"].max_rows == 39_401_761
-    assert cat.tables["pre"].max_rows == 9_600_799
+    assert cat.tables["num"].max_rows == rounded["num"]
+    assert cat.tables["pre"].max_rows == rounded["pre"]
+    # Measured counts sit strictly under the rounded caps.
+    assert sample_counts["num"] < cat.tables["num"].max_rows
+    assert sample_counts["pre"] < cat.tables["pre"].max_rows
 
     out = transpile_sql_to_verus(
         "SELECT SUM(value) FROM num",
         {"num": {"value": "double"}},
         catalog_assumptions=cat,
     )
-    assert f"pub const LEMMA_MAX_ROWS: usize = {max(sample_counts.values())};" in out
+    assert f"pub const LEMMA_MAX_ROWS: usize = {max(rounded.values())};" in out
     assert f"LEMMA_MAX_CELL_U64: u64 = {SEC_PROVE_LOOP_MAX_CELL_U64}" in out
 
 

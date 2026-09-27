@@ -16,6 +16,7 @@ from verus_transpiler.value_bounds import (
 
 from research_loop.sec_table_assumptions import (
     SEC_PROVE_LOOP_MAX_CELL_U64,
+    round_rows_up,
     sec_prove_loop_bounds,
     sec_prove_loop_catalog_assumptions,
 )
@@ -210,7 +211,7 @@ def test_engine_default_no_tight_cell_u64() -> None:
 
 
 def test_large_sec_rows_omit_false_sq_cell_lemma() -> None:
-    large_rows = 39_401_761
+    large_rows = round_rows_up(39_401_761)
     bounds = resolve_bounds(
         CatalogAssumptions(
             max_rows=large_rows,
@@ -233,7 +234,7 @@ def test_large_sec_rows_omit_false_sq_cell_lemma() -> None:
 
 
 def test_large_sec_rows_one_add_fits() -> None:
-    large_rows = 39_401_761
+    large_rows = round_rows_up(39_401_761)
     bounds = resolve_bounds(
         CatalogAssumptions(
             max_rows=large_rows,
@@ -264,7 +265,7 @@ def test_large_sec_rows_one_add_fits() -> None:
 
 
 def _large_sec_product_catalog() -> CatalogAssumptions:
-    large_rows = 39_401_761
+    large_rows = round_rows_up(39_401_761)
     return CatalogAssumptions(
         max_rows=large_rows,
         max_rows_cube=large_rows,

@@ -7,6 +7,7 @@ from verus_transpiler.value_bounds import emit_bound_constants, emit_bound_lemma
 from research_loop.sec_table_assumptions import (
     SEC_PROVE_LOOP_MAX_CELL_U64,
     SEC_PROVE_LOOP_MAX_ROWS,
+    round_rows_up,
     sec_prove_loop_bounds,
     sec_prove_loop_catalog_assumptions,
 )
@@ -45,6 +46,21 @@ def test_with_catalog_assumptions_merge_user_over_defaults() -> None:
     assert b.max_rows == 42
     assert b.max_cell_u64 == 2**20
     assert b.max_rows_cube == defaults.max_rows_cube
+
+
+def test_round_rows_up_next_power_of_two() -> None:
+    """Catalog caps round up so a proof covers the measured size and every smaller n."""
+    assert round_rows_up(5_000_000) == 8_388_608
+    assert round_rows_up(39_401_761) == 67_108_864
+    assert round_rows_up(0) == 1
+    assert round_rows_up(1) == 1
+    assert round_rows_up(2) == 2
+    n = 9_600_799
+    capped = round_rows_up(n)
+    assert n < capped
+    assert n <= capped
+    # Smaller tables still satisfy the same upper-bound proof obligation.
+    assert 1 <= capped and 1000 <= capped
 
 
 def test_sec_profile_is_defaults_plus_cell_cap() -> None:

@@ -33,6 +33,7 @@ from research_loop.scripts.inject_fold_bound_proofs import (
 )
 from research_loop.sec_table_assumptions import (
     SEC_PROVE_LOOP_MAX_CELL_U64,
+    round_rows_up,
     sec_prove_loop_catalog_assumptions,
 )
 from research_loop.table_assumptions import (
@@ -134,7 +135,7 @@ GROUP BY s.name"""
 
 
 def _large_sec_product_catalog() -> CatalogAssumptions:
-    large_rows = 39_401_761
+    large_rows = round_rows_up(39_401_761)
     return CatalogAssumptions(
         max_rows=large_rows,
         max_rows_cube=large_rows,
@@ -146,7 +147,7 @@ def _large_sec_product_catalog() -> CatalogAssumptions:
 
 
 def _large_sec_pre_line_catalog() -> CatalogAssumptions:
-    large_rows = 39_401_761
+    large_rows = round_rows_up(39_401_761)
     return CatalogAssumptions(
         max_rows=large_rows,
         max_rows_cube=large_rows,
@@ -156,10 +157,10 @@ def _large_sec_pre_line_catalog() -> CatalogAssumptions:
         max_string_len=128,
         tables={
             "pre": TableAssumptions(
-                max_rows=9_600_799,
+                max_rows=round_rows_up(9_600_799),
                 columns={"line": ColumnAssumption(max_value_exclusive=483)},
             ),
-            "sub": TableAssumptions(max_rows=86_135),
+            "sub": TableAssumptions(max_rows=round_rows_up(86_135)),
         },
     )
 
@@ -542,7 +543,7 @@ def test_large_sec_sum_uses_measured_abs_total_when_cell_product_overflows() -> 
     """Full-table num.value does not fit rows*max(cell); the measured abs total does."""
     from tests.test_sec_holdout_parse import SEC_SCHEMA
 
-    large_rows = 39_401_761
+    large_rows = round_rows_up(39_401_761)
     abs_total = 10**18
     catalog = CatalogAssumptions(
         max_rows=large_rows,
@@ -561,7 +562,9 @@ def test_large_sec_sum_uses_measured_abs_total_when_cell_product_overflows() -> 
                     )
                 },
             ),
-            "sub": TableAssumptions(max_rows=86_135, one_row_per_adsh=True),
+            "sub": TableAssumptions(
+                max_rows=round_rows_up(86_135), one_row_per_adsh=True
+            ),
         },
     )
     schema = {"num": SEC_SCHEMA["num"], "sub": SEC_SCHEMA["sub"]}
@@ -609,7 +612,7 @@ def test_abs_sum_requires_the_join_to_use_the_unique_key() -> None:
 def test_abs_sum_not_used_when_join_can_repeat_cells() -> None:
     from tests.test_sec_holdout_parse import SEC_SCHEMA
 
-    large_rows = 39_401_761
+    large_rows = round_rows_up(39_401_761)
     catalog = CatalogAssumptions(
         max_rows=large_rows,
         max_rows_cube=large_rows,
@@ -638,7 +641,7 @@ def test_abs_sum_not_used_when_join_can_repeat_cells() -> None:
 def test_large_sec_sum_overflowing_column_cap_raises_host_codegen() -> None:
     from tests.test_sec_holdout_parse import SEC_SCHEMA
 
-    large_rows = 39_401_761
+    large_rows = round_rows_up(39_401_761)
     huge_cap = (2**64 - 1) // (large_rows**2) + 1
     catalog = CatalogAssumptions(
         max_rows=large_rows,

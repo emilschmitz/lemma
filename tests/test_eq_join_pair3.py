@@ -13,7 +13,10 @@ from verus_transpiler.parse_sql import normalize_schema
 from research_loop.assemble_verified_program import assemble_verified_join_program
 from research_loop.harness import resolve_verus_bin, run_verus_verify
 from research_loop.method_spec_ret_type import resolve_ret_type_from_method_spec
-from research_loop.sec_table_assumptions import SEC_PROVE_LOOP_MAX_CELL_U64
+from research_loop.sec_table_assumptions import (
+    SEC_PROVE_LOOP_MAX_CELL_U64,
+    round_rows_up,
+)
 from research_loop.table_assumptions import (
     CatalogAssumptions,
     ColumnAssumption,
@@ -25,8 +28,8 @@ from verus_transpiler import transpile_sql_to_verus
 ROOT = Path(__file__).resolve().parents[1]
 EQ_JOIN_RS = ROOT / "research_loop" / "verus_lib" / "eq_join.rs"
 
-# Full SEC product caps (num global max). Not the 65536 prove_loop profile.
-_SEC_PRODUCT_MAX_ROWS = 39_401_761
+# Measured SEC counts, rounded up to next power of two (catalog upper bounds).
+_SEC_PRODUCT_MAX_ROWS = round_rows_up(39_401_761)
 
 _PAIR3_SQL = """
 SELECT COUNT(*)
@@ -46,27 +49,27 @@ def _large_sec_product_catalog() -> CatalogAssumptions:
         max_string_len=128,
         tables={
             "pre": TableAssumptions(
-                max_rows=9_600_799,
+                max_rows=round_rows_up(9_600_799),
                 columns={"line": ColumnAssumption(max_value_exclusive=483)},
             ),
-            "sub": TableAssumptions(max_rows=86_135),
-            "tag": TableAssumptions(max_rows=1_070_662),
-            "num": TableAssumptions(max_rows=39_401_761),
+            "sub": TableAssumptions(max_rows=round_rows_up(86_135)),
+            "tag": TableAssumptions(max_rows=round_rows_up(1_070_662)),
+            "num": TableAssumptions(max_rows=round_rows_up(39_401_761)),
         },
     )
 
 
 def _assert_full_sec_caps(text: str) -> None:
-    assert "pub const LEMMA_MAX_ROWS: usize = 39401761;" in text
+    assert f"pub const LEMMA_MAX_ROWS: usize = {_SEC_PRODUCT_MAX_ROWS};" in text
     assert "pub const LEMMA_MAX_pre_line: u32 = 483;" in text
     # Catalog carries full SEC table sizes (pre/sub/tag/num); global row const is num max.
     catalog = _large_sec_product_catalog()
-    assert catalog.max_rows == 39_401_761
-    assert catalog.tables["pre"].max_rows == 9_600_799
+    assert catalog.max_rows == round_rows_up(39_401_761)
+    assert catalog.tables["pre"].max_rows == round_rows_up(9_600_799)
     assert catalog.tables["pre"].columns["line"].max_value_exclusive == 483
-    assert catalog.tables["sub"].max_rows == 86_135
-    assert catalog.tables["tag"].max_rows == 1_070_662
-    assert catalog.tables["num"].max_rows == 39_401_761
+    assert catalog.tables["sub"].max_rows == round_rows_up(86_135)
+    assert catalog.tables["tag"].max_rows == round_rows_up(1_070_662)
+    assert catalog.tables["num"].max_rows == round_rows_up(39_401_761)
 
 
 def test_pair3_markers_and_prelude() -> None:
@@ -103,7 +106,7 @@ def test_pair3_transpile_emits_fold_lemmas() -> None:
     assert "nested_eq_pairs3(" in spec_rs
     assert "loop_acc_pair3(" in spec_rs
     _assert_full_sec_caps(spec_rs)
-    assert "pub const LEMMA_MAX_ROWS: usize = 39401761;" in spec_rs
+    assert f"pub const LEMMA_MAX_ROWS: usize = {_SEC_PRODUCT_MAX_ROWS};" in spec_rs
 
 
 def test_pair3_fold_lemma_verifies(tmp_path: Path) -> None:
@@ -122,7 +125,7 @@ def test_pair3_fold_lemma_verifies(tmp_path: Path) -> None:
     assert "lemma_join_method_spec_helper_is_pairs3(" in spec_rs
     assert "lemma_join_method_spec_helper_method_is_fold(" in spec_rs
     _assert_full_sec_caps(spec_rs)
-    assert "pub const LEMMA_MAX_ROWS: usize = 39401761;" in spec_rs
+    assert f"pub const LEMMA_MAX_ROWS: usize = {_SEC_PRODUCT_MAX_ROWS};" in spec_rs
     ret_type = resolve_ret_type_from_method_spec(spec_rs)
     assert ret_type == "u64"
     stub = """#[verifier::external_body]
@@ -145,7 +148,7 @@ pub exec fn run_query(num: &Cols_num, pre: &Cols_pre) -> (res: u64)
     assert "lemma_join_method_spec_helper_method_is_fold(" in program
     assert "// shape: pair3" in program
     _assert_full_sec_caps(program)
-    assert "pub const LEMMA_MAX_ROWS: usize = 39401761;" in program
+    assert f"pub const LEMMA_MAX_ROWS: usize = {_SEC_PRODUCT_MAX_ROWS};" in program
     rs_path = tmp_path / "pair3_fold.rs"
     rs_path.write_text(program, encoding="utf-8")
     ok, log = run_verus_verify(str(rs_path), timeout=300)
