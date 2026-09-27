@@ -554,12 +554,20 @@ def _resolve_col(
     raise UnsupportedContractError(f"Identifier '{node.name}' not found in schema.")
 
 
+def query_is_self_join(query: SQLQuery) -> bool:
+    """True when the same base catalog table appears under two (or more) FROM/JOIN slots."""
+    derived = {d.alias for d in query.derived_tables}
+    base = [t for t in query.tables if t not in derived]
+    return len(base) >= 2 and len(base) != len(set(base))
+
+
 def _compile_column_ref(
     node: exp.Column,
     resolver: dict[str, tuple[str, str, str | None]],
     outer_name_lower: set[str],
     *,
     outer_resolver: dict[str, tuple[str, str, str | None]] | None = None,
+    qualify_alias: bool = False,
 ) -> tuple[str, str]:
     """Compile a column to row./outer. expression and type kind."""
     if outer_name_lower and node.table and node.table.lower() in outer_name_lower:
@@ -567,6 +575,9 @@ def _compile_column_ref(
         real_col, col_type, _ = _resolve_col(node, lookup)
         return f"outer.{real_col}", _kind_of(col_type)
     real_col, col_type, _ = _resolve_col(node, resolver)
+    # Self-join: keep the SQL alias so join slots can tell a.line from b.line.
+    if qualify_alias and node.table:
+        return f"row.{node.table}.{real_col}", _kind_of(col_type)
     return f"row.{real_col}", _kind_of(col_type)
 
 
@@ -1078,6 +1089,7 @@ def _compile_where_expr(
     if scalar_counter is None:
         scalar_counter = [0]
     join_context = bool(query.joins)
+    qualify_alias = query_is_self_join(query)
     outer_name_lower = (
         {n.lower() for n in correlation_outer_names}
         if correlation_outer_names is not None
@@ -1211,7 +1223,11 @@ def _compile_where_expr(
             val_type = "int"
         elif isinstance(node.left, exp.Column):
             left_expr, kind = _compile_column_ref(
-                node.left, resolver, outer_name_lower, outer_resolver=outer_resolver,
+                node.left,
+                resolver,
+                outer_name_lower,
+                outer_resolver=outer_resolver,
+                qualify_alias=qualify_alias,
             )
             real_col, _, _ = _resolve_col(node.left, resolver)
             right_node = node.right
@@ -1235,7 +1251,11 @@ def _compile_where_expr(
                 val_type = "int"
             elif isinstance(right_node, exp.Column):
                 val_resolved, val_type = _compile_column_ref(
-                    right_node, resolver, outer_name_lower, outer_resolver=outer_resolver,
+                    right_node,
+                    resolver,
+                    outer_name_lower,
+                    outer_resolver=outer_resolver,
+                    qualify_alias=qualify_alias,
                 )
             elif isinstance(right_node, exp.Boolean):
                 val_resolved = "true" if right_node.this else "false"
@@ -1272,7 +1292,11 @@ def _compile_where_expr(
         return f"-{node.this.this}"
     if isinstance(node, exp.Column):
         expr, _ = _compile_column_ref(
-            node, resolver, outer_name_lower, outer_resolver=outer_resolver,
+            node,
+            resolver,
+            outer_name_lower,
+            outer_resolver=outer_resolver,
+            qualify_alias=qualify_alias,
         )
         return expr
     if isinstance(node, exp.Boolean):
@@ -2083,11 +2107,16 @@ def _parse_select(
                 return query
             elif isinstance(select_item, exp.Column) or derived_inner:
                 if isinstance(select_item, exp.Column):
-                    real_col, col_type, _ = _resolve_col(select_item, resolver)
+                    real_col, _, _ = _resolve_col(select_item, resolver)
                     alias = select_items[0].alias or real_col
                     query.is_projection = True
                     query.projection_columns = [alias]
-                    query.projection_exprs = [f"row.{real_col}"]
+                    if query_is_self_join(query) and select_item.table:
+                        query.projection_exprs = [
+                            f"row.{select_item.table}.{real_col}"
+                        ]
+                    else:
+                        query.projection_exprs = [f"row.{real_col}"]
                     query.agg_column = alias
                 where_clause = expression.args.get("where")
                 if where_clause:
@@ -2116,7 +2145,10 @@ def _parse_select(
                 real_col, _, _ = _resolve_col(inner, resolver)
                 alias = item.alias or real_col
                 proj_cols.append(alias)
-                proj_exprs.append(f"row.{real_col}")
+                if query_is_self_join(query) and inner.table:
+                    proj_exprs.append(f"row.{inner.table}.{real_col}")
+                else:
+                    proj_exprs.append(f"row.{real_col}")
             query.is_projection = True
             query.projection_columns = proj_cols
             query.projection_exprs = proj_exprs

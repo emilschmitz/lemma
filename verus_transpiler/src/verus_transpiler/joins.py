@@ -11,6 +11,7 @@ from .parse_sql import (
     SQLQuery,
     UnsupportedContractError,
     _corr_outer_key_expr,
+    query_is_self_join,
 )
 from .rust_ident import rust_ident
 from .subqueries import emit_derived_grouped_inner_spec
@@ -27,6 +28,7 @@ class _Slot:
     param: str
     idx: str
     struct: str
+    alias: str | None = None
 
 
 @dataclass
@@ -103,6 +105,98 @@ def _alias_map(query: SQLQuery) -> dict[str, str]:
     return out
 
 
+def _unique_slot_param(name: str, used: set[str]) -> str:
+    if name not in used:
+        used.add(name)
+        return name
+    n = 2
+    while f"{name}_{n}" in used:
+        n += 1
+    out = f"{name}_{n}"
+    used.add(out)
+    return out
+
+
+def _base_occurrences(query: SQLQuery) -> list[tuple[str, str]]:
+    """(physical_table, sql_alias) for each base FROM/JOIN slot, in order.
+
+    Self-joins keep both occurrences. Alias is the SQL name used in ON/WHERE
+    (``a`` / ``b``); when missing, the physical table name is used.
+    """
+    derived = _derived_aliases(query)
+    join_aliases: list[tuple[str, str | None]] = []
+    for join in query.joins:
+        if join.table in derived:
+            continue
+        join_aliases.append((join.table, join.alias))
+    join_alias_names = {(a or "").lower() for _, a in join_aliases if a}
+
+    from_table = next((t for t in query.tables if t not in derived), None)
+    if from_table is None:
+        return []
+    from_alias = from_table
+    for alias, table in query.table_aliases.items():
+        if table != from_table:
+            continue
+        if alias.lower() in join_alias_names:
+            continue
+        from_alias = alias
+        if alias != table:
+            break
+
+    occ: list[tuple[str, str]] = [(from_table, from_alias)]
+    for table, alias in join_aliases:
+        occ.append((table, alias or table))
+    return occ
+
+
+def _build_join_slots(query: SQLQuery) -> list[_Slot]:
+    """One slot per base-table occurrence; self-join params are SQL aliases."""
+    if not query_is_self_join(query):
+        return [
+            _Slot(
+                table=t,
+                param=t,
+                idx=f"i{i}",
+                struct=_table_struct_name(t),
+            )
+            for i, t in enumerate(_base_tables(query))
+        ]
+    used: set[str] = set()
+    slots: list[_Slot] = []
+    for i, (table, alias) in enumerate(_base_occurrences(query)):
+        param = _unique_slot_param(alias, used)
+        slots.append(
+            _Slot(
+                table=table,
+                param=param,
+                idx=f"i{i}",
+                struct=_table_struct_name(table),
+                alias=alias,
+            )
+        )
+    return slots
+
+
+def _slot_for_ref(slots: list[_Slot], ref_head: str, query: SQLQuery) -> _Slot:
+    """Resolve ``alias`` / physical table head of a ``alias.col`` ref to a slot."""
+    key = ref_head.lower()
+    for s in slots:
+        if s.param.lower() == key:
+            return s
+        if s.alias is not None and s.alias.lower() == key:
+            return s
+    aliases = _alias_map(query)
+    physical = aliases.get(key, key)
+    matches = [s for s in slots if s.table.lower() == physical.lower()]
+    if len(matches) == 1:
+        return matches[0]
+    for s in slots:
+        if s.table.lower() == key:
+            return s
+    raise KeyError(ref_head)
+
+
 def _find_table_for_col(
     col: str,
     query: SQLQuery,
@@ -171,7 +265,8 @@ def _col_access_ref(
         raise UnsupportedContractError(
             f"direct derived column access {ref!r} must go through map lookup"
         )
-    slot = slots[_slot_index(slots, table)]
+    head = ref.split(".")[0]
+    slot = _slot_for_ref(slots, head, query)
     field = rust_ident(col)
     if col_verus_type(schema[col]) == "String":
         return f"{slot.param}.{field}[{slot.idx} as int]@"
@@ -398,24 +493,45 @@ def _resolve_row_expr(
     derived_by_alias: dict[str, DerivedTable],
 ) -> str:
     stripped = re.sub(
-        r"\((row\.[A-Za-z_][A-Za-z0-9_]*) as int\)",
+        r"\((row\.[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?) as int\)",
         r"\1",
         expr,
     )
 
+    def access_on_slot(slot: _Slot, col: str) -> str | None:
+        schema = schemas_by_table[slot.table]
+        for k in schema:
+            if k.lower() == col.lower():
+                field = rust_ident(k)
+                if col_verus_type(schema[k]) == "String":
+                    return f"{slot.param}.{field}[{slot.idx} as int]@"
+                return f"{slot.param}.{field}[{slot.idx} as int]"
+        return None
+
+    def repl_qualified(m: re.Match[str]) -> str:
+        alias, col = m.group(1), m.group(2)
+        try:
+            slot = _slot_for_ref(slots, alias, query)
+        except KeyError:
+            return m.group(0)
+        hit = access_on_slot(slot, col)
+        return hit if hit is not None else m.group(0)
+
     def repl_col(m: re.Match[str]) -> str:
         col = m.group(1)
         for slot in slots:
-            schema = schemas_by_table[slot.table]
-            for k in schema:
-                if k.lower() == col.lower():
-                    field = rust_ident(k)
-                    if col_verus_type(schema[k]) == "String":
-                        return f"{slot.param}.{field}[{slot.idx} as int]@"
-                    return f"{slot.param}.{field}[{slot.idx} as int]"
+            hit = access_on_slot(slot, col)
+            if hit is not None:
+                return hit
         return f"row.{col}"
 
-    out = re.sub(r"\brow\.([A-Za-z_][A-Za-z0-9_]*)", repl_col, stripped)
+    # Self-join WHERE/SELECT: row.a.line before bare row.line.
+    out = re.sub(
+        r"\brow\.([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)",
+        repl_qualified,
+        stripped,
+    )
+    out = re.sub(r"\brow\.([A-Za-z_][A-Za-z0-9_]*)", repl_col, out)
     resolved = _resolve_subquery_calls(
         out, query, slots, schemas_by_table, derived_by_alias,
     )
@@ -755,7 +871,12 @@ def _pair_fold_lemma(
         f"            0,\n"
         f"        )"
     )
-    shape_mark = "// shape: derived.\n" if extras else ""
+    if extras:
+        shape_mark = "// shape: derived.\n"
+    elif o.table == i.table:
+        shape_mark = "// shape: selfjoin\n"
+    else:
+        shape_mark = ""
     text = f"""{shape_mark}pub proof fn {lemma}({params}{xsig}, {o.idx}: int, {i.idx}: int)
     requires
         valid_cols_{o.table}({o.param}),
@@ -2852,15 +2973,7 @@ def emit_join_spec_helpers(
 
     derived_by_alias = {d.alias: d for d in query.derived_tables}
     base = _base_tables(query)
-    slots = [
-        _Slot(
-            table=t,
-            param=t,
-            idx=f"i{i}",
-            struct=_table_struct_name(t),
-        )
-        for i, t in enumerate(base)
-    ]
+    slots = _build_join_slots(query)
 
     join_types = {j.join_type for j in query.joins}
     for jt in join_types:
@@ -3032,16 +3145,7 @@ def emit_join_grouped_map_spec(
     if len(query.tables) < 2:
         raise ValueError("join grouped map spec requires at least two tables")
     derived_by_alias = {d.alias: d for d in query.derived_tables}
-    base = _base_tables(query)
-    slots = [
-        _Slot(
-            table=t,
-            param=t,
-            idx=f"i{i}",
-            struct=_table_struct_name(t),
-        )
-        for i, t in enumerate(base)
-    ]
+    slots = _build_join_slots(query)
     helper_name = f"{prefix}_helper"
     spec_name = f"{prefix}_spec"
     loop_helper, loop_call, ret_type, _bridge = _emit_single_agg_nway(
