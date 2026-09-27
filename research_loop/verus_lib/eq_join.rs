@@ -4968,6 +4968,1116 @@ pub proof fn lemma_quad_at_origin<A>(
 }
 // SHAPE_4TABLE_END
 
+// SHAPE_CHAIN_BEGIN
+// 3-table chain: A.k = B.k AND B.m = C.m (different mid keys). Not a star.
+// Exec list order equals nested rem_join. Spec && is not short-circuit: nested if.
+
+/// `(i, j, ks[0..t])` triples.
+pub open spec fn prefix_triples(i: usize, j: usize, ks: Seq<usize>, t: int) -> Seq<(usize, usize, usize)>
+    decreases t,
+{
+    if t <= 0 {
+        Seq::<(usize, usize, usize)>::empty()
+    } else {
+        let prev = prefix_triples(i, j, ks, t - 1);
+        if 0 <= t - 1 < ks.len() {
+            prev.push((i, j, ks[t - 1]))
+        } else {
+            prev
+        }
+    }
+}
+
+/// Middles `0..j_end` matching `key` on `b_k`, each expanded by inners on `b_m[j]`.
+pub open spec fn chain_mid_product<K, M>(
+    i: usize,
+    key: K,
+    b_k: Seq<K>,
+    b_m: Seq<M>,
+    c_m: Seq<M>,
+    j_end: int,
+) -> Seq<(usize, usize, usize)>
+    decreases j_end,
+{
+    if j_end <= 0 {
+        Seq::<(usize, usize, usize)>::empty()
+    } else {
+        let prev = chain_mid_product(i, key, b_k, b_m, c_m, j_end - 1);
+        let j = j_end - 1;
+        if 0 <= j < b_k.len() {
+            if j < b_m.len() {
+                if b_k[j] == key {
+                    let ids = eq_row_ids(c_m, b_m[j], c_m.len() as int);
+                    prev + prefix_triples(i, j as usize, ids, ids.len() as int)
+                } else {
+                    prev
+                }
+            } else {
+                prev
+            }
+        } else {
+            prev
+        }
+    }
+}
+
+/// Expand a mid-id bucket (already `eq_row_ids` of `b_k`) into chain triples.
+pub open spec fn chain_expand_mids<M>(
+    i: usize,
+    mids: Seq<usize>,
+    b_m: Seq<M>,
+    c_m: Seq<M>,
+    s_end: int,
+) -> Seq<(usize, usize, usize)>
+    decreases s_end,
+{
+    if s_end <= 0 {
+        Seq::<(usize, usize, usize)>::empty()
+    } else {
+        let prev = chain_expand_mids(i, mids, b_m, c_m, s_end - 1);
+        if 0 <= s_end - 1 < mids.len() {
+            let j = mids[s_end - 1];
+            if (j as int) < b_m.len() {
+                let ids = eq_row_ids(c_m, b_m[j as int], c_m.len() as int);
+                prev + prefix_triples(i, j, ids, ids.len() as int)
+            } else {
+                prev
+            }
+        } else {
+            prev
+        }
+    }
+}
+
+/// Chain matches for outer rows `0..n`, outer-major (same order as rem_join).
+pub open spec fn nested_chain<K, M>(
+    a_k: Seq<K>,
+    b_k: Seq<K>,
+    b_m: Seq<M>,
+    c_m: Seq<M>,
+    n: int,
+) -> Seq<(usize, usize, usize)>
+    decreases n,
+{
+    if n <= 0 {
+        Seq::<(usize, usize, usize)>::empty()
+    } else if n - 1 >= a_k.len() {
+        nested_chain(a_k, b_k, b_m, c_m, n - 1)
+    } else {
+        let i = (n - 1) as usize;
+        nested_chain(a_k, b_k, b_m, c_m, n - 1) + chain_mid_product(
+            i,
+            a_k[n - 1],
+            b_k,
+            b_m,
+            c_m,
+            b_k.len() as int,
+        )
+    }
+}
+
+/// How many chain triples come from matching middles in `0..j_end`.
+pub open spec fn chain_mid_prefix_len<K, M>(
+    key: K,
+    b_k: Seq<K>,
+    b_m: Seq<M>,
+    c_m: Seq<M>,
+    j_end: int,
+) -> int
+    decreases j_end,
+{
+    if j_end <= 0 {
+        0
+    } else {
+        let prev = chain_mid_prefix_len(key, b_k, b_m, c_m, j_end - 1);
+        let j = j_end - 1;
+        if 0 <= j < b_k.len() {
+            if j < b_m.len() {
+                if b_k[j] == key {
+                    prev + eq_row_ids(c_m, b_m[j], c_m.len() as int).len() as int
+                } else {
+                    prev
+                }
+            } else {
+                prev
+            }
+        } else {
+            prev
+        }
+    }
+}
+
+pub open spec fn chain_pos<K, M>(
+    a_k: Seq<K>,
+    b_k: Seq<K>,
+    b_m: Seq<M>,
+    c_m: Seq<M>,
+    i0: int,
+    i1: int,
+    i2: int,
+) -> int {
+    if !(0 <= i0 < a_k.len()) {
+        nested_chain(a_k, b_k, b_m, c_m, i0).len() as int
+    } else {
+        let base = nested_chain(a_k, b_k, b_m, c_m, i0).len() as int;
+        let before = chain_mid_prefix_len(a_k[i0], b_k, b_m, c_m, i1);
+        let inner_part = if 0 <= i1 < b_k.len() {
+            if i1 < b_m.len() {
+                if b_k[i1] == a_k[i0] {
+                    let ids = eq_row_ids(c_m, b_m[i1], c_m.len() as int);
+                    ids_lt(ids, ids.len() as int, i2)
+                } else {
+                    0
+                }
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+        base + before + inner_part
+    }
+}
+
+/// Nested rem_join fold for a chain. Nested `if` (Spec `&&` is not short-circuit).
+pub open spec fn loop_acc_chain<K, M, A>(
+    a_k: Seq<K>,
+    b_k: Seq<K>,
+    b_m: Seq<M>,
+    c_m: Seq<M>,
+    step: spec_fn(A, int, int, int) -> A,
+    base: A,
+    n0: int,
+    n1: int,
+    n2: int,
+    i0: int,
+    i1: int,
+    i2: int,
+) -> A
+    decreases n0 - i0, n1 - i1, n2 - i2,
+{
+    if i0 < n0 {
+        if i1 < n1 {
+            if i2 < n2 {
+                let tail = loop_acc_chain(
+                    a_k, b_k, b_m, c_m, step, base, n0, n1, n2, i0, i1, i2 + 1,
+                );
+                if 0 <= i0 < a_k.len() {
+                    if 0 <= i1 < b_k.len() {
+                        if i1 < b_m.len() {
+                            if 0 <= i2 < c_m.len() {
+                                if a_k[i0] == b_k[i1] {
+                                    if b_m[i1] == c_m[i2] {
+                                        step(tail, i0, i1, i2)
+                                    } else {
+                                        tail
+                                    }
+                                } else {
+                                    tail
+                                }
+                            } else {
+                                tail
+                            }
+                        } else {
+                            tail
+                        }
+                    } else {
+                        tail
+                    }
+                } else {
+                    tail
+                }
+            } else {
+                loop_acc_chain(a_k, b_k, b_m, c_m, step, base, n0, n1, n2, i0, i1 + 1, 0)
+            }
+        } else {
+            loop_acc_chain(a_k, b_k, b_m, c_m, step, base, n0, n1, n2, i0 + 1, 0, 0)
+        }
+    } else {
+        base
+    }
+}
+
+pub proof fn lemma_prefix_triples_step(i: usize, j: usize, ks: Seq<usize>, t: int)
+    requires
+        0 <= t < ks.len(),
+    ensures
+        prefix_triples(i, j, ks, t + 1) == prefix_triples(i, j, ks, t).push((i, j, ks[t])),
+{
+    assert(prefix_triples(i, j, ks, t + 1) == prefix_triples(i, j, ks, t).push((i, j, ks[t])));
+}
+
+pub proof fn lemma_prefix_triples_len(i: usize, j: usize, ks: Seq<usize>, t: int)
+    requires
+        0 <= t <= ks.len(),
+    ensures
+        prefix_triples(i, j, ks, t).len() == t,
+    decreases t,
+{
+    if t > 0 {
+        lemma_prefix_triples_len(i, j, ks, t - 1);
+        assert(prefix_triples(i, j, ks, t) == prefix_triples(i, j, ks, t - 1).push((i, j, ks[t - 1])));
+    }
+}
+
+pub proof fn lemma_prefix_triples_at(i: usize, j: usize, ks: Seq<usize>, t: int, p: int)
+    requires
+        0 <= p < t <= ks.len(),
+    ensures
+        prefix_triples(i, j, ks, t)[p] == (i, j, ks[p]),
+    decreases t,
+{
+    lemma_prefix_triples_len(i, j, ks, t - 1);
+    if p < t - 1 {
+        lemma_prefix_triples_at(i, j, ks, t - 1, p);
+        assert(prefix_triples(i, j, ks, t)
+            == prefix_triples(i, j, ks, t - 1).push((i, j, ks[t - 1])));
+        assert(prefix_triples(i, j, ks, t)[p] == prefix_triples(i, j, ks, t - 1)[p]);
+    } else {
+        assert(prefix_triples(i, j, ks, t)
+            == prefix_triples(i, j, ks, t - 1).push((i, j, ks[t - 1])));
+        assert(prefix_triples(i, j, ks, t)[p] == (i, j, ks[t - 1]));
+    }
+}
+
+pub proof fn lemma_chain_mid_product_len<K, M>(
+    i: usize,
+    key: K,
+    b_k: Seq<K>,
+    b_m: Seq<M>,
+    c_m: Seq<M>,
+    j_end: int,
+)
+    requires
+        0 <= j_end <= b_k.len(),
+        b_k.len() == b_m.len(),
+    ensures
+        chain_mid_product(i, key, b_k, b_m, c_m, j_end).len() as int
+            == chain_mid_prefix_len(key, b_k, b_m, c_m, j_end),
+    decreases j_end,
+{
+    if j_end > 0 {
+        lemma_chain_mid_product_len(i, key, b_k, b_m, c_m, j_end - 1);
+        let j = j_end - 1;
+        if b_k[j] == key {
+            let ids = eq_row_ids(c_m, b_m[j], c_m.len() as int);
+            lemma_prefix_triples_len(i, j as usize, ids, ids.len() as int);
+            let prev = chain_mid_product(i, key, b_k, b_m, c_m, j_end - 1);
+            let extra = prefix_triples(i, j as usize, ids, ids.len() as int);
+            assert(chain_mid_product(i, key, b_k, b_m, c_m, j_end) == prev + extra);
+            assert((prev + extra).len() == prev.len() + extra.len());
+        }
+    }
+}
+
+pub proof fn lemma_chain_mid_product_step<K, M>(
+    i: usize,
+    key: K,
+    b_k: Seq<K>,
+    b_m: Seq<M>,
+    c_m: Seq<M>,
+    j_end: int,
+)
+    requires
+        0 < j_end <= b_k.len(),
+        b_k.len() == b_m.len(),
+    ensures
+        ({
+            let j = j_end - 1;
+            let prev = chain_mid_product(i, key, b_k, b_m, c_m, j_end - 1);
+            &&& b_k[j] == key ==> chain_mid_product(i, key, b_k, b_m, c_m, j_end)
+                == prev + prefix_triples(
+                    i,
+                    j as usize,
+                    eq_row_ids(c_m, b_m[j], c_m.len() as int),
+                    eq_row_ids(c_m, b_m[j], c_m.len() as int).len() as int,
+                )
+            &&& b_k[j] != key ==> chain_mid_product(i, key, b_k, b_m, c_m, j_end) == prev
+        }),
+{
+    let j = j_end - 1;
+    if b_k[j] == key {
+        assert(chain_mid_product(i, key, b_k, b_m, c_m, j_end)
+            == chain_mid_product(i, key, b_k, b_m, c_m, j_end - 1) + prefix_triples(
+                i,
+                j as usize,
+                eq_row_ids(c_m, b_m[j], c_m.len() as int),
+                eq_row_ids(c_m, b_m[j], c_m.len() as int).len() as int,
+            ));
+    } else {
+        assert(chain_mid_product(i, key, b_k, b_m, c_m, j_end)
+            == chain_mid_product(i, key, b_k, b_m, c_m, j_end - 1));
+    }
+}
+
+pub proof fn lemma_nested_chain_step<K, M>(
+    a_k: Seq<K>,
+    b_k: Seq<K>,
+    b_m: Seq<M>,
+    c_m: Seq<M>,
+    n: int,
+)
+    requires
+        0 < n <= a_k.len(),
+        b_k.len() == b_m.len(),
+    ensures
+        nested_chain(a_k, b_k, b_m, c_m, n) == nested_chain(a_k, b_k, b_m, c_m, n - 1)
+            + chain_mid_product(
+                (n - 1) as usize,
+                a_k[n - 1],
+                b_k,
+                b_m,
+                c_m,
+                b_k.len() as int,
+            ),
+{
+    assert(nested_chain(a_k, b_k, b_m, c_m, n) == nested_chain(a_k, b_k, b_m, c_m, n - 1)
+        + chain_mid_product(
+            (n - 1) as usize,
+            a_k[n - 1],
+            b_k,
+            b_m,
+            c_m,
+            b_k.len() as int,
+        ));
+}
+
+pub proof fn lemma_chain_mid_prefix_len_step<K, M>(
+    key: K,
+    b_k: Seq<K>,
+    b_m: Seq<M>,
+    c_m: Seq<M>,
+    j_end: int,
+)
+    requires
+        0 < j_end <= b_k.len(),
+        b_k.len() == b_m.len(),
+    ensures
+        ({
+            let j = j_end - 1;
+            let prev = chain_mid_prefix_len(key, b_k, b_m, c_m, j_end - 1);
+            &&& b_k[j] == key ==> chain_mid_prefix_len(key, b_k, b_m, c_m, j_end)
+                == prev + eq_row_ids(c_m, b_m[j], c_m.len() as int).len() as int
+            &&& b_k[j] != key ==> chain_mid_prefix_len(key, b_k, b_m, c_m, j_end) == prev
+        }),
+{
+    let j = j_end - 1;
+    if b_k[j] == key {
+        assert(chain_mid_prefix_len(key, b_k, b_m, c_m, j_end)
+            == chain_mid_prefix_len(key, b_k, b_m, c_m, j_end - 1)
+                + eq_row_ids(c_m, b_m[j], c_m.len() as int).len() as int);
+    } else {
+        assert(chain_mid_prefix_len(key, b_k, b_m, c_m, j_end)
+            == chain_mid_prefix_len(key, b_k, b_m, c_m, j_end - 1));
+    }
+}
+
+pub proof fn lemma_chain_mid_at<K, M>(
+    i: usize,
+    key: K,
+    b_k: Seq<K>,
+    b_m: Seq<M>,
+    c_m: Seq<M>,
+    j_end: int,
+    j: int,
+    tr: int,
+)
+    requires
+        b_k.len() == b_m.len(),
+        0 <= j < j_end <= b_k.len(),
+        j_end <= usize::MAX as int,
+        b_k[j] == key,
+        ({
+            let ids = eq_row_ids(c_m, b_m[j], c_m.len() as int);
+            0 <= tr < ids.len()
+        }),
+    ensures
+        ({
+            let ids = eq_row_ids(c_m, b_m[j], c_m.len() as int);
+            let prod = chain_mid_product(i, key, b_k, b_m, c_m, j_end);
+            let off = chain_mid_prefix_len(key, b_k, b_m, c_m, j);
+            let ju = j as usize;
+            &&& ju as int == j
+            &&& 0 <= off + tr < prod.len()
+            &&& prod[off + tr] == (i, ju, ids[tr])
+        }),
+    decreases j_end - j,
+{
+    let ids = eq_row_ids(c_m, b_m[j], c_m.len() as int);
+    assert(0 <= j <= usize::MAX as int);
+    let ju = j as usize;
+    assert(ju as int == j);
+    if j_end == j + 1 {
+        lemma_chain_mid_product_step(i, key, b_k, b_m, c_m, j_end);
+        let prev = chain_mid_product(i, key, b_k, b_m, c_m, j);
+        let extra = prefix_triples(i, ju, ids, ids.len() as int);
+        assert(chain_mid_product(i, key, b_k, b_m, c_m, j_end) == prev + extra);
+        lemma_chain_mid_product_len(i, key, b_k, b_m, c_m, j);
+        lemma_prefix_triples_len(i, ju, ids, ids.len() as int);
+        lemma_prefix_triples_at(i, ju, ids, ids.len() as int, tr);
+        let off = chain_mid_prefix_len(key, b_k, b_m, c_m, j);
+        assert(prev.len() as int == off);
+        assert(tr < extra.len());
+        lemma_right_index(prev, extra, tr);
+        assert((prev + extra)[off + tr] == extra[tr]);
+        assert(extra[tr] == (i, ju, ids[tr]));
+    } else {
+        lemma_chain_mid_at(i, key, b_k, b_m, c_m, j_end - 1, j, tr);
+        lemma_chain_mid_product_step(i, key, b_k, b_m, c_m, j_end);
+        let prev = chain_mid_product(i, key, b_k, b_m, c_m, j_end - 1);
+        let off = chain_mid_prefix_len(key, b_k, b_m, c_m, j);
+        assert(0 <= off + tr < prev.len());
+        if b_k[j_end - 1] == key {
+            let ids2 = eq_row_ids(c_m, b_m[j_end - 1], c_m.len() as int);
+            assert(0 <= j_end - 1 <= usize::MAX as int);
+            let jnext = (j_end - 1) as usize;
+            assert(jnext as int == j_end - 1);
+            let extra = prefix_triples(i, jnext, ids2, ids2.len() as int);
+            assert(chain_mid_product(i, key, b_k, b_m, c_m, j_end) == prev + extra);
+            lemma_left_index(prev, extra, off + tr);
+        } else {
+            assert(chain_mid_product(i, key, b_k, b_m, c_m, j_end) == prev);
+        }
+    }
+}
+
+pub proof fn lemma_nested_chain_len_mono<K, M>(
+    a_k: Seq<K>,
+    b_k: Seq<K>,
+    b_m: Seq<M>,
+    c_m: Seq<M>,
+    n: int,
+    m: int,
+)
+    requires
+        0 <= n <= m,
+        b_k.len() == b_m.len(),
+    ensures
+        nested_chain(a_k, b_k, b_m, c_m, n).len()
+            <= nested_chain(a_k, b_k, b_m, c_m, m).len(),
+    decreases m - n,
+{
+    if n < m {
+        lemma_nested_chain_len_mono(a_k, b_k, b_m, c_m, n, m - 1);
+        let cur = nested_chain(a_k, b_k, b_m, c_m, m);
+        let prev = nested_chain(a_k, b_k, b_m, c_m, m - 1);
+        if m - 1 < a_k.len() {
+            lemma_nested_chain_step(a_k, b_k, b_m, c_m, m);
+            assert(prev.len() <= cur.len());
+        } else {
+            assert(cur == prev);
+        }
+    }
+}
+
+pub proof fn lemma_nested_chain_index<K, M>(
+    a_k: Seq<K>,
+    b_k: Seq<K>,
+    b_m: Seq<M>,
+    c_m: Seq<M>,
+    n: int,
+    m: int,
+    p: int,
+)
+    requires
+        0 <= n <= m,
+        b_k.len() == b_m.len(),
+        0 <= p < nested_chain(a_k, b_k, b_m, c_m, n).len(),
+    ensures
+        nested_chain(a_k, b_k, b_m, c_m, m)[p]
+            == nested_chain(a_k, b_k, b_m, c_m, n)[p],
+    decreases m - n,
+{
+    if n < m {
+        let cur = nested_chain(a_k, b_k, b_m, c_m, m);
+        let prev = nested_chain(a_k, b_k, b_m, c_m, m - 1);
+        lemma_nested_chain_len_mono(a_k, b_k, b_m, c_m, n, m - 1);
+        if m - 1 >= a_k.len() {
+            assert(cur == prev);
+        } else {
+            lemma_nested_chain_step(a_k, b_k, b_m, c_m, m);
+            assert(p < prev.len());
+            let extra = chain_mid_product(
+                (m - 1) as usize,
+                a_k[m - 1],
+                b_k,
+                b_m,
+                c_m,
+                b_k.len() as int,
+            );
+            lemma_left_index(prev, extra, p);
+        }
+        lemma_nested_chain_index(a_k, b_k, b_m, c_m, n, m - 1, p);
+    }
+}
+
+pub proof fn lemma_nested_chain_past<K, M>(
+    a_k: Seq<K>,
+    b_k: Seq<K>,
+    b_m: Seq<M>,
+    c_m: Seq<M>,
+    n: int,
+)
+    requires
+        n >= a_k.len(),
+        b_k.len() == b_m.len(),
+    ensures
+        nested_chain(a_k, b_k, b_m, c_m, n)
+            == nested_chain(a_k, b_k, b_m, c_m, a_k.len() as int),
+    decreases n - a_k.len(),
+{
+    if n > a_k.len() {
+        assert(nested_chain(a_k, b_k, b_m, c_m, n)
+            == nested_chain(a_k, b_k, b_m, c_m, n - 1));
+        lemma_nested_chain_past(a_k, b_k, b_m, c_m, n - 1);
+    }
+}
+
+pub proof fn lemma_chain_expand_push_prefix<M>(
+    i: usize,
+    mids: Seq<usize>,
+    x: usize,
+    b_m: Seq<M>,
+    c_m: Seq<M>,
+    t: int,
+)
+    requires
+        0 <= t <= mids.len(),
+    ensures
+        chain_expand_mids(i, mids.push(x), b_m, c_m, t) == chain_expand_mids(i, mids, b_m, c_m, t),
+    decreases t,
+{
+    if t > 0 {
+        lemma_chain_expand_push_prefix(i, mids, x, b_m, c_m, t - 1);
+        assert(mids.push(x)[t - 1] == mids[t - 1]);
+    }
+}
+
+pub proof fn lemma_chain_mid_eq_expand<K, M>(
+    i: usize,
+    key: K,
+    b_k: Seq<K>,
+    b_m: Seq<M>,
+    c_m: Seq<M>,
+    j_end: int,
+)
+    requires
+        0 <= j_end <= b_k.len(),
+        b_k.len() == b_m.len(),
+        j_end <= usize::MAX as int,
+    ensures
+        chain_mid_product(i, key, b_k, b_m, c_m, j_end) == chain_expand_mids(
+            i,
+            eq_row_ids(b_k, key, j_end),
+            b_m,
+            c_m,
+            eq_row_ids(b_k, key, j_end).len() as int,
+        ),
+    decreases j_end,
+{
+    if j_end > 0 {
+        lemma_chain_mid_eq_expand(i, key, b_k, b_m, c_m, j_end - 1);
+        let j = j_end - 1;
+        let ju = j as usize;
+        assert(ju as int == j);
+        let prev_ids = eq_row_ids(b_k, key, j_end - 1);
+        let cur_ids = eq_row_ids(b_k, key, j_end);
+        let prev_prod = chain_mid_product(i, key, b_k, b_m, c_m, j_end - 1);
+        assert(prev_prod == chain_expand_mids(i, prev_ids, b_m, c_m, prev_ids.len() as int));
+        lemma_eq_row_ids_step(b_k, key, j_end - 1, ju);
+        if b_k[j] == key {
+            assert(cur_ids == prev_ids.push(ju));
+            let ids = eq_row_ids(c_m, b_m[j], c_m.len() as int);
+            let extra = prefix_triples(i, ju, ids, ids.len() as int);
+            assert(chain_mid_product(i, key, b_k, b_m, c_m, j_end) == prev_prod + extra);
+            lemma_chain_expand_push_prefix(i, prev_ids, ju, b_m, c_m, prev_ids.len() as int);
+            assert(chain_expand_mids(i, cur_ids, b_m, c_m, prev_ids.len() as int)
+                == chain_expand_mids(i, prev_ids, b_m, c_m, prev_ids.len() as int));
+            assert((ju as int) < b_m.len());
+            assert(chain_expand_mids(i, cur_ids, b_m, c_m, cur_ids.len() as int)
+                == chain_expand_mids(i, cur_ids, b_m, c_m, prev_ids.len() as int) + extra);
+            assert(chain_mid_product(i, key, b_k, b_m, c_m, j_end)
+                == chain_expand_mids(i, cur_ids, b_m, c_m, cur_ids.len() as int));
+        } else {
+            assert(cur_ids == prev_ids);
+            assert(chain_mid_product(i, key, b_k, b_m, c_m, j_end) == prev_prod);
+        }
+    }
+}
+
+pub proof fn lemma_chain_acc<K, M, A>(
+    a_k: Seq<K>,
+    b_k: Seq<K>,
+    b_m: Seq<M>,
+    c_m: Seq<M>,
+    step: spec_fn(A, int, int, int) -> A,
+    base: A,
+    n0: int,
+    n1: int,
+    n2: int,
+    i0: int,
+    i1: int,
+    i2: int,
+)
+    requires
+        a_k.len() == n0,
+        b_k.len() == n1,
+        b_m.len() == n1,
+        c_m.len() == n2,
+        n0 <= usize::MAX as int,
+        n1 <= usize::MAX as int,
+        n2 <= usize::MAX as int,
+        0 <= i0 <= n0,
+        0 <= i1 <= n1,
+        0 <= i2 <= n2,
+    ensures
+        loop_acc_chain(a_k, b_k, b_m, c_m, step, base, n0, n1, n2, i0, i1, i2)
+            == triple_acc(
+                nested_chain(a_k, b_k, b_m, c_m, n0),
+                step,
+                base,
+                chain_pos(a_k, b_k, b_m, c_m, i0, i1, i2),
+            ),
+    decreases n0 - i0, n1 - i1, n2 - i2,
+{
+    let triples = nested_chain(a_k, b_k, b_m, c_m, n0);
+    let pos = chain_pos(a_k, b_k, b_m, c_m, i0, i1, i2);
+    if i0 >= n0 {
+        lemma_nested_chain_past(a_k, b_k, b_m, c_m, i0);
+        assert(nested_chain(a_k, b_k, b_m, c_m, i0) == triples);
+        assert(pos == triples.len() as int);
+    } else if i1 >= n1 {
+        lemma_chain_acc(a_k, b_k, b_m, c_m, step, base, n0, n1, n2, i0 + 1, 0, 0);
+        lemma_nested_chain_step(a_k, b_k, b_m, c_m, i0 + 1);
+        assert(0 <= i0 <= usize::MAX as int);
+        let i0u = i0 as usize;
+        assert(i0u as int == i0);
+        lemma_chain_mid_product_len(i0u, a_k[i0], b_k, b_m, c_m, n1);
+        let earlier = nested_chain(a_k, b_k, b_m, c_m, i0);
+        let prod = chain_mid_product(i0u, a_k[i0], b_k, b_m, c_m, n1);
+        let through = nested_chain(a_k, b_k, b_m, c_m, i0 + 1);
+        assert(through == earlier + prod);
+        assert(i1 == n1);
+        assert(chain_mid_prefix_len(a_k[i0], b_k, b_m, c_m, n1) == prod.len() as int);
+        assert(chain_mid_prefix_len(a_k[i0], b_k, b_m, c_m, i1) == prod.len() as int);
+        // i1 == n1 == b_k.len(), so chain_pos has no inner_part at this mid.
+        assert(!(0 <= i1 < b_k.len()));
+        assert(pos == earlier.len() as int + prod.len() as int);
+        assert(through.len() == earlier.len() + prod.len());
+        if i0 + 1 < a_k.len() {
+            assert(chain_mid_prefix_len(a_k[i0 + 1], b_k, b_m, c_m, 0) == 0);
+            if 0 < b_k.len() {
+                if 0 < b_m.len() {
+                    if b_k[0] == a_k[i0 + 1] {
+                        let ids0 = eq_row_ids(c_m, b_m[0], c_m.len() as int);
+                        lemma_ids_lt_zero(ids0, ids0.len() as int);
+                    }
+                }
+            }
+            assert(chain_pos(a_k, b_k, b_m, c_m, i0 + 1, 0, 0)
+                == nested_chain(a_k, b_k, b_m, c_m, i0 + 1).len() as int);
+            assert(nested_chain(a_k, b_k, b_m, c_m, i0 + 1) == through);
+            assert(chain_pos(a_k, b_k, b_m, c_m, i0 + 1, 0, 0) == through.len() as int);
+        } else {
+            assert(chain_pos(a_k, b_k, b_m, c_m, i0 + 1, 0, 0)
+                == nested_chain(a_k, b_k, b_m, c_m, i0 + 1).len() as int);
+            assert(nested_chain(a_k, b_k, b_m, c_m, i0 + 1) == through);
+        }
+        assert(chain_pos(a_k, b_k, b_m, c_m, i0 + 1, 0, 0) == pos);
+    } else if i2 >= n2 {
+        lemma_chain_acc(a_k, b_k, b_m, c_m, step, base, n0, n1, n2, i0, i1 + 1, 0);
+        assert(n2 == c_m.len() as int);
+        let base_len = nested_chain(a_k, b_k, b_m, c_m, i0).len() as int;
+        if b_k[i1] == a_k[i0] {
+            let ids = eq_row_ids(c_m, b_m[i1], n2);
+            let ids_full = eq_row_ids(c_m, b_m[i1], c_m.len() as int);
+            assert(ids == ids_full);
+            lemma_eq_members(c_m, b_m[i1], n2);
+            assert forall|p: int| 0 <= p < ids.len() implies (#[trigger] ids[p] as int) < i2 by {
+                assert((ids[p] as int) < n2);
+                assert(n2 <= i2);
+            };
+            lemma_ids_lt_all(ids, ids.len() as int, i2);
+            lemma_chain_mid_prefix_len_step(a_k[i0], b_k, b_m, c_m, i1 + 1);
+            assert(chain_mid_prefix_len(a_k[i0], b_k, b_m, c_m, i1 + 1)
+                == chain_mid_prefix_len(a_k[i0], b_k, b_m, c_m, i1) + ids.len() as int);
+            assert(pos == base_len + chain_mid_prefix_len(a_k[i0], b_k, b_m, c_m, i1)
+                + ids.len() as int);
+            if i1 + 1 < b_k.len() {
+                if i1 + 1 < b_m.len() {
+                    if b_k[i1 + 1] == a_k[i0] {
+                        let ids_next = eq_row_ids(c_m, b_m[i1 + 1], c_m.len() as int);
+                        lemma_ids_lt_zero(ids_next, ids_next.len() as int);
+                    }
+                }
+            }
+            assert(chain_pos(a_k, b_k, b_m, c_m, i0, i1 + 1, 0)
+                == base_len + chain_mid_prefix_len(a_k[i0], b_k, b_m, c_m, i1 + 1));
+            assert(chain_pos(a_k, b_k, b_m, c_m, i0, i1 + 1, 0) == pos);
+        } else {
+            lemma_chain_mid_prefix_len_step(a_k[i0], b_k, b_m, c_m, i1 + 1);
+            assert(chain_mid_prefix_len(a_k[i0], b_k, b_m, c_m, i1 + 1)
+                == chain_mid_prefix_len(a_k[i0], b_k, b_m, c_m, i1));
+            assert(pos == base_len + chain_mid_prefix_len(a_k[i0], b_k, b_m, c_m, i1));
+            if i1 + 1 < b_k.len() {
+                if i1 + 1 < b_m.len() {
+                    if b_k[i1 + 1] == a_k[i0] {
+                        let ids_next = eq_row_ids(c_m, b_m[i1 + 1], c_m.len() as int);
+                        lemma_ids_lt_zero(ids_next, ids_next.len() as int);
+                    }
+                }
+            }
+            assert(chain_pos(a_k, b_k, b_m, c_m, i0, i1 + 1, 0)
+                == base_len + chain_mid_prefix_len(a_k[i0], b_k, b_m, c_m, i1 + 1));
+            assert(chain_pos(a_k, b_k, b_m, c_m, i0, i1 + 1, 0) == pos);
+        }
+    } else {
+        // Split on the two chain equalities with nested if (mirrors loop_acc_chain).
+        if a_k[i0] == b_k[i1] {
+            if b_m[i1] == c_m[i2] {
+                lemma_chain_acc(a_k, b_k, b_m, c_m, step, base, n0, n1, n2, i0, i1, i2 + 1);
+                lemma_eq_rank(c_m, b_m[i1], n2, i2);
+                let ids = eq_row_ids(c_m, b_m[i1], n2);
+                let tr = ids_lt(ids, ids.len() as int, i2);
+                let i0u = i0 as usize;
+                let i1u = i1 as usize;
+                let i2u = i2 as usize;
+                assert(i0u as int == i0);
+                assert(i1u as int == i1);
+                assert(i2u as int == i2);
+                lemma_nested_chain_step(a_k, b_k, b_m, c_m, i0 + 1);
+                let earlier = nested_chain(a_k, b_k, b_m, c_m, i0);
+                let prod = chain_mid_product(i0u, a_k[i0], b_k, b_m, c_m, n1);
+                let through = nested_chain(a_k, b_k, b_m, c_m, i0 + 1);
+                assert(through == earlier + prod);
+                let off = chain_mid_prefix_len(a_k[i0], b_k, b_m, c_m, i1);
+                lemma_chain_mid_at(i0u, a_k[i0], b_k, b_m, c_m, n1, i1, tr);
+                assert(prod[off + tr] == (i0u, i1u, ids[tr]));
+                assert(ids[tr] as int == i2);
+                assert(ids[tr] == i2u);
+                lemma_right_index(earlier, prod, off + tr);
+                assert(pos == earlier.len() as int + off + tr);
+                assert(pos < through.len());
+                lemma_nested_chain_len_mono(a_k, b_k, b_m, c_m, i0 + 1, n0);
+                assert(through.len() <= triples.len());
+                assert(pos < triples.len());
+                lemma_nested_chain_index(a_k, b_k, b_m, c_m, i0 + 1, n0, pos);
+                assert(triples[pos] == (i0u, i1u, i2u));
+                assert(pos + 1 == chain_pos(a_k, b_k, b_m, c_m, i0, i1, i2 + 1));
+                assert(loop_acc_chain(a_k, b_k, b_m, c_m, step, base, n0, n1, n2, i0, i1, i2)
+                    == step(
+                        loop_acc_chain(a_k, b_k, b_m, c_m, step, base, n0, n1, n2, i0, i1, i2 + 1),
+                        i0,
+                        i1,
+                        i2,
+                    ));
+                assert(triple_acc(triples, step, base, pos) == step(
+                    triple_acc(triples, step, base, pos + 1),
+                    i0,
+                    i1,
+                    i2,
+                ));
+            } else {
+                lemma_chain_acc(a_k, b_k, b_m, c_m, step, base, n0, n1, n2, i0, i1, i2 + 1);
+                let ids = eq_row_ids(c_m, b_m[i1], n2);
+                lemma_eq_members(c_m, b_m[i1], n2);
+                assert forall|p: int| 0 <= p < ids.len() implies (#[trigger] ids[p] as int) != i2 by {
+                    assert(c_m[(ids[p] as int)] == b_m[i1]);
+                };
+                lemma_ids_lt_skip(ids, ids.len() as int, i2);
+                assert(pos == chain_pos(a_k, b_k, b_m, c_m, i0, i1, i2 + 1));
+            }
+        } else {
+            lemma_chain_acc(a_k, b_k, b_m, c_m, step, base, n0, n1, n2, i0, i1, i2 + 1);
+            assert(pos == chain_pos(a_k, b_k, b_m, c_m, i0, i1, i2 + 1));
+        }
+    }
+}
+
+pub proof fn lemma_chain_pos_origin<K, M>(
+    a_k: Seq<K>,
+    b_k: Seq<K>,
+    b_m: Seq<M>,
+    c_m: Seq<M>,
+)
+    requires
+        b_k.len() == b_m.len(),
+    ensures
+        chain_pos(a_k, b_k, b_m, c_m, 0, 0, 0) == 0,
+{
+    assert(nested_chain(a_k, b_k, b_m, c_m, 0) =~= Seq::<(usize, usize, usize)>::empty());
+    if a_k.len() == 0 {
+        assert(chain_pos(a_k, b_k, b_m, c_m, 0, 0, 0) == 0);
+    } else {
+        assert(chain_mid_prefix_len(a_k[0], b_k, b_m, c_m, 0) == 0);
+        if 0 < b_k.len() {
+            if b_k[0] == a_k[0] {
+                let ids = eq_row_ids(c_m, b_m[0], c_m.len() as int);
+                lemma_ids_lt_zero(ids, ids.len() as int);
+            }
+        }
+        assert(chain_pos(a_k, b_k, b_m, c_m, 0, 0, 0) == 0);
+    }
+}
+
+/// At the origin indices, ``loop_acc_chain`` equals ``triple_acc`` of the chain list at 0.
+pub proof fn lemma_chain_at_origin<K, M, A>(
+    a_k: Seq<K>,
+    b_k: Seq<K>,
+    b_m: Seq<M>,
+    c_m: Seq<M>,
+    step: spec_fn(A, int, int, int) -> A,
+    base: A,
+    n0: int,
+    n1: int,
+    n2: int,
+)
+    requires
+        a_k.len() == n0,
+        b_k.len() == n1,
+        b_m.len() == n1,
+        c_m.len() == n2,
+        n0 <= usize::MAX as int,
+        n1 <= usize::MAX as int,
+        n2 <= usize::MAX as int,
+    ensures
+        loop_acc_chain(a_k, b_k, b_m, c_m, step, base, n0, n1, n2, 0, 0, 0)
+            == triple_acc(nested_chain(a_k, b_k, b_m, c_m, n0), step, base, 0),
+{
+    lemma_chain_acc(a_k, b_k, b_m, c_m, step, base, n0, n1, n2, 0, 0, 0);
+    lemma_chain_pos_origin(a_k, b_k, b_m, c_m);
+}
+
+/// Append inner matches for one middle row onto a chain triple list.
+pub fn push_chain_inners(
+    out: &mut Vec<(usize, usize, usize)>,
+    i: usize,
+    j: usize,
+    inners: &Vec<usize>,
+)
+    ensures
+        final(out)@ == old(out)@ + prefix_triples(i, j, inners@, inners@.len() as int),
+{
+    proof {
+        broadcast use vstd::std_specs::vec::axiom_spec_len;
+        assert(inners@.len() == inners.len() as int);
+    }
+    let ghost base = out@;
+    let mut t: usize = 0;
+    while t < inners.len()
+        invariant
+            t <= inners.len(),
+            inners@.len() == inners.len() as int,
+            out@ == base + prefix_triples(i, j, inners@, t as int),
+        decreases inners.len() - t,
+    {
+        let kid = inners[t];
+        let ghost old_out = out@;
+        out.push((i, j, kid));
+        proof {
+            assert(kid == inners@[t as int]);
+            lemma_prefix_triples_step(i, j, inners@, t as int);
+            assert(out@ == old_out.push((i, j, inners@[t as int])));
+            lemma_seq_add_push(base, prefix_triples(i, j, inners@, t as int), (i, j, inners@[t as int]));
+            assert(out@ == base + prefix_triples(i, j, inners@, t as int + 1));
+        }
+        t = t + 1;
+    }
+}
+
+pub proof fn lemma_chain_expand_mids_step<M>(
+    i: usize,
+    mids: Seq<usize>,
+    b_m: Seq<M>,
+    c_m: Seq<M>,
+    s: int,
+)
+    requires
+        0 <= s < mids.len(),
+        (mids[s] as int) < b_m.len(),
+    ensures
+        chain_expand_mids(i, mids, b_m, c_m, s + 1) == chain_expand_mids(i, mids, b_m, c_m, s)
+            + prefix_triples(
+                i,
+                mids[s],
+                eq_row_ids(c_m, b_m[mids[s] as int], c_m.len() as int),
+                eq_row_ids(c_m, b_m[mids[s] as int], c_m.len() as int).len() as int,
+            ),
+{
+    assert(chain_expand_mids(i, mids, b_m, c_m, s + 1) == chain_expand_mids(i, mids, b_m, c_m, s)
+        + prefix_triples(
+            i,
+            mids[s],
+            eq_row_ids(c_m, b_m[mids[s] as int], c_m.len() as int),
+            eq_row_ids(c_m, b_m[mids[s] as int], c_m.len() as int).len() as int,
+        ));
+}
+
+/// Chain equijoin: `a.k = b.k` and `b.m = c.m` (string keys). View equals [`nested_chain`].
+pub fn chain_eq_triples_str(
+    a_k: &Vec<String>,
+    b_k: &Vec<String>,
+    b_m: &Vec<String>,
+    c_m: &Vec<String>,
+) -> (triples: Vec<(usize, usize, usize)>)
+    requires
+        b_k@.len() == b_m@.len(),
+    ensures
+        triples@ == nested_chain(
+            key_views(a_k@),
+            key_views(b_k@),
+            key_views(b_m@),
+            key_views(c_m@),
+            a_k@.len() as int,
+        ),
+{
+    let idx_b = build_eq_index_str(b_k);
+    let idx_c = build_eq_index_str(c_m);
+    let ghost ak = key_views(a_k@);
+    let ghost bk = key_views(b_k@);
+    let ghost bm = key_views(b_m@);
+    let ghost cm = key_views(c_m@);
+    let mut triples: Vec<(usize, usize, usize)> = Vec::new();
+    let mut i: usize = 0;
+    while i < a_k.len()
+        invariant
+            i <= a_k.len(),
+            a_k@.len() == a_k.len() as int,
+            b_k@.len() == b_k.len() as int,
+            b_m@.len() == b_m.len() as int,
+            c_m@.len() == c_m.len() as int,
+            b_k@.len() == b_m@.len(),
+            ak == key_views(a_k@),
+            bk == key_views(b_k@),
+            bm == key_views(b_m@),
+            cm == key_views(c_m@),
+            index_ok(bk, idx_b.buckets@, idx_b.map@, b_k@.len() as int),
+            index_ok(cm, idx_c.buckets@, idx_c.map@, c_m@.len() as int),
+            triples@ == nested_chain(ak, bk, bm, cm, i as int),
+        decreases a_k.len() - i,
+    {
+        let key_a = a_k[i].clone();
+        let ghost end = i as int;
+        proof {
+            lemma_key_view_at(a_k@, end);
+            broadcast use vstd::std_specs::vec::axiom_spec_len;
+            assert(ak[end] == key_a@);
+            assert(bk.len() == b_k@.len());
+            assert(bm.len() == b_m@.len());
+            assert(cm.len() == c_m@.len());
+        }
+        let ghost before = triples@;
+        let present_b = idx_b.map.contains_key(key_a.as_str());
+        if present_b {
+            let got_b = idx_b.map.get(key_a.as_str());
+            let bi_b = *got_b.unwrap();
+            proof {
+                assert(idx_b.map@.contains_key(key_a@));
+                lemma_index_bucket(bk, idx_b.buckets@, idx_b.map@, bk.len() as int, key_a@);
+                assert((bi_b as int) < idx_b.buckets@.len());
+            }
+            let mids = &idx_b.buckets[bi_b];
+            let ghost mid_ids = mids@;
+            proof {
+                assert(mid_ids == eq_row_ids(bk, ak[end], bk.len() as int));
+                lemma_eq_members(bk, ak[end], bk.len() as int);
+            }
+            let mut s: usize = 0;
+            let ghost at_outer = triples@;
+            while s < mids.len()
+                invariant
+                    s <= mids.len(),
+                    mids@.len() == mids.len() as int,
+                    mid_ids == mids@,
+                    mid_ids == eq_row_ids(bk, ak[end], bk.len() as int),
+                    b_m@.len() == b_m.len() as int,
+                    c_m@.len() == c_m.len() as int,
+                    bm == key_views(b_m@),
+                    cm == key_views(c_m@),
+                    index_ok(cm, idx_c.buckets@, idx_c.map@, c_m@.len() as int),
+                    forall|p: int| 0 <= p < mid_ids.len() ==> (#[trigger] mid_ids[p] as int) < bm.len(),
+                    triples@ == at_outer + chain_expand_mids(i, mid_ids, bm, cm, s as int),
+                decreases mids.len() - s,
+            {
+                let j = mids[s];
+                proof {
+                    assert(j == mid_ids[s as int]);
+                    assert((j as int) < bm.len());
+                    assert((j as int) < b_m@.len());
+                }
+                let key_m = b_m[j].clone();
+                proof {
+                    lemma_key_view_at(b_m@, j as int);
+                    assert(bm[j as int] == key_m@);
+                }
+                let ghost before_mid = triples@;
+                let present_c = idx_c.map.contains_key(key_m.as_str());
+                if present_c {
+                    let got_c = idx_c.map.get(key_m.as_str());
+                    let bi_c = *got_c.unwrap();
+                    proof {
+                        assert(idx_c.map@.contains_key(key_m@));
+                        lemma_index_bucket(cm, idx_c.buckets@, idx_c.map@, cm.len() as int, key_m@);
+                        assert((bi_c as int) < idx_c.buckets@.len());
+                    }
+                    let inners = &idx_c.buckets[bi_c];
+                    push_chain_inners(&mut triples, i, j, inners);
+                    proof {
+                        assert(inners@ == eq_row_ids(cm, key_m@, cm.len() as int));
+                        assert(inners@ == eq_row_ids(cm, bm[j as int], cm.len() as int));
+                        lemma_chain_expand_mids_step(i, mid_ids, bm, cm, s as int);
+                        assert(triples@ == before_mid + prefix_triples(
+                            i,
+                            j,
+                            inners@,
+                            inners@.len() as int,
+                        ));
+                        assert(triples@ == at_outer + chain_expand_mids(i, mid_ids, bm, cm, s as int + 1));
+                    }
+                } else {
+                    proof {
+                        assert(!idx_c.map@.contains_key(key_m@));
+                        lemma_index_absent(cm, idx_c.buckets@, idx_c.map@, cm.len() as int, key_m@);
+                        lemma_eq_row_ids_len0(cm, key_m@, cm.len() as int);
+                        assert(eq_row_ids(cm, bm[j as int], cm.len() as int) =~= Seq::<usize>::empty());
+                        lemma_prefix_triples_len(i, j, Seq::<usize>::empty(), 0);
+                        lemma_chain_expand_mids_step(i, mid_ids, bm, cm, s as int);
+                        lemma_seq_add_empty(before_mid);
+                        assert(triples@ == at_outer + chain_expand_mids(i, mid_ids, bm, cm, s as int + 1));
+                    }
+                }
+                s = s + 1;
+            }
+            proof {
+                lemma_chain_mid_eq_expand(i, ak[end], bk, bm, cm, bk.len() as int);
+                assert(mids@ == eq_row_ids(bk, ak[end], bk.len() as int));
+                assert(triples@ == before + chain_mid_product(i, ak[end], bk, bm, cm, bk.len() as int));
+                lemma_nested_chain_step(ak, bk, bm, cm, end + 1);
+                assert(triples@ == nested_chain(ak, bk, bm, cm, end + 1));
+            }
+        } else {
+            proof {
+                assert(!idx_b.map@.contains_key(key_a@));
+                lemma_index_absent(bk, idx_b.buckets@, idx_b.map@, bk.len() as int, key_a@);
+                lemma_eq_row_ids_len0(bk, key_a@, bk.len() as int);
+                assert(eq_row_ids(bk, ak[end], bk.len() as int) =~= Seq::<usize>::empty());
+                lemma_chain_mid_eq_expand(i, ak[end], bk, bm, cm, bk.len() as int);
+                assert(chain_expand_mids(i, Seq::<usize>::empty(), bm, cm, 0)
+                    =~= Seq::<(usize, usize, usize)>::empty());
+                assert(chain_mid_product(i, ak[end], bk, bm, cm, bk.len() as int)
+                    =~= Seq::<(usize, usize, usize)>::empty());
+                lemma_nested_chain_step(ak, bk, bm, cm, end + 1);
+                lemma_seq_add_empty(before);
+                assert(triples@ == nested_chain(ak, bk, bm, cm, end + 1));
+            }
+        }
+        i = i + 1;
+    }
+    triples
+}
+
+// SHAPE_CHAIN_END
+
 // EQ_JOIN_PROVED_END
 
 #[verifier::external_body]

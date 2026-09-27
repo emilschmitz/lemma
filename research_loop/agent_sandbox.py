@@ -202,7 +202,7 @@ def _rocketship_exec_section() -> str:
 ## Exec shape
 `LEMMA_FAST_TRUSTEDS` is off. `build_hashset_u32`, `probe_sum_u64`, and `par_*` are not in scope.
 Join MethodSpec is still the nested `rem_join` / `rem_join_sq` fold in `spec.rs`. Prove `ensures res == method_spec(...)`.
-Join files already contain `equijoin_pairs_str`, `equijoin_pairs_str2`, `equijoin_pairs_u64`, `equijoin_pairs_u32`, `star_eq_triples_str`, and `star_eq_quads_str`, plus `lemma_<helper>_is_loop`, `lemma_<helper>_is_loop2`, `lemma_<helper>_is_star`, or `lemma_<helper>_is_quad` when that shape applies. Call those. Walk the pair, triple, or quad list from the end.
+Join files already contain `equijoin_pairs_str`, `equijoin_pairs_str2`, `equijoin_pairs_u64`, `equijoin_pairs_u32`, `star_eq_triples_str`, `chain_eq_triples_str`, and `star_eq_quads_str`, plus `lemma_<helper>_is_loop`, `lemma_<helper>_is_loop2`, `lemma_<helper>_is_star`, `lemma_<helper>_is_chain`, or `lemma_<helper>_is_quad` when that shape applies. Call those. Walk the pair, triple, or quad list from the end.
 Do not invent a HashMap or HashSet index of your own. Do not rebuild the correspondence those lemmas already prove.
 """
 
