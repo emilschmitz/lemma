@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 
 from .parse_sql import (
     AggSpec,
@@ -38,6 +38,51 @@ class _FoldBridge:
     slots: list[_Slot]
     helper_zeros: str
     fold_rhs: str
+    extra_params: list[tuple[str, str]] = field(default_factory=list)
+    extra_lets: list[tuple[str, str]] = field(default_factory=list)
+
+
+def _is_base_eq_part(part: str) -> bool:
+    """True when ``part`` is a column equality usable as a pair/star fold key."""
+    left_txt, sep, right_txt = part.partition(" == ")
+    if sep != " == ":
+        return False
+    left = _JOIN_SIDE.fullmatch(left_txt.strip())
+    right = _JOIN_SIDE.fullmatch(right_txt.strip())
+    return (
+        left is not None
+        and right is not None
+        and bool(left.group("view")) == bool(right.group("view"))
+    )
+
+
+def _split_join_for_fold(join_cond: str) -> tuple[str, str | None]:
+    """Split base table equalities from derived-map lookups (``contains_key`` / map vals)."""
+    parts = [p.strip() for p in join_cond.split(" && ") if p.strip()]
+    base = [p for p in parts if _is_base_eq_part(p)]
+    derived = [p for p in parts if not _is_base_eq_part(p)]
+    if not base:
+        return join_cond, None
+    return " && ".join(base), (" && ".join(derived) if derived else None)
+
+
+def _merge_step_filters(*parts: str | None) -> str | None:
+    kept = [p for p in parts if p]
+    if not kept:
+        return None
+    return " && ".join(kept)
+
+
+def _extra_sig(extra_params: list[tuple[str, str]] | None) -> str:
+    if not extra_params:
+        return ""
+    return ", " + ", ".join(f"{n}: {t}" for n, t in extra_params)
+
+
+def _extra_args(extra_params: list[tuple[str, str]] | None) -> str:
+    if not extra_params:
+        return ""
+    return ", " + ", ".join(n for n, _ in extra_params)
 
 
 def _derived_aliases(query: SQLQuery) -> set[str]:
@@ -644,10 +689,17 @@ def _pair_fold_lemma(
 
     One equality only. The filter and aggregate stay in the step closure, which
     is applied only on key matches. ``lemma_acc`` then equates that to the pair list.
+
+    Derived-table Maps (``extra_params``) are threaded into the helper/lemma and
+    into the step as ``contains_key`` / value lookups — not a second index.
     """
-    if extra_params or len(slots) != 2 or "&&" in join_cond:
+    if len(slots) != 2:
         return None
-    left_txt, sep, right_txt = join_cond.partition(" == ")
+    base_cond, derived_filt = _split_join_for_fold(join_cond)
+    if "&&" in base_cond:
+        return None
+    filter_cond = _merge_step_filters(derived_filt, filter_cond)
+    left_txt, sep, right_txt = base_cond.partition(" == ")
     if sep != " == ":
         return None
     left = _JOIN_SIDE.fullmatch(left_txt.strip())
@@ -681,6 +733,9 @@ def _pair_fold_lemma(
     else:
         step = step_body
     o, i = slots
+    extras = list(extra_params or [])
+    xsig = _extra_sig(extras)
+    xargs = _extra_args(extras)
     params = ", ".join(f"{s.param}: &{s.struct}" for s in slots)
     recurse_args = ", ".join(s.param for s in slots)
     lemma = f"lemma_{helper_name}_is_loop"
@@ -690,7 +745,7 @@ def _pair_fold_lemma(
         f"                {step}\n"
         f"            }}"
     )
-    helper_zeros = f"{helper_name}({recurse_args}, {_init_indices(slots)})"
+    helper_zeros = f"{helper_name}({recurse_args}{xargs}, {_init_indices(slots)})"
     fold_rhs = (
         f"pair_acc(\n"
         f"            nested_eq_pairs({seq_expr(outer)}, {seq_expr(inner)},"
@@ -700,7 +755,8 @@ def _pair_fold_lemma(
         f"            0,\n"
         f"        )"
     )
-    text = f"""pub proof fn {lemma}({params}, {o.idx}: int, {i.idx}: int)
+    shape_mark = "// shape: derived.\n" if extras else ""
+    text = f"""{shape_mark}pub proof fn {lemma}({params}{xsig}, {o.idx}: int, {i.idx}: int)
     requires
         valid_cols_{o.table}({o.param}),
         valid_cols_{i.table}({i.param}),
@@ -709,7 +765,7 @@ def _pair_fold_lemma(
         0 <= {o.idx} <= {o.param}.n,
         0 <= {i.idx} <= {i.param}.n,
     ensures
-        {helper_name}({recurse_args}, {o.idx}, {i.idx}) == loop_acc(
+        {helper_name}({recurse_args}{xargs}, {o.idx}, {i.idx}) == loop_acc(
             {seq_expr(outer)},
             {seq_expr(inner)},
             {step_closure},
@@ -723,16 +779,16 @@ def _pair_fold_lemma(
 {{
     if {o.idx} < {o.param}.n {{
         if {i.idx} < {i.param}.n {{
-            {lemma}({recurse_args}, {o.idx}, {i.idx} + 1);
+            {lemma}({recurse_args}{xargs}, {o.idx}, {i.idx} + 1);
             {key_assert(outer)}
             {key_assert(inner)}
         }} else {{
-            {lemma}({recurse_args}, {o.idx} + 1, 0);
+            {lemma}({recurse_args}{xargs}, {o.idx} + 1, 0);
         }}
     }}
 }}
 
-pub proof fn {pairs}({params})
+pub proof fn {pairs}({params}{xsig})
     requires
         valid_cols_{o.table}({o.param}),
         valid_cols_{i.table}({i.param}),
@@ -741,7 +797,7 @@ pub proof fn {pairs}({params})
     ensures
         {helper_zeros} == {fold_rhs},
 {{
-    {lemma}({recurse_args}, 0, 0);
+    {lemma}({recurse_args}{xargs}, 0, 0);
     lemma_loop_at_origin(
         {seq_expr(outer)},
         {seq_expr(inner)},
@@ -757,6 +813,7 @@ pub proof fn {pairs}({params})
         slots=list(slots),
         helper_zeros=helper_zeros,
         fold_rhs=fold_rhs,
+        extra_params=extras,
     )
     return text, bridge
 
@@ -776,10 +833,13 @@ def _pair2_fold_lemma(
 
     Both equalities join the same outer row to the same inner row. The filter
     stays in the step closure. ``lemma_acc2`` equates that to ``equijoin_pairs_str2``.
+    Derived Maps ride in ``extra_params`` and the step (see ``// shape: derived.``).
     """
-    if extra_params or len(slots) != 2:
+    if len(slots) != 2:
         return None
-    parts = [part.strip() for part in join_cond.split(" && ")]
+    base_cond, derived_filt = _split_join_for_fold(join_cond)
+    filter_cond = _merge_step_filters(derived_filt, filter_cond)
+    parts = [part.strip() for part in base_cond.split(" && ")]
     if len(parts) != 2:
         return None
     outer_idx, inner_idx = slots[0].idx, slots[1].idx
@@ -820,6 +880,9 @@ def _pair2_fold_lemma(
     else:
         step = step_body
     o, i = slots
+    extras = list(extra_params or [])
+    xsig = _extra_sig(extras)
+    xargs = _extra_args(extras)
     (a_outer, a_inner), (b_outer, b_inner) = oriented
     asserts = "\n            ".join(
         key_assert(side) for side in (a_outer, a_inner, b_outer, b_inner)
@@ -833,7 +896,7 @@ def _pair2_fold_lemma(
         f"                {step}\n"
         f"            }}"
     )
-    helper_zeros = f"{helper_name}({recurse_args}, {_init_indices(slots)})"
+    helper_zeros = f"{helper_name}({recurse_args}{xargs}, {_init_indices(slots)})"
     fold_rhs = (
         f"pair_acc(\n"
         f"            nested_eq_pairs2(\n"
@@ -848,7 +911,8 @@ def _pair2_fold_lemma(
         f"            0,\n"
         f"        )"
     )
-    text = f"""pub proof fn {lemma}({params}, {o.idx}: int, {i.idx}: int)
+    shape_mark = "// shape: derived.\n" if extras else ""
+    text = f"""{shape_mark}pub proof fn {lemma}({params}{xsig}, {o.idx}: int, {i.idx}: int)
     requires
         valid_cols_{o.table}({o.param}),
         valid_cols_{i.table}({i.param}),
@@ -857,7 +921,7 @@ def _pair2_fold_lemma(
         0 <= {o.idx} <= {o.param}.n,
         0 <= {i.idx} <= {i.param}.n,
     ensures
-        {helper_name}({recurse_args}, {o.idx}, {i.idx}) == loop_acc2(
+        {helper_name}({recurse_args}{xargs}, {o.idx}, {i.idx}) == loop_acc2(
             {seq_expr(a_outer)},
             {seq_expr(b_outer)},
             {seq_expr(a_inner)},
@@ -873,15 +937,15 @@ def _pair2_fold_lemma(
 {{
     if {o.idx} < {o.param}.n {{
         if {i.idx} < {i.param}.n {{
-            {lemma}({recurse_args}, {o.idx}, {i.idx} + 1);
+            {lemma}({recurse_args}{xargs}, {o.idx}, {i.idx} + 1);
             {asserts}
         }} else {{
-            {lemma}({recurse_args}, {o.idx} + 1, 0);
+            {lemma}({recurse_args}{xargs}, {o.idx} + 1, 0);
         }}
     }}
 }}
 
-pub proof fn {pairs}({params})
+pub proof fn {pairs}({params}{xsig})
     requires
         valid_cols_{o.table}({o.param}),
         valid_cols_{i.table}({i.param}),
@@ -890,7 +954,7 @@ pub proof fn {pairs}({params})
     ensures
         {helper_zeros} == {fold_rhs},
 {{
-    {lemma}({recurse_args}, 0, 0);
+    {lemma}({recurse_args}{xargs}, 0, 0);
     lemma_loop2_at_origin(
         {seq_expr(a_outer)},
         {seq_expr(b_outer)},
@@ -908,6 +972,7 @@ pub proof fn {pairs}({params})
         slots=list(slots),
         helper_zeros=helper_zeros,
         fold_rhs=fold_rhs,
+        extra_params=extras,
     )
     return text, bridge
 
@@ -974,11 +1039,14 @@ def _star_fold_lemma(
 
     One equality to the middle table and two equalities to the inner table,
     all on string columns. ``lemma_star_acc`` equates that to ``nested_star``.
+    Derived Maps ride in ``extra_params`` and the step (see ``// shape: derived.``).
     """
-    if extra_params or len(slots) != 3:
+    if len(slots) != 3:
         return None
+    base_cond, derived_filt = _split_join_for_fold(join_cond)
+    filter_cond = _merge_step_filters(derived_filt, filter_cond)
     parsed: list[tuple[re.Match[str], re.Match[str]]] = []
-    for part in join_cond.split(" && "):
+    for part in base_cond.split(" && "):
         left_txt, sep, right_txt = part.strip().partition(" == ")
         if sep != " == ":
             return None
@@ -1037,6 +1105,9 @@ def _star_fold_lemma(
     asserts = "\n            ".join(
         key_assert(side) for side in (a_outer, a_mid, t_outer, t_inner, v_outer, v_inner)
     )
+    extras = list(extra_params or [])
+    xsig = _extra_sig(extras)
+    xargs = _extra_args(extras)
     lemma = f"lemma_{helper_name}_is_star"
     pairs = f"lemma_{helper_name}_is_star_pairs"
     params = ", ".join(f"{s.param}: &{s.struct}" for s in slots)
@@ -1046,7 +1117,7 @@ def _star_fold_lemma(
         f"                {step}\n"
         f"            }}"
     )
-    helper_zeros = f"{helper_name}({recurse}, {_init_indices(slots)})"
+    helper_zeros = f"{helper_name}({recurse}{xargs}, {_init_indices(slots)})"
     fold_rhs = (
         f"triple_acc(\n"
         f"            nested_star(\n"
@@ -1063,7 +1134,8 @@ def _star_fold_lemma(
         f"            0,\n"
         f"        )"
     )
-    text = f"""pub proof fn {lemma}({params}, {outer.idx}: int, {mid.idx}: int, {inner.idx}: int)
+    shape_mark = "// shape: derived.\n" if extras else ""
+    text = f"""{shape_mark}pub proof fn {lemma}({params}{xsig}, {outer.idx}: int, {mid.idx}: int, {inner.idx}: int)
     requires
         valid_cols_{outer.table}({outer.param}),
         valid_cols_{mid.table}({mid.param}),
@@ -1075,7 +1147,7 @@ def _star_fold_lemma(
         0 <= {mid.idx} <= {mid.param}.n,
         0 <= {inner.idx} <= {inner.param}.n,
     ensures
-        {helper_name}({recurse}, {outer.idx}, {mid.idx}, {inner.idx}) == loop_acc3(
+        {helper_name}({recurse}{xargs}, {outer.idx}, {mid.idx}, {inner.idx}) == loop_acc3(
             {seq_of(a_outer)},
             {seq_of(t_outer)},
             {seq_of(v_outer)},
@@ -1096,18 +1168,18 @@ def _star_fold_lemma(
     if {outer.idx} < {outer.param}.n {{
         if {mid.idx} < {mid.param}.n {{
             if {inner.idx} < {inner.param}.n {{
-                {lemma}({recurse}, {outer.idx}, {mid.idx}, {inner.idx} + 1);
+                {lemma}({recurse}{xargs}, {outer.idx}, {mid.idx}, {inner.idx} + 1);
                 {asserts}
             }} else {{
-                {lemma}({recurse}, {outer.idx}, {mid.idx} + 1, 0);
+                {lemma}({recurse}{xargs}, {outer.idx}, {mid.idx} + 1, 0);
             }}
         }} else {{
-            {lemma}({recurse}, {outer.idx} + 1, 0, 0);
+            {lemma}({recurse}{xargs}, {outer.idx} + 1, 0, 0);
         }}
     }}
 }}
 
-pub proof fn {pairs}({params})
+pub proof fn {pairs}({params}{xsig})
     requires
         valid_cols_{outer.table}({outer.param}),
         valid_cols_{mid.table}({mid.param}),
@@ -1118,7 +1190,7 @@ pub proof fn {pairs}({params})
     ensures
         {helper_zeros} == {fold_rhs},
 {{
-    {lemma}({recurse}, 0, 0, 0);
+    {lemma}({recurse}{xargs}, 0, 0, 0);
     lemma_star_at_origin(
         {seq_of(a_outer)},
         {seq_of(t_outer)},
@@ -1139,6 +1211,7 @@ pub proof fn {pairs}({params})
         slots=list(slots),
         helper_zeros=helper_zeros,
         fold_rhs=fold_rhs,
+        extra_params=extras,
     )
     return text, bridge
 
@@ -1170,13 +1243,18 @@ def _emit_method_is_fold(bridge: _FoldBridge, method_body: str) -> str:
         req_lines.append(f"{s.param}.n <= usize::MAX,")
     requires = "\n        ".join(req_lines)
     name = f"lemma_{bridge.helper_name}_method_is_fold"
+    pairs_args = recurse
+    if bridge.extra_params:
+        pairs_args = recurse + ", " + ", ".join(n for n, _ in bridge.extra_params)
+    lets = "\n    ".join(f"let {n} = {e};" for n, e in bridge.extra_lets)
+    lets_block = f"{lets}\n    " if lets else ""
     return f"""pub proof fn {name}({params})
     requires
         {requires}
     ensures
         method_spec({recurse}) == {rhs},
 {{
-    {bridge.pairs_lemma}({recurse});
+    {lets_block}{bridge.pairs_lemma}({pairs_args});
     assert(method_spec({recurse}) == {rhs});
 }}"""
 
@@ -1484,6 +1562,7 @@ def _emit_join_multi_agg(
         ret_base="Map::empty()",
         extra_params=_derived_map_extra_params(derived_map_vars, derived_map_types),
     )
+    # // shape: derived.
     fold = _fold_lemma(
         helper_name,
         slots,
@@ -1775,6 +1854,7 @@ def _emit_join_projection(
         ret_base="Seq::empty()",
         extra_params=_derived_map_extra_params(derived_map_vars, derived_map_types),
     )
+    # // shape: derived.
     fold = _fold_lemma(
         helper_name,
         slots,
@@ -1992,6 +2072,7 @@ def _emit_single_agg_nway(
         ret_base=ret_base,
         extra_params=_derived_map_extra_params(derived_map_vars, derived_map_types),
     )
+    # // shape: derived.
     fold = _fold_lemma(
         helper_name,
         slots,
@@ -2167,8 +2248,19 @@ def emit_join_spec_helpers(
 
     if derived_prelude:
         spec_body = derived_prelude + "    " + spec_body
-        # Derived maps change the helper call shape; fold bridge is None there.
-        fold_bridge = None
+        # // shape: derived. — keep fold bridge; thread Map lets into method_is_fold.
+        if fold_bridge is not None:
+            lets = [
+                (
+                    derived_map_vars[d.alias],
+                    (
+                        f"derived_{d.alias}_spec("
+                        f"{d.query.tables[0] if d.query.tables else base[0]})"
+                    ),
+                )
+                for d in query.derived_tables
+            ]
+            fold_bridge = replace(fold_bridge, extra_lets=lets)
 
     param_list = ", ".join(f"{s.param}: &{s.struct}" for s in slots)
     recommends = "\n        ".join(
