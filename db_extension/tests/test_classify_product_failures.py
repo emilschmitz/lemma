@@ -73,11 +73,21 @@ agent_resource_exhausted: retry 1/8 iter=1 wait_s=30 (Cursor API quota; not cons
     assert out.get("detail") == "resource_exhausted"
 
 
-def test_classify_docker_exit_minus9_timed_out_false_is_agent_timeout() -> None:
+def test_classify_docker_exit_minus9_with_verus_error_is_agent() -> None:
     text = """
 CUSTOM_PIPELINE_FAILED [verify]: verus verify failed
 error: invariant not satisfied
 // AGENT_EDIT_START
+agent_docker_end: exit=-9 timed_out=False
+"""
+    out = classify_optimizer_log(text)
+    assert out["step"] == 3
+    assert out["class"] == "agent stupidity"
+    assert out.get("detail") == "run_query AGENT_EDIT"
+
+
+def test_classify_docker_exit_minus9_without_diagnostic_is_timeout() -> None:
+    text = """
 agent_docker_end: exit=-9 timed_out=False
 """
     out = classify_optimizer_log(text)

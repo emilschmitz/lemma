@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from typing import Any
 
 from research_loop.experiment_stream import (
     duckdb_error_is_contention,
@@ -79,6 +80,28 @@ def _safe_duckdb_table_name(table: str) -> bool:
     return bool(table) and table.replace("_", "").isalnum()
 
 
+def _quote_duckdb_ident(name: str) -> str:
+    """Quote a DuckDB identifier, doubling embedded quotes."""
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _fetch_one(con: Any, sql: str) -> tuple | None:
+    """One measurement query.
+
+    Lock contention is re-raised so the caller can record it. Any other
+    error skips this column instead of dropping the whole catalog.
+    """
+    try:
+        row = con.execute(sql).fetchone()
+    except Exception as exc:
+        if duckdb_error_is_contention(str(exc)):
+            raise
+        return None
+    if row is None:
+        return None
+    return tuple(row)
+
+
 def _count_duckdb_primary_rows() -> int | None:
     """Row count from LEMMA_DUCKDB_PATH primary table (SEC / DuckDB workloads)."""
     db = os.environ.get("LEMMA_DUCKDB_PATH", "").strip()
@@ -126,6 +149,14 @@ _INTEGER_DUCKDB_TYPES = frozenset(
         "hugeint",
         "tinyint",
         "int1",
+        "utinyint",
+        "uint8",
+        "usmallint",
+        "uint16",
+        "uinteger",
+        "uint32",
+        "ubigint",
+        "uint64",
     }
 )
 
@@ -173,12 +204,14 @@ def table_unique_keys() -> dict[str, tuple[tuple[str, ...], ...]] | None:
                 for key in _UNIQUE_KEY_CANDIDATES:
                     if not set(key).issubset(columns):
                         continue
-                    group = ", ".join(key)
-                    max_row = con.execute(
+                    group = ", ".join(_quote_duckdb_ident(col) for col in key)
+                    quoted_table = _quote_duckdb_ident(table_name)
+                    max_row = _fetch_one(
+                        con,
                         f"SELECT MAX(c) FROM ("
-                        f"SELECT COUNT(*) AS c FROM {table_name} GROUP BY {group}"
-                        f")"
-                    ).fetchone()
+                        f"SELECT COUNT(*) AS c FROM {quoted_table} GROUP BY {group}"
+                        f")",
+                    )
                     if max_row is None or max_row[0] is None:
                         continue
                     if int(max_row[0]) == 1:
@@ -235,16 +268,19 @@ def table_column_abs_sum_caps() -> dict[str, dict[str, int]] | None:
                 base = str(dtype).lower().split("(")[0]
                 if base not in _INTEGER_DUCKDB_TYPES | _FLOAT_DUCKDB_TYPES:
                     continue
-                sum_row = con.execute(
-                    f'SELECT CASE '
-                    f'WHEN COUNT(*) FILTER ('
-                    f'WHERE "{column_name}" IS NOT NULL '
-                    f'AND ABS("{column_name}") >= {_U64_MAX_EXCLUSIVE}'
-                    f') > 0 THEN NULL '
-                    f'ELSE SUM(CAST(CEIL(ABS("{column_name}")) AS HUGEINT)) '
-                    f'FILTER (WHERE "{column_name}" IS NOT NULL) '
-                    f'END FROM {table_name}'
-                ).fetchone()
+                quoted_col = _quote_duckdb_ident(column_name)
+                quoted_table = _quote_duckdb_ident(table_name)
+                sum_row = _fetch_one(
+                    con,
+                    f"SELECT CASE "
+                    f"WHEN COUNT(*) FILTER ("
+                    f"WHERE {quoted_col} IS NOT NULL "
+                    f"AND ABS({quoted_col}) >= {_U64_MAX_EXCLUSIVE}"
+                    f") > 0 THEN NULL "
+                    f"ELSE SUM(CAST(CEIL(ABS({quoted_col})) AS HUGEINT)) "
+                    f"FILTER (WHERE {quoted_col} IS NOT NULL) "
+                    f"END FROM {quoted_table}",
+                )
                 if sum_row is None or sum_row[0] is None:
                     continue
                 total = int(sum_row[0])
@@ -296,32 +332,42 @@ def table_column_value_caps() -> dict[str, dict[str, int]] | None:
                 base = str(dtype).lower().split("(")[0]
                 if base not in _INTEGER_DUCKDB_TYPES | _FLOAT_DUCKDB_TYPES:
                     continue
-                max_row = con.execute(
-                    f'SELECT MAX(ABS("{column_name}")) FROM {table_name}'
-                ).fetchone()
+                quoted_col = _quote_duckdb_ident(column_name)
+                quoted_table = _quote_duckdb_ident(table_name)
+                max_row = _fetch_one(
+                    con,
+                    f"SELECT MAX(ABS({quoted_col})) FROM {quoted_table}",
+                )
                 if max_row is None or max_row[0] is None:
                     continue
                 max_abs = max_row[0]
                 if base in _FLOAT_DUCKDB_TYPES:
                     # Stay in HUGEINT. float64 cannot represent integers above 2^53,
                     # so a Python float round-trip can publish a cap below the real max.
-                    exact_row = con.execute(
-                        f'SELECT CASE '
-                        f'WHEN MAX(ABS("{column_name}")) IS NULL THEN NULL '
-                        f'WHEN MAX(ABS("{column_name}")) <> TRUNC(MAX(ABS("{column_name}"))) THEN NULL '
-                        f'WHEN MAX(ABS("{column_name}")) < 0 THEN NULL '
-                        f'WHEN MAX(ABS("{column_name}")) >= {_U64_MAX_EXCLUSIVE} THEN NULL '
-                        f'ELSE CAST(TRUNC(MAX(ABS("{column_name}"))) AS HUGEINT) '
-                        f'END FROM {table_name}'
-                    ).fetchone()
+                    exact_row = _fetch_one(
+                        con,
+                        f"SELECT CASE "
+                        f"WHEN MAX(ABS({quoted_col})) IS NULL THEN NULL "
+                        f"WHEN MAX(ABS({quoted_col})) <> TRUNC(MAX(ABS({quoted_col}))) THEN NULL "
+                        f"WHEN MAX(ABS({quoted_col})) < 0 THEN NULL "
+                        f"WHEN MAX(ABS({quoted_col})) >= {_U64_MAX_EXCLUSIVE} THEN NULL "
+                        f"ELSE CAST(TRUNC(MAX(ABS({quoted_col}))) AS HUGEINT) "
+                        f"END FROM {quoted_table}",
+                    )
                     exact = None if exact_row is None else exact_row[0]
                     if exact is None:
                         continue
                     exclusive = int(exact) + 1
-                    if exclusive > _U64_MAX_EXCLUSIVE:
+                    if exclusive <= 0 or exclusive >= _U64_MAX_EXCLUSIVE:
                         continue
                 else:
-                    exclusive = int(max_abs) + 1
+                    try:
+                        exclusive = int(max_abs) + 1
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                    # A u64 const cannot name 2^64. Skip the column.
+                    if exclusive <= 0 or exclusive >= _U64_MAX_EXCLUSIVE:
+                        continue
                 caps.setdefault(table_name, {})[column_name] = exclusive
             return caps or None
         finally:
@@ -356,7 +402,12 @@ def table_row_counts() -> dict[str, int] | None:
                 name = str(table)
                 if not _safe_duckdb_table_name(name):
                     continue
-                n = int(con.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0])
+                count_row = _fetch_one(
+                    con, f"SELECT COUNT(*) FROM {_quote_duckdb_ident(name)}"
+                )
+                if count_row is None or count_row[0] is None:
+                    continue
+                n = int(count_row[0])
                 counts[name] = n
             return counts or None
         finally:
