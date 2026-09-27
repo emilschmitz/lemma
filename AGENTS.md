@@ -72,14 +72,15 @@ AGENTS.md” when they finish a milestone or before strip/inject.
 
 When booking cloud VMs for Lemma experiments:
 
-- **At most two** compute instances at a time. Do not create a third; stop or delete one first.
+- **One VM.** Only one compute instance may be active at a time. Do not create a second.
+  If one is running, stop or delete it before starting another.
 - **No GPUs.** CPU/RAM only. **Never** A100/H100, TPU, multi-node, or anything in the
   **~$100/hr** class. If a create would exceed the cap, **stop** — do not “just this once.”
 - Prefer template / known shape: Spot **`n2-highmem-64`** from snapshot
   `lemma-gendb-pre-spot-*` (or the saved `lemma-gendb-n2-highmem-64` template overrides).
   Target **~$2–4/hr**. On-demand n2-highmem-64 is ~$4.19/hr; **Spot** is ~$1.8–2.2/hr
-  in us-east1/us-central1. **Hard cap $7/hr** total (all VMs combined). On-demand is OK if
-  Spot is out of stock. If Spot stock fails, retry another zone — still ≤2 machines, still
+  in us-east1/us-central1. **Hard cap $7/hr** for that one VM. On-demand is OK if
+  Spot is out of stock. If Spot stock fails, retry another zone — still one machine, still
   under the cap — do not “upgrade” the machine class. **Never** ~$100/hr GPUs / multi-node.
 - Agent timeouts for paper/CLI runs stay **`AGENT_TIMEOUT_SEC=600`** (10 min) unless Emil
   overrides. Model is **Grok 4.7 high**: slug **`grok-4.7-high`** in

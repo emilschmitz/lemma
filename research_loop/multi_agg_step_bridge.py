@@ -1780,12 +1780,27 @@ def _emit_sum_add_fit_steps(
         f"\n{indent}        ({row_factors}) * ({col_cap} as int) <= u64::MAX as int,"
         f"\n{indent}        {{}};"
     )
+    # Stay in int. A u64 multiply in the requires is wrapping, so nonlinear_arith
+    # will not conclude prev_slot + cell <= u64::MAX from it.
+    lines.append(
+        f"{indent}assert(({cap_const} as int) == ({col_cap} as int)) by (compute);"
+    )
+    lines.append(f"{indent}assert(0 <= ({sum_delta}));")
+    lines.append(
+        f"{indent}assert((prev_slot as int) + ({sum_delta})"
+        f" <= ({rem_tail_int} + 1) * ({cap_const} as int)) by (nonlinear_arith)"
+        f"\n{indent}    requires"
+        f"\n{indent}        prev_slot as int <= {rem_tail_int} * ({cap_const} as int),"
+        f"\n{indent}        ({sum_delta}) < ({cap_const} as int),"
+        f"\n{indent}        0 <= ({sum_delta}),"
+        f"\n{indent}        {{}};"
+    )
     lines.append(
         f"{indent}assert((prev_slot as int) + ({sum_delta}) <= u64::MAX as int) by (nonlinear_arith)"
         f"\n{indent}    requires"
-        f"\n{indent}        prev_slot <= rem_tail_u64 * ({cap_const} as u64),"
-        f"\n{indent}        ({sum_delta}) < ({cap_const} as int),"
+        f"\n{indent}        (prev_slot as int) + ({sum_delta}) <= ({rem_tail_int} + 1) * ({cap_const} as int),"
         f"\n{indent}        ({rem_tail_int} + 1) * ({col_cap} as int) <= u64::MAX as int,"
+        f"\n{indent}        ({cap_const} as int) == ({col_cap} as int),"
         f"\n{indent}        {{}};"
     )
     return lines
