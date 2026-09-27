@@ -5476,6 +5476,13 @@ pub fn anti_miss_rows_str3(
 }
 // SHAPE_LEFT3_END
 
+// SHAPE_ANTI_BEGIN
+// ANTI JOIN keyword (two-table, one equality): miss rows = outer ids with no match.
+// Reuses nested_anti_misses / anti_miss_rows_str / miss_acc / anti_loop_acc /
+// lemma_anti_at_origin from SHAPE_LEFT — do not fork a second copy here.
+// Transpiler emits lemma_<helper>_is_anti (+ _is_anti_loop) and method_is_fold.
+// SHAPE_ANTI_END
+
 // EQ_JOIN_PROVED_END
 
 

@@ -1928,16 +1928,23 @@ def _left_fold_lemma(
     update_body: str,
     ret_type: str,
     ret_base: str,
+    shape: str = "left",
 ) -> tuple[str, _FoldBridge] | None:
-    """Proof that a LEFT-anti helper equals ``miss_acc`` of ``nested_anti_misses``.
+    """Proof that an anti-join helper equals ``miss_acc`` of ``nested_anti_misses``.
 
-    // shape: left
-    One equality, or three string equalities (holdout Q24). Miss rows are unmatched
-    left ids; the filter stays in the step.
+    // shape: left  — LEFT JOIN … IS NULL (one key, or three string keys for holdout Q24)
+    // shape: anti  — ANTI JOIN keyword (one equality)
+    One equality, or three string equalities on LEFT anti. Miss rows are unmatched
+    outer ids; the filter stays in the step.
+    Reuses ``nested_anti_misses`` / ``anti_miss_rows_str`` from SHAPE_LEFT.
     """
+    if shape not in ("left", "anti"):
+        raise ValueError(f"unsupported anti fold shape {shape!r}")
     if len(slots) != 2:
         return None
     if "&&" in match_conds:
+        if shape != "left":
+            return None
         return _left3_fold_lemma(
             helper_name,
             slots,
@@ -2002,8 +2009,8 @@ def _left_fold_lemma(
         f"            0,\n"
         f"        )"
     )
-    loop_lemma = f"lemma_{helper_name}_is_left_loop"
-    left_lemma = f"lemma_{helper_name}_is_left"
+    loop_lemma = f"lemma_{helper_name}_is_{shape}_loop"
+    shape_lemma = f"lemma_{helper_name}_is_{shape}"
     match_suffix = "lemma_join_right_match_helper_suffix"
     match_iff = "lemma_join_right_match_helper_iff_ids"
     text = f"""pub proof fn {match_suffix}(
@@ -2074,7 +2081,7 @@ pub proof fn {match_iff}({params}, li: int)
     }};
 }}
 
-// shape: left
+// shape: {shape}
 pub proof fn {loop_lemma}({params}, li: int)
     requires
         valid_cols_{o.table}({o.param}),
@@ -2100,7 +2107,7 @@ pub proof fn {loop_lemma}({params}, li: int)
     }}
 }}
 
-pub proof fn {left_lemma}({params})
+pub proof fn {shape_lemma}({params})
     requires
         valid_cols_{o.table}({o.param}),
         valid_cols_{i.table}({i.param}),
@@ -2120,7 +2127,7 @@ pub proof fn {left_lemma}({params})
 }}"""
     bridge = _FoldBridge(
         helper_name=helper_name,
-        pairs_lemma=left_lemma,
+        pairs_lemma=shape_lemma,
         slots=list(slots),
         helper_zeros=helper_zeros,
         fold_rhs=fold_rhs,
@@ -2392,6 +2399,7 @@ def _emit_left_anti_multi_agg(
     schemas_by_table: dict[str, dict[str, str]],
     *,
     where_expr: str | None,
+    shape: str = "left",
 ) -> tuple[str, str, str, _FoldBridge | None]:
     left, right = slots[0], slots[1]
     join = query.joins[0]
@@ -2526,6 +2534,7 @@ def _emit_left_anti_multi_agg(
         update_body=update_body,
         ret_type=f"Map<{key_ty}, {state_tuple_type}>",
         ret_base="Map::empty()",
+        shape=shape,
     )
     bridge: _FoldBridge | None = None
     helpers_out = match_helper + "\n\n" + helper
@@ -2863,10 +2872,17 @@ def emit_join_spec_helpers(
     ]
 
     join_types = {j.join_type for j in query.joins}
+    is_keyword_anti = "ANTI" in join_types
     for jt in join_types:
-        if jt in ("SEMI", "ANTI"):
+        if jt == "SEMI":
             raise UnsupportedContractError(
-                f"{jt} JOIN needs real MethodSpec; not yet supported"
+                "SEMI JOIN needs real MethodSpec; not yet supported"
+            )
+        if jt == "ANTI" and not (
+            query.groupby_columns and len(slots) == 2 and len(query.joins) == 1
+        ):
+            raise UnsupportedContractError(
+                "ANTI JOIN needs real MethodSpec; two-table group-by only"
             )
         if jt == "FULL" and (query.groupby_columns or query.is_projection or not is_sum):
             raise UnsupportedContractError(
@@ -2894,7 +2910,7 @@ def emit_join_spec_helpers(
         derived_map_vars[d.alias] = map_var
         derived_map_types[d.alias] = map_ret_type
 
-    _, is_anti = _strip_anti_join_predicates(where_expr)
+    _, is_left_anti = _strip_anti_join_predicates(where_expr)
     is_left = any(j.join_type == "LEFT" for j in query.joins)
 
     extra_having = ""
@@ -2931,9 +2947,16 @@ def emit_join_spec_helpers(
             where_expr=where_expr,
         )
         helpers = "\n\n".join(derived_helpers + [proj_helper])
-    elif query.groupby_columns and is_left and is_anti and len(slots) == 2:
+    elif query.groupby_columns and len(slots) == 2 and (
+        is_keyword_anti or (is_left and is_left_anti)
+    ):
+        anti_shape = "anti" if is_keyword_anti else "left"
         anti_helper, spec_body, ret_type, fold_bridge = _emit_left_anti_multi_agg(
-            query, slots, schemas_by_table, where_expr=where_expr,
+            query,
+            slots,
+            schemas_by_table,
+            where_expr=where_expr,
+            shape=anti_shape,
         )
         helpers = anti_helper
         spec_body = _apply_join_having_filter(spec_body)
