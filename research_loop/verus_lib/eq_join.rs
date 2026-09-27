@@ -3066,6 +3066,68 @@ pub proof fn lemma_acc2<A, B, C>(
     }
 }
 
+/// Origin of the nested match list: starting at (0, 0) is position 0.
+pub proof fn lemma_pair_pos_origin<K>(outer: Seq<K>, inner: Seq<K>)
+    ensures
+        pair_pos(outer, inner, 0, 0) == 0,
+{
+    assert(nested_eq_pairs(outer, inner, 0) =~= Seq::<(usize, usize)>::empty());
+    if outer.len() == 0 {
+        assert(pair_pos(outer, inner, 0, 0) == 0);
+    } else {
+        let ids = eq_row_ids(inner, outer[0], inner.len() as int);
+        lemma_ids_lt_zero(ids, ids.len() as int);
+        assert(pair_pos(outer, inner, 0, 0) == 0);
+    }
+}
+
+/// Origin of the two-column nested match list: starting at (0, 0) is position 0.
+pub proof fn lemma_pair_pos2_origin<A, B>(
+    outer_a: Seq<A>,
+    outer_b: Seq<B>,
+    inner_a: Seq<A>,
+    inner_b: Seq<B>,
+)
+    ensures
+        pair_pos2(outer_a, outer_b, inner_a, inner_b, 0, 0) == 0,
+{
+    assert(nested_eq_pairs2(outer_a, outer_b, inner_a, inner_b, 0)
+        =~= Seq::<(usize, usize)>::empty());
+    if outer_a.len() == 0 || outer_b.len() == 0 {
+        assert(pair_pos2(outer_a, outer_b, inner_a, inner_b, 0, 0) == 0);
+    } else {
+        let ids = eq_row_ids2(inner_a, inner_b, outer_a[0], outer_b[0], inner_a.len() as int);
+        lemma_ids_lt_zero(ids, ids.len() as int);
+        assert(pair_pos2(outer_a, outer_b, inner_a, inner_b, 0, 0) == 0);
+    }
+}
+
+/// Origin of the star nested match list: starting at (0, 0, 0) is position 0.
+pub proof fn lemma_star_pos_origin(
+    pre_a: Seq<Seq<char>>,
+    pre_t: Seq<Seq<char>>,
+    pre_v: Seq<Seq<char>>,
+    sub_a: Seq<Seq<char>>,
+    tag_t: Seq<Seq<char>>,
+    tag_v: Seq<Seq<char>>,
+)
+    ensures
+        star_pos(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, 0, 0, 0) == 0,
+{
+    assert(nested_star(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, 0)
+        =~= Seq::<(usize, usize, usize)>::empty());
+    if pre_a.len() == 0 || pre_t.len() == 0 || pre_v.len() == 0 {
+        assert(star_pos(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, 0, 0, 0) == 0);
+    } else {
+        let subs = eq_row_ids(sub_a, pre_a[0], sub_a.len() as int);
+        let tags = eq_row_ids2(tag_t, tag_v, pre_t[0], pre_v[0], tag_t.len() as int);
+        lemma_ids_lt_zero(subs, subs.len() as int);
+        lemma_ids_lt_zero(tags, tags.len() as int);
+        vstd::arithmetic::mul::lemma_mul_by_zero_is_zero(tags.len() as int);
+        assert(star_pos(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, 0, 0, 0) == 0);
+    }
+}
+
 // EQ_JOIN_PROVED_END
 
 #[verifier::external_body]

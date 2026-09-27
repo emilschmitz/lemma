@@ -71,6 +71,9 @@ def test_proved_slice_is_rocketship_clean() -> None:
     assert "pub proof fn lemma_acc<" in body
     assert "pub open spec fn loop_acc2<" in body
     assert "pub proof fn lemma_acc2<" in body
+    assert "pub proof fn lemma_pair_pos_origin<" in body
+    assert "pub proof fn lemma_pair_pos2_origin<" in body
+    assert "pub proof fn lemma_star_pos_origin(" in body
     assert "arbitrary()" not in body
     assert "external_body" not in body
     assert "assume(" not in body
