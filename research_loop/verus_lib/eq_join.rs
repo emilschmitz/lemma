@@ -4968,7 +4968,516 @@ pub proof fn lemma_quad_at_origin<A>(
 }
 // SHAPE_4TABLE_END
 
+// SHAPE_LEFT3_BEGIN
+// LEFT anti-join miss list on three String keys (holdout Q24: tag∧version∧adsh).
+// Miss when eq_row_ids3 is empty; fold with miss_acc from the end.
+
+/// Outer row ids in `0..n` with no three-column match, increasing.
+pub open spec fn nested_anti_misses3<A, B, C>(
+    oa: Seq<A>,
+    ob: Seq<B>,
+    oc: Seq<C>,
+    ia: Seq<A>,
+    ib: Seq<B>,
+    ic: Seq<C>,
+    n: int,
+) -> Seq<usize>
+    decreases n,
+{
+    if n <= 0 {
+        Seq::<usize>::empty()
+    } else if n - 1 >= oa.len() || n - 1 >= ob.len() || n - 1 >= oc.len() {
+        nested_anti_misses3(oa, ob, oc, ia, ib, ic, n - 1)
+    } else {
+        let prev = nested_anti_misses3(oa, ob, oc, ia, ib, ic, n - 1);
+        if eq_row_ids3(ia, ib, ic, oa[n - 1], ob[n - 1], oc[n - 1], ia.len() as int).len() == 0 {
+            prev.push((n - 1) as usize)
+        } else {
+            prev
+        }
+    }
+}
+
+pub proof fn lemma_nested_anti_misses3_step<A, B, C>(
+    oa: Seq<A>,
+    ob: Seq<B>,
+    oc: Seq<C>,
+    ia: Seq<A>,
+    ib: Seq<B>,
+    ic: Seq<C>,
+    n: int,
+)
+    requires
+        0 < n <= oa.len(),
+        n <= ob.len(),
+        n <= oc.len(),
+    ensures
+        eq_row_ids3(ia, ib, ic, oa[n - 1], ob[n - 1], oc[n - 1], ia.len() as int).len()
+            == 0 ==> nested_anti_misses3(oa, ob, oc, ia, ib, ic, n)
+            == nested_anti_misses3(oa, ob, oc, ia, ib, ic, n - 1).push((n - 1) as usize),
+        eq_row_ids3(ia, ib, ic, oa[n - 1], ob[n - 1], oc[n - 1], ia.len() as int).len()
+            > 0 ==> nested_anti_misses3(oa, ob, oc, ia, ib, ic, n)
+            == nested_anti_misses3(oa, ob, oc, ia, ib, ic, n - 1),
+{
+    if eq_row_ids3(ia, ib, ic, oa[n - 1], ob[n - 1], oc[n - 1], ia.len() as int).len() == 0 {
+        assert(nested_anti_misses3(oa, ob, oc, ia, ib, ic, n)
+            == nested_anti_misses3(oa, ob, oc, ia, ib, ic, n - 1).push((n - 1) as usize));
+    } else {
+        assert(nested_anti_misses3(oa, ob, oc, ia, ib, ic, n)
+            == nested_anti_misses3(oa, ob, oc, ia, ib, ic, n - 1));
+    }
+}
+
+pub open spec fn anti_loop_acc3<A, B, C, Acc>(
+    oa: Seq<A>,
+    ob: Seq<B>,
+    oc: Seq<C>,
+    ia: Seq<A>,
+    ib: Seq<B>,
+    ic: Seq<C>,
+    step: spec_fn(Acc, int) -> Acc,
+    base: Acc,
+    n_outer: int,
+    i: int,
+) -> Acc
+    decreases n_outer - i,
+{
+    if i < n_outer {
+        let tail = anti_loop_acc3(oa, ob, oc, ia, ib, ic, step, base, n_outer, i + 1);
+        if 0 <= i < oa.len() && i < ob.len() && i < oc.len() && eq_row_ids3(
+            ia,
+            ib,
+            ic,
+            oa[i],
+            ob[i],
+            oc[i],
+            ia.len() as int,
+        ).len() == 0 {
+            step(tail, i)
+        } else {
+            tail
+        }
+    } else {
+        base
+    }
+}
+
+pub proof fn lemma_eq_row_ids3_empty_from_first<A, B, C>(
+    a: Seq<A>,
+    b: Seq<B>,
+    c: Seq<C>,
+    ka: A,
+    kb: B,
+    kc: C,
+    end: int,
+)
+    requires
+        0 <= end <= a.len(),
+        a.len() == b.len(),
+        a.len() == c.len(),
+        end <= usize::MAX as int,
+        eq_row_ids(a, ka, end).len() == 0,
+    ensures
+        eq_row_ids3(a, b, c, ka, kb, kc, end).len() == 0,
+{
+    lemma_filter_is_ids2(a, b, ka, kb, end);
+    assert(eq_row_ids2(a, b, ka, kb, end) == filter_match(
+        eq_row_ids(a, ka, end),
+        b,
+        kb,
+        eq_row_ids(a, ka, end).len() as int,
+    ));
+    assert(eq_row_ids2(a, b, ka, kb, end).len() == 0);
+    lemma_filter_is_ids3(a, b, c, ka, kb, kc, end);
+    assert(eq_row_ids3(a, b, c, ka, kb, kc, end) == filter_match(
+        eq_row_ids2(a, b, ka, kb, end),
+        c,
+        kc,
+        eq_row_ids2(a, b, ka, kb, end).len() as int,
+    ));
+}
+
+pub proof fn lemma_eq_row_ids3_nonempty_iff<A, B, C>(
+    a: Seq<A>,
+    b: Seq<B>,
+    c: Seq<C>,
+    ka: A,
+    kb: B,
+    kc: C,
+    end: int,
+)
+    requires
+        0 <= end <= a.len(),
+        a.len() == b.len(),
+        a.len() == c.len(),
+        end <= usize::MAX as int,
+    ensures
+        (eq_row_ids3(a, b, c, ka, kb, kc, end).len() > 0) <==> (exists|j: int|
+            0 <= j < end && a[j] == ka && b[j] == kb && c[j] == kc),
+    decreases end,
+{
+    if end > 0 {
+        lemma_eq_row_ids3_nonempty_iff(a, b, c, ka, kb, kc, end - 1);
+        let row = (end - 1) as usize;
+        lemma_eq_row_ids3_step(a, b, c, ka, kb, kc, end - 1, row);
+        if a[end - 1] == ka && b[end - 1] == kb && c[end - 1] == kc {
+            assert(eq_row_ids3(a, b, c, ka, kb, kc, end).len() > 0);
+            assert(exists|j: int| 0 <= j < end && a[j] == ka && b[j] == kb && c[j] == kc) by {
+                assert(0 <= end - 1 < end && a[end - 1] == ka && b[end - 1] == kb && c[end - 1]
+                    == kc);
+            };
+        } else {
+            assert(eq_row_ids3(a, b, c, ka, kb, kc, end)
+                == eq_row_ids3(a, b, c, ka, kb, kc, end - 1));
+            assert((eq_row_ids3(a, b, c, ka, kb, kc, end).len() > 0) <==> (exists|j: int|
+                0 <= j < end - 1 && a[j] == ka && b[j] == kb && c[j] == kc));
+            assert((exists|j: int| 0 <= j < end && a[j] == ka && b[j] == kb && c[j] == kc)
+                <==> (exists|j: int|
+                0 <= j < end - 1 && a[j] == ka && b[j] == kb && c[j] == kc)) by {
+                if exists|j: int| 0 <= j < end && a[j] == ka && b[j] == kb && c[j] == kc {
+                    let j = choose|j: int|
+                        0 <= j < end && a[j] == ka && b[j] == kb && c[j] == kc;
+                    if j == end - 1 {
+                        assert(a[end - 1] == ka && b[end - 1] == kb && c[end - 1] == kc);
+                        assert(false);
+                    } else {
+                        assert(0 <= j < end - 1 && a[j] == ka && b[j] == kb && c[j] == kc);
+                    }
+                }
+            };
+        }
+    } else {
+        assert(eq_row_ids3(a, b, c, ka, kb, kc, 0).len() == 0);
+        assert(!(exists|j: int| 0 <= j < 0 && a[j] == ka && b[j] == kb && c[j] == kc));
+    }
+}
+
+pub proof fn lemma_anti_miss3_prefix<A, B, C>(
+    oa: Seq<A>,
+    ob: Seq<B>,
+    oc: Seq<C>,
+    ia: Seq<A>,
+    ib: Seq<B>,
+    ic: Seq<C>,
+    a: int,
+    b: int,
+)
+    requires
+        0 <= a <= b <= oa.len(),
+        b <= ob.len(),
+        b <= oc.len(),
+        b <= usize::MAX as int,
+    ensures
+        nested_anti_misses3(oa, ob, oc, ia, ib, ic, a).len() <= nested_anti_misses3(
+            oa,
+            ob,
+            oc,
+            ia,
+            ib,
+            ic,
+            b,
+        ).len(),
+        forall|p: int|
+            0 <= p < nested_anti_misses3(oa, ob, oc, ia, ib, ic, a).len() ==> (
+            #[trigger] nested_anti_misses3(oa, ob, oc, ia, ib, ic, b)[p]
+            ) == nested_anti_misses3(oa, ob, oc, ia, ib, ic, a)[p],
+    decreases b - a,
+{
+    if a < b {
+        lemma_anti_miss3_prefix(oa, ob, oc, ia, ib, ic, a, b - 1);
+        lemma_nested_anti_misses3_step(oa, ob, oc, ia, ib, ic, b);
+        let at_a = nested_anti_misses3(oa, ob, oc, ia, ib, ic, a);
+        let at_prev = nested_anti_misses3(oa, ob, oc, ia, ib, ic, b - 1);
+        let at_b = nested_anti_misses3(oa, ob, oc, ia, ib, ic, b);
+        let ids = eq_row_ids3(ia, ib, ic, oa[b - 1], ob[b - 1], oc[b - 1], ia.len() as int);
+        if ids.len() == 0 {
+            assert(at_b == at_prev.push((b - 1) as usize));
+            assert(at_a.len() <= at_prev.len());
+            assert(at_a.len() <= at_b.len());
+            assert forall|p: int| 0 <= p < at_a.len() implies at_b[p] == at_a[p] by {
+                lemma_seq_push_index_different(at_prev, (b - 1) as usize, p);
+                assert(at_b[p] == at_prev[p]);
+                assert(at_prev[p] == at_a[p]);
+            };
+        } else {
+            assert(at_b == at_prev);
+        }
+    }
+}
+
+pub proof fn lemma_anti_miss3_at<A, B, C>(
+    oa: Seq<A>,
+    ob: Seq<B>,
+    oc: Seq<C>,
+    ia: Seq<A>,
+    ib: Seq<B>,
+    ic: Seq<C>,
+    n: int,
+    i: int,
+)
+    requires
+        0 <= i < n <= oa.len(),
+        n <= ob.len(),
+        n <= oc.len(),
+        n <= usize::MAX as int,
+        eq_row_ids3(ia, ib, ic, oa[i], ob[i], oc[i], ia.len() as int).len() == 0,
+    ensures
+        (nested_anti_misses3(oa, ob, oc, ia, ib, ic, i).len() as int) < nested_anti_misses3(
+            oa,
+            ob,
+            oc,
+            ia,
+            ib,
+            ic,
+            n,
+        ).len(),
+        nested_anti_misses3(oa, ob, oc, ia, ib, ic, n)[nested_anti_misses3(
+            oa,
+            ob,
+            oc,
+            ia,
+            ib,
+            ic,
+            i,
+        ).len() as int] == i as usize,
+{
+    lemma_nested_anti_misses3_step(oa, ob, oc, ia, ib, ic, i + 1);
+    assert(nested_anti_misses3(oa, ob, oc, ia, ib, ic, i + 1)
+        == nested_anti_misses3(oa, ob, oc, ia, ib, ic, i).push(i as usize));
+    lemma_anti_miss3_prefix(oa, ob, oc, ia, ib, ic, i + 1, n);
+    let k = nested_anti_misses3(oa, ob, oc, ia, ib, ic, i).len() as int;
+    assert(nested_anti_misses3(oa, ob, oc, ia, ib, ic, i + 1)[k] == i as usize);
+    assert(nested_anti_misses3(oa, ob, oc, ia, ib, ic, n)[k]
+        == nested_anti_misses3(oa, ob, oc, ia, ib, ic, i + 1)[k]);
+}
+
+pub proof fn lemma_anti_acc3<A, B, C, Acc>(
+    oa: Seq<A>,
+    ob: Seq<B>,
+    oc: Seq<C>,
+    ia: Seq<A>,
+    ib: Seq<B>,
+    ic: Seq<C>,
+    step: spec_fn(Acc, int) -> Acc,
+    base: Acc,
+    n_outer: int,
+    i: int,
+)
+    requires
+        oa.len() == n_outer,
+        ob.len() == n_outer,
+        oc.len() == n_outer,
+        n_outer <= usize::MAX as int,
+        0 <= i <= n_outer,
+    ensures
+        anti_loop_acc3(oa, ob, oc, ia, ib, ic, step, base, n_outer, i) == miss_acc(
+            nested_anti_misses3(oa, ob, oc, ia, ib, ic, n_outer),
+            step,
+            base,
+            nested_anti_misses3(oa, ob, oc, ia, ib, ic, i).len() as int,
+        ),
+    decreases n_outer - i,
+{
+    if i < n_outer {
+        lemma_anti_acc3(oa, ob, oc, ia, ib, ic, step, base, n_outer, i + 1);
+        lemma_nested_anti_misses3_step(oa, ob, oc, ia, ib, ic, i + 1);
+        let misses = nested_anti_misses3(oa, ob, oc, ia, ib, ic, n_outer);
+        let k_i = nested_anti_misses3(oa, ob, oc, ia, ib, ic, i).len() as int;
+        let ids = eq_row_ids3(ia, ib, ic, oa[i], ob[i], oc[i], ia.len() as int);
+        if ids.len() == 0 {
+            lemma_anti_miss3_at(oa, ob, oc, ia, ib, ic, n_outer, i);
+            assert(misses[k_i] == i as usize);
+            assert(0 <= k_i < misses.len());
+            assert(anti_loop_acc3(oa, ob, oc, ia, ib, ic, step, base, n_outer, i) == step(
+                anti_loop_acc3(oa, ob, oc, ia, ib, ic, step, base, n_outer, i + 1),
+                i,
+            ));
+            assert(miss_acc(misses, step, base, k_i) == step(
+                miss_acc(misses, step, base, k_i + 1),
+                misses[k_i] as int,
+            ));
+        } else {
+            assert(nested_anti_misses3(oa, ob, oc, ia, ib, ic, i + 1)
+                == nested_anti_misses3(oa, ob, oc, ia, ib, ic, i));
+        }
+    }
+}
+
+pub proof fn lemma_anti3_at_origin<A, B, C, Acc>(
+    oa: Seq<A>,
+    ob: Seq<B>,
+    oc: Seq<C>,
+    ia: Seq<A>,
+    ib: Seq<B>,
+    ic: Seq<C>,
+    step: spec_fn(Acc, int) -> Acc,
+    base: Acc,
+    n_outer: int,
+)
+    requires
+        oa.len() == n_outer,
+        ob.len() == n_outer,
+        oc.len() == n_outer,
+        n_outer <= usize::MAX as int,
+    ensures
+        anti_loop_acc3(oa, ob, oc, ia, ib, ic, step, base, n_outer, 0) == miss_acc(
+            nested_anti_misses3(oa, ob, oc, ia, ib, ic, n_outer),
+            step,
+            base,
+            0,
+        ),
+{
+    assert(nested_anti_misses3(oa, ob, oc, ia, ib, ic, 0) =~= Seq::<usize>::empty());
+    lemma_anti_acc3(oa, ob, oc, ia, ib, ic, step, base, n_outer, 0);
+}
+
+/// LEFT-anti miss ids for three `String` key columns. View equals [`nested_anti_misses3`].
+pub fn anti_miss_rows_str3(
+    outer0: &Vec<String>,
+    outer1: &Vec<String>,
+    outer2: &Vec<String>,
+    inner0: &Vec<String>,
+    inner1: &Vec<String>,
+    inner2: &Vec<String>,
+) -> (misses: Vec<usize>)
+    requires
+        outer0@.len() == outer1@.len(),
+        outer0@.len() == outer2@.len(),
+        inner0@.len() == inner1@.len(),
+        inner0@.len() == inner2@.len(),
+    ensures
+        misses@ == nested_anti_misses3(
+            key_views(outer0@),
+            key_views(outer1@),
+            key_views(outer2@),
+            key_views(inner0@),
+            key_views(inner1@),
+            key_views(inner2@),
+            outer0@.len() as int,
+        ),
+{
+    let idx = build_eq_index_str(inner0);
+    let ghost oa = key_views(outer0@);
+    let ghost ob = key_views(outer1@);
+    let ghost oc = key_views(outer2@);
+    let ghost ia = key_views(inner0@);
+    let ghost ib = key_views(inner1@);
+    let ghost ic = key_views(inner2@);
+    let mut misses: Vec<usize> = Vec::new();
+    let mut i: usize = 0;
+    while i < outer0.len()
+        invariant
+            i <= outer0.len(),
+            outer0@.len() == outer0.len() as int,
+            outer1@.len() == outer0@.len(),
+            outer2@.len() == outer0@.len(),
+            inner0@.len() == inner0.len() as int,
+            inner1@.len() == inner0@.len(),
+            inner2@.len() == inner0@.len(),
+            oa == key_views(outer0@),
+            ob == key_views(outer1@),
+            oc == key_views(outer2@),
+            ia == key_views(inner0@),
+            ib == key_views(inner1@),
+            ic == key_views(inner2@),
+            index_ok(ia, idx.buckets@, idx.map@, inner0@.len() as int),
+            misses@ == nested_anti_misses3(oa, ob, oc, ia, ib, ic, i as int),
+        decreases outer0.len() - i,
+    {
+        let key0 = outer0[i].clone();
+        let key1 = outer1[i].clone();
+        let key2 = outer2[i].clone();
+        let ghost end = i as int;
+        proof {
+            lemma_key_view_at(outer0@, end);
+            lemma_key_view_at(outer1@, end);
+            lemma_key_view_at(outer2@, end);
+            broadcast use vstd::std_specs::vec::axiom_spec_len;
+            assert(oa[end] == key0@);
+            assert(ob[end] == key1@);
+            assert(oc[end] == key2@);
+            assert(ia.len() as int <= usize::MAX as int);
+        }
+        let ghost before = misses@;
+        let present = idx.map.contains_key(key0.as_str());
+        if present {
+            let got = idx.map.get(key0.as_str());
+            let bi = *got.unwrap();
+            proof {
+                assert(idx.map@.contains_key(key0@));
+                lemma_index_bucket(ia, idx.buckets@, idx.map@, ia.len() as int, key0@);
+                lemma_eq_row_ids_bounded(ia, key0@, ia.len() as int);
+            }
+            let ids = &idx.buckets[bi];
+            let filtered2 = filter_row_ids_str(ids, inner1, &key1);
+            proof {
+                lemma_filter_is_ids2(ia, ib, key0@, key1@, ia.len() as int);
+                assert(filtered2@ == eq_row_ids2(ia, ib, oa[end], ob[end], ia.len() as int));
+                lemma_eq2_bounded(ia, ib, oa[end], ob[end], ia.len() as int);
+                assert(ia.len() == inner2@.len());
+                assert forall|t: int|
+                    0 <= t < filtered2@.len() implies (#[trigger] filtered2@[t] as int)
+                        < inner2@.len() by {
+                    assert(
+                        (eq_row_ids2(ia, ib, oa[end], ob[end], ia.len() as int)[t] as int)
+                            < ia.len()
+                    );
+                    assert(filtered2@[t]
+                        == eq_row_ids2(ia, ib, oa[end], ob[end], ia.len() as int)[t]);
+                };
+            }
+            let filtered3 = filter_row_ids_str(&filtered2, inner2, &key2);
+            if filtered3.len() == 0 {
+                misses.push(i);
+                proof {
+                    lemma_filter_is_ids3(ia, ib, ic, key0@, key1@, key2@, ia.len() as int);
+                    assert(filtered3@
+                        == eq_row_ids3(ia, ib, ic, oa[end], ob[end], oc[end], ia.len() as int));
+                    assert(eq_row_ids3(ia, ib, ic, oa[end], ob[end], oc[end], ia.len() as int)
+                        .len() == 0);
+                    lemma_nested_anti_misses3_step(oa, ob, oc, ia, ib, ic, end + 1);
+                    assert(misses@ == before.push(i));
+                    assert(misses@ == nested_anti_misses3(oa, ob, oc, ia, ib, ic, end + 1));
+                }
+            } else {
+                proof {
+                    lemma_filter_is_ids3(ia, ib, ic, key0@, key1@, key2@, ia.len() as int);
+                    assert(filtered3@
+                        == eq_row_ids3(ia, ib, ic, oa[end], ob[end], oc[end], ia.len() as int));
+                    assert(eq_row_ids3(ia, ib, ic, oa[end], ob[end], oc[end], ia.len() as int)
+                        .len() > 0);
+                    lemma_nested_anti_misses3_step(oa, ob, oc, ia, ib, ic, end + 1);
+                    assert(misses@ == nested_anti_misses3(oa, ob, oc, ia, ib, ic, end + 1));
+                }
+            }
+        } else {
+            misses.push(i);
+            proof {
+                assert(!idx.map@.contains_key(key0@));
+                lemma_index_absent(ia, idx.buckets@, idx.map@, ia.len() as int, key0@);
+                lemma_eq_row_ids_len0(ia, key0@, ia.len() as int);
+                lemma_eq_row_ids3_empty_from_first(
+                    ia,
+                    ib,
+                    ic,
+                    key0@,
+                    key1@,
+                    key2@,
+                    ia.len() as int,
+                );
+                lemma_nested_anti_misses3_step(oa, ob, oc, ia, ib, ic, end + 1);
+                assert(misses@ == before.push(i));
+                assert(misses@ == nested_anti_misses3(oa, ob, oc, ia, ib, ic, end + 1));
+            }
+        }
+        i = i + 1;
+    }
+    misses
+}
+// SHAPE_LEFT3_END
+
 // EQ_JOIN_PROVED_END
+
 
 #[verifier::external_body]
 fn oracle_key(n: usize) -> (s: String) {

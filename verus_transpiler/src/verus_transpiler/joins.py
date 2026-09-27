@@ -1932,10 +1932,21 @@ def _left_fold_lemma(
     """Proof that a LEFT-anti helper equals ``miss_acc`` of ``nested_anti_misses``.
 
     // shape: left
-    One equality only. Miss rows are unmatched left ids; the filter stays in the step.
+    One equality, or three string equalities (holdout Q24). Miss rows are unmatched
+    left ids; the filter stays in the step.
     """
-    if len(slots) != 2 or "&&" in match_conds:
+    if len(slots) != 2:
         return None
+    if "&&" in match_conds:
+        return _left3_fold_lemma(
+            helper_name,
+            slots,
+            match_conds=match_conds,
+            filter_cond=filter_cond,
+            update_body=update_body,
+            ret_type=ret_type,
+            ret_base=ret_base,
+        )
     m = re.fullmatch(
         r"(?P<lp>\w+)\.(?P<lf>\w+)\[li as int\](?P<lv>@?)\s*==\s*"
         r"(?P<rp>\w+)\.(?P<rf>\w+)\[ri as int\](?P<rv>@?)",
@@ -2102,6 +2113,264 @@ pub proof fn {left_lemma}({params})
     lemma_anti_at_origin(
         {outer_seq},
         {inner_seq},
+        {step_closure},
+        {ret_base},
+        {o.param}.n as int,
+    );
+}}"""
+    bridge = _FoldBridge(
+        helper_name=helper_name,
+        pairs_lemma=left_lemma,
+        slots=list(slots),
+        helper_zeros=helper_zeros,
+        fold_rhs=fold_rhs,
+    )
+    return text, bridge
+
+
+def _left3_fold_lemma(
+    helper_name: str,
+    slots: list[_Slot],
+    *,
+    match_conds: str,
+    filter_cond: str | None,
+    update_body: str,
+    ret_type: str,
+    ret_base: str,
+) -> tuple[str, _FoldBridge] | None:
+    """LEFT-anti with three string equalities equals ``miss_acc`` of ``nested_anti_misses3``.
+
+    // shape: left3
+    """
+    if len(slots) != 2:
+        return None
+    parts = [p.strip() for p in match_conds.split(" && ")]
+    if len(parts) != 3:
+        return None
+    parsed: list[re.Match[str]] = []
+    for part in parts:
+        m = re.fullmatch(
+            r"(?P<lp>\w+)\.(?P<lf>\w+)\[li as int\](?P<lv>@?)\s*==\s*"
+            r"(?P<rp>\w+)\.(?P<rf>\w+)\[ri as int\](?P<rv>@?)",
+            part,
+        )
+        if m is None or not m.group("lv") or not m.group("rv"):
+            return None
+        parsed.append(m)
+    o, i = slots
+    if any(m.group("lp") != o.param or m.group("rp") != i.param for m in parsed):
+        return None
+
+    def seq_expr(param: str, field: str) -> str:
+        return f"key_views({param}.{field}@)"
+
+    outer_seqs = [seq_expr(m.group("lp"), m.group("lf")) for m in parsed]
+    inner_seqs = [seq_expr(m.group("rp"), m.group("rf")) for m in parsed]
+    l_accesses = [
+        f"{m.group('lp')}.{m.group('lf')}[li as int]@" for m in parsed
+    ]
+    r_accesses = [
+        f"{m.group('rp')}.{m.group('rf')}[ri as int]@" for m in parsed
+    ]
+    r_accesses_j = [
+        f"{m.group('rp')}.{m.group('rf')}[j as int]@" for m in parsed
+    ]
+    match_all = " && ".join(
+        f"{l} == {r}" for l, r in zip(l_accesses, r_accesses, strict=True)
+    )
+    match_all_j = " && ".join(
+        f"{l} == {r}" for l, r in zip(l_accesses, r_accesses_j, strict=True)
+    )
+    key_asserts = "\n    ".join(
+        f"assert({os}[li] == {la});"
+        for os, la in zip(outer_seqs, l_accesses, strict=True)
+    )
+    inner_asserts = "\n            ".join(
+        f"assert({ins}[j] == {ra});"
+        for ins, ra in zip(inner_seqs, r_accesses_j, strict=True)
+    )
+
+    step_update = update_body.replace("tail", "acc")
+    if filter_cond:
+        step = (
+            f"if {filter_cond} {{\n"
+            f"        {step_update}\n"
+            f"    }} else {{\n"
+            f"        acc\n"
+            f"    }}"
+        )
+    else:
+        step = step_update
+    step_closure = (
+        f"|acc: {ret_type}, li: int| {{\n"
+        f"                {step}\n"
+        f"            }}"
+    )
+    params = f"{o.param}: &{o.struct}, {i.param}: &{i.struct}"
+    helper_zeros = f"{helper_name}({o.param}, {i.param}, 0)"
+    fold_rhs = (
+        f"miss_acc(\n"
+        f"            nested_anti_misses3(\n"
+        f"                {outer_seqs[0]},\n"
+        f"                {outer_seqs[1]},\n"
+        f"                {outer_seqs[2]},\n"
+        f"                {inner_seqs[0]},\n"
+        f"                {inner_seqs[1]},\n"
+        f"                {inner_seqs[2]},\n"
+        f"                {o.param}.n as int,\n"
+        f"            ),\n"
+        f"            {step_closure},\n"
+        f"            {ret_base},\n"
+        f"            0,\n"
+        f"        )"
+    )
+    loop_lemma = f"lemma_{helper_name}_is_left_loop"
+    left_lemma = f"lemma_{helper_name}_is_left"
+    match_suffix = "lemma_join_right_match_helper_suffix"
+    match_iff = "lemma_join_right_match_helper_iff_ids"
+    text = f"""// shape: left3
+pub proof fn {match_suffix}(
+    {params},
+    li: int,
+    ri: int,
+)
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        0 <= li < {o.param}.n,
+        0 <= ri <= {i.param}.n,
+    ensures
+        join_right_match_helper({o.param}, {i.param}, li, ri) <==> exists|j: int|
+            ri <= j < {i.param}.n && {match_all_j},
+    decreases {i.param}.n - ri,
+{{
+    if ri < {i.param}.n {{
+        if {match_all} {{
+            assert(exists|j: int| ri <= j < {i.param}.n && {match_all_j}) by {{
+                assert(ri <= ri < {i.param}.n && {match_all});
+            }};
+        }} else {{
+            {match_suffix}({o.param}, {i.param}, li, ri + 1);
+        }}
+    }}
+}}
+
+pub proof fn {match_iff}({params}, li: int)
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        0 <= li < {o.param}.n,
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+    ensures
+        !join_right_match_helper({o.param}, {i.param}, li, 0) <==> eq_row_ids3(
+            {inner_seqs[0]},
+            {inner_seqs[1]},
+            {inner_seqs[2]},
+            {outer_seqs[0]}[li],
+            {outer_seqs[1]}[li],
+            {outer_seqs[2]}[li],
+            {i.param}.n as int,
+        ).len() == 0,
+{{
+    {match_suffix}({o.param}, {i.param}, li, 0);
+    {key_asserts}
+    lemma_eq_row_ids3_nonempty_iff(
+        {inner_seqs[0]},
+        {inner_seqs[1]},
+        {inner_seqs[2]},
+        {outer_seqs[0]}[li],
+        {outer_seqs[1]}[li],
+        {outer_seqs[2]}[li],
+        {i.param}.n as int,
+    );
+    assert((exists|j: int| 0 <= j < {i.param}.n && {match_all_j}) <==> (exists|j: int|
+        0 <= j < {i.param}.n && {inner_seqs[0]}[j] == {outer_seqs[0]}[li]
+            && {inner_seqs[1]}[j] == {outer_seqs[1]}[li]
+            && {inner_seqs[2]}[j] == {outer_seqs[2]}[li])) by {{
+        if exists|j: int| 0 <= j < {i.param}.n && {match_all_j} {{
+            let j = choose|j: int| 0 <= j < {i.param}.n && {match_all_j};
+            {inner_asserts}
+            assert(exists|j2: int|
+                #![trigger {inner_seqs[0]}[j2]]
+                0 <= j2 < {i.param}.n && {inner_seqs[0]}[j2] == {outer_seqs[0]}[li]
+                    && {inner_seqs[1]}[j2] == {outer_seqs[1]}[li]
+                    && {inner_seqs[2]}[j2] == {outer_seqs[2]}[li]) by {{
+                assert(0 <= j < {i.param}.n && {inner_seqs[0]}[j] == {outer_seqs[0]}[li]
+                    && {inner_seqs[1]}[j] == {outer_seqs[1]}[li]
+                    && {inner_seqs[2]}[j] == {outer_seqs[2]}[li]);
+            }};
+        }}
+        if exists|j: int|
+            0 <= j < {i.param}.n && {inner_seqs[0]}[j] == {outer_seqs[0]}[li]
+                && {inner_seqs[1]}[j] == {outer_seqs[1]}[li]
+                && {inner_seqs[2]}[j] == {outer_seqs[2]}[li]
+        {{
+            let j = choose|j: int|
+                0 <= j < {i.param}.n && {inner_seqs[0]}[j] == {outer_seqs[0]}[li]
+                    && {inner_seqs[1]}[j] == {outer_seqs[1]}[li]
+                    && {inner_seqs[2]}[j] == {outer_seqs[2]}[li];
+            {inner_asserts}
+            assert({match_all_j});
+            assert(exists|j2: int|
+                #![trigger {parsed[0].group('rp')}.{parsed[0].group('rf')}[j2 as int]@]
+                0 <= j2 < {i.param}.n && {" && ".join(
+                    f"{m.group('lp')}.{m.group('lf')}[li as int]@ == "
+                    f"{m.group('rp')}.{m.group('rf')}[j2 as int]@"
+                    for m in parsed
+                )}) by {{
+                assert(0 <= j < {i.param}.n && {match_all_j});
+            }};
+        }}
+    }};
+}}
+
+pub proof fn {loop_lemma}({params}, li: int)
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+        0 <= li <= {o.param}.n,
+    ensures
+        {helper_name}({o.param}, {i.param}, li) == anti_loop_acc3(
+            {outer_seqs[0]},
+            {outer_seqs[1]},
+            {outer_seqs[2]},
+            {inner_seqs[0]},
+            {inner_seqs[1]},
+            {inner_seqs[2]},
+            {step_closure},
+            {ret_base},
+            {o.param}.n as int,
+            li,
+        ),
+    decreases {o.param}.n - li,
+{{
+    if li < {o.param}.n {{
+        {loop_lemma}({o.param}, {i.param}, li + 1);
+        {match_iff}({o.param}, {i.param}, li);
+        {key_asserts}
+    }}
+}}
+
+pub proof fn {left_lemma}({params})
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+    ensures
+        {helper_zeros} == {fold_rhs},
+{{
+    {loop_lemma}({o.param}, {i.param}, 0);
+    lemma_anti3_at_origin(
+        {outer_seqs[0]},
+        {outer_seqs[1]},
+        {outer_seqs[2]},
+        {inner_seqs[0]},
+        {inner_seqs[1]},
+        {inner_seqs[2]},
         {step_closure},
         {ret_base},
         {o.param}.n as int,

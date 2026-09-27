@@ -19,6 +19,7 @@ from research_loop.table_assumptions import (
     ColumnAssumption,
     TableAssumptions,
 )
+from research_loop.trusted_ret_bridge import dynamic_ret_type_config, map_new_expr
 from tests.test_sec_holdout_parse import SEC_SCHEMA
 from verus_transpiler import transpile_sql_to_verus
 
@@ -35,6 +36,19 @@ FROM pre p
 LEFT JOIN sub s ON p.adsh = s.adsh
 WHERE p.stmt = 'CI' AND s.adsh IS NULL
 GROUP BY p.adsh
+"""
+
+# Holdout Q24: three-key LEFT anti (tag ∧ version ∧ adsh).
+_LEFT_ANTI3_SQL = """
+SELECT n.tag, n.version, COUNT(*) AS cnt, SUM(n.value) AS total
+FROM num n
+LEFT JOIN pre p ON n.tag = p.tag AND n.version = p.version AND n.adsh = p.adsh
+WHERE n.uom = 'USD' AND n.ddate BETWEEN 20230101 AND 20231231
+      AND n.value IS NOT NULL
+      AND p.adsh IS NULL
+GROUP BY n.tag, n.version
+HAVING COUNT(*) > 10
+LIMIT 100
 """
 
 
@@ -77,11 +91,17 @@ def test_left_shape_slice_is_rocketship_clean() -> None:
     body = proved_eq_join_prelude()
     assert "// SHAPE_LEFT_BEGIN" in body
     assert "// SHAPE_LEFT_END" in body
+    assert "// SHAPE_LEFT3_BEGIN" in body
+    assert "// SHAPE_LEFT3_END" in body
     assert "pub fn anti_miss_rows_str(" in body
+    assert "pub fn anti_miss_rows_str3(" in body
     assert "pub open spec fn nested_anti_misses<" in body
+    assert "pub open spec fn nested_anti_misses3<" in body
     assert "pub open spec fn anti_loop_acc<" in body
+    assert "pub open spec fn anti_loop_acc3<" in body
     assert "pub open spec fn miss_acc<" in body
     assert "pub proof fn lemma_anti_at_origin<" in body
+    assert "pub proof fn lemma_anti3_at_origin<" in body
     assert "arbitrary()" not in body
     assert "external_body" not in body
     assert "assume(" not in body
@@ -149,9 +169,76 @@ pub exec fn run_query(pre: &Cols_pre, sub: &Cols_sub) -> (res: StringHashMap<u64
     assert "verification results::" in log
 
 
+def _projected_num_pre(sql: str) -> dict[str, dict[str, str]]:
+    _, multi = normalize_schema({"num": SEC_SCHEMA["num"], "pre": SEC_SCHEMA["pre"]})
+    if not isinstance(multi, dict):
+        raise TypeError("expected a per-table schema")
+    projected = project_multi_schema_for_query(sql, multi)
+    if any(not isinstance(cols, dict) for cols in projected.values()):
+        raise TypeError("expected a per-table schema")
+    return cast(dict[str, dict[str, str]], projected)
+
+
+def test_left_anti3_transpile_emits_is_left_fold() -> None:
+    projected = _projected_num_pre(_LEFT_ANTI3_SQL)
+    catalog = _large_sec_product_catalog()
+    out = transpile_sql_to_verus(
+        _LEFT_ANTI3_SQL, projected, catalog_assumptions=catalog
+    )
+    assert "// shape: left3" in out
+    assert "lemma_join_anti_multi_agg_helper_is_left(" in out
+    assert "lemma_join_anti_multi_agg_helper_method_is_fold(" in out
+    assert "nested_anti_misses3" in out
+    assert "anti_loop_acc3" in out
+    assert "lemma_anti3_at_origin" in out
+    _assert_full_sec_caps(out)
+
+
+def test_left_anti3_fold_lemma_verifies(tmp_path: Path) -> None:
+    """Holdout Q24 three-key LEFT anti equals miss_acc under full SEC caps."""
+    if resolve_verus_bin() is None:
+        pytest.skip("verus not found")
+    projected = _projected_num_pre(_LEFT_ANTI3_SQL)
+    catalog = _large_sec_product_catalog()
+    spec_rs = transpile_sql_to_verus(
+        _LEFT_ANTI3_SQL, projected, catalog_assumptions=catalog
+    )
+    assert "lemma_join_anti_multi_agg_helper_is_left(" in spec_rs
+    assert "nested_anti_misses3" in spec_rs
+    _assert_full_sec_caps(spec_rs)
+    ret_type = resolve_ret_type_from_method_spec(spec_rs)
+    rust_ret = dynamic_ret_type_config()[ret_type]["rust_ret"]
+    body = map_new_expr(rust_ret) if "HashMap" in rust_ret else "Vec::new()"
+    stub = f"""#[verifier::external_body]
+pub exec fn run_query(num: &Cols_num, pre: &Cols_pre) -> (res: {rust_ret})
+    requires valid_cols_num(num), valid_cols_pre(pre),
+    ensures res@ == method_spec(num, pre),
+{{
+    {body}
+}}
+"""
+    program = assemble_verified_join_program(
+        spec_rs=spec_rs,
+        run_query_body=stub,
+        multi_schema=projected,
+        table_order=("num", "pre"),
+        ret_type=ret_type,
+        default_tbls={"num": "", "pre": ""},
+        catalog_assumptions=catalog,
+    )
+    assert "pub fn anti_miss_rows_str3(" in program
+    assert "lemma_join_anti_multi_agg_helper_is_left(" in program
+    _assert_full_sec_caps(program)
+    rs_path = tmp_path / "left_anti3_fold.rs"
+    rs_path.write_text(program, encoding="utf-8")
+    ok, log = run_verus_verify(str(rs_path), timeout=360)
+    assert ok, log[-5000:]
+    assert "0 errors" in log
+
+
 def test_eq_join_left_shape_verus_clean() -> None:
     if resolve_verus_bin() is None:
         pytest.skip("verus not found")
-    ok, log = run_verus_verify(str(EQ_JOIN_RS), timeout=120)
+    ok, log = run_verus_verify(str(EQ_JOIN_RS), timeout=180)
     assert ok, log[-4000:]
     assert "0 errors" in log
