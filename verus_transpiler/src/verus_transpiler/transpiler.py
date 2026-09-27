@@ -22,6 +22,7 @@ from .col_exprs import (
     spec_where_cond,
     to_col_expr,
 )
+from .eq_join_prelude import proved_eq_join_prelude
 from .joins import _table_struct_name, emit_join_spec_helpers
 from .parse_sql import (
     AggSpec,
@@ -29,13 +30,13 @@ from .parse_sql import (
     SQLQuery,
     UnsupportedContractError,
     _agg_value_type,
+    _outer_base_table,
     grouped_derived_scalar_inner_tables,
     inner_base_tables,
     is_grouped_derived_scalar_subquery,
     normalize_schema,
     parse_sql,
     support_spec_params,
-    _outer_base_table,
 )
 from .recursive_cte import emit_recursive_cte_helper
 from .rust_ident import rust_ident
@@ -1551,9 +1552,11 @@ def transpile_sql_to_verus(
 
     join_multi = is_join and bool(multi_schema)
     trusted_prelude = emit_trusted_prelude(include_left_join_miss=not join_multi)
+    eq_join_prelude = f"\n{proved_eq_join_prelude()}\n" if join_multi else ""
 
+    hash_state_use = "\nuse std::hash::RandomState;" if join_multi else ""
     return f"""use vstd::prelude::*;
-use std::collections::{{HashMap, HashSet}};
+use std::collections::{{HashMap, HashSet}};{hash_state_use}
 
 verus! {{
 
@@ -1562,7 +1565,7 @@ verus! {{
 {emit_bound_lemmas(bounds=bounds, catalog=catalog_assumptions)}
 
 {trusted_prelude}
-
+{eq_join_prelude}
 {cols_block}
 
 {helpers}

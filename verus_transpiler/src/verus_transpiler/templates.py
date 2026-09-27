@@ -23,7 +23,14 @@ def emit_run_query_skeleton(
         sig = "pub exec fn run_query(left: &Cols_left, right: &Cols_right) -> (res: u64)"
         req = "    requires valid_cols_left(left), valid_cols_right(right),"
         ens = "    ensures res == method_spec(left, right),"
+        join_hint = (
+            "// Proved equijoin is already in this file. Call it; do not rebuild the hash invariant.\n"
+            "// equijoin_pairs_str / equijoin_pairs_str2 / equijoin_pairs_u64 / equijoin_pairs_u32\n"
+            "// star_eq_triples_str for one outer key plus a two-column inner (tag, version).\n"
+            "// pairs@ is the forward nested match list. method_spec folds backward: walk pairs from the end.\n"
+        )
     else:
+        join_hint = ""
         extras = support_spec_params(query)
         extra_sig = "".join(f", {n}: &{s}" for n, s, _ in extras)
         extra_req = "".join(f" && {v}({n})" for n, _, v in extras)
@@ -88,7 +95,7 @@ def emit_run_query_skeleton(
         for line in body_hint.splitlines(keepends=False)
     )
 
-    return f"""// === RunQuery skeleton (agent provides the body) ===
+    return f"""{join_hint}// === RunQuery skeleton (agent provides the body) ===
 // {sig}
 // {req}
 // {ens}

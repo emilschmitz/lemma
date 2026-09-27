@@ -86,6 +86,8 @@ Must hold **all** of:
    ``LEMMA_FOLD_SLOT_AXIOMATIC=1``. Migration alias ``assume_*`` → ``lemma_*``
    is ``LEMMA_FOLD_SLOT_ASSUME_ALIAS=1`` (off by default).
 
+**Proved equijoin** (`research_loop/verus_lib/eq_join.rs`, spliced into join queries only): the bucket for a key is the increasing row ids where that column equals the key, and `equijoin_pairs_*` / `star_eq_triples_str` equal that nested match list. The bodies are verified. The hash trust is menu A (`StringHashMap` and `std::collections::HashMap` `@`). This is not menu B (`build_hashset_u32` / `probe_sum_u64`) and not a whole-query Trusted: the agent still proves `run_query ≡ method_spec`.
+
 ### External assumptions vs Trusteds
 
 ::

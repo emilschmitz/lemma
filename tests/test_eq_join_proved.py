@@ -1,0 +1,119 @@
+"""Proved equijoin: Verus, runtime oracle, and join-only splice."""
+
+from __future__ import annotations
+
+import os
+import subprocess
+from pathlib import Path
+
+import pytest
+from verus_transpiler.column_projection import project_multi_schema_for_query
+from verus_transpiler.eq_join_prelude import proved_eq_join_prelude
+from verus_transpiler.parse_sql import normalize_schema
+
+from research_loop.assemble_verified_program import assemble_verified_join_program
+from research_loop.harness import resolve_verus_bin, run_verus_compile, run_verus_verify
+from research_loop.method_spec_ret_type import resolve_ret_type_from_method_spec
+from tests.test_sec_holdout_parse import SEC_SCHEMA
+from verus_transpiler import transpile_sql_to_verus
+
+ROOT = Path(__file__).resolve().parents[1]
+EQ_JOIN_RS = ROOT / "research_loop" / "verus_lib" / "eq_join.rs"
+
+_ADSH_SQL = """
+SELECT COUNT(*)
+FROM pre p
+JOIN sub s ON p.adsh = s.adsh
+WHERE s.fy = 2024
+"""
+
+_STAR_SQL = """
+SELECT p.adsh
+FROM pre p
+JOIN sub s ON p.adsh = s.adsh
+JOIN tag t ON p.tag = t.tag AND p.version = t.version
+LIMIT 50
+"""
+
+_SINGLE_SQL = "SELECT COUNT(*) FROM pre p WHERE p.stmt = 'CI'"
+
+
+def test_proved_slice_is_rocketship_clean() -> None:
+    body = proved_eq_join_prelude()
+    assert "pub fn equijoin_pairs_str(" in body
+    assert "pub fn equijoin_pairs_str2(" in body
+    assert "pub fn equijoin_pairs_u64(" in body
+    assert "pub fn star_eq_triples_str(" in body
+    assert "arbitrary()" not in body
+    assert "external_body" not in body
+    assert "assume(" not in body
+
+
+def test_join_transpile_includes_proved_equijoin_and_single_table_does_not() -> None:
+    adsh = transpile_sql_to_verus(
+        _ADSH_SQL,
+        {"pre": SEC_SCHEMA["pre"], "sub": SEC_SCHEMA["sub"]},
+    )
+    star = transpile_sql_to_verus(
+        _STAR_SQL,
+        {"pre": SEC_SCHEMA["pre"], "sub": SEC_SCHEMA["sub"], "tag": SEC_SCHEMA["tag"]},
+    )
+    single = transpile_sql_to_verus(_SINGLE_SQL, {"pre": SEC_SCHEMA["pre"]})
+    for out in (adsh, star):
+        assert "pub fn equijoin_pairs_str(" in out
+        assert "pub fn star_eq_triples_str(" in out
+        assert "walk pairs from the end" in out
+    assert "pub fn build_eq_index_str(" not in single
+    assert "pub fn equijoin_pairs_str(" not in single
+
+
+def test_spliced_adsh_join_verifies(tmp_path: Path) -> None:
+    """Host file with the proved index verifies. The stub is not an agent proof."""
+    if resolve_verus_bin() is None:
+        pytest.skip("verus not found")
+    _, multi = normalize_schema({"pre": SEC_SCHEMA["pre"], "sub": SEC_SCHEMA["sub"]})
+    projected = project_multi_schema_for_query(_ADSH_SQL, multi)
+    spec_rs = transpile_sql_to_verus(_ADSH_SQL, projected)
+    ret_type = resolve_ret_type_from_method_spec(spec_rs)
+    assert ret_type == "u64"
+    stub = """#[verifier::external_body]
+pub exec fn run_query(pre: &Cols_pre, sub: &Cols_sub) -> (res: u64)
+    requires valid_cols_pre(pre), valid_cols_sub(sub),
+    ensures res == method_spec(pre, sub),
+{
+    0u64
+}"""
+    program = assemble_verified_join_program(
+        spec_rs=spec_rs,
+        run_query_body=stub,
+        multi_schema=projected,
+        table_order=("pre", "sub"),
+        ret_type=ret_type,
+        default_tbls={"pre": "", "sub": ""},
+    )
+    assert "pub fn equijoin_pairs_str(" in program
+    rs_path = tmp_path / "adsh_join.rs"
+    rs_path.write_text(program, encoding="utf-8")
+    ok, log = run_verus_verify(str(rs_path), timeout=180)
+    assert ok, log[-5000:]
+    assert "0 errors" in log
+
+
+def test_eq_join_verus_clean() -> None:
+    if resolve_verus_bin() is None:
+        pytest.skip("verus not found")
+    ok, log = run_verus_verify(str(EQ_JOIN_RS), timeout=120)
+    assert ok, log[-4000:]
+    assert "0 errors" in log
+
+
+def test_eq_join_oracle_matches_nested_loops() -> None:
+    if resolve_verus_bin() is None:
+        pytest.skip("verus not found")
+    ok, log, binary = run_verus_compile(str(EQ_JOIN_RS), timeout=180)
+    assert ok and binary, log[-4000:]
+    try:
+        subprocess.run([binary], check=True, timeout=60)
+    finally:
+        if binary and os.path.isfile(binary):
+            os.remove(binary)

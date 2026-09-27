@@ -35,6 +35,19 @@ res
 Use the helper name and params from **this query's** `spec.rs` (joins use `Cols_<table>` params).
 `valid_cols` / `valid_cols_<table>` belong in `requires`, not the loop invariant.
 
+## Proved equijoin
+
+Join files already contain a verified index. The bodies are checked by Verus.
+Call them from `AGENT_EDIT`. Do not rebuild a `HashMap` proof, and do not add
+`spec fn` or `proof fn`.
+
+- `equijoin_pairs_str(outer, inner)` — one `String` column (`adsh`).
+- `equijoin_pairs_str2(o0, o1, i0, i1)` — two `String` columns, both equal (`tag` and `version`).
+- `equijoin_pairs_u64` / `equijoin_pairs_u32` — one integer column.
+- `star_eq_triples_str(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v)` — one outer table matched to a one-column inner and a two-column inner.
+
+`pairs@` (or `triples@`) is the forward nested match list: outer-major, inner row ids increasing. `method_spec` folds from the high index downward, so walk the pair list from the end. Each step should match one iteration of `method_spec_helper`. Filters and aggregates stay in that loop. The pair list is the equijoin matches, not the whole query result.
+
 ## Allowed patterns
 
 - Use TRUSTED helpers already in scope (`add_u64`, column `get_*_exec` accessors, NativeAgg bridges).

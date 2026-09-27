@@ -1,0 +1,2132 @@
+//! Proved equijoin index. Rocketship: the body is verified, not `external_body`.
+//!
+//! One idea: the bucket for a key is the increasing row ids where the column
+//! equals that key. `equijoin_pairs_*` walks outer rows and those buckets, so
+//! the pair list is the nested-loop match list (same order as `rem_join`).
+//!
+//! vstd `StringHashMap` and `std::collections::HashMap` supply the hash-table
+//! view. This file does not assume the join result.
+//!
+//! `// EQ_JOIN_PROVED_BEGIN` .. `// EQ_JOIN_PROVED_END` is the slice assembled
+//! into join queries. The oracle below that marker is tests only.
+
+use std::collections::HashMap;
+use std::hash::RandomState;
+use vstd::prelude::*;
+
+verus! {
+
+// EQ_JOIN_PROVED_BEGIN
+
+use core::hash::Hash;
+use vstd::hash_map::StringHashMap;
+use vstd::std_specs::hash::{
+    axiom_contains_deref_key, axiom_maps_deref_key_to_value, axiom_random_state_builds_valid_hashers,
+    axiom_u32_obeys_hash_table_key_model, axiom_u64_obeys_hash_table_key_model,
+    builds_valid_hashers, obeys_key_model,
+};
+use vstd::map::{axiom_map_insert_different, lemma_map_insert_domain, lemma_map_insert_same};
+use vstd::seq::{
+    lemma_seq_push_index_different, lemma_seq_push_index_same, lemma_seq_push_len,
+    lemma_seq_update_different, lemma_seq_update_len,
+};
+use vstd::set::{lemma_set_insert_different, lemma_set_insert_same};
+
+/// Row ids `0..end` where `keys[id] == k`, in increasing order.
+pub open spec fn eq_row_ids<K>(keys: Seq<K>, k: K, end: int) -> Seq<usize>
+    decreases end,
+{
+    if end <= 0 {
+        Seq::<usize>::empty()
+    } else {
+        let prev = eq_row_ids(keys, k, end - 1);
+        if 0 <= end - 1 < keys.len() {
+            if keys[end - 1] == k {
+                prev.push((end - 1) as usize)
+            } else {
+                prev
+            }
+        } else {
+            prev
+        }
+    }
+}
+
+/// Spec keys of an exec column (`String@` or an integer's view).
+pub open spec fn key_views<K: View>(keys: Seq<K>) -> Seq<<K as View>::V> {
+    Seq::new(keys.len(), |i: int| keys[i]@)
+}
+
+pub open spec fn prefix_pairs(i: usize, js: Seq<usize>, t: int) -> Seq<(usize, usize)>
+    decreases t,
+{
+    if t <= 0 {
+        Seq::<(usize, usize)>::empty()
+    } else {
+        let prev = prefix_pairs(i, js, t - 1);
+        if 0 <= t - 1 < js.len() {
+            prev.push((i, js[t - 1]))
+        } else {
+            prev
+        }
+    }
+}
+
+/// Matches between `outer[0..n]` and `inner`, outer-major, inner increasing.
+pub open spec fn nested_eq_pairs<K>(outer: Seq<K>, inner: Seq<K>, n: int) -> Seq<(usize, usize)>
+    decreases n,
+{
+    if n <= 0 {
+        Seq::<(usize, usize)>::empty()
+    } else if n - 1 >= outer.len() {
+        nested_eq_pairs(outer, inner, n - 1)
+    } else {
+        let i = (n - 1) as usize;
+        let ids = eq_row_ids(inner, outer[n - 1], inner.len() as int);
+        nested_eq_pairs(outer, inner, n - 1) + prefix_pairs(i, ids, ids.len() as int)
+    }
+}
+
+/// `m[k]` is a bucket whose view is `eq_row_ids(keys, k, end)`.
+pub open spec fn index_ok<K>(
+    keys: Seq<K>,
+    buckets: Seq<Vec<usize>>,
+    m: Map<K, usize>,
+    end: int,
+) -> bool {
+    &&& forall|k: K|
+        #[trigger] m.contains_key(k) ==> {
+            let bi = m[k] as int;
+            0 <= bi < buckets.len() && buckets[bi]@ == eq_row_ids(keys, k, end)
+        }
+    &&& forall|k: K|
+        (#[trigger] eq_row_ids(keys, k, end)).len() > 0 ==> m.contains_key(k)
+    &&& forall|k1: K, k2: K|
+        #![trigger m.contains_key(k1), m.contains_key(k2)]
+        m.contains_key(k1) && m.contains_key(k2) && k1 != k2 ==> m[k1] != m[k2]
+}
+
+pub proof fn lemma_index_bucket<K>(
+    keys: Seq<K>,
+    buckets: Seq<Vec<usize>>,
+    m: Map<K, usize>,
+    end: int,
+    k: K,
+)
+    requires
+        index_ok(keys, buckets, m, end),
+        m.contains_key(k),
+    ensures
+        0 <= (m[k] as int) < buckets.len(),
+        buckets[(m[k] as int)]@ == eq_row_ids(keys, k, end),
+{
+    assert(buckets[(m[k] as int)]@ == eq_row_ids(keys, k, end));
+}
+
+pub proof fn lemma_index_covers<K>(
+    keys: Seq<K>,
+    buckets: Seq<Vec<usize>>,
+    m: Map<K, usize>,
+    end: int,
+    k: K,
+)
+    requires
+        index_ok(keys, buckets, m, end),
+        eq_row_ids(keys, k, end).len() > 0,
+    ensures
+        m.contains_key(k),
+{
+    assert(m.contains_key(k));
+}
+
+pub proof fn lemma_index_absent<K>(
+    keys: Seq<K>,
+    buckets: Seq<Vec<usize>>,
+    m: Map<K, usize>,
+    end: int,
+    k: K,
+)
+    requires
+        index_ok(keys, buckets, m, end),
+        !m.contains_key(k),
+    ensures
+        eq_row_ids(keys, k, end).len() == 0,
+{
+    if eq_row_ids(keys, k, end).len() > 0 {
+        lemma_index_covers(keys, buckets, m, end, k);
+        assert(false);
+    }
+}
+
+pub proof fn lemma_index_distinct<K>(
+    keys: Seq<K>,
+    buckets: Seq<Vec<usize>>,
+    m: Map<K, usize>,
+    end: int,
+    k1: K,
+    k2: K,
+)
+    requires
+        index_ok(keys, buckets, m, end),
+        m.contains_key(k1),
+        m.contains_key(k2),
+        k1 != k2,
+    ensures
+        m[k1] != m[k2],
+{
+    assert(m[k1] != m[k2]);
+}
+
+pub proof fn lemma_eq_row_ids_step<K>(keys: Seq<K>, k: K, end: int, row: usize)
+    requires
+        0 <= end < keys.len(),
+        row as int == end,
+    ensures
+        keys[end] == k ==> eq_row_ids(keys, k, end + 1) == eq_row_ids(keys, k, end).push(row),
+        keys[end] != k ==> eq_row_ids(keys, k, end + 1) == eq_row_ids(keys, k, end),
+{
+    assert((row as int) as usize == row);
+    let prev = eq_row_ids(keys, k, end);
+    let next = eq_row_ids(keys, k, end + 1);
+    if keys[end] == k {
+        assert(next == prev.push(row));
+    } else {
+        assert(next == prev);
+    }
+}
+
+pub proof fn lemma_prefix_pairs_step(i: usize, js: Seq<usize>, t: int)
+    requires
+        0 <= t < js.len(),
+    ensures
+        prefix_pairs(i, js, t + 1) == prefix_pairs(i, js, t).push((i, js[t])),
+{
+    assert(prefix_pairs(i, js, t + 1) == prefix_pairs(i, js, t).push((i, js[t])));
+}
+
+pub proof fn lemma_nested_eq_pairs_step<K>(outer: Seq<K>, inner: Seq<K>, n: int)
+    requires
+        0 < n <= outer.len(),
+    ensures
+        nested_eq_pairs(outer, inner, n) == nested_eq_pairs(outer, inner, n - 1) + prefix_pairs(
+            (n - 1) as usize,
+            eq_row_ids(inner, outer[n - 1], inner.len() as int),
+            eq_row_ids(inner, outer[n - 1], inner.len() as int).len() as int,
+        ),
+{
+    assert(nested_eq_pairs(outer, inner, n) == nested_eq_pairs(outer, inner, n - 1) + prefix_pairs(
+        (n - 1) as usize,
+        eq_row_ids(inner, outer[n - 1], inner.len() as int),
+        eq_row_ids(inner, outer[n - 1], inner.len() as int).len() as int,
+    ));
+}
+
+pub proof fn lemma_seq_add_empty<A>(s: Seq<A>)
+    ensures
+        s + Seq::<A>::empty() == s,
+{
+    broadcast use vstd::seq::group_seq_lemmas;
+
+    assert(s + Seq::<A>::empty() =~= s);
+}
+
+pub proof fn lemma_key_view_at<K: View>(keys: Seq<K>, i: int)
+    requires
+        0 <= i < keys.len(),
+    ensures
+        key_views(keys)[i] == keys[i]@,
+{
+    broadcast use vstd::seq::lemma_seq_new_index;
+
+    assert(key_views(keys)[i] == keys[i]@);
+}
+
+pub proof fn lemma_index_ok_empty<K>(keys: Seq<K>)
+    ensures
+        index_ok(keys, Seq::<Vec<usize>>::empty(), Map::<K, usize>::empty(), 0),
+{
+    broadcast use vstd::map::group_map_lemmas;
+
+    assert forall|k: K| eq_row_ids(keys, k, 0) == Seq::<usize>::empty() by {
+        assert(eq_row_ids(keys, k, 0) == Seq::<usize>::empty());
+    };
+    assert(Map::<K, usize>::empty().dom() =~= Set::<K>::empty());
+    assert(index_ok(keys, Seq::<Vec<usize>>::empty(), Map::<K, usize>::empty(), 0));
+}
+
+pub proof fn lemma_eq_row_ids_len0<K>(keys: Seq<K>, k: K, end: int)
+    requires
+        eq_row_ids(keys, k, end).len() == 0,
+    ensures
+        eq_row_ids(keys, k, end) == Seq::<usize>::empty(),
+{
+    broadcast use vstd::seq::group_seq_lemmas;
+
+    let s = eq_row_ids(keys, k, end);
+    assert(s.len() == 0);
+    assert(Seq::<usize>::empty().len() == 0);
+    assert(s =~= Seq::<usize>::empty());
+}
+
+/// Existing key: one bucket grows by `row`. Map is unchanged.
+#[verifier::spinoff_prover]
+pub proof fn lemma_index_append<K>(
+    keys: Seq<K>,
+    old_b: Seq<Vec<usize>>,
+    new_b: Seq<Vec<usize>>,
+    old_bucket: Seq<usize>,
+    m: Map<K, usize>,
+    k: K,
+    end: int,
+    row: usize,
+    bi: usize,
+)
+    requires
+        index_ok(keys, old_b, m, end),
+        0 <= end < keys.len(),
+        row as int == end,
+        keys[end] == k,
+        m.contains_key(k),
+        m[k] == bi,
+        (bi as int) < old_b.len(),
+        old_b[bi as int]@ == old_bucket,
+        new_b == old_b.update(bi as int, new_b[bi as int]),
+        new_b[bi as int]@ == old_bucket.push(row),
+    ensures
+        index_ok(keys, new_b, m, end + 1),
+{
+    broadcast use vstd::seq::group_seq_lemmas;
+
+    lemma_eq_row_ids_step(keys, k, end, row);
+    lemma_index_bucket(keys, old_b, m, end, k);
+    lemma_seq_update_len(old_b, bi as int, new_b[bi as int]);
+    assert(new_b.len() == old_b.len());
+    assert forall|k2: K| m.contains_key(k2) implies {
+        let bi2 = m[k2] as int;
+        0 <= bi2 < new_b.len() && new_b[bi2]@ == eq_row_ids(keys, k2, end + 1)
+    } by {
+        lemma_index_bucket(keys, old_b, m, end, k2);
+        let bi2 = m[k2] as int;
+        assert(0 <= bi2 < old_b.len());
+        assert(bi2 < new_b.len());
+        if k2 == k {
+            assert(bi2 == bi as int);
+            assert(old_bucket == eq_row_ids(keys, k, end));
+            assert(new_b[bi2]@ == old_bucket.push(row));
+            assert(eq_row_ids(keys, k, end + 1) == old_bucket.push(row));
+        } else {
+            lemma_index_distinct(keys, old_b, m, end, k2, k);
+            assert(bi2 != bi as int);
+            lemma_seq_update_different(old_b, bi2, bi as int, new_b[bi as int]);
+            assert(old_b.update(bi as int, new_b[bi as int])[bi2] == old_b[bi2]);
+            assert(new_b[bi2] == old_b[bi2]);
+            lemma_eq_row_ids_step(keys, k2, end, row);
+            assert(keys[end] != k2);
+            assert(eq_row_ids(keys, k2, end + 1) == eq_row_ids(keys, k2, end));
+            assert(new_b[bi2]@ == eq_row_ids(keys, k2, end + 1));
+        }
+    };
+    assert forall|k2: K| eq_row_ids(keys, k2, end + 1).len() > 0 implies m.contains_key(k2) by {
+        lemma_eq_row_ids_step(keys, k2, end, row);
+        if keys[end] == k2 {
+            assert(k2 == k);
+            assert(m.contains_key(k));
+        } else {
+            assert(eq_row_ids(keys, k2, end + 1) == eq_row_ids(keys, k2, end));
+            lemma_index_covers(keys, old_b, m, end, k2);
+        }
+    };
+    assert forall|k1: K, k2: K| #![auto]
+        m.contains_key(k1) && m.contains_key(k2) && k1 != k2 implies m[k1] != m[k2] by {
+        lemma_index_distinct(keys, old_b, m, end, k1, k2);
+    };
+    assert(index_ok(keys, new_b, m, end + 1));
+}
+
+/// Fresh key: append a new one-element bucket and point the map at it.
+#[verifier::spinoff_prover]
+pub proof fn lemma_index_insert<K>(
+    keys: Seq<K>,
+    old_b: Seq<Vec<usize>>,
+    new_b: Seq<Vec<usize>>,
+    old_m: Map<K, usize>,
+    new_m: Map<K, usize>,
+    k: K,
+    end: int,
+    row: usize,
+    bi: usize,
+    one: Vec<usize>,
+)
+    requires
+        index_ok(keys, old_b, old_m, end),
+        0 <= end < keys.len(),
+        row as int == end,
+        keys[end] == k,
+        !old_m.contains_key(k),
+        bi as int == old_b.len(),
+        one@ == Seq::<usize>::empty().push(row),
+        new_b == old_b.push(one),
+        new_m == old_m.insert(k, bi),
+    ensures
+        index_ok(keys, new_b, new_m, end + 1),
+{
+    broadcast use vstd::seq::group_seq_lemmas;
+    broadcast use vstd::map::group_map_lemmas;
+    broadcast use vstd::set::group_set_lemmas;
+
+    lemma_eq_row_ids_step(keys, k, end, row);
+    lemma_index_absent(keys, old_b, old_m, end, k);
+    lemma_eq_row_ids_len0(keys, k, end);
+    assert(eq_row_ids(keys, k, end + 1) == Seq::<usize>::empty().push(row));
+    lemma_seq_push_len(old_b, one);
+    lemma_seq_push_index_same(old_b, one, bi as int);
+    assert(new_b[bi as int] == one);
+    assert(new_b[bi as int]@ == one@);
+    assert(new_b[bi as int]@ == eq_row_ids(keys, k, end + 1));
+    lemma_map_insert_same(old_m, k, bi);
+    assert(old_m.insert(k, bi)[k] == bi);
+    assert(new_m[k] == bi);
+    lemma_map_insert_domain(old_m, k, bi);
+    lemma_set_insert_same(old_m.dom(), k);
+    assert(new_m.contains_key(k));
+
+    assert forall|k2: K| new_m.contains_key(k2) implies {
+        let bi2 = new_m[k2] as int;
+        0 <= bi2 < new_b.len() && new_b[bi2]@ == eq_row_ids(keys, k2, end + 1)
+    } by {
+        let bi2 = new_m[k2] as int;
+        if k2 == k {
+            assert(bi2 == bi as int);
+            assert(0 <= bi2 < new_b.len());
+            assert(new_b[bi2]@ == eq_row_ids(keys, k, end + 1));
+        } else {
+            lemma_set_insert_different(old_m.dom(), k2, k);
+            assert(old_m.contains_key(k2));
+            axiom_map_insert_different(old_m, k2, k, bi);
+            assert(old_m.insert(k, bi)[k2] == old_m[k2]);
+            assert(new_m[k2] == old_m[k2]);
+            lemma_index_bucket(keys, old_b, old_m, end, k2);
+            assert(0 <= bi2 < old_b.len());
+            assert(bi2 != bi as int);
+            lemma_seq_push_index_different(old_b, one, bi2);
+            assert(new_b[bi2] == old_b[bi2]);
+            lemma_eq_row_ids_step(keys, k2, end, row);
+            assert(keys[end] != k2);
+            assert(eq_row_ids(keys, k2, end + 1) == eq_row_ids(keys, k2, end));
+            assert(new_b[bi2]@ == eq_row_ids(keys, k2, end + 1));
+        }
+    };
+    assert forall|k2: K| eq_row_ids(keys, k2, end + 1).len() > 0 implies new_m.contains_key(k2) by {
+        lemma_eq_row_ids_step(keys, k2, end, row);
+        if keys[end] == k2 {
+            assert(k2 == k);
+            assert(new_m.contains_key(k));
+        } else {
+            assert(eq_row_ids(keys, k2, end + 1) == eq_row_ids(keys, k2, end));
+            lemma_index_covers(keys, old_b, old_m, end, k2);
+            lemma_set_insert_different(old_m.dom(), k2, k);
+            assert(new_m.contains_key(k2));
+        }
+    };
+    assert forall|k1: K, k2: K| #![auto]
+        new_m.contains_key(k1) && new_m.contains_key(k2) && k1 != k2 implies new_m[k1] != new_m[k2] by {
+        if k1 != k && k2 != k {
+            lemma_set_insert_different(old_m.dom(), k1, k);
+            lemma_set_insert_different(old_m.dom(), k2, k);
+            axiom_map_insert_different(old_m, k1, k, bi);
+            axiom_map_insert_different(old_m, k2, k, bi);
+            assert(new_m[k1] == old_m[k1]);
+            assert(new_m[k2] == old_m[k2]);
+            lemma_index_distinct(keys, old_b, old_m, end, k1, k2);
+        } else if k1 == k {
+            assert(new_m[k1] == bi);
+            lemma_set_insert_different(old_m.dom(), k2, k);
+            axiom_map_insert_different(old_m, k2, k, bi);
+            assert(new_m[k2] == old_m[k2]);
+            lemma_index_bucket(keys, old_b, old_m, end, k2);
+            assert((old_m[k2] as int) < old_b.len());
+            assert(old_m[k2] != bi);
+        } else {
+            assert(k2 == k);
+            assert(new_m[k2] == bi);
+            lemma_set_insert_different(old_m.dom(), k1, k);
+            axiom_map_insert_different(old_m, k1, k, bi);
+            assert(new_m[k1] == old_m[k1]);
+            lemma_index_bucket(keys, old_b, old_m, end, k1);
+            assert((old_m[k1] as int) < old_b.len());
+            assert(old_m[k1] != bi);
+        }
+    };
+    assert(index_ok(keys, new_b, new_m, end + 1));
+}
+
+pub struct EqIndexStr {
+    pub buckets: Vec<Vec<usize>>,
+    pub map: StringHashMap<usize>,
+}
+
+/// Bucket row-ids for `keys`. Each id appears once, in increasing order.
+pub fn build_eq_index_str(keys: &Vec<String>) -> (idx: EqIndexStr)
+    ensures
+        index_ok(key_views(keys@), idx.buckets@, idx.map@, keys@.len() as int),
+{
+    let ghost sk = key_views(keys@);
+    let mut buckets: Vec<Vec<usize>> = Vec::with_capacity(keys.len());
+    let mut map: StringHashMap<usize> = StringHashMap::with_capacity(keys.len());
+    proof {
+        broadcast use vstd::std_specs::vec::axiom_spec_len;
+        lemma_index_ok_empty::<Seq<char>>(sk);
+    }
+    let mut i: usize = 0;
+    while i < keys.len()
+        invariant
+            i <= keys.len(),
+            keys@.len() == keys.len() as int,
+            sk == key_views(keys@),
+            index_ok(sk, buckets@, map@, i as int),
+        decreases keys.len() - i,
+    {
+        let key = keys[i].clone();
+        let ghost k = key@;
+        let ghost end = i as int;
+        proof {
+            lemma_key_view_at(keys@, end);
+            assert(k == sk[end]);
+            broadcast use vstd::std_specs::vec::axiom_spec_len;
+            assert(keys@.len() == keys.len() as int);
+        }
+        let present = map.contains_key(key.as_str());
+        proof {
+            assert(present == map@.contains_key(k));
+        }
+        if present {
+            let got = map.get(key.as_str());
+            proof {
+                assert(got is Some);
+                assert(map@.contains_key(k));
+            }
+            let bi = *got.unwrap();
+            proof {
+                assert(map@[k] == bi);
+                lemma_index_bucket(sk, buckets@, map@, end, k);
+                assert((bi as int) < buckets@.len());
+            }
+            let ghost old_b = buckets@;
+            let ghost old_bucket = buckets@[bi as int]@;
+            let ghost m = map@;
+            buckets[bi].push(i);
+            proof {
+                assert(buckets@ == old_b.update(bi as int, buckets@[bi as int]));
+                assert(buckets@[bi as int]@ == old_bucket.push(i));
+                lemma_index_append(sk, old_b, buckets@, old_bucket, m, k, end, i, bi);
+            }
+        } else {
+            proof {
+                assert(!map@.contains_key(k));
+            }
+            let bi = buckets.len();
+            let ghost old_b = buckets@;
+            let ghost old_m = map@;
+            let mut one: Vec<usize> = Vec::new();
+            one.push(i);
+            let ghost one_g = one;
+            proof {
+                broadcast use vstd::std_specs::vec::axiom_spec_len;
+                assert(bi as int == old_b.len());
+                assert(one_g@ == Seq::<usize>::empty().push(i));
+                assert(!old_m.contains_key(k));
+            }
+            buckets.push(one);
+            map.insert(key, bi);
+            proof {
+                assert(buckets@ == old_b.push(one_g));
+                assert(map@ == old_m.insert(k, bi));
+                lemma_index_insert(sk, old_b, buckets@, old_m, map@, k, end, i, bi, one_g);
+            }
+        }
+        proof {
+            assert(index_ok(sk, buckets@, map@, end + 1));
+        }
+        i = i + 1;
+    }
+    EqIndexStr { buckets, map }
+}
+
+/// Bucket for `key`, or `None` when no row matches.
+pub fn probe_eq_str<'a>(idx: &'a EqIndexStr, keys: &Vec<String>, key: &str) -> (hit: Option<&'a Vec<usize>>)
+    requires
+        index_ok(key_views(keys@), idx.buckets@, idx.map@, keys@.len() as int),
+    ensures
+        match hit {
+            Some(v) => v@ == eq_row_ids(key_views(keys@), key@, keys@.len() as int),
+            None => eq_row_ids(key_views(keys@), key@, keys@.len() as int).len() == 0,
+        },
+{
+    let ghost sk = key_views(keys@);
+    let ghost n = keys@.len() as int;
+    let bi_opt: Option<usize> = match idx.map.get(key) {
+        Some(bi_ref) => Some(*bi_ref),
+        None => None,
+    };
+    match bi_opt {
+        Some(bi) => {
+            proof {
+                broadcast use vstd::std_specs::vec::axiom_spec_len;
+                assert(idx.map@.contains_key(key@));
+                assert(idx.map@[key@] == bi);
+                assert((bi as int) < idx.buckets@.len());
+                assert(idx.buckets@[bi as int]@ == eq_row_ids(sk, key@, n));
+                assert(idx.buckets.len() == idx.buckets@.len());
+            }
+            Some(&idx.buckets[bi])
+        },
+        None => {
+            proof {
+                assert(!idx.map@.contains_key(key@));
+                assert(eq_row_ids(sk, key@, n).len() == 0);
+            }
+            None
+        },
+    }
+}
+
+pub fn push_prefix_pairs(pairs: &mut Vec<(usize, usize)>, i: usize, ids: &Vec<usize>)
+    ensures
+        final(pairs)@ == old(pairs)@ + prefix_pairs(i, ids@, ids@.len() as int),
+{
+    proof {
+        broadcast use vstd::std_specs::vec::axiom_spec_len;
+        assert(ids@.len() == ids.len() as int);
+    }
+    let ghost base = pairs@;
+    let mut extra: Vec<(usize, usize)> = Vec::new();
+    let mut t: usize = 0;
+    while t < ids.len()
+        invariant
+            t <= ids.len(),
+            ids@.len() == ids.len() as int,
+            extra@ == prefix_pairs(i, ids@, t as int),
+        decreases ids.len() - t,
+    {
+        let ghost old_extra = extra@;
+        let id = ids[t];
+        extra.push((i, id));
+        proof {
+            assert(id == ids@[t as int]);
+            lemma_prefix_pairs_step(i, ids@, t as int);
+            assert(extra@ == old_extra.push((i, ids@[t as int])));
+            assert(extra@ == prefix_pairs(i, ids@, t as int + 1));
+        }
+        t = t + 1;
+    }
+    proof {
+        assert(extra@ == prefix_pairs(i, ids@, ids@.len() as int));
+        assert(pairs@ == base);
+    }
+    pairs.append(&mut extra);
+    proof {
+        assert(pairs@ == base + prefix_pairs(i, ids@, ids@.len() as int));
+    }
+}
+
+/// Pair list equal to the nested equijoin on one string column.
+pub fn equijoin_pairs_str(outer: &Vec<String>, inner: &Vec<String>) -> (pairs: Vec<(usize, usize)>)
+    ensures
+        pairs@ == nested_eq_pairs(key_views(outer@), key_views(inner@), outer@.len() as int),
+{
+    let idx = build_eq_index_str(inner);
+    let ghost ov = key_views(outer@);
+    let ghost iv = key_views(inner@);
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    let mut i: usize = 0;
+    while i < outer.len()
+        invariant
+            i <= outer.len(),
+            outer@.len() == outer.len() as int,
+            inner@.len() == inner.len() as int,
+            ov == key_views(outer@),
+            iv == key_views(inner@),
+            index_ok(iv, idx.buckets@, idx.map@, inner@.len() as int),
+            pairs@ == nested_eq_pairs(ov, iv, i as int),
+        decreases outer.len() - i,
+    {
+        let key = outer[i].clone();
+        let ghost end = i as int;
+        proof {
+            lemma_key_view_at(outer@, end);
+            broadcast use vstd::std_specs::vec::axiom_spec_len;
+            assert(ov[end] == key@);
+        }
+        let ghost before = pairs@;
+        let bi_opt: Option<usize> = match idx.map.get(key.as_str()) {
+            Some(bi_ref) => Some(*bi_ref),
+            None => None,
+        };
+        match bi_opt {
+            Some(bi) => {
+                proof {
+                    assert(idx.map@.contains_key(key@));
+                    assert(idx.buckets@[bi as int]@ == eq_row_ids(iv, key@, iv.len() as int));
+                }
+                let ids = &idx.buckets[bi];
+                push_prefix_pairs(&mut pairs, i, ids);
+                proof {
+                    lemma_nested_eq_pairs_step(ov, iv, end + 1);
+                    assert(ids@ == eq_row_ids(iv, ov[end], iv.len() as int));
+                    assert(pairs@ == before + prefix_pairs(i, ids@, ids@.len() as int));
+                    assert(pairs@ == nested_eq_pairs(ov, iv, end + 1));
+                }
+            },
+            None => {
+                proof {
+                    assert(!idx.map@.contains_key(key@));
+                    assert(eq_row_ids(iv, key@, iv.len() as int).len() == 0);
+                    lemma_eq_row_ids_len0(iv, key@, iv.len() as int);
+                    lemma_nested_eq_pairs_step(ov, iv, end + 1);
+                    lemma_seq_add_empty(before);
+                    assert(prefix_pairs(i, Seq::<usize>::empty(), 0) == Seq::<(usize, usize)>::empty());
+                    assert(pairs@ == nested_eq_pairs(ov, iv, end + 1));
+                }
+            },
+        }
+        i = i + 1;
+    }
+    pairs
+}
+
+/// Identity view for integer keys (`u64@ == u64`). Trigger for the quantifier.
+pub open spec fn view_is_id<K: View<V = K>>(x: K) -> bool {
+    x@ == x
+}
+
+#[verifier::reject_recursive_types(K)]
+pub struct EqIndexCopy<K> where K: View<V = K> + Eq + Hash {
+    pub buckets: Vec<Vec<usize>>,
+    pub map: HashMap<K, usize>,
+}
+
+pub proof fn lemma_u64_hash_key()
+    ensures
+        obeys_key_model::<u64>(),
+        builds_valid_hashers::<RandomState>(),
+        forall|x: u64| #[trigger] view_is_id(x),
+{
+    broadcast use axiom_u64_obeys_hash_table_key_model;
+    broadcast use axiom_random_state_builds_valid_hashers;
+
+    assert(obeys_key_model::<u64>());
+    assert(builds_valid_hashers::<RandomState>());
+    assert forall|x: u64| #[trigger] view_is_id(x) by {
+        assert(x@ == x);
+    };
+}
+
+pub proof fn lemma_u32_hash_key()
+    ensures
+        obeys_key_model::<u32>(),
+        builds_valid_hashers::<RandomState>(),
+        forall|x: u32| #[trigger] view_is_id(x),
+{
+    broadcast use axiom_u32_obeys_hash_table_key_model;
+    broadcast use axiom_random_state_builds_valid_hashers;
+
+    assert(obeys_key_model::<u32>());
+    assert(builds_valid_hashers::<RandomState>());
+    assert forall|x: u32| #[trigger] view_is_id(x) by {
+        assert(x@ == x);
+    };
+}
+
+/// Same bucket invariant as [`build_eq_index_str`], for identity-view keys (`u32`, `u64`).
+pub fn build_eq_index_copy<K: Copy + View<V = K> + Eq + Hash>(keys: &Vec<K>) -> (idx: EqIndexCopy<K>)
+    requires
+        obeys_key_model::<K>(),
+        builds_valid_hashers::<RandomState>(),
+        forall|x: K| #[trigger] view_is_id(x),
+    ensures
+        index_ok(key_views(keys@), idx.buckets@, idx.map@, keys@.len() as int),
+{
+    let ghost sk = key_views(keys@);
+    let mut buckets: Vec<Vec<usize>> = Vec::with_capacity(keys.len());
+    let mut map: HashMap<K, usize> = HashMap::with_capacity(keys.len());
+    proof {
+        broadcast use vstd::std_specs::vec::axiom_spec_len;
+        lemma_index_ok_empty(sk);
+    }
+    let mut i: usize = 0;
+    while i < keys.len()
+        invariant
+            i <= keys.len(),
+            keys@.len() == keys.len() as int,
+            sk == key_views(keys@),
+            obeys_key_model::<K>(),
+            builds_valid_hashers::<RandomState>(),
+            forall|x: K| #[trigger] view_is_id(x),
+            index_ok(sk, buckets@, map@, i as int),
+        decreases keys.len() - i,
+    {
+        let key = keys[i];
+        let ghost k = key@;
+        let ghost end = i as int;
+        proof {
+            lemma_key_view_at(keys@, end);
+            assert(k == sk[end]);
+            broadcast use vstd::std_specs::vec::axiom_spec_len;
+            assert(keys@.len() == keys.len() as int);
+        }
+        proof {
+            assert(view_is_id(key));
+            assert(key@ == key);
+            broadcast use axiom_contains_deref_key;
+        }
+        let present = map.contains_key(&key);
+        proof {
+            assert(present == map@.contains_key(key));
+            assert(present == map@.contains_key(k));
+        }
+        if present {
+            let got = map.get(&key);
+            proof {
+                broadcast use axiom_maps_deref_key_to_value;
+                assert(got is Some);
+                assert(map@.contains_key(k));
+            }
+            let bi = *got.unwrap();
+            proof {
+                assert(map@[k] == bi);
+                lemma_index_bucket(sk, buckets@, map@, end, k);
+                assert((bi as int) < buckets@.len());
+            }
+            let ghost old_b = buckets@;
+            let ghost old_bucket = buckets@[bi as int]@;
+            let ghost m = map@;
+            buckets[bi].push(i);
+            proof {
+                assert(buckets@ == old_b.update(bi as int, buckets@[bi as int]));
+                assert(buckets@[bi as int]@ == old_bucket.push(i));
+                lemma_index_append(sk, old_b, buckets@, old_bucket, m, k, end, i, bi);
+            }
+        } else {
+            proof {
+                assert(!map@.contains_key(k));
+            }
+            let bi = buckets.len();
+            let ghost old_b = buckets@;
+            let ghost old_m = map@;
+            let mut one: Vec<usize> = Vec::new();
+            one.push(i);
+            let ghost one_g = one;
+            proof {
+                broadcast use vstd::std_specs::vec::axiom_spec_len;
+                assert(bi as int == old_b.len());
+                assert(one_g@ == Seq::<usize>::empty().push(i));
+                assert(!old_m.contains_key(k));
+            }
+            buckets.push(one);
+            map.insert(key, bi);
+            proof {
+                assert(buckets@ == old_b.push(one_g));
+                assert(map@ == old_m.insert(k, bi));
+                lemma_index_insert(sk, old_b, buckets@, old_m, map@, k, end, i, bi, one_g);
+            }
+        }
+        proof {
+            assert(index_ok(sk, buckets@, map@, end + 1));
+        }
+        i = i + 1;
+    }
+    EqIndexCopy { buckets, map }
+}
+
+pub fn build_eq_index_u64(keys: &Vec<u64>) -> (idx: EqIndexCopy<u64>)
+    ensures
+        index_ok(key_views(keys@), idx.buckets@, idx.map@, keys@.len() as int),
+{
+    proof {
+        lemma_u64_hash_key();
+    }
+    build_eq_index_copy(keys)
+}
+
+pub fn build_eq_index_u32(keys: &Vec<u32>) -> (idx: EqIndexCopy<u32>)
+    ensures
+        index_ok(key_views(keys@), idx.buckets@, idx.map@, keys@.len() as int),
+{
+    proof {
+        lemma_u32_hash_key();
+    }
+    build_eq_index_copy(keys)
+}
+
+pub fn equijoin_pairs_copy<K: Copy + View<V = K> + Eq + Hash>(
+    outer: &Vec<K>,
+    inner: &Vec<K>,
+) -> (pairs: Vec<(usize, usize)>)
+    requires
+        obeys_key_model::<K>(),
+        builds_valid_hashers::<RandomState>(),
+        forall|x: K| #[trigger] view_is_id(x),
+    ensures
+        pairs@ == nested_eq_pairs(key_views(outer@), key_views(inner@), outer@.len() as int),
+{
+    let idx = build_eq_index_copy(inner);
+    let ghost ov = key_views(outer@);
+    let ghost iv = key_views(inner@);
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    let mut i: usize = 0;
+    while i < outer.len()
+        invariant
+            i <= outer.len(),
+            outer@.len() == outer.len() as int,
+            inner@.len() == inner.len() as int,
+            ov == key_views(outer@),
+            iv == key_views(inner@),
+            obeys_key_model::<K>(),
+            builds_valid_hashers::<RandomState>(),
+            forall|x: K| #[trigger] view_is_id(x),
+            index_ok(iv, idx.buckets@, idx.map@, inner@.len() as int),
+            pairs@ == nested_eq_pairs(ov, iv, i as int),
+        decreases outer.len() - i,
+    {
+        let key = outer[i];
+        let ghost end = i as int;
+        proof {
+            lemma_key_view_at(outer@, end);
+            broadcast use vstd::std_specs::vec::axiom_spec_len;
+            assert(ov[end] == key@);
+        }
+        let ghost before = pairs@;
+        proof {
+            assert(view_is_id(key));
+            assert(key@ == key);
+            broadcast use axiom_contains_deref_key;
+            broadcast use axiom_maps_deref_key_to_value;
+        }
+        let bi_opt: Option<usize> = match idx.map.get(&key) {
+            Some(bi_ref) => Some(*bi_ref),
+            None => None,
+        };
+        match bi_opt {
+            Some(bi) => {
+                proof {
+                    assert(idx.map@.contains_key(key@));
+                    assert(idx.buckets@[bi as int]@ == eq_row_ids(iv, key@, iv.len() as int));
+                }
+                let ids = &idx.buckets[bi];
+                push_prefix_pairs(&mut pairs, i, ids);
+                proof {
+                    lemma_nested_eq_pairs_step(ov, iv, end + 1);
+                    assert(ids@ == eq_row_ids(iv, ov[end], iv.len() as int));
+                    assert(pairs@ == before + prefix_pairs(i, ids@, ids@.len() as int));
+                    assert(pairs@ == nested_eq_pairs(ov, iv, end + 1));
+                }
+            },
+            None => {
+                proof {
+                    assert(!idx.map@.contains_key(key@));
+                    assert(eq_row_ids(iv, key@, iv.len() as int).len() == 0);
+                    lemma_eq_row_ids_len0(iv, key@, iv.len() as int);
+                    lemma_nested_eq_pairs_step(ov, iv, end + 1);
+                    lemma_seq_add_empty(before);
+                    assert(prefix_pairs(i, Seq::<usize>::empty(), 0) == Seq::<(usize, usize)>::empty());
+                    assert(pairs@ == nested_eq_pairs(ov, iv, end + 1));
+                }
+            },
+        }
+        i = i + 1;
+    }
+    pairs
+}
+
+pub fn equijoin_pairs_u64(outer: &Vec<u64>, inner: &Vec<u64>) -> (pairs: Vec<(usize, usize)>)
+    ensures
+        pairs@ == nested_eq_pairs(key_views(outer@), key_views(inner@), outer@.len() as int),
+{
+    proof {
+        lemma_u64_hash_key();
+    }
+    equijoin_pairs_copy(outer, inner)
+}
+
+pub fn equijoin_pairs_u32(outer: &Vec<u32>, inner: &Vec<u32>) -> (pairs: Vec<(usize, usize)>)
+    ensures
+        pairs@ == nested_eq_pairs(key_views(outer@), key_views(inner@), outer@.len() as int),
+{
+    proof {
+        lemma_u32_hash_key();
+    }
+    equijoin_pairs_copy(outer, inner)
+}
+
+/// Row ids where column `a` equals `ka` and column `b` equals `kb`.
+pub open spec fn eq_row_ids2<A, B>(a: Seq<A>, b: Seq<B>, ka: A, kb: B, end: int) -> Seq<usize>
+    decreases end,
+{
+    if end <= 0 {
+        Seq::<usize>::empty()
+    } else {
+        let prev = eq_row_ids2(a, b, ka, kb, end - 1);
+        if 0 <= end - 1 < a.len() {
+            if end - 1 < b.len() {
+                if a[end - 1] == ka {
+                    if b[end - 1] == kb {
+                        prev.push((end - 1) as usize)
+                    } else {
+                        prev
+                    }
+                } else {
+                    prev
+                }
+            } else {
+                prev
+            }
+        } else {
+            prev
+        }
+    }
+}
+
+pub open spec fn nested_eq_pairs2<A, B>(
+    outer_a: Seq<A>,
+    outer_b: Seq<B>,
+    inner_a: Seq<A>,
+    inner_b: Seq<B>,
+    n: int,
+) -> Seq<(usize, usize)>
+    decreases n,
+{
+    if n <= 0 {
+        Seq::<(usize, usize)>::empty()
+    } else if n - 1 >= outer_a.len() || n - 1 >= outer_b.len() {
+        nested_eq_pairs2(outer_a, outer_b, inner_a, inner_b, n - 1)
+    } else {
+        let i = (n - 1) as usize;
+        let ids = eq_row_ids2(
+            inner_a,
+            inner_b,
+            outer_a[n - 1],
+            outer_b[n - 1],
+            inner_a.len() as int,
+        );
+        nested_eq_pairs2(outer_a, outer_b, inner_a, inner_b, n - 1) + prefix_pairs(
+            i,
+            ids,
+            ids.len() as int,
+        )
+    }
+}
+
+/// Keep `ids[0..t]` whose `col` entry equals `k`.
+pub open spec fn filter_match<B>(ids: Seq<usize>, col: Seq<B>, k: B, t: int) -> Seq<usize>
+    decreases t,
+{
+    if t <= 0 {
+        Seq::<usize>::empty()
+    } else {
+        let prev = filter_match(ids, col, k, t - 1);
+        if 0 <= t - 1 < ids.len() {
+            let j = ids[t - 1];
+            if 0 <= j < col.len() {
+                if col[j as int] == k {
+                    prev.push(j)
+                } else {
+                    prev
+                }
+            } else {
+                prev
+            }
+        } else {
+            prev
+        }
+    }
+}
+
+pub proof fn lemma_eq_row_ids2_step<A, B>(
+    a: Seq<A>,
+    b: Seq<B>,
+    ka: A,
+    kb: B,
+    end: int,
+    row: usize,
+)
+    requires
+        0 <= end < a.len(),
+        end < b.len(),
+        row as int == end,
+    ensures
+        a[end] == ka && b[end] == kb ==> eq_row_ids2(a, b, ka, kb, end + 1) == eq_row_ids2(
+            a,
+            b,
+            ka,
+            kb,
+            end,
+        ).push(row),
+        !(a[end] == ka && b[end] == kb) ==> eq_row_ids2(a, b, ka, kb, end + 1) == eq_row_ids2(
+            a,
+            b,
+            ka,
+            kb,
+            end,
+        ),
+{
+    assert((row as int) as usize == row);
+    let prev = eq_row_ids2(a, b, ka, kb, end);
+    let next = eq_row_ids2(a, b, ka, kb, end + 1);
+    if a[end] == ka && b[end] == kb {
+        assert(next == prev.push(row));
+    } else {
+        assert(next == prev);
+    }
+}
+
+pub proof fn lemma_nested_eq_pairs2_step<A, B>(
+    outer_a: Seq<A>,
+    outer_b: Seq<B>,
+    inner_a: Seq<A>,
+    inner_b: Seq<B>,
+    n: int,
+)
+    requires
+        0 < n <= outer_a.len(),
+        n <= outer_b.len(),
+        inner_a.len() == inner_b.len(),
+    ensures
+        nested_eq_pairs2(outer_a, outer_b, inner_a, inner_b, n) == nested_eq_pairs2(
+            outer_a,
+            outer_b,
+            inner_a,
+            inner_b,
+            n - 1,
+        ) + prefix_pairs(
+            (n - 1) as usize,
+            eq_row_ids2(inner_a, inner_b, outer_a[n - 1], outer_b[n - 1], inner_a.len() as int),
+            eq_row_ids2(inner_a, inner_b, outer_a[n - 1], outer_b[n - 1], inner_a.len() as int).len() as int,
+        ),
+{
+}
+
+pub proof fn lemma_eq_row_ids_bounded<K>(keys: Seq<K>, k: K, end: int)
+    requires
+        0 <= end <= keys.len(),
+        end <= usize::MAX as int,
+    ensures
+        forall|t: int|
+            0 <= t < eq_row_ids(keys, k, end).len() ==> (#[trigger] eq_row_ids(keys, k, end)[t] as int)
+                < end,
+    decreases end,
+{
+    if end > 0 {
+        assert(0 <= end - 1 <= usize::MAX as int);
+        assert(end - 1 <= keys.len());
+        lemma_eq_row_ids_bounded(keys, k, end - 1);
+        let prev = eq_row_ids(keys, k, end - 1);
+        let row = (end - 1) as usize;
+        assert(row as int == end - 1);
+        lemma_eq_row_ids_step(keys, k, end - 1, row);
+        let cur = eq_row_ids(keys, k, end);
+        if keys[end - 1] == k {
+            assert(cur == prev.push(row));
+            assert forall|t: int| 0 <= t < cur.len() implies ((cur[t] as int) < end) by {
+                if t == prev.len() {
+                    assert(cur[t] == row);
+                    assert((row as int) < end);
+                } else {
+                    lemma_seq_push_index_different(prev, row, t);
+                    assert((prev[t] as int) < end - 1);
+                }
+            };
+        } else {
+            assert(cur == prev);
+            assert forall|t: int| 0 <= t < cur.len() implies ((cur[t] as int) < end) by {
+                assert((prev[t] as int) < end - 1);
+            };
+        }
+    }
+}
+
+pub proof fn lemma_filter_prefix_same<B>(s: Seq<usize>, col: Seq<B>, k: B, j: usize, t: int)
+    requires
+        0 <= t <= s.len(),
+    ensures
+        filter_match(s.push(j), col, k, t) == filter_match(s, col, k, t),
+    decreases t,
+{
+    if t > 0 {
+        lemma_filter_prefix_same(s, col, k, j, t - 1);
+        lemma_seq_push_index_different(s, j, t - 1);
+    }
+}
+
+pub proof fn lemma_filter_push<B>(s: Seq<usize>, col: Seq<B>, k: B, j: usize)
+    requires
+        (j as int) < col.len(),
+    ensures
+        col[j as int] == k ==> filter_match(s.push(j), col, k, (s.len() + 1) as int) == filter_match(
+            s,
+            col,
+            k,
+            s.len() as int,
+        ).push(j),
+        col[j as int] != k ==> filter_match(s.push(j), col, k, (s.len() + 1) as int) == filter_match(
+            s,
+            col,
+            k,
+            s.len() as int,
+        ),
+{
+    lemma_filter_prefix_same(s, col, k, j, s.len() as int);
+    lemma_seq_push_len(s, j);
+    lemma_seq_push_index_same(s, j, s.len() as int);
+}
+
+pub proof fn lemma_filter_is_ids2<A, B>(a: Seq<A>, b: Seq<B>, ka: A, kb: B, end: int)
+    requires
+        0 <= end <= a.len(),
+        a.len() == b.len(),
+        end <= usize::MAX as int,
+    ensures
+        filter_match(
+            eq_row_ids(a, ka, end),
+            b,
+            kb,
+            eq_row_ids(a, ka, end).len() as int,
+        ) == eq_row_ids2(a, b, ka, kb, end),
+    decreases end,
+{
+    if end > 0 {
+        assert(0 <= end - 1 <= usize::MAX as int);
+        lemma_filter_is_ids2(a, b, ka, kb, end - 1);
+        let row = (end - 1) as usize;
+        assert(row as int == end - 1);
+        let prev = eq_row_ids(a, ka, end - 1);
+        lemma_eq_row_ids_step(a, ka, end - 1, row);
+        lemma_eq_row_ids2_step(a, b, ka, kb, end - 1, row);
+        if a[end - 1] == ka {
+            assert(eq_row_ids(a, ka, end) == prev.push(row));
+            lemma_filter_push(prev, b, kb, row);
+            if b[end - 1] == kb {
+                assert(eq_row_ids2(a, b, ka, kb, end) == eq_row_ids2(a, b, ka, kb, end - 1).push(row));
+            } else {
+                assert(eq_row_ids2(a, b, ka, kb, end) == eq_row_ids2(a, b, ka, kb, end - 1));
+            }
+        } else {
+            assert(eq_row_ids(a, ka, end) == prev);
+            assert(eq_row_ids2(a, b, ka, kb, end) == eq_row_ids2(a, b, ka, kb, end - 1));
+        }
+    }
+}
+
+pub fn filter_row_ids_str(ids: &Vec<usize>, col: &Vec<String>, key: &String) -> (out: Vec<usize>)
+    requires
+        forall|t: int| 0 <= t < ids@.len() ==> ids@[t] < col@.len(),
+    ensures
+        out@ == filter_match(ids@, key_views(col@), key@, ids@.len() as int),
+{
+    proof {
+        broadcast use vstd::std_specs::vec::axiom_spec_len;
+        assert(ids@.len() == ids.len() as int);
+        assert(col@.len() == col.len() as int);
+    }
+    let mut out: Vec<usize> = Vec::new();
+    let mut t: usize = 0;
+    while t < ids.len()
+        invariant
+            t <= ids.len(),
+            ids@.len() == ids.len() as int,
+            col@.len() == col.len() as int,
+            forall|u: int| 0 <= u < ids@.len() ==> ids@[u] < col@.len(),
+            out@ == filter_match(ids@, key_views(col@), key@, t as int),
+        decreases ids.len() - t,
+    {
+        let id = ids[t];
+        proof {
+            assert(id == ids@[t as int]);
+            assert(id < col@.len());
+            lemma_key_view_at(col@, id as int);
+        }
+        let ghost old_out = out@;
+        if col[id] == *key {
+            out.push(id);
+            proof {
+                assert(col@[id as int]@ == key@);
+                assert(key_views(col@)[id as int] == key@);
+                assert(out@ == old_out.push(id));
+                assert(out@ == filter_match(ids@, key_views(col@), key@, t as int + 1));
+            }
+        } else {
+            proof {
+                assert(col@[id as int]@ != key@);
+                assert(out@ == filter_match(ids@, key_views(col@), key@, t as int + 1));
+            }
+        }
+        t = t + 1;
+    }
+    out
+}
+
+/// Equijoin on two string columns (for example `tag` and `version`).
+pub fn equijoin_pairs_str2(
+    outer0: &Vec<String>,
+    outer1: &Vec<String>,
+    inner0: &Vec<String>,
+    inner1: &Vec<String>,
+) -> (pairs: Vec<(usize, usize)>)
+    requires
+        outer0@.len() == outer1@.len(),
+        inner0@.len() == inner1@.len(),
+    ensures
+        pairs@ == nested_eq_pairs2(
+            key_views(outer0@),
+            key_views(outer1@),
+            key_views(inner0@),
+            key_views(inner1@),
+            outer0@.len() as int,
+        ),
+{
+    let idx = build_eq_index_str(inner0);
+    let ghost oa = key_views(outer0@);
+    let ghost ob = key_views(outer1@);
+    let ghost ia = key_views(inner0@);
+    let ghost ib = key_views(inner1@);
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    let mut i: usize = 0;
+    while i < outer0.len()
+        invariant
+            i <= outer0.len(),
+            outer0@.len() == outer0.len() as int,
+            outer1@.len() == outer0@.len(),
+            inner0@.len() == inner0.len() as int,
+            inner1@.len() == inner0@.len(),
+            oa == key_views(outer0@),
+            ob == key_views(outer1@),
+            ia == key_views(inner0@),
+            ib == key_views(inner1@),
+            index_ok(ia, idx.buckets@, idx.map@, inner0@.len() as int),
+            pairs@ == nested_eq_pairs2(oa, ob, ia, ib, i as int),
+        decreases outer0.len() - i,
+    {
+        let key0 = outer0[i].clone();
+        let key1 = outer1[i].clone();
+        let ghost end = i as int;
+        proof {
+            lemma_key_view_at(outer0@, end);
+            lemma_key_view_at(outer1@, end);
+            assert(oa[end] == key0@);
+            assert(ob[end] == key1@);
+            broadcast use vstd::std_specs::vec::axiom_spec_len;
+            broadcast use vstd::seq::lemma_seq_new_len;
+            assert(inner0@.len() == inner0.len() as int);
+            assert(ia.len() == inner0@.len());
+            assert(ia.len() as int <= usize::MAX as int);
+        }
+        let ghost before = pairs@;
+        let present = idx.map.contains_key(key0.as_str());
+        if present {
+            let got = idx.map.get(key0.as_str());
+            let bi = *got.unwrap();
+            proof {
+                assert(idx.map@.contains_key(key0@));
+                lemma_index_bucket(ia, idx.buckets@, idx.map@, ia.len() as int, key0@);
+                lemma_eq_row_ids_bounded(ia, key0@, ia.len() as int);
+            }
+            let ids = &idx.buckets[bi];
+            let filtered = filter_row_ids_str(ids, inner1, &key1);
+            push_prefix_pairs(&mut pairs, i, &filtered);
+            proof {
+                lemma_filter_is_ids2(ia, ib, key0@, key1@, ia.len() as int);
+                assert(filtered@ == eq_row_ids2(ia, ib, oa[end], ob[end], ia.len() as int));
+                lemma_nested_eq_pairs2_step(oa, ob, ia, ib, end + 1);
+                assert(pairs@ == nested_eq_pairs2(oa, ob, ia, ib, end + 1));
+            }
+        } else {
+            proof {
+                assert(!idx.map@.contains_key(key0@));
+                lemma_index_absent(ia, idx.buckets@, idx.map@, ia.len() as int, key0@);
+                lemma_eq_row_ids_len0(ia, key0@, ia.len() as int);
+                lemma_filter_is_ids2(ia, ib, key0@, key1@, ia.len() as int);
+                lemma_nested_eq_pairs2_step(oa, ob, ia, ib, end + 1);
+                lemma_seq_add_empty(before);
+                assert(pairs@ == nested_eq_pairs2(oa, ob, ia, ib, end + 1));
+            }
+        }
+        i = i + 1;
+    }
+    pairs
+}
+
+pub open spec fn tag_prefix(i: usize, s: usize, tags: Seq<usize>, t: int) -> Seq<(usize, usize, usize)>
+    decreases t,
+{
+    if t <= 0 {
+        Seq::<(usize, usize, usize)>::empty()
+    } else {
+        let prev = tag_prefix(i, s, tags, t - 1);
+        if 0 <= t - 1 < tags.len() {
+            prev.push((i, s, tags[t - 1]))
+        } else {
+            prev
+        }
+    }
+}
+
+pub open spec fn sub_product(
+    i: usize,
+    subs: Seq<usize>,
+    tags: Seq<usize>,
+    s_end: int,
+) -> Seq<(usize, usize, usize)>
+    decreases s_end,
+{
+    if s_end <= 0 {
+        Seq::<(usize, usize, usize)>::empty()
+    } else {
+        let prev = sub_product(i, subs, tags, s_end - 1);
+        if 0 <= s_end - 1 < subs.len() {
+            prev + tag_prefix(i, subs[s_end - 1], tags, tags.len() as int)
+        } else {
+            prev
+        }
+    }
+}
+
+/// Forward nested star: each outer row with every sub match and every two-key tag match.
+pub open spec fn nested_star(
+    pre_a: Seq<Seq<char>>,
+    pre_t: Seq<Seq<char>>,
+    pre_v: Seq<Seq<char>>,
+    sub_a: Seq<Seq<char>>,
+    tag_t: Seq<Seq<char>>,
+    tag_v: Seq<Seq<char>>,
+    n: int,
+) -> Seq<(usize, usize, usize)>
+    decreases n,
+{
+    if n <= 0 {
+        Seq::<(usize, usize, usize)>::empty()
+    } else if n - 1 >= pre_a.len() {
+        nested_star(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, n - 1)
+    } else {
+        let i = (n - 1) as usize;
+        let subs = eq_row_ids(sub_a, pre_a[n - 1], sub_a.len() as int);
+        let tags = eq_row_ids2(tag_t, tag_v, pre_t[n - 1], pre_v[n - 1], tag_t.len() as int);
+        nested_star(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, n - 1) + sub_product(
+            i,
+            subs,
+            tags,
+            subs.len() as int,
+        )
+    }
+}
+
+pub proof fn lemma_tag_prefix_step(i: usize, s: usize, tags: Seq<usize>, t: int)
+    requires
+        0 <= t < tags.len(),
+    ensures
+        tag_prefix(i, s, tags, t + 1) == tag_prefix(i, s, tags, t).push((i, s, tags[t])),
+{
+    assert(tag_prefix(i, s, tags, t + 1) == tag_prefix(i, s, tags, t).push((i, s, tags[t])));
+}
+
+pub proof fn lemma_sub_product_step(i: usize, subs: Seq<usize>, tags: Seq<usize>, s: int)
+    requires
+        0 <= s < subs.len(),
+    ensures
+        sub_product(i, subs, tags, s + 1) == sub_product(i, subs, tags, s) + tag_prefix(
+            i,
+            subs[s],
+            tags,
+            tags.len() as int,
+        ),
+{
+    assert(sub_product(i, subs, tags, s + 1) == sub_product(i, subs, tags, s) + tag_prefix(
+        i,
+        subs[s],
+        tags,
+        tags.len() as int,
+    ));
+}
+
+pub proof fn lemma_seq_add_push<A>(a: Seq<A>, b: Seq<A>, x: A)
+    ensures
+        (a + b).push(x) == a + b.push(x),
+{
+    broadcast use vstd::seq::group_seq_lemmas;
+
+    assert((a + b).push(x) =~= a + b.push(x));
+}
+
+pub proof fn lemma_nested_star_step(
+    pre_a: Seq<Seq<char>>,
+    pre_t: Seq<Seq<char>>,
+    pre_v: Seq<Seq<char>>,
+    sub_a: Seq<Seq<char>>,
+    tag_t: Seq<Seq<char>>,
+    tag_v: Seq<Seq<char>>,
+    n: int,
+)
+    requires
+        0 < n <= pre_a.len(),
+        pre_a.len() == pre_t.len(),
+        pre_a.len() == pre_v.len(),
+        tag_t.len() == tag_v.len(),
+    ensures
+        nested_star(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, n) == nested_star(
+            pre_a,
+            pre_t,
+            pre_v,
+            sub_a,
+            tag_t,
+            tag_v,
+            n - 1,
+        ) + sub_product(
+            (n - 1) as usize,
+            eq_row_ids(sub_a, pre_a[n - 1], sub_a.len() as int),
+            eq_row_ids2(tag_t, tag_v, pre_t[n - 1], pre_v[n - 1], tag_t.len() as int),
+            eq_row_ids(sub_a, pre_a[n - 1], sub_a.len() as int).len() as int,
+        ),
+{
+    assert(nested_star(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, n) == nested_star(
+        pre_a,
+        pre_t,
+        pre_v,
+        sub_a,
+        tag_t,
+        tag_v,
+        n - 1,
+    ) + sub_product(
+        (n - 1) as usize,
+        eq_row_ids(sub_a, pre_a[n - 1], sub_a.len() as int),
+        eq_row_ids2(tag_t, tag_v, pre_t[n - 1], pre_v[n - 1], tag_t.len() as int),
+        eq_row_ids(sub_a, pre_a[n - 1], sub_a.len() as int).len() as int,
+    ));
+}
+
+pub fn push_star_product(
+    out: &mut Vec<(usize, usize, usize)>,
+    i: usize,
+    subs: &Vec<usize>,
+    tags: &Vec<usize>,
+)
+    ensures
+        final(out)@ == old(out)@ + sub_product(i, subs@, tags@, subs@.len() as int),
+{
+    proof {
+        broadcast use vstd::std_specs::vec::axiom_spec_len;
+        assert(subs@.len() == subs.len() as int);
+        assert(tags@.len() == tags.len() as int);
+    }
+    let ghost base = out@;
+    let mut extra: Vec<(usize, usize, usize)> = Vec::new();
+    let mut s: usize = 0;
+    while s < subs.len()
+        invariant
+            s <= subs.len(),
+            subs@.len() == subs.len() as int,
+            tags@.len() == tags.len() as int,
+            extra@ == sub_product(i, subs@, tags@, s as int),
+        decreases subs.len() - s,
+    {
+        let sid = subs[s];
+        let ghost at_sub = extra@;
+        proof {
+            assert(sid == subs@[s as int]);
+            lemma_seq_add_empty(at_sub);
+        }
+        let mut t: usize = 0;
+        while t < tags.len()
+            invariant
+                t <= tags.len(),
+                s < subs.len(),
+                subs@.len() == subs.len() as int,
+                tags@.len() == tags.len() as int,
+                sid == subs@[s as int],
+                extra@ == at_sub + tag_prefix(i, sid, tags@, t as int),
+            decreases tags.len() - t,
+        {
+            let tid = tags[t];
+            let ghost old_extra = extra@;
+            extra.push((i, sid, tid));
+            proof {
+                assert(tid == tags@[t as int]);
+                lemma_tag_prefix_step(i, sid, tags@, t as int);
+                assert(extra@ == old_extra.push((i, sid, tags@[t as int])));
+                lemma_seq_add_push(at_sub, tag_prefix(i, sid, tags@, t as int), (i, sid, tags@[t as int]));
+                assert(extra@ == at_sub + tag_prefix(i, sid, tags@, t as int + 1));
+            }
+            t = t + 1;
+        }
+        proof {
+            assert(extra@ == at_sub + tag_prefix(i, sid, tags@, tags@.len() as int));
+            lemma_sub_product_step(i, subs@, tags@, s as int);
+            assert(extra@ == sub_product(i, subs@, tags@, s as int + 1));
+        }
+        s = s + 1;
+    }
+    proof {
+        assert(extra@ == sub_product(i, subs@, tags@, subs@.len() as int));
+        assert(out@ == base);
+    }
+    out.append(&mut extra);
+    proof {
+        assert(out@ == base + sub_product(i, subs@, tags@, subs@.len() as int));
+    }
+}
+
+/// Star equijoin: `pre.adsh = sub.adsh` and `pre.tag = tag.tag AND pre.version = tag.version`.
+pub fn star_eq_triples_str(
+    pre_adsh: &Vec<String>,
+    pre_tag: &Vec<String>,
+    pre_ver: &Vec<String>,
+    sub_adsh: &Vec<String>,
+    tag_tag: &Vec<String>,
+    tag_ver: &Vec<String>,
+) -> (triples: Vec<(usize, usize, usize)>)
+    requires
+        pre_adsh@.len() == pre_tag@.len(),
+        pre_adsh@.len() == pre_ver@.len(),
+        tag_tag@.len() == tag_ver@.len(),
+    ensures
+        triples@ == nested_star(
+            key_views(pre_adsh@),
+            key_views(pre_tag@),
+            key_views(pre_ver@),
+            key_views(sub_adsh@),
+            key_views(tag_tag@),
+            key_views(tag_ver@),
+            pre_adsh@.len() as int,
+        ),
+{
+    let idx_sub = build_eq_index_str(sub_adsh);
+    let idx_tag = build_eq_index_str(tag_tag);
+    let ghost pa = key_views(pre_adsh@);
+    let ghost pt = key_views(pre_tag@);
+    let ghost pv = key_views(pre_ver@);
+    let ghost sa = key_views(sub_adsh@);
+    let ghost tt = key_views(tag_tag@);
+    let ghost tv = key_views(tag_ver@);
+    let mut triples: Vec<(usize, usize, usize)> = Vec::new();
+    let mut i: usize = 0;
+    while i < pre_adsh.len()
+        invariant
+            i <= pre_adsh.len(),
+            pre_adsh@.len() == pre_adsh.len() as int,
+            pre_adsh@.len() == pre_tag@.len(),
+            pre_adsh@.len() == pre_ver@.len(),
+            pre_tag@.len() == pre_tag.len() as int,
+            pre_ver@.len() == pre_ver.len() as int,
+            sub_adsh@.len() == sub_adsh.len() as int,
+            tag_tag@.len() == tag_tag.len() as int,
+            tag_ver@.len() == tag_ver.len() as int,
+            tag_tag@.len() == tag_ver@.len(),
+            pa == key_views(pre_adsh@),
+            pt == key_views(pre_tag@),
+            pv == key_views(pre_ver@),
+            sa == key_views(sub_adsh@),
+            tt == key_views(tag_tag@),
+            tv == key_views(tag_ver@),
+            index_ok(sa, idx_sub.buckets@, idx_sub.map@, sub_adsh@.len() as int),
+            index_ok(tt, idx_tag.buckets@, idx_tag.map@, tag_tag@.len() as int),
+            triples@ == nested_star(pa, pt, pv, sa, tt, tv, i as int),
+        decreases pre_adsh.len() - i,
+    {
+        let key_a = pre_adsh[i].clone();
+        let key_t = pre_tag[i].clone();
+        let key_v = pre_ver[i].clone();
+        let ghost end = i as int;
+        proof {
+            lemma_key_view_at(pre_adsh@, end);
+            lemma_key_view_at(pre_tag@, end);
+            lemma_key_view_at(pre_ver@, end);
+            broadcast use vstd::std_specs::vec::axiom_spec_len;
+            broadcast use vstd::seq::lemma_seq_new_len;
+            assert(pa[end] == key_a@);
+            assert(pt[end] == key_t@);
+            assert(pv[end] == key_v@);
+            assert(sa.len() == sub_adsh@.len());
+            assert(tt.len() == tag_tag@.len());
+            assert(tv.len() == tag_ver@.len());
+            assert(sa.len() as int <= usize::MAX as int);
+            assert(tt.len() as int <= usize::MAX as int);
+        }
+        let present_a = idx_sub.map.contains_key(key_a.as_str());
+        let present_t = idx_tag.map.contains_key(key_t.as_str());
+        if present_a {
+            let got_a = idx_sub.map.get(key_a.as_str());
+            let bi_a = *got_a.unwrap();
+            proof {
+                assert(idx_sub.map@.contains_key(key_a@));
+                lemma_index_bucket(sa, idx_sub.buckets@, idx_sub.map@, sa.len() as int, key_a@);
+                assert((bi_a as int) < idx_sub.buckets@.len());
+            }
+            let sub_ids = &idx_sub.buckets[bi_a];
+            if present_t {
+                let got_t = idx_tag.map.get(key_t.as_str());
+                let bi_t = *got_t.unwrap();
+                proof {
+                    assert(idx_tag.map@.contains_key(key_t@));
+                    lemma_index_bucket(tt, idx_tag.buckets@, idx_tag.map@, tt.len() as int, key_t@);
+                    lemma_eq_row_ids_bounded(tt, key_t@, tt.len() as int);
+                    assert((bi_t as int) < idx_tag.buckets@.len());
+                }
+                let tag_bucket = &idx_tag.buckets[bi_t];
+                let tags = filter_row_ids_str(tag_bucket, tag_ver, &key_v);
+                let ghost before = triples@;
+                push_star_product(&mut triples, i, sub_ids, &tags);
+                proof {
+                    lemma_filter_is_ids2(tt, tv, key_t@, key_v@, tt.len() as int);
+                    assert(sub_ids@ == eq_row_ids(sa, pa[end], sa.len() as int));
+                    assert(tags@ == eq_row_ids2(tt, tv, pt[end], pv[end], tt.len() as int));
+                    lemma_nested_star_step(pa, pt, pv, sa, tt, tv, end + 1);
+                    assert(triples@ == before + sub_product(i, sub_ids@, tags@, sub_ids@.len() as int));
+                    assert(triples@ == nested_star(pa, pt, pv, sa, tt, tv, end + 1));
+                }
+            } else {
+                let tags: Vec<usize> = Vec::new();
+                let ghost before = triples@;
+                push_star_product(&mut triples, i, sub_ids, &tags);
+                proof {
+                    assert(!idx_tag.map@.contains_key(key_t@));
+                    lemma_index_absent(tt, idx_tag.buckets@, idx_tag.map@, tt.len() as int, key_t@);
+                    lemma_eq_row_ids_len0(tt, key_t@, tt.len() as int);
+                    lemma_filter_is_ids2(tt, tv, key_t@, key_v@, tt.len() as int);
+                    assert(eq_row_ids2(tt, tv, pt[end], pv[end], tt.len() as int) =~= Seq::<usize>::empty());
+                    assert(tags@ == eq_row_ids2(tt, tv, pt[end], pv[end], tt.len() as int));
+                    assert(sub_ids@ == eq_row_ids(sa, pa[end], sa.len() as int));
+                    lemma_nested_star_step(pa, pt, pv, sa, tt, tv, end + 1);
+                    assert(triples@ == before + sub_product(i, sub_ids@, tags@, sub_ids@.len() as int));
+                    assert(triples@ == nested_star(pa, pt, pv, sa, tt, tv, end + 1));
+                }
+            }
+        } else {
+            let sub_ids: Vec<usize> = Vec::new();
+            let tags: Vec<usize> = Vec::new();
+            let ghost before = triples@;
+            push_star_product(&mut triples, i, &sub_ids, &tags);
+            proof {
+                assert(!idx_sub.map@.contains_key(key_a@));
+                lemma_index_absent(sa, idx_sub.buckets@, idx_sub.map@, sa.len() as int, key_a@);
+                lemma_eq_row_ids_len0(sa, key_a@, sa.len() as int);
+                assert(eq_row_ids(sa, pa[end], sa.len() as int) =~= Seq::<usize>::empty());
+                assert(sub_ids@ == eq_row_ids(sa, pa[end], sa.len() as int));
+                assert(sub_product(i, sub_ids@, tags@, 0) =~= Seq::<(usize, usize, usize)>::empty());
+                lemma_nested_star_step(pa, pt, pv, sa, tt, tv, end + 1);
+                assert(sub_product(
+                    i,
+                    eq_row_ids(sa, pa[end], sa.len() as int),
+                    eq_row_ids2(tt, tv, pt[end], pv[end], tt.len() as int),
+                    0,
+                ) =~= Seq::<(usize, usize, usize)>::empty());
+                assert(triples@ == before + sub_product(i, sub_ids@, tags@, sub_ids@.len() as int));
+                assert(triples@ == nested_star(pa, pt, pv, sa, tt, tv, end + 1));
+            }
+        }
+        i = i + 1;
+    }
+    triples
+}
+
+// EQ_JOIN_PROVED_END
+
+#[verifier::external_body]
+fn oracle_key(n: usize) -> (s: String) {
+    n.to_string()
+}
+
+#[verifier::external_body]
+fn oracle_naive_pairs(outer: &Vec<String>, inner: &Vec<String>) -> (out: Vec<(usize, usize)>) {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < outer.len() {
+        let mut j = 0;
+        while j < inner.len() {
+            if outer[i] == inner[j] {
+                out.push((i, j));
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+    out
+}
+
+#[verifier::external_body]
+fn oracle_expect_pairs(got: &Vec<(usize, usize)>, exp: &Vec<(usize, usize)>) {
+    if got.len() != exp.len() {
+        panic!("pair len {} != {}", got.len(), exp.len());
+    }
+    let mut i = 0;
+    while i < got.len() {
+        if got[i] != exp[i] {
+            panic!("pair mismatch at {}", i);
+        }
+        i += 1;
+    }
+}
+
+#[verifier::external_body]
+fn oracle_fill(dst: &mut Vec<String>, n: usize, salt: usize, modu: usize) {
+    dst.clear();
+    let mut i = 0;
+    while i < n {
+        let id = if modu == 0 { i } else { (i.wrapping_mul(salt).wrapping_add(salt)) % modu };
+        dst.push(oracle_key(id));
+        i += 1;
+    }
+}
+
+#[verifier::external_body]
+fn oracle_check_case(outer: &Vec<String>, inner: &Vec<String>) {
+    let got = equijoin_pairs_str(outer, inner);
+    let exp = oracle_naive_pairs(outer, inner);
+    oracle_expect_pairs(&got, &exp);
+    let idx = build_eq_index_str(inner);
+    let mut seen = vec![0usize; inner.len()];
+    let mut i = 0;
+    while i < inner.len() {
+        match probe_eq_str(&idx, inner, inner[i].as_str()) {
+            Some(bucket) => {
+                let mut found = false;
+                let mut t = 0;
+                while t < bucket.len() {
+                    if bucket[t] == i {
+                        found = true;
+                    }
+                    if t > 0 && bucket[t] <= bucket[t - 1] {
+                        panic!("bucket not increasing");
+                    }
+                    if bucket[t] >= inner.len() || inner[bucket[t]] != inner[i] {
+                        panic!("bucket element not a match");
+                    }
+                    t += 1;
+                }
+                if !found {
+                    panic!("row missing from its bucket");
+                }
+            },
+            None => panic!("probe missed an existing key"),
+        }
+        seen[i] = seen[i] + 1;
+        i += 1;
+    }
+    let miss = probe_eq_str(&idx, inner, "\u{0000}no-such-key");
+    match miss {
+        Some(_) => panic!("probe invented a key"),
+        None => {},
+    }
+}
+
+#[verifier::external_body]
+fn oracle_naive_u64(outer: &Vec<u64>, inner: &Vec<u64>) -> (out: Vec<(usize, usize)>) {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < outer.len() {
+        let mut j = 0;
+        while j < inner.len() {
+            if outer[i] == inner[j] {
+                out.push((i, j));
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+    out
+}
+
+#[verifier::external_body]
+fn oracle_fill_u64(dst: &mut Vec<u64>, n: usize, salt: usize, modu: usize) {
+    dst.clear();
+    let mut i = 0;
+    while i < n {
+        let id = if modu == 0 { i as u64 } else { ((i.wrapping_mul(salt).wrapping_add(salt)) % modu) as u64 };
+        dst.push(id);
+        i += 1;
+    }
+}
+
+#[verifier::external_body]
+fn oracle_check_u64(outer: &Vec<u64>, inner: &Vec<u64>) {
+    let got = equijoin_pairs_u64(outer, inner);
+    let exp = oracle_naive_u64(outer, inner);
+    oracle_expect_pairs(&got, &exp);
+}
+
+#[verifier::external_body]
+fn oracle_naive_u32(outer: &Vec<u32>, inner: &Vec<u32>) -> (out: Vec<(usize, usize)>) {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < outer.len() {
+        let mut j = 0;
+        while j < inner.len() {
+            if outer[i] == inner[j] {
+                out.push((i, j));
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+    out
+}
+
+#[verifier::external_body]
+fn oracle_check_u32(outer: &Vec<u32>, inner: &Vec<u32>) {
+    let got = equijoin_pairs_u32(outer, inner);
+    let exp = oracle_naive_u32(outer, inner);
+    oracle_expect_pairs(&got, &exp);
+}
+
+#[verifier::external_body]
+fn oracle_naive_str2(
+    outer0: &Vec<String>,
+    outer1: &Vec<String>,
+    inner0: &Vec<String>,
+    inner1: &Vec<String>,
+) -> (out: Vec<(usize, usize)>) {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < outer0.len() {
+        let mut j = 0;
+        while j < inner0.len() {
+            if outer0[i] == inner0[j] && outer1[i] == inner1[j] {
+                out.push((i, j));
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+    out
+}
+
+#[verifier::external_body]
+fn oracle_check_str2(
+    outer0: &Vec<String>,
+    outer1: &Vec<String>,
+    inner0: &Vec<String>,
+    inner1: &Vec<String>,
+) {
+    let got = equijoin_pairs_str2(outer0, outer1, inner0, inner1);
+    let exp = oracle_naive_str2(outer0, outer1, inner0, inner1);
+    oracle_expect_pairs(&got, &exp);
+}
+
+#[verifier::external_body]
+fn oracle_expect_triples(got: &Vec<(usize, usize, usize)>, exp: &Vec<(usize, usize, usize)>) {
+    if got.len() != exp.len() {
+        panic!("triple len {} != {}", got.len(), exp.len());
+    }
+    let mut i = 0;
+    while i < got.len() {
+        if got[i] != exp[i] {
+            panic!("triple mismatch at {}", i);
+        }
+        i += 1;
+    }
+}
+
+#[verifier::external_body]
+fn oracle_naive_star(
+    pre_adsh: &Vec<String>,
+    pre_tag: &Vec<String>,
+    pre_ver: &Vec<String>,
+    sub_adsh: &Vec<String>,
+    tag_tag: &Vec<String>,
+    tag_ver: &Vec<String>,
+) -> (out: Vec<(usize, usize, usize)>) {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < pre_adsh.len() {
+        let mut s = 0;
+        while s < sub_adsh.len() {
+            if pre_adsh[i] == sub_adsh[s] {
+                let mut t = 0;
+                while t < tag_tag.len() {
+                    if pre_tag[i] == tag_tag[t] && pre_ver[i] == tag_ver[t] {
+                        out.push((i, s, t));
+                    }
+                    t += 1;
+                }
+            }
+            s += 1;
+        }
+        i += 1;
+    }
+    out
+}
+
+#[verifier::external_body]
+fn oracle_check_star(
+    pre_adsh: &Vec<String>,
+    pre_tag: &Vec<String>,
+    pre_ver: &Vec<String>,
+    sub_adsh: &Vec<String>,
+    tag_tag: &Vec<String>,
+    tag_ver: &Vec<String>,
+) {
+    let got = star_eq_triples_str(pre_adsh, pre_tag, pre_ver, sub_adsh, tag_tag, tag_ver);
+    let exp = oracle_naive_star(pre_adsh, pre_tag, pre_ver, sub_adsh, tag_tag, tag_ver);
+    oracle_expect_triples(&got, &exp);
+}
+
+#[verifier::external_body]
+fn check_eq_join_oracle() {
+    oracle_check_case(&Vec::new(), &Vec::new());
+    let mut a: Vec<String> = Vec::new();
+    let mut b: Vec<String> = Vec::new();
+    a.push("adsh".to_string());
+    oracle_check_case(&a, &b);
+    oracle_check_case(&b, &a);
+    b.push("adsh".to_string());
+    oracle_check_case(&a, &b);
+    b.push("adsh".to_string());
+    a.push("other".to_string());
+    a.push("adsh".to_string());
+    oracle_check_case(&a, &b);
+    let mut i = 0;
+    while i < 25 {
+        oracle_fill(&mut a, (i % 9) + 1, i + 3, (i % 5) + 1);
+        oracle_fill(&mut b, (i % 7) + 1, i + 5, (i % 4) + 1);
+        oracle_check_case(&a, &b);
+        i += 1;
+    }
+    oracle_fill(&mut a, 4000, 1, 250);
+    oracle_fill(&mut b, 250, 1, 250);
+    oracle_check_case(&a, &b);
+    oracle_fill(&mut a, 300, 1, 1);
+    oracle_fill(&mut b, 300, 1, 1);
+    oracle_check_case(&a, &b);
+    a.clear();
+    b.clear();
+    a.push("".to_string());
+    a.push("λ".to_string());
+    b.push("".to_string());
+    b.push("λ".to_string());
+    b.push("".to_string());
+    oracle_check_case(&a, &b);
+    let mut long = String::new();
+    i = 0;
+    while i < 2000 {
+        long.push('x');
+        i += 1;
+    }
+    a.clear();
+    b.clear();
+    a.push(long.clone());
+    b.push(long);
+    b.push("y".to_string());
+    oracle_check_case(&a, &b);
+    oracle_fill(&mut b, 20000, 1, 20000);
+    let idx = build_eq_index_str(&b);
+    i = 0;
+    while i < b.len() {
+        match probe_eq_str(&idx, &b, b[i].as_str()) {
+            Some(bucket) => {
+                if bucket.len() != 1 || bucket[0] != i {
+                    panic!("unique key bucket");
+                }
+            },
+            None => panic!("unique key missing"),
+        }
+        i += 1;
+    }
+
+    let mut x64: Vec<u64> = Vec::new();
+    let mut y64: Vec<u64> = Vec::new();
+    oracle_check_u64(&x64, &y64);
+    x64.push(0);
+    oracle_check_u64(&x64, &y64);
+    y64.push(0);
+    y64.push(0);
+    x64.push(u64::MAX);
+    oracle_check_u64(&x64, &y64);
+    oracle_fill_u64(&mut x64, 4000, 1, 250);
+    oracle_fill_u64(&mut y64, 250, 1, 250);
+    oracle_check_u64(&x64, &y64);
+    oracle_fill_u64(&mut x64, 300, 7, 1);
+    oracle_fill_u64(&mut y64, 300, 7, 1);
+    oracle_check_u64(&x64, &y64);
+    oracle_fill_u64(&mut y64, 20000, 1, 20000);
+    oracle_fill_u64(&mut x64, 1000, 3, 20000);
+    oracle_check_u64(&x64, &y64);
+
+    let mut x32: Vec<u32> = Vec::new();
+    let mut y32: Vec<u32> = Vec::new();
+    x32.push(0);
+    x32.push(u32::MAX);
+    y32.push(u32::MAX);
+    y32.push(1);
+    oracle_check_u32(&x32, &y32);
+    i = 0;
+    x32.clear();
+    y32.clear();
+    while i < 500 {
+        x32.push((i % 40) as u32);
+        y32.push((i % 17) as u32);
+        i += 1;
+    }
+    oracle_check_u32(&x32, &y32);
+
+    let mut o0: Vec<String> = Vec::new();
+    let mut o1: Vec<String> = Vec::new();
+    let mut n0: Vec<String> = Vec::new();
+    let mut n1: Vec<String> = Vec::new();
+    oracle_check_str2(&o0, &o1, &n0, &n1);
+    o0.push("Assets".to_string());
+    o1.push("us-gaap/2024".to_string());
+    n0.push("Assets".to_string());
+    n1.push("us-gaap/2023".to_string());
+    oracle_check_str2(&o0, &o1, &n0, &n1);
+    n1.clear();
+    n1.push("us-gaap/2024".to_string());
+    n0.push("Assets".to_string());
+    n1.push("us-gaap/2024".to_string());
+    o0.push("Liab".to_string());
+    o1.push("us-gaap/2024".to_string());
+    oracle_check_str2(&o0, &o1, &n0, &n1);
+    oracle_fill(&mut o0, 1500, 1, 80);
+    oracle_fill(&mut o1, 1500, 3, 20);
+    oracle_fill(&mut n0, 200, 1, 80);
+    oracle_fill(&mut n1, 200, 3, 20);
+    oracle_check_str2(&o0, &o1, &n0, &n1);
+
+    let mut pre_a: Vec<String> = Vec::new();
+    let mut pre_t: Vec<String> = Vec::new();
+    let mut pre_v: Vec<String> = Vec::new();
+    let mut sub_a: Vec<String> = Vec::new();
+    let mut tag_t: Vec<String> = Vec::new();
+    let mut tag_v: Vec<String> = Vec::new();
+    oracle_check_star(&pre_a, &pre_t, &pre_v, &sub_a, &tag_t, &tag_v);
+    pre_a.push("0001".to_string());
+    pre_t.push("Assets".to_string());
+    pre_v.push("us-gaap/2024".to_string());
+    oracle_check_star(&pre_a, &pre_t, &pre_v, &sub_a, &tag_t, &tag_v);
+    sub_a.push("0001".to_string());
+    sub_a.push("0001".to_string());
+    tag_t.push("Assets".to_string());
+    tag_v.push("us-gaap/2023".to_string());
+    oracle_check_star(&pre_a, &pre_t, &pre_v, &sub_a, &tag_t, &tag_v);
+    tag_t.push("Assets".to_string());
+    tag_v.push("us-gaap/2024".to_string());
+    pre_a.push("0002".to_string());
+    pre_t.push("Liab".to_string());
+    pre_v.push("ifrs/2024".to_string());
+    oracle_check_star(&pre_a, &pre_t, &pre_v, &sub_a, &tag_t, &tag_v);
+    oracle_fill(&mut pre_a, 400, 1, 60);
+    oracle_fill(&mut pre_t, 400, 5, 30);
+    oracle_fill(&mut pre_v, 400, 9, 8);
+    oracle_fill(&mut sub_a, 120, 1, 60);
+    oracle_fill(&mut tag_t, 90, 5, 30);
+    oracle_fill(&mut tag_v, 90, 9, 8);
+    oracle_check_star(&pre_a, &pre_t, &pre_v, &sub_a, &tag_t, &tag_v);
+    oracle_fill(&mut pre_a, 40, 1, 1);
+    oracle_fill(&mut pre_t, 40, 1, 1);
+    oracle_fill(&mut pre_v, 40, 1, 1);
+    oracle_fill(&mut sub_a, 40, 1, 1);
+    oracle_fill(&mut tag_t, 40, 1, 1);
+    oracle_fill(&mut tag_v, 40, 1, 1);
+    oracle_check_star(&pre_a, &pre_t, &pre_v, &sub_a, &tag_t, &tag_v);
+}
+
+} // verus!
+
+fn main() {
+    check_eq_join_oracle();
+}
