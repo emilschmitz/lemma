@@ -1524,6 +1524,19 @@ def _fold_lemma(
     )
     if chain is not None:
         return chain
+    # shape: q6
+    q6 = _q6_fold_lemma(
+        helper_name,
+        slots,
+        join_cond=join_cond,
+        filter_cond=filter_cond,
+        update_expr=update_expr,
+        ret_type=ret_type,
+        ret_base=ret_base,
+        extra_params=extra_params,
+    )
+    if q6 is not None:
+        return q6
     # shape: 4table
     return _quad_fold_lemma(
         helper_name,
@@ -1914,6 +1927,231 @@ pub proof fn {pairs}({params})
     )
     return text, bridge
 
+
+def _q6_fold_lemma(
+    helper_name: str,
+    slots: list[_Slot],
+    *,
+    join_cond: str,
+    filter_cond: str | None,
+    update_expr: str,
+    ret_type: str,
+    ret_base: str,
+    extra_params: list[tuple[str, str]] | None,
+) -> tuple[str, _FoldBridge] | None:
+    """Proof that a 3-table 1+3 helper equals ``loop_acc_q6``.
+
+    One equality to the middle table and three equalities to the inner table
+    (holdout Q6: num⋈sub on adsh, num⋈pre on adsh/tag/version). Not the 1+2
+    string star. ``lemma_q6_acc`` equates that to ``nested_q6``.
+    """
+    if len(slots) != 3:
+        return None
+    base_cond, derived_filt = _split_join_for_fold(join_cond)
+    filter_cond = _merge_step_filters(derived_filt, filter_cond)
+    parsed: list[tuple[re.Match[str], re.Match[str]]] = []
+    for part in base_cond.split(" && "):
+        left_txt, sep, right_txt = part.strip().partition(" == ")
+        if sep != " == ":
+            return None
+        left = _JOIN_SIDE.fullmatch(left_txt.strip())
+        right = _JOIN_SIDE.fullmatch(right_txt.strip())
+        if left is None or right is None or not left.group("view") or not right.group("view"):
+            return None
+        parsed.append((left, right))
+    if len(parsed) != 4:
+        return None
+    outer, mid, inner = slots
+
+    def orient(
+        left: re.Match[str], right: re.Match[str], idx_a: str, idx_b: str,
+    ) -> tuple[re.Match[str], re.Match[str]] | None:
+        if left.group("idx") == idx_a and right.group("idx") == idx_b:
+            return left, right
+        if right.group("idx") == idx_a and left.group("idx") == idx_b:
+            return right, left
+        return None
+
+    adsh = None
+    pres: list[tuple[re.Match[str], re.Match[str]]] = []
+    for left, right in parsed:
+        idxs = {left.group("idx"), right.group("idx")}
+        if idxs == {outer.idx, mid.idx}:
+            got = orient(left, right, outer.idx, mid.idx)
+            if got is None:
+                return None
+            adsh = got
+        elif idxs == {outer.idx, inner.idx}:
+            got = orient(left, right, outer.idx, inner.idx)
+            if got is None:
+                return None
+            pres.append(got)
+        else:
+            return None
+    if adsh is None or len(pres) != 3:
+        return None
+    a_outer, a_mid = adsh
+    hub_a_key = f"{a_outer.group('param')}.{a_outer.group('field')}"
+    pre_a_pair: tuple[re.Match[str], re.Match[str]] | None = None
+    others: list[tuple[re.Match[str], re.Match[str]]] = []
+    for o_side, i_side in pres:
+        key = f"{o_side.group('param')}.{o_side.group('field')}"
+        if key == hub_a_key:
+            if pre_a_pair is not None:
+                return None
+            pre_a_pair = (o_side, i_side)
+        else:
+            others.append((o_side, i_side))
+    if pre_a_pair is None or len(others) != 2:
+        return None
+    t_outer, t_inner = others[0]
+    v_outer, v_inner = others[1]
+    p_a_outer, p_a_inner = pre_a_pair
+
+    def seq_of(side: re.Match[str]) -> str:
+        return f"key_views({side.group('param')}.{side.group('field')}@)"
+
+    def key_assert(side: re.Match[str]) -> str:
+        param, field, idx = side.group("param"), side.group("field"), side.group("idx")
+        return f"assert(key_views({param}.{field}@)[{idx}] == {param}.{field}[{idx} as int]@);"
+
+    step_body = re.sub(r"\btail\b", "acc", update_expr)
+    if filter_cond:
+        step = f"if {filter_cond} {{\n        {step_body}\n    }} else {{\n        acc\n    }}"
+    else:
+        step = step_body
+    seen: set[str] = set()
+    assert_sides: list[re.Match[str]] = []
+    for side in (a_outer, a_mid, p_a_outer, p_a_inner, t_outer, t_inner, v_outer, v_inner):
+        k = f"{side.group('param')}.{side.group('field')}.{side.group('idx')}"
+        if k not in seen:
+            seen.add(k)
+            assert_sides.append(side)
+    asserts = "\n            ".join(key_assert(side) for side in assert_sides)
+    extras = list(extra_params or [])
+    xsig = _extra_sig(extras)
+    xargs = _extra_args(extras)
+    lemma = f"lemma_{helper_name}_is_q6"
+    pairs = f"lemma_{helper_name}_is_q6_pairs"
+    params = ", ".join(f"{s.param}: &{s.struct}" for s in slots)
+    recurse = ", ".join(s.param for s in slots)
+    step_closure = (
+        f"|acc: {ret_type}, {outer.idx}: int, {mid.idx}: int, {inner.idx}: int| {{\n"
+        f"                {step}\n"
+        f"            }}"
+    )
+    helper_zeros = f"{helper_name}({recurse}{xargs}, {_init_indices(slots)})"
+    seqs = (
+        seq_of(a_outer),
+        seq_of(t_outer),
+        seq_of(v_outer),
+        seq_of(a_mid),
+        seq_of(p_a_inner),
+        seq_of(t_inner),
+        seq_of(v_inner),
+    )
+    fold_rhs = (
+        f"triple_acc(\n"
+        f"            nested_q6(\n"
+        f"                {seqs[0]},\n"
+        f"                {seqs[1]},\n"
+        f"                {seqs[2]},\n"
+        f"                {seqs[3]},\n"
+        f"                {seqs[4]},\n"
+        f"                {seqs[5]},\n"
+        f"                {seqs[6]},\n"
+        f"                {outer.param}.n as int,\n"
+        f"            ),\n"
+        f"            {step_closure},\n"
+        f"            {ret_base},\n"
+        f"            0,\n"
+        f"        )"
+    )
+    # shape: q6
+    shape_mark = "// shape: q6\n"
+    if extras:
+        shape_mark = "// shape: q6\n// shape: derived.\n"
+    text_block = f"""{shape_mark}pub proof fn {lemma}({params}{xsig}, {outer.idx}: int, {mid.idx}: int, {inner.idx}: int)
+    requires
+        valid_cols_{outer.table}({outer.param}),
+        valid_cols_{mid.table}({mid.param}),
+        valid_cols_{inner.table}({inner.param}),
+        {outer.param}.n <= usize::MAX,
+        {mid.param}.n <= usize::MAX,
+        {inner.param}.n <= usize::MAX,
+        0 <= {outer.idx} <= {outer.param}.n,
+        0 <= {mid.idx} <= {mid.param}.n,
+        0 <= {inner.idx} <= {inner.param}.n,
+    ensures
+        {helper_name}({recurse}{xargs}, {outer.idx}, {mid.idx}, {inner.idx}) == loop_acc_q6(
+            {seqs[0]},
+            {seqs[1]},
+            {seqs[2]},
+            {seqs[3]},
+            {seqs[4]},
+            {seqs[5]},
+            {seqs[6]},
+            {step_closure},
+            {ret_base},
+            {outer.param}.n as int,
+            {mid.param}.n as int,
+            {inner.param}.n as int,
+            {outer.idx},
+            {mid.idx},
+            {inner.idx},
+        ),
+    decreases {outer.param}.n - {outer.idx}, {mid.param}.n - {mid.idx}, {inner.param}.n - {inner.idx},
+{{
+    if {outer.idx} < {outer.param}.n {{
+        if {mid.idx} < {mid.param}.n {{
+            if {inner.idx} < {inner.param}.n {{
+                {lemma}({recurse}{xargs}, {outer.idx}, {mid.idx}, {inner.idx} + 1);
+                {asserts}
+            }} else {{
+                {lemma}({recurse}{xargs}, {outer.idx}, {mid.idx} + 1, 0);
+            }}
+        }} else {{
+            {lemma}({recurse}{xargs}, {outer.idx} + 1, 0, 0);
+        }}
+    }}
+}}
+
+pub proof fn {pairs}({params}{xsig})
+    requires
+        valid_cols_{outer.table}({outer.param}),
+        valid_cols_{mid.table}({mid.param}),
+        valid_cols_{inner.table}({inner.param}),
+        {outer.param}.n <= usize::MAX,
+        {mid.param}.n <= usize::MAX,
+        {inner.param}.n <= usize::MAX,
+    ensures
+        {helper_zeros} == {fold_rhs},
+{{
+    {lemma}({recurse}{xargs}, 0, 0, 0);
+    lemma_q6_at_origin(
+        {seqs[0]},
+        {seqs[1]},
+        {seqs[2]},
+        {seqs[3]},
+        {seqs[4]},
+        {seqs[5]},
+        {seqs[6]},
+        {step_closure},
+        {ret_base},
+        {outer.param}.n as int,
+        {mid.param}.n as int,
+        {inner.param}.n as int,
+    );
+}}"""
+    bridge = _FoldBridge(
+        helper_name=helper_name,
+        pairs_lemma=pairs,
+        slots=list(slots),
+        helper_zeros=helper_zeros,
+        fold_rhs=fold_rhs,
+        extra_params=extras,
+    )
+    return text_block, bridge
 
 def _quad_fold_lemma(
     helper_name: str,

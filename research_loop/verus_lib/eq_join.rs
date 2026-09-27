@@ -9352,6 +9352,715 @@ pub fn full_outer_parts_str(left: &Vec<String>, right: &Vec<String>) -> (parts: 
 }
 // SHAPE_FULL_END
 
+// SHAPE_Q6_BEGIN
+/// Holdout Q6: hub ⋈ 1-col mid ⋈ 3-col inner (num⋈sub on adsh, num⋈pre on adsh/tag/version).
+/// Match list order equals nested-loop (hub-major, mid, then inner). Reuses sub_product /
+/// triple_acc; not the 1+2 string star.
+
+/// Forward nested Q6: each hub row with every 1-col mid match and every 3-col inner match.
+pub open spec fn nested_q6(
+    hub_a: Seq<Seq<char>>,
+    hub_t: Seq<Seq<char>>,
+    hub_v: Seq<Seq<char>>,
+    sub_a: Seq<Seq<char>>,
+    pre_a: Seq<Seq<char>>,
+    pre_t: Seq<Seq<char>>,
+    pre_v: Seq<Seq<char>>,
+    n: int,
+) -> Seq<(usize, usize, usize)>
+    decreases n,
+{
+    if n <= 0 {
+        Seq::<(usize, usize, usize)>::empty()
+    } else if n - 1 >= hub_a.len() {
+        nested_q6(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, n - 1)
+    } else {
+        let i = (n - 1) as usize;
+        let subs = eq_row_ids(sub_a, hub_a[n - 1], sub_a.len() as int);
+        let pres = eq_row_ids3(
+            pre_a, pre_t, pre_v, hub_a[n - 1], hub_t[n - 1], hub_v[n - 1], pre_a.len() as int,
+        );
+        nested_q6(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, n - 1) + sub_product(
+            i,
+            subs,
+            pres,
+            subs.len() as int,
+        )
+    }
+}
+
+pub proof fn lemma_nested_q6_step(
+    hub_a: Seq<Seq<char>>,
+    hub_t: Seq<Seq<char>>,
+    hub_v: Seq<Seq<char>>,
+    sub_a: Seq<Seq<char>>,
+    pre_a: Seq<Seq<char>>,
+    pre_t: Seq<Seq<char>>,
+    pre_v: Seq<Seq<char>>,
+    n: int,
+)
+    requires
+        0 < n <= hub_a.len(),
+        hub_a.len() == hub_t.len(),
+        hub_a.len() == hub_v.len(),
+        pre_a.len() == pre_t.len(),
+        pre_a.len() == pre_v.len(),
+    ensures
+        nested_q6(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, n) == nested_q6(
+            hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, n - 1,
+        ) + sub_product(
+            (n - 1) as usize,
+            eq_row_ids(sub_a, hub_a[n - 1], sub_a.len() as int),
+            eq_row_ids3(
+                pre_a, pre_t, pre_v, hub_a[n - 1], hub_t[n - 1], hub_v[n - 1],
+                pre_a.len() as int,
+            ),
+            eq_row_ids(sub_a, hub_a[n - 1], sub_a.len() as int).len() as int,
+        ),
+{
+    assert(nested_q6(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, n) == nested_q6(
+        hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, n - 1,
+    ) + sub_product(
+        (n - 1) as usize,
+        eq_row_ids(sub_a, hub_a[n - 1], sub_a.len() as int),
+        eq_row_ids3(
+            pre_a, pre_t, pre_v, hub_a[n - 1], hub_t[n - 1], hub_v[n - 1],
+            pre_a.len() as int,
+        ),
+        eq_row_ids(sub_a, hub_a[n - 1], sub_a.len() as int).len() as int,
+    ));
+}
+
+/// Q6 equijoin: hub.adsh=sub.adsh and hub.(adsh,tag,version)=pre.(adsh,tag,version).
+pub fn q6_eq_triples_str(
+    hub_adsh: &Vec<String>,
+    hub_tag: &Vec<String>,
+    hub_ver: &Vec<String>,
+    sub_adsh: &Vec<String>,
+    pre_adsh: &Vec<String>,
+    pre_tag: &Vec<String>,
+    pre_ver: &Vec<String>,
+) -> (triples: Vec<(usize, usize, usize)>)
+    requires
+        hub_adsh@.len() == hub_tag@.len(),
+        hub_adsh@.len() == hub_ver@.len(),
+        pre_adsh@.len() == pre_tag@.len(),
+        pre_adsh@.len() == pre_ver@.len(),
+    ensures
+        triples@ == nested_q6(
+            key_views(hub_adsh@),
+            key_views(hub_tag@),
+            key_views(hub_ver@),
+            key_views(sub_adsh@),
+            key_views(pre_adsh@),
+            key_views(pre_tag@),
+            key_views(pre_ver@),
+            hub_adsh@.len() as int,
+        ),
+{
+    let idx_sub = build_eq_index_str(sub_adsh);
+    let idx_pre = build_eq_index_str(pre_adsh);
+    let ghost ha = key_views(hub_adsh@);
+    let ghost ht = key_views(hub_tag@);
+    let ghost hv = key_views(hub_ver@);
+    let ghost sa = key_views(sub_adsh@);
+    let ghost pa = key_views(pre_adsh@);
+    let ghost pt = key_views(pre_tag@);
+    let ghost pv = key_views(pre_ver@);
+    let mut triples: Vec<(usize, usize, usize)> = Vec::new();
+    let mut i: usize = 0;
+    while i < hub_adsh.len()
+        invariant
+            i <= hub_adsh.len(),
+            hub_adsh@.len() == hub_adsh.len() as int,
+            hub_adsh@.len() == hub_tag@.len(),
+            hub_adsh@.len() == hub_ver@.len(),
+            hub_tag@.len() == hub_tag.len() as int,
+            hub_ver@.len() == hub_ver.len() as int,
+            sub_adsh@.len() == sub_adsh.len() as int,
+            pre_adsh@.len() == pre_adsh.len() as int,
+            pre_tag@.len() == pre_tag.len() as int,
+            pre_ver@.len() == pre_ver.len() as int,
+            pre_adsh@.len() == pre_tag@.len(),
+            pre_adsh@.len() == pre_ver@.len(),
+            ha == key_views(hub_adsh@),
+            ht == key_views(hub_tag@),
+            hv == key_views(hub_ver@),
+            sa == key_views(sub_adsh@),
+            pa == key_views(pre_adsh@),
+            pt == key_views(pre_tag@),
+            pv == key_views(pre_ver@),
+            index_ok(sa, idx_sub.buckets@, idx_sub.map@, sub_adsh@.len() as int),
+            index_ok(pa, idx_pre.buckets@, idx_pre.map@, pre_adsh@.len() as int),
+            triples@ == nested_q6(ha, ht, hv, sa, pa, pt, pv, i as int),
+        decreases hub_adsh.len() - i,
+    {
+        let key_a = hub_adsh[i].clone();
+        let key_t = hub_tag[i].clone();
+        let key_v = hub_ver[i].clone();
+        let ghost end = i as int;
+        proof {
+            lemma_key_view_at(hub_adsh@, end);
+            lemma_key_view_at(hub_tag@, end);
+            lemma_key_view_at(hub_ver@, end);
+            broadcast use vstd::std_specs::vec::axiom_spec_len;
+            broadcast use vstd::seq::lemma_seq_new_len;
+            assert(ha[end] == key_a@);
+            assert(ht[end] == key_t@);
+            assert(hv[end] == key_v@);
+            assert(sa.len() == sub_adsh@.len());
+            assert(pa.len() == pre_adsh@.len());
+            assert(pt.len() == pre_tag@.len());
+            assert(pv.len() == pre_ver@.len());
+            assert(sa.len() as int <= usize::MAX as int);
+            assert(pa.len() as int <= usize::MAX as int);
+        }
+        let present_a = idx_sub.map.contains_key(key_a.as_str());
+        let present_p = idx_pre.map.contains_key(key_a.as_str());
+        let sub_ids: Vec<usize>;
+        let pres: Vec<usize>;
+        if present_a {
+            let got_a = idx_sub.map.get(key_a.as_str());
+            let bi_a = *got_a.unwrap();
+            proof {
+                assert(idx_sub.map@.contains_key(key_a@));
+                lemma_index_bucket(sa, idx_sub.buckets@, idx_sub.map@, sa.len() as int, key_a@);
+                assert((bi_a as int) < idx_sub.buckets@.len());
+            }
+            sub_ids = idx_sub.buckets[bi_a].clone();
+        } else {
+            proof {
+                assert(!idx_sub.map@.contains_key(key_a@));
+                lemma_index_absent(sa, idx_sub.buckets@, idx_sub.map@, sa.len() as int, key_a@);
+                lemma_eq_row_ids_len0(sa, key_a@, sa.len() as int);
+            }
+            sub_ids = Vec::new();
+        }
+        if present_p {
+            let got_p = idx_pre.map.get(key_a.as_str());
+            let bi_p = *got_p.unwrap();
+            proof {
+                assert(idx_pre.map@.contains_key(key_a@));
+                lemma_index_bucket(pa, idx_pre.buckets@, idx_pre.map@, pa.len() as int, key_a@);
+                lemma_eq_row_ids_bounded(pa, key_a@, pa.len() as int);
+                assert((bi_p as int) < idx_pre.buckets@.len());
+            }
+            let pre_bucket = &idx_pre.buckets[bi_p];
+            let pre_mid = filter_row_ids_str(pre_bucket, pre_tag, &key_t);
+            proof {
+                lemma_filter_is_ids2(pa, pt, key_a@, key_t@, pa.len() as int);
+                assert(pre_mid@ == eq_row_ids2(pa, pt, ha[end], ht[end], pa.len() as int));
+                lemma_eq2_bounded(pa, pt, ha[end], ht[end], pa.len() as int);
+                assert(pa.len() == pre_ver@.len());
+                assert forall|t: int|
+                    0 <= t < pre_mid@.len() implies (#[trigger] pre_mid@[t] as int)
+                        < pre_ver@.len() by {
+                    assert(
+                        (eq_row_ids2(pa, pt, ha[end], ht[end], pa.len() as int)[t] as int)
+                            < pa.len()
+                    );
+                    assert(pre_mid@[t] == eq_row_ids2(pa, pt, ha[end], ht[end], pa.len() as int)[t]);
+                };
+            }
+            pres = filter_row_ids_str(&pre_mid, pre_ver, &key_v);
+            proof {
+                lemma_filter_is_ids3(pa, pt, pv, key_a@, key_t@, key_v@, pa.len() as int);
+            }
+        } else {
+            proof {
+                assert(!idx_pre.map@.contains_key(key_a@));
+                lemma_index_absent(pa, idx_pre.buckets@, idx_pre.map@, pa.len() as int, key_a@);
+                lemma_eq_row_ids_len0(pa, key_a@, pa.len() as int);
+                lemma_filter_is_ids2(pa, pt, key_a@, key_t@, pa.len() as int);
+                lemma_filter_is_ids3(pa, pt, pv, key_a@, key_t@, key_v@, pa.len() as int);
+                assert(eq_row_ids3(pa, pt, pv, ha[end], ht[end], hv[end], pa.len() as int)
+                    =~= Seq::<usize>::empty());
+            }
+            pres = Vec::new();
+        }
+        let ghost before = triples@;
+        proof {
+            assert(sub_ids@ == eq_row_ids(sa, ha[end], sa.len() as int));
+            assert(pres@ == eq_row_ids3(pa, pt, pv, ha[end], ht[end], hv[end], pa.len() as int));
+        }
+        push_star_product(&mut triples, i, &sub_ids, &pres);
+        proof {
+            lemma_nested_q6_step(ha, ht, hv, sa, pa, pt, pv, end + 1);
+            assert(triples@ == before + sub_product(i, sub_ids@, pres@, sub_ids@.len() as int));
+            assert(triples@ == nested_q6(ha, ht, hv, sa, pa, pt, pv, end + 1));
+        }
+        i = i + 1;
+    }
+    triples
+}
+
+pub open spec fn q6_sub(sub_a: Seq<Seq<char>>, key: Seq<char>, i1: int) -> bool {
+    &&& 0 <= i1 < sub_a.len()
+    &&& sub_a[i1] == key
+}
+
+pub open spec fn q6_pos(
+    hub_a: Seq<Seq<char>>,
+    hub_t: Seq<Seq<char>>,
+    hub_v: Seq<Seq<char>>,
+    sub_a: Seq<Seq<char>>,
+    pre_a: Seq<Seq<char>>,
+    pre_t: Seq<Seq<char>>,
+    pre_v: Seq<Seq<char>>,
+    i0: int,
+    i1: int,
+    i2: int,
+) -> int {
+    if !(0 <= i0 < hub_a.len() && i0 < hub_t.len() && i0 < hub_v.len()) {
+        nested_q6(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, i0).len() as int
+    } else {
+        let subs = eq_row_ids(sub_a, hub_a[i0], sub_a.len() as int);
+        let pres = eq_row_ids3(
+            pre_a, pre_t, pre_v, hub_a[i0], hub_t[i0], hub_v[i0], pre_a.len() as int,
+        );
+        let sr = ids_lt(subs, subs.len() as int, i1);
+        let pr = if q6_sub(sub_a, hub_a[i0], i1) {
+            ids_lt(pres, pres.len() as int, i2)
+        } else {
+            0
+        };
+        nested_q6(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, i0).len() as int
+            + sr * (pres.len() as int) + pr
+    }
+}
+
+pub open spec fn loop_acc_q6<A>(
+    hub_a: Seq<Seq<char>>,
+    hub_t: Seq<Seq<char>>,
+    hub_v: Seq<Seq<char>>,
+    sub_a: Seq<Seq<char>>,
+    pre_a: Seq<Seq<char>>,
+    pre_t: Seq<Seq<char>>,
+    pre_v: Seq<Seq<char>>,
+    step: spec_fn(A, int, int, int) -> A,
+    base: A,
+    n0: int,
+    n1: int,
+    n2: int,
+    i0: int,
+    i1: int,
+    i2: int,
+) -> A
+    decreases n0 - i0, n1 - i1, n2 - i2,
+{
+    if i0 < n0 {
+        if i1 < n1 {
+            if i2 < n2 {
+                let tail = loop_acc_q6(
+                    hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v,
+                    step, base, n0, n1, n2, i0, i1, i2 + 1,
+                );
+                if hub_a[i0] == sub_a[i1]
+                    && hub_a[i0] == pre_a[i2]
+                    && hub_t[i0] == pre_t[i2]
+                    && hub_v[i0] == pre_v[i2]
+                {
+                    step(tail, i0, i1, i2)
+                } else {
+                    tail
+                }
+            } else {
+                loop_acc_q6(
+                    hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v,
+                    step, base, n0, n1, n2, i0, i1 + 1, 0,
+                )
+            }
+        } else {
+            loop_acc_q6(
+                hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v,
+                step, base, n0, n1, n2, i0 + 1, 0, 0,
+            )
+        }
+    } else {
+        base
+    }
+}
+
+pub proof fn lemma_nested_q6_len_mono(
+    hub_a: Seq<Seq<char>>,
+    hub_t: Seq<Seq<char>>,
+    hub_v: Seq<Seq<char>>,
+    sub_a: Seq<Seq<char>>,
+    pre_a: Seq<Seq<char>>,
+    pre_t: Seq<Seq<char>>,
+    pre_v: Seq<Seq<char>>,
+    n: int,
+    m: int,
+)
+    requires
+        0 <= n <= m,
+        hub_a.len() == hub_t.len(),
+        hub_a.len() == hub_v.len(),
+        pre_a.len() == pre_t.len(),
+        pre_a.len() == pre_v.len(),
+    ensures
+        nested_q6(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, n).len()
+            <= nested_q6(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, m).len(),
+    decreases m - n,
+{
+    if n < m {
+        lemma_nested_q6_len_mono(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, n, m - 1);
+        let cur = nested_q6(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, m);
+        let prev = nested_q6(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, m - 1);
+        if m - 1 < hub_a.len() {
+            lemma_nested_q6_step(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, m);
+            assert(prev.len() <= cur.len());
+        } else {
+            assert(cur == prev);
+        }
+    }
+}
+
+pub proof fn lemma_nested_q6_index(
+    hub_a: Seq<Seq<char>>,
+    hub_t: Seq<Seq<char>>,
+    hub_v: Seq<Seq<char>>,
+    sub_a: Seq<Seq<char>>,
+    pre_a: Seq<Seq<char>>,
+    pre_t: Seq<Seq<char>>,
+    pre_v: Seq<Seq<char>>,
+    n: int,
+    m: int,
+    p: int,
+)
+    requires
+        0 <= n <= m,
+        hub_a.len() == hub_t.len(),
+        hub_a.len() == hub_v.len(),
+        pre_a.len() == pre_t.len(),
+        pre_a.len() == pre_v.len(),
+        0 <= p < nested_q6(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, n).len(),
+    ensures
+        nested_q6(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, m)[p]
+            == nested_q6(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, n)[p],
+    decreases m - n,
+{
+    if n < m {
+        let cur = nested_q6(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, m);
+        let prev = nested_q6(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, m - 1);
+        lemma_nested_q6_len_mono(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, n, m - 1);
+        if m - 1 >= hub_a.len() {
+            assert(cur == prev);
+        } else {
+            lemma_nested_q6_step(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, m);
+            assert(p < prev.len());
+            let subs = eq_row_ids(sub_a, hub_a[m - 1], sub_a.len() as int);
+            let pres = eq_row_ids3(
+                pre_a, pre_t, pre_v, hub_a[m - 1], hub_t[m - 1], hub_v[m - 1],
+                pre_a.len() as int,
+            );
+            let extra = sub_product((m - 1) as usize, subs, pres, subs.len() as int);
+            lemma_left_index(prev, extra, p);
+        }
+        lemma_nested_q6_index(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, n, m - 1, p);
+    }
+}
+
+pub proof fn lemma_nested_q6_past(
+    hub_a: Seq<Seq<char>>,
+    hub_t: Seq<Seq<char>>,
+    hub_v: Seq<Seq<char>>,
+    sub_a: Seq<Seq<char>>,
+    pre_a: Seq<Seq<char>>,
+    pre_t: Seq<Seq<char>>,
+    pre_v: Seq<Seq<char>>,
+    n: int,
+)
+    requires
+        n >= hub_a.len(),
+        hub_a.len() == hub_t.len(),
+        hub_a.len() == hub_v.len(),
+        pre_a.len() == pre_t.len(),
+        pre_a.len() == pre_v.len(),
+    ensures
+        nested_q6(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, n)
+            == nested_q6(
+                hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, hub_a.len() as int,
+            ),
+    decreases n - hub_a.len(),
+{
+    if n > hub_a.len() {
+        assert(nested_q6(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, n)
+            == nested_q6(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, n - 1));
+        lemma_nested_q6_past(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, n - 1);
+    }
+}
+
+pub proof fn lemma_q6_acc<A>(
+    hub_a: Seq<Seq<char>>,
+    hub_t: Seq<Seq<char>>,
+    hub_v: Seq<Seq<char>>,
+    sub_a: Seq<Seq<char>>,
+    pre_a: Seq<Seq<char>>,
+    pre_t: Seq<Seq<char>>,
+    pre_v: Seq<Seq<char>>,
+    step: spec_fn(A, int, int, int) -> A,
+    base: A,
+    n0: int,
+    n1: int,
+    n2: int,
+    i0: int,
+    i1: int,
+    i2: int,
+)
+    requires
+        hub_a.len() == n0,
+        hub_t.len() == n0,
+        hub_v.len() == n0,
+        sub_a.len() == n1,
+        pre_a.len() == n2,
+        pre_t.len() == n2,
+        pre_v.len() == n2,
+        n0 <= usize::MAX as int,
+        n1 <= usize::MAX as int,
+        n2 <= usize::MAX as int,
+        0 <= i0 <= n0,
+        0 <= i1 <= n1,
+        0 <= i2 <= n2,
+    ensures
+        loop_acc_q6(
+            hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, step, base, n0, n1, n2, i0, i1, i2,
+        ) == triple_acc(
+            nested_q6(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, n0),
+            step,
+            base,
+            q6_pos(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, i0, i1, i2),
+        ),
+    decreases n0 - i0, n1 - i1, n2 - i2,
+{
+    let triples = nested_q6(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, n0);
+    let pos = q6_pos(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, i0, i1, i2);
+    if i0 >= n0 {
+        lemma_nested_q6_past(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, i0);
+        assert(nested_q6(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, i0) == triples);
+        assert(pos == triples.len() as int);
+    } else if i1 >= n1 {
+        lemma_q6_acc(
+            hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v,
+            step, base, n0, n1, n2, i0 + 1, 0, 0,
+        );
+        let subs = eq_row_ids(sub_a, hub_a[i0], n1);
+        let pres = eq_row_ids3(pre_a, pre_t, pre_v, hub_a[i0], hub_t[i0], hub_v[i0], n2);
+        lemma_eq_members(sub_a, hub_a[i0], n1);
+        assert forall|p: int| 0 <= p < subs.len() implies (#[trigger] subs[p] as int) < i1 by {
+            assert((subs[p] as int) < n1);
+            assert(n1 <= i1);
+        };
+        lemma_ids_lt_all(subs, subs.len() as int, i1);
+        lemma_sub_product_len(i0 as usize, subs, pres, subs.len() as int);
+        assert((i0 as usize) as int == i0);
+        lemma_nested_q6_step(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, i0 + 1);
+        let earlier = nested_q6(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, i0);
+        let through = nested_q6(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, i0 + 1);
+        assert(through.len() == earlier.len() + subs.len() * pres.len());
+        if i0 + 1 < n0 {
+            let subs2 = eq_row_ids(sub_a, hub_a[i0 + 1], n1);
+            let pres2 = eq_row_ids3(pre_a, pre_t, pre_v, hub_a[i0 + 1], hub_t[i0 + 1], hub_v[i0 + 1], n2);
+            lemma_ids_lt_zero(subs2, subs2.len() as int);
+            lemma_ids_lt_zero(pres2, pres2.len() as int);
+        }
+        assert(q6_pos(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, i0 + 1, 0, 0) == pos);
+    } else if i2 >= n2 {
+        lemma_q6_acc(
+            hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v,
+            step, base, n0, n1, n2, i0, i1 + 1, 0,
+        );
+        let subs = eq_row_ids(sub_a, hub_a[i0], n1);
+        let pres = eq_row_ids3(pre_a, pre_t, pre_v, hub_a[i0], hub_t[i0], hub_v[i0], n2);
+        if q6_sub(sub_a, hub_a[i0], i1) {
+            lemma_eq_rank(sub_a, hub_a[i0], n1, i1);
+            lemma_eq3_members(pre_a, pre_t, pre_v, hub_a[i0], hub_t[i0], hub_v[i0], n2);
+            assert forall|p: int| 0 <= p < pres.len() implies (#[trigger] pres[p] as int) < i2 by {
+                assert((pres[p] as int) < n2);
+                assert(n2 <= i2);
+            };
+            lemma_ids_lt_all(pres, pres.len() as int, i2);
+            lemma_ids_lt_zero(pres, pres.len() as int);
+            let sr = ids_lt(subs, subs.len() as int, i1);
+            let plen = pres.len() as int;
+            vstd::arithmetic::mul::lemma_mul_is_distributive_add_other_way(plen, sr, 1);
+            vstd::arithmetic::mul::lemma_mul_basics_4(plen);
+            assert((sr + 1) * plen == sr * plen + plen);
+        } else {
+            lemma_eq_members(sub_a, hub_a[i0], n1);
+            assert forall|p: int| 0 <= p < subs.len() implies (#[trigger] subs[p] as int) != i1 by {
+                assert(sub_a[(subs[p] as int)] == hub_a[i0]);
+            };
+            lemma_ids_lt_skip(subs, subs.len() as int, i1);
+            lemma_ids_lt_zero(pres, pres.len() as int);
+        }
+        assert(q6_pos(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, i0, i1 + 1, 0) == pos);
+    } else if hub_a[i0] == sub_a[i1]
+        && hub_a[i0] == pre_a[i2]
+        && hub_t[i0] == pre_t[i2]
+        && hub_v[i0] == pre_v[i2]
+    {
+        lemma_q6_acc(
+            hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v,
+            step, base, n0, n1, n2, i0, i1, i2 + 1,
+        );
+        lemma_eq_rank(sub_a, hub_a[i0], n1, i1);
+        lemma_eq3_rank(pre_a, pre_t, pre_v, hub_a[i0], hub_t[i0], hub_v[i0], n2, i2);
+        let subs = eq_row_ids(sub_a, hub_a[i0], n1);
+        let pres = eq_row_ids3(pre_a, pre_t, pre_v, hub_a[i0], hub_t[i0], hub_v[i0], n2);
+        let sr = ids_lt(subs, subs.len() as int, i1);
+        let pr = ids_lt(pres, pres.len() as int, i2);
+        let plen = pres.len() as int;
+        let i0u = i0 as usize;
+        let i1u = i1 as usize;
+        let i2u = i2 as usize;
+        assert(i0u as int == i0);
+        assert(i1u as int == i1);
+        assert(i2u as int == i2);
+        lemma_sub_product_len(i0u, subs, pres, subs.len() as int);
+        let prod = sub_product(i0u, subs, pres, subs.len() as int);
+        assert(0 <= sr < subs.len());
+        assert(0 <= pr < plen);
+        assert(sr * plen + pr < prod.len()) by (nonlinear_arith)
+            requires
+                0 <= sr < subs.len(),
+                0 <= pr < plen,
+                prod.len() == subs.len() * pres.len(),
+                plen == pres.len() as int,
+        {
+        }
+        lemma_sub_product_at(i0u, subs, pres, subs.len() as int, sr, pr);
+        lemma_nested_q6_step(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, i0 + 1);
+        let earlier = nested_q6(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, i0);
+        let through = nested_q6(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, i0 + 1);
+        assert(through == earlier + prod);
+        assert(prod[sr * pres.len() + pr] == (i0u, subs[sr], pres[pr]));
+        assert(subs[sr] as int == i1);
+        assert(pres[pr] as int == i2);
+        assert(subs[sr] == i1u);
+        assert(pres[pr] == i2u);
+        lemma_right_index(earlier, prod, sr * plen + pr);
+        assert(pos == earlier.len() as int + sr * plen + pr);
+        assert(sr * plen + pr < prod.len()) by (nonlinear_arith)
+            requires
+                0 <= sr < subs.len(),
+                0 <= pr < plen,
+                prod.len() == subs.len() * pres.len(),
+                plen == pres.len() as int,
+        {
+        }
+        assert(pos < through.len());
+        lemma_nested_q6_len_mono(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, i0 + 1, n0);
+        assert(through.len() <= triples.len());
+        assert(pos < triples.len());
+        lemma_nested_q6_index(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, i0 + 1, n0, pos);
+        assert(triples[pos] == (i0u, i1u, i2u));
+        assert(pos + 1 == q6_pos(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, i0, i1, i2 + 1));
+        assert(loop_acc_q6(
+            hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, step, base, n0, n1, n2, i0, i1, i2,
+        ) == step(
+            loop_acc_q6(
+                hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v,
+                step, base, n0, n1, n2, i0, i1, i2 + 1,
+            ),
+            i0,
+            i1,
+            i2,
+        ));
+        assert(triple_acc(triples, step, base, pos) == step(
+            triple_acc(triples, step, base, pos + 1),
+            i0,
+            i1,
+            i2,
+        ));
+    } else {
+        lemma_q6_acc(
+            hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v,
+            step, base, n0, n1, n2, i0, i1, i2 + 1,
+        );
+        let subs = eq_row_ids(sub_a, hub_a[i0], n1);
+        let pres = eq_row_ids3(pre_a, pre_t, pre_v, hub_a[i0], hub_t[i0], hub_v[i0], n2);
+        if q6_sub(sub_a, hub_a[i0], i1) {
+            lemma_eq3_members(pre_a, pre_t, pre_v, hub_a[i0], hub_t[i0], hub_v[i0], n2);
+            assert forall|p: int| 0 <= p < pres.len() implies (#[trigger] pres[p] as int) != i2 by {
+                assert(pre_a[(pres[p] as int)] == hub_a[i0]);
+                assert(pre_t[(pres[p] as int)] == hub_t[i0]);
+                assert(pre_v[(pres[p] as int)] == hub_v[i0]);
+            };
+            lemma_ids_lt_skip(pres, pres.len() as int, i2);
+        }
+        assert(pos == q6_pos(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, i0, i1, i2 + 1));
+    }
+}
+
+/// Origin of the Q6 match list: starting at (0, 0, 0) is position 0.
+pub proof fn lemma_q6_pos_origin(
+    hub_a: Seq<Seq<char>>,
+    hub_t: Seq<Seq<char>>,
+    hub_v: Seq<Seq<char>>,
+    sub_a: Seq<Seq<char>>,
+    pre_a: Seq<Seq<char>>,
+    pre_t: Seq<Seq<char>>,
+    pre_v: Seq<Seq<char>>,
+)
+    ensures
+        q6_pos(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, 0, 0, 0) == 0,
+{
+    assert(nested_q6(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, 0)
+        =~= Seq::<(usize, usize, usize)>::empty());
+    if hub_a.len() == 0 || hub_t.len() == 0 || hub_v.len() == 0 {
+        assert(q6_pos(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, 0, 0, 0) == 0);
+    } else {
+        let subs = eq_row_ids(sub_a, hub_a[0], sub_a.len() as int);
+        let pres = eq_row_ids3(pre_a, pre_t, pre_v, hub_a[0], hub_t[0], hub_v[0], pre_a.len() as int);
+        lemma_ids_lt_zero(subs, subs.len() as int);
+        lemma_ids_lt_zero(pres, pres.len() as int);
+        vstd::arithmetic::mul::lemma_mul_by_zero_is_zero(pres.len() as int);
+        assert(q6_pos(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, 0, 0, 0) == 0);
+    }
+}
+
+/// At the origin indices, ``loop_acc_q6`` equals ``triple_acc`` of the Q6 match list at 0.
+pub proof fn lemma_q6_at_origin<A>(
+    hub_a: Seq<Seq<char>>,
+    hub_t: Seq<Seq<char>>,
+    hub_v: Seq<Seq<char>>,
+    sub_a: Seq<Seq<char>>,
+    pre_a: Seq<Seq<char>>,
+    pre_t: Seq<Seq<char>>,
+    pre_v: Seq<Seq<char>>,
+    step: spec_fn(A, int, int, int) -> A,
+    base: A,
+    n0: int,
+    n1: int,
+    n2: int,
+)
+    requires
+        hub_a.len() == n0,
+        hub_t.len() == n0,
+        hub_v.len() == n0,
+        sub_a.len() == n1,
+        pre_a.len() == n2,
+        pre_t.len() == n2,
+        pre_v.len() == n2,
+        n0 <= usize::MAX as int,
+        n1 <= usize::MAX as int,
+        n2 <= usize::MAX as int,
+    ensures
+        loop_acc_q6(
+            hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, step, base, n0, n1, n2, 0, 0, 0,
+        ) == triple_acc(
+            nested_q6(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, n0),
+            step,
+            base,
+            0,
+        ),
+{
+    lemma_q6_acc(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v, step, base, n0, n1, n2, 0, 0, 0);
+    lemma_q6_pos_origin(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v);
+}
+// SHAPE_Q6_END
+
 // EQ_JOIN_PROVED_END
 
 

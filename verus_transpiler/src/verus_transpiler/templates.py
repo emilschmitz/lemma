@@ -21,6 +21,9 @@ def _emit_join_run_query_skeleton(ret_type: str) -> str:
 //   3-table star — star_eq_triples_str:
 //     walk triples from the end with invariant acc == triple_acc(triples@, step, base, k as int);
 //     then lemma_<helper>_is_star_pairs
+//   3-table Q6 (1+3) — q6_eq_triples_str:
+//     walk triples from the end with invariant acc == triple_acc(triples@, step, base, k as int);
+//     then lemma_<helper>_is_q6_pairs
 //   4-table star — star_eq_quads_str:
 //     walk quads from the end with invariant acc == quad_acc(quads@, step, base, k as int);
 //     then lemma_<helper>_is_quad_pairs
