@@ -885,6 +885,10 @@ def _pair_fold_lemma(
     )
     if extras:
         shape_mark = "// shape: derived.\n"
+    elif "subquery_having" in helper_name:
+        # HAVING threshold built from a join+GROUP BY map (holdout Q3).
+        # Reuses the ordinary pair fold / equijoin_pairs_str — not a new geometry.
+        shape_mark = "// shape: having_join\n"
     elif o.table == i.table:
         shape_mark = "// shape: selfjoin\n"
     else:
