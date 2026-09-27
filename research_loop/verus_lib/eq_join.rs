@@ -9282,6 +9282,76 @@ pub fn right_outer_pairs_str(outer: &Vec<String>, inner: &Vec<String>) -> (slots
 
 // SHAPE_RIGHT_END
 
+// SHAPE_FULL_BEGIN
+// FULL OUTER JOIN: matched pairs, then unmatched left, then unmatched right.
+// Parts reuse nested_eq_pairs / nested_anti_misses; no whole-join Trusted.
+
+/// Three-phase FULL OUTER fold (pair list, then left misses, then right misses).
+pub open spec fn full_acc<A>(
+    pairs: Seq<(usize, usize)>,
+    left_miss: Seq<usize>,
+    right_miss: Seq<usize>,
+    step_pair: spec_fn(A, int, int) -> A,
+    step_left: spec_fn(A, int) -> A,
+    step_right: spec_fn(A, int) -> A,
+    base: A,
+) -> A {
+    let after_pairs = pair_acc(pairs, step_pair, base, 0);
+    let after_left = miss_acc(left_miss, step_left, after_pairs, 0);
+    miss_acc(right_miss, step_right, after_left, 0)
+}
+
+/// Origin: ``full_acc`` is pair_acc then left miss_acc then right miss_acc at 0.
+pub proof fn lemma_full_at_origin<A>(
+    pairs: Seq<(usize, usize)>,
+    left_miss: Seq<usize>,
+    right_miss: Seq<usize>,
+    step_pair: spec_fn(A, int, int) -> A,
+    step_left: spec_fn(A, int) -> A,
+    step_right: spec_fn(A, int) -> A,
+    base: A,
+)
+    ensures
+        full_acc(pairs, left_miss, right_miss, step_pair, step_left, step_right, base)
+            == miss_acc(
+            right_miss,
+            step_right,
+            miss_acc(left_miss, step_left, pair_acc(pairs, step_pair, base, 0), 0),
+            0,
+        ),
+{
+}
+
+/// Matched pairs + left anti-misses + right anti-misses (String keys).
+pub fn full_outer_parts_str(left: &Vec<String>, right: &Vec<String>) -> (parts: (
+    Vec<(usize, usize)>,
+    Vec<usize>,
+    Vec<usize>,
+))
+    ensures
+        parts.0@ == nested_eq_pairs(
+            key_views(left@),
+            key_views(right@),
+            left@.len() as int,
+        ),
+        parts.1@ == nested_anti_misses(
+            key_views(left@),
+            key_views(right@),
+            left@.len() as int,
+        ),
+        parts.2@ == nested_anti_misses(
+            key_views(right@),
+            key_views(left@),
+            right@.len() as int,
+        ),
+{
+    let pairs = equijoin_pairs_str(left, right);
+    let left_miss = anti_miss_rows_str(left, right);
+    let right_miss = anti_miss_rows_str(right, left);
+    (pairs, left_miss, right_miss)
+}
+// SHAPE_FULL_END
+
 // EQ_JOIN_PROVED_END
 
 

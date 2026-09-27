@@ -49,6 +49,7 @@ Call them from `AGENT_EDIT`. Do not rebuild a `HashMap` proof, and do not add
 - <!-- shape: left --> `anti_miss_rows_str(outer, inner)` — LEFT anti-join miss ids (unmatched outer rows); fold with `miss_acc` / `lemma_<helper>_is_left`.
 - <!-- shape: left3 --> `anti_miss_rows_str3(o0, o1, o2, i0, i1, i2)` — three-key LEFT anti miss ids; fold with `miss_acc` / `lemma_<helper>_is_left` (uses `nested_anti_misses3`).
 - `star_eq_quads_str(hub_a, hub_t, hub_v, sub_a, tag_t, tag_v, pre_a, pre_t, pre_v)` — 4-table star (hub ⋈ 1-col ⋈ 2-col ⋈ 3-col); walk with `quad_acc` then `lemma_<helper>_is_quad_pairs`. <!-- shape: 4table -->
+- <!-- shape: full --> `full_outer_parts_str(left, right)` — FULL OUTER parts (matched pairs, left misses, right misses); fold with `full_acc` / `lemma_<helper>_is_full`.
 
 `pairs@` (or `triples@`) is the forward nested match list: outer-major, inner row ids increasing. `method_spec` folds from the high index downward, so walk the pair list from the end. Filters and aggregates stay in that loop. The pair list is the equijoin matches, not the whole query result.
 
