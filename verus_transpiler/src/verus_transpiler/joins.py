@@ -2117,6 +2117,204 @@ pub proof fn {left_lemma}({params})
     return text, bridge
 
 
+def _semi_fold_lemma(
+    helper_name: str,
+    slots: list[_Slot],
+    *,
+    match_conds: str,
+    filter_cond: str | None,
+    update_body: str,
+    ret_type: str,
+    ret_base: str,
+) -> tuple[str, _FoldBridge] | None:
+    """Proof that a SEMI helper equals ``hit_acc`` of ``nested_semi_hits``.
+
+    // shape: semi
+    One equality only. Hit rows are matched left ids; the filter stays in the step.
+    """
+    if len(slots) != 2 or "&&" in match_conds:
+        return None
+    m = re.fullmatch(
+        r"(?P<lp>\w+)\.(?P<lf>\w+)\[li as int\](?P<lv>@?)\s*==\s*"
+        r"(?P<rp>\w+)\.(?P<rf>\w+)\[ri as int\](?P<rv>@?)",
+        match_conds.strip(),
+    )
+    if m is None or bool(m.group("lv")) != bool(m.group("rv")):
+        return None
+    o, i = slots
+    if m.group("lp") != o.param or m.group("rp") != i.param:
+        return None
+
+    def seq_expr(param: str, field: str, view: str) -> str:
+        col = f"{param}.{field}"
+        return f"key_views({col}@)" if view else f"{col}@"
+
+    outer_seq = seq_expr(m.group("lp"), m.group("lf"), m.group("lv"))
+    inner_seq = seq_expr(m.group("rp"), m.group("rf"), m.group("rv"))
+    l_access = f"{m.group('lp')}.{m.group('lf')}[li as int]{m.group('lv')}"
+    r_access = f"{m.group('rp')}.{m.group('rf')}[ri as int]{m.group('rv')}"
+    r_access_j = f"{m.group('rp')}.{m.group('rf')}[j as int]{m.group('rv')}"
+    outer_at_li = f"{outer_seq}[li]"
+    key_at_li = f"assert({outer_seq}[li] == {l_access});"
+    if m.group("lv"):
+        inner_at_j = (
+            f"assert(key_views({m.group('rp')}.{m.group('rf')}@)[j] == {r_access_j});"
+        )
+    else:
+        inner_at_j = f"assert({inner_seq}[j] == {r_access_j});"
+
+    step_update = update_body.replace("tail", "acc")
+    if filter_cond:
+        step = (
+            f"if {filter_cond} {{\n"
+            f"        {step_update}\n"
+            f"    }} else {{\n"
+            f"        acc\n"
+            f"    }}"
+        )
+    else:
+        step = step_update
+    step_closure = (
+        f"|acc: {ret_type}, li: int| {{\n"
+        f"                {step}\n"
+        f"            }}"
+    )
+    params = f"{o.param}: &{o.struct}, {i.param}: &{i.struct}"
+    helper_zeros = f"{helper_name}({o.param}, {i.param}, 0)"
+    fold_rhs = (
+        f"hit_acc(\n"
+        f"            nested_semi_hits({outer_seq}, {inner_seq}, {o.param}.n as int),\n"
+        f"            {step_closure},\n"
+        f"            {ret_base},\n"
+        f"            0,\n"
+        f"        )"
+    )
+    loop_lemma = f"lemma_{helper_name}_is_semi_loop"
+    semi_lemma = f"lemma_{helper_name}_is_semi"
+    match_suffix = "lemma_join_right_match_helper_suffix"
+    match_iff = "lemma_join_right_match_helper_iff_ids"
+    text = f"""pub proof fn {match_suffix}(
+    {params},
+    li: int,
+    ri: int,
+)
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        0 <= li < {o.param}.n,
+        0 <= ri <= {i.param}.n,
+    ensures
+        join_right_match_helper({o.param}, {i.param}, li, ri) <==> exists|j: int|
+            ri <= j < {i.param}.n && {l_access} == {r_access_j},
+    decreases {i.param}.n - ri,
+{{
+    if ri < {i.param}.n {{
+        if {l_access} == {r_access} {{
+            assert(exists|j: int| ri <= j < {i.param}.n && {l_access} == {r_access_j}) by {{
+                assert(ri <= ri < {i.param}.n && {l_access} == {r_access});
+            }};
+        }} else {{
+            {match_suffix}({o.param}, {i.param}, li, ri + 1);
+        }}
+    }}
+}}
+
+pub proof fn {match_iff}({params}, li: int)
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        0 <= li < {o.param}.n,
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+    ensures
+        join_right_match_helper({o.param}, {i.param}, li, 0) <==> eq_row_ids(
+            {inner_seq},
+            {outer_at_li},
+            {i.param}.n as int,
+        ).len() > 0,
+{{
+    {match_suffix}({o.param}, {i.param}, li, 0);
+    {key_at_li}
+    lemma_eq_row_ids_nonempty_iff({inner_seq}, {outer_at_li}, {i.param}.n as int);
+    assert((exists|j: int| 0 <= j < {i.param}.n && {l_access} == {r_access_j}) <==> (exists|j: int|
+        0 <= j < {i.param}.n && {inner_seq}[j] == {outer_at_li})) by {{
+        if exists|j: int| 0 <= j < {i.param}.n && {l_access} == {r_access_j} {{
+            let j = choose|j: int| 0 <= j < {i.param}.n && {l_access} == {r_access_j};
+            {inner_at_j}
+            assert({inner_seq}[j] == {outer_at_li});
+            assert(exists|j2: int|
+                #![trigger {inner_seq}[j2]]
+                0 <= j2 < {i.param}.n && {inner_seq}[j2] == {outer_at_li}) by {{
+                assert(0 <= j < {i.param}.n && {inner_seq}[j] == {outer_at_li});
+            }};
+        }}
+        if exists|j: int| 0 <= j < {i.param}.n && {inner_seq}[j] == {outer_at_li} {{
+            let j = choose|j: int| 0 <= j < {i.param}.n && {inner_seq}[j] == {outer_at_li};
+            {inner_at_j}
+            assert({l_access} == {r_access_j});
+            assert(exists|j2: int|
+                #![trigger {m.group('rp')}.{m.group('rf')}[j2 as int]{m.group('rv')}]
+                0 <= j2 < {i.param}.n && {l_access} == {m.group('rp')}.{m.group('rf')}[j2 as int]{m.group('rv')}) by {{
+                assert(0 <= j < {i.param}.n && {l_access} == {r_access_j});
+            }};
+        }}
+    }};
+}}
+
+// shape: semi
+pub proof fn {loop_lemma}({params}, li: int)
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+        0 <= li <= {o.param}.n,
+    ensures
+        {helper_name}({o.param}, {i.param}, li) == semi_loop_acc(
+            {outer_seq},
+            {inner_seq},
+            {step_closure},
+            {ret_base},
+            {o.param}.n as int,
+            li,
+        ),
+    decreases {o.param}.n - li,
+{{
+    if li < {o.param}.n {{
+        {loop_lemma}({o.param}, {i.param}, li + 1);
+        {match_iff}({o.param}, {i.param}, li);
+        assert({outer_seq}[li] == {l_access});
+    }}
+}}
+
+pub proof fn {semi_lemma}({params})
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+    ensures
+        {helper_zeros} == {fold_rhs},
+{{
+    {loop_lemma}({o.param}, {i.param}, 0);
+    lemma_semi_at_origin(
+        {outer_seq},
+        {inner_seq},
+        {step_closure},
+        {ret_base},
+        {o.param}.n as int,
+    );
+}}"""
+    bridge = _FoldBridge(
+        helper_name=helper_name,
+        pairs_lemma=semi_lemma,
+        slots=list(slots),
+        helper_zeros=helper_zeros,
+        fold_rhs=fold_rhs,
+    )
+    return text, bridge
+
+
 def _emit_left_anti_multi_agg(
     query: SQLQuery,
     slots: list[_Slot],
@@ -2250,6 +2448,155 @@ def _emit_left_anti_multi_agg(
             f"    raw.map_values(|v: {state_tuple_type}| {project_expr})"
         )
     fold = _left_fold_lemma(
+        helper_name,
+        slots,
+        match_conds=match_conds,
+        filter_cond=filter_cond,
+        update_body=update_body,
+        ret_type=f"Map<{key_ty}, {state_tuple_type}>",
+        ret_base="Map::empty()",
+    )
+    bridge: _FoldBridge | None = None
+    helpers_out = match_helper + "\n\n" + helper
+    if fold is not None:
+        fold_text, bridge = fold
+        helpers_out = helpers_out + "\n\n" + fold_text
+    return helpers_out, spec_body, ret_type, bridge
+
+
+def _emit_semi_multi_agg(
+    query: SQLQuery,
+    slots: list[_Slot],
+    schemas_by_table: dict[str, dict[str, str]],
+    *,
+    where_expr: str | None,
+) -> tuple[str, str, str, _FoldBridge | None]:
+    """Existence-only SEMI JOIN: fold outer rows that have ≥1 equijoin match."""
+    left, right = slots[0], slots[1]
+    join = query.joins[0]
+    match_parts: list[str] = []
+    for left_ref, right_ref in join.on_equalities:
+        l_expr = _col_access_ref(left_ref, query, slots, schemas_by_table, {})
+        r_col = _col_access_ref(right_ref, query, slots, schemas_by_table, {})
+        r_expr = r_col.replace(f"{right.idx} as int", "ri as int")
+        l_expr = l_expr.replace(f"{left.idx} as int", "li as int")
+        match_parts.append(f"{l_expr} == {r_expr}")
+    match_conds = " && ".join(match_parts)
+    match_helper = _emit_match_helper(left, right, match_conds)
+
+    filter_cond = (
+        _anti_left_li(
+            _resolve_filter_expr(where_expr, query, [left], schemas_by_table, {}) or "",
+            left,
+        )
+        if where_expr
+        else None
+    )
+    key_expr, key_ty = _groupby_key_parts(query, slots, schemas_by_table, {})
+    key_expr = _anti_left_li(key_expr, left)
+
+    state_types: list[str] = []
+    state_defaults: list[str] = []
+    update_stmts: list[str] = []
+    project_parts: list[str] = []
+
+    specs = query.agg_specs if query.agg_specs else [
+        AggSpec(query.agg_type, query.agg_column, query.agg_expr, ""),
+    ]
+    for i, spec in enumerate(specs):
+        if spec.agg_type == "COUNT":
+            state_types.append("u64")
+            state_defaults.append("0u64")
+            prev_ref = "prev" if len(specs) == 1 else f"prev.{i}"
+            update_stmts.append(f"let s{i} = ({prev_ref} as int + 1) as u64;")
+            project_parts.append(f"s{i}" if len(specs) > 1 else "s0")
+        elif spec.agg_type == "SUM":
+            from .parse_sql import _agg_value_type
+            vt = _agg_value_type(spec.agg_expr)
+            state_types.append(vt)
+            state_defaults.append(f"0{vt}")
+            term = _anti_left_li(
+                _agg_term_expr(spec, query, [left], schemas_by_table, {}),
+                left,
+            )
+            prev_ref = "prev" if len(specs) == 1 else f"prev.{i}"
+            update_stmts.append(
+                f"let s{i} = ({prev_ref} as int + {term} as int) as {vt};"
+            )
+            project_parts.append(f"s{i}" if len(specs) > 1 else "s0")
+        elif spec.agg_type in ("MIN", "MAX", "AVG"):
+            raise UnsupportedContractError(
+                f"SEMI JOIN agg {spec.agg_type!r} not supported"
+            )
+        else:
+            raise UnsupportedContractError(
+                f"SEMI JOIN multi-agg {spec.agg_type!r} not supported"
+            )
+
+    n_state = len(state_types)
+    state_tuple_type = state_types[0] if n_state == 1 else f"({', '.join(state_types)})"
+    default_state = state_defaults[0] if n_state == 1 else f"({', '.join(state_defaults)})"
+    rebuild = "s0" if n_state == 1 else f"({', '.join(f's{i}' for i in range(n_state))})"
+    if n_state == 1:
+        rendered = update_stmts[0]
+    else:
+        rendered = "\n            ".join(update_stmts)
+    if n_state == 1 and len(project_parts) == 1 and project_parts[0] == "s0":
+        project_parts = ["s0"]
+
+    filter_part = f" && {filter_cond}" if filter_cond else ""
+    update_body = (
+        f"let key = {key_expr};\n"
+        f"            let prev = if tail.contains_key(key) {{ tail[key] }} else {{ {default_state} }};\n"
+        f"            {rendered}\n"
+        f"            tail.insert(key, {rebuild})"
+    )
+
+    helper_name = "join_semi_multi_agg_helper"
+    helper = f"""pub open spec fn {helper_name}(
+    {left.param}: &{left.struct},
+    {right.param}: &{right.struct},
+    li: int,
+) -> (res: Map<{key_ty}, {state_tuple_type}>)
+    decreases {left.param}.n - li,
+{{
+    if li < {left.param}.n {{
+        let tail = {helper_name}({left.param}, {right.param}, li + 1);
+        if join_right_match_helper({left.param}, {right.param}, li, 0){filter_part} {{
+            {update_body}
+        }} else {{
+            tail
+        }}
+    }} else {{
+        Map::empty()
+    }}
+}}"""
+
+    def _project_from_v(expr: str) -> str:
+        out = expr
+        if n_state == 1:
+            return out.replace("s0", "v")
+        for i in range(n_state - 1, -1, -1):
+            out = out.replace(f"s{i}", f"v.{i}")
+        return out
+
+    if len(project_parts) == 1:
+        project_expr = _project_from_v(project_parts[0])
+    else:
+        project_expr = f"({', '.join(_project_from_v(p) for p in project_parts)})"
+    if n_state == 1 and not query.is_multi_agg:
+        ret_type = f"Map<{key_ty}, u64>"
+        spec_body = (
+            f"let raw = {helper_name}({left.param}, {right.param}, 0);\n"
+            f"    raw"
+        )
+    else:
+        ret_type = f"Map<{key_ty}, {_multi_agg_tuple_type(query)}>"
+        spec_body = (
+            f"let raw = {helper_name}({left.param}, {right.param}, 0);\n"
+            f"    raw.map_values(|v: {state_tuple_type}| {project_expr})"
+        )
+    fold = _semi_fold_lemma(
         helper_name,
         slots,
         match_conds=match_conds,
@@ -2595,9 +2942,18 @@ def emit_join_spec_helpers(
 
     join_types = {j.join_type for j in query.joins}
     for jt in join_types:
-        if jt in ("SEMI", "ANTI"):
+        if jt == "ANTI":
             raise UnsupportedContractError(
-                f"{jt} JOIN needs real MethodSpec; not yet supported"
+                "ANTI JOIN needs real MethodSpec; not yet supported"
+            )
+        if jt == "SEMI" and (
+            len(slots) != 2
+            or not query.groupby_columns
+            or query.is_projection
+            or len(query.joins) != 1
+        ):
+            raise UnsupportedContractError(
+                "SEMI JOIN needs real MethodSpec; not yet supported"
             )
         if jt == "FULL" and (query.groupby_columns or query.is_projection or not is_sum):
             raise UnsupportedContractError(
@@ -2627,6 +2983,7 @@ def emit_join_spec_helpers(
 
     _, is_anti = _strip_anti_join_predicates(where_expr)
     is_left = any(j.join_type == "LEFT" for j in query.joins)
+    is_semi = any(j.join_type == "SEMI" for j in query.joins)
 
     extra_having = ""
     spec_body: str
@@ -2662,6 +3019,12 @@ def emit_join_spec_helpers(
             where_expr=where_expr,
         )
         helpers = "\n\n".join(derived_helpers + [proj_helper])
+    elif query.groupby_columns and is_semi and len(slots) == 2:
+        semi_helper, spec_body, ret_type, fold_bridge = _emit_semi_multi_agg(
+            query, slots, schemas_by_table, where_expr=where_expr,
+        )
+        helpers = semi_helper
+        spec_body = _apply_join_having_filter(spec_body)
     elif query.groupby_columns and is_left and is_anti and len(slots) == 2:
         anti_helper, spec_body, ret_type, fold_bridge = _emit_left_anti_multi_agg(
             query, slots, schemas_by_table, where_expr=where_expr,
