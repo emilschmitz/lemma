@@ -539,6 +539,10 @@ def _scan_forbidden(edit_region: str) -> list[str]:
         violations.append("forbidden construct in edit region: top-level 'mod'")
     if re.search(r"\bfn\s+method_spec\b", clean):
         violations.append("forbidden: defining fn method_spec in edit region")
+    if re.search(r"\bproof\s+fn\b", clean):
+        violations.append("forbidden proof fn in edit region")
+    if re.search(r"\bspec\s+fn\b", clean):
+        violations.append("forbidden spec fn in edit region")
     if re.search(r"\bensures\s+true\b", clean):
         violations.append("forbidden vacuous ensures: ensures true")
     return violations

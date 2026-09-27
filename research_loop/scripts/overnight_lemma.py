@@ -430,6 +430,35 @@ def write_unfinished_json(
     _fsync_write(out_dir / "unfinished.json", json.dumps(doc, indent=2, default=str) + "\n")
 
 
+def _leftover_verify_text(out_dir: Path, qid: str) -> str:
+    """Append harvested verify output so classification sees the Verus error.
+
+    Driver logs often contain only ``exit=-9``. The leftover
+    ``verify_error_custom.log`` is the diagnostic. ``LEMMA_TRACE_RUN_QUERY_LINE``
+    lets the classifier separate host lemmas above ``run_query`` from the body.
+    """
+    ws = out_dir / "traces" / qid / "workspace"
+    parts: list[str] = []
+    src = ws / "custom_query.rs"
+    if src.is_file():
+        try:
+            for i, line in enumerate(
+                src.read_text(encoding="utf-8", errors="replace").splitlines(), 1
+            ):
+                if line.startswith("pub exec fn run_query"):
+                    parts.append(f"LEMMA_TRACE_RUN_QUERY_LINE={i}")
+                    break
+        except OSError:
+            pass
+    verify = ws / "verify_error_custom.log"
+    if verify.is_file():
+        try:
+            parts.append(verify.read_text(encoding="utf-8", errors="replace")[:200_000])
+        except OSError:
+            pass
+    return "\n".join(parts)
+
+
 def write_failure_classify(out_dir: Path, results: list[dict]) -> dict[str, Any]:
     """Classify finished harvest rows from optimizer logs.
 
@@ -455,6 +484,11 @@ def write_failure_classify(out_dir: Path, results: list[dict]) -> dict[str, Any]
             entries.append({**base, **cls, "detail": f"missing_log:{path}"})
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
+        qid = rec.get("qid")
+        if qid:
+            extra = _leftover_verify_text(out_dir, str(qid))
+            if extra:
+                text = text + "\n" + extra
         cls = classify_optimizer_log(text)
         entries.append({**base, **cls})
     doc: dict[str, Any] = {

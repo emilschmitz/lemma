@@ -74,6 +74,15 @@ _VERIFY_FAIL = re.compile(
     r"verify_fails|verification and compilation|CUSTOM_PIPELINE_FAILED|No iteration succeeded",
     re.I,
 )
+_VERUS_RESULT_ERRORS = re.compile(
+    r"verification results::\s*\d+\s+verified,\s*([1-9]\d*)\s+errors",
+    re.I,
+)
+_RUN_QUERY_LINE = re.compile(r"LEMMA_TRACE_RUN_QUERY_LINE=(\d+)")
+_ERROR_AT_LINE = re.compile(
+    r"^error(?:\[[^\]]+\])?:[^\n]*\n(?:[^\n]*\n){0,8}?[^\n]*custom_query\.rs:(\d+):",
+    re.MULTILINE,
+)
 _DIRTY = re.compile(
     r"Dirty files|LEMMA_EXPERIMENT=1 requires a clean git working tree",
     re.I,
@@ -157,6 +166,33 @@ def _result(step: int, cls: str, *, detail: str = "") -> dict[str, Any]:
     return out
 
 
+def _has_verify_diagnostic(text: str) -> bool:
+    return bool(
+        _VERUS_ERR.search(text)
+        or _E0308.search(text)
+        or _E0425.search(text)
+        or _VERUS_RESULT_ERRORS.search(text)
+    )
+
+
+def _classify_errors_against_run_query(text: str) -> dict[str, Any] | None:
+    """Host lemma lines sit above ``run_query``. Agent lines sit at or below it.
+
+    The marker is injected from the harvested ``custom_query.rs`` when the
+    driver log is classified. Without it, return None and use the other rules.
+    """
+    marker = _RUN_QUERY_LINE.search(text)
+    if marker is None:
+        return None
+    run_query_line = int(marker.group(1))
+    error_lines = [int(n) for n in _ERROR_AT_LINE.findall(text)]
+    if not error_lines:
+        return None
+    if any(line < run_query_line for line in error_lines):
+        return _result(4, "assemble", detail="host lemma before run_query")
+    return _result(3, "agent stupidity", detail="run_query AGENT_EDIT")
+
+
 def classify_optimizer_log(text: str) -> dict[str, Any]:
     """Return ``{step, class[, detail]}`` for optimizer stdout/stderr (first match wins)."""
     if not text:
@@ -214,17 +250,23 @@ def classify_optimizer_log(text: str) -> dict[str, Any]:
     if _RESOURCE_EXHAUSTED.search(text):
         return _result(3, "infra", detail="resource_exhausted")
 
-    # Step 3 — agent docker timeout (before harness verify).
-    if _AGENT_TIMEOUT.search(text) and _AGENT_DOCKER_CTX.search(text):
-        return _result(3, "infra", detail="agent timeout")
+    # A Verus/rustc diagnostic is the failure. Docker exit -9 after that is the
+    # session wall, not a timeout that hid the diagnostic (r31 driver logs).
+    located = _classify_errors_against_run_query(text)
+    if located is not None:
+        return located
+    if not _has_verify_diagnostic(text):
+        # Step 3 — agent docker timeout (before harness verify).
+        if _AGENT_TIMEOUT.search(text) and _AGENT_DOCKER_CTX.search(text):
+            return _result(3, "infra", detail="agent timeout")
 
-    # GNU timeout --signal=KILL → exit -9/137 even when timed_out=False.
-    if _AGENT_DOCKER_SIGKILL.search(text):
-        return _result(3, "infra", detail="agent timeout")
+        # GNU timeout --signal=KILL → exit -9/137 even when timed_out=False.
+        if _AGENT_DOCKER_SIGKILL.search(text):
+            return _result(3, "infra", detail="agent timeout")
 
-    # Standalone TimeoutExpired / timed_out without harness "after Ns" — agent path.
-    if re.search(r"TimeoutExpired", text) and not _HARNESS_TIMEOUT.search(text):
-        return _result(3, "infra", detail="agent timeout")
+        # Standalone TimeoutExpired / timed_out without harness "after Ns" — agent path.
+        if re.search(r"TimeoutExpired", text) and not _HARNESS_TIMEOUT.search(text):
+            return _result(3, "infra", detail="agent timeout")
 
     # Step 4 — leftover rustc E0425 host temps (tN) in custom_query.rs, not AGENT_EDIT.
     if _E0425.search(text) and _ASSEMBLE_HOST.search(text) and not _AGENT_EDIT.search(text):
@@ -243,13 +285,10 @@ def classify_optimizer_log(text: str) -> dict[str, Any]:
         return _result(2, "transpiler coverage", detail="spec.rs E0308")
 
     # Step 3 — Verus errors confined to agent run_query on typed spec.
-    if (
-        _VERUS_ERR.search(text)
-        and _AGENT_EDIT.search(text)
-        and _RUN_QUERY.search(text)
-        and not _SPEC_RS.search(text.split("AGENT_EDIT")[-1][:2000] if "AGENT_EDIT" in text else text)
-    ):
-        return _result(3, "agent stupidity", detail="run_query AGENT_EDIT")
+    if _VERUS_ERR.search(text) and _AGENT_EDIT.search(text):
+        edit_tail = text.split("AGENT_EDIT")[-1][:2000] if "AGENT_EDIT" in text else text
+        if not _SPEC_RS.search(edit_tail):
+            return _result(3, "agent stupidity", detail="run_query AGENT_EDIT")
 
     # Host markers in verify output → assemble or transpile, not agent.
     if _VERUS_ERR.search(text) or _VERIFY_FAIL.search(text):

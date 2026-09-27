@@ -177,6 +177,35 @@ The host records whether a pin happened.
 """
 
 
+def _fast_trusteds_on() -> bool:
+    return os.environ.get("LEMMA_FAST_TRUSTEDS", "0") == "1"
+
+
+def _verus_mode_section() -> str:
+    """Mode rules that aborted harvested verify logs before a proof result."""
+    return """
+## Verus modes
+These abort the file before a proof result.
+- `while` and `for` are exec-only. Inside `proof { }` or a `spec` function, Verus reports `cannot use while in proof or spec mode`.
+- A `proof` block inside a `spec` function is legal only when that function has `decreases`.
+- `&&&` separates spec clauses. In exec code write `&&`. `expected ','` on `&&&` is this.
+- An exec `Vec` or `HashMap` is not spec-equal to a `Seq`. Compare `@` views. `Seq<usize>` vs `Vec<usize>` is E0308 / SpecEq.
+- Do not define a new `proof fn`, `spec fn`, or lemma. Call only helpers already in `spec.rs`.
+- An error on a line above `pub exec fn run_query` is host code (`lemma_*`). The edit region cannot repair it.
+"""
+
+
+def _rocketship_exec_section() -> str:
+    if _fast_trusteds_on():
+        return ""
+    return """
+## Exec shape
+`LEMMA_FAST_TRUSTEDS` is off. `build_hashset_u32`, `probe_sum_u64`, and `par_*` are not in scope.
+Join MethodSpec is the nested `rem_join` / `rem_join_sq` fold in `spec.rs`. Implement that nested exec loop and prove `ensures res == method_spec(...)`.
+Do not invent a HashMap or HashSet index. There is no Trusted here that proves an index equals that fold.
+"""
+
+
 def _read_ro_excerpt(workspace: Path, name: str, *, max_chars: int = 2500) -> str:
     path = workspace / "context" / "ro" / name
     if not path.is_file():
@@ -274,6 +303,8 @@ Keep the host signature / `requires` / `ensures` matching `method_spec(...)` in 
 or join tables). Do not add Trusted, `assume`,
 `arbitrary`, `external_body`, or redefine `method_spec`.
 {prelim_section}
+{_rocketship_exec_section()}
+{_verus_mode_section()}
 {budget_section}
 {row_budget_section}
 {facts_block}

@@ -57,3 +57,15 @@ Use the helper name and params from **this query's** `spec.rs` (joins use `Cols_
 - Read the Verus error: usually a failed `invariant` or type mismatch.
 - Compare your update step to one iteration of `method_spec` on paper.
 - Omit `dataset_size` on MCP `run_runquery` for the host iterate size from **Row budgets** (may be the official pin); pass an explicit smaller value only for quick probes.
+- An error on a line above `pub exec fn run_query` is host code (`lemma_*`). Do not try to repair it inside the edit region.
+
+## Verus modes
+
+These abort the file before a proof result.
+
+- `while` and `for` are exec-only. Inside `proof { }` or a `spec` function, Verus reports `cannot use while in proof or spec mode`.
+- A `proof` block inside a `spec` function is legal only when that function has `decreases`.
+- `&&&` separates spec clauses. In exec code write `&&`.
+- An exec `Vec` or `HashMap` is not spec-equal to a `Seq`. Compare `@` views (`Seq` vs `Vec` is E0308 / SpecEq).
+- Do not define a new `proof fn`, `spec fn`, or lemma. Call only helpers already in `spec.rs`.
+- When `build_hashset_u32` / `probe_sum_u64` are not in `spec.rs`, do not call them. The join proof is the nested `rem_join` fold.

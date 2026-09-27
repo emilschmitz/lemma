@@ -166,11 +166,6 @@ def lemma_select_line(con: duckdb.DuckDBPyConnection, sql: str) -> str:
         return f"SELECT CAST({call} AS HUGEINT) AS {alias}"
     return f"SELECT {call} AS {alias}"
 
-def quote_sql_identifier(name: str) -> str:
-    if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
-        return name
-    return '"' + name.replace('"', '""') + '"'
-
 
 def load_csv_table(
     con: duckdb.DuckDBPyConnection,
