@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # GCP Spot experiment preflight: clean local git, pushed HEAD, flag card, optional remote sync.
 # Usage (from repo root):
-#   LEMMA_FAMILY=r23rocket bash research_loop/scripts/gcp_experiment_preflight.sh
-#   LEMMA_PREFLIGHT_SSH=1 LEMMA_FAMILY=r23rocket bash research_loop/scripts/gcp_experiment_preflight.sh
+#   LEMMA_FAMILY=r23rocket bash research_loop/scripts/gcp_experiment_preflight.sh --expect-sha <commit>
+#   LEMMA_PREFLIGHT_SSH=1 LEMMA_FAMILY=r23rocket bash research_loop/scripts/gcp_experiment_preflight.sh --expect-sha <commit>
+# --expect-sha is required. The hash must be this checkout's HEAD.
 set -euo pipefail
 
 LEMMA_FAMILY="${LEMMA_FAMILY:-}"
@@ -21,7 +22,22 @@ err() {
 }
 
 cd "$(git rev-parse --show-toplevel)"
-LOCAL_SHA="$(git rev-parse HEAD)"
+EXPECT_SHA=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --expect-sha)
+      EXPECT_SHA="${2:?--expect-sha needs the commit hash you mean to run}"
+      shift 2
+      ;;
+    *)
+      err "unknown argument '$1' (use --expect-sha <commit>)"
+      exit 1
+      ;;
+  esac
+done
+# shellcheck source=research_loop/scripts/require_expect_sha.sh
+source research_loop/scripts/require_expect_sha.sh
+LOCAL_SHA="$(require_expect_sha "$EXPECT_SHA")"
 
 if [[ -n "${LEMMA_EXPERIMENT_ALLOW_DIRTY:-}" ]]; then
   err "LEMMA_EXPERIMENT_ALLOW_DIRTY is set; experiments require a clean worktree (unset it)."

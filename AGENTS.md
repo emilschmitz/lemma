@@ -141,10 +141,13 @@ launch, and do not call it an unsynced laptop or an agent miss.
 
 **Before any paper/Spot family**, both gates. Skip either and stop:
 
-1. **SHA sync.** `LEMMA_PREFLIGHT_SSH=1`. Remote `HEAD` must equal the local
-   SHA you mean to run. Recording `git_sha` after the fact is not the gate.
-   The SSH half of `research_loop/scripts/gcp_experiment_preflight.sh` is
-   off unless that flag is set.
+1. **SHA sync.** The start command takes the commit you type.
+   `overnight_lemma.sh --expect-sha <commit>`,
+   `gcp_experiment_preflight.sh --expect-sha <commit>`,
+   and `launch_paper.sh <commit>` exit 1 when the argument is missing or is
+   not this checkout's `HEAD`. A chain script takes the same hash as `$1` and
+   forwards it. `LEMMA_PREFLIGHT_SSH=1` still has to show the remote `HEAD`
+   equal to that hash. Recording `git_sha` after the run is not the gate.
 2. **Host scaffold on the product catalog.** After any change under
    `research_loop/sec_table_assumptions.py`, `db_extension/dataset_config.py`,
    `verus_transpiler/` value bounds, or assemble: transpile one query with

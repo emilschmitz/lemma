@@ -15,6 +15,7 @@ set -euo pipefail
 export PATH="${HOME}/.local/bin:${HOME}/src/verus/source/target-verus/release:${HOME}/.cargo/bin:${PATH}"
 export VERUS_Z3_PATH="${HOME}/src/verus/source/z3"
 cd "$(git rev-parse --show-toplevel)"
+EXPECT_SHA="${1:?ERROR: type the commit hash, e.g. bash $0 $(git rev-parse --short HEAD)}"
 mkdir -p /home/emil/lemma-overnight-out-r26rocket \
          /home/emil/lemma-overnight-out-r26fast \
          /home/emil/lemma-overnight-out-r26mid
@@ -56,7 +57,7 @@ export LEMMA_HALT_ON_FINISH=0
 export LEMMA_SCHEDULE_ACPI=1
 export LEMMA_HARVEST_GS_URI="${LEMMA_HARVEST_GS_URI_ROCKET:-gs://poema-496023-lemma-harvest/r26rocket/}"
 echo "=== START r26rocket $(date -u +%Y-%m-%dT%H:%M:%SZ) ===" | tee -a "$LEMMA_OVERNIGHT_OUT/chain.log"
-if ! bash research_loop/scripts/overnight_lemma.sh; then
+if ! bash research_loop/scripts/overnight_lemma.sh --expect-sha "$EXPECT_SHA"; then
   echo "=== FAIL r26rocket; skip fast and mid; halt ===" | tee -a "$LEMMA_OVERNIGHT_OUT/chain.log"
   bash research_loop/scripts/lemma_guest_halt.sh >>"$LEMMA_OVERNIGHT_OUT/watchdog.log" 2>&1 || true
   exit 1
@@ -83,7 +84,7 @@ export LEMMA_SCHEDULE_ACPI=0
 export LEMMA_SERIOUS=1
 export LEMMA_HARVEST_GS_URI="${LEMMA_HARVEST_GS_URI_FAST:-gs://poema-496023-lemma-harvest/r26fast/}"
 echo "=== START r26fast $(date -u +%Y-%m-%dT%H:%M:%SZ) ===" | tee -a "$LEMMA_OVERNIGHT_OUT/chain.log"
-if ! bash research_loop/scripts/overnight_lemma.sh; then
+if ! bash research_loop/scripts/overnight_lemma.sh --expect-sha "$EXPECT_SHA"; then
   echo "=== FAIL r26fast; skip mid; halt ===" | tee -a "$LEMMA_OVERNIGHT_OUT/chain.log"
   bash research_loop/scripts/lemma_guest_halt.sh >>"$LEMMA_OVERNIGHT_OUT/watchdog.log" 2>&1 || true
   exit 1
@@ -103,5 +104,5 @@ export LEMMA_SCHEDULE_ACPI=0
 export LEMMA_SERIOUS=1
 export LEMMA_HARVEST_GS_URI="${LEMMA_HARVEST_GS_URI_MID:-gs://poema-496023-lemma-harvest/r26mid/}"
 echo "=== START r26mid $(date -u +%Y-%m-%dT%H:%M:%SZ) ===" | tee -a "$LEMMA_OVERNIGHT_OUT/chain.log"
-bash research_loop/scripts/overnight_lemma.sh
+bash research_loop/scripts/overnight_lemma.sh --expect-sha "$EXPECT_SHA"
 echo "=== DONE r26mid $(date -u +%Y-%m-%dT%H:%M:%SZ) ===" | tee -a "$LEMMA_OVERNIGHT_OUT/chain.log"

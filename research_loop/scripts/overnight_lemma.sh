@@ -2,14 +2,35 @@
 # Overnight Lemma batch + ACPI self-stop (fresh shuffle outside git, DuckDB baseline, agents).
 # Before GCP Spot launch: bash research_loop/scripts/gcp_experiment_preflight.sh
 # Usage:
-#   bash research_loop/scripts/overnight_lemma.sh smoke
-#   bash research_loop/scripts/overnight_lemma.sh
+#   bash research_loop/scripts/overnight_lemma.sh --expect-sha <commit> smoke
+#   bash research_loop/scripts/overnight_lemma.sh --expect-sha <commit>
+# Omitting --expect-sha, or typing a hash that is not HEAD, exits 1.
 set -euo pipefail
 export PATH="${HOME}/.local/bin:${HOME}/src/verus/source/target-verus/release:${HOME}/.cargo/bin:${PATH}"
 export VERUS_Z3_PATH="${HOME}/src/verus/source/z3"
 cd "$(git rev-parse --show-toplevel)"
 
-MODE="${1:-full}"
+MODE=full
+EXPECT_SHA=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --expect-sha)
+      EXPECT_SHA="${2:?--expect-sha needs the commit hash you mean to run}"
+      shift 2
+      ;;
+    smoke|full)
+      MODE="$1"
+      shift
+      ;;
+    *)
+      echo "ERROR: unknown argument '$1' (use --expect-sha <commit>)" >&2
+      exit 1
+      ;;
+  esac
+done
+# shellcheck source=research_loop/scripts/require_expect_sha.sh
+source research_loop/scripts/require_expect_sha.sh
+require_expect_sha "$EXPECT_SHA" >/dev/null
 OUT="${LEMMA_OVERNIGHT_OUT:-/home/emil/lemma-overnight-out}"
 SEC_DB="${LEMMA_DUCKDB_PATH:-holdout/gendb_sec_edgar/duckdb/sec_edgar.duckdb}"
 mkdir -p "$OUT"
