@@ -5476,6 +5476,257 @@ pub fn anti_miss_rows_str3(
 }
 // SHAPE_LEFT3_END
 
+// SHAPE_RIGHT_BEGIN
+// RIGHT OUTER after honest side-swap (preserved side = outer): matched pairs
+// plus one miss slot per unmatched outer. Null-extends the inner on miss.
+
+/// Prefix of `(outer_i, Some(inner_id))` for the first `t` match ids.
+pub open spec fn prefix_right_pairs(i: usize, js: Seq<usize>, t: int) -> Seq<
+    (usize, Option<usize>),
+>
+    decreases t,
+{
+    if t <= 0 {
+        Seq::<(usize, Option<usize>)>::empty()
+    } else {
+        let prev = prefix_right_pairs(i, js, t - 1);
+        if 0 <= t - 1 < js.len() {
+            prev.push((i, Some(js[t - 1])))
+        } else {
+            prev
+        }
+    }
+}
+
+/// Outer-major RIGHT/LEFT-outer slots for `outer[0..n]`.
+pub open spec fn nested_right_pairs<K>(outer: Seq<K>, inner: Seq<K>, n: int) -> Seq<
+    (usize, Option<usize>),
+>
+    decreases n,
+{
+    if n <= 0 {
+        Seq::<(usize, Option<usize>)>::empty()
+    } else if n - 1 >= outer.len() {
+        nested_right_pairs(outer, inner, n - 1)
+    } else {
+        let i = (n - 1) as usize;
+        let ids = eq_row_ids(inner, outer[n - 1], inner.len() as int);
+        let prev = nested_right_pairs(outer, inner, n - 1);
+        if ids.len() == 0 {
+            prev.push((i, None))
+        } else {
+            prev + prefix_right_pairs(i, ids, ids.len() as int)
+        }
+    }
+}
+
+pub proof fn lemma_nested_right_pairs_step<K>(outer: Seq<K>, inner: Seq<K>, n: int)
+    requires
+        0 < n <= outer.len(),
+    ensures
+        eq_row_ids(inner, outer[n - 1], inner.len() as int).len() == 0 ==> nested_right_pairs(
+            outer,
+            inner,
+            n,
+        ) == nested_right_pairs(outer, inner, n - 1).push(((n - 1) as usize, None)),
+        eq_row_ids(inner, outer[n - 1], inner.len() as int).len() > 0 ==> nested_right_pairs(
+            outer,
+            inner,
+            n,
+        ) == nested_right_pairs(outer, inner, n - 1) + prefix_right_pairs(
+            (n - 1) as usize,
+            eq_row_ids(inner, outer[n - 1], inner.len() as int),
+            eq_row_ids(inner, outer[n - 1], inner.len() as int).len() as int,
+        ),
+{
+    if eq_row_ids(inner, outer[n - 1], inner.len() as int).len() == 0 {
+        assert(nested_right_pairs(outer, inner, n) == nested_right_pairs(outer, inner, n - 1).push(
+            ((n - 1) as usize, None),
+        ));
+    } else {
+        assert(nested_right_pairs(outer, inner, n) == nested_right_pairs(outer, inner, n - 1)
+            + prefix_right_pairs(
+            (n - 1) as usize,
+            eq_row_ids(inner, outer[n - 1], inner.len() as int),
+            eq_row_ids(inner, outer[n - 1], inner.len() as int).len() as int,
+        ));
+    }
+}
+
+pub proof fn lemma_prefix_right_len(i: usize, ids: Seq<usize>, t: int)
+    requires
+        0 <= t <= ids.len(),
+    ensures
+        prefix_right_pairs(i, ids, t).len() == t,
+    decreases t,
+{
+    if t > 0 {
+        lemma_prefix_right_len(i, ids, t - 1);
+        assert(prefix_right_pairs(i, ids, t) == prefix_right_pairs(i, ids, t - 1).push((i, Some(
+            ids[t - 1],
+        ))));
+    }
+}
+
+/// Fold a RIGHT-outer slot list from the high index downward (MethodSpec order).
+pub open spec fn right_acc<A>(
+    slots: Seq<(usize, Option<usize>)>,
+    step_hit: spec_fn(A, int, int) -> A,
+    step_miss: spec_fn(A, int) -> A,
+    base: A,
+    k: int,
+) -> A
+    decreases slots.len() - k,
+{
+    if k >= slots.len() {
+        base
+    } else {
+        let tail = right_acc(slots, step_hit, step_miss, base, k + 1);
+        match slots[k].1 {
+            Some(j) => step_hit(tail, slots[k].0 as int, j as int),
+            None => step_miss(tail, slots[k].0 as int),
+        }
+    }
+}
+
+/// Alias used by join fold lemmas: loop fold at origin is the slot-list fold.
+pub open spec fn right_loop_acc<K, A>(
+    outer: Seq<K>,
+    inner: Seq<K>,
+    step_hit: spec_fn(A, int, int) -> A,
+    step_miss: spec_fn(A, int) -> A,
+    base: A,
+    n_outer: int,
+    _i: int,
+) -> A {
+    right_acc(
+        nested_right_pairs(outer, inner, n_outer),
+        step_hit,
+        step_miss,
+        base,
+        0,
+    )
+}
+
+/// Origin fact: RIGHT-outer fold equals `right_acc` of the full slot list at 0.
+pub proof fn lemma_right_at_origin<K, A>(
+    outer: Seq<K>,
+    inner: Seq<K>,
+    step_hit: spec_fn(A, int, int) -> A,
+    step_miss: spec_fn(A, int) -> A,
+    base: A,
+    n_outer: int,
+)
+    ensures
+        right_loop_acc(outer, inner, step_hit, step_miss, base, n_outer, 0) == right_acc(
+            nested_right_pairs(outer, inner, n_outer),
+            step_hit,
+            step_miss,
+            base,
+            0,
+        ),
+{
+}
+
+/// RIGHT-outer slots for one `String` key column. View equals [`nested_right_pairs`].
+pub fn right_outer_pairs_str(outer: &Vec<String>, inner: &Vec<String>) -> (slots: Vec<
+    (usize, Option<usize>),
+>)
+    ensures
+        slots@ == nested_right_pairs(key_views(outer@), key_views(inner@), outer@.len() as int),
+{
+    let idx = build_eq_index_str(inner);
+    let ghost ov = key_views(outer@);
+    let ghost iv = key_views(inner@);
+    let mut slots: Vec<(usize, Option<usize>)> = Vec::new();
+    let mut i: usize = 0;
+    while i < outer.len()
+        invariant
+            i <= outer.len(),
+            outer@.len() == outer.len() as int,
+            inner@.len() == inner.len() as int,
+            ov == key_views(outer@),
+            iv == key_views(inner@),
+            index_ok(iv, idx.buckets@, idx.map@, inner@.len() as int),
+            slots@ == nested_right_pairs(ov, iv, i as int),
+        decreases outer.len() - i,
+    {
+        let key = outer[i].clone();
+        let ghost end = i as int;
+        proof {
+            lemma_key_view_at(outer@, end);
+            broadcast use vstd::std_specs::vec::axiom_spec_len;
+            assert(ov[end] == key@);
+        }
+        let ghost before = slots@;
+        let hit = probe_eq_str(&idx, inner, key.as_str());
+        match hit {
+            Some(v) => {
+                if v.len() == 0 {
+                    slots.push((i, None));
+                    proof {
+                        assert(v@ == eq_row_ids(iv, key@, iv.len() as int));
+                        assert(eq_row_ids(iv, key@, iv.len() as int).len() == 0);
+                        lemma_eq_row_ids_len0(iv, key@, iv.len() as int);
+                        lemma_nested_right_pairs_step(ov, iv, end + 1);
+                        assert(slots@ == before.push((i, None)));
+                        assert(slots@ == nested_right_pairs(ov, iv, end + 1));
+                    }
+                } else {
+                    let mut t: usize = 0;
+                    let ghost ids = v@;
+                    while t < v.len()
+                        invariant
+                            t <= v.len(),
+                            v@.len() == v.len() as int,
+                            ids == v@,
+                            ids == eq_row_ids(iv, key@, iv.len() as int),
+                            ov == key_views(outer@),
+                            iv == key_views(inner@),
+                            slots@ == before + prefix_right_pairs(i, ids, t as int),
+                            index_ok(iv, idx.buckets@, idx.map@, inner@.len() as int),
+                        decreases v.len() - t,
+                    {
+                        let j = v[t];
+                        slots.push((i, Some(j)));
+                        proof {
+                            assert(prefix_right_pairs(i, ids, t as int + 1)
+                                == prefix_right_pairs(i, ids, t as int).push((i, Some(ids[t as int]))));
+                            assert(j == ids[t as int]);
+                            assert(slots@ == before + prefix_right_pairs(i, ids, t as int).push((
+                                i,
+                                Some(j),
+                            )));
+                            assert(slots@ == before + prefix_right_pairs(i, ids, t as int + 1));
+                        }
+                        t = t + 1;
+                    }
+                    proof {
+                        lemma_nested_right_pairs_step(ov, iv, end + 1);
+                        assert(eq_row_ids(iv, key@, iv.len() as int).len() > 0);
+                        assert(slots@ == before + prefix_right_pairs(i, ids, ids.len() as int));
+                        assert(slots@ == nested_right_pairs(ov, iv, end + 1));
+                    }
+                }
+            },
+            None => {
+                slots.push((i, None));
+                proof {
+                    assert(eq_row_ids(iv, key@, iv.len() as int).len() == 0);
+                    lemma_eq_row_ids_len0(iv, key@, iv.len() as int);
+                    lemma_nested_right_pairs_step(ov, iv, end + 1);
+                    assert(slots@ == before.push((i, None)));
+                    assert(slots@ == nested_right_pairs(ov, iv, end + 1));
+                }
+            },
+        }
+        i = i + 1;
+    }
+    slots
+}
+
+// SHAPE_RIGHT_END
+
 // EQ_JOIN_PROVED_END
 
 

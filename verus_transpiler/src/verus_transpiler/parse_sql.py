@@ -286,8 +286,7 @@ def _check_forbidden_nodes(expression: exp.Expression) -> None:
                 require_trusted("cross_join")
             elif side in ("SEMI", "ANTI"):
                 require_trusted("semi_anti_join")
-            elif side == "RIGHT":
-                require_trusted("nway_join")
+            # RIGHT JOIN: honest side-swap to outer-join MethodSpec (not TRUSTED).
         if isinstance(node, exp.ILike):
             require_trusted("ilike")
         if isinstance(node, (exp.Intersect, exp.Except)):
@@ -1910,8 +1909,7 @@ def _parse_select(
                 require_trusted("cross_join")
             elif side in ("SEMI", "ANTI"):
                 require_trusted("semi_anti_join")
-            elif side == "RIGHT":
-                require_trusted("nway_join")
+            # RIGHT JOIN: honest side-swap; join_type stays RIGHT for MethodSpec.
 
             jtable, jalias, jderived = _parse_join_from(
                 join.this,
@@ -1927,8 +1925,6 @@ def _parse_select(
                 jtable = jderived.alias
                 jalias = jderived.alias
             swap_right = side == "RIGHT"
-            if side == "RIGHT":
-                side = "LEFT"
             if side == "CROSS":
                 join_type = "CROSS"
                 on_equalities: list[tuple[str, str]] = []
@@ -1941,11 +1937,15 @@ def _parse_select(
             elif side == "LEFT":
                 join_type = "LEFT"
                 on_equalities = _parse_on_equalities(join.args.get("on"))
+            elif side == "RIGHT":
+                join_type = "RIGHT"
+                on_equalities = _parse_on_equalities(join.args.get("on"))
             else:
                 join_type = "INNER"
                 on_equalities = _parse_on_equalities(join.args.get("on"))
 
             if swap_right:
+                # A RIGHT JOIN B ≡ B LEFT JOIN A: preserved side becomes slots[0].
                 base_table = query.tables[0]
                 base_alias = None
                 for alias, table in query.table_aliases.items():
