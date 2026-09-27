@@ -708,6 +708,169 @@ def _pair_fold_lemma(
 }}"""
 
 
+def _fold_lemma(
+    helper_name: str,
+    slots: list[_Slot],
+    *,
+    join_cond: str,
+    filter_cond: str | None,
+    update_expr: str,
+    ret_type: str,
+    ret_base: str,
+    extra_params: list[tuple[str, str]] | None,
+) -> str | None:
+    pair = _pair_fold_lemma(
+        helper_name,
+        slots,
+        join_cond=join_cond,
+        filter_cond=filter_cond,
+        update_expr=update_expr,
+        ret_type=ret_type,
+        ret_base=ret_base,
+        extra_params=extra_params,
+    )
+    if pair is not None:
+        return pair
+    return _star_fold_lemma(
+        helper_name,
+        slots,
+        join_cond=join_cond,
+        filter_cond=filter_cond,
+        update_expr=update_expr,
+        ret_type=ret_type,
+        ret_base=ret_base,
+        extra_params=extra_params,
+    )
+
+
+def _star_fold_lemma(
+    helper_name: str,
+    slots: list[_Slot],
+    *,
+    join_cond: str,
+    filter_cond: str | None,
+    update_expr: str,
+    ret_type: str,
+    ret_base: str,
+    extra_params: list[tuple[str, str]] | None,
+) -> str | None:
+    """Proof that a 3-table star helper equals ``loop_acc3``.
+
+    One equality to the middle table and two equalities to the inner table,
+    all on string columns. ``lemma_star_acc`` equates that to ``nested_star``.
+    """
+    if extra_params or len(slots) != 3:
+        return None
+    parsed: list[tuple[re.Match[str], re.Match[str]]] = []
+    for part in join_cond.split(" && "):
+        left_txt, sep, right_txt = part.strip().partition(" == ")
+        if sep != " == ":
+            return None
+        left = _JOIN_SIDE.fullmatch(left_txt.strip())
+        right = _JOIN_SIDE.fullmatch(right_txt.strip())
+        if left is None or right is None or not left.group("view") or not right.group("view"):
+            return None
+        parsed.append((left, right))
+    if len(parsed) != 3:
+        return None
+    outer, mid, inner = slots
+
+    def orient(
+        left: re.Match[str], right: re.Match[str], idx_a: str, idx_b: str,
+    ) -> tuple[re.Match[str], re.Match[str]] | None:
+        if left.group("idx") == idx_a and right.group("idx") == idx_b:
+            return left, right
+        if right.group("idx") == idx_a and left.group("idx") == idx_b:
+            return right, left
+        return None
+
+    adsh = None
+    tags: list[tuple[re.Match[str], re.Match[str]]] = []
+    for left, right in parsed:
+        idxs = {left.group("idx"), right.group("idx")}
+        if idxs == {outer.idx, mid.idx}:
+            got = orient(left, right, outer.idx, mid.idx)
+            if got is None:
+                return None
+            adsh = got
+        elif idxs == {outer.idx, inner.idx}:
+            got = orient(left, right, outer.idx, inner.idx)
+            if got is None:
+                return None
+            tags.append(got)
+        else:
+            return None
+    if adsh is None or len(tags) != 2:
+        return None
+    a_outer, a_mid = adsh
+    t_outer, t_inner = tags[0]
+    v_outer, v_inner = tags[1]
+
+    def seq_of(side: re.Match[str]) -> str:
+        return f"key_views({side.group('param')}.{side.group('field')}@)"
+
+    def key_assert(side: re.Match[str]) -> str:
+        param, field, idx = side.group("param"), side.group("field"), side.group("idx")
+        return f"assert(key_views({param}.{field}@)[{idx}] == {param}.{field}[{idx} as int]@);"
+
+    step_body = re.sub(r"\btail\b", "acc", update_expr)
+    if filter_cond:
+        step = f"if {filter_cond} {{\n        {step_body}\n    }} else {{\n        acc\n    }}"
+    else:
+        step = step_body
+    asserts = "\n            ".join(
+        key_assert(side) for side in (a_outer, a_mid, t_outer, t_inner, v_outer, v_inner)
+    )
+    lemma = f"lemma_{helper_name}_is_star"
+    params = ", ".join(f"{s.param}: &{s.struct}" for s in slots)
+    recurse = ", ".join(s.param for s in slots)
+    return f"""pub proof fn {lemma}({params}, {outer.idx}: int, {mid.idx}: int, {inner.idx}: int)
+    requires
+        valid_cols_{outer.table}({outer.param}),
+        valid_cols_{mid.table}({mid.param}),
+        valid_cols_{inner.table}({inner.param}),
+        {outer.param}.n <= usize::MAX,
+        {mid.param}.n <= usize::MAX,
+        {inner.param}.n <= usize::MAX,
+        0 <= {outer.idx} <= {outer.param}.n,
+        0 <= {mid.idx} <= {mid.param}.n,
+        0 <= {inner.idx} <= {inner.param}.n,
+    ensures
+        {helper_name}({recurse}, {outer.idx}, {mid.idx}, {inner.idx}) == loop_acc3(
+            {seq_of(a_outer)},
+            {seq_of(t_outer)},
+            {seq_of(v_outer)},
+            {seq_of(a_mid)},
+            {seq_of(t_inner)},
+            {seq_of(v_inner)},
+            |acc: {ret_type}, {outer.idx}: int, {mid.idx}: int, {inner.idx}: int| {{
+                {step}
+            }},
+            {ret_base},
+            {outer.param}.n as int,
+            {mid.param}.n as int,
+            {inner.param}.n as int,
+            {outer.idx},
+            {mid.idx},
+            {inner.idx},
+        ),
+    decreases {outer.param}.n - {outer.idx}, {mid.param}.n - {mid.idx}, {inner.param}.n - {inner.idx},
+{{
+    if {outer.idx} < {outer.param}.n {{
+        if {mid.idx} < {mid.param}.n {{
+            if {inner.idx} < {inner.param}.n {{
+                {lemma}({recurse}, {outer.idx}, {mid.idx}, {inner.idx} + 1);
+                {asserts}
+            }} else {{
+                {lemma}({recurse}, {outer.idx}, {mid.idx} + 1, 0);
+            }}
+        }} else {{
+            {lemma}({recurse}, {outer.idx} + 1, 0, 0);
+        }}
+    }}
+}}"""
+
+
 def _gen_nested_loop(
     helper_name: str,
     slots: list[_Slot],
@@ -1011,7 +1174,7 @@ def _emit_join_multi_agg(
         ret_base="Map::empty()",
         extra_params=_derived_map_extra_params(derived_map_vars, derived_map_types),
     )
-    fold = _pair_fold_lemma(
+    fold = _fold_lemma(
         helper_name,
         slots,
         join_cond=join_cond,
@@ -1300,7 +1463,7 @@ def _emit_join_projection(
         ret_base="Seq::empty()",
         extra_params=_derived_map_extra_params(derived_map_vars, derived_map_types),
     )
-    fold = _pair_fold_lemma(
+    fold = _fold_lemma(
         helper_name,
         slots,
         join_cond=join_cond,
@@ -1515,7 +1678,7 @@ def _emit_single_agg_nway(
         ret_base=ret_base,
         extra_params=_derived_map_extra_params(derived_map_vars, derived_map_types),
     )
-    fold = _pair_fold_lemma(
+    fold = _fold_lemma(
         helper_name,
         slots,
         join_cond=join_cond,

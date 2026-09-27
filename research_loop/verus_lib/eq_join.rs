@@ -2147,6 +2147,590 @@ pub proof fn lemma_acc<K, A>(
     }
 }
 
+
+/// Rank of `row` in a two-column id list.
+pub proof fn lemma_eq2_members<A, B>(a: Seq<A>, b: Seq<B>, ka: A, kb: B, end: int)
+    requires
+        0 <= end <= a.len(),
+        end <= b.len(),
+        end <= usize::MAX as int,
+    ensures
+        forall|p: int|
+            0 <= p < eq_row_ids2(a, b, ka, kb, end).len() ==> {
+                let row = #[trigger] eq_row_ids2(a, b, ka, kb, end)[p] as int;
+                0 <= row < end && a[row] == ka && b[row] == kb
+            },
+    decreases end,
+{
+    if end > 0 {
+        assert(0 <= end - 1 <= usize::MAX as int);
+        lemma_eq2_members(a, b, ka, kb, end - 1);
+        let prev = eq_row_ids2(a, b, ka, kb, end - 1);
+        let cur = eq_row_ids2(a, b, ka, kb, end);
+        if 0 <= end - 1 < a.len() && end - 1 < b.len() && a[end - 1] == ka && b[end - 1] == kb {
+            let row = (end - 1) as usize;
+            assert(row as int == end - 1);
+            assert(cur == prev.push(row));
+            assert forall|p: int| 0 <= p < cur.len() implies ({
+                let r = #[trigger] cur[p] as int;
+                0 <= r < end && a[r] == ka && b[r] == kb
+            }) by {
+                if p < prev.len() {
+                    assert(cur[p] == prev[p]);
+                } else {
+                    assert(cur[p] == row);
+                }
+            };
+        } else {
+            assert(cur == prev);
+        }
+    }
+}
+
+pub proof fn lemma_eq2_rank<A, B>(a: Seq<A>, b: Seq<B>, ka: A, kb: B, end: int, row: int)
+    requires
+        0 <= row < end <= a.len(),
+        end <= b.len(),
+        a[row] == ka,
+        b[row] == kb,
+        end <= usize::MAX as int,
+    ensures
+        ({
+            let ids = eq_row_ids2(a, b, ka, kb, end);
+            let r = ids_lt(ids, ids.len() as int, row);
+            &&& 0 <= r < ids.len()
+            &&& ids[r] as int == row
+            &&& ids_lt(ids, ids.len() as int, row + 1) == r + 1
+        }),
+    decreases end - row,
+{
+    let prev = eq_row_ids2(a, b, ka, kb, end - 1);
+    let cur = eq_row_ids2(a, b, ka, kb, end);
+    if end == row + 1 {
+        let pushed = (end - 1) as usize;
+        assert(0 <= end - 1 <= usize::MAX as int);
+        assert(pushed as int == end - 1);
+        assert(cur == prev.push(pushed));
+        lemma_eq2_members(a, b, ka, kb, row);
+        lemma_ids_lt_all(prev, prev.len() as int, row);
+        lemma_ids_lt_all(prev, prev.len() as int, row + 1);
+        lemma_ids_lt_push_prefix(prev, pushed, prev.len() as int, row);
+        lemma_ids_lt_push_prefix(prev, pushed, prev.len() as int, row + 1);
+        assert(ids_lt(cur, prev.len() as int, row) == prev.len() as int);
+        assert(ids_lt(cur, prev.len() as int, row + 1) == prev.len() as int);
+        assert((pushed as int) < row + 1);
+        assert(cur.len() == prev.len() + 1);
+        assert(ids_lt(cur, cur.len() as int, row) == prev.len() as int);
+        assert(ids_lt(cur, cur.len() as int, row + 1) == prev.len() as int + 1);
+        assert(cur[prev.len() as int] == pushed);
+    } else {
+        lemma_eq2_rank(a, b, ka, kb, end - 1, row);
+        let pushed = (end - 1) as usize;
+        assert(0 <= end - 1 <= usize::MAX as int);
+        assert(pushed as int == end - 1);
+        assert(pushed as int > row);
+        if 0 <= end - 1 < a.len() && end - 1 < b.len() && a[end - 1] == ka && b[end - 1] == kb {
+            assert(cur == prev.push(pushed));
+            lemma_ids_lt_push_prefix(prev, pushed, prev.len() as int, row);
+            lemma_ids_lt_push_prefix(prev, pushed, prev.len() as int, row + 1);
+            let r = ids_lt(prev, prev.len() as int, row);
+            assert(cur[r] == prev[r]);
+        } else {
+            assert(cur == prev);
+        }
+    }
+}
+
+pub proof fn lemma_tag_prefix_len(i: usize, s: usize, tags: Seq<usize>, t: int)
+    requires
+        0 <= t <= tags.len(),
+    ensures
+        tag_prefix(i, s, tags, t).len() == t,
+    decreases t,
+{
+    if t > 0 {
+        lemma_tag_prefix_len(i, s, tags, t - 1);
+        assert(tag_prefix(i, s, tags, t) == tag_prefix(i, s, tags, t - 1).push((i, s, tags[t - 1])));
+    }
+}
+
+pub proof fn lemma_tag_prefix_at(i: usize, s: usize, tags: Seq<usize>, t: int, p: int)
+    requires
+        0 <= p < t <= tags.len(),
+    ensures
+        tag_prefix(i, s, tags, t)[p] == (i, s, tags[p]),
+    decreases t,
+{
+    lemma_tag_prefix_len(i, s, tags, t - 1);
+    if p < t - 1 {
+        lemma_tag_prefix_at(i, s, tags, t - 1, p);
+        assert(tag_prefix(i, s, tags, t) == tag_prefix(i, s, tags, t - 1).push((i, s, tags[t - 1])));
+        assert(tag_prefix(i, s, tags, t)[p] == tag_prefix(i, s, tags, t - 1)[p]);
+    } else {
+        assert(tag_prefix(i, s, tags, t) == tag_prefix(i, s, tags, t - 1).push((i, s, tags[t - 1])));
+        assert(tag_prefix(i, s, tags, t)[p] == (i, s, tags[t - 1]));
+    }
+}
+
+pub proof fn lemma_sub_product_len(i: usize, subs: Seq<usize>, tags: Seq<usize>, s_end: int)
+    requires
+        0 <= s_end <= subs.len(),
+    ensures
+        sub_product(i, subs, tags, s_end).len() == s_end * tags.len(),
+    decreases s_end,
+{
+    if s_end > 0 {
+        lemma_sub_product_len(i, subs, tags, s_end - 1);
+        lemma_tag_prefix_len(i, subs[s_end - 1], tags, tags.len() as int);
+        let prev = sub_product(i, subs, tags, s_end - 1);
+        let extra = tag_prefix(i, subs[s_end - 1], tags, tags.len() as int);
+        assert(sub_product(i, subs, tags, s_end) == prev + extra);
+        assert(prev.len() == (s_end - 1) * tags.len());
+        assert(extra.len() == tags.len());
+        assert((prev + extra).len() == prev.len() + extra.len());
+        assert(prev.len() + extra.len() == s_end * tags.len()) by (nonlinear_arith)
+            requires
+                prev.len() == (s_end - 1) * tags.len(),
+                extra.len() == tags.len(),
+        {
+        }
+        assert(sub_product(i, subs, tags, s_end).len() == prev.len() + extra.len());
+        assert(sub_product(i, subs, tags, s_end).len() == s_end * tags.len());
+    } else {
+        assert(s_end == 0);
+        assert(sub_product(i, subs, tags, s_end).len() == 0);
+        vstd::arithmetic::mul::lemma_mul_by_zero_is_zero(tags.len() as int);
+        assert(0 * (tags.len() as int) == 0);
+        assert(s_end * tags.len() == 0);
+    }
+}
+
+pub open spec fn star_sub(sub_a: Seq<Seq<char>>, key: Seq<char>, i1: int) -> bool {
+    &&& 0 <= i1 < sub_a.len()
+    &&& sub_a[i1] == key
+}
+
+pub open spec fn star_pos(
+    pre_a: Seq<Seq<char>>,
+    pre_t: Seq<Seq<char>>,
+    pre_v: Seq<Seq<char>>,
+    sub_a: Seq<Seq<char>>,
+    tag_t: Seq<Seq<char>>,
+    tag_v: Seq<Seq<char>>,
+    i0: int,
+    i1: int,
+    i2: int,
+) -> int {
+    if !(0 <= i0 < pre_a.len() && i0 < pre_t.len() && i0 < pre_v.len()) {
+        nested_star(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, i0).len() as int
+    } else {
+        let subs = eq_row_ids(sub_a, pre_a[i0], sub_a.len() as int);
+        let tags = eq_row_ids2(tag_t, tag_v, pre_t[i0], pre_v[i0], tag_t.len() as int);
+        let sr = ids_lt(subs, subs.len() as int, i1);
+        let tr = if star_sub(sub_a, pre_a[i0], i1) {
+            ids_lt(tags, tags.len() as int, i2)
+        } else {
+            0
+        };
+        nested_star(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, i0).len() as int + sr * (tags.len() as int) + tr
+    }
+}
+
+pub open spec fn loop_acc3<A>(
+    pre_a: Seq<Seq<char>>,
+    pre_t: Seq<Seq<char>>,
+    pre_v: Seq<Seq<char>>,
+    sub_a: Seq<Seq<char>>,
+    tag_t: Seq<Seq<char>>,
+    tag_v: Seq<Seq<char>>,
+    step: spec_fn(A, int, int, int) -> A,
+    base: A,
+    n0: int,
+    n1: int,
+    n2: int,
+    i0: int,
+    i1: int,
+    i2: int,
+) -> A
+    decreases n0 - i0, n1 - i1, n2 - i2,
+{
+    if i0 < n0 {
+        if i1 < n1 {
+            if i2 < n2 {
+                let tail = loop_acc3(
+                    pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, step, base, n0, n1, n2, i0, i1, i2 + 1,
+                );
+                if pre_a[i0] == sub_a[i1] && pre_t[i0] == tag_t[i2] && pre_v[i0] == tag_v[i2] {
+                    step(tail, i0, i1, i2)
+                } else {
+                    tail
+                }
+            } else {
+                loop_acc3(
+                    pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, step, base, n0, n1, n2, i0, i1 + 1, 0,
+                )
+            }
+        } else {
+            loop_acc3(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, step, base, n0, n1, n2, i0 + 1, 0, 0)
+        }
+    } else {
+        base
+    }
+}
+
+pub open spec fn triple_acc<A>(
+    triples: Seq<(usize, usize, usize)>,
+    step: spec_fn(A, int, int, int) -> A,
+    base: A,
+    k: int,
+) -> A
+    decreases triples.len() - k,
+{
+    if k >= triples.len() {
+        base
+    } else {
+        let tail = triple_acc(triples, step, base, k + 1);
+        step(tail, triples[k].0 as int, triples[k].1 as int, triples[k].2 as int)
+    }
+}
+
+pub proof fn lemma_nested_star_len_mono(
+    pre_a: Seq<Seq<char>>,
+    pre_t: Seq<Seq<char>>,
+    pre_v: Seq<Seq<char>>,
+    sub_a: Seq<Seq<char>>,
+    tag_t: Seq<Seq<char>>,
+    tag_v: Seq<Seq<char>>,
+    n: int,
+    m: int,
+)
+    requires
+        0 <= n <= m,
+        pre_a.len() == pre_t.len(),
+        pre_a.len() == pre_v.len(),
+        tag_t.len() == tag_v.len(),
+    ensures
+        nested_star(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, n).len()
+            <= nested_star(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, m).len(),
+    decreases m - n,
+{
+    if n < m {
+        lemma_nested_star_len_mono(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, n, m - 1);
+        let cur = nested_star(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, m);
+        let prev = nested_star(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, m - 1);
+        if m - 1 < pre_a.len() {
+            lemma_nested_star_step(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, m);
+            assert(prev.len() <= cur.len());
+        } else {
+            assert(cur == prev);
+        }
+    }
+}
+
+pub proof fn lemma_nested_star_index(
+    pre_a: Seq<Seq<char>>,
+    pre_t: Seq<Seq<char>>,
+    pre_v: Seq<Seq<char>>,
+    sub_a: Seq<Seq<char>>,
+    tag_t: Seq<Seq<char>>,
+    tag_v: Seq<Seq<char>>,
+    n: int,
+    m: int,
+    p: int,
+)
+    requires
+        0 <= n <= m,
+        pre_a.len() == pre_t.len(),
+        pre_a.len() == pre_v.len(),
+        tag_t.len() == tag_v.len(),
+        0 <= p < nested_star(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, n).len(),
+    ensures
+        nested_star(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, m)[p]
+            == nested_star(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, n)[p],
+    decreases m - n,
+{
+    if n < m {
+        let cur = nested_star(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, m);
+        let prev = nested_star(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, m - 1);
+        lemma_nested_star_len_mono(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, n, m - 1);
+        if m - 1 >= pre_a.len() {
+            assert(cur == prev);
+        } else {
+            lemma_nested_star_step(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, m);
+            assert(p < prev.len());
+            let subs = eq_row_ids(sub_a, pre_a[m - 1], sub_a.len() as int);
+            let tags = eq_row_ids2(tag_t, tag_v, pre_t[m - 1], pre_v[m - 1], tag_t.len() as int);
+            let extra = sub_product((m - 1) as usize, subs, tags, subs.len() as int);
+            lemma_left_index(prev, extra, p);
+        }
+        lemma_nested_star_index(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, n, m - 1, p);
+    }
+}
+
+pub proof fn lemma_nested_star_past(
+    pre_a: Seq<Seq<char>>,
+    pre_t: Seq<Seq<char>>,
+    pre_v: Seq<Seq<char>>,
+    sub_a: Seq<Seq<char>>,
+    tag_t: Seq<Seq<char>>,
+    tag_v: Seq<Seq<char>>,
+    n: int,
+)
+    requires
+        n >= pre_a.len(),
+        pre_a.len() == pre_t.len(),
+        pre_a.len() == pre_v.len(),
+        tag_t.len() == tag_v.len(),
+    ensures
+        nested_star(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, n)
+            == nested_star(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, pre_a.len() as int),
+    decreases n - pre_a.len(),
+{
+    if n > pre_a.len() {
+        assert(nested_star(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, n) == nested_star(
+            pre_a,
+            pre_t,
+            pre_v,
+            sub_a,
+            tag_t,
+            tag_v,
+            n - 1,
+        ));
+        lemma_nested_star_past(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, n - 1);
+    }
+}
+
+pub proof fn lemma_star_acc<A>(
+    pre_a: Seq<Seq<char>>,
+    pre_t: Seq<Seq<char>>,
+    pre_v: Seq<Seq<char>>,
+    sub_a: Seq<Seq<char>>,
+    tag_t: Seq<Seq<char>>,
+    tag_v: Seq<Seq<char>>,
+    step: spec_fn(A, int, int, int) -> A,
+    base: A,
+    n0: int,
+    n1: int,
+    n2: int,
+    i0: int,
+    i1: int,
+    i2: int,
+)
+    requires
+        pre_a.len() == n0,
+        pre_t.len() == n0,
+        pre_v.len() == n0,
+        sub_a.len() == n1,
+        tag_t.len() == n2,
+        tag_v.len() == n2,
+        n0 <= usize::MAX as int,
+        n1 <= usize::MAX as int,
+        n2 <= usize::MAX as int,
+        0 <= i0 <= n0,
+        0 <= i1 <= n1,
+        0 <= i2 <= n2,
+    ensures
+        loop_acc3(
+            pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, step, base, n0, n1, n2, i0, i1, i2,
+        ) == triple_acc(
+            nested_star(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, n0),
+            step,
+            base,
+            star_pos(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, i0, i1, i2),
+        ),
+    decreases n0 - i0, n1 - i1, n2 - i2,
+{
+    let triples = nested_star(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, n0);
+    let pos = star_pos(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, i0, i1, i2);
+    if i0 >= n0 {
+        lemma_nested_star_past(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, i0);
+        assert(nested_star(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, i0) == triples);
+        assert(pos == triples.len() as int);
+    } else if i1 >= n1 {
+        lemma_star_acc(
+            pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, step, base, n0, n1, n2, i0 + 1, 0, 0,
+        );
+        let subs = eq_row_ids(sub_a, pre_a[i0], n1);
+        let tags = eq_row_ids2(tag_t, tag_v, pre_t[i0], pre_v[i0], n2);
+        lemma_eq_members(sub_a, pre_a[i0], n1);
+        assert forall|p: int| 0 <= p < subs.len() implies (#[trigger] subs[p] as int) < i1 by {
+            assert((subs[p] as int) < n1);
+            assert(n1 <= i1);
+        };
+        lemma_ids_lt_all(subs, subs.len() as int, i1);
+        lemma_sub_product_len(i0 as usize, subs, tags, subs.len() as int);
+        assert((i0 as usize) as int == i0);
+        lemma_nested_star_step(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, i0 + 1);
+        let earlier = nested_star(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, i0);
+        let through = nested_star(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, i0 + 1);
+        assert(through.len() == earlier.len() + subs.len() * tags.len());
+        if i0 + 1 < n0 {
+            let subs2 = eq_row_ids(sub_a, pre_a[i0 + 1], n1);
+            let tags2 = eq_row_ids2(tag_t, tag_v, pre_t[i0 + 1], pre_v[i0 + 1], n2);
+            lemma_ids_lt_zero(subs2, subs2.len() as int);
+            lemma_ids_lt_zero(tags2, tags2.len() as int);
+        }
+        assert(star_pos(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, i0 + 1, 0, 0) == pos);
+    } else if i2 >= n2 {
+        lemma_star_acc(
+            pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, step, base, n0, n1, n2, i0, i1 + 1, 0,
+        );
+        let subs = eq_row_ids(sub_a, pre_a[i0], n1);
+        let tags = eq_row_ids2(tag_t, tag_v, pre_t[i0], pre_v[i0], n2);
+        if star_sub(sub_a, pre_a[i0], i1) {
+            lemma_eq_rank(sub_a, pre_a[i0], n1, i1);
+            lemma_eq2_members(tag_t, tag_v, pre_t[i0], pre_v[i0], n2);
+            assert forall|p: int| 0 <= p < tags.len() implies (#[trigger] tags[p] as int) < i2 by {
+                assert((tags[p] as int) < n2);
+                assert(n2 <= i2);
+            };
+            lemma_ids_lt_all(tags, tags.len() as int, i2);
+            lemma_ids_lt_zero(tags, tags.len() as int);
+            let sr = ids_lt(subs, subs.len() as int, i1);
+            let tlen = tags.len() as int;
+            vstd::arithmetic::mul::lemma_mul_is_distributive_add_other_way(tlen, sr, 1);
+            vstd::arithmetic::mul::lemma_mul_basics_4(tlen);
+            assert((sr + 1) * tlen == sr * tlen + tlen);
+        } else {
+            lemma_eq_members(sub_a, pre_a[i0], n1);
+            assert forall|p: int| 0 <= p < subs.len() implies (#[trigger] subs[p] as int) != i1 by {
+                assert(sub_a[(subs[p] as int)] == pre_a[i0]);
+            };
+            lemma_ids_lt_skip(subs, subs.len() as int, i1);
+            lemma_ids_lt_zero(tags, tags.len() as int);
+        }
+        assert(star_pos(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, i0, i1 + 1, 0) == pos);
+    } else if pre_a[i0] == sub_a[i1] && pre_t[i0] == tag_t[i2] && pre_v[i0] == tag_v[i2] {
+        lemma_star_acc(
+            pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, step, base, n0, n1, n2, i0, i1, i2 + 1,
+        );
+        lemma_eq_rank(sub_a, pre_a[i0], n1, i1);
+        lemma_eq2_rank(tag_t, tag_v, pre_t[i0], pre_v[i0], n2, i2);
+        let subs = eq_row_ids(sub_a, pre_a[i0], n1);
+        let tags = eq_row_ids2(tag_t, tag_v, pre_t[i0], pre_v[i0], n2);
+        let sr = ids_lt(subs, subs.len() as int, i1);
+        let tr = ids_lt(tags, tags.len() as int, i2);
+        let tlen = tags.len() as int;
+        let i0u = i0 as usize;
+        let i1u = i1 as usize;
+        let i2u = i2 as usize;
+        assert(i0u as int == i0);
+        assert(i1u as int == i1);
+        assert(i2u as int == i2);
+        lemma_sub_product_len(i0u, subs, tags, subs.len() as int);
+        let prod = sub_product(i0u, subs, tags, subs.len() as int);
+        assert(0 <= sr < subs.len());
+        assert(0 <= tr < tlen);
+        assert(sr * tlen + tr < prod.len()) by (nonlinear_arith)
+            requires
+                0 <= sr < subs.len(),
+                0 <= tr < tlen,
+                prod.len() == subs.len() * tags.len(),
+                tlen == tags.len() as int,
+        {
+        }
+        lemma_sub_product_at(i0u, subs, tags, subs.len() as int, sr, tr);
+        lemma_nested_star_step(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, i0 + 1);
+        let earlier = nested_star(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, i0);
+        let through = nested_star(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, i0 + 1);
+        assert(through == earlier + prod);
+        assert(prod[sr * tags.len() + tr] == (i0u, subs[sr], tags[tr]));
+        assert(subs[sr] as int == i1);
+        assert(tags[tr] as int == i2);
+        assert(subs[sr] == i1u);
+        assert(tags[tr] == i2u);
+        lemma_right_index(earlier, prod, sr * tlen + tr);
+        assert(pos == earlier.len() as int + sr * tlen + tr);
+        assert(sr * tlen + tr < prod.len()) by (nonlinear_arith)
+            requires
+                0 <= sr < subs.len(),
+                0 <= tr < tlen,
+                prod.len() == subs.len() * tags.len(),
+                tlen == tags.len() as int,
+        {
+        }
+        assert(pos < through.len());
+        lemma_nested_star_len_mono(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, i0 + 1, n0);
+        assert(through.len() <= triples.len());
+        assert(pos < triples.len());
+        lemma_nested_star_index(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, i0 + 1, n0, pos);
+        assert(triples[pos] == (i0u, i1u, i2u));
+        assert(pos + 1 == star_pos(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, i0, i1, i2 + 1));
+        assert(loop_acc3(
+            pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, step, base, n0, n1, n2, i0, i1, i2,
+        ) == step(
+            loop_acc3(
+                pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, step, base, n0, n1, n2, i0, i1, i2 + 1,
+            ),
+            i0,
+            i1,
+            i2,
+        ));
+        assert(triple_acc(triples, step, base, pos) == step(
+            triple_acc(triples, step, base, pos + 1),
+            i0,
+            i1,
+            i2,
+        ));
+    } else {
+        lemma_star_acc(
+            pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, step, base, n0, n1, n2, i0, i1, i2 + 1,
+        );
+        let subs = eq_row_ids(sub_a, pre_a[i0], n1);
+        let tags = eq_row_ids2(tag_t, tag_v, pre_t[i0], pre_v[i0], n2);
+        if star_sub(sub_a, pre_a[i0], i1) {
+            lemma_eq2_members(tag_t, tag_v, pre_t[i0], pre_v[i0], n2);
+            assert forall|p: int| 0 <= p < tags.len() implies (#[trigger] tags[p] as int) != i2 by {
+                assert(tag_t[(tags[p] as int)] == pre_t[i0]);
+                assert(tag_v[(tags[p] as int)] == pre_v[i0]);
+            };
+            lemma_ids_lt_skip(tags, tags.len() as int, i2);
+        }
+        assert(pos == star_pos(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, i0, i1, i2 + 1));
+    }
+}
+
+pub proof fn lemma_sub_product_at(
+    i: usize,
+    subs: Seq<usize>,
+    tags: Seq<usize>,
+    s_end: int,
+    sr: int,
+    tr: int,
+)
+    requires
+        0 <= sr < s_end <= subs.len(),
+        0 <= tr < tags.len(),
+    ensures
+        sub_product(i, subs, tags, s_end)[sr * tags.len() + tr] == (i, subs[sr], tags[tr]),
+    decreases s_end,
+{
+    let tlen = tags.len() as int;
+    let prev = sub_product(i, subs, tags, s_end - 1);
+    let extra = tag_prefix(i, subs[s_end - 1], tags, tlen);
+    assert(sub_product(i, subs, tags, s_end) == prev + extra);
+    lemma_sub_product_len(i, subs, tags, s_end - 1);
+    lemma_tag_prefix_len(i, subs[s_end - 1], tags, tlen);
+    if sr < s_end - 1 {
+        lemma_sub_product_at(i, subs, tags, s_end - 1, sr, tr);
+        assert(sr * tlen + tr < prev.len()) by (nonlinear_arith)
+            requires
+                0 <= sr < s_end - 1,
+                0 <= tr < tlen,
+                prev.len() == (s_end - 1) * tlen,
+        {
+        }
+        lemma_left_index(prev, extra, sr * tlen + tr);
+    } else {
+        assert(sr == s_end - 1);
+        lemma_tag_prefix_at(i, subs[s_end - 1], tags, tlen, tr);
+        assert(tr < extra.len());
+        lemma_right_index(prev, extra, tr);
+        assert(prev.len() == sr * tlen);
+        assert(prev.len() + tr == sr * tlen + tr);
+    }
+}
+
 // EQ_JOIN_PROVED_END
 
 #[verifier::external_body]
@@ -2545,6 +3129,34 @@ fn check_eq_join_oracle() {
     oracle_fill(&mut tag_t, 40, 1, 1);
     oracle_fill(&mut tag_v, 40, 1, 1);
     oracle_check_star(&pre_a, &pre_t, &pre_v, &sub_a, &tag_t, &tag_v);
+    oracle_bench_equijoin();
+}
+
+#[verifier::external_body]
+fn oracle_bench_equijoin() {
+    let n_in: usize = 20_000;
+    let n_out: usize = 100_000;
+    let mut inner: Vec<String> = Vec::new();
+    let mut i: usize = 0;
+    while i < n_in {
+        inner.push(i.to_string());
+        i += 1;
+    }
+    let mut outer: Vec<String> = Vec::new();
+    i = 0;
+    while i < n_out {
+        outer.push((i % n_in).to_string());
+        i += 1;
+    }
+    let started = std::time::Instant::now();
+    let pairs = equijoin_pairs_str(&outer, &inner);
+    let us = started.elapsed().as_micros();
+    if pairs.len() != n_out || pairs[0] != (0, 0) || pairs[n_out - 1] != (n_out - 1, (n_out - 1) % n_in) {
+        panic!("bench pairs wrong len {}", pairs.len());
+    }
+    if us > 5_000_000 {
+        panic!("bench equijoin slow {}us", us);
+    }
 }
 
 

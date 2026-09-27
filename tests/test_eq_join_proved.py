@@ -12,10 +12,14 @@ from verus_transpiler.column_projection import project_multi_schema_for_query
 from verus_transpiler.eq_join_prelude import proved_eq_join_prelude
 from verus_transpiler.parse_sql import normalize_schema
 
-from research_loop.assemble_verified_program import assemble_verified_join_program
+from research_loop.assemble_verified_program import (
+    assemble_verified_join_program,
+    assemble_verified_nway_program,
+)
 from research_loop.harness import resolve_verus_bin, run_verus_compile, run_verus_verify
 from research_loop.method_spec_ret_type import resolve_ret_type_from_method_spec
 from research_loop.sec_table_assumptions import sec_prove_loop_catalog_assumptions
+from research_loop.trusted_ret_bridge import dynamic_ret_type_config, map_new_expr
 from tests.test_sec_holdout_parse import SEC_SCHEMA
 from verus_transpiler import transpile_sql_to_verus
 
@@ -79,6 +83,7 @@ def test_join_transpile_includes_proved_equijoin_and_single_table_does_not() -> 
         assert "walk pairs from the end" in out
     assert "lemma_join_method_spec_helper_is_loop" in adsh
     assert "lemma_join_method_spec_helper_is_loop" not in star
+    assert "lemma_join_projection_helper_is_star" in star
     assert "pub fn build_eq_index_str(" not in single
     assert "pub fn equijoin_pairs_str(" not in single
 
@@ -198,6 +203,99 @@ def test_pair_fold_lemma_verifies(
     ok, log = run_verus_verify(str(rs_path), timeout=180)
     assert ok, log[-5000:]
     assert "0 errors" in log
+
+
+def test_previous_failure_joins_fold(tmp_path: Path) -> None:
+    """r24 Q16 group-by and r24 Q18 star: the generated fold lemma verifies."""
+    if resolve_verus_bin() is None:
+        pytest.skip("verus not found")
+    schema = {name: dict(cols) for name, cols in SEC_SCHEMA.items()}
+    schema["sub"]["form"] = "string"
+    schema["tag"]["custom"] = "int"
+    _, multi = normalize_schema(schema)
+    if not isinstance(multi, dict):
+        raise TypeError("expected a per-table schema")
+    catalog = sec_prove_loop_catalog_assumptions()
+    cases = [
+        (
+            """
+            SELECT s.form, s.fy, COUNT(*) AS num_lines,
+                   COUNT(DISTINCT p.tag) AS distinct_tags,
+                   AVG(p.line) AS avg_line
+            FROM pre p JOIN sub s ON p.adsh = s.adsh
+            WHERE p.stmt = 'EQ'
+            GROUP BY s.form, s.fy
+            LIMIT 500
+            """,
+            "lemma_multi_agg_helper_is_loop",
+            ("pre", "sub"),
+            False,
+        ),
+        (
+            """
+            SELECT s.name, p.stmt, t.tlabel, p.line, p.plabel
+            FROM pre p
+            JOIN sub s ON p.adsh = s.adsh
+            JOIN tag t ON p.tag = t.tag AND p.version = t.version
+            WHERE s.form = '10-K/A' AND p.stmt = 'CI' AND t.custom = 0
+            LIMIT 200
+            """,
+            "lemma_join_projection_helper_is_star",
+            ("pre", "sub", "tag"),
+            True,
+        ),
+    ]
+    for sql, lemma, order, nway in cases:
+        projected = project_multi_schema_for_query(sql, multi)
+        if any(not isinstance(cols, dict) for cols in projected.values()):
+            raise TypeError("expected a per-table schema")
+        projected = cast(dict[str, dict[str, str]], projected)
+        spec_rs = transpile_sql_to_verus(sql, projected, catalog_assumptions=catalog)
+        assert lemma in spec_rs
+        ret_type = resolve_ret_type_from_method_spec(spec_rs)
+        rust = dynamic_ret_type_config()[ret_type]["rust_ret"]
+        params = ", ".join(f"{t}: &Cols_{t}" for t in order)
+        reqs = ", ".join(f"valid_cols_{t}({t})" for t in order)
+        args = ", ".join(order)
+        body = "Vec::new()" if rust.startswith("Vec") else map_new_expr(rust)
+        if nway:
+            ensures = "res@ == res@"
+        elif rust.startswith(("HashMap", "Vec")):
+            ensures = f"res@ == method_spec({args})"
+        else:
+            ensures = f"res == method_spec({args})"
+        stub = f"""#[verifier::external_body]
+pub exec fn run_query({params}) -> (res: {rust})
+    requires {reqs},
+    ensures {ensures},
+{{
+    {body}
+}}"""
+        if nway:
+            program = assemble_verified_nway_program(
+                spec_rs=spec_rs,
+                run_query_body=stub,
+                multi_schema=projected,
+                table_order=order,
+                ret_type=ret_type,
+                default_tbls={t: "" for t in order},
+                catalog_assumptions=catalog,
+            )
+        else:
+            program = assemble_verified_join_program(
+                spec_rs=spec_rs,
+                run_query_body=stub,
+                multi_schema=projected,
+                table_order=(order[0], order[1]),
+                ret_type=ret_type,
+                default_tbls={t: "" for t in order},
+                catalog_assumptions=catalog,
+            )
+        rs_path = tmp_path / f"{lemma}.rs"
+        rs_path.write_text(program, encoding="utf-8")
+        ok, log = run_verus_verify(str(rs_path), timeout=180)
+        assert ok, log[-4000:]
+        assert "0 errors" in log
 
 
 def test_eq_join_verus_clean() -> None:
