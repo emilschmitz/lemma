@@ -9,6 +9,41 @@ from .agg_push_str import agg_bridge_str_str
 from .parse_sql import SQLQuery, support_spec_params
 
 
+def _emit_join_run_query_skeleton(ret_type: str) -> str:
+    """Commented join walk: pairs/triples from the end, then the generated is_* lemma."""
+    return f"""// Proved equijoin is already in this file. Call it; do not rebuild the hash invariant.
+// Three shapes (name the lemma this file emits for the helper):
+//   one equality — equijoin_pairs_str / equijoin_pairs_u64 / equijoin_pairs_u32:
+//     walk pairs from the end with invariant acc == pair_acc(pairs@, step, base, k as int);
+//     then lemma_<helper>_is_pairs
+//   two string equalities — equijoin_pairs_str2:
+//     same pair_acc walk; then lemma_<helper>_is_pairs2
+//   3-table star — star_eq_triples_str:
+//     walk triples from the end with invariant acc == triple_acc(triples@, step, base, k as int);
+//     then lemma_<helper>_is_star_pairs
+// method_spec may still be map_values, spec_seq_take, or apply_having_filter of the helper.
+// === RunQuery skeleton (agent provides the body) ===
+// pub exec fn run_query(...) -> (res: {ret_type})
+//     requires valid_cols_*(...),
+//     ensures res == method_spec(...),  // or res@ == method_spec(...) for maps/vecs
+// {{
+//     // let pairs = equijoin_pairs_*(...);  // or: let triples = star_eq_triples_str(...);
+//     // let mut k = pairs.len();           // or triples.len()
+//     // let mut acc = <base>;
+//     // while k > 0
+//     //     invariant
+//     //         acc == pair_acc(pairs@, step, base, k as int),  // or triple_acc(triples@, ...)
+//     //     decreases k,
+//     // {{
+//     //     k = k - 1;
+//     //     // apply step at pairs[k] (or triples[k]): filters / aggs from method_spec
+//     // }}
+//     // lemma_<helper>_is_pairs(...);  // or _is_pairs2 / _is_star_pairs — name from this file
+//     // res = ...;  // maybe map_values / spec_seq_take / apply_having_filter of the helper
+// }}
+"""
+
+
 def emit_run_query_skeleton(
     query: SQLQuery,
     ret_type: str,
@@ -20,24 +55,15 @@ def emit_run_query_skeleton(
 ) -> str:
     """Emit a commented/TODO exec fn run_query skeleton."""
     if is_join:
-        sig = "pub exec fn run_query(left: &Cols_left, right: &Cols_right) -> (res: u64)"
-        req = "    requires valid_cols_left(left), valid_cols_right(right),"
-        ens = "    ensures res == method_spec(left, right),"
-        join_hint = (
-            "// Proved equijoin is already in this file. Call it; do not rebuild the hash invariant.\n"
-            "// equijoin_pairs_str / equijoin_pairs_str2 / equijoin_pairs_u64 / equijoin_pairs_u32\n"
-            "// star_eq_triples_str for one outer key plus a two-column inner (tag, version).\n"
-            "// pairs@ is the forward nested match list. method_spec folds backward: walk pairs from the end.\n"
-        )
-    else:
-        join_hint = ""
-        extras = support_spec_params(query)
-        extra_sig = "".join(f", {n}: &{s}" for n, s, _ in extras)
-        extra_req = "".join(f" && {v}({n})" for n, _, v in extras)
-        extra_ens = "".join(f", {n}" for n, _, _ in extras)
-        sig = f"pub exec fn run_query(cols: &Cols{extra_sig}) -> (res: {ret_type})"
-        req = f"    requires valid_cols(cols){extra_req},"
-        ens = f"    ensures res == method_spec(cols{extra_ens}),"
+        return _emit_join_run_query_skeleton(ret_type)
+
+    extras = support_spec_params(query)
+    extra_sig = "".join(f", {n}: &{s}" for n, s, _ in extras)
+    extra_req = "".join(f" && {v}({n})" for n, _, v in extras)
+    extra_ens = "".join(f", {n}" for n, _, _ in extras)
+    sig = f"pub exec fn run_query(cols: &Cols{extra_sig}) -> (res: {ret_type})"
+    req = f"    requires valid_cols(cols){extra_req},"
+    ens = f"    ensures res == method_spec(cols{extra_ens}),"
 
     if query.groupby_columns:
         inv = (
@@ -95,7 +121,7 @@ def emit_run_query_skeleton(
         for line in body_hint.splitlines(keepends=False)
     )
 
-    return f"""{join_hint}// === RunQuery skeleton (agent provides the body) ===
+    return f"""// === RunQuery skeleton (agent provides the body) ===
 // {sig}
 // {req}
 // {ens}

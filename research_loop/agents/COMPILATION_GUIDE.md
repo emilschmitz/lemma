@@ -48,6 +48,9 @@ Call them from `AGENT_EDIT`. Do not rebuild a `HashMap` proof, and do not add
 
 `pairs@` (or `triples@`) is the forward nested match list: outer-major, inner row ids increasing. `method_spec` folds from the high index downward, so walk the pair list from the end. Filters and aggregates stay in that loop. The pair list is the equijoin matches, not the whole query result.
 
+Exec shape for a scratch COUNT (same walk for other aggs): call `equijoin_pairs_*` or `star_eq_triples_str`, then walk from the end with
+`invariant acc == pair_acc(pairs@, step, base, k as int)` (or `triple_acc(triples@, …)` for the star), then call `lemma_<helper>_is_pairs` / `_is_pairs2` / `_is_star_pairs`. Do not use a single-table `let mut i = cols.n` loop on a join.
+
 On a two-table join with one equality, the file also contains `lemma_<helper>_is_loop` (for example `lemma_join_method_spec_helper_is_loop` or `lemma_multi_agg_helper_is_loop`) and `lemma_<helper>_is_pairs`. The `_is_loop` lemma proves the helper equals `loop_acc` on the join keys; `_is_pairs` proves the helper at `(0, 0)` equals `pair_acc` of `nested_eq_pairs` at index 0 (same step closure), which is what `equijoin_pairs_*` returns — call `_is_pairs` instead of chaining `_is_loop`, `lemma_acc`, and `lemma_pair_pos_origin`. On a two-table join with two equalities (for example `tag` and `version`), use `lemma_<helper>_is_pairs2` (built on `_is_loop2` / `lemma_loop2_at_origin`) for the same origin fact against `nested_eq_pairs2` / `equijoin_pairs_str2`. On a three-table star (one equality plus a two-column equality), use `lemma_<helper>_is_star_pairs` (built on `_is_star` / `lemma_star_at_origin`) against `nested_star` / `star_eq_triples_str`. Do not rebuild that correspondence. `method_spec` may still apply `map_values`, `spec_seq_take`, or `apply_having_filter` to the helper's result.
 
 ## Allowed patterns
