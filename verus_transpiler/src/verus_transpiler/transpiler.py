@@ -23,7 +23,11 @@ from .col_exprs import (
     to_col_expr,
 )
 from .eq_join_prelude import proved_eq_join_prelude
-from .joins import _table_struct_name, emit_join_spec_helpers
+from .joins import (
+    _table_struct_name,
+    emit_join_spec_helpers,
+    try_decorrelate_anti_subqueries,
+)
 from .parse_sql import (
     AggSpec,
     DerivedTable,
@@ -1303,6 +1307,9 @@ def transpile_sql_to_verus(
     )
     bounds = resolve_bounds(catalog_assumptions)
     query = parse_sql(sql, schema)
+    decorrelated = try_decorrelate_anti_subqueries(query)
+    if decorrelated is not None:
+        query = decorrelated
 
     is_join = bool(query.joins)
     has_subqueries = bool(
