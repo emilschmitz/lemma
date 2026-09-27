@@ -46,7 +46,9 @@ Call them from `AGENT_EDIT`. Do not rebuild a `HashMap` proof, and do not add
 - `equijoin_pairs_u64` / `equijoin_pairs_u32` — one integer column.
 - `star_eq_triples_str(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v)` — one outer table matched to a one-column inner and a two-column inner.
 
-`pairs@` (or `triples@`) is the forward nested match list: outer-major, inner row ids increasing. `method_spec` folds from the high index downward, so walk the pair list from the end. Each step should match one iteration of `method_spec_helper`. Filters and aggregates stay in that loop. The pair list is the equijoin matches, not the whole query result.
+`pairs@` (or `triples@`) is the forward nested match list: outer-major, inner row ids increasing. `method_spec` folds from the high index downward, so walk the pair list from the end. Filters and aggregates stay in that loop. The pair list is the equijoin matches, not the whole query result.
+
+On a two-table join with one equality, the file also contains `lemma_<helper>_is_loop` (for example `lemma_join_method_spec_helper_is_loop` or `lemma_multi_agg_helper_is_loop`). It proves that helper equals `loop_acc` on the join keys. `lemma_acc` proves `loop_acc` equals `pair_acc` of `nested_eq_pairs`, which is what `equijoin_pairs_*` returns. Call those two lemmas. Do not rebuild the correspondence. `method_spec` may still apply `map_values` or `apply_having_filter` to the helper's map.
 
 ## Allowed patterns
 

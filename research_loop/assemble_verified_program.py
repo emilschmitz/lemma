@@ -319,7 +319,14 @@ def _boundary_helpers(
         or "StringHashMap" in boundary
         or "HashSetWithView" in boundary
     ):
-        boundary = _VSTD_CONTAINER_USE + boundary
+        # Join specs already import StringHashMap with the proved equijoin slice.
+        if verus_spec and "use vstd::hash_map::StringHashMap;" in verus_spec:
+            boundary = (
+                "use vstd::hash_map::HashMapWithView;\n"
+                "use vstd::hash_set::HashSetWithView;\n\n" + boundary
+            )
+        else:
+            boundary = _VSTD_CONTAINER_USE + boundary
     return boundary
 
 

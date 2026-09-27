@@ -613,6 +613,101 @@ def _init_indices(slots: list[_Slot]) -> str:
     return ", ".join("0" for _ in slots)
 
 
+_JOIN_SIDE = re.compile(
+    r"^(?P<param>\w+)\.(?P<field>\w+)\[(?P<idx>\w+) as int\](?P<view>@?)$"
+)
+
+
+def _pair_fold_lemma(
+    helper_name: str,
+    slots: list[_Slot],
+    *,
+    join_cond: str,
+    filter_cond: str | None,
+    update_expr: str,
+    ret_type: str,
+    ret_base: str,
+    extra_params: list[tuple[str, str]] | None,
+) -> str | None:
+    """Proof that a 2-table equijoin helper equals ``loop_acc`` on its key columns.
+
+    One equality only. The filter and aggregate stay in the step closure, which
+    is applied only on key matches. ``lemma_acc`` then equates that to the pair list.
+    """
+    if extra_params or len(slots) != 2 or "&&" in join_cond:
+        return None
+    left_txt, sep, right_txt = join_cond.partition(" == ")
+    if sep != " == ":
+        return None
+    left = _JOIN_SIDE.fullmatch(left_txt.strip())
+    right = _JOIN_SIDE.fullmatch(right_txt.strip())
+    if left is None or right is None or bool(left.group("view")) != bool(right.group("view")):
+        return None
+    by_idx = {left.group("idx"): left, right.group("idx"): right}
+    outer_idx, inner_idx = slots[0].idx, slots[1].idx
+    if outer_idx not in by_idx or inner_idx not in by_idx:
+        return None
+    outer, inner = by_idx[outer_idx], by_idx[inner_idx]
+
+    def seq_expr(side: re.Match[str]) -> str:
+        col = f"{side.group('param')}.{side.group('field')}"
+        if side.group("view"):
+            return f"key_views({col}@)"
+        return f"{col}@"
+
+    def key_assert(side: re.Match[str]) -> str:
+        param, field, idx = side.group("param"), side.group("field"), side.group("idx")
+        if side.group("view"):
+            return (
+                f"assert(key_views({param}.{field}@)[{idx}]"
+                f" == {param}.{field}[{idx} as int]@);"
+            )
+        return f"assert({param}.{field}@[{idx}] == {param}.{field}[{idx} as int]);"
+
+    step_body = re.sub(r"\btail\b", "acc", update_expr)
+    if filter_cond:
+        step = f"if {filter_cond} {{\n        {step_body}\n    }} else {{\n        acc\n    }}"
+    else:
+        step = step_body
+    o, i = slots
+    params = ", ".join(f"{s.param}: &{s.struct}" for s in slots)
+    recurse_args = ", ".join(s.param for s in slots)
+    lemma = f"lemma_{helper_name}_is_loop"
+    return f"""pub proof fn {lemma}({params}, {o.idx}: int, {i.idx}: int)
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+        0 <= {o.idx} <= {o.param}.n,
+        0 <= {i.idx} <= {i.param}.n,
+    ensures
+        {helper_name}({recurse_args}, {o.idx}, {i.idx}) == loop_acc(
+            {seq_expr(outer)},
+            {seq_expr(inner)},
+            |acc: {ret_type}, {o.idx}: int, {i.idx}: int| {{
+                {step}
+            }},
+            {ret_base},
+            {o.param}.n as int,
+            {i.param}.n as int,
+            {o.idx},
+            {i.idx},
+        ),
+    decreases {o.param}.n - {o.idx}, {i.param}.n - {i.idx},
+{{
+    if {o.idx} < {o.param}.n {{
+        if {i.idx} < {i.param}.n {{
+            {lemma}({recurse_args}, {o.idx}, {i.idx} + 1);
+            {key_assert(outer)}
+            {key_assert(inner)}
+        }} else {{
+            {lemma}({recurse_args}, {o.idx} + 1, 0);
+        }}
+    }}
+}}"""
+
+
 def _gen_nested_loop(
     helper_name: str,
     slots: list[_Slot],
@@ -916,6 +1011,18 @@ def _emit_join_multi_agg(
         ret_base="Map::empty()",
         extra_params=_derived_map_extra_params(derived_map_vars, derived_map_types),
     )
+    fold = _pair_fold_lemma(
+        helper_name,
+        slots,
+        join_cond=join_cond,
+        filter_cond=filter_cond,
+        update_expr=update_expr,
+        ret_type=map_ret,
+        ret_base="Map::empty()",
+        extra_params=_derived_map_extra_params(derived_map_vars, derived_map_types),
+    )
+    if fold is not None:
+        helper = helper + "\n\n" + fold
 
     spec_body = (
         f"let raw = {helper_name}({', '.join(s.param for s in slots)}"
@@ -1193,6 +1300,18 @@ def _emit_join_projection(
         ret_base="Seq::empty()",
         extra_params=_derived_map_extra_params(derived_map_vars, derived_map_types),
     )
+    fold = _pair_fold_lemma(
+        helper_name,
+        slots,
+        join_cond=join_cond,
+        filter_cond=filter_cond,
+        update_expr=update_expr,
+        ret_type=f"Seq<{row_ty}>",
+        ret_base="Seq::empty()",
+        extra_params=_derived_map_extra_params(derived_map_vars, derived_map_types),
+    )
+    if fold is not None:
+        helper = helper + "\n\n" + fold
 
     ret_type = f"Seq<{row_ty}>"
     init_args = ", ".join(
@@ -1396,6 +1515,18 @@ def _emit_single_agg_nway(
         ret_base=ret_base,
         extra_params=_derived_map_extra_params(derived_map_vars, derived_map_types),
     )
+    fold = _pair_fold_lemma(
+        helper_name,
+        slots,
+        join_cond=join_cond,
+        filter_cond=filter_cond,
+        update_expr=update_expr,
+        ret_type=ret_type,
+        ret_base=ret_base,
+        extra_params=_derived_map_extra_params(derived_map_vars, derived_map_types),
+    )
+    if fold is not None:
+        helper = helper + "\n\n" + fold
     init_args = ", ".join(
         [*(s.param for s in slots)]
         + list(derived_map_vars.values())
