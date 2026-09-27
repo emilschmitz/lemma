@@ -9,7 +9,7 @@ from research_loop.method_spec_ret_type import normalize_spec_type
 
 _DYNAMIC: dict[str, RetBridge] = {}
 
-TypeExpr = Union["TypeAtom", "TypeSeq", "TypeMap", "TypeTuple"]
+TypeExpr = Union["TypeAtom", "TypeSeq", "TypeMap", "TypeTuple", "TypeOption"]
 
 
 @dataclass(frozen=True)
@@ -31,6 +31,11 @@ class TypeMap:
 @dataclass(frozen=True)
 class TypeTuple:
     elems: tuple[TypeExpr, ...]
+
+
+@dataclass(frozen=True)
+class TypeOption:
+    inner: TypeExpr
 
 
 @dataclass(frozen=True)
@@ -98,6 +103,8 @@ def spec_to_exec_type(t: TypeExpr) -> str:
         if t.name == "Seq<char>":
             return "String"
         raise ValueError(f"unsupported spec atom for exec type: {t.name}")
+    if isinstance(t, TypeOption):
+        return f"Option<{spec_to_exec_type(t.inner)}>"
     if isinstance(t, TypeTuple):
         inner = ", ".join(spec_to_exec_type(e) for e in t.elems)
         return f"({inner})"
@@ -179,6 +186,15 @@ def _parse_type_at(s: str, pos: int) -> tuple[TypeExpr, int]:
             raise ValueError("Seq< missing closing >")
         return TypeSeq(elem=elem), pos + 1
 
+    if s.startswith("Option<", pos):
+        pos += len("Option<")
+        inner, pos = _parse_type_at(s, pos)
+        while pos < n and s[pos].isspace():
+            pos += 1
+        if pos >= n or s[pos] != ">":
+            raise ValueError("Option< missing closing >")
+        return TypeOption(inner=inner), pos + 1
+
     if s[pos] == "(":
         pos += 1
         elems: list[TypeExpr] = []
@@ -205,6 +221,8 @@ def _parse_type_at(s: str, pos: int) -> tuple[TypeExpr, int]:
 def _type_to_spec_str(t: TypeExpr) -> str:
     if isinstance(t, TypeAtom):
         return t.name
+    if isinstance(t, TypeOption):
+        return f"Option<{_type_to_spec_str(t.inner)}>"
     if isinstance(t, TypeTuple):
         inner = ", ".join(_type_to_spec_str(e) for e in t.elems)
         return f"({inner})"
@@ -230,6 +248,8 @@ def _atom_slug(atom: TypeAtom) -> str:
 def _type_slug(t: TypeExpr) -> str:
     if isinstance(t, TypeAtom):
         return _atom_slug(t)
+    if isinstance(t, TypeOption):
+        return f"opt_{_type_slug(t.inner)}"
     if isinstance(t, TypeTuple):
         return "_".join(_type_slug(e) for e in t.elems)
     raise ValueError(f"unsupported type in slug: {t!r}")
@@ -238,6 +258,8 @@ def _type_slug(t: TypeExpr) -> str:
 def _contains_seq_char(t: TypeExpr) -> bool:
     if isinstance(t, TypeAtom):
         return t.name == "Seq<char>"
+    if isinstance(t, TypeOption):
+        return _contains_seq_char(t.inner)
     if isinstance(t, TypeTuple):
         return any(_contains_seq_char(e) for e in t.elems)
     if isinstance(t, TypeSeq):
@@ -268,6 +290,8 @@ def _is_map_value_type(t: TypeExpr) -> bool:
 def _is_seq_elem_type(t: TypeExpr) -> bool:
     if isinstance(t, TypeAtom):
         return t.name in ("u32", "u64", "Seq<char>")
+    if isinstance(t, TypeOption):
+        return _is_seq_elem_type(t.inner)
     if isinstance(t, TypeTuple):
         return bool(t.elems) and all(_is_seq_elem_type(e) for e in t.elems)
     return False
@@ -753,6 +777,13 @@ def _vec_view_elem_at(spec_elem: str, access: str) -> str:
             if e.name == "Seq<char>":
                 return f"{path}@"
             return path
+        if isinstance(e, TypeOption):
+            # Option<u32>/Option<u64> share spec/exec representation; String opts use @.
+            if isinstance(e.inner, TypeAtom) and e.inner.name == "Seq<char>":
+                return (
+                    f"match {path} {{ Some(s) => Some(s@), None => None }}"
+                )
+            return path
         if isinstance(e, TypeTuple):
             parts = [walk(child, f"{path}.{i}") for i, child in enumerate(e.elems)]
             return f"({', '.join(parts)})"
@@ -789,6 +820,19 @@ def _emit_seq_trusted(
                 exec_push_elems.append(f"e{i}")
             else:
                 raise ValueError(f"unsupported seq push atom: {e.name}")
+        elif isinstance(e, TypeOption):
+            i = idx[0]
+            idx[0] += 1
+            exec_ty = spec_to_exec_type(e)
+            push_params.append((f"e{i}", exec_ty, f"e{i}"))
+            if isinstance(e.inner, TypeAtom) and e.inner.name == "Seq<char>":
+                spec_push_elems.append(
+                    f"match e{i} {{ Some(s) => Some(s@), None => None }}"
+                )
+                exec_push_elems.append(f"e{i}")
+            else:
+                spec_push_elems.append(f"e{i}")
+                exec_push_elems.append(f"e{i}")
         elif isinstance(e, TypeTuple):
             for child in e.elems:
                 walk(child, idx)

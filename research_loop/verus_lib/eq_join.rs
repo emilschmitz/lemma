@@ -4968,6 +4968,660 @@ pub proof fn lemma_quad_at_origin<A>(
 }
 // SHAPE_4TABLE_END
 
+// SHAPE_LOJ_BEGIN
+// Plain LEFT OUTER JOIN: matched (i, Some(j)) pairs plus unmatched left (i, None).
+// Same outer-major order as nested_eq_pairs; miss rows use the anti existence check.
+
+/// Matched pairs for outer row `i` as `(i, Some(j))`, increasing `j`.
+pub open spec fn prefix_loj_pairs(i: usize, js: Seq<usize>, t: int) -> Seq<(usize, Option<usize>)>
+    decreases t,
+{
+    if t <= 0 {
+        Seq::<(usize, Option<usize>)>::empty()
+    } else {
+        let prev = prefix_loj_pairs(i, js, t - 1);
+        if 0 <= t - 1 < js.len() {
+            prev.push((i, Some(js[t - 1])))
+        } else {
+            prev
+        }
+    }
+}
+
+/// LEFT OUTER join list for `outer[0..n]`: matches, or a single `(i, None)` on miss.
+pub open spec fn nested_loj_pairs<K>(outer: Seq<K>, inner: Seq<K>, n: int) -> Seq<(usize, Option<usize>)>
+    decreases n,
+{
+    if n <= 0 {
+        Seq::<(usize, Option<usize>)>::empty()
+    } else if n - 1 >= outer.len() {
+        nested_loj_pairs(outer, inner, n - 1)
+    } else {
+        let i = (n - 1) as usize;
+        let ids = eq_row_ids(inner, outer[n - 1], inner.len() as int);
+        let prev = nested_loj_pairs(outer, inner, n - 1);
+        if ids.len() == 0 {
+            prev.push((i, None))
+        } else {
+            prev + prefix_loj_pairs(i, ids, ids.len() as int)
+        }
+    }
+}
+
+pub proof fn lemma_prefix_loj_pairs_step(i: usize, js: Seq<usize>, t: int)
+    requires
+        0 <= t < js.len(),
+    ensures
+        prefix_loj_pairs(i, js, t + 1) == prefix_loj_pairs(i, js, t).push((i, Some(js[t]))),
+{
+    assert(prefix_loj_pairs(i, js, t + 1) == prefix_loj_pairs(i, js, t).push((i, Some(js[t]))));
+}
+
+pub proof fn lemma_prefix_loj_len(i: usize, ids: Seq<usize>, t: int)
+    requires
+        0 <= t <= ids.len(),
+    ensures
+        prefix_loj_pairs(i, ids, t).len() == t,
+    decreases t,
+{
+    if t > 0 {
+        lemma_prefix_loj_len(i, ids, t - 1);
+        assert(prefix_loj_pairs(i, ids, t) == prefix_loj_pairs(i, ids, t - 1).push((i, Some(ids[t - 1]))));
+    }
+}
+
+pub proof fn lemma_nested_loj_pairs_step<K>(outer: Seq<K>, inner: Seq<K>, n: int)
+    requires
+        0 < n <= outer.len(),
+    ensures
+        ({
+            let ids = eq_row_ids(inner, outer[n - 1], inner.len() as int);
+            let prev = nested_loj_pairs(outer, inner, n - 1);
+            let i = (n - 1) as usize;
+            &&& ids.len() == 0 ==> nested_loj_pairs(outer, inner, n) == prev.push((i, None))
+            &&& ids.len() > 0 ==> nested_loj_pairs(outer, inner, n) == prev + prefix_loj_pairs(
+                i,
+                ids,
+                ids.len() as int,
+            )
+        }),
+{
+    let ids = eq_row_ids(inner, outer[n - 1], inner.len() as int);
+    let prev = nested_loj_pairs(outer, inner, n - 1);
+    let i = (n - 1) as usize;
+    if ids.len() == 0 {
+        assert(nested_loj_pairs(outer, inner, n) == prev.push((i, None)));
+    } else {
+        assert(nested_loj_pairs(outer, inner, n) == prev + prefix_loj_pairs(i, ids, ids.len() as int));
+    }
+}
+
+/// Nested-loop LEFT OUTER fold: on match `step(..., Some(i1))`; on finished miss `None`.
+pub open spec fn loj_loop_acc<K, A>(
+    outer: Seq<K>,
+    inner: Seq<K>,
+    step: spec_fn(A, int, Option<int>) -> A,
+    base: A,
+    n_outer: int,
+    n_inner: int,
+    i0: int,
+    i1: int,
+) -> A
+    decreases n_outer - i0, n_inner - i1,
+{
+    if i0 < n_outer {
+        if i1 < n_inner {
+            let tail = loj_loop_acc(outer, inner, step, base, n_outer, n_inner, i0, i1 + 1);
+            if 0 <= i0 < outer.len() && 0 <= i1 < inner.len() && outer[i0] == inner[i1] {
+                step(tail, i0, Some(i1))
+            } else {
+                tail
+            }
+        } else {
+            let tail = loj_loop_acc(outer, inner, step, base, n_outer, n_inner, i0 + 1, 0);
+            if 0 <= i0 < outer.len() && eq_row_ids(inner, outer[i0], n_inner).len() == 0 {
+                step(tail, i0, None)
+            } else {
+                tail
+            }
+        }
+    } else {
+        base
+    }
+}
+
+/// Fold a LOJ pair list from the high index downward (same direction as MethodSpec).
+pub open spec fn loj_acc<A>(
+    pairs: Seq<(usize, Option<usize>)>,
+    step: spec_fn(A, int, Option<int>) -> A,
+    base: A,
+    k: int,
+) -> A
+    decreases pairs.len() - k,
+{
+    if k >= pairs.len() {
+        base
+    } else {
+        let tail = loj_acc(pairs, step, base, k + 1);
+        let oi1 = pairs[k].1;
+        match oi1 {
+            Some(j) => step(tail, pairs[k].0 as int, Some(j as int)),
+            None => step(tail, pairs[k].0 as int, None),
+        }
+    }
+}
+
+/// Index into `nested_loj_pairs` for the nested-loop cursor `(i0, i1)`.
+/// On a miss row, the cursor stays at that slot until the outer index advances.
+pub open spec fn loj_pos<K>(outer: Seq<K>, inner: Seq<K>, i0: int, i1: int) -> int {
+    if !(0 <= i0 < outer.len()) {
+        nested_loj_pairs(outer, inner, i0).len() as int
+    } else {
+        let ids = eq_row_ids(inner, outer[i0], inner.len() as int);
+        let base = nested_loj_pairs(outer, inner, i0).len() as int;
+        if ids.len() == 0 {
+            base
+        } else {
+            base + ids_lt(ids, ids.len() as int, i1)
+        }
+    }
+}
+
+pub proof fn lemma_loj_prefix_at(i: usize, ids: Seq<usize>, t: int, r: int)
+    requires
+        0 <= r < t <= ids.len(),
+    ensures
+        prefix_loj_pairs(i, ids, t)[r] == (i, Some(ids[r])),
+    decreases t,
+{
+    lemma_prefix_loj_len(i, ids, t);
+    let prev = prefix_loj_pairs(i, ids, t - 1);
+    let cur = prefix_loj_pairs(i, ids, t);
+    assert(cur == prev.push((i, Some(ids[t - 1]))));
+    lemma_prefix_loj_len(i, ids, t - 1);
+    if r < t - 1 {
+        lemma_loj_prefix_at(i, ids, t - 1, r);
+        assert(0 <= r < prev.len());
+        lemma_seq_push_index_different(prev, (i, Some(ids[t - 1])), r);
+    } else {
+        assert(r == t - 1);
+        assert(r == prev.len() as int);
+        lemma_seq_push_index_same(prev, (i, Some(ids[t - 1])), prev.len() as int);
+    }
+}
+
+pub proof fn lemma_loj_nested_len_mono<K>(outer: Seq<K>, inner: Seq<K>, n: int, m: int)
+    requires
+        0 <= n <= m <= outer.len(),
+    ensures
+        nested_loj_pairs(outer, inner, n).len() <= nested_loj_pairs(outer, inner, m).len(),
+    decreases m - n,
+{
+    if n < m {
+        lemma_loj_nested_len_mono(outer, inner, n, m - 1);
+        lemma_nested_loj_pairs_step(outer, inner, m);
+        let ids = eq_row_ids(inner, outer[m - 1], inner.len() as int);
+        let prev = nested_loj_pairs(outer, inner, m - 1);
+        let cur = nested_loj_pairs(outer, inner, m);
+        if ids.len() == 0 {
+            assert(cur == prev.push(((m - 1) as usize, None)));
+            assert(prev.len() <= cur.len());
+        } else {
+            lemma_prefix_loj_len((m - 1) as usize, ids, ids.len() as int);
+            assert(cur == prev + prefix_loj_pairs((m - 1) as usize, ids, ids.len() as int));
+            assert(prev.len() <= cur.len());
+        }
+    }
+}
+
+pub proof fn lemma_loj_nested_index<K>(outer: Seq<K>, inner: Seq<K>, n: int, m: int, p: int)
+    requires
+        0 <= n <= m <= outer.len(),
+        m <= usize::MAX as int,
+        0 <= p < nested_loj_pairs(outer, inner, n).len(),
+    ensures
+        nested_loj_pairs(outer, inner, m)[p] == nested_loj_pairs(outer, inner, n)[p],
+    decreases m - n,
+{
+    if n < m {
+        lemma_loj_nested_len_mono(outer, inner, n, m - 1);
+        lemma_loj_nested_index(outer, inner, n, m - 1, p);
+        lemma_nested_loj_pairs_step(outer, inner, m);
+        let prev = nested_loj_pairs(outer, inner, m - 1);
+        let cur = nested_loj_pairs(outer, inner, m);
+        let ids = eq_row_ids(inner, outer[m - 1], inner.len() as int);
+        let row = (m - 1) as usize;
+        assert(row as int == m - 1);
+        assert(0 <= p < prev.len());
+        if ids.len() == 0 {
+            assert(cur == prev.push((row, None)));
+            lemma_seq_push_index_different(prev, (row, None), p);
+        } else {
+            let extra = prefix_loj_pairs(row, ids, ids.len() as int);
+            assert(cur == prev + extra);
+            lemma_left_index(prev, extra, p);
+        }
+    }
+}
+
+pub proof fn lemma_loj_acc<K, A>(
+    outer: Seq<K>,
+    inner: Seq<K>,
+    step: spec_fn(A, int, Option<int>) -> A,
+    base: A,
+    n_outer: int,
+    n_inner: int,
+    i0: int,
+    i1: int,
+)
+    requires
+        outer.len() == n_outer,
+        inner.len() == n_inner,
+        n_outer <= usize::MAX as int,
+        n_inner <= usize::MAX as int,
+        0 <= i0 <= n_outer,
+        0 <= i1 <= n_inner,
+    ensures
+        loj_loop_acc(outer, inner, step, base, n_outer, n_inner, i0, i1) == loj_acc(
+            nested_loj_pairs(outer, inner, n_outer),
+            step,
+            base,
+            loj_pos(outer, inner, i0, i1),
+        ),
+    decreases n_outer - i0, n_inner - i1,
+{
+    let pairs = nested_loj_pairs(outer, inner, n_outer);
+    let pos = loj_pos(outer, inner, i0, i1);
+    if i0 >= n_outer {
+        assert(nested_loj_pairs(outer, inner, i0) =~= pairs);
+        assert(pos == pairs.len() as int);
+    } else if i1 >= n_inner {
+        let ids = eq_row_ids(inner, outer[i0], n_inner);
+        if ids.len() == 0 {
+            lemma_loj_acc(outer, inner, step, base, n_outer, n_inner, i0 + 1, 0);
+            lemma_nested_loj_pairs_step(outer, inner, i0 + 1);
+            let earlier = nested_loj_pairs(outer, inner, i0);
+            let through = nested_loj_pairs(outer, inner, i0 + 1);
+            let i0u = i0 as usize;
+            assert(i0u as int == i0);
+            assert(through == earlier.push((i0u, None)));
+            assert(pos == earlier.len() as int);
+            assert(through.len() == earlier.len() + 1);
+            assert(0 <= pos < through.len());
+            lemma_loj_nested_len_mono(outer, inner, i0 + 1, n_outer);
+            assert(through.len() <= pairs.len());
+            assert(pos < pairs.len());
+            lemma_loj_nested_index(outer, inner, i0 + 1, n_outer, pos);
+            lemma_seq_push_index_same(earlier, (i0u, None), earlier.len() as int);
+            assert(through[pos] == (i0u, None));
+            assert(pairs[pos] == (i0u, None));
+            if i0 + 1 < outer.len() {
+                let next_ids = eq_row_ids(inner, outer[i0 + 1], n_inner);
+                if next_ids.len() == 0 {
+                    assert(loj_pos(outer, inner, i0 + 1, 0)
+                        == nested_loj_pairs(outer, inner, i0 + 1).len() as int);
+                } else {
+                    lemma_ids_lt_zero(next_ids, next_ids.len() as int);
+                    assert(loj_pos(outer, inner, i0 + 1, 0)
+                        == nested_loj_pairs(outer, inner, i0 + 1).len() as int);
+                }
+            } else {
+                assert(loj_pos(outer, inner, i0 + 1, 0)
+                    == nested_loj_pairs(outer, inner, i0 + 1).len() as int);
+            }
+            assert(loj_pos(outer, inner, i0 + 1, 0) == through.len() as int);
+            assert(loj_pos(outer, inner, i0 + 1, 0) == pos + 1);
+            assert(loj_loop_acc(outer, inner, step, base, n_outer, n_inner, i0, i1) == step(
+                loj_loop_acc(outer, inner, step, base, n_outer, n_inner, i0 + 1, 0),
+                i0,
+                None,
+            ));
+            assert(loj_acc(pairs, step, base, pos) == step(
+                loj_acc(pairs, step, base, pos + 1),
+                i0,
+                None,
+            ));
+        } else {
+            lemma_loj_acc(outer, inner, step, base, n_outer, n_inner, i0 + 1, 0);
+            lemma_eq_members(inner, outer[i0], n_inner);
+            assert forall|p: int| 0 <= p < ids.len() implies (ids[p] as int) < n_inner by {
+                assert(0 <= (ids[p] as int) < n_inner);
+            };
+            assert forall|p: int| 0 <= p < ids.len() implies (ids[p] as int) < i1 by {
+                assert((ids[p] as int) < n_inner);
+                assert(n_inner <= i1);
+            };
+            lemma_ids_lt_all(ids, ids.len() as int, i1);
+            let i0u = i0 as usize;
+            assert(i0u as int == i0);
+            lemma_prefix_loj_len(i0u, ids, ids.len() as int);
+            lemma_nested_loj_pairs_step(outer, inner, i0 + 1);
+            assert(nested_loj_pairs(outer, inner, i0 + 1).len()
+                == nested_loj_pairs(outer, inner, i0).len() + ids.len());
+            if i0 + 1 < outer.len() {
+                let next_ids = eq_row_ids(inner, outer[i0 + 1], n_inner);
+                lemma_ids_lt_zero(next_ids, next_ids.len() as int);
+            }
+            assert(loj_pos(outer, inner, i0 + 1, 0) == pos);
+        }
+    } else if outer[i0] == inner[i1] {
+        lemma_loj_acc(outer, inner, step, base, n_outer, n_inner, i0, i1 + 1);
+        lemma_eq_rank(inner, outer[i0], n_inner, i1);
+        let ids = eq_row_ids(inner, outer[i0], n_inner);
+        assert(ids.len() > 0);
+        let r = ids_lt(ids, ids.len() as int, i1);
+        let i0u = i0 as usize;
+        assert(i0u as int == i0);
+        lemma_prefix_loj_len(i0u, ids, ids.len() as int);
+        lemma_loj_prefix_at(i0u, ids, ids.len() as int, r);
+        let row_pairs = prefix_loj_pairs(i0u, ids, ids.len() as int);
+        let earlier = nested_loj_pairs(outer, inner, i0);
+        let through = nested_loj_pairs(outer, inner, i0 + 1);
+        lemma_nested_loj_pairs_step(outer, inner, i0 + 1);
+        assert(through == earlier + row_pairs);
+        assert(i1 as int <= usize::MAX as int);
+        let i1u = i1 as usize;
+        assert(i1u as int == i1);
+        assert(row_pairs[r] == (i0u, Some(i1u)));
+        assert(0 <= r < row_pairs.len());
+        lemma_right_index(earlier, row_pairs, r);
+        assert(pos == earlier.len() as int + r);
+        assert(through.len() == earlier.len() + row_pairs.len());
+        assert(pos < through.len());
+        lemma_loj_nested_len_mono(outer, inner, i0 + 1, n_outer);
+        assert(through.len() <= pairs.len());
+        assert(pos < pairs.len());
+        lemma_loj_nested_index(outer, inner, i0 + 1, n_outer, pos);
+        assert(through[pos] == (i0u, Some(i1u)));
+        assert(pairs[pos] == (i0u, Some(i1u)));
+        assert(pos + 1 == loj_pos(outer, inner, i0, i1 + 1));
+        assert(loj_loop_acc(outer, inner, step, base, n_outer, n_inner, i0, i1) == step(
+            loj_loop_acc(outer, inner, step, base, n_outer, n_inner, i0, i1 + 1),
+            i0,
+            Some(i1),
+        ));
+        assert(loj_acc(pairs, step, base, pos) == step(
+            loj_acc(pairs, step, base, pos + 1),
+            i0,
+            Some(i1),
+        ));
+    } else {
+        lemma_loj_acc(outer, inner, step, base, n_outer, n_inner, i0, i1 + 1);
+        let ids = eq_row_ids(inner, outer[i0], n_inner);
+        if ids.len() == 0 {
+            assert(loj_pos(outer, inner, i0, i1 + 1) == pos);
+        } else {
+            lemma_eq_members(inner, outer[i0], n_inner);
+            assert forall|p: int| 0 <= p < ids.len() implies (ids[p] as int) != i1 by {
+                if (ids[p] as int) == i1 {
+                    assert(inner[i1] == outer[i0]);
+                    assert(false);
+                }
+            };
+            lemma_ids_lt_skip(ids, ids.len() as int, i1);
+            assert(loj_pos(outer, inner, i0, i1 + 1) == pos);
+        }
+    }
+}
+
+pub proof fn lemma_loj_pos_origin<K>(outer: Seq<K>, inner: Seq<K>)
+    requires
+        outer.len() <= usize::MAX as int,
+        inner.len() <= usize::MAX as int,
+    ensures
+        loj_pos(outer, inner, 0, 0) == 0,
+{
+    assert(nested_loj_pairs(outer, inner, 0) =~= Seq::<(usize, Option<usize>)>::empty());
+    if outer.len() > 0 {
+        let ids = eq_row_ids(inner, outer[0], inner.len() as int);
+        if ids.len() == 0 {
+            assert(loj_pos(outer, inner, 0, 0) == 0);
+        } else {
+            lemma_ids_lt_zero(ids, ids.len() as int);
+            assert(loj_pos(outer, inner, 0, 0) == 0);
+        }
+    }
+}
+
+/// At the origin indices, ``loj_loop_acc`` equals ``loj_acc`` of the full LOJ list at 0.
+pub proof fn lemma_loj_at_origin<K, A>(
+    outer: Seq<K>,
+    inner: Seq<K>,
+    step: spec_fn(A, int, Option<int>) -> A,
+    base: A,
+    n_outer: int,
+    n_inner: int,
+)
+    requires
+        outer.len() == n_outer,
+        inner.len() == n_inner,
+        n_outer <= usize::MAX as int,
+        n_inner <= usize::MAX as int,
+    ensures
+        loj_loop_acc(outer, inner, step, base, n_outer, n_inner, 0, 0) == loj_acc(
+            nested_loj_pairs(outer, inner, n_outer),
+            step,
+            base,
+            0,
+        ),
+{
+    lemma_loj_acc(outer, inner, step, base, n_outer, n_inner, 0, 0);
+    lemma_loj_pos_origin(outer, inner);
+}
+
+pub fn push_prefix_loj_pairs(pairs: &mut Vec<(usize, Option<usize>)>, i: usize, ids: &Vec<usize>)
+    ensures
+        final(pairs)@ == old(pairs)@ + prefix_loj_pairs(i, ids@, ids@.len() as int),
+{
+    proof {
+        broadcast use vstd::std_specs::vec::axiom_spec_len;
+        assert(ids@.len() == ids.len() as int);
+    }
+    let ghost base = pairs@;
+    let mut extra: Vec<(usize, Option<usize>)> = Vec::new();
+    let mut t: usize = 0;
+    while t < ids.len()
+        invariant
+            t <= ids.len(),
+            ids@.len() == ids.len() as int,
+            extra@ == prefix_loj_pairs(i, ids@, t as int),
+        decreases ids.len() - t,
+    {
+        let ghost old_extra = extra@;
+        let id = ids[t];
+        extra.push((i, Some(id)));
+        proof {
+            assert(id == ids@[t as int]);
+            lemma_prefix_loj_pairs_step(i, ids@, t as int);
+            assert(extra@ == old_extra.push((i, Some(ids@[t as int]))));
+            assert(extra@ == prefix_loj_pairs(i, ids@, t as int + 1));
+        }
+        t = t + 1;
+    }
+    proof {
+        assert(extra@ == prefix_loj_pairs(i, ids@, ids@.len() as int));
+        assert(pairs@ == base);
+    }
+    pairs.append(&mut extra);
+    proof {
+        assert(pairs@ == base + prefix_loj_pairs(i, ids@, ids@.len() as int));
+    }
+}
+
+/// LEFT OUTER pair list for one `String` key column. View equals [`nested_loj_pairs`].
+pub fn left_outer_pairs_str(outer: &Vec<String>, inner: &Vec<String>) -> (pairs: Vec<(usize, Option<usize>)>)
+    ensures
+        pairs@ == nested_loj_pairs(key_views(outer@), key_views(inner@), outer@.len() as int),
+{
+    let idx = build_eq_index_str(inner);
+    let ghost ov = key_views(outer@);
+    let ghost iv = key_views(inner@);
+    let mut pairs: Vec<(usize, Option<usize>)> = Vec::new();
+    let mut i: usize = 0;
+    while i < outer.len()
+        invariant
+            i <= outer.len(),
+            outer@.len() == outer.len() as int,
+            inner@.len() == inner.len() as int,
+            ov == key_views(outer@),
+            iv == key_views(inner@),
+            index_ok(iv, idx.buckets@, idx.map@, inner@.len() as int),
+            pairs@ == nested_loj_pairs(ov, iv, i as int),
+        decreases outer.len() - i,
+    {
+        let key = outer[i].clone();
+        let ghost end = i as int;
+        proof {
+            lemma_key_view_at(outer@, end);
+            broadcast use vstd::std_specs::vec::axiom_spec_len;
+            assert(ov[end] == key@);
+        }
+        let ghost before = pairs@;
+        let hit = probe_eq_str(&idx, inner, key.as_str());
+        match hit {
+            Some(v) => {
+                if v.len() == 0 {
+                    pairs.push((i, None));
+                    proof {
+                        assert(v@ == eq_row_ids(iv, key@, iv.len() as int));
+                        assert(eq_row_ids(iv, key@, iv.len() as int).len() == 0);
+                        lemma_eq_row_ids_len0(iv, key@, iv.len() as int);
+                        lemma_nested_loj_pairs_step(ov, iv, end + 1);
+                        assert(pairs@ == before.push((i, None)));
+                        assert(pairs@ == nested_loj_pairs(ov, iv, end + 1));
+                    }
+                } else {
+                    push_prefix_loj_pairs(&mut pairs, i, v);
+                    proof {
+                        assert(v@ == eq_row_ids(iv, key@, iv.len() as int));
+                        assert(eq_row_ids(iv, key@, iv.len() as int).len() > 0);
+                        lemma_nested_loj_pairs_step(ov, iv, end + 1);
+                        assert(pairs@ == before + prefix_loj_pairs(i, v@, v@.len() as int));
+                        assert(pairs@ == nested_loj_pairs(ov, iv, end + 1));
+                    }
+                }
+            },
+            None => {
+                pairs.push((i, None));
+                proof {
+                    assert(eq_row_ids(iv, key@, iv.len() as int).len() == 0);
+                    lemma_eq_row_ids_len0(iv, key@, iv.len() as int);
+                    lemma_nested_loj_pairs_step(ov, iv, end + 1);
+                    assert(pairs@ == before.push((i, None)));
+                    assert(pairs@ == nested_loj_pairs(ov, iv, end + 1));
+                }
+            },
+        }
+        i = i + 1;
+    }
+    pairs
+}
+
+/// LEFT OUTER pair list for one `u64` key column. View equals [`nested_loj_pairs`].
+pub fn left_outer_pairs_u64(outer: &Vec<u64>, inner: &Vec<u64>) -> (pairs: Vec<(usize, Option<usize>)>)
+    ensures
+        pairs@ == nested_loj_pairs(key_views(outer@), key_views(inner@), outer@.len() as int),
+{
+    proof {
+        lemma_u64_hash_key();
+    }
+    left_outer_pairs_copy(outer, inner)
+}
+
+pub fn left_outer_pairs_copy<K: Copy + View<V = K> + Eq + Hash>(
+    outer: &Vec<K>,
+    inner: &Vec<K>,
+) -> (pairs: Vec<(usize, Option<usize>)>)
+    requires
+        obeys_key_model::<K>(),
+        builds_valid_hashers::<RandomState>(),
+        forall|x: K| #[trigger] view_is_id(x),
+    ensures
+        pairs@ == nested_loj_pairs(key_views(outer@), key_views(inner@), outer@.len() as int),
+{
+    let idx = build_eq_index_copy(inner);
+    let ghost ov = key_views(outer@);
+    let ghost iv = key_views(inner@);
+    let mut pairs: Vec<(usize, Option<usize>)> = Vec::new();
+    let mut i: usize = 0;
+    while i < outer.len()
+        invariant
+            i <= outer.len(),
+            outer@.len() == outer.len() as int,
+            inner@.len() == inner.len() as int,
+            ov == key_views(outer@),
+            iv == key_views(inner@),
+            obeys_key_model::<K>(),
+            builds_valid_hashers::<RandomState>(),
+            forall|x: K| #[trigger] view_is_id(x),
+            index_ok(iv, idx.buckets@, idx.map@, inner@.len() as int),
+            pairs@ == nested_loj_pairs(ov, iv, i as int),
+        decreases outer.len() - i,
+    {
+        let key = outer[i];
+        let ghost end = i as int;
+        proof {
+            lemma_key_view_at(outer@, end);
+            broadcast use vstd::std_specs::vec::axiom_spec_len;
+            assert(ov[end] == key@);
+        }
+        let ghost before = pairs@;
+        proof {
+            assert(view_is_id(key));
+            assert(key@ == key);
+            broadcast use axiom_contains_deref_key;
+            broadcast use axiom_maps_deref_key_to_value;
+        }
+        let bi_opt: Option<usize> = match idx.map.get(&key) {
+            Some(bi_ref) => Some(*bi_ref),
+            None => None,
+        };
+        match bi_opt {
+            Some(bi) => {
+                proof {
+                    assert(idx.map@.contains_key(key@));
+                    assert(idx.buckets@[bi as int]@ == eq_row_ids(iv, key@, iv.len() as int));
+                }
+                let ids = &idx.buckets[bi];
+                if ids.len() == 0 {
+                    pairs.push((i, None));
+                    proof {
+                        assert(eq_row_ids(iv, key@, iv.len() as int).len() == 0);
+                        lemma_eq_row_ids_len0(iv, key@, iv.len() as int);
+                        lemma_nested_loj_pairs_step(ov, iv, end + 1);
+                        assert(pairs@ == before.push((i, None)));
+                        assert(pairs@ == nested_loj_pairs(ov, iv, end + 1));
+                    }
+                } else {
+                    push_prefix_loj_pairs(&mut pairs, i, ids);
+                    proof {
+                        assert(ids@ == eq_row_ids(iv, ov[end], iv.len() as int));
+                        assert(eq_row_ids(iv, key@, iv.len() as int).len() > 0);
+                        lemma_nested_loj_pairs_step(ov, iv, end + 1);
+                        assert(pairs@ == before + prefix_loj_pairs(i, ids@, ids@.len() as int));
+                        assert(pairs@ == nested_loj_pairs(ov, iv, end + 1));
+                    }
+                }
+            },
+            None => {
+                pairs.push((i, None));
+                proof {
+                    assert(!idx.map@.contains_key(key@));
+                    assert(eq_row_ids(iv, key@, iv.len() as int).len() == 0);
+                    lemma_eq_row_ids_len0(iv, key@, iv.len() as int);
+                    lemma_nested_loj_pairs_step(ov, iv, end + 1);
+                    assert(pairs@ == before.push((i, None)));
+                    assert(pairs@ == nested_loj_pairs(ov, iv, end + 1));
+                }
+            },
+        }
+        i = i + 1;
+    }
+    pairs
+}
+
+// SHAPE_LOJ_END
+
 // EQ_JOIN_PROVED_END
 
 #[verifier::external_body]
