@@ -74,6 +74,9 @@ def test_proved_slice_is_rocketship_clean() -> None:
     assert "pub proof fn lemma_pair_pos_origin<" in body
     assert "pub proof fn lemma_pair_pos2_origin<" in body
     assert "pub proof fn lemma_star_pos_origin(" in body
+    assert "pub proof fn lemma_loop_at_origin<" in body
+    assert "pub proof fn lemma_loop2_at_origin<" in body
+    assert "pub proof fn lemma_star_at_origin<" in body
     assert "arbitrary()" not in body
     assert "external_body" not in body
     assert "assume(" not in body
@@ -98,10 +101,14 @@ def test_join_transpile_includes_proved_equijoin_and_single_table_does_not() -> 
         assert "pub fn star_eq_triples_str(" in out
         assert "walk pairs from the end" in out
     assert "lemma_join_method_spec_helper_is_loop(" in adsh
+    assert "lemma_join_method_spec_helper_is_pairs(" in adsh
     assert "lemma_join_method_spec_helper_is_loop(" not in star
+    assert "lemma_join_method_spec_helper_is_pairs(" not in star
     assert "lemma_join_method_spec_helper_is_loop2(" not in adsh
     assert "lemma_join_method_spec_helper_is_loop2(" in tag
+    assert "lemma_join_method_spec_helper_is_pairs2(" in tag
     assert "lemma_join_projection_helper_is_star" in star
+    assert "lemma_join_projection_helper_is_star_pairs" in star
     assert "pub fn build_eq_index_str(" not in single
     assert "pub fn equijoin_pairs_str(" not in single
 
@@ -148,7 +155,7 @@ pub exec fn run_query(pre: &Cols_pre, sub: &Cols_sub) -> (res: {ret})
 
 
 @pytest.mark.parametrize(
-    ("sql", "lemma", "ret", "body", "ensures"),
+    ("sql", "lemma", "pairs_lemma", "ret", "body", "ensures"),
     [
         (
             """
@@ -158,6 +165,7 @@ pub exec fn run_query(pre: &Cols_pre, sub: &Cols_sub) -> (res: {ret})
             GROUP BY s.fy
             """,
             "lemma_join_method_spec_helper_is_loop",
+            "lemma_join_method_spec_helper_is_pairs",
             "HashMap<u32, u64>",
             "HashMap::new()",
             "res@ == method_spec(pre, sub)",
@@ -170,6 +178,7 @@ pub exec fn run_query(pre: &Cols_pre, sub: &Cols_sub) -> (res: {ret})
             GROUP BY s.fy
             """,
             "lemma_multi_agg_helper_is_loop",
+            "lemma_multi_agg_helper_is_pairs",
             "HashMap<u32, (u64, u64)>",
             "HashMap::new()",
             "res@ == method_spec(pre, sub)",
@@ -180,6 +189,7 @@ pub exec fn run_query(pre: &Cols_pre, sub: &Cols_sub) -> (res: {ret})
             FROM pre p JOIN sub s ON p.line = s.fy
             """,
             "lemma_join_method_spec_helper_is_loop",
+            "lemma_join_method_spec_helper_is_pairs",
             "u64",
             "0u64",
             "res == method_spec(pre, sub)",
@@ -190,6 +200,7 @@ pub exec fn run_query(pre: &Cols_pre, sub: &Cols_sub) -> (res: {ret})
             FROM pre p JOIN sub s ON p.adsh = s.adsh
             """,
             "lemma_join_projection_helper_is_loop",
+            "lemma_join_projection_helper_is_pairs",
             "Vec<u32>",
             "Vec::new()",
             "res@ == res@",
@@ -197,15 +208,22 @@ pub exec fn run_query(pre: &Cols_pre, sub: &Cols_sub) -> (res: {ret})
     ],
 )
 def test_pair_fold_lemma_verifies(
-    sql: str, lemma: str, ret: str, body: str, ensures: str, tmp_path: Path,
+    sql: str,
+    lemma: str,
+    pairs_lemma: str,
+    ret: str,
+    body: str,
+    ensures: str,
+    tmp_path: Path,
 ) -> None:
-    """Generated helper==loop_acc proof verifies for sum, multi-agg, and integer keys."""
+    """Generated helper==loop_acc and helper==pair_acc proofs verify under big SEC caps."""
     if resolve_verus_bin() is None:
         pytest.skip("verus not found")
     projected = _projected(sql)
     catalog = sec_prove_loop_catalog_assumptions()
     spec_rs = transpile_sql_to_verus(sql, projected, catalog_assumptions=catalog)
     assert lemma in spec_rs
+    assert pairs_lemma in spec_rs
     ret_type = resolve_ret_type_from_method_spec(spec_rs)
     program = assemble_verified_join_program(
         spec_rs=spec_rs,
@@ -216,6 +234,7 @@ def test_pair_fold_lemma_verifies(
         default_tbls={"pre": "", "sub": ""},
         catalog_assumptions=catalog,
     )
+    assert pairs_lemma in program
     rs_path = tmp_path / "fold.rs"
     rs_path.write_text(program, encoding="utf-8")
     ok, log = run_verus_verify(str(rs_path), timeout=180)
@@ -234,8 +253,10 @@ def test_two_column_fold_lemma_verifies(tmp_path: Path) -> None:
     if any(not isinstance(cols, dict) for cols in projected.values()):
         raise TypeError("expected a per-table schema")
     projected = cast(dict[str, dict[str, str]], projected)
-    spec_rs = transpile_sql_to_verus(_TAG_SQL, projected)
+    catalog = sec_prove_loop_catalog_assumptions()
+    spec_rs = transpile_sql_to_verus(_TAG_SQL, projected, catalog_assumptions=catalog)
     assert "lemma_join_method_spec_helper_is_loop2(" in spec_rs
+    assert "lemma_join_method_spec_helper_is_pairs2(" in spec_rs
     ret_type = resolve_ret_type_from_method_spec(spec_rs)
     assert ret_type == "u64"
     stub = """#[verifier::external_body]
@@ -252,7 +273,9 @@ pub exec fn run_query(pre: &Cols_pre, tag: &Cols_tag) -> (res: u64)
         table_order=("pre", "tag"),
         ret_type=ret_type,
         default_tbls={"pre": "", "tag": ""},
+        catalog_assumptions=catalog,
     )
+    assert "lemma_join_method_spec_helper_is_pairs2(" in program
     rs_path = tmp_path / "tag_fold.rs"
     rs_path.write_text(program, encoding="utf-8")
     ok, log = run_verus_verify(str(rs_path), timeout=180)
@@ -283,6 +306,7 @@ def test_previous_failure_joins_fold(tmp_path: Path) -> None:
             LIMIT 500
             """,
             "lemma_multi_agg_helper_is_loop",
+            "lemma_multi_agg_helper_is_pairs",
             ("pre", "sub"),
             False,
         ),
@@ -296,17 +320,19 @@ def test_previous_failure_joins_fold(tmp_path: Path) -> None:
             LIMIT 200
             """,
             "lemma_join_projection_helper_is_star",
+            "lemma_join_projection_helper_is_star_pairs",
             ("pre", "sub", "tag"),
             True,
         ),
     ]
-    for sql, lemma, order, nway in cases:
+    for sql, lemma, pairs_lemma, order, nway in cases:
         projected = project_multi_schema_for_query(sql, multi)
         if any(not isinstance(cols, dict) for cols in projected.values()):
             raise TypeError("expected a per-table schema")
         projected = cast(dict[str, dict[str, str]], projected)
         spec_rs = transpile_sql_to_verus(sql, projected, catalog_assumptions=catalog)
         assert lemma in spec_rs
+        assert pairs_lemma in spec_rs
         ret_type = resolve_ret_type_from_method_spec(spec_rs)
         rust = dynamic_ret_type_config()[ret_type]["rust_ret"]
         params = ", ".join(f"{t}: &Cols_{t}" for t in order)

@@ -673,6 +673,12 @@ def _pair_fold_lemma(
     params = ", ".join(f"{s.param}: &{s.struct}" for s in slots)
     recurse_args = ", ".join(s.param for s in slots)
     lemma = f"lemma_{helper_name}_is_loop"
+    pairs = f"lemma_{helper_name}_is_pairs"
+    step_closure = (
+        f"|acc: {ret_type}, {o.idx}: int, {i.idx}: int| {{\n"
+        f"                {step}\n"
+        f"            }}"
+    )
     return f"""pub proof fn {lemma}({params}, {o.idx}: int, {i.idx}: int)
     requires
         valid_cols_{o.table}({o.param}),
@@ -685,9 +691,7 @@ def _pair_fold_lemma(
         {helper_name}({recurse_args}, {o.idx}, {i.idx}) == loop_acc(
             {seq_expr(outer)},
             {seq_expr(inner)},
-            |acc: {ret_type}, {o.idx}: int, {i.idx}: int| {{
-                {step}
-            }},
+            {step_closure},
             {ret_base},
             {o.param}.n as int,
             {i.param}.n as int,
@@ -705,6 +709,31 @@ def _pair_fold_lemma(
             {lemma}({recurse_args}, {o.idx} + 1, 0);
         }}
     }}
+}}
+
+pub proof fn {pairs}({params})
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+    ensures
+        {helper_name}({recurse_args}, 0, 0) == pair_acc(
+            nested_eq_pairs({seq_expr(outer)}, {seq_expr(inner)}, {o.param}.n as int),
+            {step_closure},
+            {ret_base},
+            0,
+        ),
+{{
+    {lemma}({recurse_args}, 0, 0);
+    lemma_loop_at_origin(
+        {seq_expr(outer)},
+        {seq_expr(inner)},
+        {step_closure},
+        {ret_base},
+        {o.param}.n as int,
+        {i.param}.n as int,
+    );
 }}"""
 
 
@@ -774,6 +803,12 @@ def _pair2_fold_lemma(
     params = ", ".join(f"{s.param}: &{s.struct}" for s in slots)
     recurse_args = ", ".join(s.param for s in slots)
     lemma = f"lemma_{helper_name}_is_loop2"
+    pairs = f"lemma_{helper_name}_is_pairs2"
+    step_closure = (
+        f"|acc: {ret_type}, {o.idx}: int, {i.idx}: int| {{\n"
+        f"                {step}\n"
+        f"            }}"
+    )
     return f"""pub proof fn {lemma}({params}, {o.idx}: int, {i.idx}: int)
     requires
         valid_cols_{o.table}({o.param}),
@@ -788,9 +823,7 @@ def _pair2_fold_lemma(
             {seq_expr(b_outer)},
             {seq_expr(a_inner)},
             {seq_expr(b_inner)},
-            |acc: {ret_type}, {o.idx}: int, {i.idx}: int| {{
-                {step}
-            }},
+            {step_closure},
             {ret_base},
             {o.param}.n as int,
             {i.param}.n as int,
@@ -807,6 +840,39 @@ def _pair2_fold_lemma(
             {lemma}({recurse_args}, {o.idx} + 1, 0);
         }}
     }}
+}}
+
+pub proof fn {pairs}({params})
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+    ensures
+        {helper_name}({recurse_args}, 0, 0) == pair_acc(
+            nested_eq_pairs2(
+                {seq_expr(a_outer)},
+                {seq_expr(b_outer)},
+                {seq_expr(a_inner)},
+                {seq_expr(b_inner)},
+                {o.param}.n as int,
+            ),
+            {step_closure},
+            {ret_base},
+            0,
+        ),
+{{
+    {lemma}({recurse_args}, 0, 0);
+    lemma_loop2_at_origin(
+        {seq_expr(a_outer)},
+        {seq_expr(b_outer)},
+        {seq_expr(a_inner)},
+        {seq_expr(b_inner)},
+        {step_closure},
+        {ret_base},
+        {o.param}.n as int,
+        {i.param}.n as int,
+    );
 }}"""
 
 
@@ -936,8 +1002,14 @@ def _star_fold_lemma(
         key_assert(side) for side in (a_outer, a_mid, t_outer, t_inner, v_outer, v_inner)
     )
     lemma = f"lemma_{helper_name}_is_star"
+    pairs = f"lemma_{helper_name}_is_star_pairs"
     params = ", ".join(f"{s.param}: &{s.struct}" for s in slots)
     recurse = ", ".join(s.param for s in slots)
+    step_closure = (
+        f"|acc: {ret_type}, {outer.idx}: int, {mid.idx}: int, {inner.idx}: int| {{\n"
+        f"                {step}\n"
+        f"            }}"
+    )
     return f"""pub proof fn {lemma}({params}, {outer.idx}: int, {mid.idx}: int, {inner.idx}: int)
     requires
         valid_cols_{outer.table}({outer.param}),
@@ -957,9 +1029,7 @@ def _star_fold_lemma(
             {seq_of(a_mid)},
             {seq_of(t_inner)},
             {seq_of(v_inner)},
-            |acc: {ret_type}, {outer.idx}: int, {mid.idx}: int, {inner.idx}: int| {{
-                {step}
-            }},
+            {step_closure},
             {ret_base},
             {outer.param}.n as int,
             {mid.param}.n as int,
@@ -982,6 +1052,46 @@ def _star_fold_lemma(
             {lemma}({recurse}, {outer.idx} + 1, 0, 0);
         }}
     }}
+}}
+
+pub proof fn {pairs}({params})
+    requires
+        valid_cols_{outer.table}({outer.param}),
+        valid_cols_{mid.table}({mid.param}),
+        valid_cols_{inner.table}({inner.param}),
+        {outer.param}.n <= usize::MAX,
+        {mid.param}.n <= usize::MAX,
+        {inner.param}.n <= usize::MAX,
+    ensures
+        {helper_name}({recurse}, 0, 0, 0) == triple_acc(
+            nested_star(
+                {seq_of(a_outer)},
+                {seq_of(t_outer)},
+                {seq_of(v_outer)},
+                {seq_of(a_mid)},
+                {seq_of(t_inner)},
+                {seq_of(v_inner)},
+                {outer.param}.n as int,
+            ),
+            {step_closure},
+            {ret_base},
+            0,
+        ),
+{{
+    {lemma}({recurse}, 0, 0, 0);
+    lemma_star_at_origin(
+        {seq_of(a_outer)},
+        {seq_of(t_outer)},
+        {seq_of(v_outer)},
+        {seq_of(a_mid)},
+        {seq_of(t_inner)},
+        {seq_of(v_inner)},
+        {step_closure},
+        {ret_base},
+        {outer.param}.n as int,
+        {mid.param}.n as int,
+        {inner.param}.n as int,
+    );
 }}"""
 
 

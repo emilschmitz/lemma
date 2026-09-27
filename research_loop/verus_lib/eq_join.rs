@@ -3128,6 +3128,111 @@ pub proof fn lemma_star_pos_origin(
     }
 }
 
+/// At the origin indices, ``loop_acc`` equals ``pair_acc`` of the nested match list at 0.
+pub proof fn lemma_loop_at_origin<K, A>(
+    outer: Seq<K>,
+    inner: Seq<K>,
+    step: spec_fn(A, int, int) -> A,
+    base: A,
+    n_outer: int,
+    n_inner: int,
+)
+    requires
+        outer.len() == n_outer,
+        inner.len() == n_inner,
+        n_outer <= usize::MAX as int,
+        n_inner <= usize::MAX as int,
+    ensures
+        loop_acc(outer, inner, step, base, n_outer, n_inner, 0, 0) == pair_acc(
+            nested_eq_pairs(outer, inner, n_outer),
+            step,
+            base,
+            0,
+        ),
+{
+    lemma_acc(outer, inner, step, base, n_outer, n_inner, 0, 0);
+    lemma_pair_pos_origin(outer, inner);
+}
+
+/// At the origin indices, ``loop_acc2`` equals ``pair_acc`` of the two-column match list at 0.
+pub proof fn lemma_loop2_at_origin<A, B, C>(
+    outer_a: Seq<A>,
+    outer_b: Seq<B>,
+    inner_a: Seq<A>,
+    inner_b: Seq<B>,
+    step: spec_fn(C, int, int) -> C,
+    base: C,
+    n_outer: int,
+    n_inner: int,
+)
+    requires
+        outer_a.len() == n_outer,
+        outer_b.len() == n_outer,
+        inner_a.len() == n_inner,
+        inner_b.len() == n_inner,
+        n_outer <= usize::MAX as int,
+        n_inner <= usize::MAX as int,
+    ensures
+        loop_acc2(
+            outer_a,
+            outer_b,
+            inner_a,
+            inner_b,
+            step,
+            base,
+            n_outer,
+            n_inner,
+            0,
+            0,
+        ) == pair_acc(
+            nested_eq_pairs2(outer_a, outer_b, inner_a, inner_b, n_outer),
+            step,
+            base,
+            0,
+        ),
+{
+    lemma_acc2(outer_a, outer_b, inner_a, inner_b, step, base, n_outer, n_inner, 0, 0);
+    lemma_pair_pos2_origin(outer_a, outer_b, inner_a, inner_b);
+}
+
+/// At the origin indices, ``loop_acc3`` equals ``triple_acc`` of the star match list at 0.
+pub proof fn lemma_star_at_origin<A>(
+    pre_a: Seq<Seq<char>>,
+    pre_t: Seq<Seq<char>>,
+    pre_v: Seq<Seq<char>>,
+    sub_a: Seq<Seq<char>>,
+    tag_t: Seq<Seq<char>>,
+    tag_v: Seq<Seq<char>>,
+    step: spec_fn(A, int, int, int) -> A,
+    base: A,
+    n0: int,
+    n1: int,
+    n2: int,
+)
+    requires
+        pre_a.len() == n0,
+        pre_t.len() == n0,
+        pre_v.len() == n0,
+        sub_a.len() == n1,
+        tag_t.len() == n2,
+        tag_v.len() == n2,
+        n0 <= usize::MAX as int,
+        n1 <= usize::MAX as int,
+        n2 <= usize::MAX as int,
+    ensures
+        loop_acc3(
+            pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, step, base, n0, n1, n2, 0, 0, 0,
+        ) == triple_acc(
+            nested_star(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, n0),
+            step,
+            base,
+            0,
+        ),
+{
+    lemma_star_acc(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v, step, base, n0, n1, n2, 0, 0, 0);
+    lemma_star_pos_origin(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v);
+}
+
 // EQ_JOIN_PROVED_END
 
 #[verifier::external_body]
