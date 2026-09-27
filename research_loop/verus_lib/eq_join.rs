@@ -5476,6 +5476,847 @@ pub fn anti_miss_rows_str3(
 }
 // SHAPE_LEFT3_END
 
+// SHAPE_OR_BEGIN
+// OR of two equalities: match list is outer-major, inner-increasing ids where
+// either predicate holds (once per row pair — same as nested-loop `A || B`).
+
+/// Inner ids `0..end` where `a[j] == ka || b[j] == kb`, increasing.
+pub open spec fn or_match_ids<A, B>(
+    a: Seq<A>,
+    ka: A,
+    b: Seq<B>,
+    kb: B,
+    end: int,
+) -> Seq<usize>
+    decreases end,
+{
+    if end <= 0 {
+        Seq::<usize>::empty()
+    } else {
+        let prev = or_match_ids(a, ka, b, kb, end - 1);
+        if 0 <= end - 1 < a.len() && 0 <= end - 1 < b.len() {
+            if a[end - 1] == ka || b[end - 1] == kb {
+                prev.push((end - 1) as usize)
+            } else {
+                prev
+            }
+        } else {
+            prev
+        }
+    }
+}
+
+/// Matches between `outer[0..n]` and `inner` under `A || B`, outer-major.
+pub open spec fn nested_or_eq_pairs<A, B>(
+    outer_a: Seq<A>,
+    inner_a: Seq<A>,
+    outer_b: Seq<B>,
+    inner_b: Seq<B>,
+    n: int,
+) -> Seq<(usize, usize)>
+    decreases n,
+{
+    if n <= 0 {
+        Seq::<(usize, usize)>::empty()
+    } else if n - 1 >= outer_a.len() || n - 1 >= outer_b.len() {
+        nested_or_eq_pairs(outer_a, inner_a, outer_b, inner_b, n - 1)
+    } else {
+        let i = (n - 1) as usize;
+        let ids = or_match_ids(
+            inner_a,
+            outer_a[n - 1],
+            inner_b,
+            outer_b[n - 1],
+            inner_a.len() as int,
+        );
+        nested_or_eq_pairs(outer_a, inner_a, outer_b, inner_b, n - 1) + prefix_pairs(
+            i,
+            ids,
+            ids.len() as int,
+        )
+    }
+}
+
+pub proof fn lemma_or_match_ids_step<A, B>(a: Seq<A>, ka: A, b: Seq<B>, kb: B, end: int, row: usize)
+    requires
+        0 <= end < a.len(),
+        end < b.len(),
+        a.len() == b.len(),
+        row as int == end,
+    ensures
+        (a[end] == ka || b[end] == kb) ==> or_match_ids(a, ka, b, kb, end + 1) == or_match_ids(
+            a,
+            ka,
+            b,
+            kb,
+            end,
+        ).push(row),
+        !(a[end] == ka || b[end] == kb) ==> or_match_ids(a, ka, b, kb, end + 1) == or_match_ids(
+            a,
+            ka,
+            b,
+            kb,
+            end,
+        ),
+{
+    assert((row as int) as usize == row);
+    let prev = or_match_ids(a, ka, b, kb, end);
+    let next = or_match_ids(a, ka, b, kb, end + 1);
+    if a[end] == ka || b[end] == kb {
+        assert(next == prev.push(row));
+    } else {
+        assert(next == prev);
+    }
+}
+
+pub proof fn lemma_nested_or_eq_pairs_step<A, B>(
+    outer_a: Seq<A>,
+    inner_a: Seq<A>,
+    outer_b: Seq<B>,
+    inner_b: Seq<B>,
+    n: int,
+)
+    requires
+        0 < n <= outer_a.len(),
+        n <= outer_b.len(),
+        inner_a.len() == inner_b.len(),
+    ensures
+        ({
+            let i = (n - 1) as usize;
+            let ids = or_match_ids(
+                inner_a,
+                outer_a[n - 1],
+                inner_b,
+                outer_b[n - 1],
+                inner_a.len() as int,
+            );
+            nested_or_eq_pairs(outer_a, inner_a, outer_b, inner_b, n) == nested_or_eq_pairs(
+                outer_a,
+                inner_a,
+                outer_b,
+                inner_b,
+                n - 1,
+            ) + prefix_pairs(i, ids, ids.len() as int)
+        }),
+{
+    let i = (n - 1) as usize;
+    let ids = or_match_ids(
+        inner_a,
+        outer_a[n - 1],
+        inner_b,
+        outer_b[n - 1],
+        inner_a.len() as int,
+    );
+    assert(nested_or_eq_pairs(outer_a, inner_a, outer_b, inner_b, n) == nested_or_eq_pairs(
+        outer_a,
+        inner_a,
+        outer_b,
+        inner_b,
+        n - 1,
+    ) + prefix_pairs(i, ids, ids.len() as int));
+}
+
+/// Nested-loop fold with OR match — same order as `_gen_nested_loop` `full_cond`.
+pub open spec fn or_loop_acc<A, B, C>(
+    outer_a: Seq<A>,
+    inner_a: Seq<A>,
+    outer_b: Seq<B>,
+    inner_b: Seq<B>,
+    step: spec_fn(C, int, int) -> C,
+    base: C,
+    n_outer: int,
+    n_inner: int,
+    i0: int,
+    i1: int,
+) -> C
+    decreases n_outer - i0, n_inner - i1,
+{
+    if i0 < n_outer {
+        if i1 < n_inner {
+            let tail = or_loop_acc(
+                outer_a,
+                inner_a,
+                outer_b,
+                inner_b,
+                step,
+                base,
+                n_outer,
+                n_inner,
+                i0,
+                i1 + 1,
+            );
+            if 0 <= i0 < outer_a.len() && 0 <= i0 < outer_b.len() && 0 <= i1 < inner_a.len() && 0
+                <= i1 < inner_b.len() && (outer_a[i0] == inner_a[i1] || outer_b[i0] == inner_b[i1]) {
+                step(tail, i0, i1)
+            } else {
+                tail
+            }
+        } else {
+            or_loop_acc(outer_a, inner_a, outer_b, inner_b, step, base, n_outer, n_inner, i0 + 1, 0)
+        }
+    } else {
+        base
+    }
+}
+
+pub open spec fn or_pair_pos<A, B>(
+    outer_a: Seq<A>,
+    inner_a: Seq<A>,
+    outer_b: Seq<B>,
+    inner_b: Seq<B>,
+    i0: int,
+    i1: int,
+) -> int {
+    if !(0 <= i0 < outer_a.len()) || !(0 <= i0 < outer_b.len()) {
+        nested_or_eq_pairs(outer_a, inner_a, outer_b, inner_b, i0).len() as int
+    } else {
+        let ids = or_match_ids(inner_a, outer_a[i0], inner_b, outer_b[i0], inner_a.len() as int);
+        nested_or_eq_pairs(outer_a, inner_a, outer_b, inner_b, i0).len() as int + ids_lt(
+            ids,
+            ids.len() as int,
+            i1,
+        )
+    }
+}
+
+pub proof fn lemma_or_members<A, B>(a: Seq<A>, ka: A, b: Seq<B>, kb: B, end: int)
+    requires
+        0 <= end <= a.len(),
+        end <= b.len(),
+        a.len() == b.len(),
+        end <= usize::MAX as int,
+    ensures
+        forall|p: int|
+            0 <= p < or_match_ids(a, ka, b, kb, end).len() ==> {
+                let row = #[trigger] or_match_ids(a, ka, b, kb, end)[p] as int;
+                0 <= row < end && (a[row] == ka || b[row] == kb)
+            },
+    decreases end,
+{
+    if end > 0 {
+        assert(0 <= end - 1 <= usize::MAX as int);
+        lemma_or_members(a, ka, b, kb, end - 1);
+        let prev = or_match_ids(a, ka, b, kb, end - 1);
+        let cur = or_match_ids(a, ka, b, kb, end);
+        if 0 <= end - 1 < a.len() && 0 <= end - 1 < b.len() {
+            if a[end - 1] == ka || b[end - 1] == kb {
+                let row = (end - 1) as usize;
+                assert(row as int == end - 1);
+                assert(cur == prev.push(row));
+                assert forall|p: int| 0 <= p < cur.len() implies ({
+                    let r = #[trigger] cur[p] as int;
+                    0 <= r < end && (a[r] == ka || b[r] == kb)
+                }) by {
+                    if p < prev.len() {
+                        assert(cur[p] == prev[p]);
+                    } else {
+                        assert(cur[p] == row);
+                    }
+                };
+            } else {
+                assert(cur == prev);
+            }
+        } else {
+            assert(cur == prev);
+        }
+    }
+}
+
+pub proof fn lemma_or_rank<A, B>(a: Seq<A>, ka: A, b: Seq<B>, kb: B, end: int, row: int)
+    requires
+        0 <= row < end <= a.len(),
+        end <= b.len(),
+        a.len() == b.len(),
+        a[row] == ka || b[row] == kb,
+        end <= usize::MAX as int,
+    ensures
+        ({
+            let ids = or_match_ids(a, ka, b, kb, end);
+            let r = ids_lt(ids, ids.len() as int, row);
+            &&& 0 <= r < ids.len()
+            &&& ids[r] as int == row
+            &&& ids_lt(ids, ids.len() as int, row + 1) == r + 1
+        }),
+    decreases end - row,
+{
+    let prev = or_match_ids(a, ka, b, kb, end - 1);
+    let cur = or_match_ids(a, ka, b, kb, end);
+    if end == row + 1 {
+        let pushed = (end - 1) as usize;
+        assert(0 <= end - 1 <= usize::MAX as int);
+        assert(pushed as int == end - 1);
+        assert(cur == prev.push(pushed));
+        lemma_or_members(a, ka, b, kb, row);
+        lemma_ids_lt_all(prev, prev.len() as int, row);
+        lemma_ids_lt_all(prev, prev.len() as int, row + 1);
+        lemma_ids_lt_push_prefix(prev, pushed, prev.len() as int, row);
+        lemma_ids_lt_push_prefix(prev, pushed, prev.len() as int, row + 1);
+        assert(ids_lt(cur, prev.len() as int, row) == prev.len() as int);
+        assert(ids_lt(cur, prev.len() as int, row + 1) == prev.len() as int);
+        assert((pushed as int) < row + 1);
+        assert(cur.len() == prev.len() + 1);
+        assert(ids_lt(cur, cur.len() as int, row) == prev.len() as int);
+        assert(ids_lt(cur, cur.len() as int, row + 1) == prev.len() as int + 1);
+        assert(cur[prev.len() as int] == pushed);
+    } else {
+        lemma_or_rank(a, ka, b, kb, end - 1, row);
+        let pushed = (end - 1) as usize;
+        assert(0 <= end - 1 <= usize::MAX as int);
+        assert(pushed as int == end - 1);
+        assert(pushed as int > row);
+        if 0 <= end - 1 < a.len() && 0 <= end - 1 < b.len() {
+            if a[end - 1] == ka || b[end - 1] == kb {
+                assert(cur == prev.push(pushed));
+                lemma_ids_lt_push_prefix(prev, pushed, prev.len() as int, row);
+                lemma_ids_lt_push_prefix(prev, pushed, prev.len() as int, row + 1);
+                let r = ids_lt(prev, prev.len() as int, row);
+                assert(ids_lt(cur, cur.len() as int, row) == r);
+                assert(ids_lt(cur, cur.len() as int, row + 1) == r + 1);
+                assert(cur[r] == prev[r]);
+            } else {
+                assert(cur == prev);
+            }
+        } else {
+            assert(cur == prev);
+        }
+    }
+}
+
+pub proof fn lemma_nested_or_len_mono<A, B>(
+    outer_a: Seq<A>,
+    inner_a: Seq<A>,
+    outer_b: Seq<B>,
+    inner_b: Seq<B>,
+    n: int,
+    m: int,
+)
+    requires
+        0 <= n <= m <= outer_a.len(),
+        m <= outer_b.len(),
+        inner_a.len() == inner_b.len(),
+    ensures
+        nested_or_eq_pairs(outer_a, inner_a, outer_b, inner_b, n).len() <= nested_or_eq_pairs(
+            outer_a,
+            inner_a,
+            outer_b,
+            inner_b,
+            m,
+        ).len(),
+    decreases m - n,
+{
+    if n < m {
+        let cur = nested_or_eq_pairs(outer_a, inner_a, outer_b, inner_b, m);
+        let prev = nested_or_eq_pairs(outer_a, inner_a, outer_b, inner_b, m - 1);
+        lemma_nested_or_eq_pairs_step(outer_a, inner_a, outer_b, inner_b, m);
+        assert(prev.len() <= cur.len());
+        lemma_nested_or_len_mono(outer_a, inner_a, outer_b, inner_b, n, m - 1);
+    }
+}
+
+pub proof fn lemma_nested_or_index<A, B>(
+    outer_a: Seq<A>,
+    inner_a: Seq<A>,
+    outer_b: Seq<B>,
+    inner_b: Seq<B>,
+    n: int,
+    m: int,
+    p: int,
+)
+    requires
+        0 <= n <= m <= outer_a.len(),
+        m <= outer_b.len(),
+        inner_a.len() == inner_b.len(),
+        0 <= p < nested_or_eq_pairs(outer_a, inner_a, outer_b, inner_b, n).len(),
+    ensures
+        nested_or_eq_pairs(outer_a, inner_a, outer_b, inner_b, m)[p] == nested_or_eq_pairs(
+            outer_a,
+            inner_a,
+            outer_b,
+            inner_b,
+            n,
+        )[p],
+    decreases m - n,
+{
+    if n < m {
+        let cur = nested_or_eq_pairs(outer_a, inner_a, outer_b, inner_b, m);
+        let prev = nested_or_eq_pairs(outer_a, inner_a, outer_b, inner_b, m - 1);
+        lemma_nested_or_len_mono(outer_a, inner_a, outer_b, inner_b, n, m - 1);
+        if m - 1 >= outer_a.len() || m - 1 >= outer_b.len() {
+            assert(cur == prev);
+        } else {
+            lemma_nested_or_eq_pairs_step(outer_a, inner_a, outer_b, inner_b, m);
+            let i = (m - 1) as usize;
+            let ids = or_match_ids(
+                inner_a,
+                outer_a[m - 1],
+                inner_b,
+                outer_b[m - 1],
+                inner_a.len() as int,
+            );
+            let extra = prefix_pairs(i, ids, ids.len() as int);
+            assert(cur == prev + extra);
+            assert(p < prev.len());
+            lemma_left_index(prev, extra, p);
+        }
+        lemma_nested_or_index(outer_a, inner_a, outer_b, inner_b, n, m - 1, p);
+    }
+}
+
+pub proof fn lemma_or_acc<A, B, C>(
+    outer_a: Seq<A>,
+    inner_a: Seq<A>,
+    outer_b: Seq<B>,
+    inner_b: Seq<B>,
+    step: spec_fn(C, int, int) -> C,
+    base: C,
+    n_outer: int,
+    n_inner: int,
+    i0: int,
+    i1: int,
+)
+    requires
+        outer_a.len() == n_outer,
+        outer_b.len() == n_outer,
+        inner_a.len() == n_inner,
+        inner_b.len() == n_inner,
+        n_outer <= usize::MAX as int,
+        n_inner <= usize::MAX as int,
+        0 <= i0 <= n_outer,
+        0 <= i1 <= n_inner,
+    ensures
+        or_loop_acc(outer_a, inner_a, outer_b, inner_b, step, base, n_outer, n_inner, i0, i1)
+            == pair_acc(
+            nested_or_eq_pairs(outer_a, inner_a, outer_b, inner_b, n_outer),
+            step,
+            base,
+            or_pair_pos(outer_a, inner_a, outer_b, inner_b, i0, i1),
+        ),
+    decreases n_outer - i0, n_inner - i1,
+{
+    let pairs = nested_or_eq_pairs(outer_a, inner_a, outer_b, inner_b, n_outer);
+    let pos = or_pair_pos(outer_a, inner_a, outer_b, inner_b, i0, i1);
+    if i0 >= n_outer {
+        assert(nested_or_eq_pairs(outer_a, inner_a, outer_b, inner_b, i0) =~= pairs);
+        assert(pos == pairs.len() as int);
+    } else if i1 >= n_inner {
+        lemma_or_acc(outer_a, inner_a, outer_b, inner_b, step, base, n_outer, n_inner, i0 + 1, 0);
+        let ids = or_match_ids(inner_a, outer_a[i0], inner_b, outer_b[i0], n_inner);
+        lemma_or_members(inner_a, outer_a[i0], inner_b, outer_b[i0], n_inner);
+        assert forall|p: int| 0 <= p < ids.len() implies (ids[p] as int) < n_inner by {
+            assert(0 <= (ids[p] as int) < n_inner);
+        };
+        assert forall|p: int| 0 <= p < ids.len() implies (ids[p] as int) < i1 by {
+            assert((ids[p] as int) < n_inner);
+            assert(n_inner <= i1);
+        };
+        lemma_ids_lt_all(ids, ids.len() as int, i1);
+        let i0u = i0 as usize;
+        assert(i0u as int == i0);
+        lemma_prefix_len(i0u, ids, ids.len() as int);
+        assert(nested_or_eq_pairs(outer_a, inner_a, outer_b, inner_b, i0 + 1).len()
+            == nested_or_eq_pairs(outer_a, inner_a, outer_b, inner_b, i0).len() + ids.len());
+        if i0 + 1 < outer_a.len() {
+            let next_ids = or_match_ids(
+                inner_a,
+                outer_a[i0 + 1],
+                inner_b,
+                outer_b[i0 + 1],
+                n_inner,
+            );
+            lemma_ids_lt_zero(next_ids, next_ids.len() as int);
+        }
+        assert(or_pair_pos(outer_a, inner_a, outer_b, inner_b, i0 + 1, 0) == pos);
+    } else if outer_a[i0] == inner_a[i1] || outer_b[i0] == inner_b[i1] {
+        lemma_or_acc(outer_a, inner_a, outer_b, inner_b, step, base, n_outer, n_inner, i0, i1 + 1);
+        lemma_or_rank(inner_a, outer_a[i0], inner_b, outer_b[i0], n_inner, i1);
+        let ids = or_match_ids(inner_a, outer_a[i0], inner_b, outer_b[i0], n_inner);
+        let r = ids_lt(ids, ids.len() as int, i1);
+        let i0u = i0 as usize;
+        assert(i0u as int == i0);
+        lemma_prefix_len(i0u, ids, ids.len() as int);
+        lemma_prefix_at(i0u, ids, ids.len() as int, r);
+        let row_pairs = prefix_pairs(i0u, ids, ids.len() as int);
+        let earlier = nested_or_eq_pairs(outer_a, inner_a, outer_b, inner_b, i0);
+        let through = nested_or_eq_pairs(outer_a, inner_a, outer_b, inner_b, i0 + 1);
+        assert(through == earlier + row_pairs);
+        assert(i1 as int <= usize::MAX as int);
+        let i1u = i1 as usize;
+        assert(i1u as int == i1);
+        assert(row_pairs[r] == (i0u, i1u));
+        assert(0 <= r < row_pairs.len());
+        lemma_right_index(earlier, row_pairs, r);
+        assert(pos == earlier.len() as int + r);
+        assert(through.len() == earlier.len() + row_pairs.len());
+        assert(pos < through.len());
+        lemma_nested_or_len_mono(outer_a, inner_a, outer_b, inner_b, i0 + 1, n_outer);
+        assert(through.len() <= pairs.len());
+        assert(pos < pairs.len());
+        lemma_nested_or_index(outer_a, inner_a, outer_b, inner_b, i0 + 1, n_outer, pos);
+        assert(through[pos] == (i0u, i1u));
+        assert(pairs[pos] == (i0u, i1u));
+        assert(pos + 1 == or_pair_pos(outer_a, inner_a, outer_b, inner_b, i0, i1 + 1));
+        assert(or_loop_acc(outer_a, inner_a, outer_b, inner_b, step, base, n_outer, n_inner, i0, i1)
+            == step(
+            or_loop_acc(outer_a, inner_a, outer_b, inner_b, step, base, n_outer, n_inner, i0, i1 + 1),
+            i0,
+            i1,
+        ));
+        assert(pair_acc(pairs, step, base, pos) == step(
+            pair_acc(pairs, step, base, pos + 1),
+            i0,
+            i1,
+        ));
+    } else {
+        lemma_or_acc(outer_a, inner_a, outer_b, inner_b, step, base, n_outer, n_inner, i0, i1 + 1);
+        let ids = or_match_ids(inner_a, outer_a[i0], inner_b, outer_b[i0], n_inner);
+        lemma_or_members(inner_a, outer_a[i0], inner_b, outer_b[i0], n_inner);
+        assert forall|p: int| 0 <= p < ids.len() implies (#[trigger] ids[p] as int) != i1 by {
+            assert(inner_a[(ids[p] as int)] == outer_a[i0] || inner_b[(ids[p] as int)]
+                == outer_b[i0]);
+        };
+        lemma_ids_lt_skip(ids, ids.len() as int, i1);
+        assert(pos == or_pair_pos(outer_a, inner_a, outer_b, inner_b, i0, i1 + 1));
+    }
+}
+
+pub proof fn lemma_or_pair_pos_origin<A, B>(
+    outer_a: Seq<A>,
+    inner_a: Seq<A>,
+    outer_b: Seq<B>,
+    inner_b: Seq<B>,
+)
+    requires
+        outer_a.len() == outer_b.len(),
+        inner_a.len() == inner_b.len(),
+    ensures
+        or_pair_pos(outer_a, inner_a, outer_b, inner_b, 0, 0) == 0,
+{
+    if outer_a.len() == 0 {
+        assert(or_pair_pos(outer_a, inner_a, outer_b, inner_b, 0, 0) == 0);
+    } else {
+        let ids = or_match_ids(inner_a, outer_a[0], inner_b, outer_b[0], inner_a.len() as int);
+        lemma_ids_lt_zero(ids, ids.len() as int);
+        assert(or_pair_pos(outer_a, inner_a, outer_b, inner_b, 0, 0) == 0);
+    }
+}
+
+/// At the origin indices, ``or_loop_acc`` equals ``pair_acc`` of the OR match list at 0.
+pub proof fn lemma_or_at_origin<A, B, C>(
+    outer_a: Seq<A>,
+    inner_a: Seq<A>,
+    outer_b: Seq<B>,
+    inner_b: Seq<B>,
+    step: spec_fn(C, int, int) -> C,
+    base: C,
+    n_outer: int,
+    n_inner: int,
+)
+    requires
+        outer_a.len() == n_outer,
+        outer_b.len() == n_outer,
+        inner_a.len() == n_inner,
+        inner_b.len() == n_inner,
+        n_outer <= usize::MAX as int,
+        n_inner <= usize::MAX as int,
+    ensures
+        or_loop_acc(outer_a, inner_a, outer_b, inner_b, step, base, n_outer, n_inner, 0, 0)
+            == pair_acc(
+            nested_or_eq_pairs(outer_a, inner_a, outer_b, inner_b, n_outer),
+            step,
+            base,
+            0,
+        ),
+{
+    lemma_or_acc(outer_a, inner_a, outer_b, inner_b, step, base, n_outer, n_inner, 0, 0);
+    lemma_or_pair_pos_origin(outer_a, inner_a, outer_b, inner_b);
+}
+
+/// Proved nested-loop OR-equality match list (same order as MethodSpec `full_cond`).
+pub fn orjoin_pairs_str(
+    outer_a: &Vec<String>,
+    outer_b: &Vec<String>,
+    inner_a: &Vec<String>,
+    inner_b: &Vec<String>,
+) -> (pairs: Vec<(usize, usize)>)
+    requires
+        outer_a@.len() == outer_b@.len(),
+        inner_a@.len() == inner_b@.len(),
+        outer_a@.len() <= usize::MAX as int,
+        inner_a@.len() <= usize::MAX as int,
+    ensures
+        pairs@ == nested_or_eq_pairs(
+            key_views(outer_a@),
+            key_views(inner_a@),
+            key_views(outer_b@),
+            key_views(inner_b@),
+            outer_a@.len() as int,
+        ),
+{
+    let ghost oa = key_views(outer_a@);
+    let ghost ia = key_views(inner_a@);
+    let ghost ob = key_views(outer_b@);
+    let ghost ib = key_views(inner_b@);
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    let mut i: usize = 0;
+    while i < outer_a.len()
+        invariant
+            i <= outer_a.len(),
+            outer_a@.len() == outer_b@.len(),
+            inner_a@.len() == inner_b@.len(),
+            outer_a@.len() == outer_a.len() as int,
+            outer_b@.len() == outer_b.len() as int,
+            inner_a@.len() == inner_a.len() as int,
+            inner_b@.len() == inner_b.len() as int,
+            oa == key_views(outer_a@),
+            ia == key_views(inner_a@),
+            ob == key_views(outer_b@),
+            ib == key_views(inner_b@),
+            pairs@ == nested_or_eq_pairs(oa, ia, ob, ib, i as int),
+        decreases outer_a.len() - i,
+    {
+        let ghost before = pairs@;
+        let ghost end = i as int;
+        proof {
+            broadcast use vstd::std_specs::vec::axiom_spec_len;
+            assert(end < outer_a@.len());
+            assert(end < outer_b@.len());
+            lemma_key_view_at(outer_a@, end);
+            lemma_key_view_at(outer_b@, end);
+        }
+        let mut j: usize = 0;
+        while j < inner_a.len()
+            invariant
+                i < outer_a.len(),
+                j <= inner_a.len(),
+                outer_a@.len() == outer_b@.len(),
+                inner_a@.len() == inner_b@.len(),
+                outer_a@.len() == outer_a.len() as int,
+                outer_b@.len() == outer_b.len() as int,
+                inner_a@.len() == inner_a.len() as int,
+                inner_b@.len() == inner_b.len() as int,
+                oa == key_views(outer_a@),
+                ia == key_views(inner_a@),
+                ob == key_views(outer_b@),
+                ib == key_views(inner_b@),
+                end == i as int,
+                0 <= end < oa.len(),
+                end < ob.len(),
+                before == nested_or_eq_pairs(oa, ia, ob, ib, end),
+                pairs@ == before + or_scan_prefix(oa, ia, ob, ib, i, j as int),
+            decreases inner_a.len() - j,
+        {
+            let ghost pj = j as int;
+            let ka = outer_a[i].clone();
+            let kb = outer_b[i].clone();
+            let ia_j = inner_a[j].clone();
+            let ib_j = inner_b[j].clone();
+            proof {
+                broadcast use vstd::std_specs::vec::axiom_spec_len;
+                assert(pj < inner_a@.len());
+                assert(pj < inner_b@.len());
+                lemma_key_view_at(inner_a@, pj);
+                lemma_key_view_at(inner_b@, pj);
+                assert(oa[end] == ka@);
+                assert(ob[end] == kb@);
+                assert(ia[pj] == ia_j@);
+                assert(ib[pj] == ib_j@);
+            }
+            if ka == ia_j || kb == ib_j {
+                pairs.push((i, j));
+                proof {
+                    assert(oa[end] == ia[pj] || ob[end] == ib[pj]);
+                    lemma_or_scan_prefix_hit(oa, ia, ob, ib, i, pj);
+                }
+            } else {
+                proof {
+                    assert(!(oa[end] == ia[pj] || ob[end] == ib[pj]));
+                    lemma_or_scan_prefix_miss(oa, ia, ob, ib, i, pj);
+                }
+            }
+            j = j + 1;
+        }
+        proof {
+            lemma_or_scan_prefix_is_ids(oa, ia, ob, ib, i, inner_a@.len() as int);
+            lemma_nested_or_eq_pairs_step(oa, ia, ob, ib, end + 1);
+            let ids = or_match_ids(ia, oa[end], ib, ob[end], ia.len() as int);
+            assert(or_scan_prefix(oa, ia, ob, ib, i, ia.len() as int) == prefix_pairs(
+                i,
+                ids,
+                ids.len() as int,
+            ));
+            assert(pairs@ == before + prefix_pairs(i, ids, ids.len() as int));
+            assert(pairs@ == nested_or_eq_pairs(oa, ia, ob, ib, end + 1));
+        }
+        i = i + 1;
+    }
+    pairs
+}
+
+/// Inner scan `0..j` of OR matches for fixed outer row `i`.
+pub open spec fn or_scan_prefix<A, B>(
+    outer_a: Seq<A>,
+    inner_a: Seq<A>,
+    outer_b: Seq<B>,
+    inner_b: Seq<B>,
+    i: usize,
+    j: int,
+) -> Seq<(usize, usize)>
+    decreases j,
+{
+    if j <= 0 {
+        Seq::<(usize, usize)>::empty()
+    } else {
+        let prev = or_scan_prefix(outer_a, inner_a, outer_b, inner_b, i, j - 1);
+        if 0 <= (i as int) < outer_a.len() && 0 <= (i as int) < outer_b.len() && 0 <= j - 1
+            < inner_a.len() && 0 <= j - 1 < inner_b.len() && (outer_a[i as int] == inner_a[j - 1]
+            || outer_b[i as int] == inner_b[j - 1]) {
+            prev.push((i, (j - 1) as usize))
+        } else {
+            prev
+        }
+    }
+}
+
+pub proof fn lemma_or_scan_prefix_hit<A, B>(
+    outer_a: Seq<A>,
+    inner_a: Seq<A>,
+    outer_b: Seq<B>,
+    inner_b: Seq<B>,
+    i: usize,
+    j: int,
+)
+    requires
+        0 <= (i as int) < outer_a.len(),
+        (i as int) < outer_b.len(),
+        0 <= j < inner_a.len(),
+        j < inner_b.len(),
+        j <= usize::MAX as int,
+        outer_a[i as int] == inner_a[j] || outer_b[i as int] == inner_b[j],
+    ensures
+        or_scan_prefix(outer_a, inner_a, outer_b, inner_b, i, j + 1) == or_scan_prefix(
+            outer_a,
+            inner_a,
+            outer_b,
+            inner_b,
+            i,
+            j,
+        ).push((i, j as usize)),
+{
+    let prev = or_scan_prefix(outer_a, inner_a, outer_b, inner_b, i, j);
+    let next = or_scan_prefix(outer_a, inner_a, outer_b, inner_b, i, j + 1);
+    let ju = j as usize;
+    assert(ju as int == j);
+    assert(next == prev.push((i, ju)));
+}
+
+pub proof fn lemma_or_scan_prefix_miss<A, B>(
+    outer_a: Seq<A>,
+    inner_a: Seq<A>,
+    outer_b: Seq<B>,
+    inner_b: Seq<B>,
+    i: usize,
+    j: int,
+)
+    requires
+        0 <= (i as int) < outer_a.len(),
+        (i as int) < outer_b.len(),
+        0 <= j < inner_a.len(),
+        j < inner_b.len(),
+        !(outer_a[i as int] == inner_a[j] || outer_b[i as int] == inner_b[j]),
+    ensures
+        or_scan_prefix(outer_a, inner_a, outer_b, inner_b, i, j + 1) == or_scan_prefix(
+            outer_a,
+            inner_a,
+            outer_b,
+            inner_b,
+            i,
+            j,
+        ),
+{
+    assert(or_scan_prefix(outer_a, inner_a, outer_b, inner_b, i, j + 1) == or_scan_prefix(
+        outer_a,
+        inner_a,
+        outer_b,
+        inner_b,
+        i,
+        j,
+    ));
+}
+
+pub proof fn lemma_or_scan_prefix_is_ids<A, B>(
+    outer_a: Seq<A>,
+    inner_a: Seq<A>,
+    outer_b: Seq<B>,
+    inner_b: Seq<B>,
+    i: usize,
+    j: int,
+)
+    requires
+        0 <= (i as int) < outer_a.len(),
+        (i as int) < outer_b.len(),
+        0 <= j <= inner_a.len(),
+        j <= inner_b.len(),
+        inner_a.len() == inner_b.len(),
+        j <= usize::MAX as int,
+    ensures
+        or_scan_prefix(outer_a, inner_a, outer_b, inner_b, i, j) == prefix_pairs(
+            i,
+            or_match_ids(inner_a, outer_a[i as int], inner_b, outer_b[i as int], j),
+            or_match_ids(inner_a, outer_a[i as int], inner_b, outer_b[i as int], j).len() as int,
+        ),
+    decreases j,
+{
+    let ka = outer_a[i as int];
+    let kb = outer_b[i as int];
+    let ids = or_match_ids(inner_a, ka, inner_b, kb, j);
+    if j > 0 {
+        lemma_or_scan_prefix_is_ids(outer_a, inner_a, outer_b, inner_b, i, j - 1);
+        let prev_ids = or_match_ids(inner_a, ka, inner_b, kb, j - 1);
+        let prev_scan = or_scan_prefix(outer_a, inner_a, outer_b, inner_b, i, j - 1);
+        assert(prev_scan == prefix_pairs(i, prev_ids, prev_ids.len() as int));
+        lemma_or_match_ids_step(inner_a, ka, inner_b, kb, j - 1, (j - 1) as usize);
+        if inner_a[j - 1] == ka || inner_b[j - 1] == kb {
+            let row = (j - 1) as usize;
+            assert(row as int == j - 1);
+            assert(ids == prev_ids.push(row));
+            lemma_prefix_pairs_step(i, ids, prev_ids.len() as int);
+            assert(prefix_pairs(i, ids, ids.len() as int) == prefix_pairs(
+                i,
+                ids,
+                prev_ids.len() as int,
+            ).push((i, row)));
+            assert(prefix_pairs(i, ids, prev_ids.len() as int) == prefix_pairs(
+                i,
+                prev_ids,
+                prev_ids.len() as int,
+            )) by {
+                lemma_prefix_pairs_push_suffix(i, prev_ids, row, prev_ids.len() as int);
+            };
+            assert(or_scan_prefix(outer_a, inner_a, outer_b, inner_b, i, j) == prev_scan.push(
+                (i, row),
+            ));
+        } else {
+            assert(ids == prev_ids);
+            assert(or_scan_prefix(outer_a, inner_a, outer_b, inner_b, i, j) == prev_scan);
+        }
+    }
+}
+
+pub proof fn lemma_prefix_pairs_push_suffix(i: usize, ids: Seq<usize>, x: usize, t: int)
+    requires
+        0 <= t <= ids.len(),
+    ensures
+        prefix_pairs(i, ids.push(x), t) == prefix_pairs(i, ids, t),
+    decreases t,
+{
+    if t > 0 {
+        lemma_prefix_pairs_push_suffix(i, ids, x, t - 1);
+        assert(ids.push(x)[t - 1] == ids[t - 1]);
+    }
+}
+
+// SHAPE_OR_END
+
 // EQ_JOIN_PROVED_END
 
 
