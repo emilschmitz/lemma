@@ -78,3 +78,7 @@ verus/db_extension/rust_bridge/target/
 # Paper harvest data (traces, overnight logs, watch state). Symlink to ~/lemma-harvest.
 # Never commit or push this tree.
 /harvest
+
+# Local leftovers (old overnight outputs, lease-load worktree patch). See archive/README.md.
+# Never commit or push this tree.
+/archive
