@@ -2,10 +2,13 @@
 
 ## Always read the traces on failure
 
-On any loud fail (`CUSTOM_PIPELINE_FAILED`, experiment `exit=1`, MCP verify error): open the
+On any loud fail (`CUSTOM_PIPELINE_FAILED`, experiment `exit=1`, MCP verify error, empty timeout): open the
 traces **in this order** before guessing: `mcp_results/runs/*.json`, then
 `mcp_results/submitted.json`, then leftover `verify_error_custom.log` /
-`runquery_agent.rs`. Leftover verify is the last edit, not the official prove.
+`runquery_agent.rs`, then **`workspace/logs/agent_stream.jsonl`**. That file
+is the agent conversation. Read the `thinking` deltas joined into text and
+every `tool_call` (name, path, command). Do not stop at event counts.
+`agent_stderr.log` is not a substitute. Leftover verify is the last edit, not the official prove.
 Host codegen bugs and agent proof failures look the same at the one-line summary.
 
 ### Always name the failure type

@@ -22,7 +22,7 @@ When telling Emil about a problem, lead with **`step N (name):`** and **one** of
 | **Software fail** | Assemble, transpile, a call to a lemma the host deleted, a pin, a scorer, or missing traces. These should be impossible once the host is finished. Fix the software. Do not call this agent stupidity. |
 | **It proved and then did not run** | Verus already said `N verified, 0 errors`, and step 7 (the timed run) died. That is a run fail, not a proof fail. |
 
-**Traces before any claim about the agent.** If you are about to say the agent caused something, or you only suspect that, open the traces first. A driver line (`FAILED`, `TIMEOUT`, `fail_streak`) is not a trace. The trace is `mcp_results/runs/*.json`, `submitted.json`, and `verify_error_custom.log`.
+**Traces before any claim about the agent.** If you are about to say the agent caused something, or you only suspect that, open the traces first. A driver line (`FAILED`, `TIMEOUT`, `fail_streak`) is not a trace. On **any** agent fail, the traces are `mcp_results/runs/*.json`, `submitted.json`, `verify_error_custom.log`, **and** the agent conversation `workspace/logs/agent_stream.jsonl` (thinking text and every tool call). Event counts are not that conversation.
 
 **Proofs are the agent’s job** (`AGENT_EDIT` only). Host work is the harness: steps **2, 4, 6, 7** (typed spec, assemble, compile, pin/execute). Do not hand-write or patch proofs. If the agent fails on a **sound** spec, a **general** prompt tweak is allowed; query-specific prompt hacks are not.
 
@@ -255,10 +255,18 @@ Verus **finished** (proof error, not a timeout). Only treat it as a timeout if t
    the official prove. Do **not** contradict it with a later leftover file.
 3. Only then leftover `workspace/verify_error_custom.log` and
    `workspace/runquery_agent.rs` (last edit; often a speed-chase overwrite).
-4. Experiment / optimizer logs: `experiment_data/logs/*.log`, `nohup.out`,
+4. **`workspace/logs/agent_stream.jsonl` on every agent fail**, including
+   empty timeouts and prove errors. This is the agent's conversation.
+   Read the `thinking` text (join the `delta`s) and every `tool_call`
+   (`started` and `completed`: name, path, command). Quote what it was
+   doing when the iteration died. A count of thinking events or tool calls
+   is not this step. `agent_stderr.log` is stderr only. If this file was
+   not harvested, do not describe what the agent thought or which tools it
+   used.
+5. Experiment / optimizer logs: `experiment_data/logs/*.log`, `nohup.out`,
    harvest `r18_Q*.log`. A `TIMEOUT after Ns` line is the **host harness wall**,
    not a Verus verdict.
-5. `research_loop/generated/verify_error_custom.log` and
+6. `research_loop/generated/verify_error_custom.log` and
    `research_loop/agents/failed_transpile/verify_*.json` for local prove_loop.
 
 Do **not** classify “agent could not prove” from leftover verify / `runquery_agent.rs`
@@ -292,8 +300,10 @@ off. That is **setup didn’t give the ability**. Do **not** call an official
 0 errors` already exists.
 
 **Hard rule — missing traces:** If `workspace/mcp_results` (runs/*.json,
-submitted.json) or leftover `verify_error_custom.log` were **not harvested** off
-the VM, do **not** classify “agent too stupid to prove”. Default to **harness /
+submitted.json), leftover `verify_error_custom.log`, or
+`workspace/logs/agent_stream.jsonl` were **not harvested** off
+the VM, do **not** classify “agent too stupid to prove” and do **not**
+describe what the agent thought or which tools it called. Default to **harness /
 software failed** (traces not saved; fix harvest before blaming the agent).
 
 ### Worked example — r24rocket 2026-09-20 (`fail_streak_6`)
