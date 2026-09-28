@@ -144,7 +144,10 @@ returns.
 3. Call `lemma_<helper>_is_right2` against `nested_right_pairs2` (via
    `lemma_<helper>_is_right2_loop` + `lemma_right_at_origin2`). Multi-agg GROUP BY
    uses `join_roj_multi_agg_helper` /
-   `lemma_join_roj_multi_agg_helper_method_is_fold`.
+   `lemma_join_roj_multi_agg_helper_method_is_fold`. Two-key RIGHT projection
+   uses `join_right_projection_helper` with the same pair list; nullable-side
+   columns are `Option` (`Some` / `None` pad), preserved-side columns copied on
+   match and miss.
 4. Call `lemma_<helper>_method_is_fold`.
 
 ### FULL OUTER — `full_outer_parts_str`
