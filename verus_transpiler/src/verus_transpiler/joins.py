@@ -6112,12 +6112,13 @@ def _emit_right_scalar_count(
     where_expr: str | None,
     helper_name: str = "join_right_count_helper",
 ) -> tuple[str, str, str, _FoldBridge | None]:
-    """RIGHT OUTER scalar COUNT(*) as ``right_acc`` of ``nested_right_pairs``.
+    """RIGHT OUTER scalar COUNT(*) as ``right_acc`` of nested right-outer pairs.
 
-    // shape: right
+    // shape: right (one equality) or right2 (two string ``@`` equalities)
     After side-swap, ``slots[0]`` is the SQL RIGHT (preserved) table. Both match
     and miss slots contribute +1 — count equals the RIGHT-outer slot list length.
-    Reuses ``right_outer_pairs_str`` / ``right_acc`` (same as projection / multi-agg).
+    One equality → ``right_outer_pairs_str`` / ``nested_right_pairs``; two →
+    ``right_outer_pairs_str2`` / ``nested_right_pairs2`` via ``_right2_fold_lemma``.
     """
     if len(slots) != 2:
         raise UnsupportedContractError(
@@ -6137,35 +6138,15 @@ def _emit_right_scalar_count(
         )
     o, inn = slots
     join = query.joins[0]
-    if len(join.on_equalities) != 1:
+    if len(join.on_equalities) not in (1, 2):
         raise UnsupportedContractError(
-            "RIGHT OUTER COUNT supports exactly one equality"
-        )
-    left_ref, right_ref = join.on_equalities[0]
-    l_expr = _col_access_ref(left_ref, query, slots, schemas_by_table, {})
-    r_expr = _col_access_ref(right_ref, query, slots, schemas_by_table, {})
-    m = re.fullmatch(
-        r"(?P<lp>\w+)\.(?P<lf>\w+)\[(?P<li>\w+) as int\](?P<lv>@?)\s*==\s*"
-        r"(?P<rp>\w+)\.(?P<rf>\w+)\[(?P<ri>\w+) as int\](?P<rv>@?)",
-        f"{l_expr} == {r_expr}".replace(f"{o.idx} as int", "i0 as int").replace(
-            f"{inn.idx} as int", "i1 as int"
-        ),
-    )
-    if m is None or bool(m.group("lv")) != bool(m.group("rv")):
-        raise UnsupportedContractError(
-            "RIGHT OUTER COUNT requires a single column equality"
-        )
-    if m.group("lp") != o.param or m.group("rp") != inn.param:
-        raise UnsupportedContractError(
-            "RIGHT OUTER COUNT equality must be preserved-side == nullable-side"
+            "RIGHT OUTER COUNT supports one or two equalities"
         )
 
     def seq_expr(param: str, field: str, view: str) -> str:
         col = f"{param}.{field}"
         return f"key_views({col}@)" if view else f"{col}@"
 
-    outer_seq = seq_expr(m.group("lp"), m.group("lf"), m.group("lv"))
-    inner_seq = seq_expr(m.group("rp"), m.group("rf"), m.group("rv"))
     ret_type = "u64"
     ret_base = "0u64"
     step_hit = (
@@ -6178,30 +6159,121 @@ def _emit_right_scalar_count(
         f"            (acc as int + 1) as u64\n"
         f"        }}"
     )
-    helper = f"""// shape: right
+
+    if len(join.on_equalities) == 2:
+        # Orient each equality as preserved (slots[0]) == nullable (slots[1]);
+        # ON column order after side-swap may be either way.
+        match_parts: list[str] = []
+        for left_ref, right_ref in join.on_equalities:
+            a = _col_access_ref(left_ref, query, slots, schemas_by_table, {})
+            b = _col_access_ref(right_ref, query, slots, schemas_by_table, {})
+            a_on_preserved = f"{o.param}." in a and f"[{o.idx} as int]" in a
+            b_on_preserved = f"{o.param}." in b and f"[{o.idx} as int]" in b
+            if a_on_preserved and not b_on_preserved:
+                preserved_expr, nullable_expr = a, b
+            elif b_on_preserved and not a_on_preserved:
+                preserved_expr, nullable_expr = b, a
+            else:
+                raise UnsupportedContractError(
+                    "RIGHT OUTER COUNT equality must be "
+                    "preserved-side == nullable-side"
+                )
+            l_expr = preserved_expr.replace(f"{o.idx} as int", "i0 as int")
+            r_expr = nullable_expr.replace(f"{inn.idx} as int", "i1 as int")
+            match_parts.append(f"{l_expr} == {r_expr}")
+        parsed: list[re.Match[str]] = []
+        for part in match_parts:
+            m2 = re.fullmatch(
+                r"(?P<lp>\w+)\.(?P<lf>\w+)\[i0 as int\](?P<lv>@?)\s*==\s*"
+                r"(?P<rp>\w+)\.(?P<rf>\w+)\[i1 as int\](?P<rv>@?)",
+                part.strip(),
+            )
+            if m2 is None or not m2.group("lv") or not m2.group("rv"):
+                raise UnsupportedContractError(
+                    "RIGHT OUTER COUNT two equalities require String keys"
+                )
+            if m2.group("lp") != o.param or m2.group("rp") != inn.param:
+                raise UnsupportedContractError(
+                    "RIGHT OUTER COUNT equality must be "
+                    "preserved-side == nullable-side"
+                )
+            parsed.append(m2)
+        outer_seqs = [
+            seq_expr(m.group("lp"), m.group("lf"), m.group("lv")) for m in parsed
+        ]
+        inner_seqs = [
+            seq_expr(m.group("rp"), m.group("rf"), m.group("rv")) for m in parsed
+        ]
+        pairs_call = (
+            f"nested_right_pairs2(\n"
+            f"            {outer_seqs[0]},\n"
+            f"            {outer_seqs[1]},\n"
+            f"            {inner_seqs[0]},\n"
+            f"            {inner_seqs[1]},\n"
+            f"            {o.param}.n as int,\n"
+            f"        )"
+        )
+        shape_mark = "// shape: right2"
+        fold_text, bridge = _right2_fold_lemma(
+            helper_name,
+            slots,
+            outer_seqs=outer_seqs,
+            inner_seqs=inner_seqs,
+            ret_type=ret_type,
+            ret_base=ret_base,
+            step_hit=step_hit,
+            step_miss=step_miss,
+        )
+    else:
+        left_ref, right_ref = join.on_equalities[0]
+        l_expr = _col_access_ref(left_ref, query, slots, schemas_by_table, {})
+        r_expr = _col_access_ref(right_ref, query, slots, schemas_by_table, {})
+        m = re.fullmatch(
+            r"(?P<lp>\w+)\.(?P<lf>\w+)\[(?P<li>\w+) as int\](?P<lv>@?)\s*==\s*"
+            r"(?P<rp>\w+)\.(?P<rf>\w+)\[(?P<ri>\w+) as int\](?P<rv>@?)",
+            f"{l_expr} == {r_expr}".replace(f"{o.idx} as int", "i0 as int").replace(
+                f"{inn.idx} as int", "i1 as int"
+            ),
+        )
+        if m is None or bool(m.group("lv")) != bool(m.group("rv")):
+            raise UnsupportedContractError(
+                "RIGHT OUTER COUNT requires a single column equality"
+            )
+        if m.group("lp") != o.param or m.group("rp") != inn.param:
+            raise UnsupportedContractError(
+                "RIGHT OUTER COUNT equality must be preserved-side == nullable-side"
+            )
+        outer_seq = seq_expr(m.group("lp"), m.group("lf"), m.group("lv"))
+        inner_seq = seq_expr(m.group("rp"), m.group("rf"), m.group("rv"))
+        pairs_call = (
+            f"nested_right_pairs({outer_seq}, {inner_seq}, {o.param}.n as int)"
+        )
+        shape_mark = "// shape: right"
+        fold_text, bridge = _right_fold_lemma(
+            helper_name,
+            slots,
+            outer_seq=outer_seq,
+            inner_seq=inner_seq,
+            step_hit=step_hit,
+            step_miss=step_miss,
+            ret_type=ret_type,
+            ret_base=ret_base,
+        )
+
+    helper = f"""{shape_mark}
 pub open spec fn {helper_name}(
     {o.param}: &{o.struct},
     {inn.param}: &{inn.struct},
 ) -> (res: {ret_type})
 {{
     right_acc(
-        nested_right_pairs({outer_seq}, {inner_seq}, {o.param}.n as int),
+        {pairs_call},
         {step_hit},
         {step_miss},
         {ret_base},
         0,
     )
 }}"""
-    fold_text, bridge = _right_fold_lemma(
-        helper_name,
-        slots,
-        outer_seq=outer_seq,
-        inner_seq=inner_seq,
-        step_hit=step_hit,
-        step_miss=step_miss,
-        ret_type=ret_type,
-        ret_base=ret_base,
-    )
     helpers_out = helper + "\n\n" + fold_text
     spec_body = f"{helper_name}({o.param}, {inn.param})"
     return helpers_out, spec_body, ret_type, bridge
