@@ -121,7 +121,7 @@ returns.
 2. Walk slots from the end with `right_acc` (hit and miss steps).
 3. Call `lemma_<helper>_is_right` against `nested_right_pairs`. Projection uses
    `join_right_projection_helper`; scalar `COUNT(*)` uses `join_right_count_helper`;
-   multi-agg GROUP BY uses `join_roj_multi_agg_helper` /
+   GROUP BY with one or more aggregates uses `join_roj_multi_agg_helper` /
    `lemma_join_roj_multi_agg_helper_method_is_fold` (same `right_outer_pairs_str` list).
 4. Call `lemma_<helper>_method_is_fold`.
 

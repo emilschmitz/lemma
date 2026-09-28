@@ -76,6 +76,27 @@ def _projected(sql: str) -> dict[str, dict[str, str]]:
     return cast(dict[str, dict[str, str]], projected)
 
 
+_ROJ_ONE_SUM_SQL = """
+SELECT s.adsh, SUM(s.fy) AS s
+FROM pre p RIGHT JOIN sub s ON p.adsh = s.adsh
+GROUP BY s.adsh
+"""
+
+
+def test_roj_one_sum_transpile_emits_is_right_fold() -> None:
+    """A single SUM is the same right_acc fold as multi-agg (is_multi_agg is len>1)."""
+    projected = _projected(_ROJ_ONE_SUM_SQL)
+    catalog = _large_sec_product_catalog()
+    out = transpile_sql_to_verus(
+        _ROJ_ONE_SUM_SQL, projected, catalog_assumptions=catalog
+    )
+    assert "join_roj_multi_agg_helper" in out
+    assert "lemma_join_roj_multi_agg_helper_is_right(" in out
+    assert "lemma_join_roj_multi_agg_helper_method_is_fold(" in out
+    assert "right_acc(" in out
+    _assert_full_sec_caps(out)
+
+
 def test_roj_multi_transpile_emits_is_right_fold() -> None:
     projected = _projected(_ROJ_MULTI_SQL)
     catalog = _large_sec_product_catalog()
@@ -92,6 +113,43 @@ def test_roj_multi_transpile_emits_is_right_fold() -> None:
     assert "right_acc(" in out
     _assert_full_sec_caps(out)
     assert _SEC_PRODUCT_MAX_ROWS == 67_108_864
+
+
+def test_roj_one_sum_fold_lemma_verifies(tmp_path: Path) -> None:
+    """One preserved-side SUM uses the same right_acc proof as multi-agg."""
+    if resolve_verus_bin() is None:
+        pytest.skip("verus not found")
+    projected = _projected(_ROJ_ONE_SUM_SQL)
+    catalog = _large_sec_product_catalog()
+    spec_rs = transpile_sql_to_verus(
+        _ROJ_ONE_SUM_SQL, projected, catalog_assumptions=catalog
+    )
+    assert "lemma_join_roj_multi_agg_helper_method_is_fold(" in spec_rs
+    _assert_full_sec_caps(spec_rs)
+    ret_type = resolve_ret_type_from_method_spec(spec_rs)
+    stub = """#[verifier::external_body]
+pub exec fn run_query(sub: &Cols_sub, pre: &Cols_pre) -> (res: StringHashMap<u64>)
+    requires valid_cols_sub(sub), valid_cols_pre(pre),
+    ensures res@ == method_spec(sub, pre),
+{
+    StringHashMap::new()
+}"""
+    program = assemble_verified_join_program(
+        spec_rs=spec_rs,
+        run_query_body=stub,
+        multi_schema=projected,
+        table_order=("sub", "pre"),
+        ret_type=ret_type,
+        default_tbls={"pre": "", "sub": ""},
+        catalog_assumptions=catalog,
+    )
+    assert "lemma_join_roj_multi_agg_helper_method_is_fold(" in program
+    _assert_full_sec_caps(program)
+    rs_path = tmp_path / "roj_one_sum_fold.rs"
+    rs_path.write_text(program, encoding="utf-8")
+    ok, log = run_verus_verify(str(rs_path), timeout=300)
+    assert ok, log[-5000:]
+    assert "0 errors" in log
 
 
 def test_roj_multi_fold_lemma_verifies(tmp_path: Path) -> None:

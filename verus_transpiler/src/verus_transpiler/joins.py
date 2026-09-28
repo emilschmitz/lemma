@@ -8948,8 +8948,8 @@ def emit_join_spec_helpers(
 
     if (
         is_right
-        and query.is_multi_agg
         and query.groupby_columns
+        and query.agg_specs
         and len(slots) == 2
         and not query.is_projection
     ):
