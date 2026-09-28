@@ -55,6 +55,39 @@ def test_previous_failure_keeps_the_tail(tmp_path: Path, monkeypatch: pytest.Mon
     assert "START_MARKER" not in prompt
 
 
+def test_killed_agent_stream_is_not_the_next_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws = tmp_path / "workspace"
+    (ws / "context" / "ro").mkdir(parents=True)
+    monkeypatch.setenv("LEMMA_FAST_TRUSTEDS", "0")
+    stream = (
+        '{"type":"thinking","subtype":"delta","text":"reading spec.rs offset 2176"}\n'
+        * 400
+    )
+    prompt = build_agent_prompt(
+        workspace=ws,
+        query_id=1,
+        sql_query="SELECT 1",
+        iteration=2,
+        max_iterations=4,
+        last_error=f"Agent failed: {stream}",
+    )
+    assert "produced no Verus result" in prompt
+    assert "reading spec.rs" not in prompt
+
+    verus = "x" * 8000 + "\nverification results:: 150 verified, 1 errors\nassert forall"
+    prompt = build_agent_prompt(
+        workspace=ws,
+        query_id=1,
+        sql_query="SELECT 1",
+        iteration=2,
+        max_iterations=4,
+        last_error=verus + '\n{"type":"thinking","text":"ignore"}',
+    )
+    assert "verification results:: 150 verified, 1 errors" in prompt
+
+
 def test_concrete_proof_names_are_the_fold_lemmas() -> None:
     from research_loop.agent_sandbox import concrete_proof_names
 

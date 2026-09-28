@@ -250,8 +250,13 @@ _LAST_ERROR_MAX_CHARS = 6000
 
 
 def _clip_last_error(text: str) -> str:
-    """Keep the end of a prior iteration log. The head is the previous prompt."""
+    """Keep a real Verus/rustc tail. A killed agent's thinking stream is not an error."""
     text = text.strip()
+    if '"type":"thinking"' in text and "verification results::" not in text:
+        return (
+            "The previous iteration was killed at the wall clock. "
+            "It produced no Verus result."
+        )
     if len(text) <= _LAST_ERROR_MAX_CHARS:
         return text
     return "…previous log clipped…\n" + text[-_LAST_ERROR_MAX_CHARS:]
