@@ -89,11 +89,34 @@ def test_killed_agent_stream_is_not_the_next_error(
 
 
 def test_concrete_proof_names_are_the_fold_lemmas() -> None:
-    from research_loop.agent_sandbox import concrete_proof_names
+    from research_loop.agent_sandbox import concrete_call_lemmas, concrete_proof_names, _proof_paths_text
 
     spec = "pub fn equijoin_pairs_str() {}\npub proof fn lemma_multi_agg_helper_method_is_fold() {}\n"
     assert concrete_proof_names(spec) == ["lemma_multi_agg_helper_method_is_fold"]
     assert concrete_proof_names("pub fn equijoin_pairs_str() {}") == []
+
+    star = (
+        "pub proof fn lemma_join_projection_helper_is_star() {}\n"
+        "pub proof fn lemma_join_projection_helper_is_star_pairs() {}\n"
+        "pub proof fn lemma_join_projection_helper_method_is_fold() {}\n"
+        "pub proof fn lemma_star_at_origin() {}\n"
+    )
+    assert concrete_call_lemmas(star) == [
+        "lemma_join_projection_helper_is_star",
+        "lemma_join_projection_helper_is_star_pairs",
+        "lemma_join_projection_helper_method_is_fold",
+    ]
+    static = (
+        "Call `lemma_<helper>_is_star_pairs`.\n"
+        "Call `lemma_<helper>_method_is_fold`.\n"
+    )
+    text = _proof_paths_text(static, star)
+    assert "lemma_<helper>_" not in text
+    assert "lemma_join_projection_helper_is_star_pairs" in text
+    header, _, _rest = text.partition("Call `")
+    assert "lemma_star_at_origin" not in header
+    two = star + "pub proof fn lemma_other_helper_method_is_fold() {}\n"
+    assert "lemma_<helper>_" in _proof_paths_text(static, two)
 
 
 def test_build_agent_prompt_join_menu_not_proof_paths(

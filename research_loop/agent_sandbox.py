@@ -34,23 +34,50 @@ BODY_NAME = "runquery_agent.rs"
 SPEC_NAME = "spec.rs"
 SPEC_EXCERPT_MAX_CHARS = 12000
 _METHOD_IS_FOLD_RE = re.compile(r"\bpub proof fn (lemma_\w+_method_is_fold)\b")
+_HELPER_STEM_RE = re.compile(r"\bpub proof fn lemma_(\w+)_method_is_fold\b")
+_PROOF_FN_RE = re.compile(r"\bpub proof fn (lemma_\w+)\b")
 
 
 def concrete_proof_names(spec: str) -> list[str]:
-    """Query lemmas the host emitted. The static proof-path file only has placeholders."""
+    """Fold lemmas the host emitted. The static proof-path file only has placeholders."""
     return list(dict.fromkeys(_METHOD_IS_FOLD_RE.findall(spec)))
 
 
+def _helper_stems(spec: str) -> list[str]:
+    return list(dict.fromkeys(_HELPER_STEM_RE.findall(spec)))
+
+
+def concrete_call_lemmas(spec: str) -> list[str]:
+    """Fold lemmas plus the shape lemmas (`_is_star_pairs`, …) for those helpers."""
+    stems = _helper_stems(spec)
+    if not stems:
+        return []
+    names: list[str] = []
+    for match in _PROOF_FN_RE.finditer(spec):
+        name = match.group(1)
+        for stem in stems:
+            if name == f"lemma_{stem}_method_is_fold" or name.startswith(f"lemma_{stem}_is_"):
+                names.append(name)
+                break
+    return list(dict.fromkeys(names))
+
+
 def _proof_paths_text(static: str, spec: str) -> str:
-    names = concrete_proof_names(spec)
+    names = concrete_call_lemmas(spec)
+    stems = _helper_stems(spec)
+    body = static
+    # One helper: the static file's `lemma_<helper>_` is that function's prefix.
+    # Several helpers stay as placeholders so the wrong stem is not pasted in.
+    if len(stems) == 1:
+        body = body.replace("lemma_<helper>_", f"lemma_{stems[0]}_")
     if not names:
-        return static
+        return body
     header = (
         "## This spec\n\n"
         + "\n".join(f"- `{name}`" for name in names)
         + "\n\n"
     )
-    return header + static
+    return header + body
 
 
 def load_agent_config(config: dict[str, str] | None = None) -> dict[str, str]:
@@ -365,7 +392,7 @@ Keep the host signature / `requires` / `ensures` matching `method_spec(...)` in 
 or join tables). Do not add Trusted, `assume`,
 `arbitrary`, `external_body`, or redefine `method_spec`.
 Write the body in `{body_path}` and call `run_runquery` before half the wall-clock budget is gone.
-Fold lemma names for this query are listed under `## This spec` in `{ctx}/JOIN_PROOF_PATHS.md`.
+Concrete lemma names for this query are listed under `## This spec` in `{ctx}/JOIN_PROOF_PATHS.md`. That header is what `lemma_<helper>_` stands for.
 {prelim_section}
 {_rocketship_exec_section(ctx)}
 {_verus_mode_section()}
