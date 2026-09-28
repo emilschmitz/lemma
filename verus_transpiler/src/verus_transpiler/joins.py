@@ -5728,7 +5728,14 @@ def _emit_loj_projection(
     *,
     where_expr: str | None,
 ) -> tuple[str, str, str, _FoldBridge | None]:
-    """Plain LEFT OUTER JOIN projection: matched pairs + null-extended left misses."""
+    """Plain LEFT OUTER JOIN projection: matched pairs + null-extended left misses.
+
+    // shape: loj (one equality) or loj2 (two string ``@`` equalities)
+    One equality → ``loj_acc`` / ``nested_loj_pairs``; two → ``loj_acc`` of
+    ``nested_loj_pairs2`` / ``left_outer_pairs_str2`` via ``_loj2_fold_lemma``.
+    Right-side projected columns stay ``Option`` (``Some`` on match, ``None`` on
+    miss); left-side columns are copied on both paths.
+    """
     if len(slots) != 2 or len(query.joins) != 1:
         raise UnsupportedContractError(
             "plain LEFT JOIN projection MethodSpec supports exactly two tables"
@@ -5746,11 +5753,11 @@ def _emit_loj_projection(
         r_expr = r_col.replace(f"{right.idx} as int", "ri as int")
         l_expr = l_expr.replace(f"{left.idx} as int", "li as int")
         match_parts.append(f"{l_expr} == {r_expr}")
-    if len(match_parts) != 1:
+    if len(match_parts) not in (1, 2):
         raise UnsupportedContractError(
-            "plain LEFT JOIN projection MethodSpec supports one equality"
+            "plain LEFT JOIN projection MethodSpec supports one or two equalities"
         )
-    match_conds = match_parts[0]
+    match_conds = match_parts[0] if len(match_parts) == 1 else " && ".join(match_parts)
     match_helper = _emit_match_helper(left, right, match_conds)
 
     filter_raw, _ = _strip_anti_join_predicates(where_expr)
@@ -5821,7 +5828,9 @@ def _emit_loj_projection(
     ret_base = "Seq::empty()"
 
     filter_match = f" && ({filter_cond})" if filter_cond else ""
-    helper = f"""pub open spec fn {helper_name}(
+    shape_mark = "// shape: loj2" if len(match_parts) == 2 else "// shape: loj"
+    helper = f"""{shape_mark}
+pub open spec fn {helper_name}(
     {left.param}: &{left.struct},
     {right.param}: &{right.struct},
     {left.idx}: int,
@@ -5850,16 +5859,32 @@ def _emit_loj_projection(
     }}
 }}"""
     # Miss path does not re-check WHERE (null-extended right); filter stays on matches.
-    fold = _loj_fold_lemma(
-        helper_name,
-        slots,
-        match_conds=match_conds,
-        filter_cond=filter_cond,
-        match_update=match_update,
-        miss_update=miss_update,
-        ret_type=ret_type,
-        ret_base=ret_base,
-    )
+    if len(match_parts) == 2:
+        fold = _loj2_fold_lemma(
+            helper_name,
+            slots,
+            match_conds=match_conds,
+            filter_cond=filter_cond,
+            match_update=match_update,
+            miss_update=miss_update,
+            ret_type=ret_type,
+            ret_base=ret_base,
+        )
+        if fold is None:
+            raise UnsupportedContractError(
+                "plain LEFT JOIN two-equality projection requires two string @ equalities"
+            )
+    else:
+        fold = _loj_fold_lemma(
+            helper_name,
+            slots,
+            match_conds=match_conds,
+            filter_cond=filter_cond,
+            match_update=match_update,
+            miss_update=miss_update,
+            ret_type=ret_type,
+            ret_base=ret_base,
+        )
     bridge: _FoldBridge | None = None
     helpers_out = match_helper + "\n\n" + helper
     if fold is not None:
