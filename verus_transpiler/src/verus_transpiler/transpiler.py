@@ -28,7 +28,12 @@ from .joins import (
     emit_join_spec_helpers,
     try_decorrelate_anti_subqueries,
 )
-from .order_limit import wrap_seq_order_limit
+from .order_limit import (
+    exec_sort_by_fn,
+    group_row_before,
+    wrap_group_topk,
+    wrap_seq_order_limit,
+)
 from .parse_sql import (
     AggSpec,
     DerivedTable,
@@ -201,6 +206,7 @@ def generate_cols_rs(
     groupby_columns: list[str] | None = None,
     struct_name: str = "Cols",
     val_type: str | None = None,
+    cell_cap: bool = True,
 ) -> str:
     """Emit columnar Cols struct + getters for the given schema."""
     parsed_query = parse_sql(sql_str, schema_dict) if sql_str is not None else None
@@ -263,7 +269,10 @@ def generate_cols_rs(
         )
     if agg_push_str is not None:
         agg_methods += "\n" + emit_cols_agg_push_str_verus(
-            *agg_push_str, struct_name=struct_name, val_type=val_type
+            *agg_push_str,
+            struct_name=struct_name,
+            val_type=val_type,
+            cell_cap=cell_cap,
         )
 
     return f"""pub struct {struct_name} {{
@@ -1094,8 +1103,85 @@ def _emit_multi_agg_spec(
         extra = "\n\n" + _emit_having_helper()
         spec_body = _emit_having_filter(spec_body, query, flat_schema).strip()
 
+    order_extra = ""
+    map_ret = ret_type
+    if query.order_by:
+        keys_name = "group_keys_helper"
+        keys_rec = f"{keys_name}(cols{extra_call}, {idx_var} + 1)"
+        if cond:
+            keys_inner = (
+                f"let tail = {keys_rec};\n"
+                f"        if {cond} {{\n"
+                f"            let key = {key_expr};\n"
+                f"            if tail.contains(key) {{ tail }} else {{ tail.push(key) }}\n"
+                f"        }} else {{\n"
+                f"            tail\n"
+                f"        }}"
+            )
+        else:
+            keys_inner = (
+                f"let tail = {keys_rec};\n"
+                f"        let key = {key_expr};\n"
+                f"        if tail.contains(key) {{ tail }} else {{ tail.push(key) }}"
+            )
+        keys_helper = f"""pub open spec fn {keys_name}(cols: &Cols{extra_sig}, {idx_var}: int) -> Seq<{map_key_ty}>
+    recommends
+        0 <= {idx_var} && {idx_var} <= cols.n,
+        valid_cols(cols){extra_rec},
+    decreases cols.n - {idx_var},
+{{
+    if {idx_var} < cols.n {{
+        {keys_inner}
+    }} else {{
+        Seq::empty()
+    }}
+}}"""
+        group_types = (
+            [part.strip() for part in map_key_ty[1:-1].split(", ")]
+            if map_key_ty.startswith("(")
+            else [map_key_ty]
+        )
+        val_types = _multi_agg_val_types(query)
+        row_ty = f"({map_key_ty}, {_multi_agg_tuple_type(query)})"
+        before_name = "spec_group_before"
+        pred = group_row_before(
+            list(query.groupby_columns),
+            group_types,
+            [spec.alias for spec in query.agg_specs],
+            val_types,
+            query.order_by,
+        )
+        exec_pred = group_row_before(
+            list(query.groupby_columns),
+            group_types,
+            [spec.alias for spec in query.agg_specs],
+            val_types,
+            query.order_by,
+            exec_strings=True,
+        )
+        order_extra = (
+            "\n\n"
+            + keys_helper
+            + "\n\n"
+            + f"pub open spec fn {before_name}(a: {row_ty}, b: {row_ty}) -> bool {{\n"
+            + f"    {pred}\n"
+            + "}\n\n"
+            + exec_sort_by_fn(row_ty, before_name, exec_pred)
+        )
+        spec_body = wrap_group_topk(
+            spec_body,
+            f"{keys_name}(cols{extra_call}, 0)",
+            row_ty,
+            before_name,
+            limit=query.limit,
+            offset=query.offset,
+        )
+        ret_type = f"Seq<{row_ty}>"
+
     spec_fn = _method_spec_fn(ret_type, spec_body, extras)
-    return helper + extra, spec_fn, ret_type
+    if query.order_by:
+        spec_fn = f"// lemma_group_topk_map: {map_ret}\n{spec_fn}"
+    return helper + extra + order_extra, spec_fn, ret_type
 
 
 def _emit_single_table_spec(
@@ -1516,6 +1602,7 @@ def transpile_sql_to_verus(
         cols_block = generate_cols_rs(
             outer_schema,
             groupby_columns=query.groupby_columns,
+            cell_cap=bounds.has_tight_cell_u64,
         )
         support_cols = _emit_support_spec_table_cols(
             query, multi_schema, bounds=bounds, catalog=catalog_assumptions,

@@ -706,6 +706,7 @@ def _emit_agg_step_requires(
     slots: list[TypeExpr],
     *,
     spec_key: str,
+    cell_cap: bool = True,
 ) -> str:
     """Fit-in-width requires: cell caps + prev-fit from old(st).inner@."""
     apply_lines = [ln.strip() for ln in layout.apply_body.split("\n") if ln.strip()]
@@ -743,7 +744,10 @@ def _emit_agg_step_requires(
         row_param = _row_u64_param_in_delta(delta)
         if row_param is not None and row_param not in seen_params:
             seen_params.add(row_param)
-            clauses.append(f"{row_param} < LEMMA_MAX_CELL_U64")
+            if cell_cap:
+                clauses.append(f"{row_param} < LEMMA_MAX_CELL_U64")
+            elif kind == "sum_native":
+                clauses.append(f"{row_param} < LEMMA_MAX_NATIVE_U32 as u64")
         exec_delta = _spec_expr_to_exec(delta)
         bound = (
             _i128_add_bound_requires
@@ -3280,7 +3284,18 @@ def emit_multi_agg_step_trusted(
     exec_update = _exec_update_inner(layout, slots, "prev", layout.row_params)
     exec_update_block = "\n    ".join(exec_update)
     projected_expr = _projected_exec_expr(layout.project_body, "new_inner", slots)
-    agg_step_requires = _emit_agg_step_requires(layout, slots, spec_key=spec_key)
+    if catalog_assumptions is not None:
+        cell_cap = resolve_bounds(catalog_assumptions).has_tight_cell_u64
+    elif spec_rs:
+        cell_cap = "pub const LEMMA_MAX_CELL_U64" in spec_rs
+    else:
+        cell_cap = True
+    agg_step_requires = _emit_agg_step_requires(
+        layout,
+        slots,
+        spec_key=spec_key,
+        cell_cap=cell_cap,
+    )
 
     inner_spec_fn = _emit_inner_spec_map_fn(
         suffix=suffix,

@@ -44,6 +44,7 @@ def _agg_push_str_str_requires(
     *,
     val_type: str,
     delta_name: str = "delta",
+    cell_cap: bool = True,
 ) -> str:
     a_base = str_col_a.lower()
     b_base = str_col_b.lower()
@@ -54,7 +55,8 @@ def _agg_push_str_str_requires(
     )
     clauses = ["i < self.n"]
     if val_type == "u64":
-        clauses.append(f"{delta_name} < LEMMA_MAX_CELL_U64")
+        if cell_cap:
+            clauses.append(f"{delta_name} < LEMMA_MAX_CELL_U64")
         clauses.append(_u64_prev_fit_requires(prev_expr, f"({delta_name} as int)"))
     else:
         clauses.append(_i64_prev_fit_requires(prev_expr, f"({delta_name} as int)"))
@@ -87,13 +89,16 @@ def emit_cols_agg_push_str_verus(
     *,
     struct_name: str = "Cols",
     val_type: str = "u64",
+    cell_cap: bool = True,
 ) -> str:
     _ = struct_name
     name = agg_push_str_method_name(str_col_a, str_col_b)
     a_base = str_col_a.lower()
     b_base = str_col_b.lower()
     _, _, rust_map = agg_bridge_str_str(val_type)
-    requires = _agg_push_str_str_requires(str_col_a, str_col_b, val_type=val_type)
+    requires = _agg_push_str_str_requires(
+        str_col_a, str_col_b, val_type=val_type, cell_cap=cell_cap
+    )
     ensures = _agg_push_str_str_ensures(str_col_a, str_col_b, val_type=val_type)
     return f"""    #[verifier::external_body]
     pub exec fn {name}(

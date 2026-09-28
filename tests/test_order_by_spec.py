@@ -144,3 +144,32 @@ def test_single_column_desc_flips_the_spec_compare() -> None:
     assert "spec_seq_take(spec_seq_sort_by(" in out
     assert "spec_char_seq_lt(b, a)" in out
     assert "agent may apply in run_query" not in out
+
+
+def test_single_table_group_by_order_is_a_sorted_sequence() -> None:
+    sql = """
+    SELECT l_returnflag, l_linestatus, SUM(l_quantity) AS sum_qty, COUNT(*) AS count_order
+    FROM lineitem
+    WHERE l_shipdate <= 19980902
+    GROUP BY l_returnflag, l_linestatus
+    ORDER BY l_returnflag, l_linestatus
+    """
+    out = transpile_sql_to_verus(
+        sql,
+        {
+            "lineitem": {
+                "l_returnflag": "string",
+                "l_linestatus": "string",
+                "l_quantity": "int",
+                "l_shipdate": "int",
+            }
+        },
+    )
+    spec = out.split("pub open spec fn method_spec(", 1)[1].split("pub proof fn", 1)[0]
+    assert "-> Seq<" in spec.split("{", 1)[0]
+    assert "spec_seq_sort_by(spec_map_at_keys(" in spec
+    assert "pub exec fn exec_sort_by" in out
+    assert "not in this Map method_spec" not in out
+    assert "// lemma_group_topk_map: Map<" in out
+    assert "pub const LEMMA_MAX_CELL_U64" not in out
+    assert "delta < LEMMA_MAX_CELL_U64" not in out
