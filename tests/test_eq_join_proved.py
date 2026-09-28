@@ -44,6 +44,15 @@ EQ_JOIN_RS = ROOT / "research_loop" / "verus_lib" / "eq_join.rs"
 _SEC_PRODUCT_MAX_ROWS = round_rows_up(39_401_761)
 
 
+def test_eq_row_ids_len_bound_survives_the_agent_copy() -> None:
+    text = EQ_JOIN_RS.read_text()
+    assert "pub proof fn lemma_eq_row_ids_len_le_end" in text
+    ensures = "eq_row_ids(keys, k, end).len() <= end"
+    assert ensures in text
+    visible = _collapse_proved_bodies(text)
+    assert ensures in visible
+
+
 def _large_sec_product_catalog() -> CatalogAssumptions:
     """Full-table SEC product catalog for join fold proofs under real row caps."""
     return CatalogAssumptions(

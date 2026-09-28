@@ -268,6 +268,25 @@ pub proof fn lemma_eq_row_ids_len0<K>(keys: Seq<K>, k: K, end: int)
     assert(s =~= Seq::<usize>::empty());
 }
 
+pub proof fn lemma_eq_row_ids_len_le_end<K>(keys: Seq<K>, k: K, end: int)
+    requires
+        0 <= end <= keys.len(),
+    ensures
+        eq_row_ids(keys, k, end).len() <= end,
+    decreases end,
+{
+    if end > 0 {
+        lemma_eq_row_ids_len_le_end(keys, k, end - 1);
+        let prev = eq_row_ids(keys, k, end - 1);
+        assert(prev.len() <= end - 1);
+        if 0 <= end - 1 < keys.len() && keys[end - 1] == k {
+            assert(eq_row_ids(keys, k, end) == prev.push((end - 1) as usize));
+        } else {
+            assert(eq_row_ids(keys, k, end) == prev);
+        }
+    }
+}
+
 /// Existing key: one bucket grows by `row`. Map is unchanged.
 #[verifier::spinoff_prover]
 pub proof fn lemma_index_append<K>(
