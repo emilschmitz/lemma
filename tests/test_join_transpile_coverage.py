@@ -51,6 +51,7 @@ def _helper_section(out: str) -> str:
         "pub open spec fn join_semi_",
         "pub open spec fn join_anti_",
         "pub open spec fn join_loj_",
+        "pub open spec fn join_roj_",
         "pub open spec fn full_join_",
         "// shape:",
     )
@@ -136,6 +137,23 @@ def test_plain_left_join_multi_agg_emits_loj_fold() -> None:
     assert "lemma_join_loj_multi_agg_helper_is_loj(" in out
     assert "lemma_join_loj_multi_agg_helper_method_is_fold(" in out
     assert "nested_loj_pairs" in out
+
+
+def test_plain_right_join_multi_agg_emits_roj_fold() -> None:
+    sql = """
+    SELECT s.adsh, COUNT(*) AS c, SUM(s.fy) AS s, AVG(s.fy) AS a
+    FROM pre p RIGHT JOIN sub s ON p.adsh = s.adsh
+    GROUP BY s.adsh
+    """
+    out = transpile_sql_to_verus(sql, CATALOG)
+    _assert_rocketship_clean(out)
+    section = _helper_section(out)
+    assert "join_roj_multi_agg_helper" in section
+    assert "// shape: right" in section
+    assert "lemma_join_roj_multi_agg_helper_is_right(" in out
+    assert "lemma_join_roj_multi_agg_helper_method_is_fold(" in out
+    assert "nested_right_pairs" in out
+    assert "right_acc(" in out
 
 
 def test_right_join_uses_right_projection_after_side_swap() -> None:
