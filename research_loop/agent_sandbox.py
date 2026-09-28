@@ -241,6 +241,17 @@ def _read_ro_excerpt(workspace: Path, name: str, *, max_chars: int = 2500) -> st
     return text[:max_chars].rstrip() + "\n…\n"
 
 
+_LAST_ERROR_MAX_CHARS = 6000
+
+
+def _clip_last_error(text: str) -> str:
+    """Keep the end of a prior iteration log. The head is the previous prompt."""
+    text = text.strip()
+    if len(text) <= _LAST_ERROR_MAX_CHARS:
+        return text
+    return "…previous log clipped…\n" + text[-_LAST_ERROR_MAX_CHARS:]
+
+
 def build_agent_prompt(
     *,
     workspace: Path,
@@ -274,7 +285,7 @@ def build_agent_prompt(
 
     feedback = ""
     if last_error:
-        feedback = f"\n## Previous iteration failure\n{last_error}\n"
+        feedback = f"\n## Previous iteration failure\n{_clip_last_error(last_error)}\n"
     elif last_latency_us >= 0:
         feedback = (
             f"\n## Previous iteration\nVerified OK at {last_latency_us} µs "

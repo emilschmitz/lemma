@@ -38,6 +38,23 @@ def test_build_agent_prompt_row_budgets(tmp_path: Path, monkeypatch: pytest.Monk
     assert "not full table" not in prompt.lower()
 
 
+def test_previous_failure_keeps_the_tail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    ws = tmp_path / "workspace"
+    (ws / "context" / "ro").mkdir(parents=True)
+    monkeypatch.setenv("LEMMA_FAST_TRUSTEDS", "0")
+    blob = "START_MARKER " + ("x" * 20000) + " END_MARKER timed_out"
+    prompt = build_agent_prompt(
+        workspace=ws,
+        query_id=1,
+        sql_query="SELECT 1",
+        iteration=2,
+        max_iterations=4,
+        last_error=blob,
+    )
+    assert "END_MARKER timed_out" in prompt
+    assert "START_MARKER" not in prompt
+
+
 def test_concrete_proof_names_are_the_fold_lemmas() -> None:
     from research_loop.agent_sandbox import concrete_proof_names
 
