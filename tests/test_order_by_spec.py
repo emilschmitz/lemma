@@ -261,8 +261,9 @@ _TPCH = {
         "o_custkey": "int",
         "o_orderdate": "int",
         "o_shippriority": "int",
+        "o_totalprice": "int",
     },
-    "customer": {"c_custkey": "int", "c_mktsegment": "string"},
+    "customer": {"c_custkey": "int", "c_name": "string", "c_mktsegment": "string"},
 }
 
 
@@ -349,6 +350,29 @@ def test_official_tpch_q3_comma_join_is_an_inner_sorted_sequence() -> None:
     assert "19950315" in out
     assert "BUILDING" in out
     assert "spec_seq_take(spec_seq_sort_by(spec_map_at_keys(" in out
+
+
+def test_official_tpch_q18_in_group_having_is_a_sorted_sequence() -> None:
+    sql = """
+    SELECT c_name, c_custkey, o_orderkey, o_orderdate, o_totalprice, SUM(l_quantity)
+    FROM customer, orders, lineitem
+    WHERE o_orderkey IN (
+        SELECT l_orderkey FROM lineitem
+        GROUP BY l_orderkey
+        HAVING SUM(l_quantity) > 300
+    )
+      AND c_custkey = o_custkey
+      AND o_orderkey = l_orderkey
+    GROUP BY c_name, c_custkey, o_orderkey, o_orderdate, o_totalprice
+    ORDER BY o_totalprice DESC, o_orderdate
+    LIMIT 100
+    """
+    out = transpile_sql_to_verus(sql, _TPCH)
+    spec = out.split("pub open spec fn method_spec(", 1)[1].split("{", 1)[0]
+    assert "-> Seq<" in spec
+    assert "300" in out
+    assert "spec_seq_take(spec_seq_sort_by(spec_map_at_keys(" in out
+    assert "not in this Map method_spec" not in out
 
 
 def test_paper_tpch_q6_decimal_bound_stays_unsupported() -> None:

@@ -2014,12 +2014,19 @@ def _lift_comma_joins(expression: exp.Select, schema: dict) -> None:
     preds = _and_predicates(where.this)
     seen = {from_clause.this.name.lower()}
     used: set[int] = set()
+    fixed: list[exp.Join] = []
+    pending: list[exp.Join] = []
     for join in joins:
         if not isinstance(join.this, exp.Table):
+            fixed.append(join)
             continue
         if join.args.get("on") or (join.side or join.kind):
             seen.add(join.this.name.lower())
-            continue
+            fixed.append(join)
+        else:
+            pending.append(join)
+
+    def connecting(join: exp.Join) -> list[exp.Expression]:
         new = join.this.name.lower()
         chosen: list[exp.Expression] = []
         for pred in preds:
@@ -2034,15 +2041,29 @@ def _lift_comma_joins(expression: exp.Select, schema: dict) -> None:
             pair = {left_home.lower(), right_home.lower()}
             if new in pair and pair - {new} and pair - {new} <= seen:
                 chosen.append(pred)
+        return chosen
+
+    ordered = list(fixed)
+    progressed = True
+    while pending and progressed:
+        progressed = False
+        for index, join in enumerate(pending):
+            chosen = connecting(join)
+            if not chosen:
+                continue
+            for pred in chosen:
                 used.add(id(pred))
-        if not chosen:
-            continue
-        on: exp.Expression = chosen[0]
-        for extra in chosen[1:]:
-            on = exp.And(this=on, expression=extra)
-        join.set("on", on)
-        join.set("kind", "INNER")
-        seen.add(new)
+            on: exp.Expression = chosen[0]
+            for extra in chosen[1:]:
+                on = exp.And(this=on, expression=extra)
+            join.set("on", on)
+            join.set("kind", "INNER")
+            seen.add(join.this.name.lower())
+            ordered.append(join)
+            del pending[index]
+            progressed = True
+            break
+    expression.set("joins", ordered + pending)
     if not used:
         return
     remaining = [pred for pred in preds if id(pred) not in used]
