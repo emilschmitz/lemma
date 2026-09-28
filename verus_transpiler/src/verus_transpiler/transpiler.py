@@ -793,9 +793,13 @@ def _emit_method_spec_result(query: SQLQuery, base_ret: str) -> str:
     ) or "unspecified"
     limit_s = str(query.limit) if query.limit is not None else "none"
     offset_s = str(query.offset) if query.offset is not None else "0"
+    # A Map has no row order. Sorting or dropping groups in run_query cannot
+    # meet ensures res@ == method_spec. Seq projections put ORDER BY and LIMIT
+    # in the spec and drop this note.
     return (
         f"// Note: ORDER BY ({order_cols}), LIMIT {limit_s}, OFFSET {offset_s} "
-        f"are not part of method_spec ({row_ty}); agent may apply in run_query.\n"
+        f"are not in this Map method_spec ({row_ty}). "
+        f"run_query still returns the full map.\n"
     )
 
 

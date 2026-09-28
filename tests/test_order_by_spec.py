@@ -45,6 +45,28 @@ def test_star_order_by_sorts_before_limit() -> None:
     assert "arbitrary()" not in out
 
 
+def test_group_by_limit_stays_a_full_map() -> None:
+    sql = """
+    SELECT s.form, COUNT(*) AS num_lines
+    FROM pre p JOIN sub s ON p.adsh = s.adsh
+    GROUP BY s.form
+    ORDER BY num_lines DESC
+    LIMIT 10
+    """
+    out = transpile_sql_to_verus(
+        sql,
+        {
+            "pre": {"adsh": "string", "stmt": "string"},
+            "sub": {"adsh": "string", "form": "string"},
+        },
+    )
+    spec = out.split("pub open spec fn method_spec", 1)[1].split("pub proof fn", 1)[0]
+    assert "Map<" in spec
+    assert "spec_seq_take(" not in spec
+    assert "agent may apply in run_query" not in out
+    assert "run_query still returns the full map" in out
+
+
 def test_single_column_desc_flips_the_spec_compare() -> None:
     sql = "SELECT name FROM sub ORDER BY name DESC LIMIT 2"
     out = transpile_sql_to_verus(sql, {"sub": {"name": "string", "adsh": "string"}})
