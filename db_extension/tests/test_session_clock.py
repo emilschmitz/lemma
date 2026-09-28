@@ -114,6 +114,10 @@ def test_session_budget_prompt_section_submit_ends_on() -> None:
     assert "faster than" in text
     assert "check_session_time" in text
     assert "session_status" in text
+    assert "remaining_sec" in text
+    assert "while time is still left" in text
+    assert "No quota" in text
+    assert "keep iterating" not in text
 
 
 def test_session_budget_prompt_section_submit_ends_off() -> None:
@@ -126,3 +130,6 @@ def test_session_budget_prompt_section_submit_ends_off() -> None:
     assert "keep running" in text
     assert "check_session_time" in text
     assert "session_status" in text
+    assert "remaining_sec" in text
+    assert "while time is still left" in text
+    assert "No quota" in text

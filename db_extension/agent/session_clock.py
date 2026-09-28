@@ -176,9 +176,12 @@ def end_session_requested(workspace: Path) -> bool:
 def session_budget_prompt_section(*, budget_sec: int, submit_ends: bool) -> str:
     """Prompt text: budget always; submit semantics depend on flag (host-enforced)."""
     check = (
-        f"Check time left anytime: `python3 {CHECK_SCRIPT_NAME}` "
-        f"(or MCP `session_status`). MCP validate/run/submit responses also include "
-        f"`session.remaining_sec`."
+        f"Watch `remaining_sec` as you work, not only near the end. "
+        f"`python3 {CHECK_SCRIPT_NAME}` or MCP `session_status` returns it. "
+        f"MCP validate/run/submit responses include `session.remaining_sec` too. "
+        f"A kill at the wall saves nothing. Write the body and get a verified "
+        f"`submit_runquery` in while time is still left. If the session stays open, "
+        f"submit again when a later verified run is better. No quota."
     )
     submit_when = (
         "Call `submit_runquery(run_id=...)` when a run is **verified** and **faster than** "
@@ -193,9 +196,9 @@ def session_budget_prompt_section(*, budget_sec: int, submit_ends: bool) -> str:
         mode = (
             f"**Submit ends the session** (`AGENT_SUBMIT_ENDS_SESSION=1`): a successful "
             f"`submit_runquery` locks that run as official and the host **ends the session**. "
-            f"Wall-clock budget: **{budget_sec} seconds**. {submit_when} Because submit ends "
-            f"the session, only submit when that best is what you want locked. Until then keep "
-            f"iterating."
+            f"Wall-clock budget: **{budget_sec} seconds**. {submit_when} Submit ends the "
+            f"session, so that call is the mark. Send it while `remaining_sec` is still "
+            f"comfortable. Do not hold it for a proof you have not started writing."
         )
     else:
         mode = (
