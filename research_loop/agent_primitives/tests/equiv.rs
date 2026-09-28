@@ -196,6 +196,18 @@ fn par_star_triples_str_equiv_serial() {
       "n={n}"
     );
   }
+  let sub_n = 70_000usize;
+  let pre_adsh: Vec<String> = (0..1_000).map(|i| format!("a{}", i % sub_n)).collect();
+  let pre_tag: Vec<String> = (0..1_000).map(|i| format!("t{}", i % 100)).collect();
+  let pre_ver: Vec<String> = (0..1_000).map(|_| "v0".into()).collect();
+  let sub_adsh: Vec<String> = (0..sub_n).map(|i| format!("a{}", i % 500)).collect();
+  let tag_tag: Vec<String> = (0..200).map(|i| format!("t{}", i % 100)).collect();
+  let tag_ver: Vec<String> = (0..200).map(|_| "v0".into()).collect();
+  assert_eq!(
+    par_star_triples_str(&pre_adsh, &pre_tag, &pre_ver, &sub_adsh, &tag_tag, &tag_ver),
+    serial_star_triples_str(&pre_adsh, &pre_tag, &pre_ver, &sub_adsh, &tag_tag, &tag_ver),
+    "parallel star index"
+  );
 }
 
 #[test]

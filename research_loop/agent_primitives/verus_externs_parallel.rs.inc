@@ -590,22 +590,101 @@ pub exec fn par_star_triples_str(
             pre_adsh@, pre_tag@, pre_ver@, sub_adsh@, tag_tag@, tag_ver@,
         ),
 {
+    let n_sub = sub_adsh.len();
     let mut sub_index: std::collections::HashMap<String, Vec<usize>> =
         std::collections::HashMap::new();
-    let mut j: usize = 0;
-    while j < sub_adsh.len() {
-        sub_index.entry(sub_adsh[j].clone()).or_insert_with(Vec::new).push(j);
-        j = j + 1;
+    if n_sub < PAR_CHUNK {
+        let mut j: usize = 0;
+        while j < n_sub {
+            sub_index.entry(sub_adsh[j].clone()).or_insert_with(Vec::new).push(j);
+            j = j + 1;
+        }
+    } else {
+        let threads = par_exec_thread_count(n_sub);
+        let parts = std::thread::scope(|scope| {
+            let chunk = (n_sub + threads - 1) / threads;
+            let mut handles: Vec<std::thread::ScopedJoinHandle<std::collections::HashMap<String, Vec<usize>>>> = Vec::new();
+            let mut t: usize = 0;
+            while t < threads {
+                let start = t * chunk;
+                if start >= n_sub {
+                    break;
+                }
+                let end = if start + chunk < n_sub { start + chunk } else { n_sub };
+                handles.push(scope.spawn(|| {
+                    let mut partial: std::collections::HashMap<String, Vec<usize>> =
+                        std::collections::HashMap::new();
+                    let mut j = start;
+                    while j < end {
+                        partial.entry(sub_adsh[j].clone()).or_insert_with(Vec::new).push(j);
+                        j = j + 1;
+                    }
+                    partial
+                }));
+                t = t + 1;
+            }
+            let mut parts: Vec<std::collections::HashMap<String, Vec<usize>>> = Vec::new();
+            for h in handles {
+                parts.push(h.join().unwrap());
+            }
+            parts
+        });
+        for part in parts {
+            for (key, ids) in part {
+                sub_index.entry(key).or_insert_with(Vec::new).extend(ids);
+            }
+        }
     }
+    let n_tag = tag_tag.len();
     let mut tag_index: std::collections::HashMap<(String, String), Vec<usize>> =
         std::collections::HashMap::new();
-    let mut k: usize = 0;
-    while k < tag_tag.len() {
-        tag_index
-            .entry((tag_tag[k].clone(), tag_ver[k].clone()))
-            .or_insert_with(Vec::new)
-            .push(k);
-        k = k + 1;
+    if n_tag < PAR_CHUNK {
+        let mut k: usize = 0;
+        while k < n_tag {
+            tag_index
+                .entry((tag_tag[k].clone(), tag_ver[k].clone()))
+                .or_insert_with(Vec::new)
+                .push(k);
+            k = k + 1;
+        }
+    } else {
+        let threads = par_exec_thread_count(n_tag);
+        let parts = std::thread::scope(|scope| {
+            let chunk = (n_tag + threads - 1) / threads;
+            let mut handles: Vec<std::thread::ScopedJoinHandle<std::collections::HashMap<(String, String), Vec<usize>>>> = Vec::new();
+            let mut t: usize = 0;
+            while t < threads {
+                let start = t * chunk;
+                if start >= n_tag {
+                    break;
+                }
+                let end = if start + chunk < n_tag { start + chunk } else { n_tag };
+                handles.push(scope.spawn(|| {
+                    let mut partial: std::collections::HashMap<(String, String), Vec<usize>> =
+                        std::collections::HashMap::new();
+                    let mut k = start;
+                    while k < end {
+                        partial
+                            .entry((tag_tag[k].clone(), tag_ver[k].clone()))
+                            .or_insert_with(Vec::new)
+                            .push(k);
+                        k = k + 1;
+                    }
+                    partial
+                }));
+                t = t + 1;
+            }
+            let mut parts: Vec<std::collections::HashMap<(String, String), Vec<usize>>> = Vec::new();
+            for h in handles {
+                parts.push(h.join().unwrap());
+            }
+            parts
+        });
+        for part in parts {
+            for (key, ids) in part {
+                tag_index.entry(key).or_insert_with(Vec::new).extend(ids);
+            }
+        }
     }
     let n = pre_adsh.len();
     if n < PAR_CHUNK {

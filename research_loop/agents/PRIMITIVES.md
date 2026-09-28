@@ -119,7 +119,7 @@ No separate Verus extern: use a fixed `[u64; N]` or `SmallCardBuckets<N>` patter
 | `par_filter_sum_u64` | Chunked masked parallel sum; `ensures sum == par_filter_sum_u64_spec(col@, mask@)` |
 | `par_probe_sum_u64` | Threaded hash probe; `ensures sum == probe_sum_u64_spec(...)` |
 | `par_equijoin_pairs_str` | Threaded string pair list. Index build and probe both split once a side is large; `ensures` the same ordered pairs as the serial string equijoin. The thread schedule is not proved. |
-| `par_star_triples_str` | Threaded 3-table string star; `ensures` the same ordered triples as the serial star. The thread schedule is not proved. |
+| `par_star_triples_str` | Threaded 3-table string star. Sub and tag indexes split once a side is large; `ensures` the same ordered triples as the serial star. The thread schedule is not proved. |
 | `vector_filter_sum_u64` | Threaded date-range filter+sum; `ensures sum == vector_filter_sum_u64_spec(...)` |
 
 `par_probe_sum_u64_morsel`, `par_probe_sum_u64_multi`, and `par_small_card_filter_sum` remain

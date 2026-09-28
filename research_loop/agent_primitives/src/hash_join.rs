@@ -298,6 +298,20 @@ fn star_indexes<'a>(
     tag_tag: &'a [String],
     tag_ver: &'a [String],
 ) -> (HashMap<&'a str, Vec<usize>>, HashMap<(&'a str, &'a str), Vec<usize>>) {
+    #[cfg(feature = "parallel")]
+    {
+        if sub_adsh.len() >= PAR_CHUNK || tag_tag.len() >= PAR_CHUNK {
+            return star_indexes_par(sub_adsh, tag_tag, tag_ver);
+        }
+    }
+    star_indexes_serial(sub_adsh, tag_tag, tag_ver)
+}
+
+fn star_indexes_serial<'a>(
+    sub_adsh: &'a [String],
+    tag_tag: &'a [String],
+    tag_ver: &'a [String],
+) -> (HashMap<&'a str, Vec<usize>>, HashMap<(&'a str, &'a str), Vec<usize>>) {
     let mut sub_idx: HashMap<&str, Vec<usize>> = HashMap::new();
     for (id, key) in sub_adsh.iter().enumerate() {
         sub_idx.entry(key.as_str()).or_default().push(id);
@@ -308,6 +322,64 @@ fn star_indexes<'a>(
             .entry((key.as_str(), tag_ver[id].as_str()))
             .or_default()
             .push(id);
+    }
+    (sub_idx, tag_idx)
+}
+
+#[cfg(feature = "parallel")]
+fn star_indexes_par<'a>(
+    sub_adsh: &'a [String],
+    tag_tag: &'a [String],
+    tag_ver: &'a [String],
+) -> (HashMap<&'a str, Vec<usize>>, HashMap<(&'a str, &'a str), Vec<usize>>) {
+    let sub_parts: Vec<HashMap<&str, Vec<usize>>> = if sub_adsh.len() >= PAR_CHUNK {
+        sub_adsh
+            .par_chunks(PAR_CHUNK)
+            .enumerate()
+            .map(|(c, chunk)| {
+                let base = c * PAR_CHUNK;
+                let mut part: HashMap<&str, Vec<usize>> = HashMap::new();
+                for (j, key) in chunk.iter().enumerate() {
+                    part.entry(key.as_str()).or_default().push(base + j);
+                }
+                part
+            })
+            .collect()
+    } else {
+        let (sub_idx, _) = star_indexes_serial(sub_adsh, &[], &[]);
+        vec![sub_idx]
+    };
+    let mut sub_idx: HashMap<&str, Vec<usize>> = HashMap::new();
+    for part in sub_parts {
+        for (key, ids) in part {
+            sub_idx.entry(key).or_default().extend(ids);
+        }
+    }
+    let tag_parts: Vec<HashMap<(&str, &str), Vec<usize>>> = if tag_tag.len() >= PAR_CHUNK {
+        tag_tag
+            .par_chunks(PAR_CHUNK)
+            .enumerate()
+            .map(|(c, chunk)| {
+                let base = c * PAR_CHUNK;
+                let mut part: HashMap<(&str, &str), Vec<usize>> = HashMap::new();
+                for (j, key) in chunk.iter().enumerate() {
+                    let id = base + j;
+                    part.entry((key.as_str(), tag_ver[id].as_str()))
+                        .or_default()
+                        .push(id);
+                }
+                part
+            })
+            .collect()
+    } else {
+        let (_, tag_idx) = star_indexes_serial(&[], tag_tag, tag_ver);
+        vec![tag_idx]
+    };
+    let mut tag_idx: HashMap<(&str, &str), Vec<usize>> = HashMap::new();
+    for part in tag_parts {
+        for (key, ids) in part {
+            tag_idx.entry(key).or_default().extend(ids);
+        }
     }
     (sub_idx, tag_idx)
 }
@@ -338,9 +410,9 @@ fn probe_star_triples_str(
 
 /// Multi-core star triples. Order matches [`serial_star_triples_str`].
 ///
-/// Both indexes are built on one thread. Pre-row slices run in parallel and
-/// are concatenated in pre-row order. Stays serial when the `parallel` feature
-/// is off or the pre table is below [`PAR_CHUNK`].
+/// Sub and tag indexes split across cores once a side reaches [`PAR_CHUNK`],
+/// then merge in row order so ids stay increasing. Pre-row slices probe in
+/// parallel. Stays serial when the `parallel` feature is off.
 pub fn par_star_triples_str(
     pre_adsh: &[String],
     pre_tag: &[String],
