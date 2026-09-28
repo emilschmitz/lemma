@@ -356,6 +356,82 @@ pub exec fn run_query(pre: &Cols_pre, tag: &Cols_tag) -> (res: u64)
     assert "0 errors" in log
 
 
+def test_rocketship_failure_sql_emits_fold_lemmas() -> None:
+    """r24 pair-agg / star and r31 SUM/AVG emit fold lemmas at product SEC caps.
+
+    Harvest SQL from r24rocket / r31retry; Verus evidence for pair+star is
+    ``test_previous_failure_joins_fold`` (same emitters).
+    """
+    schema = {name: dict(cols) for name, cols in SEC_SCHEMA.items()}
+    schema["sub"]["form"] = "string"
+    schema["tag"]["custom"] = "int"
+    _, multi = normalize_schema(schema)
+    if not isinstance(multi, dict):
+        raise TypeError("expected a per-table schema")
+    catalog = _large_sec_product_catalog()
+    cases = [
+        (
+            # r24 Q16 / r31 Q12–Q20 shape
+            """
+            SELECT s.form, s.fy, COUNT(*) AS num_lines,
+                   COUNT(DISTINCT p.tag) AS distinct_tags,
+                   AVG(p.line) AS avg_line
+            FROM pre p JOIN sub s ON p.adsh = s.adsh
+            WHERE p.stmt = 'EQ'
+            GROUP BY s.form, s.fy
+            ORDER BY num_lines DESC
+            LIMIT 500
+            """,
+            (
+                "lemma_multi_agg_helper_is_pairs",
+                "lemma_multi_agg_helper_method_is_fold",
+            ),
+        ),
+        (
+            # r24 Q18 / r31 Q30 star
+            """
+            SELECT s.name, p.stmt, t.tlabel, p.line, p.plabel
+            FROM pre p
+            JOIN sub s ON p.adsh = s.adsh
+            JOIN tag t ON p.tag = t.tag AND p.version = t.version
+            WHERE s.form = '10-K/A' AND p.stmt = 'CI' AND t.custom = 0
+            ORDER BY s.name, p.line
+            LIMIT 200
+            """,
+            (
+                "lemma_join_projection_helper_is_star_pairs",
+                "lemma_join_projection_helper_method_is_fold",
+            ),
+        ),
+        (
+            # r31 Q21 SUM/AVG (same pair multi-agg emitter)
+            """
+            SELECT s.form, COUNT(*) AS num_values,
+                   SUM(n.value) AS total_value, AVG(n.value) AS avg_value
+            FROM num n JOIN sub s ON n.adsh = s.adsh
+            WHERE n.uom = 'pure' AND s.fy = 2024 AND n.value IS NOT NULL
+            GROUP BY s.form
+            ORDER BY total_value DESC
+            """,
+            (
+                "lemma_multi_agg_helper_is_pairs",
+                "lemma_multi_agg_helper_method_is_fold",
+            ),
+        ),
+    ]
+    for sql, lemmas in cases:
+        projected = project_multi_schema_for_query(sql, multi)
+        if any(not isinstance(cols, dict) for cols in projected.values()):
+            raise TypeError("expected a per-table schema")
+        projected = cast(dict[str, dict[str, str]], projected)
+        out = transpile_sql_to_verus(sql, projected, catalog_assumptions=catalog)
+        for name in lemmas:
+            assert name in out
+        _assert_full_sec_caps(
+            out, reads_pre_line=_sql_reads_pre_line(sql, projected)
+        )
+
+
 def test_previous_failure_joins_fold(tmp_path: Path) -> None:
     """r24 Q16 / Q18 star fold lemmas verify under full SEC product caps."""
     if resolve_verus_bin() is None:
