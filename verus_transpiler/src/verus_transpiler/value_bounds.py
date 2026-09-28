@@ -17,6 +17,8 @@ assumptions).
 """
 from __future__ import annotations
 
+import re
+
 from research_loop.table_assumptions import (
     DEFAULT_MAX_STRING_LEN,
     ENGINE_DEFAULT_MAX_ROWS,
@@ -460,9 +462,78 @@ def emit_bound_constants(
     return "\n".join(lines) + "\n"
 
 
+_CUBE_REMAINDER = frozenset(
+    {
+        "rem_join_cube",
+        "lemma_rem_join_cube_inner_step",
+        "lemma_rem_join_cube_mid_roll",
+        "lemma_rem_join_cube_outer_roll",
+        "lemma_rem_join_cube_nonneg_inner",
+        "lemma_rem_join_cube_nonneg_boundary",
+        "lemma_join_nested_rem_leq_rows_cube",
+        "lemma_fold_suffix_rem_leq_rows_pow3",
+    }
+)
+_FOUR_REMAINDER = frozenset(
+    {
+        "rem_join_4",
+        "lemma_rem_join_4_inner_step",
+        "lemma_rem_join_4_i2_roll",
+        "lemma_rem_join_4_i1_roll",
+        "lemma_rem_join_4_outer_roll",
+        "lemma_rem_join_4_nonneg_inner",
+        "lemma_rem_join_4_nonneg_boundary",
+        "lemma_join_nested_rem_leq_rows_4",
+        "lemma_fold_suffix_rem_leq_rows_pow4",
+        "lemma_rem_cap_cell_u64_add_fits_pow4",
+        "lemma_rem_cap_native_add_fits_pow4",
+    }
+)
+_FN_HEAD = re.compile(
+    r"^(?:pub )?(?:proof fn|open spec fn|spec fn|exec fn) ([A-Za-z0-9_]+)"
+)
+
+
+def _drop_named_fns(source: str, names: frozenset[str]) -> str:
+    """Drop function definitions by name. Brace depth ignores // comments."""
+    if not names:
+        return source
+    lines = source.splitlines(keepends=True)
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        head = _FN_HEAD.match(lines[i])
+        if head is not None and head.group(1) in names:
+            depth = 0
+            seen = False
+            while i < len(lines):
+                code = lines[i].split("//", 1)[0]
+                depth += code.count("{") - code.count("}")
+                if "{" in code:
+                    seen = True
+                i += 1
+                if seen and depth <= 0:
+                    break
+            continue
+        out.append(lines[i])
+        i += 1
+    return "".join(out)
+
+
+def _drop_deeper_join_remainder(source: str, join_tables: int) -> str:
+    """A 2-table fold does not call the cube or 4-table remainder lemmas."""
+    drop: set[str] = set()
+    if join_tables < 4:
+        drop |= _FOUR_REMAINDER
+    if join_tables < 3:
+        drop |= _CUBE_REMAINDER
+    return _drop_named_fns(source, frozenset(drop))
+
+
 def emit_bound_lemmas(
     bounds: ResolvedBounds | None = None,
     catalog: CatalogAssumptions | None = None,
+    join_tables: int = 4,
 ) -> str:
     b = _bounds_for_emit(bounds, catalog)
     skip = _skip_u64_product_lemma_names(b)
@@ -571,7 +642,7 @@ pub proof fn lemma_max_rows_4_times_money_fits_u64()
 }
 """
         aliases = _filter_proof_fns_by_name(aliases, skip)
-        return raw + "\n" + aliases
+        return _drop_deeper_join_remainder(raw + "\n" + aliases, join_tables)
     skip_fn: str | None = None
     out: list[str] = []
     for line in raw.splitlines():
@@ -586,7 +657,7 @@ pub proof fn lemma_max_rows_4_times_money_fits_u64()
         if skip_fn:
             continue
         out.append(line)
-    return "\n".join(out) + "\n"
+    return _drop_deeper_join_remainder("\n".join(out) + "\n", join_tables)
 
 
 def _emit_bound_lemmas_with_cell_cap() -> str:

@@ -1558,6 +1558,11 @@ def transpile_sql_to_verus(
     if subquery_section:
         subquery_section = subquery_section + "\n\n"
 
+    if is_join:
+        _derived = {d.alias for d in query.derived_tables}
+        _join_legs = len([t for t in query.tables if t not in _derived]) or 1
+    else:
+        _join_legs = 1
     join_multi = is_join and bool(multi_schema)
     trusted_prelude = emit_trusted_prelude(include_left_join_miss=not join_multi)
     query_after_prelude = f"{cols_block}\n\n{helpers}\n\n{subquery_section}{spec_fn}\n\n{result_spec}"
@@ -1573,7 +1578,7 @@ verus! {{
 
 {emit_bound_constants(bounds=bounds, catalog=catalog_assumptions)}
 
-{emit_bound_lemmas(bounds=bounds, catalog=catalog_assumptions)}
+{emit_bound_lemmas(bounds=bounds, catalog=catalog_assumptions, join_tables=_join_legs)}
 
 {trusted_prelude}
 {eq_join_prelude}

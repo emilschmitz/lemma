@@ -404,3 +404,15 @@ def test_prove_loop_profile_keeps_sq_cell_lemma() -> None:
         if helper is not None:
             assert helper in block
         assert "compute_only" in block or helper is not None
+
+
+def test_two_table_bounds_omit_deeper_remainder() -> None:
+    two = emit_bound_lemmas(join_tables=2)
+    three = emit_bound_lemmas(join_tables=3)
+    four = emit_bound_lemmas(join_tables=4)
+    assert "pub open spec fn rem_join_sq(" in two
+    assert "rem_join_cube(" not in two
+    assert "rem_join_4(" not in two
+    assert "pub open spec fn rem_join_cube(" in three
+    assert "rem_join_4(" not in three
+    assert "pub open spec fn rem_join_4(" in four
