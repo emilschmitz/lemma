@@ -121,6 +121,22 @@ def test_plain_left_join_groupby_keeps_unmatched() -> None:
     assert "// shape: loj" in section
 
 
+def test_plain_left_join_multi_agg_emits_loj_fold() -> None:
+    sql = """
+    SELECT p.adsh, COUNT(*) AS c, SUM(p.line) AS s, AVG(p.line) AS a
+    FROM pre p LEFT JOIN sub s ON p.adsh = s.adsh
+    GROUP BY p.adsh
+    """
+    out = transpile_sql_to_verus(sql, CATALOG)
+    _assert_rocketship_clean(out)
+    section = _helper_section(out)
+    assert "join_loj_multi_agg_helper" in section
+    assert "// shape: loj" in section
+    assert "lemma_join_loj_multi_agg_helper_is_loj(" in out
+    assert "lemma_join_loj_multi_agg_helper_method_is_fold(" in out
+    assert "nested_loj_pairs" in out
+
+
 def test_right_join_uses_loj_after_side_swap() -> None:
     sql = """
     SELECT s.adsh, p.line
