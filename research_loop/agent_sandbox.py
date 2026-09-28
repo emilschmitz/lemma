@@ -393,7 +393,7 @@ or join tables). Do not add Trusted, `assume`,
 `arbitrary`, `external_body`, or redefine `method_spec`.
 Write the body in `{body_path}` and call `run_runquery` before half the wall-clock budget is gone.
 Concrete lemma names for this query are listed under `## This spec` in `{ctx}/JOIN_PROOF_PATHS.md`. That header is what `lemma_<helper>_` stands for.
-`spec.rs` shows `proof fn` bodies as `{{ }}`. Verus checks the proved bodies, not that copy. Call those lemmas. Do not re-prove them and do not add a `proof fn`. `exec_sort_by` only discharges the sort. `group_keys_helper` is the key order from the same backward walk. `agg_step_*` and `HashMapWithView` are already in that file. Write the body once that call order is chosen.
+`spec.rs` shows `proof fn` bodies as `{{ }}`. Verus checks the proved bodies, not that copy. Call those lemmas. Do not re-prove them and do not add a `proof fn`. `exec_sort_by` only discharges the sort. `group_keys_helper` is the key order from the same backward walk. `agg_step_*` and `HashMapWithView` are already in that file. Write the body once that call order is chosen. Once the call order under `## This spec` is fixed, the next action is to edit the marked body and call `run_runquery`. Further reading does not extend the wall. An unedited stub is discarded when the wall hits.
 {prelim_section}
 {_rocketship_exec_section(ctx)}
 {_verus_mode_section()}

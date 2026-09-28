@@ -16,7 +16,9 @@ matches your SQL. Do not invent a second index or call `build_hashset_u32` / `pr
   the same backward walk (`pair_acc` / `triple_acc`). There is no second exec for it.
   `HashMapWithView` is the map `agg_step_*` already updates.
 - Write `run_query` and call `run_runquery` once the call order below is chosen. A
-  wall-clock kill with no edit saves nothing.
+  wall-clock kill with no edit saves nothing. Once that call order is fixed, the next
+  action is editing the marked body and calling `run_runquery`. Further reading does not
+  extend the wall. An unedited stub is discarded when the wall hits.
 - Match lists (`pairs@`, `triples@`, `quads@`, misses, hits, LOJ/right slots) are outer-major,
   inner ids increasing. `method_spec` folds from the high index downward — walk from the end.
 - Filters and aggregates stay in that loop. The match list is the join geometry, not the whole

@@ -136,6 +136,16 @@ def test_build_agent_prompt_join_menu_not_proof_paths(
         max_iterations=4,
     )
     assert "before half the wall-clock budget" in prompt
+    assert "Further reading does not extend the wall" in prompt
+    assert "An unedited stub is discarded when the wall hits" in prompt
+    task_block = prompt.split("## Task")[1].split("## Proved join exec menu")[0]
+    for line in task_block.splitlines():
+        if "Further reading does not extend the wall" in line:
+            assert "600" not in line
+            assert "quota" not in line.lower()
+            break
+    else:
+        raise AssertionError("expected wall-clock reading instruction in Task block")
     assert "under `## This spec`" in prompt
     assert "Verus checks the proved bodies, not that copy" in prompt
     assert "exec_sort_by` only discharges the sort" in prompt
