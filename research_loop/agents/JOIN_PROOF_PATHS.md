@@ -7,14 +7,25 @@ matches your SQL. Do not invent a second index or call `build_hashset_u32` / `pr
 
 ## Shared rules
 
+- `spec.rs` shows `proof fn` bodies as `{ }`. That is the reading copy. Verus checks the
+  proved bodies. Call the lemmas named under `## This spec`. Do not re-prove them, and
+  do not add a `proof fn` because a body looks empty.
+- `exec_sort_by`, when this file has it, ensures `spec_seq_sort_by` of the same
+  predicate. It sorts. It does not prove the join or the aggregate.
+- `group_keys_helper`, when this file has it, is the key order. Build that sequence in
+  the same backward walk (`pair_acc` / `triple_acc`). There is no second exec for it.
+  `HashMapWithView` is the map `agg_step_*` already updates.
+- Write `run_query` and call `run_runquery` once the call order below is chosen. A
+  wall-clock kill with no edit saves nothing.
 - Match lists (`pairs@`, `triples@`, `quads@`, misses, hits, LOJ/right slots) are outer-major,
   inner ids increasing. `method_spec` folds from the high index downward — walk from the end.
 - Filters and aggregates stay in that loop. The match list is the join geometry, not the whole
   query result.
 - After the backward walk, call `lemma_<helper>_method_is_fold` (when this file emits it) so
   `ensures res == method_spec` follows without re-deriving wrappers.
-- `method_spec` may still apply `map_values`, `spec_seq_take`, or `apply_having_filter` to the
-  helper's result.
+- `method_spec` may still apply `map_values`, `spec_map_at_keys`, `spec_seq_sort_by`,
+  `spec_seq_take`, or `apply_having_filter` to the helper's result. The walk proves the
+  helper. Those wrappers stay in `method_spec`.
 - <!-- shape: derived --> When a derived-table Map is an extra helper parameter, the same
   `lemma_<helper>_is_pairs` (or `_is_pairs2` / `_is_star_pairs` / matching `_is_*`) threads that
   Map into the step closure — do **not** build a second index of the subquery.

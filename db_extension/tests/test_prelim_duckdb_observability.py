@@ -137,6 +137,8 @@ def test_build_agent_prompt_join_menu_not_proof_paths(
     )
     assert "before half the wall-clock budget" in prompt
     assert "under `## This spec`" in prompt
+    assert "Verus checks the proved bodies, not that copy" in prompt
+    assert "exec_sort_by` only discharges the sort" in prompt
     assert "Do not read `spec.rs` from the first line." not in prompt
     assert "Grep" not in prompt.split("## Task")[1].split("##")[0]
     menu_start = prompt.index("## Proved join exec menu")

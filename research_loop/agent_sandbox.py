@@ -393,6 +393,7 @@ or join tables). Do not add Trusted, `assume`,
 `arbitrary`, `external_body`, or redefine `method_spec`.
 Write the body in `{body_path}` and call `run_runquery` before half the wall-clock budget is gone.
 Concrete lemma names for this query are listed under `## This spec` in `{ctx}/JOIN_PROOF_PATHS.md`. That header is what `lemma_<helper>_` stands for.
+`spec.rs` shows `proof fn` bodies as `{{ }}`. Verus checks the proved bodies, not that copy. Call those lemmas. Do not re-prove them and do not add a `proof fn`. `exec_sort_by` only discharges the sort. `group_keys_helper` is the key order from the same backward walk. Write the body once that call order is chosen.
 {prelim_section}
 {_rocketship_exec_section(ctx)}
 {_verus_mode_section()}
