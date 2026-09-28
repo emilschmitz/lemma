@@ -151,6 +151,8 @@ def test_build_agent_prompt_join_menu_not_proof_paths(
     assert "After the backward walk" not in opening
     assert "lemma_<helper>_is_pairs` (via" not in opening
     assert "lemma_loop2_at_origin" not in opening
+    assert "par_star_triples_str" not in opening
+    assert "par_equijoin_pairs_str" not in opening
 
     # Proof-path file must cover RIGHT multi-agg and multi-key SEMI/ANTI.
     from pathlib import Path
@@ -193,6 +195,33 @@ def test_build_agent_prompt_join_menu_not_proof_paths(
         "walk from the end",
     ):
         assert lemma_bit in paths_text, lemma_bit
+
+
+def test_fast_prompt_keeps_proved_join_menu(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FAST=1 used to omit the menu. The agent then searched the disk for par_*."""
+    ws = tmp_path / "workspace"
+    (ws / "context" / "ro").mkdir(parents=True)
+    monkeypatch.setenv("LEMMA_FAST_TRUSTEDS", "1")
+
+    prompt = build_agent_prompt(
+        workspace=ws,
+        query_id=1,
+        sql_query="SELECT 1 FROM a JOIN b ON a.x = b.x",
+        iteration=1,
+        max_iterations=4,
+    )
+    menu_start = prompt.index("## Proved join exec menu")
+    menu_end = prompt.index("## Verus modes")
+    opening = prompt[menu_start:menu_end]
+    assert "LEMMA_FAST_TRUSTEDS` is on" in opening
+    assert "star_eq_triples_str" in opening
+    assert "equijoin_pairs_str" in opening
+    assert "par_equijoin_pairs_str" in opening
+    assert "par_star_triples_str" in opening
+    assert "does not discharge" in opening
+    assert "is off" not in opening
 
 
 def test_build_system_prompt_row_budgets(monkeypatch: pytest.MonkeyPatch) -> None:

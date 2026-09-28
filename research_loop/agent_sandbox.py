@@ -219,14 +219,30 @@ These abort the file before a proof result.
 """
 
 
-def _rocketship_exec_section(ctx: str) -> str:
-    """Inline proved-join menu; proof recipes are in JOIN_PROOF_PATHS.md."""
-    if _fast_trusteds_on():
-        return ""
+def _proved_join_menu_body(ctx: str) -> str:
     menu_path = RESEARCH / "agents" / "JOIN_EXEC_MENU.md"
-    menu_body = menu_path.read_text().replace(
+    return menu_path.read_text().replace(
         "{PROOF_PATHS}", f"{ctx}/JOIN_PROOF_PATHS.md"
     ).rstrip()
+
+
+def _rocketship_exec_section(ctx: str) -> str:
+    """Inline proved-join menu; proof recipes are in JOIN_PROOF_PATHS.md.
+
+    FAST still has to prove the nested MethodSpec. Dropping this menu sent that
+    agent searching the filesystem for `par_*` names that are not in `spec.rs`.
+    """
+    menu_body = _proved_join_menu_body(ctx)
+    if _fast_trusteds_on():
+        return f"""
+## Proved join exec menu
+`LEMMA_FAST_TRUSTEDS` is on. `run_query` still proves the nested MethodSpec fold in
+`spec.rs` (`ensures res == method_spec(...)`).
+`par_equijoin_pairs_str` and `par_star_triples_str` are spliced into the assembled
+file. Their `ensures` is the serial pair or triple list. The thread schedule is not
+proved. Calling one does not discharge `res == method_spec(...)`.
+{menu_body}
+"""
     return f"""
 ## Proved join exec menu
 `LEMMA_FAST_TRUSTEDS` is off. `build_hashset_u32`, `probe_sum_u64`, and `par_*` are not
