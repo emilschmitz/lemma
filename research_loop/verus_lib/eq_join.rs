@@ -958,6 +958,7 @@ pub fn equijoin_pairs_u32(outer: &Vec<u32>, inner: &Vec<u32>) -> (pairs: Vec<(us
     equijoin_pairs_copy(outer, inner)
 }
 
+// SHAPE_TWOKEY_BEGIN
 /// Row ids where column `a` equals `ka` and column `b` equals `kb`.
 pub open spec fn eq_row_ids2<A, B>(a: Seq<A>, b: Seq<B>, ka: A, kb: B, end: int) -> Seq<usize>
     decreases end,
@@ -1354,6 +1355,8 @@ pub fn equijoin_pairs_str2(
     pairs
 }
 
+// SHAPE_TWOKEY_END
+// SHAPE_STAR_BEGIN
 pub open spec fn tag_prefix(i: usize, s: usize, tags: Seq<usize>, t: int) -> Seq<(usize, usize, usize)>
     decreases t,
 {
@@ -1726,6 +1729,7 @@ pub fn star_eq_triples_str(
 }
 
 
+// SHAPE_STAR_END
 /// How many ids in `ids[0..t]` are strictly below `bound`.
 pub open spec fn ids_lt(ids: Seq<usize>, t: int, bound: int) -> int
     decreases t,
@@ -2148,6 +2152,7 @@ pub proof fn lemma_acc<K, A>(
 }
 
 
+// SHAPE_TWOKEY_BEGIN
 /// Rank of `row` in a two-column id list.
 pub proof fn lemma_eq2_members<A, B>(a: Seq<A>, b: Seq<B>, ka: A, kb: B, end: int)
     requires
@@ -2241,6 +2246,8 @@ pub proof fn lemma_eq2_rank<A, B>(a: Seq<A>, b: Seq<B>, ka: A, kb: B, end: int, 
     }
 }
 
+// SHAPE_TWOKEY_END
+// SHAPE_STAR_BEGIN
 pub proof fn lemma_tag_prefix_len(i: usize, s: usize, tags: Seq<usize>, t: int)
     requires
         0 <= t <= tags.len(),
@@ -2731,6 +2738,8 @@ pub proof fn lemma_sub_product_at(
     }
 }
 
+// SHAPE_STAR_END
+// SHAPE_TWOKEY_BEGIN
 /// Position of `(i0, i1)` in a two-column nested match list.
 pub open spec fn pair_pos2<A, B>(
     outer_a: Seq<A>,
@@ -3066,6 +3075,7 @@ pub proof fn lemma_acc2<A, B, C>(
     }
 }
 
+// SHAPE_TWOKEY_END
 /// Origin of the nested match list: starting at (0, 0) is position 0.
 pub proof fn lemma_pair_pos_origin<K>(outer: Seq<K>, inner: Seq<K>)
     ensures
@@ -3081,6 +3091,7 @@ pub proof fn lemma_pair_pos_origin<K>(outer: Seq<K>, inner: Seq<K>)
     }
 }
 
+// SHAPE_TWOKEY_BEGIN
 /// Origin of the two-column nested match list: starting at (0, 0) is position 0.
 pub proof fn lemma_pair_pos2_origin<A, B>(
     outer_a: Seq<A>,
@@ -3102,6 +3113,8 @@ pub proof fn lemma_pair_pos2_origin<A, B>(
     }
 }
 
+// SHAPE_TWOKEY_END
+// SHAPE_STAR_BEGIN
 /// Origin of the star nested match list: starting at (0, 0, 0) is position 0.
 pub proof fn lemma_star_pos_origin(
     pre_a: Seq<Seq<char>>,
@@ -3128,6 +3141,7 @@ pub proof fn lemma_star_pos_origin(
     }
 }
 
+// SHAPE_STAR_END
 /// At the origin indices, ``loop_acc`` equals ``pair_acc`` of the nested match list at 0.
 pub proof fn lemma_loop_at_origin<K, A>(
     outer: Seq<K>,
@@ -3154,6 +3168,7 @@ pub proof fn lemma_loop_at_origin<K, A>(
     lemma_pair_pos_origin(outer, inner);
 }
 
+// SHAPE_TWOKEY_BEGIN
 /// At the origin indices, ``loop_acc2`` equals ``pair_acc`` of the two-column match list at 0.
 pub proof fn lemma_loop2_at_origin<A, B, C>(
     outer_a: Seq<A>,
@@ -3195,6 +3210,8 @@ pub proof fn lemma_loop2_at_origin<A, B, C>(
     lemma_pair_pos2_origin(outer_a, outer_b, inner_a, inner_b);
 }
 
+// SHAPE_TWOKEY_END
+// SHAPE_STAR_BEGIN
 /// At the origin indices, ``loop_acc3`` equals ``triple_acc`` of the star match list at 0.
 pub proof fn lemma_star_at_origin<A>(
     pre_a: Seq<Seq<char>>,
@@ -3233,6 +3250,7 @@ pub proof fn lemma_star_at_origin<A>(
     lemma_star_pos_origin(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v);
 }
 
+// SHAPE_STAR_END
 // SHAPE_LEFT_BEGIN
 // LEFT anti-join miss list: outer rows with no equijoin match (existence-only).
 // Same order as join_anti_multi_agg_helper: increasing ids; fold from the end.

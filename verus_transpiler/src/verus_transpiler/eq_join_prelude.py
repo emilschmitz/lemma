@@ -5,8 +5,9 @@ verified Verus, not ``external_body``. The oracle below the end marker stays
 out of product code.
 
 ``proved_eq_join_prelude()`` is the whole slice. ``proved_eq_join_prelude_for``
-keeps the shared core and only the ``SHAPE_*`` blocks the query text actually
-names, so a one-key join is not also the four-table library.
+keeps the one-key core and only the ``SHAPE_*`` blocks the query text actually
+names. Two-key and star proofs are ``SHAPE_TWOKEY`` / ``SHAPE_STAR`` blocks, so
+a one-key join is not also the two-key, star, or four-table library.
 """
 
 from __future__ import annotations
@@ -56,12 +57,16 @@ def _reject_forbidden(body: str) -> None:
 
 
 def _parts() -> tuple[str, list[tuple[str, str, frozenset[str]]]]:
-    """Core text, then each SHAPE block with the names it defines."""
+    """One-key core, then each SHAPE block with the names it defines.
+
+    Lines that sit between blocks stay in the core. A one-key accumulator can
+    therefore follow a two-key block in the file and still ship with every join.
+    """
     global _CACHE
     if _CACHE is not None:
         return _CACHE
     lines = _full_body().splitlines(keepends=True)
-    shape_at: list[tuple[int, str, str]] = []
+    shape_at: list[tuple[int, str, int]] = []
     open_name: str | None = None
     open_at = 0
     for i, line in enumerate(lines):
@@ -79,8 +84,11 @@ def _parts() -> tuple[str, list[tuple[str, str, frozenset[str]]]]:
             open_name = None
     if open_name is not None:
         raise RuntimeError(f"unclosed equijoin shape {open_name}")
-    core_end = shape_at[0][0] if shape_at else len(lines)
-    core = "".join(lines[:core_end]).strip() + "\n"
+    covered = [False] * len(lines)
+    for start, _name, end in shape_at:
+        for i in range(start, end + 1):
+            covered[i] = True
+    core = "".join(line for i, line in enumerate(lines) if not covered[i]).strip() + "\n"
     shapes: list[tuple[str, str, frozenset[str]]] = []
     for start, name, end in shape_at:
         block = "".join(lines[start : end + 1]).strip() + "\n"
@@ -99,27 +107,29 @@ def proved_eq_join_prelude() -> str:
 
 
 def proved_eq_join_prelude_for(query_rs: str) -> str:
-    """Core plus SHAPE blocks named by ``query_rs`` (comments ignored).
+    """One-key core plus SHAPE blocks named by ``query_rs`` (comments ignored).
 
     A block pulled in can name another block. Inclusion follows that until
-    it stops. The shared core (one-key, two-key, and star) is always kept.
+    it stops. Included blocks are emitted in file order, so a star block that
+    names a two-key helper still sees that helper above it.
     """
     core, shapes = _parts()
-    pending = list(shapes)
-    included: list[str] = [core]
+    pending = set(range(len(shapes)))
+    included: set[int] = set()
     visible = _strip_line_comments(core + "\n" + query_rs)
     changed = True
-    while changed:
+    while changed and pending:
         changed = False
-        still: list[tuple[str, str, frozenset[str]]] = []
-        for name, block, defs in pending:
+        for i in sorted(pending):
+            _name, block, defs = shapes[i]
             if any(re.search(rf"\b{re.escape(sym)}\b", visible) for sym in defs):
-                included.append(block)
+                included.add(i)
                 visible += "\n" + _strip_line_comments(block)
+                pending.discard(i)
                 changed = True
-            else:
-                still.append((name, block, defs))
-        pending = still
-    body = "\n".join(included).strip() + "\n"
+    parts = [core]
+    for i in sorted(included):
+        parts.append(shapes[i][1])
+    body = "\n".join(parts).strip() + "\n"
     _reject_forbidden(body)
     return body

@@ -144,11 +144,18 @@ def test_join_transpile_includes_proved_equijoin_and_single_table_does_not() -> 
     single = transpile_sql_to_verus(_SINGLE_SQL, {"pre": SEC_SCHEMA["pre"]})
     for out in (adsh, star, tag):
         assert "pub fn equijoin_pairs_str(" in out
-        assert "pub fn star_eq_triples_str(" in out
         assert "// SHAPE_4TABLE_BEGIN" not in out
         assert "// SHAPE_LEFT_BEGIN" not in out
         assert "// SHAPE_CHAIN_BEGIN" not in out
         assert "let mut i = cols.n" not in out
+    assert "// SHAPE_TWOKEY_BEGIN" not in adsh
+    assert "// SHAPE_STAR_BEGIN" not in adsh
+    assert "pub fn star_eq_triples_str(" not in adsh
+    assert "pub fn equijoin_pairs_str2(" not in adsh
+    assert "pub fn star_eq_triples_str(" in star
+    assert "pub open spec fn eq_row_ids2<" in star
+    assert "pub fn star_eq_triples_str(" not in tag
+    assert "pub fn equijoin_pairs_str2(" in tag
     assert "lemma_join_method_spec_helper_is_loop(" in adsh
     assert "lemma_join_method_spec_helper_is_pairs(" in adsh
     assert "lemma_join_method_spec_helper_method_is_fold(" in adsh
