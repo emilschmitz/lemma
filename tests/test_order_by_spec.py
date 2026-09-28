@@ -375,6 +375,46 @@ def test_official_tpch_q18_in_group_having_is_a_sorted_sequence() -> None:
     assert "not in this Map method_spec" not in out
 
 
+_TPCH_Q9 = {
+    "part": {"p_partkey": "int", "p_name": "string"},
+    "supplier": {"s_suppkey": "int", "s_nationkey": "int"},
+    "lineitem": {
+        "l_suppkey": "int",
+        "l_partkey": "int",
+        "l_orderkey": "int",
+        "l_extendedprice": "int",
+        "l_discount": "int",
+        "l_quantity": "int",
+    },
+    "partsupp": {"ps_suppkey": "int", "ps_partkey": "int", "ps_supplycost": "int"},
+    "orders": {"o_orderkey": "int", "o_orderdate": "int"},
+    "nation": {"n_nationkey": "int", "n_name": "string"},
+}
+
+
+def test_official_tpch_q9_derived_extract_year_is_a_sorted_sequence() -> None:
+    sql = """
+    SELECT nation, o_year, SUM(amount) AS sum_profit
+    FROM (
+        SELECT n_name AS nation, EXTRACT(year FROM o_orderdate) AS o_year,
+            l_extendedprice * (1 - l_discount) - ps_supplycost * l_quantity AS amount
+        FROM part, supplier, lineitem, partsupp, orders, nation
+        WHERE s_suppkey = l_suppkey AND ps_suppkey = l_suppkey AND ps_partkey = l_partkey
+          AND p_partkey = l_partkey AND o_orderkey = l_orderkey AND s_nationkey = n_nationkey
+          AND p_name LIKE '%green%'
+    ) AS profit
+    GROUP BY nation, o_year
+    ORDER BY nation, o_year DESC
+    """
+    out = transpile_sql_to_verus(sql, _TPCH_Q9)
+    spec = out.split("pub open spec fn method_spec", 1)[1].split("pub proof fn", 1)[0]
+    assert "-> Seq<" in spec.split("{", 1)[0]
+    assert "spec_seq_sort_by" in out
+    assert "/ 10000" in out
+    assert "green" in out
+    assert "not in this Map method_spec" not in out
+
+
 def test_paper_tpch_q6_decimal_bound_stays_unsupported() -> None:
     sql = """
     SELECT SUM(l_extendedprice * l_discount) AS revenue

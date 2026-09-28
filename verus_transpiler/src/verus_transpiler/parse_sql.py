@@ -358,6 +358,9 @@ class SQLQuery:
     is_projection: bool = False
     projection_columns: list[str] = field(default_factory=list)
     projection_exprs: list[str] = field(default_factory=list)
+    projection_types: list[str] = field(default_factory=list)
+    groupby_exprs: list[str] = field(default_factory=list)
+    groupby_types: list[str] = field(default_factory=list)
 
     @property
     def table(self) -> str:
@@ -652,6 +655,18 @@ def _parse_on_clause(
     return equalities, combiner
 
 
+def groupby_schema(
+    flat_schema: dict[str, str],
+    query: SQLQuery,
+) -> dict[str, str]:
+    """Catalog columns plus virtual GROUP BY keys (derived flatten / expressions)."""
+    merged = dict(flat_schema)
+    for col, typ in zip(query.groupby_columns, query.groupby_types, strict=False):
+        if typ and col not in merged:
+            merged[col] = typ
+    return merged
+
+
 def _unwrap_alias(node: exp.Expression) -> exp.Expression:
     if isinstance(node, exp.Alias):
         return node.this
@@ -821,10 +836,60 @@ def _compile_case_expr(
     return coerce_case_when_u64_args(result)
 
 
+def _compile_extract_year(
+    node: exp.Extract,
+    resolver: dict[str, tuple[str, str, str | None]],
+) -> str:
+    part = node.this
+    part_name = str(getattr(part, "name", part)).lower()
+    if part_name != "year":
+        raise UnsupportedContractError("EXTRACT supports YEAR only.")
+    inner = node.expression
+    if not isinstance(inner, exp.Column):
+        raise UnsupportedContractError("EXTRACT(YEAR FROM ...) requires a column.")
+    real_col, col_type, _ = _resolve_col(inner, resolver)
+    if _kind_of(col_type) != "int":
+        raise UnsupportedContractError(
+            "EXTRACT(YEAR FROM ...) requires an integer date column."
+        )
+    return f"((row.{real_col} as int) / 10000)"
+
+
+def _compile_select_expr(
+    node: exp.Expression,
+    resolver: dict[str, tuple[str, str, str | None]],
+    *,
+    qualify_alias: bool = False,
+) -> tuple[str, str]:
+    """Compile one SELECT list expression to a row.* spec string and schema type."""
+    inner = _unwrap_alias(node)
+    if isinstance(inner, exp.Extract):
+        return _compile_extract_year(inner, resolver), "int"
+    if isinstance(inner, exp.Column):
+        real_col, col_type, _ = _resolve_col(inner, resolver)
+        if _kind_of(col_type) == "string":
+            if qualify_alias and inner.table:
+                return f"row.{inner.table}.{real_col}", col_type
+            return f"row.{real_col}", col_type
+        if qualify_alias and inner.table:
+            return f"(row.{inner.table}.{real_col} as int)", col_type
+        return f"(row.{real_col} as int)", col_type
+    if isinstance(
+        inner,
+        (exp.Literal, exp.Neg, exp.Paren, exp.Mul, exp.Div, exp.Add, exp.Sub, exp.Abs),
+    ):
+        return _to_row_expr(inner, resolver), "int"
+    raise UnsupportedContractError(
+        f"Unsupported SELECT expression construct: {type(inner)}"
+    )
+
+
 def _to_row_expr(
     node: exp.Expression,
     resolver: dict[str, tuple[str, str, str | None]],
 ) -> str:
+    if isinstance(node, exp.Extract):
+        return _compile_extract_year(node, resolver)
     if isinstance(node, exp.Column):
         real_col, col_type, _table = _resolve_col(node, resolver)
         if _kind_of(col_type) != "int":
@@ -1701,6 +1766,21 @@ def _derived_exposed_columns(
             out[col] = resolver.get(col.lower(), (col, "int", None))[1]
         src_col = inner_q.projection_columns[0] if len(inner_q.projection_columns) == 1 else None
         return out, src_col
+    if (
+        inner_q.is_projection
+        and not inner_q.groupby_columns
+        and not inner_q.agg_type
+    ):
+        out: dict[str, str] = {}
+        types = inner_q.projection_types or ["int"] * len(inner_q.projection_columns)
+        for col, typ in zip(inner_q.projection_columns, types, strict=True):
+            out[col] = typ
+        src_col = (
+            inner_q.projection_columns[0]
+            if len(inner_q.projection_columns) == 1
+            else None
+        )
+        return out, src_col
     if inner_q.joins:
         require_trusted("having_subquery")
         out: dict[str, str] = {}
@@ -1758,8 +1838,9 @@ def _derived_exposed_columns(
     if inner_q.is_projection:
         out: dict[str, str] = {}
         src_col: str | None = None
-        for col in inner_q.projection_columns:
-            out[col] = "int"
+        types = inner_q.projection_types or ["int"] * len(inner_q.projection_columns)
+        for col, typ in zip(inner_q.projection_columns, types, strict=True):
+            out[col] = typ
         if len(inner_q.projection_columns) == 1:
             src_col = inner_q.projection_columns[0]
         return out, src_col
@@ -1893,6 +1974,13 @@ def _parse_window_item(
     raise UnsupportedContractError(f"unsupported window function: {type(func_node)}")
 
 
+def _rewrite_row_projection_aliases(expr: str, proj_map: dict[str, str]) -> str:
+    out = expr
+    for alias, inner_expr in sorted(proj_map.items(), key=lambda x: -len(x[0])):
+        out = out.replace(f"row.{alias}", f"({inner_expr})")
+    return out
+
+
 def _flatten_derived_project(query: SQLQuery) -> SQLQuery:
     """Rewrite filter+project derived FROM into a base-table query."""
     if not query.derived_tables:
@@ -1900,12 +1988,137 @@ def _flatten_derived_project(query: SQLQuery) -> SQLQuery:
     if len(query.derived_tables) != 1:
         raise UnsupportedContractError("only one derived table in FROM is supported.")
     derived = query.derived_tables[0]
-    if derived.query.agg_type:
+    inner = derived.query
+    if inner.agg_type:
         return query
-    if derived.query.union_query is not None or derived.query.window_specs:
+    if inner.union_query is not None or inner.window_specs:
         return query
-    if derived.query.groupby_columns:
+    if inner.groupby_columns:
         return query
+    if inner.derived_tables:
+        raise UnsupportedContractError(
+            "flattening derived projection with nested derived tables is not supported."
+        )
+
+    if inner.is_projection and inner.projection_columns:
+        if len(inner.projection_columns) == 1 and derived.source_column:
+            alias = inner.projection_columns[0]
+            base_table = inner.tables[0] if inner.tables else ""
+            new_agg_expr = query.agg_expr.replace(
+                f"row.{alias}", f"row.{derived.source_column}",
+            )
+            new_where = _merge_where(inner.where_expr, query.where_expr) or ""
+            new_proj_exprs = [
+                e.replace(f"row.{alias}", f"row.{derived.source_column}")
+                for e in query.projection_exprs
+            ]
+            return SQLQuery(
+                tables=[base_table] if base_table else list(inner.tables),
+                table_aliases=dict(inner.table_aliases),
+                joins=list(inner.joins),
+                agg_type=query.agg_type,
+                agg_column=query.agg_column,
+                groupby_columns=list(query.groupby_columns),
+                groupby_tables=list(query.groupby_tables),
+                where_conditions=list(inner.where_conditions),
+                agg_expr=new_agg_expr,
+                where_expr=new_where,
+                scalar_subqueries=list(inner.scalar_subqueries)
+                + list(query.scalar_subqueries),
+                derived_tables=[],
+                having_expr=query.having_expr,
+                order_by=list(query.order_by),
+                limit=query.limit,
+                offset=query.offset,
+                distinct=query.distinct,
+                union_all=query.union_all,
+                union_query=query.union_query,
+                intersect_all=query.intersect_all,
+                intersect_query=query.intersect_query,
+                except_all=query.except_all,
+                except_query=query.except_query,
+                correlated=query.correlated,
+                ctes=list(query.ctes),
+                exists_subqueries=list(inner.exists_subqueries)
+                + list(query.exists_subqueries),
+                in_subqueries=list(inner.in_subqueries) + list(query.in_subqueries),
+                is_projection=query.is_projection,
+                projection_columns=list(query.projection_columns),
+                projection_exprs=new_proj_exprs,
+            )
+
+        proj_map = dict(
+            zip(inner.projection_columns, inner.projection_exprs, strict=True),
+        )
+        type_map = dict(derived.columns)
+        if inner.projection_types:
+            type_map.update(
+                zip(inner.projection_columns, inner.projection_types, strict=True),
+            )
+        new_gb_exprs: list[str] = []
+        new_gb_types: list[str] = []
+        for col in query.groupby_columns:
+            if col in proj_map:
+                new_gb_exprs.append(proj_map[col])
+                new_gb_types.append(type_map.get(col, "int"))
+            else:
+                new_gb_exprs.append("")
+                new_gb_types.append(type_map.get(col, "int"))
+
+        new_agg_specs: list[AggSpec] = []
+        for spec in query.agg_specs:
+            new_agg_specs.append(
+                AggSpec(
+                    agg_type=spec.agg_type,
+                    agg_column=spec.agg_column,
+                    agg_expr=_rewrite_row_projection_aliases(spec.agg_expr, proj_map),
+                    alias=spec.alias,
+                )
+            )
+        new_agg_expr = _rewrite_row_projection_aliases(query.agg_expr, proj_map)
+        new_where = _merge_where(inner.where_expr, query.where_expr) or ""
+        flat = SQLQuery(
+            tables=list(inner.tables),
+            table_aliases=dict(inner.table_aliases),
+            joins=list(inner.joins),
+            agg_type=query.agg_type,
+            agg_column=query.agg_column,
+            groupby_columns=list(query.groupby_columns),
+            groupby_tables=list(query.groupby_tables),
+            groupby_exprs=new_gb_exprs,
+            groupby_types=new_gb_types,
+            where_conditions=list(inner.where_conditions),
+            agg_expr=new_agg_expr,
+            agg_specs=new_agg_specs,
+            select_aliases=dict(query.select_aliases),
+            where_expr=new_where,
+            scalar_subqueries=list(inner.scalar_subqueries)
+            + list(query.scalar_subqueries),
+            derived_tables=[],
+            having_expr=query.having_expr,
+            order_by=list(query.order_by),
+            limit=query.limit,
+            offset=query.offset,
+            distinct=query.distinct,
+            union_all=query.union_all,
+            union_query=query.union_query,
+            intersect_all=query.intersect_all,
+            intersect_query=query.intersect_query,
+            except_all=query.except_all,
+            except_query=query.except_query,
+            correlated=query.correlated,
+            ctes=list(query.ctes),
+            exists_subqueries=list(inner.exists_subqueries)
+            + list(query.exists_subqueries),
+            in_subqueries=list(inner.in_subqueries) + list(query.in_subqueries),
+            is_projection=query.is_projection,
+            projection_columns=list(query.projection_columns),
+            projection_exprs=list(query.projection_exprs),
+        )
+        if flat.agg_specs:
+            _sync_primary_agg(flat)
+        return flat
+
     if not derived.source_column:
         return query
 
@@ -1913,16 +2126,16 @@ def _flatten_derived_project(query: SQLQuery) -> SQLQuery:
         raise UnsupportedContractError("derived projection must expose exactly one column.")
     alias = next(iter(derived.columns))
 
-    base_table = derived.query.tables[0] if derived.query.tables else ""
+    base_table = inner.tables[0] if inner.tables else ""
     new_agg_expr = query.agg_expr.replace(f"row.{alias}", f"row.{derived.source_column}")
-    new_where = _merge_where(derived.query.where_expr, query.where_expr) or ""
+    new_where = _merge_where(inner.where_expr, query.where_expr) or ""
     new_proj_exprs = [
         e.replace(f"row.{alias}", f"row.{derived.source_column}")
         for e in query.projection_exprs
     ]
     return SQLQuery(
         tables=[base_table] if base_table else [],
-        table_aliases=dict(derived.query.table_aliases),
+        table_aliases=dict(inner.table_aliases),
         joins=[],
         agg_type=query.agg_type,
         agg_column=query.agg_column,
@@ -2421,22 +2634,29 @@ def _parse_select(
         else:
             proj_cols: list[str] = []
             proj_exprs: list[str] = []
+            proj_types: list[str] = []
+            qualify = query_is_self_join(query)
             for item in select_items:
                 inner = _unwrap_alias(item)
-                if not isinstance(inner, exp.Column):
-                    raise UnsupportedContractError(
-                        "Multi-column projection supports column references only."
-                    )
-                real_col, _, _ = _resolve_col(inner, resolver)
-                alias = item.alias or real_col
-                proj_cols.append(alias)
-                if query_is_self_join(query) and inner.table:
-                    proj_exprs.append(f"row.{inner.table}.{real_col}")
+                expr, typ = _compile_select_expr(
+                    item, resolver, qualify_alias=qualify,
+                )
+                if isinstance(inner, exp.Column):
+                    real_col, _, _ = _resolve_col(inner, resolver)
+                    alias = item.alias or real_col
+                elif item.alias:
+                    alias = item.alias
                 else:
-                    proj_exprs.append(f"row.{real_col}")
+                    raise UnsupportedContractError(
+                        "Derived projection expressions require an alias."
+                    )
+                proj_cols.append(alias)
+                proj_exprs.append(expr)
+                proj_types.append(typ)
             query.is_projection = True
             query.projection_columns = proj_cols
             query.projection_exprs = proj_exprs
+            query.projection_types = proj_types
             where_clause = expression.args.get("where")
             if where_clause:
                 query.where_expr = _compile_where(where_clause.this)

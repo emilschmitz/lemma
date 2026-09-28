@@ -62,6 +62,8 @@ def _columns_used_in_parsed_query(query, flat_schema: dict[str, str]) -> set[str
     used: set[str] = set()
     for col in query.groupby_columns:
         _add_col_to_used(used, col, flat_schema)
+    for expr in query.groupby_exprs:
+        _add_cols_from_expr(used, expr, flat_schema)
     _add_cols_from_expr(used, query.where_expr, flat_schema)
     _add_cols_from_expr(used, query.agg_expr, flat_schema)
     _add_cols_from_expr(used, query.having_expr, flat_schema)
@@ -162,6 +164,8 @@ def columns_used_by_query(
     used: set[str] = set()
     for col in query.groupby_columns:
         _add_col_to_used(used, col, flat_schema)
+    for expr in query.groupby_exprs:
+        _add_cols_from_expr(used, expr, flat_schema)
     _add_cols_from_expr(used, query.where_expr, flat_schema)
     _add_cols_from_expr(used, query.agg_expr, flat_schema)
     _add_cols_from_expr(used, query.having_expr, flat_schema)
@@ -202,6 +206,8 @@ def columns_used_by_query_from_parsed(
     used: set[str] = set()
     for col in query.groupby_columns:
         _add_col_to_used(used, col, flat_schema)
+    for expr in query.groupby_exprs:
+        _add_cols_from_expr(used, expr, flat_schema)
     _add_cols_from_expr(used, query.where_expr, flat_schema)
     _add_cols_from_expr(used, query.agg_expr, flat_schema)
     _add_cols_from_expr(used, query.having_expr, flat_schema)

@@ -44,6 +44,7 @@ from .parse_sql import (
     grouped_derived_scalar_inner_tables,
     inner_base_tables,
     is_grouped_derived_scalar_subquery,
+    groupby_schema,
     normalize_schema,
     parse_sql,
     support_spec_params,
@@ -289,10 +290,15 @@ def _groupby_key_expr(
     groupby_columns: list[str],
     idx_var: str,
     schema_dict: dict[str, str],
+    *,
+    groupby_exprs: list[str] | None = None,
 ) -> str:
     """Spec key at row index (String cols → Seq<char> via @)."""
     parts: list[str] = []
-    for col in groupby_columns:
+    for i, col in enumerate(groupby_columns):
+        if groupby_exprs and i < len(groupby_exprs) and groupby_exprs[i]:
+            parts.append(to_col_expr(groupby_exprs[i], idx_var))
+            continue
         field = rust_ident(col)
         if col_verus_type(schema_dict[col]) == "String":
             parts.append(f"cols.{field}[{idx_var} as int]@")
@@ -332,13 +338,14 @@ def _single_group_order(
     extra_call = _extra_param_call(extras)
     extra_rec = _extra_param_recommends(extras)
     idx_var = "k"
+    gb_schema = groupby_schema(flat_schema, query)
     if len(query.groupby_columns) == 1:
-        map_key_ty = spec_map_key_type(flat_schema[query.groupby_columns[0]])
+        map_key_ty = spec_map_key_type(gb_schema[query.groupby_columns[0]])
     else:
         map_key_ty = (
             "("
             + ", ".join(
-                spec_map_key_type(flat_schema[c]) for c in query.groupby_columns
+                spec_map_key_type(gb_schema[c]) for c in query.groupby_columns
             )
             + ")"
         )
@@ -348,7 +355,12 @@ def _single_group_order(
         if query.where_expr
         else None
     )
-    key_expr = _groupby_key_expr(query.groupby_columns, idx_var, flat_schema)
+    key_expr = _groupby_key_expr(
+        query.groupby_columns,
+        idx_var,
+        gb_schema,
+        groupby_exprs=query.groupby_exprs,
+    )
     keys_name = "group_keys_helper"
     keys_rec = f"{keys_name}(cols{extra_call}, {idx_var} + 1)"
     if cond:
@@ -632,11 +644,12 @@ def _emit_support_spec_table_cols(
 
 
 def _having_closure_types(query: SQLQuery, flat_schema: dict[str, str]) -> tuple[str, str]:
+    gb_schema = groupby_schema(flat_schema, query)
     if len(query.groupby_columns) == 1:
-        key_ty = spec_map_key_type(flat_schema[query.groupby_columns[0]])
+        key_ty = spec_map_key_type(gb_schema[query.groupby_columns[0]])
     else:
         parts = ", ".join(
-            spec_map_key_type(flat_schema[c]) for c in query.groupby_columns
+            spec_map_key_type(gb_schema[c]) for c in query.groupby_columns
         )
         key_ty = f"({parts})"
     # Must match MethodSpec map value (multi-agg tuple), not singular agg_expr.
@@ -1035,7 +1048,13 @@ def _emit_multi_agg_spec(
         if query.where_expr
         else None
     )
-    key_expr = _groupby_key_expr(query.groupby_columns, idx_var, flat_schema)
+    gb_schema = groupby_schema(flat_schema, query)
+    key_expr = _groupby_key_expr(
+        query.groupby_columns,
+        idx_var,
+        gb_schema,
+        groupby_exprs=query.groupby_exprs,
+    )
 
     state_types: list[str] = []
     state_defaults: list[str] = []
@@ -1178,11 +1197,12 @@ def _emit_multi_agg_spec(
             f"        tail.insert(key, {rebuild_state})"
         )
 
+    gb_schema = groupby_schema(flat_schema, query)
     if len(query.groupby_columns) == 1:
         c = query.groupby_columns[0]
-        map_key_ty = spec_map_key_type(flat_schema[c])
+        map_key_ty = spec_map_key_type(gb_schema[c])
     else:
-        map_key_ty = f"({', '.join(spec_map_key_type(flat_schema[c]) for c in query.groupby_columns)})"
+        map_key_ty = f"({', '.join(spec_map_key_type(gb_schema[c]) for c in query.groupby_columns)})"
     ret_type = f"Map<{map_key_ty}, {_multi_agg_tuple_type(query)}>"
     map_state_ret = f"Map<{map_key_ty}, {state_tuple_type}>"
 
@@ -1410,12 +1430,13 @@ def _emit_single_table_spec(
     spec_body = f"{helper_name}(cols{extra_call}, 0)"
     if query.groupby_columns:
         val_type = _agg_value_type(query.agg_expr)
+        gb_schema = groupby_schema(flat_schema, query)
         if len(query.groupby_columns) == 1:
             c = query.groupby_columns[0]
-            ret_type = f"Map<{spec_map_key_type(flat_schema[c])}, {val_type}>"
+            ret_type = f"Map<{spec_map_key_type(gb_schema[c])}, {val_type}>"
         else:
             key_types = ", ".join(
-                spec_map_key_type(flat_schema[c]) for c in query.groupby_columns
+                spec_map_key_type(gb_schema[c]) for c in query.groupby_columns
             )
             ret_type = f"Map<({key_types}), {val_type}>"
         if query.having_expr:

@@ -772,7 +772,24 @@ def _groupby_key_parts(
     parts: list[str] = []
     types: list[str] = []
     aliases = _alias_map(query)
-    for col, tbl in zip(query.groupby_columns, query.groupby_tables, strict=True):
+    for i, (col, tbl) in enumerate(
+        zip(query.groupby_columns, query.groupby_tables, strict=True),
+    ):
+        if i < len(query.groupby_exprs) and query.groupby_exprs[i]:
+            parts.append(
+                _resolve_row_expr(
+                    query.groupby_exprs[i],
+                    query,
+                    slots,
+                    schemas_by_table,
+                    derived_by_alias,
+                )
+            )
+            if i < len(query.groupby_types) and query.groupby_types[i]:
+                types.append(spec_map_key_type(query.groupby_types[i]))
+            else:
+                types.append("int")
+            continue
         table = aliases.get((tbl or "").lower(), tbl) if tbl else None
         if table is None:
             for slot in slots:
@@ -2925,12 +2942,14 @@ def _having_closure_types(
     schemas_by_table: dict[str, dict[str, str]] | None = None,
     join_depth: int = 1,
 ) -> tuple[str, str]:
-    from .parse_sql import _agg_value_type
+    from .parse_sql import _agg_value_type, groupby_schema
+
+    gb_schema = groupby_schema(flat_schema, query)
     if len(query.groupby_columns) == 1:
-        key_ty = spec_map_key_type(flat_schema[query.groupby_columns[0]])
+        key_ty = spec_map_key_type(gb_schema[query.groupby_columns[0]])
     else:
         parts = ", ".join(
-            spec_map_key_type(flat_schema[c]) for c in query.groupby_columns
+            spec_map_key_type(gb_schema[c]) for c in query.groupby_columns
         )
         key_ty = f"({parts})"
     schemas = schemas_by_table or {}
