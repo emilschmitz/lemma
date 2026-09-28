@@ -170,6 +170,13 @@ fn par_equijoin_pairs_str_equiv_serial() {
       "n={n}"
     );
   }
+  let inner: Vec<String> = (0..70_000).map(|i| format!("k{}", i % 1000)).collect();
+  let outer: Vec<String> = (0..2_000).map(|i| format!("k{}", i % 1000)).collect();
+  assert_eq!(
+    par_equijoin_pairs_str(&outer, &inner),
+    serial_equijoin_pairs_str(&outer, &inner),
+    "parallel index build"
+  );
 }
 
 #[test]

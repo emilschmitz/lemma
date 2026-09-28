@@ -190,6 +190,38 @@ pub fn serial_equijoin_pairs_str(outer: &[String], inner: &[String]) -> Vec<(usi
     probe_equijoin_pairs_str(outer, &index)
 }
 
+fn build_eq_index_str(inner: &[String]) -> HashMap<&str, Vec<usize>> {
+    #[cfg(feature = "parallel")]
+    {
+        if inner.len() >= PAR_CHUNK {
+            let parts: Vec<HashMap<&str, Vec<usize>>> = inner
+                .par_chunks(PAR_CHUNK)
+                .enumerate()
+                .map(|(c, chunk)| {
+                    let base = c * PAR_CHUNK;
+                    let mut part: HashMap<&str, Vec<usize>> = HashMap::new();
+                    for (j, key) in chunk.iter().enumerate() {
+                        part.entry(key.as_str()).or_default().push(base + j);
+                    }
+                    part
+                })
+                .collect();
+            let mut index: HashMap<&str, Vec<usize>> = HashMap::new();
+            for part in parts {
+                for (key, ids) in part {
+                    index.entry(key).or_default().extend(ids);
+                }
+            }
+            return index;
+        }
+    }
+    let mut index: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (id, key) in inner.iter().enumerate() {
+        index.entry(key.as_str()).or_default().push(id);
+    }
+    index
+}
+
 fn probe_equijoin_pairs_str(
     outer: &[String],
     index: &HashMap<&str, Vec<usize>>,
@@ -207,14 +239,11 @@ fn probe_equijoin_pairs_str(
 
 /// Multi-core string equijoin. Pair order matches [`serial_equijoin_pairs_str`].
 ///
-/// The index is built on one thread. Probe slices run in parallel and are
-/// concatenated in outer-index order. Thread count follows rayon when the
-/// `parallel` feature is on, and stays serial otherwise.
+/// Index build and probe both split across cores once a side reaches
+/// [`PAR_CHUNK`]. Chunks are merged in index order, so inner ids stay increasing.
+/// Stays serial when the `parallel` feature is off.
 pub fn par_equijoin_pairs_str(outer: &[String], inner: &[String]) -> Vec<(usize, usize)> {
-    let mut index: HashMap<&str, Vec<usize>> = HashMap::new();
-    for (id, key) in inner.iter().enumerate() {
-        index.entry(key.as_str()).or_default().push(id);
-    }
+    let index = build_eq_index_str(inner);
     #[cfg(feature = "parallel")]
     {
         if outer.len() >= PAR_CHUNK {

@@ -384,11 +384,49 @@ pub exec fn par_equijoin_pairs_str(
 ) -> (pairs: Vec<(usize, usize)>)
     ensures pairs@ == serial_eq_pairs_str_spec(outer@, inner@),
 {
+    let n_inner = inner.len();
     let mut index: std::collections::HashMap<String, Vec<usize>> = std::collections::HashMap::new();
-    let mut j: usize = 0;
-    while j < inner.len() {
-        index.entry(inner[j].clone()).or_insert_with(Vec::new).push(j);
-        j = j + 1;
+    if n_inner < PAR_CHUNK {
+        let mut j: usize = 0;
+        while j < n_inner {
+            index.entry(inner[j].clone()).or_insert_with(Vec::new).push(j);
+            j = j + 1;
+        }
+    } else {
+        let threads = par_exec_thread_count(n_inner);
+        let parts = std::thread::scope(|scope| {
+            let chunk = (n_inner + threads - 1) / threads;
+            let mut handles: Vec<std::thread::ScopedJoinHandle<std::collections::HashMap<String, Vec<usize>>>> = Vec::new();
+            let mut t: usize = 0;
+            while t < threads {
+                let start = t * chunk;
+                if start >= n_inner {
+                    break;
+                }
+                let end = if start + chunk < n_inner { start + chunk } else { n_inner };
+                handles.push(scope.spawn(|| {
+                    let mut partial: std::collections::HashMap<String, Vec<usize>> =
+                        std::collections::HashMap::new();
+                    let mut j = start;
+                    while j < end {
+                        partial.entry(inner[j].clone()).or_insert_with(Vec::new).push(j);
+                        j = j + 1;
+                    }
+                    partial
+                }));
+                t = t + 1;
+            }
+            let mut parts: Vec<std::collections::HashMap<String, Vec<usize>>> = Vec::new();
+            for h in handles {
+                parts.push(h.join().unwrap());
+            }
+            parts
+        });
+        for part in parts {
+            for (key, ids) in part {
+                index.entry(key).or_insert_with(Vec::new).extend(ids);
+            }
+        }
     }
     let n = outer.len();
     if n < PAR_CHUNK {
