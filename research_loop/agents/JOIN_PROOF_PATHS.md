@@ -147,7 +147,8 @@ returns.
    `lemma_join_roj_multi_agg_helper_method_is_fold`. Two-key RIGHT projection
    uses `join_right_projection_helper` with the same pair list; nullable-side
    columns are `Option` (`Some` / `None` pad), preserved-side columns copied on
-   match and miss.
+   match and miss. Scalar `COUNT(*)` uses `join_right_count_helper` with the same
+   list; match and miss steps both contribute +1 (count = slot-list length).
 4. Call `lemma_<helper>_method_is_fold`.
 
 ### FULL OUTER — `full_outer_parts_str`
