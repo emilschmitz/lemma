@@ -19,6 +19,7 @@ from research_loop.assemble_verified_program import (
 from research_loop.harness import resolve_verus_bin, run_verus_compile, run_verus_verify
 from research_loop.method_spec_ret_type import resolve_ret_type_from_method_spec
 from research_loop.sec_table_assumptions import (
+    SEC_PRODUCT_VALUE_CAPS,
     SEC_PROVE_LOOP_MAX_CELL_U64,
     round_rows_up,
 )
@@ -54,7 +55,13 @@ def _large_sec_product_catalog() -> CatalogAssumptions:
             ),
             "sub": TableAssumptions(max_rows=round_rows_up(86_135)),
             "tag": TableAssumptions(max_rows=round_rows_up(1_070_662)),
-            "num": TableAssumptions(max_rows=round_rows_up(39_401_761)),
+            "num": TableAssumptions(
+                max_rows=round_rows_up(39_401_761),
+                columns={
+                    col: ColumnAssumption(max_value_exclusive=cap)
+                    for col, cap in SEC_PRODUCT_VALUE_CAPS["num"].items()
+                },
+            ),
         },
     )
 
@@ -479,6 +486,38 @@ def test_previous_failure_joins_fold(tmp_path: Path) -> None:
             ("pre", "sub", "tag"),
             True,
         ),
+        (
+            """
+            SELECT s.form, COUNT(*) AS num_values,
+                   SUM(n.value) AS total_value, AVG(n.value) AS avg_value
+            FROM num n JOIN sub s ON n.adsh = s.adsh
+            WHERE n.uom = 'pure' AND s.fy = 2024 AND n.value IS NOT NULL
+            GROUP BY s.form
+            """,
+            "lemma_multi_agg_helper_is_loop",
+            "lemma_multi_agg_helper_is_pairs",
+            "lemma_multi_agg_helper_method_is_fold",
+            ("num", "sub"),
+            False,
+        ),
+        (
+            """
+            SELECT s.sic, COUNT(DISTINCT s.cik) AS num_companies,
+                   COUNT(*) AS num_values,
+                   SUM(n.value) AS total_value, AVG(n.value) AS avg_value,
+                   MIN(n.value) AS min_value, MAX(n.value) AS max_value
+            FROM num n JOIN sub s ON n.adsh = s.adsh
+            WHERE n.uom = 'pure' AND s.fy = 2024
+                  AND s.sic IS NOT NULL AND n.value IS NOT NULL AND n.value > 0
+            GROUP BY s.sic
+            HAVING COUNT(DISTINCT s.cik) >= 3
+            """,
+            "lemma_multi_agg_helper_is_loop",
+            "lemma_multi_agg_helper_is_pairs",
+            "lemma_multi_agg_helper_method_is_fold",
+            ("num", "sub"),
+            False,
+        ),
     ]
     for sql, lemma, pairs_lemma, method_lemma, order, nway in cases:
         projected = project_multi_schema_for_query(sql, multi)
@@ -500,7 +539,7 @@ def test_previous_failure_joins_fold(tmp_path: Path) -> None:
         body = "Vec::new()" if rust.startswith("Vec") else map_new_expr(rust)
         if nway:
             ensures = "res@ == res@"
-        elif rust.startswith(("HashMap", "Vec")):
+        elif rust.startswith(("HashMap", "StringHashMap", "Vec")):
             ensures = f"res@ == method_spec({args})"
         else:
             ensures = f"res == method_spec({args})"
