@@ -145,12 +145,9 @@ def test_join_transpile_includes_proved_equijoin_and_single_table_does_not() -> 
     for out in (adsh, star, tag):
         assert "pub fn equijoin_pairs_str(" in out
         assert "pub fn star_eq_triples_str(" in out
-        assert "walk pairs from the end" in out
-        assert "pair_acc(pairs@, step, base, k as int)" in out
-        assert "triple_acc(triples@, step, base, k as int)" in out
-        assert "lemma_<helper>_is_pairs" in out
-        assert "lemma_<helper>_is_pairs2" in out
-        assert "lemma_<helper>_is_star_pairs" in out
+        assert "// SHAPE_4TABLE_BEGIN" not in out
+        assert "// SHAPE_LEFT_BEGIN" not in out
+        assert "// SHAPE_CHAIN_BEGIN" not in out
         assert "let mut i = cols.n" not in out
     assert "lemma_join_method_spec_helper_is_loop(" in adsh
     assert "lemma_join_method_spec_helper_is_pairs(" in adsh

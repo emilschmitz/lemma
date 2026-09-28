@@ -22,7 +22,7 @@ from .col_exprs import (
     spec_where_cond,
     to_col_expr,
 )
-from .eq_join_prelude import proved_eq_join_prelude
+from .eq_join_prelude import proved_eq_join_prelude_for
 from .joins import (
     _table_struct_name,
     emit_join_spec_helpers,
@@ -1560,7 +1560,10 @@ def transpile_sql_to_verus(
 
     join_multi = is_join and bool(multi_schema)
     trusted_prelude = emit_trusted_prelude(include_left_join_miss=not join_multi)
-    eq_join_prelude = f"\n{proved_eq_join_prelude()}\n" if join_multi else ""
+    query_after_prelude = f"{cols_block}\n\n{helpers}\n\n{subquery_section}{spec_fn}\n\n{result_spec}"
+    eq_join_prelude = (
+        f"\n{proved_eq_join_prelude_for(query_after_prelude)}\n" if join_multi else ""
+    )
 
     hash_state_use = "\nuse std::hash::RandomState;" if join_multi else ""
     return f"""use vstd::prelude::*;
