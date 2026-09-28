@@ -109,6 +109,23 @@ def test_catalog_assumptions_sec_product_from_duckdb_counts(monkeypatch):
     assert f"LEMMA_MAX_CELL_U64: u64 = {SEC_PROVE_LOOP_MAX_CELL_U64}" in out
 
 
+def test_pin_product_catalog_ignores_smaller_duckdb_counts(monkeypatch):
+    """A local slice must not shrink the spec below the paper SEC caps."""
+    monkeypatch.setenv("LEMMA_PIN_PRODUCT_CATALOG", "1")
+    monkeypatch.setattr(
+        "db_extension.dataset_config.table_row_counts",
+        lambda: {"pre": 1000, "sub": 50},
+    )
+    cat = catalog_assumptions_for_workload("sec")
+    assert cat.max_rows == round_rows_up(39_401_761)
+    assert cat.tables["pre"].max_rows == round_rows_up(9_600_799)
+    assert cat.tables["sub"].max_rows == round_rows_up(86_135)
+    assert cat.tables["num"].max_rows == round_rows_up(39_401_761)
+    assert cat.tables["tag"].max_rows == round_rows_up(1_070_662)
+    assert cat.tables["num"].columns["value"].max_value_exclusive == 188_446_126_794_000_002
+    assert cat.tables["pre"].columns["line"].max_value_exclusive == 483
+
+
 def test_sec_product_catalog_fallback_matches_prove_loop(monkeypatch):
     monkeypatch.setattr(
         "db_extension.dataset_config.table_row_counts",

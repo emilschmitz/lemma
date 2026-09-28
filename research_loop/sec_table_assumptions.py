@@ -24,6 +24,8 @@ Swap profiles freely: Trusteds only see ``ResolvedBounds`` / ``valid_cols``.
 
 from __future__ import annotations
 
+import os
+
 from research_loop.table_assumptions import (
     CatalogAssumptions,
     ColumnAssumption,
@@ -43,6 +45,29 @@ SEC_PROVE_LOOP_MAX_CELL_U64 = 2**31
 SEC_PROVE_LOOP_MAX_NATIVE_U32 = 2**31
 SEC_PROVE_LOOP_MAX_STRING_LEN = 128
 
+# Paper SEC-EDGAR 2022–2024 COUNT(*) (docs/paper/article_draft.md).
+# Row caps round up. Value caps are the exclusive bounds the product scaffolds use.
+SEC_PRODUCT_ROW_COUNTS = {
+    "num": 39_401_761,
+    "pre": 9_600_799,
+    "sub": 86_135,
+    "tag": 1_070_662,
+}
+SEC_PRODUCT_VALUE_CAPS = {
+    "pre": {"line": 483},
+    "sub": {"fy": 10_000},
+    "num": {"value": 188_446_126_794_000_002},
+}
+
+
+def pin_product_catalog_requested() -> bool:
+    """Opt-in spec pin for a local slice whose DuckDB is smaller than SEC.
+
+    GCP leaves this unset and reads live counts. Setting it does not shrink
+    the proof obligation to the file on disk.
+    """
+    return os.environ.get("LEMMA_PIN_PRODUCT_CATALOG", "0") in ("1", "true", "True")
+
 
 def round_rows_up(n: int) -> int:
     """Smallest power of two ``>= n`` (``n < 1`` → 1).
@@ -55,8 +80,36 @@ def round_rows_up(n: int) -> int:
     return 1 << (n - 1).bit_length()
 
 
+def pinned_sec_product_catalog_assumptions() -> CatalogAssumptions:
+    """Product SEC caps from the paper counts, independent of the local file."""
+    prove = sec_prove_loop_catalog_assumptions()
+    rounded = {name: round_rows_up(n) for name, n in SEC_PRODUCT_ROW_COUNTS.items()}
+    max_rows = max(rounded.values())
+    tables: dict[str, TableAssumptions] = {}
+    for name, n in rounded.items():
+        col_assumptions = {
+            col: ColumnAssumption(max_value_exclusive=cap)
+            for col, cap in SEC_PRODUCT_VALUE_CAPS.get(name, {}).items()
+        }
+        tables[name] = TableAssumptions(max_rows=n, columns=col_assumptions)
+    return CatalogAssumptions(
+        tables=tables,
+        max_rows=max_rows,
+        max_rows_cube=max_rows,
+        max_rows_4=max_rows,
+        max_cell_u64=prove.max_cell_u64,
+        max_native_u32=prove.max_native_u32,
+        max_string_len=prove.max_string_len,
+    )
+
+
 def sec_product_catalog_assumptions() -> CatalogAssumptions:
-    """Product-path SEC profile: per-table DuckDB counts when available, else prove_loop."""
+    """Product-path SEC profile: per-table DuckDB counts when available, else prove_loop.
+
+    ``LEMMA_PIN_PRODUCT_CATALOG=1`` uses the paper counts even when the file is a slice.
+    """
+    if pin_product_catalog_requested():
+        return pinned_sec_product_catalog_assumptions()
     from db_extension.dataset_config import (
         table_column_abs_sum_caps,
         table_column_value_caps,
