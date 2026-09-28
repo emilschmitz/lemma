@@ -213,3 +213,30 @@ def test_single_agg_join_group_by_order_is_a_sorted_sequence() -> None:
     assert "spec_seq_take(spec_seq_sort_by(spec_map_at_keys(" in spec
     assert "not in this Map method_spec" not in out
     assert "(b.1) < (a.1)" in out
+
+
+def test_single_table_one_sum_group_by_order_is_a_sorted_sequence() -> None:
+    sql = """
+    SELECT l_returnflag, l_linestatus, SUM(l_quantity) AS sum_qty
+    FROM lineitem
+    WHERE l_shipdate <= 19980902
+    GROUP BY l_returnflag, l_linestatus
+    ORDER BY sum_qty DESC
+    """
+    out = transpile_sql_to_verus(
+        sql,
+        {
+            "lineitem": {
+                "l_returnflag": "string",
+                "l_linestatus": "string",
+                "l_quantity": "int",
+                "l_shipdate": "int",
+            }
+        },
+    )
+    spec = out.split("pub open spec fn method_spec(", 1)[1].split("pub proof fn", 1)[0]
+    assert "-> Seq<" in spec.split("{", 1)[0]
+    assert "spec_seq_sort_by(spec_map_at_keys(" in spec
+    assert "not in this Map method_spec" not in out
+    assert "(b.1) < (a.1)" in out
+    assert "pub const LEMMA_MAX_CELL_U64" not in out

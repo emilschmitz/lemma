@@ -319,6 +319,111 @@ def _extra_param_recommends(extras: list[tuple[str, str, str]]) -> str:
     return "".join(f",\n        {valid}({name})" for name, _, valid in extras)
 
 
+def _single_group_order(
+    query: SQLQuery,
+    flat_schema: dict[str, str],
+    extras: list[tuple[str, str, str]],
+    helpers: str,
+    spec_body: str,
+    val_type: str,
+) -> tuple[str, str, str]:
+    """One grouped aggregate plus ORDER BY is a sorted sequence of rows."""
+    extra_sig = _extra_param_sig(extras)
+    extra_call = _extra_param_call(extras)
+    extra_rec = _extra_param_recommends(extras)
+    idx_var = "k"
+    if len(query.groupby_columns) == 1:
+        map_key_ty = spec_map_key_type(flat_schema[query.groupby_columns[0]])
+    else:
+        map_key_ty = (
+            "("
+            + ", ".join(
+                spec_map_key_type(flat_schema[c]) for c in query.groupby_columns
+            )
+            + ")"
+        )
+    map_ret = f"Map<{map_key_ty}, {val_type}>"
+    cond = (
+        spec_where_cond(to_col_expr(query.where_expr, idx_var), idx_var, flat_schema)
+        if query.where_expr
+        else None
+    )
+    key_expr = _groupby_key_expr(query.groupby_columns, idx_var, flat_schema)
+    keys_name = "group_keys_helper"
+    keys_rec = f"{keys_name}(cols{extra_call}, {idx_var} + 1)"
+    if cond:
+        keys_inner = (
+            f"let tail = {keys_rec};\n"
+            f"        if {cond} {{\n"
+            f"            let key = {key_expr};\n"
+            f"            if tail.contains(key) {{ tail }} else {{ tail.push(key) }}\n"
+            f"        }} else {{\n"
+            f"            tail\n"
+            f"        }}"
+        )
+    else:
+        keys_inner = (
+            f"let tail = {keys_rec};\n"
+            f"        let key = {key_expr};\n"
+            f"        if tail.contains(key) {{ tail }} else {{ tail.push(key) }}"
+        )
+    keys_helper = f"""pub open spec fn {keys_name}(cols: &Cols{extra_sig}, {idx_var}: int) -> Seq<{map_key_ty}>
+    recommends
+        0 <= {idx_var} && {idx_var} <= cols.n,
+        valid_cols(cols){extra_rec},
+    decreases cols.n - {idx_var},
+{{
+    if {idx_var} < cols.n {{
+        {keys_inner}
+    }} else {{
+        Seq::empty()
+    }}
+}}"""
+    group_types = (
+        [part.strip() for part in map_key_ty[1:-1].split(", ")]
+        if map_key_ty.startswith("(")
+        else [map_key_ty]
+    )
+    aliases = [spec.alias or "_agg" for spec in query.agg_specs] or ["_agg"]
+    row_ty = f"({map_key_ty}, {val_type})"
+    before_name = "spec_group_before"
+    pred = group_row_before(
+        list(query.groupby_columns),
+        group_types,
+        aliases,
+        [val_type],
+        query.order_by,
+    )
+    exec_pred = group_row_before(
+        list(query.groupby_columns),
+        group_types,
+        aliases,
+        [val_type],
+        query.order_by,
+        exec_strings=True,
+    )
+    ordered = wrap_group_topk(
+        spec_body,
+        f"{keys_name}(cols{extra_call}, 0)",
+        row_ty,
+        before_name,
+        limit=query.limit,
+        offset=query.offset,
+    )
+    order_extra = (
+        "\n\n"
+        + keys_helper
+        + "\n\n"
+        + f"pub open spec fn {before_name}(a: {row_ty}, b: {row_ty}) -> bool {{\n"
+        + f"    {pred}\n"
+        + "}\n\n"
+        + exec_sort_by_fn(row_ty, before_name, exec_pred)
+    )
+    spec_fn = _method_spec_fn(f"Seq<{row_ty}>", ordered, extras)
+    spec_fn = f"// lemma_group_topk_map: {map_ret}\n{spec_fn}"
+    return helpers + order_extra, spec_fn, f"Seq<{row_ty}>"
+
+
 def _method_spec_fn(ret_type: str, spec_body: str, extras: list[tuple[str, str, str]]) -> str:
     extra_sig = _extra_param_sig(extras)
     extra_rec = _extra_param_recommends(extras)
@@ -1289,8 +1394,12 @@ def _emit_single_table_spec(
         if query.having_expr:
             extra_helpers.append(_emit_having_helper())
             spec_body = _emit_having_filter(spec_body, query, flat_schema).strip()
-        spec_fn = _method_spec_fn(ret_type, spec_body, extras)
         all_helpers = "\n\n".join([helpers] + extra_helpers) if extra_helpers else helpers
+        if query.groupby_columns and query.order_by:
+            return _single_group_order(
+                query, flat_schema, extras, all_helpers, spec_body, "u64",
+            )
+        spec_fn = _method_spec_fn(ret_type, spec_body, extras)
         return all_helpers, spec_fn, ret_type
 
     is_sum = query.agg_type in ("SUM", "MIN", "MAX")
@@ -1312,6 +1421,11 @@ def _emit_single_table_spec(
         if query.having_expr:
             extra_helpers.append(_emit_having_helper())
             spec_body = _emit_having_filter(spec_body, query, flat_schema).strip()
+        all_helpers = "\n\n".join([helpers] + extra_helpers) if extra_helpers else helpers
+        if query.order_by:
+            return _single_group_order(
+                query, flat_schema, extras, all_helpers, spec_body, val_type,
+            )
     else:
         ret_type = _agg_value_type(query.agg_expr)
 

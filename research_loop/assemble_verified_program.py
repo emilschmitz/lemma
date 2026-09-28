@@ -335,19 +335,30 @@ def _boundary_helpers(
         having = having_filter_trusted_rs(verus_spec, agg_ret)
         if having:
             boundary = f"{boundary}{having}" if boundary else having
-    if boundary and (
+    boundary_names_container = bool(boundary) and (
         "HashMapWithView" in boundary
         or "StringHashMap" in boundary
         or "HashSetWithView" in boundary
-    ):
+    )
+    # String-key agg_push lives on Cols and names HashMapWithView even when
+    # the query returns a sequence, so the import is not only a map-return concern.
+    spec_names_hm = bool(
+        verus_spec
+        and "HashMapWithView" in verus_spec
+        and "use vstd::hash_map::HashMapWithView;" not in verus_spec
+        and "HashMapWithView, StringHashMap" not in verus_spec
+    )
+    if boundary_names_container or spec_names_hm:
+        text = boundary or ""
         # Join specs already import StringHashMap with the proved equijoin slice.
         if verus_spec and "use vstd::hash_map::StringHashMap;" in verus_spec:
-            boundary = (
+            text = (
                 "use vstd::hash_map::HashMapWithView;\n"
-                "use vstd::hash_set::HashSetWithView;\n\n" + boundary
+                "use vstd::hash_set::HashSetWithView;\n\n" + text
             )
         else:
-            boundary = _VSTD_CONTAINER_USE + boundary
+            text = _VSTD_CONTAINER_USE + text
+        boundary = text
     return boundary
 
 
