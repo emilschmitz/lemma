@@ -14,7 +14,10 @@ from verus_transpiler.parse_sql import normalize_schema
 from research_loop.assemble_verified_program import assemble_verified_nway_program
 from research_loop.harness import resolve_verus_bin, run_verus_verify
 from research_loop.method_spec_ret_type import resolve_ret_type_from_method_spec
-from research_loop.sec_table_assumptions import SEC_PROVE_LOOP_MAX_CELL_U64
+from research_loop.sec_table_assumptions import (
+    SEC_PROVE_LOOP_MAX_CELL_U64,
+    round_rows_up,
+)
 from research_loop.table_assumptions import (
     CatalogAssumptions,
     ColumnAssumption,
@@ -27,8 +30,9 @@ from verus_transpiler import transpile_sql_to_verus
 ROOT = Path(__file__).resolve().parents[1]
 EQ_JOIN_RS = ROOT / "research_loop" / "verus_lib" / "eq_join.rs"
 
-# Full SEC product caps (num global max). Not the 65536 prove_loop profile.
-_SEC_PRODUCT_MAX_ROWS = 39_401_761
+# Measured SEC counts, rounded up to next power of two (catalog upper bounds).
+# Not the 65536 prove_loop profile.
+_SEC_PRODUCT_MAX_ROWS = round_rows_up(39_401_761)
 
 # Holdout Q6: 1 equality to sub + 3 equalities to pre (not the 1+2 string star).
 _Q6_SQL = """
@@ -75,14 +79,16 @@ def _large_sec_product_catalog() -> CatalogAssumptions:
         max_string_len=128,
         tables={
             "pre": TableAssumptions(
-                max_rows=9_600_799,
+                max_rows=round_rows_up(9_600_799),
                 columns={"line": ColumnAssumption(max_value_exclusive=483)},
                 unique_keys=(("adsh", "tag", "version"),),
             ),
-            "sub": TableAssumptions(max_rows=86_135, one_row_per_adsh=True),
-            "tag": TableAssumptions(max_rows=1_070_662),
+            "sub": TableAssumptions(
+                max_rows=round_rows_up(86_135), one_row_per_adsh=True
+            ),
+            "tag": TableAssumptions(max_rows=round_rows_up(1_070_662)),
             "num": TableAssumptions(
-                max_rows=39_401_761,
+                max_rows=round_rows_up(39_401_761),
                 columns={
                     "value": ColumnAssumption(
                         max_value_exclusive=2**60,
@@ -133,7 +139,7 @@ def test_q6_fold_verifies(tmp_path: Path) -> None:
         raise TypeError("expected a per-table schema")
     projected = cast(dict[str, dict[str, str]], projected)
     spec_rs = transpile_sql_to_verus(_Q6_SQL, projected, catalog_assumptions=catalog)
-    assert "pub const LEMMA_MAX_ROWS: usize = 39401761;" in spec_rs
+    assert f"pub const LEMMA_MAX_ROWS: usize = {_SEC_PRODUCT_MAX_ROWS};" in spec_rs
     assert "// shape: q6" in spec_rs
     assert "lemma_multi_agg_helper_is_q6" in spec_rs
     assert "lemma_multi_agg_helper_is_q6_pairs" in spec_rs
@@ -162,7 +168,7 @@ pub exec fn run_query({params}) -> (res: {rust})
         default_tbls={t: "" for t in order},
         catalog_assumptions=catalog,
     )
-    assert "pub const LEMMA_MAX_ROWS: usize = 39401761;" in program
+    assert f"pub const LEMMA_MAX_ROWS: usize = {_SEC_PRODUCT_MAX_ROWS};" in program
     assert "lemma_multi_agg_helper_is_q6" in program
     assert "lemma_multi_agg_helper_is_q6_pairs" in program
     assert "lemma_multi_agg_helper_method_is_fold" in program
