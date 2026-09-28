@@ -67,6 +67,7 @@ def test_rewrite_agent_cmd_uses_mounted_cursor_agent(tmp_path: Path) -> None:
     cmd = "agent -p --force --trust < PROMPT.txt"
     out = rewrite_agent_cmd_for_container(cmd, cli)
     assert out.startswith("/opt/cursor-agent/cursor-agent ")
+    assert "--sandbox disabled" in out
     assert "--force" in out
 
 

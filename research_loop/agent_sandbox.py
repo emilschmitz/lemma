@@ -124,7 +124,13 @@ def rewrite_agent_cmd_for_container(agent_cmd: str, cli_dir: Path | None) -> str
     container_bin = f"/opt/cursor-agent/{exe}"
     parts = agent_cmd.split(None, 1)
     if parts and parts[0] == "agent":
-        return container_bin if len(parts) == 1 else f"{container_bin} {parts[1]}"
+        rest = parts[1] if len(parts) > 1 else ""
+        # Docker is the sandbox (network none, mounted workspace). The CLI's own
+        # Landlock sandbox fails closed on this kernel, so every shell call dies
+        # before it runs. Disable that inner layer only inside the container.
+        if "--sandbox" not in rest.split():
+            rest = f"--sandbox disabled {rest}".strip()
+        return f"{container_bin} {rest}".strip()
     return agent_cmd
 
 
