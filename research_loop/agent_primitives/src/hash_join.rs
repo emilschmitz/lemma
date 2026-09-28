@@ -183,7 +183,7 @@ pub fn par_probe_sum_u64_multi(
 
 /// Serial string equijoin pair list: outer index, then matching inner ids in increasing order.
 pub fn serial_equijoin_pairs_str(outer: &[String], inner: &[String]) -> Vec<(usize, usize)> {
-    let mut index: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut index: HashMap<&str, Vec<usize>> = HashMap::with_capacity(inner.len());
     for (id, key) in inner.iter().enumerate() {
         index.entry(key.as_str()).or_default().push(id);
     }
@@ -199,14 +199,14 @@ fn build_eq_index_str(inner: &[String]) -> HashMap<&str, Vec<usize>> {
                 .enumerate()
                 .map(|(c, chunk)| {
                     let base = c * PAR_CHUNK;
-                    let mut part: HashMap<&str, Vec<usize>> = HashMap::new();
+                    let mut part: HashMap<&str, Vec<usize>> = HashMap::with_capacity(chunk.len());
                     for (j, key) in chunk.iter().enumerate() {
                         part.entry(key.as_str()).or_default().push(base + j);
                     }
                     part
                 })
                 .collect();
-            let mut index: HashMap<&str, Vec<usize>> = HashMap::new();
+            let mut index: HashMap<&str, Vec<usize>> = HashMap::with_capacity(inner.len());
             for part in parts {
                 for (key, ids) in part {
                     index.entry(key).or_default().extend(ids);
@@ -215,7 +215,7 @@ fn build_eq_index_str(inner: &[String]) -> HashMap<&str, Vec<usize>> {
             return index;
         }
     }
-    let mut index: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut index: HashMap<&str, Vec<usize>> = HashMap::with_capacity(inner.len());
     for (id, key) in inner.iter().enumerate() {
         index.entry(key.as_str()).or_default().push(id);
     }
@@ -312,11 +312,11 @@ fn star_indexes_serial<'a>(
     tag_tag: &'a [String],
     tag_ver: &'a [String],
 ) -> (HashMap<&'a str, Vec<usize>>, HashMap<(&'a str, &'a str), Vec<usize>>) {
-    let mut sub_idx: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut sub_idx: HashMap<&str, Vec<usize>> = HashMap::with_capacity(sub_adsh.len());
     for (id, key) in sub_adsh.iter().enumerate() {
         sub_idx.entry(key.as_str()).or_default().push(id);
     }
-    let mut tag_idx: HashMap<(&str, &str), Vec<usize>> = HashMap::new();
+    let mut tag_idx: HashMap<(&str, &str), Vec<usize>> = HashMap::with_capacity(tag_tag.len());
     for (id, key) in tag_tag.iter().enumerate() {
         tag_idx
             .entry((key.as_str(), tag_ver[id].as_str()))
@@ -338,7 +338,7 @@ fn star_indexes_par<'a>(
             .enumerate()
             .map(|(c, chunk)| {
                 let base = c * PAR_CHUNK;
-                let mut part: HashMap<&str, Vec<usize>> = HashMap::new();
+                let mut part: HashMap<&str, Vec<usize>> = HashMap::with_capacity(chunk.len());
                 for (j, key) in chunk.iter().enumerate() {
                     part.entry(key.as_str()).or_default().push(base + j);
                 }
@@ -349,7 +349,7 @@ fn star_indexes_par<'a>(
         let (sub_idx, _) = star_indexes_serial(sub_adsh, &[], &[]);
         vec![sub_idx]
     };
-    let mut sub_idx: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut sub_idx: HashMap<&str, Vec<usize>> = HashMap::with_capacity(sub_adsh.len());
     for part in sub_parts {
         for (key, ids) in part {
             sub_idx.entry(key).or_default().extend(ids);
@@ -361,7 +361,7 @@ fn star_indexes_par<'a>(
             .enumerate()
             .map(|(c, chunk)| {
                 let base = c * PAR_CHUNK;
-                let mut part: HashMap<(&str, &str), Vec<usize>> = HashMap::new();
+                let mut part: HashMap<(&str, &str), Vec<usize>> = HashMap::with_capacity(chunk.len());
                 for (j, key) in chunk.iter().enumerate() {
                     let id = base + j;
                     part.entry((key.as_str(), tag_ver[id].as_str()))
@@ -375,7 +375,7 @@ fn star_indexes_par<'a>(
         let (_, tag_idx) = star_indexes_serial(&[], tag_tag, tag_ver);
         vec![tag_idx]
     };
-    let mut tag_idx: HashMap<(&str, &str), Vec<usize>> = HashMap::new();
+    let mut tag_idx: HashMap<(&str, &str), Vec<usize>> = HashMap::with_capacity(tag_tag.len());
     for part in tag_parts {
         for (key, ids) in part {
             tag_idx.entry(key).or_default().extend(ids);

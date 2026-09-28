@@ -385,7 +385,8 @@ pub exec fn par_equijoin_pairs_str(
     ensures pairs@ == serial_eq_pairs_str_spec(outer@, inner@),
 {
     let n_inner = inner.len();
-    let mut index: std::collections::HashMap<&str, Vec<usize>> = std::collections::HashMap::new();
+    let mut index: std::collections::HashMap<&str, Vec<usize>> =
+        std::collections::HashMap::with_capacity(n_inner);
     if n_inner < PAR_CHUNK {
         let mut j: usize = 0;
         while j < n_inner {
@@ -406,7 +407,7 @@ pub exec fn par_equijoin_pairs_str(
                 let end = if start + chunk < n_inner { start + chunk } else { n_inner };
                 handles.push(scope.spawn(move || {
                     let mut partial: std::collections::HashMap<&str, Vec<usize>> =
-                        std::collections::HashMap::new();
+                        std::collections::HashMap::with_capacity(end - start);
                     let mut j = start;
                     while j < end {
                         partial.entry(inner[j].as_str()).or_insert_with(Vec::new).push(j);
@@ -593,7 +594,7 @@ pub exec fn par_star_triples_str(
 {
     let n_sub = sub_adsh.len();
     let mut sub_index: std::collections::HashMap<&str, Vec<usize>> =
-        std::collections::HashMap::new();
+        std::collections::HashMap::with_capacity(n_sub);
     if n_sub < PAR_CHUNK {
         let mut j: usize = 0;
         while j < n_sub {
@@ -614,7 +615,7 @@ pub exec fn par_star_triples_str(
                 let end = if start + chunk < n_sub { start + chunk } else { n_sub };
                 handles.push(scope.spawn(move || {
                     let mut partial: std::collections::HashMap<&str, Vec<usize>> =
-                        std::collections::HashMap::new();
+                        std::collections::HashMap::with_capacity(end - start);
                     let mut j = start;
                     while j < end {
                         partial.entry(sub_adsh[j].as_str()).or_insert_with(Vec::new).push(j);
@@ -638,7 +639,7 @@ pub exec fn par_star_triples_str(
     }
     let n_tag = tag_tag.len();
     let mut tag_index: std::collections::HashMap<(&str, &str), Vec<usize>> =
-        std::collections::HashMap::new();
+        std::collections::HashMap::with_capacity(n_tag);
     if n_tag < PAR_CHUNK {
         let mut k: usize = 0;
         while k < n_tag {
@@ -662,7 +663,7 @@ pub exec fn par_star_triples_str(
                 let end = if start + chunk < n_tag { start + chunk } else { n_tag };
                 handles.push(scope.spawn(move || {
                     let mut partial: std::collections::HashMap<(&str, &str), Vec<usize>> =
-                        std::collections::HashMap::new();
+                        std::collections::HashMap::with_capacity(end - start);
                     let mut k = start;
                     while k < end {
                         partial
