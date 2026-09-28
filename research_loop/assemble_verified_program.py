@@ -396,7 +396,12 @@ def _next_code(text: str, i: int) -> tuple[str, int]:
 
 
 def _function_body_span(text: str, sig_at: int) -> tuple[int, int]:
-    """``(open_brace, index_past_close)`` for the function that starts at ``sig_at``."""
+    """``(open_brace, index_past_close)`` for the function that starts at ``sig_at``.
+
+    A ``{`` inside ``ensures`` / ``requires`` (``match hit {``, ``assert forall``)
+    is not the function body. The body brace is the first ``{`` at parenthesis
+    depth 0 that starts its line, or that sits on the signature line itself.
+    """
     i = sig_at
     paren = 0
     open_at = -1
@@ -409,7 +414,12 @@ def _function_body_span(text: str, sig_at: int) -> tuple[int, int]:
         elif c == ")":
             paren = max(0, paren - 1)
         elif c == "{" and paren == 0:
-            open_at = nxt - 1
+            brace_at = nxt - 1
+            line_start = text.rfind("\n", 0, brace_at) + 1
+            starts_line = text[line_start:brace_at].strip() == ""
+            on_sig_line = "\n" not in text[sig_at:brace_at]
+            if starts_line or on_sig_line:
+                open_at = brace_at
         i = nxt
     depth = 0
     i = open_at

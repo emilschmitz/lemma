@@ -179,6 +179,32 @@ pub open spec fn nested_eq_pairs<K>(end: int) -> int {
     assert "pub open spec fn nested_eq_pairs<K>(end: int) -> int {\n    end\n}" in out
 
 
+def test_ensures_match_brace_is_not_the_function_body() -> None:
+    src = """
+// EQ_JOIN_PROVED_BEGIN
+pub fn probe_eq_str(key: &str) -> (hit: Option<usize>)
+    ensures
+        match hit {
+            Some(v) => v == 1,
+            None => true,
+        },
+{
+    let x = 1;
+    x
+}
+
+pub open spec fn nested_eq_pairs<K>(end: int) -> int {
+    end
+}
+"""
+    out = _collapse_proved_bodies(src)
+    assert "let x = 1" not in out
+    assert "match hit {" in out
+    assert "Some(v) => v == 1" in out
+    assert "None => true" in out
+    assert "pub open spec fn nested_eq_pairs<K>(end: int) -> int {\n    end\n}" in out
+
+
 def test_agent_visible_join_drops_proof_bodies_keeps_contract() -> None:
     spec = transpile_sql_to_verus(
         _ADSH_SQL,
@@ -189,6 +215,8 @@ def test_agent_visible_join_drops_proof_bodies_keeps_contract() -> None:
     assert "pairs@ == nested_eq_pairs(" in visible
     assert "let mut pairs: Vec<(usize, usize)> = Vec::new();" not in visible
     assert "broadcast use vstd::seq::group_seq_lemmas" not in visible
+    assert "let ghost sk = key_views(keys@);" not in visible
+    assert "Some(v) => v@ == eq_row_ids" in visible
     assert "pub open spec fn method_spec(" in visible
     assert "pub open spec fn nested_eq_pairs<" in visible
     assert spec.count("\n") - visible.count("\n") > 400
