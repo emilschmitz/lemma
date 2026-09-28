@@ -6217,8 +6217,12 @@ def _emit_right_outer_projection(
 ) -> tuple[str, str, str, _FoldBridge | None]:
     """RIGHT OUTER projection: keep unmatched preserved-side rows (null-pad inner).
 
-    After parse side-swap, ``slots[0]`` is the SQL RIGHT table. One equality only.
-    MethodSpec is the real ``right_acc(nested_right_pairs(...))`` fold.
+    // shape: right (one equality) or right2 (two string ``@`` equalities)
+    After parse side-swap, ``slots[0]`` is the SQL RIGHT table. One equality →
+    ``right_acc`` / ``nested_right_pairs``; two → ``right_acc`` of
+    ``nested_right_pairs2`` / ``right_outer_pairs_str2`` via ``_right2_fold_lemma``.
+    Two-eq nullable-side projected columns are ``Option`` (``Some`` on match,
+    ``None`` on miss); preserved-side columns are copied on both paths.
     """
     if len(slots) != 2:
         raise UnsupportedContractError("RIGHT OUTER projection supports exactly two tables")
@@ -6232,35 +6236,86 @@ def _emit_right_outer_projection(
         )
     o, inn = slots
     join = query.joins[0]
-    if len(join.on_equalities) != 1:
+    if len(join.on_equalities) not in (1, 2):
         raise UnsupportedContractError(
-            "RIGHT OUTER projection supports exactly one equality"
-        )
-    left_ref, right_ref = join.on_equalities[0]
-    l_expr = _col_access_ref(left_ref, query, slots, schemas_by_table, {})
-    r_expr = _col_access_ref(right_ref, query, slots, schemas_by_table, {})
-    m = re.fullmatch(
-        r"(?P<lp>\w+)\.(?P<lf>\w+)\[(?P<li>\w+) as int\](?P<lv>@?)\s*==\s*"
-        r"(?P<rp>\w+)\.(?P<rf>\w+)\[(?P<ri>\w+) as int\](?P<rv>@?)",
-        f"{l_expr} == {r_expr}".replace(f"{o.idx} as int", "i0 as int").replace(
-            f"{inn.idx} as int", "i1 as int"
-        ),
-    )
-    if m is None or bool(m.group("lv")) != bool(m.group("rv")):
-        raise UnsupportedContractError(
-            "RIGHT OUTER projection requires a single column equality"
-        )
-    if m.group("lp") != o.param or m.group("rp") != inn.param:
-        raise UnsupportedContractError(
-            "RIGHT OUTER projection equality must be preserved-side == nullable-side"
+            "RIGHT OUTER projection supports one or two equalities"
         )
 
     def seq_expr(param: str, field: str, view: str) -> str:
         col = f"{param}.{field}"
         return f"key_views({col}@)" if view else f"{col}@"
 
-    outer_seq = seq_expr(m.group("lp"), m.group("lf"), m.group("lv"))
-    inner_seq = seq_expr(m.group("rp"), m.group("rf"), m.group("rv"))
+    if len(join.on_equalities) == 2:
+        # Orient each equality as preserved (slots[0]) == nullable (slots[1]);
+        # ON column order after side-swap may be either way.
+        match_parts: list[str] = []
+        for left_ref, right_ref in join.on_equalities:
+            a = _col_access_ref(left_ref, query, slots, schemas_by_table, {})
+            b = _col_access_ref(right_ref, query, slots, schemas_by_table, {})
+            a_on_preserved = f"{o.param}." in a and f"[{o.idx} as int]" in a
+            b_on_preserved = f"{o.param}." in b and f"[{o.idx} as int]" in b
+            if a_on_preserved and not b_on_preserved:
+                preserved_expr, nullable_expr = a, b
+            elif b_on_preserved and not a_on_preserved:
+                preserved_expr, nullable_expr = b, a
+            else:
+                raise UnsupportedContractError(
+                    "RIGHT OUTER projection equality must be "
+                    "preserved-side == nullable-side"
+                )
+            l_expr = preserved_expr.replace(f"{o.idx} as int", "i0 as int")
+            r_expr = nullable_expr.replace(f"{inn.idx} as int", "i1 as int")
+            match_parts.append(f"{l_expr} == {r_expr}")
+        parsed: list[re.Match[str]] = []
+        for part in match_parts:
+            m2 = re.fullmatch(
+                r"(?P<lp>\w+)\.(?P<lf>\w+)\[i0 as int\](?P<lv>@?)\s*==\s*"
+                r"(?P<rp>\w+)\.(?P<rf>\w+)\[i1 as int\](?P<rv>@?)",
+                part.strip(),
+            )
+            if m2 is None or not m2.group("lv") or not m2.group("rv"):
+                raise UnsupportedContractError(
+                    "RIGHT OUTER projection two equalities require String keys"
+                )
+            if m2.group("lp") != o.param or m2.group("rp") != inn.param:
+                raise UnsupportedContractError(
+                    "RIGHT OUTER projection equality must be "
+                    "preserved-side == nullable-side"
+                )
+            parsed.append(m2)
+        outer_seqs = [
+            seq_expr(m.group("lp"), m.group("lf"), m.group("lv")) for m in parsed
+        ]
+        inner_seqs = [
+            seq_expr(m.group("rp"), m.group("rf"), m.group("rv")) for m in parsed
+        ]
+        use_right2 = True
+        outer_seq = ""
+        inner_seq = ""
+    else:
+        left_ref, right_ref = join.on_equalities[0]
+        l_expr = _col_access_ref(left_ref, query, slots, schemas_by_table, {})
+        r_expr = _col_access_ref(right_ref, query, slots, schemas_by_table, {})
+        m = re.fullmatch(
+            r"(?P<lp>\w+)\.(?P<lf>\w+)\[(?P<li>\w+) as int\](?P<lv>@?)\s*==\s*"
+            r"(?P<rp>\w+)\.(?P<rf>\w+)\[(?P<ri>\w+) as int\](?P<rv>@?)",
+            f"{l_expr} == {r_expr}".replace(f"{o.idx} as int", "i0 as int").replace(
+                f"{inn.idx} as int", "i1 as int"
+            ),
+        )
+        if m is None or bool(m.group("lv")) != bool(m.group("rv")):
+            raise UnsupportedContractError(
+                "RIGHT OUTER projection requires a single column equality"
+            )
+        if m.group("lp") != o.param or m.group("rp") != inn.param:
+            raise UnsupportedContractError(
+                "RIGHT OUTER projection equality must be preserved-side == nullable-side"
+            )
+        outer_seq = seq_expr(m.group("lp"), m.group("lf"), m.group("lv"))
+        inner_seq = seq_expr(m.group("rp"), m.group("rf"), m.group("rv"))
+        use_right2 = False
+        outer_seqs = []
+        inner_seqs = []
 
     row_parts_match: list[str] = []
     row_parts_miss: list[str] = []
@@ -6270,24 +6325,59 @@ def _emit_right_outer_projection(
         match_expr = resolved.replace(f"{o.idx} as int", "i0 as int").replace(
             f"{inn.idx} as int", "i1 as int"
         )
-        row_parts_match.append(match_expr)
-        if f"{inn.param}." in resolved:
-            spec_ty = "Seq<char>"
-            for k, v in schemas_by_table[inn.table].items():
-                if k.lower() == col.lower() or expr.lower().endswith(k.lower()):
-                    spec_ty = spec_map_key_type(v)
-                    break
-            row_parts_miss.append(_null_pad_for_spec_type(spec_ty))
-            row_types.append(spec_ty)
+        if use_right2:
+            # Two-eq: Option pad on nullable side (LOJ projection analogue).
+            is_nullable = f"{inn.param}." in resolved
+            if not is_nullable:
+                left_schema = schemas_by_table.get(o.table, {})
+                right_schema = schemas_by_table.get(inn.table, {})
+                in_nullable = col.lower() in {k.lower() for k in right_schema}
+                in_preserved = col.lower() in {k.lower() for k in left_schema}
+                if in_nullable and not in_preserved:
+                    is_nullable = True
+                elif query.table_aliases.get(col) == inn.table:
+                    is_nullable = True
+                elif query.table_aliases.get(col) == o.table:
+                    is_nullable = False
+            if is_nullable:
+                spec_ty = "Seq<char>"
+                for k, v in schemas_by_table[inn.table].items():
+                    if k.lower() == col.lower() or expr.lower().endswith(k.lower()):
+                        spec_ty = spec_map_key_type(v)
+                        break
+                row_parts_match.append(f"Some({match_expr})")
+                row_parts_miss.append("None")
+                row_types.append(f"Option<{spec_ty}>")
+            else:
+                miss_expr = resolved.replace(f"{o.idx} as int", "i0 as int")
+                row_parts_match.append(match_expr)
+                row_parts_miss.append(miss_expr)
+                spec_ty = "Seq<char>"
+                for k, v in schemas_by_table[o.table].items():
+                    if k.lower() == col.lower() or expr.lower().endswith(k.lower()):
+                        spec_ty = spec_map_key_type(v)
+                        break
+                row_types.append(spec_ty)
         else:
-            miss_expr = resolved.replace(f"{o.idx} as int", "i0 as int")
-            row_parts_miss.append(miss_expr)
-            spec_ty = "Seq<char>"
-            for k, v in schemas_by_table[o.table].items():
-                if k.lower() == col.lower() or expr.lower().endswith(k.lower()):
-                    spec_ty = spec_map_key_type(v)
-                    break
-            row_types.append(spec_ty)
+            # One-eq path unchanged: empty-string / zero pad on nullable side.
+            row_parts_match.append(match_expr)
+            if f"{inn.param}." in resolved:
+                spec_ty = "Seq<char>"
+                for k, v in schemas_by_table[inn.table].items():
+                    if k.lower() == col.lower() or expr.lower().endswith(k.lower()):
+                        spec_ty = spec_map_key_type(v)
+                        break
+                row_parts_miss.append(_null_pad_for_spec_type(spec_ty))
+                row_types.append(spec_ty)
+            else:
+                miss_expr = resolved.replace(f"{o.idx} as int", "i0 as int")
+                row_parts_miss.append(miss_expr)
+                spec_ty = "Seq<char>"
+                for k, v in schemas_by_table[o.table].items():
+                    if k.lower() == col.lower() or expr.lower().endswith(k.lower()):
+                        spec_ty = spec_map_key_type(v)
+                        break
+                row_types.append(spec_ty)
 
     if len(row_parts_match) == 1:
         match_row = row_parts_match[0]
@@ -6311,13 +6401,51 @@ def _emit_right_outer_projection(
         f"        }}"
     )
 
-    helper = f"""pub open spec fn {helper_name}(
+    if use_right2:
+        shape_mark = "// shape: right2"
+        pairs_call = (
+            f"nested_right_pairs2(\n"
+            f"            {outer_seqs[0]},\n"
+            f"            {outer_seqs[1]},\n"
+            f"            {inner_seqs[0]},\n"
+            f"            {inner_seqs[1]},\n"
+            f"            {o.param}.n as int,\n"
+            f"        )"
+        )
+        fold_text, bridge = _right2_fold_lemma(
+            helper_name,
+            slots,
+            outer_seqs=outer_seqs,
+            inner_seqs=inner_seqs,
+            ret_type=ret_type,
+            ret_base=ret_base,
+            step_hit=step_hit,
+            step_miss=step_miss,
+        )
+    else:
+        shape_mark = ""
+        pairs_call = (
+            f"nested_right_pairs({outer_seq}, {inner_seq}, {o.param}.n as int)"
+        )
+        fold_text, bridge = _right_fold_lemma(
+            helper_name,
+            slots,
+            outer_seq=outer_seq,
+            inner_seq=inner_seq,
+            match_row=match_row,
+            miss_row=miss_row,
+            ret_type=ret_type,
+            ret_base=ret_base,
+        )
+
+    shape_prefix = f"{shape_mark}\n" if shape_mark else ""
+    helper = f"""{shape_prefix}pub open spec fn {helper_name}(
     {o.param}: &{o.struct},
     {inn.param}: &{inn.struct},
 ) -> (res: {ret_type})
 {{
     right_acc(
-        nested_right_pairs({outer_seq}, {inner_seq}, {o.param}.n as int),
+        {pairs_call},
         {step_hit},
         {step_miss},
         {ret_base},
@@ -6325,16 +6453,6 @@ def _emit_right_outer_projection(
     )
 }}"""
 
-    fold_text, bridge = _right_fold_lemma(
-        helper_name,
-        slots,
-        outer_seq=outer_seq,
-        inner_seq=inner_seq,
-        match_row=match_row,
-        miss_row=miss_row,
-        ret_type=ret_type,
-        ret_base=ret_base,
-    )
     helpers_out = helper + "\n\n" + fold_text
     spec_body = f"{helper_name}({o.param}, {inn.param})"
     if query.limit is not None:
