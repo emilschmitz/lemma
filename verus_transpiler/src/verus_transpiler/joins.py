@@ -4320,6 +4320,117 @@ pub open spec fn {helper_name}(
         spec_body = f"spec_seq_take({spec_body}, {query.limit})"
     return helpers_out, spec_body, ret_type, bridge
 
+
+def _is_semi_anti_scalar_count(query: SQLQuery) -> bool:
+    """True for SEMI/ANTI ``SELECT COUNT(*)`` with no GROUP BY / projection."""
+    if query.groupby_columns or query.is_projection or query.is_multi_agg:
+        return False
+    if query.agg_type != "COUNT":
+        return False
+    specs = query.agg_specs if query.agg_specs else [
+        AggSpec(query.agg_type, query.agg_column, query.agg_expr, ""),
+    ]
+    if len(specs) != 1 or specs[0].agg_type != "COUNT":
+        return False
+    # COUNT(*) only (parser sets agg_column='*' / agg_expr='1').
+    return specs[0].agg_column in ("*", "") or specs[0].agg_expr == "1"
+
+
+def _emit_existence_scalar_count(
+    query: SQLQuery,
+    slots: list[_Slot],
+    schemas_by_table: dict[str, dict[str, str]],
+    *,
+    where_expr: str | None,
+    mode: str,
+    helper_name: str,
+) -> tuple[str, str, str, _FoldBridge | None]:
+    """SEMI/ANTI scalar COUNT(*) as fold of +1 over hit/miss rows.
+
+    Reuses ``nested_semi_hits`` / ``semi_hit_rows_str`` (SEMI) or
+    ``nested_anti_misses`` / ``anti_miss_rows_str`` (ANTI) via the same fold
+    lemmas as the projection helpers — count equals hit/miss list length.
+    """
+    if mode not in ("semi", "anti"):
+        raise ValueError(mode)
+    if len(slots) != 2:
+        raise UnsupportedContractError(
+            f"{mode.upper()} JOIN scalar COUNT requires exactly two tables"
+        )
+    if not _is_semi_anti_scalar_count(query):
+        raise UnsupportedContractError(
+            f"{mode.upper()} JOIN scalar agg needs COUNT(*) without GROUP BY"
+        )
+    left, right = slots[0], slots[1]
+    match_conds = _li_ri_match_conds(query, slots, schemas_by_table, {})
+    match_helper = _emit_match_helper(left, right, match_conds)
+    filter_raw, _ = _strip_anti_join_predicates(where_expr)
+    filter_cond = (
+        _anti_left_li(
+            _resolve_filter_expr(filter_raw, query, [left], schemas_by_table, {}) or "",
+            left,
+        )
+        if filter_raw
+        else None
+    )
+    filter_part = f" && {filter_cond}" if filter_cond else ""
+    match_test = (
+        f"join_right_match_helper({left.param}, {right.param}, li, 0)"
+        if mode == "semi"
+        else f"!join_right_match_helper({left.param}, {right.param}, li, 0)"
+    )
+    ret_type = "u64"
+    ret_base = "0u64"
+    update_body = "(tail as int + 1) as u64"
+    helper = f"""// shape: {mode}
+pub open spec fn {helper_name}(
+    {left.param}: &{left.struct},
+    {right.param}: &{right.struct},
+    li: int,
+) -> (res: {ret_type})
+    decreases {left.param}.n - li,
+{{
+    if li < {left.param}.n {{
+        let tail = {helper_name}({left.param}, {right.param}, li + 1);
+        if {match_test}{filter_part} {{
+            {update_body}
+        }} else {{
+            tail
+        }}
+    }} else {{
+        {ret_base}
+    }}
+}}"""
+    if mode == "semi":
+        fold = _semi_fold_lemma(
+            helper_name,
+            slots,
+            match_conds=match_conds,
+            filter_cond=filter_cond,
+            update_body=update_body,
+            ret_type=ret_type,
+            ret_base=ret_base,
+        )
+    else:
+        fold = _left_fold_lemma(
+            helper_name,
+            slots,
+            match_conds=match_conds,
+            filter_cond=filter_cond,
+            update_body=update_body,
+            ret_type=ret_type,
+            ret_base=ret_base,
+            shape="anti",
+        )
+    bridge: _FoldBridge | None = None
+    helpers_out = match_helper + "\n\n" + helper
+    if fold is not None:
+        fold_text, bridge = fold
+        helpers_out = helpers_out + "\n\n" + fold_text
+    spec_body = f"{helper_name}({left.param}, {right.param}, 0)"
+    return helpers_out, spec_body, ret_type, bridge
+
+
 def _loj_fold_lemma(
     helper_name: str,
     slots: list[_Slot],
@@ -5800,10 +5911,14 @@ def _full_fold_lemma(
     ret_type: str,
     ret_base: str,
     combine_kind: str,
+    lhs_expr: str | None = None,
 ) -> tuple[str, _FoldBridge] | None:
     """Proof that FULL OUTER helpers equal ``full_acc`` of pairs + left/right misses.
 
     // shape: full
+    When ``lhs_expr`` is set (e.g. a named projection chain), the ``is_full``
+    ensures uses that call instead of a ``{ let … }`` block — needed so Verus
+    can parse nested ``Option<Seq<char>>`` closures on the fold RHS.
     """
     parsed = _full_key_seqs(match_conds, slots)
     if parsed is None:
@@ -5882,12 +5997,24 @@ def _full_fold_lemma(
             f"            {ret_base},\n"
             f"        )"
         )
-    helper_zeros = (
-        f"let matched = {matched_name}({o.param}, {i.param}, 0, 0);\n"
-        f"    let left_only = {left_name}({o.param}, {i.param}, 0);\n"
-        f"    let right_only = {right_name}({o.param}, {i.param}, 0);\n"
-        f"    {_full_combine_expr('matched', 'left_only', 'right_only', combine_kind, ret_type)}"
-    )
+    if lhs_expr is not None:
+        helper_zeros = lhs_expr
+        ensures_lhs = lhs_expr
+    else:
+        helper_zeros = (
+            f"let matched = {matched_name}({o.param}, {i.param}, 0, 0);\n"
+            f"    let left_only = {left_name}({o.param}, {i.param}, 0);\n"
+            f"    let right_only = {right_name}({o.param}, {i.param}, 0);\n"
+            f"    {_full_combine_expr('matched', 'left_only', 'right_only', combine_kind, ret_type)}"
+        )
+        ensures_lhs = (
+            f"{{\n"
+            f"            let matched = {matched_name}({o.param}, {i.param}, 0, 0);\n"
+            f"            let left_only = {left_name}({o.param}, {i.param}, 0);\n"
+            f"            let right_only = {right_name}({o.param}, {i.param}, 0);\n"
+            f"            {_full_combine_expr('matched', 'left_only', 'right_only', combine_kind, ret_type)}\n"
+            f"        }}"
+        )
     matched_loop = f"lemma_{matched_name}_is_full_matched_loop"
     matched_pairs = f"lemma_{matched_name}_is_full_matched"
     left_lemma = f"lemma_{left_name}_is_full_left"
@@ -6215,12 +6342,7 @@ pub proof fn {full_lemma}({params})
         {o.param}.n <= usize::MAX,
         {i.param}.n <= usize::MAX,
     ensures
-        {{
-            let matched = {matched_name}({o.param}, {i.param}, 0, 0);
-            let left_only = {left_name}({o.param}, {i.param}, 0);
-            let right_only = {right_name}({o.param}, {i.param}, 0);
-            {_full_combine_expr('matched', 'left_only', 'right_only', combine_kind, ret_type)}
-        }} == {fold_rhs},
+        {ensures_lhs} == {fold_rhs},
 {{
     {matched_pairs}({o.param}, {i.param});
     {left_lemma}({o.param}, {i.param});
@@ -6990,37 +7112,93 @@ def _emit_full_outer_projection(
             "FULL OUTER JOIN projection fold needs one equality"
         )
     _os, _is, l_access, r_access, lv, rv = parsed
+    mf = re.fullmatch(
+        r"(?P<lp>\w+)\.(?P<lf>\w+)\[li as int\](?P<lv>@?)\s*==\s*"
+        r"(?P<rp>\w+)\.(?P<rf>\w+)\[ri as int\](?P<rv>@?)",
+        match_conds.strip(),
+    )
+    assert mf is not None
+    jk_left = mf.group("lf").lower()
+    jk_right = mf.group("rf").lower()
 
-    # Coalesce join-key projection: matched/left use left key, right-miss uses right key.
-    # Only support projecting the join key column(s) (same semantic value).
-    if len(query.projection_columns) != 1:
-        raise UnsupportedContractError(
-            "FULL OUTER JOIN projection MethodSpec supports one join-key column"
-        )
-    row_ty = "Seq<char>" if lv else "u64"
-    # Detect integer vs string from access
-    if lv:
-        row_ty = "Seq<char>"
-        expr_m = l_access.replace("li as int", f"{left.idx} as int")
-        expr_l = l_access
-        expr_r = r_access
+    match_parts: list[str] = []
+    left_parts: list[str] = []
+    right_parts: list[str] = []
+    row_types: list[str] = []
+    for col, expr in zip(query.projection_columns, query.projection_exprs, strict=True):
+        side = _proj_side(col, expr, query, slots, schemas_by_table)
+        ty: str | None = None
+        tbl = query.table_aliases.get(col, col)
+        for slot in slots:
+            if slot.table == tbl or col in schemas_by_table.get(slot.table, {}):
+                schema = schemas_by_table[slot.table]
+                for k in schema:
+                    if k.lower() == col.lower():
+                        ty = spec_map_key_type(schema[k])
+                        break
+                break
+        if ty is None:
+            for slot in slots:
+                schema = schemas_by_table[slot.table]
+                for k, v in schema.items():
+                    if expr.endswith(k) or col.lower() == k.lower():
+                        ty = spec_map_key_type(v)
+                        break
+                if ty is not None:
+                    break
+        if ty is None:
+            ty = "Seq<char>" if lv else "u64"
+
+        col_l = col.lower()
+        is_join_key = col_l == jk_left or col_l == jk_right
+        if is_join_key:
+            # Coalesce: matched/left-miss use left key; right-miss uses right key.
+            expr_m = l_access.replace("li as int", f"{left.idx} as int")
+            expr_l = l_access
+            expr_r = r_access
+            match_parts.append(expr_m)
+            left_parts.append(expr_l)
+            right_parts.append(expr_r)
+            row_types.append(ty)
+            continue
+
+        if side == "left":
+            resolved = _resolve_row_expr(
+                expr, query, [left], schemas_by_table, derived_by_alias,
+            )
+            expr_m = resolved  # left.idx == i0 in matched nested loop
+            expr_l = resolved.replace(f"{left.idx} as int", "li as int")
+            match_parts.append(f"Some({expr_m})")
+            left_parts.append(f"Some({expr_l})")
+            right_parts.append("None")
+            row_types.append(f"Option<{ty}>")
+        else:
+            # Matched nested loop uses right.idx (i1); right-miss helper uses ri.
+            expr_m = _resolve_row_expr(
+                expr, query, slots, schemas_by_table, derived_by_alias,
+            )
+            resolved_r = _resolve_row_expr(
+                expr, query, [right], schemas_by_table, derived_by_alias,
+            )
+            expr_r = resolved_r.replace(f"{right.idx} as int", "ri as int")
+            match_parts.append(f"Some({expr_m})")
+            left_parts.append("None")
+            right_parts.append(f"Some({expr_r})")
+            row_types.append(f"Option<{ty}>")
+
+    if len(match_parts) == 1:
+        row_expr_m = match_parts[0]
+        row_expr_l = left_parts[0]
+        row_expr_r = right_parts[0]
+        row_ty = row_types[0]
     else:
-        # Infer type from schema of left join col
-        mf = re.fullmatch(
-            r"(?P<lp>\w+)\.(?P<lf>\w+)\[li as int\](?P<lv>@?)\s*==\s*"
-            r"(?P<rp>\w+)\.(?P<rf>\w+)\[ri as int\](?P<rv>@?)",
-            match_conds.strip(),
-        )
-        assert mf is not None
-        schema = schemas_by_table[left.table]
-        col = mf.group("lf")
-        row_ty = spec_map_key_type(schema.get(col, schema[next(iter(schema))]))
-        expr_m = l_access.replace("li as int", f"{left.idx} as int")
-        expr_l = l_access
-        expr_r = r_access
+        row_expr_m = f"({', '.join(match_parts)})"
+        row_expr_l = f"({', '.join(left_parts)})"
+        row_expr_r = f"({', '.join(right_parts)})"
+        row_ty = f"({', '.join(row_types)})"
 
     ret_type = f"Seq<{row_ty}>"
-    update_m = f"tail.push({expr_m})"
+    update_m = f"tail.push({row_expr_m})"
     matched_loop = _gen_nested_loop(
         matched_name,
         slots,
@@ -7041,7 +7219,7 @@ def _emit_full_outer_projection(
         let tail = {left_name}({left.param}, {right.param}, li + 1);
         {f"if {filter_left} {{" if filter_left else ""}
         if !join_right_match_helper({left.param}, {right.param}, li, 0) {{
-            tail.push({expr_l})
+            tail.push({row_expr_l})
         }} else {{
             tail
         }}
@@ -7061,7 +7239,7 @@ def _emit_full_outer_projection(
         let tail = {right_name}({left.param}, {right.param}, ri + 1);
         {f"if {filter_right} {{" if filter_right else ""}
         if !join_left_match_helper({left.param}, {right.param}, 0, ri) {{
-            tail.push({expr_r})
+            tail.push({row_expr_r})
         }} else {{
             tail
         }}
@@ -7070,24 +7248,26 @@ def _emit_full_outer_projection(
         Seq::empty()
     }}
 }}"""
-    spec_body = (
-        f"let matched = {matched_name}({left.param}, {right.param}, 0, 0);\n"
-        f"    let left_only = {left_name}({left.param}, {right.param}, 0);\n"
-        f"    let right_only = {right_name}({left.param}, {right.param}, 0);\n"
-        f"    matched + left_only + right_only"
-    )
+    # Named chain so ``is_full`` ensures can name the LHS (avoids Verus parse
+    # failure on ``{ let … } == pair_acc(… Option<Seq<char>> …)``).
+    chain_name = "full_join_projection_helper"
+    chain_helper = f"""pub open spec fn {chain_name}(
+    {left.param}: &{left.struct},
+    {right.param}: &{right.struct},
+) -> (res: {ret_type})
+{{
+    let matched = {matched_name}({left.param}, {right.param}, 0, 0);
+    let left_only = {left_name}({left.param}, {right.param}, 0);
+    let right_only = {right_name}({left.param}, {right.param}, 0);
+    matched + left_only + right_only
+}}"""
+    chain_call = f"{chain_name}({left.param}, {right.param})"
+    spec_body = chain_call
     if query.limit is not None:
-        spec_body = (
-            f"spec_seq_take({{\n"
-            f"        let matched = {matched_name}({left.param}, {right.param}, 0, 0);\n"
-            f"        let left_only = {left_name}({left.param}, {right.param}, 0);\n"
-            f"        let right_only = {right_name}({left.param}, {right.param}, 0);\n"
-            f"        matched + left_only + right_only\n"
-            f"    }}, {query.limit})"
-        )
+        spec_body = f"spec_seq_take({chain_call}, {query.limit})"
 
-    update_l = f"tail.push({expr_l})"
-    update_r = f"tail.push({expr_r})"
+    update_l = f"tail.push({row_expr_l})"
+    update_r = f"tail.push({row_expr_r})"
     fold = _full_fold_lemma(
         matched_name=matched_name,
         left_name=left_name,
@@ -7103,8 +7283,11 @@ def _emit_full_outer_projection(
         ret_type=ret_type,
         ret_base="Seq::empty()",
         combine_kind="seq",
+        lhs_expr=chain_call,
     )
-    helpers = "\n\n".join([right_match, left_match, matched_loop, left_only, right_only])
+    helpers = "\n\n".join(
+        [right_match, left_match, matched_loop, left_only, right_only, chain_helper]
+    )
     bridge: _FoldBridge | None = None
     if fold is not None:
         fold_text, bridge = fold
@@ -7137,17 +7320,27 @@ def emit_join_spec_helpers(
     for jt in join_types:
         if jt == "SEMI" and not (
             len(slots) == 2 and len(query.joins) == 1
-            and (query.groupby_columns or query.is_projection)
+            and (
+                query.groupby_columns
+                or query.is_projection
+                or _is_semi_anti_scalar_count(query)
+            )
         ):
             raise UnsupportedContractError(
-                "SEMI JOIN needs real MethodSpec; two-table group-by/projection only"
+                "SEMI JOIN needs real MethodSpec; "
+                "two-table group-by/projection/scalar COUNT only"
             )
         if jt == "ANTI" and not (
             len(slots) == 2 and len(query.joins) == 1
-            and (query.groupby_columns or query.is_projection)
+            and (
+                query.groupby_columns
+                or query.is_projection
+                or _is_semi_anti_scalar_count(query)
+            )
         ):
             raise UnsupportedContractError(
-                "ANTI JOIN needs real MethodSpec; two-table group-by/projection only"
+                "ANTI JOIN needs real MethodSpec; "
+                "two-table group-by/projection/scalar COUNT only"
             )
         # FULL OUTER group-by / scalar / projection: proved three-phase fold in _emit_full_outer.
         # Still refuse multi-agg here; left-only group-by keys fail loudly inside the emitter.
@@ -7240,6 +7433,18 @@ def emit_join_spec_helpers(
             mode="anti", helper_name="join_anti_projection_helper",
         )
         helpers = proj_helper
+    elif is_keyword_semi and _is_semi_anti_scalar_count(query):
+        count_helper, spec_body, ret_type, fold_bridge = _emit_existence_scalar_count(
+            query, slots, schemas_by_table, where_expr=where_expr,
+            mode="semi", helper_name="join_semi_count_helper",
+        )
+        helpers = count_helper
+    elif is_keyword_anti and _is_semi_anti_scalar_count(query):
+        count_helper, spec_body, ret_type, fold_bridge = _emit_existence_scalar_count(
+            query, slots, schemas_by_table, where_expr=where_expr,
+            mode="anti", helper_name="join_anti_count_helper",
+        )
+        helpers = count_helper
     elif query.is_projection and is_right and len(slots) == 2:
         proj_helper, spec_body, ret_type, fold_bridge = _emit_right_outer_projection(
             query, slots, schemas_by_table, where_expr=where_expr,
