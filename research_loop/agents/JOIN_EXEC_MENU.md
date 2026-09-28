@@ -43,6 +43,8 @@ shape only. Do not invent a HashMap/HashSet index. Do not call `build_hashset_u3
   — `pairs@ == nested_loj_pairs(...)`; LEFT OUTER on `u64` keys
 - `right_outer_pairs_str(outer, inner) -> Vec<(usize, Option<usize>)>`
   — `slots@ == nested_right_pairs(...)`; RIGHT OUTER slots
+- `right_outer_pairs_str2(o0, o1, i0, i1) -> Vec<(usize, Option<usize>)>`
+  — `slots@ == nested_right_pairs2(...)`; two `String` RIGHT OUTER equalities
 - `full_outer_parts_str(left, right) -> (pairs, left_miss, right_miss)`
   — matched `nested_eq_pairs` + both `nested_anti_misses`; FULL OUTER parts
 - self-join — same `equijoin_pairs_*` ensures; params are SQL aliases (`Cols_<alias>`),

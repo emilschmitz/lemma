@@ -135,6 +135,16 @@ returns.
    `lemma_join_roj_multi_agg_helper_method_is_fold` (same `right_outer_pairs_str` list).
 4. Call `lemma_<helper>_method_is_fold`.
 
+### RIGHT OUTER two-key — `right_outer_pairs_str2`
+
+1. Call `right_outer_pairs_str2(outer0, outer1, inner0, inner1)`.
+2. Walk slots from the end with `right_acc` (same generic fold as one-key RIGHT).
+3. Call `lemma_<helper>_is_right2` against `nested_right_pairs2` (via
+   `lemma_<helper>_is_right2_loop` + `lemma_right_at_origin2`). Multi-agg GROUP BY
+   uses `join_roj_multi_agg_helper` /
+   `lemma_join_roj_multi_agg_helper_method_is_fold`.
+4. Call `lemma_<helper>_method_is_fold`.
+
 ### FULL OUTER — `full_outer_parts_str`
 
 1. Call `full_outer_parts_str`.
