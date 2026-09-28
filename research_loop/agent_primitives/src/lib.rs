@@ -31,8 +31,9 @@ pub use duckdb_pin::{
 pub use duckdb_stream::DuckStream;
 pub use hash_join::{
     build_hashset_u32, par_equijoin_pairs_str, par_probe_sum_u64, par_probe_sum_u64_morsel,
-    par_probe_sum_u64_multi, partitioned_build_hashset_u32, probe_build_sum_u64, probe_sum_u64,
-    probe_sum_u64_multi, serial_equijoin_pairs_str, DEFAULT_PARTITIONS,
+    par_probe_sum_u64_multi, par_star_triples_str, partitioned_build_hashset_u32,
+    probe_build_sum_u64, probe_sum_u64, probe_sum_u64_multi, serial_equijoin_pairs_str,
+    serial_star_triples_str, DEFAULT_PARTITIONS,
 };
 pub use parallel::{par_filter_sum_u64, par_sum_u64, serial_filter_sum_u64, serial_sum_u64};
 pub use small_card_agg::{

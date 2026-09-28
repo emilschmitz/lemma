@@ -2,7 +2,7 @@
 
 use lemma_agent_primitives::{
     build_hashset_u32, build_hashset_u32_spill, par_equijoin_pairs_str, par_filter_sum_u64,
-    par_probe_sum_u64, serial_equijoin_pairs_str,
+    par_probe_sum_u64, par_star_triples_str, serial_equijoin_pairs_str, serial_star_triples_str,
     par_probe_sum_u64_morsel, par_probe_sum_u64_multi, par_small_card_filter_sum, par_sum_u64,
     partitioned_build_hashset_u32, probe_sum_u64, probe_sum_u64_multi, serial_filter_sum_u64,
     serial_filter_sum_u64_range, serial_sum_u64, simd_filter_sum_u64_range, small_card_filter_sum,
@@ -167,6 +167,25 @@ fn par_equijoin_pairs_str_equiv_serial() {
     assert_eq!(
       par_equijoin_pairs_str(&outer, &inner),
       serial_equijoin_pairs_str(&outer, &inner),
+      "n={n}"
+    );
+  }
+}
+
+#[test]
+fn par_star_triples_str_equiv_serial() {
+  for &n in &[0usize, 1, 50, 100_000] {
+    let sub_n = if n == 0 { 0 } else { (n / 8).max(1) };
+    let tag_n = if n == 0 { 0 } else { (n / 16).max(1) };
+    let pre_adsh: Vec<String> = (0..n).map(|i| format!("a{}", i % sub_n.max(1))).collect();
+    let pre_tag: Vec<String> = (0..n).map(|i| format!("t{}", i % tag_n.max(1))).collect();
+    let pre_ver: Vec<String> = (0..n).map(|i| if i % 7 == 0 { "v1".into() } else { "v0".into() }).collect();
+    let sub_adsh: Vec<String> = (0..sub_n).map(|i| format!("a{i}")).collect();
+    let tag_tag: Vec<String> = (0..tag_n).map(|i| format!("t{}", i % tag_n.max(1))).collect();
+    let tag_ver: Vec<String> = (0..tag_n).map(|i| if i % 2 == 0 { "v0".into() } else { "v1".into() }).collect();
+    assert_eq!(
+      par_star_triples_str(&pre_adsh, &pre_tag, &pre_ver, &sub_adsh, &tag_tag, &tag_ver),
+      serial_star_triples_str(&pre_adsh, &pre_tag, &pre_ver, &sub_adsh, &tag_tag, &tag_ver),
       "n={n}"
     );
   }

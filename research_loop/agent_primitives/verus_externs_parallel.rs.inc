@@ -448,3 +448,201 @@ pub exec fn par_equijoin_pairs_str(
         })
     }
 }
+
+pub open spec fn eq_pair_ids(
+    k1: Seq<char>,
+    k2: Seq<char>,
+    a: Seq<String>,
+    b: Seq<String>,
+    j: int,
+) -> Seq<usize>
+    decreases a.len() - j,
+{
+    if j >= a.len() || j >= b.len() {
+        Seq::empty()
+    } else if a[j]@ == k1 && b[j]@ == k2 {
+        Seq::<usize>::empty().push(j as usize) + eq_pair_ids(k1, k2, a, b, j + 1)
+    } else {
+        eq_pair_ids(k1, k2, a, b, j + 1)
+    }
+}
+
+pub open spec fn attach_tag_ids(
+    i: int,
+    sid: usize,
+    tags: Seq<usize>,
+    t: int,
+) -> Seq<(usize, usize, usize)>
+    decreases tags.len() - t,
+{
+    if t >= tags.len() {
+        Seq::empty()
+    } else {
+        Seq::<(usize, usize, usize)>::empty().push((i as usize, sid, tags[t]))
+            + attach_tag_ids(i, sid, tags, t + 1)
+    }
+}
+
+pub open spec fn star_product(
+    i: int,
+    subs: Seq<usize>,
+    tags: Seq<usize>,
+    s: int,
+) -> Seq<(usize, usize, usize)>
+    decreases subs.len() - s,
+{
+    if s >= subs.len() {
+        Seq::empty()
+    } else {
+        attach_tag_ids(i, subs[s], tags, 0) + star_product(i, subs, tags, s + 1)
+    }
+}
+
+/// Ordered triples of a string star join. Same triples the serial probe produces.
+pub open spec fn serial_star_triples_str_spec(
+    pre_adsh: Seq<String>,
+    pre_tag: Seq<String>,
+    pre_ver: Seq<String>,
+    sub_adsh: Seq<String>,
+    tag_tag: Seq<String>,
+    tag_ver: Seq<String>,
+) -> Seq<(usize, usize, usize)> {
+    serial_star_triples_str_fold(pre_adsh, pre_tag, pre_ver, sub_adsh, tag_tag, tag_ver, 0)
+}
+
+pub open spec fn serial_star_triples_str_fold(
+    pre_adsh: Seq<String>,
+    pre_tag: Seq<String>,
+    pre_ver: Seq<String>,
+    sub_adsh: Seq<String>,
+    tag_tag: Seq<String>,
+    tag_ver: Seq<String>,
+    i: int,
+) -> Seq<(usize, usize, usize)>
+    decreases pre_adsh.len() - i,
+{
+    if i >= pre_adsh.len() || i >= pre_tag.len() || i >= pre_ver.len() {
+        Seq::empty()
+    } else {
+        let subs = eq_inner_ids(pre_adsh[i]@, sub_adsh, 0);
+        let tags = eq_pair_ids(pre_tag[i]@, pre_ver[i]@, tag_tag, tag_ver, 0);
+        star_product(i, subs, tags, 0)
+            + serial_star_triples_str_fold(
+                pre_adsh, pre_tag, pre_ver, sub_adsh, tag_tag, tag_ver, i + 1,
+            )
+    }
+}
+
+/// Threaded string star join. The ensures is the serial triple list, not the schedule.
+#[verifier::external_body]
+pub exec fn par_star_triples_str(
+    pre_adsh: &Vec<String>,
+    pre_tag: &Vec<String>,
+    pre_ver: &Vec<String>,
+    sub_adsh: &Vec<String>,
+    tag_tag: &Vec<String>,
+    tag_ver: &Vec<String>,
+) -> (triples: Vec<(usize, usize, usize)>)
+    requires
+        pre_adsh@.len() == pre_tag@.len(),
+        pre_adsh@.len() == pre_ver@.len(),
+        tag_tag@.len() == tag_ver@.len(),
+    ensures
+        triples@ == serial_star_triples_str_spec(
+            pre_adsh@, pre_tag@, pre_ver@, sub_adsh@, tag_tag@, tag_ver@,
+        ),
+{
+    let mut sub_index: std::collections::HashMap<String, Vec<usize>> =
+        std::collections::HashMap::new();
+    let mut j: usize = 0;
+    while j < sub_adsh.len() {
+        sub_index.entry(sub_adsh[j].clone()).or_insert_with(Vec::new).push(j);
+        j = j + 1;
+    }
+    let mut tag_index: std::collections::HashMap<(String, String), Vec<usize>> =
+        std::collections::HashMap::new();
+    let mut k: usize = 0;
+    while k < tag_tag.len() {
+        tag_index
+            .entry((tag_tag[k].clone(), tag_ver[k].clone()))
+            .or_insert_with(Vec::new)
+            .push(k);
+        k = k + 1;
+    }
+    let n = pre_adsh.len();
+    if n < PAR_CHUNK {
+        let mut triples: Vec<(usize, usize, usize)> = Vec::new();
+        let mut i: usize = 0;
+        while i < n {
+            match sub_index.get(&pre_adsh[i]) {
+                Some(subs) => {
+                    match tag_index.get(&(pre_tag[i].clone(), pre_ver[i].clone())) {
+                        Some(tags) => {
+                            let mut s: usize = 0;
+                            while s < subs.len() {
+                                let mut t: usize = 0;
+                                while t < tags.len() {
+                                    triples.push((i, subs[s], tags[t]));
+                                    t = t + 1;
+                                }
+                                s = s + 1;
+                            }
+                        },
+                        None => {},
+                    }
+                },
+                None => {},
+            }
+            i = i + 1;
+        }
+        triples
+    } else {
+        let threads = par_exec_thread_count(n);
+        std::thread::scope(|scope| {
+            let chunk = (n + threads - 1) / threads;
+            let mut handles: Vec<std::thread::ScopedJoinHandle<Vec<(usize, usize, usize)>>> =
+                Vec::new();
+            let mut t: usize = 0;
+            while t < threads {
+                let start = t * chunk;
+                if start >= n {
+                    break;
+                }
+                let end = if start + chunk < n { start + chunk } else { n };
+                handles.push(scope.spawn(|| {
+                    let mut partial: Vec<(usize, usize, usize)> = Vec::new();
+                    let mut i = start;
+                    while i < end {
+                        match sub_index.get(&pre_adsh[i]) {
+                            Some(subs) => {
+                                match tag_index.get(&(pre_tag[i].clone(), pre_ver[i].clone())) {
+                                    Some(tags) => {
+                                        let mut s: usize = 0;
+                                        while s < subs.len() {
+                                            let mut u: usize = 0;
+                                            while u < tags.len() {
+                                                partial.push((i, subs[s], tags[u]));
+                                                u = u + 1;
+                                            }
+                                            s = s + 1;
+                                        }
+                                    },
+                                    None => {},
+                                }
+                            },
+                            None => {},
+                        }
+                        i = i + 1;
+                    }
+                    partial
+                }));
+                t = t + 1;
+            }
+            let mut triples: Vec<(usize, usize, usize)> = Vec::new();
+            for h in handles {
+                triples.extend(h.join().unwrap());
+            }
+            triples
+        })
+    }
+}

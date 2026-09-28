@@ -244,6 +244,124 @@ pub fn par_equijoin_pairs_str(outer: &[String], inner: &[String]) -> Vec<(usize,
     probe_equijoin_pairs_str(outer, &index)
 }
 
+/// Serial 3-table star triples: pre row, then sub ids, then tag ids, both increasing.
+///
+/// Sub matches `pre_adsh`. Tag matches `pre_tag` and `pre_ver`. Empty when the
+/// pre columns differ in length or the two tag columns differ in length.
+pub fn serial_star_triples_str(
+    pre_adsh: &[String],
+    pre_tag: &[String],
+    pre_ver: &[String],
+    sub_adsh: &[String],
+    tag_tag: &[String],
+    tag_ver: &[String],
+) -> Vec<(usize, usize, usize)> {
+    if pre_adsh.len() != pre_tag.len() || pre_adsh.len() != pre_ver.len() || tag_tag.len() != tag_ver.len()
+    {
+        return Vec::new();
+    }
+    let (sub_idx, tag_idx) = star_indexes(sub_adsh, tag_tag, tag_ver);
+    probe_star_triples_str(pre_adsh, pre_tag, pre_ver, &sub_idx, &tag_idx)
+}
+
+fn star_indexes<'a>(
+    sub_adsh: &'a [String],
+    tag_tag: &'a [String],
+    tag_ver: &'a [String],
+) -> (HashMap<&'a str, Vec<usize>>, HashMap<(&'a str, &'a str), Vec<usize>>) {
+    let mut sub_idx: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (id, key) in sub_adsh.iter().enumerate() {
+        sub_idx.entry(key.as_str()).or_default().push(id);
+    }
+    let mut tag_idx: HashMap<(&str, &str), Vec<usize>> = HashMap::new();
+    for (id, key) in tag_tag.iter().enumerate() {
+        tag_idx
+            .entry((key.as_str(), tag_ver[id].as_str()))
+            .or_default()
+            .push(id);
+    }
+    (sub_idx, tag_idx)
+}
+
+fn probe_star_triples_str(
+    pre_adsh: &[String],
+    pre_tag: &[String],
+    pre_ver: &[String],
+    sub_idx: &HashMap<&str, Vec<usize>>,
+    tag_idx: &HashMap<(&str, &str), Vec<usize>>,
+) -> Vec<(usize, usize, usize)> {
+    let mut triples = Vec::new();
+    for (i, adsh) in pre_adsh.iter().enumerate() {
+        let Some(subs) = sub_idx.get(adsh.as_str()) else {
+            continue;
+        };
+        let Some(tags) = tag_idx.get(&(pre_tag[i].as_str(), pre_ver[i].as_str())) else {
+            continue;
+        };
+        for &sid in subs {
+            for &tid in tags {
+                triples.push((i, sid, tid));
+            }
+        }
+    }
+    triples
+}
+
+/// Multi-core star triples. Order matches [`serial_star_triples_str`].
+///
+/// Both indexes are built on one thread. Pre-row slices run in parallel and
+/// are concatenated in pre-row order. Stays serial when the `parallel` feature
+/// is off or the pre table is below [`PAR_CHUNK`].
+pub fn par_star_triples_str(
+    pre_adsh: &[String],
+    pre_tag: &[String],
+    pre_ver: &[String],
+    sub_adsh: &[String],
+    tag_tag: &[String],
+    tag_ver: &[String],
+) -> Vec<(usize, usize, usize)> {
+    if pre_adsh.len() != pre_tag.len() || pre_adsh.len() != pre_ver.len() || tag_tag.len() != tag_ver.len()
+    {
+        return Vec::new();
+    }
+    let (sub_idx, tag_idx) = star_indexes(sub_adsh, tag_tag, tag_ver);
+    #[cfg(feature = "parallel")]
+    {
+        if pre_adsh.len() >= PAR_CHUNK {
+            let chunks: Vec<Vec<(usize, usize, usize)>> = pre_adsh
+                .par_chunks(PAR_CHUNK)
+                .enumerate()
+                .map(|(c, chunk)| {
+                    let base = c * PAR_CHUNK;
+                    let mut triples = Vec::new();
+                    for (j, adsh) in chunk.iter().enumerate() {
+                        let i = base + j;
+                        let Some(subs) = sub_idx.get(adsh.as_str()) else {
+                            continue;
+                        };
+                        let Some(tags) = tag_idx.get(&(pre_tag[i].as_str(), pre_ver[i].as_str()))
+                        else {
+                            continue;
+                        };
+                        for &sid in subs {
+                            for &tid in tags {
+                                triples.push((i, sid, tid));
+                            }
+                        }
+                    }
+                    triples
+                })
+                .collect();
+            let mut triples = Vec::new();
+            for chunk in chunks {
+                triples.extend(chunk);
+            }
+            return triples;
+        }
+    }
+    probe_star_triples_str(pre_adsh, pre_tag, pre_ver, &sub_idx, &tag_idx)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
