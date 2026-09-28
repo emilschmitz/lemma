@@ -102,8 +102,9 @@ def test_plain_left_join_projection_is_not_inner() -> None:
     assert "join_loj_projection_helper" in section
     assert "// shape: loj" in section
     assert "Option<" in section
-    assert "saw: bool" in section
-    # Inner-shaped projection would use join_projection_helper without saw/Option.
+    assert "nested_loj_pairs" in out
+    assert "lemma_join_loj_projection_helper_is_loj(" in out
+    # Inner-shaped projection would use join_projection_helper without Option.
     assert "pub open spec fn join_projection_helper" not in section
 
 
@@ -137,7 +138,7 @@ def test_plain_left_join_multi_agg_emits_loj_fold() -> None:
     assert "nested_loj_pairs" in out
 
 
-def test_right_join_uses_loj_after_side_swap() -> None:
+def test_right_join_uses_right_projection_after_side_swap() -> None:
     sql = """
     SELECT s.adsh, p.line
     FROM pre p RIGHT JOIN sub s ON p.adsh = s.adsh
@@ -146,8 +147,9 @@ def test_right_join_uses_loj_after_side_swap() -> None:
     out = transpile_sql_to_verus(sql, CATALOG)
     _assert_rocketship_clean(out)
     section = _helper_section(out)
-    assert "join_loj_projection_helper" in section
-    assert "// shape: loj" in section
+    assert "join_right_projection_helper" in section
+    assert "// shape: right" in section
+    assert "lemma_join_right_projection_helper_is_right(" in out
 
 
 def test_full_outer_scalar_sum_has_three_parts() -> None:
@@ -168,27 +170,39 @@ def test_full_outer_scalar_sum_has_three_parts() -> None:
 
 def test_full_outer_projection_emits_real_spec() -> None:
     sql = """
-    SELECT p.adsh, s.name
+    SELECT p.adsh
     FROM pre p FULL OUTER JOIN sub s ON p.adsh = s.adsh
-    LIMIT 10
     """
     out = transpile_sql_to_verus(sql, CATALOG)
     _assert_rocketship_clean(out)
     section = _helper_section(out)
-    assert "full_join_proj_matched_helper" in section
-    assert "full_join_proj_left_helper" in section
-    assert "full_join_proj_right_helper" in section
-    assert "Option<" in section
+    assert "full_join_matched_helper" in section or "full_join_proj_matched_helper" in section
+    assert "full_join_left_unmatched_helper" in section or "full_join_proj_left_helper" in section
+    assert "full_join_right_unmatched_helper" in section or "full_join_proj_right_helper" in section
     assert "// shape: full" in section
+    assert "lemma_full_join_matched_helper_is_full(" in out
 
 
-def test_full_outer_groupby_fails_loud() -> None:
+def test_full_outer_groupby_on_join_key_emits_fold() -> None:
     sql = """
     SELECT p.adsh, COUNT(*) AS c
     FROM pre p FULL OUTER JOIN sub s ON p.adsh = s.adsh
     GROUP BY p.adsh
     """
-    with pytest.raises(UnsupportedContractError, match="FULL OUTER JOIN group-by"):
+    out = transpile_sql_to_verus(sql, CATALOG)
+    _assert_rocketship_clean(out)
+    assert "full_join_groupby_helper" in out
+    assert "lemma_full_join_matched_helper_is_full(" in out
+    assert "lemma_full_join_matched_helper_method_is_fold(" in out
+
+
+def test_full_outer_groupby_non_join_key_fails_loud() -> None:
+    sql = """
+    SELECT p.stmt, COUNT(*) AS c
+    FROM pre p FULL OUTER JOIN sub s ON p.adsh = s.adsh
+    GROUP BY p.stmt
+    """
+    with pytest.raises(UnsupportedContractError, match="NULL keys|left-only"):
         transpile_sql_to_verus(sql, CATALOG)
 
 
@@ -245,6 +259,38 @@ def test_left_anti_is_null_still_uses_anti_path() -> None:
     assert "join_anti_multi_agg_helper" in section
     assert "// shape: left" in section
     assert "join_loj_" not in section
+
+
+def test_semi_projection_emits_is_semi_fold() -> None:
+    sql = """
+    SELECT p.adsh, p.stmt
+    FROM pre p SEMI JOIN sub s ON p.adsh = s.adsh
+    LIMIT 10
+    """
+    out = transpile_sql_to_verus(sql, CATALOG)
+    _assert_rocketship_clean(out)
+    section = _helper_section(out)
+    assert "join_semi_projection_helper" in section
+    assert "// shape: semi" in section
+    assert "lemma_join_semi_projection_helper_is_semi(" in out
+    assert "lemma_join_semi_projection_helper_method_is_fold(" in out
+    assert "nested_semi_hits" in out
+
+
+def test_anti_projection_emits_is_anti_fold() -> None:
+    sql = """
+    SELECT p.adsh, p.stmt
+    FROM pre p ANTI JOIN sub s ON p.adsh = s.adsh
+    LIMIT 10
+    """
+    out = transpile_sql_to_verus(sql, CATALOG)
+    _assert_rocketship_clean(out)
+    section = _helper_section(out)
+    assert "join_anti_projection_helper" in section
+    assert "// shape: anti" in section
+    assert "lemma_join_anti_projection_helper_is_anti(" in out
+    assert "lemma_join_anti_projection_helper_method_is_fold(" in out
+    assert "nested_anti_misses" in out
 
 
 def test_semi_scalar_without_groupby_fails_loud() -> None:

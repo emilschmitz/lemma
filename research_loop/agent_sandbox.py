@@ -211,8 +211,8 @@ Join files already contain proved exec helpers — call the matching one for thi
 - 3-table chain — `chain_eq_triples_str` → `lemma_<helper>_is_chain_pairs`
 - 3-table Q6 (1+3) — `q6_eq_triples_str` → `lemma_<helper>_is_q6_pairs`
 - 4-table star — `star_eq_quads_str` → `lemma_<helper>_is_quad_pairs`
-- LEFT/ANTI miss — `anti_miss_rows_str` / `anti_miss_rows_str3` → `lemma_<helper>_is_left` or `_is_anti`
-- SEMI hits — `semi_hit_rows_str` → `lemma_<helper>_is_semi`
+- LEFT/ANTI miss — `anti_miss_rows_str` / `anti_miss_rows_str3` → `lemma_<helper>_is_left` or `_is_anti` (ANTI group-by or left-side projection)
+- SEMI hits — `semi_hit_rows_str` → `lemma_<helper>_is_semi` (SEMI group-by or left-side projection)
 - LEFT OUTER — `left_outer_pairs_str` / `left_outer_pairs_u64` → `lemma_<helper>_is_loj`
 - RIGHT OUTER — `right_outer_pairs_str` → `lemma_<helper>_is_right`
 - FULL OUTER — `full_outer_parts_str` → `lemma_<helper>_is_full`
