@@ -5982,6 +5982,98 @@ pub proof fn {right_lemma}({params})
     return text, bridge
 
 
+def _right2_fold_lemma(
+    helper_name: str,
+    slots: list[_Slot],
+    *,
+    outer_seqs: list[str],
+    inner_seqs: list[str],
+    ret_type: str,
+    ret_base: str,
+    step_hit: str,
+    step_miss: str,
+) -> tuple[str, _FoldBridge]:
+    """Proof that a two-equality RIGHT-outer helper equals ``right_acc`` of ``nested_right_pairs2``.
+
+    // shape: right2
+    Two string equalities. Preserved side is ``slots[0]`` (after honest RIGHT side-swap).
+    Uses ``right_outer_pairs_str2`` / ``lemma_right_at_origin2``.
+    """
+    if len(outer_seqs) != 2 or len(inner_seqs) != 2:
+        raise ValueError("right2 fold lemma needs two outer and two inner key seqs")
+    o, i = slots
+    params = f"{o.param}: &{o.struct}, {i.param}: &{i.struct}"
+    helper_zeros = f"{helper_name}({o.param}, {i.param})"
+    fold_rhs = (
+        f"right_acc(\n"
+        f"            nested_right_pairs2(\n"
+        f"                {outer_seqs[0]},\n"
+        f"                {outer_seqs[1]},\n"
+        f"                {inner_seqs[0]},\n"
+        f"                {inner_seqs[1]},\n"
+        f"                {o.param}.n as int,\n"
+        f"            ),\n"
+        f"            {step_hit},\n"
+        f"            {step_miss},\n"
+        f"            {ret_base},\n"
+        f"            0,\n"
+        f"        )"
+    )
+    loop_lemma = f"lemma_{helper_name}_is_right2_loop"
+    right_lemma = f"lemma_{helper_name}_is_right2"
+    text = f"""// shape: right2
+pub proof fn {loop_lemma}({params})
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+    ensures
+        {helper_zeros} == right_loop_acc2(
+            {outer_seqs[0]},
+            {outer_seqs[1]},
+            {inner_seqs[0]},
+            {inner_seqs[1]},
+            {step_hit},
+            {step_miss},
+            {ret_base},
+            {o.param}.n as int,
+            0,
+        ),
+{{
+    lemma_right_at_origin2(
+        {outer_seqs[0]},
+        {outer_seqs[1]},
+        {inner_seqs[0]},
+        {inner_seqs[1]},
+        {step_hit},
+        {step_miss},
+        {ret_base},
+        {o.param}.n as int,
+    );
+}}
+
+pub proof fn {right_lemma}({params})
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+    ensures
+        {helper_zeros} == {fold_rhs},
+{{
+    {loop_lemma}({o.param}, {i.param});
+}}"""
+    bridge = _FoldBridge(
+        helper_name=helper_name,
+        pairs_lemma=right_lemma,
+        slots=list(slots),
+        helper_zeros=helper_zeros,
+        fold_rhs=fold_rhs,
+    )
+    return text, bridge
+
+
 def _is_right_scalar_count(query: SQLQuery) -> bool:
     """True for RIGHT ``SELECT COUNT(*)`` with no GROUP BY / projection."""
     return _is_semi_anti_scalar_count(query)
@@ -6234,10 +6326,10 @@ def _emit_roj_multi_agg(
 ) -> tuple[str, str, str, _FoldBridge | None]:
     """RIGHT OUTER multi-agg after honest side-swap: ``right_acc`` / ``nested_right_pairs``.
 
-    // shape: right
+    // shape: right (one equality) or right2 (two string equalities)
     Preserved side is ``slots[0]`` (SQL RIGHT). GROUP BY and measures must be on
-    that side (nullable-side keys/measures need null semantics). One equality;
-    proved via ``right_outer_pairs_str``.
+    that side (nullable-side keys/measures need null semantics). One equality →
+    ``right_outer_pairs_str``; two → ``right_outer_pairs_str2`` / ``nested_right_pairs2``.
     """
     from .parse_sql import _agg_value_type
 
@@ -6270,36 +6362,85 @@ def _emit_roj_multi_agg(
     join = query.joins[0]
     match_parts: list[str] = []
     for left_ref, right_ref in join.on_equalities:
-        l_expr = _col_access_ref(left_ref, query, slots, schemas_by_table, {})
-        r_col = _col_access_ref(right_ref, query, slots, schemas_by_table, {})
-        r_expr = r_col.replace(f"{right.idx} as int", "ri as int")
-        l_expr = l_expr.replace(f"{left.idx} as int", "li as int")
+        # Orient as preserved (slots[0]/li) == nullable (slots[1]/ri). ON column
+        # order after side-swap may be either way.
+        a = _col_access_ref(left_ref, query, slots, schemas_by_table, {})
+        b = _col_access_ref(right_ref, query, slots, schemas_by_table, {})
+        a_on_preserved = (
+            f"{left.param}." in a and f"[{left.idx} as int]" in a
+        )
+        b_on_preserved = (
+            f"{left.param}." in b and f"[{left.idx} as int]" in b
+        )
+        if a_on_preserved and not b_on_preserved:
+            preserved_expr, nullable_expr = a, b
+        elif b_on_preserved and not a_on_preserved:
+            preserved_expr, nullable_expr = b, a
+        else:
+            raise UnsupportedContractError(
+                "RIGHT OUTER JOIN multi-agg equality must be "
+                "preserved-side == nullable-side"
+            )
+        l_expr = preserved_expr.replace(f"{left.idx} as int", "li as int")
+        r_expr = nullable_expr.replace(f"{right.idx} as int", "ri as int")
         match_parts.append(f"{l_expr} == {r_expr}")
-    if len(match_parts) != 1:
+    if len(match_parts) not in (1, 2):
         raise UnsupportedContractError(
-            "RIGHT OUTER JOIN multi-agg MethodSpec supports one equality"
-        )
-    match_conds = match_parts[0]
-    m = re.fullmatch(
-        r"(?P<lp>\w+)\.(?P<lf>\w+)\[li as int\](?P<lv>@?)\s*==\s*"
-        r"(?P<rp>\w+)\.(?P<rf>\w+)\[ri as int\](?P<rv>@?)",
-        match_conds.strip(),
-    )
-    if m is None or bool(m.group("lv")) != bool(m.group("rv")):
-        raise UnsupportedContractError(
-            "RIGHT OUTER JOIN multi-agg requires a single column equality"
-        )
-    if m.group("lp") != left.param or m.group("rp") != right.param:
-        raise UnsupportedContractError(
-            "RIGHT OUTER JOIN multi-agg equality must be preserved-side == nullable-side"
+            "RIGHT OUTER JOIN multi-agg MethodSpec supports one or two equalities"
         )
 
     def seq_expr(param: str, field: str, view: str) -> str:
         col = f"{param}.{field}"
         return f"key_views({col}@)" if view else f"{col}@"
 
-    outer_seq = seq_expr(m.group("lp"), m.group("lf"), m.group("lv"))
-    inner_seq = seq_expr(m.group("rp"), m.group("rf"), m.group("rv"))
+    if len(match_parts) == 2:
+        parsed: list[re.Match[str]] = []
+        for part in match_parts:
+            m2 = re.fullmatch(
+                r"(?P<lp>\w+)\.(?P<lf>\w+)\[li as int\](?P<lv>@?)\s*==\s*"
+                r"(?P<rp>\w+)\.(?P<rf>\w+)\[ri as int\](?P<rv>@?)",
+                part.strip(),
+            )
+            if m2 is None or not m2.group("lv") or not m2.group("rv"):
+                raise UnsupportedContractError(
+                    "RIGHT OUTER JOIN multi-agg two equalities require String keys"
+                )
+            if m2.group("lp") != left.param or m2.group("rp") != right.param:
+                raise UnsupportedContractError(
+                    "RIGHT OUTER JOIN multi-agg equality must be "
+                    "preserved-side == nullable-side"
+                )
+            parsed.append(m2)
+        outer_seqs = [
+            seq_expr(m.group("lp"), m.group("lf"), m.group("lv")) for m in parsed
+        ]
+        inner_seqs = [
+            seq_expr(m.group("rp"), m.group("rf"), m.group("rv")) for m in parsed
+        ]
+        use_right2 = True
+        outer_seq = ""
+        inner_seq = ""
+    else:
+        match_conds = match_parts[0]
+        m = re.fullmatch(
+            r"(?P<lp>\w+)\.(?P<lf>\w+)\[li as int\](?P<lv>@?)\s*==\s*"
+            r"(?P<rp>\w+)\.(?P<rf>\w+)\[ri as int\](?P<rv>@?)",
+            match_conds.strip(),
+        )
+        if m is None or bool(m.group("lv")) != bool(m.group("rv")):
+            raise UnsupportedContractError(
+                "RIGHT OUTER JOIN multi-agg requires a single column equality"
+            )
+        if m.group("lp") != left.param or m.group("rp") != right.param:
+            raise UnsupportedContractError(
+                "RIGHT OUTER JOIN multi-agg equality must be "
+                "preserved-side == nullable-side"
+            )
+        outer_seq = seq_expr(m.group("lp"), m.group("lf"), m.group("lv"))
+        inner_seq = seq_expr(m.group("rp"), m.group("rf"), m.group("rv"))
+        use_right2 = False
+        outer_seqs = []
+        inner_seqs = []
 
     filter_raw, _ = _strip_anti_join_predicates(where_expr)
     filter_cond = _resolve_filter_expr(
@@ -6499,14 +6640,50 @@ def _emit_roj_multi_agg(
         f"                {miss_update}\n"
         f"            }}"
     )
-    helper = f"""// shape: right
+    if use_right2:
+        shape_mark = "// shape: right2"
+        pairs_call = (
+            f"nested_right_pairs2(\n"
+            f"            {outer_seqs[0]},\n"
+            f"            {outer_seqs[1]},\n"
+            f"            {inner_seqs[0]},\n"
+            f"            {inner_seqs[1]},\n"
+            f"            {left.param}.n as int,\n"
+            f"        )"
+        )
+        fold_text, bridge = _right2_fold_lemma(
+            helper_name,
+            slots,
+            outer_seqs=outer_seqs,
+            inner_seqs=inner_seqs,
+            ret_type=map_ret,
+            ret_base="Map::empty()",
+            step_hit=step_hit,
+            step_miss=step_miss,
+        )
+    else:
+        shape_mark = "// shape: right"
+        pairs_call = (
+            f"nested_right_pairs({outer_seq}, {inner_seq}, {left.param}.n as int)"
+        )
+        fold_text, bridge = _right_fold_lemma(
+            helper_name,
+            slots,
+            outer_seq=outer_seq,
+            inner_seq=inner_seq,
+            ret_type=map_ret,
+            ret_base="Map::empty()",
+            step_hit=step_hit,
+            step_miss=step_miss,
+        )
+    helper = f"""{shape_mark}
 pub open spec fn {helper_name}(
     {left.param}: &{left.struct},
     {right.param}: &{right.struct},
 ) -> (res: {map_ret})
 {{
     right_acc(
-        nested_right_pairs({outer_seq}, {inner_seq}, {left.param}.n as int),
+        {pairs_call},
         {step_hit},
         {step_miss},
         Map::empty(),
@@ -6514,16 +6691,6 @@ pub open spec fn {helper_name}(
     )
 }}"""
 
-    fold_text, bridge = _right_fold_lemma(
-        helper_name,
-        slots,
-        outer_seq=outer_seq,
-        inner_seq=inner_seq,
-        ret_type=map_ret,
-        ret_base="Map::empty()",
-        step_hit=step_hit,
-        step_miss=step_miss,
-    )
     helpers_out = helper + "\n\n" + fold_text
     spec_body = (
         f"let raw = {helper_name}({left.param}, {right.param});\n"

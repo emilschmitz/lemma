@@ -11915,6 +11915,291 @@ pub fn left_outer_pairs_str2(
 }
 // SHAPE_LOJ2_END
 
+// SHAPE_RIGHT2_BEGIN
+// Two-key RIGHT OUTER after honest side-swap (preserved = outer): matched pairs
+// via eq_row_ids2, or (i, None) on miss. Same outer-major order as nested_right_pairs.
+// Reuses prefix_right_pairs / right_acc from SHAPE_RIGHT.
+
+/// Outer-major RIGHT-outer slots for `outer[0..n]` on two columns.
+pub open spec fn nested_right_pairs2<A, B>(
+    outer_a: Seq<A>,
+    outer_b: Seq<B>,
+    inner_a: Seq<A>,
+    inner_b: Seq<B>,
+    n: int,
+) -> Seq<(usize, Option<usize>)>
+    decreases n,
+{
+    if n <= 0 {
+        Seq::<(usize, Option<usize>)>::empty()
+    } else if n - 1 >= outer_a.len() || n - 1 >= outer_b.len() {
+        nested_right_pairs2(outer_a, outer_b, inner_a, inner_b, n - 1)
+    } else {
+        let i = (n - 1) as usize;
+        let ids = eq_row_ids2(
+            inner_a,
+            inner_b,
+            outer_a[n - 1],
+            outer_b[n - 1],
+            inner_a.len() as int,
+        );
+        let prev = nested_right_pairs2(outer_a, outer_b, inner_a, inner_b, n - 1);
+        if ids.len() == 0 {
+            prev.push((i, None))
+        } else {
+            prev + prefix_right_pairs(i, ids, ids.len() as int)
+        }
+    }
+}
+
+pub proof fn lemma_nested_right_pairs2_step<A, B>(
+    outer_a: Seq<A>,
+    outer_b: Seq<B>,
+    inner_a: Seq<A>,
+    inner_b: Seq<B>,
+    n: int,
+)
+    requires
+        0 < n <= outer_a.len(),
+        n <= outer_b.len(),
+    ensures
+        ({
+            let ids = eq_row_ids2(
+                inner_a,
+                inner_b,
+                outer_a[n - 1],
+                outer_b[n - 1],
+                inner_a.len() as int,
+            );
+            let prev = nested_right_pairs2(outer_a, outer_b, inner_a, inner_b, n - 1);
+            let i = (n - 1) as usize;
+            &&& ids.len() == 0 ==> nested_right_pairs2(outer_a, outer_b, inner_a, inner_b, n)
+                == prev.push((i, None))
+            &&& ids.len() > 0 ==> nested_right_pairs2(outer_a, outer_b, inner_a, inner_b, n)
+                == prev + prefix_right_pairs(i, ids, ids.len() as int)
+        }),
+{
+    let ids = eq_row_ids2(
+        inner_a,
+        inner_b,
+        outer_a[n - 1],
+        outer_b[n - 1],
+        inner_a.len() as int,
+    );
+    let prev = nested_right_pairs2(outer_a, outer_b, inner_a, inner_b, n - 1);
+    let i = (n - 1) as usize;
+    if ids.len() == 0 {
+        assert(nested_right_pairs2(outer_a, outer_b, inner_a, inner_b, n) == prev.push((i, None)));
+    } else {
+        assert(nested_right_pairs2(outer_a, outer_b, inner_a, inner_b, n)
+            == prev + prefix_right_pairs(i, ids, ids.len() as int));
+    }
+}
+
+pub proof fn lemma_prefix_right_pairs_step(i: usize, js: Seq<usize>, t: int)
+    requires
+        0 <= t < js.len(),
+    ensures
+        prefix_right_pairs(i, js, t + 1) == prefix_right_pairs(i, js, t).push((i, Some(js[t]))),
+{
+    assert(prefix_right_pairs(i, js, t + 1) == prefix_right_pairs(i, js, t).push((i, Some(js[t]))));
+}
+
+pub fn push_prefix_right_pairs(slots: &mut Vec<(usize, Option<usize>)>, i: usize, ids: &Vec<usize>)
+    ensures
+        final(slots)@ == old(slots)@ + prefix_right_pairs(i, ids@, ids@.len() as int),
+{
+    proof {
+        broadcast use vstd::std_specs::vec::axiom_spec_len;
+        assert(ids@.len() == ids.len() as int);
+    }
+    let ghost base = slots@;
+    let mut extra: Vec<(usize, Option<usize>)> = Vec::new();
+    let mut t: usize = 0;
+    while t < ids.len()
+        invariant
+            t <= ids.len(),
+            ids@.len() == ids.len() as int,
+            extra@ == prefix_right_pairs(i, ids@, t as int),
+        decreases ids.len() - t,
+    {
+        let ghost old_extra = extra@;
+        let id = ids[t];
+        extra.push((i, Some(id)));
+        proof {
+            assert(id == ids@[t as int]);
+            lemma_prefix_right_pairs_step(i, ids@, t as int);
+            assert(extra@ == old_extra.push((i, Some(ids@[t as int]))));
+            assert(extra@ == prefix_right_pairs(i, ids@, t as int + 1));
+        }
+        t = t + 1;
+    }
+    proof {
+        assert(extra@ == prefix_right_pairs(i, ids@, ids@.len() as int));
+        assert(slots@ == base);
+    }
+    slots.append(&mut extra);
+    proof {
+        assert(slots@ == base + prefix_right_pairs(i, ids@, ids@.len() as int));
+    }
+}
+
+/// Alias: RIGHT-outer fold on two keys equals `right_acc` of the two-key slot list.
+pub open spec fn right_loop_acc2<A, B, Acc>(
+    outer_a: Seq<A>,
+    outer_b: Seq<B>,
+    inner_a: Seq<A>,
+    inner_b: Seq<B>,
+    step_hit: spec_fn(Acc, int, int) -> Acc,
+    step_miss: spec_fn(Acc, int) -> Acc,
+    base: Acc,
+    n_outer: int,
+    _i: int,
+) -> Acc {
+    right_acc(
+        nested_right_pairs2(outer_a, outer_b, inner_a, inner_b, n_outer),
+        step_hit,
+        step_miss,
+        base,
+        0,
+    )
+}
+
+/// Origin fact: two-key RIGHT-outer fold equals `right_acc` of the full slot list at 0.
+pub proof fn lemma_right_at_origin2<A, B, Acc>(
+    outer_a: Seq<A>,
+    outer_b: Seq<B>,
+    inner_a: Seq<A>,
+    inner_b: Seq<B>,
+    step_hit: spec_fn(Acc, int, int) -> Acc,
+    step_miss: spec_fn(Acc, int) -> Acc,
+    base: Acc,
+    n_outer: int,
+)
+    ensures
+        right_loop_acc2(
+            outer_a,
+            outer_b,
+            inner_a,
+            inner_b,
+            step_hit,
+            step_miss,
+            base,
+            n_outer,
+            0,
+        ) == right_acc(
+            nested_right_pairs2(outer_a, outer_b, inner_a, inner_b, n_outer),
+            step_hit,
+            step_miss,
+            base,
+            0,
+        ),
+{
+}
+
+/// RIGHT OUTER pair list for two `String` key columns. View equals [`nested_right_pairs2`].
+pub fn right_outer_pairs_str2(
+    outer0: &Vec<String>,
+    outer1: &Vec<String>,
+    inner0: &Vec<String>,
+    inner1: &Vec<String>,
+) -> (slots: Vec<(usize, Option<usize>)>)
+    requires
+        outer0@.len() == outer1@.len(),
+        inner0@.len() == inner1@.len(),
+    ensures
+        slots@ == nested_right_pairs2(
+            key_views(outer0@),
+            key_views(outer1@),
+            key_views(inner0@),
+            key_views(inner1@),
+            outer0@.len() as int,
+        ),
+{
+    let idx = build_eq_index_str(inner0);
+    let ghost oa = key_views(outer0@);
+    let ghost ob = key_views(outer1@);
+    let ghost ia = key_views(inner0@);
+    let ghost ib = key_views(inner1@);
+    let mut slots: Vec<(usize, Option<usize>)> = Vec::new();
+    let mut i: usize = 0;
+    while i < outer0.len()
+        invariant
+            i <= outer0.len(),
+            outer0@.len() == outer0.len() as int,
+            outer1@.len() == outer0@.len(),
+            inner0@.len() == inner0.len() as int,
+            inner1@.len() == inner0@.len(),
+            oa == key_views(outer0@),
+            ob == key_views(outer1@),
+            ia == key_views(inner0@),
+            ib == key_views(inner1@),
+            index_ok(ia, idx.buckets@, idx.map@, inner0@.len() as int),
+            slots@ == nested_right_pairs2(oa, ob, ia, ib, i as int),
+        decreases outer0.len() - i,
+    {
+        let key0 = outer0[i].clone();
+        let key1 = outer1[i].clone();
+        let ghost end = i as int;
+        proof {
+            lemma_key_view_at(outer0@, end);
+            lemma_key_view_at(outer1@, end);
+            broadcast use vstd::std_specs::vec::axiom_spec_len;
+            assert(oa[end] == key0@);
+            assert(ob[end] == key1@);
+            assert(ia.len() as int <= usize::MAX as int);
+        }
+        let ghost before = slots@;
+        let present = idx.map.contains_key(key0.as_str());
+        if present {
+            let got = idx.map.get(key0.as_str());
+            let bi = *got.unwrap();
+            proof {
+                assert(idx.map@.contains_key(key0@));
+                lemma_index_bucket(ia, idx.buckets@, idx.map@, ia.len() as int, key0@);
+                lemma_eq_row_ids_bounded(ia, key0@, ia.len() as int);
+            }
+            let ids = &idx.buckets[bi];
+            let filtered = filter_row_ids_str(ids, inner1, &key1);
+            if filtered.len() == 0 {
+                slots.push((i, None));
+                proof {
+                    lemma_filter_is_ids2(ia, ib, key0@, key1@, ia.len() as int);
+                    assert(filtered@ == eq_row_ids2(ia, ib, oa[end], ob[end], ia.len() as int));
+                    assert(eq_row_ids2(ia, ib, oa[end], ob[end], ia.len() as int).len() == 0);
+                    lemma_nested_right_pairs2_step(oa, ob, ia, ib, end + 1);
+                    assert(slots@ == before.push((i, None)));
+                    assert(slots@ == nested_right_pairs2(oa, ob, ia, ib, end + 1));
+                }
+            } else {
+                push_prefix_right_pairs(&mut slots, i, &filtered);
+                proof {
+                    lemma_filter_is_ids2(ia, ib, key0@, key1@, ia.len() as int);
+                    assert(filtered@ == eq_row_ids2(ia, ib, oa[end], ob[end], ia.len() as int));
+                    assert(eq_row_ids2(ia, ib, oa[end], ob[end], ia.len() as int).len() > 0);
+                    lemma_nested_right_pairs2_step(oa, ob, ia, ib, end + 1);
+                    assert(slots@ == before + prefix_right_pairs(i, filtered@, filtered@.len() as int));
+                    assert(slots@ == nested_right_pairs2(oa, ob, ia, ib, end + 1));
+                }
+            }
+        } else {
+            slots.push((i, None));
+            proof {
+                assert(!idx.map@.contains_key(key0@));
+                lemma_index_absent(ia, idx.buckets@, idx.map@, ia.len() as int, key0@);
+                lemma_eq_row_ids_len0(ia, key0@, ia.len() as int);
+                lemma_eq_row_ids2_empty_from_first(ia, ib, key0@, key1@, ia.len() as int);
+                lemma_nested_right_pairs2_step(oa, ob, ia, ib, end + 1);
+                assert(slots@ == before.push((i, None)));
+                assert(slots@ == nested_right_pairs2(oa, ob, ia, ib, end + 1));
+            }
+        }
+        i = i + 1;
+    }
+    slots
+}
+// SHAPE_RIGHT2_END
+
 // EQ_JOIN_PROVED_END
 
 
