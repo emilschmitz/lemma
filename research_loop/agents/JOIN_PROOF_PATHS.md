@@ -155,6 +155,16 @@ returns.
    `lemma_full_join_matched_helper_method_is_fold` (same three-phase list;
    right-miss keys remap via the equality; other-side measures are 0).
 
+### FULL OUTER two equalities — `full_outer_parts_str2`
+
+1. Call `full_outer_parts_str2(l0, l1, r0, r1)`.
+2. Fold matched / left-miss / right-miss with `full_acc` of `nested_eq_pairs2` /
+   `nested_anti_misses2` (via `lemma_loop2_at_origin` + `lemma_anti2_at_origin`).
+3. Call `lemma_<helper>_is_full` (calls `lemma_full_at_origin` on the two-key lists).
+4. Call `lemma_<helper>_method_is_fold`.
+   Multi-agg GROUP BY on one join-key column uses the same chain; right-miss keys
+   remap via that equality. Two-equality projection needs NULL padding — not wired.
+
 ### Self-join
 
 Same helpers and the same call order as the matching equality shape. Params are SQL aliases
