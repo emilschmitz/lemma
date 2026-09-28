@@ -368,6 +368,99 @@ def _trim_verus_close(spec_rs: str) -> str:
     return spec_rs.rstrip() + "\n"
 
 
+def _next_code(text: str, i: int) -> tuple[str, int]:
+    """Next code character at or after ``i``, skipping comments and strings."""
+    n = len(text)
+    while i < n:
+        c = text[i]
+        nxt = text[i + 1] if i + 1 < n else ""
+        if c == "/" and nxt == "/":
+            nl = text.find("\n", i)
+            i = n if nl < 0 else nl + 1
+            continue
+        if c == "/" and nxt == "*":
+            end = text.find("*/", i + 2)
+            i = n if end < 0 else end + 2
+            continue
+        if c == '"':
+            i += 1
+            while i < n and text[i] != '"':
+                if text[i] == "\\":
+                    i += 2
+                else:
+                    i += 1
+            i = min(i + 1, n)
+            continue
+        return c, i + 1
+    return "", n
+
+
+def _function_body_span(text: str, sig_at: int) -> tuple[int, int]:
+    """``(open_brace, index_past_close)`` for the function that starts at ``sig_at``."""
+    i = sig_at
+    paren = 0
+    open_at = -1
+    while open_at < 0:
+        c, nxt = _next_code(text, i)
+        if not c:
+            raise ValueError("function signature has no body")
+        if c == "(":
+            paren += 1
+        elif c == ")":
+            paren = max(0, paren - 1)
+        elif c == "{" and paren == 0:
+            open_at = nxt - 1
+        i = nxt
+    depth = 0
+    i = open_at
+    while True:
+        c, nxt = _next_code(text, i)
+        if not c:
+            raise ValueError("unclosed function body")
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return open_at, nxt
+        i = nxt
+
+
+def _collapse_proved_bodies(core: str) -> str:
+    """Drop proof bodies and equijoin exec bodies from the copy the agent reads.
+
+    Signatures, ensures, and spec functions stay. Verus re-transpiles the real
+    bodies from SQL; this file is not what it checks. ``assert forall { } by { }``
+    is inside the body, so the span runs to the function's own closing brace.
+    """
+    begin = core.find("// EQ_JOIN_PROVED_BEGIN")
+    out: list[str] = []
+    i = 0
+    n = len(core)
+    while i < n:
+        at_line = i == 0 or core[i - 1] == "\n"
+        collapse = at_line and core.startswith("pub proof fn ", i)
+        if (
+            not collapse
+            and at_line
+            and begin >= 0
+            and i >= begin
+            and core.startswith("pub fn ", i)
+        ):
+            collapse = True
+        if collapse:
+            open_at, close_end = _function_body_span(core, i)
+            out.append(core[i:open_at])
+            out.append("{\n}\n")
+            i = close_end
+            if i < n and core[i] == "\n":
+                i += 1
+            continue
+        out.append(core[i])
+        i += 1
+    return "".join(out)
+
+
 def prepare_agent_visible_spec(
     verus_spec: str,
     ret_type: str,
@@ -375,7 +468,7 @@ def prepare_agent_visible_spec(
     catalog_assumptions: CatalogAssumptions | None = None,
 ) -> str:
     """Spec the sandbox agent may read: MethodSpec + TRUSTED agg API for ret_type; no RunQuery skeleton."""
-    core = _trim_verus_close(_strip_skeleton(verus_spec))
+    core = _collapse_proved_bodies(_trim_verus_close(_strip_skeleton(verus_spec)))
     boundary = _boundary_helpers(
         ret_type, verus_spec, catalog_assumptions=catalog_assumptions
     )

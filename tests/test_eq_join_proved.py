@@ -16,8 +16,10 @@ from verus_transpiler.eq_join_prelude import (
 from verus_transpiler.parse_sql import normalize_schema
 
 from research_loop.assemble_verified_program import (
+    _collapse_proved_bodies,
     assemble_verified_join_program,
     assemble_verified_nway_program,
+    prepare_agent_visible_spec,
 )
 from research_loop.harness import resolve_verus_bin, run_verus_compile, run_verus_verify
 from research_loop.method_spec_ret_type import resolve_ret_type_from_method_spec
@@ -150,6 +152,46 @@ def test_intkey_shape_follows_the_query_text() -> None:
     loj = proved_eq_join_prelude_for("build_eq_index_copy(inner)")
     assert "// SHAPE_INTKEY_BEGIN" in loj
     assert loj.index("pub fn build_eq_index_copy<") < loj.index("build_eq_index_copy(inner)")
+
+
+def test_forall_by_block_stays_inside_the_collapsed_body() -> None:
+    src = """
+pub proof fn lemma_index_insert<K>(k: K)
+    ensures
+        true,
+{
+    assert forall|k2: K| true implies {
+        k2 == k
+    } by {
+        assert(k2 == k);
+    }
+    assert(true);
+}
+
+pub open spec fn nested_eq_pairs<K>(end: int) -> int {
+    end
+}
+"""
+    out = _collapse_proved_bodies(src)
+    assert "assert forall" not in out
+    assert "assert(k2 == k)" not in out
+    assert "pub proof fn lemma_index_insert<K>(k: K)" in out
+    assert "pub open spec fn nested_eq_pairs<K>(end: int) -> int {\n    end\n}" in out
+
+
+def test_agent_visible_join_drops_proof_bodies_keeps_contract() -> None:
+    spec = transpile_sql_to_verus(
+        _ADSH_SQL,
+        {"pre": SEC_SCHEMA["pre"], "sub": SEC_SCHEMA["sub"]},
+    )
+    visible = prepare_agent_visible_spec(spec, resolve_ret_type_from_method_spec(spec))
+    assert "pub fn equijoin_pairs_str(" in visible
+    assert "pairs@ == nested_eq_pairs(" in visible
+    assert "let mut pairs: Vec<(usize, usize)> = Vec::new();" not in visible
+    assert "broadcast use vstd::seq::group_seq_lemmas" not in visible
+    assert "pub open spec fn method_spec(" in visible
+    assert "pub open spec fn nested_eq_pairs<" in visible
+    assert spec.count("\n") - visible.count("\n") > 400
 
 
 def test_join_transpile_includes_proved_equijoin_and_single_table_does_not() -> None:
