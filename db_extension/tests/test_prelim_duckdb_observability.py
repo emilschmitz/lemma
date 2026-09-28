@@ -54,6 +54,8 @@ def test_build_agent_prompt_join_menu_not_proof_paths(
         iteration=1,
         max_iterations=4,
     )
+    assert "before half the wall-clock budget" in prompt
+    assert "Do not read `spec.rs` from the first line." in prompt
     menu_start = prompt.index("## Proved join exec menu")
     menu_end = prompt.index("## Verus modes")
     opening = prompt[menu_start:menu_end]

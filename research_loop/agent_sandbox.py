@@ -308,6 +308,8 @@ Keep the host signature / `requires` / `ensures` matching `method_spec(...)` in 
 (same parameter list and `valid_cols*` predicates as MethodSpec — one table, extra inner tables,
 or join tables). Do not add Trusted, `assume`,
 `arbitrary`, `external_body`, or redefine `method_spec`.
+Write the body and call `run_runquery` before half the wall-clock budget is gone.
+Grep `{ctx}/spec.rs` for the helper named in `{ctx}/JOIN_PROOF_PATHS.md`. Do not read `spec.rs` from the first line.
 {prelim_section}
 {_rocketship_exec_section(ctx)}
 {_verus_mode_section()}
