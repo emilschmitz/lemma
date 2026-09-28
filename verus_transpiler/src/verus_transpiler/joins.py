@@ -4215,7 +4215,12 @@ def _emit_existence_projection(
     mode: str,
     helper_name: str,
 ) -> tuple[str, str, str, _FoldBridge | None]:
-    """SEMI/ANTI projection of left-side columns only."""
+    """SEMI/ANTI projection of left-side columns only.
+
+    Reuses ``nested_semi_hits`` / ``semi_hit_rows_str`` (SEMI) or
+    ``nested_anti_misses`` / ``anti_miss_rows_str`` (ANTI) via the same fold
+    lemmas as the group-by multi-agg helpers.
+    """
     if mode not in ("semi", "anti"):
         raise ValueError(mode)
     if len(slots) != 2:
@@ -4262,29 +4267,58 @@ def _emit_existence_projection(
         if mode == "semi"
         else f"!join_right_match_helper({left.param}, {right.param}, li, 0)"
     )
+    ret_type = f"Seq<{row_ty}>"
+    ret_base = "Seq::empty()"
+    update_body = f"tail.push({row_expr})"
     helper = f"""// shape: {mode}
 pub open spec fn {helper_name}(
     {left.param}: &{left.struct},
     {right.param}: &{right.struct},
     li: int,
-) -> (res: Seq<{row_ty}>)
+) -> (res: {ret_type})
     decreases {left.param}.n - li,
 {{
     if li < {left.param}.n {{
         let tail = {helper_name}({left.param}, {right.param}, li + 1);
         if {match_test}{filter_part} {{
-            tail.push({row_expr})
+            {update_body}
         }} else {{
             tail
         }}
     }} else {{
-        Seq::empty()
+        {ret_base}
     }}
 }}"""
+    if mode == "semi":
+        fold = _semi_fold_lemma(
+            helper_name,
+            slots,
+            match_conds=match_conds,
+            filter_cond=filter_cond,
+            update_body=update_body,
+            ret_type=ret_type,
+            ret_base=ret_base,
+        )
+    else:
+        fold = _left_fold_lemma(
+            helper_name,
+            slots,
+            match_conds=match_conds,
+            filter_cond=filter_cond,
+            update_body=update_body,
+            ret_type=ret_type,
+            ret_base=ret_base,
+            shape="anti",
+        )
+    bridge: _FoldBridge | None = None
+    helpers_out = match_helper + "\n\n" + helper
+    if fold is not None:
+        fold_text, bridge = fold
+        helpers_out = helpers_out + "\n\n" + fold_text
     spec_body = f"{helper_name}({left.param}, {right.param}, 0)"
     if query.limit is not None:
         spec_body = f"spec_seq_take({spec_body}, {query.limit})"
-    return match_helper + "\n\n" + helper, spec_body, f"Seq<{row_ty}>", None
+    return helpers_out, spec_body, ret_type, bridge
 
 def _loj_fold_lemma(
     helper_name: str,

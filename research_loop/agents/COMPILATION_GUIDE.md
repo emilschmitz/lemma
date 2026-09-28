@@ -51,8 +51,8 @@ Call them from `AGENT_EDIT`. Do not rebuild a `HashMap` proof, and do not add
 - <!-- shape: q6 --> `q6_eq_triples_str(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v)` — 3-table Q6 (hub ⋈ 1-col ⋈ 3-col); fold with `triple_acc` / `lemma_<helper>_is_q6_pairs`.
 - <!-- shape: left --> `anti_miss_rows_str(outer, inner)` — LEFT anti-join miss ids (unmatched outer rows); fold with `miss_acc` / `lemma_<helper>_is_left`.
 - <!-- shape: left3 --> `anti_miss_rows_str3(o0, o1, o2, i0, i1, i2)` — three-key LEFT anti miss ids; fold with `miss_acc` / `lemma_<helper>_is_left` (uses `nested_anti_misses3`).
-- <!-- shape: anti --> same `anti_miss_rows_str` for keyword ANTI JOIN; fold with `miss_acc` / `lemma_<helper>_is_anti`.
-- <!-- shape: semi --> `semi_hit_rows_str(outer, inner)` — SEMI hit ids (matched outer rows); fold with `hit_acc` / `lemma_<helper>_is_semi`.
+- <!-- shape: anti --> same `anti_miss_rows_str` for keyword ANTI JOIN (group-by or left-side projection); fold with `miss_acc` / `lemma_<helper>_is_anti`.
+- <!-- shape: semi --> `semi_hit_rows_str(outer, inner)` — SEMI hit ids (matched outer rows; group-by or left-side projection); fold with `hit_acc` / `lemma_<helper>_is_semi`.
 - <!-- shape: loj --> `left_outer_pairs_str(outer, inner)` / `left_outer_pairs_u64` — LEFT OUTER `(i, Option<j>)` slots; fold with `loj_acc` / `lemma_<helper>_is_loj`.
 - <!-- shape: right --> `right_outer_pairs_str(outer, inner)` — RIGHT OUTER slots; fold with `right_acc` / `lemma_<helper>_is_right`.
 - `star_eq_quads_str(hub_a, hub_t, hub_v, sub_a, tag_t, tag_v, pre_a, pre_t, pre_v)` — 4-table star (hub ⋈ 1-col ⋈ 2-col ⋈ 3-col); walk with `quad_acc` then `lemma_<helper>_is_quad_pairs`. <!-- shape: 4table -->

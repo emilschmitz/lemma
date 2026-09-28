@@ -13,20 +13,24 @@ from verus_transpiler.parse_sql import normalize_schema
 from research_loop.assemble_verified_program import assemble_verified_join_program
 from research_loop.harness import resolve_verus_bin, run_verus_verify
 from research_loop.method_spec_ret_type import resolve_ret_type_from_method_spec
-from research_loop.sec_table_assumptions import SEC_PROVE_LOOP_MAX_CELL_U64
+from research_loop.sec_table_assumptions import (
+    SEC_PROVE_LOOP_MAX_CELL_U64,
+    round_rows_up,
+)
 from research_loop.table_assumptions import (
     CatalogAssumptions,
     ColumnAssumption,
     TableAssumptions,
 )
+from research_loop.trusted_ret_bridge import dynamic_ret_type_config
 from tests.test_sec_holdout_parse import SEC_SCHEMA
 from verus_transpiler import transpile_sql_to_verus
 
 ROOT = Path(__file__).resolve().parents[1]
 EQ_JOIN_RS = ROOT / "research_loop" / "verus_lib" / "eq_join.rs"
 
-# Full SEC product caps (num global max). Not the 65536 prove_loop profile.
-_SEC_PRODUCT_MAX_ROWS = 39_401_761
+# Measured SEC counts, rounded up to next power of two (catalog upper bounds).
+_SEC_PRODUCT_MAX_ROWS = round_rows_up(39_401_761)
 
 # Two-table one-equality SEMI (corpus SQL keyword count: 0).
 _SEMI_SQL = """
@@ -35,6 +39,15 @@ FROM pre p
 SEMI JOIN sub s ON p.adsh = s.adsh
 WHERE p.stmt = 'CI'
 GROUP BY p.adsh
+"""
+
+# SEMI as left-side projection (not only GROUP BY / COUNT).
+_SEMI_PROJ_SQL = """
+SELECT p.adsh, p.line
+FROM pre p
+SEMI JOIN sub s ON p.adsh = s.adsh
+WHERE p.stmt = 'CI'
+LIMIT 50
 """
 
 
@@ -49,18 +62,18 @@ def _large_sec_product_catalog() -> CatalogAssumptions:
         max_string_len=128,
         tables={
             "pre": TableAssumptions(
-                max_rows=9_600_799,
+                max_rows=round_rows_up(9_600_799),
                 columns={"line": ColumnAssumption(max_value_exclusive=483)},
             ),
-            "sub": TableAssumptions(max_rows=86_135),
-            "tag": TableAssumptions(max_rows=1_070_662),
-            "num": TableAssumptions(max_rows=39_401_761),
+            "sub": TableAssumptions(max_rows=round_rows_up(86_135)),
+            "tag": TableAssumptions(max_rows=round_rows_up(1_070_662)),
+            "num": TableAssumptions(max_rows=round_rows_up(39_401_761)),
         },
     )
 
 
 def _assert_full_sec_caps(text: str) -> None:
-    assert "pub const LEMMA_MAX_ROWS: usize = 39401761;" in text
+    assert f"pub const LEMMA_MAX_ROWS: usize = {_SEC_PRODUCT_MAX_ROWS};" in text
 
 
 def _projected(sql: str) -> dict[str, dict[str, str]]:
@@ -140,6 +153,72 @@ pub exec fn run_query(pre: &Cols_pre, sub: &Cols_sub) -> (res: StringHashMap<u64
     assert "pub fn semi_hit_rows_str(" in program
     _assert_full_sec_caps(program)
     rs_path = tmp_path / "semi_fold.rs"
+    rs_path.write_text(program, encoding="utf-8")
+    ok, log = run_verus_verify(str(rs_path), timeout=300)
+    assert ok, log[-5000:]
+    assert "0 errors" in log
+    assert "verification results::" in log
+
+
+def test_semi_proj_transpile_emits_is_semi_fold() -> None:
+    projected = _projected(_SEMI_PROJ_SQL)
+    catalog = _large_sec_product_catalog()
+    out = transpile_sql_to_verus(
+        _SEMI_PROJ_SQL, projected, catalog_assumptions=catalog
+    )
+    assert "join_semi_projection_helper" in out
+    assert "// shape: semi" in out
+    assert "lemma_join_semi_projection_helper_is_semi(" in out
+    assert "lemma_join_semi_projection_helper_is_semi_loop(" in out
+    assert "lemma_join_semi_projection_helper_method_is_fold(" in out
+    assert "nested_semi_hits" in out
+    assert "hit_acc(" in out
+    assert "semi_hit_rows_str" in out or "nested_semi_hits" in out
+    _assert_full_sec_caps(out)
+
+
+def test_semi_proj_fold_lemma_verifies(tmp_path: Path) -> None:
+    """SEMI projection helper == hit_acc verifies under full SEC product caps."""
+    if resolve_verus_bin() is None:
+        pytest.skip("verus not found")
+    projected = _projected(_SEMI_PROJ_SQL)
+    catalog = _large_sec_product_catalog()
+    spec_rs = transpile_sql_to_verus(
+        _SEMI_PROJ_SQL, projected, catalog_assumptions=catalog
+    )
+    assert "lemma_join_semi_projection_helper_is_semi(" in spec_rs
+    assert "lemma_join_semi_projection_helper_method_is_fold(" in spec_rs
+    _assert_full_sec_caps(spec_rs)
+    ret_type = resolve_ret_type_from_method_spec(spec_rs)
+    cfg = dynamic_ret_type_config()[ret_type]
+    rust_ret = cfg["rust_ret"]
+    view_spec = cfg.get("view_spec")
+    ensures = (
+        f"{view_spec}(res@) == method_spec(pre, sub)"
+        if view_spec
+        else "res@ == method_spec(pre, sub)"
+    )
+    stub = f"""#[verifier::external_body]
+pub exec fn run_query(pre: &Cols_pre, sub: &Cols_sub) -> (res: {rust_ret})
+    requires valid_cols_pre(pre), valid_cols_sub(sub),
+    ensures {ensures},
+{{
+    Vec::new()
+}}"""
+    program = assemble_verified_join_program(
+        spec_rs=spec_rs,
+        run_query_body=stub,
+        multi_schema=projected,
+        table_order=("pre", "sub"),
+        ret_type=ret_type,
+        default_tbls={"pre": "", "sub": ""},
+        catalog_assumptions=catalog,
+    )
+    assert "lemma_join_semi_projection_helper_is_semi(" in program
+    assert "lemma_join_semi_projection_helper_method_is_fold(" in program
+    assert "pub fn semi_hit_rows_str(" in program
+    _assert_full_sec_caps(program)
+    rs_path = tmp_path / "semi_proj_fold.rs"
     rs_path.write_text(program, encoding="utf-8")
     ok, log = run_verus_verify(str(rs_path), timeout=300)
     assert ok, log[-5000:]
