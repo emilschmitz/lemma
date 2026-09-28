@@ -21,6 +21,12 @@ err() {
   echo "ERROR: $*" >&2
 }
 
+# Source next to this script. Tests run the script with cwd set to a fake
+# checkout, so a path relative to cwd cannot see require_expect_sha.sh.
+_PREFLIGHT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=research_loop/scripts/require_expect_sha.sh
+source "$_PREFLIGHT_DIR/require_expect_sha.sh"
+
 cd "$(git rev-parse --show-toplevel)"
 EXPECT_SHA=""
 while [[ $# -gt 0 ]]; do
@@ -35,8 +41,6 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
-# shellcheck source=research_loop/scripts/require_expect_sha.sh
-source research_loop/scripts/require_expect_sha.sh
 LOCAL_SHA="$(require_expect_sha "$EXPECT_SHA")"
 
 if [[ -n "${LEMMA_EXPERIMENT_ALLOW_DIRTY:-}" ]]; then

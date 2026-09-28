@@ -251,7 +251,7 @@ LEFTOVER_VERIFY_END
     assert out["class"] == "assemble"
 
 
-def test_classify_leftover_missing_is_agent_prove_miss() -> None:
+def test_classify_leftover_missing_is_harvest_not_agent() -> None:
     text = """
 FAILED
     no marked submit
@@ -259,9 +259,9 @@ FAILED
 LEMMA_METRICS_JSON: {"compiler_error": "no marked submit"}
 """
     out = classify_optimizer_log(text)
-    assert out["step"] == 3
-    assert out["class"] == "agent stupidity"
-    assert "leftover missing" in out.get("detail", "")
+    assert out["step"] == 5
+    assert out["class"] == "infra"
+    assert "harvest" in out.get("detail", "")
 
 
 def test_classify_no_marked_plus_agent_edit_leftover_is_agent() -> None:

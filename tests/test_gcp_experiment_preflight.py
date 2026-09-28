@@ -46,18 +46,38 @@ def _init_pushed_repo(tmp_path: Path) -> Path:
     return repo
 
 
+def _head(repo: Path) -> str:
+    proc = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return proc.stdout.strip()
+
+
 def _run_preflight(
     repo: Path,
     *,
     env: dict[str, str] | None = None,
+    expect_sha: str | None = "HEAD",
+    extra_args: list[str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     run_env = os.environ.copy()
     run_env.pop("LEMMA_EXPERIMENT_ALLOW_DIRTY", None)
     run_env.setdefault("LEMMA_PREFLIGHT_SSH", "0")
     if env:
         run_env.update(env)
+    cmd = ["bash", str(PREFLIGHT)]
+    if expect_sha == "HEAD":
+        cmd.extend(["--expect-sha", _head(repo)])
+    elif expect_sha is not None:
+        cmd.extend(["--expect-sha", expect_sha])
+    if extra_args:
+        cmd.extend(extra_args)
     return subprocess.run(
-        ["bash", str(PREFLIGHT)],
+        cmd,
         cwd=repo,
         env=run_env,
         capture_output=True,
@@ -184,7 +204,7 @@ def test_preflight_missing_family_exits_1(tmp_path: Path) -> None:
     run_env.setdefault("LEMMA_PREFLIGHT_SSH", "0")
     run_env.pop("LEMMA_FAMILY", None)
     proc = subprocess.run(
-        ["bash", str(PREFLIGHT)],
+        ["bash", str(PREFLIGHT), "--expect-sha", _head(repo)],
         cwd=repo,
         env=run_env,
         capture_output=True,

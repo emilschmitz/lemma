@@ -202,8 +202,9 @@ def classify_optimizer_log(text: str) -> dict[str, Any]:
     if "entrypoint.sh" in text and "permission denied" in text.lower():
         return _result(3, "infra", detail="entrypoint permission denied")
 
-    # Step 7 — harness verify/compile wall timeout (not agent docker).
-    if _HARNESS_TIMEOUT.search(text):
+    # Step 7 — harness wall. A finished Verus result with errors is the verdict
+    # (r31 logs said TIMEOUT / exit -9 after verification results were already printed).
+    if _HARNESS_TIMEOUT.search(text) and not _VERUS_RESULT_ERRORS.search(text):
         return _result(7, "failed to execute", detail="harness timeout")
 
     # Step 7 — official full-table measure timeout (no harness TIMEOUT after Ns).
@@ -304,7 +305,7 @@ def classify_optimizer_log(text: str) -> dict[str, Any]:
     # Host leftover tN (E0425) / case_when E0308 already matched above as assemble/transpile.
     if _NO_MARKED.search(text):
         if _LEFTOVER_MISSING.search(text):
-            return _result(3, "agent stupidity", detail="no marked submit (leftover missing)")
+            return _result(5, "infra", detail="traces not harvested")
         return _result(3, "agent stupidity", detail="no marked submit")
 
     return _result(5, "infra", detail="unclassified_open_traces")
