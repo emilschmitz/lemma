@@ -491,7 +491,9 @@ def prepare_agent_visible_spec(
             "// Distinct sets: hashset_*_as_map + set_new_* / set_insert_* (COUNT_DISTINCT state).\n"
             "// Seqs: seq_new_* / seq_push_* when present; else Vec@ directly.\n"
         )
-        boundary = agent_note + boundary.lstrip("\n")
+        # Slot lemmas are proof fns. Collapse their bodies the same way as the
+        # core. Exec helpers (agg_step_*) stay. Verus re-transpiles the proofs.
+        boundary = _collapse_proved_bodies(agent_note + boundary.lstrip("\n"))
     return f"{core}{boundary}}} // verus!\n"
 
 

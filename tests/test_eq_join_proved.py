@@ -205,6 +205,40 @@ pub open spec fn nested_eq_pairs<K>(end: int) -> int {
     assert "pub open spec fn nested_eq_pairs<K>(end: int) -> int {\n    end\n}" in out
 
 
+def test_prepare_collapses_appended_boundary_proof_bodies(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Boundary helpers are appended after the core collapse. Their proof bodies
+    must not come back. Exec helper bodies stay."""
+    from research_loop import assemble_verified_program as asm
+
+    def _fake_boundary(*_a: object, **_k: object) -> str:
+        return (
+            "pub exec fn agg_add_u64(x: u64) -> (r: u64)\n"
+            "    ensures r == x,\n"
+            "{\n"
+            "    x\n"
+            "}\n"
+            "\n"
+            "pub proof fn lemma_slot(x: int)\n"
+            "    ensures\n"
+            "        x == x,\n"
+            "{\n"
+            "    let ghost y = x;\n"
+            "    assert(y == x);\n"
+            "}\n"
+        )
+
+    monkeypatch.setattr(asm, "_boundary_helpers", _fake_boundary)
+    visible = prepare_agent_visible_spec(
+        "verus! {\npub open spec fn method_spec() -> int { 0 }\n} // verus!\n",
+        "u64",
+    )
+    assert "let ghost y = x;" not in visible
+    assert "assert(y == x);" not in visible
+    assert "ensures\n        x == x," in visible
+    assert "pub exec fn agg_add_u64(x: u64)" in visible
+    assert "    x\n" in visible
+
+
 def test_agent_visible_join_drops_proof_bodies_keeps_contract() -> None:
     spec = transpile_sql_to_verus(
         _ADSH_SQL,
