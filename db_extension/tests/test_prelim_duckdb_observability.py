@@ -38,6 +38,83 @@ def test_build_agent_prompt_row_budgets(tmp_path: Path, monkeypatch: pytest.Monk
     assert "not full table" not in prompt.lower()
 
 
+def test_build_agent_prompt_join_menu_not_proof_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Opening menu lists every proved exec; proof recipes stay in JOIN_PROOF_PATHS.md."""
+    ws = tmp_path / "workspace"
+    (ws / "context" / "ro").mkdir(parents=True)
+    monkeypatch.delenv("LEMMA_FAST_TRUSTEDS", raising=False)
+    monkeypatch.setenv("LEMMA_FAST_TRUSTEDS", "0")
+
+    prompt = build_agent_prompt(
+        workspace=ws,
+        query_id=1,
+        sql_query="SELECT 1 FROM a JOIN b ON a.x = b.x",
+        iteration=1,
+        max_iterations=4,
+    )
+    menu_start = prompt.index("## Proved join exec menu")
+    menu_end = prompt.index("## Verus modes")
+    opening = prompt[menu_start:menu_end]
+
+    for name in (
+        "equijoin_pairs_str",
+        "equijoin_pairs_str2",
+        "equijoin_pairs_str3",
+        "equijoin_pairs_u64",
+        "equijoin_pairs_u32",
+        "star_eq_triples_str",
+        "star_eq_quads_str",
+        "chain_eq_triples_str",
+        "q6_eq_triples_str",
+        "orjoin_pairs_str",
+        "semi_hit_rows_str",
+        "anti_miss_rows_str",
+        "anti_miss_rows_str3",
+        "left_outer_pairs_str",
+        "left_outer_pairs_u64",
+        "right_outer_pairs_str",
+        "full_outer_parts_str",
+        "self-join",
+    ):
+        assert name in opening, name
+    assert "JOIN_PROOF_PATHS.md" in opening
+    # Multi-step proof recipes must not live in the opening menu.
+    assert "Walk the pair" not in opening
+    assert "pair_acc(pairs@" not in opening
+    assert "After the backward walk" not in opening
+    assert "lemma_<helper>_is_pairs` (via" not in opening
+    assert "lemma_loop2_at_origin" not in opening
+
+    lookup = (
+        Path(__file__).resolve().parents[2]
+        / "research_loop"
+        / "agents"
+        / "JOIN_PROOF_PATHS.md"
+    )
+    paths_text = lookup.read_text()
+    for lemma_bit in (
+        "lemma_<helper>_is_pairs",
+        "lemma_<helper>_is_pairs2",
+        "lemma_<helper>_is_pairs3",
+        "lemma_<helper>_is_or",
+        "lemma_<helper>_is_star_pairs",
+        "lemma_<helper>_is_chain_pairs",
+        "lemma_<helper>_is_q6_pairs",
+        "lemma_<helper>_is_quad_pairs",
+        "lemma_<helper>_is_left",
+        "lemma_<helper>_is_anti",
+        "lemma_<helper>_is_semi",
+        "lemma_<helper>_is_loj",
+        "lemma_<helper>_is_right",
+        "lemma_<helper>_is_full",
+        "lemma_<helper>_method_is_fold",
+        "walk from the end",
+    ):
+        assert lemma_bit in paths_text, lemma_bit
+
+
 def test_build_system_prompt_row_budgets(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LEMMA_BENCH_TBL", raising=False)
     monkeypatch.delenv("LEMMA_DUCKDB_PATH", raising=False)

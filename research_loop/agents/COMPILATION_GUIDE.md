@@ -35,36 +35,30 @@ res
 Use the helper name and params from **this query's** `spec.rs` (joins use `Cols_<table>` params).
 `valid_cols` / `valid_cols_<table>` belong in `requires`, not the loop invariant.
 
-## Proved equijoin
+## Proved equijoin menu
 
 Join files already contain a verified index. The bodies are checked by Verus.
 Call them from `AGENT_EDIT`. Do not rebuild a `HashMap` proof, and do not add
-`spec fn` or `proof fn`.
+`spec fn` or `proof fn`. Proof path (lemma call order, backward walk, derived Map):
+open `context/ro/JOIN_PROOF_PATHS.md` for the shape you have.
 
-- `equijoin_pairs_str(outer, inner)` — one `String` column (`adsh`).
-- `equijoin_pairs_str2(o0, o1, i0, i1)` — two `String` columns, both equal (`tag` and `version`).
-- `equijoin_pairs_u64` / `equijoin_pairs_u32` — one integer column.
-- <!-- shape: pair3 --> `equijoin_pairs_str3(o0, o1, o2, i0, i1, i2)` — three `String` columns, all equal; fold with `pair_acc` / `lemma_<helper>_is_pairs3`.
-- <!-- shape: orjoin --> `orjoin_pairs_str(oa, ob, ia, ib)` — two-table OR equalities (`A.a=B.a OR A.b=B.b`); fold with `pair_acc` / `lemma_<helper>_is_or`.
-- `star_eq_triples_str(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v)` — one outer table matched to a one-column inner and a two-column inner.
-- <!-- shape: chain --> `chain_eq_triples_str(a_k, b_k, b_m, c_m)` — 3-table chain `A.k=B.k AND B.m=C.m` (different mid keys); fold with `triple_acc` / `lemma_<helper>_is_chain_pairs`.
-- <!-- shape: q6 --> `q6_eq_triples_str(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v)` — 3-table Q6 (hub ⋈ 1-col ⋈ 3-col); fold with `triple_acc` / `lemma_<helper>_is_q6_pairs`.
-- <!-- shape: left --> `anti_miss_rows_str(outer, inner)` — LEFT anti-join miss ids (unmatched outer rows); fold with `miss_acc` / `lemma_<helper>_is_left`.
-- <!-- shape: left3 --> `anti_miss_rows_str3(o0, o1, o2, i0, i1, i2)` — three-key LEFT anti miss ids; fold with `miss_acc` / `lemma_<helper>_is_left` (uses `nested_anti_misses3`).
-- <!-- shape: anti --> same `anti_miss_rows_str` for keyword ANTI JOIN (group-by or left-side projection); fold with `miss_acc` / `lemma_<helper>_is_anti`.
-- <!-- shape: semi --> `semi_hit_rows_str(outer, inner)` — SEMI hit ids (matched outer rows; group-by or left-side projection); fold with `hit_acc` / `lemma_<helper>_is_semi`.
-- <!-- shape: loj --> `left_outer_pairs_str(outer, inner)` / `left_outer_pairs_u64` — LEFT OUTER `(i, Option<j>)` slots; fold with `loj_acc` / `lemma_<helper>_is_loj`.
-- <!-- shape: right --> `right_outer_pairs_str(outer, inner)` — RIGHT OUTER slots; fold with `right_acc` / `lemma_<helper>_is_right`.
-- `star_eq_quads_str(hub_a, hub_t, hub_v, sub_a, tag_t, tag_v, pre_a, pre_t, pre_v)` — 4-table star (hub ⋈ 1-col ⋈ 2-col ⋈ 3-col); walk with `quad_acc` then `lemma_<helper>_is_quad_pairs`. <!-- shape: 4table -->
-- <!-- shape: full --> `full_outer_parts_str(left, right)` — FULL OUTER parts (matched pairs, left misses, right misses); fold with `full_acc` / `lemma_<helper>_is_full`.
+- `equijoin_pairs_str(outer, inner) -> Vec<(usize, usize)>` — `pairs@ == nested_eq_pairs(...)`; one `String` equality.
+- `equijoin_pairs_str2(o0, o1, i0, i1) -> Vec<(usize, usize)>` — `pairs@ == nested_eq_pairs2(...)`; two `String` equalities.
+- `equijoin_pairs_u64` / `equijoin_pairs_u32` — `pairs@ == nested_eq_pairs(...)`; one integer equality.
+- <!-- shape: pair3 --> `equijoin_pairs_str3(o0, o1, o2, i0, i1, i2) -> Vec<(usize, usize)>` — `pairs@ == nested_eq_pairs3(...)`; three `String` equalities.
+- <!-- shape: orjoin --> `orjoin_pairs_str(oa, ob, ia, ib) -> Vec<(usize, usize)>` — `pairs@ == nested_or_eq_pairs(...)`; two-table OR equalities.
+- `star_eq_triples_str(pre_a, pre_t, pre_v, sub_a, tag_t, tag_v) -> Vec<(usize, usize, usize)>` — `triples@ == nested_star(...)`; 3-table star.
+- <!-- shape: chain --> `chain_eq_triples_str(a_k, b_k, b_m, c_m) -> Vec<(usize, usize, usize)>` — `triples@ == nested_chain(...)`; 3-table chain.
+- <!-- shape: q6 --> `q6_eq_triples_str(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v) -> Vec<(usize, usize, usize)>` — `triples@ == nested_q6(...)`; 3-table Q6 (1+3).
+- <!-- shape: left --> `anti_miss_rows_str(outer, inner) -> Vec<usize>` — `misses@ == nested_anti_misses(...)`; LEFT anti miss ids.
+- <!-- shape: left3 --> `anti_miss_rows_str3(o0, o1, o2, i0, i1, i2) -> Vec<usize>` — `misses@ == nested_anti_misses3(...)`; three-key LEFT anti.
+- <!-- shape: anti --> same `anti_miss_rows_str` for keyword ANTI JOIN (group-by or left-side projection).
+- <!-- shape: semi --> `semi_hit_rows_str(outer, inner) -> Vec<usize>` — `hits@ == nested_semi_hits(...)`; SEMI hit ids.
+- <!-- shape: loj --> `left_outer_pairs_str(outer, inner)` / `left_outer_pairs_u64` — `pairs@ == nested_loj_pairs(...)`; LEFT OUTER slots.
+- <!-- shape: right --> `right_outer_pairs_str(outer, inner)` — `slots@ == nested_right_pairs(...)`; RIGHT OUTER slots.
+- `star_eq_quads_str(hub_a, hub_t, hub_v, sub_a, tag_t, tag_v, pre_a, pre_t, pre_v)` — `quads@ == nested_quad(...)`; 4-table star. <!-- shape: 4table -->
+- <!-- shape: full --> `full_outer_parts_str(left, right)` — matched pairs + left/right misses; FULL OUTER parts.
 - <!-- shape: selfjoin --> self-joins use the same `equijoin_pairs_*` helpers; `run_query` / MethodSpec params are SQL aliases (`Cols_<alias>`), not a second physical table.
-
-`pairs@` (or `triples@`) is the forward nested match list: outer-major, inner row ids increasing. `method_spec` folds from the high index downward, so walk the pair list from the end. Filters and aggregates stay in that loop. The pair list is the equijoin matches, not the whole query result.
-
-Exec shape for a scratch COUNT (same walk for other aggs): call `equijoin_pairs_*` or `star_eq_triples_str`, then walk from the end with
-`invariant acc == pair_acc(pairs@, step, base, k as int)` (or `triple_acc(triples@, …)` for the star), then call `lemma_<helper>_is_pairs` / `_is_pairs2` / `_is_star_pairs`. Do not use a single-table `let mut i = cols.n` loop on a join.
-
-On a two-table join with one equality, the file also contains `lemma_<helper>_is_loop` (for example `lemma_join_method_spec_helper_is_loop` or `lemma_multi_agg_helper_is_loop`) and `lemma_<helper>_is_pairs`. The `_is_loop` lemma proves the helper equals `loop_acc` on the join keys; `_is_pairs` proves the helper at `(0, 0)` equals `pair_acc` of `nested_eq_pairs` at index 0 (same step closure), which is what `equijoin_pairs_*` returns — call `_is_pairs` instead of chaining `_is_loop`, `lemma_acc`, and `lemma_pair_pos_origin`. On a two-table join with two equalities (for example `tag` and `version`), use `lemma_<helper>_is_pairs2` (built on `_is_loop2` / `lemma_loop2_at_origin`) for the same origin fact against `nested_eq_pairs2` / `equijoin_pairs_str2`. On three string equalities, use `lemma_<helper>_is_pairs3` against `nested_eq_pairs3` / `equijoin_pairs_str3`. On OR equalities, use `lemma_<helper>_is_or` against `nested_or_eq_pairs` / `orjoin_pairs_str`. On a three-table star (one equality plus a two-column equality), use `lemma_<helper>_is_star_pairs` (built on `_is_star` / `lemma_star_at_origin`) against `nested_star` / `star_eq_triples_str`. On a three-table chain (`A.k=B.k AND B.m=C.m`), use `lemma_<helper>_is_chain_pairs` (built on `_is_chain` / `lemma_chain_at_origin`) against `nested_chain` / `chain_eq_triples_str`. On Q6 (1+3), use `lemma_<helper>_is_q6_pairs` against `nested_q6` / `q6_eq_triples_str`. On LEFT OUTER, use `lemma_<helper>_is_loj` against `nested_loj_pairs` / `left_outer_pairs_*`. On RIGHT OUTER, use `lemma_<helper>_is_right` against `nested_right_pairs` / `right_outer_pairs_str`. On SEMI, use `lemma_<helper>_is_semi` against `nested_semi_hits` / `semi_hit_rows_str`. On FULL OUTER, use `lemma_<helper>_is_full` against `full_outer_parts_str`. Do not rebuild that correspondence. `method_spec` may still apply `map_values`, `spec_seq_take`, or `apply_having_filter` to the helper's result. After the backward walk, call `lemma_<helper>_method_is_fold` so `ensures res == method_spec` follows from the pair/triple fold without re-deriving that wrapper. When a derived-table Map is an extra helper parameter, the same `lemma_<helper>_is_pairs` (or `_is_pairs2` / `_is_star_pairs`) threads that Map into the step closure — do not build a second index of the subquery. <!-- shape: derived -->
 
 ## Allowed patterns
 
@@ -99,4 +93,4 @@ These abort the file before a proof result.
 - `&&&` separates spec clauses. In exec code write `&&`.
 - An exec `Vec` or `HashMap` is not spec-equal to a `Seq`. Compare `@` views (`Seq` vs `Vec` is E0308 / SpecEq).
 - Do not define a new `proof fn`, `spec fn`, or lemma. Call only helpers already in `spec.rs`.
-- When `build_hashset_u32` / `probe_sum_u64` are not in `spec.rs`, do not call them. Call the proved join exec helper for this shape (`equijoin_pairs_*`, `orjoin_pairs_str`, `star_eq_*`, `chain_eq_triples_str`, `q6_eq_triples_str`, `anti_miss_rows_*`, `semi_hit_rows_str`, `left_outer_pairs_*`, `right_outer_pairs_str`, `full_outer_parts_str`) and the matching `lemma_<helper>_is_*` / `lemma_<helper>_method_is_fold` already in the file. Do not rebuild that proof.
+- When `build_hashset_u32` / `probe_sum_u64` are not in `spec.rs`, do not call them. Call the proved join exec from the menu above; open `JOIN_PROOF_PATHS.md` for the lemma call order for that shape. Do not rebuild that proof.

@@ -10,61 +10,23 @@ from .parse_sql import SQLQuery, support_spec_params
 
 
 def _emit_join_run_query_skeleton(ret_type: str) -> str:
-    """Commented join walk: pairs/triples from the end, then the generated is_* lemma."""
-    return f"""// Proved equijoin is already in this file. Call it; do not rebuild the hash invariant.
-// Shapes (name the lemma this file emits for the helper):
-//   one equality — equijoin_pairs_str / equijoin_pairs_u64 / equijoin_pairs_u32:
-//     walk pairs from the end with invariant acc == pair_acc(pairs@, step, base, k as int);
-//     then lemma_<helper>_is_pairs
-//   two string equalities — equijoin_pairs_str2:
-//     same pair_acc walk; then lemma_<helper>_is_pairs2
-//   three string equalities — equijoin_pairs_str3:
-//     same pair_acc walk; then lemma_<helper>_is_pairs3
-//   OR equalities — orjoin_pairs_str:
-//     same pair_acc walk; then lemma_<helper>_is_or
-//   3-table star — star_eq_triples_str:
-//     walk triples from the end with invariant acc == triple_acc(triples@, step, base, k as int);
-//     then lemma_<helper>_is_star_pairs
-//   3-table chain — chain_eq_triples_str:
-//     same triple_acc walk; then lemma_<helper>_is_chain_pairs
-//   3-table Q6 (1+3) — q6_eq_triples_str:
-//     walk triples from the end with invariant acc == triple_acc(triples@, step, base, k as int);
-//     then lemma_<helper>_is_q6_pairs
-//   4-table star — star_eq_quads_str:
-//     walk quads from the end with invariant acc == quad_acc(quads@, step, base, k as int);
-//     then lemma_<helper>_is_quad_pairs
-//   LEFT/ANTI miss — anti_miss_rows_str / anti_miss_rows_str3:
-//     walk misses from the end with miss_acc; then lemma_<helper>_is_left or _is_anti
-//   SEMI hits — semi_hit_rows_str:
-//     walk hits from the end with hit_acc; then lemma_<helper>_is_semi
-//   LEFT OUTER — left_outer_pairs_str / left_outer_pairs_u64:
-//     walk slots from the end with loj_acc; then lemma_<helper>_is_loj
-//   RIGHT OUTER — right_outer_pairs_str:
-//     walk slots from the end with right_acc; then lemma_<helper>_is_right
-//   FULL OUTER — full_outer_parts_str:
-//     fold matched / left-miss / right-miss; then lemma_<helper>_is_full
-//   self-join — same equijoin_pairs_*; params are SQL aliases (Cols_<alias>)
-// After the walk: lemma_<helper>_method_is_fold (when this file emits it).
-// Do not call build_hashset_u32 / probe_sum_u64. Do not build a second index of a derived Map.
-// method_spec may still be map_values, spec_seq_take, or apply_having_filter of the helper.
+    """Commented join menu + pointer; proof recipes live in JOIN_PROOF_PATHS.md."""
+    return f"""// Proved equijoin is already in this file. Call the matching exec; do not rebuild the hash.
+// Compact menu (exact names). Proof path: context/ro/JOIN_PROOF_PATHS.md
+//   equijoin_pairs_str / equijoin_pairs_str2 / equijoin_pairs_str3
+//   equijoin_pairs_u64 / equijoin_pairs_u32 / orjoin_pairs_str
+//   star_eq_triples_str / chain_eq_triples_str / q6_eq_triples_str / star_eq_quads_str
+//   semi_hit_rows_str / anti_miss_rows_str / anti_miss_rows_str3
+//   left_outer_pairs_str / left_outer_pairs_u64 / right_outer_pairs_str / full_outer_parts_str
+//   self-join: same equijoin_pairs_*; params are SQL aliases (Cols_<alias>)
+// Do not call build_hashset_u32 / probe_sum_u64. Derived Map = step arg, not a second index.
 // === RunQuery skeleton (agent provides the body) ===
 // pub exec fn run_query(...) -> (res: {ret_type})
 //     requires valid_cols_*(...),
 //     ensures res == method_spec(...),  // or res@ == method_spec(...) for maps/vecs
 // {{
-//     // let pairs = equijoin_pairs_*(...);  // or: let triples = star_eq_triples_str(...);
-//     // let mut k = pairs.len();           // or triples.len()
-//     // let mut acc = <base>;
-//     // while k > 0
-//     //     invariant
-//     //         acc == pair_acc(pairs@, step, base, k as int),  // or triple_acc(triples@, ...)
-//     //     decreases k,
-//     // {{
-//     //     k = k - 1;
-//     //     // apply step at pairs[k] (or triples[k]): filters / aggs from method_spec
-//     // }}
-//     // lemma_<helper>_is_pairs(...);  // or matching _is_* / _method_is_fold — name from this file
-//     // res = ...;  // maybe map_values / spec_seq_take / apply_having_filter of the helper
+//     // let pairs = equijoin_pairs_*(...);  // see JOIN_PROOF_PATHS.md for walk + lemma_*_is_*
+//     // res = ...;
 // }}
 """
 

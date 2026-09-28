@@ -195,30 +195,20 @@ These abort the file before a proof result.
 """
 
 
-def _rocketship_exec_section() -> str:
+def _rocketship_exec_section(ctx: str) -> str:
+    """Inline proved-join menu; proof recipes are in JOIN_PROOF_PATHS.md."""
     if _fast_trusteds_on():
         return ""
-    return """
-## Exec shape
-`LEMMA_FAST_TRUSTEDS` is off. `build_hashset_u32`, `probe_sum_u64`, and `par_*` are not in scope.
-Join MethodSpec is still the nested `rem_join` / `rem_join_sq` fold in `spec.rs`. Prove `ensures res == method_spec(...)`.
-Join files already contain proved exec helpers — call the matching one for this query's shape, then the matching `lemma_<helper>_is_*` / `lemma_<helper>_method_is_fold` this file emits:
-- one equality — `equijoin_pairs_str` / `equijoin_pairs_u64` / `equijoin_pairs_u32` → `lemma_<helper>_is_pairs` (via `_is_loop`)
-- two string equalities — `equijoin_pairs_str2` → `lemma_<helper>_is_pairs2`
-- three string equalities — `equijoin_pairs_str3` → `lemma_<helper>_is_pairs3`
-- OR equalities — `orjoin_pairs_str` → `lemma_<helper>_is_or`
-- 3-table star — `star_eq_triples_str` → `lemma_<helper>_is_star_pairs`
-- 3-table chain — `chain_eq_triples_str` → `lemma_<helper>_is_chain_pairs`
-- 3-table Q6 (1+3) — `q6_eq_triples_str` → `lemma_<helper>_is_q6_pairs`
-- 4-table star — `star_eq_quads_str` → `lemma_<helper>_is_quad_pairs`
-- LEFT/ANTI miss — `anti_miss_rows_str` / `anti_miss_rows_str3` → `lemma_<helper>_is_left` or `_is_anti` (ANTI group-by or left-side projection)
-- SEMI hits — `semi_hit_rows_str` → `lemma_<helper>_is_semi` (SEMI group-by or left-side projection)
-- LEFT OUTER — `left_outer_pairs_str` / `left_outer_pairs_u64` → `lemma_<helper>_is_loj`
-- RIGHT OUTER — `right_outer_pairs_str` → `lemma_<helper>_is_right`
-- FULL OUTER — `full_outer_parts_str` → `lemma_<helper>_is_full`
-Walk the pair, triple, quad, miss, hit, or LOJ/right slot list from the end. Self-joins use the same helpers; `run_query` params are SQL aliases (`Cols_<alias>`).
-After the backward walk, call `lemma_<helper>_method_is_fold` so `ensures res == method_spec` follows without re-deriving wrappers.
-Do not invent a HashMap or HashSet index of your own. Do not call `build_hashset_u32` / `probe_sum_u64`. Do not build a second index of a derived-table Map. Do not rebuild the correspondence those lemmas already prove.
+    menu_path = RESEARCH / "agents" / "JOIN_EXEC_MENU.md"
+    menu_body = menu_path.read_text().replace(
+        "{PROOF_PATHS}", f"{ctx}/JOIN_PROOF_PATHS.md"
+    ).rstrip()
+    return f"""
+## Proved join exec menu
+`LEMMA_FAST_TRUSTEDS` is off. `build_hashset_u32`, `probe_sum_u64`, and `par_*` are not
+in scope. Join MethodSpec is still the nested `rem_join` / `rem_join_sq` fold in
+`spec.rs`. Prove `ensures res == method_spec(...)`.
+{menu_body}
 """
 
 
@@ -319,7 +309,7 @@ Keep the host signature / `requires` / `ensures` matching `method_spec(...)` in 
 or join tables). Do not add Trusted, `assume`,
 `arbitrary`, `external_body`, or redefine `method_spec`.
 {prelim_section}
-{_rocketship_exec_section()}
+{_rocketship_exec_section(ctx)}
 {_verus_mode_section()}
 {budget_section}
 {row_budget_section}
@@ -328,6 +318,7 @@ or join tables). Do not add Trusted, `assume`,
 - `{ctx}/query.sql`, `{ctx}/schema.json`, `{ctx}/spec.rs`
 - `{ctx}/data_profile.md` (AGENT_DATA_MODE=`{agent_data_mode}`), `{ctx}/row_budgets.md`, `{ctx}/hardware.md` (if present)
 - `{ctx}/COMPILATION_GUIDE.md`, `{ctx}/AGENTS.md`, `{ctx}/PRIMITIVES.md` — contract + Trusted menu only
+- `{ctx}/JOIN_PROOF_PATHS.md` — join lemma call order
 
 ## Tools
 - `validate_runquery` / `run_runquery` / `submit_runquery` / `session_status` (lemma-host MCP)
@@ -609,7 +600,13 @@ def prepare_workspace(
     if view:
         shutil.copy2(ro / SPEC_NAME, view / SPEC_NAME)
         (view / "CURRENT").write_text(f"{SPEC_NAME} (MethodSpec + TRUSTED agg API)\n")
-    for name in ("COMPILATION_GUIDE.md", "PRIMER.md", "AGENTS.md", "PRIMITIVES.md"):
+    for name in (
+        "COMPILATION_GUIDE.md",
+        "JOIN_PROOF_PATHS.md",
+        "PRIMER.md",
+        "AGENTS.md",
+        "PRIMITIVES.md",
+    ):
         for base in (RESEARCH / "agents", RESEARCH, ROOT / "research_loop" / "agents"):
             guide = base / name
             if guide.exists():
