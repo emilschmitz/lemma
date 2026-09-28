@@ -33,6 +33,25 @@ POPEN_POST_KILL_GRACE_SEC = 5.0
 BODY_NAME = "runquery_agent.rs"
 SPEC_NAME = "spec.rs"
 SPEC_EXCERPT_MAX_CHARS = 12000
+_METHOD_IS_FOLD_RE = re.compile(r"\bpub proof fn (lemma_\w+_method_is_fold)\b")
+
+
+def concrete_proof_names(spec: str) -> list[str]:
+    """Query lemmas the host emitted. The static proof-path file only has placeholders."""
+    return list(dict.fromkeys(_METHOD_IS_FOLD_RE.findall(spec)))
+
+
+def _proof_paths_text(static: str, spec: str) -> str:
+    names = concrete_proof_names(spec)
+    if not names:
+        return static
+    header = (
+        "## This spec\n\n"
+        "Grep `spec.rs` for these names. Do not read `spec.rs` from the first line.\n\n"
+        + "\n".join(f"- `{name}`" for name in names)
+        + "\n\n"
+    )
+    return header + static
 
 
 def load_agent_config(config: dict[str, str] | None = None) -> dict[str, str]:
@@ -309,7 +328,7 @@ Keep the host signature / `requires` / `ensures` matching `method_spec(...)` in 
 or join tables). Do not add Trusted, `assume`,
 `arbitrary`, `external_body`, or redefine `method_spec`.
 Write the body and call `run_runquery` before half the wall-clock budget is gone.
-Grep `{ctx}/spec.rs` for the helper named in `{ctx}/JOIN_PROOF_PATHS.md`. Do not read `spec.rs` from the first line.
+Grep `{ctx}/spec.rs` for each name under `## This spec` in `{ctx}/JOIN_PROOF_PATHS.md`. Do not read `spec.rs` from the first line.
 {prelim_section}
 {_rocketship_exec_section(ctx)}
 {_verus_mode_section()}
@@ -612,7 +631,13 @@ def prepare_workspace(
         for base in (RESEARCH / "agents", RESEARCH, ROOT / "research_loop" / "agents"):
             guide = base / name
             if guide.exists():
-                shutil.copy2(guide, ro / name)
+                if name == "JOIN_PROOF_PATHS.md":
+                    (ro / name).write_text(
+                        _proof_paths_text(guide.read_text(encoding="utf-8"), agent_spec),
+                        encoding="utf-8",
+                    )
+                else:
+                    shutil.copy2(guide, ro / name)
                 break
     body_path = workspace / BODY_NAME
     if reset_body or not body_path.exists():

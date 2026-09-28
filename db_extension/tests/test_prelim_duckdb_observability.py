@@ -38,6 +38,14 @@ def test_build_agent_prompt_row_budgets(tmp_path: Path, monkeypatch: pytest.Monk
     assert "not full table" not in prompt.lower()
 
 
+def test_concrete_proof_names_are_the_fold_lemmas() -> None:
+    from research_loop.agent_sandbox import concrete_proof_names
+
+    spec = "pub fn equijoin_pairs_str() {}\npub proof fn lemma_multi_agg_helper_method_is_fold() {}\n"
+    assert concrete_proof_names(spec) == ["lemma_multi_agg_helper_method_is_fold"]
+    assert concrete_proof_names("pub fn equijoin_pairs_str() {}") == []
+
+
 def test_build_agent_prompt_join_menu_not_proof_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -55,6 +63,7 @@ def test_build_agent_prompt_join_menu_not_proof_paths(
         max_iterations=4,
     )
     assert "before half the wall-clock budget" in prompt
+    assert "under `## This spec`" in prompt
     assert "Do not read `spec.rs` from the first line." in prompt
     menu_start = prompt.index("## Proved join exec menu")
     menu_end = prompt.index("## Verus modes")
