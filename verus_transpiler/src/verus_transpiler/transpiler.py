@@ -1488,6 +1488,7 @@ def transpile_sql_to_verus(
             is_sum=is_sum,
             val_type=val_type,
             flat_schema=flat_schema,
+            catalog=catalog_assumptions,
         )
         helpers = join_helper
         result_spec = _emit_method_spec_result(query, ret_type)

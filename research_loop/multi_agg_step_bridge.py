@@ -11,6 +11,7 @@ from verus_transpiler.col_exprs import (
     coerce_case_when_u64_args,
 )
 from verus_transpiler.value_bounds import (
+    _int_product_fits_i128,
     _int_product_fits_u64,
     rem_cap_add_fits_lemma_name,
     rem_cap_one_add_fits_lemma_name,
@@ -460,6 +461,12 @@ def _minmax_src_from_t_line(t_line: str) -> str | None:
 
 def _sum_delta_expr(s_line: str, slot_i: int, *, multi_slot: bool) -> str | None:
     prev_ref = f"prev.{slot_i}" if multi_slot else "prev"
+    m_i128 = re.search(
+        rf"let s{slot_i} = \({prev_ref} as int \+ (.+)\) as i128;",
+        s_line,
+    )
+    if m_i128:
+        return m_i128.group(1).strip()
     m = re.search(
         rf"let s{slot_i} = \({prev_ref} as int \+ (.+?)\) as u64",
         s_line,
@@ -630,11 +637,15 @@ def _count_bound_rhs(rem_int: str, count_addend: CountSlotAddend | None) -> str:
 
 
 def _slot_bound_rhs(
-    kind: str, rem_int: str, count_addend: CountSlotAddend | None
+    kind: str,
+    rem_int: str,
+    count_addend: CountSlotAddend | None,
+    cap_const: str | None = None,
 ) -> str:
     if kind == "count":
         return _count_bound_rhs(rem_int, count_addend)
-    return f"{rem_int} * ({_sum_cap_const(kind)} as int)"
+    const = cap_const if cap_const is not None else _sum_cap_const(kind)
+    return f"{rem_int} * ({const} as int)"
 
 
 _ROW_U64_BARE_RE = re.compile(
@@ -702,21 +713,22 @@ def _emit_agg_step_requires(
     seen_params: set[str] = set()
     clauses: list[str] = []
     for i, slot in enumerate(slots):
-        if not isinstance(slot, TypeAtom) or slot.name != "u64":
+        if not isinstance(slot, TypeAtom) or slot.name not in ("u64", "i128"):
             continue
         s_line = next((ln for ln in apply_lines if ln.startswith(f"let s{i} =")), "")
         kind = _classify_u64_slot(s_line, i, multi_slot=n_slots > 1)
         if kind is None:
             continue
+        zero = "0i128" if slot.name == "i128" else "0u64"
         if n_slots == 1:
             prev_ref = (
                 f"if old(st).inner@.contains_key({spec_key}) "
-                f"{{ old(st).inner@[{spec_key}] }} else {{ 0u64 }}"
+                f"{{ old(st).inner@[{spec_key}] }} else {{ {zero} }}"
             )
         else:
             prev_ref = (
                 f"(if old(st).inner@.contains_key({spec_key}) "
-                f"{{ old(st).inner@[{spec_key}].{i} }} else {{ 0u64 }})"
+                f"{{ old(st).inner@[{spec_key}].{i} }} else {{ {zero} }})"
             )
         if kind == "count":
             info = _parse_count_slot_addend(s_line, i, multi_slot=n_slots > 1)
@@ -733,7 +745,12 @@ def _emit_agg_step_requires(
             seen_params.add(row_param)
             clauses.append(f"{row_param} < LEMMA_MAX_CELL_U64")
         exec_delta = _spec_expr_to_exec(delta)
-        clauses.append(_u64_add_bound_requires(prev_ref, f"({exec_delta} as int)"))
+        bound = (
+            _i128_add_bound_requires
+            if kind == "sum_cell_i128"
+            else _u64_add_bound_requires
+        )
+        clauses.append(bound(prev_ref, f"({exec_delta} as int)"))
     if not clauses:
         return ""
     joined = " &&\n        ".join(clauses)
@@ -744,6 +761,10 @@ def _emit_agg_step_requires(
 
 def _u64_add_bound_requires(prev_expr: str, delta_expr: str) -> str:
     return f"({prev_expr} as int) + {delta_expr} <= u64::MAX as int"
+
+
+def _i128_add_bound_requires(prev_expr: str, delta_expr: str) -> str:
+    return f"({prev_expr} as int) + {delta_expr} <= i128::MAX as int"
 
 
 def _exec_update_inner(
@@ -789,7 +810,7 @@ def _exec_update_inner(
             else:
                 lines.append(f"v{i}.insert({dp.name}, true);")
             slot_vals.append(f"v{i}")
-        elif isinstance(slot, TypeAtom) and slot.name == "u64":
+        elif isinstance(slot, TypeAtom) and slot.name in ("u64", "i128"):
             s_line = next(
                 (ln for ln in apply_lines if ln.startswith(f"let s{i} =")),
                 "",
@@ -823,9 +844,15 @@ def _exec_update_inner(
                 if delta is not None:
                     prev_ref = f"{prev_var}.{i}" if len(slots) > 1 else prev_var
                     exec_delta = _spec_expr_to_exec(delta)
-                    lines.append(
-                        f"let v{i} = {_checked_u64_add(prev_ref, exec_delta)};"
-                    )
+                    if slot.name == "i128":
+                        lines.append(
+                            f"let v{i} = {prev_ref}.checked_add({exec_delta} as i128)"
+                            '.expect("Trusted overflow: ValidCols/requires violated");'
+                        )
+                    else:
+                        lines.append(
+                            f"let v{i} = {_checked_u64_add(prev_ref, exec_delta)};"
+                        )
                 elif numeric_i < len(numeric_params):
                     np = numeric_params[numeric_i]
                     numeric_i += 1
@@ -885,6 +912,8 @@ def _classify_u64_slot(s_line: str, slot_i: int, *, multi_slot: bool) -> str | N
         if delta and "case_when_u64" in delta:
             return "count" if _parse_case_when_u64_addend(delta) else None
         return "count"
+    if re.search(rf"let s{slot_i} = .+\) as i128;", s_line):
+        return "sum_cell_i128"
     delta = _sum_delta_expr(s_line, slot_i, multi_slot=multi_slot)
     if delta is None:
         return None
@@ -1160,18 +1189,23 @@ def _helper_call(ctx: FoldBoundContext, idx_overrides: dict[str, str] | None = N
     return f"{ctx.helper}({_helper_call_args(ctx, idx_overrides)})"
 
 
+def _slot_zero_lit(kind: str) -> str:
+    return "0i128" if kind == "sum_cell_i128" else "0u64"
+
+
 def _slot_bound_expr(
     helper_call: str,
     key: str,
     val_access: str,
     *,
     scalar_map: bool,
+    zero: str = "0u64",
 ) -> str:
     if scalar_map:
         inner = f"{helper_call}[{key}]"
     else:
         inner = f"{helper_call}[{key}]{val_access}"
-    return f"(if {helper_call}.contains_key({key}) {{ {inner} }} else {{ 0u64 }})"
+    return f"(if {helper_call}.contains_key({key}) {{ {inner} }} else {{ {zero} }})"
 
 
 def _rem_int_expr(ctx: FoldBoundContext, idx_overrides: dict[str, str] | None = None) -> str:
@@ -1397,12 +1431,10 @@ def _resolve_sum_cap_const(
             cap = _column_cap_from_catalog(catalog, table, column)
             if cap is not None:
                 bounds = _resolve_bounds_for_catalog(catalog)
-                global_cap = (
-                    bounds.max_native_u32
-                    if kind == "sum_native"
-                    else bounds.max_cell_u64
-                )
-                if global_cap is not None and cap <= global_cap:
+                if kind == "sum_native":
+                    if cap <= bounds.max_native_u32:
+                        return column_cap_const_name(table, column)
+                elif cap < 2**64:
                     return column_cap_const_name(table, column)
     return _sum_cap_const(kind)
 
@@ -1414,6 +1446,27 @@ def _catalog_sum_product_fits(
 ) -> bool:
     row_cap = _row_cap_for_depth(bounds, depth)
     return _int_product_fits_u64(*([row_cap] * depth), col_cap)
+
+
+def _catalog_sum_product_fits_i128(
+    bounds: ResolvedBounds,
+    depth: int,
+    col_cap: int,
+) -> bool:
+    row_cap = _row_cap_for_depth(bounds, depth)
+    return _int_product_fits_i128(*([row_cap] * depth), col_cap)
+
+
+def _slot_zero_from_default(default_state: str, val_access: str) -> str:
+    if not val_access.startswith("."):
+        return "0u64"
+    idx = int(val_access[1:])
+    frag = default_state.strip()
+    if frag.startswith("(") and frag.endswith(")"):
+        parts = [p.strip() for p in frag[1:-1].split(",")]
+        if idx < len(parts):
+            return parts[idx]
+    return "0u64"
 
 
 def _sanitize_fold_step_for_proof(fold_step: str) -> str:
@@ -1670,9 +1723,12 @@ def _emit_sum_add_fit_steps(
     catalog_assumptions: CatalogAssumptions | None = None,
     join_filter: str = "",
 ) -> list[str]:
-    """Prove ``prev_slot + sum_delta`` fits in u64 under rem·cap (SUM fold step)."""
+    """Prove ``prev_slot + sum_delta`` fits in u64/i128 under rem·cap (SUM fold step)."""
     depth = len(ctx.table_params)
     lines: list[str] = []
+    sum_width = "i128" if kind == "sum_cell_i128" else "u64"
+    if kind == "sum_cell_i128":
+        kind = "sum_cell_u64"
     ns = [p for p, _ in ctx.table_params]
     idxs = list(ctx.index_params)
     cap_kind = "native" if kind == "sum_native" else "cell_u64"
@@ -1737,7 +1793,16 @@ def _emit_sum_add_fit_steps(
         col_cap = _column_cap_from_catalog(catalog_assumptions, table, column)
         abs_sum = _column_abs_sum_from_catalog(catalog_assumptions, table, column)
     bounds = _resolve_bounds_for_catalog(catalog_assumptions)
-    if col_cap is None or not _catalog_sum_product_fits(bounds, depth, col_cap):
+    fits_u64 = col_cap is not None and _catalog_sum_product_fits(bounds, depth, col_cap)
+    fits_i128 = col_cap is not None and _catalog_sum_product_fits_i128(
+        bounds, depth, col_cap
+    )
+    if sum_width == "i128" or (not fits_u64 and fits_i128):
+        sum_width = "i128"
+    elif fits_u64:
+        sum_width = "u64"
+
+    if col_cap is None or (not fits_u64 and not fits_i128):
         if (
             ref is not None
             and abs_sum is not None
@@ -1765,23 +1830,29 @@ def _emit_sum_add_fit_steps(
             f"rows^{depth} * cap overflows u64 (sum_delta={sum_delta!r})"
         )
 
+    max_bound = "u64::MAX" if sum_width == "u64" else "i128::MAX"
     row_cap = _row_cap_for_depth(bounds, depth)
     row_factors = " * ".join(f"({row_cap} as int)" for _ in range(depth))
+    if sum_width == "u64":
+        lines.append(
+            f"{indent}assert(prev_slot <= rem_tail_u64 * ({cap_const} as u64));"
+        )
+    else:
+        lines.append(
+            f"{indent}assert(prev_slot as int <= rem_tail_int * ({cap_const} as int));"
+        )
     lines.append(
-        f"{indent}assert(prev_slot <= rem_tail_u64 * ({cap_const} as u64));"
+        f"{indent}assert(({row_factors}) * ({col_cap} as int) <= {max_bound} as int) by (compute_only);"
     )
     lines.append(
-        f"{indent}assert(({row_factors}) * ({col_cap} as int) <= u64::MAX as int) by (compute_only);"
-    )
-    lines.append(
-        f"{indent}assert(({rem_tail_int} + 1) * ({col_cap} as int) <= u64::MAX as int) by (nonlinear_arith)"
+        f"{indent}assert(({rem_tail_int} + 1) * ({col_cap} as int) <= {max_bound} as int) by (nonlinear_arith)"
         f"\n{indent}    requires"
         f"\n{indent}        {rem_tail_int} <= ({row_factors}),"
-        f"\n{indent}        ({row_factors}) * ({col_cap} as int) <= u64::MAX as int,"
+        f"\n{indent}        ({row_factors}) * ({col_cap} as int) <= {max_bound} as int,"
         f"\n{indent}        {{}};"
     )
     # Stay in int. A u64 multiply in the requires is wrapping, so nonlinear_arith
-    # will not conclude prev_slot + cell <= u64::MAX from it.
+    # will not conclude prev_slot + cell <= max from it.
     lines.append(
         f"{indent}assert(({cap_const} as int) == ({col_cap} as int)) by (compute);"
     )
@@ -1796,10 +1867,10 @@ def _emit_sum_add_fit_steps(
         f"\n{indent}        {{}};"
     )
     lines.append(
-        f"{indent}assert((prev_slot as int) + ({sum_delta}) <= u64::MAX as int) by (nonlinear_arith)"
+        f"{indent}assert((prev_slot as int) + ({sum_delta}) <= {max_bound} as int) by (nonlinear_arith)"
         f"\n{indent}    requires"
         f"\n{indent}        (prev_slot as int) + ({sum_delta}) <= ({rem_tail_int} + 1) * ({cap_const} as int),"
-        f"\n{indent}        ({rem_tail_int} + 1) * ({col_cap} as int) <= u64::MAX as int,"
+        f"\n{indent}        ({rem_tail_int} + 1) * ({col_cap} as int) <= {max_bound} as int,"
         f"\n{indent}        ({cap_const} as int) == ({col_cap} as int),"
         f"\n{indent}        {{}};"
     )
@@ -1845,8 +1916,9 @@ def _emit_inductive_hit_branch(
         prev_slot = f"if tail.contains_key({key}) {{ tail[{key}] }} else {{ 0u64 }}"
         slot_expr = lambda call: f"{call}[{key}]"
     elif val_access:
+        slot_zero = _slot_zero_from_default(hit.default_state, val_access)
         prev_slot = (
-            f"if tail.contains_key({key}) {{ tail[{key}]{val_access} }} else {{ 0u64 }}"
+            f"if tail.contains_key({key}) {{ tail[{key}]{val_access} }} else {{ {slot_zero} }}"
         )
         slot_expr = lambda call: f"{call}[{key}]{val_access}"
     else:
@@ -1934,8 +2006,12 @@ def _emit_inductive_hit_branch(
             product_fits = measured is not None and _catalog_sum_product_fits(
                 bounds, depth, measured
             )
+            product_fits_i128 = measured is not None and _catalog_sum_product_fits_i128(
+                bounds, depth, measured
+            )
             abs_sum_only = (
                 not product_fits
+                and not product_fits_i128
                 and abs_sum is not None
                 and abs_sum < 2**64
                 and _abs_sum_covers_fold(
@@ -2188,10 +2264,10 @@ def _emit_inductive_hit_branch(
         lines.append(f"{indent}}}")
         count_rem_bound = _count_bound_rhs("rem_here_int", count_addend)
         lines.append(
-            f"{indent}assert({_slot_bound_expr('next_map', key, val_access, scalar_map=hit.scalar_map)} as int <= {count_rem_bound});"
+            f"{indent}assert({_slot_bound_expr('next_map', key, val_access, scalar_map=hit.scalar_map, zero=_slot_zero_lit(kind))} as int <= {count_rem_bound});"
         )
         lines.append(
-            f"{indent}assert({_slot_bound_expr(cur_call, key, val_access, scalar_map=hit.scalar_map)} as int <= {count_rem_bound});"
+            f"{indent}assert({_slot_bound_expr(cur_call, key, val_access, scalar_map=hit.scalar_map, zero=_slot_zero_lit(kind))} as int <= {count_rem_bound});"
         )
     else:
         assert sum_delta is not None
@@ -2312,10 +2388,10 @@ def _emit_inductive_hit_branch(
         lines.append(f"{indent}    assert(next_map == tail);")
         lines.append(f"{indent}}}")
         lines.append(
-            f"{indent}assert({_slot_bound_expr('next_map', key, val_access, scalar_map=hit.scalar_map)} as int <= rem_here_int * ({cap} as int));"
+            f"{indent}assert({_slot_bound_expr('next_map', key, val_access, scalar_map=hit.scalar_map, zero=_slot_zero_lit(kind))} as int <= rem_here_int * ({cap} as int));"
         )
         lines.append(
-            f"{indent}assert({_slot_bound_expr(cur_call, key, val_access, scalar_map=hit.scalar_map)} as int <= rem_here_int * ({cap} as int));"
+            f"{indent}assert({_slot_bound_expr(cur_call, key, val_access, scalar_map=hit.scalar_map, zero=_slot_zero_lit(kind))} as int <= rem_here_int * ({cap} as int));"
         )
     return lines
 
@@ -2337,12 +2413,17 @@ def _emit_nested_count_or_sum_body(
     catalog_assumptions: CatalogAssumptions | None = None,
 ) -> list[str]:
     depth = len(ctx.table_params)
+    sum_cap_const = (
+        None
+        if kind == "count"
+        else _resolve_sum_cap_const(kind, sum_delta, catalog_assumptions)
+    )
     if level >= depth:
         cur_call = _helper_call(ctx)
         rem_here_int = _rem_int_expr(ctx)
         lines = [
             f"{indent}assert({cur_call} =~= Map::empty());",
-            f"{indent}assert({_slot_bound_expr(cur_call, key, val_access, scalar_map=hit.scalar_map)} == 0u64);",
+            f"{indent}assert({_slot_bound_expr(cur_call, key, val_access, scalar_map=hit.scalar_map, zero=_slot_zero_lit(kind))} == {_slot_zero_lit(kind)});",
         ]
         if len(ctx.table_params) == 2:
             n0, _ = ctx.table_params[0]
@@ -2386,9 +2467,9 @@ def _emit_nested_count_or_sum_body(
             lines.append(
                 f"{indent}assert({rem_here_int} == 0) by (nonlinear_arith);"
             )
-        bound_rhs = _slot_bound_rhs(kind, rem_here_int, count_addend)
+        bound_rhs = _slot_bound_rhs(kind, rem_here_int, count_addend, cap_const=sum_cap_const)
         lines.append(
-            f"{indent}assert({_slot_bound_expr(cur_call, key, val_access, scalar_map=hit.scalar_map)} as int <= {bound_rhs});"
+            f"{indent}assert({_slot_bound_expr(cur_call, key, val_access, scalar_map=hit.scalar_map, zero=_slot_zero_lit(kind))} as int <= {bound_rhs});"
         )
         return lines
 
@@ -2428,13 +2509,13 @@ def _emit_nested_count_or_sum_body(
         if depth == 1:
             lines.append(f"{indent}    assert({cur_call} =~= Map::empty());")
             lines.append(
-                f"{indent}    assert({_slot_bound_expr(cur_call, key, val_access, scalar_map=hit.scalar_map)} == 0u64);"
+                f"{indent}    assert({_slot_bound_expr(cur_call, key, val_access, scalar_map=hit.scalar_map, zero=_slot_zero_lit(kind))} == {_slot_zero_lit(kind)});"
             )
             lines.append(f"{indent}    assert({idx} == {tab_param}.n as int);")
             lines.append(f"{indent}    assert({rem_here_int} == 0);")
-            bound_rhs = _slot_bound_rhs(kind, rem_here_int, count_addend)
+            bound_rhs = _slot_bound_rhs(kind, rem_here_int, count_addend, cap_const=sum_cap_const)
             lines.append(
-                f"{indent}    assert({_slot_bound_expr(cur_call, key, val_access, scalar_map=hit.scalar_map)} as int <= {bound_rhs});"
+                f"{indent}    assert({_slot_bound_expr(cur_call, key, val_access, scalar_map=hit.scalar_map, zero=_slot_zero_lit(kind))} as int <= {bound_rhs});"
             )
         else:
             parent_idx = ctx.index_params[level - 1]
@@ -2477,9 +2558,9 @@ def _emit_nested_count_or_sum_body(
                 lines.append(
                     f"{indent}    assert({rem_here_int} == {rem_boundary_int}) by (nonlinear_arith);"
                 )
-            bound_rhs = _slot_bound_rhs(kind, rem_here_int, count_addend)
+            bound_rhs = _slot_bound_rhs(kind, rem_here_int, count_addend, cap_const=sum_cap_const)
             lines.append(
-                f"{indent}    assert({_slot_bound_expr(cur_call, key, val_access, scalar_map=hit.scalar_map)} as int "
+                f"{indent}    assert({_slot_bound_expr(cur_call, key, val_access, scalar_map=hit.scalar_map, zero=_slot_zero_lit(kind))} as int "
                 f"<= {bound_rhs});"
             )
         lines.append(f"{indent}}}")
@@ -2584,9 +2665,9 @@ def _emit_nested_count_or_sum_body(
             lines.append(
                 f"{indent}    assert({rem_here_int} == {rem_boundary_int}) by (nonlinear_arith);"
             )
-        bound_rhs = _slot_bound_rhs(kind, rem_here_int, count_addend)
+        bound_rhs = _slot_bound_rhs(kind, rem_here_int, count_addend, cap_const=sum_cap_const)
         lines.append(
-            f"{indent}    assert({_slot_bound_expr(cur_call, key, val_access, scalar_map=hit.scalar_map)} as int "
+            f"{indent}    assert({_slot_bound_expr(cur_call, key, val_access, scalar_map=hit.scalar_map, zero=_slot_zero_lit(kind))} as int "
             f"<= {bound_rhs});"
         )
     lines.append(f"{indent}}}")
@@ -2656,7 +2737,7 @@ def _emit_axiomatic_slot_bound_lemma(
         cap = f"{rem} * (LEMMA_MAX_CELL_U64 as u64)"
     comment = f"{_FOLD_AXIOM_HEADER}\n// {detail}"
     ensures = (
-        f"{_slot_bound_expr(_helper_call(ctx), 'key', val_access, scalar_map=hit.scalar_map)} <= {cap},"
+        f"{_slot_bound_expr(_helper_call(ctx), 'key', val_access, scalar_map=hit.scalar_map, zero=_slot_zero_lit(kind))} <= {cap},"
     )
     sig_params = ",\n    ".join(f"{p}: &{s}" for p, s in ctx.table_params)
     sig_params += ",\n    " + ",\n    ".join(f"{i}: int" for i in ctx.index_params)
@@ -2709,6 +2790,12 @@ def _emit_inductive_slot_bound_lemma(
             f"SUM(native) slot {slot_i}: ≤{rem} cells each < LEMMA_MAX_NATIVE_U32."
         )
         cap = f"{rem} * (LEMMA_MAX_NATIVE_U32 as u64)"
+    elif kind == "sum_cell_i128":
+        cap_c = _resolve_sum_cap_const(kind, sum_delta, catalog_assumptions)
+        detail = (
+            f"SUM(i128 cell) slot {slot_i}: ≤{rem} cells each < {cap_c}."
+        )
+        cap = ""
     else:
         detail = (
             f"SUM(u64 cell) slot {slot_i}: ≤{rem} cells each < LEMMA_MAX_CELL_U64."
@@ -2717,8 +2804,11 @@ def _emit_inductive_slot_bound_lemma(
     comment = f"{_FOLD_LEMMA_HEADER}\n// {detail}"
     cur_call = _helper_call(ctx)
     rem_int = _rem_int_expr(ctx)
-    slot_e = _slot_bound_expr(cur_call, "key", val_access, scalar_map=hit.scalar_map)
-    ensures = f"{slot_e} <= {cap},"
+    slot_e = _slot_bound_expr(cur_call, "key", val_access, scalar_map=hit.scalar_map, zero=_slot_zero_lit(kind))
+    if kind == "sum_cell_i128":
+        ensures = f"({slot_e} as int) <= i128::MAX as int,"
+    else:
+        ensures = f"{slot_e} <= {cap},"
     if kind == "count":
         if count_addend is None:
             count_addend = CountSlotAddend("1", 1)
@@ -2794,6 +2884,42 @@ def _emit_inductive_slot_bound_lemma(
                 f"    assert(({slot_e}) as int <= (({rem}) as int) * ({ub} as int));"
             )
             proof_body.append(f"    assert({slot_e} <= {rem} * ({ub} as u64));")
+    elif kind == "sum_cell_i128":
+        cap_c = _resolve_sum_cap_const(kind, sum_delta, catalog_assumptions)
+        proof_body.append(
+            f"    assert(({slot_e}) as int <= ({rem_int}) * ({cap_c} as int));"
+        )
+        ref = _parse_sum_delta_table_column(sum_delta or "")
+        col_cap = (
+            _column_cap_from_catalog(catalog_assumptions, ref[0], ref[1])
+            if ref is not None
+            else None
+        )
+        if col_cap is not None:
+            row_cap = _row_cap_for_depth(
+                _resolve_bounds_for_catalog(catalog_assumptions), depth
+            )
+            row_factors = " * ".join(f"({row_cap} as int)" for _ in range(depth))
+            proof_body.append(
+                f"    assert(({cap_c} as int) == ({col_cap} as int)) by (compute);"
+            )
+            proof_body.append(
+                f"    assert(({row_factors}) * ({col_cap} as int) <= i128::MAX as int) "
+                f"by (compute_only);"
+            )
+            proof_body.append(
+                f"    assert({rem_int} <= ({row_factors}));"
+            )
+            proof_body.append(
+                f"    assert(({rem_int}) * ({cap_c} as int) <= i128::MAX as int) "
+                f"by (nonlinear_arith)\n"
+                f"        requires\n"
+                f"            {rem_int} <= ({row_factors}),\n"
+                f"            ({row_factors}) * ({col_cap} as int) <= i128::MAX as int,\n"
+                f"            ({cap_c} as int) == ({col_cap} as int),\n"
+                f"            {{}};"
+            )
+        proof_body.append(f"    assert(({slot_e}) as int <= i128::MAX as int);")
     else:
         cap_c = _resolve_sum_cap_const(kind, sum_delta, catalog_assumptions)
         proof_body.append(
@@ -2931,13 +3057,13 @@ def emit_multi_agg_bound_lemmas(
 
     blocks: list[str] = [f"\n// === Multi-agg fold bound lemmas ({suffix}) ==="]
     for i, slot in enumerate(slots):
-        if not isinstance(slot, TypeAtom) or slot.name != "u64":
+        if not isinstance(slot, TypeAtom) or slot.name not in ("u64", "i128"):
             continue
         s_line = next((ln for ln in apply_lines if ln.startswith(f"let s{i} =")), "")
         kind = _classify_u64_slot(s_line, i, multi_slot=n_slots > 1)
         if kind is None:
             continue
-        if kind == "sum_cell_u64" and not allow_cell:
+        if kind in ("sum_cell_u64", "sum_cell_i128") and not allow_cell:
             continue
         val_access = _state_val_access(n_slots, i)
         block = _emit_slot_bound_lemma(

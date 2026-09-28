@@ -20,7 +20,9 @@ from .parse_sql import (
 )
 from .rust_ident import rust_ident
 from .subqueries import emit_derived_grouped_inner_spec
-from .value_bounds import col_verus_type, spec_map_key_type
+from research_loop.table_assumptions import CatalogAssumptions
+
+from .value_bounds import col_verus_type, spec_map_key_type, sum_accumulator_verus_type
 
 
 def _table_struct_name(table: str) -> str:
@@ -223,6 +225,62 @@ def _find_table_for_col(
             if k.lower() == col_l:
                 return tbl, k
     raise UnsupportedContractError(f"column {col!r} not found in join schema")
+
+
+def _resolve_sum_accumulator_type(
+    spec: AggSpec,
+    query: SQLQuery,
+    schemas_by_table: dict[str, dict[str, str]],
+    catalog: CatalogAssumptions | None,
+    join_depth: int,
+) -> str:
+    from .parse_sql import _agg_value_type
+
+    base = _agg_value_type(spec.agg_expr)
+    if base != "u64":
+        return base
+    col_ref = spec.agg_column or spec.agg_expr or ""
+    if not col_ref or "case" in col_ref.lower():
+        return base
+    if "." not in col_ref:
+        return base
+    try:
+        table, col = _find_table_for_col(col_ref, query, schemas_by_table)
+    except (UnsupportedContractError, KeyError):
+        return base
+    return sum_accumulator_verus_type(
+        catalog, depth=join_depth, table=table, column=col
+    )
+
+
+def _avg_project_expr(sum_pos: int, sum_ty: str) -> str:
+    """AVG quotient. u64 stays ``sum / count``. A wider sum casts the count."""
+    total = f"s{sum_pos}"
+    count = f"s{sum_pos + 1}"
+    if sum_ty == "u64":
+        return f"if {count} == 0 {{ 0 }} else {{ {total} / {count} }}"
+    return (
+        f"if {count} == 0 {{ 0{sum_ty} }} else "
+        f"{{ (({total} / ({count} as {sum_ty})) as {sum_ty}) }}"
+    )
+
+
+def _projected_agg_type(
+    spec: AggSpec,
+    query: SQLQuery,
+    schemas_by_table: dict[str, dict[str, str]],
+    catalog: CatalogAssumptions | None,
+    join_depth: int,
+) -> str:
+    from .parse_sql import _agg_value_type
+
+    if spec.agg_type in ("SUM", "AVG"):
+        return _resolve_sum_accumulator_type(
+            spec, query, schemas_by_table, catalog, join_depth
+        )
+    if spec.agg_type in ("COUNT", "COUNT_DISTINCT", "MIN", "MAX"):
+        return _agg_value_type(spec.agg_expr)
+    return "u64"
 
 
 def _schema_for_ref(
@@ -2596,6 +2654,7 @@ def _emit_join_multi_agg(
     derived_map_types: dict[str, str],
     *,
     where_expr: str | None,
+    catalog: CatalogAssumptions | None = None,
     helper_name: str = "multi_agg_helper",
 ) -> tuple[str, str, str, _FoldBridge | None]:
     from .parse_sql import _agg_value_type
@@ -2608,6 +2667,7 @@ def _emit_join_multi_agg(
         query, slots, schemas_by_table, derived_by_alias, derived_map_vars,
     )
     key_expr, key_ty = _groupby_key_parts(query, slots, schemas_by_table, derived_by_alias)
+    join_depth = len(slots)
 
     state_types: list[str] = []
     state_defaults: list[str] = []
@@ -2622,7 +2682,9 @@ def _emit_join_multi_agg(
             update_stmts.append((pos, f"let s{pos} = (prev.{pos} as int + 1) as u64;"))
             project_parts.append(f"s{pos}")
         elif spec.agg_type == "SUM":
-            val_type = _agg_value_type(spec.agg_expr)
+            val_type = _resolve_sum_accumulator_type(
+                spec, query, schemas_by_table, catalog, join_depth
+            )
             state_types.append(val_type)
             state_defaults.append(f"0{val_type}")
             term = _agg_term_expr(spec, query, slots, schemas_by_table, derived_by_alias)
@@ -2633,17 +2695,18 @@ def _emit_join_multi_agg(
             project_parts.append(f"s{pos}")
         elif spec.agg_type == "AVG":
             sum_pos = len(state_types)
-            state_types.extend(["u64", "u64"])
-            state_defaults.extend(["0u64", "0u64"])
+            sum_ty = _resolve_sum_accumulator_type(
+                spec, query, schemas_by_table, catalog, join_depth
+            )
+            state_types.extend([sum_ty, "u64"])
+            state_defaults.extend([f"0{sum_ty}", "0u64"])
             term = _agg_term_expr(spec, query, slots, schemas_by_table, derived_by_alias)
             update_stmts.append((
                 sum_pos,
-                f"let s{sum_pos} = (prev.{sum_pos} as int + {term} as int) as u64;\n"
+                f"let s{sum_pos} = (prev.{sum_pos} as int + {term} as int) as {sum_ty};\n"
                 f"            let s{sum_pos + 1} = (prev.{sum_pos + 1} as int + 1) as u64;",
             ))
-            project_parts.append(
-                f"if s{sum_pos + 1} == 0 {{ 0 }} else {{ s{sum_pos} / s{sum_pos + 1} }}"
-            )
+            project_parts.append(_avg_project_expr(sum_pos, sum_ty))
         elif spec.agg_type == "COUNT_DISTINCT":
             table, col_key = _find_table_for_col(
                 spec.agg_column, query, schemas_by_table,
@@ -2731,8 +2794,11 @@ def _emit_join_multi_agg(
     val_types: list[str] = []
     for spec in query.agg_specs:
         if spec.agg_type in ("SUM", "COUNT", "COUNT_DISTINCT", "AVG", "MIN", "MAX"):
-            from .parse_sql import _agg_value_type
-            val_types.append(_agg_value_type(spec.agg_expr))
+            val_types.append(
+                _projected_agg_type(
+                    spec, query, schemas_by_table, catalog, join_depth
+                )
+            )
         else:
             val_types.append("u64")
     ret_val_ty = val_types[0] if len(val_types) == 1 else f"({', '.join(val_types)})"
@@ -2774,7 +2840,14 @@ def _emit_join_multi_agg(
     return helper, spec_body, ret_type, bridge
 
 
-def _having_closure_types(query: SQLQuery, flat_schema: dict[str, str]) -> tuple[str, str]:
+def _having_closure_types(
+    query: SQLQuery,
+    flat_schema: dict[str, str],
+    *,
+    catalog: CatalogAssumptions | None = None,
+    schemas_by_table: dict[str, dict[str, str]] | None = None,
+    join_depth: int = 1,
+) -> tuple[str, str]:
     from .parse_sql import _agg_value_type
     if len(query.groupby_columns) == 1:
         key_ty = spec_map_key_type(flat_schema[query.groupby_columns[0]])
@@ -2783,10 +2856,18 @@ def _having_closure_types(query: SQLQuery, flat_schema: dict[str, str]) -> tuple
             spec_map_key_type(flat_schema[c]) for c in query.groupby_columns
         )
         key_ty = f"({parts})"
+    schemas = schemas_by_table or {}
     val_types: list[str] = []
     for spec in query.agg_specs:
         if spec.agg_type in ("SUM", "COUNT", "COUNT_DISTINCT", "AVG", "MIN", "MAX"):
-            val_types.append(_agg_value_type(spec.agg_expr))
+            if schemas_by_table is not None and spec.agg_type in ("SUM", "AVG"):
+                val_types.append(
+                    _projected_agg_type(
+                        spec, query, schemas, catalog, join_depth
+                    )
+                )
+            else:
+                val_types.append(_agg_value_type(spec.agg_expr))
         else:
             val_types.append("u64")
     val_ty = val_types[0] if len(val_types) == 1 else f"({', '.join(val_types)})"
@@ -2820,10 +2901,18 @@ def _emit_having_filter(
     slots: list[_Slot] | None = None,
     schemas_by_table: dict[str, dict[str, str]] | None = None,
     derived_by_alias: dict[str, DerivedTable] | None = None,
+    catalog: CatalogAssumptions | None = None,
+    join_depth: int = 1,
 ) -> str:
     if not query.having_expr:
         return spec_body
-    key_ty, val_ty = _having_closure_types(query, flat_schema)
+    key_ty, val_ty = _having_closure_types(
+        query,
+        flat_schema,
+        catalog=catalog,
+        schemas_by_table=schemas_by_table,
+        join_depth=join_depth,
+    )
     having_expr = query.having_expr
     if slots is not None and schemas_by_table is not None:
         having_expr = _resolve_subquery_calls(
@@ -6538,6 +6627,7 @@ def _emit_roj_multi_agg(
     schemas_by_table: dict[str, dict[str, str]],
     *,
     where_expr: str | None,
+    catalog: CatalogAssumptions | None = None,
 ) -> tuple[str, str, str, _FoldBridge | None]:
     """RIGHT OUTER multi-agg after honest side-swap: ``right_acc`` / ``nested_right_pairs``.
 
@@ -6662,6 +6752,7 @@ def _emit_roj_multi_agg(
         filter_raw, query, slots, schemas_by_table, {},
     )
     key_expr, key_ty = _groupby_key_parts(query, slots, schemas_by_table, {})
+    join_depth = len(slots)
 
     state_types: list[str] = []
     state_defaults: list[str] = []
@@ -6678,7 +6769,9 @@ def _emit_roj_multi_agg(
             miss_stmts.append((pos, f"let s{pos} = (prev.{pos} as int + 1) as u64;"))
             project_parts.append(f"s{pos}")
         elif spec.agg_type == "SUM":
-            val_type = _agg_value_type(spec.agg_expr)
+            val_type = _resolve_sum_accumulator_type(
+                spec, query, schemas_by_table, catalog, join_depth
+            )
             state_types.append(val_type)
             state_defaults.append(f"0{val_type}")
             term_m = _agg_term_expr(spec, query, slots, schemas_by_table, {})
@@ -6694,23 +6787,24 @@ def _emit_roj_multi_agg(
             project_parts.append(f"s{pos}")
         elif spec.agg_type == "AVG":
             sum_pos = len(state_types)
-            state_types.extend(["u64", "u64"])
-            state_defaults.extend(["0u64", "0u64"])
+            sum_ty = _resolve_sum_accumulator_type(
+                spec, query, schemas_by_table, catalog, join_depth
+            )
+            state_types.extend([sum_ty, "u64"])
+            state_defaults.extend([f"0{sum_ty}", "0u64"])
             term_m = _agg_term_expr(spec, query, slots, schemas_by_table, {})
             term_l = _agg_term_expr(spec, query, [left], schemas_by_table, {})
             match_stmts.append((
                 sum_pos,
-                f"let s{sum_pos} = (prev.{sum_pos} as int + {term_m} as int) as u64;\n"
+                f"let s{sum_pos} = (prev.{sum_pos} as int + {term_m} as int) as {sum_ty};\n"
                 f"            let s{sum_pos + 1} = (prev.{sum_pos + 1} as int + 1) as u64;",
             ))
             miss_stmts.append((
                 sum_pos,
-                f"let s{sum_pos} = (prev.{sum_pos} as int + {term_l} as int) as u64;\n"
+                f"let s{sum_pos} = (prev.{sum_pos} as int + {term_l} as int) as {sum_ty};\n"
                 f"            let s{sum_pos + 1} = (prev.{sum_pos + 1} as int + 1) as u64;",
             ))
-            project_parts.append(
-                f"if s{sum_pos + 1} == 0 {{ 0 }} else {{ s{sum_pos} / s{sum_pos + 1} }}"
-            )
+            project_parts.append(_avg_project_expr(sum_pos, sum_ty))
         elif spec.agg_type == "COUNT_DISTINCT":
             table, col_key = _find_table_for_col(
                 spec.agg_column, query, schemas_by_table,
@@ -6837,7 +6931,11 @@ def _emit_roj_multi_agg(
     val_types: list[str] = []
     for spec in query.agg_specs:
         if spec.agg_type in ("SUM", "COUNT", "COUNT_DISTINCT", "AVG", "MIN", "MAX"):
-            val_types.append(_agg_value_type(spec.agg_expr))
+            val_types.append(
+                _projected_agg_type(
+                    spec, query, schemas_by_table, catalog, join_depth
+                )
+            )
         else:
             val_types.append("u64")
     ret_val_ty = val_types[0] if len(val_types) == 1 else f"({', '.join(val_types)})"
@@ -7107,6 +7205,7 @@ def _emit_loj_multi_agg(
     schemas_by_table: dict[str, dict[str, str]],
     *,
     where_expr: str | None,
+    catalog: CatalogAssumptions | None = None,
 ) -> tuple[str, str, str, _FoldBridge | None]:
     """Plain LEFT OUTER multi-agg: matched pairs + unmatched left (null-extended).
 
@@ -7164,6 +7263,7 @@ def _emit_loj_multi_agg(
     )
     join_cond, _ = _all_join_conds(query, slots, schemas_by_table, {}, {})
     key_expr, key_ty = _groupby_key_parts(query, slots, schemas_by_table, {})
+    join_depth = len(slots)
 
     state_types: list[str] = []
     state_defaults: list[str] = []
@@ -7180,7 +7280,9 @@ def _emit_loj_multi_agg(
             miss_stmts.append((pos, f"let s{pos} = (prev.{pos} as int + 1) as u64;"))
             project_parts.append(f"s{pos}")
         elif spec.agg_type == "SUM":
-            val_type = _agg_value_type(spec.agg_expr)
+            val_type = _resolve_sum_accumulator_type(
+                spec, query, schemas_by_table, catalog, join_depth
+            )
             state_types.append(val_type)
             state_defaults.append(f"0{val_type}")
             term_m = _agg_term_expr(spec, query, slots, schemas_by_table, {})
@@ -7196,23 +7298,24 @@ def _emit_loj_multi_agg(
             project_parts.append(f"s{pos}")
         elif spec.agg_type == "AVG":
             sum_pos = len(state_types)
-            state_types.extend(["u64", "u64"])
-            state_defaults.extend(["0u64", "0u64"])
+            sum_ty = _resolve_sum_accumulator_type(
+                spec, query, schemas_by_table, catalog, join_depth
+            )
+            state_types.extend([sum_ty, "u64"])
+            state_defaults.extend([f"0{sum_ty}", "0u64"])
             term_m = _agg_term_expr(spec, query, slots, schemas_by_table, {})
             term_l = _agg_term_expr(spec, query, [left], schemas_by_table, {})
             match_stmts.append((
                 sum_pos,
-                f"let s{sum_pos} = (prev.{sum_pos} as int + {term_m} as int) as u64;\n"
+                f"let s{sum_pos} = (prev.{sum_pos} as int + {term_m} as int) as {sum_ty};\n"
                 f"            let s{sum_pos + 1} = (prev.{sum_pos + 1} as int + 1) as u64;",
             ))
             miss_stmts.append((
                 sum_pos,
-                f"let s{sum_pos} = (prev.{sum_pos} as int + {term_l} as int) as u64;\n"
+                f"let s{sum_pos} = (prev.{sum_pos} as int + {term_l} as int) as {sum_ty};\n"
                 f"            let s{sum_pos + 1} = (prev.{sum_pos + 1} as int + 1) as u64;",
             ))
-            project_parts.append(
-                f"if s{sum_pos + 1} == 0 {{ 0 }} else {{ s{sum_pos} / s{sum_pos + 1} }}"
-            )
+            project_parts.append(_avg_project_expr(sum_pos, sum_ty))
         elif spec.agg_type == "COUNT_DISTINCT":
             table, col_key = _find_table_for_col(
                 spec.agg_column, query, schemas_by_table,
@@ -7318,7 +7421,11 @@ def _emit_loj_multi_agg(
     val_types: list[str] = []
     for spec in query.agg_specs:
         if spec.agg_type in ("SUM", "COUNT", "COUNT_DISTINCT", "AVG", "MIN", "MAX"):
-            val_types.append(_agg_value_type(spec.agg_expr))
+            val_types.append(
+                _projected_agg_type(
+                    spec, query, schemas_by_table, catalog, join_depth
+                )
+            )
         else:
             val_types.append("u64")
     ret_val_ty = val_types[0] if len(val_types) == 1 else f"({', '.join(val_types)})"
@@ -8294,6 +8401,7 @@ def _emit_full_outer(
     agg_expr: str,
     is_sum: bool,
     val_type: str,
+    catalog: CatalogAssumptions | None = None,
 ) -> tuple[str, str, str, _FoldBridge | None]:
     """FULL OUTER JOIN MethodSpec: matched + unmatched left + unmatched right.
 
@@ -8387,6 +8495,7 @@ def _emit_full_outer(
             matched_name=matched_name,
             left_name=left_name,
             right_name=right_name,
+            catalog=catalog,
         )
 
     term_m = _full_side_term(
@@ -8584,6 +8693,7 @@ def _emit_full_outer_multi_agg(
     matched_name: str,
     left_name: str,
     right_name: str,
+    catalog: CatalogAssumptions | None = None,
 ) -> tuple[str, str, str, _FoldBridge | None]:
     """FULL OUTER multi-agg GROUP BY join key: matched + left miss + right miss.
 
@@ -8603,6 +8713,7 @@ def _emit_full_outer_multi_agg(
     key_r, _ = _full_groupby_key_on_side(
         query, slots, right, schemas_by_table, derived_by_alias, match_conds,
     )
+    join_depth = len(slots)
 
     state_types: list[str] = []
     state_defaults: list[str] = []
@@ -8622,7 +8733,9 @@ def _emit_full_outer_multi_agg(
             right_stmts.append((pos, bump))
             project_parts.append(f"s{pos}")
         elif spec.agg_type == "SUM":
-            val_type = _agg_value_type(spec.agg_expr)
+            val_type = _resolve_sum_accumulator_type(
+                spec, query, schemas_by_table, catalog, join_depth
+            )
             state_types.append(val_type)
             state_defaults.append(f"0{val_type}")
             term_m = _full_multi_term(
@@ -8651,30 +8764,33 @@ def _emit_full_outer_multi_agg(
             project_parts.append(f"s{pos}")
         elif spec.agg_type == "AVG":
             sum_pos = len(state_types)
-            state_types.extend(["u64", "u64"])
-            state_defaults.extend(["0u64", "0u64"])
+            sum_ty = _resolve_sum_accumulator_type(
+                spec, query, schemas_by_table, catalog, join_depth
+            )
+            state_types.extend([sum_ty, "u64"])
+            state_defaults.extend([f"0{sum_ty}", "0u64"])
             term_m = _full_multi_term(
-                spec, query, slots, schemas_by_table, derived_by_alias, val_type="u64",
+                spec, query, slots, schemas_by_table, derived_by_alias, val_type=sum_ty,
             )
             on_left = _full_measure_on_side(spec, query, [left], schemas_by_table)
             on_right = _full_measure_on_side(spec, query, [right], schemas_by_table)
             term_l = _full_multi_term(
-                spec, query, [left], schemas_by_table, derived_by_alias, val_type="u64",
+                spec, query, [left], schemas_by_table, derived_by_alias, val_type=sum_ty,
             )
             term_r = _full_multi_term(
-                spec, query, [right], schemas_by_table, derived_by_alias, val_type="u64",
+                spec, query, [right], schemas_by_table, derived_by_alias, val_type=sum_ty,
             )
             term_l = term_l.replace(f"{left.idx} as int", "li as int")
             term_r = term_r.replace(f"{right.idx} as int", "ri as int")
             match_stmts.append((
                 sum_pos,
-                f"let s{sum_pos} = (prev.{sum_pos} as int + {term_m} as int) as u64;\n"
+                f"let s{sum_pos} = (prev.{sum_pos} as int + {term_m} as int) as {sum_ty};\n"
                 f"            let s{sum_pos + 1} = (prev.{sum_pos + 1} as int + 1) as u64;",
             ))
             if on_left:
                 left_stmts.append((
                     sum_pos,
-                    f"let s{sum_pos} = (prev.{sum_pos} as int + {term_l} as int) as u64;\n"
+                    f"let s{sum_pos} = (prev.{sum_pos} as int + {term_l} as int) as {sum_ty};\n"
                     f"            let s{sum_pos + 1} = (prev.{sum_pos + 1} as int + 1) as u64;",
                 ))
             else:
@@ -8686,7 +8802,7 @@ def _emit_full_outer_multi_agg(
             if on_right:
                 right_stmts.append((
                     sum_pos,
-                    f"let s{sum_pos} = (prev.{sum_pos} as int + {term_r} as int) as u64;\n"
+                    f"let s{sum_pos} = (prev.{sum_pos} as int + {term_r} as int) as {sum_ty};\n"
                     f"            let s{sum_pos + 1} = (prev.{sum_pos + 1} as int + 1) as u64;",
                 ))
             else:
@@ -8695,9 +8811,7 @@ def _emit_full_outer_multi_agg(
                     f"let s{sum_pos} = prev.{sum_pos};\n"
                     f"            let s{sum_pos + 1} = prev.{sum_pos + 1};",
                 ))
-            project_parts.append(
-                f"if s{sum_pos + 1} == 0 {{ 0 }} else {{ s{sum_pos} / s{sum_pos + 1} }}"
-            )
+            project_parts.append(_avg_project_expr(sum_pos, sum_ty))
         else:
             raise UnsupportedContractError(
                 f"FULL OUTER JOIN multi-agg unsupported aggregate {spec.agg_type!r}"
@@ -8754,7 +8868,11 @@ def _emit_full_outer_multi_agg(
     val_types: list[str] = []
     for spec in query.agg_specs:
         if spec.agg_type in ("SUM", "COUNT", "AVG"):
-            val_types.append(_agg_value_type(spec.agg_expr))
+            val_types.append(
+                _projected_agg_type(
+                    spec, query, schemas_by_table, catalog, join_depth
+                )
+            )
         else:
             val_types.append("u64")
     ret_val_ty = val_types[0] if len(val_types) == 1 else f"({', '.join(val_types)})"
@@ -10121,6 +10239,7 @@ def emit_join_spec_helpers(
     is_sum: bool,
     val_type: str,
     flat_schema: dict[str, str] | None = None,
+    catalog: CatalogAssumptions | None = None,
 ) -> tuple[str, str, str]:
     """Emit nested-loop join spec helpers. Returns (helpers, spec_fn, ret_type)."""
     _ = flat_schema
@@ -10211,6 +10330,8 @@ def emit_join_spec_helpers(
             slots=slots,
             schemas_by_table=schemas_by_table,
             derived_by_alias=derived_by_alias,
+            catalog=catalog,
+            join_depth=len(slots),
         )
 
     if (
@@ -10221,7 +10342,7 @@ def emit_join_spec_helpers(
         and not query.is_projection
     ):
         roj_ma, spec_body, ret_type, fold_bridge = _emit_roj_multi_agg(
-            query, slots, schemas_by_table, where_expr=where_expr,
+            query, slots, schemas_by_table, where_expr=where_expr, catalog=catalog,
         )
         helpers = "\n\n".join(derived_helpers + [roj_ma])
         spec_body = _apply_join_having_filter(spec_body)
@@ -10247,6 +10368,7 @@ def emit_join_spec_helpers(
             agg_expr=agg_expr,
             is_sum=is_sum,
             val_type=val_type,
+            catalog=catalog,
         )
         helpers = "\n\n".join(derived_helpers + [full_helpers])
         if query.groupby_columns or (not query.is_projection and query.having_expr):
@@ -10330,7 +10452,7 @@ def emit_join_spec_helpers(
         spec_body = _apply_join_having_filter(spec_body)
     elif is_plain_left and query.is_multi_agg and query.groupby_columns and len(slots) == 2:
         loj_ma, spec_body, ret_type, fold_bridge = _emit_loj_multi_agg(
-            query, slots, schemas_by_table, where_expr=where_expr,
+            query, slots, schemas_by_table, where_expr=where_expr, catalog=catalog,
         )
         helpers = "\n\n".join(derived_helpers + [loj_ma])
         spec_body = _apply_join_having_filter(spec_body)
@@ -10343,6 +10465,7 @@ def emit_join_spec_helpers(
             derived_map_vars,
             derived_map_types,
             where_expr=where_expr,
+            catalog=catalog,
         )
         helpers = "\n\n".join(derived_helpers + [ma_helper])
         spec_body = _apply_join_having_filter(spec_body)

@@ -98,6 +98,8 @@ def spec_to_exec_type(t: TypeExpr) -> str:
             return "u32"
         if t.name == "u64":
             return "u64"
+        if t.name == "i128":
+            return "i128"
         if t.name == "i64":
             return "i64"
         if t.name == "Seq<char>":
@@ -211,7 +213,7 @@ def _parse_type_at(s: str, pos: int) -> tuple[TypeExpr, int]:
             raise ValueError("unclosed tuple type")
         return TypeTuple(elems=tuple(elems)), pos + 1
 
-    for atom in ("u32", "u64", "i64", "bool"):
+    for atom in ("u32", "u64", "i128", "i64", "bool"):
         if s.startswith(atom, pos):
             return TypeAtom(atom), pos + len(atom)
 
@@ -240,7 +242,7 @@ def _type_to_hm_str(t: TypeExpr) -> str:
 def _atom_slug(atom: TypeAtom) -> str:
     if atom.name == "Seq<char>":
         return "str"
-    if atom.name in ("u32", "u64", "i64"):
+    if atom.name in ("u32", "u64", "i64", "i128"):
         return atom.name
     raise ValueError(f"unsupported atom in slug: {atom.name}")
 
@@ -277,12 +279,25 @@ def _is_map_key_type(t: TypeExpr) -> bool:
     return False
 
 
+_MAP_VALUE_ATOMS = ("u64", "i64", "i128")
+
+
+def _numeric_zero(name: str) -> str:
+    if name == "u64":
+        return "0u64"
+    if name == "i64":
+        return "0i64"
+    if name == "i128":
+        return "0i128"
+    raise ValueError(f"unsupported numeric zero: {name}")
+
+
 def _is_map_value_type(t: TypeExpr) -> bool:
     if isinstance(t, TypeAtom):
-        return t.name in ("u64", "i64")
+        return t.name in _MAP_VALUE_ATOMS
     if isinstance(t, TypeTuple):
         return bool(t.elems) and all(
-            isinstance(e, TypeAtom) and e.name in ("u64", "i64") for e in t.elems
+            isinstance(e, TypeAtom) and e.name in _MAP_VALUE_ATOMS for e in t.elems
         )
     return False
 
@@ -320,13 +335,13 @@ def _key_param_specs(key: TypeExpr) -> list[tuple[str, str, str]]:
 
 def _value_param_specs(value: TypeExpr) -> list[tuple[str, str, str]]:
     if isinstance(value, TypeAtom):
-        if value.name in ("u64", "i64"):
+        if value.name in _MAP_VALUE_ATOMS:
             return [("v0", value.name, "v0")]
         raise ValueError(f"unsupported map value atom: {value.name}")
     if isinstance(value, TypeTuple):
         out: list[tuple[str, str, str]] = []
         for i, e in enumerate(value.elems):
-            if not isinstance(e, TypeAtom) or e.name not in ("u64", "i64"):
+            if not isinstance(e, TypeAtom) or e.name not in _MAP_VALUE_ATOMS:
                 raise ValueError(f"unsupported map value tuple element: {e}")
             out.append((f"v{i}", e.name, f"v{i}"))
         return out
@@ -386,6 +401,11 @@ def _i64_add_bound_requires(prev_expr: str, delta_expr: str) -> str:
         ({prev_expr} as int) + ({delta_expr} as int) <= i64::MAX as int"""
 
 
+def _i128_add_bound_requires(prev_expr: str, delta_expr: str) -> str:
+    return f"""({prev_expr} as int) + ({delta_expr} as int) >= i128::MIN as int,
+        ({prev_expr} as int) + ({delta_expr} as int) <= i128::MAX as int"""
+
+
 def _ghost_prev_expr(spec_key: str, *, zero: str = "0u64") -> str:
     return f"if old(hm)@.contains_key({spec_key}) {{ old(hm)@[{spec_key}] }} else {{ {zero} }}"
 
@@ -404,13 +424,16 @@ def _agg_add_scalar_requires(
     spec_key: str,
 ) -> str | None:
     """Fit-in-width requires on cell cap and prev+delta (ghost prev from old(hm)@)."""
-    prev_expr = _ghost_prev_expr(spec_key)
+    zero = _numeric_zero(value.name) if value.name in _MAP_VALUE_ATOMS else "0u64"
+    prev_expr = _ghost_prev_expr(spec_key, zero=zero)
     clauses: list[str] = []
     if value.name == "u64":
         clauses.append(f"{delta_name} < LEMMA_MAX_CELL_U64")
         clauses.append(_u64_add_bound_requires(prev_expr, f"({delta_name} as int)"))
     elif value.name == "i64":
         clauses.append(_i64_add_bound_requires(prev_expr, f"({delta_name} as int)"))
+    elif value.name == "i128":
+        clauses.append(_i128_add_bound_requires(prev_expr, f"({delta_name} as int)"))
     if not clauses:
         return None
     return " &&\n        ".join(clauses)
@@ -421,15 +444,18 @@ def _agg_add_tuple_requires(value: TypeTuple, *, spec_key: str) -> str | None:
     clauses: list[str] = []
     for i, e in enumerate(value.elems):
         assert isinstance(e, TypeAtom)
+        zero = _numeric_zero(e.name) if e.name in _MAP_VALUE_ATOMS else "0u64"
         if len(value.elems) == 1:
-            prev_slot = _ghost_prev_expr(spec_key)
+            prev_slot = _ghost_prev_expr(spec_key, zero=zero)
         else:
-            prev_slot = _ghost_prev_slot_expr(spec_key, i)
+            prev_slot = _ghost_prev_slot_expr(spec_key, i, zero=zero)
         if e.name == "u64":
             clauses.append(f"d{i} < LEMMA_MAX_CELL_U64")
             clauses.append(_u64_add_bound_requires(prev_slot, f"(d{i} as int)"))
         elif e.name == "i64":
             clauses.append(_i64_add_bound_requires(prev_slot, f"(d{i} as int)"))
+        elif e.name == "i128":
+            clauses.append(_i128_add_bound_requires(prev_slot, f"(d{i} as int)"))
     if not clauses:
         return None
     return " &&\n        ".join(clauses)
@@ -667,13 +693,15 @@ def _emit_map_trusted(
         add_key_sig = f"{key_sig}, {delta_params}"
         add_ensures = _agg_add_ensures(spec_key, value)
         zeros = ", ".join(
-            "0u64" if isinstance(e, TypeAtom) and e.name == "u64" else "0i64"
+            _numeric_zero(e.name) if isinstance(e, TypeAtom) else "0u64"
             for e in value.elems
         )
         default_val = zeros if len(value.elems) == 1 else f"({zeros})"
         slot_types = [e.name for e in value.elems if isinstance(e, TypeAtom)]
         updated = ", ".join(
-            _checked_add_expr(f"prev.{i}", f"d{i}", signed=(slot_types[i] == "i64"))
+            _checked_add_expr(
+                f"prev.{i}", f"d{i}", signed=(slot_types[i] in ("i64", "i128"))
+            )
             for i in range(len(value.elems))
         )
         add_requires = _agg_add_tuple_requires(value, spec_key=spec_key)
@@ -704,7 +732,7 @@ def _emit_map_trusted(
         add_sig = f"{key_sig}, delta: {value.name}"
         add_ensures = _agg_add_ensures(spec_key, value)
         add_requires = _agg_add_scalar_requires(value, spec_key=spec_key)
-        signed = value.name == "i64"
+        signed = value.name in ("i64", "i128")
         checked = _checked_add_expr("prev", "delta", signed=signed)
         if isinstance(key, TypeAtom) and key.name == "u32":
             body = f"""

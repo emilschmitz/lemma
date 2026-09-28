@@ -32,6 +32,7 @@ from research_loop.table_assumptions import (
     column_cap_const_name,
     engine_default_catalog_assumptions,
     resolve_bounds,
+    table_assumptions_for,
     with_catalog_assumptions,
 )
 
@@ -108,6 +109,7 @@ def col_spec_accessor_return(col_type: str) -> str:
 
 
 U64_MAX = 2**64 - 1
+I128_MAX = (1 << 127) - 1
 
 
 def _int_product_fits_u64(*factors: int) -> bool:
@@ -117,6 +119,47 @@ def _int_product_fits_u64(*factors: int) -> bool:
         if product > U64_MAX:
             return False
     return True
+
+
+def _int_product_fits_i128(*factors: int) -> bool:
+    product = 1
+    for factor in factors:
+        product *= factor
+        if product > I128_MAX:
+            return False
+    return True
+
+
+def _row_cap_for_join_depth(bounds: ResolvedBounds, depth: int) -> int:
+    if depth >= 4:
+        return bounds.max_rows_4
+    if depth >= 3:
+        return bounds.max_rows_cube
+    return bounds.max_rows
+
+
+def sum_accumulator_verus_type(
+    catalog: CatalogAssumptions | None,
+    *,
+    depth: int,
+    table: str,
+    column: str,
+) -> str:
+    """MethodSpec SUM/AVG-sum slot width: u64 when rows^depth·cap fits u64, else i128."""
+    if catalog is None:
+        return "u64"
+    b = _bounds_for_emit(None, catalog)
+    ta = table_assumptions_for(catalog, table)
+    cap = column_assumption_exclusive(column, ta)
+    if cap is None:
+        return "u64"
+    row_cap = _row_cap_for_join_depth(b, depth)
+    factors = (*([row_cap] * depth), cap)
+    if _int_product_fits_u64(*factors):
+        return "u64"
+    if _int_product_fits_i128(*factors):
+        return "i128"
+    return "u64"
 
 
 def _int_product_plus_one_fits_u64(*factors: int) -> bool:
@@ -342,11 +385,7 @@ def _column_cap_const_entries(
             cap = col_assumption.max_value_exclusive
             if cap is None:
                 continue
-            if cap <= bounds.max_native_u32 or (
-                bounds.has_tight_cell_u64
-                and bounds.max_cell_u64 is not None
-                and cap <= bounds.max_cell_u64
-            ):
+            if cap <= bounds.max_native_u32 or cap < 2**64:
                 out.append((table, column, cap))
     return out
 
@@ -371,12 +410,7 @@ def _column_valid_cols_bound(
         return "LEMMA_MAX_NATIVE_U32", global_cap
     if vt == "u64":
         if col_cap is not None:
-            if (
-                bounds.has_tight_cell_u64
-                and bounds.max_cell_u64 is not None
-                and col_cap <= bounds.max_cell_u64
-                and table_name is not None
-            ):
+            if table_name is not None and col_cap < 2**64:
                 return column_cap_const_name(table_name, column), col_cap
             return None
         if bounds.has_tight_cell_u64 and bounds.max_cell_u64 is not None:

@@ -129,6 +129,13 @@ FROM num n JOIN sub s ON n.adsh = s.adsh
 WHERE n.uom = 'USD'
 GROUP BY s.name"""
 
+Q21_NUM_SUB_SUM_AVG_SQL = """SELECT s.fy, SUM(n.value) AS sum_value, AVG(n.value) AS avg_value
+FROM num n JOIN sub s ON n.adsh = s.adsh
+WHERE n.uom = 'pure' AND s.fy = 2024
+GROUP BY s.fy"""
+
+NUM_VALUE_PRODUCT_CAP = 188_446_126_794_000_002
+
 TWO_TABLE_SUM_LINE_SQL = """SELECT s.name, SUM(p.line) AS total, COUNT(*) AS cnt
 FROM pre p JOIN sub s ON p.adsh = s.adsh
 GROUP BY s.name"""
@@ -143,6 +150,31 @@ def _large_sec_product_catalog() -> CatalogAssumptions:
         max_cell_u64=SEC_PROVE_LOOP_MAX_CELL_U64,
         max_native_u32=2**31,
         max_string_len=128,
+    )
+
+
+def _large_sec_num_value_catalog() -> CatalogAssumptions:
+    large_rows = round_rows_up(39_401_761)
+    return CatalogAssumptions(
+        max_rows=large_rows,
+        max_rows_cube=large_rows,
+        max_rows_4=large_rows,
+        max_cell_u64=SEC_PROVE_LOOP_MAX_CELL_U64,
+        max_native_u32=2**31,
+        max_string_len=128,
+        tables={
+            "num": TableAssumptions(
+                columns={
+                    "value": ColumnAssumption(
+                        max_value_exclusive=NUM_VALUE_PRODUCT_CAP,
+                    )
+                },
+            ),
+            "sub": TableAssumptions(
+                max_rows=round_rows_up(86_135),
+                one_row_per_adsh=True,
+            ),
+        },
     )
 
 
@@ -539,8 +571,8 @@ def test_large_sec_sum_without_column_cap_raises_host_codegen() -> None:
         multi_agg_step_trusted_rs(spec, ret_type, catalog_assumptions=catalog)
 
 
-def test_large_sec_sum_uses_measured_abs_total_when_cell_product_overflows() -> None:
-    """Full-table num.value does not fit rows*max(cell); the measured abs total does."""
+def test_large_sec_sum_uses_i128_fit_when_cell_product_overflows_u64() -> None:
+    """rows^2 * cap fits i128 but not u64: catalog fit proof, not abs_sum assume."""
     from tests.test_sec_holdout_parse import SEC_SCHEMA
 
     large_rows = round_rows_up(39_401_761)
@@ -569,13 +601,49 @@ def test_large_sec_sum_uses_measured_abs_total_when_cell_product_overflows() -> 
     )
     schema = {"num": SEC_SCHEMA["num"], "sub": SEC_SCHEMA["sub"]}
     spec = _transpile(TWO_TABLE_SUM_SQL, schema, catalog=catalog)
+    assert "as i128" in spec
+    ret_type = resolve_ret_type_from_method_spec(spec)
+    rs = multi_agg_step_trusted_rs(spec, ret_type, catalog_assumptions=catalog)
+    assert "i128::MAX" in rs
+    assert "assume((" not in rs
+    assert "lemma_rem_cap_native_add_fits(" not in rs
+    assert "lemma_rem_cap_cell_u64_add_fits(" not in rs
+
+
+def test_large_sec_sum_abs_sum_when_product_overflows_i128() -> None:
+    """When rows^2 * cap exceeds i128, unique-key join may still use abs_sum assume."""
+    from tests.test_sec_holdout_parse import SEC_SCHEMA
+    from verus_transpiler.value_bounds import I128_MAX
+
+    large_rows = round_rows_up(39_401_761)
+    huge_cap = I128_MAX // (large_rows**2) + 1
+    abs_total = 10**18
+    catalog = CatalogAssumptions(
+        max_rows=large_rows,
+        max_rows_cube=large_rows,
+        max_rows_4=large_rows,
+        max_cell_u64=SEC_PROVE_LOOP_MAX_CELL_U64,
+        max_native_u32=2**31,
+        max_string_len=128,
+        tables={
+            "num": TableAssumptions(
+                columns={
+                    "value": ColumnAssumption(
+                        max_value_exclusive=huge_cap,
+                        abs_sum_exclusive=abs_total,
+                    )
+                },
+            ),
+            "sub": TableAssumptions(one_row_per_adsh=True),
+        },
+    )
+    schema = {"num": SEC_SCHEMA["num"], "sub": SEC_SCHEMA["sub"]}
+    spec = _transpile(TWO_TABLE_SUM_SQL, schema, catalog=catalog)
     ret_type = resolve_ret_type_from_method_spec(spec)
     rs = multi_agg_step_trusted_rs(spec, ret_type, catalog_assumptions=catalog)
     assert "LEMMA_ABS_SUM_num_value" in rs
     assert "assume((prev_slot as int) + (" in rs
     assert "<= u64::MAX as int" in rs
-    assert "lemma_rem_cap_native_add_fits(" not in rs
-    assert "lemma_rem_cap_cell_u64_add_fits(" not in rs
 
 
 def test_abs_sum_requires_the_join_to_use_the_unique_key() -> None:
@@ -610,6 +678,7 @@ def test_abs_sum_requires_the_join_to_use_the_unique_key() -> None:
 
 
 def test_abs_sum_not_used_when_join_can_repeat_cells() -> None:
+    """Repeating join blocks abs_sum; i128 rem·cap proof still applies when product fits."""
     from tests.test_sec_holdout_parse import SEC_SCHEMA
 
     large_rows = round_rows_up(39_401_761)
@@ -634,11 +703,12 @@ def test_abs_sum_not_used_when_join_can_repeat_cells() -> None:
     schema = {"num": SEC_SCHEMA["num"], "sub": SEC_SCHEMA["sub"]}
     spec = _transpile(TWO_TABLE_SUM_SQL, schema, catalog=catalog)
     ret_type = resolve_ret_type_from_method_spec(spec)
-    with pytest.raises(SumAddFitCodegenError):
-        multi_agg_step_trusted_rs(spec, ret_type, catalog_assumptions=catalog)
+    rs = multi_agg_step_trusted_rs(spec, ret_type, catalog_assumptions=catalog)
+    assert "i128::MAX" in rs
+    assert "assume((" not in rs
 
 
-def test_large_sec_sum_overflowing_column_cap_raises_host_codegen() -> None:
+def test_large_sec_sum_overflowing_u64_cap_emits_i128_fit_proof() -> None:
     from tests.test_sec_holdout_parse import SEC_SCHEMA
 
     large_rows = round_rows_up(39_401_761)
@@ -659,8 +729,51 @@ def test_large_sec_sum_overflowing_column_cap_raises_host_codegen() -> None:
     schema = {"pre": SEC_SCHEMA["pre"], "sub": SEC_SCHEMA["sub"]}
     spec = _transpile(TWO_TABLE_SUM_LINE_SQL, schema, catalog=catalog)
     ret_type = resolve_ret_type_from_method_spec(spec)
+    rs = multi_agg_step_trusted_rs(spec, ret_type, catalog_assumptions=catalog)
+    assert "i128::MAX" in rs
+    assert "assume((" not in rs
+
+
+def test_large_sec_sum_column_cap_overflows_i128_raises_host_codegen() -> None:
+    from tests.test_sec_holdout_parse import SEC_SCHEMA
+    from verus_transpiler.value_bounds import I128_MAX
+
+    large_rows = round_rows_up(39_401_761)
+    huge_cap = I128_MAX // (large_rows**2) + 1
+    catalog = CatalogAssumptions(
+        max_rows=large_rows,
+        max_rows_cube=large_rows,
+        max_rows_4=large_rows,
+        max_cell_u64=SEC_PROVE_LOOP_MAX_CELL_U64,
+        max_native_u32=2**31,
+        max_string_len=128,
+        tables={
+            "pre": TableAssumptions(
+                columns={"line": ColumnAssumption(max_value_exclusive=huge_cap)}
+            ),
+        },
+    )
+    schema = {"pre": SEC_SCHEMA["pre"], "sub": SEC_SCHEMA["sub"]}
+    spec = _transpile(TWO_TABLE_SUM_LINE_SQL, schema, catalog=catalog)
+    ret_type = resolve_ret_type_from_method_spec(spec)
     with pytest.raises(SumAddFitCodegenError):
         multi_agg_step_trusted_rs(spec, ret_type, catalog_assumptions=catalog)
+
+
+def test_q21_num_sub_sum_avg_i128_accumulator_and_fit_proof() -> None:
+    from tests.test_sec_holdout_parse import SEC_SCHEMA
+
+    schema = {"num": SEC_SCHEMA["num"], "sub": SEC_SCHEMA["sub"]}
+    catalog = _large_sec_num_value_catalog()
+    spec = _transpile(Q21_NUM_SUB_SUM_AVG_SQL, schema, catalog=catalog)
+    assert "(i128, u64)" in spec or "i128, u64" in spec
+    assert "(i128, i128)" in spec
+    assert "/ (v." in spec and "as i128)" in spec
+    ret_type = resolve_ret_type_from_method_spec(spec)
+    rs = multi_agg_step_trusted_rs(spec, ret_type, catalog_assumptions=catalog)
+    assert "i128::MAX" in rs
+    assert "assume((" not in rs
+    assert str(NUM_VALUE_PRODUCT_CAP) in rs or "LEMMA_MAX_num_value" in spec
 
 
 def test_prove_loop_multi_agg_keeps_sq_native_rem_cap_calls() -> None:
