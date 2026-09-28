@@ -122,7 +122,9 @@ returns.
 3. Call `lemma_<helper>_is_loj2` against `nested_loj_pairs2` (via
    `lemma_<helper>_is_loj2_loop` + `lemma_loj_at_origin2`). Multi-agg GROUP BY
    uses `join_loj_multi_agg_helper` /
-   `lemma_join_loj_multi_agg_helper_method_is_fold`.
+   `lemma_join_loj_multi_agg_helper_method_is_fold`. Two-key LEFT projection
+   uses `join_loj_projection_helper` with the same pair list; right columns are
+   `Option` (`Some` / `None` pad), left columns copied on match and miss.
 4. Call `lemma_<helper>_method_is_fold`.
 
 ### RIGHT OUTER — `right_outer_pairs_str`
