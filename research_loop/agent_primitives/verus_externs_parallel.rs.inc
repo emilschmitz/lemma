@@ -145,7 +145,7 @@ pub exec fn par_sum_u64(vals: &Vec<u64>) -> (sum: u64)
                     break;
                 }
                 let end = if start + chunk < len { start + chunk } else { len };
-                handles.push(scope.spawn(|| {
+                handles.push(scope.spawn(move || {
                     let mut partial: u64 = 0;
                     let mut i = start;
                     while i < end {
@@ -192,7 +192,7 @@ pub exec fn par_filter_sum_u64(col: &Vec<u64>, mask: &Vec<bool>) -> (sum: u64)
                     break;
                 }
                 let end = if start + chunk < n { start + chunk } else { n };
-                handles.push(scope.spawn(|| {
+                handles.push(scope.spawn(move || {
                     let mut partial: u64 = 0;
                     let mut i = start;
                     while i < end {
@@ -250,7 +250,7 @@ pub exec fn par_probe_sum_u64(
                     break;
                 }
                 let end = if start + chunk < n { start + chunk } else { n };
-                handles.push(scope.spawn(|| {
+                handles.push(scope.spawn(move || {
                     let mut partial: u64 = 0;
                     let mut i = start;
                     while i < end {
@@ -309,7 +309,7 @@ pub exec fn vector_filter_sum_u64(
                     break;
                 }
                 let end = if start + chunk < n { start + chunk } else { n };
-                handles.push(scope.spawn(|| {
+                handles.push(scope.spawn(move || {
                     let mut partial: u64 = 0;
                     let mut i = start;
                     while i < end {
@@ -385,18 +385,18 @@ pub exec fn par_equijoin_pairs_str(
     ensures pairs@ == serial_eq_pairs_str_spec(outer@, inner@),
 {
     let n_inner = inner.len();
-    let mut index: std::collections::HashMap<String, Vec<usize>> = std::collections::HashMap::new();
+    let mut index: std::collections::HashMap<&str, Vec<usize>> = std::collections::HashMap::new();
     if n_inner < PAR_CHUNK {
         let mut j: usize = 0;
         while j < n_inner {
-            index.entry(inner[j].clone()).or_insert_with(Vec::new).push(j);
+            index.entry(inner[j].as_str()).or_insert_with(Vec::new).push(j);
             j = j + 1;
         }
     } else {
         let threads = par_exec_thread_count(n_inner);
         let parts = std::thread::scope(|scope| {
             let chunk = (n_inner + threads - 1) / threads;
-            let mut handles: Vec<std::thread::ScopedJoinHandle<std::collections::HashMap<String, Vec<usize>>>> = Vec::new();
+            let mut handles: Vec<std::thread::ScopedJoinHandle<std::collections::HashMap<&str, Vec<usize>>>> = Vec::new();
             let mut t: usize = 0;
             while t < threads {
                 let start = t * chunk;
@@ -404,19 +404,19 @@ pub exec fn par_equijoin_pairs_str(
                     break;
                 }
                 let end = if start + chunk < n_inner { start + chunk } else { n_inner };
-                handles.push(scope.spawn(|| {
-                    let mut partial: std::collections::HashMap<String, Vec<usize>> =
+                handles.push(scope.spawn(move || {
+                    let mut partial: std::collections::HashMap<&str, Vec<usize>> =
                         std::collections::HashMap::new();
                     let mut j = start;
                     while j < end {
-                        partial.entry(inner[j].clone()).or_insert_with(Vec::new).push(j);
+                        partial.entry(inner[j].as_str()).or_insert_with(Vec::new).push(j);
                         j = j + 1;
                     }
                     partial
                 }));
                 t = t + 1;
             }
-            let mut parts: Vec<std::collections::HashMap<String, Vec<usize>>> = Vec::new();
+            let mut parts: Vec<std::collections::HashMap<&str, Vec<usize>>> = Vec::new();
             for h in handles {
                 parts.push(h.join().unwrap());
             }
@@ -433,7 +433,7 @@ pub exec fn par_equijoin_pairs_str(
         let mut pairs: Vec<(usize, usize)> = Vec::new();
         let mut i: usize = 0;
         while i < n {
-            match index.get(&outer[i]) {
+            match index.get(outer[i].as_str()) {
                 Some(ids) => {
                     let mut k: usize = 0;
                     while k < ids.len() {
@@ -447,6 +447,7 @@ pub exec fn par_equijoin_pairs_str(
         }
         pairs
     } else {
+        let index = &index;
         let threads = par_exec_thread_count(n);
         std::thread::scope(|scope| {
             let chunk = (n + threads - 1) / threads;
@@ -458,11 +459,11 @@ pub exec fn par_equijoin_pairs_str(
                     break;
                 }
                 let end = if start + chunk < n { start + chunk } else { n };
-                handles.push(scope.spawn(|| {
+                handles.push(scope.spawn(move || {
                     let mut partial: Vec<(usize, usize)> = Vec::new();
                     let mut i = start;
                     while i < end {
-                        match index.get(&outer[i]) {
+                        match index.get(outer[i].as_str()) {
                             Some(ids) => {
                                 let mut k: usize = 0;
                                 while k < ids.len() {
@@ -591,19 +592,19 @@ pub exec fn par_star_triples_str(
         ),
 {
     let n_sub = sub_adsh.len();
-    let mut sub_index: std::collections::HashMap<String, Vec<usize>> =
+    let mut sub_index: std::collections::HashMap<&str, Vec<usize>> =
         std::collections::HashMap::new();
     if n_sub < PAR_CHUNK {
         let mut j: usize = 0;
         while j < n_sub {
-            sub_index.entry(sub_adsh[j].clone()).or_insert_with(Vec::new).push(j);
+            sub_index.entry(sub_adsh[j].as_str()).or_insert_with(Vec::new).push(j);
             j = j + 1;
         }
     } else {
         let threads = par_exec_thread_count(n_sub);
         let parts = std::thread::scope(|scope| {
             let chunk = (n_sub + threads - 1) / threads;
-            let mut handles: Vec<std::thread::ScopedJoinHandle<std::collections::HashMap<String, Vec<usize>>>> = Vec::new();
+            let mut handles: Vec<std::thread::ScopedJoinHandle<std::collections::HashMap<&str, Vec<usize>>>> = Vec::new();
             let mut t: usize = 0;
             while t < threads {
                 let start = t * chunk;
@@ -611,19 +612,19 @@ pub exec fn par_star_triples_str(
                     break;
                 }
                 let end = if start + chunk < n_sub { start + chunk } else { n_sub };
-                handles.push(scope.spawn(|| {
-                    let mut partial: std::collections::HashMap<String, Vec<usize>> =
+                handles.push(scope.spawn(move || {
+                    let mut partial: std::collections::HashMap<&str, Vec<usize>> =
                         std::collections::HashMap::new();
                     let mut j = start;
                     while j < end {
-                        partial.entry(sub_adsh[j].clone()).or_insert_with(Vec::new).push(j);
+                        partial.entry(sub_adsh[j].as_str()).or_insert_with(Vec::new).push(j);
                         j = j + 1;
                     }
                     partial
                 }));
                 t = t + 1;
             }
-            let mut parts: Vec<std::collections::HashMap<String, Vec<usize>>> = Vec::new();
+            let mut parts: Vec<std::collections::HashMap<&str, Vec<usize>>> = Vec::new();
             for h in handles {
                 parts.push(h.join().unwrap());
             }
@@ -636,13 +637,13 @@ pub exec fn par_star_triples_str(
         }
     }
     let n_tag = tag_tag.len();
-    let mut tag_index: std::collections::HashMap<(String, String), Vec<usize>> =
+    let mut tag_index: std::collections::HashMap<(&str, &str), Vec<usize>> =
         std::collections::HashMap::new();
     if n_tag < PAR_CHUNK {
         let mut k: usize = 0;
         while k < n_tag {
             tag_index
-                .entry((tag_tag[k].clone(), tag_ver[k].clone()))
+                .entry((tag_tag[k].as_str(), tag_ver[k].as_str()))
                 .or_insert_with(Vec::new)
                 .push(k);
             k = k + 1;
@@ -651,7 +652,7 @@ pub exec fn par_star_triples_str(
         let threads = par_exec_thread_count(n_tag);
         let parts = std::thread::scope(|scope| {
             let chunk = (n_tag + threads - 1) / threads;
-            let mut handles: Vec<std::thread::ScopedJoinHandle<std::collections::HashMap<(String, String), Vec<usize>>>> = Vec::new();
+            let mut handles: Vec<std::thread::ScopedJoinHandle<std::collections::HashMap<(&str, &str), Vec<usize>>>> = Vec::new();
             let mut t: usize = 0;
             while t < threads {
                 let start = t * chunk;
@@ -659,13 +660,13 @@ pub exec fn par_star_triples_str(
                     break;
                 }
                 let end = if start + chunk < n_tag { start + chunk } else { n_tag };
-                handles.push(scope.spawn(|| {
-                    let mut partial: std::collections::HashMap<(String, String), Vec<usize>> =
+                handles.push(scope.spawn(move || {
+                    let mut partial: std::collections::HashMap<(&str, &str), Vec<usize>> =
                         std::collections::HashMap::new();
                     let mut k = start;
                     while k < end {
                         partial
-                            .entry((tag_tag[k].clone(), tag_ver[k].clone()))
+                            .entry((tag_tag[k].as_str(), tag_ver[k].as_str()))
                             .or_insert_with(Vec::new)
                             .push(k);
                         k = k + 1;
@@ -674,7 +675,7 @@ pub exec fn par_star_triples_str(
                 }));
                 t = t + 1;
             }
-            let mut parts: Vec<std::collections::HashMap<(String, String), Vec<usize>>> = Vec::new();
+            let mut parts: Vec<std::collections::HashMap<(&str, &str), Vec<usize>>> = Vec::new();
             for h in handles {
                 parts.push(h.join().unwrap());
             }
@@ -691,9 +692,9 @@ pub exec fn par_star_triples_str(
         let mut triples: Vec<(usize, usize, usize)> = Vec::new();
         let mut i: usize = 0;
         while i < n {
-            match sub_index.get(&pre_adsh[i]) {
+            match sub_index.get(pre_adsh[i].as_str()) {
                 Some(subs) => {
-                    match tag_index.get(&(pre_tag[i].clone(), pre_ver[i].clone())) {
+                    match tag_index.get(&(pre_tag[i].as_str(), pre_ver[i].as_str())) {
                         Some(tags) => {
                             let mut s: usize = 0;
                             while s < subs.len() {
@@ -714,6 +715,8 @@ pub exec fn par_star_triples_str(
         }
         triples
     } else {
+        let sub_index = &sub_index;
+        let tag_index = &tag_index;
         let threads = par_exec_thread_count(n);
         std::thread::scope(|scope| {
             let chunk = (n + threads - 1) / threads;
@@ -726,13 +729,13 @@ pub exec fn par_star_triples_str(
                     break;
                 }
                 let end = if start + chunk < n { start + chunk } else { n };
-                handles.push(scope.spawn(|| {
+                handles.push(scope.spawn(move || {
                     let mut partial: Vec<(usize, usize, usize)> = Vec::new();
                     let mut i = start;
                     while i < end {
-                        match sub_index.get(&pre_adsh[i]) {
+                        match sub_index.get(pre_adsh[i].as_str()) {
                             Some(subs) => {
-                                match tag_index.get(&(pre_tag[i].clone(), pre_ver[i].clone())) {
+                                match tag_index.get(&(pre_tag[i].as_str(), pre_ver[i].as_str())) {
                                     Some(tags) => {
                                         let mut s: usize = 0;
                                         while s < subs.len() {
