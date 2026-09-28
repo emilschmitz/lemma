@@ -47,7 +47,6 @@ def _proof_paths_text(static: str, spec: str) -> str:
         return static
     header = (
         "## This spec\n\n"
-        "Grep `spec.rs` for these names. Do not read `spec.rs` from the first line.\n\n"
         + "\n".join(f"- `{name}`" for name in names)
         + "\n\n"
     )
@@ -169,7 +168,7 @@ def _extract_spec_excerpt(spec_text: str, *, max_chars: int = SPEC_EXCERPT_MAX_C
                 start = min(start, idx)
     excerpt = spec_text[start : start + max_chars]
     if start + max_chars < len(spec_text):
-        excerpt += "\n// ... (truncated — read full spec.rs for remainder)\n"
+        excerpt += "\n// ... (truncated)\n"
     return excerpt
 
 
@@ -338,16 +337,17 @@ Keep the host signature / `requires` / `ensures` matching `method_spec(...)` in 
 (same parameter list and `valid_cols*` predicates as MethodSpec — one table, extra inner tables,
 or join tables). Do not add Trusted, `assume`,
 `arbitrary`, `external_body`, or redefine `method_spec`.
-Write the body and call `run_runquery` before half the wall-clock budget is gone.
-Grep `{ctx}/spec.rs` for each name under `## This spec` in `{ctx}/JOIN_PROOF_PATHS.md`. Do not read `spec.rs` from the first line.
+Write the body in `{body_path}` and call `run_runquery` before half the wall-clock budget is gone.
+Fold lemma names for this query are listed under `## This spec` in `{ctx}/JOIN_PROOF_PATHS.md`.
 {prelim_section}
 {_rocketship_exec_section(ctx)}
 {_verus_mode_section()}
 {budget_section}
 {row_budget_section}
 {facts_block}
-## Context to read (do not modify)
-- `{ctx}/query.sql`, `{ctx}/schema.json`, `{ctx}/spec.rs`
+## Context (do not modify)
+- `{ctx}/query.sql`, `{ctx}/schema.json`
+- MethodSpec excerpt is below. `{ctx}/spec.rs` is the full file.
 - `{ctx}/data_profile.md` (AGENT_DATA_MODE=`{agent_data_mode}`), `{ctx}/row_budgets.md`, `{ctx}/hardware.md` (if present)
 - `{ctx}/COMPILATION_GUIDE.md`, `{ctx}/AGENTS.md`, `{ctx}/PRIMITIVES.md` — contract + Trusted menu only
 - `{ctx}/JOIN_PROOF_PATHS.md` — join lemma call order
