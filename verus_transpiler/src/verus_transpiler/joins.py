@@ -22,6 +22,7 @@ from .rust_ident import rust_ident
 from .subqueries import emit_derived_grouped_inner_spec
 from research_loop.table_assumptions import CatalogAssumptions
 
+from .order_limit import wrap_seq_order_limit
 from .value_bounds import col_verus_type, spec_map_key_type, sum_accumulator_verus_type
 
 
@@ -4768,8 +4769,16 @@ def _emit_join_projection(
         + [_init_indices(slots)]
     )
     spec_body = f"{helper_name}({init_args})"
-    if query.limit is not None:
-        spec_body = f"spec_seq_take({spec_body}, {query.limit})"
+    order_helper, spec_body = wrap_seq_order_limit(
+        query,
+        spec_body,
+        row_ty,
+        list(query.projection_columns),
+        row_types,
+        before_name="spec_join_proj_before",
+    )
+    if order_helper:
+        helper = helper + "\n\n" + order_helper
     return helper, spec_body, ret_type, bridge
 
 

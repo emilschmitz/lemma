@@ -28,6 +28,7 @@ from .joins import (
     emit_join_spec_helpers,
     try_decorrelate_anti_subqueries,
 )
+from .order_limit import wrap_seq_order_limit
 from .parse_sql import (
     AggSpec,
     DerivedTable,
@@ -674,8 +675,16 @@ def _emit_projection_branch(
 }}"""
 
     body = f"{helper_name}(cols{extra_call}, 0)"
-    if query.limit is not None:
-        body = f"spec_seq_take({body}, {query.limit})"
+    order_helper, body = wrap_seq_order_limit(
+        query,
+        body,
+        row_ty,
+        list(query.projection_columns),
+        row_types,
+        before_name="spec_proj_before",
+    )
+    if order_helper:
+        helper = order_helper + "\n" + helper
 
     if spec_name:
         spec = f"""pub open spec fn {spec_name}(cols: &{struct_name}{extra_sig}) -> {ret_type}
@@ -1565,6 +1574,10 @@ def transpile_sql_to_verus(
         _join_legs = 1
     join_multi = is_join and bool(multi_schema)
     trusted_prelude = emit_trusted_prelude(include_left_join_miss=not join_multi)
+    if "spec_seq_sort_by" in f"{helpers}\n{spec_fn}":
+        # Sort and limit are inside method_spec. The old note told the agent
+        # to sort in run_query, which cannot meet ensures res == method_spec.
+        result_spec = ""
     query_after_prelude = f"{cols_block}\n\n{helpers}\n\n{subquery_section}{spec_fn}\n\n{result_spec}"
     eq_join_prelude = (
         f"\n{proved_eq_join_prelude_for(query_after_prelude)}\n" if join_multi else ""

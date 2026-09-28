@@ -2115,7 +2115,61 @@ pub exec fn str_upper_exec(s: &str) -> (res: String)
     s.to_ascii_uppercase()
 }
 
-// === Seq helpers (projection + LIMIT) ===
+// === Seq helpers (projection + ORDER BY + LIMIT) ===
+pub open spec fn spec_char_seq_lt(a: Seq<char>, b: Seq<char>) -> bool
+    decreases a.len(), b.len()
+{
+    if a.len() == 0 {
+        0 < b.len()
+    } else if b.len() == 0 {
+        false
+    } else if a[0] != b[0] {
+        (a[0] as u32) < (b[0] as u32)
+    } else {
+        spec_char_seq_lt(a.subrange(1, a.len() as int), b.subrange(1, b.len() as int))
+    }
+}
+
+pub open spec fn spec_seq_insert_by<A>(s: Seq<A>, x: A, before: spec_fn(A, A) -> bool) -> Seq<A>
+    decreases s.len()
+{
+    if s.len() == 0 {
+        Seq::<A>::empty().push(x)
+    } else if before(x, s[0]) {
+        Seq::<A>::empty().push(x) + s
+    } else {
+        Seq::<A>::empty().push(s[0]) + spec_seq_insert_by(
+            s.subrange(1, s.len() as int),
+            x,
+            before,
+        )
+    }
+}
+
+pub open spec fn spec_seq_sort_by<A>(s: Seq<A>, before: spec_fn(A, A) -> bool) -> Seq<A>
+    decreases s.len()
+{
+    if s.len() == 0 {
+        s
+    } else {
+        spec_seq_insert_by(
+            spec_seq_sort_by(s.subrange(0, s.len() - 1), before),
+            s[s.len() - 1],
+            before,
+        )
+    }
+}
+
+pub open spec fn spec_seq_skip<A>(s: Seq<A>, n: int) -> Seq<A> {
+    if n <= 0 {
+        s
+    } else if n >= s.len() {
+        Seq::empty()
+    } else {
+        s.subrange(n, s.len() as int)
+    }
+}
+
 pub open spec fn spec_seq_take<A>(s: Seq<A>, n: int) -> Seq<A> {
     if n <= 0 {
         Seq::empty()
