@@ -12200,6 +12200,50 @@ pub fn right_outer_pairs_str2(
 }
 // SHAPE_RIGHT2_END
 
+// SHAPE_FULL2_BEGIN
+// Two-key FULL OUTER: matched pairs + left/right anti-misses via *2 helpers.
+// Parts reuse nested_eq_pairs2 / nested_anti_misses2; no whole-join Trusted.
+
+/// Matched pairs + left anti-misses + right anti-misses (two String keys).
+pub fn full_outer_parts_str2(
+    left0: &Vec<String>,
+    left1: &Vec<String>,
+    right0: &Vec<String>,
+    right1: &Vec<String>,
+) -> (parts: (Vec<(usize, usize)>, Vec<usize>, Vec<usize>))
+    requires
+        left0@.len() == left1@.len(),
+        right0@.len() == right1@.len(),
+    ensures
+        parts.0@ == nested_eq_pairs2(
+            key_views(left0@),
+            key_views(left1@),
+            key_views(right0@),
+            key_views(right1@),
+            left0@.len() as int,
+        ),
+        parts.1@ == nested_anti_misses2(
+            key_views(left0@),
+            key_views(left1@),
+            key_views(right0@),
+            key_views(right1@),
+            left0@.len() as int,
+        ),
+        parts.2@ == nested_anti_misses2(
+            key_views(right0@),
+            key_views(right1@),
+            key_views(left0@),
+            key_views(left1@),
+            right0@.len() as int,
+        ),
+{
+    let pairs = equijoin_pairs_str2(left0, left1, right0, right1);
+    let left_miss = anti_miss_rows_str2(left0, left1, right0, right1);
+    let right_miss = anti_miss_rows_str2(right0, right1, left0, left1);
+    (pairs, left_miss, right_miss)
+}
+// SHAPE_FULL2_END
+
 // EQ_JOIN_PROVED_END
 
 

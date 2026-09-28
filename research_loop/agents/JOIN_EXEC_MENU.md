@@ -47,5 +47,7 @@ shape only. Do not invent a HashMap/HashSet index. Do not call `build_hashset_u3
   — `slots@ == nested_right_pairs2(...)`; two `String` RIGHT OUTER equalities
 - `full_outer_parts_str(left, right) -> (pairs, left_miss, right_miss)`
   — matched `nested_eq_pairs` + both `nested_anti_misses`; FULL OUTER parts
+- `full_outer_parts_str2(l0, l1, r0, r1) -> (pairs, left_miss, right_miss)`
+  — matched `nested_eq_pairs2` + both `nested_anti_misses2`; two `String` FULL OUTER
 - self-join — same `equijoin_pairs_*` ensures; params are SQL aliases (`Cols_<alias>`),
   not a second physical table
