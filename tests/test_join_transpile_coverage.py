@@ -8,8 +8,9 @@ Pure transpile — full SEC catalog not required.
 from __future__ import annotations
 
 import pytest
-from verus_transpiler import transpile_sql_to_verus
 from verus_transpiler.parse_sql import UnsupportedContractError
+
+from verus_transpiler import transpile_sql_to_verus
 
 CATALOG: dict[str, dict[str, str]] = {
     "pre": {
@@ -352,3 +353,42 @@ def test_anti_scalar_count_emits_is_anti_fold() -> None:
     assert "lemma_join_anti_count_helper_method_is_fold(" in out
     assert "nested_anti_misses" in out
     assert "miss_acc(" in out
+
+
+def test_semi2_groupby_emits_is_semi_fold() -> None:
+    sql = """
+    SELECT n.tag, COUNT(*) AS cnt
+    FROM num n SEMI JOIN pre p ON n.tag = p.tag AND n.version = p.version
+    GROUP BY n.tag
+    """
+    out = transpile_sql_to_verus(sql, CATALOG)
+    _assert_rocketship_clean(out)
+    assert "lemma_join_semi_multi_agg_helper_is_semi(" in out
+    assert "lemma_join_semi_multi_agg_helper_method_is_fold(" in out
+    assert "nested_semi_hits2" in out
+
+
+def test_anti3_keyword_emits_is_anti_fold() -> None:
+    sql = """
+    SELECT n.tag, n.version, COUNT(*) AS cnt
+    FROM num n ANTI JOIN pre p
+      ON n.tag = p.tag AND n.version = p.version AND n.adsh = p.adsh
+    GROUP BY n.tag, n.version
+    """
+    out = transpile_sql_to_verus(sql, CATALOG)
+    _assert_rocketship_clean(out)
+    assert "lemma_join_anti_multi_agg_helper_is_anti(" in out
+    assert "lemma_join_anti_multi_agg_helper_method_is_fold(" in out
+    assert "nested_anti_misses3" in out
+
+
+def test_right_scalar_count_emits_is_right_fold() -> None:
+    sql = "SELECT COUNT(*) FROM pre p RIGHT JOIN sub s ON p.adsh = s.adsh"
+    out = transpile_sql_to_verus(sql, CATALOG)
+    _assert_rocketship_clean(out)
+    section = _helper_section(out)
+    assert "join_right_count_helper" in section
+    assert "lemma_join_right_count_helper_is_right(" in out
+    assert "lemma_join_right_count_helper_method_is_fold(" in out
+    assert "nested_right_pairs" in out
+    assert "right_acc(" in out

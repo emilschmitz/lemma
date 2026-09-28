@@ -90,19 +90,22 @@ returns.
 3. Call `lemma_<helper>_is_quad_pairs`.
 4. Call `lemma_<helper>_method_is_fold`.
 
-### LEFT / ANTI miss — `anti_miss_rows_str` / `anti_miss_rows_str3`
+### LEFT / ANTI miss — `anti_miss_rows_str` / `anti_miss_rows_str2` / `anti_miss_rows_str3`
 
-1. Call `anti_miss_rows_str` or `anti_miss_rows_str3`.
+1. Call `anti_miss_rows_str` (1-key), `anti_miss_rows_str2` (2-key), or `anti_miss_rows_str3`
+   (3-key). Keyword ANTI reuses the same lists as LEFT anti.
 2. Walk misses from the end with `miss_acc`.
 3. Call `lemma_<helper>_is_left` (LEFT anti / left-side projection) or `lemma_<helper>_is_anti`
-   (keyword ANTI JOIN). Three-key LEFT uses `nested_anti_misses3`.
+   (keyword ANTI JOIN). Two-key uses `nested_anti_misses2`; three-key uses `nested_anti_misses3`.
 4. Call `lemma_<helper>_method_is_fold`.
 
-### SEMI hits — `semi_hit_rows_str`
+### SEMI hits — `semi_hit_rows_str` / `semi_hit_rows_str2` / `semi_hit_rows_str3`
 
-1. Call `semi_hit_rows_str`.
+1. Call `semi_hit_rows_str` (1-key), `semi_hit_rows_str2` (2-key), or `semi_hit_rows_str3`
+   (3-key).
 2. Walk hits from the end with `hit_acc`.
-3. Call `lemma_<helper>_is_semi` against `nested_semi_hits`.
+3. Call `lemma_<helper>_is_semi` against `nested_semi_hits` / `nested_semi_hits2` /
+   `nested_semi_hits3`.
 4. Call `lemma_<helper>_method_is_fold`.
 
 ### LEFT OUTER — `left_outer_pairs_str` / `left_outer_pairs_u64`
@@ -115,8 +118,11 @@ returns.
 ### RIGHT OUTER — `right_outer_pairs_str`
 
 1. Call `right_outer_pairs_str`.
-2. Walk slots from the end with `right_acc`.
-3. Call `lemma_<helper>_is_right` against `nested_right_pairs`.
+2. Walk slots from the end with `right_acc` (hit and miss steps).
+3. Call `lemma_<helper>_is_right` against `nested_right_pairs`. Projection uses
+   `join_right_projection_helper`; scalar `COUNT(*)` uses `join_right_count_helper`;
+   multi-agg GROUP BY uses `join_roj_multi_agg_helper` /
+   `lemma_join_roj_multi_agg_helper_method_is_fold` (same `right_outer_pairs_str` list).
 4. Call `lemma_<helper>_method_is_fold`.
 
 ### FULL OUTER — `full_outer_parts_str`

@@ -25,10 +25,16 @@ shape only. Do not invent a HashMap/HashSet index. Do not call `build_hashset_u3
   — `-> Vec<(usize, usize, usize, usize)>`; `quads@ == nested_quad(...)`; 4-table star
 - `semi_hit_rows_str(outer, inner) -> Vec<usize>`
   — `hits@ == nested_semi_hits(...)`; SEMI (matched outer row ids)
+- `semi_hit_rows_str2(o0, o1, i0, i1) -> Vec<usize>`
+  — `hits@ == nested_semi_hits2(...)`; two-key SEMI hits
+- `semi_hit_rows_str3(o0, o1, o2, i0, i1, i2) -> Vec<usize>`
+  — `hits@ == nested_semi_hits3(...)`; three-key SEMI hits
 - `anti_miss_rows_str(outer, inner) -> Vec<usize>`
   — `misses@ == nested_anti_misses(...)`; LEFT anti / ANTI miss ids
+- `anti_miss_rows_str2(o0, o1, i0, i1) -> Vec<usize>`
+  — `misses@ == nested_anti_misses2(...)`; two-key LEFT anti / ANTI misses
 - `anti_miss_rows_str3(o0, o1, o2, i0, i1, i2) -> Vec<usize>`
-  — `misses@ == nested_anti_misses3(...)`; three-key LEFT anti misses
+  — `misses@ == nested_anti_misses3(...)`; three-key LEFT anti / ANTI misses
 - `left_outer_pairs_str(outer, inner) -> Vec<(usize, Option<usize>)>`
   — `pairs@ == nested_loj_pairs(...)`; LEFT OUTER slots
 - `left_outer_pairs_u64(outer, inner) -> Vec<(usize, Option<usize>)>`

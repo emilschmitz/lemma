@@ -70,7 +70,10 @@ def test_build_agent_prompt_join_menu_not_proof_paths(
         "q6_eq_triples_str",
         "orjoin_pairs_str",
         "semi_hit_rows_str",
+        "semi_hit_rows_str2",
+        "semi_hit_rows_str3",
         "anti_miss_rows_str",
+        "anti_miss_rows_str2",
         "anti_miss_rows_str3",
         "left_outer_pairs_str",
         "left_outer_pairs_u64",
@@ -86,6 +89,20 @@ def test_build_agent_prompt_join_menu_not_proof_paths(
     assert "After the backward walk" not in opening
     assert "lemma_<helper>_is_pairs` (via" not in opening
     assert "lemma_loop2_at_origin" not in opening
+
+    # Proof-path file must cover RIGHT multi-agg and multi-key SEMI/ANTI.
+    from pathlib import Path
+
+    proof = (
+        Path(__file__).resolve().parents[2]
+        / "research_loop"
+        / "agents"
+        / "JOIN_PROOF_PATHS.md"
+    ).read_text(encoding="utf-8")
+    assert "join_roj_multi_agg_helper" in proof
+    assert "semi_hit_rows_str2" in proof
+    assert "anti_miss_rows_str2" in proof
+    assert "semi_hit_rows_str3" in proof
 
     lookup = (
         Path(__file__).resolve().parents[2]

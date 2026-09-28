@@ -2860,28 +2860,42 @@ def _left_fold_lemma(
 ) -> tuple[str, _FoldBridge] | None:
     """Proof that an anti-join helper equals ``miss_acc`` of ``nested_anti_misses``.
 
-    // shape: left  — LEFT JOIN … IS NULL (one key, or three string keys for holdout Q24)
-    // shape: anti  — ANTI JOIN keyword (one equality)
-    One equality, or three string equalities on LEFT anti. Miss rows are unmatched
-    outer ids; the filter stays in the step.
-    Reuses ``nested_anti_misses`` / ``anti_miss_rows_str`` from SHAPE_LEFT.
+    // shape: left  — LEFT JOIN … IS NULL (1 / 2 / 3 string keys)
+    // shape: anti  — ANTI JOIN keyword (1 / 2 / 3 string keys)
+    Miss rows are unmatched outer ids; the filter stays in the step.
+    Reuses ``nested_anti_misses`` / ``anti_miss_rows_str`` (1-key),
+    ``nested_anti_misses2`` / ``anti_miss_rows_str2`` (2-key),
+    ``nested_anti_misses3`` / ``anti_miss_rows_str3`` (3-key).
     """
     if shape not in ("left", "anti"):
         raise ValueError(f"unsupported anti fold shape {shape!r}")
     if len(slots) != 2:
         return None
     if "&&" in match_conds:
-        if shape != "left":
-            return None
-        return _left3_fold_lemma(
-            helper_name,
-            slots,
-            match_conds=match_conds,
-            filter_cond=filter_cond,
-            update_body=update_body,
-            ret_type=ret_type,
-            ret_base=ret_base,
-        )
+        parts = [p.strip() for p in match_conds.split(" && ")]
+        if len(parts) == 3:
+            return _left3_fold_lemma(
+                helper_name,
+                slots,
+                match_conds=match_conds,
+                filter_cond=filter_cond,
+                update_body=update_body,
+                ret_type=ret_type,
+                ret_base=ret_base,
+                shape=shape,
+            )
+        if len(parts) == 2:
+            return _left2_fold_lemma(
+                helper_name,
+                slots,
+                match_conds=match_conds,
+                filter_cond=filter_cond,
+                update_body=update_body,
+                ret_type=ret_type,
+                ret_base=ret_base,
+                shape=shape,
+            )
+        return None
     m = re.fullmatch(
         r"(?P<lp>\w+)\.(?P<lf>\w+)\[li as int\](?P<lv>@?)\s*==\s*"
         r"(?P<rp>\w+)\.(?P<rf>\w+)\[ri as int\](?P<rv>@?)",
@@ -3063,6 +3077,253 @@ pub proof fn {shape_lemma}({params})
     return text, bridge
 
 
+
+def _left2_fold_lemma(
+    helper_name: str,
+    slots: list[_Slot],
+    *,
+    match_conds: str,
+    filter_cond: str | None,
+    update_body: str,
+    ret_type: str,
+    ret_base: str,
+    shape: str = "left",
+) -> tuple[str, _FoldBridge] | None:
+    """LEFT/ANTI with two string equalities equals ``miss_acc`` of ``nested_anti_misses2``.
+
+    // shape: left2 / anti2 — uses ``anti_miss_rows_str2``.
+    """
+    if shape not in ("left", "anti"):
+        raise ValueError(f"unsupported anti2 fold shape {shape!r}")
+    if len(slots) != 2:
+        return None
+    parts = [p.strip() for p in match_conds.split(" && ")]
+    if len(parts) != 2:
+        return None
+    parsed: list[re.Match[str]] = []
+    for part in parts:
+        m = re.fullmatch(
+            r"(?P<lp>\w+)\.(?P<lf>\w+)\[li as int\](?P<lv>@?)\s*==\s*"
+            r"(?P<rp>\w+)\.(?P<rf>\w+)\[ri as int\](?P<rv>@?)",
+            part,
+        )
+        if m is None or not m.group("lv") or not m.group("rv"):
+            return None
+        parsed.append(m)
+    o, i = slots
+    if any(m.group("lp") != o.param or m.group("rp") != i.param for m in parsed):
+        return None
+
+    def seq_expr(param: str, field: str) -> str:
+        return f"key_views({param}.{field}@)"
+
+    outer_seqs = [seq_expr(m.group("lp"), m.group("lf")) for m in parsed]
+    inner_seqs = [seq_expr(m.group("rp"), m.group("rf")) for m in parsed]
+    l_accesses = [
+        f"{m.group('lp')}.{m.group('lf')}[li as int]@" for m in parsed
+    ]
+    r_accesses = [
+        f"{m.group('rp')}.{m.group('rf')}[ri as int]@" for m in parsed
+    ]
+    r_accesses_j = [
+        f"{m.group('rp')}.{m.group('rf')}[j as int]@" for m in parsed
+    ]
+    match_all = " && ".join(
+        f"{l} == {r}" for l, r in zip(l_accesses, r_accesses, strict=True)
+    )
+    match_all_j = " && ".join(
+        f"{l} == {r}" for l, r in zip(l_accesses, r_accesses_j, strict=True)
+    )
+    key_asserts = "\n    ".join(
+        f"assert({os}[li] == {la});"
+        for os, la in zip(outer_seqs, l_accesses, strict=True)
+    )
+    inner_asserts = "\n            ".join(
+        f"assert({ins}[j] == {ra});"
+        for ins, ra in zip(inner_seqs, r_accesses_j, strict=True)
+    )
+
+    step_update = update_body.replace("tail", "acc")
+    if filter_cond:
+        step = (
+            f"if {filter_cond} {{\n"
+            f"        {step_update}\n"
+            f"    }} else {{\n"
+            f"        acc\n"
+            f"    }}"
+        )
+    else:
+        step = step_update
+    step_closure = (
+        f"|acc: {ret_type}, li: int| {{\n"
+        f"                {step}\n"
+        f"            }}"
+    )
+    params = f"{o.param}: &{o.struct}, {i.param}: &{i.struct}"
+    helper_zeros = f"{helper_name}({o.param}, {i.param}, 0)"
+    fold_rhs = (
+        f"miss_acc(\n"
+        f"            nested_anti_misses2(\n"
+        f"                {outer_seqs[0]},\n"
+        f"                {outer_seqs[1]},\n"
+        f"                {inner_seqs[0]},\n"
+        f"                {inner_seqs[1]},\n"
+        f"                {o.param}.n as int,\n"
+        f"            ),\n"
+        f"            {step_closure},\n"
+        f"            {ret_base},\n"
+        f"            0,\n"
+        f"        )"
+    )
+    loop_lemma = f"lemma_{helper_name}_is_{shape}_loop"
+    shape_lemma = f"lemma_{helper_name}_is_{shape}"
+    match_suffix = "lemma_join_right_match_helper_suffix"
+    match_iff = "lemma_join_right_match_helper_iff_ids"
+    text = f"""// shape: {shape}2
+pub proof fn {match_suffix}(
+    {params},
+    li: int,
+    ri: int,
+)
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        0 <= li < {o.param}.n,
+        0 <= ri <= {i.param}.n,
+    ensures
+        join_right_match_helper({o.param}, {i.param}, li, ri) <==> exists|j: int|
+            ri <= j < {i.param}.n && {match_all_j},
+    decreases {i.param}.n - ri,
+{{
+    if ri < {i.param}.n {{
+        if {match_all} {{
+            assert(exists|j: int| ri <= j < {i.param}.n && {match_all_j}) by {{
+                assert(ri <= ri < {i.param}.n && {match_all});
+            }};
+        }} else {{
+            {match_suffix}({o.param}, {i.param}, li, ri + 1);
+        }}
+    }}
+}}
+
+pub proof fn {match_iff}({params}, li: int)
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        0 <= li < {o.param}.n,
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+    ensures
+        !join_right_match_helper({o.param}, {i.param}, li, 0) <==> eq_row_ids2(
+            {inner_seqs[0]},
+            {inner_seqs[1]},
+            {outer_seqs[0]}[li],
+            {outer_seqs[1]}[li],
+            {i.param}.n as int,
+        ).len() == 0,
+{{
+    {match_suffix}({o.param}, {i.param}, li, 0);
+    {key_asserts}
+    lemma_eq_row_ids2_nonempty_iff(
+        {inner_seqs[0]},
+        {inner_seqs[1]},
+        {outer_seqs[0]}[li],
+        {outer_seqs[1]}[li],
+        {i.param}.n as int,
+    );
+    assert((exists|j: int| 0 <= j < {i.param}.n && {match_all_j}) <==> (exists|j: int|
+        0 <= j < {i.param}.n && {inner_seqs[0]}[j] == {outer_seqs[0]}[li]
+            && {inner_seqs[1]}[j] == {outer_seqs[1]}[li])) by {{
+        if exists|j: int| 0 <= j < {i.param}.n && {match_all_j} {{
+            let j = choose|j: int| 0 <= j < {i.param}.n && {match_all_j};
+            {inner_asserts}
+            assert(exists|j2: int|
+                #![trigger {inner_seqs[0]}[j2]]
+                0 <= j2 < {i.param}.n && {inner_seqs[0]}[j2] == {outer_seqs[0]}[li]
+                    && {inner_seqs[1]}[j2] == {outer_seqs[1]}[li]) by {{
+                assert(0 <= j < {i.param}.n && {inner_seqs[0]}[j] == {outer_seqs[0]}[li]
+                    && {inner_seqs[1]}[j] == {outer_seqs[1]}[li]);
+            }};
+        }}
+        if exists|j: int|
+            0 <= j < {i.param}.n && {inner_seqs[0]}[j] == {outer_seqs[0]}[li]
+                && {inner_seqs[1]}[j] == {outer_seqs[1]}[li]
+        {{
+            let j = choose|j: int|
+                0 <= j < {i.param}.n && {inner_seqs[0]}[j] == {outer_seqs[0]}[li]
+                    && {inner_seqs[1]}[j] == {outer_seqs[1]}[li];
+            {inner_asserts}
+            assert({match_all_j});
+            assert(exists|j2: int|
+                #![trigger {parsed[0].group('rp')}.{parsed[0].group('rf')}[j2 as int]@]
+                0 <= j2 < {i.param}.n && {" && ".join(
+                    f"{m.group('lp')}.{m.group('lf')}[li as int]@ == "
+                    f"{m.group('rp')}.{m.group('rf')}[j2 as int]@"
+                    for m in parsed
+                )}) by {{
+                assert(0 <= j < {i.param}.n && {match_all_j});
+            }};
+        }}
+    }};
+}}
+
+pub proof fn {loop_lemma}({params}, li: int)
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+        0 <= li <= {o.param}.n,
+    ensures
+        {helper_name}({o.param}, {i.param}, li) == anti_loop_acc2(
+            {outer_seqs[0]},
+            {outer_seqs[1]},
+            {inner_seqs[0]},
+            {inner_seqs[1]},
+            {step_closure},
+            {ret_base},
+            {o.param}.n as int,
+            li,
+        ),
+    decreases {o.param}.n - li,
+{{
+    if li < {o.param}.n {{
+        {loop_lemma}({o.param}, {i.param}, li + 1);
+        {match_iff}({o.param}, {i.param}, li);
+        {key_asserts}
+    }}
+}}
+
+pub proof fn {shape_lemma}({params})
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+    ensures
+        {helper_zeros} == {fold_rhs},
+{{
+    {loop_lemma}({o.param}, {i.param}, 0);
+    lemma_anti2_at_origin(
+        {outer_seqs[0]},
+        {outer_seqs[1]},
+        {inner_seqs[0]},
+        {inner_seqs[1]},
+        {step_closure},
+        {ret_base},
+        {o.param}.n as int,
+    );
+}}"""
+    bridge = _FoldBridge(
+        helper_name=helper_name,
+        pairs_lemma=shape_lemma,
+        slots=list(slots),
+        helper_zeros=helper_zeros,
+        fold_rhs=fold_rhs,
+    )
+    return text, bridge
+
+
 def _left3_fold_lemma(
     helper_name: str,
     slots: list[_Slot],
@@ -3072,11 +3333,14 @@ def _left3_fold_lemma(
     update_body: str,
     ret_type: str,
     ret_base: str,
+    shape: str = "left",
 ) -> tuple[str, _FoldBridge] | None:
-    """LEFT-anti with three string equalities equals ``miss_acc`` of ``nested_anti_misses3``.
+    """LEFT/ANTI with three string equalities equals ``miss_acc`` of ``nested_anti_misses3``.
 
-    // shape: left3
+    // shape: left3 / anti3 — reuses ``anti_miss_rows_str3``.
     """
+    if shape not in ("left", "anti"):
+        raise ValueError(f"unsupported anti3 fold shape {shape!r}")
     if len(slots) != 2:
         return None
     parts = [p.strip() for p in match_conds.split(" && ")]
@@ -3159,11 +3423,11 @@ def _left3_fold_lemma(
         f"            0,\n"
         f"        )"
     )
-    loop_lemma = f"lemma_{helper_name}_is_left_loop"
-    left_lemma = f"lemma_{helper_name}_is_left"
+    loop_lemma = f"lemma_{helper_name}_is_{shape}_loop"
+    shape_lemma = f"lemma_{helper_name}_is_{shape}"
     match_suffix = "lemma_join_right_match_helper_suffix"
     match_iff = "lemma_join_right_match_helper_iff_ids"
-    text = f"""// shape: left3
+    text = f"""// shape: {shape}3
 pub proof fn {match_suffix}(
     {params},
     li: int,
@@ -3289,7 +3553,7 @@ pub proof fn {loop_lemma}({params}, li: int)
     }}
 }}
 
-pub proof fn {left_lemma}({params})
+pub proof fn {shape_lemma}({params})
     requires
         valid_cols_{o.table}({o.param}),
         valid_cols_{i.table}({i.param}),
@@ -3313,7 +3577,7 @@ pub proof fn {left_lemma}({params})
 }}"""
     bridge = _FoldBridge(
         helper_name=helper_name,
-        pairs_lemma=left_lemma,
+        pairs_lemma=shape_lemma,
         slots=list(slots),
         helper_zeros=helper_zeros,
         fold_rhs=fold_rhs,
@@ -3333,10 +3597,33 @@ def _semi_fold_lemma(
 ) -> tuple[str, _FoldBridge] | None:
     """Proof that a SEMI helper equals ``hit_acc`` of ``nested_semi_hits``.
 
-    // shape: semi
-    One equality only. Hit rows are matched left ids; the filter stays in the step.
+    // shape: semi — one / two / three string equalities.
+    Hit rows are matched left ids; the filter stays in the step.
     """
-    if len(slots) != 2 or "&&" in match_conds:
+    if len(slots) != 2:
+        return None
+    if "&&" in match_conds:
+        parts = [p.strip() for p in match_conds.split(" && ")]
+        if len(parts) == 3:
+            return _semi3_fold_lemma(
+                helper_name,
+                slots,
+                match_conds=match_conds,
+                filter_cond=filter_cond,
+                update_body=update_body,
+                ret_type=ret_type,
+                ret_base=ret_base,
+            )
+        if len(parts) == 2:
+            return _semi2_fold_lemma(
+                helper_name,
+                slots,
+                match_conds=match_conds,
+                filter_cond=filter_cond,
+                update_body=update_body,
+                ret_type=ret_type,
+                ret_base=ret_base,
+            )
         return None
     m = re.fullmatch(
         r"(?P<lp>\w+)\.(?P<lf>\w+)\[li as int\](?P<lv>@?)\s*==\s*"
@@ -3504,6 +3791,496 @@ pub proof fn {semi_lemma}({params})
     lemma_semi_at_origin(
         {outer_seq},
         {inner_seq},
+        {step_closure},
+        {ret_base},
+        {o.param}.n as int,
+    );
+}}"""
+    bridge = _FoldBridge(
+        helper_name=helper_name,
+        pairs_lemma=semi_lemma,
+        slots=list(slots),
+        helper_zeros=helper_zeros,
+        fold_rhs=fold_rhs,
+    )
+    return text, bridge
+
+
+
+def _semi2_fold_lemma(
+    helper_name: str,
+    slots: list[_Slot],
+    *,
+    match_conds: str,
+    filter_cond: str | None,
+    update_body: str,
+    ret_type: str,
+    ret_base: str,
+) -> tuple[str, _FoldBridge] | None:
+    """SEMI with two string equalities equals ``hit_acc`` of ``nested_semi_hits2``.
+
+    // shape: semi2 — uses ``semi_hit_rows_str2``.
+    """
+    if len(slots) != 2:
+        return None
+    parts = [p.strip() for p in match_conds.split(" && ")]
+    if len(parts) != 2:
+        return None
+    parsed: list[re.Match[str]] = []
+    for part in parts:
+        m = re.fullmatch(
+            r"(?P<lp>\w+)\.(?P<lf>\w+)\[li as int\](?P<lv>@?)\s*==\s*"
+            r"(?P<rp>\w+)\.(?P<rf>\w+)\[ri as int\](?P<rv>@?)",
+            part,
+        )
+        if m is None or not m.group("lv") or not m.group("rv"):
+            return None
+        parsed.append(m)
+    o, i = slots
+    if any(m.group("lp") != o.param or m.group("rp") != i.param for m in parsed):
+        return None
+
+    def seq_expr(param: str, field: str) -> str:
+        return f"key_views({param}.{field}@)"
+
+    outer_seqs = [seq_expr(m.group("lp"), m.group("lf")) for m in parsed]
+    inner_seqs = [seq_expr(m.group("rp"), m.group("rf")) for m in parsed]
+    l_accesses = [f"{m.group('lp')}.{m.group('lf')}[li as int]@" for m in parsed]
+    r_accesses = [f"{m.group('rp')}.{m.group('rf')}[ri as int]@" for m in parsed]
+    r_accesses_j = [f"{m.group('rp')}.{m.group('rf')}[j as int]@" for m in parsed]
+    match_all = " && ".join(
+        f"{l} == {r}" for l, r in zip(l_accesses, r_accesses, strict=True)
+    )
+    match_all_j = " && ".join(
+        f"{l} == {r}" for l, r in zip(l_accesses, r_accesses_j, strict=True)
+    )
+    key_asserts = "\n    ".join(
+        f"assert({os}[li] == {la});"
+        for os, la in zip(outer_seqs, l_accesses, strict=True)
+    )
+    inner_asserts = "\n            ".join(
+        f"assert({ins}[j] == {ra});"
+        for ins, ra in zip(inner_seqs, r_accesses_j, strict=True)
+    )
+
+    step_update = update_body.replace("tail", "acc")
+    if filter_cond:
+        step = (
+            f"if {filter_cond} {{\n"
+            f"        {step_update}\n"
+            f"    }} else {{\n"
+            f"        acc\n"
+            f"    }}"
+        )
+    else:
+        step = step_update
+    step_closure = (
+        f"|acc: {ret_type}, li: int| {{\n"
+        f"                {step}\n"
+        f"            }}"
+    )
+    params = f"{o.param}: &{o.struct}, {i.param}: &{i.struct}"
+    helper_zeros = f"{helper_name}({o.param}, {i.param}, 0)"
+    fold_rhs = (
+        f"hit_acc(\n"
+        f"            nested_semi_hits2(\n"
+        f"                {outer_seqs[0]},\n"
+        f"                {outer_seqs[1]},\n"
+        f"                {inner_seqs[0]},\n"
+        f"                {inner_seqs[1]},\n"
+        f"                {o.param}.n as int,\n"
+        f"            ),\n"
+        f"            {step_closure},\n"
+        f"            {ret_base},\n"
+        f"            0,\n"
+        f"        )"
+    )
+    loop_lemma = f"lemma_{helper_name}_is_semi_loop"
+    semi_lemma = f"lemma_{helper_name}_is_semi"
+    match_suffix = "lemma_join_right_match_helper_suffix"
+    match_iff = "lemma_join_right_match_helper_iff_ids"
+    text = f"""// shape: semi2
+pub proof fn {match_suffix}(
+    {params},
+    li: int,
+    ri: int,
+)
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        0 <= li < {o.param}.n,
+        0 <= ri <= {i.param}.n,
+    ensures
+        join_right_match_helper({o.param}, {i.param}, li, ri) <==> exists|j: int|
+            ri <= j < {i.param}.n && {match_all_j},
+    decreases {i.param}.n - ri,
+{{
+    if ri < {i.param}.n {{
+        if {match_all} {{
+            assert(exists|j: int| ri <= j < {i.param}.n && {match_all_j}) by {{
+                assert(ri <= ri < {i.param}.n && {match_all});
+            }};
+        }} else {{
+            {match_suffix}({o.param}, {i.param}, li, ri + 1);
+        }}
+    }}
+}}
+
+pub proof fn {match_iff}({params}, li: int)
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        0 <= li < {o.param}.n,
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+    ensures
+        join_right_match_helper({o.param}, {i.param}, li, 0) <==> eq_row_ids2(
+            {inner_seqs[0]},
+            {inner_seqs[1]},
+            {outer_seqs[0]}[li],
+            {outer_seqs[1]}[li],
+            {i.param}.n as int,
+        ).len() > 0,
+{{
+    {match_suffix}({o.param}, {i.param}, li, 0);
+    {key_asserts}
+    lemma_eq_row_ids2_nonempty_iff(
+        {inner_seqs[0]},
+        {inner_seqs[1]},
+        {outer_seqs[0]}[li],
+        {outer_seqs[1]}[li],
+        {i.param}.n as int,
+    );
+    assert((exists|j: int| 0 <= j < {i.param}.n && {match_all_j}) <==> (exists|j: int|
+        0 <= j < {i.param}.n && {inner_seqs[0]}[j] == {outer_seqs[0]}[li]
+            && {inner_seqs[1]}[j] == {outer_seqs[1]}[li])) by {{
+        if exists|j: int| 0 <= j < {i.param}.n && {match_all_j} {{
+            let j = choose|j: int| 0 <= j < {i.param}.n && {match_all_j};
+            {inner_asserts}
+            assert(exists|j2: int|
+                #![trigger {inner_seqs[0]}[j2]]
+                0 <= j2 < {i.param}.n && {inner_seqs[0]}[j2] == {outer_seqs[0]}[li]
+                    && {inner_seqs[1]}[j2] == {outer_seqs[1]}[li]) by {{
+                assert(0 <= j < {i.param}.n && {inner_seqs[0]}[j] == {outer_seqs[0]}[li]
+                    && {inner_seqs[1]}[j] == {outer_seqs[1]}[li]);
+            }};
+        }}
+        if exists|j: int|
+            0 <= j < {i.param}.n && {inner_seqs[0]}[j] == {outer_seqs[0]}[li]
+                && {inner_seqs[1]}[j] == {outer_seqs[1]}[li]
+        {{
+            let j = choose|j: int|
+                0 <= j < {i.param}.n && {inner_seqs[0]}[j] == {outer_seqs[0]}[li]
+                    && {inner_seqs[1]}[j] == {outer_seqs[1]}[li];
+            {inner_asserts}
+            assert({match_all_j});
+            assert(exists|j2: int|
+                #![trigger {parsed[0].group('rp')}.{parsed[0].group('rf')}[j2 as int]@]
+                0 <= j2 < {i.param}.n && {" && ".join(
+                    f"{m.group('lp')}.{m.group('lf')}[li as int]@ == "
+                    f"{m.group('rp')}.{m.group('rf')}[j2 as int]@"
+                    for m in parsed
+                )}) by {{
+                assert(0 <= j < {i.param}.n && {match_all_j});
+            }};
+        }}
+    }};
+}}
+
+pub proof fn {loop_lemma}({params}, li: int)
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+        0 <= li <= {o.param}.n,
+    ensures
+        {helper_name}({o.param}, {i.param}, li) == semi_loop_acc2(
+            {outer_seqs[0]},
+            {outer_seqs[1]},
+            {inner_seqs[0]},
+            {inner_seqs[1]},
+            {step_closure},
+            {ret_base},
+            {o.param}.n as int,
+            li,
+        ),
+    decreases {o.param}.n - li,
+{{
+    if li < {o.param}.n {{
+        {loop_lemma}({o.param}, {i.param}, li + 1);
+        {match_iff}({o.param}, {i.param}, li);
+        {key_asserts}
+    }}
+}}
+
+pub proof fn {semi_lemma}({params})
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+    ensures
+        {helper_zeros} == {fold_rhs},
+{{
+    {loop_lemma}({o.param}, {i.param}, 0);
+    lemma_semi2_at_origin(
+        {outer_seqs[0]},
+        {outer_seqs[1]},
+        {inner_seqs[0]},
+        {inner_seqs[1]},
+        {step_closure},
+        {ret_base},
+        {o.param}.n as int,
+    );
+}}"""
+    bridge = _FoldBridge(
+        helper_name=helper_name,
+        pairs_lemma=semi_lemma,
+        slots=list(slots),
+        helper_zeros=helper_zeros,
+        fold_rhs=fold_rhs,
+    )
+    return text, bridge
+
+
+def _semi3_fold_lemma(
+    helper_name: str,
+    slots: list[_Slot],
+    *,
+    match_conds: str,
+    filter_cond: str | None,
+    update_body: str,
+    ret_type: str,
+    ret_base: str,
+) -> tuple[str, _FoldBridge] | None:
+    """SEMI with three string equalities equals ``hit_acc`` of ``nested_semi_hits3``.
+
+    // shape: semi3 — uses ``semi_hit_rows_str3``.
+    """
+    if len(slots) != 2:
+        return None
+    parts = [p.strip() for p in match_conds.split(" && ")]
+    if len(parts) != 3:
+        return None
+    parsed: list[re.Match[str]] = []
+    for part in parts:
+        m = re.fullmatch(
+            r"(?P<lp>\w+)\.(?P<lf>\w+)\[li as int\](?P<lv>@?)\s*==\s*"
+            r"(?P<rp>\w+)\.(?P<rf>\w+)\[ri as int\](?P<rv>@?)",
+            part,
+        )
+        if m is None or not m.group("lv") or not m.group("rv"):
+            return None
+        parsed.append(m)
+    o, i = slots
+    if any(m.group("lp") != o.param or m.group("rp") != i.param for m in parsed):
+        return None
+
+    def seq_expr(param: str, field: str) -> str:
+        return f"key_views({param}.{field}@)"
+
+    outer_seqs = [seq_expr(m.group("lp"), m.group("lf")) for m in parsed]
+    inner_seqs = [seq_expr(m.group("rp"), m.group("rf")) for m in parsed]
+    l_accesses = [f"{m.group('lp')}.{m.group('lf')}[li as int]@" for m in parsed]
+    r_accesses = [f"{m.group('rp')}.{m.group('rf')}[ri as int]@" for m in parsed]
+    r_accesses_j = [f"{m.group('rp')}.{m.group('rf')}[j as int]@" for m in parsed]
+    match_all = " && ".join(
+        f"{l} == {r}" for l, r in zip(l_accesses, r_accesses, strict=True)
+    )
+    match_all_j = " && ".join(
+        f"{l} == {r}" for l, r in zip(l_accesses, r_accesses_j, strict=True)
+    )
+    key_asserts = "\n    ".join(
+        f"assert({os}[li] == {la});"
+        for os, la in zip(outer_seqs, l_accesses, strict=True)
+    )
+    inner_asserts = "\n            ".join(
+        f"assert({ins}[j] == {ra});"
+        for ins, ra in zip(inner_seqs, r_accesses_j, strict=True)
+    )
+
+    step_update = update_body.replace("tail", "acc")
+    if filter_cond:
+        step = (
+            f"if {filter_cond} {{\n"
+            f"        {step_update}\n"
+            f"    }} else {{\n"
+            f"        acc\n"
+            f"    }}"
+        )
+    else:
+        step = step_update
+    step_closure = (
+        f"|acc: {ret_type}, li: int| {{\n"
+        f"                {step}\n"
+        f"            }}"
+    )
+    params = f"{o.param}: &{o.struct}, {i.param}: &{i.struct}"
+    helper_zeros = f"{helper_name}({o.param}, {i.param}, 0)"
+    fold_rhs = (
+        f"hit_acc(\n"
+        f"            nested_semi_hits3(\n"
+        f"                {outer_seqs[0]},\n"
+        f"                {outer_seqs[1]},\n"
+        f"                {outer_seqs[2]},\n"
+        f"                {inner_seqs[0]},\n"
+        f"                {inner_seqs[1]},\n"
+        f"                {inner_seqs[2]},\n"
+        f"                {o.param}.n as int,\n"
+        f"            ),\n"
+        f"            {step_closure},\n"
+        f"            {ret_base},\n"
+        f"            0,\n"
+        f"        )"
+    )
+    loop_lemma = f"lemma_{helper_name}_is_semi_loop"
+    semi_lemma = f"lemma_{helper_name}_is_semi"
+    match_suffix = "lemma_join_right_match_helper_suffix"
+    match_iff = "lemma_join_right_match_helper_iff_ids"
+    text = f"""// shape: semi3
+pub proof fn {match_suffix}(
+    {params},
+    li: int,
+    ri: int,
+)
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        0 <= li < {o.param}.n,
+        0 <= ri <= {i.param}.n,
+    ensures
+        join_right_match_helper({o.param}, {i.param}, li, ri) <==> exists|j: int|
+            ri <= j < {i.param}.n && {match_all_j},
+    decreases {i.param}.n - ri,
+{{
+    if ri < {i.param}.n {{
+        if {match_all} {{
+            assert(exists|j: int| ri <= j < {i.param}.n && {match_all_j}) by {{
+                assert(ri <= ri < {i.param}.n && {match_all});
+            }};
+        }} else {{
+            {match_suffix}({o.param}, {i.param}, li, ri + 1);
+        }}
+    }}
+}}
+
+pub proof fn {match_iff}({params}, li: int)
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        0 <= li < {o.param}.n,
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+    ensures
+        join_right_match_helper({o.param}, {i.param}, li, 0) <==> eq_row_ids3(
+            {inner_seqs[0]},
+            {inner_seqs[1]},
+            {inner_seqs[2]},
+            {outer_seqs[0]}[li],
+            {outer_seqs[1]}[li],
+            {outer_seqs[2]}[li],
+            {i.param}.n as int,
+        ).len() > 0,
+{{
+    {match_suffix}({o.param}, {i.param}, li, 0);
+    {key_asserts}
+    lemma_eq_row_ids3_nonempty_iff(
+        {inner_seqs[0]},
+        {inner_seqs[1]},
+        {inner_seqs[2]},
+        {outer_seqs[0]}[li],
+        {outer_seqs[1]}[li],
+        {outer_seqs[2]}[li],
+        {i.param}.n as int,
+    );
+    assert((exists|j: int| 0 <= j < {i.param}.n && {match_all_j}) <==> (exists|j: int|
+        0 <= j < {i.param}.n && {inner_seqs[0]}[j] == {outer_seqs[0]}[li]
+            && {inner_seqs[1]}[j] == {outer_seqs[1]}[li]
+            && {inner_seqs[2]}[j] == {outer_seqs[2]}[li])) by {{
+        if exists|j: int| 0 <= j < {i.param}.n && {match_all_j} {{
+            let j = choose|j: int| 0 <= j < {i.param}.n && {match_all_j};
+            {inner_asserts}
+            assert(exists|j2: int|
+                #![trigger {inner_seqs[0]}[j2]]
+                0 <= j2 < {i.param}.n && {inner_seqs[0]}[j2] == {outer_seqs[0]}[li]
+                    && {inner_seqs[1]}[j2] == {outer_seqs[1]}[li]
+                    && {inner_seqs[2]}[j2] == {outer_seqs[2]}[li]) by {{
+                assert(0 <= j < {i.param}.n && {inner_seqs[0]}[j] == {outer_seqs[0]}[li]
+                    && {inner_seqs[1]}[j] == {outer_seqs[1]}[li]
+                    && {inner_seqs[2]}[j] == {outer_seqs[2]}[li]);
+            }};
+        }}
+        if exists|j: int|
+            0 <= j < {i.param}.n && {inner_seqs[0]}[j] == {outer_seqs[0]}[li]
+                && {inner_seqs[1]}[j] == {outer_seqs[1]}[li]
+                && {inner_seqs[2]}[j] == {outer_seqs[2]}[li]
+        {{
+            let j = choose|j: int|
+                0 <= j < {i.param}.n && {inner_seqs[0]}[j] == {outer_seqs[0]}[li]
+                    && {inner_seqs[1]}[j] == {outer_seqs[1]}[li]
+                    && {inner_seqs[2]}[j] == {outer_seqs[2]}[li];
+            {inner_asserts}
+            assert({match_all_j});
+            assert(exists|j2: int|
+                #![trigger {parsed[0].group('rp')}.{parsed[0].group('rf')}[j2 as int]@]
+                0 <= j2 < {i.param}.n && {" && ".join(
+                    f"{m.group('lp')}.{m.group('lf')}[li as int]@ == "
+                    f"{m.group('rp')}.{m.group('rf')}[j2 as int]@"
+                    for m in parsed
+                )}) by {{
+                assert(0 <= j < {i.param}.n && {match_all_j});
+            }};
+        }}
+    }};
+}}
+
+pub proof fn {loop_lemma}({params}, li: int)
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+        0 <= li <= {o.param}.n,
+    ensures
+        {helper_name}({o.param}, {i.param}, li) == semi_loop_acc3(
+            {outer_seqs[0]},
+            {outer_seqs[1]},
+            {outer_seqs[2]},
+            {inner_seqs[0]},
+            {inner_seqs[1]},
+            {inner_seqs[2]},
+            {step_closure},
+            {ret_base},
+            {o.param}.n as int,
+            li,
+        ),
+    decreases {o.param}.n - li,
+{{
+    if li < {o.param}.n {{
+        {loop_lemma}({o.param}, {i.param}, li + 1);
+        {match_iff}({o.param}, {i.param}, li);
+        {key_asserts}
+    }}
+}}
+
+pub proof fn {semi_lemma}({params})
+    requires
+        valid_cols_{o.table}({o.param}),
+        valid_cols_{i.table}({i.param}),
+        {o.param}.n <= usize::MAX,
+        {i.param}.n <= usize::MAX,
+    ensures
+        {helper_zeros} == {fold_rhs},
+{{
+    {loop_lemma}({o.param}, {i.param}, 0);
+    lemma_semi3_at_origin(
+        {outer_seqs[0]},
+        {outer_seqs[1]},
+        {outer_seqs[2]},
+        {inner_seqs[0]},
+        {inner_seqs[1]},
+        {inner_seqs[2]},
         {step_closure},
         {ret_base},
         {o.param}.n as int,
@@ -4919,6 +5696,115 @@ pub proof fn {right_lemma}({params})
         fold_rhs=fold_rhs,
     )
     return text, bridge
+
+
+def _is_right_scalar_count(query: SQLQuery) -> bool:
+    """True for RIGHT ``SELECT COUNT(*)`` with no GROUP BY / projection."""
+    return _is_semi_anti_scalar_count(query)
+
+
+def _emit_right_scalar_count(
+    query: SQLQuery,
+    slots: list[_Slot],
+    schemas_by_table: dict[str, dict[str, str]],
+    *,
+    where_expr: str | None,
+    helper_name: str = "join_right_count_helper",
+) -> tuple[str, str, str, _FoldBridge | None]:
+    """RIGHT OUTER scalar COUNT(*) as ``right_acc`` of ``nested_right_pairs``.
+
+    // shape: right
+    After side-swap, ``slots[0]`` is the SQL RIGHT (preserved) table. Both match
+    and miss slots contribute +1 — count equals the RIGHT-outer slot list length.
+    Reuses ``right_outer_pairs_str`` / ``right_acc`` (same as projection / multi-agg).
+    """
+    if len(slots) != 2:
+        raise UnsupportedContractError(
+            "RIGHT OUTER JOIN scalar COUNT requires exactly two tables"
+        )
+    if not _is_right_scalar_count(query):
+        raise UnsupportedContractError(
+            "RIGHT OUTER JOIN scalar agg needs COUNT(*) without GROUP BY"
+        )
+    if where_expr:
+        raise UnsupportedContractError(
+            "RIGHT OUTER COUNT with WHERE needs real MethodSpec; not yet supported"
+        )
+    if query.derived_tables:
+        raise UnsupportedContractError(
+            "RIGHT OUTER COUNT with derived tables is not yet supported"
+        )
+    o, inn = slots
+    join = query.joins[0]
+    if len(join.on_equalities) != 1:
+        raise UnsupportedContractError(
+            "RIGHT OUTER COUNT supports exactly one equality"
+        )
+    left_ref, right_ref = join.on_equalities[0]
+    l_expr = _col_access_ref(left_ref, query, slots, schemas_by_table, {})
+    r_expr = _col_access_ref(right_ref, query, slots, schemas_by_table, {})
+    m = re.fullmatch(
+        r"(?P<lp>\w+)\.(?P<lf>\w+)\[(?P<li>\w+) as int\](?P<lv>@?)\s*==\s*"
+        r"(?P<rp>\w+)\.(?P<rf>\w+)\[(?P<ri>\w+) as int\](?P<rv>@?)",
+        f"{l_expr} == {r_expr}".replace(f"{o.idx} as int", "i0 as int").replace(
+            f"{inn.idx} as int", "i1 as int"
+        ),
+    )
+    if m is None or bool(m.group("lv")) != bool(m.group("rv")):
+        raise UnsupportedContractError(
+            "RIGHT OUTER COUNT requires a single column equality"
+        )
+    if m.group("lp") != o.param or m.group("rp") != inn.param:
+        raise UnsupportedContractError(
+            "RIGHT OUTER COUNT equality must be preserved-side == nullable-side"
+        )
+
+    def seq_expr(param: str, field: str, view: str) -> str:
+        col = f"{param}.{field}"
+        return f"key_views({col}@)" if view else f"{col}@"
+
+    outer_seq = seq_expr(m.group("lp"), m.group("lf"), m.group("lv"))
+    inner_seq = seq_expr(m.group("rp"), m.group("rf"), m.group("rv"))
+    ret_type = "u64"
+    ret_base = "0u64"
+    step_hit = (
+        f"|acc: {ret_type}, i0: int, i1: int| {{\n"
+        f"            (acc as int + 1) as u64\n"
+        f"        }}"
+    )
+    step_miss = (
+        f"|acc: {ret_type}, i0: int| {{\n"
+        f"            (acc as int + 1) as u64\n"
+        f"        }}"
+    )
+    helper = f"""// shape: right
+pub open spec fn {helper_name}(
+    {o.param}: &{o.struct},
+    {inn.param}: &{inn.struct},
+) -> (res: {ret_type})
+{{
+    right_acc(
+        nested_right_pairs({outer_seq}, {inner_seq}, {o.param}.n as int),
+        {step_hit},
+        {step_miss},
+        {ret_base},
+        0,
+    )
+}}"""
+    fold_text, bridge = _right_fold_lemma(
+        helper_name,
+        slots,
+        outer_seq=outer_seq,
+        inner_seq=inner_seq,
+        step_hit=step_hit,
+        step_miss=step_miss,
+        ret_type=ret_type,
+        ret_base=ret_base,
+    )
+    helpers_out = helper + "\n\n" + fold_text
+    spec_body = f"{helper_name}({o.param}, {inn.param})"
+    return helpers_out, spec_body, ret_type, bridge
+
 
 def _emit_right_outer_projection(
     query: SQLQuery,
@@ -7725,6 +8611,11 @@ def emit_join_spec_helpers(
         )
         helpers = "\n\n".join(derived_helpers + [roj_ma])
         spec_body = _apply_join_having_filter(spec_body)
+    elif is_right and _is_right_scalar_count(query) and len(slots) == 2:
+        count_helper, spec_body, ret_type, fold_bridge = _emit_right_scalar_count(
+            query, slots, schemas_by_table, where_expr=where_expr,
+        )
+        helpers = "\n\n".join(derived_helpers + [count_helper])
     elif is_right and not query.is_projection:
         raise UnsupportedContractError(
             "RIGHT JOIN group-by / aggregate needs real MethodSpec; not yet supported"
