@@ -60,7 +60,7 @@ open `context/ro/JOIN_PROOF_PATHS.md` for the shape you have.
 - <!-- shape: loj --> `left_outer_pairs_str(outer, inner)` / `left_outer_pairs_u64` — `pairs@ == nested_loj_pairs(...)`; LEFT OUTER slots.
 - <!-- shape: right --> `right_outer_pairs_str(outer, inner)` — `slots@ == nested_right_pairs(...)`; RIGHT OUTER slots (projection, scalar COUNT, multi-agg).
 - `star_eq_quads_str(hub_a, hub_t, hub_v, sub_a, tag_t, tag_v, pre_a, pre_t, pre_v)` — `quads@ == nested_quad(...)`; 4-table star. <!-- shape: 4table -->
-- <!-- shape: full --> `full_outer_parts_str(left, right)` — matched pairs + left/right misses; FULL OUTER parts.
+- <!-- shape: full --> `full_outer_parts_str(left, right)` — matched pairs + left/right misses; FULL OUTER parts (scalar, projection, group-by, multi-agg on join key).
 - <!-- shape: selfjoin --> self-joins use the same `equijoin_pairs_*` helpers; `run_query` / MethodSpec params are SQL aliases (`Cols_<alias>`), not a second physical table.
 
 ## Allowed patterns

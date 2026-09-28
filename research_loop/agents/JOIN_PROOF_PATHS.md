@@ -131,6 +131,9 @@ returns.
 2. Fold matched / left-miss / right-miss with `full_acc`.
 3. Call `lemma_<helper>_is_full`.
 4. Call `lemma_<helper>_method_is_fold`.
+   Multi-agg GROUP BY on the join key uses `full_join_groupby_helper` /
+   `lemma_full_join_matched_helper_method_is_fold` (same three-phase list;
+   right-miss keys remap via the equality; other-side measures are 0).
 
 ### Self-join
 

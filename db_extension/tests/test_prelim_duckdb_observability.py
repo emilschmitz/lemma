@@ -100,6 +100,7 @@ def test_build_agent_prompt_join_menu_not_proof_paths(
         / "JOIN_PROOF_PATHS.md"
     ).read_text(encoding="utf-8")
     assert "join_roj_multi_agg_helper" in proof
+    assert "full_join_groupby_helper" in proof
     assert "semi_hit_rows_str2" in proof
     assert "anti_miss_rows_str2" in proof
     assert "semi_hit_rows_str3" in proof

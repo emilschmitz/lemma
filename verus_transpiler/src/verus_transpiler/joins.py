@@ -7600,13 +7600,13 @@ def _emit_full_outer(
         raise UnsupportedContractError(
             "FULL OUTER JOIN with derived tables needs real MethodSpec; not yet supported"
         )
-    if query.is_multi_agg:
-        raise UnsupportedContractError(
-            "FULL OUTER JOIN multi-agg needs real MethodSpec; not yet supported"
-        )
     if len(query.joins) != 1 or len(query.joins[0].on_equalities) != 1:
         raise UnsupportedContractError(
             "FULL OUTER JOIN fold supports exactly one equality"
+        )
+    if query.is_multi_agg and not query.groupby_columns:
+        raise UnsupportedContractError(
+            "FULL OUTER JOIN multi-agg needs GROUP BY on the join key"
         )
 
     left, right = slots[0], slots[1]
@@ -7644,6 +7644,24 @@ def _emit_full_outer(
 
     if query.is_projection:
         return _emit_full_outer_projection(
+            query,
+            slots,
+            schemas_by_table,
+            derived_by_alias,
+            match_conds=match_conds,
+            right_match=right_match,
+            left_match=left_match,
+            filter_matched=filter_matched,
+            filter_left=filter_left,
+            filter_right=filter_right,
+            join_cond=join_cond,
+            matched_name=matched_name,
+            left_name=left_name,
+            right_name=right_name,
+        )
+
+    if query.is_multi_agg:
+        return _emit_full_outer_multi_agg(
             query,
             slots,
             schemas_by_table,
@@ -7790,6 +7808,339 @@ def _emit_full_outer(
         fold_text, bridge = fold
         helpers = helpers + "\n\n" + fold_text
     return helpers, spec_body, val_type, bridge
+
+
+def _full_measure_on_side(
+    spec: AggSpec,
+    query: SQLQuery,
+    side_slots: list[_Slot],
+    schemas_by_table: dict[str, dict[str, str]],
+) -> bool:
+    """True when COUNT(*) or the measure column lives on ``side_slots``."""
+    if spec.agg_type == "COUNT" and (
+        not spec.agg_column or spec.agg_column in ("*", "")
+    ):
+        return True
+    col_ref = (spec.agg_column or "").strip()
+    side_tables = {s.table for s in side_slots}
+    aliases = _alias_map(query)
+    if col_ref and "." in col_ref:
+        tbl_alias, _col = col_ref.split(".", 1)
+        table = aliases.get(tbl_alias.lower(), tbl_alias)
+        return table in side_tables
+    if not col_ref and spec.agg_expr:
+        m = re.search(r"\brow\.([A-Za-z_][A-Za-z0-9_]*)", spec.agg_expr)
+        col_ref = m.group(1) if m else ""
+    if not col_ref or col_ref == "*":
+        return True
+    try:
+        table, _ = _find_table_for_col(col_ref, query, schemas_by_table)
+    except UnsupportedContractError:
+        return False
+    return table in side_tables
+
+
+def _full_multi_term(
+    spec: AggSpec,
+    query: SQLQuery,
+    side_slots: list[_Slot],
+    schemas_by_table: dict[str, dict[str, str]],
+    derived_by_alias: dict[str, DerivedTable],
+    *,
+    val_type: str,
+) -> str:
+    """Agg term on one FULL OUTER side; other-side measures → 0 (NULL)."""
+    if spec.agg_type == "COUNT":
+        return "1"
+    if not _full_measure_on_side(spec, query, side_slots, schemas_by_table):
+        return f"0{val_type}"
+    return _agg_term_expr(spec, query, side_slots, schemas_by_table, derived_by_alias)
+
+
+def _emit_full_outer_multi_agg(
+    query: SQLQuery,
+    slots: list[_Slot],
+    schemas_by_table: dict[str, dict[str, str]],
+    derived_by_alias: dict[str, DerivedTable],
+    *,
+    match_conds: str,
+    right_match: str,
+    left_match: str,
+    filter_matched: str | None,
+    filter_left: str | None,
+    filter_right: str | None,
+    join_cond: str,
+    matched_name: str,
+    left_name: str,
+    right_name: str,
+) -> tuple[str, str, str, _FoldBridge | None]:
+    """FULL OUTER multi-agg GROUP BY join key: matched + left miss + right miss.
+
+    // shape: full
+    Reuses ``full_acc`` / ``full_outer_parts_str`` geometry. Join-key GROUP BY
+    remaps right-miss keys via the equality (no invented NULL keys). COUNT(*),
+    SUM, and AVG; other-side measures are NULL → 0 (AVG count stays put).
+    """
+    from .parse_sql import _agg_value_type
+
+    left, right = slots[0], slots[1]
+    key_m, key_ty = _groupby_key_parts(query, slots, schemas_by_table, derived_by_alias)
+    key_l = _anti_left_li(key_m, left)
+    key_r, _ = _full_groupby_key_on_side(
+        query, slots, right, schemas_by_table, derived_by_alias, match_conds,
+    )
+
+    state_types: list[str] = []
+    state_defaults: list[str] = []
+    match_stmts: list[tuple[int, str]] = []
+    left_stmts: list[tuple[int, str]] = []
+    right_stmts: list[tuple[int, str]] = []
+    project_parts: list[str] = []
+
+    for spec in query.agg_specs:
+        pos = len(state_types)
+        if spec.agg_type == "COUNT":
+            state_types.append("u64")
+            state_defaults.append("0u64")
+            bump = f"let s{pos} = (prev.{pos} as int + 1) as u64;"
+            match_stmts.append((pos, bump))
+            left_stmts.append((pos, bump))
+            right_stmts.append((pos, bump))
+            project_parts.append(f"s{pos}")
+        elif spec.agg_type == "SUM":
+            val_type = _agg_value_type(spec.agg_expr)
+            state_types.append(val_type)
+            state_defaults.append(f"0{val_type}")
+            term_m = _full_multi_term(
+                spec, query, slots, schemas_by_table, derived_by_alias, val_type=val_type,
+            )
+            term_l = _full_multi_term(
+                spec, query, [left], schemas_by_table, derived_by_alias, val_type=val_type,
+            )
+            term_r = _full_multi_term(
+                spec, query, [right], schemas_by_table, derived_by_alias, val_type=val_type,
+            )
+            term_l = term_l.replace(f"{left.idx} as int", "li as int")
+            term_r = term_r.replace(f"{right.idx} as int", "ri as int")
+            match_stmts.append((
+                pos,
+                f"let s{pos} = (prev.{pos} as int + {term_m} as int) as {val_type};",
+            ))
+            left_stmts.append((
+                pos,
+                f"let s{pos} = (prev.{pos} as int + {term_l} as int) as {val_type};",
+            ))
+            right_stmts.append((
+                pos,
+                f"let s{pos} = (prev.{pos} as int + {term_r} as int) as {val_type};",
+            ))
+            project_parts.append(f"s{pos}")
+        elif spec.agg_type == "AVG":
+            sum_pos = len(state_types)
+            state_types.extend(["u64", "u64"])
+            state_defaults.extend(["0u64", "0u64"])
+            term_m = _full_multi_term(
+                spec, query, slots, schemas_by_table, derived_by_alias, val_type="u64",
+            )
+            on_left = _full_measure_on_side(spec, query, [left], schemas_by_table)
+            on_right = _full_measure_on_side(spec, query, [right], schemas_by_table)
+            term_l = _full_multi_term(
+                spec, query, [left], schemas_by_table, derived_by_alias, val_type="u64",
+            )
+            term_r = _full_multi_term(
+                spec, query, [right], schemas_by_table, derived_by_alias, val_type="u64",
+            )
+            term_l = term_l.replace(f"{left.idx} as int", "li as int")
+            term_r = term_r.replace(f"{right.idx} as int", "ri as int")
+            match_stmts.append((
+                sum_pos,
+                f"let s{sum_pos} = (prev.{sum_pos} as int + {term_m} as int) as u64;\n"
+                f"            let s{sum_pos + 1} = (prev.{sum_pos + 1} as int + 1) as u64;",
+            ))
+            if on_left:
+                left_stmts.append((
+                    sum_pos,
+                    f"let s{sum_pos} = (prev.{sum_pos} as int + {term_l} as int) as u64;\n"
+                    f"            let s{sum_pos + 1} = (prev.{sum_pos + 1} as int + 1) as u64;",
+                ))
+            else:
+                left_stmts.append((
+                    sum_pos,
+                    f"let s{sum_pos} = prev.{sum_pos};\n"
+                    f"            let s{sum_pos + 1} = prev.{sum_pos + 1};",
+                ))
+            if on_right:
+                right_stmts.append((
+                    sum_pos,
+                    f"let s{sum_pos} = (prev.{sum_pos} as int + {term_r} as int) as u64;\n"
+                    f"            let s{sum_pos + 1} = (prev.{sum_pos + 1} as int + 1) as u64;",
+                ))
+            else:
+                right_stmts.append((
+                    sum_pos,
+                    f"let s{sum_pos} = prev.{sum_pos};\n"
+                    f"            let s{sum_pos + 1} = prev.{sum_pos + 1};",
+                ))
+            project_parts.append(
+                f"if s{sum_pos + 1} == 0 {{ 0 }} else {{ s{sum_pos} / s{sum_pos + 1} }}"
+            )
+        else:
+            raise UnsupportedContractError(
+                f"FULL OUTER JOIN multi-agg unsupported aggregate {spec.agg_type!r}"
+            )
+
+    n_state = len(state_types)
+    if n_state == 1:
+        state_tuple_type = state_types[0]
+        default_state = state_defaults[0]
+        rebuild = "s0"
+        match_rendered = "\n            ".join(
+            tmpl.replace("prev.0", "prev") for _, tmpl in match_stmts
+        )
+        left_rendered = "\n            ".join(
+            tmpl.replace("prev.0", "prev") for _, tmpl in left_stmts
+        )
+        right_rendered = "\n            ".join(
+            tmpl.replace("prev.0", "prev") for _, tmpl in right_stmts
+        )
+    else:
+        state_tuple_type = f"({', '.join(state_types)})"
+        default_state = f"({', '.join(state_defaults)})"
+        rebuild = f"({', '.join(f's{i}' for i in range(n_state))})"
+        match_rendered = "\n            ".join(tmpl for _, tmpl in match_stmts)
+        left_rendered = "\n            ".join(tmpl for _, tmpl in left_stmts)
+        right_rendered = "\n            ".join(tmpl for _, tmpl in right_stmts)
+
+    def map_update(key: str, rendered: str) -> str:
+        return (
+            f"let key = {key};\n"
+            f"            let prev = if tail.contains_key(key) {{ tail[key] }} "
+            f"else {{ {default_state} }};\n"
+            f"            {rendered}\n"
+            f"            tail.insert(key, {rebuild})"
+        )
+
+    update_m = map_update(key_m, match_rendered)
+    update_l = map_update(key_l, left_rendered)
+    update_r = map_update(key_r, right_rendered)
+
+    def _project_from_v(expr: str) -> str:
+        out = expr
+        if n_state == 1:
+            return out.replace("s0", "v")
+        for i in range(n_state - 1, -1, -1):
+            out = out.replace(f"s{i}", f"v.{i}")
+        return out
+
+    if len(project_parts) == 1:
+        project_expr = _project_from_v(project_parts[0])
+    else:
+        project_expr = f"({', '.join(_project_from_v(p) for p in project_parts)})"
+
+    val_types: list[str] = []
+    for spec in query.agg_specs:
+        if spec.agg_type in ("SUM", "COUNT", "AVG"):
+            val_types.append(_agg_value_type(spec.agg_expr))
+        else:
+            val_types.append("u64")
+    ret_val_ty = val_types[0] if len(val_types) == 1 else f"({', '.join(val_types)})"
+    map_ret = f"Map<{key_ty}, {state_tuple_type}>"
+    ret_type = f"Map<{key_ty}, {ret_val_ty}>"
+    ret_base = "Map::empty()"
+
+    matched_loop = _gen_nested_loop(
+        matched_name,
+        slots,
+        join_cond=join_cond,
+        filter_cond=filter_matched,
+        update_expr=update_m,
+        ret_type=map_ret,
+        ret_base=ret_base,
+    )
+
+    left_from = f"""pub open spec fn {left_name}(
+    {left.param}: &{left.struct},
+    {right.param}: &{right.struct},
+    acc: {map_ret},
+    li: int,
+) -> (res: {map_ret})
+    decreases {left.param}.n - li,
+{{
+    if li < {left.param}.n {{
+        let tail = {left_name}({left.param}, {right.param}, acc, li + 1);
+        {f"if {filter_left} {{" if filter_left else ""}
+        if !join_right_match_helper({left.param}, {right.param}, li, 0) {{
+            {update_l}
+        }} else {{
+            tail
+        }}
+        {f"}} else {{ tail }}" if filter_left else ""}
+    }} else {{
+        acc
+    }}
+}}"""
+    right_from = f"""pub open spec fn {right_name}(
+    {left.param}: &{left.struct},
+    {right.param}: &{right.struct},
+    acc: {map_ret},
+    ri: int,
+) -> (res: {map_ret})
+    decreases {right.param}.n - ri,
+{{
+    if ri < {right.param}.n {{
+        let tail = {right_name}({left.param}, {right.param}, acc, ri + 1);
+        {f"if {filter_right} {{" if filter_right else ""}
+        if !join_left_match_helper({left.param}, {right.param}, 0, ri) {{
+            {update_r}
+        }} else {{
+            tail
+        }}
+        {f"}} else {{ tail }}" if filter_right else ""}
+    }} else {{
+        acc
+    }}
+}}"""
+
+    chain_name = "full_join_groupby_helper"
+    chain_helper = f"""pub open spec fn {chain_name}(
+    {left.param}: &{left.struct},
+    {right.param}: &{right.struct},
+) -> (res: {map_ret})
+{{
+    let matched = {matched_name}({left.param}, {right.param}, 0, 0);
+    let after_left = {left_name}({left.param}, {right.param}, matched, 0);
+    {right_name}({left.param}, {right.param}, after_left, 0)
+}}"""
+
+    fold = _full_fold_lemma_map_chain(
+        matched_name=matched_name,
+        left_name=left_name,
+        right_name=right_name,
+        chain_name=chain_name,
+        slots=slots,
+        match_conds=match_conds,
+        filter_matched=filter_matched,
+        filter_left=filter_left,
+        filter_right=filter_right,
+        update_matched=update_m,
+        update_left=update_l,
+        update_right=update_r,
+        ret_type=map_ret,
+        ret_base=ret_base,
+    )
+    helpers = "\n\n".join(
+        [right_match, left_match, matched_loop, left_from, right_from, chain_helper]
+    )
+    bridge: _FoldBridge | None = None
+    if fold is not None:
+        fold_text, bridge = fold
+        helpers = helpers + "\n\n" + fold_text
+
+    spec_body = (
+        f"let raw = {chain_name}({left.param}, {right.param});\n"
+        f"    raw.map_values(|v: {state_tuple_type}| {project_expr})"
+    )
+    return helpers, spec_body, ret_type, bridge
 
 
 def _emit_full_outer_groupby(
@@ -8542,12 +8893,8 @@ def emit_join_spec_helpers(
                 "ANTI JOIN needs real MethodSpec; "
                 "two-table group-by/projection/scalar COUNT only"
             )
-        # FULL OUTER group-by / scalar / projection: proved three-phase fold in _emit_full_outer.
-        # Still refuse multi-agg here; left-only group-by keys fail loudly inside the emitter.
-        if jt == "FULL" and query.is_multi_agg:
-            raise UnsupportedContractError(
-                "FULL OUTER JOIN multi-agg needs real MethodSpec; not yet supported"
-            )
+        # FULL OUTER group-by / scalar / projection / multi-agg: proved in _emit_full_outer.
+        # Left-only group-by keys still fail loudly inside the emitter (NULL keys).
 
     derived_helpers: list[str] = []
     derived_map_vars: dict[str, str] = {}

@@ -232,6 +232,21 @@ def test_full_outer_groupby_on_join_key_emits_fold() -> None:
     assert "lemma_full_join_matched_helper_method_is_fold(" in out
 
 
+def test_full_outer_multi_agg_groupby_on_join_key_emits_fold() -> None:
+    sql = """
+    SELECT p.adsh, COUNT(*) AS c, SUM(p.line) AS s
+    FROM pre p FULL OUTER JOIN sub s ON p.adsh = s.adsh
+    GROUP BY p.adsh
+    """
+    out = transpile_sql_to_verus(sql, CATALOG)
+    _assert_rocketship_clean(out)
+    assert "full_join_groupby_helper" in out
+    assert "full_acc(" in out
+    assert "Map<Seq<char>, (u64, u64)>" in out
+    assert "lemma_full_join_matched_helper_is_full(" in out
+    assert "lemma_full_join_matched_helper_method_is_fold(" in out
+
+
 def test_full_outer_groupby_non_join_key_fails_loud() -> None:
     sql = """
     SELECT p.stmt, COUNT(*) AS c
