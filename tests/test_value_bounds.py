@@ -318,6 +318,32 @@ def test_valid_cols_u32_column_assumption_emits_per_column_cap() -> None:
     assert "pub const LEMMA_MAX_pre_line: u32 = 483;" in consts
 
 
+def test_valid_cols_matches_uppercase_duckdb_column_to_catalog_cap() -> None:
+    cat = CatalogAssumptions(
+        max_rows=100,
+        max_rows_cube=100,
+        max_rows_4=100,
+        tables={
+            "pre": TableAssumptions(
+                columns={"line": ColumnAssumption(max_value_exclusive=483)}
+            )
+        },
+    )
+    bounds = resolve_bounds(
+        with_catalog_assumptions(cat, defaults=engine_default_catalog_assumptions())
+    )
+    text = emit_valid_cols_predicate(
+        {"LINE": "int"},
+        struct_name="Cols_pre",
+        bounds=bounds,
+        catalog=cat,
+        table_assumptions=cat.tables["pre"],
+        table_name="pre",
+    )
+    assert "cols.line[i] < LEMMA_MAX_pre_line" in text
+    assert "LEMMA_MAX_NATIVE_U32" not in text
+
+
 def test_emit_bound_constants_includes_abs_sum() -> None:
     cat = CatalogAssumptions(
         max_rows=100,

@@ -203,6 +203,23 @@ def resolve_bounds(catalog: CatalogAssumptions) -> ResolvedBounds:
     )
 
 
+def _column_assumption(
+    table: TableAssumptions | None,
+    column: str,
+) -> ColumnAssumption | None:
+    """Look up a column cap. DuckDB schema names are uppercase; catalog keys are lower."""
+    if table is None:
+        return None
+    hit = table.columns.get(column)
+    if hit is not None:
+        return hit
+    folded = column.casefold()
+    for name, col in table.columns.items():
+        if name.casefold() == folded:
+            return col
+    return None
+
+
 def cell_u64_cap(
     assumptions: TableAssumptions | None,
     column: str | None,
@@ -211,7 +228,7 @@ def cell_u64_cap(
 ) -> int:
     """Resolve u64-ish cell cap: explicit assumption or full type width."""
     if assumptions is not None and column is not None:
-        col = assumptions.columns.get(column)
+        col = _column_assumption(assumptions, column)
         if col is not None and col.max_value_exclusive is not None:
             return col.max_value_exclusive
     return type_max_exclusive
@@ -252,7 +269,7 @@ def column_abs_sum_exclusive(
     """Measured sum(abs) exclusive bound, or None when the column has no such cap."""
     if table is None:
         return None
-    col = table.columns.get(column)
+    col = _column_assumption(table, column)
     if col is None or col.abs_sum_exclusive is None:
         return None
     return col.abs_sum_exclusive
@@ -274,7 +291,7 @@ def column_assumption_exclusive(
     """Exclusive cap from ``ColumnAssumption`` only (not catalog-wide cell cap)."""
     if table is None:
         return None
-    col = table.columns.get(column)
+    col = _column_assumption(table, column)
     if col is None or col.max_value_exclusive is None:
         return None
     return col.max_value_exclusive
