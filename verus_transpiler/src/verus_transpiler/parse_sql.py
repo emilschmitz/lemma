@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 
 import sqlglot
 from sqlglot import exp
@@ -38,6 +38,55 @@ def _contains_non_int_number(node: exp.Expression) -> bool:
         for child in node.args.values()
         if isinstance(child, exp.Expression)
     )
+
+
+def _date_from_cast(node: exp.Expression) -> date | None:
+    if not isinstance(node, exp.Cast):
+        return None
+    to = node.args.get("to")
+    if getattr(to, "this", None) != exp.DataType.Type.DATE:
+        return None
+    lit = node.this
+    if not isinstance(lit, exp.Literal) or not lit.is_string:
+        return None
+    match = _DATE_LITERAL.match(str(lit.this))
+    if match is None:
+        return None
+    year, month, day = (int(part) for part in match.groups())
+    return date(year, month, day)
+
+
+def _fold_date_interval(node: exp.Expression) -> str | None:
+    """``DATE 'YYYY-MM-DD' ± INTERVAL n DAY|YEAR`` as a YYYYMMDD integer."""
+    if not isinstance(node, (exp.Add, exp.Sub)):
+        return None
+    try:
+        base = _date_from_cast(node.left)
+    except ValueError as exc:
+        raise UnsupportedContractError("DATE literal is not a calendar date.") from exc
+    interval = node.right
+    if base is None or not isinstance(interval, exp.Interval):
+        return None
+    unit_node = interval.args.get("unit")
+    unit = str(getattr(unit_node, "this", unit_node) or "").upper()
+    lit = interval.this
+    if not isinstance(lit, exp.Literal) or not str(lit.this).lstrip("-").isdigit():
+        raise UnsupportedContractError("INTERVAL size must be an integer.")
+    n = int(lit.this)
+    if isinstance(node, exp.Sub):
+        n = -n
+    if unit == "DAY":
+        shifted = base + timedelta(days=n)
+    elif unit == "YEAR":
+        try:
+            shifted = base.replace(year=base.year + n)
+        except ValueError as exc:
+            raise UnsupportedContractError(
+                f"DATE interval from {base.isoformat()} by {n} YEAR is not a calendar date."
+            ) from exc
+    else:
+        raise UnsupportedContractError(f"INTERVAL unit {unit} is not supported.")
+    return f"{shifted.year:04d}{shifted.month:02d}{shifted.day:02d}"
 
 
 def _fold_int_literal(node: exp.Expression) -> str | None:
@@ -76,6 +125,10 @@ def _fold_int_literal(node: exp.Expression) -> str | None:
                 f"DATE literal {lit.this!r} is not a calendar date."
             ) from exc
         return f"{year:04d}{month:02d}{day:02d}"
+    if isinstance(node, (exp.Add, exp.Sub)):
+        shifted = _fold_date_interval(node)
+        if shifted is not None:
+            return shifted
     if isinstance(node, (exp.Add, exp.Sub, exp.Mul)):
         left = _fold_int_literal(node.left)
         right = _fold_int_literal(node.right)
@@ -1925,6 +1978,83 @@ def _resolve_cte_or_table(
     return name, None
 
 
+def _and_predicates(node: exp.Expression) -> list[exp.Expression]:
+    if isinstance(node, exp.And):
+        return _and_predicates(node.left) + _and_predicates(node.right)
+    if isinstance(node, exp.Paren):
+        return _and_predicates(node.this)
+    return [node]
+
+
+def _column_home(node: exp.Column, schema: dict) -> str | None:
+    if node.table:
+        return str(node.table)
+    _flat, multi = normalize_schema(schema)
+    if multi is None:
+        return None
+    hits = [
+        table
+        for table, cols in multi.items()
+        if any(col.lower() == node.name.lower() for col in cols)
+    ]
+    if len(hits) == 1:
+        return hits[0]
+    return None
+
+
+def _lift_comma_joins(expression: exp.Select, schema: dict) -> None:
+    """Turn ``FROM a, b WHERE a.k = b.k`` into an inner join on that equality."""
+    joins = expression.args.get("joins") or []
+    where = expression.args.get("where")
+    from_clause = expression.args.get("from_")
+    if not joins or where is None or from_clause is None:
+        return
+    if not isinstance(from_clause.this, exp.Table):
+        return
+    preds = _and_predicates(where.this)
+    seen = {from_clause.this.name.lower()}
+    used: set[int] = set()
+    for join in joins:
+        if not isinstance(join.this, exp.Table):
+            continue
+        if join.args.get("on") or (join.side or join.kind):
+            seen.add(join.this.name.lower())
+            continue
+        new = join.this.name.lower()
+        chosen: list[exp.Expression] = []
+        for pred in preds:
+            if id(pred) in used or not isinstance(pred, exp.EQ):
+                continue
+            if not isinstance(pred.left, exp.Column) or not isinstance(pred.right, exp.Column):
+                continue
+            left_home = _column_home(pred.left, schema)
+            right_home = _column_home(pred.right, schema)
+            if left_home is None or right_home is None:
+                continue
+            pair = {left_home.lower(), right_home.lower()}
+            if new in pair and pair - {new} and pair - {new} <= seen:
+                chosen.append(pred)
+                used.add(id(pred))
+        if not chosen:
+            continue
+        on: exp.Expression = chosen[0]
+        for extra in chosen[1:]:
+            on = exp.And(this=on, expression=extra)
+        join.set("on", on)
+        join.set("kind", "INNER")
+        seen.add(new)
+    if not used:
+        return
+    remaining = [pred for pred in preds if id(pred) not in used]
+    if not remaining:
+        expression.set("where", None)
+        return
+    acc: exp.Expression = remaining[0]
+    for pred in remaining[1:]:
+        acc = exp.And(this=acc, expression=pred)
+    where.set("this", acc)
+
+
 def _parse_select(
     expression: exp.Select,
     schema: dict[str, str] | dict[str, dict[str, str]],
@@ -2055,6 +2185,7 @@ def _parse_select(
             if alias:
                 query.table_aliases[alias] = table_name
 
+        _lift_comma_joins(expression, schema)
         for join in expression.args.get("joins") or []:
             side = (join.side or join.kind or "INNER").upper()
             if side in ("FULL",):

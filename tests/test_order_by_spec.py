@@ -314,6 +314,43 @@ def test_paper_tpch_q3_unqualified_names_are_a_sorted_sequence() -> None:
     assert "not in this Map method_spec" not in out
 
 
+def test_official_tpch_q1_interval_is_the_integer_date() -> None:
+    sql = """
+    SELECT l_returnflag, l_linestatus, SUM(l_quantity) AS sum_qty
+    FROM lineitem
+    WHERE l_shipdate <= DATE '1998-12-01' - INTERVAL 90 DAY
+    GROUP BY l_returnflag, l_linestatus
+    ORDER BY l_returnflag, l_linestatus
+    """
+    out = transpile_sql_to_verus(sql, _TPCH)
+    assert "19980902" in out
+    assert "INTERVAL" not in out
+    assert "spec_seq_sort_by" in out
+
+
+def test_official_tpch_q3_comma_join_is_an_inner_sorted_sequence() -> None:
+    sql = """
+    SELECT l_orderkey,
+           SUM(l_extendedprice * (1 - l_discount)) AS revenue,
+           o_orderdate, o_shippriority
+    FROM customer, orders, lineitem
+    WHERE c_mktsegment = 'BUILDING'
+      AND c_custkey = o_custkey
+      AND l_orderkey = o_orderkey
+      AND o_orderdate < DATE '1995-03-15'
+      AND l_shipdate > DATE '1995-03-15'
+    GROUP BY l_orderkey, o_orderdate, o_shippriority
+    ORDER BY revenue DESC, o_orderdate
+    LIMIT 10
+    """
+    out = transpile_sql_to_verus(sql, _TPCH)
+    spec = out.split("pub open spec fn method_spec(", 1)[1].split("{", 1)[0]
+    assert "-> Seq<" in spec
+    assert "19950315" in out
+    assert "BUILDING" in out
+    assert "spec_seq_take(spec_seq_sort_by(spec_map_at_keys(" in out
+
+
 def test_paper_tpch_q6_decimal_bound_stays_unsupported() -> None:
     sql = """
     SELECT SUM(l_extendedprice * l_discount) AS revenue
