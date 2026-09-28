@@ -331,14 +331,30 @@ def _boundary_helpers(
 
 
 def _strip_skeleton(spec_rs: str) -> str:
-    """Remove commented run_query skeleton; keep closing verus! brace."""
+    """Remove the commented run_query skeleton.
+
+    Items after the skeleton stay. The join prelude is emitted after the
+    query contract, so dropping everything past the marker would drop
+    ``rem_join_sq`` and the index proofs.
+    """
     if RUNQUERY_SKELETON_MARKER not in spec_rs:
         return spec_rs
-    head, _ = spec_rs.split(RUNQUERY_SKELETON_MARKER, 1)
-    tail_match = re.search(r"\n\} // verus!\s*$", spec_rs, re.MULTILINE)
-    if not tail_match:
+    head, rest = spec_rs.split(RUNQUERY_SKELETON_MARKER, 1)
+    if not re.search(r"\n\} // verus!\s*$", spec_rs, re.MULTILINE):
         raise ValueError("transpiled spec missing closing verus! brace")
-    return head.rstrip() + "\n"
+    # The marker is a prefix of its comment line. Drop that line, then the
+    # commented skeleton, and keep real items that follow.
+    rest = rest.split("\n", 1)[1] if "\n" in rest else ""
+    lines = rest.splitlines(keepends=True)
+    i = 0
+    while i < len(lines):
+        stripped = lines[i].strip()
+        if stripped == "" or stripped.startswith("//"):
+            i += 1
+            continue
+        break
+    after = _trim_verus_close("".join(lines[i:]))
+    return head.rstrip() + "\n" + after
 
 
 _VERUS_CLOSE_RE = re.compile(r"\n\} // verus!\s*$", re.MULTILINE)

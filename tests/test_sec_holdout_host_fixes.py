@@ -254,3 +254,20 @@ def test_exists_corr_string_key_and_multi_agg_having() -> None:
     ), out[out.find("apply_having_filter") : out.find("apply_having_filter") + 200]
     assert "v.0 > 10" in out or "(v.0 > 10)" in out
     assert "|k: (Seq<char>, Seq<char>), v: u64|" not in out
+
+
+def test_strip_skeleton_keeps_items_after_the_contract() -> None:
+    from research_loop.assemble_verified_program import _strip_skeleton
+
+    src = """verus! {
+pub open spec fn method_spec() -> int { 1 }
+// === RunQuery skeleton (agent provides the body) ===
+// pub exec fn run_query
+pub open spec fn rem_join_sq() -> int { 0 }
+} // verus!
+"""
+    out = _strip_skeleton(src)
+    assert "pub open spec fn method_spec" in out
+    assert "pub open spec fn rem_join_sq" in out
+    assert "RunQuery skeleton" not in out
+    assert "} // verus!" not in out

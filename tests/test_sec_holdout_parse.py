@@ -205,6 +205,10 @@ GROUP BY s.sic"""
     out = transpile_sql_to_verus(sql, schema)
     assert "method_spec" in out
     assert "unimplemented!" not in out
+    spec_at = out.find("pub open spec fn method_spec")
+    assert spec_at != -1
+    assert spec_at < out.find("pub open spec fn rem_join_cube(")
+    assert "pub open spec fn rem_join_4(" not in out
     helpers = _fold_helpers(out)
     assert helpers
     assert _fold_helpers_have_no_arbitrary(out)
@@ -220,6 +224,11 @@ GROUP BY s.name"""
     out = transpile_sql_to_verus(sql, {"num": SEC_SCHEMA["num"], "sub": SEC_SCHEMA["sub"]})
     assert "multi_agg_helper" in out
     assert "unimplemented!" not in out
+    spec_at = out.find("pub open spec fn method_spec")
+    cols_at = out.find("pub struct Cols_")
+    rem_at = out.find("pub open spec fn rem_join_sq(")
+    assert spec_at != -1 and cols_at != -1 and rem_at != -1
+    assert cols_at < spec_at < rem_at
     helpers = _fold_helpers(out)
     assert helpers
     assert _fold_helpers_have_no_arbitrary(out)

@@ -349,6 +349,7 @@ def _filter_proof_fns_by_name(source: str, skip: frozenset[str]) -> str:
             name = line.split("pub proof fn ")[1].split("(")[0]
             if name in skip:
                 skip_fn = name
+                _pop_doc_comment(out)
                 continue
             skip_fn = None
             out.append(line)
@@ -513,6 +514,18 @@ _FN_HEAD = re.compile(
 )
 
 
+def _pop_doc_comment(out: list[str]) -> None:
+    """Drop the // line immediately above a function that is being removed."""
+    blanks: list[str] = []
+    while out and out[-1].strip() == "":
+        blanks.append(out.pop())
+    if out and out[-1].lstrip().startswith("//") and not out[-1].lstrip().startswith("// ==="):
+        out.pop()
+        return
+    while blanks:
+        out.append(blanks.pop())
+
+
 def _drop_named_fns(source: str, names: frozenset[str]) -> str:
     """Drop function definitions by name. Brace depth ignores // comments."""
     if not names:
@@ -523,6 +536,7 @@ def _drop_named_fns(source: str, names: frozenset[str]) -> str:
     while i < len(lines):
         head = _FN_HEAD.match(lines[i])
         if head is not None and head.group(1) in names:
+            _pop_doc_comment(out)
             depth = 0
             seen = False
             while i < len(lines):
@@ -669,6 +683,7 @@ pub proof fn lemma_max_rows_4_times_money_fits_u64()
             x in line for x in ("cell_u64", "money_fits", "money_add_fits", "add_money")
         ):
             skip_fn = line.split("pub proof fn ")[1].split("(")[0]
+            _pop_doc_comment(out)
             continue
         if skip_fn and line.strip() == "}":
             skip_fn = None

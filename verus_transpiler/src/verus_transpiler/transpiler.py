@@ -1571,6 +1571,9 @@ def transpile_sql_to_verus(
     )
 
     hash_state_use = "\nuse std::hash::RandomState;" if join_multi else ""
+    # Query contract before the join prelude. The agent reads spec.rs from
+    # the first line; the fold it has to prove is the contract, and the
+    # remainder lemmas plus the index proofs are support.
     return f"""use vstd::prelude::*;
 use std::collections::{{HashMap, HashSet}};{hash_state_use}
 
@@ -1578,10 +1581,6 @@ verus! {{
 
 {emit_bound_constants(bounds=bounds, catalog=catalog_assumptions)}
 
-{emit_bound_lemmas(bounds=bounds, catalog=catalog_assumptions, join_tables=_join_legs)}
-
-{trusted_prelude}
-{eq_join_prelude}
 {cols_block}
 
 {helpers}
@@ -1589,6 +1588,11 @@ verus! {{
 {subquery_section}{spec_fn}
 
 {result_spec}{run_query}
+
+{emit_bound_lemmas(bounds=bounds, catalog=catalog_assumptions, join_tables=_join_legs)}
+
+{trusted_prelude}
+{eq_join_prelude}
 
 }} // verus!
 """

@@ -415,10 +415,15 @@ def test_two_table_bounds_omit_deeper_remainder() -> None:
     assert "rem_join_4(" not in two
     assert "lemma_rem_cap_one_add_fits_pow3" not in two
     assert "lemma_rem_cap_native_add_fits_4" not in two
+    assert "4-table nested loops" not in two
+    assert "3-table join rem" not in two
+    assert "2-table join rem" in two
     assert "lemma_max_rows_sq_plus_one_fits_u64" in two
     assert "pub open spec fn rem_join_cube(" in three
     assert "lemma_rem_cap_one_add_fits_pow3" in three
     assert "lemma_rem_cap_native_add_fits_4" not in three
+    assert "4-table nested loops" not in three
+    assert "3-table nested loops" in three
     assert "rem_join_4(" not in three
     assert "pub open spec fn rem_join_4(" in four
     assert "lemma_rem_cap_one_add_fits_4" in four
