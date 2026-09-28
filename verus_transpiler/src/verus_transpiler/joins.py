@@ -22,7 +22,7 @@ from .rust_ident import rust_ident
 from .subqueries import emit_derived_grouped_inner_spec
 from research_loop.table_assumptions import CatalogAssumptions
 
-from .order_limit import wrap_seq_order_limit
+from .order_limit import group_row_before, wrap_group_topk, wrap_seq_order_limit
 from .value_bounds import col_verus_type, spec_map_key_type, sum_accumulator_verus_type
 
 
@@ -2832,13 +2832,57 @@ def _emit_join_multi_agg(
         fold_text, bridge = fold
         helper = helper + "\n\n" + fold_text
 
-    spec_body = (
-        f"let raw = {helper_name}({', '.join(s.param for s in slots)}"
+    call_args = (
+        f"{', '.join(s.param for s in slots)}"
         f"{', ' + ', '.join(derived_map_vars.values()) if derived_map_vars else ''}"
-        f", {_init_indices(slots)});\n"
+        f", {_init_indices(slots)}"
+    )
+    spec_body = (
+        f"let raw = {helper_name}({call_args});\n"
         f"    raw.map_values(|v: {state_tuple_type}| {project_expr})"
     )
-    return helper, spec_body, ret_type, bridge
+    topk: tuple[str, str] | None = None
+    if query.order_by:
+        keys_name = "group_keys_helper"
+        keys_update = (
+            f"let key = {key_expr};\n"
+            f"            if tail.contains(key) {{ tail }} else {{ tail.push(key) }}"
+        )
+        keys_helper = _gen_nested_loop(
+            keys_name,
+            slots,
+            join_cond=join_cond,
+            filter_cond=filter_cond,
+            update_expr=keys_update,
+            ret_type=f"Seq<{key_ty}>",
+            ret_base="Seq::empty()",
+            extra_params=_derived_map_extra_params(derived_map_vars, derived_map_types),
+        )
+        group_types = (
+            [part.strip() for part in key_ty[1:-1].split(", ")]
+            if key_ty.startswith("(")
+            else [key_ty]
+        )
+        before_name = "spec_group_before"
+        row_ty = f"({key_ty}, {ret_val_ty})"
+        pred = group_row_before(
+            list(query.groupby_columns),
+            group_types,
+            [spec.alias for spec in query.agg_specs],
+            val_types,
+            query.order_by,
+        )
+        helper = (
+            helper
+            + "\n\n"
+            + keys_helper
+            + "\n\n"
+            + f"pub open spec fn {before_name}(a: {row_ty}, b: {row_ty}) -> bool {{\n"
+            + f"    {pred}\n"
+            + "}\n"
+        )
+        topk = (f"{keys_name}({call_args})", row_ty)
+    return helper, spec_body, ret_type, bridge, topk
 
 
 def _having_closure_types(
@@ -10323,6 +10367,7 @@ def emit_join_spec_helpers(
     ret_type: str
     helpers: str
     fold_bridge: _FoldBridge | None = None
+    group_map_ty: str | None = None
 
     def _apply_join_having_filter(body: str) -> str:
         nonlocal extra_having
@@ -10466,7 +10511,7 @@ def emit_join_spec_helpers(
         helpers = "\n\n".join(derived_helpers + [loj_ma])
         spec_body = _apply_join_having_filter(spec_body)
     elif query.is_multi_agg and query.groupby_columns:
-        ma_helper, spec_body, ret_type, fold_bridge = _emit_join_multi_agg(
+        ma_helper, spec_body, ret_type, fold_bridge, topk = _emit_join_multi_agg(
             query,
             slots,
             schemas_by_table,
@@ -10478,6 +10523,18 @@ def emit_join_spec_helpers(
         )
         helpers = "\n\n".join(derived_helpers + [ma_helper])
         spec_body = _apply_join_having_filter(spec_body)
+        if topk is not None:
+            keys_call, row_ty = topk
+            group_map_ty = ret_type
+            spec_body = wrap_group_topk(
+                spec_body,
+                keys_call,
+                row_ty,
+                "spec_group_before",
+                limit=query.limit,
+                offset=query.offset,
+            )
+            ret_type = f"Seq<{row_ty}>"
     else:
         loop_helper, spec_body, ret_type, fold_bridge = _emit_single_agg_nway(
             query,
@@ -10530,6 +10587,10 @@ def emit_join_spec_helpers(
 }}"""
     if fold_bridge is not None:
         spec_fn = spec_fn + "\n\n" + _emit_method_is_fold(fold_bridge, spec_body)
+    if group_map_ty is not None:
+        # Assemble still emits the map's agg-step lemmas. The sequence is only
+        # the ordered view of that map.
+        spec_fn = f"// lemma_group_topk_map: {group_map_ty}\n{spec_fn}"
 
     return helpers + extra_having, spec_fn, ret_type
 

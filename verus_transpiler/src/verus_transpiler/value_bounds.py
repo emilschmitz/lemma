@@ -2160,6 +2160,21 @@ pub open spec fn spec_seq_sort_by<A>(s: Seq<A>, before: spec_fn(A, A) -> bool) -
     }
 }
 
+pub open spec fn spec_map_at_keys<K, V>(keys: Seq<K>, m: Map<K, V>, i: int) -> Seq<(K, V)>
+    decreases keys.len() - i
+{
+    if i >= keys.len() {
+        Seq::empty()
+    } else {
+        let rest = spec_map_at_keys(keys, m, i + 1);
+        if m.contains_key(keys[i]) {
+            Seq::<(K, V)>::empty().push((keys[i], m[keys[i]])) + rest
+        } else {
+            rest
+        }
+    }
+}
+
 pub open spec fn spec_seq_skip<A>(s: Seq<A>, n: int) -> Seq<A> {
     if n <= 0 {
         s

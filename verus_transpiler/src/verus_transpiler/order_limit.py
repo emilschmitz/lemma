@@ -63,6 +63,81 @@ def _before_body(columns: list[str], types: list[str], order_by: list[OrderByIte
     return clause(0)
 
 
+def group_row_before(
+    group_cols: list[str],
+    group_types: list[str],
+    agg_aliases: list[str],
+    agg_types: list[str],
+    order_by: list[OrderByItem],
+) -> str:
+    """Lexicographic order on ``(group_key, agg_value)`` rows."""
+    if len(group_cols) != len(group_types) or len(agg_aliases) != len(agg_types):
+        raise UnsupportedContractError("ORDER BY group types do not match the select list")
+    n_g = len(group_cols)
+    n_a = len(agg_aliases)
+
+    def locate(column: str) -> tuple[str, str]:
+        name = column.lower()
+        for i, col in enumerate(group_cols):
+            if col.lower() == name:
+                field = "0" if n_g == 1 else f"0.{i}"
+                return field, group_types[i]
+        for i, alias in enumerate(agg_aliases):
+            if alias.lower() == name:
+                field = "1" if n_a == 1 else f"1.{i}"
+                return field, agg_types[i]
+        raise UnsupportedContractError(
+            f"ORDER BY {column} is not a group column or aggregate alias"
+        )
+
+    keys = [(locate(item.column), item.descending) for item in order_by]
+
+    def clause(i: int) -> str:
+        (field, ty), desc = keys[i]
+        left = f"{'b' if desc else 'a'}.{field}"
+        right = f"{'a' if desc else 'b'}.{field}"
+        lt = _less(ty, left, right)
+        if i + 1 == len(keys):
+            return lt
+        return (
+            f"if (a.{field}) != (b.{field}) {{\n"
+            f"            {lt}\n"
+            f"        }} else {{\n"
+            f"            {clause(i + 1)}\n"
+            f"        }}"
+        )
+
+    return clause(0)
+
+
+def wrap_group_topk(
+    spec_body: str,
+    keys_call: str,
+    row_ty: str,
+    before_name: str,
+    *,
+    limit: int | None,
+    offset: int | None,
+) -> str:
+    """Sort the grouped map's rows, then offset, then limit."""
+    ordered = (
+        f"spec_seq_sort_by(spec_map_at_keys(keys, projected, 0), "
+        f"|a: {row_ty}, b: {row_ty}| {before_name}(a, b))"
+    )
+    if offset:
+        ordered = f"spec_seq_skip({ordered}, {offset})"
+    if limit is not None:
+        ordered = f"spec_seq_take({ordered}, {limit})"
+    indented = "\n".join(f"        {line}" if line else "" for line in spec_body.split("\n"))
+    return f"""{{
+    let projected = {{
+{indented}
+    }};
+    let keys = {keys_call};
+    {ordered}
+}}"""
+
+
 def wrap_seq_order_limit(
     query: SQLQuery,
     spec_body: str,

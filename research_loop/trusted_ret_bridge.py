@@ -827,54 +827,46 @@ def _emit_seq_trusted(
     elem: TypeExpr,
 ) -> str:
     push_params: list[tuple[str, str, str]] = []
-    spec_push_elems: list[str] = []
-    exec_push_elems: list[str] = []
 
-    def walk(e: TypeExpr, idx: list[int]) -> None:
+    def walk(e: TypeExpr, idx: list[int]) -> tuple[str, str]:
         if isinstance(e, TypeAtom):
             i = idx[0]
             idx[0] += 1
             if e.name == "Seq<char>":
                 push_params.append((f"e{i}", "&str", f"e{i}@"))
-                spec_push_elems.append(f"e{i}@")
-                exec_push_elems.append(f"e{i}.to_string()")
-            elif e.name == "u32":
+                return f"e{i}@", f"e{i}.to_string()"
+            if e.name == "u32":
                 push_params.append((f"e{i}", "u32", f"e{i}"))
-                spec_push_elems.append(f"e{i}")
-                exec_push_elems.append(f"e{i}")
-            elif e.name == "u64":
+                return f"e{i}", f"e{i}"
+            if e.name == "u64":
                 push_params.append((f"e{i}", "u64", f"e{i}"))
-                spec_push_elems.append(f"e{i}")
-                exec_push_elems.append(f"e{i}")
-            else:
-                raise ValueError(f"unsupported seq push atom: {e.name}")
-        elif isinstance(e, TypeOption):
+                return f"e{i}", f"e{i}"
+            raise ValueError(f"unsupported seq push atom: {e.name}")
+        if isinstance(e, TypeOption):
             i = idx[0]
             idx[0] += 1
             exec_ty = spec_to_exec_type(e)
             push_params.append((f"e{i}", exec_ty, f"e{i}"))
             if isinstance(e.inner, TypeAtom) and e.inner.name == "Seq<char>":
-                spec_push_elems.append(
-                    f"match e{i} {{ Some(s) => Some(s@), None => None }}"
+                return (
+                    f"match e{i} {{ Some(s) => Some(s@), None => None }}",
+                    f"e{i}",
                 )
-                exec_push_elems.append(f"e{i}")
-            else:
-                spec_push_elems.append(f"e{i}")
-                exec_push_elems.append(f"e{i}")
-        elif isinstance(e, TypeTuple):
+            return f"e{i}", f"e{i}"
+        if isinstance(e, TypeTuple):
+            specs: list[str] = []
+            execs: list[str] = []
             for child in e.elems:
-                walk(child, idx)
-        else:
-            raise ValueError(f"unsupported seq push type: {e}")
+                spec_e, exec_e = walk(child, idx)
+                specs.append(spec_e)
+                execs.append(exec_e)
+            if len(specs) == 1:
+                return specs[0], execs[0]
+            return f"({', '.join(specs)})", f"({', '.join(execs)})"
+        raise ValueError(f"unsupported seq push type: {e}")
 
-    walk(elem, [0])
+    spec_elem_val, exec_elem_val = walk(elem, [0])
     push_sig = ", ".join(f"{n}: {t}" for n, t, _ in push_params)
-    if len(spec_push_elems) == 1:
-        spec_elem_val = spec_push_elems[0]
-        exec_elem_val = exec_push_elems[0]
-    else:
-        spec_elem_val = f"({', '.join(spec_push_elems)})"
-        exec_elem_val = f"({', '.join(exec_push_elems)})"
 
     spec_elem_str = _type_to_spec_str(elem)
     exec_elem_str = spec_to_exec_type(elem)

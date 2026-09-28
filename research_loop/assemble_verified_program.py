@@ -280,12 +280,33 @@ def _boundary_helpers(
         multi_agg_ret_type,
     )
 
+    # Ordered group-by returns a sequence. The aggregation lemmas still belong
+    # to the map those rows are taken from.
+    agg_ret = ret_type
+    if verus_spec:
+        marker = re.search(
+            r"^// lemma_group_topk_map: (Map<[^\n]+>)\s*$",
+            verus_spec,
+            re.M,
+        )
+        if marker:
+            from research_loop.method_spec_ret_type import (
+                normalize_spec_type,
+                ret_key_from_method_spec_type,
+            )
+            from research_loop.trusted_ret_bridge import structural_bridge_for_spec_type
+
+            map_ty = normalize_spec_type(marker.group(1))
+            try:
+                agg_ret = ret_key_from_method_spec_type(map_ty)
+            except ValueError:
+                agg_ret = structural_bridge_for_spec_type(map_ty).key
     boundary = _emit_agg_helpers(ret_type)
     if not boundary:
         b = get_bridge(ret_type)
         if b and b.trusted_rs:
             boundary = b.trusted_rs
-    if verus_spec and not multi_agg_ret_type(ret_type):
+    if verus_spec and not multi_agg_ret_type(agg_ret):
         from research_loop.method_spec_ret_type import parse_method_spec_return_type
         from research_loop.trusted_ret_bridge import bridge_from_method_spec_type
 
@@ -301,17 +322,17 @@ def _boundary_helpers(
             )
             if scalar_bounds:
                 boundary = f"{boundary}{scalar_bounds}" if boundary else scalar_bounds
-    if multi_agg_ret_type(ret_type):
+    if multi_agg_ret_type(agg_ret):
         distinct = distinct_set_trusted_rs()
         boundary = f"{boundary}{distinct}" if boundary else distinct
         if verus_spec:
             step = multi_agg_step_trusted_rs(
-                verus_spec, ret_type, catalog_assumptions=catalog_assumptions
+                verus_spec, agg_ret, catalog_assumptions=catalog_assumptions
             )
             if step:
                 boundary = f"{boundary}{step}" if boundary else step
     if verus_spec:
-        having = having_filter_trusted_rs(verus_spec, ret_type)
+        having = having_filter_trusted_rs(verus_spec, agg_ret)
         if having:
             boundary = f"{boundary}{having}" if boundary else having
     if boundary and (

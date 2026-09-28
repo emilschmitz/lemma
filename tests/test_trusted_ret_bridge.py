@@ -222,6 +222,15 @@ def test_prepare_agent_visible_spec_single_agg_no_set_helpers() -> None:
     assert "hashset_str_as_map" not in out
 
 
+def test_seq_push_keeps_nested_group_row() -> None:
+    bridge = structural_bridge_for_spec_type(
+        "Seq<((Seq<char>, u32), (u64, u64, u64))>"
+    )
+    rs = bridge.trusted_rs
+    assert ".push(((e0@, e1), (e2, e3, e4)))" in rs
+    assert ".push(((e0.to_string(), e1), (e2, e3, e4)))" in rs
+
+
 def test_seq_push_ensures_use_final_for_mut_receiver() -> None:
     bridge = structural_bridge_for_spec_type("Seq<(Seq<char>, Seq<char>, u32, Seq<char>)>")
     rs = bridge.trusted_rs

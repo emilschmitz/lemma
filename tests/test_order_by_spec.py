@@ -45,13 +45,38 @@ def test_star_order_by_sorts_before_limit() -> None:
     assert "arbitrary()" not in out
 
 
-def test_group_by_limit_stays_a_full_map() -> None:
+def test_group_by_order_by_is_a_sorted_sequence() -> None:
+    sql = """
+    SELECT s.form, s.fy, COUNT(*) AS num_lines,
+           COUNT(DISTINCT p.tag) AS distinct_tags,
+           AVG(p.line) AS avg_line
+    FROM pre p JOIN sub s ON p.adsh = s.adsh
+    WHERE p.stmt = 'IS'
+    GROUP BY s.form, s.fy
+    ORDER BY num_lines DESC
+    LIMIT 50
+    """
+    out = transpile_sql_to_verus(
+        sql,
+        {
+            "pre": {"adsh": "string", "stmt": "string", "tag": "string", "line": "int"},
+            "sub": {"adsh": "string", "form": "string", "fy": "int"},
+        },
+    )
+    spec = out.split("pub open spec fn method_spec", 1)[1].split("pub proof fn", 1)[0]
+    assert "Seq<" in spec.split("{", 1)[0]
+    assert "spec_seq_take(spec_seq_sort_by(spec_map_at_keys(" in spec
+    assert "group_keys_helper" in out
+    assert "// lemma_group_topk_map: Map<(Seq<char>, u32), (u64, u64, u64)>" in out
+    assert "(b.1.0) < (a.1.0)" in out
+    assert "agent may apply in run_query" not in out
+
+
+def test_group_by_without_order_stays_a_map() -> None:
     sql = """
     SELECT s.form, COUNT(*) AS num_lines
     FROM pre p JOIN sub s ON p.adsh = s.adsh
     GROUP BY s.form
-    ORDER BY num_lines DESC
-    LIMIT 10
     """
     out = transpile_sql_to_verus(
         sql,
@@ -60,11 +85,9 @@ def test_group_by_limit_stays_a_full_map() -> None:
             "sub": {"adsh": "string", "form": "string"},
         },
     )
-    spec = out.split("pub open spec fn method_spec", 1)[1].split("pub proof fn", 1)[0]
+    spec = out.split("pub open spec fn method_spec", 1)[1].split("{", 1)[0]
     assert "Map<" in spec
-    assert "spec_seq_take(" not in spec
-    assert "agent may apply in run_query" not in out
-    assert "run_query still returns the full map" in out
+    assert "group_keys_helper" not in out
 
 
 def test_single_column_desc_flips_the_spec_compare() -> None:
