@@ -295,6 +295,24 @@ def _schema_for_ref(
     schemas_by_table: dict[str, dict[str, str]],
     derived_by_alias: dict[str, DerivedTable],
 ) -> tuple[str, str, dict[str, str]]:
+    if "." not in ref:
+        col = ref
+        hits: list[tuple[str, str, dict[str, str]]] = []
+        for table, schema in schemas_by_table.items():
+            for key in schema:
+                if key.lower() == col.lower():
+                    hits.append((table, key, schema))
+                    break
+        for alias, derived in derived_by_alias.items():
+            for key in derived.columns:
+                if key.lower() == col.lower():
+                    hits.append((alias, key, derived.columns))
+                    break
+        if len(hits) == 1:
+            return hits[0]
+        if not hits:
+            raise UnsupportedContractError(f"Identifier '{ref}' not found in schema.")
+        raise UnsupportedContractError(f"ambiguous column {ref!r} across tables")
     alias, col = ref.split(".")[0].lower(), ref.split(".")[-1]
     aliases = _alias_map(query)
     name = aliases.get(alias, alias)
@@ -334,7 +352,7 @@ def _col_access_ref(
         raise UnsupportedContractError(
             f"direct derived column access {ref!r} must go through map lookup"
         )
-    head = ref.split(".")[0]
+    head = table if "." not in ref else ref.split(".")[0]
     slot = _slot_for_ref(slots, head, query)
     field = rust_ident(col)
     if col_verus_type(schema[col]) == "String":

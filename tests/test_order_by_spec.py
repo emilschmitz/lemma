@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import pytest
+
+from verus_transpiler.parse_sql import UnsupportedContractError
 from verus_transpiler.transpiler import transpile_sql_to_verus
 
 _STAR = {
@@ -240,3 +243,85 @@ def test_single_table_one_sum_group_by_order_is_a_sorted_sequence() -> None:
     assert "not in this Map method_spec" not in out
     assert "(b.1) < (a.1)" in out
     assert "pub const LEMMA_MAX_CELL_U64" not in out
+
+
+_TPCH = {
+    "lineitem": {
+        "l_orderkey": "int",
+        "l_quantity": "int",
+        "l_extendedprice": "int",
+        "l_discount": "int",
+        "l_tax": "int",
+        "l_returnflag": "string",
+        "l_linestatus": "string",
+        "l_shipdate": "int",
+    },
+    "orders": {
+        "o_orderkey": "int",
+        "o_custkey": "int",
+        "o_orderdate": "int",
+        "o_shippriority": "int",
+    },
+    "customer": {"c_custkey": "int", "c_mktsegment": "string"},
+}
+
+
+def test_paper_tpch_q1_date_literal_is_an_integer_in_the_sorted_spec() -> None:
+    sql = """
+    SELECT l_returnflag, l_linestatus,
+           SUM(l_quantity) AS sum_qty,
+           SUM(l_extendedprice) AS sum_base_price,
+           SUM(l_extendedprice * (1 - l_discount)) AS sum_disc_price,
+           SUM(l_extendedprice * (1 - l_discount) * (1 + l_tax)) AS sum_charge,
+           AVG(l_quantity) AS avg_qty,
+           AVG(l_extendedprice) AS avg_price,
+           AVG(l_discount) AS avg_disc,
+           COUNT(*) AS count_order
+    FROM lineitem
+    WHERE l_shipdate <= DATE '1998-09-02'
+    GROUP BY l_returnflag, l_linestatus
+    ORDER BY l_returnflag, l_linestatus
+    """
+    out = transpile_sql_to_verus(sql, _TPCH)
+    spec = out.split("pub open spec fn method_spec(", 1)[1].split("{", 1)[0]
+    assert "-> Seq<" in spec
+    assert "19980902" in out
+    assert "DATE" not in out
+    assert "spec_seq_sort_by" in out
+    assert "not in this Map method_spec" not in out
+
+
+def test_paper_tpch_q3_unqualified_names_are_a_sorted_sequence() -> None:
+    sql = """
+    SELECT l_orderkey,
+           SUM(l_extendedprice * (1 - l_discount)) AS revenue,
+           o_orderdate, o_shippriority
+    FROM customer
+    JOIN orders ON c_custkey = o_custkey
+    JOIN lineitem ON l_orderkey = o_orderkey
+    WHERE c_mktsegment = 'BUILDING'
+      AND o_orderdate < DATE '1995-03-15'
+      AND l_shipdate > DATE '1995-03-15'
+    GROUP BY l_orderkey, o_orderdate, o_shippriority
+    ORDER BY revenue DESC, o_orderdate
+    LIMIT 10
+    """
+    out = transpile_sql_to_verus(sql, _TPCH)
+    spec = out.split("pub open spec fn method_spec(", 1)[1].split("{", 1)[0]
+    assert "-> Seq<" in spec
+    assert "19950315" in out
+    assert "spec_seq_take(spec_seq_sort_by(spec_map_at_keys(" in out
+    assert "not in this Map method_spec" not in out
+
+
+def test_paper_tpch_q6_decimal_bound_stays_unsupported() -> None:
+    sql = """
+    SELECT SUM(l_extendedprice * l_discount) AS revenue
+    FROM lineitem
+    WHERE l_shipdate >= DATE '1994-01-01'
+      AND l_shipdate < DATE '1995-01-01'
+      AND l_discount BETWEEN 0.06 - 0.01 AND 0.06 + 0.01
+      AND l_quantity < 24
+    """
+    with pytest.raises(UnsupportedContractError, match="Non-integer numeric literal"):
+        transpile_sql_to_verus(sql, _TPCH)

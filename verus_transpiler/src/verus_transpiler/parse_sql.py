@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import date
 
 import sqlglot
 from sqlglot import exp
@@ -26,6 +27,67 @@ _INT_TYPES = frozenset({
 })
 _STRING_TYPES = frozenset({"string", "varchar", "text", "char", "bpchar"})
 _BOOL_TYPES = frozenset({"bool", "boolean"})
+_DATE_LITERAL = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
+
+
+def _contains_non_int_number(node: exp.Expression) -> bool:
+    if isinstance(node, exp.Literal) and node.is_number and not str(node.this).lstrip("-").isdigit():
+        return True
+    return any(
+        _contains_non_int_number(child)
+        for child in node.args.values()
+        if isinstance(child, exp.Expression)
+    )
+
+
+def _fold_int_literal(node: exp.Expression) -> str | None:
+    """Integer constant, ``DATE 'YYYY-MM-DD'``, or arithmetic of those.
+
+    A date literal is the ``YYYYMMDD`` integer the integer date columns store.
+    A fractional literal is not an integer and stays unsupported.
+    """
+    if isinstance(node, exp.Paren):
+        return _fold_int_literal(node.this)
+    if isinstance(node, exp.Neg):
+        inner = _fold_int_literal(node.this)
+        if inner is None:
+            return None
+        return str(-int(inner))
+    if isinstance(node, exp.Literal) and node.is_number and str(node.this).lstrip("-").isdigit():
+        return str(int(node.this))
+    if isinstance(node, exp.Cast):
+        to = node.args.get("to")
+        dtype = getattr(to, "this", None)
+        if dtype != exp.DataType.Type.DATE:
+            return None
+        lit = node.this
+        if not isinstance(lit, exp.Literal) or not lit.is_string:
+            return None
+        match = _DATE_LITERAL.match(str(lit.this))
+        if match is None:
+            raise UnsupportedContractError(
+                f"DATE literal {lit.this!r} is not YYYY-MM-DD."
+            )
+        year, month, day = (int(part) for part in match.groups())
+        try:
+            date(year, month, day)
+        except ValueError as exc:
+            raise UnsupportedContractError(
+                f"DATE literal {lit.this!r} is not a calendar date."
+            ) from exc
+        return f"{year:04d}{month:02d}{day:02d}"
+    if isinstance(node, (exp.Add, exp.Sub, exp.Mul)):
+        left = _fold_int_literal(node.left)
+        right = _fold_int_literal(node.right)
+        if left is None or right is None:
+            return None
+        a, b = int(left), int(right)
+        if isinstance(node, exp.Add):
+            return str(a + b)
+        if isinstance(node, exp.Sub):
+            return str(a - b)
+        return str(a * b)
+    return None
 
 
 def _kind_of(col_type: str) -> str:
@@ -1309,7 +1371,13 @@ def _compile_where_expr(
                 val_resolved = "true" if right_node.this else "false"
                 val_type = "bool"
             else:
-                raise UnsupportedContractError("Query falls outside the supported Lemma Basic SQL subset.")
+                folded = _fold_int_literal(right_node)
+                if folded is None:
+                    raise UnsupportedContractError(
+                        "Query falls outside the supported Lemma Basic SQL subset."
+                    )
+                val_resolved = folded
+                val_type = "int"
         else:
             raise UnsupportedContractError("Left hand side of comparison must be a column.")
 
@@ -1327,6 +1395,14 @@ def _compile_where_expr(
             val_raw = node.right.this
             val_t = "string" if node.right.is_string else "int"
             query.where_conditions.append((real_col, "=" if op == "==" else op, val_raw, val_t))
+        elif (
+            isinstance(node.left, exp.Column)
+            and val_type == "int"
+            and _fold_int_literal(node.right) is not None
+        ):
+            query.where_conditions.append(
+                (real_col, "=" if op == "==" else op, val_resolved, "int")
+            )
         return f"{left_expr} {op} {val_resolved}"
     if isinstance(node, exp.Literal):
         if node.is_string:
@@ -1357,6 +1433,11 @@ def _compile_where_expr(
         return _compile_is_null_check(col_node, is_null=is_null, resolver=resolver, query=query)
     if isinstance(node, exp.Paren):
         return f"({_compile_child(node.this)})"
+    folded = _fold_int_literal(node)
+    if folded is not None:
+        return folded
+    if _contains_non_int_number(node):
+        raise UnsupportedContractError("Non-integer numeric literal is not a Lemma int.")
     raise UnsupportedContractError(f"Unsupported node in filter expression: {type(node)}")
 
 
