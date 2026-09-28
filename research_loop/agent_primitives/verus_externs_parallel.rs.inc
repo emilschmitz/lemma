@@ -3,6 +3,37 @@
 // Exec bodies may use std::thread (chunked wrapping reduce). We are not proving the parallel
 // implementation; we trust result == serial_wrapping_spec(...) — see agent_primitives/tests/equiv.rs.
 
+// String-key indexes use this hasher. Ids are still appended in row order, so the
+// pair list stays the serial order. Verus does not look inside these items.
+#[verifier::external]
+pub struct StrFxHasher {
+    pub hash: u64,
+}
+
+#[verifier::external]
+impl Default for StrFxHasher {
+    fn default() -> Self {
+        StrFxHasher { hash: 0 }
+    }
+}
+
+#[verifier::external]
+impl std::hash::Hasher for StrFxHasher {
+    fn finish(&self) -> u64 {
+        self.hash
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        let mut i: usize = 0;
+        while i < bytes.len() {
+            self.hash = self.hash
+                .wrapping_mul(0x517cc1b727220a95)
+                .wrapping_add(bytes[i] as u64);
+            i = i + 1;
+        }
+    }
+}
+
 pub open spec fn par_sum_u64_spec(vals: Seq<u64>) -> u64 {
     par_sum_u64_fold(vals, 0, 0)
 }
@@ -385,8 +416,8 @@ pub exec fn par_equijoin_pairs_str(
     ensures pairs@ == serial_eq_pairs_str_spec(outer@, inner@),
 {
     let n_inner = inner.len();
-    let mut index: std::collections::HashMap<&str, Vec<usize>> =
-        std::collections::HashMap::with_capacity(n_inner);
+    let mut index: std::collections::HashMap<&str, Vec<usize>, std::hash::BuildHasherDefault<StrFxHasher>> =
+        std::collections::HashMap::with_capacity_and_hasher(n_inner, std::hash::BuildHasherDefault::default());
     if n_inner < PAR_CHUNK {
         let mut j: usize = 0;
         while j < n_inner {
@@ -397,7 +428,7 @@ pub exec fn par_equijoin_pairs_str(
         let threads = par_exec_thread_count(n_inner);
         let parts = std::thread::scope(|scope| {
             let chunk = (n_inner + threads - 1) / threads;
-            let mut handles: Vec<std::thread::ScopedJoinHandle<std::collections::HashMap<&str, Vec<usize>>>> = Vec::new();
+            let mut handles: Vec<std::thread::ScopedJoinHandle<std::collections::HashMap<&str, Vec<usize>, std::hash::BuildHasherDefault<StrFxHasher>>>> = Vec::new();
             let mut t: usize = 0;
             while t < threads {
                 let start = t * chunk;
@@ -406,8 +437,8 @@ pub exec fn par_equijoin_pairs_str(
                 }
                 let end = if start + chunk < n_inner { start + chunk } else { n_inner };
                 handles.push(scope.spawn(move || {
-                    let mut partial: std::collections::HashMap<&str, Vec<usize>> =
-                        std::collections::HashMap::with_capacity(end - start);
+                    let mut partial: std::collections::HashMap<&str, Vec<usize>, std::hash::BuildHasherDefault<StrFxHasher>> =
+                        std::collections::HashMap::with_capacity_and_hasher(end - start, std::hash::BuildHasherDefault::default());
                     let mut j = start;
                     while j < end {
                         partial.entry(inner[j].as_str()).or_insert_with(Vec::new).push(j);
@@ -417,7 +448,7 @@ pub exec fn par_equijoin_pairs_str(
                 }));
                 t = t + 1;
             }
-            let mut parts: Vec<std::collections::HashMap<&str, Vec<usize>>> = Vec::new();
+            let mut parts: Vec<std::collections::HashMap<&str, Vec<usize>, std::hash::BuildHasherDefault<StrFxHasher>>> = Vec::new();
             for h in handles {
                 parts.push(h.join().unwrap());
             }
@@ -593,8 +624,8 @@ pub exec fn par_star_triples_str(
         ),
 {
     let n_sub = sub_adsh.len();
-    let mut sub_index: std::collections::HashMap<&str, Vec<usize>> =
-        std::collections::HashMap::with_capacity(n_sub);
+    let mut sub_index: std::collections::HashMap<&str, Vec<usize>, std::hash::BuildHasherDefault<StrFxHasher>> =
+        std::collections::HashMap::with_capacity_and_hasher(n_sub, std::hash::BuildHasherDefault::default());
     if n_sub < PAR_CHUNK {
         let mut j: usize = 0;
         while j < n_sub {
@@ -605,7 +636,7 @@ pub exec fn par_star_triples_str(
         let threads = par_exec_thread_count(n_sub);
         let parts = std::thread::scope(|scope| {
             let chunk = (n_sub + threads - 1) / threads;
-            let mut handles: Vec<std::thread::ScopedJoinHandle<std::collections::HashMap<&str, Vec<usize>>>> = Vec::new();
+            let mut handles: Vec<std::thread::ScopedJoinHandle<std::collections::HashMap<&str, Vec<usize>, std::hash::BuildHasherDefault<StrFxHasher>>>> = Vec::new();
             let mut t: usize = 0;
             while t < threads {
                 let start = t * chunk;
@@ -614,8 +645,8 @@ pub exec fn par_star_triples_str(
                 }
                 let end = if start + chunk < n_sub { start + chunk } else { n_sub };
                 handles.push(scope.spawn(move || {
-                    let mut partial: std::collections::HashMap<&str, Vec<usize>> =
-                        std::collections::HashMap::with_capacity(end - start);
+                    let mut partial: std::collections::HashMap<&str, Vec<usize>, std::hash::BuildHasherDefault<StrFxHasher>> =
+                        std::collections::HashMap::with_capacity_and_hasher(end - start, std::hash::BuildHasherDefault::default());
                     let mut j = start;
                     while j < end {
                         partial.entry(sub_adsh[j].as_str()).or_insert_with(Vec::new).push(j);
@@ -625,7 +656,7 @@ pub exec fn par_star_triples_str(
                 }));
                 t = t + 1;
             }
-            let mut parts: Vec<std::collections::HashMap<&str, Vec<usize>>> = Vec::new();
+            let mut parts: Vec<std::collections::HashMap<&str, Vec<usize>, std::hash::BuildHasherDefault<StrFxHasher>>> = Vec::new();
             for h in handles {
                 parts.push(h.join().unwrap());
             }
@@ -638,8 +669,8 @@ pub exec fn par_star_triples_str(
         }
     }
     let n_tag = tag_tag.len();
-    let mut tag_index: std::collections::HashMap<(&str, &str), Vec<usize>> =
-        std::collections::HashMap::with_capacity(n_tag);
+    let mut tag_index: std::collections::HashMap<(&str, &str), Vec<usize>, std::hash::BuildHasherDefault<StrFxHasher>> =
+        std::collections::HashMap::with_capacity_and_hasher(n_tag, std::hash::BuildHasherDefault::default());
     if n_tag < PAR_CHUNK {
         let mut k: usize = 0;
         while k < n_tag {
@@ -653,7 +684,7 @@ pub exec fn par_star_triples_str(
         let threads = par_exec_thread_count(n_tag);
         let parts = std::thread::scope(|scope| {
             let chunk = (n_tag + threads - 1) / threads;
-            let mut handles: Vec<std::thread::ScopedJoinHandle<std::collections::HashMap<(&str, &str), Vec<usize>>>> = Vec::new();
+            let mut handles: Vec<std::thread::ScopedJoinHandle<std::collections::HashMap<(&str, &str), Vec<usize>, std::hash::BuildHasherDefault<StrFxHasher>>>> = Vec::new();
             let mut t: usize = 0;
             while t < threads {
                 let start = t * chunk;
@@ -662,8 +693,8 @@ pub exec fn par_star_triples_str(
                 }
                 let end = if start + chunk < n_tag { start + chunk } else { n_tag };
                 handles.push(scope.spawn(move || {
-                    let mut partial: std::collections::HashMap<(&str, &str), Vec<usize>> =
-                        std::collections::HashMap::with_capacity(end - start);
+                    let mut partial: std::collections::HashMap<(&str, &str), Vec<usize>, std::hash::BuildHasherDefault<StrFxHasher>> =
+                        std::collections::HashMap::with_capacity_and_hasher(end - start, std::hash::BuildHasherDefault::default());
                     let mut k = start;
                     while k < end {
                         partial
@@ -676,7 +707,7 @@ pub exec fn par_star_triples_str(
                 }));
                 t = t + 1;
             }
-            let mut parts: Vec<std::collections::HashMap<(&str, &str), Vec<usize>>> = Vec::new();
+            let mut parts: Vec<std::collections::HashMap<(&str, &str), Vec<usize>, std::hash::BuildHasherDefault<StrFxHasher>>> = Vec::new();
             for h in handles {
                 parts.push(h.join().unwrap());
             }
