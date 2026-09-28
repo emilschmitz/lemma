@@ -304,7 +304,7 @@ def _is_map_value_type(t: TypeExpr) -> bool:
 
 def _is_seq_elem_type(t: TypeExpr) -> bool:
     if isinstance(t, TypeAtom):
-        return t.name in ("u32", "u64", "Seq<char>")
+        return t.name in ("u32", "u64", "i64", "i128", "Seq<char>")
     if isinstance(t, TypeOption):
         return _is_seq_elem_type(t.inner)
     if isinstance(t, TypeTuple):
@@ -835,11 +835,8 @@ def _emit_seq_trusted(
             if e.name == "Seq<char>":
                 push_params.append((f"e{i}", "&str", f"e{i}@"))
                 return f"e{i}@", f"e{i}.to_string()"
-            if e.name == "u32":
-                push_params.append((f"e{i}", "u32", f"e{i}"))
-                return f"e{i}", f"e{i}"
-            if e.name == "u64":
-                push_params.append((f"e{i}", "u64", f"e{i}"))
+            if e.name in ("u32", "u64", "i64", "i128"):
+                push_params.append((f"e{i}", e.name, f"e{i}"))
                 return f"e{i}", f"e{i}"
             raise ValueError(f"unsupported seq push atom: {e.name}")
         if isinstance(e, TypeOption):

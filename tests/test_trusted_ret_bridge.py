@@ -222,6 +222,15 @@ def test_prepare_agent_visible_spec_single_agg_no_set_helpers() -> None:
     assert "hashset_str_as_map" not in out
 
 
+def test_seq_bridge_accepts_i128_group_row() -> None:
+    bridge = structural_bridge_for_spec_type(
+        "Seq<(Seq<char>, (u64, i128, i128))>"
+    )
+    assert bridge.rust_ret == "Vec<(String, (u64, i128, i128))>"
+    assert ".push((e0@, (e1, e2, e3)))" in bridge.trusted_rs
+    assert "e2: i128" in bridge.trusted_rs
+
+
 def test_seq_push_keeps_nested_group_row() -> None:
     bridge = structural_bridge_for_spec_type(
         "Seq<((Seq<char>, u32), (u64, u64, u64))>"

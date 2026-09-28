@@ -90,6 +90,52 @@ def test_group_by_without_order_stays_a_map() -> None:
     assert "group_keys_helper" not in out
 
 
+_NUM = {
+    "num": {"adsh": "string", "uom": "string", "value": "double"},
+    "sub": {"adsh": "string", "form": "string", "fy": "int", "sic": "int", "cik": "int"},
+}
+
+
+def test_sum_order_by_without_limit_is_the_full_sorted_sequence() -> None:
+    sql = """
+    SELECT s.form, COUNT(*) AS num_values,
+           SUM(n.value) AS total_value, AVG(n.value) AS avg_value
+    FROM num n JOIN sub s ON n.adsh = s.adsh
+    WHERE n.uom = 'pure' AND s.fy = 2024
+    GROUP BY s.form
+    ORDER BY total_value DESC
+    """
+    out = transpile_sql_to_verus(sql, _NUM)
+    spec = out.split("pub open spec fn method_spec", 1)[1].split("pub proof fn", 1)[0]
+    assert "-> Seq<" in spec.split("{", 1)[0]
+    assert "spec_seq_sort_by(spec_map_at_keys(" in spec
+    assert "spec_seq_take(" not in spec
+    assert "(b.1.1) < (a.1.1)" in out
+    assert "not in this Map method_spec" not in out
+
+
+def test_having_order_by_sorts_after_the_filter() -> None:
+    sql = """
+    SELECT s.sic, COUNT(DISTINCT s.cik) AS num_companies,
+           COUNT(*) AS num_values,
+           SUM(n.value) AS total_value,
+           AVG(n.value) AS avg_value,
+           MIN(n.value) AS min_value,
+           MAX(n.value) AS max_value
+    FROM num n JOIN sub s ON n.adsh = s.adsh
+    WHERE n.uom = 'pure' AND s.fy = 2024 AND n.value > 0
+    GROUP BY s.sic
+    HAVING COUNT(DISTINCT s.cik) >= 3
+    ORDER BY total_value DESC
+    LIMIT 1000
+    """
+    out = transpile_sql_to_verus(sql, _NUM)
+    spec = out.split("pub open spec fn method_spec", 1)[1].split("pub proof fn", 1)[0]
+    assert "spec_seq_take(spec_seq_sort_by(spec_map_at_keys(" in spec
+    assert "(b.1.2) < (a.1.2)" in out
+    assert "not in this Map method_spec" not in out
+
+
 def test_single_column_desc_flips_the_spec_compare() -> None:
     sql = "SELECT name FROM sub ORDER BY name DESC LIMIT 2"
     out = transpile_sql_to_verus(sql, {"sub": {"name": "string", "adsh": "string"}})
