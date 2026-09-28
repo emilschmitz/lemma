@@ -4831,30 +4831,36 @@ def _right_fold_lemma(
     *,
     outer_seq: str,
     inner_seq: str,
-    match_row: str,
-    miss_row: str,
     ret_type: str,
     ret_base: str,
+    match_row: str | None = None,
+    miss_row: str | None = None,
+    step_hit: str | None = None,
+    step_miss: str | None = None,
 ) -> tuple[str, _FoldBridge]:
     """Proof that a RIGHT-outer helper equals ``right_acc`` of ``nested_right_pairs``.
 
     // shape: right
     One equality. Preserved side is ``slots[0]`` (after honest RIGHT side-swap).
     The helper body *is* that fold; lemmas are the origin bridge for agents.
+    Pass either ``match_row``/``miss_row`` (Seq push) or full ``step_hit``/``step_miss``.
     """
     o, i = slots
     params = f"{o.param}: &{o.struct}, {i.param}: &{i.struct}"
     helper_zeros = f"{helper_name}({o.param}, {i.param})"
-    step_hit = (
-        f"|acc: {ret_type}, i0: int, i1: int| {{\n"
-        f"                acc.push({match_row})\n"
-        f"            }}"
-    )
-    step_miss = (
-        f"|acc: {ret_type}, i0: int| {{\n"
-        f"                acc.push({miss_row})\n"
-        f"            }}"
-    )
+    if step_hit is None or step_miss is None:
+        if match_row is None or miss_row is None:
+            raise ValueError("right fold lemma needs match/miss rows or step closures")
+        step_hit = (
+            f"|acc: {ret_type}, i0: int, i1: int| {{\n"
+            f"                acc.push({match_row})\n"
+            f"            }}"
+        )
+        step_miss = (
+            f"|acc: {ret_type}, i0: int| {{\n"
+            f"                acc.push({miss_row})\n"
+            f"            }}"
+        )
     fold_rhs = (
         f"right_acc(\n"
         f"            nested_right_pairs({outer_seq}, {inner_seq}, {o.param}.n as int),\n"
@@ -5047,6 +5053,314 @@ def _emit_right_outer_projection(
     if query.limit is not None:
         spec_body = f"spec_seq_take({spec_body}, {query.limit})"
     return helpers_out, spec_body, ret_type, bridge
+
+
+def _emit_roj_multi_agg(
+    query: SQLQuery,
+    slots: list[_Slot],
+    schemas_by_table: dict[str, dict[str, str]],
+    *,
+    where_expr: str | None,
+) -> tuple[str, str, str, _FoldBridge | None]:
+    """RIGHT OUTER multi-agg after honest side-swap: ``right_acc`` / ``nested_right_pairs``.
+
+    // shape: right
+    Preserved side is ``slots[0]`` (SQL RIGHT). GROUP BY and measures must be on
+    that side (nullable-side keys/measures need null semantics). One equality;
+    proved via ``right_outer_pairs_str``.
+    """
+    from .parse_sql import _agg_value_type
+
+    if len(slots) != 2 or len(query.joins) != 1:
+        raise UnsupportedContractError(
+            "RIGHT OUTER JOIN multi-agg MethodSpec supports exactly two tables"
+        )
+    if query.derived_tables:
+        raise UnsupportedContractError(
+            "RIGHT OUTER JOIN multi-agg with derived tables is not supported"
+        )
+    if not query.groupby_columns:
+        raise UnsupportedContractError(
+            "RIGHT OUTER JOIN multi-agg needs GROUP BY; not yet supported"
+        )
+    left, right = slots[0], slots[1]
+    for col, _tbl in zip(query.groupby_columns, query.groupby_tables, strict=True):
+        if _proj_side(col, f"row.{col}", query, slots, schemas_by_table) == "right":
+            raise UnsupportedContractError(
+                "RIGHT OUTER JOIN GROUP BY nullable-side key needs null keys; "
+                "not yet supported"
+            )
+    for spec in query.agg_specs:
+        if _agg_column_on_right(spec, query, slots, schemas_by_table):
+            raise UnsupportedContractError(
+                "RIGHT OUTER JOIN multi-agg on nullable-side columns needs null "
+                "measures; not yet supported"
+            )
+
+    join = query.joins[0]
+    match_parts: list[str] = []
+    for left_ref, right_ref in join.on_equalities:
+        l_expr = _col_access_ref(left_ref, query, slots, schemas_by_table, {})
+        r_col = _col_access_ref(right_ref, query, slots, schemas_by_table, {})
+        r_expr = r_col.replace(f"{right.idx} as int", "ri as int")
+        l_expr = l_expr.replace(f"{left.idx} as int", "li as int")
+        match_parts.append(f"{l_expr} == {r_expr}")
+    if len(match_parts) != 1:
+        raise UnsupportedContractError(
+            "RIGHT OUTER JOIN multi-agg MethodSpec supports one equality"
+        )
+    match_conds = match_parts[0]
+    m = re.fullmatch(
+        r"(?P<lp>\w+)\.(?P<lf>\w+)\[li as int\](?P<lv>@?)\s*==\s*"
+        r"(?P<rp>\w+)\.(?P<rf>\w+)\[ri as int\](?P<rv>@?)",
+        match_conds.strip(),
+    )
+    if m is None or bool(m.group("lv")) != bool(m.group("rv")):
+        raise UnsupportedContractError(
+            "RIGHT OUTER JOIN multi-agg requires a single column equality"
+        )
+    if m.group("lp") != left.param or m.group("rp") != right.param:
+        raise UnsupportedContractError(
+            "RIGHT OUTER JOIN multi-agg equality must be preserved-side == nullable-side"
+        )
+
+    def seq_expr(param: str, field: str, view: str) -> str:
+        col = f"{param}.{field}"
+        return f"key_views({col}@)" if view else f"{col}@"
+
+    outer_seq = seq_expr(m.group("lp"), m.group("lf"), m.group("lv"))
+    inner_seq = seq_expr(m.group("rp"), m.group("rf"), m.group("rv"))
+
+    filter_raw, _ = _strip_anti_join_predicates(where_expr)
+    filter_cond = _resolve_filter_expr(
+        filter_raw, query, slots, schemas_by_table, {},
+    )
+    key_expr, key_ty = _groupby_key_parts(query, slots, schemas_by_table, {})
+
+    state_types: list[str] = []
+    state_defaults: list[str] = []
+    match_stmts: list[tuple[int, str]] = []
+    miss_stmts: list[tuple[int, str]] = []
+    project_parts: list[str] = []
+
+    for spec in query.agg_specs:
+        pos = len(state_types)
+        if spec.agg_type == "COUNT":
+            state_types.append("u64")
+            state_defaults.append("0u64")
+            match_stmts.append((pos, f"let s{pos} = (prev.{pos} as int + 1) as u64;"))
+            miss_stmts.append((pos, f"let s{pos} = (prev.{pos} as int + 1) as u64;"))
+            project_parts.append(f"s{pos}")
+        elif spec.agg_type == "SUM":
+            val_type = _agg_value_type(spec.agg_expr)
+            state_types.append(val_type)
+            state_defaults.append(f"0{val_type}")
+            term_m = _agg_term_expr(spec, query, slots, schemas_by_table, {})
+            term_l = _agg_term_expr(spec, query, [left], schemas_by_table, {})
+            match_stmts.append((
+                pos,
+                f"let s{pos} = (prev.{pos} as int + {term_m} as int) as {val_type};",
+            ))
+            miss_stmts.append((
+                pos,
+                f"let s{pos} = (prev.{pos} as int + {term_l} as int) as {val_type};",
+            ))
+            project_parts.append(f"s{pos}")
+        elif spec.agg_type == "AVG":
+            sum_pos = len(state_types)
+            state_types.extend(["u64", "u64"])
+            state_defaults.extend(["0u64", "0u64"])
+            term_m = _agg_term_expr(spec, query, slots, schemas_by_table, {})
+            term_l = _agg_term_expr(spec, query, [left], schemas_by_table, {})
+            match_stmts.append((
+                sum_pos,
+                f"let s{sum_pos} = (prev.{sum_pos} as int + {term_m} as int) as u64;\n"
+                f"            let s{sum_pos + 1} = (prev.{sum_pos + 1} as int + 1) as u64;",
+            ))
+            miss_stmts.append((
+                sum_pos,
+                f"let s{sum_pos} = (prev.{sum_pos} as int + {term_l} as int) as u64;\n"
+                f"            let s{sum_pos + 1} = (prev.{sum_pos + 1} as int + 1) as u64;",
+            ))
+            project_parts.append(
+                f"if s{sum_pos + 1} == 0 {{ 0 }} else {{ s{sum_pos} / s{sum_pos + 1} }}"
+            )
+        elif spec.agg_type == "COUNT_DISTINCT":
+            table, col_key = _find_table_for_col(
+                spec.agg_column, query, schemas_by_table,
+            )
+            schema = schemas_by_table[table]
+            val_ty = spec_map_key_type(schema[col_key])
+            state_types.append(f"Map<{val_ty}, bool>")
+            state_defaults.append("Map::empty()")
+            val_m = _distinct_val_expr(spec, query, slots, schemas_by_table, {})
+            val_l = _distinct_val_expr(spec, query, [left], schemas_by_table, {})
+            match_stmts.append((
+                pos,
+                f"let s{pos} = if prev.{pos}.contains_key({val_m}) {{ prev.{pos} }} "
+                f"else {{ prev.{pos}.insert({val_m}, true) }};",
+            ))
+            miss_stmts.append((
+                pos,
+                f"let s{pos} = if prev.{pos}.contains_key({val_l}) {{ prev.{pos} }} "
+                f"else {{ prev.{pos}.insert({val_l}, true) }};",
+            ))
+            project_parts.append(f"s{pos}.dom().len() as u64")
+        elif spec.agg_type == "MIN":
+            state_types.append("u64")
+            state_defaults.append("u64::MAX")
+            term_m = _agg_term_expr(spec, query, slots, schemas_by_table, {})
+            term_l = _agg_term_expr(spec, query, [left], schemas_by_table, {})
+            match_stmts.append((
+                pos,
+                f"let t{pos} = {term_m};\n"
+                f"            let s{pos} = if t{pos} < prev.{pos} {{ t{pos} }} else {{ prev.{pos} }};",
+            ))
+            miss_stmts.append((
+                pos,
+                f"let t{pos} = {term_l};\n"
+                f"            let s{pos} = if t{pos} < prev.{pos} {{ t{pos} }} else {{ prev.{pos} }};",
+            ))
+            project_parts.append(f"s{pos}")
+        elif spec.agg_type == "MAX":
+            state_types.append("u64")
+            state_defaults.append("0u64")
+            term_m = _agg_term_expr(spec, query, slots, schemas_by_table, {})
+            term_l = _agg_term_expr(spec, query, [left], schemas_by_table, {})
+            match_stmts.append((
+                pos,
+                f"let t{pos} = {term_m};\n"
+                f"            let s{pos} = if t{pos} > prev.{pos} {{ t{pos} }} else {{ prev.{pos} }};",
+            ))
+            miss_stmts.append((
+                pos,
+                f"let t{pos} = {term_l};\n"
+                f"            let s{pos} = if t{pos} > prev.{pos} {{ t{pos} }} else {{ prev.{pos} }};",
+            ))
+            project_parts.append(f"s{pos}")
+        else:
+            raise UnsupportedContractError(
+                f"RIGHT OUTER JOIN multi-agg unsupported aggregate {spec.agg_type!r}"
+            )
+
+    n_state = len(state_types)
+    if n_state == 1:
+        state_tuple_type = state_types[0]
+        default_state = state_defaults[0]
+        rebuild = "s0"
+        match_rendered = "\n            ".join(
+            tmpl.replace("prev.0", "prev") for _, tmpl in match_stmts
+        )
+        miss_rendered = "\n            ".join(
+            tmpl.replace("prev.0", "prev") for _, tmpl in miss_stmts
+        )
+    else:
+        state_tuple_type = f"({', '.join(state_types)})"
+        default_state = f"({', '.join(state_defaults)})"
+        rebuild = f"({', '.join(f's{i}' for i in range(n_state))})"
+        match_rendered = "\n            ".join(tmpl for _, tmpl in match_stmts)
+        miss_rendered = "\n            ".join(tmpl for _, tmpl in miss_stmts)
+
+    # Slot indices in MethodSpec are i0/i1; right_acc steps use the same names.
+    key_hit = key_expr.replace(f"{left.idx} as int", "i0 as int").replace(
+        f"{right.idx} as int", "i1 as int",
+    )
+    key_miss = key_expr.replace(f"{left.idx} as int", "i0 as int")
+    match_body = match_rendered.replace(f"{left.idx} as int", "i0 as int").replace(
+        f"{right.idx} as int", "i1 as int",
+    )
+    miss_body = miss_rendered.replace(f"{left.idx} as int", "i0 as int")
+
+    match_update = (
+        f"let key = {key_hit};\n"
+        f"            let prev = if acc.contains_key(key) {{ acc[key] }} else {{ {default_state} }};\n"
+        f"            {match_body}\n"
+        f"            acc.insert(key, {rebuild})"
+    )
+    miss_update = (
+        f"let key = {key_miss};\n"
+        f"            let prev = if acc.contains_key(key) {{ acc[key] }} else {{ {default_state} }};\n"
+        f"            {miss_body}\n"
+        f"            acc.insert(key, {rebuild})"
+    )
+    if filter_cond:
+        filter_i = filter_cond.replace(f"{left.idx} as int", "i0 as int").replace(
+            f"{right.idx} as int", "i1 as int",
+        )
+        match_update = (
+            f"if {filter_i} {{\n"
+            f"            {match_update}\n"
+            f"        }} else {{\n"
+            f"            acc\n"
+            f"        }}"
+        )
+
+    def _project_from_v(expr: str) -> str:
+        out = expr
+        if n_state == 1:
+            return out.replace("s0", "v")
+        for i in range(n_state - 1, -1, -1):
+            out = out.replace(f"s{i}", f"v.{i}")
+        return out
+
+    if len(project_parts) == 1:
+        project_expr = _project_from_v(project_parts[0])
+    else:
+        project_expr = f"({', '.join(_project_from_v(p) for p in project_parts)})"
+
+    val_types: list[str] = []
+    for spec in query.agg_specs:
+        if spec.agg_type in ("SUM", "COUNT", "COUNT_DISTINCT", "AVG", "MIN", "MAX"):
+            val_types.append(_agg_value_type(spec.agg_expr))
+        else:
+            val_types.append("u64")
+    ret_val_ty = val_types[0] if len(val_types) == 1 else f"({', '.join(val_types)})"
+    map_ret = f"Map<{key_ty}, {state_tuple_type}>"
+    ret_type = f"Map<{key_ty}, {ret_val_ty}>"
+
+    helper_name = "join_roj_multi_agg_helper"
+    step_hit = (
+        f"|acc: {map_ret}, i0: int, i1: int| {{\n"
+        f"                {match_update}\n"
+        f"            }}"
+    )
+    step_miss = (
+        f"|acc: {map_ret}, i0: int| {{\n"
+        f"                {miss_update}\n"
+        f"            }}"
+    )
+    helper = f"""// shape: right
+pub open spec fn {helper_name}(
+    {left.param}: &{left.struct},
+    {right.param}: &{right.struct},
+) -> (res: {map_ret})
+{{
+    right_acc(
+        nested_right_pairs({outer_seq}, {inner_seq}, {left.param}.n as int),
+        {step_hit},
+        {step_miss},
+        Map::empty(),
+        0,
+    )
+}}"""
+
+    fold_text, bridge = _right_fold_lemma(
+        helper_name,
+        slots,
+        outer_seq=outer_seq,
+        inner_seq=inner_seq,
+        ret_type=map_ret,
+        ret_base="Map::empty()",
+        step_hit=step_hit,
+        step_miss=step_miss,
+    )
+    helpers_out = helper + "\n\n" + fold_text
+    spec_body = (
+        f"let raw = {helper_name}({left.param}, {right.param});\n"
+        f"    raw.map_values(|v: {state_tuple_type}| {project_expr})"
+    )
+    return helpers_out, spec_body, ret_type, bridge
+
 
 def _emit_loj_agg(
     query: SQLQuery,
@@ -7399,12 +7713,23 @@ def emit_join_spec_helpers(
             derived_by_alias=derived_by_alias,
         )
 
-    if is_right and not query.is_projection:
+    if (
+        is_right
+        and query.is_multi_agg
+        and query.groupby_columns
+        and len(slots) == 2
+        and not query.is_projection
+    ):
+        roj_ma, spec_body, ret_type, fold_bridge = _emit_roj_multi_agg(
+            query, slots, schemas_by_table, where_expr=where_expr,
+        )
+        helpers = "\n\n".join(derived_helpers + [roj_ma])
+        spec_body = _apply_join_having_filter(spec_body)
+    elif is_right and not query.is_projection:
         raise UnsupportedContractError(
             "RIGHT JOIN group-by / aggregate needs real MethodSpec; not yet supported"
         )
-
-    if "FULL" in join_types:
+    elif "FULL" in join_types:
         # // shape: full
         full_helpers, spec_body, ret_type, fold_bridge = _emit_full_outer(
             query,

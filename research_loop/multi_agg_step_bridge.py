@@ -2914,9 +2914,9 @@ def emit_multi_agg_bound_lemmas(
     catalog_assumptions: CatalogAssumptions | None = None,
 ) -> str:
     """Auditable fold-bound assumptions: helper slot caps discharge agg_step requires."""
-    # Plain LEFT OUTER multi-agg still updates on unmatched left when i1==n;
-    # the inner-join roll lemmas (helper(i0,n)==helper(i0+1,0)) do not apply.
-    if layout.helper_name.startswith("join_loj_"):
+    # Plain LEFT/RIGHT OUTER multi-agg still updates on unmatched preserved
+    # rows; the inner-join roll lemmas (helper(i0,n)==helper(i0+1,0)) do not apply.
+    if layout.helper_name.startswith(("join_loj_", "join_roj_")):
         return ""
     ctx = _parse_fold_bound_context(spec_rs, layout.helper_name)
     if ctx is None:
