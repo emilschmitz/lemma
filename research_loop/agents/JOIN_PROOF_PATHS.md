@@ -115,6 +115,16 @@ returns.
 3. Call `lemma_<helper>_is_loj` against `nested_loj_pairs`.
 4. Call `lemma_<helper>_method_is_fold`.
 
+### LEFT OUTER two-key — `left_outer_pairs_str2`
+
+1. Call `left_outer_pairs_str2(outer0, outer1, inner0, inner1)`.
+2. Walk slots from the end with `loj_acc` (same generic fold as one-key LOJ).
+3. Call `lemma_<helper>_is_loj2` against `nested_loj_pairs2` (via
+   `lemma_<helper>_is_loj2_loop` + `lemma_loj_at_origin2`). Multi-agg GROUP BY
+   uses `join_loj_multi_agg_helper` /
+   `lemma_join_loj_multi_agg_helper_method_is_fold`.
+4. Call `lemma_<helper>_method_is_fold`.
+
 ### RIGHT OUTER — `right_outer_pairs_str`
 
 1. Call `right_outer_pairs_str`.

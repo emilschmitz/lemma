@@ -37,6 +37,8 @@ shape only. Do not invent a HashMap/HashSet index. Do not call `build_hashset_u3
   — `misses@ == nested_anti_misses3(...)`; three-key LEFT anti / ANTI misses
 - `left_outer_pairs_str(outer, inner) -> Vec<(usize, Option<usize>)>`
   — `pairs@ == nested_loj_pairs(...)`; LEFT OUTER slots
+- `left_outer_pairs_str2(o0, o1, i0, i1) -> Vec<(usize, Option<usize>)>`
+  — `pairs@ == nested_loj_pairs2(...)`; two `String` LEFT OUTER equalities
 - `left_outer_pairs_u64(outer, inner) -> Vec<(usize, Option<usize>)>`
   — `pairs@ == nested_loj_pairs(...)`; LEFT OUTER on `u64` keys
 - `right_outer_pairs_str(outer, inner) -> Vec<(usize, Option<usize>)>`
