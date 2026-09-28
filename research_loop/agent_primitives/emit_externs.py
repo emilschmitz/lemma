@@ -46,6 +46,7 @@ _AGENT_PRIMITIVE_SYMBOLS = frozenset(
         "par_filter_sum_u64",
         "par_sum_u64",
         "par_probe_sum_u64",
+        "par_equijoin_pairs_str",
         "vector_filter_sum_u64",
         "par_probe_sum_u64_multi",
         "partitioned_build_hashset_u32",

@@ -331,3 +331,120 @@ pub exec fn vector_filter_sum_u64(
         })
     }
 }
+
+/// Inner row ids where the string key matches, in increasing order.
+pub open spec fn eq_inner_ids(key: Seq<char>, inner: Seq<String>, j: int) -> Seq<usize>
+    decreases inner.len() - j,
+{
+    if j >= inner.len() {
+        Seq::empty()
+    } else if inner[j]@ == key {
+        Seq::<usize>::empty().push(j as usize) + eq_inner_ids(key, inner, j + 1)
+    } else {
+        eq_inner_ids(key, inner, j + 1)
+    }
+}
+
+pub open spec fn attach_outer_ids(outer_i: int, ids: Seq<usize>, j: int) -> Seq<(usize, usize)>
+    decreases ids.len() - j,
+{
+    if j >= ids.len() {
+        Seq::empty()
+    } else {
+        Seq::<(usize, usize)>::empty().push((outer_i as usize, ids[j]))
+            + attach_outer_ids(outer_i, ids, j + 1)
+    }
+}
+
+/// Ordered pair list of a string equijoin. Same pairs the serial probe produces.
+pub open spec fn serial_eq_pairs_str_spec(outer: Seq<String>, inner: Seq<String>) -> Seq<(usize, usize)> {
+    serial_eq_pairs_str_fold(outer, inner, 0)
+}
+
+pub open spec fn serial_eq_pairs_str_fold(
+    outer: Seq<String>,
+    inner: Seq<String>,
+    i: int,
+) -> Seq<(usize, usize)>
+    decreases outer.len() - i,
+{
+    if i >= outer.len() {
+        Seq::empty()
+    } else {
+        let ids = eq_inner_ids(outer[i]@, inner, 0);
+        attach_outer_ids(i, ids, 0) + serial_eq_pairs_str_fold(outer, inner, i + 1)
+    }
+}
+
+/// Threaded string equijoin. The ensures is the serial pair list, not the schedule.
+#[verifier::external_body]
+pub exec fn par_equijoin_pairs_str(
+    outer: &Vec<String>,
+    inner: &Vec<String>,
+) -> (pairs: Vec<(usize, usize)>)
+    ensures pairs@ == serial_eq_pairs_str_spec(outer@, inner@),
+{
+    let mut index: std::collections::HashMap<String, Vec<usize>> = std::collections::HashMap::new();
+    let mut j: usize = 0;
+    while j < inner.len() {
+        index.entry(inner[j].clone()).or_insert_with(Vec::new).push(j);
+        j = j + 1;
+    }
+    let n = outer.len();
+    if n < PAR_CHUNK {
+        let mut pairs: Vec<(usize, usize)> = Vec::new();
+        let mut i: usize = 0;
+        while i < n {
+            match index.get(&outer[i]) {
+                Some(ids) => {
+                    let mut k: usize = 0;
+                    while k < ids.len() {
+                        pairs.push((i, ids[k]));
+                        k = k + 1;
+                    }
+                },
+                None => {},
+            }
+            i = i + 1;
+        }
+        pairs
+    } else {
+        let threads = par_exec_thread_count(n);
+        std::thread::scope(|scope| {
+            let chunk = (n + threads - 1) / threads;
+            let mut handles: Vec<std::thread::ScopedJoinHandle<Vec<(usize, usize)>>> = Vec::new();
+            let mut t: usize = 0;
+            while t < threads {
+                let start = t * chunk;
+                if start >= n {
+                    break;
+                }
+                let end = if start + chunk < n { start + chunk } else { n };
+                handles.push(scope.spawn(|| {
+                    let mut partial: Vec<(usize, usize)> = Vec::new();
+                    let mut i = start;
+                    while i < end {
+                        match index.get(&outer[i]) {
+                            Some(ids) => {
+                                let mut k: usize = 0;
+                                while k < ids.len() {
+                                    partial.push((i, ids[k]));
+                                    k = k + 1;
+                                }
+                            },
+                            None => {},
+                        }
+                        i = i + 1;
+                    }
+                    partial
+                }));
+                t = t + 1;
+            }
+            let mut pairs: Vec<(usize, usize)> = Vec::new();
+            for h in handles {
+                pairs.extend(h.join().unwrap());
+            }
+            pairs
+        })
+    }
+}

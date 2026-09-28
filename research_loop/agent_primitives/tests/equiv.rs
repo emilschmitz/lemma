@@ -1,7 +1,8 @@
 //! Adversarial equivalence: every `par_*` / experimental path must match its serial oracle.
 
 use lemma_agent_primitives::{
-    build_hashset_u32, build_hashset_u32_spill, par_filter_sum_u64, par_probe_sum_u64,
+    build_hashset_u32, build_hashset_u32_spill, par_equijoin_pairs_str, par_filter_sum_u64,
+    par_probe_sum_u64, serial_equijoin_pairs_str,
     par_probe_sum_u64_morsel, par_probe_sum_u64_multi, par_small_card_filter_sum, par_sum_u64,
     partitioned_build_hashset_u32, probe_sum_u64, probe_sum_u64_multi, serial_filter_sum_u64,
     serial_filter_sum_u64_range, serial_sum_u64, simd_filter_sum_u64_range, small_card_filter_sum,
@@ -142,6 +143,30 @@ fn par_probe_morsel_equiv_serial() {
     assert_eq!(
       par_probe_sum_u64_morsel(&keys, &vals, &build),
       probe_sum_u64(&keys, &vals, &build),
+      "n={n}"
+    );
+  }
+}
+
+#[test]
+fn par_equijoin_pairs_str_equiv_serial() {
+  for &n in &[0usize, 1, 50, 100_000] {
+    let inner_n = if n == 0 { 0 } else { (n / 4).max(1) };
+    let inner: Vec<String> = (0..inner_n)
+      .map(|i| format!("k{}", i % (inner_n.max(1) / 3).max(1)))
+      .collect();
+    let outer: Vec<String> = (0..n)
+      .map(|i| {
+        if inner_n == 0 || i % 5 == 0 {
+          format!("miss{i}")
+        } else {
+          format!("k{}", i % inner.len().max(1))
+        }
+      })
+      .collect();
+    assert_eq!(
+      par_equijoin_pairs_str(&outer, &inner),
+      serial_equijoin_pairs_str(&outer, &inner),
       "n={n}"
     );
   }

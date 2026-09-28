@@ -181,6 +181,69 @@ pub fn par_probe_sum_u64_multi(
     }
 }
 
+/// Serial string equijoin pair list: outer index, then matching inner ids in increasing order.
+pub fn serial_equijoin_pairs_str(outer: &[String], inner: &[String]) -> Vec<(usize, usize)> {
+    let mut index: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (id, key) in inner.iter().enumerate() {
+        index.entry(key.as_str()).or_default().push(id);
+    }
+    probe_equijoin_pairs_str(outer, &index)
+}
+
+fn probe_equijoin_pairs_str(
+    outer: &[String],
+    index: &HashMap<&str, Vec<usize>>,
+) -> Vec<(usize, usize)> {
+    let mut pairs = Vec::new();
+    for (i, key) in outer.iter().enumerate() {
+        if let Some(ids) = index.get(key.as_str()) {
+            for &id in ids {
+                pairs.push((i, id));
+            }
+        }
+    }
+    pairs
+}
+
+/// Multi-core string equijoin. Pair order matches [`serial_equijoin_pairs_str`].
+///
+/// The index is built on one thread. Probe slices run in parallel and are
+/// concatenated in outer-index order. Thread count follows rayon when the
+/// `parallel` feature is on, and stays serial otherwise.
+pub fn par_equijoin_pairs_str(outer: &[String], inner: &[String]) -> Vec<(usize, usize)> {
+    let mut index: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (id, key) in inner.iter().enumerate() {
+        index.entry(key.as_str()).or_default().push(id);
+    }
+    #[cfg(feature = "parallel")]
+    {
+        if outer.len() >= PAR_CHUNK {
+            let chunks: Vec<Vec<(usize, usize)>> = outer
+                .par_chunks(PAR_CHUNK)
+                .enumerate()
+                .map(|(c, chunk)| {
+                    let base = c * PAR_CHUNK;
+                    let mut pairs = Vec::new();
+                    for (j, key) in chunk.iter().enumerate() {
+                        if let Some(ids) = index.get(key.as_str()) {
+                            for &id in ids {
+                                pairs.push((base + j, id));
+                            }
+                        }
+                    }
+                    pairs
+                })
+                .collect();
+            let mut pairs = Vec::new();
+            for chunk in chunks {
+                pairs.extend(chunk);
+            }
+            return pairs;
+        }
+    }
+    probe_equijoin_pairs_str(outer, &index)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

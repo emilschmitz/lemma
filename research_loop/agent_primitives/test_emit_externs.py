@@ -59,6 +59,8 @@ def test_fast_trusteds_emits_core_and_parallel(monkeypatch: pytest.MonkeyPatch) 
     assert "par_sum_u64" in out
     assert "par_filter_sum_u64" in out
     assert "par_probe_sum_u64" in out
+    assert "par_equijoin_pairs_str" in out
+    assert "serial_eq_pairs_str_spec" in out
     assert "thread::scope" in out or "available_parallelism" in out
 
 
