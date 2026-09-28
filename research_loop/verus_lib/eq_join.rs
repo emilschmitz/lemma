@@ -10061,6 +10061,1139 @@ pub proof fn lemma_q6_at_origin<A>(
 }
 // SHAPE_Q6_END
 
+// SHAPE_ANTI2_BEGIN
+// Two-key ANTI / LEFT-anti miss list (String∧String). Miss when eq_row_ids2 is empty.
+
+pub proof fn lemma_eq_row_ids2_empty_from_first<A, B>(
+    a: Seq<A>,
+    b: Seq<B>,
+    ka: A,
+    kb: B,
+    end: int,
+)
+    requires
+        0 <= end <= a.len(),
+        a.len() == b.len(),
+        end <= usize::MAX as int,
+        eq_row_ids(a, ka, end).len() == 0,
+    ensures
+        eq_row_ids2(a, b, ka, kb, end).len() == 0,
+{
+    lemma_filter_is_ids2(a, b, ka, kb, end);
+    assert(eq_row_ids2(a, b, ka, kb, end) == filter_match(
+        eq_row_ids(a, ka, end),
+        b,
+        kb,
+        eq_row_ids(a, ka, end).len() as int,
+    ));
+    assert(eq_row_ids2(a, b, ka, kb, end).len() == 0);
+}
+
+pub proof fn lemma_eq_row_ids2_nonempty_iff<A, B>(
+    a: Seq<A>,
+    b: Seq<B>,
+    ka: A,
+    kb: B,
+    end: int,
+)
+    requires
+        0 <= end <= a.len(),
+        a.len() == b.len(),
+        end <= usize::MAX as int,
+    ensures
+        (eq_row_ids2(a, b, ka, kb, end).len() > 0) <==> (exists|j: int|
+            0 <= j < end && a[j] == ka && b[j] == kb),
+    decreases end,
+{
+    if end > 0 {
+        lemma_eq_row_ids2_nonempty_iff(a, b, ka, kb, end - 1);
+        let row = (end - 1) as usize;
+        lemma_eq_row_ids2_step(a, b, ka, kb, end - 1, row);
+        if a[end - 1] == ka && b[end - 1] == kb {
+            assert(eq_row_ids2(a, b, ka, kb, end).len() > 0);
+            assert(exists|j: int| 0 <= j < end && a[j] == ka && b[j] == kb) by {
+                assert(0 <= end - 1 < end && a[end - 1] == ka && b[end - 1] == kb);
+            };
+        } else {
+            assert(eq_row_ids2(a, b, ka, kb, end) == eq_row_ids2(a, b, ka, kb, end - 1));
+            assert((eq_row_ids2(a, b, ka, kb, end).len() > 0) <==> (exists|j: int|
+                0 <= j < end - 1 && a[j] == ka && b[j] == kb));
+            assert((exists|j: int| 0 <= j < end && a[j] == ka && b[j] == kb)
+                <==> (exists|j: int|
+                0 <= j < end - 1 && a[j] == ka && b[j] == kb)) by {
+                if exists|j: int| 0 <= j < end && a[j] == ka && b[j] == kb {
+                    let j = choose|j: int| 0 <= j < end && a[j] == ka && b[j] == kb;
+                    if j == end - 1 {
+                        assert(a[end - 1] == ka && b[end - 1] == kb);
+                        assert(false);
+                    } else {
+                        assert(0 <= j < end - 1 && a[j] == ka && b[j] == kb);
+                    }
+                }
+            };
+        }
+    } else {
+        assert(eq_row_ids2(a, b, ka, kb, 0).len() == 0);
+        assert(!(exists|j: int| 0 <= j < 0 && a[j] == ka && b[j] == kb));
+    }
+}
+
+/// Outer row ids in `0..n` with no two-column match, increasing.
+pub open spec fn nested_anti_misses2<A, B>(
+    oa: Seq<A>,
+    ob: Seq<B>,
+    ia: Seq<A>,
+    ib: Seq<B>,
+    n: int,
+) -> Seq<usize>
+    decreases n,
+{
+    if n <= 0 {
+        Seq::<usize>::empty()
+    } else if n - 1 >= oa.len() || n - 1 >= ob.len() {
+        nested_anti_misses2(oa, ob, ia, ib, n - 1)
+    } else {
+        let prev = nested_anti_misses2(oa, ob, ia, ib, n - 1);
+        if eq_row_ids2(ia, ib, oa[n - 1], ob[n - 1], ia.len() as int).len() == 0 {
+            prev.push((n - 1) as usize)
+        } else {
+            prev
+        }
+    }
+}
+
+pub proof fn lemma_nested_anti_misses2_step<A, B>(
+    oa: Seq<A>,
+    ob: Seq<B>,
+    ia: Seq<A>,
+    ib: Seq<B>,
+    n: int,
+)
+    requires
+        0 < n <= oa.len(),
+        n <= ob.len(),
+    ensures
+        eq_row_ids2(ia, ib, oa[n - 1], ob[n - 1], ia.len() as int).len()
+            == 0 ==> nested_anti_misses2(oa, ob, ia, ib, n)
+            == nested_anti_misses2(oa, ob, ia, ib, n - 1).push((n - 1) as usize),
+        eq_row_ids2(ia, ib, oa[n - 1], ob[n - 1], ia.len() as int).len()
+            > 0 ==> nested_anti_misses2(oa, ob, ia, ib, n)
+            == nested_anti_misses2(oa, ob, ia, ib, n - 1),
+{
+    if eq_row_ids2(ia, ib, oa[n - 1], ob[n - 1], ia.len() as int).len() == 0 {
+        assert(nested_anti_misses2(oa, ob, ia, ib, n)
+            == nested_anti_misses2(oa, ob, ia, ib, n - 1).push((n - 1) as usize));
+    } else {
+        assert(nested_anti_misses2(oa, ob, ia, ib, n)
+            == nested_anti_misses2(oa, ob, ia, ib, n - 1));
+    }
+}
+
+pub open spec fn anti_loop_acc2<A, B, Acc>(
+    oa: Seq<A>,
+    ob: Seq<B>,
+    ia: Seq<A>,
+    ib: Seq<B>,
+    step: spec_fn(Acc, int) -> Acc,
+    base: Acc,
+    n_outer: int,
+    i: int,
+) -> Acc
+    decreases n_outer - i,
+{
+    if i < n_outer {
+        let tail = anti_loop_acc2(oa, ob, ia, ib, step, base, n_outer, i + 1);
+        if 0 <= i < oa.len() && i < ob.len() && eq_row_ids2(
+            ia,
+            ib,
+            oa[i],
+            ob[i],
+            ia.len() as int,
+        ).len() == 0 {
+            step(tail, i)
+        } else {
+            tail
+        }
+    } else {
+        base
+    }
+}
+
+pub proof fn lemma_anti_miss2_prefix<A, B>(
+    oa: Seq<A>,
+    ob: Seq<B>,
+    ia: Seq<A>,
+    ib: Seq<B>,
+    a: int,
+    b: int,
+)
+    requires
+        0 <= a <= b <= oa.len(),
+        b <= ob.len(),
+        b <= usize::MAX as int,
+    ensures
+        nested_anti_misses2(oa, ob, ia, ib, a).len()
+            <= nested_anti_misses2(oa, ob, ia, ib, b).len(),
+        forall|p: int|
+            0 <= p < nested_anti_misses2(oa, ob, ia, ib, a).len() ==> (
+                #[trigger] nested_anti_misses2(oa, ob, ia, ib, b)[p]
+            ) == nested_anti_misses2(oa, ob, ia, ib, a)[p],
+    decreases b - a,
+{
+    if a < b {
+        lemma_anti_miss2_prefix(oa, ob, ia, ib, a, b - 1);
+        lemma_nested_anti_misses2_step(oa, ob, ia, ib, b);
+        let at_a = nested_anti_misses2(oa, ob, ia, ib, a);
+        let at_prev = nested_anti_misses2(oa, ob, ia, ib, b - 1);
+        let at_b = nested_anti_misses2(oa, ob, ia, ib, b);
+        let ids = eq_row_ids2(ia, ib, oa[b - 1], ob[b - 1], ia.len() as int);
+        if ids.len() == 0 {
+            assert(at_b == at_prev.push((b - 1) as usize));
+            assert(at_a.len() <= at_prev.len());
+            assert(at_a.len() <= at_b.len());
+            assert forall|p: int| 0 <= p < at_a.len() implies at_b[p] == at_a[p] by {
+                lemma_seq_push_index_different(at_prev, (b - 1) as usize, p);
+                assert(at_b[p] == at_prev[p]);
+                assert(at_prev[p] == at_a[p]);
+            };
+        } else {
+            assert(at_b == at_prev);
+        }
+    }
+}
+
+pub proof fn lemma_anti_miss2_at<A, B>(
+    oa: Seq<A>,
+    ob: Seq<B>,
+    ia: Seq<A>,
+    ib: Seq<B>,
+    n: int,
+    i: int,
+)
+    requires
+        0 <= i < n <= oa.len(),
+        n <= ob.len(),
+        n <= usize::MAX as int,
+        eq_row_ids2(ia, ib, oa[i], ob[i], ia.len() as int).len() == 0,
+    ensures
+        (nested_anti_misses2(oa, ob, ia, ib, i).len() as int)
+            < nested_anti_misses2(oa, ob, ia, ib, n).len(),
+        nested_anti_misses2(oa, ob, ia, ib, n)[
+            nested_anti_misses2(oa, ob, ia, ib, i).len() as int
+        ] == i as usize,
+{
+    lemma_nested_anti_misses2_step(oa, ob, ia, ib, i + 1);
+    assert(nested_anti_misses2(oa, ob, ia, ib, i + 1)
+        == nested_anti_misses2(oa, ob, ia, ib, i).push(i as usize));
+    lemma_anti_miss2_prefix(oa, ob, ia, ib, i + 1, n);
+    let k = nested_anti_misses2(oa, ob, ia, ib, i).len() as int;
+    assert(nested_anti_misses2(oa, ob, ia, ib, i + 1)[k] == i as usize);
+    assert(nested_anti_misses2(oa, ob, ia, ib, n)[k]
+        == nested_anti_misses2(oa, ob, ia, ib, i + 1)[k]);
+}
+
+pub proof fn lemma_anti_acc2<A, B, Acc>(
+    oa: Seq<A>,
+    ob: Seq<B>,
+    ia: Seq<A>,
+    ib: Seq<B>,
+    step: spec_fn(Acc, int) -> Acc,
+    base: Acc,
+    n_outer: int,
+    i: int,
+)
+    requires
+        oa.len() == n_outer,
+        ob.len() == n_outer,
+        n_outer <= usize::MAX as int,
+        0 <= i <= n_outer,
+    ensures
+        anti_loop_acc2(oa, ob, ia, ib, step, base, n_outer, i) == miss_acc(
+            nested_anti_misses2(oa, ob, ia, ib, n_outer),
+            step,
+            base,
+            nested_anti_misses2(oa, ob, ia, ib, i).len() as int,
+        ),
+    decreases n_outer - i,
+{
+    if i < n_outer {
+        lemma_anti_acc2(oa, ob, ia, ib, step, base, n_outer, i + 1);
+        lemma_nested_anti_misses2_step(oa, ob, ia, ib, i + 1);
+        let misses = nested_anti_misses2(oa, ob, ia, ib, n_outer);
+        let k_i = nested_anti_misses2(oa, ob, ia, ib, i).len() as int;
+        let ids = eq_row_ids2(ia, ib, oa[i], ob[i], ia.len() as int);
+        if ids.len() == 0 {
+            lemma_anti_miss2_at(oa, ob, ia, ib, n_outer, i);
+            assert(misses[k_i] == i as usize);
+            assert(0 <= k_i < misses.len());
+            assert(anti_loop_acc2(oa, ob, ia, ib, step, base, n_outer, i) == step(
+                anti_loop_acc2(oa, ob, ia, ib, step, base, n_outer, i + 1),
+                i,
+            ));
+            assert(miss_acc(misses, step, base, k_i) == step(
+                miss_acc(misses, step, base, k_i + 1),
+                misses[k_i] as int,
+            ));
+        } else {
+            assert(nested_anti_misses2(oa, ob, ia, ib, i + 1)
+                == nested_anti_misses2(oa, ob, ia, ib, i));
+        }
+    }
+}
+
+pub proof fn lemma_anti2_at_origin<A, B, Acc>(
+    oa: Seq<A>,
+    ob: Seq<B>,
+    ia: Seq<A>,
+    ib: Seq<B>,
+    step: spec_fn(Acc, int) -> Acc,
+    base: Acc,
+    n_outer: int,
+)
+    requires
+        oa.len() == n_outer,
+        ob.len() == n_outer,
+        n_outer <= usize::MAX as int,
+    ensures
+        anti_loop_acc2(oa, ob, ia, ib, step, base, n_outer, 0) == miss_acc(
+            nested_anti_misses2(oa, ob, ia, ib, n_outer),
+            step,
+            base,
+            0,
+        ),
+{
+    assert(nested_anti_misses2(oa, ob, ia, ib, 0) =~= Seq::<usize>::empty());
+    lemma_anti_acc2(oa, ob, ia, ib, step, base, n_outer, 0);
+}
+
+/// Two-key ANTI/LEFT-anti miss ids. View equals [`nested_anti_misses2`].
+pub fn anti_miss_rows_str2(
+    outer0: &Vec<String>,
+    outer1: &Vec<String>,
+    inner0: &Vec<String>,
+    inner1: &Vec<String>,
+) -> (misses: Vec<usize>)
+    requires
+        outer0@.len() == outer1@.len(),
+        inner0@.len() == inner1@.len(),
+    ensures
+        misses@ == nested_anti_misses2(
+            key_views(outer0@),
+            key_views(outer1@),
+            key_views(inner0@),
+            key_views(inner1@),
+            outer0@.len() as int,
+        ),
+{
+    let idx = build_eq_index_str(inner0);
+    let ghost oa = key_views(outer0@);
+    let ghost ob = key_views(outer1@);
+    let ghost ia = key_views(inner0@);
+    let ghost ib = key_views(inner1@);
+    let mut misses: Vec<usize> = Vec::new();
+    let mut i: usize = 0;
+    while i < outer0.len()
+        invariant
+            i <= outer0.len(),
+            outer0@.len() == outer0.len() as int,
+            outer1@.len() == outer0@.len(),
+            inner0@.len() == inner0.len() as int,
+            inner1@.len() == inner0@.len(),
+            oa == key_views(outer0@),
+            ob == key_views(outer1@),
+            ia == key_views(inner0@),
+            ib == key_views(inner1@),
+            index_ok(ia, idx.buckets@, idx.map@, inner0@.len() as int),
+            misses@ == nested_anti_misses2(oa, ob, ia, ib, i as int),
+        decreases outer0.len() - i,
+    {
+        let key0 = outer0[i].clone();
+        let key1 = outer1[i].clone();
+        let ghost end = i as int;
+        proof {
+            lemma_key_view_at(outer0@, end);
+            lemma_key_view_at(outer1@, end);
+            broadcast use vstd::std_specs::vec::axiom_spec_len;
+            assert(oa[end] == key0@);
+            assert(ob[end] == key1@);
+            assert(ia.len() as int <= usize::MAX as int);
+        }
+        let ghost before = misses@;
+        let present = idx.map.contains_key(key0.as_str());
+        if present {
+            let got = idx.map.get(key0.as_str());
+            let bi = *got.unwrap();
+            proof {
+                assert(idx.map@.contains_key(key0@));
+                lemma_index_bucket(ia, idx.buckets@, idx.map@, ia.len() as int, key0@);
+                lemma_eq_row_ids_bounded(ia, key0@, ia.len() as int);
+            }
+            let ids = &idx.buckets[bi];
+            let filtered2 = filter_row_ids_str(ids, inner1, &key1);
+            if filtered2.len() == 0 {
+                misses.push(i);
+                proof {
+                    lemma_filter_is_ids2(ia, ib, key0@, key1@, ia.len() as int);
+                    assert(filtered2@ == eq_row_ids2(ia, ib, oa[end], ob[end], ia.len() as int));
+                    assert(eq_row_ids2(ia, ib, oa[end], ob[end], ia.len() as int).len() == 0);
+                    lemma_nested_anti_misses2_step(oa, ob, ia, ib, end + 1);
+                    assert(misses@ == before.push(i));
+                    assert(misses@ == nested_anti_misses2(oa, ob, ia, ib, end + 1));
+                }
+            } else {
+                proof {
+                    lemma_filter_is_ids2(ia, ib, key0@, key1@, ia.len() as int);
+                    assert(filtered2@ == eq_row_ids2(ia, ib, oa[end], ob[end], ia.len() as int));
+                    assert(eq_row_ids2(ia, ib, oa[end], ob[end], ia.len() as int).len() > 0);
+                    lemma_nested_anti_misses2_step(oa, ob, ia, ib, end + 1);
+                    assert(misses@ == nested_anti_misses2(oa, ob, ia, ib, end + 1));
+                }
+            }
+        } else {
+            misses.push(i);
+            proof {
+                assert(!idx.map@.contains_key(key0@));
+                lemma_index_absent(ia, idx.buckets@, idx.map@, ia.len() as int, key0@);
+                lemma_eq_row_ids_len0(ia, key0@, ia.len() as int);
+                lemma_eq_row_ids2_empty_from_first(ia, ib, key0@, key1@, ia.len() as int);
+                lemma_nested_anti_misses2_step(oa, ob, ia, ib, end + 1);
+                assert(misses@ == before.push(i));
+                assert(misses@ == nested_anti_misses2(oa, ob, ia, ib, end + 1));
+            }
+        }
+        i = i + 1;
+    }
+    misses
+}
+// SHAPE_ANTI2_END
+
+// SHAPE_SEMI2_BEGIN
+// Two-key SEMI hit list (String∧String). Hit when eq_row_ids2 is nonempty.
+
+/// Outer row ids in `0..n` with a two-column match, increasing.
+pub open spec fn nested_semi_hits2<A, B>(
+    oa: Seq<A>,
+    ob: Seq<B>,
+    ia: Seq<A>,
+    ib: Seq<B>,
+    n: int,
+) -> Seq<usize>
+    decreases n,
+{
+    if n <= 0 {
+        Seq::<usize>::empty()
+    } else if n - 1 >= oa.len() || n - 1 >= ob.len() {
+        nested_semi_hits2(oa, ob, ia, ib, n - 1)
+    } else {
+        let prev = nested_semi_hits2(oa, ob, ia, ib, n - 1);
+        if eq_row_ids2(ia, ib, oa[n - 1], ob[n - 1], ia.len() as int).len() > 0 {
+            prev.push((n - 1) as usize)
+        } else {
+            prev
+        }
+    }
+}
+
+pub proof fn lemma_nested_semi_hits2_step<A, B>(
+    oa: Seq<A>,
+    ob: Seq<B>,
+    ia: Seq<A>,
+    ib: Seq<B>,
+    n: int,
+)
+    requires
+        0 < n <= oa.len(),
+        n <= ob.len(),
+    ensures
+        eq_row_ids2(ia, ib, oa[n - 1], ob[n - 1], ia.len() as int).len()
+            > 0 ==> nested_semi_hits2(oa, ob, ia, ib, n)
+            == nested_semi_hits2(oa, ob, ia, ib, n - 1).push((n - 1) as usize),
+        eq_row_ids2(ia, ib, oa[n - 1], ob[n - 1], ia.len() as int).len()
+            == 0 ==> nested_semi_hits2(oa, ob, ia, ib, n)
+            == nested_semi_hits2(oa, ob, ia, ib, n - 1),
+{
+    if eq_row_ids2(ia, ib, oa[n - 1], ob[n - 1], ia.len() as int).len() > 0 {
+        assert(nested_semi_hits2(oa, ob, ia, ib, n)
+            == nested_semi_hits2(oa, ob, ia, ib, n - 1).push((n - 1) as usize));
+    } else {
+        assert(nested_semi_hits2(oa, ob, ia, ib, n)
+            == nested_semi_hits2(oa, ob, ia, ib, n - 1));
+    }
+}
+
+pub open spec fn semi_loop_acc2<A, B, Acc>(
+    oa: Seq<A>,
+    ob: Seq<B>,
+    ia: Seq<A>,
+    ib: Seq<B>,
+    step: spec_fn(Acc, int) -> Acc,
+    base: Acc,
+    n_outer: int,
+    i: int,
+) -> Acc
+    decreases n_outer - i,
+{
+    if i < n_outer {
+        let tail = semi_loop_acc2(oa, ob, ia, ib, step, base, n_outer, i + 1);
+        if 0 <= i < oa.len() && i < ob.len() && eq_row_ids2(
+            ia,
+            ib,
+            oa[i],
+            ob[i],
+            ia.len() as int,
+        ).len() > 0 {
+            step(tail, i)
+        } else {
+            tail
+        }
+    } else {
+        base
+    }
+}
+
+pub proof fn lemma_semi_hit2_prefix<A, B>(
+    oa: Seq<A>,
+    ob: Seq<B>,
+    ia: Seq<A>,
+    ib: Seq<B>,
+    a: int,
+    b: int,
+)
+    requires
+        0 <= a <= b <= oa.len(),
+        b <= ob.len(),
+        b <= usize::MAX as int,
+    ensures
+        nested_semi_hits2(oa, ob, ia, ib, a).len()
+            <= nested_semi_hits2(oa, ob, ia, ib, b).len(),
+        forall|p: int|
+            0 <= p < nested_semi_hits2(oa, ob, ia, ib, a).len() ==> (
+                #[trigger] nested_semi_hits2(oa, ob, ia, ib, b)[p]
+            ) == nested_semi_hits2(oa, ob, ia, ib, a)[p],
+    decreases b - a,
+{
+    if a < b {
+        lemma_semi_hit2_prefix(oa, ob, ia, ib, a, b - 1);
+        lemma_nested_semi_hits2_step(oa, ob, ia, ib, b);
+        let at_a = nested_semi_hits2(oa, ob, ia, ib, a);
+        let at_prev = nested_semi_hits2(oa, ob, ia, ib, b - 1);
+        let at_b = nested_semi_hits2(oa, ob, ia, ib, b);
+        let ids = eq_row_ids2(ia, ib, oa[b - 1], ob[b - 1], ia.len() as int);
+        if ids.len() > 0 {
+            assert(at_b == at_prev.push((b - 1) as usize));
+            assert(at_a.len() <= at_prev.len());
+            assert(at_a.len() <= at_b.len());
+            assert forall|p: int| 0 <= p < at_a.len() implies at_b[p] == at_a[p] by {
+                lemma_seq_push_index_different(at_prev, (b - 1) as usize, p);
+                assert(at_b[p] == at_prev[p]);
+                assert(at_prev[p] == at_a[p]);
+            };
+        } else {
+            assert(at_b == at_prev);
+        }
+    }
+}
+
+pub proof fn lemma_semi_hit2_at<A, B>(
+    oa: Seq<A>,
+    ob: Seq<B>,
+    ia: Seq<A>,
+    ib: Seq<B>,
+    n: int,
+    i: int,
+)
+    requires
+        0 <= i < n <= oa.len(),
+        n <= ob.len(),
+        n <= usize::MAX as int,
+        eq_row_ids2(ia, ib, oa[i], ob[i], ia.len() as int).len() > 0,
+    ensures
+        (nested_semi_hits2(oa, ob, ia, ib, i).len() as int)
+            < nested_semi_hits2(oa, ob, ia, ib, n).len(),
+        nested_semi_hits2(oa, ob, ia, ib, n)[
+            nested_semi_hits2(oa, ob, ia, ib, i).len() as int
+        ] == i as usize,
+{
+    lemma_nested_semi_hits2_step(oa, ob, ia, ib, i + 1);
+    assert(nested_semi_hits2(oa, ob, ia, ib, i + 1)
+        == nested_semi_hits2(oa, ob, ia, ib, i).push(i as usize));
+    lemma_semi_hit2_prefix(oa, ob, ia, ib, i + 1, n);
+    let k = nested_semi_hits2(oa, ob, ia, ib, i).len() as int;
+    assert(nested_semi_hits2(oa, ob, ia, ib, i + 1)[k] == i as usize);
+    assert(nested_semi_hits2(oa, ob, ia, ib, n)[k]
+        == nested_semi_hits2(oa, ob, ia, ib, i + 1)[k]);
+}
+
+pub proof fn lemma_semi_acc2<A, B, Acc>(
+    oa: Seq<A>,
+    ob: Seq<B>,
+    ia: Seq<A>,
+    ib: Seq<B>,
+    step: spec_fn(Acc, int) -> Acc,
+    base: Acc,
+    n_outer: int,
+    i: int,
+)
+    requires
+        oa.len() == n_outer,
+        ob.len() == n_outer,
+        n_outer <= usize::MAX as int,
+        0 <= i <= n_outer,
+    ensures
+        semi_loop_acc2(oa, ob, ia, ib, step, base, n_outer, i) == hit_acc(
+            nested_semi_hits2(oa, ob, ia, ib, n_outer),
+            step,
+            base,
+            nested_semi_hits2(oa, ob, ia, ib, i).len() as int,
+        ),
+    decreases n_outer - i,
+{
+    if i < n_outer {
+        lemma_semi_acc2(oa, ob, ia, ib, step, base, n_outer, i + 1);
+        lemma_nested_semi_hits2_step(oa, ob, ia, ib, i + 1);
+        let hits = nested_semi_hits2(oa, ob, ia, ib, n_outer);
+        let k_i = nested_semi_hits2(oa, ob, ia, ib, i).len() as int;
+        let ids = eq_row_ids2(ia, ib, oa[i], ob[i], ia.len() as int);
+        if ids.len() > 0 {
+            lemma_semi_hit2_at(oa, ob, ia, ib, n_outer, i);
+            assert(hits[k_i] == i as usize);
+            assert(0 <= k_i < hits.len());
+            assert(semi_loop_acc2(oa, ob, ia, ib, step, base, n_outer, i) == step(
+                semi_loop_acc2(oa, ob, ia, ib, step, base, n_outer, i + 1),
+                i,
+            ));
+            assert(hit_acc(hits, step, base, k_i) == step(
+                hit_acc(hits, step, base, k_i + 1),
+                hits[k_i] as int,
+            ));
+        } else {
+            assert(nested_semi_hits2(oa, ob, ia, ib, i + 1)
+                == nested_semi_hits2(oa, ob, ia, ib, i));
+        }
+    }
+}
+
+pub proof fn lemma_semi2_at_origin<A, B, Acc>(
+    oa: Seq<A>,
+    ob: Seq<B>,
+    ia: Seq<A>,
+    ib: Seq<B>,
+    step: spec_fn(Acc, int) -> Acc,
+    base: Acc,
+    n_outer: int,
+)
+    requires
+        oa.len() == n_outer,
+        ob.len() == n_outer,
+        n_outer <= usize::MAX as int,
+    ensures
+        semi_loop_acc2(oa, ob, ia, ib, step, base, n_outer, 0) == hit_acc(
+            nested_semi_hits2(oa, ob, ia, ib, n_outer),
+            step,
+            base,
+            0,
+        ),
+{
+    assert(nested_semi_hits2(oa, ob, ia, ib, 0) =~= Seq::<usize>::empty());
+    lemma_semi_acc2(oa, ob, ia, ib, step, base, n_outer, 0);
+}
+
+/// Two-key SEMI hit ids. View equals [`nested_semi_hits2`].
+pub fn semi_hit_rows_str2(
+    outer0: &Vec<String>,
+    outer1: &Vec<String>,
+    inner0: &Vec<String>,
+    inner1: &Vec<String>,
+) -> (hits: Vec<usize>)
+    requires
+        outer0@.len() == outer1@.len(),
+        inner0@.len() == inner1@.len(),
+    ensures
+        hits@ == nested_semi_hits2(
+            key_views(outer0@),
+            key_views(outer1@),
+            key_views(inner0@),
+            key_views(inner1@),
+            outer0@.len() as int,
+        ),
+{
+    let idx = build_eq_index_str(inner0);
+    let ghost oa = key_views(outer0@);
+    let ghost ob = key_views(outer1@);
+    let ghost ia = key_views(inner0@);
+    let ghost ib = key_views(inner1@);
+    let mut hits: Vec<usize> = Vec::new();
+    let mut i: usize = 0;
+    while i < outer0.len()
+        invariant
+            i <= outer0.len(),
+            outer0@.len() == outer0.len() as int,
+            outer1@.len() == outer0@.len(),
+            inner0@.len() == inner0.len() as int,
+            inner1@.len() == inner0@.len(),
+            oa == key_views(outer0@),
+            ob == key_views(outer1@),
+            ia == key_views(inner0@),
+            ib == key_views(inner1@),
+            index_ok(ia, idx.buckets@, idx.map@, inner0@.len() as int),
+            hits@ == nested_semi_hits2(oa, ob, ia, ib, i as int),
+        decreases outer0.len() - i,
+    {
+        let key0 = outer0[i].clone();
+        let key1 = outer1[i].clone();
+        let ghost end = i as int;
+        proof {
+            lemma_key_view_at(outer0@, end);
+            lemma_key_view_at(outer1@, end);
+            broadcast use vstd::std_specs::vec::axiom_spec_len;
+            assert(oa[end] == key0@);
+            assert(ob[end] == key1@);
+            assert(ia.len() as int <= usize::MAX as int);
+        }
+        let ghost before = hits@;
+        let present = idx.map.contains_key(key0.as_str());
+        if present {
+            let got = idx.map.get(key0.as_str());
+            let bi = *got.unwrap();
+            proof {
+                assert(idx.map@.contains_key(key0@));
+                lemma_index_bucket(ia, idx.buckets@, idx.map@, ia.len() as int, key0@);
+                lemma_eq_row_ids_bounded(ia, key0@, ia.len() as int);
+            }
+            let ids = &idx.buckets[bi];
+            let filtered2 = filter_row_ids_str(ids, inner1, &key1);
+            if filtered2.len() == 0 {
+                proof {
+                    lemma_filter_is_ids2(ia, ib, key0@, key1@, ia.len() as int);
+                    assert(filtered2@ == eq_row_ids2(ia, ib, oa[end], ob[end], ia.len() as int));
+                    assert(eq_row_ids2(ia, ib, oa[end], ob[end], ia.len() as int).len() == 0);
+                    lemma_nested_semi_hits2_step(oa, ob, ia, ib, end + 1);
+                    assert(hits@ == nested_semi_hits2(oa, ob, ia, ib, end + 1));
+                }
+            } else {
+                hits.push(i);
+                proof {
+                    lemma_filter_is_ids2(ia, ib, key0@, key1@, ia.len() as int);
+                    assert(filtered2@ == eq_row_ids2(ia, ib, oa[end], ob[end], ia.len() as int));
+                    assert(eq_row_ids2(ia, ib, oa[end], ob[end], ia.len() as int).len() > 0);
+                    lemma_nested_semi_hits2_step(oa, ob, ia, ib, end + 1);
+                    assert(hits@ == before.push(i));
+                    assert(hits@ == nested_semi_hits2(oa, ob, ia, ib, end + 1));
+                }
+            }
+        } else {
+            proof {
+                assert(!idx.map@.contains_key(key0@));
+                lemma_index_absent(ia, idx.buckets@, idx.map@, ia.len() as int, key0@);
+                lemma_eq_row_ids_len0(ia, key0@, ia.len() as int);
+                lemma_eq_row_ids2_empty_from_first(ia, ib, key0@, key1@, ia.len() as int);
+                lemma_nested_semi_hits2_step(oa, ob, ia, ib, end + 1);
+                assert(hits@ == nested_semi_hits2(oa, ob, ia, ib, end + 1));
+            }
+        }
+        i = i + 1;
+    }
+    hits
+}
+// SHAPE_SEMI2_END
+
+// SHAPE_SEMI3_BEGIN
+// Three-key SEMI hit list. Hit when eq_row_ids3 is nonempty. Reuses filter/index
+// helpers from SHAPE_LEFT3; no second anti exec.
+
+/// Outer row ids in `0..n` with a three-column match, increasing.
+pub open spec fn nested_semi_hits3<A, B, C>(
+    oa: Seq<A>,
+    ob: Seq<B>,
+    oc: Seq<C>,
+    ia: Seq<A>,
+    ib: Seq<B>,
+    ic: Seq<C>,
+    n: int,
+) -> Seq<usize>
+    decreases n,
+{
+    if n <= 0 {
+        Seq::<usize>::empty()
+    } else if n - 1 >= oa.len() || n - 1 >= ob.len() || n - 1 >= oc.len() {
+        nested_semi_hits3(oa, ob, oc, ia, ib, ic, n - 1)
+    } else {
+        let prev = nested_semi_hits3(oa, ob, oc, ia, ib, ic, n - 1);
+        if eq_row_ids3(ia, ib, ic, oa[n - 1], ob[n - 1], oc[n - 1], ia.len() as int).len() > 0 {
+            prev.push((n - 1) as usize)
+        } else {
+            prev
+        }
+    }
+}
+
+pub proof fn lemma_nested_semi_hits3_step<A, B, C>(
+    oa: Seq<A>,
+    ob: Seq<B>,
+    oc: Seq<C>,
+    ia: Seq<A>,
+    ib: Seq<B>,
+    ic: Seq<C>,
+    n: int,
+)
+    requires
+        0 < n <= oa.len(),
+        n <= ob.len(),
+        n <= oc.len(),
+    ensures
+        eq_row_ids3(ia, ib, ic, oa[n - 1], ob[n - 1], oc[n - 1], ia.len() as int).len()
+            > 0 ==> nested_semi_hits3(oa, ob, oc, ia, ib, ic, n)
+            == nested_semi_hits3(oa, ob, oc, ia, ib, ic, n - 1).push((n - 1) as usize),
+        eq_row_ids3(ia, ib, ic, oa[n - 1], ob[n - 1], oc[n - 1], ia.len() as int).len()
+            == 0 ==> nested_semi_hits3(oa, ob, oc, ia, ib, ic, n)
+            == nested_semi_hits3(oa, ob, oc, ia, ib, ic, n - 1),
+{
+    if eq_row_ids3(ia, ib, ic, oa[n - 1], ob[n - 1], oc[n - 1], ia.len() as int).len() > 0 {
+        assert(nested_semi_hits3(oa, ob, oc, ia, ib, ic, n)
+            == nested_semi_hits3(oa, ob, oc, ia, ib, ic, n - 1).push((n - 1) as usize));
+    } else {
+        assert(nested_semi_hits3(oa, ob, oc, ia, ib, ic, n)
+            == nested_semi_hits3(oa, ob, oc, ia, ib, ic, n - 1));
+    }
+}
+
+pub open spec fn semi_loop_acc3<A, B, C, Acc>(
+    oa: Seq<A>,
+    ob: Seq<B>,
+    oc: Seq<C>,
+    ia: Seq<A>,
+    ib: Seq<B>,
+    ic: Seq<C>,
+    step: spec_fn(Acc, int) -> Acc,
+    base: Acc,
+    n_outer: int,
+    i: int,
+) -> Acc
+    decreases n_outer - i,
+{
+    if i < n_outer {
+        let tail = semi_loop_acc3(oa, ob, oc, ia, ib, ic, step, base, n_outer, i + 1);
+        if 0 <= i < oa.len() && i < ob.len() && i < oc.len() && eq_row_ids3(
+            ia,
+            ib,
+            ic,
+            oa[i],
+            ob[i],
+            oc[i],
+            ia.len() as int,
+        ).len() > 0 {
+            step(tail, i)
+        } else {
+            tail
+        }
+    } else {
+        base
+    }
+}
+
+pub proof fn lemma_semi_hit3_prefix<A, B, C>(
+    oa: Seq<A>,
+    ob: Seq<B>,
+    oc: Seq<C>,
+    ia: Seq<A>,
+    ib: Seq<B>,
+    ic: Seq<C>,
+    a: int,
+    b: int,
+)
+    requires
+        0 <= a <= b <= oa.len(),
+        b <= ob.len(),
+        b <= oc.len(),
+        b <= usize::MAX as int,
+    ensures
+        nested_semi_hits3(oa, ob, oc, ia, ib, ic, a).len()
+            <= nested_semi_hits3(oa, ob, oc, ia, ib, ic, b).len(),
+        forall|p: int|
+            0 <= p < nested_semi_hits3(oa, ob, oc, ia, ib, ic, a).len() ==> (
+                #[trigger] nested_semi_hits3(oa, ob, oc, ia, ib, ic, b)[p]
+            ) == nested_semi_hits3(oa, ob, oc, ia, ib, ic, a)[p],
+    decreases b - a,
+{
+    if a < b {
+        lemma_semi_hit3_prefix(oa, ob, oc, ia, ib, ic, a, b - 1);
+        lemma_nested_semi_hits3_step(oa, ob, oc, ia, ib, ic, b);
+        let at_a = nested_semi_hits3(oa, ob, oc, ia, ib, ic, a);
+        let at_prev = nested_semi_hits3(oa, ob, oc, ia, ib, ic, b - 1);
+        let at_b = nested_semi_hits3(oa, ob, oc, ia, ib, ic, b);
+        let ids = eq_row_ids3(ia, ib, ic, oa[b - 1], ob[b - 1], oc[b - 1], ia.len() as int);
+        if ids.len() > 0 {
+            assert(at_b == at_prev.push((b - 1) as usize));
+            assert(at_a.len() <= at_prev.len());
+            assert(at_a.len() <= at_b.len());
+            assert forall|p: int| 0 <= p < at_a.len() implies at_b[p] == at_a[p] by {
+                lemma_seq_push_index_different(at_prev, (b - 1) as usize, p);
+                assert(at_b[p] == at_prev[p]);
+                assert(at_prev[p] == at_a[p]);
+            };
+        } else {
+            assert(at_b == at_prev);
+        }
+    }
+}
+
+pub proof fn lemma_semi_hit3_at<A, B, C>(
+    oa: Seq<A>,
+    ob: Seq<B>,
+    oc: Seq<C>,
+    ia: Seq<A>,
+    ib: Seq<B>,
+    ic: Seq<C>,
+    n: int,
+    i: int,
+)
+    requires
+        0 <= i < n <= oa.len(),
+        n <= ob.len(),
+        n <= oc.len(),
+        n <= usize::MAX as int,
+        eq_row_ids3(ia, ib, ic, oa[i], ob[i], oc[i], ia.len() as int).len() > 0,
+    ensures
+        (nested_semi_hits3(oa, ob, oc, ia, ib, ic, i).len() as int)
+            < nested_semi_hits3(oa, ob, oc, ia, ib, ic, n).len(),
+        nested_semi_hits3(oa, ob, oc, ia, ib, ic, n)[
+            nested_semi_hits3(oa, ob, oc, ia, ib, ic, i).len() as int
+        ] == i as usize,
+{
+    lemma_nested_semi_hits3_step(oa, ob, oc, ia, ib, ic, i + 1);
+    assert(nested_semi_hits3(oa, ob, oc, ia, ib, ic, i + 1)
+        == nested_semi_hits3(oa, ob, oc, ia, ib, ic, i).push(i as usize));
+    lemma_semi_hit3_prefix(oa, ob, oc, ia, ib, ic, i + 1, n);
+    let k = nested_semi_hits3(oa, ob, oc, ia, ib, ic, i).len() as int;
+    assert(nested_semi_hits3(oa, ob, oc, ia, ib, ic, i + 1)[k] == i as usize);
+    assert(nested_semi_hits3(oa, ob, oc, ia, ib, ic, n)[k]
+        == nested_semi_hits3(oa, ob, oc, ia, ib, ic, i + 1)[k]);
+}
+
+pub proof fn lemma_semi_acc3<A, B, C, Acc>(
+    oa: Seq<A>,
+    ob: Seq<B>,
+    oc: Seq<C>,
+    ia: Seq<A>,
+    ib: Seq<B>,
+    ic: Seq<C>,
+    step: spec_fn(Acc, int) -> Acc,
+    base: Acc,
+    n_outer: int,
+    i: int,
+)
+    requires
+        oa.len() == n_outer,
+        ob.len() == n_outer,
+        oc.len() == n_outer,
+        n_outer <= usize::MAX as int,
+        0 <= i <= n_outer,
+    ensures
+        semi_loop_acc3(oa, ob, oc, ia, ib, ic, step, base, n_outer, i) == hit_acc(
+            nested_semi_hits3(oa, ob, oc, ia, ib, ic, n_outer),
+            step,
+            base,
+            nested_semi_hits3(oa, ob, oc, ia, ib, ic, i).len() as int,
+        ),
+    decreases n_outer - i,
+{
+    if i < n_outer {
+        lemma_semi_acc3(oa, ob, oc, ia, ib, ic, step, base, n_outer, i + 1);
+        lemma_nested_semi_hits3_step(oa, ob, oc, ia, ib, ic, i + 1);
+        let hits = nested_semi_hits3(oa, ob, oc, ia, ib, ic, n_outer);
+        let k_i = nested_semi_hits3(oa, ob, oc, ia, ib, ic, i).len() as int;
+        let ids = eq_row_ids3(ia, ib, ic, oa[i], ob[i], oc[i], ia.len() as int);
+        if ids.len() > 0 {
+            lemma_semi_hit3_at(oa, ob, oc, ia, ib, ic, n_outer, i);
+            assert(hits[k_i] == i as usize);
+            assert(0 <= k_i < hits.len());
+            assert(semi_loop_acc3(oa, ob, oc, ia, ib, ic, step, base, n_outer, i) == step(
+                semi_loop_acc3(oa, ob, oc, ia, ib, ic, step, base, n_outer, i + 1),
+                i,
+            ));
+            assert(hit_acc(hits, step, base, k_i) == step(
+                hit_acc(hits, step, base, k_i + 1),
+                hits[k_i] as int,
+            ));
+        } else {
+            assert(nested_semi_hits3(oa, ob, oc, ia, ib, ic, i + 1)
+                == nested_semi_hits3(oa, ob, oc, ia, ib, ic, i));
+        }
+    }
+}
+
+pub proof fn lemma_semi3_at_origin<A, B, C, Acc>(
+    oa: Seq<A>,
+    ob: Seq<B>,
+    oc: Seq<C>,
+    ia: Seq<A>,
+    ib: Seq<B>,
+    ic: Seq<C>,
+    step: spec_fn(Acc, int) -> Acc,
+    base: Acc,
+    n_outer: int,
+)
+    requires
+        oa.len() == n_outer,
+        ob.len() == n_outer,
+        oc.len() == n_outer,
+        n_outer <= usize::MAX as int,
+    ensures
+        semi_loop_acc3(oa, ob, oc, ia, ib, ic, step, base, n_outer, 0) == hit_acc(
+            nested_semi_hits3(oa, ob, oc, ia, ib, ic, n_outer),
+            step,
+            base,
+            0,
+        ),
+{
+    assert(nested_semi_hits3(oa, ob, oc, ia, ib, ic, 0) =~= Seq::<usize>::empty());
+    lemma_semi_acc3(oa, ob, oc, ia, ib, ic, step, base, n_outer, 0);
+}
+
+/// Three-key SEMI hit ids. View equals [`nested_semi_hits3`].
+pub fn semi_hit_rows_str3(
+    outer0: &Vec<String>,
+    outer1: &Vec<String>,
+    outer2: &Vec<String>,
+    inner0: &Vec<String>,
+    inner1: &Vec<String>,
+    inner2: &Vec<String>,
+) -> (hits: Vec<usize>)
+    requires
+        outer0@.len() == outer1@.len(),
+        outer0@.len() == outer2@.len(),
+        inner0@.len() == inner1@.len(),
+        inner0@.len() == inner2@.len(),
+    ensures
+        hits@ == nested_semi_hits3(
+            key_views(outer0@),
+            key_views(outer1@),
+            key_views(outer2@),
+            key_views(inner0@),
+            key_views(inner1@),
+            key_views(inner2@),
+            outer0@.len() as int,
+        ),
+{
+    let idx = build_eq_index_str(inner0);
+    let ghost oa = key_views(outer0@);
+    let ghost ob = key_views(outer1@);
+    let ghost oc = key_views(outer2@);
+    let ghost ia = key_views(inner0@);
+    let ghost ib = key_views(inner1@);
+    let ghost ic = key_views(inner2@);
+    let mut hits: Vec<usize> = Vec::new();
+    let mut i: usize = 0;
+    while i < outer0.len()
+        invariant
+            i <= outer0.len(),
+            outer0@.len() == outer0.len() as int,
+            outer1@.len() == outer0@.len(),
+            outer2@.len() == outer0@.len(),
+            inner0@.len() == inner0.len() as int,
+            inner1@.len() == inner0@.len(),
+            inner2@.len() == inner0@.len(),
+            oa == key_views(outer0@),
+            ob == key_views(outer1@),
+            oc == key_views(outer2@),
+            ia == key_views(inner0@),
+            ib == key_views(inner1@),
+            ic == key_views(inner2@),
+            index_ok(ia, idx.buckets@, idx.map@, inner0@.len() as int),
+            hits@ == nested_semi_hits3(oa, ob, oc, ia, ib, ic, i as int),
+        decreases outer0.len() - i,
+    {
+        let key0 = outer0[i].clone();
+        let key1 = outer1[i].clone();
+        let key2 = outer2[i].clone();
+        let ghost end = i as int;
+        proof {
+            lemma_key_view_at(outer0@, end);
+            lemma_key_view_at(outer1@, end);
+            lemma_key_view_at(outer2@, end);
+            broadcast use vstd::std_specs::vec::axiom_spec_len;
+            assert(oa[end] == key0@);
+            assert(ob[end] == key1@);
+            assert(oc[end] == key2@);
+            assert(ia.len() as int <= usize::MAX as int);
+        }
+        let ghost before = hits@;
+        let present = idx.map.contains_key(key0.as_str());
+        if present {
+            let got = idx.map.get(key0.as_str());
+            let bi = *got.unwrap();
+            proof {
+                assert(idx.map@.contains_key(key0@));
+                lemma_index_bucket(ia, idx.buckets@, idx.map@, ia.len() as int, key0@);
+                lemma_eq_row_ids_bounded(ia, key0@, ia.len() as int);
+            }
+            let ids = &idx.buckets[bi];
+            let filtered2 = filter_row_ids_str(ids, inner1, &key1);
+            proof {
+                lemma_filter_is_ids2(ia, ib, key0@, key1@, ia.len() as int);
+                assert(filtered2@ == eq_row_ids2(ia, ib, oa[end], ob[end], ia.len() as int));
+                lemma_eq2_bounded(ia, ib, oa[end], ob[end], ia.len() as int);
+                assert(ia.len() == inner2@.len());
+                assert forall|t: int|
+                    0 <= t < filtered2@.len() implies (#[trigger] filtered2@[t] as int)
+                        < inner2@.len() by {
+                    assert(
+                        (eq_row_ids2(ia, ib, oa[end], ob[end], ia.len() as int)[t] as int)
+                            < ia.len()
+                    );
+                    assert(filtered2@[t]
+                        == eq_row_ids2(ia, ib, oa[end], ob[end], ia.len() as int)[t]);
+                };
+            }
+            let filtered3 = filter_row_ids_str(&filtered2, inner2, &key2);
+            if filtered3.len() == 0 {
+                proof {
+                    lemma_filter_is_ids3(ia, ib, ic, key0@, key1@, key2@, ia.len() as int);
+                    assert(filtered3@
+                        == eq_row_ids3(ia, ib, ic, oa[end], ob[end], oc[end], ia.len() as int));
+                    assert(eq_row_ids3(ia, ib, ic, oa[end], ob[end], oc[end], ia.len() as int)
+                        .len() == 0);
+                    lemma_nested_semi_hits3_step(oa, ob, oc, ia, ib, ic, end + 1);
+                    assert(hits@ == nested_semi_hits3(oa, ob, oc, ia, ib, ic, end + 1));
+                }
+            } else {
+                hits.push(i);
+                proof {
+                    lemma_filter_is_ids3(ia, ib, ic, key0@, key1@, key2@, ia.len() as int);
+                    assert(filtered3@
+                        == eq_row_ids3(ia, ib, ic, oa[end], ob[end], oc[end], ia.len() as int));
+                    assert(eq_row_ids3(ia, ib, ic, oa[end], ob[end], oc[end], ia.len() as int)
+                        .len() > 0);
+                    lemma_nested_semi_hits3_step(oa, ob, oc, ia, ib, ic, end + 1);
+                    assert(hits@ == before.push(i));
+                    assert(hits@ == nested_semi_hits3(oa, ob, oc, ia, ib, ic, end + 1));
+                }
+            }
+        } else {
+            proof {
+                assert(!idx.map@.contains_key(key0@));
+                lemma_index_absent(ia, idx.buckets@, idx.map@, ia.len() as int, key0@);
+                lemma_eq_row_ids_len0(ia, key0@, ia.len() as int);
+                lemma_eq_row_ids3_empty_from_first(
+                    ia,
+                    ib,
+                    ic,
+                    key0@,
+                    key1@,
+                    key2@,
+                    ia.len() as int,
+                );
+                lemma_nested_semi_hits3_step(oa, ob, oc, ia, ib, ic, end + 1);
+                assert(hits@ == nested_semi_hits3(oa, ob, oc, ia, ib, ic, end + 1));
+            }
+        }
+        i = i + 1;
+    }
+    hits
+}
+// SHAPE_SEMI3_END
+
+
 // EQ_JOIN_PROVED_END
 
 

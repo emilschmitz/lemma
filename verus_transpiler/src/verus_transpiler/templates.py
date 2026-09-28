@@ -16,7 +16,8 @@ def _emit_join_run_query_skeleton(ret_type: str) -> str:
 //   equijoin_pairs_str / equijoin_pairs_str2 / equijoin_pairs_str3
 //   equijoin_pairs_u64 / equijoin_pairs_u32 / orjoin_pairs_str
 //   star_eq_triples_str / chain_eq_triples_str / q6_eq_triples_str / star_eq_quads_str
-//   semi_hit_rows_str / anti_miss_rows_str / anti_miss_rows_str3
+//   semi_hit_rows_str / semi_hit_rows_str2 / semi_hit_rows_str3
+//   anti_miss_rows_str / anti_miss_rows_str2 / anti_miss_rows_str3
 //   left_outer_pairs_str / left_outer_pairs_u64 / right_outer_pairs_str / full_outer_parts_str
 //   self-join: same equijoin_pairs_*; params are SQL aliases (Cols_<alias>)
 // Do not call build_hashset_u32 / probe_sum_u64. Derived Map = step arg, not a second index.

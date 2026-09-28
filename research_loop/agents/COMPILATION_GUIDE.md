@@ -51,11 +51,14 @@ open `context/ro/JOIN_PROOF_PATHS.md` for the shape you have.
 - <!-- shape: chain --> `chain_eq_triples_str(a_k, b_k, b_m, c_m) -> Vec<(usize, usize, usize)>` — `triples@ == nested_chain(...)`; 3-table chain.
 - <!-- shape: q6 --> `q6_eq_triples_str(hub_a, hub_t, hub_v, sub_a, pre_a, pre_t, pre_v) -> Vec<(usize, usize, usize)>` — `triples@ == nested_q6(...)`; 3-table Q6 (1+3).
 - <!-- shape: left --> `anti_miss_rows_str(outer, inner) -> Vec<usize>` — `misses@ == nested_anti_misses(...)`; LEFT anti miss ids.
-- <!-- shape: left3 --> `anti_miss_rows_str3(o0, o1, o2, i0, i1, i2) -> Vec<usize>` — `misses@ == nested_anti_misses3(...)`; three-key LEFT anti.
-- <!-- shape: anti --> same `anti_miss_rows_str` for keyword ANTI JOIN (group-by or left-side projection).
+- <!-- shape: left2 --> `anti_miss_rows_str2(o0, o1, i0, i1) -> Vec<usize>` — `misses@ == nested_anti_misses2(...)`; two-key LEFT anti / ANTI.
+- <!-- shape: left3 --> `anti_miss_rows_str3(o0, o1, o2, i0, i1, i2) -> Vec<usize>` — `misses@ == nested_anti_misses3(...)`; three-key LEFT anti / ANTI.
+- <!-- shape: anti --> same `anti_miss_rows_str` / `_str2` / `_str3` for keyword ANTI JOIN (group-by, projection, or scalar COUNT).
 - <!-- shape: semi --> `semi_hit_rows_str(outer, inner) -> Vec<usize>` — `hits@ == nested_semi_hits(...)`; SEMI hit ids.
+- <!-- shape: semi2 --> `semi_hit_rows_str2(o0, o1, i0, i1) -> Vec<usize>` — `hits@ == nested_semi_hits2(...)`; two-key SEMI.
+- <!-- shape: semi3 --> `semi_hit_rows_str3(o0, o1, o2, i0, i1, i2) -> Vec<usize>` — `hits@ == nested_semi_hits3(...)`; three-key SEMI.
 - <!-- shape: loj --> `left_outer_pairs_str(outer, inner)` / `left_outer_pairs_u64` — `pairs@ == nested_loj_pairs(...)`; LEFT OUTER slots.
-- <!-- shape: right --> `right_outer_pairs_str(outer, inner)` — `slots@ == nested_right_pairs(...)`; RIGHT OUTER slots.
+- <!-- shape: right --> `right_outer_pairs_str(outer, inner)` — `slots@ == nested_right_pairs(...)`; RIGHT OUTER slots (projection, scalar COUNT, multi-agg).
 - `star_eq_quads_str(hub_a, hub_t, hub_v, sub_a, tag_t, tag_v, pre_a, pre_t, pre_v)` — `quads@ == nested_quad(...)`; 4-table star. <!-- shape: 4table -->
 - <!-- shape: full --> `full_outer_parts_str(left, right)` — matched pairs + left/right misses; FULL OUTER parts.
 - <!-- shape: selfjoin --> self-joins use the same `equijoin_pairs_*` helpers; `run_query` / MethodSpec params are SQL aliases (`Cols_<alias>`), not a second physical table.
