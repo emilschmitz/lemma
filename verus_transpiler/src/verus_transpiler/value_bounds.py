@@ -472,6 +472,15 @@ _CUBE_REMAINDER = frozenset(
         "lemma_rem_join_cube_nonneg_boundary",
         "lemma_join_nested_rem_leq_rows_cube",
         "lemma_fold_suffix_rem_leq_rows_pow3",
+        "lemma_max_rows_cube_times_native_fits_u64",
+        "lemma_max_rows_cube_times_cell_u64_fits_u64",
+        "lemma_max_rows_cube_times_money_fits_u64",
+        "lemma_max_rows_cube_plus_one_fits_u64",
+        "lemma_rem_cap_native_add_fits_cube",
+        "lemma_rem_cap_cell_u64_add_fits_cube",
+        "lemma_rem_cap_money_add_fits_cube",
+        "lemma_rem_cap_one_add_fits_pow3",
+        "lemma_rem_cap_one_add_fits_cube",
     }
 )
 _FOUR_REMAINDER = frozenset(
@@ -487,6 +496,16 @@ _FOUR_REMAINDER = frozenset(
         "lemma_fold_suffix_rem_leq_rows_pow4",
         "lemma_rem_cap_cell_u64_add_fits_pow4",
         "lemma_rem_cap_native_add_fits_pow4",
+        "lemma_max_rows_4_times_native_fits_u64",
+        "lemma_max_rows_4_times_cell_u64_fits_u64",
+        "lemma_max_rows_4_times_money_fits_u64",
+        "lemma_max_rows_4_plus_one_fits_u64",
+        "lemma_rem_cap_native_add_fits_4",
+        "lemma_rem_cap_cell_u64_add_fits_4",
+        "lemma_rem_cap_money_add_fits_4",
+        "lemma_rem_cap_money_add_fits_pow4",
+        "lemma_rem_cap_one_add_fits_pow4",
+        "lemma_rem_cap_one_add_fits_4",
     }
 )
 _FN_HEAD = re.compile(
