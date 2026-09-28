@@ -134,3 +134,39 @@ def test_exists_catalog_tables_for_projection() -> None:
     assert catalog_tables_in_query(query) == ("num", "pre")
     catalog = {"num": SEC_SCHEMA["num"], "pre": SEC_SCHEMA["pre"]}
     assert uses_multi_table_program(query, catalog) is True
+
+
+_JOIN_SQL = """SELECT s.form, s.fy, COUNT(*) AS num_lines,
+       COUNT(DISTINCT p.tag) AS distinct_tags,
+       AVG(p.line) AS avg_line
+FROM pre p
+JOIN sub s ON p.adsh = s.adsh
+WHERE p.stmt = 'IS'
+GROUP BY s.form, s.fy"""
+
+
+def test_join_projects_to_columns_the_query_reads() -> None:
+    catalog = {
+        "pre": {
+            "ADSH": "string",
+            "LINE": "int",
+            "STMT": "string",
+            "TAG": "string",
+            "INPTH": "int",
+            "PLABEL": "string",
+        },
+        "sub": {
+            "ADSH": "string",
+            "FORM": "string",
+            "FY": "int",
+            "NAME": "string",
+            "SIC": "int",
+        },
+    }
+    projected = project_multi_schema_for_query(_JOIN_SQL, catalog)
+    assert set(projected["pre"]) == {"ADSH", "LINE", "STMT", "TAG"}
+    assert set(projected["sub"]) == {"ADSH", "FORM", "FY"}
+    spec = transpile_sql_to_verus(_JOIN_SQL, projected)
+    assert "inpth" not in spec.lower()
+    assert "plabel" not in spec.lower()
+    assert "method_spec" in spec

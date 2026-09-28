@@ -282,10 +282,15 @@ def project_multi_schema_for_query(
             return _flat_schema_for_used_columns(used, schema)
         return project_schema_for_query(sql_str, schema)
     if query.joins:
-        projected: dict[str, dict[str, str]] = {}
+        # Same column cut as a single-table query. Unused columns never appear
+        # in the fold, and carrying them makes valid_cols a longer requires.
+        used = columns_used_by_query(sql_str, schema)
+        projected = {}
         for table in query.tables:
-            if table in multi:
-                projected[table] = dict(multi[table])
+            if table not in multi:
+                continue
+            table_used = {col: typ for col, typ in multi[table].items() if col in used}
+            projected[table] = table_used or dict(multi[table])
         if projected:
             return projected
     used = columns_used_by_query(sql_str, schema)
