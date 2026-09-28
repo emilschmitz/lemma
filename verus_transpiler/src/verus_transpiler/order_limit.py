@@ -17,8 +17,10 @@ def _field(nfields: int, index: int, side: str) -> str:
     return f"{side}.{index}"
 
 
-def _less(ty: str, left: str, right: str) -> str:
+def _less(ty: str, left: str, right: str, *, exec_strings: bool = False) -> str:
     if ty == "Seq<char>":
+        if exec_strings:
+            return f"({left}) < ({right})"
         return f"spec_char_seq_lt({left}, {right})"
     if ty in _INT_TYPES:
         return f"({left}) < ({right})"
@@ -27,7 +29,13 @@ def _less(ty: str, left: str, right: str) -> str:
     )
 
 
-def _before_body(columns: list[str], types: list[str], order_by: list[OrderByItem]) -> str:
+def _before_body(
+    columns: list[str],
+    types: list[str],
+    order_by: list[OrderByItem],
+    *,
+    exec_strings: bool = False,
+) -> str:
     if len(columns) != len(types):
         raise UnsupportedContractError(
             "ORDER BY needs one spec type per projected column"
@@ -47,7 +55,7 @@ def _before_body(columns: list[str], types: list[str], order_by: list[OrderByIte
         idx, ty, desc = keys[i]
         left = _field(nfields, idx, "b" if desc else "a")
         right = _field(nfields, idx, "a" if desc else "b")
-        lt = _less(ty, left, right)
+        lt = _less(ty, left, right, exec_strings=exec_strings)
         same_l = _field(nfields, idx, "a")
         same_r = _field(nfields, idx, "b")
         if i + 1 == len(keys):
@@ -69,6 +77,8 @@ def group_row_before(
     agg_aliases: list[str],
     agg_types: list[str],
     order_by: list[OrderByItem],
+    *,
+    exec_strings: bool = False,
 ) -> str:
     """Lexicographic order on ``(group_key, agg_value)`` rows."""
     if len(group_cols) != len(group_types) or len(agg_aliases) != len(agg_types):
@@ -96,7 +106,7 @@ def group_row_before(
         (field, ty), desc = keys[i]
         left = f"{'b' if desc else 'a'}.{field}"
         right = f"{'a' if desc else 'b'}.{field}"
-        lt = _less(ty, left, right)
+        lt = _less(ty, left, right, exec_strings=exec_strings)
         if i + 1 == len(keys):
             return lt
         return (
@@ -152,10 +162,12 @@ def wrap_seq_order_limit(
     body = spec_body
     if query.order_by:
         pred = _before_body(columns, types, query.order_by)
+        exec_pred = _before_body(columns, types, query.order_by, exec_strings=True)
         extra = (
             f"pub open spec fn {before_name}(a: {row_ty}, b: {row_ty}) -> bool {{\n"
             f"    {pred}\n"
-            f"}}\n"
+            f"}}\n\n"
+            + exec_sort_by_fn(row_ty, before_name, exec_pred)
         )
         # A fn item does not coerce to spec_fn. The closure does.
         body = (
@@ -167,3 +179,41 @@ def wrap_seq_order_limit(
     if query.limit is not None:
         body = f"spec_seq_take({body}, {query.limit})"
     return extra, body
+
+
+def exec_sort_by_fn(row_ty: str, before_name: str, exec_pred: str) -> str:
+    """Trusted stable sort. The ensures is the spec insertion sort."""
+    from research_loop.trusted_ret_bridge import vec_view_fn_for_row
+
+    exec_row = row_ty.replace("Seq<char>", "String")
+    view = vec_view_fn_for_row(row_ty)
+    spec_before = f"|a: {row_ty}, b: {row_ty}| {before_name}(a, b)"
+    if view is None:
+        ensures = f"res@ == spec_seq_sort_by(s@, {spec_before})"
+    else:
+        ensures = (
+            f"{view}(res@) == spec_seq_sort_by({view}(s@), {spec_before})"
+        )
+    pred = "\n".join(
+        f"        {line}" if line else "" for line in exec_pred.split("\n")
+    )
+    return f"""#[verifier::external_body]
+pub exec fn exec_sort_by(s: Vec<{exec_row}>) -> (res: Vec<{exec_row}>)
+    ensures {ensures}
+{{
+    let before = |a: &{exec_row}, b: &{exec_row}| -> bool {{
+{pred}
+    }};
+    let mut v = s;
+    v.sort_by(|a, b| {{
+        if before(a, b) {{
+            std::cmp::Ordering::Less
+        }} else if before(b, a) {{
+            std::cmp::Ordering::Greater
+        }} else {{
+            std::cmp::Ordering::Equal
+        }}
+    }});
+    v
+}}
+"""

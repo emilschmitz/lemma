@@ -69,6 +69,8 @@ def test_group_by_order_by_is_a_sorted_sequence() -> None:
     assert "group_keys_helper" in out
     assert "// lemma_group_topk_map: Map<(Seq<char>, u32), (u64, u64, u64)>" in out
     assert "(b.1.0) < (a.1.0)" in out
+    assert "pub exec fn exec_sort_by" in out
+    assert "spec_seq_sort_by(vec_str_u32_u64_u64_u64_view(s@)" in out
     assert "agent may apply in run_query" not in out
 
 

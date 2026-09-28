@@ -247,6 +247,14 @@ def _atom_slug(atom: TypeAtom) -> str:
     raise ValueError(f"unsupported atom in slug: {atom.name}")
 
 
+def vec_view_fn_for_row(spec_row: str) -> str | None:
+    """View function for one ordered-row spec type, or None when exec and spec match."""
+    parsed = parse_verus_type(normalize_spec_type(spec_row))
+    if not _contains_seq_char(parsed):
+        return None
+    return f"vec_{_type_slug(parsed)}_view"
+
+
 def _type_slug(t: TypeExpr) -> str:
     if isinstance(t, TypeAtom):
         return _atom_slug(t)
