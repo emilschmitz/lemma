@@ -9,7 +9,10 @@ from typing import cast
 
 import pytest
 from verus_transpiler.column_projection import project_multi_schema_for_query
-from verus_transpiler.eq_join_prelude import proved_eq_join_prelude
+from verus_transpiler.eq_join_prelude import (
+    proved_eq_join_prelude,
+    proved_eq_join_prelude_for,
+)
 from verus_transpiler.parse_sql import normalize_schema
 
 from research_loop.assemble_verified_program import (
@@ -135,6 +138,20 @@ def test_proved_slice_is_rocketship_clean() -> None:
     assert "assume(" not in body
 
 
+def test_intkey_shape_follows_the_query_text() -> None:
+    """A string join does not carry the u32/u64 index. Naming it pulls the block."""
+    string_only = proved_eq_join_prelude_for("equijoin_pairs_str(outer, inner)")
+    assert "pub fn equijoin_pairs_str(" in string_only
+    assert "// SHAPE_INTKEY_BEGIN" not in string_only
+    assert "pub fn equijoin_pairs_u64(" not in string_only
+    named = proved_eq_join_prelude_for("equijoin_pairs_u64(outer, inner)")
+    assert "// SHAPE_INTKEY_BEGIN" in named
+    assert "pub fn build_eq_index_copy<" in named
+    loj = proved_eq_join_prelude_for("build_eq_index_copy(inner)")
+    assert "// SHAPE_INTKEY_BEGIN" in loj
+    assert loj.index("pub fn build_eq_index_copy<") < loj.index("build_eq_index_copy(inner)")
+
+
 def test_join_transpile_includes_proved_equijoin_and_single_table_does_not() -> None:
     adsh = transpile_sql_to_verus(
         _ADSH_SQL,
@@ -157,6 +174,9 @@ def test_join_transpile_includes_proved_equijoin_and_single_table_does_not() -> 
         assert "let mut i = cols.n" not in out
     assert "// SHAPE_TWOKEY_BEGIN" not in adsh
     assert "// SHAPE_STAR_BEGIN" not in adsh
+    assert "// SHAPE_INTKEY_BEGIN" not in adsh
+    assert "pub fn equijoin_pairs_u64(" not in adsh
+    assert "pub fn build_eq_index_u64(" not in adsh
     assert "pub fn star_eq_triples_str(" not in adsh
     assert "pub fn equijoin_pairs_str2(" not in adsh
     assert "pub fn star_eq_triples_str(" in star

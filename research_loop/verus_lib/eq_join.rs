@@ -694,6 +694,7 @@ pub fn equijoin_pairs_str(outer: &Vec<String>, inner: &Vec<String>) -> (pairs: V
     pairs
 }
 
+// SHAPE_INTKEY_BEGIN
 /// Identity view for integer keys (`u64@ == u64`). Trigger for the quantifier.
 pub open spec fn view_is_id<K: View<V = K>>(x: K) -> bool {
     x@ == x
@@ -957,6 +958,8 @@ pub fn equijoin_pairs_u32(outer: &Vec<u32>, inner: &Vec<u32>) -> (pairs: Vec<(us
     }
     equijoin_pairs_copy(outer, inner)
 }
+
+// SHAPE_INTKEY_END
 
 // SHAPE_TWOKEY_BEGIN
 /// Row ids where column `a` equals `ka` and column `b` equals `kb`.

@@ -7,7 +7,8 @@ out of product code.
 ``proved_eq_join_prelude()`` is the whole slice. ``proved_eq_join_prelude_for``
 keeps the one-key core and only the ``SHAPE_*`` blocks the query text actually
 names. Two-key and star proofs are ``SHAPE_TWOKEY`` / ``SHAPE_STAR`` blocks, so
-a one-key join is not also the two-key, star, or four-table library.
+a one-key join is not also the two-key, star, or four-table library. Integer
+``Copy`` keys (``u32`` / ``u64``) are ``SHAPE_INTKEY`` and stay out of a string join.
 """
 
 from __future__ import annotations
