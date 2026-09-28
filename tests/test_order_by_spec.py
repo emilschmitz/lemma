@@ -36,7 +36,8 @@ LIMIT 50
 def test_star_order_by_sorts_before_limit() -> None:
     out = transpile_sql_to_verus(_STAR_SQL, _STAR)
     assert "spec_seq_take(spec_seq_sort_by(" in out
-    assert "spec_join_proj_before" in out
+    assert "|a: (Seq<char>, Seq<char>, Seq<char>, u32, Seq<char>), b:" in out
+    assert "spec_join_proj_before(a, b)" in out
     assert "spec_char_seq_lt(a.0, b.0)" in out
     assert "(a.3) < (b.3)" in out
     assert "agent may apply in run_query" not in out

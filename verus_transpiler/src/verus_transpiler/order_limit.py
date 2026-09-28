@@ -82,7 +82,11 @@ def wrap_seq_order_limit(
             f"    {pred}\n"
             f"}}\n"
         )
-        body = f"spec_seq_sort_by({body}, {before_name})"
+        # A fn item does not coerce to spec_fn. The closure does.
+        body = (
+            f"spec_seq_sort_by({body}, "
+            f"|a: {row_ty}, b: {row_ty}| {before_name}(a, b))"
+        )
     if query.offset:
         body = f"spec_seq_skip({body}, {query.offset})"
     if query.limit is not None:
