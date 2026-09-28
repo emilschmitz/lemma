@@ -173,3 +173,43 @@ def test_single_table_group_by_order_is_a_sorted_sequence() -> None:
     assert "// lemma_group_topk_map: Map<" in out
     assert "pub const LEMMA_MAX_CELL_U64" not in out
     assert "delta < LEMMA_MAX_CELL_U64" not in out
+
+
+def test_single_agg_join_group_by_order_is_a_sorted_sequence() -> None:
+    sql = """
+    SELECT lineitem.l_orderkey,
+           SUM(lineitem.l_extendedprice * (1 - lineitem.l_discount)) AS revenue,
+           orders.o_orderdate, orders.o_shippriority
+    FROM customer
+    JOIN orders ON customer.c_custkey = orders.o_custkey
+    JOIN lineitem ON lineitem.l_orderkey = orders.o_orderkey
+    WHERE customer.c_mktsegment = 'BUILDING'
+      AND orders.o_orderdate < 19950315
+      AND lineitem.l_shipdate > 19950315
+    GROUP BY lineitem.l_orderkey, orders.o_orderdate, orders.o_shippriority
+    ORDER BY revenue DESC, orders.o_orderdate
+    LIMIT 10
+    """
+    out = transpile_sql_to_verus(
+        sql,
+        {
+            "customer": {"c_custkey": "int", "c_mktsegment": "string"},
+            "orders": {
+                "o_orderkey": "int",
+                "o_custkey": "int",
+                "o_orderdate": "int",
+                "o_shippriority": "int",
+            },
+            "lineitem": {
+                "l_orderkey": "int",
+                "l_extendedprice": "int",
+                "l_discount": "int",
+                "l_shipdate": "int",
+            },
+        },
+    )
+    spec = out.split("pub open spec fn method_spec(", 1)[1].split("pub proof fn", 1)[0]
+    assert "-> Seq<" in spec.split("{", 1)[0]
+    assert "spec_seq_take(spec_seq_sort_by(spec_map_at_keys(" in spec
+    assert "not in this Map method_spec" not in out
+    assert "(b.1) < (a.1)" in out

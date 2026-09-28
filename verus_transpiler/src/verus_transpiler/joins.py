@@ -4943,7 +4943,58 @@ def _emit_single_agg_nway(
         + list(derived_map_vars.values())
         + [_init_indices(slots)]
     )
-    return helper, f"{helper_name}({init_args})", ret_type, bridge
+    topk: tuple[str, str] | None = None
+    if query.groupby_columns and query.order_by:
+        keys_name = "group_keys_helper"
+        keys_update = (
+            f"let key = {key_expr};\n"
+            f"            if tail.contains(key) {{ tail }} else {{ tail.push(key) }}"
+        )
+        keys_helper = _gen_nested_loop(
+            keys_name,
+            slots,
+            join_cond=join_cond,
+            filter_cond=filter_cond,
+            update_expr=keys_update,
+            ret_type=f"Seq<{key_ty}>",
+            ret_base="Seq::empty()",
+            extra_params=_derived_map_extra_params(derived_map_vars, derived_map_types),
+        )
+        group_types = (
+            [part.strip() for part in key_ty[1:-1].split(", ")]
+            if key_ty.startswith("(")
+            else [key_ty]
+        )
+        aliases = [spec.alias or "_agg" for spec in query.agg_specs] or ["_agg"]
+        row_ty = f"({key_ty}, {val_type})"
+        before_name = "spec_group_before"
+        pred = group_row_before(
+            list(query.groupby_columns),
+            group_types,
+            aliases,
+            [val_type],
+            query.order_by,
+        )
+        exec_pred = group_row_before(
+            list(query.groupby_columns),
+            group_types,
+            aliases,
+            [val_type],
+            query.order_by,
+            exec_strings=True,
+        )
+        helper = (
+            helper
+            + "\n\n"
+            + keys_helper
+            + "\n\n"
+            + f"pub open spec fn {before_name}(a: {row_ty}, b: {row_ty}) -> bool {{\n"
+            + f"    {pred}\n"
+            + "}\n\n"
+            + exec_sort_by_fn(row_ty, before_name, exec_pred)
+        )
+        topk = (f"{keys_name}({init_args})", row_ty)
+    return helper, f"{helper_name}({init_args})", ret_type, bridge, topk
 
 
 def _li_ri_match_conds(
@@ -10550,7 +10601,7 @@ def emit_join_spec_helpers(
             )
             ret_type = f"Seq<{row_ty}>"
     else:
-        loop_helper, spec_body, ret_type, fold_bridge = _emit_single_agg_nway(
+        loop_helper, spec_body, ret_type, fold_bridge, topk = _emit_single_agg_nway(
             query,
             slots,
             schemas_by_table,
@@ -10564,6 +10615,18 @@ def emit_join_spec_helpers(
         )
         helpers = "\n\n".join(derived_helpers + [loop_helper])
         spec_body = _apply_join_having_filter(spec_body)
+        if topk is not None:
+            keys_call, row_ty = topk
+            group_map_ty = ret_type
+            spec_body = wrap_group_topk(
+                spec_body,
+                keys_call,
+                row_ty,
+                "spec_group_before",
+                limit=query.limit,
+                offset=query.offset,
+            )
+            ret_type = f"Seq<{row_ty}>"
 
     derived_prelude = ""
     for d in query.derived_tables:
@@ -10626,7 +10689,7 @@ def emit_join_grouped_map_spec(
     slots = _build_join_slots(query)
     helper_name = f"{prefix}_helper"
     spec_name = f"{prefix}_spec"
-    loop_helper, loop_call, ret_type, _bridge = _emit_single_agg_nway(
+    loop_helper, loop_call, ret_type, _bridge, _topk = _emit_single_agg_nway(
         query,
         slots,
         schemas_by_table,
