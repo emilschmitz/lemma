@@ -50,6 +50,14 @@ WHERE p.stmt = 'CI'
 LIMIT 50
 """
 
+# ANTI scalar COUNT(*) — length of the miss list (no GROUP BY).
+_ANTI_COUNT_SQL = """
+SELECT COUNT(*)
+FROM pre p
+ANTI JOIN sub s ON p.adsh = s.adsh
+WHERE p.stmt = 'CI'
+"""
+
 
 def _large_sec_product_catalog() -> CatalogAssumptions:
     """Full-table SEC product catalog for join fold proofs under real row caps."""
@@ -226,6 +234,65 @@ pub exec fn run_query(pre: &Cols_pre, sub: &Cols_sub) -> (res: {rust_ret})
     assert "pub fn anti_miss_rows_str(" in program
     _assert_full_sec_caps(program)
     rs_path = tmp_path / "anti_proj_fold.rs"
+    rs_path.write_text(program, encoding="utf-8")
+    ok, log = run_verus_verify(str(rs_path), timeout=300)
+    assert ok, log[-5000:]
+    assert "0 errors" in log
+    assert "verification results::" in log
+
+
+def test_anti_count_transpile_emits_is_anti_fold() -> None:
+    projected = _projected(_ANTI_COUNT_SQL)
+    catalog = _large_sec_product_catalog()
+    out = transpile_sql_to_verus(
+        _ANTI_COUNT_SQL, projected, catalog_assumptions=catalog
+    )
+    assert "join_anti_count_helper" in out
+    assert "// shape: anti" in out
+    assert "lemma_join_anti_count_helper_is_anti(" in out
+    assert "lemma_join_anti_count_helper_is_anti_loop(" in out
+    assert "lemma_join_anti_count_helper_method_is_fold(" in out
+    assert "nested_anti_misses" in out
+    assert "miss_acc(" in out
+    assert "anti_miss_rows_str" in out
+    _assert_full_sec_caps(out)
+
+
+def test_anti_count_fold_lemma_verifies(tmp_path: Path) -> None:
+    """ANTI scalar COUNT helper == miss_acc(+1) verifies under full SEC product caps."""
+    if resolve_verus_bin() is None:
+        pytest.skip("verus not found")
+    projected = _projected(_ANTI_COUNT_SQL)
+    catalog = _large_sec_product_catalog()
+    spec_rs = transpile_sql_to_verus(
+        _ANTI_COUNT_SQL, projected, catalog_assumptions=catalog
+    )
+    assert "lemma_join_anti_count_helper_is_anti(" in spec_rs
+    assert "lemma_join_anti_count_helper_method_is_fold(" in spec_rs
+    _assert_full_sec_caps(spec_rs)
+    ret_type = resolve_ret_type_from_method_spec(spec_rs)
+    assert ret_type == "u64"
+    stub = """#[verifier::external_body]
+pub exec fn run_query(pre: &Cols_pre, sub: &Cols_sub) -> (res: u64)
+    requires valid_cols_pre(pre), valid_cols_sub(sub),
+    ensures res == method_spec(pre, sub),
+{
+    0u64
+}"""
+    program = assemble_verified_join_program(
+        spec_rs=spec_rs,
+        run_query_body=stub,
+        multi_schema=projected,
+        table_order=("pre", "sub"),
+        ret_type=ret_type,
+        default_tbls={"pre": "", "sub": ""},
+        catalog_assumptions=catalog,
+    )
+    assert "lemma_join_anti_count_helper_is_anti(" in program
+    assert "lemma_join_anti_count_helper_method_is_fold(" in program
+    assert "pub fn anti_miss_rows_str(" in program
+    _assert_full_sec_caps(program)
+    rs_path = tmp_path / "anti_count_fold.rs"
     rs_path.write_text(program, encoding="utf-8")
     ok, log = run_verus_verify(str(rs_path), timeout=300)
     assert ok, log[-5000:]

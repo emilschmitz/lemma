@@ -48,6 +48,13 @@ FROM pre p
 FULL OUTER JOIN sub s ON p.adsh = s.adsh
 """
 
+# Multi-column FULL OUTER projection: join key + left non-key (Option on right miss).
+_FULL_PROJ_MULTI_SQL = """
+SELECT p.adsh, p.stmt
+FROM pre p
+FULL OUTER JOIN sub s ON p.adsh = s.adsh
+"""
+
 
 def _large_sec_product_catalog() -> CatalogAssumptions:
     """Full-table SEC product catalog for join fold proofs under real row caps."""
@@ -123,6 +130,65 @@ def test_full_outer_scalar_and_projection_transpile() -> None:
         assert "lemma_full_join_matched_helper_is_full(" in out
         assert "// shape: full" in out
         _assert_full_sec_caps(out)
+
+
+def test_full_outer_multi_projection_transpile() -> None:
+    projected = _projected(_FULL_PROJ_MULTI_SQL)
+    catalog = _large_sec_product_catalog()
+    out = transpile_sql_to_verus(
+        _FULL_PROJ_MULTI_SQL, projected, catalog_assumptions=catalog
+    )
+    assert "full_join_projection_helper" in out
+    assert "full_join_right_unmatched_helper" in out
+    assert "lemma_full_join_matched_helper_is_full(" in out
+    assert "lemma_full_join_matched_helper_method_is_fold(" in out
+    assert "Option<Seq<char>>" in out
+    assert "full_acc(" in out or "pair_acc(" in out
+    assert "nested_eq_pairs" in out
+    assert "nested_anti_misses" in out
+    assert "// shape: full" in out
+    _assert_full_sec_caps(out)
+
+
+def test_full_outer_multi_projection_fold_verifies(tmp_path: Path) -> None:
+    """FULL OUTER multi-col projection == three-phase fold under full SEC caps."""
+    if resolve_verus_bin() is None:
+        pytest.skip("verus not found")
+    projected = _projected(_FULL_PROJ_MULTI_SQL)
+    catalog = _large_sec_product_catalog()
+    spec_rs = transpile_sql_to_verus(
+        _FULL_PROJ_MULTI_SQL, projected, catalog_assumptions=catalog
+    )
+    assert "lemma_full_join_matched_helper_is_full(" in spec_rs
+    assert "lemma_full_join_matched_helper_method_is_fold(" in spec_rs
+    _assert_full_sec_caps(spec_rs)
+    ret_type = resolve_ret_type_from_method_spec(spec_rs)
+    stub = """#[verifier::external_body]
+pub exec fn run_query(pre: &Cols_pre, sub: &Cols_sub) -> (res: Vec<(String, Option<String>)>)
+    requires valid_cols_pre(pre), valid_cols_sub(sub),
+    ensures res@ == res@,
+{
+    Vec::new()
+}"""
+    program = assemble_verified_join_program(
+        spec_rs=spec_rs,
+        run_query_body=stub,
+        multi_schema=projected,
+        table_order=("pre", "sub"),
+        ret_type=ret_type,
+        default_tbls={"pre": "", "sub": ""},
+        catalog_assumptions=catalog,
+    )
+    assert "lemma_full_join_matched_helper_is_full(" in program
+    assert "pub fn full_outer_parts_str(" in program
+    assert "full_join_projection_helper" in program
+    _assert_full_sec_caps(program)
+    rs_path = tmp_path / "full_outer_multi_proj.rs"
+    rs_path.write_text(program, encoding="utf-8")
+    ok, log = run_verus_verify(str(rs_path), timeout=360)
+    assert ok, log[-5000:]
+    assert "0 errors" in log
+    assert "verification results::" in log
 
 
 def test_full_outer_left_only_groupby_still_loud() -> None:

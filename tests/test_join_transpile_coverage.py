@@ -179,8 +179,25 @@ def test_full_outer_projection_emits_real_spec() -> None:
     assert "full_join_matched_helper" in section or "full_join_proj_matched_helper" in section
     assert "full_join_left_unmatched_helper" in section or "full_join_proj_left_helper" in section
     assert "full_join_right_unmatched_helper" in section or "full_join_proj_right_helper" in section
+    assert "full_join_projection_helper" in section
     assert "// shape: full" in section
     assert "lemma_full_join_matched_helper_is_full(" in out
+
+
+def test_full_outer_multi_projection_emits_real_spec() -> None:
+    sql = """
+    SELECT p.adsh, p.stmt
+    FROM pre p FULL OUTER JOIN sub s ON p.adsh = s.adsh
+    """
+    out = transpile_sql_to_verus(sql, CATALOG)
+    _assert_rocketship_clean(out)
+    section = _helper_section(out)
+    assert "full_join_projection_helper" in section
+    assert "Option<Seq<char>>" in section
+    assert "lemma_full_join_matched_helper_is_full(" in out
+    assert "lemma_full_join_matched_helper_method_is_fold(" in out
+    assert "nested_eq_pairs" in out
+    assert "nested_anti_misses" in out
 
 
 def test_full_outer_groupby_on_join_key_emits_fold() -> None:
@@ -293,7 +310,27 @@ def test_anti_projection_emits_is_anti_fold() -> None:
     assert "nested_anti_misses" in out
 
 
-def test_semi_scalar_without_groupby_fails_loud() -> None:
-    sql = "SELECT COUNT(*) FROM pre p SEMI JOIN sub s ON p.adsh = s.adsh"
-    with pytest.raises(UnsupportedContractError, match="SEMI JOIN"):
-        transpile_sql_to_verus(sql, CATALOG)
+def test_semi_scalar_count_emits_is_semi_fold() -> None:
+    sql = "SELECT COUNT(*) FROM pre p SEMI JOIN sub s ON p.adsh = s.adsh WHERE p.stmt = 'CI'"
+    out = transpile_sql_to_verus(sql, CATALOG)
+    _assert_rocketship_clean(out)
+    section = _helper_section(out)
+    assert "join_semi_count_helper" in section
+    assert "// shape: semi" in section
+    assert "lemma_join_semi_count_helper_is_semi(" in out
+    assert "lemma_join_semi_count_helper_method_is_fold(" in out
+    assert "nested_semi_hits" in out
+    assert "hit_acc(" in out
+
+
+def test_anti_scalar_count_emits_is_anti_fold() -> None:
+    sql = "SELECT COUNT(*) FROM pre p ANTI JOIN sub s ON p.adsh = s.adsh WHERE p.stmt = 'CI'"
+    out = transpile_sql_to_verus(sql, CATALOG)
+    _assert_rocketship_clean(out)
+    section = _helper_section(out)
+    assert "join_anti_count_helper" in section
+    assert "// shape: anti" in section
+    assert "lemma_join_anti_count_helper_is_anti(" in out
+    assert "lemma_join_anti_count_helper_method_is_fold(" in out
+    assert "nested_anti_misses" in out
+    assert "miss_acc(" in out
