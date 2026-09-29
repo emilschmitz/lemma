@@ -38,9 +38,8 @@ Use the helper name and params from **this query's** `spec.rs` (joins use `Cols_
 ## Proved equijoin menu
 
 Join files already contain a verified index. The bodies are checked by Verus.
-Call them from `AGENT_EDIT`. Do not rebuild a `HashMap` proof, and do not add
-`spec fn` or `proof fn`. Proof path (lemma call order, backward walk, derived Map):
-open `context/ro/JOIN_PROOF_PATHS.md` for the shape you have.
+Call them from `AGENT_EDIT` only when this file's `spec.rs` contains them. Do not add
+`spec fn` or `proof fn`.
 
 - `equijoin_pairs_str(outer, inner) -> Vec<(usize, usize)>` — `pairs@ == nested_eq_pairs(...)`; one `String` equality.
 - `equijoin_pairs_str2(o0, o1, i0, i1) -> Vec<(usize, usize)>` — `pairs@ == nested_eq_pairs2(...)`; two `String` equalities.
@@ -83,7 +82,6 @@ open `context/ro/JOIN_PROOF_PATHS.md` for the shape you have.
 ## Debugging verify failures
 
 - Read the Verus error: usually a failed `invariant` or type mismatch.
-- Compare your update step to one iteration of `method_spec` on paper.
 - Omit `dataset_size` on MCP `run_runquery` for the host iterate size from **Row budgets** (may be the official pin); pass an explicit smaller value only for quick probes.
 - An error on a line above `pub exec fn run_query` is host code (`lemma_*`). Do not try to repair it inside the edit region.
 
@@ -96,4 +94,4 @@ These abort the file before a proof result.
 - `&&&` separates spec clauses. In exec code write `&&`.
 - An exec `Vec` or `HashMap` is not spec-equal to a `Seq`. Compare `@` views (`Seq` vs `Vec` is E0308 / SpecEq).
 - Do not define a new `proof fn`, `spec fn`, or lemma. Call only helpers already in `spec.rs`.
-- When `build_hashset_u32` / `probe_sum_u64` are not in `spec.rs`, do not call them. Call the proved join exec from the menu above; open `JOIN_PROOF_PATHS.md` for the lemma call order for that shape. Do not rebuild that proof.
+- When `build_hashset_u32` / `probe_sum_u64` are not in `spec.rs`, do not call them. The proved join execs are the menu above.

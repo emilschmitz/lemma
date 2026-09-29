@@ -10,9 +10,8 @@ from .parse_sql import SQLQuery, support_spec_params
 
 
 def _emit_join_run_query_skeleton(ret_type: str) -> str:
-    """Commented join menu + pointer; proof recipes live in JOIN_PROOF_PATHS.md."""
-    return f"""// Proved equijoin is already in this file. Call the matching exec; do not rebuild the hash.
-// Compact menu (exact names). Proof path: context/ro/JOIN_PROOF_PATHS.md
+    """Commented names of equijoin execs that may already be in this file."""
+    return f"""// Proved equijoin execs may already be in this file. Call one only if it is in this file.
 //   equijoin_pairs_str / equijoin_pairs_str2 / equijoin_pairs_str3
 //   equijoin_pairs_u64 / equijoin_pairs_u32 / orjoin_pairs_str
 //   star_eq_triples_str / chain_eq_triples_str / q6_eq_triples_str / star_eq_quads_str
@@ -26,7 +25,7 @@ def _emit_join_run_query_skeleton(ret_type: str) -> str:
 //     requires valid_cols_*(...),
 //     ensures res == method_spec(...),  // or res@ == method_spec(...) for maps/vecs
 // {{
-//     // let pairs = equijoin_pairs_*(...);  // see JOIN_PROOF_PATHS.md for walk + lemma_*_is_*
+//     // let pairs = equijoin_pairs_*(...);
 //     // res = ...;
 // }}
 """

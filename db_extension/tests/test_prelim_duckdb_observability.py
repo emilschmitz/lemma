@@ -128,7 +128,7 @@ def test_concrete_proof_names_are_the_fold_lemmas() -> None:
 def test_build_agent_prompt_join_menu_not_proof_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Opening menu lists every proved exec; proof recipes stay in JOIN_PROOF_PATHS.md."""
+    """Opening menu lists every proved exec. The prompt does not say how to prove it."""
     ws = tmp_path / "workspace"
     (ws / "context" / "ro").mkdir(parents=True)
     monkeypatch.delenv("LEMMA_FAST_TRUSTEDS", raising=False)
@@ -144,27 +144,21 @@ def test_build_agent_prompt_join_menu_not_proof_paths(
     assert "before half the wall-clock budget" in prompt
     assert "Half the budget is the writing checkpoint" in prompt
     assert "session continues until the full budget" in prompt
-    assert "Further reading does not extend the wall" in prompt
     assert "An unedited stub is discarded when the wall hits" in prompt
     task_block = prompt.split("## Task")[1].split("## Proved join exec menu")[0]
-    for line in task_block.splitlines():
-        if "Further reading does not extend the wall" in line:
-            assert "600" not in line
-            assert "quota" not in line.lower()
-            break
-    else:
-        raise AssertionError("expected wall-clock reading instruction in Task block")
+    assert "600" not in task_block
+    assert "quota" not in task_block.lower()
     assert "under `## This spec`" in prompt
-    assert "Verus checks the proved bodies, not that copy" in prompt
-    assert "exec_sort_by` only discharges the sort" in prompt
-    assert "agg_step_*` and `HashMapWithView` are already in that file" in prompt
-    assert "lemma_nested_eq_pairs_len_le_product" in prompt
-    assert "lemma_nested_eq_pairs_index_in_range" in prompt
-    assert "lemma_map_at_keys_prefix_complete" in prompt
-    assert "ghost loop" in prompt
-    assert "lemma_group_keys_helper_is_pairs" in prompt
-    assert "Otherwise the walk is that equality" in prompt
-    assert "pairs still left" in prompt
+    for recipe in (
+        "ghost loop",
+        "pairs still left",
+        "only discharges the sort",
+        "Otherwise the walk is that equality",
+        "call order",
+        "Do not re-prove",
+        "Further reading does not extend the wall",
+    ):
+        assert recipe not in prompt, recipe
     assert "Do not read `spec.rs` from the first line." not in prompt
     assert "Grep" not in prompt.split("## Task")[1].split("##")[0]
     menu_start = prompt.index("## Proved join exec menu")
@@ -195,8 +189,7 @@ def test_build_agent_prompt_join_menu_not_proof_paths(
         "self-join",
     ):
         assert name in opening, name
-    assert "JOIN_PROOF_PATHS.md" in opening
-    # Multi-step proof recipes must not live in the opening menu.
+    assert "JOIN_PROOF_PATHS.md" not in opening
     assert "Walk the pair" not in opening
     assert "pair_acc(pairs@" not in opening
     assert "After the backward walk" not in opening
@@ -205,7 +198,6 @@ def test_build_agent_prompt_join_menu_not_proof_paths(
     assert "par_star_triples_str" not in opening
     assert "par_equijoin_pairs_str" not in opening
 
-    # Proof-path file must cover RIGHT multi-agg and multi-key SEMI/ANTI.
     from pathlib import Path
 
     proof = (
@@ -214,44 +206,15 @@ def test_build_agent_prompt_join_menu_not_proof_paths(
         / "agents"
         / "JOIN_PROOF_PATHS.md"
     ).read_text(encoding="utf-8")
-    assert "join_roj_multi_agg_helper" in proof
-    assert "full_join_groupby_helper" in proof
-    assert "semi_hit_rows_str2" in proof
-    assert "anti_miss_rows_str2" in proof
-    assert "semi_hit_rows_str3" in proof
-    assert "lemma_nested_eq_pairs_len_le_product" in proof
-    assert "lemma_nested_eq_pairs_index_in_range" in proof
-    assert "lemma_map_at_keys_prefix_complete" in proof
-    assert "lemma_group_keys_helper_is_pairs" in proof
-    assert "Otherwise the walk is that equality" in proof
-    assert "pairs still left" in proof
-
-    lookup = (
-        Path(__file__).resolve().parents[2]
-        / "research_loop"
-        / "agents"
-        / "JOIN_PROOF_PATHS.md"
-    )
-    paths_text = lookup.read_text()
-    for lemma_bit in (
-        "lemma_<helper>_is_pairs",
-        "lemma_<helper>_is_pairs2",
-        "lemma_<helper>_is_pairs3",
-        "lemma_<helper>_is_or",
-        "lemma_<helper>_is_star_pairs",
-        "lemma_<helper>_is_chain_pairs",
-        "lemma_<helper>_is_q6_pairs",
-        "lemma_<helper>_is_quad_pairs",
-        "lemma_<helper>_is_left",
-        "lemma_<helper>_is_anti",
-        "lemma_<helper>_is_semi",
-        "lemma_<helper>_is_loj",
-        "lemma_<helper>_is_right",
-        "lemma_<helper>_is_full",
-        "lemma_<helper>_method_is_fold",
+    assert "signatures and `ensures` are in that file" in proof
+    for recipe in (
         "walk from the end",
+        "ghost loop",
+        "pairs still left",
+        "Call order",
+        "lemma_<helper>_is_pairs",
     ):
-        assert lemma_bit in paths_text, lemma_bit
+        assert recipe not in proof, recipe
 
 
 def test_fast_prompt_keeps_proved_join_menu(

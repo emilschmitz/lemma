@@ -1,7 +1,4 @@
-Call the matching proved exec for this SQL. Proof path (which `lemma_<helper>_is_*` /
-`lemma_<helper>_method_is_fold`, walk order, derived Map): open `{PROOF_PATHS}` for that
-shape only. Do not invent a HashMap/HashSet index. Do not call `build_hashset_u32` /
-`probe_sum_u64`. A derived-table Map is an extra step argument, not a second index.
+These exec functions are in scope when this file's `spec.rs` contains them. Each line is the function and what it ensures. Do not invent a HashMap or HashSet index. Do not call `build_hashset_u32` or `probe_sum_u64` unless that function is in `spec.rs`. A derived-table Map is an extra step argument, not a second index.
 
 - `equijoin_pairs_str(outer, inner) -> Vec<(usize, usize)>`
   — `pairs@ == nested_eq_pairs(...)`; one `String` equality
