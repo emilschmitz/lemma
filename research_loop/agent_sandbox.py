@@ -298,18 +298,63 @@ def _read_ro_excerpt(workspace: Path, name: str, *, max_chars: int = 2500) -> st
 _LAST_ERROR_MAX_CHARS = 6000
 
 
+_COMPILER_RESULT_MARKERS = (
+    "verification results::",
+    "error: expected",
+    "error[E",
+    "cannot use while in proof",
+    "aborting due to",
+)
+
+
+def _has_compiler_result(text: str) -> bool:
+    return any(marker in text for marker in _COMPILER_RESULT_MARKERS)
+
+
+def _drop_thinking_lines(text: str) -> str:
+    kept = [
+        line
+        for line in text.splitlines()
+        if '"type":"thinking"' not in line and '"type": "thinking"' not in line
+    ]
+    return "\n".join(kept).strip()
+
+
 def _clip_last_error(text: str) -> str:
     """Keep a real Verus/rustc tail. A killed agent's thinking stream is not an error."""
     text = text.strip()
-    if '"type":"thinking"' in text and "verification results::" not in text:
+    if '"type":"thinking"' in text and not _has_compiler_result(text):
         return (
             "The previous iteration was killed at the wall clock. "
             "It produced no Verus result. "
             "If the marked body is still the stub, write it and call `run_runquery`."
         )
+    if '"type":"thinking"' in text:
+        text = _drop_thinking_lines(text) or text
     if len(text) <= _LAST_ERROR_MAX_CHARS:
         return text
     return "…previous log clipped…\n" + text[-_LAST_ERROR_MAX_CHARS:]
+
+
+def attach_workspace_verify_error(workspace: Path, last_error: str) -> str:
+    """Add the leftover verify log when the agent stream never quoted it.
+
+    A wall-clock kill stores the thinking stream as the iteration error. That
+    stream has no ``verification results::`` line when rustc aborted first, so
+    the next prompt used to say the try produced no Verus result.
+    """
+    if _has_compiler_result(last_error):
+        return last_error
+    log_path = workspace / "verify_error_custom.log"
+    if not log_path.is_file():
+        return last_error
+    try:
+        excerpt = log_path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return last_error
+    if not excerpt or not _has_compiler_result(excerpt):
+        return last_error
+    return f"{last_error.rstrip()}\n\n--- verify log ---\n{excerpt[:2000]}"
 
 
 def build_agent_prompt(

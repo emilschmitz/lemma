@@ -88,6 +88,44 @@ def test_killed_agent_stream_is_not_the_next_error(
     )
     assert "verification results:: 150 verified, 1 errors" in prompt
 
+    rustc = (
+        '{"type":"thinking","subtype":"delta","text":"reading spec.rs"}\n'
+        "error: expected `,`\n"
+        "assert(0 <= k as int && k as int < (pairs@).len());\n"
+    )
+    prompt = build_agent_prompt(
+        workspace=ws,
+        query_id=1,
+        sql_query="SELECT 1",
+        iteration=2,
+        max_iterations=4,
+        last_error=rustc,
+    )
+    assert "error: expected `,`" in prompt
+    assert "(pairs@).len()" in prompt
+    assert "produced no Verus result" not in prompt
+    assert "reading spec.rs" not in prompt
+
+    from research_loop.agent_sandbox import attach_workspace_verify_error
+
+    (ws / "verify_error_custom.log").write_text(
+        "error: expected `,`\n    --> custom_query.rs:3678:56\n"
+    )
+    attached = attach_workspace_verify_error(
+        ws, '{"type":"thinking","text":"still reading"}'
+    )
+    prompt = build_agent_prompt(
+        workspace=ws,
+        query_id=1,
+        sql_query="SELECT 1",
+        iteration=2,
+        max_iterations=4,
+        last_error=attached,
+    )
+    assert "error: expected `,`" in prompt
+    assert "custom_query.rs:3678" in prompt
+    assert "produced no Verus result" not in prompt
+
 
 def test_concrete_proof_names_are_the_fold_lemmas() -> None:
     from research_loop.agent_sandbox import concrete_call_lemmas, concrete_proof_names, _proof_paths_text

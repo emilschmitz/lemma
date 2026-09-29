@@ -805,8 +805,10 @@ def run_optimization_loop(
             last_error = history[-1]["error"] if history else ""
             if last_error:
                 from db_extension.verus_bridge import enrich_agent_error_message
+                from research_loop.agent_sandbox import attach_workspace_verify_error
 
                 last_error = enrich_agent_error_message(last_error)
+                last_error = attach_workspace_verify_error(workspace, last_error)
             last_lat = history[-1]["latency_us"] if history and history[-1].get("proof_verified") else -1
 
             try:
