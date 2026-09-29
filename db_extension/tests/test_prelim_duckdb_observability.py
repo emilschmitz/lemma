@@ -150,6 +150,7 @@ def test_build_agent_prompt_join_menu_not_proof_paths(
     assert "Verus checks the proved bodies, not that copy" in prompt
     assert "exec_sort_by` only discharges the sort" in prompt
     assert "agg_step_*` and `HashMapWithView` are already in that file" in prompt
+    assert "There is no separate lemma that names that equality" in prompt
     assert "Do not read `spec.rs` from the first line." not in prompt
     assert "Grep" not in prompt.split("## Task")[1].split("##")[0]
     menu_start = prompt.index("## Proved join exec menu")
@@ -204,6 +205,7 @@ def test_build_agent_prompt_join_menu_not_proof_paths(
     assert "semi_hit_rows_str2" in proof
     assert "anti_miss_rows_str2" in proof
     assert "semi_hit_rows_str3" in proof
+    assert "The walk is that equality" in proof
 
     lookup = (
         Path(__file__).resolve().parents[2]
