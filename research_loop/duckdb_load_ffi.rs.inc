@@ -281,7 +281,15 @@ mod lemma_duckdb_load {
             return 0;
         }
         let (mut db, mut conn) = open_readonly(db_path);
-        let col_sql: Vec<String> = columns.iter().map(|(n, _)| quote_ident(n)).collect();
+        let col_sql: Vec<String> = columns
+            .iter()
+            .map(|(n, kind)| match kind {
+                // Catalog u32. Cast here so a BIGINT file column becomes the
+                // assumed width. A value that does not fit fails this cast.
+                ColKind::U32 => format!("CAST({} AS UINTEGER)", quote_ident(n)),
+                _ => quote_ident(n),
+            })
+            .collect();
         let sql = format!(
             "SELECT {} FROM {} LIMIT {}",
             col_sql.join(", "),

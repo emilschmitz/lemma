@@ -160,6 +160,81 @@ def test_duckdb_loader_join_e2e_compile_and_bench(monkeypatch: pytest.MonkeyPatc
     assert res.get("latency_us", -1) >= 0, res.get("error") or res.get("bench_error")
 
 
+def _bigint_read_stub() -> str:
+    return """#[verifier::external_body]
+pub exec fn run_query(cols: &Cols) -> (res: u64)
+    requires valid_cols(cols),
+    ensures res == method_spec(cols),
+{
+    if cols.n > 0 {
+        let _c = cols.get_cik_exec(0);
+    }
+    cols.n as u64
+}"""
+
+
+def _bigint_sub_db(path: Path, cik: int) -> None:
+    import duckdb
+
+    con = duckdb.connect(str(path))
+    con.execute("CREATE TABLE sub (cik BIGINT, fy BIGINT, name VARCHAR)")
+    con.execute("INSERT INTO sub VALUES (?, 2022, 'Acme')", [cik])
+    con.close()
+
+
+@pytest.mark.skipif(not LIBDUCKDB.is_file(), reason="libduckdb.so missing")
+@pytest.mark.skipif(resolve_verus_bin() is None, reason="verus not found")
+def test_u32_column_loads_from_duckdb_bigint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A file column may be BIGINT. The pin casts it to the catalog u32 width."""
+    db = tmp_path / "wide.duckdb"
+    _bigint_sub_db(db, 39999)
+    monkeypatch.setenv("LEMMA_DUCKDB_PATH", str(db))
+    monkeypatch.setenv("LEMMA_DUCKDB_LIB_DIR", str(ROOT / "build/libduckdb"))
+    monkeypatch.setenv("REQUIRE_PROOF", "1")
+    monkeypatch.setenv("ENABLE_VERUS_VERIFY", "1")
+    schema = {"sub": {"cik": "int", "fy": "int", "name": "string"}}
+    res = run_custom_sql_pipeline(
+        "SELECT COUNT(*) FROM sub WHERE cik > 0",
+        schema,
+        run_query_body=_bigint_read_stub(),
+        limit=10,
+        workload="sec",
+        duckdb_path=str(db),
+        skip_bench=False,
+    )
+    assert res.get("proof_verified"), res.get("verify_msg") or res.get("error")
+    assert res.get("latency_us", -1) >= 0, res.get("error") or res.get("bench_error")
+    assert "BIGINT" not in (res.get("error") or "")
+
+
+@pytest.mark.skipif(not LIBDUCKDB.is_file(), reason="libduckdb.so missing")
+@pytest.mark.skipif(resolve_verus_bin() is None, reason="verus not found")
+def test_u32_column_rejects_bigint_that_does_not_fit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "overflow.duckdb"
+    _bigint_sub_db(db, 2**32)
+    monkeypatch.setenv("LEMMA_DUCKDB_PATH", str(db))
+    monkeypatch.setenv("LEMMA_DUCKDB_LIB_DIR", str(ROOT / "build/libduckdb"))
+    monkeypatch.setenv("REQUIRE_PROOF", "1")
+    monkeypatch.setenv("ENABLE_VERUS_VERIFY", "1")
+    schema = {"sub": {"cik": "int", "fy": "int", "name": "string"}}
+    res = run_custom_sql_pipeline(
+        "SELECT COUNT(*) FROM sub WHERE cik > 0",
+        schema,
+        run_query_body=_bigint_read_stub(),
+        limit=10,
+        workload="sec",
+        duckdb_path=str(db),
+        skip_bench=False,
+    )
+    err = f"{res.get('error') or ''}\n{res.get('bench_error') or ''}"
+    assert res.get("latency_us", -1) < 0, res
+    assert "out of range" in err, err
+
+
 _AGENT_COUNT_RUNQUERY = """
 pub exec fn run_query(cols: &Cols) -> (res: u64)
     requires valid_cols(cols),
