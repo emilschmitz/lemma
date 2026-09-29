@@ -106,6 +106,12 @@ def test_concrete_proof_names_are_the_fold_lemmas() -> None:
         "lemma_join_projection_helper_is_star_pairs",
         "lemma_join_projection_helper_method_is_fold",
     ]
+    slotted = star + (
+        "pub proof fn lemma_join_projection_helper_slot0_count_leq() {}\n"
+        "pub proof fn lemma_unrelated_slot0_count_leq() {}\n"
+    )
+    assert "lemma_join_projection_helper_slot0_count_leq" in concrete_call_lemmas(slotted)
+    assert "lemma_unrelated_slot0_count_leq" not in concrete_call_lemmas(slotted)
     static = (
         "Call `lemma_<helper>_is_star_pairs`.\n"
         "Call `lemma_<helper>_method_is_fold`.\n"
@@ -158,6 +164,7 @@ def test_build_agent_prompt_join_menu_not_proof_paths(
     assert "ghost loop" in prompt
     assert "lemma_group_keys_helper_is_pairs" in prompt
     assert "Otherwise the walk is that equality" in prompt
+    assert "bounds the aggregate slot" in prompt
     assert "Do not read `spec.rs` from the first line." not in prompt
     assert "Grep" not in prompt.split("## Task")[1].split("##")[0]
     menu_start = prompt.index("## Proved join exec menu")
@@ -217,6 +224,7 @@ def test_build_agent_prompt_join_menu_not_proof_paths(
     assert "lemma_map_at_keys_prefix_complete" in proof
     assert "lemma_group_keys_helper_is_pairs" in proof
     assert "Otherwise the walk is that equality" in proof
+    assert "bounds that aggregate slot" in proof
 
     lookup = (
         Path(__file__).resolve().parents[2]

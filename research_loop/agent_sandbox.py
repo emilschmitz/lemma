@@ -58,6 +58,9 @@ def concrete_call_lemmas(spec: str) -> list[str]:
         if name.startswith("lemma_group_keys_helper_is_"):
             names.append(name)
             continue
+        if any(name.startswith(f"lemma_{stem}_slot") for stem in stems):
+            names.append(name)
+            continue
         for stem in stems:
             if name == f"lemma_{stem}_method_is_fold" or name.startswith(f"lemma_{stem}_is_"):
                 names.append(name)
@@ -396,7 +399,7 @@ or join tables). Do not add Trusted, `assume`,
 `arbitrary`, `external_body`, or redefine `method_spec`.
 Write the body in `{body_path}` and call `run_runquery` before half the wall-clock budget is gone. Half the budget is the writing checkpoint. The session continues until the full budget.
 Concrete lemma names for this query are listed under `## This spec` in `{ctx}/JOIN_PROOF_PATHS.md`. That header is what `lemma_<helper>_` stands for.
-`spec.rs` shows `proof fn` bodies as `{{ }}`. Verus checks the proved bodies, not that copy. Call those lemmas. Do not re-prove them and do not add a `proof fn`. `exec_sort_by` only discharges the sort. When this spec has `lemma_nested_eq_pairs_len_le_product`, that call bounds the pair-list length by the product of the two lengths. Do not rebuild that bound with a ghost loop. When it has `lemma_nested_eq_pairs_index_in_range`, each pair index is inside its table. Call that instead of re-proving the bounds. When it has `spec_map_at_keys_prefix`, the rows before the sort are that prefix at the key length. `lemma_map_at_keys_prefix_complete` is that equality with `spec_map_at_keys`. Call it. Do not rebuild it. `group_keys_helper` is the key order from the same backward walk. When `## This spec` lists `lemma_group_keys_helper_is_pairs`, that call is this equality. Otherwise the walk is that equality. `agg_step_*` and `HashMapWithView` are already in that file. Write the body once that call order is chosen. Once the call order under `## This spec` is fixed, the next action is to edit the marked body and call `run_runquery`. Further reading does not extend the wall. An unedited stub is discarded when the wall hits.
+`spec.rs` shows `proof fn` bodies as `{{ }}`. Verus checks the proved bodies, not that copy. Call those lemmas. Do not re-prove them and do not add a `proof fn`. `exec_sort_by` only discharges the sort. When this spec has `lemma_nested_eq_pairs_len_le_product`, that call bounds the pair-list length by the product of the two lengths. Do not rebuild that bound with a ghost loop. When it has `lemma_nested_eq_pairs_index_in_range`, each pair index is inside its table. Call that instead of re-proving the bounds. When it has `spec_map_at_keys_prefix`, the rows before the sort are that prefix at the key length. `lemma_map_at_keys_prefix_complete` is that equality with `spec_map_at_keys`. Call it. Do not rebuild it. `group_keys_helper` is the key order from the same backward walk. When `## This spec` lists `lemma_group_keys_helper_is_pairs`, that call is this equality. Otherwise the walk is that equality. When it lists a `lemma_*_slot*` name, that call bounds the aggregate slot. Do not rebuild that bound with a counter. `agg_step_*` and `HashMapWithView` are already in that file. Write the body once that call order is chosen. Once the call order under `## This spec` is fixed, the next action is to edit the marked body and call `run_runquery`. Further reading does not extend the wall. An unedited stub is discarded when the wall hits.
 {prelim_section}
 {_rocketship_exec_section(ctx)}
 {_verus_mode_section()}

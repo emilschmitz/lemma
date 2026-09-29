@@ -25,6 +25,8 @@ matches your SQL. Do not invent a second index or call `build_hashset_u32` / `pr
   When `## This spec` lists `lemma_group_keys_helper_is_pairs`, that call is the equality
   with `group_keys_helper` at the origin. Otherwise the walk is that equality.
   `HashMapWithView` is the map `agg_step_*` already updates.
+- A `lemma_*_slot*` name under `## This spec` bounds that aggregate slot. Call it.
+  Do not rebuild the bound with a counter.
 - Write `run_query` and call `run_runquery` once the call order below is chosen. A
   wall-clock kill with no edit saves nothing. Once that call order is fixed, the next
   action is editing the marked body and calling `run_runquery`. Further reading does not
