@@ -187,7 +187,7 @@ def _bigint_sub_db(path: Path, cik: int) -> None:
 def test_u32_column_loads_from_duckdb_bigint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A file column may be BIGINT. The pin casts it to the catalog u32 width."""
+    """A file column may be BIGINT. The pin casts it to the dataset INTEGER width."""
     db = tmp_path / "wide.duckdb"
     _bigint_sub_db(db, 39999)
     monkeypatch.setenv("LEMMA_DUCKDB_PATH", str(db))
@@ -215,7 +215,7 @@ def test_u32_column_rejects_bigint_that_does_not_fit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     db = tmp_path / "overflow.duckdb"
-    _bigint_sub_db(db, 2**32)
+    _bigint_sub_db(db, 2**31)
     monkeypatch.setenv("LEMMA_DUCKDB_PATH", str(db))
     monkeypatch.setenv("LEMMA_DUCKDB_LIB_DIR", str(ROOT / "build/libduckdb"))
     monkeypatch.setenv("REQUIRE_PROOF", "1")

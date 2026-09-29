@@ -284,9 +284,9 @@ mod lemma_duckdb_load {
         let col_sql: Vec<String> = columns
             .iter()
             .map(|(n, kind)| match kind {
-                // Catalog u32. Cast here so a BIGINT file column becomes the
-                // assumed width. A value that does not fit fails this cast.
-                ColKind::U32 => format!("CAST({} AS UINTEGER)", quote_ident(n)),
+                // Dataset INTEGER columns are < 2^31. Cast a wider file column
+                // to that width. A value outside signed 32-bit fails the cast.
+                ColKind::U32 => format!("CAST({} AS INTEGER)", quote_ident(n)),
                 _ => quote_ident(n),
             })
             .collect();
