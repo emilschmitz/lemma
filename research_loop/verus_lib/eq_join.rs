@@ -352,6 +352,95 @@ pub proof fn lemma_nested_eq_pairs_len_le_product<K>(outer: Seq<K>, inner: Seq<K
     }
 }
 
+pub proof fn lemma_eq_row_ids_bounded<K>(keys: Seq<K>, k: K, end: int)
+    requires
+        0 <= end <= keys.len(),
+        end <= usize::MAX as int,
+    ensures
+        forall|t: int|
+            0 <= t < eq_row_ids(keys, k, end).len() ==> (#[trigger] eq_row_ids(keys, k, end)[t] as int)
+                < end,
+    decreases end,
+{
+    if end > 0 {
+        assert(0 <= end - 1 <= usize::MAX as int);
+        assert(end - 1 <= keys.len());
+        lemma_eq_row_ids_bounded(keys, k, end - 1);
+        let prev = eq_row_ids(keys, k, end - 1);
+        let row = (end - 1) as usize;
+        assert(row as int == end - 1);
+        lemma_eq_row_ids_step(keys, k, end - 1, row);
+        let cur = eq_row_ids(keys, k, end);
+        if keys[end - 1] == k {
+            assert(cur == prev.push(row));
+            assert forall|t: int| 0 <= t < cur.len() implies ((cur[t] as int) < end) by {
+                if t == prev.len() {
+                    assert(cur[t] == row);
+                    assert((row as int) < end);
+                } else {
+                    lemma_seq_push_index_different(prev, row, t);
+                    assert((prev[t] as int) < end - 1);
+                }
+            };
+        } else {
+            assert(cur == prev);
+            assert forall|t: int| 0 <= t < cur.len() implies ((cur[t] as int) < end) by {
+                assert((prev[t] as int) < end - 1);
+            };
+        }
+    }
+}
+
+/// Each stored pair is an outer index below `n` and an inner index below `inner.len()`.
+pub proof fn lemma_nested_eq_pairs_index_in_range<K>(outer: Seq<K>, inner: Seq<K>, n: int)
+    requires
+        0 <= n <= outer.len(),
+        n <= usize::MAX as int,
+        inner.len() <= usize::MAX as int,
+    ensures
+        forall|p: int|
+            0 <= p < nested_eq_pairs(outer, inner, n).len() ==> {
+                let pair = #[trigger] nested_eq_pairs(outer, inner, n)[p];
+                (pair.0 as int) < n && (pair.1 as int) < inner.len()
+            },
+    decreases n,
+{
+    if n > 0 {
+        lemma_nested_eq_pairs_index_in_range(outer, inner, n - 1);
+        let prev = nested_eq_pairs(outer, inner, n - 1);
+        if n - 1 >= outer.len() {
+            assert(nested_eq_pairs(outer, inner, n) == prev);
+        } else {
+            assert(0 <= n - 1 <= usize::MAX as int);
+            let i = (n - 1) as usize;
+            assert(i as int == n - 1);
+            let end = inner.len() as int;
+            let ids = eq_row_ids(inner, outer[n - 1], end);
+            let added = prefix_pairs(i, ids, ids.len() as int);
+            assert(nested_eq_pairs(outer, inner, n) == prev + added);
+            lemma_eq_row_ids_bounded(inner, outer[n - 1], end);
+            lemma_prefix_len(i, ids, ids.len() as int);
+            assert forall|p: int|
+                #![trigger (prev + added)[p]]
+                0 <= p < (prev + added).len()
+                implies ((prev + added)[p].0 as int) < n && ((prev + added)[p].1 as int)
+                    < inner.len()
+            by {
+                if p < prev.len() {
+                    lemma_left_index(prev, added, p);
+                } else {
+                    let q = p - prev.len();
+                    lemma_right_index(prev, added, q);
+                    lemma_prefix_at(i, ids, ids.len() as int, q);
+                    assert(added[q] == (i, ids[q]));
+                    assert((i as int) == n - 1);
+                    assert((ids[q] as int) < end);
+                }
+            };
+        }
+    }
+}
+
 /// Existing key: one bucket grows by `row`. Map is unchanged.
 #[verifier::spinoff_prover]
 pub proof fn lemma_index_append<K>(
@@ -1191,45 +1280,6 @@ pub proof fn lemma_nested_eq_pairs2_step<A, B>(
             eq_row_ids2(inner_a, inner_b, outer_a[n - 1], outer_b[n - 1], inner_a.len() as int).len() as int,
         ),
 {
-}
-
-pub proof fn lemma_eq_row_ids_bounded<K>(keys: Seq<K>, k: K, end: int)
-    requires
-        0 <= end <= keys.len(),
-        end <= usize::MAX as int,
-    ensures
-        forall|t: int|
-            0 <= t < eq_row_ids(keys, k, end).len() ==> (#[trigger] eq_row_ids(keys, k, end)[t] as int)
-                < end,
-    decreases end,
-{
-    if end > 0 {
-        assert(0 <= end - 1 <= usize::MAX as int);
-        assert(end - 1 <= keys.len());
-        lemma_eq_row_ids_bounded(keys, k, end - 1);
-        let prev = eq_row_ids(keys, k, end - 1);
-        let row = (end - 1) as usize;
-        assert(row as int == end - 1);
-        lemma_eq_row_ids_step(keys, k, end - 1, row);
-        let cur = eq_row_ids(keys, k, end);
-        if keys[end - 1] == k {
-            assert(cur == prev.push(row));
-            assert forall|t: int| 0 <= t < cur.len() implies ((cur[t] as int) < end) by {
-                if t == prev.len() {
-                    assert(cur[t] == row);
-                    assert((row as int) < end);
-                } else {
-                    lemma_seq_push_index_different(prev, row, t);
-                    assert((prev[t] as int) < end - 1);
-                }
-            };
-        } else {
-            assert(cur == prev);
-            assert forall|t: int| 0 <= t < cur.len() implies ((cur[t] as int) < end) by {
-                assert((prev[t] as int) < end - 1);
-            };
-        }
-    }
 }
 
 pub proof fn lemma_filter_prefix_same<B>(s: Seq<usize>, col: Seq<B>, k: B, j: usize, t: int)

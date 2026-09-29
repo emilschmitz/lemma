@@ -153,6 +153,7 @@ def test_build_agent_prompt_join_menu_not_proof_paths(
     assert "exec_sort_by` only discharges the sort" in prompt
     assert "agg_step_*` and `HashMapWithView` are already in that file" in prompt
     assert "lemma_nested_eq_pairs_len_le_product" in prompt
+    assert "lemma_nested_eq_pairs_index_in_range" in prompt
     assert "ghost loop" in prompt
     assert "lemma_group_keys_helper_is_pairs" in prompt
     assert "Otherwise the walk is that equality" in prompt
@@ -211,6 +212,7 @@ def test_build_agent_prompt_join_menu_not_proof_paths(
     assert "anti_miss_rows_str2" in proof
     assert "semi_hit_rows_str3" in proof
     assert "lemma_nested_eq_pairs_len_le_product" in proof
+    assert "lemma_nested_eq_pairs_index_in_range" in proof
     assert "lemma_group_keys_helper_is_pairs" in proof
     assert "Otherwise the walk is that equality" in proof
 

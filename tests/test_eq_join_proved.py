@@ -52,9 +52,13 @@ def test_eq_row_ids_len_bound_survives_the_agent_copy() -> None:
     product = "nested_eq_pairs(outer, inner, n).len() <= n * inner.len()"
     assert "pub proof fn lemma_nested_eq_pairs_len_le_product" in text
     assert product in text
+    bounded = "(pair.0 as int) < n && (pair.1 as int) < inner.len()"
+    assert "pub proof fn lemma_nested_eq_pairs_index_in_range" in text
+    assert bounded in text
     visible = _collapse_proved_bodies(text)
     assert ensures in visible
     assert product in visible
+    assert bounded in visible
 
 
 def _large_sec_product_catalog() -> CatalogAssumptions:
