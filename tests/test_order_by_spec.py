@@ -415,6 +415,42 @@ def test_official_tpch_q9_derived_extract_year_is_a_sorted_sequence() -> None:
     assert "not in this Map method_spec" not in out
 
 
+def test_anti_join_group_by_order_is_a_sorted_sequence() -> None:
+    sql = """
+    SELECT n.tag, n.version, COUNT(*) AS cnt, SUM(n.value) AS total
+    FROM num n
+    WHERE n.uom = 'USD' AND n.ddate BETWEEN 20240101 AND 20241231
+      AND n.value IS NOT NULL
+      AND NOT EXISTS (
+          SELECT 1 FROM pre p
+          WHERE p.tag = n.tag AND p.version = n.version AND p.adsh = n.adsh
+      )
+    GROUP BY n.tag, n.version
+    HAVING COUNT(*) > 10
+    ORDER BY cnt DESC
+    LIMIT 200
+    """
+    out = transpile_sql_to_verus(
+        sql,
+        {
+            "num": {
+                "adsh": "string",
+                "tag": "string",
+                "version": "string",
+                "ddate": "int",
+                "uom": "string",
+                "value": "double",
+            },
+            "pre": {"adsh": "string", "tag": "string", "version": "string"},
+        },
+    )
+    spec = out.split("pub open spec fn method_spec(", 1)[1].split("pub proof fn", 1)[0]
+    assert "-> Seq<" in spec.split("{", 1)[0]
+    assert "spec_seq_take(spec_seq_sort_by(spec_map_at_keys(" in spec
+    assert "group_keys_helper(num, pre, 0)" in spec
+    assert "not in this Map method_spec" not in out
+
+
 def test_paper_tpch_q6_decimal_bound_stays_unsupported() -> None:
     sql = """
     SELECT SUM(l_extendedprice * l_discount) AS revenue

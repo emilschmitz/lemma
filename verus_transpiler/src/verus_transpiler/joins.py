@@ -4488,7 +4488,8 @@ def _emit_left_anti_multi_agg(
     *,
     where_expr: str | None,
     shape: str = "left",
-) -> tuple[str, str, str, _FoldBridge | None]:
+    catalog: CatalogAssumptions | None = None,
+) -> tuple[str, str, str, _FoldBridge | None, tuple[str, str] | None]:
     left, right = slots[0], slots[1]
     join = query.joins[0]
     match_parts: list[str] = []
@@ -4529,8 +4530,9 @@ def _emit_left_anti_multi_agg(
             update_stmts.append(f"let s{i} = ({prev_ref} as int + 1) as u64;")
             project_parts.append(f"s{i}" if len(specs) > 1 else "s0")
         elif spec.agg_type == "SUM":
-            from .parse_sql import _agg_value_type
-            vt = _agg_value_type(spec.agg_expr)
+            vt = _resolve_sum_accumulator_type(
+                spec, query, schemas_by_table, catalog, len(slots)
+            )
             state_types.append(vt)
             state_defaults.append(f"0{vt}")
             term = _anti_left_li(
@@ -4604,13 +4606,15 @@ pub open spec fn {helper_name}(
     else:
         project_expr = f"({', '.join(_project_from_v(p) for p in project_parts)})"
     if n_state == 1 and not query.is_multi_agg:
-        ret_type = f"Map<{key_ty}, u64>"
+        projected_ty = "u64"
+        ret_type = f"Map<{key_ty}, {projected_ty}>"
         spec_body = (
             f"let raw = {helper_name}({left.param}, {right.param}, 0);\n"
             f"    raw"
         )
     else:
-        ret_type = f"Map<{key_ty}, {_multi_agg_tuple_type(query)}>"
+        projected_ty = state_tuple_type
+        ret_type = f"Map<{key_ty}, {projected_ty}>"
         spec_body = (
             f"let raw = {helper_name}({left.param}, {right.param}, 0);\n"
             f"    raw.map_values(|v: {state_tuple_type}| {project_expr})"
@@ -4630,7 +4634,67 @@ pub open spec fn {helper_name}(
     if fold is not None:
         fold_text, bridge = fold
         helpers_out = helpers_out + "\n\n" + fold_text
-    return helpers_out, spec_body, ret_type, bridge
+    topk: tuple[str, str] | None = None
+    if query.order_by:
+        keys_helper = f"""pub open spec fn group_keys_helper(
+    {left.param}: &{left.struct},
+    {right.param}: &{right.struct},
+    li: int,
+) -> (res: Seq<{key_ty}>)
+    decreases {left.param}.n - li,
+{{
+    if li < {left.param}.n {{
+        let tail = group_keys_helper({left.param}, {right.param}, li + 1);
+        if !join_right_match_helper({left.param}, {right.param}, li, 0){filter_part} {{
+            let key = {key_expr};
+            if tail.contains(key) {{ tail }} else {{ tail.push(key) }}
+        }} else {{
+            tail
+        }}
+    }} else {{
+        Seq::empty()
+    }}
+}}"""
+        row_ty = f"({key_ty}, {projected_ty})"
+        group_types = (
+            [part.strip() for part in key_ty[1:-1].split(", ")]
+            if key_ty.startswith("(")
+            else [key_ty]
+        )
+        aliases = [spec.alias or f"_agg{i}" for i, spec in enumerate(specs)]
+        val_types = (
+            [projected_ty]
+            if len(aliases) == 1
+            else [part.strip() for part in projected_ty[1:-1].split(", ")]
+        )
+        before_name = "spec_group_before"
+        pred = group_row_before(
+            list(query.groupby_columns),
+            group_types,
+            aliases,
+            val_types,
+            query.order_by,
+        )
+        exec_pred = group_row_before(
+            list(query.groupby_columns),
+            group_types,
+            aliases,
+            val_types,
+            query.order_by,
+            exec_strings=True,
+        )
+        helpers_out = (
+            helpers_out
+            + "\n\n"
+            + keys_helper
+            + "\n\n"
+            + f"pub open spec fn {before_name}(a: {row_ty}, b: {row_ty}) -> bool {{\n"
+            + f"    {pred}\n"
+            + "}\n\n"
+            + exec_sort_by_fn(row_ty, before_name, exec_pred)
+        )
+        topk = (f"group_keys_helper({left.param}, {right.param}, 0)", row_ty)
+    return helpers_out, spec_body, ret_type, bridge, topk
 
 
 def _emit_semi_multi_agg(
@@ -7655,6 +7719,33 @@ pub open spec fn {helper_name}(
     return helpers_out, spec_body, ret_type, bridge
 
 
+def _remove_negated_exists_call(where: str, alias: str) -> str:
+    """Drop ``!exists_corr_<alias>_spec(...)`` including nested argument parens."""
+    match = re.search(rf"!\s*exists_corr_{re.escape(alias)}_spec\(", where)
+    if match is None:
+        return where
+    paren = match.end() - 1
+    depth = 0
+    end = paren
+    while end < len(where):
+        if where[end] == "(":
+            depth += 1
+        elif where[end] == ")":
+            depth -= 1
+            if depth == 0:
+                break
+        end += 1
+    left = where[: match.start()]
+    right = where[end + 1 :]
+    if re.search(r"&&\s*$", left):
+        left = re.sub(r"\s*&&\s*$", "", left)
+    elif re.match(r"\s*&&", right):
+        right = re.sub(r"^\s*&&\s*", "", right)
+    else:
+        right = "true" + right
+    return left + right
+
+
 def try_decorrelate_anti_subqueries(query: SQLQuery) -> SQLQuery | None:
     """Rewrite NOT EXISTS / NOT IN into a two-table ANTI JOIN MethodSpec shape.
 
@@ -7726,23 +7817,9 @@ def try_decorrelate_anti_subqueries(query: SQLQuery) -> SQLQuery | None:
                 on_equalities=on_eq,
             )
         ]
-        # Drop the exists call from WHERE.
-        where = query.where_expr or ""
-        where = re.sub(
-            rf"\s*&&\s*!\s*exists_corr_{re.escape(exists.alias)}_spec\([^)]*\)",
-            "",
-            where,
-        )
-        where = re.sub(
-            rf"!\s*exists_corr_{re.escape(exists.alias)}_spec\([^)]*\)\s*&&\s*",
-            "",
-            where,
-        )
-        where = re.sub(
-            rf"!\s*exists_corr_{re.escape(exists.alias)}_spec\([^)]*\)",
-            "true",
-            where,
-        )
+        # Drop the exists call from WHERE. Arguments are tuples, so the
+        # call's parentheses nest.
+        where = _remove_negated_exists_call(query.where_expr or "", exists.alias)
         where = re.sub(r"\s*&&\s*true\b", "", where)
         where = re.sub(r"\btrue\s*&&\s*", "", where)
         # Trim a wrapping paren layer left by `(pred && !exists)`.
@@ -10585,15 +10662,28 @@ def emit_join_spec_helpers(
         is_keyword_anti or (is_left and is_left_anti)
     ):
         anti_shape = "anti" if is_keyword_anti else "left"
-        anti_helper, spec_body, ret_type, fold_bridge = _emit_left_anti_multi_agg(
+        anti_helper, spec_body, ret_type, fold_bridge, topk = _emit_left_anti_multi_agg(
             query,
             slots,
             schemas_by_table,
             where_expr=where_expr,
             shape=anti_shape,
+            catalog=catalog,
         )
         helpers = anti_helper
         spec_body = _apply_join_having_filter(spec_body)
+        if topk is not None:
+            keys_call, row_ty = topk
+            group_map_ty = ret_type
+            spec_body = wrap_group_topk(
+                spec_body,
+                keys_call,
+                row_ty,
+                "spec_group_before",
+                limit=query.limit,
+                offset=query.offset,
+            )
+            ret_type = f"Seq<{row_ty}>"
     elif is_plain_left and len(slots) == 2 and not query.is_multi_agg:
         loj_helper, spec_body, ret_type, fold_bridge = _emit_loj_agg(
             query,

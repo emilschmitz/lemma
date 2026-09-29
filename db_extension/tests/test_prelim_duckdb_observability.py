@@ -136,6 +136,8 @@ def test_build_agent_prompt_join_menu_not_proof_paths(
         max_iterations=4,
     )
     assert "before half the wall-clock budget" in prompt
+    assert "Half the budget is the writing checkpoint" in prompt
+    assert "session continues until the full budget" in prompt
     assert "Further reading does not extend the wall" in prompt
     assert "An unedited stub is discarded when the wall hits" in prompt
     task_block = prompt.split("## Task")[1].split("## Proved join exec menu")[0]
