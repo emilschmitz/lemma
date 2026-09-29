@@ -12,6 +12,9 @@ matches your SQL. Do not invent a second index or call `build_hashset_u32` / `pr
   do not add a `proof fn` because a body looks empty.
 - `exec_sort_by`, when this file has it, ensures `spec_seq_sort_by` of the same
   predicate. It sorts. It does not prove the join or the aggregate.
+- `lemma_nested_eq_pairs_len_le_product`, when this file has it, bounds the pair-list
+  length by the product of the two lengths. Call it. Do not rebuild that bound
+  with a ghost loop.
 - `group_keys_helper`, when this file has it, is the key order. Build that sequence in
   the same backward walk (`pair_acc` / `triple_acc`). There is no second exec for it.
   When `## This spec` lists `lemma_group_keys_helper_is_pairs`, that call is the equality

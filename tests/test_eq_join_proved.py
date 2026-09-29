@@ -49,8 +49,12 @@ def test_eq_row_ids_len_bound_survives_the_agent_copy() -> None:
     assert "pub proof fn lemma_eq_row_ids_len_le_end" in text
     ensures = "eq_row_ids(keys, k, end).len() <= end"
     assert ensures in text
+    product = "nested_eq_pairs(outer, inner, n).len() <= n * inner.len()"
+    assert "pub proof fn lemma_nested_eq_pairs_len_le_product" in text
+    assert product in text
     visible = _collapse_proved_bodies(text)
     assert ensures in visible
+    assert product in visible
 
 
 def _large_sec_product_catalog() -> CatalogAssumptions:

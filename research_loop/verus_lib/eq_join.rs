@@ -287,6 +287,71 @@ pub proof fn lemma_eq_row_ids_len_le_end<K>(keys: Seq<K>, k: K, end: int)
     }
 }
 
+pub proof fn lemma_prefix_pairs_len_le_t(i: usize, js: Seq<usize>, t: int)
+    requires
+        0 <= t,
+    ensures
+        prefix_pairs(i, js, t).len() <= t,
+    decreases t,
+{
+    if t > 0 {
+        lemma_prefix_pairs_len_le_t(i, js, t - 1);
+        let prev = prefix_pairs(i, js, t - 1);
+        assert(prev.len() <= t - 1);
+        if 0 <= t - 1 < js.len() {
+            assert(prefix_pairs(i, js, t) == prev.push((i, js[t - 1])));
+            assert(prefix_pairs(i, js, t).len() == prev.len() + 1);
+        } else {
+            assert(prefix_pairs(i, js, t) == prev);
+        }
+    }
+}
+
+/// Pair-list length is at most the product of the two scanned lengths.
+pub proof fn lemma_nested_eq_pairs_len_le_product<K>(outer: Seq<K>, inner: Seq<K>, n: int)
+    requires
+        0 <= n,
+    ensures
+        nested_eq_pairs(outer, inner, n).len() <= n * inner.len(),
+    decreases n,
+{
+    if n > 0 {
+        lemma_nested_eq_pairs_len_le_product(outer, inner, n - 1);
+        let prev = nested_eq_pairs(outer, inner, n - 1);
+        assert(prev.len() <= (n - 1) * inner.len());
+        if n - 1 >= outer.len() {
+            assert(nested_eq_pairs(outer, inner, n) == prev);
+            assert((n - 1) * inner.len() <= n * inner.len()) by (nonlinear_arith)
+                requires
+                    0 <= inner.len(),
+            {
+            }
+        } else {
+            let i = (n - 1) as usize;
+            let end = inner.len() as int;
+            let ids = eq_row_ids(inner, outer[n - 1], end);
+            lemma_eq_row_ids_len_le_end(inner, outer[n - 1], end);
+            lemma_prefix_pairs_len_le_t(i, ids, ids.len() as int);
+            let added = prefix_pairs(i, ids, ids.len() as int);
+            assert(added.len() <= ids.len());
+            assert(ids.len() <= end);
+            assert(nested_eq_pairs(outer, inner, n) == prev + added);
+            assert((prev + added).len() == prev.len() + added.len());
+            assert(prev.len() + added.len() <= (n - 1) * inner.len() + inner.len()) by (nonlinear_arith)
+                requires
+                    prev.len() <= (n - 1) * inner.len(),
+                    added.len() <= inner.len(),
+            {
+            }
+            assert((n - 1) * inner.len() + inner.len() == n * inner.len()) by (nonlinear_arith)
+                requires
+                    0 <= inner.len(),
+            {
+            }
+        }
+    }
+}
+
 /// Existing key: one bucket grows by `row`. Map is unchanged.
 #[verifier::spinoff_prover]
 pub proof fn lemma_index_append<K>(
