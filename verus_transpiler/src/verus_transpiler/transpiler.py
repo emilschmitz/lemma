@@ -886,48 +886,28 @@ def _emit_derived_union_outer_spec(
     return helpers, spec_fn, ret_type
 
 
-def _result_row_type(base_ret: str) -> str:
-    """Map group-by / projection base type to one result row for ORDER BY / LIMIT."""
-    if base_ret.startswith("Map<"):
-        inner = base_ret[4:-1].strip()
-        comma = inner.rfind(", ")
-        if comma < 0:
-            return base_ret
-        key_ty = inner[:comma].strip()
-        val_ty = inner[comma + 2 :].strip()
-        return f"({key_ty}, {val_ty})"
-    if base_ret.startswith("Seq<"):
-        inner = base_ret[4:-1].strip()
-        if inner.startswith("("):
-            return inner
-        return f"({inner},)"
-    if base_ret.startswith("Set<"):
-        inner = base_ret[4:-1].strip()
-        return inner
-    return base_ret
+def _require_clauses_in_spec(query: SQLQuery, spec_text: str) -> None:
+    """Every result-changing clause must appear in the checked statement.
 
-
-def _emit_method_spec_result(query: SQLQuery, base_ret: str) -> str:
-    if not query.has_order_or_limit:
-        return ""
-    if not query.groupby_columns and not query.is_projection and query.agg_type:
-        return (
-            "// Note: ORDER BY / LIMIT ignored for scalar aggregate queries.\n"
+    A comment that a clause was skipped is not a spec. If the fold does not
+    contain the clause, transpilation stops.
+    """
+    if query.order_by and "spec_seq_sort_by" not in spec_text:
+        cols = ", ".join(
+            f"{ob.column}{' DESC' if ob.descending else ''}" for ob in query.order_by
         )
-    row_ty = _result_row_type(base_ret)
-    order_cols = ", ".join(
-        f"{ob.column}{' DESC' if ob.descending else ''}" for ob in query.order_by
-    ) or "unspecified"
-    limit_s = str(query.limit) if query.limit is not None else "none"
-    offset_s = str(query.offset) if query.offset is not None else "0"
-    # A Map has no row order. Sorting or dropping groups in run_query cannot
-    # meet ensures res@ == method_spec. Seq projections put ORDER BY and LIMIT
-    # in the spec and drop this note.
-    return (
-        f"// Note: ORDER BY ({order_cols}), LIMIT {limit_s}, OFFSET {offset_s} "
-        f"are not in this Map method_spec ({row_ty}). "
-        f"run_query still returns the full map.\n"
-    )
+        raise UnsupportedContractError(
+            f"ORDER BY ({cols}) is not in the method spec"
+        )
+    if query.offset:
+        if "spec_seq_skip" not in spec_text:
+            raise UnsupportedContractError(
+                f"OFFSET {query.offset} is not in the method spec"
+            )
+    if query.limit is not None and "spec_seq_take" not in spec_text:
+        raise UnsupportedContractError(
+            f"LIMIT {query.limit} is not in the method spec"
+        )
 
 
 def _emit_set_op_helpers(
@@ -1725,7 +1705,7 @@ def transpile_sql_to_verus(
             catalog=catalog_assumptions,
         )
         helpers = join_helper
-        result_spec = _emit_method_spec_result(query, ret_type)
+        result_spec = ""
         run_query = _emit_run_query(query, ret_type, is_join=True)
     else:
         if is_join:
@@ -1766,7 +1746,7 @@ def transpile_sql_to_verus(
         )
 
         helpers, spec_fn, ret_type = _emit_single_table_spec(query, outer_schema)
-        result_spec = _emit_method_spec_result(query, ret_type)
+        result_spec = ""
 
         where_at_k = to_col_expr(query.where_expr, "i") if query.where_expr else None
         if where_at_k:
@@ -1800,10 +1780,8 @@ def transpile_sql_to_verus(
         _join_legs = 1
     join_multi = is_join and bool(multi_schema)
     trusted_prelude = emit_trusted_prelude(include_left_join_miss=not join_multi)
-    if "spec_seq_sort_by" in f"{helpers}\n{spec_fn}":
-        # Sort and limit are inside method_spec. The old note told the agent
-        # to sort in run_query, which cannot meet ensures res == method_spec.
-        result_spec = ""
+    spec_text = f"{helpers}\n{spec_fn}"
+    _require_clauses_in_spec(query, spec_text)
     query_after_prelude = f"{cols_block}\n\n{helpers}\n\n{subquery_section}{spec_fn}\n\n{result_spec}"
     eq_join_prelude = (
         f"\n{proved_eq_join_prelude_for(query_after_prelude)}\n" if join_multi else ""

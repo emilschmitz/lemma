@@ -465,3 +465,24 @@ def test_paper_tpch_q6_decimal_bound_stays_unsupported() -> None:
     """
     with pytest.raises(UnsupportedContractError, match="Non-integer numeric literal"):
         transpile_sql_to_verus(sql, _TPCH)
+
+
+def test_left_join_projection_order_by_sorts_before_limit() -> None:
+    sql = """
+    SELECT s.adsh, s.name, p.stmt, p.line
+    FROM sub s
+    LEFT JOIN pre p ON s.adsh = p.adsh
+    ORDER BY s.name, s.adsh
+    LIMIT 50
+    """
+    try:
+        out = transpile_sql_to_verus(sql, _STAR)
+    except UnsupportedContractError as exc:
+        # Option-typed ORDER BY keys must fail loudly, never omit the sort.
+        assert "ORDER BY" in str(exc) or "method spec" in str(exc)
+        return
+    assert "spec_seq_sort_by" in out
+    assert "spec_seq_take" in out
+    assert "spec_loj_proj_before" in out
+    assert "not in this Map method_spec" not in out
+    assert "ORDER BY / LIMIT ignored" not in out

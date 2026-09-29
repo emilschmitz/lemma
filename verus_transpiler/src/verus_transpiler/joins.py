@@ -5431,8 +5431,16 @@ pub open spec fn {helper_name}(
         fold_text, bridge = fold
         helpers_out = helpers_out + "\n\n" + fold_text
     spec_body = f"{helper_name}({left.param}, {right.param}, 0)"
-    if query.limit is not None:
-        spec_body = f"spec_seq_take({spec_body}, {query.limit})"
+    order_helper, spec_body = wrap_seq_order_limit(
+        query,
+        spec_body,
+        row_ty,
+        list(query.projection_columns),
+        row_types,
+        before_name="spec_semi_proj_before",
+    )
+    if order_helper:
+        helpers_out = helpers_out + "\n\n" + order_helper
     return helpers_out, spec_body, ret_type, bridge
 
 
@@ -6230,8 +6238,16 @@ pub open spec fn {helper_name}(
         helpers_out = helpers_out + "\n\n" + fold_text
 
     spec_body = f"{helper_name}({left.param}, {right.param}, 0, 0)"
-    if query.limit is not None:
-        spec_body = f"spec_seq_take({spec_body}, {query.limit})"
+    order_helper, spec_body = wrap_seq_order_limit(
+        query,
+        spec_body,
+        row_ty,
+        list(query.projection_columns),
+        row_types,
+        before_name="spec_loj_proj_before",
+    )
+    if order_helper:
+        helpers_out = helpers_out + "\n\n" + order_helper
     return helpers_out, spec_body, ret_type, bridge
 
 
@@ -6865,8 +6881,16 @@ def _emit_right_outer_projection(
 
     helpers_out = helper + "\n\n" + fold_text
     spec_body = f"{helper_name}({o.param}, {inn.param})"
-    if query.limit is not None:
-        spec_body = f"spec_seq_take({spec_body}, {query.limit})"
+    order_helper, spec_body = wrap_seq_order_limit(
+        query,
+        spec_body,
+        row_ty,
+        list(query.projection_columns),
+        row_types,
+        before_name="spec_roj_proj_before",
+    )
+    if order_helper:
+        helpers_out = helpers_out + "\n\n" + order_helper
     return helpers_out, spec_body, ret_type, bridge
 
 
@@ -10461,8 +10485,6 @@ def _emit_full_outer_projection(
 }}"""
     chain_call = f"{chain_name}({left.param}, {right.param})"
     spec_body = chain_call
-    if query.limit is not None:
-        spec_body = f"spec_seq_take({chain_call}, {query.limit})"
 
     update_l = f"tail.push({row_expr_l})"
     update_r = f"tail.push({row_expr_r})"
@@ -10490,6 +10512,16 @@ def _emit_full_outer_projection(
     if fold is not None:
         fold_text, bridge = fold
         helpers = helpers + "\n\n" + fold_text
+    order_helper, spec_body = wrap_seq_order_limit(
+        query,
+        spec_body,
+        row_ty,
+        list(query.projection_columns),
+        row_types,
+        before_name="spec_full_proj_before",
+    )
+    if order_helper:
+        helpers = helpers + "\n\n" + order_helper
     return helpers, spec_body, ret_type, bridge
 
 def emit_join_spec_helpers(
