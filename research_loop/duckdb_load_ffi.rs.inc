@@ -287,6 +287,14 @@ mod lemma_duckdb_load {
                 // Dataset INTEGER columns are < 2^31. Cast a wider file column
                 // to that width. A value outside signed 32-bit fails the cast.
                 ColKind::U32 => format!("CAST({} AS INTEGER)", quote_ident(n)),
+                // A catalog u64 cell may be stored as a narrower integer.
+                // Widen those. Leave DOUBLE/FLOAT alone: CAST to BIGINT rounds.
+                ColKind::U64 => {
+                    let ident = quote_ident(n);
+                    format!(
+                        "CASE WHEN typeof({ident}) IN ('TINYINT', 'SMALLINT', 'INTEGER', 'UTINYINT', 'USMALLINT', 'UINTEGER') THEN CAST({ident} AS BIGINT) ELSE {ident} END"
+                    )
+                }
                 _ => quote_ident(n),
             })
             .collect();

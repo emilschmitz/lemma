@@ -1113,6 +1113,36 @@ def run_optimization_loop(
             continue
 
         if post_step == "no_submit_fail":
+            from db_extension.agent.measure_core import loader_block_after_proof
+
+            blocked = loader_block_after_proof(ws=workspace)
+            if blocked:
+                err = (
+                    "step 7 (execute): the function was proved, then the column "
+                    "loader rejected the file type. Not starting another prove. "
+                    + blocked
+                )
+                _vprint(f" {COLOR_RED}FAILED{COLOR_RESET}")
+                _vprint(f"    {err}")
+                print(f"proof_verified={True} latency_us={-1}", flush=True)
+                print(
+                    f"{_HARNESS_METRICS_PREFIX}{json.dumps({'status': 'FAILURE', 'proof_verified': True, 'latency_us': -1, 'compiler_error': err})}",
+                    flush=True,
+                )
+                history.append(_history_entry(
+                    iteration=iteration,
+                    status="FAILURE",
+                    proof_verified=True,
+                    latency=-1,
+                    error=err,
+                    agent_meta=agent_meta,
+                    wall_s=iter_agent_wall_s or None,
+                    agent_gen_wall_s=agent_gen_wall_s,
+                    extra=usage_extra or None,
+                ))
+                _save_harness_metrics(iteration, {"status": "FAILURE", "proof_verified": True, "latency_us": -1, "compiler_error": err})
+                _snapshot_history()
+                return _finish_run(run, {"status": "FAILED", "error": err, "history": history})
             leftover = leftover_verify_excerpt(workspace)
             err = "no marked submit"
             if leftover:

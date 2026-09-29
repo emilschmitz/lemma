@@ -160,6 +160,19 @@ def test_duckdb_loader_join_e2e_compile_and_bench(monkeypatch: pytest.MonkeyPatc
     assert res.get("latency_us", -1) >= 0, res.get("error") or res.get("bench_error")
 
 
+def _u64_read_stub() -> str:
+    return """#[verifier::external_body]
+pub exec fn run_query(cols: &Cols) -> (res: u64)
+    requires valid_cols(cols),
+    ensures res == method_spec(cols),
+{
+    if cols.n > 0 {
+        let _v = cols.get_value_exec(0);
+    }
+    cols.n as u64
+}"""
+
+
 def _bigint_read_stub() -> str:
     return """#[verifier::external_body]
 pub exec fn run_query(cols: &Cols) -> (res: u64)
@@ -180,6 +193,36 @@ def _bigint_sub_db(path: Path, cik: int) -> None:
     con.execute("CREATE TABLE sub (cik BIGINT, fy BIGINT, name VARCHAR)")
     con.execute("INSERT INTO sub VALUES (?, 2022, 'Acme')", [cik])
     con.close()
+
+
+@pytest.mark.skipif(not LIBDUCKDB.is_file(), reason="libduckdb.so missing")
+@pytest.mark.skipif(resolve_verus_bin() is None, reason="verus not found")
+def test_u64_column_loads_from_duckdb_integer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A catalog u64 cell stored as INTEGER is widened. Doubles are not rounded."""
+    import duckdb
+
+    db = tmp_path / "narrow.duckdb"
+    con = duckdb.connect(str(db))
+    con.execute("CREATE TABLE num (value INTEGER)")
+    con.execute("INSERT INTO num VALUES (10)")
+    con.close()
+    monkeypatch.setenv("LEMMA_DUCKDB_PATH", str(db))
+    monkeypatch.setenv("LEMMA_DUCKDB_LIB_DIR", str(ROOT / "build/libduckdb"))
+    monkeypatch.setenv("REQUIRE_PROOF", "1")
+    monkeypatch.setenv("ENABLE_VERUS_VERIFY", "1")
+    res = run_custom_sql_pipeline(
+        "SELECT COUNT(*) FROM num WHERE value > 0",
+        {"num": {"value": "bigint"}},
+        run_query_body=_u64_read_stub(),
+        limit=10,
+        workload="sec",
+        duckdb_path=str(db),
+        skip_bench=False,
+    )
+    assert res.get("proof_verified"), res.get("verify_msg") or res.get("error")
+    assert res.get("latency_us", -1) >= 0, res.get("error") or res.get("bench_error")
 
 
 @pytest.mark.skipif(not LIBDUCKDB.is_file(), reason="libduckdb.so missing")

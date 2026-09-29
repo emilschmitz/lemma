@@ -426,6 +426,32 @@ def is_verified_frozen_run(run: dict) -> bool:
     return runquery_sha256(body) == body_hash
 
 
+_LOADER_BLOCK_MARKERS = (
+    "unsupported DuckDB type",
+    "can't be cast",
+    "out of range for the destination type",
+    "Conversion Error",
+)
+
+
+def loader_block_after_proof(*, ws: Path) -> str | None:
+    """A proved MCP run whose timed exec died on a column type or cast.
+
+    The proof already finished. Another agent iteration would repeat it.
+    """
+    for run in list_runs(ws=ws):
+        metrics = run.get("metrics") or {}
+        if not metrics.get("proof_verified"):
+            continue
+        parts = [str(metrics.get("compiler_error") or "")]
+        parts.extend(str(item) for item in (run.get("errors") or []))
+        blob = "\n".join(parts)
+        for line in blob.splitlines():
+            if any(marker in line for marker in _LOADER_BLOCK_MARKERS):
+                return line.strip()[:500]
+    return None
+
+
 def latest_verified_frozen_run(*, ws: Path) -> dict | None:
     """Latest stored MCP run passing ``is_verified_frozen_run`` (newest run_id first)."""
     for run in list_runs(ws=ws):

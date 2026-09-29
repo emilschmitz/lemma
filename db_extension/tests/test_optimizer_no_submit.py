@@ -27,6 +27,28 @@ def test_post_agent_next_step_real_agent_paths() -> None:
     assert post_agent_next_step(use_mock=True, submitted=None) == "assemble_leftover"
 
 
+def test_loader_block_after_proof_stops_on_type_panic(tmp_path: Path) -> None:
+    runs = tmp_path / "mcp_results" / "runs"
+    runs.mkdir(parents=True)
+    (runs / "20260101T000000_aaaaaaaa.json").write_text(
+        '{"ok": false, "metrics": {"proof_verified": true, "compiler_error": "bench exec failed\\nunsupported DuckDB type BIGINT for column CIK (expected U32)"}}',
+        encoding="utf-8",
+    )
+    blocked = mc.loader_block_after_proof(ws=tmp_path)
+    assert blocked is not None
+    assert "CIK" in blocked
+
+
+def test_loader_block_after_proof_ignores_unproved_runs(tmp_path: Path) -> None:
+    runs = tmp_path / "mcp_results" / "runs"
+    runs.mkdir(parents=True)
+    (runs / "20260101T000000_bbbbbbbb.json").write_text(
+        '{"ok": false, "metrics": {"proof_verified": false, "compiler_error": "unsupported DuckDB type BIGINT"}}',
+        encoding="utf-8",
+    )
+    assert mc.loader_block_after_proof(ws=tmp_path) is None
+
+
 def test_leftover_verify_excerpt_missing_is_empty(tmp_path: Path) -> None:
     assert leftover_verify_excerpt(tmp_path) == ""
 
