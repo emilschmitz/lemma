@@ -13,8 +13,9 @@ matches your SQL. Do not invent a second index or call `build_hashset_u32` / `pr
 - `exec_sort_by`, when this file has it, ensures `spec_seq_sort_by` of the same
   predicate. It sorts. It does not prove the join or the aggregate.
 - `group_keys_helper`, when this file has it, is the key order. Build that sequence in
-  the same backward walk (`pair_acc` / `triple_acc`). There is no second exec for it,
-  and no separate lemma that names the equality. The walk is that equality.
+  the same backward walk (`pair_acc` / `triple_acc`). There is no second exec for it.
+  When `## This spec` lists `lemma_group_keys_helper_is_pairs`, that call is the equality
+  with `group_keys_helper` at the origin. Otherwise the walk is that equality.
   `HashMapWithView` is the map `agg_step_*` already updates.
 - Write `run_query` and call `run_runquery` once the call order below is chosen. A
   wall-clock kill with no edit saves nothing. Once that call order is fixed, the next

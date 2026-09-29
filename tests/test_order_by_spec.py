@@ -70,6 +70,8 @@ def test_group_by_order_by_is_a_sorted_sequence() -> None:
     assert "Seq<" in spec.split("{", 1)[0]
     assert "spec_seq_take(spec_seq_sort_by(spec_map_at_keys(" in spec
     assert "group_keys_helper" in out
+    assert "pub proof fn lemma_group_keys_helper_is_pairs" in out
+    assert "pub proof fn lemma_group_keys_helper_is_loop" in out
     assert "// lemma_group_topk_map: Map<(Seq<char>, u32), (u64, u64, u64)>" in out
     assert "(b.1.0) < (a.1.0)" in out
     assert "pub exec fn exec_sort_by" in out

@@ -2898,6 +2898,20 @@ def _emit_join_multi_agg(
             ret_base="Seq::empty()",
             extra_params=_derived_map_extra_params(derived_map_vars, derived_map_types),
         )
+        keys_fold = _fold_lemma(
+            keys_name,
+            slots,
+            join_cond=join_cond,
+            filter_cond=filter_cond,
+            update_expr=keys_update,
+            ret_type=f"Seq<{key_ty}>",
+            ret_base="Seq::empty()",
+            extra_params=_derived_map_extra_params(derived_map_vars, derived_map_types),
+        )
+        keys_fold_text = ""
+        if keys_fold is not None:
+            keys_fold_body, _keys_bridge = keys_fold
+            keys_fold_text = "\n\n" + keys_fold_body
         group_types = (
             [part.strip() for part in key_ty[1:-1].split(", ")]
             if key_ty.startswith("(")
@@ -2924,6 +2938,7 @@ def _emit_join_multi_agg(
             helper
             + "\n\n"
             + keys_helper
+            + keys_fold_text
             + "\n\n"
             + f"pub open spec fn {before_name}(a: {row_ty}, b: {row_ty}) -> bool {{\n"
             + f"    {pred}\n"
@@ -5061,6 +5076,20 @@ def _emit_single_agg_nway(
             ret_base="Seq::empty()",
             extra_params=_derived_map_extra_params(derived_map_vars, derived_map_types),
         )
+        keys_fold = _fold_lemma(
+            keys_name,
+            slots,
+            join_cond=join_cond,
+            filter_cond=filter_cond,
+            update_expr=keys_update,
+            ret_type=f"Seq<{key_ty}>",
+            ret_base="Seq::empty()",
+            extra_params=_derived_map_extra_params(derived_map_vars, derived_map_types),
+        )
+        keys_fold_text = ""
+        if keys_fold is not None:
+            keys_fold_body, _keys_bridge = keys_fold
+            keys_fold_text = "\n\n" + keys_fold_body
         group_types = (
             [part.strip() for part in key_ty[1:-1].split(", ")]
             if key_ty.startswith("(")
@@ -5088,6 +5117,7 @@ def _emit_single_agg_nway(
             helper
             + "\n\n"
             + keys_helper
+            + keys_fold_text
             + "\n\n"
             + f"pub open spec fn {before_name}(a: {row_ty}, b: {row_ty}) -> bool {{\n"
             + f"    {pred}\n"
