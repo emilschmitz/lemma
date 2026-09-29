@@ -2175,6 +2175,52 @@ pub open spec fn spec_map_at_keys<K, V>(keys: Seq<K>, m: Map<K, V>, i: int) -> S
     }
 }
 
+/// Rows for the first `n` keys, in key order. A forward push loop matches this.
+pub open spec fn spec_map_at_keys_prefix<K, V>(keys: Seq<K>, m: Map<K, V>, n: int) -> Seq<(K, V)>
+    decreases n
+{
+    if n <= 0 {
+        Seq::empty()
+    } else {
+        let prev = spec_map_at_keys_prefix(keys, m, n - 1);
+        if 0 <= n - 1 < keys.len() && m.contains_key(keys[n - 1]) {
+            prev.push((keys[n - 1], m[keys[n - 1]]))
+        } else {
+            prev
+        }
+    }
+}
+
+/// The forward prefix plus the remaining tail is the whole key walk.
+pub proof fn lemma_map_at_keys_prefix_complete<K, V>(keys: Seq<K>, m: Map<K, V>, n: int)
+    requires
+        0 <= n,
+        n <= keys.len(),
+    ensures
+        spec_map_at_keys_prefix(keys, m, n) + spec_map_at_keys(keys, m, n)
+            == spec_map_at_keys(keys, m, 0),
+    decreases n,
+{
+    if n > 0 {
+        lemma_map_at_keys_prefix_complete(keys, m, n - 1);
+        let prev = spec_map_at_keys_prefix(keys, m, n - 1);
+        let rest = spec_map_at_keys(keys, m, n);
+        let here = spec_map_at_keys(keys, m, n - 1);
+        assert(n - 1 < keys.len());
+        if m.contains_key(keys[n - 1]) {
+            let pair = (keys[n - 1], m[keys[n - 1]]);
+            let one = Seq::<(K, V)>::empty().push(pair);
+            assert(here == one + rest);
+            assert(spec_map_at_keys_prefix(keys, m, n) == prev.push(pair));
+            assert(prev.push(pair) == prev + one);
+            assert(prev + here == (prev + one) + rest);
+        } else {
+            assert(here == rest);
+            assert(spec_map_at_keys_prefix(keys, m, n) == prev);
+        }
+    }
+}
+
 pub open spec fn spec_seq_skip<A>(s: Seq<A>, n: int) -> Seq<A> {
     if n <= 0 {
         s

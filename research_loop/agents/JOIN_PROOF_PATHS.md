@@ -17,6 +17,9 @@ matches your SQL. Do not invent a second index or call `build_hashset_u32` / `pr
   with a ghost loop.
 - `lemma_nested_eq_pairs_index_in_range`, when this file has it, puts each pair
   index inside its table. Call it. Do not re-prove those bounds.
+- `spec_map_at_keys_prefix`, when this file has it, is the rows before the sort.
+  At the key length, `lemma_map_at_keys_prefix_complete` is the equality with
+  `spec_map_at_keys`. Call it. Do not rebuild that equality.
 - `group_keys_helper`, when this file has it, is the key order. Build that sequence in
   the same backward walk (`pair_acc` / `triple_acc`). There is no second exec for it.
   When `## This spec` lists `lemma_group_keys_helper_is_pairs`, that call is the equality

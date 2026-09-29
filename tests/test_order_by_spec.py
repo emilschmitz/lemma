@@ -69,6 +69,7 @@ def test_group_by_order_by_is_a_sorted_sequence() -> None:
     spec = out.split("pub open spec fn method_spec", 1)[1].split("pub proof fn", 1)[0]
     assert "Seq<" in spec.split("{", 1)[0]
     assert "spec_seq_take(spec_seq_sort_by(spec_map_at_keys(" in spec
+    assert "pub proof fn lemma_map_at_keys_prefix_complete" in out
     assert "group_keys_helper" in out
     assert "pub proof fn lemma_group_keys_helper_is_pairs" in out
     assert "pub proof fn lemma_group_keys_helper_is_loop" in out
