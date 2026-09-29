@@ -140,15 +140,33 @@ def run_duckdb_one_run(
     return {"OPEN_US": open_us, "queries": out}
 
 
+def _verus_z3_path(home: str) -> str | None:
+    """Z3 binary Verus will actually execute. Skip a path that is not on disk."""
+    candidates = [
+        os.environ.get("VERUS_Z3_PATH", ""),
+        f"{home}/tools/verus/z3",
+        f"{home}/src/verus/source/z3",
+    ]
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate):
+            return candidate
+    return None
+
+
 def env_for_lemma(*, workload: str, duckdb_path: str) -> dict[str, str]:
     """Experiment env for run_optimizer; set defaults only when unset."""
     e = os.environ.copy()
     home = os.environ.get("HOME", "/home/emil")
     e["PATH"] = (
-        f"{home}/.local/bin:{home}/src/verus/source/target-verus/release:"
+        f"{home}/.local/bin:{home}/tools/verus:"
+        f"{home}/src/verus/source/target-verus/release:"
         f"{home}/.cargo/bin:" + e.get("PATH", "")
     )
-    e.setdefault("VERUS_Z3_PATH", f"{home}/src/verus/source/z3")
+    z3 = _verus_z3_path(home)
+    if z3:
+        e["VERUS_Z3_PATH"] = z3
+    else:
+        e.pop("VERUS_Z3_PATH", None)
     e.setdefault("MAX_ITERATIONS", "1")
     e.setdefault("LEMMA_EXPERIMENT", "1")
     e.setdefault("MOCK_AGENT", "0")
