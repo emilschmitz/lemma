@@ -304,7 +304,8 @@ def _clip_last_error(text: str) -> str:
     if '"type":"thinking"' in text and "verification results::" not in text:
         return (
             "The previous iteration was killed at the wall clock. "
-            "It produced no Verus result."
+            "It produced no Verus result. "
+            "If the marked body is still the stub, write it and call `run_runquery`."
         )
     if len(text) <= _LAST_ERROR_MAX_CHARS:
         return text
@@ -397,7 +398,7 @@ Keep the host signature / `requires` / `ensures` matching `method_spec(...)` in 
 (same parameter list and `valid_cols*` predicates as MethodSpec — one table, extra inner tables,
 or join tables). Do not add Trusted, `assume`,
 `arbitrary`, `external_body`, or redefine `method_spec`.
-Write the body in `{body_path}` and call `run_runquery` before half the wall-clock budget is gone. Half the budget is the writing checkpoint. The session continues until the full budget. An unedited stub is discarded when the wall hits.
+Write the body in `{body_path}` and call `run_runquery` before half the wall-clock budget is gone. Half the budget is the writing checkpoint. The session continues until the full budget. An unedited stub is discarded when the wall hits. Reading more files does not check the proof.
 Lemmas for this query are listed under `## This spec` in `{ctx}/JOIN_PROOF_PATHS.md`. Their signatures and `ensures` are in `{ctx}/spec.rs`. `proof fn` bodies in that copy are `{{ }}`.
 {prelim_section}
 {_rocketship_exec_section(ctx)}

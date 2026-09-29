@@ -74,6 +74,7 @@ def test_killed_agent_stream_is_not_the_next_error(
         last_error=f"Agent failed: {stream}",
     )
     assert "produced no Verus result" in prompt
+    assert "write it and call `run_runquery`" in prompt
     assert "reading spec.rs" not in prompt
 
     verus = "x" * 8000 + "\nverification results:: 150 verified, 1 errors\nassert forall"
