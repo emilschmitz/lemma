@@ -164,7 +164,7 @@ def test_build_agent_prompt_join_menu_not_proof_paths(
     assert "ghost loop" in prompt
     assert "lemma_group_keys_helper_is_pairs" in prompt
     assert "Otherwise the walk is that equality" in prompt
-    assert "bounds the aggregate slot" in prompt
+    assert "pairs still left" in prompt
     assert "Do not read `spec.rs` from the first line." not in prompt
     assert "Grep" not in prompt.split("## Task")[1].split("##")[0]
     menu_start = prompt.index("## Proved join exec menu")
@@ -224,7 +224,7 @@ def test_build_agent_prompt_join_menu_not_proof_paths(
     assert "lemma_map_at_keys_prefix_complete" in proof
     assert "lemma_group_keys_helper_is_pairs" in proof
     assert "Otherwise the walk is that equality" in proof
-    assert "bounds that aggregate slot" in proof
+    assert "pairs still left" in proof
 
     lookup = (
         Path(__file__).resolve().parents[2]
