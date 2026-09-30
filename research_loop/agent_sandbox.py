@@ -443,20 +443,14 @@ Keep the host signature / `requires` / `ensures` matching `method_spec(...)` in 
 (same parameter list and `valid_cols*` predicates as MethodSpec — one table, extra inner tables,
 or join tables). Do not add Trusted, `assume`,
 `arbitrary`, `external_body`, or redefine `method_spec`.
-Write the body in `{body_path}` and call `run_runquery` before half the wall-clock budget is gone. Half the budget is the writing checkpoint. The session continues until the full budget. An unedited stub is discarded when the wall hits. Reading more files does not check the proof.
-Lemmas for this query are listed under `## This spec` in `{ctx}/JOIN_PROOF_PATHS.md`. Their signatures and `ensures` are in `{ctx}/spec.rs`. `proof fn` bodies in that copy are `{{ }}`.
 {prelim_section}
-{_rocketship_exec_section(ctx)}
-{_verus_mode_section()}
 {budget_section}
 {row_budget_section}
 {facts_block}
-## Context (do not modify)
-- `{ctx}/query.sql`, `{ctx}/schema.json`
-- MethodSpec excerpt is below. `{ctx}/spec.rs` is the full file.
+## Context to read (do not modify)
+- `{ctx}/query.sql`, `{ctx}/schema.json`, `{ctx}/spec.rs`
 - `{ctx}/data_profile.md` (AGENT_DATA_MODE=`{agent_data_mode}`), `{ctx}/row_budgets.md`, `{ctx}/hardware.md` (if present)
 - `{ctx}/COMPILATION_GUIDE.md`, `{ctx}/AGENTS.md`, `{ctx}/PRIMITIVES.md` — contract + Trusted menu only
-- `{ctx}/JOIN_PROOF_PATHS.md` — lemma names for this query
 
 ## Tools
 - `validate_runquery` / `run_runquery` / `submit_runquery` / `session_status` (lemma-host MCP)

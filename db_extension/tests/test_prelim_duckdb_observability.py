@@ -167,7 +167,7 @@ def test_concrete_proof_names_are_the_fold_lemmas() -> None:
 def test_build_agent_prompt_join_menu_not_proof_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Opening menu lists every proved exec. The prompt does not say how to prove it."""
+    """Prompt is the query, the spec, and host facts. It does not prescribe a join tactic."""
     ws = tmp_path / "workspace"
     (ws / "context" / "ro").mkdir(parents=True)
     monkeypatch.delenv("LEMMA_FAST_TRUSTEDS", raising=False)
@@ -180,14 +180,12 @@ def test_build_agent_prompt_join_menu_not_proof_paths(
         iteration=1,
         max_iterations=4,
     )
-    assert "before half the wall-clock budget" in prompt
-    assert "Half the budget is the writing checkpoint" in prompt
-    assert "session continues until the full budget" in prompt
-    assert "An unedited stub is discarded when the wall hits" in prompt
-    task_block = prompt.split("## Task")[1].split("## Proved join exec menu")[0]
-    assert "600" not in task_block
-    assert "quota" not in task_block.lower()
-    assert "under `## This spec`" in prompt
+    assert "SESSION_HOT_US" in prompt
+    assert "method_spec" in prompt
+    assert f"{ws}/context/ro/spec.rs" in prompt or "/context/ro/spec.rs" in prompt
+    assert "## Proved join exec menu" not in prompt
+    assert "## Verus modes" not in prompt
+    assert "before half the wall-clock budget" not in prompt
     for recipe in (
         "ghost loop",
         "pairs still left",
@@ -196,46 +194,10 @@ def test_build_agent_prompt_join_menu_not_proof_paths(
         "call order",
         "Do not re-prove",
         "Further reading does not extend the wall",
+        "equijoin_pairs_str",
+        "par_equijoin_pairs_str",
     ):
         assert recipe not in prompt, recipe
-    assert "Do not read `spec.rs` from the first line." not in prompt
-    assert "Grep" not in prompt.split("## Task")[1].split("##")[0]
-    menu_start = prompt.index("## Proved join exec menu")
-    menu_end = prompt.index("## Verus modes")
-    opening = prompt[menu_start:menu_end]
-
-    for name in (
-        "equijoin_pairs_str",
-        "equijoin_pairs_str2",
-        "equijoin_pairs_str3",
-        "equijoin_pairs_u64",
-        "equijoin_pairs_u32",
-        "star_eq_triples_str",
-        "star_eq_quads_str",
-        "chain_eq_triples_str",
-        "q6_eq_triples_str",
-        "orjoin_pairs_str",
-        "semi_hit_rows_str",
-        "semi_hit_rows_str2",
-        "semi_hit_rows_str3",
-        "anti_miss_rows_str",
-        "anti_miss_rows_str2",
-        "anti_miss_rows_str3",
-        "left_outer_pairs_str",
-        "left_outer_pairs_u64",
-        "right_outer_pairs_str",
-        "full_outer_parts_str",
-        "self-join",
-    ):
-        assert name in opening, name
-    assert "JOIN_PROOF_PATHS.md" not in opening
-    assert "Walk the pair" not in opening
-    assert "pair_acc(pairs@" not in opening
-    assert "After the backward walk" not in opening
-    assert "lemma_<helper>_is_pairs` (via" not in opening
-    assert "lemma_loop2_at_origin" not in opening
-    assert "par_star_triples_str" not in opening
-    assert "par_equijoin_pairs_str" not in opening
 
     from pathlib import Path
 
@@ -256,10 +218,10 @@ def test_build_agent_prompt_join_menu_not_proof_paths(
         assert recipe not in proof, recipe
 
 
-def test_fast_prompt_keeps_proved_join_menu(
+def test_fast_prompt_has_no_canned_join_menu(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """FAST=1 used to omit the menu. The agent then searched the disk for par_*."""
+    """Same prompt with or without the speed menu. Tactics are not per-flag."""
     ws = tmp_path / "workspace"
     (ws / "context" / "ro").mkdir(parents=True)
     monkeypatch.setenv("LEMMA_FAST_TRUSTEDS", "1")
@@ -271,16 +233,10 @@ def test_fast_prompt_keeps_proved_join_menu(
         iteration=1,
         max_iterations=4,
     )
-    menu_start = prompt.index("## Proved join exec menu")
-    menu_end = prompt.index("## Verus modes")
-    opening = prompt[menu_start:menu_end]
-    assert "LEMMA_FAST_TRUSTEDS` is on" in opening
-    assert "star_eq_triples_str" in opening
-    assert "equijoin_pairs_str" in opening
-    assert "par_equijoin_pairs_str" in opening
-    assert "par_star_triples_str" in opening
-    assert "does not discharge" in opening
-    assert "is off" not in opening
+    assert "## Proved join exec menu" not in prompt
+    assert "## Verus modes" not in prompt
+    assert "par_equijoin_pairs_str" not in prompt
+    assert "SESSION_HOT_US" in prompt
 
 
 def test_build_system_prompt_row_budgets(monkeypatch: pytest.MonkeyPatch) -> None:

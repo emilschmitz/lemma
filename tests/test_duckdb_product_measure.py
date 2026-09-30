@@ -27,6 +27,9 @@ PRE_SCHEMA = {
 def test_generate_load_cols_duckdb_verus_has_ffi_and_valid_cols() -> None:
     load_rs = generate_load_cols_duckdb_verus(PRE_SCHEMA, table_name="pre")
     assert "lemma_duckdb_load::pin_table" in load_rs
+    assert "lemma_duckdb_load::read_string" in load_rs
+    assert "Vec::with_capacity(n)" in load_rs
+    assert "Vec::new()" not in load_rs
     assert "ColVec" not in load_rs
     ffi = Path(ROOT / "research_loop/duckdb_load_ffi.rs.inc").read_text()
     assert "duckdb_open_ext" in ffi

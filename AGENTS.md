@@ -109,6 +109,8 @@ Every paper/Spot/`LEMMA_EXPERIMENT=1` run must be **reproducible** and **logged*
   count host-agent / measure-failed runs as the 98% gate. If the sandbox cannot be
   brought up, **stop and tell Emil** — do not continue a watered-down protocol.
 
+**How to report a timed run.** The proved binary times `run_query` with `Instant` and prints the median of five runs in microseconds. Say **instant execution** when that clock is 0: the call returned in under 1 microsecond. That is not a failed run, and it is not a performance result on a real table. Say **failed run** when the clock line is missing, the bench crashes, or the official measure errors. Do not quote the raw microsecond field in status updates. A prove failure is separate: the proof did not verify.
+
 ## Paper loop (the only overnight protocol)
 
 **Prove agent from now on: Grok 4.7** (`grok-4.7-high` in `research_loop/config.env` `AGENT_CMD`). It is the new model. Do not launch on `cursor-grok-4.6-high`.

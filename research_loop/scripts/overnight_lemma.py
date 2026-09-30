@@ -48,7 +48,7 @@ DEFAULT_HEARTBEAT_INTERVAL_SEC = 60
 
 
 def lemma_job_ok(rec: dict) -> bool:
-    """Success: verified proof, rc=0, full-table latency (int >= 0), no measure error."""
+    """Success: verified proof, rc=0, a real timed run (positive microseconds), no measure error."""
     if rec.get("official_measure_error"):
         return False
     if rec.get("proof_verified") is not True:
@@ -56,7 +56,7 @@ def lemma_job_ok(rec: dict) -> bool:
     if rec.get("returncode") != 0:
         return False
     lat = rec.get("latency_us")
-    return isinstance(lat, int) and lat >= 0
+    return isinstance(lat, int) and lat > 0
 
 
 def _metrics_objects_from_log(text: str) -> list[dict[str, Any]]:
@@ -718,7 +718,7 @@ def main() -> int:
             "only when LEMMA_SERIOUS=1 (skipped in dev overnights). MCP iterate "
             "proves on capped rows; official harvest latency_us is full-table "
             "execute after marked submit. Success requires proof_verified, "
-            "returncode=0, and latency_us int >= 0."
+            "returncode=0, and a positive timed run. A zero clock is instant execution, not a success."
         ),
     }
     (out_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")

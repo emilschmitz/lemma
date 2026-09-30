@@ -364,7 +364,8 @@ def is_timed_verified_success(metrics: dict) -> bool:
         latency = int(metrics.get("latency_us", -1))
     except (TypeError, ValueError):
         return False
-    if latency < 0:
+    # A zero clock is the timed call returning in under 1µs. That is not a scan.
+    if latency <= 0:
         return False
     if metrics.get("official_measure_error"):
         return False

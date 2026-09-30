@@ -149,7 +149,7 @@ def test_lemma_job_ok_requires_timed_latency():
     ok = mod.lemma_job_ok
     base = {"proof_verified": True, "returncode": 0, "latency_us": 100}
     assert ok(base) is True
-    assert ok({**base, "latency_us": 0}) is True
+    assert ok({**base, "latency_us": 0}) is False
     assert ok({**base, "latency_us": -1}) is False
     assert ok({**base, "latency_us": None}) is False
     assert ok({**base, "latency_us": "100"}) is False

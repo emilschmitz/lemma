@@ -90,6 +90,17 @@ def test_is_timed_verified_success_rejects_bench_skipped() -> None:
     )
 
 
+def test_is_timed_verified_success_rejects_instant() -> None:
+    assert not is_timed_verified_success(
+        {
+            "status": "SUCCESS",
+            "proof_verified": True,
+            "latency_us": 0,
+            "bench_skipped": False,
+        }
+    )
+
+
 def test_is_timed_verified_success_rejects_untimed() -> None:
     assert not is_timed_verified_success(
         {

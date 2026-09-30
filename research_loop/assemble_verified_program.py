@@ -736,14 +736,32 @@ def generate_load_cols_duckdb_verus(
 
     pinned = pin_schema_for_table(table_name, schema_dict, catalog_multi)
     col_specs: list[str] = []
+    fills: list[str] = []
     field_inits: list[str] = []
+    readers = {
+        "String": "read_string",
+        "Bool": "read_bool",
+        "U32": "read_u32",
+        "U64": "read_u64",
+    }
 
-    for col, col_type in pinned.items():
+    for idx, (col, col_type) in enumerate(pinned.items()):
         field = rust_ident(col)
         kind = _col_kind_for_schema_type(col_type)
-        col_specs.append(f'            ("{col}", lemma_duckdb_load::ColKind::{kind}),')
+        reader = readers[kind]
         rust_ty = _rust_vec_type(col_type)
-        field_inits.append(f"            {field}: Vec::<{rust_ty}>::new(),")
+        col_specs.append(f'            ("{col}", lemma_duckdb_load::ColKind::{kind}),')
+        fills.append(
+            f"""    let mut {field}: Vec<{rust_ty}> = Vec::with_capacity(n);
+    {{
+        let mut i: usize = 0;
+        while i < n {{
+            {field}.push(lemma_duckdb_load::{reader}("{table_name}", {idx}usize, i));
+            i = i + 1;
+        }}
+    }}"""
+        )
+        field_inits.append(f"            {field},")
 
     return f"""
 #[verifier::external_body]
@@ -759,6 +777,7 @@ pub exec fn {load_fn}(db_path: &str, limit: usize) -> (cols: {struct_name})
 {chr(10).join(col_specs)}
         ],
     );
+{chr(10).join(fills)}
     {struct_name} {{
         n,
 {chr(10).join(field_inits)}
