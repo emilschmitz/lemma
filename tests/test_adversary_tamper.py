@@ -31,6 +31,22 @@ def test_prompt_allows_read_and_web_and_forbids_tamper(tmp_path: Path) -> None:
     assert str(tmp_path / "candidate.json") in text
 
 
+def test_prompt_with_spaces_survives_shell_join(tmp_path: Path) -> None:
+    import shlex
+
+    prompt = "hunt `run_query` and **holes**"
+    argv = agent_argv(tmp_path, Path("/repo"), prompt)
+    assert shlex.split(" ".join(argv))[-1] == prompt
+
+
+def test_prompt_with_quote_survives_shell_join(tmp_path: Path) -> None:
+    import shlex
+
+    prompt = "don't split this prompt"
+    argv = agent_argv(tmp_path, Path("/repo"), prompt)
+    assert shlex.split(" ".join(argv))[-1] == prompt
+
+
 def test_agent_command_sandboxes_writes_and_allows_network(tmp_path: Path) -> None:
     argv = agent_argv(tmp_path, Path("/repo"), "prompt")
     assert "sandbox" in argv

@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -70,7 +71,7 @@ def agent_argv(write_dir: Path, repo_path: Path, prompt: str) -> list[str]:
         "grok-4.7-high",
         "--output-format",
         "text",
-        prompt,
+        shlex.quote(prompt),
     ]
 
 
