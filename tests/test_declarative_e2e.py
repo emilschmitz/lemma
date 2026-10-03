@@ -23,7 +23,6 @@ VERUS = Path("/home/emil/tools/verus/verus")
 
 _COUNT_SQL = "SELECT k, COUNT(*) AS cnt FROM t GROUP BY k"
 _COUNT_BODY = """
-    broadcast use vstd::std_specs::hash::axiom_u64_obeys_hash_table_key_model;
     let mut i: usize = cols.n;
     let mut map: HashMapWithView<u64, u64> = HashMapWithView::new();
     while i > 0

@@ -247,7 +247,8 @@ These abort the file before a proof result.
 - A `proof` block inside a `spec` function is legal only when that function has `decreases`.
 - `&&&` separates spec clauses. In exec code write `&&`. `expected ','` on `&&&` is this.
 - An exec `Vec` or `HashMap` is not spec-equal to a `Seq`. Compare `@` views. `Seq<usize>` vs `Vec<usize>` is E0308 / SpecEq.
-- Do not define a new `proof fn`, `spec fn`, or lemma. Call only helpers already in `spec.rs`.
+- Do not define a new `proof fn`, `spec fn`, or lemma.
+- You may import an existing vstd lemma inside the edit, for example `use vstd::arithmetic::mul::lemma_mul_nonzero;` or `broadcast use vstd::arithmetic::mul::group_mul_properties;`. Call it from `proof { }`. A `use` whose name contains `axiom` is rejected: that is an assume.
 - An error on a line above `pub exec fn run_query` is host code (`lemma_*`). The edit region cannot repair it.
 """
 
@@ -446,6 +447,8 @@ or join tables). Do not add Trusted, `assume`,
 {prelim_section}
 {budget_section}
 {row_budget_section}
+{_verus_mode_section()}
+{_rocketship_exec_section(ctx)}
 {facts_block}
 ## Context to read (do not modify)
 - `{ctx}/query.sql`, `{ctx}/schema.json`, `{ctx}/spec.rs`

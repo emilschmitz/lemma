@@ -545,6 +545,20 @@ def _scan_forbidden(edit_region: str) -> list[str]:
         violations.append("forbidden spec fn in edit region")
     if re.search(r"\bensures\s+true\b", clean):
         violations.append("forbidden vacuous ensures: ensures true")
+    from research_loop.agent_vstd_imports import use_is_an_assume
+
+    for line in edit_region.splitlines():
+        stripped = line.strip()
+        if not re.match(r"^(?:pub\s+)?(?:broadcast\s+)?use\b", stripped):
+            continue
+        if use_is_an_assume(stripped):
+            violations.append(f"use is an assume: {stripped}")
+            continue
+        if not re.match(
+            r"^(?:pub\s+)?(?:broadcast\s+)?use\s+vstd::[A-Za-z0-9_:{}*,\s]+;\s*$",
+            stripped,
+        ):
+            violations.append(f"use not allowed: {stripped}")
     return violations
 
 

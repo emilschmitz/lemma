@@ -64,12 +64,18 @@ def lemma_index_markdown() -> str:
         "",
         "- `Map::contains_key`, `Map::insert`, `Map::empty` (vstd::map) as the spec view.",
         "",
-        ("- `vstd::std_specs::hash::axiom_u64_obeys_hash_table_key_model` and the i64 and i128 variants. "
-        "Primitive keys obey the hash-map model; broadcast-use the one you need. Do not `assume()` it."),
+        ("- The host already broadcasts "
+        "`vstd::std_specs::hash::axiom_u64_obeys_hash_table_key_model` "
+        "(and the i64 and i128 variants) for the group key. "
+        "Do not import it. A name containing `axiom` is an assume and is rejected."),
         "",
         "- `Seq::len`, `Seq::index`, `Seq::skip`, `Seq::push`.",
         "",
         ("You may call these and other vstd lemmas; look them up here when unsure. "
+        "Import one with `use vstd::...::lemma_...;` or "
+        "`broadcast use vstd::...::group_...;`. "
+        "Do not import a name containing `axiom`. "
+        "Do not `assume(` or `admit(` a fact. "
         "You may **not** declare `spec fn` or `proof fn`."),
     ]
     return "\n".join(lines) + "\n"

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 _COUNT_SHAPE = """
-broadcast use vstd::std_specs::hash::axiom_u64_obeys_hash_table_key_model;
 let mut counts: Vec<u64> = Vec::new();
 let mut c: usize = 0;
 while c < KEY_CAP_t_k
@@ -180,20 +179,30 @@ def build_declarative_prompt(
         "",
         "## Edit",
         "",
-        f"Read `{spec_path}`. Edit only `{edit_path}` between `// AGENT_EDIT_START`",
-        "and `// AGENT_EDIT_END`, with the file edit tool.",
+        f"Read `{spec_path}`. Edit `{edit_path}` with the file edit tool.",
+        "The body of `run_query` stays between `// AGENT_EDIT_START` and `// AGENT_EDIT_END`.",
+        "You may also add `use vstd::...;` and `broadcast use vstd::...;` lines",
+        "for a lemma or a proved `group_` that does not contain `axiom`.",
+        "Put those next to the host `use` lines at the top of the file, or inside the edit.",
+        "The host hoists them. Only `vstd` imports are kept.",
+        "A name containing `axiom` is rejected: that import is an assume.",
+        "The hash-key axiom is already broadcast in this file. Do not import it.",
+        "Any other text outside the markers is discarded.",
+        "The host pastes your body back into the original spec.",
+        "Changing `requires` or `ensures` has no effect.",
         "Write that edit before any long plan. The first edit should be the count",
         "below, with names taken from this spec. Then call `run_runquery`.",
         "The shell cannot run in this container. Do not use it.",
         "Do not search outside this workspace. Host lemmas are already in the file",
         f"between `// HOST_LEMMAS_START` and `// HOST_LEMMAS_END`, and in `{index_path}`.",
-        "Call those names. Do not invent a vstd module path.",
+        "Call those names. Import a vstd lemma that is not in scope.",
+        "Do not `assume(` or `admit(` a fact instead of calling the lemma.",
         "",
         "## What you may write",
         "",
         "Any executable loop that meets the `ensures`. `proof { lemma_...( ... ); }` is allowed.",
-        "Do not write `proof fn`, `spec fn`, `assume(`, or `#[verifier::external_body]`.",
-        "Do not add a `spec fn`. The host already emitted the helpers.",
+        "Do not write `proof fn`, `spec fn`, `assume(`, `admit(`, or `#[verifier::external_body]`.",
+        "Those are rejected. Do not add a `spec fn`. The host already emitted the helpers.",
         "",
         "Integers. A `u64` or `i128` add equals the mathematical add when the result fits.",
         "Call the host fit lemma under the row cap and the cell cap in the spec.",

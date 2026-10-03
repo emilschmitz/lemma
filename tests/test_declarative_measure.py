@@ -167,7 +167,6 @@ def test_write_group_count_measure_matches_two_domains(tmp_path: Path) -> None:
 
 
 _DENSE_BODY = """
-    broadcast use vstd::std_specs::hash::axiom_u64_obeys_hash_table_key_model;
     let mut counts: Vec<u64> = Vec::new();
     let mut c: usize = 0;
     while c < KEY_CAP_t_k

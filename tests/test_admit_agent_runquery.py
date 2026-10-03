@@ -107,6 +107,30 @@ def test_accepts_map_hashmap_stub() -> None:
     assert "HashMapWithView::new()" in (result.run_query_fn or "")
 
 
+def test_accepts_vstd_lemma_import_and_rejects_an_axiom_import() -> None:
+    spec = _scalar_spec()
+    lemma = build_runquery_agent_source(
+        ret_type="u64",
+        body_inner=(
+            "use vstd::arithmetic::mul::lemma_mul_nonzero;\n"
+            "    broadcast use vstd::arithmetic::mul::group_mul_properties;\n"
+            "    0u64"
+        ),
+    )
+    ok = _admit(lemma, spec)
+    assert ok.ok, ok.violations
+    axiom = build_runquery_agent_source(
+        ret_type="u64",
+        body_inner=(
+            "broadcast use vstd::std_specs::hash::axiom_u64_obeys_hash_table_key_model;\n"
+            "    0u64"
+        ),
+    )
+    bad = _admit(axiom, spec)
+    assert not bad.ok
+    assert any("assume" in item for item in bad.violations)
+
+
 def test_accepts_proof_block() -> None:
     spec = _scalar_spec()
     src = build_runquery_agent_source(

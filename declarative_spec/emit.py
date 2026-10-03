@@ -135,6 +135,31 @@ class _EmitCtx:
         return name
 
 
+def _host_hash_key_axiom(rust_ty: str) -> str:
+    """Host-owned hash axiom. The agent must not import this; it is an assume."""
+    allowed = {
+        "bool",
+        "u8",
+        "u16",
+        "u32",
+        "u64",
+        "u128",
+        "usize",
+        "i8",
+        "i16",
+        "i32",
+        "i64",
+        "i128",
+        "isize",
+    }
+    if rust_ty not in allowed:
+        return ""
+    return (
+        "broadcast use vstd::std_specs::hash::"
+        f"axiom_{rust_ty}_obeys_hash_table_key_model;"
+    )
+
+
 def _emit_group_count_block(*, seq_ty: str, key_ty: str, elem: str) -> str:
     """`elem` is the spec expression for keys[i] compared to k (e.g. keys[i] or keys[i]@)."""
     elem_j = elem.replace("[i]", "[j]")
@@ -572,6 +597,12 @@ def _emit_count(parsed: ParsedQuery, model: SchemaModel, ctx: _EmitCtx) -> str:
         "use vstd::prelude::*;",
         hash_use,
         "verus! {",
+    ]
+    if key_kinds[0] != KeyKind.STRING:
+        axiom = _host_hash_key_axiom(ginfo_exec.exec_rust)
+        if axiom:
+            parts.append(axiom)
+    parts.extend([
         "\n".join(struct_lines),
         "",
         _emit_valid_cols(struct, t_orig, fields, row_cap_name, ctx),
@@ -584,7 +615,7 @@ def _emit_count(parsed: ParsedQuery, model: SchemaModel, ctx: _EmitCtx) -> str:
         "",
         _host_lemma_region(),
         "",
-    ]
+    ])
 
     field, _, gkind0 = group_meta[0]
     if gkind0 == KeyKind.STRING:
@@ -740,6 +771,9 @@ def _emit_join_sum(
         "use vstd::hash_map::HashMapWithView;",
         "verus! {",
     ]
+    hash_axiom = _host_hash_key_axiom(quant_ty)
+    if hash_axiom:
+        parts.append(hash_axiom)
     if ctx.consts:
         parts.append("\n".join(ctx.consts))
     if float_const:
