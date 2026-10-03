@@ -15,6 +15,11 @@ def lemma_index_markdown() -> str:
         ("- `lemma_i128_add_fits(a: i128, b: i128)` with the corresponding i128 min/max requires. "
         "An i128 add equals the mathematical add when the sum fits in i128."),
         "",
+        ("- `lemma_index_key_below_cap(cols, i: int)`, when this spec defines it. "
+        "Requires `valid_cols_...(cols)` and `0 <= i < cols.n as int`. "
+        "Ensures the loaded key at `i` is `>= 0` and `< KEY_CAP_...`. "
+        "Call it after reading `cols.<field>[i]`. Keep `valid_cols_...` in the loop invariant."),
+        "",
         ("- `lemma_count_step_fits_u64(prev: u64, row_cap: int)`. "
         "prev + 1 fits in u64 when the count is at most the row cap and the row cap fits in u64."),
         "",

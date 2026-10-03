@@ -3,6 +3,14 @@
 from __future__ import annotations
 
 
+def _error_excerpt(last_error: str) -> str:
+    excerpt = last_error.strip()[-4000:]
+    newline = excerpt.find("\n")
+    if newline != -1 and newline < 200:
+        excerpt = excerpt[newline + 1 :]
+    return excerpt
+
+
 def build_declarative_prompt(
     *,
     sql: str,
@@ -58,10 +66,11 @@ def build_declarative_prompt(
         "Call the host fit lemma under the row cap and the cell cap in the spec.",
         "If the slot is `u64`, call `lemma_count_step_fits_u64` or `lemma_sum_step_fits_u64`.",
         "If the slot is `i128`, call the `i128` lemma. Do not assume the add fits.",
-        "Bind a view before you use its length: `let keys = cols.k@;` then `keys.len()`.",
-        "Do not write `cols.k@.len()`.",
-        "Parenthesize a cast in a comparison: `(k as int) < (KEY_CAP_t_k as int)`.",
-        "Do not write `k as int <`.",
+        "Bind the group column from the struct before you use its length.",
+        "If the field is `grp`, write `let keys = cols.grp@;` then `keys.len()`.",
+        "Do not write `cols.grp@.len()` or any `cols.<field>@.len()`.",
+        "Parenthesize a cast in a comparison: `(k as int) < (KEY_CAP_fact_grp as int)`.",
+        "Use the `KEY_CAP_...` name from this spec. Do not write `k as int <`.",
         "Snapshot the index before you decrement it. After `i = i - 1` the old suffix",
         "is `i_old`, not `i`.",
         "",
@@ -70,12 +79,22 @@ def build_declarative_prompt(
         "If the spec has `pub const KEY_CAP_...: usize`, that is the exclusive key domain.",
         "Allocate `let mut counts: Vec<u64> = Vec::new();` and push a zero once per slot",
         "until `counts.len() == KEY_CAP_...`. Every loaded key is `< KEY_CAP_...`.",
-        "On each row, read `prev` from `counts[k as usize]`, call",
+        "The column loop invariant must include `valid_cols_<table>(cols)`.",
+        "Without that name in the invariant, the key bound is not in scope.",
+        "On each row, `let k = cols.<field>[i];` then call",
+        "`lemma_index_key_below_cap(cols, i as int)` and",
+        "`assert(k == cols.<field>@[i as int])`.",
+        "That lemma ensures `(cols.<field>@[i] as int) < (KEY_CAP_... as int)`.",
+        "Do not write a decimal bound such as `<= 255`. Use the `KEY_CAP_...` const.",
+        "Read `prev` from `counts[k as usize]`, call",
         "`lemma_count_step_fits_u64(prev, ROW_CAP_...)`, then",
         "`counts[k as usize] = prev + 1`. Leave every other slot unchanged.",
         "After the column loop, `counts[k] as int == group_count(keys, 0, k)` for each",
-        "slot. Insert a slot into the result map only when its count is nonzero.",
+        "slot. Copy a slot into the result map only when its count is nonzero.",
         "A HashMap update on every row loses the timed run on the large table.",
+        "On the copy loop, give the quantifier an explicit trigger:",
+        "`forall|k: u64| #[trigger] map@.contains_key(k) ==> ...`",
+        "and prove it with `assert forall|k: u64| #[trigger] map@.contains_key(k) ==> ... by { ... }`.",
         "If the spec has no `KEY_CAP` const, keep the count in the result map:",
         "`prev` is the map value or 0, then insert `prev + 1`.",
         "",
@@ -121,7 +140,7 @@ def build_declarative_prompt(
                 "`run_runquery` again.",
                 "",
                 "```",
-                last_error.strip()[-4000:],
+                _error_excerpt(last_error),
                 "```",
             ]
         )

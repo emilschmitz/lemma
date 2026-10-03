@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 from declarative_spec.assemble import assemble_declarative_program
@@ -32,6 +33,71 @@ def test_key_cap_emitted_only_when_column_is_bounded() -> None:
     open_ended = emit_declarative_spec(_SQL, {"t": {"k": "ubigint"}}, _catalog(domain=None))
     assert "pub const KEY_CAP_t_k: usize = 32;" in capped
     assert "KEY_CAP_t_k" not in open_ended
+    assert "lemma_index_key_below_cap" in capped
+    assert "lemma_index_key_below_cap" not in open_ended
+
+
+def test_key_bound_lemma_names_the_column_for_two_schemas() -> None:
+    fact = emit_declarative_spec(
+        "SELECT grp, COUNT(*) AS cnt FROM fact GROUP BY grp",
+        {"fact": {"grp": "ubigint"}},
+        CatalogAssumptions(
+            tables={
+                "fact": TableAssumptions(
+                    max_rows=64,
+                    columns={"grp": ColumnAssumption(max_value_exclusive=64)},
+                )
+            },
+        ),
+    )
+    src = emit_declarative_spec(
+        "SELECT slot, COUNT(*) AS c FROM src GROUP BY slot",
+        {"src": {"slot": "ubigint"}},
+        CatalogAssumptions(
+            tables={
+                "src": TableAssumptions(
+                    max_rows=128,
+                    columns={"slot": ColumnAssumption(max_value_exclusive=256)},
+                )
+            },
+        ),
+    )
+    assert "cols.grp@[i] as int <= 63" in fact
+    assert "(cols.grp@[i] as int) < (KEY_CAP_fact_grp as int)" in fact
+    assert "cols.slot@[i] as int <= 255" in src
+    assert "(cols.slot@[i] as int) < (KEY_CAP_src_slot as int)" in src
+
+
+def test_key_bound_lemma_verifies_for_two_domains(tmp_path: Path) -> None:
+    cases = (
+        (
+            "SELECT k, COUNT(*) AS cnt FROM t GROUP BY k",
+            {"t": {"k": "ubigint"}},
+            _catalog(domain=8),
+        ),
+        (
+            "SELECT slot, COUNT(*) AS c FROM src GROUP BY slot",
+            {"src": {"slot": "ubigint"}},
+            CatalogAssumptions(
+                tables={
+                    "src": TableAssumptions(
+                        max_rows=64,
+                        columns={"slot": ColumnAssumption(max_value_exclusive=256)},
+                    )
+                },
+            ),
+        ),
+    )
+    verus = Path("/home/emil/tools/verus/verus")
+    for sql, schema, catalog in cases:
+        spec = emit_declarative_spec(sql, schema, catalog)
+        cut = spec.index("pub open spec fn group_count")
+        src = spec[:cut].rstrip() + "\n}\n\nfn main() {}\n"
+        path = tmp_path / f"{next(iter(schema))}.rs"
+        path.write_text(src)
+        proc = subprocess.run([str(verus), str(path)], capture_output=True, text=True, check=False)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "0 errors" in (proc.stdout + proc.stderr)
 
 
 def test_assemble_reads_column_file_or_stays_empty() -> None:
