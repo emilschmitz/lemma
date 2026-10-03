@@ -14,7 +14,9 @@ CONFIG = TrustConfig(
     note=(
         "Hardware menu on the product transpiler. Scalar SUM is exact: "
         "Option<u128>, None when no row matches, otherwise the mathematical "
-        "sum (no u64 wrap). Not the fast menu. LEMMA_EXACT_SUM is this menu's "
+        "sum (no u64 wrap). Scalar MIN and MAX are Option<u64>, None when no "
+        "row matches. AVG is refused because DuckDB AVG is DOUBLE. Not the fast "
+        "menu. LEMMA_EXACT_SUM is this menu's "
         "switch; product leaves it unset."
     ),
     env={

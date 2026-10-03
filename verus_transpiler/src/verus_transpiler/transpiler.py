@@ -465,6 +465,63 @@ def _exact_sum_step(rec: str, cond: str | None, term: str) -> str:
     )
 
 
+def _exact_minmax_step(rec: str, cond: str | None, term: str, op: str) -> str:
+    """Running min or max plus a match count. Empty input stays count 0."""
+    choose = (
+        f"let t = {term};\n"
+        f"            if c == 0 {{ (t, 1) }} else if t {op} m {{ (t, c + 1) }} else {{ (m, c + 1) }}"
+    )
+    if cond:
+        return (
+            f"let (m, c) = {rec};\n"
+            f"        if {cond} {{\n"
+            f"            {choose}\n"
+            f"        }} else {{\n"
+            f"            (m, c)\n"
+            f"        }}"
+        )
+    return (
+        f"let (m, c) = {rec};\n"
+        f"        {choose}"
+    )
+
+
+def _build_exact_minmax_helper(
+    func_name: str,
+    query: SQLQuery,
+    idx_var: str,
+    schema_dict: dict[str, str],
+    *,
+    extras: list[tuple[str, str, str]] | None = None,
+) -> str:
+    """Scalar MIN/MAX as ``(value, matched rows)``. The value is meaningless at count 0."""
+    extras = extras or []
+    extra_sig = _extra_param_sig(extras)
+    extra_call = _extra_param_call(extras)
+    extra_rec = _extra_param_recommends(extras)
+    rec = f"{func_name}(cols{extra_call}, {idx_var} + 1)"
+    cond = (
+        spec_where_cond(to_col_expr(query.where_expr, idx_var), idx_var, schema_dict)
+        if query.where_expr
+        else None
+    )
+    term = spec_u64_term(query.agg_expr, idx_var)
+    op = "<" if query.agg_type == "MIN" else ">"
+    step = _exact_minmax_step(rec, cond, term, op)
+    return f"""pub open spec fn {func_name}(cols: &Cols{extra_sig}, {idx_var}: int) -> (u64, int)
+    recommends
+        0 <= {idx_var} && {idx_var} <= cols.n,
+        valid_cols(cols){extra_rec},
+    decreases cols.n - {idx_var},
+{{
+    if {idx_var} < cols.n {{
+        {step}
+    }} else {{
+        (0u64, 0)
+    }}
+}}"""
+
+
 def _build_exact_sum_helper(
     func_name: str,
     query: SQLQuery,
@@ -1519,6 +1576,10 @@ def _emit_single_table_spec(
         return inner_helpers, spec_fn, ret_type
 
     if query.agg_type == "AVG":
+        if os.environ.get("LEMMA_EXACT_SUM", "0") == "1":
+            raise UnsupportedContractError(
+                "hardware menu does not emit AVG: DuckDB AVG is DOUBLE, not integer division"
+            )
         if query.groupby_columns:
             helpers = "\n\n".join([
                 _build_col_helper("sum_map_helper", query, "k", flat_schema, is_sum=True, extras=extras),
@@ -1577,6 +1638,21 @@ def _emit_single_table_spec(
         )
         spec_fn = _method_spec_fn("Option<u128>", spec_body, extras)
         return helpers, spec_fn, "Option<u128>"
+
+    if (
+        os.environ.get("LEMMA_EXACT_SUM", "0") == "1"
+        and query.agg_type in ("MIN", "MAX")
+        and not query.groupby_columns
+    ):
+        helpers = _build_exact_minmax_helper(
+            helper_name, query, "k", flat_schema, extras=extras,
+        )
+        spec_body = (
+            f"let (m, c) = {helper_name}(cols{extra_call}, 0);\n"
+            "    if c == 0 { None } else { Some(m) }"
+        )
+        spec_fn = _method_spec_fn("Option<u64>", spec_body, extras)
+        return helpers, spec_fn, "Option<u64>"
 
     is_sum = query.agg_type in ("SUM", "MIN", "MAX")
     helpers = _build_col_helper(
