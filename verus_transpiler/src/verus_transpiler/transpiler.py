@@ -499,6 +499,66 @@ def _build_exact_sum_helper(
 }}"""
 
 
+def _build_count_distinct_helper(
+    func_name: str,
+    query: SQLQuery,
+    idx_var: str,
+    schema_dict: dict[str, str],
+    *,
+    extras: list[tuple[str, str, str]] | None = None,
+) -> str:
+    """Scalar COUNT(DISTINCT col) as a set of seen keys. Empty input has length 0."""
+    extras = extras or []
+    extra_sig = _extra_param_sig(extras)
+    extra_call = _extra_param_call(extras)
+    extra_rec = _extra_param_recommends(extras)
+    col = query.agg_column
+    if col not in schema_dict:
+        raise UnsupportedContractError(
+            f"COUNT(DISTINCT) column {col!r} is not in the schema"
+        )
+    key_ty = spec_map_key_type(schema_dict[col])
+    field = rust_ident(col)
+    if col_verus_type(schema_dict[col]) == "String":
+        val = f"cols.get_{field}({idx_var})@"
+    else:
+        val = f"cols.get_{field}({idx_var})"
+    rec = f"{func_name}(cols{extra_call}, {idx_var} + 1)"
+    cond = (
+        spec_where_cond(to_col_expr(query.where_expr, idx_var), idx_var, schema_dict)
+        if query.where_expr
+        else None
+    )
+    if cond:
+        step = (
+            f"let tail = {rec};\n"
+            f"        if {cond} {{\n"
+            f"            let v = {val};\n"
+            f"            if tail.contains_key(v) {{ tail }} else {{ tail.insert(v, true) }}\n"
+            f"        }} else {{\n"
+            f"            tail\n"
+            f"        }}"
+        )
+    else:
+        step = (
+            f"let tail = {rec};\n"
+            f"        let v = {val};\n"
+            f"        if tail.contains_key(v) {{ tail }} else {{ tail.insert(v, true) }}"
+        )
+    return f"""pub open spec fn {func_name}(cols: &Cols{extra_sig}, {idx_var}: int) -> Map<{key_ty}, bool>
+    recommends
+        0 <= {idx_var} && {idx_var} <= cols.n,
+        valid_cols(cols){extra_rec},
+    decreases cols.n - {idx_var},
+{{
+    if {idx_var} < cols.n {{
+        {step}
+    }} else {{
+        Map::empty()
+    }}
+}}"""
+
+
 def _build_col_helper(
     func_name: str,
     query: SQLQuery,
@@ -1454,6 +1514,14 @@ def _emit_single_table_spec(
             )
         spec_fn = _method_spec_fn(ret_type, spec_body, extras)
         return all_helpers, spec_fn, ret_type
+
+    if query.agg_type == "COUNT_DISTINCT" and not query.groupby_columns:
+        helpers = _build_count_distinct_helper(
+            helper_name, query, "k", flat_schema, extras=extras,
+        )
+        spec_body = f"{helper_name}(cols{extra_call}, 0).dom().len() as u64"
+        spec_fn = _method_spec_fn("u64", spec_body, extras)
+        return helpers, spec_fn, "u64"
 
     if (
         os.environ.get("LEMMA_EXACT_SUM", "0") == "1"
