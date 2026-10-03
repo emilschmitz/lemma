@@ -92,6 +92,7 @@ def emit_from_surface(
     parts = [
         "use vstd::prelude::*;",
         "verus! {",
+        _hash_broadcasts(helpers),
         consts,
         structs,
         "",
@@ -1102,6 +1103,20 @@ def _valids(params: list[_Slot], model: SchemaModel, catalog: CatalogAssumptions
 }}"""
         )
     return "\n\n".join(blocks)
+
+
+def _hash_broadcasts(helpers: _Helpers) -> str:
+    """Broadcast the integer hash-key axiom. String keys use ``StringHashMap``, which does not need it."""
+    from declarative_spec.emit import _host_hash_key_axiom
+
+    lines: list[str] = []
+    for _fname, _col, info, _slot in helpers.group_infos:
+        if info.spec_as == "Seq<char>" or info.is_float:
+            continue
+        line = _host_hash_key_axiom(info.exec_rust)
+        if line and line not in lines:
+            lines.append(line)
+    return "\n".join(lines)
 
 
 def _consts(

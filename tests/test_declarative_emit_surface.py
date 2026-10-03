@@ -114,6 +114,7 @@ def test_grouped_scan_states_filter_and_aggregates() -> None:
     assert "// AGENT_EDIT_START" in spec
     assert "// HOST_LEMMAS_START" in spec
     assert "assume(" not in spec
+    assert "obeys_hash_table_key_model" not in spec
 
 
 def test_join_having_scalar_states_match_and_limit() -> None:
@@ -146,6 +147,26 @@ def test_not_exists_and_case_sum_emit() -> None:
     assert "r#abstract" in case_spec
     assert "pub abstract:" not in case_spec
     assert "method_spec" not in case_spec
+
+
+def test_integer_group_broadcasts_its_hash_axiom() -> None:
+    sql = """
+    SELECT fy, COUNT(*) AS cnt
+    FROM sub
+    WHERE fy IS NOT NULL
+    GROUP BY fy
+    """
+    spec = _emit(sql)
+    assert "broadcast use vstd::std_specs::hash::axiom_i64_obeys_hash_table_key_model;" in spec
+    huge = """
+    SELECT n, COUNT(*) AS cnt
+    FROM t
+    WHERE n IS NOT NULL
+    GROUP BY n
+    """
+    huge_spec = emit_declarative_spec(huge, {"t": {"n": "hugeint"}})
+    assert "axiom_i128_obeys_hash_table_key_model;" in huge_spec
+    assert "axiom_i64_obeys_hash_table_key_model;" not in huge_spec
 
 
 def test_outer_join_is_refused() -> None:
