@@ -1496,6 +1496,25 @@ def _lift_derived_group_order(query: SQLQuery) -> SQLQuery | None:
     )
 
 
+def _unsigned_expr_violation(query: SQLQuery) -> str | None:
+    """Subtraction and negation are signed. Hardware columns are not."""
+    if os.environ.get("LEMMA_EXACT_SUM", "0") != "1":
+        return None
+    exprs: list[str] = []
+    if query.agg_expr:
+        exprs.append(query.agg_expr)
+    for spec in query.agg_specs:
+        if spec.agg_expr:
+            exprs.append(spec.agg_expr)
+    if query.where_expr:
+        exprs.append(query.where_expr)
+    for expr in exprs:
+        text = expr.strip()
+        if text.startswith("-") or " - " in text:
+            return text
+    return None
+
+
 def _emit_single_table_spec(
     query: SQLQuery,
     flat_schema: dict[str, str],
@@ -1503,6 +1522,12 @@ def _emit_single_table_spec(
     helper_name: str = "method_spec_helper",
 ) -> tuple[str, str, str]:
     """Return (helpers, spec_fn, ret_type)."""
+    signed = _unsigned_expr_violation(query)
+    if signed is not None:
+        raise UnsupportedContractError(
+            "hardware menu does not emit subtraction or negation: "
+            "DuckDB's result is signed and these columns are unsigned"
+        )
     lifted = _lift_derived_group_order(query)
     if lifted is not None:
         return _emit_single_table_spec(lifted, flat_schema, helper_name=helper_name)

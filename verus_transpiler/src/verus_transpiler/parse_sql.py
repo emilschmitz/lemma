@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -533,6 +534,11 @@ def _compile_is_null_check(
         if is_null:
             return "left_join_miss_generic(cols, 0)"
         return "!left_join_miss_generic(cols, 0)"
+    # Hardware columns have no null bit. Empty string is not SQL NULL.
+    if os.environ.get("LEMMA_EXACT_SUM", "0") == "1":
+        if is_null:
+            return "false"
+        return "true"
     # Lemma loads non-null cells for typed columns.
     if _kind_of(col_type) == "string":
         if is_null:

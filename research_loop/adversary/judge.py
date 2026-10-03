@@ -76,6 +76,14 @@ def _run_duckdb(
         con.close()
 
 
+def _rows_have_null(rows: dict[str, list[dict]]) -> bool:
+    for table_rows in rows.values():
+        for row in table_rows:
+            if any(value is None for value in row.values()):
+                return True
+    return False
+
+
 def _write_tbl(path: Path, table: str, col_types: dict[str, str], table_rows: list[dict]) -> int:
     cols = list(col_types.keys())
     header = "|".join(c.upper() for c in cols)
@@ -259,6 +267,14 @@ def judge_candidate(
                 "status": "rejected",
                 "significant": False,
                 "violations": admit.violations,
+                "config": config,
+            }
+
+        if _rows_have_null(candidate.rows):
+            return {
+                "status": "rows_outside_model",
+                "significant": False,
+                "reason": "column loads are non-null; SQL NULL is not a cell",
                 "config": config,
             }
 
