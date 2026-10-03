@@ -19,7 +19,8 @@ CONFIG = TrustConfig(
         "Subtraction and negation are refused because the result is signed. "
         "Base-table IS NULL is false: these columns have no null bit. "
         "COUNT of a null derived SUM or MIN or MAX is 0. "
-        "ILIKE is refused because DuckDB folds Unicode case. Not the fast "
+        "ILIKE is refused because DuckDB folds Unicode case. Division is "
+        "refused because DuckDB `/` is DOUBLE, not integer division. Not the fast "
         "menu. LEMMA_EXACT_SUM is this menu's "
         "switch; product leaves it unset."
     ),

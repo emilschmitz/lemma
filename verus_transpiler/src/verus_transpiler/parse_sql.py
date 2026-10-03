@@ -914,6 +914,13 @@ def _to_row_expr(
     if isinstance(node, exp.Mul):
         return f"{_to_row_expr(node.left, resolver)} * {_to_row_expr(node.right, resolver)}"
     if isinstance(node, exp.Div):
+        # DuckDB `/` on integers is DOUBLE division. The integer `/` below
+        # truncates, so SUM(5 / 2) is 2 here and 2.5 in DuckDB.
+        if os.environ.get("LEMMA_EXACT_SUM", "0") == "1":
+            raise UnsupportedContractError(
+                "hardware menu does not emit division: DuckDB `/` is real "
+                "division (DOUBLE), not integer division"
+            )
         if isinstance(node.right, exp.Literal) and node.right.this == "0":
             raise UnsupportedContractError("Division by zero literal is not supported.")
         return f"{_to_row_expr(node.left, resolver)} / {_to_row_expr(node.right, resolver)}"
