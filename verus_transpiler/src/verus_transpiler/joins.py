@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import copy
+import os
 import re
 from dataclasses import dataclass, field, replace
 
@@ -5012,6 +5013,58 @@ def _emit_single_agg_nway(
         if is_sum
         else "1"
     )
+
+    if (
+        query.agg_type == "SUM"
+        and not query.groupby_columns
+        and os.environ.get("LEMMA_EXACT_SUM") == "1"
+    ):
+        # Each u64 factor fits in u128, so the product does too. The sum is
+        # wrapping u128, which is the mathematical sum whenever that sum fits.
+        # No joined match yields NULL.
+        accesses = re.findall(
+            r"[A-Za-z_]\w*\.[A-Za-z_]\w*\[[A-Za-z_]\w* as int\]@?",
+            term,
+        )
+        if "*" in term and len(accesses) == 2:
+            step = (
+                "vstd::wrapping::u128_specs::wrapping_mul("
+                f"{accesses[0]} as u128, {accesses[1]} as u128)"
+            )
+        elif "*" not in term and "+" not in term and len(accesses) == 1:
+            step = f"({accesses[0]} as u128)"
+        else:
+            step = None
+        if step is not None:
+            update_expr = (
+                "{\n"
+                "            let (s, c) = tail;\n"
+                "            (vstd::wrapping::u128_specs::wrapping_add(s, "
+                f"{step}), c + 1)\n"
+                "        }"
+            )
+            helper = _gen_nested_loop(
+                helper_name,
+                slots,
+                join_cond=join_cond,
+                filter_cond=filter_cond,
+                update_expr=update_expr,
+                ret_type="(u128, int)",
+                ret_base="(0u128, 0)",
+                extra_params=_derived_map_extra_params(derived_map_vars, derived_map_types),
+            )
+            init_args = ", ".join(
+                [*(s.param for s in slots)]
+                + list(derived_map_vars.values())
+                + [_init_indices(slots)]
+            )
+            spec_body = (
+                "{\n"
+                f"    let (s, c) = {helper_name}({init_args});\n"
+                "    if c == 0 { None } else { Some(s) }\n"
+                "}"
+            )
+            return helper, spec_body, "Option<u128>", None, None
 
     if query.groupby_columns:
         key_expr, key_ty = _groupby_key_parts(
