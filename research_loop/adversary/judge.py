@@ -1,0 +1,357 @@
+"""Host-side adversary candidate judge."""
+
+from __future__ import annotations
+
+import os
+import re
+import subprocess
+import tempfile
+from pathlib import Path
+from typing import Any
+
+import duckdb
+from verus_transpiler.column_projection import project_schema_for_query
+from verus_transpiler.parse_sql import normalize_schema
+
+from research_loop.admit_runquery import admit_runquery_body
+from research_loop.adversary.candidate import Candidate
+from research_loop.adversary.significance import classify_difference
+from research_loop.assemble_runquery import build_exec_run_query_from_body
+from research_loop.harness import (
+    resolve_verus_bin,
+    run_verus_compile,
+    run_verus_verify,
+    write_unified_program,
+)
+from research_loop.lemma_flags import enable_templates
+from research_loop.method_spec_ret_type import resolve_ret_type_from_method_spec
+from research_loop.trust_configs import apply_trust_config
+from verus_transpiler import transpile_sql_to_verus
+
+_SPEC_TRUNC = 4000
+_SCALAR_RET = frozenset({"u64", "i64"})
+_RESULT_SCALAR = re.compile(r"^RESULT:\s*(-?\d+)\s*$", re.MULTILINE)
+_OPAQUE_MARKERS = ("map_len", "checksum", "seq_len", "set_len")
+
+
+def _schema_tables(schema: dict) -> dict[str, dict[str, str]]:
+    _flat, multi = normalize_schema(schema)
+    if multi:
+        return {k: dict(v) for k, v in multi.items()}
+    return {"t": dict(_flat)}
+
+
+def _duckdb_type(sql_type: str) -> str:
+    return sql_type.strip().upper()
+
+
+def _run_duckdb(
+    sql: str,
+    schema: dict,
+    rows: dict[str, list[dict]],
+) -> tuple[list[tuple] | None, str | None]:
+    tables = _schema_tables(schema)
+    con = duckdb.connect()
+    try:
+        for table, col_types in tables.items():
+            table_rows = rows.get(table, [])
+            parts = [f'"{c}" {_duckdb_type(t)}' for c, t in col_types.items()]
+            con.execute(f'CREATE TABLE "{table}" ({", ".join(parts)})')
+            cols = list(col_types.keys())
+            for row in table_rows:
+                names = ", ".join(f'"{c}"' for c in cols)
+                ph = ", ".join("?" for _ in cols)
+                vals = [row.get(c) for c in cols]
+                con.execute(
+                    f'INSERT INTO "{table}" ({names}) VALUES ({ph})',
+                    vals,
+                )
+        out = con.execute(sql).fetchall()
+        return [tuple(r) for r in out], None
+    except duckdb.Error as exc:
+        return None, str(exc)
+    finally:
+        con.close()
+
+
+def _write_tbl(path: Path, table: str, col_types: dict[str, str], table_rows: list[dict]) -> int:
+    cols = list(col_types.keys())
+    header = "|".join(c.upper() for c in cols)
+    lines = [header]
+    for row in table_rows:
+        cells = []
+        for c in cols:
+            v = row.get(c)
+            if v is None:
+                cells.append("")
+            else:
+                cells.append(str(v))
+        lines.append("|".join(cells))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return len(table_rows)
+
+
+def _transpile(sql: str, schema: dict) -> tuple[str | None, dict[str, str] | None, str | None]:
+    try:
+        flat, multi = normalize_schema(schema)
+        if multi:
+            from verus_transpiler.column_projection import (
+                project_multi_schema_for_query,
+            )
+
+            projected = project_multi_schema_for_query(sql, multi)
+            if len(projected) == 1:
+                one = next(iter(projected.values()))
+                if not isinstance(one, dict):
+                    raise TypeError("projected schema entry is not a column map")
+                flat_schema = {str(k): str(v) for k, v in one.items()}
+            else:
+                flat_schema = {str(k): str(v) for k, v in flat.items()}
+        else:
+            projected = project_schema_for_query(sql, flat)
+            flat_schema = {str(k): str(v) for k, v in projected.items()}
+        spec_rs = transpile_sql_to_verus(
+            sql,
+            projected if multi else flat_schema,
+            enable_templates=enable_templates(),
+        )
+        return spec_rs, flat_schema, None
+    except Exception as exc:  # noqa: BLE001
+        return None, None, str(exc)
+
+
+def _parse_scalar_result(stdout: str) -> tuple[int | None, str | None]:
+    if any(m in stdout for m in _OPAQUE_MARKERS):
+        return None, "product printer does not dump full rows"
+    m = _RESULT_SCALAR.search(stdout)
+    if not m:
+        return None, "no RESULT: <integer> line in stdout"
+    return int(m.group(1)), None
+
+
+def shell_run_query(body: str, ret_type: str, spec_rs: str) -> str:
+    """Wrap an interior body in the host ``run_query`` shell.
+
+    The candidate file is only the function interior. Assembly pastes a full
+    ``pub exec fn``, so the requires/ensures stay outside the admitted body.
+    """
+    return build_exec_run_query_from_body(body, ret_type, method_spec_rs=spec_rs)
+
+
+def _exec_verified_scalar(
+    *,
+    work_dir: Path,
+    sql: str,
+    schema_dict: dict[str, str],
+    run_query_body: str,
+    spec_rs: str,
+    ret_type: str,
+    tbl_path: Path,
+    row_count: int,
+) -> dict[str, Any]:
+    if resolve_verus_bin() is None:
+        return {
+            "status": "exec_fail",
+            "significant": False,
+            "reason": "verus binary not found",
+        }
+    rs_path = str(work_dir / "adversary_query.rs")
+    write_unified_program(
+        rs_path=rs_path,
+        sql=sql,
+        schema=schema_dict,
+        runquery_body=shell_run_query(run_query_body, ret_type, spec_rs),
+        ret_type=ret_type,
+        default_tbl=str(tbl_path),
+        workload="adversary",
+        query_key="adv",
+    )
+    verify_timeout = int(os.environ.get("VERUS_VERIFY_TIMEOUT_SEC", "120"))
+    compile_timeout = int(os.environ.get("COMPILE_TIMEOUT_SEC", "180"))
+    proof_ok, verify_msg = run_verus_verify(rs_path, verify_timeout)
+    if not proof_ok:
+        return {
+            "status": "impl_does_not_fit_spec",
+            "significant": False,
+            "proof_verified": False,
+            "verify_msg": verify_msg[:2000],
+        }
+    compile_ok, compile_msg, binary = run_verus_compile(rs_path, compile_timeout)
+    if not compile_ok or not binary:
+        return {
+            "status": "exec_fail",
+            "significant": False,
+            "proof_verified": True,
+            "compile_msg": compile_msg[:2000],
+        }
+    limit = max(row_count, 1)
+    try:
+        proc = subprocess.run(
+            [binary, str(tbl_path), str(limit)],
+            capture_output=True,
+            text=True,
+            timeout=int(os.environ.get("LEMMA_BENCH_TIMEOUT_SEC", "120")),
+            cwd=str(work_dir),
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "status": "exec_fail",
+            "significant": False,
+            "proof_verified": True,
+            "reason": "binary timed out",
+        }
+    stdout = proc.stdout or ""
+    if proc.returncode != 0:
+        return {
+            "status": "exec_fail",
+            "significant": False,
+            "proof_verified": True,
+            "stderr": (proc.stderr or "")[:2000],
+        }
+    scalar, opaque_reason = _parse_scalar_result(stdout)
+    if opaque_reason:
+        return {
+            "status": "opaque_exec_result",
+            "significant": False,
+            "reason": opaque_reason,
+            "proof_verified": True,
+            "stdout": stdout[:500],
+        }
+    return {
+        "status": "exec_ok",
+        "proof_verified": True,
+        "impl_rows": [(scalar,)],
+        "stdout": stdout[:500],
+    }
+
+
+def judge_candidate(
+    candidate: Candidate,
+    *,
+    config: str = "hardware",
+    verify: bool = False,
+    work_dir: Path | None = None,
+) -> dict[str, Any]:
+    with apply_trust_config(config):
+        admit = admit_runquery_body(candidate.run_query_body)
+        if not admit.ok:
+            return {
+                "status": "rejected",
+                "significant": False,
+                "violations": admit.violations,
+                "config": config,
+            }
+
+        spec_rs, schema_dict, transpile_err = _transpile(candidate.sql, candidate.schema)
+        if transpile_err or spec_rs is None or schema_dict is None:
+            return {
+                "status": "transpile_fail",
+                "significant": False,
+                "error": transpile_err or "transpile failed",
+                "config": config,
+            }
+
+        duck_rows, duck_error = _run_duckdb(candidate.sql, candidate.schema, candidate.rows)
+
+        base: dict[str, Any] = {
+            "config": config,
+            "sql": candidate.sql,
+            "duck_rows": duck_rows,
+            "duck_error": duck_error,
+        }
+
+        if not verify:
+            return {
+                **base,
+                "status": "unchecked_exec",
+                "significant": False,
+                "spec_rs": spec_rs[:_SPEC_TRUNC],
+            }
+
+        if len(candidate.rows) != 1:
+            return {
+                **base,
+                "status": "exec_unsupported",
+                "significant": False,
+                "reason": "verify path supports a single table only",
+            }
+
+        try:
+            ret_type = resolve_ret_type_from_method_spec(spec_rs)
+        except ValueError as exc:
+            return {
+                **base,
+                "status": "exec_unsupported",
+                "significant": False,
+                "reason": str(exc),
+            }
+
+        if ret_type not in _SCALAR_RET:
+            return {
+                **base,
+                "status": "exec_unsupported",
+                "significant": False,
+                "reason": f"verify path supports scalar u64/i64 only, got {ret_type!r}",
+            }
+
+        table_name = next(iter(candidate.rows.keys()))
+        tables = _schema_tables(candidate.schema)
+        if table_name not in tables:
+            return {
+                **base,
+                "status": "exec_unsupported",
+                "significant": False,
+                "reason": f"rows table {table_name!r} not in schema",
+            }
+
+        col_types = tables[table_name]
+        schema_for_load = schema_dict
+        if set(schema_for_load.keys()) != set(col_types.keys()):
+            schema_for_load = {c: col_types[c] for c in col_types if c in schema_for_load or c in col_types}
+
+        def _run_exec(root: Path) -> dict[str, Any]:
+            tbl_path = root / f"{table_name}.tbl"
+            n = _write_tbl(tbl_path, table_name, col_types, candidate.rows[table_name])
+            return _exec_verified_scalar(
+                work_dir=root,
+                sql=candidate.sql,
+                schema_dict=schema_for_load,
+                run_query_body=candidate.run_query_body,
+                spec_rs=spec_rs,
+                ret_type=ret_type,
+                tbl_path=tbl_path,
+                row_count=n,
+            )
+
+        if work_dir is not None:
+            exec_res = _run_exec(work_dir)
+        else:
+            with tempfile.TemporaryDirectory(prefix="lemma_adversary_") as tmp_name:
+                exec_res = _run_exec(Path(tmp_name))
+
+        status = exec_res.get("status")
+        if status != "exec_ok":
+            out = {**base, **exec_res}
+            out.setdefault("significant", False)
+            return out
+
+        impl_rows = exec_res["impl_rows"]
+        verdict = classify_difference(
+            candidate.sql,
+            impl_rows,
+            duck_rows,
+            duck_error=duck_error,
+        )
+        proof_verified = bool(exec_res.get("proof_verified"))
+        significant = verdict.significant and proof_verified
+        final_status = "hole" if significant else "no_difference"
+
+        return {
+            **base,
+            **exec_res,
+            "status": final_status,
+            "significant": significant,
+            "reason": verdict.reason,
+            "impl_rows": impl_rows,
+        }

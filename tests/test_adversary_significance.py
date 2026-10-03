@@ -1,0 +1,132 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from research_loop.admit_runquery import admit_runquery_body
+from research_loop.adversary.candidate import load_candidate
+from research_loop.adversary.significance import (
+    classify_difference,
+    sql_demands_order,
+)
+
+
+def test_order_swap_without_order_by_not_significant() -> None:
+    sql = "SELECT a, b FROM t"
+    v = classify_difference(sql, [(1, 2), (3, 4)], [(3, 4), (1, 2)])
+    assert not v.significant
+    assert v.reason == "same_multiset"
+
+
+def test_order_swap_with_order_by_significant() -> None:
+    sql = "SELECT a, b FROM t ORDER BY a"
+    v = classify_difference(sql, [(1, 2), (3, 4)], [(3, 4), (1, 2)])
+    assert v.significant
+    assert v.reason == "order"
+
+
+def test_order_by_inside_string_not_demanded() -> None:
+    sql = "SELECT a FROM t WHERE b = 'ORDER BY x'"
+    assert not sql_demands_order(sql)
+
+
+def test_limit_without_order_different_rows_not_significant() -> None:
+    sql = "SELECT a FROM t LIMIT 5"
+    v = classify_difference(sql, [(1,)], [(2,)])
+    assert not v.significant
+    assert v.reason == "limit_without_order"
+
+
+def test_empty_sum_zero_vs_null_significant() -> None:
+    sql = "SELECT SUM(a) FROM t"
+    v = classify_difference(sql, [(0,)], [(None,)])
+    assert v.significant
+    assert v.reason == "multiset"
+
+
+def test_u64_wrap_significant() -> None:
+    sql = "SELECT SUM(a) FROM t"
+    v = classify_difference(sql, [(0,)], [(2**64,)])
+    assert v.significant
+    assert v.reason == "multiset"
+
+
+def test_identical_multiset_different_order_not_significant() -> None:
+    sql = "SELECT x FROM t"
+    v = classify_difference(sql, [(1,), (2,)], [(2,), (1,)])
+    assert not v.significant
+
+
+def test_error_vs_value_significant() -> None:
+    v = classify_difference("SELECT 1", None, [(1,)], impl_error="boom")
+    assert v.significant
+    assert v.reason == "error_vs_value"
+
+
+def test_both_errors_not_significant() -> None:
+    v = classify_difference(
+        "SELECT 1", None, None, impl_error="a", duck_error="b"
+    )
+    assert not v.significant
+    assert v.reason == "both_error"
+
+
+def test_candidate_rejects_extra_key(tmp_path: Path) -> None:
+    p = tmp_path / "c.json"
+    p.write_text(
+        json.dumps(
+            {
+                "sql": "SELECT 1",
+                "schema": {"a": "INTEGER"},
+                "rows": {"t": []},
+                "run_query_body": "0u64",
+                "extra": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="unexpected JSON keys"):
+        load_candidate(p)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "#[verifier::external_body]\n0u64",
+        "assume(false);\n0u64",
+        "arbitrary()\n",
+        "unimplemented!()",
+    ],
+)
+def test_candidate_rejects_forbidden_body(tmp_path: Path, body: str) -> None:
+    p = tmp_path / "c.json"
+    p.write_text(
+        json.dumps(
+            {
+                "sql": "SELECT 1",
+                "schema": {"a": "INTEGER"},
+                "rows": {"t": []},
+                "run_query_body": body,
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError):
+        load_candidate(p)
+
+
+def test_admit_also_rejects_external_body() -> None:
+    res = admit_runquery_body("#[verifier::external_body]\n0u64")
+    assert not res.ok
+
+
+def test_shell_wraps_interior_as_run_query() -> None:
+    from research_loop.adversary.judge import shell_run_query
+
+    text = shell_run_query("let mut res: u64 = 0;\nres\n", "u64", None)
+    assert "pub exec fn run_query" in text
+    assert "ensures res ==" in text
+    assert "let mut res: u64 = 0;" in text
+    assert "fn helper" not in text
