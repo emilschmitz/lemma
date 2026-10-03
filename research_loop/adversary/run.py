@@ -1,9 +1,9 @@
 """Adversary runner: Grok in a write-only folder, host judges candidate.json.
 
 The agent may read the repo and use the web. Its workspace is only the output
-folder. ``agent sandbox run --network`` makes the repo and the Verus binary
-read-only for that process. After it exits, the host hashes the repo and Verus
-again and discards the run if they changed.
+folder. Nesting ``agent sandbox run`` freezes ``.cursor`` and the CLI cannot
+start, so the process is the CLI's own ``--sandbox enabled``. After it exits,
+the host hashes the repo and Verus again and discards the run if they changed.
 
 On a GCP VM run the same module; set ``ADVERSARY_TIMEOUT_SEC``. No Docker.
 """
@@ -13,7 +13,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shlex
 import shutil
 import subprocess
 import sys
@@ -51,15 +50,14 @@ def _prompt_text(*, config_name: str, repo_path: Path, write_dir: Path) -> str:
 
 
 def agent_argv(write_dir: Path, repo_path: Path, prompt: str) -> list[str]:
-    """Sandbox the agent: network on, repo read-only, writes only in ``write_dir``."""
+    """Run the CLI directly.
+
+    ``agent sandbox run`` freezes every ``.cursor`` directory, and the CLI
+    cannot start without writing one. The host hash after the run is what
+    discards a tampered repo. ``--sandbox enabled`` is the tool sandbox.
+    """
     agent = shutil.which("agent") or "agent"
     return [
-        agent,
-        "sandbox",
-        "run",
-        "--network",
-        f"--allow-paths={write_dir}",
-        f"--readonly-paths={repo_path}",
         agent,
         "-p",
         "--trust",
@@ -67,11 +65,13 @@ def agent_argv(write_dir: Path, repo_path: Path, prompt: str) -> list[str]:
         "enabled",
         "--workspace",
         str(write_dir),
+        "--add-dir",
+        str(repo_path),
         "--model",
         "grok-4.7-high",
         "--output-format",
         "text",
-        shlex.quote(prompt),
+        prompt,
     ]
 
 

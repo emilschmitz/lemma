@@ -31,33 +31,33 @@ def test_prompt_allows_read_and_web_and_forbids_tamper(tmp_path: Path) -> None:
     assert str(tmp_path / "candidate.json") in text
 
 
-def test_prompt_with_spaces_survives_shell_join(tmp_path: Path) -> None:
-    import shlex
-
+def test_prompt_with_spaces_is_one_argument(tmp_path: Path) -> None:
     prompt = "hunt `run_query` and **holes**"
     argv = agent_argv(tmp_path, Path("/repo"), prompt)
-    assert shlex.split(" ".join(argv))[-1] == prompt
+    assert argv[-1] == prompt
+    assert argv.count(prompt) == 1
 
 
-def test_prompt_with_quote_survives_shell_join(tmp_path: Path) -> None:
-    import shlex
-
+def test_prompt_with_quote_is_one_argument(tmp_path: Path) -> None:
     prompt = "don't split this prompt"
     argv = agent_argv(tmp_path, Path("/repo"), prompt)
-    assert shlex.split(" ".join(argv))[-1] == prompt
+    assert argv[-1] == prompt
+
+
+def test_sandbox_can_write_its_cursor_project_dir(tmp_path: Path) -> None:
+    argv = agent_argv(tmp_path, Path("/repo"), "prompt")
+    assert "sandbox" not in argv
+    assert argv[argv.index("--workspace") + 1] == str(tmp_path)
 
 
 def test_agent_command_sandboxes_writes_and_allows_network(tmp_path: Path) -> None:
     argv = agent_argv(tmp_path, Path("/repo"), "prompt")
-    assert "sandbox" in argv
-    assert "run" in argv
-    assert "--network" in argv
-    assert f"--allow-paths={tmp_path}" in argv
-    assert "--readonly-paths=/repo" in argv
-    assert "--sandbox" in argv
-    assert "enabled" in argv
+    assert argv[1:6] == ["-p", "--trust", "--sandbox", "enabled", "--workspace"]
+    assert "--add-dir" in argv
+    assert argv[argv.index("--add-dir") + 1] == "/repo"
+    assert "--model" in argv
+    assert "grok-4.7-high" in argv
     assert "--force" not in argv
-    assert "--workspace" in argv
     assert str(tmp_path) in argv
 
 
