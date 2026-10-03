@@ -34,7 +34,9 @@ def test_key_cap_emitted_only_when_column_is_bounded() -> None:
     assert "pub const KEY_CAP_t_k: usize = 32;" in capped
     assert "KEY_CAP_t_k" not in open_ended
     assert "lemma_index_key_below_cap" in capped
+    assert "lemma_dense_count_map" in capped
     assert "lemma_index_key_below_cap" not in open_ended
+    assert "lemma_dense_count_map" not in open_ended
 
 
 def test_key_bound_lemma_names_the_column_for_two_schemas() -> None:
@@ -91,7 +93,8 @@ def test_key_bound_lemma_verifies_for_two_domains(tmp_path: Path) -> None:
     verus = Path("/home/emil/tools/verus/verus")
     for sql, schema, catalog in cases:
         spec = emit_declarative_spec(sql, schema, catalog)
-        cut = spec.index("pub open spec fn group_count")
+        assert "pub proof fn lemma_dense_count_map(" in spec
+        cut = spec.index("// HOST_LEMMAS_START")
         src = spec[:cut].rstrip() + "\n}\n\nfn main() {}\n"
         path = tmp_path / f"{next(iter(schema))}.rs"
         path.write_text(src)

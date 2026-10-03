@@ -330,6 +330,65 @@ pub proof fn lemma_index_key_below_cap(cols: &{struct}, i: int)
 """.strip()
 
 
+def _emit_dense_count_map_lemma(*, key_ty: str) -> str:
+    """The final map condition, once the dense count vector and the nonzero copy are in hand."""
+    return f"""
+pub proof fn lemma_dense_count_map(
+    keys: Seq<{key_ty}>,
+    counts: Seq<{key_ty}>,
+    map: Map<{key_ty}, {key_ty}>,
+    key_cap: int,
+)
+    requires
+        0 <= key_cap,
+        counts.len() == key_cap,
+        forall|j: int| 0 <= j < keys.len() ==> {{
+            &&& 0 <= (#[trigger] keys[j] as int)
+            &&& (keys[j] as int) < key_cap
+        }},
+        forall|kk: int| 0 <= kk < key_cap ==> counts[kk] as int == group_count(keys, 0, kk as {key_ty}),
+        forall|k: {key_ty}| #[trigger] map.contains_key(k) ==> {{
+            &&& (k as int) < key_cap
+            &&& map[k] == counts[k as int]
+            &&& counts[k as int] > 0
+        }},
+        forall|kk: int| 0 <= kk < key_cap && counts[kk] > 0 ==> #[trigger] map.contains_key(kk as {key_ty}),
+    ensures
+        forall|k: {key_ty}| #[trigger] map.contains_key(k) <==> (exists|j: int|
+            0 <= j < keys.len() && keys[j] == k),
+        forall|k: {key_ty}| #[trigger] map.contains_key(k) ==> map[k] as int == group_count(keys, 0, k),
+{{
+    assert forall|k: {key_ty}|
+        #[trigger] map.contains_key(k) <==> (exists|j: int| 0 <= j < keys.len() && keys[j] == k)
+    by {{
+        if map.contains_key(k) {{
+            assert(counts[k as int] as int == group_count(keys, 0, k));
+            assert(counts[k as int] > 0);
+            lemma_group_count_witness(keys, 0, k);
+        }}
+        if exists|j: int| 0 <= j < keys.len() && keys[j] == k {{
+            let j = choose|j: int| 0 <= j < keys.len() && keys[j] == k;
+            assert(keys[j] == k);
+            assert(0 <= (keys[j] as int) && (keys[j] as int) < key_cap);
+            assert((k as int) == (keys[j] as int));
+            lemma_group_count_witness(keys, 0, k);
+            assert(group_count(keys, 0, k) > 0);
+            assert(counts[k as int] > 0);
+            assert(map.contains_key(k));
+        }}
+    }};
+    assert forall|k: {key_ty}|
+        #[trigger] map.contains_key(k) ==> map[k] as int == group_count(keys, 0, k)
+    by {{
+        if map.contains_key(k) {{
+            assert(map[k] == counts[k as int]);
+            assert(counts[k as int] as int == group_count(keys, 0, k));
+        }}
+    }};
+}}
+""".strip()
+
+
 def _emit_valid_cols(struct: str, table: str, fields: list[tuple[str, str, ColumnTypeInfo]], row_cap_name: str, ctx: _EmitCtx) -> str:
     lines = [f"pub open spec fn valid_cols_{rust_ident(table)}(cols: &{struct}) -> bool {{"]
     conj: list[str] = [f"cols.n as int <= {row_cap_name}"]
@@ -496,8 +555,11 @@ def _emit_count(parsed: ParsedQuery, model: SchemaModel, ctx: _EmitCtx) -> str:
         struct_lines.append(f"    pub {field}: Vec<{info.exec_rust}>,")
     struct_lines.append("}")
 
+    dense_map_lemma = ""
     bound_lemma = ""
     if key_cap_name is not None and key_inclusive is not None and not ginfo_exec.signed:
+        if ginfo_exec.exec_rust == "u64":
+            dense_map_lemma = _emit_dense_count_map_lemma(key_ty="u64")
         bound_lemma = _emit_key_bound_lemma(
             struct=struct,
             valid_fn=f"valid_cols_{rust_ident(t_orig)}",
@@ -517,6 +579,8 @@ def _emit_count(parsed: ParsedQuery, model: SchemaModel, ctx: _EmitCtx) -> str:
         bound_lemma,
         "",
         count_block,
+        "",
+        dense_map_lemma,
         "",
         _host_lemma_region(),
         "",

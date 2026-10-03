@@ -15,6 +15,11 @@ def lemma_index_markdown() -> str:
         ("- `lemma_i128_add_fits(a: i128, b: i128)` with the corresponding i128 min/max requires. "
         "An i128 add equals the mathematical add when the sum fits in i128."),
         "",
+        ("- `lemma_dense_count_map(keys, counts, map, key_cap)`, when this spec defines it. "
+        "Once every slot of `counts` equals `group_count(keys, 0, k)` and `map` holds exactly "
+        "the nonzero slots, the map meets the `ensures`. Call it after the copy loop. "
+        "Pass `KEY_CAP_... as int`."),
+        "",
         ("- `lemma_index_key_below_cap(cols, i: int)`, when this spec defines it. "
         "Requires `valid_cols_...(cols)` and `0 <= i < cols.n as int`. "
         "Ensures the loaded key at `i` is `>= 0` and `< KEY_CAP_...`. "
