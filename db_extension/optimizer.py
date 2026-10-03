@@ -656,6 +656,7 @@ def run_optimization_loop(
     schema: dict | None = None,
     workload_tables: dict | None = None,
     workload: str | None = None,
+    catalog_assumptions=None,
 ) -> dict:
     """
     Runs the query optimization loop (schema-driven Verus). Prints step-by-step colored output.
@@ -729,7 +730,11 @@ def run_optimization_loop(
         result = run_declarative_optimization_loop(
             sql_query=sql_query,
             resolved_schema=resolved_schema,
-            catalog=catalog_assumptions_for_workload(workload),
+            catalog=(
+                catalog_assumptions
+                if catalog_assumptions is not None
+                else catalog_assumptions_for_workload(workload)
+            ),
             dataset_size=dataset_size,
             max_iterations=max_iterations,
             use_mock=use_mock,

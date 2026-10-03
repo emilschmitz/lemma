@@ -130,6 +130,10 @@ class _EmitCtx:
         self.consts.append(_emit_open_spec_int(name, value))
         return name
 
+    def add_exec_const(self, name: str, value: int) -> str:
+        self.consts.append(f"pub const {name}: usize = {value};")
+        return name
+
 
 def _emit_group_count_block(*, seq_ty: str, key_ty: str, elem: str) -> str:
     """`elem` is the spec expression for keys[i] compared to k (e.g. keys[i] or keys[i]@)."""
@@ -435,6 +439,13 @@ def _emit_count(parsed: ParsedQuery, model: SchemaModel, ctx: _EmitCtx) -> str:
         raise DeclarativeUnsupported("mixed group key types")
     if len(group_meta) != 1:
         raise DeclarativeUnsupported("multi-column GROUP BY not yet emitted in count path")
+    from research_loop.table_assumptions import column_assumption_exclusive
+
+    _gfield, gcol, gkind0_early = group_meta[0]
+    if gkind0_early != KeyKind.STRING:
+        exclusive = column_assumption_exclusive(gcol, _lookup_table_assumptions(ctx.catalog, t_orig))
+        if exclusive is not None and exclusive > 0:
+            ctx.add_exec_const(_cap_const_name("KEY_CAP", t_orig, gcol), exclusive)
     ginfo_exec = next(info for _c, f, info in fields if f == group_meta[0][0])
     if key_kinds[0] == KeyKind.STRING:
         map_ty = f"StringHashMap<{value_ty}>"

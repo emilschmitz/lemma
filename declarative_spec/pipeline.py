@@ -156,6 +156,7 @@ def compile_and_run(
         "latency_us": latency,
         "compiler_error": "",
         "verify_msg": log[-2000:],
+        "stdout": run.stdout or "",
     }
 
 
@@ -170,12 +171,46 @@ def extract_agent_edit(source: str) -> str:
     return normalized[start:end].strip()
 
 
+def _apply_speed_bar(metrics: dict, speed_bar: dict | None) -> dict:
+    if speed_bar is None or metrics.get("status") != "SUCCESS":
+        return metrics
+    from declarative_spec.bench import rows_from_stdout
+
+    got = rows_from_stdout(str(metrics.get("stdout") or ""))
+    expect = [(int(k), int(v)) for k, v in speed_bar["rows"]]
+    duck_us = int(speed_bar["duck_us"])
+    latency = int(metrics.get("latency_us", -1))
+    if got != expect:
+        return {
+            **metrics,
+            "status": "FAILURE",
+            "duck_us": duck_us,
+            "compiler_error": (
+                f"proved but result rows differ from the loaded table "
+                f"(got {len(got)} groups, expected {len(expect)})"
+            ),
+        }
+    if latency < 0 or latency >= duck_us:
+        return {
+            **metrics,
+            "status": "FAILURE",
+            "duck_us": duck_us,
+            "compiler_error": (
+                f"proved but slower than DuckDB: query {latency} us, DuckDB {duck_us} us. "
+                "Count in a Vec of KEY_CAP slots. A HashMap update on every row loses."
+            ),
+        }
+    return {**metrics, "duck_us": duck_us}
+
+
 def run_declarative_metrics(
     *,
     spec_rs: str,
     agent_source: str,
     work_dir: Path | None = None,
     timeout_sec: int = 300,
+    column_bins: dict[str, str] | None = None,
+    speed_bar: dict | None = None,
 ) -> dict:
     """Admit the agent edit, assemble, compile, and run."""
     from declarative_spec.admit import admit_declarative_body
@@ -202,7 +237,7 @@ def run_declarative_metrics(
             "compiler_error": "; ".join(admission.violations),
         }
     try:
-        assembled = assemble_declarative_program(spec_rs, body)
+        assembled = assemble_declarative_program(spec_rs, body, column_bins=column_bins)
     except ValueError as exc:
         return {
             "status": "FAILURE",
@@ -210,4 +245,5 @@ def run_declarative_metrics(
             "latency_us": -1,
             "compiler_error": str(exc),
         }
-    return compile_and_run(assembled, work_dir=work_dir, timeout_sec=timeout_sec)
+    metrics = compile_and_run(assembled, work_dir=work_dir, timeout_sec=timeout_sec)
+    return _apply_speed_bar(metrics, speed_bar)

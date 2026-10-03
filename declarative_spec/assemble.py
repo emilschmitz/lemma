@@ -4,8 +4,23 @@ from __future__ import annotations
 
 import re
 
+_WIDTH = {
+    "u64": 8,
+    "i64": 8,
+    "u32": 4,
+    "i32": 4,
+    "usize": 8,
+    "i128": 16,
+    "f64": 8,
+}
 
-def assemble_declarative_program(spec_rs: str, agent_body: str) -> str:
+
+def assemble_declarative_program(
+    spec_rs: str,
+    agent_body: str,
+    *,
+    column_bins: dict[str, str] | None = None,
+) -> str:
     start = spec_rs.find("// AGENT_EDIT_START")
     end = spec_rs.find("// AGENT_EDIT_END")
     if start == -1 or end == -1 or end < start:
@@ -59,7 +74,14 @@ def assemble_declarative_program(spec_rs: str, agent_body: str) -> str:
         params = ", ".join(param_parts)
         struct_fields = [f"n: n_{table_suffix}"] + [f"{fname}: {table_suffix}_{fname}" for fname, _ in fields]
         fn_name = f"load_cols_{table_suffix}"
-        zero_args = ", ".join("0" if i == 0 else "vec![]" for i in range(len(param_parts)))
+        if column_bins is None:
+            prelude = ""
+            call_args = ", ".join("0" if i == 0 else "vec![]" for i in range(len(param_parts)))
+        else:
+            bin_path = column_bins.get(table_suffix)
+            if not bin_path:
+                raise ValueError(f"no column file for {table_suffix}")
+            prelude, call_args = _read_column_prelude(bin_path, table_suffix, fields)
         loaders.append(
             f"""#[verifier::external_body]
 fn {fn_name}({params}) -> (cols: {struct_name})
@@ -70,7 +92,7 @@ fn {fn_name}({params}) -> (cols: {struct_name})
 }}"""
         )
         col_var = f"cols_{table_suffix}"
-        mains_load.append(f"    let {col_var} = {fn_name}({zero_args});")
+        mains_load.append(f"{prelude}    let {col_var} = {fn_name}({call_args});")
         mains_args.append(f"&{col_var}")
 
     if len(mains_args) == 1:
@@ -80,14 +102,18 @@ fn {fn_name}({params}) -> (cols: {struct_name})
     else:
         run_call = "run_query()"
 
-    main_fn = "fn main() {\n"
-    main_fn += "\n".join(mains_load) + "\n"
-    main_fn += f"""    let start = std::time::Instant::now();
+    if column_bins is None:
+        timed = f"""    let start = std::time::Instant::now();
     let _res = {run_call};
     let elapsed = start.elapsed();
     println!("QUERY_LATENCY_US: {{}}", elapsed.as_micros());
-}}
 """
+    else:
+        timed = _timed_runs(run_call, verus_part)
+    main_fn = "fn main() {\n"
+    main_fn += "\n".join(mains_load) + "\n"
+    main_fn += timed
+    main_fn += "}\n"
 
     # Loaders carry `ensures valid_cols`, so they stay inside verus!.
     # main is outside the timer and outside the verus block.
@@ -96,3 +122,73 @@ fn {fn_name}({params}) -> (cols: {struct_name})
         raise ValueError("verus block did not end at '}'")
     verus_with_loaders = closed[:-1] + "\n" + "\n\n".join(loaders) + "\n}\n"
     return verus_with_loaders + "\n" + main_fn
+
+
+def _from_le(fty: str, bytes_var: str, off: str) -> str:
+    width = _WIDTH[fty]
+    return f"{fty}::from_le_bytes({bytes_var}[{off}..{off} + {width}].try_into().unwrap())"
+
+
+def _read_column_prelude(path: str, suffix: str, fields: list[tuple[str, str]]) -> tuple[str, str]:
+    lines = [
+        f'    let bytes_{suffix} = std::fs::read("{path}").expect("cols");',
+        f"    let n_{suffix} = u64::from_le_bytes(bytes_{suffix}[0..8].try_into().unwrap()) as usize;",
+        f"    let mut off_{suffix}: usize = 8;",
+    ]
+    args = [f"n_{suffix}"]
+    for fname, fty in fields:
+        if fty not in _WIDTH:
+            raise ValueError(f"cannot load column type {fty}")
+        var = f"{suffix}_{fname}"
+        width = _WIDTH[fty]
+        lines.append(f"    let mut {var}: Vec<{fty}> = Vec::with_capacity(n_{suffix});")
+        lines.append(f"    let mut j_{var}: usize = 0;")
+        lines.append(f"    while j_{var} < n_{suffix} {{")
+        lines.append(f"        let v_{var} = {_from_le(fty, f'bytes_{suffix}', f'off_{suffix}')};")
+        lines.append(f"        {var}.push(v_{var});")
+        lines.append(f"        off_{suffix} += {width};")
+        lines.append(f"        j_{var} += 1;")
+        lines.append("    }")
+        args.append(var)
+    return "\n".join(lines) + "\n", ", ".join(args)
+
+
+def _timed_runs(run_call: str, verus_part: str) -> str:
+    caps = re.findall(r"pub const (KEY_CAP_[A-Za-z0-9_]+): usize", verus_part)
+    dump = ""
+    if len(caps) == 1 and "HashMapWithView<u64, u64>" in verus_part:
+        cap = caps[0]
+        dump = f"""        if s == 4 {{
+            let mut key: u64 = 0;
+            while key < {cap} as u64 {{
+                match res.get(&key) {{
+                    Some(v) => println!("ROW {{}} {{}}", key, *v),
+                    None => {{}}
+                }}
+                key += 1;
+            }}
+        }}
+"""
+    return f"""    let mut samples: [u128; 5] = [0, 0, 0, 0, 0];
+    let mut s: usize = 0;
+    while s < 5 {{
+        let start = std::time::Instant::now();
+        let res = {run_call};
+        samples[s] = start.elapsed().as_micros();
+{dump}        s = s + 1;
+    }}
+    let mut a: usize = 0;
+    while a < 5 {{
+        let mut b: usize = a + 1;
+        while b < 5 {{
+            if samples[b] < samples[a] {{
+                let tmp = samples[a];
+                samples[a] = samples[b];
+                samples[b] = tmp;
+            }}
+            b = b + 1;
+        }}
+        a = a + 1;
+    }}
+    println!("QUERY_LATENCY_US: {{}}", samples[2]);
+"""

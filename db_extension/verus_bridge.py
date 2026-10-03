@@ -427,10 +427,20 @@ def _invoke_declarative_pipeline(
         )
     if not agent_source:
         agent_source = spec_rs
+    column_bins = None
+    speed_bar = None
+    if runquery_path is not None:
+        from declarative_spec.bench import load_speed_bar
+
+        loaded = load_speed_bar(runquery_path.parent / "decl_data")
+        if loaded is not None:
+            column_bins, speed_bar = loaded
     metrics = run_declarative_metrics(
         spec_rs=spec_rs,
         agent_source=agent_source,
         work_dir=work_dir,
+        column_bins=column_bins,
+        speed_bar=speed_bar,
     )
     return normalize_harness_metrics(metrics)
 

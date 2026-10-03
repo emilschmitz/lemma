@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from declarative_spec.admit import admit_declarative_body
@@ -11,6 +12,27 @@ from declarative_spec.lemma_index import lemma_index_markdown
 from declarative_spec.lemmas import FitRefusal
 from declarative_spec.pipeline import extract_agent_edit, run_declarative_metrics
 from declarative_spec.prompt import build_declarative_prompt
+
+
+def _maybe_large_table(*, sql_query: str, catalog, workspace: Path) -> tuple[dict[str, str] | None, dict | None]:
+    raw = os.environ.get("LEMMA_DECL_ROWS", "").strip()
+    if not raw:
+        return None, None
+    from research_loop.decl_columns import write_group_count_measure
+
+    n = int(raw)
+    seed = int(os.environ.get("LEMMA_DECL_SEED", "1") or "1")
+    prepared = write_group_count_measure(
+        sql=sql_query,
+        catalog=catalog,
+        n=n,
+        seed=seed,
+        dest=workspace / "decl_data",
+    )
+    return {prepared["suffix"]: prepared["bin"]}, {
+        "duck_us": prepared["duck_us"],
+        "rows": prepared["rows"],
+    }
 
 
 def _extract_agent_edit_region(source: str) -> str:
@@ -67,6 +89,20 @@ def run_declarative_optimization_loop(
     last_error = ""
     proof_verified = False
     lemma_index = lemma_index_markdown()
+    try:
+        column_bins, speed_bar = _maybe_large_table(
+            sql_query=sql_query,
+            catalog=catalog,
+            workspace=workspace,
+        )
+    except (DeclarativeUnsupported, FitRefusal, ValueError, OSError) as exc:
+        return {
+            "status": "FAILED",
+            "best_latency_us": -1,
+            "error": str(exc),
+            "history": [],
+            "proof_verified": False,
+        }
 
     for iteration in range(1, max_iterations + 1):
         iter_record: dict = {"iteration": iteration}
@@ -130,6 +166,8 @@ def run_declarative_optimization_loop(
             spec_rs=spec,
             agent_source=agent_source,
             work_dir=workspace / "declarative_build",
+            column_bins=column_bins,
+            speed_bar=speed_bar,
         )
         iter_record["verus_ok"] = metrics.get("status") == "SUCCESS"
         iter_record["proof_verified"] = bool(metrics.get("proof_verified"))
@@ -144,6 +182,7 @@ def run_declarative_optimization_loop(
             return {
                 "status": "SUCCESS",
                 "best_latency_us": latency,
+                "duck_us": metrics.get("duck_us"),
                 "best_iteration": iteration,
                 "history": history,
                 "error": "",
