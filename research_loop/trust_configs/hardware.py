@@ -1,4 +1,4 @@
-"""Hardware-close kernels / adversary bench config (not rocketship, not fast menu).
+"""Hardware menu: exact scalar SUM on the product transpiler (not the fast menu).
 
 Uses the product transpiler (``verus_transpiler``), not ``declarative_spec``; a
 declarative emitter would need its own trust config file.
@@ -12,10 +12,10 @@ CONFIG = TrustConfig(
     name="hardware",
     transpiler="product",
     note=(
-        "Adversary and speed_bench select this config. Same env as product "
-        "(fast trusteds off). Not rocketship and not the fast menu; new axioms "
-        "for hardware-close experiments go here rather than changing product "
-        "defaults. trust_configs is only a switch over existing flags."
+        "Hardware menu on the product transpiler. Scalar SUM is exact: "
+        "Option<u128>, None when no row matches, otherwise the mathematical "
+        "sum (no u64 wrap). Not the fast menu. LEMMA_EXACT_SUM is this menu's "
+        "switch; product leaves it unset."
     ),
     env={
         "LEMMA_FAST_TRUSTEDS": "0",
@@ -23,6 +23,7 @@ CONFIG = TrustConfig(
         "LEMMA_ENABLE_VECTOR_SCAN": "0",
         "LEMMA_ENABLE_SPILL_HASH": "0",
         "LEMMA_FOLD_SLOT_AXIOMATIC": "0",
+        "LEMMA_EXACT_SUM": "1",
     },
     assumption_package=None,
 )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 
 from research_loop.table_assumptions import (
@@ -443,6 +444,58 @@ def _method_spec_fn(ret_type: str, spec_body: str, extras: list[tuple[str, str, 
     recommends valid_cols(cols){extra_rec},
 {{
     {spec_body}
+}}"""
+
+
+def _exact_sum_step(rec: str, cond: str | None, term: str) -> str:
+    """Mathematical sum and match count. No ``as u64`` wrap."""
+    if cond:
+        return (
+            f"let (s, c) = {rec};\n"
+            f"        if {cond} {{\n"
+            f"            (s + ({term} as int), c + 1)\n"
+            f"        }} else {{\n"
+            f"            (s, c)\n"
+            f"        }}"
+        )
+    return (
+        f"let (s, c) = {rec};\n"
+        f"        (s + ({term} as int), c + 1)"
+    )
+
+
+def _build_exact_sum_helper(
+    func_name: str,
+    query: SQLQuery,
+    idx_var: str,
+    schema_dict: dict[str, str],
+    *,
+    extras: list[tuple[str, str, str]] | None = None,
+) -> str:
+    """Scalar SUM fold as ``(mathematical sum, matched rows)``."""
+    extras = extras or []
+    extra_sig = _extra_param_sig(extras)
+    extra_call = _extra_param_call(extras)
+    extra_rec = _extra_param_recommends(extras)
+    rec = f"{func_name}(cols{extra_call}, {idx_var} + 1)"
+    cond = (
+        spec_where_cond(to_col_expr(query.where_expr, idx_var), idx_var, schema_dict)
+        if query.where_expr
+        else None
+    )
+    term = spec_u64_term(query.agg_expr, idx_var)
+    step = _exact_sum_step(rec, cond, term)
+    return f"""pub open spec fn {func_name}(cols: &Cols{extra_sig}, {idx_var}: int) -> (int, int)
+    recommends
+        0 <= {idx_var} && {idx_var} <= cols.n,
+        valid_cols(cols){extra_rec},
+    decreases cols.n - {idx_var},
+{{
+    if {idx_var} < cols.n {{
+        {step}
+    }} else {{
+        (0, 0)
+    }}
 }}"""
 
 
@@ -1401,6 +1454,21 @@ def _emit_single_table_spec(
             )
         spec_fn = _method_spec_fn(ret_type, spec_body, extras)
         return all_helpers, spec_fn, ret_type
+
+    if (
+        os.environ.get("LEMMA_EXACT_SUM", "0") == "1"
+        and query.agg_type == "SUM"
+        and not query.groupby_columns
+    ):
+        helpers = _build_exact_sum_helper(
+            helper_name, query, "k", flat_schema, extras=extras,
+        )
+        spec_body = (
+            f"let (s, c) = {helper_name}(cols{extra_call}, 0);\n"
+            "    if c == 0 { None } else { Some(s as u128) }"
+        )
+        spec_fn = _method_spec_fn("Option<u128>", spec_body, extras)
+        return helpers, spec_fn, "Option<u128>"
 
     is_sum = query.agg_type in ("SUM", "MIN", "MAX")
     helpers = _build_col_helper(

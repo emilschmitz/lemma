@@ -34,6 +34,7 @@ def test_hardware_is_product_transpiler_not_fast() -> None:
     hw = get_config("hardware")
     assert hw.transpiler == "product"
     assert hw.env["LEMMA_FAST_TRUSTEDS"] == "0"
+    assert hw.env["LEMMA_EXACT_SUM"] == "1"
     assert hw.name == "hardware"
     assert "hardware" in hw.note.lower()
     assert hw.name != "fast"
