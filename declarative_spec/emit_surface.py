@@ -398,13 +398,23 @@ def _emit_agg(
         _emit_bound(blocks, name, ret, value, hit, main, params, key_ty, "min" if kind == "MIN" else "max")
         return _AggFn(alias, kind, name, ret, False, "bound", exec_ty)
     if kind == "COUNT":
-        _emit_fold(blocks, name, "int", "0int", f"if {hit} {{ 1int }} else {{ 0int }}", main, params, key_ty)
+        _emit_fold(
+            blocks,
+            name,
+            "int",
+            "0int",
+            f"if {hit} {{ 1int }} else {{ 0int }}",
+            main,
+            params,
+            key_ty,
+            unit_step=True,
+        )
         return _AggFn(alias, kind, name, "int", False, "fold", "u64")
     if kind == "COUNT_DISTINCT":
         value = _value_fn(blocks, f"{name}_val", agg, main, params, model, _value_ret(agg, main, model))
         later = _later(row_hit, key_at, value, main, params, key_ty)
         add = f"if {hit} && !({later}) {{ 1int }} else {{ 0int }}"
-        _emit_fold(blocks, name, "int", "0int", add, main, params, key_ty)
+        _emit_fold(blocks, name, "int", "0int", add, main, params, key_ty, unit_step=True)
         return _AggFn(alias, kind, name, "int", False, "fold", "u64")
     if kind == "SUM":
         value = _value_fn(blocks, f"{name}_val", agg, main, params, model, ret)
@@ -425,7 +435,17 @@ def _emit_agg(
         )
         add = f"if {hit} {{ {value}({_param_call(params)}, {_idx_call(main)}) }} else {{ 0real }}"
         _emit_fold(blocks, sum_name, "real", "0real", add, main, params, key_ty)
-        _emit_fold(blocks, cnt_name, "int", "0int", f"if {hit} {{ 1int }} else {{ 0int }}", main, params, key_ty)
+        _emit_fold(
+            blocks,
+            cnt_name,
+            "int",
+            "0int",
+            f"if {hit} {{ 1int }} else {{ 0int }}",
+            main,
+            params,
+            key_ty,
+            unit_step=True,
+        )
         _emit_avg_wrap(blocks, name, sum_name, cnt_name, params, key_ty, True)
         return _AggFn(alias, kind, name, "real", True, "fold", "f64")
     raise DeclarativeUnsupported(kind)
@@ -586,6 +606,42 @@ def _other_row(
     )
 
 
+def _unit_count_lemmas(
+    name: str,
+    add_expr: str,
+    slot: _Slot,
+    params: list[_Slot],
+    key_ty: str | None,
+) -> str:
+    """Proved bound and one-row equation for a 0/1 fold over one index."""
+    key_sig = f", k: {key_ty}" if key_ty else ""
+    key_call = ", k" if key_ty else ""
+    p_sig = _param_sig(params)
+    p_call = _param_call(params)
+    idx = slot.idx
+    limit = f"{slot.param}.n as int"
+    return f"""pub proof fn lemma_{name}_step({p_sig}, {idx}: int{key_sig})
+    requires
+        0 <= {idx} < {limit},
+    ensures
+        {name}({p_call}, {idx}{key_call}) == ({add_expr}) + {name}({p_call}, {idx} + 1{key_call}),
+{{
+}}
+
+pub proof fn lemma_{name}_bound({p_sig}, {idx}: int{key_sig})
+    requires
+        0 <= {idx} <= {limit},
+    ensures
+        0 <= {name}({p_call}, {idx}{key_call}) <= ({limit} - {idx}),
+    decreases {limit} - {idx},
+{{
+    if {idx} < {limit} {{
+        lemma_{name}_step({p_call}, {idx}{key_call});
+        lemma_{name}_bound({p_call}, {idx} + 1{key_call});
+    }}
+}}"""
+
+
 def _emit_fold(
     blocks: list[str],
     name: str,
@@ -595,6 +651,8 @@ def _emit_fold(
     main: list[_Slot],
     params: list[_Slot],
     key_ty: str | None,
+    *,
+    unit_step: bool = False,
 ) -> None:
     n = len(main)
     key_sig = f", k: {key_ty}" if key_ty else ""
@@ -632,6 +690,8 @@ def _emit_fold(
 }}"""
         )
     blocks.extend(chunks)
+    if unit_step and len(main) == 1 and ret == "int":
+        blocks.append(_unit_count_lemmas(name, add_expr, main[0], params, key_ty))
 
 
 def _emit_bound(
@@ -879,17 +939,18 @@ def _grouped_result(query: Query, helpers: _Helpers, scalars: dict[str, str]) ->
     having_of = _having(query, helpers, scalars, key_of)
     having_row = _having(query, helpers, scalars, key_out)
     agg_row = _agg_eqs(helpers, p, key_out)
+    hit_call = f"{helpers.row_hit}({p}, {_idx_call(helpers.main)})"
     present = (
-        f"forall|{binders}| {helpers.row_hit}({p}, {_idx_call(helpers.main)}) && ({having_of}) ==> "
-        f"exists|r: int| 0 <= r < res@.len() && {helpers.key_at}({p}, {_idx_call(helpers.main)}) == {_out_key('res@[r]', helpers)}"
+        f"forall|{binders}| #![trigger {hit_call}] {hit_call} && ({having_of}) ==> "
+        f"exists|r: int| #![trigger res@[r]] 0 <= r < res@.len() && {helpers.key_at}({p}, {_idx_call(helpers.main)}) == {_out_key('res@[r]', helpers)}"
     )
     each = (
-        f"forall|r: int| 0 <= r < res@.len() ==> ("
-        f"exists|{binders}| {helpers.row_hit}({p}, {_idx_call(helpers.main)}) && {key_of} == {key_out}"
+        f"forall|r: int| #![trigger res@[r]] 0 <= r < res@.len() ==> ("
+        f"exists|{binders}| #![trigger {hit_call}] {hit_call} && {key_of} == {key_out}"
         f" && ({having_row}) && {agg_row})"
     )
     distinct = (
-        "forall|a: int, b: int| 0 <= a < b < res@.len() ==> "
+        "forall|a: int, b: int| #![trigger res@[a], res@[b]] 0 <= a < b < res@.len() ==> "
         f"{_out_key('res@[a]', helpers)} != {_out_key('res@[b]', helpers)}"
     )
     lines = [each, distinct]
@@ -909,7 +970,7 @@ def _scalar_result(query: Query, helpers: _Helpers, scalars: dict[str, str]) -> 
     if query.limit == 0:
         return "res@.len() == 0"
     return (
-        f"((({having}) && res@.len() == 1 && (forall|r: int| 0 <= r < res@.len() ==> {aggs}))"
+        f"((({having}) && res@.len() == 1 && (forall|r: int| #![trigger res@[r]] 0 <= r < res@.len() ==> {aggs}))"
         f" || (!({having}) && res@.len() == 0))"
     )
 
@@ -995,8 +1056,9 @@ def _omitted_after(query: Query, helpers: _Helpers, scalars: dict[str, str], hav
     group_exprs = _order_exprs_key(query, helpers, scalars, key_of)
     before = _not_after(out_exprs, group_exprs, query.order_by)
     return (
-        f"forall|{binders}, r: int| {helpers.row_hit}({p}, {_idx_call(helpers.main)}) && ({having_of})"
-        f" && !(exists|r2: int| 0 <= r2 < res@.len() && {key_of} == {_out_key('res@[r2]', helpers)})"
+        f"forall|{binders}, r: int| #![trigger {helpers.row_hit}({p}, {_idx_call(helpers.main)}), res@[r]] "
+        f"{helpers.row_hit}({p}, {_idx_call(helpers.main)}) && ({having_of})"
+        f" && !(exists|r2: int| #![trigger res@[r2]] 0 <= r2 < res@.len() && {key_of} == {_out_key('res@[r2]', helpers)})"
         f" && 0 <= r < res@.len() ==> ({before})"
     )
 

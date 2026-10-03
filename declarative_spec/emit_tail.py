@@ -45,7 +45,7 @@ def _emit_order(query: Query) -> list[str]:
         return []
     before = _row_before("res@[i]", "res@[i + 1]", query.order_by, query.projection)
     return [
-        "forall|i: int| 0 <= i && i + 1 < res@.len() ==> ("
+        "forall|i: int| #![trigger res@[i]] 0 <= i && i + 1 < res@.len() ==> ("
         + before
         + ")",
     ]
@@ -80,7 +80,7 @@ def _emit_limit_offset(query: Query) -> list[str]:
 
 def _emit_distinct(_query: Query) -> list[str]:
     return [
-        "forall|i: int, j: int| 0 <= i < j < res@.len() ==> res@[i] != res@[j]",
+        "forall|i: int, j: int| #![trigger res@[i], res@[j]] 0 <= i < j < res@.len() ==> res@[i] != res@[j]",
     ]
 
 

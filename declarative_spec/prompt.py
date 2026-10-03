@@ -270,6 +270,8 @@ def build_declarative_prompt(
         "loop over another loses the timed run.",
         "Keep the groups the having condition accepts, sort by the order columns,",
         "and stop at the limit in the ensures.",
+        "A one-table count defines `lemma_<count>_step` and `lemma_<count>_bound`.",
+        "Call those. Do not re-prove the one-row equation or the row bound.",
         "Integer slots call the host fit lemma under the row cap.",
         "Float slots use one `f64` accumulator per group and call",
         "`lemma_f64_add_defined`, `lemma_f64_left_fold_push`, and",

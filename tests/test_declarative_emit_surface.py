@@ -106,6 +106,8 @@ def test_grouped_scan_states_filter_and_aggregates() -> None:
     assert "(pre.stmt@[i0]@) != \"\"@" in spec
     assert "pre.(pre." not in spec
     assert "count_cnt(" in spec
+    assert "lemma_count_cnt_step(" in spec
+    assert "lemma_count_cnt_bound(" in spec
     assert "count_distinct_num_filings(" in spec
     assert "avg_avg_line_num(" in spec
     assert "FLOAT_ABS_EPS" in spec
