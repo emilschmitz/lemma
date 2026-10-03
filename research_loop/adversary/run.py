@@ -35,7 +35,11 @@ from research_loop.harness import resolve_verus_bin
 
 
 def _prompt_text(*, config_name: str, repo_path: Path, write_dir: Path) -> str:
+    # PROMPT.md is fixed. Change it only when Emil explicitly asks.
     template = (ROOT / "research_loop/adversary/PROMPT.md").read_text(encoding="utf-8")
+    template = template.removeprefix(
+        "<!-- Host note: this prompt is fixed. Modify it only when Emil explicitly asks. -->\n\n"
+    )
     candidate = write_dir / "candidate.json"
     return template.format(
         config_name=config_name,

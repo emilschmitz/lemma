@@ -1,3 +1,5 @@
+<!-- Host note: this prompt is fixed. Modify it only when Emil explicitly asks. -->
+
 You are hunting for a **real semantic hole** between a Verus `run_query` body and DuckDB on the same SQL. The host judges with config `{config_name}` on its own tree. Your edits to that tree do not count.
 
 ## What you may do

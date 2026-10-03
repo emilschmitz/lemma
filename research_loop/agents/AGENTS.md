@@ -249,3 +249,5 @@ files; `product` writes today's defaults and must not fork transpile logic. `har
 config the adversary runner and speed bench select (not rocketship, not `LEMMA_FAST_TRUSTEDS`).
 Other agents: pick a config with `apply_trust_config(name)` or `LEMMA_TRUST_CONFIG`; do not
 change product defaults when experimenting with hardware-close kernels or adversarial hunts.
+
+The adversary prompt is the fixed file `research_loop/adversary/PROMPT.md`. Modify it only when Emil explicitly asks.

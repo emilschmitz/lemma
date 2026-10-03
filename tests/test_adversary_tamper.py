@@ -18,6 +18,11 @@ def test_prompt_allows_read_and_web_and_forbids_tamper(tmp_path: Path) -> None:
         repo_path=Path("/repo"),
         write_dir=tmp_path,
     )
+    assert text.startswith("You are hunting")
+    assert "Modify it only when Emil" not in text
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "research_loop/adversary/PROMPT.md").read_text(encoding="utf-8")
+    assert "Modify it only when Emil explicitly asks." in source
     assert "web search" in text
     assert "Read the repository at `/repo`" in text
     assert f"inside `{tmp_path}`" in text
