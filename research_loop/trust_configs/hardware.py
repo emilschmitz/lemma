@@ -18,7 +18,8 @@ CONFIG = TrustConfig(
         "row matches. AVG is refused because DuckDB AVG is DOUBLE. "
         "Subtraction and negation are refused because the result is signed. "
         "Base-table IS NULL is false: these columns have no null bit. "
-        "COUNT of a null derived SUM or MIN or MAX is 0. Not the fast "
+        "COUNT of a null derived SUM or MIN or MAX is 0. "
+        "ILIKE is refused because DuckDB folds Unicode case. Not the fast "
         "menu. LEMMA_EXACT_SUM is this menu's "
         "switch; product leaves it unset."
     ),

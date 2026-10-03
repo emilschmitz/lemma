@@ -984,6 +984,11 @@ def _compile_like_pattern(real_col: str, pattern: str) -> str:
 
 def _compile_ilike_pattern(real_col: str, pattern: str) -> str:
     """Compile ILIKE via TRUSTED case-insensitive pattern helper."""
+    if os.environ.get("LEMMA_EXACT_SUM", "0") == "1":
+        raise UnsupportedContractError(
+            "hardware menu does not emit ILIKE: DuckDB folds Unicode case, "
+            "and this helper folds ASCII only"
+        )
     require_trusted("ilike")
     col_ref = f"row.{real_col}"
     if any(c in pattern for c in "[]|^$.*+?"):
