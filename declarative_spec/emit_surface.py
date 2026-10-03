@@ -1,0 +1,1308 @@
+"""Stitch a parsed ``Query`` into one Verus spec.
+
+The spec is a condition on ``run_query``'s result: which groups exist, what
+their aggregates are, and how ORDER BY / LIMIT constrain that sequence.
+It does not define the query as a walk that inserts into a map.
+"""
+
+from __future__ import annotations
+
+import copy
+import re
+from dataclasses import dataclass, field
+
+from declarative_spec.emit_join import _build_slots, _Slot, _table_alias
+from declarative_spec.emit_tail import tail_ensures
+from declarative_spec.parse import DeclarativeUnsupported
+from declarative_spec.parse_query import parse_query
+from declarative_spec.schema_types import ColumnTypeInfo, SchemaModel, rust_ident
+from declarative_spec.surface import Agg, OrderKey, Query
+from research_loop.table_assumptions import CatalogAssumptions
+
+_IS_NULL = re.compile(
+    r"(!?)is_null\(\s*([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\s*\)"
+)
+_QUAL = re.compile(
+    r"\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b(?!@\[)"
+)
+_COLS_I = re.compile(r"\bcols\.([A-Za-z_][A-Za-z0-9_]*)@\[i\]@?")
+
+
+@dataclass
+class _AggFn:
+    alias: str
+    kind: str
+    name: str
+    ret: str  # "int" | "real"
+    float_out: bool
+    style: str  # "fold" | "bound"
+    exec: str
+
+
+@dataclass
+class _Helpers:
+    source: str
+    main: list[_Slot]
+    params: list[_Slot]
+    row_hit: str
+    key_at: str
+    key_ty: str | None
+    aggs: list[_AggFn] = field(default_factory=list)
+    group_infos: list[tuple[str, str, ColumnTypeInfo, _Slot]] = field(default_factory=list)
+    scalars: dict[str, str] = field(default_factory=dict)
+
+
+def emit_from_surface(
+    sql: str,
+    schema: dict[str, str] | dict[str, dict[str, str]],
+    catalog: CatalogAssumptions | None = None,
+    *,
+    float_abs_eps: str | None = None,
+) -> str:
+    """Verus source for ``sql``. Raises ``DeclarativeUnsupported`` when a clause is refused."""
+    query = parse_query(sql)
+    if not query.tables:
+        raise DeclarativeUnsupported("FROM")
+    model = SchemaModel.from_caller(schema, query.tables[0])
+    _reject_unemitted(query)
+    if not query.aggs:
+        raise DeclarativeUnsupported("projection")
+
+    helpers = _emit_helpers(query, "", model)
+    if any(a.float_out for a in helpers.aggs):
+        eps = (float_abs_eps or "").strip()
+        if not eps:
+            raise DeclarativeUnsupported(
+                "float SUM requires caller-provided LEMMA_FLOAT_ABS_EPS (float_abs_eps)"
+            )
+    else:
+        eps = ""
+
+    structs = _structs(helpers.params, model)
+    valids = _valids(helpers.params, model, catalog)
+    consts = _consts(helpers.params, model, catalog, eps)
+    out_row = _out_row(query, helpers, model)
+    ensures = _ensures(query, helpers, model)
+    requires = ",\n        ".join(
+        f"valid_cols_{rust_ident(s.table)}({s.param})" for s in helpers.params
+    )
+    params = ", ".join(f"{s.param}: &{s.struct}" for s in helpers.params)
+    from declarative_spec.emit import _host_lemma_region
+
+    parts = [
+        "use vstd::prelude::*;",
+        "verus! {",
+        consts,
+        structs,
+        "",
+        valids,
+        "",
+        helpers.source,
+        "",
+        _host_lemma_region(),
+        "",
+        out_row,
+        "",
+        f"""pub fn run_query({params}) -> (res: Vec<OutRow>)
+    requires
+        {requires},
+    ensures
+        {ensures},
+{{
+// AGENT_EDIT_START
+// AGENT_EDIT_END
+}}""",
+        "}",
+    ]
+    text = "\n".join(p for p in parts if p is not None)
+    text = _string_views(text, _string_fields(model, helpers.params))
+    if "method_spec" in text:
+        raise DeclarativeUnsupported("internal spec shape")
+    return text + "\n"
+
+
+def _reject_unemitted(query: Query) -> None:
+    if query.set_op:
+        raise DeclarativeUnsupported(query.set_op)
+    if query.ctes:
+        raise DeclarativeUnsupported("CTE")
+    if query.in_subqueries:
+        raise DeclarativeUnsupported("IN subquery")
+    for join in query.joins:
+        if join.kind.casefold() != "inner":
+            raise DeclarativeUnsupported("outer join")
+    for _name, sub, _neg in query.exists:
+        _reject_unemitted(sub)
+    for _name, sub in query.scalar_subqueries:
+        _reject_unemitted(sub)
+    for _name, sub in query.derived:
+        _reject_unemitted(sub)
+    if query.set_query is not None:
+        _reject_unemitted(query.set_query)
+
+
+def _emit_helpers(query: Query, prefix: str, model: SchemaModel) -> _Helpers:
+    main = _build_slots(query)
+    if not main:
+        raise DeclarativeUnsupported("FROM")
+    for slot in main:
+        model.lookup_table(slot.table)
+    extras = _extra_params(query, main, model)
+    params = list(main) + extras
+    group_infos = _group_infos(query, main, model)
+    key_ty = _key_type(group_infos)
+    row_hit = f"{prefix}row_hit"
+    key_at = f"{prefix}key_at"
+
+    blocks: list[str] = []
+    exists_calls = _exists_fns(query, prefix, main, params, model, blocks)
+    pred = _compile_pred(query.where_expr, main, [], model, exists_calls)
+    blocks.append(_row_hit_fn(row_hit, query, main, params, pred))
+    blocks.append(_key_at_fn(key_at, main, params, group_infos, key_ty))
+
+    aggs: list[_AggFn] = []
+    for agg in query.aggs:
+        aggs.append(_emit_agg(blocks, query, agg, prefix, main, params, model, key_ty, row_hit, key_at))
+
+    scalars = _scalar_fns(query, prefix, model, params)
+    # scalar calls are recorded on the query via the returned map; having reads `scalars`
+    helpers = _Helpers(
+        source="\n\n".join(b for b in blocks if b.strip()),
+        main=main,
+        params=params,
+        row_hit=row_hit,
+        key_at=key_at,
+        key_ty=key_ty,
+        aggs=aggs,
+        group_infos=group_infos,
+    )
+    helpers.source += scalars[1]
+    helpers.scalars = scalars[0]
+    return helpers
+
+
+def _extra_params(query: Query, main: list[_Slot], model: SchemaModel) -> list[_Slot]:
+    known = {s.table.casefold() for s in main}
+    params = {s.param for s in main}
+    extras: list[_Slot] = []
+
+    def add(alias: str, table: str) -> None:
+        if table.casefold() not in model.tables or table.casefold() in known:
+            return
+        param = rust_ident(alias)
+        if param in params:
+            param = rust_ident(f"{alias}_{table}")
+        extras.append(
+            _Slot(
+                table=table,
+                alias=alias,
+                param=param,
+                struct=f"Cols_{rust_ident(table)}",
+                idx="ex",
+            )
+        )
+        known.add(table.casefold())
+        params.add(param)
+
+    def walk(q: Query) -> None:
+        for _name, sub, _neg in q.exists:
+            if sub.tables:
+                add(_table_alias(sub, sub.tables[0], None), sub.tables[0])
+            for join in sub.joins:
+                add(join.alias or _table_alias(sub, join.table, join.alias), join.table)
+            walk(sub)
+        for _name, sub in q.scalar_subqueries:
+            walk(sub)
+        for _alias, sub in q.derived:
+            walk(sub)
+
+    walk(query)
+    return extras
+
+
+def _exists_fns(
+    query: Query,
+    prefix: str,
+    main: list[_Slot],
+    params: list[_Slot],
+    model: SchemaModel,
+    blocks: list[str],
+) -> dict[str, str]:
+    calls: dict[str, str] = {}
+    param_sig = _param_sig(params)
+    param_call = _param_call(params)
+    idx_sig = ", ".join(f"{s.idx}: int" for s in main)
+    idx_call = ", ".join(s.idx for s in main)
+    for name, sub, _neg in query.exists:
+        local = _reindex(_build_slots(sub), "e")
+        pred = _compile_pred(sub.where_expr, local, main, model, {})
+        chain = _chain(sub, local)
+        ranges = " && ".join(f"0 <= {s.idx} < {s.param}.n as int" for s in local)
+        binders = ", ".join(f"{s.idx}: int" for s in local)
+        outer_ranges = " && ".join(f"0 <= {s.idx} < {s.param}.n as int" for s in main)
+        body = f"{ranges} && {chain} && ({pred})" if chain else f"{ranges} && ({pred})"
+        fn = f"{prefix}{name}"
+        blocks.append(
+            f"""pub open spec fn {fn}({param_sig}, {idx_sig}) -> bool {{
+    &&& {outer_ranges}
+    &&& exists|{binders}| {body}
+}}"""
+        )
+        calls[name] = f"{fn}({param_call}, {idx_call})"
+    return calls
+
+
+def _reindex(slots: list[_Slot], prefix: str) -> list[_Slot]:
+    return [
+        _Slot(s.table, s.alias, s.param, s.struct, f"{prefix}{i}") for i, s in enumerate(slots)
+    ]
+
+
+def _row_hit_fn(name: str, query: Query, main: list[_Slot], params: list[_Slot], pred: str) -> str:
+    sig = _param_sig(params)
+    idxs = ", ".join(f"{s.idx}: int" for s in main)
+    ranges = "\n    &&& ".join(f"0 <= {s.idx} < {s.param}.n as int" for s in main)
+    chain = _chain(query, main)
+    chain_line = f"\n    &&& {chain}" if chain else ""
+    return f"""pub open spec fn {name}({sig}, {idxs}) -> bool {{
+    &&& {ranges}{chain_line}
+    &&& ({pred})
+}}"""
+
+
+def _chain(query: Query, slots: list[_Slot]) -> str:
+    if len(slots) < 2 or not query.joins:
+        return ""
+    by_alias = {s.alias: s for s in slots}
+    by_table = {s.table: s for s in slots}
+    parts: list[str] = []
+    for join in query.joins:
+        eqs = [_eq_pair(lref, rref, by_alias, by_table) for lref, rref in join.on]
+        if not eqs:
+            parts.append("true")
+            continue
+        op = " || " if join.on_combiner.casefold() == "or" else " && "
+        parts.append("(" + op.join(eqs) + ")")
+    return " && ".join(parts)
+
+
+def _eq_pair(lref: str, rref: str, by_alias: dict[str, _Slot], by_table: dict[str, _Slot]) -> str:
+    return f"{_on_cell(lref, by_alias, by_table)} == {_on_cell(rref, by_alias, by_table)}"
+
+
+def _on_cell(ref: str, by_alias: dict[str, _Slot], by_table: dict[str, _Slot]) -> str:
+    if "." not in ref:
+        raise DeclarativeUnsupported("JOIN")
+    alias, col = ref.split(".", 1)
+    slot = by_alias.get(alias) or by_table.get(alias)
+    if slot is None:
+        raise DeclarativeUnsupported("JOIN")
+    # Equality is on the spec view. String columns gain `@` in ``_string_views``.
+    return f"{slot.param}.{rust_ident(col)}@[{slot.idx}]"
+
+
+def _key_at_fn(
+    name: str,
+    main: list[_Slot],
+    params: list[_Slot],
+    groups: list[tuple[str, str, ColumnTypeInfo, _Slot]],
+    key_ty: str | None,
+) -> str:
+    if key_ty is None:
+        return ""
+    sig = _param_sig(params)
+    idxs = ", ".join(f"{s.idx}: int" for s in main)
+    ranges = " && ".join(f"0 <= {s.idx} < {s.param}.n as int" for s in main)
+    cells = ", ".join(_cell(slot, col, info) for _field, col, info, slot in groups)
+    if len(groups) != 1:
+        cells = f"({cells})"
+    default = _key_default(groups)
+    return f"""pub open spec fn {name}({sig}, {idxs}) -> {key_ty} {{
+    if {ranges} {{
+        {cells}
+    }} else {{
+        {default}
+    }}
+}}"""
+
+
+def _group_infos(
+    query: Query, main: list[_Slot], model: SchemaModel
+) -> list[tuple[str, str, ColumnTypeInfo, _Slot]]:
+    out: list[tuple[str, str, ColumnTypeInfo, _Slot]] = []
+    for i, col in enumerate(query.group_columns):
+        table = query.group_tables[i] if i < len(query.group_tables) else None
+        slot, info = _find_col(col, table, main, model)
+        out.append((rust_ident(col), col, info, slot))
+    return out
+
+
+def _key_type(groups: list[tuple[str, str, ColumnTypeInfo, _Slot]]) -> str | None:
+    if not groups:
+        return None
+    tys = [_spec_ty(info) for _f, _c, info, _s in groups]
+    if len(tys) == 1:
+        return tys[0]
+    return "(" + ", ".join(tys) + ")"
+
+
+def _key_default(groups: list[tuple[str, str, ColumnTypeInfo, _Slot]]) -> str:
+    defs = [_default(info) for _f, _c, info, _s in groups]
+    if len(defs) == 1:
+        return defs[0]
+    return "(" + ", ".join(defs) + ")"
+
+
+def _spec_ty(info: ColumnTypeInfo) -> str:
+    if info.spec_as == "Seq<char>":
+        return "Seq<char>"
+    if info.is_float:
+        return "real"
+    if info.spec_as == "bool":
+        return "bool"
+    return "int"
+
+
+def _default(info: ColumnTypeInfo) -> str:
+    if info.spec_as == "Seq<char>":
+        return "Seq::<char>::empty()"
+    if info.is_float:
+        return "0real"
+    if info.spec_as == "bool":
+        return "false"
+    return "0int"
+
+
+def _emit_agg(
+    blocks: list[str],
+    query: Query,
+    agg: Agg,
+    prefix: str,
+    main: list[_Slot],
+    params: list[_Slot],
+    model: SchemaModel,
+    key_ty: str | None,
+    row_hit: str,
+    key_at: str,
+) -> _AggFn:
+    kind = agg.kind.upper()
+    alias = rust_ident(agg.alias)
+    name = _fn_name(prefix, kind, alias)
+    is_float = _agg_is_float(agg, main, model)
+    ret = "real" if is_float else "int"
+    exec_ty = _agg_exec(kind, is_float, agg, main, model)
+    hit = _hit(row_hit, key_at, main, params, key_ty)
+    if kind in ("MIN", "MAX"):
+        value = _value_fn(blocks, f"{name}_val", agg, main, params, model, ret)
+        _emit_bound(blocks, name, ret, value, hit, main, params, key_ty, "min" if kind == "MIN" else "max")
+        return _AggFn(alias, kind, name, ret, False, "bound", exec_ty)
+    if kind == "COUNT":
+        _emit_fold(blocks, name, "int", "0int", f"if {hit} {{ 1int }} else {{ 0int }}", main, params, key_ty)
+        return _AggFn(alias, kind, name, "int", False, "fold", "u64")
+    if kind == "COUNT_DISTINCT":
+        value = _value_fn(blocks, f"{name}_val", agg, main, params, model, _value_ret(agg, main, model))
+        later = _later(row_hit, key_at, value, main, params, key_ty)
+        add = f"if {hit} && !({later}) {{ 1int }} else {{ 0int }}"
+        _emit_fold(blocks, name, "int", "0int", add, main, params, key_ty)
+        return _AggFn(alias, kind, name, "int", False, "fold", "u64")
+    if kind == "SUM":
+        value = _value_fn(blocks, f"{name}_val", agg, main, params, model, ret)
+        zero = "0real" if is_float else "0int"
+        add = f"if {hit} {{ {value}({_param_call(params)}, {_idx_call(main)}) }} else {{ {zero} }}"
+        _emit_fold(blocks, name, ret, zero, add, main, params, key_ty)
+        return _AggFn(alias, kind, name, ret, is_float, "fold", exec_ty)
+    if kind == "AVG":
+        sum_name = f"{name}_sum"
+        cnt_name = f"{name}_count"
+        value = _value_fn(blocks, f"{name}_val", agg, main, params, model, ret)
+        zero = "0real" if is_float else "0int"
+        add = f"if {hit} {{ {value}({_param_call(params)}, {_idx_call(main)}) }} else {{ {zero} }}"
+        _emit_fold(blocks, sum_name, ret, zero, add, main, params, key_ty)
+        _emit_fold(blocks, cnt_name, "int", "0int", f"if {hit} {{ 1int }} else {{ 0int }}", main, params, key_ty)
+        _emit_avg_wrap(blocks, name, sum_name, cnt_name, params, key_ty, is_float)
+        return _AggFn(alias, kind, name, ret, is_float, "fold", exec_ty)
+    raise DeclarativeUnsupported(kind)
+
+
+def _fn_name(prefix: str, kind: str, alias: str) -> str:
+    if kind == "COUNT":
+        return f"{prefix}count_{alias}"
+    if kind == "COUNT_DISTINCT":
+        return f"{prefix}count_distinct_{alias}"
+    if kind == "SUM":
+        return f"{prefix}sum_{alias}"
+    if kind == "AVG":
+        return f"{prefix}avg_{alias}"
+    if kind == "MIN":
+        return f"{prefix}min_{alias}"
+    if kind == "MAX":
+        return f"{prefix}max_{alias}"
+    raise DeclarativeUnsupported(kind)
+
+
+def _agg_is_float(agg: Agg, main: list[_Slot], model: SchemaModel) -> bool:
+    if agg.expr or agg.kind.upper() in ("COUNT", "COUNT_DISTINCT"):
+        return False
+    if not agg.column or agg.column == "*":
+        return False
+    _slot, info = _find_col(agg.column, agg.table, main, model)
+    return info.is_float
+
+
+def _agg_exec(kind: str, is_float: bool, agg: Agg, main: list[_Slot], model: SchemaModel) -> str:
+    if is_float:
+        return "f64"
+    if kind in ("COUNT", "COUNT_DISTINCT"):
+        return "u64"
+    if agg.column and agg.column != "*" and not agg.expr:
+        _slot, info = _find_col(agg.column, agg.table, main, model)
+        if info.signed:
+            return "i128"
+    if agg.expr:
+        return "i128"
+    return "u64"
+
+
+def _value_ret(agg: Agg, main: list[_Slot], model: SchemaModel) -> str:
+    if not agg.column or agg.column == "*":
+        return "int"
+    _slot, info = _find_col(agg.column, agg.table, main, model)
+    return _spec_ty(info)
+
+
+def _value_fn(
+    blocks: list[str],
+    name: str,
+    agg: Agg,
+    main: list[_Slot],
+    params: list[_Slot],
+    model: SchemaModel,
+    ret: str,
+) -> str:
+    if agg.expr:
+        expr = _compile_case(agg.expr, main, model)
+    elif agg.column and agg.column != "*":
+        slot, info = _find_col(agg.column, agg.table, main, model)
+        expr = _cell(slot, agg.column, info)
+    else:
+        raise DeclarativeUnsupported(agg.kind)
+    ranges = " && ".join(f"0 <= {s.idx} < {s.param}.n as int" for s in main)
+    default = "0real" if ret == "real" else ("Seq::<char>::empty()" if ret == "Seq<char>" else "0int")
+    if ret == "bool":
+        default = "false"
+    blocks.append(
+        f"""pub open spec fn {name}({_param_sig(params)}, {_idx_sig(main)}) -> {ret} {{
+    if {ranges} {{
+        {expr}
+    }} else {{
+        {default}
+    }}
+}}"""
+    )
+    return name
+
+
+def _compile_case(expr: str, main: list[_Slot], model: SchemaModel) -> str:
+    def repl(m: re.Match[str]) -> str:
+        col = m.group(1)
+        slot, info = _find_col(col, None, main, model)
+        return _cell(slot, col, info)
+
+    out = _COLS_I.sub(repl, expr)
+    out = re.sub(r"(as real\)) > 0\b", r"\1 > 0real", out)
+    out = re.sub(r"(as real\)) < 0\b", r"\1 < 0real", out)
+    out = re.sub(r"(as real\)) >= 0\b", r"\1 >= 0real", out)
+    out = re.sub(r"(as real\)) <= 0\b", r"\1 <= 0real", out)
+    return out.replace("{ 1 }", "{ 1int }").replace("{ 0 }", "{ 0int }")
+
+
+def _hit(row_hit: str, key_at: str, main: list[_Slot], params: list[_Slot], key_ty: str | None) -> str:
+    call = f"{row_hit}({_param_call(params)}, {_idx_call(main)})"
+    if key_ty is None:
+        return call
+    return f"{call} && {key_at}({_param_call(params)}, {_idx_call(main)}) == k"
+
+
+def _later(
+    row_hit: str,
+    key_at: str,
+    value: str,
+    main: list[_Slot],
+    params: list[_Slot],
+    key_ty: str | None,
+) -> str:
+    return _other_row(row_hit, key_at, value, main, params, key_ty, later=True)
+
+
+def _earlier(
+    row_hit: str, key_at: str, main: list[_Slot], params: list[_Slot]
+) -> str:
+    return _other_row(row_hit, key_at, "", main, params, "int", later=False)
+
+
+def _other_row(
+    row_hit: str,
+    key_at: str,
+    value: str,
+    main: list[_Slot],
+    params: list[_Slot],
+    key_ty: str | None,
+    *,
+    later: bool,
+) -> str:
+    alts = [f"j{i}" for i in range(len(main))]
+    binders = ", ".join(f"{a}: int" for a in alts)
+    pieces: list[str] = []
+    op = ">" if later else "<"
+    for d in range(len(main)):
+        eqs = [f"{alts[k]} == {main[k].idx}" for k in range(d)]
+        cmp = f"{alts[d]} {op} {main[d].idx}"
+        pieces.append("(" + " && ".join([*eqs, cmp]) + ")")
+    lex = " || ".join(pieces)
+    alt_call = ", ".join(alts)
+    here = _idx_call(main)
+    p = _param_call(params)
+    same_key = ""
+    if later and key_ty is not None:
+        same_key = f" && {key_at}({p}, {alt_call}) == k"
+    elif not later:
+        same_key = f" && {key_at}({p}, {alt_call}) == {key_at}({p}, {here})"
+    same_val = ""
+    if value:
+        same_val = f" && {value}({p}, {alt_call}) == {value}({p}, {here})"
+    return (
+        f"exists|{binders}| ({lex}) && {row_hit}({p}, {alt_call}){same_key}{same_val}"
+    )
+
+
+def _emit_fold(
+    blocks: list[str],
+    name: str,
+    ret: str,
+    zero: str,
+    add_expr: str,
+    main: list[_Slot],
+    params: list[_Slot],
+    key_ty: str | None,
+) -> None:
+    n = len(main)
+    key_sig = f", k: {key_ty}" if key_ty else ""
+    key_call = ", k" if key_ty else ""
+    p_sig = _param_sig(params)
+    p_call = _param_call(params)
+    chunks: list[str] = []
+    for level in range(n - 1, -1, -1):
+        slot = main[level]
+        fn = name if level == 0 else f"{name}_d{level}"
+        prev = main[:level]
+        bound = f"{slot.param}.n as int"
+        idx_sig = ", ".join(f"{s.idx}: int" for s in main[: level + 1])
+        if level == n - 1:
+            rec_idxs = ", ".join([*(s.idx for s in prev), f"{slot.idx} + 1"])
+            body = f"""if {slot.idx} < 0 || {slot.idx} >= {bound} {{
+        {zero}
+    }} else {{
+        ({add_expr}) + {fn}({p_call}, {rec_idxs}{key_call})
+    }}"""
+        else:
+            nxt = f"{name}_d{level + 1}"
+            next_idxs = ", ".join([*(s.idx for s in prev), slot.idx, "0"])
+            rec_idxs = ", ".join([*(s.idx for s in prev), f"{slot.idx} + 1"])
+            body = f"""if {slot.idx} < 0 || {slot.idx} >= {bound} {{
+        {zero}
+    }} else {{
+        {nxt}({p_call}, {next_idxs}{key_call}) + {fn}({p_call}, {rec_idxs}{key_call})
+    }}"""
+        chunks.append(
+            f"""pub open spec fn {fn}({p_sig}, {idx_sig}{key_sig}) -> {ret}
+    decreases {bound} - {slot.idx}
+{{
+    {body}
+}}"""
+        )
+    blocks.extend(chunks)
+
+
+def _emit_bound(
+    blocks: list[str],
+    name: str,
+    ret: str,
+    value: str,
+    hit: str,
+    main: list[_Slot],
+    params: list[_Slot],
+    key_ty: str | None,
+    pick: str,
+) -> None:
+    del ret, hit
+    alts = [f"j{i}" for i in range(len(main))]
+    binders = ", ".join(f"{a}: int" for a in alts)
+    ranges = " && ".join(f"0 <= {a} < {s.param}.n as int" for a, s in zip(alts, main, strict=True))
+    order = ">=" if pick == "min" else "<="
+    blocks.append(
+        _bound_text(
+            name,
+            value,
+            main,
+            params,
+            key_ty,
+            binders,
+            ranges,
+            _param_call(params),
+            ", ".join(alts),
+            order,
+        )
+    )
+
+
+def _bound_text(
+    name: str,
+    value: str,
+    main: list[_Slot],
+    params: list[_Slot],
+    key_ty: str | None,
+    binders: str,
+    ranges: str,
+    p: str,
+    alt: str,
+    order: str,
+) -> str:
+    # row_hit / key_at share the aggregate's prefix: ``min_lo`` sits next to ``row_hit``.
+    # The names are recovered from the value fn, which is ``{name}_val`` and the helpers
+    # are the un-prefixed ones stored on the surrounding emitter. Pass them through ``value``
+    # only. The row predicate is ``row_hit`` with the same prefix as ``name``'s module prefix.
+    prefix = ""
+    for token in ("min_", "max_"):
+        if token in name:
+            prefix = name[: name.rindex(token)]
+            break
+    row_hit = f"{prefix}row_hit"
+    key_at = f"{prefix}key_at"
+    key_part = f" && {key_at}({p}, {alt}) == k" if key_ty else ""
+    key_sig = f", k: {key_ty}" if key_ty else ""
+    return f"""pub open spec fn {name}({_param_sig(params)}{key_sig}, bound: int) -> bool {{
+    &&& (exists|{binders}| {ranges} && {row_hit}({p}, {alt}){key_part} && {value}({p}, {alt}) == bound)
+    &&& (forall|{binders}| {ranges} && {row_hit}({p}, {alt}){key_part} ==> {value}({p}, {alt}) {order} bound)
+}}"""
+
+
+def _emit_avg_wrap(
+    blocks: list[str],
+    name: str,
+    sum_name: str,
+    cnt_name: str,
+    params: list[_Slot],
+    key_ty: str | None,
+    is_float: bool,
+) -> None:
+    key_sig = f", k: {key_ty}" if key_ty else ""
+    key_call = ", k" if key_ty else ""
+    p = _param_call(params)
+    if is_float:
+        body = f"""let c = {cnt_name}({p}, i0{key_call});
+    if c > 0 {{
+        {sum_name}({p}, i0{key_call}) / (c as real)
+    }} else {{
+        0real
+    }}"""
+        ret = "real"
+    else:
+        body = f"""let c = {cnt_name}({p}, i0{key_call});
+    if c > 0 {{
+        {sum_name}({p}, i0{key_call}) / c
+    }} else {{
+        0int
+    }}"""
+        ret = "int"
+    blocks.append(
+        f"""pub open spec fn {name}({_param_sig(params)}, i0: int{key_sig}) -> {ret} {{
+    {body}
+}}"""
+    )
+
+
+def _scalar_fns(
+    query: Query, prefix: str, model: SchemaModel, params: list[_Slot]
+) -> tuple[dict[str, str], str]:
+    """Map scalar name -> call expression in the outer scope, plus extra source."""
+    calls: dict[str, str] = {}
+    extra: list[str] = []
+    by_table: dict[str, str] = {}
+    for slot in params:
+        by_table.setdefault(slot.table.casefold(), slot.param)
+    for name, sub in query.scalar_subqueries:
+        call, source = _one_scalar(f"{prefix}{name}", sub, by_table, model)
+        calls[name] = call
+        extra.append(source)
+    return calls, ("\n\n" + "\n\n".join(extra)) if extra else ""
+
+
+def _one_scalar(
+    name: str,
+    query: Query,
+    outer_params: dict[str, str],
+    model: SchemaModel,
+) -> tuple[str, str]:
+    if query.derived:
+        if len(query.aggs) != 1 or len(query.derived) != 1:
+            raise DeclarativeUnsupported("scalar subquery")
+        outer_agg = query.aggs[0]
+        inner = query.derived[0][1]
+        helpers = _emit_helpers(inner, f"{name}_", model)
+        target = _match_inner_agg(outer_agg, helpers)
+        return _reduce_groups(name, outer_agg, target, helpers, outer_params)
+    helpers = _emit_helpers(query, f"{name}_", model)
+    if len(helpers.aggs) != 1 or helpers.key_ty is not None:
+        raise DeclarativeUnsupported("scalar subquery")
+    agg = helpers.aggs[0]
+    if agg.style != "fold":
+        raise DeclarativeUnsupported("scalar subquery")
+    inner_call = f"{agg.name}({_param_call(helpers.main)}, 0)"
+    wrap = f"""pub open spec fn {name}({_param_sig(helpers.main)}) -> {agg.ret} {{
+    {inner_call}
+}}"""
+    outer_call = f"{name}({_map_args(helpers.main, outer_params)})"
+    return outer_call, helpers.source + "\n\n" + wrap
+
+
+def _match_inner_agg(outer: Agg, helpers: _Helpers) -> _AggFn:
+    if outer.column and outer.column != "*":
+        want = rust_ident(outer.column)
+        for agg in helpers.aggs:
+            if agg.alias == want:
+                return agg
+        raise DeclarativeUnsupported("scalar subquery")
+    if len(helpers.aggs) == 1:
+        return helpers.aggs[0]
+    raise DeclarativeUnsupported("scalar subquery")
+
+
+def _reduce_groups(
+    name: str,
+    outer: Agg,
+    target: _AggFn,
+    helpers: _Helpers,
+    outer_params: dict[str, str],
+) -> tuple[str, str]:
+    if helpers.key_ty is None or target.style != "fold":
+        raise DeclarativeUnsupported("scalar subquery")
+    kind = outer.kind.upper()
+    if kind not in ("AVG", "SUM", "COUNT"):
+        raise DeclarativeUnsupported("scalar subquery")
+    earlier = _earlier(helpers.row_hit, helpers.key_at, helpers.main, helpers.params)
+    p = _param_call(helpers.params)
+    idxs = _idx_call(helpers.main)
+    key_here = f"{helpers.key_at}({p}, {idxs})"
+    first = f"{helpers.row_hit}({p}, {idxs}) && !({earlier})"
+    is_real = target.ret == "real" or kind == "AVG" and target.ret == "real"
+    zero = "0real" if target.ret == "real" else "0int"
+    acc_add = f"if {first} {{ {target.name}({p}, 0, {key_here}) }} else {{ {zero} }}"
+    cnt_add = f"if {first} {{ 1int }} else {{ 0int }}"
+    blocks: list[str] = []
+    _emit_fold(blocks, f"{name}_acc", target.ret, zero, acc_add, helpers.main, helpers.params, None)
+    _emit_fold(blocks, f"{name}_groups", "int", "0int", cnt_add, helpers.main, helpers.params, None)
+    if kind == "COUNT":
+        ret = "int"
+        body = f"{name}_groups({p}, 0)"
+    elif kind == "SUM":
+        ret = target.ret
+        body = f"{name}_acc({p}, 0)"
+    else:
+        ret = "real" if target.ret == "real" else "int"
+        if target.ret == "real":
+            body = f"""let c = {name}_groups({p}, 0);
+    if c > 0 {{ {name}_acc({p}, 0) / (c as real) }} else {{ 0real }}"""
+        else:
+            body = f"""let c = {name}_groups({p}, 0);
+    if c > 0 {{ {name}_acc({p}, 0) / c }} else {{ 0int }}"""
+    del is_real
+    wrap = f"""pub open spec fn {name}({_param_sig(helpers.params)}) -> {ret} {{
+    {body}
+}}"""
+    call = f"{name}({_map_args(helpers.params, outer_params)})"
+    return call, helpers.source + "\n\n" + "\n\n".join(blocks) + "\n\n" + wrap
+
+
+def _map_args(slots: list[_Slot], by_table: dict[str, str]) -> str:
+    args: list[str] = []
+    for slot in slots:
+        key = slot.table.casefold()
+        if key not in by_table:
+            raise DeclarativeUnsupported("scalar subquery")
+        args.append(by_table[key])
+    return ", ".join(args)
+
+
+def _ensures(query: Query, helpers: _Helpers, model: SchemaModel) -> str:
+    del model
+    lines: list[str] = []
+    scalars = helpers.scalars
+    p = _param_call(helpers.params)
+    if helpers.key_ty is None:
+        lines.append(_scalar_result(query, helpers, scalars))
+    else:
+        lines.extend(_grouped_result(query, helpers, scalars))
+    tail_q = copy.copy(query)
+    tail_q.order_by = [
+        OrderKey(column=k.column.split(".")[-1], descending=k.descending) for k in query.order_by
+    ]
+    tail_q.exists = []
+    tail_q.scalar_subqueries = []
+    tail_q.in_subqueries = []
+    tail_q.set_op = None
+    tail_q.set_query = None
+    tail = tail_ensures(tail_q)
+    if tail.strip():
+        lines.append(tail)
+    # ``p`` is unused when the tail already closed the ensures; keep the param call live
+    # via the lines above.
+    del p
+    return ",\n        ".join(lines)
+
+
+def _grouped_result(query: Query, helpers: _Helpers, scalars: dict[str, str]) -> list[str]:
+    p = _param_call(helpers.params)
+    binders, _ranges = _quant(helpers.main)
+    key_of = f"{helpers.key_at}({p}, {_idx_call(helpers.main)})"
+    key_out = _out_key("res@[r]", helpers)
+    having_of = _having(query, helpers, scalars, key_of)
+    having_row = _having(query, helpers, scalars, key_out)
+    agg_row = _agg_eqs(helpers, p, key_out)
+    present = (
+        f"forall|{binders}| {helpers.row_hit}({p}, {_idx_call(helpers.main)}) && ({having_of}) ==> "
+        f"exists|r: int| 0 <= r < res@.len() && {helpers.key_at}({p}, {_idx_call(helpers.main)}) == {_out_key('res@[r]', helpers)}"
+    )
+    each = (
+        f"forall|r: int| 0 <= r < res@.len() ==> ("
+        f"exists|{binders}| {helpers.row_hit}({p}, {_idx_call(helpers.main)}) && {key_of} == {key_out}"
+        f" && ({having_row}) && {agg_row})"
+    )
+    distinct = (
+        "forall|a: int, b: int| 0 <= a < b < res@.len() ==> "
+        f"{_out_key('res@[a]', helpers)} != {_out_key('res@[b]', helpers)}"
+    )
+    lines = [each, distinct]
+    if query.limit is None:
+        lines.append(present)
+    else:
+        lines.append(f"(res@.len() == {query.limit}) || ({present})")
+        if query.order_by:
+            lines.append(_omitted_after(query, helpers, scalars, having_of))
+    return lines
+
+
+def _scalar_result(query: Query, helpers: _Helpers, scalars: dict[str, str]) -> str:
+    p = _param_call(helpers.params)
+    having = _having(query, helpers, scalars, "")
+    aggs = _agg_eqs(helpers, p, "")
+    if query.limit == 0:
+        return "res@.len() == 0"
+    return (
+        f"((({having}) && res@.len() == 1 && (forall|r: int| 0 <= r < res@.len() ==> {aggs}))"
+        f" || (!({having}) && res@.len() == 0))"
+    )
+
+
+def _agg_eqs(helpers: _Helpers, params: str, key: str) -> str:
+    parts: list[str] = []
+    key_arg = f", {key}" if helpers.key_ty else ""
+    for agg in helpers.aggs:
+        view = _out_view(f"res@[r].{agg.alias}", agg)
+        if agg.style == "bound":
+            parts.append(f"{agg.name}({params}{key_arg}, {view})")
+        elif agg.float_out:
+            parts.append(
+                f"abs_real(({view}) - {agg.name}({params}, 0{key_arg})) <= (FLOAT_ABS_EPS as real)"
+            )
+        else:
+            parts.append(f"{view} == {agg.name}({params}, 0{key_arg})")
+    return " && ".join(parts) if parts else "true"
+
+
+def _out_view(field_expr: str, agg: _AggFn) -> str:
+    if agg.float_out or agg.ret == "real":
+        return f"({field_expr} as real)"
+    return f"({field_expr} as int)"
+
+
+def _out_key(row: str, helpers: _Helpers) -> str:
+    parts: list[str] = []
+    for fname, _col, info, _slot in helpers.group_infos:
+        if info.spec_as == "Seq<char>":
+            parts.append(f"{row}.{fname}@")
+        elif info.is_float:
+            parts.append(f"({row}.{fname} as real)")
+        elif info.spec_as == "bool":
+            parts.append(f"{row}.{fname}")
+        else:
+            parts.append(f"({row}.{fname} as int)")
+    if len(parts) == 1:
+        return parts[0]
+    return "(" + ", ".join(parts) + ")"
+
+
+def _having(query: Query, helpers: _Helpers, scalars: dict[str, str], key: str) -> str:
+    expr = query.having_expr.strip()
+    if not expr:
+        return "true"
+    # Group columns are replaced before aggregate calls, which mention those
+    # same names as result fields (``res@[r].name@``).
+    held: list[tuple[str, str]] = []
+    for i, (_fname, col, _info, _slot) in enumerate(helpers.group_infos):
+        if not key or not helpers.key_ty:
+            break
+        if not re.search(rf"\b{re.escape(col)}\b", expr):
+            continue
+        token = f"__gk{i}__"
+        expr = re.sub(rf"\b{re.escape(col)}\b", token, expr)
+        piece = key if len(helpers.group_infos) == 1 else f"({key}).{i}"
+        held.append((token, piece))
+    p = _param_call(helpers.params)
+    key_arg = f", {key}" if key and helpers.key_ty else ""
+    repl: list[tuple[str, str]] = []
+    for agg, src in zip(helpers.aggs, query.aggs, strict=True):
+        if not re.search(rf"\b{re.escape(src.alias)}\b", expr):
+            continue
+        if agg.kind in ("MIN", "MAX"):
+            raise DeclarativeUnsupported("HAVING")
+        repl.append((src.alias, f"{agg.name}({p}, 0{key_arg})"))
+    for name, call in scalars.items():
+        if re.search(rf"\b{re.escape(name)}\b", expr):
+            repl.append((name, call))
+    for name, replacement in sorted(repl, key=lambda item: len(item[0]), reverse=True):
+        expr = re.sub(rf"\b{re.escape(name)}\b", lambda _m, rep=replacement: rep, expr)
+    for token, piece in held:
+        expr = expr.replace(token, piece)
+    return expr
+
+
+def _omitted_after(query: Query, helpers: _Helpers, scalars: dict[str, str], having_of: str) -> str:
+    p = _param_call(helpers.params)
+    binders, _ranges = _quant(helpers.main)
+    key_of = f"{helpers.key_at}({p}, {_idx_call(helpers.main)})"
+    out_exprs = _order_exprs_row(query, helpers)
+    group_exprs = _order_exprs_key(query, helpers, scalars, key_of)
+    before = _not_after(out_exprs, group_exprs, query.order_by)
+    return (
+        f"forall|{binders}, r: int| {helpers.row_hit}({p}, {_idx_call(helpers.main)}) && ({having_of})"
+        f" && !(exists|r2: int| 0 <= r2 < res@.len() && {key_of} == {_out_key('res@[r2]', helpers)})"
+        f" && 0 <= r < res@.len() ==> ({before})"
+    )
+
+
+def _order_exprs_row(query: Query, helpers: _Helpers) -> list[str]:
+    exprs: list[str] = []
+    for key in query.order_by:
+        col = key.column.split(".")[-1]
+        ident = rust_ident(col)
+        agg = next((a for a in helpers.aggs if a.alias == ident), None)
+        if agg is not None:
+            exprs.append(_out_view(f"res@[r].{ident}", agg))
+            continue
+        info = next((g[2] for g in helpers.group_infos if g[0] == ident), None)
+        if info is None:
+            raise DeclarativeUnsupported("ORDER BY")
+        if info.spec_as == "Seq<char>":
+            exprs.append(f"res@[r].{ident}@")
+        elif info.is_float:
+            exprs.append(f"(res@[r].{ident} as real)")
+        else:
+            exprs.append(f"(res@[r].{ident} as int)")
+    return exprs
+
+
+def _order_exprs_key(
+    query: Query, helpers: _Helpers, scalars: dict[str, str], key_of: str
+) -> list[str]:
+    del scalars
+    exprs: list[str] = []
+    p = _param_call(helpers.params)
+    for key in query.order_by:
+        col = key.column.split(".")[-1]
+        ident = rust_ident(col)
+        agg = next((a for a in helpers.aggs if a.alias == ident), None)
+        if agg is not None:
+            if agg.style == "bound":
+                raise DeclarativeUnsupported("ORDER BY")
+            key_arg = f", {key_of}" if helpers.key_ty else ""
+            exprs.append(f"{agg.name}({p}, 0{key_arg})")
+            continue
+        idx = next((i for i, g in enumerate(helpers.group_infos) if g[0] == ident), None)
+        if idx is None:
+            raise DeclarativeUnsupported("ORDER BY")
+        if len(helpers.group_infos) == 1:
+            exprs.append(key_of)
+        else:
+            exprs.append(f"{key_of}.{idx}")
+    return exprs
+
+
+def _not_after(left: list[str], right: list[str], keys: list[OrderKey]) -> str:
+    def clause(k: int) -> str:
+        cmp = ">=" if keys[k].descending else "<="
+        tie = f"({left[k]}) == ({right[k]})"
+        order = f"({left[k]}) {cmp} ({right[k]})"
+        if k + 1 == len(keys):
+            return order
+        return f"if {tie} {{ {clause(k + 1)} }} else {{ {order} }}"
+
+    if not keys:
+        return "true"
+    return clause(0)
+
+
+def _quant(slots: list[_Slot]) -> tuple[str, str]:
+    binders = ", ".join(f"{s.idx}: int" for s in slots)
+    ranges = " && ".join(f"0 <= {s.idx} < {s.param}.n as int" for s in slots)
+    return binders, ranges
+
+
+def _structs(params: list[_Slot], model: SchemaModel) -> str:
+    seen: set[str] = set()
+    blocks: list[str] = []
+    for slot in params:
+        if slot.struct in seen:
+            continue
+        seen.add(slot.struct)
+        _orig, cols = model.lookup_table(slot.table)
+        lines = [f"pub struct {slot.struct} {{", "    pub n: usize,"]
+        for col in sorted(cols):
+            lines.append(f"    pub {rust_ident(col)}: Vec<{cols[col].exec_rust}>,")
+        lines.append("}")
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
+
+
+def _valids(params: list[_Slot], model: SchemaModel, catalog: CatalogAssumptions | None) -> str:
+    seen: set[str] = set()
+    blocks: list[str] = []
+    for slot in params:
+        if slot.struct in seen:
+            continue
+        seen.add(slot.struct)
+        _orig, cols = model.lookup_table(slot.table)
+        checks = [f"{slot.param}.{rust_ident(col)}@.len() == {slot.param}.n as int" for col in sorted(cols)]
+        cap = _row_cap(catalog, slot.table)
+        if cap is not None:
+            checks.append(f"{slot.param}.n as int <= ROW_CAP_{rust_ident(slot.table)} as int")
+        body = "\n    &&& ".join(checks)
+        blocks.append(
+            f"""pub open spec fn valid_cols_{rust_ident(slot.table)}({slot.param}: &{slot.struct}) -> bool {{
+    &&& {body}
+}}"""
+        )
+    return "\n\n".join(blocks)
+
+
+def _consts(
+    params: list[_Slot],
+    model: SchemaModel,
+    catalog: CatalogAssumptions | None,
+    eps: str,
+) -> str:
+    del model
+    lines: list[str] = []
+    seen: set[str] = set()
+    for slot in params:
+        if slot.table in seen:
+            continue
+        seen.add(slot.table)
+        cap = _row_cap(catalog, slot.table)
+        if cap is not None:
+            lines.append(f"pub const ROW_CAP_{rust_ident(slot.table)}: usize = {cap};")
+    if eps:
+        lit = eps if re.search(r"[.eE]", eps) else f"{eps}.0"
+        lines.append(f"pub const FLOAT_ABS_EPS: f64 = {lit}_f64;")
+    return "\n".join(lines)
+
+
+def _row_cap(catalog: CatalogAssumptions | None, table: str) -> int | None:
+    if catalog is None:
+        return None
+    ta = catalog.tables.get(table)
+    if ta is None:
+        for name, item in catalog.tables.items():
+            if name.casefold() == table.casefold():
+                ta = item
+                break
+    if ta is not None and ta.max_rows is not None:
+        return ta.max_rows
+    if catalog.max_rows is not None:
+        return catalog.max_rows
+    from declarative_spec.lemmas import FitRefusal
+
+    raise FitRefusal(f"no row cap for table {table!r}")
+
+
+def _out_row(query: Query, helpers: _Helpers, model: SchemaModel) -> str:
+    lines = ["pub struct OutRow {"]
+    seen: set[str] = set()
+    for fname, _col, info, _slot in helpers.group_infos:
+        if fname in seen:
+            raise DeclarativeUnsupported("GROUP BY")
+        seen.add(fname)
+        lines.append(f"    pub {fname}: {info.exec_rust},")
+    for agg in helpers.aggs:
+        if agg.alias in seen:
+            raise DeclarativeUnsupported("SELECT")
+        seen.add(agg.alias)
+        lines.append(f"    pub {agg.alias}: {agg.exec},")
+    del query, model
+    lines.append("}")
+    return "\n".join(lines)
+
+
+def _string_fields(model: SchemaModel, params: list[_Slot]) -> set[str]:
+    fields: set[str] = set()
+    for slot in params:
+        _orig, cols = model.lookup_table(slot.table)
+        for col, info in cols.items():
+            if info.spec_as == "Seq<char>":
+                fields.add(rust_ident(col))
+    return fields
+
+
+def _string_views(text: str, fields: set[str]) -> str:
+    for field_name in sorted(fields, key=len, reverse=True):
+        text = re.sub(
+            rf"(\.{re.escape(field_name)}@\[)([A-Za-z0-9_]+)(\])(?!@)",
+            r"\1\2\3@",
+            text,
+        )
+    return text
+
+
+def _compile_pred(
+    expr: str,
+    local: list[_Slot],
+    outer: list[_Slot],
+    model: SchemaModel,
+    exists_calls: dict[str, str],
+) -> str:
+    if not expr.strip():
+        return "true"
+    scopes = list(local) + list(outer)
+
+    def isnull(m: re.Match[str]) -> str:
+        not_null = m.group(1) == "!"
+        ref = m.group(2)
+        slot, info = _ref_slot(ref, scopes, model)
+        if info.spec_as == "Seq<char>":
+            cell = _cell(slot, ref.split(".")[-1], info)
+            op = "!=" if not_null else "=="
+            return f"({cell} {op} \"\"@)"
+        return "true" if not_null else "false"
+
+    out = _IS_NULL.sub(isnull, expr)
+
+    def qual(m: re.Match[str]) -> str:
+        alias, col = m.group(1), m.group(2)
+        slot = _slot_named(alias, scopes)
+        if slot is None:
+            return m.group(0)
+        try:
+            _orig, info = model.lookup_column(slot.table, col)
+        except DeclarativeUnsupported:
+            return m.group(0)
+        return _cell(slot, col, info)
+
+    out = _QUAL.sub(qual, out)
+    for name, call in exists_calls.items():
+        out = re.sub(rf"\b{re.escape(name)}\b", call, out)
+    columns = _columns(scopes, model)
+    for col, (slot, info) in sorted(columns.items(), key=lambda item: len(item[0]), reverse=True):
+        if any(s.param == col or s.alias == col for s in scopes):
+            continue
+        out = re.sub(rf"(?<!\.)\b{re.escape(col)}\b", _cell(slot, col, info), out)
+    return out
+
+
+def _columns(scopes: list[_Slot], model: SchemaModel) -> dict[str, tuple[_Slot, ColumnTypeInfo]]:
+    found: dict[str, tuple[_Slot, ColumnTypeInfo]] = {}
+    ambiguous: set[str] = set()
+    for slot in scopes:
+        _orig, cols = model.lookup_table(slot.table)
+        for col, info in cols.items():
+            ident = rust_ident(col)
+            if ident in found and found[ident][0].table.casefold() != slot.table.casefold():
+                ambiguous.add(ident)
+            elif ident not in found:
+                found[ident] = (slot, info)
+    for ident in ambiguous:
+        found.pop(ident, None)
+    return found
+
+
+def _ref_slot(ref: str, scopes: list[_Slot], model: SchemaModel) -> tuple[_Slot, ColumnTypeInfo]:
+    if "." in ref:
+        alias, col = ref.split(".", 1)
+        slot = _slot_named(alias, scopes)
+        if slot is None:
+            raise DeclarativeUnsupported(f"column {ref!r} not found")
+        _orig, info = model.lookup_column(slot.table, col)
+        return slot, info
+    hit = _columns(scopes, model).get(rust_ident(ref))
+    if hit is None:
+        raise DeclarativeUnsupported(f"column {ref!r} not found")
+    return hit
+
+
+def _slot_named(alias: str, scopes: list[_Slot]) -> _Slot | None:
+    for slot in scopes:
+        if slot.alias == alias or slot.param == alias or slot.table == alias:
+            return slot
+    return None
+
+
+def _find_col(
+    col: str, table: str | None, slots: list[_Slot], model: SchemaModel
+) -> tuple[_Slot, ColumnTypeInfo]:
+    if table:
+        for slot in slots:
+            if slot.table.casefold() == table.casefold() or slot.alias == table:
+                _orig, info = model.lookup_column(slot.table, col)
+                return slot, info
+        t_orig, _cols = model.lookup_table(table)
+        for slot in slots:
+            if slot.table.casefold() == t_orig.casefold():
+                _orig, info = model.lookup_column(slot.table, col)
+                return slot, info
+    hits: list[tuple[_Slot, ColumnTypeInfo]] = []
+    for slot in slots:
+        try:
+            _orig, info = model.lookup_column(slot.table, col)
+        except DeclarativeUnsupported:
+            continue
+        hits.append((slot, info))
+    if len(hits) == 1:
+        return hits[0]
+    if not hits:
+        raise DeclarativeUnsupported(f"column {col!r} not found")
+    raise DeclarativeUnsupported(f"column {col!r} is ambiguous across tables")
+
+
+def _cell(slot: _Slot, col: str, info: ColumnTypeInfo) -> str:
+    base = f"{slot.param}.{rust_ident(col)}@[{slot.idx}]"
+    if info.spec_as == "Seq<char>":
+        return f"({base}@)"
+    if info.is_float:
+        return f"({base} as real)"
+    if info.spec_as == "bool":
+        return base
+    return f"({base} as int)"
+
+
+def _param_sig(slots: list[_Slot]) -> str:
+    return ", ".join(f"{s.param}: &{s.struct}" for s in slots)
+
+
+def _param_call(slots: list[_Slot]) -> str:
+    return ", ".join(s.param for s in slots)
+
+
+def _idx_sig(slots: list[_Slot]) -> str:
+    return ", ".join(f"{s.idx}: int" for s in slots)
+
+
+def _idx_call(slots: list[_Slot]) -> str:
+    return ", ".join(s.idx for s in slots)

@@ -8,11 +8,70 @@ from enum import Enum, auto
 
 from declarative_spec.parse import DeclarativeUnsupported
 
+# Rust keywords. A column with one of these names is emitted as a raw identifier.
+_RUST_KEYWORDS = frozenset(
+    {
+        "as",
+        "async",
+        "await",
+        "break",
+        "box",
+        "const",
+        "continue",
+        "crate",
+        "do",
+        "dyn",
+        "else",
+        "enum",
+        "extern",
+        "false",
+        "fn",
+        "for",
+        "if",
+        "impl",
+        "in",
+        "let",
+        "loop",
+        "match",
+        "mod",
+        "move",
+        "mut",
+        "pub",
+        "ref",
+        "return",
+        "self",
+        "static",
+        "struct",
+        "super",
+        "trait",
+        "true",
+        "type",
+        "unsafe",
+        "use",
+        "where",
+        "while",
+        "abstract",
+        "become",
+        "final",
+        "macro",
+        "override",
+        "priv",
+        "typeof",
+        "unsized",
+        "virtual",
+        "yield",
+        "try",
+        "union",
+    }
+)
+
 
 def rust_ident(name: str) -> str:
-    """Lowercase identifier safe for Rust field names; preserve spelling via mapping."""
-    s = name.lower()
-    return re.sub(r"[^a-z0-9_]", "_", s)
+    """Lowercase identifier safe for Rust field names; raw-escape keywords."""
+    s = re.sub(r"[^a-z0-9_]", "_", name.lower())
+    if s in _RUST_KEYWORDS:
+        return f"r#{s}"
+    return s
 
 
 class KeyKind(Enum):

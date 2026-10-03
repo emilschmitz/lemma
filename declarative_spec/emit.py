@@ -511,7 +511,12 @@ def emit_declarative_spec(
     *,
     float_abs_eps: str | None = None,
 ) -> str:
-    parsed = parse_declarative_sql(sql)
+    try:
+        parsed = parse_declarative_sql(sql)
+    except DeclarativeUnsupported:
+        from declarative_spec.emit_surface import emit_from_surface
+
+        return emit_from_surface(sql, schema, catalog, float_abs_eps=float_abs_eps)
     from_table = parsed.from_table or parsed.left_table or ""
     model = SchemaModel.from_caller(schema, from_table)
 
