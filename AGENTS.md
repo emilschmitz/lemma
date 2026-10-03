@@ -1,5 +1,11 @@
 # Lemma agent & engine rules
 
+## Never leave an implementation unproved
+
+Do not skip proving an implementation. Do not wrap it in `external_body`, `assume`, or a trusted `ensures` and call that done. Verus has to check the code that runs.
+
+The only exception is Emil explicitly authorizing a new trusted, in words like "make this a new trusted." A flag, a faster helper, a parallel schedule, or an agent guessing that speed matters is not that authorization. If he has not said it, prove the implementation.
+
 ## Product path (report every failure against one step)
 
 DuckDB is **not** a second engine. It is the pinned column store at **execute**.
@@ -25,6 +31,8 @@ When telling Emil about a problem, lead with **`step N (name):`** and **one** of
 **Traces before any claim about the agent.** If you are about to say the agent caused something, or you only suspect that, open the traces first. A driver line (`FAILED`, `TIMEOUT`, `fail_streak`) is not a trace. On **any** agent fail, the traces are `mcp_results/runs/*.json`, `submitted.json`, `verify_error_custom.log`, **and** the agent conversation `workspace/logs/agent_stream.jsonl` (thinking text and every tool call). Event counts are not that conversation.
 
 **Proofs are the agent’s job** (`AGENT_EDIT` only). Host work is the harness: steps **2, 4, 6, 7** (typed spec, assemble, compile, pin/execute). Do not hand-write or patch proofs. If the agent fails on a **sound** spec, a **general** prompt tweak is allowed; query-specific prompt hacks are not.
+
+**Every host fix gets tests.** When a piece of host code fails and we fix it, add at least two tests that cover different cases of that failure, not one snapshot of the query that broke. Assemble, transpile, verify, compile, and execute each count. A fix without those tests is not done.
 
 ## Git checkpoints (overrides “commit only when asked”)
 
@@ -105,9 +113,12 @@ Every paper/Spot/`LEMMA_EXPERIMENT=1` run must be **reproducible** and **logged*
 - **Docker sandbox is required** for `LEMMA_EXPERIMENT=1` CLI agents:
   `USE_AGENT_DOCKER=1`, `AGENT_IMAGE=lemma-agent:cli`, network-none + allowlisted egress
   (see `research_loop/AGENT_SANDBOX.md`). **Never silently** set `USE_AGENT_DOCKER=0`,
-  drop `MAX_ITERATIONS` below the paper default, pin a fake `LEMMA_DATASET_SIZE`, or
-  count host-agent / measure-failed runs as the 98% gate. If the sandbox cannot be
-  brought up, **stop and tell Emil** — do not continue a watered-down protocol.
+  pin a fake `LEMMA_DATASET_SIZE`, or count a failed measure, a host-agent run, or
+  an instant clock as success on the 98% gate. `MAX_ITERATIONS` is the attempt
+  count per query (one agent session when the proof verifies; another session only
+  when it does not). The default is 1. Setting `MAX_ITERATIONS` overrides it. If
+  the sandbox cannot be brought up, **stop and tell Emil** — do not continue a
+  watered-down protocol.
 
 **How to report a timed run.** The proved binary times `run_query` with `Instant` and prints the median of five runs in microseconds. Say **instant execution** when that clock is 0: the call returned in under 1 microsecond. That is not a failed run, and it is not a performance result on a real table. Say **failed run** when the clock line is missing, the bench crashes, or the official measure errors. Do not quote the raw microsecond field in status updates. A prove failure is separate: the proof did not verify.
 
@@ -120,17 +131,15 @@ in `harvest/` (a real directory inside this repo, gitignored). Do not commit tra
 overnight outputs, credentials, or `harvest/`. Home `~/AGENTS.md` only points
 here. Do not keep a second instruction set.
 
-**Local r12/r13 50/50 is a different experiment.** August 2026, 50-query
-resample, rocketship Trusteds, `VERIFY True`. r14 was a local tiny-SEC
-rehearsal; agent-prove was not cleared. A Spot `n2-highmem-64` does **not**
-replay that. The paper card is 61 jobs, fresh full-SEC shuffle, Docker CLI
-(`USE_AGENT_DOCKER=1`, `AGENT_IMAGE=lemma-agent:cli`, `LEMMA_AGENT_BACKEND=cli`),
-model **`grok-4.7-high`**, `LEMMA_SERIOUS=1`, `EMIT=0`, `FAST=0`, official
-full-table measure, fail-streak 6. Bigger CPU does not turn a new shuffle into r13.
+**Do not misread r13 or r24.**
 
-**The near-complete verify-and-run is r24 on the GCP VM** (SHA `c818042`):
-25 jobs proved and executed, 5 proved then the official pin timed out.
-Local r12/r13 did not execute that card.
+**r13 (August 2026, local) verified 50/50 and did not run the official timed execution.** It used rocketship Trusteds: extra trusted helper functions the agent was allowed to call. Those helpers are off on the paper path (`LEMMA_FAST_TRUSTEDS=0`). A Verus success there is not evidence the program runs on the real SEC table. A Spot VM does not replay r13.
+
+**r24rocket (2026-09-20, GCP, SHA `c818042`) is the verify-and-run result.** 25 jobs proved and the compiled query read real rows (fastest a few milliseconds, slowest about 13 seconds). 5 more proved, then the full-table run hit the 600s wall. Those 25 did not scan the column vectors. They called the pin getters (`get_*_exec`), which read the DuckDB pin. That execution is a measurement of real rows.
+
+At that same commit the host loader still built the column vectors with `Vec::new()` while `n` was the real row count. `load_cols` is `#[verifier::external_body]` with `ensures valid_cols(&cols)`. Verus does not look at the body. It takes the postcondition as given. `valid_cols` says each vector's length is `n`. That postcondition was false of the vectors. A later proof that indexes those vectors (local runs after the prompt started naming `equijoin_pairs_str`) is a proof about zero rows. The binary returns immediately. That is not a proof of the query on SEC, and it is not a usable program. Do not cite those runs as r24. Do not cite r24 as an empty-vector proof. Current HEAD copies the pinned rows into the vectors before `run_query`. An instant return is not a successful run.
+
+A paper batch is: a fresh SEC sample of `LEMMA_SHUFFLE_N` queries (default **6**), plus the 6 published GenDB SEC queries (Q101–Q106), plus 5 TPC-H queries. The old 61-job count was 50 + 6 + 5. Fresh batches set `LEMMA_ASSUMPTION_PACKAGE=sec_margin` (45 upper bounds in `research_loop/assumption_packages/sec_margin.py`; override the env var to pick another package). Docker CLI (`USE_AGENT_DOCKER=1`, `AGENT_IMAGE=lemma-agent:cli`, `LEMMA_AGENT_BACKEND=cli`), model **`grok-4.7-high`**, `LEMMA_SERIOUS=1`, `EMIT=0`, `FAST=0`, official full-table measure, fail-streak 6.
 
 **A later SHA can be fully synced and still be the wrong code.** r25
 (SHA `1af47d4`) checked out `d5cd70c` (real DuckDB row caps). The VM ran
@@ -156,7 +165,7 @@ launch, and do not call it an unsynced laptop or an agent miss.
    `verus_transpiler/` value bounds, or assemble: transpile one query with
    the real SEC counts and Verus the assembled file with the `run_query`
    skeleton. Host `proof fn`s must be `N verified, 0 errors` before the
-   61-job card. One such query would have stopped r25.
+   paper batch. One such query would have stopped r25.
 
 Loop, in order:
 
