@@ -62,6 +62,18 @@ def _parse_harness_metrics(stderr: str) -> dict:
     return {}
 
 
+def _read_lemma_spec_style() -> str:
+    raw = os.environ.get("LEMMA_SPEC_STYLE", "")
+    style = raw.strip().lower()
+    if style in ("", "recursive"):
+        return "recursive"
+    if style == "declarative":
+        return "declarative"
+    raise ValueError(
+        f"LEMMA_SPEC_STYLE must be recursive or declarative, got {raw!r}"
+    )
+
+
 def _maybe_harvest_verified_submit(workspace: Path) -> dict | None:
     """Honor verified MCP runs when agent exited without submit_runquery."""
     from db_extension.agent.measure_core import get_submitted, harvest_verified_submit
@@ -709,6 +721,22 @@ def run_optimization_loop(
         run_dir=str(run.path) if run else "",
         research_log=bool(run),
     )
+
+    spec_style = _read_lemma_spec_style()
+    if spec_style == "declarative":
+        from declarative_spec.drive import run_declarative_optimization_loop
+
+        return run_declarative_optimization_loop(
+            sql_query=sql_query,
+            resolved_schema=resolved_schema,
+            catalog=catalog_assumptions_for_workload(workload),
+            dataset_size=dataset_size,
+            max_iterations=max_iterations,
+            use_mock=use_mock,
+            workspace=workspace,
+            query_id=query_id,
+            float_abs_eps=os.environ.get("LEMMA_FLOAT_ABS_EPS"),
+        )
 
     def _snapshot_history() -> None:
         if run is not None:
