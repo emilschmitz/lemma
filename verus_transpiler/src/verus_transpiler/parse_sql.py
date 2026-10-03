@@ -958,8 +958,16 @@ def _compile_like_pattern(real_col: str, pattern: str) -> str:
         raise UnsupportedContractError(
             "LIKE supports only % prefix/suffix/contains wildcards (no regex)."
         )
+    # Each % is a wildcard. %% is the same wildcard as %, not a literal percent.
+    pattern = re.sub(r"%+", "%", pattern)
+    if pattern == "%":
+        return f'str_like_contains({col_ref}, ""@)'
     if pattern.startswith("%") and pattern.endswith("%") and len(pattern) >= 2:
         lit = pattern[1:-1]
+        if "%" in lit:
+            raise UnsupportedContractError(
+                f"unsupported LIKE pattern {pattern!r} (use %foo%, foo%, or %foo)"
+            )
         return f'str_like_contains({col_ref}, "{lit}"@)'
     if pattern.endswith("%") and not pattern.startswith("%"):
         lit = pattern[:-1]
