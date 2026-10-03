@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from .parse_sql import OrderByItem, SQLQuery, UnsupportedContractError
 
-_INT_TYPES = frozenset({"u8", "u32", "u64", "i32", "i64", "i128", "int", "usize"})
+_INT_TYPES = frozenset({"u8", "u32", "u64", "u128", "i32", "i64", "i128", "int", "usize"})
 
 
 def _field(nfields: int, index: int, side: str) -> str:

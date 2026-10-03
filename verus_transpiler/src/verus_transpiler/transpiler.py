@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+from dataclasses import replace
 
 from research_loop.table_assumptions import (
     CatalogAssumptions,
@@ -1408,6 +1409,36 @@ def _emit_multi_agg_spec(
     return helper + extra + order_extra, spec_fn, ret_type
 
 
+def _lift_derived_group_order(query: SQLQuery) -> SQLQuery | None:
+    """ORDER BY/LIMIT over one grouped derived table is that group-by ordered."""
+    if not query.is_projection or len(query.derived_tables) != 1:
+        return None
+    if query.where_expr or (not query.order_by and query.limit is None):
+        return None
+    inner = query.derived_tables[0].query
+    if (
+        inner.derived_tables
+        or inner.is_multi_agg
+        or not inner.groupby_columns
+        or not inner.agg_type
+        or inner.order_by
+    ):
+        return None
+    alias = inner.agg_specs[0].alias if inner.agg_specs else ""
+    names = {col.lower() for col in inner.groupby_columns}
+    if alias:
+        names.add(alias.lower())
+    projected = {col.lower() for col in query.projection_columns}
+    if projected != names:
+        return None
+    return replace(
+        inner,
+        order_by=list(query.order_by),
+        limit=query.limit,
+        offset=query.offset,
+    )
+
+
 def _emit_single_table_spec(
     query: SQLQuery,
     flat_schema: dict[str, str],
@@ -1415,6 +1446,9 @@ def _emit_single_table_spec(
     helper_name: str = "method_spec_helper",
 ) -> tuple[str, str, str]:
     """Return (helpers, spec_fn, ret_type)."""
+    lifted = _lift_derived_group_order(query)
+    if lifted is not None:
+        return _emit_single_table_spec(lifted, flat_schema, helper_name=helper_name)
     extras = _support_spec_params(query)
     extra_call = _extra_param_call(extras)
     extra_helpers: list[str] = []

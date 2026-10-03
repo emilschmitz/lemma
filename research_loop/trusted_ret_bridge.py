@@ -213,7 +213,7 @@ def _parse_type_at(s: str, pos: int) -> tuple[TypeExpr, int]:
             raise ValueError("unclosed tuple type")
         return TypeTuple(elems=tuple(elems)), pos + 1
 
-    for atom in ("u32", "u64", "i128", "i64", "bool"):
+    for atom in ("u32", "u64", "u128", "i128", "i64", "bool"):
         if s.startswith(atom, pos):
             return TypeAtom(atom), pos + len(atom)
 
