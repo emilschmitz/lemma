@@ -41,6 +41,15 @@ def _contains_non_int_number(node: exp.Expression) -> bool:
     )
 
 
+def _refuse_hardware_date() -> None:
+    """DuckDB will not compare an INTEGER column to a DATE."""
+    if os.environ.get("LEMMA_EXACT_SUM", "0") == "1":
+        raise UnsupportedContractError(
+            "hardware menu does not emit DATE literals: DuckDB will not "
+            "compare an INTEGER column to a DATE"
+        )
+
+
 def _date_from_cast(node: exp.Expression) -> date | None:
     if not isinstance(node, exp.Cast):
         return None
@@ -65,6 +74,8 @@ def _fold_date_interval(node: exp.Expression) -> str | None:
         base = _date_from_cast(node.left)
     except ValueError as exc:
         raise UnsupportedContractError("DATE literal is not a calendar date.") from exc
+    if base is not None:
+        _refuse_hardware_date()
     interval = node.right
     if base is None or not isinstance(interval, exp.Interval):
         return None
@@ -110,6 +121,7 @@ def _fold_int_literal(node: exp.Expression) -> str | None:
         dtype = getattr(to, "this", None)
         if dtype != exp.DataType.Type.DATE:
             return None
+        _refuse_hardware_date()
         lit = node.this
         if not isinstance(lit, exp.Literal) or not lit.is_string:
             return None
@@ -833,6 +845,11 @@ def _compile_case_expr(
     if not ifs:
         raise UnsupportedContractError("CASE requires at least one WHEN branch.")
     default = node.args.get("default")
+    if default is None and os.environ.get("LEMMA_EXACT_SUM", "0") == "1":
+        raise UnsupportedContractError(
+            "hardware menu does not emit CASE without ELSE: DuckDB yields "
+            "NULL, and this helper substitutes 0"
+        )
     else_expr = _to_row_expr(default, resolver) if default is not None else "0"
     result = else_expr
     for if_node in reversed(ifs):
@@ -846,6 +863,11 @@ def _compile_extract_year(
     node: exp.Extract,
     resolver: dict[str, tuple[str, str, str | None]],
 ) -> str:
+    if os.environ.get("LEMMA_EXACT_SUM", "0") == "1":
+        raise UnsupportedContractError(
+            "hardware menu does not emit EXTRACT: DuckDB has no date_part "
+            "on an INTEGER column"
+        )
     part = node.this
     part_name = str(getattr(part, "name", part)).lower()
     if part_name != "year":

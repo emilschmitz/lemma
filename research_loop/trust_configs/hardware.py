@@ -20,7 +20,11 @@ CONFIG = TrustConfig(
         "Base-table IS NULL is false: these columns have no null bit. "
         "COUNT of a null derived SUM or MIN or MAX is 0. "
         "ILIKE is refused because DuckDB folds Unicode case. Division is "
-        "refused because DuckDB `/` is DOUBLE, not integer division. Not the fast "
+        "refused because DuckDB `/` is DOUBLE, not integer division. "
+        "DATE literals are refused because DuckDB will not compare an INTEGER "
+        "column to a DATE. EXTRACT is refused because DuckDB has no date_part "
+        "on INTEGER. CASE without ELSE is refused because DuckDB yields NULL. "
+        "Not the fast "
         "menu. LEMMA_EXACT_SUM is this menu's "
         "switch; product leaves it unset."
     ),
