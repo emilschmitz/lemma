@@ -18,6 +18,90 @@ def rows_from_stdout(stdout: str) -> list[tuple[int, int]]:
     return sorted(rows)
 
 
+def rows_from_stdout_general(stdout: str) -> list[list[str]]:
+    """Rows printed as ``ROW`` plus unit-separator fields. Strings are hex."""
+    rows: list[list[str]] = []
+    for line in stdout.splitlines():
+        if not line.startswith("ROW\x1f"):
+            continue
+        rows.append(line.split("\x1f")[1:])
+    return rows
+
+
+def rows_match_error(got: list[list[str]], expect: list, kinds: list[str]) -> str | None:
+    """None when ``got`` matches ``expect``. Floats use a relative tolerance."""
+    decoded: list[list[object]] = []
+    for raw in got:
+        if len(raw) != len(kinds):
+            return f"proved but a result row has {len(raw)} fields, expected {len(kinds)}"
+        try:
+            decoded.append([_decode_field(cell, kind) for cell, kind in zip(raw, kinds, strict=True)])
+        except ValueError as exc:
+            return f"proved but a result field did not parse ({exc})"
+    expected = [list(row) for row in expect]
+    if len(decoded) != len(expected):
+        return (
+            "proved but result rows differ from the loaded table "
+            f"(got {len(decoded)} rows, expected {len(expected)})"
+        )
+    if _rows_equal(decoded, expected, kinds):
+        return None
+    left = sorted(decoded, key=lambda row: _row_key(row, kinds))
+    right = sorted(expected, key=lambda row: _row_key(row, kinds))
+    if _rows_equal(left, right, kinds):
+        return None
+    return (
+        "proved but result rows differ from the loaded table "
+        f"(got {len(decoded)} rows, expected {len(expected)})"
+    )
+
+
+def _decode_field(cell: str, kind: str) -> object:
+    if kind == "str":
+        try:
+            return bytes.fromhex(cell).decode("utf-8")
+        except ValueError as exc:
+            raise ValueError(f"string {cell!r}") from exc
+    if kind == "float":
+        return float(cell)
+    return int(cell)
+
+
+def _as_float(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ValueError(f"not a float: {value!r}")  # noqa: TRY004
+    return float(value)
+
+
+def _values_equal(got: object, expect: object, kind: str) -> bool:
+    if kind == "float":
+        left = _as_float(got)
+        right = _as_float(expect)
+        scale = max(abs(left), abs(right), 1.0)
+        return abs(left - right) <= 1e-4 * scale
+    return got == expect
+
+
+def _rows_equal(got: list[list[object]], expect: list[list[object]], kinds: list[str]) -> bool:
+    for left, right in zip(got, expect, strict=True):
+        if len(left) != len(kinds) or len(right) != len(kinds):
+            return False
+        for g, e, kind in zip(left, right, kinds, strict=True):
+            if not _values_equal(g, e, kind):
+                return False
+    return True
+
+
+def _row_key(row: list[object], kinds: list[str]) -> tuple[object, ...]:
+    parts: list[object] = []
+    for value, kind in zip(row, kinds, strict=True):
+        if kind == "float":
+            parts.append(round(_as_float(value), 6))
+        else:
+            parts.append(value)
+    return tuple(parts)
+
+
 def load_speed_bar(data_dir: Path) -> tuple[dict[str, str], dict] | None:
     expect_path = data_dir / "expect.json"
     if not expect_path.is_file():

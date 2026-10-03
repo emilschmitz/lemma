@@ -100,7 +100,7 @@ def _emit(sql: str, *, eps: str | None = None) -> str:
 
 
 def test_grouped_scan_states_filter_and_aggregates() -> None:
-    spec = _emit(SCAN)
+    spec = _emit(SCAN, eps="1e20")
     assert "method_spec" not in spec
     assert "inserts into a map" not in spec
     assert "(pre.stmt@[i0]@) != \"\"@" in spec
@@ -108,6 +108,8 @@ def test_grouped_scan_states_filter_and_aggregates() -> None:
     assert "count_cnt(" in spec
     assert "count_distinct_num_filings(" in spec
     assert "avg_avg_line_num(" in spec
+    assert "FLOAT_ABS_EPS" in spec
+    assert "((pre.line@[i0] as int) as real)" in spec or "(((pre.line@[i0] as int)) as real)" in spec
     assert "res@[i].cnt" in spec
     assert "// AGENT_EDIT_START" in spec
     assert "// HOST_LEMMAS_START" in spec

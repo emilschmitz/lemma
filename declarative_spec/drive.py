@@ -14,7 +14,31 @@ from declarative_spec.pipeline import extract_agent_edit, run_declarative_metric
 from declarative_spec.prompt import build_declarative_prompt
 
 
-def _maybe_large_table(*, sql_query: str, catalog, workspace: Path) -> tuple[dict[str, str] | None, dict | None]:
+def _maybe_large_table(
+    *,
+    sql_query: str,
+    catalog,
+    workspace: Path,
+    schema: dict,
+    float_abs_eps: str | None,
+) -> tuple[dict[str, str] | None, dict | None]:
+    measure_db = os.environ.get("LEMMA_MEASURE_DB", "").strip()
+    if measure_db:
+        from research_loop.decl_query_measure import write_query_measure
+
+        prepared = write_query_measure(
+            sql=sql_query,
+            schema=schema,
+            catalog=catalog,
+            db_path=Path(measure_db),
+            dest=workspace / "decl_data",
+            float_abs_eps=float_abs_eps,
+        )
+        return prepared["bins"], {
+            "duck_us": prepared["duck_us"],
+            "rows": prepared["rows"],
+            "kinds": prepared["kinds"],
+        }
     raw = os.environ.get("LEMMA_DECL_ROWS", "").strip()
     if not raw:
         return None, None
@@ -89,11 +113,14 @@ def run_declarative_optimization_loop(
     last_error = ""
     proof_verified = False
     lemma_index = lemma_index_markdown()
+    speed_bar: dict | None = None
     try:
         column_bins, speed_bar = _maybe_large_table(
             sql_query=sql_query,
             catalog=catalog,
             workspace=workspace,
+            schema=resolved_schema,
+            float_abs_eps=float_abs_eps,
         )
     except (DeclarativeUnsupported, FitRefusal, ValueError, OSError) as exc:
         return {
@@ -192,6 +219,7 @@ def run_declarative_optimization_loop(
     return {
         "status": "FAILED",
         "best_latency_us": -1,
+        "duck_us": None if speed_bar is None else speed_bar.get("duck_us"),
         "history": history,
         "error": last_error or "declarative loop exhausted iterations without a run",
         "proof_verified": proof_verified,

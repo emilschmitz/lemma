@@ -73,7 +73,7 @@ def emit_from_surface(
         eps = (float_abs_eps or "").strip()
         if not eps:
             raise DeclarativeUnsupported(
-                "float SUM requires caller-provided LEMMA_FLOAT_ABS_EPS (float_abs_eps)"
+                "float aggregate requires caller-provided LEMMA_FLOAT_ABS_EPS (float_abs_eps)"
             )
     else:
         eps = ""
@@ -412,15 +412,21 @@ def _emit_agg(
         _emit_fold(blocks, name, ret, zero, add, main, params, key_ty)
         return _AggFn(alias, kind, name, ret, is_float, "fold", exec_ty)
     if kind == "AVG":
+        # SQL AVG is a real quotient, including AVG over an integer column.
+        natural_float = is_float
+        is_float = True
+        ret = "real"
+        exec_ty = "f64"
         sum_name = f"{name}_sum"
         cnt_name = f"{name}_count"
-        value = _value_fn(blocks, f"{name}_val", agg, main, params, model, ret)
-        zero = "0real" if is_float else "0int"
-        add = f"if {hit} {{ {value}({_param_call(params)}, {_idx_call(main)}) }} else {{ {zero} }}"
-        _emit_fold(blocks, sum_name, ret, zero, add, main, params, key_ty)
+        value = _value_fn(
+            blocks, f"{name}_val", agg, main, params, model, ret, cast_real=not natural_float
+        )
+        add = f"if {hit} {{ {value}({_param_call(params)}, {_idx_call(main)}) }} else {{ 0real }}"
+        _emit_fold(blocks, sum_name, "real", "0real", add, main, params, key_ty)
         _emit_fold(blocks, cnt_name, "int", "0int", f"if {hit} {{ 1int }} else {{ 0int }}", main, params, key_ty)
-        _emit_avg_wrap(blocks, name, sum_name, cnt_name, params, key_ty, is_float)
-        return _AggFn(alias, kind, name, ret, is_float, "fold", exec_ty)
+        _emit_avg_wrap(blocks, name, sum_name, cnt_name, params, key_ty, True)
+        return _AggFn(alias, kind, name, "real", True, "fold", "f64")
     raise DeclarativeUnsupported(kind)
 
 
@@ -478,6 +484,8 @@ def _value_fn(
     params: list[_Slot],
     model: SchemaModel,
     ret: str,
+    *,
+    cast_real: bool = False,
 ) -> str:
     if agg.expr:
         expr = _compile_case(agg.expr, main, model)
@@ -486,6 +494,8 @@ def _value_fn(
         expr = _cell(slot, agg.column, info)
     else:
         raise DeclarativeUnsupported(agg.kind)
+    if cast_real:
+        expr = f"(({expr}) as real)"
     ranges = " && ".join(f"0 <= {s.idx} < {s.param}.n as int" for s in main)
     default = "0real" if ret == "real" else ("Seq::<char>::empty()" if ret == "Seq<char>" else "0int")
     if ret == "bool":

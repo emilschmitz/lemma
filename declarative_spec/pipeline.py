@@ -174,21 +174,34 @@ def extract_agent_edit(source: str) -> str:
 def _apply_speed_bar(metrics: dict, speed_bar: dict | None) -> dict:
     if speed_bar is None or metrics.get("status") != "SUCCESS":
         return metrics
-    from declarative_spec.bench import rows_from_stdout
-
-    got = rows_from_stdout(str(metrics.get("stdout") or ""))
-    expect = [(int(k), int(v)) for k, v in speed_bar["rows"]]
     duck_us = int(speed_bar["duck_us"])
     latency = int(metrics.get("latency_us", -1))
-    if got != expect:
+    stdout = str(metrics.get("stdout") or "")
+    if "kinds" in speed_bar:
+        from declarative_spec.bench import rows_from_stdout_general, rows_match_error
+
+        err = rows_match_error(
+            rows_from_stdout_general(stdout),
+            list(speed_bar["rows"]),
+            list(speed_bar["kinds"]),
+        )
+    else:
+        from declarative_spec.bench import rows_from_stdout
+
+        got = rows_from_stdout(stdout)
+        expect = [(int(k), int(v)) for k, v in speed_bar["rows"]]
+        err = None
+        if got != expect:
+            err = (
+                "proved but result rows differ from the loaded table "
+                f"(got {len(got)} groups, expected {len(expect)})"
+            )
+    if err:
         return {
             **metrics,
             "status": "FAILURE",
             "duck_us": duck_us,
-            "compiler_error": (
-                f"proved but result rows differ from the loaded table "
-                f"(got {len(got)} groups, expected {len(expect)})"
-            ),
+            "compiler_error": err,
         }
     if latency < 0 or latency >= duck_us:
         return {
@@ -213,20 +226,35 @@ def run_declarative_metrics(
     speed_bar: dict | None = None,
 ) -> dict:
     """Admit the agent edit, assemble, compile, and run."""
-    from declarative_spec.admit import admit_declarative_body
+    from declarative_spec.admit import admit_declarative_body, split_vstd_uses
     from declarative_spec.assemble import assemble_declarative_program
 
     try:
         if "AGENT_EDIT_START" in agent_source:
             body = extract_agent_edit(agent_source)
+            outside = agent_source
         else:
             body = agent_source.strip()
+            outside = agent_source
     except ValueError as exc:
         return {
             "status": "FAILURE",
             "proof_verified": False,
             "latency_us": -1,
             "compiler_error": str(exc),
+        }
+    uses, body, use_violations = split_vstd_uses(body)
+    file_uses, _rest, file_use_violations = split_vstd_uses(outside)
+    for line in file_uses:
+        if line not in uses:
+            uses.append(line)
+    use_violations = use_violations + [v for v in file_use_violations if v not in use_violations]
+    if use_violations:
+        return {
+            "status": "FAILURE",
+            "proof_verified": False,
+            "latency_us": -1,
+            "compiler_error": "; ".join(use_violations),
         }
     admission = admit_declarative_body(body)
     if not admission.ok:
@@ -237,7 +265,9 @@ def run_declarative_metrics(
             "compiler_error": "; ".join(admission.violations),
         }
     try:
-        assembled = assemble_declarative_program(spec_rs, body, column_bins=column_bins)
+        assembled = assemble_declarative_program(
+            spec_rs, body, column_bins=column_bins, extra_uses=uses
+        )
     except ValueError as exc:
         return {
             "status": "FAILURE",
