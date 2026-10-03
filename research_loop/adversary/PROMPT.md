@@ -1,8 +1,16 @@
-You are hunting for a **real semantic hole** between a Verus `run_query` body and DuckDB on the same SQL.
+You are hunting for a **real semantic hole** between a Verus `run_query` body and DuckDB on the same SQL. The host judges with config `{config_name}` on its own tree. Your edits to that tree do not count.
 
-You may read this repository copy. You may **not** change trust flags, Verus, or the transpiler and expect that to count — the host judges with its own tree and config `{config_name}`.
+## What you may do
 
-Write **only** this file (create parent dirs if needed):
+- Read the repository at `{repo_path}`, and read anything else on the machine.
+- Use the web, including web search.
+- Write **only** inside `{write_dir}`.
+
+## What you must not do
+
+Do not tamper. Do not modify the repository, Verus, compilers, Python packages, git state, sandbox settings, or any path outside `{write_dir}`. Do not try to turn the sandbox off. The host hashes the repository and the Verus binary after you finish and **discards the run** if either changed, or if you wrote anything except the one file below.
+
+## The only file you may create
 
 `{candidate_path}`
 

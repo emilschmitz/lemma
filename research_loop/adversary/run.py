@@ -1,7 +1,11 @@
-"""Adversary runner: optional Grok agent in a repo copy, host judges candidate.json.
+"""Adversary runner: Grok in a write-only folder, host judges candidate.json.
 
-On a GCP VM run the same module; set ``ADVERSARY_TIMEOUT_SEC``; no Docker.
-``VERUS`` is resolved via ``research_loop.harness.resolve_verus_bin``.
+The agent may read the repo and use the web. Its workspace is only the output
+folder. ``agent sandbox run --network`` makes the repo and the Verus binary
+read-only for that process. After it exits, the host hashes the repo and Verus
+again and discards the run if they changed.
+
+On a GCP VM run the same module; set ``ADVERSARY_TIMEOUT_SEC``. No Docker.
 """
 
 from __future__ import annotations
@@ -9,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -20,58 +25,70 @@ if str(ROOT) not in sys.path:
 
 from research_loop.adversary.candidate import load_candidate
 from research_loop.adversary.judge import judge_candidate
-
-# Directory names, matched anywhere. Keeps the agent on source, not build
-# trees, run traces, or dataset dumps.
-_COPY_EXCLUDES = (
-    ".git",
-    "target",
-    "harvest",
-    "runs",
-    "generated",
-    "__pycache__",
-    ".venv",
-    "node_modules",
-    "build",
-    "ssb-dbgen",
-    "data",
-    "archive",
-    "scratch",
-    ".cache",
+from research_loop.adversary.tamper import (
+    manifest_changes,
+    repo_snapshot,
+    sha256_file,
+    unexpected_outputs,
 )
+from research_loop.harness import resolve_verus_bin
 
 
-def _copy_repo(dst: Path) -> None:
-    dst.mkdir(parents=True, exist_ok=True)
-    cmd = ["rsync", "-a"]
-    for name in _COPY_EXCLUDES:
-        cmd.append(f"--exclude={name}")
-    cmd.append(f"{ROOT}/")
-    cmd.append(f"{dst}/")
-    subprocess.run(cmd, check=True)
-
-
-def _prompt_text(config_name: str, candidate_rel: str) -> str:
+def _prompt_text(*, config_name: str, repo_path: Path, write_dir: Path) -> str:
     template = (ROOT / "research_loop/adversary/PROMPT.md").read_text(encoding="utf-8")
-    return template.format(config_name=config_name, candidate_path=candidate_rel)
+    candidate = write_dir / "candidate.json"
+    return template.format(
+        config_name=config_name,
+        repo_path=str(repo_path),
+        write_dir=str(write_dir),
+        candidate_path=str(candidate),
+    )
 
 
-def _run_agent(copy_root: Path, prompt: str, timeout: int) -> None:
-    cmd = [
-        "agent",
+def agent_argv(write_dir: Path, repo_path: Path, prompt: str) -> list[str]:
+    """Sandbox the agent: network on, repo read-only, writes only in ``write_dir``."""
+    agent = shutil.which("agent") or "agent"
+    return [
+        agent,
+        "sandbox",
+        "run",
+        "--network",
+        f"--allow-paths={write_dir}",
+        f"--readonly-paths={repo_path}",
+        agent,
         "-p",
-        "--force",
         "--trust",
+        "--sandbox",
+        "enabled",
+        "--workspace",
+        str(write_dir),
         "--model",
         "grok-4.7-high",
         "--output-format",
         "text",
+        prompt,
     ]
+
+
+def _tool_hashes() -> dict[str, str]:
+    hashes: dict[str, str] = {}
+    verus = resolve_verus_bin()
+    verus_digest = sha256_file(Path(verus)) if verus else None
+    hashes["verus"] = verus_digest or ""
+    try:
+        import duckdb
+    except ImportError:
+        hashes["duckdb"] = ""
+    else:
+        digest = sha256_file(Path(duckdb.__file__))
+        hashes["duckdb"] = digest or ""
+    return hashes
+
+
+def _run_agent(write_dir: Path, repo_path: Path, prompt: str, timeout: int) -> None:
     subprocess.run(
-        cmd,
-        input=prompt,
-        text=True,
-        cwd=str(copy_root),
+        agent_argv(write_dir, repo_path, prompt),
+        cwd=str(write_dir),
         timeout=timeout,
         check=False,
     )
@@ -95,16 +112,29 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(report, indent=2))
             return 0
 
-        with tempfile.TemporaryDirectory(prefix="lemma_adversary_copy_") as tmp:
-            copy_root = Path(tmp) / "repo"
-            _copy_repo(copy_root)
-            candidate_rel = "adversary_out/candidate.json"
-            prompt = _prompt_text(args.config, candidate_rel)
-            (copy_root / "ADVERSARY_PROMPT.txt").write_text(prompt, encoding="utf-8")
-            _run_agent(copy_root, prompt, args.timeout)
-            cand_path = copy_root / candidate_rel
+        before_tree = repo_snapshot(ROOT)
+        before_tools = _tool_hashes()
+        with tempfile.TemporaryDirectory(prefix="lemma_adversary_out_") as tmp:
+            write_dir = Path(tmp)
+            prompt = _prompt_text(
+                config_name=args.config, repo_path=ROOT, write_dir=write_dir
+            )
+            _run_agent(write_dir, ROOT, prompt, args.timeout)
+            extra = unexpected_outputs(write_dir)
+            tree_changes = manifest_changes(before_tree, repo_snapshot(ROOT))
+            tool_changes = manifest_changes(before_tools, _tool_hashes())
+            if extra or tree_changes or tool_changes:
+                print("adversary tampered; candidate discarded", file=sys.stderr)
+                if extra:
+                    print(f"unexpected writes: {extra}", file=sys.stderr)
+                if tree_changes:
+                    print(f"repo changes: {tree_changes[:40]}", file=sys.stderr)
+                if tool_changes:
+                    print(f"tool changes: {tool_changes}", file=sys.stderr)
+                return 3
+            cand_path = write_dir / "candidate.json"
             if not cand_path.is_file():
-                print("agent returned nothing: missing adversary_out/candidate.json", file=sys.stderr)
+                print("agent returned nothing: missing candidate.json", file=sys.stderr)
                 return 2
             cand = load_candidate(cand_path)
             report = judge_candidate(cand, config=args.config, verify=True)
