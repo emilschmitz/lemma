@@ -102,6 +102,8 @@ def spec_to_exec_type(t: TypeExpr) -> str:
             return "i128"
         if t.name == "i64":
             return "i64"
+        if t.name == "u128":
+            return "u128"
         if t.name == "Seq<char>":
             return "String"
         raise ValueError(f"unsupported spec atom for exec type: {t.name}")
@@ -242,7 +244,7 @@ def _type_to_hm_str(t: TypeExpr) -> str:
 def _atom_slug(atom: TypeAtom) -> str:
     if atom.name == "Seq<char>":
         return "str"
-    if atom.name in ("u32", "u64", "i64", "i128"):
+    if atom.name in ("u32", "u64", "u128", "i64", "i128"):
         return atom.name
     raise ValueError(f"unsupported atom in slug: {atom.name}")
 
@@ -972,6 +974,29 @@ def _build_seq_bridge(spec_ret: str, elem: TypeExpr) -> RetBridge | None:
     )
 
 
+def _build_option_bridge(parsed: TypeOption) -> RetBridge | None:
+    inner = parsed.inner
+    if not isinstance(inner, TypeAtom) or inner.name not in ("u32", "u64", "u128", "i64", "i128"):
+        return None
+    rust_ret = spec_to_exec_type(parsed)
+    return RetBridge(
+        key=f"opt_{_atom_slug(inner)}",
+        rust_ret=rust_ret,
+        ensures="res == method_spec(cols),",
+        trusted_rs="",
+        default_stub="None",
+        format_result=(
+            "{\n"
+            "    match *res {\n"
+            '        None => "RESULT: none".to_string(),\n'
+            '        Some(v) => format!("RESULT: some {}", v),\n'
+            "    }\n"
+            "}"
+        ),
+        needs_hashmap=False,
+    )
+
+
 def try_build_bridge(spec_ret: str) -> RetBridge | None:
     """Build a structural RetBridge for a normalized MethodSpec return type, or None."""
     norm = normalize_spec_type(spec_ret)
@@ -987,6 +1012,8 @@ def try_build_bridge(spec_ret: str) -> RetBridge | None:
         return _build_map_bridge(norm, parsed.key, parsed.value)
     if isinstance(parsed, TypeSeq):
         return _build_seq_bridge(norm, parsed.elem)
+    if isinstance(parsed, TypeOption):
+        return _build_option_bridge(parsed)
     return None
 
 

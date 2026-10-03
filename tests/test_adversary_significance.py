@@ -7,6 +7,7 @@ import pytest
 
 from research_loop.admit_runquery import admit_runquery_body
 from research_loop.adversary.candidate import load_candidate
+from research_loop.adversary.judge import _parse_printed_result
 from research_loop.adversary.significance import (
     classify_difference,
     sql_demands_order,
@@ -63,6 +64,24 @@ def test_error_vs_value_significant() -> None:
     v = classify_difference("SELECT 1", None, [(1,)], impl_error="boom")
     assert v.significant
     assert v.reason == "error_vs_value"
+
+
+def test_printed_none_matches_sql_null() -> None:
+    row, err = _parse_printed_result("RESULT: none\n")
+    assert err is None
+    assert row == (None,)
+    verdict = classify_difference("SELECT SUM(a) FROM t", [row], [(None,)])
+    assert not verdict.significant
+
+
+def test_printed_some_matches_wide_integer() -> None:
+    row, err = _parse_printed_result("RESULT: some 18446744073709551616\n")
+    assert err is None
+    assert row == (2**64,)
+    verdict = classify_difference("SELECT SUM(a) FROM t", [row], [(2**64,)])
+    assert not verdict.significant
+    wrapped = classify_difference("SELECT SUM(a) FROM t", [(0,)], [(2**64,)])
+    assert wrapped.significant
 
 
 def test_both_errors_not_significant() -> None:

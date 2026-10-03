@@ -1,8 +1,4 @@
-"""Confirmed holes: a body Verus accepts, executed, disagrees with DuckDB.
-
-Skips when Verus is not on the machine. The fixtures are the candidate JSON
-the host judge accepts; the test does not trust a handwritten result.
-"""
+"""Old SUM attacks do not prove against the hardware Option<u128> spec."""
 
 from __future__ import annotations
 
@@ -23,12 +19,11 @@ pytestmark = pytest.mark.skipif(resolve_verus_bin() is None, reason="verus not f
     "name",
     ["adversary_empty_sum.json", "adversary_u64_wrap_sum.json"],
 )
-def test_fixture_is_a_significant_hole(name: str) -> None:
+def test_hardware_sum_attack_does_not_prove(name: str) -> None:
     report = judge_candidate(
         load_candidate(_FIXTURES / name),
         config="hardware",
         verify=True,
     )
-    assert report["status"] == "hole"
-    assert report["significant"] is True
-    assert report["proof_verified"] is True
+    assert report["significant"] is False
+    assert report["status"] == "impl_does_not_fit_spec"

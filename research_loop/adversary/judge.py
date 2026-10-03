@@ -31,6 +31,8 @@ from verus_transpiler import transpile_sql_to_verus
 _SPEC_TRUNC = 4000
 _SCALAR_RET = frozenset({"u64", "i64"})
 _RESULT_SCALAR = re.compile(r"^RESULT:\s*(-?\d+)\s*$", re.MULTILINE)
+_RESULT_NONE = re.compile(r"^RESULT:\s*none\s*$", re.MULTILINE)
+_RESULT_SOME = re.compile(r"^RESULT:\s*some\s+(-?\d+)\s*$", re.MULTILINE)
 _OPAQUE_MARKERS = ("map_len", "checksum", "seq_len", "set_len")
 
 
@@ -120,13 +122,30 @@ def _transpile(sql: str, schema: dict) -> tuple[str | None, dict[str, str] | Non
         return None, None, str(exc)
 
 
+def _scoreable_ret(ret_type: str) -> bool:
+    return ret_type in _SCALAR_RET or ret_type.startswith("opt_")
+
+
 def _parse_scalar_result(stdout: str) -> tuple[int | None, str | None]:
-    if any(m in stdout for m in _OPAQUE_MARKERS):
-        return None, "product printer does not dump full rows"
     m = _RESULT_SCALAR.search(stdout)
     if not m:
         return None, "no RESULT: <integer> line in stdout"
     return int(m.group(1)), None
+
+
+def _parse_printed_result(stdout: str) -> tuple[tuple | None, str | None]:
+    """One printed scalar or Option. ``None`` cell means SQL NULL."""
+    if any(m in stdout for m in _OPAQUE_MARKERS):
+        return None, "product printer does not dump full rows"
+    if _RESULT_NONE.search(stdout):
+        return (None,), None
+    some = _RESULT_SOME.search(stdout)
+    if some:
+        return (int(some.group(1)),), None
+    scalar, reason = _parse_scalar_result(stdout)
+    if reason:
+        return None, reason
+    return (scalar,), None
 
 
 def shell_run_query(body: str, ret_type: str, spec_rs: str) -> str:
@@ -209,7 +228,7 @@ def _exec_verified_scalar(
             "proof_verified": True,
             "stderr": (proc.stderr or "")[:2000],
         }
-    scalar, opaque_reason = _parse_scalar_result(stdout)
+    printed, opaque_reason = _parse_printed_result(stdout)
     if opaque_reason:
         return {
             "status": "opaque_exec_result",
@@ -221,7 +240,7 @@ def _exec_verified_scalar(
     return {
         "status": "exec_ok",
         "proof_verified": True,
-        "impl_rows": [(scalar,)],
+        "impl_rows": [printed],
         "stdout": stdout[:500],
     }
 
@@ -287,12 +306,12 @@ def judge_candidate(
                 "reason": str(exc),
             }
 
-        if ret_type not in _SCALAR_RET:
+        if not _scoreable_ret(ret_type):
             return {
                 **base,
                 "status": "exec_unsupported",
                 "significant": False,
-                "reason": f"verify path supports scalar u64/i64 only, got {ret_type!r}",
+                "reason": f"verify path cannot execute return type {ret_type!r}",
             }
 
         table_name = next(iter(candidate.rows.keys()))

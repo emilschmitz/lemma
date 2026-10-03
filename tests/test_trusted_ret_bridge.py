@@ -246,3 +246,23 @@ def test_seq_push_ensures_use_final_for_mut_receiver() -> None:
     assert "seq_push_str_str_u32_str" in rs
     assert "vec_str_str_u32_str_view(final(s)@) ==" in rs
     assert re.search(r"seq_push_\w+.*ensures \w+\(s@\)", rs) is None
+
+
+def test_option_u128_bridge_prints_null_or_value() -> None:
+    bridge = structural_bridge_for_spec_type("Option<u128>")
+    assert bridge.key == "opt_u128"
+    assert bridge.rust_ret == "Option<u128>"
+    assert "RESULT: none" in bridge.format_result
+    assert "RESULT: some" in bridge.format_result
+    src = build_runquery_agent_source(ret_type=bridge.key)
+    assert "Option<u128>" in src
+    assert "res == method_spec(cols)," in src
+
+
+def test_option_i64_bridge_is_a_separate_shell() -> None:
+    bridge = structural_bridge_for_spec_type("Option<i64>")
+    assert bridge.key == "opt_i64"
+    assert bridge.rust_ret == "Option<i64>"
+    src = build_runquery_agent_source(ret_type=bridge.key)
+    assert "Option<i64>" in src
+    assert "Option<u128>" not in src
