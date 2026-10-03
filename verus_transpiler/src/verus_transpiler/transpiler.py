@@ -581,6 +581,12 @@ def _build_col_helper(
         else None
     )
     val_type = _agg_value_type(query.agg_expr)
+    if (
+        os.environ.get("LEMMA_EXACT_SUM", "0") == "1"
+        and agg == "SUM"
+        and query.groupby_columns
+    ):
+        val_type = "u128"
 
     if query.groupby_columns:
         if len(query.groupby_columns) == 1:
@@ -1546,6 +1552,8 @@ def _emit_single_table_spec(
     spec_body = f"{helper_name}(cols{extra_call}, 0)"
     if query.groupby_columns:
         val_type = _agg_value_type(query.agg_expr)
+        if os.environ.get("LEMMA_EXACT_SUM", "0") == "1" and query.agg_type == "SUM":
+            val_type = "u128"
         gb_schema = groupby_schema(flat_schema, query)
         if len(query.groupby_columns) == 1:
             c = query.groupby_columns[0]
