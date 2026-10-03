@@ -1496,6 +1496,51 @@ def _lift_derived_group_order(query: SQLQuery) -> SQLQuery | None:
     )
 
 
+def _hardware_nullable_derived(
+    query: SQLQuery,
+    alias: str,
+    inner: SQLQuery,
+    flat_schema: dict[str, str],
+    extras: list[tuple[str, str, str]],
+) -> tuple[str, str, str] | None:
+    """COUNT of a null scalar sum is 0. A zero sum is still one row."""
+    if os.environ.get("LEMMA_EXACT_SUM", "0") != "1":
+        return None
+    if inner.groupby_columns or inner.agg_type not in ("SUM", "MIN", "MAX"):
+        return None
+    name = f"derived_{alias}_helper"
+    extra_call = _extra_param_call(extras)
+    if inner.agg_type == "SUM":
+        helpers = _build_exact_sum_helper(name, inner, "k", flat_schema, extras=extras)
+        present = (
+            f"let (v, c) = {name}(cols{extra_call}, 0);\n"
+            "    if c == 0 { None } else { Some(v as u128) }"
+        )
+        option_ty = "Option<u128>"
+    else:
+        helpers = _build_exact_minmax_helper(name, inner, "k", flat_schema, extras=extras)
+        present = (
+            f"let (v, c) = {name}(cols{extra_call}, 0);\n"
+            "    if c == 0 { None } else { Some(v) }"
+        )
+        option_ty = "Option<u64>"
+    if query.agg_type == "COUNT" and query.agg_column == "*":
+        body, ret = "1", "u64"
+    elif query.agg_type == "COUNT":
+        body = (
+            f"let (v, c) = {name}(cols{extra_call}, 0);\n"
+            "    if c == 0 { 0u64 } else { 1u64 }"
+        )
+        ret = "u64"
+    elif query.agg_type == inner.agg_type:
+        body, ret = present, option_ty
+    else:
+        raise UnsupportedContractError(
+            "hardware menu does not compose this aggregate over a nullable scalar"
+        )
+    return helpers, _method_spec_fn(ret, body, extras), ret
+
+
 def _unsigned_expr_violation(query: SQLQuery) -> str | None:
     """Subtraction and negation are signed. Hardware columns are not."""
     if os.environ.get("LEMMA_EXACT_SUM", "0") != "1":
@@ -1585,6 +1630,9 @@ def _emit_single_table_spec(
             raise UnsupportedContractError(
                 "derived table composition requires inner scalar aggregate."
             )
+        nullable = _hardware_nullable_derived(query, derived.alias, inner, flat_schema, extras)
+        if nullable is not None:
+            return nullable
         inner_helpers, inner_spec_call, _inner_ret = emit_derived_inner_spec(
             derived.alias, inner, flat_schema
         )
