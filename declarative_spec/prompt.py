@@ -1,4 +1,6 @@
-"""Agent prompt for declarative run_query proofs."""
+"""Prompt for the declarative flag. The recursive agent prompt is a different file."""
+
+from __future__ import annotations
 
 
 def build_declarative_prompt(
@@ -7,76 +9,108 @@ def build_declarative_prompt(
     spec_path: str,
     edit_path: str,
     lemma_index: str,
+    last_error: str = "",
+    in_docker: bool = False,
 ) -> str:
-    few_shots = _few_shots()
-    return "\n".join(
-        [
-            "# Declarative run_query proof task",
-            "",
-            f"SQL:\n```sql\n{sql.strip()}\n```",
-            "",
-            (f"Read the spec at `{spec_path}`. Edit only `{edit_path}` between "
-            "`// AGENT_EDIT_START` and `// AGENT_EDIT_END`."),
-            "",
-            "Rules:",
-            ("- The `ensures` are conditions on the result (membership and count or sum). "
-            "Do not redefine them. Do not add a `spec fn`. Do not write `proof fn`, `spec fn`, "
-            "`assume(`, or `#[verifier::external_body]`."),
-            ("- Prove the executable loop meets those conditions under `valid_cols` and the caps "
-            "in the spec. Call the host fit lemmas. Do not assume the add fits."),
-            ("- For a float sum, the spec is the real sum of the loaded floats. Use one f64 "
-            "accumulator per group, added left to right. Show the loop is the host fold "
-            "(`lemma_f64_add_defined`, `lemma_f64_left_fold_empty`, `lemma_f64_left_fold_push`), then call "
-            "`lemma_f64_sum_within_eps`. Use the host const `FLOAT_ABS_EPS`, not a numeric "
-            "literal in the agent body. Do not prove f64 rounding step by step. Do not truncate "
-            "the float column to an integer."),
-            ("- Any loop that meets the conditions is allowed. A group-by count may walk the column "
-            "from the end: `i = i - 1`; `prev = map value or 0`; insert `prev + 1`; invariant is "
-            "the two ensures for the suffix that starts at `i`; the fit lemma uses the row cap."),
-            "",
-            "## Lemma index",
-            "",
-            lemma_index.rstrip(),
-            "",
-            "## Few-shot patterns (tables `t` and `u` only)",
-            "",
-            few_shots,
-        ]
-    )
+    """Instructions for this spec style only.
 
+    When ``in_docker`` is set, paths are the container mount. The recursive
+    prompt in ``research_loop.agent_sandbox.build_agent_prompt`` is not used.
+    """
+    if in_docker:
+        spec_path = "/workspace/context/ro/spec.rs"
+        edit_path = "/workspace/runquery_agent.rs"
+        index_path = "/workspace/context/ro/lemma_index.md"
+    else:
+        index_path = "context/ro/lemma_index.md"
 
-def _few_shots() -> str:
-    return "\n".join(  # noqa: FLY002 — paragraphs, not an f-string interpolation
-        [
-            "### 1. Count group-by",
-            "",
-            "`SELECT k, COUNT(*) AS cnt FROM t GROUP BY k`",
-            "",
-            ("Ensures: map `contains_key` iff some index equals `k`, and the value as int equals "
-            "the group count. Executable `u64` map built walking the column from the end. "
-            "Fit lemma: `prev + 1` fits because the count is at most the row cap."),
-            "",
-            "### 2. Join integer sum",
-            "",
-            "`SELECT u.g, SUM(t.v) AS total FROM t JOIN u ON t.a = u.a GROUP BY u.g` with integer `v`.",
-            "",
-            ("Ensures: membership of pairs and `res[g]` as int equals the sum of loaded `t.v`. "
-            "If `u.a` is unique, the fit lemma uses `t`'s row cap times the cap on `v`, not "
-            "`u`'s row cap. Slot is u64 or i128 according to that product."),
-            "",
-            "### 3. Join float sum",
-            "",
-            ("Same query when `v` is float and `LEMMA_FLOAT_ABS_EPS` is set (host emits "
-            "`FLOAT_ABS_EPS`). Ensures: `abs(res[g] as real - real sum) <= FLOAT_ABS_EPS as real`. "
-            "Executable f64 accumulator. Proof calls "
-            "`lemma_f64_sum_within_eps(acc, n_terms, mag_cap, FLOAT_ABS_EPS, terms)`. "
-            "Do not put `0.000001` in the agent body."),
-            "",
-            "### 4. Not this mode",
-            "",
-            ("The recursive product path uses a spec function that recurses on two indexes and "
-            "defines the result map in spec code, with `ensures res == that function`. "
-            "That is the other spec style; this declarative spec does not ask you to write "
-            "a spec fn or mirror that recursive map walk."),
-        ]
-    )
+    sections = [
+        "# Declarative run_query",
+        "",
+        "This session is `LEMMA_SPEC_STYLE=declarative`.",
+        "It is not the recursive optimizer prompt. There is no `method_spec` to match.",
+        "The spec states conditions on the result. A small helper such as `group_count`",
+        "or `matched_sum` is fine. Do not define the query as a spec function that",
+        "walks indexes and updates a map.",
+        "",
+        "## SQL",
+        "",
+        "```sql",
+        sql.strip(),
+        "```",
+        "",
+        "## Edit",
+        "",
+        f"Read `{spec_path}`. Edit only `{edit_path}` between `// AGENT_EDIT_START`",
+        "and `// AGENT_EDIT_END`, with the file edit tool.",
+        "The shell cannot run in this container. Do not use it.",
+        "Do not search outside this workspace. Host lemmas are already in the file",
+        f"between `// HOST_LEMMAS_START` and `// HOST_LEMMAS_END`, and in `{index_path}`.",
+        "Call those names. Do not invent a vstd module path.",
+        "",
+        "## What you may write",
+        "",
+        "Any executable loop that meets the `ensures`. `proof { lemma_...( ... ); }` is allowed.",
+        "Do not write `proof fn`, `spec fn`, `assume(`, or `#[verifier::external_body]`.",
+        "Do not add a `spec fn`. The host already emitted the helpers.",
+        "",
+        "Integers. A `u64` or `i128` add equals the mathematical add when the result fits.",
+        "Call the host fit lemma under the row cap and the cell cap in the spec.",
+        "If the slot is `u64`, call `lemma_count_step_fits_u64` or `lemma_sum_step_fits_u64`.",
+        "If the slot is `i128`, call the `i128` lemma. Do not assume the add fits.",
+        "Bind a view before you use its length: `let keys = cols.k@;` then `keys.len()`.",
+        "Do not write `cols.k@.len()`.",
+        "Snapshot the index before you decrement it. After `i = i - 1` the old suffix",
+        "is `i_old`, not `i`.",
+        "",
+        "A count walks the column from the end. Invariant: the two `ensures` for the",
+        "suffix that starts at `i`. `prev` is the map value or 0. Insert `prev + 1`.",
+        "The fit lemma's cap argument is the `ROW_CAP_...` const in the spec.",
+        "",
+        "Floats. The spec is the real sum of the loaded floats, within `FLOAT_ABS_EPS`.",
+        "Use one `f64` accumulator per group, added left to right.",
+        "Call `lemma_f64_add_defined` before the add, then `lemma_f64_left_fold_push`,",
+        "then `lemma_f64_sum_within_eps`. Pass `FLOAT_ABS_EPS`. Do not write a numeric",
+        "epsilon. Do not unfold an `f64` add. Do not truncate the float to an integer.",
+        "",
+        "A join sum contains a group when some row of each side shares the join key",
+        "and the group column has that value. The value is the sum of the loaded",
+        "measure over those pairs. If the spec's sum cap is one side's row cap times",
+        "the cell cap, the other side's key is unique. Use that cap in the fit lemma.",
+        "",
+        "## Tools",
+        "",
+        "lemma-host MCP is already approved (`--approve-mcps`).",
+        f"1. Edit `{edit_path}`.",
+        "2. Call `run_runquery` with `path` `runquery_agent.rs`.",
+        "   That call verifies, compiles, and runs this declarative program.",
+        "   It does not look for `method_spec`.",
+        "3. Call `submit_runquery` with the returned `run_id`.",
+        "Do this before the session ends. If `run_runquery` returns an error, fix the",
+        "edit and call it again. Do not search the image for another copy of the lemma.",
+        "",
+        "## Lemma index",
+        "",
+        lemma_index.rstrip(),
+        "",
+        "## Other spec style",
+        "",
+        "The recursive product path uses a spec function that recurses on two indexes",
+        "and defines the result map in spec code, with `ensures res == that function`.",
+        "That is the other spec style. Do not write that here.",
+    ]
+    if last_error.strip():
+        sections.extend(
+            [
+                "",
+                "## Previous host error",
+                "",
+                "The last compile or verify of your edit failed. Fix that edit and call",
+                "`run_runquery` again.",
+                "",
+                "```",
+                last_error.strip()[-4000:],
+                "```",
+            ]
+        )
+    return "\n".join(sections) + "\n"

@@ -119,6 +119,12 @@ def _read_body(*, path: str | None, body: str | None, ws: Path | None = None) ->
         raise FileNotFoundError(f"file not found: {target}")
     text = target.read_text(encoding="utf-8")
     if "AGENT_EDIT_START" in text:
+        from db_extension.optimizer import _read_lemma_spec_style
+
+        if _read_lemma_spec_style() == "declarative":
+            from declarative_spec.admit import declarative_edit_from_file
+
+            return declarative_edit_from_file(text), target
         spec_path = target.parent / "context" / "ro" / "spec.rs"
         if not spec_path.is_file():
             raise ValueError(f"missing spec.rs for AGENT_EDIT admission: {spec_path}")
@@ -344,7 +350,11 @@ def run_solution(
 
     elapsed_us = int((time.perf_counter() - t0) * 1_000_000)
     ok = metrics.get("status") == "SUCCESS" and bool(metrics.get("proof_verified"))
-    if ok and lease_measure_enabled():
+    from db_extension.optimizer import _read_lemma_spec_style
+
+    # The H1 lease binary is a different program. Declarative success is the
+    # assembled query's own clock; do not staple lease rows onto it.
+    if ok and lease_measure_enabled() and _read_lemma_spec_style() != "declarative":
         try:
             metrics = merge_lease_into_metrics(metrics)
         except (FileNotFoundError, RuntimeError, ValueError) as exc:

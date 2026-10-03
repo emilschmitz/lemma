@@ -3,34 +3,18 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 
 from declarative_spec.admit import admit_declarative_body
 from declarative_spec.emit import DeclarativeUnsupported, emit_declarative_spec
 from declarative_spec.lemma_index import lemma_index_markdown
 from declarative_spec.lemmas import FitRefusal
-from declarative_spec.pipeline import verify_assembled
+from declarative_spec.pipeline import extract_agent_edit, run_declarative_metrics
 from declarative_spec.prompt import build_declarative_prompt
-
-AGENT_EDIT_START = "// AGENT_EDIT_START"
-AGENT_EDIT_END = "// AGENT_EDIT_END"
 
 
 def _extract_agent_edit_region(source: str) -> str:
-    normalized = source.replace("\r\n", "\n").replace("\r", "\n")
-    if AGENT_EDIT_START not in normalized or AGENT_EDIT_END not in normalized:
-        raise ValueError("missing AGENT_EDIT markers")
-    start = normalized.index(AGENT_EDIT_START) + len(AGENT_EDIT_START)
-    end = normalized.index(AGENT_EDIT_END)
-    return normalized[start:end].strip()
-
-
-def _proof_verified_from_verus_output(output: str) -> bool:
-    for line in (output or "").splitlines():
-        if "verification results::" in line:
-            return bool(re.search(r"\b0 errors\b", line))
-    return False
+    return extract_agent_edit(source)
 
 
 def _ensure_context_files(
@@ -67,11 +51,11 @@ def run_declarative_optimization_loop(
     if use_mock:
         return {
             "status": "FAILED",
+            "best_latency_us": -1,
             "error": "declarative spec style does not use the mock agent",
             "history": [],
         }
 
-    from declarative_spec.assemble import assemble_declarative_program
     from research_loop.agent_sandbox import (
         load_agent_config,
         run_agent_docker,
@@ -108,15 +92,19 @@ def run_declarative_optimization_loop(
         if iteration == 1 or not agent_path.is_file():
             agent_path.write_text(spec)
 
+        cfg = load_agent_config()
+        in_docker = use_docker(cfg)
         prompt = build_declarative_prompt(
             sql=sql_query,
             spec_path=str(spec_path.relative_to(workspace)),
             edit_path=str(agent_path.relative_to(workspace)),
             lemma_index=lemma_index,
+            last_error=last_error,
+            in_docker=in_docker,
         )
+        (workspace / "context" / "ro" / "DECLARATIVE.md").write_text(prompt)
 
-        cfg = load_agent_config()
-        if use_docker(cfg):
+        if in_docker:
             proc = run_agent_docker(workspace, prompt, cfg=cfg, query_id=query_id)
         else:
             proc = run_agent_local(workspace, prompt, cfg=cfg)
@@ -138,18 +126,25 @@ def run_declarative_optimization_loop(
             last_error = "; ".join(admit.violations)
             continue
 
-        assembled = assemble_declarative_program(spec, body)
-        ok, verus_out = verify_assembled(assembled)
-        iter_record["verus_ok"] = ok
-        iter_record["proof_verified"] = _proof_verified_from_verus_output(verus_out)
+        metrics = run_declarative_metrics(
+            spec_rs=spec,
+            agent_source=agent_source,
+            work_dir=workspace / "declarative_build",
+        )
+        iter_record["verus_ok"] = metrics.get("status") == "SUCCESS"
+        iter_record["proof_verified"] = bool(metrics.get("proof_verified"))
+        iter_record["latency_us"] = metrics.get("latency_us", -1)
         proof_verified = bool(iter_record["proof_verified"])
-        if not ok:
-            iter_record["verus_excerpt"] = (verus_out or "")[-4000:]
-            last_error = (verus_out or "verus failed")[-2000:]
+        if metrics.get("status") != "SUCCESS":
+            last_error = str(metrics.get("compiler_error") or "declarative run failed")
+            iter_record["verus_excerpt"] = last_error[-4000:]
         history.append(iter_record)
-        if proof_verified:
+        if metrics.get("status") == "SUCCESS" and proof_verified:
+            latency = int(metrics["latency_us"])
             return {
                 "status": "SUCCESS",
+                "best_latency_us": latency,
+                "best_iteration": iteration,
                 "history": history,
                 "error": "",
                 "proof_verified": True,
@@ -157,7 +152,8 @@ def run_declarative_optimization_loop(
 
     return {
         "status": "FAILED",
+        "best_latency_us": -1,
         "history": history,
-        "error": last_error or "declarative loop exhausted iterations without proof",
+        "error": last_error or "declarative loop exhausted iterations without a run",
         "proof_verified": proof_verified,
     }

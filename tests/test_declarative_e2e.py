@@ -181,6 +181,7 @@ def test_declarative_group_count_verifies_with_fit_lemma() -> None:
     program = assemble_declarative_program(spec, _COUNT_BODY)
     assert program.index("fn main()") > program.index("fn load_cols_t")
     assert "Instant::now()" in program
+    assert "QUERY_LATENCY_US:" in program
     out = _run_verus(program)
     assert "verification results::" in out, out
     assert "0 errors" in out, out
@@ -243,3 +244,78 @@ def test_recursive_mode_emits_walk_without_declarative_emitter(
     )
     assert "method_spec" in out
     assert ".insert(" in out
+
+
+def test_declarative_flag_compiles_and_runs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Production harness entry: the flag compiles the proved body and runs it."""
+    if not VERUS.is_file():
+        pytest.skip("verus binary not installed")
+
+    def _old_pipeline(*_args, **_kwargs):
+        raise AssertionError("recursive pipeline must not run when LEMMA_SPEC_STYLE=declarative")
+
+    monkeypatch.setenv("LEMMA_SPEC_STYLE", "declarative")
+    monkeypatch.setattr("research_loop.harness.run_custom_sql_pipeline", _old_pipeline)
+
+    catalog = CatalogAssumptions(tables={"t": TableAssumptions(max_rows=64)})
+    spec = emit_declarative_spec(_COUNT_SQL, {"t": {"k": "ubigint"}}, catalog)
+    agent = spec.replace(
+        "// AGENT_EDIT_START\n// AGENT_EDIT_END",
+        "// AGENT_EDIT_START\n" + _COUNT_BODY + "\n// AGENT_EDIT_END",
+    )
+    ro = tmp_path / "context" / "ro"
+    ro.mkdir(parents=True)
+    (ro / "spec.rs").write_text(spec)
+    agent_path = tmp_path / "runquery_agent.rs"
+    agent_path.write_text(agent)
+
+    from db_extension.verus_bridge import invoke_verus_custom_pipeline
+
+    metrics = invoke_verus_custom_pipeline(
+        sql=_COUNT_SQL,
+        schema={"t": {"k": "ubigint"}},
+        runquery_path=agent_path,
+    )
+    assert metrics["proof_verified"], metrics.get("compiler_error")
+    assert metrics["status"] == "SUCCESS"
+    assert metrics["latency_us"] >= 0
+
+
+def test_declarative_mcp_run_solution_compiles_and_runs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The Docker agent's run_runquery uses the declarative compiler, not method_spec."""
+    if not VERUS.is_file():
+        pytest.skip("verus binary not installed")
+    monkeypatch.setenv("LEMMA_SPEC_STYLE", "declarative")
+    catalog = CatalogAssumptions(tables={"t": TableAssumptions(max_rows=64)})
+    spec = emit_declarative_spec(_COUNT_SQL, {"t": {"k": "ubigint"}}, catalog)
+    agent = spec.replace(
+        "// AGENT_EDIT_START\n// AGENT_EDIT_END",
+        "// AGENT_EDIT_START\n" + _COUNT_BODY + "\n// AGENT_EDIT_END",
+    )
+    ro = tmp_path / "context" / "ro"
+    ro.mkdir(parents=True)
+    (ro / "spec.rs").write_text(spec)
+    (ro / "query.sql").write_text(_COUNT_SQL + "\n")
+    (ro / "schema.json").write_text('{"t": {"k": "ubigint"}}\n')
+    (tmp_path / "runquery_agent.rs").write_text(agent)
+
+    from db_extension.agent.measure_core import run_solution
+
+    out = run_solution(
+        path="runquery_agent.rs",
+        query_id=1,
+        dataset_size=8,
+        ws=tmp_path,
+        sql=_COUNT_SQL,
+        schema={"t": {"k": "ubigint"}},
+    )
+    assert out["ok"], out.get("errors")
+    assert out["metrics"]["proof_verified"]
+    assert out["metrics"]["latency_us"] >= 0
+    assert "method_spec" not in " ".join(out.get("errors") or [])

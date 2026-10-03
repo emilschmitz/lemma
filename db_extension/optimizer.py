@@ -726,7 +726,7 @@ def run_optimization_loop(
     if spec_style == "declarative":
         from declarative_spec.drive import run_declarative_optimization_loop
 
-        return run_declarative_optimization_loop(
+        result = run_declarative_optimization_loop(
             sql_query=sql_query,
             resolved_schema=resolved_schema,
             catalog=catalog_assumptions_for_workload(workload),
@@ -737,6 +737,10 @@ def run_optimization_loop(
             query_id=query_id,
             float_abs_eps=os.environ.get("LEMMA_FLOAT_ABS_EPS"),
         )
+        latency = result.get("best_latency_us", -1)
+        if latency != -1:
+            print(f"best_latency_us={latency}", flush=True)
+        return result
 
     def _snapshot_history() -> None:
         if run is not None:

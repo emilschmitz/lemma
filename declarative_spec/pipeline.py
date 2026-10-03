@@ -1,8 +1,9 @@
-"""Local Verus check for assembled declarative programs."""
+"""Local Verus check, compile, and run for assembled declarative programs."""
 
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -50,3 +51,163 @@ def verify_assembled(rs_source: str, *, timeout_sec: int = 180) -> tuple[bool, s
             os.unlink(path)
         except OSError:
             pass
+
+
+def _proof_verified(output: str) -> bool:
+    for line in (output or "").splitlines():
+        if "verification results::" in line and re.search(r"\b0 errors\b", line):
+            return True
+    return False
+
+
+def _latency_us(stdout: str) -> int:
+    match = re.search(r"QUERY_LATENCY_US:\s*(\d+)", stdout or "")
+    if not match:
+        return -1
+    return int(match.group(1))
+
+
+def compile_and_run(
+    rs_source: str,
+    *,
+    work_dir: Path | None = None,
+    timeout_sec: int = 300,
+) -> dict:
+    """Verify, compile, and run. Success requires a printed QUERY_LATENCY_US."""
+    verus = _verus_binary()
+    owned_dir = work_dir is None
+    directory = work_dir if work_dir is not None else Path(tempfile.mkdtemp(prefix="decl-run-"))
+    directory.mkdir(parents=True, exist_ok=True)
+    rs_path = directory / "declarative_query.rs"
+    rs_path.write_text(rs_source)
+    binary = directory / "declarative_query"
+    try:
+        proc = subprocess.run(
+            [
+                verus,
+                str(rs_path),
+                "--compile",
+                "--",
+                "-C",
+                "opt-level=3",
+                "-C",
+                "codegen-units=1",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+            check=False,
+            cwd=directory,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "status": "FAILURE",
+            "proof_verified": False,
+            "latency_us": -1,
+            "compiler_error": f"verus --compile timed out after {timeout_sec}s",
+            "verify_msg": str(exc),
+        }
+    log = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    proved = proc.returncode == 0 and _proof_verified(log)
+    if not proved or not binary.is_file():
+        return {
+            "status": "FAILURE",
+            "proof_verified": proved,
+            "latency_us": -1,
+            "compiler_error": log[-4000:],
+            "verify_msg": log[-4000:],
+        }
+    try:
+        run = subprocess.run(
+            [str(binary)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+            cwd=directory,
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "status": "FAILURE",
+            "proof_verified": True,
+            "latency_us": -1,
+            "compiler_error": "binary timed out",
+            "verify_msg": log[-2000:],
+        }
+    finally:
+        if owned_dir:
+            try:
+                binary.unlink(missing_ok=True)
+            except OSError:
+                pass
+    latency = _latency_us(run.stdout or "")
+    if run.returncode != 0 or latency < 0:
+        err = (run.stderr or run.stdout or "binary did not print QUERY_LATENCY_US")[-2000:]
+        return {
+            "status": "FAILURE",
+            "proof_verified": True,
+            "latency_us": -1,
+            "compiler_error": err,
+            "verify_msg": log[-2000:],
+        }
+    return {
+        "status": "SUCCESS",
+        "proof_verified": True,
+        "latency_us": latency,
+        "compiler_error": "",
+        "verify_msg": log[-2000:],
+    }
+
+
+def extract_agent_edit(source: str) -> str:
+    normalized = source.replace("\r\n", "\n").replace("\r", "\n")
+    start_mark = "// AGENT_EDIT_START"
+    end_mark = "// AGENT_EDIT_END"
+    if start_mark not in normalized or end_mark not in normalized:
+        raise ValueError("missing AGENT_EDIT markers")
+    start = normalized.index(start_mark) + len(start_mark)
+    end = normalized.index(end_mark)
+    return normalized[start:end].strip()
+
+
+def run_declarative_metrics(
+    *,
+    spec_rs: str,
+    agent_source: str,
+    work_dir: Path | None = None,
+    timeout_sec: int = 300,
+) -> dict:
+    """Admit the agent edit, assemble, compile, and run."""
+    from declarative_spec.admit import admit_declarative_body
+    from declarative_spec.assemble import assemble_declarative_program
+
+    try:
+        if "AGENT_EDIT_START" in agent_source:
+            body = extract_agent_edit(agent_source)
+        else:
+            body = agent_source.strip()
+    except ValueError as exc:
+        return {
+            "status": "FAILURE",
+            "proof_verified": False,
+            "latency_us": -1,
+            "compiler_error": str(exc),
+        }
+    admission = admit_declarative_body(body)
+    if not admission.ok:
+        return {
+            "status": "FAILURE",
+            "proof_verified": False,
+            "latency_us": -1,
+            "compiler_error": "; ".join(admission.violations),
+        }
+    try:
+        assembled = assemble_declarative_program(spec_rs, body)
+    except ValueError as exc:
+        return {
+            "status": "FAILURE",
+            "proof_verified": False,
+            "latency_us": -1,
+            "compiler_error": str(exc),
+        }
+    return compile_and_run(assembled, work_dir=work_dir, timeout_sec=timeout_sec)

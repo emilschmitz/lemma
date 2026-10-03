@@ -46,6 +46,14 @@ def _lookup_table_assumptions(catalog: CatalogAssumptions | None, table: str) ->
     return None
 
 
+def _host_lemma_region() -> str:
+    """Lemma source the agent can call. Assemble replaces this same region."""
+    from declarative_spec.lemmas import float_error_lemmas_rs, integer_fit_lemmas_rs
+
+    body = integer_fit_lemmas_rs().rstrip() + "\n\n" + float_error_lemmas_rs().rstrip()
+    return "// HOST_LEMMAS_START\n" + body + "\n// HOST_LEMMAS_END"
+
+
 def _row_cap_inclusive(catalog: CatalogAssumptions | None, table: str) -> int:
     ta = _lookup_table_assumptions(catalog, table)
     if ta is not None and ta.max_rows is not None:
@@ -457,8 +465,7 @@ def _emit_count(parsed: ParsedQuery, model: SchemaModel, ctx: _EmitCtx) -> str:
         "",
         count_block,
         "",
-        "// HOST_LEMMAS_START",
-        "// HOST_LEMMAS_END",
+        _host_lemma_region(),
         "",
     ]
 
@@ -661,7 +668,7 @@ def _emit_join_sum(
             )
         )
 
-    parts.extend(["", "// HOST_LEMMAS_START", "// HOST_LEMMAS_END", ""])
+    parts.extend(["", _host_lemma_region(), ""])
 
     gt_name = group_table or lt_orig
     g_struct = lt_struct if gt_name.casefold() == lt_orig.casefold() else rt_struct

@@ -39,6 +39,17 @@ def _strip_comments_and_strings(source: str) -> str:
     return "".join(out)
 
 
+def declarative_edit_from_file(source: str) -> str:
+    """Inner edit for the declarative flag. The recursive admit is not called."""
+    from declarative_spec.pipeline import extract_agent_edit
+
+    inner = extract_agent_edit(source)
+    admission = admit_declarative_body(inner)
+    if not admission.ok:
+        raise ValueError("; ".join(admission.violations))
+    return inner
+
+
 def admit_declarative_body(body: str) -> AdmitResult:
     violations: list[str] = []
     stripped = body.strip()

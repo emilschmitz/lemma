@@ -395,6 +395,46 @@ def read_workspace_bench_hints(runquery_path: Path | None) -> dict[str, str]:
     return {k: str(raw[k]) for k in keys if k in raw and raw[k]}
 
 
+def _invoke_declarative_pipeline(
+    *,
+    sql: str,
+    schema: dict,
+    runquery_path: Path | None,
+    run_query_body: str | None,
+    workload: str | None,
+) -> dict:
+    """Declarative flag: assemble the agent edit, compile, and run. Not the recursive pipeline."""
+    from db_extension.workload_config import catalog_assumptions_for_workload
+    from declarative_spec.emit import emit_declarative_spec
+    from declarative_spec.pipeline import run_declarative_metrics
+
+    spec_rs = ""
+    agent_source = (run_query_body or "").strip()
+    work_dir: Path | None = None
+    if runquery_path is not None:
+        spec_path = runquery_path.parent / "context" / "ro" / "spec.rs"
+        if spec_path.is_file():
+            spec_rs = spec_path.read_text(encoding="utf-8")
+        if not agent_source and runquery_path.is_file():
+            agent_source = runquery_path.read_text(encoding="utf-8")
+        work_dir = runquery_path.parent / "declarative_build"
+    if not spec_rs:
+        spec_rs = emit_declarative_spec(
+            sql,
+            schema,
+            catalog_assumptions_for_workload(workload),
+            float_abs_eps=os.environ.get("LEMMA_FLOAT_ABS_EPS"),
+        )
+    if not agent_source:
+        agent_source = spec_rs
+    metrics = run_declarative_metrics(
+        spec_rs=spec_rs,
+        agent_source=agent_source,
+        work_dir=work_dir,
+    )
+    return normalize_harness_metrics(metrics)
+
+
 def invoke_verus_custom_pipeline(
     *,
     sql: str,
@@ -407,6 +447,17 @@ def invoke_verus_custom_pipeline(
     workload: str | None = None,
 ) -> dict:
     """Run research_loop Verus custom SQL pipeline; normalize metrics for optimizer/MCP."""
+    from db_extension.optimizer import _read_lemma_spec_style
+
+    if _read_lemma_spec_style() == "declarative":
+        return _invoke_declarative_pipeline(
+            sql=sql,
+            schema=schema,
+            runquery_path=runquery_path,
+            run_query_body=run_query_body,
+            workload=workload,
+        )
+
     from research_loop.harness import run_custom_sql_pipeline
 
     bench_hints = read_workspace_bench_hints(runquery_path)

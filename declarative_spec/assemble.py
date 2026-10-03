@@ -85,7 +85,7 @@ fn {fn_name}({params}) -> (cols: {struct_name})
     main_fn += f"""    let start = std::time::Instant::now();
     let _res = {run_call};
     let elapsed = start.elapsed();
-    println!("{{}}", elapsed.as_micros());
+    println!("QUERY_LATENCY_US: {{}}", elapsed.as_micros());
 }}
 """
 
