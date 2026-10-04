@@ -21,6 +21,7 @@ import argparse
 import json
 import os
 import random
+import re
 import subprocess
 import sys
 import time
@@ -151,6 +152,16 @@ def sec_catalog() -> CatalogAssumptions:
     return assumption_package(sec_package())
 
 
+_AVG = re.compile(r"\bAVG\s*\(", re.I)
+
+
+def _avg_refusal(kind: str, qid: str, sql: str) -> dict | None:
+    """AVG results are DOUBLE in the reference engine; the float agent owns them, so they are skipped and recorded."""
+    if _AVG.search(sql):
+        return {"kind": kind, "qid": qid, "sql": " ".join(sql.split()), "refusal": "skipped: AVG returns DOUBLE (float agent)"}
+    return None
+
+
 def draw_sec(seed: int, count: int, schema: dict, catalog: CatalogAssumptions) -> tuple[list[dict], list[dict]]:
     """``count`` emit-able SEC queries from the shuffle generator, plus the refusals met on the way."""
     from research_loop.scripts.sqlsmith_trusted_coverage import parse_sql_file
@@ -173,6 +184,10 @@ def draw_sec(seed: int, count: int, schema: dict, catalog: CatalogAssumptions) -
     for qid, sql in pool:
         if len(picked) == count:
             break
+        skipped = _avg_refusal("sec", qid, sql)
+        if skipped:
+            refused.append(skipped)
+            continue
         try:
             emit_declarative_spec(sql, schema, catalog)
         except (DeclarativeUnsupported, FitRefusal, ValueError) as exc:
@@ -192,6 +207,10 @@ def draw_tpch(seed: int, count: int) -> tuple[list[dict], list[dict]]:
     for name, sql in variants:
         if len(picked) == count:
             break
+        skipped = _avg_refusal("tpch", name, sql)
+        if skipped:
+            refused.append(skipped)
+            continue
         try:
             emit_declarative_spec(sql, schema, catalog)
         except (DeclarativeUnsupported, FitRefusal, ValueError) as exc:
