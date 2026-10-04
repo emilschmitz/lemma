@@ -524,6 +524,7 @@ def emit_declarative_spec(
 
     sql = _flatten_group_derived_sql(sql)
     integer_sql, scales = rewrite_numeric(sql, schema)
+    _check_shape_classes(integer_sql)
     spec = _emit_integer_sql(integer_sql, schema, catalog, float_abs_eps=float_abs_eps)
     return _with_agent_surface(with_out_scales(spec, scales))
 
@@ -566,6 +567,19 @@ def _prune_unread_columns(spec: str) -> str:
 
     spec = _COLS_STRUCT.sub(struct, spec)
     return _VALID_FN.sub(valid, spec)
+
+
+def _check_shape_classes(integer_sql: str) -> None:
+    """Refuse a query with a shape class known to have no proof (see ``shapes``). A parse the surface cannot
+    read is left to the emitter, which refuses it."""
+    from declarative_spec.parse_query import parse_query
+    from declarative_spec.shapes import check_shapes
+
+    try:
+        query = parse_query(integer_sql)
+    except DeclarativeUnsupported:
+        return
+    check_shapes(query)
 
 
 def _flatten_group_derived_sql(sql: str) -> str:
