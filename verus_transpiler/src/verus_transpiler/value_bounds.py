@@ -1865,31 +1865,28 @@ pub open spec fn left_join_miss_generic(cols: &Cols, row: int) -> bool {
 }
 
 """
-    return """// === Trusted arithmetic helpers ===
-// TRUSTED: if (a as int) + (b as int) <= u64::MAX then add is mathematical +.
-#[verifier::external_body]
+    return """// === Arithmetic helpers (proved: Verus checks each body against its requires) ===
+// If (a as int) + (b as int) <= u64::MAX then add is mathematical +.
 pub exec fn add_u64(a: u64, b: u64) -> (res: u64)
     requires
         (a as int) + (b as int) <= u64::MAX as int,
     ensures
         res == a + b,
 {
-    a.checked_add(b).expect("Trusted overflow: ValidCols/requires violated")
+    a + b
 }
 
-// TRUSTED: if (a as int) * (b as int) <= u64::MAX then mul is mathematical *.
-#[verifier::external_body]
+// If (a as int) * (b as int) <= u64::MAX then mul is mathematical *.
 pub exec fn mul_u64_u32(a: u64, b: u32) -> (res: u64)
     requires
         (a as int) * (b as int) <= u64::MAX as int,
     ensures
         res == a * (b as u64),
 {
-    a.checked_mul(b as u64).expect("Trusted overflow: ValidCols/requires violated")
+    a * (b as u64)
 }
 
-// TRUSTED: if (a as int) - (b as int) fits in i64 then sub is mathematical -.
-#[verifier::external_body]
+// If (a as int) - (b as int) fits in i64 then sub is mathematical -.
 pub exec fn sub_u64_to_i64(a: u64, b: u64) -> (res: i64)
     requires
         (a as int) - (b as int) >= i64::MIN as int,
@@ -1897,11 +1894,10 @@ pub exec fn sub_u64_to_i64(a: u64, b: u64) -> (res: i64)
     ensures
         res == (a as int) - (b as int),
 {
-    (a as i64) - (b as i64)
+    ((a as i128) - (b as i128)) as i64
 }
 
-// TRUSTED: if (a as int) + (b as int) fits in i64 then add is mathematical +.
-#[verifier::external_body]
+// If (a as int) + (b as int) fits in i64 then add is mathematical +.
 pub exec fn add_i64(a: i64, b: i64) -> (res: i64)
     requires
         (a as int) + (b as int) >= i64::MIN as int,
@@ -1909,7 +1905,7 @@ pub exec fn add_i64(a: i64, b: i64) -> (res: i64)
     ensures
         res == a + b,
 {
-    a.checked_add(b).expect("Trusted overflow: ValidCols/requires violated")
+    a + b
 }
 
 // === CASE WHEN (simple int branches) ===
@@ -1917,7 +1913,6 @@ pub open spec fn case_when_u64(cond: bool, then_v: u64, else_v: u64) -> u64 {
     if cond { then_v } else { else_v }
 }
 
-#[verifier::external_body]
 pub exec fn case_when_u64_exec(cond: bool, then_v: u64, else_v: u64) -> (res: u64)
     ensures res == case_when_u64(cond, then_v, else_v),
 {
@@ -2074,7 +2069,6 @@ pub open spec fn abs_u64(x: u64) -> u64 {
     x
 }
 
-#[verifier::external_body]
 pub exec fn abs_u64_exec(x: u64) -> (res: u64)
     ensures res == abs_u64(x),
 {
@@ -2337,12 +2331,7 @@ pub open spec fn seq_sum_u64_helper(s: Seq<u64>, i: int) -> u64
     }
 }
 
-""" + left_join_miss + """// TRUSTED: multi-agg HashMap exec view bridge.
-#[verifier::external_body]
-pub open spec fn hashmap_multi_agg_view<K, V>(m: Map<K, V>) -> Map<K, V> {
-    m
-}
-"""
+""" + left_join_miss
 
 
 
