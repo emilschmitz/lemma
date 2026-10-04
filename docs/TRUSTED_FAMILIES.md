@@ -346,11 +346,20 @@ against DuckDB within tolerance, and a wrong body is rejected), `tests/test_decl
 `tests/test_declarative_float_typecheck.py`, `tests/test_f64_idealization_adversary.py` (the adversary's literal-collision,
 cast and loader tests that still apply; its rounding findings are pinned as accepted limitations).
 
-**Accepted limitations (rounding; not holes).** Summation order flips `HAVING SUM(v) > x` / `ORDER BY SUM(v)` near ties
-(`0.1 + 0.2 + 0.3 > 0.6` is true in DuckDB, false over the reals); cancellation (`1e16, 1, 1, 1, -1e16`) and absorption lose
-the small terms in f64 but not in the spec; `AVG` of integers above 2^53 casts with rounding; `p * d = 0.3` equality on computed
-floats follows the reals; underflow (`1e-200 * 1e-200`) is 0 in IEEE and positive in the spec; denormal literals are inexact;
-`0.06 + 0.01` constants are folded exactly (as DuckDB folds them in DECIMAL), not in f64.
+**Accepted limitations (rounding; not holes).** The idealization keeps exactly 11 trusted items.
+- Rounding in every `*_real` lemma: add, subtract, multiply and divide are taken as the real operations; the f64 result differs
+  by up to 2^-53 relative per operation (`0.06 + 0.01` is `0.06999999999999999`; `2^53 + 1` is `2^53`); integer casts above 2^53 round.
+- Underflow: `mul`/`div` have no lower magnitude bound (`1e-200 * 1e-200` is 0 in IEEE and positive in the spec).
+- Denormal and non-dyadic literals: a literal denotes its decimal value, but the double is only the nearest one (denormal literals
+  are the least precise); two literals that round to the same double are refused.
+- Comparisons of computed floats (`p * d = 0.3`, `HAVING SUM(v) > x`, `v + 1 > w`): the spec compares exact reals, the execution
+  compares rounded doubles, so a value that is a tie over the reals can differ.
+- Summation-order flips: DuckDB's `SUM(double)` is plain f64 in an order we do not control and is nondeterministic under parallel
+  execution; `0.1 + 0.2 + 0.3 > 0.6` is true in DuckDB and false over the reals; cancellation (`1e16, 1, 1, 1, -1e16`) and absorption
+  lose small terms in f64 but not in the spec; ORDER BY / HAVING near ties can flip.
+- `0.06 + 0.01` constants are folded exactly (as DuckDB folds them in DECIMAL), not in f64.
+Still refused (not a rounding matter): an integer or DECIMAL column compared with, or mixed in arithmetic with, a float column or
+float expression (no typed bridge), colliding float literals, literals that are not a finite nonzero double.
 
 ## Menu (25 families)
 

@@ -147,6 +147,13 @@ def test_mounted_examples_never_come_from_the_archive() -> None:
             assert not _contains_word(text, name), f"{p.name} uses the shelved name {name}"
 
 
+@pytest.mark.parametrize("kind", list(QUERIES))
+def test_the_emitted_spec_never_mentions_the_archive(kind: str) -> None:
+    spec = emit_declarative_spec(QUERIES[kind], SCHEMA, CATALOG)
+    for word in ("future_float_error_bounds", "shelved", "archive"):
+        assert word not in spec.lower(), word
+
+
 def test_a_body_calling_a_shelved_name_is_just_an_unknown_name() -> None:
     spec = emit_declarative_spec(QUERIES["float"], SCHEMA, CATALOG)
     for name in ("lemma_f64_sum_within_eps", "lemma_f64_left_fold_push", "host_u64_to_f64_exact"):

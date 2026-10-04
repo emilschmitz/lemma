@@ -51,8 +51,7 @@ pub open spec fn abs_real(x: real) -> real {
 // operations behave exactly like the real operations on `as real` values. True IEEE rounding
 // error is ignored, so add/sub/mul/div/cast are an IDEALIZATION, not a proof. Comparisons are
 // exact in IEEE; only the missing link from vstd's uninterpreted `lt_ensures`-style predicates
-// to `as real` is trusted. Rounding error is ACCEPTED (see the top of this file); a proved per-operation
-// error bound is future work, shelved in declarative_spec/future_float_error_bounds/.
+// to `as real` is trusted. Rounding error is ACCEPTED: a proved per-operation error bound is future work.
 // ---------------------------------------------------------------------------------------------
 pub open spec fn f64_safe_bound() -> real {
     0x100000000000000000000000000000000000000000000000000int as real

@@ -175,27 +175,15 @@ BYPASS = [
 ]
 
 
-@pytest.mark.xfail(strict=True, reason="TRANSPILER: `intcol > floatexpr` bypasses the mixing refusal (ill-typed spec)")
 @pytest.mark.parametrize("sql", BYPASS)
 def test_integer_column_against_a_float_expression_is_refused_at_emit(sql: str) -> None:
     with pytest.raises(DeclarativeUnsupported):
         emit(sql)
 
 
-@needs_verus
-def test_the_bypass_spec_is_rejected_loudly_by_verus(tmp_path: Path) -> None:
-    """Not unsound: the emitted spec compares int with real, Verus refuses to typecheck it (E0277), so no body verifies.
-    For a DECIMAL column it would also compare the SCALED integer, so a typed fix must not just cast."""
-    spec = emit("SELECT COUNT(*) AS c FROM t WHERE d > v + 1")
-    assert "(t.d@[i0] as int) > ((t.v@[i0] as real) + 1real)" in spec
-    body = "    let mut res: Vec<OutRow> = Vec::new();\n    res.push(OutRow { c: 12345 });\n    res\n"
-    path = tmp_path / "bypass.rs"
-    path.write_text(assemble_declarative_program(spec, body))
-    proc = subprocess.run(
-        [str(GUARDED), str(path), "--triggers-mode", "silent"], capture_output=True, text=True, check=False
-    )
-    out = proc.stdout + proc.stderr
-    assert "E0277" in out and "verification results::" not in out
+def test_the_bypass_is_now_a_precise_refusal_not_a_late_E0277() -> None:
+    with pytest.raises(DeclarativeUnsupported, match="mixed with a float column"):
+        emit("SELECT COUNT(*) AS c FROM t WHERE d > v + 1")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -334,7 +322,6 @@ def test_emitted_float_spec_does_not_mention_the_archive_names() -> None:
     assert SHELVED.findall(spec) == []
 
 
-@pytest.mark.xfail(strict=True, reason="LEAK: the host lemma comment in spec.rs names the archive folder")
 def test_emitted_spec_does_not_name_the_archive_folder() -> None:
     spec = emit("SELECT SUM(v) AS s FROM t")
     assert "future_float_error_bounds" not in spec and "shelved" not in spec

@@ -270,7 +270,7 @@ class _Rewriter:
                     if fold_number(num.node) is not None:
                         lit = _T(_float_literal(num), "float")
                         return (left, lit) if num is right else (lit, right)
-                    if isinstance(_unparen(flt.node), exp.Column):
+                    if isinstance(_unparen(flt.node), (exp.Column, exp.Add, exp.Sub, exp.Mul, exp.Neg)):
                         raise DeclarativeUnsupported(
                             "a non-constant integer or DECIMAL value compared with a float column: "
                             "mixed with a float column"
