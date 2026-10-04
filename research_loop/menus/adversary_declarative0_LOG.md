@@ -122,6 +122,13 @@ Prover rules from round 4: at least 6 of 10 checks on real attempts; stop early 
 
 | **r4 SEC T1 `SELECT MIN(ddate), MAX(ddate) FROM num WHERE uom='pure' AND qtrs=3`** (synthetic, 1M rows) | T1 | tuned (now a fixture) | manual, 4 checks | **YES, 11 verified, 0 errors** | **320** | 1,227 | 1,830 | **3.83x / 5.72x** |
 
+| **r4 TPC-H T2 (Q1 variant, 6.0M lineitem rows)** | T2 | tuned (now a hard fixture) | manual, 8 checks | **YES, 63 verified, 0 errors** | **32,457** | 37,214 | 110,465 | **1.15x / 3.40x** |
+
+(r4 T2: beats the all-core engine by 1.15x, short of the 2.8x TPC-H target; one backward pass, 1-character string keys as byte codes
+into a slot table, groups kept sorted by insertion. Fixture `hard/group_decimal_sums_string_keys_sorted.rs`, verified by a test
+against the generated SF1 catalog; prompt lessons added: no exec helper fns, backward pass with suffix invariants, product bounds,
+`as_bytes` byte codes, rlimit budget.)
+
 First proved-and-faster result (manual prover (Sonnet subagent), not a model-agent result; official full-table measure with the
 row-count check; the target multipliers are 5.0x SEC / 2.8x TPC-H over the multi-threaded engine, so this one clears 2.8x but
 not 5.0x on the 8-thread engine). The three failed checks were all one thing: `&str ==` has no spec tying it to `@`
