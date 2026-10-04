@@ -4,8 +4,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import select
+import shlex
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 from datetime import UTC, datetime
@@ -238,6 +241,41 @@ def _fast_trusteds_on() -> bool:
     return os.environ.get("LEMMA_FAST_TRUSTEDS", "0") == "1"
 
 
+def agent_guidance() -> str:
+    """How much of a plan the agent is given.
+
+    ``prescribe`` inlines the join menu. ``tips`` points at an optional note.
+    ``bare`` gives the contract and the Verus mode rules only.
+    """
+    raw = os.environ.get("LEMMA_AGENT_GUIDANCE", "prescribe").strip().lower()
+    if raw in {"prescribe", "tips", "bare"}:
+        return raw
+    return "prescribe"
+
+
+_TACTIC_BLOCK = re.compile(r"<!-- TACTIC_BEGIN -->.*?<!-- TACTIC_END -->\n?", re.DOTALL)
+
+_TIPS_MD = """# Optional notes
+
+These are not instructions. The contract is MethodSpec plus the compilation guide.
+
+Proved helpers already in `spec.rs` say what they return. One is worth using when that postcondition is the match list for this SQL. Some hash every column of an equality and then check the strings; the proved result is still the nested list. Writing into a buffer you already own avoids a new allocation on every row. A speed helper matters only when that function is already in `spec.rs` and its postcondition is the value you need.
+"""
+
+
+def strip_tactics(text: str) -> str:
+    return _TACTIC_BLOCK.sub("", text)
+
+
+def materialize_agent_doc(name: str, text: str) -> str:
+    """Drop prescribed plans from the mounted docs unless this arm inlines them."""
+    if agent_guidance() == "prescribe":
+        return text
+    if name in {"AGENTS.md", "COMPILATION_GUIDE.md"}:
+        return strip_tactics(text)
+    return text
+
+
 def _verus_mode_section() -> str:
     """Mode rules that aborted harvested verify logs before a proof result."""
     return """
@@ -248,7 +286,8 @@ These abort the file before a proof result.
 - `&&&` separates spec clauses. In exec code write `&&`. `expected ','` on `&&&` is this.
 - An exec `Vec` or `HashMap` is not spec-equal to a `Seq`. Compare `@` views. `Seq<usize>` vs `Vec<usize>` is E0308 / SpecEq.
 - Do not define a new `proof fn`, `spec fn`, or lemma.
-- You may import an existing vstd lemma inside the edit, for example `use vstd::arithmetic::mul::lemma_mul_nonzero;` or `broadcast use vstd::arithmetic::mul::group_mul_properties;`. Call it from `proof { }`. A `use` whose name contains `axiom` is rejected: that is an assume.
+- Import a vstd lemma inside the edit, before `pub exec fn run_query`: `use vstd::arithmetic::mul::lemma_mul_nonzero;` or `broadcast use vstd::arithmetic::mul::group_mul_properties;`. Call it from `proof { }`.
+- An import whose name contains `axiom`, `arbitrary`, or `proof_from_false` is rejected. A glob is rejected unless it is `vstd::prelude::*` or `vstd::arithmetic::<module>::*`. The host already broadcasts the integer hash-key axioms. Do not import them.
 - An error on a line above `pub exec fn run_query` is host code (`lemma_*`). The edit region cannot repair it.
 """
 
@@ -265,7 +304,16 @@ def _rocketship_exec_section(ctx: str) -> str:
 
     FAST still has to prove the nested MethodSpec. Dropping this menu sent that
     agent searching the filesystem for `par_*` names that are not in `spec.rs`.
+    ``tips`` and ``bare`` leave the menu out so a fresh query is not steered
+    at one helper.
     """
+    if agent_guidance() == "bare":
+        return ""
+    if agent_guidance() == "tips":
+        return f"""
+## Optional notes
+`{ctx}/TIPS.md` is optional. It is not a plan and not part of the contract.
+"""
     menu_body = _proved_join_menu_body(ctx)
     if _fast_trusteds_on():
         return f"""
@@ -454,10 +502,16 @@ or join tables). Do not add Trusted, `assume`,
 - `{ctx}/query.sql`, `{ctx}/schema.json`, `{ctx}/spec.rs`
 - `{ctx}/data_profile.md` (AGENT_DATA_MODE=`{agent_data_mode}`), `{ctx}/row_budgets.md`, `{ctx}/hardware.md` (if present)
 - `{ctx}/COMPILATION_GUIDE.md`, `{ctx}/AGENTS.md`, `{ctx}/PRIMITIVES.md` — contract + Trusted menu only
+{f"- `{ctx}/TIPS.md` — optional notes, not a plan" if agent_guidance() == "tips" else ""}
 
 ## Tools
-- `validate_runquery` / `run_runquery` / `submit_runquery` / `session_status` (lemma-host MCP)
-- Optimize using the SQL + profile + hardware above; prove against MethodSpec; measure SESSION_HOT_US.
+lemma-host is already approved. Call these tools by name. Do not search the repository or the Verus tree for them.
+1. Edit `{body_path}` between `AGENT_EDIT_START` and `AGENT_EDIT_END`. A lemma `use` goes in that region, before `pub exec fn run_query`.
+2. `run_runquery` with `path` `runquery_agent.rs`. Omit `dataset_size` for the iterate cap in Row budgets. The reply has `run_id`, whether the proof verified, and the compiler error.
+3. `submit_runquery` with that `run_id` when the proof verified and you want that body scored.
+4. `session_status` returns `remaining_sec`.
+`validate_runquery` checks the edit only. It does not verify and it does not replace `run_runquery`.
+Prove against MethodSpec. The timed metric is SESSION_HOT_US.
 
 ## Forbidden
 - Other files; repo fishing for stand-in bodies; weakening `ensures`; inventing Trusted APIs.
@@ -667,6 +721,21 @@ def _run_subprocess_tee_agent_log(
             assert proc.stdout is not None
             deadline = time.monotonic() + timeout
             while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    proc.kill()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    raise subprocess.TimeoutExpired(cmd, timeout)
+                ready, _, _ = select.select(
+                    [proc.stdout], [], [], min(1.0, remaining)
+                )
+                if not ready:
+                    if proc.poll() is not None:
+                        break
+                    continue
                 line = proc.stdout.readline()
                 if line:
                     log_f.write(line)
@@ -675,16 +744,74 @@ def _run_subprocess_tee_agent_log(
                         _tee_agent_stdout_line(parsed_f, line, capture=chunks)
                 elif proc.poll() is not None:
                     break
-                elif time.monotonic() > deadline:
-                    proc.kill()
-                    proc.wait()
-                    raise subprocess.TimeoutExpired(cmd, timeout)
             rc = proc.wait()
     finally:
         if parsed_f is not None:
             parsed_f.close()
     out = "".join(chunks)
     return subprocess.CompletedProcess(cmd, rc, stdout=out, stderr="")
+
+
+def _lemma_host_mcp_payload(workspace: Path) -> dict:
+    py = ROOT / ".venv" / "bin" / "python"
+    command = str(py if py.is_file() else Path(os.environ.get("PYTHON", "python3")))
+    return {
+        "mcpServers": {
+            "lemma-host": {
+                "command": command,
+                "args": ["-m", "db_extension.agent.mcp_host", "--transport", "stdio"],
+                "env": {
+                    "LEMMA_AGENT_WORKSPACE": str(workspace.resolve()),
+                    "PYTHONPATH": str(ROOT),
+                },
+            }
+        }
+    }
+
+
+def _write_mcp_json(cursor_dir: Path, workspace: Path) -> None:
+    cursor_dir.mkdir(parents=True, exist_ok=True)
+    (cursor_dir / "mcp.json").write_text(
+        json.dumps(_lemma_host_mcp_payload(workspace), indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _write_local_host_mcp(workspace: Path) -> None:
+    """Project MCP config so a host CLI agent can validate, run, and submit.
+
+    Docker writes this in the entrypoint. A local ``agent`` subprocess does not,
+    and without it the session has no measure tools.
+    """
+    _write_mcp_json(workspace / ".cursor", workspace)
+
+
+def agent_cli_launch_dir(workspace: Path) -> Path:
+    """Project directory the CLI will actually read for MCP.
+
+    Inside a git checkout the CLI walks to the repo root and ignores
+    ``.cursor/mcp.json`` in a nested run workspace. lemma-host is then absent
+    and the agent searches the disk. This directory is outside that repo.
+    """
+    launch = Path(tempfile.mkdtemp(prefix="lemma-agent-cli-"))
+    _write_mcp_json(launch / ".cursor", workspace)
+    prompt = workspace / "PROMPT.txt"
+    if prompt.is_file():
+        (launch / "PROMPT.txt").symlink_to(prompt)
+    return launch
+
+
+def command_with_edit_root(agent_cmd: str, workspace: Path) -> str:
+    """Let the editor write the run workspace while the CLI project is outside git."""
+    root = str(workspace.resolve())
+    quoted = shlex.quote(root)
+    if f"--add-dir {quoted}" in agent_cmd or f"--add-dir {root}" in agent_cmd:
+        return agent_cmd
+    flag = f"--add-dir {quoted}"
+    stripped = agent_cmd.lstrip()
+    if stripped.startswith("agent "):
+        return "agent " + flag + " " + stripped[len("agent ") :]
+    return agent_cmd
 
 
 def prepare_workspace(
@@ -751,8 +878,14 @@ def prepare_workspace(
                         encoding="utf-8",
                     )
                 else:
-                    shutil.copy2(guide, ro / name)
+                    text = guide.read_text(encoding="utf-8")
+                    (ro / name).write_text(materialize_agent_doc(name, text), encoding="utf-8")
                 break
+    tips_path = ro / "TIPS.md"
+    if agent_guidance() == "tips":
+        tips_path.write_text(_TIPS_MD, encoding="utf-8")
+    elif tips_path.exists():
+        tips_path.unlink()
     body_path = workspace / BODY_NAME
     if reset_body or not body_path.exists():
         from research_loop.assemble_runquery import write_runquery_agent_file
@@ -762,6 +895,7 @@ def prepare_workspace(
     from db_extension.agent.session_clock import write_check_script
 
     write_check_script(workspace)
+    _write_local_host_mcp(workspace)
     log_trace(COMPONENT, "workspace_ready", "context prepared", workspace=str(workspace))
     return body_path
 
@@ -831,21 +965,39 @@ def run_agent_local(
 
     log_info(COMPONENT, "agent_subprocess_start", "local bash -lc AGENT_CMD", cwd=str(workspace))
     log_debug(COMPONENT, "agent_cmd", agent_cmd)
+    _write_local_host_mcp(workspace)
+    launch = agent_cli_launch_dir(workspace)
+    log_info(COMPONENT, "agent_cli_launch", "mcp project outside the git root", launch=str(launch))
+    try:
+        subprocess.run(
+            ["agent", "mcp", "enable", "lemma-host"],
+            cwd=launch,
+            env=env,
+            timeout=8,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        log_warn(COMPONENT, "mcp_enable_failed", str(exc)[:300])
     log_trace(COMPONENT, "prompt_bytes", str(prompt_path.stat().st_size))
 
-    cmd = ["bash", "-lc", agent_cmd]
+    cmd = ["bash", "-lc", command_with_edit_root(agent_cmd, workspace)]
     workspace_logs, run_logs = _agent_log_dirs(workspace)
     stream_path = workspace_logs / "agent_stream.jsonl"
     view = _demo_view_dir()
     parsed_path = (view / "agent.log") if view else None
-    proc = _run_subprocess_tee_agent_log(
-        cmd,
-        cwd=workspace,
-        env=env,
-        timeout=timeout,
-        log_path=stream_path,
-        parsed_log_path=parsed_path,
-    )
+    try:
+        proc = _run_subprocess_tee_agent_log(
+            cmd,
+            cwd=launch,
+            env=env,
+            timeout=timeout,
+            log_path=stream_path,
+            parsed_log_path=parsed_path,
+        )
+    finally:
+        shutil.rmtree(launch, ignore_errors=True)
     _sync_agent_logs(workspace_logs, run_logs)
     log_info(
         COMPONENT,

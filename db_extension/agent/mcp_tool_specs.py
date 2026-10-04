@@ -24,7 +24,8 @@ HOST_TOOL_SPECS: tuple[HostToolSpec, ...] = (
     HostToolSpec(
         name="validate_runquery",
         description=(
-            "Validate a run_query body file (default runquery_agent.rs) without running the harness."
+            "Check that runquery_agent.rs is still inside the edit markers and does not add an assume. "
+            "Does not verify. Call run_runquery to verify."
         ),
         parameters={
             "type": "object",
@@ -37,10 +38,10 @@ HOST_TOOL_SPECS: tuple[HostToolSpec, ...] = (
     HostToolSpec(
         name="run_runquery",
         description=(
-            "Validate and run the Verus harness on a run_query solution. "
-            "Returns run_id and metrics. Omit dataset_size for the host iterate row budget "
-            "(see Row budgets in prompt; may match the official pin). Pass an explicit "
-            "smaller dataset_size for quick probes."
+            "Verify the edit, then compile and run it. Returns run_id, proof_verified, "
+            "and the compiler error when the proof fails. Omit dataset_size for the "
+            "iterate row budget in the prompt. Pass a smaller dataset_size only as a probe. "
+            "Call submit_runquery with the run_id after a verified run you want scored."
         ),
         parameters={
             "type": "object",
@@ -60,10 +61,9 @@ HOST_TOOL_SPECS: tuple[HostToolSpec, ...] = (
     HostToolSpec(
         name="submit_runquery",
         description=(
-            "Mark a prior **verified** run_id as the official submission (rejects unverified runs; "
-            "snapshots the frozen body from verify, not the live file). "
-            "Call run_runquery first to obtain run_id. "
-            "When AGENT_SUBMIT_ENDS_SESSION=1 the host ends the agent session after a successful mark."
+            "Score a verified run_id. Pass the run_id from run_runquery. "
+            "Unverified runs are rejected. The snapshot is the body that verified, not a later edit. "
+            "When AGENT_SUBMIT_ENDS_SESSION=1 the host ends the session after a successful mark."
         ),
         parameters={
             "type": "object",

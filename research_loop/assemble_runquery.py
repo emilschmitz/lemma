@@ -169,6 +169,20 @@ def validate_runquery_body(body: str) -> list[str]:
             errors.append(f"forbidden construct in body: {kw.strip()!r}")
     if re.search(r"\bfn\s+\w+", clean):
         errors.append("forbidden top-level fn in body (host provides run_query shell)")
+    from research_loop.agent_vstd_imports import use_is_an_assume
+
+    for line in body.splitlines():
+        stripped = line.strip()
+        if not re.match(r"^(?:pub\s+)?(?:broadcast\s+)?use\b", stripped):
+            continue
+        if use_is_an_assume(stripped):
+            errors.append(f"use is an assume: {stripped}")
+            continue
+        if not re.match(
+            r"^(?:pub\s+)?(?:broadcast\s+)?use\s+vstd::[A-Za-z0-9_:{}*,\s]+;\s*$",
+            stripped,
+        ):
+            errors.append(f"use not allowed: {stripped}")
     depth = 0
     for ch in clean:
         if ch == "{":
@@ -390,6 +404,8 @@ def build_runquery_agent_source(
     sql_block = _sql_comment_block(sql_query)
     hint = _method_spec_hint_comments(method_spec_rs, ret_type=ret_type)
     run_query_fn = (
+        "// A vstd lemma import goes here, still inside AGENT_EDIT, before the function.\n"
+        "// use vstd::arithmetic::mul::lemma_mul_nonzero;\n"
         f"{hint}"
         f"{_run_query_signature(rust_ret, method_spec_rs)}\n"
         f"{_run_query_requires(method_spec_rs)}\n"
