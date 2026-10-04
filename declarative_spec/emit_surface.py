@@ -73,6 +73,7 @@ def emit_from_surface(
         return emit_projection_program(query, model, catalog)
 
     helpers = _emit_helpers(query, "", model)
+    _require_float_mags(query, helpers, model, catalog)
     if any(a.float_out for a in helpers.aggs):
         eps = (float_abs_eps or "").strip()
         if not eps:
@@ -1162,6 +1163,7 @@ def _valids(params: list[_Slot], model: SchemaModel, catalog: CatalogAssumptions
         cap = _row_cap(catalog, slot.table)
         if cap is not None:
             checks.append(f"{slot.param}.n as int <= ROW_CAP_{rust_ident(slot.table)} as int")
+        checks.extend(_float_mag_checks(slot, model, catalog))
         body = "\n    &&& ".join(checks)
         blocks.append(
             f"""pub open spec fn valid_cols_{rust_ident(slot.table)}({slot.param}: &{slot.struct}) -> bool {{
@@ -1191,7 +1193,6 @@ def _consts(
     catalog: CatalogAssumptions | None,
     eps: str,
 ) -> str:
-    del model
     lines: list[str] = []
     seen: set[str] = set()
     for slot in params:
@@ -1204,7 +1205,87 @@ def _consts(
     if eps:
         lit = eps if re.search(r"[.eE]", eps) else f"{eps}.0"
         lines.append(f"pub const FLOAT_ABS_EPS: f64 = {lit}_f64;")
+    lines.extend(_float_mag_consts(params, model, catalog))
     return "\n".join(lines)
+
+
+def _require_float_mags(
+    query: Query,
+    helpers: _Helpers,
+    model: SchemaModel,
+    catalog: CatalogAssumptions | None,
+) -> None:
+    """A float sum without a catalog magnitude cannot discharge the error lemma."""
+    if catalog is None:
+        return
+    from declarative_spec.emit import _lookup_table_assumptions
+    from declarative_spec.lemmas import FitRefusal
+    from research_loop.table_assumptions import column_assumption_exclusive
+
+    for src in query.aggs:
+        if src.expr or not src.column or src.column == "*":
+            continue
+        slot, info = _find_col(src.column, src.table, helpers.main, model)
+        if not info.is_float:
+            continue
+        table_assumptions = _lookup_table_assumptions(catalog, slot.table)
+        if column_assumption_exclusive(src.column, table_assumptions) is None:
+            raise FitRefusal(f"float sum requires magnitude cap for {slot.table}.{src.column}")
+
+
+def _float_mag_name(table: str, column: str) -> str:
+    return f"MAG_CAP_{rust_ident(table)}_{rust_ident(column)}"
+
+
+def _float_mags(
+    params: list[_Slot], model: SchemaModel, catalog: CatalogAssumptions | None
+) -> list[tuple[str, str, int]]:
+    """Float columns whose catalog states an exclusive magnitude."""
+    if catalog is None:
+        return []
+    from declarative_spec.emit import _lookup_table_assumptions
+    from research_loop.table_assumptions import column_assumption_exclusive
+
+    found: list[tuple[str, str, int]] = []
+    seen: set[str] = set()
+    for slot in params:
+        if slot.table in seen:
+            continue
+        seen.add(slot.table)
+        _orig, cols = model.lookup_table(slot.table)
+        table_assumptions = _lookup_table_assumptions(catalog, slot.table)
+        for col, info in sorted(cols.items()):
+            if not info.is_float:
+                continue
+            cap = column_assumption_exclusive(col, table_assumptions)
+            if cap is None:
+                continue
+            found.append((slot.table, col, cap))
+    return found
+
+
+def _float_mag_consts(
+    params: list[_Slot], model: SchemaModel, catalog: CatalogAssumptions | None
+) -> list[str]:
+    return [
+        f"pub const {_float_mag_name(table, col)}: u64 = {cap};"
+        for table, col, cap in _float_mags(params, model, catalog)
+    ]
+
+
+def _float_mag_checks(
+    slot: _Slot, model: SchemaModel, catalog: CatalogAssumptions | None
+) -> list[str]:
+    checks: list[str] = []
+    for table, col, _cap in _float_mags([slot], model, catalog):
+        const = _float_mag_name(table, col)
+        field = f"{slot.param}.{rust_ident(col)}@[i]"
+        checks.append(
+            f"forall|i: int| #![trigger {slot.param}.{rust_ident(col)}@[i]] "
+            f"0 <= i < {slot.param}.n as int ==> "
+            f"-({const} as real) < ({field} as real) < ({const} as real)"
+        )
+    return checks
 
 
 def _row_cap(catalog: CatalogAssumptions | None, table: str) -> int | None:

@@ -281,6 +281,8 @@ def build_declarative_prompt(
         "Float slots use one `f64` accumulator per group and call",
         "`lemma_f64_add_defined`, `lemma_f64_left_fold_push`, and",
         "`lemma_f64_sum_within_eps` with `FLOAT_ABS_EPS`.",
+        "If the spec defines `MAG_CAP_<table>_<column>`, every loaded cell of that",
+        "column is strictly inside that cap. Pass that const as the magnitude.",
         "",
         "Floats. The spec is the real sum of the loaded floats, within `FLOAT_ABS_EPS`.",
         "Use one `f64` accumulator per group, added left to right.",

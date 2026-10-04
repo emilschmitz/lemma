@@ -226,6 +226,43 @@ def test_correlated_max_projection_binds_the_outer_row() -> None:
     assert "Cols_num" in spec and "Cols_sub" in spec
 
 
+def test_catalog_float_column_states_its_magnitude() -> None:
+    from research_loop.assumption_packages.sec_margin import sec_margin_catalog
+
+    sql = """
+    SELECT s.fy, SUM(n.value) AS total
+    FROM num n
+    JOIN sub s ON n.adsh = s.adsh
+    WHERE n.value IS NOT NULL
+    GROUP BY s.fy
+    """
+    spec = emit_declarative_spec(sql, SCHEMA, sec_margin_catalog(), float_abs_eps="1e20")
+    assert "pub const MAG_CAP_num_value: u64 = " in spec
+    assert "#![trigger n.value@[i]]" in spec
+    assert "-(MAG_CAP_num_value as real) < (n.value@[i] as real) < (MAG_CAP_num_value as real)" in spec
+
+
+def test_integer_table_does_not_invent_a_float_magnitude() -> None:
+    from research_loop.assumption_packages.sec_margin import sec_margin_catalog
+    from research_loop.table_assumptions import CatalogAssumptions, TableAssumptions
+
+    bare = CatalogAssumptions(tables={"num": TableAssumptions(max_rows=100)})
+    sql = """
+    SELECT fy, COUNT(*) AS cnt
+    FROM sub
+    GROUP BY fy
+    """
+    spec = emit_declarative_spec(sql, SCHEMA, sec_margin_catalog())
+    assert "MAG_CAP_" not in spec
+    summed = """
+    SELECT n.tag, SUM(n.value) AS total
+    FROM num n
+    GROUP BY n.tag
+    """
+    with pytest.raises(Exception, match="magnitude cap"):
+        emit_declarative_spec(summed, SCHEMA, bare, float_abs_eps="1e20")
+
+
 def test_outer_join_is_refused() -> None:
     sql = """
     SELECT n.tag, COUNT(*) AS cnt
