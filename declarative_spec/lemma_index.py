@@ -46,20 +46,31 @@ def lemma_index_markdown() -> str:
         ("- `lemma_sum_step_fits_i128(prev: i128, cell: i128, total_cap: int)`. "
         "Same sum step for an i128 slot, including negative cells inside the cap."),
         "",
-        ("- `lemma_f64_sum_within_eps(acc: f64, n_terms: int, mag_cap: int, eps: f64, terms: Seq<f64>)`. "
-        "A plain left-to-right f64 fold is within eps of the real sum of the loaded floats when "
-        "eps is at least host_f64_sum_error(n_terms, mag_cap). Pass the ghost sequence you tracked; "
-        "do not unfold an f64 add step by step."),
+        ("- f64 idealization (finite values within the catalog caps behave like the reals; rounding error is ignored; "
+        "this is a labeled trusted family). `f64_within(x: f64, cap: real)` is `x` finite with `-cap < x as real < cap`: "
+        "the loader proves `valid_cols` gives it for a float column with cap `MAG_CAP_<table>_<col> as real` once you read "
+        "`t.<col>@[i].is_finite_spec()` (assert it) and the cap conjunct. Keep `f64_literals_ok()` in every loop "
+        "invariant: it states each f64 literal in the query (and `0.0`) denotes its decimal value."),
         "",
-        ("- `lemma_f64_add_defined(x: f64, y: f64)`. "
-        "IEEE f64 addition is defined for every pair of values. Call it before `acc + x`."),
+        ("- `lemma_f64_add_defined(x, y)`, `lemma_f64_sub_defined(x, y)`, `lemma_f64_mul_defined(x, y)`. "
+        "Call before `x + y`, `x - y`, `x * y`: the exec operation is defined."),
         "",
-        ("- `lemma_f64_left_fold_empty()` and `lemma_f64_left_fold_push(prefix, x, acc, next)`. "
-        "The host opaque f64 accumulator: empty is 0.0. "
-        "`next` is one f64 add, and it is the fold of `prefix.push(x)`."),
+        ("- `lemma_f64_add_within(x, y, o, cx, cy)`, `lemma_f64_sub_within(...)`, `lemma_f64_mul_within(...)`: "
+        "requires `f64_within(x, cx)`, `f64_within(y, cy)`, the op's `*_ensures(x, y, o)` (it holds after `let o = x + y;`), "
+        "and `cx + cy` (`cx * cy` for mul) at most `f64_safe_bound()` (2^200). Ensures `o` is finite, `o as real` equals "
+        "the real sum/difference/product, and `f64_within(o, cx + cy)` (`cx * cy`). A float SUM is exact in the "
+        "idealization: keep `acc as real == <spec sum>` and `f64_within(acc, cnt * cap + 1)` as the loop invariant, so no "
+        "epsilon is ever needed. (`lemma_f64_add_real`/`sub_real`/`mul_real` are the same without the bound.)"),
         "",
-        ("- `host_f64_sum_error(n_terms: int, mag_cap: int) -> real`. "
-        "Host error bound depending only on term count and magnitude cap."),
+        ("- `lemma_f64_div_defined(x, y, cx, cq)` then `lemma_f64_div_real(x, y, o, cx, cq)`: x finite within cx, y finite and "
+        "nonzero, `-cq * |y| < x < cq * |y|`: the quotient `o as real == x as real / y as real`. Use for AVG."),
+        "",
+        ("- `host_u64_to_f64(n: u64) -> f64` and `host_i128_to_f64(n: i128) -> f64` (exec): the cast, with "
+        "`(o as real) == (n as int as real)` and `o` finite. vstd gives the plain `as f64` no meaning, so use these."),
+        "",
+        ("- `lemma_f64_lt_real(x, y, o)`, `le`, `gt`, `ge`, `eq`: after `let o = x < y;` (resp. `<=`, `>`, `>=`, `==`) with "
+        "both finite, `o <==> (x as real) < (y as real)` (resp. the other relations). Use for a float filter, MIN/MAX, "
+        "ORDER BY on a float, HAVING on a float aggregate."),
         "",
         "- `abs_real(x: real) -> real`. Absolute value on reals.",
         "",

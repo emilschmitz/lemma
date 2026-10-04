@@ -206,10 +206,7 @@ def test_trusted_idealization_family_is_exactly_these_lemmas() -> None:
         head = part.lstrip().splitlines()[0]
         names.append(head.split("fn ")[1].split("(")[0])
     assert names == [
-        "lemma_f64_left_fold_empty",
         "lemma_f64_add_defined",
-        "lemma_f64_left_fold_push",
-        "lemma_f64_sum_within_eps",
         "lemma_f64_sub_defined",
         "lemma_f64_mul_defined",
         "lemma_f64_add_real",
@@ -226,4 +223,4 @@ def test_trusted_idealization_family_is_exactly_these_lemmas() -> None:
         "lemma_f64_eq_real",
     ]
     # Every trusted item of the family carries its label.
-    assert rust.count("// TRUSTED (f64 idealization)") >= 14
+    assert rust.count("// TRUSTED (f64 idealization)") >= 15
