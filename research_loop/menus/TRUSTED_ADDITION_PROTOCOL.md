@@ -20,3 +20,21 @@ remain forbidden.
    every finding, an entry in `docs/TRUSTED_FAMILIES.md` (exact text), and a line in the paper's
    Limitations section.
 4. **Reporting.** Every result that depends on a trusted statement says so.
+
+## Accepted: floating-point error (Emil, 2026-10-04)
+
+Floating-point rounding error is an ACCEPTED limitation for now. Floats are modeled as exact real
+arithmetic (the "f64 idealization": finite `f64` add/sub/mul/div, casts and comparisons behave as the
+real operations; rounding is ignored). Results on `DOUBLE` columns are compared with DuckDB
+empirically, within a tolerance, never exactly. So an adversary finding that is ONLY rounding error
+(last-bit differences, summation-order differences, near-tie flips in `HAVING`/`ORDER BY` on computed
+floats, int-to-float casts above 2^53, underflow/denormals) is logged as "accepted float limitation"
+and is NOT a hole and NOT a reason to block a merge.
+
+Still holes and blockers (soundness, not accuracy): a vacuous hypothesis that makes every body verify
+(e.g. two float literals that round to the same double), wrong binding or typing, a refusal bypass
+that lets a wrong spec through, a trusted statement that is false for reasons other than rounding.
+
+The earlier error-bound lemmas (sum-within-eps, left-fold, exact-result lemmas) are NOT used. They are
+kept, documented, in `declarative_spec/future_float_error_bounds/` as future work: a proved
+error bound would replace the idealization later.

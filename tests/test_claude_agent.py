@@ -91,11 +91,54 @@ def test_config_dir_is_mounted_read_only_and_key_absent_when_unset(
     assert "ANTHROPIC_API_KEY" not in args
 
 
-def test_unset_credentials_fail_loudly(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_unset_credentials_and_no_login_file_fail_loudly(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("LEMMA_CLAUDE_CONFIG_DIR", raising=False)
-    with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY nor LEMMA_CLAUDE_CONFIG_DIR"):
+    monkeypatch.setenv("HOME", str(tmp_path))  # an empty home: no login file
+    with pytest.raises(RuntimeError, match="no Claude login file"):
         claude_docker_args()
+
+
+def test_login_file_is_mounted_alone_and_read_only_by_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("LEMMA_CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".claude").mkdir()
+    login = tmp_path / ".claude" / ".credentials.json"
+    login.write_text("{}")  # dummy content: the code only builds a mount, it never reads the file
+    (tmp_path / ".claude" / "history.jsonl").write_text("not mounted")
+    (tmp_path / ".claude.json").write_text("{}")  # account state file next to the token file
+    args = claude_docker_args()
+    assert f"{(tmp_path / '.claude.json').resolve()}:/root/.claude-host/.claude.json:ro" in args
+    assert f"{login.resolve()}:/root/.claude-host/.credentials.json:ro" in args
+    assert not any("history" in a for a in args)  # only the one file, not the directory
+    assert "ANTHROPIC_API_KEY" not in args
+
+
+def test_oauth_token_is_passed_by_name_only_and_beats_the_login_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("LEMMA_CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sentinel-not-a-real-token")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / ".credentials.json").write_text("{}")
+    args = claude_docker_args()
+    assert "CLAUDE_CODE_OAUTH_TOKEN" in args
+    assert not any("sentinel" in a for a in args)
+    assert not any(".credentials.json" in a for a in args)
+
+
+def test_key_wins_over_login_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sentinel-not-a-real-key")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / ".credentials.json").write_text("{}")
+    args = claude_docker_args()
+    assert "ANTHROPIC_API_KEY" in args and not any(".credentials.json" in a for a in args)
 
 
 def test_missing_config_dir_fails_loudly(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -108,7 +151,7 @@ def test_missing_config_dir_fails_loudly(monkeypatch: pytest.MonkeyPatch, tmp_pa
 def test_ladder_env_selects_claude_for_claude_slugs() -> None:
     from research_loop.scripts.declarative_ladder import agent_env
 
-    env = agent_env("claude-sonnet-5-5")
+    env = agent_env("claude-sonnet-5-5", "declarative")
     assert env["AGENT_IMAGE"] == CLAUDE_IMAGE
     assert env["AGENT_ENV"] == ""
     assert env["AGENT_CMD"] == claude_agent_cmd("claude-sonnet-5-5")
@@ -117,7 +160,7 @@ def test_ladder_env_selects_claude_for_claude_slugs() -> None:
 def test_ladder_env_keeps_cursor_agent_for_other_slugs() -> None:
     from research_loop.scripts.declarative_ladder import agent_env
 
-    env = agent_env("grok-4.7-high")
+    env = agent_env("grok-4.7-high", "declarative")
     assert env["AGENT_CMD"].startswith("agent -p ") and "--model grok-4.7-high" in env["AGENT_CMD"]
     assert env["AGENT_IMAGE"] == "lemma-agent:cli"
 

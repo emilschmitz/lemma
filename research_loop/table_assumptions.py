@@ -47,6 +47,9 @@ class ColumnAssumption:
     # Exclusive upper bound on the sum of absolute cell values, when that total
     # fits in u64. A single pass that adds each cell at most once stays below it.
     abs_sum_exclusive: int | None = None
+    # DECIMAL columns: the bounds above are on the stored integer, value * 10**scale. The
+    # assumption-package check requires the database column to be DECIMAL(_, scale).
+    scale: int = 0
 
 
 @dataclass(frozen=True)

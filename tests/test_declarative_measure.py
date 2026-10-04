@@ -33,13 +33,12 @@ def test_key_cap_emitted_only_when_column_is_bounded() -> None:
     open_ended = emit_declarative_spec(_SQL, {"t": {"k": "ubigint"}}, _catalog(domain=None))
     assert "pub const KEY_CAP_t_k: usize = 32;" in capped
     assert "KEY_CAP_t_k" not in open_ended
-    assert "lemma_index_key_below_cap" in capped
+    assert "lemma_index_key_below_cap" not in capped
     assert "lemma_dense_count_map" in capped
-    assert "lemma_index_key_below_cap" not in open_ended
     assert "lemma_dense_count_map" not in open_ended
 
 
-def test_key_bound_lemma_names_the_column_for_two_schemas() -> None:
+def test_key_bound_is_in_valid_cols_for_two_schemas() -> None:
     fact = emit_declarative_spec(
         "SELECT grp, COUNT(*) AS cnt FROM fact GROUP BY grp",
         {"fact": {"grp": "ubigint"}},
@@ -65,40 +64,24 @@ def test_key_bound_lemma_names_the_column_for_two_schemas() -> None:
         ),
     )
     assert "cols.grp@[i] as int <= 63" in fact
-    assert "(cols.grp@[i] as int) < (KEY_CAP_fact_grp as int)" in fact
+    assert "lemma_index_key_below_cap" not in fact
     assert "cols.slot@[i] as int <= 255" in src
-    assert "(cols.slot@[i] as int) < (KEY_CAP_src_slot as int)" in src
+    assert "lemma_index_key_below_cap" not in src
 
 
-def test_key_bound_lemma_verifies_for_two_domains(tmp_path: Path) -> None:
-    cases = (
-        (
-            "SELECT k, COUNT(*) AS cnt FROM t GROUP BY k",
-            {"t": {"k": "ubigint"}},
-            _catalog(domain=8),
-        ),
-        (
-            "SELECT slot, COUNT(*) AS c FROM src GROUP BY slot",
-            {"src": {"slot": "ubigint"}},
-            CatalogAssumptions(
-                tables={
-                    "src": TableAssumptions(
-                        max_rows=64,
-                        columns={"slot": ColumnAssumption(max_value_exclusive=256)},
-                    )
-                },
-            ),
-        ),
-    )
+def test_dense_count_body_verifies_for_two_domains_without_a_key_bound_lemma(tmp_path: Path) -> None:
+    """Verus derives `k < KEY_CAP` from `valid_cols` itself: the body asserts it, no lemma call."""
     verus = Path("/home/emil/tools/verus/verus")
-    for sql, schema, catalog in cases:
-        spec = emit_declarative_spec(sql, schema, catalog)
-        assert "pub proof fn lemma_dense_count_map(" in spec
-        cut = spec.index("// HOST_LEMMAS_START")
-        src = spec[:cut].rstrip() + "\n}\n\nfn main() {}\n"
-        path = tmp_path / f"{next(iter(schema))}.rs"
+    for domain in (8, 256):
+        spec = emit_declarative_spec(_SQL, {"t": {"k": "ubigint"}}, _catalog(domain=domain))
+        assert "lemma_index_key_below_cap" not in spec
+        src = spec.replace("// AGENT_EDIT_START\n// AGENT_EDIT_END", _DENSE_BODY)
+        assert src != spec
+        path = tmp_path / f"d{domain}.rs"
         path.write_text(src)
-        proc = subprocess.run([str(verus), str(path)], capture_output=True, text=True, check=False)
+        proc = subprocess.run(
+            [str(verus), str(path), "--crate-type=lib"], capture_output=True, text=True, check=False
+        )
         assert proc.returncode == 0, proc.stdout + proc.stderr
         assert "0 errors" in (proc.stdout + proc.stderr)
 
@@ -208,7 +191,6 @@ _DENSE_BODY = """
             assert(prev as int == group_count(keys, start, k));
             assert(group_count(keys, ii, k) == group_count(keys, start, k) + 1);
             assert(prev as int + 1 <= ROW_CAP_t);
-            lemma_count_step_fits_u64(prev, ROW_CAP_t);
         }
         let next = prev + 1;
         counts[idx] = next;

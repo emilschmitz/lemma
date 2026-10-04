@@ -195,23 +195,75 @@ def is_claude_cmd(agent_cmd: str) -> bool:
     return agent_cmd.split(None, 1)[0] == "claude"
 
 
+MOCK_PORT_ENV = "LEMMA_TEST_MOCK_ANTHROPIC_PORT"
+MOCK_CA_ENV = "LEMMA_TEST_MOCK_ANTHROPIC_CA"
+MOCK_EGRESS_PROFILE = "anthropic-mock-test"
+
+
+def claude_test_mock() -> tuple[int, Path] | None:
+    """TEST ONLY: (port, CA pem) of the local mock model API, when a test selected it.
+
+    Selecting it swaps the egress profile for one that allows only the mock's reserved
+    ``.test`` name, so the container cannot reach any real vendor host in that run.
+    """
+    port, ca = os.environ.get(MOCK_PORT_ENV), os.environ.get(MOCK_CA_ENV)
+    if port is None and ca is None:
+        return None
+    if not (port and ca):
+        raise RuntimeError(f"{MOCK_PORT_ENV} and {MOCK_CA_ENV} must be set together")
+    return int(port), Path(ca)
+
+
+def claude_login_file() -> Path:
+    """The host Claude Code login file, mounted on its own like the Cursor path mounts ~/.cursor."""
+    return Path.home() / ".claude" / ".credentials.json"
+
+
 def claude_docker_args() -> list[str]:
-    """Docker args for the claude agent. The key is passed by name only (value stays in env)."""
+    """Docker args for the claude agent. Secrets are never read here or put on a command line.
+
+    Order: ``ANTHROPIC_API_KEY`` (passed by name only), else ``CLAUDE_CODE_OAUTH_TOKEN`` (the long-lived
+    token from ``claude setup-token``, also by name only: the intended non-interactive credential, it does
+    not rotate under the host login), else ``LEMMA_CLAUDE_CONFIG_DIR`` (a directory,
+    read-only), else the host login file ``~/.claude/.credentials.json``, read-only, that file only
+    (Claude history and memory stay out of the container). The entrypoint copies the mount into a
+    writable ``/root/.claude``. A model agent runs next to whatever is mounted: Emil chose the login
+    file as the default, the same way the Cursor path mounts ``~/.cursor``.
+    """
     key = os.environ.get("ANTHROPIC_API_KEY", "")
     config_dir = os.environ.get("LEMMA_CLAUDE_CONFIG_DIR", "")
-    if not key and not config_dir:
-        raise RuntimeError(
-            "claude agent selected but neither ANTHROPIC_API_KEY nor LEMMA_CLAUDE_CONFIG_DIR "
-            "is set in the launching shell"
-        )
     args = ["-e", "CLAUDE_CONFIG_DIR=/root/.claude"]
     if key:
         args += ["-e", "ANTHROPIC_API_KEY"]
-    if config_dir:
+    elif os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", ""):
+        args += ["-e", "CLAUDE_CODE_OAUTH_TOKEN"]
+    elif config_dir:
         path = Path(config_dir).expanduser()
         if not path.is_dir():
             raise RuntimeError(f"LEMMA_CLAUDE_CONFIG_DIR is not a directory: {path}")
         args += ["-v", f"{path.resolve()}:{CLAUDE_CONTAINER_CONFIG_HOST}:ro"]
+    else:
+        login = claude_login_file()
+        if not login.is_file():
+            raise RuntimeError(
+                "claude agent selected but no ANTHROPIC_API_KEY, no LEMMA_CLAUDE_CONFIG_DIR, "
+                f"and no Claude login file at {login}"
+            )
+        args += ["-v", f"{login.resolve()}:{CLAUDE_CONTAINER_CONFIG_HOST}/.credentials.json:ro"]
+        # Account state (oauthAccount, onboarding flags) lives in ~/.claude.json next to the token file.
+        # With CLAUDE_CONFIG_DIR set Claude Code reads it as $CLAUDE_CONFIG_DIR/.claude.json.
+        state = Path.home() / ".claude.json"
+        if state.is_file():
+            args += ["-v", f"{state.resolve()}:{CLAUDE_CONTAINER_CONFIG_HOST}/.claude.json:ro"]
+    mock = claude_test_mock()
+    if mock is not None:
+        from research_loop.scripts.mock_anthropic_api import MOCK_HOST
+
+        args += [
+            "-e", f"ANTHROPIC_BASE_URL=https://{MOCK_HOST}",
+            "-e", "NODE_EXTRA_CA_CERTS=/mock-ca.pem",
+            "-v", f"{mock[1].resolve()}:/mock-ca.pem:ro",
+        ]
     return args
 
 
@@ -1102,11 +1154,17 @@ def run_agent_docker(
     env["HOME"] = "/root"
     # Writable config dir (host creds are mounted RO at /root/.cursor-host).
     env["CURSOR_CONFIG_DIR"] = "/root/.cursor"
+    from db_extension.dataset_config import run_runquery_iterate_tool_blurb
+
+    env["LEMMA_RUN_RUNQUERY_BLURB"] = run_runquery_iterate_tool_blurb()
 
     profile = infer_egress_profile(
         agent_cmd,
         cfg.get("AGENT_EGRESS_PROFILE") or os.environ.get("AGENT_EGRESS_PROFILE"),
     )
+    mock = claude_test_mock() if claude else None
+    if mock is not None:
+        profile = MOCK_EGRESS_PROFILE
     allow = _parse_allowlist(
         cfg.get("LEMMA_EGRESS_ALLOWLIST") or os.environ.get("LEMMA_EGRESS_ALLOWLIST"),
         profile=profile,
@@ -1132,6 +1190,9 @@ def run_agent_docker(
         egress_sock,
         allow,
         log_path=log_dir / "egress_bridge.jsonl",
+        dial_overrides=(
+            {"lemma-mock-anthropic.test": ("127.0.0.1", mock[0])} if mock is not None else None
+        ),
     )
     mcp_server.start()
     egress_server.start()
@@ -1162,10 +1223,13 @@ def run_agent_docker(
         "docker", "run", "--rm",
         "--name", container_name,
         "--network", "none",
+        "--memory", "3g", "--memory-swap", "3g",
         "--cap-drop", "ALL",
         # Host-owned bind mounts need DAC_OVERRIDE when container runs as root.
         "--cap-add", "DAC_OVERRIDE",
         "-v", f"{ws}:/workspace:rw",
+        # The prompt names /workspace/context/ro/...; mount it read-only there too (after the rw mount).
+        "-v", f"{(ws / 'context' / 'ro').resolve()}:/workspace/context/ro:ro",
         "-v", f"{(ws / 'context' / 'ro').resolve()}:/context/ro:ro",
         "-v", f"{mcp_sock.resolve()}:/lemma-mcp.sock",
         "-v", f"{egress_sock.resolve()}:/lemma-egress.sock",
@@ -1231,6 +1295,7 @@ def run_agent_docker(
         "LEMMA_AGENT_STDERR_LOG",
         "PATH",
         "ANTHROPIC_API_KEY",
+        "CLAUDE_CODE_OAUTH_TOKEN",  # by name only (claude_docker_args): a value on the command line leaks
     }
     for k, v in env.items():
         if k in skip_env:
@@ -1319,6 +1384,7 @@ def run_agent_docker(
             # suspend, which extended sessions to hours when inhibit dropped.
             wall_deadline = time.time() + timeout
             rc: int | None = None
+            ended = False
             while True:
                 rc = popen.poll()
                 if rc is not None:
@@ -1336,6 +1402,7 @@ def run_agent_docker(
                         "agent_docker_end_session",
                         "end_session sentinel after submit",
                     )
+                    ended = True
                     _docker_kill_container(container_name)
                     rc = _kill_and_reap_popen(popen, deadline=deadline)
                     break
@@ -1346,6 +1413,12 @@ def run_agent_docker(
                 if remaining <= 0:
                     continue
                 time.sleep(min(0.5, remaining))
+            # GNU ``timeout --signal=KILL`` can win the race against the poll deadline above.
+            # Either way the wall-clock kill is reported the same: timed_out, exit -9.
+            if rc == -9 and not ended:
+                timed_out = True
+            if timed_out:
+                rc = -9
             proc = subprocess.CompletedProcess(
                 cmd, int(rc if rc is not None else -1), "".join(stdout_chunks), "".join(stderr_chunks)
             )
@@ -1380,6 +1453,23 @@ def run_agent_docker(
             )
     log_info(COMPONENT, "agent_docker_end", f"exit={proc.returncode}", timed_out=timed_out)
     return proc
+
+
+def describe_agent_exit(proc: subprocess.CompletedProcess[str]) -> str:
+    """One line for a failed agent process. Exit -9 is the AGENT_TIMEOUT_SEC kill."""
+    reason = "timed out (AGENT_TIMEOUT_SEC)" if proc.returncode == -9 else "failed"
+    return f"agent {reason}: exit {proc.returncode}. {(proc.stderr or '').strip()[-500:]}"
+
+
+def agent_failure(proc: subprocess.CompletedProcess[str], workspace: Path) -> str | None:
+    """Message when the agent process failed without a marked submit, else None.
+
+    Shared by the declarative driver and the recursive optimizer. Without it an untouched stub
+    only fails later (``empty agent body``), which hides that the agent never ran to completion.
+    """
+    if proc.returncode == 0 or (workspace / "mcp_results" / "submitted.json").is_file():
+        return None
+    return f"{describe_agent_exit(proc)} No submit."
 
 
 def read_agent_body(workspace: Path) -> str:

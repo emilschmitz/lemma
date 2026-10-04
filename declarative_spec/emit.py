@@ -48,9 +48,9 @@ def _lookup_table_assumptions(catalog: CatalogAssumptions | None, table: str) ->
 
 def _host_lemma_region() -> str:
     """Lemma source the agent can call. Assemble replaces this same region."""
-    from declarative_spec.lemmas import float_error_lemmas_rs, integer_fit_lemmas_rs
+    from declarative_spec.trusted_sets import current
 
-    body = integer_fit_lemmas_rs().rstrip() + "\n\n" + float_error_lemmas_rs().rstrip()
+    body = current().lemmas_rs()
     return "// HOST_LEMMAS_START\n" + body + "\n// HOST_LEMMAS_END"
 
 
@@ -328,33 +328,6 @@ pub open spec fn matched_real_sum_rec(
 """.strip()
 
 
-def _emit_key_bound_lemma(
-    *,
-    struct: str,
-    valid_fn: str,
-    field: str,
-    key_cap: str,
-    inclusive: int,
-) -> str:
-    """Proved bridge from ``valid_cols`` to ``key < KEY_CAP``.
-
-    The column bound in ``valid_cols`` is an inclusive decimal. Callers index
-    ``counts[k as usize]`` only after this lemma, which states the exclusive cap.
-    """
-    return f"""
-pub proof fn lemma_index_key_below_cap(cols: &{struct}, i: int)
-    requires
-        {valid_fn}(cols),
-        0 <= i < cols.n as int,
-    ensures
-        0 <= cols.{field}@[i] as int,
-        (cols.{field}@[i] as int) < ({key_cap} as int),
-{{
-    assert(0 <= cols.{field}@[i] as int && cols.{field}@[i] as int <= {_int_literal(inclusive)});
-}}
-""".strip()
-
-
 def _emit_dense_count_map_lemma(*, key_ty: str) -> str:
     """The final map condition, once the dense count vector and the nonzero copy are in hand."""
     return f"""
@@ -522,9 +495,79 @@ def emit_declarative_spec(
     """Spec for ``sql``. DATE and DECIMAL are first stated as exact integer SQL (``numeric_rewrite``)."""
     from declarative_spec.numeric_rewrite import rewrite_numeric, with_out_scales
 
+    sql = _flatten_group_derived_sql(sql)
     integer_sql, scales = rewrite_numeric(sql, schema)
+    _check_shape_classes(integer_sql)
     spec = _emit_integer_sql(integer_sql, schema, catalog, float_abs_eps=float_abs_eps)
     return _with_agent_surface(with_out_scales(spec, scales))
+
+
+_COLS_STRUCT = re.compile(r"pub struct (Cols_\w+) \{\n((?:    pub [^\n]+\n)+)\}")
+_VALID_FN = re.compile(
+    r"pub open spec fn (valid_cols_\w+)\((\w+): &(Cols_\w+)\) -> bool \{\n    &&& (.*?)\n\}", re.S
+)
+
+
+def _prune_unread_columns(spec: str) -> str:
+    """Keep in each ``Cols_<table>`` (and its ``valid_cols``) only the columns the spec reads.
+
+    A column no spec text mentions is never loaded, so a NULL in it cannot block the run.
+    A column the query reads stays, and a NULL there still fails at export.
+    """
+    rest = _COLS_STRUCT.sub("", spec)
+    rest = _VALID_FN.sub("", rest)
+    used = set(re.findall(r"\w\.((?:r#)?\w+)@", rest))
+
+    def struct(m: re.Match[str]) -> str:
+        lines = [
+            ln
+            for ln in m.group(2).splitlines()
+            if ln.strip() == "pub n: usize," or re.match(r"\s+pub ((?:r#)?\w+):", ln).group(1) in used
+        ]
+        return f"pub struct {m.group(1)} {{\n" + "\n".join(lines) + "\n}"
+
+    def valid(m: re.Match[str]) -> str:
+        param = m.group(2)
+        dropped = {
+            f
+            for f in re.findall(rf"\b{re.escape(param)}\.((?:r#)?\w+)@", m.group(4))
+            if f not in used
+        }
+        conj = m.group(4).split("\n    &&& ")
+        kept = [c for c in conj if not any(re.search(rf"\b{re.escape(param)}\.{re.escape(f)}@", c) for f in dropped)]
+        body = "\n    &&& ".join(kept or ["true"])
+        return f"pub open spec fn {m.group(1)}({param}: &{m.group(3)}) -> bool {{\n    &&& {body}\n}}"
+
+    spec = _COLS_STRUCT.sub(struct, spec)
+    return _VALID_FN.sub(valid, spec)
+
+
+def _check_shape_classes(integer_sql: str) -> None:
+    """Refuse a query with a shape class known to have no proof (see ``shapes``). A parse the surface cannot
+    read is left to the emitter, which refuses it."""
+    from declarative_spec.parse_query import parse_query
+    from declarative_spec.shapes import check_shapes
+
+    try:
+        query = parse_query(integer_sql)
+    except DeclarativeUnsupported:
+        return
+    check_shapes(query)
+
+
+def _flatten_group_derived_sql(sql: str) -> str:
+    """SQL with a filter over a grouped derived table merged into the grouped query (see ``flatten_group``)."""
+    import sqlglot
+
+    from declarative_spec.flatten_group import flatten_group_derived, move_inner_join_filters
+
+    try:
+        tree = sqlglot.parse_one(sql)
+    except sqlglot.errors.SqlglotError:
+        return sql  # the stages below report the parse error
+    moved = move_inner_join_filters(tree)
+    flat = flatten_group_derived(tree)
+    return sql if flat is tree and not moved else flat.sql()
 
 
 def _with_agent_surface(spec: str) -> str:
@@ -533,9 +576,14 @@ def _with_agent_surface(spec: str) -> str:
     from declarative_spec.vstd_index import preamble_uses
 
     assert spec.count("use vstd::prelude::*;") == 1
+    spec = _prune_unread_columns(spec)
     spec = spec.replace("use vstd::prelude::*;", preamble_uses(), 1)
     head, sep, tail = spec.partition("pub fn run_query(")
     assert sep
+    if "spec_like(" in head and "spec fn spec_like(" not in head:
+        from declarative_spec.emit_like import SPEC_LIKE_FN
+
+        head = f"{head}{SPEC_LIKE_FN}\n\n"
     return f"{head}{HELPERS_START}\n{HELPERS_END}\n{sep}{tail}"
 
 
@@ -626,17 +674,9 @@ def _emit_count(parsed: ParsedQuery, model: SchemaModel, ctx: _EmitCtx) -> str:
     struct_lines.append("}")
 
     dense_map_lemma = ""
-    bound_lemma = ""
     if key_cap_name is not None and key_inclusive is not None and not ginfo_exec.signed:
         if ginfo_exec.exec_rust == "u64":
             dense_map_lemma = _emit_dense_count_map_lemma(key_ty="u64")
-        bound_lemma = _emit_key_bound_lemma(
-            struct=struct,
-            valid_fn=f"valid_cols_{rust_ident(t_orig)}",
-            field=group_meta[0][0],
-            key_cap=key_cap_name,
-            inclusive=key_inclusive,
-        )
 
     parts: list[str] = [
         "use vstd::prelude::*;",
@@ -651,8 +691,6 @@ def _emit_count(parsed: ParsedQuery, model: SchemaModel, ctx: _EmitCtx) -> str:
         "\n".join(struct_lines),
         "",
         _emit_valid_cols(struct, t_orig, fields, row_cap_name, ctx),
-        "",
-        bound_lemma,
         "",
         count_block,
         "",
