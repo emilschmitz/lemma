@@ -8,6 +8,7 @@ from dataclasses import dataclass, field, replace
 import sqlglot
 from sqlglot import exp
 
+from declarative_spec.literals import string_token
 from declarative_spec.parse import DeclarativeUnsupported
 from declarative_spec.parse_exprs import (
     arith_text,
@@ -860,7 +861,7 @@ def _compile_side(node: exp.Expression, ctx: _BoolCtx) -> str:
         return ref
     if isinstance(node, exp.Literal):
         if node.is_string:
-            return f'"{node.this}"@'
+            return string_token(str(node.this))
         if node.is_number:
             return str(node.this)
         if str(node.this).upper() in ("TRUE", "FALSE"):
@@ -885,7 +886,7 @@ def _compile_case(node: exp.Case, scope: _Scope) -> str:
             _col_ref(n, scope)
             return f"cols.{rust_ident(n.name)}@[i]"
         if isinstance(n, exp.Literal) and n.is_string:
-            return f'"{n.this}"@'
+            return string_token(str(n.this))
         if isinstance(n, exp.Literal) and n.is_number:
             return str(n.this)
         raise DeclarativeUnsupported("CASE")
@@ -1073,5 +1074,5 @@ def _compile_like(node: exp.Like, ctx: _BoolCtx) -> str:
     if any(ch in str(pattern.this) for ch in '"\\'):
         raise DeclarativeUnsupported("LIKE pattern with a quote or backslash")
     col, _ = _col_ref(node.this, ctx.scope)
-    text = f'spec_like({col}, "{pattern.this}"@)'
+    text = f"spec_like({col}, {string_token(str(pattern.this))})"
     return f"!({text})" if node.args.get("negate") else text

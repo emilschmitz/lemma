@@ -38,6 +38,11 @@ FIXED: dict[str, str] = {
     "hole_group_by_rollup_dropped": "refused",
     "hole_exists_subquery_limit_ignored": "refused",
     "hole_min_two_arg_is_list": "refused",
+    # The hand-proved body encodes the old wrong semantics; Verus now rejects it.
+    "hole_is_null_empty_string": "impl_does_not_fit_spec",
+    "hole_is_not_null_empty_string": "impl_does_not_fit_spec",
+    "hole_literal_rewritten_to_column": "impl_does_not_fit_spec",
+    "hole_string_literal_backslash_escape": "impl_does_not_fit_spec",
 }
 
 
@@ -118,3 +123,32 @@ def test_exported_column_blob_is_identical_for_null_and_zero() -> None:
         blobs.append(_export_table(con, model, "t", [("a", "i64")]))
         con.close()
     assert blobs[0] == blobs[1]
+
+
+def _spec(sql: str, schema: dict) -> str:
+    from declarative_spec.emit_surface import emit_from_surface
+
+    return emit_from_surface(sql, schema, CatalogAssumptions(tables={}, max_rows=1))
+
+
+@pytest.mark.parametrize("col, ty", [("s", "VARCHAR"), ("a", "BIGINT")])
+def test_is_null_is_false_and_is_not_null_true_for_every_type(col: str, ty: str) -> None:
+    schema = {"t": {"a": "BIGINT", "s": "VARCHAR"}}
+    assert ty
+    null_spec = _spec(f"SELECT a FROM t WHERE {col} IS NULL", schema)
+    not_null_spec = _spec(f"SELECT a FROM t WHERE {col} IS NOT NULL", schema)
+    assert '""@' not in null_spec and '""@' not in not_null_spec
+
+
+def test_string_literal_is_not_rewritten_to_a_column() -> None:
+    spec = _spec("SELECT a FROM t WHERE s = 'a'", {"t": {"a": "BIGINT", "s": "VARCHAR"}})
+    assert '"a"@' in spec
+
+
+@pytest.mark.parametrize(
+    "literal, rust",
+    [("x\\\\y", '"x\\\\\\\\y"@'), ('say "hi"', '"say \\"hi\\""@')],
+)
+def test_string_literal_is_escaped_into_rust(literal: str, rust: str) -> None:
+    spec = _spec(f"SELECT a FROM t WHERE s = '{literal}'", {"t": {"a": "BIGINT", "s": "VARCHAR"}})
+    assert rust in spec

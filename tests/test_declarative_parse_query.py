@@ -14,6 +14,7 @@ if "declarative_spec" not in sys.modules:
     _pkg.__path__ = [str(Path(__file__).resolve().parents[1] / "declarative_spec")]
     sys.modules["declarative_spec"] = _pkg
 
+from declarative_spec.literals import string_token
 from declarative_spec.parse import DeclarativeUnsupported
 from declarative_spec.parse_query import parse_query
 from declarative_spec.surface import Query
@@ -40,7 +41,7 @@ def test_multi_agg_group_having_order_limit() -> None:
     assert "region" in q.where_expr
     assert "5" in q.where_expr
     assert "&&" in q.where_expr
-    assert '"active"@' in q.where_expr
+    assert string_token("active") in q.where_expr
     assert q.having_expr
     assert "cnt" in q.having_expr
     assert q.limit == 100
