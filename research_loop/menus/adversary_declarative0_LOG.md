@@ -226,6 +226,12 @@ Real EDGAR 2022-2024 loaded by the coordinator: num 39,401,761 rows (value exact
 | `SELECT SUM(value) AS total FROM num WHERE value > 5000` | real SEC, full 39.4M num rows | T1 | PARALLEL, 8 vstd threads (`parallel_ungrouped_sum.rs` templated to i128/value, 18 verified, 0 errors) | yes | **17,128** | 219,016 | 872,864 | **12.79x / 50.96x** |
 | TPC-H Q6 variant | TPC-H SF1 (6.0M lineitem) | T1 | PARALLEL, 8 vstd threads (`parallel_ungrouped_product_sum.rs`, 21 verified, 0 errors) | yes | **5,827** | 11,874 | 22,786 | **2.04x / 3.91x** (the single-threaded body was 0.53x / 1.22x) |
 
+| TPC-H Q6 variant, same parallel body | TPC-H SF3 (18.0M lineitem; 4 columns, 0.5 GB) | T1 | PARALLEL 8 vstd threads (21 verified, 0 errors) | yes | 16,925 | 19,181 | 67,619 | **1.13x / 4.00x** |
+| TPC-H Q6 variant, same parallel body | TPC-H SF10 (60.0M lineitem; 1.7 GB binary memory) | T1 | PARALLEL 8 vstd threads (21 verified, 0 errors) | yes | 55,668 | 69,506 | 262,942 | **1.25x / 4.72x** |
+
+Scale ladder for Q6 (data stated): SF1 2.04x, SF3 1.13x, SF10 1.25x vs the all-core engine; ~4x vs one thread at every size. At SF3/SF10 the parallel scan reads ~30 GB/s (504 MB in 16.9 ms), i.e. it is at the machine's memory bandwidth, and DuckDB 8t is about as fast
+(zone-map pruning of the shipdate range avoids part of the data). So the 2.8x TPC-H target is NOT reachable for this bandwidth-bound scan with the same bytes read; SF10 is the largest that ran (generated with `research_loop/scripts/gen_tpch.py`, dbgen under a 3 GB DuckDB memory limit: 81 s, 2.7 GB file; export 4:52).
+
 Parallel path (declarative-only, `LEMMA_PARALLEL_VSTD=1`, `declarative_spec/parallel.py`): `run_query` also takes `<t>_arc: &std::sync::Arc<Cols_t>` with
 `requires **<t>_arc == *<t>` (host main passes the same object twice), ensures unchanged. Workers own `Arc::clone`s and fold row ranges; the host's
 suffix folds are additive so the partials telescope (no copy, no concatenation lemma). Trusted base: vstd `spawn`/`join`/`Arc` only; no
