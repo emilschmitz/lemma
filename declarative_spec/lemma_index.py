@@ -6,10 +6,12 @@ def lemma_index_markdown() -> str:
         "# Declarative spec lemma index",
         "",
         "Write the `run_query` edit before you read the rest of this index.",
-        "You MAY write `use vstd::...;` and `broadcast use vstd::...;`.",
-        "Those lines are hoisted and kept.",
-        "Still forbidden: `assume(`, `admit(`, a new `spec fn`, a new `proof fn`,",
-        "`#[verifier::external_body]`, and a name containing `axiom`, `arbitrary`, or `proof_from_false`.",
+        "Every vstd module is already imported by glob. Write no `use` lines.",
+        "The one allowed line is `broadcast use vstd::<module>::group_<name>;` (exact name, see",
+        "`context/ro/verus/INDEX.md` for the list).",
+        "Still forbidden: `assume(`, `admit(`, `#[verifier::external_body]`, and a name containing",
+        "`axiom`, `arbitrary`, or `proof_from_false`.",
+        "A new `spec fn` or `proof fn` goes between `// AGENT_HELPERS_START` and `// AGENT_HELPERS_END`.",
         "`proof { lemma_...(); }` is allowed.",
         "",
         "Host lemmas (call these; do not re-prove arithmetic fit by hand):",
@@ -74,15 +76,13 @@ def lemma_index_markdown() -> str:
         ("- The host already broadcasts "
         "`vstd::std_specs::hash::axiom_u64_obeys_hash_table_key_model` "
         "(and the i64 and i128 variants) for the group key. "
-        "Do not import it. A name containing `axiom` is an assume and is rejected."),
+        "Do not use it by name. A name containing `axiom` is an assume and is rejected."),
         "",
         "- `Seq::len`, `Seq::index`, `Seq::skip`, `Seq::push`.",
         "",
-        ("You may call these and other vstd lemmas; look them up here when unsure. "
-        "Import one with `use vstd::...::lemma_...;` or "
-        "`broadcast use vstd::...::group_...;`. "
-        "Do not import a name containing `axiom`, `arbitrary`, or `proof_from_false`. "
+        ("You may call these and other vstd lemmas by bare name; look them up in `context/ro/verus/` "
+        "when unsure. Do not use a name containing `axiom`, `arbitrary`, or `proof_from_false`. "
         "Do not `assume(` or `admit(` a fact. "
-        "You may **not** declare `spec fn` or `proof fn`."),
+        "Write helper `spec fn` / `proof fn` items only in the helper region."),
     ]
     return "\n".join(lines) + "\n"

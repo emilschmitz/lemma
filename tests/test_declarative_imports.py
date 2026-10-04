@@ -318,3 +318,27 @@ def test_a_non_terminating_helper_spec_fn_is_rejected_by_verus() -> None:
     assert admit_helpers(helpers, _USUM_SPEC).ok
     out = _verus(_usum_with("", helpers))
     assert not _accepted(out) and "decreas" in out
+
+
+# ---- what the agent is told ---------------------------------------------------------------
+
+
+def test_docs_index_lists_the_generated_groups(tmp_path: Path) -> None:
+    from declarative_spec.drive import _ensure_context_files
+
+    _ensure_context_files(tmp_path, sql_query="select 1", resolved_schema={}, spec_text="")
+    index = (tmp_path / "context" / "ro" / "verus" / "INDEX.md").read_text()
+    for module, name in broadcast_groups():
+        assert f"`broadcast use vstd::{module}::{name};`" in index
+    assert "group_hash_axioms" not in index
+    assert "turns a bundle of vstd lemmas on" in index
+
+
+def test_prompt_describes_both_regions_and_no_longer_offers_imports() -> None:
+    from declarative_spec.prompt import build_declarative_prompt
+
+    prompt = build_declarative_prompt(
+        sql="select 1", spec_path="s.rs", edit_path="e.rs", lemma_index="idx", last_error="", in_docker=False
+    )
+    assert "AGENT_HELPERS_START" in prompt and "broadcast use vstd::seq::group_seq_axioms;" in prompt
+    assert "You MAY write `use vstd::...;`" not in prompt
