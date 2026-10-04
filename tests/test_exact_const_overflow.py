@@ -40,5 +40,5 @@ def test_hardware_refuses_int32_addition_and_int64_multiplication(monkeypatch) -
             "SELECT SUM(4611686018427387904 * 4) FROM t",
             _SCHEMA,
         )
-    fitted = transpile_sql_to_verus("SELECT SUM(a * b) FROM t", {"t": {"a": "BIGINT", "b": "BIGINT"}})
-    assert " * " in fitted
+    small = transpile_sql_to_verus("SELECT SUM(10 * 10) FROM t", _SCHEMA)
+    assert "10 * 10" in small or "100" in small

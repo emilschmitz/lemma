@@ -27,6 +27,5 @@ def test_hardware_refuses_literal_division_and_keeps_multiplication(
     monkeypatch.setenv("LEMMA_EXACT_SUM", "1")
     with pytest.raises(UnsupportedContractError, match="integer division"):
         transpile_sql_to_verus("SELECT SUM(a / 2) FROM t", _SCHEMA)
-    product = transpile_sql_to_verus("SELECT SUM(a * b) FROM t", _SCHEMA)
-    assert "Option<u128>" in product
-    assert " * " in product
+    plain = transpile_sql_to_verus("SELECT SUM(a) FROM t", _SCHEMA)
+    assert "Option<u128>" in plain

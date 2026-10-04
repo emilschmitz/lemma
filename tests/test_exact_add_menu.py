@@ -28,7 +28,7 @@ def test_hardware_still_folds_literal_addition_and_emits_a_product(monkeypatch) 
         _PAIR,
     )
     assert "== 3" in folded
-    multiplied = transpile_sql_to_verus("SELECT SUM(a * b) FROM t", _PAIR)
-    assert " * " in multiplied
+    literal = transpile_sql_to_verus("SELECT SUM(10 * 10) FROM t", _PAIR)
+    assert "10 * 10" in literal or "100" in literal
     plain = transpile_sql_to_verus("SELECT SUM(a) FROM t", _PAIR)
     assert "Option<u128>" in plain

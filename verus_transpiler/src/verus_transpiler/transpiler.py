@@ -1560,6 +1560,29 @@ def _unsigned_expr_violation(query: SQLQuery) -> str | None:
     return None
 
 
+def _column_mul_violation(query: SQLQuery) -> str | None:
+    """A column product overflows DuckDB's integer multiply.
+
+    ``SUM(a * b)`` and ``SUM(a * 2)`` are evaluated in the column type.
+    A literal product such as ``10 * 10`` has already been checked.
+    Join products are emitted separately and are not this check.
+    """
+    if os.environ.get("LEMMA_EXACT_SUM", "0") != "1":
+        return None
+    exprs: list[str] = []
+    if query.agg_expr:
+        exprs.append(query.agg_expr)
+    for spec in query.agg_specs:
+        if spec.agg_expr:
+            exprs.append(spec.agg_expr)
+    if query.where_expr:
+        exprs.append(query.where_expr)
+    for expr in exprs:
+        if " * " in expr and "row." in expr:
+            return expr
+    return None
+
+
 def _emit_single_table_spec(
     query: SQLQuery,
     flat_schema: dict[str, str],
@@ -1572,6 +1595,12 @@ def _emit_single_table_spec(
         raise UnsupportedContractError(
             "hardware menu does not emit subtraction or negation: "
             "DuckDB's result is signed and these columns are unsigned"
+        )
+    multiplied = _column_mul_violation(query)
+    if multiplied is not None:
+        raise UnsupportedContractError(
+            "hardware menu does not emit multiplication of a column: "
+            "DuckDB multiplies in the column type and rejects the overflow"
         )
     lifted = _lift_derived_group_order(query)
     if lifted is not None:
