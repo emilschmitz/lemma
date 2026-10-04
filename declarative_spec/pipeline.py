@@ -48,7 +48,8 @@ def verify_assembled(rs_source: str, *, timeout_sec: int | None = None) -> tuple
         f.write(rs_source)
         path = f.name
     try:
-        proc = run_verus([verus, path, *verus_limit_args()], timeout=timeout_sec)
+        # cwd = the temp file's directory: Verus leaves a compiled executable named after the source in its cwd
+        proc = run_verus([verus, path, *verus_limit_args()], timeout=timeout_sec, cwd=Path(path).parent)
         combined = (proc.stdout or "") + (proc.stderr or "")
         return proc.returncode == 0, combined
     except subprocess.TimeoutExpired as e:

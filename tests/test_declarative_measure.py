@@ -361,3 +361,28 @@ def test_speedup_reports_median_and_best_and_the_runs_are_nine(monkeypatch) -> N
     }
     out = _apply_speed_bar(run, bar)
     assert out["speedup"] == 2.0 and out["speedup_best"] == 4.0 and out["speedup_1t"] == 4.0
+
+
+def test_verify_assembled_leaves_no_executable_in_the_working_directory(tmp_path, monkeypatch) -> None:
+    """Verus names its compiled output after the source and puts it in the cwd: the cwd must be the temp dir, not the repo."""
+    import os
+
+    from declarative_spec import pipeline
+
+    seen: dict = {}
+
+    def fake(cmd, *, timeout, cwd=None):
+        seen["cwd"] = cwd
+        seen["path"] = cmd[1]
+
+        class R:
+            stdout, stderr, returncode = "verification results:: 1 verified, 0 errors", "", 0
+
+        return R()
+
+    monkeypatch.setattr(pipeline, "run_verus", fake)
+    monkeypatch.chdir(tmp_path)
+    ok, _ = pipeline.verify_assembled("fn main() {}")
+    assert ok and seen["cwd"] is not None
+    assert os.path.realpath(seen["cwd"]) != os.path.realpath(os.getcwd())
+    assert os.path.dirname(seen["path"]) == str(seen["cwd"])
