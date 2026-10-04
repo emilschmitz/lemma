@@ -1,0 +1,18 @@
+{
+ "sql": "SELECT b, SUM(a) AS x FROM t GROUP BY ROLLUP (b)",
+ "schema": {
+  "t": {
+   "a": "BIGINT",
+   "b": "BIGINT"
+  }
+ },
+ "rows": {
+  "t": [
+   {
+    "a": 1,
+    "b": 2
+   }
+  ]
+ },
+ "run_query_body": "\nlet mut x: i128 = 0;\nif t.n > 0 {\n    x = t.a[0] as i128;\n}\nlet mut res: Vec<OutRow> = Vec::new();\nres.push(OutRow { x: x });\nproof {\n    reveal_with_fuel(sum_x, 3);\n    assert(res@[0].x as int == sum_x(t, 0));\n}\nres\n"
+}

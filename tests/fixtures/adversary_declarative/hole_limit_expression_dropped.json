@@ -1,0 +1,16 @@
+{
+ "sql": "SELECT a FROM t ORDER BY a LIMIT 1 - 1",
+ "schema": {
+  "t": {
+   "a": "BIGINT"
+  }
+ },
+ "rows": {
+  "t": [
+   {
+    "a": 7
+   }
+  ]
+ },
+ "run_query_body": "\nlet mut res: Vec<OutRow> = Vec::new();\nif t.n > 0 {\n    proof {\n        reveal_with_fuel(hit_count, 3);\n        reveal_with_fuel(hits_with, 3);\n        reveal_with_fuel(out_copies, 3);\n    }\n    let a = t.a[0];\n    res.push(OutRow { a: a });\n    proof {\n        reveal_with_fuel(hit_count, 3);\n        reveal_with_fuel(hits_with, 3);\n        reveal_with_fuel(out_copies, 3);\n        assert(t.n == 1);\n        assert(row_hit(t, 0));\n    }\n}\nres\n"
+}

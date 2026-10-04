@@ -1,0 +1,18 @@
+{
+ "sql": "SELECT a FROM t WHERE s IS NOT NULL",
+ "schema": {
+  "t": {
+   "a": "BIGINT",
+   "s": "VARCHAR"
+  }
+ },
+ "rows": {
+  "t": [
+   {
+    "a": 7,
+    "s": ""
+   }
+  ]
+ },
+ "run_query_body": "\nuse vstd::string::StringSliceAdditionalSpecFns;\nlet mut res: Vec<OutRow> = Vec::new();\nif t.n > 0 {\n    proof {\n        reveal_with_fuel(hit_count, 3);\n        reveal_with_fuel(hits_with, 3);\n        reveal_with_fuel(out_copies, 3);\n    }\n    let s0 = t.s[0].as_str();\n    let n0 = s0.unicode_len();\n    proof {\n        assert(s0@ == t.s@[0]@);\n        assert(n0 as int == s0@.len());\n    }\n    if n0 != 0 {\n        let a = t.a[0];\n        res.push(OutRow { a: a });\n    }\n    proof {\n        reveal_with_fuel(hit_count, 3);\n        reveal_with_fuel(hits_with, 3);\n        reveal_with_fuel(out_copies, 3);\n        assert(t.n == 1);\n        reveal_strlit(\"\");\n        assert(n0 == 0 ==> t.s@[0]@ =~= \"\"@);\n        if n0 != 0 {\n            assert(row_hit(t, 0));\n            assert(out_key(res@[0]) == proj_key(t, 0));\n        }\n        assert(n0 != 0 ==> t.s@[0]@ != \"\"@);\n    }\n}\nres\n"
+}

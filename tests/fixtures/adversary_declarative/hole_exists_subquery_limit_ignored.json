@@ -1,0 +1,28 @@
+{
+ "sql": "SELECT a FROM t WHERE EXISTS (SELECT 1 FROM u WHERE u.k = t.k LIMIT 0) ORDER BY a",
+ "schema": {
+  "t": {
+   "a": "BIGINT",
+   "k": "BIGINT"
+  },
+  "u": {
+   "k": "BIGINT",
+   "v": "BIGINT"
+  }
+ },
+ "rows": {
+  "t": [
+   {
+    "a": 7,
+    "k": 1
+   }
+  ],
+  "u": [
+   {
+    "k": 1,
+    "v": 5
+   }
+  ]
+ },
+ "run_query_body": "\nlet mut res: Vec<OutRow> = Vec::new();\nif t.n > 0 && u.n > 0 {\n    proof {\n        reveal_with_fuel(hit_count, 3);\n        reveal_with_fuel(hits_with, 3);\n        reveal_with_fuel(out_copies, 3);\n        assert(t.n == 1);\n        assert(u.n == 1);\n    }\n    let hit = t.k[0] == u.k[0];\n    if hit {\n        let a = t.a[0];\n        res.push(OutRow { a: a });\n    }\n    proof {\n        reveal_with_fuel(hit_count, 3);\n        reveal_with_fuel(hits_with, 3);\n        reveal_with_fuel(out_copies, 3);\n        if hit {\n            assert(u.k@[0] == t.k@[0]);\n            assert(exists_1(t, u, 0));\n            assert(row_hit(t, u, 0));\n            assert(out_key(res@[0]) == proj_key(t, u, 0));\n        } else {\n            assert(!exists_1(t, u, 0));\n        }\n    }\n}\nelse {\n    proof {\n        reveal_with_fuel(hit_count, 3);\n        reveal_with_fuel(hits_with, 3);\n        reveal_with_fuel(out_copies, 3);\n        assert(t.n == 0 || u.n == 0);\n        if t.n == 0 {\n            assert(hit_count(t, u, 0) == 0);\n        } else {\n            assert(!exists_1(t, u, 0));\n        }\n    }\n}\nres\n"
+}

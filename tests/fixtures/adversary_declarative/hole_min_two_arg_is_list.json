@@ -1,0 +1,18 @@
+{
+ "sql": "SELECT b, MIN(a, 1) AS x FROM t GROUP BY b",
+ "schema": {
+  "t": {
+   "a": "BIGINT",
+   "b": "BIGINT"
+  }
+ },
+ "rows": {
+  "t": [
+   {
+    "a": 7,
+    "b": 2
+   }
+  ]
+ },
+ "run_query_body": "\nlet mut res: Vec<OutRow> = Vec::new();\nif t.n > 0 {\n    let b = t.b[0];\n    let a = t.a[0];\n    res.push(OutRow { b: b, x: a as i128 });\n    proof {\n        assert(t.n == 1);\n        assert(row_hit(t, 0));\n        assert(key_at(t, 0) == (b as int));\n        assert(min_x_val(t, 0) == (a as int));\n        assert(min_x(t, (b as int), (a as int)));\n        assert(res@[0].b == b);\n        assert(res@[0].x as int == a as int);\n        assert(forall|i0: int| #![trigger row_hit(t, i0)] row_hit(t, i0) ==> i0 == 0);\n    }\n}\nres\n"
+}
