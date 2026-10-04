@@ -6,6 +6,9 @@ import re
 
 from declarative_spec import parallel
 
+# The timed measure is the MEDIAN of this many runs (odd). The shared box shows ~30 percent run-to-run noise.
+TIMED_RUNS = 9
+
 _WIDTH = {
     "u8": 1,
     "u16": 2,
@@ -504,7 +507,7 @@ def _string_map_dump(verus_part: str) -> tuple[str, str]:
     if suffix is None or field is None:
         raise ValueError("a StringHashMap result needs a one-table run_query keyed by `cols.<field>@[j]@ == k`")
     keys = f"cols_{suffix.group(1)}.{field.group(1)}"
-    dump = f"""        if s == 4 {{
+    dump = f"""        if s == {TIMED_RUNS - 1} {{
             let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
             let mut printed: usize = 0;
             let mut r: usize = 0;
@@ -539,7 +542,7 @@ def _timed_runs(run_call: str, verus_part: str) -> tuple[str, str]:
         if len(caps) == 1 and shape:
             cap = caps[0]
             key_ty = shape.group(1)
-            dump = f"""        if s == 4 {{
+            dump = f"""        if s == {TIMED_RUNS - 1} {{
             let mut key: {key_ty} = 0;
             let mut printed: usize = 0;
             while (key as i128) < {cap} as i128 {{
@@ -560,18 +563,18 @@ def _timed_runs(run_call: str, verus_part: str) -> tuple[str, str]:
                 "a timed run needs a printable result: an OutRow struct, or a HashMapWithView "
                 "result with exactly one KEY_CAP; got neither, so the output could not be compared"
             )
-    timed = f"""    let mut samples: [u128; 5] = [0, 0, 0, 0, 0];
+    timed = f"""    let mut samples: [u128; {TIMED_RUNS}] = [0; {TIMED_RUNS}];
     let mut s: usize = 0;
-    while s < 5 {{
+    while s < {TIMED_RUNS} {{
         let start = std::time::Instant::now();
         let res = {run_call};
         samples[s] = start.elapsed().as_micros();
 {dump}        s = s + 1;
     }}
     let mut a: usize = 0;
-    while a < 5 {{
+    while a < {TIMED_RUNS} {{
         let mut b: usize = a + 1;
-        while b < 5 {{
+        while b < {TIMED_RUNS} {{
             if samples[b] < samples[a] {{
                 let tmp = samples[a];
                 samples[a] = samples[b];
@@ -581,6 +584,8 @@ def _timed_runs(run_call: str, verus_part: str) -> tuple[str, str]:
         }}
         a = a + 1;
     }}
-    println!("QUERY_LATENCY_US: {{}}", samples[2]);
+    println!("QUERY_LATENCY_US: {{}}", samples[{TIMED_RUNS // 2}]);
+    println!("QUERY_LATENCY_BEST_US: {{}}", samples[0]);
+    println!("TIMED_RUNS: {TIMED_RUNS}");
 {after}"""
     return timed, hex_fn

@@ -76,6 +76,11 @@ def _verify_summary(output: str) -> str:
     return ""
 
 
+def _best_us(stdout: str) -> int:
+    match = re.search(r"QUERY_LATENCY_BEST_US:\s*(\d+)", stdout or "")
+    return -1 if match is None else int(match.group(1))
+
+
 def _latency_us(stdout: str) -> int:
     match = re.search(r"QUERY_LATENCY_US:\s*(\d+)", stdout or "")
     if not match:
@@ -139,7 +144,7 @@ def compile_and_run(
             [str(binary)],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=300,
             check=False,
             cwd=directory,
         )
@@ -171,6 +176,7 @@ def compile_and_run(
         "status": "SUCCESS",
         "proof_verified": True,
         "latency_us": latency,
+        "latency_best_us": _best_us(run.stdout or ""),
         "compiler_error": "",
         "verify_msg": log[-2000:],
         "verify_summary": _verify_summary(log),
@@ -222,7 +228,11 @@ def _apply_speed_bar(metrics: dict, speed_bar: dict | None) -> dict:
     speedup = duck_us / max(latency, 1)
     attained = {
         "speed_bar_mult": mult,
-        "speedup": speedup,
+        "speedup": speedup,  # median of the timed runs
+        "latency_best_us": metrics.get("latency_best_us"),
+        "speedup_best": None
+        if metrics.get("latency_best_us") in (None, -1)
+        else duck_us / max(int(metrics["latency_best_us"]), 1),
         "duck_threads": speed_bar.get("duck_threads"),
         "duck1_us": speed_bar.get("duck1_us"),
         "speedup_1t": None if speed_bar.get("duck1_us") is None else int(speed_bar["duck1_us"]) / max(latency, 1),
