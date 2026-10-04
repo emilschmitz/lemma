@@ -1,11 +1,13 @@
 """Rocketship Trusted bar: adversarial emit guards + light semantic oracles.
 
 Ensures ``emit_trusted_prelude()`` stays at the NASA-grade bar documented in
-``docs/TRUSTED_FAMILIES.md``: fit-in-width ``requires``, ``checked_*`` arithmetic,
-open string specs (no ``arbitrary()``), and ``left_join_miss_generic == false``.
+``docs/TRUSTED_FAMILIES.md``: fit-in-width ``requires``, arithmetic helpers whose bodies
+Verus checks (no ``external_body``, no ``wrapping_*``), open string specs (no
+``arbitrary()``), and ``left_join_miss_generic == false``.
 
-Regression intent: if someone reintroduces ``wrapping_add`` on ``add_u64`` or
-``arbitrary()`` on ``str_like_contains``, these tests fail loudly.
+Regression intent: if someone reintroduces ``wrapping_add`` on ``add_u64``, puts
+``external_body`` back on an arithmetic helper, or uses ``arbitrary()`` on
+``str_like_contains``, these tests fail loudly.
 """
 
 from __future__ import annotations
@@ -21,14 +23,14 @@ _ARITH_EXEC_TRUSTEDS: list[dict[str, Any]] = [
         "name": "add_u64",
         "requires_snippets": ["(a as int) + (b as int) <= u64::MAX as int"],
         "ensures_snippets": ["res == a + b"],
-        "checked": "checked_add",
+        "checked": None,
         "forbid_wrapping": True,
     },
     {
         "name": "mul_u64_u32",
         "requires_snippets": ["(a as int) * (b as int) <= u64::MAX as int"],
         "ensures_snippets": ["res == a * (b as u64)"],
-        "checked": "checked_mul",
+        "checked": None,
         "forbid_wrapping": True,
     },
     {
@@ -38,7 +40,7 @@ _ARITH_EXEC_TRUSTEDS: list[dict[str, Any]] = [
             "(a as int) + (b as int) <= i64::MAX as int",
         ],
         "ensures_snippets": ["res == a + b"],
-        "checked": "checked_add",
+        "checked": None,
         "forbid_wrapping": True,
     },
     {
@@ -110,8 +112,10 @@ def test_arith_trusted_requires_before_ensures_and_checked(prelude: str, spec: d
         assert snippet in block, f"{spec['name']}: missing requires snippet {snippet!r}"
     for snippet in spec["ensures_snippets"]:
         assert snippet in block, f"{spec['name']}: missing ensures snippet {snippet!r}"
-    if spec["checked"]:
-        assert spec["checked"] in block, f"{spec['name']}: expected {spec['checked']}"
+    assert "external_body" not in prelude.split(f"fn {spec['name']}(")[0][-80:], (
+        f"{spec['name']}: arithmetic helper must be proved, not external_body"
+    )
+    assert "checked_" not in block, f"{spec['name']}: Verus checks the overflow, no runtime panic"
     if spec["forbid_wrapping"]:
         assert "wrapping_add" not in block, f"{spec['name']}: must not use wrapping_add"
         assert "wrapping_mul" not in block, f"{spec['name']}: must not use wrapping_mul"
@@ -119,13 +123,13 @@ def test_arith_trusted_requires_before_ensures_and_checked(prelude: str, spec: d
 
 def test_adversarial_add_u64_rejects_wrapping_add_regression(prelude: str) -> None:
     block = _extract_fn_block(prelude, "add_u64")
-    assert "checked_add" in block
+    assert "a + b" in block
     assert "wrapping_add" not in block
 
 
 def test_adversarial_mul_u64_u32_rejects_wrapping_mul_regression(prelude: str) -> None:
     block = _extract_fn_block(prelude, "mul_u64_u32")
-    assert "checked_mul" in block
+    assert "a * (b as u64)" in block
     assert "wrapping_mul" not in block
 
 

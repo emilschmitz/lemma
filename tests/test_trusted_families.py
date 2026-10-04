@@ -102,7 +102,7 @@ def test_view_and_trusted_helpers(fam) -> None:
     if fam.kind == "map":
         assert bridge.view_spec is None
         assert "arbitrary()" not in bridge.trusted_rs
-        assert "external_body" in bridge.trusted_rs
+        assert ("external_body" in bridge.trusted_rs) == fam.spec_ret.startswith("Map<(")
         suffix = bridge.agg_suffix or ""
         assert f"agg_new_{suffix}" in bridge.trusted_rs
         assert "agg_add_" in bridge.trusted_rs or "agg_put_" in bridge.trusted_rs

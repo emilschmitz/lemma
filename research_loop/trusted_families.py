@@ -193,8 +193,11 @@ def assert_menu_complete() -> None:
                 raise AssertionError(f"{fam.id}: map must not use opaque view_spec")
             if "arbitrary()" in bridge.trusted_rs:
                 raise AssertionError(f"{fam.id}: map trusted_rs must not contain arbitrary()")
-            if "external_body" not in bridge.trusted_rs:
-                raise AssertionError(f"{fam.id}: map trusted_rs missing external_body")
+            has_ext = "external_body" in bridge.trusted_rs
+            if fam.spec_ret.startswith("Map<(") != has_ext:
+                raise AssertionError(
+                    f"{fam.id}: external_body must be present exactly for tuple keys (agg_new)"
+                )
             suffix = bridge.agg_suffix or ""
             if f"agg_new_{suffix}" not in bridge.trusted_rs:
                 raise AssertionError(f"{fam.id}: trusted_rs missing agg_new_{suffix}")

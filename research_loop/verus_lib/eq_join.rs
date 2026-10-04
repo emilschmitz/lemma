@@ -1246,16 +1246,6 @@ pub fn build_eq_index_u64(keys: &Vec<u64>) -> (idx: EqIndexCopy<u64>)
     build_eq_index_copy(keys)
 }
 
-pub fn build_eq_index_u32(keys: &Vec<u32>) -> (idx: EqIndexCopy<u32>)
-    ensures
-        index_ok(key_views(keys@), idx.buckets@, idx.map@, keys@.len() as int),
-{
-    proof {
-        lemma_u32_hash_key();
-    }
-    build_eq_index_copy(keys)
-}
-
 pub fn equijoin_pairs_copy<K: Copy + View<V = K> + Eq + Hash>(
     outer: &Vec<K>,
     inner: &Vec<K>,
@@ -2180,15 +2170,6 @@ pub proof fn lemma_seq_add_push<A>(a: Seq<A>, b: Seq<A>, x: A)
     assert((a + b).push(x) =~= a + b.push(x));
 }
 
-pub proof fn lemma_seq_add_assoc<A>(a: Seq<A>, b: Seq<A>, c: Seq<A>)
-    ensures
-        (a + b) + c == a + (b + c),
-{
-    broadcast use vstd::seq::group_seq_lemmas;
-
-    assert((a + b) + c =~= a + (b + c));
-}
-
 pub proof fn lemma_nested_star_step(
     pre_a: Seq<Seq<char>>,
     pre_t: Seq<Seq<char>>,
@@ -2302,7 +2283,7 @@ pub fn push_star_product(
             lemma_sub_product_step(i, subs@, tags@, s as int);
             assert(sub_product(i, subs@, tags@, s as int + 1) == sub_product(i, subs@, tags@, s as int)
                 + tag_prefix(i, sid, tags@, tags@.len() as int));
-            lemma_seq_add_assoc(
+            vstd::seq_lib::lemma_concat_associative(
                 base,
                 sub_product(i, subs@, tags@, s as int),
                 tag_prefix(i, sid, tags@, tags@.len() as int),
@@ -11346,21 +11327,6 @@ pub proof fn lemma_nested_right_pairs_step<K>(outer: Seq<K>, inner: Seq<K>, n: i
             eq_row_ids(inner, outer[n - 1], inner.len() as int),
             eq_row_ids(inner, outer[n - 1], inner.len() as int).len() as int,
         ));
-    }
-}
-
-pub proof fn lemma_prefix_right_len(i: usize, ids: Seq<usize>, t: int)
-    requires
-        0 <= t <= ids.len(),
-    ensures
-        prefix_right_pairs(i, ids, t).len() == t,
-    decreases t,
-{
-    if t > 0 {
-        lemma_prefix_right_len(i, ids, t - 1);
-        assert(prefix_right_pairs(i, ids, t) == prefix_right_pairs(i, ids, t - 1).push((i, Some(
-            ids[t - 1],
-        ))));
     }
 }
 

@@ -473,10 +473,14 @@ def _agg_add_tuple_requires(value: TypeTuple, *, spec_key: str) -> str | None:
     return " &&\n        ".join(clauses)
 
 
-def _checked_add_expr(prev: str, delta: str, *, signed: bool = False) -> str:
-    op = "checked_add"
-    msg = "Trusted overflow: ValidCols/requires violated"
-    return f"{prev}.{op}({delta}).expect(\"{msg}\")"
+def _add_expr(prev: str, delta: str) -> str:
+    """Plain `+`: the helper's fit-in-width `requires` is what Verus checks it against."""
+    return f"{prev} + {delta}"
+
+
+def _prev_or_zero(get_call: str, zero: str) -> str:
+    """`Option<&V>` to V with a default (vstd has no spec for `copied`/`unwrap_or`)."""
+    return f"match {get_call} {{ Some(v) => *v, None => {zero} }}"
 
 
 def _agg_add_ensures(
@@ -667,7 +671,7 @@ def _set_as_map_open_spec(atom: str) -> tuple[str, str, str]:
 
 
 def _emit_distinct_set_trusted(atom: str) -> str:
-    """TRUSTED distinct-set helpers: vstd HashSetWithView + open Map bridge."""
+    """Distinct-set helpers: vstd HashSetWithView + open Map bridge."""
     view, set_ghost, spec_map = _set_as_map_open_spec(atom)
     if atom == "str":
         rust_set = "HashSetWithView<String>"
@@ -685,20 +689,21 @@ def _emit_distinct_set_trusted(atom: str) -> str:
         raise ValueError(f"unsupported distinct-set atom: {atom!r}")
 
     suffix = atom
+    # `HashSetWithView::<String>::new()` requires `obeys_key_model::<String>()`, which vstd
+    # only assumes inside `StringHashSet`; the u32 constructor is proved from vstd's axiom.
+    new_attr = "#[verifier::external_body]\n" if atom == "str" else ""
     return f"""
-// === TRUSTED distinct-set helpers ({atom}: HashSetWithView exec ↔ Map spec) ===
+// === Distinct-set helpers ({atom}: HashSetWithView exec ↔ Map spec; only str set_new is trusted) ===
 pub open spec fn {view}(s: {set_ghost}) -> {spec_map} {{
     Map::new(s, |k| true)
 }}
 
-#[verifier::external_body]
-pub exec fn set_new_{suffix}() -> (s: {rust_set})
+{new_attr}pub exec fn set_new_{suffix}() -> (s: {rust_set})
     ensures {view}(s@) == Map::empty(),
 {{
     HashSetWithView::new()
 }}
 
-#[verifier::external_body]
 pub exec fn set_insert_{suffix}(s: &mut {rust_set}, {insert_param}) -> (is_new: bool)
     ensures
         {view}(final(s)@).contains_key({spec_key}),
@@ -736,9 +741,13 @@ def _emit_map_trusted(
     put_ensures = f"final(hm)@ == old(hm)@.insert({spec_key}, {spec_val}),"
     new_expr = map_new_expr(rust_ret)
 
+    # `HashMapWithView::new()` requires `obeys_key_model::<K>()`. vstd has that axiom for
+    # integer keys and `StringHashMap` for a lone String key; a tuple key has none, so only
+    # `agg_new` stays trusted there. `agg_put` / `agg_add` are proved for every key shape.
+    new_attr = ["#[verifier::external_body]"] if isinstance(key, TypeTuple) else []
     lines = [
-        "// === TRUSTED structural map helpers (vstd view @ + agg_new + agg_put/agg_add) ===",
-        "#[verifier::external_body]",
+        "// === Structural map helpers (vstd view @ + agg_new + agg_put/agg_add) ===",
+        *new_attr,
         f"pub exec fn agg_new_{suffix}() -> (hm: {rust_ret})",
         "    ensures hm@ == Map::empty(),",
         "{",
@@ -750,7 +759,6 @@ def _emit_map_trusted(
         lines.extend(
             [
                 "",
-                "#[verifier::external_body]",
                 f"pub exec fn agg_put_{suffix}(hm: &mut {rust_ret}, {key_sig}, {val_sig})",
                 f"    ensures {put_ensures}",
                 "{",
@@ -772,22 +780,15 @@ def _emit_map_trusted(
             for e in value.elems
         )
         default_val = zeros if len(value.elems) == 1 else f"({zeros})"
-        slot_types = [e.name for e in value.elems if isinstance(e, TypeAtom)]
-        updated = ", ".join(
-            _checked_add_expr(
-                f"prev.{i}", f"d{i}", signed=(slot_types[i] in ("i64", "i128"))
-            )
-            for i in range(len(value.elems))
-        )
+        updated = ", ".join(_add_expr(f"prev.{i}", f"d{i}") for i in range(len(value.elems)))
         add_requires = _agg_add_tuple_requires(value, spec_key=spec_key)
         add_body_lines = [
             f"    let key = {exec_key};",
-            f"    let prev = hm.get(&key).copied().unwrap_or({default_val});",
+            f"    let prev = {_prev_or_zero('hm.get(&key)', default_val)};",
             f"    hm.insert(key, ({updated}));",
         ]
         add_fn: list[str] = [
             "",
-            "#[verifier::external_body]",
             f"pub exec fn agg_add_{suffix}(hm: &mut {rust_ret}, {add_key_sig})",
         ]
         if add_requires:
@@ -807,28 +808,26 @@ def _emit_map_trusted(
         add_sig = f"{key_sig}, delta: {value.name}"
         add_ensures = _agg_add_ensures(spec_key, value)
         add_requires = _agg_add_scalar_requires(value, spec_key=spec_key)
-        signed = value.name in ("i64", "i128")
-        checked = _checked_add_expr("prev", "delta", signed=signed)
+        checked = _add_expr("prev", "delta")
         zero = _numeric_zero(value.name)
         if isinstance(key, TypeAtom) and key.name == "u32":
             body = f"""
-    let prev = hm.get(&k0).copied().unwrap_or({zero});
+    let prev = {_prev_or_zero("hm.get(&k0)", zero)};
     hm.insert(k0, {checked});
 """
         elif isinstance(key, TypeAtom) and key.name == "Seq<char>":
             body = f"""
-    let prev = hm.get(k0).copied().unwrap_or({zero});
+    let prev = {_prev_or_zero("hm.get(k0)", zero)};
     hm.insert(k0.to_string(), {checked});
 """
         else:
             body = f"""
     let key = {exec_key};
-    let prev = hm.get(&key).copied().unwrap_or({zero});
+    let prev = {_prev_or_zero("hm.get(&key)", zero)};
     hm.insert(key, {checked});
 """
         add_fn = [
             "",
-            "#[verifier::external_body]",
             f"pub exec fn agg_add_{suffix}(hm: &mut {rust_ret}, {add_sig})",
         ]
         if add_requires:
@@ -952,20 +951,55 @@ def _emit_seq_trusted(
         f"{view_fn}(final(s)@) == {view_fn}(old(s)@).push({spec_elem_val}),"
     )
 
+    rec_fn = f"{view_fn}_rec"
+    lemma = f"lemma_{view_fn}_push"
+    row_at_x = _vec_view_elem_at(spec_elem_str, "x")
+    row_at_i = _vec_view_elem_at(spec_elem_str, "s[i]")
+    spec_empty = f"Seq::<{spec_elem_str}>::empty()"
     return f"""{view_rs}
-// === TRUSTED structural seq helpers (Vec@ + seq_new + seq_push) ===
-#[verifier::external_body]
+// Pushing a row pushes its view: induction on the right fold that defines `{rec_fn}`.
+pub proof fn {lemma}(s: Seq<{exec_elem_str}>, x: {exec_elem_str}, i: int)
+    requires
+        0 <= i <= s.len(),
+    ensures
+        {rec_fn}(s.push(x), i) == {rec_fn}(s, i).push({row_at_x}),
+    decreases s.len() - i,
+{{
+    broadcast use vstd::seq::group_seq_lemmas;
+
+    let sp = s.push(x);
+    let y = {row_at_x};
+    assert(sp.len() == s.len() + 1);
+    if i < s.len() {{
+        {lemma}(s, x, i + 1);
+        assert(sp[i] == s[i]);
+        let a = {rec_fn}(s, i + 1);
+        let v = {row_at_i};
+        assert({rec_fn}(sp, i) == {rec_fn}(sp, i + 1).insert(0, v));
+        assert({rec_fn}(s, i) == a.insert(0, v));
+        assert(a.push(y).insert(0, v) =~= a.insert(0, v).push(y));
+    }} else {{
+        assert(sp[i] == x);
+        assert({rec_fn}(sp, i + 1) == {spec_empty});
+        assert({rec_fn}(sp, i) == {spec_empty}.insert(0, y));
+        assert({rec_fn}(s, i) == {spec_empty});
+        assert({spec_empty}.insert(0, y) =~= {spec_empty}.push(y));
+    }}
+}}
+
+// === Structural seq helpers (Vec@ + seq_new + seq_push; bodies proved) ===
 pub exec fn seq_new_{suffix}() -> (s: {rust_ret})
     ensures {view_fn}(s@) == Seq::empty(),
 {{
     Vec::new()
 }}
 
-#[verifier::external_body]
 pub exec fn seq_push_{suffix}(s: &mut {rust_ret}, {push_sig})
     ensures {push_ensures}
 {{
+    let ghost old_s = s@;
     s.push({exec_elem_val});
+    proof {{ {lemma}(old_s, s@[old_s.len() as int], 0); }}
 }}
 """
 

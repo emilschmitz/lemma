@@ -85,22 +85,26 @@ def test_ci_gate_prelude_arith_has_requires(prelude: str, name: str) -> None:
     assert req_pos < ens_pos
 
 
-def test_ci_gate_agg_add_bridge_checked_add_with_prev_fit_requires() -> None:
+def test_ci_gate_agg_add_bridge_plain_add_with_prev_fit_requires() -> None:
     fam = next(f for f in TRUSTED_FAMILY_MENU if f.id == "map_str_u32_u64")
     block = _agg_add_chunk(bridge_for_family(fam).trusted_rs, "agg_add_str_u32__u64")
     assert "requires" in block
-    assert "checked_add" in block
+    assert "external_body" not in block
+    assert "prev + delta" in block
+    assert "checked_add" not in block
     assert "wrapping_add" not in block
     assert "delta < LEMMA_MAX_CELL_U64" in block
     assert "old(hm)@" in block
     assert "(prev as int) + (delta as int)" not in block
 
 
-def test_ci_gate_multi_agg_tuple_agg_add_checked_with_prev_fit() -> None:
+def test_ci_gate_multi_agg_tuple_agg_add_plain_with_prev_fit() -> None:
     bridge = structural_bridge_for_spec_type("Map<(Seq<char>, Seq<char>), (u64, u64)>")
     block = _agg_add_chunk(bridge.trusted_rs, "agg_add_str_str__u64_u64")
     assert "requires" in block
-    assert "checked_add" in block
+    assert "external_body" not in block
+    assert "prev.0 + d0" in block
+    assert "checked_add" not in block
     assert "wrapping_add" not in block
     assert "d0 < LEMMA_MAX_CELL_U64" in block
     assert "old(hm)@" in block

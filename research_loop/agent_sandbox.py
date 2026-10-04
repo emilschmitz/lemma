@@ -214,23 +214,47 @@ def claude_test_mock() -> tuple[int, Path] | None:
     return int(port), Path(ca)
 
 
+def claude_login_file() -> Path:
+    """The host Claude Code login file, mounted on its own like the Cursor path mounts ~/.cursor."""
+    return Path.home() / ".claude" / ".credentials.json"
+
+
 def claude_docker_args() -> list[str]:
-    """Docker args for the claude agent. The key is passed by name only (value stays in env)."""
+    """Docker args for the claude agent. Secrets are never read here or put on a command line.
+
+    Order: ``ANTHROPIC_API_KEY`` (passed by name only), else ``CLAUDE_CODE_OAUTH_TOKEN`` (the long-lived
+    token from ``claude setup-token``, also by name only: the intended non-interactive credential, it does
+    not rotate under the host login), else ``LEMMA_CLAUDE_CONFIG_DIR`` (a directory,
+    read-only), else the host login file ``~/.claude/.credentials.json``, read-only, that file only
+    (Claude history and memory stay out of the container). The entrypoint copies the mount into a
+    writable ``/root/.claude``. A model agent runs next to whatever is mounted: Emil chose the login
+    file as the default, the same way the Cursor path mounts ``~/.cursor``.
+    """
     key = os.environ.get("ANTHROPIC_API_KEY", "")
     config_dir = os.environ.get("LEMMA_CLAUDE_CONFIG_DIR", "")
-    if not key and not config_dir:
-        raise RuntimeError(
-            "claude agent selected but neither ANTHROPIC_API_KEY nor LEMMA_CLAUDE_CONFIG_DIR "
-            "is set in the launching shell"
-        )
     args = ["-e", "CLAUDE_CONFIG_DIR=/root/.claude"]
     if key:
         args += ["-e", "ANTHROPIC_API_KEY"]
-    if config_dir:
+    elif os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", ""):
+        args += ["-e", "CLAUDE_CODE_OAUTH_TOKEN"]
+    elif config_dir:
         path = Path(config_dir).expanduser()
         if not path.is_dir():
             raise RuntimeError(f"LEMMA_CLAUDE_CONFIG_DIR is not a directory: {path}")
         args += ["-v", f"{path.resolve()}:{CLAUDE_CONTAINER_CONFIG_HOST}:ro"]
+    else:
+        login = claude_login_file()
+        if not login.is_file():
+            raise RuntimeError(
+                "claude agent selected but no ANTHROPIC_API_KEY, no LEMMA_CLAUDE_CONFIG_DIR, "
+                f"and no Claude login file at {login}"
+            )
+        args += ["-v", f"{login.resolve()}:{CLAUDE_CONTAINER_CONFIG_HOST}/.credentials.json:ro"]
+        # Account state (oauthAccount, onboarding flags) lives in ~/.claude.json next to the token file.
+        # With CLAUDE_CONFIG_DIR set Claude Code reads it as $CLAUDE_CONFIG_DIR/.claude.json.
+        state = Path.home() / ".claude.json"
+        if state.is_file():
+            args += ["-v", f"{state.resolve()}:{CLAUDE_CONTAINER_CONFIG_HOST}/.claude.json:ro"]
     mock = claude_test_mock()
     if mock is not None:
         from research_loop.scripts.mock_anthropic_api import MOCK_HOST
@@ -1271,6 +1295,7 @@ def run_agent_docker(
         "LEMMA_AGENT_STDERR_LOG",
         "PATH",
         "ANTHROPIC_API_KEY",
+        "CLAUDE_CODE_OAUTH_TOKEN",  # by name only (claude_docker_args): a value on the command line leaks
     }
     for k, v in env.items():
         if k in skip_env:

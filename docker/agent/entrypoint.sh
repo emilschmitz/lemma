@@ -18,7 +18,9 @@ fi
 # Claude Code config (LEMMA_CLAUDE_CONFIG_DIR mounted RO at .claude-host) -> writable CLAUDE_CONFIG_DIR.
 mkdir -p /root/.claude
 if [[ -d /root/.claude-host ]]; then
-  cp -a /root/.claude-host/. /root/.claude/
+  # no -a: the container has no CAP_CHOWN, so preserving the host owner of a read-only mount fails
+  cp -R --no-preserve=ownership,timestamps /root/.claude-host/. /root/.claude/
+  chmod -R u+rwX /root/.claude
 fi
 export DISABLE_TELEMETRY=1 DISABLE_ERROR_REPORTING=1 DISABLE_AUTOUPDATER=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 mkdir -p /root/.cursor/projects /root/.cursor/chats /root/.cursor/ai-tracking
