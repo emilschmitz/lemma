@@ -100,7 +100,7 @@ ASSUMPTIONS: tuple[MarginAssumption, ...] = (
     MarginAssumption(10, "(pre.adsh, pre.report, pre.line) is unique"),
     MarginAssumption(11, "num.value < 2^62"),
     MarginAssumption(12, "num.ddate < 2^28"),
-    MarginAssumption(13, "num.qtrs < 2^8"),
+    MarginAssumption(13, "num.qtrs < 2^16"),
     MarginAssumption(14, "sub.cik < 2^24"),
     MarginAssumption(15, "sub.sic < 2^14"),
     MarginAssumption(16, "sub.fy < 2^12"),
@@ -183,7 +183,7 @@ def sec_margin_catalog(value_scale: int = 0) -> CatalogAssumptions:
                         _col(VALUE_EXCLUSIVE * 10**value_scale, value_scale)
                     ),
                     "ddate": _col(2**28),
-                    "qtrs": _col(2**8),
+                    "qtrs": _col(2**16),  # real EDGAR max is 3604 (checked 2026-10-04 on the full 39.4M-row table); 2^8 was false
                     "adsh": _strlen(32),
                     "tag": _strlen(512),
                     "version": _strlen(64),
