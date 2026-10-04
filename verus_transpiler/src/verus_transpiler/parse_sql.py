@@ -2136,7 +2136,15 @@ def _flatten_derived_project(query: SQLQuery) -> SQLQuery:
     inner = derived.query
     if inner.agg_type:
         return query
-    if inner.union_query is not None or inner.window_specs:
+    # UNION stays a derived table. EXCEPT and INTERSECT must too: flattening
+    # them rewrites the outer count as a scan of the left table and drops
+    # the set difference.
+    if (
+        inner.union_query is not None
+        or inner.intersect_query is not None
+        or inner.except_query is not None
+        or inner.window_specs
+    ):
         return query
     if inner.groupby_columns:
         return query
@@ -2867,6 +2875,14 @@ def _validate_union_compatible(left: SQLQuery, right: SQLQuery) -> None:
         raise UnsupportedContractError("UNION branches must use the same aggregate.")
 
 
+def _refuse_nested_set_op(left: SQLQuery) -> None:
+    """A second set operator would overwrite the branch already stored on ``left``."""
+    if left.union_query is not None or left.intersect_query is not None or left.except_query is not None:
+        raise UnsupportedContractError(
+            "nested set operations need a real MethodSpec"
+        )
+
+
 def _parse_expression(
     expression: exp.Expression,
     schema: dict[str, str] | dict[str, dict[str, str]],
@@ -2876,6 +2892,7 @@ def _parse_expression(
         left = _parse_expression(expression.this, schema)
         right = _parse_expression(expression.expression, schema)
         _validate_union_compatible(left, right)
+        _refuse_nested_set_op(left)
         union_all = not expression.args.get("distinct", True)
         left.union_all = union_all
         left.union_query = right
@@ -2885,6 +2902,7 @@ def _parse_expression(
         left = _parse_expression(expression.this, schema)
         right = _parse_expression(expression.expression, schema)
         _validate_union_compatible(left, right)
+        _refuse_nested_set_op(left)
         left.intersect_all = not expression.args.get("distinct", True)
         left.intersect_query = right
         return left
@@ -2893,6 +2911,7 @@ def _parse_expression(
         left = _parse_expression(expression.this, schema)
         right = _parse_expression(expression.expression, schema)
         _validate_union_compatible(left, right)
+        _refuse_nested_set_op(left)
         left.except_all = not expression.args.get("distinct", True)
         left.except_query = right
         return left

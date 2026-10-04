@@ -1013,21 +1013,49 @@ def _emit_projection_spec(query: SQLQuery, flat_schema: dict[str, str]) -> tuple
     return helpers, spec_fn, ret_type
 
 
+def _derived_set_op(inner: SQLQuery) -> tuple[str, SQLQuery]:
+    """The one set operator stored on a derived projection, plus its right branch."""
+    branches = [
+        ("union", inner.union_query),
+        ("intersect", inner.intersect_query),
+        ("except", inner.except_query),
+    ]
+    present = [(name, branch) for name, branch in branches if branch is not None]
+    if len(present) != 1:
+        raise UnsupportedContractError(
+            "derived set operation needs one UNION, INTERSECT, or EXCEPT"
+        )
+    return present[0]
+
+
 def _emit_derived_union_outer_spec(
     query: SQLQuery,
     derived: DerivedTable,
     flat_schema: dict[str, str],
 ) -> tuple[str, str, str]:
-    """Outer aggregate over UNION/UNION ALL derived projection."""
+    """Outer aggregate over a derived UNION, INTERSECT, or EXCEPT projection."""
     inner = derived.query
-    right = inner.union_query
-    if right is None or not inner.is_projection:
+    op, right = _derived_set_op(inner)
+    if not inner.is_projection:
         raise UnsupportedContractError(
-            "derived UNION composition requires compatible projection branches"
+            "derived set operation requires compatible projection branches"
+        )
+    if op == "intersect" and inner.intersect_all:
+        raise UnsupportedContractError(
+            "INTERSECT ALL set operation needs real MethodSpec bag fold; not yet supported"
+        )
+    if op == "except" and inner.except_all:
+        raise UnsupportedContractError(
+            "EXCEPT ALL set operation needs real MethodSpec bag fold; not yet supported"
+        )
+    if op != "union" and (query.where_expr or query.where_conditions):
+        raise UnsupportedContractError(
+            "filter over a derived set operation is not in the method spec"
         )
     if len(inner.projection_columns) != 1 or not query.agg_type:
         raise UnsupportedContractError(
-            "derived UNION outer aggregate requires single-column projection + scalar agg"
+            "derived set operation outer aggregate requires "
+            "single-column projection + scalar agg"
         )
 
     prefix_l = f"derived_{derived.alias}_left"
@@ -1038,20 +1066,24 @@ def _emit_derived_union_outer_spec(
     right_helpers, right_call, _ = _emit_projection_branch(
         right, flat_schema, helper_name=f"{prefix_r}_helper", spec_name=f"{prefix_r}_spec",
     )
-    if inner.union_all:
+    if op == "union" and inner.union_all:
         combined = f"spec_seq_concat({left_call}, {right_call})"
-    else:
+    elif op == "union":
         combined = f"spec_seq_union_distinct({left_call}, {right_call})"
+    elif op == "intersect":
+        combined = f"spec_seq_intersect({left_call}, {right_call})"
+    else:
+        combined = f"spec_seq_except({left_call}, {right_call})"
 
-    if query.agg_type == "SUM":
-        spec_body = f"seq_sum_u64({combined})"
-        ret_type = "u64"
-    elif query.agg_type == "COUNT":
+    if query.agg_type == "COUNT":
         spec_body = f"{combined}.len() as u64"
+        ret_type = "u64"
+    elif query.agg_type == "SUM" and op == "union":
+        spec_body = f"seq_sum_u64({combined})"
         ret_type = "u64"
     else:
         raise UnsupportedContractError(
-            f"outer {query.agg_type!r} over derived UNION not supported"
+            f"outer {query.agg_type!r} over derived {op.upper()} not supported"
         )
 
     helpers = "\n\n".join([left_helpers, right_helpers])
@@ -1633,7 +1665,11 @@ def _emit_single_table_spec(
                 f"outer aggregate over derived recursive CTE '{derived.alias}' "
                 "needs real MethodSpec; not yet supported"
             )
-        if inner.union_query is not None:
+        if (
+            inner.union_query is not None
+            or inner.intersect_query is not None
+            or inner.except_query is not None
+        ):
             return _emit_derived_union_outer_spec(query, derived, flat_schema)
         if inner.window_specs:
             raise UnsupportedContractError(
