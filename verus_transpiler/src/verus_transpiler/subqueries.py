@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field, replace
 
@@ -709,6 +710,25 @@ def _agg_combine(agg_type: str) -> str:
     return "add"
 
 
+def _map_key_and_value(map_ty: str) -> tuple[str, str]:
+    """Split ``Map<K, V>`` on the comma that separates the key from the value."""
+    if not (map_ty.startswith("Map<") and map_ty.endswith(">")):
+        raise UnsupportedContractError(f"grouped spec is not a map: {map_ty}")
+    inner = map_ty[len("Map<"):-1]
+    depth = 0
+    split_at = None
+    for i, ch in enumerate(inner):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            split_at = i
+    if split_at is None:
+        raise UnsupportedContractError(f"grouped spec is not a map: {map_ty}")
+    return inner[:split_at].strip(), inner[split_at + 1 :].strip()
+
+
 def _emit_groupby_map_helper(
     prefix: str,
     inner: SQLQuery,
@@ -717,6 +737,7 @@ def _emit_groupby_map_helper(
     struct_name: str = "Cols",
     param_name: str = "cols",
     valid_fn: str = "valid_cols",
+    exact_sum: bool = False,
 ) -> tuple[str, str, str]:
     """Single-aggregate group-by fold -> Map<Key, Val>."""
     helper_name = f"{prefix}_helper"
@@ -735,6 +756,8 @@ def _emit_groupby_map_helper(
     val_type = _agg_value_type(inner.agg_expr) if is_sum else "u64"
     if inner.agg_type in ("MIN", "MAX"):
         val_type = "u64"
+    if exact_sum and is_sum:
+        val_type = "u128"
     term_at_k = (
         spec_i64_term(inner.agg_expr, idx_var)
         if is_sum and val_type == "i64"
@@ -757,40 +780,35 @@ def _emit_groupby_map_helper(
         inner.groupby_columns, idx_var, schema, param_name=param_name,
     )
     zero = f"0{val_type}"
+    if combine == "min":
+        empty_prev = "u64::MAX"
+        step = f"if t < prev {{ t }} else {{ prev }}"
+    elif combine == "max":
+        empty_prev = "0u64"
+        step = f"if t > prev {{ t }} else {{ prev }}"
+    else:
+        empty_prev = zero
+        step = f"(prev as int + t as int) as {val_type}"
 
     if where_at_k:
         body_inner = (
             f"let tail = {helper_name}({param_name}, {idx_var} + 1);\n"
             f"        if {where_at_k} {{\n"
             f"            let key = {key_expr};\n"
-            f"            let prev = if tail.contains_key(key) {{ tail[key] }} else {{ {zero} }};\n"
-            f"            tail.insert(key, (prev as int + {term_at_k} as int) as {val_type})\n"
+            f"            let prev = if tail.contains_key(key) {{ tail[key] }} else {{ {empty_prev} }};\n"
+            f"            let t = {term_at_k};\n"
+            f"            tail.insert(key, {step})\n"
             f"        }} else {{\n"
             f"            tail\n"
             f"        }}"
-        )
-    elif combine == "max":
-        body_inner = (
-            f"let tail = {helper_name}({param_name}, {idx_var} + 1);\n"
-            f"        let key = {key_expr};\n"
-            f"        let prev = if tail.contains_key(key) {{ tail[key] }} else {{ 0u64 }};\n"
-            f"        let t = {term_at_k};\n"
-            f"        tail.insert(key, if t > prev {{ t }} else {{ prev }})"
-        )
-    elif combine == "min":
-        body_inner = (
-            f"let tail = {helper_name}({param_name}, {idx_var} + 1);\n"
-            f"        let key = {key_expr};\n"
-            f"        let prev = if tail.contains_key(key) {{ tail[key] }} else {{ u64::MAX }};\n"
-            f"        let t = {term_at_k};\n"
-            f"        tail.insert(key, if t < prev {{ t }} else {{ prev }})"
         )
     else:
         body_inner = (
             f"let tail = {helper_name}({param_name}, {idx_var} + 1);\n"
             f"        let key = {key_expr};\n"
-            f"        let prev = if tail.contains_key(key) {{ tail[key] }} else {{ {zero} }};\n"
-            f"        tail.insert(key, (prev as int + {term_at_k} as int) as {val_type})"
+            f"        let prev = if tail.contains_key(key) {{ tail[key] }} else {{ {empty_prev} }};\n"
+            f"        let t = {term_at_k};\n"
+            f"        tail.insert(key, {step})"
         )
 
     helper = f"""pub open spec fn {helper_name}({param_name}: &{struct_name}, {idx_var}: int) -> {map_ret}
@@ -1813,9 +1831,17 @@ def emit_derived_grouped_inner_spec(
         raise UnsupportedContractError(
             "grouped derived table requires GROUP BY with aggregate"
         )
-    helpers, spec_call, ret_type = _emit_groupby_map_helper(
-        prefix, inner, schema, struct_name=struct_name,
+    exact_sum = (
+        os.environ.get("LEMMA_EXACT_SUM", "0") == "1" and inner.agg_type == "SUM"
     )
+    helpers, spec_call, ret_type = _emit_groupby_map_helper(
+        prefix, inner, schema, struct_name=struct_name, exact_sum=exact_sum,
+    )
+    if inner.having_expr:
+        key_ty, val_ty = _map_key_and_value(ret_type)
+        spec_call = _inline_having_filter(
+            spec_call, inner.having_expr, key_ty, val_ty,
+        )
     return helpers, spec_call, ret_type
 
 

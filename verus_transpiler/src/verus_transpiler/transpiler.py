@@ -1314,9 +1314,10 @@ def _emit_grouped_derived_outer_spec(
 
     The map's keys are the groups. Counting those keys is not the sum of the values.
     """
-    inner_helpers, call, _inner_ret = emit_derived_grouped_inner_spec(
+    inner_helpers, call, inner_ret = emit_derived_grouped_inner_spec(
         derived.alias, derived.query, flat_schema
     )
+    val_ty = inner_ret.rsplit(",", 1)[-1].strip().removesuffix(">")
     exact = os.environ.get("LEMMA_EXACT_SUM", "0") == "1"
     agg = query.agg_type
     if agg == "COUNT":
@@ -1336,26 +1337,28 @@ def _emit_grouped_derived_outer_spec(
         )
         ret = "u64"
     elif agg == "MIN" and exact:
+        hi = "u128::MAX" if val_ty == "u128" else "u64::MAX"
         body = (
             f"let m = {call};\n"
             "    if m.dom().len() == 0 { None } else {\n"
-            "        Some(m.values().fold(u64::MAX, |acc, v| if v < acc { v } else { acc }))\n"
+            f"        Some(m.values().fold({hi}, |acc, v| if v < acc {{ v }} else {{ acc }}))\n"
             "    }"
         )
-        ret = "Option<u64>"
+        ret = f"Option<{val_ty}>"
     elif agg == "MIN":
         body = (
             f"{call}.values().fold(u64::MAX, |acc, v| if v < acc {{ v }} else {{ acc }})"
         )
         ret = "u64"
     elif agg == "MAX" and exact:
+        lo = "0u128" if val_ty == "u128" else "0u64"
         body = (
             f"let m = {call};\n"
             "    if m.dom().len() == 0 { None } else {\n"
-            "        Some(m.values().fold(0u64, |acc, v| if v > acc { v } else { acc }))\n"
+            f"        Some(m.values().fold({lo}, |acc, v| if v > acc {{ v }} else {{ acc }}))\n"
             "    }"
         )
-        ret = "Option<u64>"
+        ret = f"Option<{val_ty}>"
     elif agg == "MAX":
         body = f"{call}.values().fold(0u64, |acc, v| if v > acc {{ v }} else {{ acc }})"
         ret = "u64"
