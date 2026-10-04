@@ -50,7 +50,6 @@
                 assert(prev == 0);
                 assert(prev as int + 1 <= ROW_CAP_t);
             }
-            lemma_count_step_fits_u64(prev, ROW_CAP_t);
             assert((prev + 1) as int == prev as int + 1);
         }
         let next = prev + 1;
