@@ -21,6 +21,14 @@ remain forbidden.
    Limitations section.
 4. **Reporting.** Every result that depends on a trusted statement says so.
 
+## Floating-point rounding is accepted (Emil, 2026-10-04)
+
+Floats are modeled as exact real arithmetic (the f64 idealization, `docs/TRUSTED_FAMILIES.md`). An adversary report that only
+shows rounding error (a last-bit difference, a near-tie flip, cancellation, absorption, underflow, a double that is not its
+decimal) is an **accepted float limitation**, not a hole. Soundness holes still count: a body that verifies although it is wrong
+for a reason other than rounding, a vacuous hypothesis (two literals rounding to the same double), a statement false even
+ignoring rounding. Lemmas archived in `declarative_spec/future_float_error_bounds/` are unused and invisible to the agent.
+
 ## Accepted: floating-point error (Emil, 2026-10-04)
 
 Floating-point rounding error is an ACCEPTED limitation for now. Floats are modeled as exact real

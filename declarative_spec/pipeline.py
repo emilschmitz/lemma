@@ -199,7 +199,6 @@ def _apply_speed_bar(metrics: dict, speed_bar: dict | None) -> dict:
             rows_from_stdout_general(stdout),
             list(speed_bar["rows"]),
             list(speed_bar["kinds"]),
-            speed_bar.get("float_abs_eps"),
         )
     else:
         from declarative_spec.bench import rows_from_stdout
@@ -240,7 +239,7 @@ def _apply_speed_bar(metrics: dict, speed_bar: dict | None) -> dict:
                 "Use one pass over dense arrays; avoid a loop over one table inside another and a hash-map update per row where a dense Vec indexed by key works."
             ),
         }
-    return {**metrics, **attained, "duck_us": duck_us, "float_abs_eps": speed_bar.get("float_abs_eps")}
+    return {**metrics, **attained, "duck_us": duck_us}
 
 
 def run_declarative_metrics(

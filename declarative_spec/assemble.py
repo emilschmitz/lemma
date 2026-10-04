@@ -239,6 +239,18 @@ def _runtime_checks(verus_part: str, suffix: str, fields: list[tuple[str, str]])
             continue
         m = re.fullmatch(
             rf"forall\|i: int\| #!\[trigger {p}\.((?:r#)?\w+)@\[i\]\] 0 <= i < {p}\.n as int ==> "
+            rf"{p}\.(?:r#)?\w+@\[i\]\.is_finite_spec\(\)",
+            c,
+        )
+        if m:
+            var = f"{suffix}_{_local_ident(m.group(1))}"
+            out.append(
+                f"    assert!({var}.iter().all(|v| v.is_finite()), "
+                f'"{suffix}.{_local_ident(m.group(1))}: a value is NaN or infinite");'
+            )
+            continue
+        m = re.fullmatch(
+            rf"forall\|i: int\| #!\[trigger {p}\.((?:r#)?\w+)@\[i\]\] 0 <= i < {p}\.n as int ==> "
             rf"-\((\w+) as real\) < \({p}\.(?:r#)?\w+@\[i\] as real\) < \(\2 as real\)",
             c,
         )

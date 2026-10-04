@@ -32,13 +32,11 @@ def rows_match_error(
     got: list[list[str]],
     expect: list,
     kinds: list[str],
-    float_abs_eps: str | None = None,
 ) -> str | None:
-    """None when ``got`` matches ``expect``. A float matches within the absolute ``float_abs_eps``.
+    """None when ``got`` matches ``expect``. A float matches within ``float_tolerance`` (the only epsilon).
 
     Result columns are matched by position: the SELECT order is the output order.
     """
-    eps = _eps(float_abs_eps)
     decoded: list[list[object]] = []
     for raw in got:
         if len(raw) != len(kinds):
@@ -53,24 +51,29 @@ def rows_match_error(
             "proved but result rows differ from the loaded table "
             f"(got {len(decoded)} rows, expected {len(expected)})"
         )
-    if _rows_equal(decoded, expected, kinds, eps):
+    if _rows_equal(decoded, expected, kinds):
         return None
     left = sorted(decoded, key=lambda row: _row_key(row, kinds))
     right = sorted(expected, key=lambda row: _row_key(row, kinds))
-    if _rows_equal(left, right, kinds, eps):
+    if _rows_equal(left, right, kinds):
         return None
     return (
         "proved but result rows differ from the loaded table "
-        f"(got {len(decoded)} rows, expected {len(expected)}"
-        + ("" if eps is None else f"; float epsilon {float_abs_eps}")
-        + ")"
+        f"(got {len(decoded)} rows, expected {len(expected)}; float tolerance relative {REL_TOLERANCE:g})"
     )
 
 
-def _eps(float_abs_eps: str | None) -> float | None:
-    if float_abs_eps is None or not str(float_abs_eps).strip():
-        return None
-    return float(float_abs_eps)
+REL_TOLERANCE = 1e-9
+ABS_FLOOR = 1e-9
+
+
+def float_tolerance(expect: float) -> float:
+    """The row check's tolerance for one DuckDB float: relative 1e-9 of the value, with a 1e-9 floor.
+
+    Float results are exact reals in the spec (rounding is ignored, see `declarative_spec/lemmas.py`), so the
+    binary and DuckDB can differ in the last bits; this is the only epsilon left and it never enters a spec.
+    """
+    return REL_TOLERANCE * abs(expect) + ABS_FLOOR
 
 
 def _decode_field(cell: str, kind: str) -> object:
@@ -92,24 +95,22 @@ def _as_float(value: object) -> float:
     return float(value)
 
 
-def _values_equal(got: object, expect: object, kind: str, eps: float | None) -> bool:
+def _values_equal(got: object, expect: object, kind: str) -> bool:
     if got is None or expect is None:
         return got is None and expect is None
     if kind == "float":
-        if eps is None:
-            raise ValueError("a float result column is compared without a float_abs_eps")
-        return abs(_as_float(got) - _as_float(expect)) <= eps
+        return abs(_as_float(got) - _as_float(expect)) <= float_tolerance(_as_float(expect))
     return got == expect
 
 
 def _rows_equal(
-    got: list[list[object]], expect: list[list[object]], kinds: list[str], eps: float | None
+    got: list[list[object]], expect: list[list[object]], kinds: list[str]
 ) -> bool:
     for left, right in zip(got, expect, strict=True):
         if len(left) != len(kinds) or len(right) != len(kinds):
             return False
         for g, e, kind in zip(left, right, kinds, strict=True):
-            if not _values_equal(g, e, kind, eps):
+            if not _values_equal(g, e, kind):
                 return False
     return True
 

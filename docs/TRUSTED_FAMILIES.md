@@ -189,6 +189,178 @@ For every family in `TRUSTED_FAMILY_MENU`:
 Parametrized structural tests: `tests/test_trusted_families.py`.
 Semantic differential (exec math vs oracle / DuckDB): `tests/test_trusted_semantic_differential.py`.
 
+## f64 idealization (the ONLY trusted float code)
+
+> **Floating-point rounding error is ACCEPTED** (Emil, 2026-10-04). Floats are modeled as exact real arithmetic. An
+> adversary report that only shows rounding error (a last-bit difference, a near-tie flip in HAVING / ORDER BY,
+> cancellation, absorption, underflow, the double 0.1 not being the real 1/10) is an **accepted float limitation**, not a
+> hole. A soundness hole (a wrong body that verifies for a reason other than rounding) still counts. The proved
+> error-bound and exact lemmas are archived, unused, in `declarative_spec/future_float_error_bounds/` (README there);
+> the prover agent never sees them (`tests/test_future_float_archive_is_invisible.py`).
+
+**Claim.** For finite `f64` values within the catalog magnitude caps (the loader rejects NaN and infinity and enforces
+`MAG_CAP_<table>_<col>`; `valid_cols` carries both as conjuncts), the executable `+ - * /`, the integer-to-`f64` casts and
+the comparisons `< <= > >= ==` behave as the real operations on `x as real`. A float aggregate is therefore an exact
+fold over reals and its spec says `result == the real value`: there is no epsilon in any spec, ensures or proof.
+**What is false about it:** `+ - * /` and casts above 2^53 round (relative error up to 2^-53 per operation), and `mul`/`div`
+have no lower magnitude bound (underflow). Comparisons are exact in IEEE 754; only the link from vstd's uninterpreted
+`lt_ensures`-style predicates to `as real` is trusted.
+
+**Accuracy against DuckDB is empirical.** The measure step compares the binary's rows with DuckDB's within
+`declarative_spec/bench.py::float_tolerance` (relative 1e-9 with a 1e-9 floor); that is the only epsilon left and it never
+enters a spec. Last-bit differences and near-tie flips can occur (DuckDB's own `SUM(double)` is plain f64 and
+nondeterministic under parallel execution).
+
+**Companion hypothesis (an assumption in the spec, not a lemma).** Verus gives a float literal no value as a real, so every
+float query's `run_query` carries `requires f64_literals_ok()`: each f64 literal of the query and `0.0` denote their decimal
+value. Soundness items kept (the adversary's blocker): two literals that round to the same double make this hypothesis
+contradictory (every body would verify), so the emitter refuses them naming both; a literal that rounds to 0 or infinity, or
+has so many digits that it overflows, is refused cleanly (`DeclarativeUnsupported`, no crash).
+
+**Operand and result caps.** Operands are `f64_within(x, cap)` (finite and `|x| < cap`, the catalog cap); every operation also
+requires its result bound at most `f64_safe_bound()` = 2^200, far below the f64 overflow bound, so no operation overflows.
+
+**The trusted items: 11, each labeled `TRUSTED (f64 idealization)` in the source.** Each of add/sub/mul/div is called
+BEFORE the operation and ensures both that the operation is defined (`add_req` etc.) and that whatever it returns is the
+real operation of its operands; `add_within`/`sub_within`/`mul_within` are proved (not trusted) wrappers that add the result's
+`f64_within` bound. Exact text (from `declarative_spec/lemmas.py`, `float_error_lemmas_rs`):
+
+```rust
+pub open spec fn f64_within(x: f64, cap: real) -> bool {
+    x.is_finite_spec() && -cap < (x as real) && (x as real) < cap
+}
+
+// TRUSTED (f64 idealization): addition. Called BEFORE `x + y`: finite x, y within caps and a sum below
+// the overflow bound make the exec `+` defined (`add_req`), and whatever the add returns is the real sum
+// (rounding error ignored).
+#[verifier::external_body]
+pub proof fn lemma_f64_add_real(x: f64, y: f64, cx: real, cy: real)
+    requires
+        0real <= cx, 0real <= cy, cx + cy <= f64_safe_bound(),
+        f64_within(x, cx), f64_within(y, cy),
+    ensures
+        x.add_req(y),
+        forall|o: f64| #[trigger] add_ensures::<f64>(x, y, o) ==>
+            o.is_finite_spec() && (o as real) == (x as real) + (y as real),
+{ }
+
+// TRUSTED (f64 idealization): subtraction, same shape.
+#[verifier::external_body]
+pub proof fn lemma_f64_sub_real(x: f64, y: f64, cx: real, cy: real)
+    requires
+        0real <= cx, 0real <= cy, cx + cy <= f64_safe_bound(),
+        f64_within(x, cx), f64_within(y, cy),
+    ensures
+        x.sub_req(y),
+        forall|o: f64| #[trigger] sub_ensures::<f64>(x, y, o) ==>
+            o.is_finite_spec() && (o as real) == (x as real) - (y as real),
+{ }
+
+// TRUSTED (f64 idealization): multiplication, same shape (product below the overflow bound).
+#[verifier::external_body]
+pub proof fn lemma_f64_mul_real(x: f64, y: f64, cx: real, cy: real)
+    requires
+        0real <= cx, 0real <= cy, cx * cy <= f64_safe_bound(),
+        f64_within(x, cx), f64_within(y, cy),
+    ensures
+        x.mul_req(y),
+        forall|o: f64| #[trigger] mul_ensures::<f64>(x, y, o) ==>
+            o.is_finite_spec() && (o as real) == (x as real) * (y as real),
+{ }
+
+// TRUSTED (f64 idealization): division of finite x by finite nonzero y whose real quotient is within the
+// cap: the exec `/` is defined and returns the real quotient (rounding ignored).
+#[verifier::external_body]
+pub proof fn lemma_f64_div_real(x: f64, y: f64, cx: real, cq: real)
+    requires
+        0real <= cx, 0real <= cq, cq <= f64_safe_bound(),
+        f64_within(x, cx),
+        y.is_finite_spec(), (y as real) != 0real,
+        -cq * abs_real(y as real) < (x as real),
+        (x as real) < cq * abs_real(y as real),
+    ensures
+        x.div_req(y),
+        forall|o: f64| #[trigger] div_ensures::<f64>(x, y, o) ==>
+            o.is_finite_spec() && (o as real) == (x as real) / (y as real),
+{ }
+
+// TRUSTED (f64 idealization): an integer cast to f64 keeps its value (exact below 2^53, rounding
+// ignored above, up to the safe bound). vstd gives the exec `as f64` no specification, so the host
+// provides the cast as a trusted exec function; the body is the plain Rust cast.
+#[verifier::external_body]
+pub fn host_u64_to_f64(n: u64) -> (o: f64)
+    requires (n as int as real) <= f64_safe_bound(),
+    ensures o.is_finite_spec(), (o as real) == (n as int as real),
+{
+    n as f64
+}
+
+// TRUSTED (f64 idealization): the same cast claim for i128.
+#[verifier::external_body]
+pub fn host_i128_to_f64(n: i128) -> (o: f64)
+    requires -f64_safe_bound() <= (n as int as real) && (n as int as real) <= f64_safe_bound(),
+    ensures o.is_finite_spec(), (o as real) == (n as int as real),
+{
+    n as f64
+}
+
+// TRUSTED (f64 idealization): comparisons of finite f64 values hold exactly when the real
+// comparison does (exact in IEEE 754; the link from the uninterpreted predicate is trusted).
+#[verifier::external_body]
+pub proof fn lemma_f64_lt_real(x: f64, y: f64, o: bool)
+    requires x.is_finite_spec(), y.is_finite_spec(), lt_ensures::<f64>(x, y, o),
+    ensures o <==> (x as real) < (y as real),
+{ }
+
+// TRUSTED (f64 idealization): `<=` on finite f64 is `<=` on the reals.
+#[verifier::external_body]
+pub proof fn lemma_f64_le_real(x: f64, y: f64, o: bool)
+    requires x.is_finite_spec(), y.is_finite_spec(), le_ensures::<f64>(x, y, o),
+    ensures o <==> (x as real) <= (y as real),
+{ }
+
+// TRUSTED (f64 idealization): `>` on finite f64 is `>` on the reals.
+#[verifier::external_body]
+pub proof fn lemma_f64_gt_real(x: f64, y: f64, o: bool)
+    requires x.is_finite_spec(), y.is_finite_spec(), gt_ensures::<f64>(x, y, o),
+    ensures o <==> (x as real) > (y as real),
+{ }
+
+// TRUSTED (f64 idealization): `>=` on finite f64 is `>=` on the reals.
+#[verifier::external_body]
+pub proof fn lemma_f64_ge_real(x: f64, y: f64, o: bool)
+    requires x.is_finite_spec(), y.is_finite_spec(), ge_ensures::<f64>(x, y, o),
+    ensures o <==> (x as real) >= (y as real),
+{ }
+
+// TRUSTED (f64 idealization): `==` on finite f64 is equality of the reals.
+#[verifier::external_body]
+pub proof fn lemma_f64_eq_real(x: f64, y: f64, o: bool)
+    requires x.is_finite_spec(), y.is_finite_spec(), eq_ensures::<f64>(x, y, o),
+    ensures o <==> (x as real) == (y as real),
+{ }
+```
+
+Tests: `tests/test_declarative_float_idealization.py` (the trusted set is exactly these 11 items; every float shape verifies, runs
+against DuckDB within tolerance, and a wrong body is rejected), `tests/test_declarative_float_q2.py` (the SEC AVG shape),
+`tests/test_declarative_float_typecheck.py`, `tests/test_f64_idealization_adversary.py` (the adversary's literal-collision,
+cast and loader tests that still apply; its rounding findings are pinned as accepted limitations).
+
+**Accepted limitations (rounding; not holes).** The idealization keeps exactly 11 trusted items.
+- Rounding in every `*_real` lemma: add, subtract, multiply and divide are taken as the real operations; the f64 result differs
+  by up to 2^-53 relative per operation (`0.06 + 0.01` is `0.06999999999999999`; `2^53 + 1` is `2^53`); integer casts above 2^53 round.
+- Underflow: `mul`/`div` have no lower magnitude bound (`1e-200 * 1e-200` is 0 in IEEE and positive in the spec).
+- Denormal and non-dyadic literals: a literal denotes its decimal value, but the double is only the nearest one (denormal literals
+  are the least precise); two literals that round to the same double are refused.
+- Comparisons of computed floats (`p * d = 0.3`, `HAVING SUM(v) > x`, `v + 1 > w`): the spec compares exact reals, the execution
+  compares rounded doubles, so a value that is a tie over the reals can differ.
+- Summation-order flips: DuckDB's `SUM(double)` is plain f64 in an order we do not control and is nondeterministic under parallel
+  execution; `0.1 + 0.2 + 0.3 > 0.6` is true in DuckDB and false over the reals; cancellation (`1e16, 1, 1, 1, -1e16`) and absorption
+  lose small terms in f64 but not in the spec; ORDER BY / HAVING near ties can flip.
+- `0.06 + 0.01` constants are folded exactly (as DuckDB folds them in DECIMAL), not in f64.
+Still refused (not a rounding matter): an integer or DECIMAL column compared with, or mixed in arithmetic with, a float column or
+float expression (no typed bridge), colliding float literals, literals that are not a finite nonzero double.
+
 ## Menu (25 families)
 
 | id | kind | spec_ret | purpose |

@@ -29,7 +29,7 @@ def _duck() -> duckdb.DuckDBPyConnection:
 
 
 def _spec(sql: str) -> str:
-    return emit_declarative_spec(sql, SCHEMA, CATALOG, float_abs_eps="1e20")
+    return emit_declarative_spec(sql, SCHEMA, CATALOG)
 
 
 def _group_facts(sql: str, fn: str, params: str, key_col: str = "g") -> tuple[list[str], dict[int, int]]:
@@ -178,7 +178,7 @@ def test_decimal_case_sum_is_duckdbs_sum_in_stored_units(case: str) -> None:
     con.executemany("INSERT INTO t VALUES (?, ?, ?)", [(r["a"], r["g"], r["d"] / 100) for r in DEC_ROWS])
     sql = f"SELECT g, {case} AS x FROM t GROUP BY g"
     want = {int(g): int(round(float(x) * 100)) for g, x in con.execute(sql).fetchall()}
-    spec = emit_declarative_spec(sql, DEC_SCHEMA, CATALOG, float_abs_eps="1e20")
+    spec = emit_declarative_spec(sql, DEC_SCHEMA, CATALOG)
     facts = [f"sum_x(t, 0, {g}) == {v}int" for g, v in want.items()]
     ok, out = prove_facts(spec, {"t": DEC_ROWS}, facts)
     assert ok, out[-1500:]

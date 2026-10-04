@@ -165,7 +165,7 @@ def main() -> None:
             duck.execute(f"CREATE TABLE {t} ({', '.join(c + ' BIGINT' for c in cols)})")
             duck.executemany(f"INSERT INTO {t} VALUES ({', '.join('?' for _ in cols)})", [tuple(r[c] for c in cols) for r in tables[t]])
         try:
-            spec = emit_declarative_spec(sql, SCHEMA, CATALOG, float_abs_eps="1e20")
+            spec = emit_declarative_spec(sql, SCHEMA, CATALOG)
         except Exception as exc:  # noqa: BLE001
             stats["refused"] += 1
             if type(exc).__name__ not in ("DeclarativeUnsupported", "FitRefusal"):

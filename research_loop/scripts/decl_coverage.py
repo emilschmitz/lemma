@@ -131,7 +131,7 @@ def emit_all(sqls, schema, catalog):
     crashed: dict[str, list[str]] = collections.defaultdict(list)
     for sql in sqls:
         try:
-            ok.append((sql, emit_declarative_spec(sql, schema, catalog, float_abs_eps="1e20")))
+            ok.append((sql, emit_declarative_spec(sql, schema, catalog)))
         except (DeclarativeUnsupported, FitRefusal) as exc:
             refused[normalize(f"{type(exc).__name__}: {exc}")].append(sql)
         except Exception as exc:  # noqa: BLE001  report every crash

@@ -242,7 +242,6 @@ def test_measure_exports_only_the_columns_the_spec_reads_and_the_row_count(tmp_p
         catalog=_catalog(),
         db_path=db,
         dest=tmp_path / "d",
-        float_abs_eps=None,
     )
     assert prep["table_rows"] == {"t": 3}
     assert prep["kinds"] is None
@@ -262,7 +261,6 @@ def test_measure_refuses_a_null_in_a_column_the_query_reads(tmp_path: Path, null
             catalog=_catalog(),
             db_path=db,
             dest=tmp_path / "d",
-            float_abs_eps=None,
         )
 
 
@@ -275,7 +273,6 @@ def test_a_null_in_a_column_the_query_does_not_read_does_not_block(tmp_path: Pat
         catalog=_catalog(),
         db_path=db,
         dest=tmp_path / "d",
-        float_abs_eps=None,
     )
 
 
@@ -309,7 +306,6 @@ def test_a_null_in_a_column_the_query_reads_still_raises(tmp_path: Path, sql: st
             catalog=_catalog(),
             db_path=db,
             dest=tmp_path / "d",
-            float_abs_eps=None,
         )
 
 

@@ -26,7 +26,6 @@ from research_loop.scripts.sqlsmith_trusted_coverage import load_sec_schema, par
 
 _DEC_DB = ROOT / "holdout" / "gendb_sec_edgar" / "duckdb" / "sec_edgar_local_dec.duckdb"
 # The f64 error lemma needs an epsilon; the draws use this one.
-FLOAT_ABS_EPS = "1e20"
 
 
 def reason_class(exc: Exception) -> str:
@@ -42,7 +41,7 @@ def coverage(queries: list[tuple[str, str]], schema: dict, package: str) -> tupl
     refused: Counter = Counter()
     for qid, sql in queries:
         try:
-            emit_declarative_spec(sql, schema, catalog, float_abs_eps=FLOAT_ABS_EPS)
+            emit_declarative_spec(sql, schema, catalog)
         except Exception as exc:  # every refusal kind is counted by its message
             refused[reason_class(exc)] += 1
         else:

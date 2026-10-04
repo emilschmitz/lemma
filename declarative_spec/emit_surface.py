@@ -60,23 +60,17 @@ def emit_from_surface(
     sql: str,
     schema: dict[str, str] | dict[str, dict[str, str]],
     catalog: CatalogAssumptions | None = None,
-    *,
-    float_abs_eps: str | None = None,
 ) -> str:
     """Verus source for ``sql``. Raises ``DeclarativeUnsupported`` when a clause is refused."""
     from declarative_spec.literals import resolve_string_tokens
 
-    return resolve_string_tokens(
-        _emit_with_string_tokens(sql, schema, catalog, float_abs_eps=float_abs_eps)
-    )
+    return resolve_string_tokens(_emit_with_string_tokens(sql, schema, catalog))
 
 
 def _emit_with_string_tokens(
     sql: str,
     schema: dict[str, str] | dict[str, dict[str, str]],
     catalog: CatalogAssumptions | None = None,
-    *,
-    float_abs_eps: str | None = None,
 ) -> str:
     """Verus source for ``sql``. Raises ``DeclarativeUnsupported`` when a clause is refused."""
     query = flatten_derived(parse_query(sql))
@@ -95,19 +89,11 @@ def _emit_with_string_tokens(
 
     helpers = _emit_helpers(query, "", model)
     _require_float_mags(query, helpers, model, catalog)
-    if any(a.float_out for a in helpers.aggs):
-        eps = (float_abs_eps or "").strip()
-        if not eps:
-            raise DeclarativeUnsupported(
-                "float aggregate requires caller-provided LEMMA_FLOAT_ABS_EPS (float_abs_eps)"
-            )
-    else:
-        eps = ""
 
     structs = _structs(helpers.params, model)
     int_sum = any(a.kind == "SUM" and not a.float_out for a in helpers.aggs)
     valids = _valids(helpers.params, model, catalog, int_sum=int_sum)
-    consts = _consts(helpers.params, model, catalog, eps)
+    consts = _consts(helpers.params, model, catalog)
     out_row = _out_row(query, helpers, model)
     ensures = _ensures(query, helpers, model)
     requires = ",\n        ".join(
@@ -546,7 +532,14 @@ def _emit_agg(
         sum_name = f"{name}_sum"
         cnt_name = f"{name}_count"
         value = _value_fn(
-            blocks, f"{name}_val", agg, main, params, model, ret, cast_real=not natural_float
+            blocks,
+            f"{name}_val",
+            agg,
+            main,
+            params,
+            model,
+            ret,
+            cast_real=not natural_float,
         )
         add = f"if {hit} {{ {value}({_param_call(params)}, {_idx_call(main)}) }} else {{ 0real }}"
         _emit_fold(blocks, sum_name, "real", "0real", add, main, params, key_ty)
@@ -596,6 +589,8 @@ def _case_float_results(expr: str, main: list[_Slot], model: SchemaModel) -> lis
 
 
 def _agg_is_float(agg: Agg, main: list[_Slot], model: SchemaModel) -> bool:
+    if agg.arith:
+        return any(_ref_slot(ref, main, model)[1].is_float for ref in agg.arith_refs)
     if agg.expr:
         return agg.kind.upper() in ("SUM", "AVG") and bool(_case_float_results(agg.expr, main, model))
     if agg.kind.upper() in ("COUNT", "COUNT_DISTINCT"):
@@ -843,7 +838,7 @@ def _emit_bound(
     row_hit: str,
     key_at: str,
 ) -> None:
-    del ret, hit
+    del hit
     alts = [f"j{i}" for i in range(len(main))]
     binders = ", ".join(f"{a}: int" for a in alts)
     ranges = " && ".join(f"0 <= {a} < {s.param}.n as int" for a, s in zip(alts, main, strict=True))
@@ -860,6 +855,7 @@ def _emit_bound(
             _param_call(params),
             ", ".join(alts),
             order,
+            ret,
             row_hit,
             key_at,
         )
@@ -877,12 +873,13 @@ def _bound_text(
     p: str,
     alt: str,
     order: str,
+    ret: str,
     row_hit: str,
     key_at: str,
 ) -> str:
     key_part = f" && {key_at}({p}, {alt}) == k" if key_ty else ""
     key_sig = f", k: {key_ty}" if key_ty else ""
-    return f"""pub open spec fn {name}({_param_sig(params)}{key_sig}, bound: int) -> bool {{
+    return f"""pub open spec fn {name}({_param_sig(params)}{key_sig}, bound: {ret}) -> bool {{
     &&& (exists|{binders}| {ranges} && {row_hit}({p}, {alt}){key_part} && {value}({p}, {alt}) == bound)
     &&& (forall|{binders}| {ranges} && {row_hit}({p}, {alt}){key_part} ==> {value}({p}, {alt}) {order} bound)
 }}"""
@@ -1068,7 +1065,8 @@ def _ensures(query: Query, helpers: _Helpers, model: SchemaModel) -> str:
     string_cols = frozenset(
         fname for fname, _c, info, _s in helpers.group_infos if info.spec_as == "Seq<char>"
     )
-    tail = tail_ensures(tail_q, string_cols)
+    float_cols = frozenset(a.alias for a in helpers.aggs if a.exec == "f64")
+    tail = tail_ensures(tail_q, string_cols, float_cols)
     if tail.strip():
         lines.append(tail)
     # ``p`` is unused when the tail already closed the ensures; keep the param call live
@@ -1170,8 +1168,6 @@ def _agg_eqs(helpers: _Helpers, params: str, key: str, row: str = "res@[r]") -> 
         view = _out_view(f"{field}->Some_0" if nullable else field, agg)
         if agg.style == "bound":
             eq = f"{agg.name}({params}{key_arg}, {view})"
-        elif agg.float_out:
-            eq = f"abs_real(({view}) - {agg.name}({params}, 0{key_arg})) <= (FLOAT_ABS_EPS as real)"
         else:
             eq = f"{view} == {agg.name}({params}, 0{key_arg})"
         if nullable:
@@ -1210,6 +1206,7 @@ def _having(query: Query, helpers: _Helpers, scalars: dict[str, str], key: str) 
     expr = query.having_expr.strip()
     if not expr:
         return "true"
+    expr = _real_literals(expr)
     # Group columns are replaced before aggregate calls, which mention those
     # same names as result fields (``res@[r].name@``).
     held: list[tuple[str, str]] = []
@@ -1456,7 +1453,6 @@ def _consts(
     params: list[_Slot],
     model: SchemaModel,
     catalog: CatalogAssumptions | None,
-    eps: str,
 ) -> str:
     lines: list[str] = []
     seen: set[str] = set()
@@ -1467,9 +1463,6 @@ def _consts(
         cap = _row_cap(catalog, slot.table)
         if cap is not None:
             lines.append(f"pub const ROW_CAP_{rust_ident(slot.table)}: usize = {cap};")
-    if eps:
-        lit = eps if re.search(r"[.eE]", eps) else f"{eps}.0"
-        lines.append(f"pub const FLOAT_ABS_EPS: f64 = {lit}_f64;")
     lines.extend(_float_mag_consts(params, model, catalog))
     return "\n".join(lines)
 
@@ -1491,6 +1484,13 @@ def _require_float_mags(
     for src in query.aggs:
         if src.expr:
             needed += _case_float_results(src.expr, helpers.main, model)
+        elif src.arith:
+            needed += [
+                (slot, r.rpartition(".")[2])
+                for r in src.arith_refs
+                for slot, info in [_ref_slot(r, helpers.main, model)]
+                if info.is_float
+            ]
         elif src.column and src.column != "*":
             slot, info = _find_col(src.column, src.table, helpers.main, model)
             if info.is_float:
@@ -1498,7 +1498,7 @@ def _require_float_mags(
     for slot, column in needed:
         table_assumptions = _lookup_table_assumptions(catalog, slot.table)
         if column_assumption_exclusive(column, table_assumptions) is None:
-            raise FitRefusal(f"float sum requires magnitude cap for {slot.table}.{column}")
+            raise FitRefusal(f"float aggregate requires magnitude cap for {slot.table}.{column}")
 
 
 def _float_mag_name(table: str, column: str) -> str:
@@ -1548,6 +1548,10 @@ def _float_mag_checks(
     for table, col, _cap in _float_mags([slot], model, catalog):
         const = _float_mag_name(table, col)
         field = f"{slot.param}.{rust_ident(col)}@[i]"
+        checks.append(
+            f"forall|i: int| #![trigger {slot.param}.{rust_ident(col)}@[i]] "
+            f"0 <= i < {slot.param}.n as int ==> {field}.is_finite_spec()"
+        )
         checks.append(
             f"forall|i: int| #![trigger {slot.param}.{rust_ident(col)}@[i]] "
             f"0 <= i < {slot.param}.n as int ==> "
@@ -1628,6 +1632,20 @@ def _string_views(text: str, fields: set[str]) -> str:
     return text
 
 
+_FLOAT_LIT = re.compile(r"(?<![\w.])(\d+)(?:\.(\d+))?e0(?!\w)")
+
+
+def _real_literals(text: str) -> str:
+    """A float literal ``1.5e0`` (see ``numeric_rewrite``) as the exact real ``(15real / 10real)``."""
+
+    def one(m: re.Match[str]) -> str:
+        frac = m.group(2) or ""
+        num, den = int(m.group(1) + frac), 10 ** len(frac)
+        return f"{num}real" if den == 1 else f"({num}real / {den}real)"
+
+    return _FLOAT_LIT.sub(one, text)
+
+
 def _compile_pred(
     expr: str,
     local: list[_Slot],
@@ -1637,6 +1655,7 @@ def _compile_pred(
 ) -> str:
     if not expr.strip():
         return "true"
+    expr = _real_literals(expr)
     scopes = list(local) + list(outer)
 
     def isnull(m: re.Match[str]) -> str:

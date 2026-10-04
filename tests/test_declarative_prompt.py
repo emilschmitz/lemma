@@ -227,6 +227,21 @@ def test_prompt_carries_the_q1_lessons() -> None:
     assert "backward pass" in p and "`as_bytes`" in p and "--rlimit" in p
 
 
+def test_float_spec_gets_the_float_recipe_and_an_integer_spec_does_not() -> None:
+    schema = {"t": {"k": "integer", "v": "double"}}
+    cat = CatalogAssumptions(
+        tables={"t": TableAssumptions(max_rows=64, columns={"v": ColumnAssumption(max_value_exclusive=2**20)})}
+    )
+    sql = "SELECT SUM(v) AS s FROM t WHERE v > 1.5"
+    spec = emit_declarative_spec(sql, schema, cat)
+    p = build_declarative_prompt(sql=sql, spec_path="s", edit_path="e", lemma_index="idx", spec_text=spec)
+    assert "## Floats (this spec has a DOUBLE column or result)" in p
+    assert "`float_sum.rs`" in p and "`float_group_avg_decimal.rs`" in p and "f64_literals_ok()" in p
+    assert "FLOAT_ABS_EPS" not in p.split("## Lemma index")[0]
+    plain = _prompt("SELECT stmt, COUNT(*) AS c FROM pre GROUP BY stmt")
+    assert "## Floats (this spec" not in plain
+
+
 def test_mount_examples_copies_every_example(tmp_path: Path) -> None:
     mount_examples(tmp_path)
     names = {f.name for f in (tmp_path / "examples").iterdir()}

@@ -34,7 +34,7 @@ CATALOG = CatalogAssumptions(max_rows=16, tables={n: TableAssumptions(max_rows=1
 
 
 def _emit(sql: str) -> str:
-    return emit_declarative_spec(sql, SCHEMA, CATALOG, float_abs_eps="1e20")
+    return emit_declarative_spec(sql, SCHEMA, CATALOG)
 
 
 def _verify(spec: str, *, lemmas: bool) -> None:

@@ -25,7 +25,7 @@ def main() -> None:
             continue
         print("SQL:", sql)
         try:
-            spec = emit_declarative_spec(sql, schema, catalog, float_abs_eps="1e20")
+            spec = emit_declarative_spec(sql, schema, catalog)
         except Exception as exc:  # noqa: BLE001
             print(f"  -> {type(exc).__name__}: {exc}")
             continue

@@ -139,9 +139,6 @@ def test_min_max_keep_the_scale_and_count_has_none() -> None:
     [
         ("SELECT SUM(d / 2) AS s FROM t", "division"),
         ("SELECT SUM(d * f) AS s FROM t", "float column"),
-        ("SELECT SUM(f * (1 - f)) AS s FROM t", "float column"),
-        ("SELECT SUM(f - 1) AS s FROM t", "float column"),
-        ("SELECT COUNT(*) AS c FROM t WHERE f > 0.5", "float column"),
         ("SELECT COUNT(*) AS c FROM t WHERE f > d", "float column"),
         ("SELECT COUNT(*) AS c FROM t WHERE dt > 5", "DATE compared"),
         ("SELECT COUNT(*) AS c FROM t WHERE dt = i", "DATE compared"),
@@ -358,7 +355,7 @@ def test_decimal_and_date_export_exact_integers_including_i128(tmp_path: Path) -
     cat = CatalogAssumptions(max_rows=8, tables={"w": TableAssumptions(max_rows=8)})
     sql = "SELECT SUM(a) AS sa, SUM(b) AS sb, MIN(d) AS first FROM w"
     prepared = write_query_measure(
-        sql=sql, schema=schema, catalog=cat, db_path=db, dest=tmp_path / "out", float_abs_eps=None
+        sql=sql, schema=schema, catalog=cat, db_path=db, dest=tmp_path / "out"
     )
     blob = Path(prepared["bins"]["w"]).read_bytes()
     assert int.from_bytes(blob[:8], "little") == 2
@@ -385,12 +382,12 @@ def test_result_columns_match_by_position_not_by_duckdb_name(tmp_path: Path) -> 
     cat = CatalogAssumptions(max_rows=8, tables={"q": TableAssumptions(max_rows=8)})
     # No alias: DuckDB names the column `sum(v)`, the spec field is `sum`.
     prepared = write_query_measure(
-        sql="SELECT k, SUM(v) FROM q GROUP BY k", schema=schema, catalog=cat, db_path=db, dest=tmp_path / "o1", float_abs_eps=None
+        sql="SELECT k, SUM(v) FROM q GROUP BY k", schema=schema, catalog=cat, db_path=db, dest=tmp_path / "o1"
     )
     assert sorted(prepared["rows"]) == [[1, 375], [2, 400]]
     # Aggregate before the key: OutRow follows the SELECT order too.
     swapped = write_query_measure(
-        sql="SELECT SUM(v), k FROM q GROUP BY k", schema=schema, catalog=cat, db_path=db, dest=tmp_path / "o2", float_abs_eps=None
+        sql="SELECT SUM(v), k FROM q GROUP BY k", schema=schema, catalog=cat, db_path=db, dest=tmp_path / "o2"
     )
     assert sorted(swapped["rows"]) == [[375, 1], [400, 2]]
     spec = emit_declarative_spec("SELECT SUM(v), k FROM q GROUP BY k", schema, cat)
@@ -412,44 +409,24 @@ def test_a_spec_scale_that_is_not_duckdbs_is_refused() -> None:
 # ---- floats: a configurable epsilon, reported ------------------------------------------------
 
 
-def test_float_results_match_within_the_configured_epsilon() -> None:
-    row = [["9.5000004"]]
-    assert rows_match_error(row, [[9.5]], ["float"], "1e-6") is None
-    err = rows_match_error(row, [[9.5]], ["float"], "1e-8")
-    assert err is not None and "float epsilon 1e-8" in err
+def test_float_results_match_within_the_relative_tolerance() -> None:
+    assert rows_match_error([["9.50000000001"]], [[9.5]], ["float"]) is None
+    err = rows_match_error([["9.5001"]], [[9.5]], ["float"])
+    assert err is not None and "float tolerance" in err
 
 
-def test_a_float_comparison_without_an_epsilon_is_loud() -> None:
-    with pytest.raises(ValueError, match="float_abs_eps"):
-        rows_match_error([["1.0"]], [[1.0]], ["float"])
-
-
-def test_the_epsilon_is_carried_end_to_end_into_the_results(tmp_path: Path) -> None:
+def test_the_tolerance_is_carried_end_to_end_into_the_results() -> None:
     from declarative_spec.pipeline import _apply_speed_bar
 
-    bar = {"duck_us": 1000, "rows": [[4.0]], "kinds": ["float"], "float_abs_eps": "1e-3"}
+    bar = {"duck_us": 1000, "rows": [[4.0]], "kinds": ["float"]}
     ok = _apply_speed_bar(
-        {"status": "SUCCESS", "proof_verified": True, "latency_us": 5, "stdout": "ROW\x1f4.0005\n"}, bar
+        {"status": "SUCCESS", "proof_verified": True, "latency_us": 5, "stdout": "ROW\x1f4.000000001\n"}, bar
     )
-    assert ok["status"] == "SUCCESS" and ok["float_abs_eps"] == "1e-3"
+    assert ok["status"] == "SUCCESS"
     bad = _apply_speed_bar(
         {"status": "SUCCESS", "proof_verified": True, "latency_us": 5, "stdout": "ROW\x1f4.01\n"}, bar
     )
     assert bad["status"] == "FAILURE"
-    db = tmp_path / "f.duckdb"
-    con = duckdb.connect(str(db))
-    con.execute("CREATE TABLE f (k INTEGER, v DOUBLE)")
-    con.execute("INSERT INTO f VALUES (1, 1.5)")
-    con.close()
-    prepared = write_query_measure(
-        sql="SELECT k, SUM(v) AS s FROM f GROUP BY k",
-        schema={"f": {"k": "integer", "v": "double"}},
-        catalog=None,
-        db_path=db,
-        dest=tmp_path / "o",
-        float_abs_eps="1e-5",
-    )
-    assert prepared["float_abs_eps"] == "1e-5"
 
 
 # ---- TPC-H on native DECIMAL(15,2) and DATE -----------------------------------------------------
@@ -588,7 +565,7 @@ def test_q6_proved_body_prints_duckdbs_non_empty_answer(
     assert "// OUT_SCALES: 4" in spec
     assert "(lineitem.l_discount@[i0] as int) >= 5 && (lineitem.l_discount@[i0] as int) <= 7" in spec
     assert f"(lineitem.l_shipdate@[i0] as int) >= {_days('1994-01-01')}" in spec
-    prepared = write_query_measure(sql=Q6, schema=schema, catalog=cat, db_path=db, dest=tmp_path, float_abs_eps=None)
+    prepared = write_query_measure(sql=Q6, schema=schema, catalog=cat, db_path=db, dest=tmp_path)
     revenue = prepared["rows"][0][0]
     assert revenue is not None and revenue > 0
     assert revenue == decimal_scaled(duckdb.connect(str(db), read_only=True).execute(Q6).fetchone()[0], 4)
@@ -676,7 +653,7 @@ def test_q1_with_avg_over_a_decimal_emits_the_average_in_natural_units(
 ) -> None:
     _db, schema, cat = tpch_small
     spec = emit_declarative_spec(
-        Q1.replace("count(*)", "avg(l_quantity) AS avg_qty, count(*)"), schema, cat, float_abs_eps="1e20"
+        Q1.replace("count(*)", "avg(l_quantity) AS avg_qty, count(*)"), schema, cat
     )
     assert "avg_avg_qty" in spec and "* 100real" in spec  # l_quantity is DECIMAL(15,2)
     assert "pub avg_qty: f64" in spec
@@ -686,7 +663,7 @@ def test_q3_result_has_date_keys_that_measure_as_day_numbers(
     tpch_small: tuple[Path, dict, CatalogAssumptions], tmp_path: Path
 ) -> None:
     db, schema, cat = tpch_small
-    prepared = write_query_measure(sql=Q3, schema=schema, catalog=cat, db_path=db, dest=tmp_path, float_abs_eps=None)
+    prepared = write_query_measure(sql=Q3, schema=schema, catalog=cat, db_path=db, dest=tmp_path)
     assert prepared["rows"], "Q3 has a non-empty answer on the subset"
     first = prepared["rows"][0]
     assert first[1] > 0 and first[2] < _days("1995-03-15")

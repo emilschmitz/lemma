@@ -10,8 +10,10 @@ states each comparison and arithmetic step over the stored integers:
 * a comparison brings both sides to the larger scale, so every comparison is exact;
 * SUM keeps the scale of its argument, as DuckDB's DECIMAL sum does.
 
-Anything not exactly representable is refused: ``/``, ``%``, AVG of a DECIMAL, arithmetic on a
-float column, a decimal literal against a float column, a number against a DATE.
+A float column stays a float: a number that meets a float column (comparison, ``+``, ``-``, ``*``)
+is rewritten as a float literal ``<decimal>e0`` (the f64 idealization: the spec reads it as that exact real).
+Anything not exactly representable is refused: ``/``, ``%``, AVG of a DECIMAL, a non-constant integer
+column mixed with a float column, a number against a DATE.
 
 ``rewrite_numeric`` returns the integer SQL and the scale of each SELECT output, in order.
 """
@@ -20,13 +22,15 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+from decimal import Decimal
+from fractions import Fraction
 from dataclasses import dataclass, field
 
 import sqlglot
 from sqlglot import exp
 
 from declarative_spec.parse import DeclarativeUnsupported
-from declarative_spec.parse_exprs import fold_date
+from declarative_spec.parse_exprs import fold_date, fold_number
 from declarative_spec.schema_types import ColumnTypeInfo, SchemaModel
 
 MAX_SCALE = 38
@@ -35,8 +39,7 @@ _ISO_DATE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
 _EPOCH = dt.date(1970, 1, 1)
 _COMPARE = (exp.EQ, exp.NEQ, exp.GT, exp.LT, exp.GTE, exp.LTE)
 
-# (kind, scale). kind: num | date | float | calc | str | bool | unknown
-# ``float`` is a stored double (or the exact average of integers); ``calc`` is a sum or average of floats.
+# (kind, scale). kind: num | date | float | str | bool | unknown   (``float``: a double, or a float expression)
 Type = tuple[str, int]
 
 
@@ -259,40 +262,23 @@ class _Rewriter:
             if "unknown" in kinds:
                 raise DeclarativeUnsupported("a DATE compared with an operand of unknown type")
             raise DeclarativeUnsupported(f"a DATE compared with {(kinds - {'date'}).pop()}")
-        if "calc" in kinds:
-            raise DeclarativeUnsupported(
-                "a float sum or average is compared: its value is only known within epsilon, so no exact order or membership exists"
-            )
         if "float" in kinds:
-            self._require_exact_float_compare(left, right)
+            if kinds == {"float"}:
+                return left, right
+            for num, flt in ((right, left), (left, right)):
+                if flt.kind == "float" and num.kind == "num":
+                    if fold_number(num.node) is not None:
+                        lit = _T(_float_literal(num), "float")
+                        return (left, lit) if num is right else (lit, right)
+                    if isinstance(_unparen(flt.node), (exp.Column, exp.Add, exp.Sub, exp.Mul, exp.Neg)):
+                        raise DeclarativeUnsupported(
+                            "a non-constant integer or DECIMAL value compared with a float column: "
+                            "mixed with a float column"
+                        )
+                    return left, right  # an average or sum of floats: the emitter widens the integer side to real
         if "unknown" in kinds and any(t.kind == "num" and t.scale > 0 for t in (left, right)):
             raise DeclarativeUnsupported("a DECIMAL compared with an operand of unknown type")
         return left, right
-
-    @staticmethod
-    def _require_exact_float_compare(left: _T, right: _T) -> None:
-        """A stored double is compared only with an integer literal; an integer average with any integer."""
-        floats = [t for t in (left, right) if t.kind == "float"]
-        if len(floats) == 2:
-            raise DeclarativeUnsupported("two float operands are compared")
-        other = right if floats[0] is left else left
-        if not isinstance(_unparen(floats[0].node), exp.Column):
-            # AVG over integers: a real quotient, exact against an integer.
-            if other.kind == "num" and other.scale > 0:
-                raise DeclarativeUnsupported("a decimal value compared with an average")
-            return
-        node = _unparen(other.node)
-        if isinstance(node, exp.Neg):
-            node = _unparen(node.this)
-        if not (
-            other.kind == "num"
-            and other.scale == 0
-            and isinstance(node, exp.Literal)
-            and abs(int(node.this)) <= 2**53
-        ):
-            raise DeclarativeUnsupported(
-                "a float column is compared with something other than an integer literal up to 2**53"
-            )
 
     def _between(self, node: exp.Between, scope: _Scope) -> exp.Expression:
         this = self.typed(node.this, scope)
@@ -348,6 +334,8 @@ class _Rewriter:
             return _T(node, "bool")
         if isinstance(node, exp.Neg):
             inner = self.typed(node.this, scope)
+            if inner.kind == "float":
+                return _T(exp.Neg(this=inner.node), "float")
             self._require_num(inner, "negation")
             return _T(exp.Neg(this=inner.node), "num", inner.scale)
         if isinstance(node, (exp.Cast, exp.Add, exp.Sub)):
@@ -403,15 +391,14 @@ class _Rewriter:
 
     @staticmethod
     def _require_num(t: _T, what: str) -> None:
-        if t.kind in ("float", "calc"):
-            raise DeclarativeUnsupported(
-                f"{what} on a float column: float products and differences have no proved error bound"
-            )
         if t.kind != "num":
             raise DeclarativeUnsupported(f"{what} on a {t.kind} operand")
 
     def _arith(self, node: exp.Expression, scope: _Scope) -> _T:
         left, right = self.typed(node.this, scope), self.typed(node.expression, scope)  # type: ignore[attr-defined]
+        if "float" in (left.kind, right.kind):
+            left, right = _float_operand(left), _float_operand(right)
+            return _T(type(node)(this=left.node, expression=right.node), "float")
         self._require_num(left, "arithmetic")
         self._require_num(right, "arithmetic")
         if isinstance(node, exp.Mul):
@@ -429,21 +416,18 @@ class _Rewriter:
         inner = self.typed(arg, scope)
         node.set("this", inner.node)
         if isinstance(node, exp.Sum):
-            if inner.kind not in ("num", "float", "calc"):
+            if inner.kind not in ("num", "float"):
                 raise DeclarativeUnsupported(f"SUM over a {inner.kind} operand")
-            return _T(node, "calc" if inner.kind != "num" else "num", inner.scale)
+            return _T(node, inner.kind, inner.scale)
         if isinstance(node, exp.Avg):
             if inner.kind == "num" and inner.scale > 0:
-                # DuckDB averages a DECIMAL in DOUBLE. The spec states the exact quotient in natural units (stored
-                # integer sum / (count * 10**scale)) and the double result is held to it within epsilon, like any float.
+                # DuckDB averages a DECIMAL in DOUBLE: the spec states the exact quotient in natural units.
                 marked = exp.Anonymous(this=f"__dec{inner.scale}", expressions=[inner.node])
                 node.set("this", marked)
                 return _T(node, "float")
-            if inner.kind not in ("num", "float", "calc"):
+            if inner.kind not in ("num", "float"):
                 raise DeclarativeUnsupported(f"AVG over a {inner.kind} operand")
-            return _T(node, "float" if inner.kind == "num" else "calc")
-        if inner.kind in ("float", "calc"):
-            raise DeclarativeUnsupported("MIN or MAX over a float: float ordering is not stated")
+            return _T(node, "float")
         if inner.kind in ("str", "bool"):
             raise DeclarativeUnsupported(f"MIN or MAX over a {inner.kind}: only integer and date orderings are stated")
         return _T(node, inner.kind, inner.scale)
@@ -489,6 +473,24 @@ class _Rewriter:
                     raise DeclarativeUnsupported("CASE returns a float column or an integer expression")
             return _T(node, "float")
         return _T(node, kinds.pop() if len(kinds) == 1 else "unknown")
+
+
+def _float_literal(t: _T) -> exp.Expression:
+    """A constant number met by a float column, as the float literal ``<decimal>e0``."""
+    value = fold_number(t.node)
+    if value is None:
+        raise DeclarativeUnsupported("a non-constant integer or DECIMAL value mixed with a float column")
+    exact = Decimal(value.numerator) / Decimal(value.denominator * 10**t.scale) if value else Decimal(0)
+    lit = exp.Literal.number(f"{abs(exact):f}e0")
+    return exp.Neg(this=lit) if exact < 0 else lit
+
+
+def _float_operand(t: _T) -> _T:
+    if t.kind == "float":
+        return t
+    if t.kind == "num":
+        return _T(_float_literal(t), "float")
+    raise DeclarativeUnsupported(f"arithmetic mixing a float column with a {t.kind} operand")
 
 
 def _decimal_case_scale(results: list[_T]) -> int:

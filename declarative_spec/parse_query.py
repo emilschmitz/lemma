@@ -12,6 +12,7 @@ from declarative_spec.literals import string_token
 from declarative_spec.parse import DeclarativeUnsupported
 from declarative_spec.parse_exprs import (
     arith_text,
+    has_float_literal,
     extract_text,
     compare_to_rational,
     fold_date,
@@ -1069,6 +1070,8 @@ def _exact_int_side(node: exp.Expression, ctx: _BoolCtx) -> str:
 
 def _compare_exact(node: exp.Expression, op: str, ctx: _BoolCtx) -> str | None:
     """A comparison where one side is a non-integer constant such as ``0.06 - 0.01``."""
+    if has_float_literal(node):
+        return None  # a float comparison is stated over reals, not scaled integers
     left_value, right_value = fold_number(node.left), fold_number(node.right)  # type: ignore[attr-defined]
     if left_value is not None and right_value is not None:
         if left_value.denominator == 1 and right_value.denominator == 1:
@@ -1092,6 +1095,8 @@ def _compare_exact(node: exp.Expression, op: str, ctx: _BoolCtx) -> str | None:
 
 
 def _between_exact(node: exp.Between, ctx: _BoolCtx) -> str | None:
+    if has_float_literal(node):
+        return None
     low, high = fold_number(node.args["low"]), fold_number(node.args["high"])
     if low is None or high is None:
         return None

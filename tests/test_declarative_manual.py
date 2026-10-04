@@ -40,7 +40,6 @@ def test_measure_writes_expect_json_that_load_speed_bar_reads(tmp_path: Path, sq
     con.close()
     prepared = write_query_measure(
         sql=sql, schema={"t": {"k": "integer"}}, catalog=_CAT, db_path=db, dest=tmp_path / "decl_data",
-        float_abs_eps=None,
     )
     loaded = load_speed_bar(tmp_path / "decl_data")
     assert loaded is not None
@@ -88,7 +87,6 @@ def test_chunked_export_is_byte_identical_to_one_chunk(tmp_path: Path, monkeypat
         "schema": {"t": {"k": "integer"}},
         "catalog": _CAT,
         "db_path": db,
-        "float_abs_eps": None,
     }
     big = m.write_query_measure(dest=tmp_path / "a", **kw)
     monkeypatch.setattr(m, "_CHUNK_ROWS", 2)
@@ -112,5 +110,4 @@ def test_null_in_a_later_chunk_still_fails_loudly(tmp_path: Path, monkeypatch: p
             catalog=_CAT,
             db_path=db,
             dest=tmp_path / "o",
-            float_abs_eps=None,
         )

@@ -29,7 +29,6 @@ def _maybe_large_table(
     catalog,
     workspace: Path,
     schema: dict,
-    float_abs_eps: str | None,
 ) -> tuple[dict[str, str] | None, dict | None]:
     measure_db = os.environ.get("LEMMA_MEASURE_DB", "").strip()
     if measure_db:
@@ -41,7 +40,6 @@ def _maybe_large_table(
             catalog=catalog,
             db_path=Path(measure_db),
             dest=workspace / "decl_data",
-            float_abs_eps=float_abs_eps,
         )
         bar = {
             "duck_us": prepared["duck_us"],
@@ -49,7 +47,6 @@ def _maybe_large_table(
             "duck1_us": prepared["duck1_us"],
             "rows": prepared["rows"],
             "table_rows": prepared["table_rows"],
-            "float_abs_eps": float_abs_eps,
         }
         if prepared["kinds"] is not None:  # OutRow result; a map result prints `ROW key value`
             bar["kinds"] = prepared["kinds"]
@@ -163,7 +160,6 @@ def run_declarative_optimization_loop(
     use_mock: bool,
     workspace: Path,
     query_id: int,
-    float_abs_eps: str | None,
 ) -> dict:
     _ = dataset_size  # reserved for future measure hooks
     if use_mock:
@@ -192,7 +188,6 @@ def run_declarative_optimization_loop(
             catalog=catalog,
             workspace=workspace,
             schema=resolved_schema,
-            float_abs_eps=float_abs_eps,
         )
     except (DeclarativeUnsupported, FitRefusal, ValueError, OSError) as exc:
         return {
@@ -210,7 +205,6 @@ def run_declarative_optimization_loop(
                 sql_query,
                 resolved_schema,
                 catalog,
-                float_abs_eps=float_abs_eps,
             )
         except (DeclarativeUnsupported, FitRefusal, ValueError, OSError) as exc:
             iter_record["error"] = f"emit_declarative_spec: {exc}"
@@ -294,7 +288,6 @@ def run_declarative_optimization_loop(
                 "speedup": metrics.get("speedup"),
                 "speedup_1t": metrics.get("speedup_1t"),
                 "speed_bar_mult": metrics.get("speed_bar_mult"),
-                "float_abs_eps": float_abs_eps,
                 "best_iteration": iteration,
                 "history": history,
                 "error": "",
@@ -305,7 +298,6 @@ def run_declarative_optimization_loop(
         "status": "FAILED",
         "best_latency_us": -1,
         "duck_us": None if speed_bar is None else speed_bar.get("duck_us"),
-        "float_abs_eps": float_abs_eps,
         "history": history,
         "error": last_error or "declarative loop exhausted iterations without a run",
         "proof_verified": proof_verified,

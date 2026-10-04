@@ -361,12 +361,10 @@ def run_query_job(job: dict, model: str, max_iterations: int) -> dict:
     if job["kind"] == "sec":
         os.environ["LEMMA_MEASURE_DB"] = str(SEC_DB)
         os.environ["LEMMA_ASSUMPTION_PACKAGE"] = sec_package()
-        os.environ.pop("LEMMA_FLOAT_ABS_EPS", None)
         kwargs.update(schema=sec_schema(), workload="sec")
     else:
         schema, catalog = tpch_schema_and_catalog(TPCH_DB)
         os.environ["LEMMA_MEASURE_DB"] = str(TPCH_DB)
-        os.environ.pop("LEMMA_FLOAT_ABS_EPS", None)
         kwargs.update(schema=schema, catalog_assumptions=catalog)
     runs_dir = ROOT / "research_loop" / "runs"
     before = set(runs_dir.glob("*")) if runs_dir.is_dir() else set()

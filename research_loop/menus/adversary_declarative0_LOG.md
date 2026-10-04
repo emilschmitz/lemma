@@ -26,7 +26,7 @@ Memory rules (after the 2026-10-04 12:27 OOM): Verus only through `scripts/ram/v
 | `LEMMA_SPEED_BAR_MULT`, `speedup`, `speedup_1t`, `duck1_us` | bar is configurable; attainment per query | `tests/test_declarative_measure.py`, `tests/test_decl_query_measure.py` |
 | manual harness: absolute paths, `check` reads kind and `context/ro/query.sql` from the workspace | check failed on relative paths | `tests/test_declarative_manual.py` |
 | `write_query_measure` writes `expect.json` | in-session `run_runquery` had no official columns, bar or expected rows on the measure path | `tests/test_declarative_manual.py` |
-| emitter refuses float ordering, equality, MIN, MAX (`declarative_spec/float_order.py`) | no proved bridge from f64 `<` to real `<` (see Q24); coverage item, not an agent failure | `tests/test_declarative_float_order.py` (7 refused forms, 4 allowed forms) |
+| (REMOVED, see the last line) emitter refused float ordering, equality, MIN, MAX (`declarative_spec/float_order.py`) | no proved bridge from f64 `<` to real `<` (see Q24); coverage item, not an agent failure | `tests/test_declarative_float_order.py` (7 refused forms, 4 allowed forms) |
 | prompt rewrite: what you get, regions and rules, SQL, the ONE recipe for this spec's result type with the verified fixture inlined, hard-shape warning, speed, hygiene, one lemma index | prompt was 420 lines, repetitive, count recipe only fit `HashMapWithView` + `KEY_CAP` | `tests/test_declarative_prompt.py` (10 tests); stale prompt tests in `tests/test_spec_style.py` removed (they asserted text the integration prompt no longer had) |
 | measure export streams in 500k-row chunks | SF1 `lineitem` export peaked at 6 GB of Python tuples | chunked == one chunk byte for byte; NULL in a later chunk still fails |
 | `LEMMA_VERUS_BIN` override | run Verus through the memory guard | `tests/test_declarative_manual.py` |
@@ -171,3 +171,5 @@ Q14 (HAVING SUM(float) > scalar subquery), Q9 (ORDER BY SUM(float)). All reason:
 Drawn: SEC Q2 (`pre` GROUP BY `(stmt, rfile)` with COUNT(DISTINCT adsh), AVG(line), ORDER BY cnt; string tuple key, known-hard),
 SEC Q19 (`num` NOT EXISTS `pre`, float SUM, HAVING COUNT > 10, ORDER BY cnt LIMIT 1000; known-hard),
 TPC-H Q6-variant (ungrouped decimal sum with date and discount filters; worked-example shape).
+
+- Float shapes are back in scope, refusal removed (`declarative_spec/float_order.py` deleted; f64 idealization, `docs/TRUSTED_FAMILIES.md`): stored-column filters, MIN/MAX, ORDER BY, products and differences, grouped SUM/AVG with HAVING and top-K emit; refused: float equality on computed values, colliding float literals, AVG whose integer sum may exceed 2^53.

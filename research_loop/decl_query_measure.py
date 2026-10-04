@@ -33,12 +33,11 @@ def write_query_measure(
     catalog: CatalogAssumptions | None,
     db_path: Path,
     dest: Path,
-    float_abs_eps: str | None,
 ) -> dict:
     """Write one column file per input struct and the DuckDB median for ``sql``."""
     if not db_path.is_file():
         raise FileNotFoundError(f"measure database missing at {db_path}")
-    spec = emit_declarative_spec(sql, schema, catalog, float_abs_eps=float_abs_eps)
+    spec = emit_declarative_spec(sql, schema, catalog)
     structs = re.findall(r"pub struct (Cols_[A-Za-z0-9_]+)\s*\{([^}]+)\}", spec)
     out_match = re.search(r"pub struct OutRow\s*\{([^}]+)\}", spec)
     map_match = re.search(r"-> \(res: HashMapWithView<(\w+), (\w+)>\)", spec)
@@ -99,7 +98,6 @@ def write_query_measure(
         "rows": rows,
         "kinds": kinds,
         "table_rows": table_rows,
-        "float_abs_eps": float_abs_eps,
     }
     (dest / "expect.json").write_text(json.dumps(expect) + "\n", encoding="utf-8")
     return {
@@ -110,7 +108,6 @@ def write_query_measure(
         "rows": rows,
         "kinds": kinds,
         "table_rows": table_rows,
-        "float_abs_eps": float_abs_eps,
     }
 
 

@@ -23,7 +23,7 @@ if str(ROOT) not in sys.path:
 from declarative_spec.assemble import assemble_declarative_program
 from declarative_spec.emit import emit_declarative_spec
 from research_loop.assumption_packages import assumption_package
-from research_loop.scripts.decl_coverage import _DEC_DB, FLOAT_ABS_EPS
+from research_loop.scripts.decl_coverage import _DEC_DB
 from research_loop.scripts.sqlsmith_trusted_coverage import load_sec_schema, parse_sql_file
 
 GUARDED = ROOT / "scripts" / "ram" / "verus_guarded.sh"
@@ -59,7 +59,7 @@ def main() -> None:
         specs: dict[str, str] = {}
         for qid, sql in queries:
             try:
-                specs[qid] = emit_declarative_spec(sql, schema, catalog, float_abs_eps=FLOAT_ABS_EPS)
+                specs[qid] = emit_declarative_spec(sql, schema, catalog)
             except Exception:  # noqa: S112 - refusals are counted by decl_coverage
                 continue
         picked = random.Random(args.seed).sample(sorted(specs), min(args.n, len(specs)))

@@ -248,6 +248,46 @@ def mount_examples(ro: Path) -> None:
         target = dest / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text((_FIXTURES / name).read_text())
+    for path in sorted(_FIXTURES.glob("float_*.rs")):  # the float shapes (exact reals, the f64 idealization lemmas)
+        (dest / path.name).write_text(path.read_text())
+
+
+_FLOAT_EXAMPLES: tuple[tuple[str, str], ...] = (
+    ("float_sum.rs", "ungrouped SUM of a DOUBLE column"),
+    ("float_product_sum.rs", "ungrouped SUM of a product of DOUBLE columns"),
+    ("float_filter_count.rs", "COUNT under a DOUBLE comparison"),
+    ("float_min_max.rs", "MIN and MAX of a DOUBLE column"),
+    ("float_avg_int.rs", "ungrouped AVG of an integer column (DOUBLE result)"),
+    ("float_avg_decimal.rs", "ungrouped AVG of a DECIMAL column"),
+    ("float_avg_float.rs", "ungrouped AVG of a DOUBLE column"),
+    ("float_group_sum_having.rs", "GROUP BY, SUM(double), HAVING on the sum"),
+    ("float_group_sum_order_limit.rs", "GROUP BY, SUM(double), ORDER BY the sum, LIMIT"),
+    ("float_group_avg_having.rs", "GROUP BY, AVG(double), HAVING on the average"),
+    ("float_group_avg_decimal.rs", "GROUP BY, AVG over a DECIMAL column"),
+    ("float_order_limit.rs", "ORDER BY a DOUBLE column, LIMIT (selection by repeated minimum)"),
+    ("float_avg_group_count_distinct.rs", "tuple-of-strings GROUP BY, COUNT, COUNT DISTINCT and AVG (long)"),
+)
+
+
+def _float_section(spec_text: str) -> list[str]:
+    """Float recipe: floats are exact reals under the host's f64 idealization; list the verified float examples."""
+    structs = "".join(re.findall(r"pub struct (?:Cols_\w+|OutRow)\s*\{([^}]*)\}", spec_text))
+    if "f64" not in structs and not re.search(r"-> \(res: [^)]*f64", spec_text):
+        return []
+    lines = [
+        "",
+        "## Floats (this spec has a DOUBLE column or result)",
+        "",
+        "A float is exact real arithmetic here (rounding differences against the reference engine are an accepted",
+        "limitation; there is no epsilon). Keep `f64_literals_ok()` and `acc as real == <spec fold>` in the loop invariant,",
+        "call `lemma_f64_add_defined` / `sub_defined` / `mul_defined` before an operation and `lemma_f64_add_within` /",
+        "`sub_within` / `mul_within` after it, compare with `lemma_f64_lt_real` / `gt_real` / ..., divide with",
+        "`lemma_f64_div_defined` / `lemma_f64_div_real`, and cast integers with `host_u64_to_f64` / `host_i128_to_f64`.",
+        "Verified float examples in `context/ro/examples/`:",
+        "",
+    ]
+    lines += [f"- `{name}`: {what}" for name, what in _FLOAT_EXAMPLES]
+    return lines
 
 
 def _recipe_section(shape: dict) -> list[str]:
@@ -323,8 +363,8 @@ groups) and a TPC-H Q1 shape (two string keys, several decimal SUMs, sorted outp
 KNOWN HARD, no worked example: a join whose key repeats on both sides (many-to-many) with `COUNT(DISTINCT ...)`;
 `EXISTS`/`IN` joins; `HAVING` against a scalar subquery; multi-key `DISTINCT`; set operations. These need long helper
 proofs (an existential witness per group, a selection invariant). Start with the simplest correct loop that proves,
-make sure the result is submitted, and only then look for speed. Float comparison, float `ORDER BY` and float MIN/MAX
-are refused by the host; you will not see them.
+make sure the result is submitted, and only then look for speed. Float comparisons, float `ORDER BY`, float MIN/MAX,
+products and averages over `DOUBLE` columns are in scope (floats are exact reals here; `float_*.rs` examples).
 """
 
 _SPEED = """\
@@ -377,8 +417,11 @@ _PROOF_HYGIENE = """\
   help. Build the literal once (`let pure: String = String::from_str("pure");`, ensures `pure@ == "pure"@`), keep
   `pure@ == "pure"@` in the loop invariant, and compare `cols.uom[i] == pure` (`String == String`, vstd `string.rs`).
 - `Vec::insert` has the view `Seq::insert`; `Seq::insert_ensures(pos, elt)` (vstd `seq_lib.rs`, call it as `s.insert_ensures(p, x)`) gives its length and element facts. Grep `LEMMAS.md` for a vstd lemma before you write your own.
-- Floats: one `f64` accumulator, `lemma_f64_add_defined`, `lemma_f64_left_fold_push`,
-  `lemma_f64_sum_within_eps` with `FLOAT_ABS_EPS` (never a numeric epsilon, never unfold an f64 add).
+- Floats (rounding error is accepted: a float is exact real arithmetic here, so a SUM is an exact fold and there
+  is no epsilon): one `f64` accumulator with `acc as real == <spec sum>`; before each `+ - *` call
+  `lemma_f64_add_defined` / `sub_defined` / `mul_defined`, after it `lemma_f64_add_within` / `sub_within` /
+  `mul_within`; compare with `lemma_f64_gt_real` and friends; divide with `lemma_f64_div_defined` / `div_real`;
+  cast integers with `host_u64_to_f64` / `host_i128_to_f64`. Keep `f64_literals_ok()` in every loop invariant.
 """
 
 
@@ -423,9 +466,9 @@ def build_declarative_prompt(
         f"- `{edit_path}` already holds the host spec, the host lemmas, the loaders and `run_query`. You edit it.",
         f"- Read-only: `{spec_path}` (same spec), `{root}/query.sql`, `{root}/schema.json`, `{index_path}`,",
         f"  `{root}/examples/` (verified example bodies), `{root}/verus/` (vstd source, Verus guide, small examples;",
-        "  read `INDEX.md` first: it has one grep recipe per common lookup (`Vec::push`, `String::eq`, `StringHashMap`,",
-        f"  `decreases`, `assert forall`, `choose`, broadcast groups, ...); then grep `LEMMAS.md`, `EXAMPLES_INDEX.md`,",
-        f"  `GUIDE_INDEX.md`).",
+        "  read `INDEX.md` first (one grep recipe per common lookup), then grep `LEMMAS.md`, `EXAMPLES_INDEX.md` and `GUIDE_INDEX.md`).",
+        "- Look up vstd with one grep, e.g. `grep -n -A5 \"^## StringHashMap::\" LEMMAS.md` (in `verus/`): `INDEX.md` has a",
+        "  recipe per common lookup (`Vec::push`, `String::eq`, `decreases`, `assert forall`, `choose`, broadcast groups).",
         "- Tools: the file edit tool; `run_runquery` (path `runquery_agent.rs`) verifies, compiles and times your",
         "  program on the official table; `submit_runquery` with the returned `run_id`. You cannot run Verus or a shell.",
         "- Done means: Verus says `N verified, 0 errors`, the result equals the reference engine's rows, and the timed run beats",
@@ -457,6 +500,7 @@ def build_declarative_prompt(
         "",
     ]
     sections += _recipe_section(shape)
+    sections += _float_section(spec_text)
     sections += [""]
     if shape["hard"]:
         sections += [

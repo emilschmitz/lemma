@@ -30,7 +30,7 @@ from research_loop.table_assumptions import (
 )
 
 
-def test_add_u64_requires_int_bound_and_checked_add() -> None:
+def test_add_u64_requires_int_bound_and_plain_add() -> None:
     prelude = emit_trusted_prelude()
     m = re.search(
         r"pub exec fn add_u64\(.*?\)\s*->.*?\{(.*?)\n\}",
@@ -43,14 +43,15 @@ def test_add_u64_requires_int_bound_and_checked_add() -> None:
     assert "(a as int) + (b as int) <= u64::MAX as int" in block
     assert "ensures" in block
     assert "res == a + b" in block
-    assert "checked_add" in block
+    assert "external_body" not in block
     assert "wrapping_add" not in block
 
 
 def test_mul_u64_u32_requires_int_bound() -> None:
     prelude = emit_trusted_prelude()
     assert "(a as int) * (b as int) <= u64::MAX as int" in prelude
-    assert "checked_mul" in prelude
+    block = prelude.split("pub exec fn mul_u64_u32")[1].split("pub exec fn sub_u64_to_i64")[0]
+    assert "a * (b as u64)" in block
 
 
 def test_add_i64_requires_int_bounds() -> None:
@@ -62,7 +63,7 @@ def test_add_i64_requires_int_bounds() -> None:
     block = prelude[start:end]
     assert "(a as int) + (b as int) >= i64::MIN as int" in block
     assert "(a as int) + (b as int) <= i64::MAX as int" in block
-    assert "checked_add" in block
+    assert "a + b" in block
 
 
 def test_sub_u64_to_i64_requires_int_bounds() -> None:
@@ -139,7 +140,7 @@ def test_prelude_global_no_arbitrary() -> None:
 def test_mul_u64_u32_no_wrapping_mul() -> None:
     prelude = emit_trusted_prelude()
     block = prelude.split("pub exec fn mul_u64_u32")[1].split("pub exec fn sub_u64_to_i64")[0]
-    assert "checked_mul" in block
+    assert "a * (b as u64)" in block
     assert "wrapping_mul" not in block
 
 

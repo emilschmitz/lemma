@@ -106,10 +106,15 @@ def test_decimal_literal_on_either_side_of_a_comparison() -> None:
     assert "* 2 > 1" in left
 
 
-def test_decimal_literal_against_a_float_column_is_refused() -> None:
-    sql = "SELECT SUM(price) AS s FROM li WHERE ratio > 0.5"
-    with pytest.raises(DeclarativeUnsupported, match="float comparison has no proved bridge to reals"):
-        emit_declarative_spec(sql, SCHEMA, CATALOG)
+def test_decimal_literal_against_a_float_column_is_a_real_literal() -> None:
+    spec = emit_declarative_spec("SELECT SUM(price) AS s FROM li WHERE ratio > 0.5", SCHEMA, CATALOG)
+    assert "(li.ratio@[i0] as real) > (5real / 10real)" in spec
+    assert "(0.5f64 as real) == (1real / 2real)" in spec  # the literal hypothesis
+
+
+def test_integer_literal_against_a_float_column_is_a_real_literal() -> None:
+    spec = emit_declarative_spec("SELECT SUM(price) AS s FROM li WHERE ratio <= 2", SCHEMA, CATALOG)
+    assert "(li.ratio@[i0] as real) <= 2real" in spec
 
 
 def test_decimal_compare_spec_typechecks_in_verus() -> None:
@@ -143,14 +148,13 @@ def test_min_over_arithmetic_and_avg_over_arithmetic_emit() -> None:
         "SELECT MIN(price - disc) AS lo, AVG(price * qty) AS mean FROM li",
         SCHEMA,
         CATALOG,
-        float_abs_eps="1e20",
     )
     assert "min_lo" in spec
     assert "avg_mean" in spec
 
 
-def test_arithmetic_over_a_float_column_is_refused() -> None:
-    with pytest.raises(DeclarativeUnsupported, match="float column"):
+def test_integer_column_mixed_with_a_float_column_is_refused() -> None:
+    with pytest.raises(DeclarativeUnsupported, match="mixed with a float column"):
         emit_declarative_spec("SELECT SUM(price * ratio) AS s FROM li", SCHEMA, CATALOG)
 
 

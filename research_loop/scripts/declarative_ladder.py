@@ -106,7 +106,6 @@ def run_ladder(model: str, indices: tuple[int, ...] | None = None) -> list[dict]
         if job.get("sec"):
             os.environ["LEMMA_MEASURE_DB"] = str(db_path)
             os.environ["LEMMA_ASSUMPTION_PACKAGE"] = "sec_margin"
-            os.environ["LEMMA_FLOAT_ABS_EPS"] = "1e20"
             os.environ.pop("LEMMA_DECL_ROWS", None)
             os.environ.pop("LEMMA_DECL_SEED", None)
             kwargs.update(schema=sec_schema, workload="sec")

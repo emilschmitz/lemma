@@ -36,7 +36,7 @@ def main() -> None:
         if not sql:
             continue
         try:
-            spec = emit_declarative_spec(sql, SCHEMA, CATALOG, float_abs_eps="1e20")
+            spec = emit_declarative_spec(sql, SCHEMA, CATALOG)
         except Exception as exc:  # noqa: BLE001
             print(f"REFUSED[{type(exc).__name__}] {sql}\n      {exc}")
             continue
