@@ -74,6 +74,7 @@ def test_prompt_shows_the_parallel_section_only_for_a_parallel_spec(monkeypatch:
     assert spec_shape(on)["recipe"] == spec_shape(off)["recipe"] == "ungrouped"
     mount_examples(tmp_path)
     assert (tmp_path / "examples" / "parallel_ungrouped_sum.rs").is_file()
+    assert all((tmp_path / "examples" / f"parallel_ungrouped_{k}.rs").is_file() for k in ("min", "max", "count", "product_sum"))
 
 
 def _verify(monkeypatch: pytest.MonkeyPatch, mutate: tuple[str, str] | None = None) -> tuple[bool, str]:
@@ -147,3 +148,30 @@ def test_non_outrow_results_have_no_parallel_variant_and_stay_loud(monkeypatch: 
     monkeypatch.setenv(parallel.ENV, "1")
     with pytest.raises(DeclarativeUnsupported, match="for `Vec<OutRow>` results"):
         emit_declarative_spec("SELECT uom, COUNT(*) AS c FROM num GROUP BY uom", schema, cat)
+
+
+PAR_SHAPES = {
+    "parallel_ungrouped_min.rs": ("SELECT MIN(line) AS m FROM pre WHERE line > 5", ("let hit = v > 5;", "let hit = v > 6;")),
+    "parallel_ungrouped_max.rs": ("SELECT MAX(line) AS m FROM pre WHERE line > 5", ("let hit = v > 5;", "let hit = v > 6;")),
+    "parallel_ungrouped_count.rs": ("SELECT COUNT(*) AS c FROM pre WHERE line > 5", ("v > 5", "v > 6")),
+}
+
+
+@pytest.mark.parametrize("name", sorted(PAR_SHAPES))
+def test_parallel_min_max_count_examples_verify_and_a_mutation_does_not(name: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    if not any(c.is_file() for c in VERUS_CANDIDATES):
+        pytest.skip("verus binary not installed")
+    monkeypatch.setenv("LEMMA_VERUS_BIN", str(Path(__file__).resolve().parents[1] / "scripts" / "ram" / "verus_guarded.sh"))
+    monkeypatch.setenv(parallel.ENV, "1")
+    sql, (old, new) = PAR_SHAPES[name]
+    spec = emit_declarative_spec(sql, SCHEMA, CATALOG)
+    text = (_FIXTURES / name).read_text()
+    assert old in text
+
+    def run(t: str) -> tuple[bool, str]:
+        return verify_assembled(assemble_declarative_program(spec, extract_agent_edit(t), helpers=extract_agent_helpers(t)), timeout_sec=600)
+
+    ok, out = run(text)
+    assert ok and "0 errors" in out, out[-2000:]
+    bad, _ = run(text.replace(old, new))
+    assert not bad
