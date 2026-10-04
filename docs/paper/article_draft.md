@@ -101,3 +101,7 @@ Q9/Q18: GenDB’s instance-optimized C++ still much faster than DuckDB.
 
 Still in [`article_draft.tex`](article_draft.tex) §Evaluation (WSL laptop,
 not this GCP harvest).
+
+## Limitations
+
+- **Floating point.** The declarative path states float aggregates within a configurable absolute epsilon (`LEMMA_FLOAT_ABS_EPS`). `f64` addition is covered by a trusted host error lemma (`host_f64_sum_error`). Verus's standard library gives `f64` add, subtract and multiply only as uninterpreted predicates with no link to the real-number result, so there is no proved error bound for float products or differences inside an aggregate (for example `SUM(a * (1 - b))` over `DOUBLE` columns). Those queries are refused, loudly. A trusted statement of IEEE 754 round-to-nearest error for multiply and subtract would lift this; we leave it as future work. Exact `DECIMAL(p,s)` and `DATE` columns are supported natively as scaled and day-count integers and are not affected.
