@@ -7,14 +7,14 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 
 from research_loop.trust_configs import fast as fast_mod
-from research_loop.trust_configs import hardware as hardware_mod
+from research_loop.trust_configs import adversary_imperativespec0 as adversary_imperativespec0_mod
 from research_loop.trust_configs import product as product_mod
 from research_loop.trust_configs._types import TrustConfig
 
 CONFIGS: dict[str, TrustConfig] = {
     product_mod.CONFIG.name: product_mod.CONFIG,
     fast_mod.CONFIG.name: fast_mod.CONFIG,
-    hardware_mod.CONFIG.name: hardware_mod.CONFIG,
+    adversary_imperativespec0_mod.CONFIG.name: adversary_imperativespec0_mod.CONFIG,
 }
 
 

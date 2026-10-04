@@ -16,7 +16,11 @@ from typing import Any
 import duckdb
 
 from research_loop.adversary.candidate import Candidate
-from research_loop.adversary.significance import classify_difference
+from research_loop.adversary.significance import (
+    classify_difference,
+    sql_limit_without_order,
+    unlimited_sql,
+)
 from research_loop.table_assumptions import (
     CatalogAssumptions,
     ColumnAssumption,
@@ -40,6 +44,9 @@ def default_catalog(
     A dense group-count map needs it to print its rows. Signed and large
     columns get no assumption beyond the SQL type.
     """
+    # These are upper bounds only. No row-count floor is imposed on the data: an empty table
+    # (n == 0) stays allowed, because empty-table answers (SUM/MIN/MAX are NULL, COUNT is 0)
+    # are exactly what the judge probes.
     biggest = max([len(r) for r in rows.values()] + [1])
     per_table: dict[str, TableAssumptions] = {}
     for table, col_types in tables.items():
@@ -185,6 +192,9 @@ def judge_declarative_candidate(
             duck_rows, duck_error = None, str(exc)
         base["duck_rows"] = duck_rows
         base["duck_error"] = duck_error
+        unlimited = None
+        if duck_error is None and sql_limit_without_order(candidate.sql):
+            unlimited = [tuple(r) for r in con.execute(unlimited_sql(candidate.sql)).fetchall()]
 
         model = SchemaModel.from_caller(tables, next(iter(tables)))
         structs = re.findall(r"pub struct (Cols_[A-Za-z0-9_]+)\s*\{([^}]+)\}", spec_rs)
@@ -233,7 +243,9 @@ def judge_declarative_candidate(
             "reason": why,
             "stdout": metrics["stdout"][:500],
         }
-    verdict = classify_difference(candidate.sql, impl_rows, duck_rows, duck_error=duck_error)
+    verdict = classify_difference(
+        candidate.sql, impl_rows, duck_rows, duck_error=duck_error, unlimited=unlimited
+    )
     return {
         **base,
         "status": "hole" if verdict.significant else "no_difference",

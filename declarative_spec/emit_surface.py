@@ -64,6 +64,21 @@ def emit_from_surface(
     float_abs_eps: str | None = None,
 ) -> str:
     """Verus source for ``sql``. Raises ``DeclarativeUnsupported`` when a clause is refused."""
+    from declarative_spec.literals import resolve_string_tokens
+
+    return resolve_string_tokens(
+        _emit_with_string_tokens(sql, schema, catalog, float_abs_eps=float_abs_eps)
+    )
+
+
+def _emit_with_string_tokens(
+    sql: str,
+    schema: dict[str, str] | dict[str, dict[str, str]],
+    catalog: CatalogAssumptions | None = None,
+    *,
+    float_abs_eps: str | None = None,
+) -> str:
+    """Verus source for ``sql``. Raises ``DeclarativeUnsupported`` when a clause is refused."""
     query = flatten_derived(parse_query(sql))
     if not query.tables:
         raise DeclarativeUnsupported("FROM")
@@ -1559,11 +1574,9 @@ def _compile_pred(
     def isnull(m: re.Match[str]) -> str:
         not_null = m.group(1) == "!"
         ref = m.group(2)
-        slot, info = _ref_slot(ref, scopes, model)
-        if info.spec_as == "Seq<char>":
-            cell = _cell(slot, ref.split(".")[-1], info)
-            op = "!=" if not_null else "=="
-            return f"({cell} {op} \"\"@)"
+        _ref_slot(ref, scopes, model)  # fail loudly on an unknown column
+        # Exported columns hold no NULL (the loader rejects NULL cells), and an empty string
+        # is a value, not NULL.
         return "true" if not_null else "false"
 
     out = _IS_NULL.sub(isnull, expr)

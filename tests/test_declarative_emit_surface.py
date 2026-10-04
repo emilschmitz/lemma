@@ -103,7 +103,7 @@ def test_grouped_scan_states_filter_and_aggregates() -> None:
     spec = _emit(SCAN, eps="1e20")
     assert "method_spec" not in spec
     assert "inserts into a map" not in spec
-    assert "(pre.stmt@[i0]@) != \"\"@" in spec
+    assert "pre.stmt@[i0]@) != \"\"@" not in spec  # IS NOT NULL is true, not s != ""
     assert "pre.(pre." not in spec
     assert "count_cnt(" in spec
     assert "lemma_count_cnt_step(" in spec

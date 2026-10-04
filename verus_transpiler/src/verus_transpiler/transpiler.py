@@ -1269,7 +1269,7 @@ def _wrapping_seq_sum(elem: str, expr: str) -> tuple[str, str]:
 
 
 def _exact_empty_seq_sum(elem: str, expr: str) -> tuple[str, str, str]:
-    """Hardware sum: ``None`` on an empty sequence, otherwise the exact total."""
+    """adversary_imperativespec0 sum: ``None`` on an empty sequence, otherwise the exact total."""
     fn, src = _seq_sum_as_u128(elem)
     body = (
         f"let rows = {expr};\n"
@@ -1732,7 +1732,7 @@ def _lift_derived_group_order(query: SQLQuery) -> SQLQuery | None:
     )
 
 
-def _hardware_nullable_derived(
+def _adversary_imperativespec0_nullable_derived(
     query: SQLQuery,
     alias: str,
     inner: SQLQuery,
@@ -1772,13 +1772,13 @@ def _hardware_nullable_derived(
         body, ret = present, option_ty
     else:
         raise UnsupportedContractError(
-            "hardware menu does not compose this aggregate over a nullable scalar"
+            "adversary_imperativespec0 menu does not compose this aggregate over a nullable scalar"
         )
     return helpers, _method_spec_fn(ret, body, extras), ret
 
 
 def _unsigned_expr_violation(query: SQLQuery) -> str | None:
-    """Subtraction and negation are signed. Hardware columns are not."""
+    """Subtraction and negation are signed. adversary_imperativespec0 columns are not."""
     if os.environ.get("LEMMA_EXACT_SUM", "0") != "1":
         return None
     exprs: list[str] = []
@@ -1829,13 +1829,13 @@ def _emit_single_table_spec(
     signed = _unsigned_expr_violation(query)
     if signed is not None:
         raise UnsupportedContractError(
-            "hardware menu does not emit subtraction or negation: "
+            "adversary_imperativespec0 menu does not emit subtraction or negation: "
             "DuckDB's result is signed and these columns are unsigned"
         )
     multiplied = _column_mul_violation(query)
     if multiplied is not None:
         raise UnsupportedContractError(
-            "hardware menu does not emit multiplication of a column: "
+            "adversary_imperativespec0 menu does not emit multiplication of a column: "
             "DuckDB multiplies in the column type and rejects the overflow"
         )
     lifted = _lift_derived_group_order(query)
@@ -1909,7 +1909,7 @@ def _emit_single_table_spec(
             raise UnsupportedContractError(
                 "derived table composition requires inner scalar aggregate."
             )
-        nullable = _hardware_nullable_derived(query, derived.alias, inner, flat_schema, extras)
+        nullable = _adversary_imperativespec0_nullable_derived(query, derived.alias, inner, flat_schema, extras)
         if nullable is not None:
             return nullable
         inner_helpers, inner_spec_call, _inner_ret = emit_derived_inner_spec(
@@ -1930,7 +1930,7 @@ def _emit_single_table_spec(
     if query.agg_type == "AVG":
         if os.environ.get("LEMMA_EXACT_SUM", "0") == "1":
             raise UnsupportedContractError(
-                "hardware menu does not emit AVG: DuckDB AVG is DOUBLE, not integer division"
+                "adversary_imperativespec0 menu does not emit AVG: DuckDB AVG is DOUBLE, not integer division"
             )
         if query.groupby_columns:
             helpers = "\n\n".join([

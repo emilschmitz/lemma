@@ -6,6 +6,8 @@ import os
 import subprocess
 from pathlib import Path
 
+from assumption_db import build_conforming_db
+
 ROOT = Path(__file__).resolve().parents[1]
 PREFLIGHT = ROOT / "research_loop" / "scripts" / "gcp_experiment_preflight.sh"
 
@@ -67,6 +69,8 @@ def _run_preflight(
     run_env = os.environ.copy()
     run_env.pop("LEMMA_EXPERIMENT_ALLOW_DIRTY", None)
     run_env.setdefault("LEMMA_PREFLIGHT_SSH", "0")
+    run_env.pop("LEMMA_ASSUMPTION_PACKAGE", None)
+    run_env["LEMMA_DUCKDB_PATH"] = str(build_conforming_db(repo.parent / "conforming.duckdb"))
     if env:
         run_env.update(env)
     cmd = ["bash", str(PREFLIGHT)]
@@ -376,3 +380,43 @@ def test_lemma_guest_halt_is_not_wrapper() -> None:
     first = text.splitlines()[0]
     assert first.startswith("#!")
     assert "wrapper" not in text.lower()
+
+
+def _rocket_env(**extra: str) -> dict[str, str]:
+    return {
+        "LEMMA_FAMILY": "r23rocket",
+        "LEMMA_EMIT_AGENT_PRIMITIVES": "0",
+        "LEMMA_FAST_TRUSTEDS": "0",
+        **extra,
+    }
+
+
+def test_preflight_missing_duckdb_path_exits_1(tmp_path: Path) -> None:
+    repo = _init_pushed_repo(tmp_path)
+    proc = _run_preflight(repo, env=_rocket_env(LEMMA_DUCKDB_PATH=""))
+    assert proc.returncode == 1
+    assert "LEMMA_DUCKDB_PATH" in proc.stderr
+
+
+def test_preflight_stale_package_exits_1_naming_the_assumption(tmp_path: Path) -> None:
+    import duckdb
+
+    repo = _init_pushed_repo(tmp_path)
+    stale = build_conforming_db(tmp_path / "stale.duckdb")
+    con = duckdb.connect(str(stale))
+    con.execute("UPDATE pre SET line = 100000")
+    con.close()
+    proc = _run_preflight(repo, env=_rocket_env(LEMMA_DUCKDB_PATH=str(stale)))
+    assert proc.returncode == 1
+    assert "pre.line" in proc.stderr
+    assert "100000" in proc.stderr
+    assert "failed the data check" in proc.stderr
+
+
+def test_preflight_named_package_is_the_one_checked(tmp_path: Path) -> None:
+    repo = _init_pushed_repo(tmp_path)
+    # The conforming one-row sec_margin DB has more rows than prove_loop's cube cap of... none;
+    # but it lacks prove_loop's absent-column semantics: prove_loop names no columns, so it holds.
+    proc = _run_preflight(repo, env=_rocket_env(LEMMA_ASSUMPTION_PACKAGE="no_such_package"))
+    assert proc.returncode == 1
+    assert "no_such_package" in proc.stderr

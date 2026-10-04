@@ -1,4 +1,4 @@
-"""Hardware refuses `/` because DuckDB divides in DOUBLE."""
+"""adversary_imperativespec0 refuses `/` because DuckDB divides in DOUBLE."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from verus_transpiler.transpiler import transpile_sql_to_verus
 _SCHEMA = {"t": {"a": "BIGINT", "b": "BIGINT"}}
 
 
-def test_hardware_refuses_column_division_and_product_keeps_the_quotient(
+def test_adversary_imperativespec0_refuses_column_division_and_product_keeps_the_quotient(
     monkeypatch,
 ) -> None:
     sql = "SELECT SUM(a / b) FROM t"
@@ -21,7 +21,7 @@ def test_hardware_refuses_column_division_and_product_keeps_the_quotient(
         transpile_sql_to_verus(sql, _SCHEMA)
 
 
-def test_hardware_refuses_literal_division_and_keeps_multiplication(
+def test_adversary_imperativespec0_refuses_literal_division_and_keeps_multiplication(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("LEMMA_EXACT_SUM", "1")

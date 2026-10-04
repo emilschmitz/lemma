@@ -8,6 +8,7 @@ from dataclasses import dataclass, field, replace
 import sqlglot
 from sqlglot import exp
 
+from declarative_spec.literals import string_token
 from declarative_spec.parse import DeclarativeUnsupported
 from declarative_spec.parse_exprs import (
     arith_text,
@@ -275,6 +276,48 @@ def _check_forbidden(expression: exp.Expression) -> None:
                 raise DeclarativeUnsupported(f"{side} JOIN")
         if isinstance(node, exp.With) and node.args.get("recursive"):
             raise DeclarativeUnsupported("recursive CTE")
+        _check_clause_args(node)
+
+
+_EXISTS_FORBIDDEN_ARGS = ("limit", "offset", "order", "distinct", "group", "having")
+
+
+def _check_clause_args(node: exp.Expression) -> None:
+    """Refuse clauses that are parsed but that the spec emitter would silently drop."""
+    if isinstance(node, exp.Select):
+        if node.args.get("offset") is not None:
+            raise DeclarativeUnsupported("OFFSET")
+        if node.args.get("sample") is not None:
+            raise DeclarativeUnsupported("USING SAMPLE")
+        group = node.args.get("group")
+        if group is not None:
+            for key in ("all", "rollup", "cube", "grouping_sets", "totals"):
+                if group.args.get(key):
+                    raise DeclarativeUnsupported(f"GROUP BY {key.upper()}")
+    if isinstance(node, exp.Table) and node.args.get("sample") is not None:
+        raise DeclarativeUnsupported("TABLESAMPLE")
+    if isinstance(node, exp.Limit):
+        value = node.expression
+        is_int = isinstance(value, exp.Literal) and not value.is_string and value.this.isdigit()
+        if not is_int:
+            raise DeclarativeUnsupported("LIMIT must be a non-negative integer literal")
+        if node.args.get("limit_options") is not None:
+            raise DeclarativeUnsupported("LIMIT PERCENT / WITH TIES")
+    if isinstance(node, (exp.Exists, exp.Subquery)) and isinstance(node.this, exp.Select):
+        inner = node.this
+        if isinstance(node, exp.Exists):
+            forbidden = _EXISTS_FORBIDDEN_ARGS
+        elif isinstance(node.parent, (exp.In, exp.Binary)):
+            forbidden = ("limit",)
+        else:
+            forbidden = ()
+        for key in forbidden:
+            if inner.args.get(key):
+                raise DeclarativeUnsupported(f"{key.upper()} inside a subquery")
+    if isinstance(node, (exp.Sum, exp.Avg, exp.Min, exp.Max, exp.Count)) and node.args.get(
+        "expressions"
+    ):
+        raise DeclarativeUnsupported("aggregate with extra arguments")
 
 
 def _unwrap_alias(node: exp.Expression) -> exp.Expression:
@@ -801,14 +844,16 @@ def _compile_bool(node: exp.Expression, ctx: _BoolCtx) -> str:
 def _compile_is_null(node: exp.Is, ctx: _BoolCtx, *, negated: bool) -> str:
     col_node = node.this
     if not isinstance(col_node, exp.Column):
-        raise DeclarativeUnsupported("IS NULL")
+        raise DeclarativeUnsupported("IS on a non-column")
     col_ref, _ = _col_ref(col_node, ctx.scope)
-    is_null = isinstance(node.expression, exp.Null)
-    if negated:
-        is_null = not is_null
-    if is_null:
-        return f"is_null({col_ref})"
-    return f"!is_null({col_ref})"
+    rhs = node.expression
+    if isinstance(rhs, exp.Boolean):
+        # Columns hold no NULL, so ``c IS TRUE`` is ``c == true``.
+        text = f"({col_ref} == {'true' if rhs.this else 'false'})"
+        return f"!{text}" if negated else text
+    if not isinstance(rhs, exp.Null):
+        raise DeclarativeUnsupported("IS with a non-NULL, non-boolean right side")
+    return f"!is_null({col_ref})" if negated else f"is_null({col_ref})"
 
 
 def _compile_side(node: exp.Expression, ctx: _BoolCtx) -> str:
@@ -823,7 +868,7 @@ def _compile_side(node: exp.Expression, ctx: _BoolCtx) -> str:
         return ref
     if isinstance(node, exp.Literal):
         if node.is_string:
-            return f'"{node.this}"@'
+            return string_token(str(node.this))
         if node.is_number:
             return str(node.this)
         if str(node.this).upper() in ("TRUE", "FALSE"):
@@ -848,7 +893,7 @@ def _compile_case(node: exp.Case, scope: _Scope) -> str:
             _col_ref(n, scope)
             return f"cols.{rust_ident(n.name)}@[i]"
         if isinstance(n, exp.Literal) and n.is_string:
-            return f'"{n.this}"@'
+            return string_token(str(n.this))
         if isinstance(n, exp.Literal) and n.is_number:
             return str(n.this)
         raise DeclarativeUnsupported("CASE")
@@ -867,7 +912,10 @@ def _compile_case(node: exp.Case, scope: _Scope) -> str:
         return f"({atom(n.left)} {op_map[type(n)]} {atom(n.right)})"
 
     default = node.args.get("default")
-    text = atom(default) if default is not None else "0"
+    if default is None:
+        # No ELSE yields NULL, which MIN/MAX/SUM skip; the spec has no NULL.
+        raise DeclarativeUnsupported("CASE without ELSE")
+    text = atom(default)
     for arm in reversed(list(node.args.get("ifs") or [])):
         text = f"if {cond(arm.this)} {{ {atom(arm.args['true'])} }} else {{ {text} }}"
     return text
@@ -1035,5 +1083,5 @@ def _compile_like(node: exp.Like, ctx: _BoolCtx) -> str:
     if any(ch in str(pattern.this) for ch in '"\\'):
         raise DeclarativeUnsupported("LIKE pattern with a quote or backslash")
     col, _ = _col_ref(node.this, ctx.scope)
-    text = f'spec_like({col}, "{pattern.this}"@)'
+    text = f"spec_like({col}, {string_token(str(pattern.this))})"
     return f"!({text})" if node.args.get("negate") else text

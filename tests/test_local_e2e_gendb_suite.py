@@ -91,6 +91,7 @@ def test_apply_product_env_submit_ends_session(
 
     from research_loop.scripts import local_e2e_tiny_docker as e2e
 
+    monkeypatch.setattr(os, "environ", dict(os.environ))  # apply_product_env writes os.environ directly
     monkeypatch.setenv("AGENT_SUBMIT_ENDS_SESSION", "0")
     monkeypatch.setenv("LEMMA_DATASET_SIZE", "500")
     e2e.apply_product_env(duckdb_path=tmp_path / "t.duckdb")

@@ -14,7 +14,7 @@ from research_loop.adversary.tamper import (
 
 def test_prompt_allows_read_and_web_and_forbids_tamper(tmp_path: Path) -> None:
     text = _prompt_text(
-        config_name="hardware",
+        config_name="adversary_imperativespec0",
         repo_path=Path("/repo"),
         write_dir=tmp_path,
     )

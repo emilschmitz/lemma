@@ -1,4 +1,4 @@
-"""Old SUM attacks do not prove against the hardware Option<u128> spec."""
+"""Old SUM attacks do not prove against the adversary_imperativespec0 Option<u128> spec."""
 
 from __future__ import annotations
 
@@ -19,10 +19,10 @@ pytestmark = pytest.mark.skipif(resolve_verus_bin() is None, reason="verus not f
     "name",
     ["adversary_empty_sum.json", "adversary_u64_wrap_sum.json"],
 )
-def test_hardware_sum_attack_does_not_prove(name: str) -> None:
+def test_adversary_imperativespec0_sum_attack_does_not_prove(name: str) -> None:
     report = judge_candidate(
         load_candidate(_FIXTURES / name),
-        config="hardware",
+        config="adversary_imperativespec0",
         verify=True,
     )
     assert report["significant"] is False

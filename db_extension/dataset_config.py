@@ -85,23 +85,6 @@ def _quote_duckdb_ident(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
-def _fetch_one(con: Any, sql: str) -> tuple | None:
-    """One measurement query.
-
-    Lock contention is re-raised so the caller can record it. Any other
-    error skips this column instead of dropping the whole catalog.
-    """
-    try:
-        row = con.execute(sql).fetchone()
-    except Exception as exc:
-        if duckdb_error_is_contention(str(exc)):
-            raise
-        return None
-    if row is None:
-        return None
-    return tuple(row)
-
-
 def _count_duckdb_primary_rows() -> int | None:
     """Row count from LEMMA_DUCKDB_PATH primary table (SEC / DuckDB workloads)."""
     db = os.environ.get("LEMMA_DUCKDB_PATH", "").strip()
@@ -171,260 +154,183 @@ _UNIQUE_KEY_CANDIDATES: tuple[tuple[str, ...], ...] = (
 )
 
 
-def table_unique_keys() -> dict[str, tuple[tuple[str, ...], ...]] | None:
+def connect_measured_duckdb(stage: str) -> Any:
+    """Read-only connection to ``LEMMA_DUCKDB_PATH``. Raises when it is unusable."""
+    import duckdb
+
+    db = os.environ.get("LEMMA_DUCKDB_PATH", "").strip()
+    if not db:
+        raise RuntimeError(
+            "LEMMA_DUCKDB_PATH is not set: the measured catalog needs the SEC DuckDB."
+        )
+    if not Path(db).is_file():
+        raise FileNotFoundError(f"LEMMA_DUCKDB_PATH {db!r} is not a file.")
+    try:
+        return duckdb.connect(db, read_only=True)
+    except Exception as exc:
+        if duckdb_error_is_contention(str(exc)):
+            emit_duckdb_contention(stage=stage, error=str(exc), db_path=db)
+        raise
+
+
+def _main_columns(con: Any) -> list[tuple[str, str, str]]:
+    """(table, column, lowercase base type) for every column in schema ``main``."""
+    rows = con.execute(
+        "SELECT table_name, column_name, data_type "
+        "FROM information_schema.columns WHERE table_schema = 'main'"
+    ).fetchall()
+    return [
+        (str(t), str(c), str(d).lower().split("(")[0])
+        for t, c, d in rows
+        if _safe_duckdb_table_name(str(t))
+    ]
+
+
+def table_unique_keys() -> dict[str, tuple[tuple[str, ...], ...]]:
     """Unique column groups measured from ``LEMMA_DUCKDB_PATH``.
 
-    Returns None when the database is missing. A candidate is stored only when
-    every column exists and no group has more than one row.
+    A candidate is stored only when every column exists and no group has more
+    than one row. Raises when the database is missing or a query fails.
     """
-    db = os.environ.get("LEMMA_DUCKDB_PATH", "").strip()
-    if not db or not Path(db).is_file():
-        return None
+    con = connect_measured_duckdb("unique_keys")
     try:
-        import duckdb
-    except ImportError:
-        return None
-    try:
-        con = duckdb.connect(db, read_only=True)
-        try:
-            rows = con.execute(
-                "SELECT table_name, column_name "
-                "FROM information_schema.columns "
-                "WHERE table_schema = 'main'"
-            ).fetchall()
-            cols_by_table: dict[str, set[str]] = {}
-            for table, column in rows:
-                table_name = str(table)
-                if not _safe_duckdb_table_name(table_name):
+        cols_by_table: dict[str, set[str]] = {}
+        for table, column, _ in _main_columns(con):
+            cols_by_table.setdefault(table, set()).add(column)
+        found: dict[str, tuple[tuple[str, ...], ...]] = {}
+        for table_name, columns in cols_by_table.items():
+            unique: list[tuple[str, ...]] = []
+            for key in _UNIQUE_KEY_CANDIDATES:
+                if not set(key).issubset(columns):
                     continue
-                cols_by_table.setdefault(table_name, set()).add(str(column))
-            found: dict[str, tuple[tuple[str, ...], ...]] = {}
-            for table_name, columns in cols_by_table.items():
-                unique: list[tuple[str, ...]] = []
-                for key in _UNIQUE_KEY_CANDIDATES:
-                    if not set(key).issubset(columns):
-                        continue
-                    group = ", ".join(_quote_duckdb_ident(col) for col in key)
-                    quoted_table = _quote_duckdb_ident(table_name)
-                    max_row = _fetch_one(
-                        con,
-                        f"SELECT MAX(c) FROM ("
-                        f"SELECT COUNT(*) AS c FROM {quoted_table} GROUP BY {group}"
-                        f")",
-                    )
-                    if max_row is None or max_row[0] is None:
-                        continue
-                    if int(max_row[0]) == 1:
-                        unique.append(key)
-                if unique:
-                    found[table_name] = tuple(unique)
-            return found or None
-        finally:
-            con.close()
-    except Exception as exc:
-        if duckdb_error_is_contention(str(exc)):
-            emit_duckdb_contention(stage="unique_keys", error=str(exc), db_path=db)
-            raise
-        return None
+                group = ", ".join(_quote_duckdb_ident(col) for col in key)
+                max_count = con.execute(
+                    f"SELECT MAX(c) FROM (SELECT COUNT(*) AS c "
+                    f"FROM {_quote_duckdb_ident(table_name)} GROUP BY {group})"
+                ).fetchone()[0]
+                if max_count is not None and int(max_count) == 1:
+                    unique.append(key)
+            if unique:
+                found[table_name] = tuple(unique)
+        return found
+    finally:
+        con.close()
 
 
-def tables_one_row_per_adsh() -> set[str] | None:
+def tables_one_row_per_adsh() -> set[str]:
     """Tables whose ``adsh`` column has at most one row per value."""
-    keys = table_unique_keys()
-    if not keys:
-        return None
-    unique = {name for name, groups in keys.items() if ("adsh",) in groups}
-    return unique or None
+    return {
+        name for name, groups in table_unique_keys().items() if ("adsh",) in groups
+    }
 
 
-def table_column_abs_sum_caps() -> dict[str, dict[str, int]] | None:
+def table_column_abs_sum_caps() -> dict[str, dict[str, int]]:
     """Exclusive bound on ``sum(abs(col))``: ``sum(ceil(abs))+1`` when it fits in u64.
 
-    Returns None when the database is missing. A column is omitted when the sum
-    overflows u64 or cannot be computed. The number is an input to the catalog,
-    not a proof constant chosen in software.
+    A column is omitted when the sum overflows u64, a cell is NaN/inf, or the column
+    is all NULL.
+    Raises when the database is missing or a query fails.
     """
-    db = os.environ.get("LEMMA_DUCKDB_PATH", "").strip()
-    if not db or not Path(db).is_file():
-        return None
+    con = connect_measured_duckdb("column_abs_sum_caps")
     try:
-        import duckdb
-    except ImportError:
-        return None
-    try:
-        con = duckdb.connect(db, read_only=True)
-        try:
-            rows = con.execute(
-                "SELECT table_name, column_name, data_type "
-                "FROM information_schema.columns "
-                "WHERE table_schema = 'main'"
-            ).fetchall()
-            caps: dict[str, dict[str, int]] = {}
-            for table, column, dtype in rows:
-                table_name = str(table)
-                column_name = str(column)
-                if not _safe_duckdb_table_name(table_name):
-                    continue
-                base = str(dtype).lower().split("(")[0]
-                if base not in _INTEGER_DUCKDB_TYPES | _FLOAT_DUCKDB_TYPES:
-                    continue
-                quoted_col = _quote_duckdb_ident(column_name)
-                quoted_table = _quote_duckdb_ident(table_name)
-                sum_row = _fetch_one(
-                    con,
-                    f"SELECT CASE "
-                    f"WHEN COUNT(*) FILTER ("
-                    f"WHERE {quoted_col} IS NOT NULL "
-                    f"AND ABS({quoted_col}) >= {_U64_MAX_EXCLUSIVE}"
-                    f") > 0 THEN NULL "
-                    f"ELSE SUM(CAST(CEIL(ABS({quoted_col})) AS HUGEINT)) "
-                    f"FILTER (WHERE {quoted_col} IS NOT NULL) "
-                    f"END FROM {quoted_table}",
-                )
-                if sum_row is None or sum_row[0] is None:
-                    continue
-                total = int(sum_row[0])
-                if total < 0:
-                    continue
-                # Exclusive bound must itself fit in a u64 const (strictly below 2^64).
-                exclusive = total + 1
-                if exclusive >= _U64_MAX_EXCLUSIVE:
-                    continue
-                caps.setdefault(table_name, {})[column_name] = exclusive
-            return caps or None
-        finally:
-            con.close()
-    except Exception as exc:
-        if duckdb_error_is_contention(str(exc)):
-            emit_duckdb_contention(stage="column_abs_sum_caps", error=str(exc), db_path=db)
-            raise
-        return None
+        caps: dict[str, dict[str, int]] = {}
+        for table_name, column_name, base in _main_columns(con):
+            if base not in _INTEGER_DUCKDB_TYPES | _FLOAT_DUCKDB_TYPES:
+                continue
+            col = _quote_duckdb_ident(column_name)
+            total = con.execute(
+                f"SELECT CASE "
+                f"WHEN COUNT(*) FILTER ("
+                f"WHERE {col} IS NOT NULL "
+                f"AND (NOT isfinite({col}) OR ABS({col}) >= {_U64_MAX_EXCLUSIVE})"
+                f") > 0 THEN NULL "
+                f"ELSE SUM(CASE WHEN isfinite({col}) "
+                f"AND ABS({col}) < {_U64_MAX_EXCLUSIVE} "
+                f"THEN CAST(CEIL(ABS({col})) AS HUGEINT) END) "
+                f"END FROM {_quote_duckdb_ident(table_name)}"
+            ).fetchone()[0]
+            if total is None:
+                continue
+            # Exclusive bound must itself fit in a u64 const (strictly below 2^64).
+            exclusive = int(total) + 1
+            if exclusive >= _U64_MAX_EXCLUSIVE:
+                continue
+            caps.setdefault(table_name, {})[column_name] = exclusive
+        return caps
+    finally:
+        con.close()
 
 
-def table_column_value_caps() -> dict[str, dict[str, int]] | None:
+def table_column_value_caps() -> dict[str, dict[str, int]]:
     """Per-table per-column exclusive upper bounds from ``LEMMA_DUCKDB_PATH``.
 
     INTEGER/BIGINT: ``max(abs(col)) + 1``. DOUBLE: same only when the column max is
-    integral, equals ``trunc(max)``, and fits in ``u64``. Returns None when the DB
-    is missing or unreadable.
+    integral, finite, and fits in ``u64``. Other columns are omitted. Raises when the
+    database is missing or a query fails.
     """
-    db = os.environ.get("LEMMA_DUCKDB_PATH", "").strip()
-    if not db or not Path(db).is_file():
-        return None
+    con = connect_measured_duckdb("column_value_caps")
     try:
-        import duckdb
-    except ImportError:
-        return None
-    try:
-        con = duckdb.connect(db, read_only=True)
-        try:
-            rows = con.execute(
-                "SELECT table_name, column_name, data_type "
-                "FROM information_schema.columns "
-                "WHERE table_schema = 'main'"
-            ).fetchall()
-            caps: dict[str, dict[str, int]] = {}
-            for table, column, dtype in rows:
-                table_name = str(table)
-                column_name = str(column)
-                if not _safe_duckdb_table_name(table_name):
-                    continue
-                base = str(dtype).lower().split("(")[0]
-                if base not in _INTEGER_DUCKDB_TYPES | _FLOAT_DUCKDB_TYPES:
-                    continue
-                quoted_col = _quote_duckdb_ident(column_name)
-                quoted_table = _quote_duckdb_ident(table_name)
-                max_row = _fetch_one(
-                    con,
-                    f"SELECT MAX(ABS({quoted_col})) FROM {quoted_table}",
-                )
-                if max_row is None or max_row[0] is None:
-                    continue
-                max_abs = max_row[0]
-                if base in _FLOAT_DUCKDB_TYPES:
-                    # Stay in HUGEINT. float64 cannot represent integers above 2^53,
-                    # so a Python float round-trip can publish a cap below the real max.
-                    exact_row = _fetch_one(
-                        con,
-                        f"SELECT CASE "
-                        f"WHEN MAX(ABS({quoted_col})) IS NULL THEN NULL "
-                        f"WHEN MAX(ABS({quoted_col})) <> TRUNC(MAX(ABS({quoted_col}))) THEN NULL "
-                        f"WHEN MAX(ABS({quoted_col})) < 0 THEN NULL "
-                        f"WHEN MAX(ABS({quoted_col})) >= {_U64_MAX_EXCLUSIVE} THEN NULL "
-                        f"ELSE CAST(TRUNC(MAX(ABS({quoted_col}))) AS HUGEINT) "
-                        f"END FROM {quoted_table}",
-                    )
-                    exact = None if exact_row is None else exact_row[0]
-                    if exact is None:
-                        continue
-                    exclusive = int(exact) + 1
-                    if exclusive <= 0 or exclusive >= _U64_MAX_EXCLUSIVE:
-                        continue
-                else:
-                    try:
-                        exclusive = int(max_abs) + 1
-                    except (TypeError, ValueError, OverflowError):
-                        continue
-                    # A u64 const cannot name 2^64. Skip the column.
-                    if exclusive <= 0 or exclusive >= _U64_MAX_EXCLUSIVE:
-                        continue
-                caps.setdefault(table_name, {})[column_name] = exclusive
-            return caps or None
-        finally:
-            con.close()
-    except Exception as exc:
-        if duckdb_error_is_contention(str(exc)):
-            emit_duckdb_contention(
-                stage="column_value_caps", error=str(exc), db_path=db
-            )
-            raise
-        return None
+        caps: dict[str, dict[str, int]] = {}
+        for table_name, column_name, base in _main_columns(con):
+            if base not in _INTEGER_DUCKDB_TYPES | _FLOAT_DUCKDB_TYPES:
+                continue
+            col = _quote_duckdb_ident(column_name)
+            table = _quote_duckdb_ident(table_name)
+            if base in _FLOAT_DUCKDB_TYPES:
+                # Stay in HUGEINT. float64 cannot represent integers above 2^53,
+                # so a Python float round-trip can publish a cap below the real max.
+                exact = con.execute(
+                    f"SELECT CASE "
+                    f"WHEN MAX(ABS({col})) IS NULL THEN NULL "
+                    f"WHEN NOT isfinite(MAX(ABS({col}))) THEN NULL "
+                    f"WHEN MAX(ABS({col})) <> TRUNC(MAX(ABS({col}))) THEN NULL "
+                    f"WHEN MAX(ABS({col})) >= {_U64_MAX_EXCLUSIVE} THEN NULL "
+                    f"ELSE CAST(TRUNC(MAX(ABS({col}))) AS HUGEINT) "
+                    f"END FROM {table}"
+                ).fetchone()[0]
+            else:
+                exact = con.execute(f"SELECT MAX(ABS({col})) FROM {table}").fetchone()[0]
+            if exact is None:
+                continue
+            exclusive = int(exact) + 1
+            # A u64 const cannot name 2^64. Skip the column.
+            if exclusive >= _U64_MAX_EXCLUSIVE:
+                continue
+            caps.setdefault(table_name, {})[column_name] = exclusive
+        return caps
+    finally:
+        con.close()
 
 
-def table_row_counts() -> dict[str, int] | None:
-    """Per-table ``COUNT(*)`` from ``LEMMA_DUCKDB_PATH``, or None if unavailable."""
-    db = os.environ.get("LEMMA_DUCKDB_PATH", "").strip()
-    if not db or not Path(db).is_file():
-        return None
+def table_row_counts() -> dict[str, int]:
+    """Per-table ``COUNT(*)`` from ``LEMMA_DUCKDB_PATH``. Raises when unavailable."""
+    con = connect_measured_duckdb("count_table_rows")
     try:
-        import duckdb
-    except ImportError:
-        return None
-    try:
-        con = duckdb.connect(db, read_only=True)
-        try:
-            rows = con.execute(
+        names = [
+            str(t)
+            for (t,) in con.execute(
                 "SELECT table_name FROM information_schema.tables "
                 "WHERE table_schema = 'main' AND table_type = 'BASE TABLE'"
             ).fetchall()
-            counts: dict[str, int] = {}
-            for (table,) in rows:
-                name = str(table)
-                if not _safe_duckdb_table_name(name):
-                    continue
-                count_row = _fetch_one(
-                    con, f"SELECT COUNT(*) FROM {_quote_duckdb_ident(name)}"
-                )
-                if count_row is None or count_row[0] is None:
-                    continue
-                n = int(count_row[0])
-                counts[name] = n
-            return counts or None
-        finally:
-            con.close()
-    except Exception as exc:
-        if duckdb_error_is_contention(str(exc)):
-            emit_duckdb_contention(stage="count_table_rows", error=str(exc), db_path=db)
-            raise
-        return None
+            if _safe_duckdb_table_name(str(t))
+        ]
+        return {
+            name: int(
+                con.execute(
+                    f"SELECT COUNT(*) FROM {_quote_duckdb_ident(name)}"
+                ).fetchone()[0]
+            )
+            for name in names
+        }
+    finally:
+        con.close()
 
 
 def _count_duckdb_max_table_rows() -> int | None:
     """Max row count across user tables in LEMMA_DUCKDB_PATH (official pin limit)."""
-    counts = table_row_counts()
-    if not counts:
+    if not os.environ.get("LEMMA_DUCKDB_PATH", "").strip():
         return None
-    return max(counts.values())
+    return max(table_row_counts().values())
 
 
 def effective_dataset_size() -> int:
@@ -591,7 +497,7 @@ def row_budget_prompt_section() -> str:
         ),
     ]
 
-    counts = table_row_counts()
+    counts = table_row_counts() if os.environ.get("LEMMA_DUCKDB_PATH", "").strip() else None
     if counts:
         table_bits = ", ".join(f"{name}={n}" for name, n in sorted(counts.items()))
         lines.append(f"- **Table row counts (DuckDB):** {table_bits}")

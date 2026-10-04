@@ -267,18 +267,18 @@ def test_measure_refuses_a_null_in_a_column_the_query_reads(tmp_path: Path, null
         )
 
 
-def test_measure_ignores_a_null_in_a_column_the_query_does_not_read(tmp_path: Path) -> None:
+def test_measure_raises_on_a_null_even_in_a_column_the_query_does_not_read(tmp_path: Path) -> None:
     db = tmp_path / "u.duckdb"
     _tiny_db(db, [(1, "a", None), (2, "b", None)])
-    prep = write_query_measure(
-        sql="SELECT k, COUNT(*) AS c FROM t WHERE s = 'a' GROUP BY k",
-        schema=_SCHEMA,
-        catalog=_catalog(),
-        db_path=db,
-        dest=tmp_path / "d",
-        float_abs_eps=None,
-    )
-    assert prep["table_rows"] == {"t": 2}
+    with pytest.raises(ValueError, match="NULL"):
+        write_query_measure(
+            sql="SELECT k, COUNT(*) AS c FROM t WHERE s = 'a' GROUP BY k",
+            schema=_SCHEMA,
+            catalog=_catalog(),
+            db_path=db,
+            dest=tmp_path / "d",
+            float_abs_eps=None,
+        )
 
 
 def test_agent_file_with_host_uses_passes_import_vetting() -> None:

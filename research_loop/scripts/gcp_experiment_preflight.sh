@@ -129,6 +129,21 @@ fi
 # Multi-family Spot chains: set LEMMA_HALT_ON_FINISH=0 on non-final families so only
 # the last family's run_and_halt.sh stops the VM (see overnight_lemma.sh).
 
+# A stale assumption package must stop the launch. The package defaults to
+# sec_margin, the same default overnight_lemma.sh exports. LEMMA_DUCKDB_PATH is
+# required: no database means no check, and no check means no launch.
+ASSUMPTION_PACKAGE="${LEMMA_ASSUMPTION_PACKAGE:-sec_margin}"
+if [[ -z "${LEMMA_DUCKDB_PATH:-}" ]]; then
+  err "LEMMA_DUCKDB_PATH is not set; cannot check assumption package '$ASSUMPTION_PACKAGE' against the data."
+  exit 1
+fi
+# Run from the real checkout holding this script: tests run it inside a bare fake repo.
+(cd "$_PREFLIGHT_DIR/../.." && uv run python -m research_loop.assumption_packages.check \
+  --package "$ASSUMPTION_PACKAGE" --db "$LEMMA_DUCKDB_PATH") || {
+  err "assumption package '$ASSUMPTION_PACKAGE' failed the data check (see above)."
+  exit 1
+}
+
 echo "preflight OK: family=$LEMMA_FAMILY card=$card EMIT=$EMIT FAST=$FAST VECTOR=$VECTOR SPILL=$SPILL WAIT=$WAIT sha=$LOCAL_SHA"
 echo "  rocket     -> EMIT=0 FAST=0"
 echo "  fast       -> FAST_TRUSTEDS=1"

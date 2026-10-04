@@ -76,15 +76,15 @@ def test_qualify_is_refused() -> None:
         )
 
 
-def test_hardware_sum_of_distinct_values_is_empty_aware(monkeypatch) -> None:
+def test_adversary_imperativespec0_sum_of_distinct_values_is_empty_aware(monkeypatch) -> None:
     sql = "SELECT SUM(a) FROM (SELECT DISTINCT a FROM t) d"
     monkeypatch.delenv("LEMMA_EXACT_SUM", raising=False)
     product = _method_spec_body(transpile_sql_to_verus(sql, _SCHEMA))
     assert "seq_sum_u32_as_u64(derived_d_spec(cols), 0)" in product
     monkeypatch.setenv("LEMMA_EXACT_SUM", "1")
-    hardware = _method_spec_body(transpile_sql_to_verus(sql, _SCHEMA))
-    assert "Option<u128>" in hardware
-    assert "if rows.len() == 0 { None }" in hardware
+    adversary_imperativespec0 = _method_spec_body(transpile_sql_to_verus(sql, _SCHEMA))
+    assert "Option<u128>" in adversary_imperativespec0
+    assert "if rows.len() == 0 { None }" in adversary_imperativespec0
     with pytest.raises(UnsupportedContractError, match="filter over a derived DISTINCT"):
         transpile_sql_to_verus(
             "SELECT COUNT(*) FROM (SELECT DISTINCT a FROM t) d WHERE a = 1",

@@ -87,16 +87,16 @@ def test_top_level_filtered_group_max_is_max_not_sum() -> None:
     assert "(prev as int + t as int)" not in helper
 
 
-def test_hardware_grouped_sum_is_exact_u128(monkeypatch) -> None:
+def test_adversary_imperativespec0_grouped_sum_is_exact_u128(monkeypatch) -> None:
     sql = "SELECT SUM(s) FROM (SELECT k, SUM(a) AS s FROM t GROUP BY k) d"
     monkeypatch.delenv("LEMMA_EXACT_SUM", raising=False)
     product = transpile_sql_to_verus(sql, _SCHEMA)
     assert "as u64)" in product or "as u64>" in product
     assert "Map<u32, u64>" in product
     monkeypatch.setenv("LEMMA_EXACT_SUM", "1")
-    hardware = transpile_sql_to_verus(sql, _SCHEMA)
-    assert "Map<u32, u128>" in hardware
-    assert "as u128)" in hardware
-    body = _method_spec_body(hardware)
+    adversary_imperativespec0 = transpile_sql_to_verus(sql, _SCHEMA)
+    assert "Map<u32, u128>" in adversary_imperativespec0
+    assert "as u128)" in adversary_imperativespec0
+    body = _method_spec_body(adversary_imperativespec0)
     assert "Option<u128>" in body
     assert "if m.dom().len() == 0 { None }" in body

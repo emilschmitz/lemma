@@ -1,4 +1,4 @@
-"""Hardware join SUM is an exact Option<u128>. Product SUM stays wrapping u64."""
+"""adversary_imperativespec0 join SUM is an exact Option<u128>. Product SUM stays wrapping u64."""
 
 from __future__ import annotations
 

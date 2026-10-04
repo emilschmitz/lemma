@@ -1,4 +1,4 @@
-"""Hardware refuses a one-table column product. Join products stay."""
+"""adversary_imperativespec0 refuses a one-table column product. Join products stay."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ _JOIN = {
 }
 
 
-def test_hardware_refuses_column_products_and_product_path_keeps_them(
+def test_adversary_imperativespec0_refuses_column_products_and_product_path_keeps_them(
     monkeypatch,
 ) -> None:
     sql = "SELECT SUM(a * b) FROM t"
@@ -27,7 +27,7 @@ def test_hardware_refuses_column_products_and_product_path_keeps_them(
         transpile_sql_to_verus("SELECT SUM(a * 2) FROM t", {"t": {"a": "INTEGER"}})
 
 
-def test_hardware_join_product_still_uses_wrapping_mul(monkeypatch) -> None:
+def test_adversary_imperativespec0_join_product_still_uses_wrapping_mul(monkeypatch) -> None:
     monkeypatch.setenv("LEMMA_EXACT_SUM", "1")
     src = transpile_sql_to_verus(
         "SELECT SUM(t.amount * dim.w) FROM t JOIN dim ON t.dim_id = dim.id",

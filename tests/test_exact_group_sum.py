@@ -1,4 +1,4 @@
-"""Hardware menu group-by SUM is a u128 total, not a wrapping u64."""
+"""adversary_imperativespec0 menu group-by SUM is a u128 total, not a wrapping u64."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ def test_product_group_sum_stays_u64(monkeypatch) -> None:
     assert "Map<u32, u128>" not in src
 
 
-def test_hardware_group_sum_is_u128(monkeypatch) -> None:
+def test_adversary_imperativespec0_group_sum_is_u128(monkeypatch) -> None:
     monkeypatch.setenv("LEMMA_EXACT_SUM", "1")
     one = transpile_sql_to_verus("SELECT k, SUM(amount) FROM t GROUP BY k", _SCHEMA)
     two = transpile_sql_to_verus(

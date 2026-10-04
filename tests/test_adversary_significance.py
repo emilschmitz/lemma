@@ -33,11 +33,48 @@ def test_order_by_inside_string_not_demanded() -> None:
     assert not sql_demands_order(sql)
 
 
-def test_limit_without_order_different_rows_not_significant() -> None:
-    sql = "SELECT a FROM t LIMIT 5"
-    v = classify_difference(sql, [(1,)], [(2,)])
+_FULL = [(1,), (2,), (3,)]
+
+
+def test_limit_without_order_any_subset_of_right_size_is_fine() -> None:
+    v = classify_difference("SELECT a FROM t LIMIT 2", [(3,), (1,)], [(1,), (2,)], unlimited=_FULL)
     assert not v.significant
     assert v.reason == "limit_without_order"
+
+
+def test_limit_without_order_wrong_row_count_is_significant() -> None:
+    v = classify_difference("SELECT a FROM t LIMIT 2", [(1,)], [(1,), (2,)], unlimited=_FULL)
+    assert v.significant
+    assert v.reason == "limit_row_count"
+
+
+def test_limit_without_order_row_outside_result_is_significant() -> None:
+    v = classify_difference("SELECT a FROM t LIMIT 2", [(1,), (9,)], [(1,), (2,)], unlimited=_FULL)
+    assert v.significant
+    assert v.reason == "limit_rows_not_in_result"
+
+
+def test_limit_without_order_duplicate_beyond_multiplicity_is_significant() -> None:
+    v = classify_difference("SELECT a FROM t LIMIT 2", [(1,), (1,)], [(1,), (2,)], unlimited=_FULL)
+    assert v.significant
+
+
+def test_limit_larger_than_table_expects_every_row() -> None:
+    sql = "SELECT a FROM t LIMIT 10"
+    assert not classify_difference(sql, [(2,), (1,), (3,)], _FULL, unlimited=_FULL).significant
+    assert classify_difference(sql, [(1,), (2,)], _FULL, unlimited=_FULL).significant
+
+
+def test_limit_offset_without_order_expects_n_minus_offset() -> None:
+    sql = "SELECT a FROM t LIMIT 5 OFFSET 2"
+    assert not classify_difference(sql, [(3,)], [(3,)], unlimited=_FULL).significant
+    assert classify_difference(sql, [(3,), (2,)], [(3,)], unlimited=_FULL).significant
+
+
+def test_unlimited_sql_drops_limit_and_offset() -> None:
+    from research_loop.adversary.significance import unlimited_sql
+
+    assert "LIMIT" not in unlimited_sql("SELECT a FROM t WHERE a > 1 LIMIT 3 OFFSET 1").upper()
 
 
 def test_empty_sum_zero_vs_null_significant() -> None:

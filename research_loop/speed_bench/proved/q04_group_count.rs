@@ -223,21 +223,8 @@ pub exec fn run_query(cols: &Cols) -> (res: Groups)
         group_view(res.seen@, res.vals@, res.overflow@) == method_spec(cols),
 {
     broadcast use vstd::std_specs::hash::axiom_u32_obeys_hash_table_key_model;
-    let mut seen: Vec<bool> = Vec::new();
-    let mut vals: Vec<u64> = Vec::new();
-    let mut j: usize = 0;
-    while j < DENSE
-        invariant
-            j <= DENSE,
-            seen.len() == j,
-            vals.len() == j,
-            forall|t: int| 0 <= t < j as int ==> !seen@[t],
-        decreases DENSE - j,
-    {
-        seen.push(false);
-        vals.push(0);
-        j = j + 1;
-    }
+    let mut seen: Vec<bool> = vec![false; DENSE];
+    let mut vals: Vec<u64> = vec![0u64; DENSE];
     let mut overflow = HashMapWithView::<u32, u64>::new();
     proof {
         lemma_dense_empty(seen@, vals@, 0);
@@ -256,6 +243,7 @@ pub exec fn run_query(cols: &Cols) -> (res: Groups)
                     <= (cols.n - i) as u64,
             forall|t: int|
                 0 <= t < DENSE as int && seen@[t] ==> vals@[t] <= (cols.n - i) as u64,
+            forall|t: int| 0 <= t < DENSE as int && !seen@[t] ==> vals@[t] == 0,
         decreases i,
     {
         let ghost bound = (cols.n - i) as u64;
@@ -266,11 +254,7 @@ pub exec fn run_query(cols: &Cols) -> (res: Groups)
         let ghost before_over = overflow@;
         if key < DENSE as u32 {
             let idx = key as usize;
-            let prev = if seen[idx] {
-                vals[idx]
-            } else {
-                0u64
-            };
+            let prev = vals[idx];
             proof {
                 lemma_count_fits();
             }
@@ -284,8 +268,11 @@ pub exec fn run_query(cols: &Cols) -> (res: Groups)
                     lemma_dense_absent(before_seen, before_vals, key as int, 0);
                 }
             }
-            seen.set(idx, true);
+            if !seen[idx] {
+                seen.set(idx, true);
+            }
             vals.set(idx, next);
+            assert(seen@ =~= before_seen.update(idx as int, true));
             proof {
                 lemma_dense_set(before_seen, before_vals, key as int, next, 0);
             }
@@ -322,19 +309,23 @@ pub exec fn run_query(cols: &Cols) -> (res: Groups)
 
 }
 
+fn env_usize(key: &str) -> usize {
+    std::env::var(key).unwrap().parse().unwrap()
+}
+
 fn main() {
-    let n: usize = 2_000_000;
+    let n = env_usize("SPEED_ROWS");
     let mut k = Vec::with_capacity(n);
     for i in 0..n {
         k.push((i % 32) as u32);
     }
     let cols = Cols { n, k };
-    for _ in 0..2 {
+    for _ in 0..env_usize("SPEED_WARMUP") {
         let _ = run_query(&cols);
     }
-    let mut samples = Vec::with_capacity(5);
+    let mut samples = Vec::new();
     let mut last = None;
-    for _ in 0..5 {
+    for _ in 0..env_usize("SPEED_RUNS") {
         let t0 = std::time::Instant::now();
         last = Some(run_query(&cols));
         samples.push(t0.elapsed().as_micros());
@@ -349,5 +340,6 @@ fn main() {
     }
     println!("OVERFLOW:{}", groups.overflow.len());
     println!("RESULT:{pairs:?}");
+    println!("SAMPLES_US:{samples:?}");
     println!("MEDIAN_US:{}", samples[samples.len() / 2]);
 }

@@ -1,4 +1,4 @@
-"""Hardware refuses FLOAT/DOUBLE, and NOT LIKE keeps its negation."""
+"""adversary_imperativespec0 refuses FLOAT/DOUBLE, and NOT LIKE keeps its negation."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ _FLOAT = {"t": {"a": "FLOAT"}}
 _STR = {"t": {"s": "VARCHAR"}}
 
 
-def test_hardware_refuses_float_and_product_still_compares_the_integer(
+def test_adversary_imperativespec0_refuses_float_and_product_still_compares_the_integer(
     monkeypatch,
 ) -> None:
     sql = "SELECT COUNT(*) FROM t WHERE a = 16777216"
@@ -26,7 +26,7 @@ def test_hardware_refuses_float_and_product_still_compares_the_integer(
     assert "Option<u128>" in kept
 
 
-def test_hardware_refuses_real_and_decimal(monkeypatch) -> None:
+def test_adversary_imperativespec0_refuses_real_and_decimal(monkeypatch) -> None:
     monkeypatch.setenv("LEMMA_EXACT_SUM", "1")
     with pytest.raises(UnsupportedContractError, match="floating-point"):
         transpile_sql_to_verus("SELECT COUNT(*) FROM t WHERE a = 1", {"t": {"a": "REAL"}})
@@ -46,7 +46,7 @@ def test_not_like_is_negated_and_like_is_not(monkeypatch) -> None:
     assert "!(str_like_prefix" not in plain
 
 
-def test_not_ilike_is_negated_on_the_product_path_and_refused_on_hardware(
+def test_not_ilike_is_negated_on_the_product_path_and_refused_on_adversary_imperativespec0(
     monkeypatch,
 ) -> None:
     sql = "SELECT COUNT(*) FROM t WHERE s NOT ILIKE 'a%'"

@@ -1,4 +1,4 @@
-"""Hardware menu: exact scalar SUM on the product transpiler (not the fast menu).
+"""adversary_imperativespec0 menu: exact scalar SUM on the product transpiler (not the fast menu).
 
 Uses the product transpiler (``verus_transpiler``), not ``declarative_spec``; a
 declarative emitter would need its own trust config file.
@@ -9,10 +9,10 @@ from __future__ import annotations
 from research_loop.trust_configs._types import TrustConfig
 
 CONFIG = TrustConfig(
-    name="hardware",
+    name="adversary_imperativespec0",
     transpiler="product",
     note=(
-        "Hardware menu on the product transpiler. Scalar SUM is exact: "
+        "adversary_imperativespec0 menu on the product transpiler. Scalar SUM is exact: "
         "Option<u128>, None when no row matches, otherwise the mathematical "
         "sum (no u64 wrap). Scalar MIN and MAX are Option<u64>, None when no "
         "row matches. AVG is refused because DuckDB AVG is DOUBLE. "
