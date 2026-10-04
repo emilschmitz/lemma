@@ -53,14 +53,7 @@ def declarative_edit_from_file(source: str) -> str:
 _IDENT = r"[A-Za-z_][A-Za-z0-9_]*"
 _USE_LINE = re.compile(
     r"^(?:pub\s+)?(?:broadcast\s+)?use\s+"
-    + _IDENT
-    + r"(?:::"
-    + _IDENT
-    + r")*(?:::\*|::\{(?:\s*"
-    + _IDENT
-    + r"\s*,)*\s*"
-    + _IDENT
-    + r"\s*\})?;\s*$"
+    + r"vstd::[A-Za-z0-9_:{}*,\s]+;\s*$"
 )
 
 
@@ -112,12 +105,20 @@ def admit_declarative_body(body: str) -> AdmitResult:
         violations.append("proof fn")
     if re.search(r"\bspec\s+fn\b", cleaned):
         violations.append("spec fn")
-    if "assume(" in cleaned:
+    if re.search(r"\bassume\s*\(", cleaned):
         violations.append("assume(")
-    if "admit(" in cleaned:
+    if re.search(r"\badmit\s*\(", cleaned):
         violations.append("admit(")
-    if "#[verifier::external_body]" in cleaned:
-        violations.append("#[verifier::external_body]")
+    if re.search(r"#\s*!?\s*\[\s*verifier\s*::\s*external", cleaned):
+        violations.append("#[verifier::external...]")
+    if re.search(r"\bassume_specification\b", cleaned):
+        violations.append("assume_specification")
+    if re.search(r"\bunimplemented\s*!", cleaned):
+        violations.append("unimplemented!")
+    from research_loop.agent_vstd_imports import ASSUME_NAME
+
+    for name in sorted({m.group(0).lower() for m in ASSUME_NAME.finditer(cleaned)}):
+        violations.append(f"forbidden name: {name}")
     from research_loop.agent_vstd_imports import use_is_an_assume
 
     for line in body.splitlines():

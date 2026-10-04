@@ -169,6 +169,7 @@ def build_declarative_prompt(
         "You MAY write `use vstd::hash_map::StringHashMap;`.",
         "You MAY write `use vstd::...;` and `broadcast use vstd::...;`.",
         "Those lines are hoisted and kept.",
+        "The vstd source is readable at `context/ro/verus/` (`INDEX.md` first).",
         "",
         "while i > 0",
         "    invariant",
