@@ -115,11 +115,97 @@ def _tpch(tier_name: str, rng: random.Random) -> list[tuple[str, str]]:
     return []
 
 
+def _combo_sec(tier_name: str, rng: random.Random) -> list[tuple[str, str]]:
+    """Structural variety: aggregate, column, predicate form and group column are drawn, so shapes differ (not only literals)."""
+    num_aggs = ["SUM(value)", "MIN(value)", "MAX(value)", "COUNT(*)", "MIN(ddate)", "MAX(ddate)", "SUM(qtrs)"]
+    num_preds = [
+        f"uom = '{rng.choice(['USD', 'shares', 'pure'])}'",
+        f"ddate >= {rng.choice([20220101, 20230101])} AND ddate < {rng.choice([20231231, 20240331])}",
+        f"qtrs = {rng.randint(0, 4)} AND uom <> '{rng.choice(['USD', 'pure'])}'",
+        f"value > {rng.choice([100, 5000, 250000])}",
+        f"uom = '{rng.choice(['USD', 'shares'])}' AND value BETWEEN {rng.choice([10, 1000])} AND {rng.choice([50000, 900000])}",
+    ]
+    pre_aggs = ["COUNT(*)", "SUM(line)", "MIN(line)", "MAX(report)", "SUM(report)"]
+    pre_preds = [
+        f"stmt = '{rng.choice(['BS', 'IS', 'CF', 'EQ'])}'",
+        f"line BETWEEN {rng.randint(1, 10)} AND {rng.randint(11, 40)}",
+        f"stmt <> '{rng.choice(['UN', 'SI'])}' AND report > {rng.randint(1, 20)}",
+        f"inpth = {rng.randint(0, 1)} AND line > {rng.randint(1, 30)}",
+    ]
+    out: list[tuple[str, str]] = []
+    if tier_name == "T1":
+        for i in range(4):
+            if i % 2 == 0:
+                aggs = ", ".join(f"{a} AS a{j}" for j, a in enumerate(rng.sample(num_aggs, rng.choice([1, 2]))))
+                out.append((f"sec_c1_num{i}", f"SELECT {aggs} FROM num WHERE {rng.choice(num_preds)}"))
+            else:
+                aggs = ", ".join(f"{a} AS a{j}" for j, a in enumerate(rng.sample(pre_aggs, rng.choice([1, 2]))))
+                out.append((f"sec_c1_pre{i}", f"SELECT {aggs} FROM pre WHERE {rng.choice(pre_preds)}"))
+    elif tier_name == "T2":
+        keys_num = ["uom", "qtrs", "tag"]
+        keys_pre = ["stmt", "report", "inpth", "rfile"]
+        for i in range(4):
+            if i % 2 == 0:
+                k = rng.choice(keys_num)
+                a = rng.choice(num_aggs)
+                having = f" HAVING COUNT(*) > {rng.randint(1, 50)}" if rng.random() < 0.5 else ""
+                order = f" ORDER BY {k}" if rng.random() < 0.5 else ""
+                out.append((f"sec_c2_num{i}", f"SELECT {k}, {a} AS a FROM num WHERE {rng.choice(num_preds)} GROUP BY {k}{having}{order}"))
+            else:
+                k = rng.choice(keys_pre)
+                a = rng.choice(pre_aggs)
+                out.append((f"sec_c2_pre{i}", f"SELECT {k}, {a} AS a, COUNT(*) AS c FROM pre WHERE {rng.choice(pre_preds)} GROUP BY {k}"))
+    elif tier_name == "T3":
+        keys = ["s.fy", "s.fp", "s.form", "s.countryba"]
+        for i in range(3):
+            k = rng.choice(keys)
+            a = rng.choice(["SUM(n.value)", "COUNT(*)", "MAX(n.value)", "MIN(n.ddate)", "SUM(n.qtrs)"])
+            pr = rng.choice([f"n.uom = '{rng.choice(['USD', 'shares', 'pure'])}'", f"s.fy = {rng.choice([2022, 2023, 2024])}", f"n.qtrs = {rng.randint(0, 4)} AND s.fy >= 2023"])
+            grouped = rng.random() < 0.7
+            sel = f"{k}, " if grouped else ""
+            grp = f" GROUP BY {k}" if grouped else ""
+            out.append((f"sec_c3_{i}", f"SELECT {sel}{a} AS a FROM num n JOIN sub s ON n.adsh = s.adsh WHERE {pr}{grp}"))
+    return out
+
+
+def _combo_tpch(tier_name: str, rng: random.Random) -> list[tuple[str, str]]:
+    li_aggs = ["sum(l_quantity)", "sum(l_extendedprice)", "min(l_extendedprice)", "max(l_discount)", "count(*)", "sum(l_extendedprice * (1 - l_discount))", "sum(l_extendedprice * l_tax)"]
+    li_preds = [
+        f"l_shipdate >= date '{rng.randint(1993, 1997)}-0{rng.randint(1, 9)}-01'",
+        f"l_shipdate < date '{rng.randint(1994, 1998)}-01-01' AND l_quantity < {rng.randint(10, 40)}",
+        f"l_discount BETWEEN 0.0{rng.randint(1, 4)} AND 0.0{rng.randint(5, 9)}",
+        f"l_returnflag = '{rng.choice(['R', 'A', 'N'])}' AND l_tax < 0.0{rng.randint(3, 8)}",
+        f"l_shipmode = '{rng.choice(['MAIL', 'AIR', 'SHIP', 'RAIL'])}'",
+    ]
+    out: list[tuple[str, str]] = []
+    if tier_name == "T1":
+        for i in range(3):
+            aggs = ", ".join(f"{a} AS a{j}" for j, a in enumerate(rng.sample(li_aggs, rng.choice([1, 2]))))
+            out.append((f"tpch_c1_{i}", f"SELECT {aggs} FROM lineitem WHERE {rng.choice(li_preds)}"))
+    elif tier_name == "T2":
+        keys = ["l_returnflag", "l_linestatus", "l_shipmode", "l_shipinstruct"]
+        for i in range(3):
+            k = rng.choice(keys)
+            a = rng.choice(li_aggs)
+            order = f" ORDER BY {k}" if rng.random() < 0.5 else ""
+            out.append((f"tpch_c2_{i}", f"SELECT {k}, {a} AS a, count(*) AS c FROM lineitem WHERE {rng.choice(li_preds)} GROUP BY {k}{order}"))
+    elif tier_name == "T3":
+        for i in range(3):
+            k = rng.choice(["c_mktsegment", "o_orderpriority", "o_orderstatus"])
+            a = rng.choice(["sum(o_totalprice)", "count(*)", "max(o_totalprice)", "min(o_orderdate)"])
+            if k == "c_mktsegment":
+                out.append((f"tpch_c3_{i}", f"SELECT {k}, {a} AS a FROM orders JOIN customer ON o_custkey = c_custkey WHERE o_orderdate < date '{rng.randint(1994, 1998)}-01-01' GROUP BY {k}"))
+            else:
+                la = rng.choice(["sum(l_quantity)", "count(*)", "max(l_extendedprice)", "min(l_shipdate)"])
+                out.append((f"tpch_c3_{i}", f"SELECT {k}, {la} AS a FROM orders JOIN lineitem ON o_orderkey = l_orderkey WHERE o_orderdate >= date '{rng.randint(1993, 1997)}-01-01' GROUP BY {k}"))
+    return out
+
+
 def seeded_queries(kind: str, tier_name: str, rng: random.Random) -> list[tuple[str, str]]:
     """Fresh seeded queries of one tier for ``kind`` in {"sec", "tpch"}, shuffled."""
     if kind not in ("sec", "tpch"):
         raise ValueError(f"unknown kind {kind!r}")
-    out = (_sec if kind == "sec" else _tpch)(tier_name, rng)
+    out = (_sec if kind == "sec" else _tpch)(tier_name, rng) + (_combo_sec if kind == "sec" else _combo_tpch)(tier_name, rng)
     rng.shuffle(out)
     return out
 
