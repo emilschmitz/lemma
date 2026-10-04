@@ -189,179 +189,89 @@ For every family in `TRUSTED_FAMILY_MENU`:
 Parametrized structural tests: `tests/test_trusted_families.py`.
 Semantic differential (exec math vs oracle / DuckDB): `tests/test_trusted_semantic_differential.py`.
 
-## f64 idealization (the float trust, and its limits)
+## f64 idealization (the ONLY trusted float code)
 
-Authorized by Emil (2026-10-04: "accept floating point errors for now"), reviewed by the adversary gate
-(`research_loop/menus/f64_idealization_ADVERSARY_VERDICT.md`, regression tests
-`tests/test_f64_idealization_adversary.py`). All float trust is in `float_error_lemmas_rs` and
-`float_exact_lemmas_rs` of `declarative_spec/lemmas.py` and consists of exactly the items below; everything else about
-floats (the min/max/ORDER BY/HAVING proofs, the AVG bookkeeping, the sum-error bound's use) is proved.
+> **Floating-point rounding error is ACCEPTED** (Emil, 2026-10-04). Floats are modeled as exact real arithmetic. An
+> adversary report that only shows rounding error (a last-bit difference, a near-tie flip in HAVING / ORDER BY,
+> cancellation, absorption, underflow, the double 0.1 not being the real 1/10) is an **accepted float limitation**, not a
+> hole. A soundness hole (a wrong body that verifies for a reason other than rounding) still counts. The proved
+> error-bound and exact lemmas are archived, unused, in `declarative_spec/future_float_error_bounds/` (README there);
+> the prover agent never sees them (`tests/test_future_float_archive_is_invisible.py`).
 
-**Three kinds of trusted item.**
+**Claim.** For finite `f64` values within the catalog magnitude caps (the loader rejects NaN and infinity and enforces
+`MAG_CAP_<table>_<col>`; `valid_cols` carries both as conjuncts), the executable `+ - * /`, the integer-to-`f64` casts and
+the comparisons `< <= > >= ==` behave as the real operations on `x as real`. A float aggregate is therefore an exact
+fold over reals and its spec says `result == the real value`: there is no epsilon in any spec, ensures or proof.
+**What is false about it:** `+ - * /` and casts above 2^53 round (relative error up to 2^-53 per operation), and `mul`/`div`
+have no lower magnitude bound (underflow). Comparisons are exact in IEEE 754; only the link from vstd's uninterpreted
+`lt_ensures`-style predicates to `as real` is trusted.
 
-1. **True statements** (no idealization): `lemma_f64_add_defined`/`sub_defined`/`mul_defined` (IEEE operations are
-   defined), the comparison lemmas `lemma_f64_lt_real` .. `eq_real` (IEEE comparisons are exact for finite values; only
-   the link from vstd's uninterpreted predicates to `as real` is trusted), the `_exact` lemmas
-   (`lemma_f64_add_exact`, `sub_exact`, `mul_exact`: when the real result is an integer `s` with `|s| <= 2^53` the f64
-   result is exactly `s`), the casts `host_u64_to_f64_exact` / `host_i128_to_f64_exact` (`|n| <= 2^53`), and the sum
-   error lemma `lemma_f64_sum_within_eps` with its fold lemmas (a plain left-to-right f64 fold is within
-   `n^2 * cap * 2^-52` of the real sum; holds in every summation order on all adversarial data tested). A plain
-   `SUM(float)` / `AVG(float)` is proved with the sum-error lemma, so its epsilon really bounds the error.
-2. **The idealization**: `lemma_f64_add_real`, `sub_real`, `mul_real`, `div_real` (with `div_defined`): for finite
-   values within the caps (`f64_within`), the f64 result *is* the real result. **False whenever rounding occurs**
-   (relative error up to 2^-53 per operation; `0.06 + 0.01` is `0.06999999999999999`; `2^53 + 1` is `2^53`). Used only
-   where a shape needs it: products and differences inside an aggregate, a comparison of a computed value, AVG's
-   division. Operands are bounded by the catalog caps and results by `f64_safe_bound()` = 2^200 (no overflow).
-3. **A companion hypothesis**, not a lemma: `f64_literals_ok()` in `run_query`'s `requires` states that each f64
-   literal of the query, `0.0` and `FLOAT_ABS_EPS` denote their decimal value. False for every non-dyadic literal
-   (the double 0.1 is not the real 1/10). The emitter refuses two literals that round to the same double (the
-   hypothesis would be contradictory) and a nonzero literal that rounds to 0 or infinity.
+**Accuracy against DuckDB is empirical.** The measure step compares the binary's rows with DuckDB's within
+`declarative_spec/bench.py::float_tolerance` (relative 1e-9 with a 1e-9 floor); that is the only epsilon left and it never
+enters a spec. Last-bit differences and near-tie flips can occur (DuckDB's own `SUM(double)` is plain f64 and
+nondeterministic under parallel execution).
 
-**Accepted, quantified limitations (measured by the adversary; Emil: float results need not match DuckDB exactly).**
+**Companion hypothesis (an assumption in the spec, not a lemma).** Verus gives a float literal no value as a real, so every
+float query's `run_query` carries `requires f64_literals_ok()`: each f64 literal of the query and `0.0` denote their decimal
+value. Soundness items kept (the adversary's blocker): two literals that round to the same double make this hypothesis
+contradictory (every body would verify), so the emitter refuses them naming both; a literal that rounds to 0 or infinity, or
+has so many digits that it overflows, is refused cleanly (`DeclarativeUnsupported`, no crash).
 
-| Class | Effect |
-|---|---|
-| HAVING / ORDER BY on a float aggregate | summation order flips near-ties: `0.1+0.2+0.3 > 0.6` is true in DuckDB (`0.6000000000000001`) and the proved real sum says false; one whole row differs. Tie order between equal real sums differs. |
-| cancellation / absorption | `SUM(a*(1-b))` with `1e16, 1, 1, 1, -1e16`: real 3, DuckDB 0; idealization claims error 0 (true error 3). `2^53` plus 1000 ones: error 1000. |
-| DuckDB's own sum | plain (uncompensated) f64, nondeterministic under parallel `SUM(double)`: 8 runs gave 8 distinct values. No single exact reference exists, so the row check uses a tolerance, never equality. |
-| AVG over an integer / DECIMAL | refused when `rows * cell cap` may exceed 2^53 (the cast rounds above it); decided by the catalog caps, never guessed. |
-| computed float equality (`p * d = 0.3`) | refused (spec says real equality, execution is IEEE). Stored value vs literal equality is in scope. |
-| underflow | `1e-200 * 1e-200` is 0 in IEEE; the idealized statement claims a positive real. Answer equals DuckDB (0). |
-| signed zero | `-0.0` vs `+0.0` equal under epsilon, differ in bits. |
-| constants | `0.06 + 0.01` is folded exactly (DuckDB folds it in DECIMAL) by the emitter, not computed in f64. |
+**Operand and result caps.** Operands are `f64_within(x, cap)` (finite and `|x| < cap`, the catalog cap); every operation also
+requires its result bound at most `f64_safe_bound()` = 2^200, far below the f64 overflow bound, so no operation overflows.
 
-**Tolerance.** `LEMMA_FLOAT_ABS_EPS` defaults to relative 1e-9 of the largest float sum the catalog allows (floor
-1e-9, `declarative_spec/float_eps.py`); the timed row check accepts `min(eps, 1e-9 * |value| + 1e-9)` per DuckDB float,
-so a huge epsilon cannot make it vacuous.
-
-**Exact statements (copied from `declarative_spec/lemmas.py`).**
+**The trusted items: 11, each labeled `TRUSTED (f64 idealization)` in the source.** Each of add/sub/mul/div is called
+BEFORE the operation and ensures both that the operation is defined (`add_req` etc.) and that whatever it returns is the
+real operation of its operands; `add_within`/`sub_within`/`mul_within` are proved (not trusted) wrappers that add the result's
+`f64_within` bound. Exact text (from `declarative_spec/lemmas.py`, `float_error_lemmas_rs`):
 
 ```rust
-pub open spec fn host_f64_sum_error(n_terms: int, mag_cap: int) -> real {
-    (n_terms as real) * (n_terms as real) * (mag_cap as real) * (1real / 4503599627370496real)
-}
-
-pub open spec fn real_sum_seq(terms: Seq<f64>) -> real
-    decreases terms.len()
-{
-    if terms.len() == 0 { 0real }
-    else { (terms[0] as real) + real_sum_seq(terms.skip(1)) }
-}
-
-pub uninterp spec fn f64_left_fold(terms: Seq<f64>) -> f64;
-
 pub open spec fn f64_within(x: f64, cap: real) -> bool {
     x.is_finite_spec() && -cap < (x as real) && (x as real) < cap
 }
 
-pub open spec fn f64_exact_int_max() -> int {
-    0x20000000000000int
-}
-
-// TRUSTED (f64 sum error, true statement): the opaque f64 accumulator of an empty sum is 0.0.
+// TRUSTED (f64 idealization): addition. Called BEFORE `x + y`: finite x, y within caps and a sum below
+// the overflow bound make the exec `+` defined (`add_req`), and whatever the add returns is the real sum
+// (rounding error ignored).
 #[verifier::external_body]
-pub proof fn lemma_f64_left_fold_empty()
-    ensures f64_left_fold(Seq::<f64>::empty()) == 0.0f64,
-{ }
-
-// TRUSTED (f64 idealization): IEEE addition is defined for every pair of f64 values (the exec `+`
-// precondition holds). No value is claimed. The agent calls this before `acc + x`.
-#[verifier::external_body]
-pub proof fn lemma_f64_add_defined(x: f64, y: f64)
-    ensures x.add_req(y),
-{ }
-
-// TRUSTED (f64 sum error, true statement): one f64 add extends the opaque left fold by that term.
-#[verifier::external_body]
-pub proof fn lemma_f64_left_fold_push(prefix: Seq<f64>, x: f64, acc: f64, next: f64)
-    requires
-        acc == f64_left_fold(prefix),
-        vstd::std_specs::ops::add_ensures::<f64>(acc, x, next),
-    ensures f64_left_fold(prefix.push(x)) == next,
-{ }
-
-// TRUSTED (f64 sum error, true statement; Higham-style bound with slack, held on all adversarial data):
-// a plain left-to-right f64 fold of finite terms below the cap is within n^2 * cap * 2^-52 of the real sum.
-// This is the lemma for a plain SUM(float): it is not an idealization and `eps` really bounds the error.
-#[verifier::external_body]
-pub proof fn lemma_f64_sum_within_eps(
-    acc: f64,
-    n_terms: int,
-    mag_cap: int,
-    eps: f64,
-    terms: Seq<f64>,
-)
-    requires
-        n_terms == terms.len() as int,
-        0 <= n_terms < 0x10_0000_0000_0000int,
-        0 <= mag_cap,
-        acc == f64_left_fold(terms),
-        forall|i: int| 0 <= i < terms.len() ==> {
-            let r = #[trigger] (terms[i] as real);
-            let cap = mag_cap as real;
-            -cap < r && r < cap
-        },
-        host_f64_sum_error(n_terms, mag_cap) <= (eps as real),
-    ensures
-        abs_real((acc as real) - real_sum_seq(terms)) <= (eps as real),
-{ }
-
-// TRUSTED (f64 idealization): like `lemma_f64_add_defined`, IEEE subtraction is defined for every
-// pair of f64 values (the exec `-` precondition holds). No value is claimed.
-#[verifier::external_body]
-pub proof fn lemma_f64_sub_defined(x: f64, y: f64)
-    ensures x.sub_req(y),
-{ }
-
-// TRUSTED (f64 idealization): IEEE multiplication is defined for every pair (the exec `*`
-// precondition holds). No value is claimed.
-#[verifier::external_body]
-pub proof fn lemma_f64_mul_defined(x: f64, y: f64)
-    ensures x.mul_req(y),
-{ }
-
-// TRUSTED (f64 idealization): finite x, y within caps, a sum below the overflow bound:
-// the f64 sum is the real sum (rounding error ignored).
-#[verifier::external_body]
-pub proof fn lemma_f64_add_real(x: f64, y: f64, o: f64, cx: real, cy: real)
+pub proof fn lemma_f64_add_real(x: f64, y: f64, cx: real, cy: real)
     requires
         0real <= cx, 0real <= cy, cx + cy <= f64_safe_bound(),
         f64_within(x, cx), f64_within(y, cy),
-        add_ensures::<f64>(x, y, o),
     ensures
-        o.is_finite_spec(),
-        (o as real) == (x as real) + (y as real),
+        x.add_req(y),
+        forall|o: f64| #[trigger] add_ensures::<f64>(x, y, o) ==>
+            o.is_finite_spec() && (o as real) == (x as real) + (y as real),
 { }
 
-// TRUSTED (f64 idealization): same claim for subtraction.
+// TRUSTED (f64 idealization): subtraction, same shape.
 #[verifier::external_body]
-pub proof fn lemma_f64_sub_real(x: f64, y: f64, o: f64, cx: real, cy: real)
+pub proof fn lemma_f64_sub_real(x: f64, y: f64, cx: real, cy: real)
     requires
         0real <= cx, 0real <= cy, cx + cy <= f64_safe_bound(),
         f64_within(x, cx), f64_within(y, cy),
-        sub_ensures::<f64>(x, y, o),
     ensures
-        o.is_finite_spec(),
-        (o as real) == (x as real) - (y as real),
+        x.sub_req(y),
+        forall|o: f64| #[trigger] sub_ensures::<f64>(x, y, o) ==>
+            o.is_finite_spec() && (o as real) == (x as real) - (y as real),
 { }
 
-// TRUSTED (f64 idealization): same claim for multiplication (product below the overflow bound).
+// TRUSTED (f64 idealization): multiplication, same shape (product below the overflow bound).
 #[verifier::external_body]
-pub proof fn lemma_f64_mul_real(x: f64, y: f64, o: f64, cx: real, cy: real)
+pub proof fn lemma_f64_mul_real(x: f64, y: f64, cx: real, cy: real)
     requires
         0real <= cx, 0real <= cy, cx * cy <= f64_safe_bound(),
         f64_within(x, cx), f64_within(y, cy),
-        mul_ensures::<f64>(x, y, o),
     ensures
-        o.is_finite_spec(),
-        (o as real) == (x as real) * (y as real),
+        x.mul_req(y),
+        forall|o: f64| #[trigger] mul_ensures::<f64>(x, y, o) ==>
+            o.is_finite_spec() && (o as real) == (x as real) * (y as real),
 { }
 
-// TRUSTED (f64 idealization): division of finite x by finite nonzero y whose real quotient is
-// within the cap: the f64 quotient is the real quotient (rounding ignored). The division
-// precondition (`div_req`) holds, so the exec `/` is accepted.
+// TRUSTED (f64 idealization): division of finite x by finite nonzero y whose real quotient is within the
+// cap: the exec `/` is defined and returns the real quotient (rounding ignored).
 #[verifier::external_body]
-pub proof fn lemma_f64_div_defined(x: f64, y: f64, cx: real, cq: real)
+pub proof fn lemma_f64_div_real(x: f64, y: f64, cx: real, cq: real)
     requires
         0real <= cx, 0real <= cq, cq <= f64_safe_bound(),
         f64_within(x, cx),
@@ -370,22 +280,29 @@ pub proof fn lemma_f64_div_defined(x: f64, y: f64, cx: real, cq: real)
         (x as real) < cq * abs_real(y as real),
     ensures
         x.div_req(y),
+        forall|o: f64| #[trigger] div_ensures::<f64>(x, y, o) ==>
+            o.is_finite_spec() && (o as real) == (x as real) / (y as real),
 { }
 
-// TRUSTED (f64 idealization): the quotient claim (see lemma_f64_div_defined for the requires).
+// TRUSTED (f64 idealization): an integer cast to f64 keeps its value (exact below 2^53, rounding
+// ignored above, up to the safe bound). vstd gives the exec `as f64` no specification, so the host
+// provides the cast as a trusted exec function; the body is the plain Rust cast.
 #[verifier::external_body]
-pub proof fn lemma_f64_div_real(x: f64, y: f64, o: f64, cx: real, cq: real)
-    requires
-        0real <= cx, 0real <= cq, cq <= f64_safe_bound(),
-        f64_within(x, cx),
-        y.is_finite_spec(), (y as real) != 0real,
-        -cq * abs_real(y as real) < (x as real),
-        (x as real) < cq * abs_real(y as real),
-        div_ensures::<f64>(x, y, o),
-    ensures
-        o.is_finite_spec(),
-        (o as real) == (x as real) / (y as real),
-{ }
+pub fn host_u64_to_f64(n: u64) -> (o: f64)
+    requires (n as int as real) <= f64_safe_bound(),
+    ensures o.is_finite_spec(), (o as real) == (n as int as real),
+{
+    n as f64
+}
+
+// TRUSTED (f64 idealization): the same cast claim for i128.
+#[verifier::external_body]
+pub fn host_i128_to_f64(n: i128) -> (o: f64)
+    requires -f64_safe_bound() <= (n as int as real) && (n as int as real) <= f64_safe_bound(),
+    ensures o.is_finite_spec(), (o as real) == (n as int as real),
+{
+    n as f64
+}
 
 // TRUSTED (f64 idealization): comparisons of finite f64 values hold exactly when the real
 // comparison does (exact in IEEE 754; the link from the uninterpreted predicate is trusted).
@@ -422,72 +339,18 @@ pub proof fn lemma_f64_eq_real(x: f64, y: f64, o: bool)
     requires x.is_finite_spec(), y.is_finite_spec(), eq_ensures::<f64>(x, y, o),
     ensures o <==> (x as real) == (y as real),
 { }
-
-// TRUSTED (f64 exact, adversary-proposed): the f64 sum of finite x, y is the real sum whenever
-// that real sum is an integer of magnitude at most 2^53 (representable, so IEEE returns it).
-#[verifier::external_body]
-pub proof fn lemma_f64_add_exact(x: f64, y: f64, o: f64, s: int)
-    requires
-        x.is_finite_spec(), y.is_finite_spec(),
-        -f64_exact_int_max() <= s <= f64_exact_int_max(),
-        (x as real) + (y as real) == (s as real),
-        add_ensures::<f64>(x, y, o),
-    ensures
-        o.is_finite_spec(),
-        (o as real) == (s as real),
-{ }
-
-// TRUSTED (f64 exact, adversary-proposed): same for subtraction.
-#[verifier::external_body]
-pub proof fn lemma_f64_sub_exact(x: f64, y: f64, o: f64, s: int)
-    requires
-        x.is_finite_spec(), y.is_finite_spec(),
-        -f64_exact_int_max() <= s <= f64_exact_int_max(),
-        (x as real) - (y as real) == (s as real),
-        sub_ensures::<f64>(x, y, o),
-    ensures
-        o.is_finite_spec(),
-        (o as real) == (s as real),
-{ }
-
-// TRUSTED (f64 exact, adversary-proposed): same for multiplication (an integer product of
-// magnitude at most 2^53; a subnormal or inexact product is excluded because it is no such integer).
-#[verifier::external_body]
-pub proof fn lemma_f64_mul_exact(x: f64, y: f64, o: f64, s: int)
-    requires
-        x.is_finite_spec(), y.is_finite_spec(),
-        -f64_exact_int_max() <= s <= f64_exact_int_max(),
-        (x as real) * (y as real) == (s as real),
-        mul_ensures::<f64>(x, y, o),
-    ensures
-        o.is_finite_spec(),
-        (o as real) == (s as real),
-{ }
-
-// TRUSTED (f64 exact, adversary-proposed): an integer cast to f64 keeps its value up to 2^53.
-// Above 2^53 the cast rounds (the idealized `host_u64_to_f64` is false there).
-#[verifier::external_body]
-pub fn host_u64_to_f64_exact(n: u64) -> (o: f64)
-    requires n as int <= f64_exact_int_max(),
-    ensures o.is_finite_spec(), (o as real) == (n as int as real),
-{
-    n as f64
-}
-
-// TRUSTED (f64 exact, adversary-proposed): the same for i128, |n| <= 2^53.
-#[verifier::external_body]
-pub fn host_i128_to_f64_exact(n: i128) -> (o: f64)
-    requires -f64_exact_int_max() <= n as int <= f64_exact_int_max(),
-    ensures o.is_finite_spec(), (o as real) == (n as int as real),
-{
-    n as f64
-}
 ```
 
-Proved (not trusted) next to them: `lemma_f64_add_within`, `lemma_f64_sub_within`, `lemma_f64_mul_within` (the result's
-`f64_within` bound). Tests: `tests/test_declarative_float_idealization.py` (the trusted set is exactly this list; the
-shapes verify, run against DuckDB within epsilon, and wrong bodies are rejected), `tests/test_declarative_float_q2.py`,
-`tests/test_declarative_float_typecheck.py`, `tests/test_declarative_float_refusals.py`.
+Tests: `tests/test_declarative_float_idealization.py` (the trusted set is exactly these 11 items; every float shape verifies, runs
+against DuckDB within tolerance, and a wrong body is rejected), `tests/test_declarative_float_q2.py` (the SEC AVG shape),
+`tests/test_declarative_float_typecheck.py`, `tests/test_f64_idealization_adversary.py` (the adversary's literal-collision,
+cast and loader tests that still apply; its rounding findings are pinned as accepted limitations).
+
+**Accepted limitations (rounding; not holes).** Summation order flips `HAVING SUM(v) > x` / `ORDER BY SUM(v)` near ties
+(`0.1 + 0.2 + 0.3 > 0.6` is true in DuckDB, false over the reals); cancellation (`1e16, 1, 1, 1, -1e16`) and absorption lose
+the small terms in f64 but not in the spec; `AVG` of integers above 2^53 casts with rounding; `p * d = 0.3` equality on computed
+floats follows the reals; underflow (`1e-200 * 1e-200`) is 0 in IEEE and positive in the spec; denormal literals are inexact;
+`0.06 + 0.01` constants are folded exactly (as DuckDB folds them in DECIMAL), not in f64.
 
 ## Menu (25 families)
 

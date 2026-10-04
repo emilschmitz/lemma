@@ -198,6 +198,8 @@ def mount_examples(ro: Path) -> None:
     dest.mkdir(parents=True, exist_ok=True)
     for name, _what in _EXAMPLES.values():
         (dest / name).write_text((_FIXTURES / name).read_text())
+    for path in sorted(_FIXTURES.glob("float_*.rs")):  # the float shapes (exact reals, the f64 idealization lemmas)
+        (dest / path.name).write_text(path.read_text())
 
 
 def _recipe_section(shape: dict) -> list[str]:
