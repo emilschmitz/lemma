@@ -17,7 +17,11 @@ from verus_transpiler.parse_sql import normalize_schema
 
 from research_loop.admit_runquery import admit_runquery_body
 from research_loop.adversary.candidate import Candidate
-from research_loop.adversary.significance import classify_difference
+from research_loop.adversary.significance import (
+    classify_difference,
+    sql_limit_without_order,
+    unlimited_sql,
+)
 from research_loop.assemble_runquery import build_exec_run_query_from_body
 from research_loop.harness import (
     resolve_verus_bin,
@@ -465,6 +469,9 @@ def judge_candidate(
             }
 
         duck_rows, duck_error = _run_duckdb(candidate.sql, candidate.schema, candidate.rows)
+        unlimited = None
+        if duck_error is None and sql_limit_without_order(candidate.sql):
+            unlimited, _ = _run_duckdb(unlimited_sql(candidate.sql), candidate.schema, candidate.rows)
 
         base: dict[str, Any] = {
             "config": config,
@@ -587,6 +594,7 @@ def judge_candidate(
             impl_rows,
             duck_rows,
             duck_error=duck_error,
+            unlimited=unlimited,
         )
         significant = verdict.significant and proof_verified
         final_status = "hole" if significant else "no_difference"

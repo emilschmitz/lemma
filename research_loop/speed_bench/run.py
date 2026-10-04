@@ -23,7 +23,11 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from research_loop.adversary.significance import classify_difference
+from research_loop.adversary.significance import (
+    classify_difference,
+    sql_limit_without_order,
+    unlimited_sql,
+)
 from research_loop.speed_bench.queries import QUERIES, QuerySpec
 from research_loop.trust_configs import apply_trust_config
 
@@ -135,7 +139,10 @@ def _run_kernel(query_id: str, cols_bin: Path) -> tuple[list[tuple], int]:
 def _bench_one(q: QuerySpec, con: duckdb.DuckDBPyConnection, cols_bin: Path) -> dict[str, Any]:
     duck_rows, duck_us = _time_duckdb(con, q.sql)
     kernel_rows, kernel_us = _run_kernel(q.id, cols_bin)
-    verdict = classify_difference(q.sql, kernel_rows, duck_rows)
+    unlimited = None
+    if sql_limit_without_order(q.sql):
+        unlimited = [tuple(r) for r in con.execute(unlimited_sql(q.sql)).fetchall()]
+    verdict = classify_difference(q.sql, kernel_rows, duck_rows, unlimited=unlimited)
     match = not verdict.significant
     win = kernel_us < duck_us and match
     speedup = (duck_us / kernel_us) if kernel_us > 0 else None

@@ -35,6 +35,26 @@ def sql_limit_without_order(sql: str) -> bool:
     return _LIMIT.search(stripped) is not None or _FETCH.search(stripped) is not None
 
 
+def _limit_offset(sql: str) -> tuple[int, int]:
+    import sqlglot
+
+    select = sqlglot.parse_one(sql, read="duckdb")
+    limit, offset = select.args.get("limit"), select.args.get("offset")
+    if limit is None:
+        raise ValueError(f"no LIMIT in {sql!r}")
+    return int(limit.expression.this), int(offset.expression.this) if offset is not None else 0
+
+
+def unlimited_sql(sql: str) -> str:
+    """``sql`` without its LIMIT/OFFSET: the full result the limited one picks rows from."""
+    import sqlglot
+
+    select = sqlglot.parse_one(sql, read="duckdb")
+    select.set("limit", None)
+    select.set("offset", None)
+    return select.sql(dialect="duckdb")
+
+
 def _normalize_cell(value: Any) -> Any:
     if value is None or isinstance(value, bool):
         return value
@@ -58,7 +78,9 @@ def classify_difference(
     *,
     impl_error: str | None = None,
     duck_error: str | None = None,
+    unlimited: list[tuple] | None = None,
 ) -> Verdict:
+    """``unlimited`` is DuckDB's result for ``unlimited_sql(sql)``; LIMIT without ORDER BY needs it."""
     impl_err = (impl_error or "").strip() or None
     duck_err = (duck_error or "").strip() or None
 
@@ -77,9 +99,16 @@ def classify_difference(
     duck_n = _normalize_rows(duck)
 
     if sql_limit_without_order(sql):
-        if Counter(impl_n) != Counter(duck_n):
-            return Verdict(significant=False, reason="limit_without_order")
-        return Verdict(significant=False, reason="same_multiset")
+        # Without ORDER BY any rows may be picked. Only the count and membership are fixed.
+        if unlimited is None or impl_n is None:
+            raise ValueError("LIMIT without ORDER BY needs the unlimited result and impl rows")
+        limit, offset = _limit_offset(sql)
+        want = min(limit, max(len(unlimited) - offset, 0))
+        if len(impl_n) != want:
+            return Verdict(significant=True, reason="limit_row_count")
+        if Counter(impl_n) - Counter(_normalize_rows(unlimited)):
+            return Verdict(significant=True, reason="limit_rows_not_in_result")
+        return Verdict(significant=False, reason="limit_without_order")
 
     if sql_demands_order(sql):
         if impl_n != duck_n:
