@@ -402,6 +402,7 @@ class SQLQuery:
     agg_expr: str = ""
     agg_specs: list[AggSpec] = field(default_factory=list)
     select_aliases: dict[str, int] = field(default_factory=dict)
+    groupby_aliases: dict[str, str] = field(default_factory=dict)
     where_expr: str = ""
     scalar_subqueries: list[ScalarSubquery] = field(default_factory=list)
     derived_tables: list[DerivedTable] = field(default_factory=list)
@@ -1777,15 +1778,18 @@ def _compile_having_expr_side(
             return "v"
         return f"v.{idx}"
     if isinstance(node, exp.Column):
-        # Aggregate aliases (SUM(a) AS s) are not schema columns. Check them
-        # before resolver lookup so HAVING s > 0 is not dropped as unknown.
+        # Aggregate aliases (SUM(a) AS s) and GROUP BY aliases (k AS g) are not
+        # always schema columns. Resolve them before the base-table lookup.
         alias_key = node.name.lower()
         if alias_key in query.select_aliases:
             idx = query.select_aliases[alias_key]
             if len(query.agg_specs) <= 1:
                 return "v"
             return f"v.{idx}"
-        real_col, _, _ = _resolve_col(node, resolver)
+        if alias_key in query.groupby_aliases:
+            real_col = query.groupby_aliases[alias_key]
+        else:
+            real_col, _, _ = _resolve_col(node, resolver)
         if real_col not in query.groupby_columns:
             raise UnsupportedContractError(
                 f"HAVING column {real_col!r} must be a GROUP BY column or aggregate alias."
@@ -2729,6 +2733,12 @@ def _parse_select(
             if isinstance(item, exp.Column):
                 real_col, _, _ = _resolve_col(item, resolver)
                 select_cols.add(real_col)
+                alias = (
+                    raw.alias
+                    if isinstance(raw, exp.Alias) and raw.alias
+                    else real_col
+                )
+                query.groupby_aliases[str(alias).lower()] = real_col
             elif _is_aggregate_expr(item):
                 agg_items.append(raw)
         if not select_cols.issubset(set(query.groupby_columns)):
