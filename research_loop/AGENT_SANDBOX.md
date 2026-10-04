@@ -158,6 +158,35 @@ uv run python research_loop/scripts/declarative_ladder_claude.py   # haiku, then
 
 Per-run env only; `config.env` is untouched. Traces per run: `research_loop/runs/LATEST`.
 
+### One launcher, one flag: `--style imperative|declarative`
+
+Same container, same agent, same sandbox; the style flag switches the whole chain (emitter, trusted
+set, prompt, agent-visible mounts, admission, assembler, measure). "Imperative" is the loop-and-invariant
+path; the value was formerly spelled `recursive` and `recursive` is rejected. The two style names live in
+`research_loop/spec_styles.py` (one place; `ENV_VALUE` there is what is written to `LEMMA_SPEC_STYLE`).
+
+```bash
+uv run python research_loop/scripts/run_container_agent.py --style declarative \
+    --menu adversary_declarative0 --agent claude-haiku-4-5-20251001 \
+    --query-sql "SELECT report, COUNT(*) AS cnt FROM pre WHERE line > 5 GROUP BY report"
+uv run python research_loop/scripts/run_container_agent.py --style imperative \
+    --menu rocketship --agent claude-haiku-4-5-20251001 --allow-override \
+    --query-sql "SELECT COUNT(*) FROM pre WHERE line > 0"
+```
+
+`--menu` names a profile (`research_loop/menu_profile.py`) that sets every axis; `LEMMA_MENU=<name>`
+does the same for `run_optimization_loop`. Axes: `style`, `trusted_set` (`rocketship`, `fast`,
+`adversary_imperativespec0` for imperative; `declarative_default` for declarative), `assumption_package`,
+`agent`, `speed_bar_mult`. Overrides, each ONE axis: `LEMMA_SPEC_STYLE`/`--style`,
+`LEMMA_TRUSTED_SET`/`--trusted-set`, `LEMMA_ASSUMPTION_PACKAGE`/`--assumption-package`,
+`LEMMA_AGENT_MODEL`/`--agent`, `LEMMA_SPEED_BAR_MULT`/`--speed-bar-mult`. An override that contradicts a
+value the profile sets fails unless `--allow-override` (`LEMMA_MENU_ALLOW_OVERRIDE=1`); a trusted set that
+does not belong to the style fails always. The resolved selection (every axis and its source) is printed
+first and stored in the run's `manifest.json` under `menu`. Note: a shell that exports
+`LEMMA_ASSUMPTION_PACKAGE` (e.g. `prove_loop`) counts as an override.
+
+`/workspace/context/ro` is mounted read-only inside the container (nested mount after the rw workspace).
+
 ### Verified against the mock vs needs your real run
 
 | Behavior | Mock | Real run |

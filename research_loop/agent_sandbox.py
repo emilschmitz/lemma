@@ -1204,6 +1204,8 @@ def run_agent_docker(
         # Host-owned bind mounts need DAC_OVERRIDE when container runs as root.
         "--cap-add", "DAC_OVERRIDE",
         "-v", f"{ws}:/workspace:rw",
+        # The prompt names /workspace/context/ro/...; mount it read-only there too (after the rw mount).
+        "-v", f"{(ws / 'context' / 'ro').resolve()}:/workspace/context/ro:ro",
         "-v", f"{(ws / 'context' / 'ro').resolve()}:/context/ro:ro",
         "-v", f"{mcp_sock.resolve()}:/lemma-mcp.sock",
         "-v", f"{egress_sock.resolve()}:/lemma-egress.sock",
@@ -1426,6 +1428,23 @@ def run_agent_docker(
             )
     log_info(COMPONENT, "agent_docker_end", f"exit={proc.returncode}", timed_out=timed_out)
     return proc
+
+
+def describe_agent_exit(proc: subprocess.CompletedProcess[str]) -> str:
+    """One line for a failed agent process. Exit -9 is the AGENT_TIMEOUT_SEC kill."""
+    reason = "timed out (AGENT_TIMEOUT_SEC)" if proc.returncode == -9 else "failed"
+    return f"agent {reason}: exit {proc.returncode}. {(proc.stderr or '').strip()[-500:]}"
+
+
+def agent_failure(proc: subprocess.CompletedProcess[str], workspace: Path) -> str | None:
+    """Message when the agent process failed without a marked submit, else None.
+
+    Shared by the declarative driver and the recursive optimizer. Without it an untouched stub
+    only fails later (``empty agent body``), which hides that the agent never ran to completion.
+    """
+    if proc.returncode == 0 or (workspace / "mcp_results" / "submitted.json").is_file():
+        return None
+    return f"{describe_agent_exit(proc)} No submit."
 
 
 def read_agent_body(workspace: Path) -> str:
