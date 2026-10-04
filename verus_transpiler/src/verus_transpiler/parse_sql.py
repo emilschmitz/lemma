@@ -2284,6 +2284,7 @@ def _flatten_derived_project(query: SQLQuery) -> SQLQuery:
             agg_expr=new_agg_expr,
             agg_specs=new_agg_specs,
             select_aliases=dict(query.select_aliases),
+            groupby_aliases=dict(query.groupby_aliases),
             where_expr=new_where,
             scalar_subqueries=list(inner.scalar_subqueries)
             + list(query.scalar_subqueries),
