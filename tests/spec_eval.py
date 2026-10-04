@@ -35,7 +35,8 @@ def _exists_hints(spec: str, params: list[tuple[str, str]], tables: dict[str, li
     for name, sig in re.findall(r"spec fn (\w*(?:row_hit|key_at|_val))\(([^)]*)\) -> (?:bool|int|Seq<char>|real)", spec):
         parts = [p.strip().split(": ") for p in sig.split(",")]
         structs = [ty.removeprefix("&") for _n, ty in parts if ty.startswith("&")]
-        ranges = [range(len(tables[st.removeprefix("Cols_")])) for st in structs]
+        n_idx = sum(1 for _n, ty in parts if ty == "int")
+        ranges = [range(len(tables[st.removeprefix("Cols_")])) for st in structs[:n_idx]]
         by_struct = {}
         for param, struct in params:
             by_struct.setdefault(struct, param)
