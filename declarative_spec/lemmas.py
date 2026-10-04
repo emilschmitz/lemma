@@ -307,29 +307,25 @@ pub proof fn lemma_f64_div_real(x: f64, y: f64, o: f64, cx: real, cq: real)
         (o as real) == (x as real) / (y as real),
 { }
 
-// TRUSTED (f64 idealization): an integer cast to f64 keeps its value when its magnitude is
-// within the (power of two) cap 2^53, where every integer is exactly representable; above that
-// the claim is the idealization (rounding ignored) up to the safe bound.
+// TRUSTED (f64 idealization): an integer cast to f64 keeps its value (exact below 2^53, rounding
+// ignored above, up to the safe bound). vstd gives the exec `as f64` no specification, so the host
+// provides the cast as a trusted exec function; the body is the plain Rust cast.
 #[verifier::external_body]
-pub proof fn lemma_u64_as_f64_real(n: u64, o: f64)
-    requires
-        (n as int as real) <= f64_safe_bound(),
-        o == (n as f64),
-    ensures
-        o.is_finite_spec(),
-        (o as real) == (n as int as real),
-{ }
+pub fn host_u64_to_f64(n: u64) -> (o: f64)
+    requires (n as int as real) <= f64_safe_bound(),
+    ensures o.is_finite_spec(), (o as real) == (n as int as real),
+{
+    n as f64
+}
 
-// TRUSTED (f64 idealization): same cast claim for i128.
+// TRUSTED (f64 idealization): the same cast claim for i128.
 #[verifier::external_body]
-pub proof fn lemma_i128_as_f64_real(n: i128, o: f64)
-    requires
-        -f64_safe_bound() <= (n as int as real) <= f64_safe_bound(),
-        o == (n as f64),
-    ensures
-        o.is_finite_spec(),
-        (o as real) == (n as int as real),
-{ }
+pub fn host_i128_to_f64(n: i128) -> (o: f64)
+    requires -f64_safe_bound() <= (n as int as real) && (n as int as real) <= f64_safe_bound(),
+    ensures o.is_finite_spec(), (o as real) == (n as int as real),
+{
+    n as f64
+}
 
 // TRUSTED (f64 idealization): comparisons of finite f64 values hold exactly when the real
 // comparison does (exact in IEEE 754; the link from the uninterpreted predicate is trusted).
