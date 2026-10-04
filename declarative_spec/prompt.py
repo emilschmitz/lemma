@@ -278,6 +278,9 @@ def mount_examples(ro: Path) -> None:
     if dict_mode():  # the dictionary-encoded string recipe (only when strings are encoded)
         for path in sorted(_FIXTURES.glob("dict_*.rs")):
             (dest / path.name).write_text(path.read_text())
+        for path in sorted((_FIXTURES / "hard").glob("dict_*.rs")):
+            (dest / "hard").mkdir(parents=True, exist_ok=True)
+            (dest / "hard" / path.name).write_text(path.read_text())
 
 
 _FLOAT_EXAMPLES: tuple[tuple[str, str], ...] = (
@@ -353,7 +356,8 @@ def _parallel_section(spec_text: str, shape: dict) -> list[str]:
         "12.8x faster than the all-core reference engine. Keep the single-threaded body as the first proof if the parallel one is",
         "hard, then upgrade. A hash aggregate or a join does not telescope directly, but a GROUP BY over a small code domain does: give each",
         "worker its own DENSE array per aggregate (one slot per dictionary code), merge them slotwise in the join loop, and the slotwise",
-        "telescoping is the same proof (dict mode: `context/ro/examples/dict_group_count_sum_parallel.rs`, 13x on the real 39.4M-row table).",
+        "telescoping is the same proof (dict mode: `context/ro/examples/dict_group_count_sum_parallel.rs`, 13x on the real 39.4M-row table;",
+        "two dictionary keys, several aggregates, sorted output, a flat m1*m2 slot array: `context/ro/examples/hard/dict_parallel_q1.rs`, TPC-H Q1 at 3.95x).",
         "The example is the template (SUM; adapt the fold, the filter, the cell bound and the accumulator type):",
         f"`context/ro/examples/{_PAR_EXAMPLE}` (also `parallel_ungrouped_product_sum.rs` for a product with a date filter, and `parallel_ungrouped_min.rs`, `_max.rs`, `_count.rs`: MIN/MAX merge the workers' (value, any) pairs, COUNT is additive).",
     ]

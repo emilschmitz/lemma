@@ -492,3 +492,14 @@ def test_parallel_dict_group_example_verifies_and_a_wrong_merge_does_not(monkeyp
     first_set = text.index("set(", text.index("// AGENT_EDIT_START"))
     bad, _ = run(text[:first_set] + "set(" + text[first_set + 4 :].replace("+", "-", 1))
     assert not bad
+
+
+def test_hard_dict_examples_are_mounted_only_in_dict_mode(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    from declarative_spec.prompt import mount_examples
+
+    monkeypatch.setenv("LEMMA_STRING_ENCODING", "plain")
+    mount_examples(tmp_path / "plain")
+    assert not (tmp_path / "plain" / "examples" / "hard" / "dict_parallel_q1.rs").exists()
+    monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
+    mount_examples(tmp_path / "dict")
+    assert (tmp_path / "dict" / "examples" / "hard" / "dict_parallel_q1.rs").is_file()

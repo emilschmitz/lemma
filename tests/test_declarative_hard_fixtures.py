@@ -36,6 +36,8 @@ TPCH = {
         "ORDER BY l_returnflag, l_linestatus"
     ),
 }
+# TPC-H Q1 with dictionary strings and 8 parallel workers (any TPC-H scale's catalog: the body is data-size independent).
+DICT_PAR = {"dict_parallel_q1.rs": TPCH["group_decimal_sums_string_keys_sorted.rs"]}
 # Fixtures that live next to the other worked examples (not under hard/), on the SEC DECIMAL variant.
 TOP = {
     "join_min_stringhashmap_probe.rs": (
@@ -51,17 +53,20 @@ def _verify(name: str, monkeypatch: pytest.MonkeyPatch, mutate: tuple[str, str] 
     if not any(c.is_file() for c in VERUS_CANDIDATES):
         pytest.skip("verus binary not installed")
     monkeypatch.setenv("LEMMA_VERUS_BIN", str(Path(__file__).resolve().parents[1] / "scripts" / "ram" / "verus_guarded.sh"))
-    text = ((HARD if name in CASES or name in TPCH else _FIXTURES) / name).read_text()
+    if name in DICT_PAR:
+        monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
+        monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "1")
+    text = ((HARD if name in CASES or name in TPCH or name in DICT_PAR else _FIXTURES) / name).read_text()
     if mutate is not None:
         assert mutate[0] in text
         text = text.replace(*mutate, 1)
-    if name in TPCH:
+    if name in TPCH or name in DICT_PAR:
         from research_loop.scripts.declarative_round import TPCH_DB, tpch_schema_and_catalog
 
         if not TPCH_DB.is_file():
             pytest.skip(f"TPC-H database not generated at {TPCH_DB}")
         schema, catalog = tpch_schema_and_catalog(TPCH_DB)
-        spec = emit_declarative_spec(TPCH[name], schema, catalog)
+        spec = emit_declarative_spec({**TPCH, **DICT_PAR}[name], schema, catalog)
     else:
         sql = {**CASES, **TOP}[name]
         from research_loop.scripts.declarative_round import SEC_DB, sec_catalog, sec_schema
@@ -73,7 +78,7 @@ def _verify(name: str, monkeypatch: pytest.MonkeyPatch, mutate: tuple[str, str] 
     return verify_assembled(program, timeout_sec=600)
 
 
-@pytest.mark.parametrize("name", sorted({**CASES, **TOP, **TPCH}))
+@pytest.mark.parametrize("name", sorted({**CASES, **TOP, **TPCH, **DICT_PAR}))
 def test_hard_fixture_verifies(name: str, monkeypatch: pytest.MonkeyPatch) -> None:
     ok, out = _verify(name, monkeypatch)
     assert ok and "0 errors" in out, out[-2000:]
