@@ -191,3 +191,19 @@ def test_float_case_without_a_catalog_magnitude_is_refused() -> None:
         emit_declarative_spec(
             "SELECT SUM(CASE WHEN v > 0 THEN v ELSE 0 END) FROM t", SCHEMA, bare, float_abs_eps="1e20"
         )
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT MIN(k) FROM t",
+        "SELECT q, MAX(k) AS m FROM t GROUP BY q",
+    ],
+)
+def test_min_max_over_a_string_is_refused(sql: str) -> None:
+    with pytest.raises(DeclarativeUnsupported, match="MIN or MAX over a str"):
+        _emit(sql)
+
+
+def test_min_max_over_an_integer_still_typechecks() -> None:
+    _typechecks(_emit("SELECT k, MIN(q) AS lo, MAX(q) AS hi FROM t GROUP BY k"))

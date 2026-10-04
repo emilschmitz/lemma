@@ -128,7 +128,11 @@ def assemble_declarative_program(
         mains_args.append(f"&{col_var}")
 
     if mains_args:
-        run_call = f"run_query({', '.join(mains_args)})"
+        # One argument per parameter: two aliases of one table (a self join) share one loaded struct.
+        sig = re.search(r"pub fn run_query\(([^)]*)\)", verus_part)
+        structs_in_sig = re.findall(r":\s*&Cols_([A-Za-z0-9_]+)", sig.group(1)) if sig else []
+        args = [f"&cols_{suffix}" for suffix in structs_in_sig] or mains_args
+        run_call = f"run_query({', '.join(args)})"
     else:
         run_call = "run_query()"
 

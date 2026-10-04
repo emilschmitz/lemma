@@ -314,6 +314,10 @@ def _exists_fns(
     idx_call = ", ".join(s.idx for s in main)
     for name, sub, _neg in query.exists:
         local = _reindex(_build_slots(sub), "e")
+        # A subquery over a table the outer scope already passes reads that parameter at its own index,
+        # so ``FROM sub a ... EXISTS (SELECT 1 FROM sub b ...)`` indexes one parameter twice.
+        by_table = {p.table.casefold(): p.param for p in params}
+        local = [_Slot(s.table, s.alias, by_table.get(s.table.casefold(), s.param), s.struct, s.idx) for s in local]
         pred = _compile_pred(sub.where_expr, local, main, model, {})
         chain = _chain(sub, local)
         ranges = " && ".join(f"0 <= {s.idx} < {s.param}.n as int" for s in local)
@@ -1706,9 +1710,16 @@ def _ref_slot(ref: str, scopes: list[_Slot], model: SchemaModel) -> tuple[_Slot,
 
 
 def _slot_named(alias: str, scopes: list[_Slot]) -> _Slot | None:
-    for slot in scopes:
-        if slot.alias == alias or slot.param == alias or slot.table == alias:
-            return slot
+    """The slot an alias names. An alias match anywhere beats a parameter or table-name match, so with
+    two slots on one parameter (``FROM sub a ... EXISTS (SELECT 1 FROM sub b ...)``) ``a`` is the outer row."""
+    for matches in (
+        lambda s: s.alias == alias,
+        lambda s: s.param == alias,
+        lambda s: s.table == alias,
+    ):
+        for slot in scopes:
+            if matches(slot):
+                return slot
     return None
 
 

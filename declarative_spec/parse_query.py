@@ -378,14 +378,14 @@ def _col_ref(node: exp.Column, scope: _Scope) -> tuple[str, str | None]:
     name = node.name
     if node.table:
         tbl = node.table
-        resolved = scope.aliases.get(tbl.lower(), tbl)
-        return f"{tbl}.{name}", resolved
+        # The alias itself, not its base table: two aliases of one table are two different rows.
+        return f"{tbl}.{name}", tbl
     return name, None
 
 
 def _resolve_group_table(node: exp.Column, scope: _Scope) -> str | None:
     if node.table:
-        return scope.aliases.get(node.table.lower(), node.table)
+        return node.table
     if len(scope.tables) == 1:
         return scope.tables[0]
     return None
@@ -761,7 +761,7 @@ def _compile_bool(node: exp.Expression, ctx: _BoolCtx) -> str:
         inner = node.this
         if isinstance(inner, exp.Exists):
             name = ctx.counters.next_exists()
-            sub = _parse_subquery_select(inner.this, ctx.scope)
+            sub = _parse_subquery_select(_exists_body(inner.this), ctx.scope)
             ctx.query.exists.append((name, sub, True))
             return f"!{name}"
         if isinstance(inner, exp.Is):
@@ -769,7 +769,7 @@ def _compile_bool(node: exp.Expression, ctx: _BoolCtx) -> str:
         return f"!({_compile_bool(inner, ctx)})"
     if isinstance(node, exp.Exists):
         name = ctx.counters.next_exists()
-        sub = _parse_subquery_select(node.this, ctx.scope)
+        sub = _parse_subquery_select(_exists_body(node.this), ctx.scope)
         ctx.query.exists.append((name, sub, False))
         return name
     if isinstance(node, exp.Between):
@@ -841,6 +841,14 @@ def _compile_bool(node: exp.Expression, ctx: _BoolCtx) -> str:
     if folded is not None:
         return folded
     raise DeclarativeUnsupported("WHERE expression")
+
+
+def _exists_body(body: exp.Expression) -> exp.Expression:
+    """EXISTS ignores the select list, so ``SELECT *`` is ``SELECT 1``."""
+    if isinstance(body, exp.Select) and any(isinstance(e, exp.Star) for e in body.expressions):
+        body = body.copy()
+        body.set("expressions", [exp.Literal.number(1)])
+    return body
 
 
 def _compile_is_null(node: exp.Is, ctx: _BoolCtx, *, negated: bool) -> str:

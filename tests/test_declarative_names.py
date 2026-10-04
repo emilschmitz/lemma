@@ -129,3 +129,62 @@ def test_a_with_name_used_inside_a_subquery_is_refused_not_a_crash() -> None:
     )
     with pytest.raises(DeclarativeUnsupported):
         _emit(sql)
+
+
+@pytest.mark.parametrize(
+    ("sql", "inner_cmp"),
+    [
+        (
+            "SELECT COUNT(*) AS c FROM sub a WHERE EXISTS (SELECT 1 FROM sub b WHERE b.cik = a.cik AND b.fy <> a.fy)",
+            "(a.cik@[e0] as int) == (a.cik@[i0] as int)",
+        ),
+        (
+            "SELECT a.form, COUNT(*) AS c FROM sub a WHERE NOT EXISTS "
+            "(SELECT 1 FROM sub b WHERE b.fy > a.fy AND b.cik = a.cik) GROUP BY a.form",
+            "(a.fy@[e0] as int) > (a.fy@[i0] as int)",
+        ),
+        (
+            # the inner alias shadows the outer one: both sides are the inner row
+            "SELECT COUNT(*) AS c FROM sub a WHERE EXISTS (SELECT 1 FROM sub a WHERE a.cik = a.fy)",
+            "(a.cik@[e0] as int) == (a.fy@[e0] as int)",
+        ),
+    ],
+)
+def test_a_correlated_self_subquery_binds_inner_and_outer_rows_apart(sql: str, inner_cmp: str) -> None:
+    spec = _emit(sql)
+    assert inner_cmp in spec
+    _typechecks(spec)
+
+
+def test_exists_star_is_exists_one() -> None:
+    spec = _emit("SELECT COUNT(*) AS c FROM sub a WHERE EXISTS (SELECT * FROM tag t WHERE t.tag = a.adsh)")
+    assert "exists|e0: int|" in spec
+    _typechecks(spec)
+
+
+SELF = {"nation": {"k": "integer", "reg": "integer", "nm": "varchar"}}
+SELF_CAT = CatalogAssumptions(max_rows=64, tables={"nation": TableAssumptions(max_rows=64)})
+
+
+@pytest.mark.parametrize(
+    ("sql", "want"),
+    [
+        ("SELECT b.nm, COUNT(*) AS c FROM nation a, nation b WHERE a.reg = b.reg GROUP BY b.nm", "b.nm@[i1]"),
+        ("SELECT a.nm, COUNT(*) AS c FROM nation a, nation b WHERE a.reg = b.reg GROUP BY a.nm", "a.nm@[i0]"),
+        ("SELECT a.nm, SUM(b.k) AS s FROM nation a, nation b WHERE a.reg = b.reg GROUP BY a.nm", "b.k@[i1]"),
+    ],
+)
+def test_group_key_and_aggregate_bind_to_the_alias_they_name(sql: str, want: str) -> None:
+    spec = emit_declarative_spec(sql, SELF, SELF_CAT)
+    assert want in spec
+    if "SUM" not in sql:
+        key_fn = spec.split("pub open spec fn key_at")[1].split("} else")[0]
+        assert want in key_fn
+
+
+def test_self_join_passes_one_loaded_struct_per_parameter() -> None:
+    spec = emit_declarative_spec(
+        "SELECT b.nm, COUNT(*) AS c FROM nation a, nation b WHERE a.reg = b.reg GROUP BY b.nm", SELF, SELF_CAT
+    )
+    program = assemble_declarative_program(spec, "    Vec::new()")
+    assert "run_query(&cols_nation, &cols_nation)" in program

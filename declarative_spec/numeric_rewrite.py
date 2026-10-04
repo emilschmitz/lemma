@@ -436,6 +436,8 @@ class _Rewriter:
             return _T(node, "float" if inner.kind == "num" else "calc")
         if inner.kind in ("float", "calc"):
             raise DeclarativeUnsupported("MIN or MAX over a float: float ordering is not stated")
+        if inner.kind in ("str", "bool"):
+            raise DeclarativeUnsupported(f"MIN or MAX over a {inner.kind}: only integer and date orderings are stated")
         return _T(node, inner.kind, inner.scale)
 
     def _case(self, node: exp.Case, scope: _Scope) -> _T:
