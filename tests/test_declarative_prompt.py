@@ -256,6 +256,21 @@ def test_join_min_gets_the_probe_example_and_the_skip_tip() -> None:
     assert "skip the probe of the other side" in p
 
 
+def test_dict_mode_specs_get_the_dictionary_recipes(monkeypatch: pytest.MonkeyPatch) -> None:
+    from research_loop.assumption_packages import assumption_package
+
+    monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
+    schema = {"num": {"uom": "varchar", "value": "decimal(38,4)", "qtrs": "int"}}
+    cat = assumption_package("sec_margin_dec")
+    group = "SELECT uom, COUNT(*) AS c FROM num GROUP BY uom"
+    filt = "SELECT COUNT(*) AS c, SUM(value) AS s FROM num WHERE uom = 'USD'"
+    for sql, recipe, file in ((group, "dict_group", "dict_group_count_dense.rs"), (filt, "dict_filter", "dict_string_filter_minmax.rs")):
+        spec = emit_declarative_spec(sql, schema, cat)
+        assert "__dict" in spec and spec_shape(spec)["recipe"] == recipe
+        p = build_declarative_prompt(sql=sql, spec_path="s", edit_path="e", lemma_index="idx", spec_text=spec)
+        assert f"context/ro/examples/{file}" in p
+
+
 def test_mount_examples_copies_every_example(tmp_path: Path) -> None:
     mount_examples(tmp_path)
     names = {f.name for f in (tmp_path / "examples").iterdir()}

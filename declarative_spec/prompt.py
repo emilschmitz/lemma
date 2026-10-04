@@ -169,6 +169,14 @@ _EXAMPLES: dict[str, tuple[str, str]] = {
         "join_min_stringhashmap_probe.rs",
         "two tables joined on a string key, ungrouped MIN/MAX with a string-literal filter (`StringHashMap` probe)",
     ),
+    "dict_group": (
+        "dict_group_count_dense.rs",
+        "dictionary string mode: GROUP BY a string key as a dense array over dictionary codes, `Vec<OutRow>` with the key as a String",
+    ),
+    "dict_filter": (
+        "dict_string_filter_minmax.rs",
+        "dictionary string mode: a string-literal filter becomes one code comparison (literal's code looked up once)",
+    ),
     "ungrouped_minmax": (
         "ungrouped_minmax_string_filter.rs",
         "one table, filtered ungrouped MIN and MAX of an integer column, with a string-literal comparison in the filter",
@@ -200,7 +208,9 @@ def spec_shape(spec_text: str) -> dict:
     result = re.search(r"pub fn run_query\([^)]*\)\s*->\s*\(res:\s*([^)]+)\)", spec_text)
     ty = result.group(1).strip() if result else ""
     tables = len(re.findall(r"pub struct Cols_", spec_text))
-    if ty.startswith("HashMapWithView"):
+    if "__dict" in spec_text and ty.startswith("Vec<OutRow>"):
+        recipe = "dict_group" if ("out_row_ok(" in spec_text and "proj_key(" not in spec_text) else "dict_filter"
+    elif ty.startswith("HashMapWithView"):
         recipe = "dense_map" if "KEY_CAP_" in spec_text else "int_map"
     elif ty.startswith("StringHashMap"):
         recipe = "string_map"
@@ -249,6 +259,8 @@ def mount_examples(ro: Path) -> None:
     dest = ro / "examples"
     dest.mkdir(parents=True, exist_ok=True)
     for name in [n for n, _w in _EXAMPLES.values()] + sorted(set(_EXAMPLE_HELPERS.values())) + [_PAR_EXAMPLE, *_PAR_EXTRA]:
+        if name.startswith("dict_"):
+            continue  # mounted below, only in dict mode
         target = dest / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text((_FIXTURES / name).read_text())
