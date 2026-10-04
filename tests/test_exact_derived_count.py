@@ -20,7 +20,7 @@ def test_product_count_of_derived_sum_stays_one(monkeypatch) -> None:
     assert "\n    1\n" in src
 
 
-def test_hardware_count_of_empty_sum_uses_match_count(monkeypatch) -> None:
+def test_adversary_imperativespec0_count_of_empty_sum_uses_match_count(monkeypatch) -> None:
     monkeypatch.setenv("LEMMA_EXACT_SUM", "1")
     src = transpile_sql_to_verus(_SQL, _SCHEMA)
     outer = _outer(src)
@@ -29,7 +29,7 @@ def test_hardware_count_of_empty_sum_uses_match_count(monkeypatch) -> None:
     assert "(0, 0)" in src
 
 
-def test_hardware_count_star_of_null_sum_is_still_one_row(monkeypatch) -> None:
+def test_adversary_imperativespec0_count_star_of_null_sum_is_still_one_row(monkeypatch) -> None:
     monkeypatch.setenv("LEMMA_EXACT_SUM", "1")
     src = transpile_sql_to_verus(
         "WITH d AS (SELECT SUM(a) AS s FROM t WHERE a > 10) SELECT COUNT(*) FROM d",
@@ -40,7 +40,7 @@ def test_hardware_count_star_of_null_sum_is_still_one_row(monkeypatch) -> None:
     assert "if c == 0" not in outer
 
 
-def test_hardware_sum_of_derived_sum_is_none_when_empty(monkeypatch) -> None:
+def test_adversary_imperativespec0_sum_of_derived_sum_is_none_when_empty(monkeypatch) -> None:
     monkeypatch.setenv("LEMMA_EXACT_SUM", "1")
     src = transpile_sql_to_verus(
         "WITH d AS (SELECT SUM(a) AS s FROM t WHERE a > 10) SELECT SUM(s) FROM d",

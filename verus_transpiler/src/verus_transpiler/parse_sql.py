@@ -46,7 +46,7 @@ def _contains_non_int_number(node: exp.Expression) -> bool:
     )
 
 
-def _refuse_hardware_const_overflow(left: int, right: int, result: int, op: str) -> None:
+def _refuse_adversary_imperativespec0_const_overflow(left: int, right: int, result: int, op: str) -> None:
     """DuckDB types small literals as INT32 and does not widen the operation.
 
     ``100000 * 100000`` is an INT32 multiply, so DuckDB errors. A literal that
@@ -72,16 +72,16 @@ def _refuse_hardware_const_overflow(left: int, right: int, result: int, op: str)
     if lo <= result <= hi:
         return
     raise UnsupportedContractError(
-        f"hardware menu does not fold {op} that overflows {label}: "
+        f"adversary_imperativespec0 menu does not fold {op} that overflows {label}: "
         "DuckDB rejects that literal arithmetic"
     )
 
 
-def _refuse_hardware_date() -> None:
+def _refuse_adversary_imperativespec0_date() -> None:
     """DuckDB will not compare an INTEGER column to a DATE."""
     if os.environ.get("LEMMA_EXACT_SUM", "0") == "1":
         raise UnsupportedContractError(
-            "hardware menu does not emit DATE literals: DuckDB will not "
+            "adversary_imperativespec0 menu does not emit DATE literals: DuckDB will not "
             "compare an INTEGER column to a DATE"
         )
 
@@ -111,7 +111,7 @@ def _fold_date_interval(node: exp.Expression) -> str | None:
     except ValueError as exc:
         raise UnsupportedContractError("DATE literal is not a calendar date.") from exc
     if base is not None:
-        _refuse_hardware_date()
+        _refuse_adversary_imperativespec0_date()
     interval = node.right
     if base is None or not isinstance(interval, exp.Interval):
         return None
@@ -157,7 +157,7 @@ def _fold_int_literal(node: exp.Expression) -> str | None:
         dtype = getattr(to, "this", None)
         if dtype != exp.DataType.Type.DATE:
             return None
-        _refuse_hardware_date()
+        _refuse_adversary_imperativespec0_date()
         lit = node.this
         if not isinstance(lit, exp.Literal) or not lit.is_string:
             return None
@@ -193,7 +193,7 @@ def _fold_int_literal(node: exp.Expression) -> str | None:
         else:
             result = a * b
             op = "multiplication"
-        _refuse_hardware_const_overflow(a, b, result, op)
+        _refuse_adversary_imperativespec0_const_overflow(a, b, result, op)
         return str(result)
     return None
 
@@ -203,12 +203,12 @@ def _kind_of(col_type: str) -> str:
     base = t.split("(")[0]
     if os.environ.get("LEMMA_EXACT_SUM", "0") == "1" and base in _FLOAT_TYPES:
         raise UnsupportedContractError(
-            "hardware menu does not emit floating-point columns: DuckDB "
+            "adversary_imperativespec0 menu does not emit floating-point columns: DuckDB "
             "FLOAT and DOUBLE round, and this loader keeps the integer text"
         )
     if os.environ.get("LEMMA_EXACT_SUM", "0") == "1" and base == "date":
         raise UnsupportedContractError(
-            "hardware menu does not emit DATE columns: DuckDB will not "
+            "adversary_imperativespec0 menu does not emit DATE columns: DuckDB will not "
             "compare a DATE to an integer"
         )
     if t in _BOOL_TYPES or base in _BOOL_TYPES:
@@ -600,7 +600,7 @@ def _compile_is_null_check(
         if is_null:
             return "left_join_miss_generic(cols, 0)"
         return "!left_join_miss_generic(cols, 0)"
-    # Hardware columns have no null bit. Empty string is not SQL NULL.
+    # adversary_imperativespec0 columns have no null bit. Empty string is not SQL NULL.
     if os.environ.get("LEMMA_EXACT_SUM", "0") == "1":
         if is_null:
             return "false"
@@ -901,7 +901,7 @@ def _compile_case_expr(
     default = node.args.get("default")
     if default is None and os.environ.get("LEMMA_EXACT_SUM", "0") == "1":
         raise UnsupportedContractError(
-            "hardware menu does not emit CASE without ELSE: DuckDB yields "
+            "adversary_imperativespec0 menu does not emit CASE without ELSE: DuckDB yields "
             "NULL, and this helper substitutes 0"
         )
     else_expr = _to_row_expr(default, resolver) if default is not None else "0"
@@ -919,7 +919,7 @@ def _compile_extract_year(
 ) -> str:
     if os.environ.get("LEMMA_EXACT_SUM", "0") == "1":
         raise UnsupportedContractError(
-            "hardware menu does not emit EXTRACT: DuckDB has no date_part "
+            "adversary_imperativespec0 menu does not emit EXTRACT: DuckDB has no date_part "
             "on an INTEGER column"
         )
     part = node.this
@@ -997,7 +997,7 @@ def _to_row_expr(
         # truncates, so SUM(5 / 2) is 2 here and 2.5 in DuckDB.
         if os.environ.get("LEMMA_EXACT_SUM", "0") == "1":
             raise UnsupportedContractError(
-                "hardware menu does not emit division: DuckDB `/` is real "
+                "adversary_imperativespec0 menu does not emit division: DuckDB `/` is real "
                 "division (DOUBLE), not integer division"
             )
         if isinstance(node.right, exp.Literal) and node.right.this == "0":
@@ -1012,7 +1012,7 @@ def _to_row_expr(
             and _fold_int_literal(node) is None
         ):
             raise UnsupportedContractError(
-                "hardware menu does not emit addition of a column: DuckDB "
+                "adversary_imperativespec0 menu does not emit addition of a column: DuckDB "
                 "adds in the column type and rejects the overflow"
             )
         _fold_int_literal(node)
@@ -1084,7 +1084,7 @@ def _compile_ilike_pattern(real_col: str, pattern: str) -> str:
     """Compile ILIKE via TRUSTED case-insensitive pattern helper."""
     if os.environ.get("LEMMA_EXACT_SUM", "0") == "1":
         raise UnsupportedContractError(
-            "hardware menu does not emit ILIKE: DuckDB folds Unicode case, "
+            "adversary_imperativespec0 menu does not emit ILIKE: DuckDB folds Unicode case, "
             "and this helper folds ASCII only"
         )
     require_trusted("ilike")

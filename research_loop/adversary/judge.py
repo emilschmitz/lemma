@@ -422,7 +422,7 @@ def resolve_spec_style(style: str | None = None) -> str:
 def judge_candidate(
     candidate: Candidate,
     *,
-    config: str = "hardware",
+    config: str = "adversary_imperativespec0",
     verify: bool = False,
     work_dir: Path | None = None,
     spec_style: str | None = None,

@@ -1,4 +1,4 @@
-"""Hardware menu scalar SUM matches DuckDB's empty-NULL and no-wrap behavior."""
+"""adversary_imperativespec0 menu scalar SUM matches DuckDB's empty-NULL and no-wrap behavior."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ def test_product_sum_stays_wrapped_u64(monkeypatch) -> None:
     assert os.environ.get("LEMMA_EXACT_SUM") is None
 
 
-def test_hardware_sum_is_exact_option(monkeypatch) -> None:
+def test_adversary_imperativespec0_sum_is_exact_option(monkeypatch) -> None:
     monkeypatch.setenv("LEMMA_EXACT_SUM", "1")
     src = transpile_sql_to_verus(_SQL, _SCHEMA)
     assert "-> Option<u128>" in src

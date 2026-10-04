@@ -1,4 +1,4 @@
-"""Hardware refuses column addition that DuckDB evaluates in the column type."""
+"""adversary_imperativespec0 refuses column addition that DuckDB evaluates in the column type."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from verus_transpiler.transpiler import transpile_sql_to_verus
 _PAIR = {"t": {"a": "BIGINT", "b": "BIGINT"}}
 
 
-def test_hardware_refuses_column_addition_and_product_keeps_it(monkeypatch) -> None:
+def test_adversary_imperativespec0_refuses_column_addition_and_product_keeps_it(monkeypatch) -> None:
     sql = "SELECT SUM(a + b) FROM t"
     monkeypatch.delenv("LEMMA_EXACT_SUM", raising=False)
     product = transpile_sql_to_verus(sql, _PAIR)
@@ -21,7 +21,7 @@ def test_hardware_refuses_column_addition_and_product_keeps_it(monkeypatch) -> N
         transpile_sql_to_verus("SELECT MIN(a + 1) FROM t", _PAIR)
 
 
-def test_hardware_still_folds_literal_addition_and_emits_a_product(monkeypatch) -> None:
+def test_adversary_imperativespec0_still_folds_literal_addition_and_emits_a_product(monkeypatch) -> None:
     monkeypatch.setenv("LEMMA_EXACT_SUM", "1")
     folded = transpile_sql_to_verus(
         "SELECT COUNT(*) FROM t WHERE a = 1 + 2",

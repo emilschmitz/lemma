@@ -82,3 +82,4 @@ verus/db_extension/rust_bridge/target/
 # Local leftovers (old overnight outputs, lease-load worktree patch). See archive/README.md.
 # Never commit or push this tree.
 /archive
+research_loop/speed_bench/.cache/

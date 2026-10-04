@@ -101,7 +101,7 @@ def _run_agent(write_dir: Path, repo_path: Path, prompt: str, timeout: int) -> N
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Lemma adversary hunt")
-    parser.add_argument("--config", default="hardware")
+    parser.add_argument("--config", default="adversary_imperativespec0")
     parser.add_argument(
         "--timeout",
         type=int,

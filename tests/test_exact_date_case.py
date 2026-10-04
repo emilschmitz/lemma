@@ -1,4 +1,4 @@
-"""Hardware refuses DATE folds, EXTRACT, and CASE without ELSE."""
+"""adversary_imperativespec0 refuses DATE folds, EXTRACT, and CASE without ELSE."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ _DATE = {"t": {"d": "INTEGER"}}
 _NUM = {"t": {"a": "BIGINT"}}
 
 
-def test_hardware_refuses_date_equality_and_product_folds_yyyymmdd(
+def test_adversary_imperativespec0_refuses_date_equality_and_product_folds_yyyymmdd(
     monkeypatch,
 ) -> None:
     sql = "SELECT COUNT(*) FROM t WHERE d = DATE '2024-01-15'"
@@ -22,7 +22,7 @@ def test_hardware_refuses_date_equality_and_product_folds_yyyymmdd(
         transpile_sql_to_verus(sql, _DATE)
 
 
-def test_hardware_refuses_date_interval_and_between(monkeypatch) -> None:
+def test_adversary_imperativespec0_refuses_date_interval_and_between(monkeypatch) -> None:
     monkeypatch.setenv("LEMMA_EXACT_SUM", "1")
     with pytest.raises(UnsupportedContractError, match="INTEGER column to a DATE"):
         transpile_sql_to_verus(
@@ -36,7 +36,7 @@ def test_hardware_refuses_date_interval_and_between(monkeypatch) -> None:
         )
 
 
-def test_hardware_refuses_extract_and_product_divides_by_10000(monkeypatch) -> None:
+def test_adversary_imperativespec0_refuses_extract_and_product_divides_by_10000(monkeypatch) -> None:
     sql = "SELECT SUM(EXTRACT(YEAR FROM d)) FROM t"
     monkeypatch.delenv("LEMMA_EXACT_SUM", raising=False)
     product = transpile_sql_to_verus(sql, _DATE)
@@ -46,7 +46,7 @@ def test_hardware_refuses_extract_and_product_divides_by_10000(monkeypatch) -> N
         transpile_sql_to_verus(sql, _DATE)
 
 
-def test_hardware_refuses_case_without_else_and_keeps_an_else(monkeypatch) -> None:
+def test_adversary_imperativespec0_refuses_case_without_else_and_keeps_an_else(monkeypatch) -> None:
     missing = "SELECT MIN(CASE WHEN a > 0 THEN a END) FROM t"
     present = "SELECT SUM(CASE WHEN a > 0 THEN a ELSE 0 END) FROM t"
     monkeypatch.delenv("LEMMA_EXACT_SUM", raising=False)

@@ -3,7 +3,7 @@
 //! On this generator every aggregate fits in i64 with ordinary addition (amounts are
 //! 0..999, N is far below i64 limits). Wrapping arithmetic is used only where the
 //! mathematical result is still exact on this data — not a license to wrap on adversarial
-//! inputs. Trust config: `hardware` / product transpiler.
+//! inputs. Trust config: `adversary_imperativespec0` / product transpiler.
 
 use std::env;
 use std::fs::File;
