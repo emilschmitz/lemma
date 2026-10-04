@@ -225,11 +225,10 @@ def test_sec_num_value_sum_differs_from_body_order_beyond_a_tight_epsilon() -> N
 # ---------------------------------------------------------------------------------------------
 
 
-def test_cast_lemma_as_written_has_no_2_pow_53_bound() -> None:
+def test_idealized_casts_were_removed_only_the_exact_casts_remain() -> None:
+    """FIXED: the cast lemmas required `<= f64_safe_bound()` (2^200), false above 2^53. Only the `_exact` ones remain."""
     text = float_error_lemmas_rs()
-    cast = text.split("pub fn host_u64_to_f64")[1].split("{")[0]
-    assert "f64_safe_bound()" in cast
-    assert "0x20000000000000" not in cast  # 2^53 appears nowhere: the statement is false above 2^53
+    assert "pub fn host_u64_to_f64(" not in text and "pub fn host_i128_to_f64(" not in text
     bound = re.search(r"pub open spec fn f64_safe_bound\(\) -> real \{\s*(0x[0-9a-f_]+)int", text)
     assert bound is not None
     assert int(bound.group(1).replace("_", ""), 16) >= 2**200  # ~1.6e60
@@ -508,10 +507,11 @@ def test_product_underflow_is_not_excluded_by_mul_requires() -> None:
 
 
 def test_draws_script_sets_an_epsilon_that_accepts_any_float() -> None:
-    text = (ROOT / "research_loop" / "scripts" / "declarative_draws.py").read_text()
-    assert 'os.environ.setdefault("LEMMA_FLOAT_ABS_EPS", "1e20")' in text
-    # With eps 1e20 a wildly wrong sum matches, so the timed row check proves nothing about floats.
-    assert rows_match_error([["0"]], [(123456789.0,)], ["float"], "1e20") is None
+    """FIXED: no script sets 1e20, and a huge epsilon no longer makes the row check vacuous."""
+    for name in ("declarative_draws", "declarative_round", "declarative_manual", "declarative_ladder"):
+        assert "1e20" not in (ROOT / "research_loop" / "scripts" / f"{name}.py").read_text()
+    # The row tolerance is min(eps, relative 1e-9 of the value + 1e-9): a wildly wrong sum is rejected at eps 1e20.
+    assert rows_match_error([["0"]], [(123456789.0,)], ["float"], "1e20") is not None
     assert rows_match_error([["0"]], [(123456789.0,)], ["float"], EPS) is not None
 
 
@@ -522,12 +522,11 @@ def test_draws_script_sets_an_epsilon_that_accepts_any_float() -> None:
 COLLIDING_SQL = "SELECT COUNT(*) AS c FROM t WHERE v > 0.1 AND v < 0.10000000000000001"
 
 
-def test_colliding_literals_state_contradictory_hypotheses() -> None:
-    """The two texts are the same double but the hypothesis gives them different reals."""
+def test_colliding_literals_are_refused_naming_both() -> None:
+    """FIXED: the two texts are the same double, so the hypothesis would be contradictory: the emitter refuses."""
     assert float("0.1") == float("0.10000000000000001")
-    spec = emit_declarative_spec(COLLIDING_SQL, SCHEMA, CATALOG, float_abs_eps=EPS)
-    assert "(0.1f64 as real) == (1real / 10real)" in spec
-    assert "(0.10000000000000001f64 as real) == (10000000000000001real / 100000000000000000real)" in spec
+    with pytest.raises(DeclarativeUnsupported, match=r"0\.1 and 0\.10000000000000001"):
+        emit_declarative_spec(COLLIDING_SQL, SCHEMA, CATALOG, float_abs_eps=EPS)
 
 
 @needs_verus
@@ -541,7 +540,6 @@ def test_verus_identifies_literals_that_round_to_the_same_double(tmp_path: Path)
     assert verus_summary(src, tmp_path, "lits").endswith("0 errors")
 
 
-@pytest.mark.xfail(strict=True, reason="TRANSPILER BUG (see verdict): colliding f64 literals must be refused")
 def test_emitter_refuses_colliding_float_literals() -> None:
     with pytest.raises(DeclarativeUnsupported):
         emit_declarative_spec(COLLIDING_SQL, SCHEMA, CATALOG, float_abs_eps=EPS)
@@ -600,6 +598,5 @@ def test_float_equality_of_a_computed_value_differs_between_spec_and_duckdb() ->
     schema = {"li": {"p": "double", "d": "double"}}
     cols = {c: ColumnAssumption(max_value_exclusive=1024) for c in ("p", "d")}
     cat = CatalogAssumptions(max_rows=100, tables={"li": TableAssumptions(max_rows=100, columns=cols)})
-    spec = emit_declarative_spec("SELECT COUNT(*) AS c FROM li WHERE p * d = 0.3", schema, cat, float_abs_eps=EPS)
-    assert "((li.p@[i0] as real) * (li.d@[i0] as real)) == (3real / 10real)" in spec
-    # The exec of any body is IEEE and equals DuckDB (0); the proved statement (1) is false of it.
+    with pytest.raises(DeclarativeUnsupported, match="float equality on a computed value"):
+        emit_declarative_spec("SELECT COUNT(*) AS c FROM li WHERE p * d = 0.3", schema, cat, float_abs_eps=EPS)

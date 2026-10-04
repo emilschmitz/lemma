@@ -6,6 +6,7 @@ import pytest
 
 from declarative_spec.emit import emit_declarative_spec
 from declarative_spec.parse import DeclarativeUnsupported
+from research_loop.table_assumptions import CatalogAssumptions, ColumnAssumption, TableAssumptions
 
 SCHEMA = {
     "num": {
@@ -100,7 +101,11 @@ def _emit(sql: str, *, eps: str | None = None) -> str:
 
 
 def test_grouped_scan_states_filter_and_aggregates() -> None:
-    spec = _emit(SCAN, eps="1e20")
+    # AVG(line) casts an exact integer sum to f64: the catalog must keep rows * cap within 2^53.
+    catalog = CatalogAssumptions(
+        tables={"pre": TableAssumptions(max_rows=1000, columns={"line": ColumnAssumption(max_value_exclusive=2**20)})}
+    )
+    spec = emit_declarative_spec(SCAN, SCHEMA, catalog, float_abs_eps="1e20")
     assert "method_spec" not in spec
     assert "inserts into a map" not in spec
     assert "pre.stmt@[i0]@) != \"\"@" not in spec  # IS NOT NULL is true, not s != ""

@@ -95,6 +95,7 @@ def _emit_with_string_tokens(
 
     helpers = _emit_helpers(query, "", model)
     _require_float_mags(query, helpers, model, catalog)
+    avg_caps = _require_exact_avg_sum(query, helpers, model, catalog)
     if any(a.float_out for a in helpers.aggs):
         eps = (float_abs_eps or "").strip()
         if not eps:
@@ -106,7 +107,7 @@ def _emit_with_string_tokens(
 
     structs = _structs(helpers.params, model)
     int_sum = any(a.kind == "SUM" and not a.float_out for a in helpers.aggs)
-    valids = _valids(helpers.params, model, catalog, int_sum=int_sum)
+    valids = _valids(helpers.params, model, catalog, int_sum=int_sum, int_caps=avg_caps)
     consts = _consts(helpers.params, model, catalog, eps)
     out_row = _out_row(query, helpers, model)
     ensures = _ensures(query, helpers, model)
@@ -1378,6 +1379,7 @@ def _valids(
     catalog: CatalogAssumptions | None,
     *,
     int_sum: bool = False,
+    int_caps: dict[tuple[str, str], int] | None = None,
 ) -> str:
     seen: set[str] = set()
     blocks: list[str] = []
@@ -1400,6 +1402,14 @@ def _valids(
                 cell = f"{slot.param}.{rust_ident(col)}@[i] as int"
                 checks.append(
                     f"forall|i: int| 0 <= i < {slot.param}.n as int ==> {cell} >= -{top} && {cell} <= {top}"
+                )
+        for col in sorted(cols):
+            cap_ex = (int_caps or {}).get((slot.table, col))
+            if cap_ex is not None and cols[col].precision is None:
+                # A catalog cap an AVG relies on (its integer sum must stay exact in an f64).
+                cell = f"{slot.param}.{rust_ident(col)}@[i] as int"
+                checks.append(
+                    f"forall|i: int| 0 <= i < {slot.param}.n as int ==> {cell} >= -{cap_ex - 1} && {cell} <= {cap_ex - 1}"
                 )
         checks.extend(_float_mag_checks(slot, model, catalog))
         body = "\n    &&& ".join(checks)
@@ -1479,6 +1489,46 @@ def _require_float_mags(
             table_assumptions = _lookup_table_assumptions(catalog, slot.table)
             if column_assumption_exclusive(column, table_assumptions) is None:
                 raise FitRefusal(f"float aggregate requires magnitude cap for {slot.table}.{column}")
+
+
+EXACT_CAST_MAX = 2**53
+
+
+def _require_exact_avg_sum(
+    query: Query,
+    helpers: _Helpers,
+    model: SchemaModel,
+    catalog: CatalogAssumptions | None,
+) -> dict[tuple[str, str], int]:
+    """AVG over an integer or DECIMAL column casts the exact integer sum to f64, which is exact only up to 2^53.
+
+    The catalog decides: rows times the cell bound must stay within 2^53, else the query is refused loudly.
+    """
+    from declarative_spec.emit import _lookup_table_assumptions
+    from research_loop.table_assumptions import column_assumption_exclusive
+
+    caps: dict[tuple[str, str], int] = {}
+    for src in query.aggs:
+        if src.kind.upper() != "AVG" or src.expr or src.arith or not src.column or src.column == "*":
+            continue
+        slot, info = _find_col(src.column, src.table, helpers.main, model)
+        if info.is_float:
+            continue
+        ta = _lookup_table_assumptions(catalog, slot.table) if catalog is not None else None
+        declared = column_assumption_exclusive(src.column, ta) if ta is not None else None
+        cap = declared if declared is not None else info.cell_exclusive_cap
+        if declared is not None and info.precision is None:
+            caps[(slot.table, src.column)] = declared
+        rows = 1
+        for main_slot in helpers.main:
+            rows *= _row_cap(catalog, main_slot.table) or 0
+        if rows == 0 or cap is None or rows * (cap - 1) > EXACT_CAST_MAX:
+            raise DeclarativeUnsupported(
+                f"AVG over {slot.table}.{src.column}: the scaled sum may exceed 2^53, where the integer-to-f64 cast "
+                f"rounds (rows {rows or 'unknown'} x cell bound {cap}); declare a catalog cap with "
+                "rows * cap at most 2^53"
+            )
+    return caps
 
 
 def _float_mag_name(table: str, column: str) -> str:

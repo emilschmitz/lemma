@@ -40,7 +40,7 @@ CATALOG = CatalogAssumptions(
     tables={
         "t": TableAssumptions(
             max_rows=100,
-            columns={c: ColumnAssumption(max_value_exclusive=2**10) for c in "abv"},
+            columns={c: ColumnAssumption(max_value_exclusive=2**10) for c in "abvi"},
         )
     },
 )
@@ -111,6 +111,12 @@ SHAPES: dict[str, Shape] = {
         "float_group_sum_order_limit",
         ("((res@[i].s as real)) >= ((res@[i + 1].s as real))", "res@.len() <= 2"),
         ("let more = gj > gb;", "let more = gj < gb;"),
+    ),
+    "sum_eps": Shape(
+        "SELECT SUM(v) AS s FROM t",
+        "float_sum_eps",
+        ("(t.v@[i0] as real)", "abs_real(((res@[r].s->Some_0 as real)) - sum_s(t, 0)) <= (FLOAT_ABS_EPS as real)"),
+        ("let next = acc + x;", "let next = x + x;"),
     ),
     "avg_int": Shape(
         "SELECT AVG(i) AS m FROM t",
@@ -198,13 +204,14 @@ def test_wrong_float_body_is_rejected(name: str, db: Path, tmp_path: Path) -> No
     assert "verification results::" in str(metrics.get("compiler_error")), str(metrics.get("compiler_error"))[-1500:]
 
 
-def test_trusted_idealization_family_is_exactly_these_lemmas() -> None:
-    rust = float_error_lemmas_rs()
-    names = []
-    parts = rust.split("#[verifier::external_body]")[1:]
-    for part in parts:
-        head = part.lstrip().splitlines()[0]
-        names.append(head.split("fn ")[1].split("(")[0])
+def test_trusted_float_code_is_exactly_these_items() -> None:
+    from declarative_spec.lemmas import host_float_lemmas_rs
+
+    rust = host_float_lemmas_rs()
+    names = [
+        part.lstrip().splitlines()[0].split("fn ")[1].split("(")[0]
+        for part in rust.split("#[verifier::external_body]")[1:]
+    ]
     assert names == [
         "lemma_f64_left_fold_empty",
         "lemma_f64_add_defined",
@@ -217,13 +224,17 @@ def test_trusted_idealization_family_is_exactly_these_lemmas() -> None:
         "lemma_f64_mul_real",
         "lemma_f64_div_defined",
         "lemma_f64_div_real",
-        "host_u64_to_f64",
-        "host_i128_to_f64",
         "lemma_f64_lt_real",
         "lemma_f64_le_real",
         "lemma_f64_gt_real",
         "lemma_f64_ge_real",
         "lemma_f64_eq_real",
+        "lemma_f64_add_exact",
+        "lemma_f64_sub_exact",
+        "lemma_f64_mul_exact",
+        "host_u64_to_f64_exact",
+        "host_i128_to_f64_exact",
     ]
-    # Every trusted item of the family carries its label.
-    assert rust.count("// TRUSTED (f64 idealization)") >= 14
+    # The idealized casts (false above 2^53) are gone: only the exact casts remain.
+    assert "pub fn host_u64_to_f64(" not in rust and "pub fn host_i128_to_f64(" not in rust
+    assert rust.count("// TRUSTED (f64") >= len(names) - 1

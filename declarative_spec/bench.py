@@ -67,6 +67,17 @@ def rows_match_error(
     )
 
 
+REL_TOLERANCE = 1e-9
+ABS_FLOOR = 1e-9
+
+
+def float_tolerance(eps: float, expect: float) -> float:
+    """The row check's tolerance for one DuckDB float: the configured absolute epsilon, but never looser than
+    relative 1e-9 of the value (plus a 1e-9 floor), so a huge epsilon (a catalog that allows huge sums) cannot make
+    the check accept any float."""
+    return min(eps, REL_TOLERANCE * abs(expect) + ABS_FLOOR)
+
+
 def _eps(float_abs_eps: str | None) -> float | None:
     if float_abs_eps is None or not str(float_abs_eps).strip():
         return None
@@ -98,7 +109,7 @@ def _values_equal(got: object, expect: object, kind: str, eps: float | None) -> 
     if kind == "float":
         if eps is None:
             raise ValueError("a float result column is compared without a float_abs_eps")
-        return abs(_as_float(got) - _as_float(expect)) <= eps
+        return abs(_as_float(got) - _as_float(expect)) <= float_tolerance(eps, _as_float(expect))
     return got == expect
 
 

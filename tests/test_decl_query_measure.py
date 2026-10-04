@@ -130,7 +130,7 @@ def test_general_speed_bar_accepts_a_close_float() -> None:
         "status": "SUCCESS",
         "proof_verified": True,
         "latency_us": 400,
-        "stdout": "ROW\x1f616263\x1f4.00001000000000000\x1f2\nQUERY_LATENCY_US: 400\n",
+        "stdout": "ROW\x1f616263\x1f4.00000000100000000\x1f2\nQUERY_LATENCY_US: 400\n",
     }
     won = _apply_speed_bar(fast, bar)
     assert won["status"] == "SUCCESS"

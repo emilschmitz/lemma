@@ -38,8 +38,9 @@ def _job_env(kind: str) -> tuple[dict, object, str | None]:
         from research_loop.scripts.sqlsmith_trusted_coverage import load_sec_schema
 
         os.environ["LEMMA_MEASURE_DB"] = str(rnd.SEC_DB)
-        os.environ["LEMMA_FLOAT_ABS_EPS"] = "1e20"
-        return load_sec_schema(), rnd.sec_catalog(), "1e20"
+        eps = rnd.sec_float_abs_eps()
+        os.environ["LEMMA_FLOAT_ABS_EPS"] = eps
+        return load_sec_schema(), rnd.sec_catalog(), eps
     schema, catalog = rnd.tpch_schema_and_catalog(rnd.TPCH_DB)
     os.environ["LEMMA_MEASURE_DB"] = str(rnd.TPCH_DB)
     return schema, catalog, None

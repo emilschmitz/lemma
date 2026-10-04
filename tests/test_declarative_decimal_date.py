@@ -138,7 +138,7 @@ def test_min_max_keep_the_scale_and_count_has_none() -> None:
     ("sql", "why"),
     [
         ("SELECT SUM(d / 2) AS s FROM t", "division"),
-        ("SELECT AVG(d) AS s FROM t", "AVG over a DECIMAL"),
+        ("SELECT AVG(d * 2) AS s FROM t", "AVG over a DECIMAL expression"),
         ("SELECT SUM(d * f) AS s FROM t", "float column"),
         ("SELECT COUNT(*) AS c FROM t WHERE f > d", "float column"),
         ("SELECT COUNT(*) AS c FROM t WHERE dt > 5", "DATE compared"),
@@ -411,10 +411,10 @@ def test_a_spec_scale_that_is_not_duckdbs_is_refused() -> None:
 
 
 def test_float_results_match_within_the_configured_epsilon() -> None:
-    row = [["9.5000004"]]
+    row = [["9.50000000001"]]
     assert rows_match_error(row, [[9.5]], ["float"], "1e-6") is None
-    err = rows_match_error(row, [[9.5]], ["float"], "1e-8")
-    assert err is not None and "float epsilon 1e-8" in err
+    err = rows_match_error(row, [[9.5]], ["float"], "1e-12")
+    assert err is not None and "float epsilon 1e-12" in err
 
 
 def test_a_float_comparison_without_an_epsilon_is_loud() -> None:
@@ -427,7 +427,7 @@ def test_the_epsilon_is_carried_end_to_end_into_the_results(tmp_path: Path) -> N
 
     bar = {"duck_us": 1000, "rows": [[4.0]], "kinds": ["float"], "float_abs_eps": "1e-3"}
     ok = _apply_speed_bar(
-        {"status": "SUCCESS", "proof_verified": True, "latency_us": 5, "stdout": "ROW\x1f4.0005\n"}, bar
+        {"status": "SUCCESS", "proof_verified": True, "latency_us": 5, "stdout": "ROW\x1f4.000000001\n"}, bar
     )
     assert ok["status"] == "SUCCESS" and ok["float_abs_eps"] == "1e-3"
     bad = _apply_speed_bar(
@@ -669,10 +669,10 @@ def test_official_query_spec_states_the_result_scales_and_type_checks(
         assert "error" not in proc.stdout + proc.stderr, proc.stdout + proc.stderr
 
 
-def test_q1_with_avg_over_a_decimal_is_refused(tpch_small: tuple[Path, dict, CatalogAssumptions]) -> None:
+def test_q1_with_avg_over_a_decimal_expression_is_refused(tpch_small: tuple[Path, dict, CatalogAssumptions]) -> None:
     _db, schema, cat = tpch_small
-    with pytest.raises(DeclarativeUnsupported, match="AVG over a DECIMAL"):
-        emit_declarative_spec(Q1.replace("count(*)", "avg(l_quantity) AS avg_qty, count(*)"), schema, cat)
+    with pytest.raises(DeclarativeUnsupported, match="AVG over a DECIMAL expression"):
+        emit_declarative_spec(Q1.replace("count(*)", "avg(l_quantity * 2) AS avg_qty, count(*)"), schema, cat)
 
 
 def test_q3_result_has_date_keys_that_measure_as_day_numbers(

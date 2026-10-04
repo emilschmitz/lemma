@@ -122,10 +122,10 @@ _ASSEMBLER_NAMES = {"main", "row_hex"}
 
 def host_names(spec_rs: str) -> set[str]:
     """Every item name the host defines: the spec, the host lemmas, and the assembler's names."""
-    from declarative_spec.lemmas import float_error_lemmas_rs, integer_fit_lemmas_rs
+    from declarative_spec.lemmas import host_float_lemmas_rs, integer_fit_lemmas_rs
 
     text = _strip_comments_and_strings(
-        spec_rs + "\n" + integer_fit_lemmas_rs() + "\n" + float_error_lemmas_rs()
+        spec_rs + "\n" + integer_fit_lemmas_rs() + "\n" + host_float_lemmas_rs()
     )
     return set(_ITEM_NAME.findall(text)) | _ASSEMBLER_NAMES
 

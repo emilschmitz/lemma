@@ -239,6 +239,11 @@ class _Rewriter:
 
     def _compare(self, node: exp.Expression, scope: _Scope) -> exp.Expression:
         left, right = self.typed(node.this, scope), self.typed(node.expression, scope)  # type: ignore[attr-defined]
+        if isinstance(node, (exp.EQ, exp.NEQ)) and any(_computed_float(t) for t in (left, right)):
+            raise DeclarativeUnsupported(
+                "float equality on a computed value (arithmetic or an aggregate): the executed IEEE value "
+                "differs from the exact real the spec states, so equality cannot be proved or checked"
+            )
         left, right = self._pair(left, right)
         node.set("this", left.node)
         node.set("expression", right.node)
@@ -263,10 +268,15 @@ class _Rewriter:
         if "float" in kinds:
             if kinds == {"float"}:
                 return left, right
-            if left.kind == "float" and right.kind == "num":
-                return left, _T(_float_literal(right), "float")
-            if right.kind == "float" and left.kind == "num":
-                return _T(_float_literal(left), "float"), right
+            for num, flt in ((right, left), (left, right)):
+                if flt.kind == "float" and num.kind == "num":
+                    if fold_number(num.node) is not None:
+                        lit = _T(_float_literal(num), "float")
+                        return (left, lit) if num is right else (lit, right)
+                    if num.scale > 0:
+                        raise DeclarativeUnsupported(
+                            "a DECIMAL column compared with a float column: mixed exact and float values"
+                        )
         if "unknown" in kinds and any(t.kind == "num" and t.scale > 0 for t in (left, right)):
             raise DeclarativeUnsupported("a DECIMAL compared with an operand of unknown type")
         return left, right
@@ -432,6 +442,21 @@ class _Rewriter:
             raise DeclarativeUnsupported("a DECIMAL result in CASE")
         kinds = {r.kind for r in results}
         return _T(node, kinds.pop() if len(kinds) == 1 else "unknown")
+
+
+def _computed_float(t: _T) -> bool:
+    """A float that is not a stored value: arithmetic or an aggregate other than MIN/MAX."""
+    if t.kind != "float":
+        return False
+    node = t.node
+    while isinstance(node, (exp.Paren, exp.Neg)):
+        node = node.this
+    if isinstance(node, exp.Subquery):  # a scalar subquery that selects MIN/MAX of a column is a stored value
+        inner = node.this.expressions[0] if isinstance(node.this, exp.Select) and node.this.expressions else None
+        while isinstance(inner, exp.Alias):
+            inner = inner.this
+        return not isinstance(inner, (exp.Min, exp.Max))
+    return not isinstance(node, (exp.Column, exp.Literal, exp.Min, exp.Max))
 
 
 def _float_literal(t: _T) -> exp.Expression:

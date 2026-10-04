@@ -1,6 +1,6 @@
 // Worked example: GROUP BY k, AVG(v) over a DOUBLE column, HAVING AVG(v) > 2. Exact under the f64 idealization.
 // Pass 1 collects the distinct keys. Pass 2, per key: an f64 sum and a u64 count over all rows, one division
-// (`host_u64_to_f64`, `lemma_f64_div_defined`, `lemma_f64_div_real`), then keep the key when `avg > 2.0`.
+// (`host_u64_to_f64_exact`, `lemma_f64_div_defined`, `lemma_f64_div_real`), then keep the key when `avg > 2.0`.
 // AGENT_HELPERS_START
 proof fn bound_step(m: int, p: real)
     ensures ((m + 1) as real) * p == (m as real) * p + p,
@@ -163,7 +163,7 @@ proof fn bound_below(m: int, p: real)
             assert(cnt as int >= 1);
             assert((cnt as int as real) <= 100real);
         }
-        let fc = host_u64_to_f64(cnt);
+        let fc = host_u64_to_f64_exact(cnt);
         proof {
             assert(abs_real(fc as real) == (cnt as int as real));
             let cap = MAG_CAP_t_v as real;

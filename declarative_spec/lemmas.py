@@ -166,18 +166,20 @@ pub open spec fn real_sum_seq(terms: Seq<f64>) -> real
 
 pub uninterp spec fn f64_left_fold(terms: Seq<f64>) -> f64;
 
+// TRUSTED (f64 sum error, true statement): the opaque f64 accumulator of an empty sum is 0.0.
 #[verifier::external_body]
 pub proof fn lemma_f64_left_fold_empty()
     ensures f64_left_fold(Seq::<f64>::empty()) == 0.0f64,
 { }
 
-// IEEE addition is defined for every pair of f64 values. The agent calls this
-// before `acc + x` so Verus accepts the add; the agent does not unfold it.
+// TRUSTED (f64 idealization): IEEE addition is defined for every pair of f64 values (the exec `+`
+// precondition holds). No value is claimed. The agent calls this before `acc + x`.
 #[verifier::external_body]
 pub proof fn lemma_f64_add_defined(x: f64, y: f64)
     ensures x.add_req(y),
 { }
 
+// TRUSTED (f64 sum error, true statement): one f64 add extends the opaque left fold by that term.
 #[verifier::external_body]
 pub proof fn lemma_f64_left_fold_push(prefix: Seq<f64>, x: f64, acc: f64, next: f64)
     requires
@@ -186,6 +188,9 @@ pub proof fn lemma_f64_left_fold_push(prefix: Seq<f64>, x: f64, acc: f64, next: 
     ensures f64_left_fold(prefix.push(x)) == next,
 { }
 
+// TRUSTED (f64 sum error, true statement; Higham-style bound with slack, held on all adversarial data):
+// a plain left-to-right f64 fold of finite terms below the cap is within n^2 * cap * 2^-52 of the real sum.
+// This is the lemma for a plain SUM(float): it is not an idealization and `eps` really bounds the error.
 #[verifier::external_body]
 pub proof fn lemma_f64_sum_within_eps(
     acc: f64,
@@ -214,7 +219,7 @@ pub proof fn lemma_f64_sum_within_eps(
 // the ONLY float trust beyond the sum lemmas above. Claim: for FINITE f64 values (the loader
 // rejects NaN and infinity and enforces the catalog magnitude caps), the executable f64
 // operations behave exactly like the real operations on `as real` values. True IEEE rounding
-// error is ignored, so add/sub/mul/div/cast are an IDEALIZATION, not a proof. Comparisons are
+// error is ignored, so add/sub/mul/div are an IDEALIZATION, not a proof (the integer casts are exact, up to 2^53). Comparisons are
 // exact in IEEE; only the missing link from vstd's uninterpreted `lt_ensures`-style predicates
 // to `as real` is trusted. A proved relative-error (2^-53 per operation) lemma is future work.
 // ---------------------------------------------------------------------------------------------
@@ -307,26 +312,6 @@ pub proof fn lemma_f64_div_real(x: f64, y: f64, o: f64, cx: real, cq: real)
         (o as real) == (x as real) / (y as real),
 { }
 
-// TRUSTED (f64 idealization): an integer cast to f64 keeps its value (exact below 2^53, rounding
-// ignored above, up to the safe bound). vstd gives the exec `as f64` no specification, so the host
-// provides the cast as a trusted exec function; the body is the plain Rust cast.
-#[verifier::external_body]
-pub fn host_u64_to_f64(n: u64) -> (o: f64)
-    requires (n as int as real) <= f64_safe_bound(),
-    ensures o.is_finite_spec(), (o as real) == (n as int as real),
-{
-    n as f64
-}
-
-// TRUSTED (f64 idealization): the same cast claim for i128.
-#[verifier::external_body]
-pub fn host_i128_to_f64(n: i128) -> (o: f64)
-    requires -f64_safe_bound() <= (n as int as real) && (n as int as real) <= f64_safe_bound(),
-    ensures o.is_finite_spec(), (o as real) == (n as int as real),
-{
-    n as f64
-}
-
 // TRUSTED (f64 idealization): comparisons of finite f64 values hold exactly when the real
 // comparison does (exact in IEEE 754; the link from the uninterpreted predicate is trusted).
 #[verifier::external_body]
@@ -404,3 +389,84 @@ pub proof fn lemma_f64_mul_within(x: f64, y: f64, o: f64, cx: real, cy: real)
         requires -cx < a, a < cx, -cy < b, b < cy;
 }
 """.strip()
+
+
+def float_exact_lemmas_rs() -> str:
+    """Adversary-proposed TRUE replacements for the idealized f64 lemmas (not yet assembled).
+
+    Each statement is a consequence of IEEE 754 correct rounding: when the exact real result is
+    representable, the f64 result is that real. An integer of magnitude at most 2^53 is always
+    representable. Source: research_loop/menus/f64_idealization_ADVERSARY_VERDICT.md
+    (manual adversary, Sonnet subagent). Valid inside a verus! block that already holds the
+    `float_error_lemmas_rs` preamble (`use vstd::std_specs::ops::*;`, `use vstd::float::*;`).
+    """
+    return """
+pub open spec fn f64_exact_int_max() -> int {
+    0x20000000000000int
+}
+
+// TRUSTED (f64 exact, adversary-proposed): the f64 sum of finite x, y is the real sum whenever
+// that real sum is an integer of magnitude at most 2^53 (representable, so IEEE returns it).
+#[verifier::external_body]
+pub proof fn lemma_f64_add_exact(x: f64, y: f64, o: f64, s: int)
+    requires
+        x.is_finite_spec(), y.is_finite_spec(),
+        -f64_exact_int_max() <= s <= f64_exact_int_max(),
+        (x as real) + (y as real) == (s as real),
+        add_ensures::<f64>(x, y, o),
+    ensures
+        o.is_finite_spec(),
+        (o as real) == (s as real),
+{ }
+
+// TRUSTED (f64 exact, adversary-proposed): same for subtraction.
+#[verifier::external_body]
+pub proof fn lemma_f64_sub_exact(x: f64, y: f64, o: f64, s: int)
+    requires
+        x.is_finite_spec(), y.is_finite_spec(),
+        -f64_exact_int_max() <= s <= f64_exact_int_max(),
+        (x as real) - (y as real) == (s as real),
+        sub_ensures::<f64>(x, y, o),
+    ensures
+        o.is_finite_spec(),
+        (o as real) == (s as real),
+{ }
+
+// TRUSTED (f64 exact, adversary-proposed): same for multiplication (an integer product of
+// magnitude at most 2^53; a subnormal or inexact product is excluded because it is no such integer).
+#[verifier::external_body]
+pub proof fn lemma_f64_mul_exact(x: f64, y: f64, o: f64, s: int)
+    requires
+        x.is_finite_spec(), y.is_finite_spec(),
+        -f64_exact_int_max() <= s <= f64_exact_int_max(),
+        (x as real) * (y as real) == (s as real),
+        mul_ensures::<f64>(x, y, o),
+    ensures
+        o.is_finite_spec(),
+        (o as real) == (s as real),
+{ }
+
+// TRUSTED (f64 exact, adversary-proposed): an integer cast to f64 keeps its value up to 2^53.
+// Above 2^53 the cast rounds (the idealized `host_u64_to_f64` is false there).
+#[verifier::external_body]
+pub fn host_u64_to_f64_exact(n: u64) -> (o: f64)
+    requires n as int <= f64_exact_int_max(),
+    ensures o.is_finite_spec(), (o as real) == (n as int as real),
+{
+    n as f64
+}
+
+// TRUSTED (f64 exact, adversary-proposed): the same for i128, |n| <= 2^53.
+#[verifier::external_body]
+pub fn host_i128_to_f64_exact(n: i128) -> (o: f64)
+    requires -f64_exact_int_max() <= n as int <= f64_exact_int_max(),
+    ensures o.is_finite_spec(), (o as real) == (n as int as real),
+{
+    n as f64
+}
+""".strip()
+
+
+def host_float_lemmas_rs() -> str:
+    """Every float host lemma the agent may call (idealized block plus the exact block)."""
+    return float_error_lemmas_rs().rstrip() + "\n\n" + float_exact_lemmas_rs()

@@ -94,7 +94,7 @@ def test_float_error_lemmas_verus() -> None:
     rust = float_error_lemmas_rs()
     assert "lemma_f64_sum_within_eps" in rust
     assert "as real" in rust
-    assert rust.count("external_body") == 4
+    assert rust.count("external_body") == 16
     proc = _run_verus(rust)
     combined = proc.stdout + proc.stderr
     assert proc.returncode == 0, combined

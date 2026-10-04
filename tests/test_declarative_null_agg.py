@@ -12,11 +12,13 @@ import pytest
 from declarative_spec.assemble import assemble_declarative_program
 from declarative_spec.bench import rows_match_error
 from declarative_spec.emit import emit_declarative_spec
-from research_loop.table_assumptions import CatalogAssumptions, TableAssumptions
+from research_loop.table_assumptions import CatalogAssumptions, ColumnAssumption, TableAssumptions
 
 VERUS = Path("/home/emil/tools/verus/verus")
 SCHEMA = {"t": {"a": "integer", "g": "integer"}}
-CATALOG = CatalogAssumptions(tables={"t": TableAssumptions(max_rows=8)})
+CATALOG = CatalogAssumptions(
+    tables={"t": TableAssumptions(max_rows=8, columns={"a": ColumnAssumption(max_value_exclusive=2**20)})}
+)
 
 # No row can pass: the filter is contradictory, so the result must be NULL.
 _NEVER = "WHERE a > 100 AND a < 50"

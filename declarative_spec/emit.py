@@ -48,9 +48,9 @@ def _lookup_table_assumptions(catalog: CatalogAssumptions | None, table: str) ->
 
 def _host_lemma_region() -> str:
     """Lemma source the agent can call. Assemble replaces this same region."""
-    from declarative_spec.lemmas import float_error_lemmas_rs, integer_fit_lemmas_rs
+    from declarative_spec.lemmas import host_float_lemmas_rs, integer_fit_lemmas_rs
 
-    body = integer_fit_lemmas_rs().rstrip() + "\n\n" + float_error_lemmas_rs().rstrip()
+    body = integer_fit_lemmas_rs().rstrip() + "\n\n" + host_float_lemmas_rs().rstrip()
     return "// HOST_LEMMAS_START\n" + body + "\n// HOST_LEMMAS_END"
 
 
@@ -531,6 +531,30 @@ def emit_declarative_spec(
 _F64_LITERAL = re.compile(r"(?<![\w.])(\d+(?:\.\d+)?)e0(?!\w)")
 
 
+def _refuse_colliding_literals(texts: dict[str, "Fraction"], float_abs_eps: str | None) -> None:
+    """Two decimal values that round to the same double would make the literal hypothesis contradictory
+    (Verus identifies equal doubles), so every body would verify. Refuse, naming both."""
+    import math
+
+    def shown(label: str) -> str:
+        return (float_abs_eps or label).strip() if label == "FLOAT_ABS_EPS" else label
+
+    seen: dict[float, tuple[str, "Fraction"]] = {}
+    for label, value in sorted(texts.items()):
+        double = float(value)
+        if math.isinf(double) or (double == 0.0 and value != 0):
+            raise DeclarativeUnsupported(
+                f"float literal {shown(label)} rounds to {double}: it is not a finite nonzero double"
+            )
+        if double in seen and seen[double][1] != value:
+            other = seen[double][0]
+            raise DeclarativeUnsupported(
+                f"float literals {shown(other)} and {shown(label)} are the same double ({double!r}) "
+                "but different decimal values: the literal hypothesis would be contradictory"
+            )
+        seen[double] = (label, value)
+
+
 def _with_f64_literals(spec: str, integer_sql: str, float_abs_eps: str | None) -> str:
     """State, as a hypothesis of ``run_query``, that each f64 literal denotes its decimal value.
 
@@ -550,6 +574,7 @@ def _with_f64_literals(spec: str, integer_sql: str, float_abs_eps: str | None) -
     if not texts and "f64" not in outside_lemmas:
         return spec
     texts["0.0"] = Fraction(0)  # the initial value of every accumulator
+    _refuse_colliding_literals(texts, float_abs_eps)
     conj = "\n".join(
         f"    &&& ({text if text == 'FLOAT_ABS_EPS' else text + 'f64'} as real) == ({v.numerator}real / {v.denominator}real)"
         for text, v in sorted(texts.items())

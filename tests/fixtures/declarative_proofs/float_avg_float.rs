@@ -1,5 +1,5 @@
 // Worked example: ungrouped AVG over a DOUBLE column. Exact f64 sum (idealization), a u64 count cast with
-// `host_u64_to_f64`, one division (`lemma_f64_div_defined`, `lemma_f64_div_real`). The sum's magnitude bound
+// `host_u64_to_f64_exact`, one division (`lemma_f64_div_defined`, `lemma_f64_div_real`). The sum's magnitude bound
 // is tracked against the count (`cnt * cap + 1`) so the quotient bound `cap + 1` follows.
 // AGENT_HELPERS_START
 proof fn bound_step(m: int, p: real)
@@ -78,7 +78,7 @@ proof fn bound_below(m: int, p: real)
         proof {
             assert((cnt as int as real) <= 100real);
         }
-        let fc = host_u64_to_f64(cnt);
+        let fc = host_u64_to_f64_exact(cnt);
         proof {
             assert(cnt as int >= 1);
             assert(abs_real(fc as real) == (cnt as int as real));

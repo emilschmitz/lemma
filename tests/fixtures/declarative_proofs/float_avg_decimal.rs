@@ -1,6 +1,6 @@
 // Worked example: ungrouped AVG over a DECIMAL(10,2) column (DuckDB returns DOUBLE). The spec states the real
 // value of each cell (`stored / 100`). The body sums the stored integers exactly in an i128, then, under the f64
-// idealization, casts sum / scale / count with `host_i128_to_f64` / `host_u64_to_f64` and divides twice
+// idealization, casts sum / scale / count with `host_i128_to_f64_exact` / `host_u64_to_f64_exact` and divides twice
 // (`lemma_f64_div_defined` and `lemma_f64_div_real` each time): (sum / 100) / count.
 // AGENT_HELPERS_START
 // AGENT_HELPERS_END
@@ -52,9 +52,9 @@
             assert(-(100real * 10000000000real) <= (acc as int as real));
             assert((cnt as int as real) <= 100real);
         }
-        let fs = host_i128_to_f64(acc);
-        let fscale = host_u64_to_f64(100);
-        let fc = host_u64_to_f64(cnt);
+        let fs = host_i128_to_f64_exact(acc);
+        let fscale = host_u64_to_f64_exact(100);
+        let fc = host_u64_to_f64_exact(cnt);
         proof {
             assert(cnt as int >= 1);
             assert((fscale as real) == 100real);

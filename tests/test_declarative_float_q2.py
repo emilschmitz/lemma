@@ -17,7 +17,7 @@ from declarative_spec.bench import rows_from_stdout_general, rows_match_error
 from declarative_spec.emit import emit_declarative_spec
 from declarative_spec.pipeline import run_declarative_metrics
 from research_loop.decl_query_measure import write_query_measure
-from research_loop.table_assumptions import CatalogAssumptions, TableAssumptions
+from research_loop.table_assumptions import CatalogAssumptions, ColumnAssumption, TableAssumptions
 
 VERUS = Path("/home/emil/tools/verus/verus")
 PROOFS = Path(__file__).parent / "fixtures" / "declarative_proofs"
@@ -32,7 +32,9 @@ WHERE stmt IS NOT NULL
 GROUP BY stmt, rfile
 ORDER BY cnt DESC"""
 Q2_SCHEMA = {"adsh": "varchar", "line": "bigint", "stmt": "varchar", "rfile": "varchar"}
-Q2_CATALOG = CatalogAssumptions(tables={"pre": TableAssumptions(max_rows=250_000)})
+Q2_CATALOG = CatalogAssumptions(
+    tables={"pre": TableAssumptions(max_rows=250_000, columns={"line": ColumnAssumption(max_value_exclusive=2**20)})}
+)
 
 
 def _q2_db(path: Path) -> None:

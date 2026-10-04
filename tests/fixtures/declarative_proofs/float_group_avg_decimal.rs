@@ -1,6 +1,6 @@
 // Worked example: GROUP BY k, AVG(d) over a DECIMAL(10,2) column. Pass 1 collects the distinct keys. Pass 2, per
 // key: the stored integers sum exactly in an i128 with a u64 count; then, under the f64 idealization, cast, divide
-// by the scale (100) and by the count (`host_*_to_f64`, `lemma_f64_div_defined`, `lemma_f64_div_real`).
+// by the scale (100) and by the count (`host_*_to_f64_exact`, `lemma_f64_div_defined`, `lemma_f64_div_real`).
 // AGENT_HELPERS_START
 proof fn bound_step(m: int, p: real)
     ensures ((m + 1) as real) * p == (m as real) * p + p,
@@ -153,9 +153,9 @@ proof fn bound_below(m: int, p: real)
             assert(-(100real * 10000000000real) <= (acc as int as real));
             assert((cnt as int as real) <= 100real);
         }
-        let fs = host_i128_to_f64(acc);
-        let fscale = host_u64_to_f64(100);
-        let fc = host_u64_to_f64(cnt);
+        let fs = host_i128_to_f64_exact(acc);
+        let fscale = host_u64_to_f64_exact(100);
+        let fc = host_u64_to_f64_exact(cnt);
         proof {
             assert((fscale as real) == 100real);
             assert(abs_real(fscale as real) == 100real);
