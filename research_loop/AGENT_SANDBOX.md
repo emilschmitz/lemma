@@ -101,13 +101,79 @@ or written to disk or logs):
 A model agent runs next to whatever is mounted or in its environment, so use a dedicated,
 spend-capped API key. Cursor credentials and the Cursor CLI are not mounted into this container.
 
-Ladder (per-run env only, `config.env` untouched):
+Facts learned from the mock end-to-end run (Claude Code 2.1.289):
+
+- `claude` is a native binary (`claude.exe`), not a Node script. The image's Node 18 and
+  `NODE_USE_ENV_PROXY=1` are irrelevant to it: it honors `HTTPS_PROXY` itself and goes through the
+  sidecar with a plain `CONNECT` (see `egress_bridge.jsonl`).
+- `--permission-mode acceptEdits --allowedTools Bash,Read,Edit,Write,Glob,Grep,mcp__lemma-host`
+  runs Read, Edit, Bash and the lemma-host MCP tools headless with no permission prompt. No
+  `--dangerously-skip-permissions` is used or needed.
+- With `DISABLE_TELEMETRY`, `DISABLE_AUTOUPDATER`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` the only
+  hosts the container contacted were the model API; `egress_denied.jsonl` was never created. Any other
+  host is a 403 at the bridge and is logged there.
+- The MCP proxy runs in the image, which has only `lemma_agent`. The host passes the
+  `run_runquery` tool blurb in `LEMMA_RUN_RUNQUERY_BLURB` (the entrypoint writes it into `mcp.json`);
+  a missing variable is a loud `KeyError`, the MCP server then shows `failed`.
+- Claude Code writes text and tool_use blocks of one turn as separate `assistant` stream events;
+  `claude_stream.py` handles that (`tests/fixtures/claude_stream_real_mock.jsonl` is the recorded real
+  stream).
+- Exit codes: a failing claude exits non-zero (`set -o pipefail`). `AGENT_TIMEOUT_SEC` kills the
+  container; the run reports `timed_out` and exit `-9`, and the declarative driver records
+  `agent timed out (AGENT_TIMEOUT_SEC): exit -9, no submit` (a failed or timed-out agent with no
+  `submitted.json` fails the iteration instead of surfacing later as "empty agent body").
+- Containers run with `--memory 3g --memory-swap 3g`.
+
+### Mock model API (no credentials; plumbing tests)
+
+`research_loop/scripts/mock_anthropic_api.py` is a TLS/SSE mock of `/v1/messages` that scripts
+Read, Edit (reference body), Bash, `run_runquery`, `submit_runquery`, final text. The container's
+Claude Code reaches it through the real egress bridge: env `LEMMA_TEST_MOCK_ANTHROPIC_PORT` +
+`LEMMA_TEST_MOCK_ANTHROPIC_CA` (both or loud error) switch the egress profile to
+`anthropic-mock-test`, which allows only `lemma-mock-anthropic.test` (reserved `.test` name, no real
+vendor host) and makes the bridge dial 127.0.0.1:port for it. Real runs never set these, so their
+policy (network none, only anthropic hosts) is unchanged. Run it (one heavy job at a time, memory
+capped, Verus through `scripts/ram/verus_guarded.sh`):
 
 ```bash
-export ANTHROPIC_API_KEY=...   # your own shell
+systemd-run --user --scope -p MemoryMax=5G -p MemorySwapMax=0 uv run pytest tests/test_claude_mock_e2e.py -q
+```
+
+### Real-API steps (yours)
+
+```bash
+# 1. image (host networking for the build only; runs stay --network none)
+docker build --network host -t lemma-agent:claude --build-arg INSTALL_CLAUDE_CODE=1 -f docker/agent/Dockerfile .
+# 2. credentials, in your own shell. Either a dedicated spend-capped API key ...
+export ANTHROPIC_API_KEY=...
+#    ... or a directory you prepare that contains your login file:
+# export LEMMA_CLAUDE_CONFIG_DIR=$HOME/lemma-claude-config
+# 3. the SEC DuckDB the ladder needs
+export LEMMA_DUCKDB_PATH=/home/emil/projects/lemma-db/holdout/gendb_sec_edgar/duckdb/sec_edgar_local.duckdb
+# 4. one cheap query first (haiku, ladder query 1 only), then the ladder
+uv run python -c "from research_loop.scripts.declarative_ladder import run_ladder; run_ladder('claude-haiku-4-5-20251001', indices=(1,))"
 uv run python research_loop/scripts/declarative_ladder.py claude-haiku-4-5-20251001
 uv run python research_loop/scripts/declarative_ladder_claude.py   # haiku, then sonnet 5.5 only if haiku proves < 4/6
 ```
+
+Per-run env only; `config.env` is untouched. Traces per run: `research_loop/runs/LATEST`.
+
+### Verified against the mock vs needs your real run
+
+| Behavior | Mock | Real run |
+|---|---|---|
+| Container starts, network none, memory cap, entrypoint, MCP socket, egress bridge | verified | - |
+| Claude Code reaches its API through HTTPS_PROXY sidecar (CONNECT, TLS, custom CA) | verified | real `api.anthropic.com` TLS and the `anthropic` allowlist (`anthropic.com`, `api.anthropic.com`) cover every host a real session contacts |
+| Headless permissions: Read/Edit/Bash/lemma-host MCP with no prompt | verified | same flags, expected identical |
+| `run_runquery` proves (`proof_verified: true`) and `submit_runquery` writes `submitted.json` | verified | - |
+| `agent_stream.jsonl` / `claude_raw.jsonl` / `agent_stderr.log`, harvest layout like Cursor | verified | `thinking` events: the mock emits none, so the thinking-delta conversion is only covered by the hand-made `claude_stream_sample.jsonl` |
+| Timeout kill (`AGENT_TIMEOUT_SEC`), exit -9, failing claude fails the run | verified | - |
+| Ladder plumbing: slug -> `--model`, SUCCESS classification, results record | verified (query 1) | - |
+| Telemetry / auto-update traffic is off | no denied or unexpected hosts seen | confirm `egress_denied.jsonl` stays empty |
+| Credentials: `ANTHROPIC_API_KEY` pass-through by name | verified (dummy key) | real key accepted |
+| `LEMMA_CLAUDE_CONFIG_DIR` login-file mount and its format | not tested | needs your real login file |
+| Model behavior, proof success rate, rate limits / 429 / overload errors, real costs | not testable | needs your run |
+| Real stream details the mock cannot produce (thinking blocks, usage/cost, `api_retry` on real errors) | not testable | check `claude_raw.jsonl` once |
 
 ## Run artifacts (GCP harvest)
 

@@ -1357,6 +1357,7 @@ def run_agent_docker(
             # suspend, which extended sessions to hours when inhibit dropped.
             wall_deadline = time.time() + timeout
             rc: int | None = None
+            ended = False
             while True:
                 rc = popen.poll()
                 if rc is not None:
@@ -1374,6 +1375,7 @@ def run_agent_docker(
                         "agent_docker_end_session",
                         "end_session sentinel after submit",
                     )
+                    ended = True
                     _docker_kill_container(container_name)
                     rc = _kill_and_reap_popen(popen, deadline=deadline)
                     break
@@ -1384,6 +1386,12 @@ def run_agent_docker(
                 if remaining <= 0:
                     continue
                 time.sleep(min(0.5, remaining))
+            # GNU ``timeout --signal=KILL`` can win the race against the poll deadline above.
+            # Either way the wall-clock kill is reported the same: timed_out, exit -9.
+            if rc == -9 and not ended:
+                timed_out = True
+            if timed_out:
+                rc = -9
             proc = subprocess.CompletedProcess(
                 cmd, int(rc if rc is not None else -1), "".join(stdout_chunks), "".join(stderr_chunks)
             )

@@ -6,6 +6,7 @@ test-only bridge override). It scripts one conversation, turn by turn:
 
 1. Read ``runquery_agent.rs``
 2. Edit the AGENT_EDIT region to the reference body
+2b. Bash ``ls /workspace``
 3. ``mcp__lemma-host__run_runquery``
 4. ``mcp__lemma-host__submit_runquery`` with the run_id the host returned
 5. final text, end of turn
@@ -104,6 +105,15 @@ class Conversation:
                         "new_string": f"{_START}\n{self.body}\n{_END}",
                     },
                 },
+            ]
+        if "toolu_mock_bash" not in done:
+            return [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_mock_bash",
+                    "name": "Bash",
+                    "input": {"command": "ls /workspace && echo bash-ok", "description": "List the workspace"},
+                }
             ]
         if "toolu_mock_run" not in done:
             return [{"type": "tool_use", "id": "toolu_mock_run", "name": "mcp__lemma-host__run_runquery", "input": {}}]
