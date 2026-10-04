@@ -38,6 +38,8 @@ def _maybe_large_table(
         )
         bar = {
             "duck_us": prepared["duck_us"],
+            "duck_threads": prepared["duck_threads"],
+            "duck1_us": prepared["duck1_us"],
             "rows": prepared["rows"],
             "table_rows": prepared["table_rows"],
             "float_abs_eps": float_abs_eps,
@@ -250,6 +252,11 @@ def run_declarative_optimization_loop(
                 "status": "SUCCESS",
                 "best_latency_us": latency,
                 "duck_us": metrics.get("duck_us"),
+                "duck1_us": metrics.get("duck1_us"),
+                "duck_threads": metrics.get("duck_threads"),
+                "speedup": metrics.get("speedup"),
+                "speedup_1t": metrics.get("speedup_1t"),
+                "speed_bar_mult": metrics.get("speed_bar_mult"),
                 "float_abs_eps": float_abs_eps,
                 "best_iteration": iteration,
                 "history": history,

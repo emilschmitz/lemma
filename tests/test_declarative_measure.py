@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import subprocess
+
+import pytest
 from pathlib import Path
 
 from declarative_spec.assemble import assemble_declarative_program
@@ -133,12 +135,45 @@ def test_speed_bar_accepts_a_faster_match_and_rejects_a_loss() -> None:
     slow = {**fast, "latency_us": 1000}
     lost = _apply_speed_bar(slow, bar)
     assert lost["status"] == "FAILURE"
-    assert "slower than DuckDB" in lost["compiler_error"]
+    assert "below the speed bar" in lost["compiler_error"]
 
     wrong = {**fast, "stdout": "ROW 1 4\nQUERY_LATENCY_US: 400\n"}
     mismatch = _apply_speed_bar(wrong, bar)
     assert mismatch["status"] == "FAILURE"
     assert "differ" in mismatch["compiler_error"]
+
+
+def _fast_run(latency: int) -> dict:
+    return {
+        "status": "SUCCESS",
+        "proof_verified": True,
+        "latency_us": latency,
+        "stdout": f"ROW 1 4\nQUERY_LATENCY_US: {latency}\n",
+    }
+
+
+def test_speed_bar_mult_scales_the_bar_and_reports_attainment(monkeypatch) -> None:
+    bar = {"duck_us": 1000, "duck1_us": 4000, "rows": [[1, 4]]}
+    monkeypatch.setenv("LEMMA_SPEED_BAR_MULT", "5.0")
+    miss = _apply_speed_bar(_fast_run(250), bar)  # 4.0x < 5.0x
+    assert miss["status"] == "FAILURE"
+    assert "5x faster" in miss["compiler_error"]
+    assert miss["speedup"] == 4.0
+    hit = _apply_speed_bar(_fast_run(150), bar)
+    assert hit["status"] == "SUCCESS"
+    assert hit["speed_bar_mult"] == 5.0
+    assert round(hit["speedup"], 2) == 6.67
+    assert round(hit["speedup_1t"], 2) == 26.67
+
+
+def test_speed_bar_mult_defaults_to_merely_faster_and_rejects_nonpositive(monkeypatch) -> None:
+    bar = {"duck_us": 1000, "rows": [[1, 4]]}
+    monkeypatch.delenv("LEMMA_SPEED_BAR_MULT", raising=False)
+    assert _apply_speed_bar(_fast_run(999), bar)["status"] == "SUCCESS"
+    assert _apply_speed_bar(_fast_run(1000), bar)["status"] == "FAILURE"
+    monkeypatch.setenv("LEMMA_SPEED_BAR_MULT", "0")
+    with pytest.raises(ValueError, match="positive"):
+        _apply_speed_bar(_fast_run(10), bar)
 
 
 def test_write_group_count_measure_matches_two_domains(tmp_path: Path) -> None:

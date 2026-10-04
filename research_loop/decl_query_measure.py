@@ -78,7 +78,10 @@ def write_query_measure(
             bins[suffix] = str(path)
         scales_match = _OUT_SCALES.search(spec)
         scales = [int(x) for x in scales_match.group(1).split(",")] if scales_match else None
+        duck_threads = int(con.execute("SELECT current_setting('threads')").fetchone()[0])
         duck_us, rows, kinds = _time_query(con, sql, out_fields, scales)
+        con.execute("SET threads=1")
+        duck1_us = _median_us(con, sql)
     except duckdb.Error as exc:
         raise ValueError(str(exc)) from exc
     finally:
@@ -88,6 +91,8 @@ def write_query_measure(
     return {
         "bins": bins,
         "duck_us": duck_us,
+        "duck_threads": duck_threads,
+        "duck1_us": duck1_us,
         "rows": rows,
         "kinds": kinds,
         "table_rows": table_rows,
@@ -207,6 +212,18 @@ def _time_query(
     for record in result:
         rows.append([_canon(out_fields[i][1], record[indexes[i]], scales[i]) for i in range(len(out_fields))])
     return int(statistics.median(samples)), rows, kinds
+
+
+def _median_us(con: duckdb.DuckDBPyConnection, sql: str) -> int:
+    """Median of five timed runs after two warmups, in the connection's current thread setting."""
+    for _ in range(2):
+        con.execute(sql).fetchall()
+    samples: list[float] = []
+    for _ in range(5):
+        t0 = time.perf_counter()
+        con.execute(sql).fetchall()
+        samples.append((time.perf_counter() - t0) * 1_000_000)
+    return int(statistics.median(samples))
 
 
 def _kind(exec_rust: str) -> str:

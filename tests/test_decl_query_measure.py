@@ -73,6 +73,25 @@ def test_measure_exports_string_join_and_int_count(tmp_path: Path) -> None:
     assert "u" in prepared["bins"]
 
 
+def test_measure_reports_all_thread_and_one_thread_duckdb_times(tmp_path: Path) -> None:
+    for name, sql, schema, build in (
+        ("join", _JOIN, _JOIN_SCHEMA, _join_db),
+        ("float", _FLOAT, _FLOAT_SCHEMA, _float_db),
+    ):
+        db = tmp_path / f"{name}.duckdb"
+        build(db)
+        prepared = write_query_measure(
+            sql=sql,
+            schema=schema,
+            catalog=None,
+            db_path=db,
+            dest=tmp_path / name,
+            float_abs_eps="1e-9" if name == "float" else None,
+        )
+        assert prepared["duck_threads"] >= 1
+        assert isinstance(prepared["duck1_us"], int) and prepared["duck1_us"] >= 0
+
+
 def test_measure_exports_float_sum(tmp_path: Path) -> None:
     db = tmp_path / "float.duckdb"
     _float_db(db)
@@ -143,7 +162,7 @@ def test_general_speed_bar_rejects_a_wrong_row_and_a_slower_run() -> None:
     }
     lost = _apply_speed_bar(slow, bar)
     assert lost["status"] == "FAILURE"
-    assert "slower than DuckDB" in lost["compiler_error"]
+    assert "below the speed bar" in lost["compiler_error"]
 
 
 _MULTI = """

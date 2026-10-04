@@ -60,6 +60,37 @@ def test_adversary_imperativespec0_applies_product_flags_and_exact_sum() -> None
                 os.environ[k] = v
 
 
+_DECL_KEYS = {
+    "LEMMA_SPEC_STYLE": "declarative",
+    "LEMMA_FAST_TRUSTEDS": "0",
+    "LEMMA_ENABLE_PARALLEL": "0",
+    "LEMMA_ENABLE_VECTOR_SCAN": "0",
+    "LEMMA_ENABLE_SPILL_HASH": "0",
+    "LEMMA_FOLD_SLOT_AXIOMATIC": "0",
+    "LEMMA_EXACT_SUM": "1",
+}
+
+
+def test_adversary_declarative0_resolves_to_declarative_transpiler() -> None:
+    cfg = get_config("adversary_declarative0")
+    assert cfg.transpiler == "declarative"
+    assert cfg.name == "adversary_declarative0"
+    assert cfg.env == _DECL_KEYS
+
+
+def test_adversary_declarative0_applies_flags_and_restores(monkeypatch: pytest.MonkeyPatch) -> None:
+    for k in [*_DECL_KEYS, "LEMMA_TRUST_CONFIG"]:
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("LEMMA_FAST_TRUSTEDS", "1")  # a pre-set value must come back
+    with apply_trust_config("adversary_declarative0"):
+        for k, v in _DECL_KEYS.items():
+            assert os.environ[k] == v
+        assert os.environ["LEMMA_TRUST_CONFIG"] == "adversary_declarative0"
+    assert os.environ["LEMMA_FAST_TRUSTEDS"] == "1"
+    assert "LEMMA_SPEC_STYLE" not in os.environ
+    assert "LEMMA_TRUST_CONFIG" not in os.environ
+
+
 def test_old_hardware_name_is_rejected_without_alias() -> None:
     with pytest.raises(ValueError, match="unknown trust config 'hardware'"):
         get_config("hardware")
