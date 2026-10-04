@@ -107,6 +107,7 @@ def emit_from_surface(
         "",
         _host_lemma_region(),
         "",
+        _seq_le_source() if any(_order_seq_flags(query, helpers)) else "",
         out_row,
         "",
         f"""pub fn run_query({params}) -> (res: Vec<OutRow>)
@@ -125,6 +126,34 @@ def emit_from_surface(
     if "method_spec" in text:
         raise DeclarativeUnsupported("internal spec shape")
     return text + "\n"
+
+
+_REAL_CMP = r"(?:<=|>=|==|!=|<|>)"
+
+
+def _scalar_returns_real(source: str, call: str) -> bool:
+    fn = call.split("(")[0]
+    return re.search(rf"spec fn {re.escape(fn)}\([^)]*\)\s*->\s*real\b", source) is not None
+
+
+def _promote_int_side(text: str, token: str) -> str:
+    """``token`` is a real-valued scalar: compare an ``as int`` operand as a real."""
+    text = re.sub(
+        rf"\(([^()\s]+) as int\)(\s*{_REAL_CMP}\s*){re.escape(token)}",
+        lambda m: f"(({m.group(1)} as int) as real){m.group(2)}{token}",
+        text,
+    )
+    return re.sub(
+        rf"{re.escape(token)}(\s*{_REAL_CMP}\s*)\(([^()\s]+) as int\)",
+        lambda m: f"{token}{m.group(1)}(({m.group(2)} as int) as real)",
+        text,
+    )
+
+
+def _seq_le_source() -> str:
+    from declarative_spec.emit_projection import _seq_le_fn
+
+    return _seq_le_fn() + "\n"
 
 
 def _reject_unemitted(query: Query) -> None:
@@ -927,6 +956,10 @@ def _ensures(query: Query, helpers: _Helpers, model: SchemaModel) -> str:
     tail_q.in_subqueries = []
     tail_q.set_op = None
     tail_q.set_query = None
+    text_order = helpers.key_ty is not None and any(_order_seq_flags(query, helpers))
+    if text_order:
+        tail_q.order_by = []
+        lines.append(_typed_order_line(query, helpers))
     tail = tail_ensures(tail_q)
     if tail.strip():
         lines.append(tail)
@@ -1045,6 +1078,23 @@ def _having(query: Query, helpers: _Helpers, scalars: dict[str, str], key: str) 
         repl.append((src.alias, f"{agg.name}({p}, 0{key_arg})"))
     for name, call in scalars.items():
         if re.search(rf"\b{re.escape(name)}\b", expr):
+            if _scalar_returns_real(helpers.source, call):
+                for i, (agg, src) in enumerate(zip(helpers.aggs, query.aggs, strict=True)):
+                    if agg.ret == "real" or agg.float_out:
+                        continue
+                    a = re.escape(src.alias)
+                    n = re.escape(name)
+                    tok = f"__RA{i}__"
+                    expr = re.sub(
+                        rf"\b{a}\b(\s*{_REAL_CMP}\s*){n}\b", rf"{tok}\1{name}", expr
+                    )
+                    expr = re.sub(
+                        rf"\b{n}\b(\s*{_REAL_CMP}\s*){a}\b", rf"{name}\1{tok}", expr
+                    )
+                    if tok in expr:
+                        repl.append(
+                            (tok, f"({agg.name}({p}, 0{key_arg}) as real)")
+                        )
             repl.append((name, call))
     for name, replacement in sorted(repl, key=lambda item: len(item[0]), reverse=True):
         expr = re.sub(rf"\b{re.escape(name)}\b", lambda _m, rep=replacement: rep, expr)
@@ -1059,7 +1109,9 @@ def _omitted_after(query: Query, helpers: _Helpers, scalars: dict[str, str], hav
     key_of = f"{helpers.key_at}({p}, {_idx_call(helpers.main)})"
     out_exprs = _order_exprs_row(query, helpers)
     group_exprs = _order_exprs_key(query, helpers, scalars, key_of)
-    before = _not_after(out_exprs, group_exprs, query.order_by)
+    before = _not_after(
+        out_exprs, group_exprs, query.order_by, _order_seq_flags(query, helpers)
+    )
     return (
         f"forall|{binders}, r: int| #![trigger {helpers.row_hit}({p}, {_idx_call(helpers.main)}), res@[r]] "
         f"{helpers.row_hit}({p}, {_idx_call(helpers.main)}) && ({having_of})"
@@ -1115,11 +1167,22 @@ def _order_exprs_key(
     return exprs
 
 
-def _not_after(left: list[str], right: list[str], keys: list[OrderKey]) -> str:
+def _not_after(
+    left: list[str], right: list[str], keys: list[OrderKey], seq: list[bool] | None = None
+) -> str:
+    """``left`` is not after ``right``. ``seq[k]`` marks a ``Seq<char>`` key, ordered by ``seq_le``."""
+
     def clause(k: int) -> str:
-        cmp = ">=" if keys[k].descending else "<="
         tie = f"({left[k]}) == ({right[k]})"
-        order = f"({left[k]}) {cmp} ({right[k]})"
+        if seq is not None and seq[k]:
+            order = (
+                f"seq_le({right[k]}, {left[k]})"
+                if keys[k].descending
+                else f"seq_le({left[k]}, {right[k]})"
+            )
+        else:
+            cmp = ">=" if keys[k].descending else "<="
+            order = f"({left[k]}) {cmp} ({right[k]})"
         if k + 1 == len(keys):
             return order
         return f"if {tie} {{ {clause(k + 1)} }} else {{ {order} }}"
@@ -1127,6 +1190,23 @@ def _not_after(left: list[str], right: list[str], keys: list[OrderKey]) -> str:
     if not keys:
         return "true"
     return clause(0)
+
+
+def _order_seq_flags(query: Query, helpers: _Helpers) -> list[bool]:
+    flags: list[bool] = []
+    for key in query.order_by:
+        ident = rust_ident(key.column.split(".")[-1])
+        info = next((g[2] for g in helpers.group_infos if g[0] == ident), None)
+        flags.append(info is not None and info.spec_as == "Seq<char>")
+    return flags
+
+
+def _typed_order_line(query: Query, helpers: _Helpers) -> str:
+    """Adjacent result rows are in ORDER BY order, comparing text keys with ``seq_le``."""
+    left = [e.replace("res@[r]", "res@[i]") for e in _order_exprs_row(query, helpers)]
+    right = [e.replace("res@[r]", "res@[i + 1]") for e in _order_exprs_row(query, helpers)]
+    before = _not_after(left, right, query.order_by, _order_seq_flags(query, helpers))
+    return f"forall|i: int| #![trigger res@[i]] 0 <= i && i + 1 < res@.len() ==> ({before})"
 
 
 def _quant(slots: list[_Slot]) -> tuple[str, str]:

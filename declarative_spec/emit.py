@@ -504,6 +504,14 @@ def _max_summands(
     return rows_l * rows_r
 
 
+_COUNT_PATH_SHAPE_REFUSALS = frozenset(
+    {
+        "multi-column GROUP BY not yet emitted in count path",
+        "mixed group key types",
+    }
+)
+
+
 def emit_declarative_spec(
     sql: str,
     schema: dict[str, str] | dict[str, dict[str, str]],
@@ -511,20 +519,25 @@ def emit_declarative_spec(
     *,
     float_abs_eps: str | None = None,
 ) -> str:
+    from declarative_spec.emit_surface import emit_from_surface
+
     try:
         parsed = parse_declarative_sql(sql)
     except DeclarativeUnsupported:
-        from declarative_spec.emit_surface import emit_from_surface
-
         return emit_from_surface(sql, schema, catalog, float_abs_eps=float_abs_eps)
     from_table = parsed.from_table or parsed.left_table or ""
     model = SchemaModel.from_caller(schema, from_table)
-
     ctx = _EmitCtx(catalog=catalog, lines=[], consts=[], float_eps=float_abs_eps)
-
-    if parsed.is_join:
-        return _emit_join_sum(parsed, model, ctx, float_abs_eps)
-    return _emit_count(parsed, model, ctx)
+    try:
+        if parsed.is_join:
+            return _emit_join_sum(parsed, model, ctx, float_abs_eps)
+        return _emit_count(parsed, model, ctx)
+    except DeclarativeUnsupported as exc:
+        # The count emitter takes one group key of one type. The surface emitter takes the
+        # other grouped-count shapes, or raises its own DeclarativeUnsupported.
+        if str(exc) not in _COUNT_PATH_SHAPE_REFUSALS:
+            raise
+        return emit_from_surface(sql, schema, catalog, float_abs_eps=float_abs_eps)
 
 
 def _emit_count(parsed: ParsedQuery, model: SchemaModel, ctx: _EmitCtx) -> str:

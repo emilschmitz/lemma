@@ -48,8 +48,206 @@ def _parse_expression(expression: exp.Expression) -> Query:
         left.set_query = right
         return left
     if isinstance(expression, exp.Select):
-        return _parse_select(expression)
+        return _parse_select(_fold_anti_joins(_fold_derived_agg_joins(expression)))
     raise DeclarativeUnsupported("unsupported top-level SQL shape")
+
+
+def _fold_derived_agg_joins(select: exp.Select) -> exp.Select:
+    """Turn ``JOIN (SELECT g.., AGG(x) AS a FROM t [WHERE w] GROUP BY g..) m ON k = m.g.. AND v = m.a``
+    into ``WHERE v = (SELECT AGG(x) FROM t WHERE w AND g = k ..)``.
+
+    The two forms select the same rows: a group exists exactly when the correlated
+    subquery has rows, and a NULL key or NULL aggregate matches in neither. The join is
+    only folded when the derived table is used for nothing but that equality.
+    """
+    select = select.copy()
+    kept: list[exp.Join] = []
+    extra: list[exp.Expression] = []
+    for join in select.args.get("joins") or []:
+        folded = _derived_join_condition(select, join)
+        if folded is None:
+            kept.append(join)
+        else:
+            extra.append(folded)
+    if not extra:
+        return select
+    select.set("joins", kept or None)
+    where = select.args.get("where")
+    cond: exp.Expression | None = where.this if where else None
+    for e in extra:
+        cond = e if cond is None else exp.And(this=cond, expression=e)
+    select.set("where", exp.Where(this=cond))
+    return select
+
+
+def _derived_join_condition(select: exp.Select, join: exp.Join) -> exp.Expression | None:
+    sub = join.this
+    if not isinstance(sub, exp.Subquery) or not sub.alias:
+        return None
+    if (join.side or join.kind or "INNER").upper() != "INNER":
+        return None
+    inner = sub.this
+    if not isinstance(inner, exp.Select) or inner.args.get("joins"):
+        return None
+    if any(inner.args.get(k) for k in ("having", "order", "limit", "offset", "with_", "distinct")):
+        return None
+    from_clause = inner.args.get("from_")
+    group = inner.args.get("group")
+    if from_clause is None or group is None or not isinstance(from_clause.this, exp.Table):
+        return None
+    group_names = []
+    for g in group.expressions:
+        if not isinstance(g, exp.Column):
+            return None
+        group_names.append(g.name.lower())
+    agg_item = None
+    for item in inner.expressions:
+        node = _unwrap_alias(item)
+        if _is_aggregate(item):
+            if agg_item is not None or not isinstance(item, exp.Alias):
+                return None
+            agg_item = item
+        elif not (isinstance(node, exp.Column) and node.name.lower() in group_names):
+            return None
+    if agg_item is None:
+        return None
+    alias = sub.alias
+    on = join.args.get("on")
+    pairs: list[tuple[exp.Column, str]] = []  # (outer column, derived column name)
+
+    def conjuncts(node: exp.Expression) -> list[exp.Expression]:
+        while isinstance(node, exp.Paren):
+            node = node.this
+        if isinstance(node, exp.And):
+            return conjuncts(node.left) + conjuncts(node.right)
+        return [node]
+
+    for c in conjuncts(on) if on is not None else []:
+        if not isinstance(c, exp.EQ):
+            return None
+        left, right = c.left, c.right
+        if not (isinstance(left, exp.Column) and isinstance(right, exp.Column)):
+            return None
+        if right.table == alias and left.table != alias:
+            pairs.append((left, right.name))
+        elif left.table == alias and right.table != alias:
+            pairs.append((right, left.name))
+        else:
+            return None
+    value_pairs = [p for p in pairs if p[1].lower() == agg_item.alias.lower()]
+    key_pairs = [p for p in pairs if p[1].lower() != agg_item.alias.lower()]
+    if len(value_pairs) != 1 or {n.lower() for _c, n in key_pairs} != set(group_names):
+        return None
+    if len(key_pairs) != len(group_names):
+        return None
+    # the derived table may appear only in its own ON clause
+    for col in select.find_all(exp.Column):
+        if col.table == alias and not _inside(col, join):
+            return None
+    inner_alias = f"dq_{alias}"
+    inner = inner.copy()
+    inner.args["from_"].this.set("alias", exp.TableAlias(this=exp.to_identifier(inner_alias)))
+    for col in inner.find_all(exp.Column):
+        if not col.table:
+            col.set("table", exp.to_identifier(inner_alias))
+    cond = inner.args["where"].this if inner.args.get("where") else None
+    for outer_col, name in key_pairs:
+        eq = exp.EQ(
+            this=exp.column(name, table=inner_alias),
+            expression=outer_col.copy(),
+        )
+        cond = eq if cond is None else exp.And(this=cond, expression=eq)
+    scalar = exp.Select(expressions=[agg_item.this.copy()])
+    scalar.set("from_", inner.args["from_"])
+    if cond is not None:
+        scalar.set("where", exp.Where(this=cond))
+    return exp.EQ(this=value_pairs[0][0].copy(), expression=exp.Subquery(this=scalar))
+
+
+def _fold_anti_joins(select: exp.Select) -> exp.Select:
+    """Turn ``LEFT JOIN t p ON eqs WHERE .. AND p.k IS NULL`` into ``AND NOT EXISTS (SELECT 1 FROM t p WHERE eqs)``.
+
+    Sound when ``p.k`` takes part in an ON equality (a matched row then has ``p.k`` non-NULL, so
+    ``p.k IS NULL`` holds exactly for unmatched rows) and ``p`` is used nowhere else.
+    """
+    select = select.copy()
+    where = select.args.get("where")
+    if where is None:
+        return select
+    kept: list[exp.Join] = []
+    new_where = where.this
+    for join in select.args.get("joins") or []:
+        result = _anti_join_where(select, join, new_where)
+        if result is None:
+            kept.append(join)
+        else:
+            new_where = result
+    if len(kept) == len(select.args.get("joins") or []):
+        return select
+    select.set("joins", kept or None)
+    select.set("where", exp.Where(this=new_where))
+    return select
+
+
+def _anti_join_where(
+    select: exp.Select, join: exp.Join, where: exp.Expression
+) -> exp.Expression | None:
+    if (join.side or "").upper() != "LEFT" or not isinstance(join.this, exp.Table):
+        return None
+    alias = join.this.alias or join.this.name
+    on = join.args.get("on")
+    if on is None:
+        return None
+
+    def conjuncts(node: exp.Expression) -> list[exp.Expression]:
+        while isinstance(node, exp.Paren):
+            node = node.this
+        if isinstance(node, exp.And):
+            return conjuncts(node.left) + conjuncts(node.right)
+        return [node]
+
+    on_cols = {
+        c.name.lower()
+        for c in conjuncts(on)
+        if isinstance(c, exp.EQ)
+        for c in (c.left, c.right)
+        if isinstance(c, exp.Column) and c.table == alias
+    }
+    where_parts = conjuncts(where)
+    target = None
+    for part in where_parts:
+        if (
+            isinstance(part, exp.Is)
+            and isinstance(part.expression, exp.Null)
+            and isinstance(part.this, exp.Column)
+            and part.this.table == alias
+            and part.this.name.lower() in on_cols
+        ):
+            target = part
+            break
+    if target is None:
+        return None
+    for col in select.find_all(exp.Column):
+        if col.table == alias and col is not target.this and not _inside(col, on):
+            return None
+    rest = [p for p in where_parts if p is not target]
+    sub = exp.Select(expressions=[exp.Literal.number(1)])
+    sub.set("from_", exp.From(this=join.this.copy()))
+    sub.set("where", exp.Where(this=on.copy()))
+    not_exists = exp.Not(this=exp.Exists(this=sub))
+    cond: exp.Expression = not_exists
+    for p in rest:
+        cond = exp.And(this=p.copy(), expression=cond)
+    return cond
+
+
+def _inside(node: exp.Expression, ancestor: exp.Expression) -> bool:
+    cur = node
+    while cur is not None:
+        if cur is ancestor:
+            return True
+        cur = cur.parent
+    return False
 
 
 def _check_forbidden(expression: exp.Expression) -> None:
