@@ -122,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
             report = judge_candidate(
                 cand, config=args.config, verify=True, spec_style=args.spec_style
             )
-            print(json.dumps(report, indent=2))
+            print(json.dumps(report, indent=2, default=str))
             return 0
 
         before_tree = repo_snapshot(ROOT)
@@ -153,7 +153,7 @@ def main(argv: list[str] | None = None) -> int:
             report = judge_candidate(
                 cand, config=args.config, verify=True, spec_style=args.spec_style
             )
-            print(json.dumps(report, indent=2))
+            print(json.dumps(report, indent=2, default=str))
             return 0
     except subprocess.TimeoutExpired:
         print("agent timed out", file=sys.stderr)

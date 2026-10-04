@@ -147,6 +147,115 @@ def test_product_sum_example_verifies(monkeypatch: pytest.MonkeyPatch) -> None:
     assert ok and "0 errors" in out, out[-1500:]
 
 
+_DISTINCT = (
+    "SELECT stmt, rfile, COUNT(*) AS cnt, COUNT(DISTINCT adsh) AS num_filings FROM pre "
+    "WHERE stmt IS NOT NULL GROUP BY stmt, rfile ORDER BY cnt DESC"
+)
+
+
+def test_hard_distinct_shape_points_to_the_long_example_and_shows_only_its_header(tmp_path: Path) -> None:
+    schema = {"pre": {"stmt": "varchar", "rfile": "varchar", "adsh": "varchar", "line": "bigint"}}
+    spec = emit_declarative_spec(_DISTINCT, schema, CatalogAssumptions(tables={"pre": TableAssumptions(max_rows=64)}))
+    assert spec_shape(spec)["recipe"] == "hard_distinct"
+    p = build_declarative_prompt(sql=_DISTINCT, spec_path="s", edit_path="e", lemma_index="idx", spec_text=spec)
+    assert "context/ro/examples/hard/string_tuple_count_distinct_sorted.rs" in p
+    assert "#[verifier::opaque] spec fn" in p.split("## The recipe for THIS spec")[1].split("## ")[0]  # the header
+    assert "lemma_ins_sort" not in p  # the 550-line body is not pasted
+    mount_examples(tmp_path)
+    assert (tmp_path / "examples" / "hard" / "string_tuple_count_distinct_sorted.rs").is_file()
+
+
+def test_prompt_documents_the_rlimit_recipe_and_the_ground_term_rule() -> None:
+    p = _prompt("SELECT stmt, COUNT(*) AS c FROM pre GROUP BY stmt")
+    assert "invariant not satisfied before loop" in p and "`#[verifier::opaque] spec fn`" in p
+    assert "ground term" in p and "choose|r: int|" in p
+
+
+def test_prompt_points_at_vstd_first_and_says_where_broadcast_use_goes() -> None:
+    p = _prompt("SELECT stmt, COUNT(*) AS c FROM pre GROUP BY stmt")
+    assert "insert_ensures" in p and "Grep `LEMMAS.md` for a vstd lemma before you write your own" in p
+    assert "at the top level of the helper region it is rejected" in p
+
+
+def test_minmax_with_string_filter_gets_its_example_and_the_string_literal_tip() -> None:
+    sql = "SELECT MIN(line) AS lo, MAX(line) AS hi FROM pre WHERE stmt = 'BS' AND report = 3"
+    spec = _spec(sql)
+    assert spec_shape(spec)["recipe"] == "ungrouped_minmax"
+    p = build_declarative_prompt(sql=sql, spec_path="s", edit_path="e", lemma_index="idx", spec_text=spec)
+    assert "String::from_str" in p and "pure@ == \"pure\"@" in p
+    assert "any ==> forall" in p.split("## Which shapes")[0]  # the example body is inlined
+
+
+_PROJ_SCHEMA = {"t": {"a": "bigint", "g": "bigint"}, "u": {"g": "bigint", "w": "bigint"}}
+_PROJ_CATALOG = CatalogAssumptions(tables={n: TableAssumptions(max_rows=8) for n in _PROJ_SCHEMA})
+
+
+@pytest.mark.parametrize(
+    ("sql", "recipe", "helper_marker"),
+    [
+        ("SELECT a, g FROM t WHERE a > 1", "projection_where", "proof fn lemma_shift"),
+        ("SELECT t.a, u.w FROM t JOIN u ON t.g = u.g", "projection_join", "proof fn lemma_shift"),
+        (
+            "SELECT a FROM t t1 WHERE a = (SELECT MAX(a) FROM t t2 WHERE t2.g = t1.g)",
+            "projection_correlated_max",
+            None,
+        ),
+        ("SELECT DISTINCT g FROM t WHERE a > 1", "projection_distinct", None),
+        ("SELECT a, g FROM t WHERE a > 1 ORDER BY a DESC LIMIT 3", "projection_top_k", None),
+    ],
+)
+def test_projection_shapes_get_their_recipe_helper_and_text(sql: str, recipe: str, helper_marker: str | None) -> None:
+    spec = emit_declarative_spec(sql, _PROJ_SCHEMA, _PROJ_CATALOG)
+    assert spec_shape(spec)["recipe"] == recipe
+    p = build_declarative_prompt(sql=sql, spec_path="s", edit_path="e", lemma_index="idx", spec_text=spec)
+    assert "Projection recipe: walk the rows from the last to the first" in p
+    assert f"context/ro/examples/{recipe}.rs" in p
+    if helper_marker:
+        assert helper_marker in p
+
+
+def test_all_four_helper_files_are_mounted(tmp_path: Path) -> None:
+    mount_examples(tmp_path)
+    names = {f.name for f in (tmp_path / "examples").iterdir()}
+    assert {"projection_where.helpers.rs", "projection_int_key.helpers.rs", "projection_top_k.helpers.rs"} <= names
+    assert (tmp_path / "examples" / "hard" / "group_decimal_sums_string_keys_sorted.rs").is_file()
+
+
+def test_prompt_carries_the_q1_lessons() -> None:
+    p = _prompt("SELECT stmt, COUNT(*) AS c FROM pre GROUP BY stmt")
+    assert "an exec `fn` helper is rejected" in p
+    assert "backward pass" in p and "`as_bytes`" in p and "--rlimit" in p
+
+
+def test_float_spec_gets_the_float_recipe_and_an_integer_spec_does_not() -> None:
+    schema = {"t": {"k": "integer", "v": "double"}}
+    cat = CatalogAssumptions(
+        tables={"t": TableAssumptions(max_rows=64, columns={"v": ColumnAssumption(max_value_exclusive=2**20)})}
+    )
+    sql = "SELECT SUM(v) AS s FROM t WHERE v > 1.5"
+    spec = emit_declarative_spec(sql, schema, cat)
+    p = build_declarative_prompt(sql=sql, spec_path="s", edit_path="e", lemma_index="idx", spec_text=spec)
+    assert "## Floats (this spec has a DOUBLE column or result)" in p
+    assert "`float_sum.rs`" in p and "`float_group_avg_decimal.rs`" in p and "f64_literals_ok()" in p
+    assert "FLOAT_ABS_EPS" not in p.split("## Lemma index")[0]
+    plain = _prompt("SELECT stmt, COUNT(*) AS c FROM pre GROUP BY stmt")
+    assert "## Floats (this spec" not in plain
+
+
+def test_prompt_explains_how_to_find_the_rlimit_culprit() -> None:
+    p = _prompt("SELECT stmt, COUNT(*) AS c FROM pre GROUP BY stmt")
+    assert "There is no `--profile`" in p and "state it pointwise" in p and "assert forall ... by" in p
+
+
+def test_join_min_gets_the_probe_example_and_the_skip_tip() -> None:
+    sql = "SELECT MIN(n.line) AS a FROM pre n JOIN sub s ON n.adsh = s.adsh WHERE n.stmt = 'BS'"
+    spec = _spec(sql)
+    assert spec_shape(spec)["recipe"] == "join_min_probe"
+    p = build_declarative_prompt(sql=sql, spec_path="s", edit_path="e", lemma_index="idx", spec_text=spec)
+    assert "context/ro/examples/join_min_stringhashmap_probe.rs" in p
+    assert "skip the probe of the other side" in p
+
+
 def test_mount_examples_copies_every_example(tmp_path: Path) -> None:
     mount_examples(tmp_path)
     names = {f.name for f in (tmp_path / "examples").iterdir()}
