@@ -564,8 +564,23 @@ def _fn_name(prefix: str, kind: str, alias: str) -> str:
     raise DeclarativeUnsupported(kind)
 
 
+_CASE_RESULT_COL = re.compile(r"\{ cols\.([A-Za-z_][A-Za-z0-9_]*)@\[i\] \}")
+
+
+def _case_float_results(expr: str, main: list[_Slot], model: SchemaModel) -> list[tuple[_Slot, str]]:
+    """The float columns a CASE can return (its THEN/ELSE results), with their slots."""
+    found: list[tuple[_Slot, str]] = []
+    for col in _CASE_RESULT_COL.findall(expr):
+        slot, info = _find_col(col, None, main, model)
+        if info.is_float:
+            found.append((slot, col))
+    return found
+
+
 def _agg_is_float(agg: Agg, main: list[_Slot], model: SchemaModel) -> bool:
-    if agg.expr or agg.kind.upper() in ("COUNT", "COUNT_DISTINCT"):
+    if agg.expr:
+        return agg.kind.upper() in ("SUM", "AVG") and bool(_case_float_results(agg.expr, main, model))
+    if agg.kind.upper() in ("COUNT", "COUNT_DISTINCT"):
         return False
     if not agg.column or agg.column == "*":
         return False
@@ -611,7 +626,7 @@ def _value_fn(
     if agg.arith:
         expr = _compile_pred(agg.arith, main, [], model, {})
     elif agg.expr:
-        expr = _compile_case(agg.expr, main, model)
+        expr = _compile_case(agg.expr, main, model, real=ret == "real" and not cast_real)
     elif agg.column and agg.column != "*":
         slot, info = _find_col(agg.column, agg.table, main, model)
         expr = _cell(slot, agg.column, info)
@@ -635,18 +650,28 @@ def _value_fn(
     return name
 
 
-def _compile_case(expr: str, main: list[_Slot], model: SchemaModel) -> str:
+def _compile_case(expr: str, main: list[_Slot], model: SchemaModel, *, real: bool = False) -> str:
     def repl(m: re.Match[str]) -> str:
         col = m.group(1)
         slot, info = _find_col(col, None, main, model)
         return _cell(slot, col, info)
 
-    out = _COLS_I.sub(repl, expr)
-    out = re.sub(r"(as real\)) > 0\b", r"\1 > 0real", out)
-    out = re.sub(r"(as real\)) < 0\b", r"\1 < 0real", out)
-    out = re.sub(r"(as real\)) >= 0\b", r"\1 >= 0real", out)
-    out = re.sub(r"(as real\)) <= 0\b", r"\1 <= 0real", out)
+    out = _real_literals(_COLS_I.sub(repl, expr))
+    if real:
+        return re.sub(r"\{ (-?\d+) \}", r"{ \1real }", out)
     return out.replace("{ 1 }", "{ 1int }").replace("{ 0 }", "{ 0int }")
+
+
+_REAL_CELL = r"\([A-Za-z_][A-Za-z0-9_.#]*@\[[A-Za-z0-9_]+\] as real\)"
+_CMP_OP = r"(?:==|!=|<=|>=|<|>)"
+_REAL_LEFT = re.compile(rf"({_REAL_CELL})(\s*{_CMP_OP}\s*)(-?\d+)(?![\w.])")
+_REAL_RIGHT = re.compile(rf"(?<![\w.])(-?\d+)(\s*{_CMP_OP}\s*)({_REAL_CELL})")
+
+
+def _real_literals(text: str) -> str:
+    """An integer literal compared with a float cell is a real literal (``5`` becomes ``5real``)."""
+    text = _REAL_LEFT.sub(r"\1\2\3real", text)
+    return _REAL_RIGHT.sub(r"\1real\2\3", text)
 
 
 def _hit(row_hit: str, key_at: str, main: list[_Slot], params: list[_Slot], key_ty: str | None) -> str:
@@ -1446,15 +1471,18 @@ def _require_float_mags(
     from declarative_spec.lemmas import FitRefusal
     from research_loop.table_assumptions import column_assumption_exclusive
 
+    needed: list[tuple[_Slot, str]] = []
     for src in query.aggs:
-        if src.expr or not src.column or src.column == "*":
-            continue
-        slot, info = _find_col(src.column, src.table, helpers.main, model)
-        if not info.is_float:
-            continue
+        if src.expr:
+            needed += _case_float_results(src.expr, helpers.main, model)
+        elif src.column and src.column != "*":
+            slot, info = _find_col(src.column, src.table, helpers.main, model)
+            if info.is_float:
+                needed.append((slot, src.column))
+    for slot, column in needed:
         table_assumptions = _lookup_table_assumptions(catalog, slot.table)
-        if column_assumption_exclusive(src.column, table_assumptions) is None:
-            raise FitRefusal(f"float sum requires magnitude cap for {slot.table}.{src.column}")
+        if column_assumption_exclusive(column, table_assumptions) is None:
+            raise FitRefusal(f"float sum requires magnitude cap for {slot.table}.{column}")
 
 
 def _float_mag_name(table: str, column: str) -> str:
@@ -1624,7 +1652,7 @@ def _compile_pred(
         if any(s.param == col or s.alias == col for s in scopes):
             continue
         out = re.sub(rf"(?<!\.)\b{re.escape(col)}\b", _cell(slot, col, info), out)
-    return out
+    return _real_literals(out)
 
 
 def _columns(scopes: list[_Slot], model: SchemaModel) -> dict[str, tuple[_Slot, ColumnTypeInfo]]:
