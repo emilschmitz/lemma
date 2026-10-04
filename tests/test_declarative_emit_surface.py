@@ -171,6 +171,61 @@ def test_integer_group_broadcasts_its_hash_axiom() -> None:
     assert "axiom_i64_obeys_hash_table_key_model;" not in huge_spec
 
 
+PROJ = """
+SELECT s.fy, s.name
+FROM sub s
+WHERE s.fy = 2023 AND s.name IS NOT NULL
+ORDER BY s.name ASC
+LIMIT 10
+"""
+
+PROJ_MAX = """
+SELECT s.name, n.tag, n.value
+FROM num n
+JOIN sub s ON n.adsh = s.adsh
+WHERE n.uom = 'USD' AND s.fy = 2023 AND n.value IS NOT NULL
+      AND n.value = (
+          SELECT MAX(n2.value)
+          FROM num n2
+          WHERE n2.tag = n.tag AND n2.adsh = n.adsh AND n2.uom = 'USD'
+      )
+ORDER BY n.value DESC
+LIMIT 100
+"""
+
+
+def test_filter_projection_counts_each_hit() -> None:
+    spec = _emit(PROJ)
+    assert "method_spec" not in spec
+    assert "assume(" not in spec
+    assert "arbitrary()" not in spec
+    assert "pub fy: i64" in spec
+    assert "pub name: String" in spec
+    assert "hit_count(" in spec
+    assert "lemma_hit_count_step(" in spec
+    assert "hits_with(" in spec
+    assert "out_copies(" in spec
+    assert "res@.len() <= 10" in spec
+    assert "seq_le(" in spec
+    assert "sq_1(" not in spec
+
+
+def test_correlated_max_projection_binds_the_outer_row() -> None:
+    spec = _emit(PROJ_MAX)
+    assert "method_spec" not in spec
+    assert "assume(" not in spec
+    assert "arbitrary()" not in spec
+    assert "pub open spec fn sq_1(" in spec
+    assert "(n.tag@[j0]@) == (n.tag@[i0]@)" in spec
+    assert "(n.adsh@[j0]@) == (n.adsh@[i0]@)" in spec
+    assert "n.tag@[j0]@) == (n.tag@[j0]@" not in spec
+    assert "exists|j0: int|" in spec
+    assert "forall|j0: int|" in spec
+    assert "hit_count(" in spec
+    assert "res@.len() <= 100" in spec
+    assert "Cols_num" in spec and "Cols_sub" in spec
+
+
 def test_outer_join_is_refused() -> None:
     sql = """
     SELECT n.tag, COUNT(*) AS cnt

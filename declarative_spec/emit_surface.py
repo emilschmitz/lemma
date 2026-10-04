@@ -66,7 +66,11 @@ def emit_from_surface(
     model = SchemaModel.from_caller(schema, query.tables[0])
     _reject_unemitted(query)
     if not query.aggs:
-        raise DeclarativeUnsupported("projection")
+        if not query.projection:
+            raise DeclarativeUnsupported("projection")
+        from declarative_spec.emit_projection import emit_projection_program
+
+        return emit_projection_program(query, model, catalog)
 
     helpers = _emit_helpers(query, "", model)
     if any(a.float_out for a in helpers.aggs):
