@@ -128,38 +128,57 @@ def host_names(spec_rs: str) -> set[str]:
     return set(_ITEM_NAME.findall(text)) | _ASSEMBLER_NAMES
 
 
+def _continues_after_block(rest: str) -> bool:
+    """After a top-level `}`: does the same item go on? A new item starts with a word or `#[`.
+
+    `else`, the body `{` after a block expression in the signature, and an operator or `,` all continue
+    the item (`ensures if c { a } else { b } {`).
+    """
+    rest = rest.lstrip()
+    if not rest:
+        return False
+    if re.match(r"(?:else|ensures|requires|decreases|recommends|opens_invariants|no_unwind|returns)\b", rest):
+        return True
+    return not (rest[0].isalpha() or rest[0] == "_" or rest[0] == "#")
+
+
 def _top_level_headers(cleaned: str) -> list[str]:
-    """Text before each top-level `{` or `;` of the helper region, one entry per item."""
+    """Text before each item's body `{` (or its `;`) in the helper region, one entry per item.
+
+    Braces inside parentheses or brackets belong to an expression. A block that closes and is followed by
+    `else`, an operator or another `{` is part of the same signature (see ``_continues_after_block``).
+    """
     headers: list[str] = []
     depth = 0
-    paren = 0  # a `{` inside `(` or `[` of a header (a struct literal, `(if c { a } else { b })`) is not the body
+    paren = 0
     start = 0
+    recorded = False  # the current item's header is already taken
     for i, ch in enumerate(cleaned):
-        if depth == 0 and ch in "([":
+        if ch in "([":
             paren += 1
-        elif depth == 0 and ch in ")]":
+        elif ch in ")]":
             paren -= 1
-        elif ch == "{" and depth == 0 and paren > 0:
-            depth += 1000  # skip to the matching `}` without ending the header
-        elif ch == "}" and depth >= 1000:
-            depth -= 1000
-        elif ch == "{":
-            if depth == 0:
+        elif ch == "{" and paren == 0:
+            if depth == 0 and not recorded:
                 headers.append(cleaned[start:i].strip())
+                recorded = True
             depth += 1
-        elif ch == "}":
+        elif ch == "}" and paren == 0:
             depth -= 1
             if depth < 0:
                 raise ValueError("unbalanced braces in the helper region")
-            if depth == 0:
+            if depth == 0 and not _continues_after_block(cleaned[i + 1 :]):
                 start = i + 1
-        elif ch == ";" and depth == 0:
-            headers.append(cleaned[start:i].strip())
+                recorded = False
+        elif ch == ";" and depth == 0 and paren == 0:
+            if not recorded:
+                headers.append(cleaned[start:i].strip())
             start = i + 1
-    if depth != 0:
-        raise ValueError("unbalanced braces in the helper region")
+            recorded = False
+    if depth != 0 or paren != 0:
+        raise ValueError("unbalanced braces or parentheses in the helper region")
     tail = cleaned[start:].strip()
-    if tail:
+    if tail and not recorded:
         headers.append(tail)
     return headers
 

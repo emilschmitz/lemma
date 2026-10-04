@@ -248,6 +248,38 @@ def test_helper_region_holds_only_proof_and_spec_fns(helpers: str) -> None:
     assert not admit_helpers(helpers, _USUM_SPEC).ok, helpers
 
 
+_BLOCK_SIGNATURES = [
+    "proof fn p(x: int) ensures if x > 0 { x > 0 } else { x <= 0 } { }",
+    "proof fn p(x: int) requires if x > 0 { true } else if x == 0 { true } else { x < 0 } ensures true { }",
+    "proof fn p(x: int) ensures (if x > 0 { 1int } else { 0int }) >= 0 { }",
+    "spec fn pick(x: int) -> int { if x > 0 { x } else { 0 } }",
+    "proof fn p(x: int) ensures { let y = x; y == x } { }",
+    "proof fn p(s: Seq<int>) ensures forall|i: int| 0 <= i < s.len() ==> if s[i] > 0 { true } else { s[i] <= 0 } { }",
+]
+
+
+@pytest.mark.parametrize("helper", _BLOCK_SIGNATURES)
+def test_helper_with_block_expressions_in_its_signature_is_accepted(helper: str) -> None:
+    both = helper + "\nproof fn after_it() { }"  # the next item is still seen as its own item
+    assert admit_helpers(helper, _USUM_SPEC).ok, admit_helpers(helper, _USUM_SPEC).violations
+    assert admit_helpers(both, _USUM_SPEC).ok, admit_helpers(both, _USUM_SPEC).violations
+
+
+def test_block_signatures_do_not_hide_a_bad_item_or_a_reused_name() -> None:
+    sig = "proof fn p(x: int) ensures if x > 0 { true } else { true } { }\n"
+    assert not admit_helpers(sig + "fn plain() { }", _USUM_SPEC).ok
+    assert not admit_helpers(sig + "struct S { x: u64 }", _USUM_SPEC).ok
+    taken = admit_helpers("proof fn row_hit(x: int) ensures if x > 0 { true } else { true } { }", _USUM_SPEC)
+    assert any("row_hit" in v for v in taken.violations)
+    twice = admit_helpers(sig + sig, _USUM_SPEC)
+    assert any("defined twice" in v for v in twice.violations)
+
+
+def test_unbalanced_parentheses_in_a_signature_are_reported() -> None:
+    result = admit_helpers("proof fn p(x: int ensures true { }", _USUM_SPEC)
+    assert not result.ok and any("unbalanced" in v for v in result.violations)
+
+
 def test_marker_tampering() -> None:
     agent = _agent_file(_USUM_SPEC, "    0u64", "proof fn ok_helper() { }")
     assert extract_agent_edit(agent) == "0u64"

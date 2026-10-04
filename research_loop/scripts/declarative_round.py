@@ -21,6 +21,7 @@ import argparse
 import json
 import os
 import random
+import re
 import subprocess
 import sys
 import time
@@ -36,7 +37,14 @@ from research_loop.table_assumptions import CatalogAssumptions, TableAssumptions
 from research_loop.trust_configs import apply_trust_config
 
 MAIN_REPO = Path("/home/emil/projects/lemma-db")
-SEC_DB = MAIN_REPO / "holdout" / "gendb_sec_edgar" / "duckdb" / "sec_edgar_local.duckdb"
+# The local SEC file is SYNTHETIC (holdout/gendb_sec_edgar/synth_tiny.py), not real EDGAR; the DECIMAL variant
+# (value as DECIMAL(38,4), derived from the stored doubles) is the default for this menu.
+SEC_DB = Path(
+    os.environ.get(
+        "LEMMA_DUCKDB_PATH",
+        MAIN_REPO / "holdout" / "gendb_sec_edgar" / "duckdb" / "sec_edgar_local_dec.duckdb",
+    )
+)
 TPCH_SF = float(os.environ.get("LEMMA_TPCH_SF", "1"))
 TPCH_DB = Path(os.environ.get("LEMMA_TPCH_DB", ROOT / "research_loop" / "generated" / f"tpch_sf{TPCH_SF:g}.duckdb"))
 OUT = ROOT / "research_loop" / "generated" / "decl_rounds"
@@ -126,10 +134,32 @@ def ensure_tpch_db() -> Path:
     return TPCH_DB
 
 
+def sec_package() -> str:
+    from research_loop.scripts.declarative_draws import package_for_db
+
+    return package_for_db(SEC_DB)
+
+
+def sec_schema() -> dict:
+    from research_loop.scripts.sqlsmith_trusted_coverage import load_sec_schema
+
+    return load_sec_schema(SEC_DB)
+
+
 def sec_catalog() -> CatalogAssumptions:
     from research_loop.assumption_packages import assumption_package
 
-    return assumption_package("sec_margin")
+    return assumption_package(sec_package())
+
+
+_AVG = re.compile(r"\bAVG\s*\(", re.I)
+
+
+def _avg_refusal(kind: str, qid: str, sql: str) -> dict | None:
+    """AVG results are DOUBLE in the reference engine: the float idealization agent owns them. They stay in the sample, are recorded with their SQL as pending, and get no prover until that branch lands."""
+    if _AVG.search(sql):
+        return {"kind": kind, "qid": qid, "sql": " ".join(sql.split()), "refusal": "pending idealization: AVG returns DOUBLE (float agent branch not merged); no prover is launched on it"}
+    return None
 
 
 def draw_sec(seed: int, count: int, schema: dict, catalog: CatalogAssumptions) -> tuple[list[dict], list[dict]]:
@@ -154,6 +184,10 @@ def draw_sec(seed: int, count: int, schema: dict, catalog: CatalogAssumptions) -
     for qid, sql in pool:
         if len(picked) == count:
             break
+        skipped = _avg_refusal("sec", qid, sql)
+        if skipped:
+            refused.append(skipped)
+            continue
         try:
             emit_declarative_spec(sql, schema, catalog)
         except (DeclarativeUnsupported, FitRefusal, ValueError) as exc:
@@ -173,6 +207,10 @@ def draw_tpch(seed: int, count: int) -> tuple[list[dict], list[dict]]:
     for name, sql in variants:
         if len(picked) == count:
             break
+        skipped = _avg_refusal("tpch", name, sql)
+        if skipped:
+            refused.append(skipped)
+            continue
         try:
             emit_declarative_spec(sql, schema, catalog)
         except (DeclarativeUnsupported, FitRefusal, ValueError) as exc:
@@ -183,15 +221,11 @@ def draw_tpch(seed: int, count: int) -> tuple[list[dict], list[dict]]:
 
 
 def draw(seed: int, mix: list[str]) -> tuple[list[dict], list[dict]]:
-    sec_schema = None
     picked: list[dict] = []
     refused: list[dict] = []
     n_sec, n_tpch = mix.count("sec"), mix.count("tpch")
     if n_sec:
-        from research_loop.scripts.sqlsmith_trusted_coverage import load_sec_schema
-
-        sec_schema = load_sec_schema()
-        p, r = draw_sec(seed, n_sec, sec_schema, sec_catalog())
+        p, r = draw_sec(seed, n_sec, sec_schema(), sec_catalog())
         picked += p
         refused += r
     if n_tpch:
@@ -199,6 +233,115 @@ def draw(seed: int, mix: list[str]) -> tuple[list[dict], list[dict]]:
         picked += p
         refused += r
     return picked, refused
+
+
+def draw_tiered(seed: int, tiers: list[str], *, heldout: bool = False) -> tuple[list[dict], list[dict]]:
+    """One fresh query per requested tier (see ``declarative_tiers``); the kind alternates with the seed.
+
+    T1 to T3 come from seeded templates on the SEC (synthetic, DECIMAL) and TPC-H schemas; T4 and T5 also from the
+    classified SEC shuffle pool. AVG draws stay in the sample as pending idealization and get no prover.
+
+    Novelty: a query already in the seen registry is never drawn again; a candidate with a new SHAPE (literals
+    stripped) is preferred. ``heldout`` draws only held-out shapes (the evaluation set: never used for recipes,
+    fixtures or prompt text); the default draws only tuned shapes. Every pick is registered.
+    """
+    from research_loop.scripts import declarative_tiers as tiers_mod
+    from research_loop.scripts.declarative_tiers import seeded_queries, tier as classify
+    from research_loop.scripts.sqlsmith_trusted_coverage import parse_sql_file
+
+    sec_sch, sec_cat = sec_schema(), sec_catalog()
+    tpch_sch, tpch_cat = tpch_schema_and_catalog(ensure_tpch_db())
+    ctx = {"sec": (sec_sch, sec_cat), "tpch": (tpch_sch, tpch_cat)}
+    picked: list[dict] = []
+    refused: list[dict] = []
+    for i, tier_name in enumerate(tiers):
+        order = ["sec", "tpch"] if (seed + i) % 2 == 0 else ["tpch", "sec"]
+        cands: list[tuple[str, str, str]] = []
+        for kind in order:
+            if tier_name in ("T1", "T2", "T3"):
+                for qid, sql in seeded_queries(kind, tier_name, random.Random(seed * 10 + i)):
+                    cands.append((kind, qid, sql))
+        if tier_name in ("T4", "T5"):
+            OUT.mkdir(parents=True, exist_ok=True)
+            out_sql = OUT / f"sec_pool_{seed}_{tier_name}.sql"
+            subprocess.run(
+                [sys.executable, str(MAIN_REPO / "holdout" / "gendb_sec_edgar" / "generate_queries.py"), "--seed", str(seed),
+                 "--num-generate", "600", "--num-select", "60", "--db-path", str(SEC_DB), "--output", str(out_sql)],
+                check=True,
+            )
+            pool = parse_sql_file(out_sql)
+            random.Random(seed + i).shuffle(pool)
+            cands += [("sec", qid, sql.strip()) for qid, sql in pool if classify(sql) == tier_name]
+        seen_q, seen_shapes = tiers_mod.load_registry()
+        cands = [
+            c for c in cands
+            if tiers_mod.normalize(c[2]) not in seen_q
+            and tiers_mod.is_heldout(tiers_mod.shape_key(c[2])) == heldout
+        ]
+        cands.sort(key=lambda c: tiers_mod.shape_key(c[2]) in seen_shapes)  # stable: new shapes first
+        for kind, qid, sql in cands:
+            skipped = _avg_refusal(kind, qid, sql)
+            if skipped:
+                refused.append({**skipped, "tier": tier_name})
+                continue
+            schema, catalog = ctx[kind]
+            try:
+                emit_declarative_spec(sql, schema, catalog)
+            except (DeclarativeUnsupported, FitRefusal, ValueError) as exc:
+                refused.append({"kind": kind, "qid": qid, "tier": tier_name, "sql": " ".join(sql.split()), "refusal": str(exc)[:400]})
+                continue
+            nov = tiers_mod.novelty(sql)
+            tiers_mod.register(sql, f"drawn seed {seed} {tier_name}{' heldout' if heldout else ''}")
+            picked.append(
+                {"kind": kind, "qid": qid, "tier": tier_name, "sql": sql, "heldout": heldout, **nov}
+            )
+            break
+    return picked, refused
+
+
+def backfill_registry() -> None:
+    """Register every query drawn so far (saved draws) and the queries behind fixtures, and report contamination."""
+    from research_loop.scripts import declarative_tiers as tiers_mod
+
+    known, _ = tiers_mod.load_registry()
+    for path in sorted(OUT.glob("draw_*.json")):
+        for job in json.loads(path.read_text())["picked"]:
+            if tiers_mod.normalize(job["sql"]) not in known:
+                tiers_mod.register(job["sql"], f"backfill {path.name} {job['qid']}")
+                known.add(tiers_mod.normalize(job["sql"]))
+    for sql, why in _FIXTURE_QUERIES:
+        if tiers_mod.normalize(sql) not in known:
+            tiers_mod.register(sql, why)
+            known.add(tiers_mod.normalize(sql))
+        if tiers_mod.is_heldout(tiers_mod.shape_key(sql)):
+            print(f"CONTAMINATED: fixture shape is in the held-out set: {why}", flush=True)
+
+
+# Queries behind recipes and fixtures: their shapes are tuned shapes and must not be held-out.
+_FIXTURE_QUERIES = [
+    (
+        "SELECT stmt, rfile, COUNT(*) AS cnt, COUNT(DISTINCT adsh) AS num_filings FROM pre WHERE stmt IS NOT NULL "
+        "GROUP BY stmt, rfile ORDER BY cnt DESC",
+        "fixture hard/string_tuple_count_distinct_sorted.rs",
+    ),
+    (
+        "SELECT sum(l_extendedprice * l_discount) AS revenue FROM lineitem WHERE l_shipdate >= date '1994-01-01' "
+        "AND l_shipdate < date '1994-01-01' + interval '1' year AND l_discount BETWEEN 0.09 - 0.01 AND 0.09 + 0.01 "
+        "AND l_quantity < 25",
+        "fixture ungrouped_decimal_product_sum.rs",
+    ),
+    (
+        "SELECT MIN(ddate) AS lo, MAX(ddate) AS hi FROM num WHERE uom = 'pure' AND qtrs = 3",
+        "fixture ungrouped_minmax_string_filter.rs",
+    ),
+    (
+        "SELECT l_returnflag, l_linestatus, sum(l_quantity) AS sum_qty, sum(l_extendedprice) AS sum_base_price, "
+        "sum(l_extendedprice * (1 - l_discount)) AS sum_disc_price, count(*) AS count_order FROM lineitem "
+        "WHERE l_shipdate <= date '1998-12-01' - interval '90' day GROUP BY l_returnflag, l_linestatus "
+        "ORDER BY l_returnflag, l_linestatus",
+        "fixture hard/group_decimal_sums_string_keys_sorted.rs",
+    ),
+]
 
 
 def agent_env(model: str) -> dict[str, str]:
@@ -210,8 +353,6 @@ def agent_env(model: str) -> dict[str, str]:
 def run_query_job(job: dict, model: str, max_iterations: int) -> dict:
     from db_extension.optimizer import run_optimization_loop
     from research_loop.agent_sandbox import claude_docker_args
-    from research_loop.scripts.sqlsmith_trusted_coverage import load_sec_schema
-
     os.environ.update(agent_env(model))
     claude_docker_args()  # raises before any work when no credentials are set
     for key in ("LEMMA_DECL_ROWS", "LEMMA_DECL_SEED", "LEMMA_ASSUMPTION_PACKAGE"):
@@ -219,8 +360,8 @@ def run_query_job(job: dict, model: str, max_iterations: int) -> dict:
     kwargs: dict = {"max_iterations": max_iterations, "use_mock": False}
     if job["kind"] == "sec":
         os.environ["LEMMA_MEASURE_DB"] = str(SEC_DB)
-        os.environ["LEMMA_ASSUMPTION_PACKAGE"] = "sec_margin"
-        kwargs.update(schema=load_sec_schema(), workload="sec")
+        os.environ["LEMMA_ASSUMPTION_PACKAGE"] = sec_package()
+        kwargs.update(schema=sec_schema(), workload="sec")
     else:
         schema, catalog = tpch_schema_and_catalog(TPCH_DB)
         os.environ["LEMMA_MEASURE_DB"] = str(TPCH_DB)
@@ -249,12 +390,18 @@ def main() -> int:
     ap.add_argument("--seed", type=int, required=True)
     ap.add_argument("--model", default=HAIKU)
     ap.add_argument("--mix", default="sec,sec,tpch")
+    ap.add_argument("--heldout", action="store_true", help="with --tiers: draw held-out shapes only (evaluation set)")
+    ap.add_argument("--backfill-registry", action="store_true")
+    ap.add_argument("--tiers", help="comma-separated tiers T1..T5: one fresh query per tier (replaces --mix)")
     ap.add_argument("--max-iterations", type=int, default=2)
     ap.add_argument("--draw-only", action="store_true")
     ap.add_argument("--only", help="comma-separated qids to run (after the draw)")
     args = ap.parse_args()
+    if args.backfill_registry:
+        backfill_registry()
+        return 0
     mix = args.mix.split(",")
-    picked, refused = draw(args.seed, mix)
+    picked, refused = draw_tiered(args.seed, args.tiers.split(","), heldout=args.heldout) if args.tiers else draw(args.seed, mix)
     OUT.mkdir(parents=True, exist_ok=True)
     log = OUT / f"round_{args.seed}.jsonl"
     for r in refused:

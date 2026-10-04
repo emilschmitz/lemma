@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 import tempfile
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -81,12 +82,30 @@ def _load_duckdb(
             )
 
 
-def _decode(cell: str, fty: str) -> object:
+def _decode(cell: str, fty: str, scale: int = 0) -> object:
+    """One printed cell. `NULL` is an `Option` cell; a scaled integer (DECIMAL) is divided by 10**scale."""
+    if cell == "NULL":
+        return None
+    if fty.startswith("Option<"):
+        fty = fty[len("Option<") : -1]
     if fty == "String":
         return bytes.fromhex(cell).decode("utf-8")
     if fty == "f64":
         return float(cell)
+    if scale:
+        return Decimal(int(cell)).scaleb(-scale)
     return int(cell)
+
+
+def _out_scales(spec_rs: str, n_fields: int) -> list[int]:
+    """The `// OUT_SCALES: a,b,..` line the emitter writes for DECIMAL results (stored integer = value * 10**scale)."""
+    m = re.search(r"^// OUT_SCALES: ([0-9,]+)$", spec_rs, re.MULTILINE)
+    if m is None:
+        return [0] * n_fields
+    scales = [int(x) for x in m.group(1).split(",")]
+    if len(scales) != n_fields:
+        raise ValueError(f"OUT_SCALES has {len(scales)} entries, OutRow has {n_fields}")
+    return scales
 
 
 def _parse_rows(stdout: str, spec_rs: str) -> tuple[list[tuple] | None, str | None]:
@@ -100,7 +119,8 @@ def _parse_rows(stdout: str, spec_rs: str) -> tuple[list[tuple] | None, str | No
             cells = line.split("\x1f")[1:]
             if len(cells) != len(ftypes):
                 return None, f"row has {len(cells)} fields, OutRow has {len(ftypes)}"
-            rows.append(tuple(_decode(c, t) for c, t in zip(cells, ftypes, strict=True)))
+            scales = _out_scales(spec_rs, len(ftypes))
+            rows.append(tuple(_decode(c, t, sc) for c, t, sc in zip(cells, ftypes, scales, strict=True)))
         return rows, None
     if "HashMapWithView<u64, u64>" in spec_rs and "pub const KEY_CAP_" in spec_rs:
         pairs: list[tuple] = []

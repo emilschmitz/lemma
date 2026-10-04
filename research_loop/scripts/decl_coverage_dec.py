@@ -1,6 +1,6 @@
 """Declarative emission coverage of a SQL file on the DOUBLE and the DECIMAL SEC schema.
 
-    uv run python -m research_loop.scripts.decl_coverage_dec research_loop/generated/decl_coverage/dec_N.sql
+    uv run python -m research_loop.scripts.decl_coverage research_loop/generated/decl_coverage/dec_N.sql
 
 Each query goes through ``emit_declarative_spec`` with the ``sec_margin`` package (DOUBLE schema)
 and the ``sec_margin_dec`` package (DECIMAL schema). Emission only: no Verus. Prints emit counts
