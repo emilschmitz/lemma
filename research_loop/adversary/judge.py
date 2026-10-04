@@ -30,10 +30,20 @@ from verus_transpiler import transpile_sql_to_verus
 
 _SPEC_TRUNC = 4000
 _SCALAR_RET = frozenset({"u64", "i64"})
+_MAP_LEN_SCOREABLE = frozenset(
+    {
+        "map_u32_u64",
+        "map_str_u64",
+        "map_u32_str_u64",
+        "map_str_u32_u64",
+        "map_str_str_u64",
+    }
+)
 _RESULT_SCALAR = re.compile(r"^RESULT:\s*(-?\d+)\s*$", re.MULTILINE)
 _RESULT_NONE = re.compile(r"^RESULT:\s*none\s*$", re.MULTILINE)
 _RESULT_SOME = re.compile(r"^RESULT:\s*some\s+(-?\d+)\s*$", re.MULTILINE)
-_OPAQUE_MARKERS = ("map_len", "checksum", "seq_len", "set_len")
+_RESULT_MAP_LEN = re.compile(r"^RESULT:\s*map_len=(\d+)\s*$", re.MULTILINE)
+_OPAQUE_MARKERS = ("checksum", "seq_len", "set_len")
 
 
 def _schema_tables(schema: dict) -> dict[str, dict[str, str]]:
@@ -181,7 +191,11 @@ def _transpile(sql: str, schema: dict) -> tuple[str | None, dict[str, str] | Non
 
 
 def _scoreable_ret(ret_type: str) -> bool:
-    return ret_type in _SCALAR_RET or ret_type.startswith("opt_")
+    return (
+        ret_type in _SCALAR_RET
+        or ret_type.startswith("opt_")
+        or ret_type in _MAP_LEN_SCOREABLE
+    )
 
 
 def _parse_scalar_result(stdout: str) -> tuple[int | None, str | None]:
@@ -191,8 +205,15 @@ def _parse_scalar_result(stdout: str) -> tuple[int | None, str | None]:
     return int(m.group(1)), None
 
 
+def _parse_map_len(stdout: str) -> int | None:
+    m = _RESULT_MAP_LEN.search(stdout)
+    return int(m.group(1)) if m else None
+
+
 def _parse_printed_result(stdout: str) -> tuple[tuple | None, str | None]:
     """One printed scalar or Option. ``None`` cell means SQL NULL."""
+    if _RESULT_MAP_LEN.search(stdout):
+        return None, "map_len_only"
     if any(m in stdout for m in _OPAQUE_MARKERS):
         return None, "product printer does not dump full rows"
     if _RESULT_NONE.search(stdout):
@@ -285,6 +306,23 @@ def _exec_verified_scalar(
             "significant": False,
             "proof_verified": True,
             "stderr": (proc.stderr or "")[:2000],
+        }
+    if ret_type in _MAP_LEN_SCOREABLE:
+        map_len = _parse_map_len(stdout)
+        if map_len is None:
+            return {
+                "status": "opaque_exec_result",
+                "significant": False,
+                "reason": "map printer did not report map_len",
+                "proof_verified": True,
+                "stdout": stdout[:500],
+            }
+        return {
+            "status": "exec_ok",
+            "proof_verified": True,
+            "impl_map_len": map_len,
+            "impl_rows": None,
+            "stdout": stdout[:500],
         }
     printed, opaque_reason = _parse_printed_result(stdout)
     if opaque_reason:
@@ -429,6 +467,30 @@ def judge_candidate(
             out.setdefault("significant", False)
             return out
 
+        proof_verified = bool(exec_res.get("proof_verified"))
+        if "impl_map_len" in exec_res:
+            map_len = int(exec_res["impl_map_len"])
+            if duck_error and duck_rows is None:
+                significant = proof_verified
+                reason = "error_vs_value"
+            elif duck_rows is None:
+                significant = False
+                reason = "no_duck_rows"
+            elif map_len != len(duck_rows):
+                significant = proof_verified
+                reason = "map_cardinality"
+            else:
+                significant = False
+                reason = "map_cardinality_match_values_unscored"
+            final_status = "hole" if significant else "no_difference"
+            return {
+                **base,
+                **exec_res,
+                "status": final_status,
+                "significant": significant,
+                "reason": reason,
+            }
+
         impl_rows = exec_res["impl_rows"]
         verdict = classify_difference(
             candidate.sql,
@@ -436,7 +498,6 @@ def judge_candidate(
             duck_rows,
             duck_error=duck_error,
         )
-        proof_verified = bool(exec_res.get("proof_verified"))
         significant = verdict.significant and proof_verified
         final_status = "hole" if significant else "no_difference"
 
