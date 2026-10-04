@@ -170,6 +170,51 @@ def rewrite_agent_cmd_for_container(agent_cmd: str, cli_dir: Path | None) -> str
     return agent_cmd
 
 
+CLAUDE_IMAGE = "lemma-agent:claude"
+CLAUDE_CONTAINER_CONFIG_HOST = "/root/.claude-host"
+_CLAUDE_TOOLS = "Bash,Read,Edit,Write,Glob,Grep,mcp__lemma-host"
+
+
+def claude_agent_cmd(model: str) -> str:
+    """Headless Claude Code inside the container. Prompt on stdin, no secret on the line.
+
+    The pipe converts Claude stream-json into the Cursor-style ``agent_stream.jsonl``
+    (stdout) and keeps the raw stream in ``logs/claude_raw.jsonl``.
+    """
+    return (
+        f"claude -p --model {shlex.quote(model)} --output-format stream-json --verbose "
+        f"--permission-mode acceptEdits --allowedTools {_CLAUDE_TOOLS} "
+        "--disallowedTools WebSearch,WebFetch "
+        "--mcp-config /root/.cursor/mcp.json --strict-mcp-config "
+        "< PROMPT.txt "
+        "| python -m lemma_agent.claude_stream --raw /workspace/logs/claude_raw.jsonl"
+    )
+
+
+def is_claude_cmd(agent_cmd: str) -> bool:
+    return agent_cmd.split(None, 1)[0] == "claude"
+
+
+def claude_docker_args() -> list[str]:
+    """Docker args for the claude agent. The key is passed by name only (value stays in env)."""
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    config_dir = os.environ.get("LEMMA_CLAUDE_CONFIG_DIR", "")
+    if not key and not config_dir:
+        raise RuntimeError(
+            "claude agent selected but neither ANTHROPIC_API_KEY nor LEMMA_CLAUDE_CONFIG_DIR "
+            "is set in the launching shell"
+        )
+    args = ["-e", "CLAUDE_CONFIG_DIR=/root/.claude"]
+    if key:
+        args += ["-e", "ANTHROPIC_API_KEY"]
+    if config_dir:
+        path = Path(config_dir).expanduser()
+        if not path.is_dir():
+            raise RuntimeError(f"LEMMA_CLAUDE_CONFIG_DIR is not a directory: {path}")
+        args += ["-v", f"{path.resolve()}:{CLAUDE_CONTAINER_CONFIG_HOST}:ro"]
+    return args
+
+
 def parse_agent_env(cfg: dict[str, str], base: dict[str, str] | None = None) -> dict[str, str]:
     """Pass named vars from host into agent subprocess (AGENT_ENV=CURSOR_API_KEY,...)."""
     if base is None:
@@ -1033,6 +1078,8 @@ def run_agent_docker(
         cli_dir,
     )
     timeout = int(cfg.get("AGENT_TIMEOUT_SEC", "600"))
+    claude = is_claude_cmd(agent_cmd)
+    claude_args = claude_docker_args() if claude else []
     (workspace / "PROMPT.txt").write_text(prompt)
 
     from db_extension.agent.egress_bridge import (
@@ -1044,6 +1091,8 @@ def run_agent_docker(
     from db_extension.agent.measure_core import MeasureContext
 
     env = parse_agent_env(cfg, base={})
+    if claude:
+        env.pop("CURSOR_API_KEY", None)
     env["AGENT_CMD"] = agent_cmd
     env["LEMMA_AGENT_MODE"] = "cli"
     env["LEMMA_MCP_SOCK"] = "/lemma-mcp.sock"
@@ -1141,29 +1190,33 @@ def run_agent_docker(
         cmd.extend(["--entrypoint", "/bin/bash"])
         use_host_entrypoint = True
         log_info(COMPONENT, "entrypoint_mount", str(entrypoint_host))
-    if cli_dir is not None:
-        cmd.extend(["-v", f"{cli_dir}:/opt/cursor-agent:ro"])
-        cmd.extend(["-e", "PATH=/opt/cursor-agent:/root/.local/bin:/root/.cursor/bin:/usr/local/bin:/usr/bin:/bin"])
-        log_info(COMPONENT, "agent_cli_mount", str(cli_dir))
-    if cred_path.is_dir():
-        # Mount RO elsewhere; entrypoint copies into writable /root/.cursor.
-        cmd.extend(["-v", f"{cred_path.resolve()}:/root/.cursor-host:ro"])
-        log_info(COMPONENT, "credentials_mount", str(cred_path))
+    if claude:
+        # Cursor credentials and CLI never enter the claude container.
+        cmd.extend(claude_args)
     else:
-        log_warn(COMPONENT, "credentials_missing", f"no credentials dir at {cred_path}")
+        if cli_dir is not None:
+            cmd.extend(["-v", f"{cli_dir}:/opt/cursor-agent:ro"])
+            cmd.extend(["-e", "PATH=/opt/cursor-agent:/root/.local/bin:/root/.cursor/bin:/usr/local/bin:/usr/bin:/bin"])
+            log_info(COMPONENT, "agent_cli_mount", str(cli_dir))
+        if cred_path.is_dir():
+            # Mount RO elsewhere; entrypoint copies into writable /root/.cursor.
+            cmd.extend(["-v", f"{cred_path.resolve()}:/root/.cursor-host:ro"])
+            log_info(COMPONENT, "credentials_mount", str(cred_path))
+        else:
+            log_warn(COMPONENT, "credentials_missing", f"no credentials dir at {cred_path}")
 
-    # Cursor agent login lives under ~/.config/cursor/auth.json (not ~/.cursor).
-    auth_host = (
-        cfg.get("AGENT_AUTH_DIR")
-        or os.environ.get("AGENT_AUTH_DIR")
-        or str(Path.home() / ".config" / "cursor")
-    )
-    auth_path = Path(auth_host).expanduser()
-    if auth_path.is_dir():
-        cmd.extend(["-v", f"{auth_path.resolve()}:/root/.config/cursor-host:ro"])
-        log_info(COMPONENT, "auth_mount", str(auth_path))
-    else:
-        log_warn(COMPONENT, "auth_missing", f"no auth dir at {auth_path}")
+        # Cursor agent login lives under ~/.config/cursor/auth.json (not ~/.cursor).
+        auth_host = (
+            cfg.get("AGENT_AUTH_DIR")
+            or os.environ.get("AGENT_AUTH_DIR")
+            or str(Path.home() / ".config" / "cursor")
+        )
+        auth_path = Path(auth_host).expanduser()
+        if auth_path.is_dir():
+            cmd.extend(["-v", f"{auth_path.resolve()}:/root/.config/cursor-host:ro"])
+            log_info(COMPONENT, "auth_mount", str(auth_path))
+        else:
+            log_warn(COMPONENT, "auth_missing", f"no auth dir at {auth_path}")
 
     skip_env = {
         "AGENT_CMD",
@@ -1177,6 +1230,7 @@ def run_agent_docker(
         "LEMMA_AGENT_STREAM_LOG",
         "LEMMA_AGENT_STDERR_LOG",
         "PATH",
+        "ANTHROPIC_API_KEY",
     }
     for k, v in env.items():
         if k in skip_env:
