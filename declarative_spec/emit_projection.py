@@ -39,7 +39,8 @@ from declarative_spec.emit_surface import (
 )
 from declarative_spec.emit_date import with_civil_fns
 from declarative_spec.parse import DeclarativeUnsupported
-from declarative_spec.schema_types import ColumnTypeInfo, SchemaModel, rust_ident
+from declarative_spec.emit_in import apply_in_calls, in_subquery_calls
+from declarative_spec.schema_types import ColumnTypeInfo, SchemaModel, param_ident, rust_ident
 from declarative_spec.surface import Query
 from research_loop.table_assumptions import CatalogAssumptions
 
@@ -132,9 +133,9 @@ def _projection_params(query: Query, main: list[_Slot], model: SchemaModel) -> l
     def add(alias: str, table: str) -> None:
         if table.casefold() not in model.tables or table.casefold() in known:
             return
-        param = rust_ident(alias)
+        param = param_ident(alias)
         if param in names:
-            param = rust_ident(f"{alias}_{table}")
+            param = param_ident(f"{alias}_{table}")
         params.append(
             _Slot(
                 table=table,
@@ -208,7 +209,9 @@ def _projection_where(
         holds.append((token, name, bound_src or ""))
         return token
 
-    expr = _SCALAR_EQ.sub(repl, query.where_expr)
+    in_heads, in_sources = in_subquery_calls(query, "", params, model)
+    blocks.extend(in_sources)
+    expr = apply_in_calls(_SCALAR_EQ.sub(repl, query.where_expr), in_heads)
     for name in values:
         expr = re.sub(rf"\b{re.escape(name)}\b", f"__VAL{name}__", expr)
     pred = _compile_pred(expr, main, [], model, exists_calls)

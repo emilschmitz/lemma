@@ -22,7 +22,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from db_extension.optimizer import run_optimization_loop
+from research_loop.assumption_packages.check import check_package
 from research_loop.scripts.sqlsmith_trusted_coverage import (
+    decimal_columns,
     load_sec_schema,
     parse_sql_file,
 )
@@ -41,6 +43,11 @@ def resolve_sec_db() -> Path:
     if not path.is_file():
         raise SystemExit(f"ERROR: SEC DuckDB missing at {path}; cannot generate shuffle.")
     return path
+
+
+def package_for_db(db_path: Path) -> str:
+    """The assumption package for this database file: the DECIMAL one when the file has DECIMAL columns."""
+    return "sec_margin_dec" if decimal_columns(db_path) else "sec_margin"
 
 
 def gendb_sample_command(*, seed: int, db_path: Path, output: Path) -> list[str]:
@@ -88,9 +95,11 @@ def _one_draw(seed: int, db_path: Path) -> bool:
         flush=True,
     )
     queries = sample_gendb_queries(seed=seed, db_path=db_path, output=sql_path)
-    schema = load_sec_schema()
+    schema = load_sec_schema(db_path)
+    package = package_for_db(db_path)
+    check_package(package, str(db_path))
     os.environ["LEMMA_SPEC_STYLE"] = "declarative"
-    os.environ["LEMMA_ASSUMPTION_PACKAGE"] = "sec_margin"
+    os.environ["LEMMA_ASSUMPTION_PACKAGE"] = package
     os.environ["LEMMA_MEASURE_DB"] = str(db_path)
     # Relative 1e-9 of the largest float sum the catalog allows: also the tolerance of the timed row check.
     from research_loop.scripts.declarative_round import sec_float_abs_eps

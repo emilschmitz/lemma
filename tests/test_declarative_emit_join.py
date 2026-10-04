@@ -109,8 +109,8 @@ def test_or_on_two_equalities() -> None:
     )
     out = join_helpers(query)
     assert "||" in out.split("join_0_matched")[1].split("}")[0]
-    assert "l.k1@[li] == r.k1@[ri]" in out
-    assert "l.k2@[li] == r.k2@[ri]" in out
+    assert "l.k1@[li] == r_t.k1@[ri]" in out
+    assert "l.k2@[li] == r_t.k2@[ri]" in out
     assert "join_0_left_row" not in out
 
 

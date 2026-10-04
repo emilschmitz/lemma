@@ -39,7 +39,7 @@ _ISO_DATE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
 _EPOCH = dt.date(1970, 1, 1)
 _COMPARE = (exp.EQ, exp.NEQ, exp.GT, exp.LT, exp.GTE, exp.LTE)
 
-# (kind, scale). kind: num | date | float | str | bool | unknown
+# (kind, scale). kind: num | date | float | str | bool | unknown   (``float``: a double, or a float expression)
 Type = tuple[str, int]
 
 
@@ -239,11 +239,8 @@ class _Rewriter:
 
     def _compare(self, node: exp.Expression, scope: _Scope) -> exp.Expression:
         left, right = self.typed(node.this, scope), self.typed(node.expression, scope)  # type: ignore[attr-defined]
-        if isinstance(node, (exp.EQ, exp.NEQ)) and any(_computed_float(t) for t in (left, right)):
-            raise DeclarativeUnsupported(
-                "float equality on a computed value (arithmetic or an aggregate): the executed IEEE value "
-                "differs from the exact real the spec states, so equality cannot be proved or checked"
-            )
+        if (left.kind, right.kind) == ("str", "str") and not isinstance(node, (exp.EQ, exp.NEQ)):
+            raise DeclarativeUnsupported("string ordering comparison: only = and <> on strings are stated")
         left, right = self._pair(left, right)
         node.set("this", left.node)
         node.set("expression", right.node)
@@ -285,6 +282,8 @@ class _Rewriter:
         this = self.typed(node.this, scope)
         low = self.typed(node.args["low"], scope)
         high = self.typed(node.args["high"], scope)
+        if this.kind == "str":
+            raise DeclarativeUnsupported("BETWEEN on strings: string ordering is not stated")
         this, low = self._pair(this, low)
         this, high = self._pair(this, high)
         if {this.kind, low.kind, high.kind} == {"num"}:
@@ -419,12 +418,34 @@ class _Rewriter:
                 raise DeclarativeUnsupported(f"SUM over a {inner.kind} operand")
             return _T(node, inner.kind, inner.scale)
         if isinstance(node, exp.Avg):
-            if inner.kind == "num" and inner.scale > 0 and not isinstance(inner.node, exp.Column):
-                raise DeclarativeUnsupported("AVG over a DECIMAL expression: only a DECIMAL column is stated (as its real value)")
+            if inner.kind == "num" and inner.scale > 0:
+                # DuckDB averages a DECIMAL in DOUBLE: the spec states the exact quotient in natural units.
+                marked = exp.Anonymous(this=f"__dec{inner.scale}", expressions=[inner.node])
+                node.set("this", marked)
+                return _T(node, "float")
             if inner.kind not in ("num", "float"):
                 raise DeclarativeUnsupported(f"AVG over a {inner.kind} operand")
             return _T(node, "float")
+        if inner.kind in ("str", "bool"):
+            raise DeclarativeUnsupported(f"MIN or MAX over a {inner.kind}: only integer and date orderings are stated")
         return _T(node, inner.kind, inner.scale)
+
+    def _decimal_case(self, node: exp.Case, results: list[_T]) -> _T:
+        """A CASE whose results are DECIMAL columns of one scale and integer literals, which are rescaled exactly."""
+        scale = _decimal_case_scale(results)
+        for r in results:
+            inner = _unparen(r.node)
+            literal = isinstance(inner.this if isinstance(inner, exp.Neg) else inner, exp.Literal)
+            if r.scale != scale and not literal:
+                raise DeclarativeUnsupported("a DECIMAL CASE result of another scale than its column results")
+            if r.scale == scale and not (literal or isinstance(inner, exp.Column)):
+                raise DeclarativeUnsupported("a DECIMAL CASE result that is not a column or a literal")
+        arms = node.args.get("ifs") or []
+        for arm, r in zip(arms, results[: len(arms)], strict=True):
+            arm.set("true", _scaled(r, scale))
+        if node.args.get("default") is not None:
+            node.set("default", _scaled(results[-1], scale))
+        return _T(node, "num", scale)
 
     def _case(self, node: exp.Case, scope: _Scope) -> _T:
         results: list[_T] = []
@@ -439,24 +460,17 @@ class _Rewriter:
             node.set("default", res.node)
             results.append(res)
         if any(r.kind == "num" and r.scale > 0 for r in results):
-            raise DeclarativeUnsupported("a DECIMAL result in CASE")
+            return self._decimal_case(node, results)
         kinds = {r.kind for r in results}
+        if kinds == {"float", "num"}:
+            # An integer literal beside a float column is that float (every scale is 0 here).
+            for r in results:
+                lit = _unparen(r.node)
+                lit = _unparen(lit.this) if isinstance(lit, exp.Neg) else lit
+                if r.kind == "num" and not isinstance(lit, exp.Literal):
+                    raise DeclarativeUnsupported("CASE returns a float column or an integer expression")
+            return _T(node, "float")
         return _T(node, kinds.pop() if len(kinds) == 1 else "unknown")
-
-
-def _computed_float(t: _T) -> bool:
-    """A float that is not a stored value: arithmetic or an aggregate other than MIN/MAX."""
-    if t.kind != "float":
-        return False
-    node = t.node
-    while isinstance(node, (exp.Paren, exp.Neg)):
-        node = node.this
-    if isinstance(node, exp.Subquery):  # a scalar subquery that selects MIN/MAX of a column is a stored value
-        inner = node.this.expressions[0] if isinstance(node.this, exp.Select) and node.this.expressions else None
-        while isinstance(inner, exp.Alias):
-            inner = inner.this
-        return not isinstance(inner, (exp.Min, exp.Max))
-    return not isinstance(node, (exp.Column, exp.Literal, exp.Min, exp.Max))
 
 
 def _float_literal(t: _T) -> exp.Expression:
@@ -475,6 +489,13 @@ def _float_operand(t: _T) -> _T:
     if t.kind == "num":
         return _T(_float_literal(t), "float")
     raise DeclarativeUnsupported(f"arithmetic mixing a float column with a {t.kind} operand")
+
+
+def _decimal_case_scale(results: list[_T]) -> int:
+    scales = {r.scale for r in results if r.kind == "num" and r.scale > 0}
+    if len(scales) != 1 or any(r.kind != "num" for r in results):
+        raise DeclarativeUnsupported("a DECIMAL result in CASE beside a result of another type or scale")
+    return scales.pop()
 
 
 def _first_table(tree: exp.Expression) -> str:

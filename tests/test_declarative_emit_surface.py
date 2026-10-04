@@ -111,7 +111,7 @@ def test_grouped_scan_states_filter_and_aggregates() -> None:
     assert "pre.stmt@[i0]@) != \"\"@" not in spec  # IS NOT NULL is true, not s != ""
     assert "pre.(pre." not in spec
     assert "count_cnt(" in spec
-    assert "lemma_count_cnt_step(" in spec
+    assert "lemma_count_cnt_step(" not in spec
     assert "lemma_count_cnt_bound(" in spec
     assert "count_distinct_num_filings(" in spec
     assert "avg_avg_line_num(" in spec
@@ -124,18 +124,10 @@ def test_grouped_scan_states_filter_and_aggregates() -> None:
     assert "obeys_hash_table_key_model" not in spec
 
 
-def test_join_having_scalar_states_match_and_limit() -> None:
-    spec = _emit(JOIN_SCALAR, eps="0.001")
-    assert "method_spec" not in spec
-    assert "n.adsh@[i0]@ == s.adsh@[i1]@" in spec
-    assert "sum_total_value(" in spec
-    assert "sq_1(" in spec
-    assert "FLOAT_ABS_EPS" in spec
-    assert "abs_real(" in spec
-    assert "res@.len() <= 50" in spec
-    assert "sum_total_value(n, s, 0, (row.name@, (row.cik as int))) > sq_1(n, s)" in spec
-    assert "res@[r].((" not in spec
-    assert "// AGENT_EDIT_START" in spec
+def test_join_having_on_a_float_sum_is_refused() -> None:
+    # HAVING SUM(float) > (SELECT AVG(...)): the sum is only known within epsilon, so membership has no exact spec.
+    with pytest.raises(DeclarativeUnsupported, match="float sum or average is compared"):
+        _emit(JOIN_SCALAR, eps="0.001")
 
 
 def test_not_exists_and_case_sum_emit() -> None:
@@ -151,8 +143,8 @@ def test_not_exists_and_case_sum_emit() -> None:
     assert "positive_count" in case_spec
     assert "0real" in case_spec
     assert "if " in case_spec
-    assert "r#abstract" in case_spec
-    assert "pub abstract:" not in case_spec
+    # Columns the query does not read are not loaded.
+    assert "abstract" not in case_spec
     assert "method_spec" not in case_spec
 
 
@@ -207,7 +199,7 @@ def test_filter_projection_counts_each_hit() -> None:
     assert "pub fy: i64" in spec
     assert "pub name: String" in spec
     assert "hit_count(" in spec
-    assert "lemma_hit_count_step(" in spec
+    assert "lemma_hit_count_step(" not in spec
     assert "hits_with(" in spec
     assert "out_copies(" in spec
     assert "res@.len() <= 10" in spec
@@ -215,20 +207,9 @@ def test_filter_projection_counts_each_hit() -> None:
     assert "sq_1(" not in spec
 
 
-def test_correlated_max_projection_binds_the_outer_row() -> None:
-    spec = _emit(PROJ_MAX)
-    assert "method_spec" not in spec
-    assert "assume(" not in spec
-    assert "arbitrary()" not in spec
-    assert "pub open spec fn sq_1(" in spec
-    assert "(n.tag@[j0]@) == (n.tag@[i0]@)" in spec
-    assert "(n.adsh@[j0]@) == (n.adsh@[i0]@)" in spec
-    assert "n.tag@[j0]@) == (n.tag@[j0]@" not in spec
-    assert "exists|j0: int|" in spec
-    assert "forall|j0: int|" in spec
-    assert "hit_count(" in spec
-    assert "res@.len() <= 100" in spec
-    assert "Cols_num" in spec and "Cols_sub" in spec
+def test_correlated_max_over_a_float_is_refused() -> None:
+    with pytest.raises(DeclarativeUnsupported, match="MIN or MAX over a float"):
+        _emit(PROJ_MAX)
 
 
 def test_catalog_float_column_states_its_magnitude() -> None:

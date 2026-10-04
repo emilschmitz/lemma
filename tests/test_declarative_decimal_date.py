@@ -138,7 +138,6 @@ def test_min_max_keep_the_scale_and_count_has_none() -> None:
     ("sql", "why"),
     [
         ("SELECT SUM(d / 2) AS s FROM t", "division"),
-        ("SELECT AVG(d * 2) AS s FROM t", "AVG over a DECIMAL expression"),
         ("SELECT SUM(d * f) AS s FROM t", "float column"),
         ("SELECT COUNT(*) AS c FROM t WHERE f > d", "float column"),
         ("SELECT COUNT(*) AS c FROM t WHERE dt > 5", "DATE compared"),
@@ -148,7 +147,7 @@ def test_min_max_keep_the_scale_and_count_has_none() -> None:
         ("SELECT SUM(dt + 1) AS s FROM t", "date"),
         ("SELECT COUNT(*) AS c FROM t WHERE dt + INTERVAL 1 DAY > DATE '2000-01-01'", "INTERVAL"),
         ("SELECT SUM(d * 1e3) AS s FROM t", "plain decimals"),
-        ("SELECT SUM(CASE WHEN k > 1 THEN d ELSE 0 END) AS s FROM t", "CASE"),
+        ("SELECT SUM(CASE WHEN k > 1 THEN d ELSE 1.5 END) AS s FROM t", "CASE"),
         ("SELECT COUNT(*) AS c FROM t WHERE EXTRACT(year FROM i) = 1", "EXTRACT needs a DATE"),
     ],
 )
@@ -669,10 +668,15 @@ def test_official_query_spec_states_the_result_scales_and_type_checks(
         assert "error" not in proc.stdout + proc.stderr, proc.stdout + proc.stderr
 
 
-def test_q1_with_avg_over_a_decimal_expression_is_refused(tpch_small: tuple[Path, dict, CatalogAssumptions]) -> None:
+def test_q1_with_avg_over_a_decimal_emits_the_average_in_natural_units(
+    tpch_small: tuple[Path, dict, CatalogAssumptions],
+) -> None:
     _db, schema, cat = tpch_small
-    with pytest.raises(DeclarativeUnsupported, match="AVG over a DECIMAL expression"):
-        emit_declarative_spec(Q1.replace("count(*)", "avg(l_quantity * 2) AS avg_qty, count(*)"), schema, cat)
+    spec = emit_declarative_spec(
+        Q1.replace("count(*)", "avg(l_quantity) AS avg_qty, count(*)"), schema, cat, float_abs_eps="1e20"
+    )
+    assert "avg_avg_qty" in spec and "* 100real" in spec  # l_quantity is DECIMAL(15,2)
+    assert "pub avg_qty: f64" in spec
 
 
 def test_q3_result_has_date_keys_that_measure_as_day_numbers(

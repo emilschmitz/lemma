@@ -10,13 +10,14 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from research_loop.sec_table_assumptions import sec_prove_loop_catalog_assumptions
-from research_loop.assumption_packages.sec_margin import sec_margin_catalog
+from research_loop.assumption_packages.sec_margin import sec_margin_catalog, sec_margin_dec_catalog
 from research_loop.table_assumptions import CatalogAssumptions
 
 PackageBuilder = Callable[[], CatalogAssumptions]
 
 PACKAGES: dict[str, PackageBuilder] = {
     "sec_margin": sec_margin_catalog,
+    "sec_margin_dec": sec_margin_dec_catalog,
     "prove_loop": sec_prove_loop_catalog_assumptions,
 }
 

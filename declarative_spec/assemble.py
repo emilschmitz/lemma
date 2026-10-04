@@ -55,9 +55,9 @@ def assemble_declarative_program(
     if host_start == -1 or host_end == -1 or host_end < host_start:
         raise ValueError("HOST_LEMMAS markers missing from spec")
 
-    from declarative_spec.lemmas import host_float_lemmas_rs, integer_fit_lemmas_rs
+    from declarative_spec.trusted_sets import current
 
-    lemmas = integer_fit_lemmas_rs().rstrip() + "\n\n" + host_float_lemmas_rs().rstrip()
+    lemmas = current().lemmas_rs()
     inner_start = host_start + len("// HOST_LEMMAS_START")
     stitched = stitched[:inner_start] + "\n" + lemmas + "\n" + stitched[host_end:]
 
@@ -128,7 +128,11 @@ def assemble_declarative_program(
         mains_args.append(f"&{col_var}")
 
     if mains_args:
-        run_call = f"run_query({', '.join(mains_args)})"
+        # One argument per parameter: two aliases of one table (a self join) share one loaded struct.
+        sig = re.search(r"pub fn run_query\(([^)]*)\)", verus_part)
+        structs_in_sig = re.findall(r":\s*&Cols_([A-Za-z0-9_]+)", sig.group(1)) if sig else []
+        args = [f"&cols_{suffix}" for suffix in structs_in_sig] or mains_args
+        run_call = f"run_query({', '.join(args)})"
     else:
         run_call = "run_query()"
 

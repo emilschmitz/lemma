@@ -81,8 +81,35 @@ def _strip_sql_line_comments(text: str) -> str:
     return "\n".join(lines)
 
 
-def load_sec_schema() -> dict[str, dict[str, str]]:
-    """SEC EDGAR catalog: full ``schema.sql`` when present, else test holdout subset."""
+def decimal_columns(db_path: Path) -> dict[tuple[str, str], str]:
+    """``(table, column) -> 'decimal(p,s)'`` for every DECIMAL column of the DuckDB file."""
+    import duckdb
+
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        rows = con.execute(
+            "SELECT table_name, column_name, data_type FROM information_schema.columns "
+            "WHERE table_schema = 'main' AND data_type LIKE 'DECIMAL(%'"
+        ).fetchall()
+    finally:
+        con.close()
+    return {(str(t).lower(), str(c).lower()): str(d).lower().replace(" ", "") for t, c, d in rows}
+
+
+def load_sec_schema(db_path: Path | None = None) -> dict[str, dict[str, str]]:
+    """SEC EDGAR catalog: full ``schema.sql`` when present, else test holdout subset.
+
+    With ``db_path``, every column that file types DECIMAL(p,s) is ``decimal(p,s)`` here
+    (``schema.sql`` says DOUBLE). That is how the DECIMAL variant is selected: by the file.
+    """
+    schema = {t: dict(cols) for t, cols in _load_sec_schema_sql().items()}
+    if db_path is not None:
+        for (table, column), sql_type in decimal_columns(db_path).items():
+            schema[table][column] = sql_type
+    return schema
+
+
+def _load_sec_schema_sql() -> dict[str, dict[str, str]]:
     if SCHEMA_SQL.is_file():
         text = _strip_sql_line_comments(SCHEMA_SQL.read_text(encoding="utf-8"))
         out: dict[str, dict[str, str]] = {}

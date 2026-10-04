@@ -47,7 +47,6 @@ while i > 0
         assert(prev as int == group_count(keys, start, k));
         assert(group_count(keys, ii, k) == group_count(keys, start, k) + 1);
         assert(prev as int + 1 <= ROW_CAP_t);
-        lemma_count_step_fits_u64(prev, ROW_CAP_t);
     }
     let next = prev + 1;
     counts[idx] = next;
@@ -328,7 +327,7 @@ def build_declarative_prompt(
         f"- `{edit_path}` already holds the host spec, the host lemmas, the loaders and `run_query`. You edit it.",
         f"- Read-only: `{spec_path}` (same spec), `{root}/query.sql`, `{root}/schema.json`, `{index_path}`,",
         f"  `{root}/examples/` (verified example bodies), `{root}/verus/` (vstd source, Verus guide, small examples;",
-        "  read `INDEX.md` first, then grep `LEMMAS.md` and `EXAMPLES_INDEX.md`).",
+        "  read `INDEX.md` first (one grep recipe per common lookup), then grep `LEMMAS.md`, `EXAMPLES_INDEX.md` and `GUIDE_INDEX.md`).",
         "- Tools: the file edit tool; `run_runquery` (path `runquery_agent.rs`) verifies, compiles and times your",
         "  program on the official table; `submit_runquery` with the returned `run_id`. You cannot run Verus or a shell.",
         "- Done means: Verus says `N verified, 0 errors`, the result equals the reference engine's rows, and the timed run beats",

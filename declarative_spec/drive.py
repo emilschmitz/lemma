@@ -9,10 +9,16 @@ from pathlib import Path
 
 from declarative_spec.admit import admit_declarative_body
 from declarative_spec.emit import DeclarativeUnsupported, emit_declarative_spec
-from declarative_spec.lemma_index import lemma_index_markdown
+from declarative_spec.trusted_sets import current as current_trusted_set
 from declarative_spec.lemmas import FitRefusal
 from declarative_spec.pipeline import extract_agent_edit, run_declarative_metrics
-from declarative_spec.verus_docs import DOCS_CACHE, examples_index_markdown, lemmas_markdown
+from declarative_spec.verus_docs import (
+    DOCS_CACHE,
+    examples_index_markdown,
+    guide_index_markdown,
+    lemmas_markdown,
+    lookups_markdown,
+)
 from declarative_spec.vstd_index import VERUS_HOME, groups_markdown
 from declarative_spec.prompt import build_declarative_prompt, mount_examples
 
@@ -80,9 +86,11 @@ _VERUS_INDEX = """# Verus reference (read-only)
 statements, `requires`/`ensures`, and broadcast groups. Useful files: `seq.rs`,
 `seq_lib.rs`, `map.rs`, `map_lib.rs`, `set.rs`, `set_lib.rs`, `hash_map.rs`,
 `arithmetic/`, `std_specs/`, `relations.rs`, `calc_macro.rs`.
-Start with `LEMMAS.md` (one entry per vstd lemma / broadcast group / spec fn: path, signature,
-requires/ensures, doc line) and `EXAMPLES_INDEX.md` (one line per small verified program with
-the features it uses). Grep those, then Read one small program from `examples/` or `tests/`.
+Start with `LEMMAS.md` (one entry per vstd lemma / broadcast group / spec fn / exec method, path,
+signature, requires/ensures, doc line; methods are `## Owner::name`, the std exec specs such as
+`Vec::push` and `String::eq` are in it too), `EXAMPLES_INDEX.md` (one line per small verified program
+with the features it uses) and `GUIDE_INDEX.md` (one line per guide page with its headings).
+Grep those, then Read the page or one small program from `examples/` or `tests/`.
 `guide/` is the Verus guide (markdown). You cannot run Verus yourself: call `run_runquery`.
 Search the source with `grep -rn "proof fn lemma_" vstd/`.
 Every vstd module is already imported by glob in the spec; write no `use` lines.
@@ -91,6 +99,10 @@ A `broadcast use` turns a bundle of vstd lemmas on for automatic use by Z3 in th
 (for example `broadcast use vstd::seq::group_seq_axioms;`). More groups means more solver noise,
 so use them when stuck. Helper `proof fn` / `spec fn` items go between `// AGENT_HELPERS_START`
 and `// AGENT_HELPERS_END`.
+
+## Lookup recipes (run from `context/ro/verus/`; each is one grep)
+
+{lookups}
 
 ## Broadcast groups you may use (generated from the vstd source)
 
@@ -113,8 +125,9 @@ def mount_verus_docs(ro: Path) -> None:
         )
     (dest / "LEMMAS.md").write_text(lemmas_markdown(dest / "vstd"))
     (dest / "EXAMPLES_INDEX.md").write_text(examples_index_markdown(dest))
+    (dest / "GUIDE_INDEX.md").write_text(guide_index_markdown(dest / "guide"))
     version = (_VERUS_HOME / "version.txt").read_text().strip()
-    (dest / "INDEX.md").write_text(_VERUS_INDEX.format(version=version, groups=groups_markdown()))
+    (dest / "INDEX.md").write_text(_VERUS_INDEX.format(version=version, groups=groups_markdown(), lookups=lookups_markdown()))
 
 
 def _ensure_context_files(
@@ -130,11 +143,14 @@ def _ensure_context_files(
     spec_path.write_text(spec_text)
     (ro / "query.sql").write_text(sql_query.strip() + "\n")
     (ro / "schema.json").write_text(json.dumps(resolved_schema, indent=2) + "\n")
-    (ro / "lemma_index.md").write_text(lemma_index_markdown())
+    (ro / "lemma_index.md").write_text(current_trusted_set().index_markdown())
     mount_verus_docs(ro)
     mount_examples(ro)
     agent_path = workspace / "runquery_agent.rs"
     return spec_path, agent_path
+
+
+from research_loop.agent_sandbox import agent_failure  # noqa: E402,F401  (shared with the recursive caller)
 
 
 def run_declarative_optimization_loop(
@@ -168,7 +184,7 @@ def run_declarative_optimization_loop(
     history: list[dict] = []
     last_error = ""
     proof_verified = False
-    lemma_index = lemma_index_markdown()
+    lemma_index = current_trusted_set().index_markdown()
     speed_bar: dict | None = None
     try:
         column_bins, speed_bar = _maybe_large_table(
@@ -229,6 +245,12 @@ def run_declarative_optimization_loop(
         else:
             proc = run_agent_local(workspace, prompt, cfg=cfg)
         iter_record["agent_exit"] = proc.returncode
+        failure = agent_failure(proc, workspace)
+        if failure is not None:
+            last_error = failure
+            iter_record["error"] = failure
+            history.append(iter_record)
+            continue
 
         try:
             agent_source = agent_path.read_text()

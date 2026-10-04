@@ -19,7 +19,6 @@ FitRefusal = _lemmas.FitRefusal
 choose_agg_slot = _lemmas.choose_agg_slot
 float_error_lemmas_rs = _lemmas.float_error_lemmas_rs
 host_error_exceeds_eps = _lemmas.host_error_exceeds_eps
-integer_fit_lemmas_rs = _lemmas.integer_fit_lemmas_rs
 
 VERUS = Path("/home/emil/tools/verus/verus")
 
@@ -80,16 +79,6 @@ def test_host_error_exceeds_eps_invalid_bound() -> None:
     assert host_error_exceeds_eps(2**52, 1, "1.0") is True
 
 
-def test_integer_fit_lemmas_verus() -> None:
-    rust = integer_fit_lemmas_rs()
-    assert "external_body" not in rust
-    assert "assume(" not in rust
-    proc = _run_verus(rust)
-    combined = proc.stdout + proc.stderr
-    assert proc.returncode == 0, combined
-    assert "0 errors" in combined
-
-
 def test_float_error_lemmas_verus() -> None:
     rust = float_error_lemmas_rs()
     assert "lemma_f64_sum_within_eps" in rust
@@ -99,3 +88,49 @@ def test_float_error_lemmas_verus() -> None:
     combined = proc.stdout + proc.stderr
     assert proc.returncode == 0, combined
     assert "0 errors" in combined
+
+
+# The six `*_fits` host lemmas were removed: Verus gives these facts for primitive `+` itself.
+_REMOVED_FIT_LEMMAS = (
+    "lemma_u64_add_fits",
+    "lemma_i128_add_fits",
+    "lemma_count_step_fits_u64",
+    "lemma_count_step_fits_i128",
+    "lemma_sum_step_fits_u64",
+    "lemma_sum_step_fits_i128",
+)
+
+
+def test_integer_add_is_exact_in_verus_without_host_lemmas() -> None:
+    proc = _run_verus(
+        """
+fn count_step(prev: u64, row_cap: u64) -> (r: u64)
+    requires prev as int + 1 <= row_cap as int,
+    ensures r as int == prev as int + 1,
+{ prev + 1 }
+
+fn sum_step(prev: i128, cell: i128, cap: i128) -> (r: i128)
+    requires
+        0 <= cap,
+        -cap <= cell <= cap,
+        -cap <= prev as int + cell as int <= cap,
+    ensures r as int == prev as int + cell as int,
+{ prev + cell }
+"""
+    )
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode == 0, combined
+    assert "0 errors" in combined
+
+
+def test_overflowing_add_is_still_rejected_by_verus() -> None:
+    proc = _run_verus("fn bad(prev: u64) -> u64 { prev + 1 }")
+    assert proc.returncode != 0
+
+
+@pytest.mark.parametrize("name", _REMOVED_FIT_LEMMAS)
+def test_float_lemma_source_and_host_names_omit_removed_fit_lemmas(name: str) -> None:
+    from declarative_spec.admit import host_names
+
+    assert name not in float_error_lemmas_rs()
+    assert name not in host_names("")

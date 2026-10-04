@@ -379,14 +379,14 @@ def _col_ref(node: exp.Column, scope: _Scope) -> tuple[str, str | None]:
     name = node.name
     if node.table:
         tbl = node.table
-        resolved = scope.aliases.get(tbl.lower(), tbl)
-        return f"{tbl}.{name}", resolved
+        # The alias itself, not its base table: two aliases of one table are two different rows.
+        return f"{tbl}.{name}", tbl
     return name, None
 
 
 def _resolve_group_table(node: exp.Column, scope: _Scope) -> str | None:
     if node.table:
-        return scope.aliases.get(node.table.lower(), node.table)
+        return node.table
     if len(scope.tables) == 1:
         return scope.tables[0]
     return None
@@ -429,7 +429,9 @@ def _parse_select(expression: exp.Select, *, outer_scope: _Scope | None = None) 
     else:
         table_name, alias = _parse_table_ref(from_this)
         if table_name.lower() in scope.cte_names:
-            cte_q = next(q for n, q in query.ctes if n.lower() == table_name.lower())
+            cte_q = next((q for n, q in query.ctes if n.lower() == table_name.lower()), None)
+            if cte_q is None:
+                raise DeclarativeUnsupported("a WITH name used inside a subquery")
             query.derived.append((table_name, cte_q))
         query.tables.append(table_name)
         scope.tables.append(table_name)
@@ -562,7 +564,31 @@ def _parse_select(expression: exp.Select, *, outer_scope: _Scope | None = None) 
 
     query.limit, query.offset = _parse_limit_offset(expression)
     query.order_by = _parse_order_by(expression, scope, agg_alias_map)
+    _alias_group_keys(query)
     return query
+
+
+def _alias_group_keys(query: Query) -> None:
+    """``SELECT form AS k ... GROUP BY form``: the key is the output ``k`` reading ``form``; ORDER BY form still works."""
+    for i, col in enumerate(query.group_columns):
+        if col in query.group_exprs:
+            continue
+        table = query.group_tables[i] if i < len(query.group_tables) else None
+        for out in query.outputs:
+            qual, _, bare = out.text.rpartition(".")
+            if (
+                out.kind == "column"
+                and bare.casefold() == col.casefold()
+                and out.name.casefold() != col.casefold()
+                and (not qual or table is None or qual.casefold() == table.casefold())
+            ):
+                query.group_exprs[out.name] = out.text
+                query.group_columns[i] = out.name
+                query.order_by = [
+                    replace(k, column=out.name) if k.column.rpartition(".")[2].casefold() == col.casefold() else k
+                    for k in query.order_by
+                ]
+                break
 
 
 def _parse_cte_body(body: exp.Expression, scope: _Scope) -> Query:
@@ -652,6 +678,30 @@ def _parse_on_clause(
     return equalities, combiner
 
 
+DEC_SCALE_PREFIX = "__dec"
+
+
+def _dec_scale_marker(node: exp.Expression | None) -> int | None:
+    """The scale ``s`` of an ``__dec<s>(x)`` marker the numeric rewrite puts around an AVG argument."""
+    if isinstance(node, exp.Anonymous) and str(node.this).lower().startswith(DEC_SCALE_PREFIX):
+        return int(str(node.this)[len(DEC_SCALE_PREFIX):])
+    return None
+
+
+def _count_case(case: exp.Case, alias: str, scope: _Scope) -> Agg:
+    """``COUNT(CASE WHEN c THEN <non-NULL> END)`` counts the rows where ``c`` holds (a 0/1 term per row)."""
+    arms = case.args.get("ifs") or []
+    result = arms[0].args["true"] if len(arms) == 1 else None
+    if case.args.get("default") is not None or result is None or not isinstance(result, (exp.Literal, exp.Column)):
+        raise DeclarativeUnsupported("COUNT argument")
+    if isinstance(result, exp.Literal) and not result.is_number and not result.is_string:
+        raise DeclarativeUnsupported("COUNT argument")
+    counted = case.copy()
+    counted.args["ifs"][0].set("true", exp.Literal.number(1))
+    counted.set("default", exp.Literal.number(0))
+    return Agg(kind="COUNT", column=None, alias=alias or "count", table=None, expr=_compile_case(counted, scope))
+
+
 def _parse_agg(item: exp.Expression, scope: _Scope) -> Agg:
     alias = item.alias if isinstance(item, exp.Alias) else ""
     inner = _unwrap_alias(item)
@@ -667,6 +717,8 @@ def _parse_agg(item: exp.Expression, scope: _Scope) -> Agg:
                 alias=alias or "count_distinct",
                 table=tbl,
             )
+        if isinstance(inner.this, exp.Case):
+            return _count_case(inner.this, alias, scope)
         if isinstance(inner.this, exp.Star):
             return Agg(kind="COUNT", column="*", alias=alias or "count", table=None)
         if not isinstance(inner.this, exp.Column):
@@ -681,6 +733,12 @@ def _parse_agg(item: exp.Expression, scope: _Scope) -> Agg:
     }
     for cls, kind in kind_map.items():
         if isinstance(inner, cls):
+            scaled = _dec_scale_marker(inner.this)
+            if scaled is not None and kind == "AVG":
+                unwrapped = inner.copy()
+                unwrapped.set("this", inner.this.expressions[0])
+                agg = _parse_agg(exp.Alias(this=unwrapped, alias=alias) if alias else unwrapped, scope)
+                return replace(agg, avg_scale=scaled)
             if isinstance(inner.this, exp.Case):
                 return Agg(
                     kind=kind,
@@ -760,7 +818,7 @@ def _compile_bool(node: exp.Expression, ctx: _BoolCtx) -> str:
         inner = node.this
         if isinstance(inner, exp.Exists):
             name = ctx.counters.next_exists()
-            sub = _parse_subquery_select(inner.this, ctx.scope)
+            sub = _parse_subquery_select(_exists_body(inner.this), ctx.scope)
             ctx.query.exists.append((name, sub, True))
             return f"!{name}"
         if isinstance(inner, exp.Is):
@@ -768,7 +826,7 @@ def _compile_bool(node: exp.Expression, ctx: _BoolCtx) -> str:
         return f"!({_compile_bool(inner, ctx)})"
     if isinstance(node, exp.Exists):
         name = ctx.counters.next_exists()
-        sub = _parse_subquery_select(node.this, ctx.scope)
+        sub = _parse_subquery_select(_exists_body(node.this), ctx.scope)
         ctx.query.exists.append((name, sub, False))
         return name
     if isinstance(node, exp.Between):
@@ -842,6 +900,14 @@ def _compile_bool(node: exp.Expression, ctx: _BoolCtx) -> str:
     raise DeclarativeUnsupported("WHERE expression")
 
 
+def _exists_body(body: exp.Expression) -> exp.Expression:
+    """EXISTS ignores the select list, so ``SELECT *`` is ``SELECT 1``."""
+    if isinstance(body, exp.Select) and any(isinstance(e, exp.Star) for e in body.expressions):
+        body = body.copy()
+        body.set("expressions", [exp.Literal.number(1)])
+    return body
+
+
 def _compile_is_null(node: exp.Is, ctx: _BoolCtx, *, negated: bool) -> str:
     col_node = node.this
     if not isinstance(col_node, exp.Column):
@@ -899,15 +965,26 @@ def _compile_case(node: exp.Case, scope: _Scope) -> str:
             return str(n.this)
         raise DeclarativeUnsupported("CASE")
 
+    op_map = {
+        exp.EQ: "==",
+        exp.NEQ: "!=",
+        exp.GT: ">",
+        exp.LT: "<",
+        exp.GTE: ">=",
+        exp.LTE: "<=",
+    }
+
     def cond(n: exp.Expression) -> str:
-        op_map = {
-            exp.EQ: "==",
-            exp.NEQ: "!=",
-            exp.GT: ">",
-            exp.LT: "<",
-            exp.GTE: ">=",
-            exp.LTE: "<=",
-        }
+        if isinstance(n, exp.Paren):
+            return f"({cond(n.this)})"
+        if isinstance(n, exp.And):
+            return f"({cond(n.left)} && {cond(n.right)})"
+        if isinstance(n, exp.Or):
+            return f"({cond(n.left)} || {cond(n.right)})"
+        if isinstance(n, exp.Not):
+            return f"!({cond(n.this)})"
+        if isinstance(n, exp.In) and not n.args.get("query") and n.expressions:
+            return "(" + " || ".join(f"({atom(n.this)} == {atom(v)})" for v in n.expressions) + ")"
         if type(n) not in op_map:
             raise DeclarativeUnsupported("CASE")
         return f"({atom(n.left)} {op_map[type(n)]} {atom(n.right)})"
@@ -1035,6 +1112,7 @@ def _same_agg(a: Agg, b: Agg) -> bool:
         and a.column == b.column
         and a.arith == b.arith
         and a.expr == b.expr
+        and a.avg_scale == b.avg_scale
         and (a.table is None or b.table is None or a.table.casefold() == b.table.casefold())
     )
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from declarative_spec.schema_types import rust_ident
+from declarative_spec.schema_types import param_ident, rust_ident
 from declarative_spec.surface import Join, Query
 
 _QUAL_COL = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)$")
@@ -39,7 +39,7 @@ def _build_slots(query: Query) -> list[_Slot]:
         _Slot(
             table=first,
             alias=a0,
-            param=rust_ident(a0),
+            param=param_ident(a0),
             struct=f"Cols_{rust_ident(first)}",
             idx="i0",
         )
@@ -50,7 +50,7 @@ def _build_slots(query: Query) -> list[_Slot]:
             _Slot(
                 table=join.table,
                 alias=aj,
-                param=rust_ident(aj),
+                param=param_ident(aj),
                 struct=f"Cols_{rust_ident(join.table)}",
                 idx=f"i{j + 1}",
             )

@@ -49,6 +49,15 @@ SUB_ROWS = 2**20
 TAG_ROWS = 2**24
 ANY_TABLE_ROWS = 2**31
 VALUE_EXCLUSIVE = 2**62
+# DECIMAL variant of the database (``make_decimal_variant.py``): num.value is DECIMAL(38, 4),
+# a stored i128 equal to value * 10**4. The EDGAR documentation (aqfs.pdf) gives the field
+# as 4 decimals; the local slice has at most 2.
+DEC_VALUE_SCALE = 4
+# The same real-world fact, num.value < 2^62, in stored units. Derived, never loosened:
+# 2^62 * 10^4 (about 2^75.3) is the exclusive stored cap. The measured maximum 1.884e17 stores
+# as 1.884e21 (about 2^70.7), under it. A two-table sum of it is below 2^31 * 2^75.3 = 2^106.3,
+# which fits i128; the three-table product does not (same as the DOUBLE package, one level down).
+DEC_VALUE_EXCLUSIVE = VALUE_EXCLUSIVE * 10**DEC_VALUE_SCALE
 # tag.doc measured 13227. 2^16 is about 5x that, and covers the other text columns.
 STRING_LEN = 2**16
 U32_EXCLUSIVE = 2**31
@@ -120,30 +129,36 @@ ASSUMPTIONS: tuple[MarginAssumption, ...] = (
 )
 
 
-def _col(exclusive: int) -> ColumnAssumption:
-    return ColumnAssumption(max_value_exclusive=exclusive)
+def _col(exclusive: int, scale: int = 0) -> ColumnAssumption:
+    return ColumnAssumption(max_value_exclusive=exclusive, scale=scale)
 
 
 def _strlen(n: int) -> ColumnAssumption:
     return ColumnAssumption(max_string_len=n)
 
 
-def sec_margin_catalog() -> CatalogAssumptions:
-    """The ``sec_margin`` package as a catalog the transpiler already accepts."""
+def sec_margin_catalog(value_scale: int = 0) -> CatalogAssumptions:
+    """The ``sec_margin`` package as a catalog the transpiler already accepts.
+
+    ``value_scale`` > 0 is the DECIMAL variant: ``num.value`` is DECIMAL(38, value_scale) and
+    its cap is the same fact in stored units.
+    """
     if len(ASSUMPTIONS) != 45:
         raise RuntimeError(f"sec_margin must list 45 assumptions, got {len(ASSUMPTIONS)}")
     return CatalogAssumptions(
         max_rows=ANY_TABLE_ROWS,
         max_rows_cube=ANY_TABLE_ROWS,
         max_rows_4=ANY_TABLE_ROWS,
-        max_cell_u64=VALUE_EXCLUSIVE,
+        max_cell_u64=VALUE_EXCLUSIVE,  # u64 cells only; the DECIMAL value is an i128 cell
         max_native_u32=U32_EXCLUSIVE,
         max_string_len=STRING_LEN,
         tables={
             "num": TableAssumptions(
                 max_rows=NUM_ROWS,
                 columns={
-                    "value": _col(VALUE_EXCLUSIVE),
+                    "value": (
+                        _col(VALUE_EXCLUSIVE * 10**value_scale, value_scale)
+                    ),
                     "ddate": _col(2**28),
                     "qtrs": _col(2**8),
                     "adsh": _strlen(32),
@@ -205,3 +220,8 @@ def sec_margin_catalog() -> CatalogAssumptions:
             ),
         },
     )
+
+
+def sec_margin_dec_catalog() -> CatalogAssumptions:
+    """``sec_margin`` for the DECIMAL(38, ``DEC_VALUE_SCALE``) variant of ``num.value``."""
+    return sec_margin_catalog(DEC_VALUE_SCALE)

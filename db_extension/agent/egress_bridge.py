@@ -47,6 +47,9 @@ VENDOR_ALLOWLISTS: dict[str, tuple[str, ...]] = {
         "anthropic.com",
         "api.anthropic.com",
     ),
+    # TEST ONLY: allows nothing but the reserved ``.test`` name of the local mock model API
+    # (never resolves on the internet; no real vendor host). See research_loop/scripts/mock_anthropic_api.py.
+    "anthropic-mock-test": ("lemma-mock-anthropic.test",),
     "openai": (
         "openai.com",
         "api.openai.com",
@@ -128,9 +131,12 @@ class EgressBridge:
         sock_path: Path,
         allowlist: tuple[str, ...] = DEFAULT_ALLOWLIST,
         log_path: Path | None = None,
+        dial_overrides: dict[str, tuple[str, int]] | None = None,
     ) -> None:
         self.sock_path = sock_path
         self.allowlist = allowlist
+        # Test only: allowlisted host -> (address, port) actually dialed.
+        self.dial_overrides = dial_overrides or {}
         self.log_path = log_path
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -229,7 +235,7 @@ class EgressBridge:
                     )
                     conn.sendall(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n")
                     return
-                remote = socket.create_connection((host, port), timeout=30)
+                remote = socket.create_connection(self.dial_overrides.get(host, (host, port)), timeout=30)
                 conn.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                 self._log(
                     {

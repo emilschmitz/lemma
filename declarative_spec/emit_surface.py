@@ -18,7 +18,7 @@ from declarative_spec.emit_tail import tail_ensures
 from declarative_spec.parse import DeclarativeUnsupported
 from declarative_spec.parse_query import parse_query
 from declarative_spec.resolve import check_exact_integer_refs, flatten_derived, qualify_join_refs
-from declarative_spec.schema_types import ColumnTypeInfo, SchemaModel, classify_sql_type, rust_ident
+from declarative_spec.schema_types import ColumnTypeInfo, SchemaModel, classify_sql_type, param_ident, rust_ident
 from declarative_spec.surface import Agg, OrderKey, Query
 from research_loop.table_assumptions import CatalogAssumptions
 
@@ -28,7 +28,7 @@ _IS_NULL = re.compile(
 _QUAL = re.compile(
     r"\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b(?!@\[)"
 )
-_COLS_I = re.compile(r"\bcols\.([A-Za-z_][A-Za-z0-9_]*)@\[i\]@?")
+_COLS_I = re.compile(r"\bcols\.(?:r#)?([A-Za-z_][A-Za-z0-9_]*)@\[i\]@?")
 
 
 @dataclass
@@ -227,7 +227,16 @@ def _emit_helpers(query: Query, prefix: str, model: SchemaModel) -> _Helpers:
     in_heads, in_sources = in_subquery_calls(query, prefix, params, model)
     blocks.extend(in_sources)
     where_expr = apply_in_calls(query.where_expr, in_heads)
+    scalars = _scalar_fns(query, prefix, model, params)
+    for name in scalars[0]:
+        where_expr = re.sub(rf"\b{re.escape(name)}\b", f"__VAL{name}__", where_expr)
     pred = _compile_pred(where_expr, main, [], model, exists_calls)
+    for name, call in scalars[0].items():
+        if _scalar_returns_real(scalars[1], call):
+            pred = _promote_int_side(pred, f"__VAL{name}__")
+        pred = pred.replace(f"__VAL{name}__", call)
+    if re.search(r"\bsq_\d+\b(?!\s*\()", pred):
+        raise DeclarativeUnsupported("a scalar subquery in the WHERE of an aggregate query")
     blocks.append(_row_hit_fn(row_hit, query, main, params, pred))
     blocks.append(_key_at_fn(key_at, main, params, group_infos, key_ty))
 
@@ -236,7 +245,6 @@ def _emit_helpers(query: Query, prefix: str, model: SchemaModel) -> _Helpers:
         aggs.append(_emit_agg(blocks, query, agg, prefix, main, params, model, key_ty, row_hit, key_at))
         aggs[-1].hidden = agg.hidden
 
-    scalars = _scalar_fns(query, prefix, model, params)
     # scalar calls are recorded on the query via the returned map; having reads `scalars`
     helpers = _Helpers(
         source="\n\n".join(b for b in blocks if b.strip()),
@@ -261,9 +269,9 @@ def _extra_params(query: Query, main: list[_Slot], model: SchemaModel) -> list[_
     def add(alias: str, table: str) -> None:
         if table.casefold() not in model.tables or table.casefold() in known:
             return
-        param = rust_ident(alias)
+        param = param_ident(alias)
         if param in params:
-            param = rust_ident(f"{alias}_{table}")
+            param = param_ident(f"{alias}_{table}")
         extras.append(
             _Slot(
                 table=table,
@@ -313,6 +321,10 @@ def _exists_fns(
     idx_call = ", ".join(s.idx for s in main)
     for name, sub, _neg in query.exists:
         local = _reindex(_build_slots(sub), "e")
+        # A subquery over a table the outer scope already passes reads that parameter at its own index,
+        # so ``FROM sub a ... EXISTS (SELECT 1 FROM sub b ...)`` indexes one parameter twice.
+        by_table = {p.table.casefold(): p.param for p in params}
+        local = [_Slot(s.table, s.alias, by_table.get(s.table.casefold(), s.param), s.struct, s.idx) for s in local]
         pred = _compile_pred(sub.where_expr, local, main, model, {})
         chain = _chain(sub, local)
         ranges = " && ".join(f"0 <= {s.idx} < {s.param}.n as int" for s in local)
@@ -493,15 +505,21 @@ def _emit_agg(
     hit = _hit(row_hit, key_at, main, params, key_ty)
     if kind in ("MIN", "MAX"):
         value = _value_fn(blocks, f"{name}_val", agg, main, params, model, ret)
-        _emit_bound(blocks, name, ret, value, hit, main, params, key_ty, "min" if kind == "MIN" else "max", prefix)
+        _emit_bound(
+            blocks, name, ret, value, hit, main, params, key_ty, "min" if kind == "MIN" else "max", row_hit, key_at
+        )
         return _AggFn(alias, kind, name, ret, False, "bound", exec_ty)
     if kind == "COUNT":
+        term = "1int"
+        if agg.expr:
+            value = _value_fn(blocks, f"{name}_val", agg, main, params, model, "int")
+            term = f"{value}({_param_call(params)}, {_idx_call(main)})"
         _emit_fold(
             blocks,
             name,
             "int",
             "0int",
-            f"if {hit} {{ 1int }} else {{ 0int }}",
+            f"if {hit} {{ {term} }} else {{ 0int }}",
             main,
             params,
             key_ty,
@@ -537,7 +555,6 @@ def _emit_agg(
             model,
             ret,
             cast_real=not natural_float,
-            real_scale=_decimal_scale(agg, main, model),
         )
         add = f"if {hit} {{ {value}({_param_call(params)}, {_idx_call(main)}) }} else {{ 0real }}"
         _emit_fold(blocks, sum_name, "real", "0real", add, main, params, key_ty)
@@ -552,7 +569,7 @@ def _emit_agg(
             key_ty,
             unit_step=True,
         )
-        _emit_avg_wrap(blocks, name, sum_name, cnt_name, params, key_ty, True)
+        _emit_avg_wrap(blocks, name, sum_name, cnt_name, params, key_ty, True, agg.avg_scale)
         return _AggFn(alias, kind, name, "real", True, "fold", "f64")
     raise DeclarativeUnsupported(kind)
 
@@ -573,16 +590,25 @@ def _fn_name(prefix: str, kind: str, alias: str) -> str:
     raise DeclarativeUnsupported(kind)
 
 
-def _decimal_scale(agg: Agg, main: list[_Slot], model: SchemaModel) -> int:
-    if agg.expr or agg.arith or not agg.column or agg.column == "*":
-        return 0
-    return _find_col(agg.column, agg.table, main, model)[1].scale
+_CASE_RESULT_COL = re.compile(r"\{ cols\.(?:r#)?([A-Za-z_][A-Za-z0-9_]*)@\[i\] \}")
+
+
+def _case_float_results(expr: str, main: list[_Slot], model: SchemaModel) -> list[tuple[_Slot, str]]:
+    """The float columns a CASE can return (its THEN/ELSE results), with their slots."""
+    found: list[tuple[_Slot, str]] = []
+    for col in _CASE_RESULT_COL.findall(expr):
+        slot, info = _find_col(col, None, main, model)
+        if info.is_float:
+            found.append((slot, col))
+    return found
 
 
 def _agg_is_float(agg: Agg, main: list[_Slot], model: SchemaModel) -> bool:
     if agg.arith:
         return any(_ref_slot(ref, main, model)[1].is_float for ref in agg.arith_refs)
-    if agg.expr or agg.kind.upper() in ("COUNT", "COUNT_DISTINCT"):
+    if agg.expr:
+        return agg.kind.upper() in ("SUM", "AVG") and bool(_case_float_results(agg.expr, main, model))
+    if agg.kind.upper() in ("COUNT", "COUNT_DISTINCT"):
         return False
     if not agg.column or agg.column == "*":
         return False
@@ -624,12 +650,11 @@ def _value_fn(
     ret: str,
     *,
     cast_real: bool = False,
-    real_scale: int = 0,
 ) -> str:
     if agg.arith:
         expr = _compile_pred(agg.arith, main, [], model, {})
     elif agg.expr:
-        expr = _compile_case(agg.expr, main, model)
+        expr = _compile_case(agg.expr, main, model, real=ret == "real" and not cast_real)
     elif agg.column and agg.column != "*":
         slot, info = _find_col(agg.column, agg.table, main, model)
         expr = _cell(slot, agg.column, info)
@@ -637,8 +662,6 @@ def _value_fn(
         raise DeclarativeUnsupported(agg.kind)
     if cast_real:
         expr = f"(({expr}) as real)"
-    if real_scale:  # a DECIMAL cell is stored as value * 10**scale; AVG states its real value
-        expr = f"(({expr}) / {10**real_scale}real)"
     ranges = " && ".join(f"0 <= {s.idx} < {s.param}.n as int" for s in main)
     default = "0real" if ret == "real" else ("Seq::<char>::empty()" if ret == "Seq<char>" else "0int")
     if ret == "bool":
@@ -655,18 +678,28 @@ def _value_fn(
     return name
 
 
-def _compile_case(expr: str, main: list[_Slot], model: SchemaModel) -> str:
+def _compile_case(expr: str, main: list[_Slot], model: SchemaModel, *, real: bool = False) -> str:
     def repl(m: re.Match[str]) -> str:
         col = m.group(1)
         slot, info = _find_col(col, None, main, model)
         return _cell(slot, col, info)
 
-    out = _COLS_I.sub(repl, expr)
-    out = re.sub(r"(as real\)) > 0\b", r"\1 > 0real", out)
-    out = re.sub(r"(as real\)) < 0\b", r"\1 < 0real", out)
-    out = re.sub(r"(as real\)) >= 0\b", r"\1 >= 0real", out)
-    out = re.sub(r"(as real\)) <= 0\b", r"\1 <= 0real", out)
+    out = _real_literals(_COLS_I.sub(repl, expr))
+    if real:
+        return re.sub(r"\{ (-?\d+) \}", r"{ \1real }", out)
     return out.replace("{ 1 }", "{ 1int }").replace("{ 0 }", "{ 0int }")
+
+
+_REAL_CELL = r"\([A-Za-z_][A-Za-z0-9_.#]*@\[[A-Za-z0-9_]+\] as real\)"
+_CMP_OP = r"(?:==|!=|<=|>=|<|>)"
+_REAL_LEFT = re.compile(rf"({_REAL_CELL})(\s*{_CMP_OP}\s*)(-?\d+)(?![\w.])")
+_REAL_RIGHT = re.compile(rf"(?<![\w.])(-?\d+)(\s*{_CMP_OP}\s*)({_REAL_CELL})")
+
+
+def _real_literals(text: str) -> str:
+    """An integer literal compared with a float cell is a real literal (``5`` becomes ``5real``)."""
+    text = _REAL_LEFT.sub(r"\1\2\3real", text)
+    return _REAL_RIGHT.sub(r"\1real\2\3", text)
 
 
 def _hit(row_hit: str, key_at: str, main: list[_Slot], params: list[_Slot], key_ty: str | None) -> str:
@@ -735,22 +768,14 @@ def _unit_count_lemmas(
     params: list[_Slot],
     key_ty: str | None,
 ) -> str:
-    """Proved bound and one-row equation for a 0/1 fold over one index."""
+    """Proved bound for a 0/1 fold over one index. The one-row equation is the fold's own definition."""
     key_sig = f", k: {key_ty}" if key_ty else ""
     key_call = ", k" if key_ty else ""
     p_sig = _param_sig(params)
     p_call = _param_call(params)
     idx = slot.idx
     limit = f"{slot.param}.n as int"
-    return f"""pub proof fn lemma_{name}_step({p_sig}, {idx}: int{key_sig})
-    requires
-        0 <= {idx} < {limit},
-    ensures
-        {name}({p_call}, {idx}{key_call}) == ({add_expr}) + {name}({p_call}, {idx} + 1{key_call}),
-{{
-}}
-
-pub proof fn lemma_{name}_bound({p_sig}, {idx}: int{key_sig})
+    return f"""pub proof fn lemma_{name}_bound({p_sig}, {idx}: int{key_sig})
     requires
         0 <= {idx} <= {limit},
     ensures
@@ -758,7 +783,6 @@ pub proof fn lemma_{name}_bound({p_sig}, {idx}: int{key_sig})
     decreases {limit} - {idx},
 {{
     if {idx} < {limit} {{
-        lemma_{name}_step({p_call}, {idx}{key_call});
         lemma_{name}_bound({p_call}, {idx} + 1{key_call});
     }}
 }}"""
@@ -826,7 +850,8 @@ def _emit_bound(
     params: list[_Slot],
     key_ty: str | None,
     pick: str,
-    prefix: str,
+    row_hit: str,
+    key_at: str,
 ) -> None:
     del hit
     alts = [f"j{i}" for i in range(len(main))]
@@ -846,7 +871,8 @@ def _emit_bound(
             ", ".join(alts),
             order,
             ret,
-            prefix,
+            row_hit,
+            key_at,
         )
     )
 
@@ -863,11 +889,9 @@ def _bound_text(
     alt: str,
     order: str,
     ret: str,
-    prefix: str,
+    row_hit: str,
+    key_at: str,
 ) -> str:
-    # row_hit / key_at carry the aggregate group's prefix (not parsed out of the aggregate's name).
-    row_hit = f"{prefix}row_hit"
-    key_at = f"{prefix}key_at"
     key_part = f" && {key_at}({p}, {alt}) == k" if key_ty else ""
     key_sig = f", k: {key_ty}" if key_ty else ""
     return f"""pub open spec fn {name}({_param_sig(params)}{key_sig}, bound: {ret}) -> bool {{
@@ -884,6 +908,7 @@ def _emit_avg_wrap(
     params: list[_Slot],
     key_ty: str | None,
     is_float: bool,
+    scale: int = 0,
 ) -> None:
     key_sig = f", k: {key_ty}" if key_ty else ""
     key_call = ", k" if key_ty else ""
@@ -891,7 +916,7 @@ def _emit_avg_wrap(
     if is_float:
         body = f"""let c = {cnt_name}({p}, i0{key_call});
     if c > 0 {{
-        {sum_name}({p}, i0{key_call}) / (c as real)
+        {sum_name}({p}, i0{key_call}) / ((c as real) * {10**scale}real)
     }} else {{
         0real
     }}"""
@@ -921,6 +946,9 @@ def _scalar_fns(
     for slot in params:
         by_table.setdefault(slot.table.casefold(), slot.param)
     for name, sub in query.scalar_subqueries:
+        local = {s.alias for s in _build_slots(sub)} | {s.table for s in _build_slots(sub)}
+        if any(alias not in local for alias, _col in _QUAL.findall(sub.where_expr)):
+            raise DeclarativeUnsupported("a correlated scalar subquery outside a plain projection")
         call, source = _one_scalar(f"{prefix}{name}", sub, by_table, model)
         calls[name] = call
         extra.append(source)
@@ -1216,7 +1244,10 @@ def _having(query: Query, helpers: _Helpers, scalars: dict[str, str], key: str) 
         if not re.search(rf"\b{re.escape(src.alias)}\b", expr):
             continue
         if agg.kind in ("MIN", "MAX"):
-            raise DeclarativeUnsupported("HAVING")
+            # The bound predicate holds for exactly one value of a group that has rows: that value is the MIN/MAX.
+            ty = "real" if agg.ret == "real" else "int"
+            repl.append((src.alias, f"(choose|b: {ty}| {agg.name}({p}{key_arg}, b))"))
+            continue
         repl.append((src.alias, f"{agg.name}({p}, 0{key_arg})"))
     for name, call in scalars.items():
         if re.search(rf"\b{re.escape(name)}\b", expr):
@@ -1242,6 +1273,11 @@ def _having(query: Query, helpers: _Helpers, scalars: dict[str, str], key: str) 
         expr = re.sub(rf"\b{re.escape(name)}\b", lambda _m, rep=replacement: rep, expr)
     for token, piece in held:
         expr = expr.replace(token, piece)
+    for agg in helpers.aggs:
+        if agg.ret == "real":
+            call = re.escape(f"{agg.name}({p}, 0{key_arg})")
+            expr = re.sub(rf"({call}\s*{_CMP_OP}\s*)(-?\d+)(?![\w.])", r"\1\2real", expr)
+            expr = re.sub(rf"(?<![\w.])(-?\d+)(\s*{_CMP_OP}\s*{call})", r"\1real\2", expr)
     return expr
 
 
@@ -1474,21 +1510,25 @@ def _require_float_mags(
     from declarative_spec.lemmas import FitRefusal
     from research_loop.table_assumptions import column_assumption_exclusive
 
+    needed: list[tuple[_Slot, str]] = []
     for src in query.aggs:
         if src.expr:
-            continue
-        if src.arith:
-            found = [(_ref_slot(r, helpers.main, model), r.rpartition(".")[2]) for r in src.arith_refs]
+            needed += _case_float_results(src.expr, helpers.main, model)
+        elif src.arith:
+            needed += [
+                (slot, r.rpartition(".")[2])
+                for r in src.arith_refs
+                for slot, info in [_ref_slot(r, helpers.main, model)]
+                if info.is_float
+            ]
         elif src.column and src.column != "*":
-            found = [(_find_col(src.column, src.table, helpers.main, model), src.column)]
-        else:
-            continue
-        for (slot, info), column in found:
-            if not info.is_float:
-                continue
-            table_assumptions = _lookup_table_assumptions(catalog, slot.table)
-            if column_assumption_exclusive(column, table_assumptions) is None:
-                raise FitRefusal(f"float aggregate requires magnitude cap for {slot.table}.{column}")
+            slot, info = _find_col(src.column, src.table, helpers.main, model)
+            if info.is_float:
+                needed.append((slot, src.column))
+    for slot, column in needed:
+        table_assumptions = _lookup_table_assumptions(catalog, slot.table)
+        if column_assumption_exclusive(column, table_assumptions) is None:
+            raise FitRefusal(f"float aggregate requires magnitude cap for {slot.table}.{column}")
 
 
 EXACT_CAST_MAX = 2**53
@@ -1698,6 +1738,14 @@ def _compile_pred(
 
     out = _IS_NULL.sub(isnull, expr)
 
+    # Each cell is stashed behind a placeholder so a later pass never rewrites text inside a cell
+    # (a column named `int`, `real` or `as` must not match the words of `(x as real)`).
+    cells: list[str] = []
+
+    def stash(cell: str) -> str:
+        cells.append(cell)
+        return f"\x00{len(cells) - 1}\x00"
+
     def qual(m: re.Match[str]) -> str:
         alias, col = m.group(1), m.group(2)
         slot = _slot_named(alias, scopes)
@@ -1707,17 +1755,22 @@ def _compile_pred(
             _orig, info = model.lookup_column(slot.table, col)
         except DeclarativeUnsupported:
             return m.group(0)
-        return _cell(slot, col, info)
+        return stash(_cell(slot, col, info))
 
     out = _QUAL.sub(qual, out)
+    # A bare name is a column, even when a table parameter has the same name (table `tag`, column `tag`):
+    # parameters only appear as `param.field`, so a name followed by a dot is left alone.
+    by_name = {col.removeprefix("r#"): (slot, info) for col, (slot, info) in _columns(scopes, model).items()}
+
+    def bare(m: re.Match[str]) -> str:
+        hit = by_name.get(m.group(1))
+        return m.group(0) if hit is None else stash(_cell(hit[0], m.group(1), hit[1]))
+
+    out = re.sub(r"(?<![\w.#\x00])([A-Za-z_]\w*)(?![\w.\x00])", bare, out)
+    out = re.sub(r"\x00(\d+)\x00", lambda m: cells[int(m.group(1))], out)
     for name, call in exists_calls.items():
-        out = re.sub(rf"\b{re.escape(name)}\b", call, out)
-    columns = _columns(scopes, model)
-    for col, (slot, info) in sorted(columns.items(), key=lambda item: len(item[0]), reverse=True):
-        if any(s.param == col or s.alias == col for s in scopes):
-            continue
-        out = re.sub(rf"(?<!\.)\b{re.escape(col)}\b", _cell(slot, col, info), out)
-    return out
+        out = re.sub(rf"\b{re.escape(name)}\b", lambda _m, c=call: c, out)
+    return _real_literals(out)
 
 
 def _columns(scopes: list[_Slot], model: SchemaModel) -> dict[str, tuple[_Slot, ColumnTypeInfo]]:
@@ -1751,9 +1804,16 @@ def _ref_slot(ref: str, scopes: list[_Slot], model: SchemaModel) -> tuple[_Slot,
 
 
 def _slot_named(alias: str, scopes: list[_Slot]) -> _Slot | None:
-    for slot in scopes:
-        if slot.alias == alias or slot.param == alias or slot.table == alias:
-            return slot
+    """The slot an alias names. An alias match anywhere beats a parameter or table-name match, so with
+    two slots on one parameter (``FROM sub a ... EXISTS (SELECT 1 FROM sub b ...)``) ``a`` is the outer row."""
+    for matches in (
+        lambda s: s.alias == alias,
+        lambda s: s.param == alias,
+        lambda s: s.table == alias,
+    ):
+        for slot in scopes:
+            if matches(slot):
+                return slot
     return None
 
 
