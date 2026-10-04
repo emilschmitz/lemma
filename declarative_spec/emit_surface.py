@@ -1442,6 +1442,60 @@ def _decimal_top(catalog: CatalogAssumptions | None, table: str, col: str, info:
     return top if cap is None else min(top, cap - 1)
 
 
+def _joined_rows_bound(query: Query, main: list[_Slot], catalog: CatalogAssumptions) -> int:
+    """Upper bound on the number of joined row tuples under the catalog's row caps and unique keys.
+
+    A table whose declared unique key is fully equated (by AND-ed ON equalities) to columns of tables already
+    in the join adds at most one match per tuple, so it contributes the factor 1; any other table multiplies by
+    its row cap. The smallest bound over the choice of the first table is returned. Unique keys are catalog
+    assumptions; the assumption-package check (``research_loop/assumption_packages/check.py``) verifies each
+    against the data, so the bound holds for every dataset that package accepts.
+    """
+    from declarative_spec.emit import _lookup_table_assumptions
+
+    caps = {s.alias: _row_cap(catalog, s.table) or 1 for s in main}
+    table_of = {s.alias: s.table for s in main}
+    equated: dict[str, set[tuple[str, str]]] = {a: set() for a in caps}  # alias -> {(own col, other alias)}
+    for join in query.joins:
+        if join.on_combiner.casefold() == "or":
+            continue
+        for lref, rref in join.on:
+            if "." not in lref or "." not in rref:
+                continue
+            la, lc = lref.split(".", 1)
+            ra, rc = rref.split(".", 1)
+            if la in caps and ra in caps and la != ra:
+                equated[la].add((lc.casefold(), ra))
+                equated[ra].add((rc.casefold(), la))
+
+    def keys_of(alias: str) -> list[set[str]]:
+        ta = _lookup_table_assumptions(catalog, table_of[alias])
+        if ta is None:
+            return []
+        keys = [{c.casefold() for c in group} for group in ta.unique_keys]
+        if ta.one_row_per_adsh:
+            keys.append({"adsh"})
+        return keys
+
+    best = None
+    for root in caps:
+        included = {root}
+        total = caps[root]
+        while len(included) < len(caps):
+            rest = [a for a in caps if a not in included]
+            determined = [
+                a
+                for a in rest
+                if any(key <= {c for c, other in equated[a] if other in included} for key in keys_of(a))
+            ]
+            pick = determined[0] if determined else min(rest, key=lambda a: caps[a])
+            if not determined:
+                total *= caps[pick]
+            included.add(pick)
+        best = total if best is None else min(best, total)
+    return best or 1
+
+
 def _require_sum_fits(
     query: Query, helpers: _Helpers, model: SchemaModel, catalog: CatalogAssumptions | None
 ) -> None:
@@ -1452,9 +1506,7 @@ def _require_sum_fits(
     from declarative_spec.lemmas import FitRefusal
     from research_loop.table_assumptions import column_assumption_exclusive
 
-    rows = 1
-    for slot in helpers.main:
-        rows *= _row_cap(catalog, slot.table) or 1
+    rows = _joined_rows_bound(query, helpers.main, catalog)
     for src in query.aggs:
         if src.kind.upper() != "SUM" or src.expr or src.arith or not src.column or src.column == "*":
             continue

@@ -319,3 +319,70 @@ def test_a_join_sum_that_can_exceed_i128_is_refused() -> None:
 def test_a_join_sum_with_the_sec_cap_fits_i128_and_typechecks() -> None:
     spec = emit_declarative_spec(JOIN_SUM, BIG, _big(2**62 * 10**4))  # 2^51 * 2^75.3 < 2^127
     _verify(spec, lemmas=False)
+
+
+# ---- the joined-row bound uses declared unique keys ---------------------------------------------------------------------
+
+from declarative_spec.emit_surface import _joined_rows_bound  # noqa: E402
+from declarative_spec.parse_query import parse_query  # noqa: E402
+
+
+def _sec_dec():
+    from research_loop.assumption_packages import assumption_package
+    from research_loop.scripts.sqlsmith_trusted_coverage import load_sec_schema
+
+    db = Path("/home/emil/projects/lemma-db/holdout/gendb_sec_edgar/duckdb/sec_edgar_local_dec.duckdb")
+    if not db.is_file():
+        pytest.skip("DECIMAL SEC database not present")
+    return load_sec_schema(db), assumption_package("sec_margin_dec")
+
+
+UNIQUE_CHAIN = (
+    "SELECT t.tlabel, SUM(n.value) AS total FROM num n JOIN sub s ON n.adsh = s.adsh "
+    "JOIN tag t ON n.tag = t.tag AND n.version = t.version WHERE n.uom = 'USD' AND s.fy = 2023 GROUP BY t.tlabel"
+)
+NON_UNIQUE = (
+    "SELECT p.stmt, SUM(n.value) AS total FROM num n JOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag "
+    "AND n.version = p.version WHERE n.uom = 'USD' GROUP BY p.stmt"
+)
+PARTIAL_KEY = (
+    "SELECT t.tlabel, SUM(n.value) AS total FROM num n JOIN tag t ON n.tag = t.tag "
+    "WHERE n.uom = 'USD' GROUP BY t.tlabel"
+)
+
+
+def test_unique_key_chain_is_bounded_by_the_driving_table() -> None:
+    schema, cat = _sec_dec()
+    from research_loop.assumption_packages.sec_margin import NUM_ROWS
+
+    q = parse_query(UNIQUE_CHAIN)
+    from declarative_spec.emit_join import _build_slots
+
+    assert _joined_rows_bound(q, _build_slots(q), cat) == NUM_ROWS  # sub.adsh and (tag, version) are unique
+
+
+def test_unique_key_chain_sum_emits_and_typechecks() -> None:
+    schema, cat = _sec_dec()
+    _verify(emit_declarative_spec(UNIQUE_CHAIN, schema, cat), lemmas=False)
+
+
+@pytest.mark.parametrize("sql", [NON_UNIQUE, PARTIAL_KEY])
+def test_a_join_on_a_non_unique_or_partial_key_still_multiplies_and_is_refused(sql: str) -> None:
+    schema, cat = _sec_dec()
+    with pytest.raises(FitRefusal, match="can exceed i128"):
+        emit_declarative_spec(sql, schema, cat)
+
+
+def test_unique_keys_equated_only_in_an_or_or_in_where_do_not_count() -> None:
+    schema, cat = _sec_dec()
+    comma = "SELECT SUM(n.value) AS t FROM num n, sub s, pre p WHERE n.adsh = s.adsh AND n.adsh = p.adsh"
+    with pytest.raises(FitRefusal, match="can exceed i128"):
+        emit_declarative_spec(comma + " AND n.uom = 'USD'", schema, cat)
+
+
+def test_the_unique_keys_the_bound_relies_on_are_checked_against_the_data_by_the_package_check() -> None:
+    import inspect
+
+    from research_loop.assumption_packages import check
+
+    assert "unique key" in inspect.getsource(check) and "a group has" in inspect.getsource(check)
