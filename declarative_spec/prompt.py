@@ -277,8 +277,7 @@ _PROOF_HYGIENE = """\
 - A loop that walks down: snapshot the old index (`let i_old = i; i = i - 1;`) before using the old suffix.
 - Every loop needs `decreases`; keep `valid_cols_<table>(cols)` in every loop invariant (the key and cell bounds
   come from it). Call host lemmas as `proof { lemma_...(); }`. Give a quantifier an explicit `#[trigger]`.
-- `lemma_u64_add_fits` / `lemma_count_step_fits_u64` / `lemma_sum_step_fits_*` prove an add does not overflow
-  under the host's `ROW_CAP_...`; call them rather than assuming.
+- Integer `+` needs no overflow lemma: Verus checks it, so keep the running bound in the loop invariant.
 - Floats (rounding error is accepted: a float is exact real arithmetic here, so a SUM is an exact fold and there
   is no epsilon): one `f64` accumulator with `acc as real == <spec sum>`; before each `+ - *` call
   `lemma_f64_add_defined` / `sub_defined` / `mul_defined`, after it `lemma_f64_add_within` / `sub_within` /
@@ -329,6 +328,8 @@ def build_declarative_prompt(
         f"- Read-only: `{spec_path}` (same spec), `{root}/query.sql`, `{root}/schema.json`, `{index_path}`,",
         f"  `{root}/examples/` (verified example bodies), `{root}/verus/` (vstd source, Verus guide, small examples;",
         "  read `INDEX.md` first (one grep recipe per common lookup), then grep `LEMMAS.md`, `EXAMPLES_INDEX.md` and `GUIDE_INDEX.md`).",
+        "- Look up vstd with one grep, e.g. `grep -n -A5 \"^## StringHashMap::\" LEMMAS.md` (in `verus/`): `INDEX.md` has a",
+        "  recipe per common lookup (`Vec::push`, `String::eq`, `decreases`, `assert forall`, `choose`, broadcast groups).",
         "- Tools: the file edit tool; `run_runquery` (path `runquery_agent.rs`) verifies, compiles and times your",
         "  program on the official table; `submit_runquery` with the returned `run_id`. You cannot run Verus or a shell.",
         "- Done means: Verus says `N verified, 0 errors`, the result equals the reference engine's rows, and the timed run beats",

@@ -1,8 +1,9 @@
 """Float rules of the declarative emitter.
 
-A stored double may be compared with an integer literal up to 2**53 (exact in DuckDB and in the
-spec's reals) and may be added or summed within epsilon. A sum or average of floats is never
-compared, a float is never ordered by MIN/MAX, and two floats are never compared with each other.
+Floats are exact reals (rounding error is accepted, `declarative_spec/lemmas.py`): a stored double may be compared
+with a number literal or another double, a float sum or average may be compared or ordered, and MIN/MAX of a float is
+a real bound. Still refused: an integer or DECIMAL column mixed with a float column (no typed bridge), colliding float
+literals (the literal hypothesis would be contradictory), and strings.
 """
 
 from __future__ import annotations
@@ -107,19 +108,22 @@ def test_duckdb_compares_a_double_with_an_integer_exactly(seed: int) -> None:
 @pytest.mark.parametrize(
     "where",
     [
-        "v > q",  # an integer column is cast to double: not a literal
-        "v > w",  # two doubles
-        "v > 0.5",  # a decimal literal is not a double
-        "v > 9007199254740993",  # beyond 2**53
-        "v + 1 > 0",  # arithmetic on a double
+        "v > w",
+        "v > 0.5",
+        "v > 9007199254740993",
+        "v + 1 > 0",
+        "v * w = 0.3",
+        "v BETWEEN 0.06 - 0.01 AND 0.06 + 0.01",
     ],
 )
-def test_other_float_comparisons_are_refused(where: str) -> None:
-    with pytest.raises(DeclarativeUnsupported):
+def test_other_float_comparisons_are_stated_over_reals(where: str) -> None:
+    _typechecks(_emit(f"SELECT COUNT(*) FROM t WHERE {where}"))
+
+
+@pytest.mark.parametrize("where", ["v > q", "v * q > 1"])
+def test_an_integer_column_mixed_with_a_float_column_is_refused(where: str) -> None:
+    with pytest.raises(DeclarativeUnsupported, match="mixed with a float column"):
         _emit(f"SELECT COUNT(*) FROM t WHERE {where}")
-
-
-# ---- computed floats are never compared or ordered by MIN/MAX -------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -131,9 +135,8 @@ def test_other_float_comparisons_are_refused(where: str) -> None:
         "SELECT k FROM t WHERE (SELECT SUM(v) FROM t) > 5",
     ],
 )
-def test_comparing_a_float_sum_or_average_is_refused(sql: str) -> None:
-    with pytest.raises(DeclarativeUnsupported, match="float"):
-        _emit(sql)
+def test_comparing_a_float_sum_or_average_is_stated_over_reals(sql: str) -> None:
+    _typechecks(_emit(sql))
 
 
 @pytest.mark.parametrize(
@@ -144,13 +147,11 @@ def test_comparing_a_float_sum_or_average_is_refused(sql: str) -> None:
         "SELECT k, MIN(v) AS m, MAX(v) AS x FROM t GROUP BY k",
     ],
 )
-def test_min_max_over_a_float_is_refused(sql: str) -> None:
-    with pytest.raises(DeclarativeUnsupported, match="MIN or MAX over a float"):
-        _emit(sql)
+def test_min_max_over_a_float_is_a_real_bound(sql: str) -> None:
+    _typechecks(_emit(sql))
 
 
-def test_an_integer_average_still_compares_with_an_integer() -> None:
-    # AVG of integers is an exact real quotient (sums below 2**53), so this stays supported.
+def test_an_integer_average_compares_with_an_integer() -> None:
     _typechecks(_emit("SELECT k FROM t WHERE q > (SELECT AVG(q) FROM t)"))
 
 
@@ -209,21 +210,21 @@ def test_min_max_over_an_integer_still_typechecks() -> None:
     _typechecks(_emit("SELECT k, MIN(q) AS lo, MAX(q) AS hi FROM t GROUP BY k"))
 
 
-# ---- cases of the f64 idealization adversary (SQL only; the float lemma text is not ours) ---------------------
+# ---- cases of the f64 idealization adversary (SQL only) -------------------------------------------------
+
+
+def test_colliding_float_literals_are_refused() -> None:
+    with pytest.raises(DeclarativeUnsupported, match="same double"):
+        _emit("SELECT COUNT(*) AS c FROM t WHERE v > 0.1 AND v < 0.10000000000000001")
 
 
 @pytest.mark.parametrize(
     "sql",
     [
-        "SELECT COUNT(*) AS c FROM t WHERE v > 0.1 AND v < 0.10000000000000001",  # colliding float literals
-        "SELECT COUNT(*) AS c FROM t WHERE v * w = 0.3",  # float product compared
-        "SELECT COUNT(*) AS c FROM t WHERE v > q",  # a double against a non-literal
-        "SELECT k, SUM(v) AS s FROM t GROUP BY k HAVING SUM(v) > 0.6",  # HAVING on a float sum
-        "SELECT COUNT(*) AS c FROM t WHERE v BETWEEN 0.06 - 0.01 AND 0.06 + 0.01",  # float against decimal constants
-        "SELECT MIN(v) AS lo, MAX(v) AS hi FROM t",  # float MIN/MAX
-        "SELECT SUM(v * q) AS s FROM t",  # double times an integer column
+        "SELECT k, SUM(v) AS s FROM t GROUP BY k HAVING SUM(v) > 0.6",
+        "SELECT COUNT(*) AS c FROM t WHERE v BETWEEN 0.06 - 0.01 AND 0.06 + 0.01",
+        "SELECT MIN(v) AS lo, MAX(v) AS hi FROM t",
     ],
 )
-def test_adversary_float_queries_are_refused_by_the_emitter(sql: str) -> None:
-    with pytest.raises(DeclarativeUnsupported):
-        _emit(sql)
+def test_rounding_sensitive_float_queries_emit_as_accepted_limitations(sql: str) -> None:
+    _emit(sql)

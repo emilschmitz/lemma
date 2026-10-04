@@ -218,7 +218,7 @@ def test_helper_region_with_proof_and_spec_fns_is_accepted() -> None:
     [
         ("spec fn valid_cols_pre(x: int) -> int { x }", "valid_cols_pre"),
         ("spec fn row_hit(x: int) -> int { x }", "row_hit"),
-        ("proof fn lemma_f64_add_defined() { }", "lemma_f64_add_defined"),
+        ("proof fn lemma_f64_add_real() { }", "lemma_f64_add_real"),
         ("proof fn abs_real() { }", "abs_real"),
         ("proof fn main() { }", "main"),
         ("spec fn a() -> int { 1 }\nspec fn a() -> int { 2 }", "defined twice"),

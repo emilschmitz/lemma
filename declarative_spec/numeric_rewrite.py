@@ -270,10 +270,12 @@ class _Rewriter:
                     if fold_number(num.node) is not None:
                         lit = _T(_float_literal(num), "float")
                         return (left, lit) if num is right else (lit, right)
-                    if num.scale > 0:
+                    if isinstance(_unparen(flt.node), exp.Column):
                         raise DeclarativeUnsupported(
-                            "a DECIMAL column compared with a float column: mixed exact and float values"
+                            "a non-constant integer or DECIMAL value compared with a float column: "
+                            "mixed with a float column"
                         )
+                    return left, right  # an average or sum of floats: the emitter widens the integer side to real
         if "unknown" in kinds and any(t.kind == "num" and t.scale > 0 for t in (left, right)):
             raise DeclarativeUnsupported("a DECIMAL compared with an operand of unknown type")
         return left, right

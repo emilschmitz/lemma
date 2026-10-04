@@ -124,10 +124,10 @@ def test_grouped_scan_states_filter_and_aggregates() -> None:
     assert "obeys_hash_table_key_model" not in spec
 
 
-def test_join_having_on_a_float_sum_is_refused() -> None:
-    # HAVING SUM(float) > (SELECT AVG(...)): the sum is only known within epsilon, so membership has no exact spec.
-    with pytest.raises(DeclarativeUnsupported, match="float sum or average is compared"):
-        _emit(JOIN_SCALAR)
+def test_join_having_on_a_float_sum_emits_over_reals() -> None:
+    # Floats are exact reals (rounding error is accepted): HAVING SUM(float) > (SELECT AVG(...)) has an exact spec.
+    spec = _emit(JOIN_SCALAR)
+    assert "sq_1(" in spec
 
 
 def test_not_exists_and_case_sum_emit() -> None:
@@ -207,9 +207,9 @@ def test_filter_projection_counts_each_hit() -> None:
     assert "sq_1(" not in spec
 
 
-def test_correlated_max_over_a_float_is_refused() -> None:
-    with pytest.raises(DeclarativeUnsupported, match="MIN or MAX over a float"):
-        _emit(PROJ_MAX)
+def test_correlated_max_over_a_float_emits_a_real_bound() -> None:
+    spec = _emit(PROJ_MAX)
+    assert "bound: real" in spec
 
 
 def test_catalog_float_column_states_its_magnitude() -> None:
