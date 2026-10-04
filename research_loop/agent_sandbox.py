@@ -250,6 +250,11 @@ def claude_docker_args() -> list[str]:
                 f"and no Claude login file at {login}"
             )
         args += ["-v", f"{login.resolve()}:{CLAUDE_CONTAINER_CONFIG_HOST}/.credentials.json:ro"]
+        # Account state (oauthAccount, onboarding flags) lives in ~/.claude.json next to the token file.
+        # With CLAUDE_CONFIG_DIR set Claude Code reads it as $CLAUDE_CONFIG_DIR/.claude.json.
+        state = Path.home() / ".claude.json"
+        if state.is_file():
+            args += ["-v", f"{state.resolve()}:{CLAUDE_CONTAINER_CONFIG_HOST}/.claude.json:ro"]
     mock = claude_test_mock()
     if mock is not None:
         from research_loop.scripts.mock_anthropic_api import MOCK_HOST

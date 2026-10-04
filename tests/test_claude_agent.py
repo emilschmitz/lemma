@@ -109,7 +109,9 @@ def test_login_file_is_mounted_alone_and_read_only_by_default(
     login = tmp_path / ".claude" / ".credentials.json"
     login.write_text("{}")  # dummy content: the code only builds a mount, it never reads the file
     (tmp_path / ".claude" / "history.jsonl").write_text("not mounted")
+    (tmp_path / ".claude.json").write_text("{}")  # account state file next to the token file
     args = claude_docker_args()
+    assert f"{(tmp_path / '.claude.json').resolve()}:/root/.claude-host/.claude.json:ro" in args
     assert f"{login.resolve()}:/root/.claude-host/.credentials.json:ro" in args
     assert not any("history" in a for a in args)  # only the one file, not the directory
     assert "ANTHROPIC_API_KEY" not in args
