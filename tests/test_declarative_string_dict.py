@@ -422,3 +422,40 @@ def test_dict_group_count_sum_example_verifies_and_a_wrong_slot_does_not(monkeyp
     assert "sums[" in text
     bad, _ = run(text.replace("sums.set(", "sums.set(0 * ", 1)) if "sums.set(" in text else (False, "")
     assert not bad
+
+
+def test_dict_join_probe_example_verifies_and_a_wrong_count_does_not(monkeypatch: pytest.MonkeyPatch) -> None:
+    from pathlib import Path
+
+    from declarative_spec.assemble import assemble_declarative_program
+    from declarative_spec.emit import emit_declarative_spec
+    from declarative_spec.pipeline import VERUS_CANDIDATES, verify_assembled
+    from declarative_spec.prompt import _FIXTURES, build_declarative_prompt, spec_shape
+    from declarative_spec.regions import extract_agent_edit, extract_agent_helpers
+    from research_loop.assumption_packages import assumption_package
+
+    monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
+    schema = {
+        "num": {"adsh": "varchar", "value": "decimal(38,4)"},
+        "sub": {"adsh": "varchar", "form": "varchar"},
+    }
+    sql = "SELECT SUM(n.value) AS v FROM num n JOIN sub s ON n.adsh = s.adsh WHERE s.form = '10-K'"
+    spec = emit_declarative_spec(sql, schema, assumption_package("sec_margin_dec"))
+    assert spec_shape(spec)["recipe"] == "dict_join"
+    prompt = build_declarative_prompt(sql=sql, spec_path="s", edit_path="e", lemma_index="idx", spec_text=spec)
+    assert "context/ro/examples/dict_join_probe_sum.rs" in prompt
+    if not any(c.is_file() for c in VERUS_CANDIDATES):
+        pytest.skip("verus binary not installed")
+    monkeypatch.setenv("LEMMA_VERUS_BIN", str(Path(__file__).resolve().parents[1] / "scripts" / "ram" / "verus_guarded.sh"))
+    text = (_FIXTURES / "dict_join_probe_sum.rs").read_text()
+
+    def run(t: str) -> tuple[bool, str]:
+        return verify_assembled(
+            assemble_declarative_program(spec, extract_agent_edit(t), helpers=extract_agent_helpers(t)), timeout_sec=600
+        )
+
+    ok, out = run(text)
+    assert ok and "0 errors" in out, out[-2000:]
+    assert "cnt.set(c, before + 1);" in text
+    bad, _ = run(text.replace("cnt.set(c, before + 1);", "cnt.set(c, before + 2);", 1))
+    assert not bad
