@@ -74,7 +74,7 @@ Still **rsync/gsutil** full `research_loop/runs/` as backup — the stream is su
 
 ## Iteration policy
 
-`MAX_ITERS=4` default for paper (env `MAX_ITERATIONS`). Early stop + keep best correct.
+`MAX_ITERATIONS` defaults to 1 attempt per query. Setting the env var overrides it. Early stop + keep best correct.
 Timeouts: measure 300 s / agent 30 min (align GenDB).
 
 ---

@@ -164,6 +164,16 @@ Paths: `/workspace`, `/context/ro`, `/data`.
 """
 
 
+def _agent_speed_sections() -> str:
+    """Same proved-join and mode rules as the CLI prompt. The agent must see them."""
+    from research_loop.agent_sandbox import (
+        _rocketship_exec_section,
+        _verus_mode_section,
+    )
+
+    return _verus_mode_section() + _rocketship_exec_section("/context/ro")
+
+
 def _build_user_prompt(
     *,
     workspace: Path,
@@ -234,6 +244,7 @@ def _build_user_prompt(
 
 {budget_section}
 {row_budget_section}
+{_agent_speed_sections()}
 {facts_block}
 ## Context files (read-only)
 - `/context/ro/query.sql`, `schema.json`, `spec.rs`
@@ -287,12 +298,29 @@ def _prepare_workspace(
     guide = RESEARCH / "agents" / "COMPILATION_GUIDE.md"
     if not guide.is_file():
         guide = RESEARCH / "COMPILATION_GUIDE.md"
+    from research_loop.agent_sandbox import (
+        _TIPS_MD,
+        agent_guidance,
+        materialize_agent_doc,
+    )
+
     if guide.is_file():
-        shutil.copy2(guide, ro / "COMPILATION_GUIDE.md")
+        (ro / "COMPILATION_GUIDE.md").write_text(
+            materialize_agent_doc("COMPILATION_GUIDE.md", guide.read_text(encoding="utf-8")),
+            encoding="utf-8",
+        )
     for name in ("AGENTS.md", "PRIMITIVES.md"):
         src = RESEARCH / "agents" / name
         if src.is_file():
-            shutil.copy2(src, ro / name)
+            (ro / name).write_text(
+                materialize_agent_doc(name, src.read_text(encoding="utf-8")),
+                encoding="utf-8",
+            )
+    tips_path = ro / "TIPS.md"
+    if agent_guidance() == "tips":
+        tips_path.write_text(_TIPS_MD, encoding="utf-8")
+    elif tips_path.exists():
+        tips_path.unlink()
     if flags.agent_workload_hint:
         (ro / "WORKLOAD.md").write_text(
             "# Workload hint\n\n"

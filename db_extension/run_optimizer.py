@@ -238,7 +238,7 @@ def main():
             if allow_fallback and demo_enabled():
                 demo_duckdb_query(time_duckdb_us(con, sql, warmup=0))
     else:
-        max_iters = int(os.environ.get("MAX_ITERATIONS", "3"))
+        max_iters = int(os.environ.get("MAX_ITERATIONS", "1"))
         gemini_model = os.environ.get("GEMINI_MODEL", None)
 
         res_loop = run_optimization_loop(

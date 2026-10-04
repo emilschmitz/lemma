@@ -19,6 +19,22 @@ VERUS_SRC = os.path.join(ROOT_DIR, "verus", "src")
 GENERATED = os.path.join(CURRENT_DIR, "generated")
 
 
+def spec_requires_per_table_loaders(spec_rs: str, tables: tuple[str, ...]) -> bool:
+    """True when the spec names ``Cols_<table>`` for every table and has no bare ``Cols``.
+
+    A ``NOT EXISTS`` anti-join is not a SQL ``JOIN``, so ``query.joins`` is empty, but
+    the spec still uses one struct per table. The single-table loader returns ``Cols``
+    and then fails to compile.
+    """
+    if len(tables) < 2:
+        return False
+    if re.search(r"pub struct Cols\b", spec_rs):
+        return False
+    return all(
+        re.search(rf"pub struct Cols_{re.escape(table)}\b", spec_rs) for table in tables
+    )
+
+
 def custom_query_artifact_dir() -> str:
     """Per-process assemble dir so parallel optimizer runs do not clobber ``custom_query.rs``.
 
@@ -354,6 +370,7 @@ def run_verus_verify(rs_path: str, timeout: int) -> tuple[bool, str]:
     verus_bin = resolve_verus_bin()
     if not verus_bin:
         return False, "verus binary not found"
+    rs_path = os.path.abspath(rs_path)
     cmd = [verus_bin, rs_path]
     try:
         res = subprocess.run(
@@ -410,6 +427,7 @@ def run_verus_compile(
                 f"link-arg=-Wl,-rpath,{lib_dir}",
             ]
         )
+    rs_path = os.path.abspath(rs_path)
     cmd = [
         verus_bin,
         rs_path,
@@ -417,7 +435,7 @@ def run_verus_compile(
         "--",
         *rustc_tail,
     ]
-    rs_dir = os.path.dirname(os.path.abspath(rs_path))
+    rs_dir = os.path.dirname(rs_path)
     try:
         res = subprocess.run(
             cmd,
@@ -1818,7 +1836,8 @@ def run_custom_sql_pipeline(
 
     try:
         order = program_table_order(query, multi, table_order=table_order)
-        if query.joins and len(order) >= 2:
+        per_table = spec_requires_per_table_loaders(spec_rs, order)
+        if (query.joins and len(order) >= 2) or per_table:
             if len(order) == 2:
                 left_t, right_t = order[0], order[1]
                 default_tbls = tbls or {left_t: "", right_t: ""}

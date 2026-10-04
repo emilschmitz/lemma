@@ -46,7 +46,7 @@ def env_for_experiment() -> dict[str, str]:
     e["LEMMA_WORKLOAD"] = "sec"
     e["LEMMA_DUCKDB_PATH"] = str(ROOT / "holdout/gendb_sec_edgar/duckdb/sec_edgar.duckdb")
     e["AGENT_TIMEOUT_SEC"] = "600"
-    e["MAX_ITERATIONS"] = os.environ.get("MAX_ITERATIONS", "4")
+    e["MAX_ITERATIONS"] = os.environ.get("MAX_ITERATIONS", "1")
     e["AGENT_NETWORK"] = "0"
     e["LEMMA_EXPERIMENT_EVENT_FILE"] = str(
         ROOT / "research_loop/generated/experiment_events/r15.ndjson"

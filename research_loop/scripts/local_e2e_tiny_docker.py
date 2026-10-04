@@ -753,7 +753,7 @@ def main(argv: list[str] | None = None) -> int:
             write_suite_sql,
         )
 
-        os.environ.setdefault("MAX_ITERATIONS", "4")
+        os.environ.setdefault("MAX_ITERATIONS", "1")
         retry_rounds = 3
         sql_file = write_suite_sql()
         log_dir = GENDB_LOG

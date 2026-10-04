@@ -146,7 +146,7 @@ echo "Wrote $OUT/hardware.json"
 
 # --- fresh shuffle outside git tree (or reuse frozen SQL) ---
 SHUFFLE_SEED="${LEMMA_SHUFFLE_SEED:-1707}"
-SHUFFLE_N="${LEMMA_SHUFFLE_N:-50}"
+SHUFFLE_N="${LEMMA_SHUFFLE_N:-6}"
 SQL_OUT="$OUT/queries_resample.sql"
 
 if [[ -n "${LEMMA_SQL_FILE:-}" && -f "${LEMMA_SQL_FILE}" ]]; then
@@ -227,7 +227,7 @@ print(json.dumps({
 fi
 
 # --- agent driver env ---
-export MAX_ITERATIONS="${MAX_ITERATIONS:-4}"
+export MAX_ITERATIONS="${MAX_ITERATIONS:-1}"
 export AGENT_TIMEOUT_SEC="${AGENT_TIMEOUT_SEC:-600}"
 export LEMMA_KEEP_OPTIMIZING="${LEMMA_KEEP_OPTIMIZING:-1}"
 export LEMMA_BENCH_TIMEOUT_SEC="${LEMMA_BENCH_TIMEOUT_SEC:-600}"
@@ -240,6 +240,7 @@ unset LEMMA_FOLD_SLOT_ASSUME_ALIAS
 # Default: 6 consecutive lemma_ok=false jobs → aborted.json → guest halt (run_and_halt.sh).
 export LEMMA_FAIL_STREAK="${LEMMA_FAIL_STREAK:-6}"
 export LEMMA_WORKLOAD=sec
+export LEMMA_ASSUMPTION_PACKAGE="${LEMMA_ASSUMPTION_PACKAGE:-sec_margin}"
 export LEMMA_DUCKDB_PATH="$SEC_DB"
 WORKERS="${LEMMA_PARALLEL:-16}"
 
@@ -316,6 +317,7 @@ export MAX_ITERATIONS="${MAX_ITERATIONS}"
 export AGENT_TIMEOUT_SEC="${AGENT_TIMEOUT_SEC}"
 export LEMMA_FAIL_STREAK="${LEMMA_FAIL_STREAK}"
 export LEMMA_WORKLOAD=sec
+export LEMMA_ASSUMPTION_PACKAGE="${LEMMA_ASSUMPTION_PACKAGE}"
 export LEMMA_DUCKDB_PATH="${SEC_DB}"
 export LEMMA_PARALLEL="${WORKERS}"
 export LEMMA_SQL_ONLY="${LEMMA_SQL_ONLY:-}"

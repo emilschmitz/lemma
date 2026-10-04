@@ -164,10 +164,49 @@ def test_concrete_proof_names_are_the_fold_lemmas() -> None:
     assert "lemma_<helper>_" in _proof_paths_text(static, two)
 
 
+def test_tips_are_optional_and_do_not_name_a_helper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws = tmp_path / "workspace"
+    (ws / "context" / "ro").mkdir(parents=True)
+    monkeypatch.setenv("LEMMA_AGENT_GUIDANCE", "tips")
+    prompt = build_agent_prompt(
+        workspace=ws,
+        query_id=1,
+        sql_query="SELECT 1 FROM a JOIN b ON a.x = b.x",
+        iteration=1,
+        max_iterations=1,
+    )
+    assert "TIPS.md" in prompt
+    assert "not a plan" in prompt
+    assert "q6_eq_triples_kept" not in prompt
+    assert "hashes the three inner-key strings" not in prompt
+    assert "## Verus modes" in prompt
+
+
+def test_bare_prompt_keeps_the_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws = tmp_path / "workspace"
+    (ws / "context" / "ro").mkdir(parents=True)
+    monkeypatch.setenv("LEMMA_AGENT_GUIDANCE", "bare")
+    prompt = build_agent_prompt(
+        workspace=ws,
+        query_id=1,
+        sql_query="SELECT 1 FROM a",
+        iteration=1,
+        max_iterations=1,
+    )
+    assert "TIPS.md" not in prompt
+    assert "## Proved join exec menu" not in prompt
+    assert "external_body" in prompt
+    assert "## Verus modes" in prompt
+
+
 def test_build_agent_prompt_join_menu_not_proof_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Prompt is the query, the spec, and host facts. It does not prescribe a join tactic."""
+    """Prompt names the proved joins and the checked full-key hash. It does not prescribe a proof recipe."""
     ws = tmp_path / "workspace"
     (ws / "context" / "ro").mkdir(parents=True)
     monkeypatch.delenv("LEMMA_FAST_TRUSTEDS", raising=False)
@@ -183,8 +222,10 @@ def test_build_agent_prompt_join_menu_not_proof_paths(
     assert "SESSION_HOT_US" in prompt
     assert "method_spec" in prompt
     assert f"{ws}/context/ro/spec.rs" in prompt or "/context/ro/spec.rs" in prompt
-    assert "## Proved join exec menu" not in prompt
-    assert "## Verus modes" not in prompt
+    assert "## Proved join exec menu" in prompt
+    assert "## Verus modes" in prompt
+    assert "hashes the three inner-key strings" in prompt
+    assert "`LEMMA_FAST_TRUSTEDS` is off" in prompt
     assert "before half the wall-clock budget" not in prompt
     for recipe in (
         "ghost loop",
@@ -194,8 +235,6 @@ def test_build_agent_prompt_join_menu_not_proof_paths(
         "call order",
         "Do not re-prove",
         "Further reading does not extend the wall",
-        "equijoin_pairs_str",
-        "par_equijoin_pairs_str",
     ):
         assert recipe not in prompt, recipe
 
@@ -221,7 +260,7 @@ def test_build_agent_prompt_join_menu_not_proof_paths(
 def test_fast_prompt_has_no_canned_join_menu(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Same prompt with or without the speed menu. Tactics are not per-flag."""
+    """Fast mode still names the proved joins. It does not drop the proof bar."""
     ws = tmp_path / "workspace"
     (ws / "context" / "ro").mkdir(parents=True)
     monkeypatch.setenv("LEMMA_FAST_TRUSTEDS", "1")
@@ -233,9 +272,11 @@ def test_fast_prompt_has_no_canned_join_menu(
         iteration=1,
         max_iterations=4,
     )
-    assert "## Proved join exec menu" not in prompt
-    assert "## Verus modes" not in prompt
-    assert "par_equijoin_pairs_str" not in prompt
+    assert "## Proved join exec menu" in prompt
+    assert "## Verus modes" in prompt
+    assert "par_equijoin_pairs_str" in prompt
+    assert "hashes the three inner-key strings" in prompt
+    assert "`LEMMA_FAST_TRUSTEDS` is off" not in prompt
     assert "SESSION_HOT_US" in prompt
 
 

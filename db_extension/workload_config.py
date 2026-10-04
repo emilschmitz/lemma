@@ -346,6 +346,11 @@ def catalog_assumptions_for_workload(workload: str | None = None):
     """
     name = (workload or workload_env_name()).lower()
     if name == "sec":
+        package = os.environ.get("LEMMA_ASSUMPTION_PACKAGE", "").strip()
+        if package:
+            from research_loop.assumption_packages import assumption_package
+
+            return assumption_package(package)
         from research_loop.sec_table_assumptions import sec_product_catalog_assumptions
 
         return sec_product_catalog_assumptions()
