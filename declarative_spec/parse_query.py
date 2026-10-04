@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import sqlglot
 from sqlglot import exp
 
 from declarative_spec.parse import DeclarativeUnsupported
+from declarative_spec.parse_exprs import (
+    arith_text,
+    extract_text,
+    compare_to_rational,
+    fold_date,
+    fold_number,
+)
 from declarative_spec.schema_types import rust_ident
-from declarative_spec.surface import Agg, Join, OrderKey, Query
+from declarative_spec.surface import Agg, Join, Output, OrderKey, Query
 
 _DATE_LITERAL = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
 
@@ -405,6 +412,9 @@ def _parse_select(expression: exp.Select, *, outer_scope: _Scope | None = None) 
             on_equalities: list[tuple[str, str]] = []
             on_combiner = "and"
             join_kind = "inner"
+        elif join.args.get("on") is None and not join.args.get("using"):
+            # ``FROM a, b``: every pair of rows, narrowed by the WHERE conditions.
+            on_equalities, on_combiner, join_kind = [], "and", "inner"
         else:
             on_equalities, on_combiner = _parse_on_clause(join.args.get("on"))
             join_kind = {"INNER": "inner", "LEFT": "left", "RIGHT": "right"}.get(
@@ -452,12 +462,10 @@ def _parse_select(expression: exp.Select, *, outer_scope: _Scope | None = None) 
         for item in select_items:
             inner = _unwrap_alias(item)
             alias = item.alias if isinstance(item, exp.Alias) else ""
-            if isinstance(inner, exp.Column):
-                proj.append(alias or inner.name)
-            elif _is_aggregate(item):
+            if _is_aggregate(item):
                 agg_items.append(item)
             else:
-                raise DeclarativeUnsupported("SELECT expression")
+                proj.append(_select_output(item, scope, query))
         for item in agg_items:
             query.aggs.append(_parse_agg(item, scope))
     else:
@@ -466,8 +474,7 @@ def _parse_select(expression: exp.Select, *, outer_scope: _Scope | None = None) 
             if _is_aggregate(select_items[0]):
                 query.aggs.append(_parse_agg(select_items[0], scope))
             elif isinstance(inner, exp.Column):
-                alias = select_items[0].alias or inner.name
-                proj.append(alias)
+                proj.append(_select_output(select_items[0], scope, query))
             elif isinstance(inner, exp.Subquery):
                 name = counters.next_scalar()
                 sub = _parse_subquery_select(inner.this, scope)
@@ -475,16 +482,13 @@ def _parse_select(expression: exp.Select, *, outer_scope: _Scope | None = None) 
             elif isinstance(inner, exp.Literal):
                 query.projection = ["_literal"]
             else:
-                raise DeclarativeUnsupported("SELECT expression")
+                proj.append(_select_output(select_items[0], scope, query))
         else:
             for item in select_items:
-                inner = _unwrap_alias(item)
-                if isinstance(inner, exp.Column):
-                    proj.append(item.alias or inner.name)
-                elif _is_aggregate(item):
+                if _is_aggregate(item):
                     query.aggs.append(_parse_agg(item, scope))
                 else:
-                    raise DeclarativeUnsupported("SELECT expression")
+                    proj.append(_select_output(item, scope, query))
 
     query.projection = proj
     agg_alias_map = {a.alias.lower(): a.alias for a in query.aggs if a.alias}
@@ -637,7 +641,18 @@ def _parse_agg(item: exp.Expression, scope: _Scope) -> Agg:
                     expr=_compile_case(inner.this, scope),
                 )
             if not isinstance(inner.this, exp.Column):
-                raise DeclarativeUnsupported(f"{kind} argument")
+                refs: list[str] = []
+                text = arith_text(inner.this, lambda c: _col_ref(c, scope)[0], refs)
+                if text is None or not refs:
+                    raise DeclarativeUnsupported(f"{kind} argument")
+                return Agg(
+                    kind=kind,
+                    column=None,
+                    alias=alias or kind.lower(),
+                    table=None,
+                    arith=text,
+                    arith_refs=tuple(refs),
+                )
             _ref, tbl = _col_ref(inner.this, scope)
             return Agg(
                 kind=kind,
@@ -708,6 +723,9 @@ def _compile_bool(node: exp.Expression, ctx: _BoolCtx) -> str:
         ctx.query.exists.append((name, sub, False))
         return name
     if isinstance(node, exp.Between):
+        exact = _between_exact(node, ctx)
+        if exact is not None:
+            return exact
         if not isinstance(node.this, exp.Column):
             raise DeclarativeUnsupported("BETWEEN")
         col, _ = _col_ref(node.this, ctx.scope)
@@ -732,7 +750,7 @@ def _compile_bool(node: exp.Expression, ctx: _BoolCtx) -> str:
         parts = [f"({col_ref} == {_compile_scalar(v, ctx)})" for v in node.expressions]
         return f"({' || '.join(parts)})"
     if isinstance(node, exp.Like):
-        raise DeclarativeUnsupported("LIKE")
+        return _compile_like(node, ctx)
     if isinstance(node, (exp.EQ, exp.NEQ, exp.GT, exp.LT, exp.GTE, exp.LTE)):
         op_map = {
             exp.EQ: "==",
@@ -743,6 +761,9 @@ def _compile_bool(node: exp.Expression, ctx: _BoolCtx) -> str:
             exp.LTE: "<=",
         }
         op = op_map[type(node)]
+        exact = _compare_exact(node, op, ctx)
+        if exact is not None:
+            return exact
         if isinstance(node.right, exp.Subquery) or isinstance(node.left, exp.Subquery):
             if isinstance(node.right, exp.Subquery):
                 sub_node, other = node.right, node.left
@@ -807,16 +828,11 @@ def _compile_side(node: exp.Expression, ctx: _BoolCtx) -> str:
     if isinstance(node, exp.Boolean):
         return "true" if node.this else "false"
     if isinstance(node, (exp.Sum, exp.Count, exp.Avg, exp.Min, exp.Max)) and ctx.having:
-        inner = _unwrap_alias(node)
-        alias = node.alias if isinstance(node, exp.Alias) else ""
-        for agg in ctx.query.aggs:
-            if agg.kind == _agg_kind(inner) and (not alias or agg.alias == alias):
-                return agg.alias or agg.kind.lower()
-        raise DeclarativeUnsupported("HAVING aggregate")
+        return _having_agg_alias(node, ctx)
     folded = _fold_int_literal(node)
     if folded is not None:
         return folded
-    raise DeclarativeUnsupported("expression operand")
+    return _constant_or_arith_side(node, ctx)
 
 
 def _compile_case(node: exp.Case, scope: _Scope) -> str:
@@ -895,3 +911,125 @@ def _fold_int_literal(node: exp.Expression) -> str | None:
         y, m, d = (int(x) for x in match.groups())
         return f"{y:04d}{m:02d}{d:02d}"
     return None
+
+
+_FLIP = {"==": "==", "!=": "!=", "<": ">", "<=": ">=", ">": "<", ">=": "<="}
+
+
+def _constant_or_arith_side(node: exp.Expression, ctx: _BoolCtx) -> str:
+    date = fold_date(node)
+    if date is not None:
+        return date
+    number = fold_number(node)
+    if number is not None:
+        if number.denominator != 1:
+            raise DeclarativeUnsupported("non-integer constant operand")
+        return str(number.numerator)
+    return _exact_int_side(node, ctx)
+
+
+def _exact_int_side(node: exp.Expression, ctx: _BoolCtx) -> str:
+    """A column or integer arithmetic. The columns must be integer typed (checked at emit)."""
+    refs: list[str] = []
+    text = arith_text(node, lambda c: _col_ref(c, ctx.scope)[0], refs)
+    if text is None or not refs:
+        raise DeclarativeUnsupported("expression operand")
+    ctx.query.exact_int_refs.extend(refs)
+    return text
+
+
+def _compare_exact(node: exp.Expression, op: str, ctx: _BoolCtx) -> str | None:
+    """A comparison where one side is a non-integer constant such as ``0.06 - 0.01``."""
+    left_value, right_value = fold_number(node.left), fold_number(node.right)  # type: ignore[attr-defined]
+    if left_value is not None and right_value is not None:
+        if left_value.denominator == 1 and right_value.denominator == 1:
+            return None
+        ops = {
+            "==": left_value == right_value,
+            "!=": left_value != right_value,
+            "<": left_value < right_value,
+            "<=": left_value <= right_value,
+            ">": left_value > right_value,
+            ">=": left_value >= right_value,
+        }
+        return "true" if ops[op] else "false"
+    if right_value is not None and right_value.denominator != 1:
+        return compare_to_rational(_exact_int_side(node.left, ctx), op, right_value)  # type: ignore[attr-defined]
+    if left_value is not None and left_value.denominator != 1:
+        return compare_to_rational(
+            _exact_int_side(node.right, ctx), _FLIP[op], left_value  # type: ignore[attr-defined]
+        )
+    return None
+
+
+def _between_exact(node: exp.Between, ctx: _BoolCtx) -> str | None:
+    low, high = fold_number(node.args["low"]), fold_number(node.args["high"])
+    if low is None or high is None:
+        return None
+    if low.denominator == 1 and high.denominator == 1 and isinstance(node.this, exp.Column):
+        return None
+    left = _exact_int_side(node.this, ctx)
+    return f"({compare_to_rational(left, '>=', low)} && {compare_to_rational(left, '<=', high)})"
+
+
+def _same_agg(a: Agg, b: Agg) -> bool:
+    return (
+        a.kind == b.kind
+        and a.column == b.column
+        and a.arith == b.arith
+        and a.expr == b.expr
+        and (a.table is None or b.table is None or a.table.casefold() == b.table.casefold())
+    )
+
+
+def _having_agg_alias(node: exp.Expression, ctx: _BoolCtx) -> str:
+    """Name of the aggregate a HAVING condition reads: a SELECT one, else a hidden one."""
+    wanted = _parse_agg(node, ctx.scope)
+    for agg in ctx.query.aggs:
+        if _same_agg(agg, wanted):
+            return agg.alias
+    alias = f"having_{wanted.kind.lower()}_{sum(a.hidden for a in ctx.query.aggs)}"
+    ctx.query.aggs.append(replace(wanted, alias=alias, hidden=True))
+    return alias
+
+
+def _select_output(item: exp.Expression, scope: _Scope, query: Query) -> str:
+    """Record a non-aggregate SELECT item and return its output name."""
+    inner = _unwrap_alias(item)
+    alias = item.alias if isinstance(item, exp.Alias) else ""
+    if isinstance(inner, exp.Column):
+        name = alias or inner.name
+        query.outputs.append(Output(name, "column", _col_ref(inner, scope)[0]))
+        return name
+    if not alias:
+        raise DeclarativeUnsupported("SELECT expression needs an alias")
+    refs: list[str] = []
+
+    def ref(col: exp.Column) -> str:
+        return _col_ref(col, scope)[0]
+
+    if isinstance(inner, exp.Extract):
+        text = extract_text(inner, ref, refs)
+        query.outputs.append(Output(alias, "extract", text, tuple(refs)))
+        return alias
+    text = arith_text(inner, ref, refs)
+    if text is None or not refs:
+        raise DeclarativeUnsupported("SELECT expression")
+    query.outputs.append(Output(alias, "arith", text, tuple(refs)))
+    return alias
+
+
+def _compile_like(node: exp.Like, ctx: _BoolCtx) -> str:
+    pattern = node.expression
+    if (
+        not isinstance(node.this, exp.Column)
+        or not isinstance(pattern, exp.Literal)
+        or not pattern.is_string
+        or node.args.get("escape") is not None
+    ):
+        raise DeclarativeUnsupported("LIKE needs a column, a string literal, and no ESCAPE")
+    if any(ch in str(pattern.this) for ch in '"\\'):
+        raise DeclarativeUnsupported("LIKE pattern with a quote or backslash")
+    col, _ = _col_ref(node.this, ctx.scope)
+    text = f'spec_like({col}, "{pattern.this}"@)'
+    return f"!({text})" if node.args.get("negate") else text

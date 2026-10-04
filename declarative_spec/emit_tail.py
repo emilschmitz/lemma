@@ -13,13 +13,29 @@ def _row_col(row: str, column: str, projection: list[str]) -> str:
     return f"{row}.{field}"
 
 
-def _row_before(a: str, b: str, order_by: list[OrderKey], projection: list[str]) -> str:
-    """``a`` is not after ``b`` in the query sort order."""
+def _row_before(
+    a: str,
+    b: str,
+    order_by: list[OrderKey],
+    projection: list[str],
+    string_cols: frozenset[str] = frozenset(),
+) -> str:
+    """``a`` is not after ``b`` in the query sort order.
+
+    A key named in ``string_cols`` (a ``String`` field) is ordered by ``seq_le`` over its
+    spec view, which is DuckDB's default byte order for valid UTF-8.
+    """
 
     def clause(k: int) -> str:
         key = order_by[k]
         left = _row_col(a, key.column, projection)
         right = _row_col(b, key.column, projection)
+        if rust_ident(key.column) in string_cols:
+            left, right = f"{left}@", f"{right}@"
+            order = f"seq_le({right}, {left})" if key.descending else f"seq_le({left}, {right})"
+            if k + 1 == len(order_by):
+                return order
+            return f"if ({left}) == ({right}) {{ {clause(k + 1)} }} else {{ {order} }}"
         if key.descending:
             cmp_expr = f"({left}) >= ({right})"
             tie_note = f"descending on {key.column}"
@@ -40,10 +56,10 @@ def _row_before(a: str, b: str, order_by: list[OrderKey], projection: list[str])
     return clause(0)
 
 
-def _emit_order(query: Query) -> list[str]:
+def _emit_order(query: Query, string_cols: frozenset[str] = frozenset()) -> list[str]:
     if not query.order_by:
         return []
-    before = _row_before("res@[i]", "res@[i + 1]", query.order_by, query.projection)
+    before = _row_before("res@[i]", "res@[i + 1]", query.order_by, query.projection, string_cols)
     return [
         "forall|i: int| #![trigger res@[i]] 0 <= i && i + 1 < res@.len() ==> ("
         + before
@@ -51,7 +67,7 @@ def _emit_order(query: Query) -> list[str]:
     ]
 
 
-def _emit_limit_offset(query: Query) -> list[str]:
+def _emit_limit_offset(query: Query, string_cols: frozenset[str] = frozenset()) -> list[str]:
     lines: list[str] = []
     if query.limit is not None:
         lines.append(f"res@.len() <= {query.limit}")
@@ -63,6 +79,7 @@ def _emit_limit_offset(query: Query) -> list[str]:
                 "ordered[i + 1]",
                 query.order_by,
                 query.projection,
+                string_cols,
             )
             order_cond = (
                 "forall|i: int| 0 <= i && i + 1 < ordered.len() ==> ("
@@ -139,11 +156,11 @@ def _emit_scalar_subqueries(query: Query) -> list[str]:
     return lines
 
 
-def tail_ensures(query: Query) -> str:
+def tail_ensures(query: Query, string_cols: frozenset[str] = frozenset()) -> str:
     """Boolean ensures lines for tail clauses (comma-separated, no surrounding fn)."""
     parts: list[str] = []
-    parts.extend(_emit_order(query))
-    parts.extend(_emit_limit_offset(query))
+    parts.extend(_emit_order(query, string_cols))
+    parts.extend(_emit_limit_offset(query, string_cols))
     if query.distinct:
         parts.extend(_emit_distinct(query))
     parts.extend(_emit_set_op(query))

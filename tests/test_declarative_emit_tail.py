@@ -10,6 +10,9 @@ _ROOT = Path(__file__).resolve().parents[1]
 
 
 def _import_module(dotted: str, path: Path):
+    # Re-executing a module another test file already imported splits its classes in two.
+    if dotted in sys.modules:
+        return sys.modules[dotted]
     spec = importlib.util.spec_from_file_location(dotted, path)
     if spec is None or spec.loader is None:
         raise ImportError(dotted)

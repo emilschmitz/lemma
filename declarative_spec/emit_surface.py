@@ -11,11 +11,13 @@ import copy
 import re
 from dataclasses import dataclass, field
 
+from declarative_spec.emit_in import apply_in_calls, in_subquery_calls
 from declarative_spec.emit_join import _build_slots, _Slot, _table_alias
 from declarative_spec.emit_tail import tail_ensures
 from declarative_spec.parse import DeclarativeUnsupported
 from declarative_spec.parse_query import parse_query
-from declarative_spec.schema_types import ColumnTypeInfo, SchemaModel, rust_ident
+from declarative_spec.resolve import check_exact_integer_refs, flatten_derived, qualify_join_refs
+from declarative_spec.schema_types import ColumnTypeInfo, SchemaModel, classify_sql_type, rust_ident
 from declarative_spec.surface import Agg, OrderKey, Query
 from research_loop.table_assumptions import CatalogAssumptions
 
@@ -37,6 +39,7 @@ class _AggFn:
     float_out: bool
     style: str  # "fold" | "bound"
     exec: str
+    hidden: bool = False  # read only by HAVING; not an output column
 
 
 @dataclass
@@ -60,11 +63,13 @@ def emit_from_surface(
     float_abs_eps: str | None = None,
 ) -> str:
     """Verus source for ``sql``. Raises ``DeclarativeUnsupported`` when a clause is refused."""
-    query = parse_query(sql)
+    query = flatten_derived(parse_query(sql))
     if not query.tables:
         raise DeclarativeUnsupported("FROM")
     model = SchemaModel.from_caller(schema, query.tables[0])
     _reject_unemitted(query)
+    qualify_join_refs(query, model)
+    check_exact_integer_refs(query, model)
     if not query.aggs:
         if not query.projection:
             raise DeclarativeUnsupported("projection")
@@ -123,6 +128,14 @@ def emit_from_surface(
         "}",
     ]
     text = "\n".join(p for p in parts if p is not None)
+    if "seq_le(" in text and "spec fn seq_le(" not in text:
+        from declarative_spec.emit_projection import _seq_le_fn
+
+        text = text.replace("// HOST_LEMMAS_START", _seq_le_fn() + "\n\n// HOST_LEMMAS_START", 1)
+    if "spec_like(" in text and "spec fn spec_like(" not in text:
+        from declarative_spec.emit_like import SPEC_LIKE_FN
+
+        text = text.replace("// HOST_LEMMAS_START", SPEC_LIKE_FN + "\n\n// HOST_LEMMAS_START", 1)
     text = _string_views(text, _string_fields(model, helpers.params))
     if "method_spec" in text:
         raise DeclarativeUnsupported("internal spec shape")
@@ -162,14 +175,14 @@ def _reject_unemitted(query: Query) -> None:
         raise DeclarativeUnsupported(query.set_op)
     if query.ctes:
         raise DeclarativeUnsupported("CTE")
-    if query.in_subqueries:
-        raise DeclarativeUnsupported("IN subquery")
     for join in query.joins:
         if join.kind.casefold() != "inner":
             raise DeclarativeUnsupported("outer join")
     for _name, sub, _neg in query.exists:
         _reject_unemitted(sub)
     for _name, sub in query.scalar_subqueries:
+        _reject_unemitted(sub)
+    for _name, _col, sub in query.in_subqueries:
         _reject_unemitted(sub)
     for _name, sub in query.derived:
         _reject_unemitted(sub)
@@ -192,13 +205,17 @@ def _emit_helpers(query: Query, prefix: str, model: SchemaModel) -> _Helpers:
 
     blocks: list[str] = []
     exists_calls = _exists_fns(query, prefix, main, params, model, blocks)
-    pred = _compile_pred(query.where_expr, main, [], model, exists_calls)
+    in_heads, in_sources = in_subquery_calls(query, prefix, params, model)
+    blocks.extend(in_sources)
+    where_expr = apply_in_calls(query.where_expr, in_heads)
+    pred = _compile_pred(where_expr, main, [], model, exists_calls)
     blocks.append(_row_hit_fn(row_hit, query, main, params, pred))
     blocks.append(_key_at_fn(key_at, main, params, group_infos, key_ty))
 
     aggs: list[_AggFn] = []
     for agg in query.aggs:
         aggs.append(_emit_agg(blocks, query, agg, prefix, main, params, model, key_ty, row_hit, key_at))
+        aggs[-1].hidden = agg.hidden
 
     scalars = _scalar_fns(query, prefix, model, params)
     # scalar calls are recorded on the query via the returned map; having reads `scalars`
@@ -242,6 +259,12 @@ def _extra_params(query: Query, main: list[_Slot], model: SchemaModel) -> list[_
 
     def walk(q: Query) -> None:
         for _name, sub, _neg in q.exists:
+            if sub.tables:
+                add(_table_alias(sub, sub.tables[0], None), sub.tables[0])
+            for join in sub.joins:
+                add(join.alias or _table_alias(sub, join.table, join.alias), join.table)
+            walk(sub)
+        for _name, _col, sub in q.in_subqueries:
             if sub.tables:
                 add(_table_alias(sub, sub.tables[0], None), sub.tables[0])
             for join in sub.joins:
@@ -367,10 +390,31 @@ def _group_infos(
 ) -> list[tuple[str, str, ColumnTypeInfo, _Slot]]:
     out: list[tuple[str, str, ColumnTypeInfo, _Slot]] = []
     for i, col in enumerate(query.group_columns):
+        if col in query.group_exprs:
+            out.append(_expr_group(col, query.group_exprs[col], main, model))
+            continue
         table = query.group_tables[i] if i < len(query.group_tables) else None
         slot, info = _find_col(col, table, main, model)
         out.append((rust_ident(col), col, info, slot))
     return out
+
+
+_EXPR = "\x00expr:"
+
+
+def _expr_group(
+    name: str, text: str, main: list[_Slot], model: SchemaModel
+) -> tuple[str, str, ColumnTypeInfo, _Slot]:
+    """A group key that is a renamed column (output ``name``) or a date part (a BIGINT)."""
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?", text):
+        slot, info = _ref_slot(text, main, model)
+        return rust_ident(name), text.rpartition(".")[2], info, slot
+    return (
+        rust_ident(name),
+        _EXPR + _compile_pred(text, main, [], model, {}),
+        classify_sql_type("bigint"),
+        main[0],
+    )
 
 
 def _key_type(groups: list[tuple[str, str, ColumnTypeInfo, _Slot]]) -> str | None:
@@ -519,11 +563,11 @@ def _agg_exec(kind: str, is_float: bool, agg: Agg, main: list[_Slot], model: Sch
     if kind == "SUM":
         # DuckDB widens every integer SUM to HUGEINT, a signed 128-bit integer.
         return "i128"
-    if agg.column and agg.column != "*" and not agg.expr:
+    if agg.column and agg.column != "*" and not agg.expr and not agg.arith:
         _slot, info = _find_col(agg.column, agg.table, main, model)
         if info.signed:
             return "i128"
-    if agg.expr:
+    if agg.expr or agg.arith:
         return "i128"
     return "u64"
 
@@ -546,7 +590,9 @@ def _value_fn(
     *,
     cast_real: bool = False,
 ) -> str:
-    if agg.expr:
+    if agg.arith:
+        expr = _compile_pred(agg.arith, main, [], model, {})
+    elif agg.expr:
         expr = _compile_case(agg.expr, main, model)
     elif agg.column and agg.column != "*":
         slot, info = _find_col(agg.column, agg.table, main, model)
@@ -955,6 +1001,8 @@ def _ensures(query: Query, helpers: _Helpers, model: SchemaModel) -> str:
     tail_q.order_by = [
         OrderKey(column=k.column.split(".")[-1], descending=k.descending) for k in query.order_by
     ]
+    # Result rows are always ``OutRow`` structs here, so order keys are fields, never the row.
+    tail_q.projection = []
     tail_q.exists = []
     tail_q.scalar_subqueries = []
     tail_q.in_subqueries = []
@@ -966,7 +1014,10 @@ def _ensures(query: Query, helpers: _Helpers, model: SchemaModel) -> str:
     if text_order:
         tail_q.order_by = []
         lines.append(_typed_order_line(query, helpers))
-    tail = tail_ensures(tail_q)
+    string_cols = frozenset(
+        fname for fname, _c, info, _s in helpers.group_infos if info.spec_as == "Seq<char>"
+    )
+    tail = tail_ensures(tail_q, string_cols)
     if tail.strip():
         lines.append(tail)
     # ``p`` is unused when the tail already closed the ensures; keep the param call live
@@ -1038,6 +1089,8 @@ def _agg_eqs(helpers: _Helpers, params: str, key: str) -> str:
     parts: list[str] = []
     key_arg = f", {key}" if helpers.key_ty else ""
     for agg in helpers.aggs:
+        if agg.hidden:
+            continue
         nullable = _nullable(helpers, agg)
         field = f"res@[r].{agg.alias}"
         view = _out_view(f"{field}->Some_0" if nullable else field, agg)
@@ -1089,10 +1142,11 @@ def _having(query: Query, helpers: _Helpers, scalars: dict[str, str], key: str) 
     for i, (_fname, col, _info, _slot) in enumerate(helpers.group_infos):
         if not key or not helpers.key_ty:
             break
-        if not re.search(rf"\b{re.escape(col)}\b", expr):
+        name = col if rust_ident(col) == _fname else _fname
+        if not re.search(rf"\b{re.escape(name)}\b", expr):
             continue
         token = f"__gk{i}__"
-        expr = re.sub(rf"\b{re.escape(col)}\b", token, expr)
+        expr = re.sub(rf"\b{re.escape(name)}\b", token, expr)
         piece = key if len(helpers.group_infos) == 1 else f"({key}).{i}"
         held.append((token, piece))
     p = _param_call(helpers.params)
@@ -1432,6 +1486,8 @@ def _out_row(query: Query, helpers: _Helpers, model: SchemaModel) -> str:
         seen.add(fname)
         lines.append(f"    pub {fname}: {info.exec_rust},")
     for agg in helpers.aggs:
+        if agg.hidden:
+            continue
         if agg.alias in seen:
             raise DeclarativeUnsupported("SELECT")
         seen.add(agg.alias)
@@ -1572,6 +1628,8 @@ def _find_col(
 
 
 def _cell(slot: _Slot, col: str, info: ColumnTypeInfo) -> str:
+    if col.startswith(_EXPR):
+        return col[len(_EXPR) :]
     base = f"{slot.param}.{rust_ident(col)}@[{slot.idx}]"
     if info.spec_as == "Seq<char>":
         return f"({base}@)"
