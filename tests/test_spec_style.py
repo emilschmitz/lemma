@@ -169,6 +169,9 @@ def test_build_declarative_prompt_contract() -> None:
     assert "lemma_index_key_below_cap" in prompt
     assert "valid_cols" in prompt
     assert "inserts into a map" not in prompt.lower()
+    assert "use vstd::...;" in prompt
+    assert "Changing `requires` or `ensures` has no effect." in prompt
+    assert "Do not `assume(` or `admit(`" in prompt
     assert "recursive product path" in prompt.lower() or "other spec style" in prompt.lower()
     docker_prompt = build_declarative_prompt(
         sql="SELECT k FROM t",
@@ -179,6 +182,51 @@ def test_build_declarative_prompt_contract() -> None:
     )
     assert "/workspace/runquery_agent.rs" in docker_prompt
     assert "/workspace/context/ro/spec.rs" in docker_prompt
+
+
+def test_declarative_prompt_names_hoisted_imports_and_forbids_assume() -> None:
+    """Allowed vstd import forms stay, and assume/admit stay rejected."""
+    prompt = build_declarative_prompt(
+        sql="SELECT a FROM t",
+        spec_path="context/ro/spec.rs",
+        edit_path="runquery_agent.rs",
+        lemma_index=lemma_index_markdown(),
+    )
+    assert "use vstd::...;" in prompt
+    assert "broadcast use vstd::...;" in prompt
+    assert "The host hoists them." in prompt
+    assert "Do not `assume(` or `admit(`" in prompt
+    assert "#[verifier::external_body]" in prompt
+    assert "proof fn" in prompt
+    assert "spec fn" in prompt
+    assert "proof_from_false" in prompt
+    assert "Do not import it." in prompt
+    assert "lemma_u64_add_fits" in prompt
+
+
+def test_declarative_prompt_loop_shape_before_doc_tree() -> None:
+    """Grouped queries get the loop invariant and a write-before-read order."""
+    prompt = build_declarative_prompt(
+        sql="SELECT b, COUNT(*) FROM u GROUP BY b",
+        spec_path="context/ro/spec.rs",
+        edit_path="runquery_agent.rs",
+        lemma_index="(index)",
+        in_docker=True,
+    )
+    head = prompt.split("## SQL", 1)[0]
+    assert "before you read" in head
+    assert "DECLARATIVE.md" in head
+    assert "lemma_index.md" in head
+    assert "acc as int == count_*" in head
+    assert "decreases" in head
+    assert "StringHashMap" in head
+    assert "HashMapWithView" in head
+    assert "not a recursive exec function" in head
+    assert "Do not weaken them." in head
+    assert "FLOAT_ABS_EPS" in head
+    assert "Do not open `/workspace/context/ro/spec.rs`" in prompt
+    assert "GROUP BY b" in prompt
+    assert "SELECT a FROM t" not in prompt
 
 
 _FORBIDDEN_IN_NEW_FILES = (

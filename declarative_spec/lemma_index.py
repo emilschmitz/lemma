@@ -5,6 +5,10 @@ def lemma_index_markdown() -> str:
     lines = [
         "# Declarative spec lemma index",
         "",
+        "Write the `run_query` edit before you read the rest of this index.",
+        "`use vstd::...;` and `broadcast use vstd::...;` are allowed and the host hoists them.",
+        "Do not `assume(` or `admit(` a fact. Do not declare `spec fn` or `proof fn`.",
+        "",
         "Host lemmas (call these; do not re-prove arithmetic fit by hand):",
         "",
         ("- `lemma_u64_add_fits(a: u64, b: u64)` "
@@ -74,7 +78,7 @@ def lemma_index_markdown() -> str:
         ("You may call these and other vstd lemmas; look them up here when unsure. "
         "Import one with `use vstd::...::lemma_...;` or "
         "`broadcast use vstd::...::group_...;`. "
-        "Do not import a name containing `axiom`. "
+        "Do not import a name containing `axiom`, `arbitrary`, or `proof_from_false`. "
         "Do not `assume(` or `admit(` a fact. "
         "You may **not** declare `spec fn` or `proof fn`."),
     ]
