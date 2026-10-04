@@ -190,13 +190,17 @@ def test_gendb_shaped_value_queries_emit_exact_integer_specs(sql: str) -> None:
             assert re.search(rf"fn {name}\b", spec), name
 
 
-def test_avg_of_a_decimal_stays_refused() -> None:
+def test_avg_of_a_decimal_needs_an_epsilon_and_emits_with_one() -> None:
+    """AVG over a DECIMAL used to be refused outright; it now emits (real quotient of the scaled
+    sum) but, being a float result, refuses loudly without a caller-provided epsilon."""
     from declarative_spec.emit import DeclarativeUnsupported
 
-    with pytest.raises(DeclarativeUnsupported, match="AVG over a DECIMAL"):
-        emit_declarative_spec(
-            "SELECT tag, AVG(value) AS a FROM num GROUP BY tag LIMIT 5", _SCHEMA, assumption_package("sec_margin_dec")
-        )
+    sql = "SELECT tag, AVG(value) AS a FROM num GROUP BY tag LIMIT 5"
+    with pytest.raises(DeclarativeUnsupported, match="LEMMA_FLOAT_ABS_EPS"):
+        emit_declarative_spec(sql, _SCHEMA, assumption_package("sec_margin_dec"))
+    spec = emit_declarative_spec(sql, _SCHEMA, assumption_package("sec_margin_dec"), float_abs_eps="1e-9")
+    assert "pub value: Vec<i128>" in spec
+
 
 
 def test_draws_pick_the_package_that_matches_the_database_file(tmp_path: Path) -> None:

@@ -48,9 +48,9 @@ def _lookup_table_assumptions(catalog: CatalogAssumptions | None, table: str) ->
 
 def _host_lemma_region() -> str:
     """Lemma source the agent can call. Assemble replaces this same region."""
-    from declarative_spec.lemmas import float_error_lemmas_rs, integer_fit_lemmas_rs
+    from declarative_spec.trusted_sets import current
 
-    body = integer_fit_lemmas_rs().rstrip() + "\n\n" + float_error_lemmas_rs().rstrip()
+    body = current().lemmas_rs()
     return "// HOST_LEMMAS_START\n" + body + "\n// HOST_LEMMAS_END"
 
 
@@ -328,33 +328,6 @@ pub open spec fn matched_real_sum_rec(
 """.strip()
 
 
-def _emit_key_bound_lemma(
-    *,
-    struct: str,
-    valid_fn: str,
-    field: str,
-    key_cap: str,
-    inclusive: int,
-) -> str:
-    """Proved bridge from ``valid_cols`` to ``key < KEY_CAP``.
-
-    The column bound in ``valid_cols`` is an inclusive decimal. Callers index
-    ``counts[k as usize]`` only after this lemma, which states the exclusive cap.
-    """
-    return f"""
-pub proof fn lemma_index_key_below_cap(cols: &{struct}, i: int)
-    requires
-        {valid_fn}(cols),
-        0 <= i < cols.n as int,
-    ensures
-        0 <= cols.{field}@[i] as int,
-        (cols.{field}@[i] as int) < ({key_cap} as int),
-{{
-    assert(0 <= cols.{field}@[i] as int && cols.{field}@[i] as int <= {_int_literal(inclusive)});
-}}
-""".strip()
-
-
 def _emit_dense_count_map_lemma(*, key_ty: str) -> str:
     """The final map condition, once the dense count vector and the nonzero copy are in hand."""
     return f"""
@@ -523,8 +496,10 @@ def emit_declarative_spec(
     from declarative_spec.float_order import refuse_float_ordering
     from declarative_spec.numeric_rewrite import rewrite_numeric, with_out_scales
 
+    sql = _flatten_group_derived_sql(sql)
     refuse_float_ordering(sql, schema)
     integer_sql, scales = rewrite_numeric(sql, schema)
+    _check_shape_classes(integer_sql)
     spec = _emit_integer_sql(integer_sql, schema, catalog, float_abs_eps=float_abs_eps)
     return _with_agent_surface(with_out_scales(spec, scales))
 
@@ -567,6 +542,34 @@ def _prune_unread_columns(spec: str) -> str:
 
     spec = _COLS_STRUCT.sub(struct, spec)
     return _VALID_FN.sub(valid, spec)
+
+
+def _check_shape_classes(integer_sql: str) -> None:
+    """Refuse a query with a shape class known to have no proof (see ``shapes``). A parse the surface cannot
+    read is left to the emitter, which refuses it."""
+    from declarative_spec.parse_query import parse_query
+    from declarative_spec.shapes import check_shapes
+
+    try:
+        query = parse_query(integer_sql)
+    except DeclarativeUnsupported:
+        return
+    check_shapes(query)
+
+
+def _flatten_group_derived_sql(sql: str) -> str:
+    """SQL with a filter over a grouped derived table merged into the grouped query (see ``flatten_group``)."""
+    import sqlglot
+
+    from declarative_spec.flatten_group import flatten_group_derived, move_inner_join_filters
+
+    try:
+        tree = sqlglot.parse_one(sql)
+    except sqlglot.errors.SqlglotError:
+        return sql  # the stages below report the parse error
+    moved = move_inner_join_filters(tree)
+    flat = flatten_group_derived(tree)
+    return sql if flat is tree and not moved else flat.sql()
 
 
 def _with_agent_surface(spec: str) -> str:
@@ -673,17 +676,9 @@ def _emit_count(parsed: ParsedQuery, model: SchemaModel, ctx: _EmitCtx) -> str:
     struct_lines.append("}")
 
     dense_map_lemma = ""
-    bound_lemma = ""
     if key_cap_name is not None and key_inclusive is not None and not ginfo_exec.signed:
         if ginfo_exec.exec_rust == "u64":
             dense_map_lemma = _emit_dense_count_map_lemma(key_ty="u64")
-        bound_lemma = _emit_key_bound_lemma(
-            struct=struct,
-            valid_fn=f"valid_cols_{rust_ident(t_orig)}",
-            field=group_meta[0][0],
-            key_cap=key_cap_name,
-            inclusive=key_inclusive,
-        )
 
     parts: list[str] = [
         "use vstd::prelude::*;",
@@ -698,8 +693,6 @@ def _emit_count(parsed: ParsedQuery, model: SchemaModel, ctx: _EmitCtx) -> str:
         "\n".join(struct_lines),
         "",
         _emit_valid_cols(struct, t_orig, fields, row_cap_name, ctx),
-        "",
-        bound_lemma,
         "",
         count_block,
         "",

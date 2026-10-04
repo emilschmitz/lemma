@@ -25,6 +25,8 @@ class Agg:
     arith_refs: tuple[str, ...] = ()
     # An aggregate that only HAVING reads. It is not an output column.
     hidden: bool = False
+    # AVG over a DECIMAL column stored as value * 10**avg_scale: the average is in natural units.
+    avg_scale: int = 0
 
 
 @dataclass(frozen=True)

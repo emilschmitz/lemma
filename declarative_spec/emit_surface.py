@@ -226,8 +226,15 @@ def _emit_helpers(query: Query, prefix: str, model: SchemaModel) -> _Helpers:
     in_heads, in_sources = in_subquery_calls(query, prefix, params, model)
     blocks.extend(in_sources)
     where_expr = apply_in_calls(query.where_expr, in_heads)
+    scalars = _scalar_fns(query, prefix, model, params)
+    for name in scalars[0]:
+        where_expr = re.sub(rf"\b{re.escape(name)}\b", f"__VAL{name}__", where_expr)
     pred = _compile_pred(where_expr, main, [], model, exists_calls)
-    if re.search(r"\bsq_\d+\b", pred):
+    for name, call in scalars[0].items():
+        if _scalar_returns_real(scalars[1], call):
+            pred = _promote_int_side(pred, f"__VAL{name}__")
+        pred = pred.replace(f"__VAL{name}__", call)
+    if re.search(r"\bsq_\d+\b(?!\s*\()", pred):
         raise DeclarativeUnsupported("a scalar subquery in the WHERE of an aggregate query")
     blocks.append(_row_hit_fn(row_hit, query, main, params, pred))
     blocks.append(_key_at_fn(key_at, main, params, group_infos, key_ty))
@@ -237,7 +244,6 @@ def _emit_helpers(query: Query, prefix: str, model: SchemaModel) -> _Helpers:
         aggs.append(_emit_agg(blocks, query, agg, prefix, main, params, model, key_ty, row_hit, key_at))
         aggs[-1].hidden = agg.hidden
 
-    scalars = _scalar_fns(query, prefix, model, params)
     # scalar calls are recorded on the query via the returned map; having reads `scalars`
     helpers = _Helpers(
         source="\n\n".join(b for b in blocks if b.strip()),
@@ -498,15 +504,21 @@ def _emit_agg(
     hit = _hit(row_hit, key_at, main, params, key_ty)
     if kind in ("MIN", "MAX"):
         value = _value_fn(blocks, f"{name}_val", agg, main, params, model, ret)
-        _emit_bound(blocks, name, ret, value, hit, main, params, key_ty, "min" if kind == "MIN" else "max")
+        _emit_bound(
+            blocks, name, ret, value, hit, main, params, key_ty, "min" if kind == "MIN" else "max", row_hit, key_at
+        )
         return _AggFn(alias, kind, name, ret, False, "bound", exec_ty)
     if kind == "COUNT":
+        term = "1int"
+        if agg.expr:
+            value = _value_fn(blocks, f"{name}_val", agg, main, params, model, "int")
+            term = f"{value}({_param_call(params)}, {_idx_call(main)})"
         _emit_fold(
             blocks,
             name,
             "int",
             "0int",
-            f"if {hit} {{ 1int }} else {{ 0int }}",
+            f"if {hit} {{ {term} }} else {{ 0int }}",
             main,
             params,
             key_ty,
@@ -549,7 +561,7 @@ def _emit_agg(
             key_ty,
             unit_step=True,
         )
-        _emit_avg_wrap(blocks, name, sum_name, cnt_name, params, key_ty, True)
+        _emit_avg_wrap(blocks, name, sum_name, cnt_name, params, key_ty, True, agg.avg_scale)
         return _AggFn(alias, kind, name, "real", True, "fold", "f64")
     raise DeclarativeUnsupported(kind)
 
@@ -746,22 +758,14 @@ def _unit_count_lemmas(
     params: list[_Slot],
     key_ty: str | None,
 ) -> str:
-    """Proved bound and one-row equation for a 0/1 fold over one index."""
+    """Proved bound for a 0/1 fold over one index. The one-row equation is the fold's own definition."""
     key_sig = f", k: {key_ty}" if key_ty else ""
     key_call = ", k" if key_ty else ""
     p_sig = _param_sig(params)
     p_call = _param_call(params)
     idx = slot.idx
     limit = f"{slot.param}.n as int"
-    return f"""pub proof fn lemma_{name}_step({p_sig}, {idx}: int{key_sig})
-    requires
-        0 <= {idx} < {limit},
-    ensures
-        {name}({p_call}, {idx}{key_call}) == ({add_expr}) + {name}({p_call}, {idx} + 1{key_call}),
-{{
-}}
-
-pub proof fn lemma_{name}_bound({p_sig}, {idx}: int{key_sig})
+    return f"""pub proof fn lemma_{name}_bound({p_sig}, {idx}: int{key_sig})
     requires
         0 <= {idx} <= {limit},
     ensures
@@ -769,7 +773,6 @@ pub proof fn lemma_{name}_bound({p_sig}, {idx}: int{key_sig})
     decreases {limit} - {idx},
 {{
     if {idx} < {limit} {{
-        lemma_{name}_step({p_call}, {idx}{key_call});
         lemma_{name}_bound({p_call}, {idx} + 1{key_call});
     }}
 }}"""
@@ -837,6 +840,8 @@ def _emit_bound(
     params: list[_Slot],
     key_ty: str | None,
     pick: str,
+    row_hit: str,
+    key_at: str,
 ) -> None:
     del ret, hit
     alts = [f"j{i}" for i in range(len(main))]
@@ -855,6 +860,8 @@ def _emit_bound(
             _param_call(params),
             ", ".join(alts),
             order,
+            row_hit,
+            key_at,
         )
     )
 
@@ -870,18 +877,9 @@ def _bound_text(
     p: str,
     alt: str,
     order: str,
+    row_hit: str,
+    key_at: str,
 ) -> str:
-    # row_hit / key_at share the aggregate's prefix: ``min_lo`` sits next to ``row_hit``.
-    # The names are recovered from the value fn, which is ``{name}_val`` and the helpers
-    # are the un-prefixed ones stored on the surrounding emitter. Pass them through ``value``
-    # only. The row predicate is ``row_hit`` with the same prefix as ``name``'s module prefix.
-    prefix = ""
-    for token in ("min_", "max_"):
-        if token in name:
-            prefix = name[: name.rindex(token)]
-            break
-    row_hit = f"{prefix}row_hit"
-    key_at = f"{prefix}key_at"
     key_part = f" && {key_at}({p}, {alt}) == k" if key_ty else ""
     key_sig = f", k: {key_ty}" if key_ty else ""
     return f"""pub open spec fn {name}({_param_sig(params)}{key_sig}, bound: int) -> bool {{
@@ -898,6 +896,7 @@ def _emit_avg_wrap(
     params: list[_Slot],
     key_ty: str | None,
     is_float: bool,
+    scale: int = 0,
 ) -> None:
     key_sig = f", k: {key_ty}" if key_ty else ""
     key_call = ", k" if key_ty else ""
@@ -905,7 +904,7 @@ def _emit_avg_wrap(
     if is_float:
         body = f"""let c = {cnt_name}({p}, i0{key_call});
     if c > 0 {{
-        {sum_name}({p}, i0{key_call}) / (c as real)
+        {sum_name}({p}, i0{key_call}) / ((c as real) * {10**scale}real)
     }} else {{
         0real
     }}"""
@@ -935,6 +934,9 @@ def _scalar_fns(
     for slot in params:
         by_table.setdefault(slot.table.casefold(), slot.param)
     for name, sub in query.scalar_subqueries:
+        local = {s.alias for s in _build_slots(sub)} | {s.table for s in _build_slots(sub)}
+        if any(alias not in local for alias, _col in _QUAL.findall(sub.where_expr)):
+            raise DeclarativeUnsupported("a correlated scalar subquery outside a plain projection")
         call, source = _one_scalar(f"{prefix}{name}", sub, by_table, model)
         calls[name] = call
         extra.append(source)
@@ -1228,7 +1230,10 @@ def _having(query: Query, helpers: _Helpers, scalars: dict[str, str], key: str) 
         if not re.search(rf"\b{re.escape(src.alias)}\b", expr):
             continue
         if agg.kind in ("MIN", "MAX"):
-            raise DeclarativeUnsupported("HAVING")
+            # The bound predicate holds for exactly one value of a group that has rows: that value is the MIN/MAX.
+            ty = "real" if agg.ret == "real" else "int"
+            repl.append((src.alias, f"(choose|b: {ty}| {agg.name}({p}{key_arg}, b))"))
+            continue
         repl.append((src.alias, f"{agg.name}({p}, 0{key_arg})"))
     for name, call in scalars.items():
         if re.search(rf"\b{re.escape(name)}\b", expr):

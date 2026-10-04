@@ -18,7 +18,9 @@ fi
 # Claude Code config (LEMMA_CLAUDE_CONFIG_DIR mounted RO at .claude-host) -> writable CLAUDE_CONFIG_DIR.
 mkdir -p /root/.claude
 if [[ -d /root/.claude-host ]]; then
-  cp -a /root/.claude-host/. /root/.claude/
+  # no -a: the container has no CAP_CHOWN, so preserving the host owner of a read-only mount fails
+  cp -R --no-preserve=ownership,timestamps /root/.claude-host/. /root/.claude/
+  chmod -R u+rwX /root/.claude
 fi
 export DISABLE_TELEMETRY=1 DISABLE_ERROR_REPORTING=1 DISABLE_AUTOUPDATER=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 mkdir -p /root/.cursor/projects /root/.cursor/chats /root/.cursor/ai-tracking
@@ -63,20 +65,22 @@ if [[ "${LEMMA_AGENT_MODE:-tools}" == "cli" ]]; then
     echo "WARN: /workspace/.cursor not writable; using $CURSOR_PROJECT_DIR" >&2
   fi
   if [[ -n "${LEMMA_MCP_SOCK:-}" && -S "${LEMMA_MCP_SOCK}" ]]; then
-    cat > "$CURSOR_PROJECT_DIR/mcp.json" <<'EOF'
-{
-  "mcpServers": {
-    "lemma-host": {
-      "command": "python",
-      "args": ["-m", "lemma_agent.mcp_proxy"],
-      "env": {
+    # python writes the JSON: the run_runquery blurb is multi-line text from the host env.
+    python - "$CURSOR_PROJECT_DIR/mcp.json" <<'PY'
+import json, os, sys
+
+server = {
+    "command": "python",
+    "args": ["-m", "lemma_agent.mcp_proxy"],
+    "env": {
         "LEMMA_MCP_SOCK": "/lemma-mcp.sock",
-        "PYTHONPATH": "/app"
-      }
-    }
-  }
+        "PYTHONPATH": "/app",
+        "LEMMA_RUN_RUNQUERY_BLURB": os.environ["LEMMA_RUN_RUNQUERY_BLURB"],
+    },
 }
-EOF
+with open(sys.argv[1], "w") as f:
+    json.dump({"mcpServers": {"lemma-host": server}}, f, indent=2)
+PY
     # Also seed CURSOR_CONFIG_DIR so discovery is not only under /workspace/.cursor.
     if [[ -n "${CURSOR_CONFIG_DIR:-}" ]]; then
       mkdir -p "$CURSOR_CONFIG_DIR"

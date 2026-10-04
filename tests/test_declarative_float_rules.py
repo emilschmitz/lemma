@@ -207,3 +207,23 @@ def test_min_max_over_a_string_is_refused(sql: str) -> None:
 
 def test_min_max_over_an_integer_still_typechecks() -> None:
     _typechecks(_emit("SELECT k, MIN(q) AS lo, MAX(q) AS hi FROM t GROUP BY k"))
+
+
+# ---- cases of the f64 idealization adversary (SQL only; the float lemma text is not ours) ---------------------
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT COUNT(*) AS c FROM t WHERE v > 0.1 AND v < 0.10000000000000001",  # colliding float literals
+        "SELECT COUNT(*) AS c FROM t WHERE v * w = 0.3",  # float product compared
+        "SELECT COUNT(*) AS c FROM t WHERE v > q",  # a double against a non-literal
+        "SELECT k, SUM(v) AS s FROM t GROUP BY k HAVING SUM(v) > 0.6",  # HAVING on a float sum
+        "SELECT COUNT(*) AS c FROM t WHERE v BETWEEN 0.06 - 0.01 AND 0.06 + 0.01",  # float against decimal constants
+        "SELECT MIN(v) AS lo, MAX(v) AS hi FROM t",  # float MIN/MAX
+        "SELECT SUM(v * q) AS s FROM t",  # double times an integer column
+    ],
+)
+def test_adversary_float_queries_are_refused_by_the_emitter(sql: str) -> None:
+    with pytest.raises(DeclarativeUnsupported):
+        _emit(sql)

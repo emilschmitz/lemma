@@ -47,7 +47,6 @@ while i > 0
         assert(prev as int == group_count(keys, start, k));
         assert(group_count(keys, ii, k) == group_count(keys, start, k) + 1);
         assert(prev as int + 1 <= ROW_CAP_t);
-        lemma_count_step_fits_u64(prev, ROW_CAP_t);
     }
     let next = prev + 1;
     counts[idx] = next;
@@ -309,8 +308,8 @@ _PROOF_HYGIENE = """\
 - A loop that walks down: snapshot the old index (`let i_old = i; i = i - 1;`) before using the old suffix.
 - Every loop needs `decreases`; keep `valid_cols_<table>(cols)` in every loop invariant (the key and cell bounds
   come from it). Call host lemmas as `proof { lemma_...(); }`. Give a quantifier an explicit `#[trigger]`.
-- `lemma_u64_add_fits` / `lemma_count_step_fits_u64` / `lemma_sum_step_fits_*` prove an add does not overflow
-  under the host's `ROW_CAP_...`; call them rather than assuming.
+- Verus itself checks every `u64`/`i128` add for overflow: prove the bound with an `assert` from the host's
+  `ROW_CAP_...` and cell caps (`assert(prev as int + 1 <= ROW_CAP_t)`); no fit lemma is needed.
 - A long proof (many quantified loop invariants plus asserts in one loop) exhausts the rlimit, and Verus then
   reports a misleading error such as `invariant not satisfied before loop`. Fix: put each invariant bundle in a
   `#[verifier::opaque] spec fn`, and maintain each property in its own small `proof fn` that `reveal`s only that
@@ -367,7 +366,9 @@ def build_declarative_prompt(
         f"- `{edit_path}` already holds the host spec, the host lemmas, the loaders and `run_query`. You edit it.",
         f"- Read-only: `{spec_path}` (same spec), `{root}/query.sql`, `{root}/schema.json`, `{index_path}`,",
         f"  `{root}/examples/` (verified example bodies), `{root}/verus/` (vstd source, Verus guide, small examples;",
-        "  read `INDEX.md` first, then grep `LEMMAS.md` and `EXAMPLES_INDEX.md`).",
+        "  read `INDEX.md` first: it has one grep recipe per common lookup (`Vec::push`, `String::eq`, `StringHashMap`,",
+        f"  `decreases`, `assert forall`, `choose`, broadcast groups, ...); then grep `LEMMAS.md`, `EXAMPLES_INDEX.md`,",
+        f"  `GUIDE_INDEX.md`).",
         "- Tools: the file edit tool; `run_runquery` (path `runquery_agent.rs`) verifies, compiles and times your",
         "  program on the official table; `submit_runquery` with the returned `run_id`. You cannot run Verus or a shell.",
         "- Done means: Verus says `N verified, 0 errors`, the result equals the reference engine's rows, and the timed run beats",

@@ -184,7 +184,7 @@ let mut i = 0;
 while i < n {
     i += 1;
 }
-proof { lemma_count_step_fits_u64(prev, row_cap); }
+proof { lemma_group_count_le_suffix(keys, 0, k); }
 """
     assert admit_declarative_body(good).ok
 

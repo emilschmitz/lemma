@@ -41,7 +41,6 @@
                 assert(prev == 0);
                 assert(prev as int + 1 <= ROW_CAP_num);
             }
-            lemma_count_step_fits_u64(prev, ROW_CAP_num);
         }
         let next = prev + 1;
         map.insert(key.clone(), next);
