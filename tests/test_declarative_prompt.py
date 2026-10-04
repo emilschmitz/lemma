@@ -247,6 +247,15 @@ def test_prompt_explains_how_to_find_the_rlimit_culprit() -> None:
     assert "There is no `--profile`" in p and "state it pointwise" in p and "assert forall ... by" in p
 
 
+def test_join_min_gets_the_probe_example_and_the_skip_tip() -> None:
+    sql = "SELECT MIN(n.line) AS a FROM pre n JOIN sub s ON n.adsh = s.adsh WHERE n.stmt = 'BS'"
+    spec = _spec(sql)
+    assert spec_shape(spec)["recipe"] == "join_min_probe"
+    p = build_declarative_prompt(sql=sql, spec_path="s", edit_path="e", lemma_index="idx", spec_text=spec)
+    assert "context/ro/examples/join_min_stringhashmap_probe.rs" in p
+    assert "skip the probe of the other side" in p
+
+
 def test_mount_examples_copies_every_example(tmp_path: Path) -> None:
     mount_examples(tmp_path)
     names = {f.name for f in (tmp_path / "examples").iterdir()}

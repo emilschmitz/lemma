@@ -36,8 +36,12 @@ TPCH = {
         "ORDER BY l_returnflag, l_linestatus"
     ),
 }
+LONG = {"group_decimal_sums_string_keys_sorted.rs"}
 # Fixtures that live next to the other worked examples (not under hard/), on the SEC DECIMAL variant.
 TOP = {
+    "join_min_stringhashmap_probe.rs": (
+        "SELECT MIN(n.ddate) AS a FROM num n JOIN sub s ON n.adsh = s.adsh WHERE n.uom = 'USD'"
+    ),
     "ungrouped_minmax_string_filter.rs": (
         "SELECT MIN(ddate) AS lo, MAX(ddate) AS hi FROM num WHERE uom = 'pure' AND qtrs = 3"
     ),
@@ -48,6 +52,10 @@ def _verify(name: str, monkeypatch: pytest.MonkeyPatch, mutate: tuple[str, str] 
     if not any(c.is_file() for c in VERUS_CANDIDATES):
         pytest.skip("verus binary not installed")
     monkeypatch.setenv("LEMMA_VERUS_BIN", str(Path(__file__).resolve().parents[1] / "scripts" / "ram" / "verus_guarded.sh"))
+    if name in LONG:
+        # Long proofs fit rlimit 3 before the f64 idealization lemmas joined every spec's context; now they need more
+        # (see the LOG, "rlimit regression"). The host rlimit is an explicit setting (LEMMA_VERUS_RLIMIT).
+        monkeypatch.setenv("LEMMA_VERUS_RLIMIT", "6")
     text = ((HARD if name in CASES or name in TPCH else _FIXTURES) / name).read_text()
     if mutate is not None:
         assert mutate[0] in text
@@ -61,7 +69,11 @@ def _verify(name: str, monkeypatch: pytest.MonkeyPatch, mutate: tuple[str, str] 
         spec = emit_declarative_spec(TPCH[name], schema, catalog)
     else:
         sql = {**CASES, **TOP}[name]
-        spec = emit_declarative_spec(sql, load_sec_schema(), assumption_package("sec_margin"), float_abs_eps="1e20")
+        from research_loop.scripts.declarative_round import SEC_DB, sec_catalog, sec_schema
+
+        if not SEC_DB.is_file():
+            pytest.skip(f"SEC DECIMAL database not present at {SEC_DB}")
+        spec = emit_declarative_spec(sql, sec_schema(), sec_catalog())
     program = assemble_declarative_program(spec, extract_agent_edit(text), helpers=extract_agent_helpers(text))
     return verify_assembled(program, timeout_sec=600)
 

@@ -166,6 +166,26 @@ reference engine scans a dictionary-coded column. No provable cheap alternative 
 the TPC-H Q1 example). Candidate for a PROPOSAL to Emil (not built, would be new trusted code via the adversary-gated protocol): a
 dictionary-encoded string column in the loader (codes `u8/u16` plus a code-to-string table) with the loader relation as the trusted statement.
 
+| **r5 SEC T3 HELD-OUT `SELECT MIN(n.ddate) FROM num n JOIN sub s ON n.adsh = s.adsh WHERE n.uom = 'USD'`** (DECIMAL schema, synthetic, num 1M x sub 40k) | T3 | **held-out** | manual, 2 checks | **YES, 11 verified, 0 errors** | **8,633** | 15,024 | 32,647 | **1.74x / 3.78x** |
+
+r5 T3 held-out: check 1 proved first try but 22,613 us (0.66x); check 2 added "skip the probe for rows that cannot improve the MIN
+(`!(any && d >= lo)`)" with the cheap string filter first: 8,633 us. Design: `StringHashMap<usize>` built from `sub.adsh` (value = row
+index = the join witness), probed while scanning `num` once. Now fixture `join_min_stringhashmap_probe.rs` (verified by test) with recipe
+`join_min_probe` and the skip tip in the speed section of the prompt.
+
+**Rlimit regression (found while re-verifying fixtures after merging the float idealization):** the long hard fixture
+`hard/group_decimal_sums_string_keys_sorted.rs` verified at `--rlimit 3` before the merge (63 verified) and now fails with
+`error: function body check: Resource limit (rlimit) exceeded` in `lemma_codes_insert`; with `LEMMA_VERUS_RLIMIT=6` it verifies (59 verified, 0 errors
+in the harness run). The f64 idealization lemmas now sit in every spec's context, so long proofs cost more. The fixture test sets rlimit 6 for
+that one fixture (documented in the test); a real agent faces the host default 3 -> for the coordinator: either raise the default for declarative
+runs or move the f64 lemmas out of the context of specs that do not use floats.
+
+Prove rate by tier so far (manual prover, all rounds, tuned+held-out; only counted when a prover really tried): T1: 3/3 proved (min/max
+string filter, Q6 variant, held-out MIN+SUM), 2/3 faster than the all-core engine (3.83x, 5.35x; Q6 0.53x). T2: 2/2 proved (TPC-H Q1 1.15x,
+held-out TPC-H min/count 0.13x). T3: 1/2 proved (held-out join MIN 1.74x; the other was a host spec bug now fixed). T4: 1/4 proved (Q11 0.64x;
+Q20/Q24/Q19 early failures with the pre-fix setup). Frontier: T1 to T3 prove reliably; T4 proves with long hand-built helpers (Q11).
+Held-out only: T1 1/1 (5.35x), T2 1/1 proved (0.13x), T3 1/1 (1.74x).
+
 r4 T3 (blocker confirmed by Verus, sent to the transpiler agent addcd33571290f391): step 2 (transpile) / step 5 (verify), blame
 **host spec**: the emitted `valid_cols_num` bounds the DECIMAL(38,4) `value` cell by its TYPE (`n.value@[i] as int >= -99999999999999999999999999999999999999 &&
 ... <= 99999999999999999999999999999999999999`), not by the package's `max_value_exclusive = 2^62 * 10^4`; the ensures is an exact `int`

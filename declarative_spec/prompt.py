@@ -165,6 +165,10 @@ _EXAMPLES: dict[str, tuple[str, str]] = {
         "hard/string_tuple_count_distinct_sorted.rs",
         "one table, tuple-of-strings GROUP BY, COUNT(*) and COUNT(DISTINCT), ORDER BY the count (sorted `Vec::insert`)",
     ),
+    "join_min_probe": (
+        "join_min_stringhashmap_probe.rs",
+        "two tables joined on a string key, ungrouped MIN/MAX with a string-literal filter (`StringHashMap` probe)",
+    ),
     "ungrouped_minmax": (
         "ungrouped_minmax_string_filter.rs",
         "one table, filtered ungrouped MIN and MAX of an integer column, with a string-literal comparison in the filter",
@@ -217,7 +221,7 @@ def spec_shape(spec_text: str) -> dict:
             if re.search(r"as int\)\)?\s*\*\s*\(", head):
                 recipe = "ungrouped_product"
             elif re.search(r"\b(?:min|max)_\w+\(", head):
-                recipe = "ungrouped_minmax"
+                recipe = "join_min_probe" if tables >= 2 else "ungrouped_minmax"
             else:
                 recipe = "ungrouped"
         elif tables >= 2:
@@ -370,7 +374,7 @@ products and averages over `DOUBLE` columns are in scope (floats are exact reals
 _SPEED = """\
 ## Speed (the run is timed on the full table and compared with the reference engine)
 
-One pass over each table. No loop over one table inside a loop over another table. Prefer a dense `Vec` indexed
+One pass over each table. For a MIN or MAX over a join, skip the probe of the other side for rows that cannot improve the aggregate (`!(any && d >= lo)`): that was a 2.6x speedup in the join example. No loop over one table inside a loop over another table. Prefer a dense `Vec` indexed
 by a small integer key (`KEY_CAP_...`) over a hash map; use a hash map for a large or string key. Build the
 smaller side of a join into a map once, then probe it. For a SUM, accumulate in `u64` inside blocks small enough
 that the block sum provably cannot overflow, and widen the block sum into the `i128` total at block boundaries;
