@@ -82,3 +82,5 @@ Q14 (HAVING SUM(float) > scalar subquery), Q9 (ORDER BY SUM(float)). All reason:
 Drawn: SEC Q2 (`pre` GROUP BY `(stmt, rfile)` with COUNT(DISTINCT adsh), AVG(line), ORDER BY cnt; string tuple key, known-hard),
 SEC Q19 (`num` NOT EXISTS `pre`, float SUM, HAVING COUNT > 10, ORDER BY cnt LIMIT 1000; known-hard),
 TPC-H Q6-variant (ungrouped decimal sum with date and discount filters; worked-example shape).
+
+- Float shapes are back in scope, refusal removed (`declarative_spec/float_order.py` deleted; f64 idealization, `docs/TRUSTED_FAMILIES.md`): stored-column filters, MIN/MAX, ORDER BY, products and differences, grouped SUM/AVG with HAVING and top-K emit; refused: float equality on computed values, colliding float literals, AVG whose integer sum may exceed 2^53.
