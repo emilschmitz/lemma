@@ -119,9 +119,18 @@ def test_grouped_scan_states_filter_and_aggregates() -> None:
     assert "obeys_hash_table_key_model" not in spec
 
 
-def test_float_having_against_a_scalar_subquery_is_refused() -> None:
-    with pytest.raises(DeclarativeUnsupported, match="float comparison has no proved bridge to reals"):
-        _emit(JOIN_SCALAR, eps="0.001")
+def test_join_having_scalar_states_match_and_limit() -> None:
+    spec = _emit(JOIN_SCALAR, eps="0.001")
+    assert "method_spec" not in spec
+    assert "n.adsh@[i0]@ == s.adsh@[i1]@" in spec
+    assert "sum_total_value(" in spec
+    assert "sq_1(" in spec
+    assert "FLOAT_ABS_EPS" in spec
+    assert "abs_real(" in spec
+    assert "res@.len() <= 50" in spec
+    assert "sum_total_value(n, s, 0, (row.name@, (row.cik as int))) > sq_1(n, s)" in spec
+    assert "res@[r].((" not in spec
+    assert "// AGENT_EDIT_START" in spec
 
 
 def test_not_exists_and_case_sum_emit() -> None:
@@ -133,11 +142,13 @@ def test_not_exists_and_case_sum_emit() -> None:
     assert "res@[r].((" not in exists_spec
     assert "count_cnt(" in exists_spec
     assert "> 10" in exists_spec or ">10" in exists_spec
-
-
-def test_float_case_predicate_is_refused() -> None:
-    with pytest.raises(DeclarativeUnsupported, match="float comparison has no proved bridge to reals"):
-        _emit(CASE_SUM)
+    case_spec = _emit(CASE_SUM)
+    assert "positive_count" in case_spec
+    assert "0real" in case_spec
+    assert "if " in case_spec
+    assert "r#abstract" in case_spec
+    assert "pub abstract:" not in case_spec
+    assert "method_spec" not in case_spec
 
 
 def test_integer_group_broadcasts_its_hash_axiom() -> None:
@@ -199,9 +210,20 @@ def test_filter_projection_counts_each_hit() -> None:
     assert "sq_1(" not in spec
 
 
-def test_correlated_float_max_and_float_order_by_are_refused() -> None:
-    with pytest.raises(DeclarativeUnsupported, match="float comparison has no proved bridge to reals"):
-        _emit(PROJ_MAX)
+def test_correlated_max_projection_binds_the_outer_row() -> None:
+    spec = _emit(PROJ_MAX)
+    assert "method_spec" not in spec
+    assert "assume(" not in spec
+    assert "arbitrary()" not in spec
+    assert "pub open spec fn sq_1(" in spec
+    assert "(n.tag@[j0]@) == (n.tag@[i0]@)" in spec
+    assert "(n.adsh@[j0]@) == (n.adsh@[i0]@)" in spec
+    assert "n.tag@[j0]@) == (n.tag@[j0]@" not in spec
+    assert "exists|j0: int|" in spec
+    assert "forall|j0: int|" in spec
+    assert "hit_count(" in spec
+    assert "res@.len() <= 100" in spec
+    assert "Cols_num" in spec and "Cols_sub" in spec
 
 
 def test_catalog_float_column_states_its_magnitude() -> None:

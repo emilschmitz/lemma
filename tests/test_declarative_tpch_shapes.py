@@ -108,7 +108,7 @@ def test_decimal_literal_on_either_side_of_a_comparison() -> None:
 
 def test_decimal_literal_against_a_float_column_is_refused() -> None:
     sql = "SELECT SUM(price) AS s FROM li WHERE ratio > 0.5"
-    with pytest.raises(DeclarativeUnsupported, match="float comparison has no proved bridge to reals"):
+    with pytest.raises(DeclarativeUnsupported, match="float column"):
         emit_declarative_spec(sql, SCHEMA, CATALOG)
 
 

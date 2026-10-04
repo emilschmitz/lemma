@@ -520,10 +520,8 @@ def emit_declarative_spec(
     float_abs_eps: str | None = None,
 ) -> str:
     """Spec for ``sql``. DATE and DECIMAL are first stated as exact integer SQL (``numeric_rewrite``)."""
-    from declarative_spec.float_order import refuse_float_ordering
     from declarative_spec.numeric_rewrite import rewrite_numeric, with_out_scales
 
-    refuse_float_ordering(sql, schema)
     integer_sql, scales = rewrite_numeric(sql, schema)
     spec = _emit_integer_sql(integer_sql, schema, catalog, float_abs_eps=float_abs_eps)
     return _with_agent_surface(with_out_scales(spec, scales))
