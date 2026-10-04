@@ -237,6 +237,11 @@ Real EDGAR 2022-2024 loaded by the coordinator: num 39,401,761 rows (value exact
 The last one is a bandwidth-bound scan (about 96 MB) that loses to the all-core engine single-threaded, exactly the class the parallel path is for;
 a parallel body for the dict + validity shape is not written yet. Observation from the prover: the check's timing noise (about 30 percent between identical runs on this shared box) makes a 6 percent gap undecidable: a repeat or median-of-more timing in the check would help.
 
+| `SELECT uom, COUNT(*), SUM(value) FROM num GROUP BY uom` | real SEC, full 39.4M num rows, dict + PARALLEL 8 workers with dense per-worker arrays | T2 | parallel (dict_group_count_sum_parallel.rs, 26 verified, 2nd check) | yes | 22,475 median of 9 (best 21,068) | 293,965 | 1,208,574 | **13.08x (best 13.95x) / 53.8x** |
+
+Measurement protocol from here: the timed measure is the MEDIAN of 9 runs and the check also reports the best run (`speedup`, `speedup_best`); gaps under 25 percent between a body and the reference engine are ties (the shared box shows ~30 percent run-to-run noise: DuckDB's own 8-thread median for the same query moved 255 to 294 ms between prepares).
+Transplanting the single-threaded TPC-H Q1 body (r4, SF1 spec) to the SF3 spec failed: `54 verified, 1 errors` (the SF1 body does not carry over); a dict + parallel Q1 prover run on SF3 is in progress.
+
 Real-data blocker found: real EDGAR has NULL cells in columns queries read (pre.stmt 1,073, sub.fy 4,662, sub.fp 4,665, tag.crdr 119,636 ...); the export refuses NULLs, so those queries cannot run yet (sent to the transpiler agent, who is building validity-bit NULL support). Dict caps (max_distinct) were declared by the transpiler agent and pass check.py on the real DB.
 
 Scale ladder for Q6 (data stated): SF1 2.04x, SF3 1.13x, SF10 1.25x vs the all-core engine; ~4x vs one thread at every size. At SF3/SF10 the parallel scan reads ~30 GB/s (504 MB in 16.9 ms), i.e. it is at the machine's memory bandwidth, and DuckDB 8t is about as fast
