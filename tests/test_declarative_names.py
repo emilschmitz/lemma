@@ -115,10 +115,24 @@ def test_having_an_integer_average_against_an_integer_literal_typechecks(sql: st
     [
         "SELECT COUNT(*) AS n FROM sub WHERE fy > (SELECT AVG(fy) FROM sub)",
         "SELECT fy, COUNT(*) AS n FROM sub WHERE cik > (SELECT AVG(cik) FROM sub WHERE form = 'x') GROUP BY fy",
+        "SELECT COUNT(*) AS n FROM sub WHERE fy = (SELECT COUNT(*) FROM sub)",
     ],
 )
-def test_a_scalar_subquery_in_the_where_of_an_aggregate_is_refused(sql: str) -> None:
-    with pytest.raises(DeclarativeUnsupported, match="scalar subquery"):
+def test_an_uncorrelated_scalar_subquery_in_the_where_of_an_aggregate_typechecks(sql: str) -> None:
+    spec = _emit(sql)
+    assert "sq_1(" in spec
+    _typechecks(spec)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT COUNT(*) AS n FROM sub s WHERE s.cik > (SELECT SUM(w.cik) FROM sub w WHERE w.fy = s.fy)",
+        "SELECT s.form, COUNT(*) AS n FROM sub s WHERE s.fy > (SELECT AVG(w.fy) FROM sub w WHERE w.cik = s.cik) GROUP BY s.form",
+    ],
+)
+def test_a_correlated_scalar_subquery_in_an_aggregate_is_refused(sql: str) -> None:
+    with pytest.raises(DeclarativeUnsupported, match="correlated scalar subquery"):
         _emit(sql)
 
 

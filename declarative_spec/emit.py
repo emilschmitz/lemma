@@ -522,6 +522,7 @@ def emit_declarative_spec(
     """Spec for ``sql``. DATE and DECIMAL are first stated as exact integer SQL (``numeric_rewrite``)."""
     from declarative_spec.numeric_rewrite import rewrite_numeric, with_out_scales
 
+    sql = _flatten_group_derived_sql(sql)
     integer_sql, scales = rewrite_numeric(sql, schema)
     spec = _emit_integer_sql(integer_sql, schema, catalog, float_abs_eps=float_abs_eps)
     return _with_agent_surface(with_out_scales(spec, scales))
@@ -565,6 +566,20 @@ def _prune_unread_columns(spec: str) -> str:
 
     spec = _COLS_STRUCT.sub(struct, spec)
     return _VALID_FN.sub(valid, spec)
+
+
+def _flatten_group_derived_sql(sql: str) -> str:
+    """SQL with a filter over a grouped derived table merged into the grouped query (see ``flatten_group``)."""
+    import sqlglot
+
+    from declarative_spec.flatten_group import flatten_group_derived
+
+    try:
+        tree = sqlglot.parse_one(sql)
+    except sqlglot.errors.SqlglotError:
+        return sql  # the stages below report the parse error
+    flat = flatten_group_derived(tree)
+    return sql if flat is tree else flat.sql()
 
 
 def _with_agent_surface(spec: str) -> str:

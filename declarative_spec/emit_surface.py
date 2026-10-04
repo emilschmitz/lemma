@@ -226,8 +226,15 @@ def _emit_helpers(query: Query, prefix: str, model: SchemaModel) -> _Helpers:
     in_heads, in_sources = in_subquery_calls(query, prefix, params, model)
     blocks.extend(in_sources)
     where_expr = apply_in_calls(query.where_expr, in_heads)
+    scalars = _scalar_fns(query, prefix, model, params)
+    for name in scalars[0]:
+        where_expr = re.sub(rf"\b{re.escape(name)}\b", f"__VAL{name}__", where_expr)
     pred = _compile_pred(where_expr, main, [], model, exists_calls)
-    if re.search(r"\bsq_\d+\b", pred):
+    for name, call in scalars[0].items():
+        if _scalar_returns_real(scalars[1], call):
+            pred = _promote_int_side(pred, f"__VAL{name}__")
+        pred = pred.replace(f"__VAL{name}__", call)
+    if re.search(r"\bsq_\d+\b(?!\s*\()", pred):
         raise DeclarativeUnsupported("a scalar subquery in the WHERE of an aggregate query")
     blocks.append(_row_hit_fn(row_hit, query, main, params, pred))
     blocks.append(_key_at_fn(key_at, main, params, group_infos, key_ty))
@@ -237,7 +244,6 @@ def _emit_helpers(query: Query, prefix: str, model: SchemaModel) -> _Helpers:
         aggs.append(_emit_agg(blocks, query, agg, prefix, main, params, model, key_ty, row_hit, key_at))
         aggs[-1].hidden = agg.hidden
 
-    scalars = _scalar_fns(query, prefix, model, params)
     # scalar calls are recorded on the query via the returned map; having reads `scalars`
     helpers = _Helpers(
         source="\n\n".join(b for b in blocks if b.strip()),
@@ -935,6 +941,9 @@ def _scalar_fns(
     for slot in params:
         by_table.setdefault(slot.table.casefold(), slot.param)
     for name, sub in query.scalar_subqueries:
+        local = {s.alias for s in _build_slots(sub)} | {s.table for s in _build_slots(sub)}
+        if any(alias not in local for alias, _col in _QUAL.findall(sub.where_expr)):
+            raise DeclarativeUnsupported("a correlated scalar subquery outside a plain projection")
         call, source = _one_scalar(f"{prefix}{name}", sub, by_table, model)
         calls[name] = call
         extra.append(source)
