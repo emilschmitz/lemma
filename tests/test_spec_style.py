@@ -276,6 +276,63 @@ def test_declarative_lead_forbids_image_search_for_hash_map_sources() -> None:
     assert "/workspace/runquery_agent.rs" not in head
 
 
+def _opening_before_doc_tour(prompt: str) -> str:
+    """Text the agent sees before the doc-tree tour and the SQL section."""
+    tour = prompt.find("before you read")
+    sql = prompt.find("## SQL")
+    assert tour != -1 and sql != -1
+    assert tour < sql
+    return prompt[:tour]
+
+
+def test_declarative_opening_import_and_stringhashmap_before_doc_tour() -> None:
+    """Docker grouped query: the opening allows the import and names StringHashMap."""
+    prompt = build_declarative_prompt(
+        sql="SELECT tag, version, COUNT(*) AS cnt FROM num GROUP BY tag, version",
+        spec_path="context/ro/spec.rs",
+        edit_path="runquery_agent.rs",
+        lemma_index="(index)",
+        in_docker=True,
+    )
+    opening = _opening_before_doc_tour(prompt)
+    assert "You MAY write `use vstd::...;` and `broadcast use vstd::...;`." in opening
+    assert "use vstd::hash_map::StringHashMap;" in opening
+    assert "`assume(`" in opening
+    assert "// AGENT_EDIT_START" in opening
+    assert "// AGENT_EDIT_END" in opening
+    assert "acc as int == count_*" in opening
+    assert "decreases i," in opening
+    assert "Call the edit tool now." in opening
+    assert "The `ensures` stay the host's. Do not weaken them." in opening
+    assert opening.find("use vstd::hash_map::StringHashMap;") < opening.find("Call the edit tool now.")
+    assert prompt.find("Call the edit tool now.") < prompt.find("DECLARATIVE.md")
+    assert prompt.find("Call the edit tool now.") < prompt.find("## SQL")
+    assert "/workspace/runquery_agent.rs" in opening
+
+
+def test_declarative_opening_forbids_assume_on_scalar_host_prompt() -> None:
+    """Host-path scalar query: the same opening still forbids assume(."""
+    prompt = build_declarative_prompt(
+        sql="SELECT SUM(v) FROM t",
+        spec_path="context/ro/spec.rs",
+        edit_path="runquery_agent.rs",
+        lemma_index="(index)",
+        in_docker=False,
+    )
+    opening = _opening_before_doc_tour(prompt)
+    assert "You MAY write `use vstd::...;` and `broadcast use vstd::...;`." in opening
+    assert "You MAY write `use vstd::hash_map::StringHashMap;`." in opening
+    assert "use vstd::hash_map::StringHashMap;" in opening
+    assert "`assume(`" in opening
+    assert "`admit(`" in opening
+    assert "a new `spec fn`" in opening
+    assert "#[verifier::external_body]" in opening
+    assert "Call the edit tool now." in opening
+    assert "while i > 0" in opening
+    assert "/workspace/runquery_agent.rs" not in opening
+    assert "SELECT SUM(v) FROM t" not in opening
+
+
 _FORBIDDEN_IN_NEW_FILES = (
     "edgar",
     "tpch",
