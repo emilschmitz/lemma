@@ -35,11 +35,9 @@ from research_loop.trust_configs import apply_trust_config
 
 def _job_env(kind: str) -> tuple[dict, object, str | None]:
     if kind == "sec":
-        from research_loop.scripts.sqlsmith_trusted_coverage import load_sec_schema
-
         os.environ["LEMMA_MEASURE_DB"] = str(rnd.SEC_DB)
-        os.environ["LEMMA_FLOAT_ABS_EPS"] = "1e20"
-        return load_sec_schema(), rnd.sec_catalog(), "1e20"
+        os.environ.pop("LEMMA_FLOAT_ABS_EPS", None)
+        return rnd.sec_schema(), rnd.sec_catalog(), None
     schema, catalog = rnd.tpch_schema_and_catalog(rnd.TPCH_DB)
     os.environ["LEMMA_MEASURE_DB"] = str(rnd.TPCH_DB)
     return schema, catalog, None

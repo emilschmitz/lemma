@@ -36,7 +36,14 @@ from research_loop.table_assumptions import CatalogAssumptions, TableAssumptions
 from research_loop.trust_configs import apply_trust_config
 
 MAIN_REPO = Path("/home/emil/projects/lemma-db")
-SEC_DB = MAIN_REPO / "holdout" / "gendb_sec_edgar" / "duckdb" / "sec_edgar_local.duckdb"
+# The local SEC file is SYNTHETIC (holdout/gendb_sec_edgar/synth_tiny.py), not real EDGAR; the DECIMAL variant
+# (value as DECIMAL(38,4), derived from the stored doubles) is the default for this menu.
+SEC_DB = Path(
+    os.environ.get(
+        "LEMMA_DUCKDB_PATH",
+        MAIN_REPO / "holdout" / "gendb_sec_edgar" / "duckdb" / "sec_edgar_local_dec.duckdb",
+    )
+)
 TPCH_SF = float(os.environ.get("LEMMA_TPCH_SF", "1"))
 TPCH_DB = Path(os.environ.get("LEMMA_TPCH_DB", ROOT / "research_loop" / "generated" / f"tpch_sf{TPCH_SF:g}.duckdb"))
 OUT = ROOT / "research_loop" / "generated" / "decl_rounds"
@@ -126,10 +133,22 @@ def ensure_tpch_db() -> Path:
     return TPCH_DB
 
 
+def sec_package() -> str:
+    from research_loop.scripts.declarative_draws import package_for_db
+
+    return package_for_db(SEC_DB)
+
+
+def sec_schema() -> dict:
+    from research_loop.scripts.sqlsmith_trusted_coverage import load_sec_schema
+
+    return load_sec_schema(SEC_DB)
+
+
 def sec_catalog() -> CatalogAssumptions:
     from research_loop.assumption_packages import assumption_package
 
-    return assumption_package("sec_margin")
+    return assumption_package(sec_package())
 
 
 def draw_sec(seed: int, count: int, schema: dict, catalog: CatalogAssumptions) -> tuple[list[dict], list[dict]]:
@@ -155,7 +174,7 @@ def draw_sec(seed: int, count: int, schema: dict, catalog: CatalogAssumptions) -
         if len(picked) == count:
             break
         try:
-            emit_declarative_spec(sql, schema, catalog, float_abs_eps="1e20")
+            emit_declarative_spec(sql, schema, catalog)
         except (DeclarativeUnsupported, FitRefusal, ValueError) as exc:
             refused.append({"kind": "sec", "qid": qid, "sql": " ".join(sql.split()), "refusal": str(exc)[:400]})
             continue
@@ -183,15 +202,11 @@ def draw_tpch(seed: int, count: int) -> tuple[list[dict], list[dict]]:
 
 
 def draw(seed: int, mix: list[str]) -> tuple[list[dict], list[dict]]:
-    sec_schema = None
     picked: list[dict] = []
     refused: list[dict] = []
     n_sec, n_tpch = mix.count("sec"), mix.count("tpch")
     if n_sec:
-        from research_loop.scripts.sqlsmith_trusted_coverage import load_sec_schema
-
-        sec_schema = load_sec_schema()
-        p, r = draw_sec(seed, n_sec, sec_schema, sec_catalog())
+        p, r = draw_sec(seed, n_sec, sec_schema(), sec_catalog())
         picked += p
         refused += r
     if n_tpch:
@@ -210,8 +225,6 @@ def agent_env(model: str) -> dict[str, str]:
 def run_query_job(job: dict, model: str, max_iterations: int) -> dict:
     from db_extension.optimizer import run_optimization_loop
     from research_loop.agent_sandbox import claude_docker_args
-    from research_loop.scripts.sqlsmith_trusted_coverage import load_sec_schema
-
     os.environ.update(agent_env(model))
     claude_docker_args()  # raises before any work when no credentials are set
     for key in ("LEMMA_DECL_ROWS", "LEMMA_DECL_SEED", "LEMMA_ASSUMPTION_PACKAGE"):
@@ -219,9 +232,9 @@ def run_query_job(job: dict, model: str, max_iterations: int) -> dict:
     kwargs: dict = {"max_iterations": max_iterations, "use_mock": False}
     if job["kind"] == "sec":
         os.environ["LEMMA_MEASURE_DB"] = str(SEC_DB)
-        os.environ["LEMMA_ASSUMPTION_PACKAGE"] = "sec_margin"
-        os.environ["LEMMA_FLOAT_ABS_EPS"] = "1e20"
-        kwargs.update(schema=load_sec_schema(), workload="sec")
+        os.environ["LEMMA_ASSUMPTION_PACKAGE"] = sec_package()
+        os.environ.pop("LEMMA_FLOAT_ABS_EPS", None)
+        kwargs.update(schema=sec_schema(), workload="sec")
     else:
         schema, catalog = tpch_schema_and_catalog(TPCH_DB)
         os.environ["LEMMA_MEASURE_DB"] = str(TPCH_DB)
