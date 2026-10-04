@@ -9,7 +9,7 @@ from pathlib import Path
 
 from declarative_spec.admit import admit_declarative_body
 from declarative_spec.emit import DeclarativeUnsupported, emit_declarative_spec
-from declarative_spec.lemma_index import lemma_index_markdown
+from declarative_spec.trusted_sets import current as current_trusted_set
 from declarative_spec.lemmas import FitRefusal
 from declarative_spec.pipeline import extract_agent_edit, run_declarative_metrics
 from declarative_spec.verus_docs import (
@@ -141,22 +141,13 @@ def _ensure_context_files(
     spec_path.write_text(spec_text)
     (ro / "query.sql").write_text(sql_query.strip() + "\n")
     (ro / "schema.json").write_text(json.dumps(resolved_schema, indent=2) + "\n")
-    (ro / "lemma_index.md").write_text(lemma_index_markdown())
+    (ro / "lemma_index.md").write_text(current_trusted_set().index_markdown())
     mount_verus_docs(ro)
     agent_path = workspace / "runquery_agent.rs"
     return spec_path, agent_path
 
 
-def agent_failure(proc, workspace: Path) -> str | None:
-    """Message when the agent process failed without a marked submit, else None.
-
-    Exit -9 is the AGENT_TIMEOUT_SEC kill. Without this the untouched stub only fails later
-    as "empty agent body", which hides that the agent never ran to completion.
-    """
-    if proc.returncode == 0 or (workspace / "mcp_results" / "submitted.json").is_file():
-        return None
-    reason = "timed out (AGENT_TIMEOUT_SEC)" if proc.returncode == -9 else "failed"
-    return f"agent {reason}: exit {proc.returncode}, no submit. {proc.stderr.strip()[-500:]}"
+from research_loop.agent_sandbox import agent_failure  # noqa: E402,F401  (shared with the recursive caller)
 
 
 def run_declarative_optimization_loop(
@@ -190,7 +181,7 @@ def run_declarative_optimization_loop(
     history: list[dict] = []
     last_error = ""
     proof_verified = False
-    lemma_index = lemma_index_markdown()
+    lemma_index = current_trusted_set().index_markdown()
     speed_bar: dict | None = None
     try:
         column_bins, speed_bar = _maybe_large_table(

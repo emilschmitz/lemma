@@ -9,3 +9,15 @@ Named switches over **existing** `LEMMA_*` environment flags — not a fork of t
 The `transpiler` field names which emitter the config belongs to: `"product"` → `verus_transpiler`; `"declarative"` → `declarative_spec` (would be a separate config file if added).
 
 Use `apply_trust_config(name)` or set `LEMMA_TRUST_CONFIG`. Do not edit `lemma_flags.py` from these modules.
+
+## Menu profiles (`research_loop/menu_profile.py`)
+
+A trust config is only the env flags. A **menu profile** names everything the agent optimizes and is
+selected by `LEMMA_MENU` (production loop) or `--menu` (`scripts/run_container_agent.py`): `style`
+(`imperative` | `declarative`; moves emitter, assembler, admission, workspace, measure together),
+`trusted_set` (`rocketship` = this file's `product`, `fast`, `adversary_imperativespec0`,
+`declarative_default`; it also selects the declarative host lemma block and its lemma index from one
+registry, `declarative_spec/trusted_sets.py`), `assumption_package`, `agent`, `speed_bar_mult`.
+Profiles: `rocketship`, `adversary_imperativespec0`, `fast`, `adversary_declarative0`. Each axis can be
+overridden alone (env var or launcher flag); contradicting the profile needs `--allow-override`; a trusted
+set from the other style always fails. The resolved selection is printed and recorded in the run manifest.

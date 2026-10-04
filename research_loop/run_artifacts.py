@@ -49,6 +49,12 @@ _ENV_KEYS = (
     "LEMMA_AGENT_HARDWARE",
     "LEMMA_AGENT_DUCK_EXPLAIN",
     "LEMMA_AGENT_STATS",
+    "LEMMA_MENU",
+    "LEMMA_SPEC_STYLE",
+    "LEMMA_TRUSTED_SET",
+    "LEMMA_ASSUMPTION_PACKAGE",
+    "LEMMA_SPEED_BAR_MULT",
+    "LEMMA_AGENT_MODEL",
 )
 
 _HISTORY_OPTIONAL_KEYS = (
@@ -298,6 +304,10 @@ def begin_run(
         "duckdb_path": (os.environ.get("LEMMA_DUCKDB_PATH") or "").strip() or None,
         "env": env_snap,
     }
+    from research_loop.menu_profile import active_menu
+
+    resolved = active_menu()
+    manifest["menu"] = resolved.as_dict() if resolved is not None else None  # all axes + their source
     if extra_manifest:
         manifest.update(extra_manifest)
 

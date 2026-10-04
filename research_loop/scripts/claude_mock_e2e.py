@@ -55,9 +55,41 @@ def mock_model(conversation: Conversation, directory: Path):
                     os.environ[k] = v
 
 
+# One small SEC query per style with a Verus-verified reference body for the mock "model".
+STYLE_CASES = {
+    "declarative": (
+        "SELECT report, COUNT(*) AS cnt FROM pre WHERE line > 5 GROUP BY report",
+        PROOFS / "group_count_where.rs",
+        "adversary_declarative0",
+    ),
+    "imperative": (
+        "SELECT COUNT(*) FROM pre WHERE line > 0",
+        ROOT / "tests" / "fixtures" / "imperative_proofs" / "count_pre_line_gt0.rs",
+        "rocketship",
+    ),
+}
+
+
+def run_style_case(style: str, conversation_cls=Conversation, directory: Path | None = None) -> dict:
+    """The launcher, in ``style``, against the mock. Returns the launcher's result record."""
+    from research_loop.scripts.run_container_agent import run
+
+    sql, body_file, menu = STYLE_CASES[style]
+    with tempfile.TemporaryDirectory() as tmp:
+        with mock_model(conversation_cls(body_file.read_text().strip("\n")), directory or Path(tmp)):
+            # The imperative profile's default agent is a Cursor slug, so Claude needs the override.
+            return run(
+                menu, style, sql, agent="claude-haiku-4-5-20251001", allow_override=style == "imperative"
+            )
+
+
 def main(scenario: str) -> int:
     from research_loop.scripts.declarative_ladder import run_ladder
 
+    if scenario.startswith("style-"):
+        style, _, hang = scenario.removeprefix("style-").partition("-")
+        print(run_style_case(style, Hang if hang == "hang" else Conversation))
+        return 0
     # Ladder query 1: SELECT bucket, COUNT(*) AS c FROM src GROUP BY bucket
     conversation = {"ok": Conversation, "hang": Hang}[scenario](group_count_body("src", "bucket"))
     with tempfile.TemporaryDirectory() as tmp, mock_model(conversation, Path(tmp)) as log:

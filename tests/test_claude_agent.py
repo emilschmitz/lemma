@@ -108,7 +108,7 @@ def test_missing_config_dir_fails_loudly(monkeypatch: pytest.MonkeyPatch, tmp_pa
 def test_ladder_env_selects_claude_for_claude_slugs() -> None:
     from research_loop.scripts.declarative_ladder import agent_env
 
-    env = agent_env("claude-sonnet-5-5")
+    env = agent_env("claude-sonnet-5-5", "declarative")
     assert env["AGENT_IMAGE"] == CLAUDE_IMAGE
     assert env["AGENT_ENV"] == ""
     assert env["AGENT_CMD"] == claude_agent_cmd("claude-sonnet-5-5")
@@ -117,7 +117,7 @@ def test_ladder_env_selects_claude_for_claude_slugs() -> None:
 def test_ladder_env_keeps_cursor_agent_for_other_slugs() -> None:
     from research_loop.scripts.declarative_ladder import agent_env
 
-    env = agent_env("grok-4.7-high")
+    env = agent_env("grok-4.7-high", "declarative")
     assert env["AGENT_CMD"].startswith("agent -p ") and "--model grok-4.7-high" in env["AGENT_CMD"]
     assert env["AGENT_IMAGE"] == "lemma-agent:cli"
 

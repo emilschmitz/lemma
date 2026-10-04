@@ -296,3 +296,43 @@ def test_poll_deadline_kill_is_reported_as_the_timeout_exit_and_a_failing_claude
 ) -> None:
     assert _run_with_fake_popen(monkeypatch, tmp_path / "a", poll_rc=None, timeout="0").returncode == -9
     assert _run_with_fake_popen(monkeypatch, tmp_path / "b", poll_rc=1, timeout="600").returncode == 1
+
+
+# --- /workspace/context/ro is read-only inside the container (the path the prompt names) ---
+
+
+def _workspace_mounts(cmd: list[str]) -> list[str]:
+    return [cmd[i + 1] for i, a in enumerate(cmd) if a == "-v" and ":/workspace" in cmd[i + 1] or
+            a == "-v" and ":/context/ro" in cmd[i + 1]]
+
+
+def test_nested_read_only_mount_comes_after_the_rw_workspace_mount(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    mounts = _workspace_mounts(_captured_docker_cmd(monkeypatch, tmp_path, mock=False))
+    rw = next(i for i, m in enumerate(mounts) if m.endswith(":/workspace:rw"))
+    nested = next(i for i, m in enumerate(mounts) if m.endswith(":/workspace/context/ro:ro"))
+    assert nested > rw
+    assert any(m.endswith(":/context/ro:ro") for m in mounts)
+
+
+@pytest.mark.skipif(not docker_image_built(CLAUDE_IMAGE), reason=f"{CLAUDE_IMAGE} not built")
+def test_container_cannot_write_context_ro_but_can_write_the_agent_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    with monkeypatch.context() as patched:  # the fake Popen must not leak into the real docker run
+        mounts = _workspace_mounts(_captured_docker_cmd(patched, tmp_path, mock=False))
+    ws = tmp_path / "ws"
+    (ws / "context" / "ro" / "spec.rs").write_text("spec\n")
+    (ws / "runquery_agent.rs").write_text("body\n")
+    args = [a for m in mounts for a in ("-v", m)]
+    script = "echo x >> /workspace/context/ro/spec.rs; echo ro=$?; echo y >> /workspace/runquery_agent.rs; echo rw=$?"
+    out = subprocess.run(
+        ["docker", "run", "--rm", "--network", "none", "--memory", "512m", *args,
+         "--entrypoint", "/bin/sh", CLAUDE_IMAGE, "-c", script],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert "ro=0" not in out.stdout and "ro=" in out.stdout, out.stdout + out.stderr
+    assert "rw=0" in out.stdout, out.stdout + out.stderr
+    assert (ws / "context" / "ro" / "spec.rs").read_text() == "spec\n"
+    assert (ws / "runquery_agent.rs").read_text() == "body\ny\n"

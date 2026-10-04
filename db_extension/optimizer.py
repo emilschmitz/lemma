@@ -661,6 +661,9 @@ def run_optimization_loop(
     """
     Runs the query optimization loop (schema-driven Verus). Prints step-by-step colored output.
     """
+    from research_loop.menu_profile import activate_menu_from_env
+
+    activate_menu_from_env()  # LEMMA_MENU=<profile> sets style, trust env, speed bar; unset = unchanged
     try:
         catalog_schema = resolve_schema_for_sql(sql_query, schema)
         # Same projection the harness uses — agent must see the Cols/MethodSpec that assemble verifies.
@@ -980,10 +983,9 @@ def run_optimization_loop(
                             f"{max_agent_resource_exhausted_retries()} retries"
                         )
                     else:
-                        err = (
-                            proc.stderr or proc.stdout or "agent exited non-zero"
-                        ).strip()
-                        err = f"Agent failed: {err}"
+                        from research_loop.agent_sandbox import describe_agent_exit
+
+                        err = f"Agent failed: {describe_agent_exit(proc)}"
                     if not demo_enabled():
                         _vprint(f" {COLOR_RED}FAILED{COLOR_RESET}")
                         _vprint(f"    {err[:500]}")

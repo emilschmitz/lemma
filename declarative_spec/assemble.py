@@ -55,9 +55,9 @@ def assemble_declarative_program(
     if host_start == -1 or host_end == -1 or host_end < host_start:
         raise ValueError("HOST_LEMMAS markers missing from spec")
 
-    from declarative_spec.lemmas import float_error_lemmas_rs
+    from declarative_spec.trusted_sets import current
 
-    lemmas = float_error_lemmas_rs().rstrip()
+    lemmas = current().lemmas_rs()
     inner_start = host_start + len("// HOST_LEMMAS_START")
     stitched = stitched[:inner_start] + "\n" + lemmas + "\n" + stitched[host_end:]
 
