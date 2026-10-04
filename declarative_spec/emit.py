@@ -519,6 +519,21 @@ def emit_declarative_spec(
     *,
     float_abs_eps: str | None = None,
 ) -> str:
+    """Spec for ``sql``. DATE and DECIMAL are first stated as exact integer SQL (``numeric_rewrite``)."""
+    from declarative_spec.numeric_rewrite import rewrite_numeric, with_out_scales
+
+    integer_sql, scales = rewrite_numeric(sql, schema)
+    spec = _emit_integer_sql(integer_sql, schema, catalog, float_abs_eps=float_abs_eps)
+    return with_out_scales(spec, scales)
+
+
+def _emit_integer_sql(
+    sql: str,
+    schema: dict[str, str] | dict[str, dict[str, str]],
+    catalog: CatalogAssumptions | None,
+    *,
+    float_abs_eps: str | None,
+) -> str:
     from declarative_spec.emit_surface import emit_from_surface
 
     try:

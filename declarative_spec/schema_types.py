@@ -100,8 +100,6 @@ SIGNED_SQL = frozenset(
         "int4",
         "int8",
         "int64",
-        "decimal",
-        "numeric",
     }
 )
 FLOAT_SQL = frozenset(
@@ -134,14 +132,54 @@ class ColumnTypeInfo:
     is_float: bool
     is_hugeint: bool
     cell_exclusive_cap: int | None  # integer types only
+    scale: int = 0  # DECIMAL: the stored integer is value * 10**scale
+    is_date: bool = False  # DATE: the stored integer is days since 1970-01-01
 
 
 def _normalize_sql_type(sql_type: str) -> str:
     return " ".join(sql_type.strip().lower().split())
 
 
+_DECIMAL = re.compile(r"^(?:decimal|numeric)(?:\((\d+)(?:,\s*(\d+))?\))?$")
+
+
+def _classify_decimal(norm: str, precision: int, scale: int) -> ColumnTypeInfo:
+    if not 1 <= precision <= 38 or not 0 <= scale <= precision:
+        raise DeclarativeUnsupported(f"unsupported DECIMAL({precision},{scale})")
+    wide = precision > 18
+    return ColumnTypeInfo(
+        sql_type=f"decimal({precision},{scale})",
+        exec_rust="i128" if wide else "i64",
+        spec_as="int",
+        key_kind=KeyKind.INT,
+        signed=True,
+        is_float=False,
+        is_hugeint=wide,
+        cell_exclusive_cap=10**precision,
+        scale=scale,
+    )
+
+
 def classify_sql_type(sql_type: str) -> ColumnTypeInfo:
     norm = _normalize_sql_type(sql_type)
+    decimal = _DECIMAL.match(norm)
+    if decimal is not None:
+        # A bare DECIMAL is DuckDB's DECIMAL(18,3); DECIMAL(p) has scale 0.
+        precision = int(decimal.group(1) or 18)
+        scale = int(decimal.group(2) or (0 if decimal.group(1) else 3))
+        return _classify_decimal(norm, precision, scale)
+    if norm == "date":
+        return ColumnTypeInfo(
+            sql_type="date",
+            exec_rust="i32",
+            spec_as="int",
+            key_kind=KeyKind.INT,
+            signed=True,
+            is_float=False,
+            is_hugeint=False,
+            cell_exclusive_cap=2**31,
+            is_date=True,
+        )
     if norm in UNSIGNED_SQL:
         return ColumnTypeInfo(
             sql_type=norm,

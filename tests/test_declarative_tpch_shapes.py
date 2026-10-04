@@ -28,10 +28,10 @@ SCHEMA = {
         "disc": "integer",
         "tax": "integer",
         "flag": "varchar",
-        "ship": "integer",
+        "ship": "date",
         "ratio": "double",
     },
-    "ord": {"okey": "bigint", "ckey": "bigint", "odate": "integer", "total": "bigint"},
+    "ord": {"okey": "bigint", "ckey": "bigint", "odate": "date", "total": "bigint"},
     "cust": {"ckey": "bigint", "seg": "varchar"},
 }
 CATALOG = CatalogAssumptions(
@@ -53,8 +53,8 @@ def _typechecks(spec: str) -> str:
     return proc.stdout + proc.stderr
 
 
-def _date_int(text: str) -> int:
-    return int(dt.date.fromisoformat(text).strftime("%Y%m%d"))
+def _days(text: str) -> int:
+    return (dt.date.fromisoformat(text) - dt.date(1970, 1, 1)).days
 
 
 # ---- exact date folding, checked against DuckDB -------------------------------------------
@@ -74,7 +74,7 @@ _INTERVALS = [
 def test_date_interval_fold_matches_duckdb(sql: str, _base: str) -> None:
     got = fold_date(sqlglot.parse_one(f"SELECT {sql}").expressions[0])
     want = duckdb.sql(f"SELECT CAST({sql} AS DATE)").fetchone()[0]
-    assert got == want.strftime("%Y%m%d")
+    assert got == str((want - dt.date(1970, 1, 1)).days)
 
 
 def test_interval_unit_not_stated_exactly_is_refused() -> None:
@@ -108,7 +108,7 @@ def test_decimal_literal_on_either_side_of_a_comparison() -> None:
 
 def test_decimal_literal_against_a_float_column_is_refused() -> None:
     sql = "SELECT SUM(price) AS s FROM li WHERE ratio > 0.5"
-    with pytest.raises(DeclarativeUnsupported, match="integer column"):
+    with pytest.raises(DeclarativeUnsupported, match="float column"):
         emit_declarative_spec(sql, SCHEMA, CATALOG)
 
 
@@ -121,7 +121,7 @@ def test_decimal_compare_spec_typechecks_in_verus() -> None:
         SCHEMA,
         CATALOG,
     )
-    assert "19950101" in spec
+    assert str(_days("1995-01-01")) in spec
     assert "error" not in _typechecks(spec)
 
 
@@ -150,7 +150,7 @@ def test_min_over_arithmetic_and_avg_over_arithmetic_emit() -> None:
 
 
 def test_arithmetic_over_a_float_column_is_refused() -> None:
-    with pytest.raises(DeclarativeUnsupported, match="integer column"):
+    with pytest.raises(DeclarativeUnsupported, match="float column"):
         emit_declarative_spec("SELECT SUM(price * ratio) AS s FROM li", SCHEMA, CATALOG)
 
 
@@ -403,15 +403,11 @@ def test_like_forms_not_stated_exactly_are_refused(where: str) -> None:
 
 
 @pytest.mark.parametrize("part", ["year", "month", "day"])
-def test_extract_text_matches_duckdb_on_yyyymmdd_integers(part: str) -> None:
+def test_extract_text_is_the_civil_date_spec_fn(part: str) -> None:
     from declarative_spec.parse_exprs import extract_text
 
     node = sqlglot.parse_one(f"SELECT EXTRACT({part} FROM d)").expressions[0]
-    text = extract_text(node, lambda c: "D", [])
-    for day in (dt.date(1992, 1, 1), dt.date(1996, 2, 29), dt.date(1998, 12, 31), dt.date(2000, 7, 4)):
-        want = duckdb.execute(f"SELECT EXTRACT({part} FROM DATE '{day}')").fetchone()[0]
-        got = eval(text.replace("/", "//"), {"D": int(day.strftime("%Y%m%d"))})
-        assert got == want
+    assert extract_text(node, lambda c: "D", []) == f"spec_civil_{part}(D)"
 
 
 def test_extract_of_an_unsupported_part_is_refused() -> None:
@@ -430,7 +426,8 @@ _PROFIT = (
 def test_derived_table_with_date_part_key_and_arithmetic_sum_is_flattened() -> None:
     spec = emit_declarative_spec(_PROFIT, SCHEMA, CATALOG)
     assert "pub struct OutRow {\n    pub flag: String,\n    pub yr: i64,\n    pub total: i128,\n}" in spec
-    assert "((ord.odate@[i1] as int) / 10000)" in spec
+    assert "spec_civil_year((ord.odate@[i1] as int))" in spec
+    assert spec.count("spec fn spec_civil_year(") == 1
     assert "(((li.price@[i0] as int) * ((1 - (li.disc@[i0] as int)))) - (li.qty@[i0] as int))" in spec
     assert "pub fn run_query(li: &Cols_li, ord: &Cols_ord)" in spec
     assert "if (res@[i].flag@) == (res@[i + 1].flag@)" in spec

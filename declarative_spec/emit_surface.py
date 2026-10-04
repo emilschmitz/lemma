@@ -11,6 +11,7 @@ import copy
 import re
 from dataclasses import dataclass, field
 
+from declarative_spec.emit_date import with_civil_fns
 from declarative_spec.emit_in import apply_in_calls, in_subquery_calls
 from declarative_spec.emit_join import _build_slots, _Slot, _table_alias
 from declarative_spec.emit_tail import tail_ensures
@@ -136,6 +137,7 @@ def emit_from_surface(
         from declarative_spec.emit_like import SPEC_LIKE_FN
 
         text = text.replace("// HOST_LEMMAS_START", SPEC_LIKE_FN + "\n\n// HOST_LEMMAS_START", 1)
+    text = with_civil_fns(text)
     text = _string_views(text, _string_fields(model, helpers.params))
     if "method_spec" in text:
         raise DeclarativeUnsupported("internal spec shape")
@@ -1355,7 +1357,11 @@ def _hash_broadcasts(helpers: _Helpers) -> str:
         line = _host_hash_key_axiom(info.exec_rust)
         if line and line not in lines:
             lines.append(line)
-    return "\n".join(lines)
+    if len(lines) < 2:
+        return "\n".join(lines)
+    # Verus allows one module-level `broadcast use`, so several axioms share one.
+    names = [line.removeprefix("broadcast use ").removesuffix(";") for line in lines]
+    return "broadcast use {" + ", ".join(names) + "};"
 
 
 def _consts(

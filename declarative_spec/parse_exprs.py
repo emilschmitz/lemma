@@ -1,7 +1,7 @@
 """Exact constant folding and integer arithmetic for the declarative parser.
 
-Dates are the integer ``YYYYMMDD`` (the repo's TPC-H ETL stores date columns that way,
-and ``DATE '...'`` literals already fold to it). A date literal moved by an INTERVAL
+Dates are the integer days since 1970-01-01, DuckDB's own DATE representation, so integer
+order is date order. A date literal moved by an INTERVAL
 follows DuckDB: DAY/WEEK add days; MONTH/YEAR add months and clamp the day to the end
 of the target month. Number literals fold as exact rationals, never as floats.
 """
@@ -60,28 +60,28 @@ def _shift(day: dt.date, amount: int, unit: str) -> dt.date:
     return dt.date(year, month, min(day.day, last))
 
 
+_EPOCH = dt.date(1970, 1, 1)
+
+
 def fold_date(node: exp.Expression) -> str | None:
-    """``YYYYMMDD`` for a DATE literal, optionally moved by INTERVALs. None if not a date constant."""
+    """Days since 1970-01-01 for a DATE literal, optionally moved by INTERVALs. None if not a date constant."""
+    day = _folded_day(node)
+    return None if day is None else str((day - _EPOCH).days)
+
+
+def _folded_day(node: exp.Expression) -> dt.date | None:
     day = _date_literal(node)
     if day is not None:
-        return f"{day.year:04d}{day.month:02d}{day.day:02d}"
+        return day
     if isinstance(node, exp.Paren):
-        return fold_date(node.this)
+        return _folded_day(node.this)
     if isinstance(node, (exp.Add, exp.Sub)):
         base = _folded_day(node.this)
         if base is None:
             return None
         amount, unit = _interval(node.expression)
-        moved = _shift(base, -amount if isinstance(node, exp.Sub) else amount, unit)
-        return f"{moved.year:04d}{moved.month:02d}{moved.day:02d}"
+        return _shift(base, -amount if isinstance(node, exp.Sub) else amount, unit)
     return None
-
-
-def _folded_day(node: exp.Expression) -> dt.date | None:
-    text = fold_date(node)
-    if text is None:
-        return None
-    return dt.date(int(text[:4]), int(text[4:6]), int(text[6:]))
 
 
 def fold_number(node: exp.Expression) -> Fraction | None:
@@ -154,11 +154,7 @@ def compare_to_rational(left_text: str, op: str, value: Fraction) -> str:
     return f"(({left_text}) * {value.denominator} {_OPS[op]} {value.numerator})"
 
 
-_DATE_PARTS = {
-    "YEAR": "({c} / 10000)",
-    "MONTH": "(({c} / 100) % 100)",
-    "DAY": "({c} % 100)",
-}
+_DATE_PARTS = {"YEAR": "spec_civil_year", "MONTH": "spec_civil_month", "DAY": "spec_civil_day"}
 
 
 def extract_text(
@@ -166,9 +162,9 @@ def extract_text(
     ref: Callable[[exp.Column], str],
     refs: list[str],
 ) -> str:
-    """``EXTRACT(part FROM col)`` over a date column stored as the integer ``YYYYMMDD``."""
+    """``EXTRACT(part FROM col)`` over a DATE column (days since 1970-01-01), as a civil-date spec fn."""
     part = str(node.this.name if hasattr(node.this, "name") else node.this).upper()
     if part not in _DATE_PARTS or not isinstance(node.expression, exp.Column):
         raise DeclarativeUnsupported("EXTRACT")
     refs.append(ref(node.expression))
-    return _DATE_PARTS[part].format(c=refs[-1])
+    return f"{_DATE_PARTS[part]}({refs[-1]})"

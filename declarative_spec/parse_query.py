@@ -908,8 +908,7 @@ def _fold_int_literal(node: exp.Expression) -> str | None:
         match = _DATE_LITERAL.match(str(lit.this))
         if not match:
             raise DeclarativeUnsupported("DATE literal")
-        y, m, d = (int(x) for x in match.groups())
-        return f"{y:04d}{m:02d}{d:02d}"
+        return fold_date(node)
     return None
 
 

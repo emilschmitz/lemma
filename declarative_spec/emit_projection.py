@@ -37,6 +37,7 @@ from declarative_spec.emit_surface import (
     _structs,
     _valids,
 )
+from declarative_spec.emit_date import with_civil_fns
 from declarative_spec.parse import DeclarativeUnsupported
 from declarative_spec.schema_types import ColumnTypeInfo, SchemaModel, rust_ident
 from declarative_spec.surface import Query
@@ -116,6 +117,7 @@ def emit_projection_program(
         "}",
     ]
     text = "\n".join(p for p in parts if p is not None)
+    text = with_civil_fns(text)
     text = _string_views(text, _string_fields(model, params))
     if "method_spec" in text or "arbitrary()" in text or "assume(" in text:
         raise DeclarativeUnsupported("internal spec shape")
