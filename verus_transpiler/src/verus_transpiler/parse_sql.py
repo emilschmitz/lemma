@@ -2051,7 +2051,8 @@ def _parse_limit_offset(expression: exp.Select) -> tuple[int | None, int | None]
         lit = limit_node.expression
         if isinstance(lit, exp.Literal) and lit.is_number:
             limit_val = int(lit.this)
-        elif isinstance(lit, exp.Var) and str(lit.this).upper() == "ALL":
+        elif isinstance(lit, exp.Column) and lit.name.upper() == "ALL":
+            # LIMIT ALL is every row; leave limit unset.
             limit_val = None
         else:
             raise UnsupportedContractError(
