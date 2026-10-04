@@ -443,3 +443,7 @@ T (via `bridge_for_family`). Views are deduplicated by name.
 
 Admission and research harvests also record **which menu helpers the agent body used**
 (`research_loop/trusted_usage.py` → `logs/trusted_usage.json`).
+
+**NULL support is not a trusted lemma.** The NULL calculus (`declarative_spec/nulls.py`: three-valued logic reduced to
+two-valued SQL over validity bits) is a HOST REWRITE of the query, checked differentially against DuckDB
+(`tests/null_differential.py`, used by `tests/test_nulls_adversary.py`). Every new predicate kind must be run through it.

@@ -93,7 +93,7 @@ def _verus(program: str, *flags: str) -> str:
         pytest.skip("verus binary not installed")
     with tempfile.NamedTemporaryFile("w", suffix=".rs", delete=False) as handle:
         handle.write(program)
-    proc = subprocess.run([str(GUARD), handle.name, "--triggers-mode", "silent", *flags], capture_output=True, text=True)
+    proc = subprocess.run([str(GUARD), handle.name, "--triggers-mode", "silent", *flags], capture_output=True, text=True, cwd=tempfile.gettempdir())
     return proc.stdout + proc.stderr
 
 
