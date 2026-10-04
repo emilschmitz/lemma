@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 _COUNT_SHAPE = """
 let mut counts: Vec<u64> = Vec::new();
 let mut c: usize = 0;
@@ -133,6 +136,139 @@ map
 """.strip()
 
 
+_FIXTURES = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "declarative_proofs"
+
+# Shapes with a verified worked example, by recipe name. The file is a `run_query` body that
+# Verus proved against a spec of that shape (column and table names differ in your spec).
+_EXAMPLES: dict[str, tuple[str, str]] = {
+    "int_map": ("int_group_count.rs", "one table, integer group key, COUNT(*), result `HashMapWithView<int, u64>`"),
+    "string_map": ("string_group_count.rs", "one table, string group key, COUNT(*), result `StringHashMap<u64>`"),
+    "group_count": ("group_count_where.rs", "one table, filtered GROUP BY, COUNT(*), result `Vec<OutRow>`"),
+    "group_sum": ("group_sum_where.rs", "one table, filtered GROUP BY, SUM, result `Vec<OutRow>`"),
+    "join_group_sum": ("join_group_sum.rs", "two tables joined on a key, GROUP BY, SUM, result `Vec<OutRow>`"),
+    "ungrouped": ("ungrouped_sum_where.rs", "one table, filtered ungrouped SUM, result `Vec<OutRow>` of one row"),
+}
+
+# Features of a spec for which the host has no worked example. They are not impossible, they are
+# long: say so, so that a model does not walk into them blind.
+_HARD_FEATURES: tuple[tuple[str, str], ...] = (
+    ("count_distinct_", "COUNT(DISTINCT ...) (an existential over earlier rows)"),
+    ("sq_", "a scalar or correlated subquery"),
+    ("exists_", "EXISTS / IN / NOT EXISTS against another table"),
+    ("proj_key", "a projection with no GROUP BY (one result row per input row)"),
+    ("avg_", "AVG (a float quotient of a sum and a count)"),
+)
+
+
+def spec_shape(spec_text: str) -> dict:
+    """Which recipe matches this spec's result type, and which hard features it has."""
+    result = re.search(r"pub fn run_query\([^)]*\)\s*->\s*\(res:\s*([^)]+)\)", spec_text)
+    ty = result.group(1).strip() if result else ""
+    tables = len(re.findall(r"pub struct Cols_", spec_text))
+    if ty.startswith("HashMapWithView"):
+        recipe = "dense_map" if "KEY_CAP_" in spec_text else "int_map"
+    elif ty.startswith("StringHashMap"):
+        recipe = "string_map"
+    elif ty.startswith("Vec<OutRow>"):
+        if "out_row_ok(" not in spec_text:
+            recipe = "ungrouped"
+        elif tables >= 2:
+            recipe = "join_group_sum"
+        elif re.search(r"\bsum_\w+\(", spec_text):
+            recipe = "group_sum"
+        else:
+            recipe = "group_count"
+    else:
+        recipe = "none"
+    hard = [what for needle, what in _HARD_FEATURES if re.search(rf"\b{needle}", spec_text)]
+    if re.search(r"res@\.len\(\) <= \d+", spec_text) and recipe in ("group_count", "group_sum", "join_group_sum"):
+        hard.append("a LIMIT with ORDER BY over groups (top-K selection)")
+    if tables >= 2 and "count_distinct_" in spec_text:
+        hard.append("a join together with COUNT(DISTINCT ...)")
+    return {"result_type": ty, "recipe": recipe, "tables": tables, "hard": hard}
+
+
+def mount_examples(ro: Path) -> None:
+    """Copy the verified example bodies to ``ro/examples/`` (the prompt names them)."""
+    dest = ro / "examples"
+    dest.mkdir(parents=True, exist_ok=True)
+    for name, _what in _EXAMPLES.values():
+        (dest / name).write_text((_FIXTURES / name).read_text())
+
+
+def _recipe_section(shape: dict) -> list[str]:
+    recipe = shape["recipe"]
+    lines = ["## The recipe for THIS spec", ""]
+    lines.append(f"This spec's result type is `{shape['result_type'] or 'unknown'}`.")
+    if recipe == "dense_map":
+        lines += [
+            "Dense array of `KEY_CAP_...` counters (fastest: no hashing), then copy the nonzero slots into the",
+            "result map. Replace the names `KEY_CAP_t_k`, `ROW_CAP_t`, `valid_cols_t`, `cols.k` with the ones in",
+            "this spec, and paste the block otherwise unchanged. If the spec defines `lemma_dense_count_map`,",
+            "call it once after the copy loop instead of re-proving the final `ensures` by hand",
+            "(`lemma_dense_count_map(keys, counts@, map@, KEY_CAP_... as int);`).",
+            "",
+            "```rust",
+            _COUNT_SHAPE,
+            "```",
+        ]
+    elif recipe == "none":
+        lines += ["No worked recipe matches this result type: build it from the lemma index and the vstd docs."]
+    else:
+        name, what = _EXAMPLES[recipe]
+        lines += [
+            f"A verified body for the same shape ({what}) is `context/ro/examples/{name}`, inlined here.",
+            "Your table, column and field names differ: rename them, keep the proof structure.",
+            "",
+            "```rust",
+            (_FIXTURES / name).read_text().rstrip(),
+            "```",
+        ]
+    return lines
+
+
+_SHAPE_LIST = """\
+## Which shapes have worked examples
+
+Worked, verified examples exist (`context/ro/examples/`) for: one-table `GROUP BY` COUNT with an integer key
+(`HashMapWithView`) or a string key (`StringHashMap`); one-table filtered `GROUP BY` COUNT or SUM into
+`Vec<OutRow>`; one filtered ungrouped SUM; a two-table join `GROUP BY` SUM.
+
+KNOWN HARD, no worked example: a join whose join key repeats on both sides (many-to-many) with
+`COUNT(DISTINCT ...)`; top-K (`ORDER BY ... LIMIT`) over groups; correlated or scalar subqueries; `EXISTS`/`IN`
+joins; string-tuple group keys; `AVG` with a float result. These need long helper proofs (an existential
+witness per group, a selection invariant). Start with the simplest correct loop that proves, make sure the
+result is submitted, and only then look for speed. Float comparison, float `ORDER BY` and float MIN/MAX are
+refused by the host (no proved bridge from `f64` order to `real` order); you will not see them.
+"""
+
+_SPEED = """\
+## Speed (the run is timed on the full table and compared with the reference engine)
+
+One pass over each table. No loop over one table inside a loop over another table. Prefer a dense `Vec` indexed
+by a small integer key (`KEY_CAP_...`) over a hash map; use a hash map for a large or string key. Build the
+smaller side of a join into a map once, then probe it. For a SUM, accumulate in `u64` inside blocks small enough
+that the block sum provably cannot overflow, and widen the block sum into the `i128` total at block boundaries;
+if you cannot prove the no-overflow invariant, use a plain `i128` accumulator. Avoid per-row allocation and
+`String::clone` on the hot path. The proof must come first: a body that verifies but is slower than the bar is
+reported with its speedup, and you may rewrite it.
+"""
+
+_PROOF_HYGIENE = """\
+## Proof hygiene that costs people time
+
+- Bind a column before taking its length: `let keys = cols.grp@;` then `keys.len()`; do not write `cols.grp@.len()`.
+- Parenthesize a cast in a comparison: `(k as int) < (KEY_CAP_t_k as int)`.
+- A loop that walks down: snapshot the old index (`let i_old = i; i = i - 1;`) before using the old suffix.
+- Every loop needs `decreases`; keep `valid_cols_<table>(cols)` in every loop invariant (the key and cell bounds
+  come from it). Call host lemmas as `proof { lemma_...(); }`. Give a quantifier an explicit `#[trigger]`.
+- `lemma_u64_add_fits` / `lemma_count_step_fits_u64` / `lemma_sum_step_fits_*` prove an add does not overflow
+  under the host's `ROW_CAP_...`; call them rather than assuming.
+- Floats: one `f64` accumulator, `lemma_f64_add_defined`, `lemma_f64_left_fold_push`,
+  `lemma_f64_sum_within_eps` with `FLOAT_ABS_EPS` (never a numeric epsilon, never unfold an f64 add).
+"""
+
+
 def _error_excerpt(last_error: str) -> str:
     excerpt = last_error.strip()[-4000:]
     newline = excerpt.find("\n")
@@ -149,75 +285,54 @@ def build_declarative_prompt(
     lemma_index: str,
     last_error: str = "",
     in_docker: bool = False,
+    spec_text: str = "",
 ) -> str:
-    """Instructions for this spec style only.
+    """Instructions for this spec style only (the recursive prompt is a different file).
 
-    When ``in_docker`` is set, paths are the container mount. The recursive
-    prompt in ``research_loop.agent_sandbox.build_agent_prompt`` is not used.
+    ``spec_text`` is the emitted spec: it selects the one recipe that matches its result type and the
+    list of hard features it contains. When ``in_docker`` is set, paths are the container mount.
     """
     if in_docker:
         spec_path = "/workspace/context/ro/spec.rs"
         edit_path = "/workspace/runquery_agent.rs"
         index_path = "/workspace/context/ro/lemma_index.md"
+        root = "/workspace/context/ro"
     else:
         index_path = "context/ro/lemma_index.md"
+        root = "context/ro"
+    shape = spec_shape(spec_text)
 
     sections = [
         "# Declarative run_query",
         "",
-        f"Edit `{edit_path}` between `// AGENT_EDIT_START` and `// AGENT_EDIT_END`.",
-        "Write no `use` lines: every vstd module is already imported in the file.",
-        "The one allowed line is `broadcast use vstd::<module>::group_<name>;` (see below).",
-        "The vstd source, Verus guide and small verified examples are at `context/ro/verus/` (`INDEX.md` first):",
-        "grep `LEMMAS.md` and `EXAMPLES_INDEX.md` there, then Read one small example. You cannot run Verus; call `run_runquery`.",
+        "## What you get",
         "",
-        "while i > 0",
-        "    invariant",
-        "        i <= cols.n,",
-        "        valid_cols_*(cols),",
-        "        acc as int == count_*(...),",
-        "    decreases i,",
+        f"- `{edit_path}` already holds the host spec, the host lemmas, the loaders and `run_query`. You edit it.",
+        f"- Read-only: `{spec_path}` (same spec), `{root}/query.sql`, `{root}/schema.json`, `{index_path}`,",
+        f"  `{root}/examples/` (verified example bodies), `{root}/verus/` (vstd source, Verus guide, small examples;",
+        "  read `INDEX.md` first, then grep `LEMMAS.md` and `EXAMPLES_INDEX.md`).",
+        "- Tools: the file edit tool; `run_runquery` (path `runquery_agent.rs`) verifies, compiles and times your",
+        "  program on the official table; `submit_runquery` with the returned `run_id`. You cannot run Verus or a shell.",
+        "- Done means: Verus says `N verified, 0 errors`, the result equals the reference engine's rows, and the timed run beats",
+        "  the reference engine (`run_runquery` reports the speedup). Submit before the session ends.",
         "",
-        "Call the edit tool now.",
+        "## Regions and rules",
         "",
-        "Still forbidden in that same edit: `assume(`, `admit(`, `#[verifier::external_body]`,",
-        "and a name containing `axiom`, `arbitrary`, or `proof_from_false`.",
-        "A new `spec fn` or `proof fn` goes in the helper region, not in the body.",
-        "`proof { lemma_...(); }` is allowed.",
-        "The `ensures` stay the host's. Do not weaken them.",
-        "",
-        "This session is `LEMMA_SPEC_STYLE=declarative`.",
-        "It is not the recursive optimizer prompt. There is no `method_spec` to match.",
-        "The spec states conditions on the result. A small helper such as `group_count`",
-        "or `matched_sum` is fine. Do not define the query as a spec function that",
-        "walks indexes and updates a map.",
-        "",
-        "## Write this edit first",
-        "",
-        "Write no `use` lines; every vstd module is already imported.",
-        "Still forbidden in that same edit: `assume(`, `admit(`, `#[verifier::external_body]`,",
-        "and a name containing `axiom`, `arbitrary`, or `proof_from_false`.",
-        "`proof { lemma_...(); }` is allowed.",
-        "",
-        "Write the `run_query` body before you read the rest of this prompt, `DECLARATIVE.md`,",
-        "`lemma_index.md`, `spec.rs`, or any other file in the doc tree.",
-        "Open the edit file once, put the loop between the markers, then call `run_runquery`.",
-        "A session that only reads files does not count. Write an edit before any long plan.",
-        "",
-        "The body is an executable `while` loop, not a recursive exec function.",
-        "The loop invariant ties the machine accumulator to the spec fold:",
-        "`acc as int == count_*(...)` for a count, or the sum analogue `acc as int == sum_*(...)`,",
-        "or the float analogue (one `f64` accumulator, within `FLOAT_ABS_EPS`).",
-        "Every loop has `decreases`. Call a host lemma with `proof { lemma_...(); }`.",
-        "For a grouped query, one pass into `StringHashMap` (a string key, or nested",
-        "`StringHashMap` for a tuple of strings) or `HashMapWithView` (an integer key),",
-        "plus a probe. A loop over one table inside a loop over another loses the timed run.",
-        "`StringHashMap` and `HashMapWithView` are already imported.",
-        "Call `StringHashMap::<V>::new`, `insert`, `contains_key`, and `get`.",
-        "The view key is `Seq<char>`. `insert` ensures `final(self)@ == old(self)@.insert(k@, v)`.",
-        "`StringHashMap` is not a file in this workspace. Do not search the workspace",
-        "or the container image for `string_hash` or `hash_map` sources. Write the loop.",
-        "The `ensures` stay the host's. Do not weaken them.",
+        "- Two regions are kept, everything else in the file is discarded: the `run_query` body between",
+        "  `// AGENT_EDIT_START` and `// AGENT_EDIT_END`, and `proof fn` / `spec fn` helpers between",
+        "  `// AGENT_HELPERS_START` and `// AGENT_HELPERS_END` (just above `run_query`). A nested `proof fn` or",
+        "  `spec fn` inside the body does not work. A helper may not reuse a name the host spec defines.",
+        "- Write no `use` lines: every vstd module is imported by glob; call lemmas by bare name",
+        "  (`vstd::map_lib::lemma_map_new_domain` in full; that one name is ambiguous).",
+        "  The only allowed line is `broadcast use vstd::<module>::group_<name>;` naming a group listed in",
+        f"  `{root}/verus/INDEX.md` (it turns a bundle of vstd lemmas on for the solver; more groups, more noise), e.g. `broadcast use vstd::seq::group_seq_axioms;`.",
+        "- Forbidden (rejected before Verus runs): `assume(`, `admit(`, `#[verifier::external_body]`, `assume_specification`,",
+        "  `unimplemented!`, and any name containing `axiom`, `arbitrary` or `proof_from_false`. The hash-key",
+        "  axiom is already broadcast: do not name it. `requires`/`ensures` are the host's; changing them has",
+        "  no effect.",
+        "- `StringHashMap` and `HashMapWithView` are in scope (`new`, `insert`, `contains_key`, `get`; the view key",
+        "  is `Seq<char>` for strings). `StringHashMap::new` needs no axiom. Do not call `HashMapWithView::new` on",
+        "  a `String` or a tuple key.",
         "",
         "## SQL",
         "",
@@ -225,150 +340,21 @@ def build_declarative_prompt(
         sql.strip(),
         "```",
         "",
-        "## Edit",
-        "",
-        f"Edit `{edit_path}` with the file edit tool. That file already contains the spec.",
-        f"Do not open `{spec_path}`, `DECLARATIVE.md`, or `{index_path}` before that edit.",
-        "The body of `run_query` stays between `// AGENT_EDIT_START` and `// AGENT_EDIT_END`.",
-        "Every vstd module is already imported by glob at the top of the file. Write no `use` lines.",
-        "A name containing `axiom`, `arbitrary`, or `proof_from_false` is rejected.",
-        "The hash-key axiom is already broadcast in this file. Do not use it by name.",
-        "Any other text outside the two marked regions is discarded.",
-        "The host pastes your body back into the original spec.",
-        "Changing `requires` or `ensures` has no effect.",
-        "Write an edit before any long plan, then call `run_runquery`.",
-        "If this spec has `pub const KEY_CAP_` and returns `HashMapWithView<u64, u64>`,",
-        "the first edit is the count below, with names taken from this spec.",
-        "If this spec returns `Vec<OutRow>`, do not paste that count.",
-        "The shell cannot run in this container. Do not use it.",
-        "Do not search outside this workspace. Host lemmas are already in the file",
-        f"between `// HOST_LEMMAS_START` and `// HOST_LEMMAS_END`, and in `{index_path}`.",
-        "Call those names. Import a vstd lemma that is not in scope.",
-        "Do not `assume(` or `admit(` a fact instead of calling the lemma.",
-        "",
-        "## What you may write",
-        "",
-        "Any executable loop that meets the `ensures`. `proof { lemma_...( ... ); }` is allowed.",
-        "Do not write `assume(`, `admit(`, or `#[verifier::external_body]`. Those are rejected.",
-        "A `proof fn` or `spec fn` goes in the helper region (see below), never inside the body.",
-        "",
-        "Integers. A `u64` or `i128` add equals the mathematical add when the result fits.",
-        "Call the host fit lemma under the row cap and the cell cap in the spec.",
-        "If the slot is `u64`, call `lemma_count_step_fits_u64` or `lemma_sum_step_fits_u64`.",
-        "If the slot is `i128`, call the `i128` lemma. Do not assume the add fits.",
-        "Every integer SUM result is `i128`. For sum-heavy queries, accumulate in `u64` within blocks small enough that the block sum provably cannot overflow, and widen into the `i128` total at block boundaries. If you cannot prove the no-overflow invariant, use a plain `i128` accumulator.",
-        "Bind the group column from the struct before you use its length.",
-        "If the field is `grp`, write `let keys = cols.grp@;` then `keys.len()`.",
-        "Do not write `cols.grp@.len()` or any `cols.<field>@.len()`.",
-        "Parenthesize a cast in a comparison: `(k as int) < (KEY_CAP_fact_grp as int)`.",
-        "Use the `KEY_CAP_...` name from this spec. Do not write `k as int <`.",
-        "Snapshot the index before you decrement it. After `i = i - 1` the old suffix",
-        "is `i_old`, not `i`.",
-        "",
-        "A count walks the column from the end. The fit lemma's cap argument is the",
-        "`ROW_CAP_...` const in the spec.",
-        "If the spec has `pub const KEY_CAP_...: usize`, that is the exclusive key domain.",
-        "Allocate `let mut counts: Vec<u64> = Vec::new();` and push a zero once per slot",
-        "until `counts.len() == KEY_CAP_...`. Every loaded key is `< KEY_CAP_...`.",
-        "The column loop invariant must include `valid_cols_<table>(cols)`.",
-        "Without that name in the invariant, the key bound is not in scope.",
-        "On each row, `let k = cols.<field>[i];` then call",
-        "`lemma_index_key_below_cap(cols, i as int)` and",
-        "`assert(k == cols.<field>@[i as int])`.",
-        "That lemma ensures `(cols.<field>@[i] as int) < (KEY_CAP_... as int)`.",
-        "Do not write a decimal bound such as `<= 255`. Use the `KEY_CAP_...` const.",
-        "Read `prev` from `counts[k as usize]`, call",
-        "`lemma_count_step_fits_u64(prev, ROW_CAP_...)`, then",
-        "`counts[k as usize] = prev + 1`. Leave every other slot unchanged.",
-        "After the column loop, `counts[k] as int == group_count(keys, 0, k)` for each",
-        "slot. Copy a slot into the result map only when its count is nonzero.",
-        "A HashMap update on every row loses the timed run on the large table.",
-        "On the copy loop, give the quantifier an explicit trigger:",
-        "`forall|k: u64| #[trigger] map@.contains_key(k) ==> ...`",
-        "and prove it with `assert forall|k: u64| #[trigger] map@.contains_key(k) ==> ... by { ... }`.",
-        "When the spec defines `lemma_dense_count_map`, call it once after that loop",
-        "instead of re-proving the final `ensures` by hand:",
-        "`lemma_dense_count_map(keys, counts@, map@, KEY_CAP_... as int);`.",
-        "If the spec has no `KEY_CAP` const, keep the count in the result map:",
-        "`prev` is the map value or 0, then insert `prev + 1`.",
-        "",
-        "This count verifies when the spec's names are `KEY_CAP_t_k`, `ROW_CAP_t`,",
-        "`valid_cols_t`, and `cols.k`. Replace those four with the names in this spec.",
-        "If the spec already uses them, paste the block unchanged. Do not rewrite the proof.",
-        "Skip this block when the spec returns `Vec<OutRow>`.",
-        "",
-        "```rust",
-        _COUNT_SHAPE,
-        "```",
-        "",
-        "## Vec<OutRow>",
-        "",
-        "The result is one `OutRow` per group the ensures accept.",
-        "`key_at` is the group key. `row_hit` is the row predicate, including filters.",
-        "If the spec defines `proj_key`, there is no group. Emit one `OutRow` per",
-        "`row_hit` index tuple. `hit_count` counts those tuples and `hits_with`",
-        "counts the tuples with one `proj_key`. `out_copies` counts result rows",
-        "with one `out_key`. Sort by the order columns and keep the limit.",
-        "A `sq_` function is true when its last argument is the correlated MIN or MAX.",
-        "A string key uses `StringHashMap`. A tuple of strings uses nested `StringHashMap`.",
-        "`StringHashMap::new` and `insert` need no hash axiom: `insert` ensures",
-        "`final(self)@ == old(self)@.insert(k@, v)`.",
-        "Do not call `HashMapWithView::new` on `String` or on a tuple. That `new`",
-        "requires `obeys_key_model`, and importing an axiom is rejected.",
-        "An integer group column is the one case for `HashMapWithView`: the spec",
-        "broadcasts `axiom_<that integer>_obeys_hash_table_key_model`. Do not name it.",
-        "One pass over the driving table. For a join or `EXISTS`, insert the other",
-        "table's keys into a map first and probe it. A loop over one table inside a",
-        "loop over another loses the timed run.",
-        "Keep the groups the having condition accepts, sort by the order columns,",
-        "and stop at the limit in the ensures.",
-        "To prove the group ensures (`out_row_ok(.., res@[r])` hides its `exists`), keep three ghost",
-        "values beside `res`: `ks: Seq<int>` (the key of `res@[r]`), `wit` (a row index that has that key",
-        "and passes `row_hit`) and `pos: Map<int, int>` with `pos[ks[r]] == r`. Trigger the per-row",
-        "invariants on `ks[r]` and `res@[r]`. Do not keep `forall a < b ==> ks[a] != ks[b]` as a loop",
-        "invariant: its two-term trigger fires for every pair and exhausts the rlimit. Pass 1 scans",
-        "for each key and pushes it when absent, extending `ks`, `wit`, `pos`, and the invariant that",
-        "every `row_hit` row seen has a key in `ks`. Pass 2 runs `i` from the last row down to 0 so",
-        "the host fold unfolds one row at a time. Its invariant is `res@[r].<agg> as int ==",
-        "<fold>(.., i, ks[r])`, plus `|total| <= (n - i) * 2^63` for an `i128` SUM so the add fits.",
-        "At the end, prove `out_row_ok` by naming `wit[r]`, and distinctness from `pos[ks[a]] == a`",
-        "and `pos[ks[b]] == b`.",
-        "A one-table count defines `lemma_<count>_step` and `lemma_<count>_bound`.",
-        "Call those. Do not re-prove the one-row equation or the row bound.",
-        "Integer slots call the host fit lemma under the row cap.",
-        "Float slots use one `f64` accumulator per group and call",
-        "`lemma_f64_add_defined`, `lemma_f64_left_fold_push`, and",
-        "`lemma_f64_sum_within_eps` with `FLOAT_ABS_EPS`.",
-        "If the spec defines `MAG_CAP_<table>_<column>`, every loaded cell of that",
-        "column is strictly inside that cap. Pass that const as the magnitude.",
-        "",
-        "Floats. The spec is the real sum of the loaded floats, within `FLOAT_ABS_EPS`.",
-        "Use one `f64` accumulator per group, added left to right.",
-        "Call `lemma_f64_add_defined` before the add, then `lemma_f64_left_fold_push`,",
-        "then `lemma_f64_sum_within_eps`. Pass `FLOAT_ABS_EPS`. Do not write a numeric",
-        "epsilon. Do not unfold an `f64` add. Do not truncate the float to an integer.",
-        "",
-        "A join sum contains a group when some row of each side shares the join key",
-        "and the group column has that value. The value is the sum of the loaded",
-        "measure over those pairs. If the spec's sum cap is one side's row cap times",
-        "the cell cap, the other side's key is unique. Use that cap in the fit lemma.",
-        "",
-        "## Imports, broadcast groups, helpers",
-        "",
-        "Every vstd module is imported by glob (`use vstd::seq_lib::*;`, `use vstd::arithmetic::mul::*;`,",
-        "`use vstd::std_specs::hash::*;`, ...). Call any vstd lemma by its bare name. Write no `use` line.",
-        "The only line you may write is `broadcast use vstd::<module>::group_<name>;`, naming one group exactly",
-        "(no `*`, no braces). It turns a bundle of vstd lemmas on for automatic use by the solver in the",
-        "current scope, e.g. `broadcast use vstd::seq::group_seq_axioms;` at the top of the body or inside a",
-        "`proof { }`. More groups means more solver noise, so add one when a proof is stuck. The list is in",
-        "`context/ro/verus/INDEX.md`. One name is ambiguous under the globs: write",
-        "`vstd::map_lib::lemma_map_new_domain` in full. Any vstd name can also be written with its path.",
-        "",
-        "Nested `proof fn` and `spec fn` inside the `run_query` body do not work in this Verus. Put them",
-        "between `// AGENT_HELPERS_START` and `// AGENT_HELPERS_END`, just above `run_query`, then call",
-        "them from the body. Verus checks every helper proof and the termination of every recursive",
-        "`spec fn`. The same bans apply, and a helper may not reuse a name the host spec defines.",
-        "Only `proof fn` and `spec fn` items go there.",
+    ]
+    sections += _recipe_section(shape)
+    sections += [""]
+    if shape["hard"]:
+        sections += [
+            "## Warning: this spec has features with no worked example",
+            "",
+            "Contains: " + "; ".join(shape["hard"]) + ".",
+            "Expect a long proof. Get the simplest correct version verified first, and call `run_runquery` early",
+            "and often: its error text is the only checker you have.",
+            "",
+        ]
+    sections += [_SHAPE_LIST, _SPEED, _PROOF_HYGIENE]
+    sections += [
+        "## Helper region example",
         "",
         "```rust",
         "// AGENT_HELPERS_START",
@@ -377,27 +363,9 @@ def build_declarative_prompt(
         "// in the body:  proof { plus_zero(3); }",
         "```",
         "",
-        "## Tools",
-        "",
-        "lemma-host is already approved. Call the tools by these names.",
-        "Do not search the image or the repository for another way to verify.",
-        f"1. Edit `{edit_path}` between AGENT_EDIT_START and AGENT_EDIT_END.",
-        "2. Call `run_runquery` with `path` `runquery_agent.rs`.",
-        "   That call verifies, compiles, and runs this declarative program.",
-        "   It does not look for `method_spec`.",
-        "3. Call `submit_runquery` with the returned `run_id`.",
-        "Do this before the session ends. If `run_runquery` returns an error, fix the",
-        "edit and call it again. Do not search the image for another copy of the lemma.",
-        "",
         "## Lemma index",
         "",
         lemma_index.rstrip(),
-        "",
-        "## Other spec style",
-        "",
-        "The recursive product path uses a spec function that recurses on two indexes",
-        "and defines the result map in spec code, with `ensures res == that function`.",
-        "That is the other spec style. Do not write that here.",
     ]
     if last_error.strip():
         sections.extend(
@@ -405,8 +373,7 @@ def build_declarative_prompt(
                 "",
                 "## Previous host error",
                 "",
-                "The last compile or verify of your edit failed. Fix that edit and call",
-                "`run_runquery` again.",
+                "The last compile or verify of your edit failed. Fix that edit and call `run_runquery` again.",
                 "",
                 "```",
                 _error_excerpt(last_error),

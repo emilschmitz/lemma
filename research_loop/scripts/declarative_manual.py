@@ -86,6 +86,7 @@ def prepare(kind: str, sql: str, ws: Path) -> None:
         lemma_index=lemma_index_markdown(),
         last_error="",
         in_docker=False,
+        spec_text=spec,
     )
     (ws / "context" / "ro" / "DECLARATIVE.md").write_text(prompt)
     print(f"prepared {ws}; bar: duck_us={bar['duck_us']} duck1_us={bar['duck1_us']} rows={bar['table_rows']}")
