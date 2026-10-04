@@ -142,6 +142,17 @@ failed checks: setup didn't give the ability (no string-literal or MIN/MAX examp
 
 | r4 SEC T3 `SELECT s.fy, SUM(n.value) FROM num n JOIN sub s ON n.adsh = s.adsh WHERE n.uom = 'shares' GROUP BY s.fy` (DECIMAL, synthetic) | T3 | tuned | manual, 6 checks | **no: Verus-CONFIRMED spec blocker** | - | 21,886 | 61,915 | - |
 
+| **r5 SEC T1 HELD-OUT `SELECT MIN(value), SUM(value) FROM num WHERE value > 5000`** (DECIMAL, synthetic, 1M rows) | T1 | **held-out** | manual, 1 check (after the DECIMAL-cap host fix) | **YES, 9 verified, 0 errors** | **1,753** | 9,384 | 21,374 | **5.35x / 12.19x** |
+
+r5 T1 held-out: the first prover run (before the transpiler's fix) stopped after 1 check with a Verus-confirmed, logically
+explained blocker: `error: possible arithmetic underflow/overflow` at `acc = acc + v` because `valid_cols_num` bounded the DECIMAL(38,4)
+cell by its type (1e38), so two valid rows already exceed i128 (same root cause as r4 T3; the prover argued a counterexample, not
+hand arithmetic; I accepted it as confirmed because Verus rejected the add and the transpiler agent reproduced it). After the
+transpiler agent's fix (cells bounded by min(type digits, catalog cap), refusal when rows x cap can exceed i128) the same shape proved
+on the first try with the existing recipes (backward pass, branch-free accumulate, min witness/bound invariants, no helper).
+Clears the 5.0x SEC target against the all-core engine (synthetic 1M-row data, so not GenDB-scale). Blame for the first failure: step 2
+(transpile), host spec.
+
 r4 T3 (blocker confirmed by Verus, sent to the transpiler agent addcd33571290f391): step 2 (transpile) / step 5 (verify), blame
 **host spec**: the emitted `valid_cols_num` bounds the DECIMAL(38,4) `value` cell by its TYPE (`n.value@[i] as int >= -99999999999999999999999999999999999999 &&
 ... <= 99999999999999999999999999999999999999`), not by the package's `max_value_exclusive = 2^62 * 10^4`; the ensures is an exact `int`
