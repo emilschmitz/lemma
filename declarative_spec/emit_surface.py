@@ -89,6 +89,7 @@ def _emit_with_string_tokens(
 
     helpers = _emit_helpers(query, "", model)
     _require_float_mags(query, helpers, model, catalog)
+    _require_sum_fits(query, helpers, model, catalog)
 
     structs = _structs(helpers.params, model)
     int_sum = any(a.kind == "SUM" and not a.float_out for a in helpers.aggs)
@@ -1416,7 +1417,7 @@ def _valids(
         for col in sorted(cols):
             if cols[col].precision is not None:
                 # DECIMAL(p,s): the stored integer has at most p digits.
-                top = 10 ** cols[col].precision - 1
+                top = _decimal_top(catalog, slot.table, col, cols[col])
                 cell = f"{slot.param}.{rust_ident(col)}@[i] as int"
                 checks.append(
                     f"forall|i: int| 0 <= i < {slot.param}.n as int ==> {cell} >= -{top} && {cell} <= {top}"
@@ -1429,6 +1430,46 @@ def _valids(
 }}"""
         )
     return "\n\n".join(blocks)
+
+
+def _decimal_top(catalog: CatalogAssumptions | None, table: str, col: str, info: ColumnTypeInfo) -> int:
+    """Largest stored magnitude of a DECIMAL cell: its type's digits, tightened by the catalog's column cap."""
+    from declarative_spec.emit import _lookup_table_assumptions
+    from research_loop.table_assumptions import column_assumption_exclusive
+
+    top = 10**info.precision - 1
+    cap = column_assumption_exclusive(col, _lookup_table_assumptions(catalog, table)) if catalog is not None else None
+    return top if cap is None else min(top, cap - 1)
+
+
+def _require_sum_fits(
+    query: Query, helpers: _Helpers, model: SchemaModel, catalog: CatalogAssumptions | None
+) -> None:
+    """An integer SUM is held in i128: refuse when the row caps and the cell cap allow a larger total."""
+    if catalog is None:
+        return
+    from declarative_spec.emit import _lookup_table_assumptions
+    from declarative_spec.lemmas import FitRefusal
+    from research_loop.table_assumptions import column_assumption_exclusive
+
+    rows = 1
+    for slot in helpers.main:
+        rows *= _row_cap(catalog, slot.table) or 1
+    for src in query.aggs:
+        if src.kind.upper() != "SUM" or src.expr or src.arith or not src.column or src.column == "*":
+            continue
+        slot, info = _find_col(src.column, src.table, helpers.main, model)
+        if info.is_float or info.spec_as != "int":
+            continue
+        if info.precision is not None:
+            cell = _decimal_top(catalog, slot.table, src.column, info)
+        else:
+            cap = column_assumption_exclusive(src.column, _lookup_table_assumptions(catalog, slot.table))
+            cell = (cap if cap is not None else info.cell_exclusive_cap or 2**64) - 1
+        if rows * cell > 2**127 - 1:
+            raise FitRefusal(
+                f"SUM({src.column}) can exceed i128: {rows} joined rows x cell cap {cell} (cap the column or the rows)"
+            )
 
 
 def _hash_broadcasts(helpers: _Helpers) -> str:
