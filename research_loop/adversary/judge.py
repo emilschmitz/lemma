@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import ast
 import os
 import re
 import subprocess
 import tempfile
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +47,7 @@ _RESULT_SCALAR = re.compile(r"^RESULT:\s*(-?\d+)\s*$", re.MULTILINE)
 _RESULT_NONE = re.compile(r"^RESULT:\s*none\s*$", re.MULTILINE)
 _RESULT_SOME = re.compile(r"^RESULT:\s*some\s+(-?\d+)\s*$", re.MULTILINE)
 _RESULT_MAP_LEN = re.compile(r"^RESULT:\s*map_len=(\d+)\s*$", re.MULTILINE)
+_RESULT_MAP_KV = re.compile(r"^MAP_KV\t(.+)\t(.+)$", re.MULTILINE)
 _OPAQUE_MARKERS = ("checksum", "seq_len", "set_len")
 
 
@@ -212,9 +215,49 @@ def _parse_map_len(stdout: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
+def _flatten_map_kv(key: object, value: object) -> tuple:
+    key_part = key if isinstance(key, tuple) else (key,)
+    val_part = value if isinstance(value, tuple) else (value,)
+    return tuple(key_part) + tuple(val_part)
+
+
+def _norm_cell(value: object) -> object:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, Decimal):
+        return int(value)
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, (str, bytes, bytearray)):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return value
+    return value
+
+
+def _parse_map_kvs(stdout: str) -> list[tuple] | None:
+    rows: list[tuple] = []
+    for m in _RESULT_MAP_KV.finditer(stdout):
+        try:
+            key = ast.literal_eval(m.group(1))
+            value = ast.literal_eval(m.group(2))
+        except (SyntaxError, ValueError):
+            return None
+        flat = _flatten_map_kv(key, value)
+        rows.append(tuple(_norm_cell(c) for c in flat))
+    return rows
+
+
+def _duck_rows_as_map_tuples(duck_rows: list[tuple]) -> list[tuple]:
+    return [tuple(_norm_cell(c) for c in row) for row in duck_rows]
+
+
 def _parse_printed_result(stdout: str) -> tuple[tuple | None, str | None]:
     """One printed scalar or Option. ``None`` cell means SQL NULL."""
-    if _RESULT_MAP_LEN.search(stdout):
+    if _RESULT_MAP_LEN.search(stdout) or _RESULT_MAP_KV.search(stdout):
         return None, "map_len_only"
     if any(m in stdout for m in _OPAQUE_MARKERS):
         return None, "product printer does not dump full rows"
@@ -319,12 +362,30 @@ def _exec_verified_scalar(
                 "proof_verified": True,
                 "stdout": stdout[:500],
             }
+        map_rows = _parse_map_kvs(stdout)
+        if map_rows is None:
+            return {
+                "status": "opaque_exec_result",
+                "significant": False,
+                "reason": "map printer MAP_KV lines are not parseable",
+                "proof_verified": True,
+                "stdout": stdout[:500],
+            }
+        if len(map_rows) != map_len:
+            return {
+                "status": "opaque_exec_result",
+                "significant": False,
+                "reason": "map_len disagrees with MAP_KV count",
+                "proof_verified": True,
+                "stdout": stdout[:500],
+            }
         return {
             "status": "exec_ok",
             "proof_verified": True,
             "impl_map_len": map_len,
+            "impl_map_rows": map_rows,
             "impl_rows": None,
-            "stdout": stdout[:500],
+            "stdout": stdout[:800],
         }
     printed, opaque_reason = _parse_printed_result(stdout)
     if opaque_reason:
@@ -472,6 +533,7 @@ def judge_candidate(
         proof_verified = bool(exec_res.get("proof_verified"))
         if "impl_map_len" in exec_res:
             map_len = int(exec_res["impl_map_len"])
+            impl_map_rows = exec_res.get("impl_map_rows")
             if duck_error and duck_rows is None:
                 significant = proof_verified
                 reason = "error_vs_value"
@@ -481,9 +543,17 @@ def judge_candidate(
             elif map_len != len(duck_rows):
                 significant = proof_verified
                 reason = "map_cardinality"
-            else:
+            elif impl_map_rows is None:
                 significant = False
                 reason = "map_cardinality_match_values_unscored"
+            else:
+                duck_norm = _duck_rows_as_map_tuples(duck_rows)
+                if frozenset(impl_map_rows) != frozenset(duck_norm):
+                    significant = proof_verified
+                    reason = "map_values"
+                else:
+                    significant = False
+                    reason = "map_values_match"
             final_status = "hole" if significant else "no_difference"
             return {
                 **base,

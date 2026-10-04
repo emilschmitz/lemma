@@ -519,10 +519,64 @@ def _agg_add_ensures(
     raise ValueError(f"unsupported value for agg_add ensures: {value}")
 
 
+def _split_rust_generic_args(inner: str) -> tuple[str, str]:
+    """Split ``K, V`` at the top-level comma (tuple keys may contain commas)."""
+    depth = 0
+    for i, ch in enumerate(inner):
+        if ch in "<(":
+            depth += 1
+        elif ch in ">)":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            return inner[:i].strip(), inner[i + 1 :].strip()
+    raise ValueError(f"expected two generic args, got: {inner!r}")
+
+
+def vstd_map_dump_format(rust_ret: str) -> str:
+    """Host ``main`` expression: peel private vstd map layout and print sorted pairs.
+
+    Agent-visible Trusteds are unchanged. This only runs in the host result printer.
+    """
+    if rust_ret.startswith("StringHashMap"):
+        val_ty = rust_ret[len("StringHashMap<") : -1].strip()
+        peel_ty = f"_LemmaStringMapPeel<{val_ty}>"
+        peel_struct = (
+            "#[repr(C)] struct _LemmaStringMapPeel<V> { "
+            "m: std::collections::HashMap<String, V> }"
+        )
+        peel_cast = (
+            f"&*(&res as *const StringHashMap<{val_ty}> as *const {peel_ty})"
+        )
+    elif rust_ret.startswith("HashMapWithView"):
+        inner = rust_ret[len("HashMapWithView<") : -1]
+        key_ty, val_ty = _split_rust_generic_args(inner)
+        peel_ty = f"_LemmaMapPeel<{key_ty}, {val_ty}>"
+        peel_struct = (
+            "#[repr(C)] struct _LemmaMapPeel<K, V> { "
+            "m: std::collections::HashMap<K, V> }"
+        )
+        peel_cast = (
+            f"&*(&res as *const HashMapWithView<{key_ty}, {val_ty}> as *const {peel_ty})"
+        )
+    else:
+        raise ValueError(f"not a vstd map wrapper: {rust_ret!r}")
+    return f"""{{
+        {peel_struct};
+        let peel = unsafe {{ {peel_cast} }};
+        let mut pairs: Vec<_> = peel.m.iter().collect();
+        pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
+        let mut out = format!("RESULT: map_len={{}}", res.len());
+        for (k, v) in pairs {{
+            out.push_str(&format!("\\nMAP_KV\\t{{:?}}\\t{{:?}}", k, v));
+        }}
+        out
+    }}"""
+
+
 def _format_map_result(rust_ret: str, value: TypeExpr) -> str:
-    # vstd map wrappers lack public value iteration; harness checksum uses len only.
-    if rust_ret.startswith("HashMapWithView") or rust_ret.startswith("StringHashMap"):
-        return 'format!("RESULT: map_len={}", res.len())'
+    # vstd wrappers hide the std HashMap; peel only in the host result printer.
+    if rust_ret.startswith(("HashMapWithView", "StringHashMap")):
+        return vstd_map_dump_format(rust_ret)
     if isinstance(value, TypeAtom):
         vty = value.name
         zero = "0u64" if vty == "u64" else "0i64"
@@ -686,7 +740,7 @@ def _emit_map_trusted(
         "// === TRUSTED structural map helpers (vstd view @ + agg_new + agg_put/agg_add) ===",
         "#[verifier::external_body]",
         f"pub exec fn agg_new_{suffix}() -> (hm: {rust_ret})",
-        f"    ensures hm@ == Map::empty(),",
+        "    ensures hm@ == Map::empty(),",
         "{",
         f"    {new_expr}",
         "}",

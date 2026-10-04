@@ -238,15 +238,23 @@ def _emit_agg_helpers(ret_type: str) -> str:
 
 def _cfg(ret_type: str) -> dict[str, str]:
     if ret_type in RET_TYPE_CONFIG:
-        return RET_TYPE_CONFIG[ret_type]
-    from research_loop.trusted_ret_bridge import dynamic_ret_type_config
+        cfg = dict(RET_TYPE_CONFIG[ret_type])
+    else:
+        from research_loop.trusted_ret_bridge import dynamic_ret_type_config
 
-    dyn = dynamic_ret_type_config()
-    if ret_type in dyn:
-        return dyn[ret_type]
-    raise ValueError(
-        f"unsupported MethodSpec return type key (no Trusted/shell wiring): {ret_type}"
-    )
+        dyn = dynamic_ret_type_config()
+        if ret_type not in dyn:
+            raise ValueError(
+                f"unsupported MethodSpec return type key (no Trusted/shell wiring): {ret_type}"
+            )
+        cfg = dict(dyn[ret_type])
+    rust = cfg.get("rust_ret", "")
+    if rust.startswith(("HashMapWithView", "StringHashMap")):
+        from research_loop.trusted_ret_bridge import vstd_map_dump_format
+
+        # Host printer only: peel private layout and dump sorted pairs for the judge.
+        cfg["format_result"] = vstd_map_dump_format(rust)
+    return cfg
 
 
 def _ret_type_supported(ret_type: str) -> bool:
@@ -287,7 +295,7 @@ def _boundary_helpers(
         marker = re.search(
             r"^// lemma_group_topk_map: (Map<[^\n]+>)\s*$",
             verus_spec,
-            re.M,
+            re.MULTILINE,
         )
         if marker:
             from research_loop.method_spec_ret_type import (

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from verus_transpiler.transpiler import transpile_sql_to_verus
+
 from research_loop.method_spec_ret_type import resolve_ret_type_from_method_spec
 from research_loop.trusted_ret_bridge import structural_bridge_for_spec_type
-from verus_transpiler.transpiler import transpile_sql_to_verus
 
 _SCHEMA = {"t": {"k": "INTEGER", "k2": "INTEGER", "amount": "BIGINT"}}
 
@@ -50,3 +51,5 @@ def test_hardware_group_sum_ret_bridge_resolves(monkeypatch) -> None:
     assert "delta: u128" in b1.trusted_rs
     assert "0u128" in b2.trusted_rs
     assert 'format!("RESULT: map_len={}"' in b1.format_result
+    assert "MAP_KV" in b1.format_result
+    assert "_LemmaMapPeel" in b1.format_result
