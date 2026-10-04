@@ -12,6 +12,7 @@ from declarative_spec.emit import DeclarativeUnsupported, emit_declarative_spec
 from declarative_spec.lemma_index import lemma_index_markdown
 from declarative_spec.lemmas import FitRefusal
 from declarative_spec.pipeline import extract_agent_edit, run_declarative_metrics
+from declarative_spec.verus_docs import DOCS_CACHE, examples_index_markdown, lemmas_markdown
 from declarative_spec.vstd_index import VERUS_HOME, groups_markdown
 from declarative_spec.prompt import build_declarative_prompt
 
@@ -77,8 +78,11 @@ _VERUS_INDEX = """# Verus reference (read-only)
 statements, `requires`/`ensures`, and broadcast groups. Useful files: `seq.rs`,
 `seq_lib.rs`, `map.rs`, `map_lib.rs`, `set.rs`, `set_lib.rs`, `hash_map.rs`,
 `arithmetic/`, `std_specs/`, `relations.rs`, `calc_macro.rs`.
-The Verus guide is not on this machine, so only the vstd source is here.
-Search with `grep -rn "proof fn lemma_" vstd/`.
+Start with `LEMMAS.md` (one entry per vstd lemma / broadcast group / spec fn: path, signature,
+requires/ensures, doc line) and `EXAMPLES_INDEX.md` (one line per small verified program with
+the features it uses). Grep those, then Read one small program from `examples/` or `tests/`.
+`guide/` is the Verus guide (markdown). You cannot run Verus yourself: call `run_runquery`.
+Search the source with `grep -rn "proof fn lemma_" vstd/`.
 Every vstd module is already imported by glob in the spec; write no `use` lines.
 You may write `broadcast use vstd::<module>::group_<name>;` for exactly the groups listed below.
 A `broadcast use` turns a bundle of vstd lemmas on for automatic use by Z3 in the current scope
@@ -93,11 +97,20 @@ and `// AGENT_HELPERS_END`.
 
 
 def mount_verus_docs(ro: Path) -> None:
-    """Copy the pinned vstd source into ``ro/verus/``. Fails loudly if it is missing."""
+    """Copy the pinned vstd source and the fetched Verus guide/examples/tests into ``ro/verus/``.
+
+    Fails loudly if either is missing (run ``research_loop/scripts/fetch_verus_docs.sh``).
+    """
     dest = ro / "verus"
     if dest.exists():
         shutil.rmtree(dest)
     shutil.copytree(_VERUS_HOME / "vstd", dest / "vstd", ignore=shutil.ignore_patterns("target", "*.vir"))
+    for sub in ("guide", "examples", "tests"):
+        shutil.copytree(
+            DOCS_CACHE / sub, dest / sub, ignore=shutil.ignore_patterns("*.png", "*.svg", "cargo-tests", "target")
+        )
+    (dest / "LEMMAS.md").write_text(lemmas_markdown(dest / "vstd"))
+    (dest / "EXAMPLES_INDEX.md").write_text(examples_index_markdown(dest))
     version = (_VERUS_HOME / "version.txt").read_text().strip()
     (dest / "INDEX.md").write_text(_VERUS_INDEX.format(version=version, groups=groups_markdown()))
 
