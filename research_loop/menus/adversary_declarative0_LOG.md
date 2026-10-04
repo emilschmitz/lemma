@@ -140,6 +140,17 @@ failed checks: setup didn't give the ability (no string-literal or MIN/MAX examp
 
 | **r3b SEC Q11 re-run after the projection `out_row_ok` fix** (join + correlated MAX + top-100, DECIMAL, synthetic) | T4 | tuned (now a hard fixture) | manual, 10 of 12 checks | **YES proof: 31 verified, 0 errors; speed bar MISSED** | 71,750 | 46,232 | 116,645 | **0.64x / 1.63x** |
 
+| r4 SEC T3 `SELECT s.fy, SUM(n.value) FROM num n JOIN sub s ON n.adsh = s.adsh WHERE n.uom = 'shares' GROUP BY s.fy` (DECIMAL, synthetic) | T3 | tuned | manual, 6 checks | **no: Verus-CONFIRMED spec blocker** | - | 21,886 | 61,915 | - |
+
+r4 T3 (blocker confirmed by Verus, sent to the transpiler agent addcd33571290f391): step 2 (transpile) / step 5 (verify), blame
+**host spec**: the emitted `valid_cols_num` bounds the DECIMAL(38,4) `value` cell by its TYPE (`n.value@[i] as int >= -99999999999999999999999999999999999999 &&
+... <= 99999999999999999999999999999999999999`), not by the package's `max_value_exclusive = 2^62 * 10^4`; the ensures is an exact `int`
+sum over pairs stored in an i128, so two valid cells of 1e38-1 on one adsh already exceed `i128::MAX`. Trace: `verification results::
+19 verified, 1 errors`; `possible arithmetic underflow/overflow` at `res.set(j, OutRow { fy: k, total: c + cell })`; the prover's diagnostic
+`assert(c as int + cell as int <= i128::MAX as int)` fails. Everything else (the string literal filter after `String::from_str`) proved.
+Fix requested: honor the column cap in `valid_cols` for DECIMAL cells and check that `ROW_CAP_num * ROW_CAP_sub * cap < 2^127`
+(2^31 * 2^20 * 2^75.3 = 2^126.3) or refuse the class. Re-run after the merge.
+
 r3b Q11 (confirms the projection fix): first monolithic attempt hit `RLIMIT ... --rlimit 3` with the misleading `invariant not
 satisfied before loop`; opaque `tk` bundle fixed it; the O(n^2) rescan then timed out (`binary timed out`); replaced by "next
 same-key row" chains over `StringHashMap` (proved by an opaque bundle `ch`) -> 111,802 us, then tuned to 71,750 us (value compare
