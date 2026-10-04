@@ -524,7 +524,45 @@ def emit_declarative_spec(
 
     integer_sql, scales = rewrite_numeric(sql, schema)
     spec = _emit_integer_sql(integer_sql, schema, catalog, float_abs_eps=float_abs_eps)
+    spec = _with_f64_literals(spec, integer_sql, float_abs_eps)
     return _with_agent_surface(with_out_scales(spec, scales))
+
+
+_F64_LITERAL = re.compile(r"(?<![\w.])(\d+(?:\.\d+)?)e0(?!\w)")
+
+
+def _with_f64_literals(spec: str, integer_sql: str, float_abs_eps: str | None) -> str:
+    """State, as a hypothesis of ``run_query``, that each f64 literal denotes its decimal value.
+
+    Verus gives a float literal no value as a real (`(1.5f64 as real)` is unconstrained), so
+    the f64 idealization also needs: the literal ``c`` as an f64 is the real ``c``, rounding of
+    the nearest double ignored. It covers the query's float constants and ``FLOAT_ABS_EPS``.
+    """
+    from fractions import Fraction
+
+    texts: dict[str, Fraction] = {}
+    for m in _F64_LITERAL.finditer(integer_sql):
+        base = m.group(1)
+        texts[base if "." in base else f"{base}.0"] = Fraction(base)
+    if "pub const FLOAT_ABS_EPS" in spec and float_abs_eps:
+        texts["FLOAT_ABS_EPS"] = Fraction(float_abs_eps.strip())
+    if not texts and "f64" not in spec.partition("// HOST_LEMMAS_START")[0]:
+        return spec
+    texts["0.0"] = Fraction(0)  # the initial value of every accumulator
+    conj = "\n".join(
+        f"    &&& ({text if text == 'FLOAT_ABS_EPS' else text + 'f64'} as real) == ({v.numerator}real / {v.denominator}real)"
+        for text, v in sorted(texts.items())
+    ) or "    &&& true"
+
+    fn = (
+        "// HYPOTHESIS (f64 idealization): each f64 literal denotes its decimal value as a real.\n"
+        f"pub open spec fn f64_literals_ok() -> bool {{\n{conj}\n}}\n\n"
+    )
+    assert spec.count("pub fn run_query(") == 1
+    head, sep, tail = spec.partition("pub fn run_query(")
+    sig, req, rest = tail.partition("requires\n")
+    assert req, "run_query has no requires"
+    return head.rstrip("\n") + "\n\n" + fn + sep + sig + req + "        f64_literals_ok(),\n" + rest
 
 
 def _with_agent_surface(spec: str) -> str:

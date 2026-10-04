@@ -53,7 +53,9 @@ def check_exact_integer_refs(query: Query, model: SchemaModel) -> None:
         qual, _, bare = ref.rpartition(".")
         table = query.aliases.get(qual, qual) or None
         _t, column, info = model.resolve_column(table, bare, tables)
-        if info.is_float or info.key_kind is None or info.spec_as != "int":
+        if info.is_float:
+            continue  # float arithmetic is stated over reals (the rewriter admits only float operands)
+        if info.key_kind is None or info.spec_as != "int":
             raise DeclarativeUnsupported(
                 f"column {column!r} is {info.sql_type}; arithmetic and decimal literals need an integer column"
             )

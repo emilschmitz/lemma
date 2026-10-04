@@ -19,6 +19,7 @@ def _row_before(
     order_by: list[OrderKey],
     projection: list[str],
     string_cols: frozenset[str] = frozenset(),
+    float_cols: frozenset[str] = frozenset(),
 ) -> str:
     """``a`` is not after ``b`` in the query sort order.
 
@@ -30,6 +31,8 @@ def _row_before(
         key = order_by[k]
         left = _row_col(a, key.column, projection)
         right = _row_col(b, key.column, projection)
+        if rust_ident(key.column) in float_cols:  # an f64 field is ordered by its real value
+            left, right = f"({left} as real)", f"({right} as real)"
         if rust_ident(key.column) in string_cols:
             left, right = f"{left}@", f"{right}@"
             order = f"seq_le({right}, {left})" if key.descending else f"seq_le({left}, {right})"
@@ -56,10 +59,12 @@ def _row_before(
     return clause(0)
 
 
-def _emit_order(query: Query, string_cols: frozenset[str] = frozenset()) -> list[str]:
+def _emit_order(
+    query: Query, string_cols: frozenset[str] = frozenset(), float_cols: frozenset[str] = frozenset()
+) -> list[str]:
     if not query.order_by:
         return []
-    before = _row_before("res@[i]", "res@[i + 1]", query.order_by, query.projection, string_cols)
+    before = _row_before("res@[i]", "res@[i + 1]", query.order_by, query.projection, string_cols, float_cols)
     return [
         "forall|i: int| #![trigger res@[i]] 0 <= i && i + 1 < res@.len() ==> ("
         + before
@@ -67,7 +72,9 @@ def _emit_order(query: Query, string_cols: frozenset[str] = frozenset()) -> list
     ]
 
 
-def _emit_limit_offset(query: Query, string_cols: frozenset[str] = frozenset()) -> list[str]:
+def _emit_limit_offset(
+    query: Query, string_cols: frozenset[str] = frozenset(), float_cols: frozenset[str] = frozenset()
+) -> list[str]:
     lines: list[str] = []
     if query.limit is not None:
         lines.append(f"res@.len() <= {query.limit}")
@@ -80,6 +87,7 @@ def _emit_limit_offset(query: Query, string_cols: frozenset[str] = frozenset()) 
                 query.order_by,
                 query.projection,
                 string_cols,
+                float_cols,
             )
             order_cond = (
                 "forall|i: int| 0 <= i && i + 1 < ordered.len() ==> ("
@@ -156,11 +164,13 @@ def _emit_scalar_subqueries(query: Query) -> list[str]:
     return lines
 
 
-def tail_ensures(query: Query, string_cols: frozenset[str] = frozenset()) -> str:
+def tail_ensures(
+    query: Query, string_cols: frozenset[str] = frozenset(), float_cols: frozenset[str] = frozenset()
+) -> str:
     """Boolean ensures lines for tail clauses (comma-separated, no surrounding fn)."""
     parts: list[str] = []
-    parts.extend(_emit_order(query, string_cols))
-    parts.extend(_emit_limit_offset(query, string_cols))
+    parts.extend(_emit_order(query, string_cols, float_cols))
+    parts.extend(_emit_limit_offset(query, string_cols, float_cols))
     if query.distinct:
         parts.extend(_emit_distinct(query))
     parts.extend(_emit_set_op(query))
