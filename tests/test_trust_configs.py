@@ -67,7 +67,6 @@ _DECL_KEYS = {
     "LEMMA_ENABLE_VECTOR_SCAN": "0",
     "LEMMA_ENABLE_SPILL_HASH": "0",
     "LEMMA_FOLD_SLOT_AXIOMATIC": "0",
-    "LEMMA_EXACT_SUM": "1",
 }
 
 
@@ -76,6 +75,8 @@ def test_adversary_declarative0_resolves_to_declarative_transpiler() -> None:
     assert cfg.transpiler == "declarative"
     assert cfg.name == "adversary_declarative0"
     assert cfg.env == _DECL_KEYS
+    # the product transpiler flag would make the schema projection refuse float columns
+    assert "LEMMA_EXACT_SUM" not in cfg.env
 
 
 def test_adversary_declarative0_applies_flags_and_restores(monkeypatch: pytest.MonkeyPatch) -> None:

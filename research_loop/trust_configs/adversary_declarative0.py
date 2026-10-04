@@ -27,7 +27,6 @@ CONFIG = TrustConfig(
         "LEMMA_ENABLE_VECTOR_SCAN": "0",
         "LEMMA_ENABLE_SPILL_HASH": "0",
         "LEMMA_FOLD_SLOT_AXIOMATIC": "0",
-        "LEMMA_EXACT_SUM": "1",
     },
     assumption_package=None,
 )
