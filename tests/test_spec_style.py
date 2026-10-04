@@ -16,10 +16,10 @@ from verus_transpiler import transpile_sql_to_verus
 @pytest.mark.parametrize(
     "env_value,expected",
     [
-        (None, "recursive"),
-        ("", "recursive"),
-        ("recursive", "recursive"),
-        ("RECURSIVE", "recursive"),
+        (None, "imperative"),
+        ("", "imperative"),
+        ("imperative", "imperative"),
+        ("IMPERATIVE", "imperative"),
         ("declarative", "declarative"),
     ],
 )
@@ -35,9 +35,15 @@ def test_read_lemma_spec_style_recursive_and_declarative(
     assert _read_lemma_spec_style() == expected
 
 
+def test_read_lemma_spec_style_rejects_the_old_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LEMMA_SPEC_STYLE", "recursive")
+    with pytest.raises(ValueError, match="renamed to 'imperative'"):
+        _read_lemma_spec_style()
+
+
 def test_read_lemma_spec_style_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LEMMA_SPEC_STYLE", "other")
-    with pytest.raises(ValueError, match="recursive or declarative"):
+    with pytest.raises(ValueError, match="imperative or declarative"):
         _read_lemma_spec_style()
 
 

@@ -35,7 +35,7 @@ def _arm_env(arm: str, db_path: Path) -> None:
     os.environ["LEMMA_AGENT_GUIDANCE"] = arm
     os.environ["LEMMA_AGENT_BACKEND"] = "cli"
     os.environ["USE_AGENT_DOCKER"] = "0"
-    os.environ["LEMMA_SPEC_STYLE"] = "recursive"
+    os.environ["LEMMA_SPEC_STYLE"] = "imperative"
     os.environ["LEMMA_FAST_TRUSTEDS"] = "0"
     os.environ["LEMMA_ASSUMPTION_PACKAGE"] = "sec_margin"
     os.environ["LEMMA_DUCKDB_PATH"] = str(db_path)

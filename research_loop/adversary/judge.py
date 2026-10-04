@@ -409,14 +409,16 @@ def _exec_verified_scalar(
 
 
 def resolve_spec_style(style: str | None = None) -> str:
-    """Explicit argument, else ``LEMMA_SPEC_STYLE``, else recursive (the default)."""
+    """Explicit argument, else ``LEMMA_SPEC_STYLE``, else imperative (the default)."""
     raw = style if style is not None else os.environ.get("LEMMA_SPEC_STYLE", "")
     value = raw.strip().lower()
-    if value in ("", "recursive"):
-        return "recursive"
+    if value in ("", "imperative"):
+        return "imperative"
     if value == "declarative":
         return "declarative"
-    raise ValueError(f"spec style must be recursive or declarative, got {raw!r}")
+    if value == "recursive":
+        raise ValueError("spec style 'recursive' was renamed to 'imperative'")
+    raise ValueError(f"spec style must be imperative or declarative, got {raw!r}")
 
 
 def judge_candidate(
