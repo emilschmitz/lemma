@@ -39,6 +39,7 @@ def assemble_declarative_program(
     *,
     column_bins: dict[str, str] | None = None,
     extra_uses: list[str] | None = None,
+    expected_rows: dict[str, int] | None = None,
 ) -> str:
     start = spec_rs.find("// AGENT_EDIT_START")
     end = spec_rs.find("// AGENT_EDIT_END")
@@ -103,14 +104,25 @@ def assemble_declarative_program(
             bin_path = column_bins.get(table_suffix)
             if not bin_path:
                 raise ValueError(f"no column file for {table_suffix}")
-            prelude, call_args = _read_column_prelude(bin_path, table_suffix, fields)
+            prelude, call_args = _read_column_prelude(
+                bin_path,
+                table_suffix,
+                fields,
+                checks=_runtime_checks(verus_part, table_suffix, fields),
+                expect_rows=(expected_rows or {}).get(table_suffix),
+            )
+        requires = _loader_requires(verus_part, table_suffix, fields)
+        struct_init = ", ".join(
+            [f"n: n_{table_suffix}"] + [f"{fname}: {table_suffix}_{_local_ident(fname)}" for fname, _ in fields]
+        )
         loaders.append(
-            f"""#[verifier::external_body]
-fn {fn_name}({params}) -> (cols: {struct_name})
+            f"""fn {fn_name}({params}) -> (cols: {struct_name})
+    requires
+{requires}
     ensures
         valid_cols_{table_suffix}(&cols),
 {{
-    {struct_name} {{ {", ".join(struct_fields)} }}
+    {struct_name} {{ {struct_init} }}
 }}"""
         )
         col_var = f"cols_{table_suffix}"
@@ -136,13 +148,115 @@ fn {fn_name}({params}) -> (cols: {struct_name})
     main_fn += timed
     main_fn += "}\n"
 
-    # Loaders carry `ensures valid_cols`, so they stay inside verus!.
+    # Loaders are verified (`requires` lengths and catalog caps, `ensures valid_cols`).
+    # The column-file reader in `main` is the only trusted part; it checks the `requires` at runtime.
     # main is outside the timer and outside the verus block.
     closed = verus_part.rstrip()
     if not closed.endswith("}"):
         raise ValueError("verus block did not end at '}'")
     verus_with_loaders = closed[:-1] + "\n" + "\n\n".join(loaders) + "\n}\n"
     return verus_with_loaders + "\n" + hex_fn + main_fn
+
+
+_LEN_CONJ = re.compile(r"^[A-Za-z_]\w*\.(?:r#)?\w+@\.len\(\) == [A-Za-z_]\w*\.n as int$")
+
+
+def _valid_cols_conjuncts(verus_part: str, suffix: str) -> tuple[str, list[str]]:
+    """Return the parameter name and the conjuncts of ``valid_cols_<suffix>``."""
+    m = re.search(
+        rf"pub open spec fn valid_cols_{re.escape(suffix)}\((\w+): &Cols_{re.escape(suffix)}\) -> bool \{{(.*?)\n\}}",
+        verus_part,
+        re.DOTALL,
+    )
+    if m is None:
+        raise ValueError(f"valid_cols_{suffix} not found in spec")
+    param, body = m.group(1), m.group(2)
+    conj = [
+        re.sub(r"^\s*&&&?\s*", "", chunk).strip()
+        for chunk in re.split(r"\n\s*(?=&&)", body.strip())
+        if chunk.strip()
+    ]
+    conj = [c for c in (re.sub(r"^&&&?\s*", "", c) for c in conj) if c]
+    return param, conj
+
+
+def _loader_requires(verus_part: str, suffix: str, fields: list[tuple[str, str]]) -> str:
+    """Loader ``requires``: every ``valid_cols`` conjunct, restated over the loader parameters."""
+    param, conj = _valid_cols_conjuncts(verus_part, suffix)
+    lines: list[str] = []
+    for fname, _fty in fields:
+        lines.append(f"        {suffix}_{_local_ident(fname)}@.len() == n_{suffix} as int,")
+    for c in conj:
+        if _LEN_CONJ.match(c):
+            continue
+        out = re.sub(rf"(?<![\w.]){re.escape(param)}\.n\b", f"n_{suffix}", c)
+        for fname, _fty in fields:
+            out = re.sub(
+                rf"(?<![\w.]){re.escape(param)}\.{re.escape(fname)}@",
+                f"{suffix}_{_local_ident(fname)}@",
+                out,
+            )
+        if re.search(rf"(?<![\w.]){re.escape(param)}\.", out):
+            raise ValueError(f"valid_cols_{suffix} conjunct mentions an unknown field: {c}")
+        lines.append(f"        {out},")
+    return "\n".join(lines)
+
+
+def _runtime_checks(verus_part: str, suffix: str, fields: list[tuple[str, str]]) -> list[str]:
+    """Rust ``assert!``s that make each non-length ``valid_cols`` conjunct true of the loaded data."""
+    param, conj = _valid_cols_conjuncts(verus_part, suffix)
+    types = {fname: fty for fname, fty in fields}
+    out: list[str] = []
+    p = re.escape(param)
+    for c in conj:
+        if _LEN_CONJ.match(c):
+            continue
+        m = re.fullmatch(rf"{p}\.n as int <= (ROW_CAP_\w+)(?: as int)?", c)
+        if m:
+            lit = _const_literal(verus_part, m.group(1))
+            out.append(
+                f'    assert!(n_{suffix} <= {lit}usize, "{suffix}: {{}} rows exceed the catalog cap {lit}", n_{suffix});'
+            )
+            continue
+        m = re.fullmatch(
+            rf"forall\|i: int\| 0 <= i < {p}\.n as int ==> (?:{p}\.((?:r#)?\w+)@\[i\] as int >= 0 && )?"
+            rf"{p}\.((?:r#)?\w+)@\[i\] as int <= (\(?-?\d+\)?)",
+            c,
+        )
+        if m:
+            field = m.group(2)
+            hi = int(m.group(3).strip("()"))
+            var = f"{suffix}_{_local_ident(field)}"
+            lo = "0i128" if m.group(1) else "i128::MIN"
+            if hi > 2**127 - 1 or types[field] == "String":
+                raise ValueError(f"cannot check integer bound on {suffix}.{field}: {c}")
+            out.append(
+                f"    assert!({var}.iter().all(|v| (*v as i128) >= {lo} && (*v as i128) <= {hi}i128), "
+                f'"{suffix}.{_local_ident(field)}: value outside the catalog bound {hi}");'
+            )
+            continue
+        m = re.fullmatch(
+            rf"forall\|i: int\| #!\[trigger {p}\.((?:r#)?\w+)@\[i\]\] 0 <= i < {p}\.n as int ==> "
+            rf"-\((\w+) as real\) < \({p}\.(?:r#)?\w+@\[i\] as real\) < \(\2 as real\)",
+            c,
+        )
+        if m:
+            var = f"{suffix}_{_local_ident(m.group(1))}"
+            const = m.group(2)
+            out.append(
+                f"    assert!({var}.iter().all(|v| v.abs() < ({const} as f64)), "
+                f'"{suffix}.{_local_ident(m.group(1))}: value outside the catalog magnitude {const}");'
+            )
+            continue
+        raise ValueError(f"valid_cols_{suffix} has a conjunct the loader cannot check at runtime: {c}")
+    return out
+
+
+def _const_literal(verus_part: str, name: str) -> int:
+    m = re.search(rf"pub (?:open spec )?const {re.escape(name)}: (?:int|usize|u64) = (\d+);", verus_part)
+    if m is None:
+        raise ValueError(f"constant {name} not found in spec")
+    return int(m.group(1))
 
 
 def _local_ident(fname: str) -> str:
@@ -154,7 +268,14 @@ def _from_le(fty: str, bytes_var: str, off: str) -> str:
     return f"{fty}::from_le_bytes({bytes_var}[{off}..{off} + {width}].try_into().unwrap())"
 
 
-def _read_column_prelude(path: str, suffix: str, fields: list[tuple[str, str]]) -> tuple[str, str]:
+def _read_column_prelude(
+    path: str,
+    suffix: str,
+    fields: list[tuple[str, str]],
+    *,
+    checks: list[str] | None = None,
+    expect_rows: int | None = None,
+) -> tuple[str, str]:
     escaped = path.replace("\\", "\\\\").replace('"', '\\"')
     lines = [
         f'    let bytes_{suffix} = std::fs::read("{escaped}").expect("cols");',
@@ -189,6 +310,20 @@ def _read_column_prelude(path: str, suffix: str, fields: list[tuple[str, str]]) 
         lines.append(f"        j_{var} += 1;")
         lines.append("    }")
         args.append(var)
+    # Trusted reader: abort loudly unless the file is exactly what the loader `requires`.
+    lines.append(
+        f'    assert!(off_{suffix} == bytes_{suffix}.len(), "{suffix}: column file has trailing or missing bytes");'
+    )
+    if expect_rows is not None:
+        lines.append(
+            f'    assert!(n_{suffix} == {int(expect_rows)}usize, "{suffix}: loaded {{}} rows, DuckDB pin has {int(expect_rows)}", n_{suffix});'
+        )
+    for fname, _fty in fields:
+        var = f"{suffix}_{_local_ident(fname)}"
+        lines.append(
+            f'    assert!({var}.len() == n_{suffix}, "{suffix}.{_local_ident(fname)}: {{}} values for {{}} rows", {var}.len(), n_{suffix});'
+        )
+    lines.extend(checks or [])
     return "\n".join(lines) + "\n", ", ".join(args)
 
 
@@ -258,19 +393,31 @@ def _timed_runs(run_call: str, verus_part: str) -> tuple[str, str]:
         hex_fn, after = _row_printer(run_call, fields)
     else:
         caps = re.findall(r"pub const (KEY_CAP_[A-Za-z0-9_]+): usize", verus_part)
-        if len(caps) == 1 and "HashMapWithView<u64, u64>" in verus_part:
+        shape = re.search(r"-> \(res: HashMapWithView<(u64|i64|i128), (u64|i64|i128)>\)", verus_part)
+        if len(caps) == 1 and shape:
             cap = caps[0]
+            key_ty = shape.group(1)
             dump = f"""        if s == 4 {{
-            let mut key: u64 = 0;
-            while key < {cap} as u64 {{
+            let mut key: {key_ty} = 0;
+            let mut printed: usize = 0;
+            while (key as i128) < {cap} as i128 {{
                 match res.get(&key) {{
-                    Some(v) => println!("ROW {{}} {{}}", key, *v),
+                    Some(v) => {{
+                        println!("ROW {{}} {{}}", key, *v);
+                        printed += 1;
+                    }}
                     None => {{}}
                 }}
                 key += 1;
             }}
+            assert!(printed == res.len(), "result has {{}} keys, only {{}} lie in 0..{cap}", res.len(), printed);
         }}
 """
+        else:
+            raise ValueError(
+                "a timed run needs a printable result: an OutRow struct, or a HashMapWithView "
+                "result with exactly one KEY_CAP; got neither, so the output could not be compared"
+            )
     timed = f"""    let mut samples: [u128; 5] = [0, 0, 0, 0, 0];
     let mut s: usize = 0;
     while s < 5 {{
