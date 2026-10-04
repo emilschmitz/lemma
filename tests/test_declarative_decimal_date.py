@@ -162,10 +162,13 @@ def test_scale_beyond_38_digits_is_refused() -> None:
         rewrite_numeric(sql, SCHEMA)
 
 
-def test_join_between_columns_of_different_scale_is_refused() -> None:
+def test_join_between_columns_of_different_scale_is_refused_unless_inner() -> None:
     schema = {"a": {"x": "decimal(15,2)"}, "b": {"y": "decimal(10,3)"}}
     with pytest.raises(DeclarativeUnsupported, match="join compares"):
-        rewrite_numeric("SELECT COUNT(*) AS c FROM a JOIN b ON a.x = b.y", schema)
+        rewrite_numeric("SELECT COUNT(*) AS c FROM a LEFT JOIN b ON a.x = b.y", schema)
+    # an inner join states it as a WHERE comparison at the larger scale
+    sql, _ = rewrite_numeric("SELECT COUNT(*) AS c FROM a JOIN b ON a.x = b.y", schema)
+    assert "WHERE" in sql and "* 10" in sql
     # same scale joins as before
     rewrite_numeric("SELECT COUNT(*) AS c FROM a JOIN b ON a.x = b.x", {"a": {"x": "decimal(15,2)"}, "b": {"x": "decimal(9,2)"}})
 
