@@ -236,6 +236,8 @@ class _Rewriter:
 
     def _compare(self, node: exp.Expression, scope: _Scope) -> exp.Expression:
         left, right = self.typed(node.this, scope), self.typed(node.expression, scope)  # type: ignore[attr-defined]
+        if (left.kind, right.kind) == ("str", "str") and not isinstance(node, (exp.EQ, exp.NEQ)):
+            raise DeclarativeUnsupported("string ordering comparison: only = and <> on strings are stated")
         left, right = self._pair(left, right)
         node.set("this", left.node)
         node.set("expression", right.node)
@@ -296,6 +298,8 @@ class _Rewriter:
         this = self.typed(node.this, scope)
         low = self.typed(node.args["low"], scope)
         high = self.typed(node.args["high"], scope)
+        if this.kind == "str":
+            raise DeclarativeUnsupported("BETWEEN on strings: string ordering is not stated")
         this, low = self._pair(this, low)
         this, high = self._pair(this, high)
         if {this.kind, low.kind, high.kind} == {"num"}:

@@ -39,6 +39,7 @@ from declarative_spec.emit_surface import (
 )
 from declarative_spec.emit_date import with_civil_fns
 from declarative_spec.parse import DeclarativeUnsupported
+from declarative_spec.emit_in import apply_in_calls, in_subquery_calls
 from declarative_spec.schema_types import ColumnTypeInfo, SchemaModel, param_ident, rust_ident
 from declarative_spec.surface import Query
 from research_loop.table_assumptions import CatalogAssumptions
@@ -208,7 +209,9 @@ def _projection_where(
         holds.append((token, name, bound_src or ""))
         return token
 
-    expr = _SCALAR_EQ.sub(repl, query.where_expr)
+    in_heads, in_sources = in_subquery_calls(query, "", params, model)
+    blocks.extend(in_sources)
+    expr = apply_in_calls(_SCALAR_EQ.sub(repl, query.where_expr), in_heads)
     for name in values:
         expr = re.sub(rf"\b{re.escape(name)}\b", f"__VAL{name}__", expr)
     pred = _compile_pred(expr, main, [], model, exists_calls)
