@@ -434,7 +434,11 @@ class _Rewriter:
             return _T(node, "calc" if inner.kind != "num" else "num", inner.scale)
         if isinstance(node, exp.Avg):
             if inner.kind == "num" and inner.scale > 0:
-                raise DeclarativeUnsupported("AVG over a DECIMAL: DuckDB averages in DOUBLE, which is not stated exactly")
+                # DuckDB averages a DECIMAL in DOUBLE. The spec states the exact quotient in natural units (stored
+                # integer sum / (count * 10**scale)) and the double result is held to it within epsilon, like any float.
+                marked = exp.Anonymous(this=f"__dec{inner.scale}", expressions=[inner.node])
+                node.set("this", marked)
+                return _T(node, "float")
             if inner.kind not in ("num", "float", "calc"):
                 raise DeclarativeUnsupported(f"AVG over a {inner.kind} operand")
             return _T(node, "float" if inner.kind == "num" else "calc")
@@ -443,6 +447,23 @@ class _Rewriter:
         if inner.kind in ("str", "bool"):
             raise DeclarativeUnsupported(f"MIN or MAX over a {inner.kind}: only integer and date orderings are stated")
         return _T(node, inner.kind, inner.scale)
+
+    def _decimal_case(self, node: exp.Case, results: list[_T]) -> _T:
+        """A CASE whose results are DECIMAL columns of one scale and integer literals, which are rescaled exactly."""
+        scale = _decimal_case_scale(results)
+        for r in results:
+            inner = _unparen(r.node)
+            literal = isinstance(inner.this if isinstance(inner, exp.Neg) else inner, exp.Literal)
+            if r.scale != scale and not literal:
+                raise DeclarativeUnsupported("a DECIMAL CASE result of another scale than its column results")
+            if r.scale == scale and not (literal or isinstance(inner, exp.Column)):
+                raise DeclarativeUnsupported("a DECIMAL CASE result that is not a column or a literal")
+        arms = node.args.get("ifs") or []
+        for arm, r in zip(arms, results[: len(arms)], strict=True):
+            arm.set("true", _scaled(r, scale))
+        if node.args.get("default") is not None:
+            node.set("default", _scaled(results[-1], scale))
+        return _T(node, "num", scale)
 
     def _case(self, node: exp.Case, scope: _Scope) -> _T:
         results: list[_T] = []
@@ -457,7 +478,7 @@ class _Rewriter:
             node.set("default", res.node)
             results.append(res)
         if any(r.kind == "num" and r.scale > 0 for r in results):
-            raise DeclarativeUnsupported("a DECIMAL result in CASE")
+            return self._decimal_case(node, results)
         kinds = {r.kind for r in results}
         if kinds == {"float", "num"}:
             # An integer literal beside a float column is that float (every scale is 0 here).
@@ -468,6 +489,13 @@ class _Rewriter:
                     raise DeclarativeUnsupported("CASE returns a float column or an integer expression")
             return _T(node, "float")
         return _T(node, kinds.pop() if len(kinds) == 1 else "unknown")
+
+
+def _decimal_case_scale(results: list[_T]) -> int:
+    scales = {r.scale for r in results if r.kind == "num" and r.scale > 0}
+    if len(scales) != 1 or any(r.kind != "num" for r in results):
+        raise DeclarativeUnsupported("a DECIMAL result in CASE beside a result of another type or scale")
+    return scales.pop()
 
 
 def _first_table(tree: exp.Expression) -> str:

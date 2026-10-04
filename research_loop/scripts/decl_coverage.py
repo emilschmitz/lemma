@@ -98,6 +98,8 @@ def context(tpch: bool):
     from research_loop.assumption_packages import assumption_package
     from research_loop.scripts.sqlsmith_trusted_coverage import load_sec_schema
 
+    if os.environ.get("DECL_DEC") == "1":  # the DECIMAL(38,4) variant of the SEC database
+        return load_sec_schema(_DB.with_name("sec_edgar_local_dec.duckdb")), assumption_package("sec_margin_dec")
     return load_sec_schema(), assumption_package("sec_margin")
 
 
@@ -160,15 +162,17 @@ def free_mb() -> int:
     return 0
 
 
-def typecheck(spec: str, *, full: bool = False) -> str:
+def typecheck(spec: str, *, full: bool = False, verify: bool = False) -> str:
+    """Verus ``--no-verify`` typecheck, or (``verify``) a full run with ``assume(false)`` as the body so that
+    only the host lemmas are proved."""
     from declarative_spec.assemble import assemble_declarative_program
 
-    prog = assemble_declarative_program(spec, "    Vec::new()")
+    prog = assemble_declarative_program(spec, "    assume(false);\n    loop invariant true decreases 0int { assume(false); }" if verify else "    loop {}")
     with tempfile.NamedTemporaryFile("w", suffix=".rs", delete=False) as handle:
         handle.write(prog)
     try:
         proc = subprocess.run(
-            [str(GUARD), handle.name, "--no-verify", "--triggers-mode", "silent"],
+            [str(GUARD), handle.name, *([] if verify else ["--no-verify"]), "--triggers-mode", "silent"],
             capture_output=True, text=True, check=False, timeout=300,
         )
     finally:

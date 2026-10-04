@@ -31,7 +31,7 @@ def main() -> None:
             continue
         if "-v" in sys.argv:
             print(spec)
-        print("  -> emitted;", typecheck(spec, full="--full" in sys.argv) if "--tc" in sys.argv else "not typechecked")
+        print("  -> emitted;", typecheck(spec, full="--full" in sys.argv, verify="--verify" in sys.argv) if "--tc" in sys.argv or "--verify" in sys.argv else "not typechecked")
 
 
 if __name__ == "__main__":

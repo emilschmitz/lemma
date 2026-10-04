@@ -122,3 +122,28 @@ def flatten_group_derived(tree: exp.Expression) -> exp.Expression:
         if tree.args.get(key) is not None:
             merged.set(key, tree.args[key].copy())
     return merged
+
+
+def move_inner_join_filters(tree: exp.Expression) -> bool:
+    """Move the non-equality conjuncts of an INNER JOIN's ON into WHERE (exact for inner joins). True when changed."""
+    changed = False
+    for sel in tree.find_all(exp.Select):
+        for join in sel.args.get("joins") or []:
+            if (join.side or "").upper() or (join.kind or "").upper() not in ("", "INNER"):
+                continue
+            on = join.args.get("on")
+            if on is None:
+                continue
+            parts = _conjuncts(on)
+            keep = [
+                p for p in parts if isinstance(p, exp.EQ) and isinstance(p.this, exp.Column) and isinstance(p.expression, exp.Column)
+            ]
+            move = [p for p in parts if p not in keep]
+            if not keep or not move:
+                continue
+            join.set("on", _and(keep))
+            where = sel.args.get("where")
+            cond = _and(([where.this] if where is not None else []) + move)
+            sel.set("where", exp.Where(this=cond))
+            changed = True
+    return changed

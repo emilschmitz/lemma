@@ -572,14 +572,15 @@ def _flatten_group_derived_sql(sql: str) -> str:
     """SQL with a filter over a grouped derived table merged into the grouped query (see ``flatten_group``)."""
     import sqlglot
 
-    from declarative_spec.flatten_group import flatten_group_derived
+    from declarative_spec.flatten_group import flatten_group_derived, move_inner_join_filters
 
     try:
         tree = sqlglot.parse_one(sql)
     except sqlglot.errors.SqlglotError:
         return sql  # the stages below report the parse error
+    moved = move_inner_join_filters(tree)
     flat = flatten_group_derived(tree)
-    return sql if flat is tree else flat.sql()
+    return sql if flat is tree and not moved else flat.sql()
 
 
 def _with_agent_surface(spec: str) -> str:

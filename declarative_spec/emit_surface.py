@@ -504,15 +504,21 @@ def _emit_agg(
     hit = _hit(row_hit, key_at, main, params, key_ty)
     if kind in ("MIN", "MAX"):
         value = _value_fn(blocks, f"{name}_val", agg, main, params, model, ret)
-        _emit_bound(blocks, name, ret, value, hit, main, params, key_ty, "min" if kind == "MIN" else "max")
+        _emit_bound(
+            blocks, name, ret, value, hit, main, params, key_ty, "min" if kind == "MIN" else "max", row_hit, key_at
+        )
         return _AggFn(alias, kind, name, ret, False, "bound", exec_ty)
     if kind == "COUNT":
+        term = "1int"
+        if agg.expr:
+            value = _value_fn(blocks, f"{name}_val", agg, main, params, model, "int")
+            term = f"{value}({_param_call(params)}, {_idx_call(main)})"
         _emit_fold(
             blocks,
             name,
             "int",
             "0int",
-            f"if {hit} {{ 1int }} else {{ 0int }}",
+            f"if {hit} {{ {term} }} else {{ 0int }}",
             main,
             params,
             key_ty,
@@ -555,7 +561,7 @@ def _emit_agg(
             key_ty,
             unit_step=True,
         )
-        _emit_avg_wrap(blocks, name, sum_name, cnt_name, params, key_ty, True)
+        _emit_avg_wrap(blocks, name, sum_name, cnt_name, params, key_ty, True, agg.avg_scale)
         return _AggFn(alias, kind, name, "real", True, "fold", "f64")
     raise DeclarativeUnsupported(kind)
 
@@ -843,6 +849,8 @@ def _emit_bound(
     params: list[_Slot],
     key_ty: str | None,
     pick: str,
+    row_hit: str,
+    key_at: str,
 ) -> None:
     del ret, hit
     alts = [f"j{i}" for i in range(len(main))]
@@ -861,6 +869,8 @@ def _emit_bound(
             _param_call(params),
             ", ".join(alts),
             order,
+            row_hit,
+            key_at,
         )
     )
 
@@ -876,18 +886,9 @@ def _bound_text(
     p: str,
     alt: str,
     order: str,
+    row_hit: str,
+    key_at: str,
 ) -> str:
-    # row_hit / key_at share the aggregate's prefix: ``min_lo`` sits next to ``row_hit``.
-    # The names are recovered from the value fn, which is ``{name}_val`` and the helpers
-    # are the un-prefixed ones stored on the surrounding emitter. Pass them through ``value``
-    # only. The row predicate is ``row_hit`` with the same prefix as ``name``'s module prefix.
-    prefix = ""
-    for token in ("min_", "max_"):
-        if token in name:
-            prefix = name[: name.rindex(token)]
-            break
-    row_hit = f"{prefix}row_hit"
-    key_at = f"{prefix}key_at"
     key_part = f" && {key_at}({p}, {alt}) == k" if key_ty else ""
     key_sig = f", k: {key_ty}" if key_ty else ""
     return f"""pub open spec fn {name}({_param_sig(params)}{key_sig}, bound: int) -> bool {{
@@ -904,6 +905,7 @@ def _emit_avg_wrap(
     params: list[_Slot],
     key_ty: str | None,
     is_float: bool,
+    scale: int = 0,
 ) -> None:
     key_sig = f", k: {key_ty}" if key_ty else ""
     key_call = ", k" if key_ty else ""
@@ -911,7 +913,7 @@ def _emit_avg_wrap(
     if is_float:
         body = f"""let c = {cnt_name}({p}, i0{key_call});
     if c > 0 {{
-        {sum_name}({p}, i0{key_call}) / (c as real)
+        {sum_name}({p}, i0{key_call}) / ((c as real) * {10**scale}real)
     }} else {{
         0real
     }}"""
@@ -1237,7 +1239,10 @@ def _having(query: Query, helpers: _Helpers, scalars: dict[str, str], key: str) 
         if not re.search(rf"\b{re.escape(src.alias)}\b", expr):
             continue
         if agg.kind in ("MIN", "MAX"):
-            raise DeclarativeUnsupported("HAVING")
+            # The bound predicate holds for exactly one value of a group that has rows: that value is the MIN/MAX.
+            ty = "real" if agg.ret == "real" else "int"
+            repl.append((src.alias, f"(choose|b: {ty}| {agg.name}({p}{key_arg}, b))"))
+            continue
         repl.append((src.alias, f"{agg.name}({p}, 0{key_arg})"))
     for name, call in scalars.items():
         if re.search(rf"\b{re.escape(name)}\b", expr):
