@@ -289,12 +289,14 @@ def _is_map_key_type(t: TypeExpr) -> bool:
     return False
 
 
-_MAP_VALUE_ATOMS = ("u64", "i64", "i128")
+_MAP_VALUE_ATOMS = ("u64", "u128", "i64", "i128")
 
 
 def _numeric_zero(name: str) -> str:
     if name == "u64":
         return "0u64"
+    if name == "u128":
+        return "0u128"
     if name == "i64":
         return "0i64"
     if name == "i128":
@@ -753,20 +755,21 @@ def _emit_map_trusted(
         add_requires = _agg_add_scalar_requires(value, spec_key=spec_key)
         signed = value.name in ("i64", "i128")
         checked = _checked_add_expr("prev", "delta", signed=signed)
+        zero = _numeric_zero(value.name)
         if isinstance(key, TypeAtom) and key.name == "u32":
             body = f"""
-    let prev = hm.get(&k0).copied().unwrap_or(0);
+    let prev = hm.get(&k0).copied().unwrap_or({zero});
     hm.insert(k0, {checked});
 """
         elif isinstance(key, TypeAtom) and key.name == "Seq<char>":
             body = f"""
-    let prev = hm.get(k0).copied().unwrap_or(0);
+    let prev = hm.get(k0).copied().unwrap_or({zero});
     hm.insert(k0.to_string(), {checked});
 """
         else:
             body = f"""
     let key = {exec_key};
-    let prev = hm.get(&key).copied().unwrap_or(0);
+    let prev = hm.get(&key).copied().unwrap_or({zero});
     hm.insert(key, {checked});
 """
         add_fn = [

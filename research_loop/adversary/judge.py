@@ -33,6 +33,8 @@ _SCALAR_RET = frozenset({"u64", "i64"})
 _MAP_LEN_SCOREABLE = frozenset(
     {
         "map_u32_u64",
+        "map_u32__u128",
+        "map_u32_u32__u128",
         "map_str_u64",
         "map_u32_str_u64",
         "map_str_u32_u64",

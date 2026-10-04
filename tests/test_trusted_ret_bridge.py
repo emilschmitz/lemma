@@ -112,6 +112,18 @@ def _load_sec_queries() -> list[tuple[str, str]]:
             "HashMapWithView<(String, String, String, String), (u64, u64)>",
             "agg_put_str_str_str_str__u64_u64",
         ),
+        (
+            "Map<u32, u128>",
+            "map_u32__u128",
+            "HashMapWithView<u32, u128>",
+            "agg_add_u32__u128",
+        ),
+        (
+            "Map<(u32, u32), u128>",
+            "map_u32_u32__u128",
+            "HashMapWithView<(u32, u32), u128>",
+            "agg_add_u32_u32__u128",
+        ),
     ],
 )
 def test_structural_bridge_shapes(

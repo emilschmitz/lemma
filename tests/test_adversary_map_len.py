@@ -12,7 +12,11 @@ from research_loop.adversary.judge import (
 
 def test_map_u32_u64_is_scoreable_for_cardinality() -> None:
     assert "map_u32_u64" in _MAP_LEN_SCOREABLE
+    assert "map_u32__u128" in _MAP_LEN_SCOREABLE
+    assert "map_u32_u32__u128" in _MAP_LEN_SCOREABLE
     assert _scoreable_ret("map_u32_u64")
+    assert _scoreable_ret("map_u32__u128")
+    assert _scoreable_ret("map_u32_u32__u128")
     assert _scoreable_ret("u64")
     assert not _scoreable_ret("seq_u64")
 
