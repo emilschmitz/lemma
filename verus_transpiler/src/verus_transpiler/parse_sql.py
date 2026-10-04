@@ -2028,10 +2028,35 @@ def _parse_limit_offset(expression: exp.Select) -> tuple[int | None, int | None]
     limit_val: int | None = None
     offset_val: int | None = None
     limit_node = expression.args.get("limit")
-    if limit_node is not None and limit_node.expression is not None:
+    if isinstance(limit_node, exp.Fetch):
+        # FETCH FIRST n ROW ONLY is a LIMIT. Dropping it rewrites COUNT of a
+        # take as a scan of every row.
+        direction = str(limit_node.args.get("direction") or "FIRST").upper()
+        if direction != "FIRST":
+            raise UnsupportedContractError(
+                f"FETCH {direction} is not supported"
+            )
+        opts = limit_node.args.get("limit_options")
+        if opts is not None and (
+            opts.args.get("percent") or opts.args.get("with_ties")
+        ):
+            raise UnsupportedContractError(
+                "FETCH PERCENT / WITH TIES is not supported"
+            )
+        lit = limit_node.args.get("count")
+        if not (isinstance(lit, exp.Literal) and lit.is_number):
+            raise UnsupportedContractError("FETCH count must be a number")
+        limit_val = int(lit.this)
+    elif limit_node is not None and limit_node.expression is not None:
         lit = limit_node.expression
         if isinstance(lit, exp.Literal) and lit.is_number:
             limit_val = int(lit.this)
+        elif isinstance(lit, exp.Var) and str(lit.this).upper() == "ALL":
+            limit_val = None
+        else:
+            raise UnsupportedContractError(
+                "LIMIT expression must be a number"
+            )
     offset_node = expression.args.get("offset")
     if offset_node is not None and offset_node.expression is not None:
         lit = offset_node.expression
@@ -2462,6 +2487,11 @@ def _parse_select(
     outer_resolver: dict[str, tuple[str, str, str | None]] | None = None,
 ) -> SQLQuery:
     _check_forbidden_nodes(expression)
+    if expression.args.get("qualify") is not None:
+        raise UnsupportedContractError(
+            "QUALIFY is not in the method spec: DuckDB rejects or filters "
+            "rows that a bare aggregate would keep"
+        )
     query = SQLQuery()
     scalar_map: dict[str, ScalarSubquery] = {}
     exists_counter = [0]

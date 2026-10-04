@@ -50,6 +50,23 @@ def test_count_of_limit_without_order_is_still_the_take() -> None:
     assert "method_spec_helper" not in body
 
 
+def test_count_of_fetch_first_is_the_take_not_every_row() -> None:
+    sql = "SELECT COUNT(a) FROM (SELECT a FROM t FETCH FIRST 1 ROW ONLY) d"
+    src = transpile_sql_to_verus(sql, _SCHEMA)
+    body = _method_spec_body(src)
+    assert "derived_d_spec(cols).len() as u64" in body
+    assert "spec_seq_take" in src
+    assert "method_spec_helper" not in body
+
+
+def test_qualify_is_refused() -> None:
+    with pytest.raises(UnsupportedContractError, match="QUALIFY"):
+        transpile_sql_to_verus(
+            "SELECT COUNT(*) FROM t QUALIFY ROW_NUMBER() OVER (ORDER BY a) = 1",
+            _SCHEMA,
+        )
+
+
 def test_hardware_sum_of_distinct_values_is_empty_aware(monkeypatch) -> None:
     sql = "SELECT SUM(a) FROM (SELECT DISTINCT a FROM t) d"
     monkeypatch.delenv("LEMMA_EXACT_SUM", raising=False)
