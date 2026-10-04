@@ -108,6 +108,14 @@ def check(kind: str, sql: str, ws: Path) -> dict:
     return metrics
 
 
+_JOB_ENV_KEYS = ("LEMMA_DUCKDB_PATH", "LEMMA_TPCH_DB", "LEMMA_STRING_ENCODING", "LEMMA_PARALLEL_VSTD", "LEMMA_SPEED_BAR_MULT")
+
+
+def _job_env_snapshot() -> dict[str, str]:
+    """The settings that shape the workspace's spec and data; `check` re-applies them so the prover needs no env."""
+    return {k: os.environ[k] for k in _JOB_ENV_KEYS if k in os.environ}
+
+
 def _abs(raw: str, what: str) -> Path:
     path = Path(raw).expanduser().resolve()
     if not path.exists():
@@ -123,7 +131,7 @@ def prepare_round(seed: int, label: str) -> None:
         ws = base / f"{label}_{job['qid']}"
         with apply_trust_config("adversary_declarative0"):
             prepare(job["kind"], job["sql"], ws)
-        (ws / "manual_job.json").write_text(json.dumps({"kind": job["kind"]}))
+        (ws / "manual_job.json").write_text(json.dumps({"kind": job["kind"], "env": _job_env_snapshot()}))
         print(f"WORKSPACE {ws}")
 
 
@@ -149,10 +157,11 @@ def main() -> int:
         ws = Path(a.ws).expanduser().resolve()
         with apply_trust_config("adversary_declarative0"):
             prepare(a.kind, sql_file.read_text().strip(), ws)
-        (ws / "manual_job.json").write_text(json.dumps({"kind": a.kind}))
+        (ws / "manual_job.json").write_text(json.dumps({"kind": a.kind, "env": _job_env_snapshot()}))
         return 0
     ws = _abs(a.ws, "--ws")
     job = json.loads((ws / "manual_job.json").read_text())
+    os.environ.update(job.get("env", {}))  # the data/encoding/parallel settings the workspace was prepared with
     sql = (ws / "context" / "ro" / "query.sql").read_text().strip()
     with apply_trust_config("adversary_declarative0"):
         check(job["kind"], sql, ws)
