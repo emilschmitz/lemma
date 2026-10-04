@@ -74,7 +74,6 @@ def run(
         os.environ["LEMMA_MEASURE_DB"] = str(db_path)
         # The catalog is its own axis: sec_margin unless --assumption-package / the profile says otherwise.
         os.environ.setdefault("LEMMA_ASSUMPTION_PACKAGE", "sec_margin")
-        os.environ["LEMMA_FLOAT_ABS_EPS"] = "1e20"
     os.environ.pop("LEMMA_DECL_ROWS", None)
     os.environ.pop("LEMMA_DECL_SEED", None)
     t0 = time.time()

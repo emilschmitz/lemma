@@ -305,10 +305,9 @@ proof fn lemma_sel_step(ks: Seq<i64>, gs: Seq<f64>, tk: Seq<bool>, res: Seq<OutR
                 bound_below((t.n - (i + 1)) as int, MAG_CAP_t_v as real);
             }
             if key == kk {
-                proof { lemma_f64_add_defined(v, acc); }
+                proof { lemma_f64_add_within(v, acc, MAG_CAP_t_v as real, ((t.n - (i + 1)) as int as real) * (MAG_CAP_t_v as real) + 1real); }
                 let next = v + acc;
                 proof {
-                    lemma_f64_add_within(v, acc, next, MAG_CAP_t_v as real, ((t.n - (i + 1)) as int as real) * (MAG_CAP_t_v as real) + 1real);
                 }
                 acc = next;
             }

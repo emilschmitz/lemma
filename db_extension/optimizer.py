@@ -743,7 +743,6 @@ def run_optimization_loop(
             use_mock=use_mock,
             workspace=workspace,
             query_id=query_id,
-            float_abs_eps=os.environ.get("LEMMA_FLOAT_ABS_EPS"),
         )
         latency = result.get("best_latency_us", -1)
         if latency != -1:

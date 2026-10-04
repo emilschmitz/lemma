@@ -1,6 +1,6 @@
 // Worked example (SEC shape): GROUP BY stmt, rfile with COUNT(*), COUNT(DISTINCT adsh) and AVG(line), ORDER BY the
 // count DESC. The group pass keeps an exact i128 sum of `line` next to the count; AVG is one f64 division under
-// the f64 idealization: `host_i128_to_f64_exact`, `host_u64_to_f64_exact`, `lemma_f64_div_defined`, `lemma_f64_div_real`.
+// the f64 idealization: `host_i128_to_f64`, `host_u64_to_f64`, `lemma_f64_div_real`.
 // The rest (distinct keys, the seen-set for COUNT DISTINCT, the sorted insert) is the prover's proof, unchanged.
 // AGENT_HELPERS_START
 spec fn seen_inv(pre: &Cols_pre, kg: (Seq<char>, Seq<char>), i: int, m: Map<Seq<char>, bool>) -> bool {
@@ -72,8 +72,6 @@ proof fn lemma_nf_hit(pre: &Cols_pre, kg: (Seq<char>, Seq<char>), i: int, m: Map
         !m.contains_key(pre.adsh@[i]@) ==> count_distinct_num_filings(pre, i, kg) == 1 + count_distinct_num_filings(pre, i + 1, kg),
         count_cnt(pre, i, kg) == 1 + count_cnt(pre, i + 1, kg),
 {
-    lemma_count_distinct_num_filings_step(pre, i, kg);
-    lemma_count_cnt_step(pre, i, kg);
     assert(row_hit(pre, i));
     assert(count_distinct_num_filings_val(pre, i) == pre.adsh@[i]@);
     if m.contains_key(pre.adsh@[i]@) {
@@ -98,8 +96,6 @@ proof fn lemma_nf_miss(pre: &Cols_pre, kg: (Seq<char>, Seq<char>), i: int)
         count_distinct_num_filings(pre, i, kg) == count_distinct_num_filings(pre, i + 1, kg),
         count_cnt(pre, i, kg) == count_cnt(pre, i + 1, kg),
 {
-    lemma_count_distinct_num_filings_step(pre, i, kg);
-    lemma_count_cnt_step(pre, i, kg);
 }
 
 proof fn lemma_row_ok(pre: &Cols_pre, row: OutRow, kg: (Seq<char>, Seq<char>), w: int)
@@ -109,7 +105,7 @@ proof fn lemma_row_ok(pre: &Cols_pre, row: OutRow, kg: (Seq<char>, Seq<char>), w
         (row.stmt@, row.rfile@) == kg,
         row.cnt as int == count_cnt(pre, 0, kg),
         row.num_filings as int == count_distinct_num_filings(pre, 0, kg),
-        abs_real((row.avg_line_num as real) - avg_avg_line_num(pre, 0, kg)) <= (FLOAT_ABS_EPS as real),
+        (row.avg_line_num as real) == avg_avg_line_num(pre, 0, kg),
     ensures
         out_row_ok(pre, row),
 {
@@ -344,7 +340,6 @@ proof fn lemma_avg_count_pos(pre: &Cols_pre, i: int, w: int, kg: (Seq<char>, Seq
     ensures avg_avg_line_num_count(pre, i, kg) >= 1,
     decreases w - i,
 {
-    lemma_avg_avg_line_num_count_step(pre, i, kg);
     lemma_avg_avg_line_num_count_bound(pre, i + 1, kg);
     if i < w {
         lemma_avg_count_pos(pre, i + 1, w, kg);
@@ -483,19 +478,18 @@ proof fn lemma_avg_count_pos(pre: &Cols_pre, i: int, w: int, kg: (Seq<char>, Seq
                 nf as int == count_distinct_num_filings(pre, i as int, kg),
                 (cnt as int) <= pre.n as int - i as int,
                 (nf as int) <= pre.n as int - i as int,
-                -1048575int * (pre.n as int - i as int) <= sum as int,
-                sum as int <= 1048575int * (pre.n as int - i as int),
+                -9223372036854775808int * (pre.n as int - i as int) <= sum as int,
+                sum as int <= 9223372036854775808int * (pre.n as int - i as int),
                 seen_inv(pre, kg, i as int, seen@),
                 f64_literals_ok(),
                 (sum as int as real) == avg_avg_line_num_sum(pre, i as int, kg),
                 cnt as int == avg_avg_line_num_count(pre, i as int, kg),
-                -(cnt as int) * 1048575int <= sum as int,
-                sum as int <= (cnt as int) * 1048575int,
+                -(cnt as int) * 9223372036854775808int <= sum as int,
+                sum as int <= (cnt as int) * 9223372036854775808int,
             decreases i,
         {
             i -= 1;
             proof {
-                lemma_avg_avg_line_num_count_step(pre, i as int, kg);
                 lemma_avg_avg_line_num_count_bound(pre, i as int + 1, kg);
                 reveal_with_fuel(avg_avg_line_num_sum, 2);
                 lemma_count_cnt_bound(pre, i as int + 1, kg);
@@ -507,16 +501,11 @@ proof fn lemma_avg_count_pos(pre: &Cols_pre, i: int, w: int, kg: (Seq<char>, Seq
                 proof {
                     assert(key_at(pre, i as int) == kg);
                     lemma_nf_hit(pre, kg, i as int, seen@);
-                    lemma_count_step_fits_u64(cnt, ROW_CAP_pre as int);
-                    lemma_count_step_fits_u64(nf, ROW_CAP_pre as int);
                 }
                 cnt = cnt + 1;
                 if fresh { nf = nf + 1; }
                 let line = pre.line[i];
                 proof {
-                    lemma_i128_add_fits(sum, line as i128);
-                    assert(pre.line@.len() == pre.n as int);
-                    assert(-1048575 <= pre.line@[i as int] as int <= 1048575);
                     assert(row_hit(pre, i as int));
                     assert(avg_avg_line_num_val(pre, i as int) == ((line as int) as real));
                 }
@@ -537,29 +526,27 @@ proof fn lemma_avg_count_pos(pre: &Cols_pre, i: int, w: int, kg: (Seq<char>, Seq
         proof {
             lemma_avg_count_pos(pre, 0, wit[g as int], kg);
             assert(cnt >= 1);
-            assert((sum as int as real) <= 250000real * (1048575int as real));
-            assert(-(250000real * (1048575int as real)) <= (sum as int as real));
+            assert((sum as int as real) <= 250000real * (9223372036854775808int as real));
+            assert(-(250000real * (9223372036854775808int as real)) <= (sum as int as real));
             assert((cnt as int as real) <= 250000real);
         }
-        let fs = host_i128_to_f64_exact(sum);
-        let fc = host_u64_to_f64_exact(cnt);
+        let fs = host_i128_to_f64(sum);
+        let fc = host_u64_to_f64(cnt);
         proof {
             let c = cnt as int as real;
             assert(abs_real(fc as real) == c);
             assert((fs as real) == (sum as int as real));
-            assert(f64_within(fs, 250001real * (1048575int as real)));
+            assert(f64_within(fs, 250001real * (9223372036854775808int as real)));
             assert(-(0x10000000000000000int as real) * c < (fs as real)) by (nonlinear_arith)
-                requires (fs as real) >= -(c * (1048575int as real)), c >= 1real;
+                requires (fs as real) >= -(c * (9223372036854775808int as real)), c >= 1real;
             assert((fs as real) < (0x10000000000000000int as real) * c) by (nonlinear_arith)
-                requires (fs as real) <= c * (1048575int as real), c >= 1real;
-            lemma_f64_div_defined(fs, fc, 250001real * (1048575int as real), 0x10000000000000000int as real);
+                requires (fs as real) <= c * (9223372036854775808int as real), c >= 1real;
+            lemma_f64_div_real(fs, fc, 250001real * (9223372036854775808int as real), 0x10000000000000000int as real);
         }
         let avg = fs / fc;
         proof {
-            lemma_f64_div_real(fs, fc, avg, 250001real * (1048575int as real), 0x10000000000000000int as real);
-            // the f64 quotient is the spec's real quotient, so the difference is 0 <= eps
+            // the f64 quotient is the spec real quotient (idealization)
             assert((avg as real) == avg_avg_line_num(pre, 0, kg));
-            assert(abs_real((avg as real) - avg_avg_line_num(pre, 0, kg)) == 0real);
         }
         let row = OutRow { stmt: gs[g].clone(), rfile: gr[g].clone(), cnt: cnt, num_filings: nf, avg_line_num: avg };
         proof {

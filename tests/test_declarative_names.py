@@ -26,7 +26,7 @@ CATALOG = CatalogAssumptions(
 
 
 def _emit(sql: str) -> str:
-    return emit_declarative_spec(sql, SCHEMA, CATALOG, float_abs_eps="1e20")
+    return emit_declarative_spec(sql, SCHEMA, CATALOG)
 
 
 def _typechecks(spec: str) -> None:

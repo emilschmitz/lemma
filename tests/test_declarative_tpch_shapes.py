@@ -148,7 +148,6 @@ def test_min_over_arithmetic_and_avg_over_arithmetic_emit() -> None:
         "SELECT MIN(price - disc) AS lo, AVG(price * qty) AS mean FROM li",
         SCHEMA,
         CATALOG,
-        float_abs_eps="1e20",
     )
     assert "min_lo" in spec
     assert "avg_mean" in spec

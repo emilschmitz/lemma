@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from fractions import Fraction
 
 from declarative_spec.parse import (
     DeclarativeUnsupported,
@@ -124,7 +125,6 @@ class _EmitCtx:
     catalog: CatalogAssumptions | None
     lines: list[str]
     consts: list[str]
-    float_eps: str | None = None
 
     def add_const(self, name: str, value: int) -> str:
         self.consts.append(_emit_open_spec_int(name, value))
@@ -455,28 +455,6 @@ def _sum_bound_inclusive_abs(
     return product
 
 
-def _max_summands(
-    catalog: CatalogAssumptions | None,
-    left: str,
-    right: str,
-    join_left_table: str,
-    join_left_col: str,
-    join_right_table: str,
-    join_right_col: str,
-) -> int:
-    rows_l = _row_cap_inclusive(catalog, left)
-    rows_r = _row_cap_inclusive(catalog, right)
-    ta_l = _lookup_table_assumptions(catalog, join_left_table)
-    ta_r = _lookup_table_assumptions(catalog, join_right_table)
-    left_unique = _join_col_is_unique(ta_l, join_left_col)
-    right_unique = _join_col_is_unique(ta_r, join_right_col)
-    if left_unique and right_unique:
-        return min(rows_l, rows_r)
-    if left_unique or right_unique:
-        return max(rows_l, rows_r)
-    return rows_l * rows_r
-
-
 _COUNT_PATH_SHAPE_REFUSALS = frozenset(
     {
         "multi-column GROUP BY not yet emitted in count path",
@@ -489,8 +467,6 @@ def emit_declarative_spec(
     sql: str,
     schema: dict[str, str] | dict[str, dict[str, str]],
     catalog: CatalogAssumptions | None = None,
-    *,
-    float_abs_eps: str | None = None,
 ) -> str:
     """Spec for ``sql``. DATE and DECIMAL are first stated as exact integer SQL (``numeric_rewrite``)."""
     from declarative_spec.numeric_rewrite import rewrite_numeric, with_out_scales
@@ -498,62 +474,53 @@ def emit_declarative_spec(
     sql = _flatten_group_derived_sql(sql)
     integer_sql, scales = rewrite_numeric(sql, schema)
     _check_shape_classes(integer_sql)
-    spec = _emit_integer_sql(integer_sql, schema, catalog, float_abs_eps=float_abs_eps)
-    spec = _with_f64_literals(spec, integer_sql, float_abs_eps)
+    spec = _emit_integer_sql(integer_sql, schema, catalog)
+    spec = _with_f64_literals(spec, integer_sql)
     return _with_agent_surface(with_out_scales(spec, scales))
 
 
 _F64_LITERAL = re.compile(r"(?<![\w.])(\d+(?:\.\d+)?)e0(?!\w)")
 
 
-def _refuse_colliding_literals(texts: dict[str, "Fraction"], float_abs_eps: str | None) -> None:
-    """Two decimal values that round to the same double would make the literal hypothesis contradictory
-    (Verus identifies equal doubles), so every body would verify. Refuse, naming both."""
-    import math
-
-    def shown(label: str) -> str:
-        return (float_abs_eps or label).strip() if label == "FLOAT_ABS_EPS" else label
-
-    seen: dict[float, tuple[str, "Fraction"]] = {}
+def _refuse_bad_literals(texts: dict[str, Fraction]) -> None:
+    """Refuse a float literal that is no finite nonzero double, and two decimal values that round to the same
+    double (the literal hypothesis would be contradictory, so every body would verify). Never crash."""
+    seen: dict[float, tuple[str, Fraction]] = {}
     for label, value in sorted(texts.items()):
-        double = float(value)
-        if math.isinf(double) or (double == 0.0 and value != 0):
+        try:
+            double = float(value)
+        except OverflowError:
+            double = float("inf")  # a huge literal: float(Fraction) raises instead of returning inf
+        if double in (float("inf"), float("-inf")) or (double == 0.0 and value != 0):
             raise DeclarativeUnsupported(
-                f"float literal {shown(label)} rounds to {double}: it is not a finite nonzero double"
+                f"float literal {label[:40]}{'...' if len(label) > 40 else ''} is not a finite nonzero double"
             )
         if double in seen and seen[double][1] != value:
-            other = seen[double][0]
             raise DeclarativeUnsupported(
-                f"float literals {shown(other)} and {shown(label)} are the same double ({double!r}) "
+                f"float literals {seen[double][0]} and {label} are the same double ({double!r}) "
                 "but different decimal values: the literal hypothesis would be contradictory"
             )
         seen[double] = (label, value)
 
 
-def _with_f64_literals(spec: str, integer_sql: str, float_abs_eps: str | None) -> str:
+def _with_f64_literals(spec: str, integer_sql: str) -> str:
     """State, as a hypothesis of ``run_query``, that each f64 literal denotes its decimal value.
 
-    Verus gives a float literal no value as a real (`(1.5f64 as real)` is unconstrained), so
-    the f64 idealization also needs: the literal ``c`` as an f64 is the real ``c``, rounding of
-    the nearest double ignored. It covers the query's float constants and ``FLOAT_ABS_EPS``.
+    Verus gives a float literal no value as a real (`(1.5f64 as real)` is unconstrained), so the f64
+    idealization also needs: the literal ``c`` as an f64 is the real ``c`` (the nearest double ignored).
     """
-    from fractions import Fraction
-
     texts: dict[str, Fraction] = {}
     for m in _F64_LITERAL.finditer(integer_sql):
         base = m.group(1)
         texts[base if "." in base else f"{base}.0"] = Fraction(base)
-    if "pub const FLOAT_ABS_EPS" in spec and float_abs_eps:
-        texts["FLOAT_ABS_EPS"] = Fraction(float_abs_eps.strip())
     outside_lemmas = spec.partition("// HOST_LEMMAS_START")[0] + spec.rpartition("// HOST_LEMMAS_END")[2]
     if not texts and "f64" not in outside_lemmas:
         return spec
-    texts["0.0"] = Fraction(0)  # the initial value of every accumulator
-    _refuse_colliding_literals(texts, float_abs_eps)
+    texts["0.0"] = Fraction("0")  # the initial value of every accumulator
+    _refuse_bad_literals(texts)
     conj = "\n".join(
-        f"    &&& ({text if text == 'FLOAT_ABS_EPS' else text + 'f64'} as real) == ({v.numerator}real / {v.denominator}real)"
-        for text, v in sorted(texts.items())
-    ) or "    &&& true"
+        f"    &&& ({text}f64 as real) == ({v.numerator}real / {v.denominator}real)" for text, v in sorted(texts.items())
+    )
 
     fn = (
         "// HYPOTHESIS (f64 idealization): each f64 literal denotes its decimal value as a real.\n"
@@ -655,28 +622,26 @@ def _emit_integer_sql(
     sql: str,
     schema: dict[str, str] | dict[str, dict[str, str]],
     catalog: CatalogAssumptions | None,
-    *,
-    float_abs_eps: str | None,
 ) -> str:
     from declarative_spec.emit_surface import emit_from_surface
 
     try:
         parsed = parse_declarative_sql(sql)
     except DeclarativeUnsupported:
-        return emit_from_surface(sql, schema, catalog, float_abs_eps=float_abs_eps)
+        return emit_from_surface(sql, schema, catalog)
     from_table = parsed.from_table or parsed.left_table or ""
     model = SchemaModel.from_caller(schema, from_table)
-    ctx = _EmitCtx(catalog=catalog, lines=[], consts=[], float_eps=float_abs_eps)
+    ctx = _EmitCtx(catalog=catalog, lines=[], consts=[])
     try:
         if parsed.is_join:
-            return _emit_join_sum(parsed, model, ctx, float_abs_eps)
+            return _emit_join_sum(parsed, model, ctx)
         return _emit_count(parsed, model, ctx)
     except DeclarativeUnsupported as exc:
         # The count emitter takes one group key of one type. The surface emitter takes the
         # other grouped-count shapes, or raises its own DeclarativeUnsupported.
         if str(exc) not in _COUNT_PATH_SHAPE_REFUSALS:
             raise
-        return emit_from_surface(sql, schema, catalog, float_abs_eps=float_abs_eps)
+        return emit_from_surface(sql, schema, catalog)
 
 
 def _emit_count(parsed: ParsedQuery, model: SchemaModel, ctx: _EmitCtx) -> str:
@@ -799,7 +764,6 @@ def _emit_join_sum(
     parsed: ParsedQuery,
     model: SchemaModel,
     ctx: _EmitCtx,
-    float_abs_eps: str | None,
 ) -> str:
     lt, rt = parsed.left_table, parsed.right_table
     assert lt and rt
@@ -807,12 +771,6 @@ def _emit_join_sum(
     rt_orig, _ = model.lookup_table(rt)
 
     sum_t, sum_c, sum_info = model.resolve_column(parsed.sum_qual, parsed.sum_column or "", [lt_orig, rt_orig])
-
-    eps_text = (float_abs_eps or "").strip()
-    if sum_info.is_float and not eps_text:
-        raise DeclarativeUnsupported(
-            "float SUM requires caller-provided LEMMA_FLOAT_ABS_EPS (float_abs_eps)"
-        )
 
     # collect struct fields: join cols + group cols + sum col
     def add_field(table: str, col: str, acc: dict[tuple[str, str], tuple[str, str, ColumnTypeInfo]]):
@@ -859,7 +817,6 @@ def _emit_join_sum(
 
     from declarative_spec.lemmas import choose_agg_slot
 
-    float_const = ""
     if sum_info.is_float:
         value_ty = "f64"
         map_ty = f"HashMapWithView<{quant_ty}, {value_ty}>"
@@ -870,21 +827,6 @@ def _emit_join_sum(
 
             raise FitRefusal("float sum requires magnitude cap")
         ctx.add_const("MAG_CAP", mag_ex - 1)
-        n_terms = _max_summands(
-            ctx.catalog,
-            lt_orig,
-            rt_orig,
-            parsed.join_left_table or lt_orig,
-            parsed.join_left_col or "",
-            parsed.join_right_table or rt_orig,
-            parsed.join_right_col or "",
-        )
-        from declarative_spec.lemmas import FitRefusal, host_error_exceeds_eps
-
-        if host_error_exceeds_eps(n_terms, mag_ex, eps_text):
-            raise FitRefusal("float epsilon too tight for configured caps")
-        eps_lit = eps_text if re.search(r"[.eE]", eps_text) else f"{eps_text}.0"
-        float_const = f"pub const FLOAT_ABS_EPS: f64 = {eps_lit}_f64;\n"
     else:
         inclusive_abs = _sum_bound_inclusive_abs(
             ctx.catalog,
@@ -925,8 +867,6 @@ def _emit_join_sum(
         parts.append(hash_axiom)
     if ctx.consts:
         parts.append("\n".join(ctx.consts))
-    if float_const:
-        parts.append(float_const)
     parts.extend(
         [
             emit_struct(lt_struct, lt_orig, lt_fields),
@@ -983,7 +923,7 @@ def _emit_join_sum(
 
     if sum_info.is_float:
         value_ensure = (
-            "abs_real((res@[g] as real) - matched_real_sum(t, u, g as int)) <= (FLOAT_ABS_EPS as real)"
+            "res@[g] as real == matched_real_sum(t, u, g as int)"
         )
     else:
         value_ensure = "res@[g] as int == matched_sum(t, u, g as int)"

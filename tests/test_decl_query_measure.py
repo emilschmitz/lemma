@@ -60,7 +60,6 @@ def test_measure_exports_string_join_and_int_count(tmp_path: Path) -> None:
         catalog=None,
         db_path=db,
         dest=tmp_path / "out",
-        float_abs_eps=None,
     )
     assert prepared["kinds"] == ["str", "int"]
     assert sorted(prepared["rows"]) == [["a", 2]]
@@ -86,7 +85,6 @@ def test_measure_reports_all_thread_and_one_thread_duckdb_times(tmp_path: Path) 
             catalog=None,
             db_path=db,
             dest=tmp_path / name,
-            float_abs_eps="1e-9" if name == "float" else None,
         )
         assert prepared["duck_threads"] >= 1
         assert isinstance(prepared["duck1_us"], int) and prepared["duck1_us"] >= 0
@@ -101,7 +99,6 @@ def test_measure_exports_float_sum(tmp_path: Path) -> None:
         catalog=None,
         db_path=db,
         dest=tmp_path / "out",
-        float_abs_eps="1e20",
     )
     assert prepared["kinds"] == ["int", "float"]
     rows = sorted(prepared["rows"], key=lambda row: row[0])
@@ -115,7 +112,6 @@ def test_measure_exports_float_sum(tmp_path: Path) -> None:
             catalog=None,
             db_path=missing,
             dest=tmp_path / "missing-out",
-            float_abs_eps="1e20",
         )
 
 
@@ -124,7 +120,6 @@ def test_general_speed_bar_accepts_a_close_float() -> None:
         "duck_us": 1000,
         "rows": [["abc", 4.0, 2]],
         "kinds": ["str", "float", "int"],
-        "float_abs_eps": "1e-4",
     }
     fast = {
         "status": "SUCCESS",
@@ -142,7 +137,6 @@ def test_general_speed_bar_rejects_a_wrong_row_and_a_slower_run() -> None:
         "duck_us": 1000,
         "rows": [["abc", 4.0, 2]],
         "kinds": ["str", "float", "int"],
-        "float_abs_eps": "1e-4",
     }
     wrong = {
         "status": "SUCCESS",
@@ -266,7 +260,7 @@ def _sec_db(path: Path) -> None:
 
 def _measure(db: Path, tmp: Path, sql: str, schema: dict) -> dict:
     return write_query_measure(
-        sql=sql, schema=schema, catalog=_SEC_CATALOG, db_path=db, dest=tmp, float_abs_eps=None
+        sql=sql, schema=schema, catalog=_SEC_CATALOG, db_path=db, dest=tmp
     )
 
 

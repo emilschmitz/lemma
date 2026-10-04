@@ -96,8 +96,8 @@ GROUP BY n.tag, t.tlabel
 """
 
 
-def _emit(sql: str, *, eps: str | None = None) -> str:
-    return emit_declarative_spec(sql, SCHEMA, float_abs_eps=eps)
+def _emit(sql: str) -> str:
+    return emit_declarative_spec(sql, SCHEMA)
 
 
 def test_grouped_scan_states_filter_and_aggregates() -> None:
@@ -105,7 +105,7 @@ def test_grouped_scan_states_filter_and_aggregates() -> None:
     catalog = CatalogAssumptions(
         tables={"pre": TableAssumptions(max_rows=1000, columns={"line": ColumnAssumption(max_value_exclusive=2**20)})}
     )
-    spec = emit_declarative_spec(SCAN, SCHEMA, catalog, float_abs_eps="1e20")
+    spec = emit_declarative_spec(SCAN, SCHEMA, catalog)
     assert "method_spec" not in spec
     assert "inserts into a map" not in spec
     assert "pre.stmt@[i0]@) != \"\"@" not in spec  # IS NOT NULL is true, not s != ""
@@ -115,7 +115,7 @@ def test_grouped_scan_states_filter_and_aggregates() -> None:
     assert "lemma_count_cnt_bound(" in spec
     assert "count_distinct_num_filings(" in spec
     assert "avg_avg_line_num(" in spec
-    assert "FLOAT_ABS_EPS" in spec
+    assert "FLOAT_ABS_EPS" not in spec
     assert "((pre.line@[i0] as int) as real)" in spec or "(((pre.line@[i0] as int)) as real)" in spec
     assert "res@[i].cnt" in spec
     assert "// AGENT_EDIT_START" in spec
@@ -127,11 +127,11 @@ def test_grouped_scan_states_filter_and_aggregates() -> None:
 def test_join_having_on_a_float_sum_is_refused() -> None:
     # HAVING SUM(float) > (SELECT AVG(...)): the sum is only known within epsilon, so membership has no exact spec.
     with pytest.raises(DeclarativeUnsupported, match="float sum or average is compared"):
-        _emit(JOIN_SCALAR, eps="0.001")
+        _emit(JOIN_SCALAR)
 
 
 def test_not_exists_and_case_sum_emit() -> None:
-    exists_spec = _emit(NOT_EXISTS, eps="0.001")
+    exists_spec = _emit(NOT_EXISTS)
     assert "exists_1(" in exists_spec
     assert "!exists_1(" in exists_spec
     assert "(n.uom@[i0]@) == \"pure\"@" in exists_spec
@@ -222,7 +222,7 @@ def test_catalog_float_column_states_its_magnitude() -> None:
     WHERE n.value IS NOT NULL
     GROUP BY s.fy
     """
-    spec = emit_declarative_spec(sql, SCHEMA, sec_margin_catalog(), float_abs_eps="1e20")
+    spec = emit_declarative_spec(sql, SCHEMA, sec_margin_catalog())
     assert "pub const MAG_CAP_num_value: u64 = " in spec
     assert "#![trigger n.value@[i]]" in spec
     assert "-(MAG_CAP_num_value as real) < (n.value@[i] as real) < (MAG_CAP_num_value as real)" in spec
@@ -246,7 +246,7 @@ def test_integer_table_does_not_invent_a_float_magnitude() -> None:
     GROUP BY n.tag
     """
     with pytest.raises(Exception, match="magnitude cap"):
-        emit_declarative_spec(summed, SCHEMA, bare, float_abs_eps="1e20")
+        emit_declarative_spec(summed, SCHEMA, bare)
 
 
 def test_outer_join_is_refused() -> None:

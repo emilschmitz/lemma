@@ -21,9 +21,9 @@ class TrustedSet:
 
 
 def _default_lemmas_rs() -> str:
-    from declarative_spec.lemmas import host_float_lemmas_rs
+    from declarative_spec.lemmas import float_error_lemmas_rs
 
-    return host_float_lemmas_rs().rstrip()
+    return float_error_lemmas_rs().rstrip()
 
 
 def _default_index_markdown() -> str:

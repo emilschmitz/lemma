@@ -64,21 +64,18 @@ proof fn bound_below(m: int, p: real)
             bound_below((t.n - (i + 1)) as int, (MAG_CAP_t_a as real) * (2real + (MAG_CAP_t_b as real)));
         }
         let one: f64 = 1.0;
-        proof { lemma_f64_sub_defined(one, b); }
+        proof { lemma_f64_sub_within(one, b, 2real, MAG_CAP_t_b as real); }
         let om = one - b;
         proof {
-            lemma_f64_sub_within(one, b, om, 2real, MAG_CAP_t_b as real);
         }
-        proof { lemma_f64_mul_defined(a, om); }
+        proof { lemma_f64_mul_within(a, om, MAG_CAP_t_a as real, 2real + (MAG_CAP_t_b as real)); }
         let p = a * om;
         proof {
-            lemma_f64_mul_within(a, om, p, MAG_CAP_t_a as real, 2real + (MAG_CAP_t_b as real));
         }
-        proof { lemma_f64_add_defined(p, acc); }
+        proof { lemma_f64_add_within(p, acc, (MAG_CAP_t_a as real) * (2real + (MAG_CAP_t_b as real)),
+                ((t.n - (i + 1)) as int as real) * ((MAG_CAP_t_a as real) * (2real + (MAG_CAP_t_b as real))) + 1real); }
         let next = p + acc;
         proof {
-            lemma_f64_add_within(p, acc, next, (MAG_CAP_t_a as real) * (2real + (MAG_CAP_t_b as real)),
-                ((t.n - (i + 1)) as int as real) * ((MAG_CAP_t_a as real) * (2real + (MAG_CAP_t_b as real))) + 1real);
         }
         acc = next;
         any = true;

@@ -25,7 +25,7 @@ _NEVER = "WHERE a > 100 AND a < 50"
 
 
 def _emit(sql: str) -> str:
-    return emit_declarative_spec(sql, SCHEMA, CATALOG, float_abs_eps="1e20")
+    return emit_declarative_spec(sql, SCHEMA, CATALOG)
 
 
 def _verus(spec: str, body: str) -> str:

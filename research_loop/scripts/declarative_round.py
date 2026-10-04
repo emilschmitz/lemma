@@ -132,14 +132,6 @@ def sec_catalog() -> CatalogAssumptions:
     return assumption_package("sec_margin")
 
 
-def sec_float_abs_eps() -> str:
-    """The realistic default epsilon for SEC queries (relative 1e-9 of the largest allowed float sum)."""
-    from declarative_spec.float_eps import default_float_abs_eps
-    from research_loop.scripts.sqlsmith_trusted_coverage import load_sec_schema
-
-    return default_float_abs_eps(sec_catalog(), load_sec_schema())
-
-
 def draw_sec(seed: int, count: int, schema: dict, catalog: CatalogAssumptions) -> tuple[list[dict], list[dict]]:
     """``count`` emit-able SEC queries from the shuffle generator, plus the refusals met on the way."""
     from research_loop.scripts.sqlsmith_trusted_coverage import parse_sql_file
@@ -163,7 +155,7 @@ def draw_sec(seed: int, count: int, schema: dict, catalog: CatalogAssumptions) -
         if len(picked) == count:
             break
         try:
-            emit_declarative_spec(sql, schema, catalog, float_abs_eps=sec_float_abs_eps())
+            emit_declarative_spec(sql, schema, catalog)
         except (DeclarativeUnsupported, FitRefusal, ValueError) as exc:
             refused.append({"kind": "sec", "qid": qid, "sql": " ".join(sql.split()), "refusal": str(exc)[:400]})
             continue
@@ -228,12 +220,10 @@ def run_query_job(job: dict, model: str, max_iterations: int) -> dict:
     if job["kind"] == "sec":
         os.environ["LEMMA_MEASURE_DB"] = str(SEC_DB)
         os.environ["LEMMA_ASSUMPTION_PACKAGE"] = "sec_margin"
-        os.environ["LEMMA_FLOAT_ABS_EPS"] = sec_float_abs_eps()
         kwargs.update(schema=load_sec_schema(), workload="sec")
     else:
         schema, catalog = tpch_schema_and_catalog(TPCH_DB)
         os.environ["LEMMA_MEASURE_DB"] = str(TPCH_DB)
-        os.environ.pop("LEMMA_FLOAT_ABS_EPS", None)
         kwargs.update(schema=schema, catalog_assumptions=catalog)
     runs_dir = ROOT / "research_loop" / "runs"
     before = set(runs_dir.glob("*")) if runs_dir.is_dir() else set()

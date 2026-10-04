@@ -21,7 +21,6 @@ from research_loop.table_assumptions import CatalogAssumptions, ColumnAssumption
 
 VERUS = Path("/home/emil/tools/verus/verus")
 PROOFS = Path(__file__).parent / "fixtures" / "declarative_proofs"
-EPS = "0.000001"
 needs_verus = pytest.mark.skipif(not VERUS.is_file(), reason="verus binary not installed")
 
 Q2_SQL = """SELECT stmt, rfile, COUNT(*) AS cnt,
@@ -53,9 +52,9 @@ def _q2_run(tmp: Path, mutate: tuple[str, str] | None = None) -> tuple[dict, dic
     db = tmp / "pre.duckdb"
     _q2_db(db)
     prepared = write_query_measure(
-        sql=Q2_SQL, schema=Q2_SCHEMA, catalog=Q2_CATALOG, db_path=db, dest=tmp / "data", float_abs_eps=EPS
+        sql=Q2_SQL, schema=Q2_SCHEMA, catalog=Q2_CATALOG, db_path=db, dest=tmp / "data"
     )
-    spec = emit_declarative_spec(Q2_SQL, Q2_SCHEMA, Q2_CATALOG, float_abs_eps=EPS)
+    spec = emit_declarative_spec(Q2_SQL, Q2_SCHEMA, Q2_CATALOG)
     source = (PROOFS / "float_avg_group_count_distinct.rs").read_text()
     if mutate is not None:
         assert mutate[0] in source, mutate[0]
@@ -67,8 +66,8 @@ def _q2_run(tmp: Path, mutate: tuple[str, str] | None = None) -> tuple[dict, dic
 
 
 def test_q2_spec_states_avg_as_a_real_quotient() -> None:
-    spec = emit_declarative_spec(Q2_SQL, Q2_SCHEMA, Q2_CATALOG, float_abs_eps=EPS)
-    assert "avg_avg_line_num_sum(pre, i0, k) / (c as real)" in spec
+    spec = emit_declarative_spec(Q2_SQL, Q2_SCHEMA, Q2_CATALOG)
+    assert "avg_avg_line_num_sum(pre, i0, k) / ((c as real) * 1real)" in spec
     assert "f64_literals_ok()" in spec.split("pub fn run_query(")[1].split("ensures")[0]
 
 
@@ -79,7 +78,7 @@ def test_q2_avg_group_count_distinct_proves_runs_and_matches_duckdb(tmp_path: Pa
     assert metrics["status"] == "SUCCESS", metrics.get("compiler_error")
     got = rows_from_stdout_general(metrics["stdout"])
     assert len(got) > 1
-    assert rows_match_error(got, prepared["rows"], prepared["kinds"], EPS) is None
+    assert rows_match_error(got, prepared["rows"], prepared["kinds"]) is None
 
 
 @needs_verus

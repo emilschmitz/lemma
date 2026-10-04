@@ -190,16 +190,11 @@ def test_gendb_shaped_value_queries_emit_exact_integer_specs(sql: str) -> None:
             assert re.search(rf"fn {name}\b", spec), name
 
 
-def test_avg_of_a_decimal_needs_an_epsilon_and_emits_with_one() -> None:
-    """AVG over a DECIMAL used to be refused outright; it now emits (real quotient of the scaled
-    sum) but, being a float result, refuses loudly without a caller-provided epsilon."""
-    from declarative_spec.emit import DeclarativeUnsupported
-
+def test_avg_of_a_decimal_emits_the_exact_real_quotient() -> None:
     sql = "SELECT tag, AVG(value) AS a FROM num GROUP BY tag LIMIT 5"
-    with pytest.raises(DeclarativeUnsupported, match="LEMMA_FLOAT_ABS_EPS"):
-        emit_declarative_spec(sql, _SCHEMA, assumption_package("sec_margin_dec"))
-    spec = emit_declarative_spec(sql, _SCHEMA, assumption_package("sec_margin_dec"), float_abs_eps="1e-9")
+    spec = emit_declarative_spec(sql, _SCHEMA, assumption_package("sec_margin_dec"))
     assert "pub value: Vec<i128>" in spec
+    assert "FLOAT_ABS_EPS" not in spec
 
 
 
@@ -226,7 +221,6 @@ def _measure(tmp_path: Path, db: Path, schema: dict, sql: str) -> dict:
         catalog=assumption_package(pkg),
         db_path=db,
         dest=tmp_path / "bins",
-        float_abs_eps="1e20",
     )
 
 

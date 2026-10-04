@@ -27,7 +27,7 @@ STUB = "    proof { assume(false); }\n    Vec::new()\n"
 
 
 def _typechecks(sql: str) -> str:
-    spec = emit_declarative_spec(sql, SCHEMA, CATALOG, float_abs_eps="1e-6")
+    spec = emit_declarative_spec(sql, SCHEMA, CATALOG)
     spec = spec.replace("// AGENT_EDIT_START\n// AGENT_EDIT_END", STUB)
     with tempfile.NamedTemporaryFile("w", suffix=".rs", delete=False) as f:
         f.write(spec)
@@ -56,7 +56,7 @@ def test_float_specs_typecheck_with_a_stub_body(sql: str) -> None:
 
 
 def test_min_max_bound_is_typed_as_the_value() -> None:
-    spec = emit_declarative_spec("SELECT MAX(v) AS max_value FROM t", SCHEMA, CATALOG, float_abs_eps="1e-6")
+    spec = emit_declarative_spec("SELECT MAX(v) AS max_value FROM t", SCHEMA, CATALOG)
     assert "pub open spec fn max_max_value(t: &Cols_t, bound: real)" in spec
     assert "max_max_value_val(t, j0) <= bound" in spec
     assert "row_hit(t, j0)" in spec and "max_row_hit" not in spec

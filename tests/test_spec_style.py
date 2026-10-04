@@ -149,7 +149,7 @@ def test_unset_read_body_keeps_recursive_admit(
 def test_lemma_index_markdown_content() -> None:
     md = lemma_index_markdown()
     assert "lemma_u64_add_fits" not in md
-    assert "lemma_f64_sum_within_eps" in md
+    assert "lemma_f64_add_within" in md
     assert "axiom_u64_obeys_hash_table_key_model" in md
 
 

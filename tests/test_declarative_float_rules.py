@@ -39,7 +39,7 @@ CATALOG = CatalogAssumptions(
 
 
 def _emit(sql: str) -> str:
-    return emit_declarative_spec(sql, SCHEMA, CATALOG, float_abs_eps="1e20")
+    return emit_declarative_spec(sql, SCHEMA, CATALOG)
 
 
 def _typechecks(spec: str) -> None:
@@ -189,7 +189,7 @@ def test_float_case_without_a_catalog_magnitude_is_refused() -> None:
     bare = CatalogAssumptions(max_rows=64, tables={"t": TableAssumptions(max_rows=64)})
     with pytest.raises(FitRefusal, match="magnitude"):
         emit_declarative_spec(
-            "SELECT SUM(CASE WHEN v > 0 THEN v ELSE 0 END) FROM t", SCHEMA, bare, float_abs_eps="1e20"
+            "SELECT SUM(CASE WHEN v > 0 THEN v ELSE 0 END) FROM t", SCHEMA, bare
         )
 
 

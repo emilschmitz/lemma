@@ -243,9 +243,8 @@ KNOWN HARD, no worked example: a join whose join key repeats on both sides (many
 `COUNT(DISTINCT ...)`; top-K (`ORDER BY ... LIMIT`) over groups; correlated or scalar subqueries; `EXISTS`/`IN`
 joins; string-tuple group keys; `AVG` with a float result. These need long helper proofs (an existential
 witness per group, a selection invariant). Start with the simplest correct loop that proves, make sure the
-result is submitted, and only then look for speed. Float comparisons, float `ORDER BY` and float MIN/MAX
-over stored `DOUBLE` columns are in scope under the f64 idealization (`float_*.rs` examples); float equality on a
-computed value, colliding float literals and an `AVG` whose integer sum may exceed 2^53 are refused by the host.
+result is submitted, and only then look for speed. Float comparisons, float `ORDER BY`, float MIN/MAX,
+products and averages over `DOUBLE` columns are in scope (floats are exact reals here; `float_*.rs` examples).
 """
 
 _SPEED = """\
@@ -278,11 +277,11 @@ _PROOF_HYGIENE = """\
   come from it). Call host lemmas as `proof { lemma_...(); }`. Give a quantifier an explicit `#[trigger]`.
 - `lemma_u64_add_fits` / `lemma_count_step_fits_u64` / `lemma_sum_step_fits_*` prove an add does not overflow
   under the host's `ROW_CAP_...`; call them rather than assuming.
-- Floats: a plain `SUM(float)` or `AVG(float)`: one `f64` accumulator, `lemma_f64_add_defined`,
-  `lemma_f64_left_fold_push`, `lemma_f64_sum_within_eps` with `FLOAT_ABS_EPS` (never a numeric epsilon, never
-  unfold an f64 add). Products, differences, float comparisons and AVG's division use the f64 idealization lemmas of
-  the lemma index (`lemma_f64_*_within`, `lemma_f64_*_real`, `host_*_to_f64_exact`); keep `f64_literals_ok()` in
-  every loop invariant.
+- Floats (rounding error is accepted: a float is exact real arithmetic here, so a SUM is an exact fold and there
+  is no epsilon): one `f64` accumulator with `acc as real == <spec sum>`; before each `+ - *` call
+  `lemma_f64_add_defined` / `sub_defined` / `mul_defined`, after it `lemma_f64_add_within` / `sub_within` /
+  `mul_within`; compare with `lemma_f64_gt_real` and friends; divide with `lemma_f64_div_defined` / `div_real`;
+  cast integers with `host_u64_to_f64` / `host_i128_to_f64`. Keep `f64_literals_ok()` in every loop invariant.
 """
 
 

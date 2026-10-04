@@ -1,6 +1,6 @@
 // Worked example: GROUP BY k, AVG(v) over a DOUBLE column, HAVING AVG(v) > 2. Exact under the f64 idealization.
 // Pass 1 collects the distinct keys. Pass 2, per key: an f64 sum and a u64 count over all rows, one division
-// (`host_u64_to_f64_exact`, `lemma_f64_div_defined`, `lemma_f64_div_real`), then keep the key when `avg > 2.0`.
+// (`host_u64_to_f64`, `lemma_f64_div_defined`, `lemma_f64_div_real`), then keep the key when `avg > 2.0`.
 // AGENT_HELPERS_START
 proof fn bound_step(m: int, p: real)
     ensures ((m + 1) as real) * p == (m as real) * p + p,
@@ -138,18 +138,15 @@ proof fn bound_below(m: int, p: real)
                 assert(t.v@[i as int].is_finite_spec());
                 assert(f64_within(v, MAG_CAP_t_v as real));
                 assert((MAG_CAP_t_v as real) == 1024real);
-                lemma_avg_m_count_step(t, i as int, kk as int);
                 lemma_avg_m_count_bound(t, i as int + 1, kk as int);
                 reveal_with_fuel(avg_m_sum, 2);
                 bound_step(cnt as int, MAG_CAP_t_v as real);
                 bound_below(cnt as int, MAG_CAP_t_v as real);
-                lemma_count_step_fits_u64(cnt, 100);
             }
             if key == kk {
-                proof { lemma_f64_add_defined(v, acc); }
+                proof { lemma_f64_add_within(v, acc, MAG_CAP_t_v as real, (cnt as int as real) * (MAG_CAP_t_v as real) + 1real); }
                 let next = v + acc;
                 proof {
-                    lemma_f64_add_within(v, acc, next, MAG_CAP_t_v as real, (cnt as int as real) * (MAG_CAP_t_v as real) + 1real);
                 }
                 acc = next;
                 cnt = cnt + 1;
@@ -163,7 +160,7 @@ proof fn bound_below(m: int, p: real)
             assert(cnt as int >= 1);
             assert((cnt as int as real) <= 100real);
         }
-        let fc = host_u64_to_f64_exact(cnt);
+        let fc = host_u64_to_f64(cnt);
         proof {
             assert(abs_real(fc as real) == (cnt as int as real));
             let cap = MAG_CAP_t_v as real;
@@ -171,13 +168,12 @@ proof fn bound_below(m: int, p: real)
             let c = cnt as int as real;
             assert(-cq * c < (acc as real) && (acc as real) < cq * c) by (nonlinear_arith)
                 requires -(c * cap + 1real) < (acc as real), (acc as real) < c * cap + 1real, c >= 1real, cq == cap + 1real;
-            lemma_f64_div_defined(acc, fc, c * cap + 1real, cq);
+            lemma_f64_div_real(acc, fc, c * cap + 1real, cq);
         }
         let avg = acc / fc;
         proof {
             let cap = MAG_CAP_t_v as real;
             let c = cnt as int as real;
-            lemma_f64_div_real(acc, fc, avg, c * cap + 1real, cap + 1real);
             assert(avg.is_finite_spec());
         }
         let big = avg > 2.0;

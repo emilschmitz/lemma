@@ -340,7 +340,6 @@ def test_q6_between_decimal_arithmetic_is_folded_exactly_by_the_emitter() -> Non
         "SELECT COUNT(*) AS c FROM li WHERE d BETWEEN 0.06 - 0.01 AND 0.06 + 0.01 AND qty < 24",
         schema,
         cat,
-        float_abs_eps=EPS,
     )
     assert "(li.d@[i0] as real) >= (5real / 100real)" in spec
     assert "(li.d@[i0] as real) <= (7real / 100real)" in spec
@@ -445,7 +444,7 @@ def test_duckdb_stores_nan_and_inf_and_the_loader_rejects_them() -> None:
     con.execute("CREATE TABLE t (v DOUBLE)")
     con.execute("INSERT INTO t VALUES ('NaN'::DOUBLE), ('Infinity'::DOUBLE), (1.0)")
     assert con.execute("SELECT COUNT(*) FROM t WHERE NOT isfinite(v)").fetchone() == (2,)
-    spec = emit_declarative_spec("SELECT SUM(v) AS s FROM t", SCHEMA, CATALOG, float_abs_eps=EPS)
+    spec = emit_declarative_spec("SELECT SUM(v) AS s FROM t", SCHEMA, CATALOG)
     program = assemble_declarative_program(spec, "    Vec::new()", column_bins={"t": "/nonexistent/t.bin"})
     assert "a value is NaN or infinite" in program
     assert re.search(r"\.abs\(\) < \(MAG_CAP_t_v as f64\)", program)
@@ -526,7 +525,7 @@ def test_colliding_literals_are_refused_naming_both() -> None:
     """FIXED: the two texts are the same double, so the hypothesis would be contradictory: the emitter refuses."""
     assert float("0.1") == float("0.10000000000000001")
     with pytest.raises(DeclarativeUnsupported, match=r"0\.1 and 0\.10000000000000001"):
-        emit_declarative_spec(COLLIDING_SQL, SCHEMA, CATALOG, float_abs_eps=EPS)
+        emit_declarative_spec(COLLIDING_SQL, SCHEMA, CATALOG)
 
 
 @needs_verus
@@ -542,20 +541,20 @@ def test_verus_identifies_literals_that_round_to_the_same_double(tmp_path: Path)
 
 def test_emitter_refuses_colliding_float_literals() -> None:
     with pytest.raises(DeclarativeUnsupported):
-        emit_declarative_spec(COLLIDING_SQL, SCHEMA, CATALOG, float_abs_eps=EPS)
+        emit_declarative_spec(COLLIDING_SQL, SCHEMA, CATALOG)
 
 
 @needs_verus
 def test_colliding_literals_make_every_body_verify(tmp_path: Path) -> None:
     """HOLE: with colliding literals `f64_literals_ok()` is false, so a body returning 12345 verifies."""
     try:
-        spec = emit_declarative_spec(COLLIDING_SQL, SCHEMA, CATALOG, float_abs_eps=EPS)
+        spec = emit_declarative_spec(COLLIDING_SQL, SCHEMA, CATALOG)
     except DeclarativeUnsupported:
         pytest.skip("fixed: the emitter refuses colliding literals")
     body = "    let mut res: Vec<OutRow> = Vec::new();\n    res.push(OutRow { c: 12345 });\n    res\n"
     program = assemble_declarative_program(spec, body)
     assert verus_summary(program, tmp_path, "vacuous").endswith("0 errors")
-    control = emit_declarative_spec("SELECT COUNT(*) AS c FROM t WHERE v > 0.1", SCHEMA, CATALOG, float_abs_eps=EPS)
+    control = emit_declarative_spec("SELECT COUNT(*) AS c FROM t WHERE v > 0.1", SCHEMA, CATALOG)
     assert not verus_summary(
         assemble_declarative_program(control, body), tmp_path, "vacuous_control"
     ).endswith("0 errors")
@@ -599,4 +598,4 @@ def test_float_equality_of_a_computed_value_differs_between_spec_and_duckdb() ->
     cols = {c: ColumnAssumption(max_value_exclusive=1024) for c in ("p", "d")}
     cat = CatalogAssumptions(max_rows=100, tables={"li": TableAssumptions(max_rows=100, columns=cols)})
     with pytest.raises(DeclarativeUnsupported, match="float equality on a computed value"):
-        emit_declarative_spec("SELECT COUNT(*) AS c FROM li WHERE p * d = 0.3", schema, cat, float_abs_eps=EPS)
+        emit_declarative_spec("SELECT COUNT(*) AS c FROM li WHERE p * d = 0.3", schema, cat)

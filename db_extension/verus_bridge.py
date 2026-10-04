@@ -423,7 +423,6 @@ def _invoke_declarative_pipeline(
             sql,
             schema,
             catalog_assumptions_for_workload(workload),
-            float_abs_eps=os.environ.get("LEMMA_FLOAT_ABS_EPS"),
         )
     if not agent_source:
         agent_source = spec_rs

@@ -42,14 +42,14 @@ def test_every_class_the_emitter_emits_is_registered() -> None:
     for _ in range(150):
         sql, _keys = query(rng)
         try:
-            emit_declarative_spec(sql, SCHEMA, CATALOG, float_abs_eps="1e20")
+            emit_declarative_spec(sql, SCHEMA, CATALOG)
         except DeclarativeUnsupported:
             continue
         seen |= query_features(parse_query(sql))
     schema, catalog = load_sec_schema(), assumption_package("sec_margin")
     for sql in EXTRA:
         try:
-            emit_declarative_spec(sql, schema, catalog, float_abs_eps="1e20")
+            emit_declarative_spec(sql, schema, catalog)
         except DeclarativeUnsupported:
             continue
         seen |= query_features(parse_query(sql))

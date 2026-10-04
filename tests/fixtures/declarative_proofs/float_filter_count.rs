@@ -15,7 +15,6 @@
         proof {
             assert(t.v@.len() == t.n as int);
             assert(t.v@[i as int].is_finite_spec());
-            lemma_count_c_step(t, i as int);
             lemma_count_c_bound(t, i as int + 1);
         }
         let gt = v > 1.5;

@@ -31,7 +31,6 @@ from research_loop.table_assumptions import CatalogAssumptions, ColumnAssumption
 
 VERUS = Path("/home/emil/tools/verus/verus")
 PROOFS = Path(__file__).parent / "fixtures" / "declarative_proofs"
-EPS = "0.000001"
 SCHEMA = {
     "t": {"k": "integer", "a": "double", "b": "double", "v": "double", "i": "integer", "d": "decimal(10,2)"}
 }
@@ -112,29 +111,29 @@ SHAPES: dict[str, Shape] = {
         ("((res@[i].s as real)) >= ((res@[i + 1].s as real))", "res@.len() <= 2"),
         ("let more = gj > gb;", "let more = gj < gb;"),
     ),
-    "sum_eps": Shape(
+    "sum": Shape(
         "SELECT SUM(v) AS s FROM t",
-        "float_sum_eps",
-        ("(t.v@[i0] as real)", "abs_real(((res@[r].s->Some_0 as real)) - sum_s(t, 0)) <= (FLOAT_ABS_EPS as real)"),
-        ("let next = acc + x;", "let next = x + x;"),
+        "float_sum",
+        ("(t.v@[i0] as real)", "(res@[r].s->Some_0 as real) == sum_s(t, 0)"),
+        ("let next = v + acc;", "let next = v + v;"),
     ),
     "avg_int": Shape(
         "SELECT AVG(i) AS m FROM t",
         "float_avg_int",
-        ("(((t.i@[i0] as int)) as real)", "avg_m_sum(t, i0) / (c as real)"),
+        ("(((t.i@[i0] as int)) as real)", "avg_m_sum(t, i0) / ((c as real) * 1real)"),
         ("let avg = fs / fc;", "let avg = fs / fs;"),
     ),
     "avg_float": Shape(
         "SELECT AVG(v) AS m FROM t",
         "float_avg_float",
-        ("(t.v@[i0] as real)", "avg_m_sum(t, i0) / (c as real)"),
+        ("(t.v@[i0] as real)", "avg_m_sum(t, i0) / ((c as real) * 1real)"),
         ("let avg = acc / fc;", "let avg = fc / fc;"),
     ),
     "avg_decimal": Shape(
         "SELECT AVG(d) AS m FROM t",
         "float_avg_decimal",
-        ("(((((t.d@[i0] as int)) as real)) / 100real)",),
-        ("let mean_scaled = fs / fscale;", "let mean_scaled = fs / fc;"),
+        ("avg_m_sum(t, i0) / ((c as real) * 100real)",),
+        ("let avg = fs / fden;", "let avg = fs / fs;"),
     ),
     "group_avg_having": Shape(
         "SELECT k, AVG(v) AS m FROM t GROUP BY k HAVING AVG(v) > 2",
@@ -145,8 +144,8 @@ SHAPES: dict[str, Shape] = {
     "group_avg_decimal": Shape(
         "SELECT k, AVG(d) AS m FROM t GROUP BY k",
         "float_group_avg_decimal",
-        ("/ 100real",),
-        ("let avg = mean_scaled / fc;", "let avg = mean_scaled / fscale;"),
+        ("* 100real)",),
+        ("let avg = fs / fden;", "let avg = fs / fs;"),
     ),
 }
 
@@ -160,9 +159,9 @@ def db(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 def _run(db: Path, tmp: Path, shape: Shape, mutate: tuple[str, str] | None = None) -> tuple[dict, dict]:
     prepared = write_query_measure(
-        sql=shape.sql, schema=SCHEMA, catalog=CATALOG, db_path=db, dest=tmp / "data", float_abs_eps=EPS
+        sql=shape.sql, schema=SCHEMA, catalog=CATALOG, db_path=db, dest=tmp / "data"
     )
-    spec = emit_declarative_spec(shape.sql, SCHEMA, CATALOG, float_abs_eps=EPS)
+    spec = emit_declarative_spec(shape.sql, SCHEMA, CATALOG)
     source = (PROOFS / f"{shape.body}.rs").read_text()
     if mutate is not None:
         old, new = mutate
@@ -177,7 +176,7 @@ def _run(db: Path, tmp: Path, shape: Shape, mutate: tuple[str, str] | None = Non
 @pytest.mark.parametrize("name", list(SHAPES))
 def test_spec_states_the_float_query_over_reals(name: str) -> None:
     shape = SHAPES[name]
-    spec = emit_declarative_spec(shape.sql, SCHEMA, CATALOG, float_abs_eps=EPS)
+    spec = emit_declarative_spec(shape.sql, SCHEMA, CATALOG)
     for text in shape.spec_has:
         assert text in spec, text
     assert "f64_literals_ok()" in spec.split("pub fn run_query(")[1].split("ensures")[0]
@@ -192,7 +191,7 @@ def test_float_shape_proves_runs_and_matches_duckdb_within_epsilon(name: str, db
     assert metrics["status"] == "SUCCESS", metrics.get("compiler_error")
     got = rows_from_stdout_general(metrics["stdout"])
     assert got
-    assert rows_match_error(got, prepared["rows"], prepared["kinds"], EPS) is None
+    assert rows_match_error(got, prepared["rows"], prepared["kinds"]) is None
 
 
 @needs_verus
@@ -204,37 +203,25 @@ def test_wrong_float_body_is_rejected(name: str, db: Path, tmp_path: Path) -> No
     assert "verification results::" in str(metrics.get("compiler_error")), str(metrics.get("compiler_error"))[-1500:]
 
 
-def test_trusted_float_code_is_exactly_these_items() -> None:
-    from declarative_spec.lemmas import host_float_lemmas_rs
+def test_trusted_float_code_is_exactly_the_idealization_family() -> None:
+    from declarative_spec.lemmas import float_error_lemmas_rs
 
-    rust = host_float_lemmas_rs()
+    rust = float_error_lemmas_rs()
     names = [
         part.lstrip().splitlines()[0].split("fn ")[1].split("(")[0]
         for part in rust.split("#[verifier::external_body]")[1:]
     ]
     assert names == [
-        "lemma_f64_left_fold_empty",
-        "lemma_f64_add_defined",
-        "lemma_f64_left_fold_push",
-        "lemma_f64_sum_within_eps",
-        "lemma_f64_sub_defined",
-        "lemma_f64_mul_defined",
         "lemma_f64_add_real",
         "lemma_f64_sub_real",
         "lemma_f64_mul_real",
-        "lemma_f64_div_defined",
         "lemma_f64_div_real",
+        "host_u64_to_f64",
+        "host_i128_to_f64",
         "lemma_f64_lt_real",
         "lemma_f64_le_real",
         "lemma_f64_gt_real",
         "lemma_f64_ge_real",
         "lemma_f64_eq_real",
-        "lemma_f64_add_exact",
-        "lemma_f64_sub_exact",
-        "lemma_f64_mul_exact",
-        "host_u64_to_f64_exact",
-        "host_i128_to_f64_exact",
     ]
-    # The idealized casts (false above 2^53) are gone: only the exact casts remain.
-    assert "pub fn host_u64_to_f64(" not in rust and "pub fn host_i128_to_f64(" not in rust
-    assert rust.count("// TRUSTED (f64") >= len(names) - 1
+    assert rust.count("// TRUSTED (f64 idealization)") >= len(names)

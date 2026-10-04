@@ -18,7 +18,6 @@ _spec.loader.exec_module(_lemmas)
 FitRefusal = _lemmas.FitRefusal
 choose_agg_slot = _lemmas.choose_agg_slot
 float_error_lemmas_rs = _lemmas.float_error_lemmas_rs
-host_error_exceeds_eps = _lemmas.host_error_exceeds_eps
 
 VERUS = Path("/home/emil/tools/verus/verus")
 
@@ -67,23 +66,11 @@ def test_choose_agg_slot_signed_never_u64() -> None:
     assert choose_agg_slot(10, signed=True) == "i128"
 
 
-def test_host_error_exceeds_eps_small_bound_false() -> None:
-    assert host_error_exceeds_eps(10, 100, "0.000001") is False
-
-
-def test_host_error_exceeds_eps_huge_bound_true() -> None:
-    assert host_error_exceeds_eps(10**6, 10**18, "0.000001") is True
-
-
-def test_host_error_exceeds_eps_invalid_bound() -> None:
-    assert host_error_exceeds_eps(2**52, 1, "1.0") is True
-
-
 def test_float_error_lemmas_verus() -> None:
     rust = float_error_lemmas_rs()
-    assert "lemma_f64_sum_within_eps" in rust
+    assert "lemma_f64_add_within" in rust
     assert "as real" in rust
-    assert rust.count("external_body") == 16
+    assert rust.count("external_body") == 11
     proc = _run_verus(rust)
     combined = proc.stdout + proc.stderr
     assert proc.returncode == 0, combined

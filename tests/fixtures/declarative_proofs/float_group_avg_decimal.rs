@@ -1,6 +1,6 @@
 // Worked example: GROUP BY k, AVG(d) over a DECIMAL(10,2) column. Pass 1 collects the distinct keys. Pass 2, per
-// key: the stored integers sum exactly in an i128 with a u64 count; then, under the f64 idealization, cast, divide
-// by the scale (100) and by the count (`host_*_to_f64_exact`, `lemma_f64_div_defined`, `lemma_f64_div_real`).
+// key: the stored integers sum exactly in an i128 with a u64 count; the spec is sum / (count * 100), so cast the
+// sum and `count * 100` (`host_*_to_f64`) and divide once (`lemma_f64_div_real`).
 // AGENT_HELPERS_START
 proof fn bound_step(m: int, p: real)
     ensures ((m + 1) as real) * p == (m as real) * p + p,
@@ -118,7 +118,7 @@ proof fn bound_below(m: int, p: real)
                 t.n <= ROW_CAP_t,
                 valid_cols_t(t),
                 f64_literals_ok(),
-                avg_m_sum(t, i as int, kk as int) == (acc as int as real) / 100real,
+                avg_m_sum(t, i as int, kk as int) == (acc as int as real),
                 cnt as int == avg_m_count(t, i as int, kk as int),
                 -(cnt as int) * 10000000000int <= acc as int,
                 acc as int <= (cnt as int) * 10000000000int,
@@ -132,11 +132,8 @@ proof fn bound_below(m: int, p: real)
             proof {
                 assert(t.k@.len() == t.n as int);
                 assert(t.d@.len() == t.n as int);
-                lemma_avg_m_count_step(t, i as int, kk as int);
                 lemma_avg_m_count_bound(t, i as int + 1, kk as int);
                 reveal_with_fuel(avg_m_sum, 2);
-                lemma_sum_step_fits_i128(acc, cell as i128, 100 * 10000000000int);
-                lemma_count_step_fits_u64(cnt, 100);
             }
             if key == kk {
                 acc = acc + (cell as i128);
@@ -153,34 +150,20 @@ proof fn bound_below(m: int, p: real)
             assert(-(100real * 10000000000real) <= (acc as int as real));
             assert((cnt as int as real) <= 100real);
         }
-        let fs = host_i128_to_f64_exact(acc);
-        let fscale = host_u64_to_f64_exact(100);
-        let fc = host_u64_to_f64_exact(cnt);
+        let fs = host_i128_to_f64(acc);
+        let fden = host_u64_to_f64(cnt * 100);
         proof {
-            assert((fscale as real) == 100real);
-            assert(abs_real(fscale as real) == 100real);
+            let c = cnt as int as real;
+            assert((fden as real) == c * 100real);
+            assert(abs_real(fden as real) == c * 100real);
             assert((fs as real) == (acc as int as real));
             assert(f64_within(fs, 2000000000000real));
-            lemma_f64_div_defined(fs, fscale, 2000000000000real, 100000000000real);
+            assert(-1000000000real * abs_real(fden as real) < (fs as real) && (fs as real) < 1000000000real * abs_real(fden as real)) by (nonlinear_arith)
+                requires -c * 10000000000real <= (acc as int as real), (acc as int as real) <= c * 10000000000real, c >= 1real,
+                    abs_real(fden as real) == c * 100real, (fs as real) == (acc as int as real);
+            lemma_f64_div_real(fs, fden, 2000000000000real, 1000000000real);
         }
-        let mean_scaled = fs / fscale;
-        proof {
-            lemma_f64_div_real(fs, fscale, mean_scaled, 2000000000000real, 100000000000real);
-            let c = cnt as int as real;
-            assert(abs_real(fc as real) == c);
-            let m = (mean_scaled as real);
-            assert(m == (acc as int as real) / 100real);
-            assert(-(1000000000real) * c < m && m < 1000000000real * c) by (nonlinear_arith)
-                requires m == (acc as int as real) / 100real, -c * 10000000000real <= (acc as int as real), (acc as int as real) <= c * 10000000000real, c >= 1real;
-            assert(f64_within(mean_scaled, 20000000000real)) by {
-                assert(mean_scaled.is_finite_spec());
-            };
-            lemma_f64_div_defined(mean_scaled, fc, 20000000000real, 1000000000real);
-        }
-        let avg = mean_scaled / fc;
-        proof {
-            lemma_f64_div_real(mean_scaled, fc, avg, 20000000000real, 1000000000real);
-        }
+        let avg = fs / fden;
         let ghost old_res = res@;
         res.push(OutRow { k: kk, m: avg });
         proof {

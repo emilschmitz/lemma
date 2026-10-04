@@ -21,7 +21,6 @@ from db_extension.optimizer import run_optimization_loop
 from research_loop.agent_sandbox import CLAUDE_IMAGE, claude_agent_cmd, claude_docker_args
 from research_loop.spec_styles import ENV_VALUE, check_style
 from research_loop.scripts.declarative_draws import beats_duck, resolve_sec_db
-from research_loop.scripts.declarative_round import sec_float_abs_eps
 from research_loop.scripts.sqlsmith_trusted_coverage import load_sec_schema
 from research_loop.table_assumptions import CatalogAssumptions, ColumnAssumption, TableAssumptions
 
@@ -107,7 +106,6 @@ def run_ladder(model: str, indices: tuple[int, ...] | None = None) -> list[dict]
         if job.get("sec"):
             os.environ["LEMMA_MEASURE_DB"] = str(db_path)
             os.environ["LEMMA_ASSUMPTION_PACKAGE"] = "sec_margin"
-            os.environ["LEMMA_FLOAT_ABS_EPS"] = sec_float_abs_eps()
             os.environ.pop("LEMMA_DECL_ROWS", None)
             os.environ.pop("LEMMA_DECL_SEED", None)
             kwargs.update(schema=sec_schema, workload="sec")

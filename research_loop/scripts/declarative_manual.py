@@ -33,17 +33,15 @@ from research_loop.scripts import declarative_round as rnd
 from research_loop.trust_configs import apply_trust_config
 
 
-def _job_env(kind: str) -> tuple[dict, object, str | None]:
+def _job_env(kind: str) -> tuple[dict, object]:
     if kind == "sec":
         from research_loop.scripts.sqlsmith_trusted_coverage import load_sec_schema
 
         os.environ["LEMMA_MEASURE_DB"] = str(rnd.SEC_DB)
-        eps = rnd.sec_float_abs_eps()
-        os.environ["LEMMA_FLOAT_ABS_EPS"] = eps
-        return load_sec_schema(), rnd.sec_catalog(), eps
+        return load_sec_schema(), rnd.sec_catalog()
     schema, catalog = rnd.tpch_schema_and_catalog(rnd.TPCH_DB)
     os.environ["LEMMA_MEASURE_DB"] = str(rnd.TPCH_DB)
-    return schema, catalog, None
+    return schema, catalog
 
 
 def _project(sql: str, schema: dict) -> dict:
@@ -68,14 +66,14 @@ def _project(sql: str, schema: dict) -> dict:
 
 
 def prepare(kind: str, sql: str, ws: Path) -> None:
-    schema, catalog, eps = _job_env(kind)
+    schema, catalog = _job_env(kind)
     resolved = _project(sql, schema)
     ws.mkdir(parents=True, exist_ok=True)
     bins, bar = drive._maybe_large_table(
-        sql_query=sql, catalog=catalog, workspace=ws, schema=resolved, float_abs_eps=eps
+        sql_query=sql, catalog=catalog, workspace=ws, schema=resolved
     )
-    (ws / "decl_data" / "bar.json").write_text(json.dumps({**bar, "eps": eps}, default=str))
-    spec = emit_declarative_spec(sql, resolved, catalog, float_abs_eps=eps)
+    (ws / "decl_data" / "bar.json").write_text(json.dumps(bar, default=str))
+    spec = emit_declarative_spec(sql, resolved, catalog)
     spec_path, agent_path = drive._ensure_context_files(
         ws, sql_query=sql, resolved_schema=resolved, spec_text=spec
     )

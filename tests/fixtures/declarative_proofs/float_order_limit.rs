@@ -96,7 +96,6 @@ proof fn lemma_hit_count_all(t: &Cols_t, i0: int)
     decreases t.n as int - i0,
 {
     if i0 < t.n as int {
-        lemma_hit_count_step(t, i0);
         lemma_hit_count_all(t, i0 + 1);
     }
 }
@@ -109,7 +108,6 @@ proof fn lemma_hits_untaken(t: &Cols_t, tk: Seq<bool>, i0: int, k: real)
     decreases t.n as int - i0,
 {
     if i0 < t.n as int {
-        lemma_hits_with_step(t, i0, k);
         lemma_hits_untaken(t, tk, i0 + 1, k);
     }
 }
@@ -203,6 +201,48 @@ proof fn lemma_sel_step(t: &Cols_t, tk: Seq<bool>, res: Seq<OutRow>, wits: Seq<i
     assert(wits.push(p).len() == res.push(OutRow { v: vp }).len());
     assert(tk_count(tk.update(p, true), 0) == res.push(OutRow { v: vp }).len() as int);
 }
+// Loop exit (3 rows picked, or every row picked): the result meets the host `ensures`.
+proof fn lemma_order_final(t: &Cols_t, taken: Seq<bool>, res: Seq<OutRow>, wits: Seq<int>)
+    requires
+        sel_inv(t, taken, res, wits),
+        res.len() <= 3,
+        res.len() == 3 || res.len() as int == t.n as int,
+    ensures
+        forall|r: int| #![trigger res[r]] 0 <= r < res.len() ==> exists|i0: int| #![trigger row_hit(t, i0)] row_hit(t, i0) && out_key(res[r]) == proj_key(t, i0),
+        forall|r: int| #![trigger res[r]] 0 <= r < res.len() ==> out_copies(res, 0, out_key(res[r])) <= hits_with(t, 0, out_key(res[r])),
+        res.len() as int == hit_count(t, 0) || res.len() == 3,
+        forall|i0: int| #![trigger row_hit(t, i0)] row_hit(t, i0) && hits_with(t, 0, proj_key(t, i0)) > out_copies(res, 0, proj_key(t, i0)) && res.len() > 0 ==> (res[(res.len() as int) - 1].v as real) <= (t.v@[i0] as real),
+        forall|r: int| #![trigger res[r]] 0 <= r < res.len() && res.len() as int == hit_count(t, 0) ==> out_copies(res, 0, out_key(res[r])) == hits_with(t, 0, out_key(res[r])),
+{
+    let n = t.n;
+        lemma_hit_count_all(t, 0);
+        lemma_tk_count_all(taken, 0);
+        assert(tk_count(taken, 0) == res.len() as int);
+        lemma_sel_wits(t, taken, res, wits);
+        assert forall|r: int| #![trigger res[r]] 0 <= r < res.len() implies exists|i0: int| #![trigger row_hit(t, i0)] row_hit(t, i0) && out_key(res[r]) == proj_key(t, i0) by {
+            assert(res[r] == res[r]);
+            assert(0 <= wits[r] < t.n as int);
+            assert(row_hit(t, wits[r]));
+        };
+        assert forall|r: int| #![trigger res[r]] 0 <= r < res.len() implies out_copies(res, 0, out_key(res[r])) <= hits_with(t, 0, out_key(res[r])) by {
+            lemma_hits_untaken(t, taken, 0, out_key(res[r]));
+        };
+        assert(res.len() as int == hit_count(t, 0) || res.len() == 3);
+        assert forall|i0: int| #![trigger row_hit(t, i0)] row_hit(t, i0) && hits_with(t, 0, proj_key(t, i0)) > out_copies(res, 0, proj_key(t, i0)) && res.len() > 0 implies (res[(res.len() as int) - 1].v as real) <= (t.v@[i0] as real) by {
+            lemma_hits_untaken(t, taken, 0, proj_key(t, i0));
+            let j = choose|j: int| 0 <= j < n as int && !taken[j] && proj_key(t, j) == proj_key(t, i0);
+            assert(proj_key(t, i0) == (t.v@[i0] as real));
+        };
+        assert forall|r: int| #![trigger res[r]] 0 <= r < res.len() && res.len() as int == hit_count(t, 0) implies out_copies(res, 0, out_key(res[r])) == hits_with(t, 0, out_key(res[r])) by {
+            lemma_hits_untaken(t, taken, 0, out_key(res[r]));
+            if hits_with(t, 0, out_key(res[r])) > taken_with(t, taken, 0, out_key(res[r])) {
+                let j = choose|j: int| 0 <= j < n as int && !taken[j] && proj_key(t, j) == out_key(res[r]);
+                assert(tk_count(taken, 0) == n as int);
+                lemma_tk_count_all_taken(taken, 0);
+            }
+        };
+}
+
 // AGENT_HELPERS_END
 // AGENT_EDIT_START
     let n = t.n;
@@ -297,33 +337,10 @@ proof fn lemma_sel_step(t: &Cols_t, tk: Seq<bool>, res: Seq<OutRow>, wits: Seq<i
         taken.set(p, true);
     }
     proof {
-        lemma_hit_count_all(t, 0);
         lemma_tk_count_all(taken@, 0);
-        assert(sel_inv(t, taken@, res@, wits));
-        assert(tk_count(taken@, 0) == res@.len() as int);
-        lemma_sel_wits(t, taken@, res@, wits);
-        assert forall|r: int| #![trigger res@[r]] 0 <= r < res@.len() implies exists|i0: int| #![trigger row_hit(t, i0)] row_hit(t, i0) && out_key(res@[r]) == proj_key(t, i0) by {
-            assert(res@[r] == res@[r]);
-            assert(0 <= wits[r] < t.n as int);
-            assert(row_hit(t, wits[r]));
-        };
-        assert forall|r: int| #![trigger res@[r]] 0 <= r < res@.len() implies out_copies(res@, 0, out_key(res@[r])) <= hits_with(t, 0, out_key(res@[r])) by {
-            lemma_hits_untaken(t, taken@, 0, out_key(res@[r]));
-        };
-        assert(res@.len() as int == hit_count(t, 0) || res@.len() == 3);
-        assert forall|i0: int| #![trigger row_hit(t, i0)] row_hit(t, i0) && hits_with(t, 0, proj_key(t, i0)) > out_copies(res@, 0, proj_key(t, i0)) && res@.len() > 0 implies (res@[(res@.len() as int) - 1].v as real) <= (t.v@[i0] as real) by {
-            lemma_hits_untaken(t, taken@, 0, proj_key(t, i0));
-            let j = choose|j: int| 0 <= j < n as int && !taken@[j] && proj_key(t, j) == proj_key(t, i0);
-            assert(proj_key(t, i0) == (t.v@[i0] as real));
-        };
-        assert forall|r: int| #![trigger res@[r]] 0 <= r < res@.len() && res@.len() as int == hit_count(t, 0) implies out_copies(res@, 0, out_key(res@[r])) == hits_with(t, 0, out_key(res@[r])) by {
-            lemma_hits_untaken(t, taken@, 0, out_key(res@[r]));
-            if hits_with(t, 0, out_key(res@[r])) > taken_with(t, taken@, 0, out_key(res@[r])) {
-                let j = choose|j: int| 0 <= j < n as int && !taken@[j] && proj_key(t, j) == out_key(res@[r]);
-                assert(tk_count(taken@, 0) == n as int);
-                lemma_tk_count_all_taken(taken@, 0);
-            }
-        };
+        lemma_hit_count_all(t, 0);
+        assert(res@.len() == 3 || res@.len() as int == t.n as int);
+        lemma_order_final(t, taken@, res@, wits);
     }
     res
 // AGENT_EDIT_END

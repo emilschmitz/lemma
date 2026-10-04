@@ -144,29 +144,12 @@ def test_float_sum_emits_real_and_eps() -> None:
         "u": {"a": "integer"},
     }
     sql = "SELECT t.g, SUM(t.amt) AS s FROM t JOIN u ON t.a = u.a GROUP BY t.g"
-    out = emit_declarative_spec(sql, schema, catalog, float_abs_eps="0.000001")
+    out = emit_declarative_spec(sql, schema, catalog)
     assert "Vec<f64>" in out
     assert "as real" in out
-    assert "FLOAT_ABS_EPS" in out
-    assert "0.000001" in out
-    assert "pub const FLOAT_ABS_EPS" in out
+    assert "FLOAT_ABS_EPS" not in out
+    assert "res@[g] as real == matched_real_sum(t, u, g as int)" in out
     assert re.search(r"amt.*u64|Vec<u64>.*amt", out, re.IGNORECASE) is None
-
-
-def test_float_sum_requires_eps() -> None:
-    catalog = CatalogAssumptions(
-        tables={
-            "t": TableAssumptions(
-                max_rows=10,
-                columns={"amt": ColumnAssumption(max_value_exclusive=100)},
-            ),
-            "u": TableAssumptions(max_rows=10),
-        }
-    )
-    schema = {"t": {"a": "integer", "g": "integer", "amt": "float"}, "u": {"a": "integer"}}
-    sql = "SELECT t.g, SUM(t.amt) AS s FROM t JOIN u ON t.a = u.a GROUP BY t.g"
-    with pytest.raises(DeclarativeUnsupported, match="LEMMA_FLOAT_ABS_EPS"):
-        emit_declarative_spec(sql, schema, catalog, float_abs_eps=None)
 
 
 def test_admission_rules() -> None:

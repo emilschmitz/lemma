@@ -101,10 +101,6 @@ def _one_draw(seed: int, db_path: Path) -> bool:
     os.environ["LEMMA_SPEC_STYLE"] = "declarative"
     os.environ["LEMMA_ASSUMPTION_PACKAGE"] = package
     os.environ["LEMMA_MEASURE_DB"] = str(db_path)
-    # Relative 1e-9 of the largest float sum the catalog allows: also the tolerance of the timed row check.
-    from research_loop.scripts.declarative_round import sec_float_abs_eps
-
-    os.environ.setdefault("LEMMA_FLOAT_ABS_EPS", sec_float_abs_eps())
     os.environ.pop("LEMMA_DECL_ROWS", None)
     ok_all = True
     log_path = _OUT / f"draw_{seed}.jsonl"
