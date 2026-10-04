@@ -140,7 +140,7 @@ def _ensure_context_files(
     spec_path.write_text(spec_text)
     (ro / "query.sql").write_text(sql_query.strip() + "\n")
     (ro / "schema.json").write_text(json.dumps(resolved_schema, indent=2) + "\n")
-    (ro / "lemma_index.md").write_text(current_trusted_set().index_markdown())
+    (ro / "lemma_index.md").write_text(current_trusted_set().index_markdown(spec_text))
     mount_verus_docs(ro)
     mount_examples(ro)
     agent_path = workspace / "runquery_agent.rs"
@@ -223,6 +223,7 @@ def run_declarative_optimization_loop(
 
         cfg = load_agent_config()
         in_docker = use_docker(cfg)
+        lemma_index = current_trusted_set().index_markdown(spec)
         prompt = build_declarative_prompt(
             sql=sql_query,
             spec_path=str(spec_path.relative_to(workspace)),

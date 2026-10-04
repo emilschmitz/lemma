@@ -51,7 +51,7 @@ def _host_lemma_region() -> str:
     """Lemma source the agent can call. Assemble replaces this same region."""
     from declarative_spec.trusted_sets import current
 
-    body = current().lemmas_rs()
+    body = current().lemmas_rs(None)
     return "// HOST_LEMMAS_START\n" + body + "\n// HOST_LEMMAS_END"
 
 
@@ -601,6 +601,17 @@ def _flatten_group_derived_sql(sql: str) -> str:
     return sql if flat is tree and not moved else flat.sql()
 
 
+def _fit_host_lemma_region(spec: str) -> str:
+    """Put into the host lemma region the trusted set's blocks this spec needs (no float lemma without a float)."""
+    from declarative_spec.trusted_sets import current
+
+    body = current().lemmas_rs(spec)
+    start, end = "// HOST_LEMMAS_START", "// HOST_LEMMAS_END"
+    head, _, rest = spec.partition(start)
+    _, _, tail = rest.partition(end)
+    return f"{head}{start}\n{body}\n{end}{tail}"
+
+
 def _with_agent_surface(spec: str) -> str:
     """Import every vstd module by glob, and mark the helper region just above `run_query`."""
     from declarative_spec.regions import HELPERS_END, HELPERS_START
@@ -608,6 +619,7 @@ def _with_agent_surface(spec: str) -> str:
 
     assert spec.count("use vstd::prelude::*;") == 1
     spec = _prune_unread_columns(spec)
+    spec = _fit_host_lemma_region(spec)
     spec = spec.replace("use vstd::prelude::*;", preamble_uses(), 1)
     head, sep, tail = spec.partition("pub fn run_query(")
     assert sep

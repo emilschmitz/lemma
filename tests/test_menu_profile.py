@@ -253,7 +253,7 @@ _ALT_INDEX = "# ALT index\n- `lemma_alt_only()`\n"
 def alt_trusted_set(monkeypatch: pytest.MonkeyPatch):
     from declarative_spec import trusted_sets as ts
 
-    monkeypatch.setitem(ts.TRUSTED_SETS, "alt", ts.TrustedSet("alt", lambda: _ALT_LEMMAS, lambda: _ALT_INDEX))
+    monkeypatch.setitem(ts.TRUSTED_SETS, "alt", ts.TrustedSet("alt", lambda spec=None: _ALT_LEMMAS, lambda spec=None: _ALT_INDEX))
     monkeypatch.setitem(
         mp.TRUSTED_SETS, "alt", mp.TrustedSetEntry(DECLARATIVE, "adversary_declarative0", lambda: ts.get("alt"))
     )
@@ -276,9 +276,12 @@ def test_default_trusted_set_spec_and_index_are_unchanged() -> None:
     spec = _spec()
     # the integer fit lemmas were removed by the audit (Verus knows primitive adds natively); the
     # float host lemmas are what the default block carries now
-    assert "lemma_f64_add_real" in spec and "lemma_u64_add_fits" not in spec
+    # this spec has no float value: it carries no float lemma, and its index lists none
+    assert "lemma_f64_add_real" not in spec and "lemma_u64_add_fits" not in spec
     assert "ALT_TRUSTED_MARKER" not in spec
-    assert current().index_markdown() == lemma_index_markdown()
+    assert current().index_markdown(spec) == lemma_index_markdown(floats=False)
+    assert "lemma_f64_add_real" not in current().index_markdown(spec)
+    assert "lemma_f64_add_real" in current().index_markdown(None)  # no spec: every block
 
 
 def test_swapping_the_trusted_set_changes_spec_text_and_lemma_index_together(alt_trusted_set) -> None:
@@ -289,7 +292,7 @@ def test_swapping_the_trusted_set_changes_spec_text_and_lemma_index_together(alt
     spec = _spec()
     host = spec.split("// HOST_LEMMAS_START")[1].split("// HOST_LEMMAS_END")[0]
     assert "ALT_TRUSTED_MARKER" in host and "lemma_f64_add_real" not in host
-    assert current().index_markdown() == _ALT_INDEX
+    assert current().index_markdown(spec) == _ALT_INDEX
     assert "lemma_alt_only" in host_names(spec)  # admission knows the host names of the active set
 
 

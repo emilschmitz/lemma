@@ -218,8 +218,6 @@ def test_helper_region_with_proof_and_spec_fns_is_accepted() -> None:
     [
         ("spec fn valid_cols_pre(x: int) -> int { x }", "valid_cols_pre"),
         ("spec fn row_hit(x: int) -> int { x }", "row_hit"),
-        ("proof fn lemma_f64_add_real() { }", "lemma_f64_add_real"),
-        ("proof fn abs_real() { }", "abs_real"),
         ("proof fn main() { }", "main"),
         ("spec fn a() -> int { 1 }\nspec fn a() -> int { 2 }", "defined twice"),
     ],
@@ -228,6 +226,32 @@ def test_helper_that_reuses_a_host_name_is_rejected(helpers: str, needle: str) -
     result = admit_helpers(helpers, _USUM_SPEC)
     assert not result.ok
     assert any(needle in v for v in result.violations), result.violations
+
+
+def _float_spec() -> str:
+    from declarative_spec.emit import emit_declarative_spec
+    from research_loop.table_assumptions import CatalogAssumptions, ColumnAssumption, TableAssumptions
+
+    cat = CatalogAssumptions(
+        tables={"t": TableAssumptions(max_rows=8, columns={"v": ColumnAssumption(max_value_exclusive=2**20)})}
+    )
+    return emit_declarative_spec("SELECT SUM(v) AS s FROM t WHERE v > 0", {"t": {"v": "double"}}, cat)
+
+
+@pytest.mark.parametrize(
+    ("helpers", "needle"),
+    [("proof fn lemma_f64_add_real() { }", "lemma_f64_add_real"), ("proof fn abs_real() { }", "abs_real")],
+)
+def test_helper_that_reuses_a_float_host_name_is_rejected_in_a_float_spec(helpers: str, needle: str) -> None:
+    result = admit_helpers(helpers, _float_spec())
+    assert not result.ok
+    assert any(needle in v for v in result.violations), result.violations
+
+
+@pytest.mark.parametrize("helpers", ["proof fn lemma_f64_add_real() { }", "proof fn abs_real() { }"])
+def test_float_names_are_not_host_names_in_a_spec_without_a_float(helpers: str) -> None:
+    # a spec with no float value carries no float lemma, so these names are free helper names there
+    assert admit_helpers(helpers, _USUM_SPEC).ok
 
 
 @pytest.mark.parametrize(
@@ -374,3 +398,60 @@ def test_prompt_describes_both_regions_and_no_longer_offers_imports() -> None:
     )
     assert "AGENT_HELPERS_START" in prompt and "broadcast use vstd::seq::group_seq_axioms;" in prompt
     assert "You MAY write `use vstd::...;`" not in prompt
+
+
+# ---- the float lemma block is only for specs with a float value ---------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT k, COUNT(*) AS c FROM t GROUP BY k",
+        "SELECT k, SUM(a) AS s FROM t WHERE a > 3 GROUP BY k",
+        "SELECT a FROM t ORDER BY a LIMIT 2",
+    ],
+)
+def test_a_spec_without_a_float_value_has_no_f64_lemma_and_no_f64_index_entry(sql: str) -> None:
+    from declarative_spec.emit import emit_declarative_spec
+    from declarative_spec.lemma_index import lemma_index_markdown
+    from declarative_spec.trusted_sets import current
+
+    from research_loop.table_assumptions import CatalogAssumptions, TableAssumptions
+
+    cat = CatalogAssumptions(tables={"t": TableAssumptions(max_rows=8)})
+    spec = emit_declarative_spec(sql, {"t": {"k": "bigint", "a": "bigint"}}, cat)
+    host = spec.split("// HOST_LEMMAS_START")[1].split("// HOST_LEMMAS_END")[0]
+    assert "f64" not in host and "abs_real" not in host and "real" not in host
+    index = current().index_markdown(spec)
+    assert "f64" not in index and "abs_real" not in index and "FLOATS" not in index
+    assert index == lemma_index_markdown(floats=False)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    ["SELECT SUM(v) AS s FROM t WHERE v > 0", "SELECT AVG(a) AS m FROM t", "SELECT COUNT(*) AS c FROM t WHERE v > 1"],
+)
+def test_a_spec_with_a_float_value_carries_the_f64_lemmas_and_their_index(sql: str) -> None:
+    from declarative_spec.emit import emit_declarative_spec
+    from declarative_spec.trusted_sets import current
+    from research_loop.table_assumptions import CatalogAssumptions, ColumnAssumption, TableAssumptions
+
+    cat = CatalogAssumptions(
+        tables={"t": TableAssumptions(max_rows=8, columns={"v": ColumnAssumption(max_value_exclusive=2**20)})}
+    )
+    spec = emit_declarative_spec(sql, {"t": {"v": "double", "a": "bigint"}}, cat)
+    host = spec.split("// HOST_LEMMAS_START")[1].split("// HOST_LEMMAS_END")[0]
+    assert "lemma_f64_add_real" in host
+    assert "lemma_f64_add_real" in current().index_markdown(spec)
+
+
+def test_the_assembled_program_keeps_the_same_host_block_as_the_spec() -> None:
+    from declarative_spec.assemble import assemble_declarative_program
+    from declarative_spec.emit import emit_declarative_spec
+
+    from research_loop.table_assumptions import CatalogAssumptions, TableAssumptions
+
+    cat = CatalogAssumptions(tables={"t": TableAssumptions(max_rows=8)})
+    spec = emit_declarative_spec("SELECT k, COUNT(*) AS c FROM t GROUP BY k", {"t": {"k": "bigint"}}, cat)
+    program = assemble_declarative_program(spec, "    loop {}")
+    assert "lemma_f64" not in program

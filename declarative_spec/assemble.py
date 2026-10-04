@@ -57,7 +57,7 @@ def assemble_declarative_program(
 
     from declarative_spec.trusted_sets import current
 
-    lemmas = current().lemmas_rs()
+    lemmas = current().lemmas_rs(stitched)
     inner_start = host_start + len("// HOST_LEMMAS_START")
     stitched = stitched[:inner_start] + "\n" + lemmas + "\n" + stitched[host_end:]
 

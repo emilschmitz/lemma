@@ -1,7 +1,17 @@
 """Markdown index of host lemmas and vstd items for declarative agents."""
 
 
-def lemma_index_markdown() -> str:
+def lemma_index_markdown(floats: bool = True) -> str:
+    """The index; ``floats=False`` leaves out every entry about f64 / reals (a spec with no float value)."""
+    text = _lemma_index_all()
+    if floats:
+        return text
+    paragraphs = text.split("\n\n")
+    kept = [p for p in paragraphs if "f64" not in p and "`abs_real" not in p and "FLOATS" not in p]
+    return "\n\n".join(kept)
+
+
+def _lemma_index_all() -> str:
     lines = [
         "# Declarative spec lemma index",
         "",
