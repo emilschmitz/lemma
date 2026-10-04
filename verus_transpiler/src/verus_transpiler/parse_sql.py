@@ -29,6 +29,8 @@ _INT_TYPES = frozenset({
 _STRING_TYPES = frozenset({"string", "varchar", "text", "char", "bpchar"})
 _BOOL_TYPES = frozenset({"bool", "boolean"})
 _DATE_LITERAL = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
+_I32_MIN, _I32_MAX = -2147483648, 2147483647
+_I64_MIN, _I64_MAX = -9223372036854775808, 9223372036854775807
 
 
 def _contains_non_int_number(node: exp.Expression) -> bool:
@@ -38,6 +40,37 @@ def _contains_non_int_number(node: exp.Expression) -> bool:
         _contains_non_int_number(child)
         for child in node.args.values()
         if isinstance(child, exp.Expression)
+    )
+
+
+def _refuse_hardware_const_overflow(left: int, right: int, result: int, op: str) -> None:
+    """DuckDB types small literals as INT32 and does not widen the operation.
+
+    ``100000 * 100000`` is an INT32 multiply, so DuckDB errors. A literal that
+    does not fit in INT32, such as ``3000000000 * 2``, is BIGINT arithmetic.
+    """
+    if os.environ.get("LEMMA_EXACT_SUM", "0") != "1":
+        return
+
+    def width(value: int) -> int:
+        if _I32_MIN <= value <= _I32_MAX:
+            return 32
+        if _I64_MIN <= value <= _I64_MAX:
+            return 64
+        return 128
+
+    used = max(width(left), width(right))
+    if used == 32:
+        lo, hi, label = _I32_MIN, _I32_MAX, "INT32"
+    elif used == 64:
+        lo, hi, label = _I64_MIN, _I64_MAX, "INT64"
+    else:
+        return
+    if lo <= result <= hi:
+        return
+    raise UnsupportedContractError(
+        f"hardware menu does not fold {op} that overflows {label}: "
+        "DuckDB rejects that literal arithmetic"
     )
 
 
@@ -149,10 +182,16 @@ def _fold_int_literal(node: exp.Expression) -> str | None:
             return None
         a, b = int(left), int(right)
         if isinstance(node, exp.Add):
-            return str(a + b)
-        if isinstance(node, exp.Sub):
-            return str(a - b)
-        return str(a * b)
+            result = a + b
+            op = "addition"
+        elif isinstance(node, exp.Sub):
+            result = a - b
+            op = "subtraction"
+        else:
+            result = a * b
+            op = "multiplication"
+        _refuse_hardware_const_overflow(a, b, result, op)
+        return str(result)
     return None
 
 
@@ -934,6 +973,9 @@ def _to_row_expr(
     if isinstance(node, exp.Paren):
         return f"({_to_row_expr(node.this, resolver)})"
     if isinstance(node, exp.Mul):
+        # WHERE folds this product. SUM leaves the operator in the spec.
+        # Either way an overflowing INT32/INT64 literal product is a DuckDB error.
+        _fold_int_literal(node)
         return f"{_to_row_expr(node.left, resolver)} * {_to_row_expr(node.right, resolver)}"
     if isinstance(node, exp.Div):
         # DuckDB `/` on integers is DOUBLE division. The integer `/` below
@@ -947,6 +989,7 @@ def _to_row_expr(
             raise UnsupportedContractError("Division by zero literal is not supported.")
         return f"{_to_row_expr(node.left, resolver)} / {_to_row_expr(node.right, resolver)}"
     if isinstance(node, exp.Add):
+        _fold_int_literal(node)
         return f"{_to_row_expr(node.left, resolver)} + {_to_row_expr(node.right, resolver)}"
     if isinstance(node, exp.Sub):
         return f"{_to_row_expr(node.left, resolver)} - {_to_row_expr(node.right, resolver)}"

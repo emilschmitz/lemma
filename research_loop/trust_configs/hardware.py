@@ -23,7 +23,7 @@ CONFIG = TrustConfig(
         "refused because DuckDB `/` is DOUBLE, not integer division. "
         "DATE literals are refused because DuckDB will not compare an INTEGER "
         "column to a DATE. EXTRACT is refused because DuckDB has no date_part "
-        "on INTEGER. CASE without ELSE is refused because DuckDB yields NULL. "
+        "on INTEGER. CASE without ELSE is refused because DuckDB yields NULL. Literal arithmetic that overflows INT32 or INT64 is refused because DuckDB rejects that overflow. "
         "Not the fast "
         "menu. LEMMA_EXACT_SUM is this menu's "
         "switch; product leaves it unset."
