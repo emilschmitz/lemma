@@ -1462,10 +1462,14 @@ def _compile_where_expr(
                 query.correlated = True
             return f"!{_exists_subquery_spec_call(exists, join_context=join_context, outer_table=_outer_base_table(query))}"
         if isinstance(inner, exp.Is):
-            col_node = inner.this
-            if not isinstance(col_node, exp.Column):
-                raise UnsupportedContractError("IS NOT NULL requires a column.")
-            return _compile_is_null_check(col_node, is_null=False, resolver=resolver, query=query)
+            if isinstance(inner.expression, exp.Null):
+                col_node = inner.this
+                if not isinstance(col_node, exp.Column):
+                    raise UnsupportedContractError("IS NOT NULL requires a column.")
+                return _compile_is_null_check(
+                    col_node, is_null=False, resolver=resolver, query=query
+                )
+            return f"!({_compile_child(inner)})"
         return f"!({_compile_child(inner)})"
     if isinstance(node, exp.Exists):
         exists = _parse_exists_subquery(
@@ -1658,7 +1662,26 @@ def _compile_where_expr(
         col_node = node.this
         if not isinstance(col_node, exp.Column):
             raise UnsupportedContractError("IS NULL requires a column.")
+        if isinstance(node.expression, exp.Boolean):
+            real_col, col_type, _ = _resolve_col(col_node, resolver)
+            kind = _kind_of(col_type)
+            want_true = bool(node.expression.this)
+            col_ref = f"row.{real_col}"
+            if kind == "bool":
+                flag = "true" if want_true else "false"
+                return f"{col_ref} == {flag}"
+            if kind == "int":
+                # DuckDB: a non-zero integer IS TRUE, and zero IS FALSE.
+                if want_true:
+                    return f"{col_ref} != 0"
+                return f"{col_ref} == 0"
+            raise UnsupportedContractError(
+                "IS TRUE is not supported on string columns: DuckDB cannot "
+                "cast the string to BOOL"
+            )
         is_null = isinstance(node.expression, exp.Null)
+        if not is_null:
+            raise UnsupportedContractError("IS supports NULL, TRUE, and FALSE only.")
         return _compile_is_null_check(col_node, is_null=is_null, resolver=resolver, query=query)
     if isinstance(node, exp.Paren):
         return f"({_compile_child(node.this)})"
