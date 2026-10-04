@@ -15,6 +15,7 @@ from declarative_spec.emit_join import _build_slots, _Slot, _table_alias
 from declarative_spec.emit_tail import tail_ensures
 from declarative_spec.parse import DeclarativeUnsupported
 from declarative_spec.parse_query import parse_query
+from declarative_spec.resolve import check_exact_integer_refs, qualify_join_refs
 from declarative_spec.schema_types import ColumnTypeInfo, SchemaModel, rust_ident
 from declarative_spec.surface import Agg, OrderKey, Query
 from research_loop.table_assumptions import CatalogAssumptions
@@ -65,6 +66,8 @@ def emit_from_surface(
         raise DeclarativeUnsupported("FROM")
     model = SchemaModel.from_caller(schema, query.tables[0])
     _reject_unemitted(query)
+    qualify_join_refs(query, model)
+    check_exact_integer_refs(query, model)
     if not query.aggs:
         if not query.projection:
             raise DeclarativeUnsupported("projection")
@@ -121,6 +124,10 @@ def emit_from_surface(
         "}",
     ]
     text = "\n".join(p for p in parts if p is not None)
+    if "seq_le(" in text and "spec fn seq_le(" not in text:
+        from declarative_spec.emit_projection import _seq_le_fn
+
+        text = text.replace("// HOST_LEMMAS_START", _seq_le_fn() + "\n\n// HOST_LEMMAS_START", 1)
     text = _string_views(text, _string_fields(model, helpers.params))
     if "method_spec" in text:
         raise DeclarativeUnsupported("internal spec shape")
@@ -486,11 +493,11 @@ def _agg_exec(kind: str, is_float: bool, agg: Agg, main: list[_Slot], model: Sch
         return "f64"
     if kind in ("COUNT", "COUNT_DISTINCT"):
         return "u64"
-    if agg.column and agg.column != "*" and not agg.expr:
+    if agg.column and agg.column != "*" and not agg.expr and not agg.arith:
         _slot, info = _find_col(agg.column, agg.table, main, model)
         if info.signed:
             return "i128"
-    if agg.expr:
+    if agg.expr or agg.arith:
         return "i128"
     return "u64"
 
@@ -513,7 +520,9 @@ def _value_fn(
     *,
     cast_real: bool = False,
 ) -> str:
-    if agg.expr:
+    if agg.arith:
+        expr = _compile_pred(agg.arith, main, [], model, {})
+    elif agg.expr:
         expr = _compile_case(agg.expr, main, model)
     elif agg.column and agg.column != "*":
         slot, info = _find_col(agg.column, agg.table, main, model)
@@ -922,12 +931,17 @@ def _ensures(query: Query, helpers: _Helpers, model: SchemaModel) -> str:
     tail_q.order_by = [
         OrderKey(column=k.column.split(".")[-1], descending=k.descending) for k in query.order_by
     ]
+    # Result rows are always ``OutRow`` structs here, so order keys are fields, never the row.
+    tail_q.projection = []
     tail_q.exists = []
     tail_q.scalar_subqueries = []
     tail_q.in_subqueries = []
     tail_q.set_op = None
     tail_q.set_query = None
-    tail = tail_ensures(tail_q)
+    string_cols = frozenset(
+        fname for fname, _c, info, _s in helpers.group_infos if info.spec_as == "Seq<char>"
+    )
+    tail = tail_ensures(tail_q, string_cols)
     if tail.strip():
         lines.append(tail)
     # ``p`` is unused when the tail already closed the ensures; keep the param call live

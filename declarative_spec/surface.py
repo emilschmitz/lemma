@@ -20,6 +20,9 @@ class Agg:
     table: str | None = None
     # Spec expression for the aggregated value when it is not a bare column.
     expr: str = ""
+    # Integer arithmetic over columns (bare or ``alias.col`` names), and the columns it reads.
+    arith: str = ""
+    arith_refs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -64,3 +67,5 @@ class Query:
     in_subqueries: list[tuple[str, str, Query]] = field(default_factory=list)
     scalar_subqueries: list[tuple[str, Query]] = field(default_factory=list)
     derived: list[tuple[str, Query]] = field(default_factory=list)
+    # Column refs in WHERE/HAVING text that must be exact integers (decimal-literal compares).
+    exact_int_refs: list[str] = field(default_factory=list)

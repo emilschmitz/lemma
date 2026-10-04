@@ -9,6 +9,12 @@ import sqlglot
 from sqlglot import exp
 
 from declarative_spec.parse import DeclarativeUnsupported
+from declarative_spec.parse_exprs import (
+    arith_text,
+    compare_to_rational,
+    fold_date,
+    fold_number,
+)
 from declarative_spec.schema_types import rust_ident
 from declarative_spec.surface import Agg, Join, OrderKey, Query
 
@@ -207,6 +213,9 @@ def _parse_select(expression: exp.Select, *, outer_scope: _Scope | None = None) 
             on_equalities: list[tuple[str, str]] = []
             on_combiner = "and"
             join_kind = "inner"
+        elif join.args.get("on") is None and not join.args.get("using"):
+            # ``FROM a, b``: every pair of rows, narrowed by the WHERE conditions.
+            on_equalities, on_combiner, join_kind = [], "and", "inner"
         else:
             on_equalities, on_combiner = _parse_on_clause(join.args.get("on"))
             join_kind = {"INNER": "inner", "LEFT": "left", "RIGHT": "right"}.get(
@@ -439,7 +448,18 @@ def _parse_agg(item: exp.Expression, scope: _Scope) -> Agg:
                     expr=_compile_case(inner.this, scope),
                 )
             if not isinstance(inner.this, exp.Column):
-                raise DeclarativeUnsupported(f"{kind} argument")
+                refs: list[str] = []
+                text = arith_text(inner.this, lambda c: _col_ref(c, scope)[0], refs)
+                if text is None or not refs:
+                    raise DeclarativeUnsupported(f"{kind} argument")
+                return Agg(
+                    kind=kind,
+                    column=None,
+                    alias=alias or kind.lower(),
+                    table=None,
+                    arith=text,
+                    arith_refs=tuple(refs),
+                )
             _ref, tbl = _col_ref(inner.this, scope)
             return Agg(
                 kind=kind,
@@ -510,6 +530,9 @@ def _compile_bool(node: exp.Expression, ctx: _BoolCtx) -> str:
         ctx.query.exists.append((name, sub, False))
         return name
     if isinstance(node, exp.Between):
+        exact = _between_exact(node, ctx)
+        if exact is not None:
+            return exact
         if not isinstance(node.this, exp.Column):
             raise DeclarativeUnsupported("BETWEEN")
         col, _ = _col_ref(node.this, ctx.scope)
@@ -545,6 +568,9 @@ def _compile_bool(node: exp.Expression, ctx: _BoolCtx) -> str:
             exp.LTE: "<=",
         }
         op = op_map[type(node)]
+        exact = _compare_exact(node, op, ctx)
+        if exact is not None:
+            return exact
         if isinstance(node.right, exp.Subquery) or isinstance(node.left, exp.Subquery):
             if isinstance(node.right, exp.Subquery):
                 sub_node, other = node.right, node.left
@@ -618,7 +644,7 @@ def _compile_side(node: exp.Expression, ctx: _BoolCtx) -> str:
     folded = _fold_int_literal(node)
     if folded is not None:
         return folded
-    raise DeclarativeUnsupported("expression operand")
+    return _constant_or_arith_side(node, ctx)
 
 
 def _compile_case(node: exp.Case, scope: _Scope) -> str:
@@ -697,3 +723,62 @@ def _fold_int_literal(node: exp.Expression) -> str | None:
         y, m, d = (int(x) for x in match.groups())
         return f"{y:04d}{m:02d}{d:02d}"
     return None
+
+
+_FLIP = {"==": "==", "!=": "!=", "<": ">", "<=": ">=", ">": "<", ">=": "<="}
+
+
+def _constant_or_arith_side(node: exp.Expression, ctx: _BoolCtx) -> str:
+    date = fold_date(node)
+    if date is not None:
+        return date
+    number = fold_number(node)
+    if number is not None:
+        if number.denominator != 1:
+            raise DeclarativeUnsupported("non-integer constant operand")
+        return str(number.numerator)
+    return _exact_int_side(node, ctx)
+
+
+def _exact_int_side(node: exp.Expression, ctx: _BoolCtx) -> str:
+    """A column or integer arithmetic. The columns must be integer typed (checked at emit)."""
+    refs: list[str] = []
+    text = arith_text(node, lambda c: _col_ref(c, ctx.scope)[0], refs)
+    if text is None or not refs:
+        raise DeclarativeUnsupported("expression operand")
+    ctx.query.exact_int_refs.extend(refs)
+    return text
+
+
+def _compare_exact(node: exp.Expression, op: str, ctx: _BoolCtx) -> str | None:
+    """A comparison where one side is a non-integer constant such as ``0.06 - 0.01``."""
+    left_value, right_value = fold_number(node.left), fold_number(node.right)  # type: ignore[attr-defined]
+    if left_value is not None and right_value is not None:
+        if left_value.denominator == 1 and right_value.denominator == 1:
+            return None
+        ops = {
+            "==": left_value == right_value,
+            "!=": left_value != right_value,
+            "<": left_value < right_value,
+            "<=": left_value <= right_value,
+            ">": left_value > right_value,
+            ">=": left_value >= right_value,
+        }
+        return "true" if ops[op] else "false"
+    if right_value is not None and right_value.denominator != 1:
+        return compare_to_rational(_exact_int_side(node.left, ctx), op, right_value)  # type: ignore[attr-defined]
+    if left_value is not None and left_value.denominator != 1:
+        return compare_to_rational(
+            _exact_int_side(node.right, ctx), _FLIP[op], left_value  # type: ignore[attr-defined]
+        )
+    return None
+
+
+def _between_exact(node: exp.Between, ctx: _BoolCtx) -> str | None:
+    low, high = fold_number(node.args["low"]), fold_number(node.args["high"])
+    if low is None or high is None:
+        return None
+    if low.denominator == 1 and high.denominator == 1 and isinstance(node.this, exp.Column):
+        return None
+    left = _exact_int_side(node.this, ctx)
+    return f"({compare_to_rational(left, '>=', low)} && {compare_to_rational(left, '<=', high)})"
