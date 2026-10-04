@@ -159,6 +159,15 @@ pub struct Cols_c {
     pub n: usize,
     pub r#abstract: Vec<i64>,
 }
+pub open spec fn valid_cols_a(a: &Cols_a) -> bool {
+    &&& a.name@.len() == a.n as int
+}
+pub open spec fn valid_cols_b(b: &Cols_b) -> bool {
+    &&& b.k@.len() == b.n as int
+}
+pub open spec fn valid_cols_c(c: &Cols_c) -> bool {
+    &&& c.r#abstract@.len() == c.n as int
+}
 pub struct OutRow {
     pub name: String,
     pub k: i64,

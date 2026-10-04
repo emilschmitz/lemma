@@ -56,7 +56,7 @@ def write_query_measure(
             suffix = struct_name.removeprefix("Cols_")
             fields = _FIELD.findall(body)
             table = _table_for_suffix(model, suffix)
-            blob = _export_table(con, model, table, fields, used=_used_fields(spec, fields))
+            blob = _export_table(con, model, table, fields)
             table_rows[suffix] = int.from_bytes(blob[:8], "little")
             path = dest / f"cols_{suffix}.bin"
             path.write_bytes(blob)
@@ -71,13 +71,6 @@ def write_query_measure(
     return {"bins": bins, "duck_us": duck_us, "rows": rows, "kinds": kinds, "table_rows": table_rows}
 
 
-def _used_fields(spec: str, fields: list[tuple[str, str]]) -> set[str]:
-    """Columns the spec reads, outside the struct and its ``valid_cols`` catalog bounds."""
-    body = re.sub(r"pub struct Cols_\w+\s*\{[^}]*\}", "", spec)
-    body = re.sub(r"pub open spec fn valid_cols_\w+\(.*?\n\}", "", body, flags=re.DOTALL)
-    return {fname for fname, _fty in fields if re.search(rf"\.{re.escape(fname)}@", body)}
-
-
 def _table_for_suffix(model: SchemaModel, suffix: str) -> str:
     hits = [orig for orig in model.original_table_names.values() if rust_ident(orig) == suffix]
     if len(hits) != 1:
@@ -90,7 +83,6 @@ def _export_table(
     model: SchemaModel,
     table: str,
     fields: list[tuple[str, str]],
-    used: set[str] | None = None,
 ) -> bytes:
     _orig, cols = model.lookup_table(table)
     # The spec struct may hold only the columns the query reads. Export exactly those, in struct order.
@@ -109,11 +101,10 @@ def _export_table(
     except duckdb.Error as exc:
         raise ValueError(str(exc)) from exc
     # The spec has no NULL semantics: a NULL packed as 0 or "" would silently change the answer.
-    for idx, (fname, _fty) in enumerate(fields):
-        if (used is None or fname in used) and any(row[idx] is None for row in fetched):
+    for idx, name in enumerate(names):
+        if any(row[idx] is None for row in fetched):
             raise ValueError(
-                f"{table}.{names[idx]} has NULLs and the query reads it; "
-                "the declarative spec has no NULL semantics"
+                f"{table}.{name} has NULLs; the declarative spec has no NULL semantics"
             )
     buf = bytearray(struct.pack("<Q", len(fetched)))
     # Column-major, the order the generated reader consumes: all of column 0, then column 1, ...
@@ -205,15 +196,15 @@ def _canon(exec_rust: str, value: object) -> object:
 
 
 def _pack(fty: str, value: object) -> bytes:
+    if value is None:
+        raise ValueError("NULL cell: the declarative spec has no NULL semantics")
     if fty == "String":
-        raw = b"" if value is None else str(value).encode("utf-8")
+        raw = str(value).encode("utf-8")
         if len(raw) > 2**32 - 1:
             raise ValueError("string column longer than u32")
         return struct.pack("<I", len(raw)) + raw
     if fty == "bool":
-        return bytes([0 if value in (None, False) else 1])
-    if value is None:
-        value = 0
+        return bytes([1 if value else 0])
     try:
         if fty == "f64":
             return struct.pack("<d", _as_float(value))

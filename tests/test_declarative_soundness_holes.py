@@ -103,29 +103,23 @@ def test_plain_limit_and_group_by_still_parse() -> None:
     assert parse_query("SELECT b, SUM(a) FROM t GROUP BY b").group_columns == ["b"]
 
 
-def test_loader_turns_sql_null_into_a_value_today() -> None:
-    """The column export packs NULL as 0, "" or false, so a NULL cell is indistinguishable
-    from a real value. The judge refuses NULL rows; production export does not."""
-    assert _pack("i64", None) == _pack("i64", 0)
-    assert _pack("u64", None) == _pack("u64", 0)
-    assert _pack("f64", None) == _pack("f64", 0.0)
-    assert _pack("i128", None) == _pack("i128", 0)
-    assert _pack("String", None) == _pack("String", "")
-    assert _pack("bool", None) == _pack("bool", False)
+def test_pack_raises_on_null_for_every_type() -> None:
+    for fty in ("i64", "u64", "f64", "i128", "String", "bool"):
+        with pytest.raises((ValueError, TypeError)):
+            _pack(fty, None)
 
 
-def test_exported_column_blob_is_identical_for_null_and_zero() -> None:
+@pytest.mark.parametrize("sql_type, fty", [("BIGINT", "i64"), ("VARCHAR", "String")])
+def test_export_raises_on_a_null_cell(sql_type: str, fty: str) -> None:
     from declarative_spec.schema_types import SchemaModel
 
-    model = SchemaModel.from_caller({"t": {"a": "BIGINT"}}, "t")
-    blobs = []
-    for cell in ("NULL", "0"):
-        con = duckdb.connect()
-        con.execute('CREATE TABLE "t" ("a" BIGINT)')
-        con.execute(f'INSERT INTO "t" VALUES ({cell})')
-        blobs.append(_export_table(con, model, "t", [("a", "i64")]))
-        con.close()
-    assert blobs[0] == blobs[1]
+    model = SchemaModel.from_caller({"t": {"a": sql_type}}, "t")
+    con = duckdb.connect()
+    con.execute(f'CREATE TABLE "t" ("a" {sql_type})')
+    con.execute('INSERT INTO "t" VALUES (NULL)')
+    with pytest.raises(ValueError, match="NULL"):
+        _export_table(con, model, "t", [("a", fty)])
+    con.close()
 
 
 def _spec(sql: str, schema: dict) -> str:
