@@ -116,6 +116,7 @@ def emit_from_surface(
         _seq_le_source() if any(_order_seq_flags(query, helpers)) else "",
         out_row,
         "",
+        _out_row_ok_fn(query, helpers),
         f"""pub fn run_query({params}) -> (res: Vec<OutRow>)
     requires
         {requires},
@@ -1039,10 +1040,10 @@ def _grouped_result(query: Query, helpers: _Helpers, scalars: dict[str, str]) ->
         f"forall|{binders}| #![trigger {hit_call}] {hit_call} && ({having_of}) ==> "
         f"exists|r: int| #![trigger res@[r]] 0 <= r < res@.len() && {helpers.key_at}({p}, {_idx_call(helpers.main)}) == {_out_key('res@[r]', helpers)}"
     )
+    del having_row, agg_row
     each = (
-        f"forall|r: int| #![trigger res@[r]] 0 <= r < res@.len() ==> ("
-        f"exists|{binders}| #![trigger {hit_call}] {hit_call} && {key_of} == {key_out}"
-        f" && ({having_row}) && {agg_row})"
+        f"forall|r: int| #![trigger res@[r]] 0 <= r < res@.len() ==> "
+        f"out_row_ok({p}, res@[r])"
     )
     distinct = (
         "forall|a: int, b: int| #![trigger res@[a], res@[b]] 0 <= a < b < res@.len() ==> "
@@ -1056,6 +1057,29 @@ def _grouped_result(query: Query, helpers: _Helpers, scalars: dict[str, str]) ->
         if query.order_by:
             lines.append(_omitted_after(query, helpers, scalars, having_of))
     return lines
+
+
+def _out_row_ok_fn(query: Query, helpers: _Helpers) -> str:
+    """Per-row predicate: a result row is a real group with the right aggregates.
+
+    The ``exists`` sits inside a spec fn so ``res@[r]`` is a ground term for the solver
+    (the skolem row of a negated ``forall r. exists i0. .. res@[r] ..`` otherwise appears only
+    inside the nested quantifier body, and a loop invariant over ``res@[r]`` never fires).
+    """
+    if helpers.key_ty is None:
+        return ""
+    p = _param_call(helpers.params)
+    binders, _ranges = _quant(helpers.main)
+    hit_call = f"{helpers.row_hit}({p}, {_idx_call(helpers.main)})"
+    key_of = f"{helpers.key_at}({p}, {_idx_call(helpers.main)})"
+    key_row = _out_key("row", helpers)
+    having_row = _having(query, helpers, helpers.scalars, key_row)
+    agg_row = _agg_eqs(helpers, p, key_row, "row")
+    return (
+        f"pub open spec fn out_row_ok({_param_sig(helpers.params)}, row: OutRow) -> bool {{\n"
+        f"    exists|{binders}| #![trigger {hit_call}] {hit_call} && {key_of} == {key_row}"
+        f" && ({having_row}) && {agg_row}\n}}\n"
+    )
 
 
 def _scalar_result(query: Query, helpers: _Helpers, scalars: dict[str, str]) -> str:
@@ -1085,14 +1109,14 @@ def _any_hit(helpers: _Helpers) -> str:
     return f"exists|{binders}| #![trigger {hit}] {hit}"
 
 
-def _agg_eqs(helpers: _Helpers, params: str, key: str) -> str:
+def _agg_eqs(helpers: _Helpers, params: str, key: str, row: str = "res@[r]") -> str:
     parts: list[str] = []
     key_arg = f", {key}" if helpers.key_ty else ""
     for agg in helpers.aggs:
         if agg.hidden:
             continue
         nullable = _nullable(helpers, agg)
-        field = f"res@[r].{agg.alias}"
+        field = f"{row}.{agg.alias}"
         view = _out_view(f"{field}->Some_0" if nullable else field, agg)
         if agg.style == "bound":
             eq = f"{agg.name}({params}{key_arg}, {view})"
