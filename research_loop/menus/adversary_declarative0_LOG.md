@@ -226,6 +226,22 @@ Real EDGAR 2022-2024 loaded by the coordinator: num 39,401,761 rows (value exact
 | `SELECT SUM(value) AS total FROM num WHERE value > 5000` | real SEC, full 39.4M num rows | T1 | PARALLEL, 8 vstd threads (`parallel_ungrouped_sum.rs` templated to i128/value, 18 verified, 0 errors) | yes | **17,128** | 219,016 | 872,864 | **12.79x / 50.96x** |
 | TPC-H Q6 variant | TPC-H SF1 (6.0M lineitem) | T1 | PARALLEL, 8 vstd threads (`parallel_ungrouped_product_sum.rs`, 21 verified, 0 errors) | yes | **5,827** | 11,874 | 22,786 | **2.04x / 3.91x** (the single-threaded body was 0.53x / 1.22x) |
 
+| TPC-H Q6 variant, same parallel body | TPC-H SF3 (18.0M lineitem; 4 columns, 0.5 GB) | T1 | PARALLEL 8 vstd threads (21 verified, 0 errors) | yes | 16,925 | 19,181 | 67,619 | **1.13x / 4.00x** |
+| TPC-H Q6 variant, same parallel body | TPC-H SF10 (60.0M lineitem; 1.7 GB binary memory) | T1 | PARALLEL 8 vstd threads (21 verified, 0 errors) | yes | 55,668 | 69,506 | 262,942 | **1.25x / 4.72x** |
+
+| `SELECT COUNT(*), SUM(value) FROM num WHERE uom = 'USD'` | real SEC, full 39.4M num rows, dict mode (uom as codes) | T1 | single-threaded (dict_filter_count_sum.rs, 8 verified, first check) | yes | 65,068 | 278,767 | 1,015,002 | **4.28x / 15.6x** |
+
+| `SELECT uom, COUNT(*), SUM(value) FROM num GROUP BY uom` | real SEC, full 39.4M num rows, dict mode (dense arrays over codes) | T2 | single-threaded (dict_group_count_sum_dense.rs, 10 verified, first check) | yes | 52,550 | 255,004 | 999,800 | **4.85x / 19.0x** |
+| `SELECT COUNT(*), MIN(line) FROM pre WHERE stmt = 'BS' AND line > 3` | real SEC, full 9.6M pre rows, dict mode, NULLABLE `stmt` (validity bit) | T1 | single-threaded (7 verified, 7 checks of speed tuning) | yes, **speed bar missed** | 13,419 best / 17,620 last | 12,618 | 35,913 | **0.94x best, 0.72x last (timing noise 13.4 to 18.4 ms) / 2.0x to 2.7x** |
+
+The last one is a bandwidth-bound scan (about 96 MB) that loses to the all-core engine single-threaded, exactly the class the parallel path is for;
+a parallel body for the dict + validity shape is not written yet. Observation from the prover: the check's timing noise (about 30 percent between identical runs on this shared box) makes a 6 percent gap undecidable: a repeat or median-of-more timing in the check would help.
+
+Real-data blocker found: real EDGAR has NULL cells in columns queries read (pre.stmt 1,073, sub.fy 4,662, sub.fp 4,665, tag.crdr 119,636 ...); the export refuses NULLs, so those queries cannot run yet (sent to the transpiler agent, who is building validity-bit NULL support). Dict caps (max_distinct) were declared by the transpiler agent and pass check.py on the real DB.
+
+Scale ladder for Q6 (data stated): SF1 2.04x, SF3 1.13x, SF10 1.25x vs the all-core engine; ~4x vs one thread at every size. At SF3/SF10 the parallel scan reads ~30 GB/s (504 MB in 16.9 ms), i.e. it is at the machine's memory bandwidth, and DuckDB 8t is about as fast
+(zone-map pruning of the shipdate range avoids part of the data). So the 2.8x TPC-H target is NOT reachable for this bandwidth-bound scan with the same bytes read; SF10 is the largest that ran (generated with `research_loop/scripts/gen_tpch.py`, dbgen under a 3 GB DuckDB memory limit: 81 s, 2.7 GB file; export 4:52).
+
 Parallel path (declarative-only, `LEMMA_PARALLEL_VSTD=1`, `declarative_spec/parallel.py`): `run_query` also takes `<t>_arc: &std::sync::Arc<Cols_t>` with
 `requires **<t>_arc == *<t>` (host main passes the same object twice), ensures unchanged. Workers own `Arc::clone`s and fold row ranges; the host's
 suffix folds are additive so the partials telescope (no copy, no concatenation lemma). Trusted base: vstd `spawn`/`join`/`Arc` only; no
