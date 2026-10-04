@@ -8,14 +8,10 @@ pub struct ZoneSegmentU32 {
 }
 
 pub exec fn build_zone_map_u32(col: &Vec<u32>, zone_rows: usize) -> (zones: Vec<ZoneSegmentU32>)
+    requires zone_rows > 0,
     ensures zones@.len() == 0 || zone_rows > 0,
 {
-    // zone_rows == 0 yields no zones (the old body returned zones here, which
-    // contradicted the ensures).
     let mut zones: Vec<ZoneSegmentU32> = Vec::new();
-    if zone_rows == 0 {
-        return zones;
-    }
     let zr = zone_rows;
     let mut start: usize = 0;
     while start < col.len()

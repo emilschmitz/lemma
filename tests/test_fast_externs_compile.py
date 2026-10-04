@@ -63,11 +63,13 @@ def test_core_primitives_have_no_external_body() -> None:
 
 
 def test_core_primitives_client_behavior(tmp_path: Path) -> None:
-    """Callers see the ensures: zone_rows == 0 gives no zones, set/probe/decode contracts hold."""
+    """Callers see the contracts: set/probe/decode contracts hold."""
     client = """
-fn client_zero_rows(col: &Vec<u32>) {
-    let z = build_zone_map_u32(col, 0);
-    assert(z@.len() == 0);
+fn client_zone_ok(col: &Vec<u32>, zone_rows: usize)
+    requires zone_rows > 0,
+{
+    let z = build_zone_map_u32(col, zone_rows);
+    assert(z@.len() == 0 || zone_rows > 0);
 }
 
 fn client_range(seg: &ZoneSegmentU32) {
@@ -97,3 +99,19 @@ fn client_decode(codes: &Vec<u32>, dict: &Vec<String>)
         "client.rs",
         "use vstd::hash_set::HashSetWithView;\n" + body + client,
     )
+
+
+def test_zone_map_requires_positive_zone_rows(tmp_path: Path) -> None:
+    body = _core_body()
+    assert "requires zone_rows > 0" in body
+    if resolve_verus_bin() is None:
+        pytest.skip("verus not found")
+    client = """
+fn client_no_precondition(col: &Vec<u32>, zone_rows: usize) {
+    let z = build_zone_map_u32(col, zone_rows);
+}
+"""
+    path = tmp_path / "reject.rs"
+    path.write_text(_HEADER + body + client + _FOOTER, encoding="utf-8")
+    ok, _log = run_verus_verify(str(path), timeout=120)
+    assert not ok
