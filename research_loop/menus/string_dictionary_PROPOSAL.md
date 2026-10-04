@@ -71,3 +71,34 @@ would (duplicate or out-of-range code, empty dictionary with n > 0); (b) a spec 
 an `as int` cast); (c) the legacy count/join emitters in `emit.py` are not dictionary-aware; in dict mode `_emit_integer_sql` sends every
 query to the surface emitter (test `test_dict_mode_never_uses_the_legacy_emitters`): confirm there is no other path that
 writes a `Vec<String>` struct field for a string column.
+
+## Result on the dictionary path (coverage and speed, 2026-10-04, synthetic SEC and TPC-H SF1)
+Requested by the adversary's verdict item 2. In dict mode every query takes the surface emitter.
+
+Emission, `plain` vs `dict` (same refusal reasons and counts in both):
+
+| sample | plain | dict |
+|---|---|---|
+| GenDB 300 (two samples), double schema | 300/300 | 300/300 |
+| GenDB corpus (881) | 881/881 | 881/881 |
+| SEC DECIMAL variant, GenDB 300 | 300/300 | 300/300 |
+| fuzz 400 | 272 (68.0%) | 272 (68.0%) |
+| TPC-H 22 as written | 14 (63.6%) | 14 (63.6%) |
+
+No new refusal in dict mode. Typecheck (`--no-verify`, 40 per sample, one at a time): GenDB, corpus, fuzz, DECIMAL 40/40 each,
+TPC-H 14/14. Host lemmas verified with an `assume(false)` body in dict mode, and the assembled program (loaders verified,
+`main` with the dictionary asserts compiled): grouped COUNT over a string key, two string keys, join SUM over a string key,
+COUNT(DISTINCT string) per string key, join projection ORDER BY a string. All verify (6 to 8 verified, 0 errors).
+
+Speed (`decl_dict_bench.py`, median of 7-11 timed runs, result rows equal DuckDB's every time):
+
+| query | plain | dict | DuckDB |
+|---|---|---|---|
+| TPC-H SF1 `MIN(l_extendedprice), COUNT(*) WHERE l_shipmode='AIR'` (u8 codes via `max_distinct`) | 36.3 ms | 7.0 ms | 6.5-7.0 ms |
+| SEC synthetic `MIN/MAX(ddate) WHERE uom='pure' AND qtrs=3`, `uom` u8 codes | 299 us | 297 us | 0.7-0.8 ms |
+| same, NO `max_distinct` declared (u32 codes) | 299 us | 440-540 us | 0.7-0.8 ms |
+
+The code width decides the speed: u32 codes read four times the bytes of u8 and lose the whole gain on the SEC query, so a
+package that turns `dict` on should declare `max_distinct` for its low-cardinality string columns (a data assumption that
+`check.py` measures). The `sec_margin` packages declare none yet, so the SEC string columns would be u32 today. Not done:
+the grouped T2 body (dense array over codes), the paper-card run in dict mode (item 3), and real EDGAR data.

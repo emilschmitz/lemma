@@ -45,7 +45,7 @@ def context(which: str):
     if which == "sec":
         from research_loop.scripts.declarative_round import SEC_DB, sec_catalog, sec_schema
 
-        return SEC_DB, sec_schema(), sec_catalog()
+        return SEC_DB, sec_schema(), _with_distinct(sec_catalog(), "num", "uom", 16)  # uom: 4 units in SEC
     from research_loop.scripts.declarative_round import TPCH_DB, tpch_schema_and_catalog
 
     schema, catalog = tpch_schema_and_catalog(TPCH_DB)
