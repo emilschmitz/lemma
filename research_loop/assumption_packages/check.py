@@ -12,6 +12,8 @@ Measuring rules (same as the loader):
 * value cap (exclusive): integers use ``MAX(ABS(col)) < cap``. DOUBLE columns are
   truncated toward zero into u64, so negatives become 0:
   ``MAX(GREATEST(TRUNC(col), 0)) < cap``
+* DECIMAL(p, s) columns: the cap is on the stored integer ``value * 10**s``, so the cap's
+  ``scale`` must equal ``s`` and ``MAX(ABS(col)) * 10**s < cap``, measured exactly
 * string cap: ``MAX(LENGTH(col)) <= cap``
 * unique key: no group of the key columns has more than one row
 * catalog caps: ``max_rows`` over every table; ``max_native_u32`` over columns of
@@ -24,6 +26,7 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
+from research_loop.decl_query_measure import decimal_scaled
 from db_extension.dataset_config import (
     _FLOAT_DUCKDB_TYPES,
     _INTEGER_DUCKDB_TYPES,
@@ -46,8 +49,12 @@ class AssumptionViolation(RuntimeError):
     """The package states something the database contradicts."""
 
 
-def _max_value(con: Any, table: str, col: str, base: str) -> int | None:
+def _max_value(con: Any, table: str, col: str, base: str, scale: int = 0) -> int | None:
+    """Largest absolute cell as an integer; a DECIMAL's is its stored integer, exactly."""
     q, t = _quote_duckdb_ident(col), _quote_duckdb_ident(table)
+    if base == "decimal":
+        got = con.execute(f"SELECT MAX(ABS({q})) FROM {t}").fetchone()[0]
+        return None if got is None else decimal_scaled(got, scale)
     if base in _FLOAT_DUCKDB_TYPES:
         sql = f"SELECT CAST(MAX(GREATEST(TRUNC({q}), 0)) AS HUGEINT) FROM {t}"
     else:
@@ -74,11 +81,15 @@ def _max_group(con: Any, table: str, key: tuple[str, ...]) -> int | None:
 def violations(catalog: CatalogAssumptions, con: Any) -> list[str]:
     """Every assumption in ``catalog`` that ``con`` contradicts."""
     types: dict[str, dict[str, str]] = {}
+    scales: dict[tuple[str, str], int] = {}
     for t, c, d in con.execute(
         "SELECT table_name, column_name, data_type FROM information_schema.columns "
         "WHERE table_schema = 'main'"
     ).fetchall():
-        types.setdefault(str(t), {})[str(c)] = str(d).lower().split("(")[0]
+        full = str(d).lower()
+        types.setdefault(str(t), {})[str(c)] = full.split("(")[0]
+        if full.startswith("decimal("):
+            scales[(str(t), str(c))] = int(full.rstrip(")").split(",")[1])
 
     out: list[str] = []
     counts = {
@@ -100,11 +111,17 @@ def violations(catalog: CatalogAssumptions, con: Any) -> list[str]:
                 out.append(f"{name}.{col}: named by the package but absent from the database")
                 continue
             base = types[name][col]
+            db_scale = scales.get((name, col), 0)
             if ca.max_value_exclusive is not None:
-                if base not in _INTEGER_DUCKDB_TYPES | _FLOAT_DUCKDB_TYPES:
+                if base not in _INTEGER_DUCKDB_TYPES | _FLOAT_DUCKDB_TYPES | {"decimal"}:
                     out.append(f"{name}.{col}: value cap on non-numeric type {base}")
+                elif ca.scale != db_scale:
+                    out.append(
+                        f"{name}.{col}: value cap is in units of 10^-{ca.scale}, "
+                        f"the column is {base} with scale {db_scale}"
+                    )
                 else:
-                    m = _max_value(con, name, col, base)
+                    m = _max_value(con, name, col, base, db_scale)
                     if m is not None and m >= ca.max_value_exclusive:
                         out.append(
                             f"{name}.{col}: value cap < {ca.max_value_exclusive} "
