@@ -34,11 +34,14 @@ def _maybe_large_table(
             dest=workspace / "decl_data",
             float_abs_eps=float_abs_eps,
         )
-        return prepared["bins"], {
+        bar = {
             "duck_us": prepared["duck_us"],
             "rows": prepared["rows"],
-            "kinds": prepared["kinds"],
+            "table_rows": prepared["table_rows"],
         }
+        if prepared["kinds"] is not None:  # OutRow result; a map result prints `ROW key value`
+            bar["kinds"] = prepared["kinds"]
+        return prepared["bins"], bar
     raw = os.environ.get("LEMMA_DECL_ROWS", "").strip()
     if not raw:
         return None, None

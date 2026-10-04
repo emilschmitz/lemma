@@ -60,6 +60,14 @@ def _proof_verified(output: str) -> bool:
     return False
 
 
+def _verify_summary(output: str) -> str:
+    """The Verus ``verification results:: N verified, M errors`` line, or an empty string."""
+    for line in (output or "").splitlines():
+        if "verification results::" in line:
+            return line.strip()
+    return ""
+
+
 def _latency_us(stdout: str) -> int:
     match = re.search(r"QUERY_LATENCY_US:\s*(\d+)", stdout or "")
     if not match:
@@ -86,6 +94,8 @@ def compile_and_run(
             [
                 verus,
                 str(rs_path),
+                "--triggers-mode",
+                "silent",
                 "--compile",
                 "--",
                 "-C",
@@ -156,6 +166,7 @@ def compile_and_run(
         "latency_us": latency,
         "compiler_error": "",
         "verify_msg": log[-2000:],
+        "verify_summary": _verify_summary(log),
         "stdout": run.stdout or "",
     }
 
@@ -244,7 +255,11 @@ def run_declarative_metrics(
             "compiler_error": str(exc),
         }
     uses, body, use_violations = split_vstd_uses(body)
-    file_uses, _rest, file_use_violations = split_vstd_uses(outside)
+    # Host-emitted `use` lines (hash axiom broadcast, `std_specs::ops::*`) are part of the
+    # spec the agent file was copied from. Only imports the agent added are vetted.
+    host_lines = {line.strip() for line in spec_rs.splitlines()}
+    agent_outside = "\n".join(line for line in outside.splitlines() if line.strip() not in host_lines)
+    file_uses, _rest, file_use_violations = split_vstd_uses(agent_outside)
     for line in file_uses:
         if line not in uses:
             uses.append(line)
@@ -266,7 +281,11 @@ def run_declarative_metrics(
         }
     try:
         assembled = assemble_declarative_program(
-            spec_rs, body, column_bins=column_bins, extra_uses=uses
+            spec_rs,
+            body,
+            column_bins=column_bins,
+            extra_uses=uses,
+            expected_rows=None if speed_bar is None else speed_bar.get("table_rows"),
         )
     except ValueError as exc:
         return {

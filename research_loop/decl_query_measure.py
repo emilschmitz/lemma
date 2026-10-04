@@ -33,14 +33,20 @@ def write_query_measure(
     spec = emit_declarative_spec(sql, schema, catalog, float_abs_eps=float_abs_eps)
     structs = re.findall(r"pub struct (Cols_[A-Za-z0-9_]+)\s*\{([^}]+)\}", spec)
     out_match = re.search(r"pub struct OutRow\s*\{([^}]+)\}", spec)
-    if not structs or out_match is None:
-        raise DeclarativeUnsupported("measure needs one OutRow spec")
-    out_fields = _OUT.findall(out_match.group(1))
-    if not out_fields:
-        raise DeclarativeUnsupported("measure needs OutRow fields")
+    map_match = re.search(r"-> \(res: HashMapWithView<(\w+), (\w+)>\)", spec)
+    if not structs or (out_match is None and map_match is None):
+        raise DeclarativeUnsupported("measure needs an OutRow spec or a HashMapWithView result")
+    if out_match is not None:
+        out_fields = _OUT.findall(out_match.group(1))
+        if not out_fields:
+            raise DeclarativeUnsupported("measure needs OutRow fields")
+    else:
+        # Map result: the query yields (key, aggregate); the binary prints `ROW key value`.
+        out_fields = [("", map_match.group(1)), ("", map_match.group(2))]
     model = SchemaModel.from_caller(schema, next(iter(schema)))
     dest.mkdir(parents=True, exist_ok=True)
     bins: dict[str, str] = {}
+    table_rows: dict[str, int] = {}
     try:
         con = duckdb.connect(str(db_path), read_only=True)
     except duckdb.Error as exc:
@@ -50,7 +56,8 @@ def write_query_measure(
             suffix = struct_name.removeprefix("Cols_")
             fields = _FIELD.findall(body)
             table = _table_for_suffix(model, suffix)
-            blob = _export_table(con, model, table, fields)
+            blob = _export_table(con, model, table, fields, used=_used_fields(spec, fields))
+            table_rows[suffix] = int.from_bytes(blob[:8], "little")
             path = dest / f"cols_{suffix}.bin"
             path.write_bytes(blob)
             bins[suffix] = str(path)
@@ -61,7 +68,14 @@ def write_query_measure(
         con.close()
     if not bins:
         raise DeclarativeUnsupported("measure wrote no column files")
-    return {"bins": bins, "duck_us": duck_us, "rows": rows, "kinds": kinds}
+    return {"bins": bins, "duck_us": duck_us, "rows": rows, "kinds": kinds, "table_rows": table_rows}
+
+
+def _used_fields(spec: str, fields: list[tuple[str, str]]) -> set[str]:
+    """Columns the spec reads, outside the struct and its ``valid_cols`` catalog bounds."""
+    body = re.sub(r"pub struct Cols_\w+\s*\{[^}]*\}", "", spec)
+    body = re.sub(r"pub open spec fn valid_cols_\w+\(.*?\n\}", "", body, flags=re.DOTALL)
+    return {fname for fname, _fty in fields if re.search(rf"\.{re.escape(fname)}@", body)}
 
 
 def _table_for_suffix(model: SchemaModel, suffix: str) -> str:
@@ -76,16 +90,17 @@ def _export_table(
     model: SchemaModel,
     table: str,
     fields: list[tuple[str, str]],
+    used: set[str] | None = None,
 ) -> bytes:
     _orig, cols = model.lookup_table(table)
-    ordered = sorted(cols)
-    if len(ordered) != len(fields):
-        raise ValueError(f"{table} column count does not match the spec")
+    # The spec struct may hold only the columns the query reads. Export exactly those, in struct order.
+    by_ident = {rust_ident(col_key): col_key for col_key in cols}
     names: list[str] = []
     types: list[str] = []
-    for col_key, (fname, fty) in zip(ordered, fields, strict=True):
-        if rust_ident(col_key) != fname or cols[col_key].exec_rust != fty:
-            raise ValueError(f"{table}.{col_key} does not match spec field {fname}: {fty}")
+    for fname, fty in fields:
+        col_key = by_ident.get(fname.removeprefix("r#"))
+        if col_key is None or cols[col_key].exec_rust != fty:
+            raise ValueError(f"{table}.{fname}: {fty} is not a column of the table with that type")
         names.append(model.original_column_names[(table.casefold(), col_key)])
         types.append(fty)
     listed = ", ".join(_quote(name) for name in names)
@@ -93,10 +108,18 @@ def _export_table(
         fetched = con.execute(f"SELECT {listed} FROM {_quote(table)}").fetchall()
     except duckdb.Error as exc:
         raise ValueError(str(exc)) from exc
+    # The spec has no NULL semantics: a NULL packed as 0 or "" would silently change the answer.
+    for idx, (fname, _fty) in enumerate(fields):
+        if (used is None or fname in used) and any(row[idx] is None for row in fetched):
+            raise ValueError(
+                f"{table}.{names[idx]} has NULLs and the query reads it; "
+                "the declarative spec has no NULL semantics"
+            )
     buf = bytearray(struct.pack("<Q", len(fetched)))
-    for row in fetched:
-        for fty, value in zip(types, row, strict=True):
-            buf.extend(_pack(fty, value))
+    # Column-major, the order the generated reader consumes: all of column 0, then column 1, ...
+    for idx, fty in enumerate(types):
+        for row in fetched:
+            buf.extend(_pack(fty, row[idx]))
     return bytes(buf)
 
 
@@ -104,7 +127,7 @@ def _time_query(
     con: duckdb.DuckDBPyConnection,
     sql: str,
     out_fields: list[tuple[str, str]],
-) -> tuple[int, list[list[object]], list[str]]:
+) -> tuple[int, list[list[object]], list[str] | None]:
     for _ in range(2):
         con.execute(sql).fetchall()
     samples: list[float] = []
@@ -119,6 +142,15 @@ def _time_query(
     if result is None:
         raise RuntimeError("no timing sample")
     indexes: list[int] = []
+    if all(not fname for fname, _fty in out_fields):
+        if len(names) != len(out_fields):
+            raise ValueError(f"map result needs {len(out_fields)} query columns, got {names}")
+        indexes = list(range(len(names)))
+        kinds = [_kind(fty) for _fname, fty in out_fields]
+        if any(k != "int" for k in kinds):
+            raise ValueError("map result keys and values must be integers")
+        pairs = sorted((_canon(out_fields[0][1], r[0]), _canon(out_fields[1][1], r[1])) for r in result)
+        return int(statistics.median(samples)), [[k, v] for k, v in pairs], None
     for fname, _fty in out_fields:
         bare = fname.removeprefix("r#").casefold()
         hits = [i for i, name in enumerate(names) if name.casefold() == bare]
