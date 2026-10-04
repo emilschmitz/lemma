@@ -275,6 +275,48 @@ def _check_forbidden(expression: exp.Expression) -> None:
                 raise DeclarativeUnsupported(f"{side} JOIN")
         if isinstance(node, exp.With) and node.args.get("recursive"):
             raise DeclarativeUnsupported("recursive CTE")
+        _check_clause_args(node)
+
+
+_EXISTS_FORBIDDEN_ARGS = ("limit", "offset", "order", "distinct", "group", "having")
+
+
+def _check_clause_args(node: exp.Expression) -> None:
+    """Refuse clauses that are parsed but that the spec emitter would silently drop."""
+    if isinstance(node, exp.Select):
+        if node.args.get("offset") is not None:
+            raise DeclarativeUnsupported("OFFSET")
+        if node.args.get("sample") is not None:
+            raise DeclarativeUnsupported("USING SAMPLE")
+        group = node.args.get("group")
+        if group is not None:
+            for key in ("all", "rollup", "cube", "grouping_sets", "totals"):
+                if group.args.get(key):
+                    raise DeclarativeUnsupported(f"GROUP BY {key.upper()}")
+    if isinstance(node, exp.Table) and node.args.get("sample") is not None:
+        raise DeclarativeUnsupported("TABLESAMPLE")
+    if isinstance(node, exp.Limit):
+        value = node.expression
+        is_int = isinstance(value, exp.Literal) and not value.is_string and value.this.isdigit()
+        if not is_int:
+            raise DeclarativeUnsupported("LIMIT must be a non-negative integer literal")
+        if node.args.get("limit_options") is not None:
+            raise DeclarativeUnsupported("LIMIT PERCENT / WITH TIES")
+    if isinstance(node, (exp.Exists, exp.Subquery)) and isinstance(node.this, exp.Select):
+        inner = node.this
+        if isinstance(node, exp.Exists):
+            forbidden = _EXISTS_FORBIDDEN_ARGS
+        elif isinstance(node.parent, (exp.In, exp.Binary)):
+            forbidden = ("limit",)
+        else:
+            forbidden = ()
+        for key in forbidden:
+            if inner.args.get(key):
+                raise DeclarativeUnsupported(f"{key.upper()} inside a subquery")
+    if isinstance(node, (exp.Sum, exp.Avg, exp.Min, exp.Max, exp.Count)) and node.args.get(
+        "expressions"
+    ):
+        raise DeclarativeUnsupported("aggregate with extra arguments")
 
 
 def _unwrap_alias(node: exp.Expression) -> exp.Expression:

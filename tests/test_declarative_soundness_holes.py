@@ -26,6 +26,20 @@ _DIR = Path(__file__).resolve().parent / "fixtures" / "adversary_declarative"
 
 HOLES = sorted(p.stem for p in _DIR.glob("hole_*.json"))
 
+# Holes that were fixed: the emitter now refuses (or the judge finds no difference).
+# Anything not listed still reports "hole" today.
+FIXED: dict[str, str] = {
+    "hole_offset_dropped": "refused",
+    "hole_limit_expression_dropped": "refused",
+    "hole_limit_percent_read_as_rows": "refused",
+    "hole_using_sample_ignored": "refused",
+    "hole_group_by_all_dropped": "refused",
+    "hole_group_by_grouping_sets_dropped": "refused",
+    "hole_group_by_rollup_dropped": "refused",
+    "hole_exists_subquery_limit_ignored": "refused",
+    "hole_min_two_arg_is_list": "refused",
+}
+
 
 def test_hole_fixtures_exist() -> None:
     assert len(HOLES) >= 14
@@ -38,8 +52,47 @@ def test_declarative_hole_is_reported_today(name: str) -> None:
     report = judge_declarative_candidate(
         cand, verify=True, catalog=CatalogAssumptions(tables={}, max_rows=1)
     )
-    assert report["status"] == "hole", report
-    assert report["proof_verified"] is True
+    expected = FIXED.get(name, "hole")
+    assert report["status"] == expected, report
+    if expected == "hole":
+        assert report["proof_verified"] is True
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT a FROM t ORDER BY a LIMIT 1 OFFSET 1",
+        "SELECT a FROM t OFFSET 2",
+        "SELECT a FROM t LIMIT 1 - 1",
+        "SELECT a FROM t LIMIT NULL",
+        "SELECT a FROM t LIMIT (SELECT 1)",
+        "SELECT a FROM t LIMIT 50%",
+        "SELECT a FROM t USING SAMPLE 10 ROWS",
+        "SELECT a FROM t TABLESAMPLE (10 PERCENT)",
+        "SELECT b, SUM(a) FROM t GROUP BY ALL",
+        "SELECT b, SUM(a) FROM t GROUP BY ROLLUP (b)",
+        "SELECT b, SUM(a) FROM t GROUP BY CUBE (b)",
+        "SELECT b, SUM(a) FROM t GROUP BY GROUPING SETS ((b), ())",
+        "SELECT a FROM t WHERE EXISTS (SELECT 1 FROM u WHERE u.k = t.k LIMIT 0)",
+        "SELECT a FROM t WHERE EXISTS (SELECT DISTINCT 1 FROM u WHERE u.k = t.k)",
+        "SELECT a FROM t WHERE EXISTS (SELECT k FROM u GROUP BY k HAVING COUNT(*) > 1)",
+        "SELECT b, MIN(a, 1) FROM t GROUP BY b",
+        "SELECT b, MAX(a, 1) FROM t GROUP BY b",
+    ],
+)
+def test_dropped_clauses_are_refused_at_parse(sql: str) -> None:
+    from declarative_spec.parse import DeclarativeUnsupported
+    from declarative_spec.parse_query import parse_query
+
+    with pytest.raises(DeclarativeUnsupported):
+        parse_query(sql)
+
+
+def test_plain_limit_and_group_by_still_parse() -> None:
+    from declarative_spec.parse_query import parse_query
+
+    assert parse_query("SELECT a FROM t ORDER BY a LIMIT 5").limit == 5
+    assert parse_query("SELECT b, SUM(a) FROM t GROUP BY b").group_columns == ["b"]
 
 
 def test_loader_turns_sql_null_into_a_value_today() -> None:
