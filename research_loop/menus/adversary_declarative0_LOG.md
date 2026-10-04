@@ -153,6 +153,19 @@ on the first try with the existing recipes (backward pass, branch-free accumulat
 Clears the 5.0x SEC target against the all-core engine (synthetic 1M-row data, so not GenDB-scale). Blame for the first failure: step 2
 (transpile), host spec.
 
+| r5 TPC-H T2 HELD-OUT `SELECT l_returnflag, min(l_extendedprice), count(*) FROM lineitem WHERE l_shipmode = 'AIR' GROUP BY l_returnflag` (TPC-H SF1, 6.0M rows) | T2 | **held-out** | manual, 11 of 12 checks | **proof YES (35 verified, 0 errors); speed bar MISSED** | 59,671 | 7,548 | 26,331 | **0.13x / 0.44x** |
+
+r5 T2 held-out trace: checks 1 to 5 `RLIMIT: Z3 ran out of resources ... --rlimit 3` on `run_query` (18 to 33 verified), found by bisecting
+whole checks (no `--profile`): the culprit was a lemma `ensures` quantified over `row_hit` (fix: pointwise lemmas called from `assert forall
+... by`), and `valid_cols_lineitem` kept in every loop invariant put its quantifier in every loop context (fix: plain length and ROW_CAP facts);
+check 10 proved (66,490 us), check 11 tried a 3-byte `as_bytes` compare for `l_shipmode = 'AIR'` (59,671 us). Classification: the proof
+failures are step 3/5 with blame **setup didn't give the ability** (the inlined recipe is COUNT-only with different names; no per-group MIN
+invariant example; the rlimit hint does not say "prefer pointwise lemmas"); the speed miss is step 7 with blame **setup didn't give the ability**:
+the loader materializes string columns as `Vec<String>` (one heap pointer per row), so the filter on `l_shipmode` costs ~10 ns/row while the
+reference engine scans a dictionary-coded column. No provable cheap alternative exists today (the only trick is the 1-char `as_bytes` code of
+the TPC-H Q1 example). Candidate for a PROPOSAL to Emil (not built, would be new trusted code via the adversary-gated protocol): a
+dictionary-encoded string column in the loader (codes `u8/u16` plus a code-to-string table) with the loader relation as the trusted statement.
+
 r4 T3 (blocker confirmed by Verus, sent to the transpiler agent addcd33571290f391): step 2 (transpile) / step 5 (verify), blame
 **host spec**: the emitted `valid_cols_num` bounds the DECIMAL(38,4) `value` cell by its TYPE (`n.value@[i] as int >= -99999999999999999999999999999999999999 &&
 ... <= 99999999999999999999999999999999999999`), not by the package's `max_value_exclusive = 2^62 * 10^4`; the ensures is an exact `int`
