@@ -1,0 +1,26 @@
+{
+ "sql": "SELECT MAX(a) AS m FROM t WHERE a > 100",
+ "schema": {
+  "t": {
+   "a": "BIGINT",
+   "k": "BIGINT"
+  }
+ },
+ "rows": {
+  "t": [
+   {
+    "a": 1,
+    "k": 1
+   },
+   {
+    "a": 2,
+    "k": 1
+   },
+   {
+    "a": 2,
+    "k": 2
+   }
+  ]
+ },
+ "run_query_body": "\nlet mut best: i128 = 0;\nlet mut have: bool = false;\nlet mut i: usize = t.n;\nwhile i > 0\n    invariant\n        i <= t.n,\n        valid_cols_t(t),\n        have <==> exists|j: int| (i as int) <= j && j < (t.n as int) && row_hit(t, j),\n        have ==> exists|j: int| (i as int) <= j && j < (t.n as int) && row_hit(t, j) && max_m_val(t, j) == best as int,\n        forall|j: int| (i as int) <= j && j < (t.n as int) && row_hit(t, j) ==> max_m_val(t, j) <= best as int || !have,\n    decreases i,\n{\n    i = i - 1;\n    let a = t.a[i];\n    let ghost old_have = have;\n    let ghost old_best = best as int;\n    if a > 100 {\n        if !have || (a as i128) > best {\n            best = a as i128;\n        }\n        have = true;\n    }\n    proof {\n        let ii = i as int;\n        assert(t.a@[ii] == a);\n        assert(row_hit(t, ii) <==> a > 100);\n        if a > 100 {\n            assert(max_m_val(t, ii) == a as int);\n            assert(have);\n            assert(row_hit(t, ii) && max_m_val(t, ii) >= best as int);\n            assert(exists|j: int| ii <= j && j < (t.n as int) && row_hit(t, j));\n            if old_have {\n                let w = choose|j: int| (ii + 1) <= j && j < (t.n as int) && row_hit(t, j) && max_m_val(t, j) == old_best;\n                assert(row_hit(t, w));\n            }\n            assert(exists|j: int| ii <= j && j < (t.n as int) && row_hit(t, j) && max_m_val(t, j) == best as int);\n        } else {\n            if have {\n                assert(old_have);\n                assert(exists|j: int| (ii + 1) <= j && j < (t.n as int) && row_hit(t, j));\n            }\n        }\n    }\n}\nlet mut res: Vec<OutRow> = Vec::new();\nres.push(OutRow { m: best });\nres\n"
+}

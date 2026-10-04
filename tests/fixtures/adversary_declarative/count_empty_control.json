@@ -1,0 +1,26 @@
+{
+ "sql": "SELECT COUNT(*) AS c FROM t WHERE a > 100",
+ "schema": {
+  "t": {
+   "a": "BIGINT",
+   "k": "BIGINT"
+  }
+ },
+ "rows": {
+  "t": [
+   {
+    "a": 1,
+    "k": 1
+   },
+   {
+    "a": 2,
+    "k": 1
+   },
+   {
+    "a": 2,
+    "k": 2
+   }
+  ]
+ },
+ "run_query_body": "\nlet mut c: u64 = 0;\nlet mut i: usize = t.n;\nwhile i > 0\n    invariant\n        i <= t.n,\n        valid_cols_t(t),\n        c as int == count_c(t, i as int),\n        c as int <= (t.n - i) as int,\n    decreases i,\n{\n    i = i - 1;\n    proof { lemma_count_c_step(t, i as int); }\n    if t.a[i] > 100 {\n        c = c + 1;\n    }\n}\nlet mut res: Vec<OutRow> = Vec::new();\nres.push(OutRow { c: c });\nres\n"
+}

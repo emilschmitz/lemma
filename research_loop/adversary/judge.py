@@ -303,13 +303,31 @@ def _exec_verified_scalar(
     }
 
 
+def resolve_spec_style(style: str | None = None) -> str:
+    """Explicit argument, else ``LEMMA_SPEC_STYLE``, else recursive (the default)."""
+    raw = style if style is not None else os.environ.get("LEMMA_SPEC_STYLE", "")
+    value = raw.strip().lower()
+    if value in ("", "recursive"):
+        return "recursive"
+    if value == "declarative":
+        return "declarative"
+    raise ValueError(f"spec style must be recursive or declarative, got {raw!r}")
+
+
 def judge_candidate(
     candidate: Candidate,
     *,
     config: str = "hardware",
     verify: bool = False,
     work_dir: Path | None = None,
+    spec_style: str | None = None,
 ) -> dict[str, Any]:
+    if resolve_spec_style(spec_style) == "declarative":
+        from research_loop.adversary.judge_declarative import judge_declarative_candidate
+
+        return judge_declarative_candidate(
+            candidate, config=config, verify=verify, work_dir=work_dir
+        )
     with apply_trust_config(config):
         admit = admit_runquery_body(candidate.run_query_body)
         if not admit.ok:

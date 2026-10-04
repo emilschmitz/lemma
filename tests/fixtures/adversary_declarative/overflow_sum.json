@@ -1,0 +1,28 @@
+{
+ "sql": "SELECT SUM(a) AS s FROM t",
+ "schema": {
+  "t": {
+   "a": "BIGINT"
+  }
+ },
+ "rows": {
+  "t": [
+   {
+    "a": 9223372036854775807
+   },
+   {
+    "a": 9223372036854775807
+   },
+   {
+    "a": 9223372036854775807
+   },
+   {
+    "a": 9223372036854775807
+   },
+   {
+    "a": 9223372036854775807
+   }
+  ]
+ },
+ "run_query_body": "\nlet mut acc: i128 = 0;\nlet mut i: usize = t.n;\nwhile i > 0\n    invariant\n        i <= t.n,\n        valid_cols_t(t),\n        acc as int == sum_s(t, i as int),\n        -((t.n - i) as int) * 0x8000_0000_0000_0000int <= acc as int,\n        acc as int <= ((t.n - i) as int) * 0x8000_0000_0000_0000int,\n    decreases i,\n{\n    i = i - 1;\n    let a = t.a[i];\n    let ghost old = acc as int;\n    acc = acc + (a as i128);\n    proof {\n        reveal_with_fuel(sum_s, 2);\n        assert(t.a@[i as int] == a);\n        assert(acc as int == sum_s(t, i as int));\n    }\n}\nlet mut res: Vec<OutRow> = Vec::new();\nres.push(OutRow { s: acc });\nres\n"
+}
