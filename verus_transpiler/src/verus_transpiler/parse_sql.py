@@ -206,6 +206,11 @@ def _kind_of(col_type: str) -> str:
             "hardware menu does not emit floating-point columns: DuckDB "
             "FLOAT and DOUBLE round, and this loader keeps the integer text"
         )
+    if os.environ.get("LEMMA_EXACT_SUM", "0") == "1" and base == "date":
+        raise UnsupportedContractError(
+            "hardware menu does not emit DATE columns: DuckDB will not "
+            "compare a DATE to an integer"
+        )
     if t in _BOOL_TYPES or base in _BOOL_TYPES:
         return "bool"
     if t in _INT_TYPES or base in _INT_TYPES:

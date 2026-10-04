@@ -84,6 +84,56 @@ def _rows_have_null(rows: dict[str, list[dict]]) -> bool:
     return False
 
 
+# DuckDB stores these as fixed-width integers. A wider Python int is not a cell.
+_SQL_INT_RANGE: dict[str, tuple[int, int]] = {
+    "tinyint": (-128, 127),
+    "int1": (-128, 127),
+    "smallint": (-32768, 32767),
+    "int2": (-32768, 32767),
+    "int16": (-32768, 32767),
+    "integer": (-2147483648, 2147483647),
+    "int": (-2147483648, 2147483647),
+    "int4": (-2147483648, 2147483647),
+    "int32": (-2147483648, 2147483647),
+    "bigint": (-9223372036854775808, 9223372036854775807),
+    "int64": (-9223372036854775808, 9223372036854775807),
+    "int8": (-9223372036854775808, 9223372036854775807),
+    "hugeint": (-(2**127), 2**127 - 1),
+    "utinyint": (0, 255),
+    "usmallint": (0, 65535),
+    "uinteger": (0, 2**32 - 1),
+    "ubigint": (0, 2**64 - 1),
+}
+
+
+def _cell_outside_sql_type(sql_type: str, value: object) -> bool:
+    base = sql_type.lower().split("(")[0].strip()
+    if base not in _SQL_INT_RANGE:
+        return False
+    if isinstance(value, bool) or not isinstance(value, int):
+        return True
+    lo, hi = _SQL_INT_RANGE[base]
+    return value < lo or value > hi
+
+
+def _rows_outside_sql_domain(schema: dict, rows: dict[str, list[dict]]) -> bool:
+    tables = _schema_tables(schema)
+    for table, table_rows in rows.items():
+        col_types = tables.get(table)
+        if col_types is None and len(tables) == 1:
+            col_types = next(iter(tables.values()))
+        if not col_types:
+            continue
+        for row in table_rows:
+            for col, value in row.items():
+                sql_type = col_types.get(col)
+                if sql_type is None or value is None:
+                    continue
+                if _cell_outside_sql_type(sql_type, value):
+                    return True
+    return False
+
+
 def _write_tbl(path: Path, table: str, col_types: dict[str, str], table_rows: list[dict]) -> int:
     cols = list(col_types.keys())
     header = "|".join(c.upper() for c in cols)
@@ -275,6 +325,14 @@ def judge_candidate(
                 "status": "rows_outside_model",
                 "significant": False,
                 "reason": "column loads are non-null; SQL NULL is not a cell",
+                "config": config,
+            }
+
+        if _rows_outside_sql_domain(candidate.schema, candidate.rows):
+            return {
+                "status": "rows_outside_model",
+                "significant": False,
+                "reason": "cell is outside the SQL type DuckDB would store",
                 "config": config,
             }
 
