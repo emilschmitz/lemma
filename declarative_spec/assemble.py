@@ -127,6 +127,7 @@ def assemble_declarative_program(
         mains_load.append(f"{prelude}    let {col_var} = {fn_name}({call_args});")
         mains_args.append(f"&{col_var}")
 
+    join_cap_checks = _join_cap_checks(verus_part)
     if mains_args:
         # One argument per parameter: two aliases of one table (a self join) share one loaded struct.
         sig = re.search(r"pub fn run_query\(([^)]*)\)", verus_part)
@@ -147,6 +148,7 @@ def assemble_declarative_program(
         timed, hex_fn = _timed_runs(run_call, verus_part)
     main_fn = "fn main() {\n"
     main_fn += "\n".join(mains_load) + "\n"
+    main_fn += join_cap_checks
     main_fn += timed
     main_fn += "}\n"
 
@@ -161,6 +163,29 @@ def assemble_declarative_program(
 
 
 _LEN_CONJ = re.compile(r"^[A-Za-z_]\w*\.(?:r#)?\w+@\.len\(\) == [A-Za-z_]\w*\.n as int$")
+
+
+def _join_cap_checks(verus_part: str) -> str:
+    """Rust ``assert!``s for every ``// JOIN_CAP`` line of the spec: the joined-tuple count is within the cap.
+
+    Counted with a hash of the right table's key tuples, so it is linear. The same count is the spec fn the
+    ``requires`` of ``run_query`` bounds, and what ``check.py`` measures on the database."""
+    out = []
+    for left, right, cols_l, cols_r, cap in re.findall(
+        r"^// JOIN_CAP Cols_(\w+) Cols_(\w+) (\S+) (\S+) (\d+)$", verus_part, re.M
+    ):
+        kl = ", ".join(f"cols_{left}.{c}[i].clone()" for c in cols_l.split(","))
+        kr = ", ".join(f"cols_{right}.{c}[j].clone()" for c in cols_r.split(","))
+        out.append(
+            "    {\n"
+            "        let mut counts = std::collections::HashMap::new();\n"
+            f"        for j in 0..cols_{right}.n {{ *counts.entry(({kr},)).or_insert(0u128) += 1; }}\n"
+            "        let mut total: u128 = 0;\n"
+            f"        for i in 0..cols_{left}.n {{ if let Some(c) = counts.get(&({kl},)) {{ total += *c; }} }}\n"
+            f'        assert!(total <= {cap}u128, "join {left} x {right}: {{}} joined tuples exceed the catalog cap {cap}", total);\n'
+            "    }\n"
+        )
+    return "".join(out)
 
 
 def _valid_cols_conjuncts(verus_part: str, suffix: str) -> tuple[str, list[str]]:
@@ -260,6 +285,21 @@ def _runtime_checks(verus_part: str, suffix: str, fields: list[tuple[str, str]])
             out.append(
                 f"    assert!({var}.iter().all(|v| v.abs() < ({const} as f64)), "
                 f'"{suffix}.{_local_ident(m.group(1))}: value outside the catalog magnitude {const}");'
+            )
+            continue
+        m = re.fullmatch(
+            rf"forall\|i: int, j: int\| #!\[trigger .*?\] 0 <= i < j < {p}\.n as int ==> !\((.*)\)", c
+        )
+        if m:
+            names = list(dict.fromkeys(re.findall(rf"{p}\.((?:r#)?\w+)@\[i\]", m.group(1))))
+            vars_ = [f"{suffix}_{_local_ident(n)}" for n in names]
+            key = ", ".join(f"{v}[i].clone()" for v in vars_)
+            out.append(
+                "    {\n"
+                f"        let mut seen_{suffix} = std::collections::HashSet::new();\n"
+                f"        for i in 0..n_{suffix} {{\n"
+                f'            assert!(seen_{suffix}.insert(({key},)), "{suffix}: declared unique key ({", ".join(names)}) has a duplicate");\n'
+                "        }\n    }"
             )
             continue
         raise ValueError(f"valid_cols_{suffix} has a conjunct the loader cannot check at runtime: {c}")

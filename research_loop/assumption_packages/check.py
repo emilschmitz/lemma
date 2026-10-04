@@ -16,6 +16,7 @@ Measuring rules (same as the loader):
   ``scale`` must equal ``s`` and ``MAX(ABS(col)) * 10**s < cap``, measured exactly
 * string cap: ``MAX(LENGTH(col)) <= cap``
 * unique key: no group of the key columns has more than one row
+* join cap: ``COUNT(*)`` of the declared join is at most the cap (named with the measured count when violated)
 * catalog caps: ``max_rows`` over every table; ``max_native_u32`` over columns of
   at most 32 bits; ``max_cell_u64`` over BIGINT/HUGEINT/DOUBLE columns;
   ``max_string_len`` over every VARCHAR column.
@@ -158,6 +159,27 @@ def violations(catalog: CatalogAssumptions, con: Any) -> list[str]:
             m = _max_group(con, name, key)
             if m is not None and m > 1:
                 out.append(f"{name} unique key {key}: a group has {m} rows")
+
+    for jc in catalog.join_caps:
+        label = f"join cap {jc.left} JOIN {jc.right} ON " + " AND ".join(
+            f"{jc.left}.{a} = {jc.right}.{b}" for a, b in jc.equalities
+        )
+        absent = [(t, c) for t, c in [(jc.left, a) for a, _ in jc.equalities] + [(jc.right, b) for _, b in jc.equalities]
+                  if t not in types or c not in types[t]]
+        if absent:
+            out.append(f"{label}: {absent} absent from the database")
+            continue
+        on = " AND ".join(
+            f"l.{_quote_duckdb_ident(a)} = r.{_quote_duckdb_ident(b)}" for a, b in jc.equalities
+        )
+        measured = int(
+            con.execute(
+                f"SELECT COUNT(*) FROM {_quote_duckdb_ident(jc.left)} l "
+                f"JOIN {_quote_duckdb_ident(jc.right)} r ON {on}"
+            ).fetchone()[0]
+        )
+        if measured > jc.max_tuples:
+            out.append(f"{label}: cap {jc.max_tuples} < measured {measured} joined tuples")
 
     for label, cap in (
         ("max_rows", catalog.max_rows),

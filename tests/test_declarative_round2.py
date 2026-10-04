@@ -358,7 +358,7 @@ def test_unique_key_chain_is_bounded_by_the_driving_table() -> None:
     q = parse_query(UNIQUE_CHAIN)
     from declarative_spec.emit_join import _build_slots
 
-    assert _joined_rows_bound(q, _build_slots(q), cat) == NUM_ROWS  # sub.adsh and (tag, version) are unique
+    assert _joined_rows_bound(q, _build_slots(q), cat).rows == NUM_ROWS  # sub.adsh and (tag, version) are unique
 
 
 def test_unique_key_chain_sum_emits_and_typechecks() -> None:
@@ -368,9 +368,18 @@ def test_unique_key_chain_sum_emits_and_typechecks() -> None:
 
 @pytest.mark.parametrize("sql", [NON_UNIQUE, PARTIAL_KEY])
 def test_a_join_on_a_non_unique_or_partial_key_still_multiplies_and_is_refused(sql: str) -> None:
+    import dataclasses
+
     schema, cat = _sec_dec()
+    cat = dataclasses.replace(cat, join_caps=())  # the package's declared num-pre join cap would allow it
     with pytest.raises(FitRefusal, match="can exceed i128"):
         emit_declarative_spec(sql, schema, cat)
+
+
+def test_the_declared_num_pre_join_cap_lets_the_non_unique_join_emit() -> None:
+    schema, cat = _sec_dec()
+    spec = emit_declarative_spec(NON_UNIQUE, schema, cat)
+    assert "join_tuples_num_pre(" in spec and "JOIN_CAP_num_pre" in spec
 
 
 def test_unique_keys_equated_only_in_an_or_or_in_where_do_not_count() -> None:

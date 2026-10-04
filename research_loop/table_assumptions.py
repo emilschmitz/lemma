@@ -66,6 +66,21 @@ class TableAssumptions:
 
 
 @dataclass(frozen=True)
+class JoinCap:
+    """Data assumption: ``left JOIN right ON left.a = right.b AND ...`` has at most ``max_tuples`` joined tuples.
+
+    Stated like a row cap and checked like one: ``assumption_packages/check.py`` measures
+    ``COUNT(*)`` of exactly this join and fails naming it. The emitted spec requires it of the loaded data
+    (``run_query`` requires, ``main`` asserts it before the call).
+    """
+
+    left: str
+    right: str
+    equalities: tuple[tuple[str, str], ...]  # (left column, right column)
+    max_tuples: int
+
+
+@dataclass(frozen=True)
 class CatalogAssumptions:
     """Catalog-level and optional per-table assumptions (external to Trusteds)."""
 
@@ -76,6 +91,7 @@ class CatalogAssumptions:
     max_cell_u64: int | None = None
     max_native_u32: int | None = None
     max_string_len: int | None = None
+    join_caps: tuple[JoinCap, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -20,7 +20,7 @@ from declarative_spec.parse_query import parse_query
 from declarative_spec.resolve import check_exact_integer_refs, flatten_derived, qualify_join_refs
 from declarative_spec.schema_types import ColumnTypeInfo, SchemaModel, classify_sql_type, param_ident, rust_ident
 from declarative_spec.surface import Agg, OrderKey, Query
-from research_loop.table_assumptions import CatalogAssumptions
+from research_loop.table_assumptions import CatalogAssumptions, JoinCap
 
 _IS_NULL = re.compile(
     r"(!?)is_null\(\s*([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\s*\)"
@@ -89,16 +89,17 @@ def _emit_with_string_tokens(
 
     helpers = _emit_helpers(query, "", model)
     _require_float_mags(query, helpers, model, catalog)
-    _require_sum_fits(query, helpers, model, catalog)
+    facts = _require_sum_fits(query, helpers, model, catalog)
 
     structs = _structs(helpers.params, model)
     int_sum = any(a.kind == "SUM" and not a.float_out for a in helpers.aggs)
-    valids = _valids(helpers.params, model, catalog, int_sum=int_sum)
+    valids = _valids(helpers.params, model, catalog, int_sum=int_sum, facts=facts)
     consts = _consts(helpers.params, model, catalog)
+    cap_source, cap_requires = _join_cap_text(facts, helpers, model, catalog)
     out_row = _out_row(query, helpers, model)
     ensures = _ensures(query, helpers, model)
     requires = ",\n        ".join(
-        f"valid_cols_{rust_ident(s.table)}({s.param})" for s in helpers.params
+        [f"valid_cols_{rust_ident(s.table)}({s.param})" for s in helpers.params] + cap_requires
     )
     params = ", ".join(f"{s.param}: &{s.struct}" for s in helpers.params)
     from declarative_spec.emit import _host_lemma_region
@@ -114,6 +115,7 @@ def _emit_with_string_tokens(
         "",
         helpers.source,
         "",
+        cap_source,
         _host_lemma_region(),
         "",
         _seq_le_source() if any(_order_seq_flags(query, helpers)) else "",
@@ -1399,9 +1401,13 @@ def _valids(
     catalog: CatalogAssumptions | None,
     *,
     int_sum: bool = False,
+    facts: _JoinBound | None = None,
 ) -> str:
     seen: set[str] = set()
     blocks: list[str] = []
+    unique = {}
+    for alias, key in (facts.unique_aliases if facts else ()):
+        unique[alias] = key
     for slot in params:
         if slot.struct in seen:
             continue
@@ -1423,6 +1429,8 @@ def _valids(
                     f"forall|i: int| 0 <= i < {slot.param}.n as int ==> {cell} >= -{top} && {cell} <= {top}"
                 )
         checks.extend(_float_mag_checks(slot, model, catalog))
+        if slot.alias in unique:
+            checks.append(_unique_conj(slot, unique[slot.alias], cols))
         body = "\n    &&& ".join(checks)
         blocks.append(
             f"""pub open spec fn valid_cols_{rust_ident(slot.table)}({slot.param}: &{slot.struct}) -> bool {{
@@ -1430,6 +1438,59 @@ def _valids(
 }}"""
         )
     return "\n\n".join(blocks)
+
+
+def _unique_conj(slot: _Slot, key: tuple[str, ...], cols: dict[str, ColumnTypeInfo]) -> str:
+    """No two rows agree on every column of a declared unique key (a catalog assumption, checked by the loader)."""
+    names = [next(c for c in cols if c.casefold() == k.casefold()) for k in key]
+    p = slot.param
+    same = " && ".join(f"{p}.{rust_ident(c)}@[i] == {p}.{rust_ident(c)}@[j]" for c in names)
+    trig = ", ".join(f"{p}.{rust_ident(names[0])}@[{v}]" for v in ("i", "j"))
+    return f"forall|i: int, j: int| #![trigger {trig}] 0 <= i < j < {p}.n as int ==> !({same})"
+
+
+def _join_cap_text(
+    facts: _JoinBound | None, helpers: _Helpers, model: SchemaModel, catalog: CatalogAssumptions | None
+) -> tuple[str, list[str]]:
+    """Spec fn counting the tuples of a declared join cap, its constant, and the ``requires`` that bounds it.
+
+    The count is the same ``COUNT(*)`` ``check.py`` measures; ``main`` asserts it on the loaded data."""
+    if facts is None or not facts.caps:
+        return "", []
+    by_alias = {s.alias: s for s in helpers.params}
+    blocks: list[str] = []
+    requires: list[str] = []
+    for la, ra, cap in facts.caps:
+        left, right = by_alias[la], by_alias[ra]
+        if left.table.casefold() != cap.left.casefold():
+            left, right = right, left
+        eqs = []
+        for lc, rc in cap.equalities:
+            lcol = next(c for c in model.lookup_table(left.table)[1] if c.casefold() == lc.casefold())
+            rcol = next(c for c in model.lookup_table(right.table)[1] if c.casefold() == rc.casefold())
+            if model.lookup_table(left.table)[1][lcol].is_float:
+                raise DeclarativeUnsupported("a join cap on a float column")
+            eqs.append(f"{left.param}.{rust_ident(lcol)}@[i0] == {right.param}.{rust_ident(rcol)}@[i1]")
+        name = f"join_tuples_{rust_ident(left.table)}_{rust_ident(right.table)}"
+        sig = f"{left.param}: &{left.struct}, {right.param}: &{right.struct}"
+        call = f"{left.param}, {right.param}"
+        const = f"JOIN_CAP_{rust_ident(left.table)}_{rust_ident(right.table)}"
+        cols_l = ",".join(rust_ident(next(c for c in model.lookup_table(left.table)[1] if c.casefold() == a.casefold())) for a, _ in cap.equalities)
+        cols_r = ",".join(rust_ident(next(c for c in model.lookup_table(right.table)[1] if c.casefold() == b.casefold())) for _, b in cap.equalities)
+        blocks.append(
+            f"// JOIN_CAP {left.struct} {right.struct} {cols_l} {cols_r} {cap.max_tuples}\n"
+            f"pub const {const}: u64 = {cap.max_tuples};\n"
+            f"pub open spec fn {name}_d1({sig}, i0: int, i1: int) -> int\n"
+            f"    decreases {right.param}.n as int - i1\n{{\n"
+            f"    if i1 < 0 || i1 >= {right.param}.n as int {{\n        0int\n    }} else {{\n"
+            f"        (if {' && '.join(eqs)} {{ 1int }} else {{ 0int }}) + {name}_d1({call}, i0, i1 + 1)\n    }}\n}}\n"
+            f"pub open spec fn {name}({sig}, i0: int) -> int\n"
+            f"    decreases {left.param}.n as int - i0\n{{\n"
+            f"    if i0 < 0 || i0 >= {left.param}.n as int {{\n        0int\n    }} else {{\n"
+            f"        {name}_d1({call}, i0, 0) + {name}({call}, i0 + 1)\n    }}\n}}\n"
+        )
+        requires.append(f"{name}({call}, 0) <= {const} as int")
+    return "\n".join(blocks), requires
 
 
 def _decimal_top(catalog: CatalogAssumptions | None, table: str, col: str, info: ColumnTypeInfo) -> int:
@@ -1442,20 +1503,30 @@ def _decimal_top(catalog: CatalogAssumptions | None, table: str, col: str, info:
     return top if cap is None else min(top, cap - 1)
 
 
-def _joined_rows_bound(query: Query, main: list[_Slot], catalog: CatalogAssumptions) -> int:
-    """Upper bound on the number of joined row tuples under the catalog's row caps and unique keys.
+@dataclass(frozen=True)
+class _JoinBound:
+    """The joined-row bound and the catalog facts it relies on (these must then be required of the data)."""
 
-    A table whose declared unique key is fully equated (by AND-ed ON equalities) to columns of tables already
-    in the join adds at most one match per tuple, so it contributes the factor 1; any other table multiplies by
-    its row cap. The smallest bound over the choice of the first table is returned. Unique keys are catalog
-    assumptions; the assumption-package check (``research_loop/assumption_packages/check.py``) verifies each
-    against the data, so the bound holds for every dataset that package accepts.
+    rows: int
+    unique_aliases: tuple[tuple[str, tuple[str, ...]], ...] = ()  # (alias, key columns) taken at factor 1
+    caps: tuple[tuple[str, str, JoinCap], ...] = ()  # (left alias, right alias, declared cap) used
+
+
+def _joined_rows_bound(query: Query, main: list[_Slot], catalog: CatalogAssumptions) -> _JoinBound:
+    """Upper bound on the number of joined row tuples under the catalog's row caps, unique keys and join caps.
+
+    A table whose declared unique key is fully equated (AND-ed ON equalities) to columns of tables already in
+    the join adds at most one match per tuple: factor 1. A declared ``JoinCap`` bounds a pair of tables joined on
+    its equalities. Any other table multiplies by its row cap. The smallest bound over the choice of start (a
+    table, or a capped pair) is returned together with the facts it used. All three kinds of fact are catalog
+    assumptions checked against the data by ``research_loop/assumption_packages/check.py``; the emitter then states
+    the ones the bound used as requirements (see ``_valids`` and ``_join_cap_requires``).
     """
     from declarative_spec.emit import _lookup_table_assumptions
 
     caps = {s.alias: _row_cap(catalog, s.table) or 1 for s in main}
     table_of = {s.alias: s.table for s in main}
-    equated: dict[str, set[tuple[str, str]]] = {a: set() for a in caps}  # alias -> {(own col, other alias)}
+    pairs: set[tuple[str, str, str, str]] = set()  # (alias, column, other alias, other column)
     for join in query.joins:
         if join.on_combiner.casefold() == "or":
             continue
@@ -1465,48 +1536,78 @@ def _joined_rows_bound(query: Query, main: list[_Slot], catalog: CatalogAssumpti
             la, lc = lref.split(".", 1)
             ra, rc = rref.split(".", 1)
             if la in caps and ra in caps and la != ra:
-                equated[la].add((lc.casefold(), ra))
-                equated[ra].add((rc.casefold(), la))
+                pairs.add((la, lc.casefold(), ra, rc.casefold()))
+                pairs.add((ra, rc.casefold(), la, lc.casefold()))
 
-    def keys_of(alias: str) -> list[set[str]]:
+    def keys_of(alias: str) -> list[tuple[str, ...]]:
         ta = _lookup_table_assumptions(catalog, table_of[alias])
         if ta is None:
             return []
-        keys = [{c.casefold() for c in group} for group in ta.unique_keys]
-        if ta.one_row_per_adsh:
-            keys.append({"adsh"})
+        keys = [tuple(group) for group in ta.unique_keys]
+        if ta.one_row_per_adsh and ("adsh",) not in keys:
+            keys.append(("adsh",))
         return keys
 
-    best = None
-    for root in caps:
-        included = {root}
-        total = caps[root]
+    def covered(alias: str, key: tuple[str, ...], included: set[str]) -> bool:
+        have = {c for a, c, other, _oc in pairs if a == alias and other in included}
+        return {c.casefold() for c in key} <= have
+
+    def declared(la: str, ra: str) -> JoinCap | None:
+        best: JoinCap | None = None
+        for cap in catalog.join_caps:
+            for x, y in ((la, ra), (ra, la)):
+                if (table_of[x].casefold(), table_of[y].casefold()) != (cap.left.casefold(), cap.right.casefold()):
+                    continue
+                if all((x, lc.casefold(), y, rc.casefold()) in pairs for lc, rc in cap.equalities):
+                    if best is None or cap.max_tuples < best.max_tuples:
+                        best = cap
+        return best
+
+    starts: list[tuple[set[str], int, tuple[str, str, JoinCap] | None]] = [({a}, caps[a], None) for a in caps]
+    for la in caps:
+        for ra in caps:
+            if la < ra and (cap := declared(la, ra)) is not None:
+                starts.append(({la, ra}, cap.max_tuples, (la, ra, cap)))
+    best: _JoinBound | None = None
+    for included0, total0, used_cap in starts:
+        included, total = set(included0), total0
+        unique_used: list[tuple[str, tuple[str, ...]]] = []
         while len(included) < len(caps):
             rest = [a for a in caps if a not in included]
-            determined = [
-                a
-                for a in rest
-                if any(key <= {c for c, other in equated[a] if other in included} for key in keys_of(a))
-            ]
-            pick = determined[0] if determined else min(rest, key=lambda a: caps[a])
-            if not determined:
-                total *= caps[pick]
+            hit = next(
+                ((a, key) for a in rest for key in keys_of(a) if covered(a, key, included)),
+                None,
+            )
+            if hit is not None:
+                unique_used.append(hit)
+                included.add(hit[0])
+                continue
+            pick = min(rest, key=lambda a: caps[a])
+            total *= caps[pick]
             included.add(pick)
-        best = total if best is None else min(best, total)
-    return best or 1
+        if best is None or total < best.rows:
+            best = _JoinBound(total, tuple(unique_used), (used_cap,) if used_cap else ())
+    return best or _JoinBound(1)
 
 
 def _require_sum_fits(
     query: Query, helpers: _Helpers, model: SchemaModel, catalog: CatalogAssumptions | None
-) -> None:
-    """An integer SUM is held in i128: refuse when the row caps and the cell cap allow a larger total."""
+) -> _JoinBound | None:
+    """An integer SUM is held in i128: refuse when the row caps and the cell cap allow a larger total.
+
+    When only the unique keys / join caps keep the total below i128, the facts used are returned: the spec must
+    then require them of the data (a bound the proofs cannot see is a bound nobody can use)."""
     if catalog is None:
-        return
+        return None
     from declarative_spec.emit import _lookup_table_assumptions
     from declarative_spec.lemmas import FitRefusal
     from research_loop.table_assumptions import column_assumption_exclusive
 
-    rows = _joined_rows_bound(query, helpers.main, catalog)
+    bound = _joined_rows_bound(query, helpers.main, catalog)
+    plain = 1
+    for slot in helpers.main:
+        plain *= _row_cap(catalog, slot.table) or 1
+    needs_facts = False
     for src in query.aggs:
         if src.kind.upper() != "SUM" or src.expr or src.arith or not src.column or src.column == "*":
             continue
@@ -1518,10 +1619,13 @@ def _require_sum_fits(
         else:
             cap = column_assumption_exclusive(src.column, _lookup_table_assumptions(catalog, slot.table))
             cell = (cap if cap is not None else info.cell_exclusive_cap or 2**64) - 1
-        if rows * cell > 2**127 - 1:
+        if bound.rows * cell > 2**127 - 1:
             raise FitRefusal(
-                f"SUM({src.column}) can exceed i128: {rows} joined rows x cell cap {cell} (cap the column or the rows)"
+                f"SUM({src.column}) can exceed i128: {bound.rows} joined rows x cell cap {cell} "
+                "(cap the column or the rows, or declare a unique key or join cap)"
             )
+        needs_facts = needs_facts or plain * cell > 2**127 - 1
+    return bound if needs_facts else None
 
 
 def _hash_broadcasts(helpers: _Helpers) -> str:

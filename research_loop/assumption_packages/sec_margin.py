@@ -23,6 +23,12 @@ A count of pairs of tables at the global row cap fits in ``u64``
 (2^62 * 2^62 = 2^124). A three-table or four-table nested sum of ``value``
 does not fit in ``i128`` under these caps. That is left unstated rather than
 given a false total.
+
+Join caps (``JOIN_CAPS``, outside the 45) are data assumptions of the same kind: ``num JOIN pre ON (adsh, tag, version)``
+has at most 2^36 joined tuples. They are not proved. ``check.py`` measures ``COUNT(*)`` of each declared join and fails
+naming the join and the measured count; the emitted spec requires the cap and ``main`` asserts it on the loaded data.
+On the development machine only the synthetic SEC data (1.25M joined tuples) has been checked: the real EDGAR join
+count is unverified until the preflight (``check.py``) runs on the real database.
 """
 
 from __future__ import annotations
@@ -32,6 +38,7 @@ from dataclasses import dataclass
 from research_loop.table_assumptions import (
     CatalogAssumptions,
     ColumnAssumption,
+    JoinCap,
     TableAssumptions,
 )
 
@@ -129,6 +136,21 @@ ASSUMPTIONS: tuple[MarginAssumption, ...] = (
 )
 
 
+# Join caps: data assumptions on the number of joined tuples of a pair of tables, in the spirit of the row caps.
+# They are separate from the 45 above (that count is fixed). Each one is MEASURED by ``check.py``
+# (``COUNT(*)`` of exactly that join) and required of the loaded data by the emitted spec.
+#
+# num JOIN pre ON (adsh, tag, version): 2^36 joined tuples. Derivation: num has 39.4M rows (about 2^25.2 on the
+# 2022-2024 data) and a num fact matches the presentation lines of its filing that show the same concept: a handful
+# of statements times a few lines, about 2^3 to 2^5 on typical filings, with a few thousand for the largest
+# filings that present one concept in many reports. 2^25.2 rows x 2^11 fan-out = 2^36.2, so 2^36 holds with the
+# stated margin only if the average fan-out stays below about 2^10.8. ON THIS MACHINE ONLY THE SYNTHETIC DATA HAS
+# BEEN CHECKED; the real EDGAR join count is unverified until ``check.py`` runs on the real database.
+JOIN_CAPS: tuple[JoinCap, ...] = (
+    JoinCap("num", "pre", (("adsh", "adsh"), ("tag", "tag"), ("version", "version")), 2**36),
+)
+
+
 def _col(exclusive: int, scale: int = 0) -> ColumnAssumption:
     return ColumnAssumption(max_value_exclusive=exclusive, scale=scale)
 
@@ -152,6 +174,7 @@ def sec_margin_catalog(value_scale: int = 0) -> CatalogAssumptions:
         max_cell_u64=VALUE_EXCLUSIVE,  # u64 cells only; the DECIMAL value is an i128 cell
         max_native_u32=U32_EXCLUSIVE,
         max_string_len=STRING_LEN,
+        join_caps=JOIN_CAPS,
         tables={
             "num": TableAssumptions(
                 max_rows=NUM_ROWS,
