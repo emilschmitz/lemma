@@ -263,10 +263,15 @@ class _Rewriter:
         if "float" in kinds:
             if kinds == {"float"}:
                 return left, right
-            if left.kind == "float" and right.kind == "num":
-                return left, _T(_float_literal(right), "float")
-            if right.kind == "float" and left.kind == "num":
-                return _T(_float_literal(left), "float"), right
+            for num, flt in ((right, left), (left, right)):
+                if flt.kind == "float" and num.kind == "num":
+                    if fold_number(num.node) is not None:
+                        lit = _T(_float_literal(num), "float")
+                        return (left, lit) if num is right else (lit, right)
+                    if num.scale > 0:
+                        raise DeclarativeUnsupported(
+                            "a DECIMAL column compared with a float column: mixed exact and float values"
+                        )
         if "unknown" in kinds and any(t.kind == "num" and t.scale > 0 for t in (left, right)):
             raise DeclarativeUnsupported("a DECIMAL compared with an operand of unknown type")
         return left, right
