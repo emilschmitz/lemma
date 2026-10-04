@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import os
 from pathlib import Path
 
@@ -66,6 +67,30 @@ def _extract_agent_edit_region(source: str) -> str:
     return extract_agent_edit(source)
 
 
+_VERUS_HOME = Path.home() / "tools" / "verus"
+
+_VERUS_INDEX = """# Verus reference (read-only)
+
+`vstd/` is the exact vstd source of the pinned Verus ({version}). Read it for lemma
+statements, `requires`/`ensures`, and broadcast groups. Useful files: `seq.rs`,
+`seq_lib.rs`, `map.rs`, `map_lib.rs`, `set.rs`, `set_lib.rs`, `hash_map.rs`,
+`arithmetic/`, `std_specs/`, `relations.rs`, `calc_macro.rs`.
+The Verus guide is not on this machine, so only the vstd source is here.
+Search with `grep -rn "proof fn lemma_" vstd/`.
+You may `use vstd::<module>::*;` and `broadcast use vstd::<module>::<group>;`.
+"""
+
+
+def mount_verus_docs(ro: Path) -> None:
+    """Copy the pinned vstd source into ``ro/verus/``. Fails loudly if it is missing."""
+    dest = ro / "verus"
+    if dest.exists():
+        shutil.rmtree(dest)
+    shutil.copytree(_VERUS_HOME / "vstd", dest / "vstd", ignore=shutil.ignore_patterns("target", "*.vir"))
+    version = (_VERUS_HOME / "version.txt").read_text().strip()
+    (dest / "INDEX.md").write_text(_VERUS_INDEX.format(version=version))
+
+
 def _ensure_context_files(
     workspace: Path,
     *,
@@ -80,6 +105,7 @@ def _ensure_context_files(
     (ro / "query.sql").write_text(sql_query.strip() + "\n")
     (ro / "schema.json").write_text(json.dumps(resolved_schema, indent=2) + "\n")
     (ro / "lemma_index.md").write_text(lemma_index_markdown())
+    mount_verus_docs(ro)
     agent_path = workspace / "runquery_agent.rs"
     return spec_path, agent_path
 

@@ -66,10 +66,9 @@ def test_axiom_import_is_rejected_and_a_lemma_import_is_kept() -> None:
         "use vstd::seq::*;\n"
         "1u64"
     )
-    assert uses == ["use vstd::arithmetic::mul::lemma_mul_nonzero;"]
+    assert uses == ["use vstd::arithmetic::mul::lemma_mul_nonzero;", "use vstd::seq::*;"]
     assert "1u64" in body
     assert any("axiom_u64" in item for item in violations)
-    assert any("seq::*" in item for item in violations)
     refused = admit_declarative_body(
         "broadcast use vstd::arithmetic::mul::group_hash_axioms;\n0u64"
     )
@@ -78,3 +77,50 @@ def test_axiom_import_is_rejected_and_a_lemma_import_is_kept() -> None:
         "use vstd::arithmetic::mul::lemma_mul_nonzero;\n0u64"
     )
     assert kept.ok, kept.violations
+
+
+def test_star_and_group_imports_of_vstd_are_kept() -> None:
+    uses, _body, violations = split_vstd_uses(
+        "use vstd::seq::*;\nuse vstd::std_specs::hash::*;\n"
+        "use vstd::{seq_lib::*, map_lib::*};\n"
+        "broadcast use vstd::seq_lib::group_seq_properties;\n0u64"
+    )
+    assert violations == []
+    assert len(uses) == 4
+
+
+def test_import_escapes_are_rejected() -> None:
+    for bad in (
+        "broadcast use vstd::seq_lib::*;",
+        "broadcast use vstd::std_specs::hash::axiom_u64_obeys_hash_table_key_model;",
+        "use vstd::pervasive::arbitrary;",
+        "use vstd::pervasive::proof_from_false;",
+        "use std::mem::swap;",
+    ):
+        _u, _b, violations = split_vstd_uses(bad)
+        assert violations, bad
+
+
+def test_banned_constructs_in_body_are_rejected() -> None:
+    for bad in (
+        "assume(false);",
+        "admit();",
+        "#[verifier::external_body]\nfn f() {}",
+        "#[verifier::external]\nfn f() {}",
+        "assume_specification[ foo ] () ;",
+        "proof { proof_from_false(); }",
+        "let x: u64 = arbitrary();",
+        "unimplemented!()",
+        "broadcast use vstd::std_specs::hash::axiom_u64_obeys_hash_table_key_model;",
+    ):
+        assert not admit_declarative_body(bad + "\n0u64").ok, bad
+
+
+def test_docs_mount_is_in_the_built_workspace(tmp_path) -> None:
+    from declarative_spec.drive import _ensure_context_files
+
+    _ensure_context_files(tmp_path, sql_query="select 1", resolved_schema={}, spec_text="")
+    ro = tmp_path / "context" / "ro" / "verus"
+    assert (ro / "INDEX.md").is_file()
+    assert (ro / "vstd" / "seq_lib.rs").is_file()
+    assert (ro / "vstd" / "std_specs").is_dir()
