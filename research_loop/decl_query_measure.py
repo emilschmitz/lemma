@@ -13,6 +13,8 @@ from pathlib import Path
 import duckdb
 
 from declarative_spec.emit import DeclarativeUnsupported, emit_declarative_spec
+from declarative_spec.parse_query import parse_query
+from declarative_spec.resolve import flatten_derived
 from declarative_spec.schema_types import ColumnTypeInfo, SchemaModel, rust_ident
 from research_loop.table_assumptions import CatalogAssumptions
 
@@ -38,16 +40,25 @@ def write_query_measure(
     structs = re.findall(r"pub struct (Cols_[A-Za-z0-9_]+)\s*\{([^}]+)\}", spec)
     out_match = re.search(r"pub struct OutRow\s*\{([^}]+)\}", spec)
     map_match = re.search(r"-> \(res: HashMapWithView<(\w+), (\w+)>\)", spec)
-    if not structs or (out_match is None and map_match is None):
-        raise DeclarativeUnsupported("measure needs an OutRow spec or a HashMapWithView result")
+    string_map_match = re.search(r"-> \(res: StringHashMap<(\w+)>\)", spec)
+    if not structs or (out_match is None and map_match is None and string_map_match is None):
+        result_ty = re.search(r"pub fn run_query\([^)]*\) -> \(res: ([^)]+)\)", spec)
+        raise DeclarativeUnsupported(
+            "measure cannot print the result type "
+            f"{result_ty.group(1) if result_ty else 'unknown'}: need OutRow, HashMapWithView or StringHashMap"
+        )
     if out_match is not None:
         out_fields = _OUT.findall(out_match.group(1))
         if not out_fields:
             raise DeclarativeUnsupported("measure needs OutRow fields")
+    elif string_map_match is not None:
+        # String-keyed map: the binary prints one `ROW <hex key> <value>` per key, like an OutRow.
+        out_fields = [("key", "String"), ("value", string_map_match.group(1))]
     else:
         # Map result: the query yields (key, aggregate); the binary prints `ROW key value`.
         out_fields = [("", map_match.group(1)), ("", map_match.group(2))]
-    model = SchemaModel.from_caller(schema, next(iter(schema)))
+    # A flat (projected) schema carries no table name; the SQL's FROM names it.
+    model = SchemaModel.from_caller(schema, flatten_derived(parse_query(sql)).tables[0])
     dest.mkdir(parents=True, exist_ok=True)
     bins: dict[str, str] = {}
     table_rows: dict[str, int] = {}

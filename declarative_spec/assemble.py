@@ -391,6 +391,37 @@ def _row_printer(run_call: str, fields: list[tuple[str, str]]) -> tuple[str, str
     return hex_fn, body
 
 
+def _string_map_dump(verus_part: str) -> tuple[str, str]:
+    """Print a ``StringHashMap`` result: it cannot be iterated, so probe each key the column holds.
+
+    One `ROW`, hex key, value line (unit-separated) per distinct key, as an OutRow prints; the key column is
+    the one the run_query ``ensures`` ranges over (``cols.<field>@[j]@ == k``).
+    """
+    suffix = re.search(r"pub fn run_query\(cols: &Cols_(\w+)\)", verus_part)
+    field = re.search(r"cols\.((?:r#)?\w+)@\[j\]@ == k", verus_part)
+    if suffix is None or field is None:
+        raise ValueError("a StringHashMap result needs a one-table run_query keyed by `cols.<field>@[j]@ == k`")
+    keys = f"cols_{suffix.group(1)}.{field.group(1)}"
+    dump = f"""        if s == 4 {{
+            let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+            let mut printed: usize = 0;
+            let mut r: usize = 0;
+            while r < {keys}.len() {{
+                let key = {keys}[r].as_str();
+                if seen.insert(key) {{
+                    let v = res.get(key).expect("a key of the column is missing from the result");
+                    println!("ROW\\u{{1f}}{{}}\\u{{1f}}{{}}", row_hex(key), *v);
+                    printed += 1;
+                }}
+                r += 1;
+            }}
+            assert!(printed == res.len(), "result has {{}} keys, the column has {{}} distinct", res.len(), printed);
+        }}
+"""
+    hex_fn, _ = _row_printer("", [("k", "String")])
+    return dump, hex_fn
+
+
 def _timed_runs(run_call: str, verus_part: str) -> tuple[str, str]:
     fields = _out_row_fields(verus_part)
     dump = ""
@@ -398,6 +429,8 @@ def _timed_runs(run_call: str, verus_part: str) -> tuple[str, str]:
     hex_fn = ""
     if fields:
         hex_fn, after = _row_printer(run_call, fields)
+    elif re.search(r"-> \(res: StringHashMap<(u64|i64|i128)>\)", verus_part) is not None:
+        dump, hex_fn = _string_map_dump(verus_part)
     else:
         caps = re.findall(r"pub const (KEY_CAP_[A-Za-z0-9_]+): usize", verus_part)
         shape = re.search(r"-> \(res: HashMapWithView<(u64|i64|i128), (u64|i64|i128)>\)", verus_part)
