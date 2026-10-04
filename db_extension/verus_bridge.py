@@ -561,7 +561,13 @@ def normalize_harness_metrics(res: dict) -> dict:
     status = res.get("status", "FAILURE")
     proof_verified = bool(res.get("proof_verified"))
     ok_status = status in ("SUCCESS", "SUCCESS_UNVERIFIED")
-    compiler_error = res.get("error") or res.get("bench_error") or res.get("verify_msg") or ""
+    compiler_error = (
+        res.get("error")
+        or res.get("compiler_error")
+        or res.get("bench_error")
+        or res.get("verify_msg")
+        or ""
+    )
     compiler_error = enrich_agent_error_message(
         str(compiler_error),
         verify_msg=str(res.get("verify_msg") or ""),
