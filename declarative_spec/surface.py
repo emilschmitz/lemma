@@ -80,6 +80,8 @@ class Query:
     scalar_subqueries: list[tuple[str, Query]] = field(default_factory=list)
     derived: list[tuple[str, Query]] = field(default_factory=list)
     outputs: list[Output] = field(default_factory=list)
+    # Output names in SELECT order, when every item is a named output or aggregate.
+    select_order: list[str] = field(default_factory=list)
     # Group key name -> spec text, for keys that are a renamed column or a date part.
     group_exprs: dict[str, str] = field(default_factory=dict)
     # Column refs in WHERE/HAVING text that must be exact integers (decimal-literal compares).

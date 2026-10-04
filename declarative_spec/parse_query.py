@@ -491,6 +491,11 @@ def _parse_select(expression: exp.Select, *, outer_scope: _Scope | None = None) 
                     proj.append(_select_output(item, scope, query))
 
     query.projection = proj
+    if len(proj) + len(query.aggs) == len(select_items):
+        names, proj_names, agg_aliases = [], iter(proj), iter(a.alias for a in query.aggs)
+        for item in select_items:
+            names.append(next(agg_aliases) if _is_aggregate(item) else next(proj_names))
+        query.select_order = names
     agg_alias_map = {a.alias.lower(): a.alias for a in query.aggs if a.alias}
 
     where_clause = expression.args.get("where")

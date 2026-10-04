@@ -134,6 +134,7 @@ class ColumnTypeInfo:
     cell_exclusive_cap: int | None  # integer types only
     scale: int = 0  # DECIMAL: the stored integer is value * 10**scale
     is_date: bool = False  # DATE: the stored integer is days since 1970-01-01
+    precision: int | None = None  # DECIMAL: |stored integer| < 10**precision
 
 
 def _normalize_sql_type(sql_type: str) -> str:
@@ -157,6 +158,7 @@ def _classify_decimal(norm: str, precision: int, scale: int) -> ColumnTypeInfo:
         is_hugeint=wide,
         cell_exclusive_cap=10**precision,
         scale=scale,
+        precision=precision,
     )
 
 

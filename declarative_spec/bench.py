@@ -28,8 +28,17 @@ def rows_from_stdout_general(stdout: str) -> list[list[str]]:
     return rows
 
 
-def rows_match_error(got: list[list[str]], expect: list, kinds: list[str]) -> str | None:
-    """None when ``got`` matches ``expect``. Floats use a relative tolerance."""
+def rows_match_error(
+    got: list[list[str]],
+    expect: list,
+    kinds: list[str],
+    float_abs_eps: str | None = None,
+) -> str | None:
+    """None when ``got`` matches ``expect``. A float matches within the absolute ``float_abs_eps``.
+
+    Result columns are matched by position: the SELECT order is the output order.
+    """
+    eps = _eps(float_abs_eps)
     decoded: list[list[object]] = []
     for raw in got:
         if len(raw) != len(kinds):
@@ -44,16 +53,24 @@ def rows_match_error(got: list[list[str]], expect: list, kinds: list[str]) -> st
             "proved but result rows differ from the loaded table "
             f"(got {len(decoded)} rows, expected {len(expected)})"
         )
-    if _rows_equal(decoded, expected, kinds):
+    if _rows_equal(decoded, expected, kinds, eps):
         return None
     left = sorted(decoded, key=lambda row: _row_key(row, kinds))
     right = sorted(expected, key=lambda row: _row_key(row, kinds))
-    if _rows_equal(left, right, kinds):
+    if _rows_equal(left, right, kinds, eps):
         return None
     return (
         "proved but result rows differ from the loaded table "
-        f"(got {len(decoded)} rows, expected {len(expected)})"
+        f"(got {len(decoded)} rows, expected {len(expected)}"
+        + ("" if eps is None else f"; float epsilon {float_abs_eps}")
+        + ")"
     )
+
+
+def _eps(float_abs_eps: str | None) -> float | None:
+    if float_abs_eps is None or not str(float_abs_eps).strip():
+        return None
+    return float(float_abs_eps)
 
 
 def _decode_field(cell: str, kind: str) -> object:
@@ -75,23 +92,24 @@ def _as_float(value: object) -> float:
     return float(value)
 
 
-def _values_equal(got: object, expect: object, kind: str) -> bool:
+def _values_equal(got: object, expect: object, kind: str, eps: float | None) -> bool:
     if got is None or expect is None:
         return got is None and expect is None
     if kind == "float":
-        left = _as_float(got)
-        right = _as_float(expect)
-        scale = max(abs(left), abs(right), 1.0)
-        return abs(left - right) <= 1e-4 * scale
+        if eps is None:
+            raise ValueError("a float result column is compared without a float_abs_eps")
+        return abs(_as_float(got) - _as_float(expect)) <= eps
     return got == expect
 
 
-def _rows_equal(got: list[list[object]], expect: list[list[object]], kinds: list[str]) -> bool:
+def _rows_equal(
+    got: list[list[object]], expect: list[list[object]], kinds: list[str], eps: float | None
+) -> bool:
     for left, right in zip(got, expect, strict=True):
         if len(left) != len(kinds) or len(right) != len(kinds):
             return False
         for g, e, kind in zip(left, right, kinds, strict=True):
-            if not _values_equal(g, e, kind):
+            if not _values_equal(g, e, kind, eps):
                 return False
     return True
 

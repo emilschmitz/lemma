@@ -219,15 +219,15 @@ def _runtime_checks(verus_part: str, suffix: str, fields: list[tuple[str, str]])
             )
             continue
         m = re.fullmatch(
-            rf"forall\|i: int\| 0 <= i < {p}\.n as int ==> (?:{p}\.((?:r#)?\w+)@\[i\] as int >= 0 && )?"
+            rf"forall\|i: int\| 0 <= i < {p}\.n as int ==> (?:{p}\.((?:r#)?\w+)@\[i\] as int >= (-?\d+) && )?"
             rf"{p}\.((?:r#)?\w+)@\[i\] as int <= (\(?-?\d+\)?)",
             c,
         )
         if m:
-            field = m.group(2)
-            hi = int(m.group(3).strip("()"))
+            field = m.group(3)
+            hi = int(m.group(4).strip("()"))
             var = f"{suffix}_{_local_ident(field)}"
-            lo = "0i128" if m.group(1) else "i128::MIN"
+            lo = f"{m.group(2)}i128" if m.group(1) else "i128::MIN"
             if hi > 2**127 - 1 or types[field] == "String":
                 raise ValueError(f"cannot check integer bound on {suffix}.{field}: {c}")
             out.append(

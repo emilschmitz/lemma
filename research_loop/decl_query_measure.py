@@ -2,20 +2,24 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import re
 import statistics
 import struct
 import time
+from decimal import Decimal
 from pathlib import Path
 
 import duckdb
 
 from declarative_spec.emit import DeclarativeUnsupported, emit_declarative_spec
-from declarative_spec.schema_types import SchemaModel, rust_ident
+from declarative_spec.schema_types import ColumnTypeInfo, SchemaModel, rust_ident
 from research_loop.table_assumptions import CatalogAssumptions
 
 _FIELD = re.compile(r"pub\s+((?:r#)?[A-Za-z_][A-Za-z0-9_]*):\s+Vec<([^>]+)>")
 _OUT = re.compile(r"pub\s+((?:r#)?[A-Za-z_][A-Za-z0-9_]*):\s+([^,\n]+),")
+_OUT_SCALES = re.compile(r"^// OUT_SCALES: ([0-9,]+)$", re.MULTILINE)
+_EPOCH = dt.date(1970, 1, 1)
 
 
 def write_query_measure(
@@ -61,14 +65,23 @@ def write_query_measure(
             path = dest / f"cols_{suffix}.bin"
             path.write_bytes(blob)
             bins[suffix] = str(path)
-        duck_us, rows, kinds = _time_query(con, sql, out_fields)
+        scales_match = _OUT_SCALES.search(spec)
+        scales = [int(x) for x in scales_match.group(1).split(",")] if scales_match else None
+        duck_us, rows, kinds = _time_query(con, sql, out_fields, scales)
     except duckdb.Error as exc:
         raise ValueError(str(exc)) from exc
     finally:
         con.close()
     if not bins:
         raise DeclarativeUnsupported("measure wrote no column files")
-    return {"bins": bins, "duck_us": duck_us, "rows": rows, "kinds": kinds, "table_rows": table_rows}
+    return {
+        "bins": bins,
+        "duck_us": duck_us,
+        "rows": rows,
+        "kinds": kinds,
+        "table_rows": table_rows,
+        "float_abs_eps": float_abs_eps,
+    }
 
 
 def _used_fields(spec: str, fields: list[tuple[str, str]]) -> set[str]:
@@ -97,13 +110,19 @@ def _export_table(
     by_ident = {rust_ident(col_key): col_key for col_key in cols}
     names: list[str] = []
     types: list[str] = []
+    infos: list[ColumnTypeInfo] = []
     for fname, fty in fields:
         col_key = by_ident.get(fname.removeprefix("r#"))
         if col_key is None or cols[col_key].exec_rust != fty:
             raise ValueError(f"{table}.{fname}: {fty} is not a column of the table with that type")
         names.append(model.original_column_names[(table.casefold(), col_key)])
         types.append(fty)
-    listed = ", ".join(_quote(name) for name in names)
+        infos.append(cols[col_key])
+    # A DATE leaves DuckDB as its day number (an exact INTEGER), a DECIMAL as the exact scaled integer.
+    listed = ", ".join(
+        f"({_quote(name)} - DATE '1970-01-01')" if info.is_date else _quote(name)
+        for name, info in zip(names, infos, strict=True)
+    )
     try:
         fetched = con.execute(f"SELECT {listed} FROM {_quote(table)}").fetchall()
     except duckdb.Error as exc:
@@ -118,27 +137,42 @@ def _export_table(
     buf = bytearray(struct.pack("<Q", len(fetched)))
     # Column-major, the order the generated reader consumes: all of column 0, then column 1, ...
     for idx, fty in enumerate(types):
+        scale = infos[idx].scale
         for row in fetched:
-            buf.extend(_pack(fty, row[idx]))
+            value = row[idx]
+            buf.extend(_pack(fty, decimal_scaled(value, scale) if isinstance(value, Decimal) else value))
     return bytes(buf)
+
+
+def decimal_scaled(value: Decimal, scale: int) -> int:
+    """``value * 10**scale`` as an exact integer, with no rounding."""
+    sign, digits, exponent = value.as_tuple()
+    assert isinstance(exponent, int)
+    shift = exponent + scale
+    if shift < 0:
+        raise ValueError(f"{value} has more than {scale} fractional digits")
+    return (-1 if sign else 1) * int("".join(map(str, digits)) or "0") * 10**shift
 
 
 def _time_query(
     con: duckdb.DuckDBPyConnection,
     sql: str,
     out_fields: list[tuple[str, str]],
+    scales: list[int] | None = None,
 ) -> tuple[int, list[list[object]], list[str] | None]:
     for _ in range(2):
         con.execute(sql).fetchall()
     samples: list[float] = []
     result: list[tuple] | None = None
     names: list[str] = []
+    duck_types: list[str] = []
     for _ in range(5):
         t0 = time.perf_counter()
         cur = con.execute(sql)
         result = cur.fetchall()
         samples.append((time.perf_counter() - t0) * 1_000_000)
         names = [str(col[0]) for col in cur.description]
+        duck_types = [str(col[1]) for col in cur.description]
     if result is None:
         raise RuntimeError("no timing sample")
     indexes: list[int] = []
@@ -151,20 +185,30 @@ def _time_query(
             raise ValueError("map result keys and values must be integers")
         pairs = sorted((_canon(out_fields[0][1], r[0]), _canon(out_fields[1][1], r[1])) for r in result)
         return int(statistics.median(samples)), [[k, v] for k, v in pairs], None
-    for fname, _fty in out_fields:
-        bare = fname.removeprefix("r#").casefold()
-        hits = [i for i, name in enumerate(names) if name.casefold() == bare]
-        if len(hits) != 1:
-            raise ValueError(f"output column {fname} is not in the query result {names}")
-        indexes.append(hits[0])
+    # Result columns are matched by position: the SELECT order is the OutRow order. DuckDB's own
+    # column names (`sum(l_quantity)`) are not the spec's field names.
+    if len(names) != len(out_fields):
+        raise ValueError(f"the query returns {len(names)} columns {names}, OutRow has {len(out_fields)}")
+    indexes = list(range(len(names)))
+    if scales is None:
+        scales = [0] * len(out_fields)
+    if len(scales) != len(out_fields):
+        raise ValueError(f"OUT_SCALES has {len(scales)} entries, OutRow has {len(out_fields)}")
+    for position, (scale, duck_type) in enumerate(zip(scales, duck_types, strict=True)):
+        duck_scale = int(m.group(1)) if (m := re.fullmatch(r"DECIMAL\(\d+,(\d+)\)", duck_type)) else 0
+        if duck_scale != scale:
+            raise ValueError(
+                f"output column {position} has scale {scale} in the spec, DuckDB returns {duck_type}"
+            )
     kinds = [_kind(fty) for _fname, fty in out_fields]
     rows: list[list[object]] = []
     for record in result:
-        rows.append([_canon(out_fields[i][1], record[indexes[i]]) for i in range(len(out_fields))])
+        rows.append([_canon(out_fields[i][1], record[indexes[i]], scales[i]) for i in range(len(out_fields))])
     return int(statistics.median(samples)), rows, kinds
 
 
 def _kind(exec_rust: str) -> str:
+    exec_rust = exec_rust.removeprefix("Option<").removesuffix(">")
     if exec_rust == "String":
         return "str"
     if exec_rust == "f64":
@@ -190,7 +234,13 @@ def _as_int(value: object) -> int:
     raise ValueError(f"not an int: {value!r}")
 
 
-def _canon(exec_rust: str, value: object) -> object:
+def _canon(exec_rust: str, value: object, scale: int = 0) -> object:
+    if exec_rust.startswith("Option<"):  # SQL NULL stays NULL; the binary prints it as NULL
+        return None if value is None else _canon(exec_rust[len("Option<") : -1], value, scale)
+    if isinstance(value, Decimal):
+        return decimal_scaled(value, scale)
+    if isinstance(value, dt.date):
+        return (value - _EPOCH).days
     if exec_rust == "String":
         return "" if value is None else str(value)
     if exec_rust == "f64":

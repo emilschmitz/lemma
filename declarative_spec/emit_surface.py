@@ -1336,6 +1336,14 @@ def _valids(
         if int_sum and (cap is None or cap >= 2**63):
             # An i128 sum of u64 cells fits when the row count is below 2^63.
             checks.append(f"{slot.param}.n as int < 0x8000_0000_0000_0000int")
+        for col in sorted(cols):
+            if cols[col].precision is not None:
+                # DECIMAL(p,s): the stored integer has at most p digits.
+                top = 10 ** cols[col].precision - 1
+                cell = f"{slot.param}.{rust_ident(col)}@[i] as int"
+                checks.append(
+                    f"forall|i: int| 0 <= i < {slot.param}.n as int ==> {cell} >= -{top} && {cell} <= {top}"
+                )
         checks.extend(_float_mag_checks(slot, model, catalog))
         body = "\n    &&& ".join(checks)
         blocks.append(
@@ -1484,13 +1492,13 @@ def _row_cap(catalog: CatalogAssumptions | None, table: str) -> int | None:
 
 
 def _out_row(query: Query, helpers: _Helpers, model: SchemaModel) -> str:
-    lines = ["pub struct OutRow {"]
+    fields: list[tuple[str, str]] = []
     seen: set[str] = set()
     for fname, _col, info, _slot in helpers.group_infos:
         if fname in seen:
             raise DeclarativeUnsupported("GROUP BY")
         seen.add(fname)
-        lines.append(f"    pub {fname}: {info.exec_rust},")
+        fields.append((fname, info.exec_rust))
     for agg in helpers.aggs:
         if agg.hidden:
             continue
@@ -1498,10 +1506,23 @@ def _out_row(query: Query, helpers: _Helpers, model: SchemaModel) -> str:
             raise DeclarativeUnsupported("SELECT")
         seen.add(agg.alias)
         ty = f"Option<{agg.exec}>" if _nullable(helpers, agg) else agg.exec
-        lines.append(f"    pub {agg.alias}: {ty},")
-    del query, model
-    lines.append("}")
-    return "\n".join(lines)
+        fields.append((agg.alias, ty))
+    del model
+    fields = _in_select_order(fields, query.select_order)
+    return "\n".join(["pub struct OutRow {", *(f"    pub {n}: {t}," for n, t in fields), "}"])
+
+
+def _in_select_order(fields: list[tuple[str, str]], select_order: list[str]) -> list[tuple[str, str]]:
+    """OutRow fields in SELECT order, so a result column is read by position.
+
+    A group column the SELECT list leaves out follows the selected ones.
+    """
+    by_name = {n.removeprefix("r#").casefold(): (n, t) for n, t in fields}
+    wanted = [rust_ident(n).removeprefix("r#").casefold() for n in select_order]
+    if len(set(wanted)) != len(wanted) or not set(wanted) <= set(by_name):
+        return fields
+    rest = [f for f in fields if f[0].removeprefix("r#").casefold() not in wanted]
+    return [by_name[w] for w in wanted] + rest
 
 
 def _string_fields(model: SchemaModel, params: list[_Slot]) -> set[str]:

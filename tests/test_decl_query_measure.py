@@ -105,6 +105,7 @@ def test_general_speed_bar_accepts_a_close_float() -> None:
         "duck_us": 1000,
         "rows": [["abc", 4.0, 2]],
         "kinds": ["str", "float", "int"],
+        "float_abs_eps": "1e-4",
     }
     fast = {
         "status": "SUCCESS",
@@ -122,6 +123,7 @@ def test_general_speed_bar_rejects_a_wrong_row_and_a_slower_run() -> None:
         "duck_us": 1000,
         "rows": [["abc", 4.0, 2]],
         "kinds": ["str", "float", "int"],
+        "float_abs_eps": "1e-4",
     }
     wrong = {
         "status": "SUCCESS",

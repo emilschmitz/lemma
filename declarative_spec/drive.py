@@ -38,6 +38,7 @@ def _maybe_large_table(
             "duck_us": prepared["duck_us"],
             "rows": prepared["rows"],
             "table_rows": prepared["table_rows"],
+            "float_abs_eps": float_abs_eps,
         }
         if prepared["kinds"] is not None:  # OutRow result; a map result prints `ROW key value`
             bar["kinds"] = prepared["kinds"]
@@ -213,6 +214,7 @@ def run_declarative_optimization_loop(
                 "status": "SUCCESS",
                 "best_latency_us": latency,
                 "duck_us": metrics.get("duck_us"),
+                "float_abs_eps": metrics.get("float_abs_eps"),
                 "best_iteration": iteration,
                 "history": history,
                 "error": "",
