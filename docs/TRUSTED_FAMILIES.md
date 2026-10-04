@@ -189,6 +189,189 @@ For every family in `TRUSTED_FAMILY_MENU`:
 Parametrized structural tests: `tests/test_trusted_families.py`.
 Semantic differential (exec math vs oracle / DuckDB): `tests/test_trusted_semantic_differential.py`.
 
+## f64 idealization (the only trusted float code)
+
+Authorized by Emil (2026-10-04, reaffirmed: "throw anything Verus can prove"). Everything else about floats is
+**proved**: a float SUM is an induction over exact adds (no epsilon in the proof), MIN/MAX/ORDER BY/HAVING are proofs
+over the real comparison, AVG is one proved-correct division step on top of the lemmas below.
+
+**Claim.** For finite `f64` values (the loader rejects NaN and infinity and enforces the catalog magnitude cap
+`MAG_CAP_<table>_<col>`; `valid_cols` carries both as conjuncts), the executable `+ - * /`, the integer casts and the
+comparisons behave like the real operations on `x as real`. **What is false about it:** `+ - * /` and casts round
+(relative error up to 2^-53 per operation), so the idealization says the f64 result *is* the real result. It is an
+idealization, not a theorem. Comparisons are exact in IEEE 754; only the link from vstd's uninterpreted
+`lt_ensures`-style predicates to `as real` is trusted. Replacing the idealization by a proved per-operation error
+bound is future work. Results on `DOUBLE` columns are compared with DuckDB within the configured epsilon
+(`LEMMA_FLOAT_ABS_EPS`); that epsilon parameterizes the comparison with DuckDB at measure time and the spec's
+`abs_real(res - spec) <= FLOAT_ABS_EPS`, never a proof obligation.
+
+**Companion hypothesis (not a lemma).** Verus gives a float literal no value as a real. The spec of every float query
+therefore carries `f64_literals_ok()` in `run_query`'s `requires`: each f64 literal of the query, `0.0` and
+`FLOAT_ABS_EPS` denote their decimal value (`(1.5f64 as real) == (3real / 2real)`), the nearest double ignored. It is
+an assumption of the theorem, visible in the spec, and the agent keeps it in every loop invariant.
+
+**Caps.** Operands are `f64_within(x, cap)`: finite and `|x| < cap`. The sum/difference/product lemmas also require
+the result bound (`cx + cy`, `cx * cy`) at most `f64_safe_bound()` = 2^200, far below the f64 overflow bound 2^1024, so
+no operation overflows to infinity.
+
+**Exact statements (copied from `declarative_spec/lemmas.py`, `float_error_lemmas_rs`).**
+
+```rust
+pub open spec fn f64_within(x: f64, cap: real) -> bool {
+    x.is_finite_spec() && -cap < (x as real) && (x as real) < cap
+}
+
+// TRUSTED (f64 idealization): IEEE addition is defined for every pair of f64 values (the exec `+`
+// precondition holds). No value is claimed. The agent calls this before `acc + x`.
+#[verifier::external_body]
+pub proof fn lemma_f64_add_defined(x: f64, y: f64)
+    ensures x.add_req(y),
+{ }
+
+// TRUSTED (f64 idealization): like `lemma_f64_add_defined`, IEEE subtraction is defined for every
+// pair of f64 values (the exec `-` precondition holds). No value is claimed.
+#[verifier::external_body]
+pub proof fn lemma_f64_sub_defined(x: f64, y: f64)
+    ensures x.sub_req(y),
+{ }
+
+// TRUSTED (f64 idealization): IEEE multiplication is defined for every pair (the exec `*`
+// precondition holds). No value is claimed.
+#[verifier::external_body]
+pub proof fn lemma_f64_mul_defined(x: f64, y: f64)
+    ensures x.mul_req(y),
+{ }
+
+// TRUSTED (f64 idealization): finite x, y within caps, a sum below the overflow bound:
+// the f64 sum is the real sum (rounding error ignored).
+#[verifier::external_body]
+pub proof fn lemma_f64_add_real(x: f64, y: f64, o: f64, cx: real, cy: real)
+    requires
+        0real <= cx, 0real <= cy, cx + cy <= f64_safe_bound(),
+        f64_within(x, cx), f64_within(y, cy),
+        add_ensures::<f64>(x, y, o),
+    ensures
+        o.is_finite_spec(),
+        (o as real) == (x as real) + (y as real),
+{ }
+
+// TRUSTED (f64 idealization): same claim for subtraction.
+#[verifier::external_body]
+pub proof fn lemma_f64_sub_real(x: f64, y: f64, o: f64, cx: real, cy: real)
+    requires
+        0real <= cx, 0real <= cy, cx + cy <= f64_safe_bound(),
+        f64_within(x, cx), f64_within(y, cy),
+        sub_ensures::<f64>(x, y, o),
+    ensures
+        o.is_finite_spec(),
+        (o as real) == (x as real) - (y as real),
+{ }
+
+// TRUSTED (f64 idealization): same claim for multiplication (product below the overflow bound).
+#[verifier::external_body]
+pub proof fn lemma_f64_mul_real(x: f64, y: f64, o: f64, cx: real, cy: real)
+    requires
+        0real <= cx, 0real <= cy, cx * cy <= f64_safe_bound(),
+        f64_within(x, cx), f64_within(y, cy),
+        mul_ensures::<f64>(x, y, o),
+    ensures
+        o.is_finite_spec(),
+        (o as real) == (x as real) * (y as real),
+{ }
+
+// TRUSTED (f64 idealization): division of finite x by finite nonzero y whose real quotient is
+// within the cap: the f64 quotient is the real quotient (rounding ignored). The division
+// precondition (`div_req`) holds, so the exec `/` is accepted.
+#[verifier::external_body]
+pub proof fn lemma_f64_div_defined(x: f64, y: f64, cx: real, cq: real)
+    requires
+        0real <= cx, 0real <= cq, cq <= f64_safe_bound(),
+        f64_within(x, cx),
+        y.is_finite_spec(), (y as real) != 0real,
+        -cq * abs_real(y as real) < (x as real),
+        (x as real) < cq * abs_real(y as real),
+    ensures
+        x.div_req(y),
+{ }
+
+// TRUSTED (f64 idealization): the quotient claim (see lemma_f64_div_defined for the requires).
+#[verifier::external_body]
+pub proof fn lemma_f64_div_real(x: f64, y: f64, o: f64, cx: real, cq: real)
+    requires
+        0real <= cx, 0real <= cq, cq <= f64_safe_bound(),
+        f64_within(x, cx),
+        y.is_finite_spec(), (y as real) != 0real,
+        -cq * abs_real(y as real) < (x as real),
+        (x as real) < cq * abs_real(y as real),
+        div_ensures::<f64>(x, y, o),
+    ensures
+        o.is_finite_spec(),
+        (o as real) == (x as real) / (y as real),
+{ }
+
+// TRUSTED (f64 idealization): an integer cast to f64 keeps its value (exact below 2^53, rounding
+// ignored above, up to the safe bound). vstd gives the exec `as f64` no specification, so the host
+// provides the cast as a trusted exec function; the body is the plain Rust cast.
+#[verifier::external_body]
+pub fn host_u64_to_f64(n: u64) -> (o: f64)
+    requires (n as int as real) <= f64_safe_bound(),
+    ensures o.is_finite_spec(), (o as real) == (n as int as real),
+{
+    n as f64
+}
+
+// TRUSTED (f64 idealization): the same cast claim for i128.
+#[verifier::external_body]
+pub fn host_i128_to_f64(n: i128) -> (o: f64)
+    requires -f64_safe_bound() <= (n as int as real) && (n as int as real) <= f64_safe_bound(),
+    ensures o.is_finite_spec(), (o as real) == (n as int as real),
+{
+    n as f64
+}
+
+// TRUSTED (f64 idealization): comparisons of finite f64 values hold exactly when the real
+// comparison does (exact in IEEE 754; the link from the uninterpreted predicate is trusted).
+#[verifier::external_body]
+pub proof fn lemma_f64_lt_real(x: f64, y: f64, o: bool)
+    requires x.is_finite_spec(), y.is_finite_spec(), lt_ensures::<f64>(x, y, o),
+    ensures o <==> (x as real) < (y as real),
+{ }
+
+// TRUSTED (f64 idealization): `<=` on finite f64 is `<=` on the reals.
+#[verifier::external_body]
+pub proof fn lemma_f64_le_real(x: f64, y: f64, o: bool)
+    requires x.is_finite_spec(), y.is_finite_spec(), le_ensures::<f64>(x, y, o),
+    ensures o <==> (x as real) <= (y as real),
+{ }
+
+// TRUSTED (f64 idealization): `>` on finite f64 is `>` on the reals.
+#[verifier::external_body]
+pub proof fn lemma_f64_gt_real(x: f64, y: f64, o: bool)
+    requires x.is_finite_spec(), y.is_finite_spec(), gt_ensures::<f64>(x, y, o),
+    ensures o <==> (x as real) > (y as real),
+{ }
+
+// TRUSTED (f64 idealization): `>=` on finite f64 is `>=` on the reals.
+#[verifier::external_body]
+pub proof fn lemma_f64_ge_real(x: f64, y: f64, o: bool)
+    requires x.is_finite_spec(), y.is_finite_spec(), ge_ensures::<f64>(x, y, o),
+    ensures o <==> (x as real) >= (y as real),
+{ }
+
+// TRUSTED (f64 idealization): `==` on finite f64 is equality of the reals.
+#[verifier::external_body]
+pub proof fn lemma_f64_eq_real(x: f64, y: f64, o: bool)
+    requires x.is_finite_spec(), y.is_finite_spec(), eq_ensures::<f64>(x, y, o),
+    ensures o <==> (x as real) == (y as real),
+{ }
+```
+
+Proved (not trusted) consequences next to them: `lemma_f64_add_within`, `lemma_f64_sub_within`,
+`lemma_f64_mul_within` (the result's `f64_within` bound). Every item above carries the comment
+`TRUSTED (f64 idealization)` in the source. Tests: `tests/test_declarative_float_idealization.py` (the trusted set is
+exactly this list; nine+ shapes verify, run and match DuckDB; wrong bodies are rejected),
+`tests/test_declarative_float_q2.py` (the SEC AVG shape), `tests/test_declarative_float_typecheck.py`.
+
 ## Menu (25 families)
 
 | id | kind | spec_ret | purpose |
