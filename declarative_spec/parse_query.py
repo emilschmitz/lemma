@@ -964,15 +964,26 @@ def _compile_case(node: exp.Case, scope: _Scope) -> str:
             return str(n.this)
         raise DeclarativeUnsupported("CASE")
 
+    op_map = {
+        exp.EQ: "==",
+        exp.NEQ: "!=",
+        exp.GT: ">",
+        exp.LT: "<",
+        exp.GTE: ">=",
+        exp.LTE: "<=",
+    }
+
     def cond(n: exp.Expression) -> str:
-        op_map = {
-            exp.EQ: "==",
-            exp.NEQ: "!=",
-            exp.GT: ">",
-            exp.LT: "<",
-            exp.GTE: ">=",
-            exp.LTE: "<=",
-        }
+        if isinstance(n, exp.Paren):
+            return f"({cond(n.this)})"
+        if isinstance(n, exp.And):
+            return f"({cond(n.left)} && {cond(n.right)})"
+        if isinstance(n, exp.Or):
+            return f"({cond(n.left)} || {cond(n.right)})"
+        if isinstance(n, exp.Not):
+            return f"!({cond(n.this)})"
+        if isinstance(n, exp.In) and not n.args.get("query") and n.expressions:
+            return "(" + " || ".join(f"({atom(n.this)} == {atom(v)})" for v in n.expressions) + ")"
         if type(n) not in op_map:
             raise DeclarativeUnsupported("CASE")
         return f"({atom(n.left)} {op_map[type(n)]} {atom(n.right)})"

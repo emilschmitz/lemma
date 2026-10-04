@@ -257,3 +257,21 @@ def test_decimal_case_sum_integer_form_returns_duckdbs_rows(case: str, seed: int
 def test_decimal_case_with_other_scales_is_refused(sql: str) -> None:
     with pytest.raises(DeclarativeUnsupported, match="DECIMAL"):
         _emit(sql)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "SUM(CASE WHEN s = 'x' OR s = 'y' THEN 1 ELSE 0 END)",
+        "SUM(CASE WHEN s <> 'x' AND NOT (a > 2) THEN 1 ELSE 0 END)",
+        "SUM(CASE WHEN s IN ('x', 'z') AND (a > 2 OR g = 1) THEN 1 ELSE 0 END)",
+    ],
+)
+def test_case_conditions_may_combine_and_or_not_in(case: str) -> None:
+    spec = _emit(f"SELECT g, {case} AS v FROM t GROUP BY g")
+    _verify(spec, lemmas=False)
+
+
+def test_case_condition_with_an_unsupported_function_is_refused() -> None:
+    with pytest.raises(DeclarativeUnsupported):
+        _emit("SELECT SUM(CASE WHEN LENGTH(s) = 1 THEN 1 ELSE 0 END) AS v FROM t")
