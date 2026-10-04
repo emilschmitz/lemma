@@ -509,8 +509,12 @@ pub exec fn run_query(t: &Cols_t, dim: &Cols_dim) -> (res: Option<u128>)
 
 }
 
+fn env_usize(key: &str) -> usize {
+    std::env::var(key).unwrap().parse().unwrap()
+}
+
 fn main() {
-    let n: usize = 2_000_000;
+    let n = env_usize("SPEED_ROWS");
     let mut dim_id = Vec::with_capacity(n);
     let mut amount = Vec::with_capacity(n);
     for i in 0..n {
@@ -525,17 +529,18 @@ fn main() {
         w.push((j as u64) * 3);
     }
     let dim = Cols_dim { n: 1000, id, w };
-    for _ in 0..2 {
+    for _ in 0..env_usize("SPEED_WARMUP") {
         let _ = run_query(&t, &dim);
     }
-    let mut samples = Vec::with_capacity(5);
+    let mut samples = Vec::new();
     let mut last = None;
-    for _ in 0..5 {
+    for _ in 0..env_usize("SPEED_RUNS") {
         let t0 = std::time::Instant::now();
         last = Some(run_query(&t, &dim));
         samples.push(t0.elapsed().as_micros());
     }
     samples.sort();
     println!("RESULT:{:?}", last.unwrap());
+    println!("SAMPLES_US:{samples:?}");
     println!("MEDIAN_US:{}", samples[samples.len() / 2]);
 }

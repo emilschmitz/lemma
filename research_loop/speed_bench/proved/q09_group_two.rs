@@ -1243,8 +1243,12 @@ pub exec fn run_query(cols: &Cols) -> (res: Groups)
 
 }
 
+fn env_usize(key: &str) -> usize {
+    std::env::var(key).unwrap().parse().unwrap()
+}
+
 fn main() {
-    let n: usize = 2_000_000;
+    let n = env_usize("SPEED_ROWS");
     let mut k = Vec::with_capacity(n);
     let mut k2 = Vec::with_capacity(n);
     let mut amount = Vec::with_capacity(n);
@@ -1254,31 +1258,29 @@ fn main() {
         amount.push(((i as u64) * 17) % 1000);
     }
     let cols = Cols { n, k, k2, amount };
-    for _ in 0..2 {
+    for _ in 0..env_usize("SPEED_WARMUP") {
         let _ = run_query(&cols);
     }
-    let mut samples = Vec::with_capacity(5);
+    let mut samples = Vec::new();
     let mut last = None;
-    for _ in 0..5 {
+    for _ in 0..env_usize("SPEED_RUNS") {
         let t0 = std::time::Instant::now();
         last = Some(run_query(&cols));
         samples.push(t0.elapsed().as_micros());
     }
     samples.sort();
     let groups = last.unwrap();
-    let mut shown = 0u32;
-    let mut total = 0u128;
+    let mut triples = Vec::new();
     for key in 0..32u32 {
         for key2 in 0..8u32 {
             let idx = (key as usize) * 8 + (key2 as usize);
             if groups.seen[idx] {
-                shown += 1;
-                total += groups.vals[idx];
+                triples.push((key, key2, groups.vals[idx]));
             }
         }
     }
     println!("OVERFLOW:{}", groups.oa.len());
-    println!("SHOWN:{shown}");
-    println!("TOTAL:{total}");
+    println!("RESULT:{triples:?}");
+    println!("SAMPLES_US:{samples:?}");
     println!("MEDIAN_US:{}", samples[samples.len() / 2]);
 }
