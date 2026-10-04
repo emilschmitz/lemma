@@ -59,6 +59,7 @@ def test_experiment_fails_loud_missing_tbl(monkeypatch, tmp_path):
 
 
 def test_catalog_assumptions_sec_profile(monkeypatch):
+    monkeypatch.setenv("LEMMA_ASSUMPTION_PACKAGE", "prove_loop")
     monkeypatch.delenv("LEMMA_DUCKDB_PATH", raising=False)
     cat = catalog_assumptions_for_workload("sec")
     assert cat == sec_prove_loop_catalog_assumptions()
@@ -79,15 +80,15 @@ def test_catalog_assumptions_sec_product_from_duckdb_counts(monkeypatch):
     )
     monkeypatch.setattr(
         "db_extension.dataset_config.table_column_value_caps",
-        lambda: None,
+        lambda: {},
     )
     monkeypatch.setattr(
         "db_extension.dataset_config.table_column_abs_sum_caps",
-        lambda: None,
+        lambda: {},
     )
     monkeypatch.setattr(
         "db_extension.dataset_config.table_unique_keys",
-        lambda: None,
+        lambda: {},
     )
     cat = catalog_assumptions_for_workload("sec")
     assert cat.max_rows == max(rounded.values())
@@ -126,13 +127,6 @@ def test_pin_product_catalog_ignores_smaller_duckdb_counts(monkeypatch):
     assert cat.tables["pre"].columns["line"].max_value_exclusive == 483
 
 
-def test_sec_product_catalog_fallback_matches_prove_loop(monkeypatch):
-    monkeypatch.setattr(
-        "db_extension.dataset_config.table_row_counts",
-        lambda: None,
-    )
-    assert sec_product_catalog_assumptions() == sec_prove_loop_catalog_assumptions()
-    assert sec_product_catalog_assumptions().max_rows == SEC_PROVE_LOOP_MAX_ROWS
 
 
 def test_catalog_assumptions_non_sec_is_none():
@@ -141,7 +135,8 @@ def test_catalog_assumptions_non_sec_is_none():
     assert catalog_assumptions_for_workload("tpch") is None
 
 
-def test_sec_workload_transpile_emits_max_cell_u64():
+def test_sec_workload_transpile_emits_max_cell_u64(monkeypatch):
+    monkeypatch.setenv("LEMMA_ASSUMPTION_PACKAGE", "prove_loop")
     cat = catalog_assumptions_for_workload("sec")
     out = transpile_sql_to_verus(
         "SELECT SUM(value) FROM num",
@@ -154,6 +149,27 @@ def test_sec_workload_transpile_emits_max_cell_u64():
 
 def test_sec_workload_env_selects_catalog(monkeypatch):
     monkeypatch.setenv("LEMMA_WORKLOAD", "sec")
+    monkeypatch.setenv("LEMMA_ASSUMPTION_PACKAGE", "prove_loop")
     cat = catalog_assumptions_for_workload()
     assert cat is not None
     assert cat.max_cell_u64 == SEC_PROVE_LOOP_MAX_CELL_U64
+
+
+def test_sec_product_catalog_without_duckdb_raises_not_prove_loop(monkeypatch, tmp_path):
+    monkeypatch.delenv("LEMMA_ASSUMPTION_PACKAGE", raising=False)
+    monkeypatch.delenv("LEMMA_PIN_PRODUCT_CATALOG", raising=False)
+    monkeypatch.delenv("LEMMA_DUCKDB_PATH", raising=False)
+    with pytest.raises(RuntimeError, match="LEMMA_DUCKDB_PATH is not set"):
+        sec_product_catalog_assumptions()
+    with pytest.raises(RuntimeError, match="LEMMA_DUCKDB_PATH is not set"):
+        catalog_assumptions_for_workload("sec")
+    monkeypatch.setenv("LEMMA_DUCKDB_PATH", str(tmp_path / "missing.duckdb"))
+    with pytest.raises(FileNotFoundError):
+        catalog_assumptions_for_workload("sec")
+
+
+def test_sec_product_catalog_empty_database_raises(monkeypatch):
+    monkeypatch.delenv("LEMMA_PIN_PRODUCT_CATALOG", raising=False)
+    monkeypatch.setattr("db_extension.dataset_config.table_row_counts", lambda: {})
+    with pytest.raises(RuntimeError, match="no tables"):
+        sec_product_catalog_assumptions()

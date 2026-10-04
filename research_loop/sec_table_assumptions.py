@@ -104,8 +104,10 @@ def pinned_sec_product_catalog_assumptions() -> CatalogAssumptions:
 
 
 def sec_product_catalog_assumptions() -> CatalogAssumptions:
-    """Product-path SEC profile: per-table DuckDB counts when available, else prove_loop.
+    """Product-path SEC profile measured from ``LEMMA_DUCKDB_PATH``.
 
+    Raises when the database is missing, unreadable, or has no tables. The tiny
+    prove_loop profile is only reachable as ``LEMMA_ASSUMPTION_PACKAGE=prove_loop``.
     ``LEMMA_PIN_PRODUCT_CATALOG=1`` uses the paper counts even when the file is a slice.
     """
     if pin_product_catalog_requested():
@@ -119,11 +121,11 @@ def sec_product_catalog_assumptions() -> CatalogAssumptions:
 
     counts = table_row_counts()
     if not counts:
-        return sec_prove_loop_catalog_assumptions()
+        raise RuntimeError("LEMMA_DUCKDB_PATH has no tables to measure a catalog from.")
 
     column_caps = table_column_value_caps()
     abs_sums = table_column_abs_sum_caps()
-    unique_keys = table_unique_keys() or {}
+    unique_keys = table_unique_keys()
     prove = sec_prove_loop_catalog_assumptions()
     # Round each measured COUNT(*) up to the next power of two; global / cube / 4
     # caps stay the max of those (product profile — do not shrink to prove_loop).
@@ -132,8 +134,8 @@ def sec_product_catalog_assumptions() -> CatalogAssumptions:
     tables: dict[str, TableAssumptions] = {}
     for name, n in rounded.items():
         col_assumptions: dict[str, ColumnAssumption] = {}
-        cap_cols = column_caps.get(name, {}) if column_caps else {}
-        sum_cols = abs_sums.get(name, {}) if abs_sums else {}
+        cap_cols = column_caps.get(name, {})
+        sum_cols = abs_sums.get(name, {})
         for col in set(cap_cols) | set(sum_cols):
             col_assumptions[col] = ColumnAssumption(
                 max_value_exclusive=cap_cols.get(col),

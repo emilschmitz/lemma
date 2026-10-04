@@ -1,7 +1,8 @@
 """Named assumption packages. Each package is a separate config.
 
-Select one with ``LEMMA_ASSUMPTION_PACKAGE``. Unset keeps the existing SEC
-product / prove-loop catalog.
+Select one with ``LEMMA_ASSUMPTION_PACKAGE``. Unset measures the SEC product
+catalog from ``LEMMA_DUCKDB_PATH`` and raises when that is unavailable. The
+tiny prove_loop profile is only reachable by naming it here.
 """
 
 from __future__ import annotations
