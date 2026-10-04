@@ -235,12 +235,17 @@ def draw(seed: int, mix: list[str]) -> tuple[list[dict], list[dict]]:
     return picked, refused
 
 
-def draw_tiered(seed: int, tiers: list[str]) -> tuple[list[dict], list[dict]]:
+def draw_tiered(seed: int, tiers: list[str], *, heldout: bool = False) -> tuple[list[dict], list[dict]]:
     """One fresh query per requested tier (see ``declarative_tiers``); the kind alternates with the seed.
 
     T1 to T3 come from seeded templates on the SEC (synthetic, DECIMAL) and TPC-H schemas; T4 and T5 also from the
     classified SEC shuffle pool. AVG draws stay in the sample as pending idealization and get no prover.
+
+    Novelty: a query already in the seen registry is never drawn again; a candidate with a new SHAPE (literals
+    stripped) is preferred. ``heldout`` draws only held-out shapes (the evaluation set: never used for recipes,
+    fixtures or prompt text); the default draws only tuned shapes. Every pick is registered.
     """
+    from research_loop.scripts import declarative_tiers as tiers_mod
     from research_loop.scripts.declarative_tiers import seeded_queries, tier as classify
     from research_loop.scripts.sqlsmith_trusted_coverage import parse_sql_file
 
@@ -267,6 +272,13 @@ def draw_tiered(seed: int, tiers: list[str]) -> tuple[list[dict], list[dict]]:
             pool = parse_sql_file(out_sql)
             random.Random(seed + i).shuffle(pool)
             cands += [("sec", qid, sql.strip()) for qid, sql in pool if classify(sql) == tier_name]
+        seen_q, seen_shapes = tiers_mod.load_registry()
+        cands = [
+            c for c in cands
+            if tiers_mod.normalize(c[2]) not in seen_q
+            and tiers_mod.is_heldout(tiers_mod.shape_key(c[2])) == heldout
+        ]
+        cands.sort(key=lambda c: tiers_mod.shape_key(c[2]) in seen_shapes)  # stable: new shapes first
         for kind, qid, sql in cands:
             skipped = _avg_refusal(kind, qid, sql)
             if skipped:
@@ -278,9 +290,47 @@ def draw_tiered(seed: int, tiers: list[str]) -> tuple[list[dict], list[dict]]:
             except (DeclarativeUnsupported, FitRefusal, ValueError) as exc:
                 refused.append({"kind": kind, "qid": qid, "tier": tier_name, "sql": " ".join(sql.split()), "refusal": str(exc)[:400]})
                 continue
-            picked.append({"kind": kind, "qid": qid, "tier": tier_name, "sql": sql})
+            nov = tiers_mod.novelty(sql)
+            tiers_mod.register(sql, f"drawn seed {seed} {tier_name}{' heldout' if heldout else ''}")
+            picked.append(
+                {"kind": kind, "qid": qid, "tier": tier_name, "sql": sql, "heldout": heldout, **nov}
+            )
             break
     return picked, refused
+
+
+def backfill_registry() -> None:
+    """Register every query drawn so far (saved draws) and the queries behind fixtures, and report contamination."""
+    from research_loop.scripts import declarative_tiers as tiers_mod
+
+    known, _ = tiers_mod.load_registry()
+    for path in sorted(OUT.glob("draw_*.json")):
+        for job in json.loads(path.read_text())["picked"]:
+            if tiers_mod.normalize(job["sql"]) not in known:
+                tiers_mod.register(job["sql"], f"backfill {path.name} {job['qid']}")
+                known.add(tiers_mod.normalize(job["sql"]))
+    for sql, why in _FIXTURE_QUERIES:
+        if tiers_mod.normalize(sql) not in known:
+            tiers_mod.register(sql, why)
+            known.add(tiers_mod.normalize(sql))
+        if tiers_mod.is_heldout(tiers_mod.shape_key(sql)):
+            print(f"CONTAMINATED: fixture shape is in the held-out set: {why}", flush=True)
+
+
+# Queries behind recipes and fixtures: their shapes are tuned shapes and must not be held-out.
+_FIXTURE_QUERIES = [
+    (
+        "SELECT stmt, rfile, COUNT(*) AS cnt, COUNT(DISTINCT adsh) AS num_filings FROM pre WHERE stmt IS NOT NULL "
+        "GROUP BY stmt, rfile ORDER BY cnt DESC",
+        "fixture hard/string_tuple_count_distinct_sorted.rs",
+    ),
+    (
+        "SELECT sum(l_extendedprice * l_discount) AS revenue FROM lineitem WHERE l_shipdate >= date '1994-01-01' "
+        "AND l_shipdate < date '1994-01-01' + interval '1' year AND l_discount BETWEEN 0.09 - 0.01 AND 0.09 + 0.01 "
+        "AND l_quantity < 25",
+        "fixture ungrouped_decimal_product_sum.rs",
+    ),
+]
 
 
 def agent_env(model: str) -> dict[str, str]:
@@ -331,13 +381,18 @@ def main() -> int:
     ap.add_argument("--seed", type=int, required=True)
     ap.add_argument("--model", default=HAIKU)
     ap.add_argument("--mix", default="sec,sec,tpch")
+    ap.add_argument("--heldout", action="store_true", help="with --tiers: draw held-out shapes only (evaluation set)")
+    ap.add_argument("--backfill-registry", action="store_true")
     ap.add_argument("--tiers", help="comma-separated tiers T1..T5: one fresh query per tier (replaces --mix)")
     ap.add_argument("--max-iterations", type=int, default=2)
     ap.add_argument("--draw-only", action="store_true")
     ap.add_argument("--only", help="comma-separated qids to run (after the draw)")
     args = ap.parse_args()
+    if args.backfill_registry:
+        backfill_registry()
+        return 0
     mix = args.mix.split(",")
-    picked, refused = draw_tiered(args.seed, args.tiers.split(",")) if args.tiers else draw(args.seed, mix)
+    picked, refused = draw_tiered(args.seed, args.tiers.split(","), heldout=args.heldout) if args.tiers else draw(args.seed, mix)
     OUT.mkdir(parents=True, exist_ok=True)
     log = OUT / f"round_{args.seed}.jsonl"
     for r in refused:

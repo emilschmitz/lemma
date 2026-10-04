@@ -12,7 +12,10 @@ SEC (synthetic) and TPC-H schemas; the SEC shuffle generator's pool is also clas
 
 from __future__ import annotations
 
+import hashlib
+import json
 import random
+from pathlib import Path
 
 import sqlglot
 from sqlglot import exp
@@ -119,3 +122,52 @@ def seeded_queries(kind: str, tier_name: str, rng: random.Random) -> list[tuple[
     out = (_sec if kind == "sec" else _tpch)(tier_name, rng)
     rng.shuffle(out)
     return out
+
+
+# ---- seen registry, shape keys, held-out shapes ----------------------------------------------------------------
+
+REGISTRY = Path(__file__).resolve().parents[2] / "research_loop" / "generated" / "decl_rounds" / "seen_queries.jsonl"
+HELDOUT_PERCENT = 30
+
+
+def normalize(sql: str) -> str:
+    """Whitespace collapsed, trailing semicolon dropped, literals kept."""
+    return " ".join(sql.split()).rstrip(";").strip()
+
+
+def shape_key(sql: str) -> str:
+    """The query with every literal replaced by `?`: two queries with the same shape differ only in constants."""
+    tree = sqlglot.parse_one(sql)
+    for lit in list(tree.find_all(exp.Literal)):
+        lit.replace(exp.Placeholder())
+    return " ".join(tree.sql().split())
+
+
+def is_heldout(shape: str) -> bool:
+    """A fixed ~30% of shape keys, by hash: never used to write recipes, fixtures or prompt text."""
+    return int(hashlib.sha1(shape.encode()).hexdigest()[:8], 16) % 100 < HELDOUT_PERCENT
+
+
+def load_registry(path: Path = REGISTRY) -> tuple[set[str], set[str]]:
+    """(normalized queries, shape keys) seen so far."""
+    queries: set[str] = set()
+    shapes: set[str] = set()
+    if path.is_file():
+        for line in path.read_text().splitlines():
+            rec = json.loads(line)
+            queries.add(rec["sql"])
+            shapes.add(rec["shape"])
+    return queries, shapes
+
+
+def novelty(sql: str, path: Path = REGISTRY) -> dict:
+    queries, shapes = load_registry(path)
+    return {"new_query": normalize(sql) not in queries, "new_shape": shape_key(sql) not in shapes}
+
+
+def register(sql: str, why: str, path: Path = REGISTRY) -> None:
+    """Record a drawn, proved or fixture-used query (normalized SQL and shape key)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rec = {"sql": normalize(sql), "shape": shape_key(sql), "heldout": is_heldout(shape_key(sql)), "why": why}
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(rec) + "\n")

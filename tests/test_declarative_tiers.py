@@ -37,6 +37,36 @@ def test_seeded_templates_land_in_their_tier_and_vary_with_the_seed(kind: str, t
     assert {s for _q, s in a} != {s for _q, s in b}
 
 
+def test_shape_key_strips_literals_but_not_columns_or_operators() -> None:
+    from research_loop.scripts.declarative_tiers import shape_key
+
+    a = shape_key("SELECT SUM(v) FROM t WHERE k > 5 AND s = 'x'")
+    assert a == shape_key("SELECT SUM(v) FROM t WHERE k > 99 AND s = 'zzz'")
+    assert a != shape_key("SELECT SUM(v) FROM t WHERE k >= 5 AND s = 'x'")
+    assert a != shape_key("SELECT SUM(w) FROM t WHERE k > 5 AND s = 'x'")
+
+
+def test_registry_round_trip_novelty_and_normalization(tmp_path) -> None:
+    from research_loop.scripts import declarative_tiers as m
+
+    path = tmp_path / "seen.jsonl"
+    q = "SELECT SUM(v)  FROM t\nWHERE k > 5;"
+    assert m.novelty(q, path) == {"new_query": True, "new_shape": True}
+    m.register(q, "test", path)
+    assert m.novelty("SELECT SUM(v) FROM t WHERE k > 5", path) == {"new_query": False, "new_shape": False}
+    assert m.novelty("SELECT SUM(v) FROM t WHERE k > 6", path) == {"new_query": True, "new_shape": False}
+    assert m.novelty("SELECT SUM(w) FROM t WHERE k > 6", path) == {"new_query": True, "new_shape": True}
+
+
+def test_heldout_set_is_a_stable_fraction_of_shapes() -> None:
+    from research_loop.scripts import declarative_tiers as m
+
+    shapes = [f"SELECT c{i} FROM t{i % 7}" for i in range(2000)]
+    held = [m.is_heldout(s) for s in shapes]
+    assert held == [m.is_heldout(s) for s in shapes]  # stable
+    assert 0.24 < sum(held) / len(held) < 0.36
+
+
 def test_unknown_kind_is_loud_and_tiers_are_ordered() -> None:
     with pytest.raises(ValueError, match="unknown kind"):
         seeded_queries("x", "T1", random.Random(0))
