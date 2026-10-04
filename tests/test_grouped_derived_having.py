@@ -38,6 +38,31 @@ def test_filtered_group_min_is_min_not_sum() -> None:
     assert "(prev as int + t as int)" not in helper
 
 
+def test_top_level_filtered_group_min_is_min_not_sum() -> None:
+    sql = "SELECT k, MIN(a) FROM t WHERE a > 1 GROUP BY k"
+    src = transpile_sql_to_verus(sql, {"t": {"k": "INTEGER", "a": "INTEGER"}})
+    helper = src[
+        src.index("pub open spec fn method_spec_helper") : src.index(
+            "pub open spec fn method_spec("
+        )
+    ]
+    assert "if t < prev { t } else { prev }" in helper
+    assert "u64::MAX" in helper
+    assert "(prev as int + t as int)" not in helper
+
+
+def test_top_level_filtered_group_max_is_max_not_sum() -> None:
+    sql = "SELECT k, MAX(a) FROM t WHERE a > 1 GROUP BY k"
+    src = transpile_sql_to_verus(sql, {"t": {"k": "INTEGER", "a": "INTEGER"}})
+    helper = src[
+        src.index("pub open spec fn method_spec_helper") : src.index(
+            "pub open spec fn method_spec("
+        )
+    ]
+    assert "if t > prev { t } else { prev }" in helper
+    assert "(prev as int + t as int)" not in helper
+
+
 def test_hardware_grouped_sum_is_exact_u128(monkeypatch) -> None:
     sql = "SELECT SUM(s) FROM (SELECT k, SUM(a) AS s FROM t GROUP BY k) d"
     monkeypatch.delenv("LEMMA_EXACT_SUM", raising=False)

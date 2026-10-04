@@ -665,13 +665,23 @@ def _build_col_helper(
         else:
             term = f"1{val_type}"
         zero = f"0{val_type}"
+        if agg == "MIN":
+            empty_prev = "u64::MAX"
+            step = "if t < prev { t } else { prev }"
+        elif agg == "MAX":
+            empty_prev = "0u64"
+            step = "if t > prev { t } else { prev }"
+        else:
+            empty_prev = zero
+            step = f"(prev as int + t as int) as {val_type}"
         if cond:
             body_inner = (
                 f"let tail = {rec};\n"
                 f"        if {cond} {{\n"
                 f"            let key = {key_expr};\n"
-                f"            let prev = if tail.contains_key(key) {{ tail[key] }} else {{ {zero} }};\n"
-                f"            tail.insert(key, (prev as int + {term} as int) as {val_type})\n"
+                f"            let prev = if tail.contains_key(key) {{ tail[key] }} else {{ {empty_prev} }};\n"
+                f"            let t = {term};\n"
+                f"            tail.insert(key, {step})\n"
                 f"        }} else {{\n"
                 f"            tail\n"
                 f"        }}"
@@ -680,8 +690,9 @@ def _build_col_helper(
             body_inner = (
                 f"let tail = {rec};\n"
                 f"        let key = {key_expr};\n"
-                f"        let prev = if tail.contains_key(key) {{ tail[key] }} else {{ {zero} }};\n"
-                f"        tail.insert(key, (prev as int + {term} as int) as {val_type})"
+                f"        let prev = if tail.contains_key(key) {{ tail[key] }} else {{ {empty_prev} }};\n"
+                f"        let t = {term};\n"
+                f"        tail.insert(key, {step})"
             )
         base_val = "Map::empty()"
         return f"""pub open spec fn {func_name}(cols: &Cols{extra_sig}, {idx_var}: int) -> {ret_type}
