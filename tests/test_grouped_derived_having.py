@@ -26,6 +26,18 @@ def test_count_of_groups_applies_having() -> None:
     assert "method_spec_helper" not in body
 
 
+def test_count_of_groups_applies_having_on_agg_alias() -> None:
+    sql = (
+        "SELECT COUNT(*) FROM "
+        "(SELECT k, SUM(a) AS s FROM t GROUP BY k HAVING s > 0) d"
+    )
+    src = transpile_sql_to_verus(sql, _SCHEMA)
+    body = _method_spec_body(src)
+    assert "filter_keys" in body
+    assert "(v > 0)" in body
+    assert "derived_d_spec(cols)" in body
+
+
 def test_filtered_group_min_is_min_not_sum() -> None:
     sql = (
         "SELECT SUM(m) FROM "

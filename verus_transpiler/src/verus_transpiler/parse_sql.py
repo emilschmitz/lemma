@@ -1777,13 +1777,15 @@ def _compile_having_expr_side(
             return "v"
         return f"v.{idx}"
     if isinstance(node, exp.Column):
-        real_col, _, _ = _resolve_col(node, resolver)
-        alias_key = real_col.lower()
+        # Aggregate aliases (SUM(a) AS s) are not schema columns. Check them
+        # before resolver lookup so HAVING s > 0 is not dropped as unknown.
+        alias_key = node.name.lower()
         if alias_key in query.select_aliases:
             idx = query.select_aliases[alias_key]
             if len(query.agg_specs) <= 1:
                 return "v"
             return f"v.{idx}"
+        real_col, _, _ = _resolve_col(node, resolver)
         if real_col not in query.groupby_columns:
             raise UnsupportedContractError(
                 f"HAVING column {real_col!r} must be a GROUP BY column or aggregate alias."
