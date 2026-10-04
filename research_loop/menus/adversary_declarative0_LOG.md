@@ -229,6 +229,10 @@ Real EDGAR 2022-2024 loaded by the coordinator: num 39,401,761 rows (value exact
 | TPC-H Q6 variant, same parallel body | TPC-H SF3 (18.0M lineitem; 4 columns, 0.5 GB) | T1 | PARALLEL 8 vstd threads (21 verified, 0 errors) | yes | 16,925 | 19,181 | 67,619 | **1.13x / 4.00x** |
 | TPC-H Q6 variant, same parallel body | TPC-H SF10 (60.0M lineitem; 1.7 GB binary memory) | T1 | PARALLEL 8 vstd threads (21 verified, 0 errors) | yes | 55,668 | 69,506 | 262,942 | **1.25x / 4.72x** |
 
+| `SELECT COUNT(*), SUM(value) FROM num WHERE uom = 'USD'` | real SEC, full 39.4M num rows, dict mode (uom as codes) | T1 | single-threaded (dict_filter_count_sum.rs, 8 verified, first check) | yes | 65,068 | 278,767 | 1,015,002 | **4.28x / 15.6x** |
+
+Real-data blocker found: real EDGAR has NULL cells in columns queries read (pre.stmt 1,073, sub.fy 4,662, sub.fp 4,665, tag.crdr 119,636 ...); the export refuses NULLs, so those queries cannot run yet (sent to the transpiler agent, who is building validity-bit NULL support). Dict caps (max_distinct) were declared by the transpiler agent and pass check.py on the real DB.
+
 Scale ladder for Q6 (data stated): SF1 2.04x, SF3 1.13x, SF10 1.25x vs the all-core engine; ~4x vs one thread at every size. At SF3/SF10 the parallel scan reads ~30 GB/s (504 MB in 16.9 ms), i.e. it is at the machine's memory bandwidth, and DuckDB 8t is about as fast
 (zone-map pruning of the shipdate range avoids part of the data). So the 2.8x TPC-H target is NOT reachable for this bandwidth-bound scan with the same bytes read; SF10 is the largest that ran (generated with `research_loop/scripts/gen_tpch.py`, dbgen under a 3 GB DuckDB memory limit: 81 s, 2.7 GB file; export 4:52).
 
