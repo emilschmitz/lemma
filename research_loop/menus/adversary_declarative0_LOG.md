@@ -138,6 +138,16 @@ not 5.0x on the 8-thread engine). The three failed checks were all one thing: `&
 (verified by a guarded-Verus test; a wrong comparison must fail), recipe `ungrouped_minmax`, and a prompt tip. Blame for the three
 failed checks: setup didn't give the ability (no string-literal or MIN/MAX example).
 
+| **r3b SEC Q11 re-run after the projection `out_row_ok` fix** (join + correlated MAX + top-100, DECIMAL, synthetic) | T4 | tuned (now a hard fixture) | manual, 10 of 12 checks | **YES proof: 31 verified, 0 errors; speed bar MISSED** | 71,750 | 46,232 | 116,645 | **0.64x / 1.63x** |
+
+r3b Q11 (confirms the projection fix): first monolithic attempt hit `RLIMIT ... --rlimit 3` with the misleading `invariant not
+satisfied before loop`; opaque `tk` bundle fixed it; the O(n^2) rescan then timed out (`binary timed out`); replaced by "next
+same-key row" chains over `StringHashMap` (proved by an opaque bundle `ch`) -> 111,802 us, then tuned to 71,750 us (value compare
+before the tag compare; pre-filter on the sub map; a last-lookup cache and `with_capacity` did not help: data is not clustered by
+adsh). Remaining cost: per-row String hashing of 1M rows. Classification for the speed miss: step 7 (execute), blame **agent too
+stupid to write something fast? no: setup didn't give the ability** (no provable cheap byte-fingerprint/hash-prefilter idiom; no
+dense-array recipe for string keys). Fixture `hard/projection_join_correlated_max_topk.rs` (a proof template, not a speed template).
+
 r3 Q11 trace (Sonnet manual prover, 10 checks): check 1 rejected before Verus (`broadcast use at the top of the helper region`);
 2 `Could not automatically infer triggers for this quantifier`; 3 and 4 RLIMIT on `run_query` (`invariant not satisfied before loop`,
 `precondition not satisfied`); 5 `run_query` verified (55 verified) with RLIMIT in a final-facts lemma; 6 to 10 `verification
