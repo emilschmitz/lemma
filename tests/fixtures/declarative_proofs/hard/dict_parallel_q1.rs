@@ -1031,7 +1031,7 @@ while i > lo
         assert((&*pa).l_quantity@.len() == (&*pa).n as int);
         assert((&*pa).l_extendedprice@.len() == (&*pa).n as int);
         assert((&*pa).l_discount@.len() == (&*pa).n as int);
-        assert((&*pa).n <= 17996609);
+        assert((&*pa).n <= ROW_CAP_lineitem);
     }
     if sd <= 10471 {
         proof {
@@ -1056,7 +1056,7 @@ while i > lo
         let a = v[s];
         proof {
             lemma_bd_get(v@, hi as int - i as int - 1, s as int);
-            assert(hi as int - i as int - 1 <= 17996609);
+            assert(hi as int - i as int - 1 <= ROW_CAP_lineitem);
         }
         let nq: i128 = a.0 + (qv as i128);
         let nb: i128 = a.1 + (pv as i128);
@@ -1147,14 +1147,14 @@ proof {
     proof {
         lemma_end(lineitem, n as int, cs as int);
         lemma_init_zero(lineitem, tot@, 0);
-        assert(n <= 17996609);
+        assert(n <= ROW_CAP_lineitem);
     }
     while rest.len() > 0
         invariant
             j <= 8,
             j + rest@.len() == 8,
             n == lineitem.n,
-            n <= 17996609,
+            n <= ROW_CAP_lineitem,
             cs == n / 8 + 1,
             cs <= 268435457,
             valid_cols_lineitem(lineitem),
@@ -1272,7 +1272,7 @@ while i > lo
         assert(lineitem.l_quantity@.len() == lineitem.n as int);
         assert(lineitem.l_extendedprice@.len() == lineitem.n as int);
         assert(lineitem.l_discount@.len() == lineitem.n as int);
-        assert(lineitem.n <= 17996609);
+        assert(lineitem.n <= ROW_CAP_lineitem);
     }
     if sd <= 10471 {
         proof {
@@ -1297,7 +1297,7 @@ while i > lo
         let a = v[s];
         proof {
             lemma_bd_get(v@, hi as int - i as int - 1, s as int);
-            assert(hi as int - i as int - 1 <= 17996609);
+            assert(hi as int - i as int - 1 <= ROW_CAP_lineitem);
         }
         let nq: i128 = a.0 + (qv as i128);
         let nb: i128 = a.1 + (pv as i128);
@@ -1340,7 +1340,7 @@ while i > lo
                 r@.len() == mmt as int,
                 old_t.len() == mmt as int,
                 lo <= hi <= n,
-                n <= 17996609,
+                n <= ROW_CAP_lineitem,
                 grid_bd(old_t, lo as int),
                 grid_bd(r@, hi as int - lo as int),
                 forall|q: int| #![trigger tot@[q]] 0 <= q < z as int ==>

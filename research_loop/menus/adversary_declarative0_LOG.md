@@ -239,6 +239,11 @@ a parallel body for the dict + validity shape is not written yet. Observation fr
 
 | `SELECT uom, COUNT(*), SUM(value) FROM num GROUP BY uom` | real SEC, full 39.4M num rows, dict + PARALLEL 8 workers with dense per-worker arrays | T2 | parallel (dict_group_count_sum_parallel.rs, 26 verified, 2nd check) | yes | 22,475 median of 9 (best 21,068) | 293,965 | 1,208,574 | **13.08x (best 13.95x) / 53.8x** |
 
+| TPC-H Q1 (2 dict string keys, 3 decimal sums incl. a product, count, ORDER BY keys) | TPC-H SF3 (18.0M lineitem), dict + PARALLEL 8 workers, flat m1*m2 slot array | T2 | parallel (`hard/dict_parallel_q1.rs`, 87 verified, 5 checks) | yes | 21,931 median of 9 (best 21,585) | 86,551 | 295,017 | **3.95x (best 4.01x) / 13.5x** |
+| TPC-H Q1, same body (size-independent: row cap by `ROW_CAP_lineitem`) | TPC-H SF10 (60.0M lineitem), dict + PARALLEL | T2 | parallel, re-verified against the SF10 spec (87 verified) | yes | 59,412 median of 9 (best 54,872) | 226,544 | 977,544 | **3.81x (best 4.13x) / 16.5x** |
+
+TPC-H 2.8x target: MET by Q1 at SF3 (3.95x) and SF10 (3.8x to 4.0x), a compute-bound shape (6 aggregates over 2 tiny-domain keys) where the parallel dense-array design beats the all-core engine; Q6-class scans are structurally bandwidth-bound (1.1x to 1.25x at SF3/SF10).
+
 Measurement protocol from here: the timed measure is the MEDIAN of 9 runs and the check also reports the best run (`speedup`, `speedup_best`); gaps under 25 percent between a body and the reference engine are ties (the shared box shows ~30 percent run-to-run noise: DuckDB's own 8-thread median for the same query moved 255 to 294 ms between prepares).
 Transplanting the single-threaded TPC-H Q1 body (r4, SF1 spec) to the SF3 spec failed: `54 verified, 1 errors` (the SF1 body does not carry over); a dict + parallel Q1 prover run on SF3 is in progress.
 
