@@ -197,6 +197,12 @@ def judge_declarative_candidate(
             "error": f"{type(exc).__name__}: {exc}",
         }
     base["spec_rs"] = spec_rs[:_SPEC_TRUNC]
+    if candidate.helpers.strip():
+        from declarative_spec.admit import admit_helpers
+
+        helper_violations = admit_helpers(candidate.helpers, spec_rs).violations
+        if helper_violations:
+            return {**base, "status": "rejected", "significant": False, "violations": helper_violations}
 
     if not verify:
         return {**base, "status": "unchecked_exec", "significant": False}
@@ -230,7 +236,7 @@ def judge_declarative_candidate(
                 path = root / f"cols_{suffix}.bin"
                 path.write_bytes(blob)
                 bins[suffix] = str(path)
-            assembled = assemble_declarative_program(spec_rs, body, column_bins=bins)
+            assembled = assemble_declarative_program(spec_rs, body, helpers=candidate.helpers, column_bins=bins)
             metrics = compile_and_run(assembled, work_dir=root)
     finally:
         con.close()

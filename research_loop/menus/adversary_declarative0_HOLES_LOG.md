@@ -16,6 +16,16 @@ Trusted statements added by this loop: none. (Any result that depends on a trust
 
 ---
 
+## Parallel path (LEMMA_PARALLEL_VSTD=1), manual adversary (Sonnet subagent)
+
+60 judge runs, parallel SUM/COUNT/MIN/MAX bodies against DuckDB for n = 0, 1, 7, 8, 9, 15, 16, 17, 40 rows, empty/all-rows/no-hit filters, i64 extremes,
+two-table assembly, mutations (wrong worker filter, flipped comparison, MIN body against a MAX spec: all rejected by Verus). **No hole.** Design review: `**arc == *cols`
+holds by construction (same object passed twice), Arc args follow the signature order, the Err(join) arm must itself prove `part_ok`, chunk arithmetic is right for every n tried.
+Findings fixed here (tests in tests/test_declarative_parallel.py, tests/test_adversary_judge_decimal_null.py):
+* string-keyed group-by under the flag crashed assemble (`_string_map_dump` regex and use-after-move of the loaded columns): the parallel variant now refuses non-`Vec<OutRow>` results with a loud DeclarativeUnsupported (also a refusal, not an emit_crash, for a self join).
+* the judge could not run a body that needs helpers: candidates may carry an optional `helpers` string (admitted with `admit_helpers`, then assembled).
+Not tested: float SUM/AVG in parallel (association order; expected to be unprovable against the sequential fold).
+
 ## Round 5 (manual adversary, Sonnet subagent; SEC data synthetic; judge shapes: DECIMAL ungrouped MIN/SUM/COUNT, string GROUP BY COUNT with a literal filter, string-key join MIN/SUM, TPC-H decimal and date predicates)
 
 35 candidates proved by Verus and run against DuckDB, about 55 more emit-checked only (specs read by hand). **No value-vs-value hole**: wherever DuckDB returns a value, the compiled

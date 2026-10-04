@@ -52,3 +52,20 @@ def test_decode_option_string_and_f64() -> None:
 
 def test_report_with_a_decimal_serializes() -> None:
     assert json.loads(json.dumps({"duck_rows": [[Decimal("0.5001")]]}, default=str)) == {"duck_rows": [["0.5001"]]}
+
+
+def test_candidate_helpers_key_is_optional_and_checked(tmp_path) -> None:
+    from research_loop.adversary.candidate import load_candidate
+
+    base = {"sql": "SELECT 1", "schema": {}, "rows": {}, "run_query_body": "    Vec::new()"}
+    f = tmp_path / "c.json"
+    f.write_text(json.dumps(base))
+    assert load_candidate(f).helpers == ""
+    f.write_text(json.dumps({**base, "helpers": "proof fn p() { }"}))
+    assert load_candidate(f).helpers == "proof fn p() { }"
+    f.write_text(json.dumps({**base, "helpers": "#[verifier::external_body] proof fn p() { }"}))
+    with pytest.raises(ValueError, match="forbidden token"):
+        load_candidate(f)
+    f.write_text(json.dumps({**base, "helpers": 3}))
+    with pytest.raises(TypeError, match="helpers must be a string"):
+        load_candidate(f)

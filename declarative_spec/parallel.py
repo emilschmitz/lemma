@@ -16,6 +16,8 @@ from __future__ import annotations
 import os
 import re
 
+from declarative_spec.parse import DeclarativeUnsupported
+
 ENV = "LEMMA_PARALLEL_VSTD"
 _SIG = re.compile(r"pub fn run_query\(([^)]*)\) -> \(res: ([^\n]*)\)\n    requires\n")
 ARC_SUFFIX = "_arc"
@@ -51,9 +53,16 @@ def to_parallel(spec_rs: str) -> str:
     if is_parallel(spec_rs):
         return spec_rs
     ps = params(spec_rs)
+    m0 = _SIG.search(spec_rs)
+    assert m0 is not None
+    if not m0.group(2).strip().startswith("Vec<OutRow>"):
+        raise DeclarativeUnsupported(
+            f"the parallel variant is for `Vec<OutRow>` results; this spec returns `{m0.group(2).strip()}` "
+            "(its host printer reads the loaded columns, which the Arc owns)"
+        )
     structs = [s for _n, s in ps]
     if len(set(structs)) != len(structs):
-        raise ValueError("a self join (two parameters of one table) has no parallel variant")
+        raise DeclarativeUnsupported("a self join (two parameters of one table) has no parallel variant")
     m = _SIG.search(spec_rs)
     assert m is not None
     extra = ", ".join(f"{n}{ARC_SUFFIX}: &std::sync::Arc<{s}>" for n, s in ps)

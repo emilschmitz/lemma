@@ -9,6 +9,7 @@ import pytest
 from declarative_spec import parallel
 from declarative_spec.assemble import assemble_declarative_program
 from declarative_spec.emit import emit_declarative_spec
+from declarative_spec.parse import DeclarativeUnsupported
 from declarative_spec.pipeline import VERUS_CANDIDATES, verify_assembled
 from declarative_spec.prompt import _FIXTURES, build_declarative_prompt, mount_examples, spec_shape
 from declarative_spec.regions import extract_agent_edit, extract_agent_helpers
@@ -46,7 +47,7 @@ def test_to_parallel_is_idempotent_and_handles_two_tables_in_order(monkeypatch: 
 
 def test_a_self_join_has_no_parallel_variant_and_a_non_cols_param_is_loud() -> None:
     spec = "pub fn run_query(a: &Cols_t, b: &Cols_t) -> (res: Vec<OutRow>)\n    requires\n        true,\n"
-    with pytest.raises(ValueError, match="self join"):
+    with pytest.raises(DeclarativeUnsupported, match="self join"):
         parallel.to_parallel(spec)
     with pytest.raises(ValueError, match="not `name: &Cols_<table>`"):
         parallel.params("pub fn run_query(a: u64) -> (res: u64)\n    requires\n")
@@ -133,3 +134,16 @@ def test_the_parallel_product_example_verifies_and_a_wrong_constant_does_not(mon
     assert text.count("(disc >= 8)") == 2  # the worker loop and the panic-recompute loop
     bad, _ = run(text.replace("(disc >= 8)", "(disc >= 7)"))
     assert not bad
+
+
+def test_non_outrow_results_have_no_parallel_variant_and_stay_loud(monkeypatch: pytest.MonkeyPatch) -> None:
+    schema = {"num": {"uom": "varchar", "x": "bigint"}}
+    cat = CatalogAssumptions(tables={"num": TableAssumptions(max_rows=100)})
+    monkeypatch.delenv(parallel.ENV, raising=False)
+    plain = emit_declarative_spec("SELECT uom, COUNT(*) AS c FROM num GROUP BY uom", schema, cat)
+    assert "StringHashMap" in plain
+    with pytest.raises(DeclarativeUnsupported, match="for `Vec<OutRow>` results"):
+        parallel.to_parallel(plain)
+    monkeypatch.setenv(parallel.ENV, "1")
+    with pytest.raises(DeclarativeUnsupported, match="for `Vec<OutRow>` results"):
+        emit_declarative_spec("SELECT uom, COUNT(*) AS c FROM num GROUP BY uom", schema, cat)

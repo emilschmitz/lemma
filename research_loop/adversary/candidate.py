@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 _ALLOWED_KEYS = frozenset({"sql", "schema", "rows", "run_query_body"})
+_OPTIONAL_KEYS = frozenset({"helpers"})  # proof fn / spec fn items for the helper region (declarative style)
+_OPTIONAL_KEYS = frozenset({"helpers"})  # proof fn / spec fn items for the helper region (declarative style)
 _FORBIDDEN_BODY_TOKENS = (
     "external_body",
     "arbitrary(",
@@ -21,6 +23,8 @@ class Candidate:
     schema: dict
     rows: dict[str, list[dict]]
     run_query_body: str
+    helpers: str = ""
+    helpers: str = ""
 
 
 def _reject_forbidden_body(body: str) -> None:
@@ -33,7 +37,7 @@ def load_candidate(path: Path) -> Candidate:
     raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise TypeError("candidate JSON must be an object")
-    extra = set(raw) - _ALLOWED_KEYS
+    extra = set(raw) - _ALLOWED_KEYS - _OPTIONAL_KEYS - _OPTIONAL_KEYS
     if extra:
         raise ValueError(f"unexpected JSON keys: {sorted(extra)}")
     missing = _ALLOWED_KEYS - set(raw)
@@ -52,4 +56,8 @@ def load_candidate(path: Path) -> Candidate:
     if not isinstance(body, str):
         raise TypeError("run_query_body must be a string")
     _reject_forbidden_body(body)
-    return Candidate(sql=sql, schema=schema, rows=rows, run_query_body=body)
+    helpers = raw.get("helpers", "")
+    if not isinstance(helpers, str):
+        raise TypeError("helpers must be a string")
+    _reject_forbidden_body(helpers)
+    return Candidate(sql=sql, schema=schema, rows=rows, run_query_body=body, helpers=helpers)
