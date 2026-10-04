@@ -38,13 +38,15 @@ def test_hardware_refuses_negation_and_subtraction(monkeypatch) -> None:
         transpile_sql_to_verus("SELECT SUM(a - b) FROM t", _SCHEMA)
 
 
-def test_product_still_emits_negation_and_hardware_keeps_addition(monkeypatch) -> None:
+def test_product_still_emits_negation_and_hardware_keeps_a_plain_sum(monkeypatch) -> None:
     monkeypatch.delenv("LEMMA_EXACT_SUM", raising=False)
     product = transpile_sql_to_verus("SELECT SUM(-a) FROM t", _SCHEMA)
     assert "-(cols.get_a" in product or "-(" in product
     monkeypatch.setenv("LEMMA_EXACT_SUM", "1")
-    added = transpile_sql_to_verus("SELECT SUM(a + b) FROM t", _SCHEMA)
-    assert "Option<u128>" in added
+    plain = transpile_sql_to_verus("SELECT SUM(a) FROM t", _SCHEMA)
+    assert "Option<u128>" in plain
+    with pytest.raises(UnsupportedContractError, match="addition of a column"):
+        transpile_sql_to_verus("SELECT SUM(a + b) FROM t", _SCHEMA)
 
 
 def test_sql_null_cell_is_outside_the_column_model() -> None:

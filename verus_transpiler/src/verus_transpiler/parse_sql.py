@@ -1003,6 +1003,17 @@ def _to_row_expr(
             raise UnsupportedContractError("Division by zero literal is not supported.")
         return f"{_to_row_expr(node.left, resolver)} / {_to_row_expr(node.right, resolver)}"
     if isinstance(node, exp.Add):
+        # Two literals still fold, including the INT32/INT64 overflow check.
+        # A column add is a different DuckDB type: INT32+INT32 overflows, and
+        # MIN(a + 1) errors at the top of the type even when SUM(a + 1) rewrites.
+        if (
+            os.environ.get("LEMMA_EXACT_SUM", "0") == "1"
+            and _fold_int_literal(node) is None
+        ):
+            raise UnsupportedContractError(
+                "hardware menu does not emit addition of a column: DuckDB "
+                "adds in the column type and rejects the overflow"
+            )
         _fold_int_literal(node)
         return f"{_to_row_expr(node.left, resolver)} + {_to_row_expr(node.right, resolver)}"
     if isinstance(node, exp.Sub):
