@@ -31,116 +31,7 @@ from research_loop.assumption_packages.check import violations
 from research_loop.decl_query_measure import _export_table
 from research_loop.table_assumptions import CatalogAssumptions, ColumnAssumption, TableAssumptions
 
-SCHEMA = {
-    "t": {"id": "bigint", "a": "bigint", "b": "bigint", "x": "bigint", "s": "varchar"},
-    "u": {"k": "bigint", "m": "bigint"},
-}
-CAT = CatalogAssumptions(
-    max_rows=64,
-    tables={
-        "t": TableAssumptions(
-            max_rows=64,
-            columns={"a": ColumnAssumption(nullable=True), "b": ColumnAssumption(nullable=True), "s": ColumnAssumption(nullable=True)},
-        ),
-        "u": TableAssumptions(max_rows=64, columns={"m": ColumnAssumption(nullable=True)}),
-    },
-)
-NULLABLE = {("t", "a"), ("t", "b"), ("t", "s"), ("u", "m")}
-
-
-def make_data(rng: random.Random):
-    t = [
-        (i, rng.choice([None, -1, 0, 1, 2, 3]), rng.choice([None, 0, 1, 2]), rng.randint(0, 3), rng.choice([None, "x", "y", ""]))
-        for i in range(rng.randint(0, 9))
-    ]
-    u = [(rng.randint(0, 3), rng.choice([None, 0, 1, 2])) for _ in range(rng.randint(0, 5))]
-    return t, u
-
-
-def load(con: duckdb.DuckDBPyConnection, t: list, u: list, encoded: bool) -> None:
-    if not encoded:
-        con.execute("CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, x BIGINT, s VARCHAR)")
-        con.execute("CREATE TABLE u (k BIGINT, m BIGINT)")
-        for r in t:
-            con.execute("INSERT INTO t VALUES (?,?,?,?,?)", list(r))
-        for r in u:
-            con.execute("INSERT INTO u VALUES (?,?)", list(r))
-        return
-    con.execute("CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, x BIGINT, s VARCHAR, a__v BOOLEAN, b__v BOOLEAN, s__v BOOLEAN)")
-    con.execute("CREATE TABLE u (k BIGINT, m BIGINT, m__v BOOLEAN)")
-    for i, a, b, x, s in t:
-        con.execute(
-            "INSERT INTO t VALUES (?,?,?,?,?,?,?,?)",
-            [i, 0 if a is None else a, 0 if b is None else b, x, "" if s is None else s, a is not None, b is not None, s is not None],
-        )
-    for k, m in u:
-        con.execute("INSERT INTO u VALUES (?,?,?)", [k, 0 if m is None else m, m is not None])
-
-
-def encode_sql(rewritten: str, key_cols: set[str]) -> str:
-    tree = sqlglot.parse_one(rewritten)
-
-    def fn(node: exp.Expression) -> exp.Expression:
-        if isinstance(node, exp.Is) and isinstance(node.expression, exp.Null) and isinstance(node.this, exp.Column):
-            c = node.this
-            return exp.Not(this=exp.column(c.name + "__v", table=c.table or None))
-        return node
-
-    tree = tree.transform(fn)
-    group = tree.args.get("group")
-    if group is not None:
-
-        def key(node: exp.Expression) -> exp.Expression:
-            if isinstance(node, exp.Column) and node.name in key_cols and not node.find_ancestor(exp.Is):
-                return sqlglot.parse_one(f"CASE WHEN {(node.table + '.') if node.table else ''}{node.name}__v THEN {node.sql()} END")
-            return node
-
-        tree.set("group", group.transform(key))
-        tree.set(
-            "expressions",
-            [
-                e.transform(key) if isinstance(e, exp.Column) or (isinstance(e, exp.Alias) and isinstance(e.this, exp.Column)) else e
-                for e in tree.expressions
-            ],
-        )
-    return tree.sql()
-
-
-def norm(rows: list, ordered: bool) -> list:
-    rows = [tuple(r) for r in rows]
-    return rows if ordered else sorted(rows, key=repr)
-
-
-def differs(sql: str, trials: int = 150, seed: int = 1):
-    """None when the rewrite is equivalent on `trials` random tables, else (t, u, duckdb rows, encoded rows)."""
-    rewritten = _null_rewrite_sql(sql, SCHEMA, CAT)
-    tree = sqlglot.parse_one(sql)
-    group = tree.args.get("group")
-    gcols: set[str] = set()
-    if group is not None:
-        gcols = {c.name for c in group.find_all(exp.Column) if ("t", c.name) in NULLABLE or ("u", c.name) in NULLABLE}
-    enc = encode_sql(rewritten, gcols)
-    ordered = "ORDER BY" in sql.upper()
-    rng = random.Random(seed)
-    for _ in range(trials):
-        t, u = make_data(rng)
-        c1, c2 = duckdb.connect(), duckdb.connect()
-        load(c1, t, u, False)
-        load(c2, t, u, True)
-        r1 = norm(c1.execute(sql).fetchall(), ordered)
-        r2 = norm(c2.execute(enc).fetchall(), ordered)
-        if r1 != r2:
-            return t, u, r1, r2
-    return None
-
-
-def accepted(sql: str) -> bool:
-    try:
-        emit_declarative_spec(sql, SCHEMA, CAT)
-    except DeclarativeUnsupported:
-        return False
-    return True
-
+from tests.null_differential import CAT, NULLABLE, SCHEMA, accepted, differs, encode_sql, load, make_data, norm  # noqa: F401
 
 EQUIVALENT = [
     "SELECT COUNT(*) AS c FROM t WHERE a > 1",
@@ -220,14 +111,12 @@ NOT_IN_EMPTY = [
 ]
 
 
-@pytest.mark.xfail(strict=True, reason="BUG: F(BETWEEN) needs every nullable operand non-NULL, but x NOT BETWEEN NULL AND 0 is TRUE for x > 0")
 @pytest.mark.parametrize("sql", NOT_BETWEEN)
 def test_not_between_with_a_nullable_bound(sql: str) -> None:
     assert accepted(sql)
     assert differs(sql, trials=300) is None
 
 
-@pytest.mark.xfail(strict=True, reason="BUG: `a NOT IN (empty subquery)` is TRUE for NULL a, the rewrite requires a IS NOT NULL")
 @pytest.mark.parametrize("sql", NOT_IN_EMPTY)
 def test_not_in_an_empty_subquery_keeps_null_cells(sql: str) -> None:
     assert accepted(sql)
@@ -245,10 +134,15 @@ def test_minimal_witnesses_of_the_two_bugs() -> None:
     assert con.execute("SELECT COUNT(*) FROM t WHERE a NOT IN (SELECT k FROM u)").fetchone() == (2,)
 
 
-def test_the_emitted_spec_of_not_between_drops_the_row() -> None:
+def test_the_emitted_spec_of_not_between_keeps_the_row_a_null_bound_cannot_decide() -> None:
     spec = emit_declarative_spec("SELECT COUNT(*) AS c FROM t WHERE x NOT BETWEEN a AND 0", SCHEMA, CAT)
     row_hit = spec.split("spec fn row_hit")[1].split("\n}")[0]
-    assert "t.a__valid@[i0]" in row_hit  # requires a non-NULL: the row (a NULL, x = 5) is not kept, SQL keeps it
+    assert "t.a__valid@[i0]" in row_hit and "||" in row_hit  # (x < a AND a valid) OR (x > 0): TRUE for a NULL a, x = 5
+
+
+def test_a_not_between_with_nullable_bounds_does_not_prove_them_non_null() -> None:
+    with pytest.raises(DeclarativeUnsupported, match="GROUP BY|SELECT list|HAVING|ORDER BY"):
+        emit_declarative_spec("SELECT a, COUNT(*) AS c FROM t WHERE x NOT BETWEEN a AND 0 GROUP BY a HAVING a > 0", SCHEMA, CAT)
 
 
 # ---- refusals are the correct outcome ----------------------------------------------------------------------------------------
@@ -404,7 +298,6 @@ def test_dictionary_plus_nullable_string_exports_a_valid_relation() -> None:
     assert bits == [1, 0, 1, 0, 1] and len(set(entries)) == len(entries)
 
 
-@pytest.mark.xfail(strict=True, reason="the NULL cell's default code 0 is stringified and enters the dictionary as the entry '0'")
 def test_dictionary_of_a_nullable_string_holds_only_the_columns_values() -> None:
     entries, _bits = _dict_nullable_export(["x", None, "y", None, "x"])
     assert sorted(entries) == ["x", "y"]
@@ -425,3 +318,38 @@ def test_nullable_loader_verifies(tmp_path: Path) -> None:
     proc = subprocess.run([str(guarded), str(path), "--triggers-mode", "silent"], capture_output=True, text=True, check=False)
     out = proc.stdout + proc.stderr
     assert re.search(r"verification results:: \d+ verified, 0 errors", out), out[-1200:]
+
+
+def test_a_dictionary_with_exactly_256_distinct_values_and_nulls_still_fits_u8() -> None:
+    values = [f"v{i}" for i in range(256)] + [None, None]
+    con = duckdb.connect()
+    con.execute("CREATE TABLE t (id BIGINT, s VARCHAR)")
+    for i, v in enumerate(values):
+        con.execute("INSERT INTO t VALUES (?, ?)", [i, v])
+    cat = CatalogAssumptions(
+        max_rows=300, tables={"t": TableAssumptions(max_rows=300, columns={"s": ColumnAssumption(nullable=True, max_distinct=256)})}
+    )
+    model = SchemaModel.from_caller({"t": {"id": "bigint", "s": "varchar"}}, "t").with_nullable(cat)
+    blob = _export_table(con, model, "t", [("s", "u8"), ("s__dict", "String"), ("s__valid", "bool")])
+    n = struct.unpack_from("<Q", blob, 0)[0]
+    assert n == 258 and struct.unpack_from("<Q", blob, 8 + n)[0] == 256  # NULL cells take code 0: no extra entry
+
+
+def test_an_all_null_dictionary_column_still_has_an_entry_for_code_zero() -> None:
+    entries, bits = _dict_nullable_export([None, None])
+    assert bits == [0, 0] and entries == [""]
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT COUNT(*) AS c FROM t WHERE a NOT IN (SELECT k FROM u)",
+        "SELECT COUNT(*) AS c FROM t WHERE a IN (SELECT k FROM u)",
+        "SELECT COUNT(*) AS c FROM t WHERE NOT (x BETWEEN a AND b) OR b > 1",
+        "SELECT COUNT(*) AS c FROM t WHERE x NOT BETWEEN 0 AND 2",
+    ],
+)
+def test_more_predicate_kinds_through_the_differential_helper(sql: str) -> None:
+    from tests.null_differential import assert_equivalent
+
+    assert_equivalent(sql)

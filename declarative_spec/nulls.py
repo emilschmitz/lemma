@@ -114,6 +114,12 @@ class _NullRewriter:
             if not truth and owner is not None:
                 return {(owner[0], node.this.name.casefold())}
             return set()
+        if isinstance(node, exp.Between):
+            low = exp.GTE(this=node.this.copy(), expression=node.args["low"].copy())
+            high = exp.LTE(this=node.this.copy(), expression=node.args["high"].copy())
+            return self._valid_when(exp.And(this=low, expression=high), truth, scope)
+        if isinstance(node, exp.In) and node.args.get("query") is not None and not truth:
+            return set()  # NULL IN (empty subquery) is FALSE
         if isinstance(node, _VALUE_PREDICATES):
             found: set[tuple[str, str]] = set()
             for col in self._nullable_columns(node, scope):
@@ -304,6 +310,12 @@ class _NullRewriter:
         if isinstance(node, exp.Exists):
             self._subqueries(node, scope)
             return node, exp.Not(this=node.copy())
+        if isinstance(node, exp.Between) and self._nullable_columns(node, scope):
+            # x BETWEEN lo AND hi is (x >= lo) AND (x <= hi): three-valued AND, so NOT BETWEEN is TRUE when one
+            # side is FALSE even if another operand is NULL.
+            low = exp.GTE(this=node.this.copy(), expression=node.args["low"].copy())
+            high = exp.LTE(this=node.this.copy(), expression=node.args["high"].copy())
+            return self.tf(exp.And(this=low, expression=high), scope)
         if isinstance(node, _VALUE_PREDICATES):
             self._subqueries(node, scope)
             if isinstance(node, exp.In):
@@ -319,10 +331,14 @@ class _NullRewriter:
             if not cols:
                 return node, exp.Not(this=exp.Paren(this=node.copy()))
             guard = _and([exp.Not(this=exp.Is(this=c.copy(), expression=exp.Null())) for c in cols.values()])
-            return (
-                exp.Paren(this=exp.And(this=guard, expression=exp.Paren(this=node))),
-                exp.Paren(this=exp.And(this=guard.copy(), expression=exp.Not(this=exp.Paren(this=node.copy())))),
-            )
+            false_ = exp.Paren(this=exp.And(this=guard.copy(), expression=exp.Not(this=exp.Paren(this=node.copy()))))
+            query = node.args.get("query") if isinstance(node, exp.In) else None
+            if query is not None:
+                # NULL IN (empty subquery) is FALSE (not NULL): the row passes `NOT IN` when the subquery has no rows.
+                inner = query.this if isinstance(query, exp.Subquery) else query
+                empty = exp.Not(this=exp.Exists(this=inner.copy()))
+                false_ = exp.Paren(this=exp.Or(this=false_, expression=empty))
+            return exp.Paren(this=exp.And(this=guard, expression=exp.Paren(this=node))), false_
         if isinstance(node, exp.Boolean):
             return node, exp.Not(this=node.copy())
         if self._nullable_columns(node, scope):

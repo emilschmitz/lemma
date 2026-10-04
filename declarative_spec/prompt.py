@@ -173,6 +173,11 @@ _EXAMPLES: dict[str, tuple[str, str]] = {
         "dict_group_count_dense.rs",
         "dictionary string mode: GROUP BY a string key as a dense array over dictionary codes, `Vec<OutRow>` with the key as a String",
     ),
+    "dict_join": (
+        "dict_join_probe_sum.rs",
+        "dictionary string mode: JOIN ON a string key (one dictionary per table): per-code count array over the small side, "
+        "NUM's dictionary translated to its codes once through a `StringHashMap`, then two array reads per row",
+    ),
     "dict_filter": (
         "dict_string_filter_minmax.rs",
         "dictionary string mode: a string-literal filter becomes one code comparison (literal's code looked up once)",
@@ -210,6 +215,8 @@ def spec_shape(spec_text: str) -> dict:
     tables = len(re.findall(r"pub struct Cols_", spec_text))
     if "__dict" in spec_text and ty.startswith("Vec<OutRow>"):
         recipe = "dict_group" if ("out_row_ok(" in spec_text and "proj_key(" not in spec_text) else "dict_filter"
+        if tables >= 2 and "proj_key(" not in spec_text:
+            recipe = "dict_join"
     elif ty.startswith("HashMapWithView"):
         recipe = "dense_map" if "KEY_CAP_" in spec_text else "int_map"
     elif ty.startswith("StringHashMap"):

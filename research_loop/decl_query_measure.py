@@ -171,6 +171,7 @@ def _export_table(
         raise ValueError(str(exc)) from exc
     col_bufs = [bytearray() for _ in types]
     dictionaries: dict[int, dict[str, int]] = {idx: {} for idx in set(dict_of.values())}
+    null_codes: set[int] = set()  # dictionary code fields that hold a NULL cell
     total = 0
     while True:
         chunk = cur.fetchmany(_CHUNK_ROWS)
@@ -195,12 +196,21 @@ def _export_table(
                         raise ValueError(
                             f"{table}.{names[idx]} has NULLs; the catalog does not declare the column nullable"
                         )
+                    if idx in dictionaries:
+                        # A NULL cell's code is arbitrary (the validity bit says NULL) but must index the dictionary:
+                        # code 0 takes no entry of its own (see the all-NULL case below).
+                        null_codes.add(idx)
+                        buf.extend(_pack(fty, 0))
+                        continue
                     value = _DEFAULT_CELL[fty]
                 if idx in dictionaries:
                     codes = dictionaries[idx]
                     buf.extend(_pack(fty, codes.setdefault(str(value), len(codes))))
                     continue
                 buf.extend(_pack(fty, decimal_scaled(value, scale) if isinstance(value, Decimal) else value))
+    for source in null_codes:
+        if not dictionaries[source]:
+            dictionaries[source][""] = 0  # every cell is NULL: code 0 still has to index an entry
     for idx, source in dict_of.items():
         entries = sorted(dictionaries[source].items(), key=lambda kv: kv[1])
         col_bufs[idx].extend(struct.pack("<Q", len(entries)))
