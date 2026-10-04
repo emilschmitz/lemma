@@ -212,3 +212,68 @@ and stays an accepted limitation. Reference lint: `_admit_eps_form` in the round
 4. Hygiene: overflow requirement and finite terms on `lemma_f64_sum_within_eps`; refuse (not crash) on overflowing literals.
 5. Then list the accepted limitations (rounding in `add/sub/mul/div_real`, underflow, float ordering on computed
    floats, denormal literals) in `docs/TRUSTED_FAMILIES.md` and the paper's Limitations section.
+
+---
+
+# Third review: soundness only (manual adversary, Sonnet subagent)
+
+Target: float agent branch at `1f6e70d` (read from a `git archive` copy; my branch is still not merged with it). Rule applied:
+rounding-only findings are accepted float limitations (`TRUSTED_ADDITION_PROTOCOL.md`), not blockers. The round-2 file
+(`test_f64_idealization_adversary_round2.py`, about the removed epsilon/exact lemmas) is replaced by
+`tests/test_f64_idealization_adversary_round3.py`; the float agent's adapted first-round file passes unchanged on the new state.
+On the new state: round 3 plus first round give 74 passed, 1 skipped, 5 strict xfails. Verus through `verus_guarded.sh`.
+
+## (1) Lemmas: no inconsistency other than rounding
+
+The 11 active trusted items are pinned by name. Checked and sound apart from rounding:
+
+* `add/sub/mul/div_real` (new shape: `ensures op_req(x,y), forall o. op_ensures(x,y,o) ==> o finite && o as real == real op`).
+  The quantified form is not vacuous (the exec op supplies an `o`) and introduces no extra falsity. `div`: needs finite `y` with
+  real value nonzero (so no `0/0`); `1.0 / 0.0` is rejected by Verus (precondition). Caps are at most 2^200 against an f64 overflow at
+  about 2^1024, and `cx * cy <= 2^200` and `cx + cy <= 2^200` hold for every claimed result: no overflow, no `inf - inf`.
+* `host_u64_to_f64`, `host_i128_to_f64`: `u64` and `i128` are always inside 2^200 so the requires never blocks, the ensures
+  (finite, `as real == n`) is false only through rounding above 2^53 (accepted).
+* comparisons: finite operands required, `-0.0` vs `0.0` agree with equal reals, NaN excluded.
+* **Combined proof attempts (4) to derive `false` all fail** (`5 verified, 4 errors`: add then eq/lt on `0.1 + 0.2` vs `0.3`; two outputs
+  of one add; `2^53 + 1.0` vs a bit-identical literal spelled `2^53 + 1`; `1.0 / 0.0`). Verus ties f64 identity to `as real` only through these
+  lemmas and has no way to see that rounding makes two instances disagree, so rounding never turns into a derivable contradiction.
+  Residual theoretical note: a model needs an infinite f64 sort; the real f64 is finite, so an adversary able to quantify over 2^64 distinct
+  sums would clash; no Verus proof can do that. Not a blocker.
+
+## (2) `f64_literals_ok()`: never false for a query that is emitted
+
+Refused: colliding literals in every position tested (WHERE, IN, BETWEEN, HAVING on SUM and AVG, CASE, ORDER BY/LIMIT, arithmetic operand,
+ties spelled with 34 digits), exponent forms (`1e-1`, `1E-1`, `1.5e3`, `1e-320`), hex, overflowing literals (400 digits, now a refusal), underflowing
+literals (330 zeros). Accepted and consistent: IN lists, `BETWEEN -0.5 AND 0.5`, `-0.0` (it is `0.0`, same key), DECIMAL-vs-float compares with a literal,
+`0.1` and `0.100`, adjacent doubles `0.3` and `0.3000000000000000444` (distinct), 40-digit literals (the emitter rounds to 28 digits, rounding only).
+**Verus rounds literals exactly like the emitter's `float(Fraction)`** (tested on above-tie, tie-to-even, below-tie, 34-digit and adjacent cases), so the
+collision test equals Verus's own identification. DECIMAL literals against DECIMAL/int columns stay exact integers (31-digit literals checked).
+Accepted limitation: a denormal literal (319 zeros) is accepted; the hypothesis is rounding-only less exact. No query found for which the hypothesis is false.
+
+## (3) Typed mixing: no unsound bypass, one early-refusal gap
+
+Refused through aliases, subqueries, joins, CASE (both branches), AVG, GROUP BY expressions, MAX, IN, BETWEEN, explicit CAST, `d * v`: 17 shapes pinned.
+**Gap (transpiler, not unsound):** `intcol > floatexpr` emits (`WHERE i > v + 1`, `i > v * 2`, `d > v + 1`, `v + 1 < i`): the spec compares `int` with `real`.
+Verus refuses the spec with `E0277` (no body can verify; pinned), so it fails at step 5 instead of being refused at transpile. For a DECIMAL column the spec
+compares the scaled integer, so the eventual typed fix must convert (not just cast). Strict xfail pinned. (`HAVING AVG(i) > v` also emits, but DuckDB
+rejects that SQL itself, so there is no result to disagree with.)
+
+## (4) Invisibility of the archive
+
+I built a real workspace for a float query (`_ensure_context_files`: spec, lemma index, vstd, guide, examples, 611 files) and grepped all 16 derived
+shelved names: **0 hits**; the prompt has none. **Leak:** the emitted `spec.rs` (read by the agent) carries the comment
+"shelved in declarative_spec/future_float_error_bounds/" in the host lemma block. No lemma name, but it names the archive folder and invites a search;
+fix: delete that comment (strict xfail `test_emitted_spec_does_not_name_the_archive_folder`; the name test already excludes that line).
+
+## Verdict
+
+* Lemma statements: sound except rounding (accepted).
+* Hypothesis: sound (no false instance found), literal guard matches Verus.
+* Mixing: no unsound path; one ill-typed-spec gap that fails loudly.
+* Archive: invisible except one comment.
+
+**Merge: yes, with these conditions** (none is a soundness blocker): (a) delete the comment naming the archive folder; (b) refuse `intcol/DECIMAL op
+floatexpr` comparisons at emit (the four BYPASS shapes) so the failure is early and typed; (c) list the accepted limitations (rounding in every
+`*_real` lemma, underflow, denormal literals, float comparisons of computed values, summation-order flips) in `docs/TRUSTED_FAMILIES.md` and the
+paper's Limitations section; (d) merge note: my branch conflicts with theirs in `declarative_spec/lemmas.py` and `tests/test_f64_idealization_adversary.py`;
+take theirs for both and keep my round-3 file.
