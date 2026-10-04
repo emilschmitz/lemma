@@ -35,7 +35,7 @@ def test_hardware_sum_of_distinct_values_is_empty_aware(monkeypatch) -> None:
     sql = "SELECT SUM(a) FROM (SELECT DISTINCT a FROM t) d"
     monkeypatch.delenv("LEMMA_EXACT_SUM", raising=False)
     product = _method_spec_body(transpile_sql_to_verus(sql, _SCHEMA))
-    assert "seq_sum_u64(derived_d_spec(cols))" in product
+    assert "seq_sum_u32_as_u64(derived_d_spec(cols), 0)" in product
     monkeypatch.setenv("LEMMA_EXACT_SUM", "1")
     hardware = _method_spec_body(transpile_sql_to_verus(sql, _SCHEMA))
     assert "Option<u128>" in hardware

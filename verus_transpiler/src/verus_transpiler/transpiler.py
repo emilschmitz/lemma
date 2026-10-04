@@ -1060,12 +1060,16 @@ def _emit_derived_union_outer_spec(
 
     prefix_l = f"derived_{derived.alias}_left"
     prefix_r = f"derived_{derived.alias}_right"
-    left_helpers, left_call, _ = _emit_projection_branch(
+    left_helpers, left_call, left_ty = _emit_projection_branch(
         inner, flat_schema, helper_name=f"{prefix_l}_helper", spec_name=f"{prefix_l}_spec",
     )
-    right_helpers, right_call, _ = _emit_projection_branch(
+    right_helpers, right_call, right_ty = _emit_projection_branch(
         right, flat_schema, helper_name=f"{prefix_r}_helper", spec_name=f"{prefix_r}_spec",
     )
+    if left_ty != right_ty:
+        raise UnsupportedContractError(
+            "derived set operation branches have different column types"
+        )
     if op == "union" and inner.union_all:
         combined = f"spec_seq_concat({left_call}, {right_call})"
     elif op == "union":
@@ -1079,8 +1083,17 @@ def _emit_derived_union_outer_spec(
         spec_body = f"{combined}.len() as u64"
         ret_type = "u64"
     elif query.agg_type == "SUM" and op == "union":
-        spec_body = f"seq_sum_u64({combined})"
-        ret_type = "u64"
+        elem = _seq_elem(left_ty)
+        if os.environ.get("LEMMA_EXACT_SUM", "0") == "1":
+            extra, spec_body, ret_type = _exact_empty_seq_sum(elem, combined)
+            helpers = "\n\n".join([extra, left_helpers, right_helpers])
+        else:
+            extra, spec_body = _wrapping_seq_sum(elem, combined)
+            ret_type = "u64"
+            parts = [p for p in (extra, left_helpers, right_helpers) if p]
+            helpers = "\n\n".join(parts)
+        spec_fn = _method_spec_block(ret_type, spec_body)
+        return helpers, spec_fn, ret_type
     else:
         raise UnsupportedContractError(
             f"outer {query.agg_type!r} over derived {op.upper()} not supported"
@@ -1202,6 +1215,58 @@ def _method_spec_block(ret_type: str, body: str) -> str:
 }}"""
 
 
+def _seq_elem(seq_ty: str) -> str:
+    if seq_ty.startswith("Seq<") and seq_ty.endswith(">"):
+        return seq_ty[len("Seq<"):-1]
+    raise UnsupportedContractError(f"SUM over {seq_ty} is not in the method spec")
+
+
+def _seq_sum_as_u128(elem: str) -> tuple[str, str]:
+    """Exact sum of a ``Seq<u32>`` or ``Seq<u64>``. The total fits in ``u128``."""
+    if elem not in ("u32", "u64"):
+        raise UnsupportedContractError(f"SUM over Seq<{elem}> is not in the method spec")
+    fn = f"seq_sum_{elem}_as_u128"
+    src = f"""pub open spec fn {fn}(s: Seq<{elem}>, i: int) -> u128
+    decreases s.len() - i,
+{{
+    if i < s.len() {{
+        ({fn}(s, i + 1) as int + s[i] as int) as u128
+    }} else {{
+        0u128
+    }}
+}}"""
+    return fn, src
+
+
+def _wrapping_seq_sum(elem: str, expr: str) -> tuple[str, str]:
+    """Product-path wrapping sum. ``seq_sum_u64`` only accepts ``Seq<u64>``."""
+    if elem == "u64":
+        return "", f"seq_sum_u64({expr})"
+    if elem != "u32":
+        raise UnsupportedContractError(f"SUM over Seq<{elem}> is not in the method spec")
+    fn = "seq_sum_u32_as_u64"
+    src = f"""pub open spec fn {fn}(s: Seq<u32>, i: int) -> u64
+    decreases s.len() - i,
+{{
+    if i < s.len() {{
+        ({fn}(s, i + 1) as int + s[i] as int) as u64
+    }} else {{
+        0u64
+    }}
+}}"""
+    return src, f"{fn}({expr}, 0)"
+
+
+def _exact_empty_seq_sum(elem: str, expr: str) -> tuple[str, str, str]:
+    """Hardware sum: ``None`` on an empty sequence, otherwise the exact total."""
+    fn, src = _seq_sum_as_u128(elem)
+    body = (
+        f"let rows = {expr};\n"
+        f"    if rows.len() == 0 {{ None }} else {{ Some({fn}(rows, 0)) }}"
+    )
+    return src, body, "Option<u128>"
+
+
 def _emit_derived_distinct_outer_spec(
     query: SQLQuery,
     derived: DerivedTable,
@@ -1216,7 +1281,7 @@ def _emit_derived_distinct_outer_spec(
     if not query.agg_type:
         raise UnsupportedContractError("derived DISTINCT requires a scalar aggregate")
     prefix = f"derived_{derived.alias}"
-    helpers, call, _ret = _emit_projection_branch(
+    helpers, call, seq_ty = _emit_projection_branch(
         inner,
         flat_schema,
         helper_name=f"{prefix}_helper",
@@ -1229,22 +1294,12 @@ def _emit_derived_distinct_outer_spec(
             "SUM over derived DISTINCT requires one projected column"
         )
     if query.agg_type == "SUM" and os.environ.get("LEMMA_EXACT_SUM", "0") == "1":
-        exact = """pub open spec fn seq_sum_exact_u128(s: Seq<u64>, i: int) -> u128
-    decreases s.len() - i,
-{
-    if i < s.len() {
-        (seq_sum_exact_u128(s, i + 1) as int + s[i] as int) as u128
-    } else {
-        0u128
-    }
-}"""
-        body = (
-            f"let rows = {call};\n"
-            "    if rows.len() == 0 { None } else { Some(seq_sum_exact_u128(rows, 0)) }"
-        )
-        return exact + "\n\n" + helpers, _method_spec_block("Option<u128>", body), "Option<u128>"
+        extra, body, ret = _exact_empty_seq_sum(_seq_elem(seq_ty), call)
+        return extra + "\n\n" + helpers, _method_spec_block(ret, body), ret
     if query.agg_type == "SUM":
-        return helpers, _method_spec_block("u64", f"seq_sum_u64({call})"), "u64"
+        extra, expr = _wrapping_seq_sum(_seq_elem(seq_ty), call)
+        joined = extra + "\n\n" + helpers if extra else helpers
+        return joined, _method_spec_block("u64", expr), "u64"
     raise UnsupportedContractError(
         f"outer {query.agg_type!r} over derived DISTINCT not supported"
     )
