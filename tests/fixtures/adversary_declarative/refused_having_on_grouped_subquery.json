@@ -1,0 +1,26 @@
+{
+ "sql": "SELECT COUNT(*) AS c FROM (SELECT k, COUNT(*) AS n FROM t GROUP BY k) g WHERE g.n > 1",
+ "schema": {
+  "t": {
+   "a": "BIGINT",
+   "k": "BIGINT"
+  }
+ },
+ "rows": {
+  "t": [
+   {
+    "a": 1,
+    "k": 1
+   },
+   {
+    "a": 2,
+    "k": 1
+   },
+   {
+    "a": 2,
+    "k": 2
+   }
+  ]
+ },
+ "run_query_body": "\nlet res: Vec<OutRow> = Vec::new();\nres\n"
+}

@@ -1,0 +1,18 @@
+{
+ "sql": "SELECT b, MAX(CASE WHEN a > 1 THEN a END) AS x FROM t GROUP BY b",
+ "schema": {
+  "t": {
+   "a": "BIGINT",
+   "b": "BIGINT"
+  }
+ },
+ "rows": {
+  "t": [
+   {
+    "a": 1,
+    "b": 2
+   }
+  ]
+ },
+ "run_query_body": "\nlet mut res: Vec<OutRow> = Vec::new();\nif t.n > 0 {\n    let b = t.b[0];\n    let a = t.a[0];\n    let v: i128 = if a > 1 { a as i128 } else { 0 };\n    res.push(OutRow { b: b, x: v });\n    proof {\n        assert(t.n == 1);\n        assert(row_hit(t, 0));\n        assert(key_at(t, 0) == (b as int));\n        assert(max_x_val(t, 0) == (v as int));\n        assert(max_x(t, (b as int), (v as int)));\n        assert(res@[0].b == b);\n        assert(res@[0].x == v);\n        assert(forall|i0: int| #![trigger row_hit(t, i0)] row_hit(t, i0) ==> i0 == 0);\n    }\n}\nres\n"
+}

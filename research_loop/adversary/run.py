@@ -108,12 +108,20 @@ def main(argv: list[str] | None = None) -> int:
         default=int(os.environ.get("ADVERSARY_TIMEOUT_SEC", "600")),
     )
     parser.add_argument("--candidate", type=Path, default=None)
+    parser.add_argument(
+        "--spec-style",
+        choices=("recursive", "declarative"),
+        default=None,
+        help="default: LEMMA_SPEC_STYLE, else recursive",
+    )
     args = parser.parse_args(argv)
 
     try:
         if args.candidate is not None:
             cand = load_candidate(args.candidate)
-            report = judge_candidate(cand, config=args.config, verify=True)
+            report = judge_candidate(
+                cand, config=args.config, verify=True, spec_style=args.spec_style
+            )
             print(json.dumps(report, indent=2))
             return 0
 
@@ -142,7 +150,9 @@ def main(argv: list[str] | None = None) -> int:
                 print("agent returned nothing: missing candidate.json", file=sys.stderr)
                 return 2
             cand = load_candidate(cand_path)
-            report = judge_candidate(cand, config=args.config, verify=True)
+            report = judge_candidate(
+                cand, config=args.config, verify=True, spec_style=args.spec_style
+            )
             print(json.dumps(report, indent=2))
             return 0
     except subprocess.TimeoutExpired:

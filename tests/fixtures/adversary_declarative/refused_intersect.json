@@ -1,0 +1,37 @@
+{
+ "sql": "SELECT a FROM t INTERSECT SELECT a FROM u",
+ "schema": {
+  "t": {
+   "a": "BIGINT",
+   "k": "BIGINT"
+  },
+  "u": {
+   "a": "BIGINT"
+  }
+ },
+ "rows": {
+  "t": [
+   {
+    "a": 1,
+    "k": 1
+   },
+   {
+    "a": 2,
+    "k": 1
+   },
+   {
+    "a": 2,
+    "k": 2
+   }
+  ],
+  "u": [
+   {
+    "a": 2
+   },
+   {
+    "a": 3
+   }
+  ]
+ },
+ "run_query_body": "\nlet res: Vec<OutRow> = Vec::new();\nres\n"
+}

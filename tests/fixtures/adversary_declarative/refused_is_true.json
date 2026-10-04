@@ -1,0 +1,26 @@
+{
+ "sql": "SELECT COUNT(*) AS c FROM t WHERE (a > 1) IS TRUE",
+ "schema": {
+  "t": {
+   "a": "BIGINT",
+   "k": "BIGINT"
+  }
+ },
+ "rows": {
+  "t": [
+   {
+    "a": 1,
+    "k": 1
+   },
+   {
+    "a": 2,
+    "k": 1
+   },
+   {
+    "a": 2,
+    "k": 2
+   }
+  ]
+ },
+ "run_query_body": "\nlet res: Vec<OutRow> = Vec::new();\nres\n"
+}
