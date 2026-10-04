@@ -138,8 +138,8 @@ def test_not_exists_and_case_sum_emit() -> None:
     assert "positive_count" in case_spec
     assert "0real" in case_spec
     assert "if " in case_spec
-    assert "r#abstract" in case_spec
-    assert "pub abstract:" not in case_spec
+    # Columns the query does not read are not loaded.
+    assert "abstract" not in case_spec
     assert "method_spec" not in case_spec
 
 

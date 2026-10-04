@@ -18,7 +18,7 @@ from declarative_spec.emit_tail import tail_ensures
 from declarative_spec.parse import DeclarativeUnsupported
 from declarative_spec.parse_query import parse_query
 from declarative_spec.resolve import check_exact_integer_refs, flatten_derived, qualify_join_refs
-from declarative_spec.schema_types import ColumnTypeInfo, SchemaModel, classify_sql_type, rust_ident
+from declarative_spec.schema_types import ColumnTypeInfo, SchemaModel, classify_sql_type, param_ident, rust_ident
 from declarative_spec.surface import Agg, OrderKey, Query
 from research_loop.table_assumptions import CatalogAssumptions
 
@@ -28,7 +28,7 @@ _IS_NULL = re.compile(
 _QUAL = re.compile(
     r"\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b(?!@\[)"
 )
-_COLS_I = re.compile(r"\bcols\.([A-Za-z_][A-Za-z0-9_]*)@\[i\]@?")
+_COLS_I = re.compile(r"\bcols\.(?:r#)?([A-Za-z_][A-Za-z0-9_]*)@\[i\]@?")
 
 
 @dataclass
@@ -227,6 +227,8 @@ def _emit_helpers(query: Query, prefix: str, model: SchemaModel) -> _Helpers:
     blocks.extend(in_sources)
     where_expr = apply_in_calls(query.where_expr, in_heads)
     pred = _compile_pred(where_expr, main, [], model, exists_calls)
+    if re.search(r"\bsq_\d+\b", pred):
+        raise DeclarativeUnsupported("a scalar subquery in the WHERE of an aggregate query")
     blocks.append(_row_hit_fn(row_hit, query, main, params, pred))
     blocks.append(_key_at_fn(key_at, main, params, group_infos, key_ty))
 
@@ -260,9 +262,9 @@ def _extra_params(query: Query, main: list[_Slot], model: SchemaModel) -> list[_
     def add(alias: str, table: str) -> None:
         if table.casefold() not in model.tables or table.casefold() in known:
             return
-        param = rust_ident(alias)
+        param = param_ident(alias)
         if param in params:
-            param = rust_ident(f"{alias}_{table}")
+            param = param_ident(f"{alias}_{table}")
         extras.append(
             _Slot(
                 table=table,
@@ -564,7 +566,7 @@ def _fn_name(prefix: str, kind: str, alias: str) -> str:
     raise DeclarativeUnsupported(kind)
 
 
-_CASE_RESULT_COL = re.compile(r"\{ cols\.([A-Za-z_][A-Za-z0-9_]*)@\[i\] \}")
+_CASE_RESULT_COL = re.compile(r"\{ cols\.(?:r#)?([A-Za-z_][A-Za-z0-9_]*)@\[i\] \}")
 
 
 def _case_float_results(expr: str, main: list[_Slot], model: SchemaModel) -> list[tuple[_Slot, str]]:
@@ -1248,6 +1250,11 @@ def _having(query: Query, helpers: _Helpers, scalars: dict[str, str], key: str) 
         expr = re.sub(rf"\b{re.escape(name)}\b", lambda _m, rep=replacement: rep, expr)
     for token, piece in held:
         expr = expr.replace(token, piece)
+    for agg in helpers.aggs:
+        if agg.ret == "real":
+            call = re.escape(f"{agg.name}({p}, 0{key_arg})")
+            expr = re.sub(rf"({call}\s*{_CMP_OP}\s*)(-?\d+)(?![\w.])", r"\1\2real", expr)
+            expr = re.sub(rf"(?<![\w.])(-?\d+)(\s*{_CMP_OP}\s*{call})", r"\1real\2", expr)
     return expr
 
 
@@ -1633,6 +1640,14 @@ def _compile_pred(
 
     out = _IS_NULL.sub(isnull, expr)
 
+    # Each cell is stashed behind a placeholder so a later pass never rewrites text inside a cell
+    # (a column named `int`, `real` or `as` must not match the words of `(x as real)`).
+    cells: list[str] = []
+
+    def stash(cell: str) -> str:
+        cells.append(cell)
+        return f"\x00{len(cells) - 1}\x00"
+
     def qual(m: re.Match[str]) -> str:
         alias, col = m.group(1), m.group(2)
         slot = _slot_named(alias, scopes)
@@ -1642,16 +1657,21 @@ def _compile_pred(
             _orig, info = model.lookup_column(slot.table, col)
         except DeclarativeUnsupported:
             return m.group(0)
-        return _cell(slot, col, info)
+        return stash(_cell(slot, col, info))
 
     out = _QUAL.sub(qual, out)
+    # A bare name is a column, even when a table parameter has the same name (table `tag`, column `tag`):
+    # parameters only appear as `param.field`, so a name followed by a dot is left alone.
+    by_name = {col.removeprefix("r#"): (slot, info) for col, (slot, info) in _columns(scopes, model).items()}
+
+    def bare(m: re.Match[str]) -> str:
+        hit = by_name.get(m.group(1))
+        return m.group(0) if hit is None else stash(_cell(hit[0], m.group(1), hit[1]))
+
+    out = re.sub(r"(?<![\w.#\x00])([A-Za-z_]\w*)(?![\w.\x00])", bare, out)
+    out = re.sub(r"\x00(\d+)\x00", lambda m: cells[int(m.group(1))], out)
     for name, call in exists_calls.items():
-        out = re.sub(rf"\b{re.escape(name)}\b", call, out)
-    columns = _columns(scopes, model)
-    for col, (slot, info) in sorted(columns.items(), key=lambda item: len(item[0]), reverse=True):
-        if any(s.param == col or s.alias == col for s in scopes):
-            continue
-        out = re.sub(rf"(?<!\.)\b{re.escape(col)}\b", _cell(slot, col, info), out)
+        out = re.sub(rf"\b{re.escape(name)}\b", lambda _m, c=call: c, out)
     return _real_literals(out)
 
 

@@ -428,7 +428,9 @@ def _parse_select(expression: exp.Select, *, outer_scope: _Scope | None = None) 
     else:
         table_name, alias = _parse_table_ref(from_this)
         if table_name.lower() in scope.cte_names:
-            cte_q = next(q for n, q in query.ctes if n.lower() == table_name.lower())
+            cte_q = next((q for n, q in query.ctes if n.lower() == table_name.lower()), None)
+            if cte_q is None:
+                raise DeclarativeUnsupported("a WITH name used inside a subquery")
             query.derived.append((table_name, cte_q))
         query.tables.append(table_name)
         scope.tables.append(table_name)

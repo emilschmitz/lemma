@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 from dataclasses import dataclass
 from enum import Enum, auto
 
@@ -72,6 +73,42 @@ def rust_ident(name: str) -> str:
     if s in _RUST_KEYWORDS:
         return f"r#{s}"
     return s
+
+
+# Names the emitted spec binds itself: the result, a row, a group key, quantifier variables, row indices.
+_GENERATED_NAMES = frozenset({"res", "row", "k", "r", "r2", "ex"})
+_GENERATED_INDEX = re.compile(r"^[ij]\d+$")
+_VALUE_DEF = re.compile(
+    r"^(?:pub(?:\([^)]*\))?\s+)?(?:(?:open|closed|uninterp|const|unsafe|exec|spec|proof|broadcast|axiom|default)\s+)*"
+    r"(?:fn|const|static)\s+(\w+)",
+    re.M,
+)
+
+
+@lru_cache(maxsize=1)
+def ambiguous_verus_names() -> frozenset[str]:
+    """Function and constant names that two glob imports of the spec preamble both define.
+
+    The preamble imports the Verus builtin crate and every vstd module by glob. A parameter named
+    like a name defined in two of them is rejected as ambiguous (``sub``, ``add``). Read from the
+    pinned Verus install; fails loudly when it is missing.
+    """
+    from declarative_spec.vstd_index import VERUS_HOME, VSTD
+
+    sources: dict[str, set[str]] = {}
+    for path in [VERUS_HOME / "builtin" / "src" / "lib.rs", *sorted(VSTD.rglob("*.rs"))]:
+        for name in _VALUE_DEF.findall(path.read_text()):
+            sources.setdefault(name, set()).add(str(path))
+    return frozenset(name for name, files in sources.items() if len(files) >= 2)
+
+
+def param_ident(name: str) -> str:
+    """The Rust parameter for a table or alias: ``rust_ident``, moved off names the spec itself uses."""
+    ident = rust_ident(name)
+    bare = ident.removeprefix("r#")
+    if bare in _GENERATED_NAMES or _GENERATED_INDEX.match(bare) or bare in ambiguous_verus_names():
+        return f"{bare}_t"
+    return ident
 
 
 class KeyKind(Enum):

@@ -267,12 +267,45 @@ def test_measure_refuses_a_null_in_a_column_the_query_reads(tmp_path: Path, null
         )
 
 
-def test_measure_raises_on_a_null_even_in_a_column_the_query_does_not_read(tmp_path: Path) -> None:
+def test_a_null_in_a_column_the_query_does_not_read_does_not_block(tmp_path: Path) -> None:
     db = tmp_path / "u.duckdb"
     _tiny_db(db, [(1, "a", None), (2, "b", None)])
+    write_query_measure(
+        sql="SELECT k, COUNT(*) AS c FROM t WHERE s = 'a' GROUP BY k",
+        schema=_SCHEMA,
+        catalog=_catalog(),
+        db_path=db,
+        dest=tmp_path / "d",
+        float_abs_eps=None,
+    )
+
+
+def test_unread_columns_are_absent_from_the_struct_and_valid_cols() -> None:
+    spec = emit_declarative_spec(
+        "SELECT k, COUNT(*) AS c FROM t WHERE s = 'a' GROUP BY k", _SCHEMA, _catalog()
+    )
+    struct = spec.split("pub struct Cols_t {")[1].split("}")[0]
+    valid = spec.split("pub open spec fn valid_cols_t")[1].split("\n}")[0]
+    read = {"k", "s"}
+    for col in _SCHEMA["t"]:
+        assert (f"pub {col}:" in struct) == (col in read), col
+        assert (f".{col}@" in valid) == (col in read), col
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT k, COUNT(*) AS c FROM t WHERE s = 'a' GROUP BY k",  # in WHERE
+        "SELECT s, COUNT(*) AS c FROM t GROUP BY s",  # in GROUP BY
+        "SELECT k, COUNT(DISTINCT s) AS c FROM t GROUP BY k",  # in an aggregate
+    ],
+)
+def test_a_null_in_a_column_the_query_reads_still_raises(tmp_path: Path, sql: str) -> None:
+    db = tmp_path / "u.duckdb"
+    _tiny_db(db, [(1, None, 0.5), (2, "b", 0.5)])  # NULL in s, the column these queries read
     with pytest.raises(ValueError, match="NULL"):
         write_query_measure(
-            sql="SELECT k, COUNT(*) AS c FROM t WHERE s = 'a' GROUP BY k",
+            sql=sql,
             schema=_SCHEMA,
             catalog=_catalog(),
             db_path=db,

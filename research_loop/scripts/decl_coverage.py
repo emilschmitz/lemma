@@ -80,9 +80,15 @@ def tpch_queries() -> list[str]:
 
 
 def load_sql(path: Path) -> list[str]:
-    from research_loop.scripts.sqlsmith_trusted_coverage import parse_sql_file
-
-    return [sql.rstrip(";") for _qid, sql in parse_sql_file(path)]
+    """Queries of a ``-- Q<n>...`` labeled file (GenDB or fuzz), whatever statement each starts with."""
+    blocks = re.split(r"^--\s*Q\d+.*$", path.read_text(), flags=re.MULTILINE)[1:]
+    out = []
+    for block in blocks:
+        body = "\n".join(line for line in block.splitlines() if not line.lstrip().startswith("--"))
+        body = body.strip().rstrip(";").strip()
+        if body:
+            out.append(body)
+    return out
 
 
 def context(tpch: bool):
@@ -95,13 +101,15 @@ def context(tpch: bool):
     return load_sec_schema(), assumption_package("sec_margin")
 
 
-def queries_for(round_n: str, tpch: bool) -> list[str]:
+def queries_for(round_n: str, tpch: bool, fuzz: bool = False) -> list[str]:
     if tpch:
         f = OUT / f"tpch_{round_n}.sql"
         base = tpch_queries()
         if f.is_file():
             base += [q.strip() for q in f.read_text().split(";\n") if q.strip()]
         return base
+    if fuzz:
+        return load_sql(OUT / f"fuzz_{round_n}.sql")
     return load_sql(OUT / f"round_{round_n}.sql")
 
 
@@ -131,7 +139,7 @@ def emit_all(sqls, schema, catalog):
 
 def cmd_emit(args) -> None:
     schema, catalog = context(args.tpch)
-    sqls = queries_for(args.round, args.tpch)
+    sqls = queries_for(args.round, args.tpch, args.fuzz)
     ok, refused, crashed = emit_all(sqls, schema, catalog)
     total = len(sqls)
     print(
@@ -175,7 +183,7 @@ def typecheck(spec: str, *, full: bool = False) -> str:
 
 def cmd_tc(args) -> None:
     schema, catalog = context(args.tpch)
-    ok, _r, _c = emit_all(queries_for(args.round, args.tpch), schema, catalog)
+    ok, _r, _c = emit_all(queries_for(args.round, args.tpch, args.fuzz), schema, catalog)
     rng = random.Random(args.seed)
     rng.shuffle(ok)
     buckets: dict[str, list[str]] = collections.defaultdict(list)
@@ -195,6 +203,14 @@ def cmd_tc(args) -> None:
 
 def cmd_gen(args) -> None:
     OUT.mkdir(parents=True, exist_ok=True)
+    if args.fuzz:
+        from research_loop.scripts.decl_fuzz import generate
+
+        out = OUT / f"fuzz_{args.round}.sql"
+        qs = generate(args.seed, args.count)
+        out.write_text("\n".join(f"-- Q{i}: fuzz\n{q};\n" for i, q in enumerate(qs, 1)))
+        print(out, len(qs))
+        return
     out = OUT / f"round_{args.round}.sql"
     subprocess.run(
         [sys.executable, str(_GEN), "--seed", str(args.seed), "--num-generate", str(args.count * 4),
@@ -212,6 +228,7 @@ def main() -> None:
     p.add_argument("--count", type=int, default=300)
     p.add_argument("--max", type=int, default=40)
     p.add_argument("--tpch", action="store_true")
+    p.add_argument("--fuzz", action="store_true")
     args = p.parse_args()
     {"gen": cmd_gen, "emit": cmd_emit, "tc": cmd_tc}[args.cmd](args)
 
