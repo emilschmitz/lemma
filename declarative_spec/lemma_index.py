@@ -14,37 +14,12 @@ def lemma_index_markdown() -> str:
         "A new `spec fn` or `proof fn` goes between `// AGENT_HELPERS_START` and `// AGENT_HELPERS_END`.",
         "`proof { lemma_...(); }` is allowed.",
         "",
-        "Host lemmas (call these; do not re-prove arithmetic fit by hand):",
-        "",
-        ("- `lemma_u64_add_fits(a: u64, b: u64)` "
-        "`requires a as int + b as int <= u64::MAX as int`, "
-        "`ensures a + b == (a as int + b as int) as u64`. "
-        "A u64 add equals the mathematical add when the sum fits in u64."),
-        "",
-        ("- `lemma_i128_add_fits(a: i128, b: i128)` with the corresponding i128 min/max requires. "
-        "An i128 add equals the mathematical add when the sum fits in i128."),
+        "Host lemmas (call these; the integer adds need none, Verus checks overflow itself):",
         "",
         ("- `lemma_dense_count_map(keys, counts, map, key_cap)`, when this spec defines it. "
         "Once every slot of `counts` equals `group_count(keys, 0, k)` and `map` holds exactly "
         "the nonzero slots, the map meets the `ensures`. Call it after the copy loop. "
         "Pass `KEY_CAP_... as int`."),
-        "",
-        ("- `lemma_index_key_below_cap(cols, i: int)`, when this spec defines it. "
-        "Requires `valid_cols_...(cols)` and `0 <= i < cols.n as int`. "
-        "Ensures the loaded key at `i` is `>= 0` and `< KEY_CAP_...`. "
-        "Call it after reading `cols.<field>[i]`. Keep `valid_cols_...` in the loop invariant."),
-        "",
-        ("- `lemma_count_step_fits_u64(prev: u64, row_cap: int)`. "
-        "prev + 1 fits in u64 when the count is at most the row cap and the row cap fits in u64."),
-        "",
-        ("- `lemma_count_step_fits_i128(prev: i128, row_cap: int)`. "
-        "Same count step when the aggregate slot is i128."),
-        "",
-        ("- `lemma_sum_step_fits_u64(prev: u64, cell: u64, total_cap: int)`. "
-        "Adding one more cell fits in u64 when the running sum stays within total_cap."),
-        "",
-        ("- `lemma_sum_step_fits_i128(prev: i128, cell: i128, total_cap: int)`. "
-        "Same sum step for an i128 slot, including negative cells inside the cap."),
         "",
         ("- `lemma_f64_sum_within_eps(acc: f64, n_terms: int, mag_cap: int, eps: f64, terms: Seq<f64>)`. "
         "A plain left-to-right f64 fold is within eps of the real sum of the loaded floats when "

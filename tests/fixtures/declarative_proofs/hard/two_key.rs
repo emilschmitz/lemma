@@ -131,9 +131,6 @@
             assert(pre.line@.len() == pre.n as int);
             assert(pre.report@.len() == pre.n as int);
             assert(key_at(pre, i as int) == kk);
-            assert forall|q: (int, int)| #[trigger] count_c(pre, i as int, q) == (if row_hit(pre, i as int) && key_at(pre, i as int) == q { 1int } else { 0int }) + count_c(pre, i as int + 1, q) by {
-                lemma_count_c_step(pre, i as int, q);
-            };
         }
         if true {
             let mut j: usize = 0;

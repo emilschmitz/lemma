@@ -106,7 +106,7 @@ def test_grouped_scan_states_filter_and_aggregates() -> None:
     assert "pre.stmt@[i0]@) != \"\"@" not in spec  # IS NOT NULL is true, not s != ""
     assert "pre.(pre." not in spec
     assert "count_cnt(" in spec
-    assert "lemma_count_cnt_step(" in spec
+    assert "lemma_count_cnt_step(" not in spec
     assert "lemma_count_cnt_bound(" in spec
     assert "count_distinct_num_filings(" in spec
     assert "avg_avg_line_num(" in spec
@@ -194,7 +194,7 @@ def test_filter_projection_counts_each_hit() -> None:
     assert "pub fy: i64" in spec
     assert "pub name: String" in spec
     assert "hit_count(" in spec
-    assert "lemma_hit_count_step(" in spec
+    assert "lemma_hit_count_step(" not in spec
     assert "hits_with(" in spec
     assert "out_copies(" in spec
     assert "res@.len() <= 10" in spec

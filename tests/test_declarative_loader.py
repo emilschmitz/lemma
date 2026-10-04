@@ -75,7 +75,6 @@ _BODY = """
                 assert(prev == 0);
                 assert(prev as int + 1 <= ROW_CAP_t);
             }
-            lemma_count_step_fits_u64(prev, ROW_CAP_t);
         }
         let next = prev + 1;
         map.insert(k, next);

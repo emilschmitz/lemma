@@ -75,7 +75,6 @@ _COUNT_BODY = """
                 assert(prev == 0);
                 assert(prev as int + 1 <= ROW_CAP_t);
             }
-            lemma_count_step_fits_u64(prev, ROW_CAP_t);
             assert((prev + 1) as int == prev as int + 1);
         }
         let next = prev + 1;
@@ -176,7 +175,6 @@ def test_declarative_group_count_verifies_with_fit_lemma() -> None:
     admission = admit_declarative_body(_COUNT_BODY)
     assert admission.ok, admission.violations
     assert "assume(" not in _COUNT_BODY
-    assert "lemma_count_step_fits_u64" in _COUNT_BODY
     program = assemble_declarative_program(spec, _COUNT_BODY)
     assert program.index("fn main()") > program.index("fn load_cols_t")
     assert "Instant::now()" in program

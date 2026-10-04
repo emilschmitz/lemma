@@ -148,7 +148,7 @@ def test_unset_read_body_keeps_recursive_admit(
 
 def test_lemma_index_markdown_content() -> None:
     md = lemma_index_markdown()
-    assert "lemma_u64_add_fits" in md
+    assert "lemma_u64_add_fits" not in md
     assert "lemma_f64_sum_within_eps" in md
     assert "axiom_u64_obeys_hash_table_key_model" in md
     assert "may **not** declare `spec fn`" in md
@@ -166,7 +166,6 @@ def test_build_declarative_prompt_contract() -> None:
     assert "FLOAT_ABS_EPS" in prompt
     assert "run_runquery" in prompt
     assert "method_spec" in prompt
-    assert "lemma_index_key_below_cap" in prompt
     assert "valid_cols" in prompt
     assert "inserts into a map" not in prompt.lower()
     assert "use vstd::...;" in prompt
@@ -204,7 +203,7 @@ def test_declarative_prompt_names_hoisted_imports_and_forbids_assume() -> None:
     assert "`proof { lemma_...(); }` is allowed." in head
     assert "The host hoists them." in prompt
     assert "Do not `assume(` or `admit(`" in prompt
-    assert "lemma_u64_add_fits" in prompt
+    assert "lemma_u64_add_fits" not in prompt
 
 
 def test_declarative_prompt_loop_shape_before_doc_tree() -> None:

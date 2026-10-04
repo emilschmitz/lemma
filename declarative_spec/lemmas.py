@@ -85,63 +85,6 @@ def host_error_exceeds_eps(n_terms: int, mag_cap: int, eps: str) -> bool:
     return eps_num * bound_den < bound_num * eps_den
 
 
-def integer_fit_lemmas_rs() -> str:
-    """Rust source of the proved fit lemmas, valid inside a verus! block."""
-    return """
-pub proof fn lemma_u64_add_fits(a: u64, b: u64)
-    requires a as int + b as int <= u64::MAX as int,
-    ensures a + b == (a as int + b as int) as u64,
-{
-}
-
-pub proof fn lemma_i128_add_fits(a: i128, b: i128)
-    requires
-        i128::MIN as int <= a as int + b as int,
-        a as int + b as int <= i128::MAX as int,
-    ensures a + b == (a as int + b as int) as i128,
-{
-}
-
-pub proof fn lemma_count_step_fits_u64(prev: u64, row_cap: int)
-    requires
-        0 <= row_cap <= u64::MAX as int,
-        prev as int + 1 <= row_cap,
-    ensures prev + 1 == (prev as int + 1) as u64,
-{
-    lemma_u64_add_fits(prev, 1);
-}
-
-pub proof fn lemma_count_step_fits_i128(prev: i128, row_cap: int)
-    requires
-        0 <= row_cap <= i128::MAX as int,
-        0 <= prev as int,
-        prev as int + 1 <= row_cap,
-    ensures prev + 1 == (prev as int + 1) as i128,
-{
-    lemma_i128_add_fits(prev, 1);
-}
-
-pub proof fn lemma_sum_step_fits_u64(prev: u64, cell: u64, total_cap: int)
-    requires
-        0 <= total_cap <= u64::MAX as int,
-        prev as int + cell as int <= total_cap,
-    ensures prev + cell == (prev as int + cell as int) as u64,
-{
-    lemma_u64_add_fits(prev, cell);
-}
-
-pub proof fn lemma_sum_step_fits_i128(prev: i128, cell: i128, total_cap: int)
-    requires
-        0 <= total_cap <= i128::MAX as int,
-        -total_cap <= cell as int <= total_cap,
-        -total_cap <= prev as int + cell as int <= total_cap,
-    ensures prev + cell == (prev as int + cell as int) as i128,
-{
-    lemma_i128_add_fits(prev, cell);
-}
-""".strip()
-
-
 def float_error_lemmas_rs() -> str:
     """Rust source of the float host lemmas, valid inside a verus! block."""
     return """

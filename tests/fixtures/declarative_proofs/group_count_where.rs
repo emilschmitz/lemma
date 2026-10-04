@@ -129,9 +129,6 @@
             assert(pre.report@.len() == pre.n as int);
             assert(key_at(pre, i as int) == k as int);
             assert(row_hit(pre, i as int) <==> ((line as int) > 5));
-            assert forall|kk: int| #[trigger] count_cnt(pre, i as int, kk) == (if row_hit(pre, i as int) && key_at(pre, i as int) == kk { 1int } else { 0int }) + count_cnt(pre, i as int + 1, kk) by {
-                lemma_count_cnt_step(pre, i as int, kk);
-            };
         }
         if line > 5 {
             let mut j: usize = 0;
