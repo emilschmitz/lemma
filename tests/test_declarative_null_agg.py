@@ -162,7 +162,7 @@ def test_integer_sum_is_i128_for_unsigned_and_signed_columns(col_type: str, excl
 def test_grouped_integer_sum_is_i128_even_for_ubigint() -> None:
     spec = _emit_typed("SELECT g, SUM(a) AS s FROM t GROUP BY g", "ubigint", 2**64)
     assert "pub s: i128," in spec
-    assert "(res@[r].s as int) ==" in spec
+    assert "(row.s as int) ==" in spec
 
 
 def test_integer_sum_without_row_cap_states_row_count_below_two_pow_63() -> None:

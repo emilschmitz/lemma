@@ -128,7 +128,7 @@ def test_join_having_scalar_states_match_and_limit() -> None:
     assert "FLOAT_ABS_EPS" in spec
     assert "abs_real(" in spec
     assert "res@.len() <= 50" in spec
-    assert "sum_total_value(n, s, 0, (res@[r].name@, (res@[r].cik as int))) > sq_1(n, s)" in spec
+    assert "sum_total_value(n, s, 0, (row.name@, (row.cik as int))) > sq_1(n, s)" in spec
     assert "res@[r].((" not in spec
     assert "// AGENT_EDIT_START" in spec
 
