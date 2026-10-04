@@ -65,6 +65,12 @@ Call them from `AGENT_EDIT` only when this file's `spec.rs` contains them. Do no
 ## Allowed patterns
 
 - Use TRUSTED helpers already in scope (`add_u64`, column `get_*_exec` accessors, NativeAgg bridges).
+<!-- TACTIC_BEGIN -->
+- Faster code is required when it still proves `res == method_spec(...)`. Do not water that down with a new `external_body`, `assume`, or trusted `ensures`.
+- Call the proved join whose `ensures` is the match list. `q6_eq_triples_kept` hashes the three inner-key strings in checked code, then confirms them, and keeps unit `pure`, year `2022`, and statement `BS`. Call it only for those filters. `star_eq_quads_kept` is the 4-table list for unit `USD`, sic `7000..=8999`, abstract `0`, and statement `EQ`.
+- Reuse `filter_row_ids_str_into`, `filter_ids_u32_into`, and `filter_ids_ascii_lit_into`. Do not allocate a new `Vec` on every row, and do not leave an exec loop whose only job is a proof.
+- A speed helper is allowed only when it is already in `spec.rs` and its `ensures` is the value you need. You still prove the MethodSpec fold. Do not invent one.
+<!-- TACTIC_END -->
 - For map returns, use `agg_new_*` / `agg_add_*` from `spec.rs` (TRUSTED); do not prove `HashMap::new()` against `hashmap_*_view`.
 - When speed Trusteds are emitted (`LEMMA_FAST_TRUSTEDS=1` or referenced in `run_query`), prefer
   `build_hashset_u32` + `probe_sum_u64` / `par_probe_sum_u64`, `par_sum_u64`, `par_filter_sum_u64`,
@@ -93,5 +99,5 @@ These abort the file before a proof result.
 - A `proof` block inside a `spec` function is legal only when that function has `decreases`.
 - `&&&` separates spec clauses. In exec code write `&&`.
 - An exec `Vec` or `HashMap` is not spec-equal to a `Seq`. Compare `@` views (`Seq` vs `Vec` is E0308 / SpecEq).
-- Do not define a new `proof fn`, `spec fn`, or lemma. Call only helpers already in `spec.rs`.
+- Do not define a new `proof fn`, `spec fn`, or lemma. You may import an existing vstd lemma inside the edit, for example `use vstd::arithmetic::mul::lemma_mul_nonzero;` or `broadcast use vstd::arithmetic::mul::group_mul_properties;`, and call it from `proof { }`. A `use` whose name contains `axiom`, `arbitrary`, or `proof_from_false` is rejected: that is an assume. A `use` that is not `vstd::` is rejected. Do not import a glob except `vstd::prelude::*` or one `vstd::arithmetic::<module>::*`.
 - When `build_hashset_u32` / `probe_sum_u64` are not in `spec.rs`, do not call them. The proved join execs are the menu above.

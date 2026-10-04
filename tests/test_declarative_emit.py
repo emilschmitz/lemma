@@ -174,6 +174,7 @@ def test_admission_rules() -> None:
         "proof fn foo() {}",
         "spec fn bar() -> bool { true }",
         "assume(false);",
+        "admit(false);",
         "#[verifier::external_body]\nfn x() {}",
     ):
         r = admit_declarative_body(bad)

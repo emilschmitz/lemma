@@ -121,6 +121,12 @@ trusted. A speed flag is not that. If an existing helper's body is already
 unproved, say so and do not build on it unless he authorized that helper.
 Empty `assume_*` is an axiom, not a proof. See `docs/TRUSTED_FAMILIES.md`.
 
+The agent may import a vstd lemma (`use vstd::...::lemma_...;` or `broadcast use vstd::...::group_...;`) and call it from `proof { }`. That import is rejected when the name contains `axiom`, `arbitrary`, or `proof_from_false`, or when the path is not `vstd::`. An import is not a way to add an assume.
+
+<!-- TACTIC_BEGIN -->
+**Faster is required when the proof stays.** Ship the checked body that is faster and still proves `res == method_spec`. Call the proved join helper whose `ensures` is the match list. `q6_eq_triples_kept` hashes the three inner-key strings in checked code, then confirms the strings; call it only when the filters are unit `pure`, year `2022`, and statement `BS`. Reuse `filter_*_into` buffers. Use an existing fast helper only when it is in `spec.rs` and its `ensures` is exactly the value you need. Do not add a trusted to go faster, and do not leave a proof-only exec loop in the timed body.
+<!-- TACTIC_END -->
+
 ## Failures must be loud
 
 Never silently emit a fake “verified” program, auto-codegen a TRUSTED `run_query` that

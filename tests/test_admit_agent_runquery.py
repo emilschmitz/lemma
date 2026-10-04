@@ -129,6 +129,61 @@ def test_accepts_vstd_lemma_import_and_rejects_an_axiom_import() -> None:
     bad = _admit(axiom, spec)
     assert not bad.ok
     assert any("assume" in item for item in bad.violations)
+    assert "lemma_mul_nonzero" in (ok.run_query_fn or "")
+    escape = build_runquery_agent_source(
+        ret_type="u64",
+        body_inner=(
+            "use vstd::pervasive::proof_from_false;\n"
+            "    use vstd::pervasive::arbitrary;\n"
+            "    0u64"
+        ),
+    )
+    escaped = _admit(escape, spec)
+    assert not escaped.ok
+    assert any("proof_from_false" in item for item in escaped.violations)
+    assert any("arbitrary" in item for item in escaped.violations)
+
+
+def test_imported_lemma_verifies(tmp_path: Path) -> None:
+    """A vstd lemma import inside run_query is a real proof, not an assume."""
+    from research_loop.harness import resolve_verus_bin, run_verus_verify
+
+    if resolve_verus_bin() is None:
+        pytest.skip("verus not found")
+    path = tmp_path / "lemma_import_check.rs"
+    path.write_text(
+        "use vstd::prelude::*;\n"
+        "verus! {\n"
+        "pub exec fn run_query() -> (r: u64)\n"
+        "    ensures r == 0u64,\n"
+        "{\n"
+        "    use vstd::arithmetic::mul::lemma_mul_nonzero;\n"
+        "    proof {\n"
+        "        broadcast use vstd::arithmetic::mul::group_mul_properties;\n"
+        "        lemma_mul_nonzero(2int, 3int);\n"
+        "    }\n"
+        "    0u64\n"
+        "}\n"
+        "fn main() {}\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    ok, log = run_verus_verify(str(path), timeout=60)
+    assert ok, log[-2000:]
+    assert "0 errors" in log
+
+
+def test_legacy_body_rejects_an_axiom_import() -> None:
+    from research_loop.assemble_runquery import validate_runquery_body
+
+    assert validate_runquery_body(
+        "use vstd::arithmetic::mul::lemma_mul_nonzero;\n0u64"
+    ) == []
+    errors = validate_runquery_body(
+        "use vstd::pervasive::proof_from_false;\n0u64"
+    )
+    assert errors
+    assert any("assume" in item for item in errors)
 
 
 def test_accepts_proof_block() -> None:
