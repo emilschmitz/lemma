@@ -156,9 +156,9 @@ _AVG = re.compile(r"\bAVG\s*\(", re.I)
 
 
 def _avg_refusal(kind: str, qid: str, sql: str) -> dict | None:
-    """AVG results are DOUBLE in the reference engine; the float agent owns them, so they are skipped and recorded."""
+    """AVG results are DOUBLE in the reference engine: the float idealization agent owns them. They stay in the sample, are recorded with their SQL as pending, and get no prover until that branch lands."""
     if _AVG.search(sql):
-        return {"kind": kind, "qid": qid, "sql": " ".join(sql.split()), "refusal": "skipped: AVG returns DOUBLE (float agent)"}
+        return {"kind": kind, "qid": qid, "sql": " ".join(sql.split()), "refusal": "pending idealization: AVG returns DOUBLE (float agent branch not merged); no prover is launched on it"}
     return None
 
 

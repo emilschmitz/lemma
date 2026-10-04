@@ -66,12 +66,12 @@ def test_verus_binary_override_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert _verus_binary() != "  "
 
 
-def test_avg_queries_are_skipped_and_recorded_not_dropped() -> None:
+def test_avg_queries_are_recorded_as_pending_not_dropped() -> None:
     from research_loop.scripts.declarative_round import _avg_refusal
 
     for sql in ("SELECT AVG(x) FROM t", "select k, avg ( x ) as a from t group by k"):
         rec = _avg_refusal("sec", "Q1", sql)
-        assert rec is not None and "AVG returns DOUBLE" in rec["refusal"] and rec["qid"] == "Q1"
+        assert rec is not None and "pending idealization" in rec["refusal"] and rec["qid"] == "Q1"
     assert _avg_refusal("sec", "Q2", "SELECT SUM(x), AVERAGE_X FROM t") is None
 
 
