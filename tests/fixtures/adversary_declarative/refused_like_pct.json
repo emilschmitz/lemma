@@ -1,0 +1,30 @@
+{
+ "sql": "SELECT COUNT(*) AS c FROM t WHERE s LIKE '%%'",
+ "schema": {
+  "t": {
+   "a": "BIGINT",
+   "k": "BIGINT",
+   "s": "VARCHAR"
+  }
+ },
+ "rows": {
+  "t": [
+   {
+    "a": 1,
+    "k": 1,
+    "s": "ab"
+   },
+   {
+    "a": 2,
+    "k": 1,
+    "s": "axb"
+   },
+   {
+    "a": 2,
+    "k": 2,
+    "s": "b"
+   }
+  ]
+ },
+ "run_query_body": "\nlet res: Vec<OutRow> = Vec::new();\nres\n"
+}

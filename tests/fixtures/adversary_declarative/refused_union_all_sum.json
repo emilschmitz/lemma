@@ -1,0 +1,37 @@
+{
+ "sql": "SELECT SUM(x) AS s FROM (SELECT a AS x FROM t WHERE a > 100 UNION ALL SELECT a AS x FROM u WHERE a > 100) w",
+ "schema": {
+  "t": {
+   "a": "BIGINT",
+   "k": "BIGINT"
+  },
+  "u": {
+   "a": "BIGINT"
+  }
+ },
+ "rows": {
+  "t": [
+   {
+    "a": 1,
+    "k": 1
+   },
+   {
+    "a": 2,
+    "k": 1
+   },
+   {
+    "a": 2,
+    "k": 2
+   }
+  ],
+  "u": [
+   {
+    "a": 2
+   },
+   {
+    "a": 3
+   }
+  ]
+ },
+ "run_query_body": "\nlet res: Vec<OutRow> = Vec::new();\nres\n"
+}

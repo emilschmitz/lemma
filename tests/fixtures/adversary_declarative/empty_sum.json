@@ -1,0 +1,26 @@
+{
+ "sql": "SELECT SUM(a) AS sum FROM t WHERE a > 100",
+ "schema": {
+  "t": {
+   "a": "BIGINT",
+   "k": "BIGINT"
+  }
+ },
+ "rows": {
+  "t": [
+   {
+    "a": 1,
+    "k": 1
+   },
+   {
+    "a": 2,
+    "k": 1
+   },
+   {
+    "a": 2,
+    "k": 2
+   }
+  ]
+ },
+ "run_query_body": "\nlet mut acc: i128 = 0;\nlet mut i: usize = t.n;\nwhile i > 0\n    invariant\n        i <= t.n,\n        valid_cols_t(t),\n        acc as int == sum_sum(t, i as int),\n        -((t.n - i) as int) * 0x8000_0000_0000_0000int <= acc as int,\n        acc as int <= ((t.n - i) as int) * 0x8000_0000_0000_0000int,\n    decreases i,\n{\n    i = i - 1;\n    let a = t.a[i];\n    let ghost old = acc as int;\n    if a > 100 {\n        acc = acc + (a as i128);\n    }\n    proof {\n        reveal_with_fuel(sum_sum, 2);\n        assert(t.a@[i as int] == a);\n        assert(acc as int == sum_sum(t, i as int));\n    }\n}\nlet mut res: Vec<OutRow> = Vec::new();\nres.push(OutRow { sum: acc });\nres\n"
+}
