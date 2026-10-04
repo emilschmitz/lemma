@@ -16,6 +16,23 @@ Trusted statements added by this loop: none. (Any result that depends on a trust
 
 ---
 
+## Round 5 (manual adversary, Sonnet subagent; SEC data synthetic; judge shapes: DECIMAL ungrouped MIN/SUM/COUNT, string GROUP BY COUNT with a literal filter, string-key join MIN/SUM, TPC-H decimal and date predicates)
+
+35 candidates proved by Verus and run against DuckDB, about 55 more emit-checked only (specs read by hand). **No value-vs-value hole**: wherever DuckDB returns a value, the compiled
+proved body returned the same value (decimal scales, date arithmetic incl. month-end clamp and leap days, string literals incl. empty / NUL / U+1F600 /
+composed vs decomposed accents / trailing space, duplicate join keys on both sides, empty tables). Files: `research_loop/generated/adversary_r5/`.
+
+| Candidate | Status | Finding | Triage |
+|---|---|---|---|
+| a11, a12 `... WHERE v < 1e35` / `v > -1e35 - 0.5` on `decimal(38,4)` | judge `hole` (error_vs_value) | DuckDB raises `Conversion Error: Could not cast value ... to DECIMAL(38,4)`; the spec compares the literal as an unbounded integer and returns a value | accepted limitation candidate: DuckDB errors, SQL defines no value; to transpiler agent: refuse a literal outside the column's DECIMAL range (loud) |
+| x3 `WHERE i + 1 > w`, i = INT64 max | judge `hole` (error_vs_value) | DuckDB `Out of Range Error: Overflow in addition of INT64`; the spec has no overflow model | same class; to transpiler agent: refuse or model BIGINT overflow in arithmetic predicates |
+| judge false positives, every decimal-valued output (a1..a15) | harness bug | `_parse_rows` ignored `// OUT_SCALES:`: stored integer 5001 vs `Decimal('0.5001')` reported as `hole` (reason `multiset`) | FIXED here (judge decodes OUT_SCALES), tests `tests/test_adversary_judge_decimal_null.py` |
+| a3b, empty/no-match MIN/SUM | harness crash | `_decode` called `int("NULL")` for an `Option` cell; CLI also crashed on `Decimal` JSON | FIXED here (NULL -> None, `json.dumps(default=str)`), same tests |
+| xf23, xf24, xf26 `DATE '9999-12-31' + INTERVAL '1' DAY`, `DATE '0001-01-31' - INTERVAL '1' MONTH`, `+ INTERVAL '2147483647' DAY` | `emit_crash` | Python `datetime` OverflowError / ValueError leaks instead of a clean DeclarativeUnsupported | to transpiler agent: refuse cleanly |
+| refusals of easy shapes | coverage | join on keys of different decimal scale `ON a.x = b.z` refused (`join compares num(2) with num(4)`) while the comma-join WHERE and `ON a.x < b.z` are accepted: inconsistent; `ON a.n = b.z` (bigint vs decimal) refused; `SUM(v)` over decimal(38,4) refused (`SUM(v) can exceed i128`); CAST, TIMESTAMP, multi-unit INTERVAL, `/`, string `<`, string MIN, LEFT JOIN refused | to transpiler agent for triage (not holes) |
+
+Group-by-string MIN was emit-checked only (a MIN-per-group proof was too long to write blind).
+
 # Declarative adversary log (manual adversary, Sonnet subagent; no credentials)
 
 Menu flags of adversary_declarative0 (no fast/parallel trusteds). Existing fixtures re-run green after every fix
