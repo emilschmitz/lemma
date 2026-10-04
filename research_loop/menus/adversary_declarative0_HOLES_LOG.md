@@ -27,3 +27,24 @@ witness fixture was built (the cap-1 fixtures cannot tell the two bindings apart
 several rows). They are pinned by spec-text tests plus a Verus typecheck. No new fixture asserts "hole".
 
 Round B2 and later rounds were not run.
+
+## Round B2: rows-level evaluation (`tests/spec_eval.py`, `research_loop/scripts/decl_speceval_fuzz.py`)
+Method: Verus evaluates the emitted spec on concrete rows (a `proof fn` assuming the columns are exactly the rows, with
+`reveal_with_fuel` and witness hints) and must prove DuckDB's own answer, group by group. A wrong value (or a mis-bound
+alias) fails to prove, so the harness discriminates (each case has a control). This replaces cap-1 witnesses.
+
+Covered by hand-written cases with controls (`tests/test_declarative_spec_eval.py`, 18 tests): self-join group key
+binds to the named alias (both aliases), self-join SUM reads the named alias, correlated EXISTS / NOT EXISTS over the
+same table (aggregate and per-row), correlated MAX scalar (per-row), grouped derived table merge, MIN/MAX bound
+functions incl. aliases containing `min_`/`max_`, DECIMAL CASE sums in stored units. H1 and H2 of B1 are now confirmed
+at rows level (the fixed bindings prove DuckDB's values; the other alias's values do not).
+
+Differential fuzz (random SEC-shaped integer queries, tiny tables, spec functions vs DuckDB): 6 runs (seeds 1,2,3,5,11 and
+the 25-query smoke), about 250 queries proved equal, 0 mismatches after harness fixes. Shapes: single table, inner
+join, self join, correlated EXISTS/NOT EXISTS, uncorrelated COUNT scalar, COUNT/SUM/SUM(expr)/SUM(CASE)/COUNT(col)/
+COUNT(CASE), aliases res/k/i0/row/t/u/a/g/r/sub. Not covered (harness limits, not found wrong): IN (SELECT) existential
+witnesses, AVG scalars (real arithmetic), multi-key groups, MIN/MAX (covered by hand cases only).
+Text-substitution hunt: HAVING alias/group-name replacement and scalar token replacement read in 7 emitted HAVING forms
+(alias equal to a column, aliased key, HAVING on alias, scalar real promotion): correct. `sq_N` token regex is
+word-bounded. No new silent mis-binding found in this round; one new loud failure fixed (`min_`/`max_` alias helper).
+Float rounding differences vs DuckDB are accepted limitations and not logged as holes.
