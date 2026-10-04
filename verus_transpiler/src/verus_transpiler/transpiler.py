@@ -1267,19 +1267,28 @@ def _exact_empty_seq_sum(elem: str, expr: str) -> tuple[str, str, str]:
     return src, body, "Option<u128>"
 
 
-def _emit_derived_distinct_outer_spec(
+def _emit_derived_projection_outer_spec(
     query: SQLQuery,
     derived: DerivedTable,
     flat_schema: dict[str, str],
 ) -> tuple[str, str, str]:
-    """Outer aggregate over ``SELECT DISTINCT`` of one projection."""
+    """Outer aggregate over a derived projection (DISTINCT / ORDER BY / LIMIT)."""
     inner = derived.query
+    shape = (
+        "DISTINCT"
+        if inner.distinct
+        else "ORDER BY/LIMIT"
+        if (inner.order_by or inner.limit is not None or inner.offset)
+        else "projection"
+    )
     if query.where_expr or query.where_conditions:
         raise UnsupportedContractError(
-            "filter over a derived DISTINCT is not in the method spec"
+            f"filter over a derived {shape} is not in the method spec"
         )
     if not query.agg_type:
-        raise UnsupportedContractError("derived DISTINCT requires a scalar aggregate")
+        raise UnsupportedContractError(
+            f"derived {shape} requires a scalar aggregate"
+        )
     prefix = f"derived_{derived.alias}"
     helpers, call, seq_ty = _emit_projection_branch(
         inner,
@@ -1291,7 +1300,7 @@ def _emit_derived_distinct_outer_spec(
         return helpers, _method_spec_block("u64", f"{call}.len() as u64"), "u64"
     if query.agg_type == "SUM" and len(inner.projection_columns) != 1:
         raise UnsupportedContractError(
-            "SUM over derived DISTINCT requires one projected column"
+            f"SUM over derived {shape} requires one projected column"
         )
     if query.agg_type == "SUM" and os.environ.get("LEMMA_EXACT_SUM", "0") == "1":
         extra, body, ret = _exact_empty_seq_sum(_seq_elem(seq_ty), call)
@@ -1301,8 +1310,17 @@ def _emit_derived_distinct_outer_spec(
         joined = extra + "\n\n" + helpers if extra else helpers
         return joined, _method_spec_block("u64", expr), "u64"
     raise UnsupportedContractError(
-        f"outer {query.agg_type!r} over derived DISTINCT not supported"
+        f"outer {query.agg_type!r} over derived {shape} not supported"
     )
+
+
+def _emit_derived_distinct_outer_spec(
+    query: SQLQuery,
+    derived: DerivedTable,
+    flat_schema: dict[str, str],
+) -> tuple[str, str, str]:
+    """Backward-compatible name for the derived projection outer emitter."""
+    return _emit_derived_projection_outer_spec(query, derived, flat_schema)
 
 
 def _emit_grouped_derived_outer_spec(
@@ -1851,8 +1869,8 @@ def _emit_single_table_spec(
                 "outer aggregate over derived window column needs real MethodSpec; "
                 "not yet supported"
             )
-        if inner.is_projection and inner.distinct and not inner.agg_type:
-            return _emit_derived_distinct_outer_spec(query, derived, flat_schema)
+        if inner.is_projection and not inner.agg_type:
+            return _emit_derived_projection_outer_spec(query, derived, flat_schema)
         if inner.groupby_columns:
             return _emit_grouped_derived_outer_spec(query, derived, flat_schema)
         if not inner.agg_type:

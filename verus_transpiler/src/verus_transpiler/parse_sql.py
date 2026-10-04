@@ -2152,6 +2152,10 @@ def _flatten_derived_project(query: SQLQuery) -> SQLQuery:
     # COUNT and SUM are not: two copies of the same value count as one.
     if inner.distinct and query.agg_type not in ("MIN", "MAX"):
         return query
+    # Flattening also drops ORDER BY / LIMIT / OFFSET. A COUNT of LIMIT 1 is 1,
+    # not the full table.
+    if inner.order_by or inner.limit is not None or inner.offset:
+        return query
     if inner.derived_tables:
         raise UnsupportedContractError(
             "flattening derived projection with nested derived tables is not supported."
