@@ -235,6 +235,54 @@ def draw(seed: int, mix: list[str]) -> tuple[list[dict], list[dict]]:
     return picked, refused
 
 
+def draw_tiered(seed: int, tiers: list[str]) -> tuple[list[dict], list[dict]]:
+    """One fresh query per requested tier (see ``declarative_tiers``); the kind alternates with the seed.
+
+    T1 to T3 come from seeded templates on the SEC (synthetic, DECIMAL) and TPC-H schemas; T4 and T5 also from the
+    classified SEC shuffle pool. AVG draws stay in the sample as pending idealization and get no prover.
+    """
+    from research_loop.scripts.declarative_tiers import seeded_queries, tier as classify
+    from research_loop.scripts.sqlsmith_trusted_coverage import parse_sql_file
+
+    sec_sch, sec_cat = sec_schema(), sec_catalog()
+    tpch_sch, tpch_cat = tpch_schema_and_catalog(ensure_tpch_db())
+    ctx = {"sec": (sec_sch, sec_cat), "tpch": (tpch_sch, tpch_cat)}
+    picked: list[dict] = []
+    refused: list[dict] = []
+    for i, tier_name in enumerate(tiers):
+        order = ["sec", "tpch"] if (seed + i) % 2 == 0 else ["tpch", "sec"]
+        cands: list[tuple[str, str, str]] = []
+        for kind in order:
+            if tier_name in ("T1", "T2", "T3"):
+                for qid, sql in seeded_queries(kind, tier_name, random.Random(seed * 10 + i)):
+                    cands.append((kind, qid, sql))
+        if tier_name in ("T4", "T5"):
+            OUT.mkdir(parents=True, exist_ok=True)
+            out_sql = OUT / f"sec_pool_{seed}_{tier_name}.sql"
+            subprocess.run(
+                [sys.executable, str(MAIN_REPO / "holdout" / "gendb_sec_edgar" / "generate_queries.py"), "--seed", str(seed),
+                 "--num-generate", "600", "--num-select", "60", "--db-path", str(SEC_DB), "--output", str(out_sql)],
+                check=True,
+            )
+            pool = parse_sql_file(out_sql)
+            random.Random(seed + i).shuffle(pool)
+            cands += [("sec", qid, sql.strip()) for qid, sql in pool if classify(sql) == tier_name]
+        for kind, qid, sql in cands:
+            skipped = _avg_refusal(kind, qid, sql)
+            if skipped:
+                refused.append({**skipped, "tier": tier_name})
+                continue
+            schema, catalog = ctx[kind]
+            try:
+                emit_declarative_spec(sql, schema, catalog)
+            except (DeclarativeUnsupported, FitRefusal, ValueError) as exc:
+                refused.append({"kind": kind, "qid": qid, "tier": tier_name, "sql": " ".join(sql.split()), "refusal": str(exc)[:400]})
+                continue
+            picked.append({"kind": kind, "qid": qid, "tier": tier_name, "sql": sql})
+            break
+    return picked, refused
+
+
 def agent_env(model: str) -> dict[str, str]:
     from research_loop.scripts.declarative_ladder import agent_env as ladder_env
 
@@ -283,12 +331,13 @@ def main() -> int:
     ap.add_argument("--seed", type=int, required=True)
     ap.add_argument("--model", default=HAIKU)
     ap.add_argument("--mix", default="sec,sec,tpch")
+    ap.add_argument("--tiers", help="comma-separated tiers T1..T5: one fresh query per tier (replaces --mix)")
     ap.add_argument("--max-iterations", type=int, default=2)
     ap.add_argument("--draw-only", action="store_true")
     ap.add_argument("--only", help="comma-separated qids to run (after the draw)")
     args = ap.parse_args()
     mix = args.mix.split(",")
-    picked, refused = draw(args.seed, mix)
+    picked, refused = draw_tiered(args.seed, args.tiers.split(",")) if args.tiers else draw(args.seed, mix)
     OUT.mkdir(parents=True, exist_ok=True)
     log = OUT / f"round_{args.seed}.jsonl"
     for r in refused:
