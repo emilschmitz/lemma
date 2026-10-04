@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import re
 import statistics
 import struct
@@ -88,6 +89,18 @@ def write_query_measure(
         con.close()
     if not bins:
         raise DeclarativeUnsupported("measure wrote no column files")
+    # The in-session run_runquery tool loads this (declarative_spec.bench.load_speed_bar): the agent's
+    # runs then use the official column files, the DuckDB bar and the expected result rows.
+    expect = {
+        "duck_us": duck_us,
+        "duck_threads": duck_threads,
+        "duck1_us": duck1_us,
+        "rows": rows,
+        "kinds": kinds,
+        "table_rows": table_rows,
+        "float_abs_eps": float_abs_eps,
+    }
+    (dest / "expect.json").write_text(json.dumps(expect) + "\n", encoding="utf-8")
     return {
         "bins": bins,
         "duck_us": duck_us,

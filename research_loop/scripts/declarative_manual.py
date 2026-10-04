@@ -7,7 +7,9 @@ verify, compile, official timed run, row check, speed bar). Results from this pa
 'manual prover (Sonnet subagent), not a model-agent result'.
 
   declarative_manual.py prepare --kind sec|tpch --sql-file F --ws DIR
-  declarative_manual.py check --kind sec|tpch --sql-file F --ws DIR
+  declarative_manual.py check --ws DIR     (kind and SQL come from the workspace: context/ro/query.sql)
+
+Relative paths are resolved against the current directory; a missing path exits with a message.
 """
 
 from __future__ import annotations
@@ -108,19 +110,34 @@ def check(kind: str, sql: str, ws: Path) -> dict:
     return metrics
 
 
+def _abs(raw: str, what: str) -> Path:
+    path = Path(raw).expanduser().resolve()
+    if not path.exists():
+        raise SystemExit(f"ERROR: {what} {raw!r} does not exist (resolved to {path})")
+    return path
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("cmd", choices=["prepare", "check"])
-    ap.add_argument("--kind", required=True, choices=["sec", "tpch"])
-    ap.add_argument("--sql-file", required=True)
+    ap.add_argument("--kind", choices=["sec", "tpch"], help="prepare only; check reads it from the workspace")
+    ap.add_argument("--sql-file", help="prepare only; check reads <ws>/context/ro/query.sql")
     ap.add_argument("--ws", required=True)
     a = ap.parse_args()
-    sql = Path(a.sql_file).read_text().strip()
+    if a.cmd == "prepare":
+        if not a.kind or not a.sql_file:
+            raise SystemExit("ERROR: prepare needs --kind and --sql-file")
+        sql_file = _abs(a.sql_file, "--sql-file")
+        ws = Path(a.ws).expanduser().resolve()
+        with apply_trust_config("adversary_declarative0"):
+            prepare(a.kind, sql_file.read_text().strip(), ws)
+        (ws / "manual_job.json").write_text(json.dumps({"kind": a.kind}))
+        return 0
+    ws = _abs(a.ws, "--ws")
+    job = json.loads((ws / "manual_job.json").read_text())
+    sql = (ws / "context" / "ro" / "query.sql").read_text().strip()
     with apply_trust_config("adversary_declarative0"):
-        if a.cmd == "prepare":
-            prepare(a.kind, sql, Path(a.ws))
-        else:
-            check(a.kind, sql, Path(a.ws))
+        check(job["kind"], sql, ws)
     return 0
 
 
