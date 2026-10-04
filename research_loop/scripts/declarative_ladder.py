@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from db_extension.optimizer import run_optimization_loop
+from research_loop.agent_sandbox import CLAUDE_IMAGE, claude_agent_cmd, claude_docker_args
 from research_loop.scripts.declarative_draws import beats_duck, resolve_sec_db
 from research_loop.scripts.sqlsmith_trusted_coverage import load_sec_schema
 from research_loop.table_assumptions import CatalogAssumptions, ColumnAssumption, TableAssumptions
@@ -61,27 +62,40 @@ def synthetic_group_counts() -> list[dict]:
     return out
 
 
-def main(model: str) -> int:
-    db_path = resolve_sec_db()
+def agent_env(model: str) -> dict[str, str]:
+    """Per-run agent env. ``claude-*`` slugs run Claude Code, everything else the Cursor agent."""
     env = {
         "LEMMA_SPEC_STYLE": "declarative",
         "USE_AGENT_DOCKER": "1",
-        "AGENT_IMAGE": "lemma-agent:cli",
         "LEMMA_AGENT_BACKEND": "cli",
         "LEMMA_SERIOUS": "1",
         "LEMMA_RESEARCH_LOG": "1",
-        "AGENT_CMD": (
-            f"agent -p --force --trust --approve-mcps --model {model} "
-            '--output-format stream-json --stream-partial-output "$(cat PROMPT.txt)"'
-        ),
     }
-    os.environ.update(env)
+    if model.startswith("claude-"):
+        env.update(AGENT_IMAGE=CLAUDE_IMAGE, AGENT_ENV="", AGENT_CMD=claude_agent_cmd(model))
+    else:
+        env.update(
+            AGENT_IMAGE="lemma-agent:cli",
+            AGENT_CMD=(
+                f"agent -p --force --trust --approve-mcps --model {model} "
+                '--output-format stream-json --stream-partial-output "$(cat PROMPT.txt)"'
+            ),
+        )
+    return env
+
+
+def run_ladder(model: str) -> list[dict]:
+    db_path = resolve_sec_db()
+    os.environ.update(agent_env(model))
+    if model.startswith("claude-"):
+        claude_docker_args()  # raises before any work when no credentials are set
     os.environ.pop("LEMMA_DECL_ROWS", None)
     out = ROOT / "research_loop" / "generated" / "decl_ladder"
     out.mkdir(parents=True, exist_ok=True)
     log = out / f"{model}.jsonl"
     sec_schema = load_sec_schema()
     jobs = synthetic_group_counts() + [{"sql": sql, "sec": True} for sql in _SEC_JOINS]
+    records = []
     for index, job in enumerate(jobs, start=1):
         sql = job["sql"]
         kwargs: dict = {"max_iterations": 2, "use_mock": False}
@@ -119,6 +133,12 @@ def main(model: str) -> int:
         with log.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record) + "\n")
         print(f"RESULT {json.dumps(record)}", flush=True)
+        records.append(record)
+    return records
+
+
+def main(model: str) -> int:
+    run_ladder(model)
     return 0
 
 

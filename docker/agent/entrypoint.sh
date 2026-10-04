@@ -15,6 +15,12 @@ fi
 if [[ -d /root/.config/cursor-host ]]; then
   cp -a /root/.config/cursor-host/. /root/.config/cursor/ 2>/dev/null || true
 fi
+# Claude Code config (LEMMA_CLAUDE_CONFIG_DIR mounted RO at .claude-host) -> writable CLAUDE_CONFIG_DIR.
+mkdir -p /root/.claude
+if [[ -d /root/.claude-host ]]; then
+  cp -a /root/.claude-host/. /root/.claude/
+fi
+export DISABLE_TELEMETRY=1 DISABLE_ERROR_REPORTING=1 DISABLE_AUTOUPDATER=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 mkdir -p /root/.cursor/projects /root/.cursor/chats /root/.cursor/ai-tracking
 
 # Allowlisted API egress (Cursor / Anthropic / …). Web to other hosts is denied on the host bridge.
@@ -119,7 +125,7 @@ EOF
   ERRLOG="${LEMMA_AGENT_STDERR_LOG:-/workspace/logs/agent_stderr.log}"
   mkdir -p "$(dirname "$STREAM")" "$(dirname "$ERRLOG")"
   set +e
-  bash -c "$AGENT_CMD" > >(tee -a "$STREAM") 2> >(tee -a "$ERRLOG" >&2)
+  bash -c "set -o pipefail; $AGENT_CMD" > >(tee -a "$STREAM") 2> >(tee -a "$ERRLOG" >&2)
   exit $?
 fi
 

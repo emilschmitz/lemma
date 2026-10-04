@@ -87,12 +87,15 @@ def allowlist_for_profile(profile: str) -> tuple[str, ...]:
 def infer_egress_profile(agent_cmd: str, explicit: str | None = None) -> str:
     if explicit and explicit.strip():
         return explicit.strip()
+    # The executable decides the vendor; a model slug like claude-sonnet-5 in an
+    # ``agent`` command must not select the anthropic profile.
     cmd = agent_cmd.lower()
-    if "claude" in cmd:
+    exe = cmd.split(None, 1)[0]
+    if exe == "claude":
         return "anthropic"
-    if "codex" in cmd:
+    if exe == "codex":
         return "openai"
-    if "agy" in cmd or "gemini" in cmd:
+    if exe in ("agy", "gemini"):
         return "google"
     if "openrouter" in cmd:
         return "openrouter"
