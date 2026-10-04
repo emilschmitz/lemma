@@ -472,7 +472,7 @@ def emit_declarative_spec(
     from declarative_spec.numeric_rewrite import rewrite_numeric, with_out_scales
 
     sql = _flatten_group_derived_sql(sql)
-    integer_sql, scales = rewrite_numeric(sql, schema)
+    integer_sql, scales = rewrite_numeric(sql, schema, catalog)
     _check_shape_classes(integer_sql)
     spec = _emit_integer_sql(integer_sql, schema, catalog)
     spec = _with_f64_literals(spec, integer_sql)

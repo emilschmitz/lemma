@@ -65,7 +65,12 @@ _EPOCH = dt.date(1970, 1, 1)
 
 def fold_date(node: exp.Expression) -> str | None:
     """Days since 1970-01-01 for a DATE literal, optionally moved by INTERVALs. None if not a date constant."""
-    day = _folded_day(node)
+    try:
+        day = _folded_day(node)
+    except (ValueError, OverflowError) as exc:
+        # An impossible date ('2000-02-30'), a year outside 1..9999, or an INTERVAL too large for the calendar
+        # fold: DuckDB's range is wider or its error differs, so the constant is not stated.
+        raise DeclarativeUnsupported(f"DATE constant not representable: {exc}") from exc
     return None if day is None else str((day - _EPOCH).days)
 
 

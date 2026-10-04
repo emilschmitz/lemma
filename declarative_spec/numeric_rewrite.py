@@ -43,11 +43,25 @@ _COMPARE = (exp.EQ, exp.NEQ, exp.GT, exp.LT, exp.GTE, exp.LTE)
 Type = tuple[str, int]
 
 
+# The type DuckDB computes + - * in, by its exclusive magnitude cap (it raises an overflow error beyond it).
+_SQL_INT_CAP = {
+    "tinyint": 2**7, "int1": 2**7, "smallint": 2**15, "int2": 2**15, "integer": 2**31, "int": 2**31, "int4": 2**31,
+    "bigint": 2**63, "int8": 2**63, "int64": 2**63, "utinyint": 2**8, "usmallint": 2**16, "uinteger": 2**32,
+    "uint": 2**32, "ubigint": 2**64,
+}
+
+
 @dataclass
 class _T:
     node: exp.Expression
     kind: str
     scale: int = 0
+    # Integer overflow model (plain integer columns, integer literals, + - *): ``mag`` is the largest absolute
+    # value the catalog allows, ``tcap`` the exclusive cap of the type DuckDB computes in (2**31 INTEGER, 2**63
+    # BIGINT; 0 when the operand is not a plain integer). ``prec`` is a DECIMAL column's precision.
+    mag: int | None = None
+    tcap: int = 0
+    prec: tuple[int, int] | None = None  # (precision, scale) of a DECIMAL column
 
 
 @dataclass
@@ -55,6 +69,20 @@ class _Scope:
     tables: dict[str, dict[str, Type]] = field(default_factory=dict)
     aliases: dict[str, Type] = field(default_factory=dict)
     parent: _Scope | None = None
+    # column -> (type info, largest absolute value the catalog allows or None), per table alias
+    meta: dict[str, dict[str, tuple[ColumnTypeInfo, int | None]]] = field(default_factory=dict)
+
+    def find_meta(self, qual: str, name: str) -> tuple[ColumnTypeInfo, int | None] | None:
+        name = name.casefold()
+        if qual:
+            cols = self.meta.get(qual.casefold())
+            if cols is not None:
+                return cols.get(name)
+        else:
+            hits = [cols[name] for cols in self.meta.values() if name in cols]
+            if len(hits) == 1:
+                return hits[0]
+        return self.parent.find_meta(qual, name) if self.parent else None
 
     def find(self, qual: str, name: str) -> Type | None:
         name = name.casefold()
@@ -108,7 +136,7 @@ def _align(ts: list[_T]) -> list[_T]:
     scale = max(t.scale for t in ts)
     if scale > MAX_SCALE:
         raise DeclarativeUnsupported(f"DECIMAL scale {scale} exceeds {MAX_SCALE}")
-    return [_T(_scaled(t, scale), "num", scale) for t in ts]
+    return [_T(_scaled(t, scale), "num", scale, prec=t.prec) for t in ts]
 
 
 def _unparen(node: exp.Expression) -> exp.Expression:
@@ -126,8 +154,9 @@ def _iso_date_days(node: exp.Expression) -> int | None:
 
 
 class _Rewriter:
-    def __init__(self, model: SchemaModel) -> None:
+    def __init__(self, model: SchemaModel, catalog: object | None = None) -> None:
         self.model = model
+        self.catalog = catalog
 
     # ---- queries -----------------------------------------------------------------------
 
@@ -176,6 +205,7 @@ class _Rewriter:
         node.set("expressions", items)
 
         for join in node.args.get("joins") or []:
+            self._hoist_scaled_equalities(node, join, scope)
             on = join.args.get("on")
             if on is not None:
                 self._check_join_on(on, scope)
@@ -203,8 +233,54 @@ class _Rewriter:
             key = (source.alias or source.name).casefold()
             columns = self.model.tables.get(source.name.casefold(), {})
             scope.tables[key] = {c: _info_type(i) for c, i in columns.items()}
+            scope.meta[key] = {c: (i, self._column_mag(source.name, c, i)) for c, i in columns.items()}
             return
         raise DeclarativeUnsupported("FROM table reference")
+
+    def _column_mag(self, table: str, column: str, info: ColumnTypeInfo) -> int | None:
+        """Largest absolute cell the catalog (or the column type) allows; None when no catalog is given."""
+        if self.catalog is None or info.is_float or info.is_date:
+            return None
+        from declarative_spec.emit import _lookup_table_assumptions
+        from research_loop.table_assumptions import column_assumption_exclusive
+
+        cap = column_assumption_exclusive(column, _lookup_table_assumptions(self.catalog, table))
+        cap = cap if cap is not None else (_SQL_INT_CAP.get(info.sql_type) or info.cell_exclusive_cap)
+        return None if cap is None else cap - 1
+
+    def _hoist_scaled_equalities(self, select: exp.Select, join: exp.Join, scope: _Scope) -> None:
+        """An INNER JOIN equality between DECIMALs of different scale becomes a WHERE comparison.
+
+        The WHERE comparison brings both sides to the larger scale exactly (as ``ON a.x < b.z`` already is), so the
+        result is the same rows; an ON pair is compared as stored integers and cannot be rescaled."""
+        if (join.side or "").upper() or (join.kind or "").upper() not in ("", "INNER") or join.args.get("on") is None:
+            return
+
+        def parts(n: exp.Expression) -> list[exp.Expression]:
+            return parts(n.this) + parts(n.expression) if isinstance(n, exp.And) else [n]
+
+        keep: list[exp.Expression] = []
+        moved: list[exp.Expression] = []
+        for conj in parts(join.args["on"]):
+            if isinstance(conj, exp.EQ) and isinstance(conj.this, exp.Column) and isinstance(conj.expression, exp.Column):
+                left, right = self.typed(conj.this, scope), self.typed(conj.expression, scope)
+                if left.kind == right.kind == "num" and left.scale != right.scale:
+                    moved.append(conj)
+                    continue
+            keep.append(conj)
+        if not moved:
+            return
+
+        def conjoin(items: list[exp.Expression]) -> exp.Expression | None:
+            out = None
+            for item in items:
+                out = item if out is None else exp.And(this=out, expression=item)
+            return out
+
+        join.set("on", conjoin(keep))
+        where = select.args.get("where")
+        cond = conjoin(([where.this] if where is not None else []) + moved)
+        select.set("where", exp.Where(this=cond))
 
     def _check_join_on(self, on: exp.Expression, scope: _Scope) -> None:
         """A join equality compares stored integers as they are, so both sides need the same scale."""
@@ -256,6 +332,7 @@ class _Rewriter:
                 b.node, b.kind = _int_node(days), "date"
         kinds = {left.kind, right.kind}
         if kinds == {"num"}:
+            self._require_decimal_literal_in_range(left, right)
             aligned = _align([left, right])
             return aligned[0], aligned[1]
         if "date" in kinds and kinds != {"date"}:
@@ -279,6 +356,22 @@ class _Rewriter:
         if "unknown" in kinds and any(t.kind == "num" and t.scale > 0 for t in (left, right)):
             raise DeclarativeUnsupported("a DECIMAL compared with an operand of unknown type")
         return left, right
+
+    @staticmethod
+    def _require_decimal_literal_in_range(left: _T, right: _T) -> None:
+        """DuckDB casts a literal and a DECIMAL column to one DECIMAL of at most 38 digits, and raises a
+        Conversion Error when the literal needs more: the spec would return a value instead."""
+        for col, lit in ((left, right), (right, left)):
+            node = _unparen(lit.node)
+            node = _unparen(node.this) if isinstance(node, exp.Neg) else node
+            if col.prec is None or not isinstance(node, exp.Literal):
+                continue
+            digits = len(str(abs(int(node.this))))
+            lit_int = max(1, digits - lit.scale)
+            if max(col.prec[0] - col.prec[1], lit_int) + max(col.prec[1], lit.scale) > 38:
+                raise DeclarativeUnsupported(
+                    "a literal outside the DECIMAL column's range: DuckDB raises a Conversion Error for it"
+                )
 
     def _between(self, node: exp.Between, scope: _Scope) -> exp.Expression:
         this = self.typed(node.this, scope)
@@ -322,12 +415,18 @@ class _Rewriter:
     def typed(self, node: exp.Expression, scope: _Scope) -> _T:
         if isinstance(node, exp.Paren):
             inner = self.typed(node.this, scope)
-            return _T(exp.Paren(this=inner.node), inner.kind, inner.scale)
+            return _T(exp.Paren(this=inner.node), inner.kind, inner.scale, inner.mag, inner.tcap, inner.prec)
         if isinstance(node, exp.Column):
             found = scope.find(node.table, node.name)
             if found is None:
                 return _T(node, "unknown")
-            return _T(node, *found)
+            meta = scope.find_meta(node.table, node.name)
+            if meta is None:
+                return _T(node, *found)
+            info, mag = meta
+            plain = found[0] == "num" and found[1] == 0 and info.precision is None and not info.is_hugeint
+            tcap = _SQL_INT_CAP.get(info.sql_type, 0) if plain else 0
+            return _T(node, *found, mag=mag if plain else None, tcap=tcap, prec=(info.precision, info.scale) if info.precision else None)
         if isinstance(node, exp.Literal):
             return self._literal(node)
         if isinstance(node, exp.Boolean):
@@ -337,7 +436,7 @@ class _Rewriter:
             if inner.kind == "float":
                 return _T(exp.Neg(this=inner.node), "float")
             self._require_num(inner, "negation")
-            return _T(exp.Neg(this=inner.node), "num", inner.scale)
+            return _T(exp.Neg(this=inner.node), "num", inner.scale, inner.mag, inner.tcap, inner.prec)
         if isinstance(node, (exp.Cast, exp.Add, exp.Sub)):
             days = self._folded_date(node)
             if days is not None:
@@ -374,7 +473,11 @@ class _Rewriter:
         if match is None or not (match.group(1) or match.group(2)):
             raise DeclarativeUnsupported(f"number literal {node.this!r} (only plain decimals are exact)")
         whole, frac = match.group(1), match.group(2) or ""
-        return _T(exp.Literal.number(int((whole + frac) or "0")), "num", len(frac))
+        value = int((whole + frac) or "0")
+        if frac:
+            return _T(exp.Literal.number(value), "num", len(frac))
+        # DuckDB types a whole-number literal INTEGER when it fits, else BIGINT.
+        return _T(exp.Literal.number(value), "num", 0, mag=value, tcap=2**31 if value < 2**31 else 2**63)
 
     def _folded_date(self, node: exp.Expression) -> int | None:
         if isinstance(node, (exp.Add, exp.Sub)) and (
@@ -405,9 +508,25 @@ class _Rewriter:
             scale = left.scale + right.scale
             if scale > MAX_SCALE:
                 raise DeclarativeUnsupported(f"DECIMAL scale {scale} exceeds {MAX_SCALE}")
-            return _T(exp.Mul(this=left.node, expression=right.node), "num", scale)
+            out = _T(exp.Mul(this=left.node, expression=right.node), "num", scale)
+            return self._integer_result(node, left, right, out) if scale == 0 else out
+        raw_left, raw_right = left, right
         left, right = _align([left, right])
-        return _T(type(node)(this=left.node, expression=right.node), "num", left.scale)
+        out = _T(type(node)(this=left.node, expression=right.node), "num", left.scale)
+        return self._integer_result(node, raw_left, raw_right, out) if left.scale == 0 else out
+
+    def _integer_result(self, node: exp.Expression, left: _T, right: _T, result: _T) -> _T:
+        """Plain integer + - *: DuckDB errors when the result leaves its type, and the spec's integers do not."""
+        if left.tcap and right.tcap and left.mag is not None and right.mag is not None:
+            mag = left.mag * right.mag if isinstance(node, exp.Mul) else left.mag + right.mag
+            tcap = max(left.tcap, right.tcap)
+            if mag >= tcap:
+                raise DeclarativeUnsupported(
+                    f"integer arithmetic can overflow: the catalog allows |result| up to {mag}, "
+                    f"the type holds up to {tcap - 1}, and DuckDB raises an overflow error there"
+                )
+            result.mag, result.tcap = mag, tcap
+        return result
 
     def _aggregate(self, node: exp.Expression, scope: _Scope) -> _T:
         arg = node.this
@@ -507,14 +626,14 @@ def _first_table(tree: exp.Expression) -> str:
     return table.name
 
 
-def rewrite_numeric(sql: str, schema: dict) -> tuple[str, list[int]]:
+def rewrite_numeric(sql: str, schema: dict, catalog: object | None = None) -> tuple[str, list[int]]:
     """Integer-only SQL for ``sql``, and the DECIMAL scale of each SELECT output in order."""
     try:
         tree = sqlglot.parse_one(sql)
     except Exception as exc:
         raise DeclarativeUnsupported(f"SQL parse error: {exc}") from exc
     model = SchemaModel.from_caller(schema, _first_table(tree))
-    rewritten, outputs = _Rewriter(model).query(tree, None)
+    rewritten, outputs = _Rewriter(model, catalog).query(tree, None)
     return rewritten.sql(), [scale if kind == "num" else 0 for kind, scale in outputs]
 
 

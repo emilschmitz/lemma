@@ -395,3 +395,109 @@ def test_the_unique_keys_the_bound_relies_on_are_checked_against_the_data_by_the
     from research_loop.assumption_packages import check
 
     assert "unique key" in inspect.getsource(check) and "a group has" in inspect.getsource(check)
+
+
+# ---- round-5 adversary findings: error-vs-value and crashes --------------------------------------------------------------
+
+R5 = {
+    "t": {"i": "bigint", "j": "integer", "w": "bigint", "v": "decimal(38,4)", "d": "date"},
+}
+R5_CAT = CatalogAssumptions(
+    max_rows=16, tables={"t": TableAssumptions(max_rows=16, columns={"j": ColumnAssumption(max_value_exclusive=2**20)})}
+)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT COUNT(*) AS c FROM t WHERE v < 100000000000000000000000000000000000",
+        "SELECT COUNT(*) AS c FROM t WHERE v BETWEEN 0 AND 100000000000000000000000000000000000",
+        "SELECT COUNT(*) AS c FROM t WHERE v IN (1, 100000000000000000000000000000000000)",
+    ],
+)
+def test_a_literal_beyond_the_decimal_columns_range_is_refused(sql: str) -> None:
+    with pytest.raises(DeclarativeUnsupported, match="Conversion Error"):
+        emit_declarative_spec(sql, R5, R5_CAT)
+
+
+@pytest.mark.parametrize("sql", ["SELECT COUNT(*) AS c FROM t WHERE v < 1000000", "SELECT COUNT(*) AS c FROM t WHERE v < 12.5"])
+def test_a_literal_inside_the_decimal_range_still_emits(sql: str) -> None:
+    emit_declarative_spec(sql, R5, R5_CAT)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT COUNT(*) AS c FROM t WHERE i + 1 > w",  # BIGINT + 1 overflows at INT64 max
+        "SELECT SUM(i * 2) AS s FROM t",
+        "SELECT COUNT(*) AS c FROM t WHERE j * j * j > 5",  # 2^60 fits INTEGER? no: INTEGER holds 2^31
+    ],
+)
+def test_integer_arithmetic_that_can_overflow_under_the_catalog_is_refused(sql: str) -> None:
+    with pytest.raises(DeclarativeUnsupported, match="can overflow"):
+        emit_declarative_spec(sql, R5, R5_CAT)
+
+
+@pytest.mark.parametrize(
+    "sql", ["SELECT COUNT(*) AS c FROM t WHERE j + 1 > 5", "SELECT SUM(j * 2 + 1) AS s FROM t"]
+)
+def test_integer_arithmetic_under_a_catalog_cap_emits(sql: str) -> None:
+    emit_declarative_spec(sql, R5, R5_CAT)  # |j| < 2^20: the results fit INTEGER
+
+
+def test_without_a_catalog_there_is_no_overflow_refusal() -> None:
+    emit_declarative_spec("SELECT COUNT(*) AS c FROM t WHERE i + 1 > w", R5)
+
+
+@pytest.mark.parametrize(
+    "literal",
+    [
+        "DATE '9999-12-31' + INTERVAL '1' DAY",
+        "DATE '0001-01-31' - INTERVAL '1' MONTH",
+        "DATE '2000-01-01' + INTERVAL '2147483647' DAY",
+        "DATE '2000-02-30'",
+    ],
+)
+def test_date_constants_that_python_cannot_hold_are_refused_not_crashes(literal: str) -> None:
+    with pytest.raises(DeclarativeUnsupported):
+        emit_declarative_spec(f"SELECT COUNT(*) AS c FROM t WHERE d = {literal}", R5, R5_CAT)
+
+
+# ---- ON equality across DECIMAL scales is stated like the comma join --------------------------------------------------------
+
+SCALES = {"a": {"x": "decimal(10,2)", "k": "bigint"}, "b": {"z": "decimal(10,4)", "k": "bigint"}}
+SCALES_CAT = CatalogAssumptions(max_rows=16, tables={n: TableAssumptions(max_rows=16) for n in SCALES})
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT COUNT(*) AS c FROM a JOIN b ON a.x = b.z",
+        "SELECT COUNT(*) AS c FROM a JOIN b ON a.k = b.k AND a.x = b.z",
+        "SELECT COUNT(*) AS c FROM a, b WHERE a.x = b.z",
+    ],
+)
+def test_decimal_equality_across_scales_is_accepted_in_on_and_where_alike(sql: str) -> None:
+    spec = emit_declarative_spec(sql, SCALES, SCALES_CAT)
+    assert "* 100" in spec  # the lower scale is rescaled exactly
+
+
+def test_the_hoisted_equality_returns_duckdbs_rows() -> None:
+    con = duckdb.connect()
+    con.execute("CREATE TABLE a (x DECIMAL(10,2), k BIGINT)")
+    con.execute("CREATE TABLE b (z DECIMAL(10,4), k BIGINT)")
+    con.executemany("INSERT INTO a VALUES (?, ?)", [(Decimal("1.50"), 1), (Decimal("2.25"), 2), (Decimal("3.00"), 1)])
+    con.executemany("INSERT INTO b VALUES (?, ?)", [(Decimal("1.5000"), 1), (Decimal("2.2500"), 1), (Decimal("3.0001"), 1)])
+    on = "SELECT COUNT(*) FROM a JOIN b ON a.k = b.k AND a.x = b.z"
+    int_sql, _ = rewrite_numeric(on, SCALES)
+    ints = duckdb.connect()
+    ints.execute("CREATE TABLE a (x HUGEINT, k BIGINT)")
+    ints.execute("CREATE TABLE b (z HUGEINT, k BIGINT)")
+    ints.executemany("INSERT INTO a VALUES (?, ?)", [(150, 1), (225, 2), (300, 1)])
+    ints.executemany("INSERT INTO b VALUES (?, ?)", [(15000, 1), (22500, 1), (30001, 1)])
+    assert ints.execute(int_sql).fetchall() == con.execute(on).fetchall() == [(1,)]
+
+
+def test_an_outer_join_equality_across_scales_is_still_refused() -> None:
+    with pytest.raises(DeclarativeUnsupported, match="join compares"):
+        rewrite_numeric("SELECT COUNT(*) FROM a LEFT JOIN b ON a.x = b.z", SCALES)

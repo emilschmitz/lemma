@@ -16,7 +16,7 @@ from declarative_spec.assemble import assemble_declarative_program
 from declarative_spec.emit import DeclarativeUnsupported, emit_declarative_spec
 from declarative_spec.parse_exprs import fold_date, fold_number
 from declarative_spec.parse_query import parse_query
-from research_loop.table_assumptions import CatalogAssumptions, TableAssumptions
+from research_loop.table_assumptions import CatalogAssumptions, ColumnAssumption, TableAssumptions
 
 VERUS = Path("/home/emil/tools/verus/verus")
 
@@ -34,9 +34,20 @@ SCHEMA = {
     "ord": {"okey": "bigint", "ckey": "bigint", "odate": "date", "total": "bigint"},
     "cust": {"ckey": "bigint", "seg": "varchar"},
 }
+# Integer arithmetic must fit the type DuckDB computes in, so the integer columns carry a catalog cap.
 CATALOG = CatalogAssumptions(
     max_rows=64,
-    tables={t: TableAssumptions(max_rows=64) for t in SCHEMA},
+    tables={
+        t: TableAssumptions(
+            max_rows=64,
+            columns={
+                c: ColumnAssumption(max_value_exclusive=2**20)
+                for c, ty in SCHEMA[t].items()
+                if ty in ("bigint", "integer")
+            },
+        )
+        for t in SCHEMA
+    },
 )
 
 
