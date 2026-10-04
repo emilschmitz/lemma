@@ -131,6 +131,8 @@ def prepare_round(seed: int, label: str) -> None:
 
 
 def main() -> int:
+    # Verus only through the memory-guarded wrapper (one box, many agents).
+    os.environ.setdefault("LEMMA_VERUS_BIN", str(ROOT / "scripts" / "ram" / "verus_guarded.sh"))
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("cmd", choices=["prepare", "check", "prepare-round"])
     ap.add_argument("--seed", type=int, help="prepare-round only")

@@ -55,3 +55,12 @@ def test_measure_writes_expect_json_that_load_speed_bar_reads(tmp_path: Path, sq
 _CAT = CatalogAssumptions(
     tables={"t": TableAssumptions(max_rows=3, columns={"k": ColumnAssumption(max_value_exclusive=4)})}
 )
+
+
+def test_verus_binary_override_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    from declarative_spec.pipeline import _verus_binary
+
+    monkeypatch.setenv("LEMMA_VERUS_BIN", "/x/guarded.sh")
+    assert _verus_binary() == "/x/guarded.sh"
+    monkeypatch.setenv("LEMMA_VERUS_BIN", "  ")
+    assert _verus_binary() != "  "

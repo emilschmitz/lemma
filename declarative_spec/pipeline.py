@@ -17,6 +17,9 @@ VERUS_CANDIDATES = (
 
 
 def _verus_binary() -> str:
+    override = os.environ.get("LEMMA_VERUS_BIN", "").strip()  # e.g. scripts/ram/verus_guarded.sh
+    if override:
+        return override
     for p in VERUS_CANDIDATES:
         if p.is_file() and os.access(p, os.X_OK):
             return str(p)
