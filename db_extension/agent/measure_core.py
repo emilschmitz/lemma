@@ -124,7 +124,9 @@ def _read_body(*, path: str | None, body: str | None, ws: Path | None = None) ->
         if _read_lemma_spec_style() == "declarative":
             from declarative_spec.admit import declarative_edit_from_file
 
-            return declarative_edit_from_file(text), target
+            spec_path = target.parent / "context" / "ro" / "spec.rs"
+            spec_rs = spec_path.read_text(encoding="utf-8") if spec_path.is_file() else None
+            return declarative_edit_from_file(text, spec_rs), target
         spec_path = target.parent / "context" / "ro" / "spec.rs"
         if not spec_path.is_file():
             raise ValueError(f"missing spec.rs for AGENT_EDIT admission: {spec_path}")

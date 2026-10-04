@@ -524,7 +524,19 @@ def emit_declarative_spec(
 
     integer_sql, scales = rewrite_numeric(sql, schema)
     spec = _emit_integer_sql(integer_sql, schema, catalog, float_abs_eps=float_abs_eps)
-    return with_out_scales(spec, scales)
+    return _with_agent_surface(with_out_scales(spec, scales))
+
+
+def _with_agent_surface(spec: str) -> str:
+    """Import every vstd module by glob, and mark the helper region just above `run_query`."""
+    from declarative_spec.regions import HELPERS_END, HELPERS_START
+    from declarative_spec.vstd_index import preamble_uses
+
+    assert spec.count("use vstd::prelude::*;") == 1
+    spec = spec.replace("use vstd::prelude::*;", preamble_uses(), 1)
+    head, sep, tail = spec.partition("pub fn run_query(")
+    assert sep
+    return f"{head}{HELPERS_START}\n{HELPERS_END}\n{sep}{tail}"
 
 
 def _emit_integer_sql(

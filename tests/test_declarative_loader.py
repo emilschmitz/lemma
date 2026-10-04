@@ -287,7 +287,13 @@ def test_agent_file_with_host_uses_passes_import_vetting() -> None:
     agent = spec.replace("// AGENT_EDIT_START\n// AGENT_EDIT_END", "// AGENT_EDIT_START\n    HashMapWithView::new()\n// AGENT_EDIT_END")
     m = run_declarative_metrics(spec_rs=spec, agent_source=agent, work_dir=None, timeout_sec=1)
     # The host's own axiom broadcast is not an agent import; failure may come later, never from vetting.
-    assert "use is an assume" not in m.get("compiler_error", "")
-    sneaky = agent.replace("use vstd::prelude::*;", "use vstd::prelude::*;\nbroadcast use vstd::std_specs::hash::axiom_i64_obeys_hash_table_key_model;", 1)
+    assert "forbidden name" not in m.get("compiler_error", "")
+    # An axiom broadcast the agent adds inside its edit is refused. The same line outside the
+    # markers is discarded, so it never reaches the assembled program.
+    sneaky = agent.replace(
+        "// AGENT_EDIT_START\n",
+        "// AGENT_EDIT_START\nbroadcast use vstd::std_specs::hash::axiom_i64_obeys_hash_table_key_model;\n",
+        1,
+    )
     m2 = run_declarative_metrics(spec_rs=spec, agent_source=sneaky, work_dir=None, timeout_sec=1)
-    assert "use is an assume" in m2["compiler_error"]
+    assert "use: only" in m2["compiler_error"] and "forbidden name: axiom" in m2["compiler_error"]

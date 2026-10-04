@@ -8,6 +8,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from declarative_spec.regions import extract_agent_edit, extract_agent_helpers
+
 VERUS_CANDIDATES = (
     Path("/home/emil/tools/verus/verus"),
     Path("verus"),
@@ -171,17 +173,6 @@ def compile_and_run(
     }
 
 
-def extract_agent_edit(source: str) -> str:
-    normalized = source.replace("\r\n", "\n").replace("\r", "\n")
-    start_mark = "// AGENT_EDIT_START"
-    end_mark = "// AGENT_EDIT_END"
-    if start_mark not in normalized or end_mark not in normalized:
-        raise ValueError("missing AGENT_EDIT markers")
-    start = normalized.index(start_mark) + len(start_mark)
-    end = normalized.index(end_mark)
-    return normalized[start:end].strip()
-
-
 def _apply_speed_bar(metrics: dict, speed_bar: dict | None) -> dict:
     if speed_bar is None or metrics.get("status") != "SUCCESS":
         return metrics
@@ -238,54 +229,33 @@ def run_declarative_metrics(
     speed_bar: dict | None = None,
 ) -> dict:
     """Admit the agent edit, assemble, compile, and run."""
-    from declarative_spec.admit import admit_declarative_body, split_vstd_uses
+    from declarative_spec.admit import admit_declarative_body, admit_helpers
     from declarative_spec.assemble import assemble_declarative_program
 
+    def failure(message: str) -> dict:
+        return {"status": "FAILURE", "proof_verified": False, "latency_us": -1, "compiler_error": message}
+
+    # Only the two marked regions survive. Anything else in the agent file is discarded.
     try:
         if "AGENT_EDIT_START" in agent_source:
             body = extract_agent_edit(agent_source)
-            outside = agent_source
+            helpers = extract_agent_helpers(agent_source)
         else:
             body = agent_source.strip()
-            outside = agent_source
+            helpers = ""
     except ValueError as exc:
-        return {
-            "status": "FAILURE",
-            "proof_verified": False,
-            "latency_us": -1,
-            "compiler_error": str(exc),
-        }
-    uses, body, use_violations = split_vstd_uses(body)
-    # Host-emitted `use` lines (hash axiom broadcast, `std_specs::ops::*`) are part of the
-    # spec the agent file was copied from. Only imports the agent added are vetted.
-    host_lines = {line.strip() for line in spec_rs.splitlines()}
-    agent_outside = "\n".join(line for line in outside.splitlines() if line.strip() not in host_lines)
-    file_uses, _rest, file_use_violations = split_vstd_uses(agent_outside)
-    for line in file_uses:
-        if line not in uses:
-            uses.append(line)
-    use_violations = use_violations + [v for v in file_use_violations if v not in use_violations]
-    if use_violations:
-        return {
-            "status": "FAILURE",
-            "proof_verified": False,
-            "latency_us": -1,
-            "compiler_error": "; ".join(use_violations),
-        }
-    admission = admit_declarative_body(body)
-    if not admission.ok:
-        return {
-            "status": "FAILURE",
-            "proof_verified": False,
-            "latency_us": -1,
-            "compiler_error": "; ".join(admission.violations),
-        }
+        return failure(str(exc))
+    violations = list(admit_declarative_body(body).violations)
+    if helpers:
+        violations += admit_helpers(helpers, spec_rs).violations
+    if violations:
+        return failure("; ".join(violations))
     try:
         assembled = assemble_declarative_program(
             spec_rs,
             body,
+            helpers=helpers,
             column_bins=column_bins,
-            extra_uses=uses,
             expected_rows=None if speed_bar is None else speed_bar.get("table_rows"),
         )
     except ValueError as exc:
