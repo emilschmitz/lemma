@@ -1,0 +1,128 @@
+"""MANUAL-PROVER harness for the declarative path (used when no model-agent credentials exist).
+
+``prepare``: build exactly what the real agent gets in its workspace (spec, context/ro files, the
+generated prompt as context/ro/DECLARATIVE.md, runquery_agent.rs, official column files and the
+DuckDB bar) for one query of a round log. ``check``: the run_runquery equivalent (admit, assemble,
+verify, compile, official timed run, row check, speed bar). Results from this path are
+'manual prover (Sonnet subagent), not a model-agent result'.
+
+  declarative_manual.py prepare --kind sec|tpch --sql-file F --ws DIR
+  declarative_manual.py check --kind sec|tpch --sql-file F --ws DIR
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from declarative_spec import drive
+from declarative_spec.emit import emit_declarative_spec
+from declarative_spec.lemma_index import lemma_index_markdown
+from declarative_spec.pipeline import run_declarative_metrics
+from declarative_spec.prompt import build_declarative_prompt
+from research_loop.scripts import declarative_round as rnd
+from research_loop.trust_configs import apply_trust_config
+
+
+def _job_env(kind: str) -> tuple[dict, object, str | None]:
+    if kind == "sec":
+        from research_loop.scripts.sqlsmith_trusted_coverage import load_sec_schema
+
+        os.environ["LEMMA_MEASURE_DB"] = str(rnd.SEC_DB)
+        os.environ["LEMMA_FLOAT_ABS_EPS"] = "1e20"
+        return load_sec_schema(), rnd.sec_catalog(), "1e20"
+    schema, catalog = rnd.tpch_schema_and_catalog(rnd.TPCH_DB)
+    os.environ["LEMMA_MEASURE_DB"] = str(rnd.TPCH_DB)
+    return schema, catalog, None
+
+
+def _project(sql: str, schema: dict) -> dict:
+    from db_extension.optimizer import (
+        normalize_schema,
+        parse_sql,
+        project_multi_schema_for_query,
+        project_schema_for_query,
+        resolve_schema_for_sql,
+        uses_multi_table_program,
+    )
+
+    catalog_schema = resolve_schema_for_sql(sql, schema)
+    try:  # the optimizer does the same: any projection failure keeps the catalog schema
+        _flat, multi = normalize_schema(catalog_schema)
+        parsed = parse_sql(sql, catalog_schema)
+        if multi is not None and uses_multi_table_program(parsed, multi):
+            return project_multi_schema_for_query(sql, multi)
+        return project_schema_for_query(sql, catalog_schema)
+    except Exception:
+        return catalog_schema
+
+
+def prepare(kind: str, sql: str, ws: Path) -> None:
+    schema, catalog, eps = _job_env(kind)
+    resolved = _project(sql, schema)
+    ws.mkdir(parents=True, exist_ok=True)
+    bins, bar = drive._maybe_large_table(
+        sql_query=sql, catalog=catalog, workspace=ws, schema=resolved, float_abs_eps=eps
+    )
+    (ws / "decl_data" / "bar.json").write_text(json.dumps({**bar, "eps": eps}, default=str))
+    spec = emit_declarative_spec(sql, resolved, catalog, float_abs_eps=eps)
+    spec_path, agent_path = drive._ensure_context_files(
+        ws, sql_query=sql, resolved_schema=resolved, spec_text=spec
+    )
+    agent_path.write_text(spec)
+    prompt = build_declarative_prompt(
+        sql=sql,
+        spec_path=str(spec_path.relative_to(ws)),
+        edit_path=str(agent_path.relative_to(ws)),
+        lemma_index=lemma_index_markdown(),
+        last_error="",
+        in_docker=False,
+    )
+    (ws / "context" / "ro" / "DECLARATIVE.md").write_text(prompt)
+    print(f"prepared {ws}; bar: duck_us={bar['duck_us']} duck1_us={bar['duck1_us']} rows={bar['table_rows']}")
+
+
+def check(kind: str, sql: str, ws: Path) -> dict:
+    bar = json.loads((ws / "decl_data" / "bar.json").read_text())
+    bins = {p.name[len("cols_") : -len(".bin")]: str(p) for p in sorted((ws / "decl_data").glob("cols_*.bin"))}
+    spec = (ws / "context" / "ro" / "spec.rs").read_text()
+    metrics = run_declarative_metrics(
+        spec_rs=spec,
+        agent_source=(ws / "runquery_agent.rs").read_text(),
+        work_dir=ws / "declarative_build",
+        column_bins=bins,
+        speed_bar=bar,
+        timeout_sec=int(os.environ.get("LEMMA_CHECK_TIMEOUT", "600")),
+    )
+    keep = {k: v for k, v in metrics.items() if k != "stdout"}
+    (ws / "last_check.json").write_text(json.dumps(keep, default=str, indent=1))
+    print(json.dumps({k: keep.get(k) for k in ("status", "proof_verified", "latency_us", "duck_us", "duck1_us", "speedup", "speedup_1t", "verify_summary")}, default=str))
+    print((keep.get("compiler_error") or "")[-3500:])
+    return metrics
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("cmd", choices=["prepare", "check"])
+    ap.add_argument("--kind", required=True, choices=["sec", "tpch"])
+    ap.add_argument("--sql-file", required=True)
+    ap.add_argument("--ws", required=True)
+    a = ap.parse_args()
+    sql = Path(a.sql_file).read_text().strip()
+    with apply_trust_config("adversary_declarative0"):
+        if a.cmd == "prepare":
+            prepare(a.kind, sql, Path(a.ws))
+        else:
+            check(a.kind, sql, Path(a.ws))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
