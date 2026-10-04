@@ -1130,6 +1130,9 @@ def run_agent_docker(
     env["HOME"] = "/root"
     # Writable config dir (host creds are mounted RO at /root/.cursor-host).
     env["CURSOR_CONFIG_DIR"] = "/root/.cursor"
+    from db_extension.dataset_config import run_runquery_iterate_tool_blurb
+
+    env["LEMMA_RUN_RUNQUERY_BLURB"] = run_runquery_iterate_tool_blurb()
 
     profile = infer_egress_profile(
         agent_cmd,
@@ -1196,6 +1199,7 @@ def run_agent_docker(
         "docker", "run", "--rm",
         "--name", container_name,
         "--network", "none",
+        "--memory", "3g", "--memory-swap", "3g",
         "--cap-drop", "ALL",
         # Host-owned bind mounts need DAC_OVERRIDE when container runs as root.
         "--cap-add", "DAC_OVERRIDE",

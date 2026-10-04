@@ -7,6 +7,7 @@ socket, real egress bridge. Only the model is the mock. See research_loop/AGENT_
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -27,9 +28,11 @@ DUMMY_KEY = "test-key-not-real"
 
 def group_count_body(table: str, column: str) -> str:
     """Verus-verified reference body for ``SELECT <column>, COUNT(*) FROM <table> GROUP BY <column>`` (ubigint)."""
-    body = (PROOFS / "u64_group_count_t_k.rs").read_text()
+    # Counting in a Vec of KEY_CAP slots (the shape that beats DuckDB's speed bar), not a HashMap.
+    body = (PROOFS / "u64_group_count_slots_t_k.rs").read_text()
+    body = body.replace("KEY_CAP_t_k", f"KEY_CAP_{table}_{column}")
     body = body.replace("valid_cols_t", f"valid_cols_{table}").replace("ROW_CAP_t", f"ROW_CAP_{table}")
-    return re.sub(r"cols\.k@", f"cols.{column}@", body)
+    return re.sub(r"\bcols\.k\b", f"cols.{column}", body)
 
 
 @contextmanager
@@ -59,7 +62,11 @@ def main(scenario: str) -> int:
     conversation = {"ok": Conversation, "hang": Hang}[scenario](group_count_body("src", "bucket"))
     with tempfile.TemporaryDirectory() as tmp, mock_model(conversation, Path(tmp)) as log:
         records = run_ladder("claude-haiku-4-5-20251001", indices=(1,))
-        print(f"MOCK_REQUESTS {log.read_text()}")
+        for line in log.read_text().splitlines():
+            rec = json.loads(line)
+            rec.pop("headers", None)
+            rec["tools"] = len(rec.get("tools", []))
+            print(f"MOCK_REQUEST {rec}")
     print(records)
     return 0
 

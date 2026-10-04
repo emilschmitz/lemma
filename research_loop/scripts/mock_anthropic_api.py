@@ -45,17 +45,20 @@ def make_ca(directory: Path) -> tuple[Path, Path]:
     return cert, key
 
 
-def _tool_results(messages: list[dict]) -> list[str]:
-    """Text of every tool_result in the last user message."""
-    last = messages[-1]["content"]
-    out = []
-    for block in last if isinstance(last, list) else []:
-        if block.get("type") == "tool_result":
-            content = block["content"]
-            if isinstance(content, list):
-                content = "".join(b.get("text", "") for b in content if b.get("type") == "text")
-            out.append(content)
-    return out
+def _result_text(content) -> str:
+    if isinstance(content, list):
+        return "".join(b.get("text", "") for b in content if b.get("type") == "text")
+    return content
+
+
+def next_user_results(messages: list[dict], tool_use_id: str):
+    """The tool_result content for ``tool_use_id`` anywhere in the history, else None."""
+    for m in messages:
+        if m["role"] == "user" and isinstance(m["content"], list):
+            for block in m["content"]:
+                if block.get("type") == "tool_result" and block["tool_use_id"] == tool_use_id:
+                    return block["content"]
+    return None
 
 
 def _agent_region(read_result: str) -> str:
@@ -71,18 +74,24 @@ class Conversation:
     def __init__(self, body: str, workspace_file: str = "/workspace/runquery_agent.rs") -> None:
         self.body = body
         self.file = workspace_file
-        self.read_result = ""
 
     def blocks(self, messages: list[dict]) -> list[dict]:
-        turn = sum(1 for m in messages if m["role"] == "assistant")
-        results = _tool_results(messages) if turn else []
-        if turn == 0:
+        # Claude Code may split one model turn into several assistant messages, so the step is
+        # the first scripted tool whose result is not in the history yet, not a message count.
+        done = {
+            b["id"]: _result_text(next_user_results(messages, b["id"]))
+            for m in messages
+            if m["role"] == "assistant" and isinstance(m["content"], list)
+            for b in m["content"]
+            if b.get("type") == "tool_use" and next_user_results(messages, b["id"]) is not None
+        }
+        if "toolu_mock_read" not in done:
             return [
                 {"type": "text", "text": "Reading the stub."},
                 {"type": "tool_use", "id": "toolu_mock_read", "name": "Read", "input": {"file_path": self.file}},
             ]
-        if turn == 1:
-            old = _agent_region(results[0])
+        if "toolu_mock_edit" not in done:
+            old = _agent_region(done["toolu_mock_read"])
             return [
                 {"type": "text", "text": "Writing the reference body."},
                 {
@@ -96,10 +105,14 @@ class Conversation:
                     },
                 },
             ]
-        if turn == 2:
+        if "toolu_mock_run" not in done:
             return [{"type": "tool_use", "id": "toolu_mock_run", "name": "mcp__lemma-host__run_runquery", "input": {}}]
-        if turn == 3:
-            run_id = json.loads(results[0])["run_id"]
+        if "toolu_mock_submit" not in done:
+            # FastMCP wraps the proxy's JSON text as {"result": "<json text>"}.
+            # The host may append text after the JSON object, so decode the first object only.
+            first = json.JSONDecoder().raw_decode
+            text = first(done["toolu_mock_run"].lstrip())[0]["result"]
+            run_id = first(text.lstrip())[0]["run_id"]
             return [
                 {
                     "type": "tool_use",
@@ -216,7 +229,16 @@ class MockAnthropic:
                 self.wfile.write(data)
 
         self.lock = threading.Lock()
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+
+        class Server(ThreadingHTTPServer):
+            def handle_error(self, request, client_address) -> None:
+                # A handler bug must show up in the log, not as a silent connection drop.
+                import traceback
+
+                with mock.lock, log.open("a", encoding="utf-8") as fh:
+                    fh.write(json.dumps({"handler_error": traceback.format_exc()}) + "\n")
+
+        self.server = Server(("127.0.0.1", 0), Handler)
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.load_cert_chain(cert, key)
         self.server.socket = ctx.wrap_socket(self.server.socket, server_side=True)

@@ -58,9 +58,9 @@ def _proxy(tool: str, args: dict) -> str:
 
 
 def build_proxy_mcp() -> FastMCP:
-    from db_extension.dataset_config import run_runquery_iterate_tool_blurb
-
-    iterate_blurb = run_runquery_iterate_tool_blurb()
+    # The sandbox has no db_extension/research_loop config: the host computes the blurb
+    # (``run_runquery_iterate_tool_blurb``) and passes it in. Missing = loud KeyError.
+    iterate_blurb = os.environ["LEMMA_RUN_RUNQUERY_BLURB"]
 
     mcp = FastMCP(
         "lemma-sandbox",
