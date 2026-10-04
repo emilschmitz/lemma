@@ -907,7 +907,10 @@ def _compile_case(node: exp.Case, scope: _Scope) -> str:
         return f"({atom(n.left)} {op_map[type(n)]} {atom(n.right)})"
 
     default = node.args.get("default")
-    text = atom(default) if default is not None else "0"
+    if default is None:
+        # No ELSE yields NULL, which MIN/MAX/SUM skip; the spec has no NULL.
+        raise DeclarativeUnsupported("CASE without ELSE")
+    text = atom(default)
     for arm in reversed(list(node.args.get("ifs") or [])):
         text = f"if {cond(arm.this)} {{ {atom(arm.args['true'])} }} else {{ {text} }}"
     return text

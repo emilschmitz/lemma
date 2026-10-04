@@ -38,6 +38,7 @@ FIXED: dict[str, str] = {
     "hole_group_by_rollup_dropped": "refused",
     "hole_exists_subquery_limit_ignored": "refused",
     "hole_min_two_arg_is_list": "refused",
+    "hole_case_missing_else_is_zero": "refused",
     # The hand-proved body encodes the old wrong semantics; Verus now rejects it.
     "hole_is_null_empty_string": "impl_does_not_fit_spec",
     "hole_is_not_null_empty_string": "impl_does_not_fit_spec",
@@ -173,3 +174,19 @@ def test_is_with_other_right_sides_is_refused(predicate: str) -> None:
 
     with pytest.raises(DeclarativeUnsupported):
         parse_query(f"SELECT a FROM t WHERE {predicate}")
+
+
+@pytest.mark.parametrize("agg", ["MIN", "MAX", "SUM"])
+def test_case_without_else_in_an_aggregate_is_refused(agg: str) -> None:
+    from declarative_spec.parse import DeclarativeUnsupported
+    from declarative_spec.parse_query import parse_query
+
+    with pytest.raises(DeclarativeUnsupported):
+        parse_query(f"SELECT b, {agg}(CASE WHEN a > 1 THEN a END) AS x FROM t GROUP BY b")
+
+
+def test_case_with_else_still_parses() -> None:
+    from declarative_spec.parse_query import parse_query
+
+    q = parse_query("SELECT b, SUM(CASE WHEN a > 1 THEN a ELSE 0 END) AS x FROM t GROUP BY b")
+    assert q.aggs[0].kind == "SUM"
