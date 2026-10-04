@@ -100,6 +100,18 @@ SHAPES: dict[str, Shape] = {
         ("sum_s(t, 0, (row.k as int)) > 10real", "(10.0f64 as real) == (10real / 1real)"),
         ("let big = acc > 10.0;", "let big = acc > 100.0;"),
     ),
+    "order_by_limit": Shape(
+        "SELECT v FROM t ORDER BY v LIMIT 3",
+        "float_order_limit",
+        ("pub open spec fn proj_key(t: &Cols_t, i0: int) -> real", "(res@[i].v as real)) <= ((res@[i + 1].v as real)"),
+        ("let less = vj < vb;", "let less = vj > vb;"),
+    ),
+    "group_sum_order_limit": Shape(
+        "SELECT k, SUM(v) AS s FROM t GROUP BY k ORDER BY s DESC LIMIT 2",
+        "float_group_sum_order_limit",
+        ("((res@[i].s as real)) >= ((res@[i + 1].s as real))", "res@.len() <= 2"),
+        ("let more = gj > gb;", "let more = gj < gb;"),
+    ),
     "avg_int": Shape(
         "SELECT AVG(i) AS m FROM t",
         "float_avg_int",

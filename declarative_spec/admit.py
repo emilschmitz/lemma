@@ -134,9 +134,18 @@ def _top_level_headers(cleaned: str) -> list[str]:
     """Text before each top-level `{` or `;` of the helper region, one entry per item."""
     headers: list[str] = []
     depth = 0
+    paren = 0  # a `{` inside `(` or `[` of a header (a struct literal, `(if c { a } else { b })`) is not the body
     start = 0
     for i, ch in enumerate(cleaned):
-        if ch == "{":
+        if depth == 0 and ch in "([":
+            paren += 1
+        elif depth == 0 and ch in ")]":
+            paren -= 1
+        elif ch == "{" and depth == 0 and paren > 0:
+            depth += 1000  # skip to the matching `}` without ending the header
+        elif ch == "}" and depth >= 1000:
+            depth -= 1000
+        elif ch == "{":
             if depth == 0:
                 headers.append(cleaned[start:i].strip())
             depth += 1
