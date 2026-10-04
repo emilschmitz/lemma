@@ -111,3 +111,15 @@ def test_null_in_a_later_chunk_still_fails_loudly(tmp_path: Path, monkeypatch: p
             db_path=db,
             dest=tmp_path / "o",
         )
+
+
+def test_job_env_snapshot_keeps_only_the_settings_that_are_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    from research_loop.scripts.declarative_manual import _JOB_ENV_KEYS, _job_env_snapshot
+
+    for k in _JOB_ENV_KEYS:
+        monkeypatch.delenv(k, raising=False)
+    assert _job_env_snapshot() == {}
+    monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
+    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "1")
+    monkeypatch.setenv("UNRELATED", "x")
+    assert _job_env_snapshot() == {"LEMMA_STRING_ENCODING": "dict", "LEMMA_PARALLEL_VSTD": "1"}
