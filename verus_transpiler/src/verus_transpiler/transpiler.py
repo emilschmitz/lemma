@@ -1882,6 +1882,27 @@ def _emit_single_table_spec(
             )
         if inner.is_projection and not inner.agg_type:
             return _emit_derived_projection_outer_spec(query, derived, flat_schema)
+        if inner.groupby_columns and not inner.agg_type:
+            # Bare GROUP BY is DISTINCT of the group keys.
+            keys = list(inner.groupby_columns)
+            as_distinct = replace(
+                inner,
+                is_projection=True,
+                distinct=True,
+                projection_columns=keys,
+                projection_exprs=[f"row.{c}" for c in keys],
+                projection_types=[
+                    flat_schema.get(c, "INTEGER") for c in keys
+                ],
+                groupby_columns=[],
+                groupby_tables=[],
+                groupby_aliases={},
+            )
+            return _emit_derived_projection_outer_spec(
+                query,
+                replace(derived, query=as_distinct),
+                flat_schema,
+            )
         if inner.groupby_columns:
             return _emit_grouped_derived_outer_spec(query, derived, flat_schema)
         if not inner.agg_type:

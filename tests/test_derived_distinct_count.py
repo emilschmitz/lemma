@@ -15,6 +15,15 @@ def _method_spec_body(src: str) -> str:
     return rest[: rest.index("\n}")]
 
 
+def test_count_of_bare_groupby_is_the_number_of_groups() -> None:
+    sql = "SELECT COUNT(*) FROM (SELECT a FROM t GROUP BY a) g"
+    src = transpile_sql_to_verus(sql, _SCHEMA)
+    body = _method_spec_body(src)
+    assert "derived_g_spec(cols).len() as u64" in body
+    assert "if tail.contains(" in src
+    assert "method_spec_helper" not in body
+
+
 def test_count_of_distinct_values_is_the_deduped_length() -> None:
     sql = "SELECT COUNT(a) FROM (SELECT DISTINCT a FROM t) d"
     src = transpile_sql_to_verus(sql, _SCHEMA)
