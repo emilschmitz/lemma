@@ -274,7 +274,10 @@ def test_default_trusted_set_spec_and_index_are_unchanged() -> None:
     from declarative_spec.trusted_sets import current
 
     spec = _spec()
-    assert "lemma_u64_add_fits" in spec and "ALT_TRUSTED_MARKER" not in spec
+    # the integer fit lemmas were removed by the audit (Verus knows primitive adds natively); the
+    # float host lemmas are what the default block carries now
+    assert "lemma_f64_add_defined" in spec and "lemma_u64_add_fits" not in spec
+    assert "ALT_TRUSTED_MARKER" not in spec
     assert current().index_markdown() == lemma_index_markdown()
 
 
@@ -285,7 +288,7 @@ def test_swapping_the_trusted_set_changes_spec_text_and_lemma_index_together(alt
     mp.activate_menu("alt_menu")
     spec = _spec()
     host = spec.split("// HOST_LEMMAS_START")[1].split("// HOST_LEMMAS_END")[0]
-    assert "ALT_TRUSTED_MARKER" in host and "lemma_u64_add_fits" not in host
+    assert "ALT_TRUSTED_MARKER" in host and "lemma_f64_add_defined" not in host
     assert current().index_markdown() == _ALT_INDEX
     assert "lemma_alt_only" in host_names(spec)  # admission knows the host names of the active set
 
