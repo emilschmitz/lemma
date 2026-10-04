@@ -28,6 +28,9 @@ _INT_TYPES = frozenset({
 })
 _STRING_TYPES = frozenset({"string", "varchar", "text", "char", "bpchar"})
 _BOOL_TYPES = frozenset({"bool", "boolean"})
+_FLOAT_TYPES = frozenset({
+    "decimal", "numeric", "double", "float8", "float", "real", "float4",
+})
 _DATE_LITERAL = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
 _I32_MIN, _I32_MAX = -2147483648, 2147483647
 _I64_MIN, _I64_MAX = -9223372036854775808, 9223372036854775807
@@ -197,11 +200,17 @@ def _fold_int_literal(node: exp.Expression) -> str | None:
 
 def _kind_of(col_type: str) -> str:
     t = col_type.lower()
-    if t in _BOOL_TYPES or t.split("(")[0] in _BOOL_TYPES:
+    base = t.split("(")[0]
+    if os.environ.get("LEMMA_EXACT_SUM", "0") == "1" and base in _FLOAT_TYPES:
+        raise UnsupportedContractError(
+            "hardware menu does not emit floating-point columns: DuckDB "
+            "FLOAT and DOUBLE round, and this loader keeps the integer text"
+        )
+    if t in _BOOL_TYPES or base in _BOOL_TYPES:
         return "bool"
-    if t in _INT_TYPES or t.split("(")[0] in _INT_TYPES:
+    if t in _INT_TYPES or base in _INT_TYPES:
         return "int"
-    if t in _STRING_TYPES or t.split("(")[0] in _STRING_TYPES:
+    if t in _STRING_TYPES or base in _STRING_TYPES:
         return "string"
     raise UnsupportedContractError(f"Unrecognized column type {col_type!r}")
 
@@ -1507,7 +1516,10 @@ def _compile_where_expr(
         pat_node = node.args.get("expression")
         if not isinstance(pat_node, exp.Literal) or not pat_node.is_string:
             raise UnsupportedContractError("LIKE pattern must be a string literal.")
-        return _compile_like_pattern(real_col, pat_node.this)
+        compiled = _compile_like_pattern(real_col, pat_node.this)
+        if node.args.get("negate"):
+            return f"!({compiled})"
+        return compiled
     if isinstance(node, exp.ILike):
         require_trusted("ilike")
         if not isinstance(node.this, exp.Column):
@@ -1518,7 +1530,10 @@ def _compile_where_expr(
         pat_node = node.args.get("expression")
         if not isinstance(pat_node, exp.Literal) or not pat_node.is_string:
             raise UnsupportedContractError("ILIKE pattern must be a string literal.")
-        return _compile_ilike_pattern(real_col, pat_node.this)
+        compiled = _compile_ilike_pattern(real_col, pat_node.this)
+        if node.args.get("negate"):
+            return f"!({compiled})"
+        return compiled
     if isinstance(node, (exp.EQ, exp.NEQ, exp.GT, exp.LT, exp.GTE, exp.LTE)):
         op_map = {exp.EQ: "==", exp.NEQ: "!=", exp.GT: ">", exp.LT: "<", exp.GTE: ">=", exp.LTE: "<="}
         op = op_map[type(node)]
