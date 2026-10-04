@@ -197,4 +197,12 @@ Pytest slice results are in section 5.
 
 ## 5. Tests
 
-(filled in below after each slice)
+- eq_join slice (`tests/test_eq_join_*.py` + `test_join_transpile_coverage.py`, guarded Verus, 5 GB scope):
+  base 38 failed / 106 passed (807 s); after A2 38 / 106 (647 s); after B+C+D 38 / 106 (662 s); the failing
+  test names are identical in all three runs (pre-existing: Q6 kept-family 3 errors, stale tests).
+- Touched/new slices after merging `integration/declarative-1`: `test_ret_type_key`, `test_prelude_proved_arith`,
+  `test_proved_bridges` (22 family files + distinct sets verified through the guard), `test_value_bounds`,
+  `test_rocketship_trusted_adversarial`, `test_rocketship_ci_gate`, `test_trusted_families`: 260 passed, 27 skipped.
+- Not done: `joins._emit_existence_scan_agg` (0 refs, 148 lines) and the axiomatic fold-slot branch are left for a
+  later group (the latter needs the already-red `test_fold_bound_slot_kinds`). `research_loop/menus/` additions
+  were not run against the full-suite (collection of the whole tree errors at base on `tests.` imports).
