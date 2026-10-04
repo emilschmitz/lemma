@@ -237,16 +237,15 @@ _SHAPE_LIST = """\
 
 Worked, verified examples exist (`context/ro/examples/`) for: one-table `GROUP BY` COUNT with an integer key
 (`HashMapWithView`) or a string key (`StringHashMap`); one-table filtered `GROUP BY` COUNT or SUM into
-`Vec<OutRow>`; one filtered ungrouped SUM; the float shapes above; a two-table join `GROUP BY` SUM; a filtered ungrouped SUM of a product of two decimal columns (with a
+`Vec<OutRow>`; one filtered ungrouped SUM; a two-table join `GROUP BY` SUM; a filtered ungrouped SUM of a product of two decimal columns (with a
 `nonlinear_arith` bound helper).
 
 KNOWN HARD, no worked example: a join whose join key repeats on both sides (many-to-many) with
 `COUNT(DISTINCT ...)`; top-K (`ORDER BY ... LIMIT`) over groups; correlated or scalar subqueries; `EXISTS`/`IN`
 joins; string-tuple group keys; `AVG` with a float result. These need long helper proofs (an existential
 witness per group, a selection invariant). Start with the simplest correct loop that proves, make sure the
-result is submitted, and only then look for speed. Float shapes are in scope under the
-f64 idealization (`float_*.rs` examples: a float filter, MIN/MAX, a product sum, grouped SUM with HAVING, top-K by a
-float, top-K groups by a float sum, AVG of int / float / DECIMAL, grouped AVG): copy their lemma calls and invariants.
+result is submitted, and only then look for speed. Float comparison, float `ORDER BY` and float MIN/MAX are
+refused by the host (no proved bridge from `f64` order to `real` order); you will not see them.
 """
 
 _SPEED = """\
@@ -279,11 +278,8 @@ _PROOF_HYGIENE = """\
   come from it). Call host lemmas as `proof { lemma_...(); }`. Give a quantifier an explicit `#[trigger]`.
 - `lemma_u64_add_fits` / `lemma_count_step_fits_u64` / `lemma_sum_step_fits_*` prove an add does not overflow
   under the host's `ROW_CAP_...`; call them rather than assuming.
-- Floats: the f64 idealization (see the lemma index). One `f64` accumulator; before each `+ - *` call
-  `lemma_f64_add_defined` / `sub_defined` / `mul_defined`, after it `lemma_f64_add_within` / `sub_within` /
-  `mul_within`; compare with `lemma_f64_gt_real` and friends; divide with `lemma_f64_div_defined` / `div_real`;
-  cast integers with `host_u64_to_f64` / `host_i128_to_f64`. Keep `f64_literals_ok()` in every loop invariant.
-  The sum is exact (`acc as real == spec sum`), so never state an epsilon and never unfold an f64 op.
+- Floats: one `f64` accumulator, `lemma_f64_add_defined`, `lemma_f64_left_fold_push`,
+  `lemma_f64_sum_within_eps` with `FLOAT_ABS_EPS` (never a numeric epsilon, never unfold an f64 add).
 """
 
 

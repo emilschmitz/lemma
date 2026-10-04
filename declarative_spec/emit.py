@@ -482,6 +482,28 @@ def _sum_bound_inclusive_abs(
     return product
 
 
+def _max_summands(
+    catalog: CatalogAssumptions | None,
+    left: str,
+    right: str,
+    join_left_table: str,
+    join_left_col: str,
+    join_right_table: str,
+    join_right_col: str,
+) -> int:
+    rows_l = _row_cap_inclusive(catalog, left)
+    rows_r = _row_cap_inclusive(catalog, right)
+    ta_l = _lookup_table_assumptions(catalog, join_left_table)
+    ta_r = _lookup_table_assumptions(catalog, join_right_table)
+    left_unique = _join_col_is_unique(ta_l, join_left_col)
+    right_unique = _join_col_is_unique(ta_r, join_right_col)
+    if left_unique and right_unique:
+        return min(rows_l, rows_r)
+    if left_unique or right_unique:
+        return max(rows_l, rows_r)
+    return rows_l * rows_r
+
+
 _COUNT_PATH_SHAPE_REFUSALS = frozenset(
     {
         "multi-column GROUP BY not yet emitted in count path",
@@ -785,6 +807,19 @@ def _emit_join_sum(
 
             raise FitRefusal("float sum requires magnitude cap")
         ctx.add_const("MAG_CAP", mag_ex - 1)
+        n_terms = _max_summands(
+            ctx.catalog,
+            lt_orig,
+            rt_orig,
+            parsed.join_left_table or lt_orig,
+            parsed.join_left_col or "",
+            parsed.join_right_table or rt_orig,
+            parsed.join_right_col or "",
+        )
+        from declarative_spec.lemmas import FitRefusal, host_error_exceeds_eps
+
+        if host_error_exceeds_eps(n_terms, mag_ex, eps_text):
+            raise FitRefusal("float epsilon too tight for configured caps")
         eps_lit = eps_text if re.search(r"[.eE]", eps_text) else f"{eps_text}.0"
         float_const = f"pub const FLOAT_ABS_EPS: f64 = {eps_lit}_f64;\n"
     else:

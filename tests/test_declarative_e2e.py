@@ -90,47 +90,57 @@ _COUNT_BODY = """
 """
 
 _FOLD_FN = """
-pub open spec fn real_sum_prefix(xs: Seq<f64>, n: int) -> real
-    decreases n
-{
-    if n <= 0 { 0real } else { real_sum_prefix(xs, n - 1) + (xs[n - 1] as real) }
-}
+pub const FLOAT_ABS_EPS: f64 = 0.000001f64;
+pub open spec const MAG: int = 10;
 
-// A float sum is exact under the f64 idealization: no epsilon in the proof.
 fn fold_f64(xs: &Vec<f64>) -> (acc: f64)
     requires
         xs@.len() <= 4,
-        (0.0f64 as real) == 0real,
-        forall|i: int| 0 <= i < xs@.len() ==> f64_within(#[trigger] xs@[i], 10real),
+        forall|i: int| 0 <= i < xs@.len() ==> {
+            let r = #[trigger] (xs@[i] as real);
+            let cap = MAG as real;
+            -cap < r && r < cap
+        },
+        host_f64_sum_error(xs@.len() as int, MAG) <= (FLOAT_ABS_EPS as real),
     ensures
-        (acc as real) == real_sum_prefix(xs@, xs@.len() as int),
+        abs_real((acc as real) - real_sum_seq(xs@)) <= (FLOAT_ABS_EPS as real),
 {
     let mut acc: f64 = 0.0;
     let mut i: usize = 0;
+    proof {
+        lemma_f64_left_fold_empty();
+        assert(xs@.take(0) == Seq::<f64>::empty());
+    }
     while i < xs.len()
         invariant
             i <= xs.len(),
             xs@.len() <= 4,
-            (0.0f64 as real) == 0real,
-            (acc as real) == real_sum_prefix(xs@, i as int),
-            f64_within(acc, (i as int as real) * 10real + 1real),
-            forall|j: int| 0 <= j < xs@.len() ==> f64_within(#[trigger] xs@[j], 10real),
+            acc == f64_left_fold(xs@.take(i as int)),
+            forall|j: int| 0 <= j < xs@.len() ==> {
+                let r = #[trigger] (xs@[j] as real);
+                let cap = MAG as real;
+                -cap < r && r < cap
+            },
+            host_f64_sum_error(xs@.len() as int, MAG) <= (FLOAT_ABS_EPS as real),
         decreases xs.len() - i,
     {
         let x = xs[i];
         let prev = acc;
-        proof {
-            lemma_f64_add_defined(prev, x);
-            assert((i as int as real) <= 4real);
-        }
+        proof { lemma_f64_add_defined(prev, x); }
         let next = prev + x;
         proof {
             assert(x == xs@[i as int]);
-            lemma_f64_add_within(prev, x, next, (i as int as real) * 10real + 1real, 10real);
-            assert(((i + 1) as int as real) * 10real == (i as int as real) * 10real + 10real);
+            lemma_f64_left_fold_push(xs@.take(i as int), x, prev, next);
+            assert(xs@.take((i + 1) as int) =~= xs@.take(i as int).push(x));
+            assert(next == f64_left_fold(xs@.take((i + 1) as int)));
         }
         acc = next;
         i = i + 1;
+    }
+    proof {
+        assert(xs@.take(xs@.len() as int) =~= xs@);
+        assert(acc == f64_left_fold(xs@));
+        lemma_f64_sum_within_eps(acc, xs@.len() as int, MAG, FLOAT_ABS_EPS, xs@);
     }
     acc
 }
