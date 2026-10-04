@@ -63,20 +63,22 @@ if [[ "${LEMMA_AGENT_MODE:-tools}" == "cli" ]]; then
     echo "WARN: /workspace/.cursor not writable; using $CURSOR_PROJECT_DIR" >&2
   fi
   if [[ -n "${LEMMA_MCP_SOCK:-}" && -S "${LEMMA_MCP_SOCK}" ]]; then
-    cat > "$CURSOR_PROJECT_DIR/mcp.json" <<'EOF'
-{
-  "mcpServers": {
-    "lemma-host": {
-      "command": "python",
-      "args": ["-m", "lemma_agent.mcp_proxy"],
-      "env": {
+    # python writes the JSON: the run_runquery blurb is multi-line text from the host env.
+    python - "$CURSOR_PROJECT_DIR/mcp.json" <<'PY'
+import json, os, sys
+
+server = {
+    "command": "python",
+    "args": ["-m", "lemma_agent.mcp_proxy"],
+    "env": {
         "LEMMA_MCP_SOCK": "/lemma-mcp.sock",
-        "PYTHONPATH": "/app"
-      }
-    }
-  }
+        "PYTHONPATH": "/app",
+        "LEMMA_RUN_RUNQUERY_BLURB": os.environ["LEMMA_RUN_RUNQUERY_BLURB"],
+    },
 }
-EOF
+with open(sys.argv[1], "w") as f:
+    json.dump({"mcpServers": {"lemma-host": server}}, f, indent=2)
+PY
     # Also seed CURSOR_CONFIG_DIR so discovery is not only under /workspace/.cursor.
     if [[ -n "${CURSOR_CONFIG_DIR:-}" ]]; then
       mkdir -p "$CURSOR_CONFIG_DIR"
