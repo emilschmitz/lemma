@@ -232,6 +232,50 @@ def test_declarative_prompt_loop_shape_before_doc_tree() -> None:
     assert "SELECT a FROM t" not in prompt
 
 
+def test_declarative_lead_stringhashmap_import_not_a_workspace_file() -> None:
+    """Workspace *.rs has no StringHashMap. The write-first lead names the import."""
+    prompt = build_declarative_prompt(
+        sql="SELECT tag, COUNT(*) AS cnt FROM num GROUP BY tag",
+        spec_path="context/ro/spec.rs",
+        edit_path="runquery_agent.rs",
+        lemma_index="(index)",
+        in_docker=True,
+    )
+    head = prompt.split("## SQL", 1)[0]
+    assert "use vstd::hash_map::StringHashMap;" in head
+    assert "`StringHashMap` is not a file in this workspace." in head
+    assert "Do not search the workspace" in head
+    assert "You MAY write `use vstd::...;` and `broadcast use vstd::...;`." in head
+    assert "`assume(`" in head
+    assert "`admit(`" in head
+    assert "a new `spec fn`" in head
+    assert "a new `proof fn`" in head
+    assert "#[verifier::external_body]" in head
+    assert "read spec.rs first" not in head.lower()
+
+
+def test_declarative_lead_forbids_image_search_for_hash_map_sources() -> None:
+    """A non-grouped host-path prompt still forbids hunting the image for the type."""
+    prompt = build_declarative_prompt(
+        sql="SELECT SUM(v) FROM t",
+        spec_path="context/ro/spec.rs",
+        edit_path="runquery_agent.rs",
+        lemma_index="(index)",
+        in_docker=False,
+    )
+    head = prompt.split("## SQL", 1)[0]
+    assert "use vstd::hash_map::StringHashMap;" in head
+    assert "or the container image for `string_hash` or `hash_map` sources." in head
+    assert "Write the loop." in head
+    assert "StringHashMap::<V>::new" in head
+    assert "`insert` ensures `final(self)@ == old(self)@.insert(k@, v)`." in head
+    assert "HashMapWithView" in head
+    assert "`assume(`" in head
+    assert "a new `spec fn`" in head
+    assert "#[verifier::external_body]" in head
+    assert "/workspace/runquery_agent.rs" not in head
+
+
 _FORBIDDEN_IN_NEW_FILES = (
     "edgar",
     "tpch",
