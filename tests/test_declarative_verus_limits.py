@@ -123,8 +123,11 @@ def test_a_wall_timeout_kills_the_solver_child_too(tmp_path: Path, monkeypatch: 
     pipeline.compile_and_run("// program", work_dir=tmp_path / "w", timeout_sec=2)
     child = int(pid_file.read_text())
     for _ in range(50):
-        stat = Path(f"/proc/{child}/stat")
-        if not stat.exists() or stat.read_text().split()[2] == "Z":
+        try:
+            # the child can exit between listing and reading /proc: that means it is gone, which is the point
+            if Path(f"/proc/{child}/stat").read_text().split()[2] == "Z":
+                return
+        except FileNotFoundError:
             return
         time.sleep(0.1)
     os.kill(child, 9)
