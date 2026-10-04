@@ -1,0 +1,6 @@
+read_threads=1 GiB/s=27.4
+read_threads=2 GiB/s=37.7
+read_threads=4 GiB/s=36.9
+read_threads=8 GiB/s=37.3
+copy_threads=1 GiB/s(read+write counted once)=17.0
+copy_threads=8 GiB/s(read+write counted once)=14.7
