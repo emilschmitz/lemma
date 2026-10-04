@@ -306,7 +306,7 @@ def _exec_verified_scalar(
 def judge_candidate(
     candidate: Candidate,
     *,
-    config: str = "hardware",
+    config: str = "adversary_imperativespec0",
     verify: bool = False,
     work_dir: Path | None = None,
 ) -> dict[str, Any]:

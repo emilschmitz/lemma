@@ -153,7 +153,7 @@ def _bench_one(q: QuerySpec, con: duckdb.DuckDBPyConnection, cols_bin: Path) -> 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Lemma speed bench")
     parser.add_argument("--rows", type=int, default=int(os.environ.get("SPEED_ROWS", "2000000")))
-    parser.add_argument("--config", default="hardware")
+    parser.add_argument("--config", default="adversary_imperativespec0")
     parser.add_argument("--query", default=None)
     args = parser.parse_args(argv)
 

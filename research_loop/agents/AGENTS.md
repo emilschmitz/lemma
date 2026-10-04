@@ -251,7 +251,7 @@ optimizer contract and must **not** be wired into default `transpile_sql_to_veru
 
 Named trust menus live under `research_loop/trust_configs/` — see
 `research_loop/trust_configs/README.md`. This modularizes **existing** `LEMMA_*` flags into
-files; `product` writes today's defaults and must not fork transpile logic. `hardware` is the
+files; `product` writes today's defaults and must not fork transpile logic. `adversary_imperativespec0` is the
 config the adversary runner and speed bench select (not rocketship, not `LEMMA_FAST_TRUSTEDS`).
 Other agents: pick a config with `apply_trust_config(name)` or `LEMMA_TRUST_CONFIG`; do not
 change product defaults when experimenting with hardware-close kernels or adversarial hunts.

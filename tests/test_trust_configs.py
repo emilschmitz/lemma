@@ -30,11 +30,39 @@ def test_fast_apply_sets_and_restores() -> None:
             os.environ["LEMMA_FAST_TRUSTEDS"] = prev
 
 
-def test_hardware_is_product_transpiler_not_fast() -> None:
-    hw = get_config("hardware")
-    assert hw.transpiler == "product"
-    assert hw.env["LEMMA_FAST_TRUSTEDS"] == "0"
-    assert hw.env["LEMMA_EXACT_SUM"] == "1"
-    assert hw.name == "hardware"
-    assert "hardware" in hw.note.lower()
-    assert hw.name != "fast"
+def test_adversary_imperativespec0_is_product_transpiler_not_fast() -> None:
+    cfg = get_config("adversary_imperativespec0")
+    assert cfg.transpiler == "product"
+    assert cfg.name == "adversary_imperativespec0"
+    assert cfg.name != "fast"
+    assert "adversary_imperativespec0" in cfg.note.lower()
+
+
+def test_adversary_imperativespec0_applies_product_flags_and_exact_sum() -> None:
+    keys = {
+        "LEMMA_FAST_TRUSTEDS": "0",
+        "LEMMA_ENABLE_PARALLEL": "0",
+        "LEMMA_ENABLE_VECTOR_SCAN": "0",
+        "LEMMA_ENABLE_SPILL_HASH": "0",
+        "LEMMA_FOLD_SLOT_AXIOMATIC": "0",
+        "LEMMA_EXACT_SUM": "1",
+    }
+    saved = {k: os.environ.pop(k, None) for k in [*keys, "LEMMA_TRUST_CONFIG"]}
+    try:
+        with apply_trust_config("adversary_imperativespec0"):
+            for k, v in keys.items():
+                assert os.environ[k] == v
+            assert os.environ["LEMMA_TRUST_CONFIG"] == "adversary_imperativespec0"
+        assert "LEMMA_EXACT_SUM" not in os.environ
+    finally:
+        for k, v in saved.items():
+            if v is not None:
+                os.environ[k] = v
+
+
+def test_old_hardware_name_is_rejected_without_alias() -> None:
+    with pytest.raises(ValueError, match="unknown trust config 'hardware'"):
+        get_config("hardware")
+    with pytest.raises(ValueError, match="unknown trust config 'hardware'"):
+        with apply_trust_config("hardware"):
+            pass

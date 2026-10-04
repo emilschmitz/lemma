@@ -1,4 +1,4 @@
-"""Hardware refuses literal arithmetic DuckDB rejects as overflow."""
+"""adversary_imperativespec0 refuses literal arithmetic DuckDB rejects as overflow."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from verus_transpiler.transpiler import transpile_sql_to_verus
 _SCHEMA = {"t": {"a": "BIGINT"}}
 
 
-def test_hardware_refuses_int32_product_and_product_path_folds_it(monkeypatch) -> None:
+def test_adversary_imperativespec0_refuses_int32_product_and_product_path_folds_it(monkeypatch) -> None:
     sql = "SELECT COUNT(*) FROM t WHERE a = 100000 * 100000"
     monkeypatch.delenv("LEMMA_EXACT_SUM", raising=False)
     product = transpile_sql_to_verus(sql, _SCHEMA)
@@ -28,7 +28,7 @@ def test_hardware_refuses_int32_product_and_product_path_folds_it(monkeypatch) -
     assert "10000" in small
 
 
-def test_hardware_refuses_int32_addition_and_int64_multiplication(monkeypatch) -> None:
+def test_adversary_imperativespec0_refuses_int32_addition_and_int64_multiplication(monkeypatch) -> None:
     monkeypatch.setenv("LEMMA_EXACT_SUM", "1")
     with pytest.raises(UnsupportedContractError, match="addition that overflows INT32"):
         transpile_sql_to_verus(

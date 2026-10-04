@@ -27,7 +27,7 @@ def test_percent_only_matches_every_string() -> None:
     assert 'str_like_contains(cols.get_s(k), ""@)' in src
 
 
-def test_hardware_refuses_ilike_and_product_keeps_ascii_fold(monkeypatch) -> None:
+def test_adversary_imperativespec0_refuses_ilike_and_product_keeps_ascii_fold(monkeypatch) -> None:
     sql = "SELECT COUNT(*) FROM t WHERE s ILIKE 'i'"
     monkeypatch.delenv("LEMMA_EXACT_SUM", raising=False)
     product = transpile_sql_to_verus(sql, _SCHEMA)
