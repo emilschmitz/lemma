@@ -155,8 +155,8 @@ def test_mcp_iterate_cap_default(
     monkeypatch.setenv("LEMMA_DUCKDB_PATH", "/unused/sec_edgar.duckdb")
     monkeypatch.setenv("LEMMA_PRIMARY_TABLE", "pre")
     monkeypatch.setattr(
-        "db_extension.dataset_config._count_duckdb_primary_rows",
-        lambda: 6_001_215,
+        "db_extension.dataset_config.table_row_counts",
+        lambda: {"pre": 6_001_215},
     )
     assert effective_dataset_size() == 6_001_215
     assert mcp_iterate_dataset_size() == 50_000
@@ -172,8 +172,8 @@ def test_mcp_iterate_respects_dataset_size_env(
     monkeypatch.setenv("LEMMA_DUCKDB_PATH", "/unused/sec_edgar.duckdb")
     monkeypatch.setenv("LEMMA_PRIMARY_TABLE", "pre")
     monkeypatch.setattr(
-        "db_extension.dataset_config._count_duckdb_primary_rows",
-        lambda: 6_001_215,
+        "db_extension.dataset_config.table_row_counts",
+        lambda: {"pre": 6_001_215},
     )
     assert effective_dataset_size() == 500
     assert mcp_iterate_dataset_size() == 500
@@ -189,8 +189,8 @@ def test_mcp_iterate_custom_env_cap(
     monkeypatch.setenv("LEMMA_DUCKDB_PATH", "/unused/sec_edgar.duckdb")
     monkeypatch.setenv("LEMMA_PRIMARY_TABLE", "pre")
     monkeypatch.setattr(
-        "db_extension.dataset_config._count_duckdb_primary_rows",
-        lambda: 6_001_215,
+        "db_extension.dataset_config.table_row_counts",
+        lambda: {"pre": 6_001_215},
     )
     assert effective_dataset_size() == 6_001_215
     assert mcp_iterate_dataset_size() == 1000
@@ -207,8 +207,8 @@ def test_optimizer_path_unchanged_when_only_iterate_cap_set(
     monkeypatch.delenv("LEMMA_BENCH_TBL", raising=False)
     monkeypatch.setenv("LEMMA_MCP_ITERATE_ROWS", "50000")
     monkeypatch.setattr(
-        "db_extension.dataset_config._count_duckdb_primary_rows",
-        lambda: 6_001_215,
+        "db_extension.dataset_config.table_row_counts",
+        lambda: {"pre": 6_001_215},
     )
     monkeypatch.setenv("LEMMA_BENCH_TBL", str(tbl))
     assert effective_dataset_size() == 6_001_215
@@ -246,8 +246,8 @@ def test_mcp_iterate_uncapped_matches_official(
     monkeypatch.setenv("LEMMA_DUCKDB_PATH", "/unused/sec_edgar.duckdb")
     monkeypatch.setenv("LEMMA_PRIMARY_TABLE", "pre")
     monkeypatch.setattr(
-        "db_extension.dataset_config._count_duckdb_primary_rows",
-        lambda: 6_001_215,
+        "db_extension.dataset_config.table_row_counts",
+        lambda: {"pre": 6_001_215},
     )
     assert mcp_iterate_is_uncapped()
     assert effective_dataset_size() == 6_001_215
@@ -293,8 +293,8 @@ def test_row_budget_prompt_when_iterate_below_official(
     monkeypatch.setenv("LEMMA_DUCKDB_PATH", "/unused/sec_edgar.duckdb")
     monkeypatch.setenv("LEMMA_PRIMARY_TABLE", "pre")
     monkeypatch.setattr(
-        "db_extension.dataset_config._count_duckdb_primary_rows",
-        lambda: 6_001_215,
+        "db_extension.dataset_config.table_row_counts",
+        lambda: {"pre": 6_001_215},
     )
     section = row_budget_prompt_section()
     assert "50000" in section
@@ -322,13 +322,6 @@ def test_run_runquery_iterate_tool_blurb_matches_mode(
     run_def = next(d for d in defs if d["function"]["name"] == "run_runquery")
     assert blurb_capped.split(".")[0] in run_def["function"]["description"]
 
-
-def test_table_row_counts_returns_none_without_duckdb(
-    monkeypatch: pytest.MonkeyPatch,
-    isolated_ssb: Path,
-) -> None:
-    monkeypatch.delenv("LEMMA_DUCKDB_PATH", raising=False)
-    assert table_row_counts() is None
 
 
 def test_table_row_counts_per_table(
@@ -443,3 +436,46 @@ def test_run_solution_default_passes_iterate_dataset_size(
     assert out["ok"] is True
     assert seen == [50_000]
     assert out["dataset_size"] == 50_000
+
+
+_MEASURING = (
+    table_row_counts,
+    table_column_value_caps,
+    table_column_abs_sum_caps,
+    table_unique_keys,
+)
+
+
+def test_measuring_functions_raise_without_duckdb_path(
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_ssb: Path,
+) -> None:
+    monkeypatch.delenv("LEMMA_DUCKDB_PATH", raising=False)
+    for fn in _MEASURING:
+        with pytest.raises(RuntimeError, match="LEMMA_DUCKDB_PATH is not set"):
+            fn()
+
+
+def test_measuring_functions_raise_on_missing_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    isolated_ssb: Path,
+) -> None:
+    monkeypatch.setenv("LEMMA_DUCKDB_PATH", str(tmp_path / "nope.duckdb"))
+    for fn in _MEASURING:
+        with pytest.raises(FileNotFoundError):
+            fn()
+
+
+def test_measuring_functions_raise_on_unreadable_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    isolated_ssb: Path,
+) -> None:
+    duckdb = pytest.importorskip("duckdb")
+    junk = tmp_path / "junk.duckdb"
+    junk.write_bytes(b"this is not a duckdb file" * 100)
+    monkeypatch.setenv("LEMMA_DUCKDB_PATH", str(junk))
+    for fn in _MEASURING:
+        with pytest.raises(duckdb.Error):
+            fn()

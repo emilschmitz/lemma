@@ -340,8 +340,8 @@ def resolve_workload(sql: str, *, workload: str | None = None) -> WorkloadSpec:
 def catalog_assumptions_for_workload(workload: str | None = None):
     """Layer-A catalog profile for product-path transpile/assemble.
 
-    SEC workload uses ``sec_product_catalog_assumptions()`` (DuckDB row counts
-    when available; prove_loop fallback otherwise). All other workloads return
+    SEC workload uses ``sec_product_catalog_assumptions()`` (measured from
+    ``LEMMA_DUCKDB_PATH``; raises when it is unusable). All other workloads return
     ``None`` so the transpiler keeps engine defaults (no ``LEMMA_MAX_CELL_U64``).
     """
     name = (workload or workload_env_name()).lower()
