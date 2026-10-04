@@ -118,9 +118,27 @@ def _abs(raw: str, what: str) -> Path:
     return path
 
 
+def prepare_round(seed: int, label: str) -> None:
+    """Prepare one workspace per drawn query of ``declarative_round.py --seed N --draw-only``."""
+    draw = json.loads((rnd.OUT / f"draw_{seed}.json").read_text())
+    base = ROOT / "research_loop" / "generated" / "manual"
+    for job in draw["picked"]:
+        ws = base / f"{label}_{job['qid']}"
+        with apply_trust_config("adversary_declarative0"):
+            prepare(job["kind"], job["sql"], ws)
+        (ws / "manual_job.json").write_text(json.dumps({"kind": job["kind"]}))
+        print(f"WORKSPACE {ws}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("cmd", choices=["prepare", "check"])
+    ap.add_argument("cmd", choices=["prepare", "check", "prepare-round"])
+    ap.add_argument("--seed", type=int, help="prepare-round only")
+    ap.add_argument("--label", help="prepare-round only: workspace name prefix, e.g. r2")
+    if "prepare-round" in sys.argv[1:2]:
+        a = ap.parse_args()
+        prepare_round(a.seed, a.label)
+        return 0
     ap.add_argument("--kind", choices=["sec", "tpch"], help="prepare only; check reads it from the workspace")
     ap.add_argument("--sql-file", help="prepare only; check reads <ws>/context/ro/query.sql")
     ap.add_argument("--ws", required=True)
