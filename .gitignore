@@ -83,3 +83,6 @@ verus/db_extension/rust_bridge/target/
 # Never commit or push this tree.
 /archive
 research_loop/speed_bench/.cache/
+
+# Downloaded Verus docs (fetch_verus_docs.sh)
+research_loop/vendor/verus_docs/
