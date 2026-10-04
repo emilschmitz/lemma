@@ -130,10 +130,22 @@ def _export_table(
     names: list[str] = []
     types: list[str] = []
     infos: list[ColumnTypeInfo] = []
+    dict_of: dict[int, int] = {}  # field index of a `<col>__dict` -> field index of its codes
+    code_fields: dict[str, int] = {}
     for fname, fty in fields:
-        col_key = by_ident.get(fname.removeprefix("r#"))
-        if col_key is None or cols[col_key].exec_rust != fty:
-            raise ValueError(f"{table}.{fname}: {fty} is not a column of the table with that type")
+        if fname.endswith("__dict"):
+            # The dictionary of a string column loaded as codes (``declarative_spec.string_encoding``).
+            base = fname.removeprefix("r#")[: -len("__dict")]
+            col_key = by_ident.get(base)
+            if col_key is None or fty != "String" or cols[col_key].exec_rust != "String":
+                raise ValueError(f"{table}.{fname}: not the dictionary of a string column")
+            dict_of[len(names)] = code_fields[base]
+        else:
+            col_key = by_ident.get(fname.removeprefix("r#"))
+            if col_key is not None and cols[col_key].exec_rust == "String" and fty in ("u8", "u16", "u32"):
+                code_fields[fname.removeprefix("r#")] = len(names)
+            elif col_key is None or cols[col_key].exec_rust != fty:
+                raise ValueError(f"{table}.{fname}: {fty} is not a column of the table with that type")
         names.append(model.original_column_names[(table.casefold(), col_key)])
         types.append(fty)
         infos.append(cols[col_key])
@@ -149,6 +161,7 @@ def _export_table(
     except duckdb.Error as exc:
         raise ValueError(str(exc)) from exc
     col_bufs = [bytearray() for _ in types]
+    dictionaries: dict[int, dict[str, int]] = {idx: {} for idx in set(dict_of.values())}
     total = 0
     while True:
         chunk = cur.fetchmany(_CHUNK_ROWS)
@@ -156,6 +169,8 @@ def _export_table(
             break
         total += len(chunk)
         for idx, fty in enumerate(types):
+            if idx in dict_of:
+                continue
             scale = infos[idx].scale
             buf = col_bufs[idx]
             for row in chunk:
@@ -163,7 +178,16 @@ def _export_table(
                 # The spec has no NULL semantics: a NULL packed as 0 or "" would silently change the answer.
                 if value is None:
                     raise ValueError(f"{table}.{names[idx]} has NULLs; the declarative spec has no NULL semantics")
+                if idx in dictionaries:
+                    codes = dictionaries[idx]
+                    buf.extend(_pack(fty, codes.setdefault(str(value), len(codes))))
+                    continue
                 buf.extend(_pack(fty, decimal_scaled(value, scale) if isinstance(value, Decimal) else value))
+    for idx, source in dict_of.items():
+        entries = sorted(dictionaries[source].items(), key=lambda kv: kv[1])
+        col_bufs[idx].extend(struct.pack("<Q", len(entries)))
+        for text, _code in entries:
+            col_bufs[idx].extend(_pack("String", text))
     # Column-major, the order the generated reader consumes: all of column 0, then column 1, ...
     return struct.pack("<Q", total) + b"".join(col_bufs)
 
@@ -311,6 +335,10 @@ def _pack(fty: str, value: object) -> bytes:
             return struct.pack("<i", _as_int(value))
         if fty == "u32":
             return struct.pack("<I", _as_int(value))
+        if fty == "u16":
+            return struct.pack("<H", _as_int(value))
+        if fty == "u8":
+            return struct.pack("<B", _as_int(value))
         if fty == "usize":
             return struct.pack("<Q", _as_int(value))
         if fty == "i128":

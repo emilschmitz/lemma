@@ -128,6 +128,11 @@ def violations(catalog: CatalogAssumptions, con: Any) -> list[str]:
                             f"{name}.{col}: value cap < {ca.max_value_exclusive} "
                             f"but measured max {m}"
                         )
+            if ca.max_distinct is not None:
+                q, t = _quote_duckdb_ident(col), _quote_duckdb_ident(name)
+                d = int(con.execute(f"SELECT COUNT(DISTINCT {q}) FROM {t}").fetchone()[0])
+                if d > ca.max_distinct:
+                    out.append(f"{name}.{col}: distinct cap {ca.max_distinct} < measured {d} distinct values")
             if ca.max_string_len is not None:
                 if base not in _STRING_TYPES:
                     out.append(f"{name}.{col}: string cap on non-string type {base}")
