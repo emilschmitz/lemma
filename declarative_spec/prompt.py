@@ -154,6 +154,10 @@ _EXAMPLES: dict[str, tuple[str, str]] = {
         "hard/string_tuple_count_distinct_sorted.rs",
         "one table, tuple-of-strings GROUP BY, COUNT(*) and COUNT(DISTINCT), ORDER BY the count (sorted `Vec::insert`)",
     ),
+    "ungrouped_minmax": (
+        "ungrouped_minmax_string_filter.rs",
+        "one table, filtered ungrouped MIN and MAX of an integer column, with a string-literal comparison in the filter",
+    ),
     "ungrouped": ("ungrouped_sum_where.rs", "one table, filtered ungrouped SUM, result `Vec<OutRow>` of one row"),
 }
 
@@ -180,7 +184,12 @@ def spec_shape(spec_text: str) -> dict:
     elif ty.startswith("Vec<OutRow>"):
         if "out_row_ok(" not in spec_text:
             head = spec_text.split("pub fn run_query(")[0]
-            recipe = "ungrouped_product" if re.search(r"as int\)\)?\s*\*\s*\(", head) else "ungrouped"
+            if re.search(r"as int\)\)?\s*\*\s*\(", head):
+                recipe = "ungrouped_product"
+            elif re.search(r"\b(?:min|max)_\w+\(", head):
+                recipe = "ungrouped_minmax"
+            else:
+                recipe = "ungrouped"
         elif tables >= 2:
             recipe = "join_group_sum"
         elif re.search(r"\bcount_distinct_", spec_text):
@@ -258,7 +267,7 @@ _SHAPE_LIST = """\
 Worked, verified examples exist (`context/ro/examples/`) for: one-table `GROUP BY` COUNT with an integer key
 (`HashMapWithView`) or a string key (`StringHashMap`); one-table filtered `GROUP BY` COUNT or SUM into
 `Vec<OutRow>`; one filtered ungrouped SUM; a two-table join `GROUP BY` SUM; a filtered ungrouped SUM of a product of two decimal columns (with a
-`nonlinear_arith` bound helper).
+`nonlinear_arith` bound helper); a filtered ungrouped MIN and MAX (with a string-literal comparison).
 
 One hard shape has a worked example, too long to inline (`context/ro/examples/hard/`): tuple-of-strings
 `GROUP BY` with `COUNT(DISTINCT ...)` and a sorted result. It proves but is O(groups x rows): a speed loser when
@@ -308,6 +317,9 @@ _PROOF_HYGIENE = """\
   bundle; keep the loop invariant to the opaque calls plus the cheap facts.
 - A quantifier or existential over a spec function of a row (`key_at(pre, i0)`) only fires on a ground term: bind
   one (`let w = key_at(pre, i0);`) or take a witness with `choose|r: int| ...` before you assert the instance.
+- A string literal in a predicate (`uom = 'pure'`): `&str ==` has no spec tying it to `@`, and `reveal_strlit` does not
+  help. Build the literal once (`let pure: String = String::from_str("pure");`, ensures `pure@ == "pure"@`), keep
+  `pure@ == "pure"@` in the loop invariant, and compare `cols.uom[i] == pure` (`String == String`, vstd `string.rs`).
 - `Vec::insert` has the view `Seq::insert`; `Seq::insert_ensures(pos, elt)` (vstd `seq_lib.rs`, call it as `s.insert_ensures(p, x)`) gives its length and element facts. Grep `LEMMAS.md` for a vstd lemma before you write your own.
 - Floats: one `f64` accumulator, `lemma_f64_add_defined`, `lemma_f64_left_fold_push`,
   `lemma_f64_sum_within_eps` with `FLOAT_ABS_EPS` (never a numeric epsilon, never unfold an f64 add).

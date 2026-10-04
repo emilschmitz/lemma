@@ -330,6 +330,10 @@ _FIXTURE_QUERIES = [
         "AND l_quantity < 25",
         "fixture ungrouped_decimal_product_sum.rs",
     ),
+    (
+        "SELECT MIN(ddate) AS lo, MAX(ddate) AS hi FROM num WHERE uom = 'pure' AND qtrs = 3",
+        "fixture ungrouped_minmax_string_filter.rs",
+    ),
 ]
 
 

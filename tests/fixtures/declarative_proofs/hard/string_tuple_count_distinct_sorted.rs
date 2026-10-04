@@ -459,7 +459,6 @@ proof fn lemma_final(pre: &Cols_pre, ks: Seq<(Seq<char>, Seq<char>)>, o: Seq<Out
         let ghost kg = ks[g as int];
         let mut cnt: u64 = 0;
         let mut nf: u64 = 0;
-        let mut sum: i128 = 0;
         let mut seen: StringHashMap<bool> = StringHashMap::new();
         let mut i: usize = pre.n;
         proof {
@@ -479,8 +478,6 @@ proof fn lemma_final(pre: &Cols_pre, ks: Seq<(Seq<char>, Seq<char>)>, o: Seq<Out
                 nf as int == count_distinct_num_filings(pre, i as int, kg),
                 (cnt as int) <= pre.n as int - i as int,
                 (nf as int) <= pre.n as int - i as int,
-                -9223372036854775808int * (pre.n as int - i as int) <= sum as int,
-                sum as int <= 9223372036854775808int * (pre.n as int - i as int),
                 seen_inv(pre, kg, i as int, seen@),
             decreases i,
         {
@@ -500,11 +497,8 @@ proof fn lemma_final(pre: &Cols_pre, ks: Seq<(Seq<char>, Seq<char>)>, o: Seq<Out
                 }
                 cnt = cnt + 1;
                 if fresh { nf = nf + 1; }
-                let line = pre.line[i];
                 proof {
-                    lemma_i128_add_fits(sum, line as i128);
                 }
-                sum = sum + (line as i128);
                 let ghost old_seen = seen@;
                 seen.insert(pre.adsh[i].clone(), true);
                 proof {

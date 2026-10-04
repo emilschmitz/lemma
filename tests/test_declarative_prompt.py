@@ -177,6 +177,15 @@ def test_prompt_points_at_vstd_first_and_says_where_broadcast_use_goes() -> None
     assert "at the top level of the helper region it is rejected" in p
 
 
+def test_minmax_with_string_filter_gets_its_example_and_the_string_literal_tip() -> None:
+    sql = "SELECT MIN(line) AS lo, MAX(line) AS hi FROM pre WHERE stmt = 'BS' AND report = 3"
+    spec = _spec(sql)
+    assert spec_shape(spec)["recipe"] == "ungrouped_minmax"
+    p = build_declarative_prompt(sql=sql, spec_path="s", edit_path="e", lemma_index="idx", spec_text=spec)
+    assert "String::from_str" in p and "pure@ == \"pure\"@" in p
+    assert "any ==> forall" in p.split("## Which shapes")[0]  # the example body is inlined
+
+
 def test_mount_examples_copies_every_example(tmp_path: Path) -> None:
     mount_examples(tmp_path)
     names = {f.name for f in (tmp_path / "examples").iterdir()}
