@@ -56,6 +56,24 @@ Not a single result is a model-agent result.
 Fixes triggered by round 1: float refusal, prompt restructure with worked examples and the known-hard list,
 `expect.json`, absolute paths, chunked export (see table above).
 
+## Bandwidth-bound single-thread losers (data for scoping a vstd-thread parallel loader; nothing built)
+
+Emil's decision (relayed): anything straight from vstd, including `vstd::thread::spawn/join`, may be used on any menu.
+We do not build a parallel loader here; this table is the data for scoping one.
+
+| Query (round) | rows scanned | proved | binary | DuckDB 8 threads | DuckDB 1 thread | vs 8 threads | vs 1 thread |
+|---|---|---|---|---|---|---|---|
+| TPC-H Q6 variant (r2), manual prover | 6,001,215 `lineitem`, 4 columns, about 168 MB | yes, 15 verified, 0 errors | 21,874 us | 11,490 us | 26,722 us | 0.53x (loss) | 1.22x (win) |
+
+The scan is memory-bandwidth-bound for one core; the bar (all-core engine) is not winnable single-threaded at this size.
+Note the DuckDB median moves between prepares (Q6: 11.5 ms, then 8.9 ms on re-prepare), so single bar numbers carry about
+25 percent noise on this shared box.
+
+Prompt and examples changes from this result (generic): the bar is stated to be the all-core engine with `speedup_1t`
+reported separately; branch-free accumulate (`if hit { v } else { 0 }`, about 1.7x faster than a branchy add on an
+unpredictable filter) and `&&` not `&`; the `mul_small` `nonlinear_arith` helper is a verified worked example
+(`tests/fixtures/declarative_proofs/ungrouped_decimal_product_sum.rs`, verified by a test through the guarded Verus).
+
 ## Round 2 (seed 7102) - in progress
 
 Refused during the draw (coverage items): SEC Q18 and Q17 (`ORDER BY n.value DESC` over a float, correlated float MAX),
