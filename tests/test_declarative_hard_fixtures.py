@@ -21,6 +21,11 @@ CASES = {
         "SELECT stmt, rfile, COUNT(*) AS cnt, COUNT(DISTINCT adsh) AS num_filings FROM pre "
         "WHERE stmt IS NOT NULL GROUP BY stmt, rfile ORDER BY cnt DESC"
     ),
+    "projection_join_correlated_max_topk.rs": (
+        "SELECT s.name, n.tag, n.value FROM num n JOIN sub s ON n.adsh = s.adsh WHERE n.uom = 'pure' AND s.fy = 2022 "
+        "AND n.value IS NOT NULL AND n.value = (SELECT MAX(n2.value) FROM num n2 WHERE n2.tag = n.tag "
+        "AND n2.adsh = n.adsh AND n2.uom = 'pure') ORDER BY n.value DESC LIMIT 100"
+    ),
 }
 # Hard fixtures on the TPC-H schema (needs the generated SF1 database for its measured catalog; skipped without it).
 TPCH = {
