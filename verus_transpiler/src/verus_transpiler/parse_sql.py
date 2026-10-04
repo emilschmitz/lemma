@@ -1671,29 +1671,34 @@ def _compile_where_expr(
     if isinstance(node, exp.Boolean):
         return "true" if node.this else "false"
     if isinstance(node, exp.Is):
-        col_node = node.this
-        if not isinstance(col_node, exp.Column):
-            raise UnsupportedContractError("IS NULL requires a column.")
         if isinstance(node.expression, exp.Boolean):
-            real_col, col_type, _ = _resolve_col(col_node, resolver)
-            kind = _kind_of(col_type)
             want_true = bool(node.expression.this)
-            col_ref = f"row.{real_col}"
-            if kind == "bool":
-                flag = "true" if want_true else "false"
-                return f"{col_ref} == {flag}"
-            if kind == "int":
-                # DuckDB: a non-zero integer IS TRUE, and zero IS FALSE.
-                if want_true:
-                    return f"{col_ref} != 0"
-                return f"{col_ref} == 0"
-            raise UnsupportedContractError(
-                "IS TRUE is not supported on string columns: DuckDB cannot "
-                "cast the string to BOOL"
-            )
+            col_node = node.this
+            if isinstance(col_node, exp.Column):
+                real_col, col_type, _ = _resolve_col(col_node, resolver)
+                kind = _kind_of(col_type)
+                col_ref = f"row.{real_col}"
+                if kind == "bool":
+                    flag = "true" if want_true else "false"
+                    return f"{col_ref} == {flag}"
+                if kind == "int":
+                    # DuckDB: a non-zero integer IS TRUE, and zero IS FALSE.
+                    if want_true:
+                        return f"{col_ref} != 0"
+                    return f"{col_ref} == 0"
+                raise UnsupportedContractError(
+                    "IS TRUE is not supported on string columns: DuckDB cannot "
+                    "cast the string to BOOL"
+                )
+            # Boolean predicate: IS TRUE is identity, IS FALSE is negation.
+            pred = _compile_child(col_node)
+            return pred if want_true else f"!({pred})"
         is_null = isinstance(node.expression, exp.Null)
         if not is_null:
             raise UnsupportedContractError("IS supports NULL, TRUE, and FALSE only.")
+        col_node = node.this
+        if not isinstance(col_node, exp.Column):
+            raise UnsupportedContractError("IS NULL requires a column.")
         return _compile_is_null_check(col_node, is_null=is_null, resolver=resolver, query=query)
     if isinstance(node, exp.Paren):
         return f"({_compile_child(node.this)})"

@@ -26,3 +26,16 @@ def test_bool_is_true_and_not_is_true_and_string_is_refused() -> None:
     assert "!(cols.get_a(k) != 0)" in negated
     with pytest.raises(UnsupportedContractError, match="string"):
         transpile_sql_to_verus("SELECT COUNT(*) FROM t WHERE s IS TRUE", _STR)
+
+
+def test_comparison_is_true_is_the_predicate() -> None:
+    src = transpile_sql_to_verus(
+        "SELECT COUNT(*) FROM t WHERE (a > 0) IS TRUE",
+        _INT,
+    )
+    assert "cols.get_a(k) > 0" in src
+    false_src = transpile_sql_to_verus(
+        "SELECT COUNT(*) FROM t WHERE (a > 0) IS FALSE",
+        _INT,
+    )
+    assert "!(cols.get_a(k) > 0)" in false_src or "!((" in false_src
