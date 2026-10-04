@@ -150,6 +150,10 @@ _EXAMPLES: dict[str, tuple[str, str]] = {
         "ungrouped_decimal_product_sum.rs",
         "one table, filtered ungrouped SUM of a product of two decimal columns, with a helper lemma",
     ),
+    "hard_distinct": (
+        "hard/string_tuple_count_distinct_sorted.rs",
+        "one table, tuple-of-strings GROUP BY, COUNT(*) and COUNT(DISTINCT), ORDER BY the count (sorted `Vec::insert`)",
+    ),
     "ungrouped": ("ungrouped_sum_where.rs", "one table, filtered ungrouped SUM, result `Vec<OutRow>` of one row"),
 }
 
@@ -179,6 +183,8 @@ def spec_shape(spec_text: str) -> dict:
             recipe = "ungrouped_product" if re.search(r"as int\)\)?\s*\*\s*\(", head) else "ungrouped"
         elif tables >= 2:
             recipe = "join_group_sum"
+        elif re.search(r"\bcount_distinct_", spec_text):
+            recipe = "hard_distinct"
         elif re.search(r"\bsum_\w+\(", spec_text):
             recipe = "group_sum"
         else:
@@ -198,7 +204,9 @@ def mount_examples(ro: Path) -> None:
     dest = ro / "examples"
     dest.mkdir(parents=True, exist_ok=True)
     for name, _what in _EXAMPLES.values():
-        (dest / name).write_text((_FIXTURES / name).read_text())
+        target = dest / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text((_FIXTURES / name).read_text())
 
 
 def _recipe_section(shape: dict) -> list[str]:
@@ -221,6 +229,18 @@ def _recipe_section(shape: dict) -> list[str]:
         lines += ["No worked recipe matches this result type: build it from the lemma index and the vstd docs."]
     else:
         name, what = _EXAMPLES[recipe]
+        if name.startswith("hard/"):
+            header = [ln for ln in (_FIXTURES / name).read_text().splitlines() if ln.startswith("//")]
+            header = header[: next((i for i, ln in enumerate(header) if "AGENT_" in ln), len(header))]
+            lines += [
+                f"A verified body for a close shape ({what}) is `context/ro/examples/{name}` (about 550 lines, read it",
+                "with the Read tool, do not paste it blind). Its header, which says what each technique is for:",
+                "",
+                "```",
+                *header,
+                "```",
+            ]
+            return lines
         lines += [
             f"A verified body for the same shape ({what}) is `context/ro/examples/{name}`, inlined here.",
             "Your table, column and field names differ: rename them, keep the proof structure.",
@@ -239,6 +259,10 @@ Worked, verified examples exist (`context/ro/examples/`) for: one-table `GROUP B
 (`HashMapWithView`) or a string key (`StringHashMap`); one-table filtered `GROUP BY` COUNT or SUM into
 `Vec<OutRow>`; one filtered ungrouped SUM; a two-table join `GROUP BY` SUM; a filtered ungrouped SUM of a product of two decimal columns (with a
 `nonlinear_arith` bound helper).
+
+One hard shape has a worked example, too long to inline (`context/ro/examples/hard/`): tuple-of-strings
+`GROUP BY` with `COUNT(DISTINCT ...)` and a sorted result. It proves but is O(groups x rows): a speed loser when
+there are many groups.
 
 KNOWN HARD, no worked example: a join whose join key repeats on both sides (many-to-many) with
 `COUNT(DISTINCT ...)`; top-K (`ORDER BY ... LIMIT`) over groups; correlated or scalar subqueries; `EXISTS`/`IN`
@@ -278,6 +302,12 @@ _PROOF_HYGIENE = """\
   come from it). Call host lemmas as `proof { lemma_...(); }`. Give a quantifier an explicit `#[trigger]`.
 - `lemma_u64_add_fits` / `lemma_count_step_fits_u64` / `lemma_sum_step_fits_*` prove an add does not overflow
   under the host's `ROW_CAP_...`; call them rather than assuming.
+- A long proof (many quantified loop invariants plus asserts in one loop) exhausts the rlimit, and Verus then
+  reports a misleading error such as `invariant not satisfied before loop`. Fix: put each invariant bundle in a
+  `#[verifier::opaque] spec fn`, and maintain each property in its own small `proof fn` that `reveal`s only that
+  bundle; keep the loop invariant to the opaque calls plus the cheap facts.
+- A quantifier or existential over a spec function of a row (`key_at(pre, i0)`) only fires on a ground term: bind
+  one (`let w = key_at(pre, i0);`) or take a witness with `choose|r: int| ...` before you assert the instance.
 - Floats: one `f64` accumulator, `lemma_f64_add_defined`, `lemma_f64_left_fold_push`,
   `lemma_f64_sum_within_eps` with `FLOAT_ABS_EPS` (never a numeric epsilon, never unfold an f64 add).
 """

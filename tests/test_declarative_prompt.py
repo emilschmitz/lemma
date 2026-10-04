@@ -147,6 +147,30 @@ def test_product_sum_example_verifies(monkeypatch: pytest.MonkeyPatch) -> None:
     assert ok and "0 errors" in out, out[-1500:]
 
 
+_DISTINCT = (
+    "SELECT stmt, rfile, COUNT(*) AS cnt, COUNT(DISTINCT adsh) AS num_filings FROM pre "
+    "WHERE stmt IS NOT NULL GROUP BY stmt, rfile ORDER BY cnt DESC"
+)
+
+
+def test_hard_distinct_shape_points_to_the_long_example_and_shows_only_its_header(tmp_path: Path) -> None:
+    schema = {"pre": {"stmt": "varchar", "rfile": "varchar", "adsh": "varchar", "line": "bigint"}}
+    spec = emit_declarative_spec(_DISTINCT, schema, CatalogAssumptions(tables={"pre": TableAssumptions(max_rows=64)}))
+    assert spec_shape(spec)["recipe"] == "hard_distinct"
+    p = build_declarative_prompt(sql=_DISTINCT, spec_path="s", edit_path="e", lemma_index="idx", spec_text=spec)
+    assert "context/ro/examples/hard/string_tuple_count_distinct_sorted.rs" in p
+    assert "#[verifier::opaque] spec fn" in p.split("## The recipe for THIS spec")[1].split("## ")[0]  # the header
+    assert "lemma_ins_sort" not in p  # the 550-line body is not pasted
+    mount_examples(tmp_path)
+    assert (tmp_path / "examples" / "hard" / "string_tuple_count_distinct_sorted.rs").is_file()
+
+
+def test_prompt_documents_the_rlimit_recipe_and_the_ground_term_rule() -> None:
+    p = _prompt("SELECT stmt, COUNT(*) AS c FROM pre GROUP BY stmt")
+    assert "invariant not satisfied before loop" in p and "`#[verifier::opaque] spec fn`" in p
+    assert "ground term" in p and "choose|r: int|" in p
+
+
 def test_mount_examples_copies_every_example(tmp_path: Path) -> None:
     mount_examples(tmp_path)
     names = {f.name for f in (tmp_path / "examples").iterdir()}
