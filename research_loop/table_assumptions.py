@@ -50,6 +50,10 @@ class ColumnAssumption:
     # String columns: at most this many distinct values. Picks the dictionary code width (u8/u16/u32) when strings
     # are dictionary-encoded; a data assumption, measured by ``assumption_packages/check.py``.
     max_distinct: int | None = None
+    # True when the column may contain NULL. A column NOT declared nullable is required to have none: the exporter
+    # refuses a NULL in it and ``check.py`` measures it. A nullable column is loaded with a validity vector
+    # (``<col>__valid: Vec<bool>``, false for a NULL cell) and queries on it follow SQL's three-valued logic.
+    nullable: bool = False
     # DECIMAL columns: the bounds above are on the stored integer, value * 10**scale. The
     # assumption-package check requires the database column to be DECIMAL(_, scale).
     scale: int = 0

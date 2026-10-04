@@ -41,6 +41,7 @@ class _AggFn:
     style: str  # "fold" | "bound"
     exec: str
     hidden: bool = False  # read only by HAVING; not an output column
+    hit_fn: str = ""  # the row predicate this aggregate sees (row_hit, or row_hit && its FILTER)
 
 
 @dataclass
@@ -76,7 +77,7 @@ def _emit_with_string_tokens(
     query = flatten_derived(parse_query(sql))
     if not query.tables:
         raise DeclarativeUnsupported("FROM")
-    model = SchemaModel.from_caller(schema, query.tables[0])
+    model = SchemaModel.from_caller(schema, query.tables[0]).with_nullable(catalog)
     _reject_unemitted(query)
     qualify_join_refs(query, model)
     check_exact_integer_refs(query, model)
@@ -230,8 +231,18 @@ def _emit_helpers(query: Query, prefix: str, model: SchemaModel) -> _Helpers:
 
     aggs: list[_AggFn] = []
     for agg in query.aggs:
-        aggs.append(_emit_agg(blocks, query, agg, prefix, main, params, model, key_ty, row_hit, key_at))
+        hit_name = row_hit
+        if agg.filter_expr:
+            if key_ty is not None and agg.kind.upper() in _NULLABLE_UNGROUPED:
+                raise DeclarativeUnsupported(
+                    "a SUM, MIN, MAX or AVG that skips NULL cells in a grouped query: a group may have only NULLs, "
+                    "and then its value is NULL (not stated for grouped results yet)"
+                )
+            hit_name = f"{prefix}hit_{rust_ident(agg.alias)}"
+            blocks.append(_agg_hit_fn(hit_name, row_hit, agg, main, params, model))
+        aggs.append(_emit_agg(blocks, query, agg, prefix, main, params, model, key_ty, hit_name, key_at))
         aggs[-1].hidden = agg.hidden
+        aggs[-1].hit_fn = hit_name
 
     # scalar calls are recorded on the query via the returned map; having reads `scalars`
     helpers = _Helpers(
@@ -379,6 +390,17 @@ def _on_cell(ref: str, by_alias: dict[str, _Slot], by_table: dict[str, _Slot]) -
     return f"{slot.param}.{rust_ident(col)}@[{slot.idx}]"
 
 
+def _key_cell(slot: _Slot, col: str, info: ColumnTypeInfo) -> str:
+    """The key component of a row: the cell, or `(valid, cell)` for a nullable key (`(false, default)` for NULL)."""
+    import dataclasses
+
+    if not info.nullable_key:
+        return _cell(slot, col, info)
+    plain = dataclasses.replace(info, nullable_key=False)
+    valid = f"{slot.param}.{rust_ident(col)}{VALID_SUFFIX}@[{slot.idx}]"
+    return f"(if {valid} {{ (true, {_cell(slot, col, plain)}) }} else {{ (false, {_default(plain)}) }})"
+
+
 def _key_at_fn(
     name: str,
     main: list[_Slot],
@@ -391,7 +413,7 @@ def _key_at_fn(
     sig = _param_sig(params)
     idxs = ", ".join(f"{s.idx}: int" for s in main)
     ranges = " && ".join(f"0 <= {s.idx} < {s.param}.n as int" for s in main)
-    cells = ", ".join(_cell(slot, col, info) for _field, col, info, slot in groups)
+    cells = ", ".join(_key_cell(slot, col, info) for _field, col, info, slot in groups)
     if len(groups) != 1:
         cells = f"({cells})"
     default = _key_default(groups)
@@ -415,7 +437,48 @@ def _group_infos(
         table = query.group_tables[i] if i < len(query.group_tables) else None
         slot, info = _find_col(col, table, main, model)
         out.append((rust_ident(col), col, info, slot))
-    return out
+    return [_mark_nullable_key(g, query, model) for g in out]
+
+
+def _top_level_conjuncts(text: str) -> list[str]:
+    """The ``&&``-separated top-level conjuncts of a parsed boolean text (parentheses are balanced)."""
+    text = text.strip()
+    while text.startswith("(") and text.endswith(")"):
+        depth = 0
+        for i, ch in enumerate(text):
+            depth += ch == "("
+            depth -= ch == ")"
+            if depth == 0 and i < len(text) - 1:
+                break
+        else:
+            text = text[1:-1].strip()
+            continue
+        break
+    parts, depth, start = [], 0, 0
+    for i, ch in enumerate(text):
+        depth += ch == "("
+        depth -= ch == ")"
+        if depth == 0 and text.startswith("&&", i):
+            parts.append(text[start:i].strip())
+            start = i + 2
+    parts.append(text[start:].strip())
+    return [p for p in parts if p]
+
+
+def _mark_nullable_key(
+    group: tuple[str, str, ColumnTypeInfo, _Slot], query: Query, model: SchemaModel
+) -> tuple[str, str, ColumnTypeInfo, _Slot]:
+    """A group key over a nullable column the WHERE does not prove non-NULL becomes a `(valid, value)` key."""
+    import dataclasses
+
+    fname, col, info, slot = group
+    if col.startswith(_EXPR) or not model.is_nullable(slot.table, col):
+        return group
+    proven = {c for c in _top_level_conjuncts(query.where_expr)}
+    bare = col.rpartition(".")[2]
+    if any(re.fullmatch(rf"!is_null\((?:[\w]+\.)?{re.escape(bare)}\)", c) for c in proven):
+        return group
+    return fname, col, dataclasses.replace(info, nullable_key=True), slot
 
 
 _EXPR = "\x00expr:"
@@ -453,6 +516,10 @@ def _key_default(groups: list[tuple[str, str, ColumnTypeInfo, _Slot]]) -> str:
 
 
 def _spec_ty(info: ColumnTypeInfo) -> str:
+    if info.nullable_key:
+        import dataclasses
+
+        return f"(bool, {_spec_ty(dataclasses.replace(info, nullable_key=False))})"
     if info.spec_as == "Seq<char>":
         return "Seq<char>"
     if info.is_float:
@@ -463,6 +530,10 @@ def _spec_ty(info: ColumnTypeInfo) -> str:
 
 
 def _default(info: ColumnTypeInfo) -> str:
+    if info.nullable_key:
+        import dataclasses
+
+        return f"(false, {_default(dataclasses.replace(info, nullable_key=False))})"
     if info.spec_as == "Seq<char>":
         return "Seq::<char>::empty()"
     if info.is_float:
@@ -1153,10 +1224,22 @@ def _nullable(helpers: _Helpers, agg: _AggFn) -> bool:
     return helpers.key_ty is None and agg.kind in _NULLABLE_UNGROUPED
 
 
-def _any_hit(helpers: _Helpers) -> str:
+def _agg_hit_fn(
+    name: str, row_hit: str, agg: Agg, main: list[_Slot], params: list[_Slot], model: SchemaModel
+) -> str:
+    """The rows an aggregate with a FILTER sees: the query's rows where the filter holds."""
+    pred = _compile_pred(agg.filter_expr, main, [], model, {})
+    idxs = ", ".join(f"{s.idx}: int" for s in main)
+    return (
+        f"pub open spec fn {name}({_param_sig(params)}, {idxs}) -> bool {{\n"
+        f"    {row_hit}({_param_call(params)}, {_idx_call(main)}) && ({pred})\n}}"
+    )
+
+
+def _any_hit(helpers: _Helpers, hit_fn: str = "") -> str:
     p = _param_call(helpers.params)
     binders, _ranges = _quant(helpers.main)
-    hit = f"{helpers.row_hit}({p}, {_idx_call(helpers.main)})"
+    hit = f"{hit_fn or helpers.row_hit}({p}, {_idx_call(helpers.main)})"
     return f"exists|{binders}| #![trigger {hit}] {hit}"
 
 
@@ -1174,7 +1257,7 @@ def _agg_eqs(helpers: _Helpers, params: str, key: str, row: str = "res@[r]") -> 
         else:
             eq = f"{view} == {agg.name}({params}, 0{key_arg})"
         if nullable:
-            any_hit = _any_hit(helpers)
+            any_hit = _any_hit(helpers, agg.hit_fn)
             eq = (
                 f"((({any_hit}) ==> (({field} is Some) && {eq}))"
                 f" && (!({any_hit}) ==> ({field} is None)))"
@@ -1192,7 +1275,22 @@ def _out_view(field_expr: str, agg: _AggFn) -> str:
 def _out_key(row: str, helpers: _Helpers) -> str:
     parts: list[str] = []
     for fname, _col, info, _slot in helpers.group_infos:
-        if info.spec_as == "Seq<char>":
+        if info.nullable_key:
+            import dataclasses
+
+            plain = dataclasses.replace(info, nullable_key=False)
+            some = f"{row}.{fname}->Some_0"
+            if info.spec_as == "Seq<char>":
+                value, default = f"{some}@", "Seq::<char>::empty()"
+            elif info.is_float:
+                value, default = f"({some} as real)", "0real"
+            elif info.spec_as == "bool":
+                value, default = some, "false"
+            else:
+                value, default = f"({some} as int)", "0int"
+            del plain
+            parts.append(f"(if {row}.{fname} is Some {{ (true, {value}) }} else {{ (false, {default}) }})")
+        elif info.spec_as == "Seq<char>":
             parts.append(f"{row}.{fname}@")
         elif info.is_float:
             parts.append(f"({row}.{fname} as real)")
@@ -1388,6 +1486,9 @@ def _code_type(catalog: CatalogAssumptions | None, table: str, col: str) -> str:
     return code_type(None if ca is None else ca.max_distinct)
 
 
+VALID_SUFFIX = "__valid"
+
+
 def _structs(params: list[_Slot], model: SchemaModel, catalog: CatalogAssumptions | None = None) -> str:
     from declarative_spec.string_encoding import DICT_SUFFIX, dict_mode
 
@@ -1406,8 +1507,10 @@ def _structs(params: list[_Slot], model: SchemaModel, catalog: CatalogAssumption
                     raise DeclarativeUnsupported(f"column {col!r} ends in the reserved dictionary suffix")
                 lines.append(f"    pub {rust_ident(col)}: Vec<{_code_type(catalog, slot.table, col)}>,")
                 lines.append(f"    pub {rust_ident(col)}{DICT_SUFFIX}: Vec<String>,")
-                continue
-            lines.append(f"    pub {rust_ident(col)}: Vec<{cols[col].exec_rust}>,")
+            else:
+                lines.append(f"    pub {rust_ident(col)}: Vec<{cols[col].exec_rust}>,")
+            if model.is_nullable(slot.table, col):
+                lines.append(f"    pub {rust_ident(col)}{VALID_SUFFIX}: Vec<bool>,")
         lines.append("}")
         blocks.append("\n".join(lines))
     return "\n\n".join(blocks)
@@ -1432,6 +1535,11 @@ def _valids(
         seen.add(slot.struct)
         _orig, cols = model.lookup_table(slot.table)
         checks = [f"{slot.param}.{rust_ident(col)}@.len() == {slot.param}.n as int" for col in sorted(cols)]
+        checks += [
+            f"{slot.param}.{rust_ident(col)}{VALID_SUFFIX}@.len() == {slot.param}.n as int"
+            for col in sorted(cols)
+            if model.is_nullable(slot.table, col)
+        ]
         cap = _row_cap(catalog, slot.table)
         if cap is not None:
             checks.append(f"{slot.param}.n as int <= ROW_CAP_{rust_ident(slot.table)} as int")
@@ -1676,7 +1784,7 @@ def _hash_broadcasts(helpers: _Helpers) -> str:
 
     lines: list[str] = []
     for _fname, _col, info, _slot in helpers.group_infos:
-        if info.spec_as == "Seq<char>" or info.is_float:
+        if info.spec_as == "Seq<char>" or info.is_float or info.nullable_key:
             continue
         line = _host_hash_key_axiom(info.exec_rust)
         if line and line not in lines:
@@ -1824,7 +1932,7 @@ def _out_row(query: Query, helpers: _Helpers, model: SchemaModel) -> str:
         if fname in seen:
             raise DeclarativeUnsupported("GROUP BY")
         seen.add(fname)
-        fields.append((fname, info.exec_rust))
+        fields.append((fname, f"Option<{info.exec_rust}>" if info.nullable_key else info.exec_rust))
     for agg in helpers.aggs:
         if agg.hidden:
             continue
@@ -1911,8 +2019,13 @@ def _compile_pred(
     def isnull(m: re.Match[str]) -> str:
         not_null = m.group(1) == "!"
         ref = m.group(2)
-        _ref_slot(ref, scopes, model)  # fail loudly on an unknown column
-        # Exported columns hold no NULL (the loader rejects NULL cells), and an empty string
+        slot, _info = _ref_slot(ref, scopes, model)  # fail loudly on an unknown column
+        column = ref.rpartition(".")[2]
+        if model.is_nullable(slot.table, column):
+            # A nullable column is loaded with a validity vector: false marks a NULL cell.
+            valid = f"{slot.param}.{rust_ident(column)}{VALID_SUFFIX}@[{slot.idx}]"
+            return valid if not_null else f"!{valid}"
+        # Every other column holds no NULL (the loader rejects NULL cells), and an empty string
         # is a value, not NULL.
         return "true" if not_null else "false"
 

@@ -18,12 +18,13 @@ from declarative_spec.assemble import assemble_declarative_program
 GUARD = Path(__file__).resolve().parents[1] / "scripts" / "ram" / "verus_guarded.sh"
 VERUS = Path("/home/emil/tools/verus/verus")
 
-_SUFFIX = {"i64": "i64", "u64": "u64", "i32": "i32", "u32": "u32", "i128": "i128", "i16": "i16"}
+_SUFFIX = {"bool": "", "i64": "i64", "u64": "u64", "i32": "i32", "u32": "u32", "i128": "i128", "i16": "i16"}
 
 
 def _struct_fields(spec: str, struct: str) -> list[tuple[str, str]]:
     body = re.search(rf"pub struct {struct} \{{(.*?)\n\}}", spec, re.S).group(1)
-    return re.findall(r"pub\s+((?:r#)?\w+):\s+Vec<([^>]+)>", body)
+    fields = re.findall(r"pub\s+((?:r#)?\w+):\s+Vec<([^>]+)>", body)
+    return [(c, "bool" if t == "bool" else t) for c, t in fields]
 
 
 def _exists_hints(spec: str, params: list[tuple[str, str]], tables: dict[str, list[dict]]) -> str:
@@ -69,7 +70,13 @@ def prove_facts(
         requires.append(f"{param}.n == {len(rows)}")
         for col, ty in _struct_fields(spec, struct):
             name = col.removeprefix("r#")
-            values = ", ".join(f"{r[name]}{_SUFFIX[ty]}" for r in rows)
+            if name.endswith("__valid"):
+                # a validity vector: false where the table row (a dict) holds None (a NULL cell)
+                values = ", ".join("false" if r[name.removesuffix("__valid")] is None else "true" for r in rows)
+                requires.append(f"{param}.{col}@ =~= seq![{values}]")
+                continue
+            # a NULL cell's value is arbitrary: 0 is written (the exporter's default)
+            values = ", ".join(f"{0 if r[name] is None else r[name]}{_SUFFIX[ty]}" for r in rows)
             requires.append(f"{param}.{col}@ =~= seq![{values}]")
     hints = _exists_hints(spec, params, tables)
     witness = (

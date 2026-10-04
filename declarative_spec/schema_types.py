@@ -172,6 +172,8 @@ class ColumnTypeInfo:
     scale: int = 0  # DECIMAL: the stored integer is value * 10**scale
     is_date: bool = False  # DATE: the stored integer is days since 1970-01-01
     precision: int | None = None  # DECIMAL: |stored integer| < 10**precision
+    # A GROUP BY key over a nullable column (see ``nulls``): the key is `(valid, value)` and the output field an Option.
+    nullable_key: bool = False
 
 
 def _normalize_sql_type(sql_type: str) -> str:
@@ -310,6 +312,24 @@ class SchemaModel:
     tables: dict[str, dict[str, ColumnTypeInfo]]
     original_table_names: dict[str, str]  # lowered → original spelling
     original_column_names: dict[tuple[str, str], str]  # (table lower, col lower) → original
+    # (table lower, column lower) of every column the catalog declares nullable: loaded with a validity vector
+    nullable: frozenset[tuple[str, str]] = frozenset()
+
+    def with_nullable(self, catalog: object | None) -> SchemaModel:
+        """This model plus the columns ``catalog`` declares nullable (``ColumnAssumption.nullable``)."""
+        if catalog is None:
+            return self
+        found: set[tuple[str, str]] = set()
+        for table, ta in catalog.tables.items():  # type: ignore[attr-defined]
+            for column, ca in ta.columns.items():
+                if ca.nullable:
+                    found.add((table.casefold(), column.casefold()))
+        from dataclasses import replace
+
+        return replace(self, nullable=frozenset(found))
+
+    def is_nullable(self, table: str, column: str) -> bool:
+        return (table.casefold(), column.casefold()) in self.nullable
 
     @staticmethod
     def from_caller(schema: dict[str, str] | dict[str, dict[str, str]], from_table: str) -> SchemaModel:

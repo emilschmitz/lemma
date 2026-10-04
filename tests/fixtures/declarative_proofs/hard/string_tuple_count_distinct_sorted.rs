@@ -1,7 +1,7 @@
 // Worked example (hard shape): GROUP BY a tuple of two string columns with COUNT(*) and COUNT(DISTINCT x), ORDER BY the
 // count, result `Vec<OutRow>` kept sorted. The shape of
-//   SELECT stmt, rfile, COUNT(*) AS cnt, COUNT(DISTINCT adsh) AS num_filings FROM pre
-//   WHERE stmt IS NOT NULL GROUP BY stmt, rfile ORDER BY cnt DESC
+//   SELECT version, rfile, COUNT(*) AS cnt, COUNT(DISTINCT adsh) AS num_filings FROM pre
+//   WHERE version IS NOT NULL GROUP BY version, rfile ORDER BY cnt DESC
 // Techniques shown (each is the fix for a failure that cost a real prover attempt):
 // * Invariant bundles are `#[verifier::opaque] spec fn`s (`o_ok`, `o_in`, `o_cov`, `o_dis`, `o_sort`, `cover_to`), and each
 //   property is maintained by its own small `proof fn` that `reveal`s only what it needs. Many quantified loop invariants
@@ -120,7 +120,7 @@ proof fn lemma_row_ok(pre: &Cols_pre, row: OutRow, kg: (Seq<char>, Seq<char>), w
     requires
         row_hit(pre, w),
         key_at(pre, w) == kg,
-        (row.stmt@, row.rfile@) == kg,
+        (row.version@, row.rfile@) == kg,
         row.cnt as int == count_cnt(pre, 0, kg),
         row.num_filings as int == count_distinct_num_filings(pre, 0, kg),
     ensures
@@ -135,17 +135,17 @@ spec fn o_ok(pre: &Cols_pre, o: Seq<OutRow>) -> bool {
 
 #[verifier::opaque]
 spec fn o_in(ks: Seq<(Seq<char>, Seq<char>)>, g: int, o: Seq<OutRow>) -> bool {
-    forall|q: int| #![trigger o[q]] 0 <= q < o.len() ==> exists|r: int| #![trigger ks[r]] 0 <= r < g && ks[r] == (o[q].stmt@, o[q].rfile@)
+    forall|q: int| #![trigger o[q]] 0 <= q < o.len() ==> exists|r: int| #![trigger ks[r]] 0 <= r < g && ks[r] == (o[q].version@, o[q].rfile@)
 }
 
 #[verifier::opaque]
 spec fn o_cov(ks: Seq<(Seq<char>, Seq<char>)>, g: int, o: Seq<OutRow>) -> bool {
-    forall|r: int| #![trigger ks[r]] 0 <= r < g ==> exists|q: int| #![trigger o[q]] 0 <= q < o.len() && ks[r] == (o[q].stmt@, o[q].rfile@)
+    forall|r: int| #![trigger ks[r]] 0 <= r < g ==> exists|q: int| #![trigger o[q]] 0 <= q < o.len() && ks[r] == (o[q].version@, o[q].rfile@)
 }
 
 #[verifier::opaque]
 spec fn o_dis(o: Seq<OutRow>) -> bool {
-    forall|a: int, b: int| #![trigger o[a], o[b]] 0 <= a < b < o.len() ==> (o[a].stmt@, o[a].rfile@) != (o[b].stmt@, o[b].rfile@)
+    forall|a: int, b: int| #![trigger o[a], o[b]] 0 <= a < b < o.len() ==> (o[a].version@, o[a].rfile@) != (o[b].version@, o[b].rfile@)
 }
 
 #[verifier::opaque]
@@ -241,17 +241,17 @@ proof fn lemma_ins_in(ks: Seq<(Seq<char>, Seq<char>)>, g: int, old_out: Seq<OutR
         0 <= p <= old_out.len(),
         0 <= g < ks.len(),
         o_in(ks, g, old_out),
-        (row.stmt@, row.rfile@) == ks[g],
+        (row.version@, row.rfile@) == ks[g],
     ensures
         o_in(ks, g + 1, old_out.insert(p, row)),
 {
     reveal(o_in);
     old_out.insert_ensures(p, row);
     let nw = old_out.insert(p, row);
-    assert forall|q: int| #![trigger nw[q]] 0 <= q < nw.len() implies exists|r: int| #![trigger ks[r]] 0 <= r < g + 1 && ks[r] == (nw[q].stmt@, nw[q].rfile@) by {
+    assert forall|q: int| #![trigger nw[q]] 0 <= q < nw.len() implies exists|r: int| #![trigger ks[r]] 0 <= r < g + 1 && ks[r] == (nw[q].version@, nw[q].rfile@) by {
         if q < p { assert(nw[q] == old_out[q]); }
         else if q > p { assert(nw[q] == old_out[q - 1]); }
-        else { assert(ks[g] == (nw[q].stmt@, nw[q].rfile@)); }
+        else { assert(ks[g] == (nw[q].version@, nw[q].rfile@)); }
     };
 }
 
@@ -260,16 +260,16 @@ proof fn lemma_ins_cov(ks: Seq<(Seq<char>, Seq<char>)>, g: int, old_out: Seq<Out
         0 <= p <= old_out.len(),
         0 <= g < ks.len(),
         o_cov(ks, g, old_out),
-        (row.stmt@, row.rfile@) == ks[g],
+        (row.version@, row.rfile@) == ks[g],
     ensures
         o_cov(ks, g + 1, old_out.insert(p, row)),
 {
     reveal(o_cov);
     old_out.insert_ensures(p, row);
     let nw = old_out.insert(p, row);
-    assert forall|r: int| #![trigger ks[r]] 0 <= r < g + 1 implies exists|q: int| #![trigger nw[q]] 0 <= q < nw.len() && ks[r] == (nw[q].stmt@, nw[q].rfile@) by {
+    assert forall|r: int| #![trigger ks[r]] 0 <= r < g + 1 implies exists|q: int| #![trigger nw[q]] 0 <= q < nw.len() && ks[r] == (nw[q].version@, nw[q].rfile@) by {
         if r < g {
-            let q0 = choose|q: int| 0 <= q < old_out.len() && ks[r] == (old_out[q].stmt@, old_out[q].rfile@);
+            let q0 = choose|q: int| 0 <= q < old_out.len() && ks[r] == (old_out[q].version@, old_out[q].rfile@);
             if q0 < p { assert(nw[q0] == old_out[q0]); }
             else { assert(nw[q0 + 1] == old_out[q0]); }
         } else {
@@ -284,7 +284,7 @@ proof fn lemma_ins_dis(ks: Seq<(Seq<char>, Seq<char>)>, g: int, old_out: Seq<Out
         0 <= g < ks.len(),
         o_in(ks, g, old_out),
         o_dis(old_out),
-        (row.stmt@, row.rfile@) == ks[g],
+        (row.version@, row.rfile@) == ks[g],
         forall|a: int, b: int| #![trigger ks[a], ks[b]] 0 <= a < b < ks.len() ==> ks[a] != ks[b],
     ensures
         o_dis(old_out.insert(p, row)),
@@ -293,11 +293,11 @@ proof fn lemma_ins_dis(ks: Seq<(Seq<char>, Seq<char>)>, g: int, old_out: Seq<Out
     reveal(o_dis);
     old_out.insert_ensures(p, row);
     let nw = old_out.insert(p, row);
-    assert forall|q: int| #![trigger old_out[q]] 0 <= q < old_out.len() implies (old_out[q].stmt@, old_out[q].rfile@) != ks[g] by {
-        let r = choose|r: int| 0 <= r < g && ks[r] == (old_out[q].stmt@, old_out[q].rfile@);
+    assert forall|q: int| #![trigger old_out[q]] 0 <= q < old_out.len() implies (old_out[q].version@, old_out[q].rfile@) != ks[g] by {
+        let r = choose|r: int| 0 <= r < g && ks[r] == (old_out[q].version@, old_out[q].rfile@);
         assert(ks[r] != ks[g]);
     };
-    assert forall|a: int, b: int| #![trigger nw[a], nw[b]] 0 <= a < b < nw.len() implies (nw[a].stmt@, nw[a].rfile@) != (nw[b].stmt@, nw[b].rfile@) by {
+    assert forall|a: int, b: int| #![trigger nw[a], nw[b]] 0 <= a < b < nw.len() implies (nw[a].version@, nw[a].rfile@) != (nw[b].version@, nw[b].rfile@) by {
         if a < p { assert(nw[a] == old_out[a]); } else if a > p { assert(nw[a] == old_out[a - 1]); }
         if b < p { assert(nw[b] == old_out[b]); } else if b > p { assert(nw[b] == old_out[b - 1]); }
         if a == p { assert(nw[b] == old_out[b - 1]); }
@@ -335,8 +335,8 @@ proof fn lemma_final(pre: &Cols_pre, ks: Seq<(Seq<char>, Seq<char>)>, o: Seq<Out
         cover_to(pre, ks, pre.n as int),
     ensures
         forall|r: int| #![trigger o[r]] 0 <= r < o.len() ==> out_row_ok(pre, o[r]),
-        forall|a: int, b: int| #![trigger o[a], o[b]] 0 <= a < b < o.len() ==> (o[a].stmt@, o[a].rfile@) != (o[b].stmt@, o[b].rfile@),
-        forall|i0: int| #![trigger row_hit(pre, i0)] row_hit(pre, i0) && (true) ==> exists|r: int| #![trigger o[r]] 0 <= r < o.len() && key_at(pre, i0) == (o[r].stmt@, o[r].rfile@),
+        forall|a: int, b: int| #![trigger o[a], o[b]] 0 <= a < b < o.len() ==> (o[a].version@, o[a].rfile@) != (o[b].version@, o[b].rfile@),
+        forall|i0: int| #![trigger row_hit(pre, i0)] row_hit(pre, i0) && (true) ==> exists|r: int| #![trigger o[r]] 0 <= r < o.len() && key_at(pre, i0) == (o[r].version@, o[r].rfile@),
         forall|i: int| #![trigger o[i]] 0 <= i && i + 1 < o.len() ==> ((o[i].cnt) >= (o[i + 1].cnt)),
 {
     reveal(o_ok);
@@ -344,10 +344,10 @@ proof fn lemma_final(pre: &Cols_pre, ks: Seq<(Seq<char>, Seq<char>)>, o: Seq<Out
     reveal(o_dis);
     reveal(o_sort);
     reveal(cover_to);
-    assert forall|i0: int| #![trigger row_hit(pre, i0)] row_hit(pre, i0) && (true) implies exists|r: int| #![trigger o[r]] 0 <= r < o.len() && key_at(pre, i0) == (o[r].stmt@, o[r].rfile@) by {
+    assert forall|i0: int| #![trigger row_hit(pre, i0)] row_hit(pre, i0) && (true) implies exists|r: int| #![trigger o[r]] 0 <= r < o.len() && key_at(pre, i0) == (o[r].version@, o[r].rfile@) by {
         let r0 = choose|r: int| 0 <= r < ks.len() && key_at(pre, i0) == ks[r];
-        let q = choose|q: int| 0 <= q < o.len() && ks[r0] == (o[q].stmt@, o[q].rfile@);
-        assert(key_at(pre, i0) == (o[q].stmt@, o[q].rfile@));
+        let q = choose|q: int| 0 <= q < o.len() && ks[r0] == (o[q].version@, o[q].rfile@);
+        assert(key_at(pre, i0) == (o[q].version@, o[q].rfile@));
     };
 }
 
@@ -378,7 +378,7 @@ proof fn lemma_final(pre: &Cols_pre, ks: Seq<(Seq<char>, Seq<char>)>, o: Seq<Out
         let ghost old_ks = ks;
         let ghost old_wit = wit;
         let mut j: usize = 0;
-        while j < gs.len() && !(gs[j] == pre.stmt[i] && gr[j] == pre.rfile[i])
+        while j < gs.len() && !(gs[j] == pre.version[i] && gr[j] == pre.rfile[i])
             invariant
                 j <= gs@.len(),
                 i < pre.n,
@@ -390,19 +390,19 @@ proof fn lemma_final(pre: &Cols_pre, ks: Seq<(Seq<char>, Seq<char>)>, o: Seq<Out
             decreases gs@.len() - j,
         {
             proof {
-                assert(key_at(pre, i as int) == (pre.stmt@[i as int]@, pre.rfile@[i as int]@));
+                assert(key_at(pre, i as int) == (pre.version@[i as int]@, pre.rfile@[i as int]@));
                 assert(ks[j as int] != key_at(pre, i as int));
             }
             j += 1;
         }
         if j == gs.len() {
-            let s = pre.stmt[i].clone();
+            let s = pre.version[i].clone();
             let rf = pre.rfile[i].clone();
             gs.push(s);
             gr.push(rf);
             proof {
                 let n_old = old_ks.len() as int;
-                assert(key_at(pre, i as int) == (pre.stmt@[i as int]@, pre.rfile@[i as int]@));
+                assert(key_at(pre, i as int) == (pre.version@[i as int]@, pre.rfile@[i as int]@));
                 ks = old_ks.push(key_at(pre, i as int));
                 wit = old_wit.push(i as int);
                 assert(gs@.len() == n_old + 1);
@@ -422,7 +422,7 @@ proof fn lemma_final(pre: &Cols_pre, ks: Seq<(Seq<char>, Seq<char>)>, o: Seq<Out
         } else {
             proof {
                 assert(j < gs@.len());
-                assert(key_at(pre, i as int) == (pre.stmt@[i as int]@, pre.rfile@[i as int]@));
+                assert(key_at(pre, i as int) == (pre.version@[i as int]@, pre.rfile@[i as int]@));
                 assert(ks[j as int] == key_at(pre, i as int));
                 lemma_cov_old(pre, ks, i as int, j as int);
             }
@@ -485,9 +485,9 @@ proof fn lemma_final(pre: &Cols_pre, ks: Seq<(Seq<char>, Seq<char>)>, o: Seq<Out
             proof {
                 lemma_count_cnt_bound(pre, i as int + 1, kg);
                 lemma_count_distinct_num_filings_bound(pre, i as int + 1, kg);
-                assert(key_at(pre, i as int) == (pre.stmt@[i as int]@, pre.rfile@[i as int]@));
+                assert(key_at(pre, i as int) == (pre.version@[i as int]@, pre.rfile@[i as int]@));
             }
-            if pre.stmt[i] == gs[g] && pre.rfile[i] == gr[g] {
+            if pre.version[i] == gs[g] && pre.rfile[i] == gr[g] {
                 let fresh = !seen.contains_key(pre.adsh[i].as_str());
                 proof {
                     assert(key_at(pre, i as int) == kg);
@@ -512,11 +512,11 @@ proof fn lemma_final(pre: &Cols_pre, ks: Seq<(Seq<char>, Seq<char>)>, o: Seq<Out
                 }
             }
         }
-        let row = OutRow { stmt: gs[g].clone(), rfile: gr[g].clone(), cnt: cnt, num_filings: nf };
+        let row = OutRow { version: gs[g].clone(), rfile: gr[g].clone(), cnt: cnt, num_filings: nf };
         proof {
-            assert(row.stmt@ == gs@[g as int]@);
+            assert(row.version@ == gs@[g as int]@);
             assert(row.rfile@ == gr@[g as int]@);
-            assert((row.stmt@, row.rfile@) == kg);
+            assert((row.version@, row.rfile@) == kg);
             assert(row_hit(pre, wit[g as int]));
             assert(key_at(pre, wit[g as int]) == kg);
             lemma_row_ok(pre, row, kg, wit[g as int]);

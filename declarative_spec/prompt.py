@@ -290,6 +290,23 @@ _FLOAT_EXAMPLES: tuple[tuple[str, str], ...] = (
 )
 
 
+def _nullable_section(spec_text: str) -> list[str]:
+    """Nullable columns: the validity vector is part of the row, `row_hit` already reads it."""
+    if "__valid" not in spec_text:
+        return []
+    return [
+        "",
+        "## NULLs (this spec has a nullable column)",
+        "",
+        "A nullable column `c` has a validity vector `c__valid: Vec<bool>` beside its values; where it is false the value",
+        "`c[i]` is an arbitrary default and means nothing. The spec already says what SQL says: `row_hit` reads the bit (a",
+        "comparison with a NULL cell is not true, `IS NULL` is `!c__valid@[i]`), an aggregate skips NULL cells (its",
+        "per-aggregate hit function includes `c__valid@[i]`), and all NULL group keys form ONE group (a key `(false, default)`,",
+        "an `Option` output field). In the body test `t.c__valid[i]` wherever the spec does, before comparing or adding",
+        "`t.c[i]`; never compare a value cell alone. Add `assert(t.c__valid@.len() == t.n as int)` beside the other length facts.",
+    ]
+
+
 def _float_section(spec_text: str) -> list[str]:
     """Float recipe: floats are exact reals under the host's f64 idealization; list the verified float examples."""
     structs = "".join(re.findall(r"pub struct (?:Cols_\w+|OutRow)\s*\{([^}]*)\}", spec_text))
@@ -562,6 +579,7 @@ def build_declarative_prompt(
     ]
     sections += _recipe_section(shape)
     sections += _float_section(spec_text)
+    sections += _nullable_section(spec_text)
     sections += _parallel_section(spec_text, shape)
     sections += [""]
     if shape["hard"]:

@@ -438,16 +438,16 @@ proof fn lemma_range_skip(res: Seq<OutRow>, n: &Cols_num, s: &Cols_sub, i: int, 
             jb <= s.n,
             valid_cols_sub(s),
             ch(sm@, sx@, s.adsh@, pg, jb as int, s.n),
-            forall|q: int| #![trigger pg[q]] 0 <= q < pg.len() ==> pg[q] == (s.fy@[q] == 2022),
+            forall|q: int| #![trigger pg[q]] 0 <= q < pg.len() ==> pg[q] == (s.fy__valid@[q] && s.fy@[q] == 2022),
             pg.len() == jb as int,
             sx@.len() == jb as int,
         decreases s.n - jb,
     {
         proof {
             assert(s.adsh@.len() == s.n as int);
-            assert(s.fy@.len() == s.n as int);
+            assert(s.fy@.len() == s.n as int); assert(s.fy__valid@.len() == s.n as int);
         }
-        let fl = s.fy[jb] == 2022;
+        let fl = s.fy__valid[jb] && s.fy[jb] == 2022;
         let ghost sm0 = sm@;
         let ghost sx0 = sx@;
         let ghost pg0 = pg;
@@ -463,7 +463,7 @@ proof fn lemma_range_skip(res: Seq<OutRow>, n: &Cols_num, s: &Cols_sub, i: int, 
             pg = pg.push(fl);
             lemma_ch_step(sm0, sm@, sx0, sx@, s.adsh@, pg0, pg, jb as int, s.n, fl, v);
             assert(pg[jb as int] == fl);
-            assert forall|q: int| #![trigger pg[q]] 0 <= q < pg.len() implies pg[q] == (s.fy@[q] == 2022) by {
+            assert forall|q: int| #![trigger pg[q]] 0 <= q < pg.len() implies pg[q] == (s.fy__valid@[q] && s.fy@[q] == 2022) by {
                 if q < jb as int { assert(pg[q] == pg0[q]); }
             };
         }
@@ -532,7 +532,7 @@ proof fn lemma_range_skip(res: Seq<OutRow>, n: &Cols_num, s: &Cols_sub, i: int, 
             pure@ == "pure"@,
             ch(sm@, sx@, s.adsh@, pg, s.n as int, s.n),
             ch(nm@, nx@, n.adsh@, pf, n.n as int, n.n),
-            forall|q: int| #![trigger pg[q]] 0 <= q < pg.len() ==> pg[q] == (s.fy@[q] == 2022),
+            forall|q: int| #![trigger pg[q]] 0 <= q < pg.len() ==> pg[q] == (s.fy__valid@[q] && s.fy@[q] == 2022),
             forall|q: int| #![trigger pf[q]] 0 <= q < pf.len() ==> pf[q] == (n.uom@[q]@ == "pure"@ && sm@.contains_key(n.adsh@[q]@)),
             pf.len() == n.n as int,
             pfv@ == pf,
@@ -549,7 +549,7 @@ proof fn lemma_range_skip(res: Seq<OutRow>, n: &Cols_num, s: &Cols_sub, i: int, 
             assert(n.uom@.len() == n.n as int);
             assert(n.value@.len() == n.n as int);
             assert(s.adsh@.len() == s.n as int);
-            assert(s.fy@.len() == s.n as int);
+            assert(s.fy@.len() == s.n as int); assert(s.fy__valid@.len() == s.n as int);
             assert(s.name@.len() == s.n as int);
         }
         let vi = n.value[i];
@@ -650,7 +650,7 @@ proof fn lemma_range_skip(res: Seq<OutRow>, n: &Cols_num, s: &Cols_sub, i: int, 
                         valid_cols_num(n),
                         valid_cols_sub(s),
                         ch(sm@, sx@, s.adsh@, pg, s.n as int, s.n),
-                        forall|q: int| #![trigger pg[q]] 0 <= q < pg.len() ==> pg[q] == (s.fy@[q] == 2022),
+                        forall|q: int| #![trigger pg[q]] 0 <= q < pg.len() ==> pg[q] == (s.fy__valid@[q] && s.fy@[q] == 2022),
                         pg.len() == s.n as int,
                         sx@.len() == s.n as int,
                         n.value@[i as int] == vi,
@@ -662,7 +662,7 @@ proof fn lemma_range_skip(res: Seq<OutRow>, n: &Cols_num, s: &Cols_sub, i: int, 
                 {
                     proof {
                         lemma_ch_next(sm@, sx@, s.adsh@, pg, s.n as int, s.n, c as int);
-                        assert(s.fy@[c as int] == 2022);
+                        assert(s.fy__valid@[c as int] && s.fy@[c as int] == 2022);
                         assert(row_hit(n, s, i as int, c as int));
                     }
                     let x = OutRow { name: s.name[c].clone(), tag: n.tag[i].clone(), value: vi };
