@@ -57,6 +57,8 @@ def rows_match_error(got: list[list[str]], expect: list, kinds: list[str]) -> st
 
 
 def _decode_field(cell: str, kind: str) -> object:
+    if cell == "NULL":
+        return None
     if kind == "str":
         try:
             return bytes.fromhex(cell).decode("utf-8")
@@ -74,6 +76,8 @@ def _as_float(value: object) -> float:
 
 
 def _values_equal(got: object, expect: object, kind: str) -> bool:
+    if got is None or expect is None:
+        return got is None and expect is None
     if kind == "float":
         left = _as_float(got)
         right = _as_float(expect)
@@ -95,7 +99,9 @@ def _rows_equal(got: list[list[object]], expect: list[list[object]], kinds: list
 def _row_key(row: list[object], kinds: list[str]) -> tuple[object, ...]:
     parts: list[object] = []
     for value, kind in zip(row, kinds, strict=True):
-        if kind == "float":
+        if value is None:
+            parts.append(None)
+        elif kind == "float":
             parts.append(round(_as_float(value), 6))
         else:
             parts.append(value)

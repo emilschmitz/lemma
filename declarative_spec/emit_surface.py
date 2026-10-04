@@ -956,6 +956,8 @@ def _ensures(query: Query, helpers: _Helpers, model: SchemaModel) -> str:
     tail_q.in_subqueries = []
     tail_q.set_op = None
     tail_q.set_query = None
+    if helpers.key_ty is None:
+        tail_q.order_by = []
     text_order = helpers.key_ty is not None and any(_order_seq_flags(query, helpers))
     if text_order:
         tail_q.order_by = []
@@ -1013,19 +1015,41 @@ def _scalar_result(query: Query, helpers: _Helpers, scalars: dict[str, str]) -> 
     )
 
 
+_NULLABLE_UNGROUPED = ("SUM", "MIN", "MAX", "AVG")
+
+
+def _nullable(helpers: _Helpers, agg: _AggFn) -> bool:
+    """An ungrouped SUM, MIN, MAX or AVG is NULL when no row passes the filter."""
+    return helpers.key_ty is None and agg.kind in _NULLABLE_UNGROUPED
+
+
+def _any_hit(helpers: _Helpers) -> str:
+    p = _param_call(helpers.params)
+    binders, _ranges = _quant(helpers.main)
+    hit = f"{helpers.row_hit}({p}, {_idx_call(helpers.main)})"
+    return f"exists|{binders}| #![trigger {hit}] {hit}"
+
+
 def _agg_eqs(helpers: _Helpers, params: str, key: str) -> str:
     parts: list[str] = []
     key_arg = f", {key}" if helpers.key_ty else ""
     for agg in helpers.aggs:
-        view = _out_view(f"res@[r].{agg.alias}", agg)
+        nullable = _nullable(helpers, agg)
+        field = f"res@[r].{agg.alias}"
+        view = _out_view(f"{field}->Some_0" if nullable else field, agg)
         if agg.style == "bound":
-            parts.append(f"{agg.name}({params}{key_arg}, {view})")
+            eq = f"{agg.name}({params}{key_arg}, {view})"
         elif agg.float_out:
-            parts.append(
-                f"abs_real(({view}) - {agg.name}({params}, 0{key_arg})) <= (FLOAT_ABS_EPS as real)"
-            )
+            eq = f"abs_real(({view}) - {agg.name}({params}, 0{key_arg})) <= (FLOAT_ABS_EPS as real)"
         else:
-            parts.append(f"{view} == {agg.name}({params}, 0{key_arg})")
+            eq = f"{view} == {agg.name}({params}, 0{key_arg})"
+        if nullable:
+            any_hit = _any_hit(helpers)
+            eq = (
+                f"((({any_hit}) ==> (({field} is Some) && {eq}))"
+                f" && (!({any_hit}) ==> ({field} is None)))"
+            )
+        parts.append(eq)
     return " && ".join(parts) if parts else "true"
 
 
@@ -1398,7 +1422,8 @@ def _out_row(query: Query, helpers: _Helpers, model: SchemaModel) -> str:
         if agg.alias in seen:
             raise DeclarativeUnsupported("SELECT")
         seen.add(agg.alias)
-        lines.append(f"    pub {agg.alias}: {agg.exec},")
+        ty = f"Option<{agg.exec}>" if _nullable(helpers, agg) else agg.exec
+        lines.append(f"    pub {agg.alias}: {ty},")
     del query, model
     lines.append("}")
     return "\n".join(lines)
