@@ -353,7 +353,8 @@ def test_decimal_and_date_export_exact_integers_including_i128(tmp_path: Path) -
     con.close()
     schema = {"w": {"a": "decimal(38,2)", "b": "decimal(15,2)", "d": "date", "k": "integer"}}
     cat = CatalogAssumptions(max_rows=8, tables={"w": TableAssumptions(max_rows=8)})
-    sql = "SELECT SUM(a) AS sa, SUM(b) AS sb, MIN(d) AS first FROM w"
+    # SUM(a) over a bare DECIMAL(38) is refused (2 rows could exceed i128), so the i128 column is read by MIN.
+    sql = "SELECT MIN(a) AS sa, SUM(b) AS sb, MIN(d) AS first FROM w"
     prepared = write_query_measure(
         sql=sql, schema=schema, catalog=cat, db_path=db, dest=tmp_path / "out"
     )
@@ -369,7 +370,7 @@ def test_decimal_and_date_export_exact_integers_including_i128(tmp_path: Path) -
     off += 16
     d = [int.from_bytes(blob[off + 4 * j : off + 4 * j + 4], "little", signed=True) for j in range(2)]
     assert d == [-1, (dt.date(2024, 2, 29) - EPOCH).days]
-    assert prepared["rows"] == [[0, 123445, -1]]
+    assert prepared["rows"] == [[-12345678901234567890123456789012345678, 123445, -1]]
 
 
 def test_result_columns_match_by_position_not_by_duckdb_name(tmp_path: Path) -> None:

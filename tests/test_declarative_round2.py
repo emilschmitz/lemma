@@ -275,3 +275,47 @@ def test_case_conditions_may_combine_and_or_not_in(case: str) -> None:
 def test_case_condition_with_an_unsupported_function_is_refused() -> None:
     with pytest.raises(DeclarativeUnsupported):
         _emit("SELECT SUM(CASE WHEN LENGTH(s) = 1 THEN 1 ELSE 0 END) AS v FROM t")
+
+
+# ---- DECIMAL cells honor the catalog's column cap; integer SUM totals must fit i128 -----------------------------------
+
+from declarative_spec.lemmas import FitRefusal  # noqa: E402
+from research_loop.table_assumptions import ColumnAssumption  # noqa: E402
+
+BIG = {"n": {"k": "bigint", "v": "decimal(38,4)"}, "s": {"k": "bigint", "fy": "bigint"}}
+
+
+def _big(cap: int | None, n_rows: int = 2**31, s_rows: int = 2**20) -> CatalogAssumptions:
+    cols = {} if cap is None else {"v": ColumnAssumption(max_value_exclusive=cap)}
+    return CatalogAssumptions(
+        max_rows=n_rows,
+        tables={"n": TableAssumptions(max_rows=n_rows, columns=cols), "s": TableAssumptions(max_rows=s_rows)},
+    )
+
+
+JOIN_SUM = "SELECT s.fy, SUM(n.v) AS total FROM n JOIN s ON n.k = s.k WHERE s.fy > 1 AND n.v > 0 GROUP BY s.fy"
+
+
+def test_decimal_valid_cols_uses_the_column_cap_when_the_catalog_gives_one() -> None:
+    cap = 2**62 * 10**4
+    spec = emit_declarative_spec(JOIN_SUM, BIG, _big(cap))
+    assert f">= -{cap - 1}" in spec and f"<= {cap - 1}" in spec
+    assert "99999999999999999999999999999999999999" not in spec.split("valid_cols_n")[1].split("\n}")[0]
+
+
+def test_decimal_valid_cols_falls_back_to_the_type_digits_without_a_column_cap() -> None:
+    small = _big(None, n_rows=1, s_rows=1)
+    spec = emit_declarative_spec("SELECT k, SUM(v) AS total FROM n WHERE v > 0 GROUP BY k", BIG, small)
+    assert "99999999999999999999999999999999999999" in spec
+
+
+def test_a_join_sum_that_can_exceed_i128_is_refused() -> None:
+    with pytest.raises(FitRefusal, match="can exceed i128"):
+        emit_declarative_spec(JOIN_SUM, BIG, _big(None))  # 2^51 rows x 1e38
+    with pytest.raises(FitRefusal, match="can exceed i128"):
+        emit_declarative_spec(JOIN_SUM, BIG, _big(2**100))
+
+
+def test_a_join_sum_with_the_sec_cap_fits_i128_and_typechecks() -> None:
+    spec = emit_declarative_spec(JOIN_SUM, BIG, _big(2**62 * 10**4))  # 2^51 * 2^75.3 < 2^127
+    _verify(spec, lemmas=False)
