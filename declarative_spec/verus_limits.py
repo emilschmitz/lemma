@@ -12,6 +12,9 @@ from __future__ import annotations
 
 import os
 import re
+import signal
+import subprocess
+from pathlib import Path
 
 RLIMIT_ENV = "LEMMA_VERUS_RLIMIT"
 TIMEOUT_ENV = "LEMMA_VERUS_TIMEOUT_SEC"
@@ -69,3 +72,22 @@ def failure_prefix(log: str) -> str:
     if m:
         return f"PROOF ERROR: {m.group(0)}.\n"
     return ""
+
+
+def run_verus(cmd: list[str], *, timeout: int, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+    """Run `verus`, and on a wall timeout kill its whole process group.
+
+    `subprocess.run(timeout=...)` kills only the parent. Verus's Z3 child then keeps a core and
+    gigabytes of memory until it finishes, which can be minutes. Raises `TimeoutExpired` carrying
+    the partial output so the caller can say which phase was cut off.
+    """
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=cwd, start_new_session=True
+    )
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        out, err = proc.communicate()
+        raise subprocess.TimeoutExpired(cmd, timeout, output=out, stderr=err) from None
+    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)

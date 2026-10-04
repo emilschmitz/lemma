@@ -107,3 +107,25 @@ def test_plain_proof_failure_is_labelled_with_the_verus_summary() -> None:
     log = "error: assertion failed\nverification results:: 15 verified, 2 errors\n"
     assert failure_prefix(log) == "PROOF ERROR: verification results:: 15 verified, 2 errors.\n"
     assert failure_prefix("error[E0425]: cannot find value") == ""
+
+
+def test_a_wall_timeout_kills_the_solver_child_too(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+    import time
+
+    pid_file = tmp_path / "child.pid"
+    fake = _fake_verus(
+        tmp_path,
+        "import subprocess\n"
+        f"c = subprocess.Popen(['sleep', '60'])\nopen({str(pid_file)!r}, 'w').write(str(c.pid))\ntime.sleep(60)\n",
+    )
+    monkeypatch.setattr(pipeline, "_verus_binary", lambda: fake)
+    pipeline.compile_and_run("// program", work_dir=tmp_path / "w", timeout_sec=2)
+    child = int(pid_file.read_text())
+    for _ in range(50):
+        stat = Path(f"/proc/{child}/stat")
+        if not stat.exists() or stat.read_text().split()[2] == "Z":
+            return
+        time.sleep(0.1)
+    os.kill(child, 9)
+    raise AssertionError("the solver child survived the wall timeout")

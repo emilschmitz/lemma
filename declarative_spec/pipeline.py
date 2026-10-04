@@ -11,6 +11,7 @@ from pathlib import Path
 from declarative_spec.regions import extract_agent_edit, extract_agent_helpers
 from declarative_spec.verus_limits import (
     failure_prefix,
+    run_verus,
     timeout_message,
     verus_limit_args,
     verus_timeout_sec,
@@ -44,13 +45,7 @@ def verify_assembled(rs_source: str, *, timeout_sec: int | None = None) -> tuple
         f.write(rs_source)
         path = f.name
     try:
-        proc = subprocess.run(
-            [verus, path, *verus_limit_args()],
-            capture_output=True,
-            text=True,
-            timeout=timeout_sec,
-            check=False,
-        )
+        proc = run_verus([verus, path, *verus_limit_args()], timeout=timeout_sec)
         combined = (proc.stdout or "") + (proc.stderr or "")
         return proc.returncode == 0, combined
     except subprocess.TimeoutExpired as e:
@@ -101,7 +96,7 @@ def compile_and_run(
     rs_path.write_text(rs_source)
     binary = directory / "declarative_query"
     try:
-        proc = subprocess.run(
+        proc = run_verus(
             [
                 verus,
                 str(rs_path),
@@ -115,10 +110,7 @@ def compile_and_run(
                 "-C",
                 "codegen-units=1",
             ],
-            capture_output=True,
-            text=True,
             timeout=timeout_sec,
-            check=False,
             cwd=directory,
         )
     except subprocess.TimeoutExpired as exc:
