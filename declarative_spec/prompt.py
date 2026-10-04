@@ -44,7 +44,6 @@ while i > 0
         assert(prev as int == group_count(keys, start, k));
         assert(group_count(keys, ii, k) == group_count(keys, start, k) + 1);
         assert(prev as int + 1 <= ROW_CAP_t);
-        lemma_count_step_fits_u64(prev, ROW_CAP_t);
     }
     let next = prev + 1;
     counts[idx] = next;
@@ -252,10 +251,9 @@ def build_declarative_prompt(
         "Do not write `assume(`, `admit(`, or `#[verifier::external_body]`. Those are rejected.",
         "A `proof fn` or `spec fn` goes in the helper region (see below), never inside the body.",
         "",
-        "Integers. A `u64` or `i128` add equals the mathematical add when the result fits.",
-        "Call the host fit lemma under the row cap and the cell cap in the spec.",
-        "If the slot is `u64`, call `lemma_count_step_fits_u64` or `lemma_sum_step_fits_u64`.",
-        "If the slot is `i128`, call the `i128` lemma. Do not assume the add fits.",
+        "Integers. Verus checks every `u64` or `i128` add for overflow and, once it passes, knows the add",
+        "equals the mathematical add. Prove the no-overflow bound with an `assert` from the row cap and",
+        "the cell cap in the spec (`assert(prev as int + 1 <= ROW_CAP_...)`). No lemma call is needed.",
         "Every integer SUM result is `i128`. For sum-heavy queries, accumulate in `u64` within blocks small enough that the block sum provably cannot overflow, and widen into the `i128` total at block boundaries. If you cannot prove the no-overflow invariant, use a plain `i128` accumulator.",
         "Bind the group column from the struct before you use its length.",
         "If the field is `grp`, write `let keys = cols.grp@;` then `keys.len()`.",
@@ -265,7 +263,7 @@ def build_declarative_prompt(
         "Snapshot the index before you decrement it. After `i = i - 1` the old suffix",
         "is `i_old`, not `i`.",
         "",
-        "A count walks the column from the end. The fit lemma's cap argument is the",
+        "A count walks the column from the end. The no-overflow bound for the count is the",
         "`ROW_CAP_...` const in the spec.",
         "If the spec has `pub const KEY_CAP_...: usize`, that is the exclusive key domain.",
         "Allocate `let mut counts: Vec<u64> = Vec::new();` and push a zero once per slot",
@@ -277,8 +275,8 @@ def build_declarative_prompt(
         "`assert(k == cols.<field>@[i as int])`.",
         "That lemma ensures `(cols.<field>@[i] as int) < (KEY_CAP_... as int)`.",
         "Do not write a decimal bound such as `<= 255`. Use the `KEY_CAP_...` const.",
-        "Read `prev` from `counts[k as usize]`, call",
-        "`lemma_count_step_fits_u64(prev, ROW_CAP_...)`, then",
+        "Read `prev` from `counts[k as usize]`,",
+        "assert `prev as int + 1 <= ROW_CAP_...`, then",
         "`counts[k as usize] = prev + 1`. Leave every other slot unchanged.",
         "After the column loop, `counts[k] as int == group_count(keys, 0, k)` for each",
         "slot. Copy a slot into the result map only when its count is nonzero.",
@@ -335,7 +333,7 @@ def build_declarative_prompt(
         "and `pos[ks[b]] == b`.",
         "A one-table count defines `lemma_<count>_step` and `lemma_<count>_bound`.",
         "Call those. Do not re-prove the one-row equation or the row bound.",
-        "Integer slots call the host fit lemma under the row cap.",
+        "Integer slots: assert the add fits under the row cap, as above.",
         "Float slots use one `f64` accumulator per group and call",
         "`lemma_f64_add_defined`, `lemma_f64_left_fold_push`, and",
         "`lemma_f64_sum_within_eps` with `FLOAT_ABS_EPS`.",
@@ -351,7 +349,7 @@ def build_declarative_prompt(
         "A join sum contains a group when some row of each side shares the join key",
         "and the group column has that value. The value is the sum of the loaded",
         "measure over those pairs. If the spec's sum cap is one side's row cap times",
-        "the cell cap, the other side's key is unique. Use that cap in the fit lemma.",
+        "the cell cap, the other side's key is unique. Assert the add fits under that cap.",
         "",
         "## Imports, broadcast groups, helpers",
         "",

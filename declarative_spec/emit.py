@@ -48,9 +48,9 @@ def _lookup_table_assumptions(catalog: CatalogAssumptions | None, table: str) ->
 
 def _host_lemma_region() -> str:
     """Lemma source the agent can call. Assemble replaces this same region."""
-    from declarative_spec.lemmas import float_error_lemmas_rs, integer_fit_lemmas_rs
+    from declarative_spec.lemmas import float_error_lemmas_rs
 
-    body = integer_fit_lemmas_rs().rstrip() + "\n\n" + float_error_lemmas_rs().rstrip()
+    body = float_error_lemmas_rs().rstrip()
     return "// HOST_LEMMAS_START\n" + body + "\n// HOST_LEMMAS_END"
 
 
