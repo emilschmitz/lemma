@@ -304,3 +304,57 @@ def test_dict_mode_never_uses_the_legacy_emitters(dict_on: None, sql: str) -> No
     cat = CatalogAssumptions(max_rows=64, tables={n: TableAssumptions(max_rows=64) for n in schema})
     spec = emit_declarative_spec(sql, schema, cat)
     assert "Vec<String>" not in spec.split("pub struct OutRow")[0].replace("__dict: Vec<String>", "")
+
+
+# ---- GROUP BY a dictionary-encoded string key: the dense array over codes ----------------------------------------------------
+
+GROUP_SQL = "SELECT s, COUNT(*) AS c FROM t WHERE a > 1 GROUP BY s"
+
+
+def _group_catalog() -> CatalogAssumptions:
+    return CatalogAssumptions(
+        max_rows=8, tables={"t": TableAssumptions(max_rows=8, columns={"s": ColumnAssumption(max_distinct=16)})}
+    )
+
+
+def test_a_string_group_by_in_dict_mode_is_a_vec_of_outrow_over_the_dictionary_key(dict_on: None) -> None:
+    spec = emit_declarative_spec(GROUP_SQL, {"t": {"a": "bigint", "s": "varchar"}}, _group_catalog())
+    assert "pub struct OutRow {\n    pub s: String,\n    pub c: u64,\n}" in spec
+    assert "-> (res: Vec<OutRow>)" in spec
+    assert "Seq<char>" in spec.split("spec fn key_at")[1].split("{")[0]  # the key is the dictionary entry's view
+    assert "(t.s__dict@[t.s@[i0] as int]@)" in spec
+
+
+def test_the_dense_array_fixture_verifies_at_the_default_rlimit(dict_on: None) -> None:
+    text = (PROOFS / "dict_group_count_dense.rs").read_text()
+    spec = emit_declarative_spec(GROUP_SQL, {"t": {"a": "bigint", "s": "varchar"}}, _group_catalog())
+    program = assemble_declarative_program(spec, extract_agent_edit(text), helpers=extract_agent_helpers(text))
+    out = _verus(program, "--rlimit", "3")
+    assert re.search(r"verification results:: \d+ verified, 0 errors", out), out[-1500:]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        ("if a > 1 {", "if a > 2 {"),  # a different filter than the spec's
+        ("counts.set(code, before + 1);", "counts.set(code, before + 2);"),  # a wrong count
+    ],
+)
+def test_a_mutated_dense_array_body_is_rejected(dict_on: None, mutation: tuple[str, str]) -> None:
+    text = (PROOFS / "dict_group_count_dense.rs").read_text()
+    assert mutation[0] in text
+    text = text.replace(*mutation, 1)
+    spec = emit_declarative_spec(GROUP_SQL, {"t": {"a": "bigint", "s": "varchar"}}, _group_catalog())
+    program = assemble_declarative_program(spec, extract_agent_edit(text), helpers=extract_agent_helpers(text))
+    assert not re.search(r"verification results:: \d+ verified, 0 errors", _verus(program, "--rlimit", "3"))
+
+
+def test_the_package_declares_distinct_caps_for_the_low_cardinality_string_columns() -> None:
+    from research_loop.assumption_packages import assumption_package
+    from research_loop.assumption_packages.sec_margin import DISTINCT_CAPS
+
+    for name in ("sec_margin", "sec_margin_dec"):
+        cat = assumption_package(name)
+        for (table, column), cap in DISTINCT_CAPS.items():
+            assert cat.tables[table].columns[column].max_distinct == cap, (name, table, column)
+    assert code_type(DISTINCT_CAPS[("sub", "form")]) == "u8" and code_type(DISTINCT_CAPS[("num", "uom")]) == "u16"
