@@ -31,6 +31,7 @@ from research_loop.table_assumptions import (
     column_abs_sum_const_name,
     column_abs_sum_exclusive,
     column_assumption_exclusive,
+    column_max_string_len,
     column_cap_const_name,
     engine_default_catalog_assumptions,
     resolve_bounds,
@@ -146,8 +147,15 @@ def sum_accumulator_verus_type(
     depth: int,
     table: str,
     column: str,
+    kept_tables: int | None = None,
 ) -> str:
-    """MethodSpec SUM/AVG-sum slot width: u64 when rows^depth·cap fits u64, else i128."""
+    """MethodSpec SUM/AVG-sum slot width.
+
+    ``kept_tables`` is the number of tables that can repeat a source cell.
+    A table joined on a unique key matches at most once and is not counted.
+    u64 when that product fits in u64, else i128 when it fits there, else u64
+    (the caller then has no fitting machine width).
+    """
     if catalog is None:
         return "u64"
     b = _bounds_for_emit(None, catalog)
@@ -155,8 +163,11 @@ def sum_accumulator_verus_type(
     cap = column_assumption_exclusive(column, ta)
     if cap is None:
         return "u64"
+    kept = depth if kept_tables is None else kept_tables
+    if kept < 1:
+        kept = 1
     row_cap = _row_cap_for_join_depth(b, depth)
-    factors = (*([row_cap] * depth), cap)
+    factors = (*([row_cap] * kept), cap)
     if _int_product_fits_u64(*factors):
         return "u64"
     if _int_product_fits_i128(*factors):
@@ -2391,9 +2402,11 @@ def emit_valid_cols_predicate(
             lines.append(f"    &&& cols.{field}.len() == cols.n")
         else:
             lines.append(f"    &&& cols.{field}@.len() == cols.n")
+            strlen = column_max_string_len(col, table_assumptions)
+            cap = str(strlen) if strlen is not None else "LEMMA_MAX_STRING_LEN"
             lines.append(
                 f"    &&& forall|i: int| 0 <= i && i < cols.n as int ==>"
-                f" (cols.{field}[i]@).len() <= LEMMA_MAX_STRING_LEN"
+                f" (cols.{field}[i]@).len() <= {cap}"
             )
     lines.append("}")
     return "\n".join(lines)
@@ -2430,7 +2443,9 @@ def emit_valid_cols_accessor_lemmas(
         elif vt == "bool":
             ensures = "true"
         else:
-            ensures = f"(cols.{field}[i as int]@).len() <= LEMMA_MAX_STRING_LEN"
+            strlen = column_max_string_len(col, table_assumptions)
+            cap = str(strlen) if strlen is not None else "LEMMA_MAX_STRING_LEN"
+            ensures = f"(cols.{field}[i as int]@).len() <= {cap}"
         blocks.append(
             f"pub proof fn valid_cols_get_{base}(cols: &{struct_name}, i: int)\n"
             f"    requires\n"

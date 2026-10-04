@@ -50,9 +50,9 @@ pub open spec fn par_sum_u64_fold(vals: Seq<u64>, i: int, acc: u64) -> u64
 
 pub open spec fn par_filter_sum_u64_pair_len(col: Seq<u64>, mask: Seq<bool>) -> int {
     if col.len() < mask.len() {
-        col.len()
+        col.len() as int
     } else {
-        mask.len()
+        mask.len() as int
     }
 }
 
@@ -80,9 +80,9 @@ pub open spec fn par_filter_sum_u64_fold(
 
 pub open spec fn vector_filter_sum_u64_pair_len(dates: Seq<u32>, amounts: Seq<u64>) -> int {
     if dates.len() < amounts.len() {
-        dates.len()
+        dates.len() as int
     } else {
-        amounts.len()
+        amounts.len() as int
     }
 }
 

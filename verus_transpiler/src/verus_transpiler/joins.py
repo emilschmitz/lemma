@@ -234,6 +234,59 @@ def _find_table_for_col(
     raise UnsupportedContractError(f"column {col!r} not found in join schema")
 
 
+def _join_names_for_table(query: SQLQuery, join: JoinSpec) -> set[str]:
+    names = {join.table}
+    if join.alias:
+        names.add(join.alias)
+    for alias, table in query.table_aliases.items():
+        if table == join.table:
+            names.add(alias)
+    return names
+
+
+def _equality_columns_for_names(
+    equalities: list[tuple[str, str]],
+    names: set[str],
+) -> set[str]:
+    found: set[str] = set()
+    for left, right in equalities:
+        for ref in (left, right):
+            if "." not in ref:
+                continue
+            head, col = ref.split(".", 1)
+            if head in names:
+                found.add(col.lower())
+    return found
+
+
+def _uniquely_joined_table_count(
+    query: SQLQuery,
+    catalog: CatalogAssumptions | None,
+) -> int:
+    """How many joined tables match at most one row on their join key."""
+    if catalog is None:
+        return 0
+    from research_loop.table_assumptions import table_assumptions_for
+
+    count = 0
+    for join in query.joins:
+        assumptions = table_assumptions_for(catalog, join.table)
+        if assumptions is None:
+            continue
+        keys: list[tuple[str, ...]] = list(assumptions.unique_keys)
+        if assumptions.one_row_per_adsh and ("adsh",) not in keys:
+            keys.append(("adsh",))
+        if not keys or join.on_combiner != "and":
+            continue
+        mentioned = _equality_columns_for_names(
+            join.on_equalities,
+            _join_names_for_table(query, join),
+        )
+        if any(all(col.lower() in mentioned for col in key) for key in keys):
+            count += 1
+    return count
+
+
 def _resolve_sum_accumulator_type(
     spec: AggSpec,
     query: SQLQuery,
@@ -255,8 +308,13 @@ def _resolve_sum_accumulator_type(
         table, col = _find_table_for_col(col_ref, query, schemas_by_table)
     except (UnsupportedContractError, KeyError):
         return base
+    kept = join_depth - _uniquely_joined_table_count(query, catalog)
     return sum_accumulator_verus_type(
-        catalog, depth=join_depth, table=table, column=col
+        catalog,
+        depth=join_depth,
+        table=table,
+        column=col,
+        kept_tables=kept,
     )
 
 

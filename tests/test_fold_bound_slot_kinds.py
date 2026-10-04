@@ -826,3 +826,84 @@ def test_prove_loop_inject_rem_cap_lines_keep_sq_native() -> None:
     assert ctx is not None
     lines = _rem_cap_lines(ctx, "native")
     assert lines == ["lemma_rem_cap_native_add_fits(rem);"]
+
+
+THREE_TABLE_VALUE_SUM_SQL = """SELECT s.name, SUM(n.value) AS total, COUNT(*) AS cnt
+FROM num n
+JOIN sub s ON n.adsh = s.adsh
+JOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version
+GROUP BY s.name"""
+
+FOUR_TABLE_VALUE_SUM_SQL = """SELECT s.name, SUM(n.value) AS total, COUNT(*) AS cnt
+FROM num n
+JOIN sub s ON n.adsh = s.adsh
+JOIN tag t ON n.tag = t.tag AND n.version = t.version
+JOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version
+GROUP BY s.name"""
+
+
+def _margin_without_unique_keys():
+    from dataclasses import replace
+
+    from research_loop.assumption_packages.sec_margin import sec_margin_catalog
+
+    catalog = sec_margin_catalog()
+    tables = {
+        name: replace(table, unique_keys=(), one_row_per_adsh=False)
+        for name, table in catalog.tables.items()
+    }
+    return replace(catalog, tables=tables)
+
+
+def test_three_table_unique_sub_sum_uses_remaining_product() -> None:
+    """sub.adsh is unique, so a 3-table value sum is num x pre x value, not the cube."""
+    from research_loop.assumption_packages.sec_margin import (
+        ANY_TABLE_ROWS,
+        VALUE_EXCLUSIVE,
+        sec_margin_catalog,
+    )
+    from tests.test_sec_holdout_parse import SEC_SCHEMA
+
+    schema = {name: SEC_SCHEMA[name] for name in ("num", "sub", "pre")}
+    catalog = sec_margin_catalog()
+    spec = _transpile(THREE_TABLE_VALUE_SUM_SQL, schema, catalog=catalog)
+    assert "i128" in spec
+    ret_type = resolve_ret_type_from_method_spec(spec)
+    rs = multi_agg_step_trusted_rs(spec, ret_type, catalog_assumptions=catalog)
+    product = ANY_TABLE_ROWS * ANY_TABLE_ROWS * VALUE_EXCLUSIVE
+    assert str(product) in rs
+    assert "assume(" in rs
+    assert "i128::MAX" in rs
+
+
+def test_four_table_unique_sub_and_tag_sum_uses_same_remaining_product() -> None:
+    """sub and (tag, version) are unique, so a 4-table value sum drops both."""
+    from research_loop.assumption_packages.sec_margin import (
+        ANY_TABLE_ROWS,
+        VALUE_EXCLUSIVE,
+        sec_margin_catalog,
+    )
+    from tests.test_sec_holdout_parse import SEC_SCHEMA
+
+    schema = {name: SEC_SCHEMA[name] for name in ("num", "sub", "pre", "tag")}
+    catalog = sec_margin_catalog()
+    spec = _transpile(FOUR_TABLE_VALUE_SUM_SQL, schema, catalog=catalog)
+    assert "i128" in spec
+    ret_type = resolve_ret_type_from_method_spec(spec)
+    rs = multi_agg_step_trusted_rs(spec, ret_type, catalog_assumptions=catalog)
+    product = ANY_TABLE_ROWS * ANY_TABLE_ROWS * VALUE_EXCLUSIVE
+    assert str(product) in rs
+    assert "assume(" in rs
+    cube = ANY_TABLE_ROWS ** 3 * VALUE_EXCLUSIVE
+    assert str(cube) not in rs
+
+
+def test_three_table_sum_without_unique_keys_still_raises() -> None:
+    from tests.test_sec_holdout_parse import SEC_SCHEMA
+
+    schema = {name: SEC_SCHEMA[name] for name in ("num", "sub", "pre")}
+    catalog = _margin_without_unique_keys()
+    spec = _transpile(THREE_TABLE_VALUE_SUM_SQL, schema, catalog=catalog)
+    ret_type = resolve_ret_type_from_method_spec(spec)
+    with pytest.raises(SumAddFitCodegenError):
+        multi_agg_step_trusted_rs(spec, ret_type, catalog_assumptions=catalog)

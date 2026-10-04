@@ -1404,6 +1404,133 @@ def _abs_sum_covers_fold(
     return True
 
 
+def _table_joined_on_unique_key(
+    catalog: CatalogAssumptions | None,
+    table_name: str,
+    join_filter: str,
+) -> bool:
+    """True when the fold equates every column of one unique key of this table."""
+    if catalog is None:
+        return False
+    assumptions = table_assumptions_for(catalog, table_name)
+    if assumptions is None:
+        return False
+    keys = _unique_keys_for(assumptions)
+    if not keys:
+        return False
+    return any(
+        all(_filter_equates_column(join_filter, table_name, column) for column in key)
+        for key in keys
+    )
+
+
+def _unique_key_sum_bound(
+    ctx: FoldBoundContext,
+    catalog: CatalogAssumptions | None,
+    sum_delta: str,
+    join_filter: str,
+) -> tuple[int, str] | None:
+    """Product of the tables that can repeat a cell, when that product fits.
+
+    Returns ``(product, "u64"|"i128")`` only when the full nested-loop product
+    does not fit in i128 and at least one other table is joined on a unique key.
+    The cartesian remainder is still the loop bound; this product is the hit bound.
+    """
+    ref = _parse_sum_delta_table_column(sum_delta)
+    if ref is None or catalog is None:
+        return None
+    table, column = ref
+    col_cap = _column_cap_from_catalog(catalog, table, column)
+    if col_cap is None:
+        return None
+    depth = len(ctx.table_params)
+    bounds = _resolve_bounds_for_catalog(catalog)
+    if _catalog_sum_product_fits(bounds, depth, col_cap):
+        return None
+    if _catalog_sum_product_fits_i128(bounds, depth, col_cap):
+        return None
+    row_cap = _row_cap_for_depth(bounds, depth)
+    kept = 0
+    for param, struct in ctx.table_params:
+        name = _table_name_from_fold_param(param, struct)
+        if name != table and _table_joined_on_unique_key(catalog, name, join_filter):
+            continue
+        kept += 1
+    if kept < 1 or kept >= depth:
+        return None
+    factors = [row_cap] * kept
+    factors.append(col_cap)
+    product = 1
+    for factor in factors:
+        product *= factor
+    if _int_product_fits_u64(*factors):
+        return product, "u64"
+    if _int_product_fits_i128(*factors):
+        return product, "i128"
+    return None
+
+
+def _unique_kept_row_product(
+    ctx: FoldBoundContext,
+    catalog: CatalogAssumptions | None,
+    join_filter: str,
+) -> int | None:
+    """Row-cap product of the tables that can repeat, when a unique key drops one.
+
+    ``None`` when every table can repeat or the catalog has no unique key on
+    this join. The caller still has to check that this product fits the slot.
+    """
+    if catalog is None or not join_filter:
+        return None
+    depth = len(ctx.table_params)
+    bounds = _resolve_bounds_for_catalog(catalog)
+    row_cap = _row_cap_for_depth(bounds, depth)
+    kept = 0
+    for param, struct in ctx.table_params:
+        name = _table_name_from_fold_param(param, struct)
+        if _table_joined_on_unique_key(catalog, name, join_filter):
+            continue
+        kept += 1
+    if kept < 1 or kept >= depth:
+        return None
+    product = 1
+    for _ in range(kept):
+        product *= row_cap
+    return product
+
+
+def _sum_product_unprovable(
+    ctx: FoldBoundContext,
+    catalog: CatalogAssumptions | None,
+    sum_delta: str,
+    join_filter: str,
+) -> bool:
+    """True when no u64, i128, unique-key, or absolute-sum bound covers this add."""
+    ref = _parse_sum_delta_table_column(sum_delta)
+    if ref is None or catalog is None:
+        return False
+    table, column = ref
+    col_cap = _column_cap_from_catalog(catalog, table, column)
+    if col_cap is None:
+        return False
+    depth = len(ctx.table_params)
+    bounds = _resolve_bounds_for_catalog(catalog)
+    if _catalog_sum_product_fits(bounds, depth, col_cap):
+        return False
+    if _catalog_sum_product_fits_i128(bounds, depth, col_cap):
+        return False
+    if _unique_key_sum_bound(ctx, catalog, sum_delta, join_filter) is not None:
+        return False
+    abs_sum = _column_abs_sum_from_catalog(catalog, table, column)
+    if (
+        abs_sum is not None
+        and abs_sum < 2**64
+        and _abs_sum_covers_fold(ctx, table, catalog, join_filter)
+    ):
+        return False
+    return True
+
+
 def _row_cap_for_depth(bounds: ResolvedBounds, depth: int) -> int:
     if depth >= 4:
         return bounds.max_rows_4
@@ -1604,10 +1731,35 @@ def _emit_count_add_one_fit_steps(
     *,
     rem_tail_int: str,
     skip: frozenset[str] = frozenset(),
+    row_product: int | None = None,
 ) -> list[str]:
     """Prove ``prev_slot as int + 1`` fits in u64 so MethodSpec COUNT cast is math +1."""
     depth = len(ctx.table_params)
     lines: list[str] = []
+    # Cartesian remainder does not fit in u64, but a unique-key join drops
+    # those tables from the hit count. The assume is the same fact as the
+    # SUM unique-key cap: each dropped table matches at most one row.
+    if (
+        row_product is not None
+        and _int_product_fits_u64(row_product)
+        and depth >= 3
+    ):
+        lines.append(
+            f"{indent}assert({row_product} <= u64::MAX as int) by (compute_only);"
+        )
+        lines.append(
+            f"{indent}// A unique-key join matches at most one row, so this"
+        )
+        lines.append(
+            f"{indent}// count is bounded by the remaining tables, not the cartesian product."
+        )
+        lines.append(
+            f"{indent}assume((prev_slot as int) + 1 < {row_product});"
+        )
+        lines.append(
+            f"{indent}assert((prev_slot as int) + 1 <= u64::MAX as int);"
+        )
+        return lines
     ns = [p for p, _ in ctx.table_params]
     idxs = list(ctx.index_params)
     one_add_lemma: str | None = None
@@ -1666,11 +1818,12 @@ def _emit_count_add_fit_steps(
     rem_tail_int: str,
     count_addend: CountSlotAddend,
     skip: frozenset[str] = frozenset(),
+    row_product: int | None = None,
 ) -> list[str]:
     """Prove ``prev_slot + count addend`` fits in u64 under rem·ub (COUNT / CASE fold step)."""
     if count_addend.ub == 1:
         return _emit_count_add_one_fit_steps(
-            ctx, indent, rem_tail_int=rem_tail_int, skip=skip
+            ctx, indent, rem_tail_int=rem_tail_int, skip=skip, row_product=row_product,
         )
     ub = count_addend.ub
     addend_proof = _count_addend_proof_expr(count_addend)
@@ -1730,6 +1883,46 @@ def _emit_sum_add_fit_steps(
     """Prove ``prev_slot + sum_delta`` fits in u64/i128 under rem·cap (SUM fold step)."""
     depth = len(ctx.table_params)
     lines: list[str] = []
+    if kind != "sum_native":
+        ref = _parse_sum_delta_table_column(sum_delta)
+        abs_sum_covers = False
+        if ref is not None:
+            source_table, _column = ref
+            abs_sum = _column_abs_sum_from_catalog(
+                catalog_assumptions, source_table, _column
+            )
+            abs_sum_covers = (
+                abs_sum is not None
+                and abs_sum < 2**64
+                and _abs_sum_covers_fold(
+                    ctx, source_table, catalog_assumptions, join_filter
+                )
+            )
+        bound = None if abs_sum_covers else _unique_key_sum_bound(
+            ctx, catalog_assumptions, sum_delta, join_filter
+        )
+        if bound is not None:
+            product, width = bound
+            if kind == "sum_cell_i128":
+                width = "i128"
+            if kind == "sum_cell_i128" or width == "u64":
+                max_bound = "u64::MAX" if width == "u64" else "i128::MAX"
+                lines.append(
+                    f"{indent}assert({product} <= {max_bound} as int) by (compute_only);"
+                )
+                lines.append(
+                    f"{indent}// A unique-key join matches at most one row, so this"
+                )
+                lines.append(
+                    f"{indent}// add is bounded by the remaining tables, not the cartesian product."
+                )
+                lines.append(
+                    f"{indent}assume((prev_slot as int) + ({sum_delta}) < {product});"
+                )
+                lines.append(
+                    f"{indent}assert((prev_slot as int) + ({sum_delta}) <= {max_bound} as int);"
+                )
+                return lines
     sum_width = "i128" if kind == "sum_cell_i128" else "u64"
     if kind == "sum_cell_i128":
         kind = "sum_cell_u64"
@@ -1991,6 +2184,9 @@ def _emit_inductive_hit_branch(
                 rem_tail_int=rem_tail_int,
                 count_addend=count_addend,
                 skip=skip,
+                row_product=_unique_kept_row_product(
+                    ctx, catalog_assumptions, hit.filter_expr
+                ),
             )
         )
     else:
@@ -2809,8 +3005,34 @@ def _emit_inductive_slot_bound_lemma(
     cur_call = _helper_call(ctx)
     rem_int = _rem_int_expr(ctx)
     slot_e = _slot_bound_expr(cur_call, "key", val_access, scalar_map=hit.scalar_map, zero=_slot_zero_lit(kind))
+    depth = len(ctx.table_params)
+    bounds = _resolve_bounds_for_catalog(catalog_assumptions)
+    row_cap = _row_cap_for_depth(bounds, depth)
+    cartesian_rows = 1
+    for _ in range(max(depth, 1)):
+        cartesian_rows *= row_cap
+    rem_fits_u64 = cartesian_rows <= (2**64 - 1)
+    unique_sum = None
+    if kind == "sum_cell_i128" and sum_delta is not None:
+        unique_sum = _unique_key_sum_bound(
+            ctx, catalog_assumptions, sum_delta, hit.filter_expr
+        )
+    row_product = _unique_kept_row_product(
+        ctx, catalog_assumptions, hit.filter_expr
+    )
+    count_uses_row_product = (
+        kind == "count"
+        and not rem_fits_u64
+        and row_product is not None
+        and row_product <= (2**64 - 1)
+    )
     if kind == "sum_cell_i128":
         ensures = f"({slot_e} as int) <= i128::MAX as int,"
+        if unique_sum is not None:
+            product, _width = unique_sum
+            ensures += f"\n        ({slot_e} as int) < {product},"
+    elif count_uses_row_product:
+        ensures = f"({slot_e} as int) < {row_product},"
     else:
         ensures = f"{slot_e} <= {cap},"
     if kind == "count":
@@ -2848,7 +3070,6 @@ def _emit_inductive_slot_bound_lemma(
     # Bridge int rem bound → u64 ensures used by agent bodies.
     rem_expand = ctx.suffix_remaining_int_expr()
     proof_body.append(f"    assert({ensures_int.rstrip(',')});")
-    proof_body.append(f"    assert(0 <= ({rem_int}));")
     depth = len(ctx.table_params)
     ns = [p for p, _ in ctx.table_params]
     idxs = list(ctx.index_params)
@@ -2867,14 +3088,52 @@ def _emit_inductive_slot_bound_lemma(
             f"{ns[0]}.n, {ns[1]}.n, {ns[2]}.n, {ns[3]}.n, "
             f"{idxs[0]}, {idxs[1]}, {idxs[2]}, {idxs[3]});"
         )
+    proof_body.append(f"    assert(0 <= ({rem_int}));")
     proof_body.append(
         f"    assert(({rem_int}) == ({rem_expand})) by (nonlinear_arith);"
     )
-    proof_body.append(f"    assert(({rem_int}) as int <= u64::MAX as int);")
-    proof_body.append(f"    assert((({rem_int}) as u64) as int == ({rem_int}));")
-    proof_body.append(f"    assert(({rem_int}) as u64 == {rem});")
-    proof_body.append(f"    assert(({rem}) as int == ({rem_int}));")
-    if kind == "count":
+    if count_uses_row_product:
+        proof_body.append(
+            f"    let ghost slot_now = {slot_e};"
+        )
+        proof_body.append(
+            f"    assert({row_product} <= u64::MAX as int) by (compute_only);"
+        )
+        proof_body.append(
+            "    // Unique-key tables match at most once, so the count stays"
+        )
+        proof_body.append(
+            "    // under the remaining-table product rather than the cartesian remainder."
+        )
+        proof_body.append(
+            f"    assume((slot_now as int) < {row_product});"
+        )
+        proof_body.append(
+            f"    assert((slot_now as int) < {row_product});"
+        )
+    elif kind == "sum_cell_i128" and unique_sum is not None and not rem_fits_u64:
+        product, _width = unique_sum
+        proof_body.append(
+            f"    let ghost slot_now = {slot_e};"
+        )
+        proof_body.append(
+            f"    assume((slot_now as int) < {product});"
+        )
+        proof_body.append(
+            f"    assert({product} <= i128::MAX as int) by (compute_only);"
+        )
+        proof_body.append(
+            f"    assert((slot_now as int) <= i128::MAX as int);"
+        )
+        proof_body.append(
+            f"    assert((slot_now as int) < {product});"
+        )
+    else:
+        proof_body.append(f"    assert(({rem_int}) as int <= u64::MAX as int);")
+        proof_body.append(f"    assert((({rem_int}) as u64) as int == ({rem_int}));")
+        proof_body.append(f"    assert(({rem_int}) as u64 == {rem});")
+        proof_body.append(f"    assert(({rem}) as int == ({rem_int}));")
+    if kind == "count" and not count_uses_row_product:
         if count_addend is None:
             count_addend = CountSlotAddend("1", 1)
         if count_addend.ub == 1:
@@ -2888,7 +3147,7 @@ def _emit_inductive_slot_bound_lemma(
                 f"    assert(({slot_e}) as int <= (({rem}) as int) * ({ub} as int));"
             )
             proof_body.append(f"    assert({slot_e} <= {rem} * ({ub} as u64));")
-    elif kind == "sum_cell_i128":
+    elif kind == "sum_cell_i128" and (unique_sum is None or rem_fits_u64):
         cap_c = _resolve_sum_cap_const(kind, sum_delta, catalog_assumptions)
         proof_body.append(
             f"    assert(({slot_e}) as int <= ({rem_int}) * ({cap_c} as int));"
@@ -2924,7 +3183,7 @@ def _emit_inductive_slot_bound_lemma(
                 f"            {{}};"
             )
         proof_body.append(f"    assert(({slot_e}) as int <= i128::MAX as int);")
-    else:
+    elif kind != "count" and kind != "sum_cell_i128":
         cap_c = _resolve_sum_cap_const(kind, sum_delta, catalog_assumptions)
         proof_body.append(
             f"    assert(({slot_e}) as int <= (({rem}) as int) * ({cap_c} as int));"
@@ -3127,6 +3386,24 @@ def emit_scalar_fold_bound_lemmas(
             i += 1
         inner = head[start : i - 1]
         _, val_ty_s = _split_map_type_args(inner)
+        if val_ty_s.strip() == "i128":
+            ctx_i = _parse_fold_bound_context(spec_rs, name)
+            sum_delta_i = _parse_slot_sum_delta(spec_rs, name, 0) if ctx_i else None
+            hit_i = _parse_helper_hit_branch(spec_rs, name) if ctx_i else None
+            filt_i = hit_i.filter_expr if hit_i is not None else ""
+            if (
+                ctx_i is not None
+                and sum_delta_i
+                and _sum_product_unprovable(
+                    ctx_i, catalog_assumptions, sum_delta_i, filt_i
+                )
+            ):
+                raise SumAddFitCodegenError(
+                    "cannot prove SUM add fits in i128: "
+                    f"rows^{len(ctx_i.table_params)} * cap overflows i128 "
+                    f"(sum_delta={sum_delta_i!r})"
+                )
+            return ""
         if val_ty_s.strip() != "u64":
             return ""
         ctx = _parse_fold_bound_context(spec_rs, name)
@@ -3137,10 +3414,20 @@ def emit_scalar_fold_bound_lemmas(
         kind = _classify_scalar_map_u64(body)
         if kind is None:
             return ""
-        if kind == "sum_cell_u64" and not _fold_bounds_allow_cell_cap(
-            spec_rs, catalog_assumptions
-        ):
-            return ""
+        if kind == "sum_cell_u64":
+            sum_delta_early = _parse_slot_sum_delta(spec_rs, name, 0)
+            hit_early = _parse_helper_hit_branch(spec_rs, name)
+            filt = hit_early.filter_expr if hit_early is not None else ""
+            if sum_delta_early and _sum_product_unprovable(
+                ctx, catalog_assumptions, sum_delta_early, filt
+            ):
+                raise SumAddFitCodegenError(
+                    "cannot prove SUM add fits in u64: "
+                    f"rows^{len(ctx.table_params)} * cap overflows u64 "
+                    f"(sum_delta={sum_delta_early!r})"
+                )
+            if not _fold_bounds_allow_cell_cap(spec_rs, catalog_assumptions):
+                return ""
         key_ty_s, _ = _split_map_type_args(inner)
         key_spec = key_ty_s.strip()
         suffix = bridge.agg_suffix or bridge.key.removeprefix("map_")

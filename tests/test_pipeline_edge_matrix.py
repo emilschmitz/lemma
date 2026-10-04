@@ -387,9 +387,15 @@ def _cases() -> list[dict]:
 
     absent_when_on = [
         ("prompt_fast_on_no_off_banner", "`LEMMA_FAST_TRUSTEDS` is off"),
-        ("prompt_fast_on_no_forbid_hash", "Do not invent a HashMap"),
         ("prompt_fast_on_keeps_modes", "cannot use while in proof or spec mode"),
     ]
+    for cid, needle in (
+        ("prompt_fast_on_keeps_no_hashmap", "Do not invent a HashMap"),
+        ("prompt_fast_on_proved_hash", "hashes the three inner-key strings"),
+        ("prompt_off_proved_hash", "hashes the three inner-key strings"),
+    ):
+        fast = "0" if cid.startswith("prompt_off_") else "1"
+        cases.append({"id": cid, "kind": "prompt_has", "fast": fast, "needle": needle})
     for cid, needle in absent_when_on:
         present = cid.endswith("keeps_modes")
         cases.append(
@@ -407,6 +413,7 @@ def _cases() -> list[dict]:
         ("guide_no_proof_fn", "proof fn"),
         ("guide_host_line", "above `pub exec fn run_query`"),
         ("guide_hash_only_when_present", "When `build_hashset_u32` / `probe_sum_u64` are not in `spec.rs`"),
+        ("guide_proved_hash", "hashes the three inner-key strings"),
     ]
     for cid, needle in guide_needles:
         cases.append({"id": cid, "kind": "guide", "needle": needle})
@@ -450,6 +457,7 @@ def _prompt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fast: str) -> str:
     monkeypatch.setenv("LEMMA_MCP_ITERATE_ROWS", "50")
     monkeypatch.delenv("LEMMA_DUCKDB_PATH", raising=False)
     monkeypatch.delenv("LEMMA_BENCH_TBL", raising=False)
+    monkeypatch.delenv("LEMMA_AGENT_GUIDANCE", raising=False)
     return build_agent_prompt(
         workspace=ws,
         query_id=1,

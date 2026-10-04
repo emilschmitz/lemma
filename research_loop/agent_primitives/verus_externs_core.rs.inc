@@ -57,9 +57,9 @@ pub open spec fn hashset_u32_keys_from_seq_fold(keys: Seq<u32>, i: int) -> Set<u
 
 pub open spec fn probe_sum_u64_pair_len(probe_keys: Seq<u32>, values: Seq<u64>) -> int {
     if probe_keys.len() < values.len() {
-        probe_keys.len()
+        probe_keys.len() as int
     } else {
-        values.len()
+        values.len() as int
     }
 }
 

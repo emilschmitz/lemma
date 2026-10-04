@@ -546,6 +546,19 @@ def _format_map_result(rust_ret: str, value: TypeExpr) -> str:
     raise ValueError(f"unsupported map value for format_result: {value}")
 
 
+def _checksum_terms(expr: str, ty: TypeExpr) -> list[str]:
+    """Numeric fields that a result checksum should add, including nested tuples."""
+    if isinstance(ty, TypeAtom) and ty.name in ("u64", "u32", "i128", "i64"):
+        cast = expr if ty.name == "u64" else f"({expr} as u64)"
+        return [f".wrapping_add({cast})"]
+    if isinstance(ty, TypeTuple):
+        terms: list[str] = []
+        for i, elem in enumerate(ty.elems):
+            terms.extend(_checksum_terms(f"{expr}.{i}", elem))
+        return terms
+    return []
+
+
 def _format_seq_result(elem: TypeExpr) -> str:
     if isinstance(elem, TypeAtom):
         if elem.name == "u64":
@@ -564,11 +577,7 @@ def _format_seq_result(elem: TypeExpr) -> str:
             )
     if isinstance(elem, TypeTuple):
         fold = " |a, v| {\n            a"
-        for i, e in enumerate(elem.elems):
-            if isinstance(e, TypeAtom) and e.name == "u64":
-                fold += f".wrapping_add(v.{i})"
-            elif isinstance(e, TypeAtom) and e.name == "u32":
-                fold += f".wrapping_add(v.{i} as u64)"
+        fold += "".join(_checksum_terms("v", elem))
         fold += "\n        }"
         return (
             "{\n"
