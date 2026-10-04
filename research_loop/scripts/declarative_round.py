@@ -334,6 +334,13 @@ _FIXTURE_QUERIES = [
         "SELECT MIN(ddate) AS lo, MAX(ddate) AS hi FROM num WHERE uom = 'pure' AND qtrs = 3",
         "fixture ungrouped_minmax_string_filter.rs",
     ),
+    (
+        "SELECT l_returnflag, l_linestatus, sum(l_quantity) AS sum_qty, sum(l_extendedprice) AS sum_base_price, "
+        "sum(l_extendedprice * (1 - l_discount)) AS sum_disc_price, count(*) AS count_order FROM lineitem "
+        "WHERE l_shipdate <= date '1998-12-01' - interval '90' day GROUP BY l_returnflag, l_linestatus "
+        "ORDER BY l_returnflag, l_linestatus",
+        "fixture hard/group_decimal_sums_string_keys_sorted.rs",
+    ),
 ]
 
 

@@ -186,6 +186,47 @@ def test_minmax_with_string_filter_gets_its_example_and_the_string_literal_tip()
     assert "any ==> forall" in p.split("## Which shapes")[0]  # the example body is inlined
 
 
+_PROJ_SCHEMA = {"t": {"a": "bigint", "g": "bigint"}, "u": {"g": "bigint", "w": "bigint"}}
+_PROJ_CATALOG = CatalogAssumptions(tables={n: TableAssumptions(max_rows=8) for n in _PROJ_SCHEMA})
+
+
+@pytest.mark.parametrize(
+    ("sql", "recipe", "helper_marker"),
+    [
+        ("SELECT a, g FROM t WHERE a > 1", "projection_where", "proof fn lemma_shift"),
+        ("SELECT t.a, u.w FROM t JOIN u ON t.g = u.g", "projection_join", "proof fn lemma_shift"),
+        (
+            "SELECT a FROM t t1 WHERE a = (SELECT MAX(a) FROM t t2 WHERE t2.g = t1.g)",
+            "projection_correlated_max",
+            None,
+        ),
+        ("SELECT DISTINCT g FROM t WHERE a > 1", "projection_distinct", None),
+        ("SELECT a, g FROM t WHERE a > 1 ORDER BY a DESC LIMIT 3", "projection_top_k", None),
+    ],
+)
+def test_projection_shapes_get_their_recipe_helper_and_text(sql: str, recipe: str, helper_marker: str | None) -> None:
+    spec = emit_declarative_spec(sql, _PROJ_SCHEMA, _PROJ_CATALOG)
+    assert spec_shape(spec)["recipe"] == recipe
+    p = build_declarative_prompt(sql=sql, spec_path="s", edit_path="e", lemma_index="idx", spec_text=spec)
+    assert "Projection recipe: walk the rows from the last to the first" in p
+    assert f"context/ro/examples/{recipe}.rs" in p
+    if helper_marker:
+        assert helper_marker in p
+
+
+def test_all_four_helper_files_are_mounted(tmp_path: Path) -> None:
+    mount_examples(tmp_path)
+    names = {f.name for f in (tmp_path / "examples").iterdir()}
+    assert {"projection_where.helpers.rs", "projection_int_key.helpers.rs", "projection_top_k.helpers.rs"} <= names
+    assert (tmp_path / "examples" / "hard" / "group_decimal_sums_string_keys_sorted.rs").is_file()
+
+
+def test_prompt_carries_the_q1_lessons() -> None:
+    p = _prompt("SELECT stmt, COUNT(*) AS c FROM pre GROUP BY stmt")
+    assert "an exec `fn` helper is rejected" in p
+    assert "backward pass" in p and "`as_bytes`" in p and "--rlimit" in p
+
+
 def test_mount_examples_copies_every_example(tmp_path: Path) -> None:
     mount_examples(tmp_path)
     names = {f.name for f in (tmp_path / "examples").iterdir()}

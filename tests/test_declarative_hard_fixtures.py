@@ -22,6 +22,15 @@ CASES = {
         "WHERE stmt IS NOT NULL GROUP BY stmt, rfile ORDER BY cnt DESC"
     ),
 }
+# Hard fixtures on the TPC-H schema (needs the generated SF1 database for its measured catalog; skipped without it).
+TPCH = {
+    "group_decimal_sums_string_keys_sorted.rs": (
+        "SELECT l_returnflag, l_linestatus, sum(l_quantity) AS sum_qty, sum(l_extendedprice) AS sum_base_price, "
+        "sum(l_extendedprice * (1 - l_discount)) AS sum_disc_price, count(*) AS count_order FROM lineitem "
+        "WHERE l_shipdate <= date '1998-12-01' - interval '90' day GROUP BY l_returnflag, l_linestatus "
+        "ORDER BY l_returnflag, l_linestatus"
+    ),
+}
 # Fixtures that live next to the other worked examples (not under hard/), on the SEC DECIMAL variant.
 TOP = {
     "ungrouped_minmax_string_filter.rs": (
@@ -34,17 +43,25 @@ def _verify(name: str, monkeypatch: pytest.MonkeyPatch, mutate: tuple[str, str] 
     if not any(c.is_file() for c in VERUS_CANDIDATES):
         pytest.skip("verus binary not installed")
     monkeypatch.setenv("LEMMA_VERUS_BIN", str(Path(__file__).resolve().parents[1] / "scripts" / "ram" / "verus_guarded.sh"))
-    text = ((HARD if name in CASES else _FIXTURES) / name).read_text()
+    text = ((HARD if name in CASES or name in TPCH else _FIXTURES) / name).read_text()
     if mutate is not None:
         assert mutate[0] in text
         text = text.replace(*mutate, 1)
-    sql = {**CASES, **TOP}[name]
-    spec = emit_declarative_spec(sql, load_sec_schema(), assumption_package("sec_margin"), float_abs_eps="1e20")
+    if name in TPCH:
+        from research_loop.scripts.declarative_round import TPCH_DB, tpch_schema_and_catalog
+
+        if not TPCH_DB.is_file():
+            pytest.skip(f"TPC-H database not generated at {TPCH_DB}")
+        schema, catalog = tpch_schema_and_catalog(TPCH_DB)
+        spec = emit_declarative_spec(TPCH[name], schema, catalog)
+    else:
+        sql = {**CASES, **TOP}[name]
+        spec = emit_declarative_spec(sql, load_sec_schema(), assumption_package("sec_margin"), float_abs_eps="1e20")
     program = assemble_declarative_program(spec, extract_agent_edit(text), helpers=extract_agent_helpers(text))
     return verify_assembled(program, timeout_sec=600)
 
 
-@pytest.mark.parametrize("name", sorted({**CASES, **TOP}))
+@pytest.mark.parametrize("name", sorted({**CASES, **TOP, **TPCH}))
 def test_hard_fixture_verifies(name: str, monkeypatch: pytest.MonkeyPatch) -> None:
     ok, out = _verify(name, monkeypatch)
     assert ok and "0 errors" in out, out[-2000:]

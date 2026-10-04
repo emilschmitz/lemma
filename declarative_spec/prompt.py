@@ -149,6 +149,18 @@ _EXAMPLES: dict[str, tuple[str, str]] = {
         "ungrouped_decimal_product_sum.rs",
         "one table, filtered ungrouped SUM of a product of two decimal columns, with a helper lemma",
     ),
+    "projection_where": ("projection_where.rs", "one table, `SELECT cols WHERE ...` (no GROUP BY), result `Vec<OutRow>`"),
+    "projection_join": ("projection_join.rs", "two tables joined, plain projection `SELECT t.a, u.w ... JOIN ...`"),
+    "projection_correlated_max": (
+        "projection_correlated_max.rs",
+        "projection with a correlated scalar subquery `a = (SELECT MAX(a) ... WHERE same key)`",
+    ),
+    "projection_distinct": ("projection_distinct.rs", "`SELECT DISTINCT cols ... WHERE ...`"),
+    "projection_top_k": ("projection_top_k.rs", "projection with `ORDER BY ... LIMIT k` (multiplicity and the omitted-row clause)"),
+    "hard_group_strings": (
+        "hard/group_decimal_sums_string_keys_sorted.rs",
+        "one table, GROUP BY two string columns, several decimal SUMs and COUNT(*), ORDER BY the keys (TPC-H Q1 shape)",
+    ),
     "hard_distinct": (
         "hard/string_tuple_count_distinct_sorted.rs",
         "one table, tuple-of-strings GROUP BY, COUNT(*) and COUNT(DISTINCT), ORDER BY the count (sorted `Vec::insert`)",
@@ -158,6 +170,14 @@ _EXAMPLES: dict[str, tuple[str, str]] = {
         "one table, filtered ungrouped MIN and MAX of an integer column, with a string-literal comparison in the filter",
     ),
     "ungrouped": ("ungrouped_sum_where.rs", "one table, filtered ungrouped SUM, result `Vec<OutRow>` of one row"),
+}
+
+# Helper-region file that goes with an example body (a few lines each; the body calls it).
+_EXAMPLE_HELPERS: dict[str, str] = {
+    "projection_where": "projection_where.helpers.rs",
+    "projection_join": "projection_where.helpers.rs",
+    "projection_correlated_max": "projection_int_key.helpers.rs",
+    "projection_top_k": "projection_top_k.helpers.rs",
 }
 
 # Features of a spec for which the host has no worked example. They are not impossible, they are
@@ -180,6 +200,17 @@ def spec_shape(spec_text: str) -> dict:
         recipe = "dense_map" if "KEY_CAP_" in spec_text else "int_map"
     elif ty.startswith("StringHashMap"):
         recipe = "string_map"
+    elif ty.startswith("Vec<OutRow>") and "proj_key(" in spec_text:
+        if "sq_" in spec_text:
+            recipe = "projection_correlated_max"
+        elif "out_copies(" not in spec_text:
+            recipe = "projection_distinct"
+        elif re.search(r"res@\[i \+ 1\]", spec_text.split("pub fn run_query")[-1]):
+            recipe = "projection_top_k"
+        elif tables >= 2:
+            recipe = "projection_join"
+        else:
+            recipe = "projection_where"
     elif ty.startswith("Vec<OutRow>"):
         if "out_row_ok(" not in spec_text:
             head = spec_text.split("pub fn run_query(")[0]
@@ -193,6 +224,8 @@ def spec_shape(spec_text: str) -> dict:
             recipe = "join_group_sum"
         elif re.search(r"\bcount_distinct_", spec_text):
             recipe = "hard_distinct"
+        elif "(Seq<char>, Seq<char>)" in spec_text:
+            recipe = "hard_group_strings"
         elif re.search(r"\bsum_\w+\(", spec_text):
             recipe = "group_sum"
         else:
@@ -211,7 +244,7 @@ def mount_examples(ro: Path) -> None:
     """Copy the verified example bodies to ``ro/examples/`` (the prompt names them)."""
     dest = ro / "examples"
     dest.mkdir(parents=True, exist_ok=True)
-    for name, _what in _EXAMPLES.values():
+    for name in [n for n, _w in _EXAMPLES.values()] + sorted(set(_EXAMPLE_HELPERS.values())):
         target = dest / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text((_FIXTURES / name).read_text())
@@ -252,32 +285,46 @@ def _recipe_section(shape: dict) -> list[str]:
         lines += [
             f"A verified body for the same shape ({what}) is `context/ro/examples/{name}`, inlined here.",
             "Your table, column and field names differ: rename them, keep the proof structure.",
-            "",
-            "```rust",
-            (_FIXTURES / name).read_text().rstrip(),
-            "```",
         ]
+        helper = _EXAMPLE_HELPERS.get(recipe)
+        if helper:
+            lines += [
+                "Its helper (goes between `// AGENT_HELPERS_START` and `// AGENT_HELPERS_END`, file "
+                f"`context/ro/examples/{helper}`):",
+                "",
+                "```rust",
+                (_FIXTURES / helper).read_text().rstrip(),
+                "```",
+            ]
+        lines += ["", "The body:", "", "```rust", (_FIXTURES / name).read_text().rstrip(), "```"]
+        if recipe.startswith("projection_"):
+            lines += [
+                "",
+                "Projection recipe: walk the rows from the last to the first and `res.insert(0, row)` each passing row, so",
+                "the loop invariant is `out_copies(res@, 0, k) == hits_with(t, i, k)` for every key `k`, plus",
+                "`res@.len() == hit_count(t, i)` and `out_row_ok` for every kept row; a join adds a partial fold in an inner",
+                "loop to the finished outer suffix. The 12-line shift lemma is the only helper the plain cases need.",
+                "`OFFSET` is refused by the host.",
+            ]
     return lines
 
 
 _SHAPE_LIST = """\
 ## Which shapes have worked examples
 
-Worked, verified examples exist (`context/ro/examples/`) for: one-table `GROUP BY` COUNT with an integer key
-(`HashMapWithView`) or a string key (`StringHashMap`); one-table filtered `GROUP BY` COUNT or SUM into
-`Vec<OutRow>`; one filtered ungrouped SUM; a two-table join `GROUP BY` SUM; a filtered ungrouped SUM of a product of two decimal columns (with a
-`nonlinear_arith` bound helper); a filtered ungrouped MIN and MAX (with a string-literal comparison).
+Verified examples exist (`context/ro/examples/`, `hard/` for the long ones) for: one-table `GROUP BY` COUNT with an
+integer key (`HashMapWithView`) or a string key (`StringHashMap`); one-table filtered `GROUP BY` COUNT or SUM into
+`Vec<OutRow>`; a filtered ungrouped SUM (also of a product of decimals, with a `nonlinear_arith` bound helper) and
+ungrouped MIN/MAX with a string-literal comparison; a two-table join `GROUP BY` SUM; projections into `Vec<OutRow>`
+(plain, join, correlated `MAX` subquery, `DISTINCT`, `ORDER BY ... LIMIT k`); and, too long to inline, a
+tuple-of-strings `GROUP BY` with `COUNT(DISTINCT ...)` and a sorted result (O(groups x rows): a speed loser with many
+groups) and a TPC-H Q1 shape (two string keys, several decimal SUMs, sorted output, one pass).
 
-One hard shape has a worked example, too long to inline (`context/ro/examples/hard/`): tuple-of-strings
-`GROUP BY` with `COUNT(DISTINCT ...)` and a sorted result. It proves but is O(groups x rows): a speed loser when
-there are many groups.
-
-KNOWN HARD, no worked example: a join whose join key repeats on both sides (many-to-many) with
-`COUNT(DISTINCT ...)`; top-K (`ORDER BY ... LIMIT`) over groups; correlated or scalar subqueries; `EXISTS`/`IN`
-joins; string-tuple group keys; `AVG` with a float result. These need long helper proofs (an existential
-witness per group, a selection invariant). Start with the simplest correct loop that proves, make sure the
-result is submitted, and only then look for speed. Float comparison, float `ORDER BY` and float MIN/MAX are
-refused by the host (no proved bridge from `f64` order to `real` order); you will not see them.
+KNOWN HARD, no worked example: a join whose key repeats on both sides (many-to-many) with `COUNT(DISTINCT ...)`;
+`EXISTS`/`IN` joins; `HAVING` against a scalar subquery; multi-key `DISTINCT`; set operations. These need long helper
+proofs (an existential witness per group, a selection invariant). Start with the simplest correct loop that proves,
+make sure the result is submitted, and only then look for speed. Float comparison, float `ORDER BY` and float MIN/MAX
+are refused by the host; you will not see them.
 """
 
 _SPEED = """\
@@ -316,6 +363,16 @@ _PROOF_HYGIENE = """\
   bundle; keep the loop invariant to the opaque calls plus the cheap facts.
 - A quantifier or existential over a spec function of a row (`key_at(pre, i0)`) only fires on a ground term: bind
   one (`let w = key_at(pre, i0);`) or take a witness with `choose|r: int| ...` before you assert the instance.
+- Only `proof fn` and `spec fn` items are allowed in the helper region: an exec `fn` helper is rejected, so write
+  string comparisons and loop bodies inline in `run_query`.
+- The host's backward recursive folds fit a single backward pass (`let mut i = t.n; while i > 0 { i -= 1; ... }`)
+  with suffix invariants (`acc == fold(rows i..n)`); prefer it to a forward pass.
+- A product of two cells needs its own bound assert (for example `price * (100 - disc) <= 2e30` from the cell cap
+  1e15); a sum is bounded by (rows seen) * (cell bound).
+- Short string keys (1 or 2 characters) are cheapest as small integer codes from `as_bytes` (vstd `utf8.rs`,
+  grep `LEMMAS.md` for `as_bytes`) indexing a slot table, not as hashed strings.
+- The verifier's rlimit budget is the host's `--rlimit` (3 by default); the error names the main loop even when the
+  overrun is in one of its asserts.
 - A string literal in a predicate (`uom = 'pure'`): `&str ==` has no spec tying it to `@`, and `reveal_strlit` does not
   help. Build the literal once (`let pure: String = String::from_str("pure");`, ensures `pure@ == "pure"@`), keep
   `pure@ == "pure"@` in the loop invariant, and compare `cols.uom[i] == pure` (`String == String`, vstd `string.rs`).
