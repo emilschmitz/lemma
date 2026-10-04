@@ -16,8 +16,8 @@ from declarative_spec.emit_join import _build_slots, _Slot, _table_alias
 from declarative_spec.emit_tail import tail_ensures
 from declarative_spec.parse import DeclarativeUnsupported
 from declarative_spec.parse_query import parse_query
-from declarative_spec.resolve import check_exact_integer_refs, qualify_join_refs
-from declarative_spec.schema_types import ColumnTypeInfo, SchemaModel, rust_ident
+from declarative_spec.resolve import check_exact_integer_refs, flatten_derived, qualify_join_refs
+from declarative_spec.schema_types import ColumnTypeInfo, SchemaModel, classify_sql_type, rust_ident
 from declarative_spec.surface import Agg, OrderKey, Query
 from research_loop.table_assumptions import CatalogAssumptions
 
@@ -63,7 +63,7 @@ def emit_from_surface(
     float_abs_eps: str | None = None,
 ) -> str:
     """Verus source for ``sql``. Raises ``DeclarativeUnsupported`` when a clause is refused."""
-    query = parse_query(sql)
+    query = flatten_derived(parse_query(sql))
     if not query.tables:
         raise DeclarativeUnsupported("FROM")
     model = SchemaModel.from_caller(schema, query.tables[0])
@@ -130,6 +130,10 @@ def emit_from_surface(
         from declarative_spec.emit_projection import _seq_le_fn
 
         text = text.replace("// HOST_LEMMAS_START", _seq_le_fn() + "\n\n// HOST_LEMMAS_START", 1)
+    if "spec_like(" in text and "spec fn spec_like(" not in text:
+        from declarative_spec.emit_like import SPEC_LIKE_FN
+
+        text = text.replace("// HOST_LEMMAS_START", SPEC_LIKE_FN + "\n\n// HOST_LEMMAS_START", 1)
     text = _string_views(text, _string_fields(model, helpers.params))
     if "method_spec" in text:
         raise DeclarativeUnsupported("internal spec shape")
@@ -356,10 +360,31 @@ def _group_infos(
 ) -> list[tuple[str, str, ColumnTypeInfo, _Slot]]:
     out: list[tuple[str, str, ColumnTypeInfo, _Slot]] = []
     for i, col in enumerate(query.group_columns):
+        if col in query.group_exprs:
+            out.append(_expr_group(col, query.group_exprs[col], main, model))
+            continue
         table = query.group_tables[i] if i < len(query.group_tables) else None
         slot, info = _find_col(col, table, main, model)
         out.append((rust_ident(col), col, info, slot))
     return out
+
+
+_EXPR = "\x00expr:"
+
+
+def _expr_group(
+    name: str, text: str, main: list[_Slot], model: SchemaModel
+) -> tuple[str, str, ColumnTypeInfo, _Slot]:
+    """A group key that is a renamed column (output ``name``) or a date part (a BIGINT)."""
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?", text):
+        slot, info = _ref_slot(text, main, model)
+        return rust_ident(name), text.rpartition(".")[2], info, slot
+    return (
+        rust_ident(name),
+        _EXPR + _compile_pred(text, main, [], model, {}),
+        classify_sql_type("bigint"),
+        main[0],
+    )
 
 
 def _key_type(groups: list[tuple[str, str, ColumnTypeInfo, _Slot]]) -> str | None:
@@ -1056,10 +1081,11 @@ def _having(query: Query, helpers: _Helpers, scalars: dict[str, str], key: str) 
     for i, (_fname, col, _info, _slot) in enumerate(helpers.group_infos):
         if not key or not helpers.key_ty:
             break
-        if not re.search(rf"\b{re.escape(col)}\b", expr):
+        name = col if rust_ident(col) == _fname else _fname
+        if not re.search(rf"\b{re.escape(name)}\b", expr):
             continue
         token = f"__gk{i}__"
-        expr = re.sub(rf"\b{re.escape(col)}\b", token, expr)
+        expr = re.sub(rf"\b{re.escape(name)}\b", token, expr)
         piece = key if len(helpers.group_infos) == 1 else f"({key}).{i}"
         held.append((token, piece))
     p = _param_call(helpers.params)
@@ -1484,6 +1510,8 @@ def _find_col(
 
 
 def _cell(slot: _Slot, col: str, info: ColumnTypeInfo) -> str:
+    if col.startswith(_EXPR):
+        return col[len(_EXPR) :]
     base = f"{slot.param}.{rust_ident(col)}@[{slot.idx}]"
     if info.spec_as == "Seq<char>":
         return f"({base}@)"

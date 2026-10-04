@@ -152,3 +152,23 @@ def compare_to_rational(left_text: str, op: str, value: Fraction) -> str:
     if value.denominator == 1:
         return f"({left_text} {_OPS[op]} {value.numerator})"
     return f"(({left_text}) * {value.denominator} {_OPS[op]} {value.numerator})"
+
+
+_DATE_PARTS = {
+    "YEAR": "({c} / 10000)",
+    "MONTH": "(({c} / 100) % 100)",
+    "DAY": "({c} % 100)",
+}
+
+
+def extract_text(
+    node: exp.Extract,
+    ref: Callable[[exp.Column], str],
+    refs: list[str],
+) -> str:
+    """``EXTRACT(part FROM col)`` over a date column stored as the integer ``YYYYMMDD``."""
+    part = str(node.this.name if hasattr(node.this, "name") else node.this).upper()
+    if part not in _DATE_PARTS or not isinstance(node.expression, exp.Column):
+        raise DeclarativeUnsupported("EXTRACT")
+    refs.append(ref(node.expression))
+    return _DATE_PARTS[part].format(c=refs[-1])

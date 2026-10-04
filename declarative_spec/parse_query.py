@@ -11,12 +11,13 @@ from sqlglot import exp
 from declarative_spec.parse import DeclarativeUnsupported
 from declarative_spec.parse_exprs import (
     arith_text,
+    extract_text,
     compare_to_rational,
     fold_date,
     fold_number,
 )
 from declarative_spec.schema_types import rust_ident
-from declarative_spec.surface import Agg, Join, OrderKey, Query
+from declarative_spec.surface import Agg, Join, Output, OrderKey, Query
 
 _DATE_LITERAL = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
 
@@ -263,12 +264,10 @@ def _parse_select(expression: exp.Select, *, outer_scope: _Scope | None = None) 
         for item in select_items:
             inner = _unwrap_alias(item)
             alias = item.alias if isinstance(item, exp.Alias) else ""
-            if isinstance(inner, exp.Column):
-                proj.append(alias or inner.name)
-            elif _is_aggregate(item):
+            if _is_aggregate(item):
                 agg_items.append(item)
             else:
-                raise DeclarativeUnsupported("SELECT expression")
+                proj.append(_select_output(item, scope, query))
         for item in agg_items:
             query.aggs.append(_parse_agg(item, scope))
     else:
@@ -277,8 +276,7 @@ def _parse_select(expression: exp.Select, *, outer_scope: _Scope | None = None) 
             if _is_aggregate(select_items[0]):
                 query.aggs.append(_parse_agg(select_items[0], scope))
             elif isinstance(inner, exp.Column):
-                alias = select_items[0].alias or inner.name
-                proj.append(alias)
+                proj.append(_select_output(select_items[0], scope, query))
             elif isinstance(inner, exp.Subquery):
                 name = counters.next_scalar()
                 sub = _parse_subquery_select(inner.this, scope)
@@ -286,16 +284,13 @@ def _parse_select(expression: exp.Select, *, outer_scope: _Scope | None = None) 
             elif isinstance(inner, exp.Literal):
                 query.projection = ["_literal"]
             else:
-                raise DeclarativeUnsupported("SELECT expression")
+                proj.append(_select_output(select_items[0], scope, query))
         else:
             for item in select_items:
-                inner = _unwrap_alias(item)
-                if isinstance(inner, exp.Column):
-                    proj.append(item.alias or inner.name)
-                elif _is_aggregate(item):
+                if _is_aggregate(item):
                     query.aggs.append(_parse_agg(item, scope))
                 else:
-                    raise DeclarativeUnsupported("SELECT expression")
+                    proj.append(_select_output(item, scope, query))
 
     query.projection = proj
     agg_alias_map = {a.alias.lower(): a.alias for a in query.aggs if a.alias}
@@ -557,7 +552,7 @@ def _compile_bool(node: exp.Expression, ctx: _BoolCtx) -> str:
         parts = [f"({col_ref} == {_compile_scalar(v, ctx)})" for v in node.expressions]
         return f"({' || '.join(parts)})"
     if isinstance(node, exp.Like):
-        raise DeclarativeUnsupported("LIKE")
+        return _compile_like(node, ctx)
     if isinstance(node, (exp.EQ, exp.NEQ, exp.GT, exp.LT, exp.GTE, exp.LTE)):
         op_map = {
             exp.EQ: "==",
@@ -798,3 +793,45 @@ def _having_agg_alias(node: exp.Expression, ctx: _BoolCtx) -> str:
     alias = f"having_{wanted.kind.lower()}_{sum(a.hidden for a in ctx.query.aggs)}"
     ctx.query.aggs.append(replace(wanted, alias=alias, hidden=True))
     return alias
+
+
+def _select_output(item: exp.Expression, scope: _Scope, query: Query) -> str:
+    """Record a non-aggregate SELECT item and return its output name."""
+    inner = _unwrap_alias(item)
+    alias = item.alias if isinstance(item, exp.Alias) else ""
+    if isinstance(inner, exp.Column):
+        name = alias or inner.name
+        query.outputs.append(Output(name, "column", _col_ref(inner, scope)[0]))
+        return name
+    if not alias:
+        raise DeclarativeUnsupported("SELECT expression needs an alias")
+    refs: list[str] = []
+
+    def ref(col: exp.Column) -> str:
+        return _col_ref(col, scope)[0]
+
+    if isinstance(inner, exp.Extract):
+        text = extract_text(inner, ref, refs)
+        query.outputs.append(Output(alias, "extract", text, tuple(refs)))
+        return alias
+    text = arith_text(inner, ref, refs)
+    if text is None or not refs:
+        raise DeclarativeUnsupported("SELECT expression")
+    query.outputs.append(Output(alias, "arith", text, tuple(refs)))
+    return alias
+
+
+def _compile_like(node: exp.Like, ctx: _BoolCtx) -> str:
+    pattern = node.expression
+    if (
+        not isinstance(node.this, exp.Column)
+        or not isinstance(pattern, exp.Literal)
+        or not pattern.is_string
+        or node.args.get("escape") is not None
+    ):
+        raise DeclarativeUnsupported("LIKE needs a column, a string literal, and no ESCAPE")
+    if any(ch in str(pattern.this) for ch in '"\\'):
+        raise DeclarativeUnsupported("LIKE pattern with a quote or backslash")
+    col, _ = _col_ref(node.this, ctx.scope)
+    text = f'spec_like({col}, "{pattern.this}"@)'
+    return f"!({text})" if node.args.get("negate") else text

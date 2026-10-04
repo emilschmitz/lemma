@@ -311,3 +311,168 @@ def test_in_subquery_returning_an_aggregate_or_two_columns_is_refused() -> None:
         sql = f"SELECT SUM(price) AS s FROM ord WHERE okey IN ({sub})"
         with pytest.raises(DeclarativeUnsupported):
             emit_declarative_spec(sql, SCHEMA, CATALOG)
+
+
+# ---- LIKE ------------------------------------------------------------------------------------
+
+
+def _spec_like(s: str, p: str) -> bool:
+    """Python mirror of ``SPEC_LIKE_FN``, line for line."""
+    if not p:
+        return not s
+    if p[0] == "%":
+        return _spec_like(s, p[1:]) or (len(s) > 0 and _spec_like(s[1:], p))
+    if not s:
+        return False
+    if p[0] == "_" or p[0] == s[0]:
+        return _spec_like(s[1:], p[1:])
+    return False
+
+
+_LIKE_CASES = [
+    ("forest green", "%green%"),
+    ("greenhouse", "%green%"),
+    ("gren", "%green%"),
+    ("green", "green"),
+    ("Green", "green"),
+    ("", "%"),
+    ("", "_"),
+    ("a", "_"),
+    ("ab", "a_"),
+    ("abc", "a_"),
+    ("a%c", "a%c"),
+    ("a\\c", "a\\c"),
+    ("a_c", "a_c"),
+    ("abc", "%%c"),
+    ("abcabc", "a%c%c"),
+    ("naïve", "na_ve"),
+    ("naïve", "%ï%"),
+    ("x", ""),
+    ("", ""),
+]
+
+
+@pytest.mark.parametrize(("value", "pattern"), _LIKE_CASES)
+def test_spec_like_agrees_with_duckdb_like(value: str, pattern: str) -> None:
+    got = duckdb.execute("SELECT ? LIKE ?", [value, pattern]).fetchone()[0]
+    assert _spec_like(value, pattern) == got
+
+
+def test_like_emits_spec_like_over_the_string_view_and_not_like_negates() -> None:
+    pos = emit_declarative_spec(
+        "SELECT COUNT(*) AS n FROM cust WHERE seg LIKE 'BUILD%'", SCHEMA, CATALOG
+    )
+    neg = emit_declarative_spec(
+        "SELECT COUNT(*) AS n FROM cust WHERE seg NOT LIKE '%ING'", SCHEMA, CATALOG
+    )
+    assert 'spec_like((cust.seg@[i0]@), "BUILD%"@)' in pos
+    assert '!(spec_like((cust.seg@[i0]@), "%ING"@))' in neg
+    assert pos.count("spec fn spec_like(") == 1
+    if VERUS.is_file():
+        for spec in (pos, neg):
+            assert "error" not in _typechecks(spec)
+
+
+def test_spec_like_function_verifies_in_verus() -> None:
+    if not VERUS.is_file():
+        pytest.skip("verus binary not installed")
+    from declarative_spec.emit_like import SPEC_LIKE_FN
+
+    with tempfile.NamedTemporaryFile("w", suffix=".rs", delete=False) as handle:
+        handle.write(f"use vstd::prelude::*;\nverus! {{\n{SPEC_LIKE_FN}\n}}\nfn main() {{}}\n")
+    proc = subprocess.run([str(VERUS), handle.name], capture_output=True, text=True, check=False)
+    assert "0 errors" in proc.stdout + proc.stderr
+
+
+@pytest.mark.parametrize(
+    "where",
+    [
+        "seg LIKE 'a' ESCAPE '!'",
+        "seg LIKE ckey",
+        "seg ILIKE 'a%'",
+        "seg LIKE 'a\"b'",
+        "seg LIKE 'a\\b'",
+    ],
+)
+def test_like_forms_not_stated_exactly_are_refused(where: str) -> None:
+    with pytest.raises(DeclarativeUnsupported):
+        emit_declarative_spec(f"SELECT COUNT(*) AS n FROM cust WHERE {where}", SCHEMA, CATALOG)
+
+
+# ---- EXTRACT and derived tables --------------------------------------------------------------
+
+
+@pytest.mark.parametrize("part", ["year", "month", "day"])
+def test_extract_text_matches_duckdb_on_yyyymmdd_integers(part: str) -> None:
+    from declarative_spec.parse_exprs import extract_text
+
+    node = sqlglot.parse_one(f"SELECT EXTRACT({part} FROM d)").expressions[0]
+    text = extract_text(node, lambda c: "D", [])
+    for day in (dt.date(1992, 1, 1), dt.date(1996, 2, 29), dt.date(1998, 12, 31), dt.date(2000, 7, 4)):
+        want = duckdb.execute(f"SELECT EXTRACT({part} FROM DATE '{day}')").fetchone()[0]
+        got = eval(text.replace("/", "//"), {"D": int(day.strftime("%Y%m%d"))})
+        assert got == want
+
+
+def test_extract_of_an_unsupported_part_is_refused() -> None:
+    with pytest.raises(DeclarativeUnsupported, match="EXTRACT"):
+        parse_query("SELECT y FROM (SELECT EXTRACT(week FROM ship) AS y FROM li) AS t")
+
+
+_PROFIT = (
+    "SELECT flag, yr, SUM(amt) AS total FROM ("
+    " SELECT flag AS flag, EXTRACT(year FROM odate) AS yr, price * (1 - disc) - qty AS amt"
+    " FROM li, ord WHERE li.okey = ord.okey AND flag LIKE 'R%'"
+    ") AS p GROUP BY flag, yr ORDER BY flag, yr DESC"
+)
+
+
+def test_derived_table_with_date_part_key_and_arithmetic_sum_is_flattened() -> None:
+    spec = emit_declarative_spec(_PROFIT, SCHEMA, CATALOG)
+    assert "pub struct OutRow {\n    pub flag: String,\n    pub yr: i64,\n    pub total: i128,\n}" in spec
+    assert "((ord.odate@[i1] as int) / 10000)" in spec
+    assert "(((li.price@[i0] as int) * ((1 - (li.disc@[i0] as int)))) - (li.qty@[i0] as int))" in spec
+    assert "pub fn run_query(li: &Cols_li, ord: &Cols_ord)" in spec
+    assert "if (res@[i].flag@) == (res@[i + 1].flag@)" in spec
+    if VERUS.is_file():
+        assert "error" not in _typechecks(spec)
+
+
+def test_derived_table_renamed_column_key_and_having_on_the_alias() -> None:
+    spec = emit_declarative_spec(
+        "SELECT f, COUNT(*) AS n FROM (SELECT flag AS f, qty FROM li) AS t GROUP BY f HAVING f = 'R'",
+        SCHEMA,
+        CATALOG,
+    )
+    assert "pub f: String" in spec
+    assert "li.flag@[i0]@" in spec
+    assert '"R"@' in spec
+    if VERUS.is_file():
+        assert "error" not in _typechecks(spec)
+
+
+def test_derived_table_aggregate_over_a_plain_output_reads_the_source_column() -> None:
+    spec = emit_declarative_spec(
+        "SELECT f, SUM(q) AS total FROM (SELECT flag AS f, qty AS q FROM li) AS t GROUP BY f",
+        SCHEMA,
+        CATALOG,
+    )
+    assert "(li.qty@[i0] as int)" in spec
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # outer WHERE would need a rewrite of the derived table's text
+        "SELECT f, COUNT(*) AS n FROM (SELECT flag AS f FROM li) AS t WHERE f = 'R' GROUP BY f",
+        # a group key that is arithmetic has no exact integer width to give OutRow
+        "SELECT a, COUNT(*) AS n FROM (SELECT price - disc AS a FROM li) AS t GROUP BY a",
+        # outer names something the derived table does not output
+        "SELECT g, COUNT(*) AS n FROM (SELECT flag AS f FROM li) AS t GROUP BY g",
+        # a derived table that itself aggregates
+        "SELECT f, COUNT(*) AS n FROM (SELECT flag AS f, COUNT(*) AS c FROM li GROUP BY flag) AS t GROUP BY f",
+    ],
+)
+def test_derived_table_shapes_not_flattened_exactly_are_refused(sql: str) -> None:
+    with pytest.raises(DeclarativeUnsupported):
+        emit_declarative_spec(sql, SCHEMA, CATALOG)

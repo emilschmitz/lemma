@@ -59,3 +59,77 @@ def check_exact_integer_refs(query: Query, model: SchemaModel) -> None:
             )
     for sub in _subqueries(query):
         check_exact_integer_refs(sub, model)
+
+
+def flatten_derived(query: Query) -> Query:
+    """Merge ``SELECT ... FROM (SELECT <named outputs> FROM <joins> WHERE ...) GROUP BY ...``.
+
+    The result reads the inner tables and WHERE directly. An outer group key that names an
+    inner column or date part becomes a group expression, and an outer aggregate over an
+    inner output reads that output's text. The inner query must be a plain SELECT, and the
+    outer query may not filter the derived table (that would need a rewrite of its text).
+    """
+    if not query.derived:
+        return query
+    if len(query.derived) != 1 or query.tables != [query.derived[0][0]] or query.joins:
+        raise DeclarativeUnsupported("derived table shape")
+    _alias, inner = query.derived[0]
+    if (
+        inner.group_columns
+        or inner.aggs
+        or inner.having_expr
+        or inner.order_by
+        or inner.limit is not None
+        or inner.offset is not None
+        or inner.distinct
+        or inner.set_op
+        or inner.ctes
+        or inner.derived
+        or not inner.outputs
+    ):
+        raise DeclarativeUnsupported("derived table body")
+    if query.where_expr or query.exists or query.in_subqueries or query.scalar_subqueries:
+        raise DeclarativeUnsupported("WHERE over a derived table")
+    outs = {o.name.casefold(): o for o in inner.outputs}
+
+    def output(name: str):
+        hit = outs.get(name.casefold())
+        if hit is None:
+            raise DeclarativeUnsupported(f"column {name!r} is not an output of the derived table")
+        return hit
+
+    merged = Query(
+        tables=list(inner.tables),
+        aliases=dict(inner.aliases),
+        joins=list(inner.joins),
+        where_expr=inner.where_expr,
+        exists=list(inner.exists),
+        in_subqueries=list(inner.in_subqueries),
+        scalar_subqueries=list(inner.scalar_subqueries),
+        exact_int_refs=list(inner.exact_int_refs),
+        group_columns=list(query.group_columns),
+        group_tables=[None] * len(query.group_columns),
+        projection=list(query.projection),
+        having_expr=query.having_expr,
+        order_by=list(query.order_by),
+        limit=query.limit,
+        offset=query.offset,
+        distinct=query.distinct,
+    )
+    for name in query.group_columns:
+        src = output(name)
+        if src.kind == "arith":
+            raise DeclarativeUnsupported("GROUP BY an arithmetic output of a derived table")
+        merged.group_exprs[name] = src.text
+        merged.exact_int_refs.extend(src.refs)
+    for agg in query.aggs:
+        if agg.column and agg.column != "*":
+            src = output(agg.column)
+            if src.kind == "column":
+                agg = replace(agg, column=src.text.rpartition(".")[2], table=None)
+            else:
+                agg = replace(agg, column=None, table=None, arith=src.text, arith_refs=src.refs)
+        elif agg.expr or agg.arith:
+            raise DeclarativeUnsupported("aggregate expression over a derived table")
+        merged.aggs.append(agg)
+    return merged

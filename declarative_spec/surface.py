@@ -28,6 +28,16 @@ class Agg:
 
 
 @dataclass(frozen=True)
+class Output:
+    """One non-aggregate SELECT item of a subquery: a named column, date part, or integer expression."""
+
+    name: str
+    kind: str  # "column" | "extract" | "arith"
+    text: str  # spec text over bare or ``alias.col`` names
+    refs: tuple[str, ...] = ()  # columns an extract/arith text reads (must be integers)
+
+
+@dataclass(frozen=True)
 class Join:
     """One join. ``kind`` is inner, left, or right. Equalities are (left, right) column pairs."""
 
@@ -69,5 +79,8 @@ class Query:
     in_subqueries: list[tuple[str, str, Query]] = field(default_factory=list)
     scalar_subqueries: list[tuple[str, Query]] = field(default_factory=list)
     derived: list[tuple[str, Query]] = field(default_factory=list)
+    outputs: list[Output] = field(default_factory=list)
+    # Group key name -> spec text, for keys that are a renamed column or a date part.
+    group_exprs: dict[str, str] = field(default_factory=dict)
     # Column refs in WHERE/HAVING text that must be exact integers (decimal-literal compares).
     exact_int_refs: list[str] = field(default_factory=list)

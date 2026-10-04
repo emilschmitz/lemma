@@ -25,15 +25,15 @@ def in_subquery_calls(
 ) -> tuple[dict[str, str], list[str]]:
     """Map ``in_N`` to ``fn(<outer args>, `` text and return the helper sources."""
     from declarative_spec.emit_surface import (
+        _cell,
         _emit_helpers,
+        _find_col,
         _having,
         _idx_call,
         _map_args,
         _param_call,
         _param_sig,
         _quant,
-        _cell,
-        _find_col,
     )
 
     by_table: dict[str, str] = {}
