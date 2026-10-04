@@ -59,13 +59,14 @@ def aggs(rng: random.Random, refs: list[str]) -> list[tuple[str, str]]:
     out = []
     for i in range(rng.randint(1, 3)):
         col = rng.choice(refs)
-        kind = rng.choice(["count", "count", "sum", "sumx", "casesum", "countcol"])
+        kind = rng.choice(["count", "count", "sum", "sumx", "casesum", "countcol", "countcase", "countcase"])
         e = {
             "count": "COUNT(*)",
             "countcol": f"COUNT({col})",
             "sum": f"SUM({col})",
             "sumx": f"SUM({col} * 2 + 1)",
             "casesum": f"SUM(CASE WHEN {col} > 1 THEN 1 ELSE 0 END)",
+            "countcase": f"COUNT(CASE WHEN {col} > 1 OR {col} = 0 THEN 1 END)",
         }[kind]
         out.append((e, f"c{i}"))
     return out

@@ -126,3 +126,61 @@ def test_grouped_derived_table_merges_to_the_groups_duckdb_returns() -> None:
     facts = [f"count_c(t, 0, {k}) == {v}int" for k, v in want.items()]
     ok, out = prove_facts(_spec(sql), TABLES, facts, funs=["count_c"])
     assert ok, out[-1500:]
+
+
+def _extreme_rows(fn: str) -> dict[int, tuple[int, int]]:
+    """group -> (row index, value) of the first row holding MIN/MAX(a)."""
+    out = {}
+    for g, rid, a in _duck().execute(
+        f"SELECT g, rid, a FROM t x WHERE a = (SELECT {fn}(a) FROM t y WHERE y.g = x.g) ORDER BY rid DESC"
+    ).fetchall():
+        out[int(g)] = (int(rid), int(a))
+    return out
+
+
+def test_min_bound_function_is_the_group_minimum() -> None:
+    sql = "SELECT g, MIN(a) AS m, COUNT(*) AS c FROM t GROUP BY g HAVING MIN(a) < 3"
+    rows = _extreme_rows("MIN")
+    witness = "".join(f"    assert(row_hit(t, {r}) && key_at(t, {r}) == {g} && min_m_val(t, {r}) == {v});\n" for g, (r, v) in rows.items())
+    facts = [f"min_m(t, {g}, {v}) == true" for g, (_r, v) in rows.items()]
+    facts += [f"min_m(t, {g}, {v + 1}) == false" for g, (_r, v) in rows.items()]
+    ok, out = prove_facts(_spec(sql), TABLES, facts, extra=witness)
+    assert ok, out[-1500:]
+
+
+def test_min_max_aliases_that_contain_min_or_max_bind_their_own_row_predicate() -> None:
+    sql = "SELECT g, MIN(a) AS min_value, MAX(a) AS max_min FROM t GROUP BY g"
+    mins, maxs = _extreme_rows("MIN"), _extreme_rows("MAX")
+    witness = "".join(f"    assert(min_min_value_val(t, {r}) == {v});\n" for _g, (r, v) in mins.items())
+    witness += "".join(f"    assert(max_max_min_val(t, {r}) == {v});\n" for _g, (r, v) in maxs.items())
+    facts = [f"min_min_value(t, {g}, {v}) == true" for g, (_r, v) in mins.items()]
+    facts += [f"max_max_min(t, {g}, {v}) == true" for g, (_r, v) in maxs.items()]
+    ok, out = prove_facts(_spec(sql), TABLES, facts, extra=witness)
+    assert ok, out[-1500:]
+
+
+DEC_SCHEMA = {"t": {"a": "bigint", "g": "bigint", "d": "decimal(15,2)"}}
+DEC_ROWS = [{"a": 1, "g": 0, "d": 150}, {"a": 2, "g": 0, "d": -275}, {"a": 3, "g": 1, "d": 5}, {"a": 2, "g": 1, "d": 1000}]
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "SUM(CASE WHEN d > 0 THEN d ELSE 0 END)",
+        "SUM(CASE WHEN d < 1.00 THEN d ELSE 5 END)",
+        "SUM(CASE WHEN a = 2 THEN d ELSE 0.25 END)",
+    ],
+)
+def test_decimal_case_sum_is_duckdbs_sum_in_stored_units(case: str) -> None:
+    """The stored integer is value * 100: the spec's fold equals DuckDB's decimal sum times 100."""
+    con = duckdb.connect()
+    con.execute("CREATE TABLE t (a BIGINT, g BIGINT, d DECIMAL(15,2))")
+    con.executemany("INSERT INTO t VALUES (?, ?, ?)", [(r["a"], r["g"], r["d"] / 100) for r in DEC_ROWS])
+    sql = f"SELECT g, {case} AS x FROM t GROUP BY g"
+    want = {int(g): int(round(float(x) * 100)) for g, x in con.execute(sql).fetchall()}
+    spec = emit_declarative_spec(sql, DEC_SCHEMA, CATALOG, float_abs_eps="1e20")
+    facts = [f"sum_x(t, 0, {g}) == {v}int" for g, v in want.items()]
+    ok, out = prove_facts(spec, {"t": DEC_ROWS}, facts)
+    assert ok, out[-1500:]
+    bad, _ = prove_facts(spec, {"t": DEC_ROWS}, [f"sum_x(t, 0, {g}) == {v + 1}int" for g, v in want.items()])
+    assert not bad

@@ -32,7 +32,7 @@ def _exists_hints(spec: str, params: list[tuple[str, str]], tables: dict[str, li
     import itertools
 
     lines: list[str] = []
-    for name, sig in re.findall(r"spec fn (\w+_row_hit)\(([^)]*)\) -> bool", spec):
+    for name, sig in re.findall(r"spec fn (\w*(?:row_hit|key_at|_val))\(([^)]*)\) -> (?:bool|int|Seq<char>|real)", spec):
         parts = [p.strip().split(": ") for p in sig.split(",")]
         structs = [ty.removeprefix("&") for _n, ty in parts if ty.startswith("&")]
         ranges = [range(len(tables[st.removeprefix("Cols_")])) for st in structs]
@@ -42,7 +42,7 @@ def _exists_hints(spec: str, params: list[tuple[str, str]], tables: dict[str, li
         args = [by_struct[st] for st in structs]
         for combo in itertools.product(*ranges):
             call = f"{name}({', '.join(args + [str(i) for i in combo])})"
-            lines.append(f"    assert({call} || !{call});\n")
+            lines.append(f"    assert({call} == {call});\n")
     return "".join(lines)
 
 
@@ -53,6 +53,7 @@ def prove_facts(
     *,
     fuel: int = 8,
     funs: list[str] | None = None,
+    extra: str = "",
 ) -> tuple[bool, str]:
     """True when Verus proves every fact. ``funs`` are the recursive spec fns to unfold; default: every
     ``spec fn`` of the emitted spec that has a ``decreases`` clause."""
@@ -80,6 +81,7 @@ def prove_facts(
         + ",\n{\n"
         + "".join(f"    reveal_with_fuel({f}, {fuel});\n" for f in funs)
         + hints
+        + extra
         + "}\n"
     )
     spec = spec.replace("// AGENT_HELPERS_START", witness + "// AGENT_HELPERS_START", 1)
