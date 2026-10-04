@@ -258,6 +258,7 @@ def build_declarative_prompt(
         "Call the host fit lemma under the row cap and the cell cap in the spec.",
         "If the slot is `u64`, call `lemma_count_step_fits_u64` or `lemma_sum_step_fits_u64`.",
         "If the slot is `i128`, call the `i128` lemma. Do not assume the add fits.",
+        "Every integer SUM result is `i128`. For sum-heavy queries, accumulate in `u64` within blocks small enough that the block sum provably cannot overflow, and widen into the `i128` total at block boundaries. If you cannot prove the no-overflow invariant, use a plain `i128` accumulator.",
         "Bind the group column from the struct before you use its length.",
         "If the field is `grp`, write `let keys = cols.grp@;` then `keys.len()`.",
         "Do not write `cols.grp@.len()` or any `cols.<field>@.len()`.",

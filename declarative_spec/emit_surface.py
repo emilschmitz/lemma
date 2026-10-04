@@ -84,7 +84,8 @@ def emit_from_surface(
         eps = ""
 
     structs = _structs(helpers.params, model)
-    valids = _valids(helpers.params, model, catalog)
+    int_sum = any(a.kind == "SUM" and not a.float_out for a in helpers.aggs)
+    valids = _valids(helpers.params, model, catalog, int_sum=int_sum)
     consts = _consts(helpers.params, model, catalog, eps)
     out_row = _out_row(query, helpers, model)
     ensures = _ensures(query, helpers, model)
@@ -515,6 +516,9 @@ def _agg_exec(kind: str, is_float: bool, agg: Agg, main: list[_Slot], model: Sch
         return "f64"
     if kind in ("COUNT", "COUNT_DISTINCT"):
         return "u64"
+    if kind == "SUM":
+        # DuckDB widens every integer SUM to HUGEINT, a signed 128-bit integer.
+        return "i128"
     if agg.column and agg.column != "*" and not agg.expr:
         _slot, info = _find_col(agg.column, agg.table, main, model)
         if info.signed:
@@ -1255,7 +1259,13 @@ def _structs(params: list[_Slot], model: SchemaModel) -> str:
     return "\n\n".join(blocks)
 
 
-def _valids(params: list[_Slot], model: SchemaModel, catalog: CatalogAssumptions | None) -> str:
+def _valids(
+    params: list[_Slot],
+    model: SchemaModel,
+    catalog: CatalogAssumptions | None,
+    *,
+    int_sum: bool = False,
+) -> str:
     seen: set[str] = set()
     blocks: list[str] = []
     for slot in params:
@@ -1267,6 +1277,9 @@ def _valids(params: list[_Slot], model: SchemaModel, catalog: CatalogAssumptions
         cap = _row_cap(catalog, slot.table)
         if cap is not None:
             checks.append(f"{slot.param}.n as int <= ROW_CAP_{rust_ident(slot.table)} as int")
+        if int_sum and (cap is None or cap >= 2**63):
+            # An i128 sum of u64 cells fits when the row count is below 2^63.
+            checks.append(f"{slot.param}.n as int < 0x8000_0000_0000_0000int")
         checks.extend(_float_mag_checks(slot, model, catalog))
         body = "\n    &&& ".join(checks)
         blocks.append(

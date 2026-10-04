@@ -770,7 +770,9 @@ def _emit_join_sum(
             parsed.join_right_col or "",
         )
         ctx.add_const("SUM_CAP", inclusive_abs)
-        value_ty = choose_agg_slot(inclusive_abs, signed=sum_info.signed)
+        choose_agg_slot(inclusive_abs, signed=sum_info.signed)
+        # DuckDB widens every integer SUM to HUGEINT, a signed 128-bit integer.
+        value_ty = "i128"
         map_ty = f"HashMapWithView<{quant_ty}, {value_ty}>"
 
     def emit_struct(name: str, table: str, flist: list[tuple[str, str, ColumnTypeInfo]]) -> str:

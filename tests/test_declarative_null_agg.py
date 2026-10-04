@@ -121,3 +121,52 @@ def test_row_printer_prints_null_for_option_fields() -> None:
     _hex, body = _row_printer("run_query(&cols)", [("s", "Option<i128>"), ("f", "Option<f64>")])
     assert '"NULL".to_string()' in body
     assert "format!(\"{:.17}\"" in body
+
+
+def _emit_typed(sql: str, col_type: str, exclusive: int) -> str:
+    from research_loop.table_assumptions import ColumnAssumption
+
+    catalog = CatalogAssumptions(
+        tables={
+            "t": TableAssumptions(
+                max_rows=8, columns={"a": ColumnAssumption(max_value_exclusive=exclusive)}
+            )
+        }
+    )
+    return emit_declarative_spec(sql, {"t": {"a": col_type, "g": "integer"}}, catalog)
+
+
+_EMPTY_BODY = (
+    "    let mut v: Vec<OutRow> = Vec::new();\n"
+    "    v.push(OutRow { s: None });\n"
+    "    proof {\n"
+    "        assert(forall|i0: int| !row_hit(t, i0));\n"
+    "    }\n"
+    "    v\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("col_type", "exclusive"),
+    [("ubigint", 2**64), ("bigint", 2**62)],
+)
+def test_integer_sum_is_i128_for_unsigned_and_signed_columns(col_type: str, exclusive: int) -> None:
+    spec = _emit_typed(f"SELECT SUM(a) AS s FROM t {_NEVER}", col_type, exclusive)
+    assert "pub s: Option<i128>," in spec
+    assert "(res@[r].s->Some_0 as int) == sum_s(t, 0)" in spec
+    assert "0x8000_0000_0000_0000int" not in spec  # the catalog row cap already states it
+    out = _verus(spec, _EMPTY_BODY)
+    assert re.search(r"verification results:: \d+ verified, 0 errors", out), out[-1500:]
+
+
+def test_grouped_integer_sum_is_i128_even_for_ubigint() -> None:
+    spec = _emit_typed("SELECT g, SUM(a) AS s FROM t GROUP BY g", "ubigint", 2**64)
+    assert "pub s: i128," in spec
+    assert "(res@[r].s as int) ==" in spec
+
+
+def test_integer_sum_without_row_cap_states_row_count_below_two_pow_63() -> None:
+    spec = emit_declarative_spec(
+        "SELECT g, SUM(a) AS s FROM t GROUP BY g", {"t": {"a": "ubigint", "g": "integer"}}, None
+    )
+    assert "t.n as int < 0x8000_0000_0000_0000int" in spec
