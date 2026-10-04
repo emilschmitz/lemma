@@ -391,6 +391,9 @@ pub proof fn lemma_f64_mul_within(x: f64, y: f64, o: f64, cx: real, cy: real)
 """.strip()
 
 
+F64_EXACT_INT_MAX = 2**53
+
+
 def float_exact_lemmas_rs() -> str:
     """Adversary-proposed TRUE replacements for the idealized f64 lemmas (not yet assembled).
 
