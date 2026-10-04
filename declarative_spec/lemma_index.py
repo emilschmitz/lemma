@@ -21,11 +21,6 @@ def lemma_index_markdown() -> str:
         "the nonzero slots, the map meets the `ensures`. Call it after the copy loop. "
         "Pass `KEY_CAP_... as int`."),
         "",
-        ("- `lemma_index_key_below_cap(cols, i: int)`, when this spec defines it. "
-        "Requires `valid_cols_...(cols)` and `0 <= i < cols.n as int`. "
-        "Ensures the loaded key at `i` is `>= 0` and `< KEY_CAP_...`. "
-        "Call it after reading `cols.<field>[i]`. Keep `valid_cols_...` in the loop invariant."),
-        "",
         ("- `lemma_f64_sum_within_eps(acc: f64, n_terms: int, mag_cap: int, eps: f64, terms: Seq<f64>)`. "
         "A plain left-to-right f64 fold is within eps of the real sum of the loaded floats when "
         "eps is at least host_f64_sum_error(n_terms, mag_cap). Pass the ghost sequence you tracked; "

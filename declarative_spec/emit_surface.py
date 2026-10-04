@@ -715,22 +715,14 @@ def _unit_count_lemmas(
     params: list[_Slot],
     key_ty: str | None,
 ) -> str:
-    """Proved bound and one-row equation for a 0/1 fold over one index."""
+    """Proved bound for a 0/1 fold over one index. The one-row equation is the fold's own definition."""
     key_sig = f", k: {key_ty}" if key_ty else ""
     key_call = ", k" if key_ty else ""
     p_sig = _param_sig(params)
     p_call = _param_call(params)
     idx = slot.idx
     limit = f"{slot.param}.n as int"
-    return f"""pub proof fn lemma_{name}_step({p_sig}, {idx}: int{key_sig})
-    requires
-        0 <= {idx} < {limit},
-    ensures
-        {name}({p_call}, {idx}{key_call}) == ({add_expr}) + {name}({p_call}, {idx} + 1{key_call}),
-{{
-}}
-
-pub proof fn lemma_{name}_bound({p_sig}, {idx}: int{key_sig})
+    return f"""pub proof fn lemma_{name}_bound({p_sig}, {idx}: int{key_sig})
     requires
         0 <= {idx} <= {limit},
     ensures
@@ -738,7 +730,6 @@ pub proof fn lemma_{name}_bound({p_sig}, {idx}: int{key_sig})
     decreases {limit} - {idx},
 {{
     if {idx} < {limit} {{
-        lemma_{name}_step({p_call}, {idx}{key_call});
         lemma_{name}_bound({p_call}, {idx} + 1{key_call});
     }}
 }}"""

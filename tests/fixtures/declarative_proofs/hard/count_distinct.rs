@@ -16,7 +16,6 @@
         let v = pre.report[i];
         proof {
             assert(pre.report@.len() == pre.n as int);
-            lemma_count_distinct_c_step(pre, i as int);
             lemma_count_distinct_c_bound(pre, i as int + 1);
             assert(row_hit(pre, i as int));
             assert(count_distinct_c_val(pre, i as int) == v as int);

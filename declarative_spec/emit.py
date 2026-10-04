@@ -328,33 +328,6 @@ pub open spec fn matched_real_sum_rec(
 """.strip()
 
 
-def _emit_key_bound_lemma(
-    *,
-    struct: str,
-    valid_fn: str,
-    field: str,
-    key_cap: str,
-    inclusive: int,
-) -> str:
-    """Proved bridge from ``valid_cols`` to ``key < KEY_CAP``.
-
-    The column bound in ``valid_cols`` is an inclusive decimal. Callers index
-    ``counts[k as usize]`` only after this lemma, which states the exclusive cap.
-    """
-    return f"""
-pub proof fn lemma_index_key_below_cap(cols: &{struct}, i: int)
-    requires
-        {valid_fn}(cols),
-        0 <= i < cols.n as int,
-    ensures
-        0 <= cols.{field}@[i] as int,
-        (cols.{field}@[i] as int) < ({key_cap} as int),
-{{
-    assert(0 <= cols.{field}@[i] as int && cols.{field}@[i] as int <= {_int_literal(inclusive)});
-}}
-""".strip()
-
-
 def _emit_dense_count_map_lemma(*, key_ty: str) -> str:
     """The final map condition, once the dense count vector and the nonzero copy are in hand."""
     return f"""
@@ -626,17 +599,9 @@ def _emit_count(parsed: ParsedQuery, model: SchemaModel, ctx: _EmitCtx) -> str:
     struct_lines.append("}")
 
     dense_map_lemma = ""
-    bound_lemma = ""
     if key_cap_name is not None and key_inclusive is not None and not ginfo_exec.signed:
         if ginfo_exec.exec_rust == "u64":
             dense_map_lemma = _emit_dense_count_map_lemma(key_ty="u64")
-        bound_lemma = _emit_key_bound_lemma(
-            struct=struct,
-            valid_fn=f"valid_cols_{rust_ident(t_orig)}",
-            field=group_meta[0][0],
-            key_cap=key_cap_name,
-            inclusive=key_inclusive,
-        )
 
     parts: list[str] = [
         "use vstd::prelude::*;",
@@ -651,8 +616,6 @@ def _emit_count(parsed: ParsedQuery, model: SchemaModel, ctx: _EmitCtx) -> str:
         "\n".join(struct_lines),
         "",
         _emit_valid_cols(struct, t_orig, fields, row_cap_name, ctx),
-        "",
-        bound_lemma,
         "",
         count_block,
         "",

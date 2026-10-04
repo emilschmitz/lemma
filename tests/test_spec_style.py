@@ -166,7 +166,6 @@ def test_build_declarative_prompt_contract() -> None:
     assert "FLOAT_ABS_EPS" in prompt
     assert "run_runquery" in prompt
     assert "method_spec" in prompt
-    assert "lemma_index_key_below_cap" in prompt
     assert "valid_cols" in prompt
     assert "inserts into a map" not in prompt.lower()
     assert "use vstd::...;" in prompt
