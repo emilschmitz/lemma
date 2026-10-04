@@ -184,3 +184,24 @@ def test_case_with_else_still_parses() -> None:
 
     q = parse_query("SELECT b, SUM(CASE WHEN a > 1 THEN a ELSE 0 END) AS x FROM t GROUP BY b")
     assert q.aggs[0].kind == "SUM"
+
+
+def test_export_uses_only_the_struct_fields_of_a_wider_table() -> None:
+    from declarative_spec.schema_types import SchemaModel
+
+    model = SchemaModel.from_caller({"t": {"a": "BIGINT", "b": "BIGINT", "s": "VARCHAR"}}, "t")
+    con = duckdb.connect()
+    con.execute('CREATE TABLE "t" ("a" BIGINT, "b" BIGINT, "s" VARCHAR)')
+    con.execute("INSERT INTO \"t\" VALUES (1, 2, 'x')")
+    only_b = _export_table(con, model, "t", [("b", "i64")])
+    both = _export_table(con, model, "t", [("b", "i64"), ("s", "String")])
+    assert len(only_b) == 8 + 8
+    assert len(both) == 8 + 8 + 4 + 1
+    con.close()
+
+
+def test_default_catalog_allows_an_empty_table() -> None:
+    from research_loop.adversary.judge_declarative import default_catalog
+
+    cat = default_catalog({"t": {"a": "BIGINT"}}, {"t": []})
+    assert cat.max_rows >= 1  # a cap, not a floor: n == 0 satisfies it

@@ -44,6 +44,9 @@ def default_catalog(
     A dense group-count map needs it to print its rows. Signed and large
     columns get no assumption beyond the SQL type.
     """
+    # These are upper bounds only. No row-count floor is imposed on the data: an empty table
+    # (n == 0) stays allowed, because empty-table answers (SUM/MIN/MAX are NULL, COUNT is 0)
+    # are exactly what the judge probes.
     biggest = max([len(r) for r in rows.values()] + [1])
     per_table: dict[str, TableAssumptions] = {}
     for table, col_types in tables.items():
