@@ -404,3 +404,82 @@ pub proof fn lemma_f64_mul_within(x: f64, y: f64, o: f64, cx: real, cy: real)
         requires -cx < a, a < cx, -cy < b, b < cy;
 }
 """.strip()
+
+
+F64_EXACT_INT_MAX = 2**53
+
+
+def float_exact_lemmas_rs() -> str:
+    """Adversary-proposed TRUE replacements for the idealized f64 lemmas (not yet assembled).
+
+    Each statement is a consequence of IEEE 754 correct rounding: when the exact real result is
+    representable, the f64 result is that real. An integer of magnitude at most 2^53 is always
+    representable. Source: research_loop/menus/f64_idealization_ADVERSARY_VERDICT.md
+    (manual adversary, Sonnet subagent). Valid inside a verus! block that already holds the
+    `float_error_lemmas_rs` preamble (`use vstd::std_specs::ops::*;`, `use vstd::float::*;`).
+    """
+    return """
+pub open spec fn f64_exact_int_max() -> int {
+    0x20000000000000int
+}
+
+// TRUSTED (f64 exact, adversary-proposed): the f64 sum of finite x, y is the real sum whenever
+// that real sum is an integer of magnitude at most 2^53 (representable, so IEEE returns it).
+#[verifier::external_body]
+pub proof fn lemma_f64_add_exact(x: f64, y: f64, o: f64, s: int)
+    requires
+        x.is_finite_spec(), y.is_finite_spec(),
+        -f64_exact_int_max() <= s <= f64_exact_int_max(),
+        (x as real) + (y as real) == (s as real),
+        add_ensures::<f64>(x, y, o),
+    ensures
+        o.is_finite_spec(),
+        (o as real) == (s as real),
+{ }
+
+// TRUSTED (f64 exact, adversary-proposed): same for subtraction.
+#[verifier::external_body]
+pub proof fn lemma_f64_sub_exact(x: f64, y: f64, o: f64, s: int)
+    requires
+        x.is_finite_spec(), y.is_finite_spec(),
+        -f64_exact_int_max() <= s <= f64_exact_int_max(),
+        (x as real) - (y as real) == (s as real),
+        sub_ensures::<f64>(x, y, o),
+    ensures
+        o.is_finite_spec(),
+        (o as real) == (s as real),
+{ }
+
+// TRUSTED (f64 exact, adversary-proposed): same for multiplication (an integer product of
+// magnitude at most 2^53; a subnormal or inexact product is excluded because it is no such integer).
+#[verifier::external_body]
+pub proof fn lemma_f64_mul_exact(x: f64, y: f64, o: f64, s: int)
+    requires
+        x.is_finite_spec(), y.is_finite_spec(),
+        -f64_exact_int_max() <= s <= f64_exact_int_max(),
+        (x as real) * (y as real) == (s as real),
+        mul_ensures::<f64>(x, y, o),
+    ensures
+        o.is_finite_spec(),
+        (o as real) == (s as real),
+{ }
+
+// TRUSTED (f64 exact, adversary-proposed): an integer cast to f64 keeps its value up to 2^53.
+// Above 2^53 the cast rounds (the idealized `host_u64_to_f64` is false there).
+#[verifier::external_body]
+pub fn host_u64_to_f64_exact(n: u64) -> (o: f64)
+    requires n as int <= f64_exact_int_max(),
+    ensures o.is_finite_spec(), (o as real) == (n as int as real),
+{
+    n as f64
+}
+
+// TRUSTED (f64 exact, adversary-proposed): the same for i128, |n| <= 2^53.
+#[verifier::external_body]
+pub fn host_i128_to_f64_exact(n: i128) -> (o: f64)
+    requires -f64_exact_int_max() <= n as int <= f64_exact_int_max(),
+    ensures o.is_finite_spec(), (o as real) == (n as int as real),
+{
+    n as f64
+}
+""".strip()
