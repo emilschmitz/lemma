@@ -86,8 +86,8 @@ proof fn lemma_nf_hit(pre: &Cols_pre, kg: (Seq<char>, Seq<char>), i: int, m: Map
         !m.contains_key(pre.adsh@[i]@) ==> count_distinct_num_filings(pre, i, kg) == 1 + count_distinct_num_filings(pre, i + 1, kg),
         count_cnt(pre, i, kg) == 1 + count_cnt(pre, i + 1, kg),
 {
-    lemma_count_distinct_num_filings_step(pre, i, kg);
-    lemma_count_cnt_step(pre, i, kg);
+    reveal_with_fuel(count_distinct_num_filings, 2);
+    reveal_with_fuel(count_cnt, 2);
     assert(row_hit(pre, i));
     assert(count_distinct_num_filings_val(pre, i) == pre.adsh@[i]@);
     if m.contains_key(pre.adsh@[i]@) {
@@ -112,8 +112,8 @@ proof fn lemma_nf_miss(pre: &Cols_pre, kg: (Seq<char>, Seq<char>), i: int)
         count_distinct_num_filings(pre, i, kg) == count_distinct_num_filings(pre, i + 1, kg),
         count_cnt(pre, i, kg) == count_cnt(pre, i + 1, kg),
 {
-    lemma_count_distinct_num_filings_step(pre, i, kg);
-    lemma_count_cnt_step(pre, i, kg);
+    reveal_with_fuel(count_distinct_num_filings, 2);
+    reveal_with_fuel(count_cnt, 2);
 }
 
 proof fn lemma_row_ok(pre: &Cols_pre, row: OutRow, kg: (Seq<char>, Seq<char>), w: int)
@@ -492,8 +492,8 @@ proof fn lemma_final(pre: &Cols_pre, ks: Seq<(Seq<char>, Seq<char>)>, o: Seq<Out
                 proof {
                     assert(key_at(pre, i as int) == kg);
                     lemma_nf_hit(pre, kg, i as int, seen@);
-                    lemma_count_step_fits_u64(cnt, ROW_CAP_pre as int);
-                    lemma_count_step_fits_u64(nf, ROW_CAP_pre as int);
+                    assert(cnt as int + 1 <= ROW_CAP_pre as int);
+                    assert(nf as int + 1 <= ROW_CAP_pre as int);
                 }
                 cnt = cnt + 1;
                 if fresh { nf = nf + 1; }
