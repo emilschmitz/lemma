@@ -74,7 +74,33 @@ reported separately; branch-free accumulate (`if hit { v } else { 0 }`, about 1.
 unpredictable filter) and `&&` not `&`; the `mul_small` `nonlinear_arith` helper is a verified worked example
 (`tests/fixtures/declarative_proofs/ungrouped_decimal_product_sum.rs`, verified by a test through the guarded Verus).
 
-## Round 2 (seed 7102) - in progress
+## Round 2 results so far (manual prover, not a model-agent result)
+
+| Query | step / blame | trace quote | speed |
+|---|---|---|---|
+| TPC-H Q6 variant | step 7 (execute): **proved and then below the bar** (not a proof fail); bandwidth-bound, see table above | `verification results:: 15 verified, 0 errors`; `proved but below the speed bar: query 21874 us, DuckDB 11490 us (0.53x; the bar is 1x faster than DuckDB)` | 0.53x (8 thr), 1.22x (1 thr) |
+| SEC Q2 (tuple-of-strings GROUP BY, COUNT DISTINCT, AVG, ORDER BY cnt) | step 3 (agent), AVG part only: **setup didn't give the ability** (f64 division / int-to-f64 lemmas missing; owned by the float-idealization agent) | `verification results:: 41 verified, 1 errors`; the prover set `avg` to `0.0` as a DIAGNOSTIC (its own comment: "f64 div has an unsatisfiable precondition; 0.0 is NOT the true AVG"), so that body is NOT a result | none |
+
+Everything but AVG verified for Q2 (grouping, tuple key, COUNT DISTINCT, sorted result). The AVG-free variant of that body is
+now the verified fixture `tests/fixtures/declarative_proofs/hard/string_tuple_count_distinct_sorted.rs` (see fixes below).
+Speed note from the prover: that design scans once per group, O(groups x rows), and would lose to the reference engine
+on many groups. A single-pass hash-aggregate recipe for grouped COUNT DISTINCT is NOT written yet (open item; needs a
+per-group seen-map proof).
+
+Fixes from Q2 (generic, tested):
+- helper-region parser (`declarative_spec/admit.py`): a signature or `ensures` with `if ... { } else { }` or a block
+  expression no longer splits into fake items (`helper region holds only ... not: else`); braces in parentheses are
+  expression braces; a block followed by `else`, `ensures`/`requires`..., an operator or `{` continues the item.
+  Tests: 6 block-signature forms accepted (also with a following item), bad item / reused name / duplicate after such a
+  signature still rejected, unbalanced parentheses reported.
+- prompt: rlimit recipe (opaque spec fns for invariant bundles, one proof fn per property with `reveal`; the misleading
+  `invariant not satisfied before loop` symptom), the ground-term / `choose` rule, and a pointer to the hard worked
+  example with its header comment (not the 550-line body) when the spec is a grouped COUNT DISTINCT.
+- verified hard fixture (test verifies it through the guarded Verus, and a mutated sorted-insert must fail):
+  tuple-of-strings group key, per-group distinct set as a backward scan with a `StringHashMap` seen-map, `Vec::insert`
+  into a sorted vector (`lemma_ins_*`), opaque invariant bundles, the ground-term pattern.
+
+## Round 2 (seed 7102) - draw
 
 Refused during the draw (coverage items): SEC Q18 and Q17 (`ORDER BY n.value DESC` over a float, correlated float MAX),
 Q14 (HAVING SUM(float) > scalar subquery), Q9 (ORDER BY SUM(float)). All reason: `float comparison has no proved bridge to reals`.
