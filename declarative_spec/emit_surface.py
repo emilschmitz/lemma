@@ -11,6 +11,7 @@ import copy
 import re
 from dataclasses import dataclass, field
 
+from declarative_spec.emit_in import apply_in_calls, in_subquery_calls
 from declarative_spec.emit_join import _build_slots, _Slot, _table_alias
 from declarative_spec.emit_tail import tail_ensures
 from declarative_spec.parse import DeclarativeUnsupported
@@ -38,6 +39,7 @@ class _AggFn:
     float_out: bool
     style: str  # "fold" | "bound"
     exec: str
+    hidden: bool = False  # read only by HAVING; not an output column
 
 
 @dataclass
@@ -139,14 +141,14 @@ def _reject_unemitted(query: Query) -> None:
         raise DeclarativeUnsupported(query.set_op)
     if query.ctes:
         raise DeclarativeUnsupported("CTE")
-    if query.in_subqueries:
-        raise DeclarativeUnsupported("IN subquery")
     for join in query.joins:
         if join.kind.casefold() != "inner":
             raise DeclarativeUnsupported("outer join")
     for _name, sub, _neg in query.exists:
         _reject_unemitted(sub)
     for _name, sub in query.scalar_subqueries:
+        _reject_unemitted(sub)
+    for _name, _col, sub in query.in_subqueries:
         _reject_unemitted(sub)
     for _name, sub in query.derived:
         _reject_unemitted(sub)
@@ -169,13 +171,17 @@ def _emit_helpers(query: Query, prefix: str, model: SchemaModel) -> _Helpers:
 
     blocks: list[str] = []
     exists_calls = _exists_fns(query, prefix, main, params, model, blocks)
-    pred = _compile_pred(query.where_expr, main, [], model, exists_calls)
+    in_heads, in_sources = in_subquery_calls(query, prefix, params, model)
+    blocks.extend(in_sources)
+    where_expr = apply_in_calls(query.where_expr, in_heads)
+    pred = _compile_pred(where_expr, main, [], model, exists_calls)
     blocks.append(_row_hit_fn(row_hit, query, main, params, pred))
     blocks.append(_key_at_fn(key_at, main, params, group_infos, key_ty))
 
     aggs: list[_AggFn] = []
     for agg in query.aggs:
         aggs.append(_emit_agg(blocks, query, agg, prefix, main, params, model, key_ty, row_hit, key_at))
+        aggs[-1].hidden = agg.hidden
 
     scalars = _scalar_fns(query, prefix, model, params)
     # scalar calls are recorded on the query via the returned map; having reads `scalars`
@@ -219,6 +225,12 @@ def _extra_params(query: Query, main: list[_Slot], model: SchemaModel) -> list[_
 
     def walk(q: Query) -> None:
         for _name, sub, _neg in q.exists:
+            if sub.tables:
+                add(_table_alias(sub, sub.tables[0], None), sub.tables[0])
+            for join in sub.joins:
+                add(join.alias or _table_alias(sub, join.table, join.alias), join.table)
+            walk(sub)
+        for _name, _col, sub in q.in_subqueries:
             if sub.tables:
                 add(_table_alias(sub, sub.tables[0], None), sub.tables[0])
             for join in sub.joins:
@@ -998,6 +1010,8 @@ def _agg_eqs(helpers: _Helpers, params: str, key: str) -> str:
     parts: list[str] = []
     key_arg = f", {key}" if helpers.key_ty else ""
     for agg in helpers.aggs:
+        if agg.hidden:
+            continue
         view = _out_view(f"res@[r].{agg.alias}", agg)
         if agg.style == "bound":
             parts.append(f"{agg.name}({params}{key_arg}, {view})")
@@ -1329,6 +1343,8 @@ def _out_row(query: Query, helpers: _Helpers, model: SchemaModel) -> str:
         seen.add(fname)
         lines.append(f"    pub {fname}: {info.exec_rust},")
     for agg in helpers.aggs:
+        if agg.hidden:
+            continue
         if agg.alias in seen:
             raise DeclarativeUnsupported("SELECT")
         seen.add(agg.alias)

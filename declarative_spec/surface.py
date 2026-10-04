@@ -23,6 +23,8 @@ class Agg:
     # Integer arithmetic over columns (bare or ``alias.col`` names), and the columns it reads.
     arith: str = ""
     arith_refs: tuple[str, ...] = ()
+    # An aggregate that only HAVING reads. It is not an output column.
+    hidden: bool = False
 
 
 @dataclass(frozen=True)

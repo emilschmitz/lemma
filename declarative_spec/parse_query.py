@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import sqlglot
 from sqlglot import exp
@@ -635,12 +635,7 @@ def _compile_side(node: exp.Expression, ctx: _BoolCtx) -> str:
     if isinstance(node, exp.Boolean):
         return "true" if node.this else "false"
     if isinstance(node, (exp.Sum, exp.Count, exp.Avg, exp.Min, exp.Max)) and ctx.having:
-        inner = _unwrap_alias(node)
-        alias = node.alias if isinstance(node, exp.Alias) else ""
-        for agg in ctx.query.aggs:
-            if agg.kind == _agg_kind(inner) and (not alias or agg.alias == alias):
-                return agg.alias or agg.kind.lower()
-        raise DeclarativeUnsupported("HAVING aggregate")
+        return _having_agg_alias(node, ctx)
     folded = _fold_int_literal(node)
     if folded is not None:
         return folded
@@ -782,3 +777,24 @@ def _between_exact(node: exp.Between, ctx: _BoolCtx) -> str | None:
         return None
     left = _exact_int_side(node.this, ctx)
     return f"({compare_to_rational(left, '>=', low)} && {compare_to_rational(left, '<=', high)})"
+
+
+def _same_agg(a: Agg, b: Agg) -> bool:
+    return (
+        a.kind == b.kind
+        and a.column == b.column
+        and a.arith == b.arith
+        and a.expr == b.expr
+        and (a.table is None or b.table is None or a.table.casefold() == b.table.casefold())
+    )
+
+
+def _having_agg_alias(node: exp.Expression, ctx: _BoolCtx) -> str:
+    """Name of the aggregate a HAVING condition reads: a SELECT one, else a hidden one."""
+    wanted = _parse_agg(node, ctx.scope)
+    for agg in ctx.query.aggs:
+        if _same_agg(agg, wanted):
+            return agg.alias
+    alias = f"having_{wanted.kind.lower()}_{sum(a.hidden for a in ctx.query.aggs)}"
+    ctx.query.aggs.append(replace(wanted, alias=alias, hidden=True))
+    return alias

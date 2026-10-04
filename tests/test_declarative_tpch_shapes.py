@@ -232,3 +232,82 @@ def test_order_by_string_then_integer_key_breaks_ties_on_the_view() -> None:
     assert "if (res@[i].flag@) == (res@[i + 1].flag@)" in spec
     if VERUS.is_file():
         assert "error" not in _typechecks(spec)
+
+
+# ---- HAVING on an aggregate the SELECT list does not show ------------------------------------
+
+
+def test_having_aggregate_missing_from_select_is_a_hidden_aggregate() -> None:
+    spec = emit_declarative_spec(
+        "SELECT flag, COUNT(*) AS n FROM li GROUP BY flag HAVING SUM(qty) > 300",
+        SCHEMA,
+        CATALOG,
+    )
+    assert "sum_having_sum_0(" in spec
+    out_row = spec.split("pub struct OutRow {")[1].split("}")[0]
+    assert "having" not in out_row
+    assert "pub n:" in out_row
+    if VERUS.is_file():
+        assert "error" not in _typechecks(spec)
+
+
+def test_having_picks_the_aggregate_it_names_not_the_first_of_its_kind() -> None:
+    q = parse_query(
+        "SELECT flag, SUM(price) AS a, SUM(qty) AS b FROM li GROUP BY flag HAVING SUM(qty) > 5"
+    )
+    assert q.having_expr == "(b > 5)"
+    assert [a.hidden for a in q.aggs] == [False, False]
+
+
+def test_having_aggregate_over_arithmetic_is_hidden_and_exact() -> None:
+    q = parse_query(
+        "SELECT flag, SUM(price) AS a FROM li GROUP BY flag HAVING SUM(price * qty) > 10"
+    )
+    assert q.aggs[1].hidden
+    assert q.aggs[1].arith == "(price * qty)"
+
+
+# ---- IN (SELECT ...) -------------------------------------------------------------------------
+
+_IN_GROUPED = (
+    "SELECT ord.okey, SUM(qty) AS q FROM ord, li "
+    "WHERE ord.okey IN (SELECT okey FROM li GROUP BY okey HAVING SUM(qty) > 300) "
+    "AND li.okey = ord.okey GROUP BY ord.okey"
+)
+
+
+def test_in_subquery_group_having_is_exists_a_hit_row_of_a_passing_group() -> None:
+    spec = emit_declarative_spec(_IN_GROUPED, SCHEMA, CATALOG)
+    assert "spec fn in_1_in(li: &Cols_li, x: int) -> bool" in spec
+    assert "in_1_key_at(li, i0) == x" in spec
+    assert "in_1_sum_having_sum_0(li, 0, in_1_key_at(li, i0)) > 300" in spec
+    assert "in_1_in(li, (ord.okey@[i0] as int))" in spec
+
+
+def test_in_subquery_grouped_spec_typechecks_in_verus() -> None:
+    if not VERUS.is_file():
+        pytest.skip("verus binary not installed")
+    assert "error" not in _typechecks(emit_declarative_spec(_IN_GROUPED, SCHEMA, CATALOG))
+
+
+def test_in_subquery_over_a_table_the_outer_query_lacks_adds_it_as_a_parameter() -> None:
+    spec = emit_declarative_spec(
+        "SELECT seg, COUNT(*) AS n FROM cust WHERE ckey IN (SELECT ckey FROM ord WHERE total > 5) GROUP BY seg",
+        SCHEMA,
+        CATALOG,
+    )
+    assert "pub fn run_query(cust: &Cols_cust, ord: &Cols_ord)" in spec
+    assert "in_1_in(ord, (cust.ckey@[i0] as int))" in spec
+    if VERUS.is_file():
+        assert "error" not in _typechecks(spec)
+
+
+def test_in_subquery_returning_an_aggregate_or_two_columns_is_refused() -> None:
+    for sub in (
+        "SELECT SUM(qty) FROM li",
+        "SELECT okey, qty FROM li",
+        "SELECT okey, COUNT(*) FROM li GROUP BY okey",
+    ):
+        sql = f"SELECT SUM(price) AS s FROM ord WHERE okey IN ({sub})"
+        with pytest.raises(DeclarativeUnsupported):
+            emit_declarative_spec(sql, SCHEMA, CATALOG)
