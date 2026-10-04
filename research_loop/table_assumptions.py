@@ -284,6 +284,19 @@ def column_cap_const_name(table: str, column: str) -> str:
     return f"LEMMA_MAX_{_seg(table)}_{_seg(column)}"
 
 
+def column_max_string_len(
+    column: str,
+    table: TableAssumptions | None,
+) -> int | None:
+    """Per-column string length cap, or None when only the catalog-wide cap applies."""
+    if table is None:
+        return None
+    col = _column_assumption(table, column)
+    if col is None or col.max_string_len is None:
+        return None
+    return col.max_string_len
+
+
 def column_assumption_exclusive(
     column: str,
     table: TableAssumptions | None,
