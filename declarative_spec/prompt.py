@@ -344,7 +344,9 @@ def _parallel_section(spec_text: str, shape: dict) -> list[str]:
         "worker k returns `fold(t, lo_k) - fold(t, hi_k)` and the partials telescope to `fold(t, 0)`. No column is copied.",
         "A scan that is limited by memory bandwidth is the case this is for: on the real 39.4M-row table the parallel SUM was",
         "12.8x faster than the all-core reference engine. Keep the single-threaded body as the first proof if the parallel one is",
-        "hard, then upgrade. A join, hash aggregate or a result that is not a plain additive fold does not telescope directly.",
+        "hard, then upgrade. A hash aggregate or a join does not telescope directly, but a GROUP BY over a small code domain does: give each",
+        "worker its own DENSE array per aggregate (one slot per dictionary code), merge them slotwise in the join loop, and the slotwise",
+        "telescoping is the same proof (dict mode: `context/ro/examples/dict_group_count_sum_parallel.rs`, 13x on the real 39.4M-row table).",
         "The example is the template (SUM; adapt the fold, the filter, the cell bound and the accumulator type):",
         f"`context/ro/examples/{_PAR_EXAMPLE}` (also `parallel_ungrouped_product_sum.rs` for a product with a date filter, and `parallel_ungrouped_min.rs`, `_max.rs`, `_count.rs`: MIN/MAX merge the workers' (value, any) pairs, COUNT is additive).",
     ]
