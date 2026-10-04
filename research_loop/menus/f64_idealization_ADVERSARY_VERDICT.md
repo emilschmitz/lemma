@@ -136,3 +136,79 @@ Not mergeable as is: fix 1 (blocker), switch casts to the exact variants (or acc
 above 2^53), restore or replace the sum-error lemma, then list the accepted limitations above in
 `docs/TRUSTED_FAMILIES.md` and the paper's Limitations section. Not done here: edits to the float agent's
 worktree, the recursive pipeline, harvest, GCP, model runs.
+
+---
+
+# Second review (manual adversary, Sonnet subagent)
+
+Target: float agent branch `worktree-agent-a613164f3dd22dc1e` at `a63f0ff`. I read it from a `git archive` copy
+(my branch is not merged with it; the merge conflicts in `declarative_spec/lemmas.py` and
+`tests/test_f64_idealization_adversary.py` because that branch already holds my first-round files, so the float
+agent should resolve them). Tests: `tests/test_f64_idealization_adversary_round2.py` (+ fixture
+`tests/fixtures/adversary_round2/sum_idealized_eps0.rs`) and the first-round file, both run on the new state:
+54 passed, 1 skipped (the colliding-literal Verus demo skips because the emitter now refuses), 4 xfailed
+(strict). Verus through `verus_guarded.sh`, one job at a time.
+
+## Closed
+
+* Colliding literals (BLOCKER): refused for query/query, query/IN list, query/`FLOAT_ABS_EPS`, and
+  `9007199254740993.0` vs `...992.0`. Scientific notation (`1e-320`, `1.5e3`, `1e-1`) is refused. `-0.0`, `BETWEEN -0.5 AND 0.5`,
+  IN lists and DECIMAL-column compares emit one consistent hypothesis.
+* Casts: the non-exact `host_*_to_f64` are gone; the exact ones require `|n| <= 2^53` in the lemma itself, so
+  the gate holds on every path, whatever the emitter checks. AVG over an int/DECIMAL column is refused when
+  `rows * cap > 2^53` (also grouped, with HAVING).
+* Epsilon: row check is relative (`float_tolerance`); 1e20 no longer accepts garbage.
+
+## Verdict per lemma (new state)
+
+| Lemma | Verdict |
+|---|---|
+| `add_defined`, `sub_defined`, `mul_defined` | sound |
+| `lemma_f64_left_fold_empty/push` | sound (IEEE add is deterministic) |
+| `lemma_f64_sum_within_eps` | sound for reachable inputs. **False when `n * cap` overflows f64** (n=2, cap=2^1023 + 2^980: finite eps, sum is inf) and does not require finite terms. Unreachable (catalog caps are u64, rows below 2^52, so `n * cap < 2^116`). Hygiene fix: add `(n_terms as real) * (mag_cap as real) <= f64_safe_bound()` and `terms[i].is_finite_spec()` to the requires. |
+| `add_real`, `sub_real`, `mul_real`, `div_real` | **false-when rounding occurs** (accepted limitation); `mul`/`div` also **false on underflow** (`1e-200 * 1e-200 = 0`, `1e-300 / 1e300 = 0`, no lower magnitude bound; accepted, optional loader floor `|v| = 0 or >= 2^-500`). Overflow: not reachable, `cx + cy`, `cx * cy`, `cq` are each at most 2^200, f64::MAX is about 2^1024. `div_defined` conditions are sound (finite divisor with nonzero real value, `|x| < cq * |y|`, so no `0/0`, no inf). |
+| `*_exact`, `host_*_to_f64_exact` | sound (a representable exact result is returned exactly by IEEE; tested on 60k random fractional-operand cases) |
+| comparisons | sound on finite operands (as before) |
+| `f64_literals_ok` | consistent for every single query and for non-colliding literals (false only as a statement about the real 0.1, accepted); see new findings 2 and 3 |
+
+## New findings
+
+1. **Residual hole, confirmed: the idealized add makes the epsilon vacuous.** `SELECT SUM(v) AS s FROM t` with
+   `FLOAT_ABS_EPS = 0.0` verifies (`24 verified, 0 errors`) through `lemma_f64_add_within`
+   (`sum_idealized_eps0.rs`); the true lemma cannot apply there. The same holds for plain AVG(v), AVG over int expressions
+   and SUM(a*(1-b)) (their shipped fixtures use `lemma_f64_add_within`).
+2. **The default epsilon pushes agents onto the idealized add.** eps is `1e-9 * rows * cap`, the sound bound is
+   `rows^2 * cap * 2^-52`; they cross at 4.5M rows. For SEC `num` (39.4M rows) and TPC-H lineitem (60M) the sound lemma
+   cannot discharge at the default eps (pinned). Fix: for sums use `eps = max(default, rows^2 * cap * 2^-52)`
+   (about 7e-7 relative at the table maximum); the row check stays tight through `float_tolerance`.
+3. **Gap in the cast refusal:** `AVG(i * 3)`, `AVG(i + i)`, `AVG(i * i)` skip the `2^53` check (`src.arith` is skipped in
+   `_require_exact_avg_sum`); at 1e9 rows x 1e9 cap they emit. The sum cast itself is still protected by the lemma's
+   requires, but a body can cast each row (each at most 2^53) and accumulate with the idealized add (finding 1), so
+   the refusal is bypassable. Strict xfail `test_avg_over_integer_expression_is_refused_above_2_pow_53`.
+4. **Transpiler:** a literal of 400 digits crashes with `OverflowError` (`float(Fraction)` raises before the
+   `isinf` check) instead of `DeclarativeUnsupported`; strict xfail pinned. A denormal literal spelled with 319 zeros is
+   accepted with relative error 1e-5 against its hypothesis (accepted limitation).
+
+## Recommendation for the residual hole (2)
+
+It is avoidable. The true lemma proves everything the epsilon form needs; the idealized add is needed only for per-row
+terms (`a*(1-b)` uses `sub`/`mul`), which carry an error covered by the epsilon margin (`n * cap * 2^-52` is
+about 1e-7 of the default eps). Rule: **when the spec's postcondition is stated with `FLOAT_ABS_EPS`, admission rejects any
+reference to `lemma_f64_add_real`, `lemma_f64_add_within` (and `add_exact` has no use there) in the body and helpers**; the
+accumulator must use `lemma_f64_left_fold_push` + `lemma_f64_sum_within_eps`. The lint is name-based and complete because
+the lemmas are host-defined and no other way produces `acc as real == sum` (helpers are linted too). Cost, pinned in
+`test_proposed_lint_accepts_the_true_sum_fixture_and_rejects_idealized_accumulation`: the eps-form fixtures `float_avg_float`,
+`float_product_sum` (and the AVG-over-int ones) must be re-proved with the fold lemma over their terms; shapes that need a
+per-row `+` (`SUM(a + b)`) are refused until a relative-error add lemma exists. HAVING / ORDER BY on float sums is not eps-form
+and stays an accepted limitation. Reference lint: `_admit_eps_form` in the round-2 test file; it rejects the eps-0 body and accepts
+`float_sum_eps.rs`.
+
+## Merge: **no, not yet**. Conditions
+
+1. Install the eps-form admission rule above (finding 1) and re-prove the affected fixtures, or accept in writing that
+   plain-sum epsilons are not guarantees.
+2. Make the default sum epsilon at least `rows^2 * cap * 2^-52` (finding 2).
+3. Close the AVG-over-expression gap (finding 3) or let finding 1's rule cover it.
+4. Hygiene: overflow requirement and finite terms on `lemma_f64_sum_within_eps`; refuse (not crash) on overflowing literals.
+5. Then list the accepted limitations (rounding in `add/sub/mul/div_real`, underflow, float ordering on computed
+   floats, denormal literals) in `docs/TRUSTED_FAMILIES.md` and the paper's Limitations section.
