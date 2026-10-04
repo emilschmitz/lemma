@@ -212,6 +212,13 @@ def _row_printer(run_call: str, fields: list[tuple[str, str]]) -> tuple[str, str
             needs_hex = True
             placeholders.append("{}")
             args.append(f"row_hex(&{access})")
+        elif fty.startswith("Option<"):
+            inner = fty[len("Option<") : -1]
+            fmt_one = "{:.17}" if inner == "f64" else "{}"
+            placeholders.append("{}")
+            args.append(
+                f'match {access} {{ Some(v) => format!("{fmt_one}", v), None => "NULL".to_string() }}'
+            )
         elif fty == "f64":
             placeholders.append("{:.17}")
             args.append(access)

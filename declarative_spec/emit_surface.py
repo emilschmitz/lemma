@@ -84,7 +84,8 @@ def emit_from_surface(
         eps = ""
 
     structs = _structs(helpers.params, model)
-    valids = _valids(helpers.params, model, catalog)
+    int_sum = any(a.kind == "SUM" and not a.float_out for a in helpers.aggs)
+    valids = _valids(helpers.params, model, catalog, int_sum=int_sum)
     consts = _consts(helpers.params, model, catalog, eps)
     out_row = _out_row(query, helpers, model)
     ensures = _ensures(query, helpers, model)
@@ -107,6 +108,7 @@ def emit_from_surface(
         "",
         _host_lemma_region(),
         "",
+        _seq_le_source() if any(_order_seq_flags(query, helpers)) else "",
         out_row,
         "",
         f"""pub fn run_query({params}) -> (res: Vec<OutRow>)
@@ -125,6 +127,34 @@ def emit_from_surface(
     if "method_spec" in text:
         raise DeclarativeUnsupported("internal spec shape")
     return text + "\n"
+
+
+_REAL_CMP = r"(?:<=|>=|==|!=|<|>)"
+
+
+def _scalar_returns_real(source: str, call: str) -> bool:
+    fn = call.split("(")[0]
+    return re.search(rf"spec fn {re.escape(fn)}\([^)]*\)\s*->\s*real\b", source) is not None
+
+
+def _promote_int_side(text: str, token: str) -> str:
+    """``token`` is a real-valued scalar: compare an ``as int`` operand as a real."""
+    text = re.sub(
+        rf"\(([^()\s]+) as int\)(\s*{_REAL_CMP}\s*){re.escape(token)}",
+        lambda m: f"(({m.group(1)} as int) as real){m.group(2)}{token}",
+        text,
+    )
+    return re.sub(
+        rf"{re.escape(token)}(\s*{_REAL_CMP}\s*)\(([^()\s]+) as int\)",
+        lambda m: f"{token}{m.group(1)}(({m.group(2)} as int) as real)",
+        text,
+    )
+
+
+def _seq_le_source() -> str:
+    from declarative_spec.emit_projection import _seq_le_fn
+
+    return _seq_le_fn() + "\n"
 
 
 def _reject_unemitted(query: Query) -> None:
@@ -486,6 +516,9 @@ def _agg_exec(kind: str, is_float: bool, agg: Agg, main: list[_Slot], model: Sch
         return "f64"
     if kind in ("COUNT", "COUNT_DISTINCT"):
         return "u64"
+    if kind == "SUM":
+        # DuckDB widens every integer SUM to HUGEINT, a signed 128-bit integer.
+        return "i128"
     if agg.column and agg.column != "*" and not agg.expr:
         _slot, info = _find_col(agg.column, agg.table, main, model)
         if info.signed:
@@ -927,6 +960,12 @@ def _ensures(query: Query, helpers: _Helpers, model: SchemaModel) -> str:
     tail_q.in_subqueries = []
     tail_q.set_op = None
     tail_q.set_query = None
+    if helpers.key_ty is None:
+        tail_q.order_by = []
+    text_order = helpers.key_ty is not None and any(_order_seq_flags(query, helpers))
+    if text_order:
+        tail_q.order_by = []
+        lines.append(_typed_order_line(query, helpers))
     tail = tail_ensures(tail_q)
     if tail.strip():
         lines.append(tail)
@@ -980,19 +1019,41 @@ def _scalar_result(query: Query, helpers: _Helpers, scalars: dict[str, str]) -> 
     )
 
 
+_NULLABLE_UNGROUPED = ("SUM", "MIN", "MAX", "AVG")
+
+
+def _nullable(helpers: _Helpers, agg: _AggFn) -> bool:
+    """An ungrouped SUM, MIN, MAX or AVG is NULL when no row passes the filter."""
+    return helpers.key_ty is None and agg.kind in _NULLABLE_UNGROUPED
+
+
+def _any_hit(helpers: _Helpers) -> str:
+    p = _param_call(helpers.params)
+    binders, _ranges = _quant(helpers.main)
+    hit = f"{helpers.row_hit}({p}, {_idx_call(helpers.main)})"
+    return f"exists|{binders}| #![trigger {hit}] {hit}"
+
+
 def _agg_eqs(helpers: _Helpers, params: str, key: str) -> str:
     parts: list[str] = []
     key_arg = f", {key}" if helpers.key_ty else ""
     for agg in helpers.aggs:
-        view = _out_view(f"res@[r].{agg.alias}", agg)
+        nullable = _nullable(helpers, agg)
+        field = f"res@[r].{agg.alias}"
+        view = _out_view(f"{field}->Some_0" if nullable else field, agg)
         if agg.style == "bound":
-            parts.append(f"{agg.name}({params}{key_arg}, {view})")
+            eq = f"{agg.name}({params}{key_arg}, {view})"
         elif agg.float_out:
-            parts.append(
-                f"abs_real(({view}) - {agg.name}({params}, 0{key_arg})) <= (FLOAT_ABS_EPS as real)"
-            )
+            eq = f"abs_real(({view}) - {agg.name}({params}, 0{key_arg})) <= (FLOAT_ABS_EPS as real)"
         else:
-            parts.append(f"{view} == {agg.name}({params}, 0{key_arg})")
+            eq = f"{view} == {agg.name}({params}, 0{key_arg})"
+        if nullable:
+            any_hit = _any_hit(helpers)
+            eq = (
+                f"((({any_hit}) ==> (({field} is Some) && {eq}))"
+                f" && (!({any_hit}) ==> ({field} is None)))"
+            )
+        parts.append(eq)
     return " && ".join(parts) if parts else "true"
 
 
@@ -1045,6 +1106,23 @@ def _having(query: Query, helpers: _Helpers, scalars: dict[str, str], key: str) 
         repl.append((src.alias, f"{agg.name}({p}, 0{key_arg})"))
     for name, call in scalars.items():
         if re.search(rf"\b{re.escape(name)}\b", expr):
+            if _scalar_returns_real(helpers.source, call):
+                for i, (agg, src) in enumerate(zip(helpers.aggs, query.aggs, strict=True)):
+                    if agg.ret == "real" or agg.float_out:
+                        continue
+                    a = re.escape(src.alias)
+                    n = re.escape(name)
+                    tok = f"__RA{i}__"
+                    expr = re.sub(
+                        rf"\b{a}\b(\s*{_REAL_CMP}\s*){n}\b", rf"{tok}\1{name}", expr
+                    )
+                    expr = re.sub(
+                        rf"\b{n}\b(\s*{_REAL_CMP}\s*){a}\b", rf"{name}\1{tok}", expr
+                    )
+                    if tok in expr:
+                        repl.append(
+                            (tok, f"({agg.name}({p}, 0{key_arg}) as real)")
+                        )
             repl.append((name, call))
     for name, replacement in sorted(repl, key=lambda item: len(item[0]), reverse=True):
         expr = re.sub(rf"\b{re.escape(name)}\b", lambda _m, rep=replacement: rep, expr)
@@ -1059,7 +1137,9 @@ def _omitted_after(query: Query, helpers: _Helpers, scalars: dict[str, str], hav
     key_of = f"{helpers.key_at}({p}, {_idx_call(helpers.main)})"
     out_exprs = _order_exprs_row(query, helpers)
     group_exprs = _order_exprs_key(query, helpers, scalars, key_of)
-    before = _not_after(out_exprs, group_exprs, query.order_by)
+    before = _not_after(
+        out_exprs, group_exprs, query.order_by, _order_seq_flags(query, helpers)
+    )
     return (
         f"forall|{binders}, r: int| #![trigger {helpers.row_hit}({p}, {_idx_call(helpers.main)}), res@[r]] "
         f"{helpers.row_hit}({p}, {_idx_call(helpers.main)}) && ({having_of})"
@@ -1115,11 +1195,22 @@ def _order_exprs_key(
     return exprs
 
 
-def _not_after(left: list[str], right: list[str], keys: list[OrderKey]) -> str:
+def _not_after(
+    left: list[str], right: list[str], keys: list[OrderKey], seq: list[bool] | None = None
+) -> str:
+    """``left`` is not after ``right``. ``seq[k]`` marks a ``Seq<char>`` key, ordered by ``seq_le``."""
+
     def clause(k: int) -> str:
-        cmp = ">=" if keys[k].descending else "<="
         tie = f"({left[k]}) == ({right[k]})"
-        order = f"({left[k]}) {cmp} ({right[k]})"
+        if seq is not None and seq[k]:
+            order = (
+                f"seq_le({right[k]}, {left[k]})"
+                if keys[k].descending
+                else f"seq_le({left[k]}, {right[k]})"
+            )
+        else:
+            cmp = ">=" if keys[k].descending else "<="
+            order = f"({left[k]}) {cmp} ({right[k]})"
         if k + 1 == len(keys):
             return order
         return f"if {tie} {{ {clause(k + 1)} }} else {{ {order} }}"
@@ -1127,6 +1218,23 @@ def _not_after(left: list[str], right: list[str], keys: list[OrderKey]) -> str:
     if not keys:
         return "true"
     return clause(0)
+
+
+def _order_seq_flags(query: Query, helpers: _Helpers) -> list[bool]:
+    flags: list[bool] = []
+    for key in query.order_by:
+        ident = rust_ident(key.column.split(".")[-1])
+        info = next((g[2] for g in helpers.group_infos if g[0] == ident), None)
+        flags.append(info is not None and info.spec_as == "Seq<char>")
+    return flags
+
+
+def _typed_order_line(query: Query, helpers: _Helpers) -> str:
+    """Adjacent result rows are in ORDER BY order, comparing text keys with ``seq_le``."""
+    left = [e.replace("res@[r]", "res@[i]") for e in _order_exprs_row(query, helpers)]
+    right = [e.replace("res@[r]", "res@[i + 1]") for e in _order_exprs_row(query, helpers)]
+    before = _not_after(left, right, query.order_by, _order_seq_flags(query, helpers))
+    return f"forall|i: int| #![trigger res@[i]] 0 <= i && i + 1 < res@.len() ==> ({before})"
 
 
 def _quant(slots: list[_Slot]) -> tuple[str, str]:
@@ -1151,7 +1259,13 @@ def _structs(params: list[_Slot], model: SchemaModel) -> str:
     return "\n\n".join(blocks)
 
 
-def _valids(params: list[_Slot], model: SchemaModel, catalog: CatalogAssumptions | None) -> str:
+def _valids(
+    params: list[_Slot],
+    model: SchemaModel,
+    catalog: CatalogAssumptions | None,
+    *,
+    int_sum: bool = False,
+) -> str:
     seen: set[str] = set()
     blocks: list[str] = []
     for slot in params:
@@ -1163,6 +1277,9 @@ def _valids(params: list[_Slot], model: SchemaModel, catalog: CatalogAssumptions
         cap = _row_cap(catalog, slot.table)
         if cap is not None:
             checks.append(f"{slot.param}.n as int <= ROW_CAP_{rust_ident(slot.table)} as int")
+        if int_sum and (cap is None or cap >= 2**63):
+            # An i128 sum of u64 cells fits when the row count is below 2^63.
+            checks.append(f"{slot.param}.n as int < 0x8000_0000_0000_0000int")
         checks.extend(_float_mag_checks(slot, model, catalog))
         body = "\n    &&& ".join(checks)
         blocks.append(
@@ -1318,7 +1435,8 @@ def _out_row(query: Query, helpers: _Helpers, model: SchemaModel) -> str:
         if agg.alias in seen:
             raise DeclarativeUnsupported("SELECT")
         seen.add(agg.alias)
-        lines.append(f"    pub {agg.alias}: {agg.exec},")
+        ty = f"Option<{agg.exec}>" if _nullable(helpers, agg) else agg.exec
+        lines.append(f"    pub {agg.alias}: {ty},")
     del query, model
     lines.append("}")
     return "\n".join(lines)
