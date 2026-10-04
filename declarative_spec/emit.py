@@ -636,7 +636,12 @@ def _emit_integer_sql(
     catalog: CatalogAssumptions | None,
 ) -> str:
     from declarative_spec.emit_surface import emit_from_surface
+    from declarative_spec.string_encoding import dict_mode
 
+    if dict_mode():
+        # The count and join-sum emitters below know `Vec<String>` columns only: with dictionary-encoded strings every
+        # query takes the surface emitter, which refuses what it cannot state.
+        return emit_from_surface(sql, schema, catalog)
     try:
         parsed = parse_declarative_sql(sql)
     except DeclarativeUnsupported:

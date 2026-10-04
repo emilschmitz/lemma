@@ -92,7 +92,7 @@ def emit_projection_program(
         "use vstd::prelude::*;",
         "verus! {",
         _consts(params, model, catalog),
-        _structs(params, model),
+        _structs(params, model, catalog),
         "",
         _valids(params, model, catalog),
         "",

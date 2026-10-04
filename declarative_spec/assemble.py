@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 
 _WIDTH = {
+    "u8": 1,
+    "u16": 2,
     "u64": 8,
     "i64": 8,
     "u32": 4,
@@ -212,6 +214,8 @@ def _loader_requires(verus_part: str, suffix: str, fields: list[tuple[str, str]]
     param, conj = _valid_cols_conjuncts(verus_part, suffix)
     lines: list[str] = []
     for fname, _fty in fields:
+        if fname.endswith("__dict"):
+            continue  # a dictionary has its own length: `valid_cols` relates it to the codes
         lines.append(f"        {suffix}_{_local_ident(fname)}@.len() == n_{suffix} as int,")
     for c in conj:
         if _LEN_CONJ.match(c):
@@ -288,6 +292,28 @@ def _runtime_checks(verus_part: str, suffix: str, fields: list[tuple[str, str]])
             )
             continue
         m = re.fullmatch(
+            rf"forall\|i: int\| #!\[trigger {p}\.((?:r#)?\w+)@\[i\]\] 0 <= i < {p}\.n as int ==> "
+            rf"\({p}\.\1@\[i\] as int\) < {p}\.\1__dict@\.len\(\)",
+            c,
+        )
+        if m:
+            codes, dct = f"{suffix}_{_local_ident(m.group(1))}", f"{suffix}_{_local_ident(m.group(1))}__dict"
+            out.append(
+                f'    assert!({codes}.iter().all(|c| (*c as usize) < {dct}.len()), "{suffix}.{_local_ident(m.group(1))}: a code is outside its dictionary");'
+            )
+            continue
+        m = re.fullmatch(
+            rf"forall\|a: int, b: int\| #!\[trigger {p}\.((?:r#)?\w+)__dict@\[a\]@, .*?\] "
+            rf"0 <= a < b < {p}\.\1__dict@\.len\(\) ==> .*",
+            c,
+        )
+        if m:
+            dct = f"{suffix}_{_local_ident(m.group(1))}__dict"
+            out.append(
+                f'    assert!({dct}.iter().collect::<std::collections::HashSet<_>>().len() == {dct}.len(), "{suffix}.{_local_ident(m.group(1))}: a dictionary entry repeats");'
+            )
+            continue
+        m = re.fullmatch(
             rf"forall\|i: int, j: int\| #!\[trigger .*?\] 0 <= i < j < {p}\.n as int ==> !\((.*)\)", c
         )
         if m:
@@ -339,9 +365,19 @@ def _read_column_prelude(
     args = [f"n_{suffix}"]
     for fname, fty in fields:
         var = f"{suffix}_{_local_ident(fname)}"
-        lines.append(f"    let mut {var}: Vec<{fty}> = Vec::with_capacity(n_{suffix});")
-        lines.append(f"    let mut j_{var}: usize = 0;")
-        lines.append(f"    while j_{var} < n_{suffix} {{")
+        if fname.endswith("__dict"):
+            # A dictionary: its own count (u64), then that many strings.
+            lines.append(
+                f"    let m_{var} = u64::from_le_bytes(bytes_{suffix}[off_{suffix}..off_{suffix} + 8].try_into().unwrap()) as usize;"
+            )
+            lines.append(f"    off_{suffix} += 8;")
+            lines.append(f"    let mut {var}: Vec<{fty}> = Vec::with_capacity(m_{var});")
+            lines.append(f"    let mut j_{var}: usize = 0;")
+            lines.append(f"    while j_{var} < m_{var} {{")
+        else:
+            lines.append(f"    let mut {var}: Vec<{fty}> = Vec::with_capacity(n_{suffix});")
+            lines.append(f"    let mut j_{var}: usize = 0;")
+            lines.append(f"    while j_{var} < n_{suffix} {{")
         if fty == "String":
             lines.append(
                 f"        let len_{var} = u32::from_le_bytes(bytes_{suffix}[off_{suffix}..off_{suffix} + 4].try_into().unwrap()) as usize;"
@@ -373,6 +409,8 @@ def _read_column_prelude(
             f'    assert!(n_{suffix} == {int(expect_rows)}usize, "{suffix}: loaded {{}} rows, DuckDB pin has {int(expect_rows)}", n_{suffix});'
         )
     for fname, _fty in fields:
+        if fname.endswith("__dict"):
+            continue
         var = f"{suffix}_{_local_ident(fname)}"
         lines.append(
             f'    assert!({var}.len() == n_{suffix}, "{suffix}.{_local_ident(fname)}: {{}} values for {{}} rows", {var}.len(), n_{suffix});'

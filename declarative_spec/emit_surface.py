@@ -91,7 +91,7 @@ def _emit_with_string_tokens(
     _require_float_mags(query, helpers, model, catalog)
     facts = _require_sum_fits(query, helpers, model, catalog)
 
-    structs = _structs(helpers.params, model)
+    structs = _structs(helpers.params, model, catalog)
     int_sum = any(a.kind == "SUM" and not a.float_out for a in helpers.aggs)
     valids = _valids(helpers.params, model, catalog, int_sum=int_sum, facts=facts)
     consts = _consts(helpers.params, model, catalog)
@@ -1379,7 +1379,19 @@ def _quant(slots: list[_Slot]) -> tuple[str, str]:
     return binders, ranges
 
 
-def _structs(params: list[_Slot], model: SchemaModel) -> str:
+def _code_type(catalog: CatalogAssumptions | None, table: str, col: str) -> str:
+    from declarative_spec.emit import _lookup_table_assumptions
+    from declarative_spec.string_encoding import code_type
+
+    ta = _lookup_table_assumptions(catalog, table) if catalog is not None else None
+    ca = None if ta is None else next((c for k, c in ta.columns.items() if k.casefold() == col.casefold()), None)
+    return code_type(None if ca is None else ca.max_distinct)
+
+
+def _structs(params: list[_Slot], model: SchemaModel, catalog: CatalogAssumptions | None = None) -> str:
+    from declarative_spec.string_encoding import DICT_SUFFIX, dict_mode
+
+    dict_on = dict_mode()
     seen: set[str] = set()
     blocks: list[str] = []
     for slot in params:
@@ -1389,6 +1401,12 @@ def _structs(params: list[_Slot], model: SchemaModel) -> str:
         _orig, cols = model.lookup_table(slot.table)
         lines = [f"pub struct {slot.struct} {{", "    pub n: usize,"]
         for col in sorted(cols):
+            if dict_on and cols[col].spec_as == "Seq<char>":
+                if rust_ident(col).endswith(DICT_SUFFIX):
+                    raise DeclarativeUnsupported(f"column {col!r} ends in the reserved dictionary suffix")
+                lines.append(f"    pub {rust_ident(col)}: Vec<{_code_type(catalog, slot.table, col)}>,")
+                lines.append(f"    pub {rust_ident(col)}{DICT_SUFFIX}: Vec<String>,")
+                continue
             lines.append(f"    pub {rust_ident(col)}: Vec<{cols[col].exec_rust}>,")
         lines.append("}")
         blocks.append("\n".join(lines))
@@ -1429,6 +1447,7 @@ def _valids(
                     f"forall|i: int| 0 <= i < {slot.param}.n as int ==> {cell} >= -{top} && {cell} <= {top}"
                 )
         checks.extend(_float_mag_checks(slot, model, catalog))
+        checks.extend(_dict_checks(slot, cols))
         if slot.alias in unique:
             checks.append(_unique_conj(slot, unique[slot.alias], cols))
         body = "\n    &&& ".join(checks)
@@ -1438,6 +1457,29 @@ def _valids(
 }}"""
         )
     return "\n\n".join(blocks)
+
+
+def _dict_checks(slot: _Slot, cols: dict[str, ColumnTypeInfo]) -> list[str]:
+    """The loader relation of dictionary-encoded string columns (see ``string_encoding``)."""
+    from declarative_spec.string_encoding import DICT_SUFFIX, dict_mode
+
+    if not dict_mode():
+        return []
+    out: list[str] = []
+    p = slot.param
+    for col in sorted(cols):
+        if cols[col].spec_as != "Seq<char>":
+            continue
+        c = rust_ident(col)
+        d = f"{c}{DICT_SUFFIX}"
+        out.append(
+            f"forall|i: int| #![trigger {p}.{c}@[i]] 0 <= i < {p}.n as int ==> ({p}.{c}@[i] as int) < {p}.{d}@.len()"
+        )
+        out.append(
+            f"forall|a: int, b: int| #![trigger {p}.{d}@[a]@, {p}.{d}@[b]@] "
+            f"0 <= a < b < {p}.{d}@.len() ==> {p}.{d}@[a]@ != {p}.{d}@[b]@"
+        )
+    return out
 
 
 def _unique_conj(slot: _Slot, key: tuple[str, ...], cols: dict[str, ColumnTypeInfo]) -> str:
@@ -1820,6 +1862,17 @@ def _string_fields(model: SchemaModel, params: list[_Slot]) -> set[str]:
 
 
 def _string_views(text: str, fields: set[str]) -> str:
+    from declarative_spec.string_encoding import DICT_SUFFIX, dict_mode
+
+    if dict_mode():
+        # The string cell is the dictionary entry its code names: `t.c@[i]` is `t.c__dict@[t.c@[i] as int]@`.
+        for field_name in sorted(fields, key=len, reverse=True):
+            text = re.sub(
+                rf"(?<![\w.@])([A-Za-z_]\w*)\.{re.escape(field_name)}@\[([A-Za-z0-9_]+)\]@?(?! as int)(?!\])",
+                rf"\1.{field_name}{DICT_SUFFIX}@[\1.{field_name}@[\2] as int]@",
+                text,
+            )
+        return text
     for field_name in sorted(fields, key=len, reverse=True):
         text = re.sub(
             rf"(\.{re.escape(field_name)}@\[)([A-Za-z0-9_]+)(\])(?!@)",

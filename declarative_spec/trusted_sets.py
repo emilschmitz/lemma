@@ -41,10 +41,28 @@ def _default_lemmas_rs(spec: str | None = None) -> str:
     return float_error_lemmas_rs().rstrip() if spec_uses_floats(spec) else ""
 
 
+_DICT_NOTE = """
+Dictionary-encoded string columns (this spec has `<col>__dict` fields):
+
+- A string column `c` is two vectors: `t.c` (one small integer CODE per row) and `t.c__dict` (the distinct strings).
+  The spec reads a cell as `t.c__dict@[t.c@[i] as int]@`; `valid_cols` gives you that every code is below
+  `t.c__dict@.len()` and that dictionary entries are pairwise distinct. Nothing about `t.c[i]` itself is a string.
+- `c = 'lit'` becomes a code comparison. Look the literal's code up ONCE before the row loop (scan `t.c__dict` with
+  `String == String`, keep `found` and `code`); distinctness makes it the only entry equal to the literal, so the
+  cell equals the literal exactly when `found && (t.c[i] as usize) == code`. The row loop then reads one small
+  integer per row. A worked body: `context/ro/examples/dict_string_filter_minmax.rs`.
+- GROUP BY a string key: use a dense array indexed by the code (`counts: Vec<u64>` of length `t.c__dict.len()`),
+  then build the result from the nonzero slots; the dictionary entry is the key string.
+"""
+
+
 def _default_index_markdown(spec: str | None = None) -> str:
     from declarative_spec.lemma_index import lemma_index_markdown
 
-    return lemma_index_markdown(floats=spec_uses_floats(spec))
+    text = lemma_index_markdown(floats=spec_uses_floats(spec))
+    if spec is not None and "__dict@" in spec:
+        text += _DICT_NOTE
+    return text
 
 
 TRUSTED_SETS: dict[str, TrustedSet] = {

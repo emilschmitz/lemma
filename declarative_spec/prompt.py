@@ -254,6 +254,11 @@ def mount_examples(ro: Path) -> None:
         target.write_text((_FIXTURES / name).read_text())
     for path in sorted(_FIXTURES.glob("float_*.rs")):  # the float shapes (exact reals, the f64 idealization lemmas)
         (dest / path.name).write_text(path.read_text())
+    from declarative_spec.string_encoding import dict_mode
+
+    if dict_mode():  # the dictionary-encoded string recipe (only when strings are encoded)
+        for path in sorted(_FIXTURES.glob("dict_*.rs")):
+            (dest / path.name).write_text(path.read_text())
 
 
 _FLOAT_EXAMPLES: tuple[tuple[str, str], ...] = (
