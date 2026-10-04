@@ -155,8 +155,32 @@ def _col(exclusive: int, scale: int = 0) -> ColumnAssumption:
     return ColumnAssumption(max_value_exclusive=exclusive, scale=scale)
 
 
-def _strlen(n: int) -> ColumnAssumption:
-    return ColumnAssumption(max_string_len=n)
+def _strlen(n: int, distinct: int | None = None) -> ColumnAssumption:
+    return ColumnAssumption(max_string_len=n, max_distinct=distinct)
+
+
+# Distinct-value caps of the low-cardinality string columns (data assumptions, outside the 45): they pick the
+# dictionary code width when strings are dictionary-encoded (LEMMA_STRING_ENCODING=dict): u8 up to 256, u16 up to 65536.
+# `check.py` MEASURES each (COUNT(DISTINCT col)) and fails naming the column and the measured count. Derived from
+# the EDGAR Financial Statement Data Sets documentation with a wide margin; ON THIS MACHINE ONLY THE SYNTHETIC DATA
+# HAS BEEN CHECKED (num.uom 3, pre.stmt 7, pre.rfile 2, sub.form 4, sub.fp 5, sub.afs 1, tag.iord 1, tag.crdr 1,
+# tag.datatype 1, sub.countryba 1). The real numbers are unverified until the preflight runs on the real database.
+#   pre.stmt 16 (BS IS CF EQ CI UN CP SI), pre.rfile 8 (H, X), sub.form 256 (about 60 form types), sub.fp 32
+#   (FY Q1-Q4 H1 H2 M9 T1-T3 ...), sub.afs 16 (LAF ACC SRA NON ...), tag.iord 4 (I, D), tag.crdr 4 (C, D),
+#   tag.datatype 64 (about 10), sub.countryba 512 (ISO codes, about 250 and a few historical), num.uom 4096 (EDGAR
+#   has hundreds of units; u16 codes).
+DISTINCT_CAPS: dict[tuple[str, str], int] = {
+    ("num", "uom"): 4096,
+    ("pre", "stmt"): 16,
+    ("pre", "rfile"): 8,
+    ("sub", "form"): 256,
+    ("sub", "fp"): 32,
+    ("sub", "afs"): 16,
+    ("sub", "countryba"): 512,
+    ("tag", "iord"): 4,
+    ("tag", "crdr"): 4,
+    ("tag", "datatype"): 64,
+}
 
 
 def sec_margin_catalog(value_scale: int = 0) -> CatalogAssumptions:
@@ -187,7 +211,7 @@ def sec_margin_catalog(value_scale: int = 0) -> CatalogAssumptions:
                     "adsh": _strlen(32),
                     "tag": _strlen(512),
                     "version": _strlen(64),
-                    "uom": _strlen(64),
+                    "uom": _strlen(64, DISTINCT_CAPS[("num", "uom")]),
                     "coreg": _strlen(COREG_LEN),
                 },
             ),
@@ -202,8 +226,8 @@ def sec_margin_catalog(value_scale: int = 0) -> CatalogAssumptions:
                     "adsh": _strlen(32),
                     "tag": _strlen(512),
                     "version": _strlen(64),
-                    "stmt": _strlen(8),
-                    "rfile": _strlen(4),
+                    "stmt": _strlen(8, DISTINCT_CAPS[("pre", "stmt")]),
+                    "rfile": _strlen(4, DISTINCT_CAPS[("pre", "rfile")]),
                 },
             ),
             "sub": TableAssumptions(
@@ -220,11 +244,11 @@ def sec_margin_catalog(value_scale: int = 0) -> CatalogAssumptions:
                     "prevrpt": _col(16),
                     "wksi": _col(16),
                     "adsh": _strlen(32),
-                    "form": _strlen(16),
-                    "fp": _strlen(8),
-                    "countryba": _strlen(8),
+                    "form": _strlen(16, DISTINCT_CAPS[("sub", "form")]),
+                    "fp": _strlen(8, DISTINCT_CAPS[("sub", "fp")]),
+                    "countryba": _strlen(8, DISTINCT_CAPS[("sub", "countryba")]),
                     "name": _strlen(256),
-                    "afs": _strlen(AFS_LEN),
+                    "afs": _strlen(AFS_LEN, DISTINCT_CAPS[("sub", "afs")]),
                 },
             ),
             "tag": TableAssumptions(
@@ -235,9 +259,9 @@ def sec_margin_catalog(value_scale: int = 0) -> CatalogAssumptions:
                     "abstract": _col(16),
                     "tag": _strlen(512),
                     "version": _strlen(64),
-                    "datatype": _strlen(32),
-                    "iord": _strlen(4),
-                    "crdr": _strlen(4),
+                    "datatype": _strlen(32, DISTINCT_CAPS[("tag", "datatype")]),
+                    "iord": _strlen(4, DISTINCT_CAPS[("tag", "iord")]),
+                    "crdr": _strlen(4, DISTINCT_CAPS[("tag", "crdr")]),
                     "doc": _strlen(STRING_LEN),
                 },
             ),

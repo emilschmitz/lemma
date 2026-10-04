@@ -52,7 +52,10 @@ Dictionary-encoded string columns (this spec has `<col>__dict` fields):
   cell equals the literal exactly when `found && (t.c[i] as usize) == code`. The row loop then reads one small
   integer per row. A worked body: `context/ro/examples/dict_string_filter_minmax.rs`.
 - GROUP BY a string key: use a dense array indexed by the code (`counts: Vec<u64>` of length `t.c__dict.len()`),
-  then build the result from the nonzero slots; the dictionary entry is the key string.
+  then build the result from the nonzero slots; the dictionary entry is the key string. The result is a `Vec<OutRow>`
+  whose key field is a `String`. A worked, verified body (counts backwards to match the suffix fold, a ghost slot
+  sequence for the output rows, `lemma_count_pos` for 'count > 0 means a witness row'):
+  `context/ro/examples/dict_group_count_dense.rs`.
 """
 
 
