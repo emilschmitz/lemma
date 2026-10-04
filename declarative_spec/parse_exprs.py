@@ -84,6 +84,15 @@ def _folded_day(node: exp.Expression) -> dt.date | None:
     return None
 
 
+def is_float_literal(node: exp.Expression) -> bool:
+    """A number literal written ``<decimal>e0``: the rewriter's mark for a float constant."""
+    return isinstance(node, exp.Literal) and node.is_number and re.fullmatch(r"\d+(\.\d+)?e0", str(node.this)) is not None
+
+
+def has_float_literal(node: exp.Expression) -> bool:
+    return any(is_float_literal(n) for n in node.walk())
+
+
 def fold_number(node: exp.Expression) -> Fraction | None:
     """Exact value of a constant number expression (+, -, *, unary -). None if it has a column."""
     if isinstance(node, exp.Paren):
@@ -123,6 +132,8 @@ def arith_text(
         refs.append(ref(node))
         return refs[-1]
     if isinstance(node, exp.Literal):
+        if is_float_literal(node):
+            return str(node.this)
         if node.is_number and re.fullmatch(r"\d+", str(node.this)):
             return str(node.this)
         if node.is_number:

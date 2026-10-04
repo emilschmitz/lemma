@@ -492,7 +492,7 @@ def _emit_agg(
     hit = _hit(row_hit, key_at, main, params, key_ty)
     if kind in ("MIN", "MAX"):
         value = _value_fn(blocks, f"{name}_val", agg, main, params, model, ret)
-        _emit_bound(blocks, name, ret, value, hit, main, params, key_ty, "min" if kind == "MIN" else "max")
+        _emit_bound(blocks, name, ret, value, hit, main, params, key_ty, "min" if kind == "MIN" else "max", prefix)
         return _AggFn(alias, kind, name, ret, False, "bound", exec_ty)
     if kind == "COUNT":
         _emit_fold(
@@ -528,7 +528,15 @@ def _emit_agg(
         sum_name = f"{name}_sum"
         cnt_name = f"{name}_count"
         value = _value_fn(
-            blocks, f"{name}_val", agg, main, params, model, ret, cast_real=not natural_float
+            blocks,
+            f"{name}_val",
+            agg,
+            main,
+            params,
+            model,
+            ret,
+            cast_real=not natural_float,
+            real_scale=_decimal_scale(agg, main, model),
         )
         add = f"if {hit} {{ {value}({_param_call(params)}, {_idx_call(main)}) }} else {{ 0real }}"
         _emit_fold(blocks, sum_name, "real", "0real", add, main, params, key_ty)
@@ -564,7 +572,15 @@ def _fn_name(prefix: str, kind: str, alias: str) -> str:
     raise DeclarativeUnsupported(kind)
 
 
+def _decimal_scale(agg: Agg, main: list[_Slot], model: SchemaModel) -> int:
+    if agg.expr or agg.arith or not agg.column or agg.column == "*":
+        return 0
+    return _find_col(agg.column, agg.table, main, model)[1].scale
+
+
 def _agg_is_float(agg: Agg, main: list[_Slot], model: SchemaModel) -> bool:
+    if agg.arith:
+        return any(_ref_slot(ref, main, model)[1].is_float for ref in agg.arith_refs)
     if agg.expr or agg.kind.upper() in ("COUNT", "COUNT_DISTINCT"):
         return False
     if not agg.column or agg.column == "*":
@@ -607,6 +623,7 @@ def _value_fn(
     ret: str,
     *,
     cast_real: bool = False,
+    real_scale: int = 0,
 ) -> str:
     if agg.arith:
         expr = _compile_pred(agg.arith, main, [], model, {})
@@ -619,6 +636,8 @@ def _value_fn(
         raise DeclarativeUnsupported(agg.kind)
     if cast_real:
         expr = f"(({expr}) as real)"
+    if real_scale:  # a DECIMAL cell is stored as value * 10**scale; AVG states its real value
+        expr = f"(({expr}) / {10**real_scale}real)"
     ranges = " && ".join(f"0 <= {s.idx} < {s.param}.n as int" for s in main)
     default = "0real" if ret == "real" else ("Seq::<char>::empty()" if ret == "Seq<char>" else "0int")
     if ret == "bool":
@@ -806,8 +825,9 @@ def _emit_bound(
     params: list[_Slot],
     key_ty: str | None,
     pick: str,
+    prefix: str,
 ) -> None:
-    del ret, hit
+    del hit
     alts = [f"j{i}" for i in range(len(main))]
     binders = ", ".join(f"{a}: int" for a in alts)
     ranges = " && ".join(f"0 <= {a} < {s.param}.n as int" for a, s in zip(alts, main, strict=True))
@@ -824,6 +844,8 @@ def _emit_bound(
             _param_call(params),
             ", ".join(alts),
             order,
+            ret,
+            prefix,
         )
     )
 
@@ -839,21 +861,15 @@ def _bound_text(
     p: str,
     alt: str,
     order: str,
+    ret: str,
+    prefix: str,
 ) -> str:
-    # row_hit / key_at share the aggregate's prefix: ``min_lo`` sits next to ``row_hit``.
-    # The names are recovered from the value fn, which is ``{name}_val`` and the helpers
-    # are the un-prefixed ones stored on the surrounding emitter. Pass them through ``value``
-    # only. The row predicate is ``row_hit`` with the same prefix as ``name``'s module prefix.
-    prefix = ""
-    for token in ("min_", "max_"):
-        if token in name:
-            prefix = name[: name.rindex(token)]
-            break
+    # row_hit / key_at carry the aggregate group's prefix (not parsed out of the aggregate's name).
     row_hit = f"{prefix}row_hit"
     key_at = f"{prefix}key_at"
     key_part = f" && {key_at}({p}, {alt}) == k" if key_ty else ""
     key_sig = f", k: {key_ty}" if key_ty else ""
-    return f"""pub open spec fn {name}({_param_sig(params)}{key_sig}, bound: int) -> bool {{
+    return f"""pub open spec fn {name}({_param_sig(params)}{key_sig}, bound: {ret}) -> bool {{
     &&& (exists|{binders}| {ranges} && {row_hit}({p}, {alt}){key_part} && {value}({p}, {alt}) == bound)
     &&& (forall|{binders}| {ranges} && {row_hit}({p}, {alt}){key_part} ==> {value}({p}, {alt}) {order} bound)
 }}"""
@@ -1035,7 +1051,8 @@ def _ensures(query: Query, helpers: _Helpers, model: SchemaModel) -> str:
     string_cols = frozenset(
         fname for fname, _c, info, _s in helpers.group_infos if info.spec_as == "Seq<char>"
     )
-    tail = tail_ensures(tail_q, string_cols)
+    float_cols = frozenset(a.alias for a in helpers.aggs if a.exec == "f64")
+    tail = tail_ensures(tail_q, string_cols, float_cols)
     if tail.strip():
         lines.append(tail)
     # ``p`` is unused when the tail already closed the ensures; keep the param call live
@@ -1177,6 +1194,7 @@ def _having(query: Query, helpers: _Helpers, scalars: dict[str, str], key: str) 
     expr = query.having_expr.strip()
     if not expr:
         return "true"
+    expr = _real_literals(expr)
     # Group columns are replaced before aggregate calls, which mention those
     # same names as result fields (``res@[r].name@``).
     held: list[tuple[str, str]] = []
@@ -1447,14 +1465,20 @@ def _require_float_mags(
     from research_loop.table_assumptions import column_assumption_exclusive
 
     for src in query.aggs:
-        if src.expr or not src.column or src.column == "*":
+        if src.expr:
             continue
-        slot, info = _find_col(src.column, src.table, helpers.main, model)
-        if not info.is_float:
+        if src.arith:
+            found = [(_ref_slot(r, helpers.main, model), r.rpartition(".")[2]) for r in src.arith_refs]
+        elif src.column and src.column != "*":
+            found = [(_find_col(src.column, src.table, helpers.main, model), src.column)]
+        else:
             continue
-        table_assumptions = _lookup_table_assumptions(catalog, slot.table)
-        if column_assumption_exclusive(src.column, table_assumptions) is None:
-            raise FitRefusal(f"float sum requires magnitude cap for {slot.table}.{src.column}")
+        for (slot, info), column in found:
+            if not info.is_float:
+                continue
+            table_assumptions = _lookup_table_assumptions(catalog, slot.table)
+            if column_assumption_exclusive(column, table_assumptions) is None:
+                raise FitRefusal(f"float aggregate requires magnitude cap for {slot.table}.{column}")
 
 
 def _float_mag_name(table: str, column: str) -> str:
@@ -1504,6 +1528,10 @@ def _float_mag_checks(
     for table, col, _cap in _float_mags([slot], model, catalog):
         const = _float_mag_name(table, col)
         field = f"{slot.param}.{rust_ident(col)}@[i]"
+        checks.append(
+            f"forall|i: int| #![trigger {slot.param}.{rust_ident(col)}@[i]] "
+            f"0 <= i < {slot.param}.n as int ==> {field}.is_finite_spec()"
+        )
         checks.append(
             f"forall|i: int| #![trigger {slot.param}.{rust_ident(col)}@[i]] "
             f"0 <= i < {slot.param}.n as int ==> "
@@ -1584,6 +1612,20 @@ def _string_views(text: str, fields: set[str]) -> str:
     return text
 
 
+_FLOAT_LIT = re.compile(r"(?<![\w.])(\d+)(?:\.(\d+))?e0(?!\w)")
+
+
+def _real_literals(text: str) -> str:
+    """A float literal ``1.5e0`` (see ``numeric_rewrite``) as the exact real ``(15real / 10real)``."""
+
+    def one(m: re.Match[str]) -> str:
+        frac = m.group(2) or ""
+        num, den = int(m.group(1) + frac), 10 ** len(frac)
+        return f"{num}real" if den == 1 else f"({num}real / {den}real)"
+
+    return _FLOAT_LIT.sub(one, text)
+
+
 def _compile_pred(
     expr: str,
     local: list[_Slot],
@@ -1593,6 +1635,7 @@ def _compile_pred(
 ) -> str:
     if not expr.strip():
         return "true"
+    expr = _real_literals(expr)
     scopes = list(local) + list(outer)
 
     def isnull(m: re.Match[str]) -> str:

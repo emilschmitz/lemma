@@ -14,7 +14,7 @@ from declarative_spec.lemmas import FitRefusal
 from declarative_spec.pipeline import extract_agent_edit, run_declarative_metrics
 from declarative_spec.verus_docs import DOCS_CACHE, examples_index_markdown, lemmas_markdown
 from declarative_spec.vstd_index import VERUS_HOME, groups_markdown
-from declarative_spec.prompt import build_declarative_prompt
+from declarative_spec.prompt import build_declarative_prompt, mount_examples
 
 
 def _maybe_large_table(
@@ -39,6 +39,8 @@ def _maybe_large_table(
         )
         bar = {
             "duck_us": prepared["duck_us"],
+            "duck_threads": prepared["duck_threads"],
+            "duck1_us": prepared["duck1_us"],
             "rows": prepared["rows"],
             "table_rows": prepared["table_rows"],
             "float_abs_eps": float_abs_eps,
@@ -130,6 +132,7 @@ def _ensure_context_files(
     (ro / "schema.json").write_text(json.dumps(resolved_schema, indent=2) + "\n")
     (ro / "lemma_index.md").write_text(lemma_index_markdown())
     mount_verus_docs(ro)
+    mount_examples(ro)
     agent_path = workspace / "runquery_agent.rs"
     return spec_path, agent_path
 
@@ -217,6 +220,7 @@ def run_declarative_optimization_loop(
             lemma_index=lemma_index,
             last_error=last_error,
             in_docker=in_docker,
+            spec_text=spec,
         )
         (workspace / "context" / "ro" / "DECLARATIVE.md").write_text(prompt)
 
@@ -263,6 +267,11 @@ def run_declarative_optimization_loop(
                 "status": "SUCCESS",
                 "best_latency_us": latency,
                 "duck_us": metrics.get("duck_us"),
+                "duck1_us": metrics.get("duck1_us"),
+                "duck_threads": metrics.get("duck_threads"),
+                "speedup": metrics.get("speedup"),
+                "speedup_1t": metrics.get("speedup_1t"),
+                "speed_bar_mult": metrics.get("speed_bar_mult"),
                 "float_abs_eps": float_abs_eps,
                 "best_iteration": iteration,
                 "history": history,

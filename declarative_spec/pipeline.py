@@ -24,6 +24,9 @@ VERUS_CANDIDATES = (
 
 
 def _verus_binary() -> str:
+    override = os.environ.get("LEMMA_VERUS_BIN", "").strip()  # e.g. scripts/ram/verus_guarded.sh
+    if override:
+        return override
     for p in VERUS_CANDIDATES:
         if p.is_file() and os.access(p, os.X_OK):
             return str(p)
@@ -175,6 +178,14 @@ def compile_and_run(
     }
 
 
+def speed_bar_mult() -> float:
+    """How many times faster than DuckDB the proved binary must be. ``LEMMA_SPEED_BAR_MULT``, default 1.0."""
+    mult = float(os.environ.get("LEMMA_SPEED_BAR_MULT", "1.0"))
+    if mult <= 0:
+        raise ValueError(f"LEMMA_SPEED_BAR_MULT must be positive, got {mult}")
+    return mult
+
+
 def _apply_speed_bar(metrics: dict, speed_bar: dict | None) -> dict:
     if speed_bar is None or metrics.get("status") != "SUCCESS":
         return metrics
@@ -208,17 +219,28 @@ def _apply_speed_bar(metrics: dict, speed_bar: dict | None) -> dict:
             "duck_us": duck_us,
             "compiler_error": err,
         }
-    if latency < 0 or latency >= duck_us:
+    mult = speed_bar_mult()
+    speedup = duck_us / max(latency, 1)
+    attained = {
+        "speed_bar_mult": mult,
+        "speedup": speedup,
+        "duck_threads": speed_bar.get("duck_threads"),
+        "duck1_us": speed_bar.get("duck1_us"),
+        "speedup_1t": None if speed_bar.get("duck1_us") is None else int(speed_bar["duck1_us"]) / max(latency, 1),
+    }
+    if latency < 0 or latency * mult >= duck_us:
         return {
             **metrics,
+            **attained,
             "status": "FAILURE",
             "duck_us": duck_us,
             "compiler_error": (
-                f"proved but slower than DuckDB: query {latency} us, DuckDB {duck_us} us. "
-                "Count in a Vec of KEY_CAP slots. A HashMap update on every row loses."
+                f"proved but below the speed bar: query {latency} us, DuckDB {duck_us} us "
+                f"({speedup:.2f}x; the bar is {mult:g}x faster than DuckDB). "
+                "Use one pass over dense arrays; avoid a loop over one table inside another and a hash-map update per row where a dense Vec indexed by key works."
             ),
         }
-    return {**metrics, "duck_us": duck_us, "float_abs_eps": speed_bar.get("float_abs_eps")}
+    return {**metrics, **attained, "duck_us": duck_us, "float_abs_eps": speed_bar.get("float_abs_eps")}
 
 
 def run_declarative_metrics(

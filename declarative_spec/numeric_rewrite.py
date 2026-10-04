@@ -10,8 +10,10 @@ states each comparison and arithmetic step over the stored integers:
 * a comparison brings both sides to the larger scale, so every comparison is exact;
 * SUM keeps the scale of its argument, as DuckDB's DECIMAL sum does.
 
-Anything not exactly representable is refused: ``/``, ``%``, AVG of a DECIMAL, arithmetic on a
-float column, a decimal literal against a float column, a number against a DATE.
+A float column stays a float: a number that meets a float column (comparison, ``+``, ``-``, ``*``)
+is rewritten as a float literal ``<decimal>e0`` (the f64 idealization: the spec reads it as that exact real).
+Anything not exactly representable is refused: ``/``, ``%``, AVG of a DECIMAL, a non-constant integer
+column mixed with a float column, a number against a DATE.
 
 ``rewrite_numeric`` returns the integer SQL and the scale of each SELECT output, in order.
 """
@@ -20,13 +22,15 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+from decimal import Decimal
+from fractions import Fraction
 from dataclasses import dataclass, field
 
 import sqlglot
 from sqlglot import exp
 
 from declarative_spec.parse import DeclarativeUnsupported
-from declarative_spec.parse_exprs import fold_date
+from declarative_spec.parse_exprs import fold_date, fold_number
 from declarative_spec.schema_types import ColumnTypeInfo, SchemaModel
 
 MAX_SCALE = 38
@@ -257,12 +261,12 @@ class _Rewriter:
                 raise DeclarativeUnsupported("a DATE compared with an operand of unknown type")
             raise DeclarativeUnsupported(f"a DATE compared with {(kinds - {'date'}).pop()}")
         if "float" in kinds:
-            other = right if left.kind == "float" else left
-            if other.kind == "num" and other.scale > 0:
-                raise DeclarativeUnsupported(
-                    "a decimal value compared with a float column: "
-                    "arithmetic and decimal literals need an integer or decimal column"
-                )
+            if kinds == {"float"}:
+                return left, right
+            if left.kind == "float" and right.kind == "num":
+                return left, _T(_float_literal(right), "float")
+            if right.kind == "float" and left.kind == "num":
+                return _T(_float_literal(left), "float"), right
         if "unknown" in kinds and any(t.kind == "num" and t.scale > 0 for t in (left, right)):
             raise DeclarativeUnsupported("a DECIMAL compared with an operand of unknown type")
         return left, right
@@ -319,6 +323,8 @@ class _Rewriter:
             return _T(node, "bool")
         if isinstance(node, exp.Neg):
             inner = self.typed(node.this, scope)
+            if inner.kind == "float":
+                return _T(exp.Neg(this=inner.node), "float")
             self._require_num(inner, "negation")
             return _T(exp.Neg(this=inner.node), "num", inner.scale)
         if isinstance(node, (exp.Cast, exp.Add, exp.Sub)):
@@ -374,15 +380,14 @@ class _Rewriter:
 
     @staticmethod
     def _require_num(t: _T, what: str) -> None:
-        if t.kind == "float":
-            raise DeclarativeUnsupported(
-                f"{what} on a float column: float products and differences have no proved error bound"
-            )
         if t.kind != "num":
             raise DeclarativeUnsupported(f"{what} on a {t.kind} operand")
 
     def _arith(self, node: exp.Expression, scope: _Scope) -> _T:
         left, right = self.typed(node.this, scope), self.typed(node.expression, scope)  # type: ignore[attr-defined]
+        if "float" in (left.kind, right.kind):
+            left, right = _float_operand(left), _float_operand(right)
+            return _T(type(node)(this=left.node, expression=right.node), "float")
         self._require_num(left, "arithmetic")
         self._require_num(right, "arithmetic")
         if isinstance(node, exp.Mul):
@@ -404,8 +409,8 @@ class _Rewriter:
                 raise DeclarativeUnsupported(f"SUM over a {inner.kind} operand")
             return _T(node, inner.kind, inner.scale)
         if isinstance(node, exp.Avg):
-            if inner.kind == "num" and inner.scale > 0:
-                raise DeclarativeUnsupported("AVG over a DECIMAL: DuckDB averages in DOUBLE, which is not stated exactly")
+            if inner.kind == "num" and inner.scale > 0 and not isinstance(inner.node, exp.Column):
+                raise DeclarativeUnsupported("AVG over a DECIMAL expression: only a DECIMAL column is stated (as its real value)")
             if inner.kind not in ("num", "float"):
                 raise DeclarativeUnsupported(f"AVG over a {inner.kind} operand")
             return _T(node, "float")
@@ -427,6 +432,24 @@ class _Rewriter:
             raise DeclarativeUnsupported("a DECIMAL result in CASE")
         kinds = {r.kind for r in results}
         return _T(node, kinds.pop() if len(kinds) == 1 else "unknown")
+
+
+def _float_literal(t: _T) -> exp.Expression:
+    """A constant number met by a float column, as the float literal ``<decimal>e0``."""
+    value = fold_number(t.node)
+    if value is None:
+        raise DeclarativeUnsupported("a non-constant integer or DECIMAL value mixed with a float column")
+    exact = Decimal(value.numerator) / Decimal(value.denominator * 10**t.scale) if value else Decimal(0)
+    lit = exp.Literal.number(f"{abs(exact):f}e0")
+    return exp.Neg(this=lit) if exact < 0 else lit
+
+
+def _float_operand(t: _T) -> _T:
+    if t.kind == "float":
+        return t
+    if t.kind == "num":
+        return _T(_float_literal(t), "float")
+    raise DeclarativeUnsupported(f"arithmetic mixing a float column with a {t.kind} operand")
 
 
 def _first_table(tree: exp.Expression) -> str:
