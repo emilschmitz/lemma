@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import re
 import statistics
 import struct
@@ -18,6 +19,7 @@ from declarative_spec.resolve import flatten_derived
 from declarative_spec.schema_types import ColumnTypeInfo, SchemaModel, rust_ident
 from research_loop.table_assumptions import CatalogAssumptions
 
+_CHUNK_ROWS = 500_000
 _FIELD = re.compile(r"pub\s+((?:r#)?[A-Za-z_][A-Za-z0-9_]*):\s+Vec<([^>]+)>")
 _OUT = re.compile(r"pub\s+((?:r#)?[A-Za-z_][A-Za-z0-9_]*):\s+([^,\n]+),")
 _OUT_SCALES = re.compile(r"^// OUT_SCALES: ([0-9,]+)$", re.MULTILINE)
@@ -78,16 +80,33 @@ def write_query_measure(
             bins[suffix] = str(path)
         scales_match = _OUT_SCALES.search(spec)
         scales = [int(x) for x in scales_match.group(1).split(",")] if scales_match else None
+        duck_threads = int(con.execute("SELECT current_setting('threads')").fetchone()[0])
         duck_us, rows, kinds = _time_query(con, sql, out_fields, scales)
+        con.execute("SET threads=1")
+        duck1_us = _median_us(con, sql)
     except duckdb.Error as exc:
         raise ValueError(str(exc)) from exc
     finally:
         con.close()
     if not bins:
         raise DeclarativeUnsupported("measure wrote no column files")
+    # The in-session run_runquery tool loads this (declarative_spec.bench.load_speed_bar): the agent's
+    # runs then use the official column files, the DuckDB bar and the expected result rows.
+    expect = {
+        "duck_us": duck_us,
+        "duck_threads": duck_threads,
+        "duck1_us": duck1_us,
+        "rows": rows,
+        "kinds": kinds,
+        "table_rows": table_rows,
+        "float_abs_eps": float_abs_eps,
+    }
+    (dest / "expect.json").write_text(json.dumps(expect) + "\n", encoding="utf-8")
     return {
         "bins": bins,
         "duck_us": duck_us,
+        "duck_threads": duck_threads,
+        "duck1_us": duck1_us,
         "rows": rows,
         "kinds": kinds,
         "table_rows": table_rows,
@@ -126,24 +145,30 @@ def _export_table(
         f"({_quote(name)} - DATE '1970-01-01')" if info.is_date else _quote(name)
         for name, info in zip(names, infos, strict=True)
     )
+    # Stream in chunks and pack each column as it arrives: a Python tuple per row for a 6M-row table
+    # is gigabytes, the packed columns are tens of megabytes.
     try:
-        fetched = con.execute(f"SELECT {listed} FROM {_quote(table)}").fetchall()
+        cur = con.execute(f"SELECT {listed} FROM {_quote(table)}")
     except duckdb.Error as exc:
         raise ValueError(str(exc)) from exc
-    # The spec has no NULL semantics: a NULL packed as 0 or "" would silently change the answer.
-    for idx, name in enumerate(names):
-        if any(row[idx] is None for row in fetched):
-            raise ValueError(
-                f"{table}.{name} has NULLs; the declarative spec has no NULL semantics"
-            )
-    buf = bytearray(struct.pack("<Q", len(fetched)))
+    col_bufs = [bytearray() for _ in types]
+    total = 0
+    while True:
+        chunk = cur.fetchmany(_CHUNK_ROWS)
+        if not chunk:
+            break
+        total += len(chunk)
+        for idx, fty in enumerate(types):
+            scale = infos[idx].scale
+            buf = col_bufs[idx]
+            for row in chunk:
+                value = row[idx]
+                # The spec has no NULL semantics: a NULL packed as 0 or "" would silently change the answer.
+                if value is None:
+                    raise ValueError(f"{table}.{names[idx]} has NULLs; the declarative spec has no NULL semantics")
+                buf.extend(_pack(fty, decimal_scaled(value, scale) if isinstance(value, Decimal) else value))
     # Column-major, the order the generated reader consumes: all of column 0, then column 1, ...
-    for idx, fty in enumerate(types):
-        scale = infos[idx].scale
-        for row in fetched:
-            value = row[idx]
-            buf.extend(_pack(fty, decimal_scaled(value, scale) if isinstance(value, Decimal) else value))
-    return bytes(buf)
+    return struct.pack("<Q", total) + b"".join(col_bufs)
 
 
 def decimal_scaled(value: Decimal, scale: int) -> int:
@@ -207,6 +232,18 @@ def _time_query(
     for record in result:
         rows.append([_canon(out_fields[i][1], record[indexes[i]], scales[i]) for i in range(len(out_fields))])
     return int(statistics.median(samples)), rows, kinds
+
+
+def _median_us(con: duckdb.DuckDBPyConnection, sql: str) -> int:
+    """Median of five timed runs after two warmups, in the connection's current thread setting."""
+    for _ in range(2):
+        con.execute(sql).fetchall()
+    samples: list[float] = []
+    for _ in range(5):
+        t0 = time.perf_counter()
+        con.execute(sql).fetchall()
+        samples.append((time.perf_counter() - t0) * 1_000_000)
+    return int(statistics.median(samples))
 
 
 def _kind(exec_rust: str) -> str:
