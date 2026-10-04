@@ -11040,30 +11040,3 @@ def _table_for_col(
     if col_u in right_cols:
         return right_table
     return left_table
-
-
-def _resolve_join_row_expr(
-    expr: str,
-    left_table: str,
-    right_table: str,
-    schemas_by_table: dict[str, dict[str, str]],
-) -> str:
-    """Rewrite row.col into left./right. indexed accesses (2-table exec path)."""
-
-    def col_access(col: str, tbl: str | None) -> str:
-        field = rust_ident(col)
-        resolved = _table_for_col(col, tbl, left_table, right_table, schemas_by_table)
-        side = "right" if resolved == right_table else "left"
-        idx = "ri" if side == "right" else "li"
-        return f"{side}.{field}[{idx} as int]"
-
-    stripped = re.sub(
-        r"\((row\.[A-Za-z_][A-Za-z0-9_]*) as int\)",
-        r"\1",
-        expr,
-    )
-
-    def repl(m: re.Match[str]) -> str:
-        return col_access(m.group(1), None)
-
-    return re.sub(r"\brow\.([A-Za-z_][A-Za-z0-9_]*)", repl, stripped)

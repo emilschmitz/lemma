@@ -271,7 +271,7 @@ def _resolve_custom_ret_type(
     multi: bool,
 ) -> str:
     """Map parsed SQL shape to assembler RET_TYPE_CONFIG key (no exec codegen)."""
-    from verus_transpiler.codegen_exec import (
+    from verus_transpiler.ret_type_key import (
         _resolve_join_groupby_ret_type_key,
         resolve_ret_type_key,
     )
