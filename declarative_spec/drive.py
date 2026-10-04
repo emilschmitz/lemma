@@ -147,6 +147,18 @@ def _ensure_context_files(
     return spec_path, agent_path
 
 
+def agent_failure(proc, workspace: Path) -> str | None:
+    """Message when the agent process failed without a marked submit, else None.
+
+    Exit -9 is the AGENT_TIMEOUT_SEC kill. Without this the untouched stub only fails later
+    as "empty agent body", which hides that the agent never ran to completion.
+    """
+    if proc.returncode == 0 or (workspace / "mcp_results" / "submitted.json").is_file():
+        return None
+    reason = "timed out (AGENT_TIMEOUT_SEC)" if proc.returncode == -9 else "failed"
+    return f"agent {reason}: exit {proc.returncode}, no submit. {proc.stderr.strip()[-500:]}"
+
+
 def run_declarative_optimization_loop(
     *,
     sql_query: str,
@@ -238,6 +250,12 @@ def run_declarative_optimization_loop(
         else:
             proc = run_agent_local(workspace, prompt, cfg=cfg)
         iter_record["agent_exit"] = proc.returncode
+        failure = agent_failure(proc, workspace)
+        if failure is not None:
+            last_error = failure
+            iter_record["error"] = failure
+            history.append(iter_record)
+            continue
 
         try:
             agent_source = agent_path.read_text()

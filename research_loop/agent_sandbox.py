@@ -195,6 +195,25 @@ def is_claude_cmd(agent_cmd: str) -> bool:
     return agent_cmd.split(None, 1)[0] == "claude"
 
 
+MOCK_PORT_ENV = "LEMMA_TEST_MOCK_ANTHROPIC_PORT"
+MOCK_CA_ENV = "LEMMA_TEST_MOCK_ANTHROPIC_CA"
+MOCK_EGRESS_PROFILE = "anthropic-mock-test"
+
+
+def claude_test_mock() -> tuple[int, Path] | None:
+    """TEST ONLY: (port, CA pem) of the local mock model API, when a test selected it.
+
+    Selecting it swaps the egress profile for one that allows only the mock's reserved
+    ``.test`` name, so the container cannot reach any real vendor host in that run.
+    """
+    port, ca = os.environ.get(MOCK_PORT_ENV), os.environ.get(MOCK_CA_ENV)
+    if port is None and ca is None:
+        return None
+    if not (port and ca):
+        raise RuntimeError(f"{MOCK_PORT_ENV} and {MOCK_CA_ENV} must be set together")
+    return int(port), Path(ca)
+
+
 def claude_docker_args() -> list[str]:
     """Docker args for the claude agent. The key is passed by name only (value stays in env)."""
     key = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -212,6 +231,15 @@ def claude_docker_args() -> list[str]:
         if not path.is_dir():
             raise RuntimeError(f"LEMMA_CLAUDE_CONFIG_DIR is not a directory: {path}")
         args += ["-v", f"{path.resolve()}:{CLAUDE_CONTAINER_CONFIG_HOST}:ro"]
+    mock = claude_test_mock()
+    if mock is not None:
+        from research_loop.scripts.mock_anthropic_api import MOCK_HOST
+
+        args += [
+            "-e", f"ANTHROPIC_BASE_URL=https://{MOCK_HOST}",
+            "-e", "NODE_EXTRA_CA_CERTS=/mock-ca.pem",
+            "-v", f"{mock[1].resolve()}:/mock-ca.pem:ro",
+        ]
     return args
 
 
@@ -1102,11 +1130,17 @@ def run_agent_docker(
     env["HOME"] = "/root"
     # Writable config dir (host creds are mounted RO at /root/.cursor-host).
     env["CURSOR_CONFIG_DIR"] = "/root/.cursor"
+    from db_extension.dataset_config import run_runquery_iterate_tool_blurb
+
+    env["LEMMA_RUN_RUNQUERY_BLURB"] = run_runquery_iterate_tool_blurb()
 
     profile = infer_egress_profile(
         agent_cmd,
         cfg.get("AGENT_EGRESS_PROFILE") or os.environ.get("AGENT_EGRESS_PROFILE"),
     )
+    mock = claude_test_mock() if claude else None
+    if mock is not None:
+        profile = MOCK_EGRESS_PROFILE
     allow = _parse_allowlist(
         cfg.get("LEMMA_EGRESS_ALLOWLIST") or os.environ.get("LEMMA_EGRESS_ALLOWLIST"),
         profile=profile,
@@ -1132,6 +1166,9 @@ def run_agent_docker(
         egress_sock,
         allow,
         log_path=log_dir / "egress_bridge.jsonl",
+        dial_overrides=(
+            {"lemma-mock-anthropic.test": ("127.0.0.1", mock[0])} if mock is not None else None
+        ),
     )
     mcp_server.start()
     egress_server.start()
@@ -1162,6 +1199,7 @@ def run_agent_docker(
         "docker", "run", "--rm",
         "--name", container_name,
         "--network", "none",
+        "--memory", "3g", "--memory-swap", "3g",
         "--cap-drop", "ALL",
         # Host-owned bind mounts need DAC_OVERRIDE when container runs as root.
         "--cap-add", "DAC_OVERRIDE",
@@ -1319,6 +1357,7 @@ def run_agent_docker(
             # suspend, which extended sessions to hours when inhibit dropped.
             wall_deadline = time.time() + timeout
             rc: int | None = None
+            ended = False
             while True:
                 rc = popen.poll()
                 if rc is not None:
@@ -1336,6 +1375,7 @@ def run_agent_docker(
                         "agent_docker_end_session",
                         "end_session sentinel after submit",
                     )
+                    ended = True
                     _docker_kill_container(container_name)
                     rc = _kill_and_reap_popen(popen, deadline=deadline)
                     break
@@ -1346,6 +1386,12 @@ def run_agent_docker(
                 if remaining <= 0:
                     continue
                 time.sleep(min(0.5, remaining))
+            # GNU ``timeout --signal=KILL`` can win the race against the poll deadline above.
+            # Either way the wall-clock kill is reported the same: timed_out, exit -9.
+            if rc == -9 and not ended:
+                timed_out = True
+            if timed_out:
+                rc = -9
             proc = subprocess.CompletedProcess(
                 cmd, int(rc if rc is not None else -1), "".join(stdout_chunks), "".join(stderr_chunks)
             )
