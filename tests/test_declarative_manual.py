@@ -64,3 +64,44 @@ def test_verus_binary_override_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert _verus_binary() == "/x/guarded.sh"
     monkeypatch.setenv("LEMMA_VERUS_BIN", "  ")
     assert _verus_binary() != "  "
+
+
+def test_chunked_export_is_byte_identical_to_one_chunk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import research_loop.decl_query_measure as m
+
+    db = tmp_path / "c.duckdb"
+    con = duckdb.connect(str(db))
+    con.execute("CREATE TABLE t (k INTEGER)")
+    con.execute("INSERT INTO t VALUES (1), (1), (2), (3), (3)")
+    con.close()
+    kw = {
+        "sql": "SELECT k, COUNT(*) AS c FROM t GROUP BY k",
+        "schema": {"t": {"k": "integer"}},
+        "catalog": _CAT,
+        "db_path": db,
+        "float_abs_eps": None,
+    }
+    big = m.write_query_measure(dest=tmp_path / "a", **kw)
+    monkeypatch.setattr(m, "_CHUNK_ROWS", 2)
+    small = m.write_query_measure(dest=tmp_path / "b", **kw)
+    assert Path(big["bins"]["t"]).read_bytes() == Path(small["bins"]["t"]).read_bytes()
+
+
+def test_null_in_a_later_chunk_still_fails_loudly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import research_loop.decl_query_measure as m
+
+    db = tmp_path / "n.duckdb"
+    con = duckdb.connect(str(db))
+    con.execute("CREATE TABLE t (k INTEGER)")
+    con.execute("INSERT INTO t VALUES (1), (2), (3), (NULL)")
+    con.close()
+    monkeypatch.setattr(m, "_CHUNK_ROWS", 2)
+    with pytest.raises(ValueError, match="has NULLs"):
+        m.write_query_measure(
+            sql="SELECT k, COUNT(*) AS c FROM t GROUP BY k",
+            schema={"t": {"k": "integer"}},
+            catalog=_CAT,
+            db_path=db,
+            dest=tmp_path / "o",
+            float_abs_eps=None,
+        )
