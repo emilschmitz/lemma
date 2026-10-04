@@ -409,8 +409,8 @@ class _Rewriter:
                 raise DeclarativeUnsupported(f"SUM over a {inner.kind} operand")
             return _T(node, inner.kind, inner.scale)
         if isinstance(node, exp.Avg):
-            if inner.kind == "num" and inner.scale > 0:
-                raise DeclarativeUnsupported("AVG over a DECIMAL: DuckDB averages in DOUBLE, which is not stated exactly")
+            if inner.kind == "num" and inner.scale > 0 and not isinstance(inner.node, exp.Column):
+                raise DeclarativeUnsupported("AVG over a DECIMAL expression: only a DECIMAL column is stated (as its real value)")
             if inner.kind not in ("num", "float"):
                 raise DeclarativeUnsupported(f"AVG over a {inner.kind} operand")
             return _T(node, "float")

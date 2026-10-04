@@ -528,7 +528,15 @@ def _emit_agg(
         sum_name = f"{name}_sum"
         cnt_name = f"{name}_count"
         value = _value_fn(
-            blocks, f"{name}_val", agg, main, params, model, ret, cast_real=not natural_float
+            blocks,
+            f"{name}_val",
+            agg,
+            main,
+            params,
+            model,
+            ret,
+            cast_real=not natural_float,
+            real_scale=_decimal_scale(agg, main, model),
         )
         add = f"if {hit} {{ {value}({_param_call(params)}, {_idx_call(main)}) }} else {{ 0real }}"
         _emit_fold(blocks, sum_name, "real", "0real", add, main, params, key_ty)
@@ -562,6 +570,12 @@ def _fn_name(prefix: str, kind: str, alias: str) -> str:
     if kind == "MAX":
         return f"{prefix}max_{alias}"
     raise DeclarativeUnsupported(kind)
+
+
+def _decimal_scale(agg: Agg, main: list[_Slot], model: SchemaModel) -> int:
+    if agg.expr or agg.arith or not agg.column or agg.column == "*":
+        return 0
+    return _find_col(agg.column, agg.table, main, model)[1].scale
 
 
 def _agg_is_float(agg: Agg, main: list[_Slot], model: SchemaModel) -> bool:
@@ -609,6 +623,7 @@ def _value_fn(
     ret: str,
     *,
     cast_real: bool = False,
+    real_scale: int = 0,
 ) -> str:
     if agg.arith:
         expr = _compile_pred(agg.arith, main, [], model, {})
@@ -621,6 +636,8 @@ def _value_fn(
         raise DeclarativeUnsupported(agg.kind)
     if cast_real:
         expr = f"(({expr}) as real)"
+    if real_scale:  # a DECIMAL cell is stored as value * 10**scale; AVG states its real value
+        expr = f"(({expr}) / {10**real_scale}real)"
     ranges = " && ".join(f"0 <= {s.idx} < {s.param}.n as int" for s in main)
     default = "0real" if ret == "real" else ("Seq::<char>::empty()" if ret == "Seq<char>" else "0int")
     if ret == "bool":

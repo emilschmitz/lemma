@@ -546,7 +546,8 @@ def _with_f64_literals(spec: str, integer_sql: str, float_abs_eps: str | None) -
         texts[base if "." in base else f"{base}.0"] = Fraction(base)
     if "pub const FLOAT_ABS_EPS" in spec and float_abs_eps:
         texts["FLOAT_ABS_EPS"] = Fraction(float_abs_eps.strip())
-    if not texts and "f64" not in spec.partition("// HOST_LEMMAS_START")[0]:
+    outside_lemmas = spec.partition("// HOST_LEMMAS_START")[0] + spec.rpartition("// HOST_LEMMAS_END")[2]
+    if not texts and "f64" not in outside_lemmas:
         return spec
     texts["0.0"] = Fraction(0)  # the initial value of every accumulator
     conj = "\n".join(
