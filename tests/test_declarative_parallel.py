@@ -98,3 +98,38 @@ def test_a_wrong_worker_filter_or_a_wrong_chunk_bound_does_not_verify(monkeypatc
     assert not ok
     ok2, _out2 = _verify(monkeypatch, ("let cs: usize = n / 8 + 1;", "let cs: usize = n / 8;"))
     assert not ok2
+
+
+_Q6_SCHEMA = {
+    "lineitem": {
+        "l_quantity": "decimal(15,2)",
+        "l_extendedprice": "decimal(15,2)",
+        "l_discount": "decimal(15,2)",
+        "l_shipdate": "date",
+    }
+}
+_Q6 = (
+    "SELECT sum(l_extendedprice * l_discount) AS revenue FROM lineitem WHERE l_shipdate >= date '1994-01-01' "
+    "AND l_shipdate < date '1994-01-01' + interval '1' year AND l_discount BETWEEN 0.09 - 0.01 AND 0.09 + 0.01 "
+    "AND l_quantity < 25"
+)
+
+
+def test_the_parallel_product_example_verifies_and_a_wrong_constant_does_not(monkeypatch: pytest.MonkeyPatch) -> None:
+    if not any(c.is_file() for c in VERUS_CANDIDATES):
+        pytest.skip("verus binary not installed")
+    monkeypatch.setenv("LEMMA_VERUS_BIN", str(Path(__file__).resolve().parents[1] / "scripts" / "ram" / "verus_guarded.sh"))
+    monkeypatch.setenv(parallel.ENV, "1")
+    spec = emit_declarative_spec(_Q6, _Q6_SCHEMA, CatalogAssumptions(tables={"lineitem": TableAssumptions(max_rows=2**31)}))
+    text = (_FIXTURES / "parallel_ungrouped_product_sum.rs").read_text()
+
+    def run(t: str) -> tuple[bool, str]:
+        return verify_assembled(
+            assemble_declarative_program(spec, extract_agent_edit(t), helpers=extract_agent_helpers(t)), timeout_sec=600
+        )
+
+    ok, out = run(text)
+    assert ok and "0 errors" in out, out[-2000:]
+    assert text.count("(disc >= 8)") == 2  # the worker loop and the panic-recompute loop
+    bad, _ = run(text.replace("(disc >= 8)", "(disc >= 7)"))
+    assert not bad

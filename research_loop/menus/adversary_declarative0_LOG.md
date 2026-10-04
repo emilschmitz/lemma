@@ -215,6 +215,25 @@ multiplicity example). Hard but possible: untried ideas are ghost witness sequen
 Helper-region note from this run: a module-level `broadcast use` in the helper region is rejected by design (put it inside a proof fn);
 the prompt now says so. (Update below.)
 
+## REAL-SIZE RESULTS (data stated per line; synthetic numbers are retired for claims)
+
+Real EDGAR 2022-2024 loaded by the coordinator: num 39,401,761 rows (value exact DECIMAL(38,4)), pre 9,600,799, sub 86,135, tag 1,070,662
+(`holdout/gendb_sec_edgar/duckdb/sec_edgar_dec.duckdb`, package `sec_margin_dec`, passes on the real data). TPC-H SF1 (lineitem 6,001,215). One heavy job at a time, memory caps via systemd-run.
+
+| query | data | tier | body | proved | us | duck 8t | duck 1t | speedup (8t / 1t) |
+|---|---|---|---|---|---|---|---|---|
+| `SELECT MIN(value), SUM(value) FROM num WHERE value > 5000` | real SEC, full 39.4M num rows (reads value only: i128, 630 MB) | T1 | single-threaded (the r5 held-out body, transplanted and RE-VERIFIED against the real-data spec: 5 verified, 0 errors) | yes | 107,684 | 230,712 | 931,027 | **2.14x / 8.65x** |
+| `SELECT SUM(value) AS total FROM num WHERE value > 5000` | real SEC, full 39.4M num rows | T1 | PARALLEL, 8 vstd threads (`parallel_ungrouped_sum.rs` templated to i128/value, 18 verified, 0 errors) | yes | **17,128** | 219,016 | 872,864 | **12.79x / 50.96x** |
+| TPC-H Q6 variant | TPC-H SF1 (6.0M lineitem) | T1 | PARALLEL, 8 vstd threads (`parallel_ungrouped_product_sum.rs`, 21 verified, 0 errors) | yes | **5,827** | 11,874 | 22,786 | **2.04x / 3.91x** (the single-threaded body was 0.53x / 1.22x) |
+
+Parallel path (declarative-only, `LEMMA_PARALLEL_VSTD=1`, `declarative_spec/parallel.py`): `run_query` also takes `<t>_arc: &std::sync::Arc<Cols_t>` with
+`requires **<t>_arc == *<t>` (host main passes the same object twice), ensures unchanged. Workers own `Arc::clone`s and fold row ranges; the host's
+suffix folds are additive so the partials telescope (no copy, no concatenation lemma). Trusted base: vstd `spawn`/`join`/`Arc` only; no
+new trusted code of ours. A panicked worker (`join` Err, impossible for proved code) is recomputed inline with the same loop (a `loop {}` is not
+admissible: no `decreases`). Examples verified by tests with negative mutations. The bandwidth-bound loser class (Q6) now beats the all-core engine; the
+5.0x SEC target is met by the parallel SUM (12.8x) and the 2.8x TPC-H target is not yet (2.04x at SF1; larger SF not tried: 14 GB box, concurrent agents).
+Not parallelized yet: grouped aggregates, joins, projections.
+
 ## Data note (every result line)
 
 The SEC data on this machine is SYNTHETIC (`holdout/gendb_sec_edgar/synth_tiny.py`), not real EDGAR: `value = round(uniform(1.0, 1e6), 2)`, 1M `num` rows, `coreg`/`footnote` NULL on every row. From round 3 on, queries are drawn on the DECIMAL variant (`sec_edgar_local_dec.duckdb`, `value` DECIMAL(38,4) derived from the stored doubles, package `sec_margin_dec`; `research_loop/menus/sec_decimal_variant.md`). Speeds on 1M synthetic rows are not GenDB-scale.

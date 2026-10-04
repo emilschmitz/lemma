@@ -248,7 +248,7 @@ def mount_examples(ro: Path) -> None:
     """Copy the verified example bodies to ``ro/examples/`` (the prompt names them)."""
     dest = ro / "examples"
     dest.mkdir(parents=True, exist_ok=True)
-    for name in [n for n, _w in _EXAMPLES.values()] + sorted(set(_EXAMPLE_HELPERS.values())) + [_PAR_EXAMPLE]:
+    for name in [n for n, _w in _EXAMPLES.values()] + sorted(set(_EXAMPLE_HELPERS.values())) + [_PAR_EXAMPLE, "parallel_ungrouped_product_sum.rs"]:
         target = dest / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text((_FIXTURES / name).read_text())
@@ -317,7 +317,7 @@ def _parallel_section(spec_text: str, shape: dict) -> list[str]:
         "12.8x faster than the all-core reference engine. Keep the single-threaded body as the first proof if the parallel one is",
         "hard, then upgrade. A join, hash aggregate or a result that is not a plain additive fold does not telescope directly.",
         "The example is the template (SUM; adapt the fold, the filter, the cell bound and the accumulator type):",
-        f"`context/ro/examples/{_PAR_EXAMPLE}`.",
+        f"`context/ro/examples/{_PAR_EXAMPLE}` (with a product and a date filter: `parallel_ungrouped_product_sum.rs`).",
     ]
     if shape["recipe"] in ("ungrouped", "ungrouped_product", "ungrouped_minmax"):
         header = [ln for ln in (_FIXTURES / _PAR_EXAMPLE).read_text().splitlines() if ln.startswith("//")]
