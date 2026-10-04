@@ -41,6 +41,8 @@ FIXED: dict[str, str] = {
     # The hand-proved body encodes the old wrong semantics; Verus now rejects it.
     "hole_is_null_empty_string": "impl_does_not_fit_spec",
     "hole_is_not_null_empty_string": "impl_does_not_fit_spec",
+    "hole_is_true_read_as_not_null": "impl_does_not_fit_spec",
+    "hole_is_false_read_as_not_null": "impl_does_not_fit_spec",
     "hole_literal_rewritten_to_column": "impl_does_not_fit_spec",
     "hole_string_literal_backslash_escape": "impl_does_not_fit_spec",
 }
@@ -152,3 +154,22 @@ def test_string_literal_is_not_rewritten_to_a_column() -> None:
 def test_string_literal_is_escaped_into_rust(literal: str, rust: str) -> None:
     spec = _spec(f"SELECT a FROM t WHERE s = '{literal}'", {"t": {"a": "BIGINT", "s": "VARCHAR"}})
     assert rust in spec
+
+
+@pytest.mark.parametrize(
+    "predicate, expected",
+    [("c IS TRUE", "(c == true)"), ("c IS FALSE", "(c == false)"), ("c IS NOT TRUE", "!(c == true)")],
+)
+def test_is_true_false_compile_to_the_boolean_comparison(predicate: str, expected: str) -> None:
+    from declarative_spec.parse_query import parse_query
+
+    assert parse_query(f"SELECT a FROM t WHERE {predicate}").where_expr == expected
+
+
+@pytest.mark.parametrize("predicate", ["a IS 5", "(a > 1) IS TRUE"])
+def test_is_with_other_right_sides_is_refused(predicate: str) -> None:
+    from declarative_spec.parse import DeclarativeUnsupported
+    from declarative_spec.parse_query import parse_query
+
+    with pytest.raises(DeclarativeUnsupported):
+        parse_query(f"SELECT a FROM t WHERE {predicate}")

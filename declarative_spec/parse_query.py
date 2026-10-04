@@ -839,14 +839,16 @@ def _compile_bool(node: exp.Expression, ctx: _BoolCtx) -> str:
 def _compile_is_null(node: exp.Is, ctx: _BoolCtx, *, negated: bool) -> str:
     col_node = node.this
     if not isinstance(col_node, exp.Column):
-        raise DeclarativeUnsupported("IS NULL")
+        raise DeclarativeUnsupported("IS on a non-column")
     col_ref, _ = _col_ref(col_node, ctx.scope)
-    is_null = isinstance(node.expression, exp.Null)
-    if negated:
-        is_null = not is_null
-    if is_null:
-        return f"is_null({col_ref})"
-    return f"!is_null({col_ref})"
+    rhs = node.expression
+    if isinstance(rhs, exp.Boolean):
+        # Columns hold no NULL, so ``c IS TRUE`` is ``c == true``.
+        text = f"({col_ref} == {'true' if rhs.this else 'false'})"
+        return f"!{text}" if negated else text
+    if not isinstance(rhs, exp.Null):
+        raise DeclarativeUnsupported("IS with a non-NULL, non-boolean right side")
+    return f"!is_null({col_ref})" if negated else f"is_null({col_ref})"
 
 
 def _compile_side(node: exp.Expression, ctx: _BoolCtx) -> str:
