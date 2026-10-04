@@ -43,3 +43,75 @@ def test_parallel_fast_helpers_typecheck(tmp_path: Path, monkeypatch: pytest.Mon
     assert "par_filter_sum_u64_pair_len" in body
     assert "vector_filter_sum_u64_pair_len" in body
     _verify(tmp_path, "both.rs", body)
+
+
+def _core_body() -> str:
+    return emit_agent_externs(enable_parallel=False)
+
+
+def test_core_primitives_have_no_external_body() -> None:
+    body = _core_body()
+    assert "external_body" not in body
+    for sym in (
+        "build_zone_map_u32",
+        "may_satisfy_range_u32",
+        "build_hashset_u32",
+        "probe_sum_u64",
+        "decode_dict_str",
+    ):
+        assert f"pub exec fn {sym}" in body
+
+
+def test_core_primitives_client_behavior(tmp_path: Path) -> None:
+    """Callers see the contracts: set/probe/decode contracts hold."""
+    client = """
+fn client_zone_ok(col: &Vec<u32>, zone_rows: usize)
+    requires zone_rows > 0,
+{
+    let z = build_zone_map_u32(col, zone_rows);
+    assert(z@.len() == 0 || zone_rows > 0);
+}
+
+fn client_range(seg: &ZoneSegmentU32) {
+    let b = may_satisfy_range_u32(seg, 5, 9);
+    assert(b == (seg.max >= 5 && seg.min <= 9));
+}
+
+fn client_set(keys: &Vec<u32>, probe: &Vec<u32>, vals: &Vec<u64>) {
+    let s = build_hashset_u32(keys, 0);
+    assert(s@ == hashset_u32_keys_from_seq(keys@));
+    let t = probe_sum_u64(probe, vals, &s);
+    assert(t == probe_sum_u64_spec(probe@, vals@, s@));
+}
+
+fn client_decode(codes: &Vec<u32>, dict: &Vec<String>)
+    requires
+        codes@.len() > 0,
+        (codes[0] as int) < dict@.len(),
+{
+    let s = decode_dict_str(codes, dict, 0);
+    assert(s == dict[codes[0] as int]);
+}
+"""
+    body = _core_body().replace("use vstd::hash_set::HashSetWithView;\n\n", "")
+    _verify(
+        tmp_path,
+        "client.rs",
+        "use vstd::hash_set::HashSetWithView;\n" + body + client,
+    )
+
+
+def test_zone_map_requires_positive_zone_rows(tmp_path: Path) -> None:
+    body = _core_body()
+    assert "requires zone_rows > 0" in body
+    if resolve_verus_bin() is None:
+        pytest.skip("verus not found")
+    client = """
+fn client_no_precondition(col: &Vec<u32>, zone_rows: usize) {
+    let z = build_zone_map_u32(col, zone_rows);
+}
+"""
+    path = tmp_path / "reject.rs"
+    path.write_text(_HEADER + body + client + _FOOTER, encoding="utf-8")
+    ok, _log = run_verus_verify(str(path), timeout=120)
+    assert not ok
