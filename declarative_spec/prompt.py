@@ -401,6 +401,11 @@ _PROOF_HYGIENE = """\
   reports a misleading error such as `invariant not satisfied before loop`. Fix: put each invariant bundle in a
   `#[verifier::opaque] spec fn`, and maintain each property in its own small `proof fn` that `reveal`s only that
   bundle; keep the loop invariant to the opaque calls plus the cheap facts.
+- There is no `--profile`: to find the rlimit culprit, bisect with whole checks (stub the tail of `run_query` to an
+  empty result and see which loop still verifies). Two usual culprits: a lemma whose `ensures` is a quantifier over
+  `row_hit` (state it pointwise, with the row index as an argument, and call it from `assert forall ... by`), and
+  `valid_cols_<table>(cols)` kept in every loop invariant (its cell-range quantifier then sits in every loop context:
+  keep only the plain length and `ROW_CAP_...` facts you use).
 - A quantifier or existential over a spec function of a row (`key_at(pre, i0)`) only fires on a ground term: bind
   one (`let w = key_at(pre, i0);`) or take a witness with `choose|r: int| ...` before you assert the instance.
 - Only `proof fn` and `spec fn` items are allowed in the helper region: an exec `fn` helper is rejected, so write

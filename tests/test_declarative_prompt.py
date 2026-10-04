@@ -242,6 +242,11 @@ def test_float_spec_gets_the_float_recipe_and_an_integer_spec_does_not() -> None
     assert "## Floats (this spec" not in plain
 
 
+def test_prompt_explains_how_to_find_the_rlimit_culprit() -> None:
+    p = _prompt("SELECT stmt, COUNT(*) AS c FROM pre GROUP BY stmt")
+    assert "There is no `--profile`" in p and "state it pointwise" in p and "assert forall ... by" in p
+
+
 def test_mount_examples_copies_every_example(tmp_path: Path) -> None:
     mount_examples(tmp_path)
     names = {f.name for f in (tmp_path / "examples").iterdir()}
