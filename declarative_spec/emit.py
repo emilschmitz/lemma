@@ -472,6 +472,7 @@ def emit_declarative_spec(
     from declarative_spec.numeric_rewrite import rewrite_numeric, with_out_scales
 
     sql = _flatten_group_derived_sql(sql)
+    sql = _null_rewrite_sql(sql, schema, catalog)
     integer_sql, scales = rewrite_numeric(sql, schema, catalog)
     _check_shape_classes(integer_sql)
     spec = _emit_integer_sql(integer_sql, schema, catalog)
@@ -576,6 +577,27 @@ def _prune_unread_columns(spec: str) -> str:
     return _VALID_FN.sub(valid, spec)
 
 
+def _null_rewrite_sql(sql: str, schema: dict, catalog: CatalogAssumptions | None) -> str:
+    """SQL with its NULL semantics over the catalog's nullable columns stated in two-valued SQL (see ``nulls``)."""
+    import sqlglot
+
+    from declarative_spec.nulls import rewrite_nulls
+
+    if catalog is None or not any(ca.nullable for ta in catalog.tables.values() for ca in ta.columns.values()):
+        return sql
+    try:
+        tree = sqlglot.parse_one(sql)
+    except sqlglot.errors.SqlglotError:
+        return sql  # the stages below report the parse error
+    first = tree.find(sqlglot.exp.Table)
+    if first is None:
+        return sql
+    model = SchemaModel.from_caller(schema, first.name).with_nullable(catalog)
+    if not model.nullable:
+        return sql
+    return rewrite_nulls(tree, model).sql()
+
+
 def _check_shape_classes(integer_sql: str) -> None:
     """Refuse a query with a shape class known to have no proof (see ``shapes``). A parse the surface cannot
     read is left to the emitter, which refuses it."""
@@ -641,9 +663,13 @@ def _emit_integer_sql(
     from declarative_spec.emit_surface import emit_from_surface
     from declarative_spec.string_encoding import dict_mode
 
-    if dict_mode():
-        # The count and join-sum emitters below know `Vec<String>` columns only: with dictionary-encoded strings every
-        # query takes the surface emitter, which refuses what it cannot state.
+    has_nullable = catalog is not None and any(
+        ca.nullable for ta in catalog.tables.values() for ca in ta.columns.values()
+    )
+    if dict_mode() or has_nullable:
+        # The count and join-sum emitters below know `Vec<String>` columns without a validity vector only: with
+        # dictionary-encoded strings or nullable columns every query takes the surface emitter, which refuses what
+        # it cannot state.
         return emit_from_surface(sql, schema, catalog)
     try:
         parsed = parse_declarative_sql(sql)

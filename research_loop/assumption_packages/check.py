@@ -16,6 +16,7 @@ Measuring rules (same as the loader):
   ``scale`` must equal ``s`` and ``MAX(ABS(col)) * 10**s < cap``, measured exactly
 * string cap: ``MAX(LENGTH(col)) <= cap``
 * unique key: no group of the key columns has more than one row
+* nullable: every column the package does not declare ``nullable`` has no NULL cell
 * join cap: ``COUNT(*)`` of the declared join is at most the cap (named with the measured count when violated)
 * catalog caps: ``max_rows`` over every table; ``max_native_u32`` over columns of
   at most 32 bits; ``max_cell_u64`` over BIGINT/HUGEINT/DOUBLE columns;
@@ -153,6 +154,17 @@ def violations(catalog: CatalogAssumptions, con: Any) -> list[str]:
                         f"{name}.{col}: abs-sum cap < {ca.abs_sum_exclusive} "
                         f"but measured sum {int(s)}"
                     )
+        # A column the package does not declare nullable is required to hold no NULL (the exporter refuses one).
+        declared = {c.casefold() for c, ca in table.columns.items() if ca.nullable}
+        checked = [c for c in types[name] if c.casefold() not in declared]
+        if checked and counts[name]:
+            listed = ", ".join(
+                f"COUNT(*) FILTER (WHERE {_quote_duckdb_ident(c)} IS NULL)" for c in checked
+            )
+            nulls = con.execute(f"SELECT {listed} FROM {_quote_duckdb_ident(name)}").fetchone()
+            for c, n in zip(checked, nulls, strict=True):
+                if n:
+                    out.append(f"{name}.{c}: not declared nullable but {int(n)} NULL cells")
         keys = list(table.unique_keys)
         if table.one_row_per_adsh and ("adsh",) not in keys:
             keys.append(("adsh",))

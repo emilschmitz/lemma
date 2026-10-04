@@ -27,6 +27,9 @@ class Agg:
     hidden: bool = False
     # AVG over a DECIMAL column stored as value * 10**avg_scale: the average is in natural units.
     avg_scale: int = 0
+    # ``AGG(x) FILTER (WHERE c)``: the aggregate sees only the rows where this spec condition holds (and the query's
+    # WHERE). SQL's NULL-skipping aggregates over a nullable column are stated this way (``!is_null(col)``).
+    filter_expr: str = ""
 
 
 @dataclass(frozen=True)

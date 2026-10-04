@@ -59,7 +59,7 @@ def write_query_measure(
         # Map result: the query yields (key, aggregate); the binary prints `ROW key value`.
         out_fields = [("", map_match.group(1)), ("", map_match.group(2))]
     # A flat (projected) schema carries no table name; the SQL's FROM names it.
-    model = SchemaModel.from_caller(schema, flatten_derived(parse_query(sql)).tables[0])
+    model = SchemaModel.from_caller(schema, flatten_derived(parse_query(sql)).tables[0]).with_nullable(catalog)
     dest.mkdir(parents=True, exist_ok=True)
     bins: dict[str, str] = {}
     table_rows: dict[str, int] = {}
@@ -132,8 +132,16 @@ def _export_table(
     infos: list[ColumnTypeInfo] = []
     dict_of: dict[int, int] = {}  # field index of a `<col>__dict` -> field index of its codes
     code_fields: dict[str, int] = {}
+    valid_fields: set[int] = set()  # field indices of a `<col>__valid` (false for a NULL cell)
+    nullable: list[bool] = []
     for fname, fty in fields:
-        if fname.endswith("__dict"):
+        if fname.endswith("__valid"):
+            # The validity vector of a nullable column: true where the cell is not NULL.
+            col_key = by_ident.get(fname.removeprefix("r#")[: -len("__valid")])
+            if col_key is None or fty != "bool" or not model.is_nullable(table, col_key):
+                raise ValueError(f"{table}.{fname}: not the validity vector of a nullable column")
+            valid_fields.add(len(names))
+        elif fname.endswith("__dict"):
             # The dictionary of a string column loaded as codes (``declarative_spec.string_encoding``).
             base = fname.removeprefix("r#")[: -len("__dict")]
             col_key = by_ident.get(base)
@@ -149,6 +157,7 @@ def _export_table(
         names.append(model.original_column_names[(table.casefold(), col_key)])
         types.append(fty)
         infos.append(cols[col_key])
+        nullable.append(model.is_nullable(table, col_key))
     # A DATE leaves DuckDB as its day number (an exact INTEGER), a DECIMAL as the exact scaled integer.
     listed = ", ".join(
         f"({_quote(name)} - DATE '1970-01-01')" if info.is_date else _quote(name)
@@ -175,9 +184,18 @@ def _export_table(
             buf = col_bufs[idx]
             for row in chunk:
                 value = row[idx]
-                # The spec has no NULL semantics: a NULL packed as 0 or "" would silently change the answer.
+                if idx in valid_fields:
+                    buf.extend(_pack("bool", value is not None))
+                    continue
                 if value is None:
-                    raise ValueError(f"{table}.{names[idx]} has NULLs; the declarative spec has no NULL semantics")
+                    # A column the catalog does not declare nullable has no NULL: a NULL packed as 0 or "" would
+                    # silently change the answer. A nullable column's value cell is arbitrary where the validity
+                    # vector says NULL, so the default is written.
+                    if not nullable[idx]:
+                        raise ValueError(
+                            f"{table}.{names[idx]} has NULLs; the catalog does not declare the column nullable"
+                        )
+                    value = _DEFAULT_CELL[fty]
                 if idx in dictionaries:
                     codes = dictionaries[idx]
                     buf.extend(_pack(fty, codes.setdefault(str(value), len(codes))))
@@ -190,6 +208,11 @@ def _export_table(
             col_bufs[idx].extend(_pack("String", text))
     # Column-major, the order the generated reader consumes: all of column 0, then column 1, ...
     return struct.pack("<Q", total) + b"".join(col_bufs)
+
+
+_DEFAULT_CELL: dict[str, object] = {
+    "String": "", "bool": False, "f64": 0.0, "i64": 0, "u64": 0, "i32": 0, "u32": 0, "u16": 0, "u8": 0, "usize": 0, "i128": 0,
+}
 
 
 def decimal_scaled(value: Decimal, scale: int) -> int:

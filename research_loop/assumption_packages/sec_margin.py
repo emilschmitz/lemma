@@ -155,16 +155,48 @@ def _col(exclusive: int, scale: int = 0) -> ColumnAssumption:
     return ColumnAssumption(max_value_exclusive=exclusive, scale=scale)
 
 
-def _strlen(n: int, distinct: int | None = None) -> ColumnAssumption:
-    return ColumnAssumption(max_string_len=n, max_distinct=distinct)
+def _strlen(n: int, distinct: int | None = None, nullable: bool = False) -> ColumnAssumption:
+    return ColumnAssumption(max_string_len=n, max_distinct=distinct, nullable=nullable)
+
+
+# Columns that hold NULL cells in the real EDGAR database (counts measured on sec_edgar_dec.duckdb, 2026-10-04):
+# num.coreg 38,909,249 / num.footnote 39,329,996 of 39.4M; pre.stmt 1,073 / pre.plabel 1,332 of 9.6M; sub.sic 1,215,
+# countryba 87, stprba 9,355, cityba 87, countryinc 7,967, period 7, fy 4,662, fp 4,665, afs 695, fye 106 of 86,135;
+# tag.crdr 119,636, tlabel 6, doc 146,328 of 1.07M. These are declared ``nullable``: loaded with a validity vector and
+# queried with SQL's three-valued logic. Every other column is declared (by omission) to hold no NULL, and
+# ``check.py`` measures that.
+NULLABLE_COLUMNS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("num", "coreg"), ("num", "footnote"),
+        ("pre", "stmt"), ("pre", "plabel"),
+        ("sub", "sic"), ("sub", "countryba"), ("sub", "stprba"), ("sub", "cityba"), ("sub", "countryinc"),
+        ("sub", "period"), ("sub", "fy"), ("sub", "fp"), ("sub", "afs"), ("sub", "fye"),
+        ("tag", "crdr"), ("tag", "tlabel"), ("tag", "doc"),
+    }
+)
+
+
+def _with_nullable(catalog: CatalogAssumptions) -> CatalogAssumptions:
+    """``catalog`` with ``nullable=True`` on every column of ``NULLABLE_COLUMNS`` (a column with no entry gets one)."""
+    import dataclasses
+
+    tables = dict(catalog.tables)
+    for table, column in sorted(NULLABLE_COLUMNS):
+        ta = tables[table]
+        old = ta.columns.get(column, ColumnAssumption())
+        cols = {**ta.columns, column: dataclasses.replace(old, nullable=True)}
+        tables[table] = dataclasses.replace(ta, columns=cols)
+    return dataclasses.replace(catalog, tables=tables)
 
 
 # Distinct-value caps of the low-cardinality string columns (data assumptions, outside the 45): they pick the
 # dictionary code width when strings are dictionary-encoded (LEMMA_STRING_ENCODING=dict): u8 up to 256, u16 up to 65536.
 # `check.py` MEASURES each (COUNT(DISTINCT col)) and fails naming the column and the measured count. Derived from
 # the EDGAR Financial Statement Data Sets documentation with a wide margin; ON THIS MACHINE ONLY THE SYNTHETIC DATA
-# HAS BEEN CHECKED (num.uom 3, pre.stmt 7, pre.rfile 2, sub.form 4, sub.fp 5, sub.afs 1, tag.iord 1, tag.crdr 1,
-# tag.datatype 1, sub.countryba 1). The real numbers are unverified until the preflight runs on the real database.
+# HAS BEEN CHECKED ON THE SYNTHETIC DATA (num.uom 3, pre.stmt 7, pre.rfile 2, sub.form 4, sub.fp 5, sub.afs 1, tag.iord 1,
+# tag.crdr 1, tag.datatype 1, sub.countryba 1). MEASURED ON THE REAL DATABASE (read-only, 2026-10-04, sec_edgar_dec.duckdb):
+# num.uom 201, pre.stmt 8, pre.rfile 2, sub.form 49, sub.fp 4, sub.afs 3, sub.countryba 78, tag.iord 2, tag.crdr 2,
+# tag.datatype 13: every cap below holds with margin.
 #   pre.stmt 16 (BS IS CF EQ CI UN CP SI), pre.rfile 8 (H, X), sub.form 256 (about 60 form types), sub.fp 32
 #   (FY Q1-Q4 H1 H2 M9 T1-T3 ...), sub.afs 16 (LAF ACC SRA NON ...), tag.iord 4 (I, D), tag.crdr 4 (C, D),
 #   tag.datatype 64 (about 10), sub.countryba 512 (ISO codes, about 250 and a few historical), num.uom 4096 (EDGAR
@@ -191,6 +223,10 @@ def sec_margin_catalog(value_scale: int = 0) -> CatalogAssumptions:
     """
     if len(ASSUMPTIONS) != 45:
         raise RuntimeError(f"sec_margin must list 45 assumptions, got {len(ASSUMPTIONS)}")
+    return _with_nullable(_sec_margin_base(value_scale))
+
+
+def _sec_margin_base(value_scale: int) -> CatalogAssumptions:
     return CatalogAssumptions(
         max_rows=ANY_TABLE_ROWS,
         max_rows_cube=ANY_TABLE_ROWS,

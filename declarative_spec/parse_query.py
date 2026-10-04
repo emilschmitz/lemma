@@ -329,6 +329,8 @@ def _unwrap_alias(node: exp.Expression) -> exp.Expression:
 
 def _is_aggregate(node: exp.Expression) -> bool:
     inner = _unwrap_alias(node)
+    if isinstance(inner, exp.Filter):
+        inner = inner.this
     return isinstance(inner, (exp.Sum, exp.Count, exp.Avg, exp.Min, exp.Max))
 
 
@@ -703,8 +705,20 @@ def _count_case(case: exp.Case, alias: str, scope: _Scope) -> Agg:
 
 
 def _parse_agg(item: exp.Expression, scope: _Scope) -> Agg:
+    top = _unwrap_alias(item)
+    if isinstance(top, exp.Filter):
+        # AGG(x) FILTER (WHERE cond): the same aggregate over the rows where cond holds.
+        where = top.expression
+        cond = where.this if isinstance(where, exp.Where) else where
+        ctx = _BoolCtx(query=Query(), scope=scope, counters=_Counters())
+        text = _compile_bool(cond, ctx)
+        if ctx.query.exists or ctx.query.in_subqueries or ctx.query.scalar_subqueries:
+            raise DeclarativeUnsupported("a subquery in FILTER")
+        alias = item.alias if isinstance(item, exp.Alias) else ""
+        bare = exp.Alias(this=top.this, alias=alias) if alias else top.this
+        return replace(_parse_agg(bare, scope), filter_expr=text)
     alias = item.alias if isinstance(item, exp.Alias) else ""
-    inner = _unwrap_alias(item)
+    inner = top
     if isinstance(inner, exp.Count):
         if isinstance(inner.this, exp.Distinct):
             col_node = inner.this.expressions[0]
@@ -1113,6 +1127,7 @@ def _same_agg(a: Agg, b: Agg) -> bool:
         and a.arith == b.arith
         and a.expr == b.expr
         and a.avg_scale == b.avg_scale
+        and a.filter_expr == b.filter_expr
         and (a.table is None or b.table is None or a.table.casefold() == b.table.casefold())
     )
 

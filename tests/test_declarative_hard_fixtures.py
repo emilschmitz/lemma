@@ -18,8 +18,8 @@ HARD = _FIXTURES / "hard"
 
 CASES = {
     "string_tuple_count_distinct_sorted.rs": (
-        "SELECT stmt, rfile, COUNT(*) AS cnt, COUNT(DISTINCT adsh) AS num_filings FROM pre "
-        "WHERE stmt IS NOT NULL GROUP BY stmt, rfile ORDER BY cnt DESC"
+        "SELECT version, rfile, COUNT(*) AS cnt, COUNT(DISTINCT adsh) AS num_filings FROM pre "
+        "WHERE version IS NOT NULL GROUP BY version, rfile ORDER BY cnt DESC"
     ),
     "projection_join_correlated_max_topk.rs": (
         "SELECT s.name, n.tag, n.value FROM num n JOIN sub s ON n.adsh = s.adsh WHERE n.uom = 'pure' AND s.fy = 2022 "
