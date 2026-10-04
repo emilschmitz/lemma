@@ -102,6 +102,36 @@ Fixes from Q2 (generic, tested):
 
 | SEC Q19 (NOT EXISTS, SUM(value) DOUBLE, HAVING COUNT, ORDER BY cnt LIMIT 1000), DOUBLE schema | step 3 (agent) / step 2 (spec): **setup didn't give the ability**: the f64 eps precondition is unsatisfiable at the host caps | prover (2 of 8 checks, then stopped): `verification results:: 17 verified, 2 errors`. `out_row_ok` needs `|total - sum| <= FLOAT_ABS_EPS` (1e20) but `lemma_f64_sum_within_eps` needs `n_terms^2 * mag_cap / 2^52 <= eps`; `valid_cols` gives group size <= ROW_CAP_num = 2^31 and `|value| < 2^62`, worst case 2^72 ~ 4.7e21 > 1e20, so the lemma's precondition cannot be discharged for a plain left fold. Prompt gaps: no worked float example, no NOT EXISTS / top-K example. NOTE: the prover made only 2 checks and stopped on a hand-arithmetic argument, so this is a weak trace (the Z3 probe was inconclusive); treat as 'prover gave up early', not as a proof of impossibility. This is the DOUBLE variant; the DECIMAL variant (round 3 on) has no eps. | none |
 
+## Results table (tiered; manual prover (Sonnet subagent), not a model-agent result; SEC data is SYNTHETIC)
+
+Tiers: T1 single-table filter + aggregate, T2 single-table GROUP BY, T3 two-table join, T4 EXISTS/IN/scalar subquery/COUNT DISTINCT,
+T5 three tables / derived tables / the rest. Held-out shapes (30 percent of shape keys by hash) are drawn only with `--heldout`
+and never used for recipes, fixtures or prompt text; tuned and held-out are reported separately. Registry:
+`research_loop/generated/decl_rounds/seen_queries.jsonl`.
+Prover rules from round 4: at least 6 of 10 checks on real attempts; stop early only with a Verus-confirmed blocker (quoted).
+
+| query | tier | set | prover | proved? | us | duck 8t | duck 1t | speedup (8t / 1t) |
+|---|---|---|---|---|---|---|---|---|
+| r1 Q20 (pre-tier) | T4 | tuned | manual, old prompt | no (gave up, no attempt) | - | 139,403 | 234,892 | - |
+| r1 Q24 | T4 | tuned | manual | no (float bridge) | - | 82,354 | 121,364 | - |
+| r1 TPC-H Q18-shape | T2/T4 | tuned | manual | no: 38 verified, 2 rlimit | - | 109,636 | 277,071 | - |
+| r2 TPC-H Q6 variant | T1 | tuned (fixture) | manual | yes, 15 verified | 21,874 | 11,490 | 26,722 | 0.53x / 1.22x |
+| r2 SEC Q2 | T4 | tuned (fixture) | manual | no: 41 verified, 1 error (AVG) | - | 24,183 | 21,275 | - |
+| r2b SEC Q19 (DOUBLE) | T4 | tuned | manual, gave up after 2 checks | no (gave up; eps precondition argument not Verus-confirmed) | - | 31,622 | 38,070 | - |
+| r3 SEC Q11 (correlated MAX, top-100, DECIMAL) | T4 | tuned | manual, 10 real checks | no: 59 verified, 1 error | - | 49,171 | 128,903 | - |
+
+r3 Q11 trace (Sonnet manual prover, 10 checks): check 1 rejected before Verus (`broadcast use at the top of the helper region`);
+2 `Could not automatically infer triggers for this quantifier`; 3 and 4 RLIMIT on `run_query` (`invariant not satisfied before loop`,
+`precondition not satisfied`); 5 `run_query` verified (55 verified) with RLIMIT in a final-facts lemma; 6 to 10 `verification
+results:: 58/59 verified, 1 errors`, always the first `ensures` clause `forall r. exists i0,i1. row_hit(i0,i1) && out_key(res@[r]) ==
+proj_key(i0,i1)` (the output row `res@[r]` appears only inside the `exists`, so the forall has no ground term to fire on; four
+workarounds tried: reveal + assert forall by, `let tr = t[r]`, a per-row lemma, a ground `row_hit` seed). Classification: step 3 (agent) /
+5 (verify); blame **setup didn't give the ability** (no example for `forall r. exists hit`, only `forall hit. exists r`; no top-K with
+multiplicity example). Hard but possible: untried ideas are ghost witness sequences `w0`/`w1` per output row, or a non-opaque
+`h_keyhit`. Naive O(n^2) design (rescan per row), so also a speed loser even if it verified. Kept emitted, recorded as hard.
+Helper-region note from this run: a module-level `broadcast use` in the helper region is rejected by design (put it inside a proof fn);
+the prompt now says so. (Update below.)
+
 ## Data note (every result line)
 
 The SEC data on this machine is SYNTHETIC (`holdout/gendb_sec_edgar/synth_tiny.py`), not real EDGAR: `value = round(uniform(1.0, 1e6), 2)`, 1M `num` rows, `coreg`/`footnote` NULL on every row. From round 3 on, queries are drawn on the DECIMAL variant (`sec_edgar_local_dec.duckdb`, `value` DECIMAL(38,4) derived from the stored doubles, package `sec_margin_dec`; `research_loop/menus/sec_decimal_variant.md`). Speeds on 1M synthetic rows are not GenDB-scale.

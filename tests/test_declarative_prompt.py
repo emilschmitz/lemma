@@ -171,6 +171,12 @@ def test_prompt_documents_the_rlimit_recipe_and_the_ground_term_rule() -> None:
     assert "ground term" in p and "choose|r: int|" in p
 
 
+def test_prompt_points_at_vstd_first_and_says_where_broadcast_use_goes() -> None:
+    p = _prompt("SELECT stmt, COUNT(*) AS c FROM pre GROUP BY stmt")
+    assert "insert_ensures" in p and "Grep `LEMMAS.md` for a vstd lemma before you write your own" in p
+    assert "at the top level of the helper region it is rejected" in p
+
+
 def test_mount_examples_copies_every_example(tmp_path: Path) -> None:
     mount_examples(tmp_path)
     names = {f.name for f in (tmp_path / "examples").iterdir()}

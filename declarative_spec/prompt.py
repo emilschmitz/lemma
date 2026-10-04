@@ -308,6 +308,7 @@ _PROOF_HYGIENE = """\
   bundle; keep the loop invariant to the opaque calls plus the cheap facts.
 - A quantifier or existential over a spec function of a row (`key_at(pre, i0)`) only fires on a ground term: bind
   one (`let w = key_at(pre, i0);`) or take a witness with `choose|r: int| ...` before you assert the instance.
+- `Vec::insert` has the view `Seq::insert`; `Seq::insert_ensures(pos, elt)` (vstd `seq_lib.rs`, call it as `s.insert_ensures(p, x)`) gives its length and element facts. Grep `LEMMAS.md` for a vstd lemma before you write your own.
 - Floats: one `f64` accumulator, `lemma_f64_add_defined`, `lemma_f64_left_fold_push`,
   `lemma_f64_sum_within_eps` with `FLOAT_ABS_EPS` (never a numeric epsilon, never unfold an f64 add).
 """
@@ -369,7 +370,7 @@ def build_declarative_prompt(
         "- Write no `use` lines: every vstd module is imported by glob; call lemmas by bare name",
         "  (`vstd::map_lib::lemma_map_new_domain` in full; that one name is ambiguous).",
         "  The only allowed line is `broadcast use vstd::<module>::group_<name>;` naming a group listed in",
-        f"  `{root}/verus/INDEX.md` (it turns a bundle of vstd lemmas on for the solver; more groups, more noise), e.g. `broadcast use vstd::seq::group_seq_axioms;`.",
+        f"  `{root}/verus/INDEX.md` (it turns a bundle of vstd lemmas on for the solver; more groups, more noise), e.g. `broadcast use vstd::seq::group_seq_axioms;`. Write it inside the body or inside a `proof fn` body; at the top level of the helper region it is rejected.",
         "- Forbidden (rejected before Verus runs): `assume(`, `admit(`, `#[verifier::external_body]`, `assume_specification`,",
         "  `unimplemented!`, and any name containing `axiom`, `arbitrary` or `proof_from_false`. The hash-key",
         "  axiom is already broadcast: do not name it. `requires`/`ensures` are the host's; changing them has",
