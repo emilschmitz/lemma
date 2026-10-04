@@ -390,3 +390,35 @@ def test_dict_filter_count_sum_example_verifies_and_a_wrong_literal_does_not(mon
     assert '"USD"' in text
     bad, _ = run(text.replace('"USD"', '"EUR"', 1))
     assert not bad
+
+
+def test_dict_group_count_sum_example_verifies_and_a_wrong_slot_does_not(monkeypatch: pytest.MonkeyPatch) -> None:
+    from pathlib import Path
+
+    from declarative_spec.assemble import assemble_declarative_program
+    from declarative_spec.emit import emit_declarative_spec
+    from declarative_spec.pipeline import VERUS_CANDIDATES, verify_assembled
+    from declarative_spec.prompt import _FIXTURES
+    from declarative_spec.regions import extract_agent_edit, extract_agent_helpers
+    from research_loop.assumption_packages import assumption_package
+
+    if not any(c.is_file() for c in VERUS_CANDIDATES):
+        pytest.skip("verus binary not installed")
+    monkeypatch.setenv("LEMMA_VERUS_BIN", str(Path(__file__).resolve().parents[1] / "scripts" / "ram" / "verus_guarded.sh"))
+    monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
+    schema = {"num": {"uom": "varchar", "value": "decimal(38,4)"}}
+    spec = emit_declarative_spec(
+        "SELECT uom, COUNT(*) AS c, SUM(value) AS s FROM num GROUP BY uom", schema, assumption_package("sec_margin_dec")
+    )
+    text = (_FIXTURES / "dict_group_count_sum_dense.rs").read_text()
+
+    def run(t: str) -> tuple[bool, str]:
+        return verify_assembled(
+            assemble_declarative_program(spec, extract_agent_edit(t), helpers=extract_agent_helpers(t)), timeout_sec=600
+        )
+
+    ok, out = run(text)
+    assert ok and "0 errors" in out, out[-2000:]
+    assert "sums[" in text
+    bad, _ = run(text.replace("sums.set(", "sums.set(0 * ", 1)) if "sums.set(" in text else (False, "")
+    assert not bad
