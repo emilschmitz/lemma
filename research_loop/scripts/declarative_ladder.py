@@ -84,7 +84,8 @@ def agent_env(model: str) -> dict[str, str]:
     return env
 
 
-def run_ladder(model: str) -> list[dict]:
+def run_ladder(model: str, indices: tuple[int, ...] | None = None) -> list[dict]:
+    """All six queries, or only the 1-based ``indices`` (plumbing runs)."""
     db_path = resolve_sec_db()
     os.environ.update(agent_env(model))
     if model.startswith("claude-"):
@@ -97,6 +98,8 @@ def run_ladder(model: str) -> list[dict]:
     jobs = synthetic_group_counts() + [{"sql": sql, "sec": True} for sql in _SEC_JOINS]
     records = []
     for index, job in enumerate(jobs, start=1):
+        if indices is not None and index not in indices:
+            continue
         sql = job["sql"]
         kwargs: dict = {"max_iterations": 2, "use_mock": False}
         if job.get("sec"):
