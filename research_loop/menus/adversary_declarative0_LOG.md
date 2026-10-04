@@ -120,6 +120,17 @@ Prover rules from round 4: at least 6 of 10 checks on real attempts; stop early 
 | r2b SEC Q19 (DOUBLE) | T4 | tuned | manual, gave up after 2 checks | no (gave up; eps precondition argument not Verus-confirmed) | - | 31,622 | 38,070 | - |
 | r3 SEC Q11 (correlated MAX, top-100, DECIMAL) | T4 | tuned | manual, 10 real checks | no: 59 verified, 1 error | - | 49,171 | 128,903 | - |
 
+| **r4 SEC T1 `SELECT MIN(ddate), MAX(ddate) FROM num WHERE uom='pure' AND qtrs=3`** (synthetic, 1M rows) | T1 | tuned (now a fixture) | manual, 4 checks | **YES, 11 verified, 0 errors** | **320** | 1,227 | 1,830 | **3.83x / 5.72x** |
+
+First proved-and-faster result (manual prover (Sonnet subagent), not a model-agent result; official full-table measure with the
+row-count check; the target multipliers are 5.0x SEC / 2.8x TPC-H over the multi-threaded engine, so this one clears 2.8x but
+not 5.0x on the 8-thread engine). The three failed checks were all one thing: `&str ==` has no spec tying it to `@`
+(`assert(e <==> (s@ == "pure"@))` failed, also with `reveal_strlit`). Fix found by the prover from vstd `string.rs`:
+`String::from_str("pure")` hoisted out of the loop, `pure@ == "pure"@` in the invariant, compare with `String ==`
+(no vstd lemma needed). Now the verified fixture `tests/fixtures/declarative_proofs/ungrouped_minmax_string_filter.rs`
+(verified by a guarded-Verus test; a wrong comparison must fail), recipe `ungrouped_minmax`, and a prompt tip. Blame for the three
+failed checks: setup didn't give the ability (no string-literal or MIN/MAX example).
+
 r3 Q11 trace (Sonnet manual prover, 10 checks): check 1 rejected before Verus (`broadcast use at the top of the helper region`);
 2 `Could not automatically infer triggers for this quantifier`; 3 and 4 RLIMIT on `run_query` (`invariant not satisfied before loop`,
 `precondition not satisfied`); 5 `run_query` verified (55 verified) with RLIMIT in a final-facts lemma; 6 to 10 `verification
