@@ -113,10 +113,12 @@ def test_cli_flag_reaches_the_judge(
 @pytest.mark.skipif(resolve_verus_bin() is None, reason="verus not found")
 @pytest.mark.parametrize(
     ("name", "status"),
-    [("empty_sum", "hole"), ("count_empty_control", "no_difference")],
+    # SUM is Option<i128> now: the hand-proved body that returned 0 on an empty table no
+    # longer fits the spec, so the empty-SUM hole is closed.
+    [("empty_sum", "impl_does_not_fit_spec"), ("count_empty_control", "no_difference")],
 )
 def test_declarative_judge_end_to_end(name: str, status: str) -> None:
     cand = load_candidate(_FIXTURES / "adversary_declarative" / f"{name}.json")
     report = judge_candidate(cand, verify=True, spec_style="declarative")
     assert report["status"] == status, report
-    assert report["proof_verified"] is True
+    assert report["proof_verified"] is (status != "impl_does_not_fit_spec")
