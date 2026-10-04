@@ -192,15 +192,18 @@ def test_declarative_prompt_names_hoisted_imports_and_forbids_assume() -> None:
         edit_path="runquery_agent.rs",
         lemma_index=lemma_index_markdown(),
     )
-    assert "use vstd::...;" in prompt
-    assert "broadcast use vstd::...;" in prompt
+    head = prompt.split("## SQL", 1)[0]
+    assert "You MAY write `use vstd::...;` and `broadcast use vstd::...;`." in head
+    assert "Those lines are hoisted and kept." in head
+    assert "`assume(`" in head
+    assert "`admit(`" in head
+    assert "a new `spec fn`" in head
+    assert "a new `proof fn`" in head
+    assert "#[verifier::external_body]" in head
+    assert "`axiom`, `arbitrary`, or `proof_from_false`" in head
+    assert "`proof { lemma_...(); }` is allowed." in head
     assert "The host hoists them." in prompt
     assert "Do not `assume(` or `admit(`" in prompt
-    assert "#[verifier::external_body]" in prompt
-    assert "proof fn" in prompt
-    assert "spec fn" in prompt
-    assert "proof_from_false" in prompt
-    assert "Do not import it." in prompt
     assert "lemma_u64_add_fits" in prompt
 
 
