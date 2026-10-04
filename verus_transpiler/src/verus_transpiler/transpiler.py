@@ -1194,6 +1194,123 @@ def _emit_union_helpers(query: SQLQuery, flat_schema: dict[str, str]) -> tuple[s
     return _emit_set_op_helpers(query, flat_schema, op="union")
 
 
+def _method_spec_block(ret_type: str, body: str) -> str:
+    return f"""pub open spec fn method_spec(cols: &Cols) -> {ret_type}
+    recommends valid_cols(cols),
+{{
+    {body}
+}}"""
+
+
+def _emit_derived_distinct_outer_spec(
+    query: SQLQuery,
+    derived: DerivedTable,
+    flat_schema: dict[str, str],
+) -> tuple[str, str, str]:
+    """Outer aggregate over ``SELECT DISTINCT`` of one projection."""
+    inner = derived.query
+    if query.where_expr or query.where_conditions:
+        raise UnsupportedContractError(
+            "filter over a derived DISTINCT is not in the method spec"
+        )
+    if not query.agg_type:
+        raise UnsupportedContractError("derived DISTINCT requires a scalar aggregate")
+    prefix = f"derived_{derived.alias}"
+    helpers, call, _ret = _emit_projection_branch(
+        inner,
+        flat_schema,
+        helper_name=f"{prefix}_helper",
+        spec_name=f"{prefix}_spec",
+    )
+    if query.agg_type == "COUNT":
+        return helpers, _method_spec_block("u64", f"{call}.len() as u64"), "u64"
+    if query.agg_type == "SUM" and len(inner.projection_columns) != 1:
+        raise UnsupportedContractError(
+            "SUM over derived DISTINCT requires one projected column"
+        )
+    if query.agg_type == "SUM" and os.environ.get("LEMMA_EXACT_SUM", "0") == "1":
+        exact = """pub open spec fn seq_sum_exact_u128(s: Seq<u64>, i: int) -> u128
+    decreases s.len() - i,
+{
+    if i < s.len() {
+        (seq_sum_exact_u128(s, i + 1) as int + s[i] as int) as u128
+    } else {
+        0u128
+    }
+}"""
+        body = (
+            f"let rows = {call};\n"
+            "    if rows.len() == 0 { None } else { Some(seq_sum_exact_u128(rows, 0)) }"
+        )
+        return exact + "\n\n" + helpers, _method_spec_block("Option<u128>", body), "Option<u128>"
+    if query.agg_type == "SUM":
+        return helpers, _method_spec_block("u64", f"seq_sum_u64({call})"), "u64"
+    raise UnsupportedContractError(
+        f"outer {query.agg_type!r} over derived DISTINCT not supported"
+    )
+
+
+def _emit_grouped_derived_outer_spec(
+    query: SQLQuery,
+    derived: DerivedTable,
+    flat_schema: dict[str, str],
+) -> tuple[str, str, str]:
+    """Outer scalar aggregate over a grouped derived map.
+
+    The map's keys are the groups. Counting those keys is not the sum of the values.
+    """
+    inner_helpers, call, _inner_ret = emit_derived_grouped_inner_spec(
+        derived.alias, derived.query, flat_schema
+    )
+    exact = os.environ.get("LEMMA_EXACT_SUM", "0") == "1"
+    agg = query.agg_type
+    if agg == "COUNT":
+        body, ret = f"{call}.dom().len() as u64", "u64"
+    elif agg == "SUM" and exact:
+        body = (
+            f"let m = {call};\n"
+            "    if m.dom().len() == 0 { None } else {\n"
+            "        Some(m.values().fold(0u128, |acc, v| (acc as int + v as int) as u128))\n"
+            "    }"
+        )
+        ret = "Option<u128>"
+    elif agg == "SUM":
+        body = (
+            f"let m = {call};\n"
+            "    m.values().fold(0u64, |acc, v| (acc as int + v as int) as u64)"
+        )
+        ret = "u64"
+    elif agg == "MIN" and exact:
+        body = (
+            f"let m = {call};\n"
+            "    if m.dom().len() == 0 { None } else {\n"
+            "        Some(m.values().fold(u64::MAX, |acc, v| if v < acc { v } else { acc }))\n"
+            "    }"
+        )
+        ret = "Option<u64>"
+    elif agg == "MIN":
+        body = (
+            f"{call}.values().fold(u64::MAX, |acc, v| if v < acc {{ v }} else {{ acc }})"
+        )
+        ret = "u64"
+    elif agg == "MAX" and exact:
+        body = (
+            f"let m = {call};\n"
+            "    if m.dom().len() == 0 { None } else {\n"
+            "        Some(m.values().fold(0u64, |acc, v| if v > acc { v } else { acc }))\n"
+            "    }"
+        )
+        ret = "Option<u64>"
+    elif agg == "MAX":
+        body = f"{call}.values().fold(0u64, |acc, v| if v > acc {{ v }} else {{ acc }})"
+        ret = "u64"
+    else:
+        raise UnsupportedContractError(
+            f"outer {agg!r} over a grouped derived table not supported"
+        )
+    return inner_helpers, _method_spec_block(ret, body), ret
+
+
 def _multi_agg_val_types(query: SQLQuery) -> list[str]:
     types: list[str] = []
     for spec in query.agg_specs:
@@ -1676,21 +1793,10 @@ def _emit_single_table_spec(
                 "outer aggregate over derived window column needs real MethodSpec; "
                 "not yet supported"
             )
+        if inner.is_projection and inner.distinct and not inner.agg_type:
+            return _emit_derived_distinct_outer_spec(query, derived, flat_schema)
         if inner.groupby_columns:
-            inner_helpers, inner_spec_call, _inner_ret = emit_derived_grouped_inner_spec(
-                derived.alias, inner, flat_schema
-            )
-            spec_body = f"""{{
-    let m = {inner_spec_call};
-    m.values().fold(0u64, |acc, v| (acc as int + v as int) as u64)
-}}"""
-            ret_type = "u64"
-            spec_fn = f"""pub open spec fn method_spec(cols: &Cols) -> {ret_type}
-    recommends valid_cols(cols),
-{{
-    {spec_body}
-}}"""
-            return inner_helpers, spec_fn, ret_type
+            return _emit_grouped_derived_outer_spec(query, derived, flat_schema)
         if not inner.agg_type:
             raise UnsupportedContractError(
                 "derived table composition requires inner scalar aggregate."
