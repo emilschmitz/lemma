@@ -561,3 +561,45 @@ def test_colliding_literals_make_every_body_verify(tmp_path: Path) -> None:
     assert not verus_summary(
         assemble_declarative_program(control, body), tmp_path, "vacuous_control"
     ).endswith("0 errors")
+
+
+@pytest.mark.parametrize("seed", range(3))
+def test_removed_sum_within_eps_bound_was_sound_in_every_order(seed: int) -> None:
+    """The deleted `host_f64_sum_error(n, cap) = n^2 * cap * 2^-52` bounds the error of any-order f64 sums.
+
+    The idealized lemmas replace it with error 0, so the spec's `<= FLOAT_ABS_EPS` is then provable for
+    any eps (even 0). This pins that the old bound held on adversarial data, i.e. dropping it lost soundness.
+    """
+    rng = random.Random(seed)
+    for _ in range(200):
+        n = rng.randint(1, 400)
+        cap = 2 ** rng.randint(1, 60)
+        kind = rng.choice(["wide", "cancel", "absorb"])
+        if kind == "wide":
+            xs = [rng.uniform(-cap, cap) for _ in range(n)]
+        elif kind == "cancel":
+            xs = [float(cap - 1), *[rng.uniform(0, 1) for _ in range(n)], -float(cap - 1)]
+        else:
+            xs = [float(min(cap - 1, 2**53))] + [1.0] * n
+        xs = [x for x in xs if abs(x) < cap]
+        m = len(xs)
+        bound = Fraction(m * m * cap, 2**52)
+        exact = exact_sum(xs)
+        for order in (xs, xs[::-1], sorted(xs)):
+            assert abs(Fraction(fsum_fwd(order)) - exact) <= bound
+
+
+def test_float_equality_of_a_computed_value_differs_between_spec_and_duckdb() -> None:
+    """`WHERE p * d = 0.3` with p = 0.1, d = 3.0: spec (reals, hypothesis 0.1 = 1/10) counts the row, DuckDB does not."""
+    con = duck()
+    con.execute("CREATE TABLE li (p DOUBLE, d DOUBLE)")
+    con.execute("INSERT INTO li VALUES (0.1, 3.0)")
+    assert con.execute("SELECT COUNT(*) FROM li WHERE p * d = 0.3").fetchone() == (0,)
+    assert 0.1 * 3.0 == 0.30000000000000004
+    assert Fraction(1, 10) * 3 == Fraction(3, 10)  # what the proved spec says: one hit
+    schema = {"li": {"p": "double", "d": "double"}}
+    cols = {c: ColumnAssumption(max_value_exclusive=1024) for c in ("p", "d")}
+    cat = CatalogAssumptions(max_rows=100, tables={"li": TableAssumptions(max_rows=100, columns=cols)})
+    spec = emit_declarative_spec("SELECT COUNT(*) AS c FROM li WHERE p * d = 0.3", schema, cat, float_abs_eps=EPS)
+    assert "((li.p@[i0] as real) * (li.d@[i0] as real)) == (3real / 10real)" in spec
+    # The exec of any body is IEEE and equals DuckDB (0); the proved statement (1) is false of it.
