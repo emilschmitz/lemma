@@ -476,7 +476,10 @@ def emit_declarative_spec(
     _check_shape_classes(integer_sql)
     spec = _emit_integer_sql(integer_sql, schema, catalog)
     spec = _with_f64_literals(spec, integer_sql)
-    return _with_agent_surface(with_out_scales(spec, scales))
+    out = _with_agent_surface(with_out_scales(spec, scales))
+    from declarative_spec import parallel
+
+    return parallel.to_parallel(out) if parallel.enabled() else out
 
 
 _F64_LITERAL = re.compile(r"(?<![\w.])(\d+(?:\.\d+)?)e0(?!\w)")

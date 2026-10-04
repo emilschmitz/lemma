@@ -248,7 +248,7 @@ def mount_examples(ro: Path) -> None:
     """Copy the verified example bodies to ``ro/examples/`` (the prompt names them)."""
     dest = ro / "examples"
     dest.mkdir(parents=True, exist_ok=True)
-    for name in [n for n, _w in _EXAMPLES.values()] + sorted(set(_EXAMPLE_HELPERS.values())):
+    for name in [n for n, _w in _EXAMPLES.values()] + sorted(set(_EXAMPLE_HELPERS.values())) + [_PAR_EXAMPLE]:
         target = dest / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text((_FIXTURES / name).read_text())
@@ -297,6 +297,35 @@ def _float_section(spec_text: str) -> list[str]:
     ]
     lines += [f"- `{name}`: {what}" for name, what in _FLOAT_EXAMPLES]
     return lines
+
+
+def _parallel_section(spec_text: str, shape: dict) -> list[str]:
+    """Parallel-scan recipe, shown only when the spec was emitted with the Arc parameters (LEMMA_PARALLEL_VSTD=1)."""
+    from declarative_spec import parallel
+
+    if not parallel.is_parallel(spec_text):
+        return []
+    lines = [
+        "",
+        "## Parallel scan (this spec's `run_query` also takes `<table>_arc: &std::sync::Arc<Cols_<table>>`)",
+        "",
+        "The extra parameter is the same table, shared (`requires **<t>_arc == *<t>`; the `ensures` are unchanged). You may run",
+        "workers with `vstd::thread::spawn` and `JoinHandle::join` (vstd's own, not trusted code of ours): each worker owns an",
+        "`std::sync::Arc::clone(<t>_arc)` and folds a row RANGE `[lo, hi)`; the host's suffix folds are additive over ranges, so",
+        "worker k returns `fold(t, lo_k) - fold(t, hi_k)` and the partials telescope to `fold(t, 0)`. No column is copied.",
+        "A scan that is limited by memory bandwidth is the case this is for: on the real 39.4M-row table the parallel SUM was",
+        "12.8x faster than the all-core reference engine. Keep the single-threaded body as the first proof if the parallel one is",
+        "hard, then upgrade. A join, hash aggregate or a result that is not a plain additive fold does not telescope directly.",
+        "The example is the template (SUM; adapt the fold, the filter, the cell bound and the accumulator type):",
+        f"`context/ro/examples/{_PAR_EXAMPLE}`.",
+    ]
+    if shape["recipe"] in ("ungrouped", "ungrouped_product", "ungrouped_minmax"):
+        header = [ln for ln in (_FIXTURES / _PAR_EXAMPLE).read_text().splitlines() if ln.startswith("//")]
+        lines += ["", "Its header:", "", "```", *header, "```"]
+    return lines
+
+
+_PAR_EXAMPLE = "parallel_ungrouped_sum.rs"
 
 
 def _recipe_section(shape: dict) -> list[str]:
@@ -515,6 +544,7 @@ def build_declarative_prompt(
     ]
     sections += _recipe_section(shape)
     sections += _float_section(spec_text)
+    sections += _parallel_section(spec_text, shape)
     sections += [""]
     if shape["hard"]:
         sections += [

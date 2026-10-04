@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 
+from declarative_spec import parallel
+
 _WIDTH = {
     "u8": 1,
     "u16": 2,
@@ -130,11 +132,18 @@ def assemble_declarative_program(
         mains_args.append(f"&{col_var}")
 
     join_cap_checks = _join_cap_checks(verus_part)
+    arc_lets = ""
     if mains_args:
         # One argument per parameter: two aliases of one table (a self join) share one loaded struct.
         sig = re.search(r"pub fn run_query\(([^)]*)\)", verus_part)
         structs_in_sig = re.findall(r":\s*&Cols_([A-Za-z0-9_]+)", sig.group(1)) if sig else []
         args = [f"&cols_{suffix}" for suffix in structs_in_sig] or mains_args
+        if parallel.is_parallel(verus_part):
+            # The same object twice: `&*arc` and `&arc`, so `**arc == *cols` holds by construction.
+            arc_lets = "".join(
+                f"    let arc_{suffix} = std::sync::Arc::new(cols_{suffix});\n" for suffix in dict.fromkeys(structs_in_sig)
+            )
+            args = [f"&*arc_{suffix}" for suffix in structs_in_sig] + [f"&arc_{suffix}" for suffix in structs_in_sig]
         run_call = f"run_query({', '.join(args)})"
     else:
         run_call = "run_query()"
@@ -151,6 +160,7 @@ def assemble_declarative_program(
     main_fn = "fn main() {\n"
     main_fn += "\n".join(mains_load) + "\n"
     main_fn += join_cap_checks
+    main_fn += arc_lets
     main_fn += timed
     main_fn += "}\n"
 

@@ -23,3 +23,10 @@ registry, `declarative_spec/trusted_sets.py`), `assumption_package`, `agent`, `s
 Profiles: `rocketship`, `adversary_imperativespec0`, `fast`, `adversary_declarative0`. Each axis can be
 overridden alone (env var or launcher flag); contradicting the profile needs `--allow-override`; a trusted
 set from the other style always fails. The resolved selection is printed and recorded in the run manifest.
+
+## Optional: `LEMMA_PARALLEL_VSTD=1` (declarative menus)
+
+Not part of any menu's env (opt-in per run). The emitted `run_query` also receives `<table>_arc: &std::sync::Arc<Cols_<table>>` with
+`requires **<table>_arc == *<table>` (the host `main` passes the same object twice) and the `ensures` are unchanged. The agent may then
+use vstd `thread::spawn` / `JoinHandle::join` (vstd's own, not trusted code of ours) on row ranges; see `declarative_spec/parallel.py` and
+the verified example `tests/fixtures/declarative_proofs/parallel_ungrouped_sum.rs`.
