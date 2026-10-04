@@ -157,6 +157,26 @@ def export_tpch(sf: float, out_dir: Path, tables: tuple[str, ...] = TPCH_TABLES)
     return meta
 
 
+def export_tpch_duckdb(sf: float, db_path: Path, tables: tuple[str, ...] = TPCH_TABLES) -> Path:
+    """Native TPC-H as a DuckDB file: DECIMAL(15,2) money and discount, real DATE columns.
+
+    The declarative path reads these types directly (DATE as days since 1970-01-01, DECIMAL as a
+    scaled integer), so this file is its measure database with no ETL to integers.
+    """
+    import duckdb
+
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    con = duckdb.connect(str(db_path))
+    try:
+        con.execute("INSTALL tpch; LOAD tpch;")
+        con.execute(f"CALL dbgen(sf={sf});")
+        for table in set(TPCH_TABLES) - set(tables):
+            con.execute(f"DROP TABLE {table}")
+    finally:
+        con.close()
+    return db_path
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--sf", type=float, default=1.0, help="TPC-H scale factor (default 1)")
@@ -166,7 +186,16 @@ def main() -> None:
         default=None,
         help="Output directory (default data/tpch-sf1 for sf=1, else data/tpch-sf{sf})",
     )
+    p.add_argument(
+        "--duckdb",
+        type=Path,
+        default=None,
+        help="Write a native-typed DuckDB file (DECIMAL(15,2), DATE) instead of integer .tbl files",
+    )
     args = p.parse_args()
+    if args.duckdb is not None:
+        print(f"Wrote native TPC-H SF={args.sf} -> {export_tpch_duckdb(args.sf, args.duckdb)}")
+        return
     out_dir = args.out_dir if args.out_dir is not None else default_out_dir(args.sf)
     meta = export_tpch(args.sf, out_dir)
     print(f"Exported TPC-H SF={args.sf} → {out_dir}")

@@ -96,7 +96,8 @@ def _scaled(t: _T, to_scale: int) -> exp.Expression:
     if isinstance(inner, exp.Literal) and inner.is_int:
         value = int(inner.this) * 10**shift
         return _int_node(-value if isinstance(node, exp.Neg) else value)
-    return exp.Mul(this=exp.Paren(this=node), expression=exp.Literal.number(10**shift))
+    left = node if isinstance(node, (exp.Column, exp.Paren)) else exp.Paren(this=node)
+    return exp.Mul(this=left, expression=exp.Literal.number(10**shift))
 
 
 def _align(ts: list[_T]) -> list[_T]:
