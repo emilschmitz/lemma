@@ -128,7 +128,7 @@ def judge_declarative_candidate(
     )
 
     # Declarative imports stay inside the function: the recursive judge never loads them.
-    from declarative_spec.admit import admit_declarative_body, split_vstd_uses
+    from declarative_spec.admit import admit_declarative_body
     from declarative_spec.assemble import assemble_declarative_program
     from declarative_spec.emit import DeclarativeUnsupported, emit_declarative_spec
     from declarative_spec.lemmas import FitRefusal
@@ -138,9 +138,8 @@ def judge_declarative_candidate(
 
     base: dict[str, Any] = {"config": config, "spec_style": "declarative", "sql": candidate.sql}
 
-    uses, body, use_violations = split_vstd_uses(candidate.run_query_body)
-    admit = admit_declarative_body(body)
-    violations = use_violations + admit.violations
+    body = candidate.run_query_body
+    violations = admit_declarative_body(body).violations
     if violations:
         return {**base, "status": "rejected", "significant": False, "violations": violations}
 
@@ -211,7 +210,7 @@ def judge_declarative_candidate(
                 path = root / f"cols_{suffix}.bin"
                 path.write_bytes(blob)
                 bins[suffix] = str(path)
-            assembled = assemble_declarative_program(spec_rs, body, column_bins=bins, extra_uses=uses)
+            assembled = assemble_declarative_program(spec_rs, body, column_bins=bins)
             metrics = compile_and_run(assembled, work_dir=root)
     finally:
         con.close()

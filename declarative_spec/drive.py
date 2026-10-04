@@ -12,6 +12,7 @@ from declarative_spec.emit import DeclarativeUnsupported, emit_declarative_spec
 from declarative_spec.lemma_index import lemma_index_markdown
 from declarative_spec.lemmas import FitRefusal
 from declarative_spec.pipeline import extract_agent_edit, run_declarative_metrics
+from declarative_spec.vstd_index import VERUS_HOME, groups_markdown
 from declarative_spec.prompt import build_declarative_prompt
 
 
@@ -68,7 +69,7 @@ def _extract_agent_edit_region(source: str) -> str:
     return extract_agent_edit(source)
 
 
-_VERUS_HOME = Path.home() / "tools" / "verus"
+_VERUS_HOME = VERUS_HOME
 
 _VERUS_INDEX = """# Verus reference (read-only)
 
@@ -78,7 +79,16 @@ statements, `requires`/`ensures`, and broadcast groups. Useful files: `seq.rs`,
 `arithmetic/`, `std_specs/`, `relations.rs`, `calc_macro.rs`.
 The Verus guide is not on this machine, so only the vstd source is here.
 Search with `grep -rn "proof fn lemma_" vstd/`.
-You may `use vstd::<module>::*;` and `broadcast use vstd::<module>::<group>;`.
+Every vstd module is already imported by glob in the spec; write no `use` lines.
+You may write `broadcast use vstd::<module>::group_<name>;` for exactly the groups listed below.
+A `broadcast use` turns a bundle of vstd lemmas on for automatic use by Z3 in the current scope
+(for example `broadcast use vstd::seq::group_seq_axioms;`). More groups means more solver noise,
+so use them when stuck. Helper `proof fn` / `spec fn` items go between `// AGENT_HELPERS_START`
+and `// AGENT_HELPERS_END`.
+
+## Broadcast groups you may use (generated from the vstd source)
+
+{groups}
 """
 
 
@@ -89,7 +99,7 @@ def mount_verus_docs(ro: Path) -> None:
         shutil.rmtree(dest)
     shutil.copytree(_VERUS_HOME / "vstd", dest / "vstd", ignore=shutil.ignore_patterns("target", "*.vir"))
     version = (_VERUS_HOME / "version.txt").read_text().strip()
-    (dest / "INDEX.md").write_text(_VERUS_INDEX.format(version=version))
+    (dest / "INDEX.md").write_text(_VERUS_INDEX.format(version=version, groups=groups_markdown()))
 
 
 def _ensure_context_files(

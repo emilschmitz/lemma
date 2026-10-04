@@ -15,42 +15,40 @@ _WIDTH = {
 }
 
 
-def _insert_agent_uses(stitched: str, extra_uses: list[str]) -> str:
-    """Place new vstd imports next to the host imports. Broadcast uses go inside verus!."""
-    plain: list[str] = []
-    broadcast: list[str] = []
-    for line in extra_uses:
-        if line in stitched:
-            continue
-        if line.startswith(("broadcast ", "pub broadcast ")):
-            broadcast.append(line)
-        else:
-            plain.append(line)
-    if broadcast:
-        stitched = stitched.replace("verus! {", "verus! {\n" + "\n".join(broadcast), 1)
-    if plain:
-        stitched = stitched.replace("verus! {", "\n".join(plain) + "\nverus! {", 1)
-    return stitched
+def _insert_helpers(stitched: str, helpers: str) -> str:
+    """Put the agent's helper items between the host's helper markers, if the spec has them."""
+    from declarative_spec.regions import HELPERS_END, HELPERS_START
+
+    start = stitched.find(HELPERS_START)
+    end = stitched.find(HELPERS_END)
+    if not helpers.strip():
+        return stitched
+    if start == -1 or end == -1 or end < start:
+        raise ValueError("AGENT_HELPERS markers missing from spec")
+    inner = start + len(HELPERS_START)
+    return stitched[:inner] + f"\n{helpers.strip()}\n" + stitched[end:]
 
 
 def assemble_declarative_program(
     spec_rs: str,
     agent_body: str,
     *,
+    helpers: str = "",
     column_bins: dict[str, str] | None = None,
-    extra_uses: list[str] | None = None,
     expected_rows: dict[str, int] | None = None,
 ) -> str:
-    start = spec_rs.find("// AGENT_EDIT_START")
-    end = spec_rs.find("// AGENT_EDIT_END")
+    from declarative_spec.regions import EDIT_END, EDIT_START
+
+    start = spec_rs.find(EDIT_START)
+    end = spec_rs.find(EDIT_END)
     if start == -1 or end == -1 or end < start:
         raise ValueError("AGENT_EDIT markers missing from spec")
 
-    before = spec_rs[: start + len("// AGENT_EDIT_START")]
+    before = spec_rs[: start + len(EDIT_START)]
     after = spec_rs[end:]
     body_block = f"\n{agent_body.rstrip()}\n"
     stitched = before + body_block + after
-    stitched = _insert_agent_uses(stitched, extra_uses or [])
+    stitched = _insert_helpers(stitched, helpers)
 
     host_start = stitched.find("// HOST_LEMMAS_START")
     host_end = stitched.find("// HOST_LEMMAS_END")
