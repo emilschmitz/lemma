@@ -529,15 +529,60 @@ def emit_declarative_spec(
     return _with_agent_surface(with_out_scales(spec, scales))
 
 
+_COLS_STRUCT = re.compile(r"pub struct (Cols_\w+) \{\n((?:    pub [^\n]+\n)+)\}")
+_VALID_FN = re.compile(
+    r"pub open spec fn (valid_cols_\w+)\((\w+): &(Cols_\w+)\) -> bool \{\n    &&& (.*?)\n\}", re.S
+)
+
+
+def _prune_unread_columns(spec: str) -> str:
+    """Keep in each ``Cols_<table>`` (and its ``valid_cols``) only the columns the spec reads.
+
+    A column no spec text mentions is never loaded, so a NULL in it cannot block the run.
+    A column the query reads stays, and a NULL there still fails at export.
+    """
+    rest = _COLS_STRUCT.sub("", spec)
+    rest = _VALID_FN.sub("", rest)
+    used = set(re.findall(r"\w\.((?:r#)?\w+)@", rest))
+
+    def struct(m: re.Match[str]) -> str:
+        lines = [
+            ln
+            for ln in m.group(2).splitlines()
+            if ln.strip() == "pub n: usize," or re.match(r"\s+pub ((?:r#)?\w+):", ln).group(1) in used
+        ]
+        return f"pub struct {m.group(1)} {{\n" + "\n".join(lines) + "\n}"
+
+    def valid(m: re.Match[str]) -> str:
+        param = m.group(2)
+        dropped = {
+            f
+            for f in re.findall(rf"\b{re.escape(param)}\.((?:r#)?\w+)@", m.group(4))
+            if f not in used
+        }
+        conj = m.group(4).split("\n    &&& ")
+        kept = [c for c in conj if not any(re.search(rf"\b{re.escape(param)}\.{re.escape(f)}@", c) for f in dropped)]
+        body = "\n    &&& ".join(kept or ["true"])
+        return f"pub open spec fn {m.group(1)}({param}: &{m.group(3)}) -> bool {{\n    &&& {body}\n}}"
+
+    spec = _COLS_STRUCT.sub(struct, spec)
+    return _VALID_FN.sub(valid, spec)
+
+
 def _with_agent_surface(spec: str) -> str:
     """Import every vstd module by glob, and mark the helper region just above `run_query`."""
     from declarative_spec.regions import HELPERS_END, HELPERS_START
     from declarative_spec.vstd_index import preamble_uses
 
     assert spec.count("use vstd::prelude::*;") == 1
+    spec = _prune_unread_columns(spec)
     spec = spec.replace("use vstd::prelude::*;", preamble_uses(), 1)
     head, sep, tail = spec.partition("pub fn run_query(")
     assert sep
+    if "spec_like(" in head and "spec fn spec_like(" not in head:
+        from declarative_spec.emit_like import SPEC_LIKE_FN
+
+        head = f"{head}{SPEC_LIKE_FN}\n\n"
     return f"{head}{HELPERS_START}\n{HELPERS_END}\n{sep}{tail}"
 
 

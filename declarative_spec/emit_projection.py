@@ -39,7 +39,7 @@ from declarative_spec.emit_surface import (
 )
 from declarative_spec.emit_date import with_civil_fns
 from declarative_spec.parse import DeclarativeUnsupported
-from declarative_spec.schema_types import ColumnTypeInfo, SchemaModel, rust_ident
+from declarative_spec.schema_types import ColumnTypeInfo, SchemaModel, param_ident, rust_ident
 from declarative_spec.surface import Query
 from research_loop.table_assumptions import CatalogAssumptions
 
@@ -132,9 +132,9 @@ def _projection_params(query: Query, main: list[_Slot], model: SchemaModel) -> l
     def add(alias: str, table: str) -> None:
         if table.casefold() not in model.tables or table.casefold() in known:
             return
-        param = rust_ident(alias)
+        param = param_ident(alias)
         if param in names:
-            param = rust_ident(f"{alias}_{table}")
+            param = param_ident(f"{alias}_{table}")
         params.append(
             _Slot(
                 table=table,

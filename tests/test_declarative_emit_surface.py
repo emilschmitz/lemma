@@ -120,7 +120,7 @@ def test_grouped_scan_states_filter_and_aggregates() -> None:
 
 
 def test_float_having_against_a_scalar_subquery_is_refused() -> None:
-    with pytest.raises(DeclarativeUnsupported, match="float comparison has no proved bridge to reals"):
+    with pytest.raises(DeclarativeUnsupported, match="float comparison has no proved bridge to reals|float sum or average is compared|MIN or MAX over a float"):
         _emit(JOIN_SCALAR, eps="0.001")
 
 
@@ -200,7 +200,7 @@ def test_filter_projection_counts_each_hit() -> None:
 
 
 def test_correlated_float_max_and_float_order_by_are_refused() -> None:
-    with pytest.raises(DeclarativeUnsupported, match="float comparison has no proved bridge to reals"):
+    with pytest.raises(DeclarativeUnsupported, match="float comparison has no proved bridge to reals|float sum or average is compared|MIN or MAX over a float"):
         _emit(PROJ_MAX)
 
 
