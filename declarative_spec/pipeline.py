@@ -9,6 +9,13 @@ import tempfile
 from pathlib import Path
 
 from declarative_spec.regions import extract_agent_edit, extract_agent_helpers
+from declarative_spec.verus_limits import (
+    failure_prefix,
+    run_verus,
+    timeout_message,
+    verus_limit_args,
+    verus_timeout_sec,
+)
 
 VERUS_CANDIDATES = (
     Path("/home/emil/tools/verus/verus"),
@@ -23,31 +30,27 @@ def _verus_binary() -> str:
     return "verus"
 
 
-def verify_assembled(rs_source: str, *, timeout_sec: int = 180) -> tuple[bool, str]:
+def _text(chunk: str | bytes | None) -> str:
+    if chunk is None:
+        return ""
+    if isinstance(chunk, bytes):
+        return chunk.decode("utf-8", errors="replace")
+    return chunk
+
+
+def verify_assembled(rs_source: str, *, timeout_sec: int | None = None) -> tuple[bool, str]:
+    timeout_sec = verus_timeout_sec() if timeout_sec is None else timeout_sec
     verus = _verus_binary()
     with tempfile.NamedTemporaryFile(mode="w", suffix=".rs", delete=False) as f:
         f.write(rs_source)
         path = f.name
     try:
-        proc = subprocess.run(
-            [verus, path],
-            capture_output=True,
-            text=True,
-            timeout=timeout_sec,
-            check=False,
-        )
+        proc = run_verus([verus, path, *verus_limit_args()], timeout=timeout_sec)
         combined = (proc.stdout or "") + (proc.stderr or "")
         return proc.returncode == 0, combined
     except subprocess.TimeoutExpired as e:
-        def _text(chunk: str | bytes | None) -> str:
-            if chunk is None:
-                return ""
-            if isinstance(chunk, bytes):
-                return chunk.decode("utf-8", errors="replace")
-            return chunk
-
         out = _text(e.stdout) + _text(e.stderr)
-        return False, out or f"timeout after {timeout_sec}s"
+        return False, timeout_message(out, timeout_sec)
     finally:
         try:
             os.unlink(path)
@@ -81,9 +84,10 @@ def compile_and_run(
     rs_source: str,
     *,
     work_dir: Path | None = None,
-    timeout_sec: int = 300,
+    timeout_sec: int | None = None,
 ) -> dict:
     """Verify, compile, and run. Success requires a printed QUERY_LATENCY_US."""
+    timeout_sec = verus_timeout_sec() if timeout_sec is None else timeout_sec
     verus = _verus_binary()
     owned_dir = work_dir is None
     directory = work_dir if work_dir is not None else Path(tempfile.mkdtemp(prefix="decl-run-"))
@@ -92,12 +96,13 @@ def compile_and_run(
     rs_path.write_text(rs_source)
     binary = directory / "declarative_query"
     try:
-        proc = subprocess.run(
+        proc = run_verus(
             [
                 verus,
                 str(rs_path),
                 "--triggers-mode",
                 "silent",
+                *verus_limit_args(),
                 "--compile",
                 "--",
                 "-C",
@@ -105,10 +110,7 @@ def compile_and_run(
                 "-C",
                 "codegen-units=1",
             ],
-            capture_output=True,
-            text=True,
             timeout=timeout_sec,
-            check=False,
             cwd=directory,
         )
     except subprocess.TimeoutExpired as exc:
@@ -116,8 +118,8 @@ def compile_and_run(
             "status": "FAILURE",
             "proof_verified": False,
             "latency_us": -1,
-            "compiler_error": f"verus --compile timed out after {timeout_sec}s",
-            "verify_msg": str(exc),
+            "compiler_error": timeout_message(_text(exc.stdout) + _text(exc.stderr), timeout_sec),
+            "verify_msg": _text(exc.stdout) + _text(exc.stderr),
         }
     log = (proc.stdout or "") + "\n" + (proc.stderr or "")
     proved = proc.returncode == 0 and _proof_verified(log)
@@ -126,7 +128,7 @@ def compile_and_run(
             "status": "FAILURE",
             "proof_verified": proved,
             "latency_us": -1,
-            "compiler_error": log[-4000:],
+            "compiler_error": failure_prefix(log) + log[-4000:],
             "verify_msg": log[-4000:],
         }
     try:
@@ -224,7 +226,7 @@ def run_declarative_metrics(
     spec_rs: str,
     agent_source: str,
     work_dir: Path | None = None,
-    timeout_sec: int = 300,
+    timeout_sec: int | None = None,
     column_bins: dict[str, str] | None = None,
     speed_bar: dict | None = None,
 ) -> dict:
