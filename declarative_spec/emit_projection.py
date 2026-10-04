@@ -106,6 +106,8 @@ def emit_projection_program(
         "",
         _out_copies_fn(fields) if not query.distinct else "",
         "",
+        _out_row_ok_fn(params, main, query),
+        "",
         f"""pub fn run_query({sig}) -> (res: Vec<OutRow>)
     requires
         {requires},
@@ -373,6 +375,23 @@ def _row_view(expr: str, info: ColumnTypeInfo) -> str:
     return f"({expr} as int)"
 
 
+def _out_row_ok_fn(params: list[_Slot], main: list[_Slot], query: Query) -> str:
+    """Per-row predicate: a result row is the projection of some source row that passes the filter.
+
+    The ``exists`` sits inside a spec fn so ``res@[r]`` is a ground term for the solver, as in the grouped path:
+    inline, the skolem row of a negated ``forall r. exists i0. .. res@[r] ..`` appears only inside the nested
+    quantifier body and a loop invariant over ``res@[r]`` never fires.
+    """
+    p = _param_call(params)
+    binders, _ranges = _quant(main)
+    hit = f"row_hit({p}, {_idx_call(main)})"
+    sig = ", ".join(f"{s.param}: &{s.struct}" for s in params)
+    return (
+        f"pub open spec fn out_row_ok({sig}, row: OutRow) -> bool {{\n"
+        f"    exists|{binders}| #![trigger {hit}] {hit} && out_key(row) == proj_key({p}, {_idx_call(main)})\n}}\n"
+    )
+
+
 def _out_key_fn(fields: list[_Field]) -> str:
     groups = [(fname, col, info, slot) for fname, col, info, slot in fields]
     parts = [_row_view(f"row.{fname}", info) for fname, _col, info, _slot in fields]
@@ -470,10 +489,7 @@ def _projection_ensures(
     hit = f"row_hit({p}, {idxs})"
     key = f"proj_key({p}, {idxs})"
     lines = [
-        (
-            f"forall|r: int| #![trigger res@[r]] 0 <= r < res@.len() ==> "
-            f"exists|{binders}| #![trigger {hit}] {hit} && out_key(res@[r]) == {key}"
-        ),
+        f"forall|r: int| #![trigger res@[r]] 0 <= r < res@.len() ==> out_row_ok({p}, res@[r])",
     ]
     if query.order_by:
         before = _typed_not_after(
