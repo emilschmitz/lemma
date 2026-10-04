@@ -100,6 +100,21 @@ Fixes from Q2 (generic, tested):
   tuple-of-strings group key, per-group distinct set as a backward scan with a `StringHashMap` seen-map, `Vec::insert`
   into a sorted vector (`lemma_ins_*`), opaque invariant bundles, the ground-term pattern.
 
+| SEC Q19 (NOT EXISTS, SUM(value) DOUBLE, HAVING COUNT, ORDER BY cnt LIMIT 1000), DOUBLE schema | step 3 (agent) / step 2 (spec): **setup didn't give the ability**: the f64 eps precondition is unsatisfiable at the host caps | prover (2 of 8 checks, then stopped): `verification results:: 17 verified, 2 errors`. `out_row_ok` needs `|total - sum| <= FLOAT_ABS_EPS` (1e20) but `lemma_f64_sum_within_eps` needs `n_terms^2 * mag_cap / 2^52 <= eps`; `valid_cols` gives group size <= ROW_CAP_num = 2^31 and `|value| < 2^62`, worst case 2^72 ~ 4.7e21 > 1e20, so the lemma's precondition cannot be discharged for a plain left fold. Prompt gaps: no worked float example, no NOT EXISTS / top-K example. NOTE: the prover made only 2 checks and stopped on a hand-arithmetic argument, so this is a weak trace (the Z3 probe was inconclusive); treat as 'prover gave up early', not as a proof of impossibility. This is the DOUBLE variant; the DECIMAL variant (round 3 on) has no eps. | none |
+
+## Data note (every result line)
+
+The SEC data on this machine is SYNTHETIC (`holdout/gendb_sec_edgar/synth_tiny.py`), not real EDGAR: `value = round(uniform(1.0, 1e6), 2)`, 1M `num` rows, `coreg`/`footnote` NULL on every row. From round 3 on, queries are drawn on the DECIMAL variant (`sec_edgar_local_dec.duckdb`, `value` DECIMAL(38,4) derived from the stored doubles, package `sec_margin_dec`; `research_loop/menus/sec_decimal_variant.md`). Speeds on 1M synthetic rows are not GenDB-scale.
+
+## Audit of added helpers against vstd (Emil's rule: no junk)
+
+`mul_small` (fixture `ungrouped_decimal_product_sum.rs`; a prover-written helper in a worked example, not a host lemma): grep
+`LEMMAS.md` for `lemma_mul_upper_bound` / `lemma_mul_inequality` / `mul_le`: vstd has `lemma_mul_upper_bound(x, xbound, y, ybound)`
+requiring `0 <= x`; the decimal cell here is signed (`-999999999999999 <= p`), so there is no exact equivalent. Kept as an
+example only. Other fixtures added by me (`string_tuple_count_distinct_sorted.rs`) are example bodies; their helpers
+(`seen_inv`, `lemma_ins_*`, `lemma_nf_*`) are specific to the host's `count_distinct_*` / `out_row_ok` spec functions and
+have no vstd equivalent beyond `Seq::insert_ensures`-style lemmas, which they already call.
+
 ## Round 2 (seed 7102) - draw
 
 Refused during the draw (coverage items): SEC Q18 and Q17 (`ORDER BY n.value DESC` over a float, correlated float MAX),
