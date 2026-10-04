@@ -115,6 +115,21 @@ def test_login_file_is_mounted_alone_and_read_only_by_default(
     assert "ANTHROPIC_API_KEY" not in args
 
 
+def test_oauth_token_is_passed_by_name_only_and_beats_the_login_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("LEMMA_CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sentinel-not-a-real-token")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / ".credentials.json").write_text("{}")
+    args = claude_docker_args()
+    assert "CLAUDE_CODE_OAUTH_TOKEN" in args
+    assert not any("sentinel" in a for a in args)
+    assert not any(".credentials.json" in a for a in args)
+
+
 def test_key_wins_over_login_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sentinel-not-a-real-key")
     monkeypatch.setenv("HOME", str(tmp_path))

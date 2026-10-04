@@ -222,7 +222,9 @@ def claude_login_file() -> Path:
 def claude_docker_args() -> list[str]:
     """Docker args for the claude agent. Secrets are never read here or put on a command line.
 
-    Order: ``ANTHROPIC_API_KEY`` (passed by name only), else ``LEMMA_CLAUDE_CONFIG_DIR`` (a directory,
+    Order: ``ANTHROPIC_API_KEY`` (passed by name only), else ``CLAUDE_CODE_OAUTH_TOKEN`` (the long-lived
+    token from ``claude setup-token``, also by name only: the intended non-interactive credential, it does
+    not rotate under the host login), else ``LEMMA_CLAUDE_CONFIG_DIR`` (a directory,
     read-only), else the host login file ``~/.claude/.credentials.json``, read-only, that file only
     (Claude history and memory stay out of the container). The entrypoint copies the mount into a
     writable ``/root/.claude``. A model agent runs next to whatever is mounted: Emil chose the login
@@ -233,6 +235,8 @@ def claude_docker_args() -> list[str]:
     args = ["-e", "CLAUDE_CONFIG_DIR=/root/.claude"]
     if key:
         args += ["-e", "ANTHROPIC_API_KEY"]
+    elif os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", ""):
+        args += ["-e", "CLAUDE_CODE_OAUTH_TOKEN"]
     elif config_dir:
         path = Path(config_dir).expanduser()
         if not path.is_dir():
@@ -1286,6 +1290,7 @@ def run_agent_docker(
         "LEMMA_AGENT_STDERR_LOG",
         "PATH",
         "ANTHROPIC_API_KEY",
+        "CLAUDE_CODE_OAUTH_TOKEN",  # by name only (claude_docker_args): a value on the command line leaks
     }
     for k, v in env.items():
         if k in skip_env:
