@@ -195,6 +195,25 @@ def is_claude_cmd(agent_cmd: str) -> bool:
     return agent_cmd.split(None, 1)[0] == "claude"
 
 
+MOCK_PORT_ENV = "LEMMA_TEST_MOCK_ANTHROPIC_PORT"
+MOCK_CA_ENV = "LEMMA_TEST_MOCK_ANTHROPIC_CA"
+MOCK_EGRESS_PROFILE = "anthropic-mock-test"
+
+
+def claude_test_mock() -> tuple[int, Path] | None:
+    """TEST ONLY: (port, CA pem) of the local mock model API, when a test selected it.
+
+    Selecting it swaps the egress profile for one that allows only the mock's reserved
+    ``.test`` name, so the container cannot reach any real vendor host in that run.
+    """
+    port, ca = os.environ.get(MOCK_PORT_ENV), os.environ.get(MOCK_CA_ENV)
+    if port is None and ca is None:
+        return None
+    if not (port and ca):
+        raise RuntimeError(f"{MOCK_PORT_ENV} and {MOCK_CA_ENV} must be set together")
+    return int(port), Path(ca)
+
+
 def claude_docker_args() -> list[str]:
     """Docker args for the claude agent. The key is passed by name only (value stays in env)."""
     key = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -212,6 +231,15 @@ def claude_docker_args() -> list[str]:
         if not path.is_dir():
             raise RuntimeError(f"LEMMA_CLAUDE_CONFIG_DIR is not a directory: {path}")
         args += ["-v", f"{path.resolve()}:{CLAUDE_CONTAINER_CONFIG_HOST}:ro"]
+    mock = claude_test_mock()
+    if mock is not None:
+        from research_loop.scripts.mock_anthropic_api import MOCK_HOST
+
+        args += [
+            "-e", f"ANTHROPIC_BASE_URL=https://{MOCK_HOST}",
+            "-e", "NODE_EXTRA_CA_CERTS=/mock-ca.pem",
+            "-v", f"{mock[1].resolve()}:/mock-ca.pem:ro",
+        ]
     return args
 
 
@@ -1107,6 +1135,9 @@ def run_agent_docker(
         agent_cmd,
         cfg.get("AGENT_EGRESS_PROFILE") or os.environ.get("AGENT_EGRESS_PROFILE"),
     )
+    mock = claude_test_mock() if claude else None
+    if mock is not None:
+        profile = MOCK_EGRESS_PROFILE
     allow = _parse_allowlist(
         cfg.get("LEMMA_EGRESS_ALLOWLIST") or os.environ.get("LEMMA_EGRESS_ALLOWLIST"),
         profile=profile,
@@ -1132,6 +1163,9 @@ def run_agent_docker(
         egress_sock,
         allow,
         log_path=log_dir / "egress_bridge.jsonl",
+        dial_overrides=(
+            {"lemma-mock-anthropic.test": ("127.0.0.1", mock[0])} if mock is not None else None
+        ),
     )
     mcp_server.start()
     egress_server.start()
