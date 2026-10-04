@@ -93,6 +93,60 @@ def test_in_docker_paths_and_previous_error() -> None:
     assert "## Previous host error" in p and "error: boom" in p
 
 
+_Q6_SCHEMA = {
+    "lineitem": {
+        "l_quantity": "decimal(15,2)",
+        "l_extendedprice": "decimal(15,2)",
+        "l_discount": "decimal(15,2)",
+        "l_shipdate": "date",
+    }
+}
+_Q6 = (
+    "SELECT sum(l_extendedprice * l_discount) AS revenue FROM lineitem WHERE l_shipdate >= date '1994-01-01' "
+    "AND l_shipdate < date '1994-01-01' + interval '1' year AND l_discount BETWEEN 0.09 - 0.01 AND 0.09 + 0.01 "
+    "AND l_quantity < 25"
+)
+_Q6_CATALOG = CatalogAssumptions(tables={"lineitem": TableAssumptions(max_rows=64)})
+
+
+def test_product_sum_gets_the_helper_example_and_other_ungrouped_does_not() -> None:
+    spec = emit_declarative_spec(_Q6, _Q6_SCHEMA, _Q6_CATALOG)
+    assert spec_shape(spec)["recipe"] == "ungrouped_product"
+    p = build_declarative_prompt(
+        sql=_Q6, spec_path="s", edit_path="e", lemma_index="idx", spec_text=spec
+    )
+    assert "proof fn mul_small" in p and "context/ro/examples/ungrouped_decimal_product_sum.rs" in p
+    plain = _prompt("SELECT SUM(line) AS total FROM pre WHERE line > 5")
+    assert "proof fn mul_small" not in plain.split("## Which shapes")[0]
+
+
+def test_speed_guidance_names_the_all_core_bar_and_the_branch_free_form() -> None:
+    p = _prompt("SELECT stmt, COUNT(*) AS c FROM pre GROUP BY stmt")
+    assert "speedup_1t" in p and "all cores" in p
+    assert "if hit { v } else { 0 }" in p and "`&&`, not `&`" in p
+    assert "by (nonlinear_arith)" in p
+
+
+def test_product_sum_example_verifies(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The inlined example is a real proof: assemble it on its spec and run Verus (memory-guarded)."""
+    from declarative_spec.assemble import assemble_declarative_program
+    from declarative_spec.pipeline import VERUS_CANDIDATES, verify_assembled
+    from declarative_spec.prompt import _FIXTURES
+    from declarative_spec.regions import extract_agent_edit, extract_agent_helpers
+
+    if not any(c.is_file() for c in VERUS_CANDIDATES):
+        pytest.skip("verus binary not installed")
+    guarded = Path(__file__).resolve().parents[1] / "scripts" / "ram" / "verus_guarded.sh"
+    monkeypatch.setenv("LEMMA_VERUS_BIN", str(guarded))
+    text = (_FIXTURES / "ungrouped_decimal_product_sum.rs").read_text()
+    spec = emit_declarative_spec(_Q6, _Q6_SCHEMA, _Q6_CATALOG)
+    program = assemble_declarative_program(
+        spec, extract_agent_edit(text), helpers=extract_agent_helpers(text)
+    )
+    ok, out = verify_assembled(program)
+    assert ok and "0 errors" in out, out[-1500:]
+
+
 def test_mount_examples_copies_every_example(tmp_path: Path) -> None:
     mount_examples(tmp_path)
     names = {f.name for f in (tmp_path / "examples").iterdir()}

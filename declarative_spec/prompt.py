@@ -146,6 +146,10 @@ _EXAMPLES: dict[str, tuple[str, str]] = {
     "group_count": ("group_count_where.rs", "one table, filtered GROUP BY, COUNT(*), result `Vec<OutRow>`"),
     "group_sum": ("group_sum_where.rs", "one table, filtered GROUP BY, SUM, result `Vec<OutRow>`"),
     "join_group_sum": ("join_group_sum.rs", "two tables joined on a key, GROUP BY, SUM, result `Vec<OutRow>`"),
+    "ungrouped_product": (
+        "ungrouped_decimal_product_sum.rs",
+        "one table, filtered ungrouped SUM of a product of two decimal columns, with a helper lemma",
+    ),
     "ungrouped": ("ungrouped_sum_where.rs", "one table, filtered ungrouped SUM, result `Vec<OutRow>` of one row"),
 }
 
@@ -171,7 +175,8 @@ def spec_shape(spec_text: str) -> dict:
         recipe = "string_map"
     elif ty.startswith("Vec<OutRow>"):
         if "out_row_ok(" not in spec_text:
-            recipe = "ungrouped"
+            head = spec_text.split("pub fn run_query(")[0]
+            recipe = "ungrouped_product" if re.search(r"as int\)\)?\s*\*\s*\(", head) else "ungrouped"
         elif tables >= 2:
             recipe = "join_group_sum"
         elif re.search(r"\bsum_\w+\(", spec_text):
@@ -232,7 +237,8 @@ _SHAPE_LIST = """\
 
 Worked, verified examples exist (`context/ro/examples/`) for: one-table `GROUP BY` COUNT with an integer key
 (`HashMapWithView`) or a string key (`StringHashMap`); one-table filtered `GROUP BY` COUNT or SUM into
-`Vec<OutRow>`; one filtered ungrouped SUM; a two-table join `GROUP BY` SUM.
+`Vec<OutRow>`; one filtered ungrouped SUM; a two-table join `GROUP BY` SUM; a filtered ungrouped SUM of a product of two decimal columns (with a
+`nonlinear_arith` bound helper).
 
 KNOWN HARD, no worked example: a join whose join key repeats on both sides (many-to-many) with
 `COUNT(DISTINCT ...)`; top-K (`ORDER BY ... LIMIT`) over groups; correlated or scalar subqueries; `EXISTS`/`IN`
@@ -252,6 +258,14 @@ that the block sum provably cannot overflow, and widen the block sum into the `i
 if you cannot prove the no-overflow invariant, use a plain `i128` accumulator. Avoid per-row allocation and
 `String::clone` on the hot path. The proof must come first: a body that verifies but is slower than the bar is
 reported with its speedup, and you may rewrite it.
+
+The bar is the reference engine running on all cores. `run_runquery` also reports the speedup against the same
+engine on one thread (`speedup_1t`). A scan that is limited by memory bandwidth (a few wide columns over millions
+of rows) may be hard to win on one core: report both numbers, do not trade the proof for it.
+A filter that is not predictable is faster branch-free: `let t = if hit { v } else { 0 }; acc = acc + t;` beat
+`if hit { acc = acc + v }` by about 1.7x on a large scan. Use `&&`, not `&`, on bools (Verus rejects `&`).
+To prove a product of two cells fits in the `i128` accumulator, write a helper with `by (nonlinear_arith)` from the
+two cell bounds (worked example: `context/ro/examples/ungrouped_decimal_product_sum.rs`).
 """
 
 _PROOF_HYGIENE = """\
