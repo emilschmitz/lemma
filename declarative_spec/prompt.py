@@ -5,6 +5,9 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from declarative_spec.example_registry import INDEX_GROUPS as _INDEX_GROUPS
+from declarative_spec.example_registry import MORE_EXAMPLES as _MORE_EXAMPLES
+
 _COUNT_SHAPE = """
 let mut counts: Vec<u64> = Vec::new();
 let mut c: usize = 0;
@@ -140,23 +143,56 @@ _FIXTURES = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "dec
 # Shapes with a verified worked example, by recipe name. The file is a `run_query` body that
 # Verus proved against a spec of that shape (column and table names differ in your spec).
 _EXAMPLES: dict[str, tuple[str, str]] = {
-    "int_map": ("int_group_count.rs", "one table, integer group key, COUNT(*), result `HashMapWithView<int, u64>`"),
-    "string_map": ("string_group_count.rs", "one table, string group key, COUNT(*), result `StringHashMap<u64>`"),
-    "group_count": ("group_count_where.rs", "one table, filtered GROUP BY, COUNT(*), result `Vec<OutRow>`"),
-    "group_sum": ("group_sum_where.rs", "one table, filtered GROUP BY, SUM, result `Vec<OutRow>`"),
-    "join_group_sum": ("join_group_sum.rs", "two tables joined on a key, GROUP BY, SUM, result `Vec<OutRow>`"),
+    "int_map": (
+        "int_group_count.rs",
+        "one table, integer group key, COUNT(*), result `HashMapWithView<int, u64>`",
+    ),
+    "string_map": (
+        "string_group_count.rs",
+        "one table, string group key, COUNT(*), result `StringHashMap<u64>`",
+    ),
+    "group_count": (
+        "group_count_where.rs",
+        "one table, filtered GROUP BY, COUNT(*), result `Vec<OutRow>`",
+    ),
+    "group_sum": (
+        "group_sum_where.rs",
+        "one table, filtered GROUP BY, SUM, result `Vec<OutRow>`",
+    ),
+    "join_group_sum": (
+        "join_group_sum.rs",
+        "two tables joined on a key, GROUP BY, SUM, result `Vec<OutRow>`",
+    ),
     "ungrouped_product": (
         "ungrouped_decimal_product_sum.rs",
         "one table, filtered ungrouped SUM of a product of two decimal columns, with a helper lemma",
     ),
-    "projection_where": ("projection_where.rs", "one table, `SELECT cols WHERE ...` (no GROUP BY), result `Vec<OutRow>`"),
-    "projection_join": ("projection_join.rs", "two tables joined, plain projection `SELECT t.a, u.w ... JOIN ...`"),
+    "projection_where": (
+        "projection_where.rs",
+        "one table, `SELECT cols WHERE ...` (no GROUP BY), result `Vec<OutRow>`",
+    ),
+    "projection_join": (
+        "projection_join.rs",
+        "two tables joined, plain projection `SELECT t.a, u.w ... JOIN ...`",
+    ),
     "projection_correlated_max": (
         "projection_correlated_max.rs",
         "projection with a correlated scalar subquery `a = (SELECT MAX(a) ... WHERE same key)`",
     ),
-    "projection_distinct": ("projection_distinct.rs", "`SELECT DISTINCT cols ... WHERE ...`"),
-    "projection_top_k": ("projection_top_k.rs", "projection with `ORDER BY ... LIMIT k` (multiplicity and the omitted-row clause)"),
+    "projection_distinct": (
+        "projection_distinct.rs",
+        "`SELECT DISTINCT cols ... WHERE ...`",
+    ),
+    "projection_join_correlated_max": (
+        "hard/projection_join_correlated_max_topk.rs",
+        "projection over a TWO-table join with a correlated scalar MAX subquery (or a join to a per-key MAX), ORDER BY ... LIMIT k: "
+        '"next same-key row" chains and a sorted top-k `Vec` (proves in plain string mode; in dictionary mode the string columns are '
+        "code vectors, so adapt the key and output handling; it proves but is slow: a proof template, not a speed template)",
+    ),
+    "projection_top_k": (
+        "projection_top_k.rs",
+        "projection with `ORDER BY ... LIMIT k` (multiplicity and the omitted-row clause)",
+    ),
     "hard_group_strings": (
         "hard/group_decimal_sums_string_keys_sorted.rs",
         "one table, GROUP BY two string columns, several decimal SUMs and COUNT(*), ORDER BY the keys (TPC-H Q1 shape)",
@@ -196,7 +232,10 @@ _EXAMPLES: dict[str, tuple[str, str]] = {
         "ungrouped_minmax_string_filter.rs",
         "one table, filtered ungrouped MIN and MAX of an integer column, with a string-literal comparison in the filter",
     ),
-    "ungrouped": ("ungrouped_sum_where.rs", "one table, filtered ungrouped SUM, result `Vec<OutRow>` of one row"),
+    "ungrouped": (
+        "ungrouped_sum_where.rs",
+        "one table, filtered ungrouped SUM, result `Vec<OutRow>` of one row",
+    ),
 }
 
 # Helper-region file that goes with an example body (a few lines each; the body calls it).
@@ -218,85 +257,178 @@ _HARD_FEATURES: tuple[tuple[str, str], ...] = (
 )
 
 
-def spec_shape(spec_text: str) -> dict:
-    """Which recipe matches this spec's result type, and which hard features it has."""
+def _features(spec_text: str) -> dict:
+    """The facts about a spec that pick its recipe (the result kind is a string, the rest are bools)."""
     result = re.search(r"pub fn run_query\([^)]*\)\s*->\s*\(res:\s*([^)]+)\)", spec_text)
     ty = result.group(1).strip() if result else ""
     tables = len(re.findall(r"pub struct Cols_", spec_text))
-    if "__dict" in spec_text and ty.startswith("Vec<OutRow>"):
-        recipe = "dict_group" if ("out_row_ok(" in spec_text and "proj_key(" not in spec_text) else "dict_filter"
-        if tables >= 2 and "proj_key(" not in spec_text:
-            recipe = "dict_join"
-        if recipe == "dict_join" and re.search(r"\bexists_\d+\(", spec_text):
-            recipe = "dict_anti_join"
-        elif recipe == "dict_join" and tables >= 3 and re.search(r"res@\.len\(\) <= \d+", spec_text):
-            recipe = "dict_join3"
-    elif ty.startswith("HashMapWithView"):
-        recipe = "dense_map" if "KEY_CAP_" in spec_text else "int_map"
+    head = spec_text.split("pub fn run_query(")[0]
+    tail = spec_text.split("pub fn run_query")[-1]
+    if ty.startswith("HashMapWithView"):
+        kind = "int_map"
     elif ty.startswith("StringHashMap"):
-        recipe = "string_map"
-    elif ty.startswith("Vec<OutRow>") and "proj_key(" in spec_text:
-        if "sq_" in spec_text:
-            recipe = "projection_correlated_max"
-        elif "out_copies(" not in spec_text:
-            recipe = "projection_distinct"
-        elif re.search(r"res@\[i \+ 1\]", spec_text.split("pub fn run_query")[-1]):
-            recipe = "projection_top_k"
-        elif tables >= 2:
-            recipe = "projection_join"
-        else:
-            recipe = "projection_where"
+        kind = "string_map"
     elif ty.startswith("Vec<OutRow>"):
-        if "out_row_ok(" not in spec_text:
-            head = spec_text.split("pub fn run_query(")[0]
-            if re.search(r"as int\)\)?\s*\*\s*\(", head):
-                recipe = "ungrouped_product"
-            elif re.search(r"\b(?:min|max)_\w+\(", head):
-                recipe = "join_min_probe" if tables >= 2 else "ungrouped_minmax"
-            else:
-                recipe = "ungrouped"
-        elif tables >= 2:
-            recipe = "join_group_sum"
-        elif re.search(r"\bcount_distinct_", spec_text):
-            recipe = "hard_distinct"
-        elif "(Seq<char>, Seq<char>)" in spec_text:
-            recipe = "hard_group_strings"
-        elif re.search(r"\bsum_\w+\(", spec_text):
-            recipe = "group_sum"
-        else:
-            recipe = "group_count"
+        kind = "rows"
     else:
-        recipe = "none"
+        kind = "other"
+    return {
+        "ty": ty,
+        "tables": tables,
+        "kind": kind,
+        "dict": "__dict" in spec_text,
+        "dense": "KEY_CAP_" in spec_text,
+        "proj": "proj_key(" in spec_text,  # a projection: one result row per input row
+        "grouped": "out_row_ok(" in spec_text,
+        "copies": "out_copies(" in spec_text,  # multiplicity; absent for SELECT DISTINCT
+        "sorted": bool(re.search(r"res@\[i \+ 1\]", tail)),  # ORDER BY: the result is a sorted sequence
+        "sq": bool(re.search(r"\bsq_", spec_text)),
+        "exists": bool(re.search(r"\bexists_\d+\(", spec_text)),
+        "limit": bool(re.search(r"res@\.len\(\) <= \d+", spec_text)),
+        "multi": tables >= 2,
+        "multi3": tables >= 3,
+        "product": bool(re.search(r"as int\)\)?\s*\*\s*\(", head)),
+        "minmax": bool(re.search(r"\b(?:min|max)_\w+\(", head)),
+        "count_distinct": bool(re.search(r"\bcount_distinct_", spec_text)),
+        "str_tuple": "(Seq<char>, Seq<char>)" in spec_text,
+        "sum": bool(re.search(r"\bsum_\w+\(", spec_text)),
+    }
+
+
+# Shape -> recipe, as a table. A rule matches when every feature it names has the value it gives (a feature it does
+# not name does not matter); the FIRST matching rule wins, so the rules go from the most specific shape to the most
+# general one, and the encoding mode (dictionary or plain) is just one more feature. A dictionary-mode projection used
+# to fall into the ungrouped filter recipe because the dictionary test came first and the projection rules were never
+# reached; here a projection is decided before any dictionary rule.
+_RECIPE_RULES: tuple[tuple[str, dict], ...] = (
+    ("int_map", {"kind": "int_map", "dense": False}),
+    ("dense_map", {"kind": "int_map", "dense": True}),
+    ("string_map", {"kind": "string_map"}),
+    # projections (no GROUP BY), plain and dictionary mode alike
+    (
+        "projection_join_correlated_max",
+        {"kind": "rows", "proj": True, "sq": True, "multi": True},
+    ),
+    ("projection_correlated_max", {"kind": "rows", "proj": True, "sq": True}),
+    ("projection_distinct", {"kind": "rows", "proj": True, "copies": False}),
+    ("projection_top_k", {"kind": "rows", "proj": True, "sorted": True}),
+    ("projection_join", {"kind": "rows", "proj": True, "multi": True}),
+    ("projection_where", {"kind": "rows", "proj": True}),
+    # dictionary-coded strings
+    ("dict_anti_join", {"kind": "rows", "dict": True, "multi": True, "exists": True}),
+    ("dict_join3", {"kind": "rows", "dict": True, "multi3": True, "limit": True}),
+    ("dict_join", {"kind": "rows", "dict": True, "multi": True}),
+    ("dict_group", {"kind": "rows", "dict": True, "grouped": True}),
+    ("dict_filter", {"kind": "rows", "dict": True}),
+    # plain strings: ungrouped aggregates
+    ("ungrouped_product", {"kind": "rows", "grouped": False, "product": True}),
+    (
+        "join_min_probe",
+        {"kind": "rows", "grouped": False, "minmax": True, "multi": True},
+    ),
+    ("ungrouped_minmax", {"kind": "rows", "grouped": False, "minmax": True}),
+    ("ungrouped", {"kind": "rows", "grouped": False}),
+    # plain strings: grouped aggregates
+    ("join_group_sum", {"kind": "rows", "multi": True}),
+    ("hard_distinct", {"kind": "rows", "count_distinct": True}),
+    ("hard_group_strings", {"kind": "rows", "str_tuple": True}),
+    ("group_sum", {"kind": "rows", "sum": True}),
+    ("group_count", {"kind": "rows"}),
+)
+
+
+def route(features: dict) -> str:
+    """The recipe of a spec's features (`none` when no rule matches)."""
+    for recipe, needs in _RECIPE_RULES:
+        if all(features[name] == value for name, value in needs.items()):
+            return recipe
+    return "none"
+
+
+def spec_shape(spec_text: str) -> dict:
+    """Which recipe matches this spec's result type, and which hard features it has."""
+    f = _features(spec_text)
+    recipe = route(f)
     hard = [what for needle, what in _HARD_FEATURES if re.search(rf"\b{needle}", spec_text)]
-    if re.search(r"res@\.len\(\) <= \d+", spec_text) and recipe in ("group_count", "group_sum", "join_group_sum"):
+    if f["limit"] and recipe in ("group_count", "group_sum", "join_group_sum"):
         hard.append("a LIMIT with ORDER BY over groups (top-K selection)")
-    if recipe == "dict_anti_join":  # the recipe's own example covers NOT EXISTS
-        hard = [h for h in hard if not h.startswith("EXISTS / IN / NOT EXISTS")]
-    if tables >= 2 and "count_distinct_" in spec_text:
+    covered = {  # features the recipe's own worked example already covers: no "no worked example" warning for them
+        "dict_anti_join": ("EXISTS / IN / NOT EXISTS",),
+        "projection_join_correlated_max": (
+            "a projection with no GROUP BY",
+            "a scalar or correlated subquery",
+        ),
+    }
+    covered_by_family = ("a projection with no GROUP BY",) if recipe.startswith("projection_") else ()
+    hard = [h for h in hard if not h.startswith(covered.get(recipe, ()) + covered_by_family)]
+    if f["multi"] and f["count_distinct"]:
         hard.append("a join together with COUNT(DISTINCT ...)")
-    return {"result_type": ty, "recipe": recipe, "tables": tables, "hard": hard}
+    return {
+        "result_type": f["ty"],
+        "recipe": recipe,
+        "tables": f["tables"],
+        "hard": hard,
+    }
+
+
+def _dict_only(name: str) -> bool:
+    return Path(name).name.startswith("dict_")
+
+
+def registered_examples() -> list[tuple[str, str]]:
+    """Every mountable example as (path under the fixtures directory, one line saying what shape it proves)."""
+    seen: dict[str, str] = {}
+    for name, what in [*_EXAMPLES.values(), *_MORE_EXAMPLES, *_FLOAT_EXAMPLES]:
+        seen.setdefault(name, what)
+    return sorted(seen.items())
+
+
+def helper_files() -> list[str]:
+    return sorted({*_EXAMPLE_HELPERS.values(), "projection_null_cell.helpers.rs"})
+
+
+def example_index_markdown(dict_mode_on: bool) -> str:
+    """The generated shape -> file -> what-it-proves table for `context/ro/examples/INDEX.md`."""
+    groups: dict[str, list[str]] = {title: [] for _pat, title in _INDEX_GROUPS}
+    for name, what in registered_examples():
+        if _dict_only(name) and not dict_mode_on:
+            continue
+        lines = len((_FIXTURES / name).read_text().splitlines())
+        title = next(t for pat, t in _INDEX_GROUPS if re.search(pat, name))
+        groups[title].append(f"| {what} | `{name}` | {lines} |")
+    out = [
+        "# Worked examples: shape -> file -> what it proves",
+        "",
+        "Every file is a `run_query` body (plus helpers) that Verus verified against a spec of the shape in the first column; your",
+        "table, column and field names differ. Find the closest row, then read THAT file (long ones: the header comment first, then the",
+        "loop you need with the Read tool's offset/limit; do not read the whole directory). `parallel_*` and `float_*` rows are techniques",
+        "to combine with a base shape. Helper files (`*.helpers.rs`) go in the helper region beside their body.",
+    ]
+    for title, rows in groups.items():
+        if rows:
+            out += [
+                "",
+                f"## {title}",
+                "",
+                "| shape | file | lines |",
+                "|---|---|---|",
+                *rows,
+            ]
+    return "\n".join(out) + "\n"
 
 
 def mount_examples(ro: Path) -> None:
-    """Copy the verified example bodies to ``ro/examples/`` (the prompt names them)."""
+    """Copy the verified example bodies and a generated `INDEX.md` to ``ro/examples/`` (the prompt points at the index)."""
+    from declarative_spec.string_encoding import dict_mode
+
     dest = ro / "examples"
     dest.mkdir(parents=True, exist_ok=True)
-    for name in [n for n, _w in _EXAMPLES.values()] + sorted(set(_EXAMPLE_HELPERS.values())) + [_PAR_EXAMPLE, *_PAR_EXTRA, "parallel_dict_nullable_count_min.rs", "parallel_dict_filter_count_max_blockskip.rs", "parallel_dict_filter_count_max_slices.rs", "parallel_ungrouped_product_sum_slices.rs"]:
-        if Path(name).name.startswith("dict_"):
-            continue  # mounted below, only in dict mode
+    dict_on = dict_mode()
+    for name in [n for n, _w in registered_examples() if dict_on or not _dict_only(n)] + helper_files():
         target = dest / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text((_FIXTURES / name).read_text())
-    for path in sorted(_FIXTURES.glob("float_*.rs")):  # the float shapes (exact reals, the f64 idealization lemmas)
-        (dest / path.name).write_text(path.read_text())
-    from declarative_spec.string_encoding import dict_mode
-
-    if dict_mode():  # the dictionary-encoded string recipe (only when strings are encoded)
-        for path in sorted(_FIXTURES.glob("dict_*.rs")):
-            (dest / path.name).write_text(path.read_text())
-        for path in sorted((_FIXTURES / "hard").glob("dict_*.rs")):
-            (dest / "hard").mkdir(parents=True, exist_ok=True)
-            (dest / "hard" / path.name).write_text(path.read_text())
+    (dest / "INDEX.md").write_text(example_index_markdown(dict_on))
 
 
 _FLOAT_EXAMPLES: tuple[tuple[str, str], ...] = (
@@ -308,11 +440,20 @@ _FLOAT_EXAMPLES: tuple[tuple[str, str], ...] = (
     ("float_avg_decimal.rs", "ungrouped AVG of a DECIMAL column"),
     ("float_avg_float.rs", "ungrouped AVG of a DOUBLE column"),
     ("float_group_sum_having.rs", "GROUP BY, SUM(double), HAVING on the sum"),
-    ("float_group_sum_order_limit.rs", "GROUP BY, SUM(double), ORDER BY the sum, LIMIT"),
+    (
+        "float_group_sum_order_limit.rs",
+        "GROUP BY, SUM(double), ORDER BY the sum, LIMIT",
+    ),
     ("float_group_avg_having.rs", "GROUP BY, AVG(double), HAVING on the average"),
     ("float_group_avg_decimal.rs", "GROUP BY, AVG over a DECIMAL column"),
-    ("float_order_limit.rs", "ORDER BY a DOUBLE column, LIMIT (selection by repeated minimum)"),
-    ("float_avg_group_count_distinct.rs", "tuple-of-strings GROUP BY, COUNT, COUNT DISTINCT and AVG (long)"),
+    (
+        "float_order_limit.rs",
+        "ORDER BY a DOUBLE column, LIMIT (selection by repeated minimum)",
+    ),
+    (
+        "float_avg_group_count_distinct.rs",
+        "tuple-of-strings GROUP BY, COUNT, COUNT DISTINCT and AVG (long)",
+    ),
 )
 
 
@@ -377,9 +518,11 @@ def _scale_section(spec_text: str) -> list[str]:
         return lines + [""]
     if parallel.is_parallel(spec_text):
         lines += [
-            "Rule: get a sequential body to `0 errors` first, then, before you stop, replace it with the parallel recipe below",
-            "(workers over row ranges) unless the parallel body will not verify. Submit the faster verified body; if only the",
-            "sequential one verifies, submit it and say its `speedup` is below 1.",
+            "Order: (1) get ANY body to `N verified, 0 errors` first; sequential is fine, and never trade it for an unverified one.",
+            "(2) Read the `speedup` field of that run. At or above the bar: submit it, you are done. Below the bar: only now try the",
+            "parallel recipe below (workers over row ranges) as an upgrade, keeping the sequential `run_id`. (3) Submit the parallel",
+            "body only if it verifies and its `speedup` is higher; if it does not verify after a few checks, submit the sequential",
+            "`run_id` and say its `speedup` is below 1. Either way, end by submitting a verified body.",
         ]
     else:
         lines += ["This spec has no parallel parameters, so a single-threaded body is all that is available: report the speedup as measured."]
@@ -401,8 +544,8 @@ def _parallel_section(spec_text: str, shape: dict) -> list[str]:
         "`std::sync::Arc::clone(<t>_arc)` and folds a row RANGE `[lo, hi)`; the host's suffix folds are additive over ranges, so",
         "worker k returns `fold(t, lo_k) - fold(t, hi_k)` and the partials telescope to `fold(t, 0)`. No column is copied.",
         "A scan that is limited by memory bandwidth is the case this is for: on the real 39.4M-row table the parallel SUM was",
-        "12.8x faster than the all-core reference engine. Keep the single-threaded body as the first proof if the parallel one is",
-        "hard, then upgrade. A hash aggregate or a join does not telescope directly, but a GROUP BY over a small code domain does: give each",
+        "12.8x faster than the all-core reference engine. Keep the single-threaded body as the first proof (the order above),",
+        "then upgrade only if it loses. A hash aggregate or a join does not telescope directly, but a GROUP BY over a small code domain does: give each",
         "worker its own DENSE array per aggregate (one slot per dictionary code), merge them slotwise in the join loop, and the slotwise",
         "telescoping is the same proof (dict mode: `context/ro/examples/dict_group_count_sum_parallel.rs`, 13x on the real 39.4M-row table;",
         "a nullable dictionary column with a string filter, COUNT and MIN: `context/ro/examples/parallel_dict_nullable_count_min.rs` (1.8x on real `pre`);",
@@ -466,14 +609,20 @@ def _recipe_section(shape: dict) -> list[str]:
         helper = _EXAMPLE_HELPERS.get(recipe)
         if helper:
             lines += [
-                "Its helper (goes between `// AGENT_HELPERS_START` and `// AGENT_HELPERS_END`, file "
-                f"`context/ro/examples/{helper}`):",
+                f"Its helper (goes between `// AGENT_HELPERS_START` and `// AGENT_HELPERS_END`, file `context/ro/examples/{helper}`):",
                 "",
                 "```rust",
                 (_FIXTURES / helper).read_text().rstrip(),
                 "```",
             ]
-        lines += ["", "The body:", "", "```rust", (_FIXTURES / name).read_text().rstrip(), "```"]
+        lines += [
+            "",
+            "The body:",
+            "",
+            "```rust",
+            (_FIXTURES / name).read_text().rstrip(),
+            "```",
+        ]
         if recipe.startswith("projection_"):
             lines += [
                 "",
@@ -489,19 +638,15 @@ def _recipe_section(shape: dict) -> list[str]:
 _SHAPE_LIST = """\
 ## Which shapes have worked examples
 
-Verified examples exist (`context/ro/examples/`, `hard/` for the long ones) for: one-table `GROUP BY` COUNT with an
-integer key (`HashMapWithView`) or a string key (`StringHashMap`); one-table filtered `GROUP BY` COUNT or SUM into
-`Vec<OutRow>`; a filtered ungrouped SUM (also of a product of decimals, with a `nonlinear_arith` bound helper) and
-ungrouped MIN/MAX with a string-literal comparison; a two-table join `GROUP BY` SUM; projections into `Vec<OutRow>`
-(plain, join, correlated `MAX` subquery, `DISTINCT`, `ORDER BY ... LIMIT k`); and, too long to inline, a
-tuple-of-strings `GROUP BY` with `COUNT(DISTINCT ...)` and a sorted result (O(groups x rows): a speed loser with many
-groups) and a TPC-H Q1 shape (two string keys, several decimal SUMs, sorted output, one pass).
+`context/ro/examples/INDEX.md` is a generated table of shape -> file -> what it proves (with line counts) over every verified
+example: grouped and ungrouped aggregates, joins, projections, floats, TPC-H shapes, parallel scans and, in dictionary mode,
+the long published-shape examples. Open the index first, pick the closest row, read that one file (a long one by ranges:
+header comment, then the loop you need). Do not read the whole directory.
 
 KNOWN HARD, no worked example: a join whose key repeats on both sides (many-to-many) with `COUNT(DISTINCT ...)`;
-`EXISTS`/`IN` joins (outside dictionary mode; see the examples below for NOT EXISTS); multi-key `DISTINCT`; set operations. These need long helper
-proofs (an existential witness per group, a selection invariant). Start with the simplest correct loop that proves,
-make sure the result is submitted, and only then look for speed. Dictionary mode has long examples (`hard/dict_anti_join_group_topk.rs`: NOT EXISTS / LEFT JOIN anti-join with HAVING and top-k; `hard/dict_join3_group_topk.rs`: three-table join, four-key GROUP BY, top-k; `hard/dict_group_two_keys_count_distinct_avg.rs`: two keys, COUNT DISTINCT, AVG; `hard/dict_having_scalar_subquery.rs`: HAVING against a scalar subquery); read the one that matches. Float comparisons, float `ORDER BY`, float MIN/MAX,
-products and averages over `DOUBLE` columns are in scope (floats are exact reals here; `float_*.rs` examples).
+`EXISTS`/`IN` joins (outside dictionary mode); multi-key `DISTINCT`; set operations. These need long helper proofs (an
+existential witness per group, a selection invariant). Start with the simplest correct loop that proves, make sure a
+verified body is submitted, and only then look for speed. Floats are exact reals here (`float_*.rs`).
 """
 
 _SPEED = """\
@@ -555,7 +700,7 @@ _DO_NOT = """\
 - Every `while` has a `decreases`. Use only names that exist: the host spec, the lemma index, vstd (grep `LEMMAS.md`), your own helper region.
 - Never replace a failing body with a placeholder (`Vec::new()`) to have something to submit: it fails the postcondition on any data with a matching row.
   Keep the body with the fewest errors and fix the error the host reports.
-- Before writing, open the nearest example under `context/ro/examples/` (`hard/` too; the list follows) and copy its loop structure, invariants and helper lemmas.
+- Before writing, find the nearest shape in `context/ro/examples/INDEX.md`, read that example and copy its loop structure, invariants and helper lemmas.
 """
 
 _PROOF_HYGIENE = """\
@@ -663,9 +808,10 @@ def build_declarative_prompt(
         "",
         f"- `{edit_path}` already holds the host spec, the host lemmas, the loaders and `run_query`. You edit it.",
         f"- Read-only: `{spec_path}` (same spec), `{root}/query.sql`, `{root}/schema.json`, `{index_path}`,",
-        f"  `{root}/examples/` (verified example bodies), `{root}/verus/` (vstd source, Verus guide, small examples;",
+        f"  `{root}/examples/` (verified example bodies; start with `INDEX.md` there: shape -> file -> what it proves),",
+        f"  `{root}/verus/` (vstd source, Verus guide, small examples;",
         "  read `INDEX.md` first (one grep recipe per common lookup), then grep `LEMMAS.md`, `EXAMPLES_INDEX.md` and `GUIDE_INDEX.md`).",
-        "- Look up vstd with one grep, e.g. `grep -n -A5 \"^## StringHashMap::\" LEMMAS.md` (in `verus/`): `INDEX.md` has a",
+        '- Look up vstd with one grep, e.g. `grep -n -A5 "^## StringHashMap::" LEMMAS.md` (in `verus/`): `INDEX.md` has a',
         "  recipe per common lookup (`Vec::push`, `String::eq`, `decreases`, `assert forall`, `choose`, broadcast groups).",
         "- Tools: the file edit tool; `run_runquery` (path `runquery_agent.rs`) verifies, compiles and times your",
         "  program on the official table; `submit_runquery` with the returned `run_id`. In Claude Code these are",
@@ -752,8 +898,9 @@ def build_declarative_prompt(
             "",
             "This is a non-interactive session: nobody answers questions. Do the task now. Never ask the user anything and never",
             "offer options. Do not stop until `run_runquery` shows `N verified, 0 errors` and you have called `submit_runquery`",
-            "with that `run_id`. If you conclude it cannot verify, say plainly why in your last message; an empty or placeholder",
-            "body is a failure, not a result.",
+            "with the `run_id` of your best verified body (a parallel upgrade, where the spec has one, is tried only after a verified",
+            "body exists and only when its `speedup` is below the bar). If you conclude it cannot verify, say plainly why in your",
+            "last message; an empty or placeholder body is a failure, not a result.",
         ]
     )
     return "\n".join(sections) + "\n"
