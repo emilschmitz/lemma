@@ -225,3 +225,12 @@ def test_tpch_catalog_comes_from_the_profiled_package_when_one_is_named_and_from
     monkeypatch.setenv("LEMMA_TPCH_PACKAGE", str(path))
     _schema, profiled = rnd.tpch_schema_and_catalog(db)
     assert profiled.tables["lineitem"].columns["q"].max_value_exclusive == 1024
+
+
+def test_sec_package_is_the_named_one_when_set_and_the_database_default_otherwise(monkeypatch: pytest.MonkeyPatch) -> None:
+    from research_loop.scripts import declarative_round as rnd
+
+    monkeypatch.setenv("LEMMA_SEC_PACKAGE", "/p/mine.json")
+    assert rnd.sec_package() == "/p/mine.json"
+    monkeypatch.delenv("LEMMA_SEC_PACKAGE")
+    assert rnd.sec_package() in ("sec_margin", "sec_margin_dec")

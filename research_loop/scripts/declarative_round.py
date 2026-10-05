@@ -143,6 +143,10 @@ def ensure_tpch_db() -> Path:
 def sec_package() -> str:
     from research_loop.scripts.declarative_draws import package_for_db
 
+    named = os.environ.get("LEMMA_SEC_PACKAGE")
+    if named:  # a profiler-proposed package for this database (``assumption_packages.profile``), by name or JSON path
+        return named
+
     return package_for_db(SEC_DB)
 
 
