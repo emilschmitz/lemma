@@ -331,7 +331,16 @@ def _is_aggregate(node: exp.Expression) -> bool:
     inner = _unwrap_alias(node)
     if isinstance(inner, exp.Filter):
         inner = inner.this
-    return isinstance(inner, (exp.Sum, exp.Count, exp.Avg, exp.Min, exp.Max))
+    return isinstance(inner, (exp.Sum, exp.Count, exp.Avg, exp.Min, exp.Max)) or _is_ratio(inner)
+
+
+def _is_ratio(node: exp.Expression) -> bool:
+    """The ``__dec<s>(L) / __dec<s>(R)`` the numeric rewrite makes of a ratio of two aggregates."""
+    return (
+        isinstance(node, exp.Div)
+        and _dec_scale_marker(node.this) is not None
+        and _dec_scale_marker(node.expression) is not None
+    )
 
 
 @dataclass
@@ -339,6 +348,8 @@ class _Scope:
     tables: list[str] = field(default_factory=list)
     aliases: dict[str, str] = field(default_factory=dict)
     cte_names: set[str] = field(default_factory=set)
+    # Hidden operand aggregates of the ratios in the SELECT list, appended to the query after its select order is set.
+    pending: list[Agg] = field(default_factory=list)
 
     def outer_names(self) -> set[str]:
         names = set(self.tables)
@@ -544,6 +555,7 @@ def _parse_select(expression: exp.Select, *, outer_scope: _Scope | None = None) 
         for item in select_items:
             names.append(next(agg_aliases) if _is_aggregate(item) else next(proj_names))
         query.select_order = names
+    query.aggs.extend(scope.pending)
     agg_alias_map = {a.alias.lower(): a.alias for a in query.aggs if a.alias}
 
     where_clause = expression.args.get("where")
@@ -704,8 +716,60 @@ def _count_case(case: exp.Case, alias: str, scope: _Scope) -> Agg:
     return Agg(kind="COUNT", column=None, alias=alias or "count", table=None, expr=_compile_case(counted, scope))
 
 
+def _unparen_node(node: exp.Expression) -> exp.Expression:
+    while isinstance(node, exp.Paren):
+        node = node.this
+    return node
+
+
+def _ratio_operand(node: exp.Expression, scope: _Scope, alias: str) -> tuple[Agg, int]:
+    """An operand of a ratio: a SUM or COUNT, alone or times one whole-number constant (the constant is returned)."""
+    node = _unparen_node(node)
+    k = 1
+    if isinstance(node, exp.Mul):
+        for lit, other in ((node.this, node.expression), (node.expression, node.this)):
+            lit = _unparen_node(lit)
+            neg = isinstance(lit, exp.Neg)
+            core = _unparen_node(lit.this) if neg else lit
+            if isinstance(core, exp.Literal) and core.is_int:
+                k = -int(core.this) if neg else int(core.this)
+                node = _unparen_node(other)
+                break
+        else:
+            raise DeclarativeUnsupported("division operand")
+    if not isinstance(node, (exp.Sum, exp.Count)) or isinstance(node.this, exp.Distinct):
+        raise DeclarativeUnsupported("division operand must be a SUM or COUNT (not DISTINCT, AVG, MIN, MAX or FILTERed)")
+    return replace(_parse_agg(exp.Alias(this=node, alias=alias), scope), hidden=True), k
+
+
+def _parse_ratio(item: exp.Expression, scope: _Scope) -> tuple[Agg, list[Agg]]:
+    """The visible ``RATIO`` aggregate of ``L / R`` and its two hidden operand aggregates.
+
+    ``ratio`` is (numerator alias, denominator alias, numerator constant, numerator scale, denominator scale): the
+    value is ``(K * N / 10**sN) / (D / 10**sD)`` over the exact sums N and D."""
+    alias = item.alias if isinstance(item, exp.Alias) else ""
+    if not alias:
+        raise DeclarativeUnsupported("SELECT expression needs an alias")
+    top = _unwrap_alias(item)
+    num, k = _ratio_operand(top.this.expressions[0], scope, f"{alias}__num")
+    den, k_den = _ratio_operand(top.expression.expressions[0], scope, f"{alias}__den")
+    if k_den != 1:
+        raise DeclarativeUnsupported("a constant factor on the denominator of a division")
+    ratio = Agg(
+        kind="RATIO",
+        column=None,
+        alias=alias,
+        ratio=(num.alias, den.alias, k, _dec_scale_marker(top.this), _dec_scale_marker(top.expression)),
+    )
+    return ratio, [num, den]
+
+
 def _parse_agg(item: exp.Expression, scope: _Scope) -> Agg:
     top = _unwrap_alias(item)
+    if _is_ratio(top):
+        ratio, operands = _parse_ratio(item, scope)
+        scope.pending.extend(operands)
+        return ratio
     if isinstance(top, exp.Filter):
         # AGG(x) FILTER (WHERE cond): the same aggregate over the rows where cond holds.
         where = top.expression
@@ -754,12 +818,14 @@ def _parse_agg(item: exp.Expression, scope: _Scope) -> Agg:
                 agg = _parse_agg(exp.Alias(this=unwrapped, alias=alias) if alias else unwrapped, scope)
                 return replace(agg, avg_scale=scaled)
             if isinstance(inner.this, exp.Case):
+                case_refs: list[str] = []
                 return Agg(
                     kind=kind,
                     column=None,
                     alias=alias or kind.lower(),
                     table=None,
-                    expr=_compile_case(inner.this, scope),
+                    expr=_compile_case(inner.this, scope, case_refs),
+                    arith_refs=tuple(case_refs),
                 )
             if not isinstance(inner.this, exp.Column):
                 refs: list[str] = []
@@ -966,8 +1032,10 @@ def _compile_side(node: exp.Expression, ctx: _BoolCtx) -> str:
     return _constant_or_arith_side(node, ctx)
 
 
-def _compile_case(node: exp.Case, scope: _Scope) -> str:
-    """A searched CASE as a spec if-expression over ``cols.<field>@[i]``."""
+def _compile_case(node: exp.Case, scope: _Scope, refs: list[str] | None = None) -> str:
+    """A searched CASE as a spec if-expression over ``cols.<field>@[i]``.
+
+    ``refs`` collects the columns read by arithmetic THEN / ELSE values (they must be exact integers)."""
 
     def atom(n: exp.Expression) -> str:
         if isinstance(n, exp.Column):
@@ -978,6 +1046,23 @@ def _compile_case(node: exp.Case, scope: _Scope) -> str:
         if isinstance(n, exp.Literal) and n.is_number:
             return str(n.this)
         raise DeclarativeUnsupported("CASE")
+
+    def result(n: exp.Expression) -> str:
+        """A THEN / ELSE value: a column or literal, or integer arithmetic over columns (+ - * and whole numbers)."""
+        if isinstance(n, (exp.Column, exp.Literal)):
+            return atom(n)
+        found: list[str] = []
+
+        def cell(col: exp.Column) -> str:
+            found.append(_col_ref(col, scope)[0])
+            return f"cols.{rust_ident(col.name)}@[i]"
+
+        text = arith_text(n, cell, [])
+        if text is None or not found:
+            raise DeclarativeUnsupported("CASE result")
+        if refs is not None:
+            refs.extend(found)
+        return text
 
     op_map = {
         exp.EQ: "==",
@@ -999,6 +1084,18 @@ def _compile_case(node: exp.Case, scope: _Scope) -> str:
             return f"!({cond(n.this)})"
         if isinstance(n, exp.In) and not n.args.get("query") and n.expressions:
             return "(" + " || ".join(f"({atom(n.this)} == {atom(v)})" for v in n.expressions) + ")"
+        if isinstance(n, exp.Like):
+            pattern = n.expression
+            if (
+                not isinstance(n.this, exp.Column)
+                or not isinstance(pattern, exp.Literal)
+                or not pattern.is_string
+                or n.args.get("escape") is not None
+                or any(ch in str(pattern.this) for ch in ('"', "\\"))
+            ):
+                raise DeclarativeUnsupported("LIKE needs a column, a string literal without quote or backslash, and no ESCAPE")
+            text = f"spec_like({atom(n.this)}, {string_token(str(pattern.this))})"
+            return f"!({text})" if n.args.get("negate") else text
         if type(n) not in op_map:
             raise DeclarativeUnsupported("CASE")
         return f"({atom(n.left)} {op_map[type(n)]} {atom(n.right)})"
@@ -1007,9 +1104,9 @@ def _compile_case(node: exp.Case, scope: _Scope) -> str:
     if default is None:
         # No ELSE yields NULL, which MIN/MAX/SUM skip; the spec has no NULL.
         raise DeclarativeUnsupported("CASE without ELSE")
-    text = atom(default)
+    text = result(default)
     for arm in reversed(list(node.args.get("ifs") or [])):
-        text = f"if {cond(arm.this)} {{ {atom(arm.args['true'])} }} else {{ {text} }}"
+        text = f"if {cond(arm.this)} {{ {result(arm.args['true'])} }} else {{ {text} }}"
     return text
 
 

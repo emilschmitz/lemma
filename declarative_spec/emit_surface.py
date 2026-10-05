@@ -42,6 +42,7 @@ class _AggFn:
     exec: str
     hidden: bool = False  # read only by HAVING; not an output column
     hit_fn: str = ""  # the row predicate this aggregate sees (row_hit, or row_hit && its FILTER)
+    ratio_nullable: bool = False  # a RATIO with a SUM operand is NULL when no row passes (SQL SUM of no rows)
 
 
 @dataclass
@@ -556,6 +557,8 @@ def _emit_agg(
     key_at: str,
 ) -> _AggFn:
     kind = agg.kind.upper()
+    if kind == "RATIO":
+        return _emit_ratio(blocks, query, agg, prefix, main, params, model, key_ty)
     alias = rust_ident(agg.alias)
     name = _fn_name(prefix, kind, alias)
     is_float = _agg_is_float(agg, main, model)
@@ -633,6 +636,63 @@ def _emit_agg(
     raise DeclarativeUnsupported(kind)
 
 
+def _emit_ratio(
+    blocks: list[str],
+    query: Query,
+    agg: Agg,
+    prefix: str,
+    main: list[_Slot],
+    params: list[_Slot],
+    model: SchemaModel,
+    key_ty: str | None,
+) -> _AggFn:
+    """``[K *] SUM|COUNT / SUM|COUNT``: DuckDB divides DECIMAL and integer operands in DOUBLE (IEEE).
+
+    The spec fn ``ratio_<alias>(params, i0[, k], v)`` says what the f64 result ``v`` is, from the two exact integer
+    fold results N (numerator) and D (denominator):
+
+    * ``D != 0``: ``v`` is finite and, as a real, ``(K * N / 10**sN) / (D / 10**sD)`` (the f64 idealization: the
+      quotient of the exact natural values; rounding is the accepted float limitation);
+    * ``D == 0``: IEEE 754 division by +0.0: ``+inf`` if ``K * N > 0``, ``-inf`` if ``K * N < 0``, NaN if ``K * N == 0``
+      (DuckDB returns exactly these; the body proves it with ``lemma_f64_div_by_zero``).
+
+    A division by a SUM or COUNT that is zero is data, so the case is part of the specification."""
+    assert agg.ratio is not None
+    num_alias, den_alias, k, num_scale, den_scale = agg.ratio
+    by_alias = {a.alias: a for a in query.aggs}
+    operands = [by_alias[num_alias], by_alias[den_alias]]
+    for op in operands:
+        if op.kind.upper() not in ("SUM", "COUNT"):
+            raise DeclarativeUnsupported("division operand must be a SUM or COUNT")
+        if _agg_is_float(op, main, model):
+            raise DeclarativeUnsupported(
+                "division of a float SUM: the quotient of two floating sums has no magnitude bound the proof can use"
+            )
+    num_fn, den_fn = (_fn_name(prefix, op.kind.upper(), rust_ident(op.alias)) for op in operands)
+    name = f"{prefix}ratio_{rust_ident(agg.alias)}"
+    key_sig = f", k: {key_ty}" if key_ty else ""
+    key_call = ", k" if key_ty else ""
+    p_call = _param_call(params)
+    blocks.append(
+        f"""pub open spec fn {name}({_param_sig(params)}, i0: int{key_sig}, v: f64) -> bool {{
+    let num: int = {k} * {num_fn}({p_call}, i0{key_call});
+    let den: int = {den_fn}({p_call}, i0{key_call});
+    if den != 0 {{
+        v.is_finite_spec() && (v as real) == ((num as real) * {10**den_scale}real) / ((den as real) * {10**num_scale}real)
+    }} else if num > 0 {{
+        v.is_infinite_spec() && !v.is_sign_negative_spec()
+    }} else if num < 0 {{
+        v.is_infinite_spec() && v.is_sign_negative_spec()
+    }} else {{
+        v.is_nan_spec()
+    }}
+}}"""
+    )
+    fn = _AggFn(rust_ident(agg.alias), "RATIO", name, "real", True, "ratio", "f64")
+    fn.ratio_nullable = any(op.kind.upper() == "SUM" for op in operands) and key_ty is None
+    return fn
+
+
 def _fn_name(prefix: str, kind: str, alias: str) -> str:
     if kind == "COUNT":
         return f"{prefix}count_{alias}"
@@ -666,6 +726,8 @@ def _agg_is_float(agg: Agg, main: list[_Slot], model: SchemaModel) -> bool:
     if agg.arith:
         return any(_ref_slot(ref, main, model)[1].is_float for ref in agg.arith_refs)
     if agg.expr:
+        if any(_ref_slot(ref, main, model)[1].is_float for ref in agg.arith_refs):
+            raise DeclarativeUnsupported("arithmetic in a CASE result over a float column")
         return agg.kind.upper() in ("SUM", "AVG") and bool(_case_float_results(agg.expr, main, model))
     if agg.kind.upper() in ("COUNT", "COUNT_DISTINCT"):
         return False
@@ -1220,7 +1282,9 @@ _NULLABLE_UNGROUPED = ("SUM", "MIN", "MAX", "AVG")
 
 
 def _nullable(helpers: _Helpers, agg: _AggFn) -> bool:
-    """An ungrouped SUM, MIN, MAX or AVG is NULL when no row passes the filter."""
+    """An ungrouped SUM, MIN, MAX or AVG is NULL when no row passes the filter; so is a ratio with a SUM operand."""
+    if agg.kind == "RATIO":
+        return agg.ratio_nullable
     return helpers.key_ty is None and agg.kind in _NULLABLE_UNGROUPED
 
 
@@ -1252,7 +1316,9 @@ def _agg_eqs(helpers: _Helpers, params: str, key: str, row: str = "res@[r]") -> 
         nullable = _nullable(helpers, agg)
         field = f"{row}.{agg.alias}"
         view = _out_view(f"{field}->Some_0" if nullable else field, agg)
-        if agg.style == "bound":
+        if agg.style == "ratio":
+            eq = f"{agg.name}({params}, 0{key_arg}, {field}->Some_0)" if nullable else f"{agg.name}({params}, 0{key_arg}, {field})"
+        elif agg.style == "bound":
             eq = f"{agg.name}({params}{key_arg}, {view})"
         else:
             eq = f"{view} == {agg.name}({params}, 0{key_arg})"
@@ -1327,6 +1393,8 @@ def _having(query: Query, helpers: _Helpers, scalars: dict[str, str], key: str) 
     for agg, src in zip(helpers.aggs, query.aggs, strict=True):
         if not re.search(rf"\b{re.escape(src.alias)}\b", expr):
             continue
+        if agg.kind == "RATIO":
+            raise DeclarativeUnsupported("HAVING on a division: its result is an IEEE double, not an exact value")
         if agg.kind in ("MIN", "MAX"):
             # The bound predicate holds for exactly one value of a group that has rows: that value is the MIN/MAX.
             ty = "real" if agg.ret == "real" else "int"
@@ -1388,6 +1456,8 @@ def _order_exprs_row(query: Query, helpers: _Helpers) -> list[str]:
         col = key.column.split(".")[-1]
         ident = rust_ident(col)
         agg = next((a for a in helpers.aggs if a.alias == ident), None)
+        if agg is not None and agg.kind == "RATIO":
+            raise DeclarativeUnsupported("ORDER BY a division: its result is an IEEE double (NaN has no place in an order)")
         if agg is not None:
             exprs.append(_out_view(f"res@[r].{ident}", agg))
             continue
@@ -1413,6 +1483,8 @@ def _order_exprs_key(
         col = key.column.split(".")[-1]
         ident = rust_ident(col)
         agg = next((a for a in helpers.aggs if a.alias == ident), None)
+        if agg is not None and agg.kind == "RATIO":
+            raise DeclarativeUnsupported("ORDER BY a division: its result is an IEEE double (NaN has no place in an order)")
         if agg is not None:
             if agg.style == "bound":
                 raise DeclarativeUnsupported("ORDER BY")
