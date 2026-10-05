@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 
@@ -99,7 +100,12 @@ def _values_equal(got: object, expect: object, kind: str) -> bool:
     if got is None or expect is None:
         return got is None and expect is None
     if kind == "float":
-        return abs(_as_float(got) - _as_float(expect)) <= float_tolerance(_as_float(expect))
+        g, e = _as_float(got), _as_float(expect)
+        if math.isnan(g) or math.isnan(e):
+            return math.isnan(g) and math.isnan(e)  # a ratio with a zero denominator is IEEE NaN / inf (like DuckDB)
+        if math.isinf(g) or math.isinf(e):
+            return g == e
+        return abs(g - e) <= float_tolerance(e)
     return got == expect
 
 

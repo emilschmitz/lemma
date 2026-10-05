@@ -30,6 +30,10 @@ class Agg:
     # ``AGG(x) FILTER (WHERE c)``: the aggregate sees only the rows where this spec condition holds (and the query's
     # WHERE). SQL's NULL-skipping aggregates over a nullable column are stated this way (``!is_null(col)``).
     filter_expr: str = ""
+    # ``kind == "RATIO"``: (numerator alias, denominator alias, numerator constant, numerator scale, denominator
+    # scale). The operands are hidden aggregates of the same query; the value is the real quotient
+    # ``(K * N / 10**sN) / (D / 10**sD)``, with IEEE results for a zero denominator (DuckDB divides in DOUBLE).
+    ratio: tuple[str, str, int, int, int] | None = None
 
 
 @dataclass(frozen=True)
