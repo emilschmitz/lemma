@@ -32,10 +32,9 @@ def test_build_runquery_agent_source_u64_has_edit_markers_and_ret_type():
 
 def test_build_runquery_agent_source_map_ret_type():
     src = build_runquery_agent_source(ret_type="map_u32_str_u64")
-    assert "HashMap<(u32, String), u64>" in src
-    assert "hashmap_u32_str_u64_view(res@) == method_spec(cols)," in src
-    assert "HashMap::new()" in src
-    assert "use std::collections::HashMap;" in src
+    assert "-> (res: HashMapWithView<(u32, String), u64>)" in src
+    assert "ensures res@ == method_spec(cols)," in src
+    assert "HashMapWithView::new()" in src
 
 
 def test_host_edit_fingerprint_rejects_shell_tamper():
@@ -71,8 +70,8 @@ def test_build_runquery_agent_source_includes_sql_header():
 def test_build_exec_run_query_from_body_map_uses_view_ensures():
     body = "let mut m = HashMap::new();\n    m"
     wrapped = build_exec_run_query_from_body(body, "map_str_str_u64")
-    assert "HashMap<(String, String), u64>" in wrapped
-    assert "hashmap_str_str_u64_view(res@) == method_spec(cols)," in wrapped
+    assert "-> (res: HashMapWithView<(String, String), u64>)" in wrapped
+    assert "ensures res@ == method_spec(cols)," in wrapped
     assert "let mut m = HashMap::new();" in wrapped
 
 

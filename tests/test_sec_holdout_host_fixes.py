@@ -238,16 +238,14 @@ def test_exists_corr_string_key_and_multi_agg_having() -> None:
     schema = {"num": SEC_SCHEMA["num"], "pre": SEC_SCHEMA["pre"]}
     out = transpile_sql_to_verus(_Q4_EXISTS_MULTI_AGG, schema)
     assert "outer_key: u32" not in out
-    assert re.search(
-        r"outer_key:\s*\(Seq<char>,\s*Seq<char>,\s*Seq<char>\)",
-        out,
-    ), "multi-col correlated EXISTS must use tuple outer_key"
-    assert re.search(
-        r"exists_corr_\w+_spec\("
-        r"[^,]+,\s*"
-        r"\(cols\.get_adsh\(k\),\s*cols\.get_tag\(k\),\s*cols\.get_version\(k\)\)\)",
-        out,
-    ), "call site must pass all correlation keys"
+    # NOT EXISTS over a 3-column correlation is an anti-join fold (no exists_corr_* spec fn); every correlation
+    # key is a Seq<char> equality inside the right-match helper.
+    assert "join_anti_multi_agg_helper" in out and "exists_corr_" not in out
+    helper = out[out.index("pub open spec fn join_right_match_helper") :]
+    helper = helper[: helper.index("shape: anti")]
+    for col in ("adsh", "tag", "version"):
+        assert f"num.{col}[li as int]@ == pre.{col}[ri as int]@" in helper
+    assert "!join_right_match_helper(num, pre, li, 0)" in out
     assert re.search(
         r"apply_having_filter\(m,\s*\|k:\s*\(Seq<char>,\s*Seq<char>\),\s*v:\s*\(u64,\s*u64\)\|",
         out,

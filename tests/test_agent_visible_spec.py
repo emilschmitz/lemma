@@ -29,9 +29,9 @@ def test_prepare_agent_visible_spec_map_includes_agg_helpers() -> None:
 
     assert RUNQUERY_SKELETON_MARKER not in out
     assert "pub exec fn run_query" not in out
-    assert "agg_new_u32_str_u64" in out
-    assert "agg_add_u32_str_u64" in out
-    assert "hashmap_u32_str_u64_view" in out
+    assert "agg_new_u32_str__u64" in out
+    assert "agg_add_u32_str__u64" in out
+    assert "HashMapWithView<(u32, String), u64>" in out
     assert "Map::empty()" in out
     assert out.rstrip().endswith("} // verus!")
 
@@ -60,7 +60,7 @@ def test_prepare_workspace_writes_prepared_spec(tmp_path: Path) -> None:
         reset_body=True,
     )
     spec = (ws / "context" / "ro" / "spec.rs").read_text()
-    assert "agg_new_u32_str_u64" in spec
+    assert "agg_new_u32_str__u64" in spec
     assert RUNQUERY_SKELETON_MARKER not in spec
 
 
@@ -79,5 +79,5 @@ def test_harness_prepare_workspace_writes_prepared_spec(tmp_path: Path) -> None:
         reset_body=True,
     )
     spec = (ws / "context" / "ro" / "spec.rs").read_text()
-    assert "agg_add_u32_str_u64" in spec
+    assert "agg_add_u32_str__u64" in spec
     assert RUNQUERY_SKELETON_MARKER not in spec

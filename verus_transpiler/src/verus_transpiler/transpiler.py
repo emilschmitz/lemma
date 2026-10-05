@@ -268,7 +268,7 @@ def generate_cols_rs(
     agg_methods = ""
     if agg_push is not None:
         agg_methods += "\n" + emit_cols_agg_push_verus(
-            *agg_push, struct_name=struct_name, val_type=val_type
+            *agg_push, struct_name=struct_name, val_type=val_type, cell_cap=cell_cap
         )
     if agg_push_str is not None:
         agg_methods += "\n" + emit_cols_agg_push_str_verus(
@@ -782,7 +782,9 @@ def _emit_multi_table_cols(
         if table not in query.tables:
             continue
         struct = _table_struct_name(table)
-        parts.append(generate_cols_rs(cols, groupby_columns=query.groupby_columns, struct_name=struct))
+        parts.append(generate_cols_rs(
+            cols, groupby_columns=query.groupby_columns, struct_name=struct, cell_cap=bounds.has_tight_cell_u64
+        ))
         ta = table_assumptions_for(catalog, table)
         parts.append(
             emit_valid_cols_predicate(
@@ -816,7 +818,7 @@ def _emit_support_spec_table_cols(
         cols = multi_schema.get(table)
         if cols is None:
             continue
-        parts.append(generate_cols_rs(cols, struct_name=struct))
+        parts.append(generate_cols_rs(cols, struct_name=struct, cell_cap=bounds.has_tight_cell_u64))
         ta = table_assumptions_for(catalog, table)
         parts.append(
             emit_valid_cols_predicate(
@@ -2252,6 +2254,7 @@ def transpile_sql_to_verus(
             flat_schema,
             sql_str=sql,
             groupby_columns=query.groupby_columns,
+            cell_cap=bounds.has_tight_cell_u64,
         )
         valid_cols = emit_valid_cols_predicate(
             flat_schema, bounds=bounds, catalog=catalog_assumptions
@@ -2267,6 +2270,7 @@ def transpile_sql_to_verus(
             flat_schema,
             sql_str=sql,
             groupby_columns=query.groupby_columns,
+            cell_cap=bounds.has_tight_cell_u64,
         )
         valid_cols = emit_valid_cols_predicate(
             flat_schema, bounds=bounds, catalog=catalog_assumptions
@@ -2282,6 +2286,7 @@ def transpile_sql_to_verus(
             flat_schema,
             sql_str=sql,
             groupby_columns=query.groupby_columns,
+            cell_cap=bounds.has_tight_cell_u64,
         )
         valid_cols = emit_valid_cols_predicate(
             flat_schema, bounds=bounds, catalog=catalog_assumptions

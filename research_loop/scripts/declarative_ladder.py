@@ -72,9 +72,8 @@ def agent_env(model: str, style: str) -> dict[str, str]:
         "LEMMA_SERIOUS": "1",
         "LEMMA_RESEARCH_LOG": "1",
     }
-    if check_style(style) == DECLARATIVE:
-        # Without Arc'd columns in the emitted spec the agent cannot write a parallel body at all.
-        env["LEMMA_PARALLEL_VSTD"] = "1"
+    # No LEMMA_PARALLEL_VSTD: every ladder query is a GROUP BY (a map result), and the parallel variant refuses
+    # non-Vec<OutRow> results loudly, so enabling it here would fail every job at emit time.
     if model.startswith("claude-"):
         env.update(AGENT_IMAGE=CLAUDE_IMAGE, AGENT_ENV="", AGENT_CMD=claude_agent_cmd(model))
     else:

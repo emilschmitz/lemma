@@ -118,12 +118,23 @@ def test_valid_cols_numeric_columns_have_vec_len() -> None:
 
 
 def test_q24_emits_agg_step_for_anti_join_helper() -> None:
+    # ORDER BY / LIMIT now live inside method_spec, so the full query returns an ordered Seq and the Map-only
+    # agg_step bridge does not apply to it; the grouped anti-join fold itself (no ORDER BY) still returns a Map.
     sql = _load_query("24")
-    projected = _projected_schema(sql)
-    spec = transpile_sql_to_verus(sql, projected)
+    unordered = sql.split("ORDER BY")[0].strip()
+    spec = transpile_sql_to_verus(unordered, _projected_schema(unordered))
     ret = resolve_ret_type_from_method_spec(spec)
     step = multi_agg_step_trusted_rs(spec, ret)
     assert "agg_step_" in step
+    assert "join_anti_multi_agg_helper" in spec
+
+
+def test_q24_ordered_result_is_a_seq_and_has_no_map_agg_step() -> None:
+    sql = _load_query("24")
+    spec = transpile_sql_to_verus(sql, _projected_schema(sql))
+    ret = resolve_ret_type_from_method_spec(spec)
+    assert ret.startswith("seq_")
+    assert multi_agg_step_trusted_rs(spec, ret) == ""
     assert "join_anti_multi_agg_helper" in spec
 
 

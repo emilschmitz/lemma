@@ -56,6 +56,7 @@ def _agg_push_u32_str_requires(
     *,
     val_type: str,
     delta_name: str = "delta",
+    cell_cap: bool = True,
 ) -> str:
     u32_base = u32_col.lower()
     str_base = str_col.lower()
@@ -64,7 +65,9 @@ def _agg_push_u32_str_requires(
         f"if old(agg)@.contains_key({spec_key}) {{ old(agg)@[{spec_key}] }} "
         f"else {{ 0{val_type} }}"
     )
-    clauses = ["i < self.n", f"{delta_name} < LEMMA_MAX_CELL_U64"] if val_type == "u64" else ["i < self.n"]
+    clauses = ["i < self.n"]
+    if val_type == "u64" and cell_cap:
+        clauses.append(f"{delta_name} < LEMMA_MAX_CELL_U64")
     if val_type == "u64":
         clauses.append(_u64_prev_fit_requires(prev_expr, f"({delta_name} as int)"))
     else:
@@ -78,6 +81,7 @@ def _agg_push_u32_str_ensures(
     *,
     val_type: str,
     delta_name: str = "delta",
+    cell_cap: bool = True,
 ) -> str:
     u32_base = u32_col.lower()
     str_base = str_col.lower()
@@ -98,13 +102,14 @@ def emit_cols_agg_push_verus(
     *,
     struct_name: str = "Cols",
     val_type: str = "u64",
+    cell_cap: bool = True,
 ) -> str:
     _ = struct_name
     name = agg_push_method_name(u32_col, str_col)
     u32_base = u32_col.lower()
     str_base = str_col.lower()
     _, _, rust_map = agg_bridge_u32_str(val_type)
-    requires = _agg_push_u32_str_requires(u32_col, str_col, val_type=val_type)
+    requires = _agg_push_u32_str_requires(u32_col, str_col, val_type=val_type, cell_cap=cell_cap)
     ensures = _agg_push_u32_str_ensures(u32_col, str_col, val_type=val_type)
     # Self-contained body: join queries may emit Cols.agg_push without the
     # matching ret-type agg_add_* bridge (e.g. group key order differs from ret).

@@ -130,7 +130,7 @@ def test_style_flag_switches_spec_prompt_admission_and_assemble(
         runs[style] = run
         # The declarative hash-map body races DuckDB on a tiny table: a proved-but-slower verdict
         # is the speed bar, not a plumbing failure. Anything else must be SUCCESS.
-        slower = "proved but slower than DuckDB" in record["error"]
+        slower = "proved but below the speed bar" in record["error"]
         assert record["status"] == "SUCCESS" or (style == "declarative" and slower), record["error"]
         if record["status"] == "SUCCESS":
             submitted = json.loads((run / "workspace" / "mcp_results" / "submitted.json").read_text())

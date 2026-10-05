@@ -165,6 +165,28 @@ def test_ladder_env_keeps_cursor_agent_for_other_slugs() -> None:
     assert env["AGENT_IMAGE"] == "lemma-agent:cli"
 
 
+@pytest.mark.parametrize("model", ["claude-sonnet-5-5", "grok-4.7-high"])
+def test_ladder_env_does_not_enable_parallel_variant_for_group_by_queries(model: str) -> None:
+    # The parallel variant refuses map results; the ladder is all GROUP BY, so enabling it fails every job.
+    from research_loop.scripts.declarative_ladder import agent_env
+
+    assert "LEMMA_PARALLEL_VSTD" not in agent_env(model, "declarative")
+
+
+def test_ladder_group_by_sql_emits_under_the_ladder_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    from declarative_spec.emit import emit_declarative_spec
+    from research_loop.scripts.declarative_ladder import agent_env
+
+    monkeypatch.delenv("LEMMA_PARALLEL_VSTD", raising=False)
+    for k, v in agent_env("claude-sonnet-5-5", "declarative").items():
+        monkeypatch.setenv(k, v)
+    from research_loop.table_assumptions import CatalogAssumptions, TableAssumptions
+
+    catalog = CatalogAssumptions(tables={"src": TableAssumptions(max_rows=2**20)})
+    spec = emit_declarative_spec("SELECT b, COUNT(*) AS c FROM src GROUP BY b", {"src": {"b": "bigint"}}, catalog)
+    assert "HashMapWithView" in spec and "_arc" not in spec
+
+
 def test_gate_counts_only_success_records() -> None:
     from research_loop.scripts.declarative_ladder_claude import proved
 
