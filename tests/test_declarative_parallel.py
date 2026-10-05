@@ -68,6 +68,7 @@ def test_prompt_shows_the_parallel_section_only_for_a_parallel_spec(monkeypatch:
     p = build_declarative_prompt(sql=SUM, spec_path="s", edit_path="e", lemma_index="idx", spec_text=on)
     assert "## Parallel scan" in p and "parallel_ungrouped_sum.rs" in p and "telescope" in p
     assert "12.8x faster" in p
+    assert "dict_group_count_sum_parallel.rs" in p and "DENSE array" in p and "hard/dict_parallel_q1.rs" in p and "parallel_dict_nullable_count_min.rs" in p
     off = _emit(SUM, False, monkeypatch)
     q = build_declarative_prompt(sql=SUM, spec_path="s", edit_path="e", lemma_index="idx", spec_text=off)
     assert "## Parallel scan" not in q

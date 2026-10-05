@@ -48,7 +48,8 @@ def verify_assembled(rs_source: str, *, timeout_sec: int | None = None) -> tuple
         f.write(rs_source)
         path = f.name
     try:
-        proc = run_verus([verus, path, *verus_limit_args()], timeout=timeout_sec)
+        # cwd = the temp file's directory: Verus leaves a compiled executable named after the source in its cwd
+        proc = run_verus([verus, path, *verus_limit_args()], timeout=timeout_sec, cwd=Path(path).parent)
         combined = (proc.stdout or "") + (proc.stderr or "")
         return proc.returncode == 0, combined
     except subprocess.TimeoutExpired as e:
@@ -74,6 +75,11 @@ def _verify_summary(output: str) -> str:
         if "verification results::" in line:
             return line.strip()
     return ""
+
+
+def _best_us(stdout: str) -> int:
+    match = re.search(r"QUERY_LATENCY_BEST_US:\s*(\d+)", stdout or "")
+    return -1 if match is None else int(match.group(1))
 
 
 def _latency_us(stdout: str) -> int:
@@ -139,7 +145,7 @@ def compile_and_run(
             [str(binary)],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=300,
             check=False,
             cwd=directory,
         )
@@ -171,6 +177,7 @@ def compile_and_run(
         "status": "SUCCESS",
         "proof_verified": True,
         "latency_us": latency,
+        "latency_best_us": _best_us(run.stdout or ""),
         "compiler_error": "",
         "verify_msg": log[-2000:],
         "verify_summary": _verify_summary(log),
@@ -222,7 +229,11 @@ def _apply_speed_bar(metrics: dict, speed_bar: dict | None) -> dict:
     speedup = duck_us / max(latency, 1)
     attained = {
         "speed_bar_mult": mult,
-        "speedup": speedup,
+        "speedup": speedup,  # median of the timed runs
+        "latency_best_us": metrics.get("latency_best_us"),
+        "speedup_best": None
+        if metrics.get("latency_best_us") in (None, -1)
+        else duck_us / max(int(metrics["latency_best_us"]), 1),
         "duck_threads": speed_bar.get("duck_threads"),
         "duck1_us": speed_bar.get("duck1_us"),
         "speedup_1t": None if speed_bar.get("duck1_us") is None else int(speed_bar["duck1_us"]) / max(latency, 1),
