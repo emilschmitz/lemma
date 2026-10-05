@@ -7,6 +7,7 @@ import shutil
 import os
 from pathlib import Path
 
+from declarative_spec import best_so_far
 from declarative_spec.admit import admit_declarative_body
 from declarative_spec.emit import DeclarativeUnsupported, emit_declarative_spec
 from declarative_spec.trusted_sets import current as current_trusted_set
@@ -150,6 +151,57 @@ def _ensure_context_files(
 from research_loop.agent_sandbox import agent_failure  # noqa: E402,F401  (shared with the recursive caller)
 
 
+def _first_lines(text: str, limit: int = 1500) -> str:
+    text = text.strip()
+    return text if len(text) <= limit else text[:limit].rstrip() + "\n... (cut)"
+
+
+def _prepare_restart(workspace: Path, agent_path: Path, prev_source: str | None, iter_record: dict) -> str:
+    """Start the next session from the best file so far, and tell the agent what happened.
+
+    A session may end on a file worse than an earlier check of the same session (a refactor that broke
+    it, a `Vec::new()` stub). The best file, by Verus tally, goes back to ``agent_path`` and the last
+    attempt moves to ``context/ro/previous_attempt.rs``. Nothing here skips host admission: every later
+    check of any file goes through ``run_declarative_metrics`` as usual.
+    """
+    previous = workspace / "context" / "ro" / "previous_attempt.rs"
+    if prev_source is not None:
+        previous.write_text(prev_source)
+    state, best = best_so_far.restore_best(workspace, agent_path)
+    iter_record["restart"] = state
+    if best is None:
+        return (
+            "No check of the previous session produced a Verus tally, so there is no best attempt to restore. "
+            f"`{agent_path.name}` holds the last file you left"
+            + (f"; a copy is `context/ro/{previous.name}`" if prev_source is not None else "")
+            + "."
+        )
+    tally = f"{best['verified']} verified, {best['errors']} errors" if best["verified"] is not None else "no Verus tally"
+    iter_record["best_attempt"] = {"n": best["n"], "verified": best["verified"], "errors": best["errors"]}
+    lines = [
+        f"The host keeps your best attempt so far (check {best['n']}, {tally}).",
+        (
+            f"`{agent_path.name}` already is that best attempt: the previous session's last file was not better."
+            if state == "kept"
+            else f"The previous session ended on a worse file, so the host put the best attempt back into `{agent_path.name}`."
+        ),
+    ]
+    if state == "restored" and prev_source is not None:
+        lines.append(
+            f"The previous session's last file is kept for reference in `context/ro/{previous.name}` "
+            "(do not start from it; salvage a part only if it helps)."
+        )
+        try:
+            body = _extract_agent_edit_region(prev_source)
+        except ValueError:
+            body = ""
+        if body and len(body) <= 3000:
+            lines += ["", "The previous session's last `run_query` body:", "", "```rust", body, "```"]
+    if best["error_excerpt"] and not best["proof_verified"]:
+        lines += ["", "First errors of the best attempt (the file now in place):", "", "```", _first_lines(best["error_excerpt"]), "```"]
+    return "\n".join(lines)
+
+
 def run_declarative_optimization_loop(
     *,
     sql_query: str,
@@ -198,6 +250,7 @@ def run_declarative_optimization_loop(
             "proof_verified": False,
         }
 
+    prev_source: str | None = None  # the file the previous session left, as it was
     for iteration in range(1, max_iterations + 1):
         iter_record: dict = {"iteration": iteration}
         try:
@@ -220,6 +273,9 @@ def run_declarative_optimization_loop(
         )
         if iteration == 1 or not agent_path.is_file():
             agent_path.write_text(spec)
+        restart_note = ""
+        if iteration > 1:
+            restart_note = _prepare_restart(workspace, agent_path, prev_source, iter_record)
 
         cfg = load_agent_config()
         in_docker = use_docker(cfg)
@@ -232,6 +288,7 @@ def run_declarative_optimization_loop(
             last_error=last_error,
             in_docker=in_docker,
             spec_text=spec,
+            restart_note=restart_note,
         )
         (workspace / "context" / "ro" / "DECLARATIVE.md").write_text(prompt)
 
@@ -249,6 +306,7 @@ def run_declarative_optimization_loop(
 
         try:
             agent_source = agent_path.read_text()
+            prev_source = agent_source
             body = _extract_agent_edit_region(agent_source)
         except (OSError, ValueError) as exc:
             iter_record["error"] = f"read agent body: {exc}"
@@ -270,6 +328,7 @@ def run_declarative_optimization_loop(
             column_bins=column_bins,
             speed_bar=speed_bar,
         )
+        best_so_far.record_attempt(workspace, agent_source, metrics, origin=f"host-final:iteration{iteration}")
         iter_record["verus_ok"] = metrics.get("status") == "SUCCESS"
         iter_record["proof_verified"] = bool(metrics.get("proof_verified"))
         iter_record["latency_us"] = metrics.get("latency_us", -1)

@@ -318,6 +318,7 @@ def run_solution(
     rq_path = Path(validated["runquery_path"])
     size = dataset_size if dataset_size is not None else mcp_iterate_dataset_size()
     run_id = f"{time.strftime('%Y%m%dT%H%M%S', time.gmtime())}_{uuid.uuid4().hex[:8]}"
+    checked_source = (base / DEFAULT_RUNQUERY).read_text(encoding="utf-8")
     t0 = time.perf_counter()
     try:
         metrics, returncode = _invoke_harness(
@@ -354,6 +355,12 @@ def run_solution(
     ok = metrics.get("status") == "SUCCESS" and bool(metrics.get("proof_verified"))
     from db_extension.optimizer import _read_lemma_spec_style
 
+    if _read_lemma_spec_style() == "declarative":
+        # The exact file that was just checked, so a later session can start from the best one.
+        from declarative_spec.best_so_far import record_attempt
+
+        record_attempt(base, checked_source, metrics, origin=f"mcp:{run_id}")
+
     # The H1 lease binary is a different program. Declarative success is the
     # assembled query's own clock; do not staple lease rows onto it.
     if ok and lease_measure_enabled() and _read_lemma_spec_style() != "declarative":
@@ -371,7 +378,8 @@ def run_solution(
         "ok": ok,
         "run_id": run_id,
         "phase": "harness",
-        "errors": [] if ok else [metrics.get("compiler_error") or "harness failed"],
+        # The text is in metrics.compiler_error; repeating it here would show the agent every error twice.
+        "errors": [] if ok else (["check failed: details in metrics.compiler_error"] if metrics.get("compiler_error") else ["harness failed"]),
         "metrics": metrics,
         "result_path": str(run_path),
         "latency_us": latency_us,

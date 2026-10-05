@@ -8,9 +8,9 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from declarative_spec.feedback import FULL_LOG_NAME, format_failure
 from declarative_spec.regions import extract_agent_edit, extract_agent_helpers
 from declarative_spec.verus_limits import (
-    failure_prefix,
     run_verus,
     timeout_message,
     verus_limit_args,
@@ -99,8 +99,13 @@ def compile_and_run(
     *,
     work_dir: Path | None = None,
     timeout_sec: int | None = None,
+    agent_source: str | None = None,
 ) -> dict:
-    """Verify, compile, and run. Success requires a printed QUERY_LATENCY_US."""
+    """Verify, compile, and run. Success requires a printed QUERY_LATENCY_US.
+
+    ``agent_source`` is the agent's file; with it a failure's line numbers are mapped back to that file.
+    The full, unreduced Verus log is always written to ``<work_dir>/verify_full.log``.
+    """
     timeout_sec = verus_timeout_sec() if timeout_sec is None else timeout_sec
     verus = _verus_binary()
     owned_dir = work_dir is None
@@ -136,14 +141,24 @@ def compile_and_run(
             "verify_msg": _text(exc.stdout) + _text(exc.stderr),
         }
     log = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    (directory / FULL_LOG_NAME).write_text(log)
     proved = proc.returncode == 0 and _proof_verified(log)
     if not proved or not binary.is_file():
+        shown = format_failure(
+            log,
+            assembled=rs_source,
+            agent_source=agent_source,
+            assembled_name=rs_path.name,
+            directory=directory,
+            full_log_hint=None if owned_dir else f"{directory.name}/{FULL_LOG_NAME}",
+        )
+        # compiler_error and verify_msg are the same text on purpose: the MCP layer must not repeat it.
         return {
             "status": "FAILURE",
             "proof_verified": proved,
             "latency_us": -1,
-            "compiler_error": failure_prefix(log) + log[-4000:],
-            "verify_msg": log[-4000:],
+            "compiler_error": shown,
+            "verify_msg": shown,
         }
     try:
         run = subprocess.run(
@@ -316,7 +331,7 @@ def run_declarative_metrics(
             "latency_us": -1,
             "compiler_error": str(exc),
         }
-    metrics = compile_and_run(assembled, work_dir=work_dir, timeout_sec=timeout_sec)
+    metrics = compile_and_run(assembled, work_dir=work_dir, timeout_sec=timeout_sec, agent_source=agent_source)
     from declarative_spec import parallel
 
     # A body that never spawns a thread loses a bandwidth-bound scan to the all-core engine: tell it so when it can still upgrade.

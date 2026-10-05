@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from typing import Any
 
 from db_extension.agent.mcp_tool_specs import HOST_TOOL_SPECS, canonical_tool_name
@@ -12,6 +13,19 @@ from db_extension.agent.measure_core import MeasureContext, workspace
 def _ctx() -> MeasureContext:
     qid = int(os.environ.get("LEMMA_QUERY_ID", "1"))
     return MeasureContext(query_id=qid, workspace=workspace())
+
+
+def _relativize_paths(out: dict, ws: Path) -> dict:
+    """The agent works in /workspace; host paths mean nothing to it and leak the host layout."""
+    out = dict(out)
+    for key in ("runquery_path", "result_path"):
+        value = out.get(key)
+        if isinstance(value, str):
+            try:
+                out[key] = str(Path(value).resolve().relative_to(ws.resolve()))
+            except ValueError:
+                pass
+    return out
 
 
 def dispatch_host_tool(name: str, args: dict, ctx: MeasureContext | None = None) -> dict:
@@ -52,7 +66,7 @@ def dispatch_host_tool(name: str, args: dict, ctx: MeasureContext | None = None)
             sql=ctx.sql,
             schema=ctx.schema,
         )
-        return attach_session(ws, out)
+        return attach_session(ws, _relativize_paths(out, ws))
     if canon == "submit_runquery":
         run_id = args.get("run_id")
         if not run_id:

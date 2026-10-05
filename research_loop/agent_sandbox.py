@@ -175,14 +175,46 @@ CLAUDE_CONTAINER_CONFIG_HOST = "/root/.claude-host"
 _CLAUDE_TOOLS = "Bash,Read,Edit,Write,Glob,Grep,mcp__lemma-host"
 
 
+CLAUDE_EFFORT_ENV = "LEMMA_CLAUDE_EFFORT"
+CLAUDE_THINKING_ENV = "LEMMA_CLAUDE_THINKING_TOKENS"
+CLAUDE_EFFORT_DEFAULT = "high"
+_CLAUDE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+# Claude Code defers MCP tool schemas behind a ToolSearch tool; every session then spends its first turn loading
+# them. "false" loads them with the first request instead (ENABLE_TOOL_SEARCH, present in claude 2.1.289).
+CLAUDE_TOOL_SEARCH = "false"
+
+
+def claude_effort() -> str | None:
+    """`--effort` for the container agent: ``LEMMA_CLAUDE_EFFORT`` (default high), ``none`` omits the flag."""
+    value = (os.environ.get(CLAUDE_EFFORT_ENV) or "").strip().lower() or CLAUDE_EFFORT_DEFAULT
+    if value == "none":
+        return None
+    if value not in _CLAUDE_EFFORTS:
+        raise ValueError(f"{CLAUDE_EFFORT_ENV} must be one of {_CLAUDE_EFFORTS} or none, got {value!r}")
+    return value
+
+
+def claude_thinking_tokens() -> int | None:
+    """``MAX_THINKING_TOKENS`` for the container agent from ``LEMMA_CLAUDE_THINKING_TOKENS``; unset leaves the CLI default."""
+    raw = (os.environ.get(CLAUDE_THINKING_ENV) or "").strip()
+    if not raw:
+        return None
+    value = int(raw)
+    if value < 0:
+        raise ValueError(f"{CLAUDE_THINKING_ENV} must be >= 0, got {value}")
+    return value
+
+
 def claude_agent_cmd(model: str) -> str:
     """Headless Claude Code inside the container. Prompt on stdin, no secret on the line.
 
     The pipe converts Claude stream-json into the Cursor-style ``agent_stream.jsonl``
     (stdout) and keeps the raw stream in ``logs/claude_raw.jsonl``.
     """
+    effort = claude_effort()
+    effort_flag = f"--effort {effort} " if effort else ""
     return (
-        f"claude -p --model {shlex.quote(model)} --output-format stream-json --verbose "
+        f"claude -p --model {shlex.quote(model)} {effort_flag}--output-format stream-json --verbose "
         f"--permission-mode acceptEdits --allowedTools {_CLAUDE_TOOLS} "
         "--disallowedTools WebSearch,WebFetch "
         "--mcp-config /root/.cursor/mcp.json --strict-mcp-config "
@@ -1145,6 +1177,10 @@ def run_agent_docker(
     env = parse_agent_env(cfg, base={})
     if claude:
         env.pop("CURSOR_API_KEY", None)
+        env["ENABLE_TOOL_SEARCH"] = CLAUDE_TOOL_SEARCH
+        thinking = claude_thinking_tokens()
+        if thinking is not None:
+            env["MAX_THINKING_TOKENS"] = str(thinking)
     env["AGENT_CMD"] = agent_cmd
     env["LEMMA_AGENT_MODE"] = "cli"
     env["LEMMA_MCP_SOCK"] = "/lemma-mcp.sock"
