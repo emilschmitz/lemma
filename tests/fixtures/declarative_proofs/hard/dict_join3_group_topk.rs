@@ -13,11 +13,12 @@
 //  4. Bound sums with the host join cap (`JOIN_CAP_...`): sum <= matched pairs * cell bound < i128::MAX.
 //  5. Z3 matching loop: `forall r. out_row_ok(res[r])` and the coverage ensures (`forall hit. exists r ...`) retrigger each other. State the coverage fact with an
 //     explicit witness-index function (`choose|r| key == okey(res[r])`) plus a collapse fact (distinct keys make the witness unique), keep every large
-//     quantified fact behind a `#[verifier::opaque]` predicate that only its own lemma reveals, and give the aggregator lemma `#[verifier::rlimit(N)]`.
+//     quantified fact behind a `#[verifier::opaque]` predicate that only its own lemma reveals, and give the aggregator lemma `#[verifier::rlimit(N)]` (here 30: the one lemma that exceeded the host default budget of 3; keep N small, a larger N only burns the wall clock).
 //  6. Record every `len` equality of the parallel Vecs as a loop invariant (`gtg@.len() == gnm@.len()`); an assert inside a `proof` block is NOT visible
 //     inside a later loop, restate facts about untouched variables in its invariant.
 //  7. `valid_cols_<t>` stays reachable from every loop invariant (here through the opaque wrapper `vcs`), every loop has a `decreases`.
 //  8. A `usize` literal above u32::MAX is a rustc error under Verus: compare through `u64`.
+//  9. Constants (cell bounds, `JOIN_CAP_...`) come from YOUR spec; this fixture copies its own spec's numbers, and relies on `sub.adsh` being a catalog-declared unique key (re-check `valid_cols_sub`).
 // Speed: proved, ran at 0.93x of the all-core reference on 1M rows (1.9x of one thread): the proof comes first.
 // AGENT_HELPERS_START
 spec fn nf(n: &Cols_num, i0: int) -> bool {

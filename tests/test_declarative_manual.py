@@ -74,27 +74,7 @@ def test_avg_queries_are_recorded_as_pending_not_dropped() -> None:
     assert _avg_refusal("sec", "Q2", "SELECT SUM(x), AVERAGE_X FROM t") is None
 
 
-def test_chunked_export_is_byte_identical_to_one_chunk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import research_loop.decl_query_measure as m
-
-    db = tmp_path / "c.duckdb"
-    con = duckdb.connect(str(db))
-    con.execute("CREATE TABLE t (k INTEGER)")
-    con.execute("INSERT INTO t VALUES (1), (1), (2), (3), (3)")
-    con.close()
-    kw = {
-        "sql": "SELECT k, COUNT(*) AS c FROM t GROUP BY k",
-        "schema": {"t": {"k": "integer"}},
-        "catalog": _CAT,
-        "db_path": db,
-    }
-    big = m.write_query_measure(dest=tmp_path / "a", **kw)
-    monkeypatch.setattr(m, "_CHUNK_ROWS", 2)
-    small = m.write_query_measure(dest=tmp_path / "b", **kw)
-    assert Path(big["bins"]["t"]).read_bytes() == Path(small["bins"]["t"]).read_bytes()
-
-
-def test_null_in_a_later_chunk_still_fails_loudly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_null_in_a_non_nullable_column_fails_loudly(tmp_path: Path) -> None:
     import research_loop.decl_query_measure as m
 
     db = tmp_path / "n.duckdb"
@@ -102,7 +82,6 @@ def test_null_in_a_later_chunk_still_fails_loudly(tmp_path: Path, monkeypatch: p
     con.execute("CREATE TABLE t (k INTEGER)")
     con.execute("INSERT INTO t VALUES (1), (2), (3), (NULL)")
     con.close()
-    monkeypatch.setattr(m, "_CHUNK_ROWS", 2)
     with pytest.raises(ValueError, match="has NULLs"):
         m.write_query_measure(
             sql="SELECT k, COUNT(*) AS c FROM t GROUP BY k",
@@ -118,11 +97,11 @@ def test_job_env_snapshot_keeps_only_the_settings_that_are_set(monkeypatch: pyte
 
     for k in _JOB_ENV_KEYS:
         monkeypatch.delenv(k, raising=False)
-    assert _job_env_snapshot() == {}
+    assert _job_env_snapshot() == {"LEMMA_NARROW_CELLS": "0"}  # the effective narrow flag is always recorded
     monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
     monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "1")
     monkeypatch.setenv("UNRELATED", "x")
-    assert _job_env_snapshot() == {"LEMMA_STRING_ENCODING": "dict", "LEMMA_PARALLEL_VSTD": "1"}
+    assert _job_env_snapshot() == {"LEMMA_STRING_ENCODING": "dict", "LEMMA_PARALLEL_VSTD": "1", "LEMMA_NARROW_CELLS": "0"}
 
 
 # ---- check regenerates the spec (the spec is the ground truth) --------------------------------------------------------------
@@ -202,7 +181,9 @@ def test_the_job_snapshot_carries_the_narrow_cells_flag_and_leaves_unset_flags_o
     snap = dm._job_env_snapshot()
     assert snap["LEMMA_NARROW_CELLS"] == "1" and "LEMMA_PARALLEL_VSTD" not in snap
     monkeypatch.delenv("LEMMA_NARROW_CELLS")
-    assert "LEMMA_NARROW_CELLS" not in dm._job_env_snapshot()
+    assert dm._job_env_snapshot()["LEMMA_NARROW_CELLS"] == "0"  # the effective value is recorded even when unset
+    monkeypatch.setenv("LEMMA_NARROW_CELLS", "0")
+    assert dm._job_env_snapshot()["LEMMA_NARROW_CELLS"] == "0"
 
 
 def test_tpch_catalog_comes_from_the_profiled_package_when_one_is_named_and_from_row_counts_otherwise(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

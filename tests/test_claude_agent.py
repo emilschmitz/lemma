@@ -166,11 +166,11 @@ def test_ladder_env_keeps_cursor_agent_for_other_slugs() -> None:
 
 
 @pytest.mark.parametrize("model", ["claude-sonnet-5-5", "grok-4.7-high"])
-def test_ladder_env_does_not_enable_parallel_variant_for_group_by_queries(model: str) -> None:
-    # The parallel variant refuses map results; the ladder is all GROUP BY, so enabling it fails every job.
+def test_ladder_env_uses_auto_parallel_not_strict_for_group_by_queries(model: str) -> None:
+    # Strict "1" refuses map results at emit (the ladder is all GROUP BY); "auto" keeps those sequential.
     from research_loop.scripts.declarative_ladder import agent_env
 
-    assert "LEMMA_PARALLEL_VSTD" not in agent_env(model, "declarative")
+    assert agent_env(model, "declarative")["LEMMA_PARALLEL_VSTD"] == "auto"
 
 
 def test_ladder_group_by_sql_emits_under_the_ladder_env(monkeypatch: pytest.MonkeyPatch) -> None:

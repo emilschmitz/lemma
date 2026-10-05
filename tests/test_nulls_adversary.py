@@ -151,10 +151,10 @@ REFUSED = [
     "SELECT COUNT(*) AS c FROM t JOIN u ON t.a = u.k",
     "SELECT COUNT(*) AS c FROM t JOIN u ON t.x = u.m",
     "SELECT COUNT(*) AS c FROM t LEFT JOIN u ON t.a = u.k",
-    "SELECT a FROM t ORDER BY a LIMIT 3",
     "SELECT id FROM t ORDER BY a LIMIT 3",
-    "SELECT DISTINCT a FROM t",
-    "SELECT a, COUNT(*) AS c FROM t GROUP BY a ORDER BY a",
+    "SELECT a FROM t ORDER BY a NULLS FIRST LIMIT 3",
+    "SELECT a FROM t ORDER BY a DESC NULLS FIRST LIMIT 3",
+    "SELECT a, COUNT(*) AS c FROM t GROUP BY a ORDER BY a NULLS FIRST",
     "SELECT SUM(a) AS s FROM t HAVING SUM(a) > 2",
     "SELECT x, COUNT(*) AS c FROM t GROUP BY x HAVING COUNT(a) > 1",
     "SELECT x, SUM(a) AS s FROM t GROUP BY x",
@@ -177,6 +177,22 @@ REFUSED = [
     "SELECT SUM(CASE WHEN a > 1 THEN 1 ELSE 5 END) AS s FROM t",
     "SELECT COUNT(*) AS c FROM t UNION ALL SELECT COUNT(*) AS c FROM u",
 ]
+
+
+# Stated since the NULLS-ordering merge: the order reads NULLS LAST (DuckDB's default) and the NULL group / NULL DISTINCT value is one
+# Option key. The explicit NULLS FIRST forms stay in REFUSED above.
+STATED_SINCE_NULLS_ORDERING = [
+    "SELECT a FROM t ORDER BY a LIMIT 3",
+    "SELECT a FROM t ORDER BY a DESC LIMIT 3",
+    "SELECT DISTINCT a FROM t",
+    "SELECT a, COUNT(*) AS c FROM t GROUP BY a ORDER BY a",
+    "SELECT a FROM t ORDER BY a NULLS LAST LIMIT 3",
+]
+
+
+@pytest.mark.parametrize("sql", STATED_SINCE_NULLS_ORDERING)
+def test_ordering_and_distinct_on_a_nullable_column_are_stated(sql: str) -> None:
+    assert accepted(sql)
 
 
 @pytest.mark.parametrize("sql", REFUSED)

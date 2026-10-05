@@ -178,6 +178,16 @@ _EXAMPLES: dict[str, tuple[str, str]] = {
         "dictionary string mode: JOIN ON a string key (one dictionary per table): per-code count array over the small side, "
         "NUM's dictionary translated to its codes once through a `StringHashMap`, then two array reads per row",
     ),
+    "dict_anti_join": (
+        "hard/dict_anti_join_group_topk.rs",
+        "dictionary string mode: NOT EXISTS / LEFT JOIN ... IS NULL anti-join on three string keys into a two-key GROUP BY with HAVING, ORDER BY the count and LIMIT "
+        "(the pre dictionaries are translated to num's codes, the pre keys packed into one `HashMapWithView<i128, bool>`; for a positive EXISTS flip the membership test)",
+    ),
+    "dict_join3": (
+        "hard/dict_join3_group_topk.rs",
+        "dictionary string mode: a THREE-table join on string keys with a four-key GROUP BY, SUM and COUNT, ORDER BY the sum and LIMIT "
+        "(chain the many side by a packed key, group map over packed codes, parallel Vecs, witness-index function for the top-k)",
+    ),
     "dict_filter": (
         "dict_string_filter_minmax.rs",
         "dictionary string mode: a string-literal filter becomes one code comparison (literal's code looked up once)",
@@ -217,6 +227,10 @@ def spec_shape(spec_text: str) -> dict:
         recipe = "dict_group" if ("out_row_ok(" in spec_text and "proj_key(" not in spec_text) else "dict_filter"
         if tables >= 2 and "proj_key(" not in spec_text:
             recipe = "dict_join"
+        if recipe == "dict_join" and re.search(r"\bexists_\d+\(", spec_text):
+            recipe = "dict_anti_join"
+        elif recipe == "dict_join" and tables >= 3 and re.search(r"res@\.len\(\) <= \d+", spec_text):
+            recipe = "dict_join3"
     elif ty.startswith("HashMapWithView"):
         recipe = "dense_map" if "KEY_CAP_" in spec_text else "int_map"
     elif ty.startswith("StringHashMap"):
@@ -256,6 +270,8 @@ def spec_shape(spec_text: str) -> dict:
     hard = [what for needle, what in _HARD_FEATURES if re.search(rf"\b{needle}", spec_text)]
     if re.search(r"res@\.len\(\) <= \d+", spec_text) and recipe in ("group_count", "group_sum", "join_group_sum"):
         hard.append("a LIMIT with ORDER BY over groups (top-K selection)")
+    if recipe == "dict_anti_join":  # the recipe's own example covers NOT EXISTS
+        hard = [h for h in hard if not h.startswith("EXISTS / IN / NOT EXISTS")]
     if tables >= 2 and "count_distinct_" in spec_text:
         hard.append("a join together with COUNT(DISTINCT ...)")
     return {"result_type": ty, "recipe": recipe, "tables": tables, "hard": hard}
@@ -266,7 +282,7 @@ def mount_examples(ro: Path) -> None:
     dest = ro / "examples"
     dest.mkdir(parents=True, exist_ok=True)
     for name in [n for n, _w in _EXAMPLES.values()] + sorted(set(_EXAMPLE_HELPERS.values())) + [_PAR_EXAMPLE, *_PAR_EXTRA, "parallel_dict_nullable_count_min.rs", "parallel_dict_filter_count_max_blockskip.rs", "parallel_dict_filter_count_max_slices.rs", "parallel_ungrouped_product_sum_slices.rs"]:
-        if name.startswith("dict_"):
+        if Path(name).name.startswith("dict_"):
             continue  # mounted below, only in dict mode
         target = dest / name
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -435,7 +451,7 @@ def _recipe_section(shape: dict) -> list[str]:
             header = [ln for ln in (_FIXTURES / name).read_text().splitlines() if ln.startswith("//")]
             header = header[: next((i for i, ln in enumerate(header) if "AGENT_" in ln), len(header))]
             lines += [
-                f"A verified body for a close shape ({what}) is `context/ro/examples/{name}` (about 550 lines, read it",
+                f"A verified body for a close shape ({what}) is `context/ro/examples/{name}` (hundreds to a few thousand lines, read it",
                 "with the Read tool, do not paste it blind). Its header, which says what each technique is for:",
                 "",
                 "```",
@@ -482,9 +498,9 @@ tuple-of-strings `GROUP BY` with `COUNT(DISTINCT ...)` and a sorted result (O(gr
 groups) and a TPC-H Q1 shape (two string keys, several decimal SUMs, sorted output, one pass).
 
 KNOWN HARD, no worked example: a join whose key repeats on both sides (many-to-many) with `COUNT(DISTINCT ...)`;
-`EXISTS`/`IN` joins; `HAVING` against a scalar subquery; multi-key `DISTINCT`; set operations. These need long helper
+`EXISTS`/`IN` joins (outside dictionary mode; see the examples below for NOT EXISTS); multi-key `DISTINCT`; set operations. These need long helper
 proofs (an existential witness per group, a selection invariant). Start with the simplest correct loop that proves,
-make sure the result is submitted, and only then look for speed. Float comparisons, float `ORDER BY`, float MIN/MAX,
+make sure the result is submitted, and only then look for speed. Dictionary mode has long examples (`hard/dict_anti_join_group_topk.rs`: NOT EXISTS / LEFT JOIN anti-join with HAVING and top-k; `hard/dict_join3_group_topk.rs`: three-table join, four-key GROUP BY, top-k; `hard/dict_group_two_keys_count_distinct_avg.rs`: two keys, COUNT DISTINCT, AVG; `hard/dict_having_scalar_subquery.rs`: HAVING against a scalar subquery); read the one that matches. Float comparisons, float `ORDER BY`, float MIN/MAX,
 products and averages over `DOUBLE` columns are in scope (floats are exact reals here; `float_*.rs` examples).
 """
 
@@ -516,8 +532,30 @@ cannot overflow within one block), then merge the block into the worker's accumu
 If the speed bar is not met, look first at bounds checks, then at the bytes per row: with a catalog cap on a column the loaded cell is narrower
 (`i8`/`i16`/`i32`, see the struct in the spec) and the scan reads fewer bytes; a scan limited by the BYTES it reads is a tie at best.
 Repeat the timed run before judging: this box shows 30 percent noise.
+NARROW CELLS (a struct field `Vec<i8>`/`Vec<i16>`/`Vec<i32>` in the spec; the spec itself still reads every cell `as int`):
+a filter or arithmetic literal larger than the cell type is a literal of the WIDER type, not of the cell: write `(q as i64) < 70000` or
+`(q as i128) * 40000i128`, never `q < 70000`, which does not type-check; a comparison that holds for every cell of that width is proved from the width
+(`q as int >= -32768 && q as int <= 32767`) and the cell cap in `valid_cols_<table>`, not tested at run time. A group key stays `i64` in `OutRow`
+(`let k = q as i64;`, then `key_at(..) == k as int` follows). The running-total bound of a SUM uses the CAP of the column (the `valid_cols` conjunct
+`|cell| < cap`), not the i64 range the wide examples hard-code.
+A literal beyond the cell range also makes a comparison constant: `valid_cols` bounds `report` to its cap, so `report > 100000` is never true and a disjunct
+with it is dead (prove it from the instantiated bound; do not write the comparison in exec). A literal compared with a narrow cell takes the cell's type (`p == 1`, not `1i64`).
 To prove a product of two cells fits in the `i128` accumulator, write a helper with `by (nonlinear_arith)` from the
 two cell bounds (worked example: `context/ro/examples/ungrouped_decimal_product_sum.rs`).
+"""
+
+_DO_NOT = """\
+## Do not (each item is a real failed attempt)
+
+- Verus rejects these in exec code: `sort`/`sort_by`; iterating a `HashMapWithView`/`StringHashMap` (`.iter()`, `.keys()`, `.entry()`, `for (k, v) in &map`; keep the keys in a `Vec` next to the map; `Vec` indexing loops are fine);
+  `for x in &mut v`, `.iter_mut()`, `.into_iter()`; `.clone()` on an `OutRow` (write `OutRow { .. }` from fields; `String::clone` is fine);
+  `as int`, `as nat` (ghost code only: `proof {}`, invariants, `spec fn`); an `fn`, `proof fn` or `use` nested in the body. Use `while` loops over indices.
+- Keep `valid_cols_<t>(t)` in EVERY loop invariant, nested loops included: a loop that drops it loses the length precondition of every `col[i]`.
+  Slim it only when the rlimit forces you to (see the rlimit notes below), and then to the specific length facts you use, never to nothing.
+- Every `while` has a `decreases`. Use only names that exist: the host spec, the lemma index, vstd (grep `LEMMAS.md`), your own helper region.
+- Never replace a failing body with a placeholder (`Vec::new()`) to have something to submit: it fails the postcondition on any data with a matching row.
+  Keep the body with the fewest errors and fix the error the host reports.
+- Before writing, open the nearest example under `context/ro/examples/` (`hard/` too; the list follows) and copy its loop structure, invariants and helper lemmas.
 """
 
 _PROOF_HYGIENE = """\
@@ -571,6 +609,28 @@ def _error_excerpt(last_error: str) -> str:
     return excerpt
 
 
+_DICT_HARD: tuple[tuple[str, str, str], ...] = (
+    (
+        "count_distinct_",
+        "hard/dict_group_two_keys_count_distinct_avg.rs",
+        "two dictionary string keys, COUNT(*), COUNT(DISTINCT x) and AVG (dense slots over the codes, a per-slot seen-set, sorted insert; it assumes u8 dictionary codes for both keys, slot = a*256+b: adapt the slot arithmetic if your spec's code types are wider)",
+    ),
+    (
+        "sq_\\d+_groups",
+        "hard/dict_having_scalar_subquery.rs",
+        "a join GROUP BY SUM with HAVING against an uncorrelated scalar subquery (per-class sums, threshold, top-k by repeated maximum; proof first: group and distinct-key lookups are linear scans, replace them by a dense array over codes for speed)",
+    ),
+)
+
+
+def _dict_hard_pointers(spec_text: str) -> list[str]:
+    """Pointers to the long dictionary-mode worked examples whose feature this spec has (read them with the Read tool)."""
+    if "__dict" not in spec_text:
+        return []
+    found = [(f, what) for needle, f, what in _DICT_HARD if re.search(rf"\b{needle}", spec_text)]
+    return [f"Long verified example for this feature (dictionary mode): `context/ro/examples/{f}`: {what}." for f, what in found] + ([""] if found else [])
+
+
 def build_declarative_prompt(
     *,
     sql: str,
@@ -608,7 +668,11 @@ def build_declarative_prompt(
         "- Look up vstd with one grep, e.g. `grep -n -A5 \"^## StringHashMap::\" LEMMAS.md` (in `verus/`): `INDEX.md` has a",
         "  recipe per common lookup (`Vec::push`, `String::eq`, `decreases`, `assert forall`, `choose`, broadcast groups).",
         "- Tools: the file edit tool; `run_runquery` (path `runquery_agent.rs`) verifies, compiles and times your",
-        "  program on the official table; `submit_runquery` with the returned `run_id`. You cannot run Verus or a shell.",
+        "  program on the official table; `submit_runquery` with the returned `run_id`. In Claude Code these are",
+        "  `mcp__lemma-host__run_runquery` and `mcp__lemma-host__submit_runquery`; if they are not in your tool list yet, load",
+        "  them first with ToolSearch (`select:mcp__lemma-host__run_runquery,mcp__lemma-host__submit_runquery`). A Bash tool",
+        "  may exist, but it has no network and Verus is not on its PATH: `run_runquery` is the only Verus you have, so do not",
+        "  try `verus`, `npx` or any package install.",
         "- Done means: Verus says `N verified, 0 errors`, the result equals the reference engine's rows, and the timed run beats",
         "  the reference engine (`run_runquery` reports the speedup). Submit before the session ends.",
         "",
@@ -652,7 +716,8 @@ def build_declarative_prompt(
             "and often: its error text is the only checker you have.",
             "",
         ]
-    sections += [_SHAPE_LIST, _SPEED, _PROOF_HYGIENE]
+        sections += _dict_hard_pointers(spec_text)
+    sections += [_DO_NOT, _SHAPE_LIST, _SPEED, _PROOF_HYGIENE]
     sections += [
         "## Helper region example",
         "",
@@ -680,4 +745,15 @@ def build_declarative_prompt(
                 "```",
             ]
         )
+    sections.extend(
+        [
+            "",
+            "## Do this now",
+            "",
+            "This is a non-interactive session: nobody answers questions. Do the task now. Never ask the user anything and never",
+            "offer options. Do not stop until `run_runquery` shows `N verified, 0 errors` and you have called `submit_runquery`",
+            "with that `run_id`. If you conclude it cannot verify, say plainly why in your last message; an empty or placeholder",
+            "body is a failure, not a result.",
+        ]
+    )
     return "\n".join(sections) + "\n"

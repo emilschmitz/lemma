@@ -9,8 +9,8 @@
 //  1. `exists_1(n, p, i0)` is a witness over pre rows. Do not loop over pre per num row. Build the SET of pre keys once and probe it per num row.
 //  2. The pre and num dictionaries are different, so translate each pre dictionary to NUM's codes first: one `StringHashMap` over the num
 //     dictionary, probed once per pre dictionary entry (sentinel = dictionary length for "no such string"; an untranslatable pre row can match no num row).
-//  3. Pack the key columns' codes into one integer (`pk(x, b) = x * 2^32 + b`) so a `HashMapWithView<i128, ..>` can hold it (tuple and String keys are
-//     not hashable here). `lemma_pk_inj` proves the packing injective: do NOT skip it, membership of the packed key is what says "a pre row matches".
+//  3. Pack the key columns' codes into one integer (`pk(x, b) = x * 2^32 + b`) so a `HashMapWithView<i128, ..>` can hold it (a tuple key is not hashable here; a
+//     single String key needs `StringHashMap`). `lemma_pk_inj` proves the packing injective: do NOT skip it, membership of the packed key is what says "a pre row matches".
 //  4. The group map is keyed by the packed code pair, with PARALLEL `Vec`s for count, sum and the key codes (no map iteration, no `.clone()` of OutRow).
 //  5. Every proof obligation lives in a small `proof fn` over opaque invariant bundles (`ginv`, `sinv`): the exec body is one query for Z3,
 //     so a long body exceeds the rlimit (`invariant not satisfied before loop` or no message). Each `proof fn` has its own budget.
@@ -19,7 +19,8 @@
 //     omitted-row bound) are discharged in `lemma_final`.
 //  7. A trigger gotcha: `forall|g| #[trigger] gt[g]` over `0 <= g < len ==> exists|k| ...` never fires unless `gt[g]` also appears as a ground term in the
 //     consequent (e.g. `(gt[g] as int) >= 0 &&`).
-//  8. `valid_cols_<t>(cols)` stays in the invariant of every loop and every loop has a `decreases`.
+//  8. `valid_cols_<t>(cols)` stays in the invariant of every loop that reads the columns, and every loop has a `decreases`.
+//  9b. Constants (cell bounds such as the `value` cap, `JOIN_CAP_...`) come from YOUR spec's `valid_cols_*` and `JOIN_CAP_*`; this fixture copies the numbers of its own spec. Re-derive them, do not paste them.
 //  9. A `usize` literal above u32::MAX is a rustc error under Verus (arch-agnostic usize): compare through `u64`.
 // Speed: this proof is sequential and hash-heavy (0.7x of the all-core reference on 1M rows, 1.6x of one thread); the proof comes first.
 // AGENT_HELPERS_START

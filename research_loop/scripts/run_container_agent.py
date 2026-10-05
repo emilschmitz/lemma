@@ -21,6 +21,7 @@ import json
 import os
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -50,12 +51,63 @@ def summarize_run(run_dir: Path | None) -> dict:
         for line in egress.read_text().splitlines():
             hosts.add(json.loads(line)["host"])
     denied = ws / "mcp_results" / "egress_denied.jsonl"
+    denials = [json.loads(line) for line in denied.read_text().splitlines() if line.strip()] if denied.is_file() else []
+    windows = _bash_windows(ws / "logs" / "claude_raw.jsonl")
+    from_bash = [d for d in denials if _in_a_bash_window(d.get("ts"), windows)]
+    from_cli = [d for d in denials if d not in from_bash]
     return {
         "run_dir": str(run_dir),
         "threads_used": "spawn(" in body,
         "egress_hosts": sorted(hosts),
-        "egress_denied": denied.is_file() and denied.read_text().strip() != "",
+        # True when a denial falls outside every agent Bash call's time window (the CLI, or a process that outlived its Bash call).
+        # False does NOT prove the CLI was never denied: a CLI denial that overlaps a Bash call lands in the bash list below.
+        "egress_denied": bool(from_cli),
+        # Denied while an agent Bash call was running (e.g. `npx` fetching a package). Reported, never dropped: the sandbox
+        # did deny it, but the agent's shell asked, not the CLI. The match is by time window, so it is attribution, not proof.
+        "egress_denied_in_agent_bash": sorted({d["host"] for d in from_bash}),
+        "egress_denied_cli_hosts": sorted({d["host"] for d in from_cli}),
     }
+
+
+def _ts(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _bash_windows(raw: Path) -> list[tuple[float, float]]:
+    """(start, end) of every agent Bash tool call in the CLI's raw stream: the assistant tool_use to its tool_result."""
+    if not raw.is_file():
+        return []
+    starts: dict[str, float] = {}
+    windows: list[tuple[float, float]] = []
+    for line in raw.read_text().splitlines():
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        content = rec.get("message", {}).get("content") if isinstance(rec.get("message"), dict) else None
+        when = _ts(rec.get("timestamp"))
+        if not isinstance(content, list) or when is None:
+            continue
+        for block in content:
+            if rec.get("type") == "assistant" and block.get("type") == "tool_use" and block.get("name") == "Bash":
+                starts[block["id"]] = when
+            elif rec.get("type") == "user" and block.get("type") == "tool_result" and block.get("tool_use_id") in starts:
+                windows.append((starts.pop(block["tool_use_id"]), when))
+    # a Bash call with no result yet (the session ended in it) runs to the end of time
+    windows += [(start, float("inf")) for start in starts.values()]
+    return windows
+
+
+def _in_a_bash_window(ts: str | None, windows: list[tuple[float, float]]) -> bool:
+    # The bridge stamps with time.gmtime, i.e. the second FLOORED: the stamp is up to 1 s before the real denial, never after.
+    # So slack goes before the window only; slack after it would hide a CLI denial in the next turn's first second.
+    when = _ts(ts)
+    return when is not None and any(start - 1 <= when <= end for start, end in windows)
 
 
 def run(
@@ -103,7 +155,11 @@ def run(
         os.environ["LEMMA_MEASURE_DB"] = str(db_path)
         # The catalog is its own axis: the package that matches the database file (DECIMAL or DOUBLE `value`) unless
         # --assumption-package / the profile says otherwise. The OFFICIAL size is the size of that database.
-        os.environ.setdefault("LEMMA_ASSUMPTION_PACKAGE", package_for_db(db_path))
+        if resolved.values["assumption_package"] is None:
+            os.environ["LEMMA_ASSUMPTION_PACKAGE"] = package_for_db(db_path)
+            from research_loop.menu_profile import record_effective_axis
+
+            resolved = record_effective_axis("assumption_package", package_for_db(db_path), f"default for {db_path.name}")
     os.environ.pop("LEMMA_DECL_ROWS", None)
     os.environ.pop("LEMMA_DECL_SEED", None)
     runs_dir = ROOT / "research_loop" / "runs"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -38,8 +39,19 @@ TPCH = {
 }
 # TPC-H Q1 with dictionary strings and 8 parallel workers (any TPC-H scale's catalog: the body is data-size independent).
 DICT_PAR = {"dict_parallel_q1.rs": TPCH["group_decimal_sums_string_keys_sorted.rs"]}
-# Dictionary-string-mode fixtures on the SEC DECIMAL variant (published GenDB shapes: anti-join, 3-table dictionary join).
+# Dictionary-string-mode SEC fixtures (the published GenDB Q1 and Q3 shapes; written by a manual prover from the real agent prompt).
 DICT_SEC = {
+    "dict_group_two_keys_count_distinct_avg.rs": (
+        "SELECT stmt, rfile, COUNT(*) AS cnt, COUNT(DISTINCT adsh) AS num_filings, AVG(line) AS avg_line_num "
+        "FROM pre WHERE stmt IS NOT NULL GROUP BY stmt, rfile ORDER BY cnt DESC"
+    ),
+    "dict_having_scalar_subquery.rs": (
+        "SELECT s.name, s.cik, SUM(n.value) AS total_value FROM num n JOIN sub s ON n.adsh = s.adsh "
+        "WHERE n.uom = 'USD' AND s.fy = 2022 AND n.value IS NOT NULL GROUP BY s.name, s.cik "
+        "HAVING SUM(n.value) > (SELECT AVG(sub_total) FROM (SELECT SUM(n2.value) AS sub_total FROM num n2 "
+        "JOIN sub s2 ON n2.adsh = s2.adsh WHERE n2.uom = 'USD' AND s2.fy = 2022 AND n2.value IS NOT NULL "
+        "GROUP BY s2.cik) avg_sub) ORDER BY total_value DESC LIMIT 100"
+    ),
     "dict_anti_join_group_topk.rs": (
         "SELECT n.tag, n.version, COUNT(*) AS cnt, SUM(n.value) AS total FROM num n "
         "LEFT JOIN pre p ON n.tag = p.tag AND n.version = p.version AND n.adsh = p.adsh "
@@ -68,11 +80,12 @@ def _verify(name: str, monkeypatch: pytest.MonkeyPatch, mutate: tuple[str, str] 
     if not any(c.is_file() for c in VERUS_CANDIDATES):
         pytest.skip("verus binary not installed")
     monkeypatch.setenv("LEMMA_VERUS_BIN", str(Path(__file__).resolve().parents[1] / "scripts" / "ram" / "verus_guarded.sh"))
-    if name in DICT_SEC:
-        monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
     if name in DICT_PAR:
         monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
         monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "1")
+    if name in DICT_SEC:
+        monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
+        monkeypatch.setenv("LEMMA_ENABLE_PARALLEL", "0")
     text = ((HARD if name in CASES or name in TPCH or name in DICT_PAR or name in DICT_SEC else _FIXTURES) / name).read_text()
     if mutate is not None:
         assert mutate[0] in text
@@ -114,19 +127,29 @@ def test_a_wrong_string_comparison_does_not_verify(monkeypatch: pytest.MonkeyPat
 def test_a_flipped_anti_join_test_does_not_verify(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keeping the rows that DO have a pre match is the opposite query (EXISTS, not NOT EXISTS): Verus must reject it."""
     ok, out = _verify("dict_anti_join_group_topk.rs", monkeypatch, ("&& uok[um] && !mem;", "&& uok[um] && mem;"))
-    assert not ok and "error" in out
+    assert not ok and re.search(r"verification results:: \d+ verified, [1-9]\d* errors", out), out[-1500:]
 
 
 def test_a_shortened_date_range_does_not_verify(monkeypatch: pytest.MonkeyPatch) -> None:
     ok, out = _verify("dict_anti_join_group_topk.rs", monkeypatch, ("dd <= 20231231", "dd <= 20231230"))
-    assert not ok and "error" in out
+    assert not ok and re.search(r"verification results:: \d+ verified, [1-9]\d* errors", out), out[-1500:]
 
 
 def test_a_wrong_fiscal_year_in_the_three_table_join_does_not_verify(monkeypatch: pytest.MonkeyPatch) -> None:
     ok, out = _verify("dict_join3_group_topk.rs", monkeypatch, ("s.fy[jj] == 2023", "s.fy[jj] == 2024"))
-    assert not ok and "error" in out
+    assert not ok and re.search(r"verification results:: \d+ verified, [1-9]\d* errors", out), out[-1500:]
 
 
 def test_a_wrong_uom_literal_in_the_three_table_join_does_not_verify(monkeypatch: pytest.MonkeyPatch) -> None:
     ok, out = _verify("dict_join3_group_topk.rs", monkeypatch, ('String::from_str("USD")', 'String::from_str("EUR")'))
+    assert not ok and re.search(r"verification results:: \d+ verified, [1-9]\d* errors", out), out[-1500:]
+
+
+def test_a_wrong_sort_direction_in_the_two_key_distinct_avg_example_does_not_verify(monkeypatch: pytest.MonkeyPatch) -> None:
+    ok, out = _verify("dict_group_two_keys_count_distinct_avg.rs", monkeypatch, ("while p < out.len() && out[p].cnt >= row.cnt", "while p < out.len() && out[p].cnt <= row.cnt"))
+    assert not ok and "error" in out
+
+
+def test_a_non_strict_having_in_the_scalar_subquery_example_does_not_verify(monkeypatch: pytest.MonkeyPatch) -> None:
+    ok, out = _verify("dict_having_scalar_subquery.rs", monkeypatch, ("if !taken[g] && gt[g] > q {", "if !taken[g] && gt[g] >= q {"))
     assert not ok and "error" in out

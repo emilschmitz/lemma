@@ -40,6 +40,7 @@ def row(log: Path) -> dict:
         "verdict": verdict(x),
         "egress_hosts": rec.get("egress_hosts"),
         "egress_denied": rec.get("egress_denied"),
+        "egress_denied_in_agent_bash": rec.get("egress_denied_in_agent_bash"),
         "wall_s": rec.get("wall_s"),
         "error": (rec.get("error") or "")[:160],
     }
@@ -52,7 +53,7 @@ def main(argv: list[str]) -> int:
         r = row(Path(arg))
         print(
             f"| {r['log']} | {r.get('model')} | {r['status']} | {r.get('threads_used')} | {r.get('latency_us')} | {r.get('duck_us')} "
-            f"| {r.get('x_factor')} | {r.get('verdict')} | {r.get('egress_hosts')} denied={r.get('egress_denied')} |"
+            f"| {r.get('x_factor')} | {r.get('verdict')} | {r.get('egress_hosts')} denied={r.get('egress_denied')} bash-denied={r.get('egress_denied_in_agent_bash')} |"
         )
     return 0
 

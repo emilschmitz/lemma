@@ -64,6 +64,11 @@ def write_query_measure(
 
     integer_sql, _scales = rewrite_numeric(sql, schema, catalog)
     model = SchemaModel.from_caller(schema, flatten_derived(parse_query(integer_sql)).tables[0]).with_nullable(catalog)
+    # Plan every table's column mapping before the first export: an unmappable field must fail in milliseconds, not after a 1 GB export.
+    plans = {}
+    for struct_name, body in structs:
+        suffix = struct_name.removeprefix("Cols_")
+        plans[suffix] = _plan_table(model, _table_for_suffix(model, suffix), _FIELD.findall(body))
     dest.mkdir(parents=True, exist_ok=True)
     bins: dict[str, str] = {}
     table_rows: dict[str, int] = {}
@@ -72,11 +77,8 @@ def write_query_measure(
     except duckdb.Error as exc:
         raise ValueError(str(exc)) from exc
     try:
-        for struct_name, body in structs:
-            suffix = struct_name.removeprefix("Cols_")
-            fields = _FIELD.findall(body)
-            table = _table_for_suffix(model, suffix)
-            blob = _export_table(con, model, table, fields)
+        for suffix, plan in plans.items():
+            blob = _export_planned(con, plan)
             table_rows[suffix] = int.from_bytes(blob[:8], "little")
             path = dest / f"cols_{suffix}.bin"
             path.write_bytes(blob)
@@ -122,12 +124,8 @@ def _table_for_suffix(model: SchemaModel, suffix: str) -> str:
     return hits[0]
 
 
-def _export_table(
-    con: duckdb.DuckDBPyConnection,
-    model: SchemaModel,
-    table: str,
-    fields: list[tuple[str, str]],
-) -> bytes:
+def _plan_table(model: SchemaModel, table: str, fields: list[tuple[str, str]]) -> tuple:
+    """Map every spec struct field to its table column and check the mapping; reads no data, so a bad field fails here, not after the export."""
     _orig, cols = model.lookup_table(table)
     # The spec struct may hold only the columns the query reads. Export exactly those, in struct order.
     by_ident = {rust_ident(col_key): col_key for col_key in cols}
@@ -141,21 +139,21 @@ def _export_table(
     for fname, fty in fields:
         if fname.endswith("__valid"):
             # The validity vector of a nullable column: true where the cell is not NULL.
-            col_key = by_ident.get(fname.removeprefix("r#")[: -len("__valid")])
+            col_key = by_ident.get(fname[: -len("__valid")])
             if col_key is None or fty != "bool" or not model.is_nullable(table, col_key):
                 raise ValueError(f"{table}.{fname}: not the validity vector of a nullable column")
             valid_fields.add(len(names))
         elif fname.endswith("__dict"):
             # The dictionary of a string column loaded as codes (``declarative_spec.string_encoding``).
-            base = fname.removeprefix("r#")[: -len("__dict")]
+            base = fname[: -len("__dict")]
             col_key = by_ident.get(base)
             if col_key is None or fty != "String" or cols[col_key].exec_rust != "String":
                 raise ValueError(f"{table}.{fname}: not the dictionary of a string column")
             dict_of[len(names)] = code_fields[base]
         else:
-            col_key = by_ident.get(fname.removeprefix("r#"))
+            col_key = by_ident.get(fname)
             if col_key is not None and cols[col_key].exec_rust == "String" and fty in ("u8", "u16", "u32"):
-                code_fields[fname.removeprefix("r#")] = len(names)
+                code_fields[fname] = len(names)
             elif col_key is None or (
                 cols[col_key].exec_rust != fty
                 # a narrowed integer column loaded wide (a group key of a map-result shape, LEMMA_NARROW_CELLS)
@@ -166,6 +164,20 @@ def _export_table(
         types.append(fty)
         infos.append(cols[col_key])
         nullable.append(model.is_nullable(table, col_key))
+    return table, names, types, infos, nullable, dict_of, valid_fields
+
+
+def _export_table(
+    con: duckdb.DuckDBPyConnection,
+    model: SchemaModel,
+    table: str,
+    fields: list[tuple[str, str]],
+) -> bytes:
+    return _export_planned(con, _plan_table(model, table, fields))
+
+
+def _export_planned(con: duckdb.DuckDBPyConnection, plan: tuple) -> bytes:
+    table, names, types, infos, nullable, dict_of, valid_fields = plan
     return _encode_columns(con, table, names, types, infos, nullable, dict_of, valid_fields)
 
 

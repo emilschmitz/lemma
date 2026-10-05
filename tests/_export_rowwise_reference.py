@@ -38,21 +38,21 @@ def _export_table_rowwise(
     for fname, fty in fields:
         if fname.endswith("__valid"):
             # The validity vector of a nullable column: true where the cell is not NULL.
-            col_key = by_ident.get(fname.removeprefix("r#")[: -len("__valid")])
+            col_key = by_ident.get(fname[: -len("__valid")])
             if col_key is None or fty != "bool" or not model.is_nullable(table, col_key):
                 raise ValueError(f"{table}.{fname}: not the validity vector of a nullable column")
             valid_fields.add(len(names))
         elif fname.endswith("__dict"):
             # The dictionary of a string column loaded as codes (``declarative_spec.string_encoding``).
-            base = fname.removeprefix("r#")[: -len("__dict")]
+            base = fname[: -len("__dict")]
             col_key = by_ident.get(base)
             if col_key is None or fty != "String" or cols[col_key].exec_rust != "String":
                 raise ValueError(f"{table}.{fname}: not the dictionary of a string column")
             dict_of[len(names)] = code_fields[base]
         else:
-            col_key = by_ident.get(fname.removeprefix("r#"))
+            col_key = by_ident.get(fname)
             if col_key is not None and cols[col_key].exec_rust == "String" and fty in ("u8", "u16", "u32"):
-                code_fields[fname.removeprefix("r#")] = len(names)
+                code_fields[fname] = len(names)
             elif col_key is None or (
                 cols[col_key].exec_rust != fty
                 # a narrowed integer column loaded wide (a group key of a map-result shape, LEMMA_NARROW_CELLS)

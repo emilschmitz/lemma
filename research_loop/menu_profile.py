@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -291,6 +291,16 @@ def activate_menu(
     _active = resolved
     print(f"[menu] resolved selection\n{resolved.summary()}", flush=True)
     return resolved
+
+
+def record_effective_axis(axis: str, value: str, source: str) -> Resolved:
+    """An axis the profile left unset got its value later (a launcher default): the active selection, and so the
+    manifest and the printed RESULT, must name it rather than keep saying `unset`."""
+    global _active
+    assert _active is not None and _active.values[axis] is None
+    _active = replace(_active, values={**_active.values, axis: value}, sources={**_active.sources, axis: source})
+    print(f"[menu] {axis} = {value} [{source}]", flush=True)
+    return _active
 
 
 def deactivate_menu() -> None:

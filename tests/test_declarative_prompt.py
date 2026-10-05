@@ -72,7 +72,7 @@ def test_prompt_is_ordered_and_has_no_duplicate_sections() -> None:
     assert p.lstrip().startswith("# Declarative run_query")
     assert "while i > 0\n    invariant\n        i <= cols.n," not in p.split("## What you get")[0]
     assert "LEMMAS.md" in p and "EXAMPLES_INDEX.md" in p
-    assert "You cannot run Verus" in p
+    assert "Verus is not on its PATH" in p
     assert "AGENT_HELPERS_START" in p
     assert len(p.splitlines()) < 450
 
@@ -315,3 +315,122 @@ def test_the_quoted_multipliers_are_labelled_kernel_only_in_a_parallel_prompt(mo
     monkeypatch.setenv(parallel.ENV, "1")
     p = _prompt("SELECT SUM(line) AS total FROM pre WHERE line > 5")
     assert "kernel only" in p and "outside the timer" in p
+
+
+def test_the_do_not_block_is_short_and_general() -> None:
+    from declarative_spec.prompt import _DO_NOT
+
+    assert len(_DO_NOT.strip().splitlines()) <= 12
+    for banned in ("`sort_by`", "`for x in &mut v`", "`as int`", "valid_cols_<t>", "decreases", "Vec::new()", "context/ro/examples/"):
+        assert banned in _DO_NOT
+    for table_word in ("adsh", "stmt", "rfile", "num_filings"):  # no query- or dataset-specific text
+        assert table_word not in _DO_NOT
+    assert _DO_NOT in _prompt("SELECT SUM(line) AS total FROM pre WHERE line > 5")
+
+
+def test_dict_mode_points_count_distinct_and_scalar_subquery_specs_to_the_long_examples(monkeypatch: pytest.MonkeyPatch) -> None:
+    from declarative_spec.prompt import _FIXTURES
+
+    monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
+    distinct = _prompt("SELECT stmt, report, COUNT(*) AS c, COUNT(DISTINCT line) AS d FROM pre GROUP BY stmt, report")
+    assert "hard/dict_group_two_keys_count_distinct_avg.rs" in distinct
+    assert "feature (dictionary mode): `context/ro/examples/hard/dict_group_two_keys_count_distinct_avg.rs`" in distinct
+    assert "feature (dictionary mode): `context/ro/examples/hard/dict_having_scalar_subquery.rs`" not in distinct
+    from declarative_spec.prompt import _dict_hard_pointers
+
+    assert "dict_having_scalar_subquery.rs" in "".join(_dict_hard_pointers("x__dict sq_1_groups(n, s, 0)"))
+    assert _dict_hard_pointers("sq_1_groups(n, s, 0)") == []  # string mode: no pointer
+    plain = _prompt("SELECT SUM(line) AS total FROM pre WHERE line > 5")
+    assert "Long verified example for this feature" not in plain
+    for name in ("dict_group_two_keys_count_distinct_avg.rs", "dict_having_scalar_subquery.rs"):
+        assert (_FIXTURES / "hard" / name).is_file()
+
+
+def test_both_new_examples_are_mounted_in_dict_mode_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
+    mount_examples(tmp_path / "d")
+    assert (tmp_path / "d" / "examples" / "hard" / "dict_having_scalar_subquery.rs").is_file()
+    monkeypatch.setenv("LEMMA_STRING_ENCODING", "plain")
+    mount_examples(tmp_path / "s")
+    assert not (tmp_path / "s" / "examples" / "hard" / "dict_having_scalar_subquery.rs").exists()
+
+
+_ANTI = (
+    "SELECT n.tag, n.version, COUNT(*) AS cnt, SUM(n.value) AS total FROM num n "
+    "LEFT JOIN pre p ON n.tag = p.tag AND n.version = p.version AND n.adsh = p.adsh "
+    "WHERE n.uom = 'USD' AND n.ddate BETWEEN 20230101 AND 20231231 AND n.value IS NOT NULL AND p.adsh IS NULL "
+    "GROUP BY n.tag, n.version HAVING COUNT(*) > 10 ORDER BY cnt DESC LIMIT 100"
+)
+_JOIN3 = (
+    "SELECT s.name, p.stmt, n.tag, p.plabel, SUM(n.value) AS total_value, COUNT(*) AS cnt FROM num n "
+    "JOIN sub s ON n.adsh = s.adsh JOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version "
+    "WHERE n.uom = 'USD' AND p.stmt = 'IS' AND s.fy = 2023 AND n.value IS NOT NULL "
+    "GROUP BY s.name, p.stmt, n.tag, p.plabel ORDER BY total_value DESC LIMIT 200"
+)
+
+
+@pytest.mark.parametrize(
+    ("sql", "recipe", "file"),
+    [(_ANTI, "dict_anti_join", "hard/dict_anti_join_group_topk.rs"), (_JOIN3, "dict_join3", "hard/dict_join3_group_topk.rs")],
+)
+def test_published_sec_anti_join_and_three_table_join_get_their_hard_example(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, sql: str, recipe: str, file: str) -> None:
+    from research_loop.scripts.declarative_round import SEC_DB, sec_catalog, sec_schema
+
+    if not SEC_DB.is_file():
+        pytest.skip(f"SEC DECIMAL database not present at {SEC_DB}")
+    monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
+    monkeypatch.setenv("LEMMA_ENABLE_PARALLEL", "0")
+    spec = emit_declarative_spec(sql, sec_schema(), sec_catalog())
+    assert spec_shape(spec)["recipe"] == recipe
+    p = build_declarative_prompt(sql=sql, spec_path="s", edit_path="e", lemma_index="idx", spec_text=spec)
+    assert f"context/ro/examples/{file}" in p
+    assert "keep" in p  # the header is inlined
+    mount_examples(tmp_path)
+    assert (tmp_path / "examples" / file).is_file()
+
+
+def test_the_new_examples_keep_valid_cols_and_decreases_and_use_no_banned_construct() -> None:
+    import re
+
+    from declarative_spec.prompt import _FIXTURES
+
+    for name in ("dict_anti_join_group_topk.rs", "dict_join3_group_topk.rs"):
+        text = (_FIXTURES / "hard" / name).read_text()
+        body = text.split("// AGENT_EDIT_START")[1]
+        loops = len(re.findall(r"^\s*while\b", body, re.M))
+        assert loops and loops == len(re.findall(r"^\s*decreases\b", body, re.M)), name
+        assert "valid_cols_" in body or "vcs(" in body, name
+        for banned in ("assume(", "admit(", "external_body", "assume_specification", "unimplemented!", "arbitrary", "axiom", "sort_by", "&mut groups"):
+            assert banned not in text.replace("// ", "//"), (name, banned)
+
+
+def test_dict_only_hard_examples_are_not_mounted_in_plain_string_mode(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("LEMMA_STRING_ENCODING", "plain")
+    mount_examples(tmp_path)
+    for name in ("dict_anti_join_group_topk.rs", "dict_join3_group_topk.rs", "dict_having_scalar_subquery.rs"):
+        assert not (tmp_path / "examples" / "hard" / name).exists(), name
+
+
+def test_anti_join_recipe_has_no_contradicting_warning_and_ungrouped_three_table_is_not_routed(monkeypatch: pytest.MonkeyPatch) -> None:
+    from research_loop.scripts.declarative_round import SEC_DB, sec_catalog, sec_schema
+
+    if not SEC_DB.is_file():
+        pytest.skip(f"SEC DECIMAL database not present at {SEC_DB}")
+    monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
+    monkeypatch.setenv("LEMMA_ENABLE_PARALLEL", "0")
+    shape = spec_shape(emit_declarative_spec(_ANTI, sec_schema(), sec_catalog()))
+    assert shape["recipe"] == "dict_anti_join" and not any("NOT EXISTS" in h for h in shape["hard"])
+    ungrouped = "SELECT MIN(n.ddate) AS a FROM num n JOIN sub s ON n.adsh = s.adsh JOIN pre p ON n.adsh = p.adsh WHERE n.uom = 'USD'"
+    assert spec_shape(emit_declarative_spec(ungrouped, sec_schema(), sec_catalog()))["recipe"] != "dict_join3"
+
+
+def test_new_examples_pass_the_host_admission_lint() -> None:
+    from declarative_spec.admit import admit_declarative_body, admit_helpers
+    from declarative_spec.prompt import _FIXTURES
+    from declarative_spec.regions import extract_agent_edit, extract_agent_helpers
+
+    for name in ("dict_anti_join_group_topk.rs", "dict_join3_group_topk.rs"):
+        text = (_FIXTURES / "hard" / name).read_text()
+        body = admit_declarative_body(extract_agent_edit(text))
+        helpers = admit_helpers(extract_agent_helpers(text), "")
+        assert body.ok and helpers.ok, (name, body.violations, helpers.violations)
