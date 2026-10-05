@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from declarative_spec import parallel
+from declarative_spec import dense_budget, parallel
 
 # The timed measure is the MEDIAN of this many runs (odd). The shared box shows ~30 percent run-to-run noise.
 TIMED_RUNS = 9
@@ -163,6 +163,7 @@ def assemble_declarative_program(
     main_fn = "fn main() {\n"
     main_fn += "\n".join(mains_load) + "\n"
     main_fn += join_cap_checks
+    main_fn += dense_budget.runtime_checks(verus_part)
     main_fn += arc_lets
     main_fn += timed
     main_fn += "}\n"

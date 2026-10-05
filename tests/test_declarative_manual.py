@@ -123,3 +123,72 @@ def test_job_env_snapshot_keeps_only_the_settings_that_are_set(monkeypatch: pyte
     monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "1")
     monkeypatch.setenv("UNRELATED", "x")
     assert _job_env_snapshot() == {"LEMMA_STRING_ENCODING": "dict", "LEMMA_PARALLEL_VSTD": "1"}
+
+
+# ---- check regenerates the spec (the spec is the ground truth) --------------------------------------------------------------
+
+
+def _workspace(tmp_path: Path, spec_on_disk: str, body_file_spec: str = "OTHER SPEC TEXT") -> Path:
+    ws = tmp_path / "ws"
+    (ws / "decl_data").mkdir(parents=True)
+    (ws / "context" / "ro").mkdir(parents=True)
+    (ws / "decl_data" / "bar.json").write_text('{"duck_us": 10, "rows": []}')
+    (ws / "context" / "ro" / "spec.rs").write_text(spec_on_disk)
+    (ws / "runquery_agent.rs").write_text(body_file_spec)
+    return ws
+
+
+def _patch_check(monkeypatch: pytest.MonkeyPatch, regenerated: str) -> list[str]:
+    from research_loop.scripts import declarative_manual as m
+
+    seen: list[str] = []
+    monkeypatch.setattr(m, "regenerate_spec", lambda kind, sql: regenerated)
+
+    def fake_metrics(**kw):
+        seen.append(kw["spec_rs"])
+        return {"status": "SUCCESS", "proof_verified": True, "latency_us": 1}
+
+    monkeypatch.setattr(m, "run_declarative_metrics", fake_metrics)
+    return seen
+
+
+def test_check_passes_an_honest_workspace_and_builds_from_the_regenerated_spec(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from research_loop.scripts import declarative_manual as m
+
+    ws = _workspace(tmp_path, "spec line 1\nspec line 2\n")
+    seen = _patch_check(monkeypatch, "spec line 1\nspec line 2\n")
+    out = m.check("sec", "SELECT 1", ws)
+    assert out["status"] == "SUCCESS" and seen == ["spec line 1\nspec line 2\n"]  # not the (different) text in runquery_agent.rs
+
+
+def test_check_refuses_a_tampered_spec_and_names_the_first_differing_line(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from research_loop.scripts import declarative_manual as m
+
+    ws = _workspace(tmp_path, "spec line 1\nensures true,\n")
+    seen = _patch_check(monkeypatch, "spec line 1\nensures res == real,\n")
+    with pytest.raises(m.SpecMismatch, match=r"first difference at line 2: regenerated 'ensures res == real,' vs workspace 'ensures true,'"):
+        m.check("sec", "SELECT 1", ws)
+    assert seen == []  # nothing was verified or timed
+
+
+def test_a_transplant_into_a_stale_spec_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from research_loop.scripts import declarative_manual as m
+    from research_loop.scripts.declarative_transplant import transplant
+
+    src = "// AGENT_HELPERS_START\n// AGENT_HELPERS_END\n// AGENT_EDIT_START\nBODY\n// AGENT_EDIT_END\n"
+    stale_spec = "OLD CAPS 100\n// AGENT_HELPERS_START\n// AGENT_HELPERS_END\n// AGENT_EDIT_START\n// AGENT_EDIT_END\n"
+    moved = transplant(src, stale_spec)
+    assert "BODY" in moved and moved.startswith("OLD CAPS 100")  # the destination's spec text is untouched by the copy
+    ws = _workspace(tmp_path, stale_spec, moved)
+    seen = _patch_check(monkeypatch, "NEW CAPS 200\n// AGENT_HELPERS_START\n// AGENT_HELPERS_END\n// AGENT_EDIT_START\n// AGENT_EDIT_END\n")
+    with pytest.raises(m.SpecMismatch, match="line 1: regenerated 'NEW CAPS 200' vs workspace 'OLD CAPS 100'"):
+        m.check("sec", "SELECT 1", ws)
+    assert seen == []
+
+
+def test_first_difference_handles_length_and_equality() -> None:
+    from research_loop.scripts.declarative_manual import first_difference
+
+    assert first_difference("a\nb", "a\nb\nc") == "line 3: regenerated '<end of file>' vs workspace 'c'"
+    assert first_difference("a\nb\nc", "a\nb") == "line 3: regenerated 'c' vs workspace '<end of file>'"
+    assert first_difference("a", "a") == "texts are identical"
