@@ -338,6 +338,38 @@ def _float_section(spec_text: str) -> list[str]:
     return lines
 
 
+_ROW_CAP = re.compile(r"pub const ROW_CAP_(\w+): usize = (\d+);")
+_BIG_TABLE_ROWS = 1_000_000
+
+
+def _scale_section(spec_text: str) -> list[str]:
+    """The official table sizes (the spec's row caps) and what they mean for a sequential loop versus the all-core bar."""
+    caps = {m.group(1): int(m.group(2)) for m in _ROW_CAP.finditer(spec_text)}
+    if not caps:
+        return []
+    from declarative_spec import parallel
+
+    sizes = ", ".join(f"`{t}` {n:,}" for t, n in sorted(caps.items(), key=lambda kv: -kv[1]))
+    lines = [
+        "## Official size and the bar",
+        "",
+        f"The timed run is on the full tables (row caps in the spec: {sizes}), not on the 50,000-row iterate cap that",
+        "`run_runquery` uses by default: a time or speedup at 50k says nothing about the official run. The bar is the reference",
+        "engine on ALL cores. One thread does not beat it on a scan or aggregate over millions of rows.",
+    ]
+    if max(caps.values()) < _BIG_TABLE_ROWS:
+        return lines + [""]
+    if parallel.is_parallel(spec_text):
+        lines += [
+            "Rule: get a sequential body to `0 errors` first, then, before you stop, replace it with the parallel recipe below",
+            "(workers over row ranges) unless the parallel body will not verify. Submit the faster verified body; if only the",
+            "sequential one verifies, submit it and say its `speedup` is below 1.",
+        ]
+    else:
+        lines += ["This spec has no parallel parameters, so a single-threaded body is all that is available: report the speedup as measured."]
+    return lines + [""]
+
+
 def _parallel_section(spec_text: str, shape: dict) -> list[str]:
     """Parallel-scan recipe, shown only when the spec was emitted with the Arc parameters (LEMMA_PARALLEL_VSTD=1)."""
     from declarative_spec import parallel
@@ -591,6 +623,7 @@ def build_declarative_prompt(
         "```",
         "",
     ]
+    sections += _scale_section(spec_text)
     sections += _recipe_section(shape)
     sections += _float_section(spec_text)
     sections += _nullable_section(spec_text)

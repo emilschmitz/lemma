@@ -275,3 +275,22 @@ def test_mount_examples_copies_every_example(tmp_path: Path) -> None:
     mount_examples(tmp_path)
     names = {f.name for f in (tmp_path / "examples").iterdir()}
     assert {"group_count_where.rs", "join_group_sum.rs", "ungrouped_sum_where.rs", "string_group_count.rs"} <= names
+
+
+def test_big_table_parallel_spec_is_told_the_official_size_and_to_upgrade_to_the_parallel_recipe(monkeypatch: pytest.MonkeyPatch) -> None:
+    from declarative_spec import parallel
+
+    sql = "SELECT SUM(line) AS total FROM pre WHERE line > 5"
+    big = CatalogAssumptions(tables={"pre": TableAssumptions(max_rows=9_600_799)})
+    monkeypatch.setenv(parallel.ENV, "1")
+    p = build_declarative_prompt(sql=sql, spec_path="s", edit_path="e", lemma_index="i", spec_text=emit_declarative_spec(sql, _SCHEMA, big))
+    assert "`pre` 9,600,799" in p and "ALL cores" in p and "before you stop, replace it with the parallel recipe" in p
+    monkeypatch.delenv(parallel.ENV)
+    p = build_declarative_prompt(sql=sql, spec_path="s", edit_path="e", lemma_index="i", spec_text=emit_declarative_spec(sql, _SCHEMA, big))
+    assert "`pre` 9,600,799" in p and "no parallel parameters" in p and "replace it with the parallel recipe" not in p
+
+
+def test_small_table_spec_gets_no_parallel_rule() -> None:
+    sql = "SELECT SUM(line) AS total FROM pre WHERE line > 5"
+    p = build_declarative_prompt(sql=sql, spec_path="s", edit_path="e", lemma_index="i", spec_text=_spec(sql))
+    assert "`pre` 64" in p and "replace it with the parallel recipe" not in p and "no parallel parameters" not in p
