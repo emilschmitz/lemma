@@ -61,7 +61,7 @@
         decreases num.n - i,
     {
         let q = num.qtrs[i];
-        let d = num.ddate[i];
+        let d = num.ddate[i] as i64;
         let hit = q == 3 && found && (num.uom[i] as usize) == code;
         proof {
             assert(row_hit(num, i as int) <==> hit);

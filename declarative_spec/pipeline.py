@@ -193,7 +193,16 @@ def speed_bar_mult() -> float:
     return mult
 
 
-def _apply_speed_bar(metrics: dict, speed_bar: dict | None) -> dict:
+PARALLEL_HINT = (
+    " This body is single-threaded and the bar is the reference engine on ALL cores: upgrade to the PARALLEL recipe "
+    "(your spec has the `<table>_arc` parameters). Keep this verified body as the fallback, then write workers over row "
+    "ranges with `vstd::thread::spawn`/`join` as in `context/ro/examples/parallel_ungrouped_sum.rs` (sums/counts: partials "
+    "telescope; MIN/MAX: `parallel_ungrouped_min.rs`; GROUP BY over a small code domain: per-worker dense arrays, "
+    "`dict_group_count_sum_parallel.rs`) and call `run_runquery` again. See the 'Parallel scan' section of DECLARATIVE.md."
+)
+
+
+def _apply_speed_bar(metrics: dict, speed_bar: dict | None, *, parallel_hint: bool = False) -> dict:
     if speed_bar is None or metrics.get("status") != "SUCCESS":
         return metrics
     duck_us = int(speed_bar["duck_us"])
@@ -229,6 +238,7 @@ def _apply_speed_bar(metrics: dict, speed_bar: dict | None) -> dict:
     speedup = duck_us / max(latency, 1)
     attained = {
         "speed_bar_mult": mult,
+        "official_tables": speed_bar.get("table_rows"),  # the timed run is on these FULL tables, whatever dataset_size says
         "speedup": speedup,  # median of the timed runs
         "latency_best_us": metrics.get("latency_best_us"),
         "speedup_best": None
@@ -248,6 +258,7 @@ def _apply_speed_bar(metrics: dict, speed_bar: dict | None) -> dict:
                 f"proved but below the speed bar: query {latency} us, DuckDB {duck_us} us "
                 f"({speedup:.2f}x; the bar is {mult:g}x faster than DuckDB). "
                 "Use one pass over dense arrays; avoid a loop over one table inside another and a hash-map update per row where a dense Vec indexed by key works."
+                + (PARALLEL_HINT if parallel_hint else "")
             ),
         }
     return {**metrics, **attained, "duck_us": duck_us}
@@ -300,4 +311,8 @@ def run_declarative_metrics(
             "compiler_error": str(exc),
         }
     metrics = compile_and_run(assembled, work_dir=work_dir, timeout_sec=timeout_sec)
-    return _apply_speed_bar(metrics, speed_bar)
+    from declarative_spec import parallel
+
+    # A body that never spawns a thread loses a bandwidth-bound scan to the all-core engine: tell it so when it can still upgrade.
+    uses_threads = "spawn(" in body
+    return _apply_speed_bar(metrics, speed_bar, parallel_hint=parallel.is_parallel(spec_rs) and not uses_threads)

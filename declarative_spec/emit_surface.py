@@ -7,6 +7,8 @@ It does not define the query as a walk that inserts into a map.
 
 from __future__ import annotations
 
+import dataclasses
+
 import copy
 import re
 from dataclasses import dataclass, field
@@ -437,6 +439,9 @@ def _group_infos(
             continue
         table = query.group_tables[i] if i < len(query.group_tables) else None
         slot, info = _find_col(col, table, main, model)
+        if info.exec_rust in ("i32", "i16", "i8") and not info.is_date:
+            # LEMMA_NARROW_CELLS: the loaded cell is narrow, the group key (map key, OutRow field) stays i64.
+            info = dataclasses.replace(info, exec_rust="i64", cell_exclusive_cap=2**63)
         out.append((rust_ident(col), col, info, slot))
     return [_mark_nullable_key(g, query, model) for g in out]
 

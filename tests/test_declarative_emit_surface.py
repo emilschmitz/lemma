@@ -196,7 +196,9 @@ def test_filter_projection_counts_each_hit() -> None:
     assert "method_spec" not in spec
     assert "assume(" not in spec
     assert "arbitrary()" not in spec
-    assert "pub fy: i64" in spec
+    from declarative_spec.schema_types import narrow_cells
+
+    assert ("pub fy: i32" if narrow_cells() else "pub fy: i64") in spec
     assert "pub name: String" in spec
     assert "hit_count(" in spec
     assert "lemma_hit_count_step(" not in spec

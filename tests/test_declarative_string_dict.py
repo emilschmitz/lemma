@@ -536,3 +536,36 @@ def test_parallel_dict_nullable_example_verifies_and_dropping_the_validity_bit_d
     assert "let hit = v > 3 && ok && found && s == code;" in text
     bad, _ = run(text.replace("let hit = v > 3 && ok && found && s == code;", "let hit = v > 3 && found && s == code;"))
     assert not bad
+
+
+def test_block_skip_example_verifies_and_a_wrong_skip_condition_does_not(monkeypatch: pytest.MonkeyPatch) -> None:
+    from pathlib import Path
+
+    from declarative_spec.assemble import assemble_declarative_program
+    from declarative_spec.emit import emit_declarative_spec
+    from declarative_spec.pipeline import VERUS_CANDIDATES, verify_assembled
+    from declarative_spec.prompt import _FIXTURES
+    from declarative_spec.regions import extract_agent_edit, extract_agent_helpers
+    from research_loop.assumption_packages import assumption_package
+
+    if not any(c.is_file() for c in VERUS_CANDIDATES):
+        pytest.skip("verus binary not installed")
+    monkeypatch.setenv("LEMMA_VERUS_BIN", str(Path(__file__).resolve().parents[1] / "scripts" / "ram" / "verus_guarded.sh"))
+    monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
+    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "1")
+    schema = {"num": {"uom": "varchar", "qtrs": "int", "ddate": "int"}}
+    spec = emit_declarative_spec(
+        "SELECT COUNT(*) AS c, MAX(ddate) AS d FROM num WHERE uom = 'shares' AND qtrs = 4", schema, assumption_package("sec_margin_dec")
+    )
+    text = (_FIXTURES / "parallel_dict_filter_count_max_blockskip.rs").read_text()
+
+    def run(t: str) -> tuple[bool, str]:
+        return verify_assembled(
+            assemble_declarative_program(spec, extract_agent_edit(t), helpers=extract_agent_helpers(t)), timeout_sec=600
+        )
+
+    ok, out = run(text)
+    assert ok and "0 errors" in out, out[-2000:]
+    assert "skip = flag == 0;" in text
+    bad, _ = run(text.replace("skip = flag == 0;", "skip = flag <= 1;", 1))
+    assert not bad

@@ -31,6 +31,33 @@ from research_loop.menu_profile import activate_menu
 from research_loop.spec_styles import STYLES, check_style
 
 
+def new_run_dirs(runs_dir: Path, before: set[Path]) -> list[Path]:
+    """Run directories created since ``before`` (the `LATEST` pointer is not one)."""
+    if not runs_dir.is_dir():
+        return []
+    return sorted(p for p in set(runs_dir.glob("*")) - before if p.is_dir() and not p.is_symlink() and p.name != "LATEST")
+
+
+def summarize_run(run_dir: Path | None) -> dict:
+    """Evidence from a finished run directory: did the final body use threads, and which hosts did the sandbox reach?"""
+    if run_dir is None:
+        return {"run_dir": None}
+    ws = run_dir / "workspace"
+    body = (ws / "runquery_agent.rs").read_text() if (ws / "runquery_agent.rs").is_file() else ""
+    hosts: set[str] = set()
+    egress = ws / "mcp_results" / "egress_bridge.jsonl"
+    if egress.is_file():
+        for line in egress.read_text().splitlines():
+            hosts.add(json.loads(line)["host"])
+    denied = ws / "mcp_results" / "egress_denied.jsonl"
+    return {
+        "run_dir": str(run_dir),
+        "threads_used": "spawn(" in body,
+        "egress_hosts": sorted(hosts),
+        "egress_denied": denied.is_file() and denied.read_text().strip() != "",
+    }
+
+
 def run(
     menu: str,
     style: str,
@@ -68,26 +95,33 @@ def run(
         from research_loop.agent_sandbox import claude_docker_args
 
         claude_docker_args()  # raises before any work when no credentials are set
+    from research_loop.scripts.declarative_draws import package_for_db
+
     db_path = resolve_sec_db()
     os.environ["LEMMA_DUCKDB_PATH"] = str(db_path)
     if resolved.style == "declarative":
         os.environ["LEMMA_MEASURE_DB"] = str(db_path)
-        # The catalog is its own axis: the package that matches the database (DECIMAL columns get
-        # sec_margin_dec) unless --assumption-package / the profile says otherwise.
-        from research_loop.scripts.declarative_draws import package_for_db
-
+        # The catalog is its own axis: the package that matches the database file (DECIMAL or DOUBLE `value`) unless
+        # --assumption-package / the profile says otherwise. The OFFICIAL size is the size of that database.
         os.environ.setdefault("LEMMA_ASSUMPTION_PACKAGE", package_for_db(db_path))
     os.environ.pop("LEMMA_DECL_ROWS", None)
     os.environ.pop("LEMMA_DECL_SEED", None)
+    runs_dir = ROOT / "research_loop" / "runs"
+    before = set(runs_dir.glob("*")) if runs_dir.is_dir() else set()
     t0 = time.time()
     result = run_optimization_loop(
         sql,
-        schema=load_sec_schema(),
+        schema=load_sec_schema(db_path),
         workload="sec",
         max_iterations=max_iterations,
         use_mock=False,
     )
+    new_dirs = new_run_dirs(runs_dir, before)
     return {
+        **summarize_run(new_dirs[-1] if new_dirs else None),
+        "database": str(db_path),
+        "model": model,
+        "duck_us": result.get("duck_us"),
         "menu": menu,
         "selection": resolved.as_dict(),
         "sql": sql,
@@ -106,7 +140,8 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--style", required=True, choices=STYLES)
     ap.add_argument("--menu", required=True, help="menu profile name (sets all axes)")
-    ap.add_argument("--query-sql", required=True)
+    ap.add_argument("--query-sql")
+    ap.add_argument("--query-file", help="read the SQL from this file (instead of --query-sql)")
     ap.add_argument("--agent", help="override the agent axis: model slug (claude-* runs Claude Code)")
     ap.add_argument("--trusted-set", help="override the trusted_set axis")
     ap.add_argument("--assumption-package", help="override the catalog axis")
@@ -114,10 +149,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--allow-override", action="store_true", help="let overrides contradict the profile")
     ap.add_argument("--max-iterations", type=int, default=2)
     args = ap.parse_args(argv)
+    if (args.query_sql is None) == (args.query_file is None):
+        ap.error("give exactly one of --query-sql and --query-file")
+    sql = args.query_sql if args.query_sql is not None else Path(args.query_file).read_text().strip()
     record = run(
         args.menu,
         args.style,
-        args.query_sql,
+        sql,
         agent=args.agent,
         trusted_set=args.trusted_set,
         assumption_package=args.assumption_package,

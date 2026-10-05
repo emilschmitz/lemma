@@ -26,8 +26,8 @@
             any ==> forall|j: int| #![trigger row_hit(num, j)] 0 <= j < i as int && row_hit(num, j) ==> (num.ddate@[j] as int) <= (hi as int),
         decreases num.n - i,
     {
-        let q = num.qtrs[i];
-        let d = num.ddate[i];
+        let q = num.qtrs[i] as i64;
+        let d = num.ddate[i] as i64;
         let hit = q == 3 && num.uom[i] == pure;
         proof {
             assert(row_hit(num, i as int) <==> hit);

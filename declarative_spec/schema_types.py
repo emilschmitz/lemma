@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import re
 from functools import lru_cache
 from dataclasses import dataclass
@@ -201,6 +203,24 @@ def _classify_decimal(norm: str, precision: int, scale: int) -> ColumnTypeInfo:
     )
 
 
+# LEMMA_NARROW_CELLS=1: a SQL INTEGER is loaded as i32, SMALLINT as i16, TINYINT as i8 (the width DuckDB stores), so a
+# scan reads half or less of the bytes. The spec's `as int` views are unchanged.
+_NARROW_SIGNED: dict[str, tuple[str, int]] = {
+    "int": ("i32", 2**31),
+    "integer": ("i32", 2**31),
+    "int4": ("i32", 2**31),
+    "smallint": ("i16", 2**15),
+    "tinyint": ("i8", 2**7),
+}
+
+
+_WIDTH = {"i8": 1, "i16": 2, "i32": 4, "i64": 8}
+
+
+def narrow_cells() -> bool:
+    return os.environ.get("LEMMA_NARROW_CELLS", "0").strip() == "1"
+
+
 def classify_sql_type(sql_type: str) -> ColumnTypeInfo:
     norm = _normalize_sql_type(sql_type)
     decimal = _DECIMAL.match(norm)
@@ -236,6 +256,8 @@ def classify_sql_type(sql_type: str) -> ColumnTypeInfo:
         huge = norm == "hugeint"
         exec_ty = "i128" if huge else "i64"
         cap = 2**127 if huge else 2**63
+        if narrow_cells() and norm in _NARROW_SIGNED:
+            exec_ty, cap = _NARROW_SIGNED[norm]
         return ColumnTypeInfo(
             sql_type=norm,
             exec_rust=exec_ty,
@@ -326,7 +348,40 @@ class SchemaModel:
                     found.add((table.casefold(), column.casefold()))
         from dataclasses import replace
 
-        return replace(self, nullable=frozenset(found))
+        return replace(self, nullable=frozenset(found), tables=self._narrowed(catalog))
+
+    def _narrowed(self, catalog: object) -> dict[str, dict[str, ColumnTypeInfo]]:
+        """LEMMA_NARROW_CELLS: a signed integer column whose catalog cap bounds |cell| below 2^7 / 2^15 / 2^31 is loaded as
+        i8 / i16 / i32 (the loader's runtime check of ``valid_cols`` enforces the cap). DECIMAL and DATE columns are left alone."""
+        if not narrow_cells():
+            return self.tables
+        from dataclasses import replace
+
+        out: dict[str, dict[str, ColumnTypeInfo]] = {}
+        for table, cols in self.tables.items():
+            ta = next((t for name, t in catalog.tables.items() if name.casefold() == table), None)  # type: ignore[attr-defined]
+            new: dict[str, ColumnTypeInfo] = {}
+            for column, info in cols.items():
+                ca = None
+                if ta is not None:
+                    ca = next((c for name, c in ta.columns.items() if name.casefold() == column), None)
+                cap = ca.max_value_exclusive if ca is not None else None
+                if (
+                    cap is not None
+                    and info.exec_rust in ("i64", "i32", "i16")
+                    and info.signed
+                    and info.precision is None
+                    and not info.is_date
+                    and not info.is_float
+                ):
+                    for ty, bound in (("i8", 2**7), ("i16", 2**15), ("i32", 2**31)):
+                        if cap <= bound:
+                            if _WIDTH[ty] < _WIDTH[info.exec_rust]:
+                                info = replace(info, exec_rust=ty, cell_exclusive_cap=min(cap, bound))
+                            break
+                new[column] = info
+            out[table] = new
+        return out
 
     def is_nullable(self, table: str, column: str) -> bool:
         return (table.casefold(), column.casefold()) in self.nullable
