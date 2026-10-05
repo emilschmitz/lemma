@@ -522,6 +522,8 @@ a filter or arithmetic literal larger than the cell type is a literal of the WID
 (`q as int >= -32768 && q as int <= 32767`) and the cell cap in `valid_cols_<table>`, not tested at run time. A group key stays `i64` in `OutRow`
 (`let k = q as i64;`, then `key_at(..) == k as int` follows). The running-total bound of a SUM uses the CAP of the column (the `valid_cols` conjunct
 `|cell| < cap`), not the i64 range the wide examples hard-code.
+A literal beyond the cell range also makes a comparison constant: `valid_cols` bounds `report` to its cap, so `report > 100000` is never true and a disjunct
+with it is dead (prove it from the instantiated bound; do not write the comparison in exec). A literal compared with a narrow cell takes the cell's type (`p == 1`, not `1i64`).
 To prove a product of two cells fits in the `i128` accumulator, write a helper with `by (nonlinear_arith)` from the
 two cell bounds (worked example: `context/ro/examples/ungrouped_decimal_product_sum.rs`).
 """

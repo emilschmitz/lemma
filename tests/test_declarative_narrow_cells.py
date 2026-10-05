@@ -183,3 +183,10 @@ def test_the_prompt_says_the_sum_bound_uses_the_column_cap_not_the_i64_range() -
 
     text = build_declarative_prompt(sql="SELECT 1", spec_path="s.rs", edit_path="e.rs", lemma_index="", last_error="", in_docker=False, spec_text="")
     assert "CAP of the column" in text and "let k = q as i64;" in text
+
+
+def test_the_prompt_explains_a_dead_disjunct_from_the_cell_cap() -> None:
+    from declarative_spec.prompt import build_declarative_prompt
+
+    text = build_declarative_prompt(sql="SELECT 1", spec_path="s.rs", edit_path="e.rs", lemma_index="", last_error="", in_docker=False, spec_text="")
+    assert "is dead" in text and "`p == 1`, not `1i64`" in text
