@@ -350,7 +350,7 @@ def test_finding4_duckdb_side_exists_over_an_ungrouped_aggregate_is_always_true(
     assert con.execute("select count(*) from part where exists (select sum(price)/sum(disc) as r from li where qty > 100)").fetchone() == (2,)
 
 
-@pytest.mark.xfail(strict=True, reason="FINDING 4 (pre-existing, reachable with a ratio): EXISTS over an ungrouped aggregate subquery is emitted as `exists row in the subquery's table`; SQL says the aggregate always returns one row, so the spec forces the count to 0 where DuckDB returns 2")
+# FINDING 4 (fixed: declarative_spec/emit_surface.py `_exists_fns`; full coverage in tests/test_exists_ungrouped_aggregate.py)
 @pytest.mark.parametrize(
     "sql",
     [

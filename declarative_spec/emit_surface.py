@@ -322,6 +322,20 @@ def _exists_fns(
     idx_sig = ", ".join(f"{s.idx}: int" for s in main)
     idx_call = ", ".join(s.idx for s in main)
     for name, sub, _neg in query.exists:
+        outer_ranges = " && ".join(f"0 <= {s.idx} < {s.param}.n as int" for s in main)
+        fn = f"{prefix}{name}"
+        if _ungrouped_aggregate(sub):
+            if sub.having_expr or sub.limit is not None or sub.offset is not None:
+                raise DeclarativeUnsupported("EXISTS over an ungrouped aggregate with HAVING / LIMIT / OFFSET")
+            # SQL: an ungrouped aggregate query returns exactly one row whatever its WHERE selects (even over no
+            # rows), so EXISTS is TRUE for every outer row and NOT EXISTS is FALSE.
+            blocks.append(
+                f"""pub open spec fn {fn}({param_sig}, {idx_sig}) -> bool {{
+    &&& {outer_ranges}
+}}"""
+            )
+            calls[name] = f"{fn}({param_call}, {idx_call})"
+            continue
         local = _reindex(_build_slots(sub), "e")
         # A subquery over a table the outer scope already passes reads that parameter at its own index,
         # so ``FROM sub a ... EXISTS (SELECT 1 FROM sub b ...)`` indexes one parameter twice.
@@ -331,9 +345,7 @@ def _exists_fns(
         chain = _chain(sub, local)
         ranges = " && ".join(f"0 <= {s.idx} < {s.param}.n as int" for s in local)
         binders = ", ".join(f"{s.idx}: int" for s in local)
-        outer_ranges = " && ".join(f"0 <= {s.idx} < {s.param}.n as int" for s in main)
         body = f"{ranges} && {chain} && ({pred})" if chain else f"{ranges} && ({pred})"
-        fn = f"{prefix}{name}"
         blocks.append(
             f"""pub open spec fn {fn}({param_sig}, {idx_sig}) -> bool {{
     &&& {outer_ranges}
@@ -342,6 +354,11 @@ def _exists_fns(
         )
         calls[name] = f"{fn}({param_call}, {idx_call})"
     return calls
+
+
+def _ungrouped_aggregate(sub: Query) -> bool:
+    """An aggregate select with no GROUP BY: SQL returns one row even over no input rows."""
+    return bool(sub.aggs) and not sub.group_columns
 
 
 def _reindex(slots: list[_Slot], prefix: str) -> list[_Slot]:
