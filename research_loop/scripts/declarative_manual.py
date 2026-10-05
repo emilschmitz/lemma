@@ -89,10 +89,36 @@ def prepare(kind: str, sql: str, ws: Path) -> None:
     print(f"prepared {ws}; bar: duck_us={bar['duck_us']} duck1_us={bar['duck1_us']} rows={bar['table_rows']}")
 
 
+class SpecMismatch(RuntimeError):
+    """The workspace's context/ro/spec.rs is not what the pipeline emits for its query.sql under the active menu and environment."""
+
+
+def first_difference(expected: str, found: str) -> str:
+    """A one-line description of the first line where two texts differ."""
+    a, b = expected.splitlines(), found.splitlines()
+    for i in range(max(len(a), len(b))):
+        x = a[i] if i < len(a) else "<end of file>"
+        y = b[i] if i < len(b) else "<end of file>"
+        if x != y:
+            return f"line {i + 1}: regenerated {x[:160]!r} vs workspace {y[:160]!r}"
+    return "texts are identical"
+
+
+def regenerate_spec(kind: str, sql: str) -> str:
+    """The spec exactly as `prepare` emits it: same schema projection, catalog, menu flags and environment."""
+    schema, catalog = _job_env(kind)
+    return emit_declarative_spec(sql, _project(sql, schema), catalog)
+
+
 def check(kind: str, sql: str, ws: Path) -> dict:
+    """Verify, compile and time the workspace's body. The verified program is built from the REGENERATED spec: the spec is the
+    ground truth, so a workspace spec.rs that differs from it (tampered, stale, a transplant target prepared earlier) is refused."""
     bar = json.loads((ws / "decl_data" / "bar.json").read_text())
     bins = {p.name[len("cols_") : -len(".bin")]: str(p) for p in sorted((ws / "decl_data").glob("cols_*.bin"))}
-    spec = (ws / "context" / "ro" / "spec.rs").read_text()
+    spec = regenerate_spec(kind, sql)
+    on_disk = (ws / "context" / "ro" / "spec.rs").read_text()
+    if on_disk != spec:
+        raise SpecMismatch(f"{ws}: context/ro/spec.rs differs from the regenerated spec; first difference at {first_difference(spec, on_disk)}")
     metrics = run_declarative_metrics(
         spec_rs=spec,
         agent_source=(ws / "runquery_agent.rs").read_text(),

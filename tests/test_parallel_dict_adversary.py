@@ -529,18 +529,18 @@ def test_dict_join_probe_on_one_million_by_forty_thousand_rows(monkeypatch: pyte
 # ---------------------------------------------------------------------------------------------
 
 
-def test_declarative_manual_check_trusts_the_workspace_spec_file() -> None:
-    """`check` verifies against `context/ro/spec.rs` as found in the workspace; it does not re-emit the spec from query.sql."""
+def test_declarative_manual_check_compares_the_workspace_spec_file_with_the_regenerated_spec() -> None:
+    """`check` reads context/ro/spec.rs only to COMPARE it with the regenerated spec (the program is built from the regenerated one)."""
     text = (ROOT / "research_loop" / "scripts" / "declarative_manual.py").read_text()
     check_src = text.split("def check(")[1].split("\ndef ")[0]
-    assert 'ws / "context" / "ro" / "spec.rs"' in check_src
+    assert 'ws / "context" / "ro" / "spec.rs"' in check_src and "regenerate_spec" in check_src
 
 
-@pytest.mark.xfail(strict=True, reason="OPEN (hardening): check should regenerate the spec from query.sql + catalog and refuse a different spec.rs")
 def test_check_regenerates_the_spec_so_a_tampered_spec_file_cannot_certify_a_body() -> None:
     text = (ROOT / "research_loop" / "scripts" / "declarative_manual.py").read_text()
     check_src = text.split("def check(")[1].split("\ndef ")[0]
-    assert "emit_declarative_spec" in check_src
+    assert "regenerate_spec(" in check_src
+    assert "emit_declarative_spec" in text.split("def regenerate_spec(")[1].split("\ndef ")[0]
 
 
 def test_a_weakened_spec_would_certify_a_trivial_body_which_is_why_the_spec_file_must_be_regenerated() -> None:
