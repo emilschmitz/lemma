@@ -199,7 +199,7 @@ proof fn lemma_sel_step(ks: Seq<i64>, gs: Seq<f64>, tk: Seq<bool>, res: Seq<OutR
             forall|j: int| #![trigger t.k@[j]] 0 <= j < i as int ==> exists|r: int| #![trigger ks@[r]] 0 <= r < ks@.len() && ks@[r] == t.k@[j],
         decreases t.n - i,
     {
-        let k = t.k[i];
+        let k = t.k[i] as i64;
         proof { assert(t.k@.len() == t.n as int); }
         let mut j: usize = 0;
         while j < ks.len() && ks[j] != k
@@ -292,7 +292,7 @@ proof fn lemma_sel_step(ks: Seq<i64>, gs: Seq<f64>, tk: Seq<bool>, res: Seq<OutR
             decreases i,
         {
             i -= 1;
-            let key = t.k[i];
+            let key = t.k[i] as i64;
             let v = t.v[i];
             proof {
                 assert(t.k@.len() == t.n as int);

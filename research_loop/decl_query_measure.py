@@ -156,7 +156,11 @@ def _export_table(
             col_key = by_ident.get(fname.removeprefix("r#"))
             if col_key is not None and cols[col_key].exec_rust == "String" and fty in ("u8", "u16", "u32"):
                 code_fields[fname.removeprefix("r#")] = len(names)
-            elif col_key is None or cols[col_key].exec_rust != fty:
+            elif col_key is None or (
+                cols[col_key].exec_rust != fty
+                # a narrowed integer column loaded wide (a group key of a map-result shape, LEMMA_NARROW_CELLS)
+                and not (fty == "i64" and cols[col_key].exec_rust in ("i32", "i16", "i8") and not cols[col_key].is_date)
+            ):
                 raise ValueError(f"{table}.{fname}: {fty} is not a column of the table with that type")
         names.append(model.original_column_names[(table.casefold(), col_key)])
         types.append(fty)
@@ -225,7 +229,7 @@ def _export_table(
 
 
 _DEFAULT_CELL: dict[str, object] = {
-    "String": "", "bool": False, "f64": 0.0, "i64": 0, "u64": 0, "i32": 0, "u32": 0, "u16": 0, "u8": 0, "usize": 0, "i128": 0,
+    "String": "", "bool": False, "f64": 0.0, "i64": 0, "i16": 0, "i8": 0, "u64": 0, "i32": 0, "u32": 0, "u16": 0, "u8": 0, "usize": 0, "i128": 0,
 }
 
 
@@ -368,6 +372,10 @@ def _pack(fty: str, value: object) -> bytes:
             return struct.pack("<q", _as_int(value))
         if fty == "u64":
             return struct.pack("<Q", _as_int(value))
+        if fty == "i16":
+            return struct.pack("<h", _as_int(value))
+        if fty == "i8":
+            return struct.pack("<b", _as_int(value))
         if fty == "i32":
             return struct.pack("<i", _as_int(value))
         if fty == "u32":
