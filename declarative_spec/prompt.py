@@ -523,11 +523,11 @@ two cell bounds (worked example: `context/ro/examples/ungrouped_decimal_product_
 _DO_NOT = """\
 ## Do not (each item is a real failed attempt)
 
-- Verus rejects these in exec code: `sort`/`sort_by`; iterating a map (`.iter()`, `.keys()`, `.entry()`, `for (k, v) in &map`; keep the keys in a `Vec` next to the map);
+- Verus rejects these in exec code: `sort`/`sort_by`; iterating a `HashMapWithView`/`StringHashMap` (`.iter()`, `.keys()`, `.entry()`, `for (k, v) in &map`; keep the keys in a `Vec` next to the map; `Vec` indexing loops are fine);
   `for x in &mut v`, `.iter_mut()`, `.into_iter()`; `.clone()` on an `OutRow` (write `OutRow { .. }` from fields; `String::clone` is fine);
   `as int`, `as nat` (ghost code only: `proof {}`, invariants, `spec fn`); an `fn`, `proof fn` or `use` nested in the body. Use `while` loops over indices.
 - Keep `valid_cols_<t>(t)` in EVERY loop invariant, nested loops included: a loop that drops it loses the length precondition of every `col[i]`.
-  If the rlimit forces you to slim it, replace it by the specific length facts you use, never by nothing.
+  Slim it only when the rlimit forces you to (see the rlimit notes below), and then to the specific length facts you use, never to nothing.
 - Every `while` has a `decreases`. Use only names that exist: the host spec, the lemma index, vstd (grep `LEMMAS.md`), your own helper region.
 - Never replace a failing body with a placeholder (`Vec::new()`) to have something to submit: it fails the postcondition on any data with a matching row.
   Keep the body with the fewest errors and fix the error the host reports.
@@ -589,12 +589,12 @@ _DICT_HARD: tuple[tuple[str, str, str], ...] = (
     (
         "count_distinct_",
         "hard/dict_group_two_keys_count_distinct_avg.rs",
-        "two dictionary string keys, COUNT(*), COUNT(DISTINCT x) and AVG (dense slots over the codes, a per-slot seen-set, sorted insert)",
+        "two dictionary string keys, COUNT(*), COUNT(DISTINCT x) and AVG (dense slots over the codes, a per-slot seen-set, sorted insert; it assumes u8 dictionary codes for both keys, slot = a*256+b: adapt the slot arithmetic if your spec's code types are wider)",
     ),
     (
         "sq_\\d+_groups",
         "hard/dict_having_scalar_subquery.rs",
-        "a join GROUP BY SUM with HAVING against an uncorrelated scalar subquery (per-class sums, threshold, top-k by repeated maximum)",
+        "a join GROUP BY SUM with HAVING against an uncorrelated scalar subquery (per-class sums, threshold, top-k by repeated maximum; proof first: group and distinct-key lookups are linear scans, replace them by a dense array over codes for speed)",
     ),
 )
 
