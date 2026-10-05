@@ -19,7 +19,7 @@ if str(ROOT) not in sys.path:
 
 from db_extension.optimizer import run_optimization_loop
 from research_loop.agent_sandbox import CLAUDE_IMAGE, claude_agent_cmd, claude_docker_args
-from research_loop.spec_styles import ENV_VALUE, check_style
+from research_loop.spec_styles import DECLARATIVE, ENV_VALUE, check_style
 from research_loop.scripts.declarative_draws import beats_duck, resolve_sec_db
 from research_loop.scripts.sqlsmith_trusted_coverage import load_sec_schema
 from research_loop.table_assumptions import CatalogAssumptions, ColumnAssumption, TableAssumptions
@@ -72,6 +72,9 @@ def agent_env(model: str, style: str) -> dict[str, str]:
         "LEMMA_SERIOUS": "1",
         "LEMMA_RESEARCH_LOG": "1",
     }
+    if check_style(style) == DECLARATIVE:
+        # Without Arc'd columns in the emitted spec the agent cannot write a parallel body at all.
+        env["LEMMA_PARALLEL_VSTD"] = "1"
     if model.startswith("claude-"):
         env.update(AGENT_IMAGE=CLAUDE_IMAGE, AGENT_ENV="", AGENT_CMD=claude_agent_cmd(model))
     else:

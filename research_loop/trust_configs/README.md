@@ -26,7 +26,7 @@ set from the other style always fails. The resolved selection is printed and rec
 
 ## Optional: `LEMMA_PARALLEL_VSTD=1` (declarative menus)
 
-Not part of any menu's env (opt-in per run). The emitted `run_query` also receives `<table>_arc: &std::sync::Arc<Cols_<table>>` with
+Set by default for declarative real-agent runs (`declarative_ladder.agent_env`, used by `run_container_agent.py`); without it the spec has no Arc params and the agent cannot write a parallel body. The emitted `run_query` also receives `<table>_arc: &std::sync::Arc<Cols_<table>>` with
 `requires **<table>_arc == *<table>` (the host `main` passes the same object twice) and the `ensures` are unchanged. The agent may then
 use vstd `thread::spawn` / `JoinHandle::join` (vstd's own, not trusted code of ours) on row ranges; see `declarative_spec/parallel.py` and
 the verified example `tests/fixtures/declarative_proofs/parallel_ungrouped_sum.rs`.

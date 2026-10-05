@@ -219,7 +219,7 @@ def test_declarative_success_does_not_run_lease(
     )
     from db_extension.agent.measure_core import run_solution
 
-    out = run_solution(query_id=1, ws=tmp_path, body="loop")
+    out = run_solution(query_id=1, ws=tmp_path, body="loop", dataset_size=1000)
     assert out["ok"] is True
     assert out["latency_us"] == 4
     assert out["metrics"]["measure_path"] != "lease"
@@ -259,7 +259,7 @@ def test_unset_success_still_runs_lease(
     )
     from db_extension.agent.measure_core import run_solution
 
-    out = run_solution(query_id=1, ws=tmp_path, body="loop")
+    out = run_solution(query_id=1, ws=tmp_path, body="loop", dataset_size=1000)
     assert called == [True]
     assert out["ok"] is True
     assert out["latency_us"] == 4
