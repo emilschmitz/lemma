@@ -1174,6 +1174,10 @@ def _map_args(slots: list[_Slot], by_table: dict[str, str]) -> str:
 
 def _ensures(query: Query, helpers: _Helpers, model: SchemaModel) -> str:
     del model
+    ratio_aliases = {rust_ident(a.alias) for a in helpers.aggs if a.kind == "RATIO"}
+    for key in query.order_by:
+        if rust_ident(key.column.split(".")[-1]) in ratio_aliases:
+            raise DeclarativeUnsupported("ORDER BY a division: its result is an IEEE double (NaN has no place in an order)")
     lines: list[str] = []
     scalars = helpers.scalars
     p = _param_call(helpers.params)

@@ -44,7 +44,7 @@ REGISTRY: dict[str, Shape] = {
     "cte": Shape(UNWITNESSED),
     # filters
     "where": Shape(WITNESSED, _PROOFS + "group_count_where.rs"),
-    "like": Shape(UNWITNESSED),
+    "like": Shape(WITNESSED, _PROOFS + "tpch_q14_promo_ratio.rs"),
     "exists": Shape(UNWITNESSED),
     "not_exists": Shape(UNWITNESSED),
     "in_subquery": Shape(UNWITNESSED),
@@ -64,7 +64,8 @@ REGISTRY: dict[str, Shape] = {
     "count_case": Shape(WITNESSED, _PROOFS + "count_case_global.rs"),
     "sum": Shape(WITNESSED, _PROOFS + "group_sum_where.rs"),
     "sum_expr": Shape(WITNESSED, _PROOFS + "hard/usum_nonlinear.rs"),
-    "sum_case": Shape(UNWITNESSED),
+    "sum_case": Shape(WITNESSED, _PROOFS + "tpch_q14_promo_ratio.rs"),
+    "ratio": Shape(WITNESSED, _PROOFS + "tpch_q14_promo_ratio.rs"),
     "avg": Shape(UNWITNESSED),
     "avg_decimal": Shape(UNWITNESSED),
     "min": Shape(UNWITNESSED),
@@ -72,7 +73,7 @@ REGISTRY: dict[str, Shape] = {
     # output
     "projection": Shape(WITNESSED, _ADV + "limit_zero.json"),
     "distinct": Shape(UNWITNESSED),
-    "order_by": Shape(UNWITNESSED),
+    "order_by": Shape(WITNESSED, _PROOFS + "tpch_q3_join_group_topk.rs"),
     "limit": Shape(WITNESSED, _ADV + "limit_zero.json"),
     "offset": Shape(UNWITNESSED),
     "set_op": Shape(UNWITNESSED),
@@ -104,9 +105,13 @@ def query_features(q: Query) -> set[str]:
         f.add("where")
         if "spec_like(" in q.where_expr:
             f.add("like")
+    if any("spec_like(" in a.expr for a in q.aggs):
+        f.add("like")
     for kind in q.aggs:
         k = kind.kind.upper()
-        if k == "COUNT":
+        if k == "RATIO":
+            f.add("ratio")
+        elif k == "COUNT":
             f.add("count_case" if kind.expr else ("count_star" if kind.column == "*" else "count_column"))
         elif k == "COUNT_DISTINCT":
             f.add("count_distinct")

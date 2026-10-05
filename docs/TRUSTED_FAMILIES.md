@@ -361,6 +361,39 @@ cast and loader tests that still apply; its rounding findings are pinned as acce
 Still refused (not a rounding matter): an integer or DECIMAL column compared with, or mixed in arithmetic with, a float column or
 float expression (no typed bridge), colliding float literals, literals that are not a finite nonzero double.
 
+## Division by zero of a ratio (one more trusted item; adversary-gated)
+
+A SELECT item `[K *] SUM|COUNT(..) / SUM|COUNT(..)` (TPC-H Q14) is a DOUBLE in DuckDB (`DECIMAL / DECIMAL` and integer
+division are computed in DOUBLE). The spec says: with exact integer sums N (numerator, times the constant K) and D, the
+result is finite and equals `(K*N / 10^sN) / (D / 10^sD)` as a real when `D != 0` (the f64 idealization), and when `D == 0`
+the IEEE 754 result of dividing by +0.0: `+inf` for `K*N > 0`, `-inf` for `K*N < 0`, `NaN` for `K*N == 0`. DuckDB returns
+exactly these (`ieee_floating_point_ops` is on). A zero denominator is data, so it must be part of the specification
+(leaving it unconstrained makes every body verify; excluding it makes no body provable). The one trusted statement is
+the exec division of a finite `f64` by `0.0`. It is exact IEEE 754, not an idealization, lives in its own block
+(`declarative_spec/lemmas.py::float_div_zero_lemma_rs`, NOT in the pinned eleven-item family above), and is placed in
+the host lemma region only for a spec that states an infinite or NaN result. Exact text:
+
+```rust
+// TRUSTED (IEEE 754 division by zero; exact, not an idealization): a finite f64 divided by +0.0 is +infinity for a
+// positive numerator, -infinity for a negative one, and NaN for a zero numerator (either zero sign). DuckDB's DOUBLE
+// division returns exactly these values (`ieee_floating_point_ops` is on), so a ratio whose denominator is the exact
+// value 0 is specified by them. The body is the plain Rust division by the literal 0.0.
+#[verifier::external_body]
+pub fn host_f64_div_by_zero(x: f64) -> (o: f64)
+    requires x.is_finite_spec(),
+    ensures
+        (x as real) > 0real ==> o.is_infinite_spec() && !o.is_sign_negative_spec(),
+        (x as real) < 0real ==> o.is_infinite_spec() && o.is_sign_negative_spec(),
+        (x as real) == 0real ==> o.is_nan_spec(),
+{
+    x / 0.0
+}
+```
+
+Verdict and proposal: `research_loop/menus/ratio_division_ADVERSARY_VERDICT.md`, `research_loop/menus/ratio_division_PROPOSAL.md`.
+What is false about it: nothing about the IEEE operation; the surrounding idealization (casts of sums above 2^53, the real
+quotient) carries the accepted float limitations.
+
 ## Menu (25 families)
 
 | id | kind | spec_ret | purpose |
