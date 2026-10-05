@@ -16,6 +16,7 @@ from pathlib import Path
 
 from research_loop.pipeline_demo import resolve_demo_view_dir
 from research_loop.pipeline_log import log_debug, log_info, log_trace, log_warn
+from research_loop.sandbox_hide import shadow_mount_args
 from research_loop.table_assumptions import CatalogAssumptions
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1228,6 +1229,8 @@ def run_agent_docker(
         # Host-owned bind mounts need DAC_OVERRIDE when container runs as root.
         "--cap-add", "DAC_OVERRIDE",
         "-v", f"{ws}:/workspace:rw",
+        # Host-only artifacts (raw column data, timing bar) are shadowed by an empty read-only tmpfs.
+        *shadow_mount_args(ws),
         # The prompt names /workspace/context/ro/...; mount it read-only there too (after the rw mount).
         "-v", f"{(ws / 'context' / 'ro').resolve()}:/workspace/context/ro:ro",
         "-v", f"{(ws / 'context' / 'ro').resolve()}:/context/ro:ro",

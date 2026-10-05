@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from db_extension.agent.config import AgentFlags
+from research_loop.sandbox_hide import shadow_mount_args
 
 ROOT = Path(__file__).resolve().parents[2]
 DOCKERFILE = ROOT / "docker" / "agent" / "Dockerfile"
@@ -92,6 +93,7 @@ def start_tool_container(
         "ALL",
         "-v",
         f"{workspace}:/workspace:rw",
+        *shadow_mount_args(workspace),
         "-v",
         f"{context_ro}:/context/ro:ro",
         "-e",
