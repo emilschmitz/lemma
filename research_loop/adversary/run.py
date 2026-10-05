@@ -110,9 +110,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--candidate", type=Path, default=None)
     parser.add_argument(
         "--spec-style",
-        choices=("recursive", "declarative"),
+        choices=("imperative", "declarative"),
         default=None,
-        help="default: LEMMA_SPEC_STYLE, else recursive",
+        help="default: LEMMA_SPEC_STYLE, else imperative",
     )
     args = parser.parse_args(argv)
 

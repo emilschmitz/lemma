@@ -100,7 +100,7 @@ def test_assemble_reads_column_file_or_stays_empty() -> None:
     )
     assert 'std::fs::read("/tmp/cols_t.bin")' in loaded
     assert "QUERY_LATENCY_US:" in loaded
-    assert "samples[2]" in loaded
+    assert "samples[4]" in loaded and "[u128; 9]" in loaded and "QUERY_LATENCY_BEST_US" in loaded
 
 
 def test_speed_bar_accepts_a_faster_match_and_rejects_a_loss() -> None:
@@ -344,3 +344,45 @@ def test_dense_group_count_beats_duck_on_loaded_rows(tmp_path: Path) -> None:
     assert metrics["status"] == "SUCCESS", metrics.get("compiler_error")
     assert metrics["proof_verified"] is True
     assert 0 <= metrics["latency_us"] < prepared["duck_us"]
+
+
+def test_speedup_reports_median_and_best_and_the_runs_are_nine(monkeypatch) -> None:
+    from declarative_spec.assemble import TIMED_RUNS
+
+    assert TIMED_RUNS == 9 and TIMED_RUNS % 2 == 1
+    monkeypatch.delenv("LEMMA_SPEED_BAR_MULT", raising=False)
+    bar = {"duck_us": 1000, "duck1_us": 2000, "rows": [[1, 4]]}
+    run = {
+        "status": "SUCCESS",
+        "proof_verified": True,
+        "latency_us": 500,
+        "latency_best_us": 250,
+        "stdout": "ROW 1 4\nQUERY_LATENCY_US: 500\n",
+    }
+    out = _apply_speed_bar(run, bar)
+    assert out["speedup"] == 2.0 and out["speedup_best"] == 4.0 and out["speedup_1t"] == 4.0
+
+
+def test_verify_assembled_leaves_no_executable_in_the_working_directory(tmp_path, monkeypatch) -> None:
+    """Verus names its compiled output after the source and puts it in the cwd: the cwd must be the temp dir, not the repo."""
+    import os
+
+    from declarative_spec import pipeline
+
+    seen: dict = {}
+
+    def fake(cmd, *, timeout, cwd=None):
+        seen["cwd"] = cwd
+        seen["path"] = cmd[1]
+
+        class R:
+            stdout, stderr, returncode = "verification results:: 1 verified, 0 errors", "", 0
+
+        return R()
+
+    monkeypatch.setattr(pipeline, "run_verus", fake)
+    monkeypatch.chdir(tmp_path)
+    ok, _ = pipeline.verify_assembled("fn main() {}")
+    assert ok and seen["cwd"] is not None
+    assert os.path.realpath(seen["cwd"]) != os.path.realpath(os.getcwd())
+    assert os.path.dirname(seen["path"]) == str(seen["cwd"])

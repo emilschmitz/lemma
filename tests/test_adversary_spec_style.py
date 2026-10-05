@@ -1,4 +1,4 @@
-"""The adversary judge picks its spec style; the recursive default is unchanged."""
+"""The adversary judge picks its spec style; the imperative default is unchanged."""
 
 from __future__ import annotations
 
@@ -25,11 +25,13 @@ def _cand(sql: str) -> Candidate:
 
 def test_resolve_spec_style_default_env_and_argument(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LEMMA_SPEC_STYLE", raising=False)
-    assert resolve_spec_style() == "recursive"
+    assert resolve_spec_style() == "imperative"
     monkeypatch.setenv("LEMMA_SPEC_STYLE", "declarative")
     assert resolve_spec_style() == "declarative"
-    assert resolve_spec_style("recursive") == "recursive"
-    with pytest.raises(ValueError, match="recursive or declarative"):
+    assert resolve_spec_style("imperative") == "imperative"
+    with pytest.raises(ValueError, match="renamed to 'imperative'"):
+        resolve_spec_style("recursive")  # the old name is rejected, no alias
+    with pytest.raises(ValueError, match="imperative or declarative"):
         resolve_spec_style("sideways")
 
 
