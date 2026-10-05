@@ -194,7 +194,7 @@ _EXAMPLES: dict[str, tuple[str, str]] = {
         "dictionary string mode: projection over a TWO-table join with a per-key MAX (correlated subquery or derived table), "
         "ORDER BY value DESC then two string keys, LIMIT k: per-(adsh, tag) max in a `HashMapWithView` keyed by a packed code pair, "
         "num's dictionary translated to sub's codes once, sub rows chained per code, sorted top-k `Vec` with exec string comparison "
-        "(proved on the real SEC catalog's spec; allocates nothing over a product of dictionary sizes)",
+        "(verified against the real SEC catalog spec, not run on the 39M-row table; the per-pair max map grows with the distinct pairs; no table over a product of dictionary sizes)",
     ),
     "projection_top_k": (
         "projection_top_k.rs",

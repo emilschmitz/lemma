@@ -4,7 +4,7 @@
 //   JOIN (SELECT adsh, tag, MAX(value) AS max_value FROM num WHERE uom = 'pure' AND value IS NOT NULL GROUP BY adsh, tag) m
 //     ON n.adsh = m.adsh AND n.tag = m.tag AND n.value = m.max_value
 //   WHERE n.uom = 'pure' AND s.fy = 2022 AND n.value IS NOT NULL ORDER BY n.value DESC, s.name, n.tag LIMIT 100
-// Found by a manual prover (Sonnet subagent, not a model-agent result): 70 verified, 0 errors (8 checks). Proved against BOTH the local
+// Found by a manual prover (Sonnet subagent, not a model-agent result): 69 verified, 0 errors (a standalone script reported 70) (8 checks). Proved against BOTH the local
 // 1M-row synthetic catalog (sec_edgar_local_dec.duckdb) and the real catalog (sec_edgar_dec.duckdb: num 39,401,761 rows, sub 86,135);
 // both emit the same spec (package sec_margin_dec: ROW_CAP_num 2^31, ROW_CAP_sub 2^20, no dictionary caps), so the body is size-agnostic.
 // Timed on the local 1M-row synthetic db by the manual harness (`check`): result rows equal the reference engine's, 75,250 us vs 80,090 us for the
