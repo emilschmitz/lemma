@@ -265,7 +265,7 @@ def mount_examples(ro: Path) -> None:
     """Copy the verified example bodies to ``ro/examples/`` (the prompt names them)."""
     dest = ro / "examples"
     dest.mkdir(parents=True, exist_ok=True)
-    for name in [n for n, _w in _EXAMPLES.values()] + sorted(set(_EXAMPLE_HELPERS.values())) + [_PAR_EXAMPLE, *_PAR_EXTRA, "parallel_dict_nullable_count_min.rs"]:
+    for name in [n for n, _w in _EXAMPLES.values()] + sorted(set(_EXAMPLE_HELPERS.values())) + [_PAR_EXAMPLE, *_PAR_EXTRA, "parallel_dict_nullable_count_min.rs", "parallel_dict_filter_count_max_blockskip.rs"]:
         if name.startswith("dict_"):
             continue  # mounted below, only in dict mode
         target = dest / name
@@ -503,6 +503,12 @@ engine on one thread (`speedup_1t`). A scan that is limited by memory bandwidth 
 of rows) may be hard to win on one core: report both numbers, do not trade the proof for it.
 A filter that is not predictable is faster branch-free: `let t = if hit { v } else { 0 }; acc = acc + t;` beat
 `if hit { acc = acc + v }` by about 1.7x on a large scan. Use `&&`, not `&`, on bools (Verus rejects `&`).
+A conjunctive filter written as a short-circuit row test (`a == 1 && b == code && c > 3`) is branch-miss bound on a big scan (it cost 2x on TPC-H Q12).
+Scan fixed blocks of 32 rows with a BRANCH-FREE flag (`flag = flag + (if a == 1 {1u8} else {0}) * (if b == code {1u8} else {0})`; Verus rejects bool `&`
+and `|`, use u8 0/1 with `+` and `*`), skip the whole block when `flag == 0`, run the exact row loop only on flagged blocks (the proof pattern is in
+`context/ro/examples/parallel_dict_filter_count_max_blockskip.rs` and `hard/dict_parallel_q12.rs`). It only wins when blocks rarely flag; a scan that is
+limited by the BYTES it reads (few columns, ordinary selectivity: the cell vectors are 8-byte `i64` for INTEGER while the reference engine reads
+compressed columns) is a tie at best. Repeat the timed run before judging: this box shows 30 percent noise.
 To prove a product of two cells fits in the `i128` accumulator, write a helper with `by (nonlinear_arith)` from the
 two cell bounds (worked example: `context/ro/examples/ungrouped_decimal_product_sum.rs`).
 """

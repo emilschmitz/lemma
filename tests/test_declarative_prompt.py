@@ -271,6 +271,11 @@ def test_dict_mode_specs_get_the_dictionary_recipes(monkeypatch: pytest.MonkeyPa
         assert f"context/ro/examples/{file}" in p
 
 
+def test_prompt_teaches_block_skip_and_its_limit() -> None:
+    p = _prompt("SELECT stmt, COUNT(*) AS c FROM pre GROUP BY stmt")
+    assert "BRANCH-FREE flag" in p and "branch-miss bound" in p and "tie at best" in p and "parallel_dict_filter_count_max_blockskip.rs" in p
+
+
 def test_mount_examples_copies_every_example(tmp_path: Path) -> None:
     mount_examples(tmp_path)
     names = {f.name for f in (tmp_path / "examples").iterdir()}
