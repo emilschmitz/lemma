@@ -82,6 +82,11 @@ def _best_us(stdout: str) -> int:
     return -1 if match is None else int(match.group(1))
 
 
+def _load_us(stdout: str) -> int:
+    match = re.search(r"LOAD_US:\s*(\d+)", stdout or "")
+    return -1 if match is None else int(match.group(1))
+
+
 def _latency_us(stdout: str) -> int:
     match = re.search(r"QUERY_LATENCY_US:\s*(\d+)", stdout or "")
     if not match:
@@ -178,6 +183,7 @@ def compile_and_run(
         "proof_verified": True,
         "latency_us": latency,
         "latency_best_us": _best_us(run.stdout or ""),
+        "load_us": _load_us(run.stdout or ""),
         "compiler_error": "",
         "verify_msg": log[-2000:],
         "verify_summary": _verify_summary(log),

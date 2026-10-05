@@ -386,3 +386,15 @@ def test_verify_assembled_leaves_no_executable_in_the_working_directory(tmp_path
     assert ok and seen["cwd"] is not None
     assert os.path.realpath(seen["cwd"]) != os.path.realpath(os.getcwd())
     assert os.path.dirname(seen["path"]) == str(seen["cwd"])
+
+
+def test_load_time_is_printed_only_when_a_column_file_is_read_and_is_parsed_from_the_output() -> None:
+    from declarative_spec.pipeline import _load_us
+
+    spec = emit_declarative_spec(_SQL, {"t": {"k": "ubigint"}}, _catalog(domain=32))
+    body = "    let mut x: u64 = 0;\n    x\n"
+    assert "LOAD_US" not in assemble_declarative_program(spec, body)
+    loaded = assemble_declarative_program(spec, body, column_bins={"t": "/tmp/cols_t.bin"})
+    assert loaded.index("load_start") < loaded.index("std::fs::read") < loaded.index("LOAD_US") < loaded.index("QUERY_LATENCY_US")
+    assert _load_us("ROW 1\nLOAD_US: 2750\nQUERY_LATENCY_US: 9\n") == 2750
+    assert _load_us("QUERY_LATENCY_US: 9\n") == -1

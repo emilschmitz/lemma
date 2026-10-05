@@ -163,8 +163,13 @@ def assemble_declarative_program(
     else:
         timed, hex_fn = _timed_runs(run_call, verus_part)
     main_fn = "fn main() {\n"
+    if column_bins is not None:
+        main_fn += "    let load_start = std::time::Instant::now();\n"
     main_fn += "\n".join(mains_load) + "\n"
     main_fn += join_cap_checks
+    if column_bins is not None:
+        # Reading the column files into the loaded vectors and checking the requirements: the host-side cost the timer excludes.
+        main_fn += '    println!("LOAD_US: {}", load_start.elapsed().as_micros());\n'
     main_fn += dense_budget.runtime_checks(verus_part)
     main_fn += arc_lets
     main_fn += timed
