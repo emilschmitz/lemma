@@ -16,8 +16,8 @@ from verus_transpiler import transpile_sql_to_verus
 @pytest.mark.parametrize(
     "env_value,expected",
     [
-        (None, "imperative"),
-        ("", "imperative"),
+        (None, "declarative"),
+        ("", "declarative"),
         ("imperative", "imperative"),
         ("IMPERATIVE", "imperative"),
         ("declarative", "declarative"),
@@ -98,10 +98,10 @@ def test_optimizer_declarative_branch_calls_drive(
     assert result["status"] == "FAILED"
 
 
-def test_unset_style_still_enters_recursive_pipeline(
+def test_imperative_style_enters_imperative_pipeline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("LEMMA_SPEC_STYLE", raising=False)
+    monkeypatch.setenv("LEMMA_SPEC_STYLE", "imperative")
     called: list[bool] = []
 
     def _fake_pipeline(*_args, **_kwargs):
@@ -109,7 +109,7 @@ def test_unset_style_still_enters_recursive_pipeline(
         return {"status": "SUCCESS", "proof_verified": True, "latency_us": 7}
 
     def _no_emit(*_args, **_kwargs):
-        raise AssertionError("declarative emitter must not run when style is unset")
+        raise AssertionError("declarative emitter must not run when style is imperative")
 
     monkeypatch.setattr("research_loop.harness.run_custom_sql_pipeline", _fake_pipeline)
     monkeypatch.setattr("declarative_spec.emit.emit_declarative_spec", _no_emit)
@@ -125,11 +125,11 @@ def test_unset_style_still_enters_recursive_pipeline(
     assert metrics["latency_us"] == 7
 
 
-def test_unset_read_body_keeps_recursive_admit(
+def test_imperative_read_body_keeps_imperative_admit(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.delenv("LEMMA_SPEC_STYLE", raising=False)
+    monkeypatch.setenv("LEMMA_SPEC_STYLE", "imperative")
     ro = tmp_path / "context" / "ro"
     ro.mkdir(parents=True)
     (ro / "spec.rs").write_text("fn method_spec() {}\n")
@@ -225,13 +225,13 @@ def test_declarative_success_does_not_run_lease(
     assert out["metrics"]["measure_path"] != "lease"
 
 
-def test_unset_success_still_runs_lease(
+def test_imperative_success_still_runs_lease(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     rq = tmp_path / "runquery_agent.rs"
     rq.write_text("fn run_query() {}\n")
-    monkeypatch.delenv("LEMMA_SPEC_STYLE", raising=False)
+    monkeypatch.setenv("LEMMA_SPEC_STYLE", "imperative")
     monkeypatch.setattr(
         "db_extension.agent.measure_core.validate_solution",
         lambda **_kwargs: {"ok": True, "runquery_path": str(rq)},

@@ -65,10 +65,10 @@ def _parse_harness_metrics(stderr: str) -> dict:
 def _read_lemma_spec_style() -> str:
     raw = os.environ.get("LEMMA_SPEC_STYLE", "")
     style = raw.strip().lower()
-    if style in ("", "imperative"):
-        return "imperative"
-    if style == "declarative":
+    if style in ("", "declarative"):
         return "declarative"
+    if style == "imperative":
+        return "imperative"
     if style == "recursive":
         raise ValueError("LEMMA_SPEC_STYLE 'recursive' was renamed to 'imperative'")
     raise ValueError(
