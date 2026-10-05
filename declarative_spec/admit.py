@@ -26,6 +26,25 @@ def _strip_comments_and_strings(source: str) -> str:
             while i < n and source[i] != "\n":
                 i += 1
             continue
+        if source[i : i + 2] == "/*":
+            depth = 0
+            while i < n:
+                if source[i : i + 2] == "/*":
+                    depth += 1
+                    i += 2
+                elif source[i : i + 2] == "*/":
+                    depth -= 1
+                    i += 2
+                    if depth == 0:
+                        break
+                else:
+                    i += 1
+            out.append(" ")
+            continue
+        if source[i] == "'" and not (source[i + 1 : i + 2] == "\\" or source[i + 2 : i + 3] == "'"):
+            out.append("'")  # a lifetime, not a char literal: keep the code after it visible
+            i += 1
+            continue
         if source[i] in "\"'":
             quote = source[i]
             i += 1
@@ -74,9 +93,18 @@ _BROADCAST_GROUP = re.compile(r"\bbroadcast\s+use\s+(vstd(?:::[A-Za-z0-9_]+)+::g
 # compile-time includes or inline assembly.
 _HOST_ESCAPE = re.compile(
     r"\b(?:include_bytes|include_str|include|env|option_env|asm|global_asm|concat_idents)\s*!"
-    r"|\b(?:std|core|libc|alloc)\s*::\s*(?:fs|env|process|net|io|os|arch|ffi|ptr|mem\s*::\s*transmute)\b"
-    r"|\bextern\b|\bunsafe\b"
+    r"|\b(?:libc|alloc)\s*::"
+    r"|\bmem\s*::\s*transmute\b"
+    r"|\bextern\b|\bunsafe\b|\bmod\b|#\s*!?\s*\[\s*path\b"
 )
+# std/core paths: an allowlist of pure-compute modules; fs, env, io, process, net, path, os, arch, ffi, ptr are out.
+_STD_OK = {
+    "collections", "cmp", "vec", "option", "result", "string", "slice", "hash", "iter", "ops", "convert",
+    "num", "sync", "thread", "time", "mem", "boxed", "rc", "cell", "marker", "clone", "default", "fmt",
+    "prelude", "primitive", "borrow", "array", "char", "str", "u8", "u16", "u32", "u64", "usize",
+    "i8", "i16", "i32", "i64", "isize", "f32", "f64",
+}
+_STD_PATH = re.compile(r"\b(?:std|core)\s*::\s*([A-Za-z0-9_]+)")
 
 
 def _banned_everywhere(cleaned: str) -> list[str]:
@@ -101,6 +129,9 @@ def _banned_everywhere(cleaned: str) -> list[str]:
         violations.append("assume_specification")
     if re.search(r"\bunimplemented\s*!", rest):
         violations.append("unimplemented!")
+    for m in _STD_PATH.finditer(rest):
+        if m.group(1) not in _STD_OK:
+            violations.append(f"host access: std::{m.group(1)} is not allowed in the body")
     if _HOST_ESCAPE.search(rest):
         violations.append("host access (file/env/process/network/include/inline-asm): the body may only compute")
     for name in sorted({m.group(0).lower() for m in _ASSUME_NAME.finditer(rest)}):

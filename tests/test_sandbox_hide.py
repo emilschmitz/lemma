@@ -90,7 +90,7 @@ def test_admission_still_accepts_plain_compute() -> None:
     assert admit_declarative_body("let mut i: usize = 0; while i < n { i = i + 1; }").ok
 
 
-def test_mcp_path_into_host_only_dir_is_refused_even_through_a_symlink(tmp_path: Path) -> None:
+def test_mcp_path_into_host_only_dir_is_refused_and_planted_symlink_is_dropped(tmp_path: Path) -> None:
     from db_extension.agent.measure_core import _resolve_under_workspace
 
     ws = tmp_path.resolve()
@@ -98,7 +98,46 @@ def test_mcp_path_into_host_only_dir_is_refused_even_through_a_symlink(tmp_path:
     (ws / "decl_data" / "cols_num.bin").write_bytes(b"\xff")
     (ws / "link.rs").symlink_to("decl_data/cols_num.bin")
     (ws / "ok.rs").write_text("x")
-    for p in ("decl_data/cols_num.bin", "link.rs"):
-        with pytest.raises(PermissionError):
-            _resolve_under_workspace(p, ws)
+    with pytest.raises(PermissionError):
+        _resolve_under_workspace("decl_data/cols_num.bin", ws)
+    _resolve_under_workspace("link.rs", ws)  # the planted symlink is unlinked first, so nothing to follow
+    assert not (ws / "link.rs").exists() and not (ws / "link.rs").is_symlink()
     assert _resolve_under_workspace("ok.rs", ws) == ws / "ok.rs"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        'let s = std /**/ :: fs::read("/x");',
+        "fn f<'a>(x: &'a u8) { std::fs::read(\"/x\"); } fn g<'b>() {}",
+        '#[path = "/x.rs"] mod m;',
+        'let p = std::path::Path::new("/x").exists();',
+        'let d = std::env::var("X");',
+    ],
+)
+def test_admission_bypasses_found_by_the_adversary_are_closed(body: str) -> None:
+    from declarative_spec.admit import admit_declarative_body
+
+    assert not admit_declarative_body(body).ok
+
+
+def test_admission_keeps_char_literals_and_std_collections_working() -> None:
+    from declarative_spec.admit import admit_declarative_body
+
+    ok = "let c = 'x'; let d = '\\n'; let m: std::collections::HashMap<u64, u64> = std::collections::HashMap::new();"
+    assert admit_declarative_body(ok).ok
+
+
+def test_planted_symlinks_are_removed_before_the_host_writes(tmp_path: Path) -> None:
+    from research_loop.sandbox_hide import unlink_planted_symlinks
+
+    target = tmp_path / "outside.txt"
+    target.write_text("keep")
+    ws = tmp_path / "ws"
+    (ws / "mcp_results").mkdir(parents=True)
+    (ws / "runquery_agent.rs").symlink_to(target)
+    (ws / "mcp_results" / "x.json").symlink_to(target)
+    (ws / "real.rs").write_text("r")
+    assert len(unlink_planted_symlinks(ws)) == 2
+    assert not (ws / "runquery_agent.rs").is_symlink()
+    assert target.read_text() == "keep" and (ws / "real.rs").read_text() == "r"

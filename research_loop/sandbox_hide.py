@@ -9,6 +9,7 @@ real directory (it is the same host path, nothing moved) while the agent sees an
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 # Relative to the workspace root. Directories only (a tmpfs shadows a directory).
@@ -29,3 +30,20 @@ def shadow_mount_args(workspace: Path) -> list[str]:
             f"type=tmpfs,destination=/workspace/{rel},tmpfs-size=4096,tmpfs-mode=0555,readonly",
         ]
     return args
+
+
+def unlink_planted_symlinks(workspace: Path) -> list[Path]:
+    """Remove every symlink under the workspace before the host writes into it.
+
+    The agent can create symlinks in the rw workspace (``runquery_agent.rs``, ``mcp_results/x`` ...); a later
+    host write would follow one and overwrite its target (the timing bar, or any host file). Nothing the
+    host needs in the workspace is a symlink.
+    """
+    removed: list[Path] = []
+    for root, dirs, files in os.walk(workspace, followlinks=False):
+        for name in dirs + files:
+            p = Path(root) / name
+            if p.is_symlink():
+                p.unlink()
+                removed.append(p)
+    return removed

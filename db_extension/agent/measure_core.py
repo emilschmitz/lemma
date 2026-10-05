@@ -50,6 +50,9 @@ class MeasureContext:
         return workspace()
 
 
+from research_loop.sandbox_hide import unlink_planted_symlinks  # noqa: E402
+
+
 def workspace() -> Path:
     raw = os.environ.get("LEMMA_AGENT_WORKSPACE", str(DEFAULT_WORKSPACE))
     return Path(raw).resolve()
@@ -69,6 +72,7 @@ def runs_dir(ws: Path | None = None) -> Path:
 
 def _resolve_under_workspace(path: str, ws: Path | None = None) -> Path:
     base = ws or workspace()
+    unlink_planted_symlinks(base)
     candidate = Path(path)
     target = candidate if candidate.is_absolute() else (base / candidate)
     target = target.resolve()
@@ -147,6 +151,7 @@ def _read_body(*, path: str | None, body: str | None, ws: Path | None = None) ->
 
 def _write_marked_runquery(body: str, ws: Path | None = None) -> Path:
     base = ws or workspace()
+    unlink_planted_symlinks(base)
     rq = base / DEFAULT_RUNQUERY
     spec_path = base / "context" / "ro" / "spec.rs"
     if spec_path.is_file():
@@ -173,6 +178,7 @@ def _invoke_harness(
     schema: dict | None = None,
 ) -> tuple[dict, int]:
     del query_id  # custom SQL pipeline is schema-driven; id kept for MCP API stability
+    unlink_planted_symlinks(ws)
     if sql is None or schema is None:
         sql, schema = _read_workspace_sql_schema(ws)
     timeout = _harness_timeout_sec()
