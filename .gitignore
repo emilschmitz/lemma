@@ -91,6 +91,6 @@ research_loop/vendor/verus_docs/
 /tmp[a-z0-9_][a-z0-9_][a-z0-9_][a-z0-9_][a-z0-9_][a-z0-9_]*
 
 # local tool state
-.claude/
+.claude/worktrees/
 .verus-solver-log/
 /q01_filter_sum
