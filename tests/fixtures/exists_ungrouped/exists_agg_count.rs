@@ -1,5 +1,6 @@
 // SELECT COUNT(*) AS c FROM part WHERE EXISTS (SELECT SUM(price) AS s FROM li WHERE qty > 100)
 // An ungrouped aggregate subquery returns one row, so EXISTS holds for every part row: the count is part.n.
+// AGENT_EDIT_START
     let mut acc: u64 = 0;
     let mut i: usize = part.n;
     while i > 0
@@ -20,3 +21,4 @@
     let mut res: Vec<OutRow> = Vec::new();
     res.push(OutRow { c: acc });
     res
+// AGENT_EDIT_END

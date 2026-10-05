@@ -1,5 +1,6 @@
 // SELECT COUNT(*) AS c FROM part WHERE NOT EXISTS (SELECT SUM(price) AS s FROM li WHERE qty > 100)
 // NOT EXISTS over an ungrouped aggregate is FALSE for every part row: the count is 0.
+// AGENT_EDIT_START
     let mut acc: u64 = 0;
     let mut i: usize = part.n;
     while i > 0
@@ -19,3 +20,4 @@
     let mut res: Vec<OutRow> = Vec::new();
     res.push(OutRow { c: acc });
     res
+// AGENT_EDIT_END
