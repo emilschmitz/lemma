@@ -59,7 +59,11 @@ def write_query_measure(
         # Map result: the query yields (key, aggregate); the binary prints `ROW key value`.
         out_fields = [("", map_match.group(1)), ("", map_match.group(2))]
     # A flat (projected) schema carries no table name; the SQL's FROM names it.
-    model = SchemaModel.from_caller(schema, flatten_derived(parse_query(sql)).tables[0]).with_nullable(catalog)
+    # The emitter parses the exact-integer rewrite of the SQL (a ratio's `/` only parses there), so name the table from it.
+    from declarative_spec.numeric_rewrite import rewrite_numeric
+
+    integer_sql, _scales = rewrite_numeric(sql, schema, catalog)
+    model = SchemaModel.from_caller(schema, flatten_derived(parse_query(integer_sql)).tables[0]).with_nullable(catalog)
     dest.mkdir(parents=True, exist_ok=True)
     bins: dict[str, str] = {}
     table_rows: dict[str, int] = {}

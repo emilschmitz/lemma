@@ -33,7 +33,7 @@ DRAWS = 3
 NUM_GENERATE = 600
 NUM_SELECT = 6
 _GEN = ROOT / "holdout" / "gendb_sec_edgar" / "generate_queries.py"
-_DEFAULT_DB = ROOT / "holdout" / "gendb_sec_edgar" / "duckdb" / "sec_edgar_local.duckdb"
+_DEFAULT_DB = ROOT / "holdout" / "gendb_sec_edgar" / "duckdb" / "sec_edgar_dec.duckdb"
 _OUT = ROOT / "harvest" / "decl_draws"
 
 

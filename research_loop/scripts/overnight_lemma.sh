@@ -6,6 +6,8 @@
 #   bash research_loop/scripts/overnight_lemma.sh --expect-sha <commit>
 # Omitting --expect-sha, or typing a hash that is not HEAD, exits 1.
 set -euo pipefail
+# The overnight/paper loop (grok) is the imperative path; the global default is declarative.
+export LEMMA_SPEC_STYLE="${LEMMA_SPEC_STYLE:-imperative}"
 export PATH="${HOME}/.local/bin:${HOME}/src/verus/source/target-verus/release:${HOME}/.cargo/bin:${PATH}"
 export VERUS_Z3_PATH="${HOME}/src/verus/source/z3"
 cd "$(git rev-parse --show-toplevel)"

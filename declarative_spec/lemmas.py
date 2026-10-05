@@ -34,6 +34,30 @@ def choose_agg_slot(inclusive_max_abs: int, *, signed: bool) -> str:
     raise FitRefusal(inclusive_max_abs)
 
 
+def float_div_zero_lemma_rs() -> str:
+    """The one trusted item of a ratio spec (``SUM / SUM`` with a zero denominator), valid inside a verus! block.
+
+    Separate from ``float_error_lemmas_rs`` (the pinned eleven-item idealization family): it is exact IEEE 754, it is
+    added only to a spec that states an infinite or NaN result, and it has its own adversary verdict
+    (``research_loop/menus/ratio_division_ADVERSARY_VERDICT.md``)."""
+    return """
+// TRUSTED (IEEE 754 division by zero; exact, not an idealization): a finite f64 divided by +0.0 is +infinity for a
+// positive numerator, -infinity for a negative one, and NaN for a zero numerator (either zero sign). DuckDB's DOUBLE
+// division returns exactly these values (`ieee_floating_point_ops` is on), so a ratio whose denominator is the exact
+// value 0 is specified by them. The body is the plain Rust division by the literal 0.0.
+#[verifier::external_body]
+pub fn host_f64_div_by_zero(x: f64) -> (o: f64)
+    requires x.is_finite_spec(),
+    ensures
+        (x as real) > 0real ==> o.is_infinite_spec() && !o.is_sign_negative_spec(),
+        (x as real) < 0real ==> o.is_infinite_spec() && o.is_sign_negative_spec(),
+        (x as real) == 0real ==> o.is_nan_spec(),
+{
+    x / 0.0
+}
+""".strip()
+
+
 def float_error_lemmas_rs() -> str:
     """Rust source of the float host lemmas (the f64 idealization), valid inside a verus! block."""
     return """

@@ -35,10 +35,23 @@ def spec_uses_floats(spec: str | None) -> bool:
     return _FLOAT_USE.search(_REGION.sub("", spec)) is not None
 
 
-def _default_lemmas_rs(spec: str | None = None) -> str:
-    from declarative_spec.lemmas import float_error_lemmas_rs
+_DIV_ZERO_USE = re.compile(r"\bis_infinite_spec\b|\bis_nan_spec\b")
 
-    return float_error_lemmas_rs().rstrip() if spec_uses_floats(spec) else ""
+
+def spec_divides_by_zero(spec: str | None) -> bool:
+    """True when the spec (outside the host lemma region) states an infinite or NaN result (a ratio's zero denominator)."""
+    if spec is None:
+        return True
+    return _DIV_ZERO_USE.search(_REGION.sub("", spec)) is not None
+
+
+def _default_lemmas_rs(spec: str | None = None) -> str:
+    from declarative_spec.lemmas import float_div_zero_lemma_rs, float_error_lemmas_rs
+
+    if not spec_uses_floats(spec):
+        return ""
+    text = float_error_lemmas_rs().rstrip()
+    return text + "\n\n" + float_div_zero_lemma_rs() if spec_divides_by_zero(spec) else text
 
 
 _DICT_NOTE = """
@@ -62,7 +75,7 @@ Dictionary-encoded string columns (this spec has `<col>__dict` fields):
 def _default_index_markdown(spec: str | None = None) -> str:
     from declarative_spec.lemma_index import lemma_index_markdown
 
-    text = lemma_index_markdown(floats=spec_uses_floats(spec))
+    text = lemma_index_markdown(floats=spec_uses_floats(spec), div_zero=spec_divides_by_zero(spec))
     if spec is not None and "__dict@" in spec:
         text += _DICT_NOTE
     return text

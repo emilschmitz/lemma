@@ -1,14 +1,23 @@
 """Markdown index of host lemmas and vstd items for declarative agents."""
 
 
-def lemma_index_markdown(floats: bool = True) -> str:
-    """The index; ``floats=False`` leaves out every entry about f64 / reals (a spec with no float value)."""
+def lemma_index_markdown(floats: bool = True, div_zero: bool = False) -> str:
+    """The index; ``floats=False`` leaves out every entry about f64 / reals (a spec with no float value).
+
+    ``div_zero`` adds the entry of ``host_f64_div_by_zero`` (only a ratio spec has that lemma)."""
     text = _lemma_index_all()
     if floats:
-        return text
+        return text + (_DIV_ZERO_ENTRY if div_zero else "")
     paragraphs = text.split("\n\n")
     kept = [p for p in paragraphs if "f64" not in p and "`abs_real" not in p and "FLOATS" not in p]
     return "\n\n".join(kept)
+
+
+_DIV_ZERO_ENTRY = (
+    "\n- `host_f64_div_by_zero(x: f64) -> f64` (exec; this spec divides two aggregates): for finite `x`, the result is "
+    "`+inf` when `x as real > 0`, `-inf` when `< 0`, NaN when `== 0` (IEEE 754 division by +0.0). Use it for the "
+    "zero-denominator branch of the ratio; for a nonzero denominator use `lemma_f64_div_real`.\n"
+)
 
 
 def _lemma_index_all() -> str:

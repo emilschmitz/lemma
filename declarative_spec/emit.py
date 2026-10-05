@@ -593,6 +593,14 @@ def _null_rewrite_sql(sql: str, schema: dict, catalog: CatalogAssumptions | None
     first = tree.find(sqlglot.exp.Table)
     if first is None:
         return sql
+    # The default dialect reads a plain ASC key as NULLS FIRST; DuckDB's is NULLS LAST. Mark each ORDER BY key with
+    # what DuckDB reads, so an explicit NULLS FIRST is refused (nulls.py) instead of being dropped by the re-print.
+    try:
+        duck = sqlglot.parse_one(sql, read="duckdb")
+        for key, duck_key in zip(tree.find_all(sqlglot.exp.Ordered), duck.find_all(sqlglot.exp.Ordered), strict=True):
+            key.meta["duck_nulls_first"] = bool(duck_key.args.get("nulls_first"))
+    except (sqlglot.errors.SqlglotError, ValueError):
+        pass  # the stages below report the parse error
     model = SchemaModel.from_caller(schema, first.name).with_nullable(catalog)
     if not model.nullable:
         return sql

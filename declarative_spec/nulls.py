@@ -204,9 +204,6 @@ class _NullRewriter:
             on = join.args.get("on")
             if on is not None:
                 self._refuse_unproven(on, scope, "a JOIN condition")
-        order = sel.args.get("order")
-        if order is not None:
-            self._refuse_unproven(order, scope, "ORDER BY")
         having = sel.args.get("having")
         if having is not None:
             for agg in having.find_all(*_AGG):
@@ -223,9 +220,27 @@ class _NullRewriter:
                 owner = self._owner(g, scope)
                 if owner is not None:
                     keys.add((owner[0], g.name.casefold()))
+        is_agg = group is not None or any(item.find(_AGG) is not None for item in sel.expressions)
+        # A plain top-level projection outputs a nullable column as an Option cell, and orders by it NULL last.
+        cells: set[tuple[str, str]] = set()
+        if top and not is_agg:
+            for item in sel.expressions:
+                if isinstance(item, exp.Column) and self._owner(item, scope) is not None:
+                    cells.add((self._owner(item, scope)[0], item.name.casefold()))
+        order = sel.args.get("order")
+        if order is not None:
+            for key in order.expressions:
+                if key.meta.get("duck_nulls_first") and self._unproven(key, scope):
+                    raise DeclarativeUnsupported(
+                        "ORDER BY a nullable column with NULLS FIRST (the stated order is NULLS LAST)"
+                    )
+                for col in self._unproven(key, scope):
+                    owner = self._owner(col, scope)
+                    if owner is None or (owner[0], col.name.casefold()) not in (keys | cells):
+                        self._refuse_unproven(col, scope, "ORDER BY")
         items = []
         for item in sel.expressions:
-            items.append(self._select_item(item, scope, top, keys))
+            items.append(self._select_item(item, scope, top, keys, cells))
         sel.set("expressions", items)
 
     def _derived_outputs_are_not_null(self, inner: exp.Select) -> None:
@@ -236,7 +251,12 @@ class _NullRewriter:
                 raise DeclarativeUnsupported("an aggregate that skips NULL cells inside a derived table")
 
     def _select_item(
-        self, item: exp.Expression, scope: _Scope, top: bool, keys: set[tuple[str, str]]
+        self,
+        item: exp.Expression,
+        scope: _Scope,
+        top: bool,
+        keys: set[tuple[str, str]],
+        cells: set[tuple[str, str]],
     ) -> exp.Expression:
         alias = item.alias if isinstance(item, exp.Alias) else ""
         body = item.this if isinstance(item, exp.Alias) else item
@@ -244,6 +264,8 @@ class _NullRewriter:
             owner = self._owner(body, scope)
             if (owner[0], body.name.casefold()) in keys:
                 return item  # a GROUP BY key: its NULL group is stated by the key (see the module docstring)
+            if (owner[0], body.name.casefold()) in cells:
+                return item  # a plain projection cell: an Option output field, NULL stays NULL
         if isinstance(body, _AGG):
             new = self._aggregate(body, scope, top)
         else:

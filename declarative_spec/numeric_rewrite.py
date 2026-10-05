@@ -192,7 +192,7 @@ class _Rewriter:
                 outputs.append(("unknown", 0))
                 items.append(item)
                 continue
-            typed = self.typed(body, scope)
+            typed = self._ratio(body, scope) if isinstance(_unparen(body), exp.Div) else self.typed(body, scope)
             new = typed.node
             outputs.append((typed.kind, typed.scale))
             if isinstance(item, exp.Alias):
@@ -551,6 +551,30 @@ class _Rewriter:
             raise DeclarativeUnsupported(f"MIN or MAX over a {inner.kind}: only integer and date orderings are stated")
         return _T(node, inner.kind, inner.scale)
 
+    def _ratio(self, node: exp.Expression, scope: _Scope) -> _T:
+        """``[K *] AGG / [K *] AGG`` as a SELECT item: DuckDB divides DECIMAL and integer operands in DOUBLE.
+
+        Each operand is a SUM or COUNT, optionally times an integer or decimal constant. The rewrite keeps the
+        operands as exact integers and wraps each in ``__dec<scale>(...)``: the operand's natural value is its
+        integer over ``10**scale``, and the parser states the ratio as the real quotient of the two natural values.
+        Anything else (a float operand, a division that is not the whole item, another aggregate) is refused."""
+        node = _unparen(node)
+        if not isinstance(node, exp.Div) or node.args.get("safe") or node.args.get("typed"):
+            raise DeclarativeUnsupported("division other than the plain / operator (// and TRY_DIVIDE are not stated)")
+        sides: list[_T] = []
+        for operand in (node.this, node.expression):
+            t = self.typed(operand, scope)
+            if t.kind != "num":
+                raise DeclarativeUnsupported(f"division operand of kind {t.kind}: only SUM / COUNT of integer or DECIMAL values")
+            if not _is_scaled_aggregate(t.node):
+                raise DeclarativeUnsupported("division operand must be a SUM or COUNT, optionally times a constant")
+            sides.append(t)
+        marked = exp.Div(
+            this=exp.Anonymous(this=f"__dec{sides[0].scale}", expressions=[sides[0].node]),
+            expression=exp.Anonymous(this=f"__dec{sides[1].scale}", expressions=[sides[1].node]),
+        )
+        return _T(marked, "float")
+
     def _decimal_case(self, node: exp.Case, results: list[_T]) -> _T:
         """A CASE whose results are DECIMAL columns of one scale and integer literals, which are rescaled exactly."""
         scale = _decimal_case_scale(results)
@@ -559,8 +583,8 @@ class _Rewriter:
             literal = isinstance(inner.this if isinstance(inner, exp.Neg) else inner, exp.Literal)
             if r.scale != scale and not literal:
                 raise DeclarativeUnsupported("a DECIMAL CASE result of another scale than its column results")
-            if r.scale == scale and not (literal or isinstance(inner, exp.Column)):
-                raise DeclarativeUnsupported("a DECIMAL CASE result that is not a column or a literal")
+            if r.scale == scale and not (literal or isinstance(inner, exp.Column) or _is_int_arith(inner)):
+                raise DeclarativeUnsupported("a DECIMAL CASE result that is not a column, a literal or integer arithmetic")
         arms = node.args.get("ifs") or []
         for arm, r in zip(arms, results[: len(arms)], strict=True):
             arm.set("true", _scaled(r, scale))
@@ -592,6 +616,39 @@ class _Rewriter:
                     raise DeclarativeUnsupported("CASE returns a float column or an integer expression")
             return _T(node, "float")
         return _T(node, kinds.pop() if len(kinds) == 1 else "unknown")
+
+
+def _is_int_arith(node: exp.Expression) -> bool:
+    """Only columns, whole-number literals, ``+``, ``-``, ``*``, negation and parentheses."""
+    if isinstance(node, exp.Paren):
+        return _is_int_arith(node.this)
+    if isinstance(node, exp.Neg):
+        return _is_int_arith(node.this)
+    if isinstance(node, (exp.Add, exp.Sub, exp.Mul)):
+        return _is_int_arith(node.this) and _is_int_arith(node.expression)
+    if isinstance(node, exp.Literal):
+        return node.is_int
+    return isinstance(node, exp.Column)
+
+
+def _is_scaled_aggregate(node: exp.Expression) -> bool:
+    """A SUM or COUNT (not DISTINCT), alone or times one whole-number constant."""
+    node = _unparen(node)
+
+    def agg(n: exp.Expression) -> bool:
+        n = _unparen(n)
+        if isinstance(n, exp.Sum):
+            return True
+        return isinstance(n, exp.Count) and not isinstance(n.this, exp.Distinct)
+
+    def const(n: exp.Expression) -> bool:
+        n = _unparen(n)
+        n = _unparen(n.this) if isinstance(n, exp.Neg) else n
+        return isinstance(n, exp.Literal) and n.is_int
+
+    if isinstance(node, exp.Mul):
+        return (agg(node.this) and const(node.expression)) or (const(node.this) and agg(node.expression))
+    return agg(node)
 
 
 def _float_literal(t: _T) -> exp.Expression:

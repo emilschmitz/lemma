@@ -42,6 +42,7 @@ class _AggFn:
     exec: str
     hidden: bool = False  # read only by HAVING; not an output column
     hit_fn: str = ""  # the row predicate this aggregate sees (row_hit, or row_hit && its FILTER)
+    ratio_nullable: bool = False  # a RATIO with a SUM operand is NULL when no row passes (SQL SUM of no rows)
 
 
 @dataclass
@@ -556,6 +557,8 @@ def _emit_agg(
     key_at: str,
 ) -> _AggFn:
     kind = agg.kind.upper()
+    if kind == "RATIO":
+        return _emit_ratio(blocks, query, agg, prefix, main, params, model, key_ty)
     alias = rust_ident(agg.alias)
     name = _fn_name(prefix, kind, alias)
     is_float = _agg_is_float(agg, main, model)
@@ -633,6 +636,63 @@ def _emit_agg(
     raise DeclarativeUnsupported(kind)
 
 
+def _emit_ratio(
+    blocks: list[str],
+    query: Query,
+    agg: Agg,
+    prefix: str,
+    main: list[_Slot],
+    params: list[_Slot],
+    model: SchemaModel,
+    key_ty: str | None,
+) -> _AggFn:
+    """``[K *] SUM|COUNT / SUM|COUNT``: DuckDB divides DECIMAL and integer operands in DOUBLE (IEEE).
+
+    The spec fn ``ratio_<alias>(params, i0[, k], v)`` says what the f64 result ``v`` is, from the two exact integer
+    fold results N (numerator) and D (denominator):
+
+    * ``D != 0``: ``v`` is finite and, as a real, ``(K * N / 10**sN) / (D / 10**sD)`` (the f64 idealization: the
+      quotient of the exact natural values; rounding is the accepted float limitation);
+    * ``D == 0``: IEEE 754 division by +0.0: ``+inf`` if ``K * N > 0``, ``-inf`` if ``K * N < 0``, NaN if ``K * N == 0``
+      (DuckDB returns exactly these; the body proves it with ``lemma_f64_div_by_zero``).
+
+    A division by a SUM or COUNT that is zero is data, so the case is part of the specification."""
+    assert agg.ratio is not None
+    num_alias, den_alias, k, num_scale, den_scale = agg.ratio
+    by_alias = {a.alias: a for a in query.aggs}
+    operands = [by_alias[num_alias], by_alias[den_alias]]
+    for op in operands:
+        if op.kind.upper() not in ("SUM", "COUNT"):
+            raise DeclarativeUnsupported("division operand must be a SUM or COUNT")
+        if _agg_is_float(op, main, model):
+            raise DeclarativeUnsupported(
+                "division of a float SUM: the quotient of two floating sums has no magnitude bound the proof can use"
+            )
+    num_fn, den_fn = (_fn_name(prefix, op.kind.upper(), rust_ident(op.alias)) for op in operands)
+    name = f"{prefix}ratio_{rust_ident(agg.alias)}"
+    key_sig = f", k: {key_ty}" if key_ty else ""
+    key_call = ", k" if key_ty else ""
+    p_call = _param_call(params)
+    blocks.append(
+        f"""pub open spec fn {name}({_param_sig(params)}, i0: int{key_sig}, ratio_v__: f64) -> bool {{
+    let ratio_n__: int = {k} * {num_fn}({p_call}, i0{key_call});
+    let ratio_d__: int = {den_fn}({p_call}, i0{key_call});
+    if ratio_d__ != 0 {{
+        ratio_v__.is_finite_spec() && (ratio_v__ as real) == ((ratio_n__ as real) * {10**den_scale}real) / ((ratio_d__ as real) * {10**num_scale}real)
+    }} else if ratio_n__ > 0 {{
+        ratio_v__.is_infinite_spec() && !ratio_v__.is_sign_negative_spec()
+    }} else if ratio_n__ < 0 {{
+        ratio_v__.is_infinite_spec() && ratio_v__.is_sign_negative_spec()
+    }} else {{
+        ratio_v__.is_nan_spec()
+    }}
+}}"""
+    )
+    fn = _AggFn(rust_ident(agg.alias), "RATIO", name, "real", True, "ratio", "f64")
+    fn.ratio_nullable = any(op.kind.upper() == "SUM" for op in operands) and key_ty is None
+    return fn
+
+
 def _fn_name(prefix: str, kind: str, alias: str) -> str:
     if kind == "COUNT":
         return f"{prefix}count_{alias}"
@@ -666,6 +726,8 @@ def _agg_is_float(agg: Agg, main: list[_Slot], model: SchemaModel) -> bool:
     if agg.arith:
         return any(_ref_slot(ref, main, model)[1].is_float for ref in agg.arith_refs)
     if agg.expr:
+        if any(_ref_slot(ref, main, model)[1].is_float for ref in agg.arith_refs):
+            raise DeclarativeUnsupported("arithmetic in a CASE result over a float column")
         return agg.kind.upper() in ("SUM", "AVG") and bool(_case_float_results(agg.expr, main, model))
     if agg.kind.upper() in ("COUNT", "COUNT_DISTINCT"):
         return False
@@ -1112,6 +1174,10 @@ def _map_args(slots: list[_Slot], by_table: dict[str, str]) -> str:
 
 def _ensures(query: Query, helpers: _Helpers, model: SchemaModel) -> str:
     del model
+    ratio_aliases = {rust_ident(a.alias) for a in helpers.aggs if a.kind == "RATIO"}
+    for key in query.order_by:
+        if rust_ident(key.column.split(".")[-1]) in ratio_aliases:
+            raise DeclarativeUnsupported("ORDER BY a division: its result is an IEEE double (NaN has no place in an order)")
     lines: list[str] = []
     scalars = helpers.scalars
     p = _param_call(helpers.params)
@@ -1132,7 +1198,9 @@ def _ensures(query: Query, helpers: _Helpers, model: SchemaModel) -> str:
     tail_q.set_query = None
     if helpers.key_ty is None:
         tail_q.order_by = []
-    text_order = helpers.key_ty is not None and any(_order_seq_flags(query, helpers))
+    text_order = helpers.key_ty is not None and (
+        any(_order_seq_flags(query, helpers)) or any(_order_null_flags(query, helpers))
+    )
     if text_order:
         tail_q.order_by = []
         lines.append(_typed_order_line(query, helpers))
@@ -1220,7 +1288,9 @@ _NULLABLE_UNGROUPED = ("SUM", "MIN", "MAX", "AVG")
 
 
 def _nullable(helpers: _Helpers, agg: _AggFn) -> bool:
-    """An ungrouped SUM, MIN, MAX or AVG is NULL when no row passes the filter."""
+    """An ungrouped SUM, MIN, MAX or AVG is NULL when no row passes the filter; so is a ratio with a SUM operand."""
+    if agg.kind == "RATIO":
+        return agg.ratio_nullable
     return helpers.key_ty is None and agg.kind in _NULLABLE_UNGROUPED
 
 
@@ -1252,7 +1322,9 @@ def _agg_eqs(helpers: _Helpers, params: str, key: str, row: str = "res@[r]") -> 
         nullable = _nullable(helpers, agg)
         field = f"{row}.{agg.alias}"
         view = _out_view(f"{field}->Some_0" if nullable else field, agg)
-        if agg.style == "bound":
+        if agg.style == "ratio":
+            eq = f"{agg.name}({params}, 0{key_arg}, {field}->Some_0)" if nullable else f"{agg.name}({params}, 0{key_arg}, {field})"
+        elif agg.style == "bound":
             eq = f"{agg.name}({params}{key_arg}, {view})"
         else:
             eq = f"{view} == {agg.name}({params}, 0{key_arg})"
@@ -1272,32 +1344,30 @@ def _out_view(field_expr: str, agg: _AggFn) -> str:
     return f"({field_expr} as int)"
 
 
-def _out_key(row: str, helpers: _Helpers) -> str:
-    parts: list[str] = []
-    for fname, _col, info, _slot in helpers.group_infos:
-        if info.nullable_key:
-            import dataclasses
-
-            plain = dataclasses.replace(info, nullable_key=False)
-            some = f"{row}.{fname}->Some_0"
-            if info.spec_as == "Seq<char>":
-                value, default = f"{some}@", "Seq::<char>::empty()"
-            elif info.is_float:
-                value, default = f"({some} as real)", "0real"
-            elif info.spec_as == "bool":
-                value, default = some, "false"
-            else:
-                value, default = f"({some} as int)", "0int"
-            del plain
-            parts.append(f"(if {row}.{fname} is Some {{ (true, {value}) }} else {{ (false, {default}) }})")
-        elif info.spec_as == "Seq<char>":
-            parts.append(f"{row}.{fname}@")
+def _row_field_view(row: str, fname: str, info: ColumnTypeInfo) -> str:
+    """A result field of ``row`` as a spec value; an ``Option`` field is `(valid, value)`, `(false, default)` for None."""
+    if info.nullable_key:
+        some = f"{row}.{fname}->Some_0"
+        if info.spec_as == "Seq<char>":
+            value, default = f"{some}@", "Seq::<char>::empty()"
         elif info.is_float:
-            parts.append(f"({row}.{fname} as real)")
+            value, default = f"({some} as real)", "0real"
         elif info.spec_as == "bool":
-            parts.append(f"{row}.{fname}")
+            value, default = some, "false"
         else:
-            parts.append(f"({row}.{fname} as int)")
+            value, default = f"({some} as int)", "0int"
+        return f"(if {row}.{fname} is Some {{ (true, {value}) }} else {{ (false, {default}) }})"
+    if info.spec_as == "Seq<char>":
+        return f"{row}.{fname}@"
+    if info.is_float:
+        return f"({row}.{fname} as real)"
+    if info.spec_as == "bool":
+        return f"{row}.{fname}"
+    return f"({row}.{fname} as int)"
+
+
+def _out_key(row: str, helpers: _Helpers) -> str:
+    parts = [_row_field_view(row, fname, info) for fname, _col, info, _slot in helpers.group_infos]
     if len(parts) == 1:
         return parts[0]
     return "(" + ", ".join(parts) + ")"
@@ -1327,6 +1397,8 @@ def _having(query: Query, helpers: _Helpers, scalars: dict[str, str], key: str) 
     for agg, src in zip(helpers.aggs, query.aggs, strict=True):
         if not re.search(rf"\b{re.escape(src.alias)}\b", expr):
             continue
+        if agg.kind == "RATIO":
+            raise DeclarativeUnsupported("HAVING on a division: its result is an IEEE double, not an exact value")
         if agg.kind in ("MIN", "MAX"):
             # The bound predicate holds for exactly one value of a group that has rows: that value is the MIN/MAX.
             ty = "real" if agg.ret == "real" else "int"
@@ -1372,7 +1444,7 @@ def _omitted_after(query: Query, helpers: _Helpers, scalars: dict[str, str], hav
     out_exprs = _order_exprs_row(query, helpers)
     group_exprs = _order_exprs_key(query, helpers, scalars, key_of)
     before = _not_after(
-        out_exprs, group_exprs, query.order_by, _order_seq_flags(query, helpers)
+        out_exprs, group_exprs, query.order_by, _order_seq_flags(query, helpers), _order_null_flags(query, helpers)
     )
     return (
         f"forall|{binders}, r: int| #![trigger {helpers.row_hit}({p}, {_idx_call(helpers.main)}), res@[r]] "
@@ -1388,18 +1460,15 @@ def _order_exprs_row(query: Query, helpers: _Helpers) -> list[str]:
         col = key.column.split(".")[-1]
         ident = rust_ident(col)
         agg = next((a for a in helpers.aggs if a.alias == ident), None)
+        if agg is not None and agg.kind == "RATIO":
+            raise DeclarativeUnsupported("ORDER BY a division: its result is an IEEE double (NaN has no place in an order)")
         if agg is not None:
             exprs.append(_out_view(f"res@[r].{ident}", agg))
             continue
         info = next((g[2] for g in helpers.group_infos if g[0] == ident), None)
         if info is None:
             raise DeclarativeUnsupported("ORDER BY")
-        if info.spec_as == "Seq<char>":
-            exprs.append(f"res@[r].{ident}@")
-        elif info.is_float:
-            exprs.append(f"(res@[r].{ident} as real)")
-        else:
-            exprs.append(f"(res@[r].{ident} as int)")
+        exprs.append(_row_field_view("res@[r]", ident, info))
     return exprs
 
 
@@ -1413,6 +1482,8 @@ def _order_exprs_key(
         col = key.column.split(".")[-1]
         ident = rust_ident(col)
         agg = next((a for a in helpers.aggs if a.alias == ident), None)
+        if agg is not None and agg.kind == "RATIO":
+            raise DeclarativeUnsupported("ORDER BY a division: its result is an IEEE double (NaN has no place in an order)")
         if agg is not None:
             if agg.style == "bound":
                 raise DeclarativeUnsupported("ORDER BY")
@@ -1429,14 +1500,35 @@ def _order_exprs_key(
     return exprs
 
 
+def null_last_order(left: str, right: str, *, descending: bool, is_seq: bool) -> str:
+    """``left`` is not after ``right`` for a `(valid, value)` key. DuckDB sorts NULL last whichever the direction
+    (default_null_order is NULLS LAST for ASC and DESC alike): a valid key goes before a NULL one, two NULLs tie, two
+    valid keys compare by value."""
+    lv, rv = f"({left}).0", f"({right}).0"
+    ls, rs = f"({left}).1", f"({right}).1"
+    if is_seq:
+        inner = f"seq_le({rs}, {ls})" if descending else f"seq_le({ls}, {rs})"
+    else:
+        inner = f"{ls} {'>=' if descending else '<='} {rs}"
+    return f"(({lv} && !{rv}) || ({lv} == {rv} && (!{lv} || {inner})))"
+
+
 def _not_after(
-    left: list[str], right: list[str], keys: list[OrderKey], seq: list[bool] | None = None
+    left: list[str],
+    right: list[str],
+    keys: list[OrderKey],
+    seq: list[bool] | None = None,
+    nulls: list[bool] | None = None,
 ) -> str:
-    """``left`` is not after ``right``. ``seq[k]`` marks a ``Seq<char>`` key, ordered by ``seq_le``."""
+    """``left`` is not after ``right``. ``seq[k]`` marks a ``Seq<char>`` key, ordered by ``seq_le``; ``nulls[k]``
+    marks a `(valid, value)` key of a nullable column (NULL last)."""
 
     def clause(k: int) -> str:
         tie = f"({left[k]}) == ({right[k]})"
-        if seq is not None and seq[k]:
+        is_seq = seq is not None and seq[k]
+        if nulls is not None and nulls[k]:
+            order = null_last_order(left[k], right[k], descending=keys[k].descending, is_seq=is_seq)
+        elif is_seq:
             order = (
                 f"seq_le({right[k]}, {left[k]})"
                 if keys[k].descending
@@ -1454,6 +1546,15 @@ def _not_after(
     return clause(0)
 
 
+def _order_null_flags(query: Query, helpers: _Helpers) -> list[bool]:
+    flags: list[bool] = []
+    for key in query.order_by:
+        ident = rust_ident(key.column.split(".")[-1])
+        info = next((g[2] for g in helpers.group_infos if g[0] == ident), None)
+        flags.append(info is not None and info.nullable_key)
+    return flags
+
+
 def _order_seq_flags(query: Query, helpers: _Helpers) -> list[bool]:
     flags: list[bool] = []
     for key in query.order_by:
@@ -1467,7 +1568,9 @@ def _typed_order_line(query: Query, helpers: _Helpers) -> str:
     """Adjacent result rows are in ORDER BY order, comparing text keys with ``seq_le``."""
     left = [e.replace("res@[r]", "res@[i]") for e in _order_exprs_row(query, helpers)]
     right = [e.replace("res@[r]", "res@[i + 1]") for e in _order_exprs_row(query, helpers)]
-    before = _not_after(left, right, query.order_by, _order_seq_flags(query, helpers))
+    before = _not_after(
+        left, right, query.order_by, _order_seq_flags(query, helpers), _order_null_flags(query, helpers)
+    )
     return f"forall|i: int| #![trigger res@[i]] 0 <= i && i + 1 < res@.len() ==> ({before})"
 
 
