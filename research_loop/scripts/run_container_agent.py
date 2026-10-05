@@ -59,7 +59,8 @@ def summarize_run(run_dir: Path | None) -> dict:
         "run_dir": str(run_dir),
         "threads_used": "spawn(" in body,
         "egress_hosts": sorted(hosts),
-        # True when the Claude CLI itself, or anything not inside an agent Bash call, was denied: that is the sandbox policy firing.
+        # True when a denial falls outside every agent Bash call's time window (the CLI, or a process that outlived its Bash call).
+        # False does NOT prove the CLI was never denied: a CLI denial that overlaps a Bash call lands in the bash list below.
         "egress_denied": bool(from_cli),
         # Denied while an agent Bash call was running (e.g. `npx` fetching a package). Reported, never dropped: the sandbox
         # did deny it, but the agent's shell asked, not the CLI. The match is by time window, so it is attribution, not proof.
@@ -103,9 +104,10 @@ def _bash_windows(raw: Path) -> list[tuple[float, float]]:
 
 
 def _in_a_bash_window(ts: str | None, windows: list[tuple[float, float]]) -> bool:
-    # the bridge stamps whole seconds, so allow one second of rounding either side
+    # The bridge stamps with time.gmtime, i.e. the second FLOORED: the stamp is up to 1 s before the real denial, never after.
+    # So slack goes before the window only; slack after it would hide a CLI denial in the next turn's first second.
     when = _ts(ts)
-    return when is not None and any(start - 1 <= when <= end + 1 for start, end in windows)
+    return when is not None and any(start - 1 <= when <= end for start, end in windows)
 
 
 def run(

@@ -152,3 +152,16 @@ def test_a_launcher_default_package_shows_in_the_selection_and_the_manifest_menu
         assert manifest["menu"]["axes"]["assumption_package"]["value"] == manifest["effective"]["LEMMA_ASSUMPTION_PACKAGE"] == "sec_margin_dec"
     finally:
         deactivate_menu()
+
+
+def test_a_denial_just_after_the_bash_result_is_not_hidden_in_the_bash_bucket(tmp_path: Path) -> None:
+    # the bridge floors to the second, so a stamp after the tool_result's second cannot belong to the call
+    denial = {"host": "telemetry.example", "denied": True, "ts": "2026-10-05T17:34:32Z"}
+    out = summarize_run(_write_run(tmp_path, [denial], _bash("2026-10-05T17:34:29.100Z", "2026-10-05T17:34:31.000Z")))
+    assert out["egress_denied"] is True and out["egress_denied_in_agent_bash"] == []
+
+
+def test_a_floored_stamp_before_the_bash_start_second_still_matches(tmp_path: Path) -> None:
+    denial = {"host": "registry.npmjs.org", "denied": True, "ts": "2026-10-05T17:34:29Z"}  # real time 17:34:29.95
+    out = summarize_run(_write_run(tmp_path, [denial], _bash("2026-10-05T17:34:29.900Z", "2026-10-05T17:34:31.000Z")))
+    assert out["egress_denied_in_agent_bash"] == ["registry.npmjs.org"]

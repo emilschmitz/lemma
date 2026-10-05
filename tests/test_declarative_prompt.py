@@ -72,7 +72,7 @@ def test_prompt_is_ordered_and_has_no_duplicate_sections() -> None:
     assert p.lstrip().startswith("# Declarative run_query")
     assert "while i > 0\n    invariant\n        i <= cols.n," not in p.split("## What you get")[0]
     assert "LEMMAS.md" in p and "EXAMPLES_INDEX.md" in p
-    assert "You cannot run Verus" in p
+    assert "Verus is not on its PATH" in p
     assert "AGENT_HELPERS_START" in p
     assert len(p.splitlines()) < 450
 
