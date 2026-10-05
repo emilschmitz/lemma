@@ -61,3 +61,44 @@ def test_real_docker_hides_host_only_dir_and_keeps_editable_file_and_context(tmp
     # The host still sees the real files: nothing was moved or removed.
     assert (ws / "decl_data" / "bar.json").read_text() == "SECRET-BAR"
     assert (ws / "runquery_agent.rs").read_text().strip() == "new"
+
+
+# --- the host-side routes: the body is compiled and run on the host, and the MCP `path` argument ---
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        'let b = include_bytes!("../decl_data/cols_num.bin");',
+        'let s = std::fs::read("/x");',
+        'let v = std::env::var("LEMMA_MEASURE_DB");',
+        'let b = include_str!("../decl_data/expect.json");',
+        "unsafe { }",
+        'core::arch::asm!("nop");',
+    ],
+)
+def test_admission_rejects_host_access_in_the_body(body: str) -> None:
+    from declarative_spec.admit import admit_declarative_body
+
+    res = admit_declarative_body(body)
+    assert not res.ok and any("host access" in v or "unsafe" in v for v in res.violations)
+
+
+def test_admission_still_accepts_plain_compute() -> None:
+    from declarative_spec.admit import admit_declarative_body
+
+    assert admit_declarative_body("let mut i: usize = 0; while i < n { i = i + 1; }").ok
+
+
+def test_mcp_path_into_host_only_dir_is_refused_even_through_a_symlink(tmp_path: Path) -> None:
+    from db_extension.agent.measure_core import _resolve_under_workspace
+
+    ws = tmp_path.resolve()
+    (ws / "decl_data").mkdir()
+    (ws / "decl_data" / "cols_num.bin").write_bytes(b"\xff")
+    (ws / "link.rs").symlink_to("decl_data/cols_num.bin")
+    (ws / "ok.rs").write_text("x")
+    for p in ("decl_data/cols_num.bin", "link.rs"):
+        with pytest.raises(PermissionError):
+            _resolve_under_workspace(p, ws)
+    assert _resolve_under_workspace("ok.rs", ws) == ws / "ok.rs"

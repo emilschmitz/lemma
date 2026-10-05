@@ -69,6 +69,16 @@ _ASSUME_NAME = re.compile(r"(?i)(?:axiom|arbitrary|proof_from_false|unreached|sp
 _BROADCAST_GROUP = re.compile(r"\bbroadcast\s+use\s+(vstd(?:::[A-Za-z0-9_]+)+::group_[A-Za-z0-9_]+)\s*;")
 
 
+# The agent body is compiled and run on the HOST next to the exported column files and the timing bar
+# (outside the container's mount shadow), so it may not reach files, the environment, processes, the network,
+# compile-time includes or inline assembly.
+_HOST_ESCAPE = re.compile(
+    r"\b(?:include_bytes|include_str|include|env|option_env|asm|global_asm|concat_idents)\s*!"
+    r"|\b(?:std|core|libc|alloc)\s*::\s*(?:fs|env|process|net|io|os|arch|ffi|ptr|mem\s*::\s*transmute)\b"
+    r"|\bextern\b|\bunsafe\b"
+)
+
+
 def _banned_everywhere(cleaned: str) -> list[str]:
     """Rules shared by the `run_query` body and the helper region."""
     from declarative_spec.vstd_index import group_paths
@@ -91,6 +101,8 @@ def _banned_everywhere(cleaned: str) -> list[str]:
         violations.append("assume_specification")
     if re.search(r"\bunimplemented\s*!", rest):
         violations.append("unimplemented!")
+    if _HOST_ESCAPE.search(rest):
+        violations.append("host access (file/env/process/network/include/inline-asm): the body may only compute")
     for name in sorted({m.group(0).lower() for m in _ASSUME_NAME.finditer(rest)}):
         violations.append(f"forbidden name: {name}")
     return violations

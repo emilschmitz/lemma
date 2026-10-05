@@ -73,6 +73,12 @@ def _resolve_under_workspace(path: str, ws: Path | None = None) -> Path:
     target = candidate if candidate.is_absolute() else (base / candidate)
     target = target.resolve()
     target.relative_to(base)
+    from research_loop.sandbox_hide import HOST_ONLY_DIRS
+
+    # A symlink made in the container can dangle there yet resolve on the host: never read host-only dirs.
+    for rel in HOST_ONLY_DIRS:
+        if target.is_relative_to((base / rel).resolve()):
+            raise PermissionError(f"path is host-only: {path}")
     return target
 
 
