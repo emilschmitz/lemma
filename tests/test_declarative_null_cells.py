@@ -88,6 +88,39 @@ def test_nullable_shapes_that_are_not_stated_are_still_refused(sql: str, why: st
         _emit(sql)
 
 
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT a, x FROM t ORDER BY x NULLS FIRST",
+        "SELECT a, x FROM t ORDER BY x DESC NULLS FIRST",
+        "SELECT x, COUNT(*) AS c FROM t GROUP BY x ORDER BY x NULLS FIRST",
+    ],
+)
+def test_an_explicit_nulls_first_on_a_nullable_key_is_refused_not_ignored(sql: str) -> None:
+    with pytest.raises(DeclarativeUnsupported, match="NULLS FIRST"):
+        _emit(sql)
+
+
+@pytest.mark.parametrize("sql", ["SELECT a, x FROM t ORDER BY x NULLS LAST", "SELECT a, x FROM t ORDER BY a NULLS FIRST"])
+def test_nulls_last_and_a_non_nullable_key_are_unaffected(sql: str) -> None:
+    _emit(sql)
+
+
+@pytest.mark.parametrize(
+    ("fields", "needle"),
+    [
+        ([("s", "Option<String>")], "row_hex(v)"),
+        ([("b", "Option<bool>")], "1u8"),
+    ],
+)
+def test_the_bench_row_printer_prints_option_cells_the_way_the_decoder_reads_them(fields, needle) -> None:
+    from declarative_spec.assemble import _row_printer
+
+    hex_fn, after = _row_printer("", fields)
+    assert needle in after
+    assert ("row_hex" in hex_fn) == (fields[0][1] == "Option<String>")
+
+
 # ---- the ordering clause against DuckDB's own order, evaluated by Verus ---------------------------------------------------
 
 ROWS = [

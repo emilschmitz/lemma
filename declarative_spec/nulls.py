@@ -230,6 +230,10 @@ class _NullRewriter:
         order = sel.args.get("order")
         if order is not None:
             for key in order.expressions:
+                if key.meta.get("duck_nulls_first") and self._unproven(key, scope):
+                    raise DeclarativeUnsupported(
+                        "ORDER BY a nullable column with NULLS FIRST (the stated order is NULLS LAST)"
+                    )
                 for col in self._unproven(key, scope):
                     owner = self._owner(col, scope)
                     if owner is None or (owner[0], col.name.casefold()) not in (keys | cells):
