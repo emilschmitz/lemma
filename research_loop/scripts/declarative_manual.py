@@ -134,7 +134,7 @@ def check(kind: str, sql: str, ws: Path) -> dict:
     return metrics
 
 
-_JOB_ENV_KEYS = ("LEMMA_DUCKDB_PATH", "LEMMA_TPCH_DB", "LEMMA_STRING_ENCODING", "LEMMA_PARALLEL_VSTD", "LEMMA_SPEED_BAR_MULT")
+_JOB_ENV_KEYS = ("LEMMA_DUCKDB_PATH", "LEMMA_TPCH_DB", "LEMMA_STRING_ENCODING", "LEMMA_PARALLEL_VSTD", "LEMMA_NARROW_CELLS", "LEMMA_TPCH_PACKAGE", "LEMMA_SPEED_BAR_MULT")
 
 
 def _job_env_snapshot() -> dict[str, str]:

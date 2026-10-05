@@ -118,6 +118,12 @@ def tpch_schema_and_catalog(db: Path) -> tuple[dict, CatalogAssumptions]:
         rows = {t: con.execute(f"SELECT count(*) FROM {t}").fetchone()[0] for t in tables}
     finally:
         con.close()
+    package = os.environ.get("LEMMA_TPCH_PACKAGE")
+    if package:
+        # A catalog proposed by the profiler (``assumption_packages.profile``) for this database: row and value caps per column.
+        from research_loop.assumption_packages.json_io import load_catalog_json
+
+        return schema, load_catalog_json(package)
     # Measured row counts are the caps (no margin): an honest catalog of this database.
     catalog = CatalogAssumptions(
         max_rows=max(rows.values()), tables={t: TableAssumptions(max_rows=n) for t, n in rows.items()}

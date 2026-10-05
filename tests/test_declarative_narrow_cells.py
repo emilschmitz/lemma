@@ -63,15 +63,28 @@ def test_a_catalog_cap_narrows_a_bigint_column_to_the_narrowest_signed_type(monk
     assert _struct_fields(spec) == {"d": "i16", "e": "i32", "g": "i64"}  # cap 2^15 -> i16, 2^20 -> i32, 2^40 stays i64
 
 
-def test_dates_and_decimals_are_not_narrowed(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_decimal_with_a_catalog_cap_narrows_by_its_stored_scaled_integer_and_without_one_stays_i64(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LEMMA_NARROW_CELLS", "1")
-    schema = {"t": {"when": "date", "v": "decimal(10,2)"}}
+    schema = {"t": {"when": "date", "v": "decimal(10,2)", "w": "decimal(10,2)", "big": "decimal(30,2)"}}
     cat = CatalogAssumptions(
         max_rows=100,
-        tables={"t": TableAssumptions(max_rows=100, columns={"v": ColumnAssumption(max_value_exclusive=1000, scale=2)})},
+        tables={"t": TableAssumptions(max_rows=100, columns={"v": ColumnAssumption(max_value_exclusive=1000, scale=2), "big": ColumnAssumption(max_value_exclusive=1000, scale=2)})},
     )
-    spec = emit_declarative_spec("SELECT COUNT(*) AS c FROM t WHERE v > 1", schema, cat)
-    assert _struct_fields(spec) == {"v": "i64"}
+    spec = emit_declarative_spec("SELECT COUNT(*) AS c FROM t WHERE v > 1 AND w > 1", schema, cat)
+    assert _struct_fields(spec) == {"v": "i16", "w": "i64"}  # cap 1000 on the stored integer -> i16; no cap -> the type width
+    spec = emit_declarative_spec("SELECT COUNT(*) AS c FROM t WHERE big > 1", schema, cat)
+    assert _struct_fields(spec) == {"big": "i128"}  # a wide decimal is never narrowed
+
+
+def test_dates_stay_i32_and_the_exporter_packs_a_narrowed_decimal_as_its_scaled_integer(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LEMMA_NARROW_CELLS", "1")
+    con = duckdb.connect()
+    con.execute("CREATE TABLE t (v DECIMAL(10,2))")
+    con.execute("INSERT INTO t VALUES (12.34), (-0.05)")
+    cat = CatalogAssumptions(max_rows=10, tables={"t": TableAssumptions(max_rows=10, columns={"v": ColumnAssumption(max_value_exclusive=2**15, scale=2)})})
+    model = SchemaModel.from_caller({"t": {"v": "decimal(10,2)"}}, "t").with_nullable(cat)
+    blob = _export_table(con, model, "t", [("v", "i16")])
+    assert struct.unpack_from("<hh", blob, 8) == (1234, -5)
 
 
 def test_a_group_key_stays_i64_so_the_map_key_and_the_loaded_column_are_one_type(monkeypatch: pytest.MonkeyPatch) -> None:

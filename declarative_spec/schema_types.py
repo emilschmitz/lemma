@@ -351,8 +351,9 @@ class SchemaModel:
         return replace(self, nullable=frozenset(found), tables=self._narrowed(catalog))
 
     def _narrowed(self, catalog: object) -> dict[str, dict[str, ColumnTypeInfo]]:
-        """LEMMA_NARROW_CELLS: a signed integer column whose catalog cap bounds |cell| below 2^7 / 2^15 / 2^31 is loaded as
-        i8 / i16 / i32 (the loader's runtime check of ``valid_cols`` enforces the cap). DECIMAL and DATE columns are left alone."""
+        """LEMMA_NARROW_CELLS: a signed integer or DECIMAL column whose catalog cap bounds |cell| below 2^7 / 2^15 / 2^31 is loaded as
+        i8 / i16 / i32 (the loader's runtime check of ``valid_cols`` enforces the cap). A DECIMAL column counts by its stored scaled
+        integer, the same quantity the catalog cap bounds. DATE columns are left alone (already i32)."""
         if not narrow_cells():
             return self.tables
         from dataclasses import replace
@@ -370,7 +371,6 @@ class SchemaModel:
                     cap is not None
                     and info.exec_rust in ("i64", "i32", "i16")
                     and info.signed
-                    and info.precision is None
                     and not info.is_date
                     and not info.is_float
                 ):

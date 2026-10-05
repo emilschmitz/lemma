@@ -192,3 +192,36 @@ def test_first_difference_handles_length_and_equality() -> None:
     assert first_difference("a\nb", "a\nb\nc") == "line 3: regenerated '<end of file>' vs workspace 'c'"
     assert first_difference("a\nb\nc", "a\nb") == "line 3: regenerated 'c' vs workspace '<end of file>'"
     assert first_difference("a", "a") == "texts are identical"
+
+
+def test_the_job_snapshot_carries_the_narrow_cells_flag_and_leaves_unset_flags_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    from research_loop.scripts import declarative_manual as dm
+
+    monkeypatch.setenv("LEMMA_NARROW_CELLS", "1")
+    monkeypatch.delenv("LEMMA_PARALLEL_VSTD", raising=False)
+    snap = dm._job_env_snapshot()
+    assert snap["LEMMA_NARROW_CELLS"] == "1" and "LEMMA_PARALLEL_VSTD" not in snap
+    monkeypatch.delenv("LEMMA_NARROW_CELLS")
+    assert "LEMMA_NARROW_CELLS" not in dm._job_env_snapshot()
+
+
+def test_tpch_catalog_comes_from_the_profiled_package_when_one_is_named_and_from_row_counts_otherwise(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import json
+
+    from research_loop.assumption_packages.json_io import catalog_to_dict
+    from research_loop.scripts import declarative_round as rnd
+
+    db = tmp_path / "t.duckdb"
+    con = duckdb.connect(str(db))
+    con.execute("CREATE TABLE lineitem (q DECIMAL(15,2))")
+    con.execute("INSERT INTO lineitem VALUES (1.5), (2.5)")
+    con.close()
+    monkeypatch.delenv("LEMMA_TPCH_PACKAGE", raising=False)
+    _schema, plain = rnd.tpch_schema_and_catalog(db)
+    assert plain.tables["lineitem"].max_rows == 2 and not plain.tables["lineitem"].columns
+    pkg = CatalogAssumptions(max_rows=8, tables={"lineitem": TableAssumptions(max_rows=8, columns={"q": ColumnAssumption(max_value_exclusive=1024)})})
+    path = tmp_path / "pkg.json"
+    path.write_text(json.dumps(catalog_to_dict(pkg)))
+    monkeypatch.setenv("LEMMA_TPCH_PACKAGE", str(path))
+    _schema, profiled = rnd.tpch_schema_and_catalog(db)
+    assert profiled.tables["lineitem"].columns["q"].max_value_exclusive == 1024
