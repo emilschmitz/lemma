@@ -604,10 +604,10 @@ _PROOF_HYGIENE = """\
 
 
 def _error_excerpt(last_error: str) -> str:
-    excerpt = last_error.strip()[-4000:]
-    newline = excerpt.find("\n")
-    if newline != -1 and newline < 200:
-        excerpt = excerpt[newline + 1 :]
+    """The first errors, whole: the host already put the summary first and the errors in source order."""
+    excerpt = last_error.strip()
+    if len(excerpt) > 6000:
+        excerpt = excerpt[:6000].rstrip() + "\n... (cut here; the rest is in declarative_build/verify_full.log)"
     return excerpt
 
 
@@ -643,6 +643,7 @@ def build_declarative_prompt(
     in_docker: bool = False,
     spec_text: str = "",
     dict_sizes: dict[str, int] | None = None,
+    restart_note: str = "",
 ) -> str:
     """Instructions for this spec style only (the recursive prompt is a different file).
 
@@ -737,13 +738,19 @@ def build_declarative_prompt(
         "",
         lemma_index.rstrip(),
     ]
+    if restart_note.strip():
+        sections.extend(["", "## This is a restart: where your file stands", "", restart_note.strip()])
     if last_error.strip():
         sections.extend(
             [
                 "",
                 "## Previous host error",
                 "",
-                "The last compile or verify of your edit failed. Fix that edit and call `run_runquery` again.",
+                (
+                    "These are the first errors of the previous session's LAST attempt (not necessarily the file now in place; see above)."
+                    if restart_note.strip()
+                    else "The last compile or verify of your edit failed. Fix that edit and call `run_runquery` again."
+                ),
                 "",
                 "```",
                 _error_excerpt(last_error),
