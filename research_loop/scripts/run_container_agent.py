@@ -133,7 +133,8 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--style", required=True, choices=STYLES)
     ap.add_argument("--menu", required=True, help="menu profile name (sets all axes)")
-    ap.add_argument("--query-sql", required=True)
+    ap.add_argument("--query-sql")
+    ap.add_argument("--query-file", help="read the SQL from this file (instead of --query-sql)")
     ap.add_argument("--agent", help="override the agent axis: model slug (claude-* runs Claude Code)")
     ap.add_argument("--trusted-set", help="override the trusted_set axis")
     ap.add_argument("--assumption-package", help="override the catalog axis")
@@ -141,10 +142,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--allow-override", action="store_true", help="let overrides contradict the profile")
     ap.add_argument("--max-iterations", type=int, default=2)
     args = ap.parse_args(argv)
+    if (args.query_sql is None) == (args.query_file is None):
+        ap.error("give exactly one of --query-sql and --query-file")
+    sql = args.query_sql if args.query_sql is not None else Path(args.query_file).read_text().strip()
     record = run(
         args.menu,
         args.style,
-        args.query_sql,
+        sql,
         agent=args.agent,
         trusted_set=args.trusted_set,
         assumption_package=args.assumption_package,
