@@ -287,3 +287,55 @@ SEC Q19 (`num` NOT EXISTS `pre`, float SUM, HAVING COUNT > 10, ORDER BY cnt LIMI
 TPC-H Q6-variant (ungrouped decimal sum with date and discount filters; worked-example shape).
 
 - Float shapes are back in scope, refusal removed (`declarative_spec/float_order.py` deleted; f64 idealization, `docs/TRUSTED_FAMILIES.md`): stored-column filters, MIN/MAX, ORDER BY, products and differences, grouped SUM/AVG with HAVING and top-K emit; refused: float equality on computed values, colliding float literals, AVG whose integer sum may exceed 2^53.
+
+## Round 9 (2026-10-05): narrow cells, sliced hot loops, one-shot cost, speed-claims adversary
+
+All proofs in this section are by manual provers (Sonnet subagents), not model-agent results. Every number is from a check run that passed the spec
+regeneration gate or from `declarative_oneshot.py` (rows in `research_loop/generated/decl_oneshot.jsonl`). Reference engine: DuckDB 1.5.4, 8 threads
+(= `nproc`), scanning its own storage in place. "kernel" is the timed `run_query` alone; see the one-shot table for what is outside it.
+
+### What changed
+1. `LEMMA_NARROW_CELLS=1` now also narrows a DECIMAL column by its catalog cap on the stored scaled integer, and an INTEGER column cap is a loader
+   conjunct and a runtime assert in both modes (adversary Finding A). Verdict: `adversary_declarative0_narrow_cells_VERDICT.md` (ACCEPT WITH FIXES; opt-in, not the default).
+2. The cost of the scan loops was BOUNDS CHECKS, not bytes: slicing each block with `vstd::slice::slice_subrange` removes them and lets LLVM vectorize.
+   Prompt paragraph and two verified fixtures with mutation tests (`parallel_dict_filter_count_max_slices.rs`, `parallel_ungrouped_product_sum_slices.rs`).
+3. Speed claims were reviewed by a separate adversary: `adversary_declarative0_speed_claims_VERDICT.md`.
+
+### Kernel results (same-window pairs, medians; ties are gaps under 25 percent)
+| Shape | Data | Cells | Kernel | Reference (in place) | Kernel speedup | Reference given the same narrow data in memory |
+|---|---|---|---|---|---|---|
+| SEC selective scan `COUNT, MAX(ddate) WHERE uom = 'shares' AND qtrs = 4` | real num 39.4M | wide i64/i64/u16, block-skip body (before) | 39 ms | 27 ms | 0.69x (loss) | - |
+| same | same | wide, sliced | 16.9 ms | 23.3 ms | 1.38x | - |
+| same | same | narrow, default package (i32/i32/u16) | 10.9 to 11.2 ms | 26.3 ms | 2.35x to 2.42x | - |
+| same | same | narrow, margin-1 profiled package (i32/i16/u8, 7 bytes per row) | 8.4 ms | 23.0 ms | 2.74x (the claim 2.4x to 2.9x spans runs) | 16.5 ms, i.e. 1.96x |
+| TPC-H Q6 variant, SF10 | 60.0M lineitem | wide i64 x3, unsliced (before) | 55.7 ms | 69.5 ms | 1.25x | - |
+| same | same | narrow profiled catalog (i8/i32/i16/i32), unsliced | 28.5 to 32.5 ms | 58.9 ms | 1.8x to 2.07x | - |
+| same | same | narrow, sliced | 23.5 ms | 61.4 ms | 2.62x | 47.7 ms, i.e. 2.03x |
+| SEC `SUM(value) WHERE value > 5000` (DECIMAL(38,4) as i128, parallel, unchanged body) | real num 39.4M | default package | 16.5 ms | 222.7 ms | 13.5x | 43.7 ms, i.e. **2.65x** |
+
+Losing shapes and why: none of the three above loses any more. The 5x on SEC and 2.8x on TPC-H bars: SEC 5x is met only by the shapes where the reference
+engine is slow in place (the DECIMAL(38,4) sum: 13.5x in place, 2.65x against an in-memory copy) and by grouped/dense aggregates (earlier rounds); the selective
+scan is at about 2x to 2.7x and cannot reach 5x by reading faster (7 bytes per row is 276 MB; at 30 GB/s the floor is about 9 ms, the kernel is at 8 to 9 ms).
+TPC-H 2.8x: Q1 (earlier rounds, compute-bound) meets it; Q6 is at 2.0x to 2.6x depending on the reference and is also at the bandwidth floor.
+
+### One-shot cost (a first query on freshly pinned data) and break-even, same runs
+| Shape | pin + encode (vectorized lower bound) | shipped exporter (per-row Python) | load into the vectors | kernel | in-place reference | break-even queries (lower bound / shipped exporter) |
+|---|---|---|---|---|---|---|
+| SEC selective scan (narrow, profiled) | 1.0 s | 31.6 s | 0.21 s | 8.4 ms | 23.0 ms | 83 / 2,178 |
+| TPC-H Q6 variant SF10 | 1.2 s | 266.5 s | 0.55 s | 23.5 ms | 61.4 ms | 47 / 7,044 |
+| SEC `SUM(value)` | 22.3 s (HUGEINT to numpy conversion dominates) | 87.3 s | 0.34 s | 16.5 ms | 222.7 ms | 110 / 425 |
+
+A first query is 30 to 100 times slower than the reference answering in place (`one_shot_speedup` 0.01 to 0.03). The kernel numbers hold for repeated
+queries on already-prepared data only. The zero-copy lease bridge would remove the copy and re-encode; it is a possible later trusted proposal and is not built.
+
+### Conditions that must accompany any quoted speedup (from the speed-claims adversary)
+Kernel only; the one-shot numbers next to it; the in-place reference and the narrow in-memory reference both stated; same-window median of at least 9 with 8 threads on
+both sides (the prepare-time `duck_us` in `last_check.json` can be 15 percent high); narrow widths hold only under a user-approved package (margin-1 here:
+`uom` 201 distinct gives u8 codes, `qtrs` max 3604 gives i16); manual prover, not a model-agent result. Open: the binary prints rows only on the last timed run, so the
+row check covers run 9 of 9 (the Verus proof is what rules out a row-skipping body).
+
+### Container sanity run (the one allowed): FAILED before any agent work, infrastructure
+`container_batch.py sonnet:nc_B.sql` with narrow cells and the margin-1 package: the CLI exited in 12 s. `workspace/logs/agent_stream.jsonl` of
+`research_loop/runs/20261005T155606Z_q117004_d20aceda`: `Failed to authenticate. API Error: 401 OAuth access token has expired. Re-authenticate to continue.`
+The CLI then tried `platform.claude.com` (token refresh), which the egress allowlist (api.anthropic.com only) denies. Not retried; not a model result either way.
+Needs the host OAuth token refreshed (Emil's action); the allowlist was not touched.

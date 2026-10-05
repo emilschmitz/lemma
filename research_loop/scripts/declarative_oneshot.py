@@ -140,11 +140,11 @@ def main() -> int:
     from research_loop.scripts import declarative_manual as dm
 
     sql = (ws / "context" / "ro" / "query.sql").read_text().strip()
-    schema, _catalog = dm._job_env(job["kind"])
+    schema, catalog = dm._job_env(job["kind"])
     spec = (ws / "context" / "ro" / "spec.rs").read_text()
     resolved = dm._project(sql, schema)
     first_table = re.search(r"\bFROM\s+(\w+)", sql, re.I).group(1)
-    model = SchemaModel.from_caller(resolved, first_table)
+    model = SchemaModel.from_caller(resolved, first_table).with_nullable(catalog)
     db = os.environ.get("LEMMA_DUCKDB_PATH") or os.environ["LEMMA_TPCH_DB"]
     con = duckdb.connect(db, read_only=True)
 
