@@ -19,7 +19,11 @@
 //  7. `valid_cols_<t>` stays reachable from every loop invariant (here through the opaque wrapper `vcs`), every loop has a `decreases`.
 //  8. A `usize` literal above u32::MAX is a rustc error under Verus: compare through `u64`.
 //  9. Constants (cell bounds, `JOIN_CAP_...`) come from YOUR spec; this fixture copies its own spec's numbers, and relies on `sub.adsh` being a catalog-declared unique key (re-check `valid_cols_sub`).
-// Speed: proved, ran at 0.93x of the all-core reference on 1M rows (1.9x of one thread): the proof comes first.
+// Sizing (no dense table anywhere): the groups live in a `HashMapWithView<i128, usize>` keyed by the packed code tuple, so the key dictionaries' PRODUCT never
+// matters (REAL catalog: name 9,646 x stmt 8 x tag 197,363 x plabel 698,147 = 1.06e16 codes pairs; a dense table here is forbidden, see the prompt's
+// "Dense slot table" section). Codes are u32 (no declared bound), the only per-code arrays are over ONE dictionary each.
+// Speed: proved, ran at 0.93x of the all-core reference on the 1M-row SYNTHETIC db. REAL EDGAR (sec_edgar_dec.duckdb, sec_margin_dec; num 39,401,761, pre 9,600,799, sub 86,135):
+// 153 verified, 0 errors; result rows equal DuckDB's; median of 9: 4.44 s (best 3.57 s) vs 1.17 s all-core (0.26x), 4.16 s one thread (0.94x). Correct and runnable; not faster than the all-core engine.
 // AGENT_HELPERS_START
 spec fn nf(n: &Cols_num, i0: int) -> bool {
     n.uom__dict@[n.uom@[i0] as int]@ == "USD"@

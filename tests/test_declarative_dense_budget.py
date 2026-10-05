@@ -135,3 +135,17 @@ def test_the_exporter_records_the_dictionary_sizes_the_host_main_will_see(tmp_pa
     got = write_query_measure(sql=SQL, schema=SCHEMA, catalog=_cat(None, None), db_path=db, dest=tmp_path / "data")
     assert got["dict_sizes"] == {"t.a": 7, "t.b": 3}
     assert json.loads((tmp_path / "data" / "expect.json").read_text())["dict_sizes"] == {"t.a": 7, "t.b": 3}
+
+
+def test_the_hash_based_hard_fixtures_pass_the_lint_at_real_sec_sizes_and_a_dense_mutation_does_not() -> None:
+    """The Q5 fixture and the other hard dict fixtures build no table over a product of key dictionaries."""
+    from declarative_spec.prompt import _FIXTURES
+    from declarative_spec.regions import extract_agent_edit
+
+    real = {"sub.name": 9646, "num.tag": 197363, "sub.tag": 7, "pre.stmt": 8, "pre.plabel": 698147}
+    for name in ("dict_join3_group_topk.rs", "dict_anti_join_group_topk.rs", "dict_group_two_keys_count_distinct_avg.rs", "dict_having_scalar_subquery.rs"):
+        body = extract_agent_edit((_FIXTURES / "hard" / name).read_text())
+        assert dense_budget.body_violation(body, THREE, real) is None, name
+    body = extract_agent_edit((_FIXTURES / "hard" / "dict_join3_group_topk.rs").read_text())
+    dense = body + "\n    let a: usize = s.name__dict.len();\n    let b: usize = n.tag__dict.len();\n    let grid: Vec<u64> = vec![0u64; a * b];\n"
+    assert dense_budget.body_violation(dense, THREE, real)
