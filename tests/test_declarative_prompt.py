@@ -276,6 +276,14 @@ def test_prompt_teaches_block_skip_and_its_limit() -> None:
     assert "BRANCH-FREE flag" in p and "branch-miss bound" in p and "tie at best" in p and "parallel_dict_filter_count_max_blockskip.rs" in p
 
 
+def test_prompt_teaches_slicing_the_hot_loop_and_mounts_the_sliced_examples(tmp_path: Path) -> None:
+    p = _prompt("SELECT stmt, COUNT(*) AS c FROM pre GROUP BY stmt")
+    assert "BOUNDS CHECKS" in p and "slice_subrange" in p and "parallel_dict_filter_count_max_slices.rs" in p and "parallel_ungrouped_product_sum_slices.rs" in p
+    mount_examples(tmp_path)
+    assert (tmp_path / "examples" / "parallel_dict_filter_count_max_slices.rs").is_file()
+    assert "slice_subrange" in (tmp_path / "examples" / "parallel_ungrouped_product_sum_slices.rs").read_text()
+
+
 def test_mount_examples_copies_every_example(tmp_path: Path) -> None:
     mount_examples(tmp_path)
     names = {f.name for f in (tmp_path / "examples").iterdir()}
