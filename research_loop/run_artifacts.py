@@ -179,7 +179,7 @@ def effective_settings(git_sha: str | None, git_dirty: bool | None) -> dict[str,
     The raw env snapshot omits an unset variable, so a run could not tell "off" from "never recorded".
     """
     env = os.environ.get
-    from research_loop.agent_sandbox import CLAUDE_TOOL_SEARCH, claude_effort, claude_thinking_tokens
+    from research_loop.agent_sandbox import claude_effort, claude_thinking_tokens, claude_tool_search
 
     return {
         "LEMMA_STRING_ENCODING": (env("LEMMA_STRING_ENCODING") or "").strip() or "plain",
@@ -190,7 +190,7 @@ def effective_settings(git_sha: str | None, git_dirty: bool | None) -> dict[str,
         # Container Claude agent (ignored by other agents): what claude -p actually gets.
         "claude_effort": claude_effort(),
         "claude_max_thinking_tokens": claude_thinking_tokens(),
-        "claude_enable_tool_search": CLAUDE_TOOL_SEARCH,
+        "claude_enable_tool_search": claude_tool_search(),
         "git_sha": git_sha,
         "git_dirty": git_dirty,
     }

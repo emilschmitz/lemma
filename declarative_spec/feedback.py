@@ -156,6 +156,8 @@ def _rewrite_block(text: str, regions: list[Region], assembled_name: str) -> tup
     current_is_assembled = True
     for raw in text.split("\n"):
         m = _LOC.match(raw)
+        if re.match(r"(note|help)(\[[^\]]*\])?:", raw):
+            current_is_assembled = True  # a sub-diagnostic starts a new span; its own `-->` line (if any) decides
         if m:
             current_is_assembled = Path(m.group(3)).name == assembled_name
             raw = _LOC.sub(loc, raw, count=1)
@@ -259,7 +261,7 @@ def format_failure(
     omitted = len(errors) - shown
     if omitted:
         where = f" Full log: {full_log_hint}." if full_log_hint else ""
-        parts.append(f"... {omitted} more error(s) omitted (showing the first {shown} of {len(errors)}, in source order).{where}")
+        parts.append(f"... {omitted} more error(s) omitted (showing {shown} of {len(errors)}, yours first, displayed in source order).{where}")
     for block in warnings[:MAX_WARNINGS]:
         parts.append(_clip(_scrub_paths(block.text, directory), BLOCK_CHARS))
     if len(warnings) > MAX_WARNINGS:

@@ -177,16 +177,28 @@ _CLAUDE_TOOLS = "Bash,Read,Edit,Write,Glob,Grep,mcp__lemma-host"
 
 CLAUDE_EFFORT_ENV = "LEMMA_CLAUDE_EFFORT"
 CLAUDE_THINKING_ENV = "LEMMA_CLAUDE_THINKING_TOKENS"
-CLAUDE_EFFORT_DEFAULT = "high"
+CLAUDE_TOOL_SEARCH_ENV = "LEMMA_CLAUDE_TOOL_SEARCH"
 _CLAUDE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
-# Claude Code defers MCP tool schemas behind a ToolSearch tool; every session then spends its first turn loading
-# them. "false" loads them with the first request instead (ENABLE_TOOL_SEARCH, present in claude 2.1.289).
-CLAUDE_TOOL_SEARCH = "false"
+# Both settings are opt-in: unset leaves the CLI default, so existing runs behave as before. Documented values in
+# claude 2.1.289: --effort low|medium|high|xhigh|max (the CLI has a per-model supportsEffort table; whether Haiku 4.5
+# accepts the flag is not verified, so there is no default); ENABLE_TOOL_SEARCH true|auto|auto:N|false (false loads MCP
+# tool schemas with the first request instead of a ToolSearch turn). For equal-conditions comparisons set both
+# explicitly for every model compared.
+
+
+def claude_tool_search() -> str | None:
+    """``ENABLE_TOOL_SEARCH`` for the container agent from ``LEMMA_CLAUDE_TOOL_SEARCH``; unset leaves the CLI default."""
+    value = (os.environ.get(CLAUDE_TOOL_SEARCH_ENV) or "").strip().lower()
+    if not value:
+        return None
+    if value not in ("true", "false", "auto") and not re.fullmatch(r"auto:\d+", value):
+        raise ValueError(f"{CLAUDE_TOOL_SEARCH_ENV} must be true, false, auto or auto:N, got {value!r}")
+    return value
 
 
 def claude_effort() -> str | None:
-    """`--effort` for the container agent: ``LEMMA_CLAUDE_EFFORT`` (default high), ``none`` omits the flag."""
-    value = (os.environ.get(CLAUDE_EFFORT_ENV) or "").strip().lower() or CLAUDE_EFFORT_DEFAULT
+    """`--effort` for the container agent from ``LEMMA_CLAUDE_EFFORT``; unset or ``none`` omits the flag."""
+    value = (os.environ.get(CLAUDE_EFFORT_ENV) or "").strip().lower() or "none"
     if value == "none":
         return None
     if value not in _CLAUDE_EFFORTS:
@@ -1177,7 +1189,9 @@ def run_agent_docker(
     env = parse_agent_env(cfg, base={})
     if claude:
         env.pop("CURSOR_API_KEY", None)
-        env["ENABLE_TOOL_SEARCH"] = CLAUDE_TOOL_SEARCH
+        tool_search = claude_tool_search()
+        if tool_search is not None:
+            env["ENABLE_TOOL_SEARCH"] = tool_search
         thinking = claude_thinking_tokens()
         if thinking is not None:
             env["MAX_THINKING_TOKENS"] = str(thinking)

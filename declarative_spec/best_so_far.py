@@ -55,9 +55,22 @@ def score(metrics: dict) -> tuple[int, int, int, int]:
     return (1, int(proved), -errors, verified)
 
 
+def _read(path: Path) -> str:
+    with open(path, encoding="utf-8", newline="") as f:  # no newline translation: the hash is of the exact text
+        return f.read()
+
+
+def _read_json(path: Path, default):
+    """The agent can write these files; unreadable JSON counts as absent rather than aborting the run."""
+    try:
+        return json.loads(_read(path)) if path.is_file() else default
+    except (ValueError, OSError):
+        return default
+
+
 def _read_index(ws: Path) -> list[dict]:
-    path = ws / "mcp_results" / ATTEMPTS / "index.json"
-    return json.loads(path.read_text()) if path.is_file() else []
+    index = _read_json(ws / "mcp_results" / ATTEMPTS / "index.json", [])
+    return [e for e in index if isinstance(e, dict) and {"n", "sha", "file", "score"} <= e.keys()] if isinstance(index, list) else []
 
 
 def record_attempt(ws: Path, source: str, metrics: dict, *, origin: str) -> dict:
@@ -81,7 +94,8 @@ def record_attempt(ws: Path, source: str, metrics: dict, *, origin: str) -> dict
                 (d / "index.json").write_text(json.dumps(index, indent=2) + "\n")
                 _maybe_best(ws, d, entry)
             return entry
-    n = len(index) + 1
+    used = [int(m.group(1)) for f in d.glob("*.rs") if (m := re.fullmatch(r"(\d+)\.rs", f.name))]
+    n = max([len(index), *used]) + 1  # never reuse a number, even if index.json was lost
     (d / f"{n:03d}.rs").write_text(source)
     entry = {
         "n": n,
@@ -111,8 +125,10 @@ def _maybe_best(ws: Path, d: Path, entry: dict) -> None:
 
 
 def load_best_entry(ws: Path) -> dict | None:
-    path = ws / "mcp_results" / ATTEMPTS / "best.json"
-    return json.loads(path.read_text()) if path.is_file() else None
+    entry = _read_json(ws / "mcp_results" / ATTEMPTS / "best.json", None)
+    if not isinstance(entry, dict) or not {"n", "sha", "file", "score"} <= entry.keys():
+        return None
+    return entry
 
 
 def load_best(ws: Path) -> tuple[dict, str] | None:
@@ -125,7 +141,7 @@ def load_best(ws: Path) -> tuple[dict, str] | None:
     path = ws / "mcp_results" / ATTEMPTS / entry["file"]
     if path.is_symlink() or not path.is_file():
         raise ValueError(f"best attempt file is not a plain file: {path}")
-    text = path.read_text()
+    text = _read(path)
     if sha(text) != entry["sha"]:
         raise ValueError(f"best attempt file {entry['file']} does not match its recorded hash (tampered?)")
     return entry, text
@@ -145,7 +161,7 @@ def restore_best(ws: Path, agent_path: Path) -> tuple[str, dict | None]:
     if loaded is None:
         return "none", None
     entry, text = loaded
-    if agent_path.is_file() and sha(agent_path.read_text()) == entry["sha"]:
+    if agent_path.is_file() and sha(_read(agent_path)) == entry["sha"]:
         return "kept", entry
     agent_path.write_text(text)
     return "restored", entry

@@ -228,7 +228,7 @@ def test_effort_flag_default_and_override(monkeypatch: pytest.MonkeyPatch) -> No
     from research_loop.agent_sandbox import claude_agent_cmd
 
     monkeypatch.delenv("LEMMA_CLAUDE_EFFORT", raising=False)
-    assert "--effort high " in claude_agent_cmd("claude-haiku-4-5-20251001")
+    assert "--effort" not in claude_agent_cmd("claude-haiku-4-5-20251001")  # no default: Haiku support is unverified
     monkeypatch.setenv("LEMMA_CLAUDE_EFFORT", "medium")
     assert "--effort medium " in claude_agent_cmd("claude-haiku-4-5-20251001")
     monkeypatch.setenv("LEMMA_CLAUDE_EFFORT", "none")
@@ -254,9 +254,26 @@ def test_manifest_records_the_effective_claude_settings(monkeypatch: pytest.Monk
     monkeypatch.delenv("LEMMA_CLAUDE_EFFORT", raising=False)
     monkeypatch.delenv("LEMMA_CLAUDE_THINKING_TOKENS", raising=False)
     eff = effective_settings("sha", False)
-    assert eff["claude_effort"] == "high" and eff["claude_max_thinking_tokens"] is None
-    assert eff["claude_enable_tool_search"] == "false"
+    monkeypatch.delenv("LEMMA_CLAUDE_TOOL_SEARCH", raising=False)
+    eff = effective_settings("sha", False)
+    assert eff["claude_effort"] is None and eff["claude_max_thinking_tokens"] is None
+    assert eff["claude_enable_tool_search"] is None
+    monkeypatch.setenv("LEMMA_CLAUDE_TOOL_SEARCH", "false")
+    assert effective_settings("sha", False)["claude_enable_tool_search"] == "false"
     monkeypatch.setenv("LEMMA_CLAUDE_EFFORT", "low")
     monkeypatch.setenv("LEMMA_CLAUDE_THINKING_TOKENS", "4000")
     eff = effective_settings("sha", False)
     assert eff["claude_effort"] == "low" and eff["claude_max_thinking_tokens"] == 4000
+
+
+def test_tool_search_is_opt_in_and_validated(monkeypatch: pytest.MonkeyPatch) -> None:
+    from research_loop.agent_sandbox import claude_tool_search
+
+    monkeypatch.delenv("LEMMA_CLAUDE_TOOL_SEARCH", raising=False)
+    assert claude_tool_search() is None
+    for ok in ("false", "TRUE", "auto", "auto:10"):
+        monkeypatch.setenv("LEMMA_CLAUDE_TOOL_SEARCH", ok)
+        assert claude_tool_search() == ok.lower()
+    monkeypatch.setenv("LEMMA_CLAUDE_TOOL_SEARCH", "maybe")
+    with pytest.raises(ValueError):
+        claude_tool_search()

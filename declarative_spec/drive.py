@@ -167,7 +167,15 @@ def _prepare_restart(workspace: Path, agent_path: Path, prev_source: str | None,
     previous = workspace / "context" / "ro" / "previous_attempt.rs"
     if prev_source is not None:
         previous.write_text(prev_source)
-    state, best = best_so_far.restore_best(workspace, agent_path)
+    try:
+        state, best = best_so_far.restore_best(workspace, agent_path)
+    except (ValueError, OSError) as exc:
+        # The attempt store lives in the agent's workspace and failed its integrity check: say so, change nothing.
+        iter_record["restart"] = f"best-so-far store unusable: {exc}"
+        return (
+            "The host could not restore your best attempt (its record failed an integrity check), "
+            f"so `{agent_path.name}` holds the last file you left."
+        )
     iter_record["restart"] = state
     if best is None:
         return (

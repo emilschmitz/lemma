@@ -109,3 +109,50 @@ def test_modified_attempt_file_or_symlink_is_refused(tmp_path: Path) -> None:
     (tmp_path / "elsewhere").write_text("GOOD")
     with pytest.raises(ValueError):
         best_so_far.load_best(tmp_path)
+
+
+def test_lost_index_never_reuses_an_attempt_number(tmp_path: Path) -> None:
+    best_so_far.record_attempt(tmp_path, "ONE", _m(10, 3), origin="t")
+    (tmp_path / "mcp_results" / "attempts" / "index.json").unlink()
+    entry = best_so_far.record_attempt(tmp_path, "TWO", _m(20, 1), origin="t")
+    assert entry["file"] == "002.rs" and (tmp_path / "mcp_results" / "attempts" / "001.rs").read_text() == "ONE"
+
+
+@pytest.mark.parametrize("junk", ["{", "{}", "[]", "null"])
+def test_garbage_best_json_is_treated_as_absent(tmp_path: Path, junk: str) -> None:
+    best_so_far.record_attempt(tmp_path, "ONE", _m(10, 3), origin="t")
+    (tmp_path / "mcp_results" / "attempts" / "best.json").write_text(junk)
+    assert best_so_far.load_best_entry(tmp_path) is None
+    best_so_far.record_attempt(tmp_path, "TWO", _m(5, 5), origin="t")  # recording still works
+
+
+def test_crlf_source_round_trips(tmp_path: Path) -> None:
+    src = "a\r\nb\r\n"
+    best_so_far.record_attempt(tmp_path, src, _m(10, 1), origin="t")
+    agent = tmp_path / "a.rs"
+    agent.write_text("other")
+    assert best_so_far.restore_best(tmp_path, agent)[0] == "restored"
+    assert agent.read_bytes() == src.encode()
+
+
+def test_prepare_restart_survives_a_tampered_store(tmp_path: Path) -> None:
+    from declarative_spec.drive import _prepare_restart
+
+    (tmp_path / "context" / "ro").mkdir(parents=True)
+    best_so_far.record_attempt(tmp_path, "GOOD", _m(10, 3), origin="t")
+    (tmp_path / "mcp_results" / "attempts" / "001.rs").write_text("EVIL")
+    agent = tmp_path / "runquery_agent.rs"
+    agent.write_text("mine")
+    record: dict = {}
+    note = _prepare_restart(tmp_path, agent, "mine", record)
+    assert "integrity check" in note and agent.read_text() == "mine" and "unusable" in record["restart"]
+
+
+def test_help_snippet_after_a_vstd_span_is_still_rewritten() -> None:
+    log = (
+        f"error: x\n   --> {DIR}/{NAME}:23:1\n    |\n23  | res\n    |\n"
+        "   ::: /home/emil/tools/verus/source/vstd/seq.rs:17:5\n    |\n17  | requires x\n    |\n"
+        f"help: try this\n   --> {DIR}/{NAME}:23:1\n    |\n23  | res2\n"
+    )
+    out = format_failure(log, assembled=_assembled(), agent_source=AGENT, directory=DIR)
+    assert "\n17  | requires x" in out and "\n4  | res2" in out

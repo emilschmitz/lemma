@@ -102,3 +102,112 @@ VERDICT: FAIL
 Fixed in the follow-up commit with tests in tests/test_declarative_feedback_fixes.py: 1 (no-tally attempts are never best, so no stale-stub restore), 2 (best.json file name, symlink and recorded-hash checks; refuses loudly), 3 (a later tally for the same file replaces a no-tally record), 4 (gutter rewritten only for snippets of the assembled program), 5 (agent-region errors are chosen first, displayed in source order), 6 (prove_measure_competitive prefers compiler_error), 8 (scrub skips paths preceded by a closing bracket). Not changed: 7 (a host primary span stays labelled host-owned; the label says not editable, which is accurate for the span), 9 (the final best is not re-checked after the loop: the loop returns the host final check of the last file, as before), 10 (best among proved = most verified; a proved run ends the loop anyway).
 
 Re-reviewed by author only for the fixes; blockers 1 and 2 are covered by reproducer tests. VERDICT after fixes: PASS (blockers resolved, original verdict FAIL stands for 93ae2c5).
+
+
+## Re-review of 9e5b4d8 (diff 93ae2c5..9e5b4d8; manual adversary, Sonnet)
+
+Scope: the fixes only. Read-only; probes in the session scratchpad; `uv run pytest tests/test_declarative_feedback*.py -q` gives 37 passed.
+
+### No BLOCKERs, no MAJORs.
+
+### SHOULD-FIX 1: a raise in `load_best` kills the whole drive run and discards its history
+`declarative_spec/drive.py:278` calls `_prepare_restart` (-> `restore_best` -> `best_so_far.py:load_best`) outside any
+try/except, and `db_extension/optimizer.py:735` does not catch either. A `ValueError`/`KeyError`/`JSONDecodeError`
+from `load_best` therefore escapes `run_declarative_optimization_loop`: the `history` list, the prior iterations' results
+and the "FAILED" dict are all lost; the caller sees a raw traceback. Loud is the intent, and that holds, but the run
+is lost rather than reported as a failed iteration.
+Reproducers (all in a fresh workspace; `record_attempt` then):
+- delete `attempts/index.json`, then `record_attempt` another file: `n` restarts at 1, overwrites `001.rs`, `best.json`
+  still names `001.rs` with the old sha, so the next `load_best` raises "does not match its recorded hash".
+- write `{}` to `best.json`: `load_best` raises a bare `KeyError: 'file'` (line 123); write `{` to it: `JSONDecodeError`,
+  and even `record_attempt` (via `_maybe_best` -> `load_best_entry`, line 112) raises inside the MCP `run_runquery` path
+  (`measure_core.py:362`), turning an agent-writable file into an MCP-tool failure.
+An agent that can write the workspace can use this to abort its own run; this is not an escalation, but the cheapest
+sensible handling is to catch in `_prepare_restart`, record `iter_record["error"]`, and fall through with the agent's file
+untouched (or end the family `FAILED` with the history intact).
+
+### NOTE 1: validation is consistency, not authenticity (forgery passes)
+`best_so_far.py:121-130`. Overwrite `001.rs` with new text and set `best.json["sha"]` to its hash: `load_best` returns
+the forged text and `restore_best` writes it to the agent path (probe printed `EVIL`). Same for tampering `index.json`.
+The checks stop accidental drift, a symlink, and path traversal in `file`, which is all they can do when the
+workspace is the agent's. No escalation: the restored text only replaces the agent's own file and still goes through
+host admission and the host region rebuild. Do not read the hash check as a security boundary; the comment says
+"tampered?" and could say "inconsistent".
+Smaller points that held up: `file` must `fullmatch(\d{3,}\.rs)` (no `/`, `..`, trailing newline); `is_symlink()` plus
+`is_file()` is checked before the read; a symlinked `attempts/` directory itself is not checked (agent-controlled, the
+hash still has to match, so the only gain is the forgery above); the check-then-read TOCTOU window only allows the same
+forgery. `\d` matches non-ASCII digits (`٠٠١.rs` passes the regex), harmless because it is still one plain filename.
+
+### NOTE 2: hash is over text, read back through universal-newline decoding (latent)
+`best_so_far.py:63-98,126-128`. `record_attempt` hashes `source` as given and writes it, `load_best` hashes
+`read_text()`, which turns `\r\n`/`\r` into `\n`. Reproducer: `record_attempt(ws, "a\r\nb\r\n", ...)` then `load_best`
+raises "does not match its recorded hash". Not reachable today: both callers pass text that came out of
+`read_text` (`drive.py:~290`, `measure_core.py:321`), so it is already normalised. A future caller that passes raw
+bytes-decoded text would crash the restore path (see SHOULD-FIX 1). Hash the normalised text or read with `newline=""`.
+
+### NOTE 3: ordering and tally upgrade (held up; two small remarks)
+Probed `(has_tally, proved, -errors, verified)`:
+- a proved file followed by a no-tally recheck of the same sha leaves best at `[1,1,0,9]`; a different no-tally file never
+  becomes best; an errors-only tally never displaces a proved one; a tallied file that follows an earlier no-tally
+  record of the same sha is upgraded in `index.json` and enters `best.json` only if strictly better (checked both
+  orders). Restore can therefore not overwrite a better body with a worse one, and cannot lose a proved body.
+- `proof_verified=True` without a tally line (not produced by the current pipeline: SUCCESS always carries
+  `verify_summary`) is unranked and never best; fine.
+- remaining case where the agent's file stays non-compiling: no tallied attempt exists at all (all checks were
+  rustc/timeout/admission). Then there is nothing better to restore and "none" is returned; correct, and the restart note
+  says so.
+- same-sha with an existing tally keeps the first tally even if a later run of the identical file proves (flaky
+  rlimit); the loop ends on a proved host-final check anyway, so no effect. A tie between equal-score files keeps the
+  earlier one (strict `>`).
+
+### SHOULD-FIX 2: a `help:`/`note:` snippet after a vstd `:::` span is left unrewritten
+`feedback.py:153-165`. The gutter state is "the span named by the last `-->`/`:::` line"; sub-diagnostics such as
+`help:` suggestions print snippets of the primary file without a new `-->`. Reproducer (probe p2, case 1): primary
+`--> declarative_query.rs:23:1`, then `::: vstd/seq.rs:17:5`, then `help: try` with `23 | res2`. Output keeps `23  | res2`
+(host line number) while the same block's first snippet shows `4  | res`: the agent sees two different numbers for
+the same line and the 23 reads as a line of its own file. Wrong in the safe direction less often than the old code,
+but it is a mis-attribution the state machine introduces. Fix: reset `current_is_assembled` to the primary file at a
+line matching `^(help|note|warning|error)` (non-indented sub-diagnostic head).
+
+### NOTE 4: location lines with a space in the path are skipped
+`feedback.py:35` (`_LOC` uses `\S+?`). For a run directory containing a space (probe p2, case 2) `-->` is not matched,
+so it is printed with the host path, but the following snippet gutter is rewritten (`4  | res`): half rewritten and
+a host path leak (`_scrub_paths` also stops at the space). Workspace paths are generated by the host and have no
+spaces today; mention only.
+
+### NOTE 5: the omission line misdescribes the selection
+`feedback.py:~259`. With the new agent-first choice the footer still says "showing the first N of M, in source order"
+(probe p2, case 3: "showing the first 4 of 9"; with 11 host errors and one agent error it would claim the first 8). The
+displayed set is "agent-region errors first, then host errors up to the caps, displayed in source order". The agent
+may infer that errors beyond the cap are all later in the file. Change the wording.
+
+### NOTE 6: error selection, what held up and the residual
+- An agent-region (primary span) error is always shown: it sorts first into `chosen`, and the first block is exempt
+  from the budget check (`if chosen and ...`). Probe: 9 agent errors of 3000 chars each show 4 (budget 7000) with the
+  omitted count; 11 host errors plus one location-less error show the location-less one first, then 7 host ones. Agent
+  errors alone beyond `MAX_ERRORS` or `TOTAL_CHARS` hide only the later agent errors, never all of them.
+- `size = min(len(block.text), BLOCK_CHARS)` is computed before `_scrub_paths`, which can only change the length by a few
+  characters per path; overshoot of `TOTAL_CHARS` is bounded by that, not a defect.
+- The budget loop `break`s at the first block that does not fit instead of `continue`, so one large host block can
+  keep a later small host block out. Cosmetic.
+- Residual: classification is by the primary `-->` alone. An error whose primary span is host code but whose cause is
+  the agent (the old NOTE 7 class) counts as host, so with >= 8 agent-primary errors it is hidden. A rare overlap; the
+  location-less and host-primary errors are otherwise kept in order after the agent ones.
+- The `_scrub_paths` lookbehind `(?<![\w.)\]])` now skips a path directly after `)` or `]`; a leak is possible only
+  for text like `...)/home/x/y` and nothing in rustc/Verus output is shaped that way.
+
+### NOTE 7: gutter state machine, what held up
+`feedback.py:153-165`. A snippet line is only rewritten by the anchored `^\s*\d+\s*\|` pattern at the start of a line, after
+the `_LOC` check for that line, so: a code line that contains `|` or `-->` is always behind its own gutter
+prefix and is never read as a location; a message line cannot start with `-->`/`:::` plus a path:line:col unless
+rustc printed it; `...` elision lines and `   |` continuation lines pass untouched; a `:::` to a non-assembled
+file switches the state off and a later `-->` switches it on. Only the help/note case above is wrong, plus the initial
+default (`True`) applies to any snippet that precedes the first location line (none seen in rustc/Verus output).
+
+### What held up (summary)
+Tie/upgrade logic, no-tally attempts never best, symlink/file-name/hash checks stop drift and path tricks, the new
+`prove_measure_competitive.py` ordering (compiler_error first) is a one-line message-priority change with no
+behaviour risk, the tests in `tests/test_declarative_feedback_fixes.py` pass and the original blockers 1 and 2 are closed
+(a no-tally stub can no longer be restored; a tampered file refuses loudly).
+
+VERDICT (9e5b4d8): PASS
