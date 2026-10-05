@@ -555,6 +555,10 @@ def _parse_select(expression: exp.Select, *, outer_scope: _Scope | None = None) 
         for item in select_items:
             names.append(next(agg_aliases) if _is_aggregate(item) else next(proj_names))
         query.select_order = names
+    taken = {a.alias.lower() for a in query.aggs}
+    for hidden in scope.pending:
+        if hidden.alias.lower() in taken:
+            raise DeclarativeUnsupported(f"output name {hidden.alias!r} collides with a hidden operand of a division")
     query.aggs.extend(scope.pending)
     agg_alias_map = {a.alias.lower(): a.alias for a in query.aggs if a.alias}
 

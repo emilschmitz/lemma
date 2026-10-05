@@ -674,17 +674,17 @@ def _emit_ratio(
     key_call = ", k" if key_ty else ""
     p_call = _param_call(params)
     blocks.append(
-        f"""pub open spec fn {name}({_param_sig(params)}, i0: int{key_sig}, v: f64) -> bool {{
-    let num: int = {k} * {num_fn}({p_call}, i0{key_call});
-    let den: int = {den_fn}({p_call}, i0{key_call});
-    if den != 0 {{
-        v.is_finite_spec() && (v as real) == ((num as real) * {10**den_scale}real) / ((den as real) * {10**num_scale}real)
-    }} else if num > 0 {{
-        v.is_infinite_spec() && !v.is_sign_negative_spec()
-    }} else if num < 0 {{
-        v.is_infinite_spec() && v.is_sign_negative_spec()
+        f"""pub open spec fn {name}({_param_sig(params)}, i0: int{key_sig}, ratio_v__: f64) -> bool {{
+    let ratio_n__: int = {k} * {num_fn}({p_call}, i0{key_call});
+    let ratio_d__: int = {den_fn}({p_call}, i0{key_call});
+    if ratio_d__ != 0 {{
+        ratio_v__.is_finite_spec() && (ratio_v__ as real) == ((ratio_n__ as real) * {10**den_scale}real) / ((ratio_d__ as real) * {10**num_scale}real)
+    }} else if ratio_n__ > 0 {{
+        ratio_v__.is_infinite_spec() && !ratio_v__.is_sign_negative_spec()
+    }} else if ratio_n__ < 0 {{
+        ratio_v__.is_infinite_spec() && ratio_v__.is_sign_negative_spec()
     }} else {{
-        v.is_nan_spec()
+        ratio_v__.is_nan_spec()
     }}
 }}"""
     )

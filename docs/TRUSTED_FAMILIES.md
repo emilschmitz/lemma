@@ -391,6 +391,7 @@ pub fn host_f64_div_by_zero(x: f64) -> (o: f64)
 ```
 
 Verdict and proposal: `research_loop/menus/ratio_division_ADVERSARY_VERDICT.md`, `research_loop/menus/ratio_division_PROPOSAL.md`.
+The premise "DuckDB returns inf/NaN" holds for DuckDB 1.5.4 with default settings (`ieee_floating_point_ops` on); with it off DuckDB returns NULL and the spec would be wrong.
 What is false about it: nothing about the IEEE operation; the surrounding idealization (casts of sums above 2^53, the real
 quotient) carries the accepted float limitations.
 

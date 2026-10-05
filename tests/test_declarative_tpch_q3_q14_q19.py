@@ -116,8 +116,8 @@ def test_q14_states_the_ratio_over_two_hidden_sums_with_ieee_zero_cases(tpch: tu
     spec = emit_declarative_spec(Q14, *tpch)
     assert "pub open spec fn ratio_promo_revenue(" in spec
     assert "10000 * sum_promo_revenue__num(" in spec  # 100.00 is 10000 at scale 2
-    assert "((num as real) * 10000real) / ((den as real) * 1000000real)" in spec  # scales 6 over 4
-    for case in ("v.is_infinite_spec() && !v.is_sign_negative_spec()", "v.is_infinite_spec() && v.is_sign_negative_spec()", "v.is_nan_spec()"):
+    assert "((ratio_n__ as real) * 10000real) / ((ratio_d__ as real) * 1000000real)" in spec  # scales 6 over 4
+    for case in ("ratio_v__.is_infinite_spec() && !ratio_v__.is_sign_negative_spec()", "ratio_v__.is_infinite_spec() && ratio_v__.is_sign_negative_spec()", "ratio_v__.is_nan_spec()"):
         assert case in spec
     assert "pub promo_revenue: Option<f64>," in spec  # SUM of no rows is NULL
     assert "pub fn host_f64_div_by_zero" in spec  # the one trusted item of a ratio spec
