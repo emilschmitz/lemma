@@ -169,3 +169,17 @@ def test_a_column_without_a_declared_cap_or_a_date_has_no_integer_conjunct(monke
     monkeypatch.setenv("LEMMA_NARROW_CELLS", "0")
     spec = emit_declarative_spec("SELECT COUNT(*) AS c FROM t WHERE a > 1 AND \"when\" > DATE '2000-01-01'", SCHEMA, CAT)
     assert "t.a@[i] as int >=" not in spec and "t.when@[i] as int >=" not in spec
+
+
+def test_the_prompt_tells_a_prover_how_a_literal_wider_than_the_cell_and_a_wide_key_are_written() -> None:
+    from declarative_spec.prompt import build_declarative_prompt
+
+    text = build_declarative_prompt(sql="SELECT 1", spec_path="s.rs", edit_path="e.rs", lemma_index="", last_error="", in_docker=False, spec_text="")
+    assert "NARROW CELLS" in text and "(q as i128) * 40000i128" in text
+
+
+def test_the_prompt_says_the_sum_bound_uses_the_column_cap_not_the_i64_range() -> None:
+    from declarative_spec.prompt import build_declarative_prompt
+
+    text = build_declarative_prompt(sql="SELECT 1", spec_path="s.rs", edit_path="e.rs", lemma_index="", last_error="", in_docker=False, spec_text="")
+    assert "CAP of the column" in text and "let k = q as i64;" in text

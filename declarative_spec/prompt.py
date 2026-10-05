@@ -516,6 +516,12 @@ cannot overflow within one block), then merge the block into the worker's accumu
 If the speed bar is not met, look first at bounds checks, then at the bytes per row: with a catalog cap on a column the loaded cell is narrower
 (`i8`/`i16`/`i32`, see the struct in the spec) and the scan reads fewer bytes; a scan limited by the BYTES it reads is a tie at best.
 Repeat the timed run before judging: this box shows 30 percent noise.
+NARROW CELLS (a struct field `Vec<i8>`/`Vec<i16>`/`Vec<i32>` in the spec; the spec itself still reads every cell `as int`):
+a filter or arithmetic literal larger than the cell type is a literal of the WIDER type, not of the cell: write `(q as i64) < 70000` or
+`(q as i128) * 40000i128`, never `q < 70000`, which does not type-check; a comparison that holds for every cell of that width is proved from the width
+(`q as int >= -32768 && q as int <= 32767`) and the cell cap in `valid_cols_<table>`, not tested at run time. A group key stays `i64` in `OutRow`
+(`let k = q as i64;`, then `key_at(..) == k as int` follows). The running-total bound of a SUM uses the CAP of the column (the `valid_cols` conjunct
+`|cell| < cap`), not the i64 range the wide examples hard-code.
 To prove a product of two cells fits in the `i128` accumulator, write a helper with `by (nonlinear_arith)` from the
 two cell bounds (worked example: `context/ro/examples/ungrouped_decimal_product_sum.rs`).
 """
