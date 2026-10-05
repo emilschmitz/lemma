@@ -97,11 +97,11 @@ def test_job_env_snapshot_keeps_only_the_settings_that_are_set(monkeypatch: pyte
 
     for k in _JOB_ENV_KEYS:
         monkeypatch.delenv(k, raising=False)
-    assert _job_env_snapshot() == {}
+    assert _job_env_snapshot() == {"LEMMA_NARROW_CELLS": "0"}  # the effective narrow flag is always recorded
     monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
     monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "1")
     monkeypatch.setenv("UNRELATED", "x")
-    assert _job_env_snapshot() == {"LEMMA_STRING_ENCODING": "dict", "LEMMA_PARALLEL_VSTD": "1"}
+    assert _job_env_snapshot() == {"LEMMA_STRING_ENCODING": "dict", "LEMMA_PARALLEL_VSTD": "1", "LEMMA_NARROW_CELLS": "0"}
 
 
 # ---- check regenerates the spec (the spec is the ground truth) --------------------------------------------------------------
@@ -181,7 +181,9 @@ def test_the_job_snapshot_carries_the_narrow_cells_flag_and_leaves_unset_flags_o
     snap = dm._job_env_snapshot()
     assert snap["LEMMA_NARROW_CELLS"] == "1" and "LEMMA_PARALLEL_VSTD" not in snap
     monkeypatch.delenv("LEMMA_NARROW_CELLS")
-    assert "LEMMA_NARROW_CELLS" not in dm._job_env_snapshot()
+    assert dm._job_env_snapshot()["LEMMA_NARROW_CELLS"] == "0"  # the effective value is recorded even when unset
+    monkeypatch.setenv("LEMMA_NARROW_CELLS", "0")
+    assert dm._job_env_snapshot()["LEMMA_NARROW_CELLS"] == "0"
 
 
 def test_tpch_catalog_comes_from_the_profiled_package_when_one_is_named_and_from_row_counts_otherwise(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
