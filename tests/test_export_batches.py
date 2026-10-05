@@ -129,3 +129,18 @@ def test_no_batch_exceeds_the_batch_size_and_peak_memory_is_batch_bound(monkeypa
     assert max(sizes) <= batch and len(sizes) == 2 * (n // batch)  # two spooled columns per batch
     assert out.stat().st_size > 3_000_000
     assert peak < out.stat().st_size / 4  # whole-column buffering would be at least the file size
+
+
+def test_a_refused_export_closes_its_spool_files(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import os
+
+    con = duckdb.connect()
+    con.execute("CREATE TABLE t (k BIGINT, s VARCHAR)")
+    con.executemany("INSERT INTO t VALUES (?, ?)", [(1, "a")] * 5 + [(None, "b")])
+    plan = dqm._plan_table(_model({"k": "bigint", "s": "varchar"}), "t", [("k", "i64"), ("s", "String")])
+    monkeypatch.setattr(dqm, "_BATCH_ROWS", 2)
+    before = len(os.listdir("/proc/self/fd"))
+    for _ in range(5):
+        with (tmp_path / "x.bin").open("wb") as fh, pytest.raises(ValueError, match="NULLs"):
+            dqm._export_planned_to(con, plan, fh)
+    assert len(os.listdir("/proc/self/fd")) == before

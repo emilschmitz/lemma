@@ -74,6 +74,7 @@ def write_query_measure(
         suffix = struct_name.removeprefix("Cols_")
         plans[suffix] = _plan_table(model, _table_for_suffix(model, suffix), _FIELD.findall(body))
     dest.mkdir(parents=True, exist_ok=True)
+    (dest / "expect.json").unlink(missing_ok=True)  # stale until the export and timing succeed
     bins: dict[str, str] = {}
     table_rows: dict[str, int] = {}
     try:
@@ -83,8 +84,10 @@ def write_query_measure(
     try:
         for suffix, plan in plans.items():
             path = dest / f"cols_{suffix}.bin"
-            with path.open("wb") as fh:
+            part = path.with_suffix(".bin.part")
+            with part.open("wb") as fh:
                 table_rows[suffix] = _export_planned_to(con, plan, fh)
+            part.replace(path)  # a refused export leaves the earlier file, not a truncated one
             bins[suffix] = str(path)
         scales_match = _OUT_SCALES.search(spec)
         scales = [int(x) for x in scales_match.group(1).split(",")] if scales_match else None
@@ -188,7 +191,10 @@ def _export_planned(con: duckdb.DuckDBPyConnection, plan: tuple) -> bytes:
 def _export_planned_to(con: duckdb.DuckDBPyConnection, plan: tuple, sink: BinaryIO) -> int:
     """Write the column file for ``plan`` to ``sink``; memory is bounded by ``_BATCH_ROWS`` rows (plus the dictionaries), not the table."""
     table, names, types, infos, nullable, dict_of, valid_fields = plan
-    return _encode_columns(con, table, names, types, infos, nullable, dict_of, valid_fields, sink)
+    # The per-column spool files sit beside the destination: /tmp is often RAM (tmpfs), which would put the table back in memory.
+    name = getattr(sink, "name", None)
+    spool_dir = str(Path(name).parent) if isinstance(name, str) else None
+    return _encode_columns(con, table, names, types, infos, nullable, dict_of, valid_fields, sink, spool_dir)
 
 
 _BATCH_ROWS = 1_000_000  # rows per scan batch of the exporter
@@ -254,6 +260,7 @@ def _encode_columns(
     dict_of: dict[int, int],
     valid_fields: set[int],
     sink: BinaryIO,
+    spool_dir: str | None = None,
 ) -> int:
     """Bulk export to ``sink`` (returns the row count): DuckDB projects every cell at its loaded width, in row batches, as numpy arrays.
 
@@ -354,7 +361,7 @@ def _encode_columns(
         bounds_rowid = con.execute(f"SELECT min(rowid), max(rowid) FROM {t}").fetchone()
         # Column-major layout (all of column 0, then column 1, ...) from a row-batch scan: each column's bytes go to its own
         # temporary file, so memory is bounded by the batch, not the table. The batches are rowid ranges (row-group pruned).
-        spools.extend(tempfile.TemporaryFile() for _ in types)  # noqa: SIM115
+        spools.extend(tempfile.TemporaryFile(dir=spool_dir) for _ in types)  # noqa: SIM115
         seen = 0
         lo = bounds_rowid[0]
         while select and lo is not None and lo <= bounds_rowid[1]:
@@ -369,14 +376,12 @@ def _encode_columns(
             del arrays
         if select and seen != total:
             raise ValueError(f"{table}: scanned {seen} rows of {total}")
+        _finish(spools, dictionaries, dict_of, null_codes, total, sink)
     except duckdb.Error as exc:
         raise ValueError(str(exc)) from exc
     finally:
         for enum in enum_names:
             con.execute(f"DROP TYPE IF EXISTS {enum}")
-    try:
-        _finish(spools, dictionaries, dict_of, null_codes, total, sink)
-    finally:
         for spool in spools:
             spool.close()
     return total
