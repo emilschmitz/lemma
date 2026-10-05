@@ -45,12 +45,12 @@ SHAPES = {
     "derived_max_projection_join_topk": (
         _Q_DERIVED_MAX,
         "projection_join_correlated_max",
-        "projection_join_correlated_max",
+        "dict_projection_join_correlated_max",
     ),
     "correlated_max_join_topk": (
         _Q_CORR_JOIN,
         "projection_join_correlated_max",
-        "projection_join_correlated_max",
+        "dict_projection_join_correlated_max",
     ),
     "correlated_max_one_table": (
         "SELECT tag, value FROM num n1 WHERE n1.uom = 'pure' AND value = (SELECT MAX(value) FROM num n2 WHERE n2.tag = n1.tag)",
@@ -130,7 +130,9 @@ def test_published_derived_max_projection_gets_the_matching_hard_example_not_the
         spec_text=spec,
     )
     recipe_section = p.split("## The recipe for THIS spec")[1].split("\n## ")[0]
-    assert "hard/projection_join_correlated_max_topk.rs" in recipe_section
+    assert "hard/dict_projection_join_correlated_max_topk.rs" in recipe_section
+    assert "hard/projection_join_correlated_max_topk.rs" not in recipe_section
+    assert "DICTIONARY MODE" not in recipe_section  # it has its own dictionary-mode proof
     assert "dict_string_filter_minmax" not in recipe_section
     assert not any("scalar or correlated" in h or "projection with no GROUP BY" in h for h in spec_shape(spec)["hard"])
 
@@ -154,7 +156,7 @@ def test_route_takes_the_first_matching_rule_and_ignores_unnamed_features() -> N
         "kind": "rows",
         "ty": "Vec<OutRow>",
     }
-    assert route(base | {"proj": True, "sq": True, "dict": True, "multi": True}) == "projection_join_correlated_max"
+    assert route(base | {"proj": True, "sq": True, "dict": True, "multi": True}) == "dict_projection_join_correlated_max"
     assert route(base | {"proj": True, "dict": True, "copies": True}) == "projection_where"
     assert route(base | {"dict": True, "grouped": True, "multi": True, "exists": True}) == "dict_anti_join"
     assert route(base | {"kind": "other"}) == "none"
@@ -326,7 +328,7 @@ def test_a_small_table_parallel_prompt_does_not_refer_to_an_order_paragraph_it_l
 
 
 def test_dictionary_mode_projections_are_told_how_strings_are_coded_and_plain_mode_is_not(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in ("projection_where", "projection_topk", "projection_join", "projection_distinct", "derived_max_projection_join_topk"):
+    for name in ("projection_where", "projection_topk", "projection_join", "projection_distinct"):
         sql = SHAPES[name][0]
         dict_p = build_declarative_prompt(sql=sql, spec_path="s", edit_path="e", lemma_index="i", spec_text=_spec(sql, "dict", monkeypatch))
         plain_p = build_declarative_prompt(sql=sql, spec_path="s", edit_path="e", lemma_index="i", spec_text=_spec(sql, "plain", monkeypatch))
@@ -346,4 +348,19 @@ def test_an_uncorrelated_scalar_subquery_is_not_routed_to_the_max_chain_example(
     assert shape["recipe"] == "projection_join"
     assert any("scalar or correlated subquery" in h for h in shape["hard"])  # honest: no worked example for it
     corr = spec_shape(_spec(SHAPES["correlated_max_join_topk"][0], mode, monkeypatch))
-    assert corr["recipe"] == "projection_join_correlated_max" and not corr["hard"]
+    assert corr["recipe"] == ("projection_join_correlated_max" if mode == "plain" else "dict_projection_join_correlated_max") and not corr["hard"]
+
+
+def test_plain_mode_keeps_the_plain_example_and_dict_mode_mounts_its_own(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from declarative_spec.prompt import _EXAMPLES
+
+    assert _EXAMPLES["projection_join_correlated_max"][0] == "hard/projection_join_correlated_max_topk.rs"
+    assert _EXAMPLES["dict_projection_join_correlated_max"][0] == "hard/dict_projection_join_correlated_max_topk.rs"
+    monkeypatch.setenv("LEMMA_STRING_ENCODING", "plain")
+    mount_examples(tmp_path / "p")
+    assert (tmp_path / "p/examples/hard/projection_join_correlated_max_topk.rs").is_file()
+    assert not (tmp_path / "p/examples/hard/dict_projection_join_correlated_max_topk.rs").exists()
+    monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
+    mount_examples(tmp_path / "d")
+    assert (tmp_path / "d/examples/hard/dict_projection_join_correlated_max_topk.rs").is_file()
+    assert "`hard/dict_projection_join_correlated_max_topk.rs`" in (tmp_path / "d/examples/INDEX.md").read_text()

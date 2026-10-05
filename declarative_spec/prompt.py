@@ -186,8 +186,15 @@ _EXAMPLES: dict[str, tuple[str, str]] = {
     "projection_join_correlated_max": (
         "hard/projection_join_correlated_max_topk.rs",
         "projection over a TWO-table join with a correlated scalar MAX subquery (or a join to a per-key MAX), ORDER BY ... LIMIT k: "
-        '"next same-key row" chains and a sorted top-k `Vec` (proves in plain string mode; in dictionary mode the string columns are '
-        "code vectors, so adapt the key and output handling; it proves but is slow: a proof template, not a speed template)",
+        '"next same-key row" chains and a sorted top-k `Vec` (plain string mode; dictionary mode has its own example '
+        "`hard/dict_projection_join_correlated_max_topk.rs`; it proves but is slow: a proof template, not a speed template)",
+    ),
+    "dict_projection_join_correlated_max": (
+        "hard/dict_projection_join_correlated_max_topk.rs",
+        "dictionary string mode: projection over a TWO-table join with a per-key MAX (correlated subquery or derived table), "
+        "ORDER BY value DESC then two string keys, LIMIT k: per-(adsh, tag) max in a `HashMapWithView` keyed by a packed code pair, "
+        "num's dictionary translated to sub's codes once, sub rows chained per code, sorted top-k `Vec` with exec string comparison "
+        "(proved on the real SEC catalog's spec; allocates nothing over a product of dictionary sizes)",
     ),
     "projection_top_k": (
         "projection_top_k.rs",
@@ -306,6 +313,10 @@ _RECIPE_RULES: tuple[tuple[str, dict], ...] = (
     ("string_map", {"kind": "string_map"}),
     # projections (no GROUP BY), plain and dictionary mode alike
     (
+        "dict_projection_join_correlated_max",
+        {"kind": "rows", "proj": True, "sq": True, "multi": True, "dict": True},
+    ),
+    (
         "projection_join_correlated_max",
         {"kind": "rows", "proj": True, "sq": True, "multi": True},
     ),
@@ -355,6 +366,10 @@ def spec_shape(spec_text: str) -> dict:
     covered = {  # features the recipe's own worked example already covers: no "no worked example" warning for them
         "dict_anti_join": ("EXISTS / IN / NOT EXISTS",),
         "projection_join_correlated_max": (
+            "a projection with no GROUP BY",
+            "a scalar or correlated subquery",
+        ),
+        "dict_projection_join_correlated_max": (
             "a projection with no GROUP BY",
             "a scalar or correlated subquery",
         ),

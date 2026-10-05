@@ -58,6 +58,12 @@ DICT_SEC = {
         "WHERE n.uom = 'USD' AND n.ddate BETWEEN 20230101 AND 20231231 AND n.value IS NOT NULL AND p.adsh IS NULL "
         "GROUP BY n.tag, n.version HAVING COUNT(*) > 10 ORDER BY cnt DESC LIMIT 100"
     ),
+    "dict_projection_join_correlated_max_topk.rs": (
+        "SELECT s.name, n.tag, n.value FROM num n JOIN sub s ON n.adsh = s.adsh JOIN (SELECT adsh, tag, MAX(value) AS max_value "
+        "FROM num WHERE uom = 'pure' AND value IS NOT NULL GROUP BY adsh, tag) m ON n.adsh = m.adsh AND n.tag = m.tag "
+        "AND n.value = m.max_value WHERE n.uom = 'pure' AND s.fy = 2022 AND n.value IS NOT NULL "
+        "ORDER BY n.value DESC, s.name, n.tag LIMIT 100"
+    ),
     "dict_join3_group_topk.rs": (
         "SELECT s.name, p.stmt, n.tag, p.plabel, SUM(n.value) AS total_value, COUNT(*) AS cnt FROM num n "
         "JOIN sub s ON n.adsh = s.adsh JOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version "
@@ -153,3 +159,33 @@ def test_a_wrong_sort_direction_in_the_two_key_distinct_avg_example_does_not_ver
 def test_a_non_strict_having_in_the_scalar_subquery_example_does_not_verify(monkeypatch: pytest.MonkeyPatch) -> None:
     ok, out = _verify("dict_having_scalar_subquery.rs", monkeypatch, ("if !taken[g] && gt[g] > q {", "if !taken[g] && gt[g] >= q {"))
     assert not ok and "error" in out
+
+
+_Q2 = "dict_projection_join_correlated_max_topk.rs"
+
+
+def _rejected(name: str, monkeypatch: pytest.MonkeyPatch, mutate: tuple[str, str]) -> None:
+    ok, out = _verify(name, monkeypatch, mutate)
+    assert not ok and re.search(r"verification results:: \d+ verified, [1-9]\d* errors", out), out[-1500:]
+
+
+def test_a_flipped_tag_tie_break_in_the_dict_max_topk_example_does_not_verify(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Equal value and name: the tags must be ordered ascending; comparing them the other way breaks the ORDER BY."""
+    _rejected(_Q2, monkeypatch, ("res[p].tag.as_str().get_char(u) < x.tag.as_str().get_char(u))", "res[p].tag.as_str().get_char(u) > x.tag.as_str().get_char(u))"))
+
+
+def test_a_wrong_uom_literal_in_the_dict_max_topk_example_does_not_verify(monkeypatch: pytest.MonkeyPatch) -> None:
+    _rejected(_Q2, monkeypatch, ('String::from_str("pure")', 'String::from_str("rare")'))
+
+
+def test_a_wrong_fiscal_year_in_the_dict_max_topk_example_does_not_verify(monkeypatch: pytest.MonkeyPatch) -> None:
+    _rejected(_Q2, monkeypatch, ("s.fy[jb] == 2022", "s.fy[jb] == 2023"))
+
+
+def test_a_larger_limit_in_the_dict_max_topk_example_does_not_verify(monkeypatch: pytest.MonkeyPatch) -> None:
+    _rejected(_Q2, monkeypatch, ("if res.len() > 100 {", "if res.len() > 101 {"))
+
+
+def test_dropping_the_max_equality_in_the_dict_max_topk_example_does_not_verify(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every pure row would join, not only the per-(adsh, tag) maximum: the join to the MAX subquery is gone."""
+    _rejected(_Q2, monkeypatch, ("if vi == mv {", "if vi <= mv {"))
