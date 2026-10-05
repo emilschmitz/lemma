@@ -120,7 +120,9 @@ def test_a_wall_timeout_kills_the_solver_child_too(tmp_path: Path, monkeypatch: 
         f"c = subprocess.Popen(['sleep', '60'])\nopen({str(pid_file)!r}, 'w').write(str(c.pid))\ntime.sleep(60)\n",
     )
     monkeypatch.setattr(pipeline, "_verus_binary", lambda: fake)
-    pipeline.compile_and_run("// program", work_dir=tmp_path / "w", timeout_sec=2)
+    # generous wall: the fake solver must start python, spawn the child and write its pid before the kill,
+    # which a loaded machine can stretch past 2 s
+    pipeline.compile_and_run("// program", work_dir=tmp_path / "w", timeout_sec=8)
     child = int(pid_file.read_text())
     for _ in range(50):
         try:
