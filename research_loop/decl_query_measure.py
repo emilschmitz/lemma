@@ -12,6 +12,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import duckdb
+import numpy as np
 
 from declarative_spec.emit import DeclarativeUnsupported, emit_declarative_spec
 from declarative_spec.parse_query import parse_query
@@ -19,7 +20,6 @@ from declarative_spec.resolve import flatten_derived
 from declarative_spec.schema_types import ColumnTypeInfo, SchemaModel, rust_ident
 from research_loop.table_assumptions import CatalogAssumptions
 
-_CHUNK_ROWS = 500_000
 _FIELD = re.compile(r"pub\s+((?:r#)?[A-Za-z_][A-Za-z0-9_]*):\s+Vec<([^>]+)>")
 _OUT = re.compile(r"pub\s+((?:r#)?[A-Za-z_][A-Za-z0-9_]*):\s+([^,\n]+),")
 _OUT_SCALES = re.compile(r"^// OUT_SCALES: ([0-9,]+)$", re.MULTILINE)
@@ -166,66 +166,207 @@ def _export_table(
         types.append(fty)
         infos.append(cols[col_key])
         nullable.append(model.is_nullable(table, col_key))
-    # A DATE leaves DuckDB as its day number (an exact INTEGER), a DECIMAL as the exact scaled integer.
-    listed = ", ".join(
-        f"({_quote(name)} - DATE '1970-01-01')" if info.is_date else _quote(name)
-        for name, info in zip(names, infos, strict=True)
-    )
-    # Stream in chunks and pack each column as it arrives: a Python tuple per row for a 6M-row table
-    # is gigabytes, the packed columns are tens of megabytes.
+    return _encode_columns(con, table, names, types, infos, nullable, dict_of, valid_fields)
+
+
+_INT_RANGE: dict[str, tuple[int, int]] = {
+    "i8": (-(2**7), 2**7 - 1), "i16": (-(2**15), 2**15 - 1), "i32": (-(2**31), 2**31 - 1), "i64": (-(2**63), 2**63 - 1),
+    "u8": (0, 2**8 - 1), "u16": (0, 2**16 - 1), "u32": (0, 2**32 - 1), "u64": (0, 2**64 - 1), "usize": (0, 2**64 - 1),
+}
+_SQL_TARGET = {
+    "i8": "TINYINT", "i16": "SMALLINT", "i32": "INTEGER", "i64": "BIGINT",
+    "u8": "UTINYINT", "u16": "USMALLINT", "u32": "UINTEGER", "u64": "UBIGINT", "usize": "UBIGINT",
+}
+_NP_DTYPE = {
+    "i8": "<i1", "i16": "<i2", "i32": "<i4", "i64": "<i8", "u8": "<u1", "u16": "<u2", "u32": "<u4", "u64": "<u8", "usize": "<u8",
+    "f64": "<f8",
+}
+_DECIMAL_TYPE = re.compile(r"DECIMAL\((\d+),\s*(\d+)\)")
+
+
+def _pack_strings(values: list[str]) -> bytes:
+    """Each string as a little-endian u32 byte length then its UTF-8 bytes, built with numpy rather than a Python step per string."""
+    raw = [v.encode("utf-8") for v in values]
+    n = len(raw)
+    if n == 0:
+        return b""
+    lens = np.fromiter(map(len, raw), dtype=np.int64, count=n)
+    if int(lens.max()) > 2**32 - 1:
+        raise ValueError("string column longer than u32")
+    out = np.empty(int(lens.sum()) + 4 * n, dtype=np.uint8)
+    starts = np.cumsum(lens + 4) - (lens + 4)
+    hdr_idx = (starts[:, None] + np.arange(4)).ravel()
+    out[hdr_idx] = lens.astype("<u4").view(np.uint8)
+    body = np.ones(out.shape[0], dtype=bool)
+    body[hdr_idx] = False
+    out[body] = np.frombuffer(b"".join(raw), dtype=np.uint8)
+    return out.tobytes()
+
+
+def _decimal_unscaled_sql(name: str, scale: int, src_scale: int) -> str:
+    """SQL for ``value * 10**scale`` as an exact HUGEINT (a DECIMAL multiply would overflow at 38 digits)."""
+    if src_scale > scale:
+        raise ValueError(f"{name} has more than {scale} fractional digits")
+    if src_scale > 18:
+        # the fraction times 10**src_scale overflows DECIMAL(38) from scale 20 up: take the unscaled digits from the exact decimal text
+        digits = f"CAST(replace(CAST({name} AS VARCHAR), '.', '') AS HUGEINT)"
+        return f"({digits} * {10 ** (scale - src_scale)}::HUGEINT)"
+    ip = f"trunc({name})"
+    frac = f"CAST(({name} - {ip}) * CAST({10**src_scale} AS DECIMAL(38,0)) AS HUGEINT)"
+    return f"(CAST({ip} AS HUGEINT) * {10**scale}::HUGEINT + {frac} * {10 ** (scale - src_scale)}::HUGEINT)"
+
+
+def _encode_columns(
+    con: duckdb.DuckDBPyConnection,
+    table: str,
+    names: list[str],
+    types: list[str],
+    infos: list[ColumnTypeInfo],
+    nullable: list[bool],
+    dict_of: dict[int, int],
+    valid_fields: set[int],
+) -> bytes:
+    """Bulk export: DuckDB projects every cell at its loaded width and the columns come back as numpy arrays.
+
+    The bytes are those of a per-cell loop over the rows: dictionary codes number the distinct values in order of first
+    appearance, a NULL cell of a nullable column is the default cell (code 0 for a dictionary), a NULL in a column the
+    catalog does not declare nullable is refused, and so is a value outside its loaded type.
+    """
+    t = _quote(table)
+    uniq = list(dict.fromkeys(names))
     try:
-        cur = con.execute(f"SELECT {listed} FROM {_quote(table)}")
+        desc = con.execute(f"SELECT {', '.join(_quote(n) for n in uniq)} FROM {t} LIMIT 0").description
+        all_names = [d[0].casefold() for d in con.execute(f"SELECT * FROM {t} LIMIT 0").description]
     except duckdb.Error as exc:
         raise ValueError(str(exc)) from exc
-    col_bufs = [bytearray() for _ in types]
-    dictionaries: dict[int, dict[str, int]] = {idx: {} for idx in set(dict_of.values())}
-    null_codes: set[int] = set()  # dictionary code fields that hold a NULL cell
-    total = 0
-    while True:
-        chunk = cur.fetchmany(_CHUNK_ROWS)
-        if not chunk:
-            break
-        total += len(chunk)
+    base_types = {n: str(d[1]) for n, d in zip(uniq, desc, strict=True)}
+    for idx, fty in enumerate(types):
+        base = base_types[names[idx]]
+        if (
+            (fty == "String" and (base in ("BOOLEAN", "FLOAT", "BLOB") or base.startswith("DECIMAL")))
+            or (fty in _INT_RANGE and base in ("DOUBLE", "FLOAT"))
+            or (fty == "bool" and base == "VARCHAR" and idx not in valid_fields)
+        ):
+            raise ValueError(f"{table}.{names[idx]}: DuckDB type {base} is not loadable as {fty}")
+    if dict_of and "rowid" in all_names:
+        raise ValueError(f"{table} has a column named rowid; the dictionary order needs the row id pseudo-column")
+    dictionaries: dict[int, list[str]] = {}
+    plan: dict[int, str] = {}  # field index -> select expression
+    kinds: dict[int, str] = {}  # field index -> int | value | valid | code | string
+    enum_names: list[str] = []
+    try:
+        for idx in sorted(set(dict_of.values())):
+            q = _quote(names[idx])
+            # Distinct non-NULL cells in order of first appearance (physical row order), which is the code order.
+            rows = con.execute(
+                f"SELECT s FROM (SELECT CAST({q} AS VARCHAR) AS s, min(rowid) AS m FROM {t} WHERE {q} IS NOT NULL GROUP BY 1) ORDER BY m"
+            ).fetchall()
+            entries = [r[0] for r in rows]
+            if any("\x00" in e for e in entries):
+                raise ValueError(f"{table}.{names[idx]}: a NUL byte in a dictionary string")
+            dictionaries[idx] = entries
+            if len(entries) > 2 ** {"u8": 8, "u16": 16, "u32": 32}[types[idx]]:
+                raise ValueError(f"cannot pack code {len(entries) - 1} as {types[idx]}")
+            if entries:
+                enum = f"lemma_exp_enum_{idx}"
+                literals = ", ".join("'" + e.replace("'", "''") + "'" for e in entries)
+                con.execute(f"CREATE OR REPLACE TEMP TYPE {enum} AS ENUM ({literals})")
+                enum_names.append(enum)
+                plan[idx] = f"CAST(enum_code(CAST(CAST({q} AS VARCHAR) AS {enum})) AS {_SQL_TARGET[types[idx]]})"
+            else:
+                plan[idx] = f"CAST(NULL AS {_SQL_TARGET[types[idx]]})"
+            kinds[idx] = "code"
         for idx, fty in enumerate(types):
-            if idx in dict_of:
+            if idx in dict_of or idx in kinds:
                 continue
-            scale = infos[idx].scale
-            buf = col_bufs[idx]
-            for row in chunk:
-                value = row[idx]
-                if idx in valid_fields:
-                    buf.extend(_pack("bool", value is not None))
+            q = _quote(names[idx])
+            base = base_types[names[idx]]
+            m = _DECIMAL_TYPE.fullmatch(base)
+            if idx in valid_fields:
+                plan[idx], kinds[idx] = f"({q} IS NOT NULL)", "valid"
+            elif fty == "String":
+                plan[idx], kinds[idx] = f"CAST({q} AS VARCHAR)", "string"
+            elif fty == "bool":
+                plan[idx], kinds[idx] = f"CAST({q} AS BOOLEAN)", "value"
+            elif fty == "f64":
+                scaled = _decimal_unscaled_sql(q, infos[idx].scale, int(m.group(2))) if m else q
+                plan[idx], kinds[idx] = f"CAST({scaled} AS DOUBLE)", "value"
+            else:
+                if infos[idx].is_date:
+                    plan[idx] = f"CAST({q} - DATE '1970-01-01' AS BIGINT)"
+                elif m:
+                    plan[idx] = _decimal_unscaled_sql(q, infos[idx].scale, int(m.group(2)))
+                elif fty == "i128" or base in ("HUGEINT", "UHUGEINT", "UBIGINT"):
+                    plan[idx] = f"CAST({q} AS HUGEINT)"
+                else:
+                    plan[idx] = f"CAST({q} AS BIGINT)"
+                kinds[idx] = "int"
+        # A value outside its loaded type is refused before the narrowing cast (which would raise without naming the cell).
+        ints = [i for i, k in kinds.items() if k == "int" and types[i] != "i128"]
+        if ints:
+            bounds = con.execute(f"SELECT {', '.join(f'min({plan[i]}), max({plan[i]})' for i in ints)} FROM {t}").fetchone()
+            for pos, i in enumerate(ints):
+                lo, hi = _INT_RANGE[types[i]]
+                for v in (bounds[2 * pos], bounds[2 * pos + 1]):
+                    if v is not None and not lo <= v <= hi:
+                        raise ValueError(f"cannot pack {v!r} as {types[i]}")
+        select: list[str] = []
+        for i in sorted(plan):
+            expr = plan[i]
+            if kinds[i] == "int":
+                if types[i] == "i128":
+                    select += [f"CAST(({expr}) >> 64 AS BIGINT) AS h{i}", f"CAST(({expr}) & 18446744073709551615 AS UBIGINT) AS l{i}"]
                     continue
-                if value is None:
-                    # A column the catalog does not declare nullable has no NULL: a NULL packed as 0 or "" would
-                    # silently change the answer. A nullable column's value cell is arbitrary where the validity
-                    # vector says NULL, so the default is written.
-                    if not nullable[idx]:
-                        raise ValueError(
-                            f"{table}.{names[idx]} has NULLs; the catalog does not declare the column nullable"
-                        )
-                    if idx in dictionaries:
-                        # A NULL cell's code is arbitrary (the validity bit says NULL) but must index the dictionary:
-                        # code 0 takes no entry of its own (see the all-NULL case below).
-                        null_codes.add(idx)
-                        buf.extend(_pack(fty, 0))
-                        continue
-                    value = _DEFAULT_CELL[fty]
-                if idx in dictionaries:
-                    codes = dictionaries[idx]
-                    buf.extend(_pack(fty, codes.setdefault(str(value), len(codes))))
-                    continue
-                buf.extend(_pack(fty, decimal_scaled(value, scale) if isinstance(value, Decimal) else value))
+                expr = f"CAST({expr} AS {_SQL_TARGET[types[i]]})"
+            select.append(f"{expr} AS c{i}")
+        arrays = con.execute(f"SELECT {', '.join(select)} FROM {t}").fetchnumpy() if select else {}
+    except duckdb.Error as exc:
+        raise ValueError(str(exc)) from exc
+    finally:
+        for enum in enum_names:
+            con.execute(f"DROP TYPE IF EXISTS {enum}")
+    total = len(next(iter(arrays.values()))) if arrays else _count_rows(con, t)
+    col_bufs: list[bytes] = [b"" for _ in types]
+    null_codes: set[int] = set()
+    for idx, fty in enumerate(types):
+        if idx in dict_of:
+            continue
+        kind = kinds[idx]
+        if kind == "valid":
+            col_bufs[idx] = np.ma.filled(arrays[f"c{idx}"], False).astype("u1").tobytes()
+            continue
+        probe = arrays[f"h{idx}"] if kind == "int" and fty == "i128" else arrays[f"c{idx}"]
+        mask = np.ma.getmaskarray(probe)
+        has_null = bool(mask.any())
+        if has_null and not nullable[idx]:
+            raise ValueError(f"{table}.{names[idx]} has NULLs; the catalog does not declare the column nullable")
+        if kind == "int" and fty == "i128":
+            pair = np.empty((total, 2), dtype="<u8")
+            pair[:, 0] = np.ma.filled(arrays[f"l{idx}"], 0).astype("<u8")
+            pair[:, 1] = np.ma.filled(probe, 0).astype("<i8").view("<u8")
+            col_bufs[idx] = pair.tobytes()
+        elif kind == "code":
+            if has_null:
+                null_codes.add(idx)
+            col_bufs[idx] = np.ma.filled(probe, 0).astype(_NP_DTYPE[fty]).tobytes()
+        elif kind == "string":
+            col_bufs[idx] = _pack_strings((np.ma.filled(probe, "") if has_null else probe).tolist())
+        elif fty == "bool":
+            col_bufs[idx] = np.ma.filled(probe, False).astype("u1").tobytes()
+        else:
+            col_bufs[idx] = np.ma.filled(probe, 0).astype(_NP_DTYPE[fty]).tobytes()
     for source in null_codes:
         if not dictionaries[source]:
-            dictionaries[source][""] = 0  # every cell is NULL: code 0 still has to index an entry
+            dictionaries[source] = [""]  # every cell is NULL: code 0 still has to index an entry
     for idx, source in dict_of.items():
-        entries = sorted(dictionaries[source].items(), key=lambda kv: kv[1])
-        col_bufs[idx].extend(struct.pack("<Q", len(entries)))
-        for text, _code in entries:
-            col_bufs[idx].extend(_pack("String", text))
+        entries = dictionaries[source]
+        col_bufs[idx] = struct.pack("<Q", len(entries)) + _pack_strings(entries)
     # Column-major, the order the generated reader consumes: all of column 0, then column 1, ...
     return struct.pack("<Q", total) + b"".join(col_bufs)
+
+
+def _count_rows(con: duckdb.DuckDBPyConnection, quoted_table: str) -> int:
+    return int(con.execute(f"SELECT count(*) FROM {quoted_table}").fetchone()[0])
 
 
 _DEFAULT_CELL: dict[str, object] = {
