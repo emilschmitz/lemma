@@ -139,7 +139,11 @@ _JOB_ENV_KEYS = ("LEMMA_DUCKDB_PATH", "LEMMA_TPCH_DB", "LEMMA_STRING_ENCODING", 
 
 def _job_env_snapshot() -> dict[str, str]:
     """The settings that shape the workspace's spec and data; `check` re-applies them so the prover needs no env."""
-    return {k: os.environ[k] for k in _JOB_ENV_KEYS if k in os.environ}
+    from declarative_spec.schema_types import narrow_cells
+
+    snap = {k: os.environ[k] for k in _JOB_ENV_KEYS if k in os.environ}
+    snap["LEMMA_NARROW_CELLS"] = "1" if narrow_cells() else "0"  # the effective value, so a later change of the default cannot desync `check`
+    return snap
 
 
 def _abs(raw: str, what: str) -> Path:

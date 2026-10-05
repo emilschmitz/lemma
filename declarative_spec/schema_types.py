@@ -218,7 +218,10 @@ _WIDTH = {"i8": 1, "i16": 2, "i32": 4, "i64": 8}
 
 
 def narrow_cells() -> bool:
-    return os.environ.get("LEMMA_NARROW_CELLS", "0").strip() == "1"
+    raw = os.environ.get("LEMMA_NARROW_CELLS", "0").strip()
+    if raw not in ("0", "1"):
+        raise ValueError(f"LEMMA_NARROW_CELLS must be 0 or 1, got {raw!r}")
+    return raw == "1"
 
 
 def classify_sql_type(sql_type: str) -> ColumnTypeInfo:

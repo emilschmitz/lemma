@@ -190,3 +190,21 @@ def test_the_prompt_explains_a_dead_disjunct_from_the_cell_cap() -> None:
 
     text = build_declarative_prompt(sql="SELECT 1", spec_path="s.rs", edit_path="e.rs", lemma_index="", last_error="", in_docker=False, spec_text="")
     assert "is dead" in text and "`p == 1`, not `1i64`" in text
+
+
+@pytest.mark.parametrize("raw", ["true", "off", "", "2"])
+def test_the_flag_accepts_exactly_zero_or_one(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+    from declarative_spec.schema_types import narrow_cells
+
+    monkeypatch.setenv("LEMMA_NARROW_CELLS", raw)
+    with pytest.raises(ValueError, match="LEMMA_NARROW_CELLS"):
+        narrow_cells()
+
+
+def test_the_flag_parses_zero_and_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    from declarative_spec.schema_types import narrow_cells
+
+    monkeypatch.setenv("LEMMA_NARROW_CELLS", "1")
+    assert narrow_cells() is True
+    monkeypatch.setenv("LEMMA_NARROW_CELLS", " 0 ")
+    assert narrow_cells() is False
