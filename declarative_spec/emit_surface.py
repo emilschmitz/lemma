@@ -1132,7 +1132,9 @@ def _ensures(query: Query, helpers: _Helpers, model: SchemaModel) -> str:
     tail_q.set_query = None
     if helpers.key_ty is None:
         tail_q.order_by = []
-    text_order = helpers.key_ty is not None and any(_order_seq_flags(query, helpers))
+    text_order = helpers.key_ty is not None and (
+        any(_order_seq_flags(query, helpers)) or any(_order_null_flags(query, helpers))
+    )
     if text_order:
         tail_q.order_by = []
         lines.append(_typed_order_line(query, helpers))
@@ -1272,32 +1274,30 @@ def _out_view(field_expr: str, agg: _AggFn) -> str:
     return f"({field_expr} as int)"
 
 
-def _out_key(row: str, helpers: _Helpers) -> str:
-    parts: list[str] = []
-    for fname, _col, info, _slot in helpers.group_infos:
-        if info.nullable_key:
-            import dataclasses
-
-            plain = dataclasses.replace(info, nullable_key=False)
-            some = f"{row}.{fname}->Some_0"
-            if info.spec_as == "Seq<char>":
-                value, default = f"{some}@", "Seq::<char>::empty()"
-            elif info.is_float:
-                value, default = f"({some} as real)", "0real"
-            elif info.spec_as == "bool":
-                value, default = some, "false"
-            else:
-                value, default = f"({some} as int)", "0int"
-            del plain
-            parts.append(f"(if {row}.{fname} is Some {{ (true, {value}) }} else {{ (false, {default}) }})")
-        elif info.spec_as == "Seq<char>":
-            parts.append(f"{row}.{fname}@")
+def _row_field_view(row: str, fname: str, info: ColumnTypeInfo) -> str:
+    """A result field of ``row`` as a spec value; an ``Option`` field is `(valid, value)`, `(false, default)` for None."""
+    if info.nullable_key:
+        some = f"{row}.{fname}->Some_0"
+        if info.spec_as == "Seq<char>":
+            value, default = f"{some}@", "Seq::<char>::empty()"
         elif info.is_float:
-            parts.append(f"({row}.{fname} as real)")
+            value, default = f"({some} as real)", "0real"
         elif info.spec_as == "bool":
-            parts.append(f"{row}.{fname}")
+            value, default = some, "false"
         else:
-            parts.append(f"({row}.{fname} as int)")
+            value, default = f"({some} as int)", "0int"
+        return f"(if {row}.{fname} is Some {{ (true, {value}) }} else {{ (false, {default}) }})"
+    if info.spec_as == "Seq<char>":
+        return f"{row}.{fname}@"
+    if info.is_float:
+        return f"({row}.{fname} as real)"
+    if info.spec_as == "bool":
+        return f"{row}.{fname}"
+    return f"({row}.{fname} as int)"
+
+
+def _out_key(row: str, helpers: _Helpers) -> str:
+    parts = [_row_field_view(row, fname, info) for fname, _col, info, _slot in helpers.group_infos]
     if len(parts) == 1:
         return parts[0]
     return "(" + ", ".join(parts) + ")"
@@ -1372,7 +1372,7 @@ def _omitted_after(query: Query, helpers: _Helpers, scalars: dict[str, str], hav
     out_exprs = _order_exprs_row(query, helpers)
     group_exprs = _order_exprs_key(query, helpers, scalars, key_of)
     before = _not_after(
-        out_exprs, group_exprs, query.order_by, _order_seq_flags(query, helpers)
+        out_exprs, group_exprs, query.order_by, _order_seq_flags(query, helpers), _order_null_flags(query, helpers)
     )
     return (
         f"forall|{binders}, r: int| #![trigger {helpers.row_hit}({p}, {_idx_call(helpers.main)}), res@[r]] "
@@ -1394,12 +1394,7 @@ def _order_exprs_row(query: Query, helpers: _Helpers) -> list[str]:
         info = next((g[2] for g in helpers.group_infos if g[0] == ident), None)
         if info is None:
             raise DeclarativeUnsupported("ORDER BY")
-        if info.spec_as == "Seq<char>":
-            exprs.append(f"res@[r].{ident}@")
-        elif info.is_float:
-            exprs.append(f"(res@[r].{ident} as real)")
-        else:
-            exprs.append(f"(res@[r].{ident} as int)")
+        exprs.append(_row_field_view("res@[r]", ident, info))
     return exprs
 
 
@@ -1429,14 +1424,35 @@ def _order_exprs_key(
     return exprs
 
 
+def null_last_order(left: str, right: str, *, descending: bool, is_seq: bool) -> str:
+    """``left`` is not after ``right`` for a `(valid, value)` key. DuckDB sorts NULL last whichever the direction
+    (default_null_order is NULLS LAST for ASC and DESC alike): a valid key goes before a NULL one, two NULLs tie, two
+    valid keys compare by value."""
+    lv, rv = f"({left}).0", f"({right}).0"
+    ls, rs = f"({left}).1", f"({right}).1"
+    if is_seq:
+        inner = f"seq_le({rs}, {ls})" if descending else f"seq_le({ls}, {rs})"
+    else:
+        inner = f"{ls} {'>=' if descending else '<='} {rs}"
+    return f"(({lv} && !{rv}) || ({lv} == {rv} && (!{lv} || {inner})))"
+
+
 def _not_after(
-    left: list[str], right: list[str], keys: list[OrderKey], seq: list[bool] | None = None
+    left: list[str],
+    right: list[str],
+    keys: list[OrderKey],
+    seq: list[bool] | None = None,
+    nulls: list[bool] | None = None,
 ) -> str:
-    """``left`` is not after ``right``. ``seq[k]`` marks a ``Seq<char>`` key, ordered by ``seq_le``."""
+    """``left`` is not after ``right``. ``seq[k]`` marks a ``Seq<char>`` key, ordered by ``seq_le``; ``nulls[k]``
+    marks a `(valid, value)` key of a nullable column (NULL last)."""
 
     def clause(k: int) -> str:
         tie = f"({left[k]}) == ({right[k]})"
-        if seq is not None and seq[k]:
+        is_seq = seq is not None and seq[k]
+        if nulls is not None and nulls[k]:
+            order = null_last_order(left[k], right[k], descending=keys[k].descending, is_seq=is_seq)
+        elif is_seq:
             order = (
                 f"seq_le({right[k]}, {left[k]})"
                 if keys[k].descending
@@ -1454,6 +1470,15 @@ def _not_after(
     return clause(0)
 
 
+def _order_null_flags(query: Query, helpers: _Helpers) -> list[bool]:
+    flags: list[bool] = []
+    for key in query.order_by:
+        ident = rust_ident(key.column.split(".")[-1])
+        info = next((g[2] for g in helpers.group_infos if g[0] == ident), None)
+        flags.append(info is not None and info.nullable_key)
+    return flags
+
+
 def _order_seq_flags(query: Query, helpers: _Helpers) -> list[bool]:
     flags: list[bool] = []
     for key in query.order_by:
@@ -1467,7 +1492,9 @@ def _typed_order_line(query: Query, helpers: _Helpers) -> str:
     """Adjacent result rows are in ORDER BY order, comparing text keys with ``seq_le``."""
     left = [e.replace("res@[r]", "res@[i]") for e in _order_exprs_row(query, helpers)]
     right = [e.replace("res@[r]", "res@[i + 1]") for e in _order_exprs_row(query, helpers)]
-    before = _not_after(left, right, query.order_by, _order_seq_flags(query, helpers))
+    before = _not_after(
+        left, right, query.order_by, _order_seq_flags(query, helpers), _order_null_flags(query, helpers)
+    )
     return f"forall|i: int| #![trigger res@[i]] 0 <= i && i + 1 < res@.len() ==> ({before})"
 
 

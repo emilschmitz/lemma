@@ -21,7 +21,11 @@ from declarative_spec.emit_surface import (
     _find_col,
     _idx_call,
     _idx_sig,
+    _key_cell,
     _key_default,
+    _mark_nullable_key,
+    _row_field_view,
+    null_last_order,
     _key_type,
     _one_scalar,
     _param_call,
@@ -178,7 +182,7 @@ def _projection_fields(query: Query, main: list[_Slot], model: SchemaModel) -> l
         if fname in seen:
             raise DeclarativeUnsupported("SELECT")
         seen.add(fname)
-        fields.append((fname, col, info, slot))
+        fields.append(_mark_nullable_key((fname, col, info, slot), query, model))
     return fields
 
 
@@ -313,7 +317,7 @@ def _index_triggers(
 
 def _proj_key_fn(fields: list[_Field], main: list[_Slot], params: list[_Slot]) -> str:
     groups = [(fname, col, info, slot) for fname, col, info, slot in fields]
-    cells = [_cell(slot, col, info) for _fname, col, info, slot in fields]
+    cells = [_key_cell(slot, col, info) for _fname, col, info, slot in fields]
     body = cells[0] if len(cells) == 1 else "(" + ", ".join(cells) + ")"
     ranges = " && ".join(f"0 <= {s.idx} < {s.param}.n as int" for s in main)
     return f"""pub open spec fn proj_key({_param_sig(params)}, {_idx_sig(main)}) -> {_key_type(groups)} {{
@@ -360,12 +364,15 @@ def _projection_counts(
 def _out_row(fields: list[_Field]) -> str:
     lines = ["pub struct OutRow {"]
     for fname, _col, info, _slot in fields:
-        lines.append(f"    pub {fname}: {info.exec_rust},")
+        lines.append(f"    pub {fname}: {f'Option<{info.exec_rust}>' if info.nullable_key else info.exec_rust},")
     lines.append("}")
     return "\n".join(lines)
 
 
 def _row_view(expr: str, info: ColumnTypeInfo) -> str:
+    if info.nullable_key:
+        row, _, fname = expr.rpartition(".")
+        return _row_field_view(row, fname, info)
     if info.spec_as == "Seq<char>":
         return f"{expr}@"
     if info.is_float:
@@ -436,7 +443,7 @@ def _order_hit_pairs(query: Query, fields: list[_Field]) -> list[tuple[str, str,
     pairs: list[tuple[str, str, ColumnTypeInfo]] = []
     for i, _key in enumerate(query.order_by):
         fname, col, info, slot = _order_field(query, fields, i)
-        pairs.append((_row_view(f"{last}.{fname}", info), _cell(slot, col, info), info))
+        pairs.append((_row_view(f"{last}.{fname}", info), _key_cell(slot, col, info), info))
     return pairs
 
 
@@ -468,7 +475,11 @@ def _typed_not_after(pairs: list[tuple[str, str, ColumnTypeInfo]], keys: list) -
     def clause(k: int) -> str:
         left, right, info = pairs[k]
         tie = f"({left}) == ({right})"
-        if info.spec_as == "Seq<char>":
+        if info.nullable_key:
+            order = null_last_order(
+                left, right, descending=keys[k].descending, is_seq=info.spec_as == "Seq<char>"
+            )
+        elif info.spec_as == "Seq<char>":
             order = f"seq_le({right}, {left})" if keys[k].descending else f"seq_le({left}, {right})"
         else:
             cmp = ">=" if keys[k].descending else "<="

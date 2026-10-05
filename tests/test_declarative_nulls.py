@@ -192,8 +192,7 @@ def test_is_null_reads_the_validity_bit_only_for_a_nullable_column() -> None:
     ("sql", "why"),
     [
         ("SELECT x, COUNT(*) AS c FROM t GROUP BY x HAVING x > 1", "HAVING"),
-        ("SELECT x, COUNT(*) AS c FROM t GROUP BY x ORDER BY x", "ORDER BY"),
-        ("SELECT x FROM t WHERE a > 1", "the SELECT list"),
+        ("SELECT x + 1 AS z FROM t WHERE a > 1", "the SELECT list"),
         ("SELECT a FROM t ORDER BY x", "ORDER BY"),
         ("SELECT COUNT(*) AS c FROM t JOIN u ON t.x = u.g", "a JOIN condition"),
         ("SELECT g, SUM(x) AS s FROM t GROUP BY g", "grouped query"),
