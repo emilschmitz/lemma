@@ -115,7 +115,7 @@ def test_a_projection_is_never_swallowed_by_the_dictionary_rules(mode: str, monk
     for name, (sql, _plain, _dict) in SHAPES.items():
         if name.startswith(("projection", "derived", "correlated")):
             recipe = spec_shape(_spec(sql, mode, monkeypatch))["recipe"]
-            assert recipe.startswith("projection_"), (name, mode, recipe)
+            assert recipe.removeprefix("dict_").startswith("projection_"), (name, mode, recipe)
 
 
 def test_published_derived_max_projection_gets_the_matching_hard_example_not_the_ungrouped_one(
