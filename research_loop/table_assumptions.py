@@ -21,7 +21,8 @@ Fold slot/count/sum bounds in ``multi_agg_step_bridge`` are emitted as ``assume_
 when justified (cell slots only when ``has_tight_cell_u64``). Experts audit those
 under the supplied catalog/table assumptions — they are not Verus-proved induction.
 
-TODO: load per-table user assumptions from JSON/CLI (not implemented).
+User packages are JSON files (``assumption_packages/json_io.py``), proposed from data by
+``assumption_packages/profile.py`` and selected with ``LEMMA_ASSUMPTION_PACKAGE``.
 """
 
 from __future__ import annotations

@@ -71,16 +71,24 @@ column (for DECIMAL, on the stored integer), string length caps, unique keys, wh
 and join-size caps. They also set the widths the proof reasons about, so tighter true bounds mean easier
 proofs and faster code.
 
-1. **Declare** a package in `research_loop/assumption_packages/` (see `sec_margin_dec` for the real SEC
-   EDGAR data) and select it with `LEMMA_ASSUMPTION_PACKAGE`. Packages are written by hand; nothing infers
-   them from your data yet. Take the numbers from `SELECT MAX(...)`, `COUNT(*)` and the like, with margin.
+1. **Get a package.** The profiler proposes one from your data. It measures each table and column (same
+   rules as the check below) and writes a JSON package plus a plain-language report of every bound: what was
+   measured, the proposed cap (rounded up to a power of two, with margin), what breaks if data exceeds it, and
+   the effect on proof and speed. Unique keys are proposals only.
+   ```bash
+   uv run python -m research_loop.assumption_packages.profile --db <duckdb file> --name mypkg --out mypkg.json
+   ```
+   These are your claims about your data, so review and approve each one; the Claude Code skill
+   `.claude/skills/lemma-assumptions/SKILL.md` walks an agent through exactly that. Select the result with
+   `LEMMA_ASSUMPTION_PACKAGE=mypkg.json` (a path, or a name in `research_loop/assumption_packages/registry/`).
+   Hand-written Python packages still work (see `sec_margin_dec` for the real SEC EDGAR data).
 2. **Check it against the database.** This lists every violated assumption with the measured value and
    exits non-zero. A table or column it names that the database lacks is also a violation.
    ```bash
-   uv run python -m research_loop.assumption_packages.check --package sec_margin_dec --db <duckdb file>
+   uv run python -m research_loop.assumption_packages.check --package mypkg.json --db <duckdb file>
    ```
 3. **At run time** the loader re-checks the bounds on the pinned columns, so data that later breaks an
-   assumption fails loudly instead of running a proof that no longer applies. Re-run the check after data loads.
+   assumption fails loudly instead of running a proof that no longer applies. Re-run the profiler and check after data grows.
 
 The DuckDB extension in `db_extension/` is the interactive way in: `SELECT lemma('<sql>')` optimizes
 the query with the agent, caches the proved program, and later calls reuse it
