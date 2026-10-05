@@ -31,6 +31,26 @@ from research_loop.menu_profile import activate_menu
 from research_loop.spec_styles import STYLES, check_style
 
 
+def summarize_run(run_dir: Path | None) -> dict:
+    """Evidence from a finished run directory: did the final body use threads, and which hosts did the sandbox reach?"""
+    if run_dir is None:
+        return {"run_dir": None}
+    ws = run_dir / "workspace"
+    body = (ws / "runquery_agent.rs").read_text() if (ws / "runquery_agent.rs").is_file() else ""
+    hosts: set[str] = set()
+    egress = ws / "mcp_results" / "egress_bridge.jsonl"
+    if egress.is_file():
+        for line in egress.read_text().splitlines():
+            hosts.add(json.loads(line)["host"])
+    denied = ws / "mcp_results" / "egress_denied.jsonl"
+    return {
+        "run_dir": str(run_dir),
+        "threads_used": "spawn(" in body,
+        "egress_hosts": sorted(hosts),
+        "egress_denied": denied.is_file() and denied.read_text().strip() != "",
+    }
+
+
 def run(
     menu: str,
     style: str,
@@ -68,23 +88,33 @@ def run(
         from research_loop.agent_sandbox import claude_docker_args
 
         claude_docker_args()  # raises before any work when no credentials are set
+    from research_loop.scripts.declarative_draws import package_for_db
+
     db_path = resolve_sec_db()
     os.environ["LEMMA_DUCKDB_PATH"] = str(db_path)
     if resolved.style == "declarative":
         os.environ["LEMMA_MEASURE_DB"] = str(db_path)
-        # The catalog is its own axis: sec_margin unless --assumption-package / the profile says otherwise.
-        os.environ.setdefault("LEMMA_ASSUMPTION_PACKAGE", "sec_margin")
+        # The catalog is its own axis: the package that matches the database file (DECIMAL or DOUBLE `value`) unless
+        # --assumption-package / the profile says otherwise. The OFFICIAL size is the size of that database.
+        os.environ.setdefault("LEMMA_ASSUMPTION_PACKAGE", package_for_db(db_path))
     os.environ.pop("LEMMA_DECL_ROWS", None)
     os.environ.pop("LEMMA_DECL_SEED", None)
+    runs_dir = ROOT / "research_loop" / "runs"
+    before = set(runs_dir.glob("*")) if runs_dir.is_dir() else set()
     t0 = time.time()
     result = run_optimization_loop(
         sql,
-        schema=load_sec_schema(),
+        schema=load_sec_schema(db_path),
         workload="sec",
         max_iterations=max_iterations,
         use_mock=False,
     )
+    new_dirs = sorted(set(runs_dir.glob("*")) - before) if runs_dir.is_dir() else []
     return {
+        **summarize_run(new_dirs[-1] if new_dirs else None),
+        "database": str(db_path),
+        "model": model,
+        "duck_us": result.get("duck_us"),
         "menu": menu,
         "selection": resolved.as_dict(),
         "sql": sql,
