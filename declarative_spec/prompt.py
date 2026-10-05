@@ -608,7 +608,11 @@ def build_declarative_prompt(
         "- Look up vstd with one grep, e.g. `grep -n -A5 \"^## StringHashMap::\" LEMMAS.md` (in `verus/`): `INDEX.md` has a",
         "  recipe per common lookup (`Vec::push`, `String::eq`, `decreases`, `assert forall`, `choose`, broadcast groups).",
         "- Tools: the file edit tool; `run_runquery` (path `runquery_agent.rs`) verifies, compiles and times your",
-        "  program on the official table; `submit_runquery` with the returned `run_id`. You cannot run Verus or a shell.",
+        "  program on the official table; `submit_runquery` with the returned `run_id`. In Claude Code these are",
+        "  `mcp__lemma-host__run_runquery` and `mcp__lemma-host__submit_runquery`; if they are not in your tool list yet, load",
+        "  them first with ToolSearch (`select:mcp__lemma-host__run_runquery,mcp__lemma-host__submit_runquery`). A Bash tool",
+        "  may exist, but it has no network and Verus is not on its PATH: `run_runquery` is the only Verus you have, so do not",
+        "  try `verus`, `npx` or any package install.",
         "- Done means: Verus says `N verified, 0 errors`, the result equals the reference engine's rows, and the timed run beats",
         "  the reference engine (`run_runquery` reports the speedup). Submit before the session ends.",
         "",
@@ -680,4 +684,15 @@ def build_declarative_prompt(
                 "```",
             ]
         )
+    sections.extend(
+        [
+            "",
+            "## Do this now",
+            "",
+            "This is a non-interactive session: nobody answers questions. Do the task now. Never ask the user anything and never",
+            "offer options. Do not stop until `run_runquery` shows `N verified, 0 errors` and you have called `submit_runquery`",
+            "with that `run_id`. If you conclude it cannot verify, say plainly why in your last message; an empty or placeholder",
+            "body is a failure, not a result.",
+        ]
+    )
     return "\n".join(sections) + "\n"

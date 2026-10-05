@@ -173,6 +173,23 @@ def _env_snapshot() -> dict[str, str | dict[str, str]]:
     return snap
 
 
+def effective_settings(git_sha: str | None, git_dirty: bool | None) -> dict[str, Any]:
+    """The settings the spec emitter and the host actually read, with the default each one falls back to when unset.
+
+    The raw env snapshot omits an unset variable, so a run could not tell "off" from "never recorded".
+    """
+    env = os.environ.get
+    return {
+        "LEMMA_STRING_ENCODING": (env("LEMMA_STRING_ENCODING") or "").strip() or "plain",
+        "LEMMA_NARROW_CELLS": (env("LEMMA_NARROW_CELLS") or "").strip() or "0",
+        "LEMMA_PARALLEL_VSTD": (env("LEMMA_PARALLEL_VSTD") or "").strip() or "off",
+        "LEMMA_ENABLE_PARALLEL": env("LEMMA_ENABLE_PARALLEL") or "0",
+        "LEMMA_ASSUMPTION_PACKAGE": (env("LEMMA_ASSUMPTION_PACKAGE") or "").strip() or None,
+        "git_sha": git_sha,
+        "git_dirty": git_dirty,
+    }
+
+
 def _write_hardware_profile(run: RunArtifacts) -> None:
     try:
         from research_loop.agent_context import hardware_profile
@@ -303,6 +320,7 @@ def begin_run(
         "workload": (os.environ.get("LEMMA_WORKLOAD") or "").strip() or None,
         "duckdb_path": (os.environ.get("LEMMA_DUCKDB_PATH") or "").strip() or None,
         "env": env_snap,
+        "effective": effective_settings(git_commit, git_dirty),
     }
     from research_loop.menu_profile import active_menu
 
