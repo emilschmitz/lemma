@@ -352,7 +352,8 @@ class SchemaModel:
 
     def _narrowed(self, catalog: object) -> dict[str, dict[str, ColumnTypeInfo]]:
         """LEMMA_NARROW_CELLS: a signed integer or DECIMAL column whose catalog cap bounds |cell| below 2^7 / 2^15 / 2^31 is loaded as
-        i8 / i16 / i32 (the loader's runtime check of ``valid_cols`` enforces the cap). A DECIMAL column counts by its stored scaled
+        i8 / i16 / i32. The width is enforced loudly at export (a value outside it is refused, never wrapped); a DECIMAL cell is also
+        checked against its cap at runtime, an integer cap itself is a claim ``check.py`` measures (the loader has no conjunct for it, in either mode). A DECIMAL column counts by its stored scaled
         integer, the same quantity the catalog cap bounds. DATE columns are left alone (already i32)."""
         if not narrow_cells():
             return self.tables

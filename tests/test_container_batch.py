@@ -32,3 +32,13 @@ def test_short_model_names_map_to_slugs_and_logs_are_named_by_model_and_query(tm
     assert cb.main(["haiku:qX.sql"]) == 0
     assert calls[0][calls[0].index("--agent") + 1] == "claude-haiku-4-5-20251001"
     assert (tmp_path / "haiku_qX.log").is_file()
+
+
+def test_the_narrow_cells_flag_and_the_assumption_package_reach_the_container_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LEMMA_NARROW_CELLS", "1")
+    monkeypatch.setenv("LEMMA_ASSUMPTION_PACKAGE", "/p/profile.json")
+    cmd = cb.command("claude-sonnet-5-5", Path("/q.sql"))
+    assert "--setenv=LEMMA_NARROW_CELLS=1" in cmd and "--setenv=LEMMA_ASSUMPTION_PACKAGE=/p/profile.json" in cmd
+    monkeypatch.delenv("LEMMA_NARROW_CELLS")
+    monkeypatch.delenv("LEMMA_ASSUMPTION_PACKAGE")
+    assert not any(c.startswith(("--setenv=LEMMA_NARROW_CELLS", "--setenv=LEMMA_ASSUMPTION_PACKAGE")) for c in cb.command("m", Path("/q.sql")))

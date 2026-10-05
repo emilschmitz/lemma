@@ -134,3 +134,20 @@ def test_the_narrow_loader_verifies_and_compiles(monkeypatch: pytest.MonkeyPatch
         cwd=tempfile.gettempdir(),
     )
     assert re.search(r"verification results:: \d+ verified, 0 errors", proc.stdout + proc.stderr), (proc.stdout + proc.stderr)[-1500:]
+
+
+def test_decimal_boundaries_pack_up_to_the_width_and_are_refused_beyond_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LEMMA_NARROW_CELLS", "1")
+    con = duckdb.connect()
+    con.execute("CREATE TABLE t (d DECIMAL(10,2), e DECIMAL(12,4))")
+    con.execute("INSERT INTO t VALUES (327.67, -3.2768), (-327.68, 3.2767)")
+    cat = CatalogAssumptions(
+        max_rows=10,
+        tables={"t": TableAssumptions(max_rows=10, columns={"d": ColumnAssumption(max_value_exclusive=2**15, scale=2), "e": ColumnAssumption(max_value_exclusive=2**15, scale=4)})},
+    )
+    model = SchemaModel.from_caller({"t": {"d": "decimal(10,2)", "e": "decimal(12,4)"}}, "t").with_nullable(cat)
+    blob = _export_table(con, model, "t", [("d", "i16"), ("e", "i16")])
+    assert struct.unpack_from("<hhhh", blob, 8) == (32767, -32768, -32768, 32767)  # scale 2 and scale 4 alike
+    con.execute("INSERT INTO t VALUES (327.68, 0)")
+    with pytest.raises(Exception, match="i16"):
+        _export_table(con, model, "t", [("d", "i16"), ("e", "i16")])
