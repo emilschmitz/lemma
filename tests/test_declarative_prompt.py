@@ -315,3 +315,41 @@ def test_the_quoted_multipliers_are_labelled_kernel_only_in_a_parallel_prompt(mo
     monkeypatch.setenv(parallel.ENV, "1")
     p = _prompt("SELECT SUM(line) AS total FROM pre WHERE line > 5")
     assert "kernel only" in p and "outside the timer" in p
+
+
+def test_the_do_not_block_is_short_and_general() -> None:
+    from declarative_spec.prompt import _DO_NOT
+
+    assert len(_DO_NOT.strip().splitlines()) <= 12
+    for banned in ("`sort_by`", "`for x in &mut v`", "`as int`", "valid_cols_<t>", "decreases", "Vec::new()", "context/ro/examples/"):
+        assert banned in _DO_NOT
+    for table_word in ("adsh", "stmt", "rfile", "num_filings"):  # no query- or dataset-specific text
+        assert table_word not in _DO_NOT
+    assert _DO_NOT in _prompt("SELECT SUM(line) AS total FROM pre WHERE line > 5")
+
+
+def test_dict_mode_points_count_distinct_and_scalar_subquery_specs_to_the_long_examples(monkeypatch: pytest.MonkeyPatch) -> None:
+    from declarative_spec.prompt import _FIXTURES
+
+    monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
+    distinct = _prompt("SELECT stmt, report, COUNT(*) AS c, COUNT(DISTINCT line) AS d FROM pre GROUP BY stmt, report")
+    assert "hard/dict_group_two_keys_count_distinct_avg.rs" in distinct
+    assert "feature (dictionary mode): `context/ro/examples/hard/dict_group_two_keys_count_distinct_avg.rs`" in distinct
+    assert "feature (dictionary mode): `context/ro/examples/hard/dict_having_scalar_subquery.rs`" not in distinct
+    from declarative_spec.prompt import _dict_hard_pointers
+
+    assert "dict_having_scalar_subquery.rs" in "".join(_dict_hard_pointers("x__dict sq_1_groups(n, s, 0)"))
+    assert _dict_hard_pointers("sq_1_groups(n, s, 0)") == []  # string mode: no pointer
+    plain = _prompt("SELECT SUM(line) AS total FROM pre WHERE line > 5")
+    assert "Long verified example for this feature" not in plain
+    for name in ("dict_group_two_keys_count_distinct_avg.rs", "dict_having_scalar_subquery.rs"):
+        assert (_FIXTURES / "hard" / name).is_file()
+
+
+def test_both_new_examples_are_mounted_in_dict_mode_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
+    mount_examples(tmp_path / "d")
+    assert (tmp_path / "d" / "examples" / "hard" / "dict_having_scalar_subquery.rs").is_file()
+    monkeypatch.setenv("LEMMA_STRING_ENCODING", "plain")
+    mount_examples(tmp_path / "s")
+    assert not (tmp_path / "s" / "examples" / "hard" / "dict_having_scalar_subquery.rs").exists()

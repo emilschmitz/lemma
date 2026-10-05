@@ -482,9 +482,9 @@ tuple-of-strings `GROUP BY` with `COUNT(DISTINCT ...)` and a sorted result (O(gr
 groups) and a TPC-H Q1 shape (two string keys, several decimal SUMs, sorted output, one pass).
 
 KNOWN HARD, no worked example: a join whose key repeats on both sides (many-to-many) with `COUNT(DISTINCT ...)`;
-`EXISTS`/`IN` joins; `HAVING` against a scalar subquery; multi-key `DISTINCT`; set operations. These need long helper
+`EXISTS`/`IN` joins; multi-key `DISTINCT`; set operations. These need long helper
 proofs (an existential witness per group, a selection invariant). Start with the simplest correct loop that proves,
-make sure the result is submitted, and only then look for speed. Float comparisons, float `ORDER BY`, float MIN/MAX,
+make sure the result is submitted, and only then look for speed. Dictionary mode has two long examples (`hard/dict_group_two_keys_count_distinct_avg.rs`: two keys, COUNT DISTINCT, AVG; `hard/dict_having_scalar_subquery.rs`: HAVING against a scalar subquery); read the one that matches. Float comparisons, float `ORDER BY`, float MIN/MAX,
 products and averages over `DOUBLE` columns are in scope (floats are exact reals here; `float_*.rs` examples).
 """
 
@@ -526,6 +526,20 @@ A literal beyond the cell range also makes a comparison constant: `valid_cols` b
 with it is dead (prove it from the instantiated bound; do not write the comparison in exec). A literal compared with a narrow cell takes the cell's type (`p == 1`, not `1i64`).
 To prove a product of two cells fits in the `i128` accumulator, write a helper with `by (nonlinear_arith)` from the
 two cell bounds (worked example: `context/ro/examples/ungrouped_decimal_product_sum.rs`).
+"""
+
+_DO_NOT = """\
+## Do not (each item is a real failed attempt)
+
+- Verus rejects these in exec code: `sort`/`sort_by`; iterating a `HashMapWithView`/`StringHashMap` (`.iter()`, `.keys()`, `.entry()`, `for (k, v) in &map`; keep the keys in a `Vec` next to the map; `Vec` indexing loops are fine);
+  `for x in &mut v`, `.iter_mut()`, `.into_iter()`; `.clone()` on an `OutRow` (write `OutRow { .. }` from fields; `String::clone` is fine);
+  `as int`, `as nat` (ghost code only: `proof {}`, invariants, `spec fn`); an `fn`, `proof fn` or `use` nested in the body. Use `while` loops over indices.
+- Keep `valid_cols_<t>(t)` in EVERY loop invariant, nested loops included: a loop that drops it loses the length precondition of every `col[i]`.
+  Slim it only when the rlimit forces you to (see the rlimit notes below), and then to the specific length facts you use, never to nothing.
+- Every `while` has a `decreases`. Use only names that exist: the host spec, the lemma index, vstd (grep `LEMMAS.md`), your own helper region.
+- Never replace a failing body with a placeholder (`Vec::new()`) to have something to submit: it fails the postcondition on any data with a matching row.
+  Keep the body with the fewest errors and fix the error the host reports.
+- Before writing, open the nearest example under `context/ro/examples/` (`hard/` too; the list follows) and copy its loop structure, invariants and helper lemmas.
 """
 
 _PROOF_HYGIENE = """\
@@ -577,6 +591,28 @@ def _error_excerpt(last_error: str) -> str:
     if newline != -1 and newline < 200:
         excerpt = excerpt[newline + 1 :]
     return excerpt
+
+
+_DICT_HARD: tuple[tuple[str, str, str], ...] = (
+    (
+        "count_distinct_",
+        "hard/dict_group_two_keys_count_distinct_avg.rs",
+        "two dictionary string keys, COUNT(*), COUNT(DISTINCT x) and AVG (dense slots over the codes, a per-slot seen-set, sorted insert; it assumes u8 dictionary codes for both keys, slot = a*256+b: adapt the slot arithmetic if your spec's code types are wider)",
+    ),
+    (
+        "sq_\\d+_groups",
+        "hard/dict_having_scalar_subquery.rs",
+        "a join GROUP BY SUM with HAVING against an uncorrelated scalar subquery (per-class sums, threshold, top-k by repeated maximum; proof first: group and distinct-key lookups are linear scans, replace them by a dense array over codes for speed)",
+    ),
+)
+
+
+def _dict_hard_pointers(spec_text: str) -> list[str]:
+    """Pointers to the long dictionary-mode worked examples whose feature this spec has (read them with the Read tool)."""
+    if "__dict" not in spec_text:
+        return []
+    found = [(f, what) for needle, f, what in _DICT_HARD if re.search(rf"\b{needle}", spec_text)]
+    return [f"Long verified example for this feature (dictionary mode): `context/ro/examples/{f}`: {what}." for f, what in found] + ([""] if found else [])
 
 
 def build_declarative_prompt(
@@ -664,7 +700,8 @@ def build_declarative_prompt(
             "and often: its error text is the only checker you have.",
             "",
         ]
-    sections += [_SHAPE_LIST, _SPEED, _PROOF_HYGIENE]
+        sections += _dict_hard_pointers(spec_text)
+    sections += [_DO_NOT, _SHAPE_LIST, _SPEED, _PROOF_HYGIENE]
     sections += [
         "## Helper region example",
         "",

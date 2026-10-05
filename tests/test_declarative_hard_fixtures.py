@@ -38,6 +38,20 @@ TPCH = {
 }
 # TPC-H Q1 with dictionary strings and 8 parallel workers (any TPC-H scale's catalog: the body is data-size independent).
 DICT_PAR = {"dict_parallel_q1.rs": TPCH["group_decimal_sums_string_keys_sorted.rs"]}
+# Dictionary-string-mode SEC fixtures (the published GenDB Q1 and Q3 shapes; written by a manual prover from the real agent prompt).
+DICT_SEC = {
+    "dict_group_two_keys_count_distinct_avg.rs": (
+        "SELECT stmt, rfile, COUNT(*) AS cnt, COUNT(DISTINCT adsh) AS num_filings, AVG(line) AS avg_line_num "
+        "FROM pre WHERE stmt IS NOT NULL GROUP BY stmt, rfile ORDER BY cnt DESC"
+    ),
+    "dict_having_scalar_subquery.rs": (
+        "SELECT s.name, s.cik, SUM(n.value) AS total_value FROM num n JOIN sub s ON n.adsh = s.adsh "
+        "WHERE n.uom = 'USD' AND s.fy = 2022 AND n.value IS NOT NULL GROUP BY s.name, s.cik "
+        "HAVING SUM(n.value) > (SELECT AVG(sub_total) FROM (SELECT SUM(n2.value) AS sub_total FROM num n2 "
+        "JOIN sub s2 ON n2.adsh = s2.adsh WHERE n2.uom = 'USD' AND s2.fy = 2022 AND n2.value IS NOT NULL "
+        "GROUP BY s2.cik) avg_sub) ORDER BY total_value DESC LIMIT 100"
+    ),
+}
 # Fixtures that live next to the other worked examples (not under hard/), on the SEC DECIMAL variant.
 TOP = {
     "join_min_stringhashmap_probe.rs": (
@@ -56,7 +70,10 @@ def _verify(name: str, monkeypatch: pytest.MonkeyPatch, mutate: tuple[str, str] 
     if name in DICT_PAR:
         monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
         monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "1")
-    text = ((HARD if name in CASES or name in TPCH or name in DICT_PAR else _FIXTURES) / name).read_text()
+    if name in DICT_SEC:
+        monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
+        monkeypatch.setenv("LEMMA_ENABLE_PARALLEL", "0")
+    text = ((HARD if name in CASES or name in TPCH or name in DICT_PAR or name in DICT_SEC else _FIXTURES) / name).read_text()
     if mutate is not None:
         assert mutate[0] in text
         text = text.replace(*mutate, 1)
@@ -68,7 +85,7 @@ def _verify(name: str, monkeypatch: pytest.MonkeyPatch, mutate: tuple[str, str] 
         schema, catalog = tpch_schema_and_catalog(TPCH_DB)
         spec = emit_declarative_spec({**TPCH, **DICT_PAR}[name], schema, catalog)
     else:
-        sql = {**CASES, **TOP}[name]
+        sql = {**CASES, **TOP, **DICT_SEC}[name]
         from research_loop.scripts.declarative_round import SEC_DB, sec_catalog, sec_schema
 
         if not SEC_DB.is_file():
@@ -78,7 +95,7 @@ def _verify(name: str, monkeypatch: pytest.MonkeyPatch, mutate: tuple[str, str] 
     return verify_assembled(program, timeout_sec=600)
 
 
-@pytest.mark.parametrize("name", sorted({**CASES, **TOP, **TPCH, **DICT_PAR}))
+@pytest.mark.parametrize("name", sorted({**CASES, **TOP, **TPCH, **DICT_PAR, **DICT_SEC}))
 def test_hard_fixture_verifies(name: str, monkeypatch: pytest.MonkeyPatch) -> None:
     ok, out = _verify(name, monkeypatch)
     assert ok and "0 errors" in out, out[-2000:]
@@ -91,4 +108,14 @@ def test_a_broken_sorted_insert_does_not_verify(monkeypatch: pytest.MonkeyPatch)
 
 def test_a_wrong_string_comparison_does_not_verify(monkeypatch: pytest.MonkeyPatch) -> None:
     ok, out = _verify("ungrouped_minmax_string_filter.rs", monkeypatch, ("let hit = q == 3 && num.uom[i] == pure;", "let hit = q == 3 && num.uom[i] != pure;"))
+    assert not ok and "error" in out
+
+
+def test_a_wrong_sort_direction_in_the_two_key_distinct_avg_example_does_not_verify(monkeypatch: pytest.MonkeyPatch) -> None:
+    ok, out = _verify("dict_group_two_keys_count_distinct_avg.rs", monkeypatch, ("while p < out.len() && out[p].cnt >= row.cnt", "while p < out.len() && out[p].cnt <= row.cnt"))
+    assert not ok and "error" in out
+
+
+def test_a_non_strict_having_in_the_scalar_subquery_example_does_not_verify(monkeypatch: pytest.MonkeyPatch) -> None:
+    ok, out = _verify("dict_having_scalar_subquery.rs", monkeypatch, ("if !taken[g] && gt[g] > q {", "if !taken[g] && gt[g] >= q {"))
     assert not ok and "error" in out
