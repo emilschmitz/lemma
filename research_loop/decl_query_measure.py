@@ -203,10 +203,13 @@ def _pack_strings(values: list[str]) -> bytes:
     return out.tobytes()
 
 
-def _decimal_unscaled_sql(name: str, scale: int, src_scale: int) -> str:
+def _decimal_unscaled_sql(name: str, scale: int, src_scale: int, width: int = 38) -> str:
     """SQL for ``value * 10**scale`` as an exact HUGEINT (a DECIMAL multiply would overflow at 38 digits)."""
     if src_scale > scale:
         raise ValueError(f"{name} has more than {scale} fractional digits")
+    if width + (scale - src_scale) <= 18:
+        # fits a BIGINT with room for the multiply: plain 64-bit arithmetic (HUGEINT arithmetic is several times slower)
+        return f"CAST({name} * {10**scale} AS BIGINT)"
     if src_scale > 18:
         # the fraction times 10**src_scale overflows DECIMAL(38) from scale 20 up: take the unscaled digits from the exact decimal text
         digits = f"CAST(replace(CAST({name} AS VARCHAR), '.', '') AS HUGEINT)"
@@ -289,13 +292,13 @@ def _encode_columns(
             elif fty == "bool":
                 plan[idx], kinds[idx] = f"CAST({q} AS BOOLEAN)", "value"
             elif fty == "f64":
-                scaled = _decimal_unscaled_sql(q, infos[idx].scale, int(m.group(2))) if m else q
+                scaled = _decimal_unscaled_sql(q, infos[idx].scale, int(m.group(2)), int(m.group(1))) if m else q
                 plan[idx], kinds[idx] = f"CAST({scaled} AS DOUBLE)", "value"
             else:
                 if infos[idx].is_date:
                     plan[idx] = f"CAST({q} - DATE '1970-01-01' AS BIGINT)"
                 elif m:
-                    plan[idx] = _decimal_unscaled_sql(q, infos[idx].scale, int(m.group(2)))
+                    plan[idx] = _decimal_unscaled_sql(q, infos[idx].scale, int(m.group(2)), int(m.group(1)))
                 elif fty == "i128" or base in ("HUGEINT", "UHUGEINT", "UBIGINT"):
                     plan[idx] = f"CAST({q} AS HUGEINT)"
                 else:
@@ -315,7 +318,7 @@ def _encode_columns(
             expr = plan[i]
             if kinds[i] == "int":
                 if types[i] == "i128":
-                    select += [f"CAST(({expr}) >> 64 AS BIGINT) AS h{i}", f"CAST(({expr}) & 18446744073709551615 AS UBIGINT) AS l{i}"]
+                    select += [f"CAST(CAST({expr} AS HUGEINT) >> 64 AS BIGINT) AS h{i}", f"CAST(CAST({expr} AS HUGEINT) & 18446744073709551615 AS UBIGINT) AS l{i}"]
                     continue
                 expr = f"CAST({expr} AS {_SQL_TARGET[types[i]]})"
             select.append(f"{expr} AS c{i}")

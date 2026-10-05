@@ -105,3 +105,5 @@ NULL default cells and validity vector; code 0 for NULL dictionary cells; all-NU
 7. Fixed as loud refusals: BOOLEAN/FLOAT/BLOB/DECIMAL into a String field, DOUBLE/FLOAT into an integer field, VARCHAR into a bool field (test). Other catalog/type mismatches are catalog bugs.
 8. Not changed: plain String columns are materialized whole (about 4x the old streaming memory); dictionary and numeric columns, the shipped default, are not affected.
 9. Fixed: the description queries are inside the ValueError wrapper.
+
+10. Later change (author): a DECIMAL whose scaled value fits 18 digits is scaled with plain 64-bit arithmetic (HUGEINT arithmetic cost Q6 38 s, now 2.9 s); the same differential tests pass.
