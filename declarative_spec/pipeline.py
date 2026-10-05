@@ -238,6 +238,7 @@ def _apply_speed_bar(metrics: dict, speed_bar: dict | None, *, parallel_hint: bo
     speedup = duck_us / max(latency, 1)
     attained = {
         "speed_bar_mult": mult,
+        "official_tables": speed_bar.get("table_rows"),  # the timed run is on these FULL tables, whatever dataset_size says
         "speedup": speedup,  # median of the timed runs
         "latency_best_us": metrics.get("latency_best_us"),
         "speedup_best": None

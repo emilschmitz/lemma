@@ -556,6 +556,20 @@ def enrich_agent_error_message(
     return err
 
 
+_SPEED_KEYS = (
+    "duck_us",
+    "duck1_us",
+    "duck_threads",
+    "speedup",
+    "speedup_best",
+    "speedup_1t",
+    "speed_bar_mult",
+    "latency_best_us",
+    "verify_summary",
+    "official_tables",
+)
+
+
 def normalize_harness_metrics(res: dict) -> dict:
     status = res.get("status", "FAILURE")
     proof_verified = bool(res.get("proof_verified"))
@@ -571,7 +585,7 @@ def normalize_harness_metrics(res: dict) -> dict:
         str(compiler_error),
         verify_msg=str(res.get("verify_msg") or ""),
     )
-    return {
+    out = {
         "status": "SUCCESS" if ok_status and proof_verified else "FAILURE",
         "proof_verified": proof_verified,
         "latency_us": int(res.get("latency_us", -1)),
@@ -579,3 +593,8 @@ def normalize_harness_metrics(res: dict) -> dict:
         "raw_status": status,
         "bench_skipped": bool(res.get("bench_skipped")),
     }
+    # The declarative speed bar (official-size timing against the all-core reference engine) must reach the agent.
+    for key in _SPEED_KEYS:
+        if res.get(key) is not None:
+            out[key] = res[key]
+    return out

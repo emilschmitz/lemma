@@ -50,3 +50,30 @@ def test_no_hint_for_a_body_that_already_spawns_threads_or_a_spec_without_arcs(m
     seq = emit_declarative_spec(SQL, SCHEMA, CATALOG)
     out = _metrics(monkeypatch, seq, "    let mut res: Vec<OutRow> = Vec::new();\n    res")
     assert "below the speed bar" in out["compiler_error"] and "PARALLEL recipe" not in out["compiler_error"]
+
+
+def test_the_speed_fields_reach_the_agent_through_the_harness_metrics() -> None:
+    from db_extension.verus_bridge import normalize_harness_metrics
+
+    res = {
+        "status": "SUCCESS",
+        "proof_verified": True,
+        "latency_us": 500,
+        "duck_us": 1000,
+        "duck1_us": 3000,
+        "speedup": 2.0,
+        "speedup_1t": 6.0,
+        "latency_best_us": 450,
+        "official_tables": {"num": 39401761},
+    }
+    out = normalize_harness_metrics(res)
+    assert out["speedup"] == 2.0 and out["duck_us"] == 1000 and out["official_tables"] == {"num": 39401761}
+    assert "speedup" not in normalize_harness_metrics({"status": "FAILURE", "latency_us": -1})  # absent stays absent
+
+
+def test_a_slow_body_reports_the_official_tables_in_its_failure_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("declarative_spec.bench.rows_match_error", lambda *a, **k: None)
+    bar = {"duck_us": 100, "rows": [[1]], "kinds": ["int"], "table_rows": {"pre": 9600799}}
+    run = {"status": "SUCCESS", "proof_verified": True, "latency_us": 500, "stdout": "ROW\x1f1\n"}
+    out = pipeline._apply_speed_bar(run, bar)
+    assert out["status"] == "FAILURE" and out["official_tables"] == {"pre": 9600799}

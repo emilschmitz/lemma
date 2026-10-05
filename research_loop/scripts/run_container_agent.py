@@ -31,6 +31,13 @@ from research_loop.menu_profile import activate_menu
 from research_loop.spec_styles import STYLES, check_style
 
 
+def new_run_dirs(runs_dir: Path, before: set[Path]) -> list[Path]:
+    """Run directories created since ``before`` (the `LATEST` pointer is not one)."""
+    if not runs_dir.is_dir():
+        return []
+    return sorted(p for p in set(runs_dir.glob("*")) - before if p.is_dir() and not p.is_symlink() and p.name != "LATEST")
+
+
 def summarize_run(run_dir: Path | None) -> dict:
     """Evidence from a finished run directory: did the final body use threads, and which hosts did the sandbox reach?"""
     if run_dir is None:
@@ -109,7 +116,7 @@ def run(
         max_iterations=max_iterations,
         use_mock=False,
     )
-    new_dirs = sorted(set(runs_dir.glob("*")) - before) if runs_dir.is_dir() else []
+    new_dirs = new_run_dirs(runs_dir, before)
     return {
         **summarize_run(new_dirs[-1] if new_dirs else None),
         "database": str(db_path),

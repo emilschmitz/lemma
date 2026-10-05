@@ -27,3 +27,15 @@ def test_a_sequential_body_a_foreign_host_and_a_missing_run_dir(tmp_path: Path) 
     out = summarize_run(_run_dir(tmp_path, "while i > 0 { i -= 1; }", ["api.anthropic.com", "example.org"], denied='{"host": "example.org"}\n'))
     assert out["threads_used"] is False and out["egress_hosts"] == ["api.anthropic.com", "example.org"] and out["egress_denied"] is True
     assert summarize_run(None) == {"run_dir": None}
+
+
+def test_new_run_dirs_ignore_the_latest_pointer(tmp_path: Path) -> None:
+    from research_loop.scripts.run_container_agent import new_run_dirs
+
+    runs = tmp_path / "runs"
+    (runs / "old").mkdir(parents=True)
+    before = set(runs.glob("*"))
+    (runs / "20261005_new").mkdir()
+    (runs / "LATEST").write_text("20261005_new")
+    assert new_run_dirs(runs, before) == [runs / "20261005_new"]
+    assert new_run_dirs(tmp_path / "missing", set()) == []
