@@ -304,6 +304,8 @@ def run_declarative_metrics(
     # Before Verus, not after the proof: a dense table over a product of key dictionaries that the prepared data puts past the budget.
     from declarative_spec import dense_budget
 
+    if column_bins is not None and dense_budget.key_dictionaries(spec_rs) and not (speed_bar or {}).get("dict_sizes"):
+        return failure("the prepared data has no dictionary sizes (expect.json lacks dict_sizes): re-run prepare so the dense-slot budget can be checked")
     dense = dense_budget.body_violation(body, spec_rs, None if speed_bar is None else speed_bar.get("dict_sizes"))
     if dense:
         return failure(dense)

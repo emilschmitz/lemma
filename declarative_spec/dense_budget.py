@@ -124,10 +124,12 @@ def prompt_section(rep: dict | None) -> list[str]:
 
 
 def body_violation(body: str, spec_rs: str, dict_sizes: dict[str, int] | None) -> str | None:
-    """A message when ``body`` allocates a table sized by a product of key-dictionary lengths over the budget; else None.
+    """A message when ``body`` multiplies the lengths of two or more key dictionaries past the budget (a dense table or grid); else None.
 
-    Looks at `vec![x; E]`, `Vec::with_capacity(E)` and `.resize(E, ..)`: ``E`` (with `let m: usize = <t>.<col>__dict.len();` aliases
-    replaced) must not multiply two or more dictionary lengths whose actual sizes multiply past the budget. Decided only when the sizes are known."""
+    Names derived from a dictionary length by any chain of `let` carry that dictionary; a statement multiplying two different ones is judged
+    by the product of their actual sizes, wherever it sits (allocation, intermediate `let`, cast, `checked_mul`, push-loop bound), and nested
+    `while` loops over two dictionaries count as a grid. Best effort, not a proof: a product hidden in a helper fn or a per-slot allocation
+    over one large dictionary is not seen (see gap_q5_dense_slot_ADVERSARY_VERDICT.md). Decided only when the prepared sizes are known."""
     rep = report(spec_rs, dict_sizes)
     if rep is None or rep["allowed"] is not False or not dict_sizes:
         return None
@@ -138,27 +140,34 @@ def body_violation(body: str, spec_rs: str, dict_sizes: dict[str, int] | None) -
         for target in nested:
             col = re.search(r"\.(\w+)__dict", target).group(1)
             size = next((n for key, n in dict_sizes.items() if key.endswith(f".{col}")), None)
-            if size is None:
-                return None
-            product *= size
+            if size is not None:
+                product *= size
         if product > rep["budget"]:
             return f"nested loops over the dictionaries {', '.join(nested)} build a grid of {product} slots. " + message(rep)
-    for expr in _alloc_sizes(body):
-        for name, target in aliases.items():
-            expr = re.sub(rf"\b{re.escape(name)}\b", target, expr)
-        cols = re.findall(r"\b\w+\.(\w+)__dict\.len\(\)", expr)
-        if len(cols) >= 2 and "*" in expr:
+    def size_of(col: str) -> int | None:
+        keyed = [f"{t}.{c}" for t, c, _cap in key_dictionaries(spec_rs) if c == col]  # the key column's own table first
+        got = next((dict_sizes[k] for k in keyed if k in dict_sizes), None)
+        return got if got is not None else next((n for key, n in dict_sizes.items() if key.endswith(f".{col}")), None)
+
+    # Taint: a name derived (through any chain of `let`) from a dictionary length carries that dictionary. A statement that MULTIPLIES
+    # (`*`, `checked_mul`, ...) two or more different dictionaries' lengths is a slot count; over the budget it is rejected wherever it
+    # sits (an allocation, an intermediate `let`, a cast, `from_elem`, `resize_with`, a push-loop bound).
+    taint: dict[str, set[str]] = {}
+    for stmt in body.split(";"):
+        cols = set(re.findall(r"\b\w+\.(\w+)__dict\.len\(\)", stmt))
+        for ident in re.findall(r"\b[A-Za-z_]\w*\b", stmt):
+            cols |= taint.get(ident, set())
+        lets = re.findall(r"\blet\s+(?:mut\s+)?(\w+)", stmt)  # a block's last expression has no `;`: the next `let` shares its chunk
+        if lets and cols:
+            taint[lets[-1]] = cols
+        if len(cols) >= 2 and re.search(r"\*|\b(?:checked|saturating|wrapping|overflowing)_mul\b|\bpow\b", stmt):
             product = 1
-            for col in cols:
-                keyed = [f"{t}.{c}" for t, c, _cap in key_dictionaries(spec_rs) if c == col]  # the key column's own table first
-                size = next((dict_sizes[k] for k in keyed if k in dict_sizes), None)
-                if size is None:
-                    size = next((n for key, n in dict_sizes.items() if key.endswith(f".{col}")), None)
-                if size is None:
-                    return None
-                product *= size
+            for col in sorted(cols):
+                size = size_of(col)
+                if size is not None:  # an unknown dictionary only makes the true product larger: judge by the known ones
+                    product *= size
             if product > rep["budget"]:
-                return f"the table size `{expr.strip()}` multiplies dictionary lengths to {product} slots. " + message(rep)
+                return f"the statement `{' '.join(stmt.split())[:120]}` multiplies dictionary lengths to {product} slots. " + message(rep)
     return None
 
 

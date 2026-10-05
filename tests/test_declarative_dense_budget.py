@@ -137,6 +137,34 @@ def test_the_exporter_records_the_dictionary_sizes_the_host_main_will_see(tmp_pa
     assert json.loads((tmp_path / "data" / "expect.json").read_text())["dict_sizes"] == {"t.a": 7, "t.b": 3}
 
 
+@pytest.mark.parametrize(
+    "stmt",
+    [
+        "let t: usize = m1 * m2;\n    let g = vec![0u64; t];",
+        "let t = (m1 as u64) * (m2 as u64);\n    let g = Vec::<u64>::from_elem(0, t as usize);",
+        "let t = m1.checked_mul(m2).unwrap();\n    let mut g = Vec::new();\n    g.resize_with(t, || 0u64);",
+        "let a2 = m1;\n    let t = a2 * m2;\n    let g: Vec<u64> = std::iter::repeat(0u64).take(t).collect();",
+    ],
+)
+def test_the_lint_follows_intermediate_names_casts_and_other_allocators(stmt: str) -> None:
+    body = "    let m1: usize = s.name__dict.len();\n    let m2: usize = n.tag__dict.len();\n    " + stmt + "\n    res"
+    assert dense_budget.body_violation(body, THREE, REAL), stmt
+
+
+def test_two_loops_over_two_dictionaries_with_no_product_are_not_rejected() -> None:
+    body = (
+        "    let m1: usize = s.name__dict.len();\n    let m2: usize = n.tag__dict.len();\n    let mut a: Vec<u64> = vec![0u64; m1];\n"
+        "    let mut b: Vec<u64> = vec![0u64; m2];\n    let total = a.len() + b.len();\n    res"
+    )
+    assert dense_budget.body_violation(body, THREE, REAL) is None
+
+
+def test_prepared_data_without_dictionary_sizes_is_refused_loudly_not_silently_unchecked() -> None:
+    spec = emit_declarative_spec(SQL, SCHEMA, _cat(None, None))
+    out = pipeline.run_declarative_metrics(spec_rs=spec, agent_source="    let res: Vec<OutRow> = Vec::new();\n    res", column_bins={"t": "x.bin"}, speed_bar={"duck_us": 1})
+    assert out["status"] == "FAILURE" and "re-run prepare" in out["compiler_error"]
+
+
 def test_the_hash_based_hard_fixtures_pass_the_lint_at_real_sec_sizes_and_a_dense_mutation_does_not() -> None:
     """The Q5 fixture and the other hard dict fixtures build no table over a product of key dictionaries."""
     from declarative_spec.prompt import _FIXTURES
