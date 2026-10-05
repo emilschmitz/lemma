@@ -38,6 +38,21 @@ TPCH = {
 }
 # TPC-H Q1 with dictionary strings and 8 parallel workers (any TPC-H scale's catalog: the body is data-size independent).
 DICT_PAR = {"dict_parallel_q1.rs": TPCH["group_decimal_sums_string_keys_sorted.rs"]}
+# Dictionary-string-mode fixtures on the SEC DECIMAL variant (published GenDB shapes: anti-join, 3-table dictionary join).
+DICT_SEC = {
+    "dict_anti_join_group_topk.rs": (
+        "SELECT n.tag, n.version, COUNT(*) AS cnt, SUM(n.value) AS total FROM num n "
+        "LEFT JOIN pre p ON n.tag = p.tag AND n.version = p.version AND n.adsh = p.adsh "
+        "WHERE n.uom = 'USD' AND n.ddate BETWEEN 20230101 AND 20231231 AND n.value IS NOT NULL AND p.adsh IS NULL "
+        "GROUP BY n.tag, n.version HAVING COUNT(*) > 10 ORDER BY cnt DESC LIMIT 100"
+    ),
+    "dict_join3_group_topk.rs": (
+        "SELECT s.name, p.stmt, n.tag, p.plabel, SUM(n.value) AS total_value, COUNT(*) AS cnt FROM num n "
+        "JOIN sub s ON n.adsh = s.adsh JOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version "
+        "WHERE n.uom = 'USD' AND p.stmt = 'IS' AND s.fy = 2023 AND n.value IS NOT NULL "
+        "GROUP BY s.name, p.stmt, n.tag, p.plabel ORDER BY total_value DESC LIMIT 200"
+    ),
+}
 # Fixtures that live next to the other worked examples (not under hard/), on the SEC DECIMAL variant.
 TOP = {
     "join_min_stringhashmap_probe.rs": (
@@ -53,10 +68,12 @@ def _verify(name: str, monkeypatch: pytest.MonkeyPatch, mutate: tuple[str, str] 
     if not any(c.is_file() for c in VERUS_CANDIDATES):
         pytest.skip("verus binary not installed")
     monkeypatch.setenv("LEMMA_VERUS_BIN", str(Path(__file__).resolve().parents[1] / "scripts" / "ram" / "verus_guarded.sh"))
+    if name in DICT_SEC:
+        monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
     if name in DICT_PAR:
         monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
         monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "1")
-    text = ((HARD if name in CASES or name in TPCH or name in DICT_PAR else _FIXTURES) / name).read_text()
+    text = ((HARD if name in CASES or name in TPCH or name in DICT_PAR or name in DICT_SEC else _FIXTURES) / name).read_text()
     if mutate is not None:
         assert mutate[0] in text
         text = text.replace(*mutate, 1)
@@ -68,7 +85,7 @@ def _verify(name: str, monkeypatch: pytest.MonkeyPatch, mutate: tuple[str, str] 
         schema, catalog = tpch_schema_and_catalog(TPCH_DB)
         spec = emit_declarative_spec({**TPCH, **DICT_PAR}[name], schema, catalog)
     else:
-        sql = {**CASES, **TOP}[name]
+        sql = {**CASES, **TOP, **DICT_SEC}[name]
         from research_loop.scripts.declarative_round import SEC_DB, sec_catalog, sec_schema
 
         if not SEC_DB.is_file():
@@ -78,7 +95,7 @@ def _verify(name: str, monkeypatch: pytest.MonkeyPatch, mutate: tuple[str, str] 
     return verify_assembled(program, timeout_sec=600)
 
 
-@pytest.mark.parametrize("name", sorted({**CASES, **TOP, **TPCH, **DICT_PAR}))
+@pytest.mark.parametrize("name", sorted({**CASES, **TOP, **TPCH, **DICT_PAR, **DICT_SEC}))
 def test_hard_fixture_verifies(name: str, monkeypatch: pytest.MonkeyPatch) -> None:
     ok, out = _verify(name, monkeypatch)
     assert ok and "0 errors" in out, out[-2000:]
@@ -91,4 +108,25 @@ def test_a_broken_sorted_insert_does_not_verify(monkeypatch: pytest.MonkeyPatch)
 
 def test_a_wrong_string_comparison_does_not_verify(monkeypatch: pytest.MonkeyPatch) -> None:
     ok, out = _verify("ungrouped_minmax_string_filter.rs", monkeypatch, ("let hit = q == 3 && num.uom[i] == pure;", "let hit = q == 3 && num.uom[i] != pure;"))
+    assert not ok and "error" in out
+
+
+def test_a_flipped_anti_join_test_does_not_verify(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keeping the rows that DO have a pre match is the opposite query (EXISTS, not NOT EXISTS): Verus must reject it."""
+    ok, out = _verify("dict_anti_join_group_topk.rs", monkeypatch, ("&& uok[um] && !mem;", "&& uok[um] && mem;"))
+    assert not ok and "error" in out
+
+
+def test_a_shortened_date_range_does_not_verify(monkeypatch: pytest.MonkeyPatch) -> None:
+    ok, out = _verify("dict_anti_join_group_topk.rs", monkeypatch, ("dd <= 20231231", "dd <= 20231230"))
+    assert not ok and "error" in out
+
+
+def test_a_wrong_fiscal_year_in_the_three_table_join_does_not_verify(monkeypatch: pytest.MonkeyPatch) -> None:
+    ok, out = _verify("dict_join3_group_topk.rs", monkeypatch, ("s.fy[jj] == 2023", "s.fy[jj] == 2024"))
+    assert not ok and "error" in out
+
+
+def test_a_wrong_uom_literal_in_the_three_table_join_does_not_verify(monkeypatch: pytest.MonkeyPatch) -> None:
+    ok, out = _verify("dict_join3_group_topk.rs", monkeypatch, ('String::from_str("USD")', 'String::from_str("EUR")'))
     assert not ok and "error" in out
