@@ -358,6 +358,7 @@ def _parallel_section(spec_text: str, shape: dict) -> list[str]:
         "worker its own DENSE array per aggregate (one slot per dictionary code), merge them slotwise in the join loop, and the slotwise",
         "telescoping is the same proof (dict mode: `context/ro/examples/dict_group_count_sum_parallel.rs`, 13x on the real 39.4M-row table;",
         "a nullable dictionary column with a string filter, COUNT and MIN: `context/ro/examples/parallel_dict_nullable_count_min.rs` (1.8x on real `pre`);",
+        "The dense slot table has one slot per combination of key codes: the host refuses to emit (declared `max_distinct` product over `LEMMA_DENSE_SLOT_BUDGET`, default 2^22 slots) or aborts at load time (actual dictionary sizes) when it would not fit;",
         "two dictionary keys, several aggregates, sorted output, a flat m1*m2 slot array: `context/ro/examples/hard/dict_parallel_q1.rs`, TPC-H Q1 at 3.95x).",
         "The example is the template (SUM; adapt the fold, the filter, the cell bound and the accumulator type):",
         f"`context/ro/examples/{_PAR_EXAMPLE}` (also `parallel_ungrouped_product_sum.rs` for a product with a date filter, and `parallel_ungrouped_min.rs`, `_max.rs`, `_count.rs`: MIN/MAX merge the workers' (value, any) pairs, COUNT is additive).",
