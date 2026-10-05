@@ -128,7 +128,7 @@ def _lemma_measure_us(ws: Path, dataset_size: int) -> tuple[int, bool, str]:
     latency = int(out.get("latency_us") or metrics.get("latency_us") or -1)
     err = ""
     if not out.get("ok"):
-        err = "; ".join(out.get("errors") or []) or str(metrics.get("compiler_error") or "harness failed")
+        err = str(metrics.get("compiler_error") or "") or "; ".join(out.get("errors") or []) or "harness failed"
     return latency, proof_ok, err
 
 

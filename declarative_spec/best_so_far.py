@@ -65,12 +65,24 @@ def record_attempt(ws: Path, source: str, metrics: dict, *, origin: str) -> dict
     d = attempts_dir(ws)
     index = _read_index(ws)
     digest = sha(source)
+    t = _tally_of(metrics)
     for entry in index:
         if entry["sha"] == digest:
-            return entry  # the same file was already checked; the first tally stands
+            if entry["score"][0] == 0 and t is not None:
+                # The first check of this file produced no tally (timeout, build error); a later one did: keep that one.
+                entry.update(
+                    score=list(score(metrics)),
+                    verified=t[0],
+                    errors=t[1],
+                    proof_verified=bool(metrics.get("proof_verified")),
+                    status=metrics.get("status"),
+                    error_excerpt=str(metrics.get("compiler_error") or ""),
+                )
+                (d / "index.json").write_text(json.dumps(index, indent=2) + "\n")
+                _maybe_best(ws, d, entry)
+            return entry
     n = len(index) + 1
     (d / f"{n:03d}.rs").write_text(source)
-    t = _tally_of(metrics)
     entry = {
         "n": n,
         "sha": digest,
@@ -85,10 +97,17 @@ def record_attempt(ws: Path, source: str, metrics: dict, *, origin: str) -> dict
     }
     index.append(entry)
     (d / "index.json").write_text(json.dumps(index, indent=2) + "\n")
+    _maybe_best(ws, d, entry)
+    return entry
+
+
+def _maybe_best(ws: Path, d: Path, entry: dict) -> None:
+    """Only a check with a Verus tally can be best: a file with no tally is unranked, never a restore target."""
+    if entry["score"][0] == 0:
+        return
     best = load_best_entry(ws)
     if best is None or tuple(entry["score"]) > tuple(best["score"]):
         (d / "best.json").write_text(json.dumps(entry, indent=2) + "\n")
-    return entry
 
 
 def load_best_entry(ws: Path) -> dict | None:
@@ -100,7 +119,16 @@ def load_best(ws: Path) -> tuple[dict, str] | None:
     entry = load_best_entry(ws)
     if entry is None:
         return None
-    return entry, (ws / "mcp_results" / ATTEMPTS / entry["file"]).read_text()
+    # best.json lives in the agent-writable workspace: take only a plain `NNN.rs` file whose text matches the recorded hash.
+    if not re.fullmatch(r"\d{3,}\.rs", entry["file"]):
+        raise ValueError(f"best.json names an unexpected file: {entry['file']!r}")
+    path = ws / "mcp_results" / ATTEMPTS / entry["file"]
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"best attempt file is not a plain file: {path}")
+    text = path.read_text()
+    if sha(text) != entry["sha"]:
+        raise ValueError(f"best attempt file {entry['file']} does not match its recorded hash (tampered?)")
+    return entry, text
 
 
 def last_entry(ws: Path) -> dict | None:

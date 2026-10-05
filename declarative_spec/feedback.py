@@ -116,7 +116,7 @@ def _scrub_paths(text: str, directory: Path | None) -> str:
             return "vstd/" + "/".join(parts[parts.index("vstd") + 1 :])
         return "<host>/" + "/".join(parts[-2:])
 
-    return re.sub(r"(?<![\w.])/(?:[\w.+@-]+/)+[\w.+@-]+", short, text)
+    return re.sub(r"(?<![\w.)\]])/(?:[\w.+@-]+/)+[\w.+@-]+", short, text)
 
 
 def _rewrite_block(text: str, regions: list[Region], assembled_name: str) -> tuple[str, int | None, bool]:
@@ -140,8 +140,6 @@ def _rewrite_block(text: str, regions: list[Region], assembled_name: str) -> tup
             return f"{indent}{arrow} {region.name} line {rel}:{col}"
         return f"{indent}{arrow} {AGENT_FILE}:{line - region.assembled_first + region.agent_first}:{col}  ({region.name})"
 
-    text = _LOC.sub(loc, text)
-
     def gutter(match: re.Match[str]) -> str:
         indent, num, bar = match.groups()
         line = int(num)
@@ -152,7 +150,19 @@ def _rewrite_block(text: str, regions: list[Region], assembled_name: str) -> tup
             return f"{indent}{line - region.assembled_first + 1}{bar}"
         return f"{indent}{line - region.assembled_first + region.agent_first}{bar}"
 
-    return _GUTTER.sub(gutter, text), primary[0], in_agent[0]
+    # A snippet belongs to the span named by the last `-->` / `:::` line; only snippets of the assembled
+    # program get their gutter rewritten (a vstd snippet keeps its own line numbers).
+    out_lines = []
+    current_is_assembled = True
+    for raw in text.split("\n"):
+        m = _LOC.match(raw)
+        if m:
+            current_is_assembled = Path(m.group(3)).name == assembled_name
+            raw = _LOC.sub(loc, raw, count=1)
+        elif current_is_assembled:
+            raw = _GUTTER.sub(gutter, raw, count=1)
+        out_lines.append(raw)
+    return "\n".join(out_lines), primary[0], in_agent[0]
 
 
 def _split_blocks(log: str) -> tuple[str, list[tuple[str, str]]]:
@@ -230,15 +240,22 @@ def format_failure(
             text = text[:half].rstrip() + "\n  ... (middle omitted) ...\n" + text[-half:].lstrip()
         parts.append(_clip(text, PREAMBLE_CHARS) if raw_blocks else text)
 
+    # Choose which errors to show: those in the agent's regions first (they are the ones it can fix), then host ones,
+    # up to the caps; show the chosen ones in source order.
+    chosen: list[_Block] = []
     budget = TOTAL_CHARS
-    shown = 0
-    for block in errors[:MAX_ERRORS]:
-        text = _clip(_scrub_paths(block.text, directory), BLOCK_CHARS)
-        if shown and budget - len(text) < 0:
+    for block in [b for b in errors if b.in_agent] + [b for b in errors if not b.in_agent]:
+        if len(chosen) >= MAX_ERRORS:
             break
-        parts.append(text)
-        budget -= len(text)
-        shown += 1
+        size = min(len(block.text), BLOCK_CHARS)
+        if chosen and budget - size < 0:
+            break
+        chosen.append(block)
+        budget -= size
+    chosen.sort(key=lambda b: -1 if b.line is None else b.line)
+    shown = len(chosen)
+    for block in chosen:
+        parts.append(_clip(_scrub_paths(block.text, directory), BLOCK_CHARS))
     omitted = len(errors) - shown
     if omitted:
         where = f" Full log: {full_log_hint}." if full_log_hint else ""
