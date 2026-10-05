@@ -33,6 +33,12 @@ def _emit(sql: str, **kw) -> str:
 
 
 # rows with NULLs in x and y (None); a and g are never NULL
+@pytest.fixture(autouse=True)
+def _wide_cells(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests state the i64 cell layout; the narrow layout (LEMMA_NARROW_CELLS) is tested in test_declarative_narrow_cells."""
+    monkeypatch.delenv("LEMMA_NARROW_CELLS", raising=False)
+
+
 ROWS = [
     {"a": 1, "x": 1, "y": 2, "g": 0},
     {"a": 2, "x": None, "y": 2, "g": 0},

@@ -20,7 +20,7 @@
             assert(0 <= ROW_CAP_sub <= u64::MAX as int);
         }
         i = i - 1;
-        let k = cols.fy[i];
+        let k = cols.fy[i] as i64;
         let prev: u64 = if map.contains_key(&k) {
             *map.get(&k).unwrap()
         } else {

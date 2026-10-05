@@ -577,6 +577,16 @@ def _prune_unread_columns(spec: str) -> str:
     return _VALID_FN.sub(valid, spec)
 
 
+def _wide_key(info):
+    """A group-key column of a map-result shape stays i64: LEMMA_NARROW_CELLS narrows the other loaded cells only, because
+    the map key type, `group_count(keys: Seq<K>, ..)` and the loaded column must be one type."""
+    import dataclasses
+
+    if info.exec_rust in ("i32", "i16", "i8") and not info.is_date:
+        return dataclasses.replace(info, exec_rust="i64", cell_exclusive_cap=2**63)
+    return info
+
+
 def _null_rewrite_sql(sql: str, schema: dict, catalog: CatalogAssumptions | None) -> str:
     """SQL with its NULL semantics over the catalog's nullable columns stated in two-valued SQL (see ``nulls``)."""
     import sqlglot
@@ -703,7 +713,7 @@ def _emit_count(parsed: ParsedQuery, model: SchemaModel, ctx: _EmitCtx) -> str:
         _gt, gc, ginfo, gkind = _resolve_group_col(g, model, t_orig, [t_orig])
         field = rust_ident(gc)
         if field not in seen_fields:
-            fields.append((gc, field, ginfo))
+            fields.append((gc, field, _wide_key(ginfo)))
             seen_fields.add(field)
         group_meta.append((field, gc, gkind))
 
@@ -834,6 +844,8 @@ def _emit_join_sum(
     for g in parsed.group_cols:
         gt, gc, _ginfo, gkind = _resolve_group_col(g, model, None, [lt_orig, rt_orig])
         add_field(gt, gc, field_map)
+        key = (gt.casefold(), model.lookup_column(gt, gc)[0].casefold())
+        field_map[key] = (field_map[key][0], field_map[key][1], _wide_key(field_map[key][2]))
         group_table = gt
         group_field = rust_ident(gc)
         group_kind = gkind

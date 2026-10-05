@@ -33,7 +33,7 @@ proof fn bound_below(m: int, p: real)
             forall|j: int| #![trigger t.k@[j]] 0 <= j < i as int ==> exists|r: int| #![trigger ks@[r]] 0 <= r < ks@.len() && ks@[r] == t.k@[j],
         decreases t.n - i,
     {
-        let k = t.k[i];
+        let k = t.k[i] as i64;
         proof { assert(t.k@.len() == t.n as int); }
         let mut j: usize = 0;
         while j < ks.len() && ks[j] != k
@@ -127,7 +127,7 @@ proof fn bound_below(m: int, p: real)
             decreases i,
         {
             i -= 1;
-            let key = t.k[i];
+            let key = t.k[i] as i64;
             let cell = t.d[i];
             proof {
                 assert(t.k@.len() == t.n as int);

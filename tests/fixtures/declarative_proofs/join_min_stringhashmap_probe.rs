@@ -63,7 +63,7 @@ spec fn hit0(n: &Cols_num, s: &Cols_sub, j0: int) -> bool {
             any ==> forall|j: int| #![trigger hit0(n, s, j)] 0 <= j < i as int && hit0(n, s, j) ==> (n.ddate@[j] as int) >= (lo as int),
         decreases n.n - i,
     {
-        let d = n.ddate[i];
+        let d = n.ddate[i] as i64;
         if !(any && d >= lo) {
             let is_usd = n.uom[i] == usd;
             let found = is_usd && map.contains_key(n.adsh[i].as_str());
