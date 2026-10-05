@@ -89,3 +89,8 @@ research_loop/vendor/verus_docs/
 
 # stray test artifacts (compiled binaries and temp dirs left at the repo root by test runs)
 /tmp[a-z0-9_][a-z0-9_][a-z0-9_][a-z0-9_][a-z0-9_][a-z0-9_]*
+
+# local tool state
+.claude/
+.verus-solver-log/
+/q01_filter_sum
