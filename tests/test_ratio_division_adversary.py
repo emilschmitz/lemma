@@ -117,11 +117,11 @@ def _hidden_sum(spec: str, alias: str, part: str, rows: list[tuple]) -> int:
 def _spec_value(spec: str, alias: str, rows: list[tuple]) -> float:
     """The (single) f64 value the emitted ``ratio_<alias>`` pins, from its K, scales and the hidden sums."""
     text = _flat(spec)
-    k = int(re.search(rf"fn ratio_{alias}\(.*?let num: int = (-?\d+) \* ", text).group(1))
+    k = int(re.search(rf"fn ratio_{alias}\(.*?let ratio_n__: int = (-?\d+) \* ", text).group(1))
     f_den, f_num = (
         int(g)
         for g in re.search(
-            rf"fn ratio_{alias}\(.*?\(v as real\) == \(\(num as real\) \* (\d+)real\) / \(\(den as real\) \* (\d+)real\)", text
+            rf"fn ratio_{alias}\(.*?\(ratio_v__ as real\) == \(\(ratio_n__ as real\) \* (\d+)real\) / \(\(ratio_d__ as real\) \* (\d+)real\)", text
         ).groups()
     )
     num = k * _hidden_sum(spec, alias, "num", rows)
@@ -194,10 +194,10 @@ def test_null_ness_of_ratio_output(sql: str, optional: bool) -> None:
 
 def test_zero_denominator_branches_follow_the_sign_of_the_numerator_constant() -> None:
     spec = _flat(_emit("select -1 * sum(price) / sum(disc) as r from li"))
-    assert "let num: int = -1 * sum_r__num(li, i0);" in spec
-    assert "else if num > 0 { v.is_infinite_spec() && !v.is_sign_negative_spec() }" in spec
-    assert "else if num < 0 { v.is_infinite_spec() && v.is_sign_negative_spec() }" in spec
-    assert "else { v.is_nan_spec() }" in spec
+    assert "let ratio_n__: int = -1 * sum_r__num(li, i0);" in spec
+    assert "else if ratio_n__ > 0 { ratio_v__.is_infinite_spec() && !ratio_v__.is_sign_negative_spec() }" in spec
+    assert "else if ratio_n__ < 0 { ratio_v__.is_infinite_spec() && ratio_v__.is_sign_negative_spec() }" in spec
+    assert "else { ratio_v__.is_nan_spec() }" in spec
 
 
 @pytest.mark.parametrize(

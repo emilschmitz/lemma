@@ -72,8 +72,11 @@ def run(
     os.environ["LEMMA_DUCKDB_PATH"] = str(db_path)
     if resolved.style == "declarative":
         os.environ["LEMMA_MEASURE_DB"] = str(db_path)
-        # The catalog is its own axis: sec_margin unless --assumption-package / the profile says otherwise.
-        os.environ.setdefault("LEMMA_ASSUMPTION_PACKAGE", "sec_margin")
+        # The catalog is its own axis: the package that matches the database (DECIMAL columns get
+        # sec_margin_dec) unless --assumption-package / the profile says otherwise.
+        from research_loop.scripts.declarative_draws import package_for_db
+
+        os.environ.setdefault("LEMMA_ASSUMPTION_PACKAGE", package_for_db(db_path))
     os.environ.pop("LEMMA_DECL_ROWS", None)
     os.environ.pop("LEMMA_DECL_SEED", None)
     t0 = time.time()
