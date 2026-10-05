@@ -244,6 +244,8 @@ a parallel body for the dict + validity shape is not written yet. Observation fr
 
 | `SELECT COUNT(*), MIN(line) FROM pre WHERE stmt = 'BS' AND line > 3` (nullable stmt) | real SEC, full 9.6M pre rows, dict + PARALLEL 8 workers | T1 | parallel (`parallel_dict_nullable_count_min.rs`, 23 verified, 2nd check) | yes | 6,614 median of 9 (best 6,322) | 12,162 | 35,203 | **1.84x (best 1.92x) / 5.3x** (single-threaded body: 0.72x to 0.94x) |
 
+| `SELECT SUM(n.value) FROM num n JOIN sub s ON n.adsh = s.adsh WHERE s.form = '10-K'` | real SEC, num 39.4M JOIN sub 86,135, dict adsh codes | T3 | single-threaded (transpiler agent's `dict_join_probe_sum.rs`: per-sub-code count array, num dictionary translated to sub codes once, one probe pass; 24 verified; re-verified on the real spec) | yes | 117,412 median of 9 (best 113,662) | 293,080 | 1,221,707 | **2.50x (best 2.58x) / 10.4x** |
+
 TPC-H 2.8x target: MET by Q1 at SF3 (3.95x) and SF10 (3.8x to 4.0x), a compute-bound shape (6 aggregates over 2 tiny-domain keys) where the parallel dense-array design beats the all-core engine; Q6-class scans are structurally bandwidth-bound (1.1x to 1.25x at SF3/SF10).
 
 Measurement protocol from here: the timed measure is the MEDIAN of 9 runs and the check also reports the best run (`speedup`, `speedup_best`); gaps under 25 percent between a body and the reference engine are ties (the shared box shows ~30 percent run-to-run noise: DuckDB's own 8-thread median for the same query moved 255 to 294 ms between prepares).
