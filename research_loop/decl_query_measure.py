@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import datetime as dt
+import io
 import json
 import re
+import shutil
 import statistics
 import struct
+import tempfile
 import time
 from decimal import Decimal
 from pathlib import Path
+from typing import BinaryIO
 
 import duckdb
 import numpy as np
@@ -78,10 +82,9 @@ def write_query_measure(
         raise ValueError(str(exc)) from exc
     try:
         for suffix, plan in plans.items():
-            blob = _export_planned(con, plan)
-            table_rows[suffix] = int.from_bytes(blob[:8], "little")
             path = dest / f"cols_{suffix}.bin"
-            path.write_bytes(blob)
+            with path.open("wb") as fh:
+                table_rows[suffix] = _export_planned_to(con, plan, fh)
             bins[suffix] = str(path)
         scales_match = _OUT_SCALES.search(spec)
         scales = [int(x) for x in scales_match.group(1).split(",")] if scales_match else None
@@ -177,8 +180,18 @@ def _export_table(
 
 
 def _export_planned(con: duckdb.DuckDBPyConnection, plan: tuple) -> bytes:
+    sink = io.BytesIO()
+    _export_planned_to(con, plan, sink)
+    return sink.getvalue()
+
+
+def _export_planned_to(con: duckdb.DuckDBPyConnection, plan: tuple, sink: BinaryIO) -> int:
+    """Write the column file for ``plan`` to ``sink``; memory is bounded by ``_BATCH_ROWS`` rows (plus the dictionaries), not the table."""
     table, names, types, infos, nullable, dict_of, valid_fields = plan
-    return _encode_columns(con, table, names, types, infos, nullable, dict_of, valid_fields)
+    return _encode_columns(con, table, names, types, infos, nullable, dict_of, valid_fields, sink)
+
+
+_BATCH_ROWS = 1_000_000  # rows per scan batch of the exporter
 
 
 _INT_RANGE: dict[str, tuple[int, int]] = {
@@ -240,8 +253,9 @@ def _encode_columns(
     nullable: list[bool],
     dict_of: dict[int, int],
     valid_fields: set[int],
-) -> bytes:
-    """Bulk export: DuckDB projects every cell at its loaded width and the columns come back as numpy arrays.
+    sink: BinaryIO,
+) -> int:
+    """Bulk export to ``sink`` (returns the row count): DuckDB projects every cell at its loaded width, in row batches, as numpy arrays.
 
     The bytes are those of a per-cell loop over the rows: dictionary codes number the distinct values in order of first
     appearance, a NULL cell of a nullable column is the default cell (code 0 for a dictionary), a NULL in a column the
@@ -263,12 +277,14 @@ def _encode_columns(
             or (fty == "bool" and base == "VARCHAR" and idx not in valid_fields)
         ):
             raise ValueError(f"{table}.{names[idx]}: DuckDB type {base} is not loadable as {fty}")
-    if dict_of and "rowid" in all_names:
-        raise ValueError(f"{table} has a column named rowid; the dictionary order needs the row id pseudo-column")
+    if "rowid" in all_names:
+        raise ValueError(f"{table} has a column named rowid; the row batches and the dictionary order need the row id pseudo-column")
     dictionaries: dict[int, list[str]] = {}
     plan: dict[int, str] = {}  # field index -> select expression
     kinds: dict[int, str] = {}  # field index -> int | value | valid | code | string
     enum_names: list[str] = []
+    spools: list = []
+    null_codes: set[int] = set()
     try:
         for idx in sorted(set(dict_of.values())):
             q = _quote(names[idx])
@@ -334,50 +350,73 @@ def _encode_columns(
                     continue
                 expr = f"CAST({expr} AS {_SQL_TARGET[types[i]]})"
             select.append(f"{expr} AS c{i}")
-        arrays = con.execute(f"SELECT {', '.join(select)} FROM {t}").fetchnumpy() if select else {}
+        total = _count_rows(con, t)
+        bounds_rowid = con.execute(f"SELECT min(rowid), max(rowid) FROM {t}").fetchone()
+        # Column-major layout (all of column 0, then column 1, ...) from a row-batch scan: each column's bytes go to its own
+        # temporary file, so memory is bounded by the batch, not the table. The batches are rowid ranges (row-group pruned).
+        spools.extend(tempfile.TemporaryFile() for _ in types)  # noqa: SIM115
+        seen = 0
+        lo = bounds_rowid[0]
+        while select and lo is not None and lo <= bounds_rowid[1]:
+            hi = lo + _BATCH_ROWS
+            arrays = con.execute(f"SELECT {', '.join(select)} FROM {t} WHERE rowid >= {lo} AND rowid < {hi}").fetchnumpy()
+            lo = hi
+            n = len(next(iter(arrays.values())))
+            seen += n
+            for idx, fty in enumerate(types):
+                if n and idx not in dict_of:
+                    spools[idx].write(_encode_batch(arrays, idx, fty, kinds[idx], nullable[idx], f"{table}.{names[idx]}", null_codes, n))
+            del arrays
+        if select and seen != total:
+            raise ValueError(f"{table}: scanned {seen} rows of {total}")
     except duckdb.Error as exc:
         raise ValueError(str(exc)) from exc
     finally:
         for enum in enum_names:
             con.execute(f"DROP TYPE IF EXISTS {enum}")
-    total = len(next(iter(arrays.values()))) if arrays else _count_rows(con, t)
-    col_bufs: list[bytes] = [b"" for _ in types]
-    null_codes: set[int] = set()
-    for idx, fty in enumerate(types):
-        if idx in dict_of:
-            continue
-        kind = kinds[idx]
-        if kind == "valid":
-            col_bufs[idx] = np.ma.filled(arrays[f"c{idx}"], False).astype("u1").tobytes()
-            continue
-        probe = arrays[f"h{idx}"] if kind == "int" and fty == "i128" else arrays[f"c{idx}"]
-        mask = np.ma.getmaskarray(probe)
-        has_null = bool(mask.any())
-        if has_null and not nullable[idx]:
-            raise ValueError(f"{table}.{names[idx]} has NULLs; the catalog does not declare the column nullable")
-        if kind == "int" and fty == "i128":
-            pair = np.empty((total, 2), dtype="<u8")
-            pair[:, 0] = np.ma.filled(arrays[f"l{idx}"], 0).astype("<u8")
-            pair[:, 1] = np.ma.filled(probe, 0).astype("<i8").view("<u8")
-            col_bufs[idx] = pair.tobytes()
-        elif kind == "code":
-            if has_null:
-                null_codes.add(idx)
-            col_bufs[idx] = np.ma.filled(probe, 0).astype(_NP_DTYPE[fty]).tobytes()
-        elif kind == "string":
-            col_bufs[idx] = _pack_strings((np.ma.filled(probe, "") if has_null else probe).tolist())
-        elif fty == "bool":
-            col_bufs[idx] = np.ma.filled(probe, False).astype("u1").tobytes()
-        else:
-            col_bufs[idx] = np.ma.filled(probe, 0).astype(_NP_DTYPE[fty]).tobytes()
+    try:
+        _finish(spools, dictionaries, dict_of, null_codes, total, sink)
+    finally:
+        for spool in spools:
+            spool.close()
+    return total
+
+
+def _finish(spools: list, dictionaries: dict[int, list[str]], dict_of: dict[int, int], null_codes: set[int], total: int, sink: BinaryIO) -> None:
     for source in null_codes:
         if not dictionaries[source]:
             dictionaries[source] = [""]  # every cell is NULL: code 0 still has to index an entry
     for idx, source in dict_of.items():
         entries = dictionaries[source]
-        col_bufs[idx] = struct.pack("<Q", len(entries)) + _pack_strings(entries)
-    # Column-major, the order the generated reader consumes: all of column 0, then column 1, ...
-    return struct.pack("<Q", total) + b"".join(col_bufs)
+        spools[idx].write(struct.pack("<Q", len(entries)) + _pack_strings(entries))
+    sink.write(struct.pack("<Q", total))
+    for spool in spools:
+        spool.seek(0)
+        shutil.copyfileobj(spool, sink, 1 << 16)
+
+
+def _encode_batch(arrays: dict, idx: int, fty: str, kind: str, nullable: bool, label: str, null_codes: set[int], n: int) -> bytes:
+    """The bytes of one column for one row batch (the cell encoding of the per-row loop)."""
+    if kind == "valid":
+        return np.ma.filled(arrays[f"c{idx}"], False).astype("u1").tobytes()
+    probe = arrays[f"h{idx}"] if kind == "int" and fty == "i128" else arrays[f"c{idx}"]
+    has_null = bool(np.ma.getmaskarray(probe).any())
+    if has_null and not nullable:
+        raise ValueError(f"{label} has NULLs; the catalog does not declare the column nullable")
+    if kind == "int" and fty == "i128":
+        pair = np.empty((n, 2), dtype="<u8")
+        pair[:, 0] = np.ma.filled(arrays[f"l{idx}"], 0).astype("<u8")
+        pair[:, 1] = np.ma.filled(probe, 0).astype("<i8").view("<u8")
+        return pair.tobytes()
+    if kind == "code":
+        if has_null:
+            null_codes.add(idx)
+        return np.ma.filled(probe, 0).astype(_NP_DTYPE[fty]).tobytes()
+    if kind == "string":
+        return _pack_strings((np.ma.filled(probe, "") if has_null else probe).tolist())
+    if fty == "bool":
+        return np.ma.filled(probe, False).astype("u1").tobytes()
+    return np.ma.filled(probe, 0).astype(_NP_DTYPE[fty]).tobytes()
 
 
 def _count_rows(con: duckdb.DuckDBPyConnection, quoted_table: str) -> int:
