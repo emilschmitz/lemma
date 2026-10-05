@@ -72,8 +72,10 @@ def agent_env(model: str, style: str) -> dict[str, str]:
         "LEMMA_SERIOUS": "1",
         "LEMMA_RESEARCH_LOG": "1",
     }
-    # No LEMMA_PARALLEL_VSTD: every ladder query is a GROUP BY (a map result), and the parallel variant refuses
-    # non-Vec<OutRow> results loudly, so enabling it here would fail every job at emit time.
+    if check_style(style) == DECLARATIVE:
+        # "auto": the parallel (Arc) variant where the shape has one. A shape without one (a map result, a self join)
+        # keeps the sequential spec and its prompt says there are no Arc parameters; "1" would fail those at emit.
+        env["LEMMA_PARALLEL_VSTD"] = "auto"
     if model.startswith("claude-"):
         env.update(AGENT_IMAGE=CLAUDE_IMAGE, AGENT_ENV="", AGENT_CMD=claude_agent_cmd(model))
     else:

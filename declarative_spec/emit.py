@@ -481,7 +481,14 @@ def emit_declarative_spec(
     from declarative_spec import dense_budget, parallel
 
     dense_budget.check(out)
-    return parallel.to_parallel(out) if parallel.enabled() else out
+    if not parallel.enabled():
+        return out
+    try:
+        return parallel.to_parallel(out)
+    except DeclarativeUnsupported:
+        if parallel.strict():
+            raise
+        return out
 
 
 _F64_LITERAL = re.compile(r"(?<![\w.])(\d+(?:\.\d+)?)e0(?!\w)")

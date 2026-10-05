@@ -176,3 +176,24 @@ def test_parallel_min_max_count_examples_verify_and_a_mutation_does_not(name: st
     assert ok and "0 errors" in out, out[-2000:]
     bad, _ = run(text.replace(old, new))
     assert not bad
+
+
+def test_auto_mode_keeps_a_map_result_sequential_and_strict_mode_refuses(monkeypatch) -> None:
+    import pytest
+    from declarative_spec import parallel
+    from declarative_spec.parse import DeclarativeUnsupported
+
+    spec = "pub fn run_query(t: &Cols_t) -> (res: HashMapWithView<u64, u64>)\n    requires\n        true,\n"
+    monkeypatch.setenv(parallel.ENV, "auto")
+    assert parallel.enabled() and not parallel.strict()
+    monkeypatch.setenv(parallel.ENV, "1")
+    assert parallel.strict()
+    with pytest.raises(DeclarativeUnsupported):
+        parallel.to_parallel(spec)
+
+
+def test_agent_env_sets_auto_for_declarative_only() -> None:
+    from research_loop.scripts.declarative_ladder import agent_env
+
+    assert agent_env("claude-haiku-4-5-20251001", "declarative")["LEMMA_PARALLEL_VSTD"] == "auto"
+    assert "LEMMA_PARALLEL_VSTD" not in agent_env("claude-haiku-4-5-20251001", "imperative")

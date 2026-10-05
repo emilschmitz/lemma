@@ -24,6 +24,12 @@ ARC_SUFFIX = "_arc"
 
 
 def enabled() -> bool:
+    """``1``: every spec gets the parallel variant, a shape without one fails loudly. ``auto``: the variant where
+    the shape has one; the other shapes keep the sequential spec (the prompt then says there are no Arc parameters)."""
+    return os.environ.get(ENV, "").strip() in ("1", "auto")
+
+
+def strict() -> bool:
     return os.environ.get(ENV, "").strip() == "1"
 
 
