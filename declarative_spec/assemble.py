@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from declarative_spec import dense_budget, parallel
+from declarative_spec import parallel
 
 # The timed measure is the MEDIAN of this many runs (odd). The shared box shows ~30 percent run-to-run noise.
 TIMED_RUNS = 9
@@ -170,7 +170,6 @@ def assemble_declarative_program(
     if column_bins is not None:
         # Reading the column files into the loaded vectors and checking the requirements: the host-side cost the timer excludes.
         main_fn += '    println!("LOAD_US: {}", load_start.elapsed().as_micros());\n'
-    main_fn += dense_budget.runtime_checks(verus_part)
     main_fn += arc_lets
     main_fn += timed
     main_fn += "}\n"

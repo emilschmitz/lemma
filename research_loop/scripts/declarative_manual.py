@@ -84,6 +84,7 @@ def prepare(kind: str, sql: str, ws: Path) -> None:
         last_error="",
         in_docker=False,
         spec_text=spec,
+        dict_sizes=bar.get("dict_sizes"),
     )
     (ws / "context" / "ro" / "DECLARATIVE.md").write_text(prompt)
     print(f"prepared {ws}; bar: duck_us={bar['duck_us']} duck1_us={bar['duck1_us']} rows={bar['table_rows']}")

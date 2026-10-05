@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from declarative_spec import dense_budget
+
 _COUNT_SHAPE = """
 let mut counts: Vec<u64> = Vec::new();
 let mut c: usize = 0;
@@ -406,7 +408,7 @@ def _parallel_section(spec_text: str, shape: dict) -> list[str]:
         "worker its own DENSE array per aggregate (one slot per dictionary code), merge them slotwise in the join loop, and the slotwise",
         "telescoping is the same proof (dict mode: `context/ro/examples/dict_group_count_sum_parallel.rs`, 13x on the real 39.4M-row table;",
         "a nullable dictionary column with a string filter, COUNT and MIN: `context/ro/examples/parallel_dict_nullable_count_min.rs` (1.8x on real `pre`);",
-        "The dense slot table has one slot per combination of key codes: the host refuses to emit (declared `max_distinct` product over `LEMMA_DENSE_SLOT_BUDGET`, default 2^22 slots) or aborts at load time (actual dictionary sizes) when it would not fit;",
+        "A dense table has one slot per combination of key codes; it is allowed only when the product of the key dictionaries' sizes is within `LEMMA_DENSE_SLOT_BUDGET` (default 2^22 slots). The section \"Dense slot table: allowed or not, for THIS query\" below says which case this query is; otherwise key the groups by a packed code tuple in a `HashMapWithView`;",
         "two dictionary keys, several aggregates, sorted output, a flat m1*m2 slot array: `context/ro/examples/hard/dict_parallel_q1.rs`, TPC-H Q1 at 3.95x).",
         "Every multiplier quoted in this prompt is a manual-prover result for the timed `run_query` ALONE (kernel only) against the reference engine scanning its own storage in place; pin, copy into the vectors and encoding are outside the timer (about a second for tens of millions of rows) and a reference engine holding the same narrow data in memory is about 1.8x to 2.1x slower than our kernel, not 2.4x to 2.9x. `run_runquery` reports the same kernel-only speedup.",
         "The example is the template (SUM; adapt the fold, the filter, the cell bound and the accumulator type):",
@@ -640,11 +642,13 @@ def build_declarative_prompt(
     last_error: str = "",
     in_docker: bool = False,
     spec_text: str = "",
+    dict_sizes: dict[str, int] | None = None,
 ) -> str:
     """Instructions for this spec style only (the recursive prompt is a different file).
 
     ``spec_text`` is the emitted spec: it selects the one recipe that matches its result type and the
-    list of hard features it contains. When ``in_docker`` is set, paths are the container mount.
+    list of hard features it contains. ``dict_sizes`` (``<table>.<column>`` -> dictionary entries, measured at prepare time) lets the
+    prompt say whether a dense slot table over the group-key dictionaries is allowed. When ``in_docker`` is set, paths are the container mount.
     """
     if in_docker:
         spec_path = "/workspace/context/ro/spec.rs"
@@ -703,6 +707,7 @@ def build_declarative_prompt(
     ]
     sections += _scale_section(spec_text)
     sections += _recipe_section(shape)
+    sections += dense_budget.prompt_section(dense_budget.report(spec_text, dict_sizes)) if "__dict@" in spec_text else []
     sections += _float_section(spec_text)
     sections += _nullable_section(spec_text)
     sections += _parallel_section(spec_text, shape)

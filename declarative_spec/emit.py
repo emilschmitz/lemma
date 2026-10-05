@@ -478,9 +478,8 @@ def emit_declarative_spec(
     spec = _emit_integer_sql(integer_sql, schema, catalog)
     spec = _with_f64_literals(spec, integer_sql)
     out = _with_agent_surface(with_out_scales(spec, scales))
-    from declarative_spec import dense_budget, parallel
+    from declarative_spec import parallel
 
-    dense_budget.check(out)
     if not parallel.enabled():
         return out
     try:

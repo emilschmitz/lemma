@@ -47,6 +47,7 @@ def _maybe_large_table(
             "duck1_us": prepared["duck1_us"],
             "rows": prepared["rows"],
             "table_rows": prepared["table_rows"],
+            "dict_sizes": prepared["dict_sizes"],
         }
         if prepared["kinds"] is not None:  # OutRow result; a map result prints `ROW key value`
             bar["kinds"] = prepared["kinds"]
@@ -232,6 +233,7 @@ def run_declarative_optimization_loop(
             last_error=last_error,
             in_docker=in_docker,
             spec_text=spec,
+            dict_sizes=None if speed_bar is None else speed_bar.get("dict_sizes"),
         )
         (workspace / "context" / "ro" / "DECLARATIVE.md").write_text(prompt)
 

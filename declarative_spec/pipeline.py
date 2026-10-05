@@ -301,6 +301,12 @@ def run_declarative_metrics(
         violations += admit_helpers(helpers, spec_rs).violations
     if violations:
         return failure("; ".join(violations))
+    # Before Verus, not after the proof: a dense table over a product of key dictionaries that the prepared data puts past the budget.
+    from declarative_spec import dense_budget
+
+    dense = dense_budget.body_violation(body, spec_rs, None if speed_bar is None else speed_bar.get("dict_sizes"))
+    if dense:
+        return failure(dense)
     try:
         assembled = assemble_declarative_program(
             spec_rs,
