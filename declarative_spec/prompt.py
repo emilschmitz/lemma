@@ -282,7 +282,7 @@ def _features(spec_text: str) -> dict:
         "grouped": "out_row_ok(" in spec_text,
         "copies": "out_copies(" in spec_text,  # multiplicity; absent for SELECT DISTINCT
         "sorted": bool(re.search(r"res@\[i \+ 1\]", tail)),  # ORDER BY: the result is a sorted sequence
-        "sq": bool(re.search(r"\bsq_", spec_text)),
+        "sq": bool(re.search(r"fn sq_\d+\([^)]*\bbound\b", spec_text)),  # a MAX-style scalar subquery with a bound (an uncorrelated AVG has none)
         "exists": bool(re.search(r"\bexists_\d+\(", spec_text)),
         "limit": bool(re.search(r"res@\.len\(\) <= \d+", spec_text)),
         "multi": tables >= 2,
@@ -368,6 +368,7 @@ def spec_shape(spec_text: str) -> dict:
         "recipe": recipe,
         "tables": f["tables"],
         "hard": hard,
+        "dict": f["dict"],
     }
 
 
@@ -518,11 +519,12 @@ def _scale_section(spec_text: str) -> list[str]:
         return lines + [""]
     if parallel.is_parallel(spec_text):
         lines += [
-            "Order: (1) get ANY body to `N verified, 0 errors` first; sequential is fine, and never trade it for an unverified one.",
-            "(2) Read the `speedup` field of that run. At or above the bar: submit it, you are done. Below the bar: only now try the",
-            "parallel recipe below (workers over row ranges) as an upgrade, keeping the sequential `run_id`. (3) Submit the parallel",
-            "body only if it verifies and its `speedup` is higher; if it does not verify after a few checks, submit the sequential",
-            "`run_id` and say its `speedup` is below 1. Either way, end by submitting a verified body.",
+            "Order: (1) get ANY body to `N verified, 0 errors` first; sequential is fine, and `submit_runquery` it as soon as it",
+            "verifies (a later submit replaces it, re-submitting costs nothing, and a session killed at the wall saves nothing that was",
+            "not submitted). (2) Read the `speedup` field of that run. At or above the bar: you are done. Below the bar: only now try",
+            "the parallel recipe below (workers over row ranges) as an upgrade. (3) Submit the parallel body only if it verifies and its",
+            "`speedup` is higher; never replace a submitted verified body with an unverified or slower one. If the upgrade does not",
+            "verify after a few checks, stop and keep the sequential submission (say its `speedup` is below 1).",
         ]
     else:
         lines += ["This spec has no parallel parameters, so a single-threaded body is all that is available: report the speedup as measured."]
@@ -544,7 +546,7 @@ def _parallel_section(spec_text: str, shape: dict) -> list[str]:
         "`std::sync::Arc::clone(<t>_arc)` and folds a row RANGE `[lo, hi)`; the host's suffix folds are additive over ranges, so",
         "worker k returns `fold(t, lo_k) - fold(t, hi_k)` and the partials telescope to `fold(t, 0)`. No column is copied.",
         "A scan that is limited by memory bandwidth is the case this is for: on the real 39.4M-row table the parallel SUM was",
-        "12.8x faster than the all-core reference engine. Keep the single-threaded body as the first proof (the order above),",
+        "12.8x faster than the all-core reference engine. Keep the single-threaded body as the first proof,",
         "then upgrade only if it loses. A hash aggregate or a join does not telescope directly, but a GROUP BY over a small code domain does: give each",
         "worker its own DENSE array per aggregate (one slot per dictionary code), merge them slotwise in the join loop, and the slotwise",
         "telescoping is the same proof (dict mode: `context/ro/examples/dict_group_count_sum_parallel.rs`, 13x on the real 39.4M-row table;",
@@ -574,6 +576,14 @@ def _recipe_section(shape: dict) -> list[str]:
     recipe = shape["recipe"]
     lines = ["## The recipe for THIS spec", ""]
     lines.append(f"This spec's result type is `{shape['result_type'] or 'unknown'}`.")
+    if recipe.startswith("projection_") and shape.get("dict"):
+        lines += [
+            "DICTIONARY MODE: the example below was proved with plain strings. In this spec a string column is a `Vec<u32>` of codes",
+            "beside `<col>__dict: Vec<String>`, and the spec reads a string cell as `col__dict@[col@[i] as int]@`. Keep the example's",
+            "loop and proof structure, but where it reads a string cell write `col__dict[col[i] as usize].clone()` and prove the",
+            "dictionary index is in range from `valid_cols_<t>` (the `dict_*.rs` examples in `INDEX.md` show the translation).",
+            "",
+        ]
     if recipe == "dense_map":
         lines += [
             "Dense array of `KEY_CAP_...` counters (fastest: no hashing), then copy the nonzero slots into the",
@@ -668,7 +678,7 @@ A filter that is not predictable is faster branch-free: `let t = if hit { v } el
 A conjunctive filter written as a short-circuit row test (`a == 1 && b == code && c > 3`) is branch-miss bound on a big scan (it cost 2x on TPC-H Q12).
 Scan fixed blocks of 32 rows with a BRANCH-FREE flag (`flag = flag + (if a == 1 {1u8} else {0}) * (if b == code {1u8} else {0})`; Verus rejects bool `&`
 and `|`, use u8 0/1 with `+` and `*`), skip the whole block when `flag == 0`, run the exact row loop only on flagged blocks (the proof pattern is in
-`context/ro/examples/parallel_dict_filter_count_max_blockskip.rs` and `hard/dict_parallel_q12.rs`). It only wins when blocks rarely flag (about 2x on TPC-H Q12; none on a filter that flags 99 percent of the blocks).
+`context/ro/examples/parallel_dict_filter_count_max_blockskip.rs` and, in dictionary mode, `hard/dict_parallel_q12.rs`). It only wins when blocks rarely flag (about 2x on TPC-H Q12; none on a filter that flags 99 percent of the blocks).
 THE HIDDEN COST OF A HOT LOOP IS BOUNDS CHECKS. The compiler cannot see that `col.len() == n`, so every `col[i]` is checked and the loop does not
 vectorize. Per block of at most 8192 rows take `vstd::slice::slice_subrange(col.as_slice(), lo, hi)` of each column read and run an ascending inner loop
 over the slices with no data-dependent branch (u8 0/1 factors multiplied, `if hit { v } else { 0 }`, a block accumulator whose invariant bounds it so it
@@ -820,7 +830,8 @@ def build_declarative_prompt(
         "  may exist, but it has no network and Verus is not on its PATH: `run_runquery` is the only Verus you have, so do not",
         "  try `verus`, `npx` or any package install.",
         "- Done means: Verus says `N verified, 0 errors`, the result equals the reference engine's rows, and the timed run beats",
-        "  the reference engine (`run_runquery` reports the speedup). Submit before the session ends.",
+        "  the reference engine (`run_runquery` reports the speedup); if no verified body beats it, the fastest verified one,",
+        "  submitted. Submit a verified body as soon as you have one, and again if a later one is better.",
         "",
         "## Regions and rules",
         "",
@@ -899,7 +910,7 @@ def build_declarative_prompt(
             "This is a non-interactive session: nobody answers questions. Do the task now. Never ask the user anything and never",
             "offer options. Do not stop until `run_runquery` shows `N verified, 0 errors` and you have called `submit_runquery`",
             "with the `run_id` of your best verified body (a parallel upgrade, where the spec has one, is tried only after a verified",
-            "body exists and only when its `speedup` is below the bar). If you conclude it cannot verify, say plainly why in your",
+            "body exists and is submitted, and only when its `speedup` is below the bar). If you conclude it cannot verify, say plainly why in your",
             "last message; an empty or placeholder body is a failure, not a result.",
         ]
     )

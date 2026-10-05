@@ -162,7 +162,7 @@ def test_route_takes_the_first_matching_rule_and_ignores_unnamed_features() -> N
 
 # ---- mounting ----------------------------------------------------------------------------------------------------
 
-_ALL_FIXTURES = sorted(str(p.relative_to(P._FIXTURES)) for p in P._FIXTURES.rglob("*.rs"))
+_ALL_FIXTURES = sorted(str(p.relative_to(P._FIXTURES)) for p in P._FIXTURES.rglob("*") if p.is_file())  # any file type, not just .rs
 
 
 def test_every_fixture_is_registered_or_explicitly_unmounted() -> None:
@@ -174,13 +174,22 @@ def test_every_fixture_is_registered_or_explicitly_unmounted() -> None:
         assert name in _ALL_FIXTURES, f"{name} is registered but the file does not exist"
 
 
-def test_an_unregistered_new_fixture_would_be_caught(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def _uncovered(names: list[str]) -> list[str]:
     covered = {n for n, _w in P.registered_examples()} | set(P.helper_files()) | set(UNMOUNTED)
-    assert "brand_new_proof.rs" not in covered
-    assert {
-        "projection_correlated_max.rs",
-        "hard/two_key.rs",
-    } <= covered  # the check is not vacuous
+    return [n for n in names if n not in covered]
+
+
+def test_an_unregistered_new_fixture_would_be_caught() -> None:
+    assert _uncovered(_ALL_FIXTURES) == []
+    assert _uncovered([*_ALL_FIXTURES, "brand_new_proof.rs", "hard/new.json", "README.md"]) == ["brand_new_proof.rs", "hard/new.json", "README.md"]
+
+
+def test_no_fixture_is_registered_twice() -> None:
+    from declarative_spec.example_registry import MORE_EXAMPLES
+
+    raw = [n for n, _w in [*P._EXAMPLES.values(), *MORE_EXAMPLES, *P._FLOAT_EXAMPLES]]
+    assert len(raw) == len(set(raw)), sorted({n for n in raw if raw.count(n) > 1})
+    assert not set(UNMOUNTED) & set(raw)
 
 
 @pytest.mark.parametrize("mode", ["plain", "dict"])
@@ -218,14 +227,18 @@ def test_the_index_lists_exactly_the_mounted_bodies_with_line_counts(mode: str, 
 
 
 def test_newly_mounted_examples_use_no_banned_construct() -> None:
-    for name, _what in P.registered_examples():
+    for name in [n for n, _what in P.registered_examples()] + P.helper_files():
         text = (P._FIXTURES / name).read_text()
-        if "// AGENT_EDIT_START" in text:
+        if name.endswith(".helpers.rs"):
+            assert admit_helpers(text, "").ok, name
+            body, helpers = "", ""
+        elif "// AGENT_EDIT_START" in text:
             body, helpers = extract_agent_edit(text), extract_agent_helpers(text)
         else:
             body, helpers = text, ""
-        result = admit_declarative_body(body)
-        assert result.ok, (name, result.violations)
+        if body:
+            result = admit_declarative_body(body)
+            assert result.ok, (name, result.violations)
         if helpers:
             assert admit_helpers(helpers, "").ok, name
         stripped = "\n".join(ln for ln in text.splitlines() if not ln.strip().startswith("//"))
@@ -284,9 +297,11 @@ def test_parallel_upgrade_comes_only_after_a_verified_body_and_only_when_it_lose
 ) -> None:
     p = _parallel_prompt(monkeypatch)
     order = p.split("## Official size and the bar")[1].split("\n## ")[0]
-    assert order.index("get ANY body") < order.index("Below the bar: only now try the") < order.index("Submit the parallel")
+    order = " ".join(order.split())
+    first_submit = order.index("`submit_runquery` it as soon as it verifies")
+    assert order.index("get ANY body") < first_submit < order.index("Below the bar: only now try the parallel recipe") < order.index("Submit the parallel body only if it verifies")
     assert "before you stop, replace it" not in p
-    assert "never trade it for an unverified one" in order
+    assert "never replace a submitted verified body with an unverified or slower one" in order
 
 
 def test_the_stop_rule_and_the_parallel_rule_name_the_same_submission(
@@ -298,3 +313,37 @@ def test_the_stop_rule_and_the_parallel_rule_name_the_same_submission(
     assert "Do not stop until `run_runquery` shows `N verified, 0 errors`" in done
     # no unconditional instruction to replace a verified sequential body anywhere in the prompt
     assert not re.search(r"\breplace it with the parallel\b", p)
+
+
+def test_a_small_table_parallel_prompt_does_not_refer_to_an_order_paragraph_it_lacks(monkeypatch: pytest.MonkeyPatch) -> None:
+    from declarative_spec import parallel
+
+    sql = "SELECT SUM(value) AS total FROM num WHERE value > 5"
+    monkeypatch.setenv(parallel.ENV, "1")
+    p = build_declarative_prompt(sql=sql, spec_path="s", edit_path="e", lemma_index="i", spec_text=emit_declarative_spec(sql, _SCHEMA, _CATALOG))
+    assert "Order: (1)" not in p and "the order above" not in p
+    assert "Order: (1)" in _parallel_prompt(monkeypatch)
+
+
+def test_dictionary_mode_projections_are_told_how_strings_are_coded_and_plain_mode_is_not(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in ("projection_where", "projection_topk", "projection_join", "projection_distinct", "derived_max_projection_join_topk"):
+        sql = SHAPES[name][0]
+        dict_p = build_declarative_prompt(sql=sql, spec_path="s", edit_path="e", lemma_index="i", spec_text=_spec(sql, "dict", monkeypatch))
+        plain_p = build_declarative_prompt(sql=sql, spec_path="s", edit_path="e", lemma_index="i", spec_text=_spec(sql, "plain", monkeypatch))
+        assert "DICTIONARY MODE: the example below was proved with plain strings" in dict_p and "__dict" in dict_p.split("DICTIONARY MODE")[1][:600], name
+        assert "DICTIONARY MODE" not in plain_p, name
+    # an aggregate recipe in dictionary mode has its own dictionary-aware example and gets no such caveat
+    grouped = build_declarative_prompt(
+        sql=SHAPES["grouped_count"][0], spec_path="s", edit_path="e", lemma_index="i", spec_text=_spec(SHAPES["grouped_count"][0], "dict", monkeypatch)
+    )
+    assert "DICTIONARY MODE: the example below" not in grouped
+
+
+@pytest.mark.parametrize("mode", ["plain", "dict"])
+def test_an_uncorrelated_scalar_subquery_is_not_routed_to_the_max_chain_example(mode: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    uncorrelated = "SELECT s.name, n.value FROM num n JOIN sub s ON n.adsh = s.adsh WHERE n.value > (SELECT AVG(value) FROM num)"
+    shape = spec_shape(_spec(uncorrelated, mode, monkeypatch))
+    assert shape["recipe"] == "projection_join"
+    assert any("scalar or correlated subquery" in h for h in shape["hard"])  # honest: no worked example for it
+    corr = spec_shape(_spec(SHAPES["correlated_max_join_topk"][0], mode, monkeypatch))
+    assert corr["recipe"] == "projection_join_correlated_max" and not corr["hard"]
