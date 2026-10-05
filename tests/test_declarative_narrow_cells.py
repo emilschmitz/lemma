@@ -151,3 +151,21 @@ def test_decimal_boundaries_pack_up_to_the_width_and_are_refused_beyond_it(monke
     con.execute("INSERT INTO t VALUES (327.68, 0)")
     with pytest.raises(Exception, match="i16"):
         _export_table(con, model, "t", [("d", "i16"), ("e", "i16")])
+
+
+@pytest.mark.parametrize("narrow", ["0", "1"])
+def test_an_integer_column_cap_is_a_loader_conjunct_and_a_runtime_assert_in_both_modes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, narrow: str) -> None:
+    monkeypatch.setenv("LEMMA_NARROW_CELLS", narrow)
+    sql = "SELECT COUNT(*) AS c FROM t WHERE d > 1 AND e > 1 AND g > 1"
+    spec = emit_declarative_spec(sql, SCHEMA, CAT)
+    # d cap 2^15, e cap 2^20: |cell| <= cap - 1, whatever the loaded width
+    assert "t.d@[i] as int >= -32767 && t.d@[i] as int <= 32767" in spec
+    assert "t.e@[i] as int >= -1048575 && t.e@[i] as int <= 1048575" in spec
+    program = assemble_declarative_program(spec, STUB, column_bins={"t": str(tmp_path / "t.bin")})
+    assert "t.d: value outside the catalog bound 32767" in program
+
+
+def test_a_column_without_a_declared_cap_or_a_date_has_no_integer_conjunct(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LEMMA_NARROW_CELLS", "0")
+    spec = emit_declarative_spec("SELECT COUNT(*) AS c FROM t WHERE a > 1 AND \"when\" > DATE '2000-01-01'", SCHEMA, CAT)
+    assert "t.a@[i] as int >=" not in spec and "t.when@[i] as int >=" not in spec

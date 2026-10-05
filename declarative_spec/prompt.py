@@ -392,6 +392,7 @@ def _parallel_section(spec_text: str, shape: dict) -> list[str]:
         "a nullable dictionary column with a string filter, COUNT and MIN: `context/ro/examples/parallel_dict_nullable_count_min.rs` (1.8x on real `pre`);",
         "The dense slot table has one slot per combination of key codes: the host refuses to emit (declared `max_distinct` product over `LEMMA_DENSE_SLOT_BUDGET`, default 2^22 slots) or aborts at load time (actual dictionary sizes) when it would not fit;",
         "two dictionary keys, several aggregates, sorted output, a flat m1*m2 slot array: `context/ro/examples/hard/dict_parallel_q1.rs`, TPC-H Q1 at 3.95x).",
+        "Every multiplier quoted in this prompt is a manual-prover result for the timed `run_query` ALONE (kernel only) against the reference engine scanning its own storage in place; pin, copy into the vectors and encoding are outside the timer (about a second for tens of millions of rows) and a reference engine holding the same narrow data in memory is about 1.8x to 2.1x slower than our kernel, not 2.4x to 2.9x. `run_runquery` reports the same kernel-only speedup.",
         "The example is the template (SUM; adapt the fold, the filter, the cell bound and the accumulator type):",
         f"`context/ro/examples/{_PAR_EXAMPLE}` (also `parallel_ungrouped_product_sum.rs` for a product with a date filter, and `parallel_ungrouped_min.rs`, `_max.rs`, `_count.rs`: MIN/MAX merge the workers' (value, any) pairs, COUNT is additive).",
     ]

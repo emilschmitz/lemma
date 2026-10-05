@@ -44,3 +44,32 @@ def test_without_narrowing_the_same_projection_loads_the_wide_types(monkeypatch:
     d, n, _s, v = _run(monkeypatch, "0").values()
     assert d[0] == "int32" and n[0] == "int64" and v[0] == "int64"
     assert v[1] == [1234, 50] and n[1] == [5, 7]  # the values are the same, only the width differs
+
+
+def test_the_memory_reference_copy_keeps_names_and_meaning_at_the_loaded_width_and_answers_the_same(monkeypatch: pytest.MonkeyPatch) -> None:
+    from research_loop.scripts.declarative_oneshot import memory_copies
+
+    monkeypatch.setenv("LEMMA_NARROW_CELLS", "1")
+    monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
+    sql = "SELECT COUNT(*) AS c FROM t WHERE d > DATE '2000-01-01' AND v > 1 AND n > 1 AND s = 'a'"
+    spec = emit_declarative_spec(sql, SCHEMA, CAT)
+    src = duckdb.connect()
+    src.execute("CREATE TABLE t (d DATE, v DECIMAL(10,2), n INTEGER, s VARCHAR)")
+    src.execute("INSERT INTO t VALUES (DATE '2001-01-02', 12.34, 5, 'a'), (DATE '1999-01-01', 0.50, 7, 'b'), (DATE '2002-02-02', 1.50, 9, 'a')")
+    ((table, setup, items),) = memory_copies(spec, SchemaModel.from_caller(SCHEMA, "t").with_nullable(CAT))
+    for st in setup:
+        src.execute(st)
+    joined = " ".join(items)
+    assert "AS DECIMAL(4,2)" in joined and "AS TINYINT" in joined and "AS lemma_mem_enum_t_s" in joined
+    src.execute(f"CREATE TABLE copy AS SELECT {', '.join(items)} FROM {table}")
+    assert src.execute(sql.replace("FROM t", "FROM copy")).fetchall() == src.execute(sql).fetchall()
+
+
+def test_without_narrowing_the_memory_copy_keeps_wide_types(monkeypatch: pytest.MonkeyPatch) -> None:
+    from research_loop.scripts.declarative_oneshot import memory_copies
+
+    monkeypatch.setenv("LEMMA_NARROW_CELLS", "0")
+    spec = emit_declarative_spec("SELECT COUNT(*) AS c FROM t WHERE v > 1 AND n > 1", SCHEMA, CAT)
+    ((_table, _setup, items),) = memory_copies(spec, SchemaModel.from_caller(SCHEMA, "t").with_nullable(CAT))
+    joined = " ".join(items)
+    assert "DECIMAL(" not in joined and "AS BIGINT" in joined

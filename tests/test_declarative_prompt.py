@@ -307,3 +307,11 @@ def test_small_table_spec_gets_no_parallel_rule() -> None:
     sql = "SELECT SUM(line) AS total FROM pre WHERE line > 5"
     p = build_declarative_prompt(sql=sql, spec_path="s", edit_path="e", lemma_index="i", spec_text=_spec(sql))
     assert "`pre` 64" in p and "replace it with the parallel recipe" not in p and "no parallel parameters" not in p
+
+
+def test_the_quoted_multipliers_are_labelled_kernel_only_in_a_parallel_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    from declarative_spec import parallel
+
+    monkeypatch.setenv(parallel.ENV, "1")
+    p = _prompt("SELECT SUM(line) AS total FROM pre WHERE line > 5")
+    assert "kernel only" in p and "outside the timer" in p

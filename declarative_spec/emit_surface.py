@@ -1662,6 +1662,13 @@ def _valids(
                 checks.append(
                     f"forall|i: int| 0 <= i < {slot.param}.n as int ==> {cell} >= -{top} && {cell} <= {top}"
                 )
+        for col in sorted(cols):
+            top = _integer_top(catalog, slot.table, col, cols[col])
+            if top is not None:
+                # An INTEGER column with a catalog cap: |cell| < cap. The loader asserts it at runtime (a value inside the machine width but
+                # above the cap used to load silently; a narrowed column's width check alone does not enforce the cap).
+                cell = f"{slot.param}.{rust_ident(col)}@[i] as int"
+                checks.append(f"forall|i: int| 0 <= i < {slot.param}.n as int ==> {cell} >= -{top} && {cell} <= {top}")
         checks.extend(_float_mag_checks(slot, model, catalog))
         checks.extend(_dict_checks(slot, cols))
         if slot.alias in unique:
@@ -1749,6 +1756,20 @@ def _join_cap_text(
         )
         requires.append(f"{name}({call}, 0) <= {const} as int")
     return "\n".join(blocks), requires
+
+
+def _integer_top(catalog: CatalogAssumptions | None, table: str, col: str, info: ColumnTypeInfo) -> int | None:
+    """Largest magnitude the catalog allows an INTEGER cell (a declared column cap minus one), or None when no cap is declared."""
+    from declarative_spec.emit import _lookup_table_assumptions
+    from research_loop.table_assumptions import column_assumption_exclusive
+
+    if catalog is None or info.precision is not None or info.is_date or info.is_float or info.exec_rust not in _INT_EXEC:
+        return None
+    cap = column_assumption_exclusive(col, _lookup_table_assumptions(catalog, table))
+    return None if cap is None or cap <= 0 or cap >= 2**127 else cap - 1
+
+
+_INT_EXEC = frozenset({"i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "i128"})
 
 
 def _decimal_top(catalog: CatalogAssumptions | None, table: str, col: str, info: ColumnTypeInfo) -> int:
