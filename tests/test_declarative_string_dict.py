@@ -459,3 +459,80 @@ def test_dict_join_probe_example_verifies_and_a_wrong_count_does_not(monkeypatch
     assert "cnt.set(c, before + 1);" in text
     bad, _ = run(text.replace("cnt.set(c, before + 1);", "cnt.set(c, before + 2);", 1))
     assert not bad
+
+
+def test_parallel_dict_group_example_verifies_and_a_wrong_merge_does_not(monkeypatch: pytest.MonkeyPatch) -> None:
+    from pathlib import Path
+
+    from declarative_spec.assemble import assemble_declarative_program
+    from declarative_spec.emit import emit_declarative_spec
+    from declarative_spec.pipeline import VERUS_CANDIDATES, verify_assembled
+    from declarative_spec.prompt import _FIXTURES
+    from declarative_spec.regions import extract_agent_edit, extract_agent_helpers
+    from research_loop.assumption_packages import assumption_package
+
+    if not any(c.is_file() for c in VERUS_CANDIDATES):
+        pytest.skip("verus binary not installed")
+    monkeypatch.setenv("LEMMA_VERUS_BIN", str(Path(__file__).resolve().parents[1] / "scripts" / "ram" / "verus_guarded.sh"))
+    monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
+    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "1")
+    schema = {"num": {"uom": "varchar", "value": "decimal(38,4)"}}
+    spec = emit_declarative_spec(
+        "SELECT uom, COUNT(*) AS c, SUM(value) AS s FROM num GROUP BY uom", schema, assumption_package("sec_margin_dec")
+    )
+    text = (_FIXTURES / "dict_group_count_sum_parallel.rs").read_text()
+
+    def run(t: str) -> tuple[bool, str]:
+        return verify_assembled(
+            assemble_declarative_program(spec, extract_agent_edit(t), helpers=extract_agent_helpers(t)), timeout_sec=600
+        )
+
+    ok, out = run(text)
+    assert ok and "0 errors" in out, out[-2000:]
+    first_set = text.index("set(", text.index("// AGENT_EDIT_START"))
+    bad, _ = run(text[:first_set] + "set(" + text[first_set + 4 :].replace("+", "-", 1))
+    assert not bad
+
+
+def test_hard_dict_examples_are_mounted_only_in_dict_mode(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    from declarative_spec.prompt import mount_examples
+
+    monkeypatch.setenv("LEMMA_STRING_ENCODING", "plain")
+    mount_examples(tmp_path / "plain")
+    assert not (tmp_path / "plain" / "examples" / "hard" / "dict_parallel_q1.rs").exists()
+    monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
+    mount_examples(tmp_path / "dict")
+    assert (tmp_path / "dict" / "examples" / "hard" / "dict_parallel_q1.rs").is_file()
+
+
+def test_parallel_dict_nullable_example_verifies_and_dropping_the_validity_bit_does_not(monkeypatch: pytest.MonkeyPatch) -> None:
+    from pathlib import Path
+
+    from declarative_spec.assemble import assemble_declarative_program
+    from declarative_spec.emit import emit_declarative_spec
+    from declarative_spec.pipeline import VERUS_CANDIDATES, verify_assembled
+    from declarative_spec.prompt import _FIXTURES
+    from declarative_spec.regions import extract_agent_edit, extract_agent_helpers
+    from research_loop.assumption_packages import assumption_package
+
+    if not any(c.is_file() for c in VERUS_CANDIDATES):
+        pytest.skip("verus binary not installed")
+    monkeypatch.setenv("LEMMA_VERUS_BIN", str(Path(__file__).resolve().parents[1] / "scripts" / "ram" / "verus_guarded.sh"))
+    monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
+    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "1")
+    schema = {"pre": {"stmt": "varchar", "line": "int"}}
+    spec = emit_declarative_spec(
+        "SELECT COUNT(*) AS c, MIN(line) AS lo FROM pre WHERE stmt = 'BS' AND line > 3", schema, assumption_package("sec_margin_dec")
+    )
+    text = (_FIXTURES / "parallel_dict_nullable_count_min.rs").read_text()
+
+    def run(t: str) -> tuple[bool, str]:
+        return verify_assembled(
+            assemble_declarative_program(spec, extract_agent_edit(t), helpers=extract_agent_helpers(t)), timeout_sec=600
+        )
+
+    ok, out = run(text)
+    assert ok and "0 errors" in out, out[-2000:]
+    assert "let hit = v > 3 && ok && found && s == code;" in text
+    bad, _ = run(text.replace("let hit = v > 3 && ok && found && s == code;", "let hit = v > 3 && found && s == code;"))
+    assert not bad

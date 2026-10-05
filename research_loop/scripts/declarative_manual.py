@@ -103,7 +103,7 @@ def check(kind: str, sql: str, ws: Path) -> dict:
     )
     keep = {k: v for k, v in metrics.items() if k != "stdout"}
     (ws / "last_check.json").write_text(json.dumps(keep, default=str, indent=1))
-    print(json.dumps({k: keep.get(k) for k in ("status", "proof_verified", "latency_us", "duck_us", "duck1_us", "speedup", "speedup_1t", "verify_summary")}, default=str))
+    print(json.dumps({k: keep.get(k) for k in ("status", "proof_verified", "latency_us", "latency_best_us", "duck_us", "duck1_us", "speedup", "speedup_best", "speedup_1t", "verify_summary")}, default=str))
     print((keep.get("compiler_error") or "")[-3500:])
     return metrics
 

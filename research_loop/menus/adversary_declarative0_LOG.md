@@ -237,6 +237,20 @@ Real EDGAR 2022-2024 loaded by the coordinator: num 39,401,761 rows (value exact
 The last one is a bandwidth-bound scan (about 96 MB) that loses to the all-core engine single-threaded, exactly the class the parallel path is for;
 a parallel body for the dict + validity shape is not written yet. Observation from the prover: the check's timing noise (about 30 percent between identical runs on this shared box) makes a 6 percent gap undecidable: a repeat or median-of-more timing in the check would help.
 
+| `SELECT uom, COUNT(*), SUM(value) FROM num GROUP BY uom` | real SEC, full 39.4M num rows, dict + PARALLEL 8 workers with dense per-worker arrays | T2 | parallel (dict_group_count_sum_parallel.rs, 26 verified, 2nd check) | yes | 22,475 median of 9 (best 21,068) | 293,965 | 1,208,574 | **13.08x (best 13.95x) / 53.8x** |
+
+| TPC-H Q1 (2 dict string keys, 3 decimal sums incl. a product, count, ORDER BY keys) | TPC-H SF3 (18.0M lineitem), dict + PARALLEL 8 workers, flat m1*m2 slot array | T2 | parallel (`hard/dict_parallel_q1.rs`, 87 verified, 5 checks) | yes | 21,931 median of 9 (best 21,585) | 86,551 | 295,017 | **3.95x (best 4.01x) / 13.5x** |
+| TPC-H Q1, same body (size-independent: row cap by `ROW_CAP_lineitem`) | TPC-H SF10 (60.0M lineitem), dict + PARALLEL | T2 | parallel, re-verified against the SF10 spec (87 verified) | yes | 59,412 median of 9 (best 54,872) | 226,544 | 977,544 | **3.81x (best 4.13x) / 16.5x** |
+
+| `SELECT COUNT(*), MIN(line) FROM pre WHERE stmt = 'BS' AND line > 3` (nullable stmt) | real SEC, full 9.6M pre rows, dict + PARALLEL 8 workers | T1 | parallel (`parallel_dict_nullable_count_min.rs`, 23 verified, 2nd check) | yes | 6,614 median of 9 (best 6,322) | 12,162 | 35,203 | **1.84x (best 1.92x) / 5.3x** (single-threaded body: 0.72x to 0.94x) |
+
+| `SELECT SUM(n.value) FROM num n JOIN sub s ON n.adsh = s.adsh WHERE s.form = '10-K'` | real SEC, num 39.4M JOIN sub 86,135, dict adsh codes | T3 | single-threaded (transpiler agent's `dict_join_probe_sum.rs`: per-sub-code count array, num dictionary translated to sub codes once, one probe pass; 24 verified; re-verified on the real spec) | yes | 117,412 median of 9 (best 113,662) | 293,080 | 1,221,707 | **2.50x (best 2.58x) / 10.4x** |
+
+TPC-H 2.8x target: MET by Q1 at SF3 (3.95x) and SF10 (3.8x to 4.0x), a compute-bound shape (6 aggregates over 2 tiny-domain keys) where the parallel dense-array design beats the all-core engine; Q6-class scans are structurally bandwidth-bound (1.1x to 1.25x at SF3/SF10).
+
+Measurement protocol from here: the timed measure is the MEDIAN of 9 runs and the check also reports the best run (`speedup`, `speedup_best`); gaps under 25 percent between a body and the reference engine are ties (the shared box shows ~30 percent run-to-run noise: DuckDB's own 8-thread median for the same query moved 255 to 294 ms between prepares).
+Transplanting the single-threaded TPC-H Q1 body (r4, SF1 spec) to the SF3 spec failed: `54 verified, 1 errors` (the SF1 body does not carry over); a dict + parallel Q1 prover run on SF3 is in progress.
+
 Real-data blocker found: real EDGAR has NULL cells in columns queries read (pre.stmt 1,073, sub.fy 4,662, sub.fp 4,665, tag.crdr 119,636 ...); the export refuses NULLs, so those queries cannot run yet (sent to the transpiler agent, who is building validity-bit NULL support). Dict caps (max_distinct) were declared by the transpiler agent and pass check.py on the real DB.
 
 Scale ladder for Q6 (data stated): SF1 2.04x, SF3 1.13x, SF10 1.25x vs the all-core engine; ~4x vs one thread at every size. At SF3/SF10 the parallel scan reads ~30 GB/s (504 MB in 16.9 ms), i.e. it is at the machine's memory bandwidth, and DuckDB 8t is about as fast
