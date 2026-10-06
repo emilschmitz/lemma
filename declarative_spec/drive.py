@@ -52,11 +52,7 @@ def _maybe_large_table(
         }
         if prepared["kinds"] is not None:  # OutRow result; a map result prints `ROW key value`
             bar["kinds"] = prepared["kinds"]
-            from declarative_spec.bench import cut_applies, order_info
-
-            info = order_info(sql_query)
-            # a tie group is only cut when the result is FULL: with fewer rows than the LIMIT nothing was cut and the strict check applies
-            bar.update({"order_cols": info["order_cols"], "limited": cut_applies(info, len(prepared["rows"])), "tie_rows": prepared.get("tie_rows")})
+            bar.update({k: prepared.get(k) for k in ("order_cols", "limited", "tie_rows")})  # ORDER BY / LIMIT tie handling, see bench.rows_match_error
         return prepared["bins"], bar
     raw = os.environ.get("LEMMA_DECL_ROWS", "").strip()
     if not raw:

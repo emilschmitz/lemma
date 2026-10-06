@@ -97,6 +97,10 @@ def write_query_measure(
         duck_threads = int(con.execute("SELECT current_setting('threads')").fetchone()[0])
         duck_us, rows, kinds = _time_query(con, sql, out_fields, scales)
         tie_rows = _tie_group_rows(con, sql, rows, out_fields, scales)
+        from declarative_spec.bench import cut_applies, order_info
+
+        order = order_info(sql)
+        tie_info = {"order_cols": order["order_cols"], "limited": cut_applies(order, len(rows))}  # in expect.json too: the in-session MCP check reads it
         con.execute("SET threads=1")
         duck1_us = _median_us(con, sql)
     except duckdb.Error as exc:
@@ -116,6 +120,7 @@ def write_query_measure(
         "table_rows": table_rows,
         "dict_sizes": dict_sizes,
         "tie_rows": tie_rows,
+        **tie_info,
     }
     (dest / "expect.json").write_text(json.dumps(expect) + "\n", encoding="utf-8")
     return {
@@ -128,6 +133,7 @@ def write_query_measure(
         "table_rows": table_rows,
         "dict_sizes": dict_sizes,
         "tie_rows": tie_rows,
+        **tie_info,
     }
 
 

@@ -85,3 +85,29 @@ def test_the_tie_group_is_computed_from_duckdb_without_the_limit() -> None:
     assert sorted(map(tuple, got)) == [("b", 2, "p"), ("b", 2, "q"), ("b", 2, "zz")]
     assert _tie_group_rows(con, sql, rows[:2], fields, None) is None  # fewer rows than the LIMIT: nothing was cut
     assert _tie_group_rows(con, "SELECT name FROM t ORDER BY name", rows, fields, None) is None
+
+
+def test_expect_json_carries_the_tie_handling_the_in_session_check_reads(tmp_path) -> None:
+    """r1_q01 attempt 2 (2026-10-06): the in-session `run_runquery` reads expect.json, which lacked order_cols/limited/tie_rows, so every run was judged strictly."""
+    import json
+
+    import duckdb
+
+    from research_loop.decl_query_measure import write_query_measure
+    from research_loop.table_assumptions import CatalogAssumptions, TableAssumptions
+
+    db = tmp_path / "d.duckdb"
+    con = duckdb.connect(str(db))
+    con.execute("CREATE TABLE t(a VARCHAR, b VARCHAR, v BIGINT)")
+    con.execute("INSERT INTO t SELECT 'a' || (i % 7), 'b' || (i % 3), i FROM range(100) r(i)")
+    con.close()
+    schema = {"t": {"a": "varchar", "b": "varchar", "v": "bigint"}}
+    cat = CatalogAssumptions(tables={"t": TableAssumptions(max_rows=1000)})
+    sql = "SELECT a, b, COUNT(*) AS c FROM t GROUP BY a, b ORDER BY a LIMIT 4"
+    got = write_query_measure(sql=sql, schema=schema, catalog=cat, db_path=db, dest=tmp_path / "data")
+    saved = json.loads((tmp_path / "data" / "expect.json").read_text())
+    for src in (got, saved):
+        assert src["order_cols"] == [0] and src["limited"] is True
+        assert len(src["tie_rows"]) == 3 and {row[0] for row in src["tie_rows"]} == {saved["rows"][-1][0]}  # the whole last `a` group
+    unlimited = write_query_measure(sql="SELECT a, b, COUNT(*) AS c FROM t GROUP BY a, b ORDER BY a", schema=schema, catalog=cat, db_path=db, dest=tmp_path / "d2")
+    assert unlimited["limited"] is False and unlimited["tie_rows"] is None
