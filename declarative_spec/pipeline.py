@@ -234,7 +234,7 @@ def _apply_speed_bar(metrics: dict, speed_bar: dict | None, *, parallel_hint: bo
     duck_us = int(speed_bar["duck_us"])
     latency = int(metrics.get("latency_us", -1))
     stdout = str(metrics.get("stdout") or "")
-    if "kinds" in speed_bar:
+    if speed_bar.get("kinds") is not None:  # a map result has `"kinds": null` in expect.json
         from declarative_spec.bench import rows_from_stdout_general, rows_match_error
 
         err = rows_match_error(

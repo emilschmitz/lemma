@@ -33,6 +33,7 @@ _EPOCH = dt.date(1970, 1, 1)
 
 DUCK_MEMORY_LIMIT_ENV = "LEMMA_DUCK_MEMORY_LIMIT"
 DUCK_THREADS_ENV = "LEMMA_DUCK_THREADS"
+MAX_TIE_ROWS = 200_000
 
 
 def duck_settings(dest: Path) -> dict:
@@ -50,6 +51,7 @@ def duck_settings(dest: Path) -> dict:
 def open_measure_connection(db_path: Path, dest: Path, *, read_only: bool = True) -> tuple[duckdb.DuckDBPyConnection, dict]:
     """Open ``db_path`` under :func:`duck_settings`; returns the connection and the settings applied."""
     settings = duck_settings(dest)
+    dest.mkdir(parents=True, exist_ok=True)  # DuckDB creates only the leaf of temp_directory
     con = duckdb.connect(str(db_path), read_only=read_only)
     con.execute(f"PRAGMA memory_limit='{settings['memory_limit']}'")
     con.execute(f"PRAGMA threads={settings['threads']}")
@@ -186,7 +188,12 @@ def _tie_group_rows(con, sql: str, rows: list, out_fields: list[tuple[str, str]]
     n = len(out_fields)
     names = ", ".join(f"c{i}" for i in range(n))
     cond = " AND ".join(f"c{i} IS NOT DISTINCT FROM ?" for i in info["order_cols"])
-    got = con.execute(f"SELECT * FROM ({tree.sql(dialect='duckdb')}) AS q({names}) WHERE {cond}", [raw_last[i] for i in info["order_cols"]]).fetchall()
+    count_sql = f"SELECT count(*) FROM ({tree.sql(dialect='duckdb')}) AS q({names}) WHERE {cond}"
+    params = [raw_last[i] for i in info["order_cols"]]
+    size = con.execute(count_sql, params).fetchone()[0]
+    if size > MAX_TIE_ROWS:  # a huge tie group would sit in Python memory (the DuckDB cap does not cover it): no tie rows means the strict check
+        return None
+    got = con.execute(f"SELECT * FROM ({tree.sql(dialect='duckdb')}) AS q({names}) WHERE {cond}", params).fetchall()
     sc = scales if scales is not None else [0] * n
     return [[_canon(out_fields[i][1], record[i], sc[i]) for i in range(n)] for record in got]
 
