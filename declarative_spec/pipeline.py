@@ -24,9 +24,14 @@ VERUS_CANDIDATES = (
 
 
 def _verus_binary() -> str:
-    override = os.environ.get("LEMMA_VERUS_BIN", "").strip()  # e.g. scripts/ram/verus_guarded.sh
+    override = os.environ.get("LEMMA_VERUS_BIN", "").strip()
     if override:
         return override
+    # Default: the guarded wrapper (one slot machine-wide, memory-capped, waits for free memory). A runaway Z3 once took
+    # the whole desktop session down; set LEMMA_VERUS_BIN to the real binary only on purpose.
+    guard = Path(__file__).resolve().parents[1] / "scripts" / "ram" / "verus_guarded.sh"
+    if guard.is_file() and os.access(guard, os.X_OK):
+        return str(guard)
     for p in VERUS_CANDIDATES:
         if p.is_file() and os.access(p, os.X_OK):
             return str(p)
