@@ -1,7 +1,8 @@
 # Proposal: zero-copy lease of pinned DuckDB column buffers (`LEMMA_ZERO_COPY=1`) — for adversary review
 
-Protocol: `TRUSTED_ADDITION_PROTOCOL.md`, step 1. Status: prototype behind the flag, default off, NOT cleared by an adversary
-(verdict file: `zero_copy_lease_ADVERSARY_VERDICT.md`). Do not make it default, and do not use it for a paper number, before the verdict.
+Protocol: `TRUSTED_ADDITION_PROTOCOL.md`, step 1. Status (revision 2): an OPTIONAL path behind `LEMMA_ZERO_COPY=1`, default off, never chosen silently,
+no fallback (a query it cannot run is refused at assemble time with the reason). Round 1 verdict: `zero_copy_lease_ADVERSARY_VERDICT.md` (sound after
+fixes F1 F2 F3 F7); round 2 (hardened version): `zero_copy_lease_ADVERSARY_VERDICT_2.md`. Switch-on criteria and which are met: `zero_copy_gate.md`.
 
 Question (Emil): can the declarative pipeline run directly on the DuckDB-pinned column buffers instead of copying the pinned rows
 into Rust Vecs before `run_query`?
@@ -41,10 +42,14 @@ There is **no new Verus lemma, `external_body` fn or `assume`**. The new trusted
 > (two's-complement little-endian `i8/i16/i32/i64/i128`; DECIMAL = its scaled integer; DATE = days since 1970-01-01 as `i32`), with
 > `p_k = duckdb_vector_get_data(duckdb_data_chunk_get_vector(ch_k, c))` and `len_k = duckdb_data_chunk_get_size(ch_k)`:
 > 1. **layout:** `p_k` is non-null, aligned to `align_of::<T>()`, and addresses `len_k` initialized `T` values (the vector is a flat vector);
-> 2. **liveness and immutability:** no code writes or frees that memory from before the first read until after `run_query` returns;
+> 2. **liveness and immutability:** no code writes or frees that memory from before the first read until the process exits (revision 2: the pin is
+>    leaked, never destroyed, so the slices are `'static` and may be shared with spawned threads);
 > 3. **fidelity:** the cell `r` of `c` in the SQL result is `p_{k}[r - sum_{k'<k} len_{k'}]` for the chunk `k` containing `r`
 >    (chunks in index order are the rows in result order), and the column has no NULL;
 > 4. **count:** `sum_k len_k` is the table's row count `n`.
+>
+> Revision 2 did not change the statement beyond item 2 (process lifetime instead of "until `run_query` returns"). The parallel shape needs it;
+> it is a stronger obligation on us (we never free), trivially met, and it makes a use-after-free impossible by construction (a leak per process).
 
 What Verus takes as given: the struct `PinnedCol { n, chunks: Vec<&[T]>, offs: Vec<usize> }` is well-formed (`wf`) and its slices hold the column
 (this is the same kind of fact as "the `Vec<i128>` the loader built holds the column" today). What Verus proves about it (verified host code,
@@ -52,7 +57,9 @@ What Verus takes as given: the struct `PinnedCol { n, chunks: Vec<&[T]>, offs: V
 concatenation of the chunks; `lemma_cell(c, k, j)`: `c@[offs[k] + j] == chunks[k]@[j]`.
 
 Checked by `main` at runtime, loudly (a failed check aborts, there is no fallback to the copy path): width of the pinned type equals `size_of::<T>()`
-(through `duckdb_column_type` and, for DECIMAL, `duckdb_decimal_internal_type`); alignment of every `p_k`; the validity mask of every
+AND the exact declared type of every column: the duckdb type id and, for DECIMAL, the precision and scale (`Pin::expect_type`; round 1 finding F1: the
+storage width alone cannot tell DECIMAL(38,2) from DECIMAL(38,4), or INTEGER from DATE); alignment and non-null of every `p_k`; equal chunk boundaries across
+the columns of one pin; `sum len_k` against `SELECT COUNT(*)` asked of the engine; the validity mask of every
 chunk is absent or all ones (no NULL); `sum len_k` (the `n` the loader gets); the catalog caps (`valid_cols`: row cap, `|cell|` caps),
 by the same generated assertions the copy path runs, over the borrowed memory.
 
@@ -68,19 +75,19 @@ DuckDB's cells", which nothing checks either today.
 `&[T]` slices have the vstd view `Seq<T>` (`impl<T> View for [T]`). A single `&[T]` is not enough because the pin is chunked, so a column is
 
 ```
-pub struct PinnedCol<'a, T> { pub n: usize, pub chunks: Vec<&'a [T]>, pub offs: Vec<usize> }
+pub struct PinnedCol<T: 'static> { pub n: usize, pub chunks: Vec<&'static [T]>, pub offs: Vec<usize> }   // chunks are non-empty (wf)
 view = Seq::new(n, |i| chunks[chunk_of(i)]@[i - offs[chunk_of(i)]])      // the concatenation
 ```
 
-and `valid_cols` gains `t.c.wf()`. Because the view is a `Seq<T>`, **every emitted spec statement (`t.c@[i]`, `t.c@.len()`) is unchanged**, and so are
+and `valid_cols` gains `t.c.wf()` and, for every column after the first, `t.c.offs@ == t.first.offs@` (one pin, one chunking). Because the view is a `Seq<T>`, **every emitted spec statement (`t.c@[i]`, `t.c@.len()`) is unchanged**, and so are
 `row_hit`, `sum_total` and the whole `ensures`. Only the struct's field type, the `valid_cols` conjunct, the loader's parameter type and the
 agent's way of reading cells change. Reading cell `j` of chunk `k` is a slice index; the proof step that connects it to the spec is
-`lemma_cell`. A random-access `get(i)` is not provided: it needs a binary search over `offs` (proof and speed cost); queries that probe by row
-index (hash joins on borrowed build sides) stay on the copy path for now. `Vec<T>` instead of slices would need a copy, which is what we avoid;
+`lemma_cell`. Random access `get(i)` (verified binary search over `offs`, O(log chunks), `ensures r == self@[i]`) and `find_chunk` exist for bodies that probe by row
+index; scans should walk chunks. `lemma_chunk_count`: chunks are non-empty, so at most one per row (a bound the parallel body needs for its chunk-range arithmetic). `Vec<T>` instead of slices would need a copy, which is what we avoid;
 `Vec::from_raw_parts` is not supported by Verus and would be unsound with a foreign allocator anyway.
 
 The lifetime parameter is elided at every use (`run_query(num: &Cols_num)` is accepted by Verus and rustc). The parallel shape needs `'static`
-(`Arc<Cols>` into spawned threads): the pin would be leaked for the process lifetime. Not in the prototype.
+(`Arc<Cols>` into spawned threads): the pin is leaked for the process lifetime (revision 2: built, parallel chunk-range body verified).
 
 ## 5. Which column kinds
 
@@ -109,7 +116,7 @@ access over the cells and is refused by the prototype (it can be done by iterati
 * Table writes during the call do not change a retained result chunk (it is a materialized copy). That is a property of `duckdb_result_get_chunk`
   on this version, not of the C API contract; a later DuckDB may return references into buffer-manager blocks, which an UPDATE or a checkpoint
   can move or evict. Re-validate on every DuckDB upgrade. Pinning storage segments directly (`lemma_storage`) would be a different statement.
-* Peak memory: the pin (decompressed) is the only copy. The copy path holds the pin and the `Vec`.
+* Peak memory: round 2 measured it: DuckDB copies twice inside the pin (resident set 2.6x the data after pinning a 120 MB INTEGER column), so zero-copy removes only OUR copy; the copy path holds the pin and the `Vec`.
 * Two DuckDB instances: the binary opens the database itself (read only). Library and database versions must match (the repo's
   `build/libduckdb` is 1.2.x, the database files are 1.5.x: the prototype reads a 1.2.x-format copy of the columns).
 
@@ -158,9 +165,20 @@ names with spaces (NOT fixed); (3) null-pointer check added; (7) narrow-cell spe
 
 ## 10. What is false in reality (for the adversary)
 
-1. DuckDB's chunk sizes are not uniform (measured: 11 of 19,244 chunks have a size other than 2048 on `num`, the last has 1,878). A representation
+1. DuckDB's chunk sizes are not uniform (measured: 11 to 12 of 19,244 chunks have a size other than 2048 on `num`, the last has 1,878). A representation
    assuming 2048-row chunks would be wrong; ours carries prefix sums.
 2. A "flat vector" is assumed; a different version or query shape (`WHERE`, joins) could hand back dictionary or constant vectors.
 3. `i128` buffers are 16-aligned today by allocation luck; the check turns a violation into an abort, not into a misread.
 4. Fidelity (item 3) is not independently checked.
 5. The prototype links a DuckDB (1.2.x) that is not the reference engine (1.5.x).
+
+## 11. Revision 2 additions (after the round 2 adversary)
+
+* The spec is bound to the schema model: under `LEMMA_ZERO_COPY=1` the emitter writes `// IN_TYPES: {table: {column: sql type}}` and `resolve` refuses a spec emitted for other types than
+  the model declares (round 2 finding 1: a model and database that both said DECIMAL(38,2) under a DECIMAL(38,4) spec printed NULL). The default spec is unchanged.
+* `main` asserts the linked DuckDB version (ZC-1 was validated on v1.5.4 only), refuses DATE infinity cells (the copy path's exporter maps infinity to a day number, the pin reads the raw value),
+  and the generated assertions take names as escaped string-literal arguments (a column name with `"` or `{` no longer breaks the generated Rust).
+* `tests/test_zero_copy_order.py` compares the pin's cell SEQUENCE with DuckDB's row order (the proved differential bodies are permutation-invariant): DELETE/UPDATE/INSERT growth, more than one row group,
+  DECIMAL/TINYINT/SMALLINT/DATE/HUGEINT, constant vectors, views.
+* Nullable columns stay refused (adversary opinion, round 2): borrowing DuckDB's validity bit mask needs a second trusted layout fact (word and bit order, null pointer means all valid, bits past `len` unspecified)
+  and a bit-mask view proof; if nullable columns are ever wanted, expand the mask to a `Vec<bool>` in `main`.
