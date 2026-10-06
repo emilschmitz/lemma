@@ -80,3 +80,36 @@ def test_fetch_script_pins_installed_commit() -> None:
     script = (Path(__file__).resolve().parent.parent / "research_loop/scripts/fetch_verus_docs.sh").read_text()
     assert "version.json" in script and 'test "$(git rev-parse HEAD)" = "$commit"' in script
     assert (DOCS_CACHE / "COMMIT").read_text().strip() == "3a4d30bcdc4571e7927af97be9c4664973083eda"
+
+
+NO_ARG_BROADCAST = """
+/// The empty set has length 0.
+pub broadcast proof fn lemma_empty_len<A>()
+    ensures
+        #[trigger] Set::<A>::empty().len() == 0,
+{
+}
+
+pub broadcast proof fn lemma_insert_len<A>(s: Set<A>, a: A)
+    ensures
+        #[trigger] s.insert(a).len() >= 0,
+{
+}
+
+pub proof fn lemma_plain_unit<A>()
+    ensures
+        true,
+{
+}
+"""
+
+
+def test_a_broadcast_lemma_without_value_arguments_is_marked_not_callable(tmp_path: Path) -> None:
+    """Two Sonnet attempts on r1_q04 called `lemma_set_empty_len::<Seq<char>>();` (a broadcast fn with 0 arguments): Verus rejects it."""
+    (tmp_path / "fake.rs").write_text(NO_ARG_BROADCAST)
+    md = lemmas_markdown(tmp_path)
+    block = md.split("## lemma_empty_len")[1].split("##")[0]
+    assert "NOT callable by name" in block and "broadcast use" in block
+    assert "NOT callable" not in md.split("## lemma_insert_len")[1].split("##")[0]  # a broadcast lemma WITH arguments is called normally
+    assert "NOT callable" not in md.split("## lemma_plain_unit")[1].split("##")[0]  # an ordinary zero-argument proof fn is callable
+

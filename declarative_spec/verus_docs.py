@@ -21,6 +21,14 @@ _ITEM = re.compile(
 )
 _GROUP = re.compile(r"^\s*pub\s+broadcast\s+group\s+(group_\w+)")
 _CLAUSE_LINES = 5
+# `pub broadcast proof fn name<A>()`: no value parameters. Verus rejects a direct call ("cannot call a broadcast_forall function with 0 arguments
+# directly"); two Sonnet attempts on one query both wrote `lemma_set_empty_len::<Seq<char>>();` and lost a check each time.
+_NO_VALUE_PARAMS = re.compile(r"fn\s+\w+\s*(?:<[^>]*>)?\s*\(\s*\)")
+NOT_CALLABLE_NOTE = (
+    "NOT callable by name: a broadcast proof fn with no value arguments cannot be called (Verus: 'cannot call a broadcast_forall function with 0 "
+    "arguments directly'). It takes effect only through a `broadcast use` of a group that lists it and that INDEX.md allows; if none does, "
+    "the fact is not available, so prove it yourself with an `assert` or a lemma of your own."
+)
 _IMPL = re.compile(r"^(?P<indent>\s*)(?:unsafe\s+)?impl\b(?P<rest>.*)")
 _TRAIT = re.compile(r"^(?P<indent>\s*)pub\s+trait\s+(?P<name>\w+)")
 _ASSUME = re.compile(r"^(?P<indent>\s*)pub\s+assume_specification\b[^\[]*\[\s*(?P<target>[^\]]+?)\s*\]")
@@ -189,6 +197,8 @@ def lemmas_markdown(vstd: Path) -> str:
             out.append(f"## {qualified}")
             out.append(f"- path: vstd/{rel}:{i + 1}  ({kind})")
             out.append(f"- sig: `{signature}`")
+            if kind == "proof fn" and "broadcast" in line and _NO_VALUE_PARAMS.search(signature):
+                out.append(f"- note: {NOT_CALLABLE_NOTE}")
             for key, vals in clauses.items():
                 if vals:
                     out.append(f"- {key}: {' '.join(vals)}")
