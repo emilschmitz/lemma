@@ -29,6 +29,8 @@ def command(model: str, sql_file: Path, marker: Path | None = None) -> list[str]
         "systemd-run", "--user", "--scope", "--slice=lemma.slice", "-p", "MemoryMax=6G", "-p", "MemorySwapMax=0", *env_args,
         sys.executable, str(ROOT / "research_loop" / "scripts" / "run_container_agent.py"),
         "--style", "declarative", "--menu", "adversary_declarative0", "--agent", model, "--allow-override",
+        # One session per attempt, 600 s (AGENT_TIMEOUT_SEC): a container attempt never exceeds 10 minutes of agent time.
+        "--max-iterations", "1",
         "--query-file", str(sql_file),
     ]
 
