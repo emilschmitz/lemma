@@ -80,3 +80,70 @@ def test_fetch_script_pins_installed_commit() -> None:
     script = (Path(__file__).resolve().parent.parent / "research_loop/scripts/fetch_verus_docs.sh").read_text()
     assert "version.json" in script and 'test "$(git rev-parse HEAD)" = "$commit"' in script
     assert (DOCS_CACHE / "COMMIT").read_text().strip() == "3a4d30bcdc4571e7927af97be9c4664973083eda"
+
+
+NO_ARG_BROADCAST = """
+/// The empty set has length 0.
+pub broadcast proof fn lemma_empty_len<A>()
+    ensures
+        #[trigger] Set::<A>::empty().len() == 0,
+{
+}
+
+pub broadcast proof fn lemma_insert_len<A>(s: Set<A>, a: A)
+    ensures
+        #[trigger] s.insert(a).len() >= 0,
+{
+}
+
+pub proof fn lemma_plain_unit<A>()
+    ensures
+        true,
+{
+}
+"""
+
+
+def test_a_broadcast_lemma_without_value_arguments_is_marked_not_callable(tmp_path: Path) -> None:
+    """Two Sonnet attempts on r1_q04 called `lemma_set_empty_len::<Seq<char>>();` (a broadcast fn with 0 arguments): Verus rejects it."""
+    (tmp_path / "fake.rs").write_text(NO_ARG_BROADCAST)
+    md = lemmas_markdown(tmp_path)
+    block = md.split("## lemma_empty_len")[1].split("##")[0]
+    assert "NOT callable by name" in block and "broadcast use" in block
+    assert "NOT callable" not in md.split("## lemma_insert_len")[1].split("##")[0]  # a broadcast lemma WITH arguments is called normally
+    assert "NOT callable" not in md.split("## lemma_plain_unit")[1].split("##")[0]  # an ordinary zero-argument proof fn is callable
+
+
+
+GROUPED = """
+pub broadcast proof fn lemma_grouped_len<A>()
+    ensures
+        true,
+{
+}
+
+pub broadcast proof fn lemma_axiom_grouped<A: Foo<Bar>>()
+    ensures
+        true,
+{
+}
+
+pub broadcast group group_ok {
+    lemma_grouped_len,
+}
+
+pub broadcast group group_bad {
+    axiom_something,
+    lemma_axiom_grouped,
+}
+"""
+
+
+def test_the_note_names_the_allowed_group_or_says_none_exists_and_forbids_assume(tmp_path: Path) -> None:
+    """Adversary B5/B1: name the group the agent may `broadcast use`; a group with an axiom_* member is not allowed; nested generics still match."""
+    (tmp_path / "fake.rs").write_text(GROUPED)
+    md = lemmas_markdown(tmp_path)
+    ok = md.split("## lemma_grouped_len")[1].split("\n## ")[0]
+    assert "NOT callable by name" in ok and "`broadcast use vstd::fake::group_ok;`" in ok
+    bad = md.split("## lemma_axiom_grouped")[1].split("\n## ")[0]  # nested generics `A: Foo<Bar>` are stripped before the check
+    assert "NOT callable by name" in bad and "no allowed group lists it" in bad and "never `assume` or an axiom" in bad and "group_bad" not in bad
