@@ -52,7 +52,7 @@ def _maybe_large_table(
         }
         if prepared["kinds"] is not None:  # OutRow result; a map result prints `ROW key value`
             bar["kinds"] = prepared["kinds"]
-            bar.update({k: prepared.get(k) for k in ("order_cols", "limited", "tie_rows")})  # ORDER BY / LIMIT tie handling, see bench.rows_match_error
+            bar.update({k: prepared.get(k) for k in ("order_cols", "limited", "tie_rows", "duck_settings")})  # ORDER BY / LIMIT tie handling, see bench.rows_match_error
         return prepared["bins"], bar
     raw = os.environ.get("LEMMA_DECL_ROWS", "").strip()
     if not raw:
