@@ -40,3 +40,25 @@ def test_heavy_waits_when_memory_is_short() -> None:
     env = {**os.environ, "HEAVY_MIN_AVAIL_MB": "999999999"}
     with pytest.raises(subprocess.TimeoutExpired):
         subprocess.run([str(ROOT / "scripts/ram/heavy.sh"), "true"], env=env, timeout=4, capture_output=True)
+
+
+@pytest.mark.skipif(not Path("/usr/bin/systemd-run").exists(), reason="needs systemd-run")
+def test_heavy_jobs_run_in_the_lemma_slice_and_are_first_to_be_oom_killed() -> None:
+    env = {**os.environ, "HEAVY_MIN_AVAIL_MB": "0"}
+    out = subprocess.run(
+        [str(ROOT / "scripts/ram/heavy.sh"), "python3", "-u", "-c",
+         "print(open('/proc/self/cgroup').read()); print(open('/proc/self/oom_score_adj').read())"],
+        env=env, timeout=60, capture_output=True, text=True,
+    ).stdout
+    assert "lemma.slice" in out and out.strip().endswith("800")
+
+
+@pytest.mark.skipif(not Path("/usr/bin/systemd-run").exists(), reason="needs systemd-run")
+def test_a_job_over_its_cap_is_killed_alone() -> None:
+    env = {**os.environ, "HEAVY_MIN_AVAIL_MB": "0", "HEAVY_MEM_MAX": "200M"}
+    r = subprocess.run(
+        [str(ROOT / "scripts/ram/heavy.sh"), "python3", "-c",
+         "b = bytearray(600 * 1024 * 1024)\nfor i in range(0, len(b), 4096): b[i] = 1"],
+        env=env, timeout=60, capture_output=True,
+    )
+    assert r.returncode != 0

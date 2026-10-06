@@ -165,3 +165,25 @@ def test_a_floored_stamp_before_the_bash_start_second_still_matches(tmp_path: Pa
     denial = {"host": "registry.npmjs.org", "denied": True, "ts": "2026-10-05T17:34:29Z"}  # real time 17:34:29.95
     out = summarize_run(_write_run(tmp_path, [denial], _bash("2026-10-05T17:34:29.900Z", "2026-10-05T17:34:31.000Z")))
     assert out["egress_denied_in_agent_bash"] == ["registry.npmjs.org"]
+
+
+def test_summarize_run_survives_egress_lines_without_a_host_and_counts_them(tmp_path) -> None:
+    from research_loop.scripts.run_container_agent import summarize_run
+
+    mcp = tmp_path / "workspace" / "mcp_results"
+    mcp.mkdir(parents=True)
+    (mcp / "egress_bridge.jsonl").write_text(
+        '{"host": "api.anthropic.com", "ok": true}\n\n{"ok": false, "note": "no host here"}\nnot json at all\n'
+    )
+    out = summarize_run(tmp_path)
+    assert out["egress_hosts"] == ["api.anthropic.com"] and out["egress_unparsed_lines"] == 2
+
+
+def test_summarize_run_denial_without_a_host_is_reported_not_a_crash(tmp_path) -> None:
+    from research_loop.scripts.run_container_agent import summarize_run
+
+    mcp = tmp_path / "workspace" / "mcp_results"
+    mcp.mkdir(parents=True)
+    (mcp / "egress_denied.jsonl").write_text('{"ts": "2026-10-06T00:00:00Z"}\n')
+    out = summarize_run(tmp_path)
+    assert out["egress_denied"] is True and out["egress_denied_cli_hosts"] == ["?"]
