@@ -83,6 +83,7 @@ def main() -> int:
     ap.add_argument("--seed", type=int, required=True)
     ap.add_argument("--sec", type=int, default=6)
     ap.add_argument("--round", type=int, required=True)
+    ap.add_argument("--generate", type=int, default=200)
     ap.add_argument("--pool", type=int, default=120)
     ap.add_argument("--out", type=Path, required=True, help="arena root; the round goes to <out>/rounds/rN, the registry to <out>/seen.json")
     a = ap.parse_args()
@@ -106,7 +107,7 @@ def main() -> int:
     pool_sql = rdir / f"pool_{a.seed}.sql"
     subprocess.run(
         [sys.executable, str(MAIN / "holdout" / "gendb_sec_edgar" / "generate_queries.py"), "--seed", str(a.seed),
-         "--num-generate", "600", "--num-select", str(a.pool), "--db-path", str(db), "--output", str(pool_sql)],
+         "--num-generate", str(a.generate), "--num-select", str(a.pool), "--db-path", str(db), "--output", str(pool_sql)],
         check=True,
     )
     pool = parse_sql_file(pool_sql)
