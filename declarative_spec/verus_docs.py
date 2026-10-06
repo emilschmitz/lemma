@@ -21,6 +21,36 @@ _ITEM = re.compile(
 )
 _GROUP = re.compile(r"^\s*pub\s+broadcast\s+group\s+(group_\w+)")
 _CLAUSE_LINES = 5
+# `pub broadcast proof fn name<A>()`: no value parameters. Verus rejects a direct call ("cannot call a broadcast_forall function with 0 arguments
+# directly"); two Sonnet attempts on one query both wrote `lemma_set_empty_len::<Seq<char>>();` and lost a check each time.
+_NO_VALUE_PARAMS = re.compile(r"fn\s+\w+\s*\(\s*\)")  # applied to the signature with its generics stripped (nested `<A: Foo<B>>` included)
+_GROUP_BLOCK = re.compile(r"^pub broadcast group (group_\w+)\s*\{([^}]*)\}", re.M)
+NOT_CALLABLE_NOTE = (
+    "NOT callable by name: a broadcast proof fn with no value arguments cannot be called (Verus: 'cannot call a broadcast_forall function with 0 "
+    "arguments directly'). It takes effect only through a `broadcast use` of a group that lists it and that INDEX.md allows"
+)
+NO_GROUP_NOTE = "; no allowed group lists it, so the fact is not available: prove it yourself with an `assert` or a lemma of your own (never `assume` or an axiom)."
+
+
+def _allowed_groups_by_member(vstd: Path) -> dict[str, list[str]]:
+    """Member lemma name -> `vstd::<module>::<group>` for every broadcast group the agent may `broadcast use` (a group that lists an `axiom_*` item is not allowed)."""
+    out: dict[str, list[str]] = {}
+    for path in sorted(vstd.rglob("*.rs")):
+        module = "::".join(path.relative_to(vstd).with_suffix("").parts)
+        for m in _GROUP_BLOCK.finditer(path.read_text()):
+            members = [x.strip() for x in m.group(2).split(",") if x.strip()]
+            if any(x.startswith("axiom_") for x in members):
+                continue
+            for member in members:
+                out.setdefault(member, []).append(f"vstd::{module}::{m.group(1)}")
+    return out
+
+
+def _not_callable_note(name: str, groups: dict[str, list[str]]) -> str:
+    found = groups.get(name)
+    if found:
+        return f"{NOT_CALLABLE_NOTE}; it is a member of {', '.join(f'`{g}`' for g in found)}: write `broadcast use {found[0]};` and the fact is available."
+    return NOT_CALLABLE_NOTE + NO_GROUP_NOTE
 _IMPL = re.compile(r"^(?P<indent>\s*)(?:unsafe\s+)?impl\b(?P<rest>.*)")
 _TRAIT = re.compile(r"^(?P<indent>\s*)pub\s+trait\s+(?P<name>\w+)")
 _ASSUME = re.compile(r"^(?P<indent>\s*)pub\s+assume_specification\b[^\[]*\[\s*(?P<target>[^\]]+?)\s*\]")
@@ -128,6 +158,7 @@ def lemmas_markdown(vstd: Path) -> str:
     Methods are `## Owner::name` (`HashMapWithView::insert`), std exec specs are
     `## Vec::push` / `## String::eq` (from `assume_specification[ ... ]`).
     """
+    groups = _allowed_groups_by_member(vstd)
     out = [
         "# vstd index (generated)",
         "",
@@ -189,6 +220,8 @@ def lemmas_markdown(vstd: Path) -> str:
             out.append(f"## {qualified}")
             out.append(f"- path: vstd/{rel}:{i + 1}  ({kind})")
             out.append(f"- sig: `{signature}`")
+            if kind == "proof fn" and "broadcast" in line and _NO_VALUE_PARAMS.search(_strip_generics(signature)):
+                out.append(f"- note: {_not_callable_note(name, groups)}")
             for key, vals in clauses.items():
                 if vals:
                     out.append(f"- {key}: {' '.join(vals)}")
