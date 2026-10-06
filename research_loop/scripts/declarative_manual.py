@@ -130,6 +130,10 @@ def check(kind: str, sql: str, ws: Path) -> dict:
     )
     keep = {k: v for k, v in metrics.items() if k != "stdout"}
     (ws / "last_check.json").write_text(json.dumps(keep, default=str, indent=1))
+    import time
+
+    with (ws / "check_log.jsonl").open("a") as fh:  # one line per check: arena_record.py derives checks, verified line and timings from it
+        fh.write(json.dumps({"ts": time.time(), **{k: keep.get(k) for k in ("status", "proof_verified", "latency_us", "latency_best_us", "duck_us", "speedup", "verify_summary", "target_cpu")}, "error_head": (keep.get("compiler_error") or "")[:300]}, default=str) + "\n")
     print(json.dumps({k: keep.get(k) for k in ("status", "proof_verified", "latency_us", "latency_best_us", "duck_us", "duck1_us", "speedup", "speedup_best", "speedup_1t", "target_cpu", "verify_summary")}, default=str))
     print((keep.get("compiler_error") or "")[-3500:])
     return metrics

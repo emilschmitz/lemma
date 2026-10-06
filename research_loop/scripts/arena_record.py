@@ -196,6 +196,66 @@ def row_from_run(run_dir: Path, *, query: str, attempt: int, log: Path | None = 
     }
 
 
+def row_from_manual(ws: Path, *, query: str, attempt: int, started: float, ended: float, end_reason: str, sha: str, baseline_sha: str | None = None, model: str = "claude-sonnet-5-5") -> dict:
+    """A manual-harness attempt (``declarative_manual.py``): checks, verified line and timings come from ``<ws>/check_log.jsonl`` (written by each check);
+    wall time is ``ended - started`` of the attempt (recorded by ``manual_attempt.py``); the DuckDB settings from ``decl_data/expect.json``.
+    ``baseline_setup`` is True when the setup (git sha) is the unmodified baseline sha: a success there needs no setup change."""
+    log = ws / "check_log.jsonl"
+    checks = [json.loads(line) for line in log.read_text().splitlines() if line.strip()] if log.is_file() else []
+    checks = [c for c in checks if started <= c["ts"] <= ended + 5]
+    notes: list[str] = ["manual prover (Sonnet 5.5 subagent given only the agent prompt/docs); effort is the subagent default (not settable); not a container run"]
+    expect = json.loads((ws / "decl_data" / "expect.json").read_text())
+    proved_checks = [c for c in checks if c.get("proof_verified")]
+    scored = [c for c in checks if c.get("status") == "SUCCESS"]
+    best = min(scored, key=lambda c: c["latency_us"]) if scored else None
+    err = (checks[-1] if checks else {}).get("error_head") or ""
+    kernel_us = best["latency_us"] if best else None
+    duck = (best or {}).get("duck_us") or expect.get("duck_us")
+    speedup = round(duck / kernel_us, 3) if kernel_us and duck else None
+    verified = None
+    for c in proved_checks or checks:
+        m = _VERIFIED.search((c.get("verify_summary") or "") + " " + (c.get("error_head") or ""))
+        if m:
+            cand = (int(m.group(1)), int(m.group(2)))
+            if verified is None or (cand[1], -cand[0]) < (verified[1], -verified[0]):
+                verified = cand
+    if not checks:
+        notes.append("no check was run in this attempt")
+    rows_match = True if scored else (False if any("result rows differ" in (c.get("error_head") or "") for c in checks) else None)
+    if rows_match is None:
+        notes.append("rows_match not derivable: no check reached the row check")
+    if _SPEED_BAR.search(err) and kernel_us is None:
+        notes.append("last check proved but was below the speed bar: " + err[:120])
+    job = json.loads((ws / "manual_job.json").read_text())
+    return {
+        "track": "manual",
+        "model": model,
+        "effort": "subagent default (not settable)",
+        "query": query,
+        "attempt": attempt,
+        "ws": str(ws),
+        "sha": sha,
+        "baseline_setup": baseline_sha is not None and sha == baseline_sha,
+        "baseline_sha": baseline_sha,
+        "proved": bool(proved_checks),
+        "verified_line": f"{verified[0]} verified, {verified[1]} errors" if verified else None,
+        "checks": len(checks),
+        "wall_s": round(ended - started, 1),
+        "end_reason": end_reason,
+        "status": "SUCCESS" if scored else "FAILURE",
+        "kernel_us": kernel_us,
+        "kernel_basis": "scored" if best else None,
+        "duck_allcore_us": duck,
+        "speedup": speedup,
+        "rows_match": rows_match,
+        "env": {k: (job.get("env") or {}).get(k) for k in ("LEMMA_STRING_ENCODING", "LEMMA_NARROW_CELLS", "LEMMA_PARALLEL_VSTD", "LEMMA_TARGET_CPU")},
+        "database": "sec_edgar_dec.duckdb",
+        "duck_settings": expect.get("duck_settings"),
+        "counts": True,
+        "notes": notes,
+    }
+
+
 def regenerate(index: Path, causes: Path | None, out: Path) -> list[dict]:
     """Rewrite ``out`` from the index (a list of {query, attempt, run_dir, log?, infra?}); the causes file is keyed by run directory name."""
     cause_map = json.loads(causes.read_text()) if causes and causes.is_file() else {}
