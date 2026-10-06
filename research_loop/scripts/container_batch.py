@@ -19,7 +19,7 @@ MODELS = {"haiku": "claude-haiku-4-5-20251001", "sonnet": "claude-sonnet-5-5"}
 
 
 def command(model: str, sql_file: Path) -> list[str]:
-    env_args = [f"--setenv={k}={os.environ[k]}" for k in ("LEMMA_DUCKDB_PATH", "LEMMA_STRING_ENCODING", "LEMMA_TPCH_DB", "LEMMA_NARROW_CELLS", "LEMMA_ASSUMPTION_PACKAGE") if k in os.environ]
+    env_args = [f"--setenv={k}={os.environ[k]}" for k in ("LEMMA_DUCKDB_PATH", "LEMMA_STRING_ENCODING", "LEMMA_TPCH_DB", "LEMMA_NARROW_CELLS", "LEMMA_TARGET_CPU", "LEMMA_ASSUMPTION_PACKAGE") if k in os.environ]
     return [
         "flock", "/tmp/lemma_timing.lock",
         "systemd-run", "--user", "--scope", "-p", "MemoryMax=10G", "-p", "MemorySwapMax=0", *env_args,

@@ -358,6 +358,7 @@ def run_declarative_optimization_loop(
                 "speedup": metrics.get("speedup"),
                 "speedup_1t": metrics.get("speedup_1t"),
                 "speed_bar_mult": metrics.get("speed_bar_mult"),
+                "target_cpu": metrics.get("target_cpu"),
                 "best_iteration": iteration,
                 "history": history,
                 "error": "",
