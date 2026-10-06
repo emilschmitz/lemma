@@ -15,7 +15,8 @@ def test_command_is_locked_capped_and_carries_the_selected_environment(monkeypat
     monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
     monkeypatch.delenv("LEMMA_TPCH_DB", raising=False)
     cmd = cb.command("claude-sonnet-5-5", Path("/q.sql"))
-    assert cmd[:2] == ["flock", "/tmp/lemma_timing.lock"] and cmd[cmd.index("--locked-run") - 1].endswith("container_batch.py") and cmd[cmd.index("--") + 1] == "systemd-run"
+    assert cmd[:6] == ["flock", "/tmp/lemma_timing.lock", "choom", "-n", "800", "--"] and cmd[cmd.index("--locked-run") - 1].endswith("container_batch.py")
+    assert cmd[cmd.index("--locked-run") + 3] == "systemd-run" and "--slice=lemma.slice" in cmd
     assert "MemoryMax=6G" in cmd and "--setenv=LEMMA_DUCKDB_PATH=/db.duckdb" in cmd and "--setenv=LEMMA_STRING_ENCODING=dict" in cmd
     assert not any(c.startswith("--setenv=LEMMA_TPCH_DB") for c in cmd)
     assert cmd[cmd.index("--agent") + 1] == "claude-sonnet-5-5" and "--allow-override" in cmd and cmd[-1] == "/q.sql"

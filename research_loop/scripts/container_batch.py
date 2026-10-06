@@ -24,9 +24,9 @@ def command(model: str, sql_file: Path, marker: Path | None = None) -> list[str]
     env_args = [f"--setenv={k}={os.environ[k]}" for k in ("LEMMA_DUCKDB_PATH", "LEMMA_STRING_ENCODING", "LEMMA_TPCH_DB", "LEMMA_NARROW_CELLS", "LEMMA_ASSUMPTION_PACKAGE", "LEMMA_CLAUDE_EFFORT", "LEMMA_TARGET_CPU") if k in os.environ]
     # The login refresh runs INSIDE the lock (`--locked-run`): a job that holds the lock for hours would otherwise leave this run a stale token.
     return [
-        "flock", "/tmp/lemma_timing.lock",
+        "flock", "/tmp/lemma_timing.lock", "choom", "-n", "800", "--",
         sys.executable, str(Path(__file__).resolve()), "--locked-run", str(marker or "/dev/null"), "--",
-        "systemd-run", "--user", "--scope", "-p", "MemoryMax=6G", "-p", "MemorySwapMax=0", *env_args,
+        "systemd-run", "--user", "--scope", "--slice=lemma.slice", "-p", "MemoryMax=6G", "-p", "MemorySwapMax=0", *env_args,
         sys.executable, str(ROOT / "research_loop" / "scripts" / "run_container_agent.py"),
         "--style", "declarative", "--menu", "adversary_declarative0", "--agent", model, "--allow-override",
         "--query-file", str(sql_file),

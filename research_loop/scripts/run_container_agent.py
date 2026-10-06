@@ -46,10 +46,20 @@ def summarize_run(run_dir: Path | None) -> dict:
     ws = run_dir / "workspace"
     body = (ws / "runquery_agent.rs").read_text() if (ws / "runquery_agent.rs").is_file() else ""
     hosts: set[str] = set()
+    unparsed = 0  # egress lines with no host: counted and reported, never dropped silently, never a crash after the run
     egress = ws / "mcp_results" / "egress_bridge.jsonl"
     if egress.is_file():
         for line in egress.read_text().splitlines():
-            hosts.add(json.loads(line)["host"])
+            if not line.strip():
+                continue
+            try:
+                host = json.loads(line).get("host")
+            except (ValueError, AttributeError):
+                host = None
+            if host:
+                hosts.add(host)
+            else:
+                unparsed += 1
     denied = ws / "mcp_results" / "egress_denied.jsonl"
     denials = [json.loads(line) for line in denied.read_text().splitlines() if line.strip()] if denied.is_file() else []
     windows = _bash_windows(ws / "logs" / "claude_raw.jsonl")
@@ -59,13 +69,14 @@ def summarize_run(run_dir: Path | None) -> dict:
         "run_dir": str(run_dir),
         "threads_used": "spawn(" in body,
         "egress_hosts": sorted(hosts),
+        "egress_unparsed_lines": unparsed,
         # True when a denial falls outside every agent Bash call's time window (the CLI, or a process that outlived its Bash call).
         # False does NOT prove the CLI was never denied: a CLI denial that overlaps a Bash call lands in the bash list below.
         "egress_denied": bool(from_cli),
         # Denied while an agent Bash call was running (e.g. `npx` fetching a package). Reported, never dropped: the sandbox
         # did deny it, but the agent's shell asked, not the CLI. The match is by time window, so it is attribution, not proof.
-        "egress_denied_in_agent_bash": sorted({d["host"] for d in from_bash}),
-        "egress_denied_cli_hosts": sorted({d["host"] for d in from_cli}),
+        "egress_denied_in_agent_bash": sorted({d.get("host", "?") for d in from_bash}),
+        "egress_denied_cli_hosts": sorted({d.get("host", "?") for d in from_cli}),
     }
 
 
