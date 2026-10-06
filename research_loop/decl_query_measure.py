@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import io
 import json
+import os
 import re
 import shutil
 import statistics
@@ -28,6 +29,34 @@ _FIELD = re.compile(r"pub\s+((?:r#)?[A-Za-z_][A-Za-z0-9_]*):\s+Vec<([^>]+)>")
 _OUT = re.compile(r"pub\s+((?:r#)?[A-Za-z_][A-Za-z0-9_]*):\s+([^,\n]+),")
 _OUT_SCALES = re.compile(r"^// OUT_SCALES: ([0-9,]+)$", re.MULTILINE)
 _EPOCH = dt.date(1970, 1, 1)
+
+
+DUCK_MEMORY_LIMIT_ENV = "LEMMA_DUCK_MEMORY_LIMIT"
+DUCK_THREADS_ENV = "LEMMA_DUCK_THREADS"
+MAX_TIE_ROWS = 200_000
+
+
+def duck_settings(dest: Path) -> dict:
+    """The DuckDB settings every host measure connection runs under, so the reference and our side are timed identically.
+
+    DuckDB's default memory limit is about 80% of the machine's RAM, above the container scope's cap (a big scan could be cgroup-OOM-killed):
+    default 3GB (spills to ``dest/duck_tmp``), 8 threads. ``LEMMA_DUCK_MEMORY_LIMIT`` / ``LEMMA_DUCK_THREADS`` override, recorded in expect.json."""
+    return {
+        "memory_limit": os.environ.get(DUCK_MEMORY_LIMIT_ENV, "").strip() or "3GB",
+        "threads": int(os.environ.get(DUCK_THREADS_ENV, "").strip() or "8"),
+        "temp_directory": str(dest / "duck_tmp"),
+    }
+
+
+def open_measure_connection(db_path: Path, dest: Path, *, read_only: bool = True) -> tuple[duckdb.DuckDBPyConnection, dict]:
+    """Open ``db_path`` under :func:`duck_settings`; returns the connection and the settings applied."""
+    settings = duck_settings(dest)
+    dest.mkdir(parents=True, exist_ok=True)  # DuckDB creates only the leaf of temp_directory
+    con = duckdb.connect(str(db_path), read_only=read_only)
+    con.execute(f"PRAGMA memory_limit='{settings['memory_limit']}'")
+    con.execute(f"PRAGMA threads={settings['threads']}")
+    con.execute(f"PRAGMA temp_directory='{settings['temp_directory']}'")
+    return con, settings
 
 
 def write_query_measure(
@@ -79,7 +108,7 @@ def write_query_measure(
     table_rows: dict[str, int] = {}
     dict_sizes: dict[str, int] = {}  # `<struct suffix>.<column>` -> entries of its dictionary
     try:
-        con = duckdb.connect(str(db_path), read_only=True)
+        con, duck_cfg = open_measure_connection(db_path, dest)
     except duckdb.Error as exc:
         raise ValueError(str(exc)) from exc
     try:
@@ -95,7 +124,13 @@ def write_query_measure(
         scales_match = _OUT_SCALES.search(spec)
         scales = [int(x) for x in scales_match.group(1).split(",")] if scales_match else None
         duck_threads = int(con.execute("SELECT current_setting('threads')").fetchone()[0])
+        duck_cfg["memory_limit_effective"] = str(con.execute("SELECT current_setting('memory_limit')").fetchone()[0])
         duck_us, rows, kinds = _time_query(con, sql, out_fields, scales)
+        tie_rows = _tie_group_rows(con, sql, rows, out_fields, scales)
+        from declarative_spec.bench import cut_applies, order_info
+
+        order = order_info(sql)
+        tie_info = {"order_cols": order["order_cols"], "limited": cut_applies(order, len(rows))}  # in expect.json too: the in-session MCP check reads it
         con.execute("SET threads=1")
         duck1_us = _median_us(con, sql)
     except duckdb.Error as exc:
@@ -114,6 +149,9 @@ def write_query_measure(
         "kinds": kinds,
         "table_rows": table_rows,
         "dict_sizes": dict_sizes,
+        "tie_rows": tie_rows,
+        **tie_info,
+        "duck_settings": duck_cfg,
     }
     (dest / "expect.json").write_text(json.dumps(expect) + "\n", encoding="utf-8")
     return {
@@ -125,7 +163,39 @@ def write_query_measure(
         "kinds": kinds,
         "table_rows": table_rows,
         "dict_sizes": dict_sizes,
+        "tie_rows": tie_rows,
+        **tie_info,
+        "duck_settings": duck_cfg,
     }
+
+
+def _tie_group_rows(con, sql: str, rows: list, out_fields: list[tuple[str, str]], scales: list[int] | None) -> list | None:
+    """Every row of ``sql`` WITHOUT its LIMIT whose ORDER BY keys equal those of the last kept row; None when the cut cannot fall in a tie group.
+
+    Only for ``ORDER BY <output columns> LIMIT n`` with exactly n rows kept (see ``declarative_spec.bench.order_info``). The row check uses it to accept
+    any valid choice among tied rows at the cut, and only those."""
+    import sqlglot
+
+    from declarative_spec.bench import order_info
+
+    info = order_info(sql)
+    if not (info["limited"] and info["order_cols"] and info.get("limit") == len(rows)) or all(not f for f, _t in out_fields):
+        return None
+    tree = sqlglot.parse_one(sql)
+    tree.set("order", None)
+    tree.set("limit", None)
+    raw_last = con.execute(sql).fetchall()[-1]
+    n = len(out_fields)
+    names = ", ".join(f"c{i}" for i in range(n))
+    cond = " AND ".join(f"c{i} IS NOT DISTINCT FROM ?" for i in info["order_cols"])
+    count_sql = f"SELECT count(*) FROM ({tree.sql(dialect='duckdb')}) AS q({names}) WHERE {cond}"
+    params = [raw_last[i] for i in info["order_cols"]]
+    size = con.execute(count_sql, params).fetchone()[0]
+    if size > MAX_TIE_ROWS:  # a huge tie group would sit in Python memory (the DuckDB cap does not cover it): no tie rows means the strict check
+        return None
+    got = con.execute(f"SELECT * FROM ({tree.sql(dialect='duckdb')}) AS q({names}) WHERE {cond}", params).fetchall()
+    sc = scales if scales is not None else [0] * n
+    return [[_canon(out_fields[i][1], record[i], sc[i]) for i in range(n)] for record in got]
 
 
 def _table_for_suffix(model: SchemaModel, suffix: str) -> str:

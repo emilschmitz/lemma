@@ -8,7 +8,8 @@
 set -euo pipefail
 MEM_MAX="${HEAVY_MEM_MAX:-5G}"
 MIN_AVAIL_MB="${HEAVY_MIN_AVAIL_MB:-4000}"
-exec 8>/tmp/lemma_timing.lock
+# HEAVY_LOCK overrides the lock file (tests use their own so they never queue behind a real run)
+exec 8>"${HEAVY_LOCK:-/tmp/lemma_timing.lock}"
 flock 8
 while :; do
   avail=$(awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo)
