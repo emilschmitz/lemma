@@ -177,3 +177,48 @@ def test_the_hash_based_hard_fixtures_pass_the_lint_at_real_sec_sizes_and_a_dens
     body = extract_agent_edit((_FIXTURES / "hard" / "dict_join3_group_topk.rs").read_text())
     dense = body + "\n    let a: usize = s.name__dict.len();\n    let b: usize = n.tag__dict.len();\n    let grid: Vec<u64> = vec![0u64; a * b];\n"
     assert dense_budget.body_violation(dense, THREE, real)
+
+
+# Sonnet's published-Q5/Q6 retries (2026-10-05): 7 of 11 `run_runquery` calls were rejected by this lint with NO product of dictionaries in the
+# flagged statement (a dereference, a packed key with constant multipliers, a `while` header), so the agent contorted a body to dodge it.
+_HEAD = "    let m1: usize = s.name__dict.len();\n    let m2: usize = n.tag__dict.len();\n"
+
+
+@pytest.mark.parametrize(
+    "stmt",
+    [
+        "let fc = Some(&m1);\n    match fc { Some(v) => { let vv: usize = *v; } None => {} }",
+        "let ka: u64 = 3;\n    let kt: u64 = m2 as u64;\n    let kv: u64 = 1;\n    let key: i128 = ka as i128 * 36893488147419103232i128 + kt as i128 * 8589934592i128 + kv as i128;",
+        "let key: i128 = (m1 as i128) * 36893488147419103232i128 + (m2 as i128) * 8589934592i128;",
+        "let mut j: usize = m2;\n    while j > 0 invariant j <= p.n, nl_t == n.tag__dict@.len() { j -= 1; }",
+        "let got = map.get(&m1);\n    match got { Some(gi) => { let g: usize = *gi; let h = *gi + m2; } None => {} }",
+        "let total: u64 = (*n_arc).n as u64 * 2;",
+    ],
+)
+def test_derefs_and_packed_keys_with_constant_multipliers_are_not_a_product_of_dictionaries(stmt: str) -> None:
+    assert dense_budget.body_violation(_HEAD + stmt + "\n    res", THREE, REAL) is None, stmt
+
+
+@pytest.mark.parametrize(
+    "stmt",
+    [
+        "match x { Some(v) => { let t: usize = *v; let g = vec![0u64; m1 * m2]; } None => {} }",
+        "let key: i128 = (m1 as i128) * 36893488147419103232i128;\n    let t = m1 * m2 * 2;\n    let g = vec![0u64; t];",
+        "let t = (m1 + 1) * (m2 + 1);\n    let g = vec![0u64; t];",
+        "let t = m1 * 2 * m2;\n    let g = vec![0u64; t];",
+        "let t = s.name__dict.len() * n.tag__dict.len();\n    let g = vec![0u64; t];",
+    ],
+)
+def test_a_real_product_is_still_found_next_to_derefs_and_constants(stmt: str) -> None:
+    assert dense_budget.body_violation(_HEAD + stmt + "\n    res", THREE, REAL), stmt
+
+
+@pytest.mark.parametrize(
+    "stmt",
+    [
+        "let mut t = m1;\n    t *= m2;\n    let g = vec![0u64; t];",
+        "let t = m1 /* slots */ * m2;\n    let g = vec![0u64; t];",
+    ],
+)
+def test_compound_assignment_and_block_comments_do_not_hide_a_product(stmt: str) -> None:
+    assert dense_budget.body_violation(_HEAD + stmt + "\n    res", THREE, REAL), stmt

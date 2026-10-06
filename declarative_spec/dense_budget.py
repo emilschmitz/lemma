@@ -153,16 +153,19 @@ def body_violation(body: str, spec_rs: str, dict_sizes: dict[str, int] | None) -
     # (`*`, `checked_mul`, ...) two or more different dictionaries' lengths is a slot count; over the budget it is rejected wherever it
     # sits (an allocation, an intermediate `let`, a cast, `from_elem`, `resize_with`, a push-loop bound).
     taint: dict[str, set[str]] = {}
-    for stmt in body.split(";"):
+    for stmt in _strip_comments(body).split(";"):
         cols = set(re.findall(r"\b\w+\.(\w+)__dict\.len\(\)", stmt))
         for ident in re.findall(r"\b[A-Za-z_]\w*\b", stmt):
             cols |= taint.get(ident, set())
         lets = re.findall(r"\blet\s+(?:mut\s+)?(\w+)", stmt)  # a block's last expression has no `;`: the next `let` shares its chunk
         if lets and cols:
             taint[lets[-1]] = cols
-        if len(cols) >= 2 and re.search(r"\*|\b(?:checked|saturating|wrapping|overflowing)_mul\b|\bpow\b", stmt):
+        if len(cols) < 2:
+            continue
+        product_cols = _multiplied_dictionaries(stmt, taint, cols)
+        if len(product_cols) >= 2:
             product = 1
-            for col in sorted(cols):
+            for col in sorted(product_cols):
                 size = size_of(col)
                 if size is not None:  # an unknown dictionary only makes the true product larger: judge by the known ones
                     product *= size
@@ -212,3 +215,108 @@ def _alloc_sizes(body: str) -> list[str]:
     out += [a[0] for a in _call_args(body, r"\bwith_capacity\s*\(") if a]
     out += [a[0] for a in _call_args(body, r"\.resize\s*\(") if a]
     return out
+
+
+def _strip_comments(body: str) -> str:
+    return re.sub(r"//[^\n]*", "", re.sub(r"/\*.*?\*/", " ", body, flags=re.S))
+
+
+_TOKEN = re.compile(r"[A-Za-z_]\w*|\d[\w.]*|\*=|->|=>|::|[-+*/%&|^!<>=(){}\[\],.:?]")
+_NOT_A_VALUE = {"as", "return", "in", "if", "else", "while", "match", "let", "mut", "ref", "move", "break", "continue", "for"}
+
+
+def _is_name(tok: str) -> bool:
+    return re.fullmatch(r"[A-Za-z_]\w*", tok) is not None and tok not in _NOT_A_VALUE
+
+
+def _close_of(toks: list[str], i: int) -> int:
+    depth = 0
+    for k in range(i, len(toks)):
+        if toks[k] in ("(", "[", "{"):
+            depth += 1
+        elif toks[k] in (")", "]", "}"):
+            depth -= 1
+            if depth == 0:
+                return k
+    return len(toks) - 1
+
+
+def _open_of(toks: list[str], j: int) -> int:
+    depth = 0
+    for k in range(j, -1, -1):
+        if toks[k] in (")", "]", "}"):
+            depth += 1
+        elif toks[k] in ("(", "[", "{"):
+            depth -= 1
+            if depth == 0:
+                return k
+    return 0
+
+
+def _operand_end(toks: list[str], i: int) -> int:
+    """Last token of the operand starting at ``toks[i]``: unary prefixes, a name, number or group, then `.f`, `::f`, calls, indexing, casts."""
+    while i < len(toks) - 1 and toks[i] in ("*", "&", "-", "!", "mut"):
+        i += 1
+    end = _close_of(toks, i) if toks[i] in ("(", "[", "{") else i
+    while end + 1 < len(toks):
+        nxt = toks[end + 1]
+        if nxt in (".", "::") and end + 2 < len(toks):
+            end += 2
+        elif nxt in ("(", "["):
+            end = _close_of(toks, end + 1)
+        elif nxt == "as" and end + 2 < len(toks):
+            end += 2
+        else:
+            break
+    return end
+
+
+def _operand_start(toks: list[str], j: int) -> int:
+    """First token of the operand whose last token is ``toks[j]``."""
+    i = j
+    while True:
+        if toks[i] in (")", "]"):
+            i = _open_of(toks, i)
+            if i > 0 and _is_name(toks[i - 1]):
+                i -= 1  # a call `f(..)` or an index `v[..]`
+        if i >= 2 and toks[i - 1] in (".", "::"):
+            i -= 2
+            continue
+        if i >= 2 and toks[i - 1] == "as":
+            i -= 2
+            continue
+        return i
+
+
+def _multiplied_dictionaries(stmt: str, taint: dict[str, set[str]], all_cols: set[str]) -> set[str]:
+    """Dictionaries whose lengths (or names derived from them) are operands of ONE product term (`a * b * c`) in ``stmt``.
+
+    A binary `*` needs a value before it; a `*` that starts an operand (`*v`, `**n_arc`, `(*x)`) is a dereference, not a product. A literal
+    operand carries no dictionary, so packing codes with constant multipliers (`ka * 2^64 + kt * 2^32 + kv`) is not a product of dictionaries:
+    only operands derived from different dictionary lengths multiply into a slot count. `checked_mul` / `saturating_mul` /
+    `wrapping_mul` / `overflowing_mul` / `pow` calls count every dictionary in the statement (the receiver and argument are not parsed)."""
+    toks = _TOKEN.findall(stmt)
+
+    def cols_of(lo: int, hi: int) -> set[str]:
+        text = " ".join(toks[lo : hi + 1])
+        out = set(re.findall(r"\b\w+ \. (\w+)__dict \. len \( \)", text))
+        for ident in re.findall(r"\b[A-Za-z_]\w*\b", text):
+            out |= taint.get(ident, set())
+        return out
+
+    term: dict[int, set[str]] = {}  # last token of a product term so far -> the dictionaries in it
+    found: set[str] = set()
+    for k, tok in enumerate(toks):
+        if tok not in ("*", "*=") or k == 0 or k + 1 >= len(toks):
+            continue
+        prev = toks[k - 1]
+        if not (prev in (")", "]") or re.fullmatch(r"[\w]+", prev) and prev not in _NOT_A_VALUE):
+            continue  # a dereference or a borrow, not a product
+        right_end = _operand_end(toks, k + 1)
+        both = cols_of(_operand_start(toks, k - 1), k - 1) | term.get(k - 1, set()) | cols_of(k + 1, right_end)
+        term[right_end] = both
+        if len(both) >= 2:
+            found |= both
+    if re.search(r"\b(?:checked|saturating|wrapping|overflowing)_mul\b|\bpow\b", stmt):
+        found |= all_cols
+    return found
