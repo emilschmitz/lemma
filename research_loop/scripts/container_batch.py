@@ -8,9 +8,11 @@ database (LEMMA_DUCKDB_PATH), string encoding and so on. Prints the table (``con
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -29,6 +31,30 @@ def command(model: str, sql_file: Path) -> list[str]:
     ]
 
 
+class LoginRefreshFailed(RuntimeError):
+    """The host-side `claude -p` call did not succeed: the container would run with an expired or missing login."""
+
+
+def refresh_login() -> None:
+    """Refresh the login the container mounts, by one tiny `claude -p` call on the HOST (outside the sandbox, from a neutral cwd).
+
+    The OAuth token expires (a 401 inside the sandbox cannot refresh: the allowlist excludes platform.claude.com). A failure stops the batch;
+    there is no other credential path and no credential file is read or printed here."""
+    env = {k: v for k, v in os.environ.items() if k not in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")}
+    try:
+        done = subprocess.run(
+            ["claude", "-p", "reply with the single word ok", "--model", "claude-haiku-4-5-20251001", "--max-turns", "1"],
+            cwd="/tmp", env=env, capture_output=True, text=True, timeout=90, check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise LoginRefreshFailed("login refresh timed out after 90 s: log in with `claude` in your terminal, then restart the batch") from exc
+    if done.returncode != 0 or not done.stdout.strip():
+        raise LoginRefreshFailed(
+            f"login refresh failed (exit {done.returncode}, {len(done.stdout.strip())} chars of output; stderr: {done.stderr.strip()[:200]!r}): "
+            "log in with `claude` in your terminal, then restart the batch"
+        )
+
+
 def main(argv: list[str]) -> int:
     OUT.mkdir(parents=True, exist_ok=True)
     logs: list[str] = []
@@ -37,6 +63,12 @@ def main(argv: list[str]) -> int:
         model = MODELS.get(short, short)
         sql_file = (OUT / name) if not Path(name).is_absolute() else Path(name)
         log = OUT / f"{short}_{sql_file.stem}.log"
+        try:
+            refresh_login()
+        except LoginRefreshFailed as exc:
+            print(f"STOPPED before {short}:{sql_file.name}: {exc}", file=sys.stderr, flush=True)
+            return 2
+        (OUT / f"{short}_{sql_file.stem}.refresh.json").write_text(json.dumps({"refreshed": True, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}))
         with log.open("w") as fh:
             subprocess.run(command(model, sql_file), cwd=ROOT, stdout=fh, stderr=subprocess.STDOUT, check=False)
         logs.append(str(log))
