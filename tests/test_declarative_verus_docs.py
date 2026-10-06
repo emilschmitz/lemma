@@ -113,3 +113,37 @@ def test_a_broadcast_lemma_without_value_arguments_is_marked_not_callable(tmp_pa
     assert "NOT callable" not in md.split("## lemma_insert_len")[1].split("##")[0]  # a broadcast lemma WITH arguments is called normally
     assert "NOT callable" not in md.split("## lemma_plain_unit")[1].split("##")[0]  # an ordinary zero-argument proof fn is callable
 
+
+
+GROUPED = """
+pub broadcast proof fn lemma_grouped_len<A>()
+    ensures
+        true,
+{
+}
+
+pub broadcast proof fn lemma_axiom_grouped<A: Foo<Bar>>()
+    ensures
+        true,
+{
+}
+
+pub broadcast group group_ok {
+    lemma_grouped_len,
+}
+
+pub broadcast group group_bad {
+    axiom_something,
+    lemma_axiom_grouped,
+}
+"""
+
+
+def test_the_note_names_the_allowed_group_or_says_none_exists_and_forbids_assume(tmp_path: Path) -> None:
+    """Adversary B5/B1: name the group the agent may `broadcast use`; a group with an axiom_* member is not allowed; nested generics still match."""
+    (tmp_path / "fake.rs").write_text(GROUPED)
+    md = lemmas_markdown(tmp_path)
+    ok = md.split("## lemma_grouped_len")[1].split("\n## ")[0]
+    assert "NOT callable by name" in ok and "`broadcast use vstd::fake::group_ok;`" in ok
+    bad = md.split("## lemma_axiom_grouped")[1].split("\n## ")[0]  # nested generics `A: Foo<Bar>` are stripped before the check
+    assert "NOT callable by name" in bad and "no allowed group lists it" in bad and "never `assume` or an axiom" in bad and "group_bad" not in bad
