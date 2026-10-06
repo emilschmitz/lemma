@@ -5,7 +5,7 @@
 Candidates come from the GenDB shuffle generator on the DECIMAL SEC database. A candidate is kept only if
 (1) the declarative emitter accepts it under the container settings (dictionary strings, ``sec_margin_dec``),
 (2) its normalized SQL appears in no corpus of seen queries (earlier draws, published queries, fixture and test texts), and
-(3) its literal-stripped SHAPE is not the shape of any query behind a fixture or example. Picks are spread over shape classes
+(3) its literal-stripped shape is recorded (`shape_seen_before`: same shape as a burned query, i.e. a SIBLING with other literals); never-seen shapes are preferred. Picks are spread over shape classes
 (recipe x tier). The manifest records the seed, the class of each pick and what it was checked against.
 """
 
@@ -43,20 +43,23 @@ def seen_corpus() -> tuple[set[str], set[str], str]:
     from research_loop.scripts.declarative_tiers import normalize, shape_key
     from research_loop.scripts.sqlsmith_trusted_coverage import parse_sql_file
 
+    # BURNED sources only: texts a fixture, test, recipe, menu note, manual workspace or earlier agent run was written from or analyzed.
+    # Raw shuffle pools (holdout/*.sql, generated/**/*.sql, harvest/*.sql) are NOT burned: nobody looked at most of their queries.
     files: list[Path] = []
     for base in (ROOT, MAIN):
-        files += list((base / "harvest").glob("**/*.sql")) if (base / "harvest").is_dir() else []
-        files += list((base / "holdout").glob("**/*.sql"))
-        files += list((base / "tests").glob("**/*.rs")) + list((base / "tests").glob("**/*.py")) + list((base / "tests").glob("**/*.sql"))
+        files += list((base / "tests").glob("**/*.rs")) + list((base / "tests").glob("**/*.py"))
+        files += list((base / "research_loop" / "menus").glob("*.md"))
         gen = base / "research_loop" / "generated"
         if gen.is_dir():
-            files += [p for p in gen.glob("**/query.sql")] + list(gen.glob("**/*.sql"))
-        files += list((base / "research_loop" / "menus").glob("*.md"))
-    # other worktrees keep their own manual workspaces and draws
+            files += list(gen.glob("**/query.sql"))
+        runs = base / "research_loop" / "runs"
+        if runs.is_dir():
+            files += list(runs.glob("*/workspace/context/ro/query.sql"))
+    files += list((MAIN / "holdout" / "gendb_sec_edgar").glob("queries_all.sql"))  # the published GenDB queries
     for wt in (MAIN / ".claude" / "worktrees").glob("*"):
         gen = wt / "research_loop" / "generated"
         if gen.is_dir():
-            files += list(gen.glob("**/query.sql")) + list(gen.glob("**/*.sql"))
+            files += list(gen.glob("**/query.sql"))
     files = [f for f in dict.fromkeys(files) if f.is_file() and "/arena/" not in str(f) and f.stat().st_size < 3_000_000]
     raw: list[str] = []
     queries: set[str] = set()
@@ -83,6 +86,7 @@ def main() -> int:
     ap.add_argument("--seed", type=int, required=True)
     ap.add_argument("--sec", type=int, default=6)
     ap.add_argument("--round", type=int, required=True)
+    ap.add_argument("--reuse-pool", action="store_true", help="select from an existing pool_<seed>.sql of this round (no regeneration)")
     ap.add_argument("--generate", type=int, default=200)
     ap.add_argument("--pool", type=int, default=120)
     ap.add_argument("--out", type=Path, required=True, help="arena root; the round goes to <out>/rounds/rN, the registry to <out>/seen.json")
@@ -99,13 +103,14 @@ def main() -> int:
     from research_loop.scripts.sqlsmith_trusted_coverage import load_sec_schema, parse_sql_file
 
     rdir = a.out / "rounds" / f"r{a.round}"
-    if (rdir / "queries").exists():
+    if (rdir / "queries").exists() and not a.reuse_pool:
         raise SystemExit(f"ERROR: round {a.round} already drawn at {rdir}")
-    rdir.mkdir(parents=True)
+    rdir.mkdir(parents=True, exist_ok=True)
     seen_path = a.out / "seen.json"
     registry = json.loads(seen_path.read_text()) if seen_path.is_file() else {}
     pool_sql = rdir / f"pool_{a.seed}.sql"
-    subprocess.run(
+    if not (a.reuse_pool and pool_sql.is_file()):
+      subprocess.run(
         [sys.executable, str(MAIN / "holdout" / "gendb_sec_edgar" / "generate_queries.py"), "--seed", str(a.seed),
          "--num-generate", str(a.generate), "--num-select", str(a.pool), "--db-path", str(db), "--output", str(pool_sql)],
         check=True,
@@ -120,16 +125,13 @@ def main() -> int:
         if hashlib.sha1(n.encode()).hexdigest() in registry or n in seen_q or n.lower() in raw:
             rejected["query text already seen"] += 1
             continue
-        if shape_key(sql) in seen_shapes:
-            rejected["shape of a seen/fixture query"] += 1
-            continue
         try:
             spec = emit_declarative_spec(sql, schema, catalog)
         except Exception as exc:  # noqa: BLE001 - each refusal kind is counted by its first message line
             rejected["emitter refuses: " + re.sub(r"\d+", "N", f"{type(exc).__name__}: {exc}".splitlines()[0])[:90]] += 1
             continue
         shp = spec_shape(spec)
-        cands.append({"orig_qid": qid, "sql": n, "shape": shape_key(sql), "recipe": shp["recipe"], "tier": tier(sql),
+        cands.append({"orig_qid": qid, "sql": n, "shape": shape_key(sql), "shape_seen": shape_key(sql) in seen_shapes, "recipe": shp["recipe"], "tier": tier(sql),
                       "tables": shp["tables"], "hard": shp["hard"]})
     rng = random.Random(a.seed)
     rng.shuffle(cands)
@@ -137,7 +139,7 @@ def main() -> int:
     classes: Counter = Counter()
     used_shapes: set[str] = set()
     while len(picked) < a.sec and cands:
-        cands.sort(key=lambda c: (classes[(c["recipe"], c["tier"])], c["shape"] in used_shapes))
+        cands.sort(key=lambda c: (c["shape_seen"], classes[(c["recipe"], c["tier"])], c["shape"] in used_shapes))
         c = cands.pop(0)
         picked.append(c)
         classes[(c["recipe"], c["tier"])] += 1
@@ -153,7 +155,7 @@ def main() -> int:
         (qdir / f"{name}.sql").write_text(c["sql"] + "\n")
         held = is_heldout(c["shape"])
         manifest["queries"].append({"id": f"r{a.round}_{name}", "kind": "sec", "source": f"gendb seed {a.seed} {c['orig_qid']}", "recipe": c["recipe"],
-                                    "tier": c["tier"], "tables": c["tables"], "hard_features": c["hard"], "heldout_shape": held, "sql": c["sql"]})
+                                    "tier": c["tier"], "tables": c["tables"], "hard_features": c["hard"], "heldout_shape": held, "shape_seen_before": c["shape_seen"], "sql": c["sql"]})
         registry[hashlib.sha1(c["sql"].encode()).hexdigest()] = {"sql": c["sql"], "round": a.round, "id": f"r{a.round}_{name}", "heldout_shape": held,
                                                                "looked_at_by": [], "burned": False, "shape": c["shape"]}
     (rdir / "manifest.json").write_text(json.dumps(manifest, indent=1))
