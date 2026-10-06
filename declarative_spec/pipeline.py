@@ -243,6 +243,7 @@ def _apply_speed_bar(metrics: dict, speed_bar: dict | None, *, parallel_hint: bo
             list(speed_bar["kinds"]),
             speed_bar.get("order_cols"),
             bool(speed_bar.get("limited")),
+            speed_bar.get("tie_rows"),
         )
     else:
         from declarative_spec.bench import rows_from_stdout

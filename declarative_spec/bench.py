@@ -55,11 +55,19 @@ def order_info(sql: str) -> dict:
             idx = int(key.name) - 1
         else:
             text = " ".join(key.sql().split()).lower()
-            idx = texts.index(text) if text in texts else (aliases.index(key.name.lower()) if isinstance(key, exp.Column) and not key.table and key.name.lower() in aliases else -1)
+            if isinstance(key, exp.Column) and not key.table and key.name.lower() in aliases:
+                idx = aliases.index(key.name.lower())  # an output alias wins over an underlying column of the same name
+            else:
+                idx = texts.index(text) if text in texts else -1
         if not 0 <= idx < len(outs):
             return {"order_cols": None, "limited": True, "limit": limit_n}
         cols.append(idx)
     return {"order_cols": cols, "limited": True, "limit": limit_n}
+
+
+def cut_applies(info: dict, n_rows: int) -> bool:
+    """A tie group is only cut when the result is FULL: with fewer rows than the LIMIT nothing was cut and the strict check applies."""
+    return bool(info["limited"] and info.get("limit") == n_rows)
 
 
 def rows_match_error(
@@ -68,6 +76,7 @@ def rows_match_error(
     kinds: list[str],
     order_cols: list[int] | None = None,
     limited: bool = False,
+    tie_rows: list | None = None,
 ) -> str | None:
     """None when ``got`` matches ``expect``. A float matches within ``float_tolerance`` (the only epsilon).
 
@@ -93,7 +102,7 @@ def rows_match_error(
     right = sorted(expected, key=lambda row: _row_key(row, kinds))
     if _rows_equal(left, right, kinds):
         return None
-    if limited and order_cols and _equal_up_to_the_cut_tie_group(decoded, expected, kinds, order_cols):
+    if limited and order_cols and tie_rows is not None and _equal_up_to_the_cut_tie_group(decoded, expected, kinds, order_cols, tie_rows):
         return None
     return (
         "proved but result rows differ from the loaded table "
@@ -101,12 +110,14 @@ def rows_match_error(
     )
 
 
-def _equal_up_to_the_cut_tie_group(got: list[list[object]], expect: list[list[object]], kinds: list[str], order_cols: list[int]) -> bool:
+def _equal_up_to_the_cut_tie_group(
+    got: list[list[object]], expect: list[list[object]], kinds: list[str], order_cols: list[int], tie_rows: list
+) -> bool:
     """ORDER BY keys that tie let DuckDB and the proved binary keep different rows at a LIMIT cut; both answers are valid SQL.
 
-    Accepted when the ORDER BY key columns agree position by position, and every key group except the LAST (the one the cut falls in) holds the
-    same rows. The last group's members are not compared with DuckDB: the proved spec says each kept row is not after any omitted one, which is
-    the proof's job, and the reference output does not contain the omitted tied rows to compare with."""
+    Accepted when (1) the ORDER BY key columns agree position by position, (2) every key group except the LAST (the one the cut falls in) holds
+    the same rows, and (3) the rows of the last group are members of the FULL tie group: ``tie_rows`` is every row DuckDB produces for the query
+    without its LIMIT whose ORDER BY keys equal the last key (computed at prepare time). A member can be used once per row kept."""
     def key(row: list[object]) -> list[object]:
         return [row[i] for i in order_cols]
 
@@ -120,7 +131,17 @@ def _equal_up_to_the_cut_tie_group(got: list[list[object]], expect: list[list[ob
         start -= 1
     head_got = sorted(got[:start], key=lambda row: _row_key(row, kinds))
     head_exp = sorted(expect[:start], key=lambda row: _row_key(row, kinds))
-    return _rows_equal(head_got, head_exp, kinds)
+    if not _rows_equal(head_got, head_exp, kinds):
+        return False
+    pool = [list(row) for row in tie_rows]
+    for row in got[start:]:
+        for i, cand in enumerate(pool):
+            if _rows_equal([row], [cand], kinds):
+                del pool[i]
+                break
+        else:
+            return False
+    return True
 
 
 REL_TOLERANCE = 1e-9

@@ -96,6 +96,7 @@ def write_query_measure(
         scales = [int(x) for x in scales_match.group(1).split(",")] if scales_match else None
         duck_threads = int(con.execute("SELECT current_setting('threads')").fetchone()[0])
         duck_us, rows, kinds = _time_query(con, sql, out_fields, scales)
+        tie_rows = _tie_group_rows(con, sql, rows, out_fields, scales)
         con.execute("SET threads=1")
         duck1_us = _median_us(con, sql)
     except duckdb.Error as exc:
@@ -114,6 +115,7 @@ def write_query_measure(
         "kinds": kinds,
         "table_rows": table_rows,
         "dict_sizes": dict_sizes,
+        "tie_rows": tie_rows,
     }
     (dest / "expect.json").write_text(json.dumps(expect) + "\n", encoding="utf-8")
     return {
@@ -125,7 +127,32 @@ def write_query_measure(
         "kinds": kinds,
         "table_rows": table_rows,
         "dict_sizes": dict_sizes,
+        "tie_rows": tie_rows,
     }
+
+
+def _tie_group_rows(con, sql: str, rows: list, out_fields: list[tuple[str, str]], scales: list[int] | None) -> list | None:
+    """Every row of ``sql`` WITHOUT its LIMIT whose ORDER BY keys equal those of the last kept row; None when the cut cannot fall in a tie group.
+
+    Only for ``ORDER BY <output columns> LIMIT n`` with exactly n rows kept (see ``declarative_spec.bench.order_info``). The row check uses it to accept
+    any valid choice among tied rows at the cut, and only those."""
+    import sqlglot
+
+    from declarative_spec.bench import order_info
+
+    info = order_info(sql)
+    if not (info["limited"] and info["order_cols"] and info.get("limit") == len(rows)) or all(not f for f, _t in out_fields):
+        return None
+    tree = sqlglot.parse_one(sql)
+    tree.set("order", None)
+    tree.set("limit", None)
+    raw_last = con.execute(sql).fetchall()[-1]
+    n = len(out_fields)
+    names = ", ".join(f"c{i}" for i in range(n))
+    cond = " AND ".join(f"c{i} IS NOT DISTINCT FROM ?" for i in info["order_cols"])
+    got = con.execute(f"SELECT * FROM ({tree.sql(dialect='duckdb')}) AS q({names}) WHERE {cond}", [raw_last[i] for i in info["order_cols"]]).fetchall()
+    sc = scales if scales is not None else [0] * n
+    return [[_canon(out_fields[i][1], record[i], sc[i]) for i in range(n)] for record in got]
 
 
 def _table_for_suffix(model: SchemaModel, suffix: str) -> str:
