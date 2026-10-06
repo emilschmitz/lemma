@@ -61,14 +61,3 @@ def test_desc_multi_key_ties_only_in_the_last_group_and_group_size_is_pinned() -
     assert tie is not None and tie["k"] == 2 and len(tie["pool"]) == 3 and tie["key_cols"] == [1, 0]
     assert rows_match_error([[_hex("z"), "9"], [_hex("y"), "3"], [_hex("y"), "3"]], rows, KINDS, tie) is None
     assert rows_match_error([[_hex("z"), "9"], [_hex("y"), "3"], [_hex("x"), "2"]], rows, KINDS, tie)
-
-
-def test_timing_connection_has_memory_limit_threads_and_temp_dir(tmp_path) -> None:
-    from research_loop.decl_query_measure import DUCK_MEMORY_LIMIT, configure_timing_connection
-
-    con = duckdb.connect(":memory:")
-    configure_timing_connection(con, tmp_path / "tmp")
-    assert con.execute("SELECT current_setting('threads')").fetchone()[0] == 8
-    assert con.execute("SELECT current_setting('memory_limit')").fetchone()[0].startswith(("2.7", "3.0"))
-    assert str(tmp_path) in con.execute("SELECT current_setting('temp_directory')").fetchone()[0]
-    assert (tmp_path / "tmp").is_dir()

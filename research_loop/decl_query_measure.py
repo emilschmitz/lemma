@@ -30,19 +30,6 @@ _OUT_SCALES = re.compile(r"^// OUT_SCALES: ([0-9,]+)$", re.MULTILINE)
 _EPOCH = dt.date(1970, 1, 1)
 
 
-DUCK_MEMORY_LIMIT = "3GB"
-DUCK_THREADS = 8
-
-
-def configure_timing_connection(con: duckdb.DuckDBPyConnection, temp_dir: Path) -> None:
-    """The settings every timed DuckDB connection runs under: a memory limit below the heavy-job cap (DuckDB's default is ~80% of RAM and a large
-    scan would be cgroup-killed), 8 threads, and spill files under the run directory. They are the reference's settings in every result row."""
-    temp_dir.mkdir(parents=True, exist_ok=True)
-    con.execute(f"PRAGMA memory_limit='{DUCK_MEMORY_LIMIT}'")
-    con.execute(f"PRAGMA threads={DUCK_THREADS}")
-    con.execute(f"PRAGMA temp_directory='{temp_dir}'")
-
-
 def write_query_measure(
     *,
     sql: str,
@@ -96,7 +83,6 @@ def write_query_measure(
     except duckdb.Error as exc:
         raise ValueError(str(exc)) from exc
     try:
-        configure_timing_connection(con, dest / "duck_tmp")
         for suffix, plan in plans.items():
             path = dest / f"cols_{suffix}.bin"
             part = path.with_suffix(".bin.part")
@@ -130,7 +116,6 @@ def write_query_measure(
         "table_rows": table_rows,
         "dict_sizes": dict_sizes,
         "tie": tie,
-        "duck_settings": {"memory_limit": DUCK_MEMORY_LIMIT, "threads": DUCK_THREADS},
     }
     (dest / "expect.json").write_text(json.dumps(expect) + "\n", encoding="utf-8")
     return {
@@ -143,7 +128,6 @@ def write_query_measure(
         "table_rows": table_rows,
         "dict_sizes": dict_sizes,
         "tie": tie,
-        "duck_settings": expect["duck_settings"],
     }
 
 

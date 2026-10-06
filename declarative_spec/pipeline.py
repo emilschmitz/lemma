@@ -293,7 +293,6 @@ def _apply_speed_bar(metrics: dict, speed_bar: dict | None, *, parallel_hint: bo
         else duck_us / max(int(metrics["latency_best_us"]), 1),
         "target_cpu": target_cpu(),  # a non-generic binary is tied to a CPU class: every quoted speedup must say so
         "duck_threads": speed_bar.get("duck_threads"),
-        "duck_settings": speed_bar.get("duck_settings"),
         "duck1_us": speed_bar.get("duck1_us"),
         "speedup_1t": None if speed_bar.get("duck1_us") is None else int(speed_bar["duck1_us"]) / max(latency, 1),
     }
