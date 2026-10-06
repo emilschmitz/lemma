@@ -22,4 +22,6 @@ while :; do
   echo "verus_guarded.sh: waiting for memory (available ${avail} MB < ${MIN_AVAIL_MB} MB)" >&2
   sleep 5
 done
-exec systemd-run --user --scope --quiet -p MemoryMax="$MEM_MAX" -p MemorySwapMax=0 "$VERUS" "$@"
+# Our jobs are the first the kernel should kill in a global OOM (raising oom_score_adj needs no privilege; children inherit it).
+echo 800 > /proc/$$/oom_score_adj
+exec systemd-run --user --scope --quiet --slice=lemma.slice -p MemoryMax="$MEM_MAX" -p MemorySwapMax=0 "$VERUS" "$@"
