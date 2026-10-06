@@ -96,7 +96,6 @@ def write_query_measure(
         scales = [int(x) for x in scales_match.group(1).split(",")] if scales_match else None
         duck_threads = int(con.execute("SELECT current_setting('threads')").fetchone()[0])
         duck_us, rows, kinds = _time_query(con, sql, out_fields, scales)
-        tie = _tie_group(con, sql, rows, out_fields, scales, kinds)
         con.execute("SET threads=1")
         duck1_us = _median_us(con, sql)
     except duckdb.Error as exc:
@@ -115,7 +114,6 @@ def write_query_measure(
         "kinds": kinds,
         "table_rows": table_rows,
         "dict_sizes": dict_sizes,
-        "tie": tie,
     }
     (dest / "expect.json").write_text(json.dumps(expect) + "\n", encoding="utf-8")
     return {
@@ -127,7 +125,6 @@ def write_query_measure(
         "kinds": kinds,
         "table_rows": table_rows,
         "dict_sizes": dict_sizes,
-        "tie": tie,
     }
 
 
@@ -508,78 +505,6 @@ def _time_query(
     for record in result:
         rows.append([_canon(out_fields[i][1], record[indexes[i]], scales[i]) for i in range(len(out_fields))])
     return int(statistics.median(samples)), rows, kinds
-
-
-def _tie_group(
-    con: duckdb.DuckDBPyConnection,
-    sql: str,
-    rows: list[list[object]],
-    out_fields: list[tuple[str, str]],
-    scales: list[int] | None,
-    kinds: list[str] | None,
-) -> dict | None:
-    """The rows DuckDB may legally return at the cut of ``ORDER BY ... LIMIT n`` when the sort key ties across it.
-
-    SQL leaves the choice among rows with equal sort keys free, so the expected rows are only determined outside the final tie group. Returns
-    ``{"key_cols": [...], "k": rows of the result in the group, "pool": every row of the full result in the group}``, or None when the query has
-    no LIMIT that cuts, an ORDER BY term that is not a plain output column, a float key, or no tie across the cut (the check then stays exact).
-    """
-    from sqlglot import exp
-
-    if kinds is None or not rows or "float" in kinds:  # a float anywhere in the row keeps the exact check (its tolerance is not a set membership)
-        return None
-    import sqlglot
-
-    tree = sqlglot.parse_one(sql, read="duckdb")
-    limit, order = tree.args.get("limit"), tree.args.get("order")
-    if not isinstance(tree, exp.Select) or limit is None or order is None or tree.args.get("offset") is not None:
-        return None
-    if not isinstance(limit.expression, exp.Literal) or int(limit.expression.this) != len(rows):
-        return None
-    if len(tree.expressions) != len(out_fields):
-        return None
-    key_cols: list[int] = []
-    for term in order.expressions:
-        inner = term.this if isinstance(term, exp.Ordered) else term
-        matches = []
-        for i, proj in enumerate(tree.expressions):
-            base = proj.this if isinstance(proj, exp.Alias) else proj
-            if not isinstance(inner, exp.Column):
-                if base == inner:
-                    matches.append(i)
-            elif inner.table:  # qualified: only a projected column of that very table (never an alias, which a qualified name does not see)
-                if isinstance(base, exp.Column) and base.name == inner.name and (base.table, base.db) == (inner.table, inner.db):
-                    matches.append(i)
-            elif proj.alias_or_name == inner.name:
-                matches.append(i)
-        if len(matches) != 1:
-            return None
-        key_cols.append(matches[0])
-    cut = [rows[-1][i] for i in key_cols]
-    k = sum(1 for r in rows if [r[i] for i in key_cols] == cut)
-    raw_last = con.execute(sql).fetchall()[-1]
-    inner_q = tree.copy()
-    inner_q.set("limit", None)
-    inner_q.set("order", None)
-    names = ", ".join(f"c{i}" for i in range(len(out_fields)))
-    where = " AND ".join(f"c{i} IS NOT DISTINCT FROM ?" for i in key_cols)
-    base_sql = f"FROM ({inner_q.sql(dialect='duckdb')}) AS q({names}) WHERE {where}"
-    params = [raw_last[i] for i in key_cols]
-    pool_size = con.execute(f"SELECT count(*) {base_sql}", params).fetchone()[0]
-    if pool_size <= k:
-        return None
-    if pool_size > TIE_POOL_MAX:
-        raise ValueError(f"{pool_size} rows tie with the cut key of an ORDER BY ... LIMIT (more than {TIE_POOL_MAX}); the choice among them is free, so the row check cannot be written")
-    if scales is None:
-        scales = [0] * len(out_fields)
-    pool = [
-        [_canon(out_fields[i][1], record[i], scales[i]) for i in range(len(out_fields))]
-        for record in con.execute(f"SELECT * {base_sql}", params).fetchall()
-    ]
-    return {"key_cols": key_cols, "k": k, "pool": pool}
-
-
-TIE_POOL_MAX = 200_000
 
 
 def _median_us(con: duckdb.DuckDBPyConnection, sql: str) -> int:

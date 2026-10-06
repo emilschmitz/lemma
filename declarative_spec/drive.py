@@ -49,7 +49,6 @@ def _maybe_large_table(
             "rows": prepared["rows"],
             "table_rows": prepared["table_rows"],
             "dict_sizes": prepared["dict_sizes"],
-            "tie": prepared.get("tie"),
         }
         if prepared["kinds"] is not None:  # OutRow result; a map result prints `ROW key value`
             bar["kinds"] = prepared["kinds"]

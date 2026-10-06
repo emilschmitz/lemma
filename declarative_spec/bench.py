@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import math
-from collections import Counter
 from pathlib import Path
 
 
@@ -34,7 +33,6 @@ def rows_match_error(
     got: list[list[str]],
     expect: list,
     kinds: list[str],
-    tie: dict | None = None,
 ) -> str | None:
     """None when ``got`` matches ``expect``. A float matches within ``float_tolerance`` (the only epsilon).
 
@@ -49,8 +47,6 @@ def rows_match_error(
         except ValueError as exc:
             return f"proved but a result field did not parse ({exc})"
     expected = [list(row) for row in expect]
-    if tie is not None and len(decoded) == len(expected):
-        return _tie_error(decoded, expected, kinds, tie)
     if len(decoded) != len(expected):
         return (
             "proved but result rows differ from the loaded table "
@@ -66,33 +62,6 @@ def rows_match_error(
         "proved but result rows differ from the loaded table "
         f"(got {len(decoded)} rows, expected {len(expected)}; float tolerance relative {REL_TOLERANCE:g})"
     )
-
-
-def _tie_error(decoded: list[list[object]], expected: list[list[object]], kinds: list[str], tie: dict) -> str | None:
-    """ORDER BY ... LIMIT with a sort-key tie across the cut: rows outside the final tie group must equal DuckDB's; the group's rows may be any
-    ``k`` rows of the full tie group (``tie['pool']``), because SQL leaves that choice open."""
-    cols = list(tie["key_cols"])
-    cut = [expected[-1][i] for i in cols]
-
-    def split(rows: list[list[object]]) -> tuple[list[list[object]], list[list[object]]]:
-        inside = [r for r in rows if [r[i] for i in cols] == cut]
-        return [r for r in rows if [r[i] for i in cols] != cut], inside
-
-    base_got, in_got = split(decoded)
-    base_exp, in_exp = split(expected)
-    if len(base_got) != len(base_exp) or len(in_got) != len(in_exp):
-        return f"proved but result rows differ from the loaded table (got {len(decoded)} rows, expected {len(expected)}; tie group at the cut differs in size)"
-    left = sorted(base_got, key=lambda row: _row_key(row, kinds))
-    right = sorted(base_exp, key=lambda row: _row_key(row, kinds))
-    if not _rows_equal(left, right, kinds):
-        return f"proved but result rows differ from the loaded table (got {len(decoded)} rows, expected {len(expected)}; rows before the tie group at the cut differ)"
-    available = Counter(_row_key(list(r), kinds) for r in tie["pool"])
-    for row in in_got:
-        key = _row_key(row, kinds)
-        if available[key] <= 0:
-            return "proved but a row at the ORDER BY cut is not among the rows tied with the cut key (the choice among tied rows is free; the row itself is not)"
-        available[key] -= 1
-    return None
 
 
 REL_TOLERANCE = 1e-9
