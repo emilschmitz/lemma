@@ -59,15 +59,14 @@ def _module_file(module: str) -> Path:
 def broadcast_groups() -> tuple[tuple[str, str], ...]:
     """``(module, group_name)`` for every top-level ``pub broadcast group group_*`` in those modules.
 
-    A group that lists an ``axiom_*`` item switches on a trusted vstd axiom (for example the
-    hash-key model of every integer type), so it is left out. The host broadcasts the one axiom
-    it needs for the group key itself.
+    Every group is allowed, including one that lists an ``axiom_*`` item: those axioms are part of vstd's own trusted core,
+    which every proof here already depends on (thread spawn/join, Vec/String/HashMap specs, float predicates), so switching one on
+    adds no trust beyond vstd. What stays banned is naming an axiom (or anything else) outside a ``broadcast use`` of such a group,
+    any path not starting with ``vstd::``, and any axiom the agent writes (see ``admit``).
     """
     out: dict[tuple[str, str], None] = {}
     for module in vstd_modules():
         for name, members in _GROUP.findall(_module_file(module).read_text()):
-            if re.search(r"\baxiom_", members):
-                continue
             out[(module, name)] = None
     return tuple(out)
 

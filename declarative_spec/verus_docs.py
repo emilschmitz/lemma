@@ -27,20 +27,18 @@ _NO_VALUE_PARAMS = re.compile(r"fn\s+\w+\s*\(\s*\)")  # applied to the signature
 _GROUP_BLOCK = re.compile(r"^pub broadcast group (group_\w+)\s*\{([^}]*)\}", re.M)
 NOT_CALLABLE_NOTE = (
     "NOT callable by name: a broadcast proof fn with no value arguments cannot be called (Verus: 'cannot call a broadcast_forall function with 0 "
-    "arguments directly'). It takes effect only through a `broadcast use` of a group that lists it and that INDEX.md allows"
+    "arguments directly'). It takes effect only through a `broadcast use` of a vstd group that lists it (every group is allowed)"
 )
 NO_GROUP_NOTE = "; no allowed group lists it, so the fact is not available: prove it yourself with an `assert` or a lemma of your own (never `assume` or an axiom)."
 
 
 def _allowed_groups_by_member(vstd: Path) -> dict[str, list[str]]:
-    """Member lemma name -> `vstd::<module>::<group>` for every broadcast group the agent may `broadcast use` (a group that lists an `axiom_*` item is not allowed)."""
+    """Member lemma name -> `vstd::<module>::<group>` for every vstd broadcast group (all are allowed, including groups that list `axiom_*` items: vstd's own trusted core)."""
     out: dict[str, list[str]] = {}
     for path in sorted(vstd.rglob("*.rs")):
         module = "::".join(path.relative_to(vstd).with_suffix("").parts)
         for m in _GROUP_BLOCK.finditer(path.read_text()):
             members = [x.strip() for x in m.group(2).split(",") if x.strip()]
-            if any(x.startswith("axiom_") for x in members):
-                continue
             for member in members:
                 out.setdefault(member, []).append(f"vstd::{module}::{m.group(1)}")
     return out

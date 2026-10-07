@@ -83,7 +83,8 @@ def _lemma_index_all() -> str:
         ("- The host already broadcasts "
         "`vstd::std_specs::hash::axiom_u64_obeys_hash_table_key_model` "
         "(and the i64 and i128 variants) for the group key. "
-        "Do not use it by name. A name containing `axiom` is an assume and is rejected."),
+        "Do not use it by name. A name containing `axiom` is rejected except inside `broadcast use vstd::<module>::group_<name>;`, "
+        "which is allowed for every vstd group."),
         "",
         "- `Seq::len`, `Seq::index`, `Seq::skip`, `Seq::push`.",
         "",

@@ -146,4 +146,12 @@ def test_the_note_names_the_allowed_group_or_says_none_exists_and_forbids_assume
     ok = md.split("## lemma_grouped_len")[1].split("\n## ")[0]
     assert "NOT callable by name" in ok and "`broadcast use vstd::fake::group_ok;`" in ok
     bad = md.split("## lemma_axiom_grouped")[1].split("\n## ")[0]  # nested generics `A: Foo<Bar>` are stripped before the check
-    assert "NOT callable by name" in bad and "no allowed group lists it" in bad and "never `assume` or an axiom" in bad and "group_bad" not in bad
+    assert "NOT callable by name" in bad and "`broadcast use vstd::fake::group_bad;`" in bad  # a group that lists an axiom_* member is allowed too (vstd's own trusted core)
+    assert "no allowed group lists it" not in bad
+
+
+def test_a_member_in_no_group_still_says_so(tmp_path: Path) -> None:
+    (tmp_path / "fake.rs").write_text(GROUPED + "\npub broadcast proof fn lemma_lonely()\n    ensures\n        true,\n{\n}\n")
+    md = lemmas_markdown(tmp_path)
+    lonely = md.split("## lemma_lonely")[1].split("\n## ")[0]
+    assert "no allowed group lists it" in lonely and "never `assume` or an axiom" in lonely
