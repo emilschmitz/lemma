@@ -604,11 +604,13 @@ def _group_close_section(spec_text: str) -> list[str]:
         + "The host proved all of them from a plain description of what your code built, so you do not prove them from loop invariants of the exec code:",
         "- a ghost `gk: Seq<KeyType>` (the spec's key type, see `lemma_group_close_rows`'s signature) of group keys: pairwise distinct; containing the key of every joined row that passes",
         "  WHERE and HAVING; with a ghost `gw: Seq<(int, ..)>` of witnesses: `gw[g]` is one joined row (its index tuple) that passes WHERE and HAVING and has key `gk[g]` (only `lemma_group_close_rows` takes `gw`; push the witness when you push the group);",
+        "- a ghost `used: Seq<bool>` (one flag per group) and `pos: Seq<int>` (for a used group, the result row where it was chosen: `sel[pos[g]] == g`; a plain pointwise fact, no existential)",
+        "  taken by `_present` and `_omitted` only (`used` replaces 'appears in sel');",
         "- a ghost `sel: Seq<int>`, one entry per result row: the index into `gk` of the row's group (distinct), with `res@[r]`'s key fields equal to `gk[sel[r]]` and its aggregate",
-        "  fields equal to the spec's folds for that key (`HAVING` too); `res@.len()` equals the LIMIT unless every group index appears in `sel`;"
-        + (" and for every group index NOT in `sel`, `res@[r]` is not behind that group in the ORDER BY order (the `omitted` hypothesis)." if omitted else ""),
+        "  fields equal to the spec's folds for that key (`HAVING` too); `res@.len()` equals the LIMIT unless every group is `used`;"
+        + (" and for every group that is NOT `used`, `res@[r]` is not behind that group in the ORDER BY order (the `omitted` hypothesis)." if omitted else ""),
         "Then at the end of `run_query` call, with `res@`, `gk` and `sel` (get them with `Ghost`/`Tracked` variables or `Seq` built in `proof { }` blocks):",
-        "`lemma_group_close_rows(P.., res@, gk, sel)`, `lemma_group_close_distinct(..)`, `lemma_group_close_present(..)`" + (", `lemma_group_close_omitted(..)`" if omitted else "") + ";",
+        "`lemma_group_close_rows(P.., res@, gk, gw, sel)`, `lemma_group_close_distinct(.., gk, sel)`, `lemma_group_close_present(.., gk, sel, used, pos)`" + (", `lemma_group_close_omitted(..)`" if omitted else "") + ";",
         "each ensures exactly the matching `run_query` postcondition. Their `requires` are the bullets above, spelled out (read their signatures in the spec). The order (sortedness) and the",
         "`<= LIMIT` clauses are not covered: keep them as loop invariants of the selection loop. A selection loop that repeatedly takes the best unused group (a 'used' flag per group) keeps",
         "the invariants `sel` distinct, every unused group not ahead of any chosen row, chosen rows in order, which are exactly the hypotheses above.",
