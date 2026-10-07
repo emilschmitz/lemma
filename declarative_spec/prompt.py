@@ -589,6 +589,32 @@ def _scale_section(spec_text: str) -> list[str]:
     return lines + [""]
 
 
+def _distinct_section(spec_text: str) -> list[str]:
+    """The host-proved COUNT(DISTINCT) library over a two-table join (``declarative_spec/distinct_lemmas.py``), when the spec has it."""
+    names = sorted(set(re.findall(r"pub open spec fn (\w+)_pset\(", spec_text)))
+    if not names:
+        return []
+    lines = [
+        "",
+        "## COUNT(DISTINCT) over a join: host-proved library (call by bare name; it is in the spec's host region, already proved)",
+        "",
+        "The spec counts a pair of rows `(i0, i1)` for a distinct value only when no LATER pair of the same group has that value. Proving a seen set",
+        "equal to that is the hard part; the host proved it for you, for these aggregates: " + ", ".join(f"`{n}`" for n in names) + ". For each aggregate `N` (`k` is the group key; absent for an ungrouped query; `P` are the table parameters):",
+        "- `N_hit(P, i0, i1, k)` (the fold's hit condition), `N_row_set(P, i0, i1, k)` (values over hit pairs `(i0, j1)`, `j1 >= i1`),",
+        "  `N_pset(P, i0, k)` (values over hit pairs with outer index `< i0`: what an ascending loop has seen), `N_set(P, i0, k)` (outer index `>= i0`). All are `ISet`s.",
+        "- `lemma_N_set_step(P, i0, k)`: `N_pset(i0 + 1, k) =~= N_pset(i0, k).union(N_row_set(i0, 0, k))` (and the suffix form).",
+        "- `lemma_N_row_set_step(P, i0, i1, k)`: `N_row_set(i0, i1)` is `N_row_set(i0, i1 + 1)` plus `V(i0, i1)` exactly when `N_hit(i0, i1, k)` (`V` is `N_val`).",
+        "- `lemma_N_set_end(P, k)`: `N_pset(0, k)` is empty. `lemma_N_value(P, k)`: `N(P, 0, k) == N_pset(P, n, k).len()` and that set is finite.",
+        "  (`lemma_N_is_set_len(P, i0, k)` is the same fact for the suffix set.) `n` is the outer table's row count.",
+        "How to use: loop over the outer table ascending, keep per group key `k` an exec structure whose view equals `N_pset(P, i0, k)`; per outer row add the row's values (the",
+        "`N_row_set(i0, 0, k)` values, built by the inner probe of the join) and call `lemma_N_set_step`; at the end `lemma_N_value` gives the count as `.len()`.",
+        "To keep a COUNT equal to a set's `.len()` use `vstd::iset::lemma_iset_insert_len` (`broadcast use vstd::iset::group_iset_lemmas;` turns the ISet facts on).",
+        "A dictionary column is injective (the `valid_cols` clauses say so), so a distinct code is a distinct value. These are proved by Verus with the spec; you cannot and need not change them.",
+        "",
+    ]
+    return lines
+
+
 def _parallel_section(spec_text: str, shape: dict) -> list[str]:
     """Parallel-scan recipe, shown only when the spec was emitted with the Arc parameters (LEMMA_PARALLEL_VSTD=1)."""
     from declarative_spec import parallel
@@ -926,6 +952,7 @@ def build_declarative_prompt(
     sections += _float_section(spec_text)
     sections += _nullable_section(spec_text)
     sections += _parallel_section(spec_text, shape)
+    sections += _distinct_section(spec_text)
     sections += [""]
     if shape["hard"]:
         sections += [

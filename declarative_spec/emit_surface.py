@@ -615,6 +615,20 @@ def _emit_agg(
         later = _later(row_hit, key_at, value, main, params, key_ty)
         add = f"if {hit} && !({later}) {{ 1int }} else {{ 0int }}"
         _emit_fold(blocks, name, "int", "0int", add, main, params, key_ty, unit_step=True)
+        from declarative_spec.distinct_lemmas import distinct_lemmas
+
+        library = distinct_lemmas(
+            name=name,
+            hit=hit,
+            value=value,
+            vt=_value_ret(agg, main, model),
+            idxs=[s.idx for s in main],
+            params=[(s.param, s.struct) for s in params],
+            bounds=[s.param for s in main],
+            key_ty=key_ty,
+        )
+        if library:  # host-proved, no trust: see declarative_spec/distinct_lemmas.py
+            blocks.append(library)
         return _AggFn(alias, kind, name, "int", False, "fold", "u64")
     if kind == "SUM":
         value = _value_fn(blocks, f"{name}_val", agg, main, params, model, ret)

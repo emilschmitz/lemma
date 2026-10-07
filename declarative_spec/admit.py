@@ -83,7 +83,7 @@ def declarative_edit_from_file(source: str, spec_rs: str | None = None) -> str:
 
 
 # A body or helper may not name these: they are how a proof gets assumed instead of proved.
-_ASSUME_NAME = re.compile(r"(?i)(?:axiom|arbitrary|proof_from_false|unreached|spec_affirm)")
+_ASSUME_NAME = re.compile(r"(?i)(?:axiom|arbitrary|proof_from_false|unreached|spec_affirm|assuming_finite)")
 # The one import an agent may write: switch on a vstd broadcast group by its exact path.
 _BROADCAST_GROUP = re.compile(r"\bbroadcast\s+use\s+(vstd(?:::[A-Za-z0-9_]+)+::group_[A-Za-z0-9_]+)\s*;")
 
