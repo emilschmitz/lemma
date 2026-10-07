@@ -111,3 +111,18 @@ def test_expect_json_carries_the_tie_handling_the_in_session_check_reads(tmp_pat
         assert len(src["tie_rows"]) == 3 and {row[0] for row in src["tie_rows"]} == {saved["rows"][-1][0]}  # the whole last `a` group
     unlimited = write_query_measure(sql="SELECT a, b, COUNT(*) AS c FROM t GROUP BY a, b ORDER BY a", schema=schema, catalog=cat, db_path=db, dest=tmp_path / "d2")
     assert unlimited["limited"] is False and unlimited["tie_rows"] is None
+
+
+def test_a_qualified_order_term_never_maps_to_an_output_alias() -> None:
+    """Adversary case (manual track): `u.x` is the table column, not the projection `y+0 AS x`; mapping it would widen the accepted rows."""
+    assert order_info("SELECT y+0 AS x, n FROM u ORDER BY u.x LIMIT 2")["order_cols"] is None
+    assert order_info("SELECT s.name, t.name FROM s JOIN t ON 1=1 ORDER BY t.name LIMIT 2")["order_cols"] == [1]
+
+
+def test_desc_multi_key_only_the_last_group_may_vary() -> None:
+    expect = [("z", 9, "p"), ("y", 3, "a"), ("y", 3, "b")]
+    ties = [["y", 3, "a"], ["y", 3, "b"], ["y", 3, "c"]]
+    cols = [1, 0]
+    assert rows_match_error(_got([("z", 9, "p"), ("y", 3, "c"), ("y", 3, "a")]), expect, KINDS, cols, True, ties) is None
+    assert rows_match_error(_got([("z", 9, "p"), ("y", 3, "a"), ("x", 2, "a")]), expect, KINDS, cols, True, ties) is not None
+    assert rows_match_error(_got([("z", 9, "WRONG"), ("y", 3, "a"), ("y", 3, "b")]), expect, KINDS, cols, True, ties) is not None

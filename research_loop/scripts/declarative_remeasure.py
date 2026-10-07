@@ -21,7 +21,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 MANUAL = ROOT / "research_loop" / "generated" / "manual"
 RESULTS = ROOT / "research_loop" / "generated" / "decl_results.jsonl"
-KEYS = ("status", "proof_verified", "latency_us", "latency_best_us", "duck_us", "duck1_us", "speedup", "speedup_best", "speedup_1t", "verify_summary")
+KEYS = ("status", "proof_verified", "latency_us", "latency_best_us", "duck_us", "duck1_us", "speedup", "speedup_best", "speedup_1t", "target_cpu", "verify_summary")
 
 
 def _run(args: list[str]) -> subprocess.CompletedProcess[str]:

@@ -564,6 +564,7 @@ _SPEED_KEYS = (
     "speedup_best",
     "speedup_1t",
     "speed_bar_mult",
+    "target_cpu",
     "latency_best_us",
     "verify_summary",
     "official_tables",

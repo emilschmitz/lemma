@@ -184,6 +184,7 @@ def effective_settings(git_sha: str | None, git_dirty: bool | None) -> dict[str,
     return {
         "LEMMA_STRING_ENCODING": (env("LEMMA_STRING_ENCODING") or "").strip() or "plain",
         "LEMMA_NARROW_CELLS": (env("LEMMA_NARROW_CELLS") or "").strip() or "0",
+        "LEMMA_TARGET_CPU": (env("LEMMA_TARGET_CPU") or "").strip() or "x86-64-v3",
         "LEMMA_PARALLEL_VSTD": (env("LEMMA_PARALLEL_VSTD") or "").strip() or "off",
         "LEMMA_ENABLE_PARALLEL": env("LEMMA_ENABLE_PARALLEL") or "0",
         "LEMMA_ASSUMPTION_PACKAGE": (env("LEMMA_ASSUMPTION_PACKAGE") or "").strip() or None,

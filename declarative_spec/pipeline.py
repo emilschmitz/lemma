@@ -92,6 +92,25 @@ def _load_us(stdout: str) -> int:
     return -1 if match is None else int(match.group(1))
 
 
+def target_cpu() -> str:
+    """LEMMA_TARGET_CPU: the rustc ``-C target-cpu`` of the compiled binary. Default ``x86-64-v3`` (AVX2, BMI2, FMA; every x86-64 CPU since 2013-2015).
+
+    ``generic`` adds no flag (baseline x86-64, SSE2 only); ``native`` uses this machine's full ISA and ties the binary to it. ``native`` is NOT the
+    default: on the AMD Zen box it turned on AVX-512 and made a proved TPC-H Q12 body 2.2x SLOWER than ``generic`` while ``x86-64-v3`` made it 1.35x faster.
+    The flag only changes rustc code generation of already verified source; Verus never sees it. Rust does not contract a*b+c into FMA or reassociate
+    floating point on its own, so results do not change.
+
+    RISK: a v3 (or native) binary raises SIGILL on a CPU without AVX2/BMI2/FMA; that looks like a failed run. Set ``generic`` there. Every quoted speedup must
+    say ``target_cpu=x86-64-v3 (AVX2/BMI2/FMA)`` against DuckDB's prebuilt baseline x86-64 binary (with its own runtime dispatch).
+    """
+    return (os.environ.get("LEMMA_TARGET_CPU") or "").strip() or "x86-64-v3"
+
+
+def target_cpu_rustc_args() -> list[str]:
+    cpu = target_cpu()
+    return [] if cpu == "generic" else ["-C", f"target-cpu={cpu}"]
+
+
 def _latency_us(stdout: str) -> int:
     match = re.search(r"QUERY_LATENCY_US:\s*(\d+)", stdout or "")
     if not match:
@@ -133,6 +152,7 @@ def compile_and_run(
                 "opt-level=3",
                 "-C",
                 "codegen-units=1",
+                *target_cpu_rustc_args(),
             ],
             timeout=timeout_sec,
             cwd=directory,
@@ -273,6 +293,7 @@ def _apply_speed_bar(metrics: dict, speed_bar: dict | None, *, parallel_hint: bo
         "speedup_best": None
         if metrics.get("latency_best_us") in (None, -1)
         else duck_us / max(int(metrics["latency_best_us"]), 1),
+        "target_cpu": target_cpu(),  # a non-generic binary is tied to a CPU class: every quoted speedup must say so
         "duck_threads": speed_bar.get("duck_threads"),
         "duck1_us": speed_bar.get("duck1_us"),
         "speedup_1t": None if speed_bar.get("duck1_us") is None else int(speed_bar["duck1_us"]) / max(latency, 1),
