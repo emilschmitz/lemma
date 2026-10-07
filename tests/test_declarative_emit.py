@@ -189,3 +189,17 @@ def test_package_has_no_forbidden_imports_or_names() -> None:
         text = path.read_text().replace('read="duckdb"', "").replace('_PROOFS + "tpch_', "")  # a sqlglot dialect name and fixture file names, not engine dependencies
         for token in forbidden:
             assert token not in text, f"{path.name} contains forbidden {token!r}"
+
+
+def test_fetch_first_is_refused_not_silently_dropped() -> None:
+    import pytest
+
+    from declarative_spec.parse_query import parse_query
+
+    for sql in (
+        "SELECT a FROM t ORDER BY a FETCH FIRST 0 ROWS ONLY",
+        "SELECT a, COUNT(*) AS c FROM t GROUP BY a ORDER BY c DESC FETCH FIRST 5 ROWS ONLY",
+    ):
+        with pytest.raises(DeclarativeUnsupported, match="FETCH"):
+            parse_query(sql)
+    assert parse_query("SELECT a FROM t ORDER BY a LIMIT 5") is not None  # LIMIT still works

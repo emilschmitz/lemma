@@ -43,7 +43,7 @@ decompression, parallel scheduling); we implement only the per-vector fold.** Co
 - ZC-2 / ZC-2s (cold streaming): statement "the aggregate (or scalar function) sees every row exactly once, in some order" for the fixed query template.
   The first adversary review (aggregate mode) found a **silent wrong answer when the SQL adds `DISTINCT`** (DuckDB deduplicates before the callback), plus a liveness
   bug; the same class applies to FILTER, ORDER BY in the aggregate, WHERE, GROUP BY, window frames. Fix: the glue builds the SQL from the template and refuses
-  every modifier (a rows-seen check against `SELECT COUNT(*)` was added for scalar mode). **The revision-3 scalar mode (ZC-2s) was NOT adversary-reviewed.**
+  every modifier (a rows-seen check against `SELECT COUNT(*)` was added for scalar mode). The revision-3 scalar mode (ZC-2s) was reviewed in a second pass (`cold_stream_ADVERSARY_VERDICT_2.md`): SOUND after fixes; scalar mode not switch-on ready until: (1) require a base table (a Parquet-backed view hands over dictionary vectors and the guard catches it only by accident), (2) FETCH handling (a transpiler bug, since fixed on main by refusing FETCH), (3) the SQL refusal blacklist replaced by a sqlglot-tree allowlist and `sql` made required, (6) print target and mode from the generated main. Aggregate mode could be switched on as is.
 - Nothing here was merged to `main` as code.
 
 ## Why shelved

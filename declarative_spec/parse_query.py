@@ -297,6 +297,10 @@ def _check_clause_args(node: exp.Expression) -> None:
                     raise DeclarativeUnsupported(f"GROUP BY {key.upper()}")
     if isinstance(node, exp.Table) and node.args.get("sample") is not None:
         raise DeclarativeUnsupported("TABLESAMPLE")
+    if isinstance(node, exp.Fetch):
+        # FETCH FIRST n ROWS ONLY parses to exp.Fetch, which the emitter never reads: it was silently dropped (the spec was
+        # byte-identical to the one without the clause). Refuse until it is handled like LIMIT.
+        raise DeclarativeUnsupported("FETCH FIRST ... ROWS (use LIMIT)")
     if isinstance(node, exp.Limit):
         value = node.expression
         is_int = isinstance(value, exp.Literal) and not value.is_string and value.this.isdigit()
