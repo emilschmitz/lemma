@@ -47,3 +47,42 @@ query. Compute-bound kernels (the 8-thread i128 sum) hide it.
 **Do not switch it on today.** Use the native C-API loader (copy mode) for the one-shot win over the shipped exporter (3x on INTEGER-width columns, 29x on DECIMAL(38,4), where the
 shipped exporter spends 36 s): it needs no new trusted statement beyond the pin code. Zero-copy is worth enabling only for a single-use query on a wide fixed-width column where the 100 to
 270 ms memcpy and the second resident copy matter and the kernel is compute-bound or parallel, and only after G1, G10 and G11.
+
+
+# Cold stream path (LEMMA_COLD_STREAM=1): the proved fold as a DuckDB aggregate
+
+A second OPTIONAL path (same rules: opt-in, no fallback, loud refusals) that removes the load step instead of shortening it: DuckDB's own parallel scan calls the proved fold once per vector
+(`declarative_spec/cold_stream.py`, `cold_lib.rs`, `tests/fixtures/declarative_proofs/cold_*.rs`, design and numbers in `cold_path_feasibility.md`). Trusted statement ZC-2 (stated there).
+
+| shape | DuckDB in place | cold e2e | ratio |
+|---|---|---|---|
+| `SUM(DECIMAL(38,4)) WHERE` (39.4M rows) | 282 ms | 258 ms | 0.91x |
+| `COUNT(*) WHERE qtrs = 3` (39.4M rows) | 14.4 ms | 20.2 ms | 1.40x |
+| two-column `SUM(DECIMAL(15,2)) WHERE` (TPC-H 6M rows) | 6.3 ms | 9.4 ms | 1.48x |
+
+| # | Criterion | Today | Evidence |
+|---|---|---|---|
+| C1 | Cold e2e within about 1.5x of DuckDB in place on the shapes | **MET** | table above, quiet windows recorded in `pin_work/v2_*.json` (load before, other-process CPU during) |
+| C2 | Adversary verdict SOUND, no open silent-wrong-answer finding | **PENDING** | `cold_stream_ADVERSARY_VERDICT.md` |
+| C3 | Loud refusal of everything outside the shape | **MET** | `tests/test_cold_stream.py`: parallel spec, result shape, strings/dictionaries/validity/floats/two tables, stored type, declared-vs-spec type, missing markers |
+| C4 | Differential against DuckDB | **MET** | `test_cold_fold_equals_duckdb_on_generated_tables` (three shapes, uniform / constant / sorted / extreme / nothing-matches data, sizes 0 to 250,001), delete/update/insert/constant/dictionary storage, aborts on NULL, wrong stored type, cell outside the cap |
+| C5 | New trusted statement small and reviewed | **PENDING review** | ZC-2 (five items); no new `external_body`/`assume` in Verus code (test) |
+| C6 | Order independence proved, not assumed | **MET** | `lemma_sum_by_perm` (multiset equality gives equal sums), mutation tests: dropping the permutation lemma, a wrong predicate, a merge that drops a partial, no cap check all fail to verify |
+| C7 | Works on DuckDB 1.5.x | **PARTIAL** | python-wheel C API (v1.5.4), version asserted; the aggregate C API needs DuckDB 1.3+ (the repo's libduckdb 1.2.2 has none) |
+| C8 | Production link (libduckdb 1.5.x release) | **UNMET** | prototype link only |
+| C9 | Shapes covered | **PARTIAL** | ungrouped SUM/COUNT of per-row terms over fixed-width native columns, no NULL; GROUP BY, MIN/MAX, AVG, joins, strings not built (refused) |
+
+
+## Revision 3 of the cold stream path (2026-10-07): measured with the x86-64-v3 build, scalar mode
+
+The table above was measured on a baseline-SSE2 build (the cold/zero-copy compile helper omitted `LEMMA_TARGET_CPU`, default `x86-64-v3` on main). With the fix and the scalar-function mode (details and trusted statement ZC-2s in `cold_path_feasibility.md`, revision 3):
+
+| shape | DuckDB in place | cold e2e (scalar mode) | ratio |
+|---|---|---|---|
+| `SUM(DECIMAL(38,4)) WHERE` (SEC `num`, 39.4M rows) | 235 ms | 204 ms | 0.87x |
+| `COUNT(*) WHERE qtrs = 3` (SEC `num`, 39.4M rows) | 12.2 ms | 7.9 ms | 0.65x |
+| two-column `SUM(DECIMAL(15,2)) WHERE`, TPC-H SF1 (6.0M rows) | 5.4 ms | 4.7 ms | 0.87x |
+| the same, TPC-H SF10 (60.0M rows) | 34.9 ms | 27.7 ms | 0.79x |
+
+C1 (within 1.5x of in place): **MET, and below 1.0x on every shape** (aggregate mode is 0.91 / 1.16 / 1.18 / 1.11). C2 (adversary): round 1 verdict `cold_stream_ADVERSARY_VERDICT.md` SOUND after fixes (rows-seen check, case-insensitive DESCRIBE, DISTINCT/GROUP BY/OVER/FILTER/JOIN refused: landed);
+round 2 on the scalar mode, the cap-free proofs and the build flags: `cold_stream_ADVERSARY_VERDICT_2.md`. The proofs for the i64 / i32 shapes no longer assume catalog caps (stronger theorem). C8 (production link) is unchanged: UNMET.
