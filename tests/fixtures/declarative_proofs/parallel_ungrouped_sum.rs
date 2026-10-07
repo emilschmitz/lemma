@@ -1,3 +1,4 @@
+// WORKER COUNT: the literal 8 below is the worker count (and 7 = 8 - 1, `n / 8 + 1`, `8 * cs`); the prompt's Hardware section gives the physical core count: change every one consistently if you choose another.
 // Worked example (parallel scan, LEMMA_PARALLEL_VSTD=1): ungrouped SUM under a filter, 8 worker threads over row ranges.
 //   SELECT SUM(line) AS total FROM pre WHERE line > 5
 // The spec's `run_query` also receives `pre_arc: &std::sync::Arc<Cols_pre>` with `requires **pre_arc == *pre` (the host passes the

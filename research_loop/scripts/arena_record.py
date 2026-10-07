@@ -196,6 +196,16 @@ def row_from_run(run_dir: Path, *, query: str, attempt: int, log: Path | None = 
     }
 
 
+def _cpu_model() -> str | None:
+    import subprocess
+
+    try:
+        out = subprocess.run(["lscpu"], capture_output=True, text=True, timeout=10, check=True).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return next((ln.split(":", 1)[1].strip() for ln in out.splitlines() if ln.startswith("Model name")), None)
+
+
 def row_from_manual(ws: Path, *, query: str, attempt: int, started: float, ended: float, end_reason: str, sha: str, baseline_sha: str | None = None, model: str = "claude-sonnet-5-5") -> dict:
     """A manual-harness attempt (``declarative_manual.py``): checks, verified line and timings come from ``<ws>/check_log.jsonl`` (written by each check);
     wall time is ``ended - started`` of the attempt (recorded by ``manual_attempt.py``); the DuckDB settings from ``decl_data/expect.json``.
@@ -251,6 +261,7 @@ def row_from_manual(ws: Path, *, query: str, attempt: int, started: float, ended
         "env": {k: (job.get("env") or {}).get(k) for k in ("LEMMA_STRING_ENCODING", "LEMMA_NARROW_CELLS", "LEMMA_PARALLEL_VSTD", "LEMMA_TARGET_CPU")},
         "database": "sec_edgar_dec.duckdb",
         "duck_settings": expect.get("duck_settings"),
+        "cpu_model": _cpu_model(),
         "counts": True,
         "notes": notes,
     }

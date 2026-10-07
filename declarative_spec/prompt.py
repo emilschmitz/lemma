@@ -516,6 +516,48 @@ _ROW_CAP = re.compile(r"pub const ROW_CAP_(\w+): usize = (\d+);")
 _BIG_TABLE_ROWS = 1_000_000
 
 
+def hardware_section() -> list[str]:
+    """The machine the timed run happens on, read at prompt-build time: raw `lscpu` (plus /sys cache lines if lscpu has none) and plain guidance.
+
+    Not invented: if `lscpu` cannot be run the section says so. Guidance is guidance, not a measurement."""
+    import os
+    import subprocess
+
+    from declarative_spec.pipeline import target_cpu
+
+    try:
+        out = subprocess.run(["lscpu"], capture_output=True, text=True, timeout=10, check=True).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ["## Hardware", "", "hardware info unavailable (`lscpu` could not be run on the host that built this prompt); do not assume core counts or cache sizes.", ""]
+    keep = [ln for ln in out.splitlines() if ln.split(":")[0].strip() in ("Model name", "CPU(s)", "Thread(s) per core", "Core(s) per socket", "Socket(s)", "L1d cache", "L2 cache", "L3 cache", "NUMA node(s)")]
+    if not any(ln.startswith("L1d") for ln in keep):  # some lscpu builds omit the caches
+        base = "/sys/devices/system/cpu/cpu0/cache"
+        for idx in sorted(os.listdir(base)) if os.path.isdir(base) else []:
+            try:
+                level, kind, size = (open(f"{base}/{idx}/{f}").read().strip() for f in ("level", "type", "size"))
+            except OSError:
+                continue
+            keep.append(f"L{level} {kind} cache (cpu0): {size}")
+    mem = next((ln.split()[1] for ln in open("/proc/meminfo") if ln.startswith("MemTotal:")), "unknown")
+    return [
+        "## Hardware (this machine; the timed run and the reference engine both run here)",
+        "",
+        "```",
+        *keep,
+        f"MemTotal: {mem} kB",
+        f"compile target: -C target-cpu={target_cpu()} (the CPU may have more SIMD than this; the binary uses the target only)",
+        "reference engine: DuckDB, threads=8, memory_limit=3GB",
+        "```",
+        "",
+        "Guidance, not measurement: about one worker per PHYSICAL core (cores = Core(s) per socket x Socket(s)) for memory-bound scans, since SMT threads add little;",
+        "give each worker one contiguous row range and its own accumulators (no shared mutable cell between workers: false sharing); the L3 is far smaller than a large column,",
+        "so a big scan is bandwidth-bound and narrower cells and fewer passes help more than arithmetic; keep per-block working sets within L1/L2 (a few thousand elements per chunk);",
+        "write the hot loop branch-free (accumulate `acc + (value & mask)` or `count + (hit as u64)` instead of `if hit { .. }`) so the compiler can vectorize it.",
+        "The worked parallel example uses 8 workers as a literal; replace it by the worker count you choose, consistently everywhere the example uses it.",
+        "",
+    ]
+
+
 def _scale_section(spec_text: str) -> list[str]:
     """The official table sizes (the spec's row caps) and what they mean for a sequential loop versus the all-core bar."""
     caps = {m.group(1): int(m.group(2)) for m in _ROW_CAP.finditer(spec_text)}
@@ -878,6 +920,7 @@ def build_declarative_prompt(
         "",
     ]
     sections += _scale_section(spec_text)
+    sections += hardware_section()
     sections += _recipe_section(shape)
     sections += dense_budget.prompt_section(dense_budget.report(spec_text, dict_sizes)) if "__dict@" in spec_text else []
     sections += _float_section(spec_text)
