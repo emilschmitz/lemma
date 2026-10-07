@@ -65,7 +65,8 @@ def broadcast_groups() -> tuple[tuple[str, str], ...]:
     any path not starting with ``vstd::``, and any axiom the agent writes (see ``admit``).
     """
     out: dict[tuple[str, str], None] = {}
-    for module in vstd_modules():
+    # the infinite-set modules are not glob-imported (name clashes) but their groups may still be switched on by path
+    for module in (*vstd_modules(), *(m for m in EXCLUDED if m != "prelude")):
         for name, members in _GROUP.findall(_module_file(module).read_text()):
             out[(module, name)] = None
     return tuple(out)
