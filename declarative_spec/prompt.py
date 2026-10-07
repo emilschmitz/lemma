@@ -832,6 +832,9 @@ _PROOF_HYGIENE = """\
 - A loop that walks down: snapshot the old index (`let i_old = i; i = i - 1;`) before using the old suffix.
 - Every loop needs `decreases`; keep `valid_cols_<table>(cols)` in every loop invariant (the key and cell bounds
   come from it). Call host lemmas as `proof { lemma_...(); }`. Give a quantifier an explicit `#[trigger]`.
+- A quantified loop invariant whose body mentions the NEXT index loops the solver (Z3 matching loop; the profile shows one quantifier with an astronomically large cost):
+  `forall|q| #![trigger res@[q]] .. res@[q].total >= res@[q + 1].total` instantiates `res@[q + 1]`, which instantiates it again. Use the two-term trigger
+  `#![trigger res@[q], res@[q + 1]]` (the host's own sortedness postcondition is a goal, not a hypothesis, so it is safe).
 - Verus itself checks every `u64`/`i128` add for overflow: prove the bound with an `assert` from the host's
   `ROW_CAP_...` and cell caps (`assert(prev as int + 1 <= ROW_CAP_t)`); no fit lemma is needed.
 - A long proof (many quantified loop invariants plus asserts in one loop) exhausts the rlimit, and Verus then
