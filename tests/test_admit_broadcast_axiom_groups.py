@@ -73,3 +73,10 @@ def test_assume_underscore_and_attribute_smuggling_rejected(snippet: str) -> Non
     assert not admit_helpers(f"proof fn h() {{ {snippet} }}", SPEC).ok
     if snippet.startswith("#"):
         assert not admit_helpers(snippet.replace("fn f()", "proof fn f() ensures false") + "\n", SPEC).ok
+
+
+def test_set_new_assuming_finite_is_refused() -> None:
+    """vstd's deprecated `Set::new_assuming_finite` rests on an `assume(finite)` inside `lemma_set_new_assuming_finite` (a member of group_set_lemmas):
+    the group stays allowed, the function that exploits it by name is not."""
+    assert not admit_declarative_body("let s = Set::<nat>::new_assuming_finite(|x: nat| true);\n let x = 1u64;\n").ok
+    assert not admit_helpers("proof fn f() { let s = Set::<nat>::new_assuming_finite(|x: nat| true); }", SPEC).ok

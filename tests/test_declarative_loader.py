@@ -325,3 +325,21 @@ def test_agent_file_with_host_uses_passes_import_vetting() -> None:
     )
     m2 = run_declarative_metrics(spec_rs=spec, agent_source=sneaky, work_dir=None, timeout_sec=1)
     assert "use: only" in m2["compiler_error"] and "forbidden name: axiom" in m2["compiler_error"]
+
+
+def test_a_declared_distinct_cap_is_a_spec_conjunct_and_a_loader_assert() -> None:
+    """`ColumnAssumption.max_distinct` becomes `dict.len() <= cap` in valid_cols and a loud runtime check in the loader (never a trusted proof item)."""
+    from declarative_spec.assemble import _runtime_checks
+
+    verus_part = (
+        "pub open spec fn valid_cols_t(c: &Cols_t) -> bool {\n"
+        "    &&& c.a@.len() == c.n as int\n"
+        "    &&& c.a__dict@.len() <= 512\n"
+        "}\n"
+    )
+    checks = _runtime_checks(verus_part, "t", [("a", "u16"), ("a__dict", "String")])
+    joined = "\n".join(checks)
+    assert "t_a__dict.len() <= 512" in joined and "catalog distinct cap 512" in joined
+    # an unknown conjunct shape is still refused: a cap cannot be silently dropped
+    with pytest.raises(ValueError):
+        _runtime_checks(verus_part.replace("<= 512", "<= c.n as int + 1"), "t", [("a", "u16"), ("a__dict", "String")])

@@ -45,6 +45,11 @@ DICT_SEC = {
         "SELECT stmt, rfile, COUNT(*) AS cnt, COUNT(DISTINCT adsh) AS num_filings, AVG(line) AS avg_line_num "
         "FROM pre WHERE stmt IS NOT NULL GROUP BY stmt, rfile ORDER BY cnt DESC"
     ),
+    "dict_join_group_count_distinct_topn.rs": (
+        "SELECT s.fy, s.afs, COUNT(DISTINCT s.adsh) AS n_filings, COUNT(DISTINCT s.cik) AS n_companies, SUM(n.value) AS total FROM num n "
+        "JOIN sub s ON n.adsh = s.adsh WHERE n.uom = 'USD' AND s.form = '10-K' AND s.fy IS NOT NULL AND n.value > 0 "
+        "GROUP BY s.fy, s.afs ORDER BY total DESC LIMIT 20"
+    ),
     "dict_having_scalar_subquery.rs": (
         "SELECT s.name, s.cik, SUM(n.value) AS total_value FROM num n JOIN sub s ON n.adsh = s.adsh "
         "WHERE n.uom = 'USD' AND s.fy = 2022 AND n.value IS NOT NULL GROUP BY s.name, s.cik "
@@ -92,6 +97,9 @@ def _verify(name: str, monkeypatch: pytest.MonkeyPatch, mutate: tuple[str, str] 
     if name in DICT_SEC:
         monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
         monkeypatch.setenv("LEMMA_ENABLE_PARALLEL", "0")
+    if name == "dict_join_group_count_distinct_topn.rs":
+        # Proved by the real check (loader included) at --rlimit 3; without the loader the same body sits just over it. Fragile at the margin: see FINDINGS F-MAN-8.
+        monkeypatch.setenv("LEMMA_VERUS_RLIMIT", "6")
     text = ((HARD if name in CASES or name in TPCH or name in DICT_PAR or name in DICT_SEC else _FIXTURES) / name).read_text()
     if mutate is not None:
         assert mutate[0] in text
@@ -189,3 +197,9 @@ def test_a_larger_limit_in_the_dict_max_topk_example_does_not_verify(monkeypatch
 def test_dropping_the_max_equality_in_the_dict_max_topk_example_does_not_verify(monkeypatch: pytest.MonkeyPatch) -> None:
     """Every pure row would join, not only the per-(adsh, tag) maximum: the join to the MAX subquery is gone."""
     _rejected(_Q2, monkeypatch, ("if vi == mv {", "if vi <= mv {"))
+
+
+def test_join_count_distinct_topn_fixture_rejects_a_wrong_selection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mutation: the selection loop's maximality clause flipped; the host closing lemmas must no longer apply."""
+    ok, out = _verify("dict_join_group_count_distinct_topn.rs", monkeypatch, ("gtot[q] <= gtot[best],", "gtot[q] >= gtot[best],"))
+    assert not ok or "0 errors" not in out

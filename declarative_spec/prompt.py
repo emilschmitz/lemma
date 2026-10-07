@@ -589,6 +589,67 @@ def _scale_section(spec_text: str) -> list[str]:
     return lines + [""]
 
 
+def _group_close_section(spec_text: str) -> list[str]:
+    """The host-proved closing lemmas of a grouped query (``declarative_spec/group_close.py``), when the spec has them."""
+    if "lemma_group_close_rows" not in spec_text:
+        return []
+    omitted = "lemma_group_close_omitted" in spec_text
+    return [
+        "",
+        "## Grouped result: host-proved closing lemmas (call by bare name; already proved with the spec)",
+        "",
+        "The hard part of a grouped query's `ensures` is the four quantified facts about `res@`: every row satisfies `out_row_ok` (an existential over the joined rows),",
+        "the rows' keys are pairwise distinct, every group is present unless the result is full, and "
+        + ("every group left out of a top-N is not ahead of any returned row. " if omitted else "(no ORDER BY ... LIMIT here, so no omitted-group fact). ")
+        + "The host proved all of them from a plain description of what your code built, so you do not prove them from loop invariants of the exec code:",
+        "- a ghost `gk: Seq<KeyType>` (the spec's key type, see `lemma_group_close_rows`'s signature) of group keys: pairwise distinct; containing the key of every joined row that passes",
+        "  WHERE and HAVING; with a ghost `gw: Seq<(int, ..)>` of witnesses: `gw[g]` is one joined row (its index tuple) that passes WHERE and HAVING and has key `gk[g]` (only `lemma_group_close_rows` takes `gw`; push the witness when you push the group);",
+        "- a ghost `used: Seq<bool>` (one flag per group) and `pos: Seq<int>` (for a used group, the result row where it was chosen: `sel[pos[g]] == g`; a plain pointwise fact, no existential)",
+        "  taken by `_present` and `_omitted` only (`used` replaces 'appears in sel');",
+        "- a ghost `sel: Seq<int>`, one entry per result row: the index into `gk` of the row's group (distinct), with `res@[r]`'s key fields equal to `gk[sel[r]]` and its aggregate",
+        "  fields equal to the spec's folds for that key (`HAVING` too); `res@.len()` equals the LIMIT unless every group is `used`;"
+        + (" and for every group that is NOT `used`, `res@[r]` is not behind that group in the ORDER BY order (the `omitted` hypothesis)." if omitted else ""),
+        "Then at the end of `run_query` call, with `res@`, `gk` and `sel` (get them with `Ghost`/`Tracked` variables or `Seq` built in `proof { }` blocks):",
+        "`lemma_group_close_rows(P.., res@, gk, gw, sel)`, `lemma_group_close_distinct(.., gk, sel)`, `lemma_group_close_present(.., gk, sel, used, pos)`" + (", `lemma_group_close_omitted(..)`" if omitted else "") + ";",
+        "each ensures exactly the matching `run_query` postcondition. Their `requires` are the bullets above, spelled out (read their signatures in the spec). The order (sortedness) and the",
+        "`<= LIMIT` clauses are not covered: keep them as loop invariants of the selection loop. A selection loop that repeatedly takes the best unused group (a 'used' flag per group) keeps",
+        "the invariants `sel` distinct, every unused group not ahead of any chosen row, chosen rows in order, which are exactly the hypotheses above.",
+        "Outline of the long worked example `hard/dict_join_group_count_distinct_topn.rs` (its helper region is the bulk; port the pieces, not the file): (1) a build pass over the",
+        "dimension table creating the dynamic group table (a `Vec` of group keys with a witness row per group, a lookup by linear scan or hash map) and the chain index of dimension",
+        "rows per join code; (2) one pass over the fact table: probe the chain, add to the group's total, insert into the group's seen set (per group a `HashMapWithView` keyed by the",
+        "distinct value's code or integer, or a `Vec<bool>` over a dictionary whose length the catalog caps), each step tied to the spec fold by the host lemmas (`N_set` steps, the fold's own",
+        "unfolding for SUM/AVG parts); (3) the selection loop with `used`/`pos`/`sel` and two-term-trigger sortedness invariants; (4) the closing calls in separate small helpers (`_omitted` first).",
+        "Do not give up on a long example: write the whole body in pieces, run the check, and fix the first failing clause; every piece is an ordinary loop invariant.",
+        "",
+    ]
+
+
+def _distinct_section(spec_text: str) -> list[str]:
+    """The host-proved COUNT(DISTINCT) library over a two-table join (``declarative_spec/distinct_lemmas.py``), when the spec has it."""
+    names = sorted(set(re.findall(r"pub open spec fn (\w+)_pset\(", spec_text)))
+    if not names:
+        return []
+    lines = [
+        "",
+        "## COUNT(DISTINCT) over a join: host-proved library (call by bare name; it is in the spec's host region, already proved)",
+        "",
+        "The spec counts a pair of rows `(i0, i1)` for a distinct value only when no LATER pair of the same group has that value. Proving a seen set",
+        "equal to that is the hard part; the host proved it for you, for these aggregates: " + ", ".join(f"`{n}`" for n in names) + ". For each aggregate `N` (`k` is the group key; absent for an ungrouped query; `P` are the table parameters):",
+        "- `N_hit(P, i0, i1, k)` (the fold's hit condition), `N_row_set(P, i0, i1, k)` (values over hit pairs `(i0, j1)`, `j1 >= i1`),",
+        "  `N_pset(P, i0, k)` (values over hit pairs with outer index `< i0`: what an ascending loop has seen), `N_set(P, i0, k)` (outer index `>= i0`). All are `ISet`s.",
+        "- `lemma_N_set_step(P, i0, k)`: `N_pset(i0 + 1, k) =~= N_pset(i0, k).union(N_row_set(i0, 0, k))` (and the suffix form).",
+        "- `lemma_N_row_set_step(P, i0, i1, k)`: `N_row_set(i0, i1)` is `N_row_set(i0, i1 + 1)` plus `V(i0, i1)` exactly when `N_hit(i0, i1, k)` (`V` is `N_val`).",
+        "- `lemma_N_set_end(P, k)`: `N_pset(0, k)` is empty. `lemma_N_value(P, k)`: `N(P, 0, k) == N_pset(P, n, k).len()` and that set is finite.",
+        "  (`lemma_N_is_set_len(P, i0, k)` is the same fact for the suffix set.) `n` is the outer table's row count.",
+        "How to use: loop over the outer table ascending, keep per group key `k` an exec structure whose view equals `N_pset(P, i0, k)`; per outer row add the row's values (the",
+        "`N_row_set(i0, 0, k)` values, built by the inner probe of the join) and call `lemma_N_set_step`; at the end `lemma_N_value` gives the count as `.len()`.",
+        "To keep a COUNT equal to a set's `.len()` use `vstd::iset::lemma_iset_insert_len` (`broadcast use vstd::iset::group_iset_lemmas;` turns the ISet facts on).",
+        "A dictionary column is injective (the `valid_cols` clauses say so), so a distinct code is a distinct value. These are proved by Verus with the spec; you cannot and need not change them.",
+        "",
+    ]
+    return lines
+
+
 def _parallel_section(spec_text: str, shape: dict) -> list[str]:
     """Parallel-scan recipe, shown only when the spec was emitted with the Arc parameters (LEMMA_PARALLEL_VSTD=1)."""
     from declarative_spec import parallel
@@ -779,6 +840,9 @@ _PROOF_HYGIENE = """\
 - A loop that walks down: snapshot the old index (`let i_old = i; i = i - 1;`) before using the old suffix.
 - Every loop needs `decreases`; keep `valid_cols_<table>(cols)` in every loop invariant (the key and cell bounds
   come from it). Call host lemmas as `proof { lemma_...(); }`. Give a quantifier an explicit `#[trigger]`.
+- A quantified loop invariant whose body mentions the NEXT index loops the solver (Z3 matching loop; the profile shows one quantifier with an astronomically large cost):
+  `forall|q| #![trigger res@[q]] .. res@[q].total >= res@[q + 1].total` instantiates `res@[q + 1]`, which instantiates it again. Use the two-term trigger
+  `#![trigger res@[q], res@[q + 1]]` (the host's own sortedness postcondition is a goal, not a hypothesis, so it is safe).
 - Verus itself checks every `u64`/`i128` add for overflow: prove the bound with an `assert` from the host's
   `ROW_CAP_...` and cell caps (`assert(prev as int + 1 <= ROW_CAP_t)`); no fit lemma is needed.
 - A long proof (many quantified loop invariants plus asserts in one loop) exhausts the rlimit, and Verus then
@@ -827,6 +891,11 @@ _DICT_HARD: tuple[tuple[str, str, str], ...] = (
         "count_distinct_",
         "hard/dict_group_two_keys_count_distinct_avg.rs",
         "two dictionary string keys, COUNT(*), COUNT(DISTINCT x) and AVG (dense slots over the codes, a per-slot seen-set, sorted insert; it assumes u8 dictionary codes for both keys, slot = a*256+b: adapt the slot arithmetic if your spec's code types are wider)",
+    ),
+    (
+        "lemma_group_close_rows",
+        "hard/dict_join_group_count_distinct_topn.rs",
+        "a two-table join, GROUP BY an int key and a nullable string key, two COUNT(DISTINCT x) and a SUM, ORDER BY the sum DESC LIMIT 20, using the host COUNT(DISTINCT) library and the host closing lemmas: dynamic group table with ghost witnesses, chain index probe, selection loop with `used`/`pos`/`sel` ghost state, the closing calls in small helpers (long; its group key is `(fy, afs)`: adapt the key type and the group-lookup to yours)",
     ),
     (
         "sq_\\d+_groups",
@@ -926,6 +995,8 @@ def build_declarative_prompt(
     sections += _float_section(spec_text)
     sections += _nullable_section(spec_text)
     sections += _parallel_section(spec_text, shape)
+    sections += _distinct_section(spec_text)
+    sections += _group_close_section(spec_text)
     sections += [""]
     if shape["hard"]:
         sections += [
