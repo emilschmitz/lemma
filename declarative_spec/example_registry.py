@@ -71,6 +71,10 @@ MORE_EXAMPLES: tuple[tuple[str, str], ...] = (
         "dictionary string mode: GROUP BY two string keys with COUNT(*), COUNT(DISTINCT x) and AVG, ORDER BY the count (published-shape, long)",
     ),
     (
+        "hard/dict_parallel_hash_group_topn.rs",
+        "PARALLEL hash GROUP BY with merge: integer key of a wide range (no dense array), COUNT and SUM, top-20 by the sum: 4 vstd-thread workers each fold a row range into their own hash table (telescoping per key), merged by key, selection loop and host closing lemmas (long)",
+    ),
+    (
         "hard/dict_join_group_count_distinct_topn.rs",
         "dictionary string mode: two-table join, GROUP BY an int key and a nullable string key, two COUNT(DISTINCT x) and a SUM, ORDER BY the sum DESC LIMIT 20: dynamic group table, seen sets from the host COUNT(DISTINCT) library, selection loop, host closing lemmas (long)",
     ),

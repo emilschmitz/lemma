@@ -45,6 +45,9 @@ DICT_SEC = {
         "SELECT stmt, rfile, COUNT(*) AS cnt, COUNT(DISTINCT adsh) AS num_filings, AVG(line) AS avg_line_num "
         "FROM pre WHERE stmt IS NOT NULL GROUP BY stmt, rfile ORDER BY cnt DESC"
     ),
+    "dict_parallel_hash_group_topn.rs": (
+        "SELECT n.ddate, COUNT(*) AS c, SUM(n.value) AS s FROM num n WHERE n.uom = 'USD' AND n.value > 0 GROUP BY n.ddate ORDER BY s DESC LIMIT 20"
+    ),
     "dict_join_group_count_distinct_topn.rs": (
         "SELECT s.fy, s.afs, COUNT(DISTINCT s.adsh) AS n_filings, COUNT(DISTINCT s.cik) AS n_companies, SUM(n.value) AS total FROM num n "
         "JOIN sub s ON n.adsh = s.adsh WHERE n.uom = 'USD' AND s.form = '10-K' AND s.fy IS NOT NULL AND n.value > 0 "
@@ -97,6 +100,8 @@ def _verify(name: str, monkeypatch: pytest.MonkeyPatch, mutate: tuple[str, str] 
     if name in DICT_SEC:
         monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
         monkeypatch.setenv("LEMMA_ENABLE_PARALLEL", "0")
+    if name == "dict_parallel_hash_group_topn.rs":
+        monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "1")
     if name == "dict_join_group_count_distinct_topn.rs":
         # run_query of this long example has no rlimit margin: it verifies under all file names only from about --rlimit 16 (1 of 4 names at 12 and below, 4 of 4 at 16 and 20); see FINDINGS F-MAN-9.
         monkeypatch.setenv("LEMMA_VERUS_RLIMIT", "20")
@@ -202,4 +207,10 @@ def test_dropping_the_max_equality_in_the_dict_max_topk_example_does_not_verify(
 def test_join_count_distinct_topn_fixture_rejects_a_wrong_selection(monkeypatch: pytest.MonkeyPatch) -> None:
     """Mutation: the selection loop's maximality clause flipped; the host closing lemmas must no longer apply."""
     ok, out = _verify("dict_join_group_count_distinct_topn.rs", monkeypatch, ("gtot[q] <= gtot[best],", "gtot[q] >= gtot[best],"))
+    assert not ok or "0 errors" not in out
+
+
+def test_parallel_hash_group_fixture_rejects_a_wrong_selection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mutation: the omitted-group maximality clause flipped; the host closing lemma must no longer apply."""
+    ok, out = _verify("dict_parallel_hash_group_topn.rs", monkeypatch, ("res[r].s >= ss[g])", "res[r].s <= ss[g])"))
     assert not ok or "0 errors" not in out
