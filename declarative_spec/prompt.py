@@ -614,6 +614,12 @@ def _group_close_section(spec_text: str) -> list[str]:
         "each ensures exactly the matching `run_query` postcondition. Their `requires` are the bullets above, spelled out (read their signatures in the spec). The order (sortedness) and the",
         "`<= LIMIT` clauses are not covered: keep them as loop invariants of the selection loop. A selection loop that repeatedly takes the best unused group (a 'used' flag per group) keeps",
         "the invariants `sel` distinct, every unused group not ahead of any chosen row, chosen rows in order, which are exactly the hypotheses above.",
+        "Outline of the long worked example `hard/dict_join_group_count_distinct_topn.rs` (its helper region is the bulk; port the pieces, not the file): (1) a build pass over the",
+        "dimension table creating the dynamic group table (a `Vec` of group keys with a witness row per group, a lookup by linear scan or hash map) and the chain index of dimension",
+        "rows per join code; (2) one pass over the fact table: probe the chain, add to the group's total, insert into the group's seen set (per group a `HashMapWithView` keyed by the",
+        "distinct value's code or integer, or a `Vec<bool>` over a dictionary whose length the catalog caps), each step tied to the spec fold by the host lemmas (`N_set` steps, the fold's own",
+        "unfolding for SUM/AVG parts); (3) the selection loop with `used`/`pos`/`sel` and two-term-trigger sortedness invariants; (4) the closing calls in separate small helpers (`_omitted` first).",
+        "Do not give up on a long example: write the whole body in pieces, run the check, and fix the first failing clause; every piece is an ordinary loop invariant.",
         "",
     ]
 
