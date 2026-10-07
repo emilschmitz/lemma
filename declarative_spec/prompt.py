@@ -676,6 +676,12 @@ def _parallel_section(spec_text: str, shape: dict) -> list[str]:
         "The example is the template (SUM; adapt the fold, the filter, the cell bound and the accumulator type):",
         f"`context/ro/examples/{_PAR_EXAMPLE}` (also `parallel_ungrouped_product_sum.rs` for a product with a date filter, and `parallel_ungrouped_min.rs`, `_max.rs`, `_count.rs`: MIN/MAX merge the workers' (value, any) pairs, COUNT is additive).",
     ]
+    if "lemma_group_close_rows" in spec_text:
+        lines += [
+            "A parallel HASH GROUP BY with a merge (an integer key too wide for a dense array; per-worker hash tables, merged by key; then the top-N selection and the host closing lemmas):",
+            "`context/ro/examples/hard/dict_parallel_hash_group_topn.rs` (1.46x on the real 39.4M-row table). Notes from it: the helpers region admits only `proof fn` / `spec fn`, so the worker's",
+            "fold and the merge step are NESTED `fn`s at the top of the `run_query` body; a `struct` is not admitted either (use a tuple); a postcondition on a `&mut` parameter uses `final(x)` / `old(x)`.",
+        ]
     if shape["recipe"] in ("ungrouped", "ungrouped_product", "ungrouped_minmax"):
         header = [ln for ln in (_FIXTURES / _PAR_EXAMPLE).read_text().splitlines() if ln.startswith("//")]
         lines += ["", "Its header:", "", "```", *header, "```"]
