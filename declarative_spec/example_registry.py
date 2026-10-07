@@ -71,6 +71,10 @@ MORE_EXAMPLES: tuple[tuple[str, str], ...] = (
         "dictionary string mode: GROUP BY two string keys with COUNT(*), COUNT(DISTINCT x) and AVG, ORDER BY the count (published-shape, long)",
     ),
     (
+        "hard/dict_join_group_count_distinct_topn.rs",
+        "dictionary string mode: two-table join, GROUP BY an int key and a nullable string key, two COUNT(DISTINCT x) and a SUM, ORDER BY the sum DESC LIMIT 20: dynamic group table, seen sets from the host COUNT(DISTINCT) library, selection loop, host closing lemmas (long)",
+    ),
+    (
         "hard/dict_having_scalar_subquery.rs",
         "dictionary string mode: join, GROUP BY two keys, SUM with HAVING against an uncorrelated scalar subquery, ORDER BY ... LIMIT (long)",
     ),
