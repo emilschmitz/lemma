@@ -19,7 +19,7 @@ def test_command_is_locked_capped_and_carries_the_selected_environment(monkeypat
     assert cmd[cmd.index("--locked-run") + 3] == "systemd-run" and "--slice=lemma.slice" in cmd
     assert "MemoryMax=6G" in cmd and "--setenv=LEMMA_DUCKDB_PATH=/db.duckdb" in cmd and "--setenv=LEMMA_STRING_ENCODING=dict" in cmd
     assert not any(c.startswith("--setenv=LEMMA_TPCH_DB") for c in cmd)
-    assert cmd[cmd.index("--max-iterations") + 1] == "1" and cmd[cmd.index("--agent") + 1] == "claude-sonnet-5-5" and "--allow-override" in cmd and cmd[-1] == "/q.sql"
+    assert cmd[cmd.index("--max-iterations") + 1] == "2" and cmd[cmd.index("--agent") + 1] == "claude-sonnet-5-5" and "--allow-override" in cmd and cmd[-1] == "/q.sql"
 
 
 def test_short_model_names_map_to_slugs_and_logs_are_named_by_model_and_query(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
