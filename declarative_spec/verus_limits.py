@@ -18,8 +18,10 @@ from pathlib import Path
 
 RLIMIT_ENV = "LEMMA_VERUS_RLIMIT"
 TIMEOUT_ENV = "LEMMA_VERUS_TIMEOUT_SEC"
-# Verus's own default is 10. Every reference and hard proof in the measurement uses far less.
-DEFAULT_RLIMIT = 3.0
+# Verus's own default is 10. 16 because Z3's work depends on the temporary file NAME: a long proof (the top-N join example) passed 1 of 4
+# file names at rlimit 3, 4, 6 and 12 and 4 of 4 at 16, 20 and 30 (research_loop/scripts/fixture_rlimit_sweep.sh, FINDINGS F-MAN-9). At 3 the
+# same proof passes or fails by luck; 16 removes the lottery at the cost of slower failing proofs.
+DEFAULT_RLIMIT = 16.0
 # Covers verification plus the optimized rustc build of the assembled program.
 DEFAULT_TIMEOUT_SEC = 300
 
