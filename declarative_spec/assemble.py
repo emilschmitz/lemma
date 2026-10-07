@@ -322,6 +322,13 @@ def _runtime_checks(verus_part: str, suffix: str, fields: list[tuple[str, str]])
                 f'    assert!({codes}.iter().all(|c| (*c as usize) < {dct}.len()), "{suffix}.{_local_ident(m.group(1))}: a code is outside its dictionary");'
             )
             continue
+        m = re.fullmatch(rf"{p}\.((?:r#)?\w+)__dict@\.len\(\) <= (\d+)", c)
+        if m:
+            dct = f"{suffix}_{_local_ident(m.group(1))}__dict"
+            out.append(
+                f'    assert!({dct}.len() <= {m.group(2)}, "{suffix}.{_local_ident(m.group(1))}: the dictionary has more entries than the catalog distinct cap {m.group(2)}");'
+            )
+            continue
         m = re.fullmatch(
             rf"forall\|a: int, b: int\| #!\[trigger {p}\.((?:r#)?\w+)__dict@\[a\]@, .*?\] "
             rf"0 <= a < b < {p}\.\1__dict@\.len\(\) ==> .*",

@@ -126,6 +126,7 @@ def _emit_with_string_tokens(
         out_row,
         "",
         _out_row_ok_fn(query, helpers),
+        _group_close_text(query, helpers, model),
         f"""pub fn run_query({params}) -> (res: Vec<OutRow>)
     requires
         {requires},
@@ -247,6 +248,9 @@ def _emit_helpers(query: Query, prefix: str, model: SchemaModel) -> _Helpers:
         aggs[-1].hidden = agg.hidden
         aggs[-1].hit_fn = hit_name
 
+    # the host-proved libraries go after every fold and spec fn (their position must not disturb the agent-facing definitions)
+    late = [b.removeprefix(_LIBRARY_MARK) for b in blocks if b.startswith(_LIBRARY_MARK)]
+    blocks = [b for b in blocks if not b.startswith(_LIBRARY_MARK)] + late
     # scalar calls are recorded on the query via the returned map; having reads `scalars`
     helpers = _Helpers(
         source="\n\n".join(b for b in blocks if b.strip()),
@@ -566,6 +570,9 @@ def _default(info: ColumnTypeInfo) -> str:
     return "0int"
 
 
+_LIBRARY_MARK = "// HOST_LIBRARY_MARK\n"
+
+
 def _emit_agg(
     blocks: list[str],
     query: Query,
@@ -628,7 +635,7 @@ def _emit_agg(
             key_ty=key_ty,
         )
         if library:  # host-proved, no trust: see declarative_spec/distinct_lemmas.py
-            blocks.append(library)
+            blocks.append(_LIBRARY_MARK + library)
         return _AggFn(alias, kind, name, "int", False, "fold", "u64")
     if kind == "SUM":
         value = _value_fn(blocks, f"{name}_val", agg, main, params, model, ret)
@@ -1209,6 +1216,11 @@ def _map_args(slots: list[_Slot], by_table: dict[str, str]) -> str:
 
 
 def _ensures(query: Query, helpers: _Helpers, model: SchemaModel) -> str:
+    return ",\n        ".join(_ensures_lines(query, helpers, model)[0])
+
+
+def _ensures_lines(query: Query, helpers: _Helpers, model: SchemaModel) -> tuple[list[str], int]:
+    """The ensures conjuncts, and how many leading ones are the grouped-result facts (the rest is the ORDER BY / LIMIT tail)."""
     del model
     ratio_aliases = {rust_ident(a.alias) for a in helpers.aggs if a.kind == "RATIO"}
     for key in query.order_by:
@@ -1221,6 +1233,7 @@ def _ensures(query: Query, helpers: _Helpers, model: SchemaModel) -> str:
         lines.append(_scalar_result(query, helpers, scalars))
     else:
         lines.extend(_grouped_result(query, helpers, scalars))
+    n_grouped = len(lines)
     tail_q = copy.copy(query)
     tail_q.order_by = [
         OrderKey(column=k.column.split(".")[-1], descending=k.descending) for k in query.order_by
@@ -1250,7 +1263,47 @@ def _ensures(query: Query, helpers: _Helpers, model: SchemaModel) -> str:
     # ``p`` is unused when the tail already closed the ensures; keep the param call live
     # via the lines above.
     del p
-    return ",\n        ".join(lines)
+    return lines, n_grouped
+
+
+def _group_close_text(query: Query, helpers: _Helpers, model: SchemaModel) -> str:
+    """``lemma_group_close`` (see ``group_close``) for a grouped query whose ORDER BY keys are plain; empty otherwise."""
+    from declarative_spec.group_close import group_close_lemma
+
+    if helpers.key_ty is None:
+        return ""
+    if any(_order_seq_flags(query, helpers)) or any(_order_null_flags(query, helpers)):
+        return ""
+    if query.order_by and query.limit is None:
+        pass  # ORDER BY without LIMIT: only the tail's order line (no omitted-group clause)
+    scalars = helpers.scalars
+    lines, n_grouped = _ensures_lines(query, helpers, model)
+    p = _param_call(helpers.params)
+    binders, _ranges = _quant(helpers.main)
+    key_of = f"{helpers.key_at}({p}, {_idx_call(helpers.main)})"
+    out_exprs = _order_exprs_row(query, helpers) if query.order_by and query.limit is not None else []
+
+    def omitted(key: str) -> str:
+        group_exprs = _order_exprs_key(query, helpers, scalars, key)
+        return _not_after(out_exprs, group_exprs, query.order_by, _order_seq_flags(query, helpers), _order_null_flags(query, helpers))
+
+    return group_close_lemma(
+        params_sig=_param_sig(helpers.params),
+        key_ty=helpers.key_ty,
+        limit=query.limit,
+        binders=binders,
+        hit_call=f"{helpers.row_hit}({p}, {_idx_call(helpers.main)})",
+        key_of=key_of,
+        params_call=p,
+        having=lambda key: _having(query, helpers, scalars, key),
+        out_key=lambda row: _out_key(row, helpers),
+        having_row=lambda row: _having(query, helpers, scalars, _out_key(row, helpers)),
+        agg_row=lambda row, key: _agg_eqs(helpers, p, key, row),
+        grouped_lines=lines[:n_grouped],
+        tail_lines=lines[n_grouped:],
+        omitted=omitted if (query.order_by and query.limit is not None) else None,
+        idx_names=[s.idx for s in helpers.main],
+    )
 
 
 def _grouped_result(query: Query, helpers: _Helpers, scalars: dict[str, str]) -> list[str]:
@@ -1701,7 +1754,7 @@ def _valids(
                 cell = f"{slot.param}.{rust_ident(col)}@[i] as int"
                 checks.append(f"forall|i: int| 0 <= i < {slot.param}.n as int ==> {cell} >= -{top} && {cell} <= {top}")
         checks.extend(_float_mag_checks(slot, model, catalog))
-        checks.extend(_dict_checks(slot, cols))
+        checks.extend(_dict_checks(slot, cols, catalog))
         if slot.alias in unique:
             checks.append(_unique_conj(slot, unique[slot.alias], cols))
         body = "\n    &&& ".join(checks)
@@ -1713,8 +1766,11 @@ def _valids(
     return "\n\n".join(blocks)
 
 
-def _dict_checks(slot: _Slot, cols: dict[str, ColumnTypeInfo]) -> list[str]:
-    """The loader relation of dictionary-encoded string columns (see ``string_encoding``)."""
+def _dict_checks(slot: _Slot, cols: dict[str, ColumnTypeInfo], catalog: CatalogAssumptions | None = None) -> list[str]:
+    """The loader relation of dictionary-encoded string columns (see ``string_encoding``).
+
+    A column whose catalog declares ``max_distinct`` also gets ``dict.len() <= max_distinct``: a DATA ASSUMPTION checked by the loader (it aborts loudly
+    when the data has more distinct values), so a code-based flat key or array index over the dictionary is provably in range. Never a trusted proof item."""
     from declarative_spec.string_encoding import DICT_SUFFIX, dict_mode
 
     if not dict_mode():
@@ -1733,7 +1789,18 @@ def _dict_checks(slot: _Slot, cols: dict[str, ColumnTypeInfo]) -> list[str]:
             f"forall|a: int, b: int| #![trigger {p}.{d}@[a]@, {p}.{d}@[b]@] "
             f"0 <= a < b < {p}.{d}@.len() ==> {p}.{d}@[a]@ != {p}.{d}@[b]@"
         )
+        cap = _distinct_cap(catalog, slot.table, col)
+        if cap is not None:
+            out.append(f"{p}.{d}@.len() <= {cap}")
     return out
+
+
+def _distinct_cap(catalog: CatalogAssumptions | None, table: str, col: str) -> int | None:
+    from declarative_spec.emit import _lookup_table_assumptions
+
+    ta = _lookup_table_assumptions(catalog, table) if catalog is not None else None
+    ca = None if ta is None else next((c for k, c in ta.columns.items() if k.casefold() == col.casefold()), None)
+    return None if ca is None else ca.max_distinct
 
 
 def _unique_conj(slot: _Slot, key: tuple[str, ...], cols: dict[str, ColumnTypeInfo]) -> str:

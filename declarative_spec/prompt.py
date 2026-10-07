@@ -589,6 +589,33 @@ def _scale_section(spec_text: str) -> list[str]:
     return lines + [""]
 
 
+def _group_close_section(spec_text: str) -> list[str]:
+    """The host-proved closing lemmas of a grouped query (``declarative_spec/group_close.py``), when the spec has them."""
+    if "lemma_group_close_rows" not in spec_text:
+        return []
+    omitted = "lemma_group_close_omitted" in spec_text
+    return [
+        "",
+        "## Grouped result: host-proved closing lemmas (call by bare name; already proved with the spec)",
+        "",
+        "The hard part of a grouped query's `ensures` is the four quantified facts about `res@`: every row satisfies `out_row_ok` (an existential over the joined rows),",
+        "the rows' keys are pairwise distinct, every group is present unless the result is full, and "
+        + ("every group left out of a top-N is not ahead of any returned row. " if omitted else "(no ORDER BY ... LIMIT here, so no omitted-group fact). ")
+        + "The host proved all of them from a plain description of what your code built, so you do not prove them from loop invariants of the exec code:",
+        "- a ghost `gk: Seq<KeyType>` (the spec's key type, see `lemma_group_close_rows`'s signature) of group keys: pairwise distinct; containing the key of every joined row that passes",
+        "  WHERE and HAVING; and each entry the key of at least one such row;",
+        "- a ghost `sel: Seq<int>`, one entry per result row: the index into `gk` of the row's group (distinct), with `res@[r]`'s key fields equal to `gk[sel[r]]` and its aggregate",
+        "  fields equal to the spec's folds for that key (`HAVING` too); `res@.len()` equals the LIMIT unless every group index appears in `sel`;"
+        + (" and for every group index NOT in `sel`, `res@[r]` is not behind that group in the ORDER BY order (the `omitted` hypothesis)." if omitted else ""),
+        "Then at the end of `run_query` call, with `res@`, `gk` and `sel` (get them with `Ghost`/`Tracked` variables or `Seq` built in `proof { }` blocks):",
+        "`lemma_group_close_rows(P.., res@, gk, sel)`, `lemma_group_close_distinct(..)`, `lemma_group_close_present(..)`" + (", `lemma_group_close_omitted(..)`" if omitted else "") + ";",
+        "each ensures exactly the matching `run_query` postcondition. Their `requires` are the bullets above, spelled out (read their signatures in the spec). The order (sortedness) and the",
+        "`<= LIMIT` clauses are not covered: keep them as loop invariants of the selection loop. A selection loop that repeatedly takes the best unused group (a 'used' flag per group) keeps",
+        "the invariants `sel` distinct, every unused group not ahead of any chosen row, chosen rows in order, which are exactly the hypotheses above.",
+        "",
+    ]
+
+
 def _distinct_section(spec_text: str) -> list[str]:
     """The host-proved COUNT(DISTINCT) library over a two-table join (``declarative_spec/distinct_lemmas.py``), when the spec has it."""
     names = sorted(set(re.findall(r"pub open spec fn (\w+)_pset\(", spec_text)))
@@ -953,6 +980,7 @@ def build_declarative_prompt(
     sections += _nullable_section(spec_text)
     sections += _parallel_section(spec_text, shape)
     sections += _distinct_section(spec_text)
+    sections += _group_close_section(spec_text)
     sections += [""]
     if shape["hard"]:
         sections += [
