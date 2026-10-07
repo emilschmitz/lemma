@@ -60,3 +60,31 @@ The zero-copy idea does not pay off because of chunk layout.
 4. Other findings in `research_loop/generated/arena/FINDINGS.md` (F-PIN-1 to 3, F-COLD-1 to 3): the shipped exporter was 29x slower than a native C-API load on DECIMAL(38,4)
    (this fed the exporter-v3 task, which is separate and still open); a data-dependent branch in a Verus-compiled fold costs up to 2x (write folds branch-free); DuckDB aggregate state
    memory has no alignment guarantee.
+
+## Future plan: run the proved query inside DuckDB end to end (not started)
+
+Idea (Emil, 2026-10-07): instead of exporting data into our own columns, let the data stay in DuckDB's storage and have OUR generated, proved code be what executes
+the query inside DuckDB (scan to result), so there is no ingestion cost, appends and updates are handled by DuckDB, and speedups come from specialized operators
+(join order, group-by structures, filters), as GenDB's wins do. The cold path above is only the smallest slice of this: DuckDB's scan feeds our fold, and DuckDB still
+does everything else.
+
+What each level needs:
+
+| level | what we implement | hook | status |
+|---|---|---|---|
+| 1. ungrouped SUM/COUNT of per-row terms | the per-vector fold | C API aggregate or scalar function | done as a prototype (0.65 to 0.87x of DuckDB in place) |
+| 2. grouped aggregates | per-group fold state | C API aggregate with DuckDB's GROUP BY | not tried; DuckDB still does the grouping |
+| 3. joins | build and probe structures, merge | not possible through the C API (it cannot define physical operators); needs a C++ extension against DuckDB's internal headers, version-specific (our `build/libduckdb` is 1.2.2, the data is 1.5.4) | not started |
+| 4. whole-query operator | everything | C++ extension: custom physical operator or table function reading row groups, parallel scheduling, memory manager, spill | not started |
+
+Costs and risks to plan for:
+- C API: scalar, aggregate and table functions only. Real operator replacement is a C++ extension tied to one DuckDB version (needs the matching source, about 32 MB for a release
+  archive or the git source; download needs Emil's approval) and engineering around DuckDB's parallel scan, memory manager and spill.
+- Proofs change shape: ours are whole-column functional specs; inside DuckDB's pipeline the code sees chunks. A sum is a permutation-invariant fold (done, `cold_lib.rs`,
+  vstd `to_multiset` plus a sum lemma). A join needs a build phase before a probe phase; a group-by needs a thread-merge. Each is a new proof pattern.
+- Trust: every hook adds a statement of the kind "the scan hands us every row exactly once" (ZC-2 / ZC-2s here), which must be enforced by construction (fixed query template,
+  loud refusal of every modifier) and adversary-reviewed.
+- Ceiling: for scan-bound queries DuckDB's scan is the floor (70 to 90 percent of the time in our measurements); gains beyond that come from compute-heavy operators.
+
+Suggested first step if resumed: a short feasibility study of what the DuckDB 1.5 C++ extension API allows (can an extension define a physical operator or a table function
+with a parallel scan over a table?), what it costs, and a spike on one simple whole-query operator. Keep it opt-in and adversary-gated.
