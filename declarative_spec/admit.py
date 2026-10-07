@@ -119,8 +119,10 @@ def _banned_everywhere(cleaned: str) -> list[str]:
     rest = _BROADCAST_GROUP.sub(lambda m: " " * len(m.group(0)), cleaned)
     if re.search(r"\buse\b", rest):
         violations.append("use: only `broadcast use vstd::<module>::group_<name>;` is allowed")
-    if re.search(r"\bassume\s*\(", rest):
+    if re.search(r"\bassume_?\b", rest):  # `assume_` is the builtin that `assume` expands to
         violations.append("assume(")
+    if re.search(r"\bcfg_attr\b|\bverus\s*::\s*internal\b|#\s*!?\s*\[[^\]]*\bexternal", rest):
+        violations.append("#[...external...] / cfg_attr / verus::internal attribute")
     if re.search(r"\badmit\s*\(", rest):
         violations.append("admit(")
     if re.search(r"#\s*!?\s*\[\s*verifier\s*(?:::|\()\s*external", rest):

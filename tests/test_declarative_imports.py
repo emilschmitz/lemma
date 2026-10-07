@@ -108,11 +108,11 @@ def test_reference_bodies_verify_under_the_full_preamble(name: str) -> None:
 # ---- imports ----------------------------------------------------------------------------
 
 
-def test_broadcast_groups_are_scanned_and_axiom_groups_left_out() -> None:
+def test_broadcast_groups_are_scanned_including_axiom_groups() -> None:
     groups = {f"{m}::{n}" for m, n in broadcast_groups()}
     assert {"seq::group_seq_axioms", "seq::group_seq_lemmas", "arithmetic::mul::group_mul_properties"} <= groups
-    # `group_hash_axioms` lists `axiom_*` items: trusted vstd axioms, not lemmas.
-    assert "std_specs::hash::group_hash_axioms" not in groups
+    # `group_hash_axioms` lists `axiom_*` items: vstd's own trusted core, allowed.
+    assert "std_specs::hash::group_hash_axioms" in groups
 
 
 @pytest.mark.parametrize(
@@ -137,7 +137,6 @@ def test_exact_broadcast_group_is_accepted(line: str) -> None:
         "broadcast use std::mem::group_seq_lemmas;",
         "broadcast use crate::group_seq_lemmas;",
         "broadcast use vstd::seq::group_does_not_exist;",
-        "broadcast use vstd::std_specs::hash::group_hash_axioms;",
         "broadcast use vstd::std_specs::hash::axiom_u64_obeys_hash_table_key_model;",
         "broadcast use vstd::seq::lemma_seq_empty;",
         "use vstd::seq::*;",
@@ -386,7 +385,7 @@ def test_docs_index_lists_the_generated_groups(tmp_path: Path) -> None:
     index = (tmp_path / "context" / "ro" / "verus" / "INDEX.md").read_text()
     for module, name in broadcast_groups():
         assert f"`broadcast use vstd::{module}::{name};`" in index
-    assert "group_hash_axioms" not in index
+    assert "group_hash_axioms" in index  # every vstd group is allowed, axiom-listing ones included
     assert "turns a bundle of vstd lemmas on" in index
 
 

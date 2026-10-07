@@ -56,3 +56,20 @@ def test_agent_axioms_and_assumes_in_helpers_are_rejected_or_unprovable(helper: 
         assert result.ok  # a proof fn with a body is checked by Verus (it fails there: ensures false), it adds no trust
     else:
         assert not result.ok
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        "assume_(false);",
+        "vstd::pervasive::assume_(false);",
+        "#[cfg_attr(all(), verifier::external_body)] fn f() {}",
+        "#[verus::internal(external_body)] fn f() {}",
+        "#[cfg_attr(verus_keep_ghost, verifier::external)] fn f() {}",
+    ],
+)
+def test_assume_underscore_and_attribute_smuggling_rejected(snippet: str) -> None:
+    assert not admit_declarative_body(snippet + "\n let x = 1u64;\n").ok
+    assert not admit_helpers(f"proof fn h() {{ {snippet} }}", SPEC).ok
+    if snippet.startswith("#"):
+        assert not admit_helpers(snippet.replace("fn f()", "proof fn f() ensures false") + "\n", SPEC).ok
