@@ -1293,6 +1293,8 @@ def _group_close_text(query: Query, helpers: _Helpers, model: SchemaModel) -> st
         limit=query.limit,
         binders=binders,
         hit_call=f"{helpers.row_hit}({p}, {_idx_call(helpers.main)})",
+        hit_name=helpers.row_hit,
+        key_name=helpers.key_at,
         key_of=key_of,
         params_call=p,
         having=lambda key: _having(query, helpers, scalars, key),

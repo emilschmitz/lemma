@@ -6,7 +6,7 @@ every omitted group is not ahead of any returned row (ORDER BY ... LIMIT). Provi
 host proves them ONCE from a plain description of what the exec code built:
 
 * ``gk``: a ghost ``Seq`` of group keys (the spec's key type), pairwise distinct, containing the key of every row that passes WHERE and HAVING,
-  and each of them the key of at least one such row (non-empty group);
+  and ``gw`` a ghost ``Seq`` of witness index tuples: ``gw[g]`` is a joined row that passes WHERE and HAVING and has key ``gk[g]`` (``lemma_group_close_rows`` only);
 * ``sel``: for each result row ``r`` the index of its group in ``gk`` (distinct), with the row's key equal to ``gk[sel[r]]`` and its aggregate fields
   equal to the spec's folds for that key; the result holds ``LIMIT`` rows unless every group was selected; the rows are in ORDER BY order; every
   group that was not selected is not ahead of any returned row.
@@ -25,6 +25,8 @@ def group_close_lemma(
     limit: int | None,
     binders: str,
     hit_call: str,
+    hit_name: str,
+    key_name: str,
     key_of: str,
     params_call: str,
     having,  # key expression -> HAVING condition on that key
@@ -59,9 +61,17 @@ def group_close_lemma(
         else None
     )
     parts: list[str] = []
-    parts.append(f"""pub proof fn lemma_group_close_rows({sig})
+    nb = len(idx_names)
+    wit = (lambda g: [f"gw[{g}]"]) if nb == 1 else (lambda g: [f"gw[{g}].{i}" for i in range(nb)])
+    wt = "int" if nb == 1 else "(" + ", ".join(["int"] * nb) + ")"
+    wargs = lambda g: ", ".join(wit(g))  # noqa: E731
+    h3w = (
+        f"forall|g: int| #![trigger gk[g]] 0 <= g < gk.len() ==> {hit_name}({params_call}, {wargs('g')}) && {key_name}({params_call}, {wargs('g')}) == gk[g] && ({having('gk[g]')})"
+    )
+    parts.append(f"""pub proof fn lemma_group_close_rows({params_sig}, res: Seq<OutRow>, gk: Seq<{key_ty}>, gw: Seq<{wt}>, sel: Seq<int>)
     requires
-        {h3},
+        gw.len() == gk.len(),
+        {h3w},
         {n},
         {in_range},
         {keys_eq},
@@ -71,8 +81,8 @@ def group_close_lemma(
 {{
     assert forall|r: int| #![trigger res@[r]] 0 <= r < res@.len() implies out_row_ok({params_call}, res@[r]) by {{
         let g = sel[r];
-        {pat}choose|{binders}| {h} && {key_of} == gk[g] && ({having('gk[g]')});
-        assert({h} && {key_of} == {out_key('res@[r]')} && ({having_row('res@[r]')}) && {agg_row('res@[r]', out_key('res@[r]'))});
+        assert({hit_name}({params_call}, {wargs('g')}) && {key_name}({params_call}, {wargs('g')}) == {out_key('res@[r]')} && ({having_row('res@[r]')}) && {agg_row('res@[r]', out_key('res@[r]'))});
+        assert(out_row_ok({params_call}, res@[r]));
     }}
 }}""")
     parts.append(f"""pub proof fn lemma_group_close_distinct({sig})
