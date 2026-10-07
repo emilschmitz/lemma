@@ -52,7 +52,7 @@ def group_close_lemma(
     pos_fact = "forall|g: int| #![trigger used[g]] 0 <= g < gk.len() && used[g] ==> 0 <= pos[g] < sel.len() && sel[pos[g]] == g"
     in_range = "forall|r: int| #![trigger sel[r]] 0 <= r < sel.len() ==> 0 <= sel[r] < gk.len()"
     keys_eq = f"forall|r: int| #![trigger sel[r]] 0 <= r < sel.len() ==> {out_key('res@[r]')} == gk[sel[r]]"
-    rows_ok = f"forall|r: int| #![trigger sel[r]] 0 <= r < sel.len() ==> ({having_row('res@[r]')}) && {agg_row('res@[r]', 'gk[sel[r]]')}"
+    rows_ok = f"forall|r: int| #![trigger sel[r]] #![trigger res@[r]] 0 <= r < sel.len() ==> ({having_row('res@[r]')}) && {agg_row('res@[r]', 'gk[sel[r]]')}"
     h2 = f"forall|{binders}| #![trigger {h}] {h} && ({having(key_of)}) ==> exists|g: int| #![trigger gk[g]] 0 <= g < gk.len() && gk[g] == {key_of}"
     h3 = f"forall|g: int| #![trigger gk[g]] 0 <= g < gk.len() ==> exists|{binders}| #![trigger {h}] {h} && {key_of} == gk[g] && ({having('gk[g]')})"
     h1 = "forall|a: int, b: int| #![trigger gk[a], gk[b]] 0 <= a < b < gk.len() ==> gk[a] != gk[b]"
