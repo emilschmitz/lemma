@@ -98,8 +98,8 @@ def _verify(name: str, monkeypatch: pytest.MonkeyPatch, mutate: tuple[str, str] 
         monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
         monkeypatch.setenv("LEMMA_ENABLE_PARALLEL", "0")
     if name == "dict_join_group_count_distinct_topn.rs":
-        # Proved by the real check (loader included) at --rlimit 3; without the loader the same body sits just over it. Fragile at the margin: see FINDINGS F-MAN-8.
-        monkeypatch.setenv("LEMMA_VERUS_RLIMIT", "6")
+        # run_query of this long example has no rlimit margin: it verifies under all file names only from about --rlimit 16 (1 of 4 names at 12 and below, 4 of 4 at 16 and 20); see FINDINGS F-MAN-9.
+        monkeypatch.setenv("LEMMA_VERUS_RLIMIT", "20")
     text = ((HARD if name in CASES or name in TPCH or name in DICT_PAR or name in DICT_SEC else _FIXTURES) / name).read_text()
     if mutate is not None:
         assert mutate[0] in text
