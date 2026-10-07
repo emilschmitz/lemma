@@ -887,6 +887,11 @@ _DICT_HARD: tuple[tuple[str, str, str], ...] = (
         "two dictionary string keys, COUNT(*), COUNT(DISTINCT x) and AVG (dense slots over the codes, a per-slot seen-set, sorted insert; it assumes u8 dictionary codes for both keys, slot = a*256+b: adapt the slot arithmetic if your spec's code types are wider)",
     ),
     (
+        "lemma_group_close_rows",
+        "hard/dict_join_group_count_distinct_topn.rs",
+        "a two-table join, GROUP BY an int key and a nullable string key, two COUNT(DISTINCT x) and a SUM, ORDER BY the sum DESC LIMIT 20, using the host COUNT(DISTINCT) library and the host closing lemmas: dynamic group table with ghost witnesses, chain index probe, selection loop with `used`/`pos`/`sel` ghost state, the closing calls in small helpers (long; its group key is `(fy, afs)`: adapt the key type and the group-lookup to yours)",
+    ),
+    (
         "sq_\\d+_groups",
         "hard/dict_having_scalar_subquery.rs",
         "a join GROUP BY SUM with HAVING against an uncorrelated scalar subquery (per-class sums, threshold, top-k by repeated maximum; proof first: group and distinct-key lookups are linear scans, replace them by a dense array over codes for speed)",
