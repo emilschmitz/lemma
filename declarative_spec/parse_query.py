@@ -24,7 +24,7 @@ from declarative_spec.parse_exprs import (
     fold_number,
 )
 from declarative_spec.schema_types import rust_ident
-from declarative_spec.surface import Agg, Join, Output, OrderKey, Query
+from declarative_spec.surface import Agg, CorrCount, Join, Output, OrderKey, Query
 
 _DATE_LITERAL = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
 
@@ -62,6 +62,9 @@ def _parse_expression(expression: exp.Expression) -> Query:
         left.set_query = right
         return left
     if isinstance(expression, exp.Select):
+        counted = _fold_left_count_groups(expression) if sql_switches.left_join_count() else None
+        if counted is not None:
+            return counted
         unique_needed: list[tuple[str, str]] = []
         if sql_switches.cte_reuse():
             expression, unique_needed = fold_group_join(inline_plain_ctes(expression))
@@ -181,6 +184,118 @@ def _derived_join_condition(select: exp.Select, join: exp.Join) -> exp.Expressio
     if cond is not None:
         scalar.set("where", exp.Where(this=cond))
     return exp.EQ(this=value_pairs[0][0].copy(), expression=exp.Subquery(this=scalar))
+
+
+def _fold_left_count_groups(select: exp.Select) -> Query | None:
+    """``SELECT n, COUNT(*) FROM (SELECT k, COUNT(r.c) FROM L LEFT JOIN R ON r.fk = L.k [AND pred] GROUP BY k) d(k, n) GROUP BY n``.
+
+    Read as a grouping of the rows of ``L`` by a ``CorrCount`` key (see ``surface.CorrCount``). Any other shape returns
+    None and keeps its refusal; a shape that matches but breaks a rule below raises."""
+    from_clause = select.args.get("from_")
+    if from_clause is None or not isinstance(from_clause.this, exp.Subquery) or not from_clause.this.alias:
+        return None
+    if any(select.args.get(k) for k in ("joins", "where", "having", "with_", "distinct", "qualify")):
+        return None
+    source = from_clause.this
+    inner = source.this
+    if not isinstance(inner, exp.Select) or not inner.args.get("group") or len(inner.args.get("joins") or []) != 1:
+        return None
+    join = inner.args["joins"][0]
+    inner_from = inner.args.get("from_")
+    if (join.side or "").upper() != "LEFT" or not isinstance(join.this, exp.Table) or join.args.get("on") is None:
+        return None
+    if inner_from is None or not isinstance(inner_from.this, exp.Table):
+        return None
+    if any(inner.args.get(k) for k in ("where", "having", "order", "limit", "offset", "distinct", "with_", "qualify")):
+        return None
+    group = inner.args["group"].expressions
+    outer_group = select.args["group"].expressions if select.args.get("group") else []
+    if len(group) != 1 or len(outer_group) != 1 or not isinstance(group[0], exp.Column) or not isinstance(outer_group[0], exp.Column):
+        return None
+
+    # the derived table: one key column and one COUNT(column), named by the alias's column list or by the items
+    items = inner.expressions
+    listed = [c.name for c in (source.args["alias"].args.get("columns") or [])]
+    if len(items) != 2 or (listed and len(listed) != 2):
+        return None
+    names = listed or [i.alias if isinstance(i, exp.Alias) else getattr(i, "name", "") for i in items]
+    key_at = count_at = None
+    for pos, item in enumerate(items):
+        body = _unwrap_alias(item)
+        if isinstance(body, exp.Column):
+            key_at = pos
+        elif isinstance(body, exp.Count):
+            count_at = pos
+    if key_at is None or count_at is None or not all(names):
+        return None
+    count = _unwrap_alias(items[count_at])
+    if isinstance(count.this, (exp.Star, exp.Distinct)) or not isinstance(count.this, exp.Column):
+        raise DeclarativeUnsupported(
+            "a count over a LEFT JOIN other than COUNT(<right table column>): COUNT(*) counts the unmatched row"
+        )
+    key = _unwrap_alias(items[key_at])
+    if key.name.casefold() != group[0].name.casefold() or key.table.casefold() != group[0].table.casefold():
+        raise DeclarativeUnsupported("the derived table's key column is not its GROUP BY column")
+    count_name, key_name = names[count_at], names[key_at]
+    if outer_group[0].name.casefold() != count_name.casefold() or outer_group[0].table.casefold() not in ("", source.alias.casefold()):
+        raise DeclarativeUnsupported("the outer GROUP BY of a count over a LEFT JOIN must be that count")
+
+    parts: list[exp.Expression] = []
+
+    def split(node: exp.Expression) -> None:
+        while isinstance(node, exp.Paren):
+            node = node.this
+        if isinstance(node, exp.And):
+            split(node.left)
+            split(node.right)
+        else:
+            parts.append(node)
+
+    split(join.args["on"])
+    eqs = [p for p in parts if isinstance(p, exp.EQ) and isinstance(p.left, exp.Column) and isinstance(p.right, exp.Column)]
+    rest = [p for p in parts if p not in eqs]
+    if len(eqs) != 1:
+        raise DeclarativeUnsupported("a LEFT JOIN with a count needs exactly one column equality in its ON")
+    if any(p.find(exp.Or) or p.find(exp.Subquery) or p.find(exp.AggFunc) for p in rest):
+        raise DeclarativeUnsupported("a LEFT JOIN ON predicate with OR, a subquery or an aggregate")
+    pred: exp.Expression | None = None
+    for p in rest:
+        pred = p.copy() if pred is None else exp.And(this=pred, expression=p.copy())
+
+    # the outer query: groups the rows of L by the count; only COUNT(*) and the count itself are selected
+    for item in select.expressions:
+        body = _unwrap_alias(item)
+        if isinstance(body, exp.Count) and isinstance(body.this, exp.Star):
+            continue
+        if isinstance(body, exp.Column) and body.name.casefold() == count_name.casefold():
+            continue
+        raise DeclarativeUnsupported("a select item over a count of counts other than the count and COUNT(*)")
+    outer = select.copy()
+    left = inner_from.this.copy()
+    outer.set("from_", exp.From(this=left))
+    for col in outer.find_all(exp.Column):
+        if col.table.casefold() == source.alias.casefold():
+            col.set("table", None)
+    if any(c.name.casefold() == key_name.casefold() for c in outer.find_all(exp.Column)):
+        raise DeclarativeUnsupported("the outer query reads the derived table's key column")
+    query = _parse_select(outer)
+    token = "corr_count_0"
+    query.group_exprs[query.group_columns[0]] = token
+    query.corr_counts.append(
+        CorrCount(
+            token=token,
+            right=join.this.name,
+            right_alias=join.this.alias or None,
+            refs=(
+                ".".join(p for p in (eqs[0].left.table, eqs[0].left.name) if p),
+                ".".join(p for p in (eqs[0].right.table, eqs[0].right.name) if p),
+            ),
+            group_ref=".".join(p for p in (group[0].table, group[0].name) if p),
+            count_ref=".".join(p for p in (count.this.table, count.this.name) if p),
+            pred_sql=pred.sql() if pred is not None else "",
+        )
+    )
+    return query
 
 
 def _fold_anti_joins(select: exp.Select) -> exp.Select:

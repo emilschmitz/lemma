@@ -211,6 +211,9 @@ class _Rewriter:
             on = join.args.get("on")
             if on is not None:
                 self._check_join_on(on, scope)
+                # The other conjuncts of an ON (a LEFT JOIN count filters the right table by them) are comparisons too.
+                if sql_switches.left_join_count():
+                    join.set("on", self.walk(on, scope))
         where = node.args.get("where")
         if where is not None:
             where.set("this", self.walk(where.this, scope))

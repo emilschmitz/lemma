@@ -40,6 +40,7 @@ REGISTRY: dict[str, Shape] = {
     "join_self": Shape(WITNESSED, _PROOFS + "self_join_count.rs"),
     "join_or_on": Shape(UNWITNESSED),
     "join_outer": Shape(UNWITNESSED),
+    "left_count_group": Shape(UNWITNESSED),
     "derived": Shape(UNWITNESSED),
     "cte": Shape(UNWITNESSED),
     # filters
@@ -144,6 +145,8 @@ def query_features(q: Query) -> set[str]:
         f |= query_features(sub)
     for _n, sub in q.scalar_subqueries:
         f |= query_features(sub)
+    if q.corr_counts:
+        f.add("left_count_group")
     if q.derived:
         f.add("derived")
         for _n, sub in q.derived:

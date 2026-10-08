@@ -104,6 +104,7 @@ def _emit_with_string_tokens(
         merged = dict(facts.unique_aliases) if facts else {}
         merged.update(dict(chain.unique))
         facts = dataclasses.replace(facts, unique_aliases=tuple(merged.items())) if facts else _JoinBound(1, tuple(merged.items()))
+    facts = _require_corr_unique(query, helpers, model, catalog, facts)
 
     structs = _structs(helpers.params, model, catalog)
     int_sum = any(a.kind == "SUM" and not a.float_out for a in helpers.aggs)
@@ -258,12 +259,15 @@ def _emit_helpers(query: Query, prefix: str, model: SchemaModel, chain=None) -> 
     query = _bind_group_aliases(query, main, model)
     extras = _extra_params(query, main, model)
     params = list(main) + extras
-    group_infos = _group_infos(query, main, model)
+    blocks: list[str] = []
+    from declarative_spec.emit_corr_count import corr_count_calls
+
+    corr_calls = corr_count_calls(query, prefix, main, params, model, blocks)
+    group_infos = _group_infos(query, main, model, corr_calls)
     key_ty = _key_type(group_infos)
     row_hit = f"{prefix}row_hit"
     key_at = f"{prefix}key_at"
 
-    blocks: list[str] = []
     exists_calls = _exists_fns(query, prefix, main, params, model, blocks)
     in_heads, in_sources = in_subquery_calls(query, prefix, params, model)
     blocks.extend(in_sources)
@@ -347,6 +351,8 @@ def _extra_params(query: Query, main: list[_Slot], model: SchemaModel) -> list[_
         params.add(param)
 
     def walk(q: Query) -> None:
+        for cc in q.corr_counts:
+            add(cc.right_alias or cc.right, cc.right)
         for _name, sub, _neg in q.exists:
             if sub.tables:
                 add(_table_alias(sub, sub.tables[0], None), sub.tables[0])
@@ -507,12 +513,12 @@ def _key_at_fn(
 
 
 def _group_infos(
-    query: Query, main: list[_Slot], model: SchemaModel
+    query: Query, main: list[_Slot], model: SchemaModel, calls: dict[str, str] | None = None
 ) -> list[tuple[str, str, ColumnTypeInfo, _Slot]]:
     out: list[tuple[str, str, ColumnTypeInfo, _Slot]] = []
     for i, col in enumerate(query.group_columns):
         if col in query.group_exprs:
-            out.append(_expr_group(col, query.group_exprs[col], main, model))
+            out.append(_expr_group(col, query.group_exprs[col], main, model, calls or {}))
             continue
         table = query.group_tables[i] if i < len(query.group_tables) else None
         slot, info = _find_col(col, table, main, model)
@@ -568,9 +574,11 @@ _EXPR = "\x00expr:"
 
 
 def _expr_group(
-    name: str, text: str, main: list[_Slot], model: SchemaModel
+    name: str, text: str, main: list[_Slot], model: SchemaModel, calls: dict[str, str] | None = None
 ) -> tuple[str, str, ColumnTypeInfo, _Slot]:
-    """A group key that is a renamed column (output ``name``) or a date part (a BIGINT)."""
+    """A group key that is a renamed column (output ``name``), a date part (a BIGINT), or a count call (``calls``)."""
+    if calls and text in calls:
+        return rust_ident(name), _EXPR + calls[text], classify_sql_type("bigint"), main[0]
     if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?", text):
         slot, info = _ref_slot(text, main, model)
         return rust_ident(name), text.rpartition(".")[2], info, slot
@@ -2192,6 +2200,37 @@ def _require_sum_fits(
             )
         needs_facts = needs_facts or plain * cell > 2**127 - 1
     return bound if needs_facts else None
+
+
+def _require_corr_unique(
+    query: Query,
+    helpers: _Helpers,
+    model: SchemaModel,
+    catalog: CatalogAssumptions | None,
+    facts: _JoinBound | None,
+) -> _JoinBound | None:
+    """A LEFT JOIN count groups the FROM rows by their count only when the join key is unique in the FROM table.
+
+    The catalog must declare that key; the spec then requires it of the data (``valid_cols``, checked by the loader)."""
+    if not query.corr_counts:
+        return facts
+    from declarative_spec.emit import _join_col_is_unique, _lookup_table_assumptions
+    from declarative_spec.emit_corr_count import left_key
+
+    left = helpers.main[0]
+    used = list(facts.unique_aliases) if facts else []
+    for cc in query.corr_counts:
+        col = left_key(cc, left.table, left.alias, model)
+        ta = _lookup_table_assumptions(catalog, left.table) if catalog is not None else None
+        if not _join_col_is_unique(ta, col):
+            raise DeclarativeUnsupported(
+                f"a LEFT JOIN count groups {left.table} rows by their count only if {left.table}.{col} is unique: "
+                f"declare ({col}) as a unique key of {left.table} in the catalog"
+            )
+        used.append((left.alias, (col,)))
+    return _JoinBound(
+        facts.rows if facts else 1, tuple(used), facts.caps if facts else ()
+    )
 
 
 def _hash_broadcasts(helpers: _Helpers) -> str:
