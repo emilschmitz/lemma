@@ -30,7 +30,7 @@ _IS_NULL = re.compile(
 _QUAL = re.compile(
     r"\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b(?!@\[)"
 )
-_COLS_I = re.compile(r"\bcols\.(?:r#)?([A-Za-z_][A-Za-z0-9_]*)@\[i\]@?")
+_COLS_I = re.compile(r"\bcols\.(?:([A-Za-z_][A-Za-z0-9_]*)\.)?(?:r#)?([A-Za-z_][A-Za-z0-9_]*)@\[i\]@?")
 
 
 @dataclass
@@ -842,14 +842,14 @@ def _fn_name(prefix: str, kind: str, alias: str) -> str:
     raise DeclarativeUnsupported(kind)
 
 
-_CASE_RESULT_COL = re.compile(r"\{ cols\.(?:r#)?([A-Za-z_][A-Za-z0-9_]*)@\[i\] \}")
+_CASE_RESULT_COL = re.compile(r"\{ cols\.(?:([A-Za-z_][A-Za-z0-9_]*)\.)?(?:r#)?([A-Za-z_][A-Za-z0-9_]*)@\[i\] \}")
 
 
 def _case_float_results(expr: str, main: list[_Slot], model: SchemaModel) -> list[tuple[_Slot, str]]:
     """The float columns a CASE can return (its THEN/ELSE results), with their slots."""
     found: list[tuple[_Slot, str]] = []
-    for col in _CASE_RESULT_COL.findall(expr):
-        slot, info = _find_col(col, None, main, model)
+    for alias, col in _CASE_RESULT_COL.findall(expr):
+        slot, info = _ref_slot(f"{alias}.{col}", main, model) if alias else _find_col(col, None, main, model)
         if info.is_float:
             found.append((slot, col))
     return found
@@ -934,8 +934,8 @@ def _value_fn(
 
 def _compile_case(expr: str, main: list[_Slot], model: SchemaModel, *, real: bool = False) -> str:
     def repl(m: re.Match[str]) -> str:
-        col = m.group(1)
-        slot, info = _find_col(col, None, main, model)
+        alias, col = m.group(1), m.group(2)
+        slot, info = _ref_slot(f"{alias}.{col}", main, model) if alias else _find_col(col, None, main, model)
         return _cell(slot, col, info)
 
     out = _real_literals(_COLS_I.sub(repl, expr))
