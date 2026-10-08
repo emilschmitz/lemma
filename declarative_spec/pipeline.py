@@ -186,14 +186,17 @@ def compile_and_run(
             "verify_msg": shown,
         }
     try:
-        run = subprocess.run(
-            [str(binary)],
-            capture_output=True,
-            text=True,
-            timeout=300,
-            check=False,
-            cwd=directory,
-        )
+        from declarative_spec.heavy_phase import heavy_phase
+
+        with heavy_phase("measure"):  # the timed run on the full tables: a quiet machine, no other export or proof at the same time
+            run = subprocess.run(
+                [str(binary)],
+                capture_output=True,
+                text=True,
+                timeout=300,
+                check=False,
+                cwd=directory,
+            )
     except subprocess.TimeoutExpired:
         return {
             "status": "FAILURE",

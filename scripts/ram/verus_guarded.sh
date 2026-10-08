@@ -24,4 +24,9 @@ while :; do
 done
 # Our jobs are the first the kernel should kill in a global OOM (raising oom_score_adj needs no privilege; children inherit it).
 echo 800 > /proc/$$/oom_score_adj
+# Proofs take the heavy lock SHARED: several run at once (up to the slots), but never during an exclusive heavy phase (data export, timed run).
+if [ "${LEMMA_HEAVY_LOCK_HELD:-0}" != "1" ]; then
+  exec 7>"${HEAVY_LOCK:-/tmp/lemma_timing.lock}"
+  flock -s 7
+fi
 exec systemd-run --user --scope --quiet --slice=lemma.slice -p MemoryMax="$MEM_MAX" -p MemorySwapMax=0 "$VERUS" "$@"

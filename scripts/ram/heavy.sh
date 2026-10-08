@@ -19,4 +19,5 @@ while :; do
 done
 # Our jobs are the first the kernel should kill in a global OOM (raising oom_score_adj needs no privilege; children inherit it).
 echo 800 > /proc/$$/oom_score_adj
+export LEMMA_HEAVY_LOCK_HELD=1  # the caller holds the lock: heavy phases and the Verus guard inside this job must not take it again
 exec systemd-run --user --scope --quiet --slice=lemma.slice -p MemoryMax="$MEM_MAX" -p MemorySwapMax=0 "$@"

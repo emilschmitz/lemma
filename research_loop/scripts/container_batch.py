@@ -1,7 +1,7 @@
-"""Run several real-container agent runs one after another, each under the timing lock and a memory cap.
+"""Run several real-container agent runs one after another, each in a memory cap (the data export and the timed run take the machine-wide heavy lock themselves, so batches can run in parallel).
 
 ``container_batch.py haiku:q1.sql sonnet:q2.sql ...`` (``haiku`` = claude-haiku-4-5-20251001, ``sonnet`` = claude-sonnet-5-5, or a full slug).
-Each run is ``flock /tmp/lemma_timing.lock systemd-run --user --scope -p MemoryMax=6G ... run_container_agent.py --allow-override ...``; its launcher
+Each run is ``systemd-run --user --scope -p MemoryMax=6G ... run_container_agent.py --allow-override ...``; its launcher
 output goes to ``research_loop/generated/container_runs/<model>_<query stem>.log``. The environment of the launching shell selects the
 database (LEMMA_DUCKDB_PATH), string encoding and so on. Prints the table (``container_table.py``) at the end.
 """
@@ -22,9 +22,9 @@ MODELS = {"haiku": "claude-haiku-4-5-20251001", "sonnet": "claude-sonnet-5-5"}
 
 def command(model: str, sql_file: Path, marker: Path | None = None) -> list[str]:
     env_args = [f"--setenv={k}={os.environ[k]}" for k in ("LEMMA_DUCKDB_PATH", "LEMMA_STRING_ENCODING", "LEMMA_TPCH_DB", "LEMMA_NARROW_CELLS", "LEMMA_ASSUMPTION_PACKAGE", "LEMMA_CLAUDE_EFFORT", "LEMMA_TARGET_CPU") if k in os.environ]
-    # The login refresh runs INSIDE the lock (`--locked-run`): a job that holds the lock for hours would otherwise leave this run a stale token.
+    # The login refresh runs at the start of each run (`--locked-run`: the name is historical), so every run starts with a fresh token.
     return [
-        "flock", "/tmp/lemma_timing.lock", "choom", "-n", "800", "--",
+        "choom", "-n", "800", "--",  # no whole-run lock: proving runs in parallel; the export and the timed run take the heavy lock themselves
         sys.executable, str(Path(__file__).resolve()), "--locked-run", str(marker or "/dev/null"), "--",
         "systemd-run", "--user", "--scope", "--slice=lemma.slice", "-p", "MemoryMax=6G", "-p", "MemorySwapMax=0", *env_args,
         sys.executable, str(ROOT / "research_loop" / "scripts" / "run_container_agent.py"),

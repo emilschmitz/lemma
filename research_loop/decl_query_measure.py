@@ -59,7 +59,15 @@ def open_measure_connection(db_path: Path, dest: Path, *, read_only: bool = True
     return con, settings
 
 
-def write_query_measure(
+def write_query_measure(**kwargs) -> dict:
+    """The data export and the DuckDB reference timing: an exclusive heavy phase (see declarative_spec/heavy_phase.py)."""
+    from declarative_spec.heavy_phase import heavy_phase
+
+    with heavy_phase("prepare"):
+        return _write_query_measure(**kwargs)
+
+
+def _write_query_measure(
     *,
     sql: str,
     schema: dict,
