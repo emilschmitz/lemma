@@ -157,6 +157,7 @@ class _Rewriter:
     def __init__(self, model: SchemaModel, catalog: object | None = None) -> None:
         self.model = model
         self.catalog = catalog
+        self.in_ratio = False  # a ratio operand keeps ``K * SUM(x)`` as the ratio's own constant factor
 
     # ---- queries -----------------------------------------------------------------------
 
@@ -511,6 +512,9 @@ class _Rewriter:
         self._require_num(left, "arithmetic")
         self._require_num(right, "arithmetic")
         if isinstance(node, exp.Mul):
+            folded = None if self.in_ratio else self._sum_times_constant(left, right)
+            if folded is not None:
+                return folded
             scale = left.scale + right.scale
             if scale > MAX_SCALE:
                 raise DeclarativeUnsupported(f"DECIMAL scale {scale} exceeds {MAX_SCALE}")
@@ -520,6 +524,27 @@ class _Rewriter:
         left, right = _align([left, right])
         out = _T(type(node)(this=left.node, expression=right.node), "num", left.scale)
         return self._integer_result(node, raw_left, raw_right, out) if left.scale == 0 else out
+
+    @staticmethod
+    def _sum_times_constant(left: _T, right: _T) -> _T | None:
+        """``SUM(x) * K`` (or ``K * SUM(x)``) for a constant K: DuckDB multiplies the exact DECIMAL sum by the
+        exact DECIMAL constant (scales add), which is the exact ``SUM(x * K)`` over the stored integers."""
+        for agg, const in ((left, right), (right, left)):
+            node, k = _unparen(agg.node), _unparen(const.node)
+            lit = _unparen(k.this) if isinstance(k, exp.Neg) else k
+            if (
+                isinstance(node, exp.Sum)
+                and isinstance(node.this, exp.Expression)
+                and not isinstance(node.this, exp.Distinct)
+                and node.this.find(exp.Case) is None
+                and isinstance(lit, exp.Literal)
+                and lit.is_int
+            ):
+                scale = agg.scale + const.scale
+                if scale > MAX_SCALE:
+                    raise DeclarativeUnsupported(f"DECIMAL scale {scale} exceeds {MAX_SCALE}")
+                return _T(exp.Sum(this=exp.Mul(this=exp.Paren(this=node.this), expression=k)), "num", scale)
+        return None
 
     def _integer_result(self, node: exp.Expression, left: _T, right: _T, result: _T) -> _T:
         """Plain integer + - *: DuckDB errors when the result leaves its type, and the spec's integers do not."""
@@ -568,11 +593,18 @@ class _Rewriter:
         if not isinstance(node, exp.Div) or node.args.get("safe") or node.args.get("typed"):
             raise DeclarativeUnsupported("division other than the plain / operator (// and TRY_DIVIDE are not stated)")
         sides: list[_T] = []
-        for operand in (node.this, node.expression):
-            t = self.typed(operand, scope)
+        for position, operand in enumerate((node.this, node.expression)):
+            self.in_ratio = True
+            try:
+                t = self.typed(operand, scope)
+            finally:
+                self.in_ratio = False
             if t.kind != "num":
                 raise DeclarativeUnsupported(f"division operand of kind {t.kind}: only SUM / COUNT of integer or DECIMAL values")
-            if not _is_scaled_aggregate(t.node):
+            if position == 1 and _is_constant_literal(t.node):
+                if _unparen(t.node).this == "0":  # type: ignore[union-attr]
+                    raise DeclarativeUnsupported("division by the constant zero")
+            elif not _is_scaled_aggregate(t.node):
                 raise DeclarativeUnsupported("division operand must be a SUM or COUNT, optionally times a constant")
             sides.append(t)
         marked = exp.Div(
@@ -635,6 +667,12 @@ def _is_int_arith(node: exp.Expression) -> bool:
     if isinstance(node, exp.Literal):
         return node.is_int
     return isinstance(node, exp.Column)
+
+
+def _is_constant_literal(node: exp.Expression) -> bool:
+    """A non-negative whole-number literal (a DECIMAL constant is its stored integer at its scale)."""
+    node = _unparen(node)
+    return isinstance(node, exp.Literal) and node.is_int
 
 
 def _is_scaled_aggregate(node: exp.Expression) -> bool:

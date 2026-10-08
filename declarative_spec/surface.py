@@ -34,6 +34,12 @@ class Agg:
     # scale). The operands are hidden aggregates of the same query; the value is the real quotient
     # ``(K * N / 10**sN) / (D / 10**sD)``, with IEEE results for a zero denominator (DuckDB divides in DOUBLE).
     ratio: tuple[str, str, int, int, int] | None = None
+    # A RATIO whose denominator is this nonzero whole-number constant (stored at the denominator scale), not an
+    # aggregate: ``SUM(x) / 7.0`` is ``ratio_den_const == 70`` with denominator scale 1; the denominator alias is "".
+    ratio_den_const: int | None = None
+    # ``c * AVG(x)`` / ``AVG(x) * c`` for a constant c (DuckDB's DOUBLE product): the average is multiplied by
+    # numerator/denominator, an exact rational (the float idealization states the product of the exact reals).
+    avg_factor: tuple[int, int] = (1, 1)
 
 
 @dataclass(frozen=True)

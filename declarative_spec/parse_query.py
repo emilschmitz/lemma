@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field, replace
+from decimal import Decimal
+from fractions import Fraction
 
 import sqlglot
 from sqlglot import exp
@@ -335,7 +337,26 @@ def _is_aggregate(node: exp.Expression) -> bool:
     inner = _unwrap_alias(node)
     if isinstance(inner, exp.Filter):
         inner = inner.this
-    return isinstance(inner, (exp.Sum, exp.Count, exp.Avg, exp.Min, exp.Max)) or _is_ratio(inner)
+    return (
+        isinstance(inner, (exp.Sum, exp.Count, exp.Avg, exp.Min, exp.Max))
+        or _is_ratio(inner)
+        or _avg_times_constant(inner) is not None
+    )
+
+
+def _avg_times_constant(node: exp.Expression) -> tuple[exp.Avg, tuple[int, int]] | None:
+    """``c * AVG(x)`` or ``AVG(x) * c`` for a plain number literal c (the rewrite writes a float one as ``0.2e0``)."""
+    if not isinstance(node, exp.Mul):
+        return None
+    for avg, const in ((node.this, node.expression), (node.expression, node.this)):
+        avg, const = _unparen_node(avg), _unparen_node(const)
+        neg = isinstance(const, exp.Neg)
+        lit = _unparen_node(const.this) if neg else const
+        if isinstance(avg, exp.Avg) and isinstance(lit, exp.Literal) and lit.is_number:
+            value = Fraction(Decimal(str(lit.this)))
+            value = -value if neg else value
+            return avg, (value.numerator, value.denominator)
+    return None
 
 
 def _is_ratio(node: exp.Expression) -> bool:
@@ -760,6 +781,17 @@ def _parse_ratio(item: exp.Expression, scope: _Scope) -> tuple[Agg, list[Agg]]:
         raise DeclarativeUnsupported("SELECT expression needs an alias")
     top = _unwrap_alias(item)
     num, k = _ratio_operand(top.this.expressions[0], scope, f"{alias}__num")
+    den_node = _unparen_node(top.expression.expressions[0])
+    if isinstance(den_node, exp.Literal) and den_node.is_int:
+        const = int(den_node.this)
+        ratio = Agg(
+            kind="RATIO",
+            column=None,
+            alias=alias,
+            ratio=(num.alias, "", k, _dec_scale_marker(top.this), _dec_scale_marker(top.expression)),
+            ratio_den_const=const,
+        )
+        return ratio, [num]
     den, k_den = _ratio_operand(top.expression.expressions[0], scope, f"{alias}__den")
     if k_den != 1:
         raise DeclarativeUnsupported("a constant factor on the denominator of a division")
@@ -778,6 +810,11 @@ def _parse_agg(item: exp.Expression, scope: _Scope) -> Agg:
         ratio, operands = _parse_ratio(item, scope)
         scope.pending.extend(operands)
         return ratio
+    scaled_avg = _avg_times_constant(top)
+    if scaled_avg is not None:
+        avg, factor = scaled_avg
+        bare = exp.Alias(this=avg, alias=item.alias) if isinstance(item, exp.Alias) else avg
+        return replace(_parse_agg(bare, scope), avg_factor=factor)
     if isinstance(top, exp.Filter):
         # AGG(x) FILTER (WHERE cond): the same aggregate over the rows where cond holds.
         where = top.expression
@@ -1037,6 +1074,12 @@ def _compile_side(node: exp.Expression, ctx: _BoolCtx) -> str:
     folded = _fold_int_literal(node)
     if folded is not None:
         return folded
+    if ctx.having and isinstance(node, exp.Mul):
+        # An exact SUM / COUNT times a whole-number constant (the rewrite brings a comparison to one scale this way).
+        for agg_side, const_side in ((node.this, node.expression), (node.expression, node.this)):
+            agg_node, factor = _unparen_node(agg_side), _fold_int_literal(const_side)
+            if factor is not None and isinstance(agg_node, (exp.Sum, exp.Count)):
+                return f"({_compile_side(agg_node, ctx)} * ({factor}))"
     return _constant_or_arith_side(node, ctx)
 
 
@@ -1232,6 +1275,7 @@ def _same_agg(a: Agg, b: Agg) -> bool:
         and a.arith == b.arith
         and a.expr == b.expr
         and a.avg_scale == b.avg_scale
+        and a.avg_factor == b.avg_factor
         and a.filter_expr == b.filter_expr
         and (a.table is None or b.table is None or a.table.casefold() == b.table.casefold())
     )

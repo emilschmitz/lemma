@@ -751,7 +751,7 @@ def _emit_agg(
             key_ty,
             unit_step=True,
         )
-        _emit_avg_wrap(blocks, name, sum_name, cnt_name, params, key_ty, True, agg.avg_scale)
+        _emit_avg_wrap(blocks, name, sum_name, cnt_name, params, key_ty, True, agg.avg_scale, agg.avg_factor)
         return _AggFn(alias, kind, name, "real", True, "fold", "f64")
     raise DeclarativeUnsupported(kind)
 
@@ -780,7 +780,7 @@ def _emit_ratio(
     assert agg.ratio is not None
     num_alias, den_alias, k, num_scale, den_scale = agg.ratio
     by_alias = {a.alias: a for a in query.aggs}
-    operands = [by_alias[num_alias], by_alias[den_alias]]
+    operands = [by_alias[num_alias]] + ([] if agg.ratio_den_const is not None else [by_alias[den_alias]])
     for op in operands:
         if op.kind.upper() not in ("SUM", "COUNT"):
             raise DeclarativeUnsupported("division operand must be a SUM or COUNT")
@@ -788,11 +788,24 @@ def _emit_ratio(
             raise DeclarativeUnsupported(
                 "division of a float SUM: the quotient of two floating sums has no magnitude bound the proof can use"
             )
-    num_fn, den_fn = (_fn_name(prefix, op.kind.upper(), rust_ident(op.alias)) for op in operands)
+    fns = [_fn_name(prefix, op.kind.upper(), rust_ident(op.alias)) for op in operands]
+    num_fn, den_fn = fns[0], (fns[1] if len(fns) == 2 else "")
     name = f"{prefix}ratio_{rust_ident(agg.alias)}"
     key_sig = f", k: {key_ty}" if key_ty else ""
     key_call = ", k" if key_ty else ""
     p_call = _param_call(params)
+    if agg.ratio_den_const is not None:
+        # A nonzero constant denominator: no zero branch, DuckDB's DOUBLE quotient of the exact natural values.
+        assert agg.ratio_den_const > 0
+        blocks.append(
+            f"""pub open spec fn {name}({_param_sig(params)}, i0: int{key_sig}, ratio_v__: f64) -> bool {{
+    let ratio_n__: int = {k} * {num_fn}({p_call}, i0{key_call});
+    ratio_v__.is_finite_spec() && (ratio_v__ as real) == ((ratio_n__ as real) * {10**den_scale}real) / ({agg.ratio_den_const}real * {10**num_scale}real)
+}}"""
+        )
+        fn = _AggFn(rust_ident(agg.alias), "RATIO", name, "real", True, "ratio", "f64")
+        fn.ratio_nullable = operands[0].kind.upper() == "SUM" and key_ty is None
+        return fn
     blocks.append(
         f"""pub open spec fn {name}({_param_sig(params)}, i0: int{key_sig}, ratio_v__: f64) -> bool {{
     let ratio_n__: int = {k} * {num_fn}({p_call}, i0{key_call});
@@ -1150,14 +1163,16 @@ def _emit_avg_wrap(
     key_ty: str | None,
     is_float: bool,
     scale: int = 0,
+    factor: tuple[int, int] = (1, 1),
 ) -> None:
     key_sig = f", k: {key_ty}" if key_ty else ""
     key_call = ", k" if key_ty else ""
     p = _param_call(params)
+    numerator = f"{sum_name}({p}, i0{key_call})" + (f" * ({factor[0]}real)" if factor != (1, 1) else "")
     if is_float:
         body = f"""let c = {cnt_name}({p}, i0{key_call});
     if c > 0 {{
-        {sum_name}({p}, i0{key_call}) / ((c as real) * {10**scale}real)
+        {numerator} / ((c as real) * {10**scale * factor[1]}real)
     }} else {{
         0real
     }}"""
