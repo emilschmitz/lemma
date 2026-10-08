@@ -93,6 +93,9 @@ def _filter_one_query(args: tuple[str, str, int]) -> dict:
     sql, db_path, query_timeout = args
     try:
         con = duckdb.connect(db_path, read_only=True)
+        # DuckDB's default memory_limit is ~80% of system RAM: with several workers a draw was OOM-killed under a 4 GB cap.
+        con.execute(f"PRAGMA memory_limit='{os.environ.get('LEMMA_FILTER_DUCK_MEMORY', '1GB')}'")
+        con.execute('PRAGMA threads=2')
         try:
             start = time.perf_counter()
             result = con.execute(sql)
