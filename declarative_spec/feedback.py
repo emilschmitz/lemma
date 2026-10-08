@@ -269,5 +269,9 @@ def format_failure(
     if host_warnings:
         parts.append(f"({host_warnings} warning(s) in host-owned code omitted: not yours to fix.)")
     if not errors and not summary and not preamble and not warnings:
-        parts.append("(the build produced no diagnostics)")
+        parts.append(
+            "(Verus printed no diagnostics and no verdict. The prover process was most likely killed by its memory cap "
+            "(VERUS_MEM_MAX, default 4G): the proof is too heavy for the machine, not wrong. Shrink it: move big loop bodies "
+            "into helper lemmas, drop invariants and quantifiers you do not need, and keep each assert small.)"
+        )
     return "\n\n".join(parts) + "\n"

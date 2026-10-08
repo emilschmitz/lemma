@@ -21,7 +21,8 @@ MODELS = {"haiku": "claude-haiku-4-5-20251001", "sonnet": "claude-sonnet-5-5"}
 
 
 def command(model: str, sql_file: Path, marker: Path | None = None) -> list[str]:
-    env_args = [f"--setenv={k}={os.environ[k]}" for k in ("LEMMA_DUCKDB_PATH", "LEMMA_STRING_ENCODING", "LEMMA_TPCH_DB", "LEMMA_NARROW_CELLS", "LEMMA_ASSUMPTION_PACKAGE", "LEMMA_CLAUDE_EFFORT", "LEMMA_TARGET_CPU") if k in os.environ]
+    env_args = [f"--setenv=AGENT_TIMEOUT_SEC={os.environ.get('AGENT_TIMEOUT_SEC', '750')}"]  # 2 sessions x 750 s = 25 min per attempt (Emil, 2026-10-08)
+    env_args += [f"--setenv={k}={os.environ[k]}" for k in ("LEMMA_DUCKDB_PATH", "LEMMA_STRING_ENCODING", "LEMMA_TPCH_DB", "LEMMA_NARROW_CELLS", "LEMMA_ASSUMPTION_PACKAGE", "LEMMA_CLAUDE_EFFORT", "LEMMA_TARGET_CPU") if k in os.environ]
     # The login refresh runs at the start of each run (`--locked-run`: the name is historical), so every run starts with a fresh token.
     return [
         "choom", "-n", "800", "--",  # no whole-run lock: proving runs in parallel; the export and the timed run take the heavy lock themselves
@@ -29,8 +30,8 @@ def command(model: str, sql_file: Path, marker: Path | None = None) -> list[str]
         "systemd-run", "--user", "--scope", "--slice=lemma.slice", "-p", "MemoryMax=6G", "-p", "MemorySwapMax=0", *env_args,
         sys.executable, str(ROOT / "research_loop" / "scripts" / "run_container_agent.py"),
         "--style", "declarative", "--menu", "adversary_declarative0", "--agent", model, "--allow-override",
-        # Two 600 s sessions per attempt (AGENT_TIMEOUT_SEC; the second starts from the best body so far): an attempt never
-        # exceeds 20 minutes of agent time (Emil's limit).
+        # Two 750 s sessions per attempt (AGENT_TIMEOUT_SEC; the second starts from the best body so far): an attempt never
+        # exceeds 25 minutes of agent time (Emil's limit).
         "--max-iterations", "2",
         "--query-file", str(sql_file),
     ]

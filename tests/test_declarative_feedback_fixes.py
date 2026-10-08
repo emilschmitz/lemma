@@ -156,3 +156,15 @@ def test_help_snippet_after_a_vstd_span_is_still_rewritten() -> None:
     )
     out = format_failure(log, assembled=_assembled(), agent_source=AGENT, directory=DIR)
     assert "\n17  | requires x" in out and "\n4  | res2" in out
+
+
+def test_empty_verus_output_names_the_memory_cap_not_no_diagnostics() -> None:
+    out = format_failure("", assembled=_assembled(), agent_source=AGENT, directory=DIR)
+    assert "memory cap" in out and "no diagnostics and no verdict" in out
+    assert "the build produced no diagnostics" not in out
+
+
+def test_host_warnings_only_output_still_names_the_memory_cap() -> None:
+    log = "warning: type `Cols_num` should have an upper camel case name\n   --> " + f"{DIR}/{NAME}:3:1\n    |\n\n"
+    out = format_failure(log, assembled=_assembled(), agent_source=AGENT, directory=DIR)
+    assert "memory cap" in out
