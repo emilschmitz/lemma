@@ -611,7 +611,7 @@ def _group_close_section(spec_text: str) -> list[str]:
         + (" and for every group that is NOT `used`, `res@[r]` is not behind that group in the ORDER BY order (the `omitted` hypothesis)." if omitted else ""),
         "Then at the end of `run_query` call, with `res@`, `gk` and `sel` (get them with `Ghost`/`Tracked` variables or `Seq` built in `proof { }` blocks):",
         "`lemma_group_close_rows(P.., res@, gk, gw, sel)`, `lemma_group_close_distinct(.., gk, sel)`, `lemma_group_close_present(.., gk, sel, used, pos)`" + (", `lemma_group_close_omitted(..)`" if omitted else "") + ";",
-        "each ensures exactly the matching `run_query` postcondition. Their `requires` are the bullets above, spelled out (read their signatures in the spec). The order (sortedness) and the",
+        "each ensures exactly the matching `run_query` postcondition. Their `requires` are the bullets above, spelled out (read their signatures in the spec). Call EACH closing lemma from its own small helper proof fn (one fact per helper, with only the hypotheses it needs, in the helpers region) and call `_omitted` FIRST: the combined call inside `run_query` or one big helper exceeds the rlimit. The order (sortedness) and the",
         "`<= LIMIT` clauses are not covered: keep them as loop invariants of the selection loop. A selection loop that repeatedly takes the best unused group (a 'used' flag per group) keeps",
         "the invariants `sel` distinct, every unused group not ahead of any chosen row, chosen rows in order, which are exactly the hypotheses above.",
         "Outline of the long worked example `hard/dict_join_group_count_distinct_topn.rs` (its helper region is the bulk; port the pieces, not the file): (1) a build pass over the",
@@ -849,6 +849,8 @@ _PROOF_HYGIENE = """\
 - A quantified loop invariant whose body mentions the NEXT index loops the solver (Z3 matching loop; the profile shows one quantifier with an astronomically large cost):
   `forall|q| #![trigger res@[q]] .. res@[q].total >= res@[q + 1].total` instantiates `res@[q + 1]`, which instantiates it again. Use the two-term trigger
   `#![trigger res@[q], res@[q + 1]]` (the host's own sortedness postcondition is a goal, not a hypothesis, so it is safe).
+- A fact about a ghost `Seq` (or any variable) that the loop does not modify is NOT remembered across the loop: repeat it in the loop's `invariant` (e.g. `gk.len() == gw.len()`, the group-table facts), or the loop-body and the code after the loop lose it.
+- `#[verifier::rlimit(N)]` on a helper proof fn is accepted by the admission lint and raises that one function's budget; use it on a single closing helper that is genuinely just large, not to hide a matching loop (profile first when you can).
 - Verus itself checks every `u64`/`i128` add for overflow: prove the bound with an `assert` from the host's
   `ROW_CAP_...` and cell caps (`assert(prev as int + 1 <= ROW_CAP_t)`); no fit lemma is needed.
 - A long proof (many quantified loop invariants plus asserts in one loop) exhausts the rlimit, and Verus then
@@ -870,7 +872,7 @@ _PROOF_HYGIENE = """\
   1e15); a sum is bounded by (rows seen) * (cell bound).
 - Short string keys (1 or 2 characters) are cheapest as small integer codes from `as_bytes` (vstd `utf8.rs`,
   grep `LEMMAS.md` for `as_bytes`) indexing a slot table, not as hashed strings.
-- The verifier's rlimit budget is the host's `--rlimit` (3 by default); the error names the main loop even when the
+- The verifier's rlimit budget is the host's `--rlimit` (16 by default); the error names the main loop even when the
   overrun is in one of its asserts.
 - A string literal in a predicate (`uom = 'pure'`): `&str ==` has no spec tying it to `@`, and `reveal_strlit` does not
   help. Build the literal once (`let pure: String = String::from_str("pure");`, ensures `pure@ == "pure"@`), keep
