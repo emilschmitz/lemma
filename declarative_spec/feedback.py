@@ -271,7 +271,7 @@ def format_failure(
     if not errors and not summary and not preamble and not warnings:
         parts.append(
             "(Verus printed no diagnostics and no verdict. The prover process was most likely killed by its memory cap "
-            "(VERUS_MEM_MAX, default 4G): the proof is too heavy for the machine, not wrong. Shrink it: move big loop bodies "
+            "(VERUS_MEM_MAX, default 7G): the proof is too heavy for the machine, not wrong. Shrink it: move big loop bodies "
             "into helper lemmas, drop invariants and quantifiers you do not need, and keep each assert small.)"
         )
     return "\n\n".join(parts) + "\n"

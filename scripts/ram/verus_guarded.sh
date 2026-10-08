@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Run Verus under a per-run memory cap and a machine-wide slot limit.
 #   scripts/ram/verus_guarded.sh <verus args...>
-# At most VERUS_SLOTS (default 1) Verus runs at once; each is capped at VERUS_MEM_MAX (default 4G)
+# At most VERUS_SLOTS (default 1) Verus runs at once; each is capped at VERUS_MEM_MAX (default 7G)
 # with no swap, so a runaway Z3 is killed alone instead of taking the whole app down.
 set -euo pipefail
 SLOTS="${VERUS_SLOTS:-1}"
-MEM_MAX="${VERUS_MEM_MAX:-4G}"
+MEM_MAX="${VERUS_MEM_MAX:-7G}"
 VERUS="${LEMMA_VERUS_REAL:-$HOME/tools/verus/verus}"
 exec 9>"/tmp/lemma-verus-slot-$(( $$ % SLOTS )).lock"
 # take any free slot, else wait on one
