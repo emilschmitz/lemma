@@ -10,6 +10,7 @@ research_loop/generated/arena/rounds/tpch22/queries/q01..q22.sql.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import hashlib
 import json
 import subprocess
@@ -80,6 +81,13 @@ def emit(args) -> None:
     from declarative_spec.lemmas import FitRefusal
 
     schema, catalog = schema_and_catalog()
+    for claim in args.unique:  # a user-approved unique key the package does not carry (table.column)
+        table, column = claim.split(".")
+        ta = catalog.tables[table]
+        catalog = dataclasses.replace(
+            catalog,
+            tables={**catalog.tables, table: dataclasses.replace(ta, unique_keys=(*ta.unique_keys, (column,)))},
+        )
     only = {int(x) for x in args.only.split(",")} if args.only else set(range(1, 23))
     ok = 0
     for nr in sorted(only):
@@ -107,6 +115,7 @@ def main() -> None:
     p.add_argument("cmd", choices=["setup", "emit"])
     p.add_argument("--tc", action="store_true")
     p.add_argument("--only", default="")
+    p.add_argument("--unique", action="append", default=[], help="claim table.column as a unique key (Q15: supplier.s_suppkey)")
     args = p.parse_args()
     setup() if args.cmd == "setup" else emit(args)
 

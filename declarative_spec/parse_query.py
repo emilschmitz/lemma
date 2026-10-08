@@ -10,6 +10,8 @@ from fractions import Fraction
 import sqlglot
 from sqlglot import exp
 
+from declarative_spec.fold_group_join import fold_group_join
+from declarative_spec.inline_cte import inline_plain_ctes
 from declarative_spec.literals import string_token
 from declarative_spec import sql_switches
 from declarative_spec.parse import DeclarativeUnsupported
@@ -60,7 +62,12 @@ def _parse_expression(expression: exp.Expression) -> Query:
         left.set_query = right
         return left
     if isinstance(expression, exp.Select):
-        return _parse_select(_fold_anti_joins(_fold_derived_agg_joins(expression)))
+        unique_needed: list[tuple[str, str]] = []
+        if sql_switches.cte_reuse():
+            expression, unique_needed = fold_group_join(inline_plain_ctes(expression))
+        query = _parse_select(_fold_anti_joins(_fold_derived_agg_joins(expression)))
+        query.unique_needed = unique_needed
+        return query
     raise DeclarativeUnsupported("unsupported top-level SQL shape")
 
 
@@ -374,6 +381,8 @@ class _Scope:
     tables: list[str] = field(default_factory=list)
     aliases: dict[str, str] = field(default_factory=dict)
     cte_names: set[str] = field(default_factory=set)
+    # A WITH name's definition, visible in every nested query: a CTE is a derived table substituted at each use.
+    cte_defs: dict[str, Query] = field(default_factory=dict)
     # Hidden operand aggregates of the ratios in the SELECT list, appended to the query after its select order is set.
     pending: list[Agg] = field(default_factory=list)
 
@@ -439,6 +448,7 @@ def _parse_select(expression: exp.Select, *, outer_scope: _Scope | None = None) 
         scope.tables = list(outer_scope.tables)
         scope.aliases = dict(outer_scope.aliases)
         scope.cte_names = set(outer_scope.cte_names)
+        scope.cte_defs = dict(outer_scope.cte_defs)
     counters = _Counters()
 
     with_clause = expression.args.get("with_")
@@ -450,6 +460,7 @@ def _parse_select(expression: exp.Select, *, outer_scope: _Scope | None = None) 
             inner = _parse_cte_body(cte_node.this, scope)
             query.ctes.append((cte_name, inner))
             scope.cte_names.add(cte_name.lower())
+            scope.cte_defs[cte_name.lower()] = inner
 
     query.distinct = bool(expression.args.get("distinct"))
 
@@ -468,9 +479,12 @@ def _parse_select(expression: exp.Select, *, outer_scope: _Scope | None = None) 
     else:
         table_name, alias = _parse_table_ref(from_this)
         if table_name.lower() in scope.cte_names:
-            cte_q = next((q for n, q in query.ctes if n.lower() == table_name.lower()), None)
-            if cte_q is None:
-                raise DeclarativeUnsupported("a WITH name used inside a subquery")
+            if sql_switches.cte_reuse():
+                cte_q = scope.cte_defs[table_name.lower()]
+            else:
+                cte_q = next((q for n, q in query.ctes if n.lower() == table_name.lower()), None)
+                if cte_q is None:
+                    raise DeclarativeUnsupported("a WITH name used inside a subquery")
             query.derived.append((table_name, cte_q))
         query.tables.append(table_name)
         scope.tables.append(table_name)
@@ -665,6 +679,9 @@ def _parse_join_target(
         alias = node.alias or "derived"
         return alias, alias, (alias, inner)
     table, alias = _parse_table_ref(node)
+    if sql_switches.cte_reuse() and table.lower() in scope.cte_names:
+        # A WITH name is a derived table substituted at each use; the table keeps the WITH name unless aliased.
+        return table, alias, (alias or table, scope.cte_defs[table.lower()])
     return table, alias, None
 
 

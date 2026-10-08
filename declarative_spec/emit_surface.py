@@ -13,6 +13,7 @@ import copy
 import re
 from dataclasses import dataclass, field
 
+from declarative_spec import sql_switches
 from declarative_spec.emit_date import with_civil_fns
 from declarative_spec.emit_in import apply_in_calls, in_subquery_calls
 from declarative_spec.emit_join import _build_slots, _Slot, _table_alias
@@ -80,6 +81,7 @@ def _emit_with_string_tokens(
     query = flatten_derived(parse_query(sql))
     if not query.tables:
         raise DeclarativeUnsupported("FROM")
+    _require_unique_keys(query, catalog)
     model = SchemaModel.from_caller(schema, query.tables[0]).with_nullable(catalog)
     _reject_unemitted(query)
     qualify_join_refs(query, model)
@@ -193,7 +195,7 @@ def _seq_le_source() -> str:
 def _reject_unemitted(query: Query) -> None:
     if query.set_op:
         raise DeclarativeUnsupported(query.set_op)
-    if query.ctes:
+    if query.ctes and not sql_switches.cte_reuse():
         raise DeclarativeUnsupported("CTE")
     for join in query.joins:
         if join.kind.casefold() != "inner":
@@ -210,6 +212,39 @@ def _reject_unemitted(query: Query) -> None:
         _reject_unemitted(query.set_query)
 
 
+def _require_unique_keys(query: Query, catalog: CatalogAssumptions | None) -> None:
+    """A rewrite that merges a join into a grouped query is exact only for a declared unique key (the loader checks it)."""
+    for table, column in query.unique_needed:
+        ta = next((t for n, t in (catalog.tables if catalog else {}).items() if n.casefold() == table.casefold()), None)
+        declared = ta is not None and any(
+            len(k) == 1 and k[0].casefold() == column.casefold() for k in ta.unique_keys
+        )
+        if not declared:
+            raise DeclarativeUnsupported(
+                f"{table}.{column} must be a declared unique key: the query joins it to a grouped WITH name"
+            )
+
+
+def _bind_group_aliases(query: Query, main: list[_Slot], model: SchemaModel) -> Query:
+    """``SELECT k AS a ... GROUP BY a``: a GROUP BY name that is no column of the FROM tables is the select alias.
+
+    An input column of that name wins (DuckDB and standard SQL bind GROUP BY to input columns first).
+    """
+    if not sql_switches.cte_reuse():
+        return query
+    columns = {c.casefold() for s in main for c in model.lookup_table(s.table)[1]}
+    bound = {}
+    for col in query.group_columns:
+        if col in query.group_exprs or col.casefold() in columns:
+            continue
+        hit = next((o for o in query.outputs if o.kind == "column" and o.name.casefold() == col.casefold()), None)
+        if hit is not None:
+            bound[col] = hit.text
+    if not bound:
+        return query
+    return dataclasses.replace(query, group_exprs={**query.group_exprs, **bound})
+
+
 def _emit_helpers(query: Query, prefix: str, model: SchemaModel, chain=None) -> _Helpers:
     main = _build_slots(query)
     if chain is not None and not prefix:
@@ -220,6 +255,7 @@ def _emit_helpers(query: Query, prefix: str, model: SchemaModel, chain=None) -> 
         raise DeclarativeUnsupported("FROM")
     for slot in main:
         model.lookup_table(slot.table)
+    query = _bind_group_aliases(query, main, model)
     extras = _extra_params(query, main, model)
     params = list(main) + extras
     group_infos = _group_infos(query, main, model)
@@ -1261,13 +1297,15 @@ def _reduce_groups(
     if helpers.key_ty is None or target.style != "fold":
         raise DeclarativeUnsupported("scalar subquery")
     kind = outer.kind.upper()
-    if kind not in ("AVG", "SUM", "COUNT"):
+    if kind not in ("AVG", "SUM", "COUNT", *(("MAX", "MIN") if sql_switches.cte_reuse() else ())):
         raise DeclarativeUnsupported("scalar subquery")
     earlier = _earlier(helpers.row_hit, helpers.key_at, helpers.main, helpers.params)
     p = _param_call(helpers.params)
     idxs = _idx_call(helpers.main)
     key_here = f"{helpers.key_at}({p}, {idxs})"
     first = f"{helpers.row_hit}({p}, {idxs}) && !({earlier})"
+    if kind in ("MAX", "MIN"):
+        return _extreme_over_groups(name, kind, target, helpers, first, key_here, outer_params)
     is_real = target.ret == "real" or kind == "AVG" and target.ret == "real"
     zero = "0real" if target.ret == "real" else "0int"
     acc_add = f"if {first} {{ {target.name}({p}, 0, {key_here}) }} else {{ {zero} }}"
@@ -1295,6 +1333,58 @@ def _reduce_groups(
 }}"""
     call = f"{name}({_map_args(helpers.params, outer_params)})"
     return call, helpers.source + "\n\n" + "\n\n".join(blocks) + "\n\n" + wrap
+
+
+def _extreme_over_groups(
+    name: str,
+    kind: str,
+    target: _AggFn,
+    helpers: _Helpers,
+    first: str,
+    key_here: str,
+    outer_params: dict[str, str],
+) -> tuple[str, str]:
+    """``MAX``/``MIN`` of a group aggregate over the groups of a derived table.
+
+    ``{name}_ext(.., i)`` is the extreme over the first row of each group at index >= i, ``None`` when there is none.
+    The scalar is 0 on an empty set of groups; the only consumers compare it with the aggregate of an existing group,
+    which exists only when the set is not empty.
+    """
+    if len(helpers.main) != 1:
+        raise DeclarativeUnsupported("scalar subquery")
+    slot = helpers.main[0]
+    p = _param_call(helpers.params)
+    sig = _param_sig(helpers.params)
+    zero = "0real" if target.ret == "real" else "0int"
+    better = ">" if kind == "MAX" else "<"
+    bound = f"{slot.param}.n as int"
+    idx = slot.idx
+    ext = f"""pub open spec fn {name}_ext({sig}, {idx}: int) -> Option<{target.ret}>
+    decreases {bound} - {idx}
+{{
+    if {idx} < 0 || {idx} >= {bound} {{
+        None
+    }} else {{
+        let rest = {name}_ext({p}, {idx} + 1);
+        if {first} {{
+            let v = {target.name}({p}, 0, {key_here});
+            match rest {{
+                None => Some(v),
+                Some(m) => Some(if v {better} m {{ v }} else {{ m }}),
+            }}
+        }} else {{
+            rest
+        }}
+    }}
+}}"""
+    wrap = f"""pub open spec fn {name}({sig}) -> {target.ret} {{
+    match {name}_ext({p}, 0) {{
+        Some(m) => m,
+        None => {zero},
+    }}
+}}"""
+    call = f"{name}({_map_args(helpers.params, outer_params)})"
+    return call, helpers.source + "\n\n" + ext + "\n\n" + wrap
 
 
 def _map_args(slots: list[_Slot], by_table: dict[str, str]) -> str:

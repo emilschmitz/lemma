@@ -90,6 +90,8 @@ class Query:
     set_op: str | None = None
     set_query: Query | None = None
     ctes: list[tuple[str, Query]] = field(default_factory=list)
+    # (table, column) pairs that must be declared unique keys for a rewrite to select the same rows.
+    unique_needed: list[tuple[str, str]] = field(default_factory=list)
     exists: list[tuple[str, Query, bool]] = field(default_factory=list)
     in_subqueries: list[tuple[str, str, Query]] = field(default_factory=list)
     scalar_subqueries: list[tuple[str, Query]] = field(default_factory=list)
