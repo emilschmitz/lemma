@@ -52,15 +52,16 @@ def group_close_lemma(
     pos_fact = "forall|g: int| #![trigger used[g]] 0 <= g < gk.len() && used[g] ==> 0 <= pos[g] < sel.len() && sel[pos[g]] == g"
     in_range = "forall|r: int| #![trigger sel[r]] 0 <= r < sel.len() ==> 0 <= sel[r] < gk.len()"
     keys_eq = f"forall|r: int| #![trigger sel[r]] 0 <= r < sel.len() ==> {out_key('res@[r]')} == gk[sel[r]]"
-    rows_ok = f"forall|r: int| #![trigger sel[r]] #![trigger res@[r]] 0 <= r < sel.len() ==> ({having_row('res@[r]')}) && {agg_row('res@[r]', 'gk[sel[r]]')}"
+    pcall = params_call
+    rows_ok = f"forall|r: int| #![trigger group_close_row_ok({pcall}, res@, gk, sel, r)] 0 <= r < sel.len() ==> group_close_row_ok({pcall}, res@, gk, sel, r)"
     h2 = f"forall|{binders}| #![trigger {h}] {h} && ({having(key_of)}) ==> exists|g: int| #![trigger gk[g]] 0 <= g < gk.len() && gk[g] == {key_of}"
     h3 = f"forall|g: int| #![trigger gk[g]] 0 <= g < gk.len() ==> exists|{binders}| #![trigger {h}] {h} && {key_of} == gk[g] && ({having('gk[g]')})"
     h1 = "forall|a: int, b: int| #![trigger gk[a], gk[b]] 0 <= a < b < gk.len() ==> gk[a] != gk[b]"
     s2 = "forall|a: int, b: int| #![trigger sel[a], sel[b]] 0 <= a < b < sel.len() ==> sel[a] != sel[b]"
     n = "res@.len() == sel.len()"
     omitted_hyp = (
-        "forall|g: int, r: int| #![trigger used[g], res@[r]] 0 <= g < gk.len() && !used[g]"
-        f" && 0 <= r < res@.len() ==> ({omitted('gk[g]')})"
+        f"forall|g: int, r: int| #![trigger group_close_omit_ok({pcall}, res@, gk, g, r)] 0 <= g < gk.len() && !used[g]"
+        f" && 0 <= r < res@.len() ==> group_close_omit_ok({pcall}, res@, gk, g, r)"
         if ordered
         else None
     )
@@ -69,9 +70,21 @@ def group_close_lemma(
     wit = (lambda g: [f"gw[{g}]"]) if nb == 1 else (lambda g: [f"gw[{g}].{i}" for i in range(nb)])
     wt = "int" if nb == 1 else "(" + ", ".join(["int"] * nb) + ")"
     wargs = lambda g: ", ".join(wit(g))  # noqa: E731
-    h3w = (
-        f"forall|g: int| #![trigger gk[g]] 0 <= g < gk.len() ==> {hit_name}({params_call}, {wargs('g')}) && {key_name}({params_call}, {wargs('g')}) == gk[g] && ({having('gk[g]')})"
-    )
+    h3w = f"forall|g: int| #![trigger group_close_grp_ok({pcall}, gk, gw, g)] 0 <= g < gk.len() ==> group_close_grp_ok({pcall}, gk, gw, g)"
+    preds = f"""pub open spec fn group_close_grp_ok({params_sig}, gk: Seq<{key_ty}>, gw: Seq<{wt}>, g: int) -> bool {{
+    {hit_name}({params_call}, {wargs('g')}) && {key_name}({params_call}, {wargs('g')}) == gk[g] && ({having('gk[g]')})
+}}
+
+pub open spec fn group_close_row_ok({params_sig}, res: Seq<OutRow>, gk: Seq<{key_ty}>, sel: Seq<int>, r: int) -> bool {{
+    ({having_row('res@[r]')}) && {agg_row('res@[r]', 'gk[sel[r]]')}
+}}"""
+    if ordered:
+        preds += f"""
+
+pub open spec fn group_close_omit_ok({params_sig}, res: Seq<OutRow>, gk: Seq<{key_ty}>, g: int, r: int) -> bool {{
+    {omitted('gk[g]')}
+}}"""
+    parts.append(preds)
     parts.append(f"""pub proof fn lemma_group_close_rows({params_sig}, res: Seq<OutRow>, gk: Seq<{key_ty}>, gw: Seq<{wt}>, sel: Seq<int>)
     requires
         gw.len() == gk.len(),
@@ -85,6 +98,8 @@ def group_close_lemma(
 {{
     assert forall|r: int| #![trigger res@[r]] 0 <= r < res@.len() implies out_row_ok({params_call}, res@[r]) by {{
         let g = sel[r];
+        assert(group_close_grp_ok({pcall}, gk, gw, g));
+        assert(group_close_row_ok({pcall}, res@, gk, sel, r));
         assert({hit_name}({params_call}, {wargs('g')}) && {key_name}({params_call}, {wargs('g')}) == {out_key('res@[r]')} && ({having_row('res@[r]')}) && {agg_row('res@[r]', out_key('res@[r]'))});
         assert(out_row_ok({params_call}, res@[r]));
     }}
@@ -152,6 +167,7 @@ def group_close_lemma(
             }}
         }}
         assert(gk[g] == {key_of});
+        assert(group_close_omit_ok({pcall}, res@, gk, g, r));
     }}
 }}""")
     text = "\n\n".join(parts)
