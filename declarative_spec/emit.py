@@ -471,6 +471,9 @@ def emit_declarative_spec(
     """Spec for ``sql``. DATE and DECIMAL are first stated as exact integer SQL (``numeric_rewrite``)."""
     from declarative_spec.numeric_rewrite import rewrite_numeric, with_out_scales
 
+    from declarative_spec.parse_query import rewrite_comma_joins
+
+    sql = rewrite_comma_joins(sql, schema)
     sql = _flatten_group_derived_sql(sql)
     sql = _null_rewrite_sql(sql, schema, catalog)
     integer_sql, scales = rewrite_numeric(sql, schema, catalog)
