@@ -96,12 +96,43 @@ def decimal_columns(db_path: Path) -> dict[tuple[str, str], str]:
     return {(str(t).lower(), str(c).lower()): str(d).lower().replace(" ", "") for t, c, d in rows}
 
 
-def load_sec_schema(db_path: Path | None = None) -> dict[str, dict[str, str]]:
-    """SEC EDGAR catalog: full ``schema.sql`` when present, else test holdout subset.
+_SEC_TABLES = {"num", "sub", "pre", "tag"}
 
-    With ``db_path``, every column that file types DECIMAL(p,s) is ``decimal(p,s)`` here
-    (``schema.sql`` says DOUBLE). That is how the DECIMAL variant is selected: by the file.
+
+def _duck_type(data_type: str) -> str:
+    """Catalog type word for a DuckDB ``data_type``: its own lowercase name (``classify_sql_type`` reads these)."""
+    return data_type.lower().replace(" ", "") if data_type.upper().startswith("DECIMAL(") else data_type.lower()
+
+
+def duck_schema(db_path: Path) -> dict[str, dict[str, str]]:
+    """Every table and column of the DuckDB file's main schema, from ``information_schema``."""
+    import duckdb
+
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        rows = con.execute(
+            "SELECT table_name, column_name, data_type FROM information_schema.columns "
+            "WHERE table_schema = 'main' ORDER BY table_name, ordinal_position"
+        ).fetchall()
+    finally:
+        con.close()
+    out: dict[str, dict[str, str]] = {}
+    for table, column, data_type in rows:
+        out.setdefault(str(table).lower(), {})[str(column).lower()] = _duck_type(str(data_type))
+    return out
+
+
+def load_sec_schema(db_path: Path | None = None) -> dict[str, dict[str, str]]:
+    """Catalog for a run. SEC EDGAR: full ``schema.sql`` when present, else test holdout subset.
+
+    With ``db_path`` holding the SEC tables, every column that file types DECIMAL(p,s) is
+    ``decimal(p,s)`` here (``schema.sql`` says DOUBLE). With any other ``db_path`` the catalog is
+    read from the file itself.
     """
+    if db_path is not None:
+        actual = duck_schema(db_path)
+        if not _SEC_TABLES <= set(actual):
+            return actual
     schema = {t: dict(cols) for t, cols in _load_sec_schema_sql().items()}
     if db_path is not None:
         for (table, column), sql_type in decimal_columns(db_path).items():
