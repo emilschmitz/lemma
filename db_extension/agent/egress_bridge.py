@@ -123,6 +123,26 @@ def host_allowed(hostname: str, allowlist: tuple[str, ...]) -> bool:
     return False
 
 
+def _connect_via_proxy(proxy_url: str, host: str, port: int) -> socket.socket:
+    """Open a TCP tunnel to host:port through an HTTP proxy (CONNECT); fail loudly unless the proxy answers 200."""
+    from urllib.parse import urlparse
+
+    proxy = urlparse(proxy_url)
+    sock = socket.create_connection((proxy.hostname, proxy.port or 80), timeout=30)
+    sock.sendall(f"CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n".encode("ascii"))
+    reply = b""
+    while b"\r\n\r\n" not in reply:
+        chunk = sock.recv(4096)
+        if not chunk:
+            raise ConnectionError(f"upstream proxy {proxy_url} closed the connection during CONNECT {host}:{port}")
+        reply += chunk
+    status = reply.split(b"\r\n", 1)[0].decode("iso-8859-1")
+    if " 200" not in status:
+        sock.close()
+        raise ConnectionError(f"upstream proxy {proxy_url} refused CONNECT {host}:{port}: {status}")
+    return sock
+
+
 class EgressBridge:
     """Minimal HTTP proxy: CONNECT + plain HTTP, allowlisted Host only."""
 
@@ -132,11 +152,15 @@ class EgressBridge:
         allowlist: tuple[str, ...] = DEFAULT_ALLOWLIST,
         log_path: Path | None = None,
         dial_overrides: dict[str, tuple[str, int]] | None = None,
+        upstream_proxy: str | None = None,
     ) -> None:
         self.sock_path = sock_path
         self.allowlist = allowlist
         # Test only: allowlisted host -> (address, port) actually dialed.
         self.dial_overrides = dial_overrides or {}
+        # "http://host:port" of the HTTP proxy this host reaches the internet through (HTTPS_PROXY), or None for direct dialing.
+        # The allowlist is checked BEFORE any tunnel is opened; the proxy only carries allowlisted CONNECTs.
+        self.upstream_proxy = upstream_proxy
         self.log_path = log_path
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -235,7 +259,10 @@ class EgressBridge:
                     )
                     conn.sendall(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n")
                     return
-                remote = socket.create_connection(self.dial_overrides.get(host, (host, port)), timeout=30)
+                if self.upstream_proxy:
+                    remote = _connect_via_proxy(self.upstream_proxy, host, port)
+                else:
+                    remote = socket.create_connection(self.dial_overrides.get(host, (host, port)), timeout=30)
                 conn.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                 self._log(
                     {
@@ -359,7 +386,7 @@ def main() -> None:
         if ws:
             log = Path(ws) / "mcp_results" / "egress_bridge.jsonl"
     allow = _parse_allowlist(args.allowlist, profile=args.profile)
-    bridge = EgressBridge(args.sock, allow, log)
+    bridge = EgressBridge(args.sock, allow, log, upstream_proxy=os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy"))
     print(f"egress bridge on uds://{args.sock} allow={bridge.allowlist}", flush=True)
     bridge.start()
     try:

@@ -1244,6 +1244,8 @@ def run_agent_docker(
         dial_overrides=(
             {"lemma-mock-anthropic.test": ("127.0.0.1", mock[0])} if mock is not None else None
         ),
+        # On a proxy-only network (HTTPS_PROXY set) the allowlisted CONNECTs go through that proxy; the mock path dials directly.
+        upstream_proxy=None if mock is not None else (os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")),
     )
     mcp_server.start()
     egress_server.start()
