@@ -22,7 +22,7 @@ MODELS = {"haiku": "claude-haiku-4-5-20251001", "sonnet": "claude-sonnet-5-5"}
 
 def command(model: str, sql_file: Path, marker: Path | None = None) -> list[str]:
     env_args = [f"--setenv=AGENT_TIMEOUT_SEC={os.environ.get('AGENT_TIMEOUT_SEC', '750')}"]  # 2 sessions x 750 s = 25 min per attempt (Emil, 2026-10-08)
-    env_args += [f"--setenv={k}={os.environ[k]}" for k in ("LEMMA_DUCKDB_PATH", "LEMMA_STRING_ENCODING", "LEMMA_TPCH_DB", "LEMMA_NARROW_CELLS", "LEMMA_ASSUMPTION_PACKAGE", "LEMMA_CLAUDE_EFFORT", "LEMMA_TARGET_CPU", "LEMMA_DUCK_MEMORY_LIMIT", "LEMMA_DUCK_THREADS") if k in os.environ]
+    env_args += [f"--setenv={k}={os.environ[k]}" for k in ("LEMMA_DUCKDB_PATH", "LEMMA_STRING_ENCODING", "LEMMA_JOIN_CHAIN", "LEMMA_TPCH_DB", "LEMMA_NARROW_CELLS", "LEMMA_ASSUMPTION_PACKAGE", "LEMMA_CLAUDE_EFFORT", "LEMMA_TARGET_CPU", "LEMMA_DUCK_MEMORY_LIMIT", "LEMMA_DUCK_THREADS") if k in os.environ]
     # The login refresh runs at the start of each run (`--locked-run`: the name is historical), so every run starts with a fresh token.
     return [
         "choom", "-n", "800", "--",  # no whole-run lock: proving runs in parallel; the export and the timed run take the heavy lock themselves

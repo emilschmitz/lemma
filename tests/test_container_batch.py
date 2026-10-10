@@ -94,3 +94,10 @@ def test_the_batch_stops_when_a_run_left_no_refresh_marker_and_clears_stale_mark
     monkeypatch.setattr(cb.subprocess, "run", lambda cmd, **kw: ran.append(cmd))  # the locked command fails before writing a marker
     assert cb.main(["sonnet:qA.sql"]) == 2
     assert not (tmp_path / "sonnet_qA.refresh.json").exists() and len(ran) == 1 and "no login refresh happened" in capsys.readouterr().err
+
+
+def test_the_join_chain_flag_reaches_the_run_only_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LEMMA_JOIN_CHAIN", raising=False)
+    assert not any(c.startswith("--setenv=LEMMA_JOIN_CHAIN") for c in cb.command("claude-sonnet-5-5", Path("/q.sql")))
+    monkeypatch.setenv("LEMMA_JOIN_CHAIN", "1")
+    assert "--setenv=LEMMA_JOIN_CHAIN=1" in cb.command("claude-sonnet-5-5", Path("/q.sql"))
