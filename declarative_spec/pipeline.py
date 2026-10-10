@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from declarative_spec import official_measure as om
 from declarative_spec.feedback import FULL_LOG_NAME, format_failure
 from declarative_spec.regions import extract_agent_edit, extract_agent_helpers
 from declarative_spec.verus_limits import (
@@ -126,8 +127,12 @@ def compile_and_run(
     work_dir: Path | None = None,
     timeout_sec: int | None = None,
     agent_source: str | None = None,
+    keep_binary: bool = False,
 ) -> dict:
     """Verify, compile, and run. Success requires a printed QUERY_LATENCY_US.
+
+    ``keep_binary`` leaves the compiled binary on disk (its path is ``binary_path`` in the result) for the official interleaved rounds;
+    the caller then deletes it.
 
     ``agent_source`` is the agent's file; with it a failure's line numbers are mapped back to that file.
     The full, unreduced Verus log is always written to ``<work_dir>/verify_full.log``.
@@ -200,6 +205,8 @@ def compile_and_run(
                 cwd=directory,
             )
     except subprocess.TimeoutExpired:
+        if owned_dir:
+            binary.unlink(missing_ok=True)
         return {
             "status": "FAILURE",
             "proof_verified": True,
@@ -208,13 +215,15 @@ def compile_and_run(
             "verify_msg": log[-2000:],
         }
     finally:
-        if owned_dir:
+        if owned_dir and not keep_binary:
             try:
                 binary.unlink(missing_ok=True)
             except OSError:
                 pass
     latency = _latency_us(run.stdout or "")
     if run.returncode != 0 or latency < 0:
+        if owned_dir:
+            binary.unlink(missing_ok=True)
         err = (run.stderr or run.stdout or "binary did not print QUERY_LATENCY_US")[-2000:]
         return {
             "status": "FAILURE",
@@ -233,7 +242,19 @@ def compile_and_run(
         "verify_msg": log[-2000:],
         "verify_summary": _verify_summary(log),
         "stdout": run.stdout or "",
+        "binary_path": str(binary),
+        "run_dir": str(directory),
+        "binary_owned": owned_dir,  # a temp dir the caller must clean; a caller-given work_dir keeps its binary as before
     }
+
+
+def run_binary_timed(binary: Path, directory: Path) -> tuple[int, int]:
+    """One more run of the compiled binary: (median-of-its-timed-runs us, best us). Loud on a crash, a timeout or a missing latency line."""
+    run = subprocess.run([str(binary)], capture_output=True, text=True, timeout=run_timeout_sec(), check=False, cwd=directory)
+    latency = _latency_us(run.stdout or "")
+    if run.returncode != 0 or latency < 0:
+        raise RuntimeError((run.stderr or run.stdout or "binary did not print QUERY_LATENCY_US")[-2000:])
+    return latency, _best_us(run.stdout or "")
 
 
 def speed_bar_mult() -> float:
@@ -253,9 +274,15 @@ PARALLEL_HINT = (
 )
 
 
-def _apply_speed_bar(metrics: dict, speed_bar: dict | None, *, parallel_hint: bool = False) -> dict:
+def _apply_speed_bar(metrics: dict, speed_bar: dict | None, *, parallel_hint: bool = False, official: bool = False) -> dict:
+    """Row check first (always), then the speed verdict.
+
+    ``official=True`` (the host re-measure after submit / at the end of the loop): K interleaved rounds of DuckDB and the binary, verdict on the
+    ratio of the medians (declarative_spec/official_measure.py). Otherwise (in-session ``run_runquery``): the single binary run against the DuckDB
+    median taken at prepare, as before; labelled so in ``measurement``.
+    """
     if speed_bar is None or metrics.get("status") != "SUCCESS":
-        return metrics
+        return _release_binary(metrics)
     duck_us = int(speed_bar["duck_us"])
     latency = int(metrics.get("latency_us", -1))
     stdout = str(metrics.get("stdout") or "")
@@ -282,18 +309,35 @@ def _apply_speed_bar(metrics: dict, speed_bar: dict | None, *, parallel_hint: bo
                 f"(got {len(got)} groups, expected {len(expect)})"
             )
     if err:
-        return {
+        return _release_binary({
             **metrics,
             "status": "FAILURE",
             "duck_us": duck_us,
             "compiler_error": err,
-        }
+        })
     mult = speed_bar_mult()
+    official = official and not speed_bar.get("synthetic")  # the synthetic dev bar (LEMMA_DECL_ROWS) has no DuckDB file to re-time; its result says so in `measurement`
+    rounds_info: dict = {"measurement": om.MEASUREMENT_IN_SESSION}
+    if official:
+        try:
+            rounds_info, latency, duck_us, best_us = _official_rounds(metrics, speed_bar)
+        except (RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
+            return _release_binary({
+                **metrics,
+                "status": "FAILURE",
+                "latency_us": -1,
+                "duck_us": duck_us,
+                "measurement": om.MEASUREMENT_OFFICIAL,
+                "compiler_error": f"official interleaved measure failed: {exc}",
+            })
+        metrics = {**metrics, "latency_us": latency, "latency_best_us": best_us}
+    metrics = _release_binary(metrics)
     speedup = duck_us / max(latency, 1)
     attained = {
+        **rounds_info,
         "speed_bar_mult": mult,
         "official_tables": speed_bar.get("table_rows"),  # the timed run is on these FULL tables, whatever dataset_size says
-        "speedup": speedup,  # median of the timed runs
+        "speedup": speedup,  # in session: median of the binary's timed runs vs the prepare-time DuckDB median; official: median of rounds vs median of rounds
         "latency_best_us": metrics.get("latency_best_us"),
         "speedup_best": None
         if metrics.get("latency_best_us") in (None, -1)
@@ -312,11 +356,59 @@ def _apply_speed_bar(metrics: dict, speed_bar: dict | None, *, parallel_hint: bo
             "compiler_error": (
                 f"proved but below the speed bar: query {latency} us, DuckDB {duck_us} us "
                 f"({speedup:.2f}x; the bar is {mult:g}x faster than DuckDB). "
-                "Use one pass over dense arrays; avoid a loop over one table inside another and a hash-map update per row where a dense Vec indexed by key works."
+                + (f"[{om.MEASUREMENT_OFFICIAL}: medians of {len(rounds_info['official_rounds'])} rounds, per round (ours/DuckDB us): {_rounds_text(rounds_info)}] " if official else "")
+                + "Use one pass over dense arrays; avoid a loop over one table inside another and a hash-map update per row where a dense Vec indexed by key works."
                 + (PARALLEL_HINT if parallel_hint else "")
             ),
         }
     return {**metrics, **attained, "duck_us": duck_us}
+
+
+def _release_binary(metrics: dict) -> dict:
+    """Delete the kept binary (see compile_and_run ``keep_binary``) and drop its path from the result."""
+    path = metrics.get("binary_path")
+    if path is None:
+        return metrics
+    if metrics.get("binary_owned"):
+        Path(path).unlink(missing_ok=True)
+    return {k: v for k, v in metrics.items() if k not in ("binary_path", "run_dir", "binary_owned")}
+
+
+def _rounds_text(info: dict) -> str:
+    return "; ".join(f"{r['round']}:{r['order']} {r['ours_us']}/{r['duck_us']}" for r in info["official_rounds"])
+
+
+def _official_rounds(metrics: dict, speed_bar: dict) -> tuple[dict, int, int, int]:
+    """K interleaved rounds: (info for the result, ours median us, DuckDB median us, best us of the binary over the rounds)."""
+    from declarative_spec.heavy_phase import heavy_phase
+
+    binary, directory = Path(metrics["binary_path"]), Path(metrics["run_dir"])
+    k = om.official_rounds()
+    bests: list[int] = []
+
+    def ours() -> int:
+        latency, best = run_binary_timed(binary, directory)
+        bests.append(best)
+        return latency
+
+    with heavy_phase("measure"):  # one quiet-machine phase for all rounds: no proof or export between the two sides
+        duck, close = om.duck_round_timer(speed_bar, directory)
+        try:
+            rounds = om.interleave(ours, duck, k)
+        finally:
+            close()
+    summary = om.summarize(rounds)
+    info = {
+        "measurement": om.MEASUREMENT_OFFICIAL,
+        "official_rounds": rounds,
+        "official_k": k,
+        "official_duck_reps": om.duck_reps(),
+        "ours_median_us": summary["ours_median_us"],
+        "duck_median_us": summary["duck_median_us"],
+        "check_run_latency_us": metrics.get("latency_us"),  # the first run (row check); not part of the verdict
+        "prepare_duck_us": speed_bar.get("duck_us"),  # DuckDB at prepare; not part of the verdict
+    }
+    return info, summary["ours_median_us"], summary["duck_median_us"], min(bests)
 
 
 def run_declarative_metrics(
@@ -327,8 +419,9 @@ def run_declarative_metrics(
     timeout_sec: int | None = None,
     column_bins: dict[str, str] | None = None,
     speed_bar: dict | None = None,
+    official: bool = False,
 ) -> dict:
-    """Admit the agent edit, assemble, compile, and run."""
+    """Admit the agent edit, assemble, compile, and run. ``official``: the verdict is K interleaved rounds (see ``_apply_speed_bar``)."""
     from declarative_spec.admit import admit_declarative_body, admit_helpers
     from declarative_spec.assemble import assemble_declarative_program
 
@@ -373,9 +466,11 @@ def run_declarative_metrics(
             "latency_us": -1,
             "compiler_error": str(exc),
         }
-    metrics = compile_and_run(assembled, work_dir=work_dir, timeout_sec=timeout_sec, agent_source=agent_source)
+    metrics = compile_and_run(
+        assembled, work_dir=work_dir, timeout_sec=timeout_sec, agent_source=agent_source, keep_binary=official and speed_bar is not None and not speed_bar.get("synthetic")
+    )
     from declarative_spec import parallel
 
     # A body that never spawns a thread loses a bandwidth-bound scan to the all-core engine: tell it so when it can still upgrade.
     uses_threads = "spawn(" in body
-    return _apply_speed_bar(metrics, speed_bar, parallel_hint=parallel.is_parallel(spec_rs) and not uses_threads)
+    return _apply_speed_bar(metrics, speed_bar, parallel_hint=parallel.is_parallel(spec_rs) and not uses_threads, official=official)

@@ -24,6 +24,19 @@ from declarative_spec.vstd_index import VERUS_HOME, groups_markdown
 from declarative_spec.prompt import build_declarative_prompt, mount_examples
 
 
+OFFICIAL_KEYS = (
+    "measurement", "official_k", "official_duck_reps", "official_rounds", "ours_median_us", "duck_median_us",
+    "check_run_latency_us", "prepare_duck_us", "speedup", "speed_bar_mult", "target_cpu",
+)
+
+
+def official_record(metrics: dict) -> dict | None:
+    """The official interleaved measurement of one host run (per-round numbers, medians, speedup of medians), or None if there was none."""
+    if not metrics.get("official_rounds"):
+        return None
+    return {k: metrics.get(k) for k in OFFICIAL_KEYS}
+
+
 def _maybe_large_table(
     *,
     sql_query: str,
@@ -43,16 +56,19 @@ def _maybe_large_table(
             dest=workspace / "decl_data",
         )
         bar = {
+            "sql": prepared["sql"],
+            "db_path": prepared["db_path"],
             "duck_us": prepared["duck_us"],
             "duck_threads": prepared["duck_threads"],
             "duck1_us": prepared["duck1_us"],
             "rows": prepared["rows"],
             "table_rows": prepared["table_rows"],
             "dict_sizes": prepared["dict_sizes"],
+            "duck_settings": prepared["duck_settings"],
         }
         if prepared["kinds"] is not None:  # OutRow result; a map result prints `ROW key value`
             bar["kinds"] = prepared["kinds"]
-            bar.update({k: prepared.get(k) for k in ("order_cols", "limited", "tie_rows", "duck_settings")})  # ORDER BY / LIMIT tie handling, see bench.rows_match_error
+            bar.update({k: prepared.get(k) for k in ("order_cols", "limited", "tie_rows")})  # ORDER BY / LIMIT tie handling, see bench.rows_match_error
         return prepared["bins"], bar
     raw = os.environ.get("LEMMA_DECL_ROWS", "").strip()
     if not raw:
@@ -71,6 +87,7 @@ def _maybe_large_table(
     return {prepared["suffix"]: prepared["bin"]}, {
         "duck_us": prepared["duck_us"],
         "rows": prepared["rows"],
+        "synthetic": True,  # no DuckDB file behind this dev bar: the official measure cannot re-time it
     }
 
 
@@ -338,10 +355,12 @@ def run_declarative_optimization_loop(
             work_dir=workspace / "declarative_build",
             column_bins=column_bins,
             speed_bar=speed_bar,
+            official=True,  # the end-of-loop host measure is the official one: interleaved rounds
         )
         best_so_far.record_attempt(workspace, agent_source, metrics, origin=f"host-final:iteration{iteration}")
         iter_record["verus_ok"] = metrics.get("status") == "SUCCESS"
         iter_record["proof_verified"] = bool(metrics.get("proof_verified"))
+        iter_record["official"] = official_record(metrics)
         iter_record["latency_us"] = metrics.get("latency_us", -1)
         proof_verified = bool(iter_record["proof_verified"])
         if metrics.get("status") != "SUCCESS":
@@ -357,6 +376,7 @@ def run_declarative_optimization_loop(
                 "duck1_us": metrics.get("duck1_us"),
                 "duck_threads": metrics.get("duck_threads"),
                 "speedup": metrics.get("speedup"),
+                "official": official_record(metrics),
                 "speedup_1t": metrics.get("speedup_1t"),
                 "speed_bar_mult": metrics.get("speed_bar_mult"),
                 "target_cpu": metrics.get("target_cpu"),
@@ -370,6 +390,7 @@ def run_declarative_optimization_loop(
         "status": "FAILED",
         "best_latency_us": -1,
         "duck_us": None if speed_bar is None else speed_bar.get("duck_us"),
+        "official": next((h["official"] for h in reversed(history) if h.get("official")), None),
         "history": history,
         "error": last_error or "declarative loop exhausted iterations without a run",
         "proof_verified": proof_verified,

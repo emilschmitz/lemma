@@ -189,6 +189,7 @@ def run(
         "database": str(db_path),
         "model": model,
         "duck_us": result.get("duck_us"),
+        "official": result.get("official"),  # K interleaved rounds: per-round numbers, medians, speedup of medians
         "menu": menu,
         "selection": resolved.as_dict(),
         "sql": sql,

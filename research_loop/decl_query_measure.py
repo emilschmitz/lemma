@@ -160,6 +160,8 @@ def _write_query_measure(
         "tie_rows": tie_rows,
         **tie_info,
         "duck_settings": duck_cfg,
+        "sql": sql,  # the official measure re-times DuckDB on this text, on this file, under duck_settings
+        "db_path": str(db_path),
     }
     (dest / "expect.json").write_text(json.dumps(expect) + "\n", encoding="utf-8")
     return {
@@ -174,6 +176,8 @@ def _write_query_measure(
         "tie_rows": tie_rows,
         **tie_info,
         "duck_settings": duck_cfg,
+        "sql": sql,
+        "db_path": str(db_path),
     }
 
 

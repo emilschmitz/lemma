@@ -311,6 +311,7 @@ def official_full_measure_after_submit(
             dataset_size=dataset_size,
             workload_tables=workload_tables,
             workload=workload,
+            official=True,  # declarative: K interleaved rounds against DuckDB, verdict on the medians
         )
 
     try:
