@@ -1,313 +1,339 @@
 {
-  "name": "ssb_sf1",
-  "max_rows": 33554432,
-  "max_rows_cube": 33554432,
-  "max_rows_4": 33554432,
-  "max_native_u32": 2147483648,
-  "max_string_len": 32,
-  "tables": {
-    "customer": {
-      "max_rows": 131072,
-      "columns": {
-        "c_custkey": {
-          "max_value_exclusive": 32768
-        },
-        "c_name": {
-          "max_string_len": 32,
-          "max_distinct": 131072
-        },
-        "c_address": {
-          "max_string_len": 32,
-          "max_distinct": 131072
-        },
-        "c_city": {
-          "max_string_len": 16,
-          "max_distinct": 1024
-        },
-        "c_nation": {
-          "max_string_len": 16,
-          "max_distinct": 128
-        },
-        "c_region": {
-          "max_string_len": 16,
-          "max_distinct": 32
-        },
-        "c_phone": {
-          "max_string_len": 16,
-          "max_distinct": 131072
-        },
-        "c_mktsegment": {
-          "max_string_len": 16,
-          "max_distinct": 32
-        }
-      }
+ "name": "ssb_sf1",
+ "max_rows": 33554432,
+ "max_rows_cube": 33554432,
+ "max_rows_4": 33554432,
+ "max_native_u32": 2147483648,
+ "max_string_len": 32,
+ "tables": {
+  "customer": {
+   "max_rows": 131072,
+   "columns": {
+    "c_custkey": {
+     "max_value_exclusive": 32768
     },
-    "date": {
-      "max_rows": 16384,
-      "columns": {
-        "d_datekey": {
-          "max_value_exclusive": 33554432
-        },
-        "d_date": {
-          "max_string_len": 32,
-          "max_distinct": 16384
-        },
-        "d_dayofweek": {
-          "max_string_len": 16,
-          "max_distinct": 32
-        },
-        "d_month": {
-          "max_string_len": 16,
-          "max_distinct": 64
-        },
-        "d_year": {
-          "max_value_exclusive": 2048
-        },
-        "d_yearmonthnum": {
-          "max_value_exclusive": 262144
-        },
-        "d_yearmonth": {
-          "max_string_len": 8,
-          "max_distinct": 512
-        },
-        "d_daynuminweek": {
-          "max_value_exclusive": 8
-        },
-        "d_daynuminmonth": {
-          "max_value_exclusive": 32
-        },
-        "d_daynuminyear": {
-          "max_value_exclusive": 512
-        },
-        "d_monthnuminyear": {
-          "max_value_exclusive": 16
-        },
-        "d_weeknuminyear": {
-          "max_value_exclusive": 64
-        },
-        "d_sellingseason": {
-          "max_string_len": 16,
-          "max_distinct": 32
-        },
-        "d_lastdayinweekfl": {
-          "max_value_exclusive": 2
-        },
-        "d_lastdayinmonthfl": {
-          "max_value_exclusive": 2
-        },
-        "d_holidayfl": {
-          "max_value_exclusive": 2
-        },
-        "d_weekdayfl": {
-          "max_value_exclusive": 2
-        }
-      }
+    "c_name": {
+     "max_string_len": 32,
+     "max_distinct": 131072
     },
-    "lineorder": {
-      "max_rows": 33554432,
-      "columns": {
-        "lo_orderkey": {
-          "max_value_exclusive": 8388608
-        },
-        "lo_linenumber": {
-          "max_value_exclusive": 8
-        },
-        "lo_custkey": {
-          "max_value_exclusive": 32768
-        },
-        "lo_partkey": {
-          "max_value_exclusive": 262144
-        },
-        "lo_suppkey": {
-          "max_value_exclusive": 2048
-        },
-        "lo_orderdate": {
-          "max_value_exclusive": 33554432
-        },
-        "lo_orderpriority": {
-          "max_string_len": 16,
-          "max_distinct": 32
-        },
-        "lo_shippriority": {
-          "max_value_exclusive": 1
-        },
-        "lo_quantity": {
-          "max_value_exclusive": 64
-        },
-        "lo_extendedprice": {
-          "max_value_exclusive": 16777216
-        },
-        "lo_ordtotalprice": {
-          "max_value_exclusive": 67108864
-        },
-        "lo_discount": {
-          "max_value_exclusive": 16
-        },
-        "lo_revenue": {
-          "max_value_exclusive": 16777216
-        },
-        "lo_supplycost": {
-          "max_value_exclusive": 131072
-        },
-        "lo_tax": {
-          "max_value_exclusive": 16
-        },
-        "lo_commitdate": {
-          "max_value_exclusive": 33554432
-        },
-        "lo_shipmode": {
-          "max_string_len": 8,
-          "max_distinct": 32
-        }
-      }
+    "c_address": {
+     "max_string_len": 32,
+     "max_distinct": 131072
     },
-    "part": {
-      "max_rows": 1048576,
-      "columns": {
-        "p_partkey": {
-          "max_value_exclusive": 262144
-        },
-        "p_name": {
-          "max_string_len": 32,
-          "max_distinct": 65536
-        },
-        "p_mfgr": {
-          "max_string_len": 8,
-          "max_distinct": 32
-        },
-        "p_category": {
-          "max_string_len": 8,
-          "max_distinct": 128
-        },
-        "p_brand1": {
-          "max_string_len": 16,
-          "max_distinct": 4096
-        },
-        "p_color": {
-          "max_string_len": 16,
-          "max_distinct": 512
-        },
-        "p_type": {
-          "max_string_len": 32,
-          "max_distinct": 1024
-        },
-        "p_size": {
-          "max_value_exclusive": 64
-        },
-        "p_container": {
-          "max_string_len": 16,
-          "max_distinct": 256
-        }
-      }
+    "c_city": {
+     "max_string_len": 16,
+     "max_distinct": 1024
     },
-    "supplier": {
-      "max_rows": 8192,
-      "columns": {
-        "s_suppkey": {
-          "max_value_exclusive": 2048
-        },
-        "s_name": {
-          "max_string_len": 32,
-          "max_distinct": 8192
-        },
-        "s_address": {
-          "max_string_len": 32,
-          "max_distinct": 8192
-        },
-        "s_city": {
-          "max_string_len": 16,
-          "max_distinct": 1024
-        },
-        "s_nation": {
-          "max_string_len": 16,
-          "max_distinct": 128
-        },
-        "s_region": {
-          "max_string_len": 16,
-          "max_distinct": 32
-        },
-        "s_phone": {
-          "max_string_len": 16,
-          "max_distinct": 8192
-        }
-      }
+    "c_nation": {
+     "max_string_len": 16,
+     "max_distinct": 128
+    },
+    "c_region": {
+     "max_string_len": 16,
+     "max_distinct": 32
+    },
+    "c_phone": {
+     "max_string_len": 16,
+     "max_distinct": 131072
+    },
+    "c_mktsegment": {
+     "max_string_len": 16,
+     "max_distinct": 32
     }
+   },
+   "unique_keys": [
+    [
+     "c_custkey"
+    ]
+   ]
   },
-  "join_caps": [
-    {
-      "left": "lineorder",
-      "right": "date",
-      "equalities": [
-        [
-          "lo_orderdate",
-          "d_datekey"
-        ]
-      ],
-      "max_tuples": 33554432
+  "date": {
+   "max_rows": 16384,
+   "columns": {
+    "d_datekey": {
+     "max_value_exclusive": 33554432
     },
-    {
-      "left": "lineorder",
-      "right": "customer",
-      "equalities": [
-        [
-          "lo_custkey",
-          "c_custkey"
-        ]
-      ],
-      "max_tuples": 33554432
+    "d_date": {
+     "max_string_len": 32,
+     "max_distinct": 16384
     },
-    {
-      "left": "lineorder",
-      "right": "supplier",
-      "equalities": [
-        [
-          "lo_suppkey",
-          "s_suppkey"
-        ]
-      ],
-      "max_tuples": 33554432
+    "d_dayofweek": {
+     "max_string_len": 16,
+     "max_distinct": 32
     },
-    {
-      "left": "lineorder",
-      "right": "part",
-      "equalities": [
-        [
-          "lo_partkey",
-          "p_partkey"
-        ]
-      ],
-      "max_tuples": 33554432
+    "d_month": {
+     "max_string_len": 16,
+     "max_distinct": 64
+    },
+    "d_year": {
+     "max_value_exclusive": 2048
+    },
+    "d_yearmonthnum": {
+     "max_value_exclusive": 262144
+    },
+    "d_yearmonth": {
+     "max_string_len": 8,
+     "max_distinct": 512
+    },
+    "d_daynuminweek": {
+     "max_value_exclusive": 8
+    },
+    "d_daynuminmonth": {
+     "max_value_exclusive": 32
+    },
+    "d_daynuminyear": {
+     "max_value_exclusive": 512
+    },
+    "d_monthnuminyear": {
+     "max_value_exclusive": 16
+    },
+    "d_weeknuminyear": {
+     "max_value_exclusive": 64
+    },
+    "d_sellingseason": {
+     "max_string_len": 16,
+     "max_distinct": 32
+    },
+    "d_lastdayinweekfl": {
+     "max_value_exclusive": 2
+    },
+    "d_lastdayinmonthfl": {
+     "max_value_exclusive": 2
+    },
+    "d_holidayfl": {
+     "max_value_exclusive": 2
+    },
+    "d_weekdayfl": {
+     "max_value_exclusive": 2
     }
-  ],
-  "proposals": {
-    "unique_keys": {
-      "customer": [
-        [
-          "c_name"
-        ],
-        [
-          "c_address"
-        ],
-        [
-          "c_phone"
-        ]
-      ],
-      "date": [
-        [
-          "d_date"
-        ]
-      ],
-      "supplier": [
-        [
-          "s_name"
-        ],
-        [
-          "s_address"
-        ],
-        [
-          "s_phone"
-        ]
-      ]
+   },
+   "unique_keys": [
+    [
+     "d_datekey"
+    ]
+   ]
+  },
+  "lineorder": {
+   "max_rows": 33554432,
+   "columns": {
+    "lo_orderkey": {
+     "max_value_exclusive": 8388608
+    },
+    "lo_linenumber": {
+     "max_value_exclusive": 8
+    },
+    "lo_custkey": {
+     "max_value_exclusive": 32768
+    },
+    "lo_partkey": {
+     "max_value_exclusive": 262144
+    },
+    "lo_suppkey": {
+     "max_value_exclusive": 2048
+    },
+    "lo_orderdate": {
+     "max_value_exclusive": 33554432
+    },
+    "lo_orderpriority": {
+     "max_string_len": 16,
+     "max_distinct": 32
+    },
+    "lo_shippriority": {
+     "max_value_exclusive": 1
+    },
+    "lo_quantity": {
+     "max_value_exclusive": 64
+    },
+    "lo_extendedprice": {
+     "max_value_exclusive": 16777216
+    },
+    "lo_ordtotalprice": {
+     "max_value_exclusive": 67108864
+    },
+    "lo_discount": {
+     "max_value_exclusive": 16
+    },
+    "lo_revenue": {
+     "max_value_exclusive": 16777216
+    },
+    "lo_supplycost": {
+     "max_value_exclusive": 131072
+    },
+    "lo_tax": {
+     "max_value_exclusive": 16
+    },
+    "lo_commitdate": {
+     "max_value_exclusive": 33554432
+    },
+    "lo_shipmode": {
+     "max_string_len": 8,
+     "max_distinct": 32
     }
+   },
+   "unique_keys": [
+    [
+     "lo_orderkey",
+     "lo_linenumber"
+    ]
+   ]
+  },
+  "part": {
+   "max_rows": 1048576,
+   "columns": {
+    "p_partkey": {
+     "max_value_exclusive": 262144
+    },
+    "p_name": {
+     "max_string_len": 32,
+     "max_distinct": 65536
+    },
+    "p_mfgr": {
+     "max_string_len": 8,
+     "max_distinct": 32
+    },
+    "p_category": {
+     "max_string_len": 8,
+     "max_distinct": 128
+    },
+    "p_brand1": {
+     "max_string_len": 16,
+     "max_distinct": 4096
+    },
+    "p_color": {
+     "max_string_len": 16,
+     "max_distinct": 512
+    },
+    "p_type": {
+     "max_string_len": 32,
+     "max_distinct": 1024
+    },
+    "p_size": {
+     "max_value_exclusive": 64
+    },
+    "p_container": {
+     "max_string_len": 16,
+     "max_distinct": 256
+    }
+   },
+   "unique_keys": [
+    [
+     "p_partkey"
+    ]
+   ]
+  },
+  "supplier": {
+   "max_rows": 8192,
+   "columns": {
+    "s_suppkey": {
+     "max_value_exclusive": 2048
+    },
+    "s_name": {
+     "max_string_len": 32,
+     "max_distinct": 8192
+    },
+    "s_address": {
+     "max_string_len": 32,
+     "max_distinct": 8192
+    },
+    "s_city": {
+     "max_string_len": 16,
+     "max_distinct": 1024
+    },
+    "s_nation": {
+     "max_string_len": 16,
+     "max_distinct": 128
+    },
+    "s_region": {
+     "max_string_len": 16,
+     "max_distinct": 32
+    },
+    "s_phone": {
+     "max_string_len": 16,
+     "max_distinct": 8192
+    }
+   },
+   "unique_keys": [
+    [
+     "s_suppkey"
+    ]
+   ]
   }
+ },
+ "join_caps": [
+  {
+   "left": "lineorder",
+   "right": "date",
+   "equalities": [
+    [
+     "lo_orderdate",
+     "d_datekey"
+    ]
+   ],
+   "max_tuples": 33554432
+  },
+  {
+   "left": "lineorder",
+   "right": "customer",
+   "equalities": [
+    [
+     "lo_custkey",
+     "c_custkey"
+    ]
+   ],
+   "max_tuples": 33554432
+  },
+  {
+   "left": "lineorder",
+   "right": "supplier",
+   "equalities": [
+    [
+     "lo_suppkey",
+     "s_suppkey"
+    ]
+   ],
+   "max_tuples": 33554432
+  },
+  {
+   "left": "lineorder",
+   "right": "part",
+   "equalities": [
+    [
+     "lo_partkey",
+     "p_partkey"
+    ]
+   ],
+   "max_tuples": 33554432
+  }
+ ],
+ "proposals": {
+  "unique_keys": {
+   "customer": [
+    [
+     "c_name"
+    ],
+    [
+     "c_address"
+    ],
+    [
+     "c_phone"
+    ]
+   ],
+   "date": [
+    [
+     "d_date"
+    ]
+   ],
+   "supplier": [
+    [
+     "s_name"
+    ],
+    [
+     "s_address"
+    ],
+    [
+     "s_phone"
+    ]
+   ]
+  }
+ }
 }

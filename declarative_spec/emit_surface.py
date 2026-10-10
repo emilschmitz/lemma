@@ -91,9 +91,17 @@ def _emit_with_string_tokens(
 
         return emit_projection_program(query, model, catalog)
 
-    helpers = _emit_helpers(query, "", model)
+    from declarative_spec import join_chain
+
+    chain = join_chain.find_chain(query, _build_slots(query), model, catalog) if join_chain.enabled() else None
+    helpers = _emit_helpers(query, "", model, chain=chain)
     _require_float_mags(query, helpers, model, catalog)
     facts = _require_sum_fits(query, helpers, model, catalog)
+    if chain is not None:
+        # every table after the fact table is unique on its chain key: the data must say so (loader-checked), and the proofs may use it
+        merged = dict(facts.unique_aliases) if facts else {}
+        merged.update(dict(chain.unique))
+        facts = dataclasses.replace(facts, unique_aliases=tuple(merged.items())) if facts else _JoinBound(1, tuple(merged.items()))
 
     structs = _structs(helpers.params, model, catalog)
     int_sum = any(a.kind == "SUM" and not a.float_out for a in helpers.aggs)
@@ -202,8 +210,12 @@ def _reject_unemitted(query: Query) -> None:
         _reject_unemitted(query.set_query)
 
 
-def _emit_helpers(query: Query, prefix: str, model: SchemaModel) -> _Helpers:
+def _emit_helpers(query: Query, prefix: str, model: SchemaModel, chain=None) -> _Helpers:
     main = _build_slots(query)
+    if chain is not None and not prefix:
+        from declarative_spec import join_chain
+
+        main = join_chain.reorder(main, chain)
     if not main:
         raise DeclarativeUnsupported("FROM")
     for slot in main:
@@ -244,7 +256,9 @@ def _emit_helpers(query: Query, prefix: str, model: SchemaModel) -> _Helpers:
                 )
             hit_name = f"{prefix}hit_{rust_ident(agg.alias)}"
             blocks.append(_agg_hit_fn(hit_name, row_hit, agg, main, params, model))
-        aggs.append(_emit_agg(blocks, query, agg, prefix, main, params, model, key_ty, hit_name, key_at))
+        aggs.append(
+            _emit_agg(blocks, query, agg, prefix, main, params, model, key_ty, hit_name, key_at, chain_lemmas=chain is not None and not prefix)
+        )
         aggs[-1].hidden = agg.hidden
         aggs[-1].hit_fn = hit_name
 
@@ -573,6 +587,19 @@ def _default(info: ColumnTypeInfo) -> str:
 _LIBRARY_MARK = "// HOST_LIBRARY_MARK\n"
 
 
+def _chain_library(name: str, term: str, main: list[_Slot], params: list[_Slot], key_ty: str | None) -> str:
+    from declarative_spec.chain_lemmas import chain_fold_lemmas
+
+    return chain_fold_lemmas(
+        name=name,
+        term_expr=term,
+        idxs=[s.idx for s in main],
+        bounds=[f"{s.param}.n as int" for s in main],
+        params=[(s.param, s.struct) for s in params],
+        key_ty=key_ty,
+    )
+
+
 def _emit_agg(
     blocks: list[str],
     query: Query,
@@ -584,6 +611,7 @@ def _emit_agg(
     key_ty: str | None,
     row_hit: str,
     key_at: str,
+    chain_lemmas: bool = False,
 ) -> _AggFn:
     kind = agg.kind.upper()
     if kind == "RATIO":
@@ -616,6 +644,8 @@ def _emit_agg(
             key_ty,
             unit_step=True,
         )
+        if chain_lemmas:
+            blocks.append(_LIBRARY_MARK + _chain_library(name, f"if {hit} {{ {term} }} else {{ 0int }}", main, params, key_ty))
         return _AggFn(alias, kind, name, "int", False, "fold", "u64")
     if kind == "COUNT_DISTINCT":
         value = _value_fn(blocks, f"{name}_val", agg, main, params, model, _value_ret(agg, main, model))
@@ -642,6 +672,8 @@ def _emit_agg(
         zero = "0real" if is_float else "0int"
         add = f"if {hit} {{ {value}({_param_call(params)}, {_idx_call(main)}) }} else {{ {zero} }}"
         _emit_fold(blocks, name, ret, zero, add, main, params, key_ty)
+        if chain_lemmas and not is_float:
+            blocks.append(_LIBRARY_MARK + _chain_library(name, add, main, params, key_ty))
         return _AggFn(alias, kind, name, ret, is_float, "fold", exec_ty)
     if kind == "AVG":
         # SQL AVG is a real quotient, including AVG over an integer column.
