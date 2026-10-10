@@ -18,6 +18,7 @@ prepare-time DuckDB median and is labelled ``in_session_single_vs_prepare_duck``
 from __future__ import annotations
 
 import os
+import shutil
 import statistics
 import time
 from collections.abc import Callable
@@ -68,6 +69,8 @@ def summarize(rounds: list[dict]) -> dict:
         "ours_median_us": ours_med,
         "duck_median_us": duck_med,
         "speedup": duck_med / max(ours_med, 1),
+        "ratio_min": min(r["duck_us"] / max(r["ours_us"], 1) for r in rounds),
+        "ratio_max": max(r["duck_us"] / max(r["ours_us"], 1) for r in rounds),
         "rounds": rounds,
     }
 
@@ -94,7 +97,14 @@ def duck_round_timer(speed_bar: dict, work_dir: Path) -> tuple[Callable[[], int]
     for _ in range(2):  # warm: the same two warmups the prepare-time timing takes
         con.execute(sql).fetchall()
 
+    probe: list[float] = []
+    for _ in range(reps):
+        t0 = time.perf_counter()
+        con.execute("SELECT 1").fetchall()
+        probe.append((time.perf_counter() - t0) * 1_000_000)
+
     def one_round() -> int:
+        con.execute(sql).fetchall()  # untimed first run: ours starts each round after a load, so DuckDB gets a preamble too
         samples: list[float] = []
         for _ in range(reps):
             t0 = time.perf_counter()
@@ -102,4 +112,10 @@ def duck_round_timer(speed_bar: dict, work_dir: Path) -> tuple[Callable[[], int]
             samples.append((time.perf_counter() - t0) * 1_000_000)
         return int(statistics.median(samples))
 
-    return one_round, con.close
+    one_round.python_overhead_us = int(statistics.median(probe))  # type: ignore[attr-defined]  # recorded, NOT subtracted (conservative)
+
+    def close() -> None:
+        con.close()
+        shutil.rmtree(tmp, ignore_errors=True)  # spill files of a small memory_limit can be GBs
+
+    return one_round, close

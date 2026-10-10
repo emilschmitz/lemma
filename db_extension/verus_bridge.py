@@ -579,6 +579,9 @@ _SPEED_KEYS = (
     "ours_median_us",
     "duck_median_us",
     "check_run_latency_us",
+    "ratio_band",
+    "inconclusive",
+    "duck_python_overhead_us",
     "prepare_duck_us",
 )
 

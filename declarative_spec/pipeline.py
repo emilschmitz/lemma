@@ -330,7 +330,7 @@ def _apply_speed_bar(metrics: dict, speed_bar: dict | None, *, parallel_hint: bo
                 "measurement": om.MEASUREMENT_OFFICIAL,
                 "compiler_error": f"official interleaved measure failed: {exc}",
             })
-        metrics = {**metrics, "latency_us": latency, "latency_best_us": best_us}
+        metrics = {**metrics, "latency_us": latency, "latency_best_us": None}  # best-of-45 vs a median is not comparable: not reported
     metrics = _release_binary(metrics)
     speedup = duck_us / max(latency, 1)
     attained = {
@@ -345,7 +345,7 @@ def _apply_speed_bar(metrics: dict, speed_bar: dict | None, *, parallel_hint: bo
         "target_cpu": target_cpu(),  # a non-generic binary is tied to a CPU class: every quoted speedup must say so
         "duck_threads": speed_bar.get("duck_threads"),
         "duck1_us": speed_bar.get("duck1_us"),
-        "speedup_1t": None if speed_bar.get("duck1_us") is None else int(speed_bar["duck1_us"]) / max(latency, 1),
+        "speedup_1t": None if official or speed_bar.get("duck1_us") is None else int(speed_bar["duck1_us"]) / max(latency, 1),
     }
     if latency < 0 or latency * mult >= duck_us:
         return {
@@ -384,6 +384,7 @@ def _official_rounds(metrics: dict, speed_bar: dict) -> tuple[dict, int, int, in
 
     binary, directory = Path(metrics["binary_path"]), Path(metrics["run_dir"])
     k = om.official_rounds()
+    mult_ = speed_bar_mult()
     bests: list[int] = []
 
     def ours() -> int:
@@ -393,6 +394,7 @@ def _official_rounds(metrics: dict, speed_bar: dict) -> tuple[dict, int, int, in
 
     with heavy_phase("measure"):  # one quiet-machine phase for all rounds: no proof or export between the two sides
         duck, close = om.duck_round_timer(speed_bar, directory)
+        overhead = getattr(duck, "python_overhead_us", None)
         try:
             rounds = om.interleave(ours, duck, k)
         finally:
@@ -405,6 +407,9 @@ def _official_rounds(metrics: dict, speed_bar: dict) -> tuple[dict, int, int, in
         "official_duck_reps": om.duck_reps(),
         "ours_median_us": summary["ours_median_us"],
         "duck_median_us": summary["duck_median_us"],
+        "ratio_band": [summary["ratio_min"], summary["ratio_max"]],  # per-round DuckDB/ours; noise is ~+-4%, a band over 1/mult is not a verdict
+        "inconclusive": summary["ratio_min"] * mult_ < 1.0 <= summary["ratio_max"] * mult_,
+        "duck_python_overhead_us": overhead,  # execute+fetchall of SELECT 1: counted in DuckDB's figure, not ours; not subtracted
         "check_run_latency_us": metrics.get("latency_us"),  # the first run (row check); not part of the verdict
         "prepare_duck_us": speed_bar.get("duck_us"),  # DuckDB at prepare; not part of the verdict
     }

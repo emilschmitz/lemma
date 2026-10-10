@@ -202,3 +202,30 @@ def test_the_prepared_bar_names_the_sql_database_and_settings_for_both_result_sh
         monkeypatch.setattr(dqm, "write_query_measure", lambda **kw: prepared)
         _, bar = drive._maybe_large_table(sql_query="SELECT 1", catalog=None, workspace=tmp_path, schema={})
         assert (bar["sql"], bar["db_path"], bar["duck_settings"]) == ("SELECT 1", "d.duckdb", {"memory_limit": "3GB", "threads": 4})
+
+
+def test_the_record_carries_a_band_and_flags_a_verdict_inside_noise(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("LEMMA_OFFICIAL_ROUNDS", "3")
+    _script(monkeypatch, [100, 100, 100], [90, 105, 110])  # ratios 0.9, 1.05, 1.1 straddle 1.0
+    out = pipeline._apply_speed_bar(_metrics(tmp_path), _BAR, official=True)
+    assert out["ratio_band"] == [pytest.approx(0.9), pytest.approx(1.1)] and out["inconclusive"] is True
+    _script(monkeypatch, [100, 100, 100], [150, 160, 170])
+    assert pipeline._apply_speed_bar(_metrics(tmp_path), _BAR, official=True)["inconclusive"] is False
+
+
+def test_official_results_do_not_quote_best_of_n_or_the_prepare_time_one_thread_ratio(tmp_path, monkeypatch) -> None:
+    _script(monkeypatch, [100] * 5, [150] * 5)
+    out = pipeline._apply_speed_bar(_metrics(tmp_path), {**_BAR, "duck1_us": 900}, official=True)
+    assert out["speedup_best"] is None and out["speedup_1t"] is None
+
+
+def test_duck_timer_cleans_its_spill_dir_and_reports_call_overhead(tmp_path) -> None:
+    db = tmp_path / "t.duckdb"
+    con = duckdb.connect(str(db))
+    con.execute("CREATE TABLE t AS SELECT range AS k FROM range(10)")
+    con.close()
+    bar = {"sql": "SELECT count(*) FROM t", "db_path": str(db), "duck_settings": {"memory_limit": "1GB", "threads": 1}}
+    one_round, close = om.duck_round_timer(bar, tmp_path)
+    assert one_round.python_overhead_us >= 0
+    close()
+    assert not (tmp_path / "duck_official_tmp").exists()

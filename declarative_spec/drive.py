@@ -26,7 +26,7 @@ from declarative_spec.prompt import build_declarative_prompt, mount_examples
 
 OFFICIAL_KEYS = (
     "measurement", "official_k", "official_duck_reps", "official_rounds", "ours_median_us", "duck_median_us",
-    "check_run_latency_us", "prepare_duck_us", "speedup", "speed_bar_mult", "target_cpu",
+    "check_run_latency_us", "prepare_duck_us", "ratio_band", "inconclusive", "duck_python_overhead_us", "speedup", "speed_bar_mult", "target_cpu",
 )
 
 
