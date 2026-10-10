@@ -89,6 +89,8 @@ def find_chain(query, slots: list[_Slot], model, catalog) -> JoinChain | None:
         return None
     if any(j.on_combiner.casefold() == "or" for j in query.joins):
         return None
+    if len({s.table.casefold() for s in slots}) < len(slots):
+        return None  # a self-join: one valid_cols per table cannot say which alias is unique
     pairs = _equalities(query, slots, model)
     table_of = {s.alias: s.table for s in slots}
 

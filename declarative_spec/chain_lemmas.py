@@ -102,3 +102,108 @@ def chain_fold_lemmas(
 }}"""
         )
     return "\n\n".join(out)
+
+
+def chain_row_lemmas(
+    *,
+    name: str,
+    row_hit: str,
+    idxs: list[str],
+    bounds: list[str],
+    params: list[tuple[str, str, str]],
+    key_ty: str | None,
+) -> str:
+    """The per-fact-row value of fold ``name``: at most one tuple of the chained tables joins a fact row, so the level-1 fold is that tuple's term (or 0).
+
+    ``params`` is ``[(param, struct, table), ...]`` (the first is the fact table). Uses ``lemma_chain_hit_unique`` (``chain_hit_unique_lemma``, once per query).
+    """
+    n = len(idxs)
+    P = ", ".join(f"{p}: &{s}" for p, s, _t in params)
+    C = ", ".join(p for p, _s, _t in params)
+    K = f", k: {key_ty}" if key_ty else ""
+    Kc = ", k" if key_ty else ""
+    T = f"{name}_t"
+    ys = [f"y{j}" for j in range(1, n)]
+    zs = [f"z{j}" for j in range(1, n)]
+    valids = ",\n        ".join(f"valid_cols_{t}({p})" for p, _s, t in params)
+    yb = ", ".join(f"{y}: int" for y in ys)
+    zb = ", ".join(f"{z}: int" for z in zs)
+    y_call = ", ".join(ys)
+    z_call = ", ".join(zs)
+    z_range = " && ".join(f"0 <= z{j} < {bounds[j]}" for j in range(1, n))
+    not_y = "!(" + " && ".join(f"z{j} == y{j}" for j in range(1, n)) + ")"
+    fold1 = f"{name}_d1"
+    no_hit = f"forall|{zb}| #![trigger {row_hit}({C}, j, {z_call})] !{row_hit}({C}, j, {z_call})"
+    return f"""pub proof fn lemma_{name}_row({P}, j: int{K})
+    requires
+        0 <= j < {bounds[0]},
+        {valids},
+    ensures
+        forall|{yb}| #![trigger {row_hit}({C}, j, {y_call})]
+            {row_hit}({C}, j, {y_call}) ==> {fold1}({C}, j, 0{Kc}) == {T}({C}, j, {y_call}{Kc}),
+        ({no_hit}) ==> {fold1}({C}, j, 0{Kc}) == 0int,
+{{
+    assert forall|{yb}| #![trigger {row_hit}({C}, j, {y_call})] {row_hit}({C}, j, {y_call}) implies {fold1}({C}, j, 0{Kc}) == {T}({C}, j, {y_call}{Kc}) by {{
+        assert forall|{zb}| {z_range} && {not_y} implies {T}({C}, j, {z_call}{Kc}) == 0int by {{
+            if {row_hit}({C}, j, {z_call}) {{
+                lemma_chain_hit_unique({C}, j, {y_call}, {z_call});
+            }}
+        }}
+        lemma_{name}_single_d1({C}, j, 0, {y_call}{Kc});
+    }}
+    if {no_hit} {{
+        assert forall|{zb}| {z_range} implies {T}({C}, j, {z_call}{Kc}) == 0int by {{
+            assert(!{row_hit}({C}, j, {z_call}));
+        }}
+        lemma_{name}_zero_d1({C}, j, 0{Kc});
+    }}
+}}"""
+
+
+def chain_hit_unique_lemma(
+    *,
+    row_hit: str,
+    bounds: list[str],
+    params: list[tuple[str, str, str]],
+    idxs: list[str],
+    unique: list[tuple[int, list[str]]],
+) -> str:
+    """``lemma_chain_hit_unique``: two tuples that both satisfy ``row_hit`` for the same fact row are equal (the chained tables' keys are unique).
+
+    ``unique`` is ``[(table position, [key field names])]`` for positions 1..n-1 in chain order. Each chained table's key columns are equated by the
+    join to columns of earlier tables whose rows are already equal, so its two rows have equal keys and the uniqueness conjunct of ``valid_cols`` makes them one row.
+    """
+    n = len(idxs)
+    P = ", ".join(f"{p}: &{s}" for p, s, _t in params)
+    C = ", ".join(p for p, _s, _t in params)
+    valids = ",\n        ".join(f"valid_cols_{t}({p})" for p, _s, t in params)
+    a = [f"a{j}" for j in range(1, n)]
+    b = [f"b{j}" for j in range(1, n)]
+    sig = ", ".join(f"{v}: int" for v in a + b)
+    ens = " && ".join(f"a{j} == b{j}" for j in range(1, n))
+    steps = []
+    for pos, fields in unique:
+        p = params[pos][0]
+        eq = " && ".join(f"{p}.{f}@[a{pos}] == {p}.{f}@[b{pos}]" for f in fields)
+        eq_ba = " && ".join(f"{p}.{f}@[b{pos}] == {p}.{f}@[a{pos}]" for f in fields)
+        steps.append(
+            f"""    assert(a{pos} == b{pos}) by {{
+        assert({" && ".join(f"({p}.{f}@[a{pos}] as int) == ({p}.{f}@[b{pos}] as int)" for f in fields)});
+        if a{pos} < b{pos} {{
+            assert(!({eq}));
+        }} else if b{pos} < a{pos} {{
+            assert(!({eq_ba}));
+        }}
+    }}"""
+        )
+    body = "\n".join(steps)
+    return f"""pub proof fn lemma_chain_hit_unique({P}, j: int, {sig})
+    requires
+        {valids},
+        {row_hit}({C}, j, {', '.join(a)}),
+        {row_hit}({C}, j, {', '.join(b)}),
+    ensures
+        {ens},
+{{
+{body}
+}}"""

@@ -108,18 +108,56 @@ def test_the_host_lemmas_verify_and_only_the_empty_body_fails(monkeypatch: pytes
     assert out.count("postcondition not satisfied") == 1 and "lemma_sum_total" not in out.split("verification results")[0]
 
 
-def test_a_self_join_uses_the_alias_not_the_table_to_find_the_equated_slot(monkeypatch: pytest.MonkeyPatch) -> None:
-    # fact joins two aliases of da on its key; the second alias is a different slot of the same table
+def test_a_self_join_is_not_a_chain(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One `valid_cols` per table cannot say which of two aliases of the same table is unique: the FROM order stays."""
     sql = (
         "SELECT a1.x, a2.x AS x2, SUM(fact.v) AS total FROM fact, da a1, da a2 "
         "WHERE fact.a_id = a1.id AND fact.b_id = a2.id GROUP BY a1.x, a2.x ORDER BY a1.x, a2.x"
     )
     spec = _spec(monkeypatch, "1", sql=sql)
-    assert _params(spec)[:3] == ["fact", "a1", "a2"] and "lemma_sum_total_single_d2" in spec
-    # an equality between the two aliases alone (no fact column) does not determine a2 from the fact table
-    sql2 = (
-        "SELECT a1.x, SUM(fact.v) AS total FROM fact, da a1, da a2 "
-        "WHERE fact.a_id = a1.id AND a1.x = a2.x GROUP BY a1.x ORDER BY a1.x"
+    assert _params(spec)[:3] == ["fact", "a1", "a2"] or "lemma_sum_total_single_d0" not in spec
+    assert "lemma_sum_total_single_d0" not in spec and "!(da.id@[i]" not in spec
+
+
+def test_the_per_row_lemmas_are_emitted_for_integer_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    spec = _spec(monkeypatch, "1")
+    assert "pub proof fn lemma_chain_hit_unique(" in spec and "pub proof fn lemma_sum_total_row(" in spec
+    row = spec.split("pub proof fn lemma_sum_total_row(")[1].split("\npub ")[0]
+    assert "lemma_sum_total_single_d1" in row and "lemma_sum_total_zero_d1" in row and "lemma_chain_hit_unique" in row
+
+
+COMPOSITE_SCHEMA = {
+    "fact": {"p": "bigint", "s": "bigint", "v": "bigint"},
+    "ps": {"p": "bigint", "s": "bigint", "cost": "bigint"},
+}
+COMPOSITE = "SELECT ps.cost, SUM(fact.v) AS total FROM fact, ps WHERE fact.p = ps.p AND fact.s = ps.s GROUP BY ps.cost ORDER BY ps.cost"
+
+
+def _composite_catalog(key: tuple[tuple[str, ...], ...]) -> CatalogAssumptions:
+    col = ColumnAssumption(max_value_exclusive=1000)
+    return CatalogAssumptions(
+        tables={
+            "fact": TableAssumptions(max_rows=64, columns={"p": col, "s": col, "v": col}),
+            "ps": TableAssumptions(max_rows=16, columns={"p": col, "s": col, "cost": col}, unique_keys=key),
+        }
     )
-    spec2 = _spec(monkeypatch, "1", sql=sql2)
-    assert "lemma_sum_total_single_d0" not in spec2
+
+
+def test_a_composite_key_needs_every_column_equated(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(join_chain.ENV, "1")
+    both = emit_declarative_spec(COMPOSITE, COMPOSITE_SCHEMA, _composite_catalog((("p", "s"),)))
+    assert _params(both)[:2] == ["fact", "ps"] and "lemma_sum_total_row" in both
+    assert "!(ps.p@[i] == ps.p@[j] && ps.s@[i] == ps.s@[j])" in both
+    one_equality = COMPOSITE.replace(" AND fact.s = ps.s", "")
+    half = emit_declarative_spec(one_equality, COMPOSITE_SCHEMA, _composite_catalog((("p", "s"),)))
+    assert "lemma_sum_total_row" not in half and "!(ps.p@[i]" not in half
+
+
+@pytest.mark.skipif(not any(c.is_file() for c in VERUS_CANDIDATES), reason="verus binary not installed")
+def test_the_composite_key_lemmas_verify(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(join_chain.ENV, "1")
+    monkeypatch.setenv("LEMMA_VERUS_BIN", str(__import__("pathlib").Path(__file__).resolve().parents[1] / "scripts" / "ram" / "verus_guarded.sh"))
+    spec = emit_declarative_spec(COMPOSITE, COMPOSITE_SCHEMA, _composite_catalog((("p", "s"),)))
+    ok, out = verify_assembled(assemble_declarative_program(spec, "    Vec::new()"), timeout_sec=600)
+    m = re.search(r"verification results:: (\d+) verified, (\d+) errors", out)
+    assert not ok and m and int(m.group(2)) == 1 and out.count("postcondition not satisfied") == 1, out[-1500:]

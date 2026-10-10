@@ -246,6 +246,12 @@ def _emit_helpers(query: Query, prefix: str, model: SchemaModel, chain=None) -> 
     blocks.append(_key_at_fn(key_at, main, params, group_infos, key_ty))
 
     aggs: list[_AggFn] = []
+    chain_row_hit = ""
+    if chain is not None and not prefix:
+        unique_lemma = _chain_hit_unique(chain, main, model, row_hit)
+        if unique_lemma:
+            blocks.append(_LIBRARY_MARK + unique_lemma)
+            chain_row_hit = row_hit
     for agg in query.aggs:
         hit_name = row_hit
         if agg.filter_expr:
@@ -257,7 +263,7 @@ def _emit_helpers(query: Query, prefix: str, model: SchemaModel, chain=None) -> 
             hit_name = f"{prefix}hit_{rust_ident(agg.alias)}"
             blocks.append(_agg_hit_fn(hit_name, row_hit, agg, main, params, model))
         aggs.append(
-            _emit_agg(blocks, query, agg, prefix, main, params, model, key_ty, hit_name, key_at, chain_lemmas=chain is not None and not prefix)
+            _emit_agg(blocks, query, agg, prefix, main, params, model, key_ty, hit_name, key_at, chain_lemmas=chain is not None and not prefix, chain_row_hit=chain_row_hit)
         )
         aggs[-1].hidden = agg.hidden
         aggs[-1].hit_fn = hit_name
@@ -587,17 +593,55 @@ def _default(info: ColumnTypeInfo) -> str:
 _LIBRARY_MARK = "// HOST_LIBRARY_MARK\n"
 
 
-def _chain_library(name: str, term: str, main: list[_Slot], params: list[_Slot], key_ty: str | None) -> str:
-    from declarative_spec.chain_lemmas import chain_fold_lemmas
+def _chain_hit_unique(chain, main: list[_Slot], model: SchemaModel, row_hit: str) -> str:
+    """``lemma_chain_hit_unique`` for the chain, or "" when a chained key is not a plain integer column (the agent then proves its own)."""
+    from declarative_spec.chain_lemmas import chain_hit_unique_lemma
 
-    return chain_fold_lemmas(
+    pos = {s.alias: i for i, s in enumerate(main)}
+    unique: list[tuple[int, list[str]]] = []
+    for alias, key in chain.unique:
+        slot = main[pos[alias]]
+        _orig, cols = model.lookup_table(slot.table)
+        fields = []
+        for k in key:
+            col = next(c for c in cols if c.casefold() == k.casefold())
+            info = cols[col]
+            if info.is_float or info.spec_as != "int" or info.precision is not None or info.nullable_key:
+                return ""
+            fields.append(rust_ident(col))
+        unique.append((pos[alias], fields))
+    unique.sort()
+    return chain_hit_unique_lemma(
+        row_hit=row_hit,
+        bounds=[f"{s.param}.n as int" for s in main],
+        params=[(s.param, s.struct, rust_ident(s.table)) for s in main],
+        idxs=[s.idx for s in main],
+        unique=unique,
+    )
+
+
+def _chain_library(name: str, term: str, main: list[_Slot], params: list[_Slot], key_ty: str | None, row_hit: str = "") -> str:
+    from declarative_spec.chain_lemmas import chain_fold_lemmas, chain_row_lemmas
+
+    bounds = [f"{s.param}.n as int" for s in main]
+    text = chain_fold_lemmas(
         name=name,
         term_expr=term,
         idxs=[s.idx for s in main],
-        bounds=[f"{s.param}.n as int" for s in main],
+        bounds=bounds,
         params=[(s.param, s.struct) for s in params],
         key_ty=key_ty,
     )
+    if row_hit:  # the per-fact-row lemma needs `lemma_chain_hit_unique`, emitted once per query when every chained key is a plain integer column
+        text += "\n\n" + chain_row_lemmas(
+            name=name,
+            row_hit=row_hit,
+            idxs=[s.idx for s in main],
+            bounds=bounds,
+            params=[(s.param, s.struct, rust_ident(s.table)) for s in main],
+            key_ty=key_ty,
+        )
+    return text
 
 
 def _emit_agg(
@@ -612,6 +656,7 @@ def _emit_agg(
     row_hit: str,
     key_at: str,
     chain_lemmas: bool = False,
+    chain_row_hit: str = "",
 ) -> _AggFn:
     kind = agg.kind.upper()
     if kind == "RATIO":
@@ -645,7 +690,7 @@ def _emit_agg(
             unit_step=True,
         )
         if chain_lemmas:
-            blocks.append(_LIBRARY_MARK + _chain_library(name, f"if {hit} {{ {term} }} else {{ 0int }}", main, params, key_ty))
+            blocks.append(_LIBRARY_MARK + _chain_library(name, f"if {hit} {{ {term} }} else {{ 0int }}", main, params, key_ty, chain_row_hit))
         return _AggFn(alias, kind, name, "int", False, "fold", "u64")
     if kind == "COUNT_DISTINCT":
         value = _value_fn(blocks, f"{name}_val", agg, main, params, model, _value_ret(agg, main, model))
@@ -673,7 +718,7 @@ def _emit_agg(
         add = f"if {hit} {{ {value}({_param_call(params)}, {_idx_call(main)}) }} else {{ {zero} }}"
         _emit_fold(blocks, name, ret, zero, add, main, params, key_ty)
         if chain_lemmas and not is_float:
-            blocks.append(_LIBRARY_MARK + _chain_library(name, add, main, params, key_ty))
+            blocks.append(_LIBRARY_MARK + _chain_library(name, add, main, params, key_ty, chain_row_hit))
         return _AggFn(alias, kind, name, ret, is_float, "fold", exec_ty)
     if kind == "AVG":
         # SQL AVG is a real quotient, including AVG over an integer column.
