@@ -693,6 +693,8 @@ def _chain_section(spec_text: str) -> list[str]:
         "Plan: one pass over the FACT table; for each dimension an array indexed by `key + offset` (the offset from the `valid_cols` bound of that key column) holding what the",
         "group key and the filters need (build it once from the dimension rows, with a magnitude `arr_fwd` / `arr_bwd` pair as in the example); if every lookup finds a row, that tuple",
         "IS the hit of fact row `j` and the step lemma above gives the fold of row `j`; if one lookup fails, no tuple is a hit. Never loop over a dimension inside the fact loop.",
+        "Because each fact row contributes at most ONE tuple, a SUM is at most (fact rows) x (largest term): that is the overflow bound of your accumulator (the cell magnitudes are in `valid_cols_<t>`;",
+        "the examples keep `-(rows seen) * M <= acc <= (rows seen) * M` per slot). Without the unique keys the join could have 2^100 tuples and no `i128` could hold the sum; here it cannot.",
     ]
 
 
