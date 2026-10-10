@@ -222,6 +222,11 @@ _EXAMPLES: dict[str, tuple[str, str]] = {
         "dictionary string mode: JOIN ON a string key (one dictionary per table): per-code count array over the small side, "
         "NUM's dictionary translated to its codes once through a `StringHashMap`, then two array reads per row",
     ),
+    "dict_star_join": (
+        "hard/dict_star_join_group_sum_sorted.rs",
+        "dictionary string mode, STAR JOIN (SSB Q4.1): a fact table scanned once, four unique-key dimension tables reached through arrays indexed by key, "
+        "GROUP BY an int and a dictionary string, SUM of an expression, ORDER BY both keys; uses the host lemma `lemma_<fold>_row` (LEMMA_JOIN_CHAIN)",
+    ),
     "dict_anti_join": (
         "hard/dict_anti_join_group_topk.rs",
         "dictionary string mode: NOT EXISTS / LEFT JOIN ... IS NULL anti-join on three string keys into a two-key GROUP BY with HAVING, ORDER BY the count and LIMIT "
@@ -285,6 +290,7 @@ def _features(spec_text: str) -> dict:
         "tables": tables,
         "kind": kind,
         "dict": "__dict" in spec_text,
+        "chain": "lemma_chain_hit_unique" in spec_text,  # a unique-key join chain (LEMMA_JOIN_CHAIN): fact table first, host-proved per-row lemmas
         "dense": "KEY_CAP_" in spec_text,
         "proj": "proj_key(" in spec_text,  # a projection: one result row per input row
         "grouped": "out_row_ok(" in spec_text,
@@ -327,6 +333,7 @@ _RECIPE_RULES: tuple[tuple[str, dict], ...] = (
     ("projection_join", {"kind": "rows", "proj": True, "multi": True}),
     ("projection_where", {"kind": "rows", "proj": True}),
     # dictionary-coded strings
+    ("dict_star_join", {"kind": "rows", "dict": True, "grouped": True, "multi": True, "chain": True}),
     ("dict_anti_join", {"kind": "rows", "dict": True, "multi": True, "exists": True}),
     ("dict_join3", {"kind": "rows", "dict": True, "multi3": True, "limit": True}),
     ("dict_join", {"kind": "rows", "dict": True, "multi": True}),
@@ -664,6 +671,29 @@ _PARALLEL_PLAIN_LINES = [
         "parallel examples for GROUP BY and joins are dictionary-mode files that are NOT mounted here; the ungrouped examples below are the only parallel templates.",
         "For a GROUP BY over a small key domain the same proof works with one array of accumulators per worker, merged slotwise: adapt the ungrouped template to that.",
 ]
+
+
+def _chain_section(spec_text: str) -> list[str]:
+    """What the host already proved for a unique-key join chain (LEMMA_JOIN_CHAIN), with this spec's own lemma names."""
+    if "lemma_chain_hit_unique" not in spec_text:
+        return []
+    folds = re.findall(r"pub proof fn lemma_(\w+)_row\(", spec_text)
+    names = ", ".join(f"`lemma_{f}_row`" for f in folds) or "`lemma_<fold>_row`"
+    f0 = folds[0] if folds else "<fold>"
+    return [
+        "",
+        "## Star / chain join: what the host has already proved (this spec nests the FACT table first)",
+        "",
+        "The first parameter is the fact table, and every other table has a UNIQUE key in its `valid_cols_<t>` (a catalog assumption the loader checks):",
+        "at most ONE row of each other table matches a fact row, so you never count matches.",
+        "- `lemma_chain_hit_unique(P.., j, a1.., b1..)`: two tuples that both satisfy `row_hit` for fact row `j` are equal.",
+        f"- {names}`(P.., j, k)`: for EVERY tuple `y` with `row_hit(P.., j, y..)`: `{f0}_d1(P.., j, 0, k) == chain_term_{f0}(P.., j, y.., k)` (the term is the value if the key of `y` is `k`, else 0);",
+        "  and if no tuple is a hit, `" + f0 + "_d1(P.., j, 0, k) == 0`. The fold of the whole table then steps by unfolding: `" + f0 + "(P.., j, k) == " + f0 + "_d1(P.., j, 0, k) + " + f0 + "(P.., j + 1, k)`.",
+        f"- `lemma_{f0}_zero_dL` / `lemma_{f0}_single_dL`: the per-level lemmas behind it, for a different shape of argument.",
+        "Plan: one pass over the FACT table; for each dimension an array indexed by `key + offset` (the offset from the `valid_cols` bound of that key column) holding what the",
+        "group key and the filters need (build it once from the dimension rows, with a magnitude `arr_fwd` / `arr_bwd` pair as in the example); if every lookup finds a row, that tuple",
+        "IS the hit of fact row `j` and the step lemma above gives the fold of row `j`; if one lookup fails, no tuple is a hit. Never loop over a dimension inside the fact loop.",
+    ]
 
 
 def _parallel_section(spec_text: str, shape: dict) -> list[str]:
@@ -1015,6 +1045,7 @@ def build_declarative_prompt(
     sections += dense_budget.prompt_section(dense_budget.report(spec_text, dict_sizes)) if "__dict@" in spec_text else []
     sections += _float_section(spec_text)
     sections += _nullable_section(spec_text)
+    sections += _chain_section(spec_text)
     sections += _parallel_section(spec_text, shape)
     sections += _distinct_section(spec_text)
     sections += _group_close_section(spec_text)

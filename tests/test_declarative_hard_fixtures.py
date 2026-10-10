@@ -79,6 +79,14 @@ DICT_SEC = {
         "GROUP BY s.name, p.stmt, n.tag, p.plabel ORDER BY total_value DESC LIMIT 200"
     ),
 }
+# SSB star joins (LEMMA_JOIN_CHAIN=1, dictionary strings; needs the generated SF1 database for its schema and the ssb_sf1 catalog).
+SSB_Q41 = (
+    "select d_year, c_nation, sum(lo_revenue - lo_supplycost) as profit from date, customer, supplier, part, lineorder "
+    "where lo_custkey = c_custkey and lo_suppkey = s_suppkey and lo_partkey = p_partkey and lo_orderdate = d_datekey "
+    "and c_region = 'AMERICA' and s_region = 'AMERICA' and (p_mfgr = 'MFGR#1' or p_mfgr = 'MFGR#2') group by d_year, c_nation order by d_year, c_nation"
+)
+DICT_SSB = {"dict_star_join_group_sum_sorted.rs": SSB_Q41}
+SSB_DB = _FIXTURES.parents[2] / "research_loop" / "generated" / "ssb_sf1.duckdb"
 # Fixtures that live next to the other worked examples (not under hard/), on the SEC DECIMAL variant.
 TOP = {
     "join_min_stringhashmap_probe.rs": (
@@ -100,16 +108,31 @@ def _verify(name: str, monkeypatch: pytest.MonkeyPatch, mutate: tuple[str, str] 
     if name in DICT_SEC:
         monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
         monkeypatch.setenv("LEMMA_ENABLE_PARALLEL", "0")
+    if name in DICT_SSB:
+        monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
+        monkeypatch.setenv("LEMMA_JOIN_CHAIN", "1")
+        monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "1")
     if name == "dict_parallel_hash_group_topn.rs":
         monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "1")
     if name == "dict_join_group_count_distinct_topn.rs":
         # run_query of this long example has no rlimit margin: it verifies under all file names only from about --rlimit 16 (1 of 4 names at 12 and below, 4 of 4 at 16 and 20); see FINDINGS F-MAN-9.
         monkeypatch.setenv("LEMMA_VERUS_RLIMIT", "20")
-    text = ((HARD if name in CASES or name in TPCH or name in DICT_PAR or name in DICT_SEC else _FIXTURES) / name).read_text()
+    text = ((HARD if name in CASES or name in TPCH or name in DICT_PAR or name in DICT_SEC or name in DICT_SSB else _FIXTURES) / name).read_text()
     if mutate is not None:
         assert mutate[0] in text
         text = text.replace(*mutate, 1)
-    if name in TPCH or name in DICT_PAR:
+    if name in DICT_SSB:
+        import duckdb
+
+        from research_loop.assumption_packages import assumption_package
+
+        if not SSB_DB.is_file():
+            pytest.skip(f"SSB database not generated at {SSB_DB}")
+        con = duckdb.connect(str(SSB_DB), read_only=True)
+        schema = {t: {r[0]: r[1].lower() for r in con.execute(f"describe {t}").fetchall()} for (t,) in con.execute("show tables").fetchall()}
+        con.close()
+        spec = emit_declarative_spec(DICT_SSB[name], schema, assumption_package("ssb_sf1"))
+    elif name in TPCH or name in DICT_PAR:
         from research_loop.scripts.declarative_round import TPCH_DB, tpch_schema_and_catalog
 
         if not TPCH_DB.is_file():
@@ -127,7 +150,7 @@ def _verify(name: str, monkeypatch: pytest.MonkeyPatch, mutate: tuple[str, str] 
     return verify_assembled(program, timeout_sec=600)
 
 
-@pytest.mark.parametrize("name", sorted({**CASES, **TOP, **TPCH, **DICT_PAR, **DICT_SEC}))
+@pytest.mark.parametrize("name", sorted({**CASES, **TOP, **TPCH, **DICT_PAR, **DICT_SEC, **DICT_SSB}))
 def test_hard_fixture_verifies(name: str, monkeypatch: pytest.MonkeyPatch) -> None:
     ok, out = _verify(name, monkeypatch)
     assert ok and "0 errors" in out, out[-2000:]
@@ -214,3 +237,13 @@ def test_parallel_hash_group_fixture_rejects_a_wrong_selection(monkeypatch: pyte
     """Mutation: the omitted-group maximality clause flipped; the host closing lemma must no longer apply."""
     ok, out = _verify("dict_parallel_hash_group_topn.rs", monkeypatch, ("res[r].s >= ss[g])", "res[r].s <= ss[g])"))
     assert not ok or "0 errors" not in out
+
+
+def test_a_wrong_star_join_profit_does_not_verify(monkeypatch: pytest.MonkeyPatch) -> None:
+    ok, out = _verify("dict_star_join_group_sum_sorted.rs", monkeypatch, ("profit: acc[slot] as i128", "profit: 0i128"))
+    assert not ok and "error" in out
+
+
+def test_a_star_join_body_that_forgets_to_mark_a_slot_present_does_not_verify(monkeypatch: pytest.MonkeyPatch) -> None:
+    ok, out = _verify("dict_star_join_group_sum_sorted.rs", monkeypatch, ("            pres.set(slot, true);\n", ""))
+    assert not ok and "error" in out

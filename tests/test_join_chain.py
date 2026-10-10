@@ -181,3 +181,26 @@ def test_group_close_lemmas_for_a_string_order_by_only_with_the_flag(monkeypatch
     assert "lemma_group_close_rows" not in off and "lemma_group_close_rows" in on
     limited = emit_declarative_spec(sql + " LIMIT 5", schema, cat)
     assert "lemma_group_close_rows" not in limited  # a string-ordered LIMIT still has no closing lemmas
+
+
+def test_a_dictionary_star_join_gets_its_recipe_the_chain_section_and_the_mounted_example(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    from declarative_spec.lemma_index import lemma_index_markdown
+    from declarative_spec.prompt import build_declarative_prompt, mount_examples, spec_shape
+
+    schema = {**SCHEMA, "da": {"id": "bigint", "x": "varchar"}}
+    cat = _catalog()
+    cat.tables["da"].columns["x"] = ColumnAssumption(max_string_len=8, max_distinct=16)
+    sql = "SELECT da.x, SUM(fact.v) AS total FROM da, fact, db WHERE fact.a_id = da.id AND fact.b_id = db.id GROUP BY da.x ORDER BY da.x"
+    monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
+    monkeypatch.setenv(join_chain.ENV, "1")
+    spec = emit_declarative_spec(sql, schema, cat)
+    assert spec_shape(spec)["recipe"] == "dict_star_join"
+    prompt = build_declarative_prompt(sql=sql, spec_path="s", edit_path="e", lemma_index=lemma_index_markdown(), spec_text=spec)
+    assert "Star / chain join" in prompt and "lemma_sum_total_row" in prompt and "hard/dict_star_join_group_sum_sorted.rs" in prompt
+    mount_examples(tmp_path)
+    assert (tmp_path / "examples" / "hard" / "dict_star_join_group_sum_sorted.rs").is_file()
+    # flag off: no chain, no star recipe, no section
+    monkeypatch.setenv(join_chain.ENV, "0")
+    off = emit_declarative_spec(sql, schema, cat)
+    assert spec_shape(off)["recipe"] != "dict_star_join"
+    assert "Star / chain join" not in build_declarative_prompt(sql=sql, spec_path="s", edit_path="e", lemma_index=lemma_index_markdown(), spec_text=off)
