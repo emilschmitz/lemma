@@ -434,3 +434,60 @@ def test_new_examples_pass_the_host_admission_lint() -> None:
         body = admit_declarative_body(extract_agent_edit(text))
         helpers = admit_helpers(extract_agent_helpers(text), "")
         assert body.ok and helpers.ok, (name, body.violations, helpers.violations)
+
+
+# ---- the prompt may only name example files that are mounted in that string mode --------------------------------------------------
+_PARALLEL_SCHEMA = {"lineitem": {"l_shipmode": "varchar", "l_quantity": "bigint", "l_orderkey": "bigint"}}
+_BIG = CatalogAssumptions(tables={"lineitem": TableAssumptions(max_rows=6_000_000)})
+
+
+def _mounted_names(tmp_path: Path) -> set[str]:
+    mount_examples(tmp_path)
+    return {str(p.relative_to(tmp_path / "examples")) for p in (tmp_path / "examples").rglob("*.rs")}
+
+
+def _named_examples(prompt: str) -> set[str]:
+    import re
+
+    return {m.group(1) for m in re.finditer(r"context/ro/examples/((?:hard/)?[A-Za-z0-9_]+\.rs)", prompt)}
+
+
+@pytest.mark.parametrize("mode", ["plain", "dict"])
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT l_shipmode, COUNT(*) AS c, SUM(l_quantity) AS q FROM lineitem GROUP BY l_shipmode ORDER BY l_shipmode",
+        "SELECT SUM(l_quantity) AS q FROM lineitem WHERE l_shipmode = 'AIR'",
+    ],
+)
+def test_a_parallel_prompt_names_only_examples_that_are_mounted_in_that_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str, sql: str
+) -> None:
+    monkeypatch.setenv("LEMMA_STRING_ENCODING", mode)
+    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "1")
+    spec = emit_declarative_spec(sql, _PARALLEL_SCHEMA, _BIG)
+    prompt = build_declarative_prompt(
+        sql=sql, spec_path="context/ro/spec.rs", edit_path="runquery_agent.rs", lemma_index=lemma_index_markdown(), spec_text=spec
+    )
+    assert "## Parallel scan" in prompt  # the section under test is present
+    missing = _named_examples(prompt) - _mounted_names(tmp_path)
+    assert not missing, f"{mode} mode prompt names unmounted example files: {sorted(missing)}"
+
+
+def test_the_plain_mode_parallel_section_says_the_grouped_examples_are_not_there(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LEMMA_STRING_ENCODING", "plain")
+    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "1")
+    sql = "SELECT l_shipmode, COUNT(*) AS c FROM lineitem GROUP BY l_shipmode ORDER BY l_shipmode"
+    spec = emit_declarative_spec(sql, _PARALLEL_SCHEMA, _BIG)
+    prompt = build_declarative_prompt(
+        sql=sql, spec_path="context/ro/spec.rs", edit_path="runquery_agent.rs", lemma_index=lemma_index_markdown(), spec_text=spec
+    )
+    assert "dict_parallel_q1.rs" not in prompt and "dict_group_count_sum_parallel" not in prompt
+    assert "NOT mounted here" in prompt
+
+
+def test_the_prompt_does_not_promise_a_submit_for_a_run_that_misses_the_speed_bar() -> None:
+    """`submit_runquery` refuses a run that is not `ok`, and a run below the speed bar is not `ok`: the prompt must say so (TPC-H Q1 and Q12 tried)."""
+    p = " ".join(_prompt("SELECT SUM(line) AS total FROM pre WHERE line > 5").split())
+    assert "refused by `submit_runquery`" in p and "still counts as your best proved run" in p
+    assert "if no verified body beats it, the fastest verified one, submitted" not in p

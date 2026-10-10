@@ -579,7 +579,7 @@ def _scale_section(spec_text: str) -> list[str]:
         lines += [
             "Order: (1) get ANY body to `N verified, 0 errors` first; sequential is fine, and `submit_runquery` it as soon as it",
             "verifies (a later submit replaces it, re-submitting costs nothing, and a session killed at the wall saves nothing that was",
-            "not submitted). (2) Read the `speedup` field of that run. At or above the bar: you are done. Below the bar: only now try",
+            "not submitted; a verified run below the bar is refused by `submit_runquery`: keep that file as your base). (2) Read the `speedup` field of that run. At or above the bar: you are done. Below the bar: only now try",
             "the parallel recipe below (workers over row ranges) as an upgrade. (3) Submit the parallel body only if it verifies and its",
             "`speedup` is higher; never replace a submitted verified body with an unverified or slower one. If the upgrade does not",
             "verify after a few checks, stop and keep the sequential submission (say its `speedup` is below 1).",
@@ -650,6 +650,22 @@ def _distinct_section(spec_text: str) -> list[str]:
     return lines
 
 
+_PARALLEL_DICT_LINES = [
+        "then upgrade only if it loses. A hash aggregate or a join does not telescope directly, but a GROUP BY over a small code domain does: give each",
+        "worker its own DENSE array per aggregate (one slot per dictionary code), merge them slotwise in the join loop, and the slotwise",
+        "telescoping is the same proof (dict mode: `context/ro/examples/dict_group_count_sum_parallel.rs`, 13x on the real 39.4M-row table;",
+        "a nullable dictionary column with a string filter, COUNT and MIN: `context/ro/examples/parallel_dict_nullable_count_min.rs` (1.8x on real `pre`);",
+        "A dense table has one slot per combination of key codes; it is allowed only when the product of the key dictionaries' sizes is within `LEMMA_DENSE_SLOT_BUDGET` (default 2^22 slots). The section \"Dense slot table: allowed or not, for THIS query\" below says which case this query is; otherwise key the groups by a packed code tuple in a `HashMapWithView`;",
+        "two dictionary keys, several aggregates, sorted output, a flat m1*m2 slot array: `context/ro/examples/hard/dict_parallel_q1.rs`, TPC-H Q1 at 3.95x).",
+]
+
+_PARALLEL_PLAIN_LINES = [
+        "then upgrade only if it loses. A hash aggregate or a join does not telescope directly. This spec has plain `String` columns, and the worked",
+        "parallel examples for GROUP BY and joins are dictionary-mode files that are NOT mounted here; the ungrouped examples below are the only parallel templates.",
+        "For a GROUP BY over a small key domain the same proof works with one array of accumulators per worker, merged slotwise: adapt the ungrouped template to that.",
+]
+
+
 def _parallel_section(spec_text: str, shape: dict) -> list[str]:
     """Parallel-scan recipe, shown only when the spec was emitted with the Arc parameters (LEMMA_PARALLEL_VSTD=1)."""
     from declarative_spec import parallel
@@ -666,17 +682,12 @@ def _parallel_section(spec_text: str, shape: dict) -> list[str]:
         "worker k returns `fold(t, lo_k) - fold(t, hi_k)` and the partials telescope to `fold(t, 0)`. No column is copied.",
         "A scan that is limited by memory bandwidth is the case this is for: on the real 39.4M-row table the parallel SUM was",
         "12.8x faster than the all-core reference engine. Keep the single-threaded body as the first proof,",
-        "then upgrade only if it loses. A hash aggregate or a join does not telescope directly, but a GROUP BY over a small code domain does: give each",
-        "worker its own DENSE array per aggregate (one slot per dictionary code), merge them slotwise in the join loop, and the slotwise",
-        "telescoping is the same proof (dict mode: `context/ro/examples/dict_group_count_sum_parallel.rs`, 13x on the real 39.4M-row table;",
-        "a nullable dictionary column with a string filter, COUNT and MIN: `context/ro/examples/parallel_dict_nullable_count_min.rs` (1.8x on real `pre`);",
-        "A dense table has one slot per combination of key codes; it is allowed only when the product of the key dictionaries' sizes is within `LEMMA_DENSE_SLOT_BUDGET` (default 2^22 slots). The section \"Dense slot table: allowed or not, for THIS query\" below says which case this query is; otherwise key the groups by a packed code tuple in a `HashMapWithView`;",
-        "two dictionary keys, several aggregates, sorted output, a flat m1*m2 slot array: `context/ro/examples/hard/dict_parallel_q1.rs`, TPC-H Q1 at 3.95x).",
+        *(_PARALLEL_DICT_LINES if shape["dict"] else _PARALLEL_PLAIN_LINES),
         "Every multiplier quoted in this prompt is a manual-prover result for the timed `run_query` ALONE (kernel only) against the reference engine scanning its own storage in place; pin, copy into the vectors and encoding are outside the timer (about a second for tens of millions of rows) and a reference engine holding the same narrow data in memory is about 1.8x to 2.1x slower than our kernel, not 2.4x to 2.9x. `run_runquery` reports the same kernel-only speedup.",
         "The example is the template (SUM; adapt the fold, the filter, the cell bound and the accumulator type):",
         f"`context/ro/examples/{_PAR_EXAMPLE}` (also `parallel_ungrouped_product_sum.rs` for a product with a date filter, and `parallel_ungrouped_min.rs`, `_max.rs`, `_count.rs`: MIN/MAX merge the workers' (value, any) pairs, COUNT is additive).",
     ]
-    if "lemma_group_close_rows" in spec_text:
+    if "lemma_group_close_rows" in spec_text and shape["dict"]:
         lines += [
             "A parallel HASH GROUP BY with a merge (an integer key too wide for a dense array; per-worker hash tables, merged by key; then the top-N selection and the host closing lemmas):",
             "`context/ro/examples/hard/dict_parallel_hash_group_topn.rs` (1.46x on the real 39.4M-row table). Notes from it: the helpers region admits only `proof fn` / `spec fn`, so the worker's",
@@ -968,8 +979,10 @@ def build_declarative_prompt(
         "  may exist, but it has no network and Verus is not on its PATH: `run_runquery` is the only Verus you have, so do not",
         "  try `verus`, `npx` or any package install.",
         "- Done means: Verus says `N verified, 0 errors`, the result equals the reference engine's rows, and the timed run beats",
-        "  the reference engine (`run_runquery` reports the speedup); if no verified body beats it, the fastest verified one,",
-        "  submitted. Submit a verified body as soon as you have one, and again if a later one is better.",
+        "  the reference engine (`run_runquery` reports the speedup). `submit_runquery` accepts only a run that is `ok`, i.e. one that also",
+        "  beats the reference engine: a verified body below the bar is reported as `proved but below the speed bar`, is refused by",
+        "  `submit_runquery`, and still counts as your best proved run. Keep it aside as your base (copy the file), then make it faster.",
+        "  Submit a body as soon as it verifies and beats the bar, and again if a later one is better.",
         "",
         "## Regions and rules",
         "",
@@ -1058,7 +1071,8 @@ def build_declarative_prompt(
             "This is a non-interactive session: nobody answers questions. Do the task now. Never ask the user anything and never",
             "offer options. Do not stop until `run_runquery` shows `N verified, 0 errors` and you have called `submit_runquery`",
             "with the `run_id` of your best verified body (a parallel upgrade, where the spec has one, is tried only after a verified",
-            "body exists and is submitted, and only when its `speedup` is below the bar). If you conclude it cannot verify, say plainly why in your",
+            "body exists and is submitted, and only when its `speedup` is below the bar). A verified body that stays below the bar cannot be",
+            "submitted (the host refuses it): keep improving it until the wall, and leave your best verified file in place. If you conclude it cannot verify, say plainly why in your",
             "last message; an empty or placeholder body is a failure, not a result.",
         ]
     )
