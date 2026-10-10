@@ -90,10 +90,17 @@ SSB_Q31 = (
     "where lo_custkey = c_custkey and lo_suppkey = s_suppkey and lo_orderdate = d_datekey and c_region = 'ASIA' and s_region = 'ASIA' "
     "and d_year >= 1992 and d_year <= 1997 group by c_nation, s_nation, d_year order by d_year asc, revenue desc"
 )
+SSB_Q42 = (
+    "select d_year, s_nation, p_category, sum(lo_revenue - lo_supplycost) as profit from date, customer, supplier, part, lineorder "
+    "where lo_custkey = c_custkey and lo_suppkey = s_suppkey and lo_partkey = p_partkey and lo_orderdate = d_datekey "
+    "and c_region = 'AMERICA' and s_region = 'AMERICA' and (d_year = 1997 or d_year = 1998) and (p_mfgr = 'MFGR#1' or p_mfgr = 'MFGR#2') "
+    "group by d_year, s_nation, p_category order by d_year, s_nation, p_category"
+)
 DICT_SSB = {
     "dict_star_join_group_sum_sorted.rs": SSB_Q41,
     "dict_parallel_star_join_group_sum_sorted.rs": SSB_Q41,
     "dict_parallel_star_join_two_keys_revenue_order.rs": SSB_Q31,
+    "dict_parallel_star_join_two_keys_string_order.rs": SSB_Q42,
 }
 SSB_DB = _FIXTURES.parents[2] / "research_loop" / "generated" / "ssb_sf1.duckdb"
 # Fixtures that live next to the other worked examples (not under hard/), on the SEC DECIMAL variant.
@@ -265,4 +272,9 @@ def test_a_wrong_parallel_star_join_merge_does_not_verify(monkeypatch: pytest.Mo
 
 def test_a_wrong_revenue_order_in_the_two_key_star_join_does_not_verify(monkeypatch: pytest.MonkeyPatch) -> None:
     ok, out = _verify("dict_parallel_star_join_two_keys_revenue_order.rs", monkeypatch, ("acc[sel[p]] >= acc[zz]", "acc[sel[p]] <= acc[zz]"))
+    assert not ok and "error" in out
+
+
+def test_a_wrong_pair_order_in_the_string_ordered_star_join_does_not_verify(monkeypatch: pytest.MonkeyPatch) -> None:
+    ok, out = _verify("dict_parallel_star_join_two_keys_string_order.rs", monkeypatch, ("str_le(&d2[a % m2], &d2[b % m2])", "str_le(&d2[b % m2], &d2[a % m2])"))
     assert not ok and "error" in out

@@ -722,7 +722,8 @@ def _parallel_section(spec_text: str, shape: dict) -> list[str]:
             "A parallel STAR JOIN (a fact table split over 8 workers; the dimension arrays are built once and shared through `Arc`; each worker returns a flat slot array pair that the join loop merges):",
             "`context/ro/examples/hard/dict_parallel_star_join_group_sum_sorted.rs` (SSB Q4.1: 2.7x the all-core engine, against 1.03x for the single-threaded `dict_star_join_group_sum_sorted.rs`). Turn the sequential",
             "fact loop into the nested `fn scan(.., lo, hi)` of that file and keep the rest. Two dictionary group keys, a WHERE-bounded year and ORDER BY a year then a SUM descending:",
-            "`context/ro/examples/hard/dict_parallel_star_join_two_keys_revenue_order.rs` (SSB Q3.1, 2.4x).",
+            "`context/ro/examples/hard/dict_parallel_star_join_two_keys_revenue_order.rs` (SSB Q3.1, 2.4x). Two string keys from two dimensions with ORDER BY the strings:",
+            "`context/ro/examples/hard/dict_parallel_star_join_two_keys_string_order.rs` (SSB Q4.2, 2.25x).",
         ]
     if "lemma_group_close_rows" in spec_text and shape["dict"]:
         lines += [
