@@ -4,7 +4,7 @@ No trust: ordinary ``proof fn`` / ``spec fn`` items next to the spec, checked by
 For a fold ``N`` over tables with index names ``i0..i{n-1}`` (the chain order, fact table first) and the fold levels ``N`` (= ``N_d0``), ``N_d1`` ... ``N_d{n-1}``
 the library has:
 
-* ``N_t(P, i0..i{n-1}[, k])``: the term the innermost fold adds for one index tuple (the fold's own ``add`` expression).
+* ``chain_term_N(P, i0..i{n-1}[, k])``: the term the innermost fold adds for one index tuple (the fold's own ``add`` expression).
 * ``lemma_N_zero_dL(P, i0..i{L-1}, x[, k])``: when the term is 0 for every tuple ``(y_L .. y_{n-1})`` with ``y_L >= x`` (and every index in range), then the
   level-L suffix fold ``N_dL(P, i0..i{L-1}, x[, k])`` is 0.
 * ``lemma_N_single_dL(P, i0..i{L-1}, x, m_L..m_{n-1}[, k])``: when the term is 0 for every such tuple except ``m``, and ``x <= m_L``, then the level-L suffix fold
@@ -34,7 +34,7 @@ def chain_fold_lemmas(
     C = ", ".join(p for p, _s in params)
     K = f", k: {key_ty}" if key_ty else ""
     Kc = ", k" if key_ty else ""
-    T = f"{name}_t"
+    T = f"chain_term_{name}"
 
     def fold(level: int) -> str:
         return name if level == 0 else f"{name}_d{level}"
@@ -122,7 +122,7 @@ def chain_row_lemmas(
     C = ", ".join(p for p, _s, _t in params)
     K = f", k: {key_ty}" if key_ty else ""
     Kc = ", k" if key_ty else ""
-    T = f"{name}_t"
+    T = f"chain_term_{name}"
     ys = [f"y{j}" for j in range(1, n)]
     zs = [f"z{j}" for j in range(1, n)]
     valids = ",\n        ".join(f"valid_cols_{t}({p})" for p, _s, t in params)

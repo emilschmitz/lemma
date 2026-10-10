@@ -69,7 +69,7 @@ def test_the_chain_puts_the_fact_table_first_and_requires_the_dimension_keys_uni
     # the library: the term, and the zero / single lemmas for every fold level
     for level in range(3):
         assert f"lemma_sum_total_zero_d{level}" in spec and f"lemma_sum_total_single_d{level}" in spec
-    assert "spec fn sum_total_t(" in spec
+    assert "spec fn chain_term_sum_total(" in spec
 
 
 def test_no_chain_without_a_declared_unique_key_or_with_a_nullable_key(monkeypatch: pytest.MonkeyPatch) -> None:
