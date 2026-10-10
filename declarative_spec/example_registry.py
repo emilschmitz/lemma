@@ -83,6 +83,10 @@ MORE_EXAMPLES: tuple[tuple[str, str], ...] = (
         "dictionary string mode: join, GROUP BY two keys, SUM with HAVING against an uncorrelated scalar subquery, ORDER BY ... LIMIT (long)",
     ),
     (
+        "hard/dict_parallel_star_join_group_sum_sorted.rs",
+        "dictionary string mode, PARALLEL STAR JOIN (SSB Q4.1, LEMMA_JOIN_CHAIN=1): fact table over 8 workers, four unique-key dimension arrays shared through `Arc`, per-worker flat slot arrays merged slotwise, sorted output (2.7x; long)",
+    ),
+    (
         "hard/dict_parallel_q1.rs",
         "dictionary string mode, PARALLEL: two string keys, four aggregates, ORDER BY the keys, flat slot array per worker (TPC-H Q1, long)",
     ),

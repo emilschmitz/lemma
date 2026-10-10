@@ -717,6 +717,12 @@ def _parallel_section(spec_text: str, shape: dict) -> list[str]:
         "The example is the template (SUM; adapt the fold, the filter, the cell bound and the accumulator type):",
         f"`context/ro/examples/{_PAR_EXAMPLE}` (also `parallel_ungrouped_product_sum.rs` for a product with a date filter, and `parallel_ungrouped_min.rs`, `_max.rs`, `_count.rs`: MIN/MAX merge the workers' (value, any) pairs, COUNT is additive).",
     ]
+    if shape["dict"] and "lemma_chain_hit_unique" in spec_text:
+        lines += [
+            "A parallel STAR JOIN (a fact table split over 8 workers; the dimension arrays are built once and shared through `Arc`; each worker returns a flat slot array pair that the join loop merges):",
+            "`context/ro/examples/hard/dict_parallel_star_join_group_sum_sorted.rs` (SSB Q4.1: 2.7x the all-core engine, against 1.03x for the single-threaded `dict_star_join_group_sum_sorted.rs`). Turn the sequential",
+            "fact loop into the nested `fn scan(.., lo, hi)` of that file and keep the rest.",
+        ]
     if "lemma_group_close_rows" in spec_text and shape["dict"]:
         lines += [
             "A parallel HASH GROUP BY with a merge (an integer key too wide for a dense array; per-worker hash tables, merged by key; then the top-N selection and the host closing lemmas):",
