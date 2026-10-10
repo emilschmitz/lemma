@@ -196,11 +196,16 @@ def run(
         "status": result.get("status"),
         "latency_us": result.get("best_latency_us"),
         # The imperative loop leaves "error" empty and keeps the reason per iteration in the history.
-        "error": (
-            result.get("error")
-            or next((h["error"] for h in reversed(result.get("history", [])) if h.get("error")), "")
-        )[-2000:],
+        "error": verdict_error(result),
     }
+
+
+def verdict_error(result: dict) -> str:
+    """The error line of the RESULT: empty for a SUCCESS (an earlier session's timeout stays in the history; SSB Q3.3 reported SUCCESS 3.05x with
+    "agent timed out ... No submit" left over from session 1 although session 2 submitted), else the loop's error or the last per-iteration one."""
+    if result.get("status") == "SUCCESS":
+        return ""
+    return (result.get("error") or next((h["error"] for h in reversed(result.get("history", [])) if h.get("error")), ""))[-2000:]
 
 
 def main(argv: list[str] | None = None) -> int:
