@@ -1349,8 +1349,13 @@ def _group_close_text(query: Query, helpers: _Helpers, model: SchemaModel) -> st
 
     if helpers.key_ty is None:
         return ""
-    if any(_order_seq_flags(query, helpers)) or any(_order_null_flags(query, helpers)):
+    if any(_order_null_flags(query, helpers)):
         return ""
+    from declarative_spec import join_chain
+
+    if any(_order_seq_flags(query, helpers)) and (query.limit is not None or not join_chain.enabled()):
+        return ""  # the omitted-group clause of a string-ordered LIMIT needs the string order; not stated yet. Without LIMIT the closing lemmas
+        # (rows, distinct, present) do not mention the order: they are emitted for string ORDER BY only under LEMMA_JOIN_CHAIN, so that older fixtures keep their spec text
     if query.order_by and query.limit is None:
         pass  # ORDER BY without LIMIT: only the tail's order line (no omitted-group clause)
     scalars = helpers.scalars

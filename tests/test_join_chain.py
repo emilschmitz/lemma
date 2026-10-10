@@ -161,3 +161,23 @@ def test_the_composite_key_lemmas_verify(monkeypatch: pytest.MonkeyPatch) -> Non
     ok, out = verify_assembled(assemble_declarative_program(spec, "    Vec::new()"), timeout_sec=600)
     m = re.search(r"verification results:: (\d+) verified, (\d+) errors", out)
     assert not ok and m and int(m.group(2)) == 1 and out.count("postcondition not satisfied") == 1, out[-1500:]
+
+
+STRING_ORDER = (
+    "SELECT da.x, db.y, SUM(fact.v) AS total FROM da, fact, db WHERE fact.a_id = da.id AND fact.b_id = db.id GROUP BY da.x, db.y ORDER BY da.x"
+)
+
+
+def test_group_close_lemmas_for_a_string_order_by_only_with_the_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    schema = {**SCHEMA, "db": {"id": "bigint", "y": "varchar"}}
+    monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
+    cat = _catalog()
+    cat.tables["db"].columns["y"] = ColumnAssumption(max_string_len=8, max_distinct=16)
+    sql = STRING_ORDER.replace("ORDER BY da.x", "ORDER BY da.x, db.y")
+    monkeypatch.setenv(join_chain.ENV, "0")
+    off = emit_declarative_spec(sql, schema, cat)
+    monkeypatch.setenv(join_chain.ENV, "1")
+    on = emit_declarative_spec(sql, schema, cat)
+    assert "lemma_group_close_rows" not in off and "lemma_group_close_rows" in on
+    limited = emit_declarative_spec(sql + " LIMIT 5", schema, cat)
+    assert "lemma_group_close_rows" not in limited  # a string-ordered LIMIT still has no closing lemmas
