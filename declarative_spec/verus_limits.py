@@ -18,12 +18,20 @@ from pathlib import Path
 
 RLIMIT_ENV = "LEMMA_VERUS_RLIMIT"
 TIMEOUT_ENV = "LEMMA_VERUS_TIMEOUT_SEC"
+RUN_TIMEOUT_ENV = "LEMMA_RUN_TIMEOUT_SEC"
 # Verus's own default is 10. 16 because Z3's work depends on the temporary file NAME: a long proof (the top-N join example) passed 1 of 4
 # file names at rlimit 3, 4, 6 and 12 and 4 of 4 at 16, 20 and 30 (research_loop/scripts/fixture_rlimit_sweep.sh, FINDINGS F-MAN-9). At 3 the
 # same proof passes or fails by luck; 16 removes the lottery at the cost of slower failing proofs.
 DEFAULT_RLIMIT = 16.0
 # Covers verification plus the optimized rustc build of the assembled program.
 DEFAULT_TIMEOUT_SEC = 300
+# The compiled, verified binary on the full tables (load + warm-up + the timed repetitions). The reference engine needs milliseconds to a second
+# for these queries, so a binary still running after a minute is orders of magnitude past the speed bar. The old limit (300 s) equalled the
+# MCP harness wait, so the agent saw only "harness timeout" (no cause) and lost five minutes per such try (SSB Q3.2, 2026-10-10: three of four
+# run_runquery calls, 15 of the 25 minutes, were the spec's own nested loops over 6M x 30k rows).
+DEFAULT_RUN_TIMEOUT_SEC = 60
+# Slack on top of the two inner limits, so an inner limit's own message always reaches the agent before the MCP harness gives up.
+HARNESS_SLACK_SEC = 60
 
 
 def verus_rlimit() -> float:
@@ -38,6 +46,29 @@ def verus_timeout_sec() -> int:
     if value <= 0:
         raise ValueError(f"{TIMEOUT_ENV} must be positive, got {value}")
     return value
+
+
+def run_timeout_sec() -> int:
+    value = int(os.environ.get(RUN_TIMEOUT_ENV, DEFAULT_RUN_TIMEOUT_SEC))
+    if value <= 0:
+        raise ValueError(f"{RUN_TIMEOUT_ENV} must be positive, got {value}")
+    return value
+
+
+def declarative_harness_budget_sec() -> int:
+    """How long the MCP harness must wait for one declarative run: both inner limits plus slack, so the inner message wins."""
+    return verus_timeout_sec() + run_timeout_sec() + HARNESS_SLACK_SEC
+
+
+def run_timeout_message(timeout_sec: int) -> str:
+    """A binary that Verus proved but that did not finish: a speed failure, not a proof error."""
+    return (
+        f"RUN TIMEOUT: the verified binary did not finish within {timeout_sec}s on the full tables ({RUN_TIMEOUT_ENV}). "
+        "Verus proved it (`verification results:: N verified, 0 errors`), so this is not a proof error: the body is far too slow to run. "
+        "A loop over one table inside a loop over another costs |T1| * |T2| steps, and the host spec's own nested folds are exactly that, so they "
+        "must not be run as the body. Make ONE pass over the largest table and reach the others through small lookup arrays "
+        "(index = join key) instead of a nested loop."
+    )
 
 
 def verus_limit_args() -> list[str]:

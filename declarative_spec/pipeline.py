@@ -11,6 +11,8 @@ from pathlib import Path
 from declarative_spec.feedback import FULL_LOG_NAME, format_failure
 from declarative_spec.regions import extract_agent_edit, extract_agent_helpers
 from declarative_spec.verus_limits import (
+    run_timeout_message,
+    run_timeout_sec,
     run_verus,
     timeout_message,
     verus_limit_args,
@@ -193,7 +195,7 @@ def compile_and_run(
                 [str(binary)],
                 capture_output=True,
                 text=True,
-                timeout=300,
+                timeout=run_timeout_sec(),
                 check=False,
                 cwd=directory,
             )
@@ -202,7 +204,7 @@ def compile_and_run(
             "status": "FAILURE",
             "proof_verified": True,
             "latency_us": -1,
-            "compiler_error": "binary timed out",
+            "compiler_error": run_timeout_message(run_timeout_sec()),
             "verify_msg": log[-2000:],
         }
     finally:

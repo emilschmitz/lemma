@@ -87,9 +87,12 @@ def _resolve_under_workspace(path: str, ws: Path | None = None) -> Path:
 
 
 def _harness_timeout_sec() -> int:
+    """The MCP harness wait for one run: the legacy verify+compile budget, but never less than the declarative pipeline's own inner limits
+    (Verus wall + binary run wall + slack), so a Verus or run timeout reaches the agent with its message instead of a bare "harness timeout"."""
     from db_extension.optimizer import harness_timeout_sec
+    from declarative_spec.verus_limits import declarative_harness_budget_sec
 
-    return harness_timeout_sec(config_env_path=str(CONFIG_ENV))
+    return max(harness_timeout_sec(config_env_path=str(CONFIG_ENV)), declarative_harness_budget_sec())
 
 
 def _read_workspace_sql_schema(ws: Path) -> tuple[str, dict]:
