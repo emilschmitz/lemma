@@ -106,3 +106,20 @@ def test_the_host_lemmas_verify_and_only_the_empty_body_fails(monkeypatch: pytes
     m = re.search(r"verification results:: (\d+) verified, (\d+) errors", out)
     assert m and int(m.group(2)) == 1, out[-1500:]  # the postcondition of the empty body, nothing in the lemma library
     assert out.count("postcondition not satisfied") == 1 and "lemma_sum_total" not in out.split("verification results")[0]
+
+
+def test_a_self_join_uses_the_alias_not_the_table_to_find_the_equated_slot(monkeypatch: pytest.MonkeyPatch) -> None:
+    # fact joins two aliases of da on its key; the second alias is a different slot of the same table
+    sql = (
+        "SELECT a1.x, a2.x AS x2, SUM(fact.v) AS total FROM fact, da a1, da a2 "
+        "WHERE fact.a_id = a1.id AND fact.b_id = a2.id GROUP BY a1.x, a2.x ORDER BY a1.x, a2.x"
+    )
+    spec = _spec(monkeypatch, "1", sql=sql)
+    assert _params(spec)[:3] == ["fact", "a1", "a2"] and "lemma_sum_total_single_d2" in spec
+    # an equality between the two aliases alone (no fact column) does not determine a2 from the fact table
+    sql2 = (
+        "SELECT a1.x, SUM(fact.v) AS total FROM fact, da a1, da a2 "
+        "WHERE fact.a_id = a1.id AND a1.x = a2.x GROUP BY a1.x ORDER BY a1.x"
+    )
+    spec2 = _spec(monkeypatch, "1", sql=sql2)
+    assert "lemma_sum_total_single_d0" not in spec2

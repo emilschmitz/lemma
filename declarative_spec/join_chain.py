@@ -51,7 +51,10 @@ def _equalities(query, slots: list[_Slot], model) -> set[tuple[str, str, str, st
         qual, _, bare = text.rpartition(".")
         if qual:
             table = query.aliases.get(qual, qual)
-            alias = next((s for s in slots if s.alias == qual or s.table.casefold() == table.casefold()), None)
+            # an exact alias first: a self-join has two slots of the same table
+            alias = next((s for s in slots if s.alias == qual), None) or next(
+                (s for s in slots if s.table.casefold() == table.casefold()), None
+            )
             if alias is None:
                 return None
             return alias.alias, bare.casefold()
@@ -117,13 +120,11 @@ def find_chain(query, slots: list[_Slot], model, catalog) -> JoinChain | None:
                     unique.append((s.alias, hit))
                     progress = True
         if len(placed) == len(slots):
-            used = {c for a, c, other, _oc in pairs}
             if any(nullable(a, key) for a, key in unique) or any(
                 model.is_nullable(table_of[a], c) for a, c, _o, _oc in pairs
             ):
                 return None
             best = JoinChain(tuple(placed), tuple(unique))
-            del used
             break
     return best
 
