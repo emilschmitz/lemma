@@ -102,3 +102,45 @@ def test_the_reordered_row_hit_is_the_same_conjunction(monkeypatch):
     monkeypatch.setenv(join_chain.ENV, "0")
     off = norm(emit_declarative_spec(sql, SCHEMA, _catalog()))
     assert on == off
+
+
+# ---- round 2 (delta 4bb67f1..c59009e), see join_chain_ADVERSARY_VERDICT_2.md ----
+
+
+def test_string_order_by_close_lemmas_keep_the_string_order_in_the_ensures(monkeypatch):
+    """The closing lemmas are new for a string ORDER BY without LIMIT; the run_query ensures must still carry the seq_le order and the lemmas must not."""
+    schema = {**SCHEMA, "da": {"id": "bigint", "x": "varchar"}}
+    cat = _catalog()
+    cat.tables["da"].columns["x"] = ColumnAssumption(max_string_len=8, max_distinct=16)
+    sql = "SELECT da.x, SUM(fact.v) AS t FROM fact, da WHERE fact.a_id = da.id GROUP BY da.x ORDER BY da.x"
+    spec = _emit(monkeypatch, sql, schema, cat, "dict")
+    for lemma in ("lemma_group_close_rows", "lemma_group_close_distinct", "lemma_group_close_present"):
+        assert lemma in spec
+    assert "lemma_group_close_omitted" not in spec  # no LIMIT: no omitted-group clause
+    ensures = spec[spec.index("pub fn run_query") :].split("{", 1)[0]
+    assert "seq_le" in ensures and "out_row_ok" in ensures
+    assert "seq_le" not in spec[spec.index("pub proof fn lemma_group_close_rows") : spec.index("pub fn run_query")].split("pub proof fn lemma_group_close_distinct")[0]
+
+
+def test_string_order_by_limit_gets_no_close_lemmas_with_the_flag(monkeypatch):
+    schema = {**SCHEMA, "da": {"id": "bigint", "x": "varchar"}}
+    cat = _catalog()
+    cat.tables["da"].columns["x"] = ColumnAssumption(max_string_len=8, max_distinct=16)
+    sql = "SELECT da.x, SUM(fact.v) AS t FROM fact, da WHERE fact.a_id = da.id GROUP BY da.x ORDER BY da.x LIMIT 3"
+    assert "lemma_group_close" not in _emit(monkeypatch, sql, schema, cat, "dict")
+
+
+@pytest.mark.parametrize("status,expect_empty", [("SUCCESS", True), ("FAILED", False), ("SUCCESS_UNVERIFIED", False)])
+def test_verdict_error_is_empty_only_for_success(status, expect_empty):
+    from research_loop.scripts.run_container_agent import verdict_error
+
+    res = {"status": status, "error": "", "history": [{"error": "agent timed out"}]}
+    assert (verdict_error(res) == "") is expect_empty
+
+
+def test_the_declarative_loop_returns_success_only_for_a_proved_run():
+    """SUCCESS is produced in one place; it needs proof_verified (drive.py) and the speed bar / row match turn a run into FAILURE (pipeline._apply_speed_bar)."""
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "declarative_spec" / "drive.py").read_text()
+    assert 'metrics.get("status") == "SUCCESS" and proof_verified' in src
