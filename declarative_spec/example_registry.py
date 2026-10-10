@@ -87,6 +87,10 @@ MORE_EXAMPLES: tuple[tuple[str, str], ...] = (
         "dictionary string mode, PARALLEL STAR JOIN (SSB Q4.1, LEMMA_JOIN_CHAIN=1): fact table over 8 workers, four unique-key dimension arrays shared through `Arc`, per-worker flat slot arrays merged slotwise, sorted output (2.7x; long)",
     ),
     (
+        "hard/dict_parallel_star_join_two_keys_revenue_order.rs",
+        "dictionary string mode, PARALLEL STAR JOIN (SSB Q3.1, LEMMA_JOIN_CHAIN=1): TWO dictionary group keys (pair code) and a year with a WHERE-bounded code, ORDER BY the year then the SUM descending by insertion into a sorted Vec of slots (2.4x; long)",
+    ),
+    (
         "hard/dict_parallel_q1.rs",
         "dictionary string mode, PARALLEL: two string keys, four aggregates, ORDER BY the keys, flat slot array per worker (TPC-H Q1, long)",
     ),
