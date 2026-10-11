@@ -91,9 +91,17 @@ def _emit_with_string_tokens(
 
         return emit_projection_program(query, model, catalog)
 
-    helpers = _emit_helpers(query, "", model)
+    from declarative_spec import join_chain
+
+    chain = join_chain.find_chain(query, _build_slots(query), model, catalog) if join_chain.enabled() else None
+    helpers = _emit_helpers(query, "", model, chain=chain)
     _require_float_mags(query, helpers, model, catalog)
     facts = _require_sum_fits(query, helpers, model, catalog)
+    if chain is not None:
+        # every table after the fact table is unique on its chain key: the data must say so (loader-checked), and the proofs may use it
+        merged = dict(facts.unique_aliases) if facts else {}
+        merged.update(dict(chain.unique))
+        facts = dataclasses.replace(facts, unique_aliases=tuple(merged.items())) if facts else _JoinBound(1, tuple(merged.items()))
 
     structs = _structs(helpers.params, model, catalog)
     int_sum = any(a.kind == "SUM" and not a.float_out for a in helpers.aggs)
@@ -202,8 +210,12 @@ def _reject_unemitted(query: Query) -> None:
         _reject_unemitted(query.set_query)
 
 
-def _emit_helpers(query: Query, prefix: str, model: SchemaModel) -> _Helpers:
+def _emit_helpers(query: Query, prefix: str, model: SchemaModel, chain=None) -> _Helpers:
     main = _build_slots(query)
+    if chain is not None and not prefix:
+        from declarative_spec import join_chain
+
+        main = join_chain.reorder(main, chain)
     if not main:
         raise DeclarativeUnsupported("FROM")
     for slot in main:
@@ -234,6 +246,12 @@ def _emit_helpers(query: Query, prefix: str, model: SchemaModel) -> _Helpers:
     blocks.append(_key_at_fn(key_at, main, params, group_infos, key_ty))
 
     aggs: list[_AggFn] = []
+    chain_row_hit = ""
+    if chain is not None and not prefix:
+        unique_lemma = _chain_hit_unique(chain, main, model, row_hit)
+        if unique_lemma:
+            blocks.append(_LIBRARY_MARK + unique_lemma)
+            chain_row_hit = row_hit
     for agg in query.aggs:
         hit_name = row_hit
         if agg.filter_expr:
@@ -244,7 +262,9 @@ def _emit_helpers(query: Query, prefix: str, model: SchemaModel) -> _Helpers:
                 )
             hit_name = f"{prefix}hit_{rust_ident(agg.alias)}"
             blocks.append(_agg_hit_fn(hit_name, row_hit, agg, main, params, model))
-        aggs.append(_emit_agg(blocks, query, agg, prefix, main, params, model, key_ty, hit_name, key_at))
+        aggs.append(
+            _emit_agg(blocks, query, agg, prefix, main, params, model, key_ty, hit_name, key_at, chain_lemmas=chain is not None and not prefix, chain_row_hit=chain_row_hit)
+        )
         aggs[-1].hidden = agg.hidden
         aggs[-1].hit_fn = hit_name
 
@@ -573,6 +593,57 @@ def _default(info: ColumnTypeInfo) -> str:
 _LIBRARY_MARK = "// HOST_LIBRARY_MARK\n"
 
 
+def _chain_hit_unique(chain, main: list[_Slot], model: SchemaModel, row_hit: str) -> str:
+    """``lemma_chain_hit_unique`` for the chain, or "" when a chained key is not a plain integer column (the agent then proves its own)."""
+    from declarative_spec.chain_lemmas import chain_hit_unique_lemma
+
+    pos = {s.alias: i for i, s in enumerate(main)}
+    unique: list[tuple[int, list[str]]] = []
+    for alias, key in chain.unique:
+        slot = main[pos[alias]]
+        _orig, cols = model.lookup_table(slot.table)
+        fields = []
+        for k in key:
+            col = next(c for c in cols if c.casefold() == k.casefold())
+            info = cols[col]
+            if info.is_float or info.spec_as != "int" or info.precision is not None or info.nullable_key:
+                return ""
+            fields.append(rust_ident(col))
+        unique.append((pos[alias], fields))
+    unique.sort()
+    return chain_hit_unique_lemma(
+        row_hit=row_hit,
+        bounds=[f"{s.param}.n as int" for s in main],
+        params=[(s.param, s.struct, rust_ident(s.table)) for s in main],
+        idxs=[s.idx for s in main],
+        unique=unique,
+    )
+
+
+def _chain_library(name: str, term: str, main: list[_Slot], params: list[_Slot], key_ty: str | None, row_hit: str = "") -> str:
+    from declarative_spec.chain_lemmas import chain_fold_lemmas, chain_row_lemmas
+
+    bounds = [f"{s.param}.n as int" for s in main]
+    text = chain_fold_lemmas(
+        name=name,
+        term_expr=term,
+        idxs=[s.idx for s in main],
+        bounds=bounds,
+        params=[(s.param, s.struct) for s in params],
+        key_ty=key_ty,
+    )
+    if row_hit:  # the per-fact-row lemma needs `lemma_chain_hit_unique`, emitted once per query when every chained key is a plain integer column
+        text += "\n\n" + chain_row_lemmas(
+            name=name,
+            row_hit=row_hit,
+            idxs=[s.idx for s in main],
+            bounds=bounds,
+            params=[(s.param, s.struct, rust_ident(s.table)) for s in main],
+            key_ty=key_ty,
+        )
+    return text
+
+
 def _emit_agg(
     blocks: list[str],
     query: Query,
@@ -584,6 +655,8 @@ def _emit_agg(
     key_ty: str | None,
     row_hit: str,
     key_at: str,
+    chain_lemmas: bool = False,
+    chain_row_hit: str = "",
 ) -> _AggFn:
     kind = agg.kind.upper()
     if kind == "RATIO":
@@ -616,6 +689,8 @@ def _emit_agg(
             key_ty,
             unit_step=True,
         )
+        if chain_lemmas:
+            blocks.append(_LIBRARY_MARK + _chain_library(name, f"if {hit} {{ {term} }} else {{ 0int }}", main, params, key_ty, chain_row_hit))
         return _AggFn(alias, kind, name, "int", False, "fold", "u64")
     if kind == "COUNT_DISTINCT":
         value = _value_fn(blocks, f"{name}_val", agg, main, params, model, _value_ret(agg, main, model))
@@ -642,6 +717,8 @@ def _emit_agg(
         zero = "0real" if is_float else "0int"
         add = f"if {hit} {{ {value}({_param_call(params)}, {_idx_call(main)}) }} else {{ {zero} }}"
         _emit_fold(blocks, name, ret, zero, add, main, params, key_ty)
+        if chain_lemmas and not is_float:
+            blocks.append(_LIBRARY_MARK + _chain_library(name, add, main, params, key_ty, chain_row_hit))
         return _AggFn(alias, kind, name, ret, is_float, "fold", exec_ty)
     if kind == "AVG":
         # SQL AVG is a real quotient, including AVG over an integer column.
@@ -1272,8 +1349,13 @@ def _group_close_text(query: Query, helpers: _Helpers, model: SchemaModel) -> st
 
     if helpers.key_ty is None:
         return ""
-    if any(_order_seq_flags(query, helpers)) or any(_order_null_flags(query, helpers)):
+    if any(_order_null_flags(query, helpers)):
         return ""
+    from declarative_spec import join_chain
+
+    if any(_order_seq_flags(query, helpers)) and (query.limit is not None or not join_chain.enabled()):
+        return ""  # the omitted-group clause of a string-ordered LIMIT needs the string order; not stated yet. Without LIMIT the closing lemmas
+        # (rows, distinct, present) do not mention the order: they are emitted for string ORDER BY only under LEMMA_JOIN_CHAIN, so that older fixtures keep their spec text
     if query.order_by and query.limit is None:
         pass  # ORDER BY without LIMIT: only the tail's order line (no omitted-group clause)
     scalars = helpers.scalars

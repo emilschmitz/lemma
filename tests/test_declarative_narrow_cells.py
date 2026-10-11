@@ -192,7 +192,7 @@ def test_the_prompt_explains_a_dead_disjunct_from_the_cell_cap() -> None:
     assert "is dead" in text and "`p == 1`, not `1i64`" in text
 
 
-@pytest.mark.parametrize("raw", ["true", "off", "", "2"])
+@pytest.mark.parametrize("raw", ["off", "yes", "2"])
 def test_the_flag_accepts_exactly_zero_or_one(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
     from declarative_spec.schema_types import narrow_cells
 

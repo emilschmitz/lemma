@@ -16,11 +16,11 @@ import sys
 import time
 from collections.abc import Iterator
 
-LOCK_ENV = "HEAVY_LOCK"
+import lemma_config
+
+LOCK_ENV = lemma_config.env_name("heavy_lock")
 HELD_ENV = "LEMMA_HEAVY_LOCK_HELD"
-MIN_AVAIL_ENV = "HEAVY_MIN_AVAIL_MB"
-DEFAULT_LOCK = "/tmp/lemma_timing.lock"
-DEFAULT_MIN_AVAIL_MB = 3500
+MIN_AVAIL_ENV = lemma_config.env_name("heavy_min_avail_mb")
 
 
 def _available_mb() -> int:
@@ -36,10 +36,10 @@ def heavy_phase(name: str) -> Iterator[None]:
     if os.environ.get(HELD_ENV) == "1":
         yield
         return
-    fd = os.open(os.environ.get(LOCK_ENV, DEFAULT_LOCK), os.O_CREAT | os.O_RDWR, 0o666)
+    fd = os.open(lemma_config.get("heavy_lock"), os.O_CREAT | os.O_RDWR, 0o666)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
-        need = int(os.environ.get(MIN_AVAIL_ENV, DEFAULT_MIN_AVAIL_MB))
+        need = int(lemma_config.get("heavy_min_avail_mb"))
         while (have := _available_mb()) < need:
             print(f"heavy phase {name!r}: waiting for memory ({have} MB available < {need} MB)", file=sys.stderr, flush=True)
             time.sleep(5)

@@ -63,6 +63,12 @@ uv run python research_loop/scripts/run_container_agent.py --style declarative \
 
 Verus is memory hungry. Run it through `scripts/ram/verus_guarded.sh`, which caps concurrent runs and memory.
 
+**Configuration lives in one file, `lemma.toml`** (repo root, one commented line per setting: run, agent, prover, measure, data, safety).
+Precedence: `lemma.toml` < environment variable `LEMMA_<KEY>` (e.g. `[measure] official_rounds` is `LEMMA_OFFICIAL_ROUNDS`) < CLI flag.
+A misspelled `LEMMA_*` variable, a bad value or a dead setting stops the launcher before any work (`uv run python -m lemma_config check`; `dump` lists
+every value and where it came from). Every container run records the full effective config, the git SHA and `git_dirty` in its manifest and RESULT
+line, and refuses to start from a dirty git tree (tracked files) unless `allow_dirty = true`. See `docs/FLAGS.md`.
+
 ## Using it on your own data
 
 A proof is an IF-THEN: *if* the data satisfies the declared bounds, *then* the program computes the SQL.

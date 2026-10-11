@@ -3,13 +3,15 @@
 #   scripts/ram/heavy.sh <command...>
 # Heavy = anything big or timing-sensitive: data export, query generation, benchmarks, container batches.
 # Takes the same lock as the timing runs (/tmp/lemma_timing.lock), so heavy jobs never overlap and timings stay clean.
-# Waits until MemAvailable >= HEAVY_MIN_AVAIL_MB (default 4000), then runs the command in a systemd scope
-# capped at HEAVY_MEM_MAX (default 5G) with no swap, so an overrun kills the job alone, never the desktop session.
+# Waits until MemAvailable >= heavy_min_avail_mb, then runs the command in a systemd scope capped at heavy_mem_max with no swap, so an
+# overrun kills the job alone, never the desktop session. Both values, and the lock file (heavy_lock), are keys of lemma.toml [safety]
+# (override: LEMMA_HEAVY_MIN_AVAIL_MB, LEMMA_HEAVY_MEM_MAX, LEMMA_HEAVY_LOCK; tests use their own lock so they never queue behind a real run).
 set -euo pipefail
-MEM_MAX="${HEAVY_MEM_MAX:-5G}"
-MIN_AVAIL_MB="${HEAVY_MIN_AVAIL_MB:-4000}"
-# HEAVY_LOCK overrides the lock file (tests use their own so they never queue behind a real run)
-exec 8>"${HEAVY_LOCK:-/tmp/lemma_timing.lock}"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cfg() { PYTHONPATH="$ROOT" python3 -m lemma_config get "$1"; }
+MEM_MAX="$(cfg heavy_mem_max)"
+MIN_AVAIL_MB="$(cfg heavy_min_avail_mb)"
+exec 8>"$(cfg heavy_lock)"
 flock 8
 while :; do
   avail=$(awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo)

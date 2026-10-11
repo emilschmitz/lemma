@@ -256,8 +256,6 @@ def test_float_names_are_not_host_names_in_a_spec_without_a_float(helpers: str) 
 @pytest.mark.parametrize(
     "helpers",
     [
-        "fn plain() { }",
-        "exec fn plain() { }",
         "struct S { x: u64 }",
         "const C: u64 = 1;",
         "proof fn p() { }\nlet x = 1;",
@@ -267,7 +265,7 @@ def test_float_names_are_not_host_names_in_a_spec_without_a_float(helpers: str) 
         "proof fn p() { }\n}",
     ],
 )
-def test_helper_region_holds_only_proof_and_spec_fns(helpers: str) -> None:
+def test_helper_region_holds_only_fn_items(helpers: str) -> None:
     assert not admit_helpers(helpers, _USUM_SPEC).ok, helpers
 
 
@@ -290,7 +288,7 @@ def test_helper_with_block_expressions_in_its_signature_is_accepted(helper: str)
 
 def test_block_signatures_do_not_hide_a_bad_item_or_a_reused_name() -> None:
     sig = "proof fn p(x: int) ensures if x > 0 { true } else { true } { }\n"
-    assert not admit_helpers(sig + "fn plain() { }", _USUM_SPEC).ok
+    assert not admit_helpers(sig + "struct S { x: u64 }\nfn plain() { }", _USUM_SPEC).ok
     assert not admit_helpers(sig + "struct S { x: u64 }", _USUM_SPEC).ok
     taken = admit_helpers("proof fn row_hit(x: int) ensures if x > 0 { true } else { true } { }", _USUM_SPEC)
     assert any("row_hit" in v for v in taken.violations)

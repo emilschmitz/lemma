@@ -5,6 +5,8 @@ import sys
 import time
 from pathlib import Path
 
+import lemma_config
+
 from verus_transpiler.column_projection import (
     project_multi_schema_for_query,
     project_schema_for_query,
@@ -63,17 +65,7 @@ def _parse_harness_metrics(stderr: str) -> dict:
 
 
 def _read_lemma_spec_style() -> str:
-    raw = os.environ.get("LEMMA_SPEC_STYLE", "")
-    style = raw.strip().lower()
-    if style in ("", "declarative"):
-        return "declarative"
-    if style == "imperative":
-        return "imperative"
-    if style == "recursive":
-        raise ValueError("LEMMA_SPEC_STYLE 'recursive' was renamed to 'imperative'")
-    raise ValueError(
-        f"LEMMA_SPEC_STYLE must be imperative or declarative, got {raw!r}"
-    )
+    return lemma_config.get("spec_style")  # lemma.toml [run] (declarative); LEMMA_SPEC_STYLE overrides; anything else raises
 
 
 def _maybe_harvest_verified_submit(workspace: Path) -> dict | None:
@@ -311,6 +303,7 @@ def official_full_measure_after_submit(
             dataset_size=dataset_size,
             workload_tables=workload_tables,
             workload=workload,
+            official=True,  # declarative: K interleaved rounds against DuckDB, verdict on the medians
         )
 
     try:
@@ -387,18 +380,19 @@ def is_timed_verified_success(metrics: dict) -> bool:
 
 
 def harness_timeout_sec(*, config_env_path: str | None = None) -> int:
-    """Wall-clock budget for verify+compile harness (compile/verify max + buffer)."""
-    compile_timeout = int(os.environ.get("COMPILE_TIMEOUT_SEC", "180"))
-    verify_timeout = int(os.environ.get("VERUS_VERIFY_TIMEOUT_SEC", "120"))
+    """Wall-clock budget for verify+compile harness (compile/verify max + buffer).
+
+    The Verus wall is the ONE knob ``verus_timeout_sec`` of lemma.toml (``VERUS_VERIFY_TIMEOUT_SEC`` is its deprecated alias). The imperative
+    compile wall ``COMPILE_TIMEOUT_SEC`` (default 180) is read from the environment, else from ``config_env_path``: the environment wins, as everywhere."""
+    compile_timeout = 180
     if config_env_path and os.path.isfile(config_env_path):
         with open(config_env_path) as f:
             for line in f:
                 line = line.strip()
                 if line.startswith("COMPILE_TIMEOUT_SEC="):
                     compile_timeout = int(line.split("=", 1)[1].strip())
-                elif line.startswith("VERUS_VERIFY_TIMEOUT_SEC="):
-                    verify_timeout = int(line.split("=", 1)[1].strip())
-    return max(compile_timeout, verify_timeout) + 120
+    compile_timeout = int(os.environ.get("COMPILE_TIMEOUT_SEC") or compile_timeout)
+    return max(compile_timeout, int(lemma_config.get("verus_timeout_sec"))) + 120
 
 
 def bench_timeout_sec() -> int:

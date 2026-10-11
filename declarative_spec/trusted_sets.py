@@ -54,7 +54,24 @@ def _default_lemmas_rs(spec: str | None = None) -> str:
     return text + "\n\n" + float_div_zero_lemma_rs() if spec_divides_by_zero(spec) else text
 
 
-_DICT_NOTE = """
+def _dict_note() -> str:
+    from declarative_spec import principles
+
+    if principles.examples_none():
+        text = _DICT_NOTE_TEMPLATE.format(FILTER_EXAMPLE="", GROUP_EXAMPLE="")
+        return text.replace("A worked, verified body (counts backwards to match the suffix fold, a ghost slot\n  sequence for the output rows, `lemma_count_pos` for 'count > 0 means a witness row'):", "Count backwards to match the suffix fold, keep a ghost slot sequence for the output rows, and use `lemma_count_pos` for 'count > 0 means a witness row'.")
+    if principles.principles_only():
+        return _DICT_NOTE_TEMPLATE.format(
+            FILTER_EXAMPLE=" A worked body: `context/ro/examples/scan_filter_sum_count.rs` (the filter) and `group_by_dict_key.rs` (a literal's code).",
+            GROUP_EXAMPLE="`context/ro/examples/group_by_dict_key.rs`.",
+        )
+    return _DICT_NOTE_TEMPLATE.format(
+        FILTER_EXAMPLE=" A worked body: `context/ro/examples/dict_string_filter_minmax.rs`.",
+        GROUP_EXAMPLE="`context/ro/examples/dict_group_count_dense.rs`.",
+    )
+
+
+_DICT_NOTE_TEMPLATE = """
 Dictionary-encoded string columns (this spec has `<col>__dict` fields):
 
 - A string column `c` is two vectors: `t.c` (one small integer CODE per row) and `t.c__dict` (the distinct strings).
@@ -63,12 +80,12 @@ Dictionary-encoded string columns (this spec has `<col>__dict` fields):
 - `c = 'lit'` becomes a code comparison. Look the literal's code up ONCE before the row loop (scan `t.c__dict` with
   `String == String`, keep `found` and `code`); distinctness makes it the only entry equal to the literal, so the
   cell equals the literal exactly when `found && (t.c[i] as usize) == code`. The row loop then reads one small
-  integer per row. A worked body: `context/ro/examples/dict_string_filter_minmax.rs`.
+  integer per row.{FILTER_EXAMPLE}
 - GROUP BY a string key: use a dense array indexed by the code (`counts: Vec<u64>` of length `t.c__dict.len()`),
   then build the result from the nonzero slots; the dictionary entry is the key string. The result is a `Vec<OutRow>`
   whose key field is a `String`. A worked, verified body (counts backwards to match the suffix fold, a ghost slot
   sequence for the output rows, `lemma_count_pos` for 'count > 0 means a witness row'):
-  `context/ro/examples/dict_group_count_dense.rs`.
+  {GROUP_EXAMPLE}
 """
 
 
@@ -77,7 +94,7 @@ def _default_index_markdown(spec: str | None = None) -> str:
 
     text = lemma_index_markdown(floats=spec_uses_floats(spec), div_zero=spec_divides_by_zero(spec))
     if spec is not None and "__dict@" in spec:
-        text += _DICT_NOTE
+        text += _dict_note()
     return text
 
 

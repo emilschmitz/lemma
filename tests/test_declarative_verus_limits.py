@@ -7,10 +7,9 @@ from pathlib import Path
 
 import pytest
 
+import lemma_config
 from declarative_spec import pipeline
 from declarative_spec.verus_limits import (
-    DEFAULT_RLIMIT,
-    DEFAULT_TIMEOUT_SEC,
     RLIMIT_ENV,
     TIMEOUT_ENV,
     failure_prefix,
@@ -19,6 +18,9 @@ from declarative_spec.verus_limits import (
     verus_rlimit,
     verus_timeout_sec,
 )
+
+DEFAULT_RLIMIT = lemma_config.default("verus_rlimit")
+DEFAULT_TIMEOUT_SEC = lemma_config.default("verus_timeout_sec")
 
 
 def _fake_verus(tmp_path: Path, script: str) -> str:

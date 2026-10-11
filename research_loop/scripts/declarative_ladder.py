@@ -19,7 +19,7 @@ if str(ROOT) not in sys.path:
 
 from db_extension.optimizer import run_optimization_loop
 from research_loop.agent_sandbox import CLAUDE_IMAGE, claude_agent_cmd, claude_docker_args
-from research_loop.spec_styles import DECLARATIVE, ENV_VALUE, check_style
+from research_loop.spec_styles import ENV_VALUE, check_style
 from research_loop.scripts.declarative_draws import beats_duck, resolve_sec_db
 from research_loop.scripts.sqlsmith_trusted_coverage import load_sec_schema
 from research_loop.table_assumptions import CatalogAssumptions, ColumnAssumption, TableAssumptions
@@ -69,13 +69,8 @@ def agent_env(model: str, style: str) -> dict[str, str]:
         "LEMMA_SPEC_STYLE": ENV_VALUE[check_style(style)],
         "USE_AGENT_DOCKER": "1",
         "LEMMA_AGENT_BACKEND": "cli",
-        "LEMMA_SERIOUS": "1",
         "LEMMA_RESEARCH_LOG": "1",
     }
-    if check_style(style) == DECLARATIVE:
-        # "auto": the parallel (Arc) variant where the shape has one. A shape without one (a map result, a self join)
-        # keeps the sequential spec and its prompt says there are no Arc parameters; "1" would fail those at emit.
-        env["LEMMA_PARALLEL_VSTD"] = "auto"
     if model.startswith("claude-"):
         env.update(AGENT_IMAGE=CLAUDE_IMAGE, AGENT_ENV="", AGENT_CMD=claude_agent_cmd(model))
     else:

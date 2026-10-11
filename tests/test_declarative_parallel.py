@@ -22,7 +22,7 @@ JOIN = "SELECT SUM(u.w) AS total FROM pre JOIN u ON pre.report = u.report"
 
 
 def _emit(sql: str, on: bool, monkeypatch: pytest.MonkeyPatch) -> str:
-    monkeypatch.setenv(parallel.ENV, "1") if on else monkeypatch.delenv(parallel.ENV, raising=False)
+    monkeypatch.setenv(parallel.ENV, "on") if on else monkeypatch.setenv(parallel.ENV, "off")
     return emit_declarative_spec(sql, SCHEMA, CATALOG)
 
 
@@ -122,7 +122,7 @@ def test_the_parallel_product_example_verifies_and_a_wrong_constant_does_not(mon
     if not any(c.is_file() for c in VERUS_CANDIDATES):
         pytest.skip("verus binary not installed")
     monkeypatch.setenv("LEMMA_VERUS_BIN", str(Path(__file__).resolve().parents[1] / "scripts" / "ram" / "verus_guarded.sh"))
-    monkeypatch.setenv(parallel.ENV, "1")
+    monkeypatch.setenv(parallel.ENV, "on")
     spec = emit_declarative_spec(_Q6, _Q6_SCHEMA, CatalogAssumptions(tables={"lineitem": TableAssumptions(max_rows=2**31)}))
     text = (_FIXTURES / "parallel_ungrouped_product_sum.rs").read_text()
 
@@ -141,12 +141,12 @@ def test_the_parallel_product_example_verifies_and_a_wrong_constant_does_not(mon
 def test_non_outrow_results_have_no_parallel_variant_and_stay_loud(monkeypatch: pytest.MonkeyPatch) -> None:
     schema = {"num": {"uom": "varchar", "x": "bigint"}}
     cat = CatalogAssumptions(tables={"num": TableAssumptions(max_rows=100)})
-    monkeypatch.delenv(parallel.ENV, raising=False)
+    monkeypatch.setenv(parallel.ENV, "off")
     plain = emit_declarative_spec("SELECT uom, COUNT(*) AS c FROM num GROUP BY uom", schema, cat)
     assert "StringHashMap" in plain
     with pytest.raises(DeclarativeUnsupported, match="for `Vec<OutRow>` results"):
         parallel.to_parallel(plain)
-    monkeypatch.setenv(parallel.ENV, "1")
+    monkeypatch.setenv(parallel.ENV, "on")
     with pytest.raises(DeclarativeUnsupported, match="for `Vec<OutRow>` results"):
         emit_declarative_spec("SELECT uom, COUNT(*) AS c FROM num GROUP BY uom", schema, cat)
 
@@ -163,7 +163,7 @@ def test_parallel_min_max_count_examples_verify_and_a_mutation_does_not(name: st
     if not any(c.is_file() for c in VERUS_CANDIDATES):
         pytest.skip("verus binary not installed")
     monkeypatch.setenv("LEMMA_VERUS_BIN", str(Path(__file__).resolve().parents[1] / "scripts" / "ram" / "verus_guarded.sh"))
-    monkeypatch.setenv(parallel.ENV, "1")
+    monkeypatch.setenv(parallel.ENV, "on")
     sql, (old, new) = PAR_SHAPES[name]
     spec = emit_declarative_spec(sql, SCHEMA, CATALOG)
     text = (_FIXTURES / name).read_text()
@@ -186,14 +186,16 @@ def test_auto_mode_keeps_a_map_result_sequential_and_strict_mode_refuses(monkeyp
     spec = "pub fn run_query(t: &Cols_t) -> (res: HashMapWithView<u64, u64>)\n    requires\n        true,\n"
     monkeypatch.setenv(parallel.ENV, "auto")
     assert parallel.enabled() and not parallel.strict()
-    monkeypatch.setenv(parallel.ENV, "1")
+    monkeypatch.setenv(parallel.ENV, "on")
     assert parallel.strict()
     with pytest.raises(DeclarativeUnsupported):
         parallel.to_parallel(spec)
 
 
-def test_agent_env_sets_auto_for_declarative_only() -> None:
+def test_parallel_vstd_is_an_explicit_config_value_not_forced_by_the_launcher_env() -> None:
+    import lemma_config
     from research_loop.scripts.declarative_ladder import agent_env
 
-    assert agent_env("claude-haiku-4-5-20251001", "declarative")["LEMMA_PARALLEL_VSTD"] == "auto"
-    assert "LEMMA_PARALLEL_VSTD" not in agent_env("claude-haiku-4-5-20251001", "imperative")
+    assert lemma_config.default("parallel_vstd") == "auto"  # lemma.toml [run]
+    for style in ("declarative", "imperative"):
+        assert "LEMMA_PARALLEL_VSTD" not in agent_env("claude-haiku-4-5-20251001", style)  # no silent override of the shell/config value

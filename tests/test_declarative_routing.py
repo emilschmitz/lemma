@@ -284,7 +284,7 @@ def _parallel_prompt(monkeypatch: pytest.MonkeyPatch) -> str:
 
     sql = "SELECT SUM(value) AS total FROM num WHERE value > 5"
     big = CatalogAssumptions(tables={"num": TableAssumptions(max_rows=39_401_761)})
-    monkeypatch.setenv(parallel.ENV, "1")
+    monkeypatch.setenv(parallel.ENV, "on")
     return build_declarative_prompt(
         sql=sql,
         spec_path="s",
@@ -321,7 +321,7 @@ def test_a_small_table_parallel_prompt_does_not_refer_to_an_order_paragraph_it_l
     from declarative_spec import parallel
 
     sql = "SELECT SUM(value) AS total FROM num WHERE value > 5"
-    monkeypatch.setenv(parallel.ENV, "1")
+    monkeypatch.setenv(parallel.ENV, "on")
     p = build_declarative_prompt(sql=sql, spec_path="s", edit_path="e", lemma_index="i", spec_text=emit_declarative_spec(sql, _SCHEMA, _CATALOG))
     assert "Order: (1)" not in p and "the order above" not in p
     assert "Order: (1)" in _parallel_prompt(monkeypatch)

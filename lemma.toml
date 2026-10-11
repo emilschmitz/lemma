@@ -1,0 +1,72 @@
+# lemma.toml -- the ONE place for every setting that shapes a container run, and for the safety/infrastructure settings around it.
+#
+# Precedence (one rule, no other source):   lemma.toml  <  environment variable  <  explicit CLI flag
+#   * The environment variable of a key is LEMMA_ + the key upper-cased, whatever the section:
+#       [measure] official_rounds  ->  LEMMA_OFFICIAL_ROUNDS=7
+#     An empty variable counts as unset.
+#   * CLI flags exist where a launcher has one (--max-iterations, --agent, --menu, ...); they win over everything.
+#   * Unknown keys here, unknown LEMMA_* variables in the environment, and bad values fail loudly at startup
+#     (python -m lemma_config check). Old spellings (AGENT_TIMEOUT_SEC, VERUS_MEM_MAX, ...) still work for now with a
+#     deprecation message; dead settings are rejected. The alias and dead tables are in lemma_config.py.
+#   * Every container run writes every key below with its value and source (file/env/cli) into the run manifest and the
+#     RESULT line, together with the git SHA and git_dirty. A dirty tree (tracked files) is refused unless allow_dirty = true.
+#   * Shell scripts read a value with:  python3 -m lemma_config get <key>   (scripts/ram/*.sh do; they need no other default).
+#
+# Defaults are what a container run uses today. Conflicts between the old sources were resolved to the value the frozen
+# container run used (marked "decision" below); docs/FLAGS.md has the inventory and the old values.
+#
+# NOT here, because they are fixed by the container launcher rather than chosen: USE_AGENT_DOCKER=1, LEMMA_AGENT_BACKEND=cli,
+# the agent image and command, the agent container limits (--memory 3g --network none --cap-drop ALL), scope swap 0, oom score 800,
+# the Verus guard slot lock. Secrets (ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN) are never config: environment only.
+
+[run]
+spec_style = "declarative"                  # declarative | imperative: the whole chain (emitter, assembler, admission, prompt, measure)
+menu = "adversary_declarative0"             # menu profile (research_loop/menu_profile.py); its axes are the next five keys
+agent_model = "claude-sonnet-5-5"           # prover model slug; claude-* runs Claude Code in the container. Decision: the frozen run's model (the menu profile said haiku)
+trusted_set = "declarative_default"         # host lemma block pasted into the spec
+assumption_package = "auto"                 # auto = the package that matches the DuckDB file (sec_margin_dec for DECIMAL); or a package name / .json path
+speed_bar_mult = 1.0                        # verdict: median(ours) * mult < median(DuckDB)
+max_iterations = 2                          # agent sessions per query; the 2nd starts from the best body so far. Decision: 2 (the frozen run; the loop default 3 and MAX_ITERATIONS=1/4 are legacy)
+string_encoding = "plain"                   # plain | dict. Frozen run: dict
+join_chain = false                          # fact table first, unique-key tables nested after it. Frozen run: true
+examples = "full"                           # full | principles | none: which verified examples the agent sees
+narrow_cells = false                        # INTEGER/SMALLINT/TINYINT and capped DECIMAL columns loaded as i32/i16/i8
+parallel_vstd = "auto"                      # off | auto | on. Decision: explicit "auto" (the frozen run's effective value; it used to be forced silently and the shell value was overwritten). on = every spec gets Arc params, a shape without a variant fails at emit
+
+[agent]
+agent_timeout_sec = 750                     # wall seconds per agent session. Decision: 750 (2 x 750 s = 25 min per attempt; config.env/code/AGENTS.md said 600)
+agent_submit_ends_session = false           # true: a successful submit_runquery ends the session
+agent_data_mode = "none"                    # none | stats | full: interactive DuckDB tool for the agent. Decision: none (what config.env gave the frozen run; code default stats; the CLI container is network-none anyway)
+agent_resource_exhausted_retries = 8        # Cursor agent only: retries on API quota errors
+claude_effort = "none"                      # none | low | medium | high | xhigh | max: Claude Code --effort (none omits the flag)
+claude_thinking_tokens = ""                 # MAX_THINKING_TOKENS of the Claude agent; empty = CLI default
+claude_tool_search = ""                     # ENABLE_TOOL_SEARCH of the Claude agent: true | false | auto | auto:N; empty = CLI default
+mcp_iterate_rows = 50000                    # row cap named in the prompt and checked at submit (probe pins); 0 = uncapped. The declarative measure itself always times the full tables
+
+[prover]
+verus_rlimit = 16.0                         # Verus --rlimit (Z3 work per function/loop)
+verus_timeout_sec = 300                     # wall limit of verify + optimized build. Decision: the ONE Verus timeout knob (VERUS_VERIFY_TIMEOUT_SEC 120 is now its alias; the MCP harness wait is derived from it)
+run_timeout_sec = 60                        # wall limit of one compiled-binary run (load, warm-up, timed runs)
+target_cpu = "x86-64-v3"                    # rustc -C target-cpu of the compiled binary (generic = no flag; native can SIGILL elsewhere)
+dense_slot_budget = 4194304                 # largest dense slot table (product of key dictionary sizes) a body may allocate
+
+[measure]
+official_rounds = 5                         # interleaved rounds (ours vs DuckDB) of the official verdict
+official_duck_reps = 9                      # DuckDB executions per round (median); our side is the binary's own 9 timed runs
+duck_memory_limit = "8GB"                   # DuckDB PRAGMA memory_limit on every measure connection. Decision: 8GB (frozen run); must stay below safety.scope_memory_max (checked)
+duck_threads = 8                            # DuckDB PRAGMA threads on the same connections
+
+[data]
+duckdb_path = "holdout/gendb_sec_edgar/duckdb/sec_edgar_dec.duckdb"   # the database: schema, catalog, reference timing, row counts (relative to the repo root)
+
+[safety]
+allow_dirty = false                         # true: let a container run start from a dirty git tree (tracked files). Paper runs: never
+scope_memory_max = "9G"                     # MemoryMax of the systemd scope around one container run. Equal to the lemma.slice cap (9G): a larger value would be capped by the slice anyway
+egress_profile = ""                         # API hosts the agent container may reach: cursor | anthropic | openai | openrouter | google (comma list); empty = inferred from the agent command
+egress_allowlist = ""                       # comma list of host suffixes replacing the profile; empty = profile
+heavy_lock = "/tmp/lemma_timing.lock"       # machine-wide lock: data export and timed run take it exclusively, Verus shared
+heavy_min_avail_mb = 4000                   # wait until MemAvailable is at least this before a heavy phase or a heavy.sh job. Decision: 4000 (heavy_phase.py said 3500, heavy.sh 4000)
+heavy_mem_max = "5G"                        # scope MemoryMax of scripts/ram/heavy.sh jobs
+verus_mem_max = "6G"                        # MemoryMax of each Verus run
+verus_slots = 1                             # concurrent Verus runs machine-wide
+verus_min_avail_mb = 3000                   # do not start Verus below this MemAvailable

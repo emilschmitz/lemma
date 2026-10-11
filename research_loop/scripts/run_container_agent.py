@@ -1,17 +1,18 @@
 """One launcher for the container agent: ``--style imperative|declarative`` switches the whole chain.
 
 Same container, same agent, same sandbox. ``--menu`` names a profile (``research_loop/menu_profile.py``)
-that sets every axis at once (style, trusted set, assumption package, agent, speed bar). ``--style``
-is required and must agree with the profile The other
-flags each override ONE axis; one that contradicts the profile fails unless ``--allow-override``.
+that sets every axis at once (style, trusted set, assumption package, agent, speed bar). The
+flags each override ONE axis. lemma.toml is the authority for the axes, so a value that differs from the profile default is taken (and shown in the selection as an override).
 The resolved selection (all axes and their source) is printed first and written to the run's
-manifest. Per-run env only; ``config.env`` is untouched.
+manifest. Every setting comes from ``lemma.toml`` (file < LEMMA_<KEY> environment < the flags below); the full effective
+config with its sources and the git SHA/dirtiness go into the manifest and the RESULT line. A dirty tree (tracked files) is refused
+unless ``allow_dirty`` is set.
 
     uv run python research_loop/scripts/run_container_agent.py --style declarative \
         --menu adversary_declarative0 --agent claude-haiku-4-5-20251001 \
         --query-sql "SELECT report, COUNT(*) AS cnt FROM pre WHERE line > 5 GROUP BY report"
 
-Needs ``LEMMA_DUCKDB_PATH`` (the SEC DuckDB). The imperative style also needs ``LEMMA_DUCKDB_LIB_DIR``.
+The database is ``duckdb_path`` of lemma.toml (``LEMMA_DUCKDB_PATH``). The imperative style also needs ``LEMMA_DUCKDB_LIB_DIR``.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import lemma_config
 from research_loop.menu_profile import activate_menu
 from research_loop.spec_styles import STYLES, check_style
 
@@ -131,10 +133,15 @@ def run(
     assumption_package: str | None = None,
     speed_bar_mult: str | None = None,
     allow_override: bool = False,
-    max_iterations: int = 2,
+    max_iterations: int,
 ) -> dict:
     """Run one SEC query in the container. Any mismatch between the flags and the profile is loud."""
     check_style(style)
+    # Children (MCP host, agent harness) and the deep readers of LEMMA_* see the same effective values as this process.
+    config_record = lemma_config.record()  # before the export, which keeps the sources but is the last thing to ask
+    lemma_config.export_env()
+    if lemma_config.get("assumption_package") == "auto":
+        os.environ.pop("LEMMA_ASSUMPTION_PACKAGE")  # "auto" is the launcher's own rule (the package that matches the DB), not a menu axis value
     flags = {"style": style}
     for axis, value in (
         ("agent", agent),
@@ -189,46 +196,65 @@ def run(
         "database": str(db_path),
         "model": model,
         "duck_us": result.get("duck_us"),
+        "official": result.get("official"),  # K interleaved rounds: per-round numbers, medians, speedup of medians
         "menu": menu,
         "selection": resolved.as_dict(),
+        "config": config_record["config"],  # every lemma.toml key: value, section, source (file/env/cli), origin
+        "git_sha": config_record["git_sha"],
+        "git_dirty": config_record["git_dirty"],
         "sql": sql,
         "wall_s": round(time.time() - t0, 1),
         "status": result.get("status"),
         "latency_us": result.get("best_latency_us"),
         # The imperative loop leaves "error" empty and keeps the reason per iteration in the history.
-        "error": (
-            result.get("error")
-            or next((h["error"] for h in reversed(result.get("history", [])) if h.get("error")), "")
-        )[-2000:],
+        "error": verdict_error(result),
     }
+
+
+def verdict_error(result: dict) -> str:
+    """The error line of the RESULT: empty for a SUCCESS (an earlier session's timeout stays in the history; SSB Q3.3 reported SUCCESS 3.05x with
+    "agent timed out ... No submit" left over from session 1 although session 2 submitted), else the loop's error or the last per-iteration one."""
+    if result.get("status") == "SUCCESS":
+        return ""
+    return (result.get("error") or next((h["error"] for h in reversed(result.get("history", [])) if h.get("error")), ""))[-2000:]
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--style", required=True, choices=STYLES)
-    ap.add_argument("--menu", required=True, help="menu profile name (sets all axes)")
+    ap.add_argument("--style", choices=STYLES, help="spec_style (default: lemma.toml)")
+    ap.add_argument("--menu", help="menu profile name (sets all axes; default: lemma.toml)")
     ap.add_argument("--query-sql")
     ap.add_argument("--query-file", help="read the SQL from this file (instead of --query-sql)")
     ap.add_argument("--agent", help="override the agent axis: model slug (claude-* runs Claude Code)")
     ap.add_argument("--trusted-set", help="override the trusted_set axis")
     ap.add_argument("--assumption-package", help="override the catalog axis")
     ap.add_argument("--speed-bar-mult", help="override the speed bar axis")
-    ap.add_argument("--allow-override", action="store_true", help="let overrides contradict the profile")
-    ap.add_argument("--max-iterations", type=int, default=2)
+    ap.add_argument("--max-iterations", type=int, help="agent sessions per query (default: lemma.toml)")
     args = ap.parse_args(argv)
+    lemma_config.clear_cli()
+    for key, value, flag in (
+        ("spec_style", args.style, "--style"), ("menu", args.menu, "--menu"), ("agent_model", args.agent, "--agent"),
+        ("trusted_set", args.trusted_set, "--trusted-set"), ("assumption_package", args.assumption_package, "--assumption-package"),
+        ("speed_bar_mult", None if args.speed_bar_mult is None else float(args.speed_bar_mult), "--speed-bar-mult"),
+        ("max_iterations", args.max_iterations, "--max-iterations"),
+    ):
+        lemma_config.set_cli(key, value, flag)
+    lemma_config.check_environment()  # unknown LEMMA_* variables, dead settings, bad values: before any work
+    lemma_config.require_clean_tree()  # a run must be reproducible from its commit
     if (args.query_sql is None) == (args.query_file is None):
         ap.error("give exactly one of --query-sql and --query-file")
     sql = args.query_sql if args.query_sql is not None else Path(args.query_file).read_text().strip()
+    package = lemma_config.get("assumption_package")
     record = run(
-        args.menu,
-        args.style,
+        lemma_config.get("menu"),
+        lemma_config.get("spec_style"),
         sql,
-        agent=args.agent,
-        trusted_set=args.trusted_set,
-        assumption_package=args.assumption_package,
-        speed_bar_mult=args.speed_bar_mult,
-        allow_override=args.allow_override,
-        max_iterations=args.max_iterations,
+        agent=lemma_config.get("agent_model"),
+        trusted_set=lemma_config.get("trusted_set"),
+        assumption_package=None if package == "auto" else package,
+        speed_bar_mult=str(lemma_config.get("speed_bar_mult")),
+        allow_override=True,  # lemma.toml is the single source: its axes may differ from the menu profile's defaults, and the manifest says so
+        max_iterations=lemma_config.get("max_iterations"),
     )
     print(f"RESULT {json.dumps(record)}", flush=True)
     return 0 if record["status"] == "SUCCESS" else 1

@@ -99,9 +99,9 @@ def test_job_env_snapshot_keeps_only_the_settings_that_are_set(monkeypatch: pyte
         monkeypatch.delenv(k, raising=False)
     assert _job_env_snapshot() == {"LEMMA_NARROW_CELLS": "0"}  # the effective narrow flag is always recorded
     monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
-    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "1")
+    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "on")
     monkeypatch.setenv("UNRELATED", "x")
-    assert _job_env_snapshot() == {"LEMMA_STRING_ENCODING": "dict", "LEMMA_PARALLEL_VSTD": "1", "LEMMA_NARROW_CELLS": "0"}
+    assert _job_env_snapshot() == {"LEMMA_STRING_ENCODING": "dict", "LEMMA_PARALLEL_VSTD": "on", "LEMMA_NARROW_CELLS": "0"}
 
 
 # ---- check regenerates the spec (the spec is the ground truth) --------------------------------------------------------------

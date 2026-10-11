@@ -48,7 +48,7 @@ def _setup(monkeypatch: pytest.MonkeyPatch) -> None:
         pytest.skip("verus binary not installed")
     monkeypatch.setenv("LEMMA_VERUS_BIN", str(Path(__file__).resolve().parents[1] / "scripts" / "ram" / "verus_guarded.sh"))
     monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
-    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "1")
+    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "on")
     monkeypatch.setenv("LEMMA_NARROW_CELLS", "1")
 
 

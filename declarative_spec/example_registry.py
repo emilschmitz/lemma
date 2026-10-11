@@ -83,6 +83,18 @@ MORE_EXAMPLES: tuple[tuple[str, str], ...] = (
         "dictionary string mode: join, GROUP BY two keys, SUM with HAVING against an uncorrelated scalar subquery, ORDER BY ... LIMIT (long)",
     ),
     (
+        "hard/dict_parallel_star_join_group_sum_sorted.rs",
+        "dictionary string mode, PARALLEL STAR JOIN (SSB Q4.1, LEMMA_JOIN_CHAIN=1): fact table over 8 workers, four unique-key dimension arrays shared through `Arc`, per-worker flat slot arrays merged slotwise, sorted output (2.7x; long)",
+    ),
+    (
+        "hard/dict_parallel_star_join_two_keys_revenue_order.rs",
+        "dictionary string mode, PARALLEL STAR JOIN (SSB Q3.1, LEMMA_JOIN_CHAIN=1): TWO dictionary group keys (pair code) and a year with a WHERE-bounded code, ORDER BY the year then the SUM descending by insertion into a sorted Vec of slots (2.4x; long)",
+    ),
+    (
+        "hard/dict_parallel_star_join_two_keys_string_order.rs",
+        "dictionary string mode, PARALLEL STAR JOIN (SSB Q4.2, LEMMA_JOIN_CHAIN=1): five tables, TWO string group keys from two dimensions plus a year, ORDER BY all three (strings by seq_le): sorted pair codes, emit by year then sorted code (2.25x; long)",
+    ),
+    (
         "hard/dict_parallel_q1.rs",
         "dictionary string mode, PARALLEL: two string keys, four aggregates, ORDER BY the keys, flat slot array per worker (TPC-H Q1, long)",
     ),
@@ -134,6 +146,11 @@ UNMOUNTED: dict[str, str] = {
     "u64_group_count_t_k.rs": "the u64-key map count over the test spec's fixed names `t`/`k`; `hard/map_count.rs` is the same shape and is mounted",
     "u64_group_count_slots_t_k.rs": "the dense-counter recipe under the test spec's fixed names; its text is the block inlined as the dense_map recipe",
 }
+
+# The principles set (LEMMA_EXAMPLES=principles, declarative_spec/principles.py) is mounted instead of the whole registry, never beside it.
+from declarative_spec.principles import names as _principle_names  # noqa: E402
+
+UNMOUNTED.update({f"principles/{n}": "mounted only with LEMMA_EXAMPLES=principles (declarative_spec/principles.py)" for n in _principle_names()})
 
 
 INDEX_GROUPS: tuple[tuple[str, str], ...] = (

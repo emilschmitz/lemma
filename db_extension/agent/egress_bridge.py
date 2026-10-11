@@ -17,6 +17,8 @@ import threading
 import time
 from pathlib import Path
 
+import lemma_config
+
 DEFAULT_SOCK = Path(os.environ.get("LEMMA_EGRESS_SOCK", "/tmp/lemma-egress.sock"))
 
 # Best-effort vendor API hosts.
@@ -370,12 +372,12 @@ def main() -> None:
     parser.add_argument("--sock", type=Path, default=DEFAULT_SOCK)
     parser.add_argument(
         "--allowlist",
-        default=os.environ.get("LEMMA_EGRESS_ALLOWLIST", ""),
+        default=lemma_config.get("egress_allowlist"),
         help="Comma-separated host suffixes (overrides profile)",
     )
     parser.add_argument(
         "--profile",
-        default=os.environ.get("AGENT_EGRESS_PROFILE", "cursor"),
+        default=lemma_config.get("egress_profile") or "cursor",
         help="Vendor profile: cursor, anthropic, openai, openrouter, google (comma-ok)",
     )
     parser.add_argument("--log", type=Path, default=None)

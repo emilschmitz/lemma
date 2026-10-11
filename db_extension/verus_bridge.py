@@ -402,6 +402,7 @@ def _invoke_declarative_pipeline(
     runquery_path: Path | None,
     run_query_body: str | None,
     workload: str | None,
+    official: bool = False,
 ) -> dict:
     """Declarative flag: assemble the agent edit, compile, and run. Not the recursive pipeline."""
     from db_extension.workload_config import catalog_assumptions_for_workload
@@ -440,6 +441,7 @@ def _invoke_declarative_pipeline(
         work_dir=work_dir,
         column_bins=column_bins,
         speed_bar=speed_bar,
+        official=official,
     )
     return normalize_harness_metrics(metrics)
 
@@ -454,8 +456,9 @@ def invoke_verus_custom_pipeline(
     tbl: str | None = None,
     workload_tables: dict[str, Path] | None = None,
     workload: str | None = None,
+    official: bool = False,
 ) -> dict:
-    """Run research_loop Verus custom SQL pipeline; normalize metrics for optimizer/MCP."""
+    """Run research_loop Verus custom SQL pipeline; normalize metrics for optimizer/MCP. ``official``: the host re-measure after submit (declarative: interleaved rounds)."""
     from db_extension.optimizer import _read_lemma_spec_style
 
     if _read_lemma_spec_style() == "declarative":
@@ -465,6 +468,7 @@ def invoke_verus_custom_pipeline(
             runquery_path=runquery_path,
             run_query_body=run_query_body,
             workload=workload,
+            official=official,
         )
 
     from research_loop.harness import run_custom_sql_pipeline
@@ -568,6 +572,17 @@ _SPEED_KEYS = (
     "latency_best_us",
     "verify_summary",
     "official_tables",
+    "measurement",
+    "official_rounds",
+    "official_k",
+    "official_duck_reps",
+    "ours_median_us",
+    "duck_median_us",
+    "check_run_latency_us",
+    "ratio_band",
+    "inconclusive",
+    "duck_python_overhead_us",
+    "prepare_duck_us",
 )
 
 

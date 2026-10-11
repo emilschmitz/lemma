@@ -14,6 +14,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+import lemma_config
 from research_loop.pipeline_demo import resolve_demo_view_dir
 from research_loop.pipeline_log import log_debug, log_info, log_trace, log_warn
 from research_loop.sandbox_hide import shadow_mount_args
@@ -25,7 +26,6 @@ DEFAULT_IMAGE = "lemma-agent:latest"
 DEFAULT_WORKSPACE = RESEARCH / "agent_workspace"
 COMPONENT = "agent_sandbox"
 DOCKER_KILL_TIMEOUT_SEC = 30
-AGENT_RESOURCE_EXHAUSTED_RETRIES_DEFAULT = 8
 AGENT_RESOURCE_EXHAUSTED_BACKOFF_INITIAL_SEC = 30.0
 AGENT_RESOURCE_EXHAUSTED_BACKOFF_CAP_SEC = 180.0
 
@@ -106,14 +106,13 @@ def load_agent_config(config: dict[str, str] | None = None) -> dict[str, str]:
         "AGENT_IMAGE",
         "AGENT_CMD",
         "AGENT_ENV",
-        "AGENT_TIMEOUT_SEC",
-        "AGENT_EGRESS_PROFILE",
         "AGENT_CREDENTIALS_DIR",
         "AGENT_AUTH_DIR",
-        "LEMMA_EGRESS_ALLOWLIST",
     ):
         if key in os.environ:
             cfg[key] = os.environ[key]
+    # The run settings come from lemma.toml (file < LEMMA_<KEY> env < CLI), never from config.env.
+    cfg.setdefault("AGENT_TIMEOUT_SEC", str(lemma_config.get("agent_timeout_sec")))
     return cfg
 
 
@@ -176,9 +175,9 @@ CLAUDE_CONTAINER_CONFIG_HOST = "/root/.claude-host"
 _CLAUDE_TOOLS = "Bash,Read,Edit,Write,Glob,Grep,mcp__lemma-host"
 
 
-CLAUDE_EFFORT_ENV = "LEMMA_CLAUDE_EFFORT"
-CLAUDE_THINKING_ENV = "LEMMA_CLAUDE_THINKING_TOKENS"
-CLAUDE_TOOL_SEARCH_ENV = "LEMMA_CLAUDE_TOOL_SEARCH"
+CLAUDE_EFFORT_ENV = lemma_config.env_name("claude_effort")
+CLAUDE_THINKING_ENV = lemma_config.env_name("claude_thinking_tokens")
+CLAUDE_TOOL_SEARCH_ENV = lemma_config.env_name("claude_tool_search")
 _CLAUDE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 # Both settings are opt-in: unset leaves the CLI default, so existing runs behave as before. Documented values in
 # claude 2.1.289: --effort low|medium|high|xhigh|max (the CLI has a per-model supportsEffort table; whether Haiku 4.5
@@ -189,7 +188,7 @@ _CLAUDE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
 def claude_tool_search() -> str | None:
     """``ENABLE_TOOL_SEARCH`` for the container agent from ``LEMMA_CLAUDE_TOOL_SEARCH``; unset leaves the CLI default."""
-    value = (os.environ.get(CLAUDE_TOOL_SEARCH_ENV) or "").strip().lower()
+    value = str(lemma_config.get("claude_tool_search")).strip().lower()
     if not value:
         return None
     if value not in ("true", "false", "auto") and not re.fullmatch(r"auto:\d+", value):
@@ -199,7 +198,7 @@ def claude_tool_search() -> str | None:
 
 def claude_effort() -> str | None:
     """`--effort` for the container agent from ``LEMMA_CLAUDE_EFFORT``; unset or ``none`` omits the flag."""
-    value = (os.environ.get(CLAUDE_EFFORT_ENV) or "").strip().lower() or "none"
+    value = lemma_config.get("claude_effort")
     if value == "none":
         return None
     if value not in _CLAUDE_EFFORTS:
@@ -209,7 +208,7 @@ def claude_effort() -> str | None:
 
 def claude_thinking_tokens() -> int | None:
     """``MAX_THINKING_TOKENS`` for the container agent from ``LEMMA_CLAUDE_THINKING_TOKENS``; unset leaves the CLI default."""
-    raw = (os.environ.get(CLAUDE_THINKING_ENV) or "").strip()
+    raw = str(lemma_config.get("claude_thinking_tokens")).strip()
     if not raw:
         return None
     value = int(raw)
@@ -822,13 +821,7 @@ def resource_exhausted_backoff_sec(
 
 
 def max_agent_resource_exhausted_retries() -> int:
-    raw = os.environ.get("AGENT_RESOURCE_EXHAUSTED_RETRIES", "").strip()
-    if raw:
-        try:
-            return max(1, int(raw))
-        except ValueError:
-            pass
-    return AGENT_RESOURCE_EXHAUSTED_RETRIES_DEFAULT
+    return int(lemma_config.get("agent_resource_exhausted_retries"))
 
 
 def _run_subprocess_tee_agent_log(
@@ -905,6 +898,9 @@ def _lemma_host_mcp_payload(workspace: Path) -> dict:
                 "env": {
                     "LEMMA_AGENT_WORKSPACE": str(workspace.resolve()),
                     "PYTHONPATH": str(ROOT),
+                    # this server is a separate process with its own environment: it gets the effective config (the values that differ from
+                    # lemma.toml, with their origin), e.g. the example set its run_runquery hints must cite, the same as the prompt mounted
+                    **lemma_config.forwarded_env(),
                 },
             }
         }
@@ -1211,13 +1207,13 @@ def run_agent_docker(
 
     profile = infer_egress_profile(
         agent_cmd,
-        cfg.get("AGENT_EGRESS_PROFILE") or os.environ.get("AGENT_EGRESS_PROFILE"),
+        lemma_config.get("egress_profile") or None,
     )
     mock = claude_test_mock() if claude else None
     if mock is not None:
         profile = MOCK_EGRESS_PROFILE
     allow = _parse_allowlist(
-        cfg.get("LEMMA_EGRESS_ALLOWLIST") or os.environ.get("LEMMA_EGRESS_ALLOWLIST"),
+        lemma_config.get("egress_allowlist") or None,
         profile=profile,
     )
 

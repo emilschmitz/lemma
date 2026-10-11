@@ -49,7 +49,6 @@ services:
     environment:
       AGENT_DATA_MODE: stats
       PYTHONPATH: /app
-      LEMMA_MCP_URL: http://lemma-mcp:8765/mcp
     volumes:
       - ../research_loop/agent_workspace:/workspace:rw
     networks:

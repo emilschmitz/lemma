@@ -82,7 +82,7 @@ def test_helper_headers_may_contain_braces_inside_parentheses() -> None:
 
 
 def test_a_non_helper_item_after_braced_headers_is_still_refused() -> None:
-    bad = HELPERS_WITH_BRACES_IN_HEADERS + "\nfn exec_helper() -> (r: int) { 1 }\n"
+    bad = HELPERS_WITH_BRACES_IN_HEADERS + "\nstruct ExecHelper { x: u64 }\n"
     result = admit_helpers(bad, "pub fn run_query() {}")
     assert not result.ok
-    assert any("exec_helper" in v for v in result.violations)
+    assert any("ExecHelper" in v for v in result.violations)

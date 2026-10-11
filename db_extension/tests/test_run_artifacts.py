@@ -49,7 +49,7 @@ def test_begin_run_creates_layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     )
     monkeypatch.setenv("AGENT_IMAGE", "lemma-agent:cli")
     monkeypatch.setenv("MAX_ITERATIONS", "4")
-    monkeypatch.setenv("AGENT_TIMEOUT_SEC", "300")
+    monkeypatch.setenv("LEMMA_AGENT_TIMEOUT_SEC", "300")
     run = begin_run(query_id=4, sql_query="SELECT 1", root=tmp_path)
     assert isinstance(run, RunArtifacts)
     assert run.path.is_dir()
@@ -66,7 +66,7 @@ def test_begin_run_creates_layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert "cursor-grok-4.5-high" in (manifest["agent_cmd"] or "")
     assert manifest["agent_image"] == "lemma-agent:cli"
     assert manifest["max_iterations"] == "4"
-    assert manifest["agent_timeout_sec"] == "300"
+    assert manifest["agent_timeout_sec"] == 300 and manifest["lemma_config"]["agent_timeout_sec"] == {"section": "agent", "value": 300, "source": "env", "origin": "LEMMA_AGENT_TIMEOUT_SEC"}
     assert manifest["git_dirty"] is False
     assert manifest["git_commit"] == manifest["git_sha"]
     assert "machine" in manifest["env"]

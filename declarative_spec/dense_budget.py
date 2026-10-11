@@ -2,7 +2,7 @@
 
 A dense recipe (`dict_group_count_dense.rs`, the per-worker arrays, the flat `m1 * m2` slot grid of `hard/dict_parallel_q1.rs`) keeps one slot
 per combination of group-key codes. Its slot count is the product of the key dictionaries' sizes. Above ``LEMMA_DENSE_SLOT_BUDGET`` slots
-(default 2^22) a dense table is tens of gigabytes (times the number of parallel workers), so it is not allowed. A body that keys its groups by
+(`lemma.toml` [prover] dense_slot_budget, default 2^22) a dense table is tens of gigabytes (times the number of parallel workers), so it is not allowed. A body that keys its groups by
 a packed code tuple in a `HashMapWithView` (`hard/dict_join3_group_topk.rs`) needs no such table and is always allowed.
 
 The numbers are known at PREPARE time: the exporter writes the entry count of every dictionary into ``decl_data/expect.json``
@@ -17,21 +17,24 @@ Declared code widths (``Vec<u8>``, ``Vec<u16>``) bound the dictionaries without 
 
 from __future__ import annotations
 
-import os
 import re
 
-ENV = "LEMMA_DENSE_SLOT_BUDGET"
-DEFAULT_BUDGET = 1 << 22
+import lemma_config
+
+ENV = lemma_config.env_name("dense_slot_budget")
 _CAP = {"u8": 2**8, "u16": 2**16, "u32": None}
 HASH_EXAMPLE = "hard/dict_join3_group_topk.rs"
 
 
+def _hash_pointer() -> str:
+    """` (`context/ro/examples/<file>`)` for a packed-key hash group table, or nothing when the principles set has no such example."""
+    from declarative_spec import principles
+
+    return "" if principles.principles_only() else f" (`context/ro/examples/{HASH_EXAMPLE}`)"
+
+
 def budget() -> int:
-    raw = os.environ.get(ENV, "").strip()
-    value = int(raw) if raw else DEFAULT_BUDGET
-    if value <= 0:
-        raise ValueError(f"{ENV} must be positive, got {raw!r}")
-    return value
+    return int(lemma_config.get("dense_slot_budget"))
 
 
 def key_dictionaries(spec_rs: str) -> list[tuple[str, str, int | None]]:
@@ -98,7 +101,7 @@ def message(rep: dict) -> str:
         f"over the budget of {rep['budget']} ({ENV}). Do not allocate a table (`vec![..; m1 * m2 * ..]`, `Vec::with_capacity(m1 * m2)`) "
         f"sized by a product of these dictionaries. Key the groups by their code tuple instead: pack the codes into one integer "
         f"(an `i128` holds four 32-bit codes) and use a `HashMapWithView<i128, usize>` from key to group index, with the per-group "
-        f"aggregates in parallel `Vec`s (`context/ro/examples/{HASH_EXAMPLE}`). A dense array over ONE small dictionary is still fine."
+        f"aggregates in parallel `Vec`s{_hash_pointer()}. A dense array over ONE small dictionary is still fine."
     )
 
 
@@ -111,7 +114,7 @@ def prompt_section(rep: dict | None) -> list[str]:
         lines += [
             f"- Key domains: {_shape(rep)}; the actual dictionary sizes were not measured. A dense table over their product is allowed only",
             f"  when the product is at most {rep['budget']} ({ENV}). If you cannot bound it, key the groups by a packed code tuple in a",
-            f"  `HashMapWithView` (`context/ro/examples/{HASH_EXAMPLE}`).",
+            f"  `HashMapWithView`{_hash_pointer()}.",
         ]
     elif rep["allowed"]:
         lines += [

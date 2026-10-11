@@ -1288,3 +1288,99 @@ def _compile_like(node: exp.Like, ctx: _BoolCtx) -> str:
     col, _ = _col_ref(node.this, ctx.scope)
     text = f"spec_like({col}, {string_token(str(pattern.this))})"
     return f"!({text})" if node.args.get("negate") else text
+
+
+def rewrite_comma_joins(sql: str, schema: dict) -> str:
+    """Rewrite ``FROM a, b, c WHERE a.x = b.y AND ...`` to inner equi-joins (SQL to SQL, before the other stages).
+
+    A SELECT whose joins are all plain comma joins over tables of ``schema`` gets one ``JOIN t ON ...`` per table,
+    ordered so each table joins through a WHERE column equality to the tables before it (any order in FROM). Equalities
+    that connect a table are moved into its ON; every other conjunct stays in WHERE. A table with no connecting
+    equality (a cross product) is refused. Other SELECTs are left unchanged.
+    """
+    from declarative_spec.schema_types import SchemaModel
+
+    try:
+        tree = sqlglot.parse_one(sql)
+    except sqlglot.errors.SqlglotError:
+        return sql  # the stages below report the parse error
+    changed = False
+    for select in list(tree.find_all(exp.Select)):
+        joins = select.args.get("joins") or []
+        from_clause = select.args.get("from_")
+        if not joins or from_clause is None or not isinstance(from_clause.this, exp.Table):
+            continue
+        if not all(_is_comma_join(j) for j in joins):
+            continue
+        model = SchemaModel.from_caller(schema, from_clause.this.name)
+        nodes = [from_clause.this] + [j.this for j in joins]
+        if any(n.name.casefold() not in model.tables for n in nodes):
+            continue
+        _rewrite_comma_select(select, nodes, model)
+        changed = True
+    return tree.sql() if changed else sql
+
+
+def _is_comma_join(join: exp.Join) -> bool:
+    return (
+        isinstance(join.this, exp.Table)
+        and not join.args.get("on")
+        and not join.args.get("using")
+        and not join.args.get("side")
+        and not join.args.get("kind")
+        and not join.args.get("method")
+    )
+
+
+def _and_conjuncts(node: exp.Expression) -> list[exp.Expression]:
+    while isinstance(node, exp.Paren):
+        node = node.this
+    if isinstance(node, exp.And):
+        return _and_conjuncts(node.left) + _and_conjuncts(node.right)
+    return [node]
+
+
+def _rewrite_comma_select(select: exp.Select, nodes: list[exp.Table], model) -> None:
+    names = [n.name for n in nodes]
+    by_qualifier = {(n.alias or n.name).casefold(): i for i, n in enumerate(nodes)}
+
+    def slot(col: exp.Column) -> int:
+        if col.table:
+            if col.table.casefold() not in by_qualifier:
+                raise DeclarativeUnsupported(f"comma join: unknown table qualifier {col.table!r}")
+            return by_qualifier[col.table.casefold()]
+        table, _column, _info = model.resolve_column(None, col.name, names)
+        return next(i for i, n in enumerate(names) if n.casefold() == table.casefold())
+
+    where = select.args.get("where")
+    conjuncts = _and_conjuncts(where.this) if where else []
+    # (conjunct, slot of left column, slot of right column) for each column = column equality across two tables
+    links: list[tuple[exp.Expression, int, int]] = []
+    for c in conjuncts:
+        if isinstance(c, exp.EQ) and isinstance(c.left, exp.Column) and isinstance(c.right, exp.Column):
+            a, b = slot(c.left), slot(c.right)
+            if a != b:
+                links.append((c, a, b))
+
+    included = {0}
+    pending = list(range(1, len(nodes)))
+    ordered: list[tuple[int, list[exp.Expression]]] = []
+    while pending:
+        # the first pending table with an equality to an already-joined table; all such equalities form its ON
+        found = [(p, [c for c, a, b in links if p in (a, b) and {a, b} - {p} <= included]) for p in pending]
+        pick = next(((p, on) for p, on in found if on), None)
+        if pick is None:
+            raise DeclarativeUnsupported(
+                f"comma join: no column equality connects table {names[pending[0]]!r} (cross product)"
+            )
+        ordered.append(pick)
+        included.add(pick[0])
+        pending.remove(pick[0])
+
+    used = {id(c) for _p, on in ordered for c in on}
+    select.set(
+        "joins",
+        [exp.Join(this=nodes[p].copy(), on=exp.and_(*[c.copy() for c in on])) for p, on in ordered],
+    )
+    rest = [c for c in conjuncts if id(c) not in used]
+    select.set("where", exp.Where(this=exp.and_(*[c.copy() for c in rest])) if rest else None)
