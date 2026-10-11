@@ -65,3 +65,11 @@ Kept although partly inert: `mcp_iterate_rows` (prompt text and the probe-pin ch
 ## The agent prompt
 
 Every run value the prompt states (DuckDB threads and memory limit, iterate cap, Verus rlimit, dense-slot budget, a non-default speed bar) is read from the effective config when the prompt is built; the worker count it mentions is read from the worked example's own header. Prompt sections carry a kind (task, rules, tools, limits, hardware, recipe, example-pointer, `declarative_spec/principles.py`); `examples = "none"` emits only the first five.
+
+## Parked branches (not integrated, kept as branch/tag)
+
+* `worktree-agent-a231dc03f073f5e80` / tag `archive/param-literals-wip-2026-10-07`: parameterized literals (`LEMMA_PARAM_LITERALS`), paused by Emil; the patch no longer applies to `parse_query.py` and `prompt.py`, so it needs a rebase before it can get a `[wip]` switch. Doc: `research_loop/menus/future_work_parameterized_literals.md`.
+* `harness-prompt-traces`: Verus-error classification and per-column DuckDB catalog caps (imperative path); conflicts in `dataset_config.py`, `agent_sandbox.py` and a duplicate test file, and it changes catalog behaviour of every run.
+* `worktree-agent-a440a08df90aee7f8`: exporter v3; rewrites the default data-export path of `decl_query_measure.py` in place (would need a dual path behind a switch).
+* `worktree-agent-a0e34e79c6fe9763e`: four prompt/feedback hints; prompt text changed since, and any prompt edit changes the default agent context.
+* `worktree-agent-aa1cf2f1a0245f3bf`: tools are integrated (`declarative_spec/fragment.py`, `research_loop/scripts/fragment_*.py`, `resample_eval.py`, `docs/SQL_FRAGMENT.md`); the four emitter fixes in that branch (column named `n`, ORDER BY MIN/MAX bound, `real`/`f64` in string literals, `add` rename) change emitted specs and stay on the branch with `tests/test_fragment_gaps.py`.
