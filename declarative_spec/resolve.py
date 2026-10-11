@@ -7,8 +7,10 @@ to integer-typed columns.
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 
+from declarative_spec import sql_switches
 from declarative_spec.emit_join import _build_slots
 from declarative_spec.parse import DeclarativeUnsupported
 from declarative_spec.schema_types import SchemaModel
@@ -93,12 +95,32 @@ def flatten_derived(query: Query) -> Query:
     if query.where_expr or query.exists or query.in_subqueries or query.scalar_subqueries:
         raise DeclarativeUnsupported("WHERE over a derived table")
     outs = {o.name.casefold(): o for o in inner.outputs}
+    names = [o.name.casefold() for o in inner.outputs]
+    duplicated = {n for n in names if names.count(n) > 1}
 
     def output(name: str):
+        if name.casefold() in duplicated:
+            raise DeclarativeUnsupported(f"column {name!r} is ambiguous in the derived table")
         hit = outs.get(name.casefold())
         if hit is None:
             raise DeclarativeUnsupported(f"column {name!r} is not an output of the derived table")
         return hit
+
+    def identity(name: str) -> None:
+        """The outer name reads the inner column of the same name: a renamed output would be a silent mis-binding (the outer text is kept)."""
+        src = output(name)
+        if src.kind != "column" or src.text.rpartition(".")[2].casefold() != name.casefold():
+            raise DeclarativeUnsupported(f"column {name!r} of a derived table is renamed or computed: only aggregates and group keys may read it")
+
+    for name in query.projection:
+        if name not in query.group_columns:
+            identity(name)
+    for key in query.order_by:
+        if key.column.casefold() in outs and key.column not in query.group_columns:
+            identity(key.column)
+    for o in query.outputs:
+        if o.name.casefold() in outs and o.text.rpartition(".")[2].casefold() != o.name.casefold():
+            raise DeclarativeUnsupported(f"output {o.name!r} renames a column and shadows an output of the derived table")
 
     merged = Query(
         tables=list(inner.tables),
@@ -131,7 +153,36 @@ def flatten_derived(query: Query) -> Query:
                 agg = replace(agg, column=src.text.rpartition(".")[2], table=None)
             else:
                 agg = replace(agg, column=None, table=None, arith=src.text, arith_refs=src.refs)
+        elif agg.expr and sql_switches.derived_agg_expr():
+            if agg.filter_expr:
+                raise DeclarativeUnsupported("a FILTER over a derived table")
+            text, extra = _inline_case(agg.expr, output)
+            agg = replace(agg, expr=text, arith_refs=extra)  # only the substituted refs: outer names mean nothing to the inner tables
         elif agg.expr or agg.arith:
             raise DeclarativeUnsupported("aggregate expression over a derived table")
         merged.aggs.append(agg)
     return merged
+
+
+_CASE_CELL = re.compile(r"\bcols\.(?:r#)?([A-Za-z_][A-Za-z0-9_]*)@\[i\]")
+
+
+def _inline_case(expr: str, output) -> tuple[str, tuple[str, ...]]:
+    """Rewrite the cells ``cols.<name>@[i]`` of a CASE text from derived-table output names to the inner
+    expressions they stand for. A column output becomes the (alias-qualified) inner cell; an arithmetic or
+    date-part output becomes its text with each column read as a cell. Returns the text and the columns
+    the substituted expressions read (they must be exact integers)."""
+    extra: list[str] = []
+
+    def repl(m: re.Match[str]) -> str:
+        src = output(m.group(1))
+        if src.kind == "column":
+            return f"cols.{src.text}@[i]"
+        extra.extend(src.refs)
+        refs = sorted(set(src.refs), key=len, reverse=True)
+        if not refs:
+            return src.text
+        pattern = "(?<![\\w.])(" + "|".join(re.escape(r) for r in refs) + ")(?![\\w.(])"
+        return "(" + re.sub(pattern, lambda mm: f"cols.{mm.group(1)}@[i]", src.text) + ")"
+
+    return _CASE_CELL.sub(repl, expr), tuple(extra)

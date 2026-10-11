@@ -6,6 +6,8 @@ in the recipe table of `prompt.py`, or in `UNMOUNTED`: `tests/test_declarative_r
 
 from __future__ import annotations
 
+import pathlib
+
 # Registered fixtures that are not the recipe's own example: more shapes for the index, each a body Verus verified against
 # a spec of that shape. A `dict_` basename is mounted in dictionary mode only.
 MORE_EXAMPLES: tuple[tuple[str, str], ...] = (
@@ -146,6 +148,15 @@ UNMOUNTED: dict[str, str] = {
     "u64_group_count_t_k.rs": "the u64-key map count over the test spec's fixed names `t`/`k`; `hard/map_count.rs` is the same shape and is mounted",
     "u64_group_count_slots_t_k.rs": "the dense-counter recipe under the test spec's fixed names; its text is the block inlined as the dense_map recipe",
 }
+
+# Parked pin path (lemma.toml [wip] zero_copy / cold_stream, research_loop/menus/pin_path_archive.md): test fixtures of that path, never mounted.
+UNMOUNTED.update(
+    {
+        f.name: "fixture of the parked pin path (lemma.toml [wip]); never mounted"
+        for f in (pathlib.Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "declarative_proofs").glob("*")
+        if f.name.startswith(("cold_", "zero_copy_"))
+    }
+)
 
 # The principles set (LEMMA_EXAMPLES=principles, declarative_spec/principles.py) is mounted instead of the whole registry, never beside it.
 from declarative_spec.principles import names as _principle_names  # noqa: E402

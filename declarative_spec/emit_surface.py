@@ -7,12 +7,15 @@ It does not define the query as a walk that inserts into a map.
 
 from __future__ import annotations
 
+import contextvars
 import dataclasses
 
 import copy
 import re
 from dataclasses import dataclass, field
 
+import lemma_config
+from declarative_spec import sql_switches
 from declarative_spec.emit_date import with_civil_fns
 from declarative_spec.emit_in import apply_in_calls, in_subquery_calls
 from declarative_spec.emit_join import _build_slots, _Slot, _table_alias
@@ -24,13 +27,16 @@ from declarative_spec.schema_types import ColumnTypeInfo, SchemaModel, classify_
 from declarative_spec.surface import Agg, OrderKey, Query
 from research_loop.table_assumptions import CatalogAssumptions, JoinCap
 
+# set while a query that went through the grouped-WITH fold is emitted: the only place MAX/MIN over WITH groups is exact
+_EXTREME_OK: contextvars.ContextVar[bool] = contextvars.ContextVar("extreme_ok", default=False)
+
 _IS_NULL = re.compile(
     r"(!?)is_null\(\s*([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\s*\)"
 )
 _QUAL = re.compile(
     r"\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b(?!@\[)"
 )
-_COLS_I = re.compile(r"\bcols\.(?:r#)?([A-Za-z_][A-Za-z0-9_]*)@\[i\]@?")
+_COLS_I = re.compile(r"\bcols\.(?:([A-Za-z_][A-Za-z0-9_]*)\.)?(?:r#)?([A-Za-z_][A-Za-z0-9_]*)@\[i\]@?")
 
 
 @dataclass
@@ -78,8 +84,10 @@ def _emit_with_string_tokens(
 ) -> str:
     """Verus source for ``sql``. Raises ``DeclarativeUnsupported`` when a clause is refused."""
     query = flatten_derived(parse_query(sql))
+    _EXTREME_OK.set(bool(query.unique_needed))
     if not query.tables:
         raise DeclarativeUnsupported("FROM")
+    _require_unique_keys(query, catalog)
     model = SchemaModel.from_caller(schema, query.tables[0]).with_nullable(catalog)
     _reject_unemitted(query)
     qualify_join_refs(query, model)
@@ -101,6 +109,14 @@ def _emit_with_string_tokens(
         # every table after the fact table is unique on its chain key: the data must say so (loader-checked), and the proofs may use it
         merged = dict(facts.unique_aliases) if facts else {}
         merged.update(dict(chain.unique))
+        facts = dataclasses.replace(facts, unique_aliases=tuple(merged.items())) if facts else _JoinBound(1, tuple(merged.items()))
+    facts = _require_corr_unique(query, helpers, model, catalog, facts)
+    if query.unique_needed:
+        # the grouped-WITH fold is exact only if the key is unique in the data: state it in valid_cols (the loader checks it)
+        merged = dict(facts.unique_aliases) if facts else {}
+        for table, column in query.unique_needed:
+            slot = next(sl for sl in helpers.main if sl.table.casefold() == table.casefold())
+            merged[slot.alias] = (column,)
         facts = dataclasses.replace(facts, unique_aliases=tuple(merged.items())) if facts else _JoinBound(1, tuple(merged.items()))
 
     structs = _structs(helpers.params, model, catalog)
@@ -193,7 +209,7 @@ def _seq_le_source() -> str:
 def _reject_unemitted(query: Query) -> None:
     if query.set_op:
         raise DeclarativeUnsupported(query.set_op)
-    if query.ctes:
+    if query.ctes and not sql_switches.cte_reuse():
         raise DeclarativeUnsupported("CTE")
     for join in query.joins:
         if join.kind.casefold() != "inner":
@@ -210,6 +226,39 @@ def _reject_unemitted(query: Query) -> None:
         _reject_unemitted(query.set_query)
 
 
+def _require_unique_keys(query: Query, catalog: CatalogAssumptions | None) -> None:
+    """A rewrite that merges a join into a grouped query is exact only for a declared unique key (the loader checks it)."""
+    for table, column in query.unique_needed:
+        ta = next((t for n, t in (catalog.tables if catalog else {}).items() if n.casefold() == table.casefold()), None)
+        declared = ta is not None and any(
+            len(k) == 1 and k[0].casefold() == column.casefold() for k in ta.unique_keys
+        )
+        if not declared:
+            raise DeclarativeUnsupported(
+                f"{table}.{column} must be a declared unique key: the query joins it to a grouped WITH name"
+            )
+
+
+def _bind_group_aliases(query: Query, main: list[_Slot], model: SchemaModel) -> Query:
+    """``SELECT k AS a ... GROUP BY a``: a GROUP BY name that is no column of the FROM tables is the select alias.
+
+    An input column of that name wins (DuckDB and standard SQL bind GROUP BY to input columns first).
+    """
+    if not sql_switches.cte_reuse():
+        return query
+    columns = {c.casefold() for s in main for c in model.lookup_table(s.table)[1]}
+    bound = {}
+    for col in query.group_columns:
+        if col in query.group_exprs or col.casefold() in columns:
+            continue
+        hit = next((o for o in query.outputs if o.kind == "column" and o.name.casefold() == col.casefold()), None)
+        if hit is not None:
+            bound[col] = hit.text
+    if not bound:
+        return query
+    return dataclasses.replace(query, group_exprs={**query.group_exprs, **bound})
+
+
 def _emit_helpers(query: Query, prefix: str, model: SchemaModel, chain=None) -> _Helpers:
     main = _build_slots(query)
     if chain is not None and not prefix:
@@ -220,14 +269,18 @@ def _emit_helpers(query: Query, prefix: str, model: SchemaModel, chain=None) -> 
         raise DeclarativeUnsupported("FROM")
     for slot in main:
         model.lookup_table(slot.table)
+    query = _bind_group_aliases(query, main, model)
     extras = _extra_params(query, main, model)
     params = list(main) + extras
-    group_infos = _group_infos(query, main, model)
+    blocks: list[str] = []
+    from declarative_spec.emit_corr_count import corr_count_calls
+
+    corr_calls = corr_count_calls(query, prefix, main, params, model, blocks)
+    group_infos = _group_infos(query, main, model, corr_calls)
     key_ty = _key_type(group_infos)
     row_hit = f"{prefix}row_hit"
     key_at = f"{prefix}key_at"
 
-    blocks: list[str] = []
     exists_calls = _exists_fns(query, prefix, main, params, model, blocks)
     in_heads, in_sources = in_subquery_calls(query, prefix, params, model)
     blocks.extend(in_sources)
@@ -311,6 +364,8 @@ def _extra_params(query: Query, main: list[_Slot], model: SchemaModel) -> list[_
         params.add(param)
 
     def walk(q: Query) -> None:
+        for cc in q.corr_counts:
+            add(cc.right_alias or cc.right, cc.right)
         for _name, sub, _neg in q.exists:
             if sub.tables:
                 add(_table_alias(sub, sub.tables[0], None), sub.tables[0])
@@ -471,12 +526,12 @@ def _key_at_fn(
 
 
 def _group_infos(
-    query: Query, main: list[_Slot], model: SchemaModel
+    query: Query, main: list[_Slot], model: SchemaModel, calls: dict[str, str] | None = None
 ) -> list[tuple[str, str, ColumnTypeInfo, _Slot]]:
     out: list[tuple[str, str, ColumnTypeInfo, _Slot]] = []
     for i, col in enumerate(query.group_columns):
         if col in query.group_exprs:
-            out.append(_expr_group(col, query.group_exprs[col], main, model))
+            out.append(_expr_group(col, query.group_exprs[col], main, model, calls or {}))
             continue
         table = query.group_tables[i] if i < len(query.group_tables) else None
         slot, info = _find_col(col, table, main, model)
@@ -532,9 +587,11 @@ _EXPR = "\x00expr:"
 
 
 def _expr_group(
-    name: str, text: str, main: list[_Slot], model: SchemaModel
+    name: str, text: str, main: list[_Slot], model: SchemaModel, calls: dict[str, str] | None = None
 ) -> tuple[str, str, ColumnTypeInfo, _Slot]:
-    """A group key that is a renamed column (output ``name``) or a date part (a BIGINT)."""
+    """A group key that is a renamed column (output ``name``), a date part (a BIGINT), or a count call (``calls``)."""
+    if calls and text in calls:
+        return rust_ident(name), _EXPR + calls[text], classify_sql_type("bigint"), main[0]
     if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?", text):
         slot, info = _ref_slot(text, main, model)
         return rust_ident(name), text.rpartition(".")[2], info, slot
@@ -751,7 +808,7 @@ def _emit_agg(
             key_ty,
             unit_step=True,
         )
-        _emit_avg_wrap(blocks, name, sum_name, cnt_name, params, key_ty, True, agg.avg_scale)
+        _emit_avg_wrap(blocks, name, sum_name, cnt_name, params, key_ty, True, agg.avg_scale, agg.avg_factor)
         return _AggFn(alias, kind, name, "real", True, "fold", "f64")
     raise DeclarativeUnsupported(kind)
 
@@ -780,7 +837,7 @@ def _emit_ratio(
     assert agg.ratio is not None
     num_alias, den_alias, k, num_scale, den_scale = agg.ratio
     by_alias = {a.alias: a for a in query.aggs}
-    operands = [by_alias[num_alias], by_alias[den_alias]]
+    operands = [by_alias[num_alias]] + ([] if agg.ratio_den_const is not None else [by_alias[den_alias]])
     for op in operands:
         if op.kind.upper() not in ("SUM", "COUNT"):
             raise DeclarativeUnsupported("division operand must be a SUM or COUNT")
@@ -788,11 +845,24 @@ def _emit_ratio(
             raise DeclarativeUnsupported(
                 "division of a float SUM: the quotient of two floating sums has no magnitude bound the proof can use"
             )
-    num_fn, den_fn = (_fn_name(prefix, op.kind.upper(), rust_ident(op.alias)) for op in operands)
+    fns = [_fn_name(prefix, op.kind.upper(), rust_ident(op.alias)) for op in operands]
+    num_fn, den_fn = fns[0], (fns[1] if len(fns) == 2 else "")
     name = f"{prefix}ratio_{rust_ident(agg.alias)}"
     key_sig = f", k: {key_ty}" if key_ty else ""
     key_call = ", k" if key_ty else ""
     p_call = _param_call(params)
+    if agg.ratio_den_const is not None:
+        # A nonzero constant denominator: no zero branch, DuckDB's DOUBLE quotient of the exact natural values.
+        assert agg.ratio_den_const > 0
+        blocks.append(
+            f"""pub open spec fn {name}({_param_sig(params)}, i0: int{key_sig}, ratio_v__: f64) -> bool {{
+    let ratio_n__: int = {k} * {num_fn}({p_call}, i0{key_call});
+    ratio_v__.is_finite_spec() && (ratio_v__ as real) == ((ratio_n__ as real) * {10**den_scale}real) / ({agg.ratio_den_const}real * {10**num_scale}real)
+}}"""
+        )
+        fn = _AggFn(rust_ident(agg.alias), "RATIO", name, "real", True, "ratio", "f64")
+        fn.ratio_nullable = operands[0].kind.upper() == "SUM" and key_ty is None
+        return fn
     blocks.append(
         f"""pub open spec fn {name}({_param_sig(params)}, i0: int{key_sig}, ratio_v__: f64) -> bool {{
     let ratio_n__: int = {k} * {num_fn}({p_call}, i0{key_call});
@@ -829,14 +899,14 @@ def _fn_name(prefix: str, kind: str, alias: str) -> str:
     raise DeclarativeUnsupported(kind)
 
 
-_CASE_RESULT_COL = re.compile(r"\{ cols\.(?:r#)?([A-Za-z_][A-Za-z0-9_]*)@\[i\] \}")
+_CASE_RESULT_COL = re.compile(r"\{ cols\.(?:([A-Za-z_][A-Za-z0-9_]*)\.)?(?:r#)?([A-Za-z_][A-Za-z0-9_]*)@\[i\] \}")
 
 
 def _case_float_results(expr: str, main: list[_Slot], model: SchemaModel) -> list[tuple[_Slot, str]]:
     """The float columns a CASE can return (its THEN/ELSE results), with their slots."""
     found: list[tuple[_Slot, str]] = []
-    for col in _CASE_RESULT_COL.findall(expr):
-        slot, info = _find_col(col, None, main, model)
+    for alias, col in _CASE_RESULT_COL.findall(expr):
+        slot, info = _ref_slot(f"{alias}.{col}", main, model) if alias else _find_col(col, None, main, model)
         if info.is_float:
             found.append((slot, col))
     return found
@@ -921,8 +991,8 @@ def _value_fn(
 
 def _compile_case(expr: str, main: list[_Slot], model: SchemaModel, *, real: bool = False) -> str:
     def repl(m: re.Match[str]) -> str:
-        col = m.group(1)
-        slot, info = _find_col(col, None, main, model)
+        alias, col = m.group(1), m.group(2)
+        slot, info = _ref_slot(f"{alias}.{col}", main, model) if alias else _find_col(col, None, main, model)
         return _cell(slot, col, info)
 
     out = _real_literals(_COLS_I.sub(repl, expr))
@@ -1150,14 +1220,16 @@ def _emit_avg_wrap(
     key_ty: str | None,
     is_float: bool,
     scale: int = 0,
+    factor: tuple[int, int] = (1, 1),
 ) -> None:
     key_sig = f", k: {key_ty}" if key_ty else ""
     key_call = ", k" if key_ty else ""
     p = _param_call(params)
+    numerator = f"{sum_name}({p}, i0{key_call})" + (f" * ({factor[0]}real)" if factor != (1, 1) else "")
     if is_float:
         body = f"""let c = {cnt_name}({p}, i0{key_call});
     if c > 0 {{
-        {sum_name}({p}, i0{key_call}) / ((c as real) * {10**scale}real)
+        {numerator} / ((c as real) * {10**scale * factor[1]}real)
     }} else {{
         0real
     }}"""
@@ -1209,6 +1281,8 @@ def _one_scalar(
         inner = query.derived[0][1]
         helpers = _emit_helpers(inner, f"{name}_", model)
         target = _match_inner_agg(outer_agg, helpers)
+        if outer_agg.kind.upper() in ("MAX", "MIN"):
+            _require_extreme_over_groups_exact(query, helpers, model)
         return _reduce_groups(name, outer_agg, target, helpers, outer_params)
     helpers = _emit_helpers(query, f"{name}_", model)
     if len(helpers.aggs) != 1 or helpers.key_ty is not None:
@@ -1222,6 +1296,19 @@ def _one_scalar(
 }}"""
     outer_call = f"{name}({_map_args(helpers.main, outer_params)})"
     return outer_call, helpers.source + "\n\n" + wrap
+
+
+def _require_extreme_over_groups_exact(query: Query, helpers: _Helpers, model: SchemaModel) -> None:
+    """MAX/MIN over the groups of a WITH name is stated only where it is exact: as the scalar of the folded grouped-WITH shape
+    (a joined group implies at least one group, so SQL's NULL for no groups never reaches the comparison), with no filter of its own
+    (it would be dropped) and over tables without nullable columns (an all-NULL SUM group is NULL in SQL, 0 here)."""
+    if not _EXTREME_OK.get():
+        raise DeclarativeUnsupported("MAX/MIN over the groups of a WITH name outside the grouped-WITH join shape (SQL gives NULL for no groups)")
+    if query.where_expr or query.having_expr or query.exists or query.in_subqueries or query.scalar_subqueries:
+        raise DeclarativeUnsupported("MAX/MIN over the groups of a WITH name with a filter of its own")
+    for slot in helpers.params:
+        if any(model.is_nullable(slot.table, col) for col in model.lookup_table(slot.table)[1]):
+            raise DeclarativeUnsupported("MAX/MIN over the groups of a WITH name over a table with nullable columns")
 
 
 def _match_inner_agg(outer: Agg, helpers: _Helpers) -> _AggFn:
@@ -1246,13 +1333,15 @@ def _reduce_groups(
     if helpers.key_ty is None or target.style != "fold":
         raise DeclarativeUnsupported("scalar subquery")
     kind = outer.kind.upper()
-    if kind not in ("AVG", "SUM", "COUNT"):
+    if kind not in ("AVG", "SUM", "COUNT", *(("MAX", "MIN") if sql_switches.cte_reuse() else ())):
         raise DeclarativeUnsupported("scalar subquery")
     earlier = _earlier(helpers.row_hit, helpers.key_at, helpers.main, helpers.params)
     p = _param_call(helpers.params)
     idxs = _idx_call(helpers.main)
     key_here = f"{helpers.key_at}({p}, {idxs})"
     first = f"{helpers.row_hit}({p}, {idxs}) && !({earlier})"
+    if kind in ("MAX", "MIN"):
+        return _extreme_over_groups(name, kind, target, helpers, first, key_here, outer_params)
     is_real = target.ret == "real" or kind == "AVG" and target.ret == "real"
     zero = "0real" if target.ret == "real" else "0int"
     acc_add = f"if {first} {{ {target.name}({p}, 0, {key_here}) }} else {{ {zero} }}"
@@ -1280,6 +1369,58 @@ def _reduce_groups(
 }}"""
     call = f"{name}({_map_args(helpers.params, outer_params)})"
     return call, helpers.source + "\n\n" + "\n\n".join(blocks) + "\n\n" + wrap
+
+
+def _extreme_over_groups(
+    name: str,
+    kind: str,
+    target: _AggFn,
+    helpers: _Helpers,
+    first: str,
+    key_here: str,
+    outer_params: dict[str, str],
+) -> tuple[str, str]:
+    """``MAX``/``MIN`` of a group aggregate over the groups of a derived table.
+
+    ``{name}_ext(.., i)`` is the extreme over the first row of each group at index >= i, ``None`` when there is none.
+    The scalar is 0 on an empty set of groups; the only consumers compare it with the aggregate of an existing group,
+    which exists only when the set is not empty.
+    """
+    if len(helpers.main) != 1:
+        raise DeclarativeUnsupported("scalar subquery")
+    slot = helpers.main[0]
+    p = _param_call(helpers.params)
+    sig = _param_sig(helpers.params)
+    zero = "0real" if target.ret == "real" else "0int"
+    better = ">" if kind == "MAX" else "<"
+    bound = f"{slot.param}.n as int"
+    idx = slot.idx
+    ext = f"""pub open spec fn {name}_ext({sig}, {idx}: int) -> Option<{target.ret}>
+    decreases {bound} - {idx}
+{{
+    if {idx} < 0 || {idx} >= {bound} {{
+        None
+    }} else {{
+        let rest = {name}_ext({p}, {idx} + 1);
+        if {first} {{
+            let v = {target.name}({p}, 0, {key_here});
+            match rest {{
+                None => Some(v),
+                Some(m) => Some(if v {better} m {{ v }} else {{ m }}),
+            }}
+        }} else {{
+            rest
+        }}
+    }}
+}}"""
+    wrap = f"""pub open spec fn {name}({sig}) -> {target.ret} {{
+    match {name}_ext({p}, 0) {{
+        Some(m) => m,
+        None => {zero},
+    }}
+}}"""
+    call = f"{name}({_map_args(helpers.params, outer_params)})"
+    return call, helpers.source + "\n\n" + ext + "\n\n" + wrap
 
 
 def _map_args(slots: list[_Slot], by_table: dict[str, str]) -> str:
@@ -2089,6 +2230,37 @@ def _require_sum_fits(
     return bound if needs_facts else None
 
 
+def _require_corr_unique(
+    query: Query,
+    helpers: _Helpers,
+    model: SchemaModel,
+    catalog: CatalogAssumptions | None,
+    facts: _JoinBound | None,
+) -> _JoinBound | None:
+    """A LEFT JOIN count groups the FROM rows by their count only when the join key is unique in the FROM table.
+
+    The catalog must declare that key; the spec then requires it of the data (``valid_cols``, checked by the loader)."""
+    if not query.corr_counts:
+        return facts
+    from declarative_spec.emit import _join_col_is_unique, _lookup_table_assumptions
+    from declarative_spec.emit_corr_count import left_key
+
+    left = helpers.main[0]
+    used = list(facts.unique_aliases) if facts else []
+    for cc in query.corr_counts:
+        col = left_key(cc, left.table, left.alias, model)
+        ta = _lookup_table_assumptions(catalog, left.table) if catalog is not None else None
+        if not _join_col_is_unique(ta, col):
+            raise DeclarativeUnsupported(
+                f"a LEFT JOIN count groups {left.table} rows by their count only if {left.table}.{col} is unique: "
+                f"declare ({col}) as a unique key of {left.table} in the catalog"
+            )
+        used.append((left.alias, (col,)))
+    return _JoinBound(
+        facts.rows if facts else 1, tuple(used), facts.caps if facts else ()
+    )
+
+
 def _hash_broadcasts(helpers: _Helpers) -> str:
     """Broadcast the integer hash-key axiom. String keys use ``StringHashMap``, which does not need it."""
     from declarative_spec.emit import _host_hash_key_axiom
@@ -2121,6 +2293,15 @@ def _consts(
         cap = _row_cap(catalog, slot.table)
         if cap is not None:
             lines.append(f"pub const ROW_CAP_{rust_ident(slot.table)}: usize = {cap};")
+    if lemma_config.get("zero_copy") or lemma_config.get("cold_stream"):  # WIP/parked pin path, lemma.toml [wip]
+        # The zero-copy assembler binds the spec to its schema model: the literals of the spec (scaled constants, caps) were computed from these declared types.
+        import json
+
+        types = {
+            model.original_table_names[t]: {model.original_column_names[(t, c)]: info.sql_type for c, info in cols.items()}
+            for t, cols in model.tables.items()
+        }
+        lines.append("// IN_TYPES: " + json.dumps(types, sort_keys=True))
     lines.extend(_float_mag_consts(params, model, catalog))
     return "\n".join(lines)
 

@@ -73,3 +73,16 @@ heavy_mem_max = "5G"                        # scope MemoryMax of scripts/ram/hea
 verus_mem_max = "6G"                        # MemoryMax of each Verus run
 verus_slots = 1                             # concurrent Verus runs machine-wide
 verus_min_avail_mb = 3000                   # do not start Verus below this MemAvailable
+
+[sql]
+# New SQL shapes of the declarative transpiler. Each key gates ONE capability; false = the emitter refuses the shape exactly as before (byte-identical specs for everything else). docs/FLAGS.md and research_loop/menus/sql_<feature>_ADVERSARY_VERDICT.md say what each one states and checks.
+agg_times_constant = false                  # SUM(x)*K, SUM(x)/c, c*AVG(x), HAVING with a scaled aggregate side (TPC-H Q11/Q17/Q20 shapes)
+derived_agg_expr = false                    # CASE aggregate (and ratio of CASE aggregates) over a plain SPJ derived table, extract(year) keys (TPC-H Q8 shape)
+cte_reuse = false                           # a WITH name used at several places (FROM, JOIN, scalar subquery), grouped WITH joined to a unique-key table, MAX/MIN over derived groups, GROUP BY a select alias (TPC-H Q15 shape)
+left_join_count = false                     # LEFT JOIN with right-table ON conjuncts, COUNT over the right side, count of counts (TPC-H Q13 shape)
+
+[wip]
+# Parked work, integrated for reference and switched off. Nothing here is used by a container run. Each key points at the document that says why it is parked.
+zero_copy = false                           # WIP/parked: read DuckDB's pinned chunks in place (trusted ZC-1), shelved 2026-10-07, see research_loop/menus/pin_path_archive.md
+cold_stream = false                         # WIP/parked: run the proved fold as a DuckDB C-API aggregate/scalar (trusted ZC-2/ZC-2s), shelved 2026-10-07, see research_loop/menus/pin_path_archive.md
+cold_stream_mode = "aggregate"              # WIP/parked: aggregate | scalar, used only with cold_stream; scalar is not switch-on ready, see research_loop/menus/pin_path_archive.md

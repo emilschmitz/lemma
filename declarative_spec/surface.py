@@ -34,6 +34,12 @@ class Agg:
     # scale). The operands are hidden aggregates of the same query; the value is the real quotient
     # ``(K * N / 10**sN) / (D / 10**sD)``, with IEEE results for a zero denominator (DuckDB divides in DOUBLE).
     ratio: tuple[str, str, int, int, int] | None = None
+    # A RATIO whose denominator is this nonzero whole-number constant (stored at the denominator scale), not an
+    # aggregate: ``SUM(x) / 7.0`` is ``ratio_den_const == 70`` with denominator scale 1; the denominator alias is "".
+    ratio_den_const: int | None = None
+    # ``c * AVG(x)`` / ``AVG(x) * c`` for a constant c (DuckDB's DOUBLE product): the average is multiplied by
+    # numerator/denominator, an exact rational (the float idealization states the product of the exact reals).
+    avg_factor: tuple[int, int] = (1, 1)
 
 
 @dataclass(frozen=True)
@@ -55,6 +61,25 @@ class Join:
     alias: str | None
     on: tuple[tuple[str, str], ...]
     on_combiner: str = "and"
+
+
+@dataclass(frozen=True)
+class CorrCount:
+    """A group key that is, per row of the FROM table, the count of right-table rows matching it.
+
+    ``SELECT n, COUNT(*) FROM (SELECT k, COUNT(r.c) AS n FROM L LEFT JOIN R ON r.fk = L.k AND pred GROUP BY k) d GROUP BY n``
+    groups the rows of ``L`` by ``n = #{R rows: fk = k AND pred}`` (0 when none match), which
+    is the left join's per-group count when ``k`` is unique in ``L`` and ``c`` is never NULL. Column references are kept as written; the emitter
+    resolves them against the schema (which side of the ON equality is the right table, whether ``pred`` reads only it).
+    """
+
+    token: str  # the ``Query.group_exprs`` value that stands for the count
+    right: str  # right table
+    right_alias: str | None
+    refs: tuple[str, str]  # the two sides of the ON equality, as written
+    group_ref: str  # the inner GROUP BY column, as written (must be the left side of the equality)
+    count_ref: str  # the counted column, as written (must belong to the right table)
+    pred_sql: str  # the other ON conjuncts as SQL ("" when none); they may read the right table only
 
 
 @dataclass(frozen=True)
@@ -84,6 +109,8 @@ class Query:
     set_op: str | None = None
     set_query: Query | None = None
     ctes: list[tuple[str, Query]] = field(default_factory=list)
+    # (table, column) pairs that must be declared unique keys for a rewrite to select the same rows.
+    unique_needed: list[tuple[str, str]] = field(default_factory=list)
     exists: list[tuple[str, Query, bool]] = field(default_factory=list)
     in_subqueries: list[tuple[str, str, Query]] = field(default_factory=list)
     scalar_subqueries: list[tuple[str, Query]] = field(default_factory=list)
@@ -95,3 +122,5 @@ class Query:
     group_exprs: dict[str, str] = field(default_factory=dict)
     # Column refs in WHERE/HAVING text that must be exact integers (decimal-literal compares).
     exact_int_refs: list[str] = field(default_factory=list)
+    # Group keys that count right-table rows per FROM row (see ``CorrCount``).
+    corr_counts: list[CorrCount] = field(default_factory=list)

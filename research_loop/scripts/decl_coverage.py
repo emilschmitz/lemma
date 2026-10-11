@@ -173,7 +173,7 @@ def typecheck(spec: str, *, full: bool = False, verify: bool = False) -> str:
     try:
         proc = subprocess.run(
             [str(GUARD), handle.name, *([] if verify else ["--no-verify"]), "--triggers-mode", "silent"],
-            capture_output=True, text=True, check=False, timeout=300,
+            capture_output=True, text=True, check=False, timeout=int(os.environ.get("DECL_TC_TIMEOUT", "300")),
         )
     finally:
         os.unlink(handle.name)

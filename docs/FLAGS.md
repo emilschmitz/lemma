@@ -16,7 +16,7 @@ lemma.toml  <  environment variable LEMMA_<KEY>  <  explicit CLI flag
 * Every container run writes all keys with `value`, `section`, `source` (`file`/`env`/`cli`) and `origin` into the run manifest (`lemma_config`) and the `RESULT` line (`config`), with `git_sha`, `git_dirty` and `git_untracked_files` (a count; untracked files never make `git_dirty` true). A dirty tree (tracked files; untracked and gitignored data do not count) is refused unless `allow_dirty = true`.
 * `container_batch.py` forwards nothing by name. The child reads `lemma.toml` itself; the batch passes only values that differ from the file (`lemma_config.forwarded_env`, plus `LEMMA_CONFIG_ORIGIN` so a flag is still reported as a flag).
 
-## Sections (42 keys)
+## Sections (50 keys)
 
 | Section | Keys |
 | --- | --- |
@@ -25,6 +25,8 @@ lemma.toml  <  environment variable LEMMA_<KEY>  <  explicit CLI flag
 | `[prover]` | `verus_rlimit verus_timeout_sec run_timeout_sec target_cpu dense_slot_budget` |
 | `[measure]` | `official_rounds official_duck_reps duck_memory_limit duck_threads` |
 | `[data]` | `duckdb_path data_profile` |
+| `[sql]` | `agg_times_constant derived_agg_expr cte_reuse left_join_count` (new SQL shapes of the transpiler, all default false; verdicts in `research_loop/menus/sql_<feature>_ADVERSARY_VERDICT.md`) |
+| `[wip]` | `zero_copy cold_stream cold_stream_mode` (parked pin path, default off, see `research_loop/menus/pin_path_archive.md`; nothing here is used by a container run) |
 | `[safety]` | `allow_dirty scope_memory_max egress_profile egress_allowlist heavy_lock heavy_min_avail_mb heavy_mem_max verus_mem_max verus_slots verus_min_avail_mb` |
 
 Meaning, allowed values and defaults are in the file. `menu` selects a profile (`research_loop/menu_profile.py`); the next four axis keys override its values (the launcher takes them as authority and the selection printed first shows them as overrides).
@@ -50,7 +52,7 @@ Meaning, allowed values and defaults are in the file. `menu` selects a profile (
 
 ## Removed as dead (rejected when set; `DEAD` in `lemma_config.py`)
 
-`DEFAULT_ROW_LIMIT`, `AGENT_WEB_SEARCH`, `AGENT_DOCS_MOUNT`, `AGENT_SUBMIT_ONLY_MEASURE`, `AGENT_MCP_URL` (parsed, no consumer; the AgentFlags fields are gone), `LEMMA_MCP_URL` (compose only), `LEMMA_ZERO_COPY` (recorded, no reader), `LEMMA_FLOAT_ABS_EPS` (docstring), `LEMMA_SERIOUS` (overnight only; the launcher no longer sets it). `LEMMA_TPCH_DB` is no longer forwarded by the batch (a container run reads `duckdb_path`; it stays for `declarative_manual/oneshot/remeasure.py`).
+`DEFAULT_ROW_LIMIT`, `AGENT_WEB_SEARCH`, `AGENT_DOCS_MOUNT`, `AGENT_SUBMIT_ONLY_MEASURE`, `AGENT_MCP_URL` (parsed, no consumer; the AgentFlags fields are gone), `LEMMA_MCP_URL` (compose only), `LEMMA_FLOAT_ABS_EPS` (docstring), `LEMMA_SERIOUS` (overnight only; the launcher no longer sets it). `LEMMA_TPCH_DB` is no longer forwarded by the batch (a container run reads `duckdb_path`; it stays for `declarative_manual/oneshot/remeasure.py`).
 Kept although partly inert: `mcp_iterate_rows` (prompt text and the probe-pin check at submit; the declarative measure itself always times the full tables).
 
 ## Not in `lemma.toml`
@@ -77,3 +79,11 @@ The MCP tool `verify_functions(names, path)` runs Verus on the assembled program
 ## Defaults changed with this section
 
 `string_encoding = "dict"` and `join_chain = true` (a query whose tables lack declared unique keys, or with a nullable key, a self-join, a subquery or an OR join keeps the general FROM-order form).
+
+## Parked branches (not integrated, kept as branch/tag)
+
+* `worktree-agent-a231dc03f073f5e80` / tag `archive/param-literals-wip-2026-10-07`: parameterized literals (`LEMMA_PARAM_LITERALS`), paused by Emil; the patch no longer applies to `parse_query.py` and `prompt.py`, so it needs a rebase before it can get a `[wip]` switch. Doc: `research_loop/menus/future_work_parameterized_literals.md`.
+* `harness-prompt-traces`: Verus-error classification and per-column DuckDB catalog caps (imperative path); conflicts in `dataset_config.py`, `agent_sandbox.py` and a duplicate test file, and it changes catalog behaviour of every run.
+* `worktree-agent-a440a08df90aee7f8`: exporter v3; rewrites the default data-export path of `decl_query_measure.py` in place (would need a dual path behind a switch).
+* `worktree-agent-a0e34e79c6fe9763e`: four prompt/feedback hints; prompt text changed since, and any prompt edit changes the default agent context.
+* `worktree-agent-aa1cf2f1a0245f3bf`: tools are integrated (`declarative_spec/fragment.py`, `research_loop/scripts/fragment_*.py`, `resample_eval.py`, `docs/SQL_FRAGMENT.md`); the four emitter fixes in that branch (column named `n`, ORDER BY MIN/MAX bound, `real`/`f64` in string literals, `add` rename) change emitted specs and stay on the branch with `tests/test_fragment_gaps.py`.

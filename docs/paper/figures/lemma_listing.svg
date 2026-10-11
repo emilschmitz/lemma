@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="700" height="738" viewBox="0 0 700 738"><rect width="100%" height="100%" fill="#fff"/>
+<rect x="152.0" y="4.0" width="544.0" height="184.0" fill="#e6e6e6" stroke="#000" stroke-width="0.8"/>
+<text x="144.0" y="87.7" font-size="11.2" text-anchor="end" xml:space="preserve"><tspan font-family="Linux Libertine O, Libertinus Serif, Liberation Serif, DejaVu Serif, serif" font-weight="bold">[H] Host-owned spec</tspan></text>
+<text x="144.0" y="101.0" font-size="9.1" text-anchor="end" xml:space="preserve"><tspan font-family="Linux Libertine O, Libertinus Serif, Liberation Serif, DejaVu Serif, serif">(fixed; the agent</tspan></text>
+<text x="144.0" y="113.8" font-size="9.1" text-anchor="end" xml:space="preserve"><tspan font-family="Linux Libertine O, Libertinus Serif, Liberation Serif, DejaVu Serif, serif">cannot edit it)</tspan></text>
+<text x="158.0" y="20.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">pub struct Cols_pre { pub n: usize, pub line: Vec&lt;i64&gt; }</text>
+<text x="158.0" y="36.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">pub open spec fn valid_cols_pre(pre: &amp;Cols_pre) -&gt; bool {</text>
+<text x="158.0" y="52.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">    &amp;&amp;&amp; pre.line@.len() == pre.n as int</text>
+<text x="158.0" y="68.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">    &amp;&amp;&amp; pre.n as int &lt;= ROW_CAP_pre as int            // catalog cap, re-checked at load</text>
+<text x="158.0" y="84.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">    &amp;&amp;&amp; forall|i: int| 0 &lt;= i &lt; pre.n as int ==&gt;              // catalog value bounds, re-checked at load</text>
+<text x="158.0" y="100.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">            pre.line@[i] as int &gt;= -8191 &amp;&amp; pre.line@[i] as int &lt;= 8191</text>
+<text x="158.0" y="116.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">}</text>
+<text x="158.0" y="132.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">pub open spec fn sum_total(pre: &amp;Cols_pre, i0: int) -&gt; int   // the SQL, as a fold</text>
+<text x="158.0" y="148.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">    decreases pre.n as int - i0</text>
+<text x="158.0" y="164.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">{ if i0 &lt; 0 || i0 &gt;= pre.n as int { 0int }</text>
+<text x="158.0" y="180.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">  else { (if row_hit(pre, i0) { sum_total_val(pre, i0) } else { 0int }) + sum_total(pre, i0 + 1) } }</text>
+<rect x="152.0" y="198.0" width="544.0" height="24.0" fill="#cfcfcf" stroke="#000" stroke-width="0.8"/>
+<text x="144.0" y="201.7" font-size="11.2" text-anchor="end" xml:space="preserve"><tspan font-family="Linux Libertine O, Libertinus Serif, Liberation Serif, DejaVu Serif, serif" font-weight="bold">[T] Trusted host lemmas</tspan></text>
+<text x="144.0" y="215.0" font-size="9.1" text-anchor="end" xml:space="preserve"><tspan font-family="Linux Libertine O, Libertinus Serif, Liberation Serif, DejaVu Serif, serif">(fixed menu;</tspan></text>
+<text x="144.0" y="227.8" font-size="9.1" text-anchor="end" xml:space="preserve"><tspan font-family="Linux Libertine O, Libertinus Serif, Liberation Serif, DejaVu Serif, serif">none for this query)</tspan></text>
+<text x="158.0" y="214.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">// HOST_LEMMAS_START  ...  // HOST_LEMMAS_END</text>
+<rect x="152.0" y="232.0" width="544.0" height="40.0" fill="#ffffff" stroke="#000" stroke-width="2.4"/>
+<text x="144.0" y="243.7" font-size="11.2" text-anchor="end" xml:space="preserve"><tspan font-family="Linux Libertine O, Libertinus Serif, Liberation Serif, DejaVu Serif, serif" font-weight="bold">[A] Agent helpers</tspan></text>
+<text x="144.0" y="257.0" font-size="9.1" text-anchor="end" xml:space="preserve"><tspan font-family="Linux Libertine O, Libertinus Serif, Liberation Serif, DejaVu Serif, serif">(proof fn / spec fn</tspan></text>
+<text x="144.0" y="269.8" font-size="9.1" text-anchor="end" xml:space="preserve"><tspan font-family="Linux Libertine O, Libertinus Serif, Liberation Serif, DejaVu Serif, serif">only; empty here)</tspan></text>
+<text x="158.0" y="248.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">// AGENT_HELPERS_START</text>
+<text x="158.0" y="264.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">// AGENT_HELPERS_END</text>
+<rect x="152.0" y="282.0" width="544.0" height="120.0" fill="#e6e6e6" stroke="#000" stroke-width="0.8"/>
+<text x="144.0" y="333.7" font-size="11.2" text-anchor="end" xml:space="preserve"><tspan font-family="Linux Libertine O, Libertinus Serif, Liberation Serif, DejaVu Serif, serif" font-weight="bold">[H] Host-owned signature</tspan></text>
+<text x="144.0" y="347.0" font-size="9.1" text-anchor="end" xml:space="preserve"><tspan font-family="Linux Libertine O, Libertinus Serif, Liberation Serif, DejaVu Serif, serif">(the contract)</tspan></text>
+<text x="158.0" y="298.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">pub fn run_query(pre: &amp;Cols_pre) -&gt; (res: Vec&lt;OutRow&gt;)</text>
+<text x="158.0" y="314.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">    requires valid_cols_pre(pre),</text>
+<text x="158.0" y="330.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">    ensures res@.len() == 1,                  // shown split; emitted as one conjunction</text>
+<text x="158.0" y="346.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">        (exists|i0: int| row_hit(pre, i0)) ==&gt; res@[0].total is Some</text>
+<text x="158.0" y="362.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">            &amp;&amp; res@[0].total-&gt;Some_0 as int == sum_total(pre, 0),</text>
+<text x="158.0" y="378.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">        !(exists|i0: int| row_hit(pre, i0)) ==&gt; res@[0].total is None,</text>
+<text x="158.0" y="394.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">{</text>
+<rect x="152.0" y="412.0" width="544.0" height="312.0" fill="#ffffff" stroke="#000" stroke-width="2.4"/>
+<text x="144.0" y="559.7" font-size="11.2" text-anchor="end" xml:space="preserve"><tspan font-family="Linux Libertine O, Libertinus Serif, Liberation Serif, DejaVu Serif, serif" font-weight="bold">[A] Agent-owned body</tspan></text>
+<text x="144.0" y="573.0" font-size="9.1" text-anchor="end" xml:space="preserve"><tspan font-family="Linux Libertine O, Libertinus Serif, Liberation Serif, DejaVu Serif, serif">(Haiku 4.5; Verus:</tspan></text>
+<text x="144.0" y="585.8" font-size="9.1" text-anchor="end" xml:space="preserve"><tspan font-family="Linux Libertine O, Libertinus Serif, Liberation Serif, DejaVu Serif, serif">5 verified, 0 errors)</tspan></text>
+<text x="158.0" y="428.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">// AGENT_EDIT_START</text>
+<text x="158.0" y="444.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">    let mut acc: i128 = 0;  let mut any: bool = false;  let mut i: usize = pre.n;</text>
+<text x="158.0" y="460.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">    while i &gt; 0</text>
+<text x="158.0" y="476.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">        invariant</text>
+<text x="158.0" y="492.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">            i &lt;= pre.n, valid_cols_pre(pre),</text>
+<text x="158.0" y="508.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">            acc as int == sum_total(pre, i as int),</text>
+<text x="158.0" y="524.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">            -((pre.n - i) as int) * 0x8000_0000_0000_0000int &lt;= acc as int,</text>
+<text x="158.0" y="540.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">            acc as int &lt;= ((pre.n - i) as int) * 0x8000_0000_0000_0000int,</text>
+<text x="158.0" y="556.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">            any &lt;==&gt; exists|i0: int| i as int &lt;= i0 &amp;&amp; row_hit(pre, i0),</text>
+<text x="158.0" y="572.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">        decreases i,</text>
+<text x="158.0" y="588.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">    {</text>
+<text x="158.0" y="604.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">        i -= 1;  let line = pre.line[i];</text>
+<text x="158.0" y="620.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">        proof { /* three asserts elided */ reveal_with_fuel(sum_total, 2); }</text>
+<text x="158.0" y="636.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">        if line &gt; 5 { acc = acc + (line as i128);  any = true; }</text>
+<text x="158.0" y="652.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">    }</text>
+<text x="158.0" y="668.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">    let mut res: Vec&lt;OutRow&gt; = Vec::new();</text>
+<text x="158.0" y="684.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">    res.push(OutRow { total: if any { Some(acc) } else { None } });  res</text>
+<text x="158.0" y="700.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">// AGENT_EDIT_END</text>
+<text x="158.0" y="716.0" font-size="9.0" font-family="Liberation Mono, DejaVu Sans Mono, monospace" xml:space="preserve">}</text>
+</svg>

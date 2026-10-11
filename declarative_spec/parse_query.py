@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field, replace
+from decimal import Decimal
+from fractions import Fraction
 
 import sqlglot
 from sqlglot import exp
 
+from declarative_spec.fold_group_join import fold_group_join
+from declarative_spec.inline_cte import inline_plain_ctes
 from declarative_spec.literals import string_token
+from declarative_spec import sql_switches
 from declarative_spec.parse import DeclarativeUnsupported
 from declarative_spec.parse_exprs import (
     arith_text,
@@ -19,7 +24,7 @@ from declarative_spec.parse_exprs import (
     fold_number,
 )
 from declarative_spec.schema_types import rust_ident
-from declarative_spec.surface import Agg, Join, Output, OrderKey, Query
+from declarative_spec.surface import Agg, CorrCount, Join, Output, OrderKey, Query
 
 _DATE_LITERAL = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
 
@@ -57,7 +62,15 @@ def _parse_expression(expression: exp.Expression) -> Query:
         left.set_query = right
         return left
     if isinstance(expression, exp.Select):
-        return _parse_select(_fold_anti_joins(_fold_derived_agg_joins(expression)))
+        counted = _fold_left_count_groups(expression) if sql_switches.left_join_count() else None
+        if counted is not None:
+            return counted
+        unique_needed: list[tuple[str, str]] = []
+        if sql_switches.cte_reuse():
+            expression, unique_needed = fold_group_join(inline_plain_ctes(expression))
+        query = _parse_select(_fold_anti_joins(_fold_derived_agg_joins(expression)))
+        query.unique_needed = unique_needed
+        return query
     raise DeclarativeUnsupported("unsupported top-level SQL shape")
 
 
@@ -171,6 +184,118 @@ def _derived_join_condition(select: exp.Select, join: exp.Join) -> exp.Expressio
     if cond is not None:
         scalar.set("where", exp.Where(this=cond))
     return exp.EQ(this=value_pairs[0][0].copy(), expression=exp.Subquery(this=scalar))
+
+
+def _fold_left_count_groups(select: exp.Select) -> Query | None:
+    """``SELECT n, COUNT(*) FROM (SELECT k, COUNT(r.c) FROM L LEFT JOIN R ON r.fk = L.k [AND pred] GROUP BY k) d(k, n) GROUP BY n``.
+
+    Read as a grouping of the rows of ``L`` by a ``CorrCount`` key (see ``surface.CorrCount``). Any other shape returns
+    None and keeps its refusal; a shape that matches but breaks a rule below raises."""
+    from_clause = select.args.get("from_")
+    if from_clause is None or not isinstance(from_clause.this, exp.Subquery) or not from_clause.this.alias:
+        return None
+    if any(select.args.get(k) for k in ("joins", "where", "having", "with_", "distinct", "qualify")):
+        return None
+    source = from_clause.this
+    inner = source.this
+    if not isinstance(inner, exp.Select) or not inner.args.get("group") or len(inner.args.get("joins") or []) != 1:
+        return None
+    join = inner.args["joins"][0]
+    inner_from = inner.args.get("from_")
+    if (join.side or "").upper() != "LEFT" or not isinstance(join.this, exp.Table) or join.args.get("on") is None:
+        return None
+    if inner_from is None or not isinstance(inner_from.this, exp.Table):
+        return None
+    if any(inner.args.get(k) for k in ("where", "having", "order", "limit", "offset", "distinct", "with_", "qualify")):
+        return None
+    group = inner.args["group"].expressions
+    outer_group = select.args["group"].expressions if select.args.get("group") else []
+    if len(group) != 1 or len(outer_group) != 1 or not isinstance(group[0], exp.Column) or not isinstance(outer_group[0], exp.Column):
+        return None
+
+    # the derived table: one key column and one COUNT(column), named by the alias's column list or by the items
+    items = inner.expressions
+    listed = [c.name for c in (source.args["alias"].args.get("columns") or [])]
+    if len(items) != 2 or (listed and len(listed) != 2):
+        return None
+    names = listed or [i.alias if isinstance(i, exp.Alias) else getattr(i, "name", "") for i in items]
+    key_at = count_at = None
+    for pos, item in enumerate(items):
+        body = _unwrap_alias(item)
+        if isinstance(body, exp.Column):
+            key_at = pos
+        elif isinstance(body, exp.Count):
+            count_at = pos
+    if key_at is None or count_at is None or not all(names):
+        return None
+    count = _unwrap_alias(items[count_at])
+    if isinstance(count.this, (exp.Star, exp.Distinct)) or not isinstance(count.this, exp.Column):
+        raise DeclarativeUnsupported(
+            "a count over a LEFT JOIN other than COUNT(<right table column>): COUNT(*) counts the unmatched row"
+        )
+    key = _unwrap_alias(items[key_at])
+    if key.name.casefold() != group[0].name.casefold() or key.table.casefold() != group[0].table.casefold():
+        raise DeclarativeUnsupported("the derived table's key column is not its GROUP BY column")
+    count_name, key_name = names[count_at], names[key_at]
+    if outer_group[0].name.casefold() != count_name.casefold() or outer_group[0].table.casefold() not in ("", source.alias.casefold()):
+        raise DeclarativeUnsupported("the outer GROUP BY of a count over a LEFT JOIN must be that count")
+
+    parts: list[exp.Expression] = []
+
+    def split(node: exp.Expression) -> None:
+        while isinstance(node, exp.Paren):
+            node = node.this
+        if isinstance(node, exp.And):
+            split(node.left)
+            split(node.right)
+        else:
+            parts.append(node)
+
+    split(join.args["on"])
+    eqs = [p for p in parts if isinstance(p, exp.EQ) and isinstance(p.left, exp.Column) and isinstance(p.right, exp.Column)]
+    rest = [p for p in parts if p not in eqs]
+    if len(eqs) != 1:
+        raise DeclarativeUnsupported("a LEFT JOIN with a count needs exactly one column equality in its ON")
+    if any(p.find(exp.Or) or p.find(exp.Subquery) or p.find(exp.AggFunc) for p in rest):
+        raise DeclarativeUnsupported("a LEFT JOIN ON predicate with OR, a subquery or an aggregate")
+    pred: exp.Expression | None = None
+    for p in rest:
+        pred = p.copy() if pred is None else exp.And(this=pred, expression=p.copy())
+
+    # the outer query: groups the rows of L by the count; only COUNT(*) and the count itself are selected
+    for item in select.expressions:
+        body = _unwrap_alias(item)
+        if isinstance(body, exp.Count) and isinstance(body.this, exp.Star):
+            continue
+        if isinstance(body, exp.Column) and body.name.casefold() == count_name.casefold():
+            continue
+        raise DeclarativeUnsupported("a select item over a count of counts other than the count and COUNT(*)")
+    outer = select.copy()
+    left = inner_from.this.copy()
+    outer.set("from_", exp.From(this=left))
+    for col in outer.find_all(exp.Column):
+        if col.table.casefold() == source.alias.casefold():
+            col.set("table", None)
+    if any(c.name.casefold() == key_name.casefold() for c in outer.find_all(exp.Column)):
+        raise DeclarativeUnsupported("the outer query reads the derived table's key column")
+    query = _parse_select(outer)
+    token = "corr_count_0"
+    query.group_exprs[query.group_columns[0]] = token
+    query.corr_counts.append(
+        CorrCount(
+            token=token,
+            right=join.this.name,
+            right_alias=join.this.alias or None,
+            refs=(
+                ".".join(p for p in (eqs[0].left.table, eqs[0].left.name) if p),
+                ".".join(p for p in (eqs[0].right.table, eqs[0].right.name) if p),
+            ),
+            group_ref=".".join(p for p in (group[0].table, group[0].name) if p),
+            count_ref=".".join(p for p in (count.this.table, count.this.name) if p),
+            pred_sql=pred.sql() if pred is not None else "",
+        )
+    )
+    return query
 
 
 def _fold_anti_joins(select: exp.Select) -> exp.Select:
@@ -335,7 +460,26 @@ def _is_aggregate(node: exp.Expression) -> bool:
     inner = _unwrap_alias(node)
     if isinstance(inner, exp.Filter):
         inner = inner.this
-    return isinstance(inner, (exp.Sum, exp.Count, exp.Avg, exp.Min, exp.Max)) or _is_ratio(inner)
+    return (
+        isinstance(inner, (exp.Sum, exp.Count, exp.Avg, exp.Min, exp.Max))
+        or _is_ratio(inner)
+        or (sql_switches.agg_times_constant() and _avg_times_constant(inner) is not None)
+    )
+
+
+def _avg_times_constant(node: exp.Expression) -> tuple[exp.Avg, tuple[int, int]] | None:
+    """``c * AVG(x)`` or ``AVG(x) * c`` for a plain number literal c (the rewrite writes a float one as ``0.2e0``)."""
+    if not isinstance(node, exp.Mul):
+        return None
+    for avg, const in ((node.this, node.expression), (node.expression, node.this)):
+        avg, const = _unparen_node(avg), _unparen_node(const)
+        neg = isinstance(const, exp.Neg)
+        lit = _unparen_node(const.this) if neg else const
+        if isinstance(avg, exp.Avg) and isinstance(lit, exp.Literal) and lit.is_number:
+            value = Fraction(Decimal(str(lit.this)))
+            value = -value if neg else value
+            return avg, (value.numerator, value.denominator)
+    return None
 
 
 def _is_ratio(node: exp.Expression) -> bool:
@@ -352,6 +496,8 @@ class _Scope:
     tables: list[str] = field(default_factory=list)
     aliases: dict[str, str] = field(default_factory=dict)
     cte_names: set[str] = field(default_factory=set)
+    # A WITH name's definition, visible in every nested query: a CTE is a derived table substituted at each use.
+    cte_defs: dict[str, Query] = field(default_factory=dict)
     # Hidden operand aggregates of the ratios in the SELECT list, appended to the query after its select order is set.
     pending: list[Agg] = field(default_factory=list)
 
@@ -417,6 +563,7 @@ def _parse_select(expression: exp.Select, *, outer_scope: _Scope | None = None) 
         scope.tables = list(outer_scope.tables)
         scope.aliases = dict(outer_scope.aliases)
         scope.cte_names = set(outer_scope.cte_names)
+        scope.cte_defs = dict(outer_scope.cte_defs)
     counters = _Counters()
 
     with_clause = expression.args.get("with_")
@@ -428,6 +575,7 @@ def _parse_select(expression: exp.Select, *, outer_scope: _Scope | None = None) 
             inner = _parse_cte_body(cte_node.this, scope)
             query.ctes.append((cte_name, inner))
             scope.cte_names.add(cte_name.lower())
+            scope.cte_defs[cte_name.lower()] = inner
 
     query.distinct = bool(expression.args.get("distinct"))
 
@@ -446,9 +594,12 @@ def _parse_select(expression: exp.Select, *, outer_scope: _Scope | None = None) 
     else:
         table_name, alias = _parse_table_ref(from_this)
         if table_name.lower() in scope.cte_names:
-            cte_q = next((q for n, q in query.ctes if n.lower() == table_name.lower()), None)
-            if cte_q is None:
-                raise DeclarativeUnsupported("a WITH name used inside a subquery")
+            if sql_switches.cte_reuse():
+                cte_q = scope.cte_defs[table_name.lower()]
+            else:
+                cte_q = next((q for n, q in query.ctes if n.lower() == table_name.lower()), None)
+                if cte_q is None:
+                    raise DeclarativeUnsupported("a WITH name used inside a subquery")
             query.derived.append((table_name, cte_q))
         query.tables.append(table_name)
         scope.tables.append(table_name)
@@ -643,6 +794,9 @@ def _parse_join_target(
         alias = node.alias or "derived"
         return alias, alias, (alias, inner)
     table, alias = _parse_table_ref(node)
+    if sql_switches.cte_reuse() and table.lower() in scope.cte_names:
+        # A WITH name is a derived table substituted at each use; the table keeps the WITH name unless aliased.
+        return table, alias, (alias or table, scope.cte_defs[table.lower()])
     return table, alias, None
 
 
@@ -760,6 +914,17 @@ def _parse_ratio(item: exp.Expression, scope: _Scope) -> tuple[Agg, list[Agg]]:
         raise DeclarativeUnsupported("SELECT expression needs an alias")
     top = _unwrap_alias(item)
     num, k = _ratio_operand(top.this.expressions[0], scope, f"{alias}__num")
+    den_node = _unparen_node(top.expression.expressions[0])
+    if sql_switches.agg_times_constant() and isinstance(den_node, exp.Literal) and den_node.is_int:
+        const = int(den_node.this)
+        ratio = Agg(
+            kind="RATIO",
+            column=None,
+            alias=alias,
+            ratio=(num.alias, "", k, _dec_scale_marker(top.this), _dec_scale_marker(top.expression)),
+            ratio_den_const=const,
+        )
+        return ratio, [num]
     den, k_den = _ratio_operand(top.expression.expressions[0], scope, f"{alias}__den")
     if k_den != 1:
         raise DeclarativeUnsupported("a constant factor on the denominator of a division")
@@ -778,6 +943,11 @@ def _parse_agg(item: exp.Expression, scope: _Scope) -> Agg:
         ratio, operands = _parse_ratio(item, scope)
         scope.pending.extend(operands)
         return ratio
+    scaled_avg = _avg_times_constant(top) if sql_switches.agg_times_constant() else None
+    if scaled_avg is not None:
+        avg, factor = scaled_avg
+        bare = exp.Alias(this=avg, alias=item.alias) if isinstance(item, exp.Alias) else avg
+        return replace(_parse_agg(bare, scope), avg_factor=factor)
     if isinstance(top, exp.Filter):
         # AGG(x) FILTER (WHERE cond): the same aggregate over the rows where cond holds.
         where = top.expression
@@ -1037,6 +1207,12 @@ def _compile_side(node: exp.Expression, ctx: _BoolCtx) -> str:
     folded = _fold_int_literal(node)
     if folded is not None:
         return folded
+    if sql_switches.agg_times_constant() and ctx.having and isinstance(node, exp.Mul):
+        # An exact SUM / COUNT times a whole-number constant (the rewrite brings a comparison to one scale this way).
+        for agg_side, const_side in ((node.this, node.expression), (node.expression, node.this)):
+            agg_node, factor = _unparen_node(agg_side), _fold_int_literal(const_side)
+            if factor is not None and isinstance(agg_node, (exp.Sum, exp.Count)):
+                return f"({_compile_side(agg_node, ctx)} * ({factor}))"
     return _constant_or_arith_side(node, ctx)
 
 
@@ -1232,6 +1408,7 @@ def _same_agg(a: Agg, b: Agg) -> bool:
         and a.arith == b.arith
         and a.expr == b.expr
         and a.avg_scale == b.avg_scale
+        and a.avg_factor == b.avg_factor
         and a.filter_expr == b.filter_expr
         and (a.table is None or b.table is None or a.table.casefold() == b.table.casefold())
     )
