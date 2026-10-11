@@ -55,7 +55,6 @@ DEAD: dict[str, str] = {
     "AGENT_SUBMIT_ONLY_MEASURE": "parsed but no consumer",
     "AGENT_MCP_URL": "parsed but no consumer",
     "LEMMA_MCP_URL": "read nowhere",
-    "LEMMA_ZERO_COPY": "only recorded in arena_record, no reader",
     "LEMMA_FLOAT_ABS_EPS": "named only in a docstring",
     "LEMMA_SERIOUS": "read only by overnight_lemma.sh/.py; no effect in a container run",
 }
@@ -92,6 +91,7 @@ NOT_CONFIG: frozenset[str] = frozenset(
     LEMMA_SESSION_HOT_SYNTHETIC LEMMA_RUN_HOLDOUT_BENCH LEMMA_DUCKDB_H1_SMOKE LEMMA_DUCKDB_EXPORT_DIR LEMMA_DUCKDB_EXPORT_TABLES
     LEMMA_DUCKDB_PIN_TABLES LEMMA_E2E_JOBS LEMMA_E2E_FORCE_ALL LEMMA_DOCKER_NEWGRP LEMMA_LOCAL_AGENT_LOG LEMMA_PROVE_QUERY LEMMA_PROVE_LIMITS
     LEMMA_VERUS_DOCKER_IMAGE LEMMA_REPO LEMMA_SHUFFLE_FILTER_WORKERS
+    LEMMA_ZC_DIFF_SEEDS LEMMA_ZC_TEMP_DIR LEMMA_ZC_MEMORY_LIMIT LEMMA_ZC_MAX_LOAD LEMMA_ZC_MAX_OTHERS_CORES
     """.split()
 )
 
@@ -103,6 +103,7 @@ CHOICES: dict[str, tuple[Any, ...]] = {
     "parallel_vstd": ("off", "auto", "on"),
     "agent_data_mode": ("none", "stats", "full"),
     "claude_effort": ("none", "low", "medium", "high", "xhigh", "max"),
+    "cold_stream_mode": ("aggregate", "scalar"),
 }
 # Smallest allowed value of a numeric key.
 MINIMUM: dict[str, float] = {
