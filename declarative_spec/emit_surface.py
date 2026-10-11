@@ -7,12 +7,14 @@ It does not define the query as a walk that inserts into a map.
 
 from __future__ import annotations
 
+import contextvars
 import dataclasses
 
 import copy
 import re
 from dataclasses import dataclass, field
 
+import lemma_config
 from declarative_spec import sql_switches
 from declarative_spec.emit_date import with_civil_fns
 from declarative_spec.emit_in import apply_in_calls, in_subquery_calls
@@ -24,6 +26,9 @@ from declarative_spec.resolve import check_exact_integer_refs, flatten_derived, 
 from declarative_spec.schema_types import ColumnTypeInfo, SchemaModel, classify_sql_type, param_ident, rust_ident
 from declarative_spec.surface import Agg, OrderKey, Query
 from research_loop.table_assumptions import CatalogAssumptions, JoinCap
+
+# set while a query that went through the grouped-WITH fold is emitted: the only place MAX/MIN over WITH groups is exact
+_EXTREME_OK: contextvars.ContextVar[bool] = contextvars.ContextVar("extreme_ok", default=False)
 
 _IS_NULL = re.compile(
     r"(!?)is_null\(\s*([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\s*\)"
@@ -79,6 +84,7 @@ def _emit_with_string_tokens(
 ) -> str:
     """Verus source for ``sql``. Raises ``DeclarativeUnsupported`` when a clause is refused."""
     query = flatten_derived(parse_query(sql))
+    _EXTREME_OK.set(bool(query.unique_needed))
     if not query.tables:
         raise DeclarativeUnsupported("FROM")
     _require_unique_keys(query, catalog)
@@ -105,6 +111,13 @@ def _emit_with_string_tokens(
         merged.update(dict(chain.unique))
         facts = dataclasses.replace(facts, unique_aliases=tuple(merged.items())) if facts else _JoinBound(1, tuple(merged.items()))
     facts = _require_corr_unique(query, helpers, model, catalog, facts)
+    if query.unique_needed:
+        # the grouped-WITH fold is exact only if the key is unique in the data: state it in valid_cols (the loader checks it)
+        merged = dict(facts.unique_aliases) if facts else {}
+        for table, column in query.unique_needed:
+            slot = next(sl for sl in helpers.main if sl.table.casefold() == table.casefold())
+            merged[slot.alias] = (column,)
+        facts = dataclasses.replace(facts, unique_aliases=tuple(merged.items())) if facts else _JoinBound(1, tuple(merged.items()))
 
     structs = _structs(helpers.params, model, catalog)
     int_sum = any(a.kind == "SUM" and not a.float_out for a in helpers.aggs)
@@ -1268,6 +1281,8 @@ def _one_scalar(
         inner = query.derived[0][1]
         helpers = _emit_helpers(inner, f"{name}_", model)
         target = _match_inner_agg(outer_agg, helpers)
+        if outer_agg.kind.upper() in ("MAX", "MIN"):
+            _require_extreme_over_groups_exact(query, helpers, model)
         return _reduce_groups(name, outer_agg, target, helpers, outer_params)
     helpers = _emit_helpers(query, f"{name}_", model)
     if len(helpers.aggs) != 1 or helpers.key_ty is not None:
@@ -1281,6 +1296,19 @@ def _one_scalar(
 }}"""
     outer_call = f"{name}({_map_args(helpers.main, outer_params)})"
     return outer_call, helpers.source + "\n\n" + wrap
+
+
+def _require_extreme_over_groups_exact(query: Query, helpers: _Helpers, model: SchemaModel) -> None:
+    """MAX/MIN over the groups of a WITH name is stated only where it is exact: as the scalar of the folded grouped-WITH shape
+    (a joined group implies at least one group, so SQL's NULL for no groups never reaches the comparison), with no filter of its own
+    (it would be dropped) and over tables without nullable columns (an all-NULL SUM group is NULL in SQL, 0 here)."""
+    if not _EXTREME_OK.get():
+        raise DeclarativeUnsupported("MAX/MIN over the groups of a WITH name outside the grouped-WITH join shape (SQL gives NULL for no groups)")
+    if query.where_expr or query.having_expr or query.exists or query.in_subqueries or query.scalar_subqueries:
+        raise DeclarativeUnsupported("MAX/MIN over the groups of a WITH name with a filter of its own")
+    for slot in helpers.params:
+        if any(model.is_nullable(slot.table, col) for col in model.lookup_table(slot.table)[1]):
+            raise DeclarativeUnsupported("MAX/MIN over the groups of a WITH name over a table with nullable columns")
 
 
 def _match_inner_agg(outer: Agg, helpers: _Helpers) -> _AggFn:
@@ -2265,6 +2293,15 @@ def _consts(
         cap = _row_cap(catalog, slot.table)
         if cap is not None:
             lines.append(f"pub const ROW_CAP_{rust_ident(slot.table)}: usize = {cap};")
+    if lemma_config.get("zero_copy") or lemma_config.get("cold_stream"):  # WIP/parked pin path, lemma.toml [wip]
+        # The zero-copy assembler binds the spec to its schema model: the literals of the spec (scaled constants, caps) were computed from these declared types.
+        import json
+
+        types = {
+            model.original_table_names[t]: {model.original_column_names[(t, c)]: info.sql_type for c, info in cols.items()}
+            for t, cols in model.tables.items()
+        }
+        lines.append("// IN_TYPES: " + json.dumps(types, sort_keys=True))
     lines.extend(_float_mag_consts(params, model, catalog))
     return "\n".join(lines)
 

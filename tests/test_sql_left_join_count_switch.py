@@ -47,3 +47,18 @@ def test_a_plain_left_join_is_the_same_with_the_switch_on_or_off(monkeypatch: py
     except DeclarativeUnsupported as exc:
         on = str(exc)
     assert on == off
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # adversary: the LEFT table is aliased with the name of the right table; `r.g` is then a LEFT-table predicate
+        "SELECT n, COUNT(*) AS dist FROM (SELECT k, COUNT(x.c) FROM l r LEFT JOIN r x ON x.fk = k AND r.g > 1 GROUP BY k) AS d (k, n) GROUP BY n",
+        # a qualifier that is the right table's real name although the table is aliased
+        "SELECT n, COUNT(*) AS dist FROM (SELECT k, COUNT(x.c) FROM l LEFT JOIN r x ON x.fk = k AND r.w > 1 GROUP BY k) AS d (k, n) GROUP BY n",
+    ],
+)
+def test_a_qualifier_is_the_alias_when_there_is_one(sql: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LEMMA_LEFT_JOIN_COUNT", "1")
+    with pytest.raises(DeclarativeUnsupported):
+        emit_declarative_spec(sql, SCHEMA, _catalog())

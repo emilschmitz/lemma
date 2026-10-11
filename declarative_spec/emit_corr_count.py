@@ -24,8 +24,11 @@ def _sides(cc: CorrCount, left: str, left_alias: str, model: SchemaModel) -> tup
     right = model.lookup_table(cc.right)[0]
     if model.lookup_table(left)[0].casefold() == right.casefold():
         raise DeclarativeUnsupported("a LEFT JOIN count of a table with itself")
-    right_names = {right.casefold(), (cc.right_alias or "").casefold()}
-    left_names = {left.casefold(), left_alias.casefold()}
+    # A qualifier is the alias when the table has one (it hides the table name), else the table name; the two scopes must differ.
+    right_names = {(cc.right_alias or right).casefold()}
+    left_names = {(left_alias or left).casefold()}
+    if right_names & left_names:
+        raise DeclarativeUnsupported("a LEFT JOIN count whose two tables share a qualifier")
 
     def table_of(ref: str) -> tuple[str, str]:
         qual, _, col = ref.rpartition(".")
@@ -72,7 +75,7 @@ def corr_inner(cc: CorrCount, left: str, left_alias: str, model: SchemaModel) ->
     if cc.pred_sql:
         pred = sqlglot.parse_one(cc.pred_sql, into=exp.Condition)
         for col in pred.find_all(exp.Column):
-            if col.table and col.table.casefold() not in {right.casefold(), (cc.right_alias or "").casefold()}:
+            if col.table and col.table.casefold() not in {(cc.right_alias or right).casefold()}:
                 raise DeclarativeUnsupported("a LEFT JOIN ON predicate reads a column outside the right table")
             if col.name.casefold() not in right_cols:
                 raise DeclarativeUnsupported(f"a LEFT JOIN ON predicate reads {col.name!r}, which is not a column of {right}")

@@ -136,6 +136,8 @@ def fold_group_join(select: exp.Select) -> tuple[exp.Select, list[tuple[str, str
     if len(key_pairs) != 1:
         raise DeclarativeUnsupported("a grouped WITH name needs exactly one equality of its key to a table column")
     base_alias = base_tbl.alias or base_tbl.name
+    if base_alias.lower() == inner_alias.lower():
+        raise DeclarativeUnsupported("a grouped WITH name joined to a table that shares its name or alias with the WITH body's table")
 
     def qualified_base(node: exp.Expression) -> exp.Expression:
         node = node.copy()
