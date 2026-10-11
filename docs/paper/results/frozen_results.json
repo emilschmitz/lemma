@@ -1,0 +1,333 @@
+{
+  "sha": "75f4303",
+  "settings": {
+    "agent": "Sonnet 5.5",
+    "limit_min": 25,
+    "duckdb": "1.5.4",
+    "threads": 8,
+    "memory_limit": "8GB",
+    "rounds": "median of 5 interleaved rounds",
+    "join_chain": 1,
+    "dict_strings": true
+  },
+  "median_speedup": {
+    "SSB": 2.04,
+    "TPC-H": 1.29,
+    "own solution": 2.44,
+    "same shape": 1.17,
+    "none": 1.87,
+    "all": 1.87
+  },
+  "queries": [
+    {
+      "benchmark": "SSB",
+      "query": "SSB Q3.1",
+      "tables": [
+        "lineorder",
+        "date",
+        "supplier",
+        "customer"
+      ],
+      "proof": "76 verified, 0 errors",
+      "status": "SUCCESS",
+      "ours_ms": 6.884,
+      "duck_ms": 22.746,
+      "speedup": 3.3,
+      "example": "own solution",
+      "inconclusive_pm10": false
+    },
+    {
+      "benchmark": "SSB",
+      "query": "SSB Q3.4",
+      "tables": [
+        "lineorder",
+        "date",
+        "supplier",
+        "customer"
+      ],
+      "proof": "75 verified, 0 errors",
+      "status": "SUCCESS",
+      "ours_ms": 4.901,
+      "duck_ms": 12.622,
+      "speedup": 2.58,
+      "example": "none",
+      "inconclusive_pm10": false
+    },
+    {
+      "benchmark": "SSB",
+      "query": "SSB Q2.3",
+      "tables": [
+        "lineorder",
+        "date",
+        "part",
+        "supplier"
+      ],
+      "proof": "57 verified, 0 errors",
+      "status": "SUCCESS",
+      "ours_ms": 5.704,
+      "duck_ms": 14.274,
+      "speedup": 2.5,
+      "example": "none",
+      "inconclusive_pm10": false
+    },
+    {
+      "benchmark": "SSB",
+      "query": "SSB Q4.2",
+      "tables": [
+        "lineorder",
+        "date",
+        "part",
+        "supplier",
+        "customer"
+      ],
+      "proof": "95 verified, 0 errors",
+      "status": "SUCCESS",
+      "ours_ms": 9.858,
+      "duck_ms": 24.227,
+      "speedup": 2.46,
+      "example": "own solution",
+      "inconclusive_pm10": false
+    },
+    {
+      "benchmark": "SSB",
+      "query": "SSB Q4.1",
+      "tables": [
+        "lineorder",
+        "date",
+        "part",
+        "supplier",
+        "customer"
+      ],
+      "proof": "85 verified, 0 errors",
+      "status": "SUCCESS",
+      "ours_ms": 10.665,
+      "duck_ms": 25.858,
+      "speedup": 2.42,
+      "example": "own solution",
+      "inconclusive_pm10": false
+    },
+    {
+      "benchmark": "SSB",
+      "query": "SSB Q2.1",
+      "tables": [
+        "lineorder",
+        "date",
+        "part",
+        "supplier"
+      ],
+      "proof": "89 verified, 0 errors",
+      "status": "SUCCESS",
+      "ours_ms": 6.413,
+      "duck_ms": 14.059,
+      "speedup": 2.19,
+      "example": "none",
+      "inconclusive_pm10": false
+    },
+    {
+      "benchmark": "SSB",
+      "query": "SSB Q3.2",
+      "tables": [
+        "lineorder",
+        "date",
+        "supplier",
+        "customer"
+      ],
+      "proof": "76 verified, 0 errors",
+      "status": "SUCCESS",
+      "ours_ms": 9.331,
+      "duck_ms": 17.537,
+      "speedup": 1.88,
+      "example": "none",
+      "inconclusive_pm10": false
+    },
+    {
+      "benchmark": "SSB",
+      "query": "SSB Q3.3",
+      "tables": [
+        "lineorder",
+        "date",
+        "supplier",
+        "customer"
+      ],
+      "proof": "76 verified, 0 errors",
+      "status": "SUCCESS",
+      "ours_ms": 8.998,
+      "duck_ms": 16.836,
+      "speedup": 1.87,
+      "example": "none",
+      "inconclusive_pm10": false
+    },
+    {
+      "benchmark": "SSB",
+      "query": "SSB Q1.3",
+      "tables": [
+        "lineorder",
+        "date"
+      ],
+      "proof": "38 verified, 0 errors",
+      "status": "SUCCESS",
+      "ours_ms": 3.07,
+      "duck_ms": 5.444,
+      "speedup": 1.77,
+      "example": "none",
+      "inconclusive_pm10": false
+    },
+    {
+      "benchmark": "SSB",
+      "query": "SSB Q1.1",
+      "tables": [
+        "lineorder",
+        "date"
+      ],
+      "proof": "31 verified, 0 errors",
+      "status": "SUCCESS",
+      "ours_ms": 6.734,
+      "duck_ms": 8.765,
+      "speedup": 1.3,
+      "example": "none",
+      "inconclusive_pm10": false
+    },
+    {
+      "benchmark": "SSB",
+      "query": "SSB Q1.2",
+      "tables": [
+        "lineorder",
+        "date"
+      ],
+      "proof": "31 verified, 0 errors",
+      "status": "SUCCESS",
+      "ours_ms": 4.846,
+      "duck_ms": 5.791,
+      "speedup": 1.2,
+      "example": "none",
+      "inconclusive_pm10": false
+    },
+    {
+      "benchmark": "SSB",
+      "query": "SSB Q4.3",
+      "tables": [
+        "lineorder",
+        "date",
+        "part",
+        "supplier",
+        "customer"
+      ],
+      "proof": "98 verified, 0 errors",
+      "status": "SUCCESS",
+      "ours_ms": 13.543,
+      "duck_ms": 15.774,
+      "speedup": 1.16,
+      "example": "none",
+      "inconclusive_pm10": false
+    },
+    {
+      "benchmark": "TPC-H",
+      "query": "TPC-H Q1",
+      "tables": [
+        "lineitem"
+      ],
+      "proof": "111 verified, 0 errors",
+      "status": "SUCCESS",
+      "ours_ms": 7.687,
+      "duck_ms": 25.179,
+      "speedup": 3.28,
+      "example": "own solution",
+      "inconclusive_pm10": false
+    },
+    {
+      "benchmark": "TPC-H",
+      "query": "TPC-H Q18",
+      "tables": [
+        "lineitem",
+        "orders",
+        "customer"
+      ],
+      "proof": "75 verified, 0 errors",
+      "status": "SUCCESS",
+      "ours_ms": 22.039,
+      "duck_ms": 64.956,
+      "speedup": 2.95,
+      "example": "none",
+      "inconclusive_pm10": false
+    },
+    {
+      "benchmark": "TPC-H",
+      "query": "TPC-H Q14",
+      "tables": [
+        "lineitem",
+        "part"
+      ],
+      "proof": "36 verified, 0 errors",
+      "status": "SUCCESS",
+      "ours_ms": 10.642,
+      "duck_ms": 15.731,
+      "speedup": 1.48,
+      "example": "own solution",
+      "inconclusive_pm10": false
+    },
+    {
+      "benchmark": "TPC-H",
+      "query": "TPC-H Q9",
+      "tables": [
+        "lineitem",
+        "orders",
+        "part",
+        "partsupp",
+        "supplier",
+        "nation"
+      ],
+      "proof": "109 verified, 0 errors",
+      "status": "SUCCESS",
+      "ours_ms": 54.688,
+      "duck_ms": 70.739,
+      "speedup": 1.29,
+      "example": "none",
+      "inconclusive_pm10": false
+    },
+    {
+      "benchmark": "TPC-H",
+      "query": "TPC-H Q12",
+      "tables": [
+        "lineitem",
+        "orders"
+      ],
+      "proof": "38 verified, 0 errors",
+      "status": "SUCCESS",
+      "ours_ms": 15.171,
+      "duck_ms": 18.076,
+      "speedup": 1.19,
+      "example": "own solution",
+      "inconclusive_pm10": false
+    },
+    {
+      "benchmark": "TPC-H",
+      "query": "TPC-H Q6",
+      "tables": [
+        "lineitem"
+      ],
+      "proof": "21 verified, 0 errors",
+      "status": "SUCCESS",
+      "ours_ms": 6.143,
+      "duck_ms": 7.27,
+      "speedup": 1.18,
+      "example": "same shape",
+      "inconclusive_pm10": false
+    },
+    {
+      "benchmark": "TPC-H",
+      "query": "TPC-H Q3",
+      "tables": [
+        "lineitem",
+        "orders",
+        "customer"
+      ],
+      "proof": "70 verified, 0 errors",
+      "status": "SUCCESS",
+      "ours_ms": 17.428,
+      "duck_ms": 20.228,
+      "speedup": 1.16,
+      "example": "same shape",
+      "inconclusive_pm10": false
+    }
+  ]
+}

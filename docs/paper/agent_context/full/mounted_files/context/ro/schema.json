@@ -1,0 +1,21 @@
+{
+  "lineorder": {
+    "lo_partkey": "int",
+    "lo_suppkey": "int",
+    "lo_orderdate": "int",
+    "lo_revenue": "int"
+  },
+  "date": {
+    "d_datekey": "int",
+    "d_year": "int"
+  },
+  "part": {
+    "p_partkey": "int",
+    "p_category": "string",
+    "p_brand1": "string"
+  },
+  "supplier": {
+    "s_suppkey": "int",
+    "s_region": "string"
+  }
+}
