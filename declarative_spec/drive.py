@@ -34,6 +34,14 @@ OFFICIAL_KEYS = (
 )
 
 
+
+def _replace_text(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` by rename. The agent container runs as root, so files it wrote in the workspace are
+    root-owned; the host cannot open them for writing, but it can replace them in its own directory."""
+    tmp = path.with_name(f".{path.name}.host-{os.getpid()}")
+    tmp.write_text(text)
+    os.replace(tmp, path)
+
 def official_record(metrics: dict) -> dict | None:
     """The official interleaved measurement of one host run (per-round numbers, medians, speedup of medians), or None if there was none."""
     if not metrics.get("official_rounds"):
@@ -214,7 +222,7 @@ def _prepare_restart(workspace: Path, agent_path: Path, prev_source: str | None,
     """
     previous = workspace / "context" / "ro" / "previous_attempt.rs"
     if prev_source is not None:
-        previous.write_text(prev_source)
+        _replace_text(previous, prev_source)
     try:
         state, best = best_so_far.restore_best(workspace, agent_path)
     except (ValueError, OSError) as exc:
@@ -334,11 +342,11 @@ def run_declarative_optimization_loop(
         if data_profile:
             (spec_path.parent / "data_profile.md").write_text(data_profile)
         if iteration == 1 or not agent_path.is_file():
-            agent_path.write_text(spec)
+            _replace_text(agent_path, spec)
         restart_note = ""
         if host_note:
             # A continuation after a success: the base is the best body that beat the bar (its source), not the best by Verus tally.
-            agent_path.write_text(best_source[0])
+            _replace_text(agent_path, best_source[0])
             restart_note = host_note
             iter_record["continuation"] = host_note
         elif iteration > 1:

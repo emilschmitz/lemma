@@ -278,3 +278,21 @@ def test_none_mode_below_bar_feedback_has_no_strategy_advice(monkeypatch) -> Non
 def test_speed_advice_is_kept_outside_none_mode() -> None:
     from declarative_spec import pipeline
     assert "dense" in pipeline._SPEED_ADVICE and "telescope" in pipeline.PARALLEL_HINT_PRINCIPLES
+
+
+def test_host_replaces_a_file_it_cannot_open_for_writing(tmp_path) -> None:
+    import os, stat
+    from declarative_spec.drive import _replace_text
+    f = tmp_path / "runquery_agent.rs"
+    f.write_text("old")
+    f.chmod(stat.S_IRUSR)  # like a root-owned file written by the container: not writable by the host
+    _replace_text(f, "best body")
+    assert f.read_text() == "best body"
+    assert not any(p.name.startswith(".runquery_agent.rs.host-") for p in tmp_path.iterdir())
+
+
+def test_replace_text_creates_a_missing_file(tmp_path) -> None:
+    from declarative_spec.drive import _replace_text
+    f = tmp_path / "new.rs"
+    _replace_text(f, "x")
+    assert f.read_text() == "x"
