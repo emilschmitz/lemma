@@ -21,7 +21,7 @@ lemma.toml  <  environment variable LEMMA_<KEY>  <  explicit CLI flag
 | Section | Keys |
 | --- | --- |
 | `[run]` | `spec_style menu agent_model trusted_set assumption_package speed_bar_mult max_iterations string_encoding join_chain examples narrow_cells parallel_vstd` |
-| `[agent]` | `agent_timeout_sec agent_submit_ends_session agent_data_mode agent_resource_exhausted_retries claude_effort claude_thinking_tokens claude_tool_search mcp_iterate_rows` |
+| `[agent]` | `agent_timeout_sec max_budget_usd agent_submit_ends_session agent_data_mode agent_resource_exhausted_retries claude_effort claude_thinking_tokens claude_tool_search mcp_iterate_rows` |
 | `[prover]` | `verus_rlimit verus_timeout_sec run_timeout_sec target_cpu dense_slot_budget` |
 | `[measure]` | `official_rounds official_duck_reps duck_memory_limit duck_threads` |
 | `[data]` | `duckdb_path data_profile` |
@@ -35,7 +35,7 @@ Meaning, allowed values and defaults are in the file. `menu` selects a profile (
 
 | Setting | Was | Now |
 | --- | --- | --- |
-| `agent_timeout_sec` | 600 (config.env, code, AGENTS.md), 750 (batch) | 750 (2 x 750 s = 25 min per attempt) |
+| `agent_timeout_sec` | 600 (config.env, code, AGENTS.md), 750 (batch) | 900 (2 x 900 s = 30 min per query) |
 | `max_iterations` | 1/4 (`MAX_ITERATIONS` in overnight chains), 3 (loop default), 2 (launcher flag) | 2 |
 | Verus wall | `VERUS_VERIFY_TIMEOUT_SEC` 120 (imperative) vs `LEMMA_VERUS_TIMEOUT_SEC` 300 | `verus_timeout_sec` 300; the MCP harness wait is derived from it (`VERUS_VERIFY_TIMEOUT_SEC` is its alias) |
 | harness timeout precedence | file beat environment for `COMPILE_TIMEOUT_SEC`/`VERUS_VERIFY_TIMEOUT_SEC` | environment beats file, like everything else |
@@ -69,6 +69,7 @@ Every run value the prompt states (DuckDB threads and memory limit, iterate cap,
 ## Speed target and further sessions
 
 * `speed_target` (float >= 1.0, default 10.0): the prompt (section "Target speedup", present in every examples mode) tells the agent to submit a first verified body that beats the reference engine, then keep trying faster verified bodies until this speedup, submitting each improvement and never replacing a submitted body with a slower or unverified one.
+* `max_budget_usd` (float >= 0, default 20.0, 0 = no cap) is the model spend cap per query across all its agent sessions (Claude only). Each session's command gets `--max-budget-usd <remaining>` (cap minus the earlier sessions' spend). Spend is the sum of `total_cost_usd` of the `result` events in `workspace/logs/claude_raw.jsonl` (appended by every session; a session killed before its result event counts 0). No further session starts once the cap is used (`budget used`); the manifest records `cost_usd` per entry of `sessions` and a top-level `total_cost_usd`.
 * The per-query wall budget is `max_iterations x agent_timeout_sec`. Until a body has beaten the bar the old rule holds (a further session only after a session that did not verify, at most `max_iterations`). After one has, a session that ends early with the best speedup (official measure or the agent's submitted run, whichever is higher) below `speed_target` is followed by another session that starts from the best body, with a short host message (best speedup, target, minutes left); its wall limit is the time left. Stop: target reached, budget used, or `max_idle_sessions` sessions in a row without a better speedup. `speed_target = 1.0` is the old behaviour (the first body that beats the bar ends the query). `speed_bar_mult`, the acceptance bar of `submit_runquery`, is unchanged.
 * The manifest has `sessions`: per session start, end, agent seconds, session speedup, best speedup so far, and the stop reason on the last one.
 

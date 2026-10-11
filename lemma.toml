@@ -36,7 +36,8 @@ parallel_vstd = "auto"                      # off | auto | on. Decision: explici
 [agent]
 speed_target = 10.0                         # float >= 1.0: speedup over the reference engine the agent is told to aim for after its first body beats the bar (prompt, section "Target speedup"). Within the per-query budget (max_iterations x agent_timeout_sec) a session that ends early below this target is followed by another one from the best submitted body. 1.0 = the old behaviour (a further session only after one that did not verify)
 max_idle_sessions = 2                       # int >= 1: stop starting further sessions after this many consecutive sessions without a better submitted speedup
-agent_timeout_sec = 750                     # wall seconds per agent session. Decision: 750 (2 x 750 s = 25 min per attempt; config.env/code/AGENTS.md said 600)
+agent_timeout_sec = 900                     # wall seconds per agent session. Decision: 900 (2 x 900 s = 30 min per query with max_iterations = 2; was 750, earlier 600)
+max_budget_usd = 20.0                       # float >= 0: model spend cap PER QUERY across all its agent sessions (Claude only). Each session gets `--max-budget-usd <remaining>`; remaining = this minus the spend of the earlier sessions (total_cost_usd of the stream-json result event). No further session once it is used up. 0 = no cap
 agent_submit_ends_session = false           # true: a successful submit_runquery ends the session
 agent_data_mode = "none"                    # none | stats | full: interactive DuckDB tool for the agent. Decision: none (what config.env gave the frozen run; code default stats; the CLI container is network-none anyway)
 agent_resource_exhausted_retries = 8        # Cursor agent only: retries on API quota errors

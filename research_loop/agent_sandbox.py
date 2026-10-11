@@ -235,6 +235,27 @@ def claude_agent_cmd(model: str) -> str:
     )
 
 
+def claude_spend_usd(raw: Path) -> float:
+    """Total model spend in a Claude raw stream (``logs/claude_raw.jsonl``, appended by every session): the sum of ``total_cost_usd`` of its
+    ``result`` events. A session killed before its result event has none, so its spend is not counted."""
+    if not raw.is_file():
+        return 0.0
+    total = 0.0
+    for line in raw.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            event = json.loads(line)
+            if event.get("type") == "result":
+                total += float(event.get("total_cost_usd") or 0.0)
+    return total
+
+
+def cmd_with_budget(agent_cmd: str, remaining_usd: float) -> str:
+    """A Claude command with ``--max-budget-usd <remaining>``; a Cursor command, or ``remaining_usd`` <= 0, is returned unchanged."""
+    if not is_claude_cmd(agent_cmd) or remaining_usd <= 0:
+        return agent_cmd
+    return agent_cmd.replace("claude -p ", f"claude -p --max-budget-usd {remaining_usd:.4f} ", 1)
+
+
 def is_claude_cmd(agent_cmd: str) -> bool:
     return agent_cmd.split(None, 1)[0] == "claude"
 

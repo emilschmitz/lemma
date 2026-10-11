@@ -1,6 +1,8 @@
 """Agent sessions of one query: when a further session starts, and what the run manifest records about each.
 
-Rules (settings in lemma.toml: ``max_iterations``, ``agent_timeout_sec``, ``speed_target``, ``max_idle_sessions``):
+Rules (settings in lemma.toml: ``max_iterations``, ``agent_timeout_sec``, ``speed_target``, ``max_idle_sessions``, ``max_budget_usd``):
+
+* ``max_budget_usd`` > 0: no further session once the spend of the sessions so far reaches it ("budget used"); each session is told the remainder.
 
 * No body has verified and beaten the bar yet: a further session starts while fewer than ``max_iterations`` sessions have run (the old rule).
 * A body has: ``speed_target == 1.0`` ends the query at once (the old rule). Otherwise a further session starts, from the best body so far,
@@ -29,6 +31,7 @@ class Outcome:
     agent_s: float  # wall seconds the agent ran
     result: dict | None = None  # the loop result for a success
     source: str | None = None  # the file of a success (the base of a continuation session)
+    cost_usd: float = 0.0  # model spend of the session (total_cost_usd of its stream-json result event)
 
 
 @dataclass
@@ -37,8 +40,10 @@ class Sessions:
     budget_s: float
     target: float
     max_idle: int
+    budget_usd: float = 0.0  # per-query model spend cap; 0 = none
     records: list[dict[str, Any]] = field(default_factory=list)
     spent_s: float = 0.0
+    spent_usd: float = 0.0
     idle: int = 0
     best: Outcome | None = None
 
@@ -47,6 +52,8 @@ class Sessions:
 
     def stop_reason(self) -> str | None:
         """Why no further session starts after the sessions so far, or None when one does."""
+        if self.budget_usd > 0 and self.spent_usd >= self.budget_usd:
+            return f"budget used (${self.spent_usd:.2f} of ${self.budget_usd:.2f})"
         if self.best is None:
             return None if len(self.records) < self.max_iterations else f"{self.max_iterations} sessions without a body that beats the bar"
         if self.target <= 1.0:
@@ -59,6 +66,10 @@ class Sessions:
         if self.idle >= self.max_idle:
             return f"{self.idle} sessions in a row without a better speedup"
         return None
+
+    def remaining_usd(self) -> float | None:
+        """Spend cap left for the next session (``--max-budget-usd``), None without a cap."""
+        return None if self.budget_usd <= 0 else self.budget_usd - self.spent_usd
 
     def timeout_s(self) -> int | None:
         """Wall limit of the next session: the old full session limit until a body has beaten the bar, then what is left of the budget."""
@@ -80,11 +91,13 @@ class Sessions:
         if self.best is not None:
             self.idle = 0 if improved else self.idle + 1
         self.spent_s += outcome.agent_s
+        self.spent_usd += outcome.cost_usd
         self.records.append({
             "session": n,
             "start": datetime.fromtimestamp(start, UTC).isoformat(),
             "end": datetime.fromtimestamp(end, UTC).isoformat(),
             "agent_s": round(outcome.agent_s, 1),
+            "cost_usd": round(outcome.cost_usd, 6),
             "success": outcome.success,
             "session_speedup": outcome.speedup,
             "best_speedup": self.best_speedup(),
@@ -98,12 +111,13 @@ def run_sessions(
     agent_timeout_sec: float,
     target: float,
     max_idle: int,
+    max_budget_usd: float = 0.0,
     on_record: Callable[[list[dict[str, Any]]], None] | None = None,
     clock: Callable[[], float] = time.time,
 ) -> Sessions:
     """Run sessions until ``Sessions.stop_reason``; ``run_one(n, host_note, timeout_s)`` runs one (note and timeout are empty/None for a first session
     and for a retry after a body that did not verify)."""
-    state = Sessions(max_iterations, max_iterations * agent_timeout_sec, target, max_idle)
+    state = Sessions(max_iterations, max_iterations * agent_timeout_sec, target, max_idle, max_budget_usd)
     n = 0
     while True:
         n += 1
@@ -126,4 +140,5 @@ def record_in_manifest(manifest: Path, records: list[dict[str, Any]]) -> None:
     if manifest.is_file():
         data = json.loads(manifest.read_text())
         data["sessions"] = records
+        data["total_cost_usd"] = round(sum(r.get("cost_usd", 0.0) for r in records), 6)
         manifest.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")

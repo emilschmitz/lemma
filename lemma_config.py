@@ -113,7 +113,7 @@ MINIMUM: dict[str, float] = {
     "duck_threads": 1, "heavy_min_avail_mb": 0, "verus_slots": 1, "verus_min_avail_mb": 0,
 }
 POSITIVE = ("speed_bar_mult", "verus_rlimit")
-MINIMUM.update({"speed_target": 1.0, "max_idle_sessions": 1})
+MINIMUM.update({"speed_target": 1.0, "max_idle_sessions": 1, "max_budget_usd": 0.0})
 # Keys with no default: lemma.toml holds "" and a run without a value (file, LEMMA_<KEY>, CLI) fails loudly instead of guessing.
 REQUIRED: tuple[str, ...] = ("duckdb_path", "assumption_package")
 

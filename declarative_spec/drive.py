@@ -287,6 +287,8 @@ def run_declarative_optimization_loop(
         }
 
     from research_loop.agent_sandbox import (
+        claude_spend_usd,
+        cmd_with_budget,
         load_agent_config,
         run_agent_docker,
         run_agent_local,
@@ -319,7 +321,9 @@ def run_declarative_optimization_loop(
     except (DeclarativeUnsupported, ProfileError, ValueError, OSError) as exc:
         return {"status": "FAILED", "best_latency_us": -1, "error": f"data profile: {exc}", "history": [], "proof_verified": False}
 
-    state = {"prev_source": None, "last_error": last_error, "proof_verified": False}  # the file the previous session left; the last error; any proof so far
+    max_budget_usd = float(lemma_config.get("max_budget_usd"))
+    raw_stream = workspace / "logs" / "claude_raw.jsonl"  # appended by every Claude session of the query
+    state = {"prev_source": None, "last_error": last_error, "proof_verified": False, "remaining_usd": None}  # the file the previous session left; the last error; any proof so far
     best_source: list[str] = []  # the file of the best success so far: the base of a continuation session
     cfg = load_agent_config()
 
@@ -353,6 +357,8 @@ def run_declarative_optimization_loop(
             restart_note = _prepare_restart(workspace, agent_path, state["prev_source"], iter_record)
 
         session_cfg = cfg if timeout_s is None else {**cfg, "AGENT_TIMEOUT_SEC": str(min(int(cfg["AGENT_TIMEOUT_SEC"]), timeout_s))}
+        if state["remaining_usd"] is not None and "AGENT_CMD" in session_cfg:
+            session_cfg = {**session_cfg, "AGENT_CMD": cmd_with_budget(session_cfg["AGENT_CMD"], state["remaining_usd"])}
         in_docker = use_docker(session_cfg)
         lemma_index = current_trusted_set().index_markdown(spec)
         prompt = build_declarative_prompt(
@@ -438,13 +444,21 @@ def run_declarative_optimization_loop(
             return sessions_mod.Outcome(True, speedup, agent_s, result, agent_source)
         return sessions_mod.Outcome(False, speedup, agent_s)
 
+    def run_one_costed(iteration: int, host_note: str, timeout_s: int | None) -> sessions_mod.Outcome:
+        before = claude_spend_usd(raw_stream)
+        state["remaining_usd"] = None if max_budget_usd <= 0 else max_budget_usd - before
+        outcome = run_one(iteration, host_note, timeout_s)
+        outcome.cost_usd = claude_spend_usd(raw_stream) - before
+        return outcome
+
     manifest = workspace.parent / "manifest.json"
     done = sessions_mod.run_sessions(
-        run_one,
+        run_one_costed,
         max_iterations=max_iterations,
         agent_timeout_sec=int(cfg["AGENT_TIMEOUT_SEC"]),
         target=float(lemma_config.get("speed_target")),
         max_idle=int(lemma_config.get("max_idle_sessions")),
+        max_budget_usd=max_budget_usd,
         on_record=lambda records: sessions_mod.record_in_manifest(manifest, records),
     )
     if done.best is not None:

@@ -296,3 +296,79 @@ def test_replace_text_creates_a_missing_file(tmp_path) -> None:
     f = tmp_path / "new.rs"
     _replace_text(f, "x")
     assert f.read_text() == "x"
+
+
+# ---- max_budget_usd: per-query spend cap ---------------------------------------------------------------------------
+
+
+def _raw(path: Path, *costs: float) -> Path:
+    path.write_text("".join(json.dumps({"type": "result", "total_cost_usd": c}) + "\n" for c in costs) + json.dumps({"type": "assistant"}) + "\n")
+    return path
+
+
+def test_claude_cmd_carries_the_remaining_budget() -> None:
+    from research_loop.agent_sandbox import claude_agent_cmd, cmd_with_budget
+
+    cmd = cmd_with_budget(claude_agent_cmd("m"), 12.5)
+    assert cmd.startswith("claude -p --max-budget-usd 12.5000 --model m")
+    assert cmd_with_budget(claude_agent_cmd("m"), 0.25).count("--max-budget-usd") == 1
+
+
+def test_no_budget_flag_for_zero_cap_or_non_claude_cmd() -> None:
+    from research_loop.agent_sandbox import claude_agent_cmd, cmd_with_budget
+
+    assert cmd_with_budget(claude_agent_cmd("m"), 0) == claude_agent_cmd("m")
+    assert "--max-budget-usd" not in cmd_with_budget("agent -p --model x < PROMPT.txt", 5.0)
+
+
+def test_remaining_budget_decreases_across_sessions(tmp_path: Path) -> None:
+    from research_loop.agent_sandbox import claude_spend_usd
+
+    raw = tmp_path / "claude_raw.jsonl"
+    assert claude_spend_usd(raw) == 0.0
+    _raw(raw, 3.5)
+    assert 20.0 - claude_spend_usd(raw) == 16.5
+    _raw(raw, 3.5, 4.0)
+    assert 20.0 - claude_spend_usd(raw) == 12.5
+    state = S.Sessions(2, 1500.0, 10.0, 2, 20.0)
+    assert state.remaining_usd() == 20.0
+    state.add(1, 0.0, 1.0, Outcome(False, None, 1.0, cost_usd=7.5))
+    assert state.remaining_usd() == 12.5
+    assert S.Sessions(2, 1500.0, 10.0, 2, 0.0).remaining_usd() is None
+
+
+def test_scheduler_stops_when_the_budget_is_used() -> None:
+    outcomes = [Outcome(False, None, 10.0, cost_usd=12.0), Outcome(False, None, 10.0, cost_usd=9.0), Outcome(False, None, 10.0)]
+    it = iter(outcomes)
+    state = run_sessions(lambda n, note, t: next(it), max_iterations=5, agent_timeout_sec=750.0, target=10.0, max_idle=2, max_budget_usd=20.0)
+    assert len(state.records) == 2 and "budget used" in state.records[-1]["stop_reason"]
+    it = iter([Outcome(True, 2.0, 10.0, {}, "s", cost_usd=25.0)])
+    state = run_sessions(lambda n, note, t: next(it), max_iterations=3, agent_timeout_sec=750.0, target=10.0, max_idle=2, max_budget_usd=20.0)
+    assert len(state.records) == 1 and "budget used" in state.records[-1]["stop_reason"]
+
+
+def test_zero_cap_never_stops_on_spend() -> None:
+    it = iter([Outcome(False, None, 1.0, cost_usd=500.0), Outcome(False, None, 1.0, cost_usd=500.0)])
+    state = run_sessions(lambda n, note, t: next(it), max_iterations=2, agent_timeout_sec=750.0, target=10.0, max_idle=2, max_budget_usd=0.0)
+    assert len(state.records) == 2 and "budget used" not in state.records[-1]["stop_reason"]
+
+
+def test_manifest_records_session_costs_and_total(tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text("{}")
+    it = iter([Outcome(False, None, 1.0, cost_usd=1.25), Outcome(False, None, 1.0, cost_usd=2.0)])
+    state = run_sessions(lambda n, note, t: next(it), max_iterations=2, agent_timeout_sec=750.0, target=10.0, max_idle=2, max_budget_usd=20.0)
+    S.record_in_manifest(manifest, state.records)
+    data = json.loads(manifest.read_text())
+    assert [r["cost_usd"] for r in data["sessions"]] == [1.25, 2.0] and data["total_cost_usd"] == 3.25
+    manifest.write_text("{}")
+    S.record_in_manifest(manifest, [{"session": 1, "cost_usd": 0.5}])
+    assert json.loads(manifest.read_text())["total_cost_usd"] == 0.5
+
+
+def test_budget_and_timeout_settings_are_loaded() -> None:
+    assert lc.get("agent_timeout_sec") == 900 and lc.get("max_budget_usd") == 20.0
+    assert lc.get("max_iterations") * lc.get("agent_timeout_sec") == 1800
+    with pytest.raises(lc.ConfigError):
+        lc.set_cli("max_budget_usd", -1.0)
+        lc.get("max_budget_usd")
