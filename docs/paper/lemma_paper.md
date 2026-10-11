@@ -2,11 +2,11 @@
 
 Author: TODO · Affiliation: TODO · Email: TODO
 
-<!-- Source: ~/Desktop/LEMMA_PAPER_111026.tex (VLDB / acmart sigconf + pvldb), converted verbatim to Markdown; abstract and the Future-work additions from Emil's edits in the Claude doc, 2026-10-11. -->
+<!-- Source: ~/Desktop/LEMMA_PAPER_111026.tex (VLDB / acmart sigconf + pvldb), converted verbatim to Markdown (LaTeX formatting removed). -->
 
 ## Abstract
 
-General-purpose OLAP engines pay for their generality through interpretation, generic operators, and layers of abstraction. Recent systems show that LLM-synthesized, per-query executors can be far faster, but their correctness rests on tests and inspection, so a single wrong answer can go unnoticed. We present Lemma, a query engine that pairs LLM synthesis with machine-checked proof. Lemma deterministically transpiles each SQL query and its catalog schema into a formal specification in Verus, a verifier for Rust. An LLM agent then writes an optimized native executor for that query and uses Verus to prove the executor equivalent to the specification before it is compiled and served. An executor can only run once it's been verified. Verified binaries are cached and invoked from a DuckDB extension, so recurring analytical queries amortize the one-time cost of synthesis and proof. On the SEC-EDGAR and TPC-H workloads, Lemma proves [TBA]% of queries and its verified executors run [TBA]× faster than DuckDB, the strongest OLAP baseline we measure, at [TBA] median end-to-end time. To our knowledge, Lemma is the first query engine whose LLM-written executors are formally proved equivalent to the query's specification.
+Lemma synthesizes per-query native executors with an LLM, then verifies them against a deterministically transpiled Verus `MethodSpec` before compile and reuse via a DuckDB extension.
 
 ## Introduction
 
@@ -177,16 +177,6 @@ Figure (pipeline): SQL → transpile `MethodSpec`/`valid_cols` → agent `run_qu
 5. Figure out how to ideally integrate the agent with an existing DB or whether that is a good idea. E.g. with DuckDB, the agent could just run parallel as a separate db with its own storgae, it could read duckdb storage (out of memory), it could use duckdb chunk api, it could use higher level api.
 6. Improve extension sandbox; optional Inspect-style pluggable agent CLI bridge.
 
-Ablation studies:
-
-- giving pre-made recipes
-- adding float-trusteds
-- removing/adding trusteds
-    - Most recently (11 oct) we are using vstd trusteds
-- weaker/stronger model
-- use "imperative", not "declarative" specs
-
-It is unclear where the current system is superior to duckdb. A hot run is faster than DuckDB, but loading in data and running it is (supposedly) not. The current format is also (supposedly) not as good as DuckDB's or that of other trad. DBs, because it e.g. does not paginate or compress. A plan for making a system that is actually competitive in the real world would be to make it operate on the data structure of an established DB. This would also allow for running it generatively or with trad. DB engine, depending on current need.
 
 ## Acknowledgements
 
