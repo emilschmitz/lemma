@@ -358,8 +358,8 @@ def run_declarative_optimization_loop(
             restart_note = _prepare_restart(workspace, agent_path, state["prev_source"], iter_record)
 
         session_cfg = cfg if timeout_s is None else {**cfg, "AGENT_TIMEOUT_SEC": str(min(int(cfg["AGENT_TIMEOUT_SEC"]), timeout_s))}
-        if state["remaining_usd"] is not None and "AGENT_CMD" in session_cfg:
-            session_cfg = {**session_cfg, "AGENT_CMD": cmd_with_budget(session_cfg["AGENT_CMD"], state["remaining_usd"])}
+        if state["remaining_usd"] is not None:
+            session_cfg = {**session_cfg, "SESSION_MAX_BUDGET_USD": f"{state['remaining_usd']:.4f}"}  # applied to the Claude command by the sandbox
         in_docker = use_docker(session_cfg)
         lemma_index = current_trusted_set().index_markdown(spec)
         prompt = build_declarative_prompt(

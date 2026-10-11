@@ -273,6 +273,13 @@ def cmd_with_budget(agent_cmd: str, remaining_usd: float) -> str:
     return agent_cmd.replace("claude -p ", f"claude -p --max-budget-usd {remaining_usd:.4f} ", 1)
 
 
+def apply_session_budget(agent_cmd: str, cfg: dict[str, str]) -> str:
+    """The remaining per-query budget (``SESSION_MAX_BUDGET_USD``, set by drive.py per session) on a Claude command; others unchanged."""
+    if is_claude_cmd(agent_cmd) and cfg.get("SESSION_MAX_BUDGET_USD"):
+        return cmd_with_budget(agent_cmd, float(cfg["SESSION_MAX_BUDGET_USD"]))
+    return agent_cmd
+
+
 def is_claude_cmd(agent_cmd: str) -> bool:
     return agent_cmd.split(None, 1)[0] == "claude"
 
@@ -1210,6 +1217,7 @@ def run_agent_docker(
     )
     timeout = int(cfg.get("AGENT_TIMEOUT_SEC", "600"))
     claude = is_claude_cmd(agent_cmd)
+    agent_cmd = apply_session_budget(agent_cmd, cfg)
     claude_args = claude_docker_args() if claude else []
     (workspace / "PROMPT.txt").write_text(prompt)
 

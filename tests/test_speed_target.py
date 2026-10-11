@@ -391,3 +391,15 @@ def test_token_totals_present_without_a_result_event(tmp_path) -> None:
     raw = tmp_path / "claude_raw.jsonl"
     raw.write_text(json.dumps({"type": "assistant", "message": {"id": "m1", "usage": {"output_tokens": 7}}}) + "\n")
     assert claude_spend_usd(raw) == 0.0 and claude_tokens(raw)["output_tokens"] == 7
+
+
+def test_session_budget_reaches_the_claude_command() -> None:
+    from research_loop.agent_sandbox import apply_session_budget, claude_agent_cmd
+    cmd = apply_session_budget(claude_agent_cmd("claude-opus-5-5"), {"SESSION_MAX_BUDGET_USD": "18.7500"})
+    assert cmd.startswith("claude -p --max-budget-usd 18.7500 ")
+
+
+def test_session_budget_absent_or_non_claude_leaves_the_command() -> None:
+    from research_loop.agent_sandbox import apply_session_budget, claude_agent_cmd, default_agent_cmd
+    assert "--max-budget-usd" not in apply_session_budget(claude_agent_cmd("claude-opus-5-5"), {})
+    assert apply_session_budget(default_agent_cmd(), {"SESSION_MAX_BUDGET_USD": "5"}) == default_agent_cmd()
