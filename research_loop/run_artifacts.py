@@ -12,6 +12,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import lemma_config
+
 from research_loop.experiment_stream import (
     emit_query_artifact,
     emit_query_end,
@@ -28,7 +30,6 @@ _ENV_KEYS = (
     "AGENT_TIMEOUT_SEC",
     "AGENT_NETWORK",
     "AGENT_DATA_MODE",
-    "AGENT_WEB_SEARCH",
     "AGENT_MAX_TURNS",
     "OPENROUTER_MODEL",
     "OPENROUTER_BASE_URL",
@@ -117,10 +118,10 @@ def _git_dirty(root: Path) -> bool:
 
 
 def assert_experiment_git_clean(root: Path | str) -> None:
-    """Under LEMMA_EXPERIMENT=1, refuse dirty working trees (override: LEMMA_EXPERIMENT_ALLOW_DIRTY=1)."""
+    """Under LEMMA_EXPERIMENT=1, refuse dirty working trees (override: allow_dirty in lemma.toml, LEMMA_ALLOW_DIRTY=1)."""
     if not lemma_experiment():
         return
-    if os.environ.get("LEMMA_EXPERIMENT_ALLOW_DIRTY", "0") == "1":
+    if lemma_config.get("allow_dirty"):
         return
     root_path = Path(root).resolve()
     porcelain = _git_porcelain(root_path)
@@ -131,7 +132,7 @@ def assert_experiment_git_clean(root: Path | str) -> None:
             preview += f"\n... ({len(lines) - 20} more)"
         raise SystemExit(
             "LEMMA_EXPERIMENT=1 requires a clean git working tree.\n"
-            "Commit or stash changes, or set LEMMA_EXPERIMENT_ALLOW_DIRTY=1 to override.\n"
+            "Commit or stash changes, or set LEMMA_ALLOW_DIRTY=1 (allow_dirty in lemma.toml) to override.\n"
             f"Dirty files ({len(lines)}):\n{preview}"
         )
 
@@ -182,12 +183,12 @@ def effective_settings(git_sha: str | None, git_dirty: bool | None) -> dict[str,
     from research_loop.agent_sandbox import claude_effort, claude_thinking_tokens, claude_tool_search
 
     return {
-        "LEMMA_STRING_ENCODING": (env("LEMMA_STRING_ENCODING") or "").strip() or "plain",
-        "LEMMA_JOIN_CHAIN": (env("LEMMA_JOIN_CHAIN") or "").strip() or "0",
-        "LEMMA_EXAMPLES": (env("LEMMA_EXAMPLES") or "").strip() or "full",
-        "LEMMA_NARROW_CELLS": (env("LEMMA_NARROW_CELLS") or "").strip() or "0",
-        "LEMMA_TARGET_CPU": (env("LEMMA_TARGET_CPU") or "").strip() or "x86-64-v3",
-        "LEMMA_PARALLEL_VSTD": (env("LEMMA_PARALLEL_VSTD") or "").strip() or "off",
+        "LEMMA_STRING_ENCODING": lemma_config.get("string_encoding"),
+        "LEMMA_JOIN_CHAIN": "1" if lemma_config.get("join_chain") else "0",
+        "LEMMA_EXAMPLES": lemma_config.get("examples"),
+        "LEMMA_NARROW_CELLS": "1" if lemma_config.get("narrow_cells") else "0",
+        "LEMMA_TARGET_CPU": lemma_config.get("target_cpu"),
+        "LEMMA_PARALLEL_VSTD": lemma_config.get("parallel_vstd"),
         "LEMMA_ENABLE_PARALLEL": env("LEMMA_ENABLE_PARALLEL") or "0",
         "LEMMA_ASSUMPTION_PACKAGE": (env("LEMMA_ASSUMPTION_PACKAGE") or "").strip() or None,
         # Container Claude agent (ignored by other agents): what claude -p actually gets.
@@ -325,11 +326,12 @@ def begin_run(
         "agent_cmd": (os.environ.get("AGENT_CMD") or "").strip() or None,
         "agent_image": (os.environ.get("AGENT_IMAGE") or "").strip() or None,
         "max_iterations": (os.environ.get("MAX_ITERATIONS") or "").strip() or None,
-        "agent_timeout_sec": (os.environ.get("AGENT_TIMEOUT_SEC") or "").strip() or None,
+        "agent_timeout_sec": lemma_config.get("agent_timeout_sec"),
         "workload": (os.environ.get("LEMMA_WORKLOAD") or "").strip() or None,
         "duckdb_path": (os.environ.get("LEMMA_DUCKDB_PATH") or "").strip() or None,
         "env": env_snap,
         "effective": effective_settings(git_commit, git_dirty),
+        "lemma_config": lemma_config.effective_dict(),  # every key of lemma.toml with its value and source (file/env/cli)
     }
     from research_loop.menu_profile import active_menu
 

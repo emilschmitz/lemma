@@ -90,8 +90,8 @@ When booking cloud VMs for Lemma experiments:
   in us-east1/us-central1. **Hard cap $7/hr** for that one VM. On-demand is OK if
   Spot is out of stock. If Spot stock fails, retry another zone — still one machine, still
   under the cap — do not “upgrade” the machine class. **Never** ~$100/hr GPUs / multi-node.
-- Agent timeouts for paper/CLI runs stay **`AGENT_TIMEOUT_SEC=600`** (10 min) unless Emil
-  overrides. Model is **Grok 4.7 high**: slug **`grok-4.7-high`** in
+- Agent timeouts live in `lemma.toml` (`agent_timeout_sec = 750`, two sessions per attempt: 25 min,
+  Emil 2026-10-08); the old 600 s applies only to the legacy imperative/overnight path. Model is **Grok 4.7 high**: slug **`grok-4.7-high`** in
   `research_loop/config.env` `AGENT_CMD` (`agent … --model grok-4.7-high`).
   Do not launch paper runs on `cursor-grok-4.6-high`.
 
@@ -482,17 +482,12 @@ Agent edits **only** the marked body. Admission must reject new TRUSTEDs / `arbi
 
 ## Agent sandbox flags
 
-Loaded from `research_loop/config.env` (see `db_extension/AGENT.md` for OpenRouter host):
-
-| Flag | Default | Meaning |
-|------|---------|---------|
-| `AGENT_NETWORK` | `0` | Container network off |
-| `AGENT_DATA_MODE` | `stats` | `none` / `stats` / `full` — no raw row dumps by default |
-| `AGENT_WEB_SEARCH` | `0` | Web search tool off |
-| `AGENT_DOCS_MOUNT` | `1` | Mount primer/AGENTS docs into context |
-| `AGENT_TIMEOUT_SEC` | `600` | Per-iteration timeout |
-| `AGENT_SUBMIT_ONLY_MEASURE` | `1` | Timed measure via host submit/harness only |
-| `AGENT_MCP_URL` | (empty) | Optional; prefer Unix-socket MCP (`db_extension/AGENT.md`) |
+Every setting that shapes a container run (agent timeout, data mode, Verus limits, DuckDB limits, caps,
+egress, dirty-tree policy) lives in **`lemma.toml`** at the repo root: `python -m lemma_config dump`. Precedence:
+`lemma.toml` < `LEMMA_<KEY>` environment variable < CLI flag; unknown `LEMMA_*` variables fail at startup.
+`research_loop/config.env` keeps only the legacy imperative/OpenRouter settings (`AGENT_NETWORK` = container
+network off, the OpenRouter keys, `COMPILE_TIMEOUT_SEC`; see `db_extension/AGENT.md` for the OpenRouter host).
+Container runs refuse a dirty git tree (tracked files) unless `allow_dirty = true`. Inventory: `docs/FLAGS.md`.
 
 Preferred setup: OpenRouter host + tool Docker (`network none`) + Unix-socket MCP /
 sandbox `mcp_proxy`. CLI-in-Docker: Inspect-style model bridge + MCP with network none.

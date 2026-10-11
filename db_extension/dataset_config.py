@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+import lemma_config
+
 from research_loop.experiment_stream import (
     duckdb_error_is_contention,
     emit_duckdb_contention,
@@ -18,7 +20,7 @@ META_PATH = SSB_DIR / "dataset_meta.json"
 
 # SSB lineorder ≈ scale × 1.5M rows → 1.333 ≈ 2M fact rows.
 DEFAULT_SSB_SCALE = 1.333
-DEFAULT_MCP_ITERATE_ROWS = 50_000
+DEFAULT_MCP_ITERATE_ROWS = lemma_config.default("mcp_iterate_rows")
 
 _NO_DATASET_SIZE_MSG = (
     "Cannot determine dataset row count: set LEMMA_DATASET_SIZE or provide "
@@ -364,13 +366,9 @@ def effective_dataset_size() -> int:
     return available
 
 
-_MCP_ITERATE_UNCAPPED_VALUES = frozenset({"0", "full", "unlimited"})
-
-
 def mcp_iterate_is_uncapped() -> bool:
-    """True when ``LEMMA_MCP_ITERATE_ROWS`` is ``0``, ``full``, or ``unlimited`` (case-insensitive)."""
-    raw = os.environ.get("LEMMA_MCP_ITERATE_ROWS", "").strip()
-    return raw.lower() in _MCP_ITERATE_UNCAPPED_VALUES if raw else False
+    """True when ``mcp_iterate_rows`` (lemma.toml [agent], ``LEMMA_MCP_ITERATE_ROWS``) is 0."""
+    return lemma_config.get("mcp_iterate_rows") == 0
 
 
 def mcp_iterate_rows_cap() -> int:
@@ -378,12 +376,9 @@ def mcp_iterate_rows_cap() -> int:
     if mcp_iterate_is_uncapped():
         raise RuntimeError(
             "mcp_iterate_rows_cap() is undefined when LEMMA_MCP_ITERATE_ROWS is uncapped "
-            "(0/full/unlimited); use mcp_iterate_is_uncapped() and mcp_iterate_dataset_size()."
+            "(0); use mcp_iterate_is_uncapped() and mcp_iterate_dataset_size()."
         )
-    raw = os.environ.get("LEMMA_MCP_ITERATE_ROWS", "").strip()
-    if not raw:
-        return DEFAULT_MCP_ITERATE_ROWS
-    return max(1, int(raw))
+    return int(lemma_config.get("mcp_iterate_rows"))
 
 
 def mcp_iterate_dataset_size() -> int:

@@ -7,16 +7,18 @@ from pathlib import Path
 
 import pytest
 
+import lemma_config
 from declarative_spec import pipeline
 from declarative_spec.verus_limits import (
-    DEFAULT_RUN_TIMEOUT_SEC,
-    DEFAULT_TIMEOUT_SEC,
     HARNESS_SLACK_SEC,
     RUN_TIMEOUT_ENV,
     TIMEOUT_ENV,
     declarative_harness_budget_sec,
     run_timeout_sec,
 )
+
+DEFAULT_RUN_TIMEOUT_SEC = lemma_config.default("run_timeout_sec")
+DEFAULT_TIMEOUT_SEC = lemma_config.default("verus_timeout_sec")
 
 
 def _fake_verus_that_builds(tmp_path: Path, binary_body: str) -> str:
@@ -37,8 +39,8 @@ def _fake_verus_that_builds(tmp_path: Path, binary_body: str) -> str:
 
 @pytest.fixture(autouse=True)
 def _own_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("HEAVY_LOCK", str(tmp_path / "lock"))
-    monkeypatch.setenv("HEAVY_MIN_AVAIL_MB", "1")
+    monkeypatch.setenv("LEMMA_HEAVY_LOCK", str(tmp_path / "lock"))
+    monkeypatch.setenv("LEMMA_HEAVY_MIN_AVAIL_MB", "1")
 
 
 def test_run_timeout_default_override_and_bad_value(monkeypatch: pytest.MonkeyPatch) -> None:

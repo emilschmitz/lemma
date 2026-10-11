@@ -65,7 +65,7 @@ def test_the_flag_defaults_to_full_and_a_bad_value_is_loud(monkeypatch: pytest.M
     monkeypatch.setenv(P.ENV, "principles")
     assert P.principles_only()
     monkeypatch.setenv(P.ENV, "everything")
-    with pytest.raises(ValueError, match="must be 'full', 'principles' or 'none'"):
+    with pytest.raises(ValueError, match="examples must be one of"):
         P.mode()
 
 
@@ -293,14 +293,14 @@ def _prompt_specs(monkeypatch: pytest.MonkeyPatch) -> dict[str, tuple[str, str]]
         for k, v in {**P.BASE_ENV, **p.env}.items():
             monkeypatch.setenv(k, v)
         out[p.file] = (p.sql, emit_declarative_spec(p.sql, schema, _probe_catalog()))
-        monkeypatch.delenv("LEMMA_PARALLEL_VSTD", raising=False)
+        monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "off")
     for k, v in P.BASE_ENV.items():
         monkeypatch.setenv(k, v)
     for name, sql in _PROBES.items():
         out[name] = (sql, emit_declarative_spec(sql, schema, _probe_catalog()))
-    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "1")
+    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "on")
     out["parallel_group"] = (_PROBES["plain_count"], emit_declarative_spec(_PROBES["plain_count"], schema, _probe_catalog()))
-    monkeypatch.delenv("LEMMA_PARALLEL_VSTD", raising=False)
+    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "off")
     return out
 
 

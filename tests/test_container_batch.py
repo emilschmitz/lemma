@@ -7,7 +7,17 @@ from pathlib import Path
 
 import pytest
 
+import lemma_config
 from research_loop.scripts import container_batch as cb
+
+
+@pytest.fixture(autouse=True)
+def _clean_config_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each test starts with no LEMMA_* setting in the environment (lemma.toml alone) and a tree that counts as clean."""
+    for name in list(__import__("os").environ):
+        if name.startswith("LEMMA_") or name in lemma_config.ALIASES:
+            monkeypatch.delenv(name)
+    monkeypatch.setattr(lemma_config, "require_clean_tree", lambda root=None: {"git_sha": "0" * 40, "git_dirty": False, "dirty_files": []})
 
 
 def test_command_is_locked_capped_and_carries_the_selected_environment(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -17,9 +27,11 @@ def test_command_is_locked_capped_and_carries_the_selected_environment(monkeypat
     cmd = cb.command("claude-sonnet-5-5", Path("/q.sql"))
     assert cmd[:4] == ["choom", "-n", "800", "--"] and "flock" not in cmd and cmd[cmd.index("--locked-run") - 1].endswith("container_batch.py")
     assert cmd[cmd.index("--locked-run") + 3] == "systemd-run" and "--slice=lemma.slice" in cmd
-    assert "MemoryMax=6G" in cmd and "--setenv=LEMMA_DUCKDB_PATH=/db.duckdb" in cmd and "--setenv=LEMMA_STRING_ENCODING=dict" in cmd
-    assert not any(c.startswith("--setenv=LEMMA_TPCH_DB") for c in cmd)
-    assert cmd[cmd.index("--max-iterations") + 1] == "2" and cmd[cmd.index("--agent") + 1] == "claude-sonnet-5-5" and "--allow-override" in cmd and cmd[-1] == "/q.sql"
+    assert "MemoryMax=9G" in cmd and "--setenv=LEMMA_DUCKDB_PATH=/db.duckdb" in cmd and "--setenv=LEMMA_STRING_ENCODING=dict" in cmd
+    assert not any(c.startswith("--setenv=LEMMA_TPCH_DB") for c in cmd)  # dead in a container run: no longer forwarded
+    # style, menu, sessions and the agent wall are lemma.toml's, not flags of the batch
+    assert not {"--max-iterations", "--style", "--menu", "--allow-override"} & set(cmd)
+    assert cmd[cmd.index("--agent") + 1] == "claude-sonnet-5-5" and cmd[-1] == "/q.sql"
 
 
 def test_short_model_names_map_to_slugs_and_logs_are_named_by_model_and_query(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -46,7 +58,7 @@ def test_the_narrow_cells_flag_and_the_assumption_package_reach_the_container_ru
     monkeypatch.setenv("LEMMA_NARROW_CELLS", "1")
     monkeypatch.setenv("LEMMA_ASSUMPTION_PACKAGE", "/p/profile.json")
     cmd = cb.command("claude-sonnet-5-5", Path("/q.sql"))
-    assert "--setenv=LEMMA_NARROW_CELLS=1" in cmd and "--setenv=LEMMA_ASSUMPTION_PACKAGE=/p/profile.json" in cmd
+    assert "--setenv=LEMMA_NARROW_CELLS=true" in cmd and "--setenv=LEMMA_ASSUMPTION_PACKAGE=/p/profile.json" in cmd
     monkeypatch.delenv("LEMMA_NARROW_CELLS")
     monkeypatch.delenv("LEMMA_ASSUMPTION_PACKAGE")
     assert not any(c.startswith(("--setenv=LEMMA_NARROW_CELLS", "--setenv=LEMMA_ASSUMPTION_PACKAGE")) for c in cb.command("m", Path("/q.sql")))
@@ -100,4 +112,44 @@ def test_the_join_chain_flag_reaches_the_run_only_when_set(monkeypatch: pytest.M
     monkeypatch.delenv("LEMMA_JOIN_CHAIN", raising=False)
     assert not any(c.startswith("--setenv=LEMMA_JOIN_CHAIN") for c in cb.command("claude-sonnet-5-5", Path("/q.sql")))
     monkeypatch.setenv("LEMMA_JOIN_CHAIN", "1")
-    assert "--setenv=LEMMA_JOIN_CHAIN=1" in cb.command("claude-sonnet-5-5", Path("/q.sql"))
+    assert "--setenv=LEMMA_JOIN_CHAIN=true" in cb.command("claude-sonnet-5-5", Path("/q.sql"))
+
+
+# --- the batch forwards the effective config, nothing ad hoc ---
+
+
+def test_with_no_override_nothing_is_forwarded_and_the_scope_cap_comes_from_lemma_toml() -> None:
+    cmd = cb.command("claude-sonnet-5-5", Path("/q.sql"))
+    assert not any(c.startswith("--setenv") for c in cmd)  # the child reads lemma.toml itself
+    assert f"MemoryMax={lemma_config.default('scope_memory_max')}" in cmd
+
+
+def test_every_non_file_value_is_forwarded_with_its_origin_and_no_other_variable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LEMMA_OFFICIAL_ROUNDS", "3")
+    monkeypatch.setenv("AGENT_TIMEOUT_SEC", "100")  # an old spelling is forwarded under its new name
+    cmd = cb.command("claude-sonnet-5-5", Path("/q.sql"))
+    setenvs = dict(c[len("--setenv="):].split("=", 1) for c in cmd if c.startswith("--setenv="))
+    assert setenvs["LEMMA_OFFICIAL_ROUNDS"] == "3" and setenvs["LEMMA_AGENT_TIMEOUT_SEC"] == "100"
+    assert json.loads(setenvs["LEMMA_CONFIG_ORIGIN"]) == {"official_rounds": "env", "agent_timeout_sec": "env"}
+    assert set(setenvs) == {"LEMMA_OFFICIAL_ROUNDS", "LEMMA_AGENT_TIMEOUT_SEC", "LEMMA_CONFIG_ORIGIN"}
+
+
+def test_a_typo_in_a_lemma_variable_stops_the_batch_before_any_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LEMMA_OFICIAL_ROUNDS", "3")
+    ran: list = []
+    monkeypatch.setattr(cb.subprocess, "run", lambda cmd, **kw: ran.append(cmd))
+    with pytest.raises(lemma_config.ConfigError, match="LEMMA_OFICIAL_ROUNDS"):
+        cb.main(["sonnet:q.sql"])
+    assert not ran
+
+
+def test_a_dirty_tree_stops_the_batch_before_any_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    def dirty(root=None):
+        raise lemma_config.ConfigError("the git tree has uncommitted changes in tracked files (1)")
+
+    monkeypatch.setattr(lemma_config, "require_clean_tree", dirty)
+    ran: list = []
+    monkeypatch.setattr(cb.subprocess, "run", lambda cmd, **kw: ran.append(cmd))
+    with pytest.raises(lemma_config.ConfigError, match="uncommitted"):
+        cb.main(["sonnet:q.sql"])
+    assert not ran

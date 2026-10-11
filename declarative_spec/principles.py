@@ -9,14 +9,14 @@ the same rows as DuckDB (tests/test_declarative_principles.py).
 
 from __future__ import annotations
 
-import os
+import lemma_config
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from research_loop.table_assumptions import CatalogAssumptions, ColumnAssumption, TableAssumptions
 
-ENV = "LEMMA_EXAMPLES"
+ENV = lemma_config.env_name("examples")
 FIXTURES = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "declarative_proofs" / "principles"
 
 SCHEMA: dict[str, dict[str, str]] = {
@@ -114,8 +114,8 @@ PRINCIPLES: tuple[Principle, ...] = (
     Principle(
         "parallel_scan_sum.rs",
         "SELECT SUM(ev_qty) AS q FROM events WHERE ev_day >= 100",
-        "PARALLEL scan with vstd threads: split the rows across 8 workers over a shared `Arc`, per-worker partial folds that telescope, merge in order (LEMMA_PARALLEL_VSTD=1)",
-        {"LEMMA_PARALLEL_VSTD": "1"},
+        "PARALLEL scan with vstd threads: split the rows across 8 workers over a shared `Arc`, per-worker partial folds that telescope, merge in order (LEMMA_PARALLEL_VSTD=on)",
+        {"LEMMA_PARALLEL_VSTD": "on"},
     ),
     Principle(
         "null_skipping_aggregate.rs",
@@ -133,10 +133,7 @@ STAND_IN: dict[str, str | None] = {
 
 
 def mode() -> str:
-    raw = os.environ.get(ENV, "").strip() or "full"
-    if raw not in ("full", "principles", "none"):
-        raise ValueError(f"{ENV} must be 'full', 'principles' or 'none', got {raw!r}")
-    return raw
+    return lemma_config.get("examples")
 
 
 def examples_none() -> bool:

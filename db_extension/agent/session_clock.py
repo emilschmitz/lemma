@@ -7,32 +7,23 @@ attach the same snapshot.
 from __future__ import annotations
 
 import json
-import os
 import time
 from pathlib import Path
 from typing import Any
+
+import lemma_config
 
 CLOCK_NAME = "session_clock.json"
 CHECK_SCRIPT_NAME = "check_session_time"
 END_SESSION_NAME = "mcp_results/end_session"
 
 
-def _truthy(raw: str | None) -> bool:
-    if raw is None:
-        return False
-    return raw.strip().lower() not in ("", "0", "false", "no", "off")
-
-
 def submit_ends_session() -> bool:
-    return _truthy(os.environ.get("AGENT_SUBMIT_ENDS_SESSION", "0"))
+    return bool(lemma_config.get("agent_submit_ends_session"))
 
 
 def agent_timeout_sec() -> int:
-    raw = (os.environ.get("AGENT_TIMEOUT_SEC") or "600").strip()
-    try:
-        return max(1, int(raw))
-    except ValueError:
-        return 600
+    return int(lemma_config.get("agent_timeout_sec"))
 
 
 def clock_path(workspace: Path) -> Path:

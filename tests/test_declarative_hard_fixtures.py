@@ -120,16 +120,16 @@ def _verify(name: str, monkeypatch: pytest.MonkeyPatch, mutate: tuple[str, str] 
     monkeypatch.setenv("LEMMA_VERUS_BIN", str(Path(__file__).resolve().parents[1] / "scripts" / "ram" / "verus_guarded.sh"))
     if name in DICT_PAR:
         monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
-        monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "1")
+        monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "on")
     if name in DICT_SEC:
         monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
         monkeypatch.setenv("LEMMA_ENABLE_PARALLEL", "0")
     if name in DICT_SSB:
         monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
         monkeypatch.setenv("LEMMA_JOIN_CHAIN", "1")
-        monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "1")
+        monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "on")
     if name == "dict_parallel_hash_group_topn.rs":
-        monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "1")
+        monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "on")
     if name == "dict_join_group_count_distinct_topn.rs":
         # run_query of this long example has no rlimit margin: it verifies under all file names only from about --rlimit 16 (1 of 4 names at 12 and below, 4 of 4 at 16 and 20); see FINDINGS F-MAN-9.
         monkeypatch.setenv("LEMMA_VERUS_RLIMIT", "20")

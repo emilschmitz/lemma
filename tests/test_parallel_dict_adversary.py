@@ -46,7 +46,7 @@ SIZES = [0, 1, 3, 7, 8, 9, 15, 16, 17, 100]
 
 def _env(monkeypatch: pytest.MonkeyPatch, parallel_on: bool, dict_on: bool) -> None:
     monkeypatch.setenv("LEMMA_VERUS_BIN", str(GUARDED))
-    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "1") if parallel_on else monkeypatch.delenv("LEMMA_PARALLEL_VSTD", raising=False)
+    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "on") if parallel_on else monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "off")
     monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict") if dict_on else monkeypatch.delenv("LEMMA_STRING_ENCODING", raising=False)
 
 
@@ -362,7 +362,7 @@ BODY_STUB = "    let mut res: Vec<OutRow> = Vec::new();\n    res"
 
 
 def _asm(sql: str, schema: dict, catalog: CatalogAssumptions, monkeypatch: pytest.MonkeyPatch, dict_on: bool = False) -> str:
-    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "1")
+    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "on")
     monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict") if dict_on else monkeypatch.delenv("LEMMA_STRING_ENCODING", raising=False)
     spec = emit_declarative_spec(sql, schema, catalog)
     bins = {n: f"/nonexistent/{n}.bin" for n in schema}
@@ -383,7 +383,7 @@ def test_main_passes_the_same_object_for_every_table_including_dictionary_and_va
 
 
 def test_two_table_parallel_join_passes_both_arcs_in_order(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "1")
+    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "on")
     monkeypatch.delenv("LEMMA_STRING_ENCODING", raising=False)
     schema = {"pre": {"line": "bigint", "report": "bigint"}, "u": {"report": "bigint", "w": "bigint"}}
     cat = CatalogAssumptions(tables={"pre": TableAssumptions(max_rows=2**20), "u": TableAssumptions(max_rows=2**10)})
@@ -393,7 +393,7 @@ def test_two_table_parallel_join_passes_both_arcs_in_order(monkeypatch: pytest.M
 
 
 def test_a_self_join_has_no_parallel_variant(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "1")
+    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "on")
     schema = {"pre": {"line": "bigint", "report": "bigint"}}
     cat = CatalogAssumptions(tables={"pre": TableAssumptions(max_rows=1000)})
     with pytest.raises(DeclarativeUnsupported):
@@ -401,7 +401,7 @@ def test_a_self_join_has_no_parallel_variant(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_every_parallel_spec_requires_arc_equals_the_plain_parameter(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "1")
+    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "on")
     monkeypatch.delenv("LEMMA_STRING_ENCODING", raising=False)
     spec = emit_declarative_spec(PAR_UNGROUPED["parallel_ungrouped_sum.rs"], PRE_SCHEMA, PRE_CATALOG)
     sig = spec.split("pub fn run_query(")[1].split("ensures")[0]
@@ -434,7 +434,7 @@ def test_transplant_of_a_file_without_markers_is_loud() -> None:
 
 def test_check_re_admits_a_transplanted_body_that_adds_trusted_code(monkeypatch: pytest.MonkeyPatch) -> None:
     """`declarative_manual check` runs run_declarative_metrics: admission rejects external_body/assume before Verus runs."""
-    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "1")
+    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "on")
     spec = emit_declarative_spec(PAR_UNGROUPED["parallel_ungrouped_sum.rs"], PRE_SCHEMA, PRE_CATALOG)
     evil_helpers = "#[verifier::external_body]\nproof fn lemma_free(x: int)\n    ensures false,\n{ }\n"
     src = (
@@ -450,7 +450,7 @@ def test_check_re_admits_a_transplanted_body_that_adds_trusted_code(monkeypatch:
 def test_a_body_proved_for_one_spec_does_not_verify_against_another(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Transplant (a body for `line > 5` into the `line > 6` spec): Verus must reject it (rc != 0, errors)."""
     monkeypatch.setenv("LEMMA_VERUS_BIN", str(GUARDED))
-    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "1")
+    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "on")
     src = (_FIXTURES / "parallel_ungrouped_sum.rs").read_text()
     spec_b = emit_declarative_spec("SELECT SUM(line) AS total FROM pre WHERE line > 6", PRE_SCHEMA, PRE_CATALOG)
     moved = transplant(src, spec_b)
@@ -462,7 +462,7 @@ def test_a_body_proved_for_one_spec_does_not_verify_against_another(monkeypatch:
 @pytest.mark.parametrize("cap", [2**20, 2**30])
 def test_a_body_transplanted_to_another_row_cap_is_re_verified_there(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, cap: int) -> None:
     monkeypatch.setenv("LEMMA_VERUS_BIN", str(GUARDED))
-    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "1")
+    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "on")
     src = (_FIXTURES / "parallel_ungrouped_sum.rs").read_text()
     cat = CatalogAssumptions(tables={"pre": TableAssumptions(max_rows=cap)})
     spec = emit_declarative_spec(PAR_UNGROUPED["parallel_ungrouped_sum.rs"], PRE_SCHEMA, cat)
@@ -474,7 +474,7 @@ def test_a_body_transplanted_to_another_row_cap_is_re_verified_there(monkeypatch
 def test_a_body_transplanted_to_a_row_cap_it_cannot_support_is_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """The chunk arithmetic is proved for rows <= 2^31: a spec with a 2^40 cap must not verify with the same body."""
     monkeypatch.setenv("LEMMA_VERUS_BIN", str(GUARDED))
-    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "1")
+    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "on")
     src = (_FIXTURES / "parallel_ungrouped_sum.rs").read_text()
     cat = CatalogAssumptions(tables={"pre": TableAssumptions(max_rows=2**40)})
     spec = emit_declarative_spec(PAR_UNGROUPED["parallel_ungrouped_sum.rs"], PRE_SCHEMA, cat)

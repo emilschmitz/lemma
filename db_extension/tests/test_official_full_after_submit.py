@@ -260,19 +260,12 @@ def test_is_timed_verified_success_rejects_official_measure_error() -> None:
     )
 
 
-def test_harness_timeout_sec_still_covers_verify_compile(tmp_path: Path) -> None:
-    env = os.environ
-    old_compile = env.pop("COMPILE_TIMEOUT_SEC", None)
-    old_verify = env.pop("VERUS_VERIFY_TIMEOUT_SEC", None)
+def test_harness_timeout_sec_still_covers_verify_compile(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("COMPILE_TIMEOUT_SEC", raising=False)
+    monkeypatch.setenv("LEMMA_VERUS_TIMEOUT_SEC", "120")
     cfg = tmp_path / "config.env"
-    cfg.write_text("COMPILE_TIMEOUT_SEC=180\nVERUS_VERIFY_TIMEOUT_SEC=120\n")
-    try:
-        assert harness_timeout_sec(config_env_path=str(cfg)) == 300
-    finally:
-        if old_compile is not None:
-            env["COMPILE_TIMEOUT_SEC"] = old_compile
-        if old_verify is not None:
-            env["VERUS_VERIFY_TIMEOUT_SEC"] = old_verify
+    cfg.write_text("COMPILE_TIMEOUT_SEC=180\n")
+    assert harness_timeout_sec(config_env_path=str(cfg)) == 300
 
 
 def test_official_measure_timeout_uses_bench_when_larger(monkeypatch) -> None:

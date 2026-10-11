@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import os
+import lemma_config
 
 import re
 from functools import lru_cache
@@ -218,10 +218,7 @@ _WIDTH = {"i8": 1, "i16": 2, "i32": 4, "i64": 8}
 
 
 def narrow_cells() -> bool:
-    raw = os.environ.get("LEMMA_NARROW_CELLS", "0").strip()
-    if raw not in ("0", "1"):
-        raise ValueError(f"LEMMA_NARROW_CELLS must be 0 or 1, got {raw!r}")
-    return raw == "1"
+    return bool(lemma_config.get("narrow_cells"))
 
 
 def classify_sql_type(sql_type: str) -> ColumnTypeInfo:

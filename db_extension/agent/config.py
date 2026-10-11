@@ -1,9 +1,11 @@
-"""Agent configuration loaded from research_loop/config.env and process env."""
+"""Agent configuration: run settings from lemma.toml (lemma_config), the imperative/OpenRouter ones from research_loop/config.env and process env."""
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass
 from pathlib import Path
+
+import lemma_config
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_ENV = ROOT / "research_loop" / "config.env"
@@ -39,14 +41,9 @@ class AgentFlags:
     agent_network: bool = False
     agent_data_mode: str = "stats"
     agent_workload_hint: bool = True
-    agent_web_search: bool = False
-    agent_docs_mount: bool = True
-    agent_submit_only_measure: bool = True
     agent_submit_ends_session: bool = False
     agent_image: str = "lemma-agent:latest"
     agent_max_turns: int = 40
-    # Optional HTTP MCP URL (unset when empty). Measure/submit require host Unix-socket MCP.
-    agent_mcp_url: str = ""
 
     @classmethod
     def from_mapping(cls, cfg: dict[str, str]) -> AgentFlags:
@@ -59,13 +56,9 @@ class AgentFlags:
             agent_network=truthy(cfg.get("AGENT_NETWORK", "0")),
             agent_data_mode=cfg.get("AGENT_DATA_MODE", "stats"),
             agent_workload_hint=truthy(cfg.get("AGENT_WORKLOAD_HINT", "1")),
-            agent_web_search=truthy(cfg.get("AGENT_WEB_SEARCH", "0")),
-            agent_docs_mount=truthy(cfg.get("AGENT_DOCS_MOUNT", "1")),
-            agent_submit_only_measure=truthy(cfg.get("AGENT_SUBMIT_ONLY_MEASURE", "1")),
             agent_submit_ends_session=truthy(cfg.get("AGENT_SUBMIT_ENDS_SESSION", "0")),
             agent_image=cfg.get("AGENT_IMAGE", "lemma-agent:latest"),
             agent_max_turns=int(cfg.get("AGENT_MAX_TURNS", "40")),
-            agent_mcp_url=cfg.get("AGENT_MCP_URL", ""),
         )
 
 
@@ -77,19 +70,15 @@ def load_agent_flags(config_env: Path | None = None) -> AgentFlags:
         "OPENROUTER_API_KEY",
         "OPENROUTER_MODEL",
         "OPENROUTER_BASE_URL",
-        "AGENT_TIMEOUT_SEC",
         "AGENT_NETWORK",
-        "AGENT_DATA_MODE",
-        "AGENT_WEB_SEARCH",
-        "AGENT_DOCS_MOUNT",
-        "AGENT_SUBMIT_ONLY_MEASURE",
-        "AGENT_SUBMIT_ENDS_SESSION",
         "AGENT_WORKLOAD_HINT",
         "AGENT_IMAGE",
         "AGENT_MAX_TURNS",
-        "AGENT_MCP_URL",
     )
     for key in keys:
         if key in os.environ:
             cfg[key] = os.environ[key]
+    cfg["AGENT_TIMEOUT_SEC"] = str(lemma_config.get("agent_timeout_sec"))
+    cfg["AGENT_DATA_MODE"] = lemma_config.get("agent_data_mode")
+    cfg["AGENT_SUBMIT_ENDS_SESSION"] = "1" if lemma_config.get("agent_submit_ends_session") else "0"
     return AgentFlags.from_mapping(cfg)

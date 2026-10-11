@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import lemma_config
 from db_extension.optimizer import run_optimization_loop
 from research_loop.assumption_packages.check import check_package
 from research_loop.scripts.sqlsmith_trusted_coverage import (
@@ -33,13 +34,11 @@ DRAWS = 3
 NUM_GENERATE = 600
 NUM_SELECT = 6
 _GEN = ROOT / "holdout" / "gendb_sec_edgar" / "generate_queries.py"
-_DEFAULT_DB = ROOT / "holdout" / "gendb_sec_edgar" / "duckdb" / "sec_edgar_dec.duckdb"
 _OUT = ROOT / "harvest" / "decl_draws"
 
 
 def resolve_sec_db() -> Path:
-    raw = os.environ.get("LEMMA_DUCKDB_PATH", "").strip()
-    path = Path(raw) if raw else _DEFAULT_DB
+    path = ROOT / lemma_config.get("duckdb_path")  # lemma.toml [data]; an absolute path stays absolute
     if not path.is_file():
         raise SystemExit(f"ERROR: SEC DuckDB missing at {path}; cannot generate shuffle.")
     return path

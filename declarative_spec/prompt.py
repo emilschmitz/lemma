@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import lemma_config
+
 from declarative_spec import dense_budget, principles
 from declarative_spec.example_registry import INDEX_GROUPS as _INDEX_GROUPS
 from declarative_spec.example_registry import MORE_EXAMPLES as _MORE_EXAMPLES
@@ -559,7 +561,7 @@ def hardware_section() -> list[str]:
         *keep,
         f"MemTotal: {mem} kB",
         f"compile target: -C target-cpu={target_cpu()} (the CPU may have more SIMD than this; the binary uses the target only)",
-        "reference engine: DuckDB, threads=8, memory_limit=3GB",
+        f"reference engine: DuckDB, threads={lemma_config.get('duck_threads')}, memory_limit={lemma_config.get('duck_memory_limit')}",
         "```",
         "",
         "Guidance, not measurement: about one worker per PHYSICAL core (cores = Core(s) per socket x Socket(s)) for memory-bound scans, since SMT threads add little;",

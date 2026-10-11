@@ -198,6 +198,17 @@ def test_export_env_makes_children_see_the_effective_values(cfg: Path) -> None:
     assert env["LEMMA_AGENT_TIMEOUT_SEC"] == "5" and "AGENT_TIMEOUT_SEC" not in env and env["LEMMA_JOIN_CHAIN"] == "false"
 
 
+def test_export_keeps_the_source_of_every_value(cfg: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    env: dict[str, str] = {"LEMMA_OFFICIAL_ROUNDS": "3"}
+    lc.set_cli("max_iterations", 1, "--max-iterations")
+    lc.export_env(env)
+    lc.clear_cli()
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    got = {k: lc.resolve(k).source for k in ("official_rounds", "max_iterations", "agent_timeout_sec")}
+    assert got == {"official_rounds": "env", "max_iterations": "cli", "agent_timeout_sec": "file"}  # exported, yet reported as they were
+
+
 # --- the real lemma.toml: every resolved conflict has exactly one value ---
 
 

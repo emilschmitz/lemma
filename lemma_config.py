@@ -66,7 +66,7 @@ NOT_CONFIG: frozenset[str] = frozenset(
     """
     LEMMA_CONFIG_ORIGIN LEMMA_MEASURE_DB LEMMA_TRUST_CONFIG LEMMA_AGENT_MODE LEMMA_QUERY_ID LEMMA_RUN_RUNQUERY_BLURB LEMMA_AGENT_WORKSPACE
     LEMMA_RUN_DIR LEMMA_MCP_SOCK LEMMA_MCP_SOCK_DIR LEMMA_AGENT_STREAM_LOG LEMMA_AGENT_STDERR_LOG LEMMA_EGRESS_SOCK LEMMA_EGRESS_PROXY_PORT
-    LEMMA_HEAVY_LOCK_HELD LEMMA_VERUS_BIN LEMMA_VERUS_REAL LEMMA_CLAUDE_CONFIG_DIR LEMMA_AGENT_BACKEND LEMMA_RESEARCH_LOG LEMMA_EXPERIMENT
+    LEMMA_HEAVY_LOCK_HELD LEMMA_VERUS_BIN LEMMA_VERUS_REAL LEMMA_CLAUDE_CONFIG_DIR LEMMA_AGENT_BACKEND LEMMA_RESEARCH_LOG LEMMA_EXPERIMENT LEMMA_MENU_ALLOW_OVERRIDE
     LEMMA_FAST_TRUSTEDS LEMMA_ENABLE_PARALLEL LEMMA_ENABLE_VECTOR_SCAN LEMMA_ENABLE_SPILL_HASH LEMMA_FOLD_SLOT_AXIOMATIC
     LEMMA_FOLD_SLOT_INDUCTIVE LEMMA_FOLD_SLOT_ASSUME_ALIAS LEMMA_EXACT_SUM LEMMA_HASH_SPILL_BYTES LEMMA_EMIT_AGENT_PRIMITIVES
     LEMMA_LOAD_FORMAT LEMMA_LOAD_FROM_DUCKDB LEMMA_DUCKDB_SIDECAR_EXPORT LEMMA_FORCE_REGENERATE LEMMA_PIN_PRODUCT_CATALOG
@@ -165,9 +165,9 @@ def _coerce(key: str, default: Any, raw: str, where: str) -> Any:
     raw = raw.strip()
     try:
         if isinstance(default, bool):
-            if raw.lower() in ("1", "true", "yes", "on"):
+            if raw.lower() in ("1", "true"):
                 return True
-            if raw.lower() in ("0", "false", "no", "off"):
+            if raw.lower() in ("0", "false"):
                 return False
             raise ValueError("expected 0/1 or true/false")
         if isinstance(default, int):
@@ -219,13 +219,20 @@ def resolve(key: str, environ: Mapping[str, str] | None = None) -> Setting:
             _warn_alias(name, key)
         value = values.pop()
         _check(key, value, f"environment {name}")
-        origin = json.loads(environ.get(ORIGIN_ENV, "") or "{}").get(key)
-        return Setting(key, section, value, origin or "env", name)
+        handed_over = json.loads(environ.get(ORIGIN_ENV, "") or "{}").get(key)  # set by forwarded_env/export_env: where the value really came from
+        if handed_over == "file":
+            return Setting(key, section, value, "file", TOML.name)
+        return Setting(key, section, value, handed_over or "env", name)
     return Setting(key, section, default, "file", str(TOML.name))
 
 
 def get(key: str) -> Any:
     return resolve(key).value
+
+
+def default(key: str) -> Any:
+    """The lemma.toml value of ``key``, ignoring environment and CLI."""
+    return schema()[key][1]
 
 
 def set_cli(key: str, value: Any, flag: str | None = None) -> None:
@@ -303,10 +310,10 @@ def check_environment(environ: Mapping[str, str] | None = None) -> None:
 
 def export_env(environ: dict[str, str] | None = None) -> None:
     """Write every effective value as LEMMA_<KEY> into ``environ`` (default: ``os.environ``) so child processes and legacy readers see
-    the same values, and the origin of the non-file ones in ``LEMMA_CONFIG_ORIGIN``."""
+    the same values, and where every one came from (file/env/cli) in ``LEMMA_CONFIG_ORIGIN``, so the source survives the export."""
     environ = os.environ if environ is None else environ
     settings = effective(environ)
-    origin = {k: s.source for k, s in settings.items() if s.source != "file"}
+    origin = {k: s.source for k, s in settings.items()}
     for key, s in settings.items():
         environ[env_name(key)] = str(s.value).lower() if isinstance(s.value, bool) else str(s.value)
         for alias in (a for a, k in ALIASES.items() if k == key):

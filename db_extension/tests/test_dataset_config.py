@@ -234,7 +234,7 @@ def test_row_budget_prompt_section_from_env(
     assert "rem_join" in section
 
 
-@pytest.mark.parametrize("uncapped_value", ["0", "full", "FULL", "unlimited"])
+@pytest.mark.parametrize("uncapped_value", ["0"])
 def test_mcp_iterate_uncapped_matches_official(
     monkeypatch: pytest.MonkeyPatch,
     isolated_ssb: Path,
@@ -275,7 +275,7 @@ def test_row_budget_prompt_when_iterate_equals_official(
     monkeypatch.delenv("LEMMA_BENCH_TBL", raising=False)
     monkeypatch.delenv("LEMMA_DUCKDB_PATH", raising=False)
     monkeypatch.setenv("LEMMA_DATASET_SIZE", "12345")
-    monkeypatch.setenv("LEMMA_MCP_ITERATE_ROWS", "full")
+    monkeypatch.setenv("LEMMA_MCP_ITERATE_ROWS", "0")
     section = row_budget_prompt_section()
     assert "12345" in section
     assert "same pin submit is scored on" in section
@@ -309,7 +309,7 @@ def test_run_runquery_iterate_tool_blurb_matches_mode(
     monkeypatch.delenv("LEMMA_BENCH_TBL", raising=False)
     monkeypatch.delenv("LEMMA_DUCKDB_PATH", raising=False)
     monkeypatch.setenv("LEMMA_DATASET_SIZE", "12345")
-    monkeypatch.setenv("LEMMA_MCP_ITERATE_ROWS", "full")
+    monkeypatch.setenv("LEMMA_MCP_ITERATE_ROWS", "0")
     blurb = run_runquery_iterate_tool_blurb()
     assert "official pin" in blurb.lower()
     assert "not official" not in blurb.lower()

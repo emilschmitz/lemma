@@ -17,33 +17,26 @@ prepare-time DuckDB median and is labelled ``in_session_single_vs_prepare_duck``
 
 from __future__ import annotations
 
-import os
 import shutil
 import statistics
 import time
 from collections.abc import Callable
 from pathlib import Path
 
-ROUNDS_ENV = "LEMMA_OFFICIAL_ROUNDS"
-DUCK_REPS_ENV = "LEMMA_OFFICIAL_DUCK_REPS"
-DEFAULT_ROUNDS = 5
-DEFAULT_DUCK_REPS = 9  # = assemble.TIMED_RUNS: both sides report a median of nine consecutive runs
+import lemma_config
+
+ROUNDS_ENV = lemma_config.env_name("official_rounds")
+DUCK_REPS_ENV = lemma_config.env_name("official_duck_reps")  # default 9 = assemble.TIMED_RUNS: both sides report a median of nine consecutive runs
 MEASUREMENT_OFFICIAL = "official_interleaved_medians"
 MEASUREMENT_IN_SESSION = "in_session_single_vs_prepare_duck"
 
 
 def official_rounds() -> int:
-    k = int(os.environ.get(ROUNDS_ENV, "").strip() or DEFAULT_ROUNDS)
-    if k < 1:
-        raise ValueError(f"{ROUNDS_ENV} must be at least 1, got {k}")
-    return k
+    return int(lemma_config.get("official_rounds"))
 
 
 def duck_reps() -> int:
-    n = int(os.environ.get(DUCK_REPS_ENV, "").strip() or DEFAULT_DUCK_REPS)
-    if n < 1:
-        raise ValueError(f"{DUCK_REPS_ENV} must be at least 1, got {n}")
-    return n
+    return int(lemma_config.get("official_duck_reps"))
 
 
 def interleave(ours: Callable[[], int], duck: Callable[[], int], k: int) -> list[dict]:

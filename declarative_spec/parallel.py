@@ -1,6 +1,6 @@
 """Parallel-scan variant of a declarative spec: ``run_query`` also receives each table as a shared ``Arc``.
 
-Declarative-only, behind ``LEMMA_PARALLEL_VSTD=1``. Nothing here is trusted code of ours: the only trusted
+Declarative-only, behind ``LEMMA_PARALLEL_VSTD=on`` (``parallel_vstd`` in lemma.toml). Nothing here is trusted code of ours: the only trusted
 pieces are vstd's own ``thread::spawn`` / ``JoinHandle::join`` and ``Arc`` (``Arc::new`` ensures ``*v == t``, ``Arc::clone``
 is Verus's built-in equality spec). The ``ensures`` of ``run_query`` stay IDENTICAL: they still talk about the plain
 ``&Cols_t`` parameter. The extra parameter ``<name>_arc: &Arc<Cols_t>`` carries the precondition ``**<name>_arc == *<name>``,
@@ -13,24 +13,24 @@ fold of rows i..n) are additive over ranges, so the partials telescope to the wh
 
 from __future__ import annotations
 
-import os
 import re
 
+import lemma_config
 from declarative_spec.parse import DeclarativeUnsupported
 
-ENV = "LEMMA_PARALLEL_VSTD"
+ENV = lemma_config.env_name("parallel_vstd")
 _SIG = re.compile(r"pub fn run_query\(([^)]*)\) -> \(res: ([^\n]*)\)\n    requires\n")
 ARC_SUFFIX = "_arc"
 
 
 def enabled() -> bool:
-    """``1``: every spec gets the parallel variant, a shape without one fails loudly. ``auto``: the variant where
-    the shape has one; the other shapes keep the sequential spec (the prompt then says there are no Arc parameters)."""
-    return os.environ.get(ENV, "").strip() in ("1", "auto")
+    """``on``: every spec gets the parallel variant, a shape without one fails loudly. ``auto``: the variant where
+    the shape has one; the other shapes keep the sequential spec (the prompt then says there are no Arc parameters). ``off``: none."""
+    return lemma_config.get("parallel_vstd") in ("on", "auto")
 
 
 def strict() -> bool:
-    return os.environ.get(ENV, "").strip() == "1"
+    return lemma_config.get("parallel_vstd") == "on"
 
 
 def params(spec_rs: str) -> list[tuple[str, str]]:

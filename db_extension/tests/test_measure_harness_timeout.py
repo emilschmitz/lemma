@@ -17,12 +17,12 @@ def test_measure_core_harness_timeout_matches_optimizer(
     from declarative_spec.verus_limits import declarative_harness_budget_sec
 
     cfg = tmp_path / "config.env"
-    cfg.write_text("COMPILE_TIMEOUT_SEC=180\nVERUS_VERIFY_TIMEOUT_SEC=60\n")
+    cfg.write_text("COMPILE_TIMEOUT_SEC=180\n")  # the Verus wall is lemma.toml's verus_timeout_sec (300), not a second knob in config.env
     monkeypatch.setattr(mc, "CONFIG_ENV", cfg)
     monkeypatch.delenv("LEMMA_RUN_TIMEOUT_SEC", raising=False)
     monkeypatch.delenv("LEMMA_VERUS_TIMEOUT_SEC", raising=False)
     legacy = harness_timeout_sec(config_env_path=str(cfg))
-    assert legacy == 300
+    assert legacy == 420  # max(compile 180, verus_timeout_sec 300) + 120
     # the declarative pipeline's inner limits (Verus wall + binary run wall) plus slack are longer, and the wait follows them
     assert mc._harness_timeout_sec() == max(legacy, declarative_harness_budget_sec()) == 420
 

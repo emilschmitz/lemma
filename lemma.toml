@@ -62,7 +62,6 @@ duckdb_path = "holdout/gendb_sec_edgar/duckdb/sec_edgar_dec.duckdb"   # the data
 [safety]
 allow_dirty = false                         # true: let a container run start from a dirty git tree (tracked files). Paper runs: never
 scope_memory_max = "9G"                     # MemoryMax of the systemd scope around one container run. Equal to the lemma.slice cap (9G): a larger value would be capped by the slice anyway
-menu_allow_override = false                 # let launcher overrides contradict a menu profile value (the batch launcher passes --allow-override itself)
 egress_profile = ""                         # API hosts the agent container may reach: cursor | anthropic | openai | openrouter | google (comma list); empty = inferred from the agent command
 egress_allowlist = ""                       # comma list of host suffixes replacing the profile; empty = profile
 heavy_lock = "/tmp/lemma_timing.lock"       # machine-wide lock: data export and timed run take it exclusively, Verus shared

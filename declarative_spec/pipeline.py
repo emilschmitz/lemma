@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import lemma_config
 import os
 import re
 import subprocess
@@ -107,7 +108,7 @@ def target_cpu() -> str:
     RISK: a v3 (or native) binary raises SIGILL on a CPU without AVX2/BMI2/FMA; that looks like a failed run. Set ``generic`` there. Every quoted speedup must
     say ``target_cpu=x86-64-v3 (AVX2/BMI2/FMA)`` against DuckDB's prebuilt baseline x86-64 binary (with its own runtime dispatch).
     """
-    return (os.environ.get("LEMMA_TARGET_CPU") or "").strip() or "x86-64-v3"
+    return str(lemma_config.get("target_cpu"))
 
 
 def target_cpu_rustc_args() -> list[str]:
@@ -260,10 +261,7 @@ def run_binary_timed(binary: Path, directory: Path) -> tuple[int, int]:
 
 def speed_bar_mult() -> float:
     """How many times faster than DuckDB the proved binary must be. ``LEMMA_SPEED_BAR_MULT``, default 1.0."""
-    mult = float(os.environ.get("LEMMA_SPEED_BAR_MULT", "1.0"))
-    if mult <= 0:
-        raise ValueError(f"LEMMA_SPEED_BAR_MULT must be positive, got {mult}")
-    return mult
+    return float(lemma_config.get("speed_bar_mult"))
 
 
 _PARALLEL_HINT_HEAD = (

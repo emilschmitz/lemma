@@ -475,7 +475,7 @@ def test_parallel_dict_group_example_verifies_and_a_wrong_merge_does_not(monkeyp
         pytest.skip("verus binary not installed")
     monkeypatch.setenv("LEMMA_VERUS_BIN", str(Path(__file__).resolve().parents[1] / "scripts" / "ram" / "verus_guarded.sh"))
     monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
-    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "1")
+    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "on")
     schema = {"num": {"uom": "varchar", "value": "decimal(38,4)"}}
     spec = emit_declarative_spec(
         "SELECT uom, COUNT(*) AS c, SUM(value) AS s FROM num GROUP BY uom", schema, assumption_package("sec_margin_dec")
@@ -519,7 +519,7 @@ def test_parallel_dict_nullable_example_verifies_and_dropping_the_validity_bit_d
         pytest.skip("verus binary not installed")
     monkeypatch.setenv("LEMMA_VERUS_BIN", str(Path(__file__).resolve().parents[1] / "scripts" / "ram" / "verus_guarded.sh"))
     monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
-    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "1")
+    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "on")
     schema = {"pre": {"stmt": "varchar", "line": "int"}}
     spec = emit_declarative_spec(
         "SELECT COUNT(*) AS c, MIN(line) AS lo FROM pre WHERE stmt = 'BS' AND line > 3", schema, assumption_package("sec_margin_dec")
@@ -552,7 +552,7 @@ def test_block_skip_example_verifies_and_a_wrong_skip_condition_does_not(monkeyp
         pytest.skip("verus binary not installed")
     monkeypatch.setenv("LEMMA_VERUS_BIN", str(Path(__file__).resolve().parents[1] / "scripts" / "ram" / "verus_guarded.sh"))
     monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
-    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "1")
+    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "on")
     schema = {"num": {"uom": "varchar", "qtrs": "int", "ddate": "int"}}
     spec = emit_declarative_spec(
         "SELECT COUNT(*) AS c, MAX(ddate) AS d FROM num WHERE uom = 'shares' AND qtrs = 4", schema, assumption_package("sec_margin_dec")

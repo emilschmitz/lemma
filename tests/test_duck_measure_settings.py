@@ -25,9 +25,9 @@ def test_the_connection_is_capped_and_the_settings_are_returned(db, tmp_path, mo
     monkeypatch.delenv(DUCK_MEMORY_LIMIT_ENV, raising=False)
     monkeypatch.delenv(DUCK_THREADS_ENV, raising=False)
     con, cfg = open_measure_connection(db, tmp_path / "run")
-    assert cfg == {"memory_limit": "3GB", "threads": 8, "temp_directory": str(tmp_path / "run" / "duck_tmp")}
+    assert cfg == {"memory_limit": "8GB", "threads": 8, "temp_directory": str(tmp_path / "run" / "duck_tmp")}
     assert con.execute("SELECT current_setting('threads')").fetchone()[0] == 8
-    assert float(str(con.execute("SELECT current_setting('memory_limit')").fetchone()[0]).split()[0]) < 3.5  # 3GB, not ~80% of RAM
+    assert float(str(con.execute("SELECT current_setting('memory_limit')").fetchone()[0]).split()[0]) < 8.5  # lemma.toml duck_memory_limit (8GB), not ~80% of RAM
     assert con.execute("SELECT current_setting('temp_directory')").fetchone()[0] == str(tmp_path / "run" / "duck_tmp")
     con.close()
 
@@ -46,7 +46,7 @@ def test_expect_json_records_the_settings_the_reference_was_timed_under(db, tmp_
     got = write_query_measure(sql="SELECT a, COUNT(*) AS c FROM t GROUP BY a", schema=schema, catalog=cat, db_path=db, dest=tmp_path / "data")
     saved = json.loads((tmp_path / "data" / "expect.json").read_text())
     for src in (got, saved):
-        assert src["duck_settings"]["memory_limit"] == "3GB" and src["duck_settings"]["threads"] == 8
+        assert src["duck_settings"]["memory_limit"] == "8GB" and src["duck_settings"]["threads"] == 8
         assert src["duck_settings"]["memory_limit_effective"]
 
 

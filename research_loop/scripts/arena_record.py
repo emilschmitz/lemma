@@ -182,7 +182,7 @@ def row_from_run(run_dir: Path, *, query: str, attempt: int, log: Path | None = 
         "duck_allcore_us": duck_us,
         "speedup": speedup,
         "rows_match": rows_match,
-        "env": {k: eff.get(k) for k in ("LEMMA_STRING_ENCODING", "LEMMA_NARROW_CELLS", "LEMMA_PARALLEL_VSTD", "LEMMA_ZERO_COPY", "LEMMA_TARGET_CPU")},
+        "env": {k: eff.get(k) for k in ("LEMMA_STRING_ENCODING", "LEMMA_NARROW_CELLS", "LEMMA_PARALLEL_VSTD", "LEMMA_TARGET_CPU")},
         "database": Path(manifest["duckdb_path"]).name,
         "duck_settings": duck_settings,
         "refreshed": refresh,

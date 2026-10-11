@@ -15,32 +15,20 @@ from db_extension.optimizer import (
 _OPTIMIZER_PY = Path(__file__).resolve().parents[1] / "optimizer.py"
 
 
-def test_harness_timeout_sec_defaults() -> None:
-    env = os.environ
-    old_compile = env.pop("COMPILE_TIMEOUT_SEC", None)
-    old_verify = env.pop("VERUS_VERIFY_TIMEOUT_SEC", None)
-    try:
-        assert harness_timeout_sec(config_env_path="/nonexistent") == max(180, 120) + 120
-    finally:
-        if old_compile is not None:
-            env["COMPILE_TIMEOUT_SEC"] = old_compile
-        if old_verify is not None:
-            env["VERUS_VERIFY_TIMEOUT_SEC"] = old_verify
+def test_harness_timeout_sec_defaults(monkeypatch) -> None:
+    for name in ("COMPILE_TIMEOUT_SEC", "VERUS_VERIFY_TIMEOUT_SEC", "LEMMA_VERUS_TIMEOUT_SEC"):
+        monkeypatch.delenv(name, raising=False)
+    assert harness_timeout_sec(config_env_path="/nonexistent") == max(180, 300) + 120  # compile 180; the ONE Verus wall is lemma.toml's 300
 
 
-def test_harness_timeout_sec_config_env_file(tmp_path: Path) -> None:
-    env = os.environ
-    old_compile = env.pop("COMPILE_TIMEOUT_SEC", None)
-    old_verify = env.pop("VERUS_VERIFY_TIMEOUT_SEC", None)
+def test_harness_timeout_sec_config_env_file(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("COMPILE_TIMEOUT_SEC", raising=False)
+    monkeypatch.setenv("LEMMA_VERUS_TIMEOUT_SEC", "120")
     cfg = tmp_path / "config.env"
-    cfg.write_text("COMPILE_TIMEOUT_SEC=180\n# verify uses default\n")
-    try:
-        assert harness_timeout_sec(config_env_path=str(cfg)) == 300
-    finally:
-        if old_compile is not None:
-            env["COMPILE_TIMEOUT_SEC"] = old_compile
-        if old_verify is not None:
-            env["VERUS_VERIFY_TIMEOUT_SEC"] = old_verify
+    cfg.write_text("COMPILE_TIMEOUT_SEC=180\n")
+    assert harness_timeout_sec(config_env_path=str(cfg)) == 300
+    monkeypatch.setenv("COMPILE_TIMEOUT_SEC", "200")  # the environment wins over the file, as everywhere else
+    assert harness_timeout_sec(config_env_path=str(cfg)) == 320
 
 
 def test_harness_timeout_sec_env_override() -> None:

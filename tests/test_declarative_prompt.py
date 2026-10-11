@@ -295,10 +295,10 @@ def test_big_table_parallel_spec_is_told_the_official_size_and_to_upgrade_to_the
 
     sql = "SELECT SUM(line) AS total FROM pre WHERE line > 5"
     big = CatalogAssumptions(tables={"pre": TableAssumptions(max_rows=9_600_799)})
-    monkeypatch.setenv(parallel.ENV, "1")
+    monkeypatch.setenv(parallel.ENV, "on")
     p = build_declarative_prompt(sql=sql, spec_path="s", edit_path="e", lemma_index="i", spec_text=emit_declarative_spec(sql, _SCHEMA, big))
     assert "`pre` 9,600,799" in p and "ALL cores" in p and "only now try" in p and "parallel recipe below" in p
-    monkeypatch.delenv(parallel.ENV)
+    monkeypatch.setenv(parallel.ENV, "off")
     p = build_declarative_prompt(sql=sql, spec_path="s", edit_path="e", lemma_index="i", spec_text=emit_declarative_spec(sql, _SCHEMA, big))
     assert "`pre` 9,600,799" in p and "no parallel parameters" in p and "only now try" not in p
 
@@ -312,7 +312,7 @@ def test_small_table_spec_gets_no_parallel_rule() -> None:
 def test_the_quoted_multipliers_are_labelled_kernel_only_in_a_parallel_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
     from declarative_spec import parallel
 
-    monkeypatch.setenv(parallel.ENV, "1")
+    monkeypatch.setenv(parallel.ENV, "on")
     p = _prompt("SELECT SUM(line) AS total FROM pre WHERE line > 5")
     assert "kernel only" in p and "outside the timer" in p
 
@@ -464,7 +464,7 @@ def test_a_parallel_prompt_names_only_examples_that_are_mounted_in_that_mode(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str, sql: str
 ) -> None:
     monkeypatch.setenv("LEMMA_STRING_ENCODING", mode)
-    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "1")
+    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "on")
     spec = emit_declarative_spec(sql, _PARALLEL_SCHEMA, _BIG)
     prompt = build_declarative_prompt(
         sql=sql, spec_path="context/ro/spec.rs", edit_path="runquery_agent.rs", lemma_index=lemma_index_markdown(), spec_text=spec
@@ -476,7 +476,7 @@ def test_a_parallel_prompt_names_only_examples_that_are_mounted_in_that_mode(
 
 def test_the_plain_mode_parallel_section_says_the_grouped_examples_are_not_there(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LEMMA_STRING_ENCODING", "plain")
-    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "1")
+    monkeypatch.setenv("LEMMA_PARALLEL_VSTD", "on")
     sql = "SELECT l_shipmode, COUNT(*) AS c FROM lineitem GROUP BY l_shipmode ORDER BY l_shipmode"
     spec = emit_declarative_spec(sql, _PARALLEL_SCHEMA, _BIG)
     prompt = build_declarative_prompt(

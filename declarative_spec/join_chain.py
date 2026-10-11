@@ -16,19 +16,16 @@ or when the query has subqueries, an OR in a join, or fewer than two tables.
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 
+import lemma_config
 from declarative_spec.emit_join import _Slot
 
-ENV = "LEMMA_JOIN_CHAIN"
+ENV = lemma_config.env_name("join_chain")
 
 
 def enabled() -> bool:
-    raw = os.environ.get(ENV, "0").strip() or "0"
-    if raw not in ("0", "1"):
-        raise ValueError(f"{ENV} must be 0 or 1, got {raw!r}")
-    return raw == "1"
+    return bool(lemma_config.get("join_chain"))
 
 
 @dataclass(frozen=True)

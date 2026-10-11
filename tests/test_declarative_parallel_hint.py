@@ -33,7 +33,7 @@ def _metrics(monkeypatch: pytest.MonkeyPatch, spec: str, body: str) -> dict:
 
 
 def test_a_slow_sequential_body_on_a_parallel_spec_gets_the_parallel_hint(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(parallel.ENV, "1")
+    monkeypatch.setenv(parallel.ENV, "on")
     spec = emit_declarative_spec(SQL, SCHEMA, CATALOG)
     out = _metrics(monkeypatch, spec, "    let mut res: Vec<OutRow> = Vec::new();\n    res")
     assert out["status"] == "FAILURE" and "below the speed bar" in out["compiler_error"]
@@ -41,12 +41,12 @@ def test_a_slow_sequential_body_on_a_parallel_spec_gets_the_parallel_hint(monkey
 
 
 def test_no_hint_for_a_body_that_already_spawns_threads_or_a_spec_without_arcs(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(parallel.ENV, "1")
+    monkeypatch.setenv(parallel.ENV, "on")
     par = emit_declarative_spec(SQL, SCHEMA, CATALOG)
     threaded = "    let h = vstd::thread::spawn(move || 0usize);\n    let mut res: Vec<OutRow> = Vec::new();\n    res"
     out = _metrics(monkeypatch, par, threaded)
     assert "below the speed bar" in out["compiler_error"] and "PARALLEL recipe" not in out["compiler_error"]
-    monkeypatch.delenv(parallel.ENV)
+    monkeypatch.setenv(parallel.ENV, "off")
     seq = emit_declarative_spec(SQL, SCHEMA, CATALOG)
     out = _metrics(monkeypatch, seq, "    let mut res: Vec<OutRow> = Vec::new();\n    res")
     assert "below the speed bar" in out["compiler_error"] and "PARALLEL recipe" not in out["compiler_error"]

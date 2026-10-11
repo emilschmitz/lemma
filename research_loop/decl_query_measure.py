@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import BinaryIO
 
 import duckdb
+import lemma_config
 import numpy as np
 
 from declarative_spec.emit import DeclarativeUnsupported, emit_declarative_spec
@@ -31,8 +32,8 @@ _OUT_SCALES = re.compile(r"^// OUT_SCALES: ([0-9,]+)$", re.MULTILINE)
 _EPOCH = dt.date(1970, 1, 1)
 
 
-DUCK_MEMORY_LIMIT_ENV = "LEMMA_DUCK_MEMORY_LIMIT"
-DUCK_THREADS_ENV = "LEMMA_DUCK_THREADS"
+DUCK_MEMORY_LIMIT_ENV = lemma_config.env_name("duck_memory_limit")
+DUCK_THREADS_ENV = lemma_config.env_name("duck_threads")
 MAX_TIE_ROWS = 200_000
 
 
@@ -40,10 +41,11 @@ def duck_settings(dest: Path) -> dict:
     """The DuckDB settings every host measure connection runs under, so the reference and our side are timed identically.
 
     DuckDB's default memory limit is about 80% of the machine's RAM, above the container scope's cap (a big scan could be cgroup-OOM-killed):
-    default 3GB (spills to ``dest/duck_tmp``), 8 threads. ``LEMMA_DUCK_MEMORY_LIMIT`` / ``LEMMA_DUCK_THREADS`` override, recorded in expect.json."""
+    ``lemma.toml`` [measure] duck_memory_limit (8GB, checked to stay below [safety] scope_memory_max; spills to ``dest/duck_tmp``) and duck_threads (8),
+    recorded in expect.json."""
     return {
-        "memory_limit": os.environ.get(DUCK_MEMORY_LIMIT_ENV, "").strip() or "3GB",
-        "threads": int(os.environ.get(DUCK_THREADS_ENV, "").strip() or "8"),
+        "memory_limit": lemma_config.get("duck_memory_limit"),
+        "threads": int(lemma_config.get("duck_threads")),
         "temp_directory": str(dest / "duck_tmp"),
     }
 

@@ -166,11 +166,12 @@ def test_ladder_env_keeps_cursor_agent_for_other_slugs() -> None:
 
 
 @pytest.mark.parametrize("model", ["claude-sonnet-5-5", "grok-4.7-high"])
-def test_ladder_env_uses_auto_parallel_not_strict_for_group_by_queries(model: str) -> None:
-    # Strict "1" refuses map results at emit (the ladder is all GROUP BY); "auto" keeps those sequential.
+def test_ladder_uses_auto_parallel_not_strict_for_group_by_queries(model: str) -> None:
+    # Strict "on" refuses map results at emit (the ladder is all GROUP BY); "auto" (lemma.toml) keeps those sequential.
+    import lemma_config
     from research_loop.scripts.declarative_ladder import agent_env
 
-    assert agent_env(model, "declarative")["LEMMA_PARALLEL_VSTD"] == "auto"
+    assert lemma_config.default("parallel_vstd") == "auto" and "LEMMA_PARALLEL_VSTD" not in agent_env(model, "declarative")
 
 
 def test_ladder_group_by_sql_emits_under_the_ladder_env(monkeypatch: pytest.MonkeyPatch) -> None:

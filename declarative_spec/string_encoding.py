@@ -12,16 +12,13 @@ The code width comes from the catalog (``ColumnAssumption.max_distinct``, a data
 
 from __future__ import annotations
 
-import os
+import lemma_config
 
 DICT_SUFFIX = "__dict"
 
 
 def dict_mode() -> bool:
-    mode = os.environ.get("LEMMA_STRING_ENCODING", "plain").strip() or "plain"
-    if mode not in ("plain", "dict"):
-        raise ValueError(f"LEMMA_STRING_ENCODING must be 'plain' or 'dict', got {mode!r}")
-    return mode == "dict"
+    return lemma_config.get("string_encoding") == "dict"
 
 
 def code_type(max_distinct: int | None) -> str:

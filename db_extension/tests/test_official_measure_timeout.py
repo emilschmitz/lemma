@@ -55,6 +55,7 @@ def test_bench_timeout_read_from_env(monkeypatch) -> None:
 def test_config_env_does_not_shrink_verify_budget_for_measure(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("LEMMA_BENCH_TIMEOUT_SEC", raising=False)
     cfg = tmp_path / "config.env"
-    cfg.write_text("COMPILE_TIMEOUT_SEC=240\nVERUS_VERIFY_TIMEOUT_SEC=200\n")
+    monkeypatch.setenv("LEMMA_VERUS_TIMEOUT_SEC", "200")
+    cfg.write_text("COMPILE_TIMEOUT_SEC=240\n")
     assert harness_timeout_sec(config_env_path=str(cfg)) == 360
     assert official_measure_timeout_sec(config_env_path=str(cfg)) == 360

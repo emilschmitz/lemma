@@ -115,7 +115,7 @@ def test_the_budget_is_an_explicit_setting(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setenv(dense_budget.ENV, "10000")
     assert dense_budget.report(THREE, {"sub.name": 100, "num.tag": 100})["allowed"] is True
     monkeypatch.setenv(dense_budget.ENV, "0")
-    with pytest.raises(ValueError, match="must be positive"):
+    with pytest.raises(ValueError, match="must be >= 1"):
         dense_budget.budget()
 
 

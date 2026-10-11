@@ -2,7 +2,7 @@
 
 A dense recipe (`dict_group_count_dense.rs`, the per-worker arrays, the flat `m1 * m2` slot grid of `hard/dict_parallel_q1.rs`) keeps one slot
 per combination of group-key codes. Its slot count is the product of the key dictionaries' sizes. Above ``LEMMA_DENSE_SLOT_BUDGET`` slots
-(default 2^22) a dense table is tens of gigabytes (times the number of parallel workers), so it is not allowed. A body that keys its groups by
+(`lemma.toml` [prover] dense_slot_budget, default 2^22) a dense table is tens of gigabytes (times the number of parallel workers), so it is not allowed. A body that keys its groups by
 a packed code tuple in a `HashMapWithView` (`hard/dict_join3_group_topk.rs`) needs no such table and is always allowed.
 
 The numbers are known at PREPARE time: the exporter writes the entry count of every dictionary into ``decl_data/expect.json``
@@ -17,11 +17,11 @@ Declared code widths (``Vec<u8>``, ``Vec<u16>``) bound the dictionaries without 
 
 from __future__ import annotations
 
-import os
 import re
 
-ENV = "LEMMA_DENSE_SLOT_BUDGET"
-DEFAULT_BUDGET = 1 << 22
+import lemma_config
+
+ENV = lemma_config.env_name("dense_slot_budget")
 _CAP = {"u8": 2**8, "u16": 2**16, "u32": None}
 HASH_EXAMPLE = "hard/dict_join3_group_topk.rs"
 
@@ -34,11 +34,7 @@ def _hash_pointer() -> str:
 
 
 def budget() -> int:
-    raw = os.environ.get(ENV, "").strip()
-    value = int(raw) if raw else DEFAULT_BUDGET
-    if value <= 0:
-        raise ValueError(f"{ENV} must be positive, got {raw!r}")
-    return value
+    return int(lemma_config.get("dense_slot_budget"))
 
 
 def key_dictionaries(spec_rs: str) -> list[tuple[str, str, int | None]]:
