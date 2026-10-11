@@ -2,74 +2,69 @@
 
 Author: TODO · Affiliation: TODO · Email: TODO
 
-<!-- New version: Emil's edits (abstract, Future-work ablations and paragraph) + Claude's proposed edits, 2026-10-11. -->
+<!-- Mirror of the Claude doc 'Lemma: Verified LLM Synthesis of Query Executors' (rev 515): the Desktop draft verbatim + Emil's edits (abstract, Future-work ablations and paragraph) + the pipeline figure. Claude's proposals live in lemma_paper_proposed.md. -->
+
+Draft for VLDB (PVLDB template), moved here from LEMMA_PAPER_111026.tex to write and add figures; LaTeX comes back at the end.
 
 ## Abstract
 
-General-purpose OLAP engines pay for their generality through interpretation, generic operators, and layers of abstraction. Recent systems show that LLM-synthesized, per-query executors can be far faster, but their correctness rests on tests and inspection, so a single wrong answer can go unnoticed. We present Lemma, a query engine that pairs LLM synthesis with machine-checked proof. Lemma deterministically transpiles each SQL query and its catalog schema into a formal specification in Verus, a verifier for Rust. An LLM agent then writes an optimized native executor for that query and uses Verus to prove the executor equivalent to the specification before it is compiled and served. An executor can only run once it's been verified. Verified binaries are cached and invoked from a DuckDB extension, so recurring analytical queries amortize the one-time cost of synthesis and proof. On TPC-H and the Star Schema Benchmark, Lemma proves [TBA]% of the queries it accepts, and its verified executors run [TBA]× faster than all-core DuckDB on hot runs. To our knowledge, Lemma is the first query engine whose LLM-written executors are formally proved equivalent to the query's specification.
+General-purpose OLAP engines pay for their generality through interpretation, generic operators, and layers of abstraction. Recent systems show that LLM-synthesized, per-query executors can be far faster, but their correctness rests on tests and inspection, so a single wrong answer can go unnoticed. We present Lemma, a query engine that pairs LLM synthesis with machine-checked proof. Lemma deterministically transpiles each SQL query and its catalog schema into a formal specification in Verus, a verifier for Rust. An LLM agent then writes an optimized native executor for that query and uses Verus to prove the executor equivalent to the specification before it is compiled and served. An executor can only run once it's been verified. Verified binaries are cached and invoked from a DuckDB extension, so recurring analytical queries amortize the one-time cost of synthesis and proof. On the SEC-EDGAR and TPC-H workloads, Lemma proves [TBA]% of queries and its verified executors run [TBA]× faster than DuckDB, the strongest OLAP baseline we measure, at [TBA] median end-to-end time. To our knowledge, Lemma is the first query engine whose LLM-written executors are formally proved equivalent to the query's specification.
 
 ## Introduction
 
 - General-purpose OLAP engines pay for generality (interpretation, operators, abstractions).
 - LLM-synthesized per-query code can be much faster (CodexDB, GenDB, Bespoke OLAP) but is hard to trust.
-- **Lemma:** SQL → formal specification → agent writes optimized `run_query` → **Verus proves** `run_query` ≡ specification → native binary, cached in DuckDB.
+- **Lemma:** SQL → formal `MethodSpec` → agent writes optimized `run_query` → **Verus proves** `run_query` ≡ `MethodSpec` → native binary, cached in DuckDB.
 - Target: recurring analytical queries where verify+compile amortizes over many runs.
 
 ## Pipeline
 
-Figure (pipeline): SQL → transpile spec + `valid_cols` → agent `run_query` → assemble → Verus verify → `verus --compile` → binary → check rows and time vs DuckDB → DuckDB extension cache / invoke.
+Figure (pipeline): SQL → transpile `MethodSpec`/`valid_cols` → agent `run_query` → assemble → Verus verify → `verus --compile` → binary → DuckDB extension cache / invoke.
 ![Lemma pipeline](figures/pipeline.png)
 
 *Caption: Lemma end-to-end pipeline (Verus path).*
 
 **Steps.**
 
-1. **Transpile.** Deterministic SQL→Verus: columnar `Cols`, `valid_cols` (row, cell and key bounds from the assumption package), and a declarative specification of the result. Schema-driven (no hard-coded benchmark columns, no per-query templates).
-2. **Agent.** Writes only the `run_query` body and its own helpers (proof, spec and exec functions, all verified). Host injects signature + `requires valid_cols` + `ensures` result ≡ specification. Agent must not add contracts or trusted code.
-3. **Assemble.** Single `.rs`: spec + proved body + host lemmas (proved) + loader + timing `main`.
-4. **Verify.** Verus/Z3: `run_query` meets the specification. Fail ⇒ reject (no ship).
-5. **Compile.** `verus --compile` → native binary.
-6. **Check and time.** The binary's rows are compared with DuckDB's; the speed verdict is the median of 5 interleaved rounds against DuckDB on all cores.
+1. **Transpile.** Deterministic SQL→Verus: columnar `Cols`, `valid_cols` (row/cell bounds), `method_spec` / `method_spec_helper`. Schema-driven (no hard-coded benchmark columns).
+2. ARE WE USING TEMPLATES OR HARDCODED? WHAT DOES GENDB DO?
+3. **Agent.** Writes only the `run_query` body (optimized loop / agg). Host injects signature + `requires valid_cols` + `ensures` ≡ `method_spec`. Agent must not add contracts.
+4. **Assemble.** Single `.rs`: spec + proved body + trusted arith/agg helpers + `load_cols` + timing `main`.
+5. **Verify.** Verus/Z3: `run_query` exec ≡ `method_spec`. Fail ⇒ reject (no ship).
+6. **Compile.** `verus --compile` → native binary (no Dafny postprocessor path).
 7. **Serve.** DuckDB extension caches binary; repeat queries invoke native path.
 
-**Trust boundary.** The agent's code carries no trusted items; across the 19 programs of the frozen run, our own trusted items appear only in the 2 queries with floating point (TPC-H Q1, Q14).
+**Trust boundary (concise). TODO THIS MUST BE UPDATED AND MADE NICE**
 
-| What | Status | Notes |
-| --- | --- | --- |
-| Agent `run_query` and helpers | Proved | No `assume`, `admit`, `external_body`; admission rejects them |
-| Host helper lemmas (star join, group close, distinct, folds) | Proved | Emitted per query shape |
-| Float idealization (11) + IEEE division by zero (1) | Trusted | Only for AVG and ratios |
-| Data assumptions (row/value caps, unique keys, nullability) | Checked at load | Assumption package; `check.py` and `main` |
-| Loader and timing `main` | Unverified Rust | Runtime asserts; row check against DuckDB |
-| Transpiler (SQL ≡ spec) | Tested, not proved | Differential checks against DuckDB, adversary reviews |
-| vstd, Verus, Z3, rustc | Trusted base | Thread spawn/join, Vec, Arc specs |
+- **Proved:** agent `run_query` ≡ `method_spec` (scalar + group-by fixtures; ghost map tied to helper in same loop as exec agg).
+- **Trusted:** wrapping arith under `valid_cols`; NativeAgg-style `hashmap_*`/`agg_*`; `load_cols` I/O; some SQL-feature helpers (LIKE, certain joins/set ops) when used.
+- **Trusted transpiler:** SQL ≡ `method_spec` checked empirically / tests, not proved in Verus.
+- Residual gap same class as Dafny externs: malicious `external_body` can lie; agent-written proved body cannot.
 
 **Why Verus (vs prior Dafny path).**
 
 - One artifact: annotated Rust is both proof subject and executable (no translate + unsafe peephole pass).
 - Avoids Dafny `Int`/BigInt vs bitvector timeout tradeoff and postprocessor soundness hole.
-- Hot path is ordinary Rust (`Vec`, slices, vstd threads) with ghost state for the proof.
+- Hot path is ordinary Rust (`HashMap`, slices) with ghost state for the proof.
 
 ## System notes
 
 ### DuckDB extension
 
 - `SELECT lemma('SQL...')` triggers optimize / verify / compile on miss; cache hit runs native binary.
-- Demo path today; the measured results come from the container launcher.
+- WIP polish; research harness also runs standalone (`benchmark_verified.py`).
 
-### Agent sandbox
+### Agent sandbox (extension)
 
-- The agent (Claude Code) runs in Docker with no network except the model API through an allowlisted egress bridge.
-- It edits only marked regions; verifies and submits through MCP tools (`run_runquery`, `verify_functions` for partial checks, `submit_runquery`).
-- Examples mode: `full`, `principles` (7 technique examples on made-up tables), `none` (task, rules, tools, Verus reference docs only).
-- Optional data profile: exact SQL statistics per query (row counts, selectivities, group counts), no query plan.
-- Inspiration: Inspect AI tool-call sandboxing.
+- Production need: sandbox the optimizer agent (or at least its tool calls). Status as of 2026-07-21: host OpenRouter ReAct loop; tools run in Docker (`--network none` by default). Not fully "production-hardened" yet.
+- we add cursor agent to generate cheaply and to avoid having to optimize our own harness. (hyo-harness could be cool with env-var supplied start command)
+- Inspiration: Inspect AI tool-call sandboxing; Inspect agent bridge as a way to let users plug in their own agent CLI (idk that is for monitoring)
+- Data policy modes for DuckDB tool: none / stats / full (read-only).
 
-### SQL surface
+### SQL surface (sketch)
 
-- Supported: joins (incl. comma joins, star joins on unique keys), filters, GROUP BY/HAVING, ORDER BY/LIMIT, SUM/COUNT/MIN/MAX/AVG, COUNT DISTINCT, uncorrelated scalar subqueries, anti-joins, NULLs, DECIMAL, DATE, dictionary strings.
-- Not supported: recursion, window functions, outer joins (except anti-join), set operations, string functions, correlated subqueries; 5+ table joins lightly tested.
-- Workloads: TPC-H SF1 and SSB SF1.
+- Analytical subset: aggs, filters, GROUP BY/HAVING, joins, subqueries/CTEs, set ops, ORDER BY/LIMIT --- many advanced shapes still use TRUSTED helpers.
+- Fixtures: SSB flat, TPC-H (e.g. Q1/Q6), plus basic-SQL holdouts.
 
 ## Related Work
 
@@ -121,25 +116,66 @@ Figure (pipeline): SQL → transpile spec + `valid_cols` → agent `run_query` �
 
 ## Evaluation
 
-In the frozen run (commit 75f4303), all 19 attempted queries proved, matched DuckDB's rows and beat all-core DuckDB: median 2.04× on SSB (12 queries) and 1.29× on TPC-H (7 queries).
+- Baselines: DuckDB (1-thread / MT), bare hand-written Rust, Lemma verified binary (both the standard extern/trusted performant one and the slow pure verified one), lemma-as-a-duckdb-extension
+- Various metrics i guess, focus on the one that GenDB also used (afaik not complete cold start, ask IT)
+- Workloads: SSB flat, TPC-H SF1; same custom dataset as gendb 4.2. in general same data as gendb
+- tune parameters, e.g. agent used, time used for opitmization
+- Report: latency, verify+compile time, token and/or $ if agent loop used.
+- maybe we can get an estimate on cash savings for a use-case if we have that data (ask IT)
+- ablation: remove TRUSTEDs from verus
 
-![Speedup over all-core DuckDB per query, SF1](results/speedup.png)
+### Holdout microbenchmark (agent-style kernels)
 
-**Setup.** Claude Sonnet 5.5 in the container, 25 min per query, full worked examples, dictionary strings, star-join specs. Official verdict: median of 5 interleaved rounds against DuckDB 1.5.4 on all 8 threads, 8 GB memory limit. AMD Ryzen AI 5 330 (4 cores / 8 threads), 14 GB RAM. SF1.
+**Snapshot.** Measured `2026-07-21T22:38:52Z` (UTC); holdout artifact commit `dcc9d59`. Fair protocol: both sides start from *already loaded* in-memory columns / DuckDB tables; 3 warmups then median of 5 timed query-only runs. Lemma kernels written as a perfect agent would (zone maps at ingest, dict codes at ingest, in-place hash probe, dense small-card buckets); query predicates / join build+probe / aggs stay on the clock.
 
-**Caveats.**
+**Hardware (this machine).** AMD Ryzen AI 5 330 (8 logical CPUs, SMT), ~7.8 GiB RAM, Linux WSL2. MT modes: `RAYON_NUM_THREADS=8`, DuckDB `PRAGMA threads=8`.
 
-- 6 of 19 queries had their own solution mounted as an example; the agent copied or adapted examples in 15 of 19. Only TPC-H Q18 was clearly solved independently. Runs without examples (`none` mode) are in progress.
-- Times are milliseconds at SF1; only ratios to DuckDB on the same machine are meaningful, not GenDB's absolute times (SF10, 32 cores, 384 GB).
-- Data loading is excluded from the timed runs, as in GenDB's hot runs.
-- Not attempted: 15 of 22 TPC-H queries; SSB Q2.2 does not transpile (BETWEEN on strings).
+**Datasets (on disk under holdout export; no extra cloud download).**
 
-Still to add: proof and agent time per query, cost, the `none`/`principles` runs. The H1--H25 holdout table (hand-written kernels, not proved) is dropped.
+- Holdout working set ≈ **364 MB** under `verus/research_loop/holdout/data/`: synthetic `scan_skew` 500k / 1M; Zipf join 200k×50k; EDGAR-like `str_filter` 100k; TPC-H SF1 *slices* (200k and 1M lineitem + matching orders); SSB flat 500k row slice from local `ssb-dbgen/lineorder_flat.tbl`.
+- Source TPC-H SF1 full tables also present locally (≈ 967 MB under `data/tpch-sf1/`) used only to cut slices.
+
+**Queries H1--H25.** Diverse shapes: selective zone-pruned scans, small-card group-by, Zipf joins (+ multiplicity), string/dict filters, TPC-H Q1/Q3/Q6-like literals on slices, SSB Q1.1-ish, large-card mod-1000 group-by. Baselines: Lemma ST/MT, bare Rust ST, DuckDB 1T/MT. Ratios <1 mean Lemma wins.
+
+*Table: Holdout H1--H25 hot-loop latency (μs). Ratios = Lemma / other.*
+
+| Q | L_st | L_mt | bare | D_1t | D_mt | L/D_1t | L_mt/D_mt |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| H1 | 13 | 956 | 120 | 461 | 1513 | 0.03 | 0.63 |
+| H2 | 64 | 64 | 144 | 1689 | 2110 | 0.04 | 0.03 |
+| H3 | 1698 | 1106 | 1249 | 79716 | 62558 | 0.02 | 0.02 |
+| H4 | 125 | 307 | 621 | 1751 | 2830 | 0.07 | 0.11 |
+| H5 | 1034 | 1626 | 682 | 1448 | 1894 | 0.71 | 0.86 |
+| H6 | 621 | 1516 | 2779 | 1737 | 3270 | 0.36 | 0.46 |
+| H7 | 248 | 264 | 4853 | 3930 | 3889 | 0.06 | 0.07 |
+| H8 | 1 | 973 | 38 | 378 | 1128 | 0.00 | 0.86 |
+| H9 | 13 | 1086 | 118 | 436 | 1181 | 0.03 | 0.92 |
+| H10 | 27 | 1340 | 244 | 442 | 1471 | 0.06 | 0.91 |
+| H11 | 1223 | 1095 | 1485 | 87953 | 65229 | 0.01 | 0.02 |
+| H12 | 3992 | 4050 | 4110 | 607234 | 415966 | 0.01 | 0.01 |
+| H13 | 178 | 232 | 542 | 1703 | 2943 | 0.10 | 0.08 |
+| H14 | 3 | 294 | 296 | 357 | 848 | 0.01 | 0.35 |
+| H15 | 3979 | 2371 | 3205 | 3922 | 2612 | 1.01 | 0.91 |
+| H16 | 1204 | 1160 | 25008 | 17662 | 5609 | 0.07 | 0.21 |
+| H17 | 3563 | 2918 | 18925 | 6105 | 5001 | 0.58 | 0.58 |
+| H18 | 1264 | 1122 | 6912 | 8457 | 3203 | 0.15 | 0.35 |
+| H19 | 384 | 799 | 358 | 857 | 1362 | 0.45 | 0.59 |
+| H20 | 386 | 579 | 1188 | 2883 | 2729 | 0.13 | 0.21 |
+| H21 | 504 | 2313 | 388 | 2815 | 2995 | 0.18 | 0.77 |
+| H22 | 1811 | 1963 | 3143 | 10470 | 8908 | 0.17 | 0.22 |
+| H23 | 674 | 2010 | 580 | 1828 | 1657 | 0.37 | 1.21 |
+| H24 | 122 | 125 | 123 | 3792 | 6972 | 0.03 | 0.02 |
+| H25 | 5522 | 2234 | 6181 | 11897 | 5092 | 0.46 | 0.44 |
+
+**Takeaways (this snapshot).** Lemma ST ≤ DuckDB 1T on 24/25 queries (H15 ≈ tie). Wins concentrate on zone-pruned scans, dict-coded filters, small-card group-by, and Zipf joins; MT helps when work is large enough (e.g. H15/H17/H25) and hurts tiny kernels. Scale-up gaps (partitioned join build, vectorized scans, spill hash, DuckDB-backed columnar load) are tracked as flagged primitives / `verus/db_extension` experiments---not claimed solved by this table.
+
+- Additional baselines still planned: full Verus-proved binaries (not only agent-primitive holdout kernels), verify+compile amortization, cache hits.
+- Larger GCP / SF-scale runs deferred; protocol above is the intended fair compare.
 
 ## Future Work
 
-1. Shrink TRUSTED surface: exact AVG and division as integer fractions (removes the 12 float items for DECIMAL data); verify the loader's runtime checks.
-2. Hardware-aware optimization: the agent already gets `lscpu` and a data profile; needs verification support for HW-specific objects/params.
+1. Shrink TRUSTED surface: extend Verus coverage so low-level perf ops need fewer `external_body` externs.
+2. Hardware-aware optimization: give agent HW info; needs verification support for HW-specific objects/params.
 3. Stronger optimizing harness / "RSI"-style self-improvement loop (cite recent RSI harness papers --- TODO).
 4. Distributed executors: interesting, but verification challenges multiply (networks, faults, consistency).
 5. Figure out how to ideally integrate the agent with an existing DB or whether that is a good idea. E.g. with DuckDB, the agent could just run parallel as a separate db with its own storgae, it could read duckdb storage (out of memory), it could use duckdb chunk api, it could use higher level api.
