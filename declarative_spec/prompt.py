@@ -1155,6 +1155,21 @@ def _dict_hard_pointers(spec_text: str) -> list[str]:
     return [f"Long verified example for this feature (dictionary mode): `context/ro/examples/{f}`: {what}." for f, what in found] + ([""] if found else [])
 
 
+def _data_profile_section(root: str) -> list[str]:
+    """`data_profile = "stats"` in lemma.toml: a pointer to the exact statistics file; nothing at all for `none`."""
+    if lemma_config.get("data_profile") != "stats":
+        return []
+    return [
+        "## Data profile",
+        "",
+        f"`{root}/data_profile.md` holds exact statistics of this query on the official data, computed by SQL on the database: row counts, per-column",
+        "min/max/NULL fraction/distinct count, the selectivity of each filter, distinct keys and surviving rows per join, group counts,",
+        "and the rows tied at the LIMIT cut. Use it to judge sizes and where the work is. It is a measurement of this one database, not an assumption:",
+        "the proof must not depend on it, because it has to hold for every database that satisfies the assumption package.",
+        "",
+    ]
+
+
 def build_declarative_prompt(
     *,
     sql: str,
@@ -1245,6 +1260,7 @@ def build_declarative_prompt(
         (P.RECIPE, _parallel_section(spec_text, shape)),
         (P.RECIPE, _distinct_section(spec_text)),
         (P.RECIPE, _group_close_section(spec_text)),
+        (P.LIMITS, _data_profile_section(root)),
         (P.TASK, [""]),
     ]
     if shape["hard"]:

@@ -102,6 +102,7 @@ CHOICES: dict[str, tuple[Any, ...]] = {
     "examples": ("full", "principles", "none"),
     "parallel_vstd": ("off", "auto", "on"),
     "agent_data_mode": ("none", "stats", "full"),
+    "data_profile": ("none", "stats"),
     "claude_effort": ("none", "low", "medium", "high", "xhigh", "max"),
 }
 # Smallest allowed value of a numeric key.
