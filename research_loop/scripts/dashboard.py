@@ -68,6 +68,10 @@ def _run_row(run: Path, results: dict) -> dict:
             "speedup": m.get("speedup"),
             "partial": _json(f).get("partial", False),
         })
+    proved = [c for c in checks if c["status"] == "SUCCESS" or (c["verified"].endswith(" 0 errors") and c["speedup"])]
+    best = max((c["speedup"] for c in proved if c["speedup"]), default=None)
+    sub = _json(ws / "mcp_results" / "submitted.json")
+    sub_x = (sub.get("metrics") or {}).get("speedup")
     res = results.get(str(run), {})
     return {
         "run": run.name,
@@ -80,6 +84,8 @@ def _run_row(run: Path, results: dict) -> dict:
         "result": res,
         "says": _last_says(ws / "logs" / "agent_stream.jsonl"),
         "sessions": man.get("sessions") or [],
+        "best": best,
+        "submitted_x": sub_x,
     }
 
 
@@ -114,9 +120,11 @@ def page(limit: int) -> str:
             f"{(' ' + format(c['speedup'], '.2f') + 'x') if c['speedup'] else ''}</span>"
             for c in r["checks"])
         says = "<br>".join(html.escape(s[:300]) for s in r["says"])
+        best = (f"best proved {r['best']:.2f}x" if r["best"] else "no proved run yet")
+        best += f"<br>submitted {r['submitted_x']:.2f}x" if r["submitted_x"] else ""
         rows.append(
-            f"<tr><td><code>{html.escape(r['run'])}</code><br><small>{html.escape(r['model'])}</small></td>"
-            f"<td><small>{html.escape(r['sql'])}</small></td><td>{state}{' · submitted' if r['submitted'] else ''}</td>"
+            f"<tr><td><a href='/run/{html.escape(r['run'])}'><code>{html.escape(r['run'])}</code></a><br><small>{html.escape(r['model'])}</small></td>"
+            f"<td><small>{html.escape(r['sql'])}</small></td><td>{state}{' · submitted' if r['submitted'] else ''}</td><td><small>{best}</small></td>"
             f"<td>{checks}</td><td><small>{says}</small></td></tr>")
     return f"""<!doctype html><html><head><meta charset=utf-8><meta http-equiv=refresh content=10>
 <meta name=viewport content="width=device-width, initial-scale=1"><title>Lemma runs</title><style>
@@ -128,8 +136,58 @@ table{{border-collapse:collapse;width:100%}} td{{border-top:1px solid var(--line
 .chk{{display:inline-block;border:1px solid var(--line);border-radius:4px;padding:0 4px;margin:1px;font-size:12px}}
 .chk.ok{{border-color:var(--ok)}} .chk.bad{{border-color:var(--bad)}} .chk.part{{border-style:dashed}}
 </style></head><body><h3>Lemma container runs</h3><p class=dim>{html.escape(_system())} · refreshes every 10 s · newest first</p>
-<table><tr><th>run</th><th>query</th><th>result</th><th>verify checks (verified/errors, speedup)</th><th>agent's last words</th></tr>
+<table><tr><th>run</th><th>query</th><th>result</th><th>best so far</th><th>verify checks (verified/errors, speedup)</th><th>agent's last words</th></tr>
 {''.join(rows)}</table></body></html>"""
+
+
+def trace_page(name: str) -> str:
+    run = RUNS / name
+    if not run.is_dir() or "/" in name:
+        return "<p>no such run</p>"
+    ws = run / "workspace"
+    items = []
+    stream = ws / "logs" / "agent_stream.jsonl"
+    try:
+        lines = stream.read_text(errors="replace").splitlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        if not line.startswith("{"):
+            continue
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        if e.get("type") == "system" and e.get("subtype") == "init":
+            items.append("<h4>session start</h4>")
+        elif e.get("type") == "assistant":
+            for c in e.get("message", {}).get("content") or []:
+                if c.get("type") == "text" and c.get("text", "").strip():
+                    items.append(f"<div class=say>{html.escape(c['text'])}</div>")
+        elif e.get("type") == "tool_call" and e.get("subtype") == "started":
+            items.append(f"<pre class=tool>{html.escape(json.dumps(e.get('tool_call'))[:1500])}</pre>")
+    checks = []
+    for f in sorted((ws / "mcp_results" / "runs").glob("*.json")):
+        d = _json(f)
+        m = d.get("metrics", {})
+        checks.append(f"<tr><td><code>{f.stem}</code>{' (partial)' if d.get('partial') else ''}</td><td>{html.escape(str(m.get('status')))}</td>"
+                      f"<td>{'' if m.get('speedup') is None else format(m['speedup'], '.2f') + 'x'}</td>"
+                      f"<td><pre class=err>{html.escape(str(m.get('compiler_error') or '')[:2500])}</pre></td></tr>")
+    sub = _json(ws / "mcp_results" / "submitted.json")
+    prof = run / "data_profile.md"
+    body = (f"<p><a href='/'>back</a></p><h3>{html.escape(name)}</h3>"
+            f"<p><b>submitted:</b> {html.escape(str(sub.get('run_id', 'nothing')))} "
+            f"{'' if not (sub.get('metrics') or {}).get('speedup') else format(sub['metrics']['speedup'], '.2f') + 'x'}</p>"
+            f"<h4>verify checks</h4><table>{''.join(checks)}</table>"
+            f"<h4>agent conversation (text + tool calls)</h4>{''.join(items)}"
+            + (f"<h4>data profile</h4><pre>{html.escape(prof.read_text())}</pre>" if prof.exists() else ""))
+    return f"""<!doctype html><html><head><meta charset=utf-8><meta http-equiv=refresh content=15><title>{html.escape(name)}</title><style>
+:root{{--bg:#fff;--fg:#1d1d1f;--line:#e5e5e5;--box:#f5f5f7}}
+@media (prefers-color-scheme: dark){{:root{{--bg:#16181c;--fg:#e8e8e8;--line:#2c2f36;--box:#202329}}}}
+body{{background:var(--bg);color:var(--fg);font:14px system-ui,sans-serif;margin:16px}} a{{color:inherit}}
+.say{{background:var(--box);padding:8px;margin:6px 0;border-radius:6px;white-space:pre-wrap}}
+pre{{white-space:pre-wrap;word-break:break-word;font-size:12px}} .tool{{border-left:3px solid var(--line);padding-left:8px}}
+td{{border-top:1px solid var(--line);padding:4px;vertical-align:top}}</style></head><body>{body}</body></html>"""
 
 
 def main() -> None:
@@ -140,7 +198,7 @@ def main() -> None:
 
     class H(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
-            body = page(args.limit).encode()
+            body = (trace_page(self.path[5:]) if self.path.startswith("/run/") else page(args.limit)).encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()

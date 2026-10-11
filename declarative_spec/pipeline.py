@@ -281,11 +281,11 @@ PARALLEL_HINT_PRINCIPLES = (
     + "`context/ro/examples/parallel_scan_sum.rs` (sums/counts: partials telescope; MIN/MAX: merge (cell, any) pairs; "
     "GROUP BY over a small code domain: per-worker dense arrays merged slotwise) and call `run_runquery` again."
 )
+# examples = none: facts only (no recipe): the body is single-threaded, the reference engine uses all cores, the spec offers `<table>_arc`.
 PARALLEL_HINT_NONE = (
-    _PARALLEL_HINT_HEAD.removesuffix(" as in ").rstrip()
-    + " (sums/counts: partials telescope; MIN/MAX: merge (cell, any) pairs; GROUP BY over a small code domain: "
-    "per-worker dense arrays merged slotwise) and call `run_runquery` again."
+    " This body is single-threaded; the reference engine runs on all cores; your spec has the `<table>_arc` parameters."
 )
+_SPEED_ADVICE = "Use one pass over dense arrays; avoid a loop over one table inside another and a hash-map update per row where a dense Vec indexed by key works."
 
 
 def _apply_speed_bar(metrics: dict, speed_bar: dict | None, *, parallel_hint: bool = False, official: bool = False) -> dict:
@@ -371,7 +371,7 @@ def _apply_speed_bar(metrics: dict, speed_bar: dict | None, *, parallel_hint: bo
                 f"proved but below the speed bar: query {latency} us, DuckDB {duck_us} us "
                 f"({speedup:.2f}x; the bar is {mult:g}x faster than DuckDB). "
                 + (f"[{om.MEASUREMENT_OFFICIAL}: medians of {len(rounds_info['official_rounds'])} rounds, per round (ours/DuckDB us): {_rounds_text(rounds_info)}] " if official else "")
-                + "Use one pass over dense arrays; avoid a loop over one table inside another and a hash-map update per row where a dense Vec indexed by key works."
+                + ("" if principles.examples_none() else _SPEED_ADVICE)  # none: no strategy advice in host feedback
                 + ((PARALLEL_HINT_NONE if principles.examples_none() else PARALLEL_HINT_PRINCIPLES if principles.principles_only() else PARALLEL_HINT) if parallel_hint else "")
             ),
         }

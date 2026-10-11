@@ -267,3 +267,14 @@ def test_partial_check_needs_function_names(tmp_path: Path, monkeypatch: pytest.
     monkeypatch.setenv("LEMMA_AGENT_WORKSPACE", str(tmp_path))
     out = mc.verify_functions_solution(names=[], query_id=1, ws=tmp_path, sql="x", schema={})
     assert out["ok"] is False and "names" in out["error"]
+
+
+def test_none_mode_below_bar_feedback_has_no_strategy_advice(monkeypatch) -> None:
+    from declarative_spec import pipeline
+    assert "telescope" not in pipeline.PARALLEL_HINT_NONE and "dense" not in pipeline.PARALLEL_HINT_NONE
+    assert "single-threaded" in pipeline.PARALLEL_HINT_NONE
+
+
+def test_speed_advice_is_kept_outside_none_mode() -> None:
+    from declarative_spec import pipeline
+    assert "dense" in pipeline._SPEED_ADVICE and "telescope" in pipeline.PARALLEL_HINT_PRINCIPLES
