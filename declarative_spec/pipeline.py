@@ -65,7 +65,7 @@ def verify_assembled(rs_source: str, *, timeout_sec: int | None = None) -> tuple
         return proc.returncode == 0, combined
     except subprocess.TimeoutExpired as e:
         out = _text(e.stdout) + _text(e.stderr)
-        return False, timeout_message(out, timeout_sec)
+        return False, timeout_message(out, timeout_sec, getattr(e, 'wait_sec', None), getattr(e, 'run_sec', None))
     finally:
         try:
             os.unlink(path)
@@ -172,9 +172,12 @@ def compile_and_run(
             "status": "FAILURE",
             "proof_verified": False,
             "latency_us": -1,
-            "compiler_error": timeout_message(_text(exc.stdout) + _text(exc.stderr), timeout_sec),
+            "compiler_error": timeout_message(_text(exc.stdout) + _text(exc.stderr), timeout_sec, exc.wait_sec, exc.run_sec),  # type: ignore[attr-defined]
             "verify_msg": _text(exc.stdout) + _text(exc.stderr),
+            "verus_wait_sec": exc.wait_sec,  # type: ignore[attr-defined]
+            "verus_run_sec": exc.run_sec,  # type: ignore[attr-defined]
         }
+    split = {"verus_wait_sec": proc.wait_sec, "verus_run_sec": proc.run_sec}  # type: ignore[attr-defined]
     log = (proc.stdout or "") + "\n" + (proc.stderr or "")
     (directory / FULL_LOG_NAME).write_text(log)
     proved = proc.returncode == 0 and _proof_verified(log)
@@ -189,6 +192,7 @@ def compile_and_run(
         )
         # compiler_error and verify_msg are the same text on purpose: the MCP layer must not repeat it.
         return {
+            **split,
             "status": "FAILURE",
             "proof_verified": proved,
             "latency_us": -1,
@@ -211,6 +215,7 @@ def compile_and_run(
         if owned_dir:
             binary.unlink(missing_ok=True)
         return {
+            **split,
             "status": "FAILURE",
             "proof_verified": True,
             "latency_us": -1,
@@ -229,6 +234,7 @@ def compile_and_run(
             binary.unlink(missing_ok=True)
         err = (run.stderr or run.stdout or "binary did not print QUERY_LATENCY_US")[-2000:]
         return {
+            **split,
             "status": "FAILURE",
             "proof_verified": True,
             "latency_us": -1,
@@ -236,6 +242,7 @@ def compile_and_run(
             "verify_msg": log[-2000:],
         }
     return {
+        **split,
         "status": "SUCCESS",
         "proof_verified": True,
         "latency_us": latency,
@@ -498,6 +505,7 @@ def verify_functions_only(
     verus = _verus_binary()
     deadline = time.monotonic() + timeout_total
     results: list[dict] = []
+    wait_total = run_total = 0.0
     for name in names:
         left = max(1, int(deadline - time.monotonic()))
         try:
@@ -507,8 +515,12 @@ def verify_functions_only(
                 cwd=work_dir,
             )
         except subprocess.TimeoutExpired as exc:
-            results.append({"name": name, "verified": False, "summary": "", "error": timeout_message(_text(exc.stdout) + _text(exc.stderr), timeout_total)})
+            wait_total += exc.wait_sec or 0.0  # type: ignore[attr-defined]
+            run_total += exc.run_sec  # type: ignore[attr-defined]
+            results.append({"name": name, "verified": False, "summary": "", "error": timeout_message(_text(exc.stdout) + _text(exc.stderr), timeout_total, exc.wait_sec, exc.run_sec)})  # type: ignore[attr-defined]
             break
+        wait_total += proc.wait_sec or 0.0  # type: ignore[attr-defined]
+        run_total += proc.run_sec  # type: ignore[attr-defined]
         log = (proc.stdout or "") + "\n" + (proc.stderr or "")
         verified = proc.returncode == 0 and _proof_verified(log)
         entry: dict = {"name": name, "verified": verified, "summary": _verify_summary(log)}

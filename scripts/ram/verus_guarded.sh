@@ -8,6 +8,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cfg() { PYTHONPATH="$ROOT" python3 -m lemma_config get "$1"; }
 SLOTS="$(cfg verus_slots)"
+T0=$SECONDS
 MEM_MAX="$(cfg verus_mem_max)"
 VERUS="${LEMMA_VERUS_REAL:-$HOME/tools/verus/verus}"
 exec 9>"/tmp/lemma-verus-slot-$(( $$ % SLOTS )).lock"
@@ -32,4 +33,6 @@ if [ "${LEMMA_HEAVY_LOCK_HELD:-0}" != "1" ]; then
   exec 7>"$(cfg heavy_lock)"
   flock -s 7
 fi
+# The caller's verus_timeout_sec started at its call, so this wait counts against it; report it so the result can split wait from run time.
+echo "LEMMA_VERUS_QUEUE_WAIT_SEC=$(( SECONDS - T0 ))" >&2
 exec systemd-run --user --scope --quiet --slice=lemma.slice -p MemoryMax="$MEM_MAX" -p MemorySwapMax=0 "$VERUS" "$@"
