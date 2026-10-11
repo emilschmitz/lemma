@@ -14,6 +14,7 @@ import os
 import re
 import signal
 import subprocess
+import time
 from pathlib import Path
 
 import lemma_config
@@ -69,15 +70,37 @@ def verus_limit_args() -> list[str]:
 _RLIMIT_HIT = "Resource limit (rlimit) exceeded"
 
 
-def timeout_message(partial_output: str, timeout_sec: int) -> str:
-    """A wall timeout is not a proof error. Say which phase it hit."""
+WAIT_MARKER = re.compile(r"^LEMMA_VERUS_QUEUE_WAIT_SEC=(\d+)\n?", re.M)
+
+
+def split_wait(stderr: str) -> tuple[int | None, str]:
+    """The guard's queue-wait marker (seconds, or None when the Verus binary is unguarded) and the stderr without it."""
+    m = WAIT_MARKER.search(stderr or "")
+    return (None, stderr or "") if m is None else (int(m.group(1)), WAIT_MARKER.sub("", stderr, count=1))
+
+
+def split_text(wait_sec: float | None, run_sec: float, limit_sec: int) -> str:
+    """The one-line split of a Verus call: time queued for a slot, time Verus ran, and the limit both count against."""
+    waited = "no slot wait measured" if wait_sec is None else f"waited {wait_sec:.0f}s for the Verus slot"
+    return f"{waited}, Verus ran {run_sec:.0f}s, limit {limit_sec}s (`verus_timeout_sec`; the wait counts toward it)"
+
+
+def timeout_message(partial_output: str, timeout_sec: int, wait_sec: float | None = None, run_sec: float | None = None) -> str:
+    """A wall timeout is not a proof error. Say which phase it hit, and how much of the limit was spent queued."""
+    split = "" if run_sec is None else f" [{split_text(wait_sec, run_sec, timeout_sec)}]"
     if "verification results::" in partial_output:
         return (
             f"COMPILE TIMEOUT: Verus finished verifying but the build did not finish within "
-            f"{timeout_sec}s (`verus_timeout_sec` in lemma.toml). This is not a proof error."
+            f"{timeout_sec}s (`verus_timeout_sec` in lemma.toml).{split} This is not a proof error."
+        )
+    if run_sec is not None and wait_sec is not None and run_sec <= 0:
+        return (
+            f"VERIFY TIMEOUT while queued: waited {wait_sec:.0f}s for the Verus slot and never started; the {timeout_sec}s limit "
+            f"(`verus_timeout_sec`) counts the wait [{split_text(wait_sec, run_sec, timeout_sec)}]. This is not a proof error. "
+            "Too many Verus calls were in flight at once: send fewer, one at a time."
         )
     return (
-        f"VERIFY TIMEOUT: Verus did not finish verifying within {timeout_sec}s (`verus_timeout_sec` in lemma.toml). "
+        f"VERIFY TIMEOUT: Verus did not finish verifying within {timeout_sec}s (`verus_timeout_sec` in lemma.toml).{split} "
         "This is not a proof error: no `verification results::` line was printed. "
         "Waiting longer does not help. Verify a smaller part first (a helper function or one loop with its invariant), "
         "split big functions and big loop bodies into smaller ones, and drop quantifiers you do not need."
@@ -105,7 +128,11 @@ def run_verus(cmd: list[str], *, timeout: int, cwd: Path | None = None) -> subpr
     `subprocess.run(timeout=...)` kills only the parent. Verus's Z3 child then keeps a core and
     gigabytes of memory until it finishes, which can be minutes. Raises `TimeoutExpired` carrying
     the partial output so the caller can say which phase was cut off.
+
+    The limit runs from this call, so a wait for the guard's slot counts against it. The result (and the TimeoutExpired) carry
+    `wait_sec` (queue wait the guard reported; the whole elapsed time if it never reported; None for an unguarded binary) and `run_sec`.
     """
+    t0 = time.monotonic()
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=cwd, start_new_session=True
     )
@@ -114,5 +141,18 @@ def run_verus(cmd: list[str], *, timeout: int, cwd: Path | None = None) -> subpr
     except subprocess.TimeoutExpired:
         os.killpg(proc.pid, signal.SIGKILL)
         out, err = proc.communicate()
-        raise subprocess.TimeoutExpired(cmd, timeout, output=out, stderr=err) from None
-    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+        elapsed = time.monotonic() - t0
+        wait, err = split_wait(err)
+        guarded = Path(cmd[0]).name == "verus_guarded.sh"
+        if guarded and wait is None:
+            wait = elapsed  # never got past the queue
+        exc = subprocess.TimeoutExpired(cmd, timeout, output=out, stderr=err)
+        exc.wait_sec = wait  # type: ignore[attr-defined]
+        exc.run_sec = max(0.0, elapsed - (wait or 0.0))  # type: ignore[attr-defined]
+        raise exc from None
+    elapsed = time.monotonic() - t0
+    wait, err = split_wait(err)
+    done = subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+    done.wait_sec = wait  # type: ignore[attr-defined]
+    done.run_sec = max(0.0, elapsed - (wait or 0.0))  # type: ignore[attr-defined]
+    return done

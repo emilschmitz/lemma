@@ -1182,6 +1182,18 @@ def _speed_target_section(target: float) -> list[str]:
     ]
 
 
+def _verus_queue_lines() -> list[str]:
+    """How many Verus runs execute at once and what a queued call costs; both numbers come from lemma.toml (`verus_slots`, `verus_timeout_sec`)."""
+    slots = int(lemma_config.get("verus_slots"))
+    limit = int(lemma_config.get("verus_timeout_sec"))
+    at_once = "1 Verus run executes at a time" if slots == 1 else f"{slots} Verus runs execute at the same time"
+    return [
+        f"- On this machine {at_once}. Further `run_runquery` / `verify_functions` calls wait in a queue for a free slot, and that waiting counts toward the",
+        f"  {limit}s limit of the call (the call's clock starts when you send it). Send one call at a time: parallel calls only make each other time out. A result",
+        "  says `waited N s for the Verus slot, Verus ran M s` so you can tell queueing from a slow proof.",
+    ]
+
+
 def build_declarative_prompt(
     *,
     sql: str,
@@ -1234,6 +1246,7 @@ def build_declarative_prompt(
             "  try `verus`, `npx` or any package install.",
             "- `verify_functions` (`names`, path `runquery_agent.rs`) verifies only the functions you name; this is faster on large files, and the",
             "  result is a partial check that does not count as a submission.",
+            *_verus_queue_lines(),
             "- Done means: Verus says `N verified, 0 errors`, the result equals the reference engine's rows, and the timed run beats",
             "  the reference engine (`run_runquery` reports the speedup). `submit_runquery` accepts only a run that is `ok`, i.e. one that also",
             "  beats the reference engine: a verified body below the bar is reported as `proved but below the speed bar`, is refused by",
