@@ -19,6 +19,12 @@ from declarative_spec.parse_query import parse_query
 from declarative_spec.resolve import flatten_derived
 from research_loop.table_assumptions import CatalogAssumptions, ColumnAssumption, TableAssumptions
 
+@pytest.fixture(autouse=True)
+def _switch_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests are about the shape being on: lemma.toml [sql] derived_agg_expr."""
+    monkeypatch.setenv("LEMMA_DERIVED_AGG_EXPR", "1")
+
+
 SCHEMA = {
     "fact": {"fk": "bigint", "dk1": "bigint", "dk2": "bigint", "v": "bigint", "w": "bigint", "d": "date", "tag": "varchar"},
     "dim": {"dk": "bigint", "region": "varchar", "label": "varchar"},

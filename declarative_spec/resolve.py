@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from dataclasses import replace
 
+from declarative_spec import sql_switches
 from declarative_spec.emit_join import _build_slots
 from declarative_spec.parse import DeclarativeUnsupported
 from declarative_spec.schema_types import SchemaModel
@@ -136,12 +137,12 @@ def flatten_derived(query: Query) -> Query:
                 agg = replace(agg, column=src.text.rpartition(".")[2], table=None)
             else:
                 agg = replace(agg, column=None, table=None, arith=src.text, arith_refs=src.refs)
-        elif agg.expr:
+        elif agg.expr and sql_switches.derived_agg_expr():
             if agg.filter_expr:
                 raise DeclarativeUnsupported("a FILTER over a derived table")
             text, extra = _inline_case(agg.expr, output)
             agg = replace(agg, expr=text, arith_refs=tuple(agg.arith_refs) + extra)
-        elif agg.arith:
+        elif agg.expr or agg.arith:
             raise DeclarativeUnsupported("aggregate expression over a derived table")
         merged.aggs.append(agg)
     return merged
