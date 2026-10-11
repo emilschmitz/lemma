@@ -114,7 +114,7 @@ Every vstd module is already imported by glob in the spec; write no `use` lines.
 You may write `broadcast use vstd::<module>::group_<name>;` for exactly the groups listed below.
 A `broadcast use` turns a bundle of vstd lemmas on for automatic use by Z3 in the current scope
 (for example `broadcast use vstd::seq::group_seq_axioms;`). More groups means more solver noise,
-so use them when stuck. Helper `proof fn` / `spec fn` items go between `// AGENT_HELPERS_START`
+so use them when stuck. Helper `proof fn` / `spec fn` / exec `fn` items (an exec helper is verified against its own requires/ensures) go between `// AGENT_HELPERS_START`
 and `// AGENT_HELPERS_END`.
 
 ## Lookup recipes (run from `context/ro/verus/`; each is one grep)

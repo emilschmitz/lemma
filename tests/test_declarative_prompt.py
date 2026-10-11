@@ -223,7 +223,7 @@ def test_all_four_helper_files_are_mounted(tmp_path: Path) -> None:
 
 def test_prompt_carries_the_q1_lessons() -> None:
     p = _prompt("SELECT stmt, COUNT(*) AS c FROM pre GROUP BY stmt")
-    assert "an exec `fn` helper is rejected" in p
+    assert "plain exec `fn` items" in p and "no-decreases attribute is rejected" in p
     assert "backward pass" in p and "`as_bytes`" in p and "--rlimit" in p
 
 

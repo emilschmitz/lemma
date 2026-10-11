@@ -10,6 +10,7 @@ the same rows as DuckDB (tests/test_declarative_principles.py).
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -133,13 +134,30 @@ STAND_IN: dict[str, str | None] = {
 
 def mode() -> str:
     raw = os.environ.get(ENV, "").strip() or "full"
-    if raw not in ("full", "principles"):
-        raise ValueError(f"{ENV} must be 'full' or 'principles', got {raw!r}")
+    if raw not in ("full", "principles", "none"):
+        raise ValueError(f"{ENV} must be 'full', 'principles' or 'none', got {raw!r}")
     return raw
 
 
+def examples_none() -> bool:
+    """`LEMMA_EXAMPLES=none`: no example file is mounted and no prompt, lemma-index or hint text names one."""
+    return mode() == "none"
+
+
 def principles_only() -> bool:
-    return mode() == "principles"
+    """True when no benchmark-shaped example may be cited: `principles`, and also `none` (which then drops every citation, see ``scrub``)."""
+    return mode() in ("principles", "none")
+
+
+# Our example directory, however a sentence spells it. Verus's own `verus/examples` is documentation and stays.
+_EXAMPLE_REF = re.compile(r"context/ro/examples|(?<![\w/])examples/(?:INDEX|\w+\.rs|hard/)|\.helpers\.rs")
+
+
+def scrub(text: str) -> str:
+    """In `none` mode, drop every line that names an example file (`.../examples/...`); otherwise the text unchanged."""
+    if not examples_none():
+        return text
+    return "\n".join(ln for ln in text.split("\n") if not _EXAMPLE_REF.search(ln))
 
 
 def names() -> list[str]:
@@ -154,7 +172,7 @@ def example_ref(full_set_file: str) -> str | None:
 def cite(full_set_file: str, *, lead: str = "") -> str:
     """`lead` + a back-quoted `context/ro/examples/<file>` path for the sentence, or "" when principles mode has no stand-in."""
     ref = example_ref(full_set_file)
-    return "" if ref is None else f"{lead}`context/ro/examples/{ref}`"
+    return "" if ref is None or examples_none() else f"{lead}`context/ro/examples/{ref}`"
 
 
 def index_markdown() -> str:

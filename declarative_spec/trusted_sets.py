@@ -57,6 +57,9 @@ def _default_lemmas_rs(spec: str | None = None) -> str:
 def _dict_note() -> str:
     from declarative_spec import principles
 
+    if principles.examples_none():
+        text = _DICT_NOTE_TEMPLATE.format(FILTER_EXAMPLE="", GROUP_EXAMPLE="")
+        return text.replace("A worked, verified body (counts backwards to match the suffix fold, a ghost slot\n  sequence for the output rows, `lemma_count_pos` for 'count > 0 means a witness row'):", "Count backwards to match the suffix fold, keep a ghost slot sequence for the output rows, and use `lemma_count_pos` for 'count > 0 means a witness row'.")
     if principles.principles_only():
         return _DICT_NOTE_TEMPLATE.format(
             FILTER_EXAMPLE=" A worked body: `context/ro/examples/scan_filter_sum_count.rs` (the filter) and `group_by_dict_key.rs` (a literal's code).",

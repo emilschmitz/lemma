@@ -446,6 +446,8 @@ def mount_examples(ro: Path) -> None:
     from declarative_spec.string_encoding import dict_mode
 
     dest = ro / "examples"
+    if principles.examples_none():
+        return  # LEMMA_EXAMPLES=none: no example file and no examples directory at all
     if principles.principles_only():
         principles.mount(dest)  # LEMMA_EXAMPLES=principles: the curated technique set only, no benchmark-shaped body
         return
@@ -761,7 +763,7 @@ def _parallel_section(spec_text: str, shape: dict) -> list[str]:
     if "lemma_group_close_rows" in spec_text and shape["dict"] and not principles.principles_only():
         lines += [
             "A parallel HASH GROUP BY with a merge (an integer key too wide for a dense array; per-worker hash tables, merged by key; then the top-N selection and the host closing lemmas):",
-            "`context/ro/examples/hard/dict_parallel_hash_group_topn.rs` (1.46x on the real 39.4M-row table). Notes from it: the helpers region admits only `proof fn` / `spec fn`, so the worker's",
+            "`context/ro/examples/hard/dict_parallel_hash_group_topn.rs` (1.46x on the real 39.4M-row table). Notes from it: the helper region also admits exec `fn`s, but this file keeps the worker's",
             "fold and the merge step are NESTED `fn`s at the top of the `run_query` body; a `struct` is not admitted either (use a tuple); a postcondition on a `&mut` parameter uses `final(x)` / `old(x)`.",
         ]
     if principles.principles_only():
@@ -1058,8 +1060,9 @@ _PROOF_HYGIENE = """\
   keep only the plain length and `ROW_CAP_...` facts you use).
 - A quantifier or existential over a spec function of a row (`key_at(pre, i0)`) only fires on a ground term: bind
   one (`let w = key_at(pre, i0);`) or take a witness with `choose|r: int| ...` before you assert the instance.
-- Only `proof fn` and `spec fn` items are allowed in the helper region: an exec `fn` helper is rejected, so write
-  string comparisons and loop bodies inline in `run_query`.
+- The helper region takes `proof fn`, `spec fn` and plain exec `fn` items. An exec helper is verified by Verus against its
+  own `requires` / `ensures` (give it a `decreases` on every loop and recursion; the no-decreases attribute is rejected),
+  and `run_query` may rely only on those `ensures`. No `struct`, `impl`, `trait`, `macro_rules!`, `static` or `use` there.
 - The host's backward recursive folds fit a single backward pass (`let mut i = t.n; while i > 0 { i -= 1; ... }`)
   with suffix invariants (`acc == fold(rows i..n)`); prefer it to a forward pass.
 - A product of two cells needs its own bound assert (for example `price * (100 - disc) <= 2e30` from the cell cap
@@ -1170,7 +1173,7 @@ def build_declarative_prompt(
         "## Regions and rules",
         "",
         "- Two regions are kept, everything else in the file is discarded: the `run_query` body between",
-        "  `// AGENT_EDIT_START` and `// AGENT_EDIT_END`, and `proof fn` / `spec fn` helpers between",
+        "  `// AGENT_EDIT_START` and `// AGENT_EDIT_END`, and `proof fn` / `spec fn` / exec `fn` helpers between",
         "  `// AGENT_HELPERS_START` and `// AGENT_HELPERS_END` (just above `run_query`). A nested `proof fn` or",
         "  `spec fn` inside the body does not work. A helper may not reuse a name the host spec defines.",
         "- Write no `use` lines: every vstd module is imported by glob; call lemmas by bare name",
@@ -1178,7 +1181,7 @@ def build_declarative_prompt(
         "  The only allowed line is `broadcast use vstd::<module>::group_<name>;` naming a group listed in",
         f"  `{root}/verus/INDEX.md` (it turns a bundle of vstd lemmas and axioms on for the solver; any vstd group is allowed, including one that lists `axiom_*` members: they are vstd's own trusted core; more groups, more noise), e.g. `broadcast use vstd::seq::group_seq_axioms;`. Write it inside the body or inside a `proof fn` body; at the top level of the helper region it is rejected.",
         "- Forbidden (rejected before Verus runs): `assume(`, `admit(`, `#[verifier::external_body]`, `assume_specification`,",
-        "  `unimplemented!`, and any name containing `axiom`, `arbitrary` or `proof_from_false` outside a `broadcast use vstd::<module>::group_<name>;` line (you cannot write an axiom of your own). The hash-key",
+        "  `unimplemented!`, any attribute other than `#[verifier::opaque|rlimit|loop_isolation|spinoff_prover|truncate|inline|memoize|trigger|auto]` / `#[trigger]` (so no `external*`, `exec_allows_no_decreases_clause`, `cfg`, `derive`), `impl` / `trait` / `macro_rules!` / `static`, and any name containing `axiom`, `arbitrary` or `proof_from_false` outside a `broadcast use vstd::<module>::group_<name>;` line (you cannot write an axiom of your own). The hash-key",
         "  axiom is already broadcast: do not name it. `requires`/`ensures` are the host's; changing them has",
         "  no effect.",
         "- `StringHashMap` and `HashMapWithView` are in scope (`new`, `insert`, `contains_key`, `get`; the view key",
@@ -1260,4 +1263,4 @@ def build_declarative_prompt(
             "last message; an empty or placeholder body is a failure, not a result.",
         ]
     )
-    return "\n".join(sections) + "\n"
+    return principles.scrub("\n".join(sections)) + "\n"

@@ -65,7 +65,7 @@ def test_the_flag_defaults_to_full_and_a_bad_value_is_loud(monkeypatch: pytest.M
     monkeypatch.setenv(P.ENV, "principles")
     assert P.principles_only()
     monkeypatch.setenv(P.ENV, "everything")
-    with pytest.raises(ValueError, match="must be 'full' or 'principles'"):
+    with pytest.raises(ValueError, match="must be 'full', 'principles' or 'none'"):
         P.mode()
 
 
