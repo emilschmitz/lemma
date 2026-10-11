@@ -133,6 +133,8 @@ In the frozen run (commit 75f4303), all 19 attempted queries proved, matched Duc
 
 **Setup.** Claude Sonnet 5.5 in the container, 25 min per query, full worked examples, dictionary strings, star-join specs. Official verdict: median of 5 interleaved rounds against DuckDB 1.5.4 on all 8 threads, 8 GB memory limit. AMD Ryzen AI 5 330 (4 cores / 8 threads), 14 GB RAM. SF1.
 
+**Number formats.** Both Lemma and DuckDB represent `DECIMAL` and `DATE` values as exact integers; floating point appears only where SQL returns `DOUBLE` (`AVG` in TPC-H Q1 and the ratio in Q14), where both compute in IEEE double and our specification treats the operations as exact reals (see Trust boundary).
+
 **Caveats.**
 
 - 6 of 19 queries had their own solution mounted as an example; the agent copied or adapted examples in 15 of 19. Only TPC-H Q18 was clearly solved independently. Runs without examples (`none` mode) are in progress.
