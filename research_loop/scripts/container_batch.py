@@ -82,6 +82,7 @@ def main(argv: list[str]) -> int:
     if argv[:1] == ["--locked-run"]:
         return locked_run(argv[1:])
     lemma_config.check_environment()  # unknown LEMMA_* variables, dead settings, bad values: before the first run
+    lemma_config.require_run_settings()  # duckdb_path and assumption_package have no default: stop before the first run
     lemma_config.require_clean_tree()  # every run of the batch starts from the committed tree
     OUT.mkdir(parents=True, exist_ok=True)
     logs: list[str] = []

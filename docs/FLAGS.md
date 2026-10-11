@@ -11,12 +11,12 @@ lemma.toml  <  environment variable LEMMA_<KEY>  <  explicit CLI flag
 * The variable of a key is `LEMMA_` + the key upper-cased, in any section: `[measure] official_rounds` is `LEMMA_OFFICIAL_ROUNDS`. An empty variable counts as unset. Booleans are `0/1/true/false`.
 * CLI flags exist on the launcher (`run_container_agent.py`: `--style --menu --agent --trusted-set --assumption-package --speed-bar-mult --max-iterations`); `container_batch.py` takes `model:query` pairs and passes the model as `--agent`.
 * No other source. `research_loop/config.env` no longer owns any container-run setting (it keeps only the legacy imperative / overnight / OpenRouter ones, see its header).
-* Startup check (`container_batch.py`, `run_container_agent.py`, `python -m lemma_config check`): an unknown `LEMMA_*` variable (typo or dead flag), a dead setting, a bad value or type, or a duck memory limit at or above the scope cap raises, listing the culprits. Nothing falls back to a default.
+* Startup check (`container_batch.py`, `run_container_agent.py`, `python -m lemma_config check`): an unknown `LEMMA_*` variable (typo or dead flag), a dead setting, a bad value or type, or a duck memory limit at or above the scope cap raises, listing the culprits. Nothing falls back to a default. Two keys have no default at all: `duckdb_path` and `assumption_package` (empty in the file; a run without a value, from the file, `LEMMA_<KEY>` or a flag, stops at startup with a message; `assumption_package = "auto"` remains valid as an explicit value).
 * Old spellings still work with a one-line deprecation message (table below). If both spellings are set to different values it raises.
-* Every container run writes all keys with `value`, `section`, `source` (`file`/`env`/`cli`) and `origin` into the run manifest (`lemma_config`) and the `RESULT` line (`config`), with `git_sha` and `git_dirty`. A dirty tree (tracked files; untracked and gitignored data do not count) is refused unless `allow_dirty = true`.
+* Every container run writes all keys with `value`, `section`, `source` (`file`/`env`/`cli`) and `origin` into the run manifest (`lemma_config`) and the `RESULT` line (`config`), with `git_sha`, `git_dirty` and `git_untracked_files` (a count; untracked files never make `git_dirty` true). A dirty tree (tracked files; untracked and gitignored data do not count) is refused unless `allow_dirty = true`.
 * `container_batch.py` forwards nothing by name. The child reads `lemma.toml` itself; the batch passes only values that differ from the file (`lemma_config.forwarded_env`, plus `LEMMA_CONFIG_ORIGIN` so a flag is still reported as a flag).
 
-## Sections (40 keys)
+## Sections (42 keys)
 
 | Section | Keys |
 | --- | --- |
@@ -63,3 +63,17 @@ Kept although partly inert: `mcp_iterate_rows` (prompt text and the probe-pin ch
 ## The agent prompt
 
 Every run value the prompt states (DuckDB threads and memory limit, iterate cap, Verus rlimit, dense-slot budget, a non-default speed bar) is read from the effective config when the prompt is built; the worker count it mentions is read from the worked example's own header. Prompt sections carry a kind (task, rules, tools, limits, hardware, recipe, example-pointer, `declarative_spec/principles.py`); `examples = "none"` emits only the first five.
+
+## Speed target and further sessions
+
+* `speed_target` (float >= 1.0, default 10.0): the prompt (section "Target speedup", present in every examples mode) tells the agent to submit a first verified body that beats the reference engine, then keep trying faster verified bodies until this speedup, submitting each improvement and never replacing a submitted body with a slower or unverified one.
+* The per-query wall budget is `max_iterations x agent_timeout_sec`. Until a body has beaten the bar the old rule holds (a further session only after a session that did not verify, at most `max_iterations`). After one has, a session that ends early with the best speedup (official measure or the agent's submitted run, whichever is higher) below `speed_target` is followed by another session that starts from the best body, with a short host message (best speedup, target, minutes left); its wall limit is the time left. Stop: target reached, budget used, or `max_idle_sessions` sessions in a row without a better speedup. `speed_target = 1.0` is the old behaviour (the first body that beats the bar ends the query). `speed_bar_mult`, the acceptance bar of `submit_runquery`, is unchanged.
+* The manifest has `sessions`: per session start, end, agent seconds, session speedup, best speedup so far, and the stop reason on the last one.
+
+## Partial verification
+
+The MCP tool `verify_functions(names, path)` runs Verus on the assembled program with `--verify-root --verify-function <name>` once per name (same admission, same Verus guards, `verus_timeout_sec` for all names together). No compile, no timing, no row check. The result is labelled "partial check: not a proof of run_query"; it is stored under `mcp_results/runs/` with `partial: true` and `ok: false`, and `submit_runquery` refuses its run_id.
+
+## Defaults changed with this section
+
+`string_encoding = "dict"` and `join_chain = true` (a query whose tables lack declared unique keys, or with a nullable key, a self-join, a subquery or an OR join keeps the general FROM-order form).

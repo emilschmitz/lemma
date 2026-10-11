@@ -280,6 +280,9 @@ Verus **finished** (proof error, not a timeout). Only treat it as a timeout if t
 6. `research_loop/generated/verify_error_custom.log` and
    `research_loop/agents/failed_transpile/verify_*.json` for local prove_loop.
 
+**Successes too.** Before you describe what the container agent did, how it optimized, or why, for a success as well as a failure, read
+`workspace/logs/agent_stream.jsonl` (assistant text and every tool call) and the MCP runs, and quote them. Never write "presumably".
+
 Do **not** classify “agent could not prove” from leftover verify / `runquery_agent.rs`
 alone. r18 Q2 leftover was 123/1 after they had already submitted **124/0**.
 

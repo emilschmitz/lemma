@@ -59,6 +59,21 @@ HOST_TOOL_SPECS: tuple[HostToolSpec, ...] = (
         },
     ),
     HostToolSpec(
+        name="verify_functions",
+        description=(
+            "Verify only the named functions of the file (helpers, or run_query), with the same host checks and Verus limits as run_runquery. "
+            "No compile, no timing, no row check. Result is labelled a partial check: it is not a proof of run_query and its run_id cannot be submitted."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "names": {"type": "array", "items": {"type": "string"}, "description": "function names (matched as a unique substring by Verus)"},
+            },
+            "required": ["names"],
+        },
+    ),
+    HostToolSpec(
         name="submit_runquery",
         description=(
             "Score a verified run_id. Pass the run_id from run_runquery. "

@@ -229,6 +229,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--trusted-set", help="override the trusted_set axis")
     ap.add_argument("--assumption-package", help="override the catalog axis")
     ap.add_argument("--speed-bar-mult", help="override the speed bar axis")
+    ap.add_argument("--duckdb-path", help="the database (default: lemma.toml; there is no built-in default)")
     ap.add_argument("--max-iterations", type=int, help="agent sessions per query (default: lemma.toml)")
     args = ap.parse_args(argv)
     lemma_config.clear_cli()
@@ -236,10 +237,11 @@ def main(argv: list[str] | None = None) -> int:
         ("spec_style", args.style, "--style"), ("menu", args.menu, "--menu"), ("agent_model", args.agent, "--agent"),
         ("trusted_set", args.trusted_set, "--trusted-set"), ("assumption_package", args.assumption_package, "--assumption-package"),
         ("speed_bar_mult", None if args.speed_bar_mult is None else float(args.speed_bar_mult), "--speed-bar-mult"),
-        ("max_iterations", args.max_iterations, "--max-iterations"),
+        ("max_iterations", args.max_iterations, "--max-iterations"), ("duckdb_path", args.duckdb_path, "--duckdb-path"),
     ):
         lemma_config.set_cli(key, value, flag)
     lemma_config.check_environment()  # unknown LEMMA_* variables, dead settings, bad values: before any work
+    lemma_config.require_run_settings()  # duckdb_path and assumption_package have no default
     lemma_config.require_clean_tree()  # a run must be reproducible from its commit
     if (args.query_sql is None) == (args.query_file is None):
         ap.error("give exactly one of --query-sql and --query-file")

@@ -54,7 +54,7 @@ def declarative_harness_budget_sec() -> int:
 def run_timeout_message(timeout_sec: int) -> str:
     """A binary that Verus proved but that did not finish: a speed failure, not a proof error."""
     return (
-        f"RUN TIMEOUT: the verified binary did not finish within {timeout_sec}s on the full tables ({RUN_TIMEOUT_ENV}). "
+        f"RUN TIMEOUT: the verified binary did not finish within {timeout_sec}s on the full tables (`run_timeout_sec` in lemma.toml). "
         "Verus proved it (`verification results:: N verified, 0 errors`), so this is not a proof error: the body is far too slow to run. "
         "A loop over one table inside a loop over another costs |T1| * |T2| steps, and the host spec's own nested folds are exactly that, so they "
         "must not be run as the body. Make ONE pass over the largest table and reach the others through small lookup arrays "
@@ -74,12 +74,13 @@ def timeout_message(partial_output: str, timeout_sec: int) -> str:
     if "verification results::" in partial_output:
         return (
             f"COMPILE TIMEOUT: Verus finished verifying but the build did not finish within "
-            f"{timeout_sec}s ({TIMEOUT_ENV}). This is not a proof error."
+            f"{timeout_sec}s (`verus_timeout_sec` in lemma.toml). This is not a proof error."
         )
     return (
-        f"VERIFY TIMEOUT: Verus did not finish verifying within {timeout_sec}s ({TIMEOUT_ENV}). "
+        f"VERIFY TIMEOUT: Verus did not finish verifying within {timeout_sec}s (`verus_timeout_sec` in lemma.toml). "
         "This is not a proof error: no `verification results::` line was printed. "
-        "Remove the slow part of the proof (see the Z3 smoothness guidance) rather than waiting longer."
+        "Waiting longer does not help. Verify a smaller part first (a helper function or one loop with its invariant), "
+        "split big functions and big loop bodies into smaller ones, and drop quantifiers you do not need."
     )
 
 

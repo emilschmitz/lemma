@@ -1,4 +1,4 @@
-"""Unique-key join chains (LEMMA_JOIN_CHAIN): fact-first fold order, unique-key requirements, and the host-proved single-support lemmas."""
+"""Unique-key join chains (join_chain, default on): fact-first fold order, unique-key requirements, and the host-proved single-support lemmas."""
 
 from __future__ import annotations
 
@@ -46,9 +46,9 @@ def _params(spec: str) -> list[str]:
     return re.findall(r"(\w+): &Cols_\w+", sig)
 
 
-def test_the_flag_is_off_by_default_and_a_bad_value_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_flag_is_on_by_default_and_a_bad_value_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(join_chain.ENV, raising=False)
-    assert not join_chain.enabled()
+    assert join_chain.enabled()
     monkeypatch.setenv(join_chain.ENV, "yes")
     with pytest.raises(ValueError):
         join_chain.enabled()

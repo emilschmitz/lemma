@@ -446,6 +446,29 @@ def _invoke_declarative_pipeline(
     return normalize_harness_metrics(metrics)
 
 
+def invoke_partial_verify(*, sql: str, schema: dict, runquery_path: Path, names: list[str], workload: str | None = None) -> dict:
+    """Declarative only: verify just the named functions of the agent's file (``declarative_spec.pipeline.verify_functions_only``)."""
+    from db_extension.workload_config import catalog_assumptions_for_workload
+    from declarative_spec.bench import load_speed_bar
+    from declarative_spec.emit import emit_declarative_spec
+    from declarative_spec.pipeline import verify_functions_only
+
+    spec_path = runquery_path.parent / "context" / "ro" / "spec.rs"
+    spec_rs = spec_path.read_text(encoding="utf-8") if spec_path.is_file() else emit_declarative_spec(sql, schema, catalog_assumptions_for_workload(workload))
+    column_bins = speed_bar = None
+    loaded = load_speed_bar(runquery_path.parent / "decl_data")
+    if loaded is not None:
+        column_bins, speed_bar = loaded
+    return verify_functions_only(
+        spec_rs=spec_rs,
+        agent_source=runquery_path.read_text(encoding="utf-8"),
+        names=names,
+        work_dir=runquery_path.parent / "declarative_build",
+        column_bins=column_bins,
+        speed_bar=speed_bar,
+    )
+
+
 def invoke_verus_custom_pipeline(
     *,
     sql: str,

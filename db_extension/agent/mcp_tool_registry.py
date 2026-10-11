@@ -67,6 +67,12 @@ def dispatch_host_tool(name: str, args: dict, ctx: MeasureContext | None = None)
             schema=ctx.schema,
         )
         return attach_session(ws, _relativize_paths(out, ws))
+    if canon == "verify_functions":
+        qid = int(args["query_id"]) if args.get("query_id") is not None else ctx.query_id
+        out = mc.verify_functions_solution(
+            path=args.get("path"), names=list(args.get("names") or []), query_id=qid, ws=ws, sql=ctx.sql, schema=ctx.schema
+        )
+        return attach_session(ws, _relativize_paths(out, ws))
     if canon == "submit_runquery":
         run_id = args.get("run_id")
         if not run_id:
@@ -123,6 +129,11 @@ def register_fastmcp(mcp: Any) -> None:
         return json.dumps(dispatch_host_tool("run_runquery", args), indent=2)
 
     @mcp.tool()
+    def verify_functions(names: list[str], path: str = "runquery_agent.rs") -> str:
+        """Verify only the named functions of the file: a partial check, not a proof of run_query, not submittable."""
+        return json.dumps(dispatch_host_tool("verify_functions", {"path": path, "names": names}), indent=2)
+
+    @mcp.tool()
     def submit_runquery(run_id: str) -> str:
         """Mark a prior run_id as the official submission (does not re-run harness)."""
         return json.dumps(dispatch_host_tool("submit_runquery", {"run_id": run_id}), indent=2)
@@ -151,6 +162,7 @@ def register_fastmcp(mcp: Any) -> None:
     registered = {
         "validate_runquery",
         "run_runquery",
+        "verify_functions",
         "submit_runquery",
         "session_status",
         "get_submit_result",

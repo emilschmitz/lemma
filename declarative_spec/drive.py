@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
-import shutil
 import os
+import shutil
+import time
 from pathlib import Path
 
 import lemma_config
 from declarative_spec import best_so_far
+from declarative_spec import sessions as sessions_mod
 from declarative_spec.admit import admit_declarative_body
 from declarative_spec.emit import DeclarativeUnsupported, emit_declarative_spec
 from declarative_spec.trusted_sets import current as current_trusted_set
@@ -37,6 +39,15 @@ def official_record(metrics: dict) -> dict | None:
     if not metrics.get("official_rounds"):
         return None
     return {k: metrics.get(k) for k in OFFICIAL_KEYS}
+
+
+def submitted_speedup(workspace: Path) -> float | None:
+    """Speedup of the body the agent marked with ``submit_runquery`` (its in-session run on the full tables), or None if nothing is submitted."""
+    path = workspace / "mcp_results" / "submitted.json"
+    if not path.is_file():
+        return None
+    metrics = json.loads(path.read_text()).get("metrics") or {}
+    return None if metrics.get("speedup") is None else float(metrics["speedup"])
 
 
 def _maybe_large_table(
@@ -300,20 +311,19 @@ def run_declarative_optimization_loop(
     except (DeclarativeUnsupported, ProfileError, ValueError, OSError) as exc:
         return {"status": "FAILED", "best_latency_us": -1, "error": f"data profile: {exc}", "history": [], "proof_verified": False}
 
-    prev_source: str | None = None  # the file the previous session left, as it was
-    for iteration in range(1, max_iterations + 1):
+    state = {"prev_source": None, "last_error": last_error, "proof_verified": False}  # the file the previous session left; the last error; any proof so far
+    best_source: list[str] = []  # the file of the best success so far: the base of a continuation session
+    cfg = load_agent_config()
+
+    def run_one(iteration: int, host_note: str, timeout_s: int | None) -> sessions_mod.Outcome:
         iter_record: dict = {"iteration": iteration}
+        history.append(iter_record)
         try:
-            spec = emit_declarative_spec(
-                sql_query,
-                resolved_schema,
-                catalog,
-            )
+            spec = emit_declarative_spec(sql_query, resolved_schema, catalog)
         except (DeclarativeUnsupported, FitRefusal, ValueError, OSError) as exc:
             iter_record["error"] = f"emit_declarative_spec: {exc}"
-            history.append(iter_record)
-            last_error = str(exc)
-            continue
+            state["last_error"] = str(exc)
+            return sessions_mod.Outcome(False, None, 0.0)
 
         spec_path, agent_path = _ensure_context_files(
             workspace,
@@ -326,18 +336,23 @@ def run_declarative_optimization_loop(
         if iteration == 1 or not agent_path.is_file():
             agent_path.write_text(spec)
         restart_note = ""
-        if iteration > 1:
-            restart_note = _prepare_restart(workspace, agent_path, prev_source, iter_record)
+        if host_note:
+            # A continuation after a success: the base is the best body that beat the bar (its source), not the best by Verus tally.
+            agent_path.write_text(best_source[0])
+            restart_note = host_note
+            iter_record["continuation"] = host_note
+        elif iteration > 1:
+            restart_note = _prepare_restart(workspace, agent_path, state["prev_source"], iter_record)
 
-        cfg = load_agent_config()
-        in_docker = use_docker(cfg)
+        session_cfg = cfg if timeout_s is None else {**cfg, "AGENT_TIMEOUT_SEC": str(min(int(cfg["AGENT_TIMEOUT_SEC"]), timeout_s))}
+        in_docker = use_docker(session_cfg)
         lemma_index = current_trusted_set().index_markdown(spec)
         prompt = build_declarative_prompt(
             sql=sql_query,
             spec_path=str(spec_path.relative_to(workspace)),
             edit_path=str(agent_path.relative_to(workspace)),
             lemma_index=lemma_index,
-            last_error=last_error,
+            last_error=state["last_error"],
             in_docker=in_docker,
             spec_text=spec,
             dict_sizes=None if speed_bar is None else speed_bar.get("dict_sizes"),
@@ -345,34 +360,33 @@ def run_declarative_optimization_loop(
         )
         (workspace / "context" / "ro" / "DECLARATIVE.md").write_text(prompt)
 
+        a0 = time.monotonic()
         if in_docker:
-            proc = run_agent_docker(workspace, prompt, cfg=cfg, query_id=query_id)
+            proc = run_agent_docker(workspace, prompt, cfg=session_cfg, query_id=query_id)
         else:
-            proc = run_agent_local(workspace, prompt, cfg=cfg)
+            proc = run_agent_local(workspace, prompt, cfg=session_cfg)
+        agent_s = time.monotonic() - a0
         iter_record["agent_exit"] = proc.returncode
         failure = agent_failure(proc, workspace)
         if failure is not None:
-            last_error = failure
+            state["last_error"] = failure
             iter_record["error"] = failure
-            history.append(iter_record)
-            continue
+            return sessions_mod.Outcome(False, submitted_speedup(workspace), agent_s)
 
         try:
             agent_source = agent_path.read_text()
-            prev_source = agent_source
+            state["prev_source"] = agent_source
             body = _extract_agent_edit_region(agent_source)
         except (OSError, ValueError) as exc:
             iter_record["error"] = f"read agent body: {exc}"
-            history.append(iter_record)
-            last_error = str(exc)
-            continue
+            state["last_error"] = str(exc)
+            return sessions_mod.Outcome(False, submitted_speedup(workspace), agent_s)
 
         admit = admit_declarative_body(body)
         if not admit.ok:
             iter_record["admit_violations"] = list(admit.violations)
-            history.append(iter_record)
-            last_error = "; ".join(admit.violations)
-            continue
+            state["last_error"] = "; ".join(admit.violations)
+            return sessions_mod.Outcome(False, submitted_speedup(workspace), agent_s)
 
         metrics = run_declarative_metrics(
             spec_rs=spec,
@@ -380,23 +394,25 @@ def run_declarative_optimization_loop(
             work_dir=workspace / "declarative_build",
             column_bins=column_bins,
             speed_bar=speed_bar,
-            official=True,  # the end-of-loop host measure is the official one: interleaved rounds
+            official=True,  # the end-of-session host measure is the official one: interleaved rounds
         )
         best_so_far.record_attempt(workspace, agent_source, metrics, origin=f"host-final:iteration{iteration}")
         iter_record["verus_ok"] = metrics.get("status") == "SUCCESS"
         iter_record["proof_verified"] = bool(metrics.get("proof_verified"))
         iter_record["official"] = official_record(metrics)
         iter_record["latency_us"] = metrics.get("latency_us", -1)
-        proof_verified = bool(iter_record["proof_verified"])
+        state["proof_verified"] = bool(iter_record["proof_verified"])
         if metrics.get("status") != "SUCCESS":
-            last_error = str(metrics.get("compiler_error") or "declarative run failed")
-            iter_record["verus_excerpt"] = last_error[-4000:]
-        history.append(iter_record)
-        if metrics.get("status") == "SUCCESS" and proof_verified:
-            latency = int(metrics["latency_us"])
-            return {
+            state["last_error"] = str(metrics.get("compiler_error") or "declarative run failed")
+            iter_record["verus_excerpt"] = state["last_error"][-4000:]
+        submitted = submitted_speedup(workspace)
+        iter_record["submitted_speedup"] = submitted
+        speedups = [x for x in (metrics.get("speedup"), submitted) if x is not None]
+        speedup = max(speedups) if speedups else None
+        if metrics.get("status") == "SUCCESS" and state["proof_verified"]:
+            result = {
                 "status": "SUCCESS",
-                "best_latency_us": latency,
+                "best_latency_us": int(metrics["latency_us"]),
                 "duck_us": metrics.get("duck_us"),
                 "duck1_us": metrics.get("duck1_us"),
                 "duck_threads": metrics.get("duck_threads"),
@@ -406,10 +422,25 @@ def run_declarative_optimization_loop(
                 "speed_bar_mult": metrics.get("speed_bar_mult"),
                 "target_cpu": metrics.get("target_cpu"),
                 "best_iteration": iteration,
-                "history": history,
                 "error": "",
                 "proof_verified": True,
             }
+            best_source[:] = [agent_source]
+            state["last_error"] = ""
+            return sessions_mod.Outcome(True, speedup, agent_s, result, agent_source)
+        return sessions_mod.Outcome(False, speedup, agent_s)
+
+    manifest = workspace.parent / "manifest.json"
+    done = sessions_mod.run_sessions(
+        run_one,
+        max_iterations=max_iterations,
+        agent_timeout_sec=int(cfg["AGENT_TIMEOUT_SEC"]),
+        target=float(lemma_config.get("speed_target")),
+        max_idle=int(lemma_config.get("max_idle_sessions")),
+        on_record=lambda records: sessions_mod.record_in_manifest(manifest, records),
+    )
+    if done.best is not None:
+        return {**done.best.result, "history": history, "sessions": done.records}
 
     return {
         "status": "FAILED",
@@ -417,6 +448,7 @@ def run_declarative_optimization_loop(
         "duck_us": None if speed_bar is None else speed_bar.get("duck_us"),
         "official": next((h["official"] for h in reversed(history) if h.get("official")), None),
         "history": history,
-        "error": last_error or "declarative loop exhausted iterations without a run",
-        "proof_verified": proof_verified,
+        "sessions": done.records,
+        "error": state["last_error"] or "declarative loop exhausted iterations without a run",
+        "proof_verified": state["proof_verified"],
     }
