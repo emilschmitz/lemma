@@ -1,0 +1,68 @@
+{
+ "q01": {
+  "sha256": "1dd92871277148fe6b44fd22163ddc6f8f9b480286bf8b392f400d5027d8f0ef"
+ },
+ "q02": {
+  "refused": "column 'p_partkey' not found"
+ },
+ "q03": {
+  "sha256": "16f2c2a22a788c71a5b2ad97710b7faa212c9135d69e23f7c4033c22d7a441d7"
+ },
+ "q04": {
+  "sha256": "619cb652bcf071de5ebbc5d3fe6fb0ad8f83a1c53e64e95bc60d84180ea80735"
+ },
+ "q05": {
+  "sha256": "32918af6bbb750bee178c2c784e8501394edfdc0fb2848a0a9158c3f11d397b9"
+ },
+ "q06": {
+  "sha256": "ead81352051f53150eca4703adea2c1c7962b7efd9a14a0b2de98bbf6a95acfe"
+ },
+ "q07": {
+  "sha256": "69c4d311335a4f3bc665715f2e95e322a1b36810bc7257741c49a1fd5c52825c"
+ },
+ "q08": {
+  "refused": "aggregate expression over a derived table"
+ },
+ "q09": {
+  "sha256": "c1cd792de5fb160b55b6b3621e1f4a201f25c6a50ff334610d5425f80d8a107c"
+ },
+ "q10": {
+  "sha256": "e50f99f509c195f5d57a461605d8d2d0e0216ad47b021f48961c6c7375610b42"
+ },
+ "q11": {
+  "refused": "SELECT expression needs an alias"
+ },
+ "q12": {
+  "sha256": "e9e5ae31b646836f5c629a35adf61351549639ab769468af38dcc025ead6261d"
+ },
+ "q13": {
+  "refused": "JOIN ON predicate"
+ },
+ "q14": {
+  "sha256": "7835aac0c6fda1d9522201bff41c27d69f353f0b84490fb50a796afa8a069974"
+ },
+ "q15": {
+  "refused": "a WITH name used inside a subquery"
+ },
+ "q16": {
+  "sha256": "069afdf72795c9a41091a2762b17c8f31e33609a94d0c5126e0a110218408c7a"
+ },
+ "q17": {
+  "refused": "division operand must be a SUM or COUNT, optionally times a constant"
+ },
+ "q18": {
+  "sha256": "2ab02d9c6f4e9a982be7253dbedf50cb9c52a4c656622e34b0b773caf4d2032a"
+ },
+ "q19": {
+  "refused": "comma join: no column equality connects table 'part' (cross product)"
+ },
+ "q20": {
+  "refused": "SELECT expression needs an alias"
+ },
+ "q21": {
+  "sha256": "fd2e8c8affa73892a7334c00214bf133676d6decfce351e07385c91d78649254"
+ },
+ "q22": {
+  "refused": "a DECIMAL value compared with a float aggregate or subquery: the scales are not aligned"
+ }
+}

@@ -352,6 +352,12 @@ class _Rewriter:
                             "a non-constant integer or DECIMAL value compared with a float column: "
                             "mixed with a float column"
                         )
+                    if num.scale > 0:
+                        # The emitter widens the stored integer, which is the value times 10**scale, to a real; the
+                        # float side is in natural units, so the comparison would be off by that power of ten.
+                        raise DeclarativeUnsupported(
+                            "a DECIMAL value compared with a float aggregate or subquery: the scales are not aligned"
+                        )
                     return left, right  # an average or sum of floats: the emitter widens the integer side to real
         if "unknown" in kinds and any(t.kind == "num" and t.scale > 0 for t in (left, right)):
             raise DeclarativeUnsupported("a DECIMAL compared with an operand of unknown type")

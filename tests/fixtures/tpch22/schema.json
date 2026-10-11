@@ -1,0 +1,79 @@
+{
+ "customer": {
+  "c_custkey": "bigint",
+  "c_name": "varchar",
+  "c_address": "varchar",
+  "c_nationkey": "integer",
+  "c_phone": "varchar",
+  "c_acctbal": "decimal(15,2)",
+  "c_mktsegment": "varchar",
+  "c_comment": "varchar"
+ },
+ "lineitem": {
+  "l_orderkey": "bigint",
+  "l_partkey": "bigint",
+  "l_suppkey": "bigint",
+  "l_linenumber": "bigint",
+  "l_quantity": "decimal(15,2)",
+  "l_extendedprice": "decimal(15,2)",
+  "l_discount": "decimal(15,2)",
+  "l_tax": "decimal(15,2)",
+  "l_returnflag": "varchar",
+  "l_linestatus": "varchar",
+  "l_shipdate": "date",
+  "l_commitdate": "date",
+  "l_receiptdate": "date",
+  "l_shipinstruct": "varchar",
+  "l_shipmode": "varchar",
+  "l_comment": "varchar"
+ },
+ "nation": {
+  "n_nationkey": "integer",
+  "n_name": "varchar",
+  "n_regionkey": "integer",
+  "n_comment": "varchar"
+ },
+ "orders": {
+  "o_orderkey": "bigint",
+  "o_custkey": "bigint",
+  "o_orderstatus": "varchar",
+  "o_totalprice": "decimal(15,2)",
+  "o_orderdate": "date",
+  "o_orderpriority": "varchar",
+  "o_clerk": "varchar",
+  "o_shippriority": "integer",
+  "o_comment": "varchar"
+ },
+ "part": {
+  "p_partkey": "bigint",
+  "p_name": "varchar",
+  "p_mfgr": "varchar",
+  "p_brand": "varchar",
+  "p_type": "varchar",
+  "p_size": "integer",
+  "p_container": "varchar",
+  "p_retailprice": "decimal(15,2)",
+  "p_comment": "varchar"
+ },
+ "partsupp": {
+  "ps_partkey": "bigint",
+  "ps_suppkey": "bigint",
+  "ps_availqty": "bigint",
+  "ps_supplycost": "decimal(15,2)",
+  "ps_comment": "varchar"
+ },
+ "region": {
+  "r_regionkey": "integer",
+  "r_name": "varchar",
+  "r_comment": "varchar"
+ },
+ "supplier": {
+  "s_suppkey": "bigint",
+  "s_name": "varchar",
+  "s_address": "varchar",
+  "s_nationkey": "integer",
+  "s_phone": "varchar",
+  "s_acctbal": "decimal(15,2)",
+  "s_comment": "varchar"
+ }
+}
