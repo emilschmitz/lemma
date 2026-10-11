@@ -26,6 +26,12 @@ from declarative_spec.parse import DeclarativeUnsupported
 from research_loop.decl_query_measure import _canon, decimal_scaled
 from research_loop.table_assumptions import CatalogAssumptions, ColumnAssumption, TableAssumptions
 
+@pytest.fixture(autouse=True)
+def _switch_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests are about the shape being on: lemma.toml [sql] agg_times_constant."""
+    monkeypatch.setenv("LEMMA_AGG_TIMES_CONSTANT", "1")
+
+
 SCHEMA = {"t": {"d": "decimal(15,2)", "e": "decimal(10,3)", "i": "integer", "k": "integer"}}
 CATALOG = CatalogAssumptions(
     max_rows=64,

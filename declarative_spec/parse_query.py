@@ -11,6 +11,7 @@ import sqlglot
 from sqlglot import exp
 
 from declarative_spec.literals import string_token
+from declarative_spec import sql_switches
 from declarative_spec.parse import DeclarativeUnsupported
 from declarative_spec.parse_exprs import (
     arith_text,
@@ -340,7 +341,7 @@ def _is_aggregate(node: exp.Expression) -> bool:
     return (
         isinstance(inner, (exp.Sum, exp.Count, exp.Avg, exp.Min, exp.Max))
         or _is_ratio(inner)
-        or _avg_times_constant(inner) is not None
+        or (sql_switches.agg_times_constant() and _avg_times_constant(inner) is not None)
     )
 
 
@@ -782,7 +783,7 @@ def _parse_ratio(item: exp.Expression, scope: _Scope) -> tuple[Agg, list[Agg]]:
     top = _unwrap_alias(item)
     num, k = _ratio_operand(top.this.expressions[0], scope, f"{alias}__num")
     den_node = _unparen_node(top.expression.expressions[0])
-    if isinstance(den_node, exp.Literal) and den_node.is_int:
+    if sql_switches.agg_times_constant() and isinstance(den_node, exp.Literal) and den_node.is_int:
         const = int(den_node.this)
         ratio = Agg(
             kind="RATIO",
@@ -810,7 +811,7 @@ def _parse_agg(item: exp.Expression, scope: _Scope) -> Agg:
         ratio, operands = _parse_ratio(item, scope)
         scope.pending.extend(operands)
         return ratio
-    scaled_avg = _avg_times_constant(top)
+    scaled_avg = _avg_times_constant(top) if sql_switches.agg_times_constant() else None
     if scaled_avg is not None:
         avg, factor = scaled_avg
         bare = exp.Alias(this=avg, alias=item.alias) if isinstance(item, exp.Alias) else avg
@@ -1074,7 +1075,7 @@ def _compile_side(node: exp.Expression, ctx: _BoolCtx) -> str:
     folded = _fold_int_literal(node)
     if folded is not None:
         return folded
-    if ctx.having and isinstance(node, exp.Mul):
+    if sql_switches.agg_times_constant() and ctx.having and isinstance(node, exp.Mul):
         # An exact SUM / COUNT times a whole-number constant (the rewrite brings a comparison to one scale this way).
         for agg_side, const_side in ((node.this, node.expression), (node.expression, node.this)):
             agg_node, factor = _unparen_node(agg_side), _fold_int_literal(const_side)

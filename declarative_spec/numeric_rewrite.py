@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 import sqlglot
 from sqlglot import exp
 
+from declarative_spec import sql_switches
 from declarative_spec.parse import DeclarativeUnsupported
 from declarative_spec.parse_exprs import fold_date, fold_number
 from declarative_spec.schema_types import ColumnTypeInfo, SchemaModel
@@ -512,7 +513,7 @@ class _Rewriter:
         self._require_num(left, "arithmetic")
         self._require_num(right, "arithmetic")
         if isinstance(node, exp.Mul):
-            folded = None if self.in_ratio else self._sum_times_constant(left, right)
+            folded = None if self.in_ratio or not sql_switches.agg_times_constant() else self._sum_times_constant(left, right)
             if folded is not None:
                 return folded
             scale = left.scale + right.scale
@@ -601,7 +602,7 @@ class _Rewriter:
                 self.in_ratio = False
             if t.kind != "num":
                 raise DeclarativeUnsupported(f"division operand of kind {t.kind}: only SUM / COUNT of integer or DECIMAL values")
-            if position == 1 and _is_constant_literal(t.node):
+            if position == 1 and sql_switches.agg_times_constant() and _is_constant_literal(t.node):
                 if _unparen(t.node).this == "0":  # type: ignore[union-attr]
                     raise DeclarativeUnsupported("division by the constant zero")
             elif not _is_scaled_aggregate(t.node):
