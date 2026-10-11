@@ -224,7 +224,7 @@ def real(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.mark.parametrize(
     ("key", "value"),
     [
-        ("agent_timeout_sec", 900), ("max_iterations", 2), ("verus_timeout_sec", 300), ("agent_data_mode", "none"), ("parallel_vstd", "auto"),
+        ("agent_timeout_sec", 1800), ("max_iterations", 2), ("verus_timeout_sec", 300), ("agent_data_mode", "none"), ("parallel_vstd", "auto"),
         ("duck_memory_limit", "8GB"), ("heavy_min_avail_mb", 4000), ("allow_dirty", False), ("scope_memory_max", "9G"),
     ],
 )

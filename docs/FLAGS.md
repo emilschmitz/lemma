@@ -35,7 +35,7 @@ Meaning, allowed values and defaults are in the file. `menu` selects a profile (
 
 | Setting | Was | Now |
 | --- | --- | --- |
-| `agent_timeout_sec` | 600 (config.env, code, AGENTS.md), 750 (batch) | 900 (2 x 900 s = 30 min per query) |
+| `agent_timeout_sec` | 600 (config.env, code, AGENTS.md), 750 (batch) | 900 (2 x 1800 s = 60 min per query) |
 | `max_iterations` | 1/4 (`MAX_ITERATIONS` in overnight chains), 3 (loop default), 2 (launcher flag) | 2 |
 | Verus wall | `VERUS_VERIFY_TIMEOUT_SEC` 120 (imperative) vs `LEMMA_VERUS_TIMEOUT_SEC` 300 | `verus_timeout_sec` 300; the MCP harness wait is derived from it (`VERUS_VERIFY_TIMEOUT_SEC` is its alias) |
 | harness timeout precedence | file beat environment for `COMPILE_TIMEOUT_SEC`/`VERUS_VERIFY_TIMEOUT_SEC` | environment beats file, like everything else |

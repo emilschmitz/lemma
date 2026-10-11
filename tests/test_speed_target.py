@@ -367,8 +367,8 @@ def test_manifest_records_session_costs_and_total(tmp_path: Path) -> None:
 
 
 def test_budget_and_timeout_settings_are_loaded() -> None:
-    assert lc.get("agent_timeout_sec") == 900 and lc.get("max_budget_usd") == 20.0
-    assert lc.get("max_iterations") * lc.get("agent_timeout_sec") == 1800
+    assert lc.get("agent_timeout_sec") == 1800 and lc.get("max_budget_usd") == 20.0
+    assert lc.get("max_iterations") * lc.get("agent_timeout_sec") == 3600
     with pytest.raises(lc.ConfigError):
         lc.set_cli("max_budget_usd", -1.0)
         lc.get("max_budget_usd")
