@@ -353,7 +353,7 @@ def test_the_full_prompt_is_unchanged_in_default_mode(monkeypatch: pytest.Monkey
     assert "dict_group_count_dense.rs" in text and "seven small" not in text
     from declarative_spec import prompt as prompt_mod
 
-    assert prompt_mod._hygiene_text() is prompt_mod._PROOF_HYGIENE and prompt_mod._speed_text() is prompt_mod._SPEED and prompt_mod._do_not_text() is prompt_mod._DO_NOT
+    assert prompt_mod._hygiene_text() == prompt_mod._PROOF_HYGIENE.replace("@@RLIMIT@@", "16") and prompt_mod._speed_text() is prompt_mod._SPEED and prompt_mod._do_not_text() is prompt_mod._DO_NOT
     assert "key_at(pre, i0)" in text and "uom = 'pure'" in text
     assert "context/ro/examples/INDEX.md" in text
 

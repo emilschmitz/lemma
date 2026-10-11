@@ -59,3 +59,7 @@ Kept although partly inert: `mcp_iterate_rows` (prompt text and the probe-pin ch
 * Environment only (secrets and paths, never in the file): `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `LEMMA_CLAUDE_CONFIG_DIR`, `AGENT_CREDENTIALS_DIR`, `AGENT_AUTH_DIR`, `AGENT_CLI_DIR`, `HTTPS_PROXY`, `LEMMA_VERUS_BIN` (bypass the guard on purpose), `LEMMA_VERUS_REAL`, `LEMMA_MENU_ALLOW_OVERRIDE` (library-level `resolve_menu`).
 * Legacy imperative / overnight / Spot / dev scripts keep their own variables (`LEMMA_FAMILY`, `LEMMA_SHUFFLE_*`, `LEMMA_HARVEST_*`, `LEMMA_LAPTOP_LEASE*`, `LEMMA_BUDGET_USD`, `LEMMA_BENCH_TIMEOUT_SEC`, `MAX_ITERATIONS`, `COMPILE_TIMEOUT_SEC`, `AGENT_NETWORK`, `OPENROUTER_*`, `LEMMA_DEMO*`, ...). They are listed in `NOT_CONFIG` in `lemma_config.py` so the startup check accepts them; they are not part of a container run and were not refactored.
 * Deep readers that need "not a SEC run" to be expressible still read `LEMMA_DUCKDB_PATH` from the environment (`dataset_config`, `workload_config`, ...); the container launcher exports the resolved absolute `duckdb_path` there.
+
+## The agent prompt
+
+Every run value the prompt states (DuckDB threads and memory limit, iterate cap, Verus rlimit, dense-slot budget, a non-default speed bar) is read from the effective config when the prompt is built; the worker count it mentions is read from the worked example's own header. Prompt sections carry a kind (task, rules, tools, limits, hardware, recipe, example-pointer, `declarative_spec/principles.py`); `examples = "none"` emits only the first five.

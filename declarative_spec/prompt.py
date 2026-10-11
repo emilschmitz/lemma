@@ -531,7 +531,23 @@ _ROW_CAP = re.compile(r"pub const ROW_CAP_(\w+): usize = (\d+);")
 _BIG_TABLE_ROWS = 1_000_000
 
 
+_WORKER_LITERAL = re.compile(r"the literal (\d+) below is the worker count")
+
+
+def _example_workers() -> int:
+    """The worker count the worked parallel examples are written for, read from the example's own header (not restated here)."""
+    m = _WORKER_LITERAL.search((_FIXTURES / "parallel_ungrouped_sum.rs").read_text().splitlines()[0])
+    if m is None:
+        raise ValueError("parallel_ungrouped_sum.rs lost its 'the literal N below is the worker count' header line")
+    return int(m.group(1))
+
+
 def hardware_section() -> list[str]:
+    """Facts and guidance together (the prompt builder emits them as two kinds: ``_hardware_facts`` is hardware, ``_hardware_guidance`` a recipe)."""
+    return _hardware_facts() + _hardware_guidance()
+
+
+def _hardware_facts() -> list[str]:
     """The machine the timed run happens on, read at prompt-build time: raw `lscpu` (plus /sys cache lines if lscpu has none) and plain guidance.
 
     Not invented: if `lscpu` cannot be run the section says so. Guidance is guidance, not a measurement."""
@@ -564,12 +580,29 @@ def hardware_section() -> list[str]:
         f"reference engine: DuckDB, threads={lemma_config.get('duck_threads')}, memory_limit={lemma_config.get('duck_memory_limit')}",
         "```",
         "",
+    ]
+
+
+def _hardware_guidance() -> list[str]:
+    return [
         "Guidance, not measurement: about one worker per PHYSICAL core (cores = Core(s) per socket x Socket(s)) for memory-bound scans, since SMT threads add little;",
         "give each worker one contiguous row range and its own accumulators (no shared mutable cell between workers: false sharing); the L3 is far smaller than a large column,",
         "so a big scan is bandwidth-bound and narrower cells and fewer passes help more than arithmetic; keep per-block working sets within L1/L2 (a few thousand elements per chunk);",
         "write the hot loop branch-free (accumulate `acc + (value & mask)` or `count + (hit as u64)` instead of `if hit { .. }`) so the compiler can vectorize it.",
-        "The worked parallel example uses 8 workers as a literal; replace it by the worker count you choose, consistently everywhere the example uses it.",
+        f"The worked parallel example uses {_example_workers()} workers as a literal; replace it by the worker count you choose, consistently everywhere the example uses it.",
         "",
+    ]
+
+
+def _iterate_lines(sizes: str) -> list[str]:
+    """The sentence about the iterate cap, from ``mcp_iterate_rows`` (0 = `run_runquery` already times the official size)."""
+    cap = lemma_config.get("mcp_iterate_rows")
+    if cap == 0:
+        return [f"The timed run is on the full tables (row caps in the spec: {sizes}); `run_runquery` times them too. The bar is the reference"]
+    short = f"{cap // 1000}k" if cap % 1000 == 0 else f"{cap:,}"
+    return [
+        f"The timed run is on the full tables (row caps in the spec: {sizes}), not on the {cap:,}-row iterate cap that",
+        f"`run_runquery` uses by default: a time or speedup at {short} says nothing about the official run. The bar is the reference",
     ]
 
 
@@ -584,18 +617,18 @@ def _scale_section(spec_text: str) -> list[str]:
     lines = [
         "## Official size and the bar",
         "",
-        f"The timed run is on the full tables (row caps in the spec: {sizes}), not on the 50,000-row iterate cap that",
-        "`run_runquery` uses by default: a time or speedup at 50k says nothing about the official run. The bar is the reference",
+        *_iterate_lines(sizes),
         "engine on ALL cores. One thread does not beat it on a scan or aggregate over millions of rows.",
     ]
     if max(caps.values()) < _BIG_TABLE_ROWS:
         return lines + [""]
     if parallel.is_parallel(spec_text):
+        upgrade = "the parallel recipe below (workers over row ranges)" if principles.RECIPE in principles.kinds_emitted() else "workers over row ranges (the spec's `<table>_arc` parameters)"
         lines += [
             "Order: (1) get ANY body to `N verified, 0 errors` first; sequential is fine, and `submit_runquery` it as soon as it",
             "verifies (a later submit replaces it, re-submitting costs nothing, and a session killed at the wall saves nothing that was",
             "not submitted; a verified run below the bar is refused by `submit_runquery`: keep that file as your base). (2) Read the `speedup` field of that run. At or above the bar: you are done. Below the bar: only now try",
-            "the parallel recipe below (workers over row ranges) as an upgrade. (3) Submit the parallel body only if it verifies and its",
+            f"{upgrade} as an upgrade. (3) Submit the parallel body only if it verifies and its",
             "`speedup` is higher; never replace a submitted verified body with an unverified or slower one. If the upgrade does not",
             "verify after a few checks, stop and keep the sequential submission (say its `speedup` is below 1).",
         ]
@@ -679,19 +712,20 @@ _PARALLEL_DICT_LINES_PRINCIPLES = [
         "then upgrade only if it loses. A hash aggregate or a join does not telescope directly, but a GROUP BY over a small code domain does: give each",
         "worker its own DENSE array per aggregate (one slot per dictionary code), merge them slotwise in the join loop, and the slotwise",
         "telescoping is the same proof as the scalar one.",
-        "A dense table has one slot per combination of key codes; it is allowed only when the product of the key dictionaries' sizes is within `LEMMA_DENSE_SLOT_BUDGET` (default 2^22 slots). The section \"Dense slot table: allowed or not, for THIS query\" below says which case this query is; otherwise key the groups by a packed code tuple in a `HashMapWithView`.",
+        "A dense table has one slot per combination of key codes; it is allowed only when the product of the key dictionaries' sizes is within `LEMMA_DENSE_SLOT_BUDGET` (@@DENSE@@ slots). The section \"Dense slot table: allowed or not, for THIS query\" below says which case this query is; otherwise key the groups by a packed code tuple in a `HashMapWithView`.",
 ]
 _PARALLEL_DICT_LINES_FULL = [
         "then upgrade only if it loses. A hash aggregate or a join does not telescope directly, but a GROUP BY over a small code domain does: give each",
         "worker its own DENSE array per aggregate (one slot per dictionary code), merge them slotwise in the join loop, and the slotwise",
         "telescoping is the same proof (dict mode: `context/ro/examples/dict_group_count_sum_parallel.rs`, 13x on the real 39.4M-row table;",
         "a nullable dictionary column with a string filter, COUNT and MIN: `context/ro/examples/parallel_dict_nullable_count_min.rs` (1.8x on real `pre`);",
-        "A dense table has one slot per combination of key codes; it is allowed only when the product of the key dictionaries' sizes is within `LEMMA_DENSE_SLOT_BUDGET` (default 2^22 slots). The section \"Dense slot table: allowed or not, for THIS query\" below says which case this query is; otherwise key the groups by a packed code tuple in a `HashMapWithView`;",
+        "A dense table has one slot per combination of key codes; it is allowed only when the product of the key dictionaries' sizes is within `LEMMA_DENSE_SLOT_BUDGET` (@@DENSE@@ slots). The section \"Dense slot table: allowed or not, for THIS query\" below says which case this query is; otherwise key the groups by a packed code tuple in a `HashMapWithView`;",
         "two dictionary keys, several aggregates, sorted output, a flat m1*m2 slot array: `context/ro/examples/hard/dict_parallel_q1.rs`, TPC-H Q1 at 3.95x).",
 ]
 
 def _parallel_dict_lines() -> list[str]:
-    return _PARALLEL_DICT_LINES_PRINCIPLES if principles.principles_only() else _PARALLEL_DICT_LINES_FULL
+    lines = _PARALLEL_DICT_LINES_PRINCIPLES if principles.principles_only() else _PARALLEL_DICT_LINES_FULL
+    return [ln.replace("@@DENSE@@", f"{lemma_config.get('dense_slot_budget'):,}") for ln in lines]
 
 
 _PARALLEL_PLAIN_LINES = [
@@ -756,7 +790,7 @@ def _parallel_section(spec_text: str, shape: dict) -> list[str]:
     ]
     if shape["dict"] and "lemma_chain_hit_unique" in spec_text and not principles.principles_only():
         lines += [
-            "A parallel STAR JOIN (a fact table split over 8 workers; the dimension arrays are built once and shared through `Arc`; each worker returns a flat slot array pair that the join loop merges):",
+            "A parallel STAR JOIN (a fact table split over " + str(_example_workers()) + " workers; the dimension arrays are built once and shared through `Arc`; each worker returns a flat slot array pair that the join loop merges):",
             "`context/ro/examples/hard/dict_parallel_star_join_group_sum_sorted.rs` (SSB Q4.1: 2.7x the all-core engine, against 1.03x for the single-threaded `dict_star_join_group_sum_sorted.rs`). Turn the sequential",
             "fact loop into the nested `fn scan(.., lo, hi)` of that file and keep the rest. Two dictionary group keys, a WHERE-bounded year and ORDER BY a year then a SUM descending:",
             "`context/ro/examples/hard/dict_parallel_star_join_two_keys_revenue_order.rs` (SSB Q3.1, 2.4x). Two string keys from two dimensions with ORDER BY the strings:",
@@ -994,9 +1028,10 @@ _HYGIENE_SCRUB: tuple[tuple[str, str], ...] = (
 
 
 def _hygiene_text() -> str:
+    base = _PROOF_HYGIENE.replace("@@RLIMIT@@", f"{lemma_config.get('verus_rlimit'):g}")
     if not principles.principles_only():
-        return _PROOF_HYGIENE
-    text = _PROOF_HYGIENE
+        return base
+    text = base
     for old, new in _HYGIENE_SCRUB:
         assert text.count(old) == 1, old[:80]
         text = text.replace(old, new)
@@ -1071,7 +1106,7 @@ _PROOF_HYGIENE = """\
   1e15); a sum is bounded by (rows seen) * (cell bound).
 - Short string keys (1 or 2 characters) are cheapest as small integer codes from `as_bytes` (vstd `utf8.rs`,
   grep `LEMMAS.md` for `as_bytes`) indexing a slot table, not as hashed strings.
-- The verifier's rlimit budget is the host's `--rlimit` (16 by default); the error names the main loop even when the
+- The verifier's rlimit budget is the host's `--rlimit` (@@RLIMIT@@ here); the error names the main loop even when the
   overrun is in one of its asserts.
 - A string literal in a predicate (`uom = 'pure'`): `&str ==` has no spec tying it to `@`, and `reveal_strlit` does not
   help. Build the literal once (`let pure: String = String::from_str("pure");`, ensures `pure@ == "pure"@`), keep
@@ -1148,91 +1183,103 @@ def build_declarative_prompt(
         root = "context/ro"
     shape = spec_shape(spec_text)
 
-    sections = [
-        "# Declarative run_query",
-        "",
-        "## What you get",
-        "",
-        f"- `{edit_path}` already holds the host spec, the host lemmas, the loaders and `run_query`. You edit it.",
-        f"- Read-only: `{spec_path}` (same spec), `{root}/query.sql`, `{root}/schema.json`, `{index_path}`,",
-        f"  `{root}/examples/` (verified example bodies; start with `INDEX.md` there: shape -> file -> what it proves),",
-        f"  `{root}/verus/` (vstd source, Verus guide, small examples;",
-        "  read `INDEX.md` first (one grep recipe per common lookup), then grep `LEMMAS.md`, `EXAMPLES_INDEX.md` and `GUIDE_INDEX.md`).",
-        '- Look up vstd with one grep, e.g. `grep -n -A5 "^## StringHashMap::" LEMMAS.md` (in `verus/`): `INDEX.md` has a',
-        "  recipe per common lookup (`Vec::push`, `String::eq`, `decreases`, `assert forall`, `choose`, broadcast groups).",
-        "- Tools: the file edit tool; `run_runquery` (path `runquery_agent.rs`) verifies, compiles and times your",
-        "  program on the official table; `submit_runquery` with the returned `run_id`. In Claude Code these are",
-        "  `mcp__lemma-host__run_runquery` and `mcp__lemma-host__submit_runquery`; if they are not in your tool list yet, load",
-        "  them first with ToolSearch (`select:mcp__lemma-host__run_runquery,mcp__lemma-host__submit_runquery`). A Bash tool",
-        "  may exist, but it has no network and Verus is not on its PATH: `run_runquery` is the only Verus you have, so do not",
-        "  try `verus`, `npx` or any package install.",
-        "- Done means: Verus says `N verified, 0 errors`, the result equals the reference engine's rows, and the timed run beats",
-        "  the reference engine (`run_runquery` reports the speedup). `submit_runquery` accepts only a run that is `ok`, i.e. one that also",
-        "  beats the reference engine: a verified body below the bar is reported as `proved but below the speed bar`, is refused by",
-        "  `submit_runquery`, and still counts as your best proved run. Keep it aside as your base (copy the file), then make it faster.",
-        "  Submit a body as soon as it verifies and beats the bar, and again if a later one is better.",
-        "",
-        "## Regions and rules",
-        "",
-        "- Two regions are kept, everything else in the file is discarded: the `run_query` body between",
-        "  `// AGENT_EDIT_START` and `// AGENT_EDIT_END`, and `proof fn` / `spec fn` / exec `fn` helpers between",
-        "  `// AGENT_HELPERS_START` and `// AGENT_HELPERS_END` (just above `run_query`). A nested `proof fn` or",
-        "  `spec fn` inside the body does not work. A helper may not reuse a name the host spec defines.",
-        "- Write no `use` lines: every vstd module is imported by glob; call lemmas by bare name",
-        "  (`vstd::map_lib::lemma_map_new_domain` in full; that one name is ambiguous).",
-        "  The only allowed line is `broadcast use vstd::<module>::group_<name>;` naming a group listed in",
-        f"  `{root}/verus/INDEX.md` (it turns a bundle of vstd lemmas and axioms on for the solver; any vstd group is allowed, including one that lists `axiom_*` members: they are vstd's own trusted core; more groups, more noise), e.g. `broadcast use vstd::seq::group_seq_axioms;`. Write it inside the body or inside a `proof fn` body; at the top level of the helper region it is rejected.",
-        "- Forbidden (rejected before Verus runs): `assume(`, `admit(`, `#[verifier::external_body]`, `assume_specification`,",
-        "  `unimplemented!`, any attribute other than `#[verifier::opaque|rlimit|loop_isolation|spinoff_prover|truncate|inline|memoize|trigger|auto]` / `#[trigger]` (so no `external*`, `exec_allows_no_decreases_clause`, `cfg`, `derive`), `impl` / `trait` / `macro_rules!` / `static`, and any name containing `axiom`, `arbitrary` or `proof_from_false` outside a `broadcast use vstd::<module>::group_<name>;` line (you cannot write an axiom of your own). The hash-key",
-        "  axiom is already broadcast: do not name it. `requires`/`ensures` are the host's; changing them has",
-        "  no effect.",
-        "- `StringHashMap` and `HashMapWithView` are in scope (`new`, `insert`, `contains_key`, `get`; the view key",
-        "  is `Seq<char>` for strings). `StringHashMap::new` needs no axiom. Do not call `HashMapWithView::new` on",
-        "  a `String` or a tuple key.",
-        "",
-        "## SQL",
-        "",
-        "```sql",
-        sql.strip(),
-        "```",
-        "",
+    P = principles
+    bar = lemma_config.get("speed_bar_mult")
+    parts: list[tuple[str, list[str]]] = [
+        (P.TASK, ["# Declarative run_query", ""]),
+        (P.TOOLS, [
+            "## What you get",
+            "",
+            f"- `{edit_path}` already holds the host spec, the host lemmas, the loaders and `run_query`. You edit it.",
+            f"- Read-only: `{spec_path}` (same spec), `{root}/query.sql`, `{root}/schema.json`, `{index_path}`,",
+        ]),
+        (P.EXAMPLE_POINTER, [f"  `{root}/examples/` (verified example bodies; start with `INDEX.md` there: shape -> file -> what it proves),"]),
+        (P.TOOLS, [
+            f"  `{root}/verus/` (vstd source, Verus guide, small examples;",
+            "  read `INDEX.md` first (one grep recipe per common lookup), then grep `LEMMAS.md`, `EXAMPLES_INDEX.md` and `GUIDE_INDEX.md`).",
+            '- Look up vstd with one grep, e.g. `grep -n -A5 "^## StringHashMap::" LEMMAS.md` (in `verus/`): `INDEX.md` has a',
+            "  recipe per common lookup (`Vec::push`, `String::eq`, `decreases`, `assert forall`, `choose`, broadcast groups).",
+            "- Tools: the file edit tool; `run_runquery` (path `runquery_agent.rs`) verifies, compiles and times your",
+            "  program on the official table; `submit_runquery` with the returned `run_id`. In Claude Code these are",
+            "  `mcp__lemma-host__run_runquery` and `mcp__lemma-host__submit_runquery`; if they are not in your tool list yet, load",
+            "  them first with ToolSearch (`select:mcp__lemma-host__run_runquery,mcp__lemma-host__submit_runquery`). A Bash tool",
+            "  may exist, but it has no network and Verus is not on its PATH: `run_runquery` is the only Verus you have, so do not",
+            "  try `verus`, `npx` or any package install.",
+            "- Done means: Verus says `N verified, 0 errors`, the result equals the reference engine's rows, and the timed run beats",
+            "  the reference engine (`run_runquery` reports the speedup). `submit_runquery` accepts only a run that is `ok`, i.e. one that also",
+            "  beats the reference engine: a verified body below the bar is reported as `proved but below the speed bar`, is refused by",
+            "  `submit_runquery`, and still counts as your best proved run. Keep it aside as your base (copy the file), then make it faster.",
+            "  Submit a body as soon as it verifies and beats the bar, and again if a later one is better.",
+            *([f"  The bar of this run is a speedup of {bar:g}x: the median of your timed runs times {bar:g} must be below the reference engine's median."] if bar != 1.0 else []),
+            "",
+        ]),
+        (P.RULES, [
+            "## Regions and rules",
+            "",
+            "- Two regions are kept, everything else in the file is discarded: the `run_query` body between",
+            "  `// AGENT_EDIT_START` and `// AGENT_EDIT_END`, and `proof fn` / `spec fn` / exec `fn` helpers between",
+            "  `// AGENT_HELPERS_START` and `// AGENT_HELPERS_END` (just above `run_query`). A nested `proof fn` or",
+            "  `spec fn` inside the body does not work. A helper may not reuse a name the host spec defines.",
+            "- Write no `use` lines: every vstd module is imported by glob; call lemmas by bare name",
+            "  (`vstd::map_lib::lemma_map_new_domain` in full; that one name is ambiguous).",
+            "  The only allowed line is `broadcast use vstd::<module>::group_<name>;` naming a group listed in",
+            f"  `{root}/verus/INDEX.md` (it turns a bundle of vstd lemmas and axioms on for the solver; any vstd group is allowed, including one that lists `axiom_*` members: they are vstd's own trusted core; more groups, more noise), e.g. `broadcast use vstd::seq::group_seq_axioms;`. Write it inside the body or inside a `proof fn` body; at the top level of the helper region it is rejected.",
+            "- Forbidden (rejected before Verus runs): `assume(`, `admit(`, `#[verifier::external_body]`, `assume_specification`,",
+            "  `unimplemented!`, any attribute other than `#[verifier::opaque|rlimit|loop_isolation|spinoff_prover|truncate|inline|memoize|trigger|auto]` / `#[trigger]` (so no `external*`, `exec_allows_no_decreases_clause`, `cfg`, `derive`), `impl` / `trait` / `macro_rules!` / `static`, and any name containing `axiom`, `arbitrary` or `proof_from_false` outside a `broadcast use vstd::<module>::group_<name>;` line (you cannot write an axiom of your own). The hash-key",
+            "  axiom is already broadcast: do not name it. `requires`/`ensures` are the host's; changing them has",
+            "  no effect.",
+            "- `StringHashMap` and `HashMapWithView` are in scope (`new`, `insert`, `contains_key`, `get`; the view key",
+            "  is `Seq<char>` for strings). `StringHashMap::new` needs no axiom. Do not call `HashMapWithView::new` on",
+            "  a `String` or a tuple key.",
+            "",
+        ]),
+        (P.TASK, ["## SQL", "", "```sql", sql.strip(), "```", ""]),
+        (P.LIMITS, _scale_section(spec_text)),
+        (P.HARDWARE, _hardware_facts()),
+        (P.RECIPE, _hardware_guidance()),
+        (P.RECIPE, _recipe_section(shape)),
+        (P.RECIPE, dense_budget.prompt_section(dense_budget.report(spec_text, dict_sizes)) if "__dict@" in spec_text else []),
+        (P.RULES, _float_section(spec_text)),
+        (P.RULES, _nullable_section(spec_text)),
+        (P.RECIPE, _chain_section(spec_text)),
+        (P.RECIPE, _parallel_section(spec_text, shape)),
+        (P.RECIPE, _distinct_section(spec_text)),
+        (P.RECIPE, _group_close_section(spec_text)),
+        (P.TASK, [""]),
     ]
-    sections += _scale_section(spec_text)
-    sections += hardware_section()
-    sections += _recipe_section(shape)
-    sections += dense_budget.prompt_section(dense_budget.report(spec_text, dict_sizes)) if "__dict@" in spec_text else []
-    sections += _float_section(spec_text)
-    sections += _nullable_section(spec_text)
-    sections += _chain_section(spec_text)
-    sections += _parallel_section(spec_text, shape)
-    sections += _distinct_section(spec_text)
-    sections += _group_close_section(spec_text)
-    sections += [""]
     if shape["hard"]:
-        sections += [
+        parts += [(P.EXAMPLE_POINTER, [
             "## Warning: this spec has features with no worked example",
             "",
             "Contains: " + "; ".join(shape["hard"]) + ".",
             "Expect a long proof. Get the simplest correct version verified first, and call `run_runquery` early",
             "and often: its error text is the only checker you have.",
             "",
-        ]
-        sections += _dict_hard_pointers(spec_text)
-    sections += [_do_not_text(), _SHAPE_LIST_PRINCIPLES if principles.principles_only() else _SHAPE_LIST, _speed_text(), _hygiene_text()]
-    sections += [
-        "## Helper region example",
-        "",
-        "```rust",
-        "// AGENT_HELPERS_START",
-        "proof fn plus_zero(x: int) ensures x + 0 == x { }",
-        "// AGENT_HELPERS_END",
-        "// in the body:  proof { plus_zero(3); }",
-        "```",
-        "",
-        "## Lemma index",
-        "",
-        lemma_index.rstrip(),
+        ] + _dict_hard_pointers(spec_text))]
+    parts += [
+        (P.RULES, [_do_not_text()]),
+        (P.EXAMPLE_POINTER, [_SHAPE_LIST_PRINCIPLES if principles.principles_only() else _SHAPE_LIST]),
+        (P.RECIPE, [_speed_text()]),
+        (P.RULES, [_hygiene_text()]),
+        (P.RULES, [
+            "## Helper region example",
+            "",
+            "```rust",
+            "// AGENT_HELPERS_START",
+            "proof fn plus_zero(x: int) ensures x + 0 == x { }",
+            "// AGENT_HELPERS_END",
+            "// in the body:  proof { plus_zero(3); }",
+            "```",
+            "",
+        ]),
+        (P.TOOLS, ["## Lemma index", "", lemma_index.rstrip()]),
     ]
+    sections: list[str] = []
+    emitted = P.kinds_emitted()
+    for kind, lines in parts:
+        assert kind in P.KINDS, kind
+        if kind in emitted:
+            sections += lines
     if restart_note.strip():
         sections.extend(["", "## This is a restart: where your file stands", "", restart_note.strip()])
     if last_error.strip():

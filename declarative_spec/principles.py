@@ -136,6 +136,18 @@ def mode() -> str:
     return lemma_config.get("examples")
 
 
+# Every prompt section has a kind; the examples mode decides which kinds are emitted (declarative_spec/prompt.py tags each section).
+TASK, RULES, TOOLS, LIMITS, HARDWARE, RECIPE, EXAMPLE_POINTER = "task", "rules", "tools", "limits", "hardware", "recipe", "example-pointer"
+KINDS = (TASK, RULES, TOOLS, LIMITS, HARDWARE, RECIPE, EXAMPLE_POINTER)
+_PLAIN_KINDS = (TASK, RULES, TOOLS, LIMITS, HARDWARE)
+
+
+def kinds_emitted() -> tuple[str, ...]:
+    """full: everything (as before). principles: everything, the recipes and pointers being their principles variants (the section
+    builders choose those). none: no technique recipe and no pointer to an example, only the task, rules, tools, limits and hardware."""
+    return _PLAIN_KINDS if mode() == "none" else KINDS
+
+
 def examples_none() -> bool:
     """`LEMMA_EXAMPLES=none`: no example file is mounted and no prompt, lemma-index or hint text names one."""
     return mode() == "none"
