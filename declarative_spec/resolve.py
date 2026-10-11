@@ -106,6 +106,22 @@ def flatten_derived(query: Query) -> Query:
             raise DeclarativeUnsupported(f"column {name!r} is not an output of the derived table")
         return hit
 
+    def identity(name: str) -> None:
+        """The outer name reads the inner column of the same name: a renamed output would be a silent mis-binding (the outer text is kept)."""
+        src = output(name)
+        if src.kind != "column" or src.text.rpartition(".")[2].casefold() != name.casefold():
+            raise DeclarativeUnsupported(f"column {name!r} of a derived table is renamed or computed: only aggregates and group keys may read it")
+
+    for name in query.projection:
+        if name not in query.group_columns:
+            identity(name)
+    for key in query.order_by:
+        if key.column.casefold() in outs and key.column not in query.group_columns:
+            identity(key.column)
+    for o in query.outputs:
+        if o.name.casefold() in outs and o.text.rpartition(".")[2].casefold() != o.name.casefold():
+            raise DeclarativeUnsupported(f"output {o.name!r} renames a column and shadows an output of the derived table")
+
     merged = Query(
         tables=list(inner.tables),
         aliases=dict(inner.aliases),
@@ -141,7 +157,7 @@ def flatten_derived(query: Query) -> Query:
             if agg.filter_expr:
                 raise DeclarativeUnsupported("a FILTER over a derived table")
             text, extra = _inline_case(agg.expr, output)
-            agg = replace(agg, expr=text, arith_refs=tuple(agg.arith_refs) + extra)
+            agg = replace(agg, expr=text, arith_refs=extra)  # only the substituted refs: outer names mean nothing to the inner tables
         elif agg.expr or agg.arith:
             raise DeclarativeUnsupported("aggregate expression over a derived table")
         merged.aggs.append(agg)
