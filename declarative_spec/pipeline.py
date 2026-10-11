@@ -9,6 +9,7 @@ import tempfile
 from pathlib import Path
 
 from declarative_spec import official_measure as om
+from declarative_spec import principles
 from declarative_spec.feedback import FULL_LOG_NAME, format_failure
 from declarative_spec.regions import extract_agent_edit, extract_agent_helpers
 from declarative_spec.verus_limits import (
@@ -265,12 +266,21 @@ def speed_bar_mult() -> float:
     return mult
 
 
-PARALLEL_HINT = (
+_PARALLEL_HINT_HEAD = (
     " This body is single-threaded and the bar is the reference engine on ALL cores: upgrade to the PARALLEL recipe "
     "(your spec has the `<table>_arc` parameters). Keep this verified body as the fallback, then write workers over row "
-    "ranges with `vstd::thread::spawn`/`join` as in `context/ro/examples/parallel_ungrouped_sum.rs` (sums/counts: partials "
+    "ranges with `vstd::thread::spawn`/`join` as in "
+)
+PARALLEL_HINT = (
+    _PARALLEL_HINT_HEAD
+    + "`context/ro/examples/parallel_ungrouped_sum.rs` (sums/counts: partials "
     "telescope; MIN/MAX: `parallel_ungrouped_min.rs`; GROUP BY over a small code domain: per-worker dense arrays, "
     "`dict_group_count_sum_parallel.rs`) and call `run_runquery` again. See the 'Parallel scan' section of DECLARATIVE.md."
+)
+PARALLEL_HINT_PRINCIPLES = (
+    _PARALLEL_HINT_HEAD
+    + "`context/ro/examples/parallel_scan_sum.rs` (sums/counts: partials telescope; MIN/MAX: merge (cell, any) pairs; "
+    "GROUP BY over a small code domain: per-worker dense arrays merged slotwise) and call `run_runquery` again."
 )
 
 
@@ -358,7 +368,7 @@ def _apply_speed_bar(metrics: dict, speed_bar: dict | None, *, parallel_hint: bo
                 f"({speedup:.2f}x; the bar is {mult:g}x faster than DuckDB). "
                 + (f"[{om.MEASUREMENT_OFFICIAL}: medians of {len(rounds_info['official_rounds'])} rounds, per round (ours/DuckDB us): {_rounds_text(rounds_info)}] " if official else "")
                 + "Use one pass over dense arrays; avoid a loop over one table inside another and a hash-map update per row where a dense Vec indexed by key works."
-                + (PARALLEL_HINT if parallel_hint else "")
+                + ((PARALLEL_HINT_PRINCIPLES if principles.principles_only() else PARALLEL_HINT) if parallel_hint else "")
             ),
         }
     return {**metrics, **attained, "duck_us": duck_us}

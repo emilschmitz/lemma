@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from declarative_spec import dense_budget
+from declarative_spec import dense_budget, principles
 from declarative_spec.example_registry import INDEX_GROUPS as _INDEX_GROUPS
 from declarative_spec.example_registry import MORE_EXAMPLES as _MORE_EXAMPLES
 
@@ -446,6 +446,9 @@ def mount_examples(ro: Path) -> None:
     from declarative_spec.string_encoding import dict_mode
 
     dest = ro / "examples"
+    if principles.principles_only():
+        principles.mount(dest)  # LEMMA_EXAMPLES=principles: the curated technique set only, no benchmark-shaped body
+        return
     dest.mkdir(parents=True, exist_ok=True)
     dict_on = dict_mode()
     for name in [n for n, _w in registered_examples() if dict_on or not _dict_only(n)] + helper_files():
@@ -512,9 +515,10 @@ def _float_section(spec_text: str) -> list[str]:
         "call `lemma_f64_add_defined` / `sub_defined` / `mul_defined` before an operation and `lemma_f64_add_within` /",
         "`sub_within` / `mul_within` after it, compare with `lemma_f64_lt_real` / `gt_real` / ..., divide with",
         "`lemma_f64_div_defined` / `lemma_f64_div_real`, and cast integers with `host_u64_to_f64` / `host_i128_to_f64`.",
-        "Verified float examples in `context/ro/examples/`:",
-        "",
     ]
+    if principles.principles_only():
+        return lines
+    lines += ["Verified float examples in `context/ro/examples/`:", ""]
     lines += [f"- `{name}`: {what}" for name, what in _FLOAT_EXAMPLES]
     return lines
 
@@ -596,6 +600,21 @@ def _scale_section(spec_text: str) -> list[str]:
     return lines + [""]
 
 
+_GROUP_CLOSE_OUTLINE = [
+        "Outline of the long worked example `hard/dict_join_group_count_distinct_topn.rs` (its helper region is the bulk; port the pieces, not the file): (1) a build pass over the",
+        "dimension table creating the dynamic group table (a `Vec` of group keys with a witness row per group, a lookup by linear scan or hash map) and the chain index of dimension",
+        "rows per join code; (2) one pass over the fact table: probe the chain, add to the group's total, insert into the group's seen set (per group a `HashMapWithView` keyed by the",
+        "distinct value's code or integer, or a `Vec<bool>` over a dictionary whose length the catalog caps), each step tied to the spec fold by the host lemmas (`N_set` steps, the fold's own",
+        "unfolding for SUM/AVG parts); (3) the selection loop with `used`/`pos`/`sel` and two-term-trigger sortedness invariants; (4) the closing calls in separate small helpers (`_omitted` first).",
+        "Do not give up on a long example: write the whole body in pieces, run the check, and fix the first failing clause; every piece is an ordinary loop invariant.",
+]
+_GROUP_CLOSE_OUTLINE_PRINCIPLES = [
+        "A small worked use of `_rows`, `_distinct` and `_present` (dense slots over the codes of a dimension's dictionary, `gk`/`gw`/`sel`/`used`/`pos` built in a ghost loop that emits one row per",
+        "present code): `context/ro/examples/star_join_group_by.rs`. For a selection loop with a LIMIT, keep the order and `<= LIMIT` facts as loop invariants and call `_omitted` first.",
+        "Do not give up on a long proof: write the whole body in pieces, run the check, and fix the first failing clause; every piece is an ordinary loop invariant.",
+]
+
+
 def _group_close_section(spec_text: str) -> list[str]:
     """The host-proved closing lemmas of a grouped query (``declarative_spec/group_close.py``), when the spec has them."""
     if "lemma_group_close_rows" not in spec_text:
@@ -621,12 +640,7 @@ def _group_close_section(spec_text: str) -> list[str]:
         "each ensures exactly the matching `run_query` postcondition. Their `requires` are the bullets above, spelled out (read their signatures in the spec). Call EACH closing lemma from its own small helper proof fn (one fact per helper, with only the hypotheses it needs, in the helpers region) and call `_omitted` FIRST: the combined call inside `run_query` or one big helper exceeds the rlimit. The order (sortedness) and the",
         "`<= LIMIT` clauses are not covered: keep them as loop invariants of the selection loop. A selection loop that repeatedly takes the best unused group (a 'used' flag per group) keeps",
         "the invariants `sel` distinct, every unused group not ahead of any chosen row, chosen rows in order, which are exactly the hypotheses above.",
-        "Outline of the long worked example `hard/dict_join_group_count_distinct_topn.rs` (its helper region is the bulk; port the pieces, not the file): (1) a build pass over the",
-        "dimension table creating the dynamic group table (a `Vec` of group keys with a witness row per group, a lookup by linear scan or hash map) and the chain index of dimension",
-        "rows per join code; (2) one pass over the fact table: probe the chain, add to the group's total, insert into the group's seen set (per group a `HashMapWithView` keyed by the",
-        "distinct value's code or integer, or a `Vec<bool>` over a dictionary whose length the catalog caps), each step tied to the spec fold by the host lemmas (`N_set` steps, the fold's own",
-        "unfolding for SUM/AVG parts); (3) the selection loop with `used`/`pos`/`sel` and two-term-trigger sortedness invariants; (4) the closing calls in separate small helpers (`_omitted` first).",
-        "Do not give up on a long example: write the whole body in pieces, run the check, and fix the first failing clause; every piece is an ordinary loop invariant.",
+        *(_GROUP_CLOSE_OUTLINE_PRINCIPLES if principles.principles_only() else _GROUP_CLOSE_OUTLINE),
         "",
     ]
 
@@ -657,7 +671,13 @@ def _distinct_section(spec_text: str) -> list[str]:
     return lines
 
 
-_PARALLEL_DICT_LINES = [
+_PARALLEL_DICT_LINES_PRINCIPLES = [
+        "then upgrade only if it loses. A hash aggregate or a join does not telescope directly, but a GROUP BY over a small code domain does: give each",
+        "worker its own DENSE array per aggregate (one slot per dictionary code), merge them slotwise in the join loop, and the slotwise",
+        "telescoping is the same proof as the scalar one.",
+        "A dense table has one slot per combination of key codes; it is allowed only when the product of the key dictionaries' sizes is within `LEMMA_DENSE_SLOT_BUDGET` (default 2^22 slots). The section \"Dense slot table: allowed or not, for THIS query\" below says which case this query is; otherwise key the groups by a packed code tuple in a `HashMapWithView`.",
+]
+_PARALLEL_DICT_LINES_FULL = [
         "then upgrade only if it loses. A hash aggregate or a join does not telescope directly, but a GROUP BY over a small code domain does: give each",
         "worker its own DENSE array per aggregate (one slot per dictionary code), merge them slotwise in the join loop, and the slotwise",
         "telescoping is the same proof (dict mode: `context/ro/examples/dict_group_count_sum_parallel.rs`, 13x on the real 39.4M-row table;",
@@ -666,11 +686,23 @@ _PARALLEL_DICT_LINES = [
         "two dictionary keys, several aggregates, sorted output, a flat m1*m2 slot array: `context/ro/examples/hard/dict_parallel_q1.rs`, TPC-H Q1 at 3.95x).",
 ]
 
+def _parallel_dict_lines() -> list[str]:
+    return _PARALLEL_DICT_LINES_PRINCIPLES if principles.principles_only() else _PARALLEL_DICT_LINES_FULL
+
+
 _PARALLEL_PLAIN_LINES = [
         "then upgrade only if it loses. A hash aggregate or a join does not telescope directly. This spec has plain `String` columns, and the worked",
         "parallel examples for GROUP BY and joins are dictionary-mode files that are NOT mounted here; the ungrouped examples below are the only parallel templates.",
         "For a GROUP BY over a small key domain the same proof works with one array of accumulators per worker, merged slotwise: adapt the ungrouped template to that.",
 ]
+_PARALLEL_PLAIN_LINES_PRINCIPLES = [
+        "then upgrade only if it loses. A hash aggregate or a join does not telescope directly. This spec has plain `String` columns.",
+        "For a GROUP BY over a small key domain the same proof works with one array of accumulators per worker, merged slotwise: adapt the scalar template to that.",
+]
+
+
+def _PARALLEL_PLAIN_LINES_RESOLVED() -> list[str]:
+    return _PARALLEL_PLAIN_LINES_PRINCIPLES if principles.principles_only() else _PARALLEL_PLAIN_LINES
 
 
 def _chain_section(spec_text: str) -> list[str]:
@@ -691,7 +723,9 @@ def _chain_section(spec_text: str) -> list[str]:
         "  and if no tuple is a hit, `" + f0 + "_d1(P.., j, 0, k) == 0`. The fold of the whole table then steps by unfolding: `" + f0 + "(P.., j, k) == " + f0 + "_d1(P.., j, 0, k) + " + f0 + "(P.., j + 1, k)`.",
         f"- `lemma_{f0}_zero_dL` / `lemma_{f0}_single_dL`: the per-level lemmas behind it, for a different shape of argument.",
         "Plan: one pass over the FACT table; for each dimension an array indexed by `key + offset` (the offset from the `valid_cols` bound of that key column) holding what the",
-        "group key and the filters need (build it once from the dimension rows, with a magnitude `arr_fwd` / `arr_bwd` pair as in the example); if every lookup finds a row, that tuple",
+        "group key and the filters need (build it once from the dimension rows, with a magnitude `arr_fwd` / `arr_bwd` pair as in the example"
+        + ("" if not principles.principles_only() else ", here `idx_fwd` / `idx_bwd` in `context/ro/examples/join_unique_lookup.rs`")
+        + "); if every lookup finds a row, that tuple",
         "IS the hit of fact row `j` and the step lemma above gives the fold of row `j`; if one lookup fails, no tuple is a hit. Never loop over a dimension inside the fact loop.",
         "Because each fact row contributes at most ONE tuple, a SUM is at most (fact rows) x (largest term): that is the overflow bound of your accumulator (the cell magnitudes are in `valid_cols_<t>`;",
         "the examples keep `-(rows seen) * M <= acc <= (rows seen) * M` per slot). Without the unique keys the join could have 2^100 tuples and no `i128` could hold the sum; here it cannot.",
@@ -712,14 +746,11 @@ def _parallel_section(spec_text: str, shape: dict) -> list[str]:
         "workers with `vstd::thread::spawn` and `JoinHandle::join` (vstd's own, not trusted code of ours): each worker owns an",
         "`std::sync::Arc::clone(<t>_arc)` and folds a row RANGE `[lo, hi)`; the host's suffix folds are additive over ranges, so",
         "worker k returns `fold(t, lo_k) - fold(t, hi_k)` and the partials telescope to `fold(t, 0)`. No column is copied.",
-        "A scan that is limited by memory bandwidth is the case this is for: on the real 39.4M-row table the parallel SUM was",
-        "12.8x faster than the all-core reference engine. Keep the single-threaded body as the first proof,",
-        *(_PARALLEL_DICT_LINES if shape["dict"] else _PARALLEL_PLAIN_LINES),
-        "Every multiplier quoted in this prompt is a manual-prover result for the timed `run_query` ALONE (kernel only) against the reference engine scanning its own storage in place; pin, copy into the vectors and encoding are outside the timer (about a second for tens of millions of rows) and a reference engine holding the same narrow data in memory is about 1.8x to 2.1x slower than our kernel, not 2.4x to 2.9x. `run_runquery` reports the same kernel-only speedup.",
-        "The example is the template (SUM; adapt the fold, the filter, the cell bound and the accumulator type):",
-        f"`context/ro/examples/{_PAR_EXAMPLE}` (also `parallel_ungrouped_product_sum.rs` for a product with a date filter, and `parallel_ungrouped_min.rs`, `_max.rs`, `_count.rs`: MIN/MAX merge the workers' (value, any) pairs, COUNT is additive).",
+        *(_PARALLEL_INTRO_PRINCIPLES if principles.principles_only() else _PARALLEL_INTRO),
+        *(_parallel_dict_lines() if shape["dict"] else _PARALLEL_PLAIN_LINES_RESOLVED()),
+        *(_PARALLEL_TEMPLATE_PRINCIPLES if principles.principles_only() else _PARALLEL_TEMPLATE),
     ]
-    if shape["dict"] and "lemma_chain_hit_unique" in spec_text:
+    if shape["dict"] and "lemma_chain_hit_unique" in spec_text and not principles.principles_only():
         lines += [
             "A parallel STAR JOIN (a fact table split over 8 workers; the dimension arrays are built once and shared through `Arc`; each worker returns a flat slot array pair that the join loop merges):",
             "`context/ro/examples/hard/dict_parallel_star_join_group_sum_sorted.rs` (SSB Q4.1: 2.7x the all-core engine, against 1.03x for the single-threaded `dict_star_join_group_sum_sorted.rs`). Turn the sequential",
@@ -727,18 +758,39 @@ def _parallel_section(spec_text: str, shape: dict) -> list[str]:
             "`context/ro/examples/hard/dict_parallel_star_join_two_keys_revenue_order.rs` (SSB Q3.1, 2.4x). Two string keys from two dimensions with ORDER BY the strings:",
             "`context/ro/examples/hard/dict_parallel_star_join_two_keys_string_order.rs` (SSB Q4.2, 2.25x).",
         ]
-    if "lemma_group_close_rows" in spec_text and shape["dict"]:
+    if "lemma_group_close_rows" in spec_text and shape["dict"] and not principles.principles_only():
         lines += [
             "A parallel HASH GROUP BY with a merge (an integer key too wide for a dense array; per-worker hash tables, merged by key; then the top-N selection and the host closing lemmas):",
             "`context/ro/examples/hard/dict_parallel_hash_group_topn.rs` (1.46x on the real 39.4M-row table). Notes from it: the helpers region admits only `proof fn` / `spec fn`, so the worker's",
             "fold and the merge step are NESTED `fn`s at the top of the `run_query` body; a `struct` is not admitted either (use a tuple); a postcondition on a `&mut` parameter uses `final(x)` / `old(x)`.",
         ]
-    if shape["recipe"] in ("ungrouped", "ungrouped_product", "ungrouped_minmax"):
+    if principles.principles_only():
+        header = [ln for ln in (principles.FIXTURES / "parallel_scan_sum.rs").read_text().splitlines() if ln.startswith("//")]
+        lines += ["", "Its header:", "", "```", *header, "```"]
+    elif shape["recipe"] in ("ungrouped", "ungrouped_product", "ungrouped_minmax"):
         header = [ln for ln in (_FIXTURES / _PAR_EXAMPLE).read_text().splitlines() if ln.startswith("//")]
         lines += ["", "Its header:", "", "```", *header, "```"]
     return lines
 
 
+_PARALLEL_INTRO = [
+    "A scan that is limited by memory bandwidth is the case this is for: on the real 39.4M-row table the parallel SUM was",
+    "12.8x faster than the all-core reference engine. Keep the single-threaded body as the first proof,",
+]
+_PARALLEL_INTRO_PRINCIPLES = [
+    "A scan that is limited by memory bandwidth is the case this is for: a few wide columns over millions of rows are faster on all cores than on one.",
+    "Keep the single-threaded body as the first proof,",
+]
+_PARALLEL_TEMPLATE = [
+    "Every multiplier quoted in this prompt is a manual-prover result for the timed `run_query` ALONE (kernel only) against the reference engine scanning its own storage in place; pin, copy into the vectors and encoding are outside the timer (about a second for tens of millions of rows) and a reference engine holding the same narrow data in memory is about 1.8x to 2.1x slower than our kernel, not 2.4x to 2.9x. `run_runquery` reports the same kernel-only speedup.",
+    "The example is the template (SUM; adapt the fold, the filter, the cell bound and the accumulator type):",
+    "`context/ro/examples/parallel_ungrouped_sum.rs` (also `parallel_ungrouped_product_sum.rs` for a product with a date filter, and `parallel_ungrouped_min.rs`, `_max.rs`, `_count.rs`: MIN/MAX merge the workers' (value, any) pairs, COUNT is additive).",
+]
+_PARALLEL_TEMPLATE_PRINCIPLES = [
+    "`run_runquery` reports the kernel-only speedup (the pin, the copy into the vectors and the encoding are outside the timer).",
+    "The example is the template (SUM; adapt the fold, the filter, the cell bound and the accumulator type):",
+    "`context/ro/examples/parallel_scan_sum.rs` (MIN/MAX merge the workers' (cell, any) pairs instead of adding; COUNT is additive; a GROUP BY over a small code domain gives each worker its own dense array and merges slotwise).",
+]
 _PAR_EXAMPLE = "parallel_ungrouped_sum.rs"
 _PAR_EXTRA = (
     "parallel_ungrouped_product_sum.rs",
@@ -774,6 +826,12 @@ def _recipe_section(shape: dict) -> list[str]:
         ]
     elif recipe == "none":
         lines += ["No worked recipe matches this result type: build it from the lemma index and the vstd docs."]
+    elif principles.principles_only():
+        lines += [
+            "No worked example is the shape of this query. `context/ro/examples/INDEX.md` lists seven small technique examples on an unrelated schema;",
+            "read the ones whose technique your spec needs (a scan with filters and folds, a dictionary group-by, a unique-key join as a lookup, a star join with a",
+            "group-by, a sorted top-N, a parallel scan, NULL-skipping aggregates) and combine them. Their names and numbers are not yours: redo the bounds for your caps.",
+        ]
     else:
         name, what = _EXAMPLES[recipe]
         if name.startswith("hard/"):
@@ -835,6 +893,19 @@ existential witness per group, a selection invariant). Start with the simplest c
 verified body is submitted, and only then look for speed. Floats are exact reals here (`float_*.rs`).
 """
 
+_SHAPE_LIST_PRINCIPLES = """\
+## Which techniques have worked examples
+
+`context/ro/examples/INDEX.md` lists seven small verified examples, one technique each, on an unrelated schema (`events`, `items`, `users`): a filtered
+scan with COUNT/SUM over integer and DECIMAL cells, a dictionary-coded group-by, a unique-key join as a lookup, a star join with a group-by, a sorted top-N with ties, a
+parallel scan, and NULL-skipping aggregates. None is the shape of your query: read the ones your spec needs and combine them.
+
+KNOWN HARD, no worked example: a join whose key repeats on both sides (many-to-many) with `COUNT(DISTINCT ...)`;
+`EXISTS`/`IN` joins (outside dictionary mode); multi-key `DISTINCT`; set operations. These need long helper proofs (an
+existential witness per group, a selection invariant). Start with the simplest correct loop that proves, make sure a
+verified body is submitted, and only then look for speed. Floats are exact reals here.
+"""
+
 _SPEED = """\
 ## Speed (the run is timed on the full table and compared with the reference engine)
 
@@ -875,6 +946,43 @@ To prove a product of two cells fits in the `i128` accumulator, write a helper w
 two cell bounds (worked example: `context/ro/examples/ungrouped_decimal_product_sum.rs`).
 """
 
+# Benchmark-specific measurements and file pointers of `_SPEED`, and the plain-words sentence that replaces each in principles mode.
+_SPEED_SCRUB: tuple[tuple[str, str], ...] = (
+    (
+        " For a MIN or MAX over a join, skip the probe of the other side for rows that cannot improve the aggregate (`!(any && d >= lo)`): that was a 2.6x speedup in the join example.",
+        " For a MIN or MAX over a join, skip the probe of the other side for rows that cannot improve the aggregate (`!(any && d >= lo)`).",
+    ),
+    (
+        "A conjunctive filter written as a short-circuit row test (`a == 1 && b == code && c > 3`) is branch-miss bound on a big scan (it cost 2x on TPC-H Q12).",
+        "A conjunctive filter written as a short-circuit row test (`a == 1 && b == code && c > 3`) is branch-miss bound on a big scan.",
+    ),
+    (
+        "(the proof pattern is in\n`context/ro/examples/parallel_dict_filter_count_max_blockskip.rs` and, in dictionary mode, `hard/dict_parallel_q12.rs`). It only wins when blocks rarely flag (about 2x on TPC-H Q12; none on a filter that flags 99 percent of the blocks).",
+        "(it only wins when blocks rarely flag; none on a filter that flags 99 percent of the blocks).",
+    ),
+    (
+        "(`context/ro/examples/parallel_dict_filter_count_max_slices.rs`; the Q6-class product sum, `parallel_ungrouped_product_sum_slices.rs`, 28 ms to 21 ms).",
+        "(the same scan went faster when the per-row bounds checks were gone).",
+    ),
+    (
+        "(worked example: `context/ro/examples/ungrouped_decimal_product_sum.rs`).",
+        "(a small `proof fn` with two `by (nonlinear_arith)` asserts, one per side of the bound).",
+    ),
+    ("The same scan went from 20.8 ms to 9.3 ms\n", "\n"),
+    (" by about 1.7x on a large scan.", " on a large scan."),
+)
+
+
+def _speed_text() -> str:
+    if not principles.principles_only():
+        return _SPEED
+    text = _SPEED
+    for old, new in _SPEED_SCRUB:
+        assert text.count(old) == 1, old[:80]
+        text = text.replace(old, new)
+    return text
+
+
 _DO_NOT = """\
 ## Do not (each item is a real failed attempt)
 
@@ -898,7 +1006,7 @@ _PROOF_HYGIENE = """\
 - Every loop needs `decreases`; keep `valid_cols_<table>(cols)` in every loop invariant (the key and cell bounds
   come from it). Call host lemmas as `proof { lemma_...(); }`. Give a quantifier an explicit `#[trigger]`.
 - A quantified loop invariant whose body mentions the NEXT index loops the solver (Z3 matching loop; the profile shows one quantifier with an astronomically large cost):
-  `forall|q| #![trigger res@[q]] .. res@[q].total >= res@[q + 1].total` instantiates `res@[q + 1]`, which instantiates it again. Use the two-term trigger
+  `forall|q| #![trigger res@[q]] .. res@[q].amount >= res@[q + 1].amount` instantiates `res@[q + 1]`, which instantiates it again. Use the two-term trigger
   `#![trigger res@[q], res@[q + 1]]` (the host's own sortedness postcondition is a goal, not a hypothesis, so it is safe).
 - A fact about a ghost `Seq` (or any variable) that the loop does not modify is NOT remembered across the loop: repeat it in the loop's `invariant` (e.g. `gk.len() == gw.len()`, the group-table facts), or the loop-body and the code after the loop lose it.
 - `#[verifier::rlimit(N)]` on a helper proof fn is accepted by the admission lint and raises that one function's budget; use it on a single closing helper that is genuinely just large, not to hide a matching loop (profile first when you can).
@@ -913,7 +1021,7 @@ _PROOF_HYGIENE = """\
   `row_hit` (state it pointwise, with the row index as an argument, and call it from `assert forall ... by`), and
   `valid_cols_<table>(cols)` kept in every loop invariant (its cell-range quantifier then sits in every loop context:
   keep only the plain length and `ROW_CAP_...` facts you use).
-- A quantifier or existential over a spec function of a row (`key_at(pre, i0)`) only fires on a ground term: bind
+- A quantifier or existential over a spec function of a row (`key_at(events, i0)`) only fires on a ground term: bind
   one (`let w = key_at(pre, i0);`) or take a witness with `choose|r: int| ...` before you assert the instance.
 - Only `proof fn` and `spec fn` items are allowed in the helper region: an exec `fn` helper is rejected, so write
   string comparisons and loop bodies inline in `run_query`.
@@ -925,9 +1033,9 @@ _PROOF_HYGIENE = """\
   grep `LEMMAS.md` for `as_bytes`) indexing a slot table, not as hashed strings.
 - The verifier's rlimit budget is the host's `--rlimit` (16 by default); the error names the main loop even when the
   overrun is in one of its asserts.
-- A string literal in a predicate (`uom = 'pure'`): `&str ==` has no spec tying it to `@`, and `reveal_strlit` does not
-  help. Build the literal once (`let pure: String = String::from_str("pure");`, ensures `pure@ == "pure"@`), keep
-  `pure@ == "pure"@` in the loop invariant, and compare `cols.uom[i] == pure` (`String == String`, vstd `string.rs`).
+- A string literal in a predicate (`kind = 'abc'`): `&str ==` has no spec tying it to `@`, and `reveal_strlit` does not
+  help. Build the literal once (`let abc: String = String::from_str("abc");`, ensures `abc@ == "abc"@`), keep
+  `abc@ == "abc"@` in the loop invariant, and compare `cols.kind[i] == abc` (`String == String`, vstd `string.rs`).
 - `Vec::insert` has the view `Seq::insert`; `Seq::insert_ensures(pos, elt)` (vstd `seq_lib.rs`, call it as `s.insert_ensures(p, x)`) gives its length and element facts. Grep `LEMMAS.md` for a vstd lemma before you write your own.
 - Floats (rounding error is accepted: a float is exact real arithmetic here, so a SUM is an exact fold and there
   is no epsilon): one `f64` accumulator with `acc as real == <spec sum>`; before each `+ - *` call
@@ -966,7 +1074,7 @@ _DICT_HARD: tuple[tuple[str, str, str], ...] = (
 
 def _dict_hard_pointers(spec_text: str) -> list[str]:
     """Pointers to the long dictionary-mode worked examples whose feature this spec has (read them with the Read tool)."""
-    if "__dict" not in spec_text:
+    if "__dict" not in spec_text or principles.principles_only():
         return []
     found = [(f, what) for needle, f, what in _DICT_HARD if re.search(rf"\b{needle}", spec_text)]
     return [f"Long verified example for this feature (dictionary mode): `context/ro/examples/{f}`: {what}." for f, what in found] + ([""] if found else [])
@@ -1070,7 +1178,7 @@ def build_declarative_prompt(
             "",
         ]
         sections += _dict_hard_pointers(spec_text)
-    sections += [_DO_NOT, _SHAPE_LIST, _SPEED, _PROOF_HYGIENE]
+    sections += [_DO_NOT, _SHAPE_LIST_PRINCIPLES if principles.principles_only() else _SHAPE_LIST, _speed_text(), _PROOF_HYGIENE]
     sections += [
         "## Helper region example",
         "",

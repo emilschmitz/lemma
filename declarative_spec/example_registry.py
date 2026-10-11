@@ -147,6 +147,11 @@ UNMOUNTED: dict[str, str] = {
     "u64_group_count_slots_t_k.rs": "the dense-counter recipe under the test spec's fixed names; its text is the block inlined as the dense_map recipe",
 }
 
+# The principles set (LEMMA_EXAMPLES=principles, declarative_spec/principles.py) is mounted instead of the whole registry, never beside it.
+from declarative_spec.principles import names as _principle_names  # noqa: E402
+
+UNMOUNTED.update({f"principles/{n}": "mounted only with LEMMA_EXAMPLES=principles (declarative_spec/principles.py)" for n in _principle_names()})
+
 
 INDEX_GROUPS: tuple[tuple[str, str], ...] = (
     (

@@ -26,6 +26,13 @@ _CAP = {"u8": 2**8, "u16": 2**16, "u32": None}
 HASH_EXAMPLE = "hard/dict_join3_group_topk.rs"
 
 
+def _hash_pointer() -> str:
+    """` (`context/ro/examples/<file>`)` for a packed-key hash group table, or nothing when the principles set has no such example."""
+    from declarative_spec import principles
+
+    return "" if principles.principles_only() else f" (`context/ro/examples/{HASH_EXAMPLE}`)"
+
+
 def budget() -> int:
     raw = os.environ.get(ENV, "").strip()
     value = int(raw) if raw else DEFAULT_BUDGET
@@ -98,7 +105,7 @@ def message(rep: dict) -> str:
         f"over the budget of {rep['budget']} ({ENV}). Do not allocate a table (`vec![..; m1 * m2 * ..]`, `Vec::with_capacity(m1 * m2)`) "
         f"sized by a product of these dictionaries. Key the groups by their code tuple instead: pack the codes into one integer "
         f"(an `i128` holds four 32-bit codes) and use a `HashMapWithView<i128, usize>` from key to group index, with the per-group "
-        f"aggregates in parallel `Vec`s (`context/ro/examples/{HASH_EXAMPLE}`). A dense array over ONE small dictionary is still fine."
+        f"aggregates in parallel `Vec`s{_hash_pointer()}. A dense array over ONE small dictionary is still fine."
     )
 
 
@@ -111,7 +118,7 @@ def prompt_section(rep: dict | None) -> list[str]:
         lines += [
             f"- Key domains: {_shape(rep)}; the actual dictionary sizes were not measured. A dense table over their product is allowed only",
             f"  when the product is at most {rep['budget']} ({ENV}). If you cannot bound it, key the groups by a packed code tuple in a",
-            f"  `HashMapWithView` (`context/ro/examples/{HASH_EXAMPLE}`).",
+            f"  `HashMapWithView`{_hash_pointer()}.",
         ]
     elif rep["allowed"]:
         lines += [
