@@ -24,7 +24,7 @@ lemma.toml  <  environment variable LEMMA_<KEY>  <  explicit CLI flag
 | `[agent]` | `agent_timeout_sec agent_submit_ends_session agent_data_mode agent_resource_exhausted_retries claude_effort claude_thinking_tokens claude_tool_search mcp_iterate_rows` |
 | `[prover]` | `verus_rlimit verus_timeout_sec run_timeout_sec target_cpu dense_slot_budget` |
 | `[measure]` | `official_rounds official_duck_reps duck_memory_limit duck_threads` |
-| `[data]` | `duckdb_path` |
+| `[data]` | `duckdb_path data_profile` |
 | `[safety]` | `allow_dirty scope_memory_max egress_profile egress_allowlist heavy_lock heavy_min_avail_mb heavy_mem_max verus_mem_max verus_slots verus_min_avail_mb` |
 
 Meaning, allowed values and defaults are in the file. `menu` selects a profile (`research_loop/menu_profile.py`); the next four axis keys override its values (the launcher takes them as authority and the selection printed first shows them as overrides).

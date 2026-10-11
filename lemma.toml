@@ -58,6 +58,7 @@ duck_threads = 8                            # DuckDB PRAGMA threads on the same 
 
 [data]
 duckdb_path = "holdout/gendb_sec_edgar/duckdb/sec_edgar_dec.duckdb"   # the database: schema, catalog, reference timing, row counts (relative to the repo root)
+data_profile = "none"                       # none | stats: stats = exact data statistics of this query (selectivities, distinct counts, join and group sizes, ties at the LIMIT; SQL on the database, no LLM) in context/ro/data_profile.md
 
 [safety]
 allow_dirty = false                         # true: let a container run start from a dirty git tree (tracked files). Paper runs: never

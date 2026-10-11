@@ -7,6 +7,7 @@ import shutil
 import os
 from pathlib import Path
 
+import lemma_config
 from declarative_spec import best_so_far
 from declarative_spec.admit import admit_declarative_body
 from declarative_spec.emit import DeclarativeUnsupported, emit_declarative_spec
@@ -22,6 +23,7 @@ from declarative_spec.verus_docs import (
 )
 from declarative_spec.vstd_index import VERUS_HOME, groups_markdown
 from declarative_spec.prompt import build_declarative_prompt, mount_examples
+from research_loop.data_profile import ProfileError, build_profile
 
 
 OFFICIAL_KEYS = (
@@ -89,6 +91,22 @@ def _maybe_large_table(
         "rows": prepared["rows"],
         "synthetic": True,  # no DuckDB file behind this dev bar: the official measure cannot re-time it
     }
+
+
+def prepare_data_profile(sql_query: str, workspace: Path) -> str:
+    """`data_profile = "stats"`: the profile text, also written to ``<run dir>/data_profile.md``. `none`: "" and nothing is written.
+
+    The run's database is ``LEMMA_MEASURE_DB``; without it the profile cannot be computed and that is an error, not an empty profile."""
+    if lemma_config.get("data_profile") != "stats":
+        return ""
+    measure_db = os.environ.get("LEMMA_MEASURE_DB", "").strip()
+    if not measure_db:
+        raise ValueError("data_profile = 'stats' needs the run's database (LEMMA_MEASURE_DB is not set)")
+    text = build_profile(sql_query, measure_db)
+    run_dir = Path(os.environ.get("LEMMA_RUN_DIR", "").strip() or workspace.parent)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "data_profile.md").write_text(text)
+    return text
 
 
 def _extract_agent_edit_region(source: str) -> str:
@@ -277,6 +295,11 @@ def run_declarative_optimization_loop(
             "proof_verified": False,
         }
 
+    try:
+        data_profile = prepare_data_profile(sql_query, workspace)
+    except (DeclarativeUnsupported, ProfileError, ValueError, OSError) as exc:
+        return {"status": "FAILED", "best_latency_us": -1, "error": f"data profile: {exc}", "history": [], "proof_verified": False}
+
     prev_source: str | None = None  # the file the previous session left, as it was
     for iteration in range(1, max_iterations + 1):
         iter_record: dict = {"iteration": iteration}
@@ -298,6 +321,8 @@ def run_declarative_optimization_loop(
             resolved_schema=resolved_schema,
             spec_text=spec,
         )
+        if data_profile:
+            (spec_path.parent / "data_profile.md").write_text(data_profile)
         if iteration == 1 or not agent_path.is_file():
             agent_path.write_text(spec)
         restart_note = ""
