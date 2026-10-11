@@ -249,6 +249,23 @@ def claude_spend_usd(raw: Path) -> float:
     return total
 
 
+TOKEN_KEYS = ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+
+
+def claude_tokens(raw: Path) -> dict[str, int]:
+    """Token totals of a Claude raw stream, from the ``usage`` of every assistant message (one count per message id: the stream
+    repeats a message per content block). Unlike ``total_cost_usd`` this is there for a session killed at its time limit."""
+    per_message: dict[str, dict] = {}
+    if raw.is_file():
+        for line in raw.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                event = json.loads(line)
+                message = event.get("message") or {}
+                if event.get("type") == "assistant" and message.get("usage"):
+                    per_message[message.get("id") or str(len(per_message))] = message["usage"]
+    return {k: sum(int(u.get(k) or 0) for u in per_message.values()) for k in TOKEN_KEYS}
+
+
 def cmd_with_budget(agent_cmd: str, remaining_usd: float) -> str:
     """A Claude command with ``--max-budget-usd <remaining>``; a Cursor command, or ``remaining_usd`` <= 0, is returned unchanged."""
     if not is_claude_cmd(agent_cmd) or remaining_usd <= 0:

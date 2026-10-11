@@ -372,3 +372,22 @@ def test_budget_and_timeout_settings_are_loaded() -> None:
     with pytest.raises(lc.ConfigError):
         lc.set_cli("max_budget_usd", -1.0)
         lc.get("max_budget_usd")
+
+
+def test_token_totals_count_each_message_once(tmp_path) -> None:
+    import json
+    from research_loop.agent_sandbox import claude_tokens
+    raw = tmp_path / "claude_raw.jsonl"
+    u = {"input_tokens": 2, "output_tokens": 10, "cache_creation_input_tokens": 100, "cache_read_input_tokens": 50}
+    lines = [{"type": "assistant", "message": {"id": "m1", "usage": u}}, {"type": "assistant", "message": {"id": "m1", "usage": u}},
+             {"type": "assistant", "message": {"id": "m2", "usage": u}}]
+    raw.write_text("\n".join(json.dumps(x) for x in lines) + "\n")
+    assert claude_tokens(raw) == {"input_tokens": 4, "output_tokens": 20, "cache_creation_input_tokens": 200, "cache_read_input_tokens": 100}
+
+
+def test_token_totals_present_without_a_result_event(tmp_path) -> None:
+    import json
+    from research_loop.agent_sandbox import claude_spend_usd, claude_tokens
+    raw = tmp_path / "claude_raw.jsonl"
+    raw.write_text(json.dumps({"type": "assistant", "message": {"id": "m1", "usage": {"output_tokens": 7}}}) + "\n")
+    assert claude_spend_usd(raw) == 0.0 and claude_tokens(raw)["output_tokens"] == 7

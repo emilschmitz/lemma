@@ -32,6 +32,7 @@ class Outcome:
     result: dict | None = None  # the loop result for a success
     source: str | None = None  # the file of a success (the base of a continuation session)
     cost_usd: float = 0.0  # model spend of the session (total_cost_usd of its stream-json result event)
+    tokens: dict | None = None  # token totals of the session from the stream's per-message usage (present even when the session was killed)
 
 
 @dataclass
@@ -98,6 +99,7 @@ class Sessions:
             "end": datetime.fromtimestamp(end, UTC).isoformat(),
             "agent_s": round(outcome.agent_s, 1),
             "cost_usd": round(outcome.cost_usd, 6),
+            "tokens": outcome.tokens or {},
             "success": outcome.success,
             "session_speedup": outcome.speedup,
             "best_speedup": self.best_speedup(),
@@ -141,4 +143,5 @@ def record_in_manifest(manifest: Path, records: list[dict[str, Any]]) -> None:
         data = json.loads(manifest.read_text())
         data["sessions"] = records
         data["total_cost_usd"] = round(sum(r.get("cost_usd", 0.0) for r in records), 6)
+        data["total_tokens"] = {k: sum(int((r.get("tokens") or {}).get(k, 0)) for r in records) for k in {k for r in records for k in (r.get("tokens") or {})}}
         manifest.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")

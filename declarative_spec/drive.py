@@ -288,6 +288,7 @@ def run_declarative_optimization_loop(
 
     from research_loop.agent_sandbox import (
         claude_spend_usd,
+        claude_tokens,
         cmd_with_budget,
         load_agent_config,
         run_agent_docker,
@@ -446,9 +447,12 @@ def run_declarative_optimization_loop(
 
     def run_one_costed(iteration: int, host_note: str, timeout_s: int | None) -> sessions_mod.Outcome:
         before = claude_spend_usd(raw_stream)
+        tokens_before = claude_tokens(raw_stream)
         state["remaining_usd"] = None if max_budget_usd <= 0 else max_budget_usd - before
         outcome = run_one(iteration, host_note, timeout_s)
         outcome.cost_usd = claude_spend_usd(raw_stream) - before
+        tokens_after = claude_tokens(raw_stream)
+        outcome.tokens = {k: tokens_after[k] - tokens_before[k] for k in tokens_after}
         return outcome
 
     manifest = workspace.parent / "manifest.json"
