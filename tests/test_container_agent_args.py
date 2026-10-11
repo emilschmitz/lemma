@@ -13,6 +13,7 @@ from research_loop.scripts import run_container_agent as rca
 @pytest.fixture(autouse=True)
 def _tree_counts_as_clean(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(lemma_config, "require_clean_tree", lambda root=None: {"git_sha": "0" * 40, "git_dirty": False, "dirty_files": []})
+    monkeypatch.setattr(lemma_config, "REQUIRED", ())  # duckdb_path / assumption_package have no default; these tests do not run a database
     lemma_config.clear_cli()
 
 
@@ -93,6 +94,7 @@ def test_an_unknown_lemma_variable_stops_the_launcher_before_the_run(monkeypatch
 
 def test_a_dirty_tree_stops_the_launcher_before_the_run(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.undo()  # the autouse "clean" patch off: the real check, with the git state faked dirty
+    monkeypatch.setattr(lemma_config, "REQUIRED", ())
     seen = _capture_kwargs(monkeypatch)
     monkeypatch.setattr(lemma_config, "git_state", lambda root=None: {"git_sha": "a" * 40, "git_dirty": True, "dirty_files": [" M x.py"]})
     with pytest.raises(lemma_config.ConfigError, match="uncommitted changes in tracked files"):
@@ -128,3 +130,17 @@ def test_the_result_and_the_run_record_the_effective_config_and_git_state(tmp_pa
     assert set(rec["config"]) == set(lemma_config.schema()) and rec["git_sha"] == "b" * 40 and rec["git_dirty"] is False
     assert rec["config"]["official_rounds"]["value"] == 3 and rec["config"]["official_rounds"]["source"] == "env"
     assert rec["config"]["max_iterations"]["source"] == "cli" and rec["config"]["agent_timeout_sec"] == {"section": "agent", "value": 750, "source": "file", "origin": "lemma.toml"}
+
+
+def test_the_launcher_stops_without_a_database_or_a_package(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(lemma_config, "REQUIRED", ("duckdb_path", "assumption_package"))
+    for name in ("LEMMA_DUCKDB_PATH", "LEMMA_ASSUMPTION_PACKAGE"):
+        monkeypatch.delenv(name, raising=False)
+    with pytest.raises(lemma_config.ConfigError, match="duckdb_path has no default"):
+        rca.main(["--query-sql", "SELECT 1"])
+    monkeypatch.setenv("LEMMA_DUCKDB_PATH", "/db.duckdb")
+    with pytest.raises(lemma_config.ConfigError, match="assumption_package has no default"):
+        rca.main(["--query-sql", "SELECT 1"])
+    seen = _capture(monkeypatch)
+    rca.main(["--query-sql", "SELECT 1", "--assumption-package", "auto"])  # a flag supplies it
+    assert seen == ["SELECT 1"]

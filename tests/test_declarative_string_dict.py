@@ -49,13 +49,16 @@ def dict_on(monkeypatch: pytest.MonkeyPatch) -> None:
 # ---- the flag ----------------------------------------------------------------------------------------------------------
 
 
-def test_plain_is_the_default_and_a_bad_value_is_loud(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_dict_is_the_default_plain_is_explicit_and_a_bad_value_is_loud(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LEMMA_STRING_ENCODING", raising=False)
+    assert dict_mode()
+    assert "__dict" in emit_declarative_spec(SQL, SCHEMA, _catalog())
+    monkeypatch.setenv("LEMMA_STRING_ENCODING", "plain")
     assert not dict_mode()
     spec = emit_declarative_spec(SQL, SCHEMA, _catalog())
     assert "__dict" not in spec and "pub s: Vec<String>" in spec
     monkeypatch.setenv("LEMMA_STRING_ENCODING", "bogus")
-    with pytest.raises(ValueError, match="must be 'plain' or 'dict'"):
+    with pytest.raises(ValueError, match="must be one of"):
         dict_mode()
 
 

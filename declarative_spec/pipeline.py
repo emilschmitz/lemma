@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 from declarative_spec import official_measure as om
@@ -429,6 +430,96 @@ def _official_rounds(metrics: dict, speed_bar: dict) -> tuple[dict, int, int, in
     return info, summary["ours_median_us"], summary["duck_median_us"], min(bests)
 
 
+def _admit_and_assemble(spec_rs: str, agent_source: str, column_bins: dict[str, str] | None, speed_bar: dict | None) -> tuple[str, str, str]:
+    """Admit the agent edit and assemble the program: ``(assembled, body, "")``, or ``("", "", error message)``."""
+    from declarative_spec.admit import admit_declarative_body, admit_helpers
+    from declarative_spec.assemble import assemble_declarative_program
+
+    # Only the two marked regions survive. Anything else in the agent file is discarded.
+    try:
+        if "AGENT_EDIT_START" in agent_source:
+            body = extract_agent_edit(agent_source)
+            helpers = extract_agent_helpers(agent_source)
+        else:
+            body = agent_source.strip()
+            helpers = ""
+    except ValueError as exc:
+        return "", "", str(exc)
+    violations = list(admit_declarative_body(body).violations)
+    if helpers:
+        violations += admit_helpers(helpers, spec_rs).violations
+    if violations:
+        return "", "", "; ".join(violations)
+    # Before Verus, not after the proof: a dense table over a product of key dictionaries that the prepared data puts past the budget.
+    from declarative_spec import dense_budget
+
+    if column_bins is not None and dense_budget.key_dictionaries(spec_rs) and not (speed_bar or {}).get("dict_sizes"):
+        return "", "", "the prepared data has no dictionary sizes (expect.json lacks dict_sizes): re-run prepare so the dense-slot budget can be checked"
+    dense = dense_budget.body_violation(body, spec_rs, None if speed_bar is None else speed_bar.get("dict_sizes"))
+    if dense:
+        return "", "", dense
+    try:
+        assembled = assemble_declarative_program(
+            spec_rs,
+            body,
+            helpers=helpers,
+            column_bins=column_bins,
+            expected_rows=None if speed_bar is None else speed_bar.get("table_rows"),
+        )
+    except ValueError as exc:
+        return "", "", str(exc)
+    return assembled, body, ""
+
+
+PARTIAL_LABEL = "partial check: not a proof of run_query; submit still requires a full verified run_runquery run"
+
+
+def verify_functions_only(
+    *,
+    spec_rs: str,
+    agent_source: str,
+    names: list[str],
+    work_dir: Path,
+    column_bins: dict[str, str] | None = None,
+    speed_bar: dict | None = None,
+    timeout_sec: int | None = None,
+) -> dict:
+    """Admit and assemble like a full run, then verify only the named functions (one Verus run each, ``--verify-root --verify-function NAME``).
+
+    No compile, no timing, no row check. The Verus guards apply (the guarded binary) and ``verus_timeout_sec`` bounds all the names together.
+    """
+    assembled, _body, error = _admit_and_assemble(spec_rs, agent_source, column_bins, speed_bar)
+    if error:
+        return {"label": PARTIAL_LABEL, "all_verified": False, "functions": [], "error": error}
+    timeout_total = verus_timeout_sec() if timeout_sec is None else timeout_sec
+    work_dir.mkdir(parents=True, exist_ok=True)
+    rs_path = work_dir / "declarative_partial.rs"
+    rs_path.write_text(assembled)
+    verus = _verus_binary()
+    deadline = time.monotonic() + timeout_total
+    results: list[dict] = []
+    for name in names:
+        left = max(1, int(deadline - time.monotonic()))
+        try:
+            proc = run_verus(
+                [verus, str(rs_path), "--triggers-mode", "silent", *verus_limit_args(), "--verify-root", "--verify-function", name],
+                timeout=left,
+                cwd=work_dir,
+            )
+        except subprocess.TimeoutExpired as exc:
+            results.append({"name": name, "verified": False, "summary": "", "error": timeout_message(_text(exc.stdout) + _text(exc.stderr), timeout_total)})
+            break
+        log = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        verified = proc.returncode == 0 and _proof_verified(log)
+        entry: dict = {"name": name, "verified": verified, "summary": _verify_summary(log)}
+        if not verified:
+            entry["error"] = format_failure(
+                log, assembled=assembled, agent_source=agent_source, assembled_name=rs_path.name, directory=work_dir, full_log_hint=None,
+            )
+        results.append(entry)
+    return {"label": PARTIAL_LABEL, "all_verified": bool(results) and len(results) == len(names) and all(r["verified"] for r in results), "functions": results}
+
+
 def run_declarative_metrics(
     *,
     spec_rs: str,
@@ -440,50 +531,9 @@ def run_declarative_metrics(
     official: bool = False,
 ) -> dict:
     """Admit the agent edit, assemble, compile, and run. ``official``: the verdict is K interleaved rounds (see ``_apply_speed_bar``)."""
-    from declarative_spec.admit import admit_declarative_body, admit_helpers
-    from declarative_spec.assemble import assemble_declarative_program
-
-    def failure(message: str) -> dict:
-        return {"status": "FAILURE", "proof_verified": False, "latency_us": -1, "compiler_error": message}
-
-    # Only the two marked regions survive. Anything else in the agent file is discarded.
-    try:
-        if "AGENT_EDIT_START" in agent_source:
-            body = extract_agent_edit(agent_source)
-            helpers = extract_agent_helpers(agent_source)
-        else:
-            body = agent_source.strip()
-            helpers = ""
-    except ValueError as exc:
-        return failure(str(exc))
-    violations = list(admit_declarative_body(body).violations)
-    if helpers:
-        violations += admit_helpers(helpers, spec_rs).violations
-    if violations:
-        return failure("; ".join(violations))
-    # Before Verus, not after the proof: a dense table over a product of key dictionaries that the prepared data puts past the budget.
-    from declarative_spec import dense_budget
-
-    if column_bins is not None and dense_budget.key_dictionaries(spec_rs) and not (speed_bar or {}).get("dict_sizes"):
-        return failure("the prepared data has no dictionary sizes (expect.json lacks dict_sizes): re-run prepare so the dense-slot budget can be checked")
-    dense = dense_budget.body_violation(body, spec_rs, None if speed_bar is None else speed_bar.get("dict_sizes"))
-    if dense:
-        return failure(dense)
-    try:
-        assembled = assemble_declarative_program(
-            spec_rs,
-            body,
-            helpers=helpers,
-            column_bins=column_bins,
-            expected_rows=None if speed_bar is None else speed_bar.get("table_rows"),
-        )
-    except ValueError as exc:
-        return {
-            "status": "FAILURE",
-            "proof_verified": False,
-            "latency_us": -1,
-            "compiler_error": str(exc),
-        }
+    assembled, body, error = _admit_and_assemble(spec_rs, agent_source, column_bins, speed_bar)
+    if error:
+        return {"status": "FAILURE", "proof_verified": False, "latency_us": -1, "compiler_error": error}
     metrics = compile_and_run(
         assembled, work_dir=work_dir, timeout_sec=timeout_sec, agent_source=agent_source, keep_binary=official and speed_bar is not None and not speed_bar.get("synthetic")
     )

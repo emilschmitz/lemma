@@ -100,9 +100,10 @@ def _git_sha(root: Path) -> str | None:
 
 
 def _git_porcelain(root: Path) -> str:
+    """Tracked changes only: untracked and ignored files (artifact tarballs, data) are not dirt."""
     try:
         out = subprocess.run(
-            ["git", "status", "--porcelain"],
+            ["git", "status", "--porcelain", "--untracked-files=no"],
             cwd=root,
             capture_output=True,
             text=True,
@@ -111,6 +112,12 @@ def _git_porcelain(root: Path) -> str:
         return out.stdout
     except (subprocess.CalledProcessError, FileNotFoundError, OSError):
         return ""
+
+
+def _git_untracked_count(root: Path) -> int:
+    """Number of untracked, not ignored files (recorded next to git_dirty; they do not make the tree dirty)."""
+    out = subprocess.run(["git", "ls-files", "--others", "--exclude-standard"], cwd=root, capture_output=True, text=True, check=True)
+    return len([line for line in out.stdout.splitlines() if line.strip()])
 
 
 def _git_dirty(root: Path) -> bool:
@@ -321,6 +328,7 @@ def begin_run(
         "git_sha": git_commit,
         "git_commit": git_commit,
         "git_dirty": git_dirty,
+        "git_untracked_files": _git_untracked_count(root_path),
         "agent_backend": (os.environ.get("LEMMA_AGENT_BACKEND") or "").strip() or None,
         "agent_model": env_snap.get("agent_model"),
         "agent_cmd": (os.environ.get("AGENT_CMD") or "").strip() or None,

@@ -412,6 +412,46 @@ def run_solution(
     return out
 
 
+def verify_functions_solution(
+    *,
+    path: str | None = None,
+    names: list[str],
+    query_id: int,
+    ws: Path | None = None,
+    sql: str | None = None,
+    schema: dict | None = None,
+) -> dict:
+    """Verify only the named functions of the agent's file. No compile, no timing, no row check; stored under mcp_results/runs/ with
+    ``partial: true`` and never ``ok``, so ``submit_runquery`` refuses its run_id."""
+    from declarative_spec.pipeline import PARTIAL_LABEL
+
+    if not names or not all(isinstance(n, str) and n.strip() for n in names):
+        return {"ok": False, "partial": True, "label": PARTIAL_LABEL, "error": "names must be a non-empty list of function names", "run_id": None}
+    validated = validate_solution(path=path, ws=ws)
+    if not validated.get("ok"):
+        return {"ok": False, "partial": True, "label": PARTIAL_LABEL, "phase": validated.get("phase", "validate"), "errors": validated.get("errors", []), "run_id": None}
+    base = ws or workspace()
+    if sql is None or schema is None:
+        sql, schema = _read_workspace_sql_schema(base)
+    from db_extension.verus_bridge import invoke_partial_verify
+
+    run_id = f"{time.strftime('%Y%m%dT%H%M%S', time.gmtime())}_{uuid.uuid4().hex[:8]}_partial"
+    result = invoke_partial_verify(sql=sql, schema=schema, runquery_path=base / DEFAULT_RUNQUERY, names=[n.strip() for n in names])
+    out = {
+        "ok": False,  # a partial check is never a run that can be submitted
+        "partial": True,
+        "run_id": run_id,
+        "phase": "partial_verify",
+        "query_id": query_id,
+        "metrics": {"status": "PARTIAL", "proof_verified": False, "latency_us": -1},
+        "latency_us": -1,
+        "partial_all_verified": bool(result.get("all_verified")),
+        **result,
+    }
+    _store_run(out, ws=base)
+    return out
+
+
 def _store_run(record: dict, *, ws: Path) -> None:
     run_id = record.get("run_id")
     if not run_id:
@@ -520,6 +560,13 @@ def mark_submit(run_id: str, *, ws: Path | None = None) -> dict:
         return {
             "ok": False,
             "error": f"unknown run_id: {run_id}",
+            "run_id": run_id,
+            "submitted_path": None,
+        }
+    if run.get("partial"):
+        return {
+            "ok": False,
+            "error": f"run_id {run_id} is a partial check (verify_functions), not a full run: run run_runquery on the whole file and submit that run_id",
             "run_id": run_id,
             "submitted_path": None,
         }

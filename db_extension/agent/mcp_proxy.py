@@ -97,6 +97,11 @@ def build_proxy_mcp() -> FastMCP:
     mcp.tool()(run_runquery)
 
     @mcp.tool()
+    def verify_functions(names: list[str], path: str = "runquery_agent.rs") -> str:
+        """Verify only the named functions of the file: a partial check, not a proof of run_query, not submittable (host via socket)."""
+        return _proxy("verify_functions", {"path": path, "names": names})
+
+    @mcp.tool()
     def submit_runquery(run_id: str) -> str:
         """Mark a prior run_id as the official submission (host via socket; no re-run)."""
         return _proxy("submit_runquery", {"run_id": run_id})
@@ -125,6 +130,7 @@ def build_proxy_mcp() -> FastMCP:
     registered = {
         "validate_runquery",
         "run_runquery",
+        "verify_functions",
         "submit_runquery",
         "session_status",
         "get_submit_result",

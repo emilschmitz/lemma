@@ -1170,6 +1170,18 @@ def _data_profile_section(root: str) -> list[str]:
     ]
 
 
+def _speed_target_section(target: float) -> list[str]:
+    """The speed target of the run (``speed_target`` in lemma.toml): first a verified body that beats the reference engine, then faster ones."""
+    return [
+        "## Target speedup",
+        "",
+        "First get a verified body that beats the reference engine, and submit it. Then keep trying faster verified bodies until you reach",
+        f"{target:g}x the reference engine (the `speedup` field of `run_runquery`) or the session ends; submit each improvement.",
+        "Keep a copy of the last submitted file. Never replace a submitted body with one that is unverified or slower.",
+        "",
+    ]
+
+
 def build_declarative_prompt(
     *,
     sql: str,
@@ -1220,6 +1232,8 @@ def build_declarative_prompt(
             "  them first with ToolSearch (`select:mcp__lemma-host__run_runquery,mcp__lemma-host__submit_runquery`). A Bash tool",
             "  may exist, but it has no network and Verus is not on its PATH: `run_runquery` is the only Verus you have, so do not",
             "  try `verus`, `npx` or any package install.",
+            "- `verify_functions` (`names`, path `runquery_agent.rs`) verifies only the functions you name; this is faster on large files, and the",
+            "  result is a partial check that does not count as a submission.",
             "- Done means: Verus says `N verified, 0 errors`, the result equals the reference engine's rows, and the timed run beats",
             "  the reference engine (`run_runquery` reports the speedup). `submit_runquery` accepts only a run that is `ok`, i.e. one that also",
             "  beats the reference engine: a verified body below the bar is reported as `proved but below the speed bar`, is refused by",
@@ -1228,6 +1242,7 @@ def build_declarative_prompt(
             *([f"  The bar of this run is a speedup of {bar:g}x: the median of your timed runs times {bar:g} must be below the reference engine's median."] if bar != 1.0 else []),
             "",
         ]),
+        (P.TASK, _speed_target_section(lemma_config.get("speed_target"))),
         (P.RULES, [
             "## Regions and rules",
             "",

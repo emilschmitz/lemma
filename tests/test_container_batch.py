@@ -17,6 +17,7 @@ def _clean_config_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in list(__import__("os").environ):
         if name.startswith("LEMMA_") or name in lemma_config.ALIASES:
             monkeypatch.delenv(name)
+    monkeypatch.setattr(lemma_config, "REQUIRED", ())  # duckdb_path / assumption_package have no default; most tests here do not set them
     monkeypatch.setattr(lemma_config, "require_clean_tree", lambda root=None: {"git_sha": "0" * 40, "git_dirty": False, "dirty_files": []})
 
 
@@ -153,3 +154,12 @@ def test_a_dirty_tree_stops_the_batch_before_any_run(monkeypatch: pytest.MonkeyP
     with pytest.raises(lemma_config.ConfigError, match="uncommitted"):
         cb.main(["sonnet:q.sql"])
     assert not ran
+
+
+def test_a_batch_without_a_database_or_a_package_stops_before_any_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(lemma_config, "REQUIRED", ("duckdb_path", "assumption_package"))
+    with pytest.raises(lemma_config.ConfigError, match="duckdb_path has no default"):
+        cb.main(["haiku:qX.sql"])
+    monkeypatch.setenv("LEMMA_DUCKDB_PATH", "/db.duckdb")
+    with pytest.raises(lemma_config.ConfigError, match="assumption_package has no default"):
+        cb.main(["haiku:qX.sql"])

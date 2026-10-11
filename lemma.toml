@@ -24,16 +24,18 @@ spec_style = "declarative"                  # declarative | imperative: the whol
 menu = "adversary_declarative0"             # menu profile (research_loop/menu_profile.py); its axes are the next five keys
 agent_model = "claude-sonnet-5-5"           # prover model slug; claude-* runs Claude Code in the container. Decision: the frozen run's model (the menu profile said haiku)
 trusted_set = "declarative_default"         # host lemma block pasted into the spec
-assumption_package = "auto"                 # auto = the package that matches the DuckDB file (sec_margin_dec for DECIMAL); or a package name / .json path
+assumption_package = ""                     # REQUIRED, no default (empty fails loudly): a package name, a .json path, or the explicit value "auto" = the package that matches the DuckDB file (sec_margin_dec for DECIMAL)
 speed_bar_mult = 1.0                        # verdict: median(ours) * mult < median(DuckDB)
-max_iterations = 2                          # agent sessions per query; the 2nd starts from the best body so far. Decision: 2 (the frozen run; the loop default 3 and MAX_ITERATIONS=1/4 are legacy)
-string_encoding = "plain"                   # plain | dict. Frozen run: dict
-join_chain = false                          # fact table first, unique-key tables nested after it. Frozen run: true
+max_iterations = 2                          # agent sessions per query before any early-ending continuation: the per-query wall budget is max_iterations x agent_timeout_sec. A further session starts from the best body so far. Decision: 2 (the frozen run; the loop default 3 and MAX_ITERATIONS=1/4 are legacy)
+string_encoding = "dict"                    # plain | dict: dictionary-encoded string columns (the frozen run's setting)
+join_chain = true                           # fact table first, unique-key tables nested after it. A query whose tables lack unique keys in the assumption package keeps the general (non-chain) form; false forces the general form always
 examples = "full"                           # full | principles | none: which verified examples the agent sees
 narrow_cells = false                        # INTEGER/SMALLINT/TINYINT and capped DECIMAL columns loaded as i32/i16/i8
 parallel_vstd = "auto"                      # off | auto | on. Decision: explicit "auto" (the frozen run's effective value; it used to be forced silently and the shell value was overwritten). on = every spec gets Arc params, a shape without a variant fails at emit
 
 [agent]
+speed_target = 10.0                         # float >= 1.0: speedup over the reference engine the agent is told to aim for after its first body beats the bar (prompt, section "Target speedup"). Within the per-query budget (max_iterations x agent_timeout_sec) a session that ends early below this target is followed by another one from the best submitted body. 1.0 = the old behaviour (a further session only after one that did not verify)
+max_idle_sessions = 2                       # int >= 1: stop starting further sessions after this many consecutive sessions without a better submitted speedup
 agent_timeout_sec = 750                     # wall seconds per agent session. Decision: 750 (2 x 750 s = 25 min per attempt; config.env/code/AGENTS.md said 600)
 agent_submit_ends_session = false           # true: a successful submit_runquery ends the session
 agent_data_mode = "none"                    # none | stats | full: interactive DuckDB tool for the agent. Decision: none (what config.env gave the frozen run; code default stats; the CLI container is network-none anyway)
@@ -57,7 +59,7 @@ duck_memory_limit = "8GB"                   # DuckDB PRAGMA memory_limit on ever
 duck_threads = 8                            # DuckDB PRAGMA threads on the same connections
 
 [data]
-duckdb_path = "holdout/gendb_sec_edgar/duckdb/sec_edgar_dec.duckdb"   # the database: schema, catalog, reference timing, row counts (relative to the repo root)
+duckdb_path = ""                            # REQUIRED, no default (empty fails loudly): the database (schema, catalog, reference timing, row counts); relative to the repo root or absolute. Set it in this file, with LEMMA_DUCKDB_PATH, or with a launcher flag
 data_profile = "none"                       # none | stats: stats = exact data statistics of this query (selectivities, distinct counts, join and group sizes, ties at the LIMIT; SQL on the database, no LLM) in context/ro/data_profile.md
 
 [safety]

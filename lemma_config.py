@@ -112,6 +112,9 @@ MINIMUM: dict[str, float] = {
     "duck_threads": 1, "heavy_min_avail_mb": 0, "verus_slots": 1, "verus_min_avail_mb": 0,
 }
 POSITIVE = ("speed_bar_mult", "verus_rlimit")
+MINIMUM.update({"speed_target": 1.0, "max_idle_sessions": 1})
+# Keys with no default: lemma.toml holds "" and a run without a value (file, LEMMA_<KEY>, CLI) fails loudly instead of guessing.
+REQUIRED: tuple[str, ...] = ("duckdb_path", "assumption_package")
 
 
 class ConfigError(ValueError):
@@ -228,7 +231,21 @@ def resolve(key: str, environ: Mapping[str, str] | None = None) -> Setting:
 
 
 def get(key: str) -> Any:
-    return resolve(key).value
+    setting = resolve(key)
+    if key in REQUIRED and setting.value == "":
+        raise ConfigError(missing_message(key))
+    return setting.value
+
+
+def missing_message(key: str) -> str:
+    return (f"{key} has no default and is not set: give it in lemma.toml [{schema()[key][0]}], as {env_name(key)}=..., or as the launcher flag. "
+            "A run never guesses it.")
+
+
+def require_run_settings() -> None:
+    """Startup check of a run: every REQUIRED key has a value."""
+    for key in REQUIRED:
+        get(key)
 
 
 def default(key: str) -> Any:
