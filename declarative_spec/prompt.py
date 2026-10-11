@@ -804,7 +804,7 @@ def _recipe_section(shape: dict) -> list[str]:
     recipe = shape["recipe"]
     lines = ["## The recipe for THIS spec", ""]
     lines.append(f"This spec's result type is `{shape['result_type'] or 'unknown'}`.")
-    if recipe.startswith("projection_") and shape.get("dict"):
+    if recipe.startswith("projection_") and shape.get("dict") and not principles.principles_only():
         lines += [
             "DICTIONARY MODE: the example below was proved with plain strings. In this spec a string column is a `Vec<u32>` of codes",
             "beside `<col>__dict: Vec<String>`, and the spec reads a string cell as `col__dict@[col@[i] as int]@`. Keep the example's",
@@ -812,7 +812,9 @@ def _recipe_section(shape: dict) -> list[str]:
             "dictionary index is in range from `valid_cols_<t>` (the `dict_*.rs` examples in `INDEX.md` show the translation).",
             "",
         ]
-    if recipe == "dense_map":
+    if recipe == "dense_map" and principles.principles_only():
+        lines += ["A dense array of counters indexed by the key (one slot per key below `KEY_CAP_...`) is the fastest shape; `context/ro/examples/group_by_dict_key.rs` shows the invariant per slot and the emit loop."]
+    elif recipe == "dense_map":
         lines += [
             "Dense array of `KEY_CAP_...` counters (fastest: no hashing), then copy the nonzero slots into the",
             "result map. Replace the names `KEY_CAP_t_k`, `ROW_CAP_t`, `valid_cols_t`, `cols.k` with the ones in",
@@ -968,9 +970,41 @@ _SPEED_SCRUB: tuple[tuple[str, str], ...] = (
         "(worked example: `context/ro/examples/ungrouped_decimal_product_sum.rs`).",
         "(a small `proof fn` with two `by (nonlinear_arith)` asserts, one per side of the bound).",
     ),
+    ("bounds `report` to its cap, so `report > 100000`", "bounds `q` to its cap, so `q > 100000`"),
     ("The same scan went from 20.8 ms to 9.3 ms\n", "\n"),
     (" by about 1.7x on a large scan.", " on a large scan."),
 )
+
+
+_HYGIENE_SCRUB: tuple[tuple[str, str], ...] = (
+    ("res@[q].total >= res@[q + 1].total", "res@[q].amount >= res@[q + 1].amount"),
+    ("(`key_at(pre, i0)`)", "(`key_at(events, i0)`)"),
+    ("(`let w = key_at(pre, i0);`)", "(`let w = key_at(events, i0);`)"),
+    ("(`uom = 'pure'`)", "(`kind = 'abc'`)"),
+    ('(`let pure: String = String::from_str("pure");`, ensures `pure@ == "pure"@`), keep', '(`let abc: String = String::from_str("abc");`, ensures `abc@ == "abc"@`), keep'),
+    ('`pure@ == "pure"@` in the loop invariant, and compare `cols.uom[i] == pure`', '`abc@ == "abc"@` in the loop invariant, and compare `cols.kind[i] == abc`'),
+    ("- A product of two cells needs its own bound assert (for example `price * (100 - disc) <= 2e30` from the cell cap\n  1e15); a sum is bounded by (rows seen) * (cell bound).\n",
+     "- A product of two cells needs its own bound assert from the two cell caps; a sum is bounded by (rows seen) * (cell bound).\n"),
+    ("- Short string keys (1 or 2 characters) are cheapest as small integer codes from `as_bytes` (vstd `utf8.rs`,\n  grep `LEMMAS.md` for `as_bytes`) indexing a slot table, not as hashed strings.\n", ""),
+)
+
+
+def _hygiene_text() -> str:
+    if not principles.principles_only():
+        return _PROOF_HYGIENE
+    text = _PROOF_HYGIENE
+    for old, new in _HYGIENE_SCRUB:
+        assert text.count(old) == 1, old[:80]
+        text = text.replace(old, new)
+    return text
+
+
+def _do_not_text() -> str:
+    if not principles.principles_only():
+        return _DO_NOT
+    old = _DO_NOT.rstrip("\n").rsplit("\n", 1)[1] + "\n"
+    assert old.startswith("- Before writing, find the nearest shape")
+    return _DO_NOT[: -len(old)] + _DO_NOT_PRINCIPLES_LAST
 
 
 def _speed_text() -> str:
@@ -996,6 +1030,7 @@ _DO_NOT = """\
   Keep the body with the fewest errors and fix the error the host reports.
 - Before writing, find the nearest shape in `context/ro/examples/INDEX.md`, read that example and copy its loop structure, invariants and helper lemmas.
 """
+_DO_NOT_PRINCIPLES_LAST = "- Before writing, read the technique examples in `context/ro/examples/INDEX.md` that your spec needs and copy their loop structure, invariants and helper lemmas; none is your query.\n"
 
 _PROOF_HYGIENE = """\
 ## Proof hygiene that costs people time
@@ -1006,7 +1041,7 @@ _PROOF_HYGIENE = """\
 - Every loop needs `decreases`; keep `valid_cols_<table>(cols)` in every loop invariant (the key and cell bounds
   come from it). Call host lemmas as `proof { lemma_...(); }`. Give a quantifier an explicit `#[trigger]`.
 - A quantified loop invariant whose body mentions the NEXT index loops the solver (Z3 matching loop; the profile shows one quantifier with an astronomically large cost):
-  `forall|q| #![trigger res@[q]] .. res@[q].amount >= res@[q + 1].amount` instantiates `res@[q + 1]`, which instantiates it again. Use the two-term trigger
+  `forall|q| #![trigger res@[q]] .. res@[q].total >= res@[q + 1].total` instantiates `res@[q + 1]`, which instantiates it again. Use the two-term trigger
   `#![trigger res@[q], res@[q + 1]]` (the host's own sortedness postcondition is a goal, not a hypothesis, so it is safe).
 - A fact about a ghost `Seq` (or any variable) that the loop does not modify is NOT remembered across the loop: repeat it in the loop's `invariant` (e.g. `gk.len() == gw.len()`, the group-table facts), or the loop-body and the code after the loop lose it.
 - `#[verifier::rlimit(N)]` on a helper proof fn is accepted by the admission lint and raises that one function's budget; use it on a single closing helper that is genuinely just large, not to hide a matching loop (profile first when you can).
@@ -1021,7 +1056,7 @@ _PROOF_HYGIENE = """\
   `row_hit` (state it pointwise, with the row index as an argument, and call it from `assert forall ... by`), and
   `valid_cols_<table>(cols)` kept in every loop invariant (its cell-range quantifier then sits in every loop context:
   keep only the plain length and `ROW_CAP_...` facts you use).
-- A quantifier or existential over a spec function of a row (`key_at(events, i0)`) only fires on a ground term: bind
+- A quantifier or existential over a spec function of a row (`key_at(pre, i0)`) only fires on a ground term: bind
   one (`let w = key_at(pre, i0);`) or take a witness with `choose|r: int| ...` before you assert the instance.
 - Only `proof fn` and `spec fn` items are allowed in the helper region: an exec `fn` helper is rejected, so write
   string comparisons and loop bodies inline in `run_query`.
@@ -1033,9 +1068,9 @@ _PROOF_HYGIENE = """\
   grep `LEMMAS.md` for `as_bytes`) indexing a slot table, not as hashed strings.
 - The verifier's rlimit budget is the host's `--rlimit` (16 by default); the error names the main loop even when the
   overrun is in one of its asserts.
-- A string literal in a predicate (`kind = 'abc'`): `&str ==` has no spec tying it to `@`, and `reveal_strlit` does not
-  help. Build the literal once (`let abc: String = String::from_str("abc");`, ensures `abc@ == "abc"@`), keep
-  `abc@ == "abc"@` in the loop invariant, and compare `cols.kind[i] == abc` (`String == String`, vstd `string.rs`).
+- A string literal in a predicate (`uom = 'pure'`): `&str ==` has no spec tying it to `@`, and `reveal_strlit` does not
+  help. Build the literal once (`let pure: String = String::from_str("pure");`, ensures `pure@ == "pure"@`), keep
+  `pure@ == "pure"@` in the loop invariant, and compare `cols.uom[i] == pure` (`String == String`, vstd `string.rs`).
 - `Vec::insert` has the view `Seq::insert`; `Seq::insert_ensures(pos, elt)` (vstd `seq_lib.rs`, call it as `s.insert_ensures(p, x)`) gives its length and element facts. Grep `LEMMAS.md` for a vstd lemma before you write your own.
 - Floats (rounding error is accepted: a float is exact real arithmetic here, so a SUM is an exact fold and there
   is no epsilon): one `f64` accumulator with `acc as real == <spec sum>`; before each `+ - *` call
@@ -1178,7 +1213,7 @@ def build_declarative_prompt(
             "",
         ]
         sections += _dict_hard_pointers(spec_text)
-    sections += [_DO_NOT, _SHAPE_LIST_PRINCIPLES if principles.principles_only() else _SHAPE_LIST, _speed_text(), _PROOF_HYGIENE]
+    sections += [_do_not_text(), _SHAPE_LIST_PRINCIPLES if principles.principles_only() else _SHAPE_LIST, _speed_text(), _hygiene_text()]
     sections += [
         "## Helper region example",
         "",

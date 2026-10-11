@@ -905,6 +905,8 @@ def _lemma_host_mcp_payload(workspace: Path) -> dict:
                 "env": {
                     "LEMMA_AGENT_WORKSPACE": str(workspace.resolve()),
                     "PYTHONPATH": str(ROOT),
+                    # the hints this server writes (run_runquery) must cite the same example set the prompt mounted
+                    **({"LEMMA_EXAMPLES": os.environ["LEMMA_EXAMPLES"]} if "LEMMA_EXAMPLES" in os.environ else {}),
                 },
             }
         }

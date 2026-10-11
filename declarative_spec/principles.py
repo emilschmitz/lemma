@@ -166,7 +166,7 @@ def index_markdown() -> str:
             "These are NOT examples of your query. Each file is a `run_query` body (plus helpers) that Verus verified against a tiny spec on an unrelated",
             "event-log schema (`events`, `items`, `users`); it teaches ONE technique. Your tables, columns, caps and SQL differ: read the files whose technique",
             "your spec needs, then combine and adapt them (rename, redo the arithmetic for YOUR caps, change the filter). The header comment of each file says what to take.",
-            "A query usually needs several: for example a join plus a group-by plus a top-N is `join_unique_lookup.rs` + `group_by_dict_key.rs` + `top_n_with_ties.rs`.",
+            "A query usually needs several of them at once; each file's header says what to take.",
             "",
             "| technique | file | lines |",
             "|---|---|---|",

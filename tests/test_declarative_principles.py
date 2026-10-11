@@ -228,6 +228,7 @@ def test_no_mounted_example_names_a_benchmark_table_or_column(monkeypatch: pytes
     for f in mounted:
         leaked = _tokens(f.read_text()) & names
         assert not leaked, (f.name, sorted(leaked))
+        assert not _QUERY_NAMES.findall(f.read_text()), (f.name, _QUERY_NAMES.findall(f.read_text()))  # no "SSB Q4.1" / "TPC-H Q1" labels in INDEX.md or a header
 
 
 def test_the_principles_schema_shares_no_name_with_a_benchmark() -> None:
@@ -260,6 +261,8 @@ _QUERY_NAMES = re.compile(r"TPC-?H|\bSSB\b|\bGenDB\b|\bEDGAR\b|\bQ\d{1,3}(?:\.\d
 _DISTINCTIVE = {n for n in benchmark_names() if "_" in n} | {
     "lineitem", "lineorder", "partsupp", "adsh", "ddate", "qtrs", "uom", "cik", "stmt", "rfile", "plabel", "tlabel", "afs", "sic", "prevrpt", "coreg", "crdr",
 }
+# SEC names that are short or plain words but are not used as such in a prompt (a hit means an example sentence still carries a SEC table or column)
+_SEC_EXTRA = {"pre", "num", "uom", "tag", "plabel", "adsh"}
 _PROBES = {
     "grouped_topn": "SELECT it_group, SUM(ev_qty) AS q FROM events, items WHERE ev_item = it_id GROUP BY it_group ORDER BY q DESC LIMIT 2",
     "distinct": "SELECT it_group, COUNT(DISTINCT ev_user) AS u FROM events, items WHERE ev_item = it_id GROUP BY it_group",
@@ -319,7 +322,7 @@ def test_principles_prompts_and_lemma_index_name_no_benchmark_query(monkeypatch:
     for where, text in _agent_texts(monkeypatch).items():
         found = _QUERY_NAMES.findall(text)
         assert not found, (where, found, [ln for ln in text.splitlines() if _QUERY_NAMES.search(ln)][:3])
-        leaked = _tokens(text) & _DISTINCTIVE
+        leaked = (_tokens(text) & _DISTINCTIVE) | (_tokens(text) & _SEC_EXTRA)
         assert not leaked, (where, sorted(leaked))
 
 
@@ -348,6 +351,10 @@ def test_the_full_prompt_is_unchanged_in_default_mode(monkeypatch: pytest.Monkey
     spec = emit_declarative_spec(BY_FILE["group_by_dict_key.rs"].sql, P.SCHEMA, P.catalog())
     text = build_declarative_prompt(sql="select 1", spec_path="s.rs", edit_path="e.rs", lemma_index="", spec_text=spec)
     assert "dict_group_count_dense.rs" in text and "seven small" not in text
+    from declarative_spec import prompt as prompt_mod
+
+    assert prompt_mod._hygiene_text() is prompt_mod._PROOF_HYGIENE and prompt_mod._speed_text() is prompt_mod._SPEED and prompt_mod._do_not_text() is prompt_mod._DO_NOT
+    assert "key_at(pre, i0)" in text and "uom = 'pure'" in text
     assert "context/ro/examples/INDEX.md" in text
 
 
