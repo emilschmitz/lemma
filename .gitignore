@@ -94,3 +94,7 @@ research_loop/vendor/verus_docs/
 .claude/worktrees/
 .verus-solver-log/
 /q01_filter_sum
+
+# local run-trace archives (large binaries; kept on disk, not in git)
+research_loop/artifacts/*_runs_*.tar.gz
+research_loop/artifacts/*_rundirs_*.tar.gz

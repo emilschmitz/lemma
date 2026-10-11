@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "lemma-dashboard",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": [
+        "run",
+        "python",
+        "research_loop/scripts/dashboard.py",
+        "--port",
+        "8765"
+      ],
+      "port": 8765
+    }
+  ]
+}
