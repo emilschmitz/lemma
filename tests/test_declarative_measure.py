@@ -155,7 +155,7 @@ def test_speed_bar_mult_defaults_to_merely_faster_and_rejects_nonpositive(monkey
     assert _apply_speed_bar(_fast_run(999), bar)["status"] == "SUCCESS"
     assert _apply_speed_bar(_fast_run(1000), bar)["status"] == "FAILURE"
     monkeypatch.setenv("LEMMA_SPEED_BAR_MULT", "0")
-    with pytest.raises(ValueError, match="positive"):
+    with pytest.raises(ValueError, match="must be > 0"):
         _apply_speed_bar(_fast_run(10), bar)
 
 

@@ -1189,7 +1189,7 @@ def _verus_queue_lines() -> list[str]:
     at_once = "1 Verus run executes at a time" if slots == 1 else f"{slots} Verus runs execute at the same time"
     return [
         f"- On this machine {at_once}. Further `run_runquery` / `verify_functions` calls wait in a queue for a free slot, and that waiting counts toward the",
-        f"  {limit}s limit of the call (the call's clock starts when you send it). Send one call at a time: parallel calls only make each other time out. A result",
+        f"  {limit}s limit of the call (the call's clock starts when you send it). A result",
         "  says `waited N s for the Verus slot, Verus ran M s` so you can tell queueing from a slow proof.",
     ]
 
