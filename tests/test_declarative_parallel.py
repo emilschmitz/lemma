@@ -68,7 +68,8 @@ def test_prompt_shows_the_parallel_section_only_for_a_parallel_spec(monkeypatch:
     p = build_declarative_prompt(sql=SUM, spec_path="s", edit_path="e", lemma_index="idx", spec_text=on)
     assert "## Parallel scan" in p and "parallel_ungrouped_sum.rs" in p and "telescope" in p
     assert "12.8x faster" in p
-    assert "dict_group_count_sum_parallel.rs" in p and "DENSE array" in p and "hard/dict_parallel_q1.rs" in p and "parallel_dict_nullable_count_min.rs" in p and "LEMMA_DENSE_SLOT_BUDGET" in p
+    # plain String columns (the pinned encoding here): the dictionary-mode parallel examples are not mounted, so the prompt must not cite them
+    assert "dict_group_count_sum_parallel.rs" not in p and "NOT mounted here" in p
     off = _emit(SUM, False, monkeypatch)
     q = build_declarative_prompt(sql=SUM, spec_path="s", edit_path="e", lemma_index="idx", spec_text=off)
     assert "## Parallel scan" not in q
@@ -199,3 +200,15 @@ def test_parallel_vstd_is_an_explicit_config_value_not_forced_by_the_launcher_en
     assert lemma_config.default("parallel_vstd") == "auto"  # lemma.toml [run]
     for style in ("declarative", "imperative"):
         assert "LEMMA_PARALLEL_VSTD" not in agent_env("claude-haiku-4-5-20251001", style)  # no silent override of the shell/config value
+
+
+def test_prompt_cites_the_dictionary_parallel_examples_only_for_a_dictionary_spec(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LEMMA_STRING_ENCODING", "dict")
+    sql = "SELECT SUM(line) AS total FROM pre WHERE stmt = 'BS'"
+    schema = {"pre": {"line": "bigint", "stmt": "varchar"}}
+    catalog = CatalogAssumptions(tables={"pre": TableAssumptions(max_rows=2**31)})
+    monkeypatch.setenv(parallel.ENV, "on")
+    spec = emit_declarative_spec(sql, schema, catalog)
+    p = build_declarative_prompt(sql=sql, spec_path="s", edit_path="e", lemma_index="idx", spec_text=spec)
+    assert "dict_group_count_sum_parallel.rs" in p and "DENSE array" in p and "hard/dict_parallel_q1.rs" in p
+    assert "parallel_dict_nullable_count_min.rs" in p and "LEMMA_DENSE_SLOT_BUDGET" in p and "NOT mounted here" not in p
