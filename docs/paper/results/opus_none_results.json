@@ -1,0 +1,215 @@
+{
+  "model": "claude-opus-5-5",
+  "date": "2026-10-11/12",
+  "shas": [
+    "049baf7",
+    "ac8056f",
+    "c8db8f7"
+  ],
+  "price_per_mtok": {
+    "input_tokens": 4.0,
+    "cache_creation_input_tokens": 8.0,
+    "cache_read_input_tokens": 0.2,
+    "output_tokens": 20.0
+  },
+  "total_cost_usd": [
+    44.05,
+    45.45,
+    47.36
+  ],
+  "settings": {
+    "spec_style": "declarative",
+    "menu": "adversary_declarative0",
+    "agent_model": "claude-opus-5-5",
+    "trusted_set": "declarative_default",
+    "assumption_package": "/home/emil/projects/lemma-db/research_loop/assumption_packages/registry/tpch_sf1.json",
+    "speed_bar_mult": 1.0,
+    "max_iterations": 2,
+    "string_encoding": "dict",
+    "join_chain": true,
+    "examples": "none",
+    "narrow_cells": false,
+    "parallel_vstd": "auto",
+    "speed_target": 10.0,
+    "max_idle_sessions": 2,
+    "agent_timeout_sec": 1800,
+    "max_budget_usd": 20.0,
+    "agent_submit_ends_session": false,
+    "agent_data_mode": "none",
+    "agent_resource_exhausted_retries": 8,
+    "claude_effort": "none",
+    "claude_thinking_tokens": "",
+    "claude_tool_search": "",
+    "mcp_iterate_rows": 50000,
+    "verus_rlimit": 16.0,
+    "verus_timeout_sec": 300,
+    "run_timeout_sec": 60,
+    "target_cpu": "x86-64-v3",
+    "dense_slot_budget": 4194304,
+    "official_rounds": 5,
+    "official_duck_reps": 9,
+    "duck_memory_limit": "8GB",
+    "duck_threads": 8,
+    "duckdb_path": "/home/emil/projects/lemma-db/research_loop/generated/tpch_sf1.duckdb",
+    "data_profile": "stats",
+    "allow_dirty": false,
+    "scope_memory_max": "9G",
+    "egress_profile": "",
+    "egress_allowlist": "",
+    "heavy_lock": "/tmp/lemma_timing.lock",
+    "heavy_min_avail_mb": 4000,
+    "heavy_mem_max": "5G",
+    "verus_mem_max": "6G",
+    "verus_slots": 1,
+    "verus_min_avail_mb": 3000,
+    "agg_times_constant": false,
+    "derived_agg_expr": false,
+    "cte_reuse": false,
+    "left_join_count": false,
+    "zero_copy": false,
+    "cold_stream": false,
+    "cold_stream_mode": "aggregate"
+  },
+  "queries": [
+    {
+      "benchmark": "TPC-H",
+      "query": "Q6",
+      "status": "SUCCESS",
+      "proof": "10 verified, 0 errors",
+      "ours_ms": 4.92,
+      "duck_ms": 7.88,
+      "speedup": 1.6,
+      "sessions": 3,
+      "agent_min": 4.9,
+      "best_session_speedup": 1.6,
+      "stop_reason": "2 sessions in a row without a better speedup",
+      "killed_sessions": 0,
+      "cost_usd": 2.24,
+      "cost_usd_range": [
+        2.24,
+        2.24
+      ],
+      "tokens": {
+        "input_tokens": 84,
+        "cache_creation_input_tokens": 165079,
+        "cache_read_input_tokens": 1868518,
+        "output_tokens": 27369
+      },
+      "git_sha": "ac8056f",
+      "started_at": "2026-10-11T22:58:50.319894+00:00",
+      "run_dir": "research_loop/runs/20261011T225850Z_q387753_67a46959"
+    },
+    {
+      "benchmark": "TPC-H",
+      "query": "Q18",
+      "status": "SUCCESS",
+      "proof": "97 verified, 0 errors",
+      "ours_ms": 12.49,
+      "duck_ms": 64.96,
+      "speedup": 5.2,
+      "sessions": 4,
+      "agent_min": 37.1,
+      "best_session_speedup": 7.65,
+      "stop_reason": "2 sessions in a row without a better speedup",
+      "killed_sessions": 1,
+      "cost_usd": 10.29,
+      "cost_usd_range": [
+        9.65,
+        11.16
+      ],
+      "tokens": {
+        "input_tokens": 260,
+        "cache_creation_input_tokens": 434489,
+        "cache_read_input_tokens": 15989629,
+        "output_tokens": 180519
+      },
+      "git_sha": "c8db8f7",
+      "started_at": "2026-10-11T23:04:02.177617+00:00",
+      "run_dir": "research_loop/runs/20261011T230402Z_q906756_a84efc4a"
+    },
+    {
+      "benchmark": "TPC-H",
+      "query": "Q9",
+      "status": "SUCCESS",
+      "proof": "129 verified, 0 errors",
+      "ours_ms": 29.72,
+      "duck_ms": 71.8,
+      "speedup": 2.42,
+      "sessions": 5,
+      "agent_min": 37.1,
+      "best_session_speedup": 2.42,
+      "stop_reason": "2 sessions in a row without a better speedup",
+      "killed_sessions": 1,
+      "cost_usd": 11.52,
+      "cost_usd_range": [
+        10.76,
+        12.56
+      ],
+      "tokens": {
+        "input_tokens": 298,
+        "cache_creation_input_tokens": 477945,
+        "cache_read_input_tokens": 19281835,
+        "output_tokens": 191857
+      },
+      "git_sha": "049baf7",
+      "started_at": "2026-10-11T23:42:06.103566+00:00",
+      "run_dir": "research_loop/runs/20261011T234206Z_q793815_1c7b1672"
+    },
+    {
+      "benchmark": "SSB",
+      "query": "Q2.1",
+      "status": "SUCCESS",
+      "proof": "82 verified, 0 errors",
+      "ours_ms": 10.77,
+      "duck_ms": 19.98,
+      "speedup": 1.86,
+      "sessions": 3,
+      "agent_min": 30.4,
+      "best_session_speedup": 2.81,
+      "stop_reason": "2 sessions in a row without a better speedup",
+      "killed_sessions": 0,
+      "cost_usd": 10.62,
+      "cost_usd_range": [
+        10.62,
+        10.62
+      ],
+      "tokens": {
+        "input_tokens": 250,
+        "cache_creation_input_tokens": 369499,
+        "cache_read_input_tokens": 19591891,
+        "output_tokens": 187353
+      },
+      "git_sha": "049baf7",
+      "started_at": "2026-10-12T00:21:00.275320+00:00",
+      "run_dir": "research_loop/runs/20261012T002100Z_q4_33ec059d"
+    },
+    {
+      "benchmark": "SSB",
+      "query": "Q4.3",
+      "status": "SUCCESS",
+      "proof": "76 verified, 0 errors",
+      "ours_ms": 6.12,
+      "duck_ms": 15.35,
+      "speedup": 2.51,
+      "sessions": 3,
+      "agent_min": 31.4,
+      "best_session_speedup": 3.3,
+      "stop_reason": "2 sessions in a row without a better speedup",
+      "killed_sessions": 0,
+      "cost_usd": 10.78,
+      "cost_usd_range": [
+        10.78,
+        10.78
+      ],
+      "tokens": {
+        "input_tokens": 274,
+        "cache_creation_input_tokens": 367089,
+        "cache_read_input_tokens": 21587085,
+        "output_tokens": 176144
+      },
+      "git_sha": "049baf7",
+      "started_at": "2026-10-12T00:51:58.191893+00:00",
+      "run_dir": "research_loop/runs/20261012T005158Z_q4_5d330ee7"
+    }
+  ]
+}
