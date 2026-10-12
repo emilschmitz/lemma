@@ -176,12 +176,6 @@ to the query's specification.
 
 \subsection{Pipeline}\label{pipeline}
 
-Figure (pipeline): SQL \ensuremath{\rightarrow} transpile spec + \texttt{valid\_cols} \ensuremath{\rightarrow} agent
-\texttt{run\_query} \ensuremath{\rightarrow} assemble \ensuremath{\rightarrow} Verus verify \ensuremath{\rightarrow}
-\texttt{verus\ -\/-compile} \ensuremath{\rightarrow} binary \ensuremath{\rightarrow} check rows and time vs DuckDB \ensuremath{\rightarrow}
-DuckDB extension cache / invoke. \emph{Caption: Lemma end-to-end
-pipeline (Verus path).}
-
 \pandocbounded{\includegraphics[keepaspectratio,alt={How one query runs: SQL query, transpiler, the LLM agent with its tools, the official run, pass or fail}]{figures/pipeline.png}}
 
 \textbf{Steps.}
@@ -310,9 +304,10 @@ accepts them.
 
 \subsection{Evaluation}\label{evaluation}
 
-In the frozen run (commit 75f4303), all 19 attempted queries proved,
-matched DuckDB's rows and beat all-core DuckDB: median 2.04\ensuremath{\times} on SSB (12
-queries) and 1.29\ensuremath{\times} on TPC-H (7 queries).
+With Claude Opus 5.5 and no worked examples, all five queries run so far
+proved, returned DuckDB's rows and beat all-core DuckDB, by 1.60\ensuremath{\times} to
+5.20\ensuremath{\times} (median 2.42\ensuremath{\times}). The other 14 queries are still to run. Per-query
+results, configuration and cost are in Appendix F.
 
 \pandocbounded{\includegraphics[keepaspectratio,alt={Speedup over all-core DuckDB per query, SF1: Opus 5.5 without worked examples; tba = not yet run in this configuration}]{figures/speedup.png}}
 
@@ -320,11 +315,12 @@ queries) and 1.29\ensuremath{\times} on TPC-H (7 queries).
 without worked examples (Appendix F). tba = not yet run in this
 configuration.}
 
-\textbf{Setup.} Claude Sonnet 5.5 in the container, 25 min per query,
-full worked examples, dictionary strings, star-join specs. Official
-verdict: hot runs, median of 5 interleaved rounds against DuckDB 1.5.4
-on all 8 threads, 8 GB memory limit. AMD Ryzen AI 5 330 (4 cores / 8
-threads), 14 GB RAM. SF1.
+\textbf{Setup.} Claude Opus 5.5 in the container, no worked examples, a
+data profile of SQL statistics, at most 2 \ensuremath{\times} 30 min of agent time and
+\$20 per query; dictionary strings, star-join specs. Official verdict:
+hot runs, median of 5 interleaved rounds against DuckDB 1.5.4 on all 8
+threads, 8 GB memory limit. AMD Ryzen AI 5 330 (4 cores / 8 threads), 14
+GB RAM. SF1.
 
 \textbf{Number formats.} Both Lemma and DuckDB represent
 \texttt{DECIMAL} and \texttt{DATE} values as exact integers; floating
@@ -336,8 +332,10 @@ boundary).
 GenDB's times come from different hardware (SF10, 32 cores, 384 GB), so
 we compare only ratios to DuckDB on the same machine.
 
-We also ran the agent without worked examples (\texttt{none} mode) and
-with other configurations; see Appendix D.
+An earlier run with Claude Sonnet 5.5 and full worked examples proved
+all 19 queries (median 2.04\ensuremath{\times} on SSB, 1.29\ensuremath{\times} on TPC-H), but its examples
+included the solutions of 6 of those queries, so it does not measure
+generalization.
 
 \subsection{Related work}\label{related-work}
 

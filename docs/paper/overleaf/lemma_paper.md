@@ -17,8 +17,6 @@ General-purpose OLAP engines pay for their generality through interpretation, ge
 
 ## Pipeline
 
-Figure (pipeline): SQL → transpile spec + `valid_cols` → agent `run_query` → assemble → Verus verify → `verus --compile` → binary → check rows and time vs DuckDB → DuckDB extension cache / invoke. *Caption: Lemma end-to-end pipeline (Verus path).*
-
 ![How one query runs: SQL query, transpiler, the LLM agent with its tools, the official run, pass or fail](figures/pipeline.png)
 
 **Steps.**
@@ -66,19 +64,19 @@ The data assumptions come from the user's own DuckDB: a profiling tool measures 
 
 ## Evaluation
 
-In the frozen run (commit 75f4303), all 19 attempted queries proved, matched DuckDB's rows and beat all-core DuckDB: median 2.04× on SSB (12 queries) and 1.29× on TPC-H (7 queries).
+With Claude Opus 5.5 and no worked examples, all five queries run so far proved, returned DuckDB's rows and beat all-core DuckDB, by 1.60× to 5.20× (median 2.42×). The other 14 queries are still to run. Per-query results, configuration and cost are in Appendix F.
 
 ![Speedup over all-core DuckDB per query, SF1: Opus 5.5 without worked examples; tba = not yet run in this configuration](figures/speedup.png)
 
 *Figure: speedup over all-core DuckDB at SF1, Claude Opus 5.5 without worked examples (Appendix F). tba = not yet run in this configuration.*
 
-**Setup.** Claude Sonnet 5.5 in the container, 25 min per query, full worked examples, dictionary strings, star-join specs. Official verdict: hot runs, median of 5 interleaved rounds against DuckDB 1.5.4 on all 8 threads, 8 GB memory limit. AMD Ryzen AI 5 330 (4 cores / 8 threads), 14 GB RAM. SF1.
+**Setup.** Claude Opus 5.5 in the container, no worked examples, a data profile of SQL statistics, at most 2 × 30 min of agent time and $20 per query; dictionary strings, star-join specs. Official verdict: hot runs, median of 5 interleaved rounds against DuckDB 1.5.4 on all 8 threads, 8 GB memory limit. AMD Ryzen AI 5 330 (4 cores / 8 threads), 14 GB RAM. SF1.
 
 **Number formats.** Both Lemma and DuckDB represent `DECIMAL` and `DATE` values as exact integers; floating point appears only where SQL returns `DOUBLE` (`AVG` in TPC-H Q1 and the ratio in Q14), where both compute in IEEE double and our specification treats the operations as exact reals (see Trust boundary).
 
 GenDB's times come from different hardware (SF10, 32 cores, 384 GB), so we compare only ratios to DuckDB on the same machine.
 
-We also ran the agent without worked examples (`none` mode) and with other configurations; see Appendix D.
+An earlier run with Claude Sonnet 5.5 and full worked examples proved all 19 queries (median 2.04× on SSB, 1.29× on TPC-H), but its examples included the solutions of 6 of those queries, so it does not measure generalization.
 
 ## Related work
 
