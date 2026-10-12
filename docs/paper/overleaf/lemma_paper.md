@@ -329,7 +329,7 @@ With the database already open and the data in place, the hand-written kernels a
 - **Storage format.** Lemma's vectors are uncompressed and unpaged, with no persistent zone maps; DuckDB's storage has all three. A verified executor that reads DuckDB's own storage would keep them, at the price of the version-bound C++ internals in the table above.
 - **Trust at the boundary.** The loader is unverified Rust. An earlier loader filled empty vectors while the row count was real, so a proof held for zero rows. Every route that reads DuckDB memory directly adds layout facts that Verus takes on trust.
 - **Memory and concurrency.** A copy doubles the memory for the columns. A pin keeps DuckDB's buffers alive and makes writers wait until it is released.
-- **Sandboxing.** The extension starts the optimizer as a subprocess; the agent runs in Docker with egress only to the model API. Hardening this for a database server is open (Future work, item 6).
+- **Sandboxing.** The extension starts the optimizer as a subprocess; the agent runs in Docker with egress only to the model API. Hardening this for a database server is open (Future work, item 3).
 
 ## Appendix D: Ablations and configuration variants
 

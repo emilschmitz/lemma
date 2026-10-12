@@ -3,6 +3,7 @@
 \PassOptionsToPackage{hyphens}{url}
 \PassOptionsToPackage{dvipsnames,svgnames,x11names}{xcolor}
 \documentclass[
+  10pt,
 ]{article}
 \usepackage{xcolor}
 \usepackage[margin=1in]{geometry}
@@ -21,6 +22,8 @@
 \usepackage{lmodern}
 \ifPDFTeX\else
   % xetex/luatex font selection
+  \setmainfont[]{DejaVu Serif}
+  \setmonofont[]{DejaVu Sans Mono}
 \fi
 % Use upquote if available, for straight quotes in verbatim environments
 \IfFileExists{upquote.sty}{\usepackage{upquote}}{}
@@ -105,6 +108,9 @@
 \setlength{\emergencystretch}{3em} % prevent overfull lines
 \providecommand{\tightlist}{%
   \setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
+\usepackage{fvextra}
+\DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,breakanywhere,commandchars=\\\{\}}
+\fvset{breaklines,breakanywhere}
 \usepackage{bookmark}
 \IfFileExists{xurl.sty}{\usepackage{xurl}}{} % add URL line breaks if available
 \urlstyle{same}
@@ -178,12 +184,7 @@ Figure (pipeline): SQL → transpile spec + \texttt{valid\_cols} → agent
 DuckDB extension cache / invoke. \emph{Caption: Lemma end-to-end
 pipeline (Verus path).}
 
-\begin{figure}
-\centering
 \pandocbounded{\includegraphics[keepaspectratio,alt={How one query runs: SQL query, transpiler, the LLM agent with its tools, the official run, pass or fail}]{figures/pipeline.png}}
-\caption{How one query runs: SQL query, transpiler, the LLM agent with
-its tools, the official run, pass or fail}
-\end{figure}
 
 \textbf{Steps.}
 
@@ -217,12 +218,7 @@ its tools, the official run, pass or fail}
   native path.
 \end{enumerate}
 
-\begin{figure}
-\centering
 \pandocbounded{\includegraphics[keepaspectratio,alt={Worked example: the input SQL query, the transpiler's spec and contract, and the agent's run\_query body}]{figures/worked_example.png}}
-\caption{Worked example: the input SQL query, the transpiler's spec and
-contract, and the agent's run\_query body}
-\end{figure}
 
 \emph{Caption: A worked example. The input SQL query, and the program
 Verus checks, shortened with ⋮. Blue rows are the transpiler's output
@@ -320,12 +316,7 @@ In the frozen run (commit 75f4303), all 19 attempted queries proved,
 matched DuckDB's rows and beat all-core DuckDB: median 2.04× on SSB (12
 queries) and 1.29× on TPC-H (7 queries).
 
-\begin{figure}
-\centering
 \pandocbounded{\includegraphics[keepaspectratio,alt={Speedup over all-core DuckDB per query, SF1: Opus 5.5 without worked examples; tba = not yet run in this configuration}]{figures/speedup.png}}
-\caption{Speedup over all-core DuckDB per query, SF1: Opus 5.5 without
-worked examples; tba = not yet run in this configuration}
-\end{figure}
 
 \emph{Figure: speedup over all-core DuckDB at SF1, Claude Opus 5.5
 without worked examples (Appendix F). tba = not yet run in this
@@ -915,7 +906,7 @@ is in repeated hot runs; a one-off query pays the load.
   \textbf{Sandboxing.} The extension starts the optimizer as a
   subprocess; the agent runs in Docker with egress only to the model
   API. Hardening this for a database server is open (Future work, item
-  6).
+  3).
 \end{itemize}
 
 \subsection{Appendix D: Ablations and configuration
