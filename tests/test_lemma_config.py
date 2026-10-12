@@ -253,11 +253,14 @@ assumption_package = "pkg/x.json"
 
 @pytest.fixture
 def exp(cfg: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A committed repo holding experiments/e.toml; returns the repo root."""
+    """A committed repo holding configs/experiments/e.toml; returns the repo root."""
     root = tmp_path / "repo"
-    (root / "experiments").mkdir(parents=True)
+    (root / "configs" / "experiments").mkdir(parents=True)
     repo = _repo(root)
-    (repo / "experiments" / "e.toml").write_text(EXP)
+    (repo / "q1.sql").write_text("SELECT 1")
+    (repo / "pkg").mkdir()
+    (repo / "pkg" / "x.json").write_text("{}")
+    (repo / "configs" / "experiments" / "e.toml").write_text(EXP)
     subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-qm", "exp"], cwd=repo, check=True)
     monkeypatch.setattr(lc, "REQUIRED", ())
@@ -266,10 +269,10 @@ def exp(cfg: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def test_experiment_sits_between_file_and_env_and_records_its_origin(exp: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    run = lc.use_experiment("experiments/e.toml", 0, root=exp)
+    run = lc.use_experiment("configs/experiments/e.toml", 0, root=exp)
     assert run["model"] == "claude-sonnet-5-5"  # alias resolved
     s = lc.resolve("official_rounds")
-    assert (s.value, s.source, s.origin) == (3, "experiment", "experiments/e.toml")
+    assert (s.value, s.source, s.origin) == (3, "experiment", "configs/experiments/e.toml")
     assert lc._experiment["values"]["agent_model"] == "claude-sonnet-5-5" and lc._experiment["values"]["duckdb_path"] == str(exp / "data/x.duckdb")
     assert lc.resolve("max_iterations").source == "file"
     monkeypatch.setenv("LEMMA_OFFICIAL_ROUNDS", "7")
@@ -282,7 +285,7 @@ def test_experiment_sits_between_file_and_env_and_records_its_origin(exp: Path, 
 
 
 def test_experiment_unknown_or_ill_typed_keys_fail(exp: Path) -> None:
-    f = exp / "experiments" / "bad.toml"
+    f = exp / "configs" / "experiments" / "bad.toml"
     for body, msg in (
         ('[settings]\nofficial_roundz = 3\n[[run]]\nmodel="a"\nquery="q"\nduckdb_path="d"\nassumption_package="p"\n', "unknown setting"),
         ('[settings]\nofficial_rounds = "x"\n[[run]]\nmodel="a"\nquery="q"\nduckdb_path="d"\nassumption_package="p"\n', "must be a int"),
@@ -295,13 +298,13 @@ def test_experiment_unknown_or_ill_typed_keys_fail(exp: Path) -> None:
 
 
 def test_replicable_passes_on_a_clean_committed_tree(exp: Path) -> None:
-    lc.use_experiment("experiments/e.toml", 0, root=exp)
+    lc.use_experiment("configs/experiments/e.toml", 0, root=exp)
     assert lc.require_replicable(exp) == lc._git(exp, "rev-parse", "HEAD")
-    assert lc.experiment_record()["path"] == "experiments/e.toml"
+    assert lc.experiment_record()["path"] == "configs/experiments/e.toml"
 
 
 def test_replicable_refuses_env_and_cli_overrides_and_names_the_keys(exp: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    lc.use_experiment("experiments/e.toml", 0, root=exp)
+    lc.use_experiment("configs/experiments/e.toml", 0, root=exp)
     monkeypatch.setenv("LEMMA_MAX_ITERATIONS", "4")
     with pytest.raises(lc.ConfigError, match="max_iterations"):
         lc.require_replicable(exp)
@@ -312,7 +315,7 @@ def test_replicable_refuses_env_and_cli_overrides_and_names_the_keys(exp: Path, 
 
 
 def test_replicable_refuses_untracked_and_modified_files(exp: Path) -> None:
-    lc.use_experiment("experiments/e.toml", 0, root=exp)
+    lc.use_experiment("configs/experiments/e.toml", 0, root=exp)
     (exp / "stray.txt").write_text("x")
     with pytest.raises(lc.ConfigError, match="not clean.*stray.txt"):
         lc.require_replicable(exp)
@@ -323,22 +326,58 @@ def test_replicable_refuses_untracked_and_modified_files(exp: Path) -> None:
 
 
 def test_replicable_refuses_an_uncommitted_or_modified_experiment_file(exp: Path) -> None:
-    (exp / "experiments" / "new.toml").write_text(EXP)
-    lc.use_experiment("experiments/new.toml", 0, root=exp)
+    (exp / "configs" / "experiments" / "new.toml").write_text(EXP)
+    lc.use_experiment("configs/experiments/new.toml", 0, root=exp)
     with pytest.raises(lc.ConfigError, match="not committed"):
         lc.require_replicable(exp)
-    lc.use_experiment("experiments/e.toml", 0, root=exp)
-    (exp / "experiments" / "e.toml").write_text(EXP.replace("= 3", "= 4"))
-    lc.use_experiment("experiments/e.toml", 0, root=exp)  # loaded with the edited blob...
+    lc.use_experiment("configs/experiments/e.toml", 0, root=exp)
+    (exp / "configs" / "experiments" / "e.toml").write_text(EXP.replace("= 3", "= 4"))
+    lc.use_experiment("configs/experiments/e.toml", 0, root=exp)  # loaded with the edited blob...
     with pytest.raises(lc.ConfigError, match="differs from its committed version"):
         lc.require_replicable(exp)
 
 
 def test_replicable_refuses_when_head_moved_from_the_pin(exp: Path) -> None:
     pin = lc._git(exp, "rev-parse", "HEAD")
-    lc.use_experiment("experiments/e.toml", 0, pin, exp)
+    lc.use_experiment("configs/experiments/e.toml", 0, pin, exp)
     lc.require_replicable(exp)
     (exp / "a.txt").write_text("2")
     subprocess.run(["git", "commit", "-qam", "later"], cwd=exp, check=True)
     with pytest.raises(lc.ConfigError, match="pinned at"):
         lc.require_replicable(exp)
+
+
+def test_replicable_refuses_an_untracked_query_or_package(exp: Path) -> None:
+    lc.use_experiment("configs/experiments/e.toml", 0, root=exp)
+    subprocess.run(["git", "rm", "-q", "--cached", "q1.sql"], cwd=exp, check=True)
+    subprocess.run(["git", "commit", "-qm", "untrack q"], cwd=exp, check=True)
+    with pytest.raises(lc.ConfigError, match="q1.sql .*not tracked at HEAD"):
+        lc.require_replicable(exp)
+
+
+def test_replicable_refuses_a_modified_query_and_a_modified_package(exp: Path) -> None:
+    lc.use_experiment("configs/experiments/e.toml", 0, root=exp)
+    (exp / "q1.sql").write_text("SELECT 2")
+    with pytest.raises(lc.ConfigError, match="q1.sql .*differs from its committed version"):
+        lc.require_replicable(exp)
+    (exp / "q1.sql").write_text("SELECT 1")
+    (exp / "pkg" / "x.json").write_text("{1}")
+    with pytest.raises(lc.ConfigError, match="x.json .*differs"):
+        lc.require_replicable(exp)
+
+
+def test_absolute_query_paths_are_rejected(exp: Path) -> None:
+    f = exp / "configs" / "experiments" / "abs.toml"
+    f.write_text(EXP.replace('"q1.sql"', '"/tmp/q1.sql"'))
+    with pytest.raises(lc.ConfigError, match="repo-relative"):
+        lc.load_experiment(f, exp)
+
+
+def test_the_shipped_opus_config_loads_and_is_tracked() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    _, runs = lc.load_experiment("configs/experiments/opus_none_stats.toml", repo)
+    assert len(runs) == 5 and {r["model"] for r in runs} == {"claude-opus-5-5"}
+    tracked = set(subprocess.run(["git", "ls-files"], cwd=repo, capture_output=True, text=True, check=True).stdout.split())
+    assert "configs/experiments/opus_none_stats.toml" in tracked
+    for r in runs:
+        assert r["query"] in tracked and r["assumption_package"] in tracked, r

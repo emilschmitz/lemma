@@ -192,16 +192,18 @@ assumption_package = "p.json"
 
 @pytest.fixture
 def batch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """A committed temp repo with experiments/e.toml as the batch ROOT; subprocess.run records launches and fakes the login marker."""
+    """A committed temp repo with configs/experiments/e.toml as the batch ROOT; subprocess.run records launches and fakes the login marker."""
     monkeypatch.undo()  # drop the autouse stubs: the real tree check is under test
     for name in list(__import__("os").environ):
         if name.startswith("LEMMA_") or name in lemma_config.ALIASES:
             monkeypatch.delenv(name)
     root = tmp_path / "repo"
-    (root / "experiments").mkdir(parents=True)
+    (root / "configs" / "experiments").mkdir(parents=True)
     for cmd in (["git", "init", "-q"], ["git", "config", "user.email", "t@t"], ["git", "config", "user.name", "t"]):
         subprocess.run(cmd, cwd=root, check=True)
-    (root / "experiments" / "e.toml").write_text(EXP)
+    (root / "configs" / "experiments" / "e.toml").write_text(EXP)
+    for name in ("q1.sql", "q2.sql", "p.json"):
+        (root / name).write_text("x")
     subprocess.run(["git", "add", "-A"], cwd=root, check=True)
     subprocess.run(["git", "commit", "-qm", "x"], cwd=root, check=True)
     monkeypatch.setattr(cb, "ROOT", root)
@@ -227,12 +229,12 @@ def batch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 def test_an_experiment_batch_launches_every_run_with_the_pin(batch) -> None:
     root, launches = batch
-    assert cb.main(["--experiment", "experiments/e.toml"]) == 0
+    assert cb.main(["--experiment", "configs/experiments/e.toml"]) == 0
     pin = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
     assert len(launches) == 2
     for i, cmd in enumerate(launches):
         assert cmd[cmd.index("--pinned-sha") + 1] == pin and cmd[cmd.index("--run-index") + 1] == str(i) and "--agent" not in cmd
-        assert cmd[cmd.index("--experiment") + 1] == "experiments/e.toml"
+        assert cmd[cmd.index("--experiment") + 1] == "configs/experiments/e.toml"
         assert not any(c.startswith("--setenv") for c in cmd)  # nothing is forwarded as environment
 
 
@@ -244,13 +246,13 @@ def test_the_batch_refuses_and_launches_nothing(batch, monkeypatch: pytest.Monke
     elif what == "untracked":
         (root / "stray.txt").write_text("x")
     elif what == "modified_experiment":
-        (root / "experiments" / "e.toml").write_text(EXP + "\n# edited\n")
+        (root / "configs" / "experiments" / "e.toml").write_text(EXP + "\n# edited\n")
     else:
-        (root / "experiments" / "e.toml").write_text(EXP)
+        (root / "configs" / "experiments" / "e.toml").write_text(EXP)
         (root / "b.txt").write_text("1")
         subprocess.run(["git", "add", "b.txt"], cwd=root, check=True)
     with pytest.raises(lemma_config.ConfigError, match="not replicable") as err:
-        cb.main(["--experiment", "experiments/e.toml"])
+        cb.main(["--experiment", "configs/experiments/e.toml"])
     assert launches == []
     if what == "env":
         assert "max_iterations" in str(err.value)
@@ -269,7 +271,7 @@ def test_the_batch_stops_when_head_moves_after_the_first_run(batch, monkeypatch:
         return out
 
     monkeypatch.setattr(cb.subprocess, "run", commit_after_first)
-    assert cb.main(["--experiment", "experiments/e.toml"]) == 2
+    assert cb.main(["--experiment", "configs/experiments/e.toml"]) == 2
     assert len(launches) == 1 and "pinned at" in capsys.readouterr().err
 
 
@@ -281,7 +283,7 @@ def test_the_batch_stops_when_a_run_refuses(batch, monkeypatch: pytest.MonkeyPat
         returncode = 3
 
     monkeypatch.setattr(cb.subprocess, "run", lambda cmd, **kw: (inner(cmd, **kw), Refused())[1] if cmd[0] == "choom" else inner(cmd, **kw))
-    assert cb.main(["--experiment", "experiments/e.toml"]) == 2 and len(launches) == 1
+    assert cb.main(["--experiment", "configs/experiments/e.toml"]) == 2 and len(launches) == 1
 
 
 def test_positional_runs_need_allow_dirty_and_are_not_replicable(batch, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
@@ -304,8 +306,21 @@ def test_the_manifest_of_a_dev_run_is_not_replicable_and_an_experiment_run_is(tm
     ra.set_run_evidence({"data_sha256": "ab", "agent_image_digest": "sha256:cd"})
     dev = ra.begin_run(query_id=1, sql_query="SELECT 1", root=root)._manifest
     assert dev["replicable"] is False and dev["experiment"] is None and dev["data_sha256"] == "ab"
-    lemma_config.use_experiment("experiments/e.toml", 0, "f" * 40, root)
+    lemma_config.use_experiment("configs/experiments/e.toml", 0, "f" * 40, root)
     rep = ra.begin_run(query_id=1, sql_query="SELECT 1", root=root)._manifest
-    assert rep["replicable"] is True and rep["pinned_sha"] == "f" * 40 and rep["experiment"]["path"] == "experiments/e.toml"
+    assert rep["replicable"] is True and rep["pinned_sha"] == "f" * 40 and rep["experiment"]["path"] == "configs/experiments/e.toml"
     assert rep["agent_image_digest"] == "sha256:cd" and rep["lemma_config"]["official_rounds"]["source"] == "experiment"
     ra.set_run_evidence({})
+
+
+def test_the_batch_refuses_a_query_that_is_not_committed(batch) -> None:
+    root, launches = batch
+    (root / "q1.sql").write_text("changed")
+    with pytest.raises(lemma_config.ConfigError, match="q1.sql .*differs from its committed version"):
+        cb.main(["--experiment", "configs/experiments/e.toml"])
+    subprocess.run(["git", "checkout", "q1.sql"], cwd=root, check=True)
+    subprocess.run(["git", "rm", "-q", "--cached", "q1.sql"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-qm", "untrack"], cwd=root, check=True)
+    with pytest.raises(lemma_config.ConfigError, match="q1.sql .*not tracked"):
+        cb.main(["--experiment", "configs/experiments/e.toml"])
+    assert launches == []

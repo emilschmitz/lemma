@@ -5,7 +5,7 @@ Every setting that shapes a container run, and the safety/infrastructure setting
 ## The rule
 
 ```
-lemma.toml  <  experiment file (experiments/X.toml)  <  environment variable LEMMA_<KEY>  <  explicit CLI flag
+lemma.toml  <  experiment file (configs/experiments/X.toml)  <  environment variable LEMMA_<KEY>  <  explicit CLI flag
 ```
 
 * The variable of a key is `LEMMA_` + the key upper-cased, in any section: `[measure] official_rounds` is `LEMMA_OFFICIAL_ROUNDS`. An empty variable counts as unset. Booleans are `0/1/true/false`.

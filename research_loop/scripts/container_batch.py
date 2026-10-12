@@ -1,6 +1,6 @@
 """Run several real-container agent runs one after another, each in a memory cap (the data export and the timed run take the machine-wide heavy lock themselves, so batches can run in parallel).
 
-``container_batch.py --experiment experiments/X.toml`` runs the ``[[run]]`` entries of a COMMITTED experiment file; its ``[settings]`` are the
+``container_batch.py --experiment configs/experiments/X.toml`` runs the ``[[run]]`` entries of a COMMITTED experiment file; its ``[settings]`` are the
 "experiment" source (lemma.toml < experiment < env < cli). Nothing starts unless the run is replicable: clean tree including untracked files,
 the file committed unchanged at HEAD, no setting from LEMMA_* environment or CLI (the offending keys are listed). The batch pins HEAD's SHA, passes
 it to every run, and each run (and the batch before each launch) refuses and stops when HEAD or the tree changed. Manifests say ``"replicable": true``.
@@ -90,12 +90,12 @@ def plan(argv: list[str]) -> list[tuple[str, str, Path, int | None]]:
     """(short model name, model slug, sql file, experiment run index) for each run of the batch."""
     if argv[:1] == ["--experiment"]:
         if len(argv) != 2:
-            raise lemma_config.ConfigError("usage: container_batch.py --experiment experiments/X.toml (no other arguments)")
+            raise lemma_config.ConfigError("usage: container_batch.py --experiment configs/experiments/X.toml (no other arguments)")
         _, runs = lemma_config.load_experiment(argv[1], ROOT)
-        return [(r["model"], r["model"], Path(r["query"]) if Path(r["query"]).is_absolute() else OUT / r["query"], i) for i, r in enumerate(runs)]
+        return [(r["model"], r["model"], ROOT / r["query"], i) for i, r in enumerate(runs)]
     if not lemma_config.get("allow_dirty"):
         raise lemma_config.ConfigError("model:query runs are the dev form and need allow_dirty = true (their manifests say replicable=false); "
-                                       "a run whose numbers may be reported uses --experiment experiments/X.toml")
+                                       "a run whose numbers may be reported uses --experiment configs/experiments/X.toml")
     out = []
     for spec in argv:
         short, _, name = spec.partition(":")

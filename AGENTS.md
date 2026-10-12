@@ -8,7 +8,7 @@ The only exception is Emil explicitly authorizing a new trusted, in words like "
 
 ## Replicable experiments (non-negotiable)
 
-Every experiment whose numbers may be reported runs only from a committed `experiments/*.toml` via `research_loop/scripts/container_batch.py --experiment experiments/X.toml`.
+Every experiment whose numbers may be reported runs only from a committed `configs/experiments/*.toml` via `research_loop/scripts/container_batch.py --experiment configs/experiments/X.toml`.
 The tree must be clean, untracked files included, and the experiment file must be committed unchanged at HEAD.
 No `LEMMA_*` environment variable and no CLI flag may set anything: all settings live in `lemma.toml` and the experiment file, both committed. The batch refuses and lists offenders otherwise.
 The batch pins one SHA, passes it to every run, and stops if HEAD or the tree changes before a run starts.

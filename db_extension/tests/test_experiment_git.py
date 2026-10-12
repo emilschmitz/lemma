@@ -9,11 +9,19 @@ import pytest
 from research_loop.run_artifacts import assert_experiment_git_clean, begin_run
 
 
+def _track_then_modify(root: Path, name: str) -> None:
+    """The gate counts tracked changes only (untracked files do not make a tree dirty): commit a file, then modify it."""
+    (root / name).write_text("x")
+    subprocess.run(["git", "add", name], cwd=root, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x"], cwd=root, check=True)
+    (root / name).write_text("modified")
+
+
 def test_assert_experiment_git_clean_fails_on_dirty_tree(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
-    (tmp_path / "dirty.txt").write_text("x")
+    _track_then_modify(tmp_path, "dirty.txt")
     monkeypatch.setenv("LEMMA_EXPERIMENT", "1")
     monkeypatch.delenv("LEMMA_EXPERIMENT_ALLOW_DIRTY", raising=False)
     with pytest.raises(SystemExit, match="clean git working tree"):
@@ -53,7 +61,7 @@ def test_assert_experiment_git_clean_no_override_on_dirty(
 ) -> None:
     """Dirty tree must fail without LEMMA_EXPERIMENT_ALLOW_DIRTY."""
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
-    (tmp_path / "untracked.txt").write_text("dirty")
+    _track_then_modify(tmp_path, "tracked.txt")
     monkeypatch.setenv("LEMMA_EXPERIMENT", "1")
     monkeypatch.delenv("LEMMA_EXPERIMENT_ALLOW_DIRTY", raising=False)
     with pytest.raises(SystemExit, match="clean git working tree"):

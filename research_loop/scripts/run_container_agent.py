@@ -239,7 +239,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--speed-bar-mult", help="override the speed bar axis")
     ap.add_argument("--duckdb-path", help="the database (default: lemma.toml; there is no built-in default)")
     ap.add_argument("--max-iterations", type=int, help="agent sessions per query (default: lemma.toml)")
-    ap.add_argument("--experiment", help="committed experiments/X.toml: run entry --run-index of it (model, database, package and settings come from the file)")
+    ap.add_argument("--experiment", help="committed configs/experiments/X.toml: run entry --run-index of it (model, database, package and settings come from the file)")
     ap.add_argument("--run-index", type=int, default=0)
     ap.add_argument("--pinned-sha", help="the batch's pinned commit; the run refuses to start when HEAD differs")
     args = ap.parse_args(argv)

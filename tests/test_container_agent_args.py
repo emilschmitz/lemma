@@ -129,7 +129,7 @@ def test_the_result_and_the_run_record_the_effective_config_and_git_state(tmp_pa
         menu_profile.deactivate_menu()
     assert set(rec["config"]) == set(lemma_config.schema()) and rec["git_sha"] == "b" * 40 and rec["git_dirty"] is False
     assert rec["config"]["official_rounds"]["value"] == 3 and rec["config"]["official_rounds"]["source"] == "env"
-    assert rec["config"]["max_iterations"]["source"] == "cli" and rec["config"]["agent_timeout_sec"] == {"section": "agent", "value": 750, "source": "file", "origin": "lemma.toml"}
+    assert rec["config"]["max_iterations"]["source"] == "cli" and rec["config"]["agent_timeout_sec"] == {"section": "agent", "value": lemma_config.default("agent_timeout_sec"), "source": "file", "origin": "lemma.toml"}
 
 
 def test_the_launcher_stops_without_a_database_or_a_package(monkeypatch: pytest.MonkeyPatch) -> None:

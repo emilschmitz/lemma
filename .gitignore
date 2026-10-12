@@ -31,6 +31,7 @@ research_loop/demo_view/state/
 # Logs and experimental runs
 *.log
 experiments/
+!configs/experiments/
 scratch/
 research_loop/runs/
 ssb-dbgen/

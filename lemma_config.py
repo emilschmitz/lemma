@@ -1,6 +1,6 @@
 """Lemma's configuration, loaded once from ``lemma.toml`` (see its header for the rule).
 
-    lemma.toml  <  experiment file (experiments/X.toml, committed)  <  environment variable LEMMA_<KEY>  <  explicit CLI flag
+    lemma.toml  <  experiment file (configs/experiments/X.toml, committed)  <  environment variable LEMMA_<KEY>  <  explicit CLI flag
 
 ``get("measure_key")`` returns the typed effective value. The type of a key is the type of its default in ``lemma.toml``
 (bool, int, float, str). Nothing is guessed: an unknown key, a value of the wrong type or outside the allowed choices raises.
@@ -391,7 +391,7 @@ def record(root: Path | None = None) -> dict[str, Any]:
     return {"config": effective_dict(), "git_sha": state["git_sha"], "git_dirty": state["git_dirty"]}
 
 
-# --- experiments: committed experiments/*.toml, the only source of a replicable run ---
+# --- experiments: committed configs/experiments/*.toml, the only source of a replicable run ---
 
 
 def _git(root: Path, *args: str) -> str:
@@ -425,6 +425,9 @@ def load_experiment(path: Path | str, root: Path | None = None) -> tuple[dict[st
     for i, entry in enumerate(runs):
         if set(entry) != set(EXPERIMENT_KEYS) or not all(isinstance(v, str) and v for v in entry.values()):
             raise ConfigError(f"{full}: [[run]] #{i} must have exactly the string keys {list(EXPERIMENT_KEYS)}, got {entry}")
+        for key in ("query", "assumption_package"):
+            if Path(entry[key]).is_absolute():
+                raise ConfigError(f"{full}: [[run]] #{i} {key} must be repo-relative (and tracked at HEAD), got {entry[key]!r}")
         out.append({**entry, "model": MODEL_ALIASES.get(entry["model"], entry["model"])})
     return settings, out
 
@@ -443,7 +446,7 @@ def use_experiment(path: Path | str, run_index: int, pinned_sha: str | None = No
         _check(key, values[key], f"{full} [[run]] #{run_index}")
     rel = str(full.relative_to(root))
     _experiment = {
-        "path": rel, "blob_sha": _git(root, "hash-object", str(full)), "pinned_sha": pinned_sha, "run_index": run_index, "values": values,
+        "files": [run["query"], run["assumption_package"]], "path": rel, "blob_sha": _git(root, "hash-object", str(full)), "pinned_sha": pinned_sha, "run_index": run_index, "values": values,
     }
     return run
 
@@ -467,7 +470,7 @@ def require_replicable(root: Path | None = None) -> str:
     (when one is given); no setting comes from the environment or a CLI flag, and allow_dirty is off."""
     root = (root or ROOT).resolve()
     if _experiment is None:
-        raise ConfigError("no experiment loaded (use_experiment): a replicable run needs a committed experiments/*.toml")
+        raise ConfigError("no experiment loaded (use_experiment): a replicable run needs a committed configs/experiments/*.toml")
     problems: list[str] = []
     rel, head = _experiment["path"], _git(root, "rev-parse", "HEAD")
     tracked = subprocess.run(["git", "cat-file", "-e", f"HEAD:{rel}"], cwd=root, capture_output=True).returncode == 0
@@ -475,6 +478,11 @@ def require_replicable(root: Path | None = None) -> str:
         problems.append(f"the experiment file {rel} is not committed at HEAD")
     elif _git(root, "rev-parse", f"HEAD:{rel}") != _experiment["blob_sha"]:
         problems.append(f"the experiment file {rel} differs from its committed version at HEAD")
+    for f in _experiment["files"]:  # the query and the package must be exactly what HEAD has
+        if subprocess.run(["git", "cat-file", "-e", f"HEAD:{f}"], cwd=root, capture_output=True).returncode != 0:
+            problems.append(f"{f} (named by the experiment) is not tracked at HEAD")
+        elif _git(root, "rev-parse", f"HEAD:{f}") != _git(root, "hash-object", str(root / f)):
+            problems.append(f"{f} (named by the experiment) differs from its committed version at HEAD")
     dirty = [line for line in _git(root, "status", "--porcelain").splitlines() if line.strip()]  # tracked changes and untracked-not-ignored files
     if dirty:
         problems.append(f"the git tree is not clean ({len(dirty)} changed or untracked files): " + "; ".join(dirty[:20]) + ("; ..." if len(dirty) > 20 else ""))

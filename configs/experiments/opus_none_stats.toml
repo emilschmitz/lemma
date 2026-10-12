@@ -1,0 +1,34 @@
+# Opus 5.5, no verified examples, data profile on. Run: uv run python research_loop/scripts/container_batch.py --experiment configs/experiments/opus_none_stats.toml
+[settings]
+examples = "none"
+data_profile = "stats"
+
+[[run]]
+model = "claude-opus-5-5"
+query = "configs/queries/tpch/tpch_q06.sql"
+duckdb_path = "research_loop/generated/tpch_sf1.duckdb"
+assumption_package = "research_loop/assumption_packages/registry/tpch_sf1.json"
+
+[[run]]
+model = "claude-opus-5-5"
+query = "configs/queries/tpch/tpch_q18.sql"
+duckdb_path = "research_loop/generated/tpch_sf1.duckdb"
+assumption_package = "research_loop/assumption_packages/registry/tpch_sf1.json"
+
+[[run]]
+model = "claude-opus-5-5"
+query = "configs/queries/tpch/tpch_q09.sql"
+duckdb_path = "research_loop/generated/tpch_sf1.duckdb"
+assumption_package = "research_loop/assumption_packages/registry/tpch_sf1.json"
+
+[[run]]
+model = "claude-opus-5-5"
+query = "configs/queries/ssb/ssb_q2_1.sql"
+duckdb_path = "research_loop/generated/ssb_sf1.duckdb"
+assumption_package = "research_loop/assumption_packages/registry/ssb_sf1.json"
+
+[[run]]
+model = "claude-opus-5-5"
+query = "configs/queries/ssb/ssb_q4_3.sql"
+duckdb_path = "research_loop/generated/ssb_sf1.duckdb"
+assumption_package = "research_loop/assumption_packages/registry/ssb_sf1.json"
