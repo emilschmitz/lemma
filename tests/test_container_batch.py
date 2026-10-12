@@ -11,6 +11,11 @@ import lemma_config
 from research_loop.scripts import container_batch as cb
 
 
+@pytest.fixture
+def dev_form(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LEMMA_ALLOW_DIRTY", "1")  # the positional model:query form needs it
+
+
 @pytest.fixture(autouse=True)
 def _clean_config_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     """Each test starts with no LEMMA_* setting in the environment (lemma.toml alone) and a tree that counts as clean."""
@@ -35,7 +40,7 @@ def test_command_is_locked_capped_and_carries_the_selected_environment(monkeypat
     assert cmd[cmd.index("--agent") + 1] == "claude-sonnet-5-5" and cmd[-1] == "/q.sql"
 
 
-def test_short_model_names_map_to_slugs_and_logs_are_named_by_model_and_query(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_short_model_names_map_to_slugs_and_logs_are_named_by_model_and_query(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dev_form: None) -> None:
     monkeypatch.setattr(cb, "OUT", tmp_path)
     (tmp_path / "qX.sql").write_text("SELECT 1")
     calls: list[list[str]] = []
@@ -99,7 +104,7 @@ def test_a_failed_refresh_never_reaches_the_container_command(tmp_path: Path, mo
     assert not marker.exists() and not execs and "log in with `claude` in your terminal" in capsys.readouterr().err
 
 
-def test_the_batch_stops_when_a_run_left_no_refresh_marker_and_clears_stale_markers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+def test_the_batch_stops_when_a_run_left_no_refresh_marker_and_clears_stale_markers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, dev_form: None) -> None:
     monkeypatch.setattr(cb, "OUT", tmp_path)
     (tmp_path / "qA.sql").write_text("SELECT 1")
     (tmp_path / "sonnet_qA.refresh.json").write_text('{"refreshed": true}')  # left by an earlier batch
@@ -135,7 +140,7 @@ def test_every_non_file_value_is_forwarded_with_its_origin_and_no_other_variable
     assert set(setenvs) == {"LEMMA_OFFICIAL_ROUNDS", "LEMMA_AGENT_TIMEOUT_SEC", "LEMMA_CONFIG_ORIGIN"}
 
 
-def test_a_typo_in_a_lemma_variable_stops_the_batch_before_any_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_typo_in_a_lemma_variable_stops_the_batch_before_any_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dev_form: None) -> None:
     monkeypatch.setenv("LEMMA_OFICIAL_ROUNDS", "3")
     ran: list = []
     monkeypatch.setattr(cb.subprocess, "run", lambda cmd, **kw: ran.append(cmd))
@@ -144,7 +149,7 @@ def test_a_typo_in_a_lemma_variable_stops_the_batch_before_any_run(tmp_path: Pat
     assert not ran
 
 
-def test_a_dirty_tree_stops_the_batch_before_any_run(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_dirty_tree_stops_the_batch_before_any_run(monkeypatch: pytest.MonkeyPatch, dev_form: None) -> None:
     def dirty(root=None):
         raise lemma_config.ConfigError("the git tree has uncommitted changes in tracked files (1)")
 
@@ -156,10 +161,151 @@ def test_a_dirty_tree_stops_the_batch_before_any_run(monkeypatch: pytest.MonkeyP
     assert not ran
 
 
-def test_a_batch_without_a_database_or_a_package_stops_before_any_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_a_batch_without_a_database_or_a_package_stops_before_any_run(monkeypatch: pytest.MonkeyPatch, dev_form: None, tmp_path: Path) -> None:
     monkeypatch.setattr(lemma_config, "REQUIRED", ("duckdb_path", "assumption_package"))
     with pytest.raises(lemma_config.ConfigError, match="duckdb_path has no default"):
         cb.main(["haiku:qX.sql"])
     monkeypatch.setenv("LEMMA_DUCKDB_PATH", "/db.duckdb")
     with pytest.raises(lemma_config.ConfigError, match="assumption_package has no default"):
         cb.main(["haiku:qX.sql"])
+
+
+# --- experiment batches: refusals before anything launches, the pin, and the dev form ---
+
+import subprocess  # noqa: E402
+
+EXP = """
+[settings]
+official_rounds = 3
+[[run]]
+model = "sonnet"
+query = "q1.sql"
+duckdb_path = "d.duckdb"
+assumption_package = "p.json"
+[[run]]
+model = "haiku"
+query = "q2.sql"
+duckdb_path = "d.duckdb"
+assumption_package = "p.json"
+"""
+
+
+@pytest.fixture
+def batch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A committed temp repo with experiments/e.toml as the batch ROOT; subprocess.run records launches and fakes the login marker."""
+    monkeypatch.undo()  # drop the autouse stubs: the real tree check is under test
+    for name in list(__import__("os").environ):
+        if name.startswith("LEMMA_") or name in lemma_config.ALIASES:
+            monkeypatch.delenv(name)
+    root = tmp_path / "repo"
+    (root / "experiments").mkdir(parents=True)
+    for cmd in (["git", "init", "-q"], ["git", "config", "user.email", "t@t"], ["git", "config", "user.name", "t"]):
+        subprocess.run(cmd, cwd=root, check=True)
+    (root / "experiments" / "e.toml").write_text(EXP)
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-qm", "x"], cwd=root, check=True)
+    monkeypatch.setattr(cb, "ROOT", root)
+    monkeypatch.setattr(cb, "OUT", tmp_path / "out")
+    monkeypatch.setattr(lemma_config, "REQUIRED", ())
+    launches: list[list[str]] = []
+    real_run = subprocess.run
+
+    class R:
+        returncode = 0
+
+    def fake(cmd, **kw):
+        if cmd[0] != "choom":
+            return real_run(cmd, **kw)
+        launches.append(cmd)
+        Path(cmd[cmd.index("--locked-run") + 1]).write_text("{}")
+        return R()
+
+    monkeypatch.setattr(cb.subprocess, "run", fake)
+    yield root, launches
+    lemma_config.clear_experiment()
+
+
+def test_an_experiment_batch_launches_every_run_with_the_pin(batch) -> None:
+    root, launches = batch
+    assert cb.main(["--experiment", "experiments/e.toml"]) == 0
+    pin = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
+    assert len(launches) == 2
+    for i, cmd in enumerate(launches):
+        assert cmd[cmd.index("--pinned-sha") + 1] == pin and cmd[cmd.index("--run-index") + 1] == str(i) and "--agent" not in cmd
+        assert cmd[cmd.index("--experiment") + 1] == "experiments/e.toml"
+        assert not any(c.startswith("--setenv") for c in cmd)  # nothing is forwarded as environment
+
+
+@pytest.mark.parametrize("what", ["env", "untracked", "modified_experiment", "dirty_tracked"])
+def test_the_batch_refuses_and_launches_nothing(batch, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, what: str) -> None:
+    root, launches = batch
+    if what == "env":
+        monkeypatch.setenv("LEMMA_MAX_ITERATIONS", "4")
+    elif what == "untracked":
+        (root / "stray.txt").write_text("x")
+    elif what == "modified_experiment":
+        (root / "experiments" / "e.toml").write_text(EXP + "\n# edited\n")
+    else:
+        (root / "experiments" / "e.toml").write_text(EXP)
+        (root / "b.txt").write_text("1")
+        subprocess.run(["git", "add", "b.txt"], cwd=root, check=True)
+    with pytest.raises(lemma_config.ConfigError, match="not replicable") as err:
+        cb.main(["--experiment", "experiments/e.toml"])
+    assert launches == []
+    if what == "env":
+        assert "max_iterations" in str(err.value)
+
+
+def test_the_batch_stops_when_head_moves_after_the_first_run(batch, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    root, launches = batch
+    inner = cb.subprocess.run
+
+    def commit_after_first(cmd, **kw):
+        out = inner(cmd, **kw)
+        if cmd[0] == "choom" and len(launches) == 1:
+            (root / "c.txt").write_text("new")
+            subprocess.run(["git", "add", "c.txt"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "mid-batch"], cwd=root, check=True)
+        return out
+
+    monkeypatch.setattr(cb.subprocess, "run", commit_after_first)
+    assert cb.main(["--experiment", "experiments/e.toml"]) == 2
+    assert len(launches) == 1 and "pinned at" in capsys.readouterr().err
+
+
+def test_the_batch_stops_when_a_run_refuses(batch, monkeypatch: pytest.MonkeyPatch) -> None:
+    _, launches = batch
+    inner = cb.subprocess.run
+
+    class Refused:
+        returncode = 3
+
+    monkeypatch.setattr(cb.subprocess, "run", lambda cmd, **kw: (inner(cmd, **kw), Refused())[1] if cmd[0] == "choom" else inner(cmd, **kw))
+    assert cb.main(["--experiment", "experiments/e.toml"]) == 2 and len(launches) == 1
+
+
+def test_positional_runs_need_allow_dirty_and_are_not_replicable(batch, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    root, launches = batch
+    with pytest.raises(lemma_config.ConfigError, match="allow_dirty"):
+        cb.main(["haiku:qX.sql"])
+    assert launches == []
+    monkeypatch.setenv("LEMMA_ALLOW_DIRTY", "1")
+    assert cb.main(["haiku:qX.sql"]) == 0
+    assert "--experiment" not in launches[0] and lemma_config.experiment_record() is None  # the child records "replicable": false
+
+
+def test_the_manifest_of_a_dev_run_is_not_replicable_and_an_experiment_run_is(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, batch) -> None:
+    from research_loop import run_artifacts as ra
+
+    root, _ = batch
+    monkeypatch.setattr(ra, "effective_settings", lambda sha, dirty: {})
+    monkeypatch.setattr(ra, "_write_hardware_profile", lambda run: None)
+    monkeypatch.setattr(ra, "emit_query_start", lambda **kw: None)
+    ra.set_run_evidence({"data_sha256": "ab", "agent_image_digest": "sha256:cd"})
+    dev = ra.begin_run(query_id=1, sql_query="SELECT 1", root=root)._manifest
+    assert dev["replicable"] is False and dev["experiment"] is None and dev["data_sha256"] == "ab"
+    lemma_config.use_experiment("experiments/e.toml", 0, "f" * 40, root)
+    rep = ra.begin_run(query_id=1, sql_query="SELECT 1", root=root)._manifest
+    assert rep["replicable"] is True and rep["pinned_sha"] == "f" * 40 and rep["experiment"]["path"] == "experiments/e.toml"
+    assert rep["agent_image_digest"] == "sha256:cd" and rep["lemma_config"]["official_rounds"]["source"] == "experiment"
+    ra.set_run_evidence({})

@@ -1,6 +1,6 @@
 """Lemma's configuration, loaded once from ``lemma.toml`` (see its header for the rule).
 
-    lemma.toml  <  environment variable LEMMA_<KEY>  <  explicit CLI flag
+    lemma.toml  <  experiment file (experiments/X.toml, committed)  <  environment variable LEMMA_<KEY>  <  explicit CLI flag
 
 ``get("measure_key")`` returns the typed effective value. The type of a key is the type of its default in ``lemma.toml``
 (bool, int, float, str). Nothing is guessed: an unknown key, a value of the wrong type or outside the allowed choices raises.
@@ -28,6 +28,8 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent
 TOML = ROOT / "lemma.toml"
 PREFIX = "LEMMA_"
+EXPERIMENT_KEYS = ("model", "query", "duckdb_path", "assumption_package")  # every [[run]] entry has exactly these
+MODEL_ALIASES = {"haiku": "claude-haiku-4-5-20251001", "sonnet": "claude-sonnet-5-5"}
 ORIGIN_ENV = "LEMMA_CONFIG_ORIGIN"  # handoff of the batch launcher: {"key": "cli"|"env"} for values it forwarded as environment
 
 # Old spellings -> key. Honored with a deprecation message (stderr, once per name); if both spellings are set to different values it raises.
@@ -127,7 +129,7 @@ class Setting:
     key: str
     section: str
     value: Any
-    source: str  # "file" | "env" | "cli"
+    source: str  # "file" | "experiment" | "env" | "cli"
     origin: str  # the file, the variable name, or the flag that supplied it
 
     def as_dict(self) -> dict[str, Any]:
@@ -137,6 +139,8 @@ class Setting:
 _cache: dict[tuple[str, float], dict[str, tuple[str, Any]]] = {}
 _cli: dict[str, tuple[Any, str]] = {}
 _warned: set[str] = set()
+# The experiment this process runs (set by use_experiment): path, blob, pinned SHA, run index and the values it supplies.
+_experiment: dict[str, Any] | None = None
 
 
 def env_name(key: str) -> str:
@@ -200,7 +204,7 @@ def _warn_alias(name: str, key: str) -> None:
 
 
 def resolve(key: str, environ: Mapping[str, str] | None = None) -> Setting:
-    """The effective setting of ``key``: CLI flag, else environment, else lemma.toml."""
+    """The effective setting of ``key``: CLI flag, else environment, else the experiment file, else lemma.toml."""
     environ = os.environ if environ is None else environ
     table = schema()
     if key not in table:
@@ -228,6 +232,8 @@ def resolve(key: str, environ: Mapping[str, str] | None = None) -> Setting:
         if handed_over == "file":
             return Setting(key, section, value, "file", TOML.name)
         return Setting(key, section, value, handed_over or "env", name)
+    if _experiment is not None and key in _experiment["values"]:
+        return Setting(key, section, _experiment["values"][key], "experiment", _experiment["path"])
     return Setting(key, section, default, "file", str(TOML.name))
 
 
@@ -346,7 +352,7 @@ def forwarded_env() -> dict[str, str]:
     out: dict[str, str] = {}
     origin: dict[str, str] = {}
     for key, s in effective().items():
-        if s.source != "file":
+        if s.source not in ("file", "experiment"):  # the child loads the experiment file itself (--experiment), so it reports that source
             out[env_name(key)] = str(s.value).lower() if isinstance(s.value, bool) else str(s.value)
             origin[key] = s.source
     if origin:
@@ -383,6 +389,105 @@ def record(root: Path | None = None) -> dict[str, Any]:
     """The reproducibility record of a run: the effective config (value, source, origin of every key) plus git SHA and dirtiness."""
     state = git_state(root)
     return {"config": effective_dict(), "git_sha": state["git_sha"], "git_dirty": state["git_dirty"]}
+
+
+# --- experiments: committed experiments/*.toml, the only source of a replicable run ---
+
+
+def _git(root: Path, *args: str) -> str:
+    return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+
+
+def load_experiment(path: Path | str, root: Path | None = None) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    """Parse an experiment file: ``[settings]`` (lemma.toml keys, type-checked like the file) and ``[[run]]`` entries
+    (``model`` slug or alias, ``query``, ``duckdb_path``, ``assumption_package``; the two paths repo-relative). Unknown anything raises."""
+    root = root or ROOT
+    full = Path(path) if Path(path).is_absolute() else root / path
+    raw = tomllib.loads(full.read_text())
+    extra = set(raw) - {"settings", "run"}
+    if extra:
+        raise ConfigError(f"{full}: unknown top-level keys {sorted(extra)}; an experiment file has [settings] and [[run]] only")
+    table = schema()
+    settings: dict[str, Any] = {}
+    for key, value in raw.get("settings", {}).items():
+        if key not in table:
+            raise ConfigError(f"{full}: unknown setting {key!r} in [settings]; closest: {difflib.get_close_matches(key, list(table), n=3)}")
+        default = table[key][1]
+        if isinstance(value, bool) != isinstance(default, bool) or not isinstance(value, type(default) if not isinstance(default, float) else int | float):
+            raise ConfigError(f"{full}: [settings] {key} must be a {type(default).__name__}, got {value!r}")
+        value = float(value) if isinstance(default, float) else value
+        _check(key, value, f"{full} [settings] {key}")
+        settings[key] = value
+    runs = raw.get("run", [])
+    if not runs:
+        raise ConfigError(f"{full}: no [[run]] entries")
+    out: list[dict[str, str]] = []
+    for i, entry in enumerate(runs):
+        if set(entry) != set(EXPERIMENT_KEYS) or not all(isinstance(v, str) and v for v in entry.values()):
+            raise ConfigError(f"{full}: [[run]] #{i} must have exactly the string keys {list(EXPERIMENT_KEYS)}, got {entry}")
+        out.append({**entry, "model": MODEL_ALIASES.get(entry["model"], entry["model"])})
+    return settings, out
+
+
+def use_experiment(path: Path | str, run_index: int, pinned_sha: str | None = None, root: Path | None = None) -> dict[str, str]:
+    """Make run ``run_index`` of the experiment file the "experiment" source of this process (settings plus the run's model, database and
+    package; the database and package paths are resolved against the repo root). Returns the run entry."""
+    global _experiment
+    root = (root or ROOT).resolve()
+    full = (Path(path) if Path(path).is_absolute() else root / path).resolve()
+    settings, runs = load_experiment(full, root)
+    run = runs[run_index]
+    absolute = lambda p: p if Path(p).is_absolute() else str(root / p)  # noqa: E731
+    values = {**settings, "agent_model": run["model"], "duckdb_path": absolute(run["duckdb_path"]), "assumption_package": absolute(run["assumption_package"])}
+    for key in ("agent_model", "duckdb_path", "assumption_package"):
+        _check(key, values[key], f"{full} [[run]] #{run_index}")
+    rel = str(full.relative_to(root))
+    _experiment = {
+        "path": rel, "blob_sha": _git(root, "hash-object", str(full)), "pinned_sha": pinned_sha, "run_index": run_index, "values": values,
+    }
+    return run
+
+
+def clear_experiment() -> None:
+    global _experiment
+    _experiment = None
+
+
+def experiment_record() -> dict[str, Any] | None:
+    """What the manifest records about the experiment: None for a run that is not from an experiment file (so not replicable)."""
+    if _experiment is None:
+        return None
+    return {"path": _experiment["path"], "blob_sha": _experiment["blob_sha"], "pinned_sha": _experiment["pinned_sha"], "run_index": _experiment["run_index"]}
+
+
+def require_replicable(root: Path | None = None) -> str:
+    """Refuse (ConfigError, naming everything) unless this process may run a replicable experiment; returns HEAD's SHA.
+
+    The tree is clean including untracked-not-ignored files; the experiment file is committed unchanged at HEAD; HEAD is the pinned SHA
+    (when one is given); no setting comes from the environment or a CLI flag, and allow_dirty is off."""
+    root = (root or ROOT).resolve()
+    if _experiment is None:
+        raise ConfigError("no experiment loaded (use_experiment): a replicable run needs a committed experiments/*.toml")
+    problems: list[str] = []
+    rel, head = _experiment["path"], _git(root, "rev-parse", "HEAD")
+    tracked = subprocess.run(["git", "cat-file", "-e", f"HEAD:{rel}"], cwd=root, capture_output=True).returncode == 0
+    if not tracked:
+        problems.append(f"the experiment file {rel} is not committed at HEAD")
+    elif _git(root, "rev-parse", f"HEAD:{rel}") != _experiment["blob_sha"]:
+        problems.append(f"the experiment file {rel} differs from its committed version at HEAD")
+    dirty = [line for line in _git(root, "status", "--porcelain").splitlines() if line.strip()]  # tracked changes and untracked-not-ignored files
+    if dirty:
+        problems.append(f"the git tree is not clean ({len(dirty)} changed or untracked files): " + "; ".join(dirty[:20]) + ("; ..." if len(dirty) > 20 else ""))
+    if _experiment["pinned_sha"] and head != _experiment["pinned_sha"]:
+        problems.append(f"HEAD is {head[:7]} but this experiment was pinned at {_experiment['pinned_sha'][:7]}")
+    overrides = sorted(f"{k} ({s.source}: {s.origin})" for k, s in effective().items() if s.source in ("env", "cli"))
+    if overrides:
+        problems.append("settings come from the environment or the command line, not from lemma.toml and the experiment file: " + ", ".join(overrides))
+    if resolve("allow_dirty").value:
+        problems.append("allow_dirty is true; a replicable run never allows a dirty tree")
+    if problems:
+        raise ConfigError("not replicable, nothing started:\n  " + "\n  ".join(problems))
+    return head
 
 
 def main(argv: list[str]) -> int:

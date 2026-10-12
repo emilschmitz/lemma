@@ -4,9 +4,10 @@ Same container, same agent, same sandbox. ``--menu`` names a profile (``research
 that sets every axis at once (style, trusted set, assumption package, agent, speed bar). The
 flags each override ONE axis. lemma.toml is the authority for the axes, so a value that differs from the profile default is taken (and shown in the selection as an override).
 The resolved selection (all axes and their source) is printed first and written to the run's
-manifest. Every setting comes from ``lemma.toml`` (file < LEMMA_<KEY> environment < the flags below); the full effective
-config with its sources and the git SHA/dirtiness go into the manifest and the RESULT line. A dirty tree (tracked files) is refused
-unless ``allow_dirty`` is set.
+manifest. Every setting comes from ``lemma.toml`` (file < experiment file < LEMMA_<KEY> environment < the flags below); the full
+effective config with its sources and the git SHA/dirtiness go into the manifest and the RESULT line. A dirty tree (tracked files) is refused
+unless ``allow_dirty`` is set. ``--experiment X.toml --run-index N --pinned-sha SHA`` (container_batch.py passes them) runs entry N of a committed
+experiment file and first checks it is replicable: clean tree incl. untracked files, file committed, HEAD == SHA, no env/CLI settings.
 
     uv run python research_loop/scripts/run_container_agent.py --style declarative \
         --menu adversary_declarative0 --agent claude-haiku-4-5-20251001 \
@@ -32,6 +33,9 @@ if str(ROOT) not in sys.path:
 import lemma_config
 from research_loop.menu_profile import activate_menu
 from research_loop.spec_styles import STYLES, check_style
+
+
+REFUSED_EXIT = 3  # require_replicable said no: container_batch stops the batch
 
 
 def new_run_dirs(runs_dir: Path, before: set[Path]) -> list[Path]:
@@ -169,6 +173,9 @@ def run(
 
     db_path = resolve_sec_db()
     os.environ["LEMMA_DUCKDB_PATH"] = str(db_path)
+    from research_loop.run_artifacts import file_sha256, image_digest, set_run_evidence
+
+    set_run_evidence({"data_sha256": file_sha256(db_path), "agent_image_digest": image_digest(os.environ["AGENT_IMAGE"])})
     if resolved.style == "declarative":
         os.environ["LEMMA_MEASURE_DB"] = str(db_path)
         # The catalog is its own axis: the package that matches the database file (DECIMAL or DOUBLE `value`) unless
@@ -202,6 +209,7 @@ def run(
         "config": config_record["config"],  # every lemma.toml key: value, section, source (file/env/cli), origin
         "git_sha": config_record["git_sha"],
         "git_dirty": config_record["git_dirty"],
+        "replicable": lemma_config.experiment_record() is not None,
         "sql": sql,
         "wall_s": round(time.time() - t0, 1),
         "status": result.get("status"),
@@ -231,8 +239,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--speed-bar-mult", help="override the speed bar axis")
     ap.add_argument("--duckdb-path", help="the database (default: lemma.toml; there is no built-in default)")
     ap.add_argument("--max-iterations", type=int, help="agent sessions per query (default: lemma.toml)")
+    ap.add_argument("--experiment", help="committed experiments/X.toml: run entry --run-index of it (model, database, package and settings come from the file)")
+    ap.add_argument("--run-index", type=int, default=0)
+    ap.add_argument("--pinned-sha", help="the batch's pinned commit; the run refuses to start when HEAD differs")
     args = ap.parse_args(argv)
     lemma_config.clear_cli()
+    lemma_config.clear_experiment()
+    if args.experiment:
+        if args.agent or args.duckdb_path or args.assumption_package:
+            ap.error("--experiment supplies the model, database and package; do not combine with --agent/--duckdb-path/--assumption-package")
+        lemma_config.use_experiment(args.experiment, args.run_index, args.pinned_sha)
     for key, value, flag in (
         ("spec_style", args.style, "--style"), ("menu", args.menu, "--menu"), ("agent_model", args.agent, "--agent"),
         ("trusted_set", args.trusted_set, "--trusted-set"), ("assumption_package", args.assumption_package, "--assumption-package"),
@@ -242,7 +258,14 @@ def main(argv: list[str] | None = None) -> int:
         lemma_config.set_cli(key, value, flag)
     lemma_config.check_environment()  # unknown LEMMA_* variables, dead settings, bad values: before any work
     lemma_config.require_run_settings()  # duckdb_path and assumption_package have no default
-    lemma_config.require_clean_tree()  # a run must be reproducible from its commit
+    if args.experiment:
+        try:
+            lemma_config.require_replicable()
+        except lemma_config.ConfigError as exc:
+            print(f"REFUSED: {exc}", file=sys.stderr, flush=True)
+            return REFUSED_EXIT  # the batch stops on this code
+    else:
+        lemma_config.require_clean_tree()  # a run must be reproducible from its commit
     if (args.query_sql is None) == (args.query_file is None):
         ap.error("give exactly one of --query-sql and --query-file")
     sql = args.query_sql if args.query_sql is not None else Path(args.query_file).read_text().strip()

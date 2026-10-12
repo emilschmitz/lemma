@@ -1,9 +1,15 @@
 """Run several real-container agent runs one after another, each in a memory cap (the data export and the timed run take the machine-wide heavy lock themselves, so batches can run in parallel).
 
-``container_batch.py haiku:q1.sql sonnet:q2.sql ...`` (``haiku`` = claude-haiku-4-5-20251001, ``sonnet`` = claude-sonnet-5-5, or a full slug).
+``container_batch.py --experiment experiments/X.toml`` runs the ``[[run]]`` entries of a COMMITTED experiment file; its ``[settings]`` are the
+"experiment" source (lemma.toml < experiment < env < cli). Nothing starts unless the run is replicable: clean tree including untracked files,
+the file committed unchanged at HEAD, no setting from LEMMA_* environment or CLI (the offending keys are listed). The batch pins HEAD's SHA, passes
+it to every run, and each run (and the batch before each launch) refuses and stops when HEAD or the tree changed. Manifests say ``"replicable": true``.
+
+``container_batch.py haiku:q1.sql sonnet:q2.sql ...`` (``haiku`` = claude-haiku-4-5-20251001, ``sonnet`` = claude-sonnet-5-5, or a full slug) is the
+dev/throwaway form: it works ONLY with allow_dirty = true, and its manifests say ``"replicable": false``; never report its numbers.
 Each run is ``systemd-run --user --scope -p MemoryMax=<scope_memory_max> ... run_container_agent.py --agent <model> --query-file <sql>``; its launcher
 output goes to ``research_loop/generated/container_runs/<model>_<query stem>.log``. All settings come from ``lemma.toml``
-(file < LEMMA_<KEY> environment of the launching shell): nothing is forwarded by name here, the child reads lemma.toml itself and gets only the
+(file < LEMMA_<KEY> environment of the launching shell, dev form only): nothing is forwarded by name here, the child reads lemma.toml itself and gets only the
 values that differ from the file (``lemma_config.forwarded_env``), so the run reports the same effective config and sources.
 Unknown LEMMA_* variables and a dirty git tree stop the batch before it starts. Prints the table (``container_table.py``) at the end.
 """
@@ -22,11 +28,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import lemma_config  # noqa: E402
+from research_loop.scripts.run_container_agent import REFUSED_EXIT  # noqa: E402
 OUT = ROOT / "research_loop" / "generated" / "container_runs"
-MODELS = {"haiku": "claude-haiku-4-5-20251001", "sonnet": "claude-sonnet-5-5"}
+MODELS = lemma_config.MODEL_ALIASES
 
 
-def command(model: str, sql_file: Path, marker: Path | None = None) -> list[str]:
+def command(model: str, sql_file: Path, marker: Path | None = None, experiment: tuple[str, int, str] | None = None) -> list[str]:
+    """``experiment`` = (file, run index, pinned SHA): the run takes model, database, package and settings from the committed file."""
     env_args = [f"--setenv={k}={v}" for k, v in lemma_config.forwarded_env().items()]
     # The login refresh runs at the start of each run (`--locked-run`: the name is historical), so every run starts with a fresh token.
     return [
@@ -36,7 +44,7 @@ def command(model: str, sql_file: Path, marker: Path | None = None) -> list[str]
         sys.executable, str(ROOT / "research_loop" / "scripts" / "run_container_agent.py"),
         # style, menu, sessions per query (max_iterations) and the 750 s session wall (agent_timeout_sec) are lemma.toml's: an attempt
         # never exceeds 25 minutes of agent time (Emil's limit).
-        "--agent", model,
+        *(["--experiment", experiment[0], "--run-index", str(experiment[1]), "--pinned-sha", experiment[2]] if experiment else ["--agent", model]),
         "--query-file", str(sql_file),
     ]
 
@@ -78,24 +86,58 @@ def locked_run(argv: list[str]) -> int:
     os.execvp(cmd[0], cmd)
 
 
+def plan(argv: list[str]) -> list[tuple[str, str, Path, int | None]]:
+    """(short model name, model slug, sql file, experiment run index) for each run of the batch."""
+    if argv[:1] == ["--experiment"]:
+        if len(argv) != 2:
+            raise lemma_config.ConfigError("usage: container_batch.py --experiment experiments/X.toml (no other arguments)")
+        _, runs = lemma_config.load_experiment(argv[1], ROOT)
+        return [(r["model"], r["model"], Path(r["query"]) if Path(r["query"]).is_absolute() else OUT / r["query"], i) for i, r in enumerate(runs)]
+    if not lemma_config.get("allow_dirty"):
+        raise lemma_config.ConfigError("model:query runs are the dev form and need allow_dirty = true (their manifests say replicable=false); "
+                                       "a run whose numbers may be reported uses --experiment experiments/X.toml")
+    out = []
+    for spec in argv:
+        short, _, name = spec.partition(":")
+        out.append((short, MODELS.get(short, short), (OUT / name) if not Path(name).is_absolute() else Path(name), None))
+    return out
+
+
 def main(argv: list[str]) -> int:
     if argv[:1] == ["--locked-run"]:
         return locked_run(argv[1:])
+    lemma_config.clear_experiment()
     lemma_config.check_environment()  # unknown LEMMA_* variables, dead settings, bad values: before the first run
-    lemma_config.require_run_settings()  # duckdb_path and assumption_package have no default: stop before the first run
-    lemma_config.require_clean_tree()  # every run of the batch starts from the committed tree
+    runs = plan(argv)
+    experiment = argv[1] if argv[:1] == ["--experiment"] else None
+    pinned: str | None = None
+    if experiment:
+        for _, _, _, i in runs:  # every run must be valid and replicable before the first one starts
+            lemma_config.use_experiment(experiment, i, root=ROOT)
+            lemma_config.require_run_settings()
+            pinned = lemma_config.require_replicable(ROOT)
+    else:
+        lemma_config.require_run_settings()  # duckdb_path and assumption_package have no default: stop before the first run
+        lemma_config.require_clean_tree()  # every run of the batch starts from the committed tree
     OUT.mkdir(parents=True, exist_ok=True)
     logs: list[str] = []
-    for spec in argv:
-        short, _, name = spec.partition(":")
-        model = MODELS.get(short, short)
-        sql_file = (OUT / name) if not Path(name).is_absolute() else Path(name)
+    for short, model, sql_file, index in runs:
+        if experiment:
+            try:  # the pin: a commit made since the batch started changes the SHA of every later run
+                lemma_config.use_experiment(experiment, index, pinned, ROOT)
+                lemma_config.require_replicable(ROOT)
+            except lemma_config.ConfigError as exc:
+                print(f"STOPPED before {short}:{sql_file.name}: {exc}", file=sys.stderr, flush=True)
+                return 2
         log = OUT / f"{short}_{sql_file.stem}.log"
         marker = OUT / f"{short}_{sql_file.stem}.refresh.json"
         marker.unlink(missing_ok=True)  # a marker from an earlier batch must not look current
         log.unlink(missing_ok=True)
         with log.open("w") as fh:
-            subprocess.run(command(model, sql_file, marker), cwd=ROOT, stdout=fh, stderr=subprocess.STDOUT, check=False)
+            done = subprocess.run(command(model, sql_file, marker, (experiment, index, pinned) if experiment else None), cwd=ROOT, stdout=fh, stderr=subprocess.STDOUT, check=False)
+        if experiment and done.returncode == REFUSED_EXIT:
+            print(f"STOPPED at {short}:{sql_file.name}: the run refused to start (not replicable, see {log})", file=sys.stderr, flush=True)
+            return 2
         if not marker.is_file():
             print(f"STOPPED at {short}:{sql_file.name}: no login refresh happened (see {log}): log in with `claude` in your terminal, then restart the batch", file=sys.stderr, flush=True)
             return 2
@@ -106,4 +148,8 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    try:
+        raise SystemExit(main(sys.argv[1:]))
+    except lemma_config.ConfigError as exc:
+        print(f"CONFIG ERROR: {exc}", file=sys.stderr)
+        raise SystemExit(2)

@@ -1,6 +1,7 @@
 """Per-optimizer run directory layout for GCP harvest."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import platform
@@ -97,6 +98,29 @@ def _git_sha(root: Path) -> str | None:
         return sha or None
     except (subprocess.CalledProcessError, FileNotFoundError, OSError):
         return None
+
+
+_evidence: dict[str, str] = {}
+
+
+def set_run_evidence(evidence: dict[str, str]) -> None:
+    """Facts the launcher computed before the run (``data_sha256``, ``agent_image_digest``); begin_run writes them into the manifest."""
+    _evidence.clear()
+    _evidence.update(evidence)
+
+
+def file_sha256(path: Path | str) -> str:
+    """sha256 of a file, streamed in 8 MiB chunks (the databases are gigabytes)."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        while chunk := fh.read(8 << 20):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def image_digest(image: str) -> str:
+    """The id of the local docker image (``docker image inspect``); a failure raises, there is no skip."""
+    return subprocess.run(["docker", "image", "inspect", image, "--format", "{{.Id}}"], capture_output=True, text=True, check=True).stdout.strip()
 
 
 def _git_porcelain(root: Path) -> str:
@@ -339,7 +363,11 @@ def begin_run(
         "duckdb_path": (os.environ.get("LEMMA_DUCKDB_PATH") or "").strip() or None,
         "env": env_snap,
         "effective": effective_settings(git_commit, git_dirty),
-        "lemma_config": lemma_config.effective_dict(),  # every key of lemma.toml with its value and source (file/env/cli)
+        "lemma_config": lemma_config.effective_dict(),  # every key of lemma.toml with its value and source (file/experiment/env/cli)
+        "experiment": (exp := lemma_config.experiment_record()) and {"path": exp["path"], "blob_sha": exp["blob_sha"]},
+        "pinned_sha": exp["pinned_sha"] if exp else None,
+        "replicable": exp is not None,  # only a run started from a committed experiment file passed require_replicable
+        **_evidence,
     }
     from research_loop.menu_profile import active_menu
 

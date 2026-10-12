@@ -6,6 +6,15 @@ Do not skip proving an implementation. Do not wrap it in `external_body`, `assum
 
 The only exception is Emil explicitly authorizing a new trusted, in words like "make this a new trusted." A flag, a faster helper, a parallel schedule, or an agent guessing that speed matters is not that authorization. If he has not said it, prove the implementation.
 
+## Replicable experiments (non-negotiable)
+
+Every experiment whose numbers may be reported runs only from a committed `experiments/*.toml` via `research_loop/scripts/container_batch.py --experiment experiments/X.toml`.
+The tree must be clean, untracked files included, and the experiment file must be committed unchanged at HEAD.
+No `LEMMA_*` environment variable and no CLI flag may set anything: all settings live in `lemma.toml` and the experiment file, both committed. The batch refuses and lists offenders otherwise.
+The batch pins one SHA, passes it to every run, and stops if HEAD or the tree changes before a run starts.
+The manifest records the SHA, the experiment file's blob sha, the effective config with the source of every key, the sha256 of the database and the agent image digest.
+Runs under `allow_dirty` (the positional `model:query` form) are marked `replicable: false` and are never reported in the paper.
+
 ## Product path (report every failure against one step)
 
 DuckDB is **not** a second engine. It is the pinned column store at **execute**.
@@ -490,7 +499,7 @@ egress, dirty-tree policy) lives in **`lemma.toml`** at the repo root: `python -
 `lemma.toml` < `LEMMA_<KEY>` environment variable < CLI flag; unknown `LEMMA_*` variables fail at startup.
 `research_loop/config.env` keeps only the legacy imperative/OpenRouter settings (`AGENT_NETWORK` = container
 network off, the OpenRouter keys, `COMPILE_TIMEOUT_SEC`; see `db_extension/AGENT.md` for the OpenRouter host).
-Container runs refuse a dirty git tree (tracked files) unless `allow_dirty = true`. Inventory: `docs/FLAGS.md`.
+Container runs refuse a dirty git tree (tracked files) unless `allow_dirty = true`. Reportable runs follow "Replicable experiments" above. Inventory: `docs/FLAGS.md`.
 
 Preferred setup: OpenRouter host + tool Docker (`network none`) + Unix-socket MCP /
 sandbox `mcp_proxy`. CLI-in-Docker: Inspect-style model bridge + MCP with network none.

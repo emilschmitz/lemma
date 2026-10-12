@@ -236,3 +236,109 @@ def test_the_real_file_is_valid_and_its_memory_budget_is_consistent(real: None) 
     settings = lc.effective()
     assert len(settings) >= 40 and all(s.source == "file" for s in settings.values())
     lc.check_environment({})
+
+
+# --- experiment files: the fourth source, and the replicable-run refusals ---
+
+EXP = """
+[settings]
+official_rounds = 3
+[[run]]
+model = "sonnet"
+query = "q1.sql"
+duckdb_path = "data/x.duckdb"
+assumption_package = "pkg/x.json"
+"""
+
+
+@pytest.fixture
+def exp(cfg: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A committed repo holding experiments/e.toml; returns the repo root."""
+    root = tmp_path / "repo"
+    (root / "experiments").mkdir(parents=True)
+    repo = _repo(root)
+    (repo / "experiments" / "e.toml").write_text(EXP)
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "exp"], cwd=repo, check=True)
+    monkeypatch.setattr(lc, "REQUIRED", ())
+    yield repo
+    lc.clear_experiment()
+
+
+def test_experiment_sits_between_file_and_env_and_records_its_origin(exp: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run = lc.use_experiment("experiments/e.toml", 0, root=exp)
+    assert run["model"] == "claude-sonnet-5-5"  # alias resolved
+    s = lc.resolve("official_rounds")
+    assert (s.value, s.source, s.origin) == (3, "experiment", "experiments/e.toml")
+    assert lc._experiment["values"]["agent_model"] == "claude-sonnet-5-5" and lc._experiment["values"]["duckdb_path"] == str(exp / "data/x.duckdb")
+    assert lc.resolve("max_iterations").source == "file"
+    monkeypatch.setenv("LEMMA_OFFICIAL_ROUNDS", "7")
+    assert lc.resolve("official_rounds").source == "env"
+    lc.set_cli("official_rounds", 9)
+    assert lc.resolve("official_rounds").source == "cli"
+    monkeypatch.delenv("LEMMA_OFFICIAL_ROUNDS")
+    lc.clear_cli()
+    assert lc.effective_dict()["official_rounds"]["source"] == "experiment" and "LEMMA_OFFICIAL_ROUNDS" not in lc.forwarded_env()  # the child loads the file itself
+
+
+def test_experiment_unknown_or_ill_typed_keys_fail(exp: Path) -> None:
+    f = exp / "experiments" / "bad.toml"
+    for body, msg in (
+        ('[settings]\nofficial_roundz = 3\n[[run]]\nmodel="a"\nquery="q"\nduckdb_path="d"\nassumption_package="p"\n', "unknown setting"),
+        ('[settings]\nofficial_rounds = "x"\n[[run]]\nmodel="a"\nquery="q"\nduckdb_path="d"\nassumption_package="p"\n', "must be a int"),
+        ('[[run]]\nmodel="a"\nquery="q"\n', "exactly the string keys"),
+        ('[settings]\nofficial_rounds = 3\n', "no \\[\\[run\\]\\]"),
+    ):
+        f.write_text(body)
+        with pytest.raises(lc.ConfigError, match=msg):
+            lc.load_experiment(f, exp)
+
+
+def test_replicable_passes_on_a_clean_committed_tree(exp: Path) -> None:
+    lc.use_experiment("experiments/e.toml", 0, root=exp)
+    assert lc.require_replicable(exp) == lc._git(exp, "rev-parse", "HEAD")
+    assert lc.experiment_record()["path"] == "experiments/e.toml"
+
+
+def test_replicable_refuses_env_and_cli_overrides_and_names_the_keys(exp: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    lc.use_experiment("experiments/e.toml", 0, root=exp)
+    monkeypatch.setenv("LEMMA_MAX_ITERATIONS", "4")
+    with pytest.raises(lc.ConfigError, match="max_iterations"):
+        lc.require_replicable(exp)
+    monkeypatch.delenv("LEMMA_MAX_ITERATIONS")
+    lc.set_cli("agent_timeout_sec", 5, "--t")
+    with pytest.raises(lc.ConfigError, match="agent_timeout_sec"):
+        lc.require_replicable(exp)
+
+
+def test_replicable_refuses_untracked_and_modified_files(exp: Path) -> None:
+    lc.use_experiment("experiments/e.toml", 0, root=exp)
+    (exp / "stray.txt").write_text("x")
+    with pytest.raises(lc.ConfigError, match="not clean.*stray.txt"):
+        lc.require_replicable(exp)
+    (exp / "stray.txt").unlink()
+    (exp / "a.txt").write_text("changed")
+    with pytest.raises(lc.ConfigError, match="not clean"):
+        lc.require_replicable(exp)
+
+
+def test_replicable_refuses_an_uncommitted_or_modified_experiment_file(exp: Path) -> None:
+    (exp / "experiments" / "new.toml").write_text(EXP)
+    lc.use_experiment("experiments/new.toml", 0, root=exp)
+    with pytest.raises(lc.ConfigError, match="not committed"):
+        lc.require_replicable(exp)
+    lc.use_experiment("experiments/e.toml", 0, root=exp)
+    (exp / "experiments" / "e.toml").write_text(EXP.replace("= 3", "= 4"))
+    lc.use_experiment("experiments/e.toml", 0, root=exp)  # loaded with the edited blob...
+    with pytest.raises(lc.ConfigError, match="differs from its committed version"):
+        lc.require_replicable(exp)
+
+
+def test_replicable_refuses_when_head_moved_from_the_pin(exp: Path) -> None:
+    pin = lc._git(exp, "rev-parse", "HEAD")
+    lc.use_experiment("experiments/e.toml", 0, pin, exp)
+    lc.require_replicable(exp)
+    (exp / "a.txt").write_text("2")
+    subprocess.run(["git", "commit", "-qam", "later"], cwd=exp, check=True)
+    with pytest.raises(lc.ConfigError, match="pinned at"):
+        lc.require_replicable(exp)

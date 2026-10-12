@@ -5,15 +5,16 @@ Every setting that shapes a container run, and the safety/infrastructure setting
 ## The rule
 
 ```
-lemma.toml  <  environment variable LEMMA_<KEY>  <  explicit CLI flag
+lemma.toml  <  experiment file (experiments/X.toml)  <  environment variable LEMMA_<KEY>  <  explicit CLI flag
 ```
 
 * The variable of a key is `LEMMA_` + the key upper-cased, in any section: `[measure] official_rounds` is `LEMMA_OFFICIAL_ROUNDS`. An empty variable counts as unset. Booleans are `0/1/true/false`.
 * CLI flags exist on the launcher (`run_container_agent.py`: `--style --menu --agent --trusted-set --assumption-package --speed-bar-mult --max-iterations`); `container_batch.py` takes `model:query` pairs and passes the model as `--agent`.
+* The experiment file is the fourth source (`experiment`, origin = its path): `[settings]` use lemma.toml keys (unknown keys fail), and each `[[run]]` supplies `agent_model`, `duckdb_path`, `assumption_package`. A replicable run (`container_batch.py --experiment`) refuses any `env`/`cli` source; see AGENTS.md "Replicable experiments".
 * No other source. `research_loop/config.env` no longer owns any container-run setting (it keeps only the legacy imperative / overnight / OpenRouter ones, see its header).
 * Startup check (`container_batch.py`, `run_container_agent.py`, `python -m lemma_config check`): an unknown `LEMMA_*` variable (typo or dead flag), a dead setting, a bad value or type, or a duck memory limit at or above the scope cap raises, listing the culprits. Nothing falls back to a default. Two keys have no default at all: `duckdb_path` and `assumption_package` (empty in the file; a run without a value, from the file, `LEMMA_<KEY>` or a flag, stops at startup with a message; `assumption_package = "auto"` remains valid as an explicit value).
 * Old spellings still work with a one-line deprecation message (table below). If both spellings are set to different values it raises.
-* Every container run writes all keys with `value`, `section`, `source` (`file`/`env`/`cli`) and `origin` into the run manifest (`lemma_config`) and the `RESULT` line (`config`), with `git_sha`, `git_dirty` and `git_untracked_files` (a count; untracked files never make `git_dirty` true). A dirty tree (tracked files; untracked and gitignored data do not count) is refused unless `allow_dirty = true`.
+* Every container run writes all keys with `value`, `section`, `source` (`file`/`experiment`/`env`/`cli`) and `origin` into the run manifest (`lemma_config`) and the `RESULT` line (`config`), with `git_sha`, `git_dirty` and `git_untracked_files` (a count; untracked files never make `git_dirty` true). A dirty tree (tracked files; untracked and gitignored data do not count) is refused unless `allow_dirty = true`.
 * `container_batch.py` forwards nothing by name. The child reads `lemma.toml` itself; the batch passes only values that differ from the file (`lemma_config.forwarded_env`, plus `LEMMA_CONFIG_ORIGIN` so a flag is still reported as a flag).
 
 ## Sections (50 keys)
