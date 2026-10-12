@@ -22,8 +22,6 @@
 \usepackage{lmodern}
 \ifPDFTeX\else
   % xetex/luatex font selection
-  \setmainfont[]{DejaVu Serif}
-  \setmonofont[]{DejaVu Sans Mono}
 \fi
 % Use upquote if available, for straight quotes in verbatim environments
 \IfFileExists{upquote.sty}{\usepackage{upquote}}{}
@@ -130,7 +128,7 @@
 \section{Lemma: Verified LLM Synthesis of Query
 Executors}\label{lemma-verified-llm-synthesis-of-query-executors}
 
-Oct 11, 2026 · @Emil
+Oct 11, 2026 \ensuremath{\cdot} @Emil
 
 Draft for VLDB (PVLDB template), moved here from
 LEMMA\_PAPER\_111026.tex to write and add figures; LaTeX comes back at
@@ -152,7 +150,7 @@ served. An executor can only run once it's been verified. Verified
 binaries are cached and invoked from a DuckDB extension, so recurring
 analytical queries amortize the one-time cost of synthesis and proof. On
 TPC-H and the Star Schema Benchmark, Lemma proves {[}TBA{]}\% of the
-queries it accepts, and its verified executors run {[}TBA{]}× faster
+queries it accepts, and its verified executors run {[}TBA{]}\ensuremath{\times} faster
 than all-core DuckDB on hot runs. To our knowledge, Lemma is the first
 query engine whose LLM-written executors are formally proved equivalent
 to the query's specification.
@@ -168,9 +166,9 @@ to the query's specification.
   LLM-synthesized per-query code can be much faster (CodexDB, GenDB,
   Bespoke OLAP) but is hard to trust.
 \item
-  \textbf{Lemma:} SQL → formal specification → agent writes optimized
-  \texttt{run\_query} → \textbf{Verus proves} \texttt{run\_query} ≡
-  specification → native binary, cached in DuckDB.
+  \textbf{Lemma:} SQL \ensuremath{\rightarrow} formal specification \ensuremath{\rightarrow} agent writes optimized
+  \texttt{run\_query} \ensuremath{\rightarrow} \textbf{Verus proves} \texttt{run\_query} \ensuremath{\equiv}
+  specification \ensuremath{\rightarrow} native binary, cached in DuckDB.
 \item
   Target: recurring analytical queries where verify+compile amortizes
   over many runs.
@@ -178,9 +176,9 @@ to the query's specification.
 
 \subsection{Pipeline}\label{pipeline}
 
-Figure (pipeline): SQL → transpile spec + \texttt{valid\_cols} → agent
-\texttt{run\_query} → assemble → Verus verify →
-\texttt{verus\ -\/-compile} → binary → check rows and time vs DuckDB →
+Figure (pipeline): SQL \ensuremath{\rightarrow} transpile spec + \texttt{valid\_cols} \ensuremath{\rightarrow} agent
+\texttt{run\_query} \ensuremath{\rightarrow} assemble \ensuremath{\rightarrow} Verus verify \ensuremath{\rightarrow}
+\texttt{verus\ -\/-compile} \ensuremath{\rightarrow} binary \ensuremath{\rightarrow} check rows and time vs DuckDB \ensuremath{\rightarrow}
 DuckDB extension cache / invoke. \emph{Caption: Lemma end-to-end
 pipeline (Verus path).}
 
@@ -192,23 +190,23 @@ pipeline (Verus path).}
 \def\labelenumi{\arabic{enumi}.}
 \tightlist
 \item
-  \textbf{Transpile.} Deterministic SQL→Verus: columnar \texttt{Cols},
+  \textbf{Transpile.} Deterministic SQL\ensuremath{\rightarrow}Verus: columnar \texttt{Cols},
   \texttt{valid\_cols} (row, cell and key bounds from the assumption
   package), and a declarative specification of the result. Schema-driven
   (no hard-coded benchmark columns, no per-query templates).
 \item
   \textbf{Agent.} Writes only the \texttt{run\_query} body and its own
   helpers (proof, spec and exec functions, all verified). Host injects
-  signature + \texttt{requires\ valid\_cols} + \texttt{ensures} result ≡
+  signature + \texttt{requires\ valid\_cols} + \texttt{ensures} result \ensuremath{\equiv}
   specification. Agent must not add contracts or trusted code.
 \item
   \textbf{Assemble.} Single \texttt{.rs}: spec + proved body + host
   lemmas (proved) + loader + timing \texttt{main}.
 \item
   \textbf{Verify.} Verus/Z3: \texttt{run\_query} meets the
-  specification. Fail ⇒ reject (no ship).
+  specification. Fail \ensuremath{\Rightarrow} reject (no ship).
 \item
-  \textbf{Compile.} \texttt{verus\ -\/-compile} → native binary.
+  \textbf{Compile.} \texttt{verus\ -\/-compile} \ensuremath{\rightarrow} native binary.
 \item
   \textbf{Check and time.} The binary's rows are compared with DuckDB's;
   the speed verdict is the median of 5 interleaved rounds against DuckDB
@@ -221,7 +219,7 @@ pipeline (Verus path).}
 \pandocbounded{\includegraphics[keepaspectratio,alt={Worked example: the input SQL query, the transpiler's spec and contract, and the agent's run\_query body}]{figures/worked_example.png}}
 
 \emph{Caption: A worked example. The input SQL query, and the program
-Verus checks, shortened with ⋮. Blue rows are the transpiler's output
+Verus checks, shortened with \ensuremath{\vdots}. Blue rows are the transpiler's output
 (spec and contract). Orange rows marked + are the agent's body of
 \texttt{run\_query}; green text is proof annotation, erased at compile
 time. The whole program is in Appendix A.}
@@ -258,7 +256,7 @@ Data assumptions (row/value caps, unique keys, nullability) & Checked at
 load & Assumption package; \texttt{check.py} and \texttt{main} \\
 Loader and timing \texttt{main} & Unverified Rust & Runtime asserts; row
 check against DuckDB \\
-Transpiler (SQL ≡ spec) & Tested, not proved & Differential checks
+Transpiler (SQL \ensuremath{\equiv} spec) & Tested, not proved & Differential checks
 against DuckDB, adversary reviews \\
 vstd, Verus, Z3, rustc & Trusted base & Thread spawn/join, Vec, Arc
 specs \\
@@ -313,8 +311,8 @@ accepts them.
 \subsection{Evaluation}\label{evaluation}
 
 In the frozen run (commit 75f4303), all 19 attempted queries proved,
-matched DuckDB's rows and beat all-core DuckDB: median 2.04× on SSB (12
-queries) and 1.29× on TPC-H (7 queries).
+matched DuckDB's rows and beat all-core DuckDB: median 2.04\ensuremath{\times} on SSB (12
+queries) and 1.29\ensuremath{\times} on TPC-H (7 queries).
 
 \pandocbounded{\includegraphics[keepaspectratio,alt={Speedup over all-core DuckDB per query, SF1: Opus 5.5 without worked examples; tba = not yet run in this configuration}]{figures/speedup.png}}
 
@@ -374,10 +372,10 @@ with other configurations; see Appendix D.
 \item
   \textbf{HyPer} {[}Neumann2011Hyper{]} / adaptive execution
   {[}Kohn2018Adaptive{]}: data-centric LLVM compilation;
-  interpret↔compile switching.
+  interpret\ensuremath{\leftrightarrow}compile switching.
 \item
   \textbf{LegoBase} {[}Klonatos2014LegoBase{]}: generative programming /
-  staging; Scala→specialized C.
+  staging; Scala\ensuremath{\rightarrow}specialized C.
 \item
   \textbf{Umbra} {[}Kersten2021UmbraFlyingStart{]}: fast compile (Flying
   Start) + optimizing LLVM path.
@@ -412,7 +410,7 @@ NOT SO INTERESTEING}
   \textbf{Q*cert} {[}Auerbach2017Qcert{]}: Coq platform for verified
   query compilation (NRA\^{}e, multi-target).
 \item
-  \textbf{DBCert} {[}Benzaken2022DBCert{]}: verified SQL\_Coq → Imp
+  \textbf{DBCert} {[}Benzaken2022DBCert{]}: verified SQL\_Coq \ensuremath{\rightarrow} Imp
   (then JS); correct-by-construction compiler, \emph{not} LLM-written
   hot paths.
 \item
@@ -426,7 +424,7 @@ NOT SO INTERESTEING}
 \begin{itemize}
 \tightlist
 \item
-  \textbf{AlphaVerus} {[}Aggarwal2025AlphaVerus{]}: LLM→verified Verus
+  \textbf{AlphaVerus} {[}Aggarwal2025AlphaVerus{]}: LLM\ensuremath{\rightarrow}verified Verus
   via translation + verifier-guided tree search (``Treefinement'').
 \item
   \textbf{Vericoding benchmarks} {[}Dougherty2025Vericoding{]}: large
@@ -436,7 +434,7 @@ NOT SO INTERESTEING}
   eval --- cite if space.
 \end{itemize}
 
-\textbf{Adjacent LLM×DB (not executor synthesis).}
+\textbf{Adjacent LLM\ensuremath{\times}DB (not executor synthesis).}
 
 \begin{itemize}
 \tightlist
@@ -444,7 +442,7 @@ NOT SO INTERESTEING}
   \textbf{SQLBarber} {[}Lao2025SQLBarber{]}: LLM generates customized
   SQL \emph{workloads} / templates (benchmarking), not query executors.
 \item
-  Text-to-SQL / NL→SQL systems: large literature; orthogonal (query
+  Text-to-SQL / NL\ensuremath{\rightarrow}SQL systems: large literature; orthogonal (query
   \emph{text}, not verified runtime).
 \end{itemize}
 
@@ -465,8 +463,8 @@ NOT SO INTERESTEING}
 \begin{itemize}
 \tightlist
 \item
-  Lemma ≈ GenDB/CodexDB-style synthesis \emph{plus} DBCert/Cosette-style
-  machine-checked guarantees, scoped to \texttt{run\_query} ≡ MethodSpec
+  Lemma \ensuremath{\approx} GenDB/CodexDB-style synthesis \emph{plus} DBCert/Cosette-style
+  machine-checked guarantees, scoped to \texttt{run\_query} \ensuremath{\equiv} MethodSpec
   before ship.
 \end{itemize}
 
@@ -807,16 +805,16 @@ Problem
 \bottomrule\noalign{}
 \endlastfoot
 Pin the result chunks & C API \texttt{duckdb\_query} +
-\texttt{duckdb\_result\_get\_chunk} & pinning alone takes 4--14×
+\texttt{duckdb\_result\_get\_chunk} & pinning alone takes 4--14\ensuremath{\times}
 DuckDB's whole query & \texttt{duckdb\_result\_get\_chunk} is scheduled
 for removal \\
 Stream chunks over N connections & C API \texttt{duckdb\_fetch\_chunk} &
-1.5--5.6× slower & one thread per connection, a DataChunk allocation per
+1.5--5.6\ensuremath{\times} slower & one thread per connection, a DataChunk allocation per
 fetch \\
-Read result chunks in place & C API chunk pointers & 1.7--5.5× slower on
+Read result chunks in place & C API chunk pointers & 1.7--5.5\ensuremath{\times} slower on
 sequential scans & buffers not adjacent (16 KB stride for 8 KB of
 data) \\
-Scalar function in DuckDB's scan & C API scalar function & 0.65--0.87×
+Scalar function in DuckDB's scan & C API scalar function & 0.65--0.87\ensuremath{\times}
 DuckDB's time (faster) & a prototype for ungrouped SUM/COUNT only \\
 Storage scan & C++ \texttt{DataTable::ScanTableSegment} & not run &
 needs headers and library of the database's exact version (repo 1.2.2,
@@ -861,7 +859,7 @@ over 500k rows, single-threaded
 {\def\LTcaptype{none} % do not increment counter
 \begin{longtable}[]{@{}llll@{}}
 \toprule\noalign{}
-Path & Data access & Hot query (µs) & Open (ms) \\
+Path & Data access & Hot query (\ensuremath{\mu}s) & Open (ms) \\
 \midrule\noalign{}
 \endhead
 \bottomrule\noalign{}
@@ -875,7 +873,7 @@ DuckDB SQL & DuckDB runs the query & 1,131 & 8.9 \\
 }
 
 With the database already open and the data in place, the hand-written
-kernels are 12--140× faster. Counting open plus one query, an earlier
+kernels are 12--140\ensuremath{\times} faster. Counting open plus one query, an earlier
 run of the same test had DuckDB ahead: 15.2 ms against 23.2 ms (pinned)
 and 27.4 ms (streamed) (\texttt{e2e\_cached\_rerun\_h1.json}). The gain
 is in repeated hot runs; a one-off query pays the load.
@@ -1315,7 +1313,7 @@ nation)
 examples}\label{appendix-f-temporary-opus-5.5-without-worked-examples}
 
 All five queries run so far proved, returned DuckDB's rows and beat
-all-core DuckDB, from 1.60× (TPC-H Q6) to 5.20× (TPC-H Q18). The other
+all-core DuckDB, from 1.60\ensuremath{\times} (TPC-H Q6) to 5.20\ensuremath{\times} (TPC-H Q18). The other
 14 queries of the frozen set are still to run in this configuration.
 
 {\def\LTcaptype{none} % do not increment counter
@@ -1350,14 +1348,14 @@ Cost (USD)
 \endhead
 \bottomrule\noalign{}
 \endlastfoot
-TPC-H Q6 & 10 verified, 0 errors & 4.92 & 7.88 & 1.60× & 3 & 5 & 2.24 \\
-TPC-H Q9 & 129 verified, 0 errors & 29.72 & 71.80 & 2.42× & 5 & 37 &
+TPC-H Q6 & 10 verified, 0 errors & 4.92 & 7.88 & 1.60\ensuremath{\times} & 3 & 5 & 2.24 \\
+TPC-H Q9 & 129 verified, 0 errors & 29.72 & 71.80 & 2.42\ensuremath{\times} & 5 & 37 &
 \textasciitilde11.52 (10.76--12.56) \\
-TPC-H Q18 & 97 verified, 0 errors & 12.49 & 64.96 & 5.20× & 4 & 37 &
+TPC-H Q18 & 97 verified, 0 errors & 12.49 & 64.96 & 5.20\ensuremath{\times} & 4 & 37 &
 \textasciitilde10.29 (9.65--11.16) \\
-SSB Q2.1 & 82 verified, 0 errors & 10.77 & 19.98 & 1.86× & 3 & 30 &
+SSB Q2.1 & 82 verified, 0 errors & 10.77 & 19.98 & 1.86\ensuremath{\times} & 3 & 30 &
 10.62 \\
-SSB Q4.3 & 76 verified, 0 errors & 6.12 & 15.35 & 2.51× & 3 & 31 &
+SSB Q4.3 & 76 verified, 0 errors & 6.12 & 15.35 & 2.51\ensuremath{\times} & 3 & 31 &
 10.78 \\
 \end{longtable}
 }
@@ -1366,9 +1364,9 @@ SSB Q4.3 & 76 verified, 0 errors & 6.12 & 15.35 & 2.51× & 3 & 31 &
 the Docker container, network limited to the model API. No worked
 examples (\texttt{examples\ =\ none}); a data profile of SQL statistics
 (\texttt{data\_profile\ =\ stats}). Sessions of at most 30 min
-(\texttt{agent\_timeout\_sec\ =\ 1800}), at most 2 × 1800 s of agent
+(\texttt{agent\_timeout\_sec\ =\ 1800}), at most 2 \ensuremath{\times} 1800 s of agent
 time and \$20 per query (\texttt{max\_budget\_usd}). Once a body beats
-DuckDB, further sessions continue from it toward 10×
+DuckDB, further sessions continue from it toward 10\ensuremath{\times}
 (\texttt{speed\_target}) and stop after 2 sessions in a row without a
 better speedup (\texttt{max\_idle\_sessions}); every query above stopped
 that way. Verus: 300 s per call including the wait for the single Verus
