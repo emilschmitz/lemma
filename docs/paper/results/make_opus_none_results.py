@@ -1,4 +1,4 @@
-"""Build opus_none_results.{md,json} and speedup_opus_none.{png,svg} from the Opus `none` container runs of 2026-10-11 (read-only).
+"""Build opus_none_results.{md,json} and speedup_opus_none.{png,svg} from the Opus `none` container runs (2026-10-11 and 2026-10-16; read-only).
 
 Cost: a session's `total_cost_usd` from its stream-json result event. A session killed at its wall limit has no result event; its cost is
 estimated from the per-message usage in claude_raw.jsonl (input, cache write, cache read: exact) plus output tokens estimated from the
@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 ROOT = "/home/emil/projects/lemma-db"
 D = f"{ROOT}/research_loop/generated/container_runs"
 OUT = os.path.dirname(os.path.abspath(__file__))
-RUNS = ["tpch_q06", "tpch_q18", "tpch_q09", "ssb_q2_1", "ssb_q4_3"]
+RUNS = ["tpch_q01", "tpch_q03", "tpch_q06", "tpch_q09", "tpch_q12", "tpch_q18", "ssb_q2_1", "ssb_q4_3"]
 # the 19 queries of the frozen run; those not in RUNS are "tba"
 ALL = {"SSB": ["Q1.1", "Q1.2", "Q1.3", "Q2.1", "Q2.3", "Q3.1", "Q3.2", "Q3.3", "Q3.4", "Q4.1", "Q4.2", "Q4.3"],
        "TPC-H": ["Q1", "Q3", "Q6", "Q9", "Q12", "Q14", "Q18"]}
@@ -87,12 +87,12 @@ for stem in RUNS:
                      best_session_speedup=round(max(x["session_speedup"] or 0 for x in m["sessions"]), 2),
                      stop_reason=m["sessions"][-1].get("stop_reason"), killed_sessions=killed,
                      cost_usd=round(cost[1], 2), cost_usd_range=[round(cost[0], 2), round(cost[2], 2)], tokens=tok,
-                     git_sha=m["git_sha"][:7], started_at=m["started_at"], run_dir=os.path.relpath(r["run_dir"], ROOT)))
+                     git_sha=m["git_sha"][:7], replicable=m.get("replicable"), started_at=m["started_at"], run_dir=os.path.relpath(r["run_dir"], ROOT)))
 
 cfg = json.load(open(os.path.join(res[RUNS[0]]["run_dir"], "manifest.json")))["lemma_config"]
 settings = {k: v["value"] for k, v in cfg.items()}
 total = [round(sum(r["cost_usd_range"][0] for r in rows), 2), round(sum(r["cost_usd"] for r in rows), 2), round(sum(r["cost_usd_range"][1] for r in rows), 2)]
-json.dump(dict(model="claude-opus-5-5", date="2026-10-11/12", shas=sorted({r["git_sha"] for r in rows}), price_per_mtok=dict(zip(K, (round(p * 1e6, 3) for p in price))),
+json.dump(dict(model="claude-opus-5-5", date="2026-10-11/12, 2026-10-16", shas=sorted({r["git_sha"] for r in rows}), price_per_mtok=dict(zip(K, (round(p * 1e6, 3) for p in price))),
                total_cost_usd=total, settings=settings, queries=rows), open(f"{OUT}/opus_none_results.json", "w"), indent=2)
 
 md = ["| Benchmark | Query | Proof | Ours (ms) | DuckDB (ms) | Speedup | Sessions | Agent min | Cost (USD) |", "|---|---|---|---|---|---|---|---|---|"]

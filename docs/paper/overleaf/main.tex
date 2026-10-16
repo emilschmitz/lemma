@@ -304,9 +304,9 @@ accepts them.
 
 \subsection{Evaluation}\label{evaluation}
 
-With Claude Opus 5.5 and no worked examples, all five queries run so far
-proved, returned DuckDB's rows and beat all-core DuckDB, by 1.60\ensuremath{\times} to
-5.20\ensuremath{\times} (median 2.42\ensuremath{\times}). The other 14 queries are still to run. Per-query
+With Claude Opus 5.5 and no worked examples, all eight queries run so
+far proved, returned DuckDB's rows and beat all-core DuckDB, by 1.60\ensuremath{\times} to
+5.20\ensuremath{\times} (median 2.69\ensuremath{\times}). The other 11 queries are still to run. Per-query
 results, configuration and cost are in Appendix F.
 
 \pandocbounded{\includegraphics[keepaspectratio,alt={Speedup over all-core DuckDB per query, SF1: Opus 5.5 without worked examples; tba = not yet run in this configuration}]{figures/speedup.png}}
@@ -1310,9 +1310,10 @@ nation)
 \subsection{Appendix F (temporary): Opus 5.5 without worked
 examples}\label{appendix-f-temporary-opus-5.5-without-worked-examples}
 
-All five queries run so far proved, returned DuckDB's rows and beat
+All eight queries run so far proved, returned DuckDB's rows and beat
 all-core DuckDB, from 1.60\ensuremath{\times} (TPC-H Q6) to 5.20\ensuremath{\times} (TPC-H Q18). The other
-14 queries of the frozen set are still to run in this configuration.
+11 queries of the frozen set (the SSB queries except Q2.1 and Q4.3, and
+TPC-H Q14) are still to run in this configuration.
 
 {\def\LTcaptype{none} % do not increment counter
 \begin{longtable}[]{@{}
@@ -1346,11 +1347,17 @@ Cost (USD)
 \endhead
 \bottomrule\noalign{}
 \endlastfoot
+TPC-H Q1 & 81 verified, 0 errors & 7.23 & 25.28 & 3.50\ensuremath{\times} & 4 & 23 &
+7.02 \\
+TPC-H Q3 & 63 verified, 0 errors & 12.42 & 36.55 & 2.94\ensuremath{\times} & 4 & 36 &
+\textasciitilde11.20 (10.55--13.82) \\
 TPC-H Q6 & 10 verified, 0 errors & 4.92 & 7.88 & 1.60\ensuremath{\times} & 3 & 5 & 2.24 \\
 TPC-H Q9 & 129 verified, 0 errors & 29.72 & 71.80 & 2.42\ensuremath{\times} & 5 & 37 &
-\textasciitilde11.52 (10.76--12.56) \\
+\textasciitilde11.56 (10.76--14.81) \\
+TPC-H Q12 & 75 verified, 0 errors & 6.52 & 18.70 & 2.87\ensuremath{\times} & 3 & 36 &
+\textasciitilde9.10 (8.35--12.13) \\
 TPC-H Q18 & 97 verified, 0 errors & 12.49 & 64.96 & 5.20\ensuremath{\times} & 4 & 37 &
-\textasciitilde10.29 (9.65--11.16) \\
+\textasciitilde10.32 (9.65--13.06) \\
 SSB Q2.1 & 82 verified, 0 errors & 10.77 & 19.98 & 1.86\ensuremath{\times} & 3 & 30 &
 10.62 \\
 SSB Q4.3 & 76 verified, 0 errors & 6.12 & 15.35 & 2.51\ensuremath{\times} & 3 & 31 &
@@ -1371,28 +1378,32 @@ that way. Verus: 300 s per call including the wait for the single Verus
 slot, rlimit 16. Official measure, machine and DuckDB settings as in
 Evaluation.
 
-\textbf{Reproducibility.} Run 2026-10-11 22:58 to 2026-10-12 01:24 UTC.
-Commit \texttt{ac8056f} for Q6 and Q18, \texttt{049baf7} for the other
-three; the two differ only in \texttt{.gitignore}, a launch config and
-paper text. \texttt{examples} and \texttt{data\_profile} were set by
-environment variables of the launch script, and each run's manifest
-records them with their source. This batch predates the rule that
-experiments run only from a committed config file;
-\texttt{configs/experiments/opus\_none\_stats.toml} (commit
-\texttt{a4cefc0}) reproduces it. Data: \texttt{tpch\_sf1.duckdb} sha256
-\texttt{2a1ff9ff…}, \texttt{ssb\_sf1.duckdb} sha256 \texttt{3541a740…}.
-Agent image \texttt{lemma-agent:claude}, \texttt{sha256:5c5e7059…}. Full
-traces per query in
-\texttt{research\_loop/runs/\textless{}id\textgreater{}/}; table built
-by \texttt{docs/paper/results/make\_opus\_none\_results.py}.
+\textbf{Reproducibility.} Two batches. Q1, Q3 and Q12 ran on 2026-10-16
+from the committed experiment file
+\texttt{configs/experiments/opus\_none\_stats\_rest.toml} at commit
+\texttt{95fb13e}; their manifests record \texttt{replicable:\ true}, the
+data hash and the image digest. Q6, Q9, Q18, Q2.1 and Q4.3 ran on
+2026-10-11/12, before that rule, on commits \texttt{ac8056f} (Q6),
+\texttt{c8db8f7} (Q18) and \texttt{049baf7} (the rest), which differ
+only in \texttt{.gitignore}, a launch config and paper text;
+\texttt{examples} and \texttt{data\_profile} came from environment
+variables of the launch script and are recorded with their source in
+each manifest, and \texttt{configs/experiments/opus\_none\_stats.toml}
+reproduces that batch. Between the batches only the launcher and run
+records changed, not the prompts, the transpiler, the agent setup or the
+settings. Data: \texttt{tpch\_sf1.duckdb} sha256 \texttt{2a1ff9ff…},
+\texttt{ssb\_sf1.duckdb} sha256 \texttt{3541a740…}. Agent image
+\texttt{lemma-agent:claude}, \texttt{sha256:5c5e7059…}. Full traces per
+query in \texttt{research\_loop/runs/\textless{}id\textgreater{}/};
+table built by \texttt{docs/paper/results/make\_opus\_none\_results.py}.
 
-\textbf{Cost.} About \$45 for the five queries (range \$44--47).
+\textbf{Cost.} About \$73 for the eight queries (range \$70--84).
 Per-token prices, fitted exactly from the billed sessions: \$4 per
 million input tokens, \$8 cache write, \$0.20 cache read, \$20 output.
-The first sessions of Q9 and Q18 hit the 30-min limit before the CLI
-reported their cost; their input side is exact from per-message usage,
-and their output tokens are estimated from the length of the agent's
-text, thinking and tool input, with the token-per-character range of the
-finished sessions.
+The first sessions of Q3, Q9, Q12 and Q18 hit the 30-min limit before
+the CLI reported their cost; their input side is exact from per-message
+usage, and their output tokens are estimated from the length of the
+agent's text, thinking and tool input, with the token-per-character
+range of the finished sessions.
 
 \end{document}

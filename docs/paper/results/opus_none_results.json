@@ -1,8 +1,9 @@
 {
   "model": "claude-opus-5-5",
-  "date": "2026-10-11/12",
+  "date": "2026-10-11/12, 2026-10-16",
   "shas": [
     "049baf7",
+    "95fb13e",
     "ac8056f",
     "c8db8f7"
   ],
@@ -13,9 +14,9 @@
     "output_tokens": 20.0
   },
   "total_cost_usd": [
-    44.05,
-    45.45,
-    47.36
+    69.97,
+    72.84,
+    84.48
   ],
   "settings": {
     "spec_style": "declarative",
@@ -73,6 +74,64 @@
   "queries": [
     {
       "benchmark": "TPC-H",
+      "query": "Q1",
+      "status": "SUCCESS",
+      "proof": "81 verified, 0 errors",
+      "ours_ms": 7.23,
+      "duck_ms": 25.28,
+      "speedup": 3.5,
+      "sessions": 4,
+      "agent_min": 23.2,
+      "best_session_speedup": 3.73,
+      "stop_reason": "2 sessions in a row without a better speedup",
+      "killed_sessions": 0,
+      "cost_usd": 7.02,
+      "cost_usd_range": [
+        7.02,
+        7.02
+      ],
+      "tokens": {
+        "input_tokens": 236,
+        "cache_creation_input_tokens": 324670,
+        "cache_read_input_tokens": 9319023,
+        "output_tokens": 128039
+      },
+      "git_sha": "95fb13e",
+      "replicable": true,
+      "started_at": "2026-10-16T04:15:13.706443+00:00",
+      "run_dir": "research_loop/runs/20261016T041513Z_q541054_05c66421"
+    },
+    {
+      "benchmark": "TPC-H",
+      "query": "Q3",
+      "status": "SUCCESS",
+      "proof": "63 verified, 0 errors",
+      "ours_ms": 12.42,
+      "duck_ms": 36.55,
+      "speedup": 2.94,
+      "sessions": 4,
+      "agent_min": 36.0,
+      "best_session_speedup": 2.94,
+      "stop_reason": "2 sessions in a row without a better speedup",
+      "killed_sessions": 1,
+      "cost_usd": 11.2,
+      "cost_usd_range": [
+        10.55,
+        13.82
+      ],
+      "tokens": {
+        "input_tokens": 338,
+        "cache_creation_input_tokens": 407588,
+        "cache_read_input_tokens": 23441582,
+        "output_tokens": 162336
+      },
+      "git_sha": "95fb13e",
+      "replicable": true,
+      "started_at": "2026-10-16T04:39:13.371716+00:00",
+      "run_dir": "research_loop/runs/20261016T043913Z_q24558_d4427a9d"
+    },
+    {
+      "benchmark": "TPC-H",
       "query": "Q6",
       "status": "SUCCESS",
       "proof": "10 verified, 0 errors",
@@ -96,36 +155,9 @@
         "output_tokens": 27369
       },
       "git_sha": "ac8056f",
+      "replicable": null,
       "started_at": "2026-10-11T22:58:50.319894+00:00",
       "run_dir": "research_loop/runs/20261011T225850Z_q387753_67a46959"
-    },
-    {
-      "benchmark": "TPC-H",
-      "query": "Q18",
-      "status": "SUCCESS",
-      "proof": "97 verified, 0 errors",
-      "ours_ms": 12.49,
-      "duck_ms": 64.96,
-      "speedup": 5.2,
-      "sessions": 4,
-      "agent_min": 37.1,
-      "best_session_speedup": 7.65,
-      "stop_reason": "2 sessions in a row without a better speedup",
-      "killed_sessions": 1,
-      "cost_usd": 10.29,
-      "cost_usd_range": [
-        9.65,
-        11.16
-      ],
-      "tokens": {
-        "input_tokens": 260,
-        "cache_creation_input_tokens": 434489,
-        "cache_read_input_tokens": 15989629,
-        "output_tokens": 180519
-      },
-      "git_sha": "c8db8f7",
-      "started_at": "2026-10-11T23:04:02.177617+00:00",
-      "run_dir": "research_loop/runs/20261011T230402Z_q906756_a84efc4a"
     },
     {
       "benchmark": "TPC-H",
@@ -140,20 +172,79 @@
       "best_session_speedup": 2.42,
       "stop_reason": "2 sessions in a row without a better speedup",
       "killed_sessions": 1,
-      "cost_usd": 11.52,
+      "cost_usd": 11.56,
       "cost_usd_range": [
         10.76,
-        12.56
+        14.81
       ],
       "tokens": {
         "input_tokens": 298,
         "cache_creation_input_tokens": 477945,
         "cache_read_input_tokens": 19281835,
-        "output_tokens": 191857
+        "output_tokens": 194175
       },
       "git_sha": "049baf7",
+      "replicable": null,
       "started_at": "2026-10-11T23:42:06.103566+00:00",
       "run_dir": "research_loop/runs/20261011T234206Z_q793815_1c7b1672"
+    },
+    {
+      "benchmark": "TPC-H",
+      "query": "Q12",
+      "status": "SUCCESS",
+      "proof": "75 verified, 0 errors",
+      "ours_ms": 6.52,
+      "duck_ms": 18.7,
+      "speedup": 2.87,
+      "sessions": 3,
+      "agent_min": 35.5,
+      "best_session_speedup": 4.08,
+      "stop_reason": "2 sessions in a row without a better speedup",
+      "killed_sessions": 1,
+      "cost_usd": 9.1,
+      "cost_usd_range": [
+        8.35,
+        12.13
+      ],
+      "tokens": {
+        "input_tokens": 246,
+        "cache_creation_input_tokens": 326592,
+        "cache_read_input_tokens": 14766565,
+        "output_tokens": 176726
+      },
+      "git_sha": "95fb13e",
+      "replicable": true,
+      "started_at": "2026-10-16T05:16:01.987658+00:00",
+      "run_dir": "research_loop/runs/20261016T051601Z_q144970_bdeac8f8"
+    },
+    {
+      "benchmark": "TPC-H",
+      "query": "Q18",
+      "status": "SUCCESS",
+      "proof": "97 verified, 0 errors",
+      "ours_ms": 12.49,
+      "duck_ms": 64.96,
+      "speedup": 5.2,
+      "sessions": 4,
+      "agent_min": 37.1,
+      "best_session_speedup": 7.65,
+      "stop_reason": "2 sessions in a row without a better speedup",
+      "killed_sessions": 1,
+      "cost_usd": 10.32,
+      "cost_usd_range": [
+        9.65,
+        13.06
+      ],
+      "tokens": {
+        "input_tokens": 260,
+        "cache_creation_input_tokens": 434489,
+        "cache_read_input_tokens": 15989629,
+        "output_tokens": 182470
+      },
+      "git_sha": "c8db8f7",
+      "replicable": null,
+      "started_at": "2026-10-11T23:04:02.177617+00:00",
+      "run_dir": "research_loop/runs/20261011T230402Z_q906756_a84efc4a"
     },
     {
       "benchmark": "SSB",
@@ -180,6 +271,7 @@
         "output_tokens": 187353
       },
       "git_sha": "049baf7",
+      "replicable": null,
       "started_at": "2026-10-12T00:21:00.275320+00:00",
       "run_dir": "research_loop/runs/20261012T002100Z_q4_33ec059d"
     },
@@ -208,6 +300,7 @@
         "output_tokens": 176144
       },
       "git_sha": "049baf7",
+      "replicable": null,
       "started_at": "2026-10-12T00:51:58.191893+00:00",
       "run_dir": "research_loop/runs/20261012T005158Z_q4_5d330ee7"
     }

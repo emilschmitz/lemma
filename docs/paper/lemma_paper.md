@@ -64,7 +64,7 @@ The data assumptions come from the user's own DuckDB: a profiling tool measures 
 
 ## Evaluation
 
-With Claude Opus 5.5 and no worked examples, all five queries run so far proved, returned DuckDB's rows and beat all-core DuckDB, by 1.60× to 5.20× (median 2.42×). The other 14 queries are still to run. Per-query results, configuration and cost are in Appendix F.
+With Claude Opus 5.5 and no worked examples, all eight queries run so far proved, returned DuckDB's rows and beat all-core DuckDB, by 1.60× to 5.20× (median 2.69×). The other 11 queries are still to run. Per-query results, configuration and cost are in Appendix F.
 
 ![Speedup over all-core DuckDB per query, SF1: Opus 5.5 without worked examples; tba = not yet run in this configuration](overleaf/figures/speedup.png)
 
@@ -672,18 +672,21 @@ order by d_year, s_city, p_brand1
 
 ## Appendix F (temporary): Opus 5.5 without worked examples
 
-All five queries run so far proved, returned DuckDB's rows and beat all-core DuckDB, from 1.60× (TPC-H Q6) to 5.20× (TPC-H Q18). The other 14 queries of the frozen set are still to run in this configuration.
+All eight queries run so far proved, returned DuckDB's rows and beat all-core DuckDB, from 1.60× (TPC-H Q6) to 5.20× (TPC-H Q18). The other 11 queries of the frozen set (the SSB queries except Q2.1 and Q4.3, and TPC-H Q14) are still to run in this configuration.
 
 | Query | Proof | Ours (ms) | DuckDB (ms) | Speedup | Sessions | Agent time (min) | Cost (USD) |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| TPC-H Q1 | 81 verified, 0 errors | 7.23 | 25.28 | 3.50× | 4 | 23 | 7.02 |
+| TPC-H Q3 | 63 verified, 0 errors | 12.42 | 36.55 | 2.94× | 4 | 36 | \~11.20 (10.55–13.82) |
 | TPC-H Q6 | 10 verified, 0 errors | 4.92 | 7.88 | 1.60× | 3 | 5 | 2.24 |
-| TPC-H Q9 | 129 verified, 0 errors | 29.72 | 71.80 | 2.42× | 5 | 37 | \~11.52 (10.76–12.56) |
-| TPC-H Q18 | 97 verified, 0 errors | 12.49 | 64.96 | 5.20× | 4 | 37 | \~10.29 (9.65–11.16) |
+| TPC-H Q9 | 129 verified, 0 errors | 29.72 | 71.80 | 2.42× | 5 | 37 | \~11.56 (10.76–14.81) |
+| TPC-H Q12 | 75 verified, 0 errors | 6.52 | 18.70 | 2.87× | 3 | 36 | \~9.10 (8.35–12.13) |
+| TPC-H Q18 | 97 verified, 0 errors | 12.49 | 64.96 | 5.20× | 4 | 37 | \~10.32 (9.65–13.06) |
 | SSB Q2.1 | 82 verified, 0 errors | 10.77 | 19.98 | 1.86× | 3 | 30 | 10.62 |
 | SSB Q4.3 | 76 verified, 0 errors | 6.12 | 15.35 | 2.51× | 3 | 31 | 10.78 |
 
 **Configuration.** Claude Opus 5.5 (`claude-opus-5-5`) in the Docker container, network limited to the model API. No worked examples (`examples = none`); a data profile of SQL statistics (`data_profile = stats`). Sessions of at most 30 min (`agent_timeout_sec = 1800`), at most 2 × 1800 s of agent time and $20 per query (`max_budget_usd`). Once a body beats DuckDB, further sessions continue from it toward 10× (`speed_target`) and stop after 2 sessions in a row without a better speedup (`max_idle_sessions`); every query above stopped that way. Verus: 300 s per call including the wait for the single Verus slot, rlimit 16. Official measure, machine and DuckDB settings as in Evaluation.
 
-**Reproducibility.** Run 2026-10-11 22:58 to 2026-10-12 01:24 UTC. Commit `ac8056f` for Q6 and Q18, `049baf7` for the other three; the two differ only in `.gitignore`, a launch config and paper text. `examples` and `data_profile` were set by environment variables of the launch script, and each run's manifest records them with their source. This batch predates the rule that experiments run only from a committed config file; `configs/experiments/opus_none_stats.toml` (commit `a4cefc0`) reproduces it. Data: `tpch_sf1.duckdb` sha256 `2a1ff9ff…`, `ssb_sf1.duckdb` sha256 `3541a740…`. Agent image `lemma-agent:claude`, `sha256:5c5e7059…`. Full traces per query in `research_loop/runs/<id>/`; table built by `docs/paper/results/make_opus_none_results.py`.
+**Reproducibility.** Two batches. Q1, Q3 and Q12 ran on 2026-10-16 from the committed experiment file `configs/experiments/opus_none_stats_rest.toml` at commit `95fb13e`; their manifests record `replicable: true`, the data hash and the image digest. Q6, Q9, Q18, Q2.1 and Q4.3 ran on 2026-10-11/12, before that rule, on commits `ac8056f` (Q6), `c8db8f7` (Q18) and `049baf7` (the rest), which differ only in `.gitignore`, a launch config and paper text; `examples` and `data_profile` came from environment variables of the launch script and are recorded with their source in each manifest, and `configs/experiments/opus_none_stats.toml` reproduces that batch. Between the batches only the launcher and run records changed, not the prompts, the transpiler, the agent setup or the settings. Data: `tpch_sf1.duckdb` sha256 `2a1ff9ff…`, `ssb_sf1.duckdb` sha256 `3541a740…`. Agent image `lemma-agent:claude`, `sha256:5c5e7059…`. Full traces per query in `research_loop/runs/<id>/`; table built by `docs/paper/results/make_opus_none_results.py`.
 
-**Cost.** About $45 for the five queries (range $44–47). Per-token prices, fitted exactly from the billed sessions: $4 per million input tokens, $8 cache write, $0.20 cache read, $20 output. The first sessions of Q9 and Q18 hit the 30-min limit before the CLI reported their cost; their input side is exact from per-message usage, and their output tokens are estimated from the length of the agent's text, thinking and tool input, with the token-per-character range of the finished sessions.
+**Cost.** About $73 for the eight queries (range $70–84). Per-token prices, fitted exactly from the billed sessions: $4 per million input tokens, $8 cache write, $0.20 cache read, $20 output. The first sessions of Q3, Q9, Q12 and Q18 hit the 30-min limit before the CLI reported their cost; their input side is exact from per-message usage, and their output tokens are estimated from the length of the agent's text, thinking and tool input, with the token-per-character range of the finished sessions.
