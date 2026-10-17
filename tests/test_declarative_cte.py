@@ -53,7 +53,9 @@ Q15_SHAPE = (
 
 
 def _emit(sql: str, unique: bool = True) -> str:
-    return emit_declarative_spec(sql, SCHEMA, _catalog(unique))
+    """The spec without the comment that quotes the SQL above run_query (two spellings of one query differ only there)."""
+    spec = emit_declarative_spec(sql, SCHEMA, _catalog(unique))
+    return "\n".join(line for line in spec.splitlines() if not line.startswith(("// SQL (", "//     ")))
 
 
 # --- parsing ---------------------------------------------------------------------------------------------------------

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import os
 from pathlib import Path
 
@@ -193,6 +194,8 @@ def test_resolved_summary_lists_every_axis_with_its_source(capsys: pytest.Captur
 def test_resolved_selection_is_written_into_the_run_manifest(tmp_path: Path) -> None:
     from research_loop.run_artifacts import begin_run
 
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)  # begin_run records the git state of root
+
     mp.activate_menu("adversary_declarative0")
     run = begin_run(query_id=1, sql_query="SELECT 1", root=tmp_path)
     manifest = json.loads((run.path / "manifest.json").read_text())
@@ -205,6 +208,8 @@ def test_resolved_selection_is_written_into_the_run_manifest(tmp_path: Path) -> 
 
 def test_manifest_menu_is_null_without_a_profile(tmp_path: Path) -> None:
     from research_loop.run_artifacts import begin_run
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)  # begin_run records the git state of root
 
     run = begin_run(query_id=2, sql_query="SELECT 1", root=tmp_path)
     assert json.loads((run.path / "manifest.json").read_text())["menu"] is None

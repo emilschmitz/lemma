@@ -471,6 +471,8 @@ def emit_declarative_spec(
     """Spec for ``sql``. DATE and DECIMAL are first stated as exact integer SQL (``numeric_rewrite``)."""
     from declarative_spec.numeric_rewrite import rewrite_numeric, with_out_scales
 
+    original_sql = sql
+
     from declarative_spec.parse_query import rewrite_comma_joins
 
     sql = rewrite_comma_joins(sql, schema)
@@ -483,14 +485,27 @@ def emit_declarative_spec(
     out = _with_agent_surface(with_out_scales(spec, scales))
     from declarative_spec import parallel
 
-    if not parallel.enabled():
-        return out
-    try:
-        return parallel.to_parallel(out)
-    except DeclarativeUnsupported:
-        if parallel.strict():
-            raise
-        return out
+    if parallel.enabled():
+        try:
+            out = parallel.to_parallel(out)
+        except DeclarativeUnsupported:
+            if parallel.strict():
+                raise
+    return with_sql_comment(out, original_sql)
+
+
+_MARKERS = ("AGENT_EDIT_", "AGENT_HELPERS_", "HOST_LEMMAS_")
+
+
+def with_sql_comment(spec: str, sql: str) -> str:
+    """Put the query, verbatim as ``//`` lines, right above ``run_query``: a reader (or the agent) sees the SQL next to the
+    contract the spec states for it. A comment, so Verus checks nothing different."""
+    if any(marker in sql for marker in _MARKERS):
+        raise DeclarativeUnsupported("the SQL text contains a region marker of the generated file")
+    assert spec.count("pub fn run_query(") == 1
+    head, sep, tail = spec.partition("pub fn run_query(")
+    lines = ["// SQL (the query this spec states):"] + [f"//     {line}".rstrip() for line in sql.strip().splitlines()]
+    return head + "\n".join(lines) + "\n" + sep + tail
 
 
 _F64_LITERAL = re.compile(r"(?<![\w.])(\d+(?:\.\d+)?)e0(?!\w)")
