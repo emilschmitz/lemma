@@ -96,7 +96,7 @@ def test_no_where_reaches_duckdb_and_the_glue_demands_what_zc2_assumes(flag_on):
     assert "duckdb_aggregate_function_set_special_handling" in glue  # NULL rows are delivered, not skipped
     assert "belong to different aggregate states" in glue and "more rows than the catalog row cap" in glue
     assert "a column vector is not flat, aligned and NULL-free" in glue
-    assert 'TESTED_VERSIONS: &[&str] = &["v1.5.4"]' in glue
+    assert 'TESTED_VERSIONS: &[&str] = &["v1.5.6"]' in glue
     code = re.sub(r"//[^\n]*", "", verus_part)
     assert "unsafe" not in code and "external_body" not in code and "assume(" not in code
 

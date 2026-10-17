@@ -269,7 +269,7 @@ mod zc_cold {{
     }}
 
     /// ZC-2 was validated against these library versions only.
-    const TESTED_VERSIONS: &[&str] = &["v1.5.4"];
+    const TESTED_VERSIONS: &[&str] = &["v1.5.6"];
 
     pub struct Db {{ pub con: *mut c_void }}
 

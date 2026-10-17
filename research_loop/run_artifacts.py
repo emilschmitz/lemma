@@ -123,6 +123,24 @@ def image_digest(image: str) -> str:
     return subprocess.run(["docker", "image", "inspect", image, "--format", "{{.Id}}"], capture_output=True, text=True, check=True).stdout.strip()
 
 
+def duckdb_versions(lib_dir: Path | str | None = None) -> dict[str, str]:
+    """The DuckDB the run uses, both ways: the Python package and the native libduckdb (``duckdb_library_version``). They must be the same release; a mismatch or a missing library raises."""
+    import ctypes
+
+    import duckdb
+
+    from research_loop.duckdb_load_mode import require_duckdb_lib_dir
+
+    so = Path(lib_dir) / "libduckdb.so" if lib_dir is not None else require_duckdb_lib_dir() / "libduckdb.so"
+    lib = ctypes.CDLL(str(so))
+    lib.duckdb_library_version.restype = ctypes.c_char_p
+    native = lib.duckdb_library_version().decode().removeprefix("v")
+    python = duckdb.__version__
+    if native != python:
+        raise RuntimeError(f"DuckDB version mismatch: Python package {python}, native {so} {native}")
+    return {"duckdb_python_version": python, "duckdb_native_version": native}
+
+
 def _git_porcelain(root: Path) -> str:
     """Tracked changes only: untracked and ignored files (artifact tarballs, data) are not dirt."""
     try:

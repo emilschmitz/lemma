@@ -357,7 +357,7 @@ def test_r2_f2_a_date_column_gets_an_infinity_check_in_main(flag_on):
 
 def test_r2_f3_the_linked_duckdb_version_is_asserted():
     ffi = zero_copy.ffi_rs()
-    assert 'TESTED_VERSIONS: &[&str] = &["v1.5.4"]' in ffi and "duckdb_library_version" in ffi and "ZC-1 was validated on" in ffi
+    assert 'TESTED_VERSIONS: &[&str] = &["v1.5.6"]' in ffi and "duckdb_library_version" in ffi and "ZC-1 was validated on" in ffi
 
 
 def test_r2_f4_names_with_quotes_or_braces_reach_the_generated_asserts_only_as_escaped_arguments(flag_on):

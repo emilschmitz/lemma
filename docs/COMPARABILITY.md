@@ -12,7 +12,7 @@ What we do, and where it differs:
 | Cores | 2 x Xeon Gold 5218, 32 physical cores, DuckDB default | all 8 threads of this laptop (`LEMMA_DUCK_THREADS`, default 8) |
 | DuckDB memory | 384 GB, never limiting | `LEMMA_DUCK_MEMORY_LIMIT`, default 3GB: it can make DuckDB spill and favours us. For TPC-H/SSB at SF1 set it to 8GB so DuckDB is never limited. |
 | DuckDB indexes | automatic only | automatic only, none added |
-| DuckDB version | v1.4.4 | 1.5.4 (installed here; not matched) |
+| DuckDB version | v1.4.4 | 1.5.6 (installed here; not matched) |
 | Load / layout cost | generated storage not in the hot time | column load / export not in the hot time; reported separately with the break-even |
 | Generation cost | minutes and dollars per query | proof + agent minutes per query, reported per query including failed attempts |
 | Hardware | 64-core class server | 4 cores / 8 threads, 14 GB laptop: absolute times are not comparable, only ratios to DuckDB on the same machine |

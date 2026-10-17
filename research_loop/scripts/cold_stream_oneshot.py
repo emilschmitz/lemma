@@ -6,7 +6,7 @@
 The binary opens the database, registers the proved fold as an aggregate, and times ``SELECT f(cols) FROM t`` (``QUERY_LATENCY_US``: median of its own 9 runs;
 ``COLD_FIRST_US``: the first execution) next to the ORIGINAL SQL answered by DuckDB itself in the same process and connection (``REFERENCE_INPLACE_US``, median of 9).
 ``measure`` starts the binary ``--starts`` times and reports the median of each field, the ratio, and the load/other-process CPU of the window (windows with other
-processes busy are discarded and rerun, see ``zero_copy_oneshot.timed_window``). Prototype link: the python wheel's DuckDB 1.5.4 C API.
+processes busy are discarded and rerun, see ``zero_copy_oneshot.timed_window``). Prototype link: the python wheel's DuckDB 1.5.x C API.
 """
 
 from __future__ import annotations

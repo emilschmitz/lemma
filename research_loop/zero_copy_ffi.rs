@@ -47,7 +47,7 @@ mod zc_duck {
     }
 
     /// ZC-1 was validated against these library versions only (`duckdb_result_get_chunk` is a deprecated API whose chunk ownership is version dependent).
-    const TESTED_VERSIONS: &[&str] = &["v1.5.4"];
+    const TESTED_VERSIONS: &[&str] = &["v1.5.6"];
 
     pub fn open(path: &str, read_only: bool) -> Db {
         unsafe {

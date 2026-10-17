@@ -2,7 +2,7 @@
 //   cold_profile <db> "<SET ...;SET ...>" "<label>=<sql>" ...
 // Registered aggregates (INTEGER -> BIGINT): zc_noop (update does nothing), zc_touch (sums every cell, no branch), zc_cnt3 (branch-free count of cells == 3),
 // zc_cnt3_scalar_state (same, but accumulates per vector in a local and adds once). Each SQL: first execution time and the median of 9, same connection.
-// Build (prototype link, the python wheel's DuckDB 1.5.4 C API): see research_loop/scripts/zero_copy_oneshot.py::python_wheel_link.
+// Build (prototype link, the python wheel's DuckDB 1.5.x C API): see research_loop/scripts/zero_copy_oneshot.py::python_wheel_link.
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::time::Instant;
 
