@@ -100,11 +100,11 @@ def _git_sha(root: Path) -> str | None:
         return None
 
 
-_evidence: dict[str, str] = {}
+_evidence: dict[str, Any] = {}
 
 
-def set_run_evidence(evidence: dict[str, str]) -> None:
-    """Facts the launcher computed before the run (``data_sha256``, ``agent_image_digest``); begin_run writes them into the manifest."""
+def set_run_evidence(evidence: dict[str, Any]) -> None:
+    """Facts the launcher computed before the run (``data_sha256``, ``agent_image_digest``, ``agent_code_mounted``, ``agent_cli_version``); begin_run writes them into the manifest."""
     _evidence.clear()
     _evidence.update(evidence)
 

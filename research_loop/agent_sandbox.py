@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import lemma_config
+from research_loop.agent_image_check import agent_code_mount_args
 from research_loop.pipeline_demo import resolve_demo_view_dir
 from research_loop.pipeline_log import log_debug, log_info, log_trace, log_warn
 from research_loop.sandbox_hide import shadow_mount_args
@@ -249,21 +250,32 @@ def claude_spend_usd(raw: Path) -> float:
     return total
 
 
+def claude_result_count(raw: Path) -> int:
+    """Number of ``result`` events in a Claude raw stream: one per session that ended by itself. A session killed at its time limit adds none,
+    which is how a session's cost is known to be unreported (``claude_spend_usd`` would read 0 for it)."""
+    if not raw.is_file():
+        return 0
+    return sum(1 for line in raw.read_text(encoding="utf-8").splitlines() if line.strip() and json.loads(line).get("type") == "result")
+
+
 TOKEN_KEYS = ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
 
 
 def claude_tokens(raw: Path) -> dict[str, int]:
     """Token totals of a Claude raw stream, from the ``usage`` of every assistant message (one count per message id: the stream
-    repeats a message per content block). Unlike ``total_cost_usd`` this is there for a session killed at its time limit."""
-    per_message: dict[str, dict] = {}
+    repeats a message per content block, with growing ``output_tokens``: the max of each key per message id is kept). Unlike ``total_cost_usd`` this is
+    there for a session killed at its time limit. The input-side keys are exact; ``output_tokens`` undercounts (the stream carries a partial count)."""
+    per_message: dict[str, dict[str, int]] = {}
     if raw.is_file():
         for line in raw.read_text(encoding="utf-8").splitlines():
             if line.strip():
                 event = json.loads(line)
                 message = event.get("message") or {}
                 if event.get("type") == "assistant" and message.get("usage"):
-                    per_message[message.get("id") or str(len(per_message))] = message["usage"]
-    return {k: sum(int(u.get(k) or 0) for u in per_message.values()) for k in TOKEN_KEYS}
+                    seen = per_message.setdefault(message.get("id") or str(len(per_message)), {})
+                    for k in TOKEN_KEYS:
+                        seen[k] = max(seen.get(k, 0), int(message["usage"].get(k) or 0))
+    return {k: sum(u.get(k, 0) for u in per_message.values()) for k in TOKEN_KEYS}
 
 
 def cmd_with_budget(agent_cmd: str, remaining_usd: float) -> str:
@@ -1328,6 +1340,8 @@ def run_agent_docker(
         # The prompt names /workspace/context/ro/...; mount it read-only there too (after the rw mount).
         "-v", f"{(ws / 'context' / 'ro').resolve()}:/workspace/context/ro:ro",
         "-v", f"{(ws / 'context' / 'ro').resolve()}:/context/ro:ro",
+        # The commit's agent code over the image's baked copy: a stale image must not decide which tools the agent gets.
+        *agent_code_mount_args(),
         "-v", f"{mcp_sock.resolve()}:/lemma-mcp.sock",
         "-v", f"{egress_sock.resolve()}:/lemma-egress.sock",
         "-w", "/workspace",

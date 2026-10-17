@@ -32,6 +32,8 @@ ENV PATH="/root/.local/bin:/root/.cursor/bin:${PATH}"
 # Pin mcp<2: PyPI also ships an unrelated mcp 2.x without fastmcp.
 RUN pip install --no-cache-dir duckdb "mcp>=1.28,<2" httpx
 
+# Standalone use only: research_loop/agent_sandbox.py and db_extension/agent/docker_runner.py bind-mount the repo's copy of these two
+# paths read-only over them (research_loop/agent_image_check.py), so a container run never executes this baked, possibly stale code.
 COPY db_extension/agent/ /app/lemma_agent/
 # extract.py imports research_loop.assemble_runquery (stdlib-only module).
 COPY research_loop/assemble_runquery.py /app/research_loop/assemble_runquery.py

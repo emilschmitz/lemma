@@ -175,7 +175,11 @@ def run(
     os.environ["LEMMA_DUCKDB_PATH"] = str(db_path)
     from research_loop.run_artifacts import file_sha256, image_digest, set_run_evidence
 
-    set_run_evidence({"data_sha256": file_sha256(db_path), "agent_image_digest": image_digest(os.environ["AGENT_IMAGE"])})
+    from research_loop.agent_image_check import check_agent_image
+
+    # Before anything launches: the image, with the commit's agent code mounted, must serve every tool the prompt advertises (ImageMismatch = loud stop).
+    code_evidence = check_agent_image(os.environ["AGENT_IMAGE"], claude_cli=model.startswith("claude-"))
+    set_run_evidence({"data_sha256": file_sha256(db_path), "agent_image_digest": image_digest(os.environ["AGENT_IMAGE"]), **code_evidence})
     if resolved.style == "declarative":
         os.environ["LEMMA_MEASURE_DB"] = str(db_path)
         # The catalog is its own axis: the package that matches the database file (DECIMAL or DOUBLE `value`) unless

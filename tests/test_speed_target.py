@@ -403,3 +403,49 @@ def test_session_budget_absent_or_non_claude_leaves_the_command() -> None:
     from research_loop.agent_sandbox import apply_session_budget, claude_agent_cmd, default_agent_cmd
     assert "--max-budget-usd" not in apply_session_budget(claude_agent_cmd("claude-opus-5-5"), {})
     assert apply_session_budget(default_agent_cmd(), {"SESSION_MAX_BUDGET_USD": "5"}) == default_agent_cmd()
+
+
+def test_killed_session_has_no_result_event_so_its_cost_is_unreported(tmp_path: Path) -> None:
+    from research_loop.agent_sandbox import claude_result_count
+
+    raw = tmp_path / "claude_raw.jsonl"
+    assert claude_result_count(raw) == 0
+    _raw(raw, 3.5)  # session 1 ended by itself
+    assert claude_result_count(raw) == 1
+    with raw.open("a") as fh:  # session 2 was killed: assistant messages only
+        fh.write(json.dumps({"type": "assistant", "message": {"id": "m9", "usage": {"input_tokens": 5}}}) + "\n")
+    assert claude_result_count(raw) == 1
+
+
+def test_token_totals_take_the_max_per_message_id(tmp_path: Path) -> None:
+    from research_loop.agent_sandbox import claude_tokens
+
+    raw = tmp_path / "claude_raw.jsonl"
+    first = {"input_tokens": 3, "output_tokens": 1, "cache_creation_input_tokens": 10, "cache_read_input_tokens": 40}
+    last = {"input_tokens": 3, "output_tokens": 9, "cache_creation_input_tokens": 10, "cache_read_input_tokens": 40}
+    lines = [{"type": "assistant", "message": {"id": "m1", "usage": u}} for u in (first, last, first)]
+    raw.write_text("\n".join(json.dumps(x) for x in lines) + "\n")
+    assert claude_tokens(raw) == last
+
+
+def test_unreported_session_is_null_not_zero_and_leaves_the_budget_unchanged() -> None:
+    state = S.Sessions(3, 2250.0, 10.0, 2, 20.0)
+    state.add(1, 0.0, 1.0, Outcome(False, None, 1.0, cost_usd=4.0))
+    state.add(2, 1.0, 2.0, Outcome(False, None, 1.0, cost_usd=None, tokens={"input_tokens": 7, "output_tokens": 2}))
+    assert state.spent_usd == 4.0 and state.remaining_usd() == 16.0  # counted as unknown, no invented fallback
+    one, two = state.records
+    assert (one["cost_usd"], one["cost_reported"]) == (4.0, True)
+    assert (two["cost_usd"], two["cost_reported"], two["output_tokens_partial"]) == (None, False, True)
+
+
+def test_manifest_total_is_marked_incomplete_when_a_session_cost_is_unreported(tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text("{}")
+    it = iter([Outcome(False, None, 1.0, cost_usd=1.25), Outcome(False, None, 1.0, cost_usd=None)])
+    state = run_sessions(lambda n, note, t: next(it), max_iterations=2, agent_timeout_sec=750.0, target=10.0, max_idle=2, max_budget_usd=20.0)
+    S.record_in_manifest(manifest, state.records)
+    data = json.loads(manifest.read_text())
+    assert [r["cost_usd"] for r in data["sessions"]] == [1.25, None]
+    assert data["total_cost_usd"] == 1.25 and data["total_cost_complete"] is False
+    S.record_in_manifest(manifest, state.records[:1])
+    assert json.loads(manifest.read_text())["total_cost_complete"] is True

@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from db_extension.agent.config import AgentFlags
+from research_loop.agent_image_check import agent_code_mount_args
 from research_loop.sandbox_hide import shadow_mount_args
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -96,6 +97,7 @@ def start_tool_container(
         *shadow_mount_args(workspace),
         "-v",
         f"{context_ro}:/context/ro:ro",
+        *agent_code_mount_args(),  # the commit's agent code over the image's baked copy
         "-e",
         f"AGENT_DATA_MODE={flags.agent_data_mode}",
         "-e",

@@ -21,6 +21,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from research_loop.pipeline_log import log_warn
+
 
 @dataclass
 class Outcome:
@@ -31,7 +33,7 @@ class Outcome:
     agent_s: float  # wall seconds the agent ran
     result: dict | None = None  # the loop result for a success
     source: str | None = None  # the file of a success (the base of a continuation session)
-    cost_usd: float = 0.0  # model spend of the session (total_cost_usd of its stream-json result event)
+    cost_usd: float | None = 0.0  # model spend of the session (total_cost_usd of its stream-json result event); None = the session was killed before that event: unreported
     tokens: dict | None = None  # token totals of the session from the stream's per-message usage (present even when the session was killed)
 
 
@@ -44,7 +46,7 @@ class Sessions:
     budget_usd: float = 0.0  # per-query model spend cap; 0 = none
     records: list[dict[str, Any]] = field(default_factory=list)
     spent_s: float = 0.0
-    spent_usd: float = 0.0
+    spent_usd: float = 0.0  # reported spend only; a session with cost_usd None adds nothing (and is logged), it is not counted as 0 in the manifest total
     idle: int = 0
     best: Outcome | None = None
 
@@ -92,14 +94,20 @@ class Sessions:
         if self.best is not None:
             self.idle = 0 if improved else self.idle + 1
         self.spent_s += outcome.agent_s
-        self.spent_usd += outcome.cost_usd
+        reported = outcome.cost_usd is not None
+        if reported:
+            self.spent_usd += outcome.cost_usd
+        else:
+            log_warn("sessions", "cost_unreported", f"session {n} ended without a result event: its cost is unknown and not part of the budget", session=n)
         self.records.append({
             "session": n,
             "start": datetime.fromtimestamp(start, UTC).isoformat(),
             "end": datetime.fromtimestamp(end, UTC).isoformat(),
             "agent_s": round(outcome.agent_s, 1),
-            "cost_usd": round(outcome.cost_usd, 6),
+            "cost_usd": round(outcome.cost_usd, 6) if reported else None,
+            "cost_reported": reported,
             "tokens": outcome.tokens or {},
+            "output_tokens_partial": bool(outcome.tokens),  # the stream's output_tokens undercounts; the input-side counts are exact
             "success": outcome.success,
             "session_speedup": outcome.speedup,
             "best_speedup": self.best_speedup(),
@@ -142,6 +150,7 @@ def record_in_manifest(manifest: Path, records: list[dict[str, Any]]) -> None:
     if manifest.is_file():
         data = json.loads(manifest.read_text())
         data["sessions"] = records
-        data["total_cost_usd"] = round(sum(r.get("cost_usd", 0.0) for r in records), 6)
+        data["total_cost_usd"] = round(sum(r["cost_usd"] for r in records if r.get("cost_usd") is not None), 6)  # reported sessions only
+        data["total_cost_complete"] = all(r.get("cost_reported", True) for r in records)  # False: some session's cost is unknown, the total is a lower bound
         data["total_tokens"] = {k: sum(int((r.get("tokens") or {}).get(k, 0)) for r in records) for k in {k for r in records for k in (r.get("tokens") or {})}}
         manifest.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")

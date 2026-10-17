@@ -22,6 +22,7 @@ def _clean_config_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in list(__import__("os").environ):
         if name.startswith("LEMMA_") or name in lemma_config.ALIASES:
             monkeypatch.delenv(name)
+    monkeypatch.setattr(cb, "preflight_images", lambda models: None)  # no docker here (tests/test_agent_image_check.py covers the preflight)
     monkeypatch.setattr(lemma_config, "REQUIRED", ())  # duckdb_path / assumption_package have no default; most tests here do not set them
     monkeypatch.setattr(lemma_config, "require_clean_tree", lambda root=None: {"git_sha": "0" * 40, "git_dirty": False, "dirty_files": []})
 
@@ -209,6 +210,7 @@ def batch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(cb, "ROOT", root)
     monkeypatch.setattr(cb, "OUT", tmp_path / "out")
     monkeypatch.setattr(lemma_config, "REQUIRED", ())
+    monkeypatch.setattr(cb, "preflight_images", lambda models: None)  # undo() dropped the autouse stub; no docker here
     launches: list[list[str]] = []
     real_run = subprocess.run
 

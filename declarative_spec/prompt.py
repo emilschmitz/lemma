@@ -11,6 +11,12 @@ from declarative_spec import dense_budget, principles
 from declarative_spec.example_registry import INDEX_GROUPS as _INDEX_GROUPS
 from declarative_spec.example_registry import MORE_EXAMPLES as _MORE_EXAMPLES
 
+# The MCP tools the prompt tells the agent to use. Single source for the prompt text AND for the container preflight
+# (research_loop/agent_image_check.py), which refuses a run whose proxy does not register every one of them.
+ADVERTISED_TOOLS = ("run_runquery", "submit_runquery", "verify_functions")
+MCP_SERVER = "mcp__lemma-host__"  # Claude Code's name for the proxy's tools
+_CLAUDE_TOOL_NAMES = ",".join(MCP_SERVER + t for t in ADVERTISED_TOOLS)
+
 _COUNT_SHAPE = """
 let mut counts: Vec<u64> = Vec::new();
 let mut c: usize = 0;
@@ -1240,8 +1246,8 @@ def build_declarative_prompt(
             "  recipe per common lookup (`Vec::push`, `String::eq`, `decreases`, `assert forall`, `choose`, broadcast groups).",
             "- Tools: the file edit tool; `run_runquery` (path `runquery_agent.rs`) verifies, compiles and times your",
             "  program on the official table; `submit_runquery` with the returned `run_id`. In Claude Code these are",
-            "  `mcp__lemma-host__run_runquery` and `mcp__lemma-host__submit_runquery`; if they are not in your tool list yet, load",
-            "  them first with ToolSearch (`select:mcp__lemma-host__run_runquery,mcp__lemma-host__submit_runquery`). A Bash tool",
+            f"  `{MCP_SERVER}run_runquery` and `{MCP_SERVER}submit_runquery`; if they are not in your tool list yet, load",
+            f"  them first with ToolSearch (`select:{_CLAUDE_TOOL_NAMES}`). A Bash tool",
             "  may exist, but it has no network and Verus is not on its PATH: `run_runquery` is the only Verus you have, so do not",
             "  try `verus`, `npx` or any package install.",
             "- `verify_functions` (`names`, path `runquery_agent.rs`) verifies only the functions you name; this is faster on large files, and the",

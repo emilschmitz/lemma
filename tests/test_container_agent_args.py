@@ -118,6 +118,9 @@ def test_the_result_and_the_run_record_the_effective_config_and_git_state(tmp_pa
     monkeypatch.setattr(declarative_draws, "package_for_db", lambda p: "sec_margin_dec")
     monkeypatch.setattr(sqlsmith_trusted_coverage, "load_sec_schema", lambda p=None: {})
     monkeypatch.setattr(agent_sandbox, "claude_docker_args", lambda: [])
+    from research_loop import agent_image_check
+
+    monkeypatch.setattr(agent_image_check, "check_agent_image", lambda image, claude_cli: {"agent_code_mounted": True, "agent_cli_version": "x"})
     monkeypatch.setattr(optimizer, "run_optimization_loop", lambda sql, **kw: {"status": "SUCCESS", "history": []})
     monkeypatch.setattr(lemma_config, "git_state", lambda root=None: {"git_sha": "b" * 40, "git_dirty": False, "dirty_files": []})
     monkeypatch.delenv("LEMMA_ASSUMPTION_PACKAGE", raising=False)  # tests/conftest.py pins prove_loop

@@ -28,6 +28,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import lemma_config  # noqa: E402
+from research_loop.agent_image_check import ImageMismatch  # noqa: E402
 from research_loop.scripts.run_container_agent import REFUSED_EXIT  # noqa: E402
 OUT = ROOT / "research_loop" / "generated" / "container_runs"
 MODELS = lemma_config.MODEL_ALIASES
@@ -103,6 +104,15 @@ def plan(argv: list[str]) -> list[tuple[str, str, Path, int | None]]:
     return out
 
 
+def preflight_images(models: list[str]) -> None:
+    """Once, before the first run: each image the batch uses must serve every tool the prompt advertises (``ImageMismatch`` stops the batch)."""
+    from research_loop.agent_image_check import check_agent_image
+    from research_loop.scripts.declarative_ladder import agent_env
+
+    for model in sorted(set(models)):
+        check_agent_image(agent_env(model, lemma_config.get("spec_style"))["AGENT_IMAGE"], claude_cli=model.startswith("claude-"))
+
+
 def main(argv: list[str]) -> int:
     if argv[:1] == ["--locked-run"]:
         return locked_run(argv[1:])
@@ -119,6 +129,11 @@ def main(argv: list[str]) -> int:
     else:
         lemma_config.require_run_settings()  # duckdb_path and assumption_package have no default: stop before the first run
         lemma_config.require_clean_tree()  # every run of the batch starts from the committed tree
+    try:
+        preflight_images([model for _, model, _, _ in runs])
+    except ImageMismatch as exc:
+        print(f"STOPPED before the first run: {exc}", file=sys.stderr, flush=True)
+        return 2
     OUT.mkdir(parents=True, exist_ok=True)
     logs: list[str] = []
     for short, model, sql_file, index in runs:
