@@ -1,5 +1,5 @@
 // Test helper (tests/test_zero_copy_order.py): pin a SELECT through the zero-copy C-API code and print every cell in pin order.
-include!("../../declarative_spec/zero_copy_ffi.rs");
+include!("../../research_loop/zero_copy_ffi.rs");
 
 // probe <db> <sql> [ro|rw]  : pin, print meta then one line per row with every column's cell as a decimal integer (i128 widened)
 fn main() {

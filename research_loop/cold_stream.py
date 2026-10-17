@@ -22,7 +22,8 @@ import re
 from pathlib import Path
 
 from declarative_spec import assemble as asm
-from declarative_spec import parallel, zero_copy
+from declarative_spec import parallel
+from research_loop import zero_copy
 from declarative_spec.schema_types import DeclarativeUnsupported, SchemaModel
 
 _HERE = Path(__file__).resolve().parent

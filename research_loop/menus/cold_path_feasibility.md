@@ -49,7 +49,7 @@ assembler (the F1/IN_TYPES machinery of the zero-copy path is reused); a second 
 
 ## Plan if GO (done in this order, behind `LEMMA_COLD_STREAM=1`, default off, no fallback, loud refusals)
 
-1. `declarative_spec/cold_stream.py`: assemble a verified program per query: the spec with a spec-only column type, the proved `update/combine/finish`, plain-Rust glue registering `f` and running `SELECT f(...)`.
+1. `research_loop/cold_stream.py`: assemble a verified program per query: the spec with a spec-only column type, the proved `update/combine/finish`, plain-Rust glue registering `f` and running `SELECT f(...)`.
 2. Worked proofs for the shapes: SUM DECIMAL(38,4) with filter, COUNT over INTEGER, two-column DECIMAL(15,2) sum (a "parallel" shape is the same program: DuckDB parallelizes).
 3. Randomized differential test against DuckDB (sizes, constant / sorted / extreme / dictionary-compressed / deleted-rows tables), refusal tests, trust-surface test.
 4. Measurement in a recorded quiet window on the four shapes; SEPARATE manual-adversary review with a verdict file; update `arena/FINDINGS.md` and `zero_copy_gate.md`.

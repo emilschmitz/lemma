@@ -1,4 +1,4 @@
-"""LEMMA_COLD_STREAM (declarative_spec/cold_stream.py): the streaming chunk fold as a DuckDB aggregate.
+"""LEMMA_COLD_STREAM (research_loop/cold_stream.py): the streaming chunk fold as a DuckDB aggregate.
 
 Behaviors: (1) opt-in, no fallback; (2) shapes outside the path are refused loudly at assemble time; (3) the assembled program: verified fold + untrusted glue, no
 WHERE reaches DuckDB, no new trusted Verus code; (4) the three worked proofs verify and mutated folds do not (the permutation-invariant fold is the whole
@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from declarative_spec import cold_stream
+from research_loop import cold_stream
 from declarative_spec.schema_types import SchemaModel
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -197,6 +197,7 @@ def _row(r: subprocess.CompletedProcess) -> str:
 
 @pytest.fixture(scope="module", params=["aggregate", "scalar"])
 def built(request, tmp_path_factory):
+    saved = {k: os.environ.get(k) for k in ("LEMMA_COLD_STREAM", "LEMMA_NARROW_CELLS")}  # restored below: later test files must not inherit them
     os.environ["LEMMA_COLD_STREAM"] = "1"
     sys.path.insert(0, str(ROOT))
     out = {}
@@ -204,7 +205,12 @@ def built(request, tmp_path_factory):
         d = tmp_path_factory.mktemp(f"{request.param}_{name}")
         db = d / "t.duckdb"
         out[name] = (db, _build(d, name, db, request.param))
-    return out
+    yield out
+    for k, v in saved.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
 
 
 REF = {

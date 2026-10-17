@@ -6,8 +6,8 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-LIB = (ROOT / "declarative_spec" / "zero_copy_lib.rs").read_text()
-FFI = (ROOT / "declarative_spec" / "zero_copy_ffi.rs").read_text()
+LIB = (ROOT / "research_loop" / "zero_copy_lib.rs").read_text()
+FFI = (ROOT / "research_loop" / "zero_copy_ffi.rs").read_text()
 
 
 def _code(text: str) -> str:
@@ -23,8 +23,8 @@ def test_the_verified_library_has_no_trusted_escape():
 def test_unsafe_exists_only_in_the_plain_rust_ffi_and_the_generated_main():
     assert "unsafe" not in _code(LIB)
     assert _code(FFI).count("from_raw_parts") == 0  # the borrow itself is written in the generated main, once per column
-    from declarative_spec import zero_copy
+    from research_loop import zero_copy
 
-    src = (ROOT / "declarative_spec" / "zero_copy.py").read_text()
+    src = (ROOT / "research_loop" / "zero_copy.py").read_text()
     assert src.count("from_raw_parts") == 2  # zero-copy borrow and the copy-control memcpy, both in generated main text
     assert zero_copy.lib_rs() == LIB

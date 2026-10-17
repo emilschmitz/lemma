@@ -34,7 +34,7 @@ def classify_one(sql: str, kind: str) -> dict:
     import lemma_config
     lemma_config.set_cli("zero_copy", True, "this script")
     os.environ.setdefault("LEMMA_DUCKDB_PATH", SEC_DB)
-    from declarative_spec import zero_copy
+    from research_loop import zero_copy
     from declarative_spec.schema_types import DeclarativeUnsupported, SchemaModel
     from research_loop.scripts import declarative_manual as dm
     from research_loop.trust_configs import apply_trust_config

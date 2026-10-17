@@ -94,7 +94,7 @@ def _model(sql: str, kind: str):
 
 def prepare(sql_file: Path, ws: Path, kind: str, parallel: bool) -> None:
     _env(kind, parallel=parallel)
-    from declarative_spec import zero_copy
+    from research_loop import zero_copy
     from research_loop.scripts import declarative_manual as dm
     from research_loop.trust_configs import apply_trust_config
 
@@ -133,7 +133,7 @@ def _expected(sql: str, kind: str, spec: str):
 
 
 def _build(ws: Path, name: str, body_file: Path, mode: str, link: bool = True) -> Path:
-    from declarative_spec import zero_copy
+    from research_loop import zero_copy
     from declarative_spec.admit import admit_declarative_body, admit_helpers
     from declarative_spec.regions import extract_agent_edit, extract_agent_helpers
     from research_loop.scripts import declarative_manual as dm

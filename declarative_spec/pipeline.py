@@ -10,7 +10,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from declarative_spec import official_measure as om
+from research_loop import official_measure as om
 from declarative_spec import principles
 from declarative_spec.feedback import FULL_LOG_NAME, format_failure
 from declarative_spec.regions import extract_agent_edit, extract_agent_helpers
@@ -299,7 +299,7 @@ def _apply_speed_bar(metrics: dict, speed_bar: dict | None, *, parallel_hint: bo
     """Row check first (always), then the speed verdict.
 
     ``official=True`` (the host re-measure after submit / at the end of the loop): K interleaved rounds of DuckDB and the binary, verdict on the
-    ratio of the medians (declarative_spec/official_measure.py). Otherwise (in-session ``run_runquery``): the single binary run against the DuckDB
+    ratio of the medians (research_loop/official_measure.py). Otherwise (in-session ``run_runquery``): the single binary run against the DuckDB
     median taken at prepare, as before; labelled so in ``measurement``.
     """
     if speed_bar is None or metrics.get("status") != "SUCCESS":

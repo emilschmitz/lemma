@@ -140,7 +140,7 @@ def build(shape_name: str, out: Path) -> None:
     shape = SHAPES[shape_name]
     _env(shape)  # before the imports: declarative_round reads the database paths at import time
     from declarative_spec import assemble as asm
-    from declarative_spec import zero_copy
+    from research_loop import zero_copy
     from declarative_spec.regions import extract_agent_edit, extract_agent_helpers
     from research_loop.scripts import declarative_manual as dm
     from research_loop.trust_configs import apply_trust_config
@@ -173,7 +173,7 @@ def _export_us(shape: Shape, out: Path, runs: int) -> list[float]:
     """The shipped exporter (streaming bulk), timed end to end including the file write."""
     import duckdb
 
-    from declarative_spec import zero_copy
+    from research_loop import zero_copy
     from declarative_spec.schema_types import SchemaModel
     from research_loop import decl_query_measure as dqm
     from research_loop.scripts import declarative_manual as dm

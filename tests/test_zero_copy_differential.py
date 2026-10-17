@@ -116,7 +116,7 @@ def _write_db(path: Path, case: dict, n: int, kind: str, seed: int) -> None:
 def built(tmp_path_factory):
     sys.path.insert(0, str(ROOT))
     os.environ["LEMMA_ZERO_COPY"] = "1"
-    from declarative_spec import zero_copy
+    from research_loop import zero_copy
     from declarative_spec.regions import extract_agent_edit, extract_agent_helpers
     from declarative_spec.schema_types import SchemaModel
     from research_loop.scripts import zero_copy_oneshot as zo

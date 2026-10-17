@@ -7,7 +7,7 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from declarative_spec import official_measure as om
+from research_loop import official_measure as om
 from declarative_spec import pipeline
 
 

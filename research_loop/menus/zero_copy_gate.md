@@ -52,7 +52,7 @@ shipped exporter spends 36 s): it needs no new trusted statement beyond the pin 
 # Cold stream path (LEMMA_COLD_STREAM=1): the proved fold as a DuckDB aggregate
 
 A second OPTIONAL path (same rules: opt-in, no fallback, loud refusals) that removes the load step instead of shortening it: DuckDB's own parallel scan calls the proved fold once per vector
-(`declarative_spec/cold_stream.py`, `cold_lib.rs`, `tests/fixtures/declarative_proofs/cold_*.rs`, design and numbers in `cold_path_feasibility.md`). Trusted statement ZC-2 (stated there).
+(`research_loop/cold_stream.py`, `cold_lib.rs`, `tests/fixtures/declarative_proofs/cold_*.rs`, design and numbers in `cold_path_feasibility.md`). Trusted statement ZC-2 (stated there).
 
 | shape | DuckDB in place | cold e2e | ratio |
 |---|---|---|---|

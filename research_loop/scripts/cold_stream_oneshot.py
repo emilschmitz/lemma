@@ -51,7 +51,7 @@ def _env(shape: dict) -> None:
 def build(name: str, out: Path) -> Path:
     shape = SHAPES[name]
     _env(shape)
-    from declarative_spec import cold_stream
+    from research_loop import cold_stream
     from research_loop.scripts import declarative_manual as dm
     from research_loop.trust_configs import apply_trust_config
 

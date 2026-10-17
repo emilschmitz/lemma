@@ -1,6 +1,6 @@
 // Worked example (LEMMA_ZERO_COPY=1, prototype): ungrouped SUM over a DECIMAL(38,4) column (i128 cells) read in place from pinned DuckDB chunks.
 //   SELECT SUM(value) AS total FROM num WHERE value > 5000
-// `num.value` is a `PinnedCol` (declarative_spec/zero_copy_lib.rs): `chunks[k]` is a slice, `offs[k]` the row where it starts; its view is the
+// `num.value` is a `PinnedCol` (research_loop/zero_copy_lib.rs): `chunks[k]` is a slice, `offs[k]` the row where it starts; its view is the
 // concatenation, so the spec is unchanged. Hot loop = chunk by chunk, row by row, descending, exactly the sliced hot-loop recipe; the only
 // new proof step is `lemma_cell(&num.value, k, j)`: global row `offs[k] + j` is cell `j` of chunk `k`.
 // AGENT_HELPERS_START

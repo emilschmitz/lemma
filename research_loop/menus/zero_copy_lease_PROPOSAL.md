@@ -53,7 +53,7 @@ There is **no new Verus lemma, `external_body` fn or `assume`**. The new trusted
 
 What Verus takes as given: the struct `PinnedCol { n, chunks: Vec<&[T]>, offs: Vec<usize> }` is well-formed (`wf`) and its slices hold the column
 (this is the same kind of fact as "the `Vec<i128>` the loader built holds the column" today). What Verus proves about it (verified host code,
-`declarative_spec/zero_copy_lib.rs`): `wf` is `offs[0] == 0`, `offs[m] == n`, `offs[k+1] == offs[k] + chunks[k].len()`; its view is the
+`research_loop/zero_copy_lib.rs`): `wf` is `offs[0] == 0`, `offs[m] == n`, `offs[k+1] == offs[k] + chunks[k].len()`; its view is the
 concatenation of the chunks; `lemma_cell(c, k, j)`: `c@[offs[k] + j] == chunks[k]@[j]`.
 
 Checked by `main` at runtime, loudly (a failed check aborts, there is no fallback to the copy path): width of the pinned type equals `size_of::<T>()`

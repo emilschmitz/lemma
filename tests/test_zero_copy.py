@@ -1,4 +1,4 @@
-"""LEMMA_ZERO_COPY (declarative_spec/zero_copy.py): the opt-in flag, the assemble-time refusals (type, width, scale, names, narrow cells, shapes),
+"""LEMMA_ZERO_COPY (research_loop/zero_copy.py): the opt-in flag, the assemble-time refusals (type, width, scale, names, narrow cells, shapes),
 the assembled program, the verified library, and an end-to-end run against a real DuckDB through the C API.
 
 Behaviors: (1) off by default, never reached without the flag; (2) a declared-vs-stored type/precision/scale mismatch is refused (F1);
@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from declarative_spec import zero_copy
+from research_loop import zero_copy
 from declarative_spec.schema_types import SchemaModel
 
 ROOT = Path(__file__).resolve().parents[1]
