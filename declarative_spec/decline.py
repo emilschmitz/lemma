@@ -31,6 +31,8 @@ import re
 from declarative_spec.parse import DeclarativeUnsupported
 
 DECLINE_MARKER = "// LEMMA_DECLINE: run_query returns None to decline (lemma.toml assumptions = false); Some(res) satisfies run_query_ok above"
+# The stateful contract (lemma.toml ``stateful``, ``stateful.py``) declines from ``execute``: same marker role, its own text.
+DECLINE_MARKER_STATEFUL = "// LEMMA_DECLINE: execute returns None to decline (lemma.toml assumptions = false); Some(res) satisfies query_post above"
 DECLINE_LINE = "LEMMA_DECLINED"
 DECLINE_EXIT_CODE = 3
 ABI_STATUS_OK = 0
@@ -39,17 +41,18 @@ ABI_STATUS_ERROR = 2
 STATUS_DECLINED = "DECLINED"
 
 _SIG = re.compile(r"pub fn run_query\((?P<params>[^)]*)\) -> \(res: (?P<ty>[^\n]*)\)\n")
+_EXEC_SIG = re.compile(r"pub fn execute\((?P<params>s: &QState[^)]*)\) -> \(res: (?P<ty>[^\n]*)\)\n")
 _BINDERS = ("forall", "exists", "choose")
 
 
 def is_decline_spec(spec: str) -> bool:
-    """The spec was emitted with ``assumptions = false``: its ``run_query`` returns ``Option`` (None = decline)."""
-    return DECLINE_MARKER in spec
+    """The spec was emitted with ``assumptions = false``: its ``run_query`` (stateful: ``execute``) returns ``Option`` (None = decline)."""
+    return DECLINE_MARKER in spec or DECLINE_MARKER_STATEFUL in spec
 
 
 def result_type(spec: str) -> str | None:
     """The result type of ``run_query`` without the decline ``Option`` (the type a ``Some`` carries)."""
-    m = _SIG.search(spec)
+    m = _SIG.search(spec) or _EXEC_SIG.search(spec)
     if m is None:
         return None
     ty = m.group("ty")
@@ -152,6 +155,10 @@ def unwrap_option(spec: str) -> str:
     spec would state it with data assumptions minus the caps. For readers that classify a spec by its ``ensures`` (the prompt's recipe)."""
     if not is_decline_spec(spec):
         return spec
+    if DECLINE_MARKER_STATEFUL in spec:
+        from declarative_spec import stateful
+
+        return stateful.unwrap_decline(spec)
     ok = _OK_FN.search(spec)
     m = _SIG.search(spec)
     if ok is None or m is None:
@@ -168,8 +175,18 @@ def unwrap_option(spec: str) -> str:
     return head + unwrapped_sig + tail
 
 
-def prompt_paragraph() -> str:
+def prompt_paragraph(stateful: bool = False) -> str:
     """The one factual paragraph of the agent prompt (only with ``assumptions = false``)."""
+    if stateful:
+        return (
+            "## Declining (no data assumptions)\n\n"
+            "The spec states the exact answer over mathematical integers and makes no assumption about the data: no row-count, "
+            "value, dictionary-size or unique-key caps (`valid_cols_*` only relates column lengths and dictionary codes). "
+            "`execute` returns `Option<..>`: `Some(res)` must satisfy `query_post(.., res)`, and `None` declines the call "
+            "(it is always allowed and proves nothing; `build` cannot decline). A run whose `execute` returns `None` on the measured "
+            "data is reported as DECLINED: it is neither a success nor a proof failure, the host never substitutes another engine's "
+            "answer, and in experiments a declined query counts as a failed query.\n"
+        )
     return (
         "## Declining (no data assumptions)\n\n"
         "The spec states the exact answer over mathematical integers and makes no assumption about the data: no row-count, "

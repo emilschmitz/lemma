@@ -1,0 +1,17 @@
+# Smoke run of a query template (TPC-H q06) under the default since 2026-10-17: no data assumptions (assumptions = false), so no
+# assumption package. The spec states no caps, a parameter's range is its SQL type's, and run_query may decline (None): a declined
+# official round makes the run DECLINED, which counts as a failed query. The official rounds bind fresh values drawn from the TPC-H
+# substitution rules with seed 1, as in tpch_sf10_templates_smoke.toml (that file keeps the package path, assumptions = true).
+# Run: uv run python research_loop/scripts/container_batch.py --experiment configs/experiments/tpch_sf10_templates_smoke_noassump.toml
+[settings]
+assumptions = false
+examples = "none"
+data_profile = "stats"
+templates = true
+
+[[run]]
+model = "claude-opus-5-5"
+query = "configs/query_templates/tpch/q06.sql"
+duckdb_path = "research_loop/generated/tpch_sf10.duckdb"
+bindings_rules = "configs/query_templates/tpch/substitution.json"
+bindings_seed = 1

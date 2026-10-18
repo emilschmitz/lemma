@@ -14,6 +14,7 @@ No `LEMMA_*` environment variable and no CLI flag may set anything: all settings
 The batch pins one SHA, passes it to every run, and stops if HEAD or the tree changes before a run starts.
 The manifest records the SHA, the experiment file's blob sha, the effective config with the source of every key, the sha256 of the database and the agent image digest.
 Runs under `allow_dirty` (the positional `model:query` form) are marked `replicable: false` and are never reported in the paper.
+Data assumptions are off by default (`assumptions = false`, since 2026-10-17): an experiment names no assumption package (the package path, `assumptions = true`, is optional and unmaintained), and a run whose proved `run_query` declines (returns `None`) is reported `DECLINED` and counts as a failed query; no other engine's answer is substituted.
 
 ## Product path (report every failure against one step)
 
@@ -148,7 +149,7 @@ here. Do not keep a second instruction set.
 
 At that same commit the host loader still built the column vectors with `Vec::new()` while `n` was the real row count. `load_cols` is `#[verifier::external_body]` with `ensures valid_cols(&cols)`. Verus does not look at the body. It takes the postcondition as given. `valid_cols` says each vector's length is `n`. That postcondition was false of the vectors. A later proof that indexes those vectors (local runs after the prompt started naming `equijoin_pairs_str`) is a proof about zero rows. The binary returns immediately. That is not a proof of the query on SEC, and it is not a usable program. Do not cite those runs as r24. Do not cite r24 as an empty-vector proof. Current HEAD copies the pinned rows into the vectors before `run_query`. An instant return is not a successful run.
 
-A paper batch is: a fresh SEC sample of `LEMMA_SHUFFLE_N` queries (default **6**), plus the 6 published GenDB SEC queries (Q101–Q106), plus 5 TPC-H queries. The old 61-job count was 50 + 6 + 5. Fresh batches set `LEMMA_ASSUMPTION_PACKAGE=sec_margin` (45 upper bounds in `research_loop/assumption_packages/sec_margin.py`; override the env var to pick another package). Docker CLI (`USE_AGENT_DOCKER=1`, `AGENT_IMAGE=lemma-agent:cli`, `LEMMA_AGENT_BACKEND=cli`), model **`grok-4.7-high`**, `LEMMA_SERIOUS=1`, `EMIT=0`, `FAST=0`, official full-table measure, fail-streak 6.
+A paper batch is: a fresh SEC sample of `LEMMA_SHUFFLE_N` queries (default **6**), plus the 6 published GenDB SEC queries (Q101–Q106), plus 5 TPC-H queries. The old 61-job count was 50 + 6 + 5. Fresh batches set `LEMMA_ASSUMPTION_PACKAGE=sec_margin` (45 upper bounds in `research_loop/assumption_packages/sec_margin.py`; override the env var to pick another package) only on the unmaintained `assumptions = true` path; the default uses no package. Docker CLI (`USE_AGENT_DOCKER=1`, `AGENT_IMAGE=lemma-agent:cli`, `LEMMA_AGENT_BACKEND=cli`), model **`grok-4.7-high`**, `LEMMA_SERIOUS=1`, `EMIT=0`, `FAST=0`, official full-table measure, fail-streak 6.
 
 **A later SHA can be fully synced and still be the wrong code.** r25
 (SHA `1af47d4`) checked out `d5cd70c` (real DuckDB row caps). The VM ran
@@ -488,7 +489,7 @@ Schema is caller/catalog/`LEMMA_SCHEMA_JSON` — not SSB-hardwired. Dafny lives 
 
 ## Agent contract (`run_query` body only)
 
-Host injects signature + `requires valid_cols` + `ensures res == method_spec(...)`.
+Host injects signature + `requires valid_cols` + `ensures res == method_spec(...)` (with `assumptions = false`, the default: `run_query` returns `Option` and ensures `res matches Some(res) ==> run_query_ok(..)`; `None` declines).
 Agent edits **only** the marked body. Admission must reject new TRUSTEDs / `arbitrary` /
 `unimplemented!`. Details: `research_loop/agents/AGENTS.md`.
 

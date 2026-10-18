@@ -3,7 +3,9 @@
     LEMMA_IN_DUCKDB=true uv run python -m research_loop.scripts.in_duckdb_install_run --home DIR RUN_DIR [RUN_DIR ...]
 
 The run's manifest gives the SQL, the database and the settings that shape the spec (string encoding, parallel_vstd, join chain,
-narrow cells, trusted set, [sql] shape flags, assumption package); ``workspace/mcp_results/submitted.json`` gives the proved body.
+narrow cells, trusted set, [sql] shape flags, ``assumptions`` and, with assumptions on, the package); ``workspace/mcp_results/submitted.json``
+gives the proved body. A run with ``assumptions = false`` (the default since 2026-10-17) is installed with the structural catalog of its
+database (nullability only) and its executor may decline; a run whose manifest predates the flag used the package path (assumptions on).
 The spec is emitted again at THIS commit and the body must verify against it: nothing is copied from the run but the body text.
 """
 
@@ -35,12 +37,18 @@ def install_run(run_dir: Path, home: Path) -> Path:
         if key in config:
             value = config[key]["value"] if isinstance(config[key], dict) else config[key]
             os.environ[lemma_config.env_name(key)] = str(value).lower() if isinstance(value, bool) else str(value)
-    package = manifest["env"]["LEMMA_ASSUMPTION_PACKAGE"]
+    raw = config.get("assumptions", True)  # absent: the run predates the flag, when every run used an assumption package
+    assumptions = bool(raw["value"] if isinstance(raw, dict) else raw)
+    os.environ[lemma_config.env_name("assumptions")] = "true" if assumptions else "false"
     db = Path(manifest["duckdb_path"])
     schema, _measured = tpch_schema_and_catalog(db)
-    return in_duckdb.install_executor(
-        sql=manifest["sql"], schema=schema, catalog=assumption_package(package), agent_source=body, db_path=db, home=home
-    )
+    if assumptions:
+        catalog = assumption_package(manifest["env"]["LEMMA_ASSUMPTION_PACKAGE"])
+    else:
+        from research_loop.structural_catalog import structural_catalog_from_db
+
+        catalog = structural_catalog_from_db(db)
+    return in_duckdb.install_executor(sql=manifest["sql"], schema=schema, catalog=catalog, agent_source=body, db_path=db, home=home)
 
 
 def main() -> None:

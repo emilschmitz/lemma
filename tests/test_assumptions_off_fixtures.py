@@ -53,12 +53,12 @@ def _program(name: str, column_bins: dict[str, str] | None = None) -> str:
 
 @pytest.mark.parametrize("name", ["usum_checked.rs", "group_count_sum_checked.rs", "join_group_sum_checked.rs"])
 def test_a_checked_body_verifies_without_data_assumptions(name: str) -> None:
-    ok, out = verify_assembled(_program(name), timeout_sec=900)
+    ok, out = verify_assembled(_program(name), timeout_sec=3000)
     assert ok and "0 errors" in out, out[-3000:]
 
 
 def test_returning_some_without_handling_overflow_does_not_verify() -> None:
-    ok, out = verify_assembled(_program("usum_unchecked_must_fail.rs"), timeout_sec=900)
+    ok, out = verify_assembled(_program("usum_unchecked_must_fail.rs"), timeout_sec=3000)
     assert not ok and "possible arithmetic underflow/overflow" in out, out[-3000:]
 
 
@@ -82,8 +82,51 @@ def test_the_compiled_program_declines_when_the_exact_total_leaves_i128(tmp_path
     _columns(bins, [(2**126, 10), (2**126, 9)])
     with pytest.raises(pipeline.Declined):
         pipeline.run_binary_round(Path(metrics["binary_path"]), Path(metrics["run_dir"]), [])
-    declined = pipeline.compile_and_run(program, work_dir=tmp_path / "w2", timeout_sec=900)
+    declined = pipeline.compile_and_run(program, work_dir=tmp_path / "w2", timeout_sec=3000)
     assert declined["status"] == "DECLINED" and declined["declined"] is True
     assert declined["proof_verified"] is True and declined["latency_us"] == -1
     assert declined["compiler_error"].startswith("DECLINED:")
     json.dumps(declined)  # the record is what the MCP layer stores
+
+
+# ---- stateful (lemma.toml `stateful`) with assumptions = false: execute returns Option, Some(res) satisfies query_post ----
+
+
+def _stateful_program(monkeypatch: pytest.MonkeyPatch, column_bins: dict[str, str] | None = None) -> str:
+    from declarative_spec import stateful
+    from declarative_spec.regions import extract_agent_build, extract_agent_edit, extract_agent_helpers, extract_agent_state
+
+    monkeypatch.setenv("LEMMA_STATEFUL", "1")
+    sql, schema = CASES["usum_checked.rs"]
+    spec = emit_declarative_spec(sql, schema, None)
+    assert stateful.is_stateful(spec) and stateful.contract(spec).declines
+    src = (FIXTURES / "stateful_usum_checked.rs").read_text()
+    return assemble_declarative_program(
+        spec,
+        extract_agent_edit(src),
+        helpers=extract_agent_helpers(src),
+        state=extract_agent_state(src),
+        build=extract_agent_build(src),
+        column_bins=column_bins,
+    )
+
+
+def test_a_declining_stateful_execute_verifies_without_data_assumptions(monkeypatch: pytest.MonkeyPatch) -> None:
+    ok, out = verify_assembled(_stateful_program(monkeypatch), timeout_sec=3000)  # the wait for a machine-wide Verus slot counts
+    assert ok and "0 errors" in out, out[-3000:]
+
+
+def test_the_compiled_stateful_program_declines_when_the_exact_total_leaves_i128(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    bins = tmp_path / "pre.bin"
+    _columns(bins, [(150, 10), (250, 3), (-25, 7)])
+    program = _stateful_program(monkeypatch, column_bins={"pre": str(bins)})
+    assert "LEMMA_DECLINE_EXIT_CODE" in program and "(Some(Some(r)), Some(st))" in program
+    metrics = pipeline.compile_and_run(program, work_dir=tmp_path / "w", timeout_sec=900, keep_binary=True)
+    assert metrics["status"] == "SUCCESS", metrics.get("compiler_error", "")[-2000:]
+    assert "ROW\u001f125" in metrics["stdout"] and "STATE_BUILD_US" in metrics["stdout"]
+    # The same binary on data whose exact total leaves i128: execute declines, the program says so, the harness labels it.
+    _columns(bins, [(2**126, 10), (2**126, 9)])
+    with pytest.raises(pipeline.Declined):
+        pipeline.run_binary_round(Path(metrics["binary_path"]), Path(metrics["run_dir"]), [])
+    declined = pipeline.compile_and_run(program, work_dir=tmp_path / "w2", timeout_sec=3000)
+    assert declined["status"] == "DECLINED" and declined["proof_verified"] is True

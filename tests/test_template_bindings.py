@@ -180,6 +180,32 @@ def test_the_smoke_experiment_names_tracked_files_and_passes_the_file_checks() -
         assert subprocess.run(["git", "ls-files", "--error-unmatch", rel], cwd=ROOT, capture_output=True).returncode == 0, rel
 
 
+def test_the_noassump_smoke_experiment_is_valid_under_the_default_and_names_no_package() -> None:
+    old = ROOT / "configs" / "experiments" / "tpch_sf10_templates_smoke.toml"
+    f = ROOT / "configs" / "experiments" / "tpch_sf10_templates_smoke_noassump.toml"
+    settings, runs = lc.load_experiment(f, ROOT)
+    assert settings["assumptions"] is False and settings["templates"] is True and len(runs) == 1
+    assert "assumption_package" not in runs[0]
+    _, old_runs = lc.load_experiment(old, ROOT)
+    assert {k: v for k, v in old_runs[0].items() if k != "assumption_package"} == runs[0]  # the same run, minus the package
+    for key in ("query", "bindings_rules"):
+        assert subprocess.run(["git", "ls-files", "--error-unmatch", runs[0][key]], cwd=ROOT, capture_output=True).returncode == 0
+
+
+def test_the_noassump_smoke_query_emits_a_declining_template_spec_with_type_ranges(monkeypatch: pytest.MonkeyPatch) -> None:
+    from declarative_spec import decline
+    from declarative_spec.emit import emit_declarative_spec
+
+    _, runs = lc.load_experiment(ROOT / "configs" / "experiments" / "tpch_sf10_templates_smoke_noassump.toml", ROOT)
+    monkeypatch.delenv("LEMMA_ASSUMPTIONS", raising=False)  # what the experiment sets: the default
+    monkeypatch.setenv("LEMMA_TEMPLATES", "1")
+    schema = json.loads((ROOT / "tests" / "fixtures" / "tpch22" / "schema.json").read_text())
+    spec = emit_declarative_spec((ROOT / runs[0]["query"]).read_text(), schema, None)
+    assert decline.is_decline_spec(spec) and "ROW_CAP" not in spec
+    params = templates.spec_params(spec)
+    assert params and all(lo is not None and hi is not None for _n, ty, lo, hi in params if ty != "String")
+
+
 def test_the_smoke_experiment_draws_valid_q06_bindings(monkeypatch: pytest.MonkeyPatch) -> None:
     f = ROOT / "configs" / "experiments" / "tpch_sf10_templates_smoke.toml"
     _, runs = lc.load_experiment(f, ROOT)

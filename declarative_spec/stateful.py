@@ -19,6 +19,9 @@ built from; ``execute_at(version)`` returns ``None`` unless that state is presen
 result satisfies ``query_post`` on the snapshot ``refresh`` was given. What it cannot know, and trusts, is that the caller
 passes the version of the data it hands to ``refresh`` and bumps the version whenever the data changes (DuckDB's commit
 id / table version in the extension, a counter in the tests). Nothing is persisted: a new process builds again.
+
+With lemma.toml ``assumptions = false`` (``decline.py``) ``execute`` may decline: ``wrap_decline`` makes it return ``Option<T>`` with
+``ensures res matches Some(res) ==> query_post(..)``; ``execute_at`` then returns ``Option<Option<T>>`` (``Some(None)`` = declined).
 """
 
 from __future__ import annotations
@@ -30,7 +33,10 @@ import lemma_config
 from declarative_spec.parse import DeclarativeUnsupported
 from declarative_spec.regions import BUILD_END, BUILD_START, STATE_END, STATE_START
 
-__all__ = ["BUILD_END", "BUILD_START", "STATE_END", "STATE_START", "contract", "enabled", "is_stateful", "runtime_rs", "to_stateful"]
+__all__ = [
+    "BUILD_END", "BUILD_START", "STATE_END", "STATE_START", "contract", "enabled", "is_stateful", "runtime_rs", "to_stateful",
+    "unwrap_decline", "wrap_decline",
+]
 
 _RUN_QUERY = re.compile(
     r"pub fn run_query\((?P<params>[^)]*)\) -> \(res: (?P<ret>[^\n]*)\)\n"
@@ -52,7 +58,13 @@ def is_stateful(spec_rs: str) -> bool:
 class Contract:
     tables: list[tuple[str, str]]  # (parameter name, Cols_<suffix>) in run_query order
     params: list[tuple[str, str]]  # runtime parameters (name, type): every non-table parameter
-    ret: str
+    ret: str  # what execute returns: ``Option<T>`` when it may decline
+    declines: bool = False  # lemma.toml assumptions = false: execute returns Option, None declines (wrap_decline)
+
+    @property
+    def value(self) -> str:
+        """The result type ``query_post`` is about (``ret`` without the decline ``Option``)."""
+        return self.ret[len("Option<") : -1] if self.declines else self.ret
 
 
 def _split_top(text: str) -> list[str]:
@@ -202,7 +214,59 @@ def contract(spec_rs: str) -> Contract:
     for part in _split_top(e.group(1).lstrip(", ")):
         name, _, ty = part.partition(":")
         params.append((name.strip(), ty.strip()))
-    return Contract(tables=tables, params=params, ret=e.group(2).strip())
+    from declarative_spec.decline import DECLINE_MARKER_STATEFUL
+
+    ret = e.group(2).strip()
+    declines = DECLINE_MARKER_STATEFUL in spec_rs
+    if declines and not (ret.startswith("Option<") and ret.endswith(">")):
+        raise ValueError(f"a declining stateful spec's execute must return Option<..>, got {ret}")
+    return Contract(tables=tables, params=params, ret=ret, declines=declines)
+
+
+_EXECUTE = re.compile(
+    r"pub fn execute\((?P<params>s: &QState[^)]*)\) -> \(res: (?P<ret>[^\n]*)\)\n"
+    r"    requires\n        s\.inv\(\),\n"
+    r"    ensures\n        query_post\((?P<args>[^\n]*), res\),\n"
+)
+_EXECUTE_DECLINE = re.compile(
+    r"// LEMMA_DECLINE: [^\n]*\npub fn execute\((?P<params>s: &QState[^)]*)\) -> \(res: Option<(?P<ret>[^\n]*)>\)\n"
+    r"    requires\n        s\.inv\(\),\n"
+    r"    ensures\n        res matches Some\(res\) ==> query_post\((?P<args>[^\n]*), res\),\n"
+)
+
+
+def wrap_decline(spec_rs: str) -> str:
+    """lemma.toml assumptions = false on a stateful spec: ``execute`` returns ``Option<T>`` and ensures
+    ``res matches Some(res) ==> query_post(.., res)``; ``None`` declines (``decline.py``). ``query_pre``, ``query_post`` and ``build``
+    are unchanged: ``query_post`` stays the contract on the value a ``Some`` carries, as ``run_query_ok`` is for ``run_query``.
+    ``build`` cannot decline (it only makes the state; a body that cannot answer declines from ``execute``)."""
+    from declarative_spec.decline import DECLINE_MARKER_STATEFUL, is_decline_spec
+
+    if is_decline_spec(spec_rs):
+        raise ValueError("the spec already declines")
+    m = _EXECUTE.search(spec_rs)
+    if m is None:
+        raise DeclarativeUnsupported("stateful: no execute contract of the expected form in the spec")
+    new = (
+        f"{DECLINE_MARKER_STATEFUL}\n"
+        f"pub fn execute({m.group('params')}) -> (res: Option<{m.group('ret')}>)\n"
+        "    requires\n        s.inv(),\n"
+        f"    ensures\n        res matches Some(res) ==> query_post({m.group('args')}, res),\n"
+    )
+    return spec_rs[: m.start()] + new + spec_rs[m.end() :]
+
+
+def unwrap_decline(spec_rs: str) -> str:
+    """The inverse of :func:`wrap_decline` (for readers that classify a spec by its contract, like ``decline.unwrap_option``)."""
+    m = _EXECUTE_DECLINE.search(spec_rs)
+    if m is None:
+        raise ValueError("a declining stateful spec without its execute contract")
+    old = (
+        f"pub fn execute({m.group('params')}) -> (res: {m.group('ret')})\n"
+        "    requires\n        s.inv(),\n"
+        f"    ensures\n        query_post({m.group('args')}, res),\n"
+    )
+    return spec_rs[: m.start()] + old + spec_rs[m.end() :]
 
 
 def runtime_rs(spec_rs: str) -> str:
@@ -219,6 +283,8 @@ def runtime_rs(spec_rs: str) -> str:
     run_params = "".join(f", {n}: {t}" for n, t in c.params)
     param_names = "".join(f", {n}" for n, _t in c.params)
     db_tables = ", ".join(f"&st.db().{n}" for n, _s in c.tables)
+    # A declining execute (assumptions = false): Some(None) is its decline; None still means "no state built at this version".
+    answered = "(Some(Some(r)), Some(st))" if c.declines else "(Some(r), Some(st))"
     return f"""
 // HOST RUNTIME (fixed, verified): the state and the data version it was built from. Trusted outside Verus: that the caller
 // passes the version of the tables it hands to `refresh`, and a new version whenever the data changes.
@@ -272,7 +338,7 @@ impl QRuntime {{
         ensures
             res is Some <==> (self.state is Some && self.version == version),
             match (res, self.state) {{
-                (Some(r), Some(st)) => query_post({db_tables}{param_names}, r),
+                {answered} => query_post({db_tables}{param_names}, r),
                 _ => true,
             }},
     {{

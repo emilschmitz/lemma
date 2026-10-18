@@ -34,6 +34,12 @@ Runtime parameters (query templates) are every non-table parameter of `run_query
 The degenerate case: `QAcc` owns the tables, `qstate_inv` says each equals the one in `s.db()`, and `execute` is a `run_query` body
 (`tests/fixtures/declarative_proofs/stateful_degenerate_sum.rs`).
 
+With `assumptions = false` (the default; `declarative_spec/decline.py`) `query_pre` holds no data caps and `execute` may decline:
+it returns `Option<T>` and ensures `res matches Some(res) ==> query_post(.., res)` (`stateful.wrap_decline`; `query_post` stays the
+contract on `T`, `build` cannot decline). `execute_at` then returns `Option<Option<T>>`: the outer `None` is "no state at this
+version", `Some(None)` the decline. The measure `main` prints `LEMMA_DECLINED` and exits 3, as for `run_query`; the serve `main`
+prints `LEMMA_DECLINED` for that call and keeps serving (`tests/fixtures/declarative_proofs/decline/stateful_usum_checked.rs`).
+
 ## What is proved
 
 * `build` (Verus): from tables satisfying `query_pre`, it returns a state with `inv()` whose ghost snapshot is exactly its inputs.

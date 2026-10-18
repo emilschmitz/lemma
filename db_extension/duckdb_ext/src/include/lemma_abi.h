@@ -1,5 +1,6 @@
-// The C ABI of a Lemma executor library (ABI version 2: version 1 plus query-template parameters). Emitted by declarative_spec/assemble_library.py, the same template
-// for every query; the proved run_query sits behind lemma_run. Little-endian cells throughout.
+// The C ABI of a Lemma executor library (ABI version 3: version 2 plus the DECLINED status of lemma_run; version 2 added
+// query-template parameters). Emitted by declarative_spec/assemble_library.py, the same template for every query; the proved
+// run_query sits behind lemma_run. Little-endian cells throughout.
 #pragma once
 
 #include <stdint.h>
@@ -27,9 +28,17 @@ typedef struct {
 	uint64_t len;
 } LemmaParam;
 
-// Bytes owned by the library; give them back with lemma_free_out. On return 0 they are the result
+// lemma_run's status (declarative_spec/decline.py ABI_STATUS_*). DECLINED: the proved run_query returned None (lemma.toml
+// assumptions = false: the spec states no data assumptions and the body may decline, e.g. on a checked overflow); no row was
+// computed, and the caller must not present any other engine's answer as Lemma's. ERROR: a contract or data check failed.
+#define LEMMA_STATUS_OK 0
+#define LEMMA_STATUS_DECLINED 1
+#define LEMMA_STATUS_ERROR 2
+
+// Bytes owned by the library; give them back with lemma_free_out. On LEMMA_STATUS_OK they are the result
 // ("LMR1", u64 load_us, u64 run_us, u64 rows, u32 columns, one kind byte per column (1 int as i128, 2 f64, 3 bool,
-// 4 string), then per column: one validity byte per row, then the cells). On a nonzero return they are a UTF-8 message.
+// 4 string), then per column: one validity byte per row, then the cells). On DECLINED they are the UTF-8 reason, on ERROR
+// the UTF-8 message.
 typedef struct {
 	uint8_t *ptr;
 	uint64_t len;

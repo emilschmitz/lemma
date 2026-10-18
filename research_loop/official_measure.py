@@ -184,6 +184,24 @@ def _template_round_timer(con, sql: str, speed_bar: dict, bindings: list[dict], 
 # ---- the in-DuckDB path (lemma.toml [engine] in_duckdb): the proved executor called from inside DuckDB, end to end ----
 
 MEASUREMENT_IN_DUCKDB = "in_duckdb_interleaved_medians"
+# The extension's error text when the proved run_query returned None (lemma.toml assumptions = false) and lemma_route_unproved is off.
+EXTENSION_DECLINED = "Lemma: declined:"
+
+
+class InDuckdbDeclined(RuntimeError):
+    """``lemma_query`` declined in a round (or its warm-up): the proved ``run_query`` returned None on the data."""
+
+
+def _ours(con, sql: str):
+    """``con.execute(sql)`` for OUR side: an extension decline becomes :class:`InDuckdbDeclined` (every other error propagates)."""
+    import duckdb
+
+    try:
+        return con.execute(sql).fetchall()
+    except duckdb.Error as exc:
+        if EXTENSION_DECLINED in str(exc):
+            raise InDuckdbDeclined(str(exc)) from exc
+        raise
 
 
 def lemma_query_sql(sql: str, binding: dict | None = None) -> str:
@@ -203,13 +221,15 @@ def lemma_query_sql(sql: str, binding: dict | None = None) -> str:
     return f"SELECT * FROM lemma_query({args})"
 
 
-def _median_round(con, sql: str, reps: int, params: dict | None = None) -> int:
-    """One round as in :func:`duck_round_timer`: an untimed run, then ``reps`` timed runs (execute + fetchall); their median."""
-    con.execute(sql, params).fetchall()
+def _median_round(con, sql: str, reps: int, params: dict | None = None, *, ours: bool = False) -> int:
+    """One round as in :func:`duck_round_timer`: an untimed run, then ``reps`` timed runs (execute + fetchall); their median.
+    ``ours``: the ``lemma_query`` side, whose decline is raised as :class:`InDuckdbDeclined` (never timed, never replaced)."""
+    run = (lambda: _ours(con, sql)) if ours else (lambda: con.execute(sql, params).fetchall())
+    run()
     samples: list[float] = []
     for _ in range(reps):
         t0 = time.perf_counter()
-        con.execute(sql, params).fetchall()
+        run()
         samples.append((time.perf_counter() - t0) * 1_000_000)
     return int(statistics.median(samples))
 
@@ -262,20 +282,28 @@ def in_duckdb_round_timers(
             raise ValueError("the bar has template_bindings but its SQL is not a query template")
 
         def ours_t(binding: dict) -> int:
-            return _median_round(con, lemma_query_sql(sql, binding), reps)
+            return _median_round(con, lemma_query_sql(sql, binding), reps, ours=True)
 
         def duck_t(binding: dict) -> int:
             return _median_round(con, sql, reps, templates.python_values(template, binding))
 
-        for _ in range(2):  # warm both sides (and load the executor library once)
-            con.execute(sql, templates.python_values(template, bindings[0])).fetchall()
-            con.execute(lemma_query_sql(sql, bindings[0])).fetchall()
+        try:
+            for _ in range(2):  # warm both sides (and load the executor library once)
+                con.execute(sql, templates.python_values(template, bindings[0])).fetchall()
+                _ours(con, lemma_query_sql(sql, bindings[0]))
+        except BaseException:
+            close()
+            raise
         return ours_t, duck_t, close
     ours_sql = lemma_query_sql(sql)
-    for _ in range(2):  # warm both sides (and load the executor library once)
-        con.execute(sql).fetchall()
-        con.execute(ours_sql).fetchall()
-    return (lambda: _median_round(con, ours_sql, reps)), (lambda: _median_round(con, sql, reps)), close
+    try:
+        for _ in range(2):  # warm both sides (and load the executor library once)
+            con.execute(sql).fetchall()
+            _ours(con, ours_sql)
+    except BaseException:
+        close()
+        raise
+    return (lambda: _median_round(con, ours_sql, reps, ours=True)), (lambda: _median_round(con, sql, reps)), close
 
 
 def measure_in_duckdb(
@@ -284,10 +312,23 @@ def measure_in_duckdb(
     """K interleaved rounds (alternating which side goes first) of the in-DuckDB path against DuckDB, summarized like the verdict.
 
     A query template binds round i to ``template_bindings[i % len]`` on both sides, as the official measure does.
-    ``timers`` stands in for :func:`in_duckdb_round_timers` (tests)."""
-    ours, duck, close = (timers or in_duckdb_round_timers)(speed_bar, work_dir, extension=extension, home=home)
+    ``timers`` stands in for :func:`in_duckdb_round_timers` (tests).
+
+    A decline (lemma.toml ``assumptions = false``: the proved ``run_query`` returned None) in ANY round or in the warm-up makes the
+    whole result ``status: DECLINED`` with no medians: not a success, not a proof failure, and DuckDB's time is not put in its place."""
+    from declarative_spec.decline import STATUS_DECLINED
+
+    def declined(exc: InDuckdbDeclined) -> dict:
+        return {"measurement": MEASUREMENT_IN_DUCKDB, "duck_reps": duck_reps(), "status": STATUS_DECLINED, "declined": True, "error": str(exc)}
+
+    try:
+        ours, duck, close = (timers or in_duckdb_round_timers)(speed_bar, work_dir, extension=extension, home=home)
+    except InDuckdbDeclined as exc:
+        return declined(exc)
     try:
         rounds = interleave(ours, duck, official_rounds() if k is None else k, speed_bar.get("template_bindings") or None)
+    except InDuckdbDeclined as exc:
+        return declined(exc)
     finally:
         close()
     return {"measurement": MEASUREMENT_IN_DUCKDB, "duck_reps": duck_reps(), **summarize(rounds)}

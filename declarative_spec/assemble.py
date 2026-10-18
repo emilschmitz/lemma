@@ -731,10 +731,32 @@ def _assemble_stateful(
     verus_all = closed[:-1] + "\n" + stateful.runtime_rs(verus_part) + "\n" + "\n\n".join(loaders) + "\n}\n"
     fields = _out_row_fields(verus_part)
     answer = 'rt.execute_at({v}).expect("the state was built at this version")'
+    decline_const = ""
+    if c.declines:
+        # assumptions = false: execute returns Option and None declines (decline.py); same line and exit code as a run_query decline.
+        decline_const = (
+            f"// The exit code of a declined run (execute returned None); the C ABI status of the same outcome is {decline.ABI_STATUS_DECLINED}.\n"
+            f"const LEMMA_DECLINE_EXIT_CODE: i32 = {decline.DECLINE_EXIT_CODE};\n\n"
+        )
     if serve:
         if not fields:
             raise ValueError("stateful serve mode prints OutRow results only")
         hex_fn, rows = _row_printer("answer", fields)
+        if c.declines:  # one call declined: say so on its own line; the server keeps serving
+            served = f"""        let answered = {answer.format(v="version")};
+        println!("EXEC_US: {{}}", start.elapsed().as_micros());
+        match answered {{
+            Some(answer) => {{
+{_indent(rows, 12)}
+            }}
+            None => {{
+                println!("{decline.DECLINE_LINE}");
+            }}
+        }}"""
+        else:
+            served = f"""        let answer = {answer.format(v="version")};
+        println!("EXEC_US: {{}}", start.elapsed().as_micros());
+{_indent(rows, 4)}"""
         order = [suffix_of[n] for n, _s in c.tables]
         paths = "".join(f"            let path_{sfx} = words[{i + 1}].to_string();\n" for i, sfx in enumerate(order))
         loads = "\n".join(_indent(block, 8) for block in mains_load)
@@ -764,18 +786,20 @@ def _assemble_stateful(
             println!("STATE_BUILD_US: {{}}", build_start.elapsed().as_micros());
         }}
         let start = std::time::Instant::now();
-        let answer = {answer.format(v="version")};
-        println!("EXEC_US: {{}}", start.elapsed().as_micros());
-{_indent(rows, 4)}
+{served}
         println!("END");
         std::io::stdout().flush().unwrap();
     }}
 }}
 """
-        return verus_all + "\n" + hex_fn + main_fn
-    if not fields and re.search(r"-> \(res: StringHashMap<", verus_part):
+        return verus_all + "\n" + decline_const + hex_fn + main_fn
+    if not fields and re.search(r"-> \(res: (?:Option<)?StringHashMap<", verus_part):
         raise ValueError("a stateful spec with a StringHashMap result has no printer (the key column moved into the state)")
     run_call = answer.format(v="0")
+    if c.declines:
+        run_call = (
+            f'match {run_call} {{ Some(v) => v, None => {{ println!("{decline.DECLINE_LINE}"); std::process::exit(LEMMA_DECLINE_EXIT_CODE); }} }}'
+        )
     if loaded:
         timed, hex_fn = _timed_runs(run_call, verus_part)
     else:
@@ -798,4 +822,4 @@ def _assemble_stateful(
         '    println!("STATE_BUILD_US: {}", build_start.elapsed().as_micros());\n'
     )
     main_fn += timed + "}\n"
-    return verus_all + "\n" + hex_fn + main_fn
+    return verus_all + "\n" + decline_const + hex_fn + main_fn

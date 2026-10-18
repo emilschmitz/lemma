@@ -306,7 +306,12 @@ def test_an_experiment_with_assumptions_on_still_needs_its_package(tmp_path: Pat
 def test_the_committed_experiments_still_load() -> None:
     for path in sorted((lemma_config.ROOT / "configs" / "experiments").glob("*.toml")):
         settings, runs = lemma_config.load_experiment(path)
-        assert settings.get("assumptions") is True and all("assumption_package" in r for r in runs)
+        # Experiments from before the flag pin the package path; newer ones (e.g. *_noassump.toml) use the default and name no package.
+        if settings.get("assumptions") is True:
+            assert all("assumption_package" in r for r in runs), path.name
+        else:
+            assert settings.get("assumptions") is False and not any("assumption_package" in r for r in runs), path.name
+    assert lemma_config.load_experiment(lemma_config.ROOT / "configs" / "experiments" / "tpch_sf10_templates_smoke.toml")[0]["assumptions"] is True
 
 
 def test_the_structural_catalog_names_only_nullable_columns(tmp_path: Path) -> None:

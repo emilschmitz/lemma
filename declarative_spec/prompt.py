@@ -530,11 +530,11 @@ def _nullable_section(spec_text: str) -> list[str]:
 
 def _decline_section(spec_text: str) -> list[str]:
     """lemma.toml assumptions = false: one factual paragraph on the Option result and what a decline counts as (no recipe)."""
-    from declarative_spec import decline
+    from declarative_spec import decline, stateful
 
     if not decline.is_decline_spec(spec_text):
         return []
-    return decline.prompt_paragraph().rstrip("\n").split("\n") + [""]
+    return decline.prompt_paragraph(stateful.is_stateful(spec_text)).rstrip("\n").split("\n") + [""]
 
 
 def _float_section(spec_text: str) -> list[str]:

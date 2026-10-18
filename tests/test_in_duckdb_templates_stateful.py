@@ -1,6 +1,6 @@
 """In-DuckDB execution x query templates x stateful accelerators.
 
-Query templates (lemma.toml [sql] templates) run in-DuckDB: ABI version 2 passes each parameter as a ``LemmaParam``, the fixed
+Query templates (lemma.toml [sql] templates) run in-DuckDB: ABI version 2 (and 3) passes each parameter as a ``LemmaParam``, the fixed
 library template checks count, kind, type fit and the range ``run_query`` requires before any column is decoded, and the
 extension takes the values as ``lemma_query('<template>', v...)``. A stateful spec is refused in library mode (its runtime needs
 the caller's data version, which the ABI does not carry yet; docs/STATEFUL.md).
@@ -217,7 +217,7 @@ def test_the_library_answers_each_binding_like_duckdb(lo: int, sum_library: ctyp
     con.execute("CREATE TABLE t AS SELECT i AS x FROM range(1, 11) r(i)")
     (want,) = con.execute(SUM_SQL, {"lo": lo}).fetchone()
     assert _sum_result(data) == (None if want is None else int(want))
-    assert sum_library.lemma_abi_version() == ABI_VERSION == 2
+    assert sum_library.lemma_abi_version() == ABI_VERSION == 3
     assert sum_library.lemma_param_layout() == b"lo i64 -999999 999999"
 
 
@@ -235,7 +235,7 @@ def test_the_library_answers_each_binding_like_duckdb(lo: int, sum_library: ctyp
 )
 def test_the_library_refuses_a_bad_parameter_and_returns_no_rows(params: list, message: bytes, sum_library: ctypes.CDLL) -> None:
     code, data = _call(sum_library, list(range(1, 11)), params)
-    assert code == 1 and message in data and not data.startswith(b"LMR1")
+    assert code == 2 and message in data and not data.startswith(b"LMR1")  # ABI 3: an error is status 2 (1 is a decline)
 
 
 # ---------------------------------------------------------------- the extension (built): lemma_query('<template>', v...)

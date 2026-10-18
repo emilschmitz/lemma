@@ -480,10 +480,13 @@ def emit_declarative_spec(
         spec = templates.emit_template(template, schema, catalog, _emit_fixed)
     else:
         spec = with_sql_comment(_emit_fixed(sql, schema, catalog), sql)
+    if stateful.enabled():
+        # The build/execute contract replaces run_query (after the SQL comment is placed above it); see declarative_spec/stateful.py.
+        # With assumptions = false its execute may decline: Option, Some(res) satisfies query_post (stateful.wrap_decline).
+        spec = stateful.to_stateful(spec)
+        return stateful.wrap_decline(spec) if decline.enabled() else spec
     # lemma.toml assumptions = false (the default): no data caps were stated above, and run_query may decline (decline.py).
-    spec = decline.wrap_option(spec) if decline.enabled() else spec
-    # The build/execute contract replaces run_query (after the SQL comment is placed above it); see declarative_spec/stateful.py.
-    return stateful.to_stateful(spec) if stateful.enabled() else spec
+    return decline.wrap_option(spec) if decline.enabled() else spec
 
 
 def _emit_fixed(

@@ -34,6 +34,7 @@ from pathlib import Path
 import duckdb
 import lemma_config
 
+from declarative_spec import decline
 from declarative_spec.assemble_library import ABI_VERSION, assemble_library_program, input_layout, output_layout, param_layout
 from declarative_spec.emit import emit_declarative_spec
 from research_loop.decl_query_measure import _DECIMAL_TYPE, plan_tables
@@ -261,6 +262,8 @@ def install_executor(
             "format": MANIFEST_FORMAT,
             "abi_version": ABI_VERSION,
             "in_duckdb": True,
+            # lemma.toml assumptions of the spec this executor proves: false = no data assumptions, run_query may decline (lemma_run status 1).
+            "assumptions": not decline.is_decline_spec(spec),
             "key": key,
             "sql": sql,
             "normalized_sql": normalize_sql(sql),
