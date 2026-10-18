@@ -67,7 +67,9 @@ reads the current tables and calls `build`, then `execute`. One state is kept: g
 * Serve `main` (`assemble_declarative_program(.., serve=True)`): one call per stdin line `<version> <column file per table>`
   (order printed as `SERVE_TABLES:`); prints `BUILT 0|1`, `STATE_BUILD_US`, `EXEC_US`, the rows, `END`. This is the shape of the call
   an in-DuckDB extension makes through a fixed ABI: `is_current(version)`, else `refresh(version, tables)`, then
-  `execute_at(version, params)`.
+  `execute_at(version, params)`. That ABI is not built yet: library mode (`declarative_spec/assemble_library.py`, lemma.toml
+  `in_duckdb`) refuses a stateful spec loudly until the extension can pass a data version that changes with every change to the
+  tables in the caller's snapshot (`db_extension/duckdb_ext/README.md`, "Next step: stateful executors").
 
 ## Tests
 

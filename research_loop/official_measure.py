@@ -186,30 +186,45 @@ def _template_round_timer(con, sql: str, speed_bar: dict, bindings: list[dict], 
 MEASUREMENT_IN_DUCKDB = "in_duckdb_interleaved_medians"
 
 
-def lemma_query_sql(sql: str) -> str:
-    """``SELECT * FROM lemma_query('<sql>')``: the round trip the in-DuckDB measure times."""
-    return "SELECT * FROM lemma_query('" + sql.replace("'", "''") + "')"
+def lemma_query_sql(sql: str, binding: dict | None = None) -> str:
+    """``SELECT * FROM lemma_query('<sql>')``: the round trip the in-DuckDB measure times.
+
+    A query template takes its binding: one SQL literal per parameter, in declaration order, after the text
+    (``lemma_query('<template>', 5, DATE '1995-01-01', 0.05, 'BUILDING')``); the executor checks each against its spec."""
+    args = "'" + sql.replace("'", "''") + "'"
+    if binding is not None:
+        from declarative_spec import templates
+
+        template = templates.parse_template(sql)
+        if template is None:
+            raise ValueError("a binding for SQL that is not a query template")
+        templates.python_values(template, binding)  # names exactly the parameters, each of its type
+        args += "".join(", " + templates.sql_literal(p, binding[p.name]) for p in template.params)
+    return f"SELECT * FROM lemma_query({args})"
 
 
-def _median_round(con, sql: str, reps: int) -> int:
+def _median_round(con, sql: str, reps: int, params: dict | None = None) -> int:
     """One round as in :func:`duck_round_timer`: an untimed run, then ``reps`` timed runs (execute + fetchall); their median."""
-    con.execute(sql).fetchall()
+    con.execute(sql, params).fetchall()
     samples: list[float] = []
     for _ in range(reps):
         t0 = time.perf_counter()
-        con.execute(sql).fetchall()
+        con.execute(sql, params).fetchall()
         samples.append((time.perf_counter() - t0) * 1_000_000)
     return int(statistics.median(samples))
 
 
 def in_duckdb_round_timers(
     speed_bar: dict, work_dir: Path, *, extension: Path, home: Path
-) -> tuple[Callable[[], int], Callable[[], int], Callable[[], None]]:
+) -> tuple[Callable[..., int], Callable[..., int], Callable[[], None]]:
     """(one round of ``lemma_query``, one round of DuckDB, close), both on ONE read-only connection under the bar's settings.
 
     ``lemma_query`` is the whole in-DuckDB path: the scan of the needed columns in the caller's snapshot, the copy into the
     executor's buffers, the runtime check of every data assumption, the proved ``run_query`` and the rows back into DuckDB
-    vectors. Same rounds and repetitions as :func:`duck_round_timer`. The extension is loaded unsigned."""
+    vectors. Same rounds and repetitions as :func:`duck_round_timer`. The extension is loaded unsigned.
+
+    A query template (``template_bindings`` in the bar): both timers take the round's binding; ``lemma_query`` gets the values
+    as arguments (:func:`lemma_query_sql`), DuckDB runs the template text with them bound to ``$name``."""
     import duckdb
 
     if not bool(lemma_config.get("in_duckdb")):
@@ -231,16 +246,35 @@ def in_duckdb_round_timers(
         con.close()
         raise ValueError(str(exc)) from exc
     sql = str(speed_bar["sql"])
-    ours_sql = lemma_query_sql(sql)
+    bindings = speed_bar.get("template_bindings")
     reps = duck_reps()
-    for _ in range(2):  # warm both sides (and load the executor library once)
-        con.execute(sql).fetchall()
-        con.execute(ours_sql).fetchall()
 
     def close() -> None:
         con.close()
         shutil.rmtree(tmp, ignore_errors=True)
 
+    if bindings:
+        from declarative_spec import templates
+
+        template = templates.parse_template(sql)
+        if template is None:
+            close()
+            raise ValueError("the bar has template_bindings but its SQL is not a query template")
+
+        def ours_t(binding: dict) -> int:
+            return _median_round(con, lemma_query_sql(sql, binding), reps)
+
+        def duck_t(binding: dict) -> int:
+            return _median_round(con, sql, reps, templates.python_values(template, binding))
+
+        for _ in range(2):  # warm both sides (and load the executor library once)
+            con.execute(sql, templates.python_values(template, bindings[0])).fetchall()
+            con.execute(lemma_query_sql(sql, bindings[0])).fetchall()
+        return ours_t, duck_t, close
+    ours_sql = lemma_query_sql(sql)
+    for _ in range(2):  # warm both sides (and load the executor library once)
+        con.execute(sql).fetchall()
+        con.execute(ours_sql).fetchall()
     return (lambda: _median_round(con, ours_sql, reps)), (lambda: _median_round(con, sql, reps)), close
 
 
@@ -249,10 +283,11 @@ def measure_in_duckdb(
 ) -> dict:
     """K interleaved rounds (alternating which side goes first) of the in-DuckDB path against DuckDB, summarized like the verdict.
 
+    A query template binds round i to ``template_bindings[i % len]`` on both sides, as the official measure does.
     ``timers`` stands in for :func:`in_duckdb_round_timers` (tests)."""
     ours, duck, close = (timers or in_duckdb_round_timers)(speed_bar, work_dir, extension=extension, home=home)
     try:
-        rounds = interleave(ours, duck, official_rounds() if k is None else k)
+        rounds = interleave(ours, duck, official_rounds() if k is None else k, speed_bar.get("template_bindings") or None)
     finally:
         close()
     return {"measurement": MEASUREMENT_IN_DUCKDB, "duck_reps": duck_reps(), **summarize(rounds)}

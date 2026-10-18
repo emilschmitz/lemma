@@ -2,6 +2,7 @@
 // C entry point lemma_run, see lemma_abi.h) on the caller's data, in the caller's transaction.
 //
 //   lemma_query(sql)        table function: the proved executor's rows for `sql`, or an error when there is none
+//   lemma_query(sql, v...)  the same for a query template (`-- params:` header): one value per parameter, in declaration order
 //   lemma_last_query()      which engine answered the last table-reading query of this connection, and why
 //   lemma_normalize_sql(s)  the cache-key form of a SQL text; lemma_sql_key(s) its sha256 (the executor directory name)
 //   SET lemma_mode = true   every table-reading SELECT is answered by its proved executor; with no executor it is an error,
@@ -61,7 +62,8 @@ namespace {
 
 using i128 = __int128;
 
-constexpr uint32_t ABI_VERSION = 1;
+constexpr uint32_t ABI_VERSION = 2;
+constexpr uint32_t PARAM_INT = 1, PARAM_STR = 4;
 constexpr int KIND_INT = 1, KIND_F64 = 2, KIND_BOOL = 3, KIND_STR = 4;
 const char *MISS_MESSAGE = "no proved executor for this query; run `lemma optimize`";
 
@@ -171,6 +173,12 @@ struct InEntry {
 	int64_t codes_of = -1;
 };
 
+// One query-template parameter (manifest "params"): its SQL type decides how a lemma_query argument is encoded.
+struct ParamSpec {
+	std::string name, sql_type, rust_type;
+	int scale = 0;
+};
+
 struct OutCol {
 	std::string name, field, rust_type, duck_type;
 	LogicalType type;
@@ -188,6 +196,7 @@ struct Manifest {
 	std::string dir, key, sql, normalized_sql, proof, lib_sha256, git_sha;
 	std::vector<InEntry> inputs;
 	std::vector<OutCol> outputs;
+	std::vector<ParamSpec> params;
 	std::shared_ptr<Executor> exec;
 };
 
@@ -243,7 +252,8 @@ std::string JoinLines(const std::vector<lemma::Json> &lines) {
 
 // Load (once) the library of `m`: the bytes that are dlopen'ed are exactly the bytes whose sha256 the manifest records; a copy
 // in a process-private directory, so replacing lib.so on disk never changes an already loaded executor.
-std::shared_ptr<Executor> LoadLibrary(const Manifest &m, const std::string &input_layout, const std::string &output_layout) {
+std::shared_ptr<Executor> LoadLibrary(const Manifest &m, const std::string &input_layout, const std::string &output_layout,
+                                      const std::string &param_layout) {
 	std::lock_guard<std::mutex> guard(executors_lock);
 	auto it = executors.find(m.lib_sha256);
 	if (it != executors.end()) {
@@ -283,6 +293,7 @@ std::shared_ptr<Executor> LoadLibrary(const Manifest &m, const std::string &inpu
 	auto lib_sql = reinterpret_cast<lemma_text_fn>(sym("lemma_query_sql"));
 	auto lib_in = reinterpret_cast<lemma_text_fn>(sym("lemma_input_layout"));
 	auto lib_out = reinterpret_cast<lemma_text_fn>(sym("lemma_output_layout"));
+	auto lib_params = reinterpret_cast<lemma_text_fn>(sym("lemma_param_layout"));
 	auto exec = std::make_shared<Executor>();
 	exec->handle = handle;
 	exec->run = reinterpret_cast<lemma_run_fn>(sym("lemma_run"));
@@ -295,6 +306,9 @@ std::shared_ptr<Executor> LoadLibrary(const Manifest &m, const std::string &inpu
 	}
 	if (std::string(lib_in()) != input_layout || std::string(lib_out()) != output_layout) {
 		throw InvalidInputException("Lemma: the executor library of %s has another column layout than its manifest", m.key);
+	}
+	if (std::string(lib_params()) != param_layout) {
+		throw InvalidInputException("Lemma: the executor library of %s has other parameters than its manifest", m.key);
 	}
 	executors[m.lib_sha256] = exec;
 	return exec;
@@ -342,8 +356,16 @@ std::unique_ptr<Manifest> FindExecutor(ClientContext &context, const std::string
 		if (!std::regex_match(m->proof, proof)) {
 			throw InvalidInputException("Lemma: executor %s has no complete proof (manifest proof: '%s')", key, m->proof);
 		}
-		if (!j.At("params").Arr().empty()) {
-			throw InvalidInputException("Lemma: executor %s takes parameters; this extension passes none yet", key);
+		for (auto &e : j.At("params").Arr()) {
+			ParamSpec p;
+			p.name = e.At("name").Str();
+			p.sql_type = e.At("sql_type").Str();
+			p.rust_type = e.At("rust_type").Str();
+			p.scale = int(e.At("scale").Int());
+			m->params.push_back(p);
+		}
+		if (m->params.size() != j.At("param_layout").Arr().size()) {
+			throw InvalidInputException("Lemma: %s: params and param_layout differ in length", dir);
 		}
 		for (auto &e : j.At("inputs").Arr()) {
 			InEntry in;
@@ -378,7 +400,8 @@ std::unique_ptr<Manifest> FindExecutor(ClientContext &context, const std::string
 		if (m->inputs.size() != j.At("input_layout").Arr().size()) {
 			throw InvalidInputException("Lemma: %s: inputs and input_layout differ in length", dir);
 		}
-		m->exec = LoadLibrary(*m, JoinLines(j.At("input_layout").Arr()), JoinLines(j.At("output_layout").Arr()));
+		m->exec = LoadLibrary(*m, JoinLines(j.At("input_layout").Arr()), JoinLines(j.At("output_layout").Arr()),
+		                      JoinLines(j.At("param_layout").Arr()));
 	} catch (std::runtime_error &e) {
 		if (dynamic_cast<Exception *>(&e)) {
 			throw;
@@ -932,9 +955,86 @@ T Read(const std::string &b, size_t off) {
 	return v;
 }
 
-RunResult RunExecutor(const Manifest &m, ScanResult &in) {
+// One lemma_query argument as the executor takes it (lemma_abi.h): the value run_query receives, no conversion that could change
+// it. BIGINT: an integer-typed value; DATE: a DATE value (its day number); DECIMAL(p,s): an integer or DECIMAL value with at most
+// s fractional digits (scaled by 10^s, exact); VARCHAR: a VARCHAR value. Anything else, NULL included, is an error. The range
+// run_query requires is checked by the library.
+struct ParamBytes {
+	uint32_t kind = 0;
+	std::string bytes;
+};
+
+ParamBytes EncodeParam(const ParamSpec &p, const Value &v) {
+	ParamBytes out;
+	if (v.IsNull()) {
+		throw BinderException("lemma_query: parameter %s is NULL", p.name);
+	}
+	auto &t = v.type();
+	auto put_i64 = [&](int64_t x) {
+		out.kind = PARAM_INT;
+		out.bytes.assign(reinterpret_cast<const char *>(&x), sizeof(x));
+	};
+	if (p.sql_type == "VARCHAR") {
+		if (t.id() != LogicalTypeId::VARCHAR) {
+			throw BinderException("lemma_query: parameter %s is VARCHAR, got %s", p.name, t.ToString());
+		}
+		out.kind = PARAM_STR;
+		out.bytes = StringValue::Get(v);
+		return out;
+	}
+	if (p.sql_type == "BIGINT") {
+		if (!t.IsIntegral()) {
+			throw BinderException("lemma_query: parameter %s is BIGINT, got %s", p.name, t.ToString());
+		}
+		put_i64(v.DefaultCastAs(LogicalType::BIGINT).GetValue<int64_t>());
+		return out;
+	}
+	if (p.sql_type == "DATE") {
+		if (t.id() != LogicalTypeId::DATE) {
+			throw BinderException("lemma_query: parameter %s is DATE, got %s (write DATE 'YYYY-MM-DD')", p.name, t.ToString());
+		}
+		put_i64(int64_t(v.GetValue<date_t>().days));
+		return out;
+	}
+	if (p.sql_type.rfind("DECIMAL(", 0) == 0) {
+		if (!t.IsIntegral() && t.id() != LogicalTypeId::DECIMAL) {
+			throw BinderException("lemma_query: parameter %s is %s, got %s", p.name, p.sql_type, t.ToString());
+		}
+		static const std::regex number("^(-?)([0-9]+)(?:\\.([0-9]+))?$");
+		std::string text = v.ToString();
+		std::smatch mt;
+		if (!std::regex_match(text, mt, number)) {
+			throw BinderException("lemma_query: parameter %s: cannot read %s as a decimal", p.name, text);
+		}
+		std::string frac = mt[3].str();
+		while (int(frac.size()) > p.scale && frac.back() == '0') {
+			frac.pop_back(); // DECIMAL(18,4) 0.0500 is 0.05
+		}
+		if (int(frac.size()) > p.scale) {
+			throw BinderException("lemma_query: parameter %s = %s has more than %d fractional digits", p.name, text, p.scale);
+		}
+		std::string digits = mt[2].str() + frac + std::string(size_t(p.scale) - frac.size(), '0');
+		i128 scaled = 0;
+		for (char c : digits) {
+			scaled = scaled * 10 + (c - '0');
+			if (scaled > i128(INT64_MAX)) {
+				throw BinderException("lemma_query: parameter %s = %s does not fit the executor's i64", p.name, text);
+			}
+		}
+		put_i64(int64_t(mt[1].str().empty() ? scaled : -scaled));
+		return out;
+	}
+	throw InvalidInputException("Lemma: parameter %s has SQL type %s, which this extension cannot pass", p.name, p.sql_type);
+}
+
+RunResult RunExecutor(const Manifest &m, ScanResult &in, const std::vector<ParamBytes> &params) {
 	LemmaOut out {nullptr, 0, 0};
-	int32_t code = m.exec->run(in.cols.data(), in.cols.size(), nullptr, 0, &out);
+	std::vector<LemmaParam> abi_params;
+	for (auto &p : params) {
+		abi_params.push_back(
+		    LemmaParam {p.kind, reinterpret_cast<const uint8_t *>(p.bytes.data()), uint64_t(p.bytes.size())});
+	}
+	int32_t code = m.exec->run(in.cols.data(), in.cols.size(), abi_params.data(), abi_params.size(), &out);
 	std::string bytes(reinterpret_cast<const char *>(out.ptr), size_t(out.len));
 	m.exec->free_out(&out);
 	if (code != 0) {
@@ -1110,18 +1210,28 @@ void WriteCell(Vector &vec, idx_t out_i, const OutCol &c, const ResultColumn &rc
 struct LemmaBindData : public TableFunctionData {
 	std::shared_ptr<Manifest> manifest;
 	std::string sql;
-	bool from_optimizer = false; // lemma_mode replaced the plan of a plain SELECT
+	std::vector<ParamBytes> params; // a query template's values, encoded for the executor
+	bool from_optimizer = false;     // lemma_mode replaced the plan of a plain SELECT
 
 	unique_ptr<FunctionData> Copy() const override {
 		auto c = make_uniq<LemmaBindData>();
 		c->manifest = manifest;
 		c->sql = sql;
+		c->params = params;
 		c->from_optimizer = from_optimizer;
 		return std::move(c);
 	}
 	bool Equals(const FunctionData &other) const override {
 		auto &o = other.Cast<LemmaBindData>();
-		return manifest == o.manifest && sql == o.sql;
+		if (manifest != o.manifest || sql != o.sql || params.size() != o.params.size()) {
+			return false;
+		}
+		for (size_t i = 0; i < params.size(); i++) {
+			if (params[i].kind != o.params[i].kind || params[i].bytes != o.params[i].bytes) {
+				return false;
+			}
+		}
+		return true;
 	}
 };
 
@@ -1132,8 +1242,8 @@ struct LemmaGlobalState : public GlobalTableFunctionState {
 
 unique_ptr<FunctionData> LemmaQueryBind(ClientContext &context, TableFunctionBindInput &input,
                                         vector<LogicalType> &return_types, vector<string> &names) {
-	if (input.inputs.size() != 1 || input.inputs[0].IsNull()) {
-		throw BinderException("lemma_query takes one non-NULL VARCHAR: the SQL text");
+	if (input.inputs.empty() || input.inputs[0].IsNull() || input.inputs[0].type().id() != LogicalTypeId::VARCHAR) {
+		throw BinderException("lemma_query takes a non-NULL VARCHAR, the SQL text, then a query template's parameter values");
 	}
 	auto sql = StringValue::Get(input.inputs[0]);
 	auto manifest = FindExecutor(context, sql);
@@ -1147,6 +1257,18 @@ unique_ptr<FunctionData> LemmaQueryBind(ClientContext &context, TableFunctionBin
 		ThrowMiss(context, sql);
 	}
 	auto bind = make_uniq<LemmaBindData>();
+	if (input.inputs.size() != 1 + manifest->params.size()) {
+		std::string want;
+		for (auto &p : manifest->params) {
+			want += (want.empty() ? "" : ", ") + p.name + " " + p.sql_type;
+		}
+		throw BinderException("lemma_query: executor %s takes %d parameter value(s) after the SQL text (%s), got %d",
+		                      manifest->key, int64_t(manifest->params.size()), want.empty() ? "none" : want,
+		                      int64_t(input.inputs.size() - 1));
+	}
+	for (idx_t i = 0; i < manifest->params.size(); i++) {
+		bind->params.push_back(EncodeParam(manifest->params[i], input.inputs[i + 1]));
+	}
 	for (auto &c : manifest->outputs) {
 		return_types.push_back(c.type);
 		names.push_back(c.name);
@@ -1161,7 +1283,7 @@ unique_ptr<GlobalTableFunctionState> LemmaQueryInit(ClientContext &context, Tabl
 	auto start = std::chrono::steady_clock::now();
 	auto scan = ScanInputs(context, *bind.manifest);
 	auto state = make_uniq<LemmaGlobalState>();
-	state->result = RunExecutor(*bind.manifest, scan);
+	state->result = RunExecutor(*bind.manifest, scan, bind.params);
 	LastQuery lq;
 	lq.engine = "lemma";
 	lq.reason = std::string("proved executor (") + bind.manifest->proof + ", git " + bind.manifest->git_sha + ")" +
@@ -1198,11 +1320,15 @@ InsertionOrderPreservingMap<string> LemmaQueryToString(TableFunctionToStringInpu
 	out["engine"] = "lemma";
 	out["executor"] = bind.manifest->key.substr(0, 16);
 	out["proof"] = bind.manifest->proof;
+	if (!bind.params.empty()) {
+		out["params"] = std::to_string(bind.params.size());
+	}
 	return out;
 }
 
 TableFunction LemmaQueryFunctionDef() {
 	TableFunction f("lemma_query", {LogicalType::VARCHAR}, LemmaQueryFunction, LemmaQueryBind, LemmaQueryInit);
+	f.varargs = LogicalType::ANY; // a query template's parameter values
 	f.to_string = LemmaQueryToString;
 	return f;
 }
@@ -1346,6 +1472,14 @@ void LemmaOptimize(OptimizerExtensionInput &input, unique_ptr<LogicalOperator> &
 		lq.reason = std::string(MISS_MESSAGE);
 		state.Record(lq);
 		ThrowMiss(context, query_sql);
+	}
+	if (!manifest->params.empty()) {
+		lq.engine = "none";
+		lq.reason = "a query template: lemma_mode cannot see its parameter values";
+		state.Record(lq);
+		throw InvalidInputException("Lemma: executor %s is a query template; lemma_mode cannot see its parameter values, call "
+		                            "lemma_query('<sql>', <values>...)",
+		                            manifest->key);
 	}
 	(*target)->ResolveOperatorTypes();
 	auto &want = (*target)->types;

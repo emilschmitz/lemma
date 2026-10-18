@@ -6,16 +6,17 @@ columns as caller buffers through ``lemma_run``. That entry point is a FIXED TEM
 the per-field decode lines generated from the spec's column structs: no agent code is in it. Its caller in research_loop
 (the in-engine executor cache) emits it only when the feature flag of lemma.toml is on.
 
-C ABI (version 1; the C header is ``lemma_abi.h`` of the database extension):
+C ABI (version 2; the C header is ``lemma_abi.h`` of the database extension):
 
     struct LemmaCol   { const uint8_t *data; uint64_t len; uint64_t n; };     // len bytes at data; n values
-    struct LemmaParam { uint32_t kind; const uint8_t *data; uint64_t len; };  // reserved for query parameters; none today
+    struct LemmaParam { uint32_t kind; const uint8_t *data; uint64_t len; };  // one query-template parameter value
     struct LemmaOut   { uint8_t *ptr; uint64_t len; uint64_t cap; };          // owned by the library: release with lemma_free_out
 
-    uint32_t    lemma_abi_version(void);       // 1
+    uint32_t    lemma_abi_version(void);       // 2
     const char *lemma_query_sql(void);         // the SQL the spec was emitted from (NUL-terminated)
     const char *lemma_input_layout(void);      // one line per LemmaCol, in order: "rows <table>" or "<table>.<field> <rust type>"
     const char *lemma_output_layout(void);     // one line per result column: "<field> <rust type>"
+    const char *lemma_param_layout(void);      // one line per LemmaParam, in run_query's order: "<name> <rust type> <lo> <hi>" (- = none)
     int32_t     lemma_run(const LemmaCol *cols, uint64_t ncols, const LemmaParam *params, uint64_t nparams, LemmaOut *out);
     void        lemma_free_out(LemmaOut *out);
 
@@ -25,6 +26,16 @@ its UTF-8 bytes; a ``__dict`` entry has ``n`` = its entry count). ``lemma_run`` 
 take, checks EVERY data assumption ``main`` checks (the same generated checks: lengths, catalog row/value caps, dictionary codes,
 unique keys, join caps), and only then calls the proved loaders and ``run_query``. A violated assumption is a nonzero return with the
 message in ``out``; ``run_query`` never runs on unchecked data. A panic never crosses the C boundary (``catch_unwind``).
+
+Parameters (a query template, ``declarative_spec/templates.py``; new in version 2): one ``LemmaParam`` per ``// PARAM`` line of
+the spec, in ``run_query``'s order. ``kind`` 1 = an integer, ``data`` its 8 bytes as a little-endian i64 (BIGINT as is, DATE the day
+number since 1970-01-01, DECIMAL the value * 10**scale: what ``run_query`` takes); ``kind`` 4 = a VARCHAR, ``data`` its UTF-8 bytes.
+The fixed template checks the count, each kind and length, that the value fits the parameter's Rust type and lies in the range
+``run_query`` ``requires`` (the check the command line of ``main`` gets), before any column is decoded; a violation is a nonzero
+return like a violated data assumption. A spec without parameters takes ``nparams == 0``.
+
+A stateful spec (lemma.toml ``stateful``) is refused: its runtime needs the caller's data version (``docs/STATEFUL.md``), which this
+ABI does not carry yet.
 
 Result (``out`` on return 0): ``LMR1``, u64 load_us, u64 run_us, u64 rows, u32 columns, one kind byte per column
 (1 integer as i128, 2 f64, 3 bool, 4 string), then column-major per column: one validity byte per row (0 = NULL), then the cells
@@ -46,7 +57,7 @@ from declarative_spec.assemble import (
     _stitch_verus,
 )
 
-ABI_VERSION = 1
+ABI_VERSION = 2
 KIND_INT, KIND_F64, KIND_BOOL, KIND_STR = 1, 2, 3, 4
 _INT_TYPES = ("u8", "u16", "u32", "u64", "usize", "i8", "i16", "i32", "i64", "i128")
 
@@ -153,6 +164,9 @@ pub struct LemmaParam {
     pub len: u64,
 }
 
+const LEMMA_PARAM_INT: u32 = 1;
+const LEMMA_PARAM_STR: u32 = 4;
+
 #[repr(C)]
 pub struct LemmaOut {
     pub ptr: *mut u8,
@@ -180,22 +194,44 @@ pub extern "C" fn lemma_output_layout() -> *const u8 {
     LEMMA_OUTPUT_LAYOUT.as_ptr()
 }
 
-// UNSAFE 1/4. Contract: `cols` points to `ncols` initialized LemmaCol structs that outlive the call (the caller's array).
-fn lemma_col_slice<'a>(cols: *const LemmaCol, ncols: u64) -> &'a [LemmaCol] {
-    if ncols == 0 {
-        return &[];
-    }
-    assert!(!cols.is_null(), "lemma_run: cols is null");
-    unsafe { std::slice::from_raw_parts(cols, ncols as usize) }
+#[no_mangle]
+pub extern "C" fn lemma_param_layout() -> *const u8 {
+    LEMMA_PARAM_LAYOUT.as_ptr()
 }
 
-// UNSAFE 2/4. Contract: `col.data` points to `col.len` readable bytes that outlive the call and are not written during it.
-fn lemma_col_bytes<'a>(col: &LemmaCol) -> &'a [u8] {
-    if col.len == 0 {
+// UNSAFE 1/4. Contract: `ptr` points to `n` initialized T (the caller's LemmaCol or LemmaParam array) that outlive the call.
+fn lemma_slice<'a, T>(ptr: *const T, n: u64, what: &str) -> &'a [T] {
+    if n == 0 {
         return &[];
     }
-    assert!(!col.data.is_null(), "lemma_run: a column buffer is null");
-    unsafe { std::slice::from_raw_parts(col.data, col.len as usize) }
+    assert!(!ptr.is_null(), "lemma_run: {} is null", what);
+    unsafe { std::slice::from_raw_parts(ptr, n as usize) }
+}
+
+// UNSAFE 2/4. Contract: `data` points to `len` readable bytes (a LemmaCol or LemmaParam buffer) that outlive the call and are
+// not written during it.
+fn lemma_bytes<'a>(data: *const u8, len: u64, what: &str) -> &'a [u8] {
+    if len == 0 {
+        return &[];
+    }
+    assert!(!data.is_null(), "lemma_run: {} buffer is null", what);
+    unsafe { std::slice::from_raw_parts(data, len as usize) }
+}
+
+fn lemma_col_bytes<'a>(col: &LemmaCol) -> &'a [u8] {
+    lemma_bytes(col.data, col.len, "a column")
+}
+
+fn lemma_param_int(p: &LemmaParam, name: &str) -> i64 {
+    assert!(p.kind == LEMMA_PARAM_INT, "parameter {}: kind {}, expected {} (an integer)", name, p.kind, LEMMA_PARAM_INT);
+    let bytes = lemma_bytes(p.data, p.len, "a parameter");
+    assert!(bytes.len() == 8, "parameter {}: {} bytes, an integer is 8", name, bytes.len());
+    i64::from_le_bytes(bytes.try_into().unwrap())
+}
+
+fn lemma_param_str(p: &LemmaParam, name: &str) -> String {
+    assert!(p.kind == LEMMA_PARAM_STR, "parameter {}: kind {}, expected {} (a string)", name, p.kind, LEMMA_PARAM_STR);
+    String::from_utf8(lemma_bytes(p.data, p.len, "a parameter").to_vec()).expect("a string parameter is not UTF-8")
 }
 
 // UNSAFE 3/4. Contract: `out` points to a writable LemmaOut. The bytes move to the caller, who returns them with lemma_free_out.
@@ -272,12 +308,11 @@ pub extern "C" fn lemma_run(
     if out.is_null() {
         return 2;
     }
-    let _ = params; // query parameters are reserved (ABI version 1 takes none)
     std::panic::set_hook(Box::new(|_| {})); // the message goes back through `out`, not to the host's stderr
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         assert!(ncols == __NCOLS__, "lemma_run: {} column buffers, the layout has __NCOLS__", ncols);
-        assert!(nparams == 0, "lemma_run: this query takes no parameters, got {}", nparams);
-        lemma_execute(lemma_col_slice(cols, ncols))
+        assert!(nparams == __NPARAMS__, "lemma_run: {} parameters, this query takes __NPARAMS__", nparams);
+        lemma_execute(lemma_slice(cols, ncols, "cols"), lemma_slice(params, nparams, "params"))
     }));
     match outcome {
         Ok(bytes) => {
@@ -293,9 +328,55 @@ pub extern "C" fn lemma_run(
 """
 
 
+def param_layout(verus_part: str) -> list[str]:
+    """The ``LemmaParam`` order: ``<name> <rust type> <lo> <hi>`` per ``// PARAM`` line of the spec (``-`` = no range)."""
+    from declarative_spec.templates import spec_params
+
+    return [f"{name} {ty} {'-' if lo is None else lo} {'-' if hi is None else hi}" for name, ty, lo, hi in spec_params(verus_part)]
+
+
+def _param_decode(verus_part: str) -> tuple[str, list[str]]:
+    """Decode and check every query-template parameter (the ``main`` command-line check of ``assemble._param_prelude``, from the
+    ``LemmaParam`` array): kind, length, fits the Rust type, in the ``requires`` range. Returns the code and the run_query arguments."""
+    from declarative_spec.templates import spec_params
+
+    lines: list[str] = []
+    args: list[str] = []
+    for index, (name, ty, lo, hi) in enumerate(spec_params(verus_part)):
+        var = f"param_{name}"
+        if ty == "String":
+            lines.append(f'    let {var}: String = lemma_param_str(&params[{index}], "{name}");\n')
+            args.append(f"&{var}")
+            continue
+        if ty not in ("i64", "i32"):
+            raise ValueError(f"library mode cannot pass parameter {name} of type {ty}")
+        if ty == "i64":
+            lines.append(f'    let {var}: i64 = lemma_param_int(&params[{index}], "{name}");\n')
+        else:
+            lines.append(f'    let {var}_i64: i64 = lemma_param_int(&params[{index}], "{name}");\n')
+            lines.append(
+                f'    let {var}: {ty} = <{ty}>::try_from({var}_i64).unwrap_or_else(|_| panic!("parameter {name} = {{}} does not fit {ty}", {var}_i64));\n'
+            )
+        if lo is not None and hi is not None:
+            lines.append(
+                f'    assert!(({var} as i128) >= {lo}i128 && ({var} as i128) <= {hi}i128, "parameter {name} = {{}} is outside its declared range [{lo}, {hi}]", {var});\n'
+            )
+        args.append(var)
+    return "".join(lines), args
+
+
 def assemble_library_program(spec_rs: str, agent_body: str, *, helpers: str = "", sql: str) -> str:
     """The library program: the verified part of :func:`assemble_declarative_program` plus the fixed C entry point (no ``main``)."""
+    from declarative_spec import stateful
+
+    if stateful.is_stateful(spec_rs):
+        raise ValueError(
+            "library mode does not take a stateful spec yet: its runtime needs the caller's data version (refresh/execute_at, "
+            "docs/STATEFUL.md) and ABI version 2 carries none; run the query in-DuckDB with stateful = false"
+        )
     verus_part = _stitch_verus(spec_rs, agent_body, helpers)
+    param_code, param_args = _param_decode(verus_part)
+    params = param_layout(verus_part)
     outputs = output_layout(verus_part)
     layout = input_layout(verus_part)
     structs = re.findall(r"pub struct (Cols_[A-Za-z0-9_]+)\s*\{([^}]+)\}", verus_part, re.DOTALL)
@@ -329,9 +410,13 @@ def assemble_library_program(spec_rs: str, agent_body: str, *, helpers: str = ""
         loaders.append(_loader_fn(verus_part, struct_name, fields))
         args.append(f"&cols_{suffix}")
     run_call, arc_lets = _run_call(verus_part, args)
+    if param_args:
+        run_call = run_call[:-1] + (", " if run_call != "run_query()" else "") + ", ".join(param_args) + ")"
 
     kinds = ", ".join(str(_kind(ty, name)) for name, ty in outputs)
-    execute = "fn lemma_execute(cols: &[LemmaCol]) -> Vec<u8> {\n"
+    execute = "fn lemma_execute(cols: &[LemmaCol], params: &[LemmaParam]) -> Vec<u8> {\n"
+    execute += "    let _ = params;\n" if not params else ""
+    execute += param_code  # every parameter is checked before a column is decoded
     execute += "    let load_start = std::time::Instant::now();\n"
     execute += "".join(load)
     execute += _join_cap_checks(verus_part)
@@ -359,6 +444,11 @@ def assemble_library_program(spec_rs: str, agent_body: str, *, helpers: str = ""
         _static("LEMMA_SQL", sql)
         + _static("LEMMA_INPUT_LAYOUT", "\n".join(layout))
         + _static("LEMMA_OUTPUT_LAYOUT", "\n".join(f"{n} {t}" for n, t in outputs))
+        + _static("LEMMA_PARAM_LAYOUT", "\n".join(params))
     )
-    head = _TEMPLATE_HEAD.replace("__ABI__", str(ABI_VERSION)).replace("__NCOLS__", str(len(layout)))
+    head = (
+        _TEMPLATE_HEAD.replace("__ABI__", str(ABI_VERSION))
+        .replace("__NCOLS__", str(len(layout)))
+        .replace("__NPARAMS__", str(len(params)))
+    )
     return verus_with_loaders + head + "\n" + statics + "\n" + execute

@@ -34,7 +34,7 @@ from pathlib import Path
 import duckdb
 import lemma_config
 
-from declarative_spec.assemble_library import ABI_VERSION, assemble_library_program, input_layout, output_layout
+from declarative_spec.assemble_library import ABI_VERSION, assemble_library_program, input_layout, output_layout, param_layout
 from declarative_spec.emit import emit_declarative_spec
 from research_loop.decl_query_measure import _DECIMAL_TYPE, plan_tables
 from research_loop.table_assumptions import CatalogAssumptions
@@ -147,6 +147,31 @@ def output_descriptors(sql: str, spec: str, con: duckdb.DuckDBPyConnection) -> l
     return out
 
 
+def template_params(sql: str, spec: str) -> tuple[str, list[dict]]:
+    """``(fixed-constant SQL to describe and plan the scan with, manifest params)`` of a query template; ``(sql, [])`` otherwise.
+
+    The scan and the result types do not depend on the values, so the template is instantiated at one in-range value per
+    parameter (its ``requires`` low end; 0 / the empty string when it has no range). Each manifest param: name, SQL type,
+    the Rust type ``run_query`` takes, its scale (DECIMAL) and the range the library checks."""
+    from declarative_spec import templates
+
+    template = templates.parse_template(sql)
+    if template is None:
+        return sql, []
+    ranges = {name: (ty, lo, hi) for name, ty, lo, hi in templates.spec_params(spec)}
+    if [p.name for p in template.params] != list(ranges):
+        raise ValueError(f"spec parameters {list(ranges)} are not the template's {[p.name for p in template.params]} in order")
+    binding: dict[str, str] = {}
+    out: list[dict] = []
+    for p in template.params:
+        rust, lo, hi = ranges[p.name]
+        if rust != p.rust:
+            raise ValueError(f"parameter {p.name}: the spec takes {rust}, the template declares {p.sql_type} ({p.rust})")
+        binding[p.name] = "" if p.kind == "VARCHAR" else templates.text_of(p, lo if lo is not None else 0)
+        out.append({"name": p.name, "sql_type": p.sql_type, "rust_type": rust, "scale": p.scale, "lo": lo, "hi": hi})
+    return templates.instantiate(template, binding), out
+
+
 def compile_library(rs_source: str, work_dir: Path, *, timeout_sec: int | None = None) -> tuple[Path, str]:
     """Verify and compile the library program to a cdylib: ``(path of the .so, "N verified, 0 errors")``. Loud on any failure."""
     from declarative_spec.pipeline import _verus_binary, target_cpu_rustc_args
@@ -216,10 +241,11 @@ def install_executor(
     if violations:
         raise ValueError("; ".join(violations))
     program = assemble_library_program(spec, body, helpers=helpers, sql=sql)
+    plain_sql, params = template_params(sql, spec)
     con = duckdb.connect(str(db_path), read_only=True)
     try:
-        inputs = input_descriptors(sql, schema, catalog, spec, con)
-        outputs = output_descriptors(sql, spec, con)
+        inputs = input_descriptors(plain_sql, schema, catalog, spec, con)
+        outputs = output_descriptors(plain_sql, spec, con)
     finally:
         con.close()
     home = home or lemma_home()
@@ -245,7 +271,8 @@ def install_executor(
             "spec_sha256": hashlib.sha256(spec.encode("utf-8")).hexdigest(),
             "lib_sha256": _sha256_file(stage / "lib.so"),
             "target_cpu": str(lemma_config.get("target_cpu")),
-            "params": [],
+            "params": params,
+            "param_layout": param_layout(spec),
             "input_layout": input_layout(spec),
             "output_layout": [f"{f} {t}" for f, t in output_layout(spec)],
             "inputs": inputs,

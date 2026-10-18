@@ -1,4 +1,4 @@
-// The C ABI of a Lemma executor library (ABI version 1). Emitted by declarative_spec/assemble_library.py, the same template
+// The C ABI of a Lemma executor library (ABI version 2: version 1 plus query-template parameters). Emitted by declarative_spec/assemble_library.py, the same template
 // for every query; the proved run_query sits behind lemma_run. Little-endian cells throughout.
 #pragma once
 
@@ -17,7 +17,10 @@ typedef struct {
 	uint64_t n;
 } LemmaCol;
 
-// Reserved for query parameters (templates). ABI version 1 takes none: nparams must be 0.
+// One query-template parameter value (ABI version 2), in run_query's order (lemma_param_layout: "<name> <rust type> <lo> <hi>").
+// kind 1: an integer, data = 8 bytes little-endian i64 (BIGINT as is, DATE the day number since 1970-01-01, DECIMAL(p,s) the
+// value * 10^s); kind 4: a VARCHAR, data = its UTF-8 bytes. The library checks count, kinds, lengths and the range run_query
+// requires before it decodes a column. A query without parameters takes nparams = 0.
 typedef struct {
 	uint32_t kind;
 	const uint8_t *data;
@@ -34,7 +37,7 @@ typedef struct {
 } LemmaOut;
 
 typedef uint32_t (*lemma_abi_version_fn)(void);
-typedef const char *(*lemma_text_fn)(void);
+typedef const char *(*lemma_text_fn)(void); // lemma_query_sql, lemma_input_layout, lemma_output_layout, lemma_param_layout
 typedef int32_t (*lemma_run_fn)(const LemmaCol *cols, uint64_t ncols, const LemmaParam *params, uint64_t nparams,
                                 LemmaOut *out);
 typedef void (*lemma_free_out_fn)(LemmaOut *out);

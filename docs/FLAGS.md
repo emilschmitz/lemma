@@ -110,14 +110,18 @@ The MCP tool `verify_functions(names, path)` runs Verus on the assembled program
 Default `false`. Nothing in a container run reads it. With it on:
 
 * `declarative_spec/assemble_library.py` may be used: the same `verus!` part as the binary (spec, agent body, host lemmas, verified
-  loaders), with `main` replaced by the fixed C entry point `lemma_run` (ABI version 1, `db_extension/duckdb_ext/src/include/lemma_abi.h`);
-  it runs every runtime check `main` runs before `run_query` and returns an error instead of rows when one fails.
+  loaders), with `main` replaced by the fixed C entry point `lemma_run` (ABI version 2, `db_extension/duckdb_ext/src/include/lemma_abi.h`);
+  it runs every runtime check `main` runs before `run_query` and returns an error instead of rows when one fails. With `[sql]
+  templates` a query template's parameters are passed as `LemmaParam`s, checked (type, `requires` range) before any column is
+  decoded; the extension takes them as `lemma_query('<template>', v1, ...)`. A `stateful` spec is refused (needs the caller's data
+  version; next step in `db_extension/duckdb_ext/README.md`).
 * `research_loop/in_duckdb.py` `install_executor` verifies and compiles that library (`verus --crate-type=cdylib --compile`, the
   `target_cpu` of `[prover]`) and installs `${LEMMA_HOME:-~/.local/share/lemma}/executors/<sha256 of the normalized SQL>/`
   (`lib.so`, `manifest.json`, `query.sql`). Off, it raises `InDuckdbDisabled` and installs nothing. `LEMMA_HOME` is a path, not a
   setting (listed in `NOT_CONFIG`).
 * `research_loop/official_measure.py` `measure_in_duckdb` times `SELECT * FROM lemma_query('<sql>')` end to end (scan + copy +
-  checks + `run_query` + rows back) against DuckDB, interleaved like the official verdict; it refuses with the flag off.
+  checks + `run_query` + rows back) against DuckDB, interleaved like the official verdict (a template: each round on its
+  binding, both sides); it refuses with the flag off.
   `research_loop/scripts/in_duckdb_bench.py` runs it.
 
 The DuckDB side is the extension in `db_extension/duckdb_ext/` (its README: build, LOAD, `lemma_query`, `lemma_last_query`). Its own
