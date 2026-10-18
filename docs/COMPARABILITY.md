@@ -14,7 +14,7 @@ What we do, and where it differs:
 | DuckDB indexes | automatic only | automatic only, none added |
 | DuckDB version | v1.4.4 | 1.5.6 (installed here; not matched) |
 | Load / layout cost | generated storage not in the hot time | column load / export not in the hot time; reported separately with the break-even |
-| Filtering (pushdown) | n/a | with `pushdown` on (the default) DuckDB applies the pushed predicate during the export, outside our hot time, while DuckDB's own reference time includes its filter. Report `scan_plan.json` (rows full vs delivered) with every such number, or turn it off for a like-for-like time |
+| Filtering (pushdown, agent scans) | n/a | with `pushdown` / `agent_scan` on (the default) DuckDB applies the pushed predicate during the export, outside our hot time, while DuckDB's own reference time includes its filter. Report `scan_plan.json` (rows full vs delivered) with every such number, or turn both off for a like-for-like time |
 | Generation cost | minutes and dollars per query | proof + agent minutes per query, reported per query including failed attempts |
 | Hardware | 64-core class server | 4 cores / 8 threads, 14 GB laptop: absolute times are not comparable, only ratios to DuckDB on the same machine |
 | Scale | TPC-H SF10, SEC 2022-2024 (5 GB) | TPC-H SF1 (SF10 does not fit), full SEC (39M `num` rows) |

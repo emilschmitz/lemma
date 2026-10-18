@@ -17,6 +17,10 @@ MORE_EXAMPLES: tuple[tuple[str, str], ...] = (
     ),
     ("count_case_global.rs", "one table, ungrouped `COUNT(CASE WHEN ... THEN 1 END)`"),
     (
+        "scan_filtered_sum.rs",
+        "agent scan: `scan_where_<t>` returns only the rows a predicate implied by the WHERE keeps; the fold over the whole table skips the gaps (`lemma_scan_rows_<t>`)",
+    ),
+    (
         "self_join_count.rs",
         "a table joined with itself on an inequality, ungrouped COUNT(*) (nested loops; its bounds are written for a row cap of 4: redo the arithmetic for your cap)",
     ),

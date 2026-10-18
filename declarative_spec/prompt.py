@@ -1200,6 +1200,27 @@ def _verus_queue_lines() -> list[str]:
     ]
 
 
+def _scan_section(spec_text: str, root: str) -> list[str]:
+    """Agent scans (lemma.toml [run] agent_scan): only when the spec has scan handles."""
+    sig = re.search(r"pub fn run_query\(([^)]*)\)", spec_text)
+    handles = re.findall(r"(\w+_scan): &Scan_(\w+)", sig.group(1)) if sig else []
+    if not handles or "pub fn scan_where_" not in spec_text:
+        return []
+    return [
+        "## Agent scans: let the reference engine filter rows for you",
+        "",
+        f"`run_query` also gets one scan handle per table ({', '.join(f'`{h}` for `{t}`' for h, t in handles)}). "
+        "`scan_where_<t>(<t>_scan, &pred)` returns only the rows of `<t>` that satisfy `pred`, a conjunction of",
+        "`ScanAtom_<t>::Range(ScanCol_<t>::<column>, lo, hi)` (`lo <= cell <= hi`) and `ScanAtom_<t>::In(col, values)` atoms over integer",
+        "columns (dates are days since 1970-01-01, DECIMALs scaled integers, as in the spec); `out.0` holds the rows, `out.1@` their row",
+        "numbers in `<t>`. `lemma_scan_rows_<t>` tells you those row numbers are increasing and are exactly the rows satisfying `pred`.",
+        "The `ensures` is unchanged: you must still prove the result over the WHOLE table, so the rows your predicate drops must be",
+        "rows the query does not need (choose a predicate the WHERE clause implies). Fewer rows to loop over is the speed gain.",
+        f"Worked example: `{root}/examples/scan_filtered_sum.rs`. Ignoring the handles is fine too.",
+        "",
+    ]
+
+
 def build_declarative_prompt(
     *,
     sql: str,
@@ -1294,6 +1315,7 @@ def build_declarative_prompt(
         (P.RECIPE, _parallel_section(spec_text, shape)),
         (P.RECIPE, _distinct_section(spec_text)),
         (P.RECIPE, _group_close_section(spec_text)),
+        (P.RECIPE, _scan_section(spec_text, root)),
         (P.LIMITS, _data_profile_section(root)),
         (P.TASK, [""]),
     ]

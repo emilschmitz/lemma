@@ -114,13 +114,17 @@ def test_a_comparison_against_a_scaled_sum_subquery_emits_without_a_trusted_item
         "SELECT k, SUM(d * e) AS v FROM t GROUP BY k "
         "HAVING SUM(d * e) > (SELECT SUM(d * e) * 0.0001000000 FROM t)"
     )
-    spec = emit_declarative_spec(sql, SCHEMA, CATALOG)
+    from declarative_spec.agent_scan import without_scans
+
+    spec = without_scans(emit_declarative_spec(sql, SCHEMA, CATALOG))  # the agent-scan block is tested in tests/test_agent_scan.py
     assert "external_body" not in spec and "assume(" not in spec
     assert "* (1000000)" in spec or "1000000" in spec
 
 
 def test_a_scaled_sum_as_a_select_item_emits() -> None:
-    spec = emit_declarative_spec("SELECT 0.5 * SUM(d) AS half FROM t", SCHEMA, CATALOG)
+    from declarative_spec.agent_scan import without_scans
+
+    spec = without_scans(emit_declarative_spec("SELECT 0.5 * SUM(d) AS half FROM t", SCHEMA, CATALOG))
     assert "external_body" not in spec and "5" in spec
 
 

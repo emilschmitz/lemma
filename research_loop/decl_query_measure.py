@@ -127,9 +127,14 @@ def _write_query_measure(
     dest.mkdir(parents=True, exist_ok=True)
     (dest / "expect.json").unlink(missing_ok=True)  # stale until the export and timing succeed
     (dest / "scan_plan.json").unlink(missing_ok=True)
+    # Agent scans (declarative_spec/agent_scan.py): column files of earlier scans describe earlier data; never reuse them.
+    scans = "pub fn scan_where_" in spec
+    for stale in [*dest.glob("scan_*.bin"), *dest.glob("scan_*.key"), dest / "scan_ctx.pkl", dest / "scan_cmd"]:
+        stale.unlink(missing_ok=True)
     bins: dict[str, str] = {}
     table_rows: dict[str, int] = {}
     dict_sizes: dict[str, int] = {}  # `<struct suffix>.<column>` -> entries of its dictionary
+    dict_entries: dict[str, dict[str, list[str]]] = {}
     try:
         con, duck_cfg = open_measure_connection(db_path, dest)
     except duckdb.Error as exc:
@@ -140,10 +145,18 @@ def _write_query_measure(
             part = path.with_suffix(".bin.part")
             with part.open("wb") as fh:
                 sizes: dict[str, int] = {}
-                table_rows[suffix] = _export_planned_to(con, plan, fh, sizes, where=wheres[suffix])
+                dict_entries[suffix] = {}
+                table_rows[suffix] = _export_planned_to(
+                    con, plan, fh, sizes, where=wheres[suffix], dict_entries=dict_entries[suffix] if scans else None
+                )
             dict_sizes.update({f"{suffix}.{col}": n for col, n in sizes.items()})
             part.replace(path)  # a refused export leaves the earlier file, not a truncated one
             bins[suffix] = str(path)
+        if scans:
+            from research_loop.scan_export import write_scan_context
+
+            fields = {s.removeprefix("Cols_"): _FIELD.findall(body) for s, body in structs}
+            write_scan_context(dest, db_path, duck_cfg, plans, fields, wheres, dict_entries)
         pushdown_info = None
         if pushdown is not None:
             pushdown_info = scan_plan(spec, pushdown, schema, sql)
@@ -308,6 +321,8 @@ def _export_planned_to(
     dict_sizes: dict[str, int] | None = None,
     *,
     where: str | None = None,
+    fixed_dicts: dict[str, list[str]] | None = None,
+    dict_entries: dict[str, list[str]] | None = None,
 ) -> int:
     """Write the column file for ``plan`` to ``sink``; memory is bounded by ``_BATCH_ROWS`` rows (plus the dictionaries), not the table.
 
@@ -320,7 +335,7 @@ def _export_planned_to(
     spool_dir = str(Path(name).parent) if isinstance(name, str) else None
     return _encode_columns(
         con, table, names, types, infos, nullable, dict_of, valid_fields, sink, spool_dir, dict_sizes,
-        where=where,
+        where=where, fixed_dicts=fixed_dicts, dict_entries=dict_entries,
     )
 
 
@@ -379,7 +394,9 @@ def _decimal_unscaled_sql(name: str, scale: int, src_scale: int, width: int = 38
 
 def int_cell_sql(q: str, fty: str, info: ColumnTypeInfo, base: str) -> str:
     """SQL for the integer a cell is loaded as (date: days since 1970-01-01; DECIMAL: the scaled integer); ``q`` is the quoted column.
-"""
+
+    The agent-scan translation (research_loop/scan_export.py) compares exactly this expression, so a scan predicate tests the value
+    the proved code sees."""
     m = _DECIMAL_TYPE.fullmatch(base)
     if info.is_date:
         return f"CAST({q} - DATE '1970-01-01' AS BIGINT)"
@@ -404,6 +421,8 @@ def _encode_columns(
     dict_sizes: dict[str, int] | None = None,
     *,
     where: str | None = None,
+    fixed_dicts: dict[str, list[str]] | None = None,
+    dict_entries: dict[str, list[str]] | None = None,
 ) -> int:
     """Bulk export to ``sink`` (returns the row count): DuckDB projects every cell at its loaded width, in row batches, as numpy arrays.
 
@@ -441,11 +460,15 @@ def _encode_columns(
     try:
         for idx in sorted(set(dict_of.values())):
             q = _quote(names[idx])
-            # Distinct non-NULL cells in order of first appearance (physical row order), which is the code order.
-            rows = con.execute(
-                f"SELECT s FROM (SELECT CAST({q} AS VARCHAR) AS s, min(rowid) AS m FROM {t} WHERE {q} IS NOT NULL{and_pushed} GROUP BY 1) ORDER BY m"
-            ).fetchall()
-            entries = [r[0] for r in rows]
+            if fixed_dicts is not None and names[idx] in fixed_dicts:
+                # An agent scan: the codes index the full table's dictionary (scan_where ensures the dictionary is the full table's).
+                entries = list(fixed_dicts[names[idx]])
+            else:
+                # Distinct non-NULL cells in order of first appearance (physical row order), which is the code order.
+                rows = con.execute(
+                    f"SELECT s FROM (SELECT CAST({q} AS VARCHAR) AS s, min(rowid) AS m FROM {t} WHERE {q} IS NOT NULL{and_pushed} GROUP BY 1) ORDER BY m"
+                ).fetchall()
+                entries = [r[0] for r in rows]
             if any("\x00" in e for e in entries):
                 raise ValueError(f"{table}.{names[idx]}: a NUL byte in a dictionary string")
             dictionaries[idx] = entries
@@ -518,6 +541,9 @@ def _encode_columns(
         if dict_sizes is not None:
             for source in set(dict_of.values()):
                 dict_sizes[names[source]] = len(dictionaries[source])
+        if dict_entries is not None:
+            for source in set(dict_of.values()):
+                dict_entries[names[source]] = list(dictionaries[source])
     except duckdb.Error as exc:
         raise ValueError(str(exc)) from exc
     finally:

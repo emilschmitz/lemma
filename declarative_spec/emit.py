@@ -491,7 +491,12 @@ def emit_declarative_spec(
         except DeclarativeUnsupported:
             if parallel.strict():
                 raise
-    return with_sql_comment(out, original_sql)
+    out = with_sql_comment(out, original_sql)
+    from declarative_spec import agent_scan
+
+    if agent_scan.enabled():  # lemma.toml [run] agent_scan: scan handles + the one DuckDB-filter trusted item per table
+        out = agent_scan.add_scans(out)
+    return out
 
 
 _MARKERS = ("AGENT_EDIT_", "AGENT_HELPERS_", "HOST_LEMMAS_")
