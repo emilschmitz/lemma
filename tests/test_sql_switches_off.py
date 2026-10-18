@@ -25,7 +25,18 @@ CATALOG = assumption_package("tpch_sf1")
 
 
 def emit_tpch(name: str) -> str:
-    return emit_declarative_spec((FIXTURES / f"{name}.sql").read_text().strip(), SCHEMA, CATALOG)
+    """The spec without the comment quoting the SQL above run_query (added after the hashes were taken; tests/test_sql_comment.py covers it)."""
+    spec = emit_declarative_spec((FIXTURES / f"{name}.sql").read_text().strip(), SCHEMA, CATALOG)
+    out, quoting = [], False
+    for line in spec.splitlines(keepends=True):
+        if line.startswith("// SQL (the query this spec states):"):
+            quoting = True
+            continue
+        if quoting and (line.startswith("//     ") or line.rstrip("\n") == "//"):
+            continue
+        quoting = False
+        out.append(line)
+    return "".join(out)
 
 
 @pytest.mark.parametrize("key", SQL_KEYS)
