@@ -331,3 +331,55 @@ def admit_helpers(helpers: str, spec_rs: str) -> AdmitResult:
         seen.add(name)
     violations += _banned_everywhere(cleaned)
     return AdmitResult(ok=len(violations) == 0, violations=violations)
+
+
+_STATE_HEADER = re.compile(r"^(?:pub\s+)?(?:struct|enum)\s+([A-Za-z_][A-Za-z0-9_]*)\b")
+
+
+def admit_state(state: str, spec_rs: str) -> AdmitResult:
+    """The state region of a stateful spec holds `struct` and `enum` items only, one of them `QAcc`.
+
+    A type adds no fact Verus does not check: the state is constrained only by the agent's `qstate_inv`, which `build` must prove
+    and `execute` may assume. A type may not reuse a host name, nor take a `Cols_` name (the host loads every `Cols_` struct).
+    """
+    try:
+        cleaned = _strip_comments_and_strings(state)
+        headers = _top_level_headers(cleaned)
+    except ValueError as exc:
+        return AdmitResult(ok=False, violations=[str(exc)])
+    violations: list[str] = []
+    taken = host_names(spec_rs)
+    seen: set[str] = set()
+    for header in headers:
+        m = _STATE_HEADER.match(header)
+        if m is None:
+            violations.append(f"state region holds only `struct` and `enum` items, not: {header[:60]}")
+            continue
+        name = m.group(1)
+        if name in taken:
+            violations.append(f"state type redefines a host name: {name}")
+        if name.startswith("Cols_"):
+            violations.append(f"state type may not take a `Cols_` name: {name}")
+        if name in seen:
+            violations.append(f"state type defined twice: {name}")
+        seen.add(name)
+    if "QAcc" not in seen:
+        violations.append("state region must define `pub struct QAcc` (the agent part of QState)")
+    violations += _banned_everywhere(cleaned)
+    return AdmitResult(ok=len(violations) == 0, violations=violations)
+
+
+def admit_stateful(*, state: str, build: str, execute: str, helpers: str, spec_rs: str) -> AdmitResult:
+    """All four agent regions of a stateful spec: the state types, the `build` body, the `execute` body and the helpers
+    (which must define `spec fn qstate_inv`). Bodies follow the `run_query` body rules, helpers the helper rules."""
+    violations = list(admit_state(state, spec_rs).violations)
+    violations += [f"build: {v}" for v in admit_declarative_body(build).violations]
+    violations += [f"execute: {v}" for v in admit_declarative_body(execute).violations]
+    violations += admit_helpers(helpers, spec_rs).violations
+    try:
+        cleaned = _strip_comments_and_strings(helpers)
+    except ValueError:
+        cleaned = ""
+    if not re.search(r"\bspec\s+fn\s+qstate_inv\s*\(", cleaned):
+        violations.append("helper region must define `spec fn qstate_inv(s: &QState) -> bool` (the state invariant)")
+    return AdmitResult(ok=len(violations) == 0, violations=list(dict.fromkeys(violations)))

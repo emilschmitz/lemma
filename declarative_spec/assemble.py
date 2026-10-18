@@ -38,6 +38,15 @@ def _insert_helpers(stitched: str, helpers: str) -> str:
     return stitched[:inner] + f"\n{helpers.strip()}\n" + stitched[end:]
 
 
+def _fill_region(spec_rs: str, start_mark: str, end_mark: str, text: str) -> str:
+    start = spec_rs.find(start_mark)
+    end = spec_rs.find(end_mark)
+    if start == -1 or end == -1 or end < start:
+        raise ValueError(f"{start_mark.removeprefix('// ')} markers missing from spec")
+    inner = start + len(start_mark)
+    return spec_rs[:inner] + f"\n{text.strip()}\n" + spec_rs[end:]
+
+
 def assemble_declarative_program(
     spec_rs: str,
     agent_body: str,
@@ -45,8 +54,22 @@ def assemble_declarative_program(
     helpers: str = "",
     column_bins: dict[str, str] | None = None,
     expected_rows: dict[str, int] | None = None,
+    state: str = "",
+    build: str = "",
+    serve: bool = False,
 ) -> str:
+    """The program Verus checks and rustc compiles. A stateful spec (``stateful.is_stateful``) also takes the agent's
+    ``state`` types and ``build`` body (``agent_body`` is then the ``execute`` body), and gets the fixed host runtime; with
+    ``serve`` its ``main`` answers one call per stdin line (``<version> <column file per table>``) instead of the timed runs."""
+    from declarative_spec import stateful
     from declarative_spec.regions import EDIT_END, EDIT_START
+
+    is_stateful = stateful.is_stateful(spec_rs)
+    if not is_stateful and (state.strip() or build.strip() or serve):
+        raise ValueError("state / build / serve are for a stateful spec (lemma.toml `stateful`)")
+    if is_stateful:
+        spec_rs = _fill_region(spec_rs, stateful.STATE_START, stateful.STATE_END, state)
+        spec_rs = _fill_region(spec_rs, stateful.BUILD_START, stateful.BUILD_END, build)
 
     start = spec_rs.find(EDIT_START)
     end = spec_rs.find(EDIT_END)
@@ -104,7 +127,15 @@ def assemble_declarative_program(
             f"{fname}: {table_suffix}_{_local_ident(fname)}" for fname, _ in fields
         ]
         fn_name = f"load_cols_{table_suffix}"
-        if column_bins is None:
+        if serve:
+            prelude, call_args = _read_column_prelude(
+                "",
+                table_suffix,
+                fields,
+                checks=_runtime_checks(verus_part, table_suffix, fields),
+                path_expr=f"path_{table_suffix}",
+            )
+        elif column_bins is None:
             prelude = ""
             call_args = ", ".join("0" if i == 0 else "vec![]" for i in range(len(param_parts)))
         else:
@@ -137,6 +168,8 @@ def assemble_declarative_program(
         mains_args.append(f"&{col_var}")
 
     join_cap_checks = _join_cap_checks(verus_part)
+    if is_stateful:
+        return _assemble_stateful(verus_part, loaders, mains_load, join_cap_checks, column_bins is not None, serve)
     arc_lets = ""
     if mains_args:
         # One argument per parameter: two aliases of one table (a self join) share one loaded struct.
@@ -382,10 +415,12 @@ def _read_column_prelude(
     *,
     checks: list[str] | None = None,
     expect_rows: int | None = None,
+    path_expr: str | None = None,
 ) -> tuple[str, str]:
     escaped = path.replace("\\", "\\\\").replace('"', '\\"')
+    source = f"&{path_expr}" if path_expr is not None else f'"{escaped}"'
     lines = [
-        f'    let bytes_{suffix} = std::fs::read("{escaped}").expect("cols");',
+        f'    let bytes_{suffix} = std::fs::read({source}).expect("cols");',
         f"    let n_{suffix} = u64::from_le_bytes(bytes_{suffix}[0..8].try_into().unwrap()) as usize;",
         f"    let mut off_{suffix}: usize = 8;",
     ]
@@ -608,3 +643,100 @@ def _timed_runs(run_call: str, verus_part: str) -> tuple[str, str]:
     println!("TIMED_RUNS: {TIMED_RUNS}");
 {after}"""
     return timed, hex_fn
+
+
+def _indent(text: str, extra: int) -> str:
+    pad = " " * extra
+    return "\n".join(pad + line if line.strip() else line for line in text.rstrip("\n").splitlines())
+
+
+def _assemble_stateful(
+    verus_part: str, loaders: list[str], mains_load: list[str], join_cap_checks: str, loaded: bool, serve: bool
+) -> str:
+    """Verus part + loaders + the fixed host runtime (``stateful.runtime_rs``), and a ``main`` that drives the runtime.
+
+    Measure ``main``: load, ``refresh`` once at version 0 (``STATE_BUILD_US``, outside the timer), then the timed runs of
+    ``execute_at(0)``. Serve ``main``: per stdin line ``<version> <file per table in SERVE_TABLES order>``, read the files and
+    ``refresh`` only when the version is not the one the state was built at (``BUILT 1``; else ``BUILT 0``), then answer.
+    """
+    from declarative_spec import stateful
+
+    c = stateful.contract(verus_part)
+    suffix_of = {name: struct.removeprefix("Cols_") for name, struct in c.tables}
+    if c.params:
+        raise ValueError("stateful main: runtime parameters need a caller that supplies them (the template driver); none here")
+    refresh_args = ", ".join(f"cols_{suffix_of[n]}" for n, _s in c.tables)
+    closed = verus_part.rstrip()
+    if not closed.endswith("}"):
+        raise ValueError("verus block did not end at '}'")
+    verus_all = closed[:-1] + "\n" + stateful.runtime_rs(verus_part) + "\n" + "\n\n".join(loaders) + "\n}\n"
+    fields = _out_row_fields(verus_part)
+    answer = 'rt.execute_at({v}).expect("the state was built at this version")'
+    if serve:
+        if not fields:
+            raise ValueError("stateful serve mode prints OutRow results only")
+        hex_fn, rows = _row_printer("answer", fields)
+        order = [suffix_of[n] for n, _s in c.tables]
+        paths = "".join(f"            let path_{sfx} = words[{i + 1}].to_string();\n" for i, sfx in enumerate(order))
+        loads = "\n".join(_indent(block, 8) for block in mains_load)
+        main_fn = f"""fn main() {{
+    use std::io::BufRead;
+    use std::io::Write;
+    let stdin = std::io::stdin();
+    let mut rt = QRuntime::new();
+    println!("SERVE_TABLES: {' '.join(order)}");
+    std::io::stdout().flush().unwrap();
+    for line in stdin.lock().lines() {{
+        let line = line.expect("stdin");
+        let words: Vec<&str> = line.split_whitespace().collect();
+        if words.is_empty() {{
+            continue;
+        }}
+        assert!(words.len() == {1 + len(order)}, "a call is: <version> then one column file per table ({' '.join(order)})");
+        let version: u64 = words[0].parse().expect("version is a u64");
+        if rt.is_current(version) {{
+            println!("BUILT 0");
+        }} else {{
+{paths}{loads}
+{_indent(join_cap_checks, 8)}
+            let build_start = std::time::Instant::now();
+            rt.refresh(version, {refresh_args});
+            println!("BUILT 1");
+            println!("STATE_BUILD_US: {{}}", build_start.elapsed().as_micros());
+        }}
+        let start = std::time::Instant::now();
+        let answer = {answer.format(v="version")};
+        println!("EXEC_US: {{}}", start.elapsed().as_micros());
+{_indent(rows, 4)}
+        println!("END");
+        std::io::stdout().flush().unwrap();
+    }}
+}}
+"""
+        return verus_all + "\n" + hex_fn + main_fn
+    if not fields and re.search(r"-> \(res: StringHashMap<", verus_part):
+        raise ValueError("a stateful spec with a StringHashMap result has no printer (the key column moved into the state)")
+    run_call = answer.format(v="0")
+    if loaded:
+        timed, hex_fn = _timed_runs(run_call, verus_part)
+    else:
+        hex_fn = ""
+        timed = f"""    let start = std::time::Instant::now();
+    let _res = {run_call};
+    let elapsed = start.elapsed();
+    println!("QUERY_LATENCY_US: {{}}", elapsed.as_micros());
+"""
+    main_fn = "fn main() {\n"
+    if loaded:
+        main_fn += "    let load_start = std::time::Instant::now();\n"
+    main_fn += "\n".join(mains_load) + "\n" + join_cap_checks
+    if loaded:
+        main_fn += '    println!("LOAD_US: {}", load_start.elapsed().as_micros());\n'
+    main_fn += (
+        "    let mut rt = QRuntime::new();\n"
+        "    let build_start = std::time::Instant::now();\n"
+        f"    rt.refresh(0, {refresh_args});\n"
+        '    println!("STATE_BUILD_US: {}", build_start.elapsed().as_micros());\n'
+    )
+    main_fn += timed + "}\n"
+    return verus_all + "\n" + hex_fn + main_fn

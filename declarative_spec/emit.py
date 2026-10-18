@@ -483,8 +483,11 @@ def emit_declarative_spec(
     spec = _emit_integer_sql(integer_sql, schema, catalog)
     spec = _with_f64_literals(spec, integer_sql)
     out = _with_agent_surface(with_out_scales(spec, scales))
-    from declarative_spec import parallel
+    from declarative_spec import parallel, stateful
 
+    if stateful.enabled():
+        # The build/execute contract replaces run_query; the Arc (parallel) variant is not emitted (the state may hold Arcs itself).
+        return stateful.to_stateful(with_sql_comment(out, original_sql))
     if parallel.enabled():
         try:
             out = parallel.to_parallel(out)
@@ -494,7 +497,7 @@ def emit_declarative_spec(
     return with_sql_comment(out, original_sql)
 
 
-_MARKERS = ("AGENT_EDIT_", "AGENT_HELPERS_", "HOST_LEMMAS_")
+_MARKERS = ("AGENT_EDIT_", "AGENT_HELPERS_", "HOST_LEMMAS_", "AGENT_STATE_", "AGENT_BUILD_")
 
 
 def with_sql_comment(spec: str, sql: str) -> str:

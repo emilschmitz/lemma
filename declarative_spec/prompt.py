@@ -280,7 +280,7 @@ _HARD_FEATURES: tuple[tuple[str, str], ...] = (
 
 def _features(spec_text: str) -> dict:
     """The facts about a spec that pick its recipe (the result kind is a string, the rest are bools)."""
-    result = re.search(r"pub fn run_query\([^)]*\)\s*->\s*\(res:\s*([^)]+)\)", spec_text)
+    result = re.search(r"pub fn (?:run_query|execute)\([^)]*\)\s*->\s*\(res:\s*([^)]+)\)", spec_text)
     ty = result.group(1).strip() if result else ""
     tables = len(re.findall(r"pub struct Cols_", spec_text))
     head = spec_text.split("pub fn run_query(")[0]
@@ -656,6 +656,41 @@ _GROUP_CLOSE_OUTLINE_PRINCIPLES = [
         "present code): `context/ro/examples/star_join_group_by.rs`. For a selection loop with a LIMIT, keep the order and `<= LIMIT` facts as loop invariants and call `_omitted` first.",
         "Do not give up on a long proof: write the whole body in pieces, run the check, and fix the first failing clause; every piece is an ordinary loop invariant.",
 ]
+
+
+def _stateful_section(spec_text: str) -> list[str]:
+    """Facts about the build/execute contract (lemma.toml `stateful`), only for a spec that has it."""
+    from declarative_spec import stateful
+
+    if not stateful.is_stateful(spec_text):
+        return []
+    c = stateful.contract(spec_text)
+    tables = ", ".join(f"`{n}: {s}`" for n, s in c.tables)
+    return [
+        "## Stateful contract (this spec has `build` and `execute`, no `run_query`)",
+        "",
+        "- Four regions are kept in this file, not two: the state types between `// AGENT_STATE_START` and `// AGENT_STATE_END`",
+        "  (`pub struct QAcc { .. }` and any further `struct` / `enum` it uses; fields may be `Ghost<..>`), the `build` body between",
+        "  `// AGENT_BUILD_START` and `// AGENT_BUILD_END`, the `execute` body between `// AGENT_EDIT_START` and `// AGENT_EDIT_END`, and",
+        "  the helpers, which must define `spec fn qstate_inv(s: &QState) -> bool`. The body and helper rules above apply to all of them.",
+        "- The host defines `QState { snap: Ghost<QDb>, acc: QAcc }`, `s.db()` (the ghost snapshot of the tables `build` was given) and",
+        "  `s.inv()`, which is `query_pre(..)` of `s.db()` and `qstate_inv(s)`. `query_pre` is the requires and `query_post` the ensures",
+        "  that `run_query` has for this query, verbatim.",
+        f"- `build` takes the tables by value ({tables}) and must ensure `s.inv()` and `s.db() == QDb {{ .. }}` of exactly its inputs.",
+        "  It owns them: it may keep, move or drop them.",
+        "- `execute(s: &QState" + "".join(f", {n}: {t}" for n, t in c.params) + f") -> (res: {c.ret})` may assume `s.inv()` and must ensure",
+        "  `query_post` of `s.db()` and `res`. `qstate_inv` is yours: `build` must prove it and `execute` may assume it; it constrains",
+        "  only your proof, not the answer.",
+        "- A state that owns the tables (`qstate_inv`: each owned table equals the one in `s.db()`) with an `execute` that is a",
+        "  `run_query` body over them satisfies this contract.",
+        "- The host keeps one state in memory, tagged with the data version it was built from. On every call it compares the",
+        "  current data version; when no state exists or it was built at another version, it calls `build` on the current tables",
+        "  first, then `execute`. Nothing runs when the data changes; the next call rebuilds. The state is not saved: a new process",
+        "  builds again.",
+        "- `execute` may be called many times per `build`: work in `build` is paid once per data version. The timed runs time",
+        "  `execute` only; `run_runquery` reports the build time separately (`STATE_BUILD_US`).",
+        "",
+    ]
 
 
 def _group_close_section(spec_text: str) -> list[str]:
@@ -1294,6 +1329,7 @@ def build_declarative_prompt(
         (P.RECIPE, _parallel_section(spec_text, shape)),
         (P.RECIPE, _distinct_section(spec_text)),
         (P.RECIPE, _group_close_section(spec_text)),
+        (P.RULES, _stateful_section(spec_text)),
         (P.LIMITS, _data_profile_section(root)),
         (P.TASK, [""]),
     ]
