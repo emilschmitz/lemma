@@ -474,10 +474,15 @@ def emit_declarative_spec(
     arguments of the spec and of ``run_query``."""
     from declarative_spec import templates
 
+    from declarative_spec import stateful
+
     template = templates.parse_template(sql)
     if template is not None:
-        return templates.emit_template(template, schema, catalog, _emit_fixed)
-    return with_sql_comment(_emit_fixed(sql, schema, catalog), sql)
+        spec = templates.emit_template(template, schema, catalog, _emit_fixed)
+    else:
+        spec = with_sql_comment(_emit_fixed(sql, schema, catalog), sql)
+    # The build/execute contract replaces run_query (after the SQL comment is placed above it); see declarative_spec/stateful.py.
+    return stateful.to_stateful(spec) if stateful.enabled() else spec
 
 
 def _emit_fixed(
@@ -500,8 +505,7 @@ def _emit_fixed(
     from declarative_spec import parallel, stateful
 
     if stateful.enabled():
-        # The build/execute contract replaces run_query; the Arc (parallel) variant is not emitted (the state may hold Arcs itself).
-        return stateful.to_stateful(with_sql_comment(out, original_sql))
+        return out  # no Arc (parallel) variant: the state may hold Arcs itself; emit_declarative_spec applies the stateful contract
     if parallel.enabled():
         try:
             out = parallel.to_parallel(out)
