@@ -1,6 +1,7 @@
 # Opus 5.5, no verified examples, data profile on: the 14 queries of the frozen set not run in opus_none_stats.toml.
 # Run: uv run python research_loop/scripts/container_batch.py --experiment configs/experiments/opus_none_stats_rest.toml
 [settings]
+assumptions = true                # these runs used the (now UNMAINTAINED) assumption-package path: keep it so they replay as recorded
 examples = "none"
 data_profile = "stats"
 

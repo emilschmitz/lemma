@@ -184,7 +184,18 @@ def run(
         os.environ["LEMMA_MEASURE_DB"] = str(db_path)
         # The catalog is its own axis: the package that matches the database file (DECIMAL or DOUBLE `value`) unless
         # --assumption-package / the profile says otherwise. The OFFICIAL size is the size of that database.
-        if resolved.values["assumption_package"] is None:
+        # With assumptions = false (the default since 2026-10-17) there is no package at all: the spec states no data caps and run_query
+        # may decline; the package path is UNMAINTAINED.
+        if not lemma_config.assumptions_enabled():
+            if resolved.values["assumption_package"] is not None:
+                raise lemma_config.ConfigError(
+                    f"assumption package {resolved.values['assumption_package']!r} selected ({resolved.sources['assumption_package']}) but "
+                    "assumptions = false: drop it, or set assumptions = true (the UNMAINTAINED package path)"
+                )
+            from research_loop.menu_profile import record_effective_axis
+
+            resolved = record_effective_axis("assumption_package", "none", "assumptions = false: no data assumptions")
+        elif resolved.values["assumption_package"] is None:
             os.environ["LEMMA_ASSUMPTION_PACKAGE"] = package_for_db(db_path)
             from research_loop.menu_profile import record_effective_axis
 
@@ -216,7 +227,9 @@ def run(
         "replicable": lemma_config.experiment_record() is not None,
         "sql": sql,
         "wall_s": round(time.time() - t0, 1),
-        "status": result.get("status"),
+        "status": result.get("status"),  # DECLINED (assumptions = false: the proved run_query returned None) is a failed query, never a success
+        "declined": result.get("status") == "DECLINED",
+        "assumptions": lemma_config.assumptions_enabled(),
         "latency_us": result.get("best_latency_us"),
         # The imperative loop leaves "error" empty and keeps the reason per iteration in the history.
         "error": verdict_error(result),

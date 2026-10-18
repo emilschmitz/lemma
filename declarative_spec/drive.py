@@ -360,7 +360,7 @@ def run_declarative_optimization_loop(
 
     max_budget_usd = float(lemma_config.get("max_budget_usd"))
     raw_stream = workspace / "logs" / "claude_raw.jsonl"  # appended by every Claude session of the query
-    state = {"prev_source": None, "last_error": last_error, "proof_verified": False, "remaining_usd": None}  # the file the previous session left; the last error; any proof so far
+    state = {"prev_source": None, "last_error": last_error, "proof_verified": False, "remaining_usd": None, "declined": False}  # the file the previous session left; the last error; any proof so far
     best_source: list[str] = []  # the file of the best success so far: the base of a continuation session
     cfg = load_agent_config()
 
@@ -453,6 +453,9 @@ def run_declarative_optimization_loop(
         iter_record["official"] = official_record(metrics)
         iter_record["latency_us"] = metrics.get("latency_us", -1)
         state["proof_verified"] = bool(iter_record["proof_verified"])
+        # assumptions = false: the proved program returned None on the official data. Labelled DECLINED, a failed query (never a success).
+        state["declined"] = metrics.get("status") == "DECLINED"
+        iter_record["declined"] = state["declined"]
         if metrics.get("status") != "SUCCESS":
             state["last_error"] = str(metrics.get("compiler_error") or "declarative run failed")
             iter_record["verus_excerpt"] = state["last_error"][-4000:]
@@ -507,7 +510,9 @@ def run_declarative_optimization_loop(
         return {**done.best.result, "history": history, "sessions": done.records}
 
     return {
-        "status": "FAILED",
+        # The last host measure declined: say so (DECLINED is a failed query, not a proof failure); anything else that did not succeed is FAILED.
+        "status": "DECLINED" if state["declined"] else "FAILED",
+        "declined": state["declined"],
         "best_latency_us": -1,
         "duck_us": None if speed_bar is None else speed_bar.get("duck_us"),
         "official": next((h["official"] for h in reversed(history) if h.get("official")), None),

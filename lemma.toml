@@ -19,12 +19,21 @@
 # the agent image and command, the agent container limits (--memory 3g --network none --cap-drop ALL), scope swap 0, oom score 800,
 # the Verus guard slot lock. Secrets (ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN) are never config: environment only.
 
+# ======================================================================================================================
+# DATA ASSUMPTIONS ARE OFF BY DEFAULT (owner decision, 2026-10-17). The assumption-package path (assumptions = true:
+# row caps, value caps, dictionary-size caps, unique keys and join caps in valid_cols, asserted by the generated main)
+# is UNMAINTAINED. The default follows JetStream (arXiv 2610.20527): the spec uses exact mathematical integers, valid_cols
+# states only what the fixed loader builds and checks (column lengths, dictionary codes in range, distinct dictionary
+# entries), and run_query returns Option: None = DECLINE (e.g. a checked addition overflowed). A declined run is labelled
+# DECLINED, is neither a success nor a proof failure, and counts as a FAILED query in experiments. See docs/FLAGS.md.
+# ======================================================================================================================
 [run]
 spec_style = "declarative"                  # declarative | imperative: the whole chain (emitter, assembler, admission, prompt, measure)
 menu = "adversary_declarative0"             # menu profile (research_loop/menu_profile.py); its axes are the next five keys
 agent_model = "claude-sonnet-5-5"           # prover model slug; claude-* runs Claude Code in the container. Decision: the frozen run's model (the menu profile said haiku)
 trusted_set = "declarative_default"         # host lemma block pasted into the spec
-assumption_package = ""                     # REQUIRED, no default (empty fails loudly): a package name, a .json path, or the explicit value "auto" = the package that matches the DuckDB file (sec_margin_dec for DECIMAL)
+assumptions = false                         # false (default since 2026-10-17): no data assumptions, run_query may decline (None), see the block above. true = the UNMAINTAINED assumption-package path (byte-identical to before the flag; needs assumption_package)
+assumption_package = ""                     # only with assumptions = true (UNMAINTAINED), then REQUIRED (empty fails loudly): a package name, a .json path, or the explicit value "auto" = the package that matches the DuckDB file (sec_margin_dec for DECIMAL). With assumptions = false it must stay empty
 speed_bar_mult = 1.0                        # verdict: median(ours) * mult < median(DuckDB)
 max_iterations = 2                          # agent sessions per query before any early-ending continuation: the per-query wall budget is max_iterations x agent_timeout_sec. A further session starts from the best body so far. Decision: 2 (the frozen run; the loop default 3 and MAX_ITERATIONS=1/4 are legacy)
 string_encoding = "dict"                    # plain | dict: dictionary-encoded string columns (the frozen run's setting)

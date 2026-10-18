@@ -1,7 +1,12 @@
 # Experiments
 
-One TOML per experiment: `[settings]` (keys of `lemma.toml`, laid over it) and `[[run]]` entries (`model`, `query`, `duckdb_path`, `assumption_package`).
-`query` and `assumption_package` are repo-relative and must be tracked and unchanged at HEAD (queries live in `configs/queries/`); `duckdb_path` is a data path whose sha256 is recorded.
+One TOML per experiment: `[settings]` (keys of `lemma.toml`, laid over it) and `[[run]]` entries (`model`, `query`, `duckdb_path`).
+`query` is repo-relative and must be tracked and unchanged at HEAD (queries live in `configs/queries/`); `duckdb_path` is a data path whose sha256 is recorded.
+
+Data assumptions are off by default (`assumptions = false`, since 2026-10-17): a run has no `assumption_package`, the spec states no data caps, and
+`run_query` may decline (return None). A declined query is labelled `DECLINED` and counts as a failed query. The assumption-package path is
+UNMAINTAINED; an experiment that still uses it sets `assumptions = true` in `[settings]` and then every `[[run]]` also names an
+`assumption_package` (repo-relative, tracked and unchanged at HEAD). A package with `assumptions = false`, or none with `true`, is refused.
 
 Run (after committing the file; the tree must be clean, untracked files included):
 

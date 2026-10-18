@@ -1,9 +1,13 @@
 ---
 name: lemma-assumptions
-description: Get a Lemma assumption package (row/value/string caps, unique keys, nullable columns, join caps) from the user's own DuckDB, have the user approve every claim, check it, and run Lemma under it. Use when the user wants to run Lemma on their data or asks about assumptions/caps.
+description: UNMAINTAINED (off by default since 2026-10-17). Get a Lemma assumption package (row/value/string caps, unique keys, nullable columns, join caps) from the user's own DuckDB for the `assumptions = true` path, have the user approve every claim, check it, and run Lemma under it. Use only when the user explicitly wants the assumption-package path or asks about assumptions/caps.
 ---
 
 # Lemma assumptions from your data
+
+**UNMAINTAINED, off by default since 2026-10-17.** Lemma's default (`lemma.toml` `assumptions = false`) needs no package: the spec
+makes no data assumptions and the program may decline a query (reported as DECLINED). This skill applies only when the user sets
+`assumptions = true` on purpose; say so before starting.
 
 A Lemma proof is IF-THEN: IF the data obeys the declared bounds, THEN the program computes the SQL.
 The assumptions are the **user's claims about their data**. A wrong claim makes the proofs vacuous.

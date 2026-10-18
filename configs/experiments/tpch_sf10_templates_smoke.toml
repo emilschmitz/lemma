@@ -2,6 +2,7 @@
 # The package research_loop/assumption_packages/registry/tpch_sf10.json is a PLACEHOLDER name: the owner approves that package later. Until the file is committed the run refuses (not tracked at HEAD).
 # Run: uv run python research_loop/scripts/container_batch.py --experiment configs/experiments/tpch_sf10_templates_smoke.toml
 [settings]
+assumptions = true                # these runs used the (now UNMAINTAINED) assumption-package path: keep it so they replay as recorded
 examples = "none"
 data_profile = "stats"
 templates = true

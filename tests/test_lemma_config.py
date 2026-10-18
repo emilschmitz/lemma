@@ -13,6 +13,7 @@ import lemma_config as lc
 TOML = """
 [run]
 max_iterations = 2
+assumptions = false
 join_chain = false
 [measure]
 official_rounds = 5
@@ -242,6 +243,7 @@ def test_the_real_file_is_valid_and_its_memory_budget_is_consistent(real: None) 
 
 EXP = """
 [settings]
+assumptions = true
 official_rounds = 3
 [[run]]
 model = "sonnet"

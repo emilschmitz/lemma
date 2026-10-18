@@ -625,7 +625,9 @@ def normalize_harness_metrics(res: dict) -> dict:
         verify_msg=str(res.get("verify_msg") or ""),
     )
     out = {
-        "status": "SUCCESS" if ok_status and proof_verified else "FAILURE",
+        # DECLINED (assumptions = false: the proved run_query returned None) stays its own label: not a success, not a proof failure.
+        "status": "SUCCESS" if ok_status and proof_verified else ("DECLINED" if status == "DECLINED" else "FAILURE"),
+        **({"declined": True} if status == "DECLINED" else {}),
         "proof_verified": proof_verified,
         "latency_us": int(res.get("latency_us", -1)),
         "compiler_error": compiler_error,

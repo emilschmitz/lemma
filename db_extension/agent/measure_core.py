@@ -391,10 +391,12 @@ def run_solution(
     run_path = runs_dir(base) / f"{run_id}.json"
     out = {
         "ok": ok,
+        # assumptions = false: the proved run_query returned None on this data. Not ok (not a success), not a proof failure; submit refuses it.
+        "declined": metrics.get("status") == "DECLINED",
         "run_id": run_id,
         "phase": "harness",
         # The text is in metrics.compiler_error; repeating it here would show the agent every error twice.
-        "errors": [] if ok else (["check failed: details in metrics.compiler_error"] if metrics.get("compiler_error") else ["harness failed"]),
+        "errors": [] if ok else (["DECLINED: run_query returned None on this data (not a success, not a proof failure): details in metrics.compiler_error"] if metrics.get("status") == "DECLINED" else ["check failed: details in metrics.compiler_error"] if metrics.get("compiler_error") else ["harness failed"]),
         "metrics": metrics,
         "result_path": str(run_path),
         "latency_us": latency_us,

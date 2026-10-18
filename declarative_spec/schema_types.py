@@ -221,6 +221,12 @@ def narrow_cells() -> bool:
     return bool(lemma_config.get("narrow_cells"))
 
 
+def sql_width_integers() -> bool:
+    """INTEGER/SMALLINT/TINYINT loaded at their SQL width (i32/i16/i8): ``narrow_cells``, or always with ``assumptions = false``, where a cell's
+    Rust type comes from its SQL type alone (decline.py)."""
+    return narrow_cells() or not lemma_config.assumptions_enabled()
+
+
 def classify_sql_type(sql_type: str) -> ColumnTypeInfo:
     norm = _normalize_sql_type(sql_type)
     decimal = _DECIMAL.match(norm)
@@ -256,7 +262,7 @@ def classify_sql_type(sql_type: str) -> ColumnTypeInfo:
         huge = norm == "hugeint"
         exec_ty = "i128" if huge else "i64"
         cap = 2**127 if huge else 2**63
-        if narrow_cells() and norm in _NARROW_SIGNED:
+        if sql_width_integers() and norm in _NARROW_SIGNED:
             exec_ty, cap = _NARROW_SIGNED[norm]
         return ColumnTypeInfo(
             sql_type=norm,

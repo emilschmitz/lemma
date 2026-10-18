@@ -280,6 +280,9 @@ _HARD_FEATURES: tuple[tuple[str, str], ...] = (
 
 def _features(spec_text: str) -> dict:
     """The facts about a spec that pick its recipe (the result kind is a string, the rest are bools)."""
+    from declarative_spec import decline
+
+    spec_text = decline.unwrap_option(spec_text)  # assumptions = false: classify by the contract on the value a Some carries
     result = re.search(r"pub fn run_query\([^)]*\)\s*->\s*\(res:\s*([^)]+)\)", spec_text)
     ty = result.group(1).strip() if result else ""
     tables = len(re.findall(r"pub struct Cols_", spec_text))
@@ -523,6 +526,15 @@ def _nullable_section(spec_text: str) -> list[str]:
         "an `Option` output field). In the body test `t.c__valid[i]` wherever the spec does, before comparing or adding",
         "`t.c[i]`; never compare a value cell alone. Add `assert(t.c__valid@.len() == t.n as int)` beside the other length facts.",
     ]
+
+
+def _decline_section(spec_text: str) -> list[str]:
+    """lemma.toml assumptions = false: one factual paragraph on the Option result and what a decline counts as (no recipe)."""
+    from declarative_spec import decline
+
+    if not decline.is_decline_spec(spec_text):
+        return []
+    return decline.prompt_paragraph().rstrip("\n").split("\n") + [""]
 
 
 def _float_section(spec_text: str) -> list[str]:
@@ -1240,6 +1252,10 @@ def build_declarative_prompt(
     else:
         index_path = "context/ro/lemma_index.md"
         root = "context/ro"
+    from declarative_spec import decline
+
+    decline_lines = _decline_section(spec_text)
+    spec_text = decline.unwrap_option(spec_text)  # assumptions = false: every recipe section reads the contract on the value a Some carries
     shape = spec_shape(spec_text)
 
     P = principles
@@ -1297,6 +1313,7 @@ def build_declarative_prompt(
             "",
         ]),
         (P.TASK, ["## SQL", "", "```sql", sql.strip(), "```", ""]),
+        (P.RULES, decline_lines),
         (P.TASK, _template_section(spec_text)),
         (P.LIMITS, _scale_section(spec_text)),
         (P.HARDWARE, _hardware_facts()),

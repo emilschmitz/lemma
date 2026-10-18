@@ -117,6 +117,31 @@ def target_cpu_rustc_args() -> list[str]:
     return [] if cpu == "generic" else ["-C", f"target-cpu={cpu}"]
 
 
+DECLINED_MESSAGE = (
+    "DECLINED: the proved run_query returned None on the measured data (lemma.toml assumptions = false: no data assumptions, the body may "
+    "decline, e.g. on a checked overflow). A decline is not a success and not a proof failure; in experiments it counts as a failed query. "
+    "No other engine's answer was substituted."
+)
+
+
+class Declined(RuntimeError):
+    """The compiled program declined (``run_query`` returned None): see ``declarative_spec/decline.py``."""
+
+
+def _declined(returncode: int, stdout: str) -> bool:
+    """The generated main's decline: its own line, then exit code ``DECLINE_EXIT_CODE``. Both, so a crash with code 3 is not a decline."""
+    from declarative_spec.decline import DECLINE_EXIT_CODE, DECLINE_LINE
+
+    return returncode == DECLINE_EXIT_CODE and DECLINE_LINE in (stdout or "").splitlines()
+
+
+def declined_metrics(base: dict) -> dict:
+    """The result of a declined run: status DECLINED, proved (Verus already said 0 errors), no latency, the label as the error text."""
+    from declarative_spec.decline import STATUS_DECLINED
+
+    return {**base, "status": STATUS_DECLINED, "declined": True, "proof_verified": True, "latency_us": -1, "compiler_error": DECLINED_MESSAGE}
+
+
 def _latency_us(stdout: str) -> int:
     match = re.search(r"QUERY_LATENCY_US:\s*(\d+)", stdout or "")
     if not match:
@@ -232,6 +257,10 @@ def compile_and_run(
             except OSError:
                 pass
     latency = _latency_us(run.stdout or "")
+    if _declined(run.returncode, run.stdout or ""):
+        if owned_dir:
+            binary.unlink(missing_ok=True)
+        return declined_metrics({**split, "verify_msg": log[-2000:], "verify_summary": _verify_summary(log)})
     if run.returncode != 0 or latency < 0:
         if owned_dir:
             binary.unlink(missing_ok=True)
@@ -271,6 +300,8 @@ def run_binary_round(binary: Path, directory: Path, args: list[str]) -> tuple[in
     """One run of the compiled binary with ``args`` on its command line: (median us, best us, stdout). Loud like ``run_binary_timed``."""
     run = subprocess.run([str(binary), *args], capture_output=True, text=True, timeout=run_timeout_sec(), check=False, cwd=directory)
     latency = _latency_us(run.stdout or "")
+    if _declined(run.returncode, run.stdout or ""):
+        raise Declined(f"declined in an official round (parameters {args})" if args else "declined in an official round")
     if run.returncode != 0 or latency < 0:
         raise RuntimeError((run.stderr or run.stdout or "binary did not print QUERY_LATENCY_US")[-2000:])
     return latency, _best_us(run.stdout or ""), run.stdout or ""
@@ -330,6 +361,8 @@ def _apply_speed_bar(metrics: dict, speed_bar: dict | None, *, parallel_hint: bo
     if official:
         try:
             rounds_info, latency, duck_us, best_us = _official_rounds(metrics, speed_bar)
+        except Declined as exc:  # a later round (another template binding) declined: labelled, never replaced by the reference engine's time
+            return _release_binary({**declined_metrics(metrics), "duck_us": duck_us, "measurement": om.MEASUREMENT_OFFICIAL, "compiler_error": f"{DECLINED_MESSAGE} ({exc})"})
         except (RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
             return _release_binary({
                 **metrics,

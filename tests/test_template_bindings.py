@@ -18,6 +18,7 @@ SQL = "-- params: lo BIGINT\nSELECT COUNT(*) AS c, SUM(x) AS s FROM t WHERE x > 
 RULES = {"tq": {"lo": {"kind": "int_range", "lo": "0", "hi": "9"}}}
 EXP = """
 [settings]
+assumptions = true
 official_rounds = 3
 templates = true
 [[run]]
@@ -99,11 +100,11 @@ def test_rules_and_seed_go_together_and_the_seed_is_an_integer(repo: Path) -> No
     f = repo / "configs" / "experiments" / "bad.toml"
     base = 'model="a"\nquery="q"\nduckdb_path="d"\nassumption_package="p"\n'
     for body, msg in (
-        (f"[[run]]\n{base}bindings_rules=\"r.json\"\n", "go together"),
-        (f"[[run]]\n{base}bindings_seed=1\n", "go together"),
-        (f"[[run]]\n{base}bindings_rules=\"r.json\"\nbindings_seed=\"1\"\n", "an integer"),
-        (f"[[run]]\n{base}bindings_rules=\"r.json\"\nbindings_seed=true\n", "an integer"),
-        (f"[[run]]\n{base}bindings_rules=\"/abs/r.json\"\nbindings_seed=1\n", "repo-relative"),
+        (f"[settings]\nassumptions = true\n[[run]]\n{base}bindings_rules=\"r.json\"\n", "go together"),
+        (f"[settings]\nassumptions = true\n[[run]]\n{base}bindings_seed=1\n", "go together"),
+        (f"[settings]\nassumptions = true\n[[run]]\n{base}bindings_rules=\"r.json\"\nbindings_seed=\"1\"\n", "an integer"),
+        (f"[settings]\nassumptions = true\n[[run]]\n{base}bindings_rules=\"r.json\"\nbindings_seed=true\n", "an integer"),
+        (f"[settings]\nassumptions = true\n[[run]]\n{base}bindings_rules=\"/abs/r.json\"\nbindings_seed=1\n", "repo-relative"),
     ):
         f.write_text(body)
         with pytest.raises(lc.ConfigError, match=msg):

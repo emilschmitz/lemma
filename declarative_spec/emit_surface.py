@@ -1941,6 +1941,9 @@ def _valids(
     int_sum: bool = False,
     facts: _JoinBound | None = None,
 ) -> str:
+    from declarative_spec import decline
+
+    no_assumptions = decline.enabled()
     seen: set[str] = set()
     blocks: list[str] = []
     unique = {}
@@ -1960,12 +1963,17 @@ def _valids(
         cap = _row_cap(catalog, slot.table)
         if cap is not None:
             checks.append(f"{slot.param}.n as int <= ROW_CAP_{rust_ident(slot.table)} as int")
-        if int_sum and (cap is None or cap >= 2**63):
+        if int_sum and (cap is None or cap >= 2**63) and no_assumptions:
+            # assumptions = false: not a data cap but a fact of the loader's types (a Vec holds at most isize::MAX elements, and every column
+            # vector has length n); the loader checks it like the lengths. Written with `<=` (`as int <` parses as a generic).
+            checks.append(f"{slot.param}.n as int <= 0x7fff_ffff_ffff_ffffint")
+        elif int_sum and (cap is None or cap >= 2**63):
             # An i128 sum of u64 cells fits when the row count is below 2^63.
             checks.append(f"{slot.param}.n as int < 0x8000_0000_0000_0000int")
         for col in sorted(cols):
-            if cols[col].precision is not None:
-                # DECIMAL(p,s): the stored integer has at most p digits.
+            if cols[col].precision is not None and not no_assumptions:
+                # DECIMAL(p,s): the stored integer has at most p digits. Not stated with assumptions = false: the cell is the
+                # loaded machine integer, nothing more (decline.py).
                 top = _decimal_top(catalog, slot.table, col, cols[col])
                 cell = f"{slot.param}.{rust_ident(col)}@[i] as int"
                 checks.append(
@@ -2198,8 +2206,13 @@ def _require_sum_fits(
     """An integer SUM is held in i128: refuse when the row caps and the cell cap allow a larger total.
 
     When only the unique keys / join caps keep the total below i128, the facts used are returned: the spec must
-    then require them of the data (a bound the proofs cannot see is a bound nobody can use)."""
-    if catalog is None:
+    then require them of the data (a bound the proofs cannot see is a bound nobody can use).
+
+    With ``assumptions = false`` there is no bound to check: the spec sums exact integers and a body that cannot hold the
+    total declines (``decline.py``)."""
+    from declarative_spec import decline
+
+    if catalog is None or decline.enabled():
         return None
     from declarative_spec.emit import _lookup_table_assumptions
     from declarative_spec.lemmas import FitRefusal
@@ -2400,7 +2413,9 @@ def _float_mag_checks(
 
 
 def _row_cap(catalog: CatalogAssumptions | None, table: str) -> int | None:
-    if catalog is None:
+    from declarative_spec import decline
+
+    if catalog is None or decline.enabled():  # assumptions = false: no row caps (decline.py)
         return None
     ta = catalog.tables.get(table)
     if ta is None:

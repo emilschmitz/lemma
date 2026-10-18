@@ -38,8 +38,8 @@ error), ratios, and a parallel path built on vstd threads.
 What is trusted is listed in [docs/TRUSTED_FAMILIES.md](docs/TRUSTED_FAMILIES.md): the host's fixed
 helper bridges, the float idealization (a small fixed set of lemmas) and one IEEE division lemma. Adding any new
 trusted item needs a written proposal and a separate adversary review
-([protocol](research_loop/menus/TRUSTED_ADDITION_PROTOCOL.md)). Data assumptions (for example column
-bounds) are checked against the real database. Limitations are in
+([protocol](research_loop/menus/TRUSTED_ADDITION_PROTOCOL.md)). By default there are no data assumptions
+(`assumptions = false`, since 2026-10-17): the spec uses exact integers and the program may decline (see below). Limitations are in
 [docs/paper/article_draft.md](docs/paper/article_draft.md).
 
 ## Quick start
@@ -50,13 +50,15 @@ that you export in your own shell. Every agent runs in the Docker sandbox (netwo
 ```bash
 uv tool install --editable .   # from this checkout: installs the `lemma` command
 lemma setup                    # or `lemma setup --auth api-key`: checks Docker, builds the agent image, tests the sandbox, fetches libduckdb
-lemma assumptions --db my.duckdb                 # profile your data and approve every bound (a proof holds only IF your data obeys them)
 lemma optimize --db my.duckdb --sql query.sql    # agent writes, Verus proves, compiled; the executor lands in ~/.local/share/lemma/executors/
 lemma status                   # image, sandbox test, auth mode, DuckDB version, cached executors
 ```
 
 `lemma optimize --queue` proves the queries waiting in `$LEMMA_HOME/queue/*.sql`. Auth is an explicit choice (`agent_auth`, `docs/FLAGS.md`);
 a key goes into the container by name only and is never written anywhere. The in-DuckDB library (`lib.so`) is still pending.
+
+No assumption step is needed: with the default `assumptions = false` the proof makes no claim about your data. `lemma assumptions --db my.duckdb`
+(profile and approve data bounds) belongs to the UNMAINTAINED assumption-package path and is required only with `assumptions = true`.
 
 ## Quick start for development
 
@@ -87,8 +89,20 @@ line, and refuses to start from a dirty git tree (tracked files) unless `allow_d
 
 ## Using it on your own data
 
+**Default (since 2026-10-17): no data assumptions** (`lemma.toml` `assumptions = false`, following JetStream, arXiv 2610.20527).
+The spec states the exact answer over mathematical integers; `valid_cols_*` says only what the loader builds and checks (column
+lengths, dictionary codes inside their dictionary, distinct dictionary entries). Cell types come from the SQL types alone
+(DECIMAL(p,s) is i64 for p <= 18, else i128; BIGINT i64; INTEGER i32; DATE i32 days; VARCHAR a u32 dictionary code). `run_query`
+returns `Option`: `Some(res)` satisfies the contract (`run_query_ok`), `None` DECLINES, for example when a checked addition
+overflows. A declined run is reported as `DECLINED`: not a success, not a proof failure, and a failed query in experiments. The compiled
+program prints `LEMMA_DECLINED` and exits with code 3; nothing substitutes another engine's answer (an in-DuckDB extension may route a
+declined query to DuckDB only under its user flag `lemma_route_unproved`, labelled). Which columns get a NULL validity vector is read
+from the database (a column with a NULL); the exporter refuses a NULL anywhere else. Details: `declarative_spec/decline.py`, `docs/FLAGS.md`.
+
+### The assumption-package path (UNMAINTAINED, `assumptions = true`)
+
 A proof is an IF-THEN: *if* the data satisfies the declared bounds, *then* the program computes the SQL.
-So real use needs those bounds, called an **assumption package**: row caps per table, value caps per
+That path needs those bounds, called an **assumption package**: row caps per table, value caps per
 column (for DECIMAL, on the stored integer), string length caps, unique keys, which columns may be NULL,
 and join-size caps. They also set the widths the proof reasons about, so tighter true bounds mean easier
 proofs and faster code.

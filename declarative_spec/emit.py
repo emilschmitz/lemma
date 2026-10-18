@@ -472,12 +472,16 @@ def emit_declarative_spec(
 
     SQL with a ``-- params:`` header is a query template ([sql] templates, see ``templates``): its parameters become
     arguments of the spec and of ``run_query``."""
-    from declarative_spec import templates
+    from declarative_spec import decline, templates
 
+    decline.check_catalog(catalog)
     template = templates.parse_template(sql)
     if template is not None:
-        return templates.emit_template(template, schema, catalog, _emit_fixed)
-    return with_sql_comment(_emit_fixed(sql, schema, catalog), sql)
+        spec = templates.emit_template(template, schema, catalog, _emit_fixed)
+    else:
+        spec = with_sql_comment(_emit_fixed(sql, schema, catalog), sql)
+    # lemma.toml assumptions = false (the default): no data caps were stated above, and run_query may decline (decline.py).
+    return decline.wrap_option(spec) if decline.enabled() else spec
 
 
 def _emit_fixed(
@@ -723,10 +727,12 @@ def _emit_integer_sql(
     has_nullable = catalog is not None and any(
         ca.nullable for ta in catalog.tables.values() for ca in ta.columns.values()
     )
-    if dict_mode() or has_nullable:
+    from declarative_spec import decline
+
+    if dict_mode() or has_nullable or decline.enabled():
         # The count and join-sum emitters below know `Vec<String>` columns without a validity vector only: with
         # dictionary-encoded strings or nullable columns every query takes the surface emitter, which refuses what
-        # it cannot state.
+        # it cannot state. They also state row and cell caps, which a spec without data assumptions does not have.
         return emit_from_surface(sql, schema, catalog)
     try:
         parsed = parse_declarative_sql(sql)

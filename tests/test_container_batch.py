@@ -164,6 +164,7 @@ def test_a_dirty_tree_stops_the_batch_before_any_run(monkeypatch: pytest.MonkeyP
 
 def test_a_batch_without_a_database_or_a_package_stops_before_any_run(monkeypatch: pytest.MonkeyPatch, dev_form: None, tmp_path: Path) -> None:
     monkeypatch.setattr(lemma_config, "REQUIRED", ("duckdb_path", "assumption_package"))
+    monkeypatch.setenv("LEMMA_ASSUMPTIONS", "1")  # the package is required only on the (UNMAINTAINED) assumption-package path
     with pytest.raises(lemma_config.ConfigError, match="duckdb_path has no default"):
         cb.main(["haiku:qX.sql"])
     monkeypatch.setenv("LEMMA_DUCKDB_PATH", "/db.duckdb")
@@ -177,6 +178,7 @@ import subprocess  # noqa: E402
 
 EXP = """
 [settings]
+assumptions = true
 official_rounds = 3
 [[run]]
 model = "sonnet"
