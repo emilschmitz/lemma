@@ -151,7 +151,30 @@ The MCP tool `verify_functions(names, path)` runs Verus on the assembled program
   scan is the conjunction of the transpiler's pushed predicate and the agent's. With no `scan_where` call (or `agent_scan = false`) the
   transpiler pushdown alone applies.
 * Measurement: the pushed filter (and an agent scan's DuckDB filter) runs in the export, outside the timed `run_query`, while DuckDB's
-  reference time includes its own filtering. See `docs/COMPARABILITY.md`.
+  reference time includes its own filtering. So with either flag on the binary's time is labelled `hot, excludes scan/filter`
+  (`hot_label` in the official record and the RESULT line, `research_loop/official_measure.py` `timing_labels`) and the REPORTED number
+  is the in-DuckDB end-to-end measure `measure_in_duckdb` (`reported_measure`), which scans with the pushed predicate inside DuckDB.
+  See `docs/COMPARABILITY.md`.
+* With `assumptions = false` (the default): the scan items are emitted as above under the Option/decline contract (`run_query_ok` takes
+  the handles as arguments and ignores them); scan columns are the SQL-type cells (DECIMAL(38,s) is `i128`, no caps).
+  `tests/fixtures/declarative_proofs/decline/scan_usum_checked.rs` scans and declines on overflow.
+* Query templates: a pushed conjunct may compare a column with a parameter (`x > $lo`). The export of the canonical column files binds
+  `bindings[0]` (in-session runs, expected rows); every binding gets its own export under `<data>/bindings/b<k>/` (`binding_data` in
+  `expect.json`), and official round i first puts binding `i % len`'s files at the paths the binary reads and points the agent-scan
+  context at that binding's predicate (`decl_query_measure.activate_binding`, outside the timed region). The generated `main` does not
+  pin the row count of such a table. In the extension the manifest keeps the `$name` placeholders and each `lemma_query` call binds
+  its own values.
+* `stateful`: `build` gets the scan handles (`build(<t>: Cols_<t>, <t>_scan: &Scan_<t>)` requires `scan_full_<t>(<t>_scan) == <t>`; so do
+  the runtime's `refresh`); `execute` has none. The measure `main` opens the handles on the prepared data directory. Serve mode
+  refuses a build that calls `scan_where` (a handle reads one data version's export; serve mode refreshes on other versions' files);
+  with no call the handles are passed but never read.
+* In-DuckDB (`in_duckdb`): the manifest's `rows` entries carry the table's pushed predicate (`where`, `where_params`), and the extension
+  applies it inside its parallel scan: `SELECT <cols> FROM t WHERE <where>` is bound in the caller's context and given DuckDB's own
+  expression rewriter and filter pushdown; the resulting table filters run in DuckDB's scan (zone maps skip row groups, vectors return
+  only matching rows) and what DuckDB keeps above its scan is evaluated per chunk before decoding; matching rows are staged per task and
+  committed in row order. A plan of any other shape is an error. Agent scans in library mode are REFUSED at install
+  (`assemble_library_program`): a body that calls `scan_where` has no host side in ABI 4 (the binary's export is a Python program; a
+  callback into the extension is not implemented). A body that does not call it is installed; its handles are inert.
 
 ## Defaults changed with this section
 

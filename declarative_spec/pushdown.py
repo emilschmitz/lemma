@@ -72,6 +72,28 @@ class PushdownPlan:
     def params(self, table: str) -> tuple[str, ...]:
         return tuple(dict.fromkeys(p for f in self.pushed.get(table.casefold()) or [] for p in f.params))
 
+    def bound_where(self, table: str, sql: str, binding: dict[str, str] | None) -> str | None:
+        """:meth:`where` with every named parameter replaced by the SQL literal of its value in ``binding`` (a query template,
+        ``declarative_spec/templates.py``): what one round's export applies. Rendered in DuckDB's dialect. Loud on a parameter
+        the binding does not name; ``binding`` may be None only when nothing pushed for ``table`` has a parameter."""
+        where = self.where(table)
+        if where is None or not self.params(table):
+            return where
+        if binding is None:
+            raise ValueError(f"the pushed predicate on {table} binds {self.params(table)}: a run needs their values")
+        from declarative_spec import templates
+
+        template = templates.parse_template(sql)
+        if template is None:
+            raise ValueError(f"the pushed predicate on {table} has parameters but the SQL is not a query template")
+        tree = sqlglot.parse_one(where, read="duckdb")
+        for node in list(tree.find_all(exp.Placeholder)):
+            if node.name not in binding:
+                raise ValueError(f"no value for parameter {node.name} of the pushed predicate on {table}")
+            literal = sqlglot.parse_one(templates.sql_literal(template.param(node.name), binding[node.name]), read="duckdb")
+            node.replace(exp.paren(literal))
+        return tree.sql(dialect="duckdb")
+
 
 _LEAF_OK = (exp.Literal, exp.Null, exp.Boolean, exp.DataType, exp.Placeholder)
 _NODE_OK = (
@@ -83,7 +105,20 @@ _REFUSED_ANYWHERE = (exp.Subquery, exp.Exists, exp.Window, exp.With, exp.Union, 
 
 
 def plan_pushdown(sql: str, schema: dict, *, dialect: str | None = None) -> PushdownPlan:
-    """Apply the rule to ``sql`` (parsed like the transpiler parses it); fragments are rendered in ``dialect``."""
+    """Apply the rule to ``sql`` (parsed like the transpiler parses it); fragments are rendered in ``dialect``.
+
+    A query template (``-- params:`` header, ``$name`` placeholders) is planned on its body with each ``$name`` read as the named
+    parameter ``:name``: a pushed conjunct may compare a column with a parameter, and each run's export binds that run's value
+    (:meth:`PushdownPlan.bound_where`)."""
+    from declarative_spec import templates
+
+    template = templates.parse_template(sql)
+    if template is not None:
+        body, last = [], 0
+        for start, end, name in templates._placeholders(template.body):
+            body.append(template.body[last:start] + f":{name}")
+            last = end
+        sql = "".join(body) + template.body[last:]
     try:
         tree = sqlglot.parse_one(sql)
     except sqlglot.errors.SqlglotError as exc:

@@ -131,9 +131,10 @@ def _write_query_measure(
 
         pushdown = plan_pushdown(sql, schema, dialect="duckdb")
         for suffix, plan in plans.items():
-            if pushdown.params(plan[0]):
-                raise ValueError(f"pushed predicate on {plan[0]} binds parameters {pushdown.params(plan[0])}; the export has no values for them")
-            wheres[suffix] = pushdown.where(plan[0])
+            # A query template: a pushed conjunct may compare with a parameter; the canonical files hold bindings[0] (the in-session
+            # runs and the expected rows use it) and every binding gets its own export below (official round i: bindings[i % len]).
+            wheres[suffix] = pushdown.bound_where(plan[0], sql, bindings[0] if bindings else None)
+    varying = [suffix for suffix, plan in plans.items() if pushdown is not None and pushdown.params(plan[0])]
     dest.mkdir(parents=True, exist_ok=True)
     (dest / "expect.json").unlink(missing_ok=True)  # stale until the export and timing succeed
     (dest / "scan_plan.json").unlink(missing_ok=True)
@@ -141,6 +142,7 @@ def _write_query_measure(
     scans = "pub fn scan_where_" in spec
     for stale in [*dest.glob("scan_*.bin"), *dest.glob("scan_*.key"), dest / "scan_ctx.pkl", dest / "scan_cmd"]:
         stale.unlink(missing_ok=True)
+    shutil.rmtree(dest / "bindings", ignore_errors=True)  # per-binding exports of an earlier prepare
     bins: dict[str, str] = {}
     table_rows: dict[str, int] = {}
     dict_sizes: dict[str, int] = {}  # `<struct suffix>.<column>` -> entries of its dictionary
@@ -162,6 +164,9 @@ def _write_query_measure(
             dict_sizes.update({f"{suffix}.{col}": n for col, n in sizes.items()})
             part.replace(path)  # a refused export leaves the earlier file, not a truncated one
             bins[suffix] = str(path)
+        binding_data = None
+        if varying:
+            binding_data = _export_bindings(con, dest, plans, varying, pushdown, sql, bindings or [], bins, scans, table_rows, dict_entries)
         if scans:
             from research_loop.scan_export import write_scan_context
 
@@ -219,9 +224,15 @@ def _write_query_measure(
     }
     if pushdown_info is not None:  # absent with pushdown off: expect.json stays byte-identical
         expect["scan_plan"] = pushdown_info
+    if binding_data is not None:  # a template whose pushed predicate binds parameters: one export per binding (activate_binding)
+        expect["binding_data"] = binding_data
+        for rnd in binding_data["rounds"]:
+            for key, n in rnd["dict_sizes"].items():
+                dict_sizes[key] = max(dict_sizes.get(key, 0), n)  # the dense-slot budget holds for every round's data
     (dest / "expect.json").write_text(json.dumps(expect) + "\n", encoding="utf-8")
     return {
         **({"scan_plan": pushdown_info} if pushdown_info is not None else {}),
+        **({"binding_data": binding_data} if binding_data is not None else {}),
         "bins": bins,
         "duck_us": duck_us,
         "duck_threads": duck_threads,
@@ -237,6 +248,64 @@ def _write_query_measure(
         "db_path": str(db_path),
         **template_info,
     }
+
+
+def _export_bindings(
+    con, dest: Path, plans: dict, varying: list[str], pushdown, sql: str, bindings: list[dict], bins: dict, scans: bool,
+    canonical_rows: dict[str, int], canonical_dicts: dict[str, dict[str, list[str]]],
+) -> dict:
+    """A query template whose pushed predicate binds parameters: the tables in ``varying`` exported once per binding, under
+    ``dest/bindings/b<k>/`` (binding 0 is the canonical file, linked there too so it can be restored). Official round i runs on
+    binding ``i % len``'s files (:func:`activate_binding` puts them in place before the round; the binary reads fixed paths).
+    The row counts differ per binding, so the generated ``main`` does not pin them (``rows_vary``)."""
+    rounds: list[dict] = []
+    for k, binding in enumerate(bindings):
+        out_dir = dest / "bindings" / f"b{k}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        rnd: dict = {"bins": {}, "wheres": {}, "table_rows": {}, "dict_sizes": {}, "dict_entries": {}}
+        for suffix in varying:
+            plan = plans[suffix]
+            where = pushdown.bound_where(plan[0], sql, binding)
+            path = out_dir / f"cols_{suffix}.bin"
+            entries: dict[str, list[str]] = {}
+            if k == 0:  # the canonical export (bindings[0]): its rows and dictionaries
+                os.link(bins[suffix], path)
+                n = canonical_rows[suffix]
+                entries = canonical_dicts.get(suffix) or {}
+            else:
+                sizes: dict[str, int] = {}
+                with path.open("wb") as fh:
+                    n = _export_planned_to(con, plan, fh, sizes, where=where, dict_entries=entries if scans else None)
+                rnd["dict_sizes"].update({f"{suffix}.{col}": m for col, m in sizes.items()})
+            rnd["bins"][suffix] = str(path)
+            rnd["wheres"][suffix] = where
+            rnd["table_rows"][suffix] = n
+            rnd["dict_entries"][suffix] = entries
+        rounds.append(rnd)
+    return {"canonical": {suffix: bins[suffix] for suffix in varying}, "scan_dir": str(dest) if scans else None, "rounds": rounds}
+
+
+def activate_binding(binding_data: dict, k: int) -> None:
+    """Put binding ``k``'s column files (``_export_bindings``) at the canonical paths the binary reads (a hard link renamed over the
+    path: atomic, no copy), and point the agent-scan context at that binding's pushed predicate and dictionaries, dropping the scan
+    files of the previous binding (they hold other rows). Outside any timed region."""
+    import pickle
+
+    rnd = binding_data["rounds"][k]
+    for suffix, canonical in binding_data["canonical"].items():
+        tmp = Path(canonical + ".swap")
+        tmp.unlink(missing_ok=True)
+        os.link(rnd["bins"][suffix], tmp)
+        os.replace(tmp, canonical)
+    if binding_data.get("scan_dir"):
+        scan_dir = Path(binding_data["scan_dir"])
+        ctx_path = scan_dir / "scan_ctx.pkl"
+        ctx = pickle.loads(ctx_path.read_bytes())
+        ctx["wheres"].update(rnd["wheres"])
+        ctx["dict_entries"].update(rnd["dict_entries"])
+        ctx_path.write_bytes(pickle.dumps(ctx))
+        for stale in [*scan_dir.glob("scan_*.bin"), *scan_dir.glob("scan_*.key")]:
+            stale.unlink()
 
 
 def plan_tables(sql: str, schema: dict, catalog: CatalogAssumptions | None, spec: str) -> dict[str, tuple]:

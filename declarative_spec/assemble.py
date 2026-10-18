@@ -160,7 +160,10 @@ def assemble_declarative_program(
 
     join_cap_checks = _join_cap_checks(verus_part)
     if is_stateful:
-        return _assemble_stateful(verus_part, loaders, mains_load, join_cap_checks, column_bins is not None, serve)
+        return _assemble_stateful(
+            verus_part, loaders, mains_load, join_cap_checks, column_bins is not None, serve, column_bins,
+            scans_called="scan_where_" in "\n".join((agent_body, helpers, state, build)),
+        )
     run_call, arc_lets = _run_call(verus_part, mains_args, column_bins)
     param_prelude, param_args = _param_prelude(verus_part)
     if param_args:
@@ -717,7 +720,14 @@ def _indent(text: str, extra: int) -> str:
 
 
 def _assemble_stateful(
-    verus_part: str, loaders: list[str], mains_load: list[str], join_cap_checks: str, loaded: bool, serve: bool
+    verus_part: str,
+    loaders: list[str],
+    mains_load: list[str],
+    join_cap_checks: str,
+    loaded: bool,
+    serve: bool,
+    column_bins: dict[str, str] | None = None,
+    scans_called: bool = False,
 ) -> str:
     """Verus part + loaders + the fixed host runtime (``stateful.runtime_rs``), and a ``main`` that drives the runtime.
 
@@ -732,6 +742,21 @@ def _assemble_stateful(
     if c.params:
         raise ValueError("stateful main: runtime parameters need a caller that supplies them (the template driver); none here")
     refresh_args = ", ".join(f"cols_{suffix_of[n]}" for n, _s in c.tables)
+    scan_lets = ""
+    if c.scans:
+        # Agent scans in build (agent_scan.py): one handle per table over the directory of its column file, as for run_query.
+        if serve and scans_called:
+            raise ValueError(
+                "stateful serve mode with a build that calls scan_where is not supported: a scan handle reads the prepared export "
+                "directory of one data version, and serve mode refreshes on other versions' files (set agent_scan = false)"
+            )
+        for _n, scan_struct in c.scans:
+            suffix = scan_struct.removeprefix("Scan_")
+            # serve mode: the agent code never calls scan_where (checked above), so the handle is never read; an empty directory
+            scan_dir = "" if column_bins is None or serve else str(Path(column_bins[suffix]).parent)
+            escaped = scan_dir.replace("\\", "\\\\").replace('"', '\\"')
+            scan_lets += f'    let scan_{suffix} = scan_open_{suffix}("{escaped}");\n'
+        refresh_args += "".join(f", &scan_{s.removeprefix('Scan_')}" for _n, s in c.scans)
     closed = verus_part.rstrip()
     if not closed.endswith("}"):
         raise ValueError("verus block did not end at '}'")
@@ -771,7 +796,7 @@ def _assemble_stateful(
     use std::io::BufRead;
     use std::io::Write;
     let stdin = std::io::stdin();
-    let mut rt = QRuntime::new();
+{scan_lets}    let mut rt = QRuntime::new();
     println!("SERVE_TABLES: {' '.join(order)}");
     std::io::stdout().flush().unwrap();
     for line in stdin.lock().lines() {{
@@ -822,7 +847,7 @@ def _assemble_stateful(
     main_fn += "\n".join(mains_load) + "\n" + join_cap_checks
     if loaded:
         main_fn += '    println!("LOAD_US: {}", load_start.elapsed().as_micros());\n'
-    main_fn += (
+    main_fn += scan_lets + (
         "    let mut rt = QRuntime::new();\n"
         "    let build_start = std::time::Instant::now();\n"
         f"    rt.refresh(0, {refresh_args});\n"

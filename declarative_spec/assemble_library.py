@@ -600,6 +600,12 @@ def assemble_library_program(spec_rs: str, agent_body: str, *, helpers: str = ""
             "library mode does not take a stateful spec yet: its runtime needs the caller's data version (refresh/execute_at, "
             f"docs/STATEFUL.md) and ABI version {ABI_VERSION} carries none; run the query in-DuckDB with stateful = false"
         )
+    if "scan_where_" in f"{agent_body}\n{helpers}":
+        raise ValueError(
+            "library mode does not run agent scans: this body calls scan_where_<t> (lemma.toml agent_scan), whose host side is the "
+            f"column-file export of the binary; ABI version {ABI_VERSION} has no callback into the DuckDB extension for it. Use a "
+            "body without scan_where (the transpiler's pushdown is applied in the extension's scan) or run it as a binary"
+        )
     verus_part = _stitch_verus(spec_rs, agent_body, helpers)
     param_code, param_args = _param_decode(verus_part)
     params = param_layout(verus_part)

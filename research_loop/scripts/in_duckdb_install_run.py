@@ -37,6 +37,15 @@ def install_run(run_dir: Path, home: Path) -> Path:
         if key in config:
             value = config[key]["value"] if isinstance(config[key], dict) else config[key]
             os.environ[lemma_config.env_name(key)] = str(value).lower() if isinstance(value, bool) else str(value)
+    # Keys that shape the spec but came later: a run that predates them had them off (agent_scan adds scan handles to run_query;
+    # templates makes a `-- params:` header a template). The pushdown of the executor's scan is this install's setting (lemma.toml).
+    for key in ("agent_scan", "templates"):
+        raw_key = config.get(key)
+        if raw_key is None:
+            value = key == "templates" and "-- params:" in manifest["sql"]  # a template run had the switch on
+        else:
+            value = raw_key["value"] if isinstance(raw_key, dict) else raw_key
+        os.environ[lemma_config.env_name(key)] = "true" if value else "false"
     raw = config.get("assumptions", True)  # absent: the run predates the flag, when every run used an assumption package
     assumptions = bool(raw["value"] if isinstance(raw, dict) else raw)
     os.environ[lemma_config.env_name("assumptions")] = "true" if assumptions else "false"

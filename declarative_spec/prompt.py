@@ -1264,13 +1264,23 @@ def _verus_queue_lines() -> list[str]:
 def _scan_section(spec_text: str, root: str) -> list[str]:
     """Agent scans (lemma.toml [run] agent_scan): only when the spec has scan handles."""
     sig = re.search(r"pub fn run_query\(([^)]*)\)", spec_text)
+    owner = "run_query"
+    if sig is None:  # stateful: the handles go to build (execute answers from the state)
+        sig = re.search(r"pub fn build\(([^)]*)\)", spec_text)
+        owner = "build"
     handles = re.findall(r"(\w+_scan): &Scan_(\w+)", sig.group(1)) if sig else []
     if not handles or "pub fn scan_where_" not in spec_text:
         return []
+    stateful_note = (
+        ["In this stateful spec only `build` has the handles: scan in `build`, keep the rows (and their row numbers as ghost state) in",
+         "your state, and state in `qstate_inv` how they relate to `s.db()`; `execute` has no handle.", ""]
+        if owner == "build"
+        else []
+    )
     return [
         "## Agent scans: let the reference engine filter rows for you",
         "",
-        f"`run_query` also gets one scan handle per table ({', '.join(f'`{h}` for `{t}`' for h, t in handles)}). "
+        f"`{owner}` also gets one scan handle per table ({', '.join(f'`{h}` for `{t}`' for h, t in handles)}). "
         "`scan_where_<t>(<t>_scan, &pred)` returns only the rows of `<t>` that satisfy `pred`, a conjunction of",
         "`ScanAtom_<t>::Range(ScanCol_<t>::<column>, lo, hi)` (`lo <= cell <= hi`) and `ScanAtom_<t>::In(col, values)` atoms over integer",
         "columns (dates are days since 1970-01-01, DECIMALs scaled integers, as in the spec); `out.0` holds the rows, `out.1@` their row",
@@ -1279,6 +1289,7 @@ def _scan_section(spec_text: str, root: str) -> list[str]:
         "rows the query does not need (choose a predicate the WHERE clause implies). Fewer rows to loop over is the speed gain.",
         f"Worked example: `{root}/examples/scan_filtered_sum.rs`. Ignoring the handles is fine too.",
         "",
+        *stateful_note,
     ]
 
 

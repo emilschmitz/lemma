@@ -37,7 +37,16 @@
 #include "duckdb/main/connection_manager.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
+#include "duckdb/execution/expression_executor.hpp"
+#include "duckdb/optimizer/filter_pushdown.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
+#include "duckdb/parser/keyword_helper.hpp"
+#include "duckdb/planner/expression/bound_columnref_expression.hpp"
+#include "duckdb/planner/expression/bound_conjunction_expression.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
+#include "duckdb/planner/expression/bound_reference_expression.hpp"
+#include "duckdb/planner/expression_iterator.hpp"
+#include "duckdb/planner/table_filter.hpp"
 #include "duckdb/optimizer/optimizer_extension.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
 #include "duckdb/parser/parser.hpp"
@@ -45,6 +54,7 @@
 #include "duckdb/parser/tableref/subqueryref.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/extension_callback.hpp"
+#include "duckdb/planner/operator/logical_filter.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/storage/table/row_group.hpp"
@@ -66,6 +76,8 @@
 #include <cstring>
 #include <dlfcn.h>
 #include <fstream>
+#include <condition_variable>
+#include <map>
 #include <mutex>
 #include <regex>
 #include <sstream>
@@ -206,6 +218,9 @@ struct InEntry {
 	bool nullable = false;
 	int scale = 0, source_scale = 0;
 	int64_t codes_of = -1;
+	// rows entries: the transpiler's pushed-down predicate of this table (manifest "where", declarative_spec/pushdown.py), DuckDB
+	// SQL over the table's columns with a query template's `$name` placeholders; empty = the whole table. Applied in the scan.
+	std::string where;
 };
 
 // One query-template parameter (manifest "params"): its SQL type decides how a lemma_query argument is encoded.
@@ -411,6 +426,9 @@ std::unique_ptr<Manifest> FindExecutor(ClientContext &context, const std::string
 			in.table = e.At("table").Str();
 			if (e.At("kind").Str() == "rows") {
 				in.rows = true;
+				if (e.Has("where") && e.At("where").kind == lemma::Json::Kind::String) {
+					in.where = e.At("where").Str();
+				}
 			} else {
 				in.column = e.At("column").Str();
 				in.field = e.At("field").Str();
@@ -616,6 +634,7 @@ struct ColPlan {
 	uint8_t *dest = nullptr; // cell i of the table at dest + width * i (owned buffer, or a byte vector for bool / valid)
 	size_t slot = 0;         // strings: index into TaskOut::strings; codes: index into TaskOut::dicts
 	size_t dict_k = SIZE_MAX; // codes: the manifest input of its dictionary
+	size_t idx = 0;           // position in the table's plan list (a task's staging buffer)
 
 	[[noreturn]] void ThrowPack(i128 v) const {
 		throw InvalidInputException("Lemma: cannot pack %s as %s (%s)", I128String(v), e.rust_type, label);
@@ -649,6 +668,10 @@ struct TaskOut {
 	uint64_t offset = 0, count = 0;
 	std::vector<std::string> strings;
 	std::vector<LocalDict> dicts;
+	// A filtered scan (pushed predicate): the task decodes its fixed-width cells into staging buffers (one per plan, in plan
+	// order), copied to their final place once every earlier task's row count is known; no gaps, no packing afterwards.
+	std::unique_ptr<std::vector<std::vector<uint8_t>>> stage;
+	uint64_t seq = 0;
 };
 
 void PutCell(uint8_t *out, size_t width, i128 v) {
@@ -671,6 +694,14 @@ void DecodeInts(const ColPlan &p, Vector &vec, idx_t count, uint8_t *out, TO_I12
 	vec.ToUnifiedFormat(count, f);
 	auto data = UnifiedVectorFormat::GetData<SRC>(f);
 	bool all_valid = f.validity.AllValid();
+	if (!scale && sizeof(SRC) == w && range.first >= p.target.lo && range.second <= p.target.hi && all_valid) {
+		// A selected (filtered, dictionary) vector of the target's width and range: a gather, no per-cell check needed.
+		auto dst = reinterpret_cast<SRC *>(out);
+		for (idx_t r = 0; r < count; r++) {
+			std::memcpy(dst + r, data + f.sel->get_index(r), sizeof(SRC));
+		}
+		return;
+	}
 	for (idx_t r = 0; r < count; r++) {
 		idx_t idx = f.sel->get_index(r);
 		i128 v = 0;
@@ -821,7 +852,7 @@ void PutStr(std::string &out, const char *data, size_t len) {
 // One chunk of one field into the task's rows [t.count, t.count + count), i.e. table rows t.offset + t.count + r.
 void DecodeChunk(const ColPlan &p, Vector &vec, idx_t count, TaskOut &t) {
 	uint64_t row = t.offset + t.count;
-	uint8_t *out = p.dest ? p.dest + p.width * row : nullptr;
+	uint8_t *out = p.dest ? (t.stage ? (*t.stage)[p.idx].data() + p.width * t.count : p.dest + p.width * row) : nullptr;
 	switch (p.role) {
 	case Role::Int:
 	case Role::Date:
@@ -923,9 +954,12 @@ struct ScanSource {
 // Rows of one table, in the single-threaded scan order: parallel tasks write their rows at their row-group position, then the
 // rows are packed toward the front where a task returned fewer rows than its range (deleted rows, rows of a newer snapshot).
 // Every worker uses the caller's transaction, so all see one snapshot (and its own uncommitted rows).
+// With a pushed-down predicate (PushedScan): DuckDB's table filters are applied inside the scan (zone maps skip row groups and
+// vectors; a vector returns only its matching rows) and the filters DuckDB kept above its scan (`residual`) select rows of each
+// chunk before any cell is decoded, so only matching rows are handed over.
 uint64_t ScanTable(ClientContext &context, DuckTransaction &transaction, DataTable &storage, const vector<StorageIndex> &ids,
                    const vector<LogicalType> &types, std::vector<ColPlan> &plans, const std::shared_ptr<Executor> &exec,
-                   ScanResult &res, idx_t want_threads) {
+                   ScanResult &res, idx_t want_threads, TableFilterSet *filters, const Expression *residual) {
 	std::vector<std::unique_ptr<ScanSource>> sources;
 	auto committed = make_uniq<ScanSource>();
 	committed->collection = storage.GetRowGroupCollection().get();
@@ -948,6 +982,9 @@ uint64_t ScanTable(ClientContext &context, DuckTransaction &transaction, DataTab
 	}
 	// destinations, sized for the upper bound
 	size_t nstrings = 0, ndicts = 0;
+	for (size_t pi = 0; pi < plans.size(); pi++) {
+		plans[pi].idx = pi;
+	}
 	for (auto &p : plans) {
 		if (p.role == Role::String) {
 			p.slot = nstrings++;
@@ -976,23 +1013,100 @@ uint64_t ScanTable(ClientContext &context, DuckTransaction &transaction, DataTab
 	std::vector<std::unique_ptr<TaskOut>> tasks;
 	std::atomic<bool> stop {false};
 	std::exception_ptr error;
+	// A filtered scan stages each task's cells and commits them in task order (TaskOut::stage); a whole-table scan writes them
+	// at the task's row-group position and packs the (rare) gaps of deleted rows afterwards.
+	const bool staged = filters || residual;
+	std::mutex order_lock;
+	std::condition_variable order_cv;
+	std::vector<std::unique_ptr<std::vector<std::vector<uint8_t>>>> spare; // free staging sets
+	idx_t stage_sets = 0;
+	uint64_t next_seq = 0, frontier = 0, frontier_at = 0, last_start = 0;
+	std::map<uint64_t, TaskOut *> finished; // decoded tasks waiting for every earlier task's row count
+	auto commit = [&](TaskOut *t) {
+		std::vector<TaskOut *> ready;
+		{
+			std::lock_guard<std::mutex> guard(order_lock);
+			finished[t->seq] = t;
+			for (auto it = finished.find(frontier); it != finished.end(); it = finished.find(frontier)) {
+				it->second->offset = frontier_at;
+				frontier_at += it->second->count;
+				ready.push_back(it->second);
+				finished.erase(it);
+				frontier++;
+			}
+		}
+		for (auto r : ready) { // copy to the final place, outside the lock: the places of different tasks never overlap
+			for (auto &p : plans) {
+				if (p.dest && r->count) {
+					std::memcpy(p.dest + p.width * r->offset, (*r->stage)[p.idx].data(), p.width * r->count);
+				}
+			}
+			std::lock_guard<std::mutex> guard(order_lock);
+			spare.push_back(std::move(r->stage));
+			order_cv.notify_all();
+		}
+	};
 	auto worker = [&]() {
 		try {
 			TableScanState ts;
-			ts.Initialize(ids, &context, nullptr);
+			ts.Initialize(ids, &context, filters && !filters->filters.empty() ? filters : nullptr);
 			DataChunk chunk;
 			chunk.Initialize(Allocator::Get(context), types);
+			unique_ptr<ExpressionExecutor> keep; // the residual predicate, one executor per worker (its state is not shared)
+			SelectionVector sel(STANDARD_VECTOR_SIZE);
+			if (residual) {
+				keep = make_uniq<ExpressionExecutor>(context, *residual);
+			}
 			for (auto &src : sources) {
 				CollectionScanState &cs = src->local ? ts.local_state : ts.table_state;
-				while (!stop.load() && src->collection->NextParallelScan(context, src->state, cs)) {
+				while (!stop.load()) {
+					auto t = make_uniq<TaskOut>();
+					bool got;
+					if (staged) {
+						// A staging set and the next task under one lock: task order = sequence order, and the earliest unfinished
+						// task always holds a set, so a worker waiting for a set never waits on itself.
+						std::unique_lock<std::mutex> lk(order_lock);
+						if (spare.empty() && stage_sets < 2 * nthreads) {
+							stage_sets++;
+							auto set = make_uniq<std::vector<std::vector<uint8_t>>>(plans.size());
+							for (auto &p : plans) {
+								(*set)[p.idx].resize(p.width * row_group_rows);
+							}
+							spare.push_back(std::move(set));
+						}
+						order_cv.wait(lk, [&]() { return !spare.empty() || stop.load(); });
+						if (stop.load()) {
+							break;
+						}
+						got = src->collection->NextParallelScan(context, src->state, cs);
+						if (got) {
+							t->stage = std::move(spare.back());
+							spare.pop_back();
+							t->seq = next_seq++;
+							uint64_t at = src->offset + (cs.row_group->GetRowStart() + cs.vector_index * STANDARD_VECTOR_SIZE - src->base);
+							if (t->seq > 0 && at < last_start) {
+								throw InternalException("Lemma: scan tasks handed out out of row order");
+							}
+							last_start = at;
+						}
+					} else {
+						got = src->collection->NextParallelScan(context, src->state, cs);
+					}
+					if (!got) {
+						break;
+					}
 					uint64_t start = cs.row_group->GetRowStart() + cs.vector_index * STANDARD_VECTOR_SIZE;
 					if (start < src->base || cs.max_row < start || cs.max_row - src->base > src->upper) {
 						throw InternalException("Lemma: a scan task outside its table (%d..%d)", int64_t(start),
 						                        int64_t(cs.max_row));
 					}
-					auto t = make_uniq<TaskOut>();
 					t->offset = src->offset + (start - src->base);
 					uint64_t range = cs.max_row - start;
+					if (staged) {
+						if (range > row_group_rows) {
+							throw InternalException("Lemma: a scan task larger than a row group");
+						}
+					}
 					t->strings.resize(nstrings);
 					t->dicts.resize(ndicts);
 					while (true) {
@@ -1003,21 +1117,40 @@ uint64_t ScanTable(ClientContext &context, DuckTransaction &transaction, DataTab
 						if (t->count + chunk.size() > range) {
 							throw InternalException("Lemma: a scan task returned more rows than its range");
 						}
+						if (keep) {
+							idx_t kept = keep->SelectExpression(chunk, sel);
+							if (kept == 0) {
+								continue;
+							}
+							if (kept < chunk.size()) {
+								chunk.Slice(sel, kept);
+							}
+						}
 						for (auto &p : plans) {
 							DecodeChunk(p, chunk.data[p.chunk_col], chunk.size(), *t);
 						}
 						t->count += chunk.size();
 					}
-					std::lock_guard<std::mutex> guard(out_lock);
-					tasks.push_back(std::move(t));
+					TaskOut *raw = t.get();
+					{
+						std::lock_guard<std::mutex> guard(out_lock);
+						tasks.push_back(std::move(t));
+					}
+					if (staged) {
+						commit(raw);
+					}
 				}
 			}
 		} catch (...) {
-			std::lock_guard<std::mutex> guard(out_lock);
-			if (!error) {
-				error = std::current_exception();
+			{
+				std::lock_guard<std::mutex> guard(out_lock);
+				if (!error) {
+					error = std::current_exception();
+				}
 			}
+			std::lock_guard<std::mutex> guard(order_lock);
 			stop = true;
+			order_cv.notify_all();
 		}
 	};
 	{
@@ -1032,6 +1165,9 @@ uint64_t ScanTable(ClientContext &context, DuckTransaction &transaction, DataTab
 	}
 	if (error) {
 		std::rethrow_exception(error);
+	}
+	if (staged && (!finished.empty() || frontier != next_seq)) {
+		throw InternalException("Lemma: a staged scan task was never committed");
 	}
 	// Row order: tasks by position; pack fixed-width cells toward the front where a task left a gap.
 	std::sort(tasks.begin(), tasks.end(),
@@ -1146,11 +1282,149 @@ uint64_t ScanTable(ClientContext &context, DuckTransaction &transaction, DataTab
 	return total;
 }
 
+// The transpiler's pushed-down predicate of one table, planned by DuckDB: the columns to scan (the needed ones and those the
+// predicate reads, in DuckDB's scan order), the table filters DuckDB's filter pushdown put into its scan, and the part it kept
+// above the scan as one expression over chunk positions. `empty`: DuckDB proved the predicate never holds (no row is scanned).
+struct PushedScan {
+	vector<StorageIndex> ids;
+	vector<LogicalType> types;
+	std::unordered_map<std::string, idx_t> pos; // column name -> chunk column
+	unique_ptr<TableFilterSet> filters;
+	unique_ptr<Expression> residual;
+	bool empty = false;
+};
+
+unique_ptr<Expression> ToChunkRefs(unique_ptr<Expression> e, const std::map<std::pair<idx_t, idx_t>, idx_t> &chunk_col) {
+	if (e->GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
+		auto &ref = e->Cast<BoundColumnRefExpression>();
+		auto it = chunk_col.find({ref.binding.table_index, ref.binding.column_index});
+		if (it == chunk_col.end()) {
+			throw InternalException("Lemma: a pushed filter reads a column the scan does not produce");
+		}
+		return make_uniq<BoundReferenceExpression>(ref.return_type, it->second);
+	}
+	ExpressionIterator::EnumerateChildren(*e, [&](unique_ptr<Expression> &child) { child = ToChunkRefs(std::move(child), chunk_col); });
+	return e;
+}
+
+// `SELECT <cols> FROM <table> WHERE <where>` bound in the caller's context and given DuckDB's own expression rewriter and filter
+// pushdown (no other optimizer, no optimizer extension): the plan is PROJECTION / FILTER / GET of this very table, or EMPTY_RESULT.
+// Any other shape is an error, never a silent full scan. The predicate is the transpiler's (pushdown.py: single-table, sound to
+// apply before the proved code); trusted here: DuckDB evaluates it correctly (docs/TRUSTED_FAMILIES.md).
+PushedScan PlanPushdown(ClientContext &context, TableCatalogEntry &entry, const std::string &table,
+                        const std::vector<std::string> &cols, const std::string &where) {
+	std::string q = "SELECT ";
+	for (size_t i = 0; i < cols.size(); i++) {
+		q += (i ? ", " : "") + KeywordHelper::WriteQuoted(cols[i], '"');
+	}
+	q += " FROM " + KeywordHelper::WriteQuoted(table, '"') + " WHERE " + where;
+	Parser parser(context.GetParserOptions());
+	parser.ParseQuery(q);
+	if (parser.statements.size() != 1 || parser.statements[0]->type != StatementType::SELECT_STATEMENT) {
+		throw InvalidInputException("Lemma: the pushed predicate of %s is not one WHERE clause: %s", table, where);
+	}
+	auto binder = Binder::CreateBinder(context);
+	auto bound = binder->Bind(*parser.statements[0]);
+	Optimizer optimizer(*binder, context);
+	optimizer.rewriter.VisitOperator(*bound.plan);
+	FilterPushdown pushdown(optimizer);
+	auto plan = pushdown.Rewrite(std::move(bound.plan));
+	PushedScan out;
+	vector<unique_ptr<Expression>> kept;
+	LogicalOperator *op = plan.get();
+	while (op->type != LogicalOperatorType::LOGICAL_GET) {
+		if (op->type == LogicalOperatorType::LOGICAL_EMPTY_RESULT) {
+			out.empty = true;
+			return out;
+		}
+		if (op->type == LogicalOperatorType::LOGICAL_PROJECTION) {
+			for (auto &e : op->expressions) {
+				if (e->GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
+					throw InvalidInputException("Lemma: the pushed predicate of %s planned a computed projection", table);
+				}
+			}
+		} else if (op->type == LogicalOperatorType::LOGICAL_FILTER) {
+			if (!op->Cast<LogicalFilter>().projection_map.empty()) {
+				throw InvalidInputException("Lemma: the pushed predicate of %s planned a projecting filter", table);
+			}
+			for (auto &e : op->expressions) {
+				kept.push_back(e->Copy());
+			}
+		} else {
+			throw InvalidInputException("Lemma: DuckDB planned the pushed predicate of %s as %s; the scan cannot apply it", table,
+			                            LogicalOperatorToString(op->type));
+		}
+		if (op->children.size() != 1) {
+			throw InvalidInputException("Lemma: the pushed predicate of %s planned an operator with %d inputs", table,
+			                            int64_t(op->children.size()));
+		}
+		op = op->children[0].get();
+	}
+	auto &get = op->Cast<LogicalGet>();
+	auto scanned = get.GetTable();
+	if (!scanned || scanned.get() != &entry || !op->children.empty()) {
+		throw InvalidInputException("Lemma: the pushed predicate of %s was not planned as a scan of that table", table);
+	}
+	auto &column_ids = get.GetColumnIds();
+	for (idx_t i = 0; i < column_ids.size(); i++) {
+		if (column_ids[i].IsVirtualColumn() || column_ids[i].HasChildren()) {
+			throw InvalidInputException("Lemma: the pushed predicate of %s scans a virtual or nested column", table);
+		}
+		auto &col = entry.GetColumn(LogicalIndex(column_ids[i].GetPrimaryIndex()));
+		out.ids.emplace_back(col.StorageOid());
+		out.types.push_back(col.Type());
+		out.pos[col.Name()] = i;
+	}
+	// The logical plan keys its table filters by the table's column index; the scan keys them by position in its column ids (what
+	// DuckDB's physical planner does, CreateTableFilterSet). A filter on a type the scan cannot filter (supports_pushdown_type) is
+	// evaluated as an expression on the chunk instead, as DuckDB's own plan does.
+	out.filters = make_uniq<TableFilterSet>();
+	vector<unique_ptr<Expression>> residual;
+	for (auto &f : get.table_filters.filters) {
+		optional_idx at;
+		for (idx_t i = 0; i < column_ids.size(); i++) {
+			if (column_ids[i].GetPrimaryIndex() == f.first) {
+				at = i;
+				break;
+			}
+		}
+		if (!at.IsValid()) {
+			throw InternalException("Lemma: a pushed table filter of %s on a column the scan does not read", table);
+		}
+		if (get.function.supports_pushdown_type && !get.function.supports_pushdown_type(*get.bind_data, f.first)) {
+			BoundReferenceExpression ref(out.types[at.GetIndex()], at.GetIndex());
+			residual.push_back(f.second->ToExpression(ref));
+		} else {
+			out.filters->filters[at.GetIndex()] = f.second->Copy();
+		}
+	}
+	if (!kept.empty()) {
+		std::map<std::pair<idx_t, idx_t>, idx_t> chunk_col;
+		auto bindings = get.GetColumnBindings();
+		for (idx_t i = 0; i < bindings.size(); i++) {
+			chunk_col[{bindings[i].table_index, bindings[i].column_index}] = get.projection_ids.empty() ? i : get.projection_ids[i];
+		}
+		for (auto &e : kept) {
+			residual.push_back(ToChunkRefs(std::move(e), chunk_col));
+		}
+	}
+	unique_ptr<Expression> all;
+	for (auto &e : residual) {
+		all = all ? make_uniq<BoundConjunctionExpression>(ExpressionType::CONJUNCTION_AND, std::move(all), std::move(e)) : std::move(e);
+	}
+	out.residual = std::move(all);
+	return out;
+}
+
+// A query template's `$name` placeholders (outside quotes and comments) replaced by the SQL literals of the values lemma_query was
+// given; the same substitution as the SQL DuckDB answers a routed decline with.
+std::string SubstituteParams(const Manifest &m, const std::string &sql, const std::unordered_map<std::string, std::string> &literal);
+
 // Scan exactly the columns the manifest names, table by table, in the caller's transaction (its snapshot, its own uncommitted
 // changes included), on lemma_scan_threads threads (default: DuckDB's `threads`), in single-threaded row order. Fixed-width
 // integer and f64 fields are decoded once, straight into buffers of the executor library (owned inputs, ABI 3); bool and
 // validity into byte buffers; strings and dictionaries into byte strings.
-ScanResult ScanInputs(ClientContext &context, const Manifest &m) {
+ScanResult ScanInputs(ClientContext &context, const Manifest &m, const std::unordered_map<std::string, std::string> &literals) {
 	auto start = std::chrono::steady_clock::now();
 	ScanResult res;
 	res.buffers.resize(m.inputs.size());
@@ -1249,13 +1523,37 @@ ScanResult ScanInputs(ClientContext &context, const Manifest &m) {
 			auto &first = entry.GetColumns().GetColumn(PhysicalIndex(0));
 			ids.emplace_back(first.StorageOid());
 			types.push_back(first.Type());
+			pos[first.Name()] = 0;
 		}
 		for (auto &p : plans) {
 			if (p.role == Role::Code && dict_of_codes.count(p.k)) {
 				p.dict_k = dict_of_codes[p.k];
 			}
 		}
-		uint64_t total = ScanTable(context, transaction, storage, ids, types, plans, m.exec, res, want_threads);
+		PushedScan pushed;
+		if (!rows.where.empty()) {
+			// The transpiler's pushdown (manifest "where"): DuckDB filters inside the scan, only matching rows are decoded.
+			std::vector<std::string> names(ids.size());
+			for (auto &kv : pos) {
+				names[kv.second] = kv.first;
+			}
+			pushed = PlanPushdown(context, entry, rows.table, names, SubstituteParams(m, rows.where, literals));
+			if (pushed.empty) {
+				pushed.residual = make_uniq<BoundConstantExpression>(Value::BOOLEAN(false)); // DuckDB: never true; no row is kept
+			} else {
+				for (auto &p : plans) {
+					auto it = pushed.pos.find(names[p.chunk_col]);
+					if (it == pushed.pos.end()) {
+						throw InternalException("Lemma: the pushed scan of %s lost column %s", rows.table, names[p.chunk_col]);
+					}
+					p.chunk_col = it->second;
+				}
+				ids = pushed.ids;
+				types = pushed.types;
+			}
+		}
+		uint64_t total = ScanTable(context, transaction, storage, ids, types, plans, m.exec, res, want_threads,
+		                           pushed.filters.get(), pushed.residual.get());
 		res.cols[i] = LemmaCol {nullptr, 0, total};
 		for (auto &p : plans) {
 			if (p.role == Role::String) {
@@ -1568,6 +1866,7 @@ struct LemmaBindData : public TableFunctionData {
 	std::shared_ptr<Manifest> manifest;
 	std::string sql;
 	std::vector<ParamBytes> params; // a query template's values, encoded for the executor
+	std::unordered_map<std::string, std::string> literals; // the same values as SQL literals (a pushed predicate's `$name`)
 	bool from_optimizer = false;     // lemma_mode replaced the plan of a plain SELECT
 	// lemma_route_unproved: the executor already ran (at bind or plan time, to be able to route a decline); Init uses this result.
 	std::shared_ptr<RunResult> precomputed;
@@ -1578,6 +1877,7 @@ struct LemmaBindData : public TableFunctionData {
 		c->manifest = manifest;
 		c->sql = sql;
 		c->params = params;
+		c->literals = literals;
 		c->from_optimizer = from_optimizer;
 		c->precomputed = precomputed;
 		c->precomputed_scan_us = precomputed_scan_us;
@@ -1612,8 +1912,9 @@ std::string RunSignature(const Manifest &m, const std::vector<ParamBytes> &param
 
 // Scan in the caller's transaction and run the executor once: (result, scan_us).
 std::pair<std::shared_ptr<RunResult>, int64_t> ScanAndRun(ClientContext &context, const Manifest &m,
-                                                          const std::vector<ParamBytes> &params) {
-	auto scan = ScanInputs(context, m);
+                                                          const std::vector<ParamBytes> &params,
+                                                          const std::unordered_map<std::string, std::string> &literals) {
+	auto scan = ScanInputs(context, m, literals);
 	auto result = std::make_shared<RunResult>(RunExecutor(m, scan, params));
 	return {result, scan.scan_us};
 }
@@ -1622,18 +1923,28 @@ std::string DeclinedRouteReason(const std::string &reason) {
 	return "declined: " + reason + "; answered by DuckDB (lemma_route_unproved = true), not by the proved executor";
 }
 
-// The SQL DuckDB runs for a declined query when lemma_route_unproved is on: the text itself, with each `$name` placeholder of a
-// query template (outside quotes and comments) replaced by the SQL literal of the value lemma_query was given.
-std::string InstantiateForDuckdb(const Manifest &m, const std::string &sql, const vector<Value> &inputs) {
-	if (m.params.empty()) {
-		return sql;
-	}
+// The SQL literal of each query-template parameter value lemma_query was given (inputs[0] is the SQL text): what a `$name`
+// placeholder becomes in the SQL DuckDB runs (a routed decline, a pushed-down predicate). EncodeParam checks the same values.
+std::unordered_map<std::string, std::string> ParamLiterals(const Manifest &m, const vector<Value> &inputs) {
 	std::unordered_map<std::string, std::string> literal;
 	for (idx_t i = 0; i < m.params.size(); i++) {
 		auto &p = m.params[i];
 		LogicalType type = p.sql_type == "VARCHAR" ? LogicalType::VARCHAR : ParseDuckType(p.sql_type);
 		literal[p.name] = "(" + inputs[i + 1].DefaultCastAs(type).ToSQLString() + ")";
 	}
+	return literal;
+}
+
+// The SQL DuckDB runs for a declined query when lemma_route_unproved is on: the text itself, with each `$name` placeholder of a
+// query template (outside quotes and comments) replaced by the SQL literal of the value lemma_query was given.
+std::string InstantiateForDuckdb(const Manifest &m, const std::string &sql, const vector<Value> &inputs) {
+	if (m.params.empty()) {
+		return sql;
+	}
+	return SubstituteParams(m, sql, ParamLiterals(m, inputs));
+}
+
+std::string SubstituteParams(const Manifest &m, const std::string &sql, const std::unordered_map<std::string, std::string> &literal) {
 	std::string out;
 	size_t i = 0, n = sql.size();
 	auto ident = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; };
@@ -1688,7 +1999,7 @@ unique_ptr<TableRef> LemmaQueryBindReplace(ClientContext &context, TableFunction
 		params.push_back(EncodeParam(manifest->params[i], input.inputs[i + 1]));
 	}
 	auto start = std::chrono::steady_clock::now();
-	auto run = ScanAndRun(context, *manifest, params);
+	auto run = ScanAndRun(context, *manifest, params, ParamLiterals(*manifest, input.inputs));
 	auto &state = GetState(context);
 	if (!run.first->declined) {
 		std::lock_guard<std::mutex> guard(state.lock);
@@ -1748,6 +2059,7 @@ unique_ptr<FunctionData> LemmaQueryBind(ClientContext &context, TableFunctionBin
 	for (idx_t i = 0; i < manifest->params.size(); i++) {
 		bind->params.push_back(EncodeParam(manifest->params[i], input.inputs[i + 1]));
 	}
+	bind->literals = ParamLiterals(*manifest, input.inputs);
 	for (auto &c : manifest->outputs) {
 		return_types.push_back(c.type);
 		names.push_back(c.name);
@@ -1775,7 +2087,7 @@ unique_ptr<GlobalTableFunctionState> LemmaQueryInit(ClientContext &context, Tabl
 		state->result = bind.precomputed;
 		scan_us = bind.precomputed_scan_us;
 	} else {
-		auto run = ScanAndRun(context, *bind.manifest, bind.params);
+		auto run = ScanAndRun(context, *bind.manifest, bind.params, bind.literals);
 		state->result = run.first;
 		scan_us = run.second;
 	}
@@ -1869,7 +2181,7 @@ unique_ptr<FunctionData> ScanInputsBind(ClientContext &context, TableFunctionBin
 unique_ptr<GlobalTableFunctionState> ScanInputsInit(ClientContext &context, TableFunctionInitInput &input) {
 	auto &bind = input.bind_data->Cast<LemmaBindData>();
 	const Manifest &m = *bind.manifest;
-	auto scan = ScanInputs(context, m);
+	auto scan = ScanInputs(context, m, {}); // fixed SQL only: a template's pushed predicate without its values is an error
 	auto state = make_uniq<ScanInputsState>();
 	for (size_t k = 0; k < m.inputs.size(); k++) {
 		const InEntry &e = m.inputs[k];
@@ -2072,7 +2384,7 @@ void LemmaOptimize(OptimizerExtensionInput &input, unique_ptr<LogicalOperator> &
 	if (BoolSetting(context, "lemma_route_unproved")) {
 		// Run now, while DuckDB's own plan is still here: a decline keeps that plan (labelled), anything else is the answer.
 		auto start = std::chrono::steady_clock::now();
-		auto run = ScanAndRun(context, *manifest, {});
+		auto run = ScanAndRun(context, *manifest, {}, {});
 		if (run.first->declined) {
 			lq.engine = "duckdb";
 			lq.reason = DeclinedRouteReason(run.first->decline_reason);

@@ -434,6 +434,11 @@ the proof (tests/test_agent_scan.py: `scan_filtered_sum.rs` verifies, the same b
 dictionary column, with pushdown on and off. Admission: the agent may call `scan_where_t` and the scan spec fns; it cannot define
 or redefine them (host names) and cannot write `external_body`, `assume` or a type.
 
+Where the handle appears: `run_query` (also under `assumptions = false`, where the contract is `Option` and the scan columns are the
+SQL-type cells), or, with `stateful`, `build` and the runtime's `refresh` (`requires scan_full_t(t_scan) == t`; `execute` has no
+handle; serve mode refuses a build that calls `scan_where_t`). Not in library mode: an executor whose body calls `scan_where_t` is
+refused at install, so no in-DuckDB answer depends on this item yet.
+
 ## Menu (25 families)
 
 | id | kind | spec_ret | purpose |

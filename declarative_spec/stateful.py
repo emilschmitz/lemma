@@ -60,6 +60,7 @@ class Contract:
     params: list[tuple[str, str]]  # runtime parameters (name, type): every non-table parameter
     ret: str  # what execute returns: ``Option<T>`` when it may decline
     declines: bool = False  # lemma.toml assumptions = false: execute returns Option, None declines (wrap_decline)
+    scans: tuple[tuple[str, str], ...] = ()  # agent scans (agent_scan.py): (handle parameter of build, Scan_<suffix>), one per table
 
     @property
     def value(self) -> str:
@@ -107,12 +108,17 @@ def to_stateful(spec_rs: str) -> str:
     tables: list[tuple[str, str]] = []
     arcs: list[str] = []
     params: list[tuple[str, str]] = []
+    scans: list[tuple[str, str]] = []
     for part in _split_top(m.group("params")):
         name, _, ty = part.partition(":")
         name, ty = name.strip(), ty.strip()
         tm = re.fullmatch(r"&(Cols_\w+)", ty)
+        sm = re.fullmatch(r"&(Scan_\w+)", ty)
         if tm:
             tables.append((name, tm.group(1)))
+        elif sm:
+            # An agent-scan handle (agent_scan.py): build gets it, execute does not (scans are for making the state).
+            scans.append((name, sm.group(1)))
         elif "std::sync::Arc<" in ty:
             arcs.append(name)
         else:
@@ -123,6 +129,16 @@ def to_stateful(spec_rs: str) -> str:
     if not tables:
         raise DeclarativeUnsupported("stateful: run_query reads no table")
     req = [c for c in _conjuncts(m.group("req")) if not any(_mentions(c, a) for a in arcs)]
+    # `scan_full_<t>(<t>_scan) == *<t>`: a precondition of build and refresh (the handle scans exactly the table build is given),
+    # not of query_pre (execute has no handle). build takes the tables by value, so `*<t>` becomes `<t>`.
+    scan_req = [c for c in req if any(_mentions(c, n) for n, _s in scans)]
+    req = [c for c in req if c not in scan_req]
+    table_names = {n for n, _s in tables}
+    for c in scan_req:
+        sm = re.fullmatch(r"scan_full_\w+\((\w+)\) == \*(\w+)", c)
+        if sm is None or sm.group(2) not in table_names:
+            raise DeclarativeUnsupported(f"stateful: a scan-handle requires of an unexpected form: {c[:80]}")
+    scan_req = [re.sub(r"== \*(\w+)$", r"== \1", c) for c in scan_req]
     for c in req:
         for p, _ty in params:
             if _mentions(c, p):
@@ -138,13 +154,20 @@ def to_stateful(spec_rs: str) -> str:
     pre_body = "\n".join(f"    &&& {c}" for c in req) or "    true"
     post_body = "\n".join(f"    &&& {c}" for c in ens) or "    true"
     qdb_fields = "\n".join(f"    pub {n}: {s}," for n, s in tables)
-    build_params = ", ".join(f"{n}: {s}" for n, s in tables)
+    build_params = ", ".join([f"{n}: {s}" for n, s in tables] + [f"{n}: &{s}" for n, s in scans])
     build_pre = ", ".join(f"&{n}" for n, _s in tables)
+    build_scan_req = "".join(f"        {c},\n" for c in scan_req)
     qdb_init = ", ".join(f"{n}: {n}" for n, _s in tables)
+    scan_note = (
+        "\n// Agent scans: `build` gets one scan handle per table (scan_full_<t>(<t>_scan) == <t>) and may call scan_where_<t> to make the\n"
+        "// state from the rows DuckDB returns for a predicate; `execute` answers from the state only."
+        if scans
+        else ""
+    )
     block = f"""// STATEFUL CONTRACT (lemma.toml `stateful`): `build` makes a state from the tables, `execute` answers from the state.
 // query_pre is the requires and query_post the ensures that run_query had, verbatim; db() is the ghost snapshot of the
 // tables `build` was given. The host keeps the state while the data version stays the same and calls `build` again
-// (on the current tables) when it changes; `execute` may run many times per build.
+// (on the current tables) when it changes; `execute` may run many times per build.{scan_note}
 pub struct QDb {{
 {qdb_fields}
 }}
@@ -180,7 +203,7 @@ impl QState {{
 pub fn build({build_params}) -> (s: QState)
     requires
         query_pre({build_pre}),
-    ensures
+{build_scan_req}    ensures
         s.inv(),
         s.db() == (QDb {{ {qdb_init} }}),
 {{
@@ -207,9 +230,13 @@ def contract(spec_rs: str) -> Contract:
     if b is None or e is None:
         raise ValueError("not a stateful spec: build/execute signatures missing")
     tables = []
+    scans = []
     for part in _split_top(b.group(1)):
         name, _, ty = part.partition(":")
-        tables.append((name.strip(), ty.strip()))
+        if ty.strip().startswith("&Scan_"):
+            scans.append((name.strip(), ty.strip()[1:]))
+        else:
+            tables.append((name.strip(), ty.strip()))
     params = []
     for part in _split_top(e.group(1).lstrip(", ")):
         name, _, ty = part.partition(":")
@@ -220,7 +247,7 @@ def contract(spec_rs: str) -> Contract:
     declines = DECLINE_MARKER_STATEFUL in spec_rs
     if declines and not (ret.startswith("Option<") and ret.endswith(">")):
         raise ValueError(f"a declining stateful spec's execute must return Option<..>, got {ret}")
-    return Contract(tables=tables, params=params, ret=ret, declines=declines)
+    return Contract(tables=tables, params=params, ret=ret, declines=declines, scans=tuple(scans))
 
 
 _EXECUTE = re.compile(
@@ -276,9 +303,11 @@ def runtime_rs(spec_rs: str) -> str:
     at the version asked for (``None`` otherwise), so an answer from another version's state cannot be returned.
     """
     c = contract(spec_rs)
-    build_params = ", ".join(f"{n}: {s}" for n, s in c.tables)
+    build_params = ", ".join([f"{n}: {s}" for n, s in c.tables] + [f"{n}: &{s}" for n, s in c.scans])
     build_pre = ", ".join(f"&{n}" for n, _s in c.tables)
-    build_args = ", ".join(n for n, _s in c.tables)
+    build_args = ", ".join([n for n, _s in c.tables] + [n for n, _s in c.scans])
+    # agent scans: the handle scans exactly the table refresh is given (the same requires build has)
+    scan_req = "".join(f"            {_scan_full_fn(s)}({n}) == {_scan_table(n, c.tables)},\n" for n, s in c.scans)
     qdb_init = ", ".join(f"{n}: {n}" for n, _s in c.tables)
     run_params = "".join(f", {n}: {t}" for n, t in c.params)
     param_names = "".join(f", {n}" for n, _t in c.params)
@@ -319,7 +348,7 @@ impl QRuntime {{
     pub fn refresh(&mut self, version: u64, {build_params})
         requires
             query_pre({build_pre}),
-        ensures
+{scan_req}        ensures
             final(self).ok(),
             final(self).version == version,
             match final(self).state {{
@@ -355,3 +384,15 @@ impl QRuntime {{
     }}
 }}
 """
+
+
+def _scan_full_fn(scan_struct: str) -> str:
+    return "scan_full_" + scan_struct.removeprefix("Scan_")
+
+
+def _scan_table(handle: str, tables: list[tuple[str, str]]) -> str:
+    """The table parameter a scan handle belongs to (agent_scan.py names it ``<table parameter>_scan``)."""
+    name = handle.removesuffix("_scan")
+    if name not in {n for n, _s in tables}:
+        raise ValueError(f"scan handle {handle} names no table parameter")
+    return name

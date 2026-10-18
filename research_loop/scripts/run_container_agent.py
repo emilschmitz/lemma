@@ -219,6 +219,8 @@ def run(
         "model": model,
         "duck_us": result.get("duck_us"),
         "official": result.get("official"),  # K interleaved rounds: per-round numbers, medians, speedup of medians
+        # hot_label "hot, excludes scan/filter" with pushdown/agent_scan on: then the reported number is measure_in_duckdb
+        **_timing_labels(),
         "menu": menu,
         "selection": resolved.as_dict(),
         "config": config_record["config"],  # every lemma.toml key: value, section, source (file/env/cli), origin
@@ -234,6 +236,13 @@ def run(
         # The imperative loop leaves "error" empty and keeps the reason per iteration in the history.
         "error": verdict_error(result),
     }
+
+
+def _timing_labels() -> dict:
+    """``hot_label`` / ``reported_measure`` of the RESULT line (research_loop/official_measure.py ``timing_labels``)."""
+    from research_loop.official_measure import timing_labels
+
+    return timing_labels()
 
 
 def verdict_error(result: dict) -> str:

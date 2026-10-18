@@ -78,7 +78,18 @@ with `$` outside quotes is only trimmed. The extension compares the whole normal
 `normalized_sql`, `duckdb_version`, `git_sha`, `git_dirty`, `proof` (`N verified, 0 errors` from the Verus run that compiled
 `lib.so`), `spec_sha256`, `lib_sha256`, `target_cpu`, `params` (a query template's parameters: name, SQL type, Rust type, scale, the `requires` range; empty for fixed SQL), `param_layout`, `input_layout`/`output_layout`
 (must equal what the library reports), `inputs` (per buffer: table, column, DuckDB type at install, Rust type, role, scale,
-nullable) and `outputs` (DuckDB name and type, OutRow field, scale).
+nullable; a `rows` entry may carry `where` and `where_params`, the transpiler's pushed-down predicate of that table, lemma.toml
+`pushdown`) and `outputs` (DuckDB name and type, OutRow field, scale).
+
+Pushdown in the scan: for a `rows` entry with `where`, the extension binds `SELECT <cols> FROM <table> WHERE <where>` in the
+caller's context (a template's `$name` replaced by the SQL literal of that call's value) and runs only DuckDB's expression rewriter
+and filter pushdown on it (no other optimizer, no optimizer extension). The plan must be PROJECTION / FILTER / GET of that table, or
+EMPTY_RESULT (no row); anything else is an error. The GET's table filters run inside the parallel scan (zone maps skip row groups and
+vectors, a vector returns only matching rows); the filters DuckDB kept above its scan select rows of each chunk before decoding. A
+filtered task decodes into staging buffers and is copied to its final place once every earlier task's row count is known, so the
+hand-over holds exactly the matching rows in row order. Trusted, as for the export: DuckDB evaluates the predicate correctly.
+`lemma_scan_inputs` takes fixed SQL only (a template's predicate needs values). An executor whose body calls the agent-scan item
+`scan_where_<t>` is refused at install: ABI 4 has no callback into the extension for it.
 
 The extension refuses, with an error and never with DuckDB's rows: a manifest for another DuckDB version, a proof line that is not
 `N verified, 0 errors`, `in_duckdb` false, a manifest of another query, a `lib.so` whose sha256 differs from the manifest, a

@@ -33,7 +33,9 @@ def main() -> None:
     ap.add_argument("--all", action="store_true", help="every executor installed in --home")
     ap.add_argument("--extension", type=Path, default=EXTENSION)
     ap.add_argument("--rounds", type=int, default=None)
+    ap.add_argument("--bindings", help="a query template's bindings, JSON list of {name: value}: round i binds bindings[i %% len]")
     args = ap.parse_args()
+    bindings = json.loads(args.bindings) if args.bindings else None
     work = Path(tempfile.mkdtemp(prefix="in-duckdb-bench-"))
     sqls = list(args.sql)
     if args.all:
@@ -42,12 +44,14 @@ def main() -> None:
         ap.error("give --sql or --all")
     for sql in sqls:
         bar = {"sql": sql, "db_path": str(args.db), "duck_settings": duck_settings(work)}
+        if bindings:
+            bar["template_bindings"] = bindings
         with heavy_phase("measure"):
             out = official_measure.measure_in_duckdb(bar, work, extension=args.extension, home=args.home, k=args.rounds)
         con = duckdb.connect(str(args.db), read_only=True, config={"allow_unsigned_extensions": "true"})
         con.execute(f"LOAD '{args.extension}'")
         con.execute(f"SET lemma_home = '{args.home}'")
-        con.execute(official_measure.lemma_query_sql(sql)).fetchall()
+        con.execute(official_measure.lemma_query_sql(sql, bindings[0] if bindings else None)).fetchall()
         split = con.execute("SELECT scan_us, load_us, run_us, total_us, rows FROM lemma_last_query()").fetchone()
         con.close()
         out["split_us"] = dict(zip(("scan", "executor_load_and_checks", "run_query", "total_in_init", "rows"), split, strict=True))

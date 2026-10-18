@@ -84,3 +84,13 @@ reads the current tables and calls `build`, then `execute`. One state is kept: g
 `QAcc` and `qstate_inv`), assembly of both mains, the prompt section, Verus on the fixtures and on mutated bodies and runtimes, and
 differential runs of the compiled fixtures (`stateful_group_table.rs`, `stateful_date_prefix.rs`) against DuckDB on random tables under
 inserts, deletes and updates (each a new version), and on TPC-H SF1.
+
+## Agent scans in build (`[run] agent_scan`)
+
+With `agent_scan` on, `build` takes one scan handle per table: `build(<t>: Cols_<t>, <t>_scan: &Scan_<t>)` with
+`requires query_pre(&<t>), scan_full_<t>(<t>_scan) == <t>`; the runtime's `refresh` takes and requires the same and passes the handles
+through. `query_pre`, `query_post` and `execute` are unchanged (no handle): a build may ask DuckDB for the rows of a predicate
+(`scan_where_<t>`, docs/TRUSTED_FAMILIES.md "Agent scans") and keep them in the state; `qstate_inv` must then relate them to
+`s.db()`. The measure `main` opens the handles on the prepared data directory. Serve mode refuses a build that calls `scan_where`
+(a handle reads the export of one data version); a build that does not gets inert handles. Fixture:
+`tests/fixtures/declarative_proofs/decline/stateful_scan_usum_checked.rs` (assumptions off, tests/test_pushdown_combos.py).

@@ -353,6 +353,9 @@ def _install(key_or_case, home: Path, db_path: Path, schema=None, catalog=None, 
         mp.setenv("LEMMA_PARALLEL_VSTD", "off")
         mp.setenv("LEMMA_JOIN_CHAIN", "0")
         mp.setenv("LEMMA_VERUS_BIN", str(ROOT / "scripts" / "ram" / "verus_guarded.sh"))
+        # These tests describe the whole-table scan (caps and NULL checks on every row, byte-for-byte buffers); the pushed-down
+        # scan has its own tests (tests/test_in_duckdb_pushdown.py) and the SF1 tests install with the run default (pushdown on).
+        mp.setenv("LEMMA_PUSHDOWN", "0")
         return in_duckdb.install_executor(
             sql=sql, schema=schema, catalog=catalog, agent_source=(PROOFS / fixture).read_text(), db_path=db_path, home=home
         )

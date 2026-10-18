@@ -377,6 +377,7 @@ def _apply_speed_bar(metrics: dict, speed_bar: dict | None, *, parallel_hint: bo
     speedup = duck_us / max(latency, 1)
     attained = {
         **rounds_info,
+        **om.timing_labels(),  # pushdown/agent_scan on: this time is "hot, excludes scan/filter"; measure_in_duckdb is the reported number
         "speed_bar_mult": mult,
         "official_tables": speed_bar.get("table_rows"),  # the timed run is on these FULL tables, whatever dataset_size says
         "speedup": speedup,  # in session: median of the binary's timed runs vs the prepare-time DuckDB median; official: median of rounds vs median of rounds
@@ -465,7 +466,13 @@ def _official_rounds(metrics: dict, speed_bar: dict) -> tuple[dict, int, int, in
         if template is None:
             raise ValueError("expect.json has template_bindings but its SQL is not a query template")
 
+        binding_data = speed_bar.get("binding_data")  # pushed predicates with parameters: per-binding column files
+
         def ours_bound(binding: dict) -> int:  # a template round: the round's values on the binary's command line
+            if binding_data is not None:  # that binding's rows at the paths the binary reads (outside its timed region)
+                from research_loop.decl_query_measure import activate_binding
+
+                activate_binding(binding_data, bindings.index(binding))
             latency, best, stdout = run_binary_round(binary, directory, templates.binary_args(template, binding))
             bests.append(best)
             outputs.append(stdout)
@@ -478,6 +485,10 @@ def _official_rounds(metrics: dict, speed_bar: dict) -> tuple[dict, int, int, in
             rounds = om.interleave(ours_bound, duck, k, bindings) if bindings else om.interleave(ours, duck, k)
         finally:
             close()
+            if bindings and speed_bar.get("binding_data") is not None:
+                from research_loop.decl_query_measure import activate_binding
+
+                activate_binding(speed_bar["binding_data"], 0)  # back to bindings[0], what the in-session runs and expected rows use
     if bindings:  # each round's rows against DuckDB's rows for the same values: a wrong answer for any binding fails the measure
         for entry, stdout, expect in zip(rounds, outputs, duck.rows, strict=True):  # type: ignore[attr-defined]
             err = _rows_error(stdout, speed_bar, expect["rows"], expect["limited"], expect["tie_rows"])
@@ -545,13 +556,21 @@ def _admit_and_assemble(spec_rs: str, agent_source: str, column_bins: dict[str, 
             body,
             helpers=helpers,
             column_bins=column_bins,
-            expected_rows=None if speed_bar is None else speed_bar.get("table_rows"),
+            expected_rows=None if speed_bar is None else _pinned_rows(speed_bar),
             state=state,
             build=build,
         )
     except ValueError as exc:
         return "", "", str(exc)
     return assembled, body, ""
+
+
+def _pinned_rows(speed_bar: dict) -> dict[str, int] | None:
+    """The row counts the generated ``main`` pins: all tables, except those whose rows depend on a template's parameters (a pushed
+    predicate with parameters, ``decl_query_measure._export_bindings``)."""
+    rows = speed_bar.get("table_rows")
+    varying = (speed_bar.get("binding_data") or {}).get("canonical") or {}
+    return None if rows is None else {k: v for k, v in rows.items() if k not in varying}
 
 
 PARTIAL_LABEL = "partial check: not a proof of run_query; submit still requires a full verified run_runquery run"

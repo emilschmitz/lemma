@@ -124,7 +124,7 @@ def _maybe_large_table(
         if prepared["kinds"] is not None:  # OutRow result; a map result prints `ROW key value`
             bar["kinds"] = prepared["kinds"]
             bar.update({k: prepared.get(k) for k in ("order_cols", "limited", "tie_rows")})  # ORDER BY / LIMIT tie handling, see bench.rows_match_error
-        bar.update({k: prepared[k] for k in ("template_bindings", "binding_args", "row_format") if k in prepared})  # a query template, see templates.py
+        bar.update({k: prepared[k] for k in ("template_bindings", "binding_args", "row_format", "binding_data", "scan_plan") if k in prepared})  # a query template, see templates.py
         return prepared["bins"], bar
     raw = os.environ.get("LEMMA_DECL_ROWS", "").strip()
     if not raw:

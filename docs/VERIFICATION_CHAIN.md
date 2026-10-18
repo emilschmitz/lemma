@@ -69,6 +69,15 @@ windows, HAVING and self-joined tables are refused (nothing pushed). Trusted: Du
 rule itself is host code like the rest of the transpiler; `tests/test_pushdown_differential.py` checks it end to end (proved
 bodies on pushed vs full data vs DuckDB). The reference answer is always DuckDB on the full original SQL.
 
+The same rule and the same trust apply in the DuckDB extension (`in_duckdb`): the manifest names each table's pushed predicate and
+the extension's scan applies it through DuckDB's filter pushdown in the caller's snapshot (a query template's `$name` placeholders
+bound to the values of that `lemma_query` call). The extension's own part is host code: it accepts only a plan of PROJECTION /
+FILTER / GET of that very table (or DuckDB's EMPTY_RESULT), maps the table filters to scan positions as DuckDB's physical planner
+does, and evaluates the kept filters per chunk (`tests/test_in_duckdb_pushdown.py`: byte-for-byte equal to the whole-table encoding
+of the rows WHERE keeps, for 1, 2 and 8 scan threads, over several row groups with deletes). With `assumptions = false` nothing in
+the spec depends on the delivered row count; with assumptions on, the library re-checks every cap on the delivered rows.
+Query templates in the binary path: each binding's rows are exported separately and put in place before its official round.
+
 ## 5. Verus verify
 
 Verus must prove `run_query` satisfies the admitted `ensures` against `method_spec` (and any proof obligations in the body). Failure is loud — no silent DuckDB fallback for “verified” success.

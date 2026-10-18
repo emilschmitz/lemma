@@ -249,6 +249,7 @@ def install_executor(
         outputs = output_descriptors(plain_sql, spec, con)
     finally:
         con.close()
+    add_pushdown(inputs, sql, schema)
     home = home or lemma_home()
     key = executor_key(sql)
     final = home / "executors" / key
@@ -291,6 +292,23 @@ def install_executor(
         shutil.rmtree(stage, ignore_errors=True)
         raise
     return final
+
+
+def add_pushdown(inputs: list[dict], sql: str, schema: dict) -> None:
+    """lemma.toml ``pushdown``: each ``rows`` entry gets the transpiler's pushed-down predicate of its table (``where``, DuckDB SQL;
+    a query template's ``$name`` placeholders stay, the extension substitutes the values ``lemma_query`` gets) and the parameters it
+    reads (``where_params``). The extension applies it inside its scan (DuckDB's filter pushdown in the caller's snapshot), so only
+    rows that can matter are handed to the executor. Sound by ``declarative_spec/pushdown.py``; the spec is unchanged. Flag off, or
+    nothing pushed for a table: no key, the whole table is scanned as before."""
+    if not lemma_config.get("pushdown"):
+        return
+    from declarative_spec.pushdown import plan_pushdown
+
+    plan = plan_pushdown(sql, schema, dialect="duckdb")
+    for entry in inputs:
+        if entry["kind"] == "rows" and plan.where(entry["table"]) is not None:
+            entry["where"] = plan.where(entry["table"])
+            entry["where_params"] = list(plan.params(entry["table"]))
 
 
 def input_descriptors(sql: str, schema: dict, catalog: CatalogAssumptions | None, spec: str, con: duckdb.DuckDBPyConnection) -> list[dict]:

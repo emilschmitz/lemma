@@ -506,18 +506,17 @@ def _emit_fixed(
     spec = _emit_integer_sql(integer_sql, schema, catalog)
     spec = _with_f64_literals(spec, integer_sql)
     out = _with_agent_surface(with_out_scales(spec, scales))
-    from declarative_spec import parallel, stateful
+    from declarative_spec import agent_scan, parallel, stateful
 
     if stateful.enabled():
-        return out  # no Arc (parallel) variant: the state may hold Arcs itself; emit_declarative_spec applies the stateful contract
+        # no Arc (parallel) variant: the state may hold Arcs itself; emit_declarative_spec applies the stateful contract (scan handles go to build)
+        return agent_scan.add_scans(out) if agent_scan.enabled() else out
     if parallel.enabled():
         try:
             out = parallel.to_parallel(out)
         except DeclarativeUnsupported:
             if parallel.strict():
                 raise
-    from declarative_spec import agent_scan
-
     if agent_scan.enabled():  # lemma.toml [run] agent_scan: scan handles + the one DuckDB-filter trusted item per table
         out = agent_scan.add_scans(out)
     return out

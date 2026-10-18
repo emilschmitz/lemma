@@ -13,9 +13,12 @@ alternates which side goes first (an order effect cancels instead of favouring o
 
 Verdict: ``median(ours) * speed_bar_mult < median(duck)``; the bar is unchanged.
 
-``measure_in_duckdb`` (lemma.toml ``in_duckdb``) is a separate figure, not the verdict: the same interleaved rounds, with our side the
-whole in-DuckDB round trip ``SELECT * FROM lemma_query('<sql>')`` (scan + copy + runtime checks + proved run_query + rows back). The in-session ``run_runquery`` keeps its single binary run against the
-prepare-time DuckDB median and is labelled ``in_session_single_vs_prepare_duck``.
+``measure_in_duckdb`` (lemma.toml ``in_duckdb``): the same interleaved rounds, with our side the whole in-DuckDB round trip
+``SELECT * FROM lemma_query('<sql>')`` (scan with the pushed predicate + copy + runtime checks + proved run_query + rows back). With
+``pushdown`` and ``agent_scan`` off it is a separate figure next to the verdict. With either on (the defaults) the binary's hot time
+excludes DuckDB's filtering (it happened at export), so the binary's rounds are labelled ``hot, excludes scan/filter`` and
+``measure_in_duckdb`` is the REPORTED number (:func:`timing_labels`, docs/COMPARABILITY.md). The in-session ``run_runquery`` keeps its
+single binary run against the prepare-time DuckDB median and is labelled ``in_session_single_vs_prepare_duck``.
 """
 
 from __future__ import annotations
@@ -32,6 +35,31 @@ ROUNDS_ENV = lemma_config.env_name("official_rounds")
 DUCK_REPS_ENV = lemma_config.env_name("official_duck_reps")  # default 9 = assemble.TIMED_RUNS: both sides report a median of nine consecutive runs
 MEASUREMENT_OFFICIAL = "official_interleaved_medians"
 MEASUREMENT_IN_SESSION = "in_session_single_vs_prepare_duck"
+HOT_LABEL = "hot"
+HOT_EXCLUDES_SCAN_LABEL = "hot, excludes scan/filter"
+
+
+def filtering_on() -> bool:
+    """lemma.toml ``pushdown`` or ``agent_scan``: DuckDB filters rows for the proved code (at export, or in a scan_where call)."""
+    return bool(lemma_config.get("pushdown")) or bool(lemma_config.get("agent_scan"))
+
+
+def timing_labels() -> dict:
+    """What a timed number of the binary means, for every RESULT line and official record (docs/COMPARABILITY.md).
+
+    The binary's hot time starts at ``run_query`` over column files that are already loaded. With ``pushdown`` or ``agent_scan`` on,
+    DuckDB did the filtering when it exported those files (or exports them for a scan_where call), so the hot time leaves out work
+    DuckDB's reference time includes: it is labelled ``hot, excludes scan/filter`` and is NOT the reported number. The reported
+    number is then the in-DuckDB end-to-end measure (:func:`measure_in_duckdb`: the scan with the pushed predicate in the caller's
+    snapshot, the hand-over, the checks and ``run_query``, against DuckDB on the same connection). With both off the binary's
+    official rounds are the reported number, as before."""
+    if filtering_on():
+        return {
+            "hot_label": HOT_EXCLUDES_SCAN_LABEL,
+            "reported_measure": MEASUREMENT_IN_DUCKDB,
+            "reported_note": "pushdown/agent_scan on: the binary's hot time excludes DuckDB's scan and filter; report measure_in_duckdb",
+        }
+    return {"hot_label": HOT_LABEL, "reported_measure": MEASUREMENT_OFFICIAL, "reported_note": ""}
 
 
 def official_rounds() -> int:
@@ -331,4 +359,6 @@ def measure_in_duckdb(
         return declined(exc)
     finally:
         close()
-    return {"measurement": MEASUREMENT_IN_DUCKDB, "duck_reps": duck_reps(), **summarize(rounds)}
+    # The scan (with the transpiler's pushed predicate applied inside it) is in our time here: with pushdown/agent_scan on this is
+    # the reported number (timing_labels).
+    return {"measurement": MEASUREMENT_IN_DUCKDB, "duck_reps": duck_reps(), "includes_scan": True, "reported": filtering_on(), **summarize(rounds)}
