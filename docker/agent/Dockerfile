@@ -1,7 +1,7 @@
 # Agent sandbox: JSON-lines tool worker + MCP proxy + model-proxy sidecar.
 # Default (INSTALL_AGENT_CLI=0): tools-only image for OpenRouter host loop.
 # INSTALL_AGENT_CLI=1: also install Cursor `agent` CLI for LEMMA_AGENT_BACKEND=cli.
-# INSTALL_CLAUDE_CODE=1: also install Claude Code (`claude`) for the claude agent.
+# INSTALL_CLAUDE_CODE=1: also install Claude Code (`claude`, pinned to 2.1.289 for reproducible builds) for the claude agent.
 FROM python:3.12-slim-bookworm
 
 ARG INSTALL_AGENT_CLI=0
@@ -22,7 +22,7 @@ RUN if [ "$INSTALL_AGENT_CLI" = "1" ]; then \
 # Optional Claude Code CLI (network required at build time). Node comes from apt.
 RUN if [ "$INSTALL_CLAUDE_CODE" = "1" ]; then \
       apt-get update && apt-get install -y --no-install-recommends nodejs npm ca-certificates \
-      && npm install -g @anthropic-ai/claude-code \
+      && npm install -g @anthropic-ai/claude-code@2.1.289 \
       && rm -rf /var/lib/apt/lists/*; \
     fi
 

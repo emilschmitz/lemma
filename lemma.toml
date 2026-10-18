@@ -41,6 +41,7 @@ max_budget_usd = 20.0                       # float >= 0: model spend cap PER QU
 agent_submit_ends_session = false           # true: a successful submit_runquery ends the session
 agent_data_mode = "none"                    # none | stats | full: interactive DuckDB tool for the agent. Decision: none (what config.env gave the frozen run; code default stats; the CLI container is network-none anyway)
 agent_resource_exhausted_retries = 8        # Cursor agent only: retries on API quota errors
+agent_auth = "login"                        # login | api_key: how the Claude agent container authenticates. login = the host Claude Code login (read-only mount; ANTHROPIC_API_KEY is ignored and never passed). api_key = ANTHROPIC_API_KEY from the environment, passed into the container by NAME only (never written to disk, a manifest or a log). An explicit choice, never a fallback: api_key without the variable set fails loudly
 claude_effort = "none"                      # none | low | medium | high | xhigh | max: Claude Code --effort (none omits the flag)
 claude_thinking_tokens = ""                 # MAX_THINKING_TOKENS of the Claude agent; empty = CLI default
 claude_tool_search = ""                     # ENABLE_TOOL_SEARCH of the Claude agent: true | false | auto | auto:N; empty = CLI default

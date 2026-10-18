@@ -44,6 +44,22 @@ bounds) are checked against the real database. Limitations are in
 
 ## Quick start
 
+Needs Docker, Python 3.11+, [uv](https://docs.astral.sh/uv/), and either a Claude Code login (`claude login`) or an `ANTHROPIC_API_KEY`
+that you export in your own shell. Every agent runs in the Docker sandbox (network off, only `api.anthropic.com` allowed), never on the host.
+
+```bash
+uv tool install --editable .   # from this checkout: installs the `lemma` command
+lemma setup                    # or `lemma setup --auth api-key`: checks Docker, builds the agent image, tests the sandbox, fetches libduckdb
+lemma assumptions --db my.duckdb                 # profile your data and approve every bound (a proof holds only IF your data obeys them)
+lemma optimize --db my.duckdb --sql query.sql    # agent writes, Verus proves, compiled; the executor lands in ~/.local/share/lemma/executors/
+lemma status                   # image, sandbox test, auth mode, DuckDB version, cached executors
+```
+
+`lemma optimize --queue` proves the queries waiting in `$LEMMA_HOME/queue/*.sql`. Auth is an explicit choice (`agent_auth`, `docs/FLAGS.md`);
+a key goes into the container by name only and is never written anywhere. The in-DuckDB library (`lib.so`) is still pending.
+
+## Quick start for development
+
 Requires Python 3.11+, [uv](https://docs.astral.sh/uv/), Rust,
 [Verus](research_loop/scripts/install_verus.md), and Docker for the agent sandbox.
 

@@ -80,7 +80,7 @@ networking for the build only; runs stay `--network none`):
 docker build --network host -t lemma-agent:claude --build-arg INSTALL_CLAUDE_CODE=1 -f docker/agent/Dockerfile .
 ```
 
-The image gets Node from apt and `npm install -g @anthropic-ai/claude-code`, nothing else.
+The image gets Node from apt and `npm install -g @anthropic-ai/claude-code@2.1.289` (pinned), nothing else.
 The command is built by `agent_sandbox.claude_agent_cmd(model)`: `claude -p --model <slug>
 --output-format stream-json --verbose --permission-mode acceptEdits`, tools
 `Bash,Read,Edit,Write,Glob,Grep,mcp__lemma-host`, `WebSearch`/`WebFetch` denied, MCP from

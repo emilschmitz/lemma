@@ -711,8 +711,9 @@ wheels = [
 [[package]]
 name = "lemma"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
+    { name = "duckdb" },
     { name = "mcp" },
     { name = "openai" },
     { name = "pytest" },
@@ -724,7 +725,6 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "duckdb" },
     { name = "matplotlib" },
     { name = "pandas" },
     { name = "psycopg", extra = ["binary"] },
@@ -733,6 +733,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "duckdb", specifier = "==1.5.6" },
     { name = "mcp", specifier = ">=1.28.1" },
     { name = "openai", specifier = ">=2.45.0" },
     { name = "pytest", specifier = ">=9.1.1" },
@@ -744,7 +745,6 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "duckdb", specifier = "==1.5.6" },
     { name = "matplotlib", specifier = ">=3.11.0" },
     { name = "pandas", specifier = ">=3.0.3" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.4" },

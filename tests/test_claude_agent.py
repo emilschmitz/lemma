@@ -73,6 +73,7 @@ def test_cursor_command_with_claude_slug_keeps_cursor_profile() -> None:
 
 
 def test_key_is_passed_by_name_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LEMMA_AGENT_AUTH", "api_key")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sentinel-not-a-real-key")
     monkeypatch.delenv("LEMMA_CLAUDE_CONFIG_DIR", raising=False)
     args = claude_docker_args()
@@ -132,13 +133,26 @@ def test_oauth_token_is_passed_by_name_only_and_beats_the_login_file(
     assert not any(".credentials.json" in a for a in args)
 
 
-def test_key_wins_over_login_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_login_mode_ignores_the_key_and_api_key_mode_ignores_the_login_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sentinel-not-a-real-key")
     monkeypatch.setenv("HOME", str(tmp_path))
     (tmp_path / ".claude").mkdir()
     (tmp_path / ".claude" / ".credentials.json").write_text("{}")
+    args = claude_docker_args()  # default agent_auth = login
+    assert "ANTHROPIC_API_KEY" not in args and any(".credentials.json" in a for a in args)
+    monkeypatch.setenv("LEMMA_AGENT_AUTH", "api_key")
     args = claude_docker_args()
     assert "ANTHROPIC_API_KEY" in args and not any(".credentials.json" in a for a in args)
+
+
+def test_api_key_mode_without_the_variable_fails_instead_of_using_the_login(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("LEMMA_AGENT_AUTH", "api_key")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / ".credentials.json").write_text("{}")
+    with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY is not set"):
+        claude_docker_args()
 
 
 def test_missing_config_dir_fails_loudly(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
