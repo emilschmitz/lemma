@@ -1,0 +1,22 @@
+{
+  "q01_dict": {
+    "program": "83456f79048dc4b6b4d271e97c9a31cf36eabe3408e4c16b11b1c8485066e1a5",
+    "spec": "eb3e807fd37795ab3af4ab5ba85f3d90ce562b85da4598d4cab697fdbb9a8754"
+  },
+  "q03_dict": {
+    "program": "d5e9370c8fd6f466849cfa2903c1371d49cbebf66f4690d04ee7bbfd0fdbe42f",
+    "spec": "3b85cb5515b00ee3b565d17a630082f6f0af1edda4f24b913d3d0e86f253e69d"
+  },
+  "q06_plain": {
+    "program": "992dcf1e732cea13dc7d8ace04a30c502e7905281a38ea382697b10047858cf3",
+    "spec": "203f7e80cbe2f67e924d130fceabbd593341c4fe7a5ff78388e2495f5297d2c0"
+  },
+  "q12_dict": {
+    "program": "093df620ba99b251d28517212c0bec81b5cc84e0e4ab4d01763f730d67e6d42f",
+    "spec": "9c97b2b1c33227f39fd002c0030c108d9a0c526f9bd4782e0332ed4e85a11977"
+  },
+  "q14_plain": {
+    "program": "3aaf8124169e8580d410c192bff91f652b6909fd0552488a3333521d51d1e66b",
+    "spec": "5a0c9623fc5297e50076117bc1d2471eed033f6fe20742012ca6cc5a14727808"
+  }
+}

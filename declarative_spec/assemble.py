@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from declarative_spec import parallel
+from declarative_spec import decline, parallel
 
 # The timed measure is the MEDIAN of this many runs (odd). The shared box shows ~30 percent run-to-run noise.
 TIMED_RUNS = 9
@@ -164,6 +164,17 @@ def assemble_declarative_program(
     param_prelude, param_args = _param_prelude(verus_part)
     if param_args:
         run_call = run_call[:-1] + (", " if run_call != "run_query()" else "") + ", ".join(param_args) + ")"
+    decline_const = ""
+    if decline.is_decline_spec(verus_part):
+        # assumptions = false: run_query returns Option and None declines (decline.py). The program says so on one line and exits with
+        # the decline code before any result row or latency line, so no harness can mistake a decline for a result or a crash.
+        decline_const = (
+            f"// The exit code of a declined run (run_query returned None); the C ABI status of the same outcome is {decline.ABI_STATUS_DECLINED}.\n"
+            f"const LEMMA_DECLINE_EXIT_CODE: i32 = {decline.DECLINE_EXIT_CODE};\n\n"
+        )
+        run_call = (
+            f'match {run_call} {{ Some(v) => v, None => {{ println!("{decline.DECLINE_LINE}"); std::process::exit(LEMMA_DECLINE_EXIT_CODE); }} }}'
+        )
 
     hex_fn = ""
     if column_bins is None:
@@ -193,7 +204,7 @@ def assemble_declarative_program(
     if not closed.endswith("}"):
         raise ValueError("verus block did not end at '}'")
     verus_with_loaders = closed[:-1] + "\n" + "\n\n".join(loaders) + "\n}\n"
-    return verus_with_loaders + "\n" + hex_fn + main_fn
+    return verus_with_loaders + "\n" + decline_const + hex_fn + main_fn
 
 
 def _param_prelude(verus_part: str) -> tuple[str, list[str]]:
@@ -338,6 +349,10 @@ def _runtime_checks(verus_part: str, suffix: str, fields: list[tuple[str, str]])
     p = re.escape(param)
     for c in conj:
         if _LEN_CONJ.match(c):
+            continue
+        if c == f"{param}.n as int <= 0x7fff_ffff_ffff_ffffint":
+            # assumptions = false: the structural row bound (a Vec holds at most isize::MAX elements), checked like the lengths.
+            out.append(f'    assert!(n_{suffix} <= isize::MAX as usize, "{suffix}: {{}} rows exceed isize::MAX", n_{suffix});')
             continue
         m = re.fullmatch(rf"{p}\.n as int <= (ROW_CAP_\w+)(?: as int)?", c)
         if m:
@@ -632,11 +647,11 @@ def _timed_runs(run_call: str, verus_part: str) -> tuple[str, str]:
     hex_fn = ""
     if fields:
         hex_fn, after = _row_printer(run_call, fields)
-    elif re.search(r"-> \(res: StringHashMap<(u64|i64|i128)>\)", verus_part) is not None:
+    elif re.search(r"-> \(res: (?:Option<)?StringHashMap<(u64|i64|i128)>>?\)", verus_part) is not None:
         dump, hex_fn = _string_map_dump(verus_part)
     else:
         caps = re.findall(r"pub const (KEY_CAP_[A-Za-z0-9_]+): usize", verus_part)
-        shape = re.search(r"-> \(res: HashMapWithView<(u64|i64|i128), (u64|i64|i128)>\)", verus_part)
+        shape = re.search(r"-> \(res: (?:Option<)?HashMapWithView<(u64|i64|i128), (u64|i64|i128)>>?\)", verus_part)
         if len(caps) == 1 and shape:
             cap = caps[0]
             key_ty = shape.group(1)
@@ -716,10 +731,32 @@ def _assemble_stateful(
     verus_all = closed[:-1] + "\n" + stateful.runtime_rs(verus_part) + "\n" + "\n\n".join(loaders) + "\n}\n"
     fields = _out_row_fields(verus_part)
     answer = 'rt.execute_at({v}).expect("the state was built at this version")'
+    decline_const = ""
+    if c.declines:
+        # assumptions = false: execute returns Option and None declines (decline.py); same line and exit code as a run_query decline.
+        decline_const = (
+            f"// The exit code of a declined run (execute returned None); the C ABI status of the same outcome is {decline.ABI_STATUS_DECLINED}.\n"
+            f"const LEMMA_DECLINE_EXIT_CODE: i32 = {decline.DECLINE_EXIT_CODE};\n\n"
+        )
     if serve:
         if not fields:
             raise ValueError("stateful serve mode prints OutRow results only")
         hex_fn, rows = _row_printer("answer", fields)
+        if c.declines:  # one call declined: say so on its own line; the server keeps serving
+            served = f"""        let answered = {answer.format(v="version")};
+        println!("EXEC_US: {{}}", start.elapsed().as_micros());
+        match answered {{
+            Some(answer) => {{
+{_indent(rows, 12)}
+            }}
+            None => {{
+                println!("{decline.DECLINE_LINE}");
+            }}
+        }}"""
+        else:
+            served = f"""        let answer = {answer.format(v="version")};
+        println!("EXEC_US: {{}}", start.elapsed().as_micros());
+{_indent(rows, 4)}"""
         order = [suffix_of[n] for n, _s in c.tables]
         paths = "".join(f"            let path_{sfx} = words[{i + 1}].to_string();\n" for i, sfx in enumerate(order))
         loads = "\n".join(_indent(block, 8) for block in mains_load)
@@ -749,18 +786,20 @@ def _assemble_stateful(
             println!("STATE_BUILD_US: {{}}", build_start.elapsed().as_micros());
         }}
         let start = std::time::Instant::now();
-        let answer = {answer.format(v="version")};
-        println!("EXEC_US: {{}}", start.elapsed().as_micros());
-{_indent(rows, 4)}
+{served}
         println!("END");
         std::io::stdout().flush().unwrap();
     }}
 }}
 """
-        return verus_all + "\n" + hex_fn + main_fn
-    if not fields and re.search(r"-> \(res: StringHashMap<", verus_part):
+        return verus_all + "\n" + decline_const + hex_fn + main_fn
+    if not fields and re.search(r"-> \(res: (?:Option<)?StringHashMap<", verus_part):
         raise ValueError("a stateful spec with a StringHashMap result has no printer (the key column moved into the state)")
     run_call = answer.format(v="0")
+    if c.declines:
+        run_call = (
+            f'match {run_call} {{ Some(v) => v, None => {{ println!("{decline.DECLINE_LINE}"); std::process::exit(LEMMA_DECLINE_EXIT_CODE); }} }}'
+        )
     if loaded:
         timed, hex_fn = _timed_runs(run_call, verus_part)
     else:
@@ -783,4 +822,4 @@ def _assemble_stateful(
         '    println!("STATE_BUILD_US: {}", build_start.elapsed().as_micros());\n'
     )
     main_fn += timed + "}\n"
-    return verus_all + "\n" + hex_fn + main_fn
+    return verus_all + "\n" + decline_const + hex_fn + main_fn

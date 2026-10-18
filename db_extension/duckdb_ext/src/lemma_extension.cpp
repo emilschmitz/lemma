@@ -8,6 +8,12 @@
 //   SET lemma_mode = true   every table-reading SELECT is answered by its proved executor; with no executor it is an error,
 //                           or (SET lemma_route_unproved = true) it runs on DuckDB unchanged and is labelled engine=duckdb
 //
+// A proved run_query may DECLINE (lemma.toml assumptions = false: the spec states no data assumptions and the body returns None,
+// e.g. on a checked overflow; ABI status LEMMA_STATUS_DECLINED). Then lemma_query and lemma_mode raise "Lemma: declined: <reason>"
+// and return no rows, unless SET lemma_route_unproved = true: then DuckDB answers the same SQL in the caller's transaction and
+// lemma_last_query() says engine=duckdb, reason "declined: ...". With the route on, the executor runs while the statement is
+// bound (lemma_query) or planned (lemma_mode), so a decline can still hand the statement to DuckDB's own plan.
+//
 // No LLM and no network inside DuckDB: a miss is an error (and, with lemma_enqueue_misses, a file in ${lemma_home}/queue for the
 // offline `lemma optimize`). Nothing here computes a query result itself; the rows come from the verified library.
 #define DUCKDB_EXTENSION_MAIN
@@ -34,6 +40,9 @@
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/optimizer/optimizer_extension.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
+#include "duckdb/parser/parser.hpp"
+#include "duckdb/parser/statement/select_statement.hpp"
+#include "duckdb/parser/tableref/subqueryref.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/extension_callback.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
@@ -53,6 +62,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <deque>
+#include <cctype>
 #include <cstring>
 #include <dlfcn.h>
 #include <fstream>
@@ -71,7 +81,7 @@ namespace {
 
 using i128 = __int128;
 
-constexpr uint32_t ABI_VERSION = 3;
+constexpr uint32_t ABI_VERSION = 4;
 constexpr uint32_t PARAM_INT = 1, PARAM_STR = 4;
 constexpr int KIND_INT = 1, KIND_F64 = 2, KIND_BOOL = 3, KIND_STR = 4;
 const char *MISS_MESSAGE = "no proved executor for this query; run `lemma optimize`";
@@ -136,22 +146,38 @@ struct LastQuery {
 	int64_t scan_us = -1, load_us = -1, run_us = -1, total_us = -1, rows = -1;
 };
 
+struct RunResult;
+
+// What the route-on bind of lemma_query computed for the bind that follows it (lemma_route_unproved, see LemmaQueryBindReplace).
+struct PendingRun {
+	std::string signature; // executor key + encoded parameters
+	std::shared_ptr<RunResult> result;
+	int64_t scan_us = 0;
+};
+
 class LemmaState : public ClientContextState {
 public:
 	std::mutex lock;
 	LastQuery last;
 	bool in_query = false;
 	std::string query; // the statement text of the running query (set in QueryBegin)
+	// lemma_query declined and lemma_route_unproved handed its SQL to DuckDB: the optimizer hook leaves that plan and its label alone.
+	bool routed_decline = false;
+	PendingRun pending;
 
 	void QueryBegin(ClientContext &context) override {
 		std::lock_guard<std::mutex> guard(lock);
 		in_query = true;
 		query = context.GetCurrentQuery();
+		routed_decline = false;
+		pending = PendingRun();
 	}
 	void QueryEnd(ClientContext &context) override {
 		std::lock_guard<std::mutex> guard(lock);
 		in_query = false;
 		query.clear();
+		routed_decline = false;
+		pending = PendingRun();
 	}
 	void Record(LastQuery entry) {
 		std::lock_guard<std::mutex> guard(lock);
@@ -1269,6 +1295,8 @@ struct RunResult {
 	uint64_t rows = 0;
 	int64_t load_us = 0, run_us = 0;
 	std::vector<ResultColumn> cols;
+	bool declined = false;      // LEMMA_STATUS_DECLINED: run_query returned None; no rows, `decline_reason` says why
+	std::string decline_reason;
 };
 
 template <class T>
@@ -1361,10 +1389,15 @@ RunResult RunExecutor(const Manifest &m, ScanResult &in, const std::vector<Param
 	int32_t code = m.exec->run(in.cols.data(), in.cols.size(), abi_params.data(), abi_params.size(), &out);
 	std::string bytes(reinterpret_cast<const char *>(out.ptr), size_t(out.len));
 	m.exec->free_out(&out);
-	if (code != 0) {
+	RunResult r;
+	if (code == LEMMA_STATUS_DECLINED) {
+		r.declined = true;
+		r.decline_reason = bytes;
+		return r;
+	}
+	if (code != LEMMA_STATUS_OK) {
 		throw InvalidInputException("Lemma: the proved executor refused the data (no rows returned): %s", bytes);
 	}
-	RunResult r;
 	r.bytes = std::move(bytes);
 	const std::string &b = r.bytes;
 	auto need = [&](size_t end) {
@@ -1536,6 +1569,9 @@ struct LemmaBindData : public TableFunctionData {
 	std::string sql;
 	std::vector<ParamBytes> params; // a query template's values, encoded for the executor
 	bool from_optimizer = false;     // lemma_mode replaced the plan of a plain SELECT
+	// lemma_route_unproved: the executor already ran (at bind or plan time, to be able to route a decline); Init uses this result.
+	std::shared_ptr<RunResult> precomputed;
+	int64_t precomputed_scan_us = 0;
 
 	unique_ptr<FunctionData> Copy() const override {
 		auto c = make_uniq<LemmaBindData>();
@@ -1543,11 +1579,13 @@ struct LemmaBindData : public TableFunctionData {
 		c->sql = sql;
 		c->params = params;
 		c->from_optimizer = from_optimizer;
+		c->precomputed = precomputed;
+		c->precomputed_scan_us = precomputed_scan_us;
 		return std::move(c);
 	}
 	bool Equals(const FunctionData &other) const override {
 		auto &o = other.Cast<LemmaBindData>();
-		if (manifest != o.manifest || sql != o.sql || params.size() != o.params.size()) {
+		if (manifest != o.manifest || sql != o.sql || params.size() != o.params.size() || precomputed != o.precomputed) {
 			return false;
 		}
 		for (size_t i = 0; i < params.size(); i++) {
@@ -1560,9 +1598,126 @@ struct LemmaBindData : public TableFunctionData {
 };
 
 struct LemmaGlobalState : public GlobalTableFunctionState {
-	RunResult result;
+	std::shared_ptr<RunResult> result;
 	uint64_t next = 0;
 };
+
+std::string RunSignature(const Manifest &m, const std::vector<ParamBytes> &params) {
+	std::string sig = m.key;
+	for (auto &p : params) {
+		sig += "|" + std::to_string(p.kind) + ":" + std::to_string(p.bytes.size()) + ":" + p.bytes;
+	}
+	return sig;
+}
+
+// Scan in the caller's transaction and run the executor once: (result, scan_us).
+std::pair<std::shared_ptr<RunResult>, int64_t> ScanAndRun(ClientContext &context, const Manifest &m,
+                                                          const std::vector<ParamBytes> &params) {
+	auto scan = ScanInputs(context, m);
+	auto result = std::make_shared<RunResult>(RunExecutor(m, scan, params));
+	return {result, scan.scan_us};
+}
+
+std::string DeclinedRouteReason(const std::string &reason) {
+	return "declined: " + reason + "; answered by DuckDB (lemma_route_unproved = true), not by the proved executor";
+}
+
+// The SQL DuckDB runs for a declined query when lemma_route_unproved is on: the text itself, with each `$name` placeholder of a
+// query template (outside quotes and comments) replaced by the SQL literal of the value lemma_query was given.
+std::string InstantiateForDuckdb(const Manifest &m, const std::string &sql, const vector<Value> &inputs) {
+	if (m.params.empty()) {
+		return sql;
+	}
+	std::unordered_map<std::string, std::string> literal;
+	for (idx_t i = 0; i < m.params.size(); i++) {
+		auto &p = m.params[i];
+		LogicalType type = p.sql_type == "VARCHAR" ? LogicalType::VARCHAR : ParseDuckType(p.sql_type);
+		literal[p.name] = "(" + inputs[i + 1].DefaultCastAs(type).ToSQLString() + ")";
+	}
+	std::string out;
+	size_t i = 0, n = sql.size();
+	auto ident = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; };
+	while (i < n) {
+		char c = sql[i];
+		size_t j = i;
+		if (c == '\'' || c == '"') {
+			j = sql.find(c, i + 1);
+			j = j == std::string::npos ? n : j + 1;
+		} else if (sql.compare(i, 2, "--") == 0) {
+			j = sql.find('\n', i);
+			j = j == std::string::npos ? n : j + 1;
+		} else if (sql.compare(i, 2, "/*") == 0) {
+			j = sql.find("*/", i + 2);
+			j = j == std::string::npos ? n : j + 2;
+		} else if (c == '$' && i + 1 < n && (std::isalpha(static_cast<unsigned char>(sql[i + 1])) || sql[i + 1] == '_')) {
+			j = i + 1;
+			while (j < n && ident(sql[j])) {
+				j++;
+			}
+			auto it = literal.find(sql.substr(i + 1, j - i - 1));
+			if (it == literal.end()) {
+				throw InvalidInputException("Lemma: placeholder %s is not a parameter of executor %s", sql.substr(i, j - i), m.key);
+			}
+			out += it->second;
+			i = j;
+			continue;
+		} else {
+			j = i + 1;
+		}
+		out.append(sql, i, j - i);
+		i = j;
+	}
+	return out;
+}
+
+// lemma_route_unproved = true: run the executor while lemma_query is bound, so a DECLINE can still become DuckDB's own plan of the
+// same SQL (a subquery, in the caller's transaction), labelled engine=duckdb. Otherwise (route off, a miss, a wrong argument count)
+// nothing happens here and LemmaQueryBind decides; a result that did not decline is handed to that bind (PendingRun).
+unique_ptr<TableRef> LemmaQueryBindReplace(ClientContext &context, TableFunctionBindInput &input) {
+	if (!BoolSetting(context, "lemma_route_unproved") || input.inputs.empty() || input.inputs[0].IsNull() ||
+	    input.inputs[0].type().id() != LogicalTypeId::VARCHAR) {
+		return nullptr;
+	}
+	auto sql = StringValue::Get(input.inputs[0]);
+	auto manifest = FindExecutor(context, sql);
+	if (!manifest || input.inputs.size() != 1 + manifest->params.size()) {
+		return nullptr;
+	}
+	std::vector<ParamBytes> params;
+	for (idx_t i = 0; i < manifest->params.size(); i++) {
+		params.push_back(EncodeParam(manifest->params[i], input.inputs[i + 1]));
+	}
+	auto start = std::chrono::steady_clock::now();
+	auto run = ScanAndRun(context, *manifest, params);
+	auto &state = GetState(context);
+	if (!run.first->declined) {
+		std::lock_guard<std::mutex> guard(state.lock);
+		state.pending.signature = RunSignature(*manifest, params);
+		state.pending.result = run.first;
+		state.pending.scan_us = run.second;
+		return nullptr;
+	}
+	Parser parser(context.GetParserOptions());
+	parser.ParseQuery(InstantiateForDuckdb(*manifest, sql, input.inputs));
+	if (parser.statements.size() != 1 || parser.statements[0]->type != StatementType::SELECT_STATEMENT) {
+		throw InvalidInputException("Lemma: declined (%s), and the SQL of executor %s is not one SELECT DuckDB could answer",
+		                            run.first->decline_reason, manifest->key);
+	}
+	LastQuery lq;
+	lq.engine = "duckdb";
+	lq.reason = DeclinedRouteReason(run.first->decline_reason);
+	lq.key = manifest->key;
+	lq.sql = sql;
+	lq.scan_us = run.second;
+	lq.total_us = MicrosSince(start);
+	state.Record(lq);
+	{
+		std::lock_guard<std::mutex> guard(state.lock);
+		state.routed_decline = true;
+	}
+	auto select = unique_ptr_cast<SQLStatement, SelectStatement>(std::move(parser.statements[0]));
+	return make_uniq<SubqueryRef>(std::move(select));
+}
 
 unique_ptr<FunctionData> LemmaQueryBind(ClientContext &context, TableFunctionBindInput &input,
                                         vector<LogicalType> &return_types, vector<string> &names) {
@@ -1597,6 +1752,15 @@ unique_ptr<FunctionData> LemmaQueryBind(ClientContext &context, TableFunctionBin
 		return_types.push_back(c.type);
 		names.push_back(c.name);
 	}
+	{
+		auto &st = GetState(context); // the result LemmaQueryBindReplace computed for exactly this call (route on)
+		std::lock_guard<std::mutex> guard(st.lock);
+		if (st.pending.result && st.pending.signature == RunSignature(*manifest, bind->params)) {
+			bind->precomputed = st.pending.result;
+			bind->precomputed_scan_us = st.pending.scan_us;
+			st.pending = PendingRun();
+		}
+	}
 	bind->manifest = std::shared_ptr<Manifest>(manifest.release());
 	bind->sql = sql;
 	return std::move(bind);
@@ -1605,19 +1769,36 @@ unique_ptr<FunctionData> LemmaQueryBind(ClientContext &context, TableFunctionBin
 unique_ptr<GlobalTableFunctionState> LemmaQueryInit(ClientContext &context, TableFunctionInitInput &input) {
 	auto &bind = input.bind_data->Cast<LemmaBindData>();
 	auto start = std::chrono::steady_clock::now();
-	auto scan = ScanInputs(context, *bind.manifest);
 	auto state = make_uniq<LemmaGlobalState>();
-	state->result = RunExecutor(*bind.manifest, scan, bind.params);
+	int64_t scan_us;
+	if (bind.precomputed) {
+		state->result = bind.precomputed;
+		scan_us = bind.precomputed_scan_us;
+	} else {
+		auto run = ScanAndRun(context, *bind.manifest, bind.params);
+		state->result = run.first;
+		scan_us = run.second;
+	}
 	LastQuery lq;
+	lq.key = bind.manifest->key;
+	lq.sql = bind.sql;
+	lq.scan_us = scan_us;
+	if (state->result->declined) {
+		// lemma_route_unproved is off (with it on, the decline was routed before this plan existed): an error, and no rows from anyone.
+		lq.engine = "none";
+		lq.reason = "declined: " + state->result->decline_reason;
+		lq.total_us = MicrosSince(start);
+		GetState(context).Record(lq);
+		throw InvalidInputException("Lemma: declined: %s (executor %s; SET lemma_route_unproved = true lets DuckDB answer, "
+		                            "labelled engine=duckdb)",
+		                            state->result->decline_reason, bind.manifest->key);
+	}
 	lq.engine = "lemma";
 	lq.reason = std::string("proved executor (") + bind.manifest->proof + ", git " + bind.manifest->git_sha + ")" +
 	            (bind.from_optimizer ? " via lemma_mode" : " via lemma_query()");
-	lq.key = bind.manifest->key;
-	lq.sql = bind.sql;
-	lq.scan_us = scan.scan_us;
-	lq.load_us = state->result.load_us;
-	lq.run_us = state->result.run_us;
-	lq.rows = int64_t(state->result.rows);
+	lq.load_us = state->result->load_us;
+	lq.run_us = state->result->run_us;
+	lq.rows = int64_t(state->result->rows);
 	lq.total_us = MicrosSince(start);
 	GetState(context).Record(lq);
 	return std::move(state);
@@ -1626,7 +1807,7 @@ unique_ptr<GlobalTableFunctionState> LemmaQueryInit(ClientContext &context, Tabl
 void LemmaQueryFunction(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
 	auto &bind = data.bind_data->Cast<LemmaBindData>();
 	auto &state = data.global_state->Cast<LemmaGlobalState>();
-	auto &r = state.result;
+	auto &r = *state.result;
 	idx_t count = 0;
 	while (state.next < r.rows && count < STANDARD_VECTOR_SIZE) {
 		for (idx_t c = 0; c < bind.manifest->outputs.size(); c++) {
@@ -1653,6 +1834,7 @@ InsertionOrderPreservingMap<string> LemmaQueryToString(TableFunctionToStringInpu
 TableFunction LemmaQueryFunctionDef() {
 	TableFunction f("lemma_query", {LogicalType::VARCHAR}, LemmaQueryFunction, LemmaQueryBind, LemmaQueryInit);
 	f.varargs = LogicalType::ANY; // a query template's parameter values
+	f.bind_replace = LemmaQueryBindReplace; // only acts with lemma_route_unproved = true (a decline becomes DuckDB's plan)
 	f.to_string = LemmaQueryToString;
 	return f;
 }
@@ -1825,6 +2007,9 @@ void LemmaOptimize(OptimizerExtensionInput &input, unique_ptr<LogicalOperator> &
 	std::string sql;
 	{
 		std::lock_guard<std::mutex> guard(state.lock);
+		if (state.routed_decline) {
+			return; // lemma_query declined and DuckDB answers its SQL (labelled at bind); this plan is that answer
+		}
 		if (state.in_query) {
 			sql = state.query;
 		}
@@ -1884,6 +2069,21 @@ void LemmaOptimize(OptimizerExtensionInput &input, unique_ptr<LogicalOperator> &
 		names.push_back(manifest->outputs[i].name);
 	}
 	auto bind = make_uniq<LemmaBindData>();
+	if (BoolSetting(context, "lemma_route_unproved")) {
+		// Run now, while DuckDB's own plan is still here: a decline keeps that plan (labelled), anything else is the answer.
+		auto start = std::chrono::steady_clock::now();
+		auto run = ScanAndRun(context, *manifest, {});
+		if (run.first->declined) {
+			lq.engine = "duckdb";
+			lq.reason = DeclinedRouteReason(run.first->decline_reason);
+			lq.scan_us = run.second;
+			lq.total_us = MicrosSince(start);
+			state.Record(lq);
+			return;
+		}
+		bind->precomputed = run.first;
+		bind->precomputed_scan_us = run.second;
+	}
 	bind->manifest = std::shared_ptr<Manifest>(manifest.release());
 	bind->sql = query_sql;
 	bind->from_optimizer = true;
@@ -1921,8 +2121,9 @@ void LoadInternal(ExtensionLoader &loader) {
 	                          "route when there is none, see lemma_route_unproved)",
 	                          LogicalType::BOOLEAN, Value::BOOLEAN(false));
 	config.AddExtensionOption("lemma_route_unproved",
-	                          "In lemma_mode, run a query without a proved executor on DuckDB (labelled engine=duckdb in "
-	                          "lemma_last_query()) instead of raising an error",
+	                          "In lemma_mode, run a query without a proved executor on DuckDB, and (lemma_mode and lemma_query) "
+	                          "let DuckDB answer a query whose proved executor declined; both labelled engine=duckdb in "
+	                          "lemma_last_query(), instead of raising an error",
 	                          LogicalType::BOOLEAN, Value::BOOLEAN(false));
 	config.AddExtensionOption("lemma_enqueue_misses",
 	                          "Write the SQL of a miss to ${lemma_home}/queue/<key>.sql for the offline `lemma optimize`",

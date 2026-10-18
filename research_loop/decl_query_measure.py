@@ -102,8 +102,8 @@ def _write_query_measure(
     spec = emit_declarative_spec(sql, schema, catalog)
     structs = re.findall(r"pub struct (Cols_[A-Za-z0-9_]+)\s*\{([^}]+)\}", spec)
     out_match = re.search(r"pub struct OutRow\s*\{([^}]+)\}", spec)
-    map_match = re.search(r"-> \(res: HashMapWithView<(\w+), (\w+)>\)", spec)
-    string_map_match = re.search(r"-> \(res: StringHashMap<(\w+)>\)", spec)
+    map_match = re.search(r"-> \(res: (?:Option<)?HashMapWithView<(\w+), (\w+)>>?\)", spec)  # Option<..>: assumptions = false, None declines
+    string_map_match = re.search(r"-> \(res: (?:Option<)?StringHashMap<(\w+)>>?\)", spec)
     if not structs or (out_match is None and map_match is None and string_map_match is None):
         result_ty = re.search(r"pub fn run_query\([^)]*\) -> \(res: ([^)]+)\)", spec)
         raise DeclarativeUnsupported(

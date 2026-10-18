@@ -28,7 +28,8 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent
 TOML = ROOT / "lemma.toml"
 PREFIX = "LEMMA_"
-EXPERIMENT_KEYS = ("model", "query", "duckdb_path", "assumption_package")  # every [[run]] entry has these strings
+EXPERIMENT_KEYS = ("model", "query", "duckdb_path")  # every [[run]] entry has these strings
+PACKAGE_KEY = "assumption_package"  # a [[run]] string key exactly when the experiment has assumptions = true (the UNMAINTAINED package path); absent otherwise
 BINDING_KEYS = ("bindings_rules", "bindings_seed")  # optional, both or neither: a query template's substitution rules (repo-relative path) and the seed that draws its per-round bindings
 MODEL_ALIASES = {"haiku": "claude-haiku-4-5-20251001", "sonnet": "claude-sonnet-5-5"}
 ORIGIN_ENV = "LEMMA_CONFIG_ORIGIN"  # handoff of the batch launcher: {"key": "cli"|"env"} for values it forwarded as environment
@@ -120,6 +121,9 @@ POSITIVE = ("speed_bar_mult", "verus_rlimit")
 MINIMUM.update({"speed_target": 1.0, "max_idle_sessions": 1, "max_budget_usd": 0.0})
 # Keys with no default: lemma.toml holds "" and a run without a value (file, LEMMA_<KEY>, CLI) fails loudly instead of guessing.
 REQUIRED: tuple[str, ...] = ("duckdb_path", "assumption_package")
+# Required only while the flag named here is true: assumption_package belongs to the UNMAINTAINED assumption-package path (assumptions = true);
+# with assumptions = false (the default since 2026-10-17) it has no use and must stay empty.
+REQUIRED_WHEN: dict[str, str] = {"assumption_package": "assumptions"}
 
 
 class ConfigError(ValueError):
@@ -241,9 +245,15 @@ def resolve(key: str, environ: Mapping[str, str] | None = None) -> Setting:
 
 def get(key: str) -> Any:
     setting = resolve(key)
-    if key in REQUIRED and setting.value == "":
+    if key in REQUIRED and setting.value == "" and (key not in REQUIRED_WHEN or resolve(REQUIRED_WHEN[key]).value):
         raise ConfigError(missing_message(key))
     return setting.value
+
+
+def assumptions_enabled() -> bool:
+    """lemma.toml ``assumptions``: true = the UNMAINTAINED assumption-package path (data caps in valid_cols); false (default) = exact-integer specs
+    with no data assumptions, and ``run_query`` returns ``Option`` (None = decline)."""
+    return bool(get("assumptions"))
 
 
 def missing_message(key: str) -> str:
@@ -252,9 +262,17 @@ def missing_message(key: str) -> str:
 
 
 def require_run_settings() -> None:
-    """Startup check of a run: every REQUIRED key has a value."""
+    """Startup check of a run: every REQUIRED key has a value (a key of REQUIRED_WHEN only while its flag is on; while it is off the key must be empty,
+    so a package never sits in a run's config doing nothing)."""
     for key in REQUIRED:
         get(key)
+        flag = REQUIRED_WHEN.get(key)
+        if flag is not None and not resolve(flag).value and resolve(key).value != "":
+            setting = resolve(key)
+            raise ConfigError(
+                f"{key} = {setting.value!r} ({setting.source}: {setting.origin}) but {flag} = false: the assumption-package path is off "
+                f"(UNMAINTAINED since 2026-10-17). Clear {key}, or set {flag} = true ({env_name(flag)}=1) to use the package."
+            )
 
 
 def default(key: str) -> Any:
@@ -402,7 +420,7 @@ def _git(root: Path, *args: str) -> str:
 
 def load_experiment(path: Path | str, root: Path | None = None) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Parse an experiment file: ``[settings]`` (lemma.toml keys, type-checked like the file) and ``[[run]]`` entries
-    (``model`` slug or alias, ``query``, ``duckdb_path``, ``assumption_package``; the two paths repo-relative). Unknown anything raises."""
+    (``model`` slug or alias, ``query``, ``duckdb_path``, plus ``assumption_package`` exactly when ``assumptions = true``; the paths repo-relative). Unknown anything raises."""
     root = root or ROOT
     full = Path(path) if Path(path).is_absolute() else root / path
     raw = tomllib.loads(full.read_text())
@@ -423,10 +441,19 @@ def load_experiment(path: Path | str, root: Path | None = None) -> tuple[dict[st
     runs = raw.get("run", [])
     if not runs:
         raise ConfigError(f"{full}: no [[run]] entries")
+    # The package is part of a run exactly when the experiment turns the (UNMAINTAINED) assumption-package path on; otherwise the effective value
+    # (lemma.toml, or an environment override, which require_replicable then refuses anyway).
+    with_package = bool(settings["assumptions"] if "assumptions" in settings else resolve("assumptions").value)
+    required = (*EXPERIMENT_KEYS, PACKAGE_KEY) if with_package else EXPERIMENT_KEYS
     out: list[dict[str, Any]] = []
     for i, entry in enumerate(runs):
-        if not set(EXPERIMENT_KEYS) <= set(entry) <= set(EXPERIMENT_KEYS) | set(BINDING_KEYS) or not all(isinstance(entry[k], str) and entry[k] for k in EXPERIMENT_KEYS if k in entry):
-            raise ConfigError(f"{full}: [[run]] #{i} must have exactly the string keys {list(EXPERIMENT_KEYS)} (plus, optionally, {list(BINDING_KEYS)}), got {entry}")
+        if not with_package and PACKAGE_KEY in entry:
+            raise ConfigError(
+                f"{full}: [[run]] #{i} names an assumption_package but the experiment has assumptions = false (the default since 2026-10-17): "
+                "remove the package, or set assumptions = true in [settings] (the UNMAINTAINED package path)"
+            )
+        if not set(required) <= set(entry) <= set(required) | set(BINDING_KEYS) or not all(isinstance(entry[k], str) and entry[k] for k in required if k in entry):
+            raise ConfigError(f"{full}: [[run]] #{i} must have exactly the string keys {list(required)} (plus, optionally, {list(BINDING_KEYS)}), got {entry}")
         if ("bindings_rules" in entry) != ("bindings_seed" in entry):
             raise ConfigError(f"{full}: [[run]] #{i}: bindings_rules and bindings_seed go together (the seed makes the bindings replicable)")
         if "bindings_rules" in entry and (not isinstance(entry["bindings_rules"], str) or not entry["bindings_rules"] or isinstance(entry["bindings_seed"], bool) or not isinstance(entry["bindings_seed"], int)):
@@ -449,12 +476,15 @@ def use_experiment(path: Path | str, run_index: int, pinned_sha: str | None = No
     settings, runs = load_experiment(full, root)
     run = runs[run_index]
     absolute = lambda p: p if Path(p).is_absolute() else str(root / p)  # noqa: E731
-    values = {**settings, "agent_model": run["model"], "duckdb_path": absolute(run["duckdb_path"]), "assumption_package": absolute(run["assumption_package"])}
-    for key in ("agent_model", "duckdb_path", "assumption_package"):
-        _check(key, values[key], f"{full} [[run]] #{run_index}")
+    values = {**settings, "agent_model": run["model"], "duckdb_path": absolute(run["duckdb_path"])}
+    if PACKAGE_KEY in run:
+        values[PACKAGE_KEY] = absolute(run[PACKAGE_KEY])
+    for key in ("agent_model", "duckdb_path", PACKAGE_KEY):
+        if key in values:
+            _check(key, values[key], f"{full} [[run]] #{run_index}")
     rel = str(full.relative_to(root))
     _experiment = {
-        "files": [run["query"], run["assumption_package"], *([run["bindings_rules"]] if "bindings_rules" in run else [])], "path": rel,
+        "files": [run["query"], *([run[PACKAGE_KEY]] if PACKAGE_KEY in run else []), *([run["bindings_rules"]] if "bindings_rules" in run else [])], "path": rel,
         "bindings": {"rules": str(root / run["bindings_rules"]), "rules_rel": run["bindings_rules"], "seed": run["bindings_seed"], "query": run["query"]} if "bindings_rules" in run else None, "blob_sha": _git(root, "hash-object", str(full)), "pinned_sha": pinned_sha, "run_index": run_index, "values": values,
     }
     return run

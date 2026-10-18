@@ -6,13 +6,13 @@ columns as caller buffers through ``lemma_run``. That entry point is a FIXED TEM
 the per-field decode lines generated from the spec's column structs: no agent code is in it. Its caller in research_loop
 (the in-engine executor cache) emits it only when the feature flag of lemma.toml is on.
 
-C ABI (version 3; the C header is ``lemma_abi.h`` of the database extension):
+C ABI (version 4; the C header is ``lemma_abi.h`` of the database extension):
 
     struct LemmaCol   { const uint8_t *data; uint64_t len; uint64_t n; };     // len bytes at data; n values
     struct LemmaParam { uint32_t kind; const uint8_t *data; uint64_t len; };  // one query-template parameter value
     struct LemmaOut   { uint8_t *ptr; uint64_t len; uint64_t cap; };          // owned by the library: release with lemma_free_out
 
-    uint32_t    lemma_abi_version(void);       // 3
+    uint32_t    lemma_abi_version(void);       // 4
     const char *lemma_query_sql(void);         // the SQL the spec was emitted from (NUL-terminated)
     const char *lemma_input_layout(void);      // one line per LemmaCol, in order: "rows <table>" or "<table>.<field> <rust type>"
     const char *lemma_output_layout(void);     // one line per result column: "<field> <rust type>"
@@ -20,17 +20,24 @@ C ABI (version 3; the C header is ``lemma_abi.h`` of the database extension):
     uint8_t    *lemma_alloc_input(uint64_t index, uint64_t cap);              // an owned column buffer of cap cells (NULL: not owned)
     void        lemma_free_input(uint64_t index, uint8_t *data, uint64_t len); // give back an owned buffer lemma_run never got
     int32_t     lemma_run(const LemmaCol *cols, uint64_t ncols, const LemmaParam *params, uint64_t nparams, LemmaOut *out);
+                                               // 0 OK, 1 DECLINED, 2 ERROR (declarative_spec/decline.py ABI_STATUS_*)
     void        lemma_free_out(LemmaOut *out);
 
 Inputs, per column struct of the spec in order: one ``rows`` entry (``n`` = the table's row count, no data), then one entry per
 field in struct order, in the bytes of the column-file format of ``main`` (little-endian cells; a string is a u32 byte length and
 its UTF-8 bytes; a ``__dict`` entry has ``n`` = its entry count). ``lemma_run`` decodes them into the ``Vec``s the verified loaders
-take, checks EVERY data assumption ``main`` checks (the same generated checks: lengths, catalog row/value caps, dictionary codes,
-unique keys, join caps; evaluated by the fast helpers of the template: min/max per chunk on all cores, a sort or a bitmap
-instead of a hash set), and only then calls the proved loaders and ``run_query``. A violated assumption is a nonzero return with the
-message in ``out``; ``run_query`` never runs on unchecked data. A panic never crosses the C boundary (``catch_unwind``).
+take, checks EVERY data assumption ``main`` checks (the same generated checks: lengths and dictionary codes always; with lemma.toml
+``assumptions = true`` also catalog row/value caps, unique keys and join caps, which a spec emitted with ``assumptions = false`` does not
+state, so none are generated), and only then calls the proved loaders and ``run_query``. A violated check is status 2 (ERROR) with the
+message in ``out``; ``run_query`` never runs on unchecked data. The checks of the known shapes are evaluated by fast helpers of
+the template (min/max per chunk on all cores, a sort or a bitmap instead of a hash set; ``fast_check``). A panic never crosses the C boundary (``catch_unwind``): it is status 2.
 
-Owned columns (new in version 3): a field whose cells are fixed-width integers or ``f64`` (``_WIDTH``; not ``bool``, not
+Status (version 3): ``lemma_run`` returns 0 (OK: ``out`` holds the result), 1 (DECLINED: ``run_query`` returned ``None``, see
+``declarative_spec/decline.py``; ``out`` holds a UTF-8 reason and no row was computed or substituted) or 2 (ERROR: a contract or data
+check failed, or a null ``out``; ``out`` holds the message when it is not null). A spec emitted with ``assumptions = true`` never
+declines (its ``run_query`` returns the result itself). Version 2 had no decline: its nonzero return was any error.
+
+Owned columns (new in version 4): a field whose cells are fixed-width integers or ``f64`` (``_WIDTH``; not ``bool``, not
 ``String``) is passed in a buffer THIS library allocated with ``lemma_alloc_input(index, cap)`` (a ``Box<[T]>`` of ``cap`` zeroed
 cells); the caller writes the cells in place and passes ``len`` = the allocated bytes (``cap * size_of::<T>()``) and ``n`` <= cap.
 ``lemma_run`` (with ``ncols`` equal to the layout's count) takes every owned buffer as the ``Vec``'s memory (``Box::from_raw``,
@@ -46,7 +53,7 @@ The fixed template checks the count, each kind and length, that the value fits t
 return like a violated data assumption. A spec without parameters takes ``nparams == 0``.
 
 A stateful spec (lemma.toml ``stateful``) is refused: its runtime needs the caller's data version (``docs/STATEFUL.md``), which this
-ABI does not carry yet.
+ABI does not carry yet (with or without ``assumptions``).
 
 Result (``out`` on return 0): ``LMR1``, u64 load_us, u64 run_us, u64 rows, u32 columns, one kind byte per column
 (1 integer as i128, 2 f64, 3 bool, 4 string), then column-major per column: one validity byte per row (0 = NULL), then the cells
@@ -57,6 +64,7 @@ from __future__ import annotations
 
 import re
 
+from declarative_spec import decline
 from declarative_spec.assemble import (
     _WIDTH,
     _join_cap_checks,
@@ -68,7 +76,9 @@ from declarative_spec.assemble import (
     _stitch_verus,
 )
 
-ABI_VERSION = 3
+ABI_VERSION = 4
+STATUS_OK, STATUS_DECLINED, STATUS_ERROR = decline.ABI_STATUS_OK, decline.ABI_STATUS_DECLINED, decline.ABI_STATUS_ERROR
+DECLINE_REASON = "run_query returned None (assumptions = false: the proved body declined this data; no rows were computed)"
 KIND_INT, KIND_F64, KIND_BOOL, KIND_STR = 1, 2, 3, 4
 _INT_TYPES = ("u8", "u16", "u32", "u64", "usize", "i8", "i16", "i32", "i64", "i128")
 
@@ -85,12 +95,11 @@ def input_layout(verus_part: str) -> list[str]:
 
 
 def output_layout(verus_part: str) -> list[tuple[str, str]]:
-    """``(field, rust type)`` of each result column; refuses a result that is not ``Vec<OutRow>``."""
-    if not re.search(r"pub fn run_query\([^)]*\)\s*->\s*\(res: Vec<OutRow>\)", verus_part):
-        result = re.search(r"pub fn run_query\([^)]*\)\s*->\s*\(res: ([^)]+)\)", verus_part)
-        raise ValueError(
-            f"library mode returns OutRow rows; this run_query returns {result.group(1) if result else 'nothing'}"
-        )
+    """``(field, rust type)`` of each result column; refuses a result that is not ``Vec<OutRow>`` (``Option<Vec<OutRow>>`` when it may
+    decline, lemma.toml ``assumptions = false``)."""
+    ty = decline.result_type(verus_part)
+    if ty != "Vec<OutRow>":
+        raise ValueError(f"library mode returns OutRow rows; this run_query returns {ty or 'nothing'}")
     fields = [(_local_ident(f), t.strip()) for f, t in _out_row_fields(verus_part)]
     for name, ty in fields:
         _kind(ty, name)
@@ -108,6 +117,13 @@ def _kind(ty: str, name: str) -> int:
     if inner == "String":
         return KIND_STR
     raise ValueError(f"library mode cannot return OutRow field {name}: {ty}")
+
+
+def _rust_str(text: str) -> str:
+    """A Rust string literal of plain ASCII ``text`` (no quote or backslash)."""
+    if not text.isascii() or '"' in text or "\\" in text:
+        raise ValueError(f"not a plain ASCII literal: {text!r}")
+    return f'"{text}"'
 
 
 def _static(name: str, text: str) -> str:
@@ -240,6 +256,11 @@ pub struct LemmaParam {
     pub data: *const u8,
     pub len: u64,
 }
+
+// lemma_run's status: 0 OK (out = the result), 1 DECLINED (run_query returned None; out = the reason), 2 ERROR (out = the message).
+const LEMMA_STATUS_OK: i32 = __STATUS_OK__;
+const LEMMA_STATUS_DECLINED: i32 = __STATUS_DECLINED__;
+const LEMMA_STATUS_ERROR: i32 = __STATUS_ERROR__;
 
 const LEMMA_PARAM_INT: u32 = 1;
 const LEMMA_PARAM_STR: u32 = 4;
@@ -507,7 +528,7 @@ pub extern "C" fn lemma_run(
     out: *mut LemmaOut,
 ) -> i32 {
     if out.is_null() {
-        return 2;
+        return LEMMA_STATUS_ERROR;
     }
     std::panic::set_hook(Box::new(|_| {})); // the message goes back through `out`, not to the host's stderr
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -516,13 +537,17 @@ pub extern "C" fn lemma_run(
         lemma_execute(lemma_slice(cols, ncols, "cols"), lemma_slice(params, nparams, "params"))
     }));
     match outcome {
-        Ok(bytes) => {
+        Ok(Ok(bytes)) => {
             lemma_write_out(out, bytes);
-            0
+            LEMMA_STATUS_OK
+        }
+        Ok(Err(reason)) => {
+            lemma_write_out(out, reason.into_bytes());
+            LEMMA_STATUS_DECLINED
         }
         Err(payload) => {
             lemma_write_out(out, lemma_panic_message(payload).into_bytes());
-            1
+            LEMMA_STATUS_ERROR
         }
     }
 }
@@ -573,7 +598,7 @@ def assemble_library_program(spec_rs: str, agent_body: str, *, helpers: str = ""
     if stateful.is_stateful(spec_rs):
         raise ValueError(
             "library mode does not take a stateful spec yet: its runtime needs the caller's data version (refresh/execute_at, "
-            "docs/STATEFUL.md) and ABI version 2 carries none; run the query in-DuckDB with stateful = false"
+            f"docs/STATEFUL.md) and ABI version {ABI_VERSION} carries none; run the query in-DuckDB with stateful = false"
         )
     verus_part = _stitch_verus(spec_rs, agent_body, helpers)
     param_code, param_args = _param_decode(verus_part)
@@ -622,7 +647,9 @@ def assemble_library_program(spec_rs: str, agent_body: str, *, helpers: str = ""
         run_call = run_call[:-1] + (", " if run_call != "run_query()" else "") + ", ".join(param_args) + ")"
 
     kinds = ", ".join(str(_kind(ty, name)) for name, ty in outputs)
-    execute = "fn lemma_execute(cols: &[LemmaCol], params: &[LemmaParam]) -> Vec<u8> {\n"
+    declines = decline.is_decline_spec(verus_part)
+    # Ok(bytes) = the result; Err(reason) = a decline (assumptions = false: run_query returned None). Errors are panics (status 2).
+    execute = "fn lemma_execute(cols: &[LemmaCol], params: &[LemmaParam]) -> Result<Vec<u8>, String> {\n"
     # Owned buffers are taken first (O(1) each, no copy): from here on the Vecs own them, so any failure below frees them.
     execute += "".join(take)
     execute += "    let _ = params;\n" if not params else ""
@@ -633,7 +660,10 @@ def assemble_library_program(spec_rs: str, agent_body: str, *, helpers: str = ""
     execute += arc_lets
     execute += "    let load_us = load_start.elapsed().as_micros() as u64;\n"
     execute += "    let run_start = std::time::Instant::now();\n"
-    execute += f"    let res = {run_call};\n"
+    if declines:
+        execute += f"    let res = match {run_call} {{\n        Some(v) => v,\n        None => return Err(String::from({_rust_str(DECLINE_REASON)})),\n    }};\n"
+    else:
+        execute += f"    let res = {run_call};\n"
     execute += "    let run_us = run_start.elapsed().as_micros() as u64;\n"
     execute += "    let mut out: Vec<u8> = Vec::new();\n"
     execute += '    out.extend_from_slice(b"LMR1");\n'
@@ -644,7 +674,7 @@ def assemble_library_program(spec_rs: str, agent_body: str, *, helpers: str = ""
     execute += f"    out.extend_from_slice(&[{kinds}]);\n"
     for name, ty in outputs:
         execute += _encode_column(name, ty)
-    execute += "    out\n}\n"
+    execute += "    Ok(out)\n}\n"
 
     closed = verus_part.rstrip()
     if not closed.endswith("}"):
@@ -658,6 +688,9 @@ def assemble_library_program(spec_rs: str, agent_body: str, *, helpers: str = ""
     )
     head = (
         _TEMPLATE_HEAD.replace("__ABI__", str(ABI_VERSION))
+        .replace("__STATUS_OK__", str(STATUS_OK))
+        .replace("__STATUS_DECLINED__", str(STATUS_DECLINED))
+        .replace("__STATUS_ERROR__", str(STATUS_ERROR))
         .replace("__NCOLS__", str(len(layout)))
         .replace("__NPARAMS__", str(len(params)))
     )

@@ -244,6 +244,7 @@ def ready(env: Path, monkeypatch: pytest.MonkeyPatch, auth: str = "api_key") -> 
 
 def test_optimize_without_an_assumption_package_stops_with_the_exact_command(env: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
     ready(env, monkeypatch)
+    monkeypatch.setenv("LEMMA_ASSUMPTIONS", "1")  # the UNMAINTAINED package path keeps its requirement
     db = make_db(tmp_path)
     assert main(["optimize", "--db", str(db), "--sql", "SELECT SUM(a) FROM t"]) == 2
     assert f"lemma assumptions --db {db.resolve()}" in capsys.readouterr().err
@@ -251,6 +252,7 @@ def test_optimize_without_an_assumption_package_stops_with_the_exact_command(env
 
 def test_optimize_stops_when_the_package_was_edited_after_approval(env: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
     ready(env, monkeypatch)
+    monkeypatch.setenv("LEMMA_ASSUMPTIONS", "1")
     db = make_db(tmp_path)
     assert assumptions(str(db), ask=lambda _p: "y") == 0
     assert approved_package(db.resolve()).is_file()
@@ -337,7 +339,7 @@ def fake_run(tmp_path: Path, binary: bool) -> Path:
     return run
 
 
-RECORD = {"db_path": "/d.duckdb", "assumption_package_sha256": "p" * 64, "agent_model": "claude-sonnet-5-5", "agent_auth": "api_key", "image_id": "sha256:x", "git_sha": "a" * 40, "run_dir": "/r", "speedup": 3.2}
+RECORD = {"db_path": "/d.duckdb", "assumptions": True, "assumption_package_sha256": "p" * 64, "agent_model": "claude-sonnet-5-5", "agent_auth": "api_key", "image_id": "sha256:x", "git_sha": "a" * 40, "run_dir": "/r", "speedup": 3.2}
 
 
 def test_cache_layout_and_manifest_fields(env: Path, tmp_path: Path) -> None:
@@ -371,6 +373,7 @@ from pathlib import Path
 args = sys.argv[1:]
 out = Path(os.environ["STUB_OUT"]); out.mkdir(exist_ok=True)
 (out / "seen.json").write_text(json.dumps({"has_key": "ANTHROPIC_API_KEY" in os.environ, "auth": os.environ.get("LEMMA_AGENT_AUTH"), "argv_has_key": any("sk-ant" in a for a in args)}))
+(out / "argv.json").write_text(json.dumps(args))
 run = out / ("run_" + Path(args[args.index("--query-file") + 1]).stem[:8])
 (run / "workspace" / "mcp_results").mkdir(parents=True, exist_ok=True)
 (run / "workspace" / "runquery_agent.rs").write_text("body")
@@ -415,6 +418,43 @@ def test_optimize_login_mode_refreshes_the_login_and_strips_the_key(env: Path, p
     assert main(["optimize", "--db", str(db), "--sql", "SELECT 2 FROM t"]) == 0
     assert refreshed == [True]
     assert json.loads((pipeline / "seen.json").read_text()) == {"has_key": False, "auth": "login", "argv_has_key": False}
+
+
+def test_optimize_needs_no_package_when_assumptions_are_off(env: Path, pipeline: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    """The default (assumptions = false): no `lemma assumptions` step, no --assumption-package to the pipeline, the manifest says so."""
+    ready(env, monkeypatch)
+    assert "LEMMA_ASSUMPTIONS" not in os.environ
+    db = make_db(tmp_path)
+    assert main(["optimize", "--db", str(db), "--sql", "SELECT SUM(a) FROM t"]) == 0
+    argv = json.loads((pipeline / "argv.json").read_text())
+    assert "--assumption-package" not in argv and "--duckdb-path" in argv
+    manifest = json.loads(next((common.lemma_home() / "executors").glob("*/manifest.json")).read_text())
+    assert manifest["assumptions"] is False and manifest["assumption_package_sha256"] is None
+    assert main(["optimize", "--db", str(db), "--sql", "select sum(a) from t"]) == 0
+    assert "already optimized" in capsys.readouterr().out
+
+
+def test_an_executor_made_under_a_package_is_redone_without_one(env: Path, pipeline: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    ready(env, monkeypatch)
+    db = make_db(tmp_path)
+    monkeypatch.setenv("LEMMA_ASSUMPTIONS", "1")
+    assert assumptions(str(db), ask=lambda _p: "y") == 0
+    assert main(["optimize", "--db", str(db), "--sql", "SELECT 9 FROM t"]) == 0
+    assert "--assumption-package" in json.loads((pipeline / "argv.json").read_text())
+    monkeypatch.delenv("LEMMA_ASSUMPTIONS")
+    capsys.readouterr()
+    assert main(["optimize", "--db", str(db), "--sql", "SELECT 9 FROM t"]) == 0
+    assert "already optimized" not in capsys.readouterr().out
+    assert "--assumption-package" not in json.loads((pipeline / "argv.json").read_text())
+
+
+def test_a_declined_pipeline_installs_nothing_and_says_declined(env: Path, pipeline: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    ready(env, monkeypatch)
+    monkeypatch.setenv("STUB_STATUS", "DECLINED")
+    db = make_db(tmp_path)
+    assert main(["optimize", "--db", str(db), "--sql", "SELECT 4 FROM t"]) == 2
+    assert "not optimized: DECLINED" in capsys.readouterr().err
+    assert cache.list_executors() == []
 
 
 def test_a_failed_pipeline_installs_nothing_and_says_why(env: Path, pipeline: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:

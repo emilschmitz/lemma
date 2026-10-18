@@ -243,8 +243,11 @@ class _Rewriter:
         raise DeclarativeUnsupported("FROM table reference")
 
     def _column_mag(self, table: str, column: str, info: ColumnTypeInfo) -> int | None:
-        """Largest absolute cell the catalog (or the column type) allows; None when no catalog is given."""
-        if self.catalog is None or info.is_float or info.is_date:
+        """Largest absolute cell the catalog (or the column type) allows; None when no catalog is given, or with assumptions = false
+        (the spec computes in exact integers and makes no claim about the data, see decline.py)."""
+        from declarative_spec import decline
+
+        if self.catalog is None or info.is_float or info.is_date or decline.enabled():
             return None
         from declarative_spec.emit import _lookup_table_assumptions
         from research_loop.table_assumptions import column_assumption_exclusive

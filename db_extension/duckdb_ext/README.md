@@ -90,22 +90,29 @@ whose types differ from the plan's.
 * **Library mode** (`declarative_spec/assemble_library.py`): the `verus!` part (spec, agent body, host lemmas, verified
   `load_cols_*`) is byte for byte what the binary gets; `main` is replaced by a fixed C entry point, the same template for every
   query. C ABI (`src/include/lemma_abi.h`): `lemma_run(const LemmaCol *cols, uint64_t ncols, const LemmaParam *params,
-  uint64_t nparams, LemmaOut *out)` (ABI version 3); `params` carries a query template's values (since version 2: kind 1 = little-endian i64 as `run_query` takes it, i.e. DATE as
+  uint64_t nparams, LemmaOut *out)` (ABI version 4); `params` carries a query template's values (since version 2: kind 1 = little-endian i64 as `run_query` takes it, i.e. DATE as
   the day number and DECIMAL scaled by 10^s; kind 4 = UTF-8 bytes; `lemma_param_layout` lists them and must equal the manifest).
   The fixed template checks count, kinds, lengths, the Rust type and the `requires` range of every parameter before it decodes a
   column; fixed SQL takes `nparams == 0`. A **stateful** spec (lemma.toml `stateful`) is refused in library mode: its runtime needs
   the caller's data version (`refresh(version)` / `execute_at(version)`, `docs/STATEFUL.md`); next step below. Inputs are one
   "rows" entry per table (`n` = row count) then one buffer per spec field, in the bytes of the column-file format that `main`
-  reads (little-endian cells; strings as u32 length + UTF-8). **Owned inputs** (version 3): a field of fixed-width integer or
-  `f64` cells arrives in a buffer the library allocated (`lemma_alloc_input(index, cap)`, a `Box<[T]>` of zeroed cells) and filled
-  in place by the extension; `lemma_run` takes each as its `Vec`'s memory (no copy) before anything can fail, so the library frees
-  it on every path (`lemma_free_input` returns one that never reached `lemma_run`). `bool`, string and dictionary fields stay
-  borrowed. The library runs EVERY check `main` runs (lengths, catalog row and value caps, dictionary codes and uniqueness,
-  declared unique keys, join caps: the same generated checks, the known shapes evaluated by fast helpers of the template:
-  min/max per chunk on all cores, a sort of the dictionary instead of a hash set, a bitmap or sorted copy for an integer unique
-  key; `assemble_library.fast_check`), and only then calls the verified loaders and `run_query`. The checks stay in Rust: the
-  extension's scan is not trusted to have checked anything. A failed check is return code 1 with the message; a panic is
-  caught (`catch_unwind`) and never crosses into DuckDB.
+  reads (little-endian cells; strings as u32 length + UTF-8). **Owned inputs** (ABI version 4): a field of fixed-width integer
+  or `f64` cells arrives in a buffer the library allocated (`lemma_alloc_input(index, cap)`, a `Box<[T]>` of zeroed cells) and
+  filled in place by the extension; `lemma_run` takes each as its `Vec`'s memory (no copy) before anything can fail, so the library
+  frees it on every path (`lemma_free_input` returns one that never reached `lemma_run`). `bool`, string and dictionary fields stay
+  borrowed. The library runs EVERY check `main` runs (lengths, dictionary codes and uniqueness; with lemma.toml `assumptions =
+  true` also catalog row and value caps, declared unique keys, join caps: the same generated checks, the known shapes evaluated by
+  fast helpers of the template: min/max per chunk on all cores, a sort of the dictionary instead of a hash set, a bitmap or sorted
+  copy for an integer unique key; `assemble_library.fast_check`), and only then calls the verified loaders and `run_query`. The
+  checks stay in Rust: the extension's scan is not trusted to have checked anything. Status: 0 OK; 1 DECLINED (`assumptions =
+  false`, the default: `run_query` returned `None`, the reason in `out`, no rows); 2 ERROR (a failed check or contract, the message
+  in `out`; a panic is caught by `catch_unwind` and never crosses into DuckDB).
+* **Decline** (ABI version 3): on DECLINED `lemma_query` and Lemma mode raise `Lemma: declined: <reason>` and return no rows,
+  unless `SET lemma_route_unproved = true`: then DuckDB answers the same SQL in the caller's transaction (a template with
+  `lemma_query`'s values bound as literals) and `lemma_last_query()` says `engine = duckdb`, `reason = declined: ...`. With the
+  route on, the executor runs while the statement is bound (`lemma_query`, through `bind_replace`) or planned (Lemma mode), so that
+  a decline can still become DuckDB's own plan; a result that did not decline is the answer, not run twice. The manifest records
+  `assumptions` (false: the executor may decline).
 * **unsafe**: only in the fixed template, five blocks: (1) `slice::from_raw_parts` over the caller's `LemmaCol` / `LemmaParam`
   array, (2) over each input or parameter buffer, (3) writing the result into the caller's `LemmaOut`, (4) `Vec::from_raw_parts` in
   `lemma_free_out` to free it, (5) `Box::from_raw` of an owned input buffer (`lemma_take`: the buffer `lemma_alloc_input` made for
@@ -134,7 +141,7 @@ whose types differ from the plan's.
 * Executor libraries are loaded once per process (by `lib_sha256`) from a private copy, so replacing `lib.so` on disk never changes
   a loaded executor; they are never unloaded.
 
-* **Next step: stateful executors.** A further ABI version would keep one `QRuntime` per loaded library (behind a lock) and add
+* **Next step: stateful executors.** A later ABI version would keep one `QRuntime` per loaded library (behind a lock) and add
   `lemma_is_current(version)` and `lemma_run_at(version, ...)`: the extension asks first and scans only on a version change. The
   hard part is the version: it must change whenever any table the executor reads changes in the caller's snapshot (a transaction's
   start id changes per query; the catalog version does not track data), so the extension needs a per-table data version

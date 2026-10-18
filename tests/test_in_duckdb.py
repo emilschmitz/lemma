@@ -815,7 +815,7 @@ def test_the_library_refuses_bad_codes_repeated_entries_and_too_many_rows(case: 
         lib = home / "executors" / in_duckdb.executor_key(SMALL["usum"][1]) / "lib.so"
         assert _manifest(home, "usum")["input_layout"] == ["rows pre", "pre.line i64"]
         code, data = _run_library(lib, [("rows", CAP + 1), ("owned", "q", 8, list(range(CAP + 1)))])
-        assert code == 1 and message in data, data
+        assert code == 2 and message in data, data
         return
     lib = home / "executors" / in_duckdb.executor_key(SMALL["dict"][1]) / "lib.so"
     assert [ln.split()[-1] for ln in _manifest(home, "dict")["input_layout"]] == ["num", "u16", "String", "i128"]
@@ -829,7 +829,7 @@ def test_the_library_refuses_bad_codes_repeated_entries_and_too_many_rows(case: 
     if case == "ok":
         assert code == 0 and data.startswith(message), data
     else:
-        assert code == 1 and message in data and not data.startswith(b"LMR1"), data
+        assert code == 2 and message in data and not data.startswith(b"LMR1"), data
 
 
 # ---------------------------------------------------------------- SF1 (slow): the real TPC-H SF1 database, read-only

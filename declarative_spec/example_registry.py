@@ -149,6 +149,17 @@ UNMOUNTED: dict[str, str] = {
     "u64_group_count_slots_t_k.rs": "the dense-counter recipe under the test spec's fixed names; its text is the block inlined as the dense_map recipe",
     "template_sum_where.rs": "end-to-end check of lemma.toml [sql] templates (tests/test_query_templates.py), not an agent example",
     "template_date_count.rs": "end-to-end check of lemma.toml [sql] templates (tests/test_query_templates.py), not an agent example",
+    # assumptions = false (decline.py): bodies of the Option contract with checked arithmetic; the prompt gives one factual paragraph and no recipe.
+    "decline/usum_checked.rs": "assumptions = false check (tests/test_assumptions_off_fixtures.py): scalar SUM with checked i128, declines on overflow",
+    "decline/group_count_sum_checked.rs": "assumptions = false check (tests/test_assumptions_off_fixtures.py): grouped COUNT/SUM with checked arithmetic",
+    "decline/join_group_sum_checked.rs": "assumptions = false check (tests/test_assumptions_off_fixtures.py): two-table join SUM with checked arithmetic",
+    "decline/usum_unchecked_must_fail.rs": "assumptions = false NEGATIVE check: returns Some with an unchecked addition and must not verify",
+    "decline/stateful_usum_checked.rs": "assumptions = false x stateful check (tests/test_assumptions_off_fixtures.py): execute declines on overflow",
+    "decline/template_usum_checked.rs": "assumptions = false x query template check (tests/test_in_duckdb_decline.py): library mode, ctypes and the extension",
+    # stateful (lemma.toml `stateful`): four-region fixtures of the build/execute contract, checked by tests/test_stateful.py.
+    "stateful_date_prefix.rs": "stateful check (tests/test_stateful.py): prefix-sum state over the date column, serve-mode differential",
+    "stateful_degenerate_sum.rs": "stateful check (tests/test_stateful.py): the degenerate state that owns the table",
+    "stateful_group_table.rs": "stateful check (tests/test_stateful.py): grouped table state, serve-mode differential",
 }
 
 # Parked pin path (lemma.toml [wip] zero_copy / cold_stream, research_loop/menus/pin_path_archive.md): test fixtures of that path, never mounted.

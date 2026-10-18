@@ -550,3 +550,52 @@ def test_measure_path_proves_builds_once_and_checks_rows(tmp_path: Path, monkeyp
     )
     bad = run_declarative_metrics(spec_rs=spec, agent_source=wrong, work_dir=tmp_path / "bad", column_bins=prep["bins"], speed_bar=prep)
     assert not bad.get("proof_verified")
+
+
+# ---------------------------------------------------------------- assumptions = false (the default): execute may decline
+
+
+def _off_spec(monkeypatch: pytest.MonkeyPatch, sql: str = DATE_SQL) -> str:
+    monkeypatch.delenv("LEMMA_ASSUMPTIONS", raising=False)  # lemma.toml's default: no data assumptions, no catalog caps
+    return emit_declarative_spec(sql, SCHEMA, None)
+
+
+def test_assumptions_off_execute_returns_option_and_query_post_stays_on_the_value(stateful_on: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    from declarative_spec import decline
+
+    spec = _off_spec(monkeypatch)
+    assert decline.is_decline_spec(spec) and "pub fn run_query(" not in spec and "run_query_ok" not in spec
+    assert "pub fn execute(s: &QState) -> (res: Option<Vec<OutRow>>)" in spec
+    assert "res matches Some(res) ==> query_post(&s.db().lineitem, res)," in spec
+    assert "pub open spec fn query_post(lineitem: &Cols_lineitem, res: Vec<OutRow>) -> bool" in spec
+    assert "pub fn build(lineitem: Cols_lineitem) -> (s: QState)" in spec  # build cannot decline
+    c = stateful.contract(spec)
+    assert c.declines and c.ret == "Option<Vec<OutRow>>" and c.value == "Vec<OutRow>"
+    unwrapped = decline.unwrap_option(spec)
+    assert stateful.wrap_decline(unwrapped) == spec and not decline.is_decline_spec(unwrapped)
+    assert stateful.contract(unwrapped).ret == "Vec<OutRow>" and not stateful.contract(unwrapped).declines
+    runtime = stateful.runtime_rs(spec)
+    assert "-> (res: Option<Option<Vec<OutRow>>>)" in runtime and "(Some(Some(r)), Some(st)) => query_post(&st.db().lineitem, r)," in runtime
+    with pytest.raises(ValueError, match="already declines"):
+        stateful.wrap_decline(spec)
+
+
+def test_assumptions_off_mains_report_a_decline(stateful_on: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    spec = _off_spec(monkeypatch)
+    body = "    None\n"
+    regions = _regions((PROOFS / "stateful_degenerate_sum.rs").read_text())
+    measure = assemble_declarative_program(spec, body, helpers=regions["helpers"], state=regions["state"], build=regions["build"])
+    assert "const LEMMA_DECLINE_EXIT_CODE: i32 = 3;" in measure
+    assert 'match rt.execute_at(0).expect("the state was built at this version") { Some(v) => v, None => { println!("LEMMA_DECLINED"); std::process::exit(LEMMA_DECLINE_EXIT_CODE); } }' in measure
+    serve = assemble_declarative_program(spec, body, helpers=regions["helpers"], state=regions["state"], build=regions["build"], serve=True)
+    tail = serve[serve.index("fn main()") :]
+    assert "match answered {" in tail and 'println!("LEMMA_DECLINED");' in tail and "std::process::exit" not in tail  # the server keeps serving
+
+
+def test_assumptions_off_prompt_explains_the_execute_decline(stateful_on: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    from declarative_spec.prompt import _features, build_declarative_prompt
+
+    spec = _off_spec(monkeypatch)
+    text = build_declarative_prompt(sql=DATE_SQL, spec_path="s.rs", edit_path="e.rs", lemma_index="", spec_text=spec)
+    assert "`execute` returns `Option<..>`: `Some(res)` must satisfy `query_post(.., res)`" in text and "`build` cannot decline" in text
+    assert "## Stateful contract" in text and _features(spec)["ty"] == "Vec<OutRow>"
