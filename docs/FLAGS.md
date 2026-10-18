@@ -22,7 +22,7 @@ lemma.toml  <  experiment file (configs/experiments/X.toml)  <  environment vari
 
 | Section | Keys |
 | --- | --- |
-| `[run]` | `spec_style menu agent_model trusted_set assumption_package speed_bar_mult max_iterations string_encoding join_chain examples narrow_cells parallel_vstd` |
+| `[run]` | `spec_style menu agent_model trusted_set assumption_package speed_bar_mult max_iterations string_encoding join_chain examples narrow_cells parallel_vstd stateful` |
 | `[agent]` | `agent_timeout_sec max_budget_usd agent_submit_ends_session agent_data_mode agent_resource_exhausted_retries agent_auth claude_effort claude_thinking_tokens claude_tool_search mcp_iterate_rows` |
 | `[prover]` | `verus_rlimit verus_timeout_sec run_timeout_sec target_cpu dense_slot_budget` |
 | `[measure]` | `official_rounds official_duck_reps duck_memory_limit duck_threads` |
@@ -81,6 +81,20 @@ Every run value the prompt states (DuckDB threads and memory limit, iterate cap,
 * `max_budget_usd` (float >= 0, default 20.0, 0 = no cap) is the model spend cap per query across all its agent sessions (Claude only). Each session's command gets `--max-budget-usd <remaining>` (cap minus the earlier sessions' spend). Spend is the sum of `total_cost_usd` of the `result` events in `workspace/logs/claude_raw.jsonl` (appended by every session; a session killed before its result event counts 0). No further session starts once the cap is used (`budget used`); the manifest records `cost_usd` per entry of `sessions` and a top-level `total_cost_usd`.
 * The per-query wall budget is `max_iterations x agent_timeout_sec`. Until a body has beaten the bar the old rule holds (a further session only after a session that did not verify, at most `max_iterations`). After one has, a session that ends early with the best speedup (official measure or the agent's submitted run, whichever is higher) below `speed_target` is followed by another session that starts from the best body, with a short host message (best speedup, target, minutes left); its wall limit is the time left. Stop: target reached, budget used, or `max_idle_sessions` sessions in a row without a better speedup. `speed_target = 1.0` is the old behaviour (the first body that beats the bar ends the query). `speed_bar_mult`, the acceptance bar of `submit_runquery`, is unchanged.
 * The manifest has `sessions`: per session start, end, agent seconds, session speedup, best speedup so far, and the stop reason on the last one.
+
+## Stateful accelerators (`stateful`)
+
+`[run] stateful` (bool, default `false`; `LEMMA_STATEFUL`). Off: the spec has `run_query` and is byte-identical to the emitter without the flag
+(`tests/fixtures/stateful_flag_off_golden.json`). On: `run_query` is replaced by a frozen build/execute contract over the SAME query spec
+(`declarative_spec/stateful.py`): host `query_pre` (the old requires) and `query_post` (the old ensures), `QDb` (one field per table),
+`QState { snap: Ghost<QDb>, acc: QAcc }` with `db()` and `inv() = query_pre(db) && qstate_inv(self)`; the agent writes `struct QAcc` (region
+`AGENT_STATE`), `spec fn qstate_inv` (helpers), `build(<tables by value>)` ensuring `s.inv()` and `s.db() == QDb { inputs }` (region `AGENT_BUILD`)
+and `execute(&QState, <params>)` ensuring `query_post(db, params, res)` (region `AGENT_EDIT`). Admission is the same as for `run_query` bodies
+and helpers; the state region holds only `struct`/`enum` items. The assembler adds the fixed, verified host runtime `QRuntime` (one state tagged
+with the data version it was built from; `execute_at(version)` answers only from a state built at that version, `refresh` builds on the given
+tables). The measure `main` builds once (`STATE_BUILD_US`, outside the timer) and times `execute` only; `serve=True` gives a `main` that takes one
+call per stdin line (`<version> <column file per table>`) and rebuilds only when the version changes. The parallel (Arc) variant is not emitted
+with this flag; a self join and a requires on a runtime parameter are refused. Design note: `docs/STATEFUL.md`.
 
 ## Partial verification
 

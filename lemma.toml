@@ -32,6 +32,7 @@ join_chain = true                           # fact table first, unique-key table
 examples = "full"                           # full | principles | none: which verified examples the agent sees
 narrow_cells = false                        # INTEGER/SMALLINT/TINYINT and capped DECIMAL columns loaded as i32/i16/i8
 parallel_vstd = "auto"                      # off | auto | on. Decision: explicit "auto" (the frozen run's effective value; it used to be forced silently and the shell value was overwritten). on = every spec gets Arc params, a shape without a variant fails at emit
+stateful = false                            # true: the contract is an agent-written state QState with build(cols) and execute(&QState, params), both proved against the same query spec; the fixed host runtime rebuilds the state lazily when the caller's data version changes (declarative_spec/stateful.py, docs/STATEFUL.md). The parallel (Arc) variant is not emitted then. false = run_query, byte-identical specs
 
 [agent]
 speed_target = 10.0                         # float >= 1.0: speedup over the reference engine the agent is told to aim for after its first body beats the bar (prompt, section "Target speedup"). Within the per-query budget (max_iterations x agent_timeout_sec) a session that ends early below this target is followed by another one from the best submitted body. 1.0 = the old behaviour (a further session only after one that did not verify)

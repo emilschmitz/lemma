@@ -1,0 +1,74 @@
+{
+ "q01": {
+  "sha256": "9f1abdbe3a083c26d9e9f6b17231496347b0fdf21584b4cbb26be8c32f6eb514"
+ },
+ "q02": {
+  "refused": "column 'p_partkey' not found"
+ },
+ "q03": {
+  "sha256": "df22fe886c86848b7901376af8ff606f9392b57388126392fa9dd803083a5e86"
+ },
+ "q04": {
+  "sha256": "1b223501529e057fd4435a2d1eea22909b37a2a058b0b36fc7bc025f36d16ceb"
+ },
+ "q05": {
+  "sha256": "51766694f8f33bfcb58c51b3eca0c0360eef1a5953413c410c90d1e6f499e427"
+ },
+ "q06": {
+  "sha256": "cb10cda8bd63cf2c3340c2fe36518a4ad441ca3f43a544385c3636df6835eb21"
+ },
+ "q07": {
+  "sha256": "98c7e16fb4d39f2c1596e16b98a4028881f3fc8ad7c1eade812e574bf2ea5a67"
+ },
+ "q08": {
+  "refused": "aggregate expression over a derived table"
+ },
+ "q09": {
+  "sha256": "3a66b46815dbe8b7f04bbc3116f3a58aca1186ade139792b798222f318008332"
+ },
+ "q10": {
+  "sha256": "d7acab0e928d4b38e10fd41d3970dd3c0a23f0dbcbe737f7da9730b7ae48ad13"
+ },
+ "q11": {
+  "refused": "SELECT expression needs an alias"
+ },
+ "q12": {
+  "sha256": "8469b7c4778794e05d3f4dffc668655da444931aa0cc26ffba54288813d23c51"
+ },
+ "q13": {
+  "refused": "JOIN ON predicate"
+ },
+ "q14": {
+  "sha256": "9fe44c5501e755368fbe84f678d5eefb54ab64e1201ff619e251ff71df1dd0db"
+ },
+ "q15": {
+  "refused": "a WITH name used inside a subquery"
+ },
+ "q16": {
+  "sha256": "9cfff66ebcfb145be2cd53af7406ac56388367c18968fd23822d1ba9068da3f7"
+ },
+ "q17": {
+  "refused": "division operand must be a SUM or COUNT, optionally times a constant"
+ },
+ "q18": {
+  "sha256": "705c6c0721413e9932e402f9706ddd004bae626f8b32ea68e7bf25db9b66650d"
+ },
+ "q19": {
+  "refused": "comma join: no column equality connects table 'part' (cross product)"
+ },
+ "q20": {
+  "refused": "SELECT expression needs an alias"
+ },
+ "q21": {
+  "sha256": "cb2a3b0fc6337c9ea868cb3c33f660865519286ff8b1f1eb3fc8cf567a54bba6"
+ },
+ "q22": {
+  "refused": "a DECIMAL value compared with a float aggregate or subquery: the scales are not aligned"
+ },
+ "stateful_date": {
+  "sha256": "fc20c1a1a64b7338b80f7743ef1c43c849f0947a5637a3361f1f16a3d1c7e841"
+ },
+ "stateful_group": {
+  "sha256": "20e6c3ddcc7cd8c32736c32e57dc294e895c9db4a1de9e6cfe2c3824c1c372cf"
+ }
+}

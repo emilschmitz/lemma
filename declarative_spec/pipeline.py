@@ -469,12 +469,20 @@ def _official_rounds(metrics: dict, speed_bar: dict) -> tuple[dict, int, int, in
 
 def _admit_and_assemble(spec_rs: str, agent_source: str, column_bins: dict[str, str] | None, speed_bar: dict | None) -> tuple[str, str, str]:
     """Admit the agent edit and assemble the program: ``(assembled, body, "")``, or ``("", "", error message)``."""
-    from declarative_spec.admit import admit_declarative_body, admit_helpers
+    from declarative_spec import stateful
+    from declarative_spec.admit import admit_declarative_body, admit_helpers, admit_stateful
     from declarative_spec.assemble import assemble_declarative_program
+    from declarative_spec.regions import extract_agent_build, extract_agent_state
 
-    # Only the two marked regions survive. Anything else in the agent file is discarded.
+    # Only the marked regions survive (two, or four for a stateful spec). Anything else in the agent file is discarded.
+    state = build = ""
     try:
-        if "AGENT_EDIT_START" in agent_source:
+        if stateful.is_stateful(spec_rs):
+            body = extract_agent_edit(agent_source)
+            helpers = extract_agent_helpers(agent_source)
+            state = extract_agent_state(agent_source)
+            build = extract_agent_build(agent_source)
+        elif "AGENT_EDIT_START" in agent_source:
             body = extract_agent_edit(agent_source)
             helpers = extract_agent_helpers(agent_source)
         else:
@@ -482,9 +490,12 @@ def _admit_and_assemble(spec_rs: str, agent_source: str, column_bins: dict[str, 
             helpers = ""
     except ValueError as exc:
         return "", "", str(exc)
-    violations = list(admit_declarative_body(body).violations)
-    if helpers:
-        violations += admit_helpers(helpers, spec_rs).violations
+    if stateful.is_stateful(spec_rs):
+        violations = list(admit_stateful(state=state, build=build, execute=body, helpers=helpers, spec_rs=spec_rs).violations)
+    else:
+        violations = list(admit_declarative_body(body).violations)
+        if helpers:
+            violations += admit_helpers(helpers, spec_rs).violations
     if violations:
         return "", "", "; ".join(violations)
     # Before Verus, not after the proof: a dense table over a product of key dictionaries that the prepared data puts past the budget.
@@ -492,7 +503,7 @@ def _admit_and_assemble(spec_rs: str, agent_source: str, column_bins: dict[str, 
 
     if column_bins is not None and dense_budget.key_dictionaries(spec_rs) and not (speed_bar or {}).get("dict_sizes"):
         return "", "", "the prepared data has no dictionary sizes (expect.json lacks dict_sizes): re-run prepare so the dense-slot budget can be checked"
-    dense = dense_budget.body_violation(body, spec_rs, None if speed_bar is None else speed_bar.get("dict_sizes"))
+    dense = dense_budget.body_violation(f"{build}\n{body}", spec_rs, None if speed_bar is None else speed_bar.get("dict_sizes"))
     if dense:
         return "", "", dense
     try:
@@ -502,6 +513,8 @@ def _admit_and_assemble(spec_rs: str, agent_source: str, column_bins: dict[str, 
             helpers=helpers,
             column_bins=column_bins,
             expected_rows=None if speed_bar is None else speed_bar.get("table_rows"),
+            state=state,
+            build=build,
         )
     except ValueError as exc:
         return "", "", str(exc)

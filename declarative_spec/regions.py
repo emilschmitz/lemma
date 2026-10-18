@@ -43,3 +43,27 @@ def extract_agent_helpers(source: str) -> str:
         return _region(source, HELPERS_START, HELPERS_END)
     except ValueError as exc:
         raise ValueError("AGENT_HELPERS_END comes before AGENT_HELPERS_START") from exc
+
+
+# Stateful contract (lemma.toml `stateful`): two more agent regions, the state type and the `build` body.
+STATE_START = "// AGENT_STATE_START"
+STATE_END = "// AGENT_STATE_END"
+BUILD_START = "// AGENT_BUILD_START"
+BUILD_END = "// AGENT_BUILD_END"
+
+
+def _required(source: str, start_mark: str, end_mark: str, label: str) -> str:
+    if start_mark not in source or end_mark not in source:
+        raise ValueError(f"missing {label} markers")
+    try:
+        return _region(source, start_mark, end_mark)
+    except ValueError as exc:
+        raise ValueError(f"{end_mark.removeprefix('// ')} comes before {start_mark.removeprefix('// ')}") from exc
+
+
+def extract_agent_state(source: str) -> str:
+    return _required(source, STATE_START, STATE_END, "AGENT_STATE")
+
+
+def extract_agent_build(source: str) -> str:
+    return _required(source, BUILD_START, BUILD_END, "AGENT_BUILD")
