@@ -1,3 +1,9 @@
 [submodule "db_extension/extension-template-c"]
 	path = db_extension/extension-template-c
 	url = https://github.com/duckdb/extension-template-c.git
+[submodule "db_extension/duckdb_ext/extension-ci-tools"]
+	path = db_extension/duckdb_ext/extension-ci-tools
+	url = https://github.com/duckdb/extension-ci-tools
+[submodule "db_extension/duckdb_ext/duckdb"]
+	path = db_extension/duckdb_ext/duckdb
+	url = https://github.com/duckdb/duckdb

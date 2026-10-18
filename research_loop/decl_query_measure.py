@@ -101,17 +101,8 @@ def _write_query_measure(
     else:
         # Map result: the query yields (key, aggregate); the binary prints `ROW key value`.
         out_fields = [("", map_match.group(1)), ("", map_match.group(2))]
-    # A flat (projected) schema carries no table name; the SQL's FROM names it.
-    # The emitter parses the exact-integer rewrite of the SQL (a ratio's `/` only parses there), so name the table from it.
-    from declarative_spec.numeric_rewrite import rewrite_numeric
-
-    integer_sql, _scales = rewrite_numeric(sql, schema, catalog)
-    model = SchemaModel.from_caller(schema, flatten_derived(parse_query(integer_sql)).tables[0]).with_nullable(catalog)
     # Plan every table's column mapping before the first export: an unmappable field must fail in milliseconds, not after a 1 GB export.
-    plans = {}
-    for struct_name, body in structs:
-        suffix = struct_name.removeprefix("Cols_")
-        plans[suffix] = _plan_table(model, _table_for_suffix(model, suffix), _FIELD.findall(body))
+    plans = plan_tables(sql, schema, catalog, spec)
     dest.mkdir(parents=True, exist_ok=True)
     (dest / "expect.json").unlink(missing_ok=True)  # stale until the export and timing succeed
     bins: dict[str, str] = {}
@@ -181,6 +172,21 @@ def _write_query_measure(
         "sql": sql,
         "db_path": str(db_path),
     }
+
+
+def plan_tables(sql: str, schema: dict, catalog: CatalogAssumptions | None, spec: str) -> dict[str, tuple]:
+    """Column struct suffix -> its export plan (``_plan_table``): which table column each spec field reads, at which type."""
+    # A flat (projected) schema carries no table name; the SQL's FROM names it.
+    # The emitter parses the exact-integer rewrite of the SQL (a ratio's `/` only parses there), so name the table from it.
+    from declarative_spec.numeric_rewrite import rewrite_numeric
+
+    integer_sql, _scales = rewrite_numeric(sql, schema, catalog)
+    model = SchemaModel.from_caller(schema, flatten_derived(parse_query(integer_sql)).tables[0]).with_nullable(catalog)
+    plans = {}
+    for struct_name, body in re.findall(r"pub struct (Cols_[A-Za-z0-9_]+)\s*\{([^}]+)\}", spec):
+        suffix = struct_name.removeprefix("Cols_")
+        plans[suffix] = _plan_table(model, _table_for_suffix(model, suffix), _FIELD.findall(body))
+    return plans
 
 
 def _tie_group_rows(con, sql: str, rows: list, out_fields: list[tuple[str, str]], scales: list[int] | None) -> list | None:

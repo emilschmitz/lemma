@@ -38,14 +38,8 @@ def _insert_helpers(stitched: str, helpers: str) -> str:
     return stitched[:inner] + f"\n{helpers.strip()}\n" + stitched[end:]
 
 
-def assemble_declarative_program(
-    spec_rs: str,
-    agent_body: str,
-    *,
-    helpers: str = "",
-    column_bins: dict[str, str] | None = None,
-    expected_rows: dict[str, int] | None = None,
-) -> str:
+def _stitch_verus(spec_rs: str, agent_body: str, helpers: str) -> str:
+    """The spec with the agent body and helpers in their regions and the host lemmas pasted: the ``verus!`` part of the program."""
     from declarative_spec.regions import EDIT_END, EDIT_START
 
     start = spec_rs.find(EDIT_START)
@@ -86,8 +80,18 @@ def assemble_declarative_program(
     if verus_end is None:
         raise ValueError("unclosed verus! block")
 
-    verus_part = stitched[:verus_end]
+    return stitched[:verus_end]
 
+
+def assemble_declarative_program(
+    spec_rs: str,
+    agent_body: str,
+    *,
+    helpers: str = "",
+    column_bins: dict[str, str] | None = None,
+    expected_rows: dict[str, int] | None = None,
+) -> str:
+    verus_part = _stitch_verus(spec_rs, agent_body, helpers)
     structs = re.findall(r"pub struct (Cols_[A-Za-z0-9_]+)\s*\{([^}]+)\}", verus_part, re.DOTALL)
     loaders: list[str] = []
     mains_load: list[str] = []
@@ -96,13 +100,7 @@ def assemble_declarative_program(
     for struct_name, body in structs:
         table_suffix = struct_name.removeprefix("Cols_")
         fields = re.findall(r"pub\s+((?:r#)?[A-Za-z_][A-Za-z0-9_]*):\s+Vec<([^>]+)>", body)
-        param_parts = [f"n_{table_suffix}: usize"]
-        for fname, fty in fields:
-            param_parts.append(f"{table_suffix}_{_local_ident(fname)}: Vec<{fty}>")
-        params = ", ".join(param_parts)
-        struct_fields = [f"n: n_{table_suffix}"] + [
-            f"{fname}: {table_suffix}_{_local_ident(fname)}" for fname, _ in fields
-        ]
+        param_parts = [f"n_{table_suffix}: usize"] + [f"{table_suffix}_{_local_ident(f)}: Vec<{t}>" for f, t in fields]
         fn_name = f"load_cols_{table_suffix}"
         if column_bins is None:
             prelude = ""
@@ -118,40 +116,13 @@ def assemble_declarative_program(
                 checks=_runtime_checks(verus_part, table_suffix, fields),
                 expect_rows=(expected_rows or {}).get(table_suffix),
             )
-        requires = _loader_requires(verus_part, table_suffix, fields)
-        struct_init = ", ".join(
-            [f"n: n_{table_suffix}"] + [f"{fname}: {table_suffix}_{_local_ident(fname)}" for fname, _ in fields]
-        )
-        loaders.append(
-            f"""fn {fn_name}({params}) -> (cols: {struct_name})
-    requires
-{requires}
-    ensures
-        valid_cols_{table_suffix}(&cols),
-{{
-    {struct_name} {{ {struct_init} }}
-}}"""
-        )
+        loaders.append(_loader_fn(verus_part, struct_name, fields))
         col_var = f"cols_{table_suffix}"
         mains_load.append(f"{prelude}    let {col_var} = {fn_name}({call_args});")
         mains_args.append(f"&{col_var}")
 
     join_cap_checks = _join_cap_checks(verus_part)
-    arc_lets = ""
-    if mains_args:
-        # One argument per parameter: two aliases of one table (a self join) share one loaded struct.
-        sig = re.search(r"pub fn run_query\(([^)]*)\)", verus_part)
-        structs_in_sig = re.findall(r":\s*&Cols_([A-Za-z0-9_]+)", sig.group(1)) if sig else []
-        args = [f"&cols_{suffix}" for suffix in structs_in_sig] or mains_args
-        if parallel.is_parallel(verus_part):
-            # The same object twice: `&*arc` and `&arc`, so `**arc == *cols` holds by construction.
-            arc_lets = "".join(
-                f"    let arc_{suffix} = std::sync::Arc::new(cols_{suffix});\n" for suffix in dict.fromkeys(structs_in_sig)
-            )
-            args = [f"&*arc_{suffix}" for suffix in structs_in_sig] + [f"&arc_{suffix}" for suffix in structs_in_sig]
-        run_call = f"run_query({', '.join(args)})"
-    else:
-        run_call = "run_query()"
+    run_call, arc_lets = _run_call(verus_part, mains_args)
 
     hex_fn = ""
     if column_bins is None:
@@ -182,6 +153,42 @@ def assemble_declarative_program(
         raise ValueError("verus block did not end at '}'")
     verus_with_loaders = closed[:-1] + "\n" + "\n\n".join(loaders) + "\n}\n"
     return verus_with_loaders + "\n" + hex_fn + main_fn
+
+
+def _loader_fn(verus_part: str, struct_name: str, fields: list[tuple[str, str]]) -> str:
+    """The verified loader of one column struct: ``requires`` every ``valid_cols`` conjunct over its parameters, ``ensures valid_cols``."""
+    table_suffix = struct_name.removeprefix("Cols_")
+    param_parts = [f"n_{table_suffix}: usize"] + [f"{table_suffix}_{_local_ident(fname)}: Vec<{fty}>" for fname, fty in fields]
+    requires = _loader_requires(verus_part, table_suffix, fields)
+    struct_init = ", ".join(
+        [f"n: n_{table_suffix}"] + [f"{fname}: {table_suffix}_{_local_ident(fname)}" for fname, _ in fields]
+    )
+    return f"""fn load_cols_{table_suffix}({", ".join(param_parts)}) -> (cols: {struct_name})
+    requires
+{requires}
+    ensures
+        valid_cols_{table_suffix}(&cols),
+{{
+    {struct_name} {{ {struct_init} }}
+}}"""
+
+
+def _run_call(verus_part: str, mains_args: list[str]) -> tuple[str, str]:
+    """``(the run_query call, the Arc lets it needs)`` over the loaded ``cols_<suffix>`` structs."""
+    if not mains_args:
+        return "run_query()", ""
+    # One argument per parameter: two aliases of one table (a self join) share one loaded struct.
+    sig = re.search(r"pub fn run_query\(([^)]*)\)", verus_part)
+    structs_in_sig = re.findall(r":\s*&Cols_([A-Za-z0-9_]+)", sig.group(1)) if sig else []
+    args = [f"&cols_{suffix}" for suffix in structs_in_sig] or mains_args
+    arc_lets = ""
+    if parallel.is_parallel(verus_part):
+        # The same object twice: `&*arc` and `&arc`, so `**arc == *cols` holds by construction.
+        arc_lets = "".join(
+            f"    let arc_{suffix} = std::sync::Arc::new(cols_{suffix});\n" for suffix in dict.fromkeys(structs_in_sig)
+        )
+        args = [f"&*arc_{suffix}" for suffix in structs_in_sig] + [f"&arc_{suffix}" for suffix in structs_in_sig]
+    return f"run_query({', '.join(args)})", arc_lets
 
 
 _LEN_CONJ = re.compile(r"^[A-Za-z_]\w*\.(?:r#)?\w+@\.len\(\) == [A-Za-z_]\w*\.n as int$")
