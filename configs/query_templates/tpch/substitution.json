@@ -1,0 +1,21 @@
+{
+  "_source": "TPC-H 3.0.1 section 2.4: the qgen substitution parameters of each template, as data for declarative_spec.templates.generate_bindings. A SQL expression of a substitution parameter (DATE + INTERVAL, DISCOUNT +- 0.01, '1998-12-01' - DELTA days) is a second parameter drawn as a shift of the first, because a template parameter may only stand directly against a column.",
+  "q01": {
+    "ship_hi": {"kind": "date_range", "lo": "1998-08-03", "hi": "1998-10-02", "unit": "day"}
+  },
+  "q03": {
+    "segment": {"kind": "choice", "values": ["AUTOMOBILE", "BUILDING", "FURNITURE", "MACHINERY", "HOUSEHOLD"]},
+    "day": {"kind": "date_range", "lo": "1995-03-01", "hi": "1995-03-31", "unit": "day"}
+  },
+  "q06": {
+    "ship_lo": {"kind": "date_range", "lo": "1993-01-01", "hi": "1997-01-01", "unit": "year"},
+    "ship_hi": {"kind": "date_shift", "of": "ship_lo", "amount": 1, "unit": "year"},
+    "disc_lo": {"kind": "decimal_range", "lo": "0.01", "hi": "0.08"},
+    "disc_hi": {"kind": "decimal_shift", "of": "disc_lo", "amount": "0.02"},
+    "quantity": {"kind": "choice", "values": ["24", "25"]}
+  },
+  "q14": {
+    "ship_lo": {"kind": "date_range", "lo": "1993-01-01", "hi": "1997-12-01", "unit": "month"},
+    "ship_hi": {"kind": "date_shift", "of": "ship_lo", "amount": 1, "unit": "month"}
+  }
+}

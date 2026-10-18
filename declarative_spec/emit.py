@@ -468,11 +468,25 @@ def emit_declarative_spec(
     schema: dict[str, str] | dict[str, dict[str, str]],
     catalog: CatalogAssumptions | None = None,
 ) -> str:
-    """Spec for ``sql``. DATE and DECIMAL are first stated as exact integer SQL (``numeric_rewrite``)."""
+    """Spec for ``sql``. DATE and DECIMAL are first stated as exact integer SQL (``numeric_rewrite``).
+
+    SQL with a ``-- params:`` header is a query template ([sql] templates, see ``templates``): its parameters become
+    arguments of the spec and of ``run_query``."""
+    from declarative_spec import templates
+
+    template = templates.parse_template(sql)
+    if template is not None:
+        return templates.emit_template(template, schema, catalog, _emit_fixed)
+    return with_sql_comment(_emit_fixed(sql, schema, catalog), sql)
+
+
+def _emit_fixed(
+    sql: str,
+    schema: dict[str, str] | dict[str, dict[str, str]],
+    catalog: CatalogAssumptions | None = None,
+) -> str:
+    """The spec of fixed-constant SQL, without the SQL comment."""
     from declarative_spec.numeric_rewrite import rewrite_numeric, with_out_scales
-
-    original_sql = sql
-
     from declarative_spec.parse_query import rewrite_comma_joins
 
     sql = rewrite_comma_joins(sql, schema)
@@ -491,7 +505,7 @@ def emit_declarative_spec(
         except DeclarativeUnsupported:
             if parallel.strict():
                 raise
-    return with_sql_comment(out, original_sql)
+    return out
 
 
 _MARKERS = ("AGENT_EDIT_", "AGENT_HELPERS_", "HOST_LEMMAS_")

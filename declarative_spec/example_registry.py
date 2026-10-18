@@ -147,6 +147,8 @@ MORE_EXAMPLES: tuple[tuple[str, str], ...] = (
 UNMOUNTED: dict[str, str] = {
     "u64_group_count_t_k.rs": "the u64-key map count over the test spec's fixed names `t`/`k`; `hard/map_count.rs` is the same shape and is mounted",
     "u64_group_count_slots_t_k.rs": "the dense-counter recipe under the test spec's fixed names; its text is the block inlined as the dense_map recipe",
+    "template_sum_where.rs": "end-to-end check of lemma.toml [sql] templates (tests/test_query_templates.py), not an agent example",
+    "template_date_count.rs": "end-to-end check of lemma.toml [sql] templates (tests/test_query_templates.py), not an agent example",
 }
 
 # Parked pin path (lemma.toml [wip] zero_copy / cold_stream, research_loop/menus/pin_path_archive.md): test fixtures of that path, never mounted.

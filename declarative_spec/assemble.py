@@ -152,6 +152,9 @@ def assemble_declarative_program(
         run_call = f"run_query({', '.join(args)})"
     else:
         run_call = "run_query()"
+    param_prelude, param_args = _param_prelude(verus_part)
+    if param_args:
+        run_call = run_call[:-1] + (", " if run_call != "run_query()" else "") + ", ".join(param_args) + ")"
 
     hex_fn = ""
     if column_bins is None:
@@ -162,7 +165,7 @@ def assemble_declarative_program(
 """
     else:
         timed, hex_fn = _timed_runs(run_call, verus_part)
-    main_fn = "fn main() {\n"
+    main_fn = "fn main() {\n" + param_prelude
     if column_bins is not None:
         main_fn += "    let load_start = std::time::Instant::now();\n"
     main_fn += "\n".join(mains_load) + "\n"
@@ -182,6 +185,35 @@ def assemble_declarative_program(
         raise ValueError("verus block did not end at '}'")
     verus_with_loaders = closed[:-1] + "\n" + "\n\n".join(loaders) + "\n}\n"
     return verus_with_loaders + "\n" + hex_fn + main_fn
+
+
+def _param_prelude(verus_part: str) -> tuple[str, list[str]]:
+    """Query-template parameters (``// PARAM`` lines of the spec, see ``declarative_spec/templates.py``): read each value from the
+    command line, in run_query's order, and check the range run_query ``requires`` with a loud ``assert!``, like the data checks.
+    Returns the code and the arguments to append to the run_query call."""
+    from declarative_spec.templates import spec_params
+
+    params = spec_params(verus_part)
+    if not params:
+        return "", []
+    names = ", ".join(name for name, _ty, _lo, _hi in params)
+    lines = [
+        "    let lemma_param_argv: Vec<String> = std::env::args().collect();",
+        f'    assert!(lemma_param_argv.len() == {len(params) + 1}, "expected {len(params)} query parameter values ({names}) on the command line, got {{}}", lemma_param_argv.len() - 1);',
+    ]
+    args: list[str] = []
+    for index, (name, ty, lo, hi) in enumerate(params, start=1):
+        var = f"param_{name}"
+        if ty == "String":
+            lines.append(f"    let {var}: String = lemma_param_argv[{index}].clone();")
+            args.append(f"&{var}")
+            continue
+        lines.append(f'    let {var}: {ty} = lemma_param_argv[{index}].parse::<{ty}>().expect("parameter {name}: not a {ty}");')
+        lines.append(
+            f'    assert!(({var} as i128) >= {lo}i128 && ({var} as i128) <= {hi}i128, "parameter {name} = {{}} is outside its declared range [{lo}, {hi}]", {var});'
+        )
+        args.append(var)
+    return "\n".join(lines) + "\n", args
 
 
 _LEN_CONJ = re.compile(r"^[A-Za-z_]\w*\.(?:r#)?\w+@\.len\(\) == [A-Za-z_]\w*\.n as int$")

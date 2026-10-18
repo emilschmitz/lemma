@@ -131,8 +131,11 @@ def compile_and_run(
     timeout_sec: int | None = None,
     agent_source: str | None = None,
     keep_binary: bool = False,
+    run_args: list[str] | None = None,
 ) -> dict:
     """Verify, compile, and run. Success requires a printed QUERY_LATENCY_US.
+
+    ``run_args``: the binary's command line (a query template's parameter values, see ``templates.binary_args``).
 
     ``keep_binary`` leaves the compiled binary on disk (its path is ``binary_path`` in the result) for the official interleaved rounds;
     the caller then deletes it.
@@ -204,7 +207,7 @@ def compile_and_run(
 
         with heavy_phase("measure"):  # the timed run on the full tables: a quiet machine, no other export or proof at the same time
             run = subprocess.run(
-                [str(binary)],
+                [str(binary), *(run_args or [])],
                 capture_output=True,
                 text=True,
                 timeout=run_timeout_sec(),
@@ -260,11 +263,17 @@ def compile_and_run(
 
 def run_binary_timed(binary: Path, directory: Path) -> tuple[int, int]:
     """One more run of the compiled binary: (median-of-its-timed-runs us, best us). Loud on a crash, a timeout or a missing latency line."""
-    run = subprocess.run([str(binary)], capture_output=True, text=True, timeout=run_timeout_sec(), check=False, cwd=directory)
+    latency, best, _stdout = run_binary_round(binary, directory, [])
+    return latency, best
+
+
+def run_binary_round(binary: Path, directory: Path, args: list[str]) -> tuple[int, int, str]:
+    """One run of the compiled binary with ``args`` on its command line: (median us, best us, stdout). Loud like ``run_binary_timed``."""
+    run = subprocess.run([str(binary), *args], capture_output=True, text=True, timeout=run_timeout_sec(), check=False, cwd=directory)
     latency = _latency_us(run.stdout or "")
     if run.returncode != 0 or latency < 0:
         raise RuntimeError((run.stderr or run.stdout or "binary did not print QUERY_LATENCY_US")[-2000:])
-    return latency, _best_us(run.stdout or "")
+    return latency, _best_us(run.stdout or ""), run.stdout or ""
 
 
 def speed_bar_mult() -> float:
@@ -307,28 +316,7 @@ def _apply_speed_bar(metrics: dict, speed_bar: dict | None, *, parallel_hint: bo
     duck_us = int(speed_bar["duck_us"])
     latency = int(metrics.get("latency_us", -1))
     stdout = str(metrics.get("stdout") or "")
-    if speed_bar.get("kinds") is not None:  # a map result has `"kinds": null` in expect.json
-        from declarative_spec.bench import rows_from_stdout_general, rows_match_error
-
-        err = rows_match_error(
-            rows_from_stdout_general(stdout),
-            list(speed_bar["rows"]),
-            list(speed_bar["kinds"]),
-            speed_bar.get("order_cols"),
-            bool(speed_bar.get("limited")),
-            speed_bar.get("tie_rows"),
-        )
-    else:
-        from declarative_spec.bench import rows_from_stdout
-
-        got = rows_from_stdout(stdout)
-        expect = [(int(k), int(v)) for k, v in speed_bar["rows"]]
-        err = None
-        if got != expect:
-            err = (
-                "proved but result rows differ from the loaded table "
-                f"(got {len(got)} groups, expected {len(expect)})"
-            )
+    err = _rows_error(stdout, speed_bar, speed_bar["rows"], bool(speed_bar.get("limited")), speed_bar.get("tie_rows"))
     if err:
         return _release_binary({
             **metrics,
@@ -385,6 +373,28 @@ def _apply_speed_bar(metrics: dict, speed_bar: dict | None, *, parallel_hint: bo
     return {**metrics, **attained, "duck_us": duck_us}
 
 
+def _rows_error(stdout: str, speed_bar: dict, rows: list, limited: bool, tie_rows: list | None) -> str | None:
+    """The row check: the binary's printed rows against DuckDB's ``rows`` (None when they match)."""
+    if speed_bar.get("kinds") is not None:  # a map result has `"kinds": null` in expect.json
+        from declarative_spec.bench import rows_from_stdout_general, rows_match_error
+
+        return rows_match_error(
+            rows_from_stdout_general(stdout),
+            list(rows),
+            list(speed_bar["kinds"]),
+            speed_bar.get("order_cols"),
+            limited,
+            tie_rows,
+        )
+    from declarative_spec.bench import rows_from_stdout
+
+    got = rows_from_stdout(stdout)
+    expect = [(int(k), int(v)) for k, v in rows]
+    if got != expect:
+        return "proved but result rows differ from the loaded table " f"(got {len(got)} groups, expected {len(expect)})"
+    return None
+
+
 def _release_binary(metrics: dict) -> dict:
     """Delete the kept binary (see compile_and_run ``keep_binary``) and drop its path from the result."""
     path = metrics.get("binary_path")
@@ -413,13 +423,33 @@ def _official_rounds(metrics: dict, speed_bar: dict) -> tuple[dict, int, int, in
         bests.append(best)
         return latency
 
+    bindings = speed_bar.get("template_bindings")
+    outputs: list[str] = []
+    if bindings:
+        from declarative_spec import templates
+
+        template = templates.parse_template(str(speed_bar["sql"]))
+        if template is None:
+            raise ValueError("expect.json has template_bindings but its SQL is not a query template")
+
+        def ours_bound(binding: dict) -> int:  # a template round: the round's values on the binary's command line
+            latency, best, stdout = run_binary_round(binary, directory, templates.binary_args(template, binding))
+            bests.append(best)
+            outputs.append(stdout)
+            return latency
+
     with heavy_phase("measure"):  # one quiet-machine phase for all rounds: no proof or export between the two sides
         duck, close = om.duck_round_timer(speed_bar, directory)
         overhead = getattr(duck, "python_overhead_us", None)
         try:
-            rounds = om.interleave(ours, duck, k)
+            rounds = om.interleave(ours_bound, duck, k, bindings) if bindings else om.interleave(ours, duck, k)
         finally:
             close()
+    if bindings:  # each round's rows against DuckDB's rows for the same values: a wrong answer for any binding fails the measure
+        for entry, stdout, expect in zip(rounds, outputs, duck.rows, strict=True):  # type: ignore[attr-defined]
+            err = _rows_error(stdout, speed_bar, expect["rows"], expect["limited"], expect["tie_rows"])
+            if err:
+                raise RuntimeError(f"round {entry['round']} with parameters {entry['binding']}: {err}")
     summary = om.summarize(rounds)
     info = {
         "measurement": om.MEASUREMENT_OFFICIAL,
@@ -546,8 +576,15 @@ def run_declarative_metrics(
     assembled, body, error = _admit_and_assemble(spec_rs, agent_source, column_bins, speed_bar)
     if error:
         return {"status": "FAILURE", "proof_verified": False, "latency_us": -1, "compiler_error": error}
+    from declarative_spec.templates import spec_params
+
+    run_args: list[str] | None = None
+    if spec_params(spec_rs):
+        run_args = (speed_bar or {}).get("binding_args")
+        if run_args is None:
+            return {"status": "FAILURE", "proof_verified": False, "latency_us": -1, "compiler_error": "a query template's binary needs parameter values: prepare the data with bindings (expect.json binding_args)"}
     metrics = compile_and_run(
-        assembled, work_dir=work_dir, timeout_sec=timeout_sec, agent_source=agent_source, keep_binary=official and speed_bar is not None and not speed_bar.get("synthetic")
+        assembled, work_dir=work_dir, timeout_sec=timeout_sec, agent_source=agent_source, keep_binary=official and speed_bar is not None and not speed_bar.get("synthetic"), run_args=run_args
     )
     from declarative_spec import parallel
 
