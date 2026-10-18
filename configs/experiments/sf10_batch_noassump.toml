@@ -1,0 +1,76 @@
+# SF10 batch, 2026-10-18: TPC-H SF10 (Q1/Q3/Q14 as templates with fresh TPC-H bindings, Q9/Q12/Q18 fixed) and GenDB's six SEC-EDGAR queries
+# (DECIMAL variant, 2022-2024). Opus 5.5, no worked examples, data profile, no data assumptions (decline), pushdown + agent scans on.
+# Q6 (template) was run by tpch_sf10_templates_smoke_noassump.toml. Reported numbers: in-DuckDB end to end (research_loop/scripts/in_duckdb_bench.py)
+# after installing each SUCCESS run; the batch's own hot verdict excludes the scan/filter (docs/COMPARABILITY.md).
+# Run: uv run python research_loop/scripts/container_batch.py --experiment configs/experiments/sf10_batch_noassump.toml
+[settings]
+assumptions = false
+examples = "none"
+data_profile = "stats"
+templates = true
+
+[[run]]
+model = "claude-opus-5-5"
+query = "configs/query_templates/tpch/q01.sql"
+duckdb_path = "research_loop/generated/tpch_sf10.duckdb"
+bindings_rules = "configs/query_templates/tpch/substitution.json"
+bindings_seed = 1
+
+[[run]]
+model = "claude-opus-5-5"
+query = "configs/query_templates/tpch/q03.sql"
+duckdb_path = "research_loop/generated/tpch_sf10.duckdb"
+bindings_rules = "configs/query_templates/tpch/substitution.json"
+bindings_seed = 1
+
+[[run]]
+model = "claude-opus-5-5"
+query = "configs/query_templates/tpch/q14.sql"
+duckdb_path = "research_loop/generated/tpch_sf10.duckdb"
+bindings_rules = "configs/query_templates/tpch/substitution.json"
+bindings_seed = 1
+
+[[run]]
+model = "claude-opus-5-5"
+query = "configs/queries/tpch/tpch_q09.sql"
+duckdb_path = "research_loop/generated/tpch_sf10.duckdb"
+
+[[run]]
+model = "claude-opus-5-5"
+query = "configs/queries/tpch/tpch_q12.sql"
+duckdb_path = "research_loop/generated/tpch_sf10.duckdb"
+
+[[run]]
+model = "claude-opus-5-5"
+query = "configs/queries/tpch/tpch_q18.sql"
+duckdb_path = "research_loop/generated/tpch_sf10.duckdb"
+
+[[run]]
+model = "claude-opus-5-5"
+query = "configs/queries/sec_edgar/q1.sql"
+duckdb_path = "holdout/gendb_sec_edgar/duckdb/sec_edgar_dec.duckdb"
+
+[[run]]
+model = "claude-opus-5-5"
+query = "configs/queries/sec_edgar/q2.sql"
+duckdb_path = "holdout/gendb_sec_edgar/duckdb/sec_edgar_dec.duckdb"
+
+[[run]]
+model = "claude-opus-5-5"
+query = "configs/queries/sec_edgar/q3.sql"
+duckdb_path = "holdout/gendb_sec_edgar/duckdb/sec_edgar_dec.duckdb"
+
+[[run]]
+model = "claude-opus-5-5"
+query = "configs/queries/sec_edgar/q4.sql"
+duckdb_path = "holdout/gendb_sec_edgar/duckdb/sec_edgar_dec.duckdb"
+
+[[run]]
+model = "claude-opus-5-5"
+query = "configs/queries/sec_edgar/q6.sql"
+duckdb_path = "holdout/gendb_sec_edgar/duckdb/sec_edgar_dec.duckdb"
+
+[[run]]
+model = "claude-opus-5-5"
+query = "configs/queries/sec_edgar/q24.sql"
+duckdb_path = "holdout/gendb_sec_edgar/duckdb/sec_edgar_dec.duckdb"
