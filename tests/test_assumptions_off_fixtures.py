@@ -130,3 +130,89 @@ def test_the_compiled_stateful_program_declines_when_the_exact_total_leaves_i128
         pipeline.run_binary_round(Path(metrics["binary_path"]), Path(metrics["run_dir"]), [])
     declined = pipeline.compile_and_run(program, work_dir=tmp_path / "w2", timeout_sec=3000)
     assert declined["status"] == "DECLINED" and declined["proof_verified"] is True
+
+
+# ---- exact rationals (lemma.toml [sql] exact_division, on) with assumptions = false: the Rat field is inside run_query_ok ----
+
+_LINEITEM = {"lineitem": {"l_quantity": "BIGINT", "l_extendedprice": "DECIMAL(15,2)", "l_discount": "DECIMAL(15,2)", "l_shipdate": "DATE"}}
+_Q14_ONE_TABLE = (
+    "SELECT 100.00 * SUM(CASE WHEN l_quantity > 10 THEN l_extendedprice * (1 - l_discount) ELSE 0 END) "
+    "/ SUM(l_extendedprice * (1 - l_discount)) AS promo_revenue FROM lineitem "
+    "WHERE l_shipdate >= DATE '1995-09-01' AND l_shipdate < DATE '1995-10-01'"
+)
+EXACT_CASES = {
+    "exact_avg_checked.rs": ("SELECT AVG(cost) AS avg_cost FROM pre WHERE line > 5", _PRE_COST),
+    "exact_q14_ratio_checked.rs": (_Q14_ONE_TABLE, _LINEITEM),
+    "exact_q14_ratio_unchecked_must_fail.rs": (_Q14_ONE_TABLE, _LINEITEM),
+}
+
+
+def _exact_spec(name: str, monkeypatch: pytest.MonkeyPatch) -> str:
+    monkeypatch.setenv("LEMMA_EXACT_DIVISION", "1")
+    sql, schema = EXACT_CASES[name]
+    return emit_declarative_spec(sql, schema, None)
+
+
+def _exact_program(name: str, monkeypatch: pytest.MonkeyPatch) -> str:
+    from declarative_spec.regions import extract_agent_edit, extract_agent_helpers
+
+    src = (FIXTURES / name).read_text()
+    return assemble_declarative_program(_exact_spec(name, monkeypatch), extract_agent_edit(src), helpers=extract_agent_helpers(src))
+
+
+@pytest.mark.parametrize(("name", "rat_fn"), [("exact_avg_checked.rs", "avg_avg_cost"), ("exact_q14_ratio_checked.rs", "ratio_promo_revenue")])
+def test_the_rat_contract_is_inside_run_query_ok(name: str, rat_fn: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    import re
+
+    spec = _exact_spec(name, monkeypatch)
+    ok = re.search(r"pub open spec fn run_query_ok\(.*?\n\}\n", spec, re.S)
+    assert ok is not None and "-> (res: Option<Vec<OutRow>>)" in spec and "res matches Some(res) ==> run_query_ok(" in spec
+    assert "ROW_CAP" not in spec and "MAG_CAP" not in spec
+    assert f"{rat_fn}(" in ok.group(0)  # the Rat field's clause is part of what Some(res) promises
+    assert re.search(rf"pub open spec fn {rat_fn}\([^{{]*r: Rat\) -> bool \{{\n    rat_is\(r, ", spec)  # stated over int only
+
+
+@pytest.mark.parametrize("name", ["exact_avg_checked.rs", "exact_q14_ratio_checked.rs"])
+def test_a_checked_exact_rational_body_verifies_without_data_assumptions(name: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    ok, out = verify_assembled(_exact_program(name, monkeypatch), timeout_sec=3000)
+    assert ok and "0 errors" in out, out[-3000:]
+
+
+def test_stateful_exact_avg_verifies_runs_and_prints_duckdbs_double(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """stateful x exact_division x assumptions = false: supported (the Rat clause is inside query_post; execute may decline)."""
+    import duckdb
+
+    from declarative_spec import stateful
+    from declarative_spec.bench import float_tolerance
+    from declarative_spec.regions import extract_agent_build, extract_agent_edit, extract_agent_helpers, extract_agent_state
+
+    monkeypatch.setenv("LEMMA_STATEFUL", "1")
+    spec = _exact_spec("exact_avg_checked.rs", monkeypatch)
+    assert stateful.is_stateful(spec) and stateful.contract(spec).declines and "avg_avg_cost(pre, 0, res@[r].avg_cost->Some_0)" in spec
+    src = (FIXTURES / "stateful_exact_avg_checked.rs").read_text()
+    bins = tmp_path / "pre.bin"
+    rows = [(150, 10), (250, 3), (-25, 7), (7, 6)]  # (cents, line): line > 5 keeps 150, -25, 7
+    _columns(bins, rows)
+    program = assemble_declarative_program(
+        spec,
+        extract_agent_edit(src),
+        helpers=extract_agent_helpers(src),
+        state=extract_agent_state(src),
+        build=extract_agent_build(src),
+        column_bins={"pre": str(bins)},
+    )
+    ok, out = verify_assembled(program, timeout_sec=3000)
+    assert ok and "0 errors" in out, out[-3000:]
+    metrics = pipeline.compile_and_run(program, work_dir=tmp_path / "w", timeout_sec=900)
+    assert metrics["status"] == "SUCCESS", metrics.get("compiler_error", "")[-2000:]
+    con = duckdb.connect()
+    con.execute("CREATE TABLE pre (line BIGINT, cost DECIMAL(38,2))")
+    con.executemany("INSERT INTO pre VALUES (?, CAST(? AS DECIMAL(38,2)) / 100)", [(line, cents) for cents, line in rows])
+    (want,) = con.execute("SELECT AVG(cost) FROM pre WHERE line > 5").fetchone()
+    got = float(metrics["stdout"].split("ROW\u001f", 1)[1].split()[0])
+    assert abs(got - want) <= float_tolerance(want), (got, want)
+
+
+def test_an_unchecked_multiplication_building_the_rat_does_not_verify(monkeypatch: pytest.MonkeyPatch) -> None:
+    ok, out = verify_assembled(_exact_program("exact_q14_ratio_unchecked_must_fail.rs", monkeypatch), timeout_sec=3000)
+    assert not ok and "possible arithmetic underflow/overflow" in out, out[-3000:]

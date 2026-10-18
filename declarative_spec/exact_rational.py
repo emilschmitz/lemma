@@ -11,6 +11,9 @@ integers. Nothing in the spec is a float and no float trusted item is pasted:
   denominator, exactly DuckDB 1.5.6's DOUBLE division (``ieee_floating_point_ops`` is on; ``x / 0`` is not NULL there);
 * an AVG or a division inside a comparison (HAVING, a scalar subquery in WHERE) is a pair of spec fns ``<f>_num`` /
   ``<f>_den`` with ``den > 0``, and the comparison is cross-multiplied into integers (``rat_compare``).
+  An AVG that may be over no rows (a scalar subquery, an AVG over derived-table groups) also has ``<f>_nonempty``: SQL's
+  AVG of no rows is NULL, so the comparison holds only when it is nonempty (refused under NOT, where NULL is not FALSE).
+  An output AVG of no rows is the ``None`` of its ``Option<Rat>`` field (an ungrouped aggregate over no row).
 
 A FLOAT/DOUBLE operand anywhere in the query is refused (``refuse_float_spec``): its exact statement needs an error bound,
 which is future work (``declarative_spec/future_float_error_bounds/``). The f64 idealization is used only with the flag off.
@@ -165,11 +168,41 @@ def _side(operand: str, rats: dict[str, tuple[str, str]]) -> tuple[str, str]:
     return (operand if _INT_LIT.match(operand) else f"({operand})"), "1"
 
 
-def rat_compare(text: str, rats: dict[str, tuple[str, str]]) -> str:
-    """Rewrite every comparison that has a token of ``rats`` (token -> (num, den) spec text, den > 0) on one side.
+EMPTY_AVG_UNDER_NOT = (
+    "a comparison with an AVG that may be over no rows (SQL NULL) under NOT: NOT of an unknown comparison is unknown, "
+    "which the two-valued spec does not state yet"
+)
+
+
+def _negated(text: str, a: int) -> bool:
+    """Is position ``a`` inside a negation: a ``!`` directly before it, or before any parenthesis that encloses it?"""
+    if text[:a].rstrip().endswith("!"):
+        return True
+    depth = 0
+    for k in range(a - 1, -1, -1):
+        if text[k] in ")]":
+            depth += 1
+        elif text[k] in "([":
+            if depth == 0:
+                if text[:k].rstrip().endswith("!"):
+                    return True
+            else:
+                depth -= 1
+    return False
+
+
+def rat_compare(text: str, rats: dict[str, tuple[str, ...]]) -> str:
+    """Rewrite every comparison that has a token of ``rats`` on one side.
+
+    A token maps to ``(num, den)`` spec text with den > 0, or ``(num, den, nonempty)`` for an AVG that may be over no rows
+    (a scalar subquery, an AVG over the groups of a derived table): SQL's AVG of no rows is NULL, and a comparison with
+    NULL is never TRUE, so the comparison is stated ``(nonempty && a OP n/d)``. That is exact under AND and OR in a
+    WHERE / HAVING (a row passes only when the condition is TRUE); under NOT it is not (NOT NULL is NULL) and is refused.
 
     ``a OP n/d`` with d > 0 is ``a * d OP n``; ``n1/d1 OP n2/d2`` is ``n1 * d2 OP n2 * d1``. A token used any other way
     (in arithmetic, as a bare value) is refused: it has no exact integer statement here."""
+    guards = {t: v[2] for t, v in rats.items() if len(v) > 2}
+    rats = {t: (v[0], v[1]) for t, v in rats.items()}
     for token in sorted(rats, key=len, reverse=True):
         pattern = re.compile(rf"(?<![\w#]){re.escape(token)}(?!\w)")
         while (m := pattern.search(text)) is not None:
@@ -200,7 +233,11 @@ def rat_compare(text: str, rats: dict[str, tuple[str, str]]) -> str:
             # n1/d1 OP n2/d2 with d1, d2 > 0:  n1 * d2 OP n2 * d1
             left = ln if rd == "1" else f"{ln} * {rd}"
             right = rn if ld == "1" else f"{rn} * {ld}"
-            text = text[:a] + f"({left} {op} {right})" + text[b:]
+            empty = [guards[t] for t in (lhs.strip(), rhs.strip()) if t in guards]
+            if empty and _negated(text, a):
+                raise DeclarativeUnsupported(EMPTY_AVG_UNDER_NOT)
+            compared = f"{left} {op} {right}"
+            text = text[:a] + (f"({' && '.join(empty)} && {compared})" if empty else f"({compared})") + text[b:]
     return text
 
 

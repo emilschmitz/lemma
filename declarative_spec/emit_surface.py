@@ -186,12 +186,15 @@ def _scalar_returns_real(source: str, call: str) -> bool:
     return re.search(rf"spec fn {re.escape(fn)}\([^)]*\)\s*->\s*real\b", source) is not None
 
 
-def _scalar_rat(source: str, call: str) -> tuple[str, str] | None:
-    """An exact-rational scalar (``<f>_num`` / ``<f>_den`` in ``source``): the two calls; None for any other scalar."""
+def _scalar_rat(source: str, call: str) -> tuple[str, ...] | None:
+    """An exact-rational scalar (``<f>_num`` / ``<f>_den`` in ``source``): the two calls, and ``<f>_nonempty`` when the AVG
+    may be over no rows (SQL NULL; see ``exact_rational.rat_compare``); None for any other scalar."""
     fn, _, args = call.partition("(")
     if re.search(rf"spec fn {re.escape(fn)}_den\(", source) is None:
         return None
-    return f"{fn}_num({args}", f"{fn}_den({args}"
+    if re.search(rf"spec fn {re.escape(fn)}_nonempty\(", source) is None:
+        return f"{fn}_num({args}", f"{fn}_den({args}"
+    return f"{fn}_num({args}", f"{fn}_den({args}", f"{fn}_nonempty({args}"
 
 
 def _place_scalar(pred: str, name: str, call: str, source: str) -> str:
@@ -850,7 +853,7 @@ def _emit_exact_avg(
 
     ``<name>_sum`` folds the stored integers (a DECIMAL cell is value * 10**s), ``<name>_count`` counts the rows, and the
     value is ``sum * f0 / (count * 10**s * f1)`` for the constant factor f0/f1 of ``c * AVG(x)``. With no row the pair is
-    ``0 / 1`` (the value 0, as the real form states it); a result row always has a row. ``<name>(.., r)`` says the result
+    ``0 / 1``, never read as a value: an output AVG of no rows is its field's ``None``, a group always has a row, and a scalar-subquery AVG is compared only when ``<f>_nonempty`` (SQL NULL otherwise). ``<name>(.., r)`` says the result
     field ``r`` is that rational (``rat_is``)."""
     from declarative_spec.exact_rational import FLOAT_REFUSAL
 
@@ -1388,6 +1391,11 @@ def _one_scalar(
 
 pub open spec fn {name}_den({_param_sig(helpers.main)}) -> int {{
     {agg.name}_den({p}, 0)
+}}
+
+// SQL's AVG of no rows is NULL: a comparison with it is never TRUE (exact_rational.rat_compare).
+pub open spec fn {name}_nonempty({_param_sig(helpers.main)}) -> bool {{
+    {agg.name}_count({p}, 0) > 0
 }}"""
         return f"{name}({_map_args(helpers.main, outer_params)})", helpers.source + "\n\n" + wrap
     if agg.style != "fold":
@@ -1488,7 +1496,7 @@ def _avg_over_groups_exact(
     """``AVG`` over the groups of a derived table as an exact rational (lemma.toml [sql] exact_division).
 
     ``<name>_num`` is the sum of the group values (stored integers), ``<name>_den`` the number of groups times 10**s for a
-    DECIMAL group value; with no group the pair is ``0 / 1`` (the value 0, as the real form states it)."""
+    DECIMAL group value; with no group the pair is ``0 / 1`` and ``<name>_nonempty`` is false: SQL NULL, a comparison with it never holds."""
     from declarative_spec.exact_rational import FLOAT_REFUSAL
 
     if target.ret == "real":
@@ -1511,6 +1519,11 @@ def _avg_over_groups_exact(
 pub open spec fn {name}_den({sig}) -> int {{
     let c = {name}_groups({p}, 0);
     if c > 0 {{ {den} }} else {{ 1int }}
+}}
+
+// SQL's AVG of no rows (no group) is NULL: a comparison with it is never TRUE (exact_rational.rat_compare).
+pub open spec fn {name}_nonempty({sig}) -> bool {{
+    {name}_groups({p}, 0) > 0
 }}"""
     call = f"{name}({_map_args(helpers.params, outer_params)})"
     return call, helpers.source + "\n\n" + "\n\n".join(blocks) + "\n\n" + wrap
@@ -1856,7 +1869,7 @@ def _having(query: Query, helpers: _Helpers, scalars: dict[str, str], key: str) 
     p = _param_call(helpers.params)
     key_arg = f", {key}" if key and helpers.key_ty else ""
     repl: list[tuple[str, str]] = []
-    rats: dict[str, tuple[str, str]] = {}
+    rats: dict[str, tuple[str, ...]] = {}
     for agg, src in zip(helpers.aggs, query.aggs, strict=True):
         if not re.search(rf"\b{re.escape(src.alias)}\b", expr):
             continue

@@ -278,7 +278,7 @@ int KindOf(const std::string &rust, bool &option) {
 		option = true;
 		inner = inner.substr(7, inner.size() - 8);
 	}
-	if (inner == "f64") {
+	if (inner == "f64" || inner == "Rat") { // Rat: an exact rational, written by the library as the double num / den
 		return KIND_F64;
 	}
 	if (inner == "bool") {

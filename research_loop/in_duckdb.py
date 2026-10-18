@@ -136,7 +136,7 @@ def output_descriptors(sql: str, spec: str, con: duckdb.DuckDBPyConnection) -> l
         dec = _DECIMAL_TYPE.fullmatch(duck_type)
         if inner == "String":
             ok = duck_type == "VARCHAR"
-        elif inner == "f64":
+        elif inner in ("f64", "Rat"):  # an exact rational (lemma.toml [sql] exact_division) leaves the library as its double num / den
             ok = duck_type in ("DOUBLE", "FLOAT")
         elif inner == "bool":
             ok = duck_type == "BOOLEAN"

@@ -237,6 +237,153 @@ def test_rat_compare_refuses_what_it_cannot_state_exactly(text: str) -> None:
         rat_compare(text, {"T": ("n(x)", "d(x)")})
 
 
+# ---- an AVG over no rows is SQL NULL, not 0 ---------------------------------------------------------------------------------
+# A scalar-subquery AVG (or an AVG over the groups of a derived table) can be over no rows; SQL's value is NULL and a comparison
+# with it is never TRUE. The spec states `(<f>_nonempty(..) && cross-multiplied comparison)`, which is exact under AND / OR in a
+# WHERE or HAVING; under NOT (where NULL is not FALSE) the shape is refused. A group's own AVG always has a row.
+
+_EMPTY = "SELECT AVG(q) FROM a WHERE r > 100"  # no row of the tables below has r > 100
+
+
+@pytest.mark.parametrize(
+    ("text", "stated"),
+    [
+        ("(q > T)", "((e(x) && (q) * d(x) > n(x)))"),
+        ("((r == 1) || (q > T))", "((r == 1) || ((e(x) && (q) * d(x) > n(x))))"),
+        ("(T == T)", "((e(x) && e(x) && n(x) * d(x) == n(x) * d(x)))"),
+    ],
+)
+def test_rat_compare_guards_a_possibly_empty_avg(text: str, stated: str) -> None:
+    from declarative_spec.exact_rational import rat_compare
+
+    assert rat_compare(text, {"T": ("n(x)", "d(x)", "e(x)")}) == stated
+
+
+@pytest.mark.parametrize("text", ["!(q > T)", "!((r == 1) || (q > T))", "(r == 1) && !((q > T))"])
+def test_rat_compare_refuses_a_possibly_empty_avg_under_not(text: str) -> None:
+    from declarative_spec.exact_rational import rat_compare
+
+    with pytest.raises(DeclarativeUnsupported, match="under NOT"):
+        rat_compare(text, {"T": ("n(x)", "d(x)", "e(x)")})
+    assert "n(x)" in rat_compare(text, {"T": ("n(x)", "d(x)")})  # a group's own AVG (never empty) is fine under NOT
+
+
+@pytest.mark.parametrize(
+    ("sql", "stated"),
+    [
+        (f"SELECT k, q FROM a WHERE q > ({_EMPTY})", "(sq_1_nonempty(a) && ((a.q@[i0] as int)) * sq_1_den(a) > sq_1_num(a))"),
+        (f"SELECT k, q FROM a WHERE r = 1 OR q > ({_EMPTY})", "((a.r@[i0] as int) == 1) || ((sq_1_nonempty(a) && "),
+        (f"SELECT q, COUNT(*) AS c FROM a GROUP BY q HAVING COUNT(*) > ({_EMPTY})", "(sq_1_nonempty(a) && (count_c(a, 0, "),
+        (
+            "SELECT k, COUNT(*) AS c FROM a GROUP BY k HAVING COUNT(*) > (SELECT AVG(cnt) FROM (SELECT COUNT(*) AS cnt FROM a WHERE r > 100 GROUP BY q) sub)",
+            "(sq_1_nonempty(a) && (count_c(a, 0, ",
+        ),
+    ],
+)
+def test_a_possibly_empty_avg_is_stated_null_not_zero(sql: str, stated: str) -> None:
+    spec = emit_declarative_spec(sql, WIDE_SCHEMA, WIDE_CATALOG)
+    assert stated in spec
+    assert re.search(r"pub open spec fn sq_1_nonempty\(a: &Cols_a\) -> bool \{\n    \w+\(a, 0\) > 0\n\}", spec)
+    _no_float(spec)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [f"SELECT k, q FROM a WHERE NOT (q > ({_EMPTY}))", f"SELECT q, COUNT(*) AS c FROM a GROUP BY q HAVING NOT (COUNT(*) > ({_EMPTY}))"],
+)
+def test_a_possibly_empty_avg_under_not_is_refused(sql: str) -> None:
+    with pytest.raises(DeclarativeUnsupported, match="under NOT"):
+        emit_declarative_spec(sql, WIDE_SCHEMA, WIDE_CATALOG)
+
+
+def _stated_rows(rows: list[tuple[str, int, int]], sql_kind: str) -> list[tuple[str, int]]:
+    """The rows the emitted WHERE admits, evaluated as the spec states it: the subquery's (num, den, nonempty) then the guarded,
+    cross-multiplied comparison. ``sql_kind`` names which of the two WHERE shapes below."""
+    hits = [q for _k, q, r in rows if r > 100]
+    num, den, nonempty = sum(hits), (len(hits) if hits else 1), len(hits) > 0
+    keep = []
+    for k, q, r in rows:
+        cmp = nonempty and q * den > num
+        if cmp or (sql_kind == "or" and r == 1):
+            keep.append((k, q))
+    return keep
+
+
+@pytest.mark.parametrize("data", [[("x", 3, 1), ("y", 5, 2), ("z", -4, 7)], [("x", 3, 101), ("y", 5, 2), ("z", -4, 200)], []])
+@pytest.mark.parametrize("sql_kind", ["plain", "or"])
+def test_the_stated_empty_avg_semantics_match_duckdb(data: list[tuple[str, int, int]], sql_kind: str) -> None:
+    """DuckDB on empty and nonempty subquery inputs gives exactly the rows the guarded statement admits (the old `0 / 1` statement
+    admitted q > 0 when the subquery had no row)."""
+    where = f"q > ({_EMPTY})" if sql_kind == "plain" else f"r = 1 OR q > ({_EMPTY})"
+    sql = f"SELECT k, q FROM a WHERE {where}"
+    spec = emit_declarative_spec(sql, WIDE_SCHEMA, WIDE_CATALOG)
+    assert "sq_1_nonempty(a) && " in spec
+    con = duckdb.connect()
+    con.execute("CREATE TABLE a (k VARCHAR, q INTEGER, r INTEGER)")
+    if data:
+        con.executemany("INSERT INTO a VALUES (?, ?, ?)", data)
+    want = sorted(con.execute(sql).fetchall())
+    assert sorted(_stated_rows(data, sql_kind)) == want
+    if not any(r > 100 for _k, _q, r in data):  # the empty case: DuckDB keeps no row by the comparison
+        assert all(r == 1 for k, _q, r in data if (k, _q) in want)
+
+
+# ---- a DECIMAL compared with an AVG of a DECIMAL: both sides in the stored units, cross-multiplied --------------------------
+# (GenDB SEC Q3: HAVING SUM(value) > (SELECT AVG(sub_total) FROM (SELECT SUM(value) ...)); refused before as "scales not aligned")
+
+_DEC_SCHEMA = {"t": {"k": "integer", "d": "decimal(10,2)", "e": "decimal(12,4)"}, "u": {"k": "integer", "d": "decimal(10,2)"}}
+
+
+@pytest.mark.parametrize(
+    ("sql", "stated", "den"),
+    [
+        (  # scale 2 vs AVG of scale 2: the AVG's denominator is the bare count (the stored sum over the count)
+            "SELECT k, d FROM t WHERE d > (SELECT AVG(d) FROM u)",
+            "(sq_1_nonempty(u) && ((t.d@[i0] as int)) * sq_1_den(u) > sq_1_num(u))",
+            "if c > 0 { c } else { 1int }",
+        ),
+        (  # scale 2 vs AVG of scale 4: the AVG is stated in hundredths (count * 10^2)
+            "SELECT k, d FROM t WHERE d > (SELECT AVG(e) FROM t)",
+            "((t.d@[i0] as int)) * sq_1_den(t) > sq_1_num(t)",
+            "if c > 0 { c * 100 } else { 1int }",
+        ),
+        (  # the SEC Q3 shape: a group's SUM against the AVG of the groups' SUMs
+            "SELECT k, SUM(d) AS s FROM t GROUP BY k HAVING SUM(d) > (SELECT AVG(st) FROM (SELECT SUM(d) AS st FROM t GROUP BY k) x)",
+            "(sq_1_nonempty(t) && (sum_s(t, 0, (row.k as int))) * sq_1_den(t) > sq_1_num(t))",
+            "if c > 0 { c } else { 1int }",
+        ),
+    ],
+)
+def test_a_decimal_compared_with_an_avg_is_exact_in_stored_units(sql: str, stated: str, den: str) -> None:
+    spec = emit_declarative_spec(sql, _DEC_SCHEMA, None)
+    assert stated in spec and den in spec
+    _no_float(spec)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT k, e FROM t WHERE e > (SELECT AVG(d) FROM t)",  # scale 4 vs an AVG of scale 2: the AVG side would need * 10^2
+        "SELECT k, d FROM t WHERE d > (SELECT AVG(k) FROM t)",  # scale 2 vs an AVG of an integer
+    ],
+)
+def test_a_decimal_compared_with_a_coarser_avg_is_still_refused(sql: str) -> None:
+    with pytest.raises(DeclarativeUnsupported, match="scales are not aligned"):
+        emit_declarative_spec(sql, _DEC_SCHEMA, None)
+
+
+def test_the_stored_unit_comparison_agrees_with_duckdb() -> None:
+    """d > AVG(e) over DECIMAL(10,2) vs DECIMAL(12,4), evaluated as stated (stored d * count * 100 > stored sum of e) == DuckDB."""
+    rows = [(1, "1.25", "1.2499"), (2, "1.26", "1.2501"), (3, "-3.00", "1.2500"), (4, "1.25", "1.2500")]
+    con = duckdb.connect()
+    con.execute("CREATE TABLE t (k INTEGER, d DECIMAL(10,2), e DECIMAL(12,4))")
+    con.executemany("INSERT INTO t VALUES (?, ?, ?)", rows)
+    want = sorted(k for (k,) in con.execute("SELECT k FROM t WHERE d > (SELECT AVG(e) FROM t)").fetchall())
+    e_sum = sum(int(Decimal(e).scaleb(4)) for _k, _d, e in rows)
+    stated = sorted(k for k, d, _e in rows if int(Decimal(d).scaleb(2)) * (len(rows) * 100) > e_sum)
+    assert stated == want == [2]
+
+
 # ---- float operands are refused, never idealized -------------------------------------------------------------------------
 
 

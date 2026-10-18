@@ -570,7 +570,9 @@ def _exact_rational_section(spec_text: str) -> list[str]:
         "with the signs of both flipped when d < 0). A division by a SUM or COUNT that is 0 (d == 0) is `r.den == 0` with",
         "`r.num` of the sign of n (the host prints it as +inf, -inf or NaN, like the reference engine). An AVG compared in",
         "HAVING or WHERE is stated cross-multiplied (`<f>_num(..) * 10 > 15 * <f>_den(..)`, den > 0): decide it in i128",
-        "integers. The host converts `Rat` to a double only when it prints the result, outside the proof.",
+        "integers. An AVG that may be over no rows (a scalar subquery) is SQL NULL there: its comparison is stated",
+        "`(<f>_nonempty(..) && ..)` and holds only when that AVG has a row. The host converts `Rat` to a double only when it",
+        "prints the result, outside the proof.",
     ]
 
 
