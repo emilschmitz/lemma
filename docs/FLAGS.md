@@ -28,6 +28,7 @@ lemma.toml  <  experiment file (configs/experiments/X.toml)  <  environment vari
 | `[measure]` | `official_rounds official_duck_reps duck_memory_limit duck_threads` |
 | `[data]` | `duckdb_path data_profile` |
 | `[sql]` | `agg_times_constant derived_agg_expr cte_reuse left_join_count templates` (new SQL shapes of the transpiler, all default false; verdicts in `research_loop/menus/sql_<feature>_ADVERSARY_VERDICT.md`) |
+| `[engine]` | `in_duckdb` (Lemma inside DuckDB, default off; see the section below) |
 | `[wip]` | `zero_copy cold_stream cold_stream_mode` (parked pin path, default off, see `research_loop/menus/pin_path_archive.md`; nothing here is used by a container run) |
 | `[safety]` | `allow_dirty scope_memory_max egress_profile egress_allowlist heavy_lock heavy_min_avail_mb heavy_mem_max verus_mem_max verus_slots verus_min_avail_mb` |
 
@@ -103,6 +104,25 @@ The MCP tool `verify_functions(names, path)` runs Verus on the assembled program
 ## Defaults changed with this section
 
 `string_encoding = "dict"` and `join_chain = true` (a query whose tables lack declared unique keys, or with a nullable key, a self-join, a subquery or an OR join keeps the general FROM-order form).
+
+## In-DuckDB execution (`[engine] in_duckdb`)
+
+Default `false`. Nothing in a container run reads it. With it on:
+
+* `declarative_spec/assemble_library.py` may be used: the same `verus!` part as the binary (spec, agent body, host lemmas, verified
+  loaders), with `main` replaced by the fixed C entry point `lemma_run` (ABI version 1, `db_extension/duckdb_ext/src/include/lemma_abi.h`);
+  it runs every runtime check `main` runs before `run_query` and returns an error instead of rows when one fails.
+* `research_loop/in_duckdb.py` `install_executor` verifies and compiles that library (`verus --crate-type=cdylib --compile`, the
+  `target_cpu` of `[prover]`) and installs `${LEMMA_HOME:-~/.local/share/lemma}/executors/<sha256 of the normalized SQL>/`
+  (`lib.so`, `manifest.json`, `query.sql`). Off, it raises `InDuckdbDisabled` and installs nothing. `LEMMA_HOME` is a path, not a
+  setting (listed in `NOT_CONFIG`).
+* `research_loop/official_measure.py` `measure_in_duckdb` times `SELECT * FROM lemma_query('<sql>')` end to end (scan + copy +
+  checks + `run_query` + rows back) against DuckDB, interleaved like the official verdict; it refuses with the flag off.
+  `research_loop/scripts/in_duckdb_bench.py` runs it.
+
+The DuckDB side is the extension in `db_extension/duckdb_ext/` (its README: build, LOAD, `lemma_query`, `lemma_last_query`). Its own
+settings are DuckDB session settings, not lemma.toml keys: `lemma_mode` (default false), `lemma_route_unproved` (default false;
+experiments never set it), `lemma_enqueue_misses` (default false), `lemma_home`.
 
 ## Parked branches (not integrated, kept as branch/tag)
 

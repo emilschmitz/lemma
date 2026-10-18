@@ -11,7 +11,10 @@ alternates which side goes first (an order effect cancels instead of favouring o
   up, same protocol as ours; the round's figure is their median. Same settings as the bar was prepared under (``duck_settings`` recorded in
   expect.json: threads, memory limit), read-only on the same database file.
 
-Verdict: ``median(ours) * speed_bar_mult < median(duck)``; the bar is unchanged. The in-session ``run_runquery`` keeps its single binary run against the
+Verdict: ``median(ours) * speed_bar_mult < median(duck)``; the bar is unchanged.
+
+``measure_in_duckdb`` (lemma.toml ``in_duckdb``) is a separate figure, not the verdict: the same interleaved rounds, with our side the
+whole in-DuckDB round trip ``SELECT * FROM lemma_query('<sql>')`` (scan + copy + runtime checks + proved run_query + rows back). The in-session ``run_runquery`` keeps its single binary run against the
 prepare-time DuckDB median and is labelled ``in_session_single_vs_prepare_duck``.
 """
 
@@ -176,3 +179,80 @@ def _template_round_timer(con, sql: str, speed_bar: dict, bindings: list[dict], 
         shutil.rmtree(tmp, ignore_errors=True)
 
     return one_round, close
+
+
+# ---- the in-DuckDB path (lemma.toml [engine] in_duckdb): the proved executor called from inside DuckDB, end to end ----
+
+MEASUREMENT_IN_DUCKDB = "in_duckdb_interleaved_medians"
+
+
+def lemma_query_sql(sql: str) -> str:
+    """``SELECT * FROM lemma_query('<sql>')``: the round trip the in-DuckDB measure times."""
+    return "SELECT * FROM lemma_query('" + sql.replace("'", "''") + "')"
+
+
+def _median_round(con, sql: str, reps: int) -> int:
+    """One round as in :func:`duck_round_timer`: an untimed run, then ``reps`` timed runs (execute + fetchall); their median."""
+    con.execute(sql).fetchall()
+    samples: list[float] = []
+    for _ in range(reps):
+        t0 = time.perf_counter()
+        con.execute(sql).fetchall()
+        samples.append((time.perf_counter() - t0) * 1_000_000)
+    return int(statistics.median(samples))
+
+
+def in_duckdb_round_timers(
+    speed_bar: dict, work_dir: Path, *, extension: Path, home: Path
+) -> tuple[Callable[[], int], Callable[[], int], Callable[[], None]]:
+    """(one round of ``lemma_query``, one round of DuckDB, close), both on ONE read-only connection under the bar's settings.
+
+    ``lemma_query`` is the whole in-DuckDB path: the scan of the needed columns in the caller's snapshot, the copy into the
+    executor's buffers, the runtime check of every data assumption, the proved ``run_query`` and the rows back into DuckDB
+    vectors. Same rounds and repetitions as :func:`duck_round_timer`. The extension is loaded unsigned."""
+    import duckdb
+
+    if not bool(lemma_config.get("in_duckdb")):
+        raise ValueError("in_duckdb is off in lemma.toml [engine]: the in-DuckDB measure is not available")
+    missing = [key for key in ("sql", "db_path", "duck_settings") if not speed_bar.get(key)]
+    if missing:
+        raise ValueError(f"speed bar lacks {missing}")
+    settings = speed_bar["duck_settings"]
+    tmp = work_dir / "duck_official_tmp"
+    tmp.mkdir(parents=True, exist_ok=True)
+    con = duckdb.connect(str(speed_bar["db_path"]), read_only=True, config={"allow_unsigned_extensions": "true"})
+    try:
+        con.execute(f"PRAGMA memory_limit='{settings['memory_limit']}'")
+        con.execute(f"PRAGMA threads={int(settings['threads'])}")
+        con.execute(f"PRAGMA temp_directory='{tmp}'")
+        con.execute(f"LOAD '{extension}'")
+        con.execute(f"SET lemma_home = '{home}'")
+    except duckdb.Error as exc:
+        con.close()
+        raise ValueError(str(exc)) from exc
+    sql = str(speed_bar["sql"])
+    ours_sql = lemma_query_sql(sql)
+    reps = duck_reps()
+    for _ in range(2):  # warm both sides (and load the executor library once)
+        con.execute(sql).fetchall()
+        con.execute(ours_sql).fetchall()
+
+    def close() -> None:
+        con.close()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    return (lambda: _median_round(con, ours_sql, reps)), (lambda: _median_round(con, sql, reps)), close
+
+
+def measure_in_duckdb(
+    speed_bar: dict, work_dir: Path, *, extension: Path, home: Path, k: int | None = None, timers: Callable | None = None
+) -> dict:
+    """K interleaved rounds (alternating which side goes first) of the in-DuckDB path against DuckDB, summarized like the verdict.
+
+    ``timers`` stands in for :func:`in_duckdb_round_timers` (tests)."""
+    ours, duck, close = (timers or in_duckdb_round_timers)(speed_bar, work_dir, extension=extension, home=home)
+    try:
+        rounds = interleave(ours, duck, official_rounds() if k is None else k)
+    finally:
+        close()
+    return {"measurement": MEASUREMENT_IN_DUCKDB, "duck_reps": duck_reps(), **summarize(rounds)}

@@ -23,3 +23,7 @@ def _tests_do_not_depend_on_the_run_defaults_of_lemma_toml(monkeypatch: pytest.M
     lemma_config.clear_cli()  # CLI overrides are process-global: no test leaks its flags into the next
     yield
     lemma_config.clear_cli()
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line("markers", "slow: needs a big build or a full-size database (e.g. TPC-H SF1); minutes per test")

@@ -85,6 +85,10 @@ cte_reuse = false                           # a WITH name used at several places
 left_join_count = false                     # LEFT JOIN with right-table ON conjuncts, COUNT over the right side, count of counts (TPC-H Q13 shape)
 templates = false                           # query templates: a `-- params: name TYPE, ...` header and `$name` placeholders; each parameter is an argument of the spec and of run_query (one proof for every value), the official measure binds fresh values per round (declarative_spec/templates.py)
 
+[engine]
+# Lemma inside DuckDB (db_extension/duckdb_ext/README.md). Default off; nothing here is used by a container run.
+in_duckdb = false                           # true: the assembler may emit library mode (the proved run_query as a cdylib with the fixed C entry point lemma_run) and research_loop/in_duckdb.py may install executors into ${LEMMA_HOME}/executors for the DuckDB extension. Off: library mode is refused and nothing is installed
+
 [wip]
 # Parked work, integrated for reference and switched off. Nothing here is used by a container run. Each key points at the document that says why it is parked.
 zero_copy = false                           # WIP/parked: read DuckDB's pinned chunks in place (trusted ZC-1), shelved 2026-10-07, see research_loop/menus/pin_path_archive.md
