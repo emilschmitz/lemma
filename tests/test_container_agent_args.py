@@ -147,3 +147,15 @@ def test_the_launcher_stops_without_a_database_or_a_package(monkeypatch: pytest.
     seen = _capture(monkeypatch)
     rca.main(["--query-sql", "SELECT 1", "--assumption-package", "auto"])  # a flag supplies it
     assert seen == ["SELECT 1"]
+
+
+def test_package_axis_drops_auto_and_the_empty_default() -> None:
+    from research_loop.scripts.run_container_agent import package_axis
+
+    assert package_axis("") is None and package_axis(None) is None and package_axis("auto") is None
+
+
+def test_package_axis_keeps_a_named_package() -> None:
+    from research_loop.scripts.run_container_agent import package_axis
+
+    assert package_axis("research_loop/assumption_packages/registry/tpch_sf10.json") == "research_loop/assumption_packages/registry/tpch_sf10.json"

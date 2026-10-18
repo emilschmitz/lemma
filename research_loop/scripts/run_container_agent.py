@@ -127,6 +127,11 @@ def _in_a_bash_window(ts: str | None, windows: list[tuple[float, float]]) -> boo
     return when is not None and any(start - 1 <= when <= end for start, end in windows)
 
 
+def package_axis(value: str | None) -> str | None:
+    """The package axis to pass on: none for "auto" (the launcher's own rule) and for "" (no package: the assumptions = false default)."""
+    return None if value in (None, "", "auto") else value
+
+
 def run(
     menu: str,
     style: str,
@@ -144,8 +149,8 @@ def run(
     # Children (MCP host, agent harness) and the deep readers of LEMMA_* see the same effective values as this process.
     config_record = lemma_config.record()  # before the export, which keeps the sources but is the last thing to ask
     lemma_config.export_env()
-    if lemma_config.get("assumption_package") == "auto":
-        os.environ.pop("LEMMA_ASSUMPTION_PACKAGE")  # "auto" is the launcher's own rule (the package that matches the DB), not a menu axis value
+    if package_axis(lemma_config.get("assumption_package")) is None:
+        os.environ.pop("LEMMA_ASSUMPTION_PACKAGE", None)  # "auto" is the launcher's own rule (the package that matches the DB), not a menu axis value
     flags = {"style": style}
     for axis, value in (
         ("agent", agent),
@@ -302,7 +307,7 @@ def main(argv: list[str] | None = None) -> int:
         sql,
         agent=lemma_config.get("agent_model"),
         trusted_set=lemma_config.get("trusted_set"),
-        assumption_package=None if package == "auto" else package,
+        assumption_package=package_axis(package),
         speed_bar_mult=str(lemma_config.get("speed_bar_mult")),
         allow_override=True,  # lemma.toml is the single source: its axes may differ from the menu profile's defaults, and the manifest says so
         max_iterations=lemma_config.get("max_iterations"),
