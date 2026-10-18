@@ -162,7 +162,7 @@ The MCP tool `verify_functions(names, path)` runs Verus on the assembled program
 Default `false`. Nothing in a container run reads it. With it on:
 
 * `declarative_spec/assemble_library.py` may be used: the same `verus!` part as the binary (spec, agent body, host lemmas, verified
-  loaders), with `main` replaced by the fixed C entry point `lemma_run` (ABI version 3, `db_extension/duckdb_ext/src/include/lemma_abi.h`);
+  loaders), with `main` replaced by the fixed C entry point `lemma_run` (ABI version 4, `db_extension/duckdb_ext/src/include/lemma_abi.h`);
   it runs every runtime check `main` runs before `run_query` and returns an error (status 2) instead of rows when one fails. With
   `assumptions = false` its `run_query` may decline: status 1 (DECLINED), no rows; the extension then raises `Lemma: declined: ...`
   unless the user set `lemma_route_unproved`, which lets DuckDB answer, labelled `engine=duckdb` in `lemma_last_query()`. A decline

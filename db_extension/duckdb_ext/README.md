@@ -51,6 +51,8 @@ Or run our CLI, where Lemma is already loaded: `build/release/duckdb db.duckdb`.
 | `SET lemma_route_unproved = true` | in Lemma mode, a query without an executor runs on DuckDB unchanged instead of raising the error; labelled `engine=duckdb` in `lemma_last_query()`. Default `false`. Experiments never set it |
 | `SELECT * FROM lemma_last_query()` | `engine` (`lemma`, `duckdb` or `none`), `reason`, `query_key`, `sql`, and for Lemma: `scan_us` (scan + copy), `load_us` (decode + every assumption check in the library), `run_us` (proved `run_query`), `total_us`, `rows` |
 | `SET lemma_enqueue_misses = true` | a miss also writes `${lemma_home}/queue/<key>.sql` for the offline `lemma optimize`. Default `false` |
+| `SET lemma_scan_threads = <n>` | threads of the scan that hands the columns to the executor; `0` (default) = DuckDB's `threads`. The bytes are the same for every value |
+| `SELECT * FROM lemma_scan_inputs('<sql>')` | the input buffers `lemma_query` would hand to the executor (input, name, role, n, data), from the same scan; the executor does not run. For tests |
 | `SET lemma_home = '<dir>'` | default `$LEMMA_HOME`, else `~/.local/share/lemma` (read at LOAD) |
 | `lemma_normalize_sql(s)`, `lemma_sql_key(s)` | the cache-key form of a SQL text and its sha256 |
 
@@ -88,36 +90,50 @@ whose types differ from the plan's.
 * **Library mode** (`declarative_spec/assemble_library.py`): the `verus!` part (spec, agent body, host lemmas, verified
   `load_cols_*`) is byte for byte what the binary gets; `main` is replaced by a fixed C entry point, the same template for every
   query. C ABI (`src/include/lemma_abi.h`): `lemma_run(const LemmaCol *cols, uint64_t ncols, const LemmaParam *params,
-  uint64_t nparams, LemmaOut *out)` (ABI version 3); `params` carries a query template's values (since version 2: kind 1 = little-endian i64 as `run_query` takes it, i.e. DATE as
+  uint64_t nparams, LemmaOut *out)` (ABI version 4); `params` carries a query template's values (since version 2: kind 1 = little-endian i64 as `run_query` takes it, i.e. DATE as
   the day number and DECIMAL scaled by 10^s; kind 4 = UTF-8 bytes; `lemma_param_layout` lists them and must equal the manifest).
   The fixed template checks count, kinds, lengths, the Rust type and the `requires` range of every parameter before it decodes a
   column; fixed SQL takes `nparams == 0`. A **stateful** spec (lemma.toml `stateful`) is refused in library mode: its runtime needs
   the caller's data version (`refresh(version)` / `execute_at(version)`, `docs/STATEFUL.md`); next step below. Inputs are one
   "rows" entry per table (`n` = row count) then one buffer per spec field, in the bytes of the column-file format that `main`
-  reads (little-endian cells; strings as u32 length + UTF-8). The library decodes them into the `Vec`s, runs EVERY check `main`
-  runs (lengths, dictionary codes and uniqueness; with lemma.toml `assumptions = true` also catalog row and value caps, declared
-  unique keys, join caps; the same generated code), and only then calls the verified loaders and `run_query`. Status: 0 OK; 1
-  DECLINED (`assumptions = false`, the default: `run_query` returned `None`, the reason in `out`, no rows); 2 ERROR (a failed check
-  or contract, the message in `out`; a panic is caught by `catch_unwind` and never crosses into DuckDB).
+  reads (little-endian cells; strings as u32 length + UTF-8). **Owned inputs** (ABI version 4): a field of fixed-width integer
+  or `f64` cells arrives in a buffer the library allocated (`lemma_alloc_input(index, cap)`, a `Box<[T]>` of zeroed cells) and
+  filled in place by the extension; `lemma_run` takes each as its `Vec`'s memory (no copy) before anything can fail, so the library
+  frees it on every path (`lemma_free_input` returns one that never reached `lemma_run`). `bool`, string and dictionary fields stay
+  borrowed. The library runs EVERY check `main` runs (lengths, dictionary codes and uniqueness; with lemma.toml `assumptions =
+  true` also catalog row and value caps, declared unique keys, join caps: the same generated checks, the known shapes evaluated by
+  fast helpers of the template: min/max per chunk on all cores, a sort of the dictionary instead of a hash set, a bitmap or sorted
+  copy for an integer unique key; `assemble_library.fast_check`), and only then calls the verified loaders and `run_query`. The
+  checks stay in Rust: the extension's scan is not trusted to have checked anything. Status: 0 OK; 1 DECLINED (`assumptions =
+  false`, the default: `run_query` returned `None`, the reason in `out`, no rows); 2 ERROR (a failed check or contract, the message
+  in `out`; a panic is caught by `catch_unwind` and never crosses into DuckDB).
 * **Decline** (ABI version 3): on DECLINED `lemma_query` and Lemma mode raise `Lemma: declined: <reason>` and return no rows,
   unless `SET lemma_route_unproved = true`: then DuckDB answers the same SQL in the caller's transaction (a template with
   `lemma_query`'s values bound as literals) and `lemma_last_query()` says `engine = duckdb`, `reason = declined: ...`. With the
   route on, the executor runs while the statement is bound (`lemma_query`, through `bind_replace`) or planned (Lemma mode), so that
   a decline can still become DuckDB's own plan; a result that did not decline is the answer, not run twice. The manifest records
   `assumptions` (false: the executor may decline).
-* **unsafe**: only in the fixed template, four blocks: (1) `slice::from_raw_parts` over the caller's `LemmaCol` / `LemmaParam`
-  array, (2) over each input or parameter buffer, (3) writing the result into the caller's `LemmaOut`, (4) `Vec::from_raw_parts` in `lemma_free_out` to free it.
+* **unsafe**: only in the fixed template, five blocks: (1) `slice::from_raw_parts` over the caller's `LemmaCol` / `LemmaParam`
+  array, (2) over each input or parameter buffer, (3) writing the result into the caller's `LemmaOut`, (4) `Vec::from_raw_parts` in
+  `lemma_free_out` to free it, (5) `Box::from_raw` of an owned input buffer (`lemma_take`: the buffer `lemma_alloc_input` made for
+  that column, taken once).
   Each states its contract in a comment. No unsafe in agent regions (admission rejects it as before).
 * **Compile**: `verus <file> --crate-type=cdylib --compile -- -C opt-level=3 -C codegen-units=1 -C target-cpu=<lemma.toml
   target_cpu>`; the proof line of that same run goes into the manifest.
-* **Scan** (`ScanInputs`): for each table the spec reads, `DataTable::InitializeScan` / `Scan` over exactly the needed column ids,
-  with the caller's `DuckTransaction` (its snapshot, including its own uncommitted rows: `DataTable::Scan` reads the transaction-local
-  storage after the committed row groups), single-threaded, in row order. Cells are encoded as the Python exporter
+* **Scan** (`ScanInputs` / `ScanTable`): for each table the spec reads, DuckDB's parallel table scan over exactly the needed
+  column ids (`RowGroupCollection::InitializeParallelScan` / `NextParallelScan`, one task per row group, as `table_scan.cpp`
+  does), for the committed row groups and then the transaction-local ones (its own uncommitted rows), all with the caller's
+  `DuckTransaction`, so every thread reads one snapshot. `lemma_scan_threads` threads (default: DuckDB's `threads`). A task writes
+  its rows at its row group's position in the destination (sized for every row of the table); afterwards the rows are packed to
+  the front where a task returned fewer than its range (deleted rows, rows of a newer snapshot), so the result is the
+  single-threaded row order byte for byte (`tests/test_in_duckdb.py`, against a Python encoding of `ORDER BY rowid`). Cells are encoded as the Python exporter
   (`research_loop/decl_query_measure.py`) encodes them: DATE = days since 1970-01-01, DECIMAL = integer value * 10^(spec scale)
   (overflow checked), DECIMAL to f64 through DuckDB's own BIGINT/HUGEINT-to-DOUBLE path, dictionary codes numbering distinct
   non-NULL strings in order of first appearance (u8/u16/u32, overflow refused), NULL = zero cell only where the catalog declares the
-  column nullable (else an error), validity vectors as 0/1 bytes. One copy per column into a contiguous buffer; the library copies
-  once more into its `Vec`s (the spec is unchanged).
+  column nullable (else an error), validity vectors as 0/1 bytes. Dictionary codes are numbered per task, then renumbered in
+  task order (the table's first appearance) and rewritten in place where a task's numbering differs. Fixed-width cells are
+  written once, straight into the owned buffer (a flat vector of the target width without NULLs is one `memcpy`); strings
+  go through a per-task buffer and the library still copies them into `String`s.
 * **Rows back**: the library writes `LMR1` + per column validity + cells (i128 integers, f64, bool, strings); the extension writes
   them into DuckDB vectors of the manifest's types (DECIMAL by its physical width, range-checked; DATE; HUGEINT; ...).
 * **Lemma mode** is an `OptimizerExtension` (post-optimizer): it replaces the plan root (below EXPLAIN) with a `LogicalGet` of
@@ -148,4 +164,4 @@ uv run pytest -m slow tests/test_in_duckdb.py              # + TPC-H SF1 (resear
 ## Limits (today)
 
 Only `Vec<OutRow>` results (no map-shaped results); string columns must be VARCHAR; no query parameters; executors are not
-unloaded; the scan is single-threaded and copies each column twice (DuckDB vector -> buffer -> `Vec`).
+unloaded; string fields are copied twice (DuckDB vector -> per-task buffer -> `String`).

@@ -84,7 +84,7 @@ def test_a_declining_library_returns_status_declined_and_states_no_caps() -> Non
     assert "-> Result<Vec<u8>, String>" in execute and "None => return Err(String::from(" in execute and "Ok(out)" in execute
     assert "const LEMMA_STATUS_OK: i32 = 0;" in lib and "const LEMMA_STATUS_DECLINED: i32 = 1;" in lib and "const LEMMA_STATUS_ERROR: i32 = 2;" in lib
     assert "Ok(Err(reason)) => {" in lib and f"pub extern \"C\" fn lemma_abi_version() -> u32 {{\n    {ABI_VERSION}\n}}" in lib
-    assert ABI_VERSION == 3
+    assert ABI_VERSION == 4  # 3 added DECLINED, 4 owned input buffers
     for cap in ("exceed the catalog cap", "catalog bound", "catalog magnitude", "catalog distinct cap", "declared unique key", "join cap"):
         assert cap not in lib
     assert "values for {} rows" in execute  # the structural length check stays
@@ -105,7 +105,7 @@ def test_a_declining_stateful_spec_is_still_refused_in_library_mode(monkeypatch:
     monkeypatch.setenv("LEMMA_STATEFUL", "1")
     spec = _spec()
     assert "execute returns None to decline" in spec
-    with pytest.raises(ValueError, match="library mode does not take a stateful spec yet.*ABI version 3"):
+    with pytest.raises(ValueError, match=r"library mode does not take a stateful spec yet.*ABI version \d+"):
         assemble_library_program(spec, "    None\n", sql=SQL)
 
 
@@ -191,12 +191,15 @@ class _Out(ctypes.Structure):
 def _call(lib: ctypes.CDLL, rows: list[tuple[int, int]], params: list[int] = (), ncols: int = 3) -> tuple[int, bytes]:
     cost = b"".join(c.to_bytes(16, "little", signed=True) for _l, c in rows)
     line = b"".join(struct.pack("<q", ln) for ln, _c in rows)
-    keep = [ctypes.create_string_buffer(cost, max(len(cost), 1)), ctypes.create_string_buffer(line, max(len(line), 1))]
-    cols = (_Col * 3)(
-        _Col(None, 0, len(rows)),
-        _Col(ctypes.cast(keep[0], ctypes.c_void_p), len(cost), len(rows)),
-        _Col(ctypes.cast(keep[1], ctypes.c_void_p), len(line), len(rows)),
-    )
+    # both fields are owned inputs (ABI 4): buffers of the library's allocator, written in place, taken by lemma_run
+    owned = []
+    for index, data in ((1, cost), (2, line)):
+        ptr = lib.lemma_alloc_input(index, len(rows))
+        assert ptr
+        ctypes.memmove(ptr, data, len(data))
+        owned.append((index, ptr, len(data)))
+    keep: list = []
+    cols = (_Col * 3)(_Col(None, 0, len(rows)), *(_Col(ptr, size, len(rows)) for _i, ptr, size in owned))
     ps = (_Param * max(len(params), 1))()
     for i, value in enumerate(params):
         keep.append(ctypes.create_string_buffer(struct.pack("<q", value), 8))
@@ -205,6 +208,9 @@ def _call(lib: ctypes.CDLL, rows: list[tuple[int, int]], params: list[int] = (),
     code = lib.lemma_run(cols, ncols, ps, len(params), ctypes.byref(out))
     data = ctypes.string_at(out.ptr, out.len)
     lib.lemma_free_out(ctypes.byref(out))
+    if ncols != 3:  # with a wrong column count lemma_run takes nothing: the caller gives the buffers back
+        for index, ptr, size in owned:
+            lib.lemma_free_input(index, ptr, size)
     return code, data
 
 
@@ -232,6 +238,9 @@ def libraries(tmp_path_factory: pytest.TempPathFactory) -> dict[str, ctypes.CDLL
             lib = ctypes.CDLL(str(so))
             lib.lemma_run.restype = ctypes.c_int32
             lib.lemma_abi_version.restype = ctypes.c_uint32
+            lib.lemma_alloc_input.restype = ctypes.c_void_p
+            lib.lemma_alloc_input.argtypes = [ctypes.c_uint64, ctypes.c_uint64]
+            lib.lemma_free_input.argtypes = [ctypes.c_uint64, ctypes.c_void_p, ctypes.c_uint64]
             out[name] = lib
     return out
 
@@ -239,7 +248,7 @@ def libraries(tmp_path_factory: pytest.TempPathFactory) -> dict[str, ctypes.CDLL
 @needs_verus
 def test_the_library_answers_or_declines_through_the_c_abi(libraries: dict) -> None:
     lib = libraries["fixed"]
-    assert lib.lemma_abi_version() == 3
+    assert lib.lemma_abi_version() == 4
     code, data = _call(lib, FITS)
     assert code == 0 and _total(data) == 125
     code, data = _call(lib, OVERFLOW)
@@ -302,7 +311,7 @@ def _last(con: duckdb.DuckDBPyConnection) -> tuple[str, str]:
 def test_the_manifest_records_assumptions_and_the_abi(home: Path) -> None:
     for sql in (SQL, TEMPLATE):
         manifest = json.loads((in_duckdb.executor_dir(sql, home) / "manifest.json").read_text())
-        assert manifest["assumptions"] is False and manifest["abi_version"] == 3
+        assert manifest["assumptions"] is False and manifest["abi_version"] == 4
 
 
 @needs_ext
