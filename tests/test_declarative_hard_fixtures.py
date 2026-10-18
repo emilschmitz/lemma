@@ -15,6 +15,8 @@ from declarative_spec.regions import extract_agent_edit, extract_agent_helpers
 from research_loop.assumption_packages import assumption_package
 from research_loop.scripts.sqlsmith_trusted_coverage import load_sec_schema
 
+pytestmark = pytest.mark.usefixtures("exact_division_off")  # the real-form AVG / ratio and f64 idealization (lemma.toml [sql] exact_division = false)
+
 HARD = _FIXTURES / "hard"
 
 CASES = {

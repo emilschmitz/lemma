@@ -14,6 +14,8 @@ from research_loop.spec_styles import DECLARATIVE, ENV_VALUE, IMPERATIVE
 from research_loop.table_assumptions import CatalogAssumptions, TableAssumptions
 from research_loop.trust_configs import get_config
 
+pytestmark = pytest.mark.usefixtures("exact_division_off")  # the real-form AVG / ratio and f64 idealization (lemma.toml [sql] exact_division = false)
+
 _AXIS_ENV = [
     "LEMMA_MENU", "LEMMA_SPEC_STYLE", "LEMMA_TRUSTED_SET", "LEMMA_ASSUMPTION_PACKAGE",
     "LEMMA_SPEED_BAR_MULT", "LEMMA_AGENT_MODEL", "LEMMA_MENU_ALLOW_OVERRIDE", "LEMMA_TRUST_CONFIG",

@@ -94,6 +94,7 @@ agg_times_constant = false                  # SUM(x)*K, SUM(x)/c, c*AVG(x), HAVI
 derived_agg_expr = false                    # CASE aggregate (and ratio of CASE aggregates) over a plain SPJ derived table, extract(year) keys (TPC-H Q8 shape)
 cte_reuse = false                           # a WITH name used at several places (FROM, JOIN, scalar subquery), grouped WITH joined to a unique-key table, MAX/MIN over derived groups, GROUP BY a select alias (TPC-H Q15 shape)
 left_join_count = false                     # LEFT JOIN with right-table ON conjuncts, COUNT over the right side, count of counts (TPC-H Q13 shape)
+exact_division = true                       # AVG and `/` over exact operands (integer, DECIMAL, DATE) are stated as EXACT RATIONALS (num/den of mathematical ints, a `Rat` result field printed as a double by the host outside the proof): no float trusted item. A FLOAT/DOUBLE operand anywhere in the query is refused (error-bound specs are future work). false = the f64 idealization (11 + 1 trusted items), byte-identical to before
 templates = false                           # query templates: a `-- params: name TYPE, ...` header and `$name` placeholders; each parameter is an argument of the spec and of run_query (one proof for every value), the official measure binds fresh values per round (declarative_spec/templates.py)
 
 [engine]

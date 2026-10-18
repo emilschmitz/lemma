@@ -16,6 +16,8 @@ from declarative_spec.prompt import build_declarative_prompt, helper_files, moun
 from declarative_spec.trusted_sets import current as current_trusted_set
 from tests.test_declarative_principles import _prompt_specs
 
+pytestmark = pytest.mark.usefixtures("exact_division_off")  # the real-form AVG / ratio and f64 idealization (lemma.toml [sql] exact_division = false)
+
 
 def test_none_mounts_nothing_at_all(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setenv(P.ENV, "none")

@@ -29,6 +29,8 @@ from declarative_spec.pipeline import run_declarative_metrics
 from research_loop.decl_query_measure import write_query_measure
 from research_loop.table_assumptions import CatalogAssumptions, ColumnAssumption, TableAssumptions
 
+pytestmark = pytest.mark.usefixtures("exact_division_off")  # the real-form AVG / ratio and f64 idealization (lemma.toml [sql] exact_division = false)
+
 VERUS = Path("/home/emil/tools/verus/verus")
 PROOFS = Path(__file__).parent / "fixtures" / "declarative_proofs"
 SCHEMA = {

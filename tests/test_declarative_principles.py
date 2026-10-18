@@ -25,6 +25,8 @@ from declarative_spec.prompt import build_declarative_prompt, mount_examples
 from declarative_spec.regions import extract_agent_edit, extract_agent_helpers
 from declarative_spec.trusted_sets import current as current_trusted_set
 
+pytestmark = pytest.mark.usefixtures("exact_division_off")  # the real-form AVG / ratio and f64 idealization (lemma.toml [sql] exact_division = false)
+
 ROOT = Path(__file__).resolve().parents[1]
 VERUS = Path("/home/emil/tools/verus/verus")
 needs_verus = pytest.mark.skipif(not VERUS.is_file(), reason="verus binary not installed")

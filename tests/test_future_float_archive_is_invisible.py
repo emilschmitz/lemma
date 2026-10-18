@@ -25,6 +25,8 @@ from declarative_spec.prompt import build_declarative_prompt
 from declarative_spec.trusted_sets import current
 from research_loop.table_assumptions import CatalogAssumptions, ColumnAssumption, TableAssumptions
 
+pytestmark = pytest.mark.usefixtures("exact_division_off")  # the real-form AVG / ratio and f64 idealization (lemma.toml [sql] exact_division = false)
+
 ROOT = Path(__file__).resolve().parent.parent
 ARCHIVES = [ROOT / "declarative_spec" / "future_float_error_bounds"]
 VERUS = Path("/home/emil/tools/verus/verus")

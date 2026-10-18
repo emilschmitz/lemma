@@ -18,6 +18,8 @@ from declarative_spec.parse_exprs import fold_date, fold_number
 from declarative_spec.parse_query import parse_query
 from research_loop.table_assumptions import CatalogAssumptions, ColumnAssumption, TableAssumptions
 
+pytestmark = pytest.mark.usefixtures("exact_division_off")  # the real-form AVG / ratio and f64 idealization (lemma.toml [sql] exact_division = false)
+
 VERUS = Path("/home/emil/tools/verus/verus")
 
 SCHEMA = {

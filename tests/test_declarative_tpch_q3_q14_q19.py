@@ -24,6 +24,8 @@ from research_loop.decl_query_measure import write_query_measure
 from research_loop.scripts.declarative_round import tpch_schema_and_catalog
 from tests.tpch_mini import build_mini_tpch
 
+pytestmark = pytest.mark.usefixtures("exact_division_off")  # the real-form AVG / ratio and f64 idealization (lemma.toml [sql] exact_division = false)
+
 ROOT = Path(__file__).resolve().parents[1]
 PROOFS = ROOT / "tests" / "fixtures" / "declarative_proofs"
 VERUS = Path("/home/emil/tools/verus/verus")

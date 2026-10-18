@@ -11,6 +11,8 @@ from declarative_spec.lemma_index import lemma_index_markdown
 from declarative_spec.prompt import build_declarative_prompt, mount_examples, spec_shape
 from research_loop.table_assumptions import CatalogAssumptions, ColumnAssumption, TableAssumptions
 
+pytestmark = pytest.mark.usefixtures("exact_division_off")  # the real-form AVG / ratio and f64 idealization (lemma.toml [sql] exact_division = false)
+
 _SCHEMA = {
     "pre": {"line": "bigint", "report": "bigint", "stmt": "varchar"},
     "num": {"adsh": "varchar", "qtrs": "bigint", "uom": "varchar"},

@@ -504,8 +504,16 @@ def _emit_fixed(
     integer_sql, scales = rewrite_numeric(sql, schema, catalog)
     _check_shape_classes(integer_sql)
     spec = _emit_integer_sql(integer_sql, schema, catalog)
-    spec = _with_f64_literals(spec, integer_sql)
+    from declarative_spec import sql_switches
+
+    exact = sql_switches.exact_division()
+    if not exact:
+        spec = _with_f64_literals(spec, integer_sql)
     out = _with_agent_surface(with_out_scales(spec, scales))
+    if exact:
+        from declarative_spec.exact_rational import finish_exact_spec
+
+        out = finish_exact_spec(out)  # exact rationals, no float: a FLOAT/DOUBLE operand is refused here
     from declarative_spec import agent_scan, parallel, stateful
 
     if stateful.enabled():

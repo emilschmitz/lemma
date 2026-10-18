@@ -15,6 +15,8 @@ from research_loop.table_assumptions import (
     TableAssumptions,
 )
 
+pytestmark = pytest.mark.usefixtures("exact_division_off")  # the real-form AVG / ratio and f64 idealization (lemma.toml [sql] exact_division = false)
+
 ROOT = Path(__file__).resolve().parents[1]
 DECL_DIR = ROOT / "declarative_spec"
 

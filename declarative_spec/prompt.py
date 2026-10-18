@@ -380,6 +380,8 @@ def spec_shape(spec_text: str) -> dict:
     f = _features(spec_text)
     recipe = route(f)
     hard = [what for needle, what in _HARD_FEATURES if re.search(rf"\b{needle}", spec_text)]
+    if "spec fn rat_is(" in spec_text:  # lemma.toml [sql] exact_division: an AVG is no float here
+        hard = [_EXACT_AVG_FEATURE if what == _HARD_FEATURES[-1][1] else what for what in hard]
     if f["limit"] and recipe in ("group_count", "group_sum", "join_group_sum"):
         hard.append("a LIMIT with ORDER BY over groups (top-K selection)")
     covered = {  # features the recipe's own worked example already covers: no "no worked example" warning for them
@@ -410,6 +412,20 @@ def _dict_only(name: str) -> bool:
     return Path(name).name.startswith("dict_")
 
 
+_FLOAT_TRUSTED_CALL = re.compile(r"\b(?:lemma_f64_\w+|host_(?:u64|i128)_to_f64|host_f64_div_by_zero|f64_literals_ok)\b")
+
+
+def _division_mode_ok(name: str) -> bool:
+    """lemma.toml [sql] exact_division: an example that calls the float idealization is not mounted with the flag on (those items do
+    not exist then), and an exact-rational (`Rat`) example is not mounted with it off."""
+    from declarative_spec import sql_switches
+
+    text = (_FIXTURES / name).read_text()
+    if sql_switches.exact_division():
+        return _FLOAT_TRUSTED_CALL.search(text) is None
+    return "Rat {" not in text
+
+
 def registered_examples() -> list[tuple[str, str]]:
     """Every mountable example as (path under the fixtures directory, one line saying what shape it proves)."""
     seen: dict[str, str] = {}
@@ -426,7 +442,7 @@ def example_index_markdown(dict_mode_on: bool) -> str:
     """The generated shape -> file -> what-it-proves table for `context/ro/examples/INDEX.md`."""
     groups: dict[str, list[str]] = {title: [] for _pat, title in _INDEX_GROUPS}
     for name, what in registered_examples():
-        if _dict_only(name) and not dict_mode_on:
+        if _dict_only(name) and not dict_mode_on or not _division_mode_ok(name):
             continue
         lines = len((_FIXTURES / name).read_text().splitlines())
         title = next(t for pat, t in _INDEX_GROUPS if re.search(pat, name))
@@ -464,7 +480,7 @@ def mount_examples(ro: Path) -> None:
         return
     dest.mkdir(parents=True, exist_ok=True)
     dict_on = dict_mode()
-    for name in [n for n, _w in registered_examples() if dict_on or not _dict_only(n)] + helper_files():
+    for name in [n for n, _w in registered_examples() if (dict_on or not _dict_only(n)) and _division_mode_ok(n)] + helper_files():
         target = dest / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text((_FIXTURES / name).read_text())
@@ -535,6 +551,27 @@ def _decline_section(spec_text: str) -> list[str]:
     if not decline.is_decline_spec(spec_text):
         return []
     return decline.prompt_paragraph(stateful.is_stateful(spec_text)).rstrip("\n").split("\n") + [""]
+
+
+_EXACT_AVG_FEATURE = "AVG (an exact rational: its sum and its count)"
+
+
+def _exact_rational_section(spec_text: str) -> list[str]:
+    """lemma.toml [sql] exact_division: an AVG or a division is an exact rational `Rat`, stated over integers only."""
+    if "spec fn rat_is(" not in spec_text:
+        return []
+    return [
+        "",
+        "## Exact rationals (this spec has an AVG or a division)",
+        "",
+        "There are no floats here: an AVG or a division is the exact quotient of two integers. A result field of type",
+        "`Rat { num: i128, den: i128 }` must satisfy `rat_is(r, n, d)` for the spec's n and d: `r.den > 0` and",
+        "`r.num * d == n * r.den` (any equal fraction; `Rat { num: n, den: d }` itself is the simplest when both fit i128,",
+        "with the signs of both flipped when d < 0). A division by a SUM or COUNT that is 0 (d == 0) is `r.den == 0` with",
+        "`r.num` of the sign of n (the host prints it as +inf, -inf or NaN, like the reference engine). An AVG compared in",
+        "HAVING or WHERE is stated cross-multiplied (`<f>_num(..) * 10 > 15 * <f>_den(..)`, den > 0): decide it in i128",
+        "integers. The host converts `Rat` to a double only when it prints the result, outside the proof.",
+    ]
 
 
 def _float_section(spec_text: str) -> list[str]:
@@ -1187,6 +1224,32 @@ _PROOF_HYGIENE = """\
 """
 
 
+_FLOAT_TIP = """- Floats (rounding error is accepted: a float is exact real arithmetic here, so a SUM is an exact fold and there
+  is no epsilon): one `f64` accumulator with `acc as real == <spec sum>`; before each `+ - *` call
+  `lemma_f64_add_defined` / `sub_defined` / `mul_defined`, after it `lemma_f64_add_within` / `sub_within` /
+  `mul_within`; compare with `lemma_f64_gt_real` and friends; divide with `lemma_f64_div_defined` / `div_real`;
+  cast integers with `host_u64_to_f64` / `host_i128_to_f64`. Keep `f64_literals_ok()` in every loop invariant."""
+_EXACT_TIP = """- AVG and division are exact rationals (no floats; a FLOAT/DOUBLE column is refused by the host): build the result
+  `Rat { num, den }` from integer sums and counts, and decide a comparison with an AVG cross-multiplied in i128."""
+
+
+def _division_text(prompt: str) -> str:
+    """lemma.toml [sql] exact_division: the general text says that AVG and `/` are exact rationals, not that floats are reals
+    (with the flag off the text is unchanged)."""
+    from declarative_spec import sql_switches
+
+    if not sql_switches.exact_division():
+        return prompt
+    for old, new in (
+        (_FLOAT_TIP, _EXACT_TIP),
+        ("Floats are exact reals here (`float_*.rs`).", "AVG and `/` are exact rationals here (`exact_*.rs`); FLOAT/DOUBLE columns are refused."),
+        ("Floats are exact reals here.", "AVG and `/` are exact rationals here; FLOAT/DOUBLE columns are refused."),
+        ("joins, projections, floats, TPC-H shapes", "joins, projections, exact AVG and division, TPC-H shapes"),
+    ):
+        prompt = prompt.replace(old, new)
+    return prompt
+
+
 def _error_excerpt(last_error: str) -> str:
     """The first errors, whole: the host already put the summary first and the errors in source order."""
     excerpt = last_error.strip()
@@ -1388,6 +1451,7 @@ def build_declarative_prompt(
         (P.RECIPE, _recipe_section(shape)),
         (P.RECIPE, dense_budget.prompt_section(dense_budget.report(spec_text, dict_sizes)) if "__dict@" in spec_text else []),
         (P.RULES, _float_section(spec_text)),
+        (P.RULES, _exact_rational_section(spec_text)),
         (P.RULES, _nullable_section(spec_text)),
         (P.RECIPE, _chain_section(spec_text)),
         (P.RECIPE, _parallel_section(spec_text, shape)),
@@ -1463,4 +1527,4 @@ def build_declarative_prompt(
             "last message; an empty or placeholder body is a failure, not a result.",
         ]
     )
-    return principles.scrub("\n".join(sections)) + "\n"
+    return _division_text(principles.scrub("\n".join(sections))) + "\n"

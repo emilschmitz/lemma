@@ -189,7 +189,38 @@ For every family in `TRUSTED_FAMILY_MENU`:
 Parametrized structural tests: `tests/test_trusted_families.py`.
 Semantic differential (exec math vs oracle / DuckDB): `tests/test_trusted_semantic_differential.py`.
 
-## f64 idealization (the ONLY trusted float code)
+## Exact rationals for AVG and `/` (default; no trusted item)
+
+**lemma.toml `[sql] exact_division = true` (the default since 2026-10-17).** Following JetStream (arXiv 2610.20527):
+*arithmetic is exact, and division and AVG produce exact rationals.* An AVG or a division whose operands are exact
+(integers, DECIMAL, DATE arithmetic) is stated as the quotient `n / d` of two mathematical integers, with no float and no
+`real` anywhere in the spec (`declarative_spec/exact_rational.py`):
+
+* a result field is `Rat { num: i128, den: i128 }` and the spec says `rat_is(r, n, d)`: for `d != 0`, `r.den > 0` and
+  `r.num * d == n * r.den` (cross-multiplied, any equal fraction); for `d == 0` (a division by a SUM or COUNT that is 0),
+  `r.den == 0` and `r.num` has the sign of `n`. AVG: `n = SUM(stored integers) * f0`, `d = COUNT * 10^scale * f1` (`f0/f1`
+  the constant of `c * AVG(x)`). A ratio `[K *] A / B`: `n = K * A * 10^sB`, `d = B * 10^sA`;
+* an AVG (own column, scalar subquery, AVG over the groups of a derived table) in a comparison is a pair of spec fns
+  `<f>_num` / `<f>_den` with `den > 0` (`0 / 1` when there is no row, the value the real form gave), and the comparison is
+  cross-multiplied into integers (`avg_num * 10 > 15 * avg_den` for `AVG(x) > 1.5`). The real form's integer floor division
+  of an AVG over groups of integer values (`acc / c`) is gone;
+* the agent computes the pair with the integer sums and counts it already has. The host prints a `Rat` as the IEEE double
+  `(num as f64) / (den as f64)` in `main`, outside the proof (`declarative_spec/assemble.py::_row_printer`); for `den == 0`
+  that is `+inf`, `-inf` or `NaN` by the sign of `num`, which is DuckDB 1.5.6's DOUBLE division by zero
+  (`ieee_floating_point_ops` on; `x / 0` is not NULL). Rows are compared with DuckDB by the unchanged DOUBLE check
+  (`declarative_spec/bench.py::float_tolerance`, relative 1e-9 with a 1e-9 floor; `inf`/`NaN` must match exactly).
+
+**Trusted items: none.** The host lemma region is empty for every declarative spec with the flag on: neither the eleven
+f64-idealization items nor `host_f64_div_by_zero` are emitted (`tests/test_declarative_exact_division.py` greps the
+assembled programs for their names). A FLOAT/DOUBLE operand anywhere in the query (an AVG or a SUM of a DOUBLE column, a
+DOUBLE comparison, a DOUBLE projection) is **refused** with `DeclarativeUnsupported`: its exact statement needs an error
+bound, which is future work (`declarative_spec/future_float_error_bounds/`). Not stated yet (refused): ORDER BY an AVG or a
+division, HAVING on a division, an AVG inside arithmetic. Verified examples: `exact_avg_decimal.rs`, `exact_ratio_sums.rs`
+(zero denominators), `dict_tpch_q14_exact_ratio.rs`, `hard/dict_parallel_q1_exact_avg.rs` (both on TPC-H SF1 against DuckDB).
+
+With `exact_division = false` the two sections below apply unchanged (byte-identical specs and programs).
+
+## f64 idealization (the ONLY trusted float code; only with `exact_division = false`)
 
 > **Floating-point rounding error is ACCEPTED** (Emil, 2026-10-04). Floats are modeled as exact real arithmetic. An
 > adversary report that only shows rounding error (a last-bit difference, a near-tie flip in HAVING / ORDER BY,
@@ -361,7 +392,7 @@ cast and loader tests that still apply; its rounding findings are pinned as acce
 Still refused (not a rounding matter): an integer or DECIMAL column compared with, or mixed in arithmetic with, a float column or
 float expression (no typed bridge), colliding float literals, literals that are not a finite nonzero double.
 
-## Division by zero of a ratio (one more trusted item; adversary-gated)
+## Division by zero of a ratio (one more trusted item; adversary-gated; only with `exact_division = false`)
 
 A SELECT item `[K *] SUM|COUNT(..) / SUM|COUNT(..)` (TPC-H Q14) is a DOUBLE in DuckDB (`DECIMAL / DECIMAL` and integer
 division are computed in DOUBLE). The spec says: with exact integer sums N (numerator, times the constant K) and D, the

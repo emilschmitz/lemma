@@ -41,6 +41,22 @@ MORE_EXAMPLES: tuple[tuple[str, str], ...] = (
         "one table, filtered ungrouped SUM whose running-total bound `(n - i) * m` needs `by (nonlinear_arith)`",
     ),
     (
+        "exact_avg_decimal.rs",
+        "exact_division: ungrouped AVG over a DECIMAL column as an exact rational `Rat { num: sum, den: count * 100 }` (no float)",
+    ),
+    (
+        "exact_ratio_sums.rs",
+        "exact_division: `SUM(a) / SUM(b)` as an exact rational, incl. a zero denominator (`Rat { num: N, den: 0 }`) and sign flips for a negative one",
+    ),
+    (
+        "dict_tpch_q14_exact_ratio.rs",
+        "exact_division, join chain: TPC-H Q14 (`100.00 * SUM(CASE LIKE ..) / SUM(..)`) as an exact rational; PROMO flag per dictionary entry, dense position table over the unique part key",
+    ),
+    (
+        "hard/dict_parallel_q1_exact_avg.rs",
+        "exact_division, PARALLEL: TPC-H Q1 with grouped AVG over DECIMAL as `Rat { num: sum, den: count * 100 }` (the AVG folds equal the SUM / COUNT folds)",
+    ),
+    (
         "tpch_q14_promo_ratio.rs",
         "TPC-H Q14: a two-table join, ratio of two exact DECIMAL sums (one under a LIKE prefix), divided in DOUBLE",
     ),
