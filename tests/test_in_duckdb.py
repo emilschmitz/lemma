@@ -127,7 +127,9 @@ def test_library_mode_keeps_the_verified_part_and_replaces_main(key: str, monkey
     assert lib.startswith(verified.rstrip("\n"))  # the verus! part and the loaders are byte-identical
     assert "fn main(" not in lib and "pub extern \"C\" fn lemma_run(" in lib
     tail = lib[len(verified) :]
-    assert tail.count("unsafe {") + tail.count("unsafe{") == 4  # only the four commented blocks of the fixed template
+    # only the five commented blocks of the fixed template (the fifth, ABI 3: an owned input buffer becomes the Vec)
+    assert tail.count("unsafe {") + tail.count("unsafe{") == 5
+    assert all(f"// UNSAFE {i}/5. Contract:" in tail for i in range(1, 6))
     assert "unsafe" not in body
     assert "catch_unwind" in tail and "load_cols_" in tail
 
@@ -139,14 +141,123 @@ def test_library_mode_checks_every_assumption_main_checks_before_run_query(key: 
     main = assemble_declarative_program(spec, body, column_bins={"pre": "/x"})
     execute = lib[lib.index("fn lemma_execute") :]
     checks = [ln.strip() for ln in main.splitlines() if ln.strip().startswith("assert!(") and "catalog" in ln]
-    assert checks and all(c in execute for c in checks)
-    assert execute.index(checks[-1]) < execute.index("run_query(")
+    assert checks
+    for check in checks:  # the same check, as is or through a fast helper of the template, before run_query
+        message = re.search(r'"[^"]*catalog[^"]*"', check).group(0)
+        assert message in execute, check
+        assert execute.index(message) < execute.index("run_query(")
 
 
 def test_library_mode_refuses_a_map_result(monkeypatch: pytest.MonkeyPatch) -> None:
     spec = emit_declarative_spec("SELECT uom, COUNT(*) FROM num GROUP BY uom", {"uom": "VARCHAR"}, CatalogAssumptions(tables={"num": TableAssumptions(max_rows=8)}))
     with pytest.raises(ValueError, match="library mode returns OutRow rows"):
         assemble_library_program(spec, "    StringHashMap::new()\n", sql="SELECT uom, COUNT(*) FROM num GROUP BY uom")
+
+
+# ---------------------------------------------------------------- fast checks: the same predicates, faster
+
+
+def test_fast_check_rewrites_the_known_shapes_and_keeps_any_other_check_as_is() -> None:
+    from declarative_spec.assemble_library import fast_check
+
+    types = {"t_a": "i64", "t_c": "u8", "t_c__dict": "String", "t_f": "f64", "t_s": "String"}
+    rng = '    assert!(t_a.iter().all(|v| (*v as i128) >= -15i128 && (*v as i128) <= 15i128), "t.a: value outside the catalog bound 15");'
+    assert fast_check(rng, types) == '    assert!(lemma_all_in_range(&t_a, -15i128, 15i128), "t.a: value outside the catalog bound 15");'
+    code = '    assert!(t_c.iter().all(|c| (*c as usize) < t_c__dict.len()), "t.c: a code is outside its dictionary");'
+    assert fast_check(code, types) == '    assert!(lemma_all_below(&t_c, t_c__dict.len()), "t.c: a code is outside its dictionary");'
+    distinct = '    assert!(t_c__dict.iter().collect::<std::collections::HashSet<_>>().len() == t_c__dict.len(), "t.c: a dictionary entry repeats");'
+    assert fast_check(distinct, types) == '    assert!(lemma_all_distinct(&t_c__dict), "t.c: a dictionary entry repeats");'
+    finite = '    assert!(t_f.iter().all(|v| v.is_finite()), "t.f: a value is NaN or infinite");'
+    assert fast_check(finite, types) == '    assert!(lemma_par_all(&t_f, |v: &f64| v.is_finite()), "t.f: a value is NaN or infinite");'
+    unique = (
+        "    {\n        let mut seen_t = std::collections::HashSet::new();\n        for i in 0..n_t {\n"
+        '            assert!(seen_t.insert((t_a[i].clone(),)), "t: declared unique key (a) has a duplicate");\n        }\n    }'
+    )
+    assert fast_check(unique, types) == '    assert!(lemma_unique_ints(&t_a), "t: declared unique key (a) has a duplicate");'
+    # a string key, a two-column key and an unknown shape stay exactly as generated
+    for kept in (
+        unique.replace("t_a[i]", "t_s[i]"),
+        unique.replace("(t_a[i].clone(),)", "(t_a[i].clone(), t_c[i].clone(),)"),
+        '    assert!(n_t <= 64usize, "t: {} rows exceed the catalog cap 64", n_t);',
+    ):
+        assert fast_check(kept, types) == kept
+
+
+_FAST_CHECK_HARNESS = r"""
+fn naive_range<T: LemmaInt>(v: &[T], lo: i128, hi: i128) -> bool { v.iter().all(|x| x.wide() >= lo && x.wide() <= hi) }
+fn naive_below<T: LemmaInt>(v: &[T], n: usize) -> bool { v.iter().all(|x| x.wide() < n as i128) }
+fn naive_unique<T: LemmaInt + std::hash::Hash>(v: &[T]) -> bool { v.iter().collect::<std::collections::HashSet<_>>().len() == v.len() }
+fn naive_distinct(v: &[String]) -> bool { v.iter().collect::<std::collections::HashSet<_>>().len() == v.len() }
+
+struct Rng(u64);
+impl Rng { fn next(&mut self) -> u64 { self.0 ^= self.0 << 13; self.0 ^= self.0 >> 7; self.0 ^= self.0 << 17; self.0 } }
+
+fn main() {
+    let mut rng = Rng(0x9E3779B97F4A7C15);
+    let mut cases = 0u64;
+    // lengths around the threading cut (64Ki values per part) and the empty slice
+    for &len in &[0usize, 1, 2, 7, 65535, 65536, 65537, 300_001] {
+        for round in 0..6 {
+            let span = [1u64, 2, 30, 1000, 1 << 20, u64::MAX][round];
+            let v: Vec<i64> = (0..len).map(|_| (rng.next() % span) as i64 - (span / 2) as i64).collect();
+            let mut w = v.clone();
+            if len > 3 && round % 2 == 0 { let i = (rng.next() as usize) % len; w[i] = w[(i + 1) % len]; }  // a duplicate
+            for &(lo, hi) in &[(-15i128, 15i128), (i128::MIN, 0), (0, i128::MAX), (-1000, 999), (i64::MIN as i128, i64::MAX as i128)] {
+                assert_eq!(lemma_all_in_range(&v, lo, hi), naive_range(&v, lo, hi));
+                cases += 1;
+            }
+            assert_eq!(lemma_unique_ints(&v), naive_unique(&v));
+            assert_eq!(lemma_unique_ints(&w), naive_unique(&w));
+            let codes: Vec<u8> = v.iter().map(|x| (*x as u64 % 7) as u8).collect();
+            for n in 0..9 { assert_eq!(lemma_all_below(&codes, n), naive_below(&codes, n)); }
+            let wide: Vec<i128> = v.iter().map(|x| (*x as i128) << 64).collect();
+            assert_eq!(lemma_all_in_range(&wide, -(1i128 << 80), 1i128 << 80), naive_range(&wide, -(1i128 << 80), 1i128 << 80));
+            assert_eq!(lemma_unique_ints(&wide), naive_unique(&wide));
+            let f: Vec<f64> = v.iter().map(|x| *x as f64).collect();
+            assert_eq!(lemma_par_all(&f, |x: &f64| x.abs() < 1e3), f.iter().all(|x| x.abs() < 1e3));
+            cases += 14;
+        }
+    }
+    // a value that breaks the bound only in the last part, and one only in the first
+    let mut v: Vec<u32> = vec![5; 500_000];
+    v[499_999] = 6;
+    assert!(!lemma_all_in_range(&v, 0, 5) && lemma_all_in_range(&v, 0, 6) && !lemma_all_below(&v, 6));
+    v[499_999] = 5; v[0] = 7;
+    assert!(!lemma_all_in_range(&v, 0, 5) && !lemma_par_all(&v, |x: &u32| *x < 7));
+    // unique keys: dense (bitmap) and sparse (sorted copy), duplicate at both ends
+    let dense: Vec<u64> = (0..200_000u64).collect();
+    let sparse: Vec<u64> = (0..200_000u64).map(|i| i * 1_000_003).collect();
+    assert!(lemma_unique_ints(&dense) && lemma_unique_ints(&sparse));
+    for base in [dense, sparse] {
+        let mut a = base.clone(); a[199_999] = a[0];
+        let mut b = base.clone(); b[1] = b[0];
+        assert!(!lemma_unique_ints(&a) && !lemma_unique_ints(&b));
+    }
+    let words: Vec<String> = ["A", "N", "R", "", "AB"].iter().map(|s| s.to_string()).collect();
+    assert!(lemma_all_distinct(&words) && naive_distinct(&words));
+    let mut again = words.clone(); again.push("N".to_string());
+    assert!(!lemma_all_distinct(&again) && !naive_distinct(&again));
+    let empty: Vec<String> = Vec::new();
+    assert!(lemma_all_distinct(&empty));
+    println!("ok {}", cases);
+}
+"""
+
+
+@pytest.mark.skipif(shutil.which("rustc") is None, reason="rustc not installed")
+def test_fast_checks_agree_with_the_naive_predicates(tmp_path: Path) -> None:
+    """The template's check helpers (compiled alone with rustc) against the plain `iter().all` / HashSet forms `main` uses:
+    random slices around the threading cut, extreme bounds, i128, duplicates at either end, dense and sparse keys, empty."""
+    from declarative_spec import assemble_library
+
+    head = assemble_library._TEMPLATE_HEAD
+    helpers = head[head.index("// Fast evaluation of the generated data checks") : head.index("fn lemma_fixed<")]
+    src = tmp_path / "fast_checks.rs"
+    src.write_text("#![allow(dead_code)]\n" + helpers + _FAST_CHECK_HARNESS)
+    exe = tmp_path / "fast_checks"
+    subprocess.run(["rustc", "--edition", "2021", "-O", "-o", str(exe), str(src)], check=True, capture_output=True, timeout=300)
+    out = subprocess.run([str(exe)], capture_output=True, text=True, timeout=300, check=False)
+    assert out.returncode == 0 and out.stdout.startswith("ok "), out.stderr[-2000:]
 
 
 # ---------------------------------------------------------------- measure hook (stubbed timers)
@@ -476,6 +587,249 @@ def test_statically_linked_cli_answers_with_the_proved_executor(home: Path) -> N
     assert lines[-1] == "lemma"
     version = subprocess.run([str(CLI), "-c", "SELECT version()"], capture_output=True, text=True, check=True).stdout
     assert "v1.5.6" in version
+
+
+# ---------------------------------------------------------------- the parallel scan: the single-threaded row order, byte for byte
+# lemma_scan_inputs(sql) returns the bytes lemma_query hands to lemma_run (the executor does not run, so no catalog cap applies).
+# The reference is an independent Python encoding of `SELECT ... ORDER BY rowid` on the same connection (committed rows in row
+# order, then the transaction's own rows; deleted rows gone): what a single thread scanning in row order produces.
+
+ROW_GROUP = 122880  # DuckDB's default row group: tables below span several, the last one partial
+
+
+def _scan(con: duckdb.DuckDBPyConnection, sql: str) -> list[tuple]:
+    return con.execute("SELECT input, name, role, n, data FROM lemma_scan_inputs(?) ORDER BY input", [sql]).fetchall()
+
+
+def _pack_int(v: int, rust: str) -> bytes:
+    width = {"u8": 1, "u16": 2, "u32": 4, "u64": 8, "i8": 1, "i16": 2, "i32": 4, "i64": 8, "i128": 16, "usize": 8}[rust]
+    return v.to_bytes(width, "little", signed=rust.startswith("i"))
+
+
+def _pack_str(s: str) -> bytes:
+    data = s.encode("utf-8")
+    return len(data).to_bytes(4, "little") + data
+
+
+def _reference(con: duckdb.DuckDBPyConnection, manifest: dict) -> list[tuple]:
+    """(input, name, role, n, bytes) per manifest input, encoded in Python from the rows in row order."""
+    out: list[tuple] = []
+    inputs = manifest["inputs"]
+    cache: dict[str, list] = {}
+    for k, e in enumerate(inputs):
+        table = e["table"]
+        if table not in cache:
+            cols = [x["column"] for x in inputs if x["kind"] == "field" and x["table"] == table]
+            names = list(dict.fromkeys(cols)) or ["rowid"]
+            rows = con.execute(f"SELECT {', '.join(names)} FROM {table} ORDER BY rowid").fetchall()
+            cache[table] = [dict(zip(names, r, strict=True)) for r in rows]
+        rows = cache[table]
+        if e["kind"] == "rows":
+            out.append((k, table, "rows", len(rows), b""))
+            continue
+        values = [r[e["column"]] for r in rows]
+        name, role = f"{table}.{e['field']}", e["role"]
+        if role in ("int", "decimal"):
+            scale = 10 ** e["scale"]
+            cells = [0 if v is None else int(Decimal(v) * scale) for v in values]
+            out.append((k, name, role, len(rows), b"".join(_pack_int(c, e["rust_type"]) for c in cells)))
+        elif role == "string":
+            out.append((k, name, role, len(rows), b"".join(_pack_str("" if v is None else v) for v in values)))
+        elif role in ("code", "dict"):
+            entries = list(dict.fromkeys(v for v in values if v is not None))
+            if role == "code":
+                code = {s: i for i, s in enumerate(entries)}
+                out.append((k, name, role, len(rows), b"".join(_pack_int(code.get(v, 0), e["rust_type"]) for v in values)))
+            else:
+                if not entries and any(v is None for v in values):
+                    entries = [""]
+                out.append((k, name, role, len(entries), b"".join(_pack_str(s) for s in entries)))
+        else:
+            raise AssertionError(f"no reference encoding for role {role}")
+    return out
+
+
+def _big_num(con: duckdb.DuckDBPyConnection, rows: int, *, nulls: bool, value_type: str = "DECIMAL(38,4)") -> None:
+    """`num` over several row groups: uom with values that first appear in different row groups (so the per-task dictionary
+    numbering differs from the table's), optional NULLs, and committed deletes that leave gaps inside row groups."""
+    uom = """CASE WHEN i < 200000 THEN ['USD', 'EUR'][1 + i % 2]
+                  WHEN i < 300000 THEN ['shares', 'USD', 'pure', 'EUR'][1 + i % 4]
+                  ELSE 'late-' || (i % 3) END"""
+    value = f"CAST((i * 7919) % 2000003 - 1000001 AS {value_type}) / 100"
+    if nulls:
+        uom = f"CASE WHEN i % 997 = 5 THEN NULL ELSE {uom} END"
+        value = f"CASE WHEN i % 1009 = 7 THEN NULL ELSE {value} END"
+    con.execute(f"CREATE OR REPLACE TABLE num (adsh VARCHAR, qtrs BIGINT, uom VARCHAR, value {value_type})")
+    con.execute(f"INSERT INTO num SELECT 'a' || (i % 13), i % 5, {uom}, CAST({value} AS {value_type}) FROM range({rows}) t(i)")
+    con.execute("DELETE FROM num WHERE rowid % 50000 < 3 OR rowid BETWEEN 130000 AND 131000")
+    con.execute("CREATE OR REPLACE TABLE sub AS SELECT 'a' || i AS adsh, 2000 + i % 4 AS fy FROM range(1, 15) t(i)")
+
+
+def _nullable_home(home: Path, tmp_path: Path, key: str, edit) -> Path:
+    """A copy of `home` whose manifest of `key` is edited (scan settings only; the library and its layouts are unchanged)."""
+    copy = tmp_path / "home"
+    shutil.copytree(home, copy)
+    manifest = copy / "executors" / in_duckdb.executor_key(SMALL[key][1]) / "manifest.json"
+    m = json.loads(manifest.read_text())
+    edit(m)
+    manifest.write_text(json.dumps(m))
+    return copy
+
+
+def _manifest(home: Path, key: str) -> dict:
+    return json.loads((home / "executors" / in_duckdb.executor_key(SMALL[key][1]) / "manifest.json").read_text())
+
+
+@needs_ext
+@pytest.mark.parametrize("key", ["dict", "join"])
+def test_parallel_scan_equals_the_single_threaded_row_order_byte_for_byte(key: str, home: Path) -> None:
+    con = _connect(home)
+    _big_num(con, 3 * ROW_GROUP + 4567, nulls=False)
+    sql = SMALL[key][1]
+    want = _reference(con, _manifest(home, key))
+    assert want[0][3] == con.execute("SELECT COUNT(*) FROM num").fetchone()[0] > 3 * ROW_GROUP
+    for threads in (1, 2, 3, 8):
+        con.execute(f"SET lemma_scan_threads = {threads}")
+        got = _scan(con, sql)
+        assert [g[:4] for g in got] == [w[:4] for w in want], threads
+        for g, w in zip(got, want, strict=True):
+            assert g[4] == w[4], (threads, g[1])
+
+
+@needs_ext
+@pytest.mark.parametrize("threads", [1, 4])
+def test_parallel_scan_encodes_nulls_as_zero_cells_and_scaled_decimals(threads: int, home: Path, tmp_path: Path) -> None:
+    """NULL codes are code 0 and NULL decimals 0 where the manifest declares the column nullable (codes renumbered per task
+    keep NULL at 0); a DECIMAL(18,2) column loaded at the spec's scale 4 goes through the scaled (non-copy) path."""
+
+    def edit(m: dict) -> None:
+        for e in m["inputs"]:
+            if e.get("column") in ("uom", "value"):
+                e["nullable"] = True
+            if e.get("column") == "value":
+                e["duck_type"], e["source_scale"] = "DECIMAL(18,2)", 2
+
+    copy = _nullable_home(home, tmp_path, "dict", edit)
+    con = _connect(copy)
+    _big_num(con, 2 * ROW_GROUP + 999, nulls=True, value_type="DECIMAL(18,2)")
+    con.execute(f"SET lemma_scan_threads = {threads}")
+    manifest = _manifest(copy, "dict")
+    want = _reference(con, manifest)
+    got = _scan(con, SMALL["dict"][1])
+    assert got == want
+    assert con.execute("SELECT COUNT(*) FROM num WHERE uom IS NULL").fetchone()[0] > 0
+    # without the nullable declaration, a NULL is an error raised on a scan thread, never rows
+    plain = _connect(home)
+    _big_num(plain, 2 * ROW_GROUP + 999, nulls=True)
+    plain.execute(f"SET lemma_scan_threads = {threads}")
+    with pytest.raises(duckdb.Error, match="has NULLs; the catalog does not declare the column nullable"):
+        _scan(plain, SMALL["dict"][1])
+    with pytest.raises(duckdb.Error, match="refused the data|has NULLs"):
+        plain.execute(official_measure.lemma_query_sql(SMALL["dict"][1])).fetchall()
+
+
+@needs_ext
+def test_parallel_scan_reads_the_callers_snapshot_with_a_concurrent_writer(home: Path, tmp_path: Path) -> None:
+    db = tmp_path / "snap_big.duckdb"
+    writer = _connect(home, str(db))
+    _big_num(writer, 2 * ROW_GROUP + 77, nulls=False)
+    reader = writer.cursor()
+    reader.execute(f"SET lemma_home = '{home}'")
+    sql = SMALL["dict"][1]
+    manifest = _manifest(home, "dict")
+    for con in (writer, reader):
+        con.execute("SET lemma_scan_threads = 8")
+    before = _scan(reader, sql)
+    assert before == _reference(reader, manifest)
+    writer.execute("BEGIN")
+    writer.execute(f"INSERT INTO num SELECT 'z', 1, 'only-in-tx', 1.5 FROM range({ROW_GROUP + 10}) t(i)")  # two local row groups
+    writer.execute("DELETE FROM num WHERE rowid % 7 = 3")
+    # the writer sees its own uncommitted rows and deletes, through the parallel scan as in row order
+    mine = _scan(writer, sql)
+    assert mine == _reference(writer, manifest) and mine != before
+    writer.execute("SET lemma_scan_threads = 1")
+    assert _scan(writer, sql) == mine
+    # the other connection does not, at any thread count
+    for threads in (1, 8):
+        reader.execute(f"SET lemma_scan_threads = {threads}")
+        assert _scan(reader, sql) == before
+    writer.execute("COMMIT")
+    reader2 = writer.cursor()
+    reader2.execute(f"SET lemma_home = '{home}'")
+    assert _scan(reader2, sql) == mine
+
+
+def _run_library(lib_path: Path, cols_spec: list) -> tuple[int, bytes]:
+    """lemma_run of an installed executor with hand-made inputs: ("rows", n) | ("owned", type code, width, values) |
+    ("strings", entries). Owned buffers come from the library's allocator (ABI 3)."""
+    import ctypes
+    import struct
+
+    from tests.test_in_duckdb_templates_stateful import _Col, _Out, _Param
+
+    lib = ctypes.CDLL(str(lib_path))
+    lib.lemma_alloc_input.restype = ctypes.c_void_p
+    lib.lemma_alloc_input.argtypes = [ctypes.c_uint64, ctypes.c_uint64]
+    lib.lemma_run.restype = ctypes.c_int32
+    keep: list = []
+    cols = (_Col * len(cols_spec))()
+    for k, spec in enumerate(cols_spec):
+        if spec[0] == "rows":
+            cols[k] = _Col(None, 0, spec[1])
+        elif spec[0] == "owned":
+            _kind, fmt, width, values = spec
+            ptr = lib.lemma_alloc_input(k, len(values))
+            assert ptr
+            if fmt == "i128":
+                raw = b"".join(v.to_bytes(16, "little", signed=True) for v in values)
+            else:
+                raw = struct.pack(f"<{len(values)}{fmt}", *values)
+            if values:
+                ctypes.memmove(ptr, raw, width * len(values))
+            cols[k] = _Col(ptr, width * len(values), len(values))
+        else:
+            data = b"".join(_pack_str(s) for s in spec[1])
+            keep.append(ctypes.create_string_buffer(data, len(data)))
+            cols[k] = _Col(ctypes.cast(keep[-1], ctypes.c_void_p), len(data), len(spec[1]))
+    out = _Out()
+    code = lib.lemma_run(cols, len(cols_spec), (_Param * 1)(), 0, ctypes.byref(out))
+    data = ctypes.string_at(out.ptr, out.len)
+    lib.lemma_free_out(ctypes.byref(out))
+    return code, data
+
+
+@needs_ext
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("code_outside", b"a code is outside its dictionary"),
+        ("dict_repeats", b"a dictionary entry repeats"),
+        ("row_cap", f"rows exceed the catalog cap {CAP}".encode()),
+        ("ok", b"LMR1"),
+    ],
+)
+def test_the_library_refuses_bad_codes_repeated_entries_and_too_many_rows(case: str, message: bytes, home: Path) -> None:
+    """The checks stay in the library (Rust), whatever the scan did: a proved executor called directly with data the C++ scan
+    would never produce is refused before run_query."""
+    if case == "row_cap":
+        lib = home / "executors" / in_duckdb.executor_key(SMALL["usum"][1]) / "lib.so"
+        assert _manifest(home, "usum")["input_layout"] == ["rows pre", "pre.line i64"]
+        code, data = _run_library(lib, [("rows", CAP + 1), ("owned", "q", 8, list(range(CAP + 1)))])
+        assert code == 1 and message in data, data
+        return
+    lib = home / "executors" / in_duckdb.executor_key(SMALL["dict"][1]) / "lib.so"
+    assert [ln.split()[-1] for ln in _manifest(home, "dict")["input_layout"]] == ["num", "u16", "String", "i128"]
+    codes, entries = [0, 1, 0, 1, 1], ["USD", "EUR"]
+    if case == "code_outside":
+        codes[3] = 2
+    elif case == "dict_repeats":
+        entries = ["USD", "USD"]
+    values = [10_000, -25_000, 3, 0, 7]  # DECIMAL(38,4) cells as i128
+    code, data = _run_library(lib, [("rows", 5), ("owned", "H", 2, codes), ("strings", entries), ("owned", "i128", 16, values)])
+    if case == "ok":
+        assert code == 0 and data.startswith(message), data
+    else:
+        assert code == 1 and message in data and not data.startswith(b"LMR1"), data
 
 
 # ---------------------------------------------------------------- SF1 (slow): the real TPC-H SF1 database, read-only

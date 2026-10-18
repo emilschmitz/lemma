@@ -61,13 +61,16 @@ def test_library_mode_checks_every_parameter_before_any_column_and_passes_it_to_
     range_check = next(ln.strip() for ln in main.splitlines() if "outside its declared range" in ln)
     assert range_check in execute  # the same range check the command line of `main` gets
     decode = execute.index('lemma_param_int(&params[0], "lo")')
-    assert decode < execute.index(range_check) < execute.index("load_start") < execute.index("lemma_fixed(")
+    # the owned column buffer is taken first (O(1), so the library frees it on every path); nothing is decoded or checked
+    # before the parameters are
+    assert execute.index('lemma_take(&cols[1], "t.x")') < decode < execute.index(range_check) < execute.index("load_start")
+    assert execute.index("load_start") < execute.index("assert!(t_x.len() == n_t")
     assert "param_lo)" in execute[execute.index("run_query(") :].split("\n")[0]
     assert "nparams == 1" in lib and "lemma_param_layout" in lib
     assert param_layout(spec) == ["lo i64 -999999 999999"]
     verified = main[: main.index("\nfn main()")]
     tail = lib[len(verified) :]
-    assert tail.count("unsafe {") == 4  # the parameter buffers go through the same two commented readers
+    assert tail.count("unsafe {") == 5  # the parameter buffers go through the same two commented readers
 
 
 def test_library_mode_date_parameters_are_narrowed_to_i32_with_a_check_and_fixed_sql_takes_none() -> None:
@@ -164,9 +167,18 @@ class _Out(ctypes.Structure):
     _fields_ = [("ptr", ctypes.POINTER(ctypes.c_uint8)), ("len", ctypes.c_uint64), ("cap", ctypes.c_uint64)]
 
 
-def _call(lib: ctypes.CDLL, xs: list[int], params: list[tuple[int, bytes]]) -> tuple[int, bytes]:
-    keep = [ctypes.create_string_buffer(struct.pack(f"<{len(xs)}q", *xs), 8 * len(xs))]
-    cols = (_Col * 2)(_Col(None, 0, len(xs)), _Col(ctypes.cast(keep[0], ctypes.c_void_p), 8 * len(xs), len(xs)))
+def _owned_i64(lib: ctypes.CDLL, index: int, xs: list[int], cap: int | None = None) -> _Col:
+    """An owned input (ABI 3): a buffer of the library's allocator holding ``xs`` (cap cells, default len(xs))."""
+    cap = len(xs) if cap is None else cap
+    ptr = lib.lemma_alloc_input(index, cap)
+    assert ptr
+    ctypes.memmove(ptr, struct.pack(f"<{len(xs)}q", *xs), 8 * len(xs))
+    return _Col(ptr, 8 * cap, len(xs))
+
+
+def _call(lib: ctypes.CDLL, xs: list[int], params: list[tuple[int, bytes]], cap: int | None = None) -> tuple[int, bytes]:
+    keep: list = []
+    cols = (_Col * 2)(_Col(None, 0, len(xs)), _owned_i64(lib, 1, xs, cap))  # lemma_run takes the buffer, whatever it returns
     ps = (_Param * max(len(params), 1))()
     for i, (kind, data) in enumerate(params):
         keep.append(ctypes.create_string_buffer(data, len(data)))
@@ -204,6 +216,9 @@ def sum_library(tmp_path_factory: pytest.TempPathFactory) -> ctypes.CDLL:
     lib.lemma_run.restype = ctypes.c_int32
     lib.lemma_param_layout.restype = ctypes.c_char_p
     lib.lemma_abi_version.restype = ctypes.c_uint32
+    lib.lemma_alloc_input.restype = ctypes.c_void_p
+    lib.lemma_alloc_input.argtypes = [ctypes.c_uint64, ctypes.c_uint64]
+    lib.lemma_free_input.argtypes = [ctypes.c_uint64, ctypes.c_void_p, ctypes.c_uint64]
     return lib
 
 
@@ -217,7 +232,7 @@ def test_the_library_answers_each_binding_like_duckdb(lo: int, sum_library: ctyp
     con.execute("CREATE TABLE t AS SELECT i AS x FROM range(1, 11) r(i)")
     (want,) = con.execute(SUM_SQL, {"lo": lo}).fetchone()
     assert _sum_result(data) == (None if want is None else int(want))
-    assert sum_library.lemma_abi_version() == ABI_VERSION == 2
+    assert sum_library.lemma_abi_version() == ABI_VERSION == 3
     assert sum_library.lemma_param_layout() == b"lo i64 -999999 999999"
 
 
@@ -236,6 +251,45 @@ def test_the_library_answers_each_binding_like_duckdb(lo: int, sum_library: ctyp
 def test_the_library_refuses_a_bad_parameter_and_returns_no_rows(params: list, message: bytes, sum_library: ctypes.CDLL) -> None:
     code, data = _call(sum_library, list(range(1, 11)), params)
     assert code == 1 and message in data and not data.startswith(b"LMR1")
+
+
+# ---------------------------------------------------------------- owned input buffers (ABI 3), through the C ABI (Verus)
+
+
+@needs_verus
+@pytest.mark.parametrize("cap", [10, 11, 4096])
+def test_an_owned_buffer_with_spare_capacity_holds_exactly_n_values(cap: int, sum_library: ctypes.CDLL) -> None:
+    """The scan allocates for every row of the table and packs the visible ones to the front: n <= cap, the rest is ignored."""
+    code, data = _call(sum_library, list(range(1, 11)), [(1, struct.pack("<q", 3))], cap=cap)
+    assert code == 0, data
+    assert _sum_result(data) == sum(range(4, 11))
+
+
+@needs_verus
+def test_owned_buffers_are_only_for_owned_inputs_and_go_back_when_never_run(sum_library: ctypes.CDLL) -> None:
+    assert not sum_library.lemma_alloc_input(0, 8)  # the rows entry carries no data
+    assert not sum_library.lemma_alloc_input(7, 8)  # no such input
+    for _ in range(200):  # 200 x 8 MB returned with lemma_free_input: a leak would show as 1.6 GB
+        ptr = sum_library.lemma_alloc_input(1, 1 << 20)
+        assert ptr
+        sum_library.lemma_free_input(1, ptr, 8 << 20)
+    zero = sum_library.lemma_alloc_input(1, 0)
+    assert zero  # an empty owned buffer is a valid (dangling, never read) pointer
+    sum_library.lemma_free_input(1, zero, 0)
+
+
+@needs_verus
+def test_more_values_than_the_owned_buffer_holds_is_refused(sum_library: ctypes.CDLL) -> None:
+    col = _owned_i64(sum_library, 1, list(range(1, 11)))
+    col.n = 11  # one more value than the buffer's cells
+    cols = (_Col * 2)(_Col(None, 0, 11), col)
+    lo = ctypes.create_string_buffer(struct.pack("<q", 3), 8)
+    ps = (_Param * 1)(_Param(1, ctypes.cast(lo, ctypes.c_void_p), 8))
+    out = _Out()
+    code = sum_library.lemma_run(cols, 2, ps, 1, ctypes.byref(out))
+    data = ctypes.string_at(out.ptr, out.len)
+    sum_library.lemma_free_out(ctypes.byref(out))
+    assert code == 1 and b"11 values in a buffer of 10 cells" in data
 
 
 # ---------------------------------------------------------------- the extension (built): lemma_query('<template>', v...)

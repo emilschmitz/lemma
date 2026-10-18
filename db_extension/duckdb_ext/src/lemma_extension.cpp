@@ -33,14 +33,23 @@
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/optimizer/optimizer_extension.hpp"
+#include "duckdb/parallel/task_scheduler.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/extension_callback.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/storage/data_table.hpp"
+#include "duckdb/storage/table/row_group.hpp"
+#include "duckdb/storage/table/row_group_collection.hpp"
 #include "duckdb/storage/table/scan_state.hpp"
 #include "duckdb/transaction/duck_transaction.hpp"
+#include "duckdb/transaction/local_storage.hpp"
 
+#include <algorithm>
+#include <atomic>
 #include <cerrno>
+#include <climits>
+#include <limits>
+#include <thread>
 #include <chrono>
 #include <cstdlib>
 #include <deque>
@@ -62,7 +71,7 @@ namespace {
 
 using i128 = __int128;
 
-constexpr uint32_t ABI_VERSION = 2;
+constexpr uint32_t ABI_VERSION = 3;
 constexpr uint32_t PARAM_INT = 1, PARAM_STR = 4;
 constexpr int KIND_INT = 1, KIND_F64 = 2, KIND_BOOL = 3, KIND_STR = 4;
 const char *MISS_MESSAGE = "no proved executor for this query; run `lemma optimize`";
@@ -190,6 +199,8 @@ struct Executor {
 	void *handle = nullptr;
 	lemma_run_fn run = nullptr;
 	lemma_free_out_fn free_out = nullptr;
+	lemma_alloc_input_fn alloc_input = nullptr; // ABI 3: owned input buffers
+	lemma_free_input_fn free_input = nullptr;
 };
 
 struct Manifest {
@@ -298,6 +309,8 @@ std::shared_ptr<Executor> LoadLibrary(const Manifest &m, const std::string &inpu
 	exec->handle = handle;
 	exec->run = reinterpret_cast<lemma_run_fn>(sym("lemma_run"));
 	exec->free_out = reinterpret_cast<lemma_free_out_fn>(sym("lemma_free_out"));
+	exec->alloc_input = reinterpret_cast<lemma_alloc_input_fn>(sym("lemma_alloc_input"));
+	exec->free_input = reinterpret_cast<lemma_free_input_fn>(sym("lemma_free_input"));
 	if (abi() != ABI_VERSION) {
 		throw InvalidInputException("Lemma: executor ABI version %d, this extension speaks %d", int(abi()), int(ABI_VERSION));
 	}
@@ -494,315 +507,631 @@ double HugeToDouble(i128 v) {
 	return double(upper) * 18446744073709551616.0 + double(lower);
 }
 
-struct Encoder {
+i128 HugeOf(hugeint_t h) {
+	return (i128(h.upper) << 64) | i128(h.lower);
+}
+
+// The value range of a DuckDB source cell type (for the copy fast path: a source that fits the target needs no range check).
+template <class SRC>
+std::pair<i128, i128> SourceRange() {
+	return {i128(std::numeric_limits<SRC>::min()), i128(std::numeric_limits<SRC>::max())};
+}
+template <>
+std::pair<i128, i128> SourceRange<date_t>() {
+	return {i128(std::numeric_limits<int32_t>::min()), i128(std::numeric_limits<int32_t>::max())};
+}
+template <>
+std::pair<i128, i128> SourceRange<hugeint_t>() {
+	const i128 i128_max = ~(i128(1) << 127);
+	return {-i128_max - 1, i128_max};
+}
+
+enum class Role { Valid, Int, Date, Decimal, F64, Bool, String, Code, Dict };
+
+Role RoleOf(const std::string &role, const std::string &label) {
+	static const std::unordered_map<std::string, Role> roles = {
+	    {"valid", Role::Valid}, {"int", Role::Int},       {"date", Role::Date},     {"decimal", Role::Decimal},
+	    {"f64", Role::F64},     {"bool", Role::Bool},     {"string", Role::String}, {"code", Role::Code},
+	    {"dict", Role::Dict}};
+	auto it = roles.find(role);
+	if (it == roles.end()) {
+		throw InvalidInputException("Lemma: %s: unknown input role %s", label, role);
+	}
+	return it->second;
+}
+
+// An input the library owns (ABI 3): its fixed-width integer or f64 cells go straight into a buffer of the library's allocator,
+// which lemma_run takes as the Vec's memory. Mirrors assemble_library.owned.
+bool OwnedType(const std::string &rust) {
+	static const std::unordered_map<std::string, int> owned = {{"u8", 1},  {"u16", 1}, {"u32", 1}, {"u64", 1},   {"usize", 1},
+	                                                            {"i8", 1},  {"i16", 1}, {"i32", 1}, {"i64", 1},   {"i128", 1},
+	                                                            {"f64", 1}};
+	return owned.count(rust) != 0;
+}
+
+// A buffer allocated by the executor library (lemma_alloc_input). Returned to it (lemma_free_input) unless released to lemma_run.
+struct OwnedBuffer {
+	std::shared_ptr<Executor> exec;
+	uint64_t index = 0;
+	uint8_t *ptr = nullptr;
+	uint64_t len = 0, width = 0;
+	OwnedBuffer(std::shared_ptr<Executor> exec_p, uint64_t index_p, uint64_t cap, uint64_t width)
+	    : exec(std::move(exec_p)), index(index_p) {
+		ptr = exec->alloc_input(index, cap);
+		if (!ptr) {
+			throw InvalidInputException("Lemma: the executor library allocated no buffer for input %d (%d cells)",
+			                            int64_t(index), int64_t(cap));
+		}
+		len = cap * width;
+		this->width = width;
+	}
+	~OwnedBuffer() {
+		if (ptr) {
+			exec->free_input(index, ptr, len);
+		}
+	}
+	OwnedBuffer(const OwnedBuffer &) = delete;
+	OwnedBuffer &operator=(const OwnedBuffer &) = delete;
+};
+
+// How one field input (not a rows entry, not a dictionary) is decoded: immutable while the scan threads run.
+struct ColPlan {
+	size_t k = 0; // manifest input index
 	InEntry e;
 	std::string label;
+	Role role = Role::Int;
 	IntTarget target;
 	i128 mul = 1;              // decimal: 10^(scale - source_scale)
 	bool decimal_wide = false; // f64 from DECIMAL: the exporter's HUGEINT path (else BIGINT)
-	std::string bytes;
-	uint64_t n = 0;
-	bool null_seen = false;
 	uint64_t code_limit = 0;
+	idx_t chunk_col = 0;
+	LogicalType type;
+	size_t width = 0;      // bytes per cell in `dest`; 0 for strings
+	uint8_t *dest = nullptr; // cell i of the table at dest + width * i (owned buffer, or a byte vector for bool / valid)
+	size_t slot = 0;         // strings: index into TaskOut::strings; codes: index into TaskOut::dicts
+	size_t dict_k = SIZE_MAX; // codes: the manifest input of its dictionary
 
-	void PutInt(i128 v) {
-		if (v < target.lo || v > target.hi) {
-			throw InvalidInputException("Lemma: cannot pack %s as %s (%s)", I128String(v), e.rust_type, label);
-		}
-		char buf[16];
-		std::memcpy(buf, &v, 16);
-		bytes.append(buf, size_t(target.width));
+	[[noreturn]] void ThrowPack(i128 v) const {
+		throw InvalidInputException("Lemma: cannot pack %s as %s (%s)", I128String(v), e.rust_type, label);
 	}
-	static void PutStr(std::string &out, const char *data, size_t len) {
-		if (len > 0xFFFFFFFFull) {
-			throw InvalidInputException("Lemma: a string is longer than u32");
-		}
-		uint32_t l = uint32_t(len);
-		out.append(reinterpret_cast<const char *>(&l), 4);
-		out.append(data, len);
-	}
-	void NullCell() {
+	void NullCell() const {
 		if (!e.nullable) {
 			throw InvalidInputException("Lemma: %s has NULLs; the catalog does not declare the column nullable", label);
 		}
 	}
-
-	// The integer value of a cell of an integer, DATE or DECIMAL column (unscaled for DECIMAL).
-	static i128 IntOf(const LogicalType &t, const UnifiedVectorFormat &f, idx_t idx, const std::string &label) {
-		switch (t.id()) {
-		case LogicalTypeId::TINYINT:
-			return UnifiedVectorFormat::GetData<int8_t>(f)[idx];
-		case LogicalTypeId::SMALLINT:
-			return UnifiedVectorFormat::GetData<int16_t>(f)[idx];
-		case LogicalTypeId::INTEGER:
-			return UnifiedVectorFormat::GetData<int32_t>(f)[idx];
-		case LogicalTypeId::BIGINT:
-			return UnifiedVectorFormat::GetData<int64_t>(f)[idx];
-		case LogicalTypeId::UTINYINT:
-			return UnifiedVectorFormat::GetData<uint8_t>(f)[idx];
-		case LogicalTypeId::USMALLINT:
-			return UnifiedVectorFormat::GetData<uint16_t>(f)[idx];
-		case LogicalTypeId::UINTEGER:
-			return UnifiedVectorFormat::GetData<uint32_t>(f)[idx];
-		case LogicalTypeId::UBIGINT:
-			return UnifiedVectorFormat::GetData<uint64_t>(f)[idx];
-		case LogicalTypeId::HUGEINT: {
-			auto h = UnifiedVectorFormat::GetData<hugeint_t>(f)[idx];
-			return (i128(h.upper) << 64) | i128(h.lower);
-		}
-		case LogicalTypeId::DATE:
-			return UnifiedVectorFormat::GetData<date_t>(f)[idx].days;
-		case LogicalTypeId::DECIMAL:
-			switch (t.InternalType()) {
-			case PhysicalType::INT16:
-				return UnifiedVectorFormat::GetData<int16_t>(f)[idx];
-			case PhysicalType::INT32:
-				return UnifiedVectorFormat::GetData<int32_t>(f)[idx];
-			case PhysicalType::INT64:
-				return UnifiedVectorFormat::GetData<int64_t>(f)[idx];
-			case PhysicalType::INT128: {
-				auto h = UnifiedVectorFormat::GetData<hugeint_t>(f)[idx];
-				return (i128(h.upper) << 64) | i128(h.lower);
-			}
-			default:
-				break;
-			}
-			break;
-		default:
-			break;
-		}
-		throw InvalidInputException("Lemma: %s: DuckDB type %s is not loadable as an integer", label, t.ToString());
-	}
-
-	i128 Scaled(i128 v) {
+	i128 Scaled(i128 v) const {
 		i128 out;
 		if (__builtin_mul_overflow(v, mul, &out)) {
 			throw InvalidInputException("Lemma: %s: value out of range at scale %d", label, e.scale);
 		}
 		return out;
 	}
+};
 
-	enum class Role { Valid, Int, Date, Decimal, F64, Bool, String, Code };
-	Role role = Role::Int;
+// Dictionary codes seen by ONE scan task: its distinct non-NULL strings in order of first appearance in the task. Merged into the
+// table's numbering (first appearance in row order) after the scan. Keys point into `entries` (a deque: elements never move).
+struct LocalDict {
+	string_map_t<uint32_t> codes;
+	std::deque<std::string> entries;
+	std::vector<uint64_t> nulls; // rows (relative to the task) holding a NULL: code 0 of the table, whatever the remap
+	bool null_seen = false;
+	std::vector<int64_t> memo;   // per chunk: dictionary-vector index -> code
+};
 
-	void SetRole() {
-		static const std::unordered_map<std::string, Role> roles = {
-		    {"valid", Role::Valid}, {"int", Role::Int},       {"date", Role::Date},     {"decimal", Role::Decimal},
-		    {"f64", Role::F64},     {"bool", Role::Bool},     {"string", Role::String}, {"code", Role::Code}};
-		auto it = roles.find(e.role);
-		if (it == roles.end()) {
-			throw InvalidInputException("Lemma: %s: unknown input role %s", label, e.role);
-		}
-		role = it->second;
+// What one scan task produced: rows [offset, offset + count) of every fixed-width destination, its strings and dictionaries.
+struct TaskOut {
+	uint64_t offset = 0, count = 0;
+	std::vector<std::string> strings;
+	std::vector<LocalDict> dicts;
+};
+
+void PutCell(uint8_t *out, size_t width, i128 v) {
+	std::memcpy(out, &v, width); // little-endian: the low `width` bytes
+}
+
+// Integer cells (INT*, UINT*, HUGEINT, DATE, DECIMAL) of one chunk at `out`: scale, range check, `width` LE bytes each. A flat
+// vector without NULLs whose source type is the target's width and fits its range is one memcpy.
+template <class SRC, class TO_I128>
+void DecodeInts(const ColPlan &p, Vector &vec, idx_t count, uint8_t *out, TO_I128 to_i128) {
+	size_t w = p.width;
+	bool scale = p.role == Role::Decimal && p.mul != 1;
+	auto range = SourceRange<SRC>();
+	if (!scale && sizeof(SRC) == w && range.first >= p.target.lo && range.second <= p.target.hi &&
+	    vec.GetVectorType() == VectorType::FLAT_VECTOR && FlatVector::Validity(vec).AllValid()) {
+		std::memcpy(out, FlatVector::GetData<SRC>(vec), w * count);
+		return;
 	}
-
-	// Integer cells (INT*, UINT*, HUGEINT, DATE, DECIMAL) of one chunk: typed loop, scale, range check, `width` LE bytes each.
-	template <class SRC, class TO_I128>
-	void AppendInts(const UnifiedVectorFormat &f, idx_t count, TO_I128 to_i128) {
-		auto data = UnifiedVectorFormat::GetData<SRC>(f);
-		size_t w = size_t(target.width);
-		size_t at = bytes.size();
-		bytes.resize(at + w * count);
-		char *out = &bytes[at];
-		bool all_valid = f.validity.AllValid();
-		for (idx_t r = 0; r < count; r++) {
-			idx_t idx = f.sel->get_index(r);
-			i128 v = 0;
-			if (all_valid || f.validity.RowIsValid(idx)) {
-				v = to_i128(data[idx]);
-				if (role == Role::Decimal && mul != 1) {
-					v = Scaled(v);
-				}
-			} else {
-				NullCell();
+	UnifiedVectorFormat f;
+	vec.ToUnifiedFormat(count, f);
+	auto data = UnifiedVectorFormat::GetData<SRC>(f);
+	bool all_valid = f.validity.AllValid();
+	for (idx_t r = 0; r < count; r++) {
+		idx_t idx = f.sel->get_index(r);
+		i128 v = 0;
+		if (all_valid || f.validity.RowIsValid(idx)) {
+			v = to_i128(data[idx]);
+			if (scale) {
+				v = p.Scaled(v);
 			}
-			if (v < target.lo || v > target.hi) {
-				throw InvalidInputException("Lemma: cannot pack %s as %s (%s)", I128String(v), e.rust_type, label);
-			}
-			std::memcpy(out + w * r, &v, w);
+		} else {
+			p.NullCell();
 		}
+		if (v < p.target.lo || v > p.target.hi) {
+			p.ThrowPack(v);
+		}
+		PutCell(out + w * r, w, v);
 	}
+}
 
-	void AppendIntegers(const LogicalType &t, const UnifiedVectorFormat &f, idx_t count) {
-		auto huge = [](hugeint_t h) { return (i128(h.upper) << 64) | i128(h.lower); };
-		auto same = [](int64_t v) { return i128(v); };
-		PhysicalType p = t.InternalType();
-		switch (t.id()) {
-		case LogicalTypeId::DATE:
-			return AppendInts<date_t>(f, count, [](date_t d) { return i128(d.days); });
-		case LogicalTypeId::UBIGINT:
-			return AppendInts<uint64_t>(f, count, [](uint64_t v) { return i128(v); });
-		case LogicalTypeId::UINTEGER:
-			return AppendInts<uint32_t>(f, count, same);
-		case LogicalTypeId::USMALLINT:
-			return AppendInts<uint16_t>(f, count, same);
-		case LogicalTypeId::UTINYINT:
-			return AppendInts<uint8_t>(f, count, same);
-		case LogicalTypeId::TINYINT:
-		case LogicalTypeId::SMALLINT:
-		case LogicalTypeId::INTEGER:
-		case LogicalTypeId::BIGINT:
-		case LogicalTypeId::HUGEINT:
-		case LogicalTypeId::DECIMAL:
-			switch (p) {
-			case PhysicalType::INT8:
-				return AppendInts<int8_t>(f, count, same);
-			case PhysicalType::INT16:
-				return AppendInts<int16_t>(f, count, same);
-			case PhysicalType::INT32:
-				return AppendInts<int32_t>(f, count, same);
-			case PhysicalType::INT64:
-				return AppendInts<int64_t>(f, count, same);
-			case PhysicalType::INT128:
-				return AppendInts<hugeint_t>(f, count, huge);
-			default:
-				break;
-			}
-			break;
+void DecodeIntegers(const ColPlan &p, Vector &vec, idx_t count, uint8_t *out) {
+	auto huge = [](hugeint_t h) { return HugeOf(h); };
+	auto same = [](int64_t v) { return i128(v); };
+	const LogicalType &t = p.type;
+	switch (t.id()) {
+	case LogicalTypeId::DATE:
+		return DecodeInts<date_t>(p, vec, count, out, [](date_t d) { return i128(d.days); });
+	case LogicalTypeId::UBIGINT:
+		return DecodeInts<uint64_t>(p, vec, count, out, [](uint64_t v) { return i128(v); });
+	case LogicalTypeId::UINTEGER:
+		return DecodeInts<uint32_t>(p, vec, count, out, same);
+	case LogicalTypeId::USMALLINT:
+		return DecodeInts<uint16_t>(p, vec, count, out, same);
+	case LogicalTypeId::UTINYINT:
+		return DecodeInts<uint8_t>(p, vec, count, out, same);
+	case LogicalTypeId::TINYINT:
+	case LogicalTypeId::SMALLINT:
+	case LogicalTypeId::INTEGER:
+	case LogicalTypeId::BIGINT:
+	case LogicalTypeId::HUGEINT:
+	case LogicalTypeId::DECIMAL:
+		switch (t.InternalType()) {
+		case PhysicalType::INT8:
+			return DecodeInts<int8_t>(p, vec, count, out, same);
+		case PhysicalType::INT16:
+			return DecodeInts<int16_t>(p, vec, count, out, same);
+		case PhysicalType::INT32:
+			return DecodeInts<int32_t>(p, vec, count, out, same);
+		case PhysicalType::INT64:
+			return DecodeInts<int64_t>(p, vec, count, out, same);
+		case PhysicalType::INT128:
+			return DecodeInts<hugeint_t>(p, vec, count, out, huge);
 		default:
 			break;
 		}
-		throw InvalidInputException("Lemma: %s: DuckDB type %s is not loadable as an integer", label, t.ToString());
+		break;
+	default:
+		break;
 	}
+	throw InvalidInputException("Lemma: %s: DuckDB type %s is not loadable as an integer", p.label, t.ToString());
+}
 
-	// Dictionary codes: distinct non-NULL strings numbered in order of first appearance. Keys point into `entries` (a deque:
-	// its elements never move, so the string_t keys stay valid).
-	string_map_t<uint32_t> codes;
-	std::deque<std::string> entries;
-
-	uint32_t CodeOf(const string_t &s) {
-		auto it = codes.find(s);
-		if (it != codes.end()) {
-			return it->second;
-		}
-		if (std::memchr(s.GetData(), 0, s.GetSize()) != nullptr) {
-			throw InvalidInputException("Lemma: %s: a NUL byte in a dictionary string", label);
-		}
-		if (entries.size() >= code_limit) {
-			throw InvalidInputException("Lemma: cannot pack code %d as %s (%s)", int64_t(entries.size()), e.rust_type, label);
-		}
-		uint32_t code = uint32_t(entries.size());
-		entries.emplace_back(s.GetData(), s.GetSize());
-		const std::string &kept = entries.back();
-		codes.emplace(string_t(kept.data(), uint32_t(kept.size())), code);
-		return code;
+// The integer value of a cell of an integer or DECIMAL column (unscaled for DECIMAL), for the f64 role.
+i128 IntOf(const ColPlan &p, const UnifiedVectorFormat &f, idx_t idx) {
+	const LogicalType &t = p.type;
+	switch (t.InternalType()) {
+	case PhysicalType::INT8:
+		return UnifiedVectorFormat::GetData<int8_t>(f)[idx];
+	case PhysicalType::INT16:
+		return UnifiedVectorFormat::GetData<int16_t>(f)[idx];
+	case PhysicalType::INT32:
+		return UnifiedVectorFormat::GetData<int32_t>(f)[idx];
+	case PhysicalType::INT64:
+		return UnifiedVectorFormat::GetData<int64_t>(f)[idx];
+	case PhysicalType::UINT8:
+		return UnifiedVectorFormat::GetData<uint8_t>(f)[idx];
+	case PhysicalType::UINT16:
+		return UnifiedVectorFormat::GetData<uint16_t>(f)[idx];
+	case PhysicalType::UINT32:
+		return UnifiedVectorFormat::GetData<uint32_t>(f)[idx];
+	case PhysicalType::UINT64:
+		return UnifiedVectorFormat::GetData<uint64_t>(f)[idx];
+	case PhysicalType::INT128:
+		return HugeOf(UnifiedVectorFormat::GetData<hugeint_t>(f)[idx]);
+	default:
+		break;
 	}
+	throw InvalidInputException("Lemma: %s: DuckDB type %s is not loadable as an integer", p.label, t.ToString());
+}
 
-	// A DuckDB dictionary vector: the same index is the same string, so look each index up once per chunk.
-	std::vector<int64_t> memo;
-	void AppendDictionaryCodes(const UnifiedVectorFormat &f, idx_t count) {
-		auto data = UnifiedVectorFormat::GetData<string_t>(f);
+uint32_t CodeOf(const ColPlan &p, LocalDict &d, const string_t &s) {
+	auto it = d.codes.find(s);
+	if (it != d.codes.end()) {
+		return it->second;
+	}
+	if (std::memchr(s.GetData(), 0, s.GetSize()) != nullptr) {
+		throw InvalidInputException("Lemma: %s: a NUL byte in a dictionary string", p.label);
+	}
+	if (d.entries.size() >= p.code_limit) { // the table has at least as many distinct strings as this task
+		throw InvalidInputException("Lemma: cannot pack code %d as %s (%s)", int64_t(d.entries.size()), p.e.rust_type, p.label);
+	}
+	uint32_t code = uint32_t(d.entries.size());
+	d.entries.emplace_back(s.GetData(), s.GetSize());
+	const std::string &kept = d.entries.back();
+	d.codes.emplace(string_t(kept.data(), uint32_t(kept.size())), code);
+	return code;
+}
+
+// Task-local dictionary codes of one chunk, rows [pos, pos + count) of the task. A DuckDB dictionary vector: the same index is
+// the same string, so each index is looked up once per chunk.
+void DecodeCodes(const ColPlan &p, Vector &vec, idx_t count, uint8_t *out, LocalDict &d, uint64_t pos) {
+	UnifiedVectorFormat f;
+	vec.ToUnifiedFormat(count, f);
+	auto data = UnifiedVectorFormat::GetData<string_t>(f);
+	bool dict = vec.GetVectorType() == VectorType::DICTIONARY_VECTOR;
+	if (dict) {
 		idx_t max_idx = 0;
 		for (idx_t r = 0; r < count; r++) {
 			max_idx = MaxValue<idx_t>(max_idx, f.sel->get_index(r));
 		}
-		memo.assign(max_idx + 1, -1);
-		for (idx_t r = 0; r < count; r++) {
-			idx_t idx = f.sel->get_index(r);
-			uint32_t code = 0;
-			if (!f.validity.RowIsValid(idx)) {
-				NullCell();
-				null_seen = true;
-			} else if (memo[idx] >= 0) {
-				code = uint32_t(memo[idx]);
-			} else {
-				code = CodeOf(data[idx]);
-				memo[idx] = code;
-			}
-			PutInt(code);
-		}
+		d.memo.assign(max_idx + 1, -1);
 	}
+	for (idx_t r = 0; r < count; r++) {
+		idx_t idx = f.sel->get_index(r);
+		uint32_t code = 0;
+		if (!f.validity.RowIsValid(idx)) {
+			p.NullCell();
+			d.nulls.push_back(pos + r);
+		} else if (dict && d.memo[idx] >= 0) {
+			code = uint32_t(d.memo[idx]);
+		} else {
+			code = CodeOf(p, d, data[idx]);
+			if (dict) {
+				d.memo[idx] = code;
+			}
+		}
+		PutCell(out + p.width * r, p.width, code);
+	}
+}
 
-	void Append(const LogicalType &t, Vector &vec, idx_t count) {
-		UnifiedVectorFormat f;
-		vec.ToUnifiedFormat(count, f);
-		n += count;
-		switch (role) {
-		case Role::Int:
-		case Role::Date:
-		case Role::Decimal:
-			return AppendIntegers(t, f, count);
-		case Role::Code:
-			if (vec.GetVectorType() == VectorType::DICTIONARY_VECTOR) {
-				return AppendDictionaryCodes(f, count);
+void PutStr(std::string &out, const char *data, size_t len) {
+	if (len > 0xFFFFFFFFull) {
+		throw InvalidInputException("Lemma: a string is longer than u32");
+	}
+	uint32_t l = uint32_t(len);
+	out.append(reinterpret_cast<const char *>(&l), 4);
+	out.append(data, len);
+}
+
+// One chunk of one field into the task's rows [t.count, t.count + count), i.e. table rows t.offset + t.count + r.
+void DecodeChunk(const ColPlan &p, Vector &vec, idx_t count, TaskOut &t) {
+	uint64_t row = t.offset + t.count;
+	uint8_t *out = p.dest ? p.dest + p.width * row : nullptr;
+	switch (p.role) {
+	case Role::Int:
+	case Role::Date:
+	case Role::Decimal:
+		return DecodeIntegers(p, vec, count, out);
+	case Role::Code:
+		return DecodeCodes(p, vec, count, out, t.dicts[p.slot], t.count);
+	default:
+		break;
+	}
+	UnifiedVectorFormat f;
+	vec.ToUnifiedFormat(count, f);
+	const LogicalType &type = p.type;
+	for (idx_t r = 0; r < count; r++) {
+		idx_t idx = f.sel->get_index(r);
+		bool valid = f.validity.RowIsValid(idx);
+		if (p.role == Role::Valid) {
+			out[r] = valid ? 1 : 0;
+			continue;
+		}
+		if (!valid) {
+			p.NullCell();
+		}
+		switch (p.role) {
+		case Role::F64: {
+			double d = 0.0;
+			if (valid) {
+				if (type.id() == LogicalTypeId::DOUBLE) {
+					d = UnifiedVectorFormat::GetData<double>(f)[idx];
+				} else if (type.id() == LogicalTypeId::FLOAT) {
+					d = UnifiedVectorFormat::GetData<float>(f)[idx];
+				} else if (type.id() == LogicalTypeId::DECIMAL) {
+					i128 sv = p.Scaled(IntOf(p, f, idx));
+					d = p.decimal_wide ? HugeToDouble(sv) : double(int64_t(sv));
+				} else if (type.id() == LogicalTypeId::HUGEINT) {
+					d = HugeToDouble(IntOf(p, f, idx));
+				} else {
+					i128 sv = IntOf(p, f, idx);
+					d = type.id() == LogicalTypeId::UBIGINT ? double(uint64_t(sv)) : double(int64_t(sv));
+				}
+			}
+			std::memcpy(out + 8 * r, &d, 8);
+			break;
+		}
+		case Role::Bool:
+			out[r] = valid && UnifiedVectorFormat::GetData<bool>(f)[idx] ? 1 : 0;
+			break;
+		case Role::String:
+			if (valid) {
+				auto sv = UnifiedVectorFormat::GetData<string_t>(f)[idx];
+				PutStr(t.strings[p.slot], sv.GetData(), sv.GetSize());
+			} else {
+				PutStr(t.strings[p.slot], "", 0);
 			}
 			break;
 		default:
-			break;
+			throw InternalException("Lemma: role %s in a scan", p.e.role);
 		}
-		for (idx_t r = 0; r < count; r++) {
-			idx_t idx = f.sel->get_index(r);
-			bool valid = f.validity.RowIsValid(idx);
-			if (role == Role::Valid) {
-				bytes.push_back(valid ? 1 : 0);
-				continue;
-			}
-			if (!valid) {
-				NullCell();
-			}
-			switch (role) {
-			case Role::F64: {
-				double d = 0.0;
-				if (valid) {
-					if (t.id() == LogicalTypeId::DOUBLE) {
-						d = UnifiedVectorFormat::GetData<double>(f)[idx];
-					} else if (t.id() == LogicalTypeId::FLOAT) {
-						d = UnifiedVectorFormat::GetData<float>(f)[idx];
-					} else if (t.id() == LogicalTypeId::DECIMAL) {
-						i128 sv = Scaled(IntOf(t, f, idx, label));
-						d = decimal_wide ? HugeToDouble(sv) : double(int64_t(sv));
-					} else if (t.id() == LogicalTypeId::HUGEINT) {
-						d = HugeToDouble(IntOf(t, f, idx, label));
-					} else {
-						i128 sv = IntOf(t, f, idx, label);
-						d = t.id() == LogicalTypeId::UBIGINT ? double(uint64_t(sv)) : double(int64_t(sv));
-					}
-				}
-				bytes.append(reinterpret_cast<const char *>(&d), 8);
-				break;
-			}
-			case Role::Bool:
-				bytes.push_back(valid && UnifiedVectorFormat::GetData<bool>(f)[idx] ? 1 : 0);
-				break;
-			case Role::String:
-				if (valid) {
-					auto sv = UnifiedVectorFormat::GetData<string_t>(f)[idx];
-					PutStr(bytes, sv.GetData(), sv.GetSize());
-				} else {
-					PutStr(bytes, "", 0);
-				}
-				break;
-			case Role::Code: {
-				uint32_t code = 0;
-				if (!valid) {
-					null_seen = true;
-				} else {
-					code = CodeOf(UnifiedVectorFormat::GetData<string_t>(f)[idx]);
-				}
-				PutInt(code);
-				break;
-			}
-			default:
-				throw InternalException("Lemma: role %s in a scan", e.role);
+	}
+}
+
+struct ScanResult {
+	std::vector<std::string> buffers;                // borrowed byte inputs: strings, dictionaries
+	std::vector<std::vector<uint8_t>> bytes;         // borrowed one-byte inputs: bool, validity
+	std::vector<std::unique_ptr<OwnedBuffer>> owned; // owned inputs (null where an input is not owned)
+	std::vector<LemmaCol> cols;
+	int64_t scan_us = 0;
+
+	// lemma_run takes the owned buffers whatever it returns: from here on they are the library's.
+	void ReleaseOwned() {
+		for (auto &o : owned) {
+			if (o) {
+				o->ptr = nullptr;
 			}
 		}
 	}
 };
 
-struct ScanResult {
-	std::vector<std::string> buffers; // one per input entry (empty for rows entries)
-	std::vector<LemmaCol> cols;
-	int64_t scan_us = 0;
+idx_t ScanThreads(ClientContext &context) {
+	Value v;
+	if (context.TryGetCurrentSetting("lemma_scan_threads", v) && !v.IsNull() && v.GetValue<int64_t>() > 0) {
+		return idx_t(v.GetValue<int64_t>());
+	}
+	return MaxValue<idx_t>(1, idx_t(TaskScheduler::GetScheduler(context).NumberOfThreads()));
+}
+
+// One scan task source: the committed row groups, or the transaction-local ones (this transaction's own uncommitted rows).
+// Tasks of the parallel scan are whole row groups (DuckDB's own parallel table scan); a task's rows land at its position in the
+// single-threaded row order: (row start - base row id), after all committed rows for the local part.
+struct ScanSource {
+	RowGroupCollection *collection = nullptr;
+	ParallelCollectionScanState state;
+	bool local = false;
+	uint64_t base = 0;   // the collection's first row id
+	uint64_t offset = 0; // where its rows start in the destination (upper bound of the rows before it)
+	uint64_t upper = 0;  // rows in the collection (visible or not): an upper bound of what this source yields
 };
 
+// Rows of one table, in the single-threaded scan order: parallel tasks write their rows at their row-group position, then the
+// rows are packed toward the front where a task returned fewer rows than its range (deleted rows, rows of a newer snapshot).
+// Every worker uses the caller's transaction, so all see one snapshot (and its own uncommitted rows).
+uint64_t ScanTable(ClientContext &context, DuckTransaction &transaction, DataTable &storage, const vector<StorageIndex> &ids,
+                   const vector<LogicalType> &types, std::vector<ColPlan> &plans, const std::shared_ptr<Executor> &exec,
+                   ScanResult &res, idx_t want_threads) {
+	std::vector<std::unique_ptr<ScanSource>> sources;
+	auto committed = make_uniq<ScanSource>();
+	committed->collection = storage.GetRowGroupCollection().get();
+	committed->collection->InitializeParallelScan(committed->state);
+	committed->base = committed->state.row_groups->GetBaseRowId();
+	committed->upper = committed->state.max_row - committed->base;
+	uint64_t upper = committed->upper;
+	sources.push_back(std::move(committed));
+	auto local_storage = LocalStorage::Get(transaction).GetStorage(storage);
+	if (local_storage && local_storage->GetCollection().GetTotalRows() > 0) {
+		auto local = make_uniq<ScanSource>();
+		local->collection = &local_storage->GetCollection();
+		local->local = true;
+		local->collection->InitializeParallelScan(local->state);
+		local->base = local->state.row_groups->GetBaseRowId();
+		local->upper = local->state.max_row - local->base;
+		local->offset = upper;
+		upper += local->upper;
+		sources.push_back(std::move(local));
+	}
+	// destinations, sized for the upper bound
+	size_t nstrings = 0, ndicts = 0;
+	for (auto &p : plans) {
+		if (p.role == Role::String) {
+			p.slot = nstrings++;
+		} else if (p.role == Role::Code) {
+			p.slot = ndicts++;
+		}
+		if (p.width == 0) {
+			continue;
+		}
+		if (res.owned[p.k]) {
+			throw InternalException("Lemma: input %d scanned twice", int64_t(p.k));
+		}
+		if (OwnedType(p.e.rust_type)) {
+			res.owned[p.k] = make_uniq<OwnedBuffer>(exec, p.k, upper, p.width);
+			p.dest = res.owned[p.k]->ptr;
+		} else {
+			res.bytes[p.k].resize(upper);
+			p.dest = res.bytes[p.k].data();
+		}
+	}
+	idx_t row_group_rows = MaxValue<idx_t>(1, storage.GetRowGroupSize());
+	idx_t tasks_estimate = upper / row_group_rows + sources.size();
+	idx_t nthreads = MaxValue<idx_t>(1, MinValue<idx_t>(want_threads, tasks_estimate));
+
+	std::mutex out_lock;
+	std::vector<std::unique_ptr<TaskOut>> tasks;
+	std::atomic<bool> stop {false};
+	std::exception_ptr error;
+	auto worker = [&]() {
+		try {
+			TableScanState ts;
+			ts.Initialize(ids, &context, nullptr);
+			DataChunk chunk;
+			chunk.Initialize(Allocator::Get(context), types);
+			for (auto &src : sources) {
+				CollectionScanState &cs = src->local ? ts.local_state : ts.table_state;
+				while (!stop.load() && src->collection->NextParallelScan(context, src->state, cs)) {
+					uint64_t start = cs.row_group->GetRowStart() + cs.vector_index * STANDARD_VECTOR_SIZE;
+					if (start < src->base || cs.max_row < start || cs.max_row - src->base > src->upper) {
+						throw InternalException("Lemma: a scan task outside its table (%d..%d)", int64_t(start),
+						                        int64_t(cs.max_row));
+					}
+					auto t = make_uniq<TaskOut>();
+					t->offset = src->offset + (start - src->base);
+					uint64_t range = cs.max_row - start;
+					t->strings.resize(nstrings);
+					t->dicts.resize(ndicts);
+					while (true) {
+						chunk.Reset();
+						if (!cs.Scan(transaction, chunk) || chunk.size() == 0) {
+							break;
+						}
+						if (t->count + chunk.size() > range) {
+							throw InternalException("Lemma: a scan task returned more rows than its range");
+						}
+						for (auto &p : plans) {
+							DecodeChunk(p, chunk.data[p.chunk_col], chunk.size(), *t);
+						}
+						t->count += chunk.size();
+					}
+					std::lock_guard<std::mutex> guard(out_lock);
+					tasks.push_back(std::move(t));
+				}
+			}
+		} catch (...) {
+			std::lock_guard<std::mutex> guard(out_lock);
+			if (!error) {
+				error = std::current_exception();
+			}
+			stop = true;
+		}
+	};
+	{
+		std::vector<std::thread> pool;
+		for (idx_t i = 1; i < nthreads; i++) {
+			pool.emplace_back(worker);
+		}
+		worker();
+		for (auto &th : pool) {
+			th.join();
+		}
+	}
+	if (error) {
+		std::rethrow_exception(error);
+	}
+	// Row order: tasks by position; pack fixed-width cells toward the front where a task left a gap.
+	std::sort(tasks.begin(), tasks.end(),
+	          [](const std::unique_ptr<TaskOut> &a, const std::unique_ptr<TaskOut> &b) { return a->offset < b->offset; });
+	uint64_t total = 0;
+	for (auto &t : tasks) {
+		if (t->offset < total) {
+			throw InternalException("Lemma: overlapping scan tasks");
+		}
+		if (t->offset != total) {
+			for (auto &p : plans) {
+				if (p.dest && t->count) {
+					std::memmove(p.dest + p.width * total, p.dest + p.width * t->offset, p.width * t->count);
+				}
+			}
+			t->offset = total;
+		}
+		total += t->count;
+	}
+	// Dictionary codes: number the distinct strings in order of first appearance in row order (the tasks in order, each task's
+	// strings in its order), then rewrite each task's codes where its own numbering differs; a NULL cell is code 0.
+	for (auto &p : plans) {
+		if (p.role != Role::Code) {
+			continue;
+		}
+		LocalDict global;
+		std::vector<std::vector<uint32_t>> remaps(tasks.size());
+		std::vector<bool> identity(tasks.size(), true);
+		for (size_t ti = 0; ti < tasks.size(); ti++) {
+			LocalDict &d = tasks[ti]->dicts[p.slot];
+			auto &remap = remaps[ti];
+			remap.resize(d.entries.size());
+			for (size_t c = 0; c < d.entries.size(); c++) {
+				const std::string &s = d.entries[c];
+				string_t key(s.data(), uint32_t(s.size()));
+				auto it = global.codes.find(key);
+				uint32_t code;
+				if (it != global.codes.end()) {
+					code = it->second;
+				} else {
+					if (global.entries.size() >= p.code_limit) {
+						throw InvalidInputException("Lemma: cannot pack code %d as %s (%s)", int64_t(global.entries.size()),
+						                            p.e.rust_type, p.label);
+					}
+					code = uint32_t(global.entries.size());
+					global.entries.push_back(s);
+					const std::string &kept = global.entries.back();
+					global.codes.emplace(string_t(kept.data(), uint32_t(kept.size())), code);
+				}
+				remap[c] = code;
+				identity[ti] = identity[ti] && code == c;
+			}
+			global.null_seen = global.null_seen || !d.nulls.empty();
+		}
+		std::atomic<size_t> next {0};
+		auto rewrite = [&]() {
+			for (size_t ti = next++; ti < tasks.size(); ti = next++) {
+				if (identity[ti]) {
+					continue;
+				}
+				TaskOut &t = *tasks[ti];
+				uint8_t *base = p.dest + p.width * t.offset;
+				for (uint64_t r = 0; r < t.count; r++) {
+					uint32_t c = 0;
+					std::memcpy(&c, base + p.width * r, p.width);
+					PutCell(base + p.width * r, p.width, remaps[ti][c]);
+				}
+				for (auto r : t.dicts[p.slot].nulls) {
+					PutCell(base + p.width * r, p.width, 0);
+				}
+			}
+		};
+		{
+			std::vector<std::thread> pool;
+			for (idx_t i = 1; i < nthreads; i++) {
+				pool.emplace_back(rewrite);
+			}
+			rewrite();
+			for (auto &th : pool) {
+				th.join();
+			}
+		}
+		// the dictionary input of this codes field
+		std::string out;
+		std::vector<std::string> entries(global.entries.begin(), global.entries.end());
+		if (entries.empty() && global.null_seen) {
+			entries.emplace_back(""); // every cell is NULL: code 0 still has to index an entry
+		}
+		for (auto &s : entries) {
+			PutStr(out, s.data(), s.size());
+		}
+		if (p.dict_k == SIZE_MAX) {
+			throw InvalidInputException("Lemma: %s: a codes field without its dictionary", p.label);
+		}
+		res.buffers[p.dict_k] = std::move(out);
+		res.cols[p.dict_k] = LemmaCol {nullptr, 0, entries.size()};
+	}
+	for (auto &p : plans) {
+		if (p.role == Role::String) {
+			size_t size = 0;
+			for (auto &t : tasks) {
+				size += t->strings[p.slot].size();
+			}
+			std::string out;
+			out.reserve(size);
+			for (auto &t : tasks) {
+				out += t->strings[p.slot];
+			}
+			res.buffers[p.k] = std::move(out);
+		}
+	}
+	return total;
+}
+
 // Scan exactly the columns the manifest names, table by table, in the caller's transaction (its snapshot, its own uncommitted
-// changes included: DataTable::Scan reads the transaction-local storage after the committed row groups), one thread, in row order.
+// changes included), on lemma_scan_threads threads (default: DuckDB's `threads`), in single-threaded row order. Fixed-width
+// integer and f64 fields are decoded once, straight into buffers of the executor library (owned inputs, ABI 3); bool and
+// validity into byte buffers; strings and dictionaries into byte strings.
 ScanResult ScanInputs(ClientContext &context, const Manifest &m) {
 	auto start = std::chrono::steady_clock::now();
 	ScanResult res;
 	res.buffers.resize(m.inputs.size());
+	res.bytes.resize(m.inputs.size());
+	res.owned.resize(m.inputs.size());
 	res.cols.resize(m.inputs.size());
-	std::vector<std::unique_ptr<Encoder>> enc(m.inputs.size());
+	idx_t want_threads = ScanThreads(context);
 	size_t i = 0;
 	while (i < m.inputs.size()) {
 		const InEntry &rows = m.inputs[i];
@@ -822,6 +1151,8 @@ ScanResult ScanInputs(ClientContext &context, const Manifest &m) {
 		vector<StorageIndex> ids;
 		vector<LogicalType> types;
 		std::unordered_map<std::string, idx_t> pos; // column name -> chunk column
+		std::vector<ColPlan> plans;
+		std::unordered_map<size_t, size_t> dict_of_codes; // codes input -> its dictionary input
 		for (size_t k = i + 1; k < end; k++) {
 			const InEntry &e = m.inputs[k];
 			auto &col = entry.GetColumn(e.column);
@@ -837,96 +1168,88 @@ ScanResult ScanInputs(ClientContext &context, const Manifest &m) {
 				ids.emplace_back(col.StorageOid());
 				types.push_back(col.Type());
 			}
-			auto en = make_uniq<Encoder>();
-			en->e = e;
-			en->label = rows.table + "." + e.column;
-			if (e.role != "dict") {
-				en->SetRole();
+			ColPlan p;
+			p.k = k;
+			p.e = e;
+			p.label = rows.table + "." + e.column;
+			p.role = RoleOf(e.role, p.label);
+			if (p.role == Role::Dict) {
+				if (e.codes_of <= int64_t(i) || e.codes_of >= int64_t(end) || m.inputs[size_t(e.codes_of)].role != "code" ||
+				    dict_of_codes.count(size_t(e.codes_of))) {
+					throw InvalidInputException("Lemma: %s.%s: the dictionary names no codes field", rows.table, e.column);
+				}
+				dict_of_codes[size_t(e.codes_of)] = k; // filled from its codes field by the scan
+				continue;
 			}
-			if (e.role == "dict") {
-				continue; // filled from its codes field after the scan
+			p.chunk_col = pos[col.Name()];
+			p.type = col.Type();
+			switch (p.role) {
+			case Role::Code:
+				p.target = TargetOf(e.rust_type);
+				p.code_limit = e.rust_type == "u8" ? 256ull : e.rust_type == "u16" ? 65536ull : 4294967296ull;
+				p.width = size_t(p.target.width);
+				break;
+			case Role::Int:
+			case Role::Date:
+			case Role::Decimal:
+				p.target = TargetOf(e.rust_type);
+				p.width = size_t(p.target.width);
+				break;
+			case Role::F64:
+				p.width = 8;
+				break;
+			case Role::Bool:
+			case Role::Valid:
+				p.width = 1;
+				break;
+			default:
+				p.width = 0;
+				break;
 			}
-			if (e.role == "code") {
-				en->target = TargetOf(e.rust_type);
-				en->code_limit = e.rust_type == "u8" ? 256ull : e.rust_type == "u16" ? 65536ull : 4294967296ull;
-			} else if (e.role == "int" || e.role == "date" || e.role == "decimal") {
-				en->target = TargetOf(e.rust_type);
+			if (p.width && OwnedType(e.rust_type) != (p.role != Role::Bool && p.role != Role::Valid)) {
+				throw InvalidInputException("Lemma: %s: role %s does not fit the field type %s", p.label, e.role, e.rust_type);
 			}
-			if (e.role == "decimal" || (e.role == "f64" && col.Type().id() == LogicalTypeId::DECIMAL)) {
+			if (p.role == Role::Decimal || (p.role == Role::F64 && col.Type().id() == LogicalTypeId::DECIMAL)) {
 				if (e.source_scale > e.scale) {
-					throw InvalidInputException("Lemma: %s has more than %d fractional digits", en->label, e.scale);
+					throw InvalidInputException("Lemma: %s has more than %d fractional digits", p.label, e.scale);
 				}
-				en->mul = Pow10(e.scale - e.source_scale);
-				en->decimal_wide = DecimalType::GetWidth(col.Type()) + (e.scale - e.source_scale) > 18;
+				p.mul = Pow10(e.scale - e.source_scale);
+				p.decimal_wide = DecimalType::GetWidth(col.Type()) + (e.scale - e.source_scale) > 18;
 			}
-			enc[k] = std::move(en);
+			plans.push_back(std::move(p));
 		}
-		uint64_t total = 0;
-		if (!ids.empty()) {
-			TableScanState state;
-			storage.InitializeScan(context, transaction, state, ids);
-			DataChunk chunk;
-			chunk.Initialize(Allocator::Get(context), types);
-			while (true) {
-				chunk.Reset();
-				storage.Scan(transaction, chunk, state);
-				if (chunk.size() == 0) {
-					break;
-				}
-				total += chunk.size();
-				for (size_t k = i + 1; k < end; k++) {
-					if (enc[k]) {
-						idx_t c = pos[entry.GetColumn(m.inputs[k].column).Name()];
-						enc[k]->Append(types[c], chunk.data[c], chunk.size());
-					}
-				}
-			}
-		} else {
+		if (ids.empty()) {
 			// No column is read (e.g. COUNT(*)): count the rows visible to this transaction with a scan of the first column.
 			auto &first = entry.GetColumns().GetColumn(PhysicalIndex(0));
 			ids.emplace_back(first.StorageOid());
-			TableScanState state;
-			storage.InitializeScan(context, transaction, state, ids);
-			DataChunk chunk;
-			chunk.Initialize(Allocator::Get(context), {first.Type()});
-			while (true) {
-				chunk.Reset();
-				storage.Scan(transaction, chunk, state);
-				if (chunk.size() == 0) {
-					break;
-				}
-				total += chunk.size();
+			types.push_back(first.Type());
+		}
+		for (auto &p : plans) {
+			if (p.role == Role::Code && dict_of_codes.count(p.k)) {
+				p.dict_k = dict_of_codes[p.k];
 			}
 		}
+		uint64_t total = ScanTable(context, transaction, storage, ids, types, plans, m.exec, res, want_threads);
 		res.cols[i] = LemmaCol {nullptr, 0, total};
-		for (size_t k = i + 1; k < end; k++) {
-			const InEntry &e = m.inputs[k];
-			if (e.role == "dict") {
-				if (e.codes_of < 0 || size_t(e.codes_of) >= m.inputs.size() || !enc[size_t(e.codes_of)] ||
-				    enc[size_t(e.codes_of)]->e.role != "code") {
-					throw InvalidInputException("Lemma: %s.%s: the dictionary names no codes field", rows.table, e.column);
+		for (auto &p : plans) {
+			if (p.role == Role::String) {
+				res.cols[p.k] = LemmaCol {nullptr, 0, total};
+			} else if (p.width) {
+				if (res.owned[p.k]) {
+					res.cols[p.k] = LemmaCol {res.owned[p.k]->ptr, res.owned[p.k]->len, total};
+				} else {
+					res.bytes[p.k].resize(total);
+					res.cols[p.k] = LemmaCol {res.bytes[p.k].data(), total, total};
 				}
-				auto &src = *enc[size_t(e.codes_of)];
-				std::vector<std::string> entries(src.entries.begin(), src.entries.end());
-				if (entries.empty() && src.null_seen) {
-					entries.emplace_back(""); // every cell is NULL: code 0 still has to index an entry
-				}
-				std::string out;
-				for (auto &s : entries) {
-					Encoder::PutStr(out, s.data(), s.size());
-				}
-				res.buffers[k] = std::move(out);
-				res.cols[k] = LemmaCol {nullptr, 0, entries.size()};
-			} else {
-				res.buffers[k] = std::move(enc[k]->bytes);
-				res.cols[k] = LemmaCol {nullptr, 0, enc[k]->n};
 			}
 		}
 		i = end;
 	}
 	for (size_t k = 0; k < res.cols.size(); k++) {
-		res.cols[k].data = reinterpret_cast<const uint8_t *>(res.buffers[k].data());
-		res.cols[k].len = res.buffers[k].size();
+		if (!res.owned[k] && res.bytes[k].empty() && !m.inputs[k].rows) {
+			res.cols[k].data = reinterpret_cast<const uint8_t *>(res.buffers[k].data());
+			res.cols[k].len = res.buffers[k].size();
+		}
 	}
 	res.scan_us = MicrosSince(start);
 	return res;
@@ -1034,6 +1357,7 @@ RunResult RunExecutor(const Manifest &m, ScanResult &in, const std::vector<Param
 		abi_params.push_back(
 		    LemmaParam {p.kind, reinterpret_cast<const uint8_t *>(p.bytes.data()), uint64_t(p.bytes.size())});
 	}
+	in.ReleaseOwned(); // lemma_run takes every owned input buffer, whatever it returns (lemma_abi.h)
 	int32_t code = m.exec->run(in.cols.data(), in.cols.size(), abi_params.data(), abi_params.size(), &out);
 	std::string bytes(reinterpret_cast<const char *>(out.ptr), size_t(out.len));
 	m.exec->free_out(&out);
@@ -1333,6 +1657,68 @@ TableFunction LemmaQueryFunctionDef() {
 	return f;
 }
 
+// ---------------------------------------------------------------- lemma_scan_inputs(sql): the bytes handed to an executor
+
+// One row per executor input of `sql`: what lemma_query would pass to lemma_run (the cells of an owned input up to n), from the
+// same scan, in the caller's transaction. The executor does not run. For tests of the scan (thread counts, snapshots).
+struct ScanInputsState : public GlobalTableFunctionState {
+	std::vector<std::tuple<int64_t, std::string, std::string, uint64_t, std::string>> rows;
+	size_t next = 0;
+};
+
+unique_ptr<FunctionData> ScanInputsBind(ClientContext &context, TableFunctionBindInput &input, vector<LogicalType> &types,
+                                        vector<string> &names) {
+	if (input.inputs.size() != 1 || input.inputs[0].IsNull()) {
+		throw BinderException("lemma_scan_inputs takes the SQL text");
+	}
+	auto sql = StringValue::Get(input.inputs[0]);
+	auto manifest = FindExecutor(context, sql);
+	if (!manifest) {
+		ThrowMiss(context, sql);
+	}
+	names = {"input", "name", "role", "n", "data"};
+	types = {LogicalType::BIGINT, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::UBIGINT, LogicalType::BLOB};
+	auto bind = make_uniq<LemmaBindData>();
+	bind->manifest = std::shared_ptr<Manifest>(manifest.release());
+	bind->sql = sql;
+	return std::move(bind);
+}
+
+unique_ptr<GlobalTableFunctionState> ScanInputsInit(ClientContext &context, TableFunctionInitInput &input) {
+	auto &bind = input.bind_data->Cast<LemmaBindData>();
+	const Manifest &m = *bind.manifest;
+	auto scan = ScanInputs(context, m);
+	auto state = make_uniq<ScanInputsState>();
+	for (size_t k = 0; k < m.inputs.size(); k++) {
+		const InEntry &e = m.inputs[k];
+		const LemmaCol &c = scan.cols[k];
+		std::string data;
+		if (scan.owned[k]) {
+			data.assign(reinterpret_cast<const char *>(c.data), size_t(c.n * scan.owned[k]->width));
+		} else if (c.len) {
+			data.assign(reinterpret_cast<const char *>(c.data), size_t(c.len));
+		}
+		state->rows.emplace_back(int64_t(k), e.rows ? e.table : e.table + "." + e.field, e.rows ? "rows" : e.role, c.n,
+		                         std::move(data));
+	}
+	return std::move(state); // the owned buffers go back to the library with `scan`
+}
+
+void ScanInputsFunction(ClientContext &, TableFunctionInput &data, DataChunk &output) {
+	auto &st = data.global_state->Cast<ScanInputsState>();
+	idx_t count = 0;
+	while (st.next < st.rows.size() && count < STANDARD_VECTOR_SIZE) {
+		auto &r = st.rows[st.next++];
+		output.SetValue(0, count, Value::BIGINT(std::get<0>(r)));
+		output.SetValue(1, count, Value(std::get<1>(r)));
+		output.SetValue(2, count, Value(std::get<2>(r)));
+		output.SetValue(3, count, Value::UBIGINT(std::get<3>(r)));
+		output.SetValue(4, count, Value::BLOB(const_data_ptr_cast(std::get<4>(r).data()), std::get<4>(r).size()));
+		count++;
+	}
+	output.SetCardinality(count);
+}
+
 // ---------------------------------------------------------------- lemma_last_query()
 
 struct LastBind : public TableFunctionData {
@@ -1541,11 +1927,17 @@ void LoadInternal(ExtensionLoader &loader) {
 	config.AddExtensionOption("lemma_enqueue_misses",
 	                          "Write the SQL of a miss to ${lemma_home}/queue/<key>.sql for the offline `lemma optimize`",
 	                          LogicalType::BOOLEAN, Value::BOOLEAN(false));
+	config.AddExtensionOption("lemma_scan_threads",
+	                          "Threads of the in-DuckDB scan that hands the columns to a proved executor (0: DuckDB's threads "
+	                          "setting). The rows are the same for every value",
+	                          LogicalType::BIGINT, Value::BIGINT(0));
 	config.AddExtensionOption("lemma_home", "Lemma's directory: executors/<key>/{lib.so,manifest.json,query.sql}, queue/",
 	                          LogicalType::VARCHAR, Value(DefaultHome()));
 	loader.RegisterFunction(LemmaQueryFunctionDef());
 	TableFunction last("lemma_last_query", {}, LastQueryFunction, LastQueryBind, LastQueryInit);
 	loader.RegisterFunction(last);
+	loader.RegisterFunction(
+	    TableFunction("lemma_scan_inputs", {LogicalType::VARCHAR}, ScanInputsFunction, ScanInputsBind, ScanInputsInit));
 	loader.RegisterFunction(
 	    ScalarFunction("lemma_normalize_sql", {LogicalType::VARCHAR}, LogicalType::VARCHAR, NormalizeSqlScalar));
 	loader.RegisterFunction(ScalarFunction("lemma_sql_key", {LogicalType::VARCHAR}, LogicalType::VARCHAR, SqlKeyScalar));

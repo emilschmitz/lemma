@@ -6,17 +6,19 @@ columns as caller buffers through ``lemma_run``. That entry point is a FIXED TEM
 the per-field decode lines generated from the spec's column structs: no agent code is in it. Its caller in research_loop
 (the in-engine executor cache) emits it only when the feature flag of lemma.toml is on.
 
-C ABI (version 2; the C header is ``lemma_abi.h`` of the database extension):
+C ABI (version 3; the C header is ``lemma_abi.h`` of the database extension):
 
     struct LemmaCol   { const uint8_t *data; uint64_t len; uint64_t n; };     // len bytes at data; n values
     struct LemmaParam { uint32_t kind; const uint8_t *data; uint64_t len; };  // one query-template parameter value
     struct LemmaOut   { uint8_t *ptr; uint64_t len; uint64_t cap; };          // owned by the library: release with lemma_free_out
 
-    uint32_t    lemma_abi_version(void);       // 2
+    uint32_t    lemma_abi_version(void);       // 3
     const char *lemma_query_sql(void);         // the SQL the spec was emitted from (NUL-terminated)
     const char *lemma_input_layout(void);      // one line per LemmaCol, in order: "rows <table>" or "<table>.<field> <rust type>"
     const char *lemma_output_layout(void);     // one line per result column: "<field> <rust type>"
     const char *lemma_param_layout(void);      // one line per LemmaParam, in run_query's order: "<name> <rust type> <lo> <hi>" (- = none)
+    uint8_t    *lemma_alloc_input(uint64_t index, uint64_t cap);              // an owned column buffer of cap cells (NULL: not owned)
+    void        lemma_free_input(uint64_t index, uint8_t *data, uint64_t len); // give back an owned buffer lemma_run never got
     int32_t     lemma_run(const LemmaCol *cols, uint64_t ncols, const LemmaParam *params, uint64_t nparams, LemmaOut *out);
     void        lemma_free_out(LemmaOut *out);
 
@@ -24,8 +26,17 @@ Inputs, per column struct of the spec in order: one ``rows`` entry (``n`` = the 
 field in struct order, in the bytes of the column-file format of ``main`` (little-endian cells; a string is a u32 byte length and
 its UTF-8 bytes; a ``__dict`` entry has ``n`` = its entry count). ``lemma_run`` decodes them into the ``Vec``s the verified loaders
 take, checks EVERY data assumption ``main`` checks (the same generated checks: lengths, catalog row/value caps, dictionary codes,
-unique keys, join caps), and only then calls the proved loaders and ``run_query``. A violated assumption is a nonzero return with the
+unique keys, join caps; evaluated by the fast helpers of the template: min/max per chunk on all cores, a sort or a bitmap
+instead of a hash set), and only then calls the proved loaders and ``run_query``. A violated assumption is a nonzero return with the
 message in ``out``; ``run_query`` never runs on unchecked data. A panic never crosses the C boundary (``catch_unwind``).
+
+Owned columns (new in version 3): a field whose cells are fixed-width integers or ``f64`` (``_WIDTH``; not ``bool``, not
+``String``) is passed in a buffer THIS library allocated with ``lemma_alloc_input(index, cap)`` (a ``Box<[T]>`` of ``cap`` zeroed
+cells); the caller writes the cells in place and passes ``len`` = the allocated bytes (``cap * size_of::<T>()``) and ``n`` <= cap.
+``lemma_run`` (with ``ncols`` equal to the layout's count) takes every owned buffer as the ``Vec``'s memory (``Box::from_raw``,
+truncated to ``n``) before it checks anything else, so the cells are copied once (DuckDB vector -> this buffer) and the library
+frees them whatever ``lemma_run`` returns; a buffer the caller never passes it returns with ``lemma_free_input``. Borrowed
+columns (``bool``, strings, dictionaries) are read, never written or kept, as in version 2.
 
 Parameters (a query template, ``declarative_spec/templates.py``; new in version 2): one ``LemmaParam`` per ``// PARAM`` line of
 the spec, in ``run_query``'s order. ``kind`` 1 = an integer, ``data`` its 8 bytes as a little-endian i64 (BIGINT as is, DATE the day
@@ -57,7 +68,7 @@ from declarative_spec.assemble import (
     _stitch_verus,
 )
 
-ABI_VERSION = 2
+ABI_VERSION = 3
 KIND_INT, KIND_F64, KIND_BOOL, KIND_STR = 1, 2, 3, 4
 _INT_TYPES = ("u8", "u16", "u32", "u64", "usize", "i8", "i16", "i32", "i64", "i128")
 
@@ -108,16 +119,82 @@ def _static(name: str, text: str) -> str:
     return f"static {name}: [u8; {size}] = {body};\n"
 
 
+def owned(fty: str) -> bool:
+    """An owned input column (ABI 3): fixed-width integer or f64 cells, passed in a buffer of ``lemma_alloc_input``."""
+    return fty in _WIDTH
+
+
 def _decode_field(index: int, suffix: str, fname: str, fty: str) -> str:
     var = f"{suffix}_{_local_ident(fname)}"
     label = f"{suffix}.{_local_ident(fname)}"
+    if owned(fty):
+        return f'    let {var}: Vec<{fty}> = lemma_take(&cols[{index}], "{label}");\n'
     if fty == "String":
         return f'    let {var}: Vec<String> = lemma_strings(&cols[{index}], "{label}");\n'
     if fty == "bool":
         return f'    let {var}: Vec<bool> = lemma_fixed(&cols[{index}], "{label}", |b: [u8; 1]| b[0] != 0);\n'
-    if fty in _WIDTH:
-        return f'    let {var}: Vec<{fty}> = lemma_fixed(&cols[{index}], "{label}", {fty}::from_le_bytes);\n'
     raise ValueError(f"library mode cannot load column type {fty}")
+
+
+_RANGE_CHECK = re.compile(
+    r"^(\s*)assert!\((\w+)\.iter\(\)\.all\(\|v\| \(\*v as i128\) >= (\S+) && \(\*v as i128\) <= (\S+)\), (\".*\")\);$"
+)
+_CODE_CHECK = re.compile(r"^(\s*)assert!\((\w+)\.iter\(\)\.all\(\|c\| \(\*c as usize\) < (\w+)\.len\(\)\), (\".*\")\);$")
+_ALL_CHECK = re.compile(r"^(\s*)assert!\((\w+)\.iter\(\)\.all\(\|v\| (.*)\), (\".*\")\);$")
+_DISTINCT_CHECK = re.compile(
+    r"^(\s*)assert!\((\w+)\.iter\(\)\.collect::<std::collections::HashSet<_>>\(\)\.len\(\) == \2\.len\(\), (\".*\")\);$"
+)
+_UNIQUE_CHECK = re.compile(
+    r"^\s*\{\n\s*let mut seen_\w+ = std::collections::HashSet::new\(\);\n\s*for i in 0\.\.n_\w+ \{\n"
+    r"\s*assert!\(seen_\w+\.insert\(\((\w+)\[i\]\.clone\(\),\)\), (\".*\")\);\n\s*\}\n\s*\}$"
+)
+
+
+def fast_check(check: str, var_types: dict[str, str]) -> str:
+    """The same predicate as one generated ``valid_cols`` check of :func:`assemble._runtime_checks`, evaluated by the template's
+    fast helpers (min/max per chunk on all cores, a sort or bitmap instead of a hash set). A check of another shape is kept as
+    it is: every check ``main`` makes is made here, only faster where the shape is known."""
+    if m := _RANGE_CHECK.match(check):
+        ind, var, lo, hi, msg = m.groups()
+        return f"{ind}assert!(lemma_all_in_range(&{var}, {lo}, {hi}), {msg});"
+    if m := _CODE_CHECK.match(check):
+        ind, codes, dct, msg = m.groups()
+        return f"{ind}assert!(lemma_all_below(&{codes}, {dct}.len()), {msg});"
+    if m := _ALL_CHECK.match(check):
+        ind, var, pred, msg = m.groups()
+        return f"{ind}assert!(lemma_par_all(&{var}, |v: &{var_types[var]}| {pred}), {msg});"
+    if m := _DISTINCT_CHECK.match(check):
+        ind, var, msg = m.groups()
+        return f"{ind}assert!(lemma_all_distinct(&{var}), {msg});"
+    if (m := _UNIQUE_CHECK.match(check)) and var_types.get(m.group(1)) in _INT_TYPES:
+        return f"    assert!(lemma_unique_ints(&{m.group(1)}), {m.group(2)});"
+    return check
+
+
+def _owned_alloc_fns(owned_cols: list[tuple[int, str]]) -> str:
+    """``lemma_alloc_input`` / ``lemma_free_input``: one arm per owned column of the layout (its index and cell type)."""
+    alloc = "".join(f"        {i} => lemma_alloc_vec::<{t}>(cap),\n" for i, t in owned_cols)
+    free = "".join(f'        {i} => drop(lemma_take::<{t}>(&col, "lemma_free_input")),\n' for i, t in owned_cols)
+    return (
+        "// An owned column buffer of `cap` cells for input `index` (null: that input is not owned, or the arguments are wrong).\n"
+        "#[no_mangle]\n"
+        'pub extern "C" fn lemma_alloc_input(index: u64, cap: u64) -> *mut u8 {\n'
+        "    std::panic::catch_unwind(|| match index {\n"
+        f"{alloc}"
+        "        _ => std::ptr::null_mut(),\n"
+        "    })\n"
+        "    .unwrap_or(std::ptr::null_mut())\n"
+        "}\n\n"
+        "// Give back an owned buffer of input `index` that lemma_run never received (`len` = its allocated bytes).\n"
+        "#[no_mangle]\n"
+        'pub extern "C" fn lemma_free_input(index: u64, data: *mut u8, len: u64) {\n'
+        "    let col = LemmaCol { data: data as *const u8, len, n: 0 };\n"
+        "    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match index {\n"
+        f"{free}"
+        "        _ => {}\n"
+        "    }));\n"
+        "}\n"
+    )
 
 
 def _encode_column(fname: str, fty: str) -> str:
@@ -147,7 +224,7 @@ def _encode_column(fname: str, fty: str) -> str:
     return f"    for r in res.iter() {{\n{valid}    }}\n    for r in res.iter() {{\n{cell}    }}\n"
 
 
-# The fixed host template. `unsafe` appears ONLY here, in four small functions, each commented with the caller's contract.
+# The fixed host template. `unsafe` appears ONLY here, in five small functions, each commented with the caller's contract.
 _TEMPLATE_HEAD = r"""
 // ===== HOST C ABI (fixed template, not agent code; outside verus!, unverified, reviewed) =====
 #[repr(C)]
@@ -199,7 +276,7 @@ pub extern "C" fn lemma_param_layout() -> *const u8 {
     LEMMA_PARAM_LAYOUT.as_ptr()
 }
 
-// UNSAFE 1/4. Contract: `ptr` points to `n` initialized T (the caller's LemmaCol or LemmaParam array) that outlive the call.
+// UNSAFE 1/5. Contract: `ptr` points to `n` initialized T (the caller's LemmaCol or LemmaParam array) that outlive the call.
 fn lemma_slice<'a, T>(ptr: *const T, n: u64, what: &str) -> &'a [T] {
     if n == 0 {
         return &[];
@@ -208,7 +285,7 @@ fn lemma_slice<'a, T>(ptr: *const T, n: u64, what: &str) -> &'a [T] {
     unsafe { std::slice::from_raw_parts(ptr, n as usize) }
 }
 
-// UNSAFE 2/4. Contract: `data` points to `len` readable bytes (a LemmaCol or LemmaParam buffer) that outlive the call and are
+// UNSAFE 2/5. Contract: `data` points to `len` readable bytes (a LemmaCol or LemmaParam buffer) that outlive the call and are
 // not written during it.
 fn lemma_bytes<'a>(data: *const u8, len: u64, what: &str) -> &'a [u8] {
     if len == 0 {
@@ -234,14 +311,14 @@ fn lemma_param_str(p: &LemmaParam, name: &str) -> String {
     String::from_utf8(lemma_bytes(p.data, p.len, "a parameter").to_vec()).expect("a string parameter is not UTF-8")
 }
 
-// UNSAFE 3/4. Contract: `out` points to a writable LemmaOut. The bytes move to the caller, who returns them with lemma_free_out.
+// UNSAFE 3/5. Contract: `out` points to a writable LemmaOut. The bytes move to the caller, who returns them with lemma_free_out.
 fn lemma_write_out(out: *mut LemmaOut, bytes: Vec<u8>) {
     let mut bytes = std::mem::ManuallyDrop::new(bytes);
     let value = LemmaOut { ptr: bytes.as_mut_ptr(), len: bytes.len() as u64, cap: bytes.capacity() as u64 };
     unsafe { out.write(value) };
 }
 
-// UNSAFE 4/4. Contract: `out` was filled by lemma_run of this library and not freed before; it is reset to empty.
+// UNSAFE 4/5. Contract: `out` was filled by lemma_run of this library and not freed before; it is reset to empty.
 #[no_mangle]
 pub extern "C" fn lemma_free_out(out: *mut LemmaOut) {
     if out.is_null() {
@@ -255,6 +332,130 @@ pub extern "C" fn lemma_free_out(out: *mut LemmaOut) {
         o.ptr = std::ptr::null_mut();
         o.len = 0;
         o.cap = 0;
+    }
+}
+
+// Owned input columns (ABI 3). A fixed-width field arrives in a buffer this library allocated (lemma_alloc_input): a Box<[T]>
+// of `cap` zeroed cells, written in place by the caller. Allocation is safe code; taking it back is UNSAFE 5/5.
+fn lemma_alloc_vec<T: Copy + Default>(cap: u64) -> *mut u8 {
+    let cells: Box<[T]> = vec![T::default(); cap as usize].into_boxed_slice();
+    Box::into_raw(cells) as *mut T as *mut u8
+}
+
+// UNSAFE 5/5. Contract: `col.data` was returned by lemma_alloc_input of this library for this very column (so it is a
+// Box<[T]> of col.len / size_of::<T>() cells: the same T, the same length), every cell holds a T (any bit pattern is one for
+// the integer and f64 cell types this is used with), and the caller gives the buffer up with this call: it is taken once, by
+// lemma_run or by lemma_free_input, never both. The Vec owns the memory afterwards and frees it.
+fn lemma_take<T>(col: &LemmaCol, label: &str) -> Vec<T> {
+    let w = std::mem::size_of::<T>() as u64;
+    assert!(
+        !col.data.is_null() && col.len % w == 0 && (col.data as usize) % std::mem::align_of::<T>() == 0,
+        "{}: not an owned buffer of {}-byte cells", label, w
+    );
+    let cap = (col.len / w) as usize;
+    let mut cells: Vec<T> = unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(col.data as *mut T, cap)) }.into_vec();
+    assert!(col.n <= cap as u64, "{}: {} values in a buffer of {} cells", label, col.n, cap);
+    cells.truncate(col.n as usize);
+    cells
+}
+
+// Fast evaluation of the generated data checks: the same predicates, one pass per column, split over the cores.
+trait LemmaInt: Copy + Ord + Send + Sync {
+    fn wide(self) -> i128;
+}
+macro_rules! lemma_int {
+    ($($t:ty),*) => { $(impl LemmaInt for $t { fn wide(self) -> i128 { self as i128 } })* };
+}
+lemma_int!(u8, u16, u32, u64, usize, i8, i16, i32, i64, i128);
+
+// f over chunks of `v`, one scoped thread per chunk (one chunk under 64Ki values); the results in chunk order.
+fn lemma_par<T: Sync, R: Send>(v: &[T], f: impl Fn(&[T]) -> R + Sync) -> Vec<R> {
+    let cores = std::thread::available_parallelism().map(|c| c.get()).unwrap_or(1);
+    let parts = cores.min(v.len() >> 16).max(1);
+    if parts == 1 {
+        return vec![f(v)];
+    }
+    let size = (v.len() + parts - 1) / parts;
+    let f = &f;
+    std::thread::scope(|s| {
+        let handles: Vec<_> = v.chunks(size).map(|c| s.spawn(move || f(c))).collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    })
+}
+
+// (min, max) of a non-empty slice, None for an empty one.
+fn lemma_min_max<T: LemmaInt>(v: &[T]) -> Option<(T, T)> {
+    if v.is_empty() {
+        return None;
+    }
+    let parts = lemma_par(v, |c| {
+        let (mut lo, mut hi) = (c[0], c[0]);
+        for &x in c {
+            lo = if x < lo { x } else { lo };
+            hi = if x > hi { x } else { hi };
+        }
+        (lo, hi)
+    });
+    let (mut lo, mut hi) = parts[0];
+    for &(a, b) in &parts {
+        lo = lo.min(a);
+        hi = hi.max(b);
+    }
+    Some((lo, hi))
+}
+
+// every value v has lo <= v <= hi (as i128)
+fn lemma_all_in_range<T: LemmaInt>(v: &[T], lo: i128, hi: i128) -> bool {
+    match lemma_min_max(v) {
+        None => true,
+        Some((a, b)) => a.wide() >= lo && b.wide() <= hi,
+    }
+}
+
+// every code c has c < len
+fn lemma_all_below<T: LemmaInt>(codes: &[T], len: usize) -> bool {
+    match lemma_min_max(codes) {
+        None => true,
+        Some((_, b)) => b.wide() < len as i128,
+    }
+}
+
+// every value satisfies `pred`
+fn lemma_par_all<T: Sync>(v: &[T], pred: impl Fn(&T) -> bool + Sync) -> bool {
+    lemma_par(v, |c| c.iter().all(|x| pred(x))).into_iter().all(|ok| ok)
+}
+
+// no two entries are equal (a sort of references, not a hash set)
+fn lemma_all_distinct<T: Ord>(v: &[T]) -> bool {
+    let mut refs: Vec<&T> = v.iter().collect();
+    refs.sort_unstable();
+    refs.windows(2).all(|w| w[0] != w[1])
+}
+
+// no two values are equal: a bitmap over [min, max] when that span is at most 64 bits per value, else a sorted copy
+fn lemma_unique_ints<T: LemmaInt>(v: &[T]) -> bool {
+    let (lo, hi) = match lemma_min_max(v) {
+        None => return true,
+        Some(m) => m,
+    };
+    // hi - lo can overflow i128 for i128 keys: no span, the sorted copy
+    let span = hi.wide().checked_sub(lo.wide()).map(|d| d.saturating_add(1)).unwrap_or(i128::MAX);
+    if span <= 64 * (v.len() as i128) + 4096 {
+        let mut bits = vec![0u64; (span as usize + 63) / 64];
+        let base = lo.wide();
+        for &x in v {
+            let i = (x.wide() - base) as usize;
+            let (word, bit) = (i >> 6, 1u64 << (i & 63));
+            if bits[word] & bit != 0 {
+                return false;
+            }
+            bits[word] |= bit;
+        }
+        true
+    } else {
+        let mut sorted: Vec<T> = v.to_vec();
+        sorted.sort_unstable();
+        sorted.windows(2).all(|w| w[0] != w[1])
     }
 }
 
@@ -381,6 +582,8 @@ def assemble_library_program(spec_rs: str, agent_body: str, *, helpers: str = ""
     layout = input_layout(verus_part)
     structs = re.findall(r"pub struct (Cols_[A-Za-z0-9_]+)\s*\{([^}]+)\}", verus_part, re.DOTALL)
     loaders: list[str] = []
+    take: list[str] = []  # owned columns: taken before anything can fail, so the library frees them on every path
+    owned_cols: list[tuple[int, str]] = []
     load: list[str] = []
     args: list[str] = []
     index = 0
@@ -393,7 +596,11 @@ def assemble_library_program(spec_rs: str, agent_body: str, *, helpers: str = ""
         ]
         index += 1
         for fname, fty in fields:
-            lines.append(_decode_field(index, suffix, fname, fty))
+            if owned(fty):
+                take.append(_decode_field(index, suffix, fname, fty))
+                owned_cols.append((index, fty))
+            else:
+                lines.append(_decode_field(index, suffix, fname, fty))
             index += 1
         for fname, _fty in fields:
             if fname.endswith("__dict"):
@@ -403,7 +610,8 @@ def assemble_library_program(spec_rs: str, agent_body: str, *, helpers: str = ""
                 f'    assert!({var}.len() == n_{suffix}, "{suffix}.{_local_ident(fname)}: {{}} values for {{}} rows", {var}.len(), n_{suffix});\n'
             )
         # The same runtime checks `main` makes: every non-length `valid_cols` conjunct (catalog caps, codes, unique keys).
-        lines.extend(c + "\n" for c in _runtime_checks(verus_part, suffix, fields))
+        var_types = {f"{suffix}_{_local_ident(f)}": t for f, t in fields}
+        lines.extend(fast_check(c, var_types) + "\n" for c in _runtime_checks(verus_part, suffix, fields))
         call = ", ".join([f"n_{suffix}"] + [f"{suffix}_{_local_ident(f)}" for f, _ in fields])
         lines.append(f"    let cols_{suffix} = load_cols_{suffix}({call});\n")
         load.append("".join(lines))
@@ -415,8 +623,10 @@ def assemble_library_program(spec_rs: str, agent_body: str, *, helpers: str = ""
 
     kinds = ", ".join(str(_kind(ty, name)) for name, ty in outputs)
     execute = "fn lemma_execute(cols: &[LemmaCol], params: &[LemmaParam]) -> Vec<u8> {\n"
+    # Owned buffers are taken first (O(1) each, no copy): from here on the Vecs own them, so any failure below frees them.
+    execute += "".join(take)
     execute += "    let _ = params;\n" if not params else ""
-    execute += param_code  # every parameter is checked before a column is decoded
+    execute += param_code  # every parameter is checked before a column is decoded or checked
     execute += "    let load_start = std::time::Instant::now();\n"
     execute += "".join(load)
     execute += _join_cap_checks(verus_part)
@@ -451,4 +661,4 @@ def assemble_library_program(spec_rs: str, agent_body: str, *, helpers: str = ""
         .replace("__NCOLS__", str(len(layout)))
         .replace("__NPARAMS__", str(len(params)))
     )
-    return verus_with_loaders + head + "\n" + statics + "\n" + execute
+    return verus_with_loaders + head + "\n" + _owned_alloc_fns(owned_cols) + "\n" + statics + "\n" + execute

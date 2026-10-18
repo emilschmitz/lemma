@@ -1,4 +1,5 @@
-// The C ABI of a Lemma executor library (ABI version 2: version 1 plus query-template parameters). Emitted by declarative_spec/assemble_library.py, the same template
+// The C ABI of a Lemma executor library (ABI version 3: version 2 plus owned input columns; version 2 added query-template
+// parameters). Emitted by declarative_spec/assemble_library.py, the same template
 // for every query; the proved run_query sits behind lemma_run. Little-endian cells throughout.
 #pragma once
 
@@ -10,7 +11,12 @@ extern "C" {
 
 // One input buffer. A table's "rows" entry has data = NULL, len = 0, n = row count. A field entry holds the field's cells in
 // the column-file encoding (fixed-width cells; a string is a u32 byte length then its UTF-8 bytes); n = number of cells
-// (the dictionary size for a __dict field). The library reads but never writes or keeps it.
+// (the dictionary size for a __dict field).
+// OWNED fields (ABI 3): a field whose layout type is a fixed-width integer or f64 (not bool, not String) is passed in a
+// buffer the library allocated with lemma_alloc_input(index, cap): data = that buffer, len = its allocated bytes
+// (cap * cell width), n <= cap cells written by the caller. lemma_run (called with the layout's ncols) takes every owned
+// buffer as the memory of its Vec, whatever it returns; a buffer never passed to lemma_run goes back with lemma_free_input.
+// Every other field is BORROWED: the library reads but never writes or keeps it.
 typedef struct {
 	const uint8_t *data;
 	uint64_t len;
@@ -41,6 +47,10 @@ typedef const char *(*lemma_text_fn)(void); // lemma_query_sql, lemma_input_layo
 typedef int32_t (*lemma_run_fn)(const LemmaCol *cols, uint64_t ncols, const LemmaParam *params, uint64_t nparams,
                                 LemmaOut *out);
 typedef void (*lemma_free_out_fn)(LemmaOut *out);
+// An owned buffer of `cap` zeroed cells for input `index` (NULL when that input is not owned).
+typedef uint8_t *(*lemma_alloc_input_fn)(uint64_t index, uint64_t cap);
+// Return an owned buffer of input `index` (len = its allocated bytes) that was never passed to lemma_run.
+typedef void (*lemma_free_input_fn)(uint64_t index, uint8_t *data, uint64_t len);
 
 #ifdef __cplusplus
 }
