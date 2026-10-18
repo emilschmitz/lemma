@@ -169,18 +169,14 @@ def test_drive_prepare_refuses_a_template_without_rules_before_any_data_is_writt
     assert not (workspace / "decl_data").exists()
 
 
-def test_the_smoke_experiment_refuses_until_its_package_is_committed() -> None:
+def test_the_smoke_experiment_names_tracked_files_and_passes_the_file_checks() -> None:
     f = ROOT / "configs" / "experiments" / "tpch_sf10_templates_smoke.toml"
     settings, runs = lc.load_experiment(f, ROOT)
     assert settings["templates"] is True and len(runs) == 1
     assert runs[0]["bindings_seed"] == 1 and runs[0]["bindings_rules"] == "configs/query_templates/tpch/substitution.json"
-    assert not (ROOT / runs[0]["assumption_package"]).exists()  # the owner approves the package later
-    try:
-        lc.use_experiment(f, 0, root=ROOT)
-        with pytest.raises(lc.ConfigError, match=r"tpch_sf10\.json \(named by the experiment\) is not tracked at HEAD"):
-            lc.require_replicable(ROOT)
-    finally:
-        lc.clear_experiment()
+    for key in ("query", "assumption_package", "bindings_rules"):
+        rel = runs[0][key]
+        assert subprocess.run(["git", "ls-files", "--error-unmatch", rel], cwd=ROOT, capture_output=True).returncode == 0, rel
 
 
 def test_the_smoke_experiment_draws_valid_q06_bindings(monkeypatch: pytest.MonkeyPatch) -> None:

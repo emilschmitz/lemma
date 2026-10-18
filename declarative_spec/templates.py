@@ -229,6 +229,20 @@ def sql_literal(param: Param, text: str) -> str:
     return f"({shown})" if shown.startswith("-") else shown
 
 
+def with_literals(sql: str, binding: Mapping[str, str]) -> str:
+    """The template's SQL with every ``$name`` replaced by the binding's SQL literal (e.g. for statistics on one concrete instance)."""
+    template = parse_template(sql)
+    if template is None:
+        return sql
+    _check_binding(template, binding)
+    params = {p.name: p for p in template.params}
+    out, last = [], 0
+    for start, end, name in _placeholders(sql):
+        out += [sql[last:start], sql_literal(params[name], binding[name])]
+        last = end
+    return "".join(out) + sql[last:]
+
+
 def python_value(param: Param, text: str) -> int | dt.date | Decimal | str:
     """The value as an exact Python object (int, date, Decimal, str): what a reference engine binds to ``$name``."""
     spec_value(param, text)  # validates

@@ -156,7 +156,16 @@ def prepare_data_profile(sql_query: str, workspace: Path) -> str:
     measure_db = os.environ.get("LEMMA_MEASURE_DB", "").strip()
     if not measure_db:
         raise ValueError("data_profile = 'stats' needs the run's database (LEMMA_MEASURE_DB is not set)")
-    text = build_profile(sql_query, measure_db)
+    drawn = template_bindings(sql_query)
+    if drawn is None:
+        text = build_profile(sql_query, measure_db)
+    else:  # a template: the statistics of its first binding (the one prepare and the in-session runs use), said so in the file
+        from declarative_spec.templates import with_literals
+
+        first = drawn["bindings"][0]
+        text = build_profile(with_literals(sql_query, first), measure_db)
+        shown = ", ".join(f"${k} = {v}" for k, v in first.items())
+        text = text.replace("# Data profile\n", f"# Data profile\n\nThis query is a template; the numbers below are for its first parameter binding ({shown}). Other bindings select other rows.\n", 1)
     run_dir = Path(os.environ.get("LEMMA_RUN_DIR", "").strip() or workspace.parent)
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "data_profile.md").write_text(text)
