@@ -1,0 +1,17 @@
+{
+  "sf": 10.0,
+  "duckdb_version": "1.5.6",
+  "file": "tpch_sf10.duckdb",
+  "bytes": 2679910400,
+  "sha256": "f40de96389cb4f68b18b97ee75fa315bab1e0cc2866b18083a521ec353daa057",
+  "rows": {
+    "customer": 1500000,
+    "lineitem": 59986052,
+    "nation": 25,
+    "orders": 15000000,
+    "part": 2000000,
+    "partsupp": 8000000,
+    "region": 5,
+    "supplier": 100000
+  }
+}
