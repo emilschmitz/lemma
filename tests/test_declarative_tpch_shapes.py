@@ -213,10 +213,10 @@ def test_ambiguous_bare_on_column_is_refused() -> None:
 def test_comma_and_on_forms_state_the_same_condition_set() -> None:
     comma = emit_declarative_spec(_Q3_COMMA, SCHEMA, CATALOG)
     joined = emit_declarative_spec(_Q3_ON, SCHEMA, CATALOG)
-    for equality in ("cust.ckey@[i0] as int) == (ord.ckey@[i1] as int", "li.okey@[i2] as int) == (ord.okey@[i1] as int"):
-        assert equality in comma
-    assert "cust.ckey@[i0] == ord.ckey@[i1]" in joined
-    assert "li.okey@[i2] == ord.okey@[i1]" in joined
+    # rewrite_comma_joins turns the comma form into the ON form, so both state the equalities the same way
+    for spec in (comma, joined):
+        assert "cust.ckey@[i0] == ord.ckey@[i1]" in spec
+        assert "li.okey@[i2] == ord.okey@[i1]" in spec
 
 
 def test_comma_join_spec_typechecks_in_verus() -> None:
