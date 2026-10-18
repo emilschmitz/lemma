@@ -323,7 +323,9 @@ def claude_login_file() -> Path:
 def claude_docker_args() -> list[str]:
     """Docker args for the claude agent. Secrets are never read here or put on a command line.
 
-    Order: ``ANTHROPIC_API_KEY`` (passed by name only), else ``CLAUDE_CODE_OAUTH_TOKEN`` (the long-lived
+    ``agent_auth`` (lemma.toml) chooses the path, and the choice is never switched silently. ``api_key``: ``ANTHROPIC_API_KEY`` (passed by
+    name only; unset = error). ``login`` (default): ``ANTHROPIC_API_KEY`` is ignored and never passed; the order is
+    ``CLAUDE_CODE_OAUTH_TOKEN`` (the long-lived
     token from ``claude setup-token``, also by name only: the intended non-interactive credential, it does
     not rotate under the host login), else ``LEMMA_CLAUDE_CONFIG_DIR`` (a directory,
     read-only), else the host login file ``~/.claude/.credentials.json``, read-only, that file only
@@ -331,11 +333,13 @@ def claude_docker_args() -> list[str]:
     writable ``/root/.claude``. A model agent runs next to whatever is mounted: Emil chose the login
     file as the default, the same way the Cursor path mounts ``~/.cursor``.
     """
-    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    auth = lemma_config.get("agent_auth")
     config_dir = os.environ.get("LEMMA_CLAUDE_CONFIG_DIR", "")
     args = ["-e", "CLAUDE_CONFIG_DIR=/root/.claude"]
-    if key:
-        args += ["-e", "ANTHROPIC_API_KEY"]
+    if auth == "api_key":
+        if not os.environ.get("ANTHROPIC_API_KEY", ""):
+            raise RuntimeError("agent_auth = api_key but ANTHROPIC_API_KEY is not set in the environment (no fallback to the login: set it, or use agent_auth = login)")
+        args += ["-e", "ANTHROPIC_API_KEY"]  # the name only: docker reads the value from this process's environment
     elif os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", ""):
         args += ["-e", "CLAUDE_CODE_OAUTH_TOKEN"]
     elif config_dir:

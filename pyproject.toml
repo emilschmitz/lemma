@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "lemma"
 version = "0.1.0"
@@ -12,7 +16,18 @@ dependencies = [
     "tree-sitter-rust>=0.24.2",
     "openai>=2.45.0",
     "mcp>=1.28.1",
+    "duckdb==1.5.6",
 ]
+
+[project.scripts]
+lemma = "lemma_cli.main:main"
+
+[tool.setuptools]
+packages = ["lemma_cli"]
+
+[tool.pytest.ini_options]
+markers = ["slow: real Docker integration tests (opt in with -m slow)"]
+addopts = "-m 'not slow'"
 
 [tool.uv.workspace]
 members = ["db_extension/dafny_transpiler", "verus_transpiler"]
@@ -23,7 +38,6 @@ verus-transpiler = { workspace = true }
 
 [dependency-groups]
 dev = [
-    "duckdb==1.5.6",
     "matplotlib>=3.11.0",
     "pandas>=3.0.3",
     "psycopg[binary]>=3.3.4",

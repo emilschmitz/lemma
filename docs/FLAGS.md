@@ -17,12 +17,12 @@ lemma.toml  <  experiment file (configs/experiments/X.toml)  <  environment vari
 * Every container run writes all keys with `value`, `section`, `source` (`file`/`experiment`/`env`/`cli`) and `origin` into the run manifest (`lemma_config`) and the `RESULT` line (`config`), with `git_sha`, `git_dirty` and `git_untracked_files` (a count; untracked files never make `git_dirty` true). A dirty tree (tracked files; untracked and gitignored data do not count) is refused unless `allow_dirty = true`.
 * `container_batch.py` forwards nothing by name. The child reads `lemma.toml` itself; the batch passes only values that differ from the file (`lemma_config.forwarded_env`, plus `LEMMA_CONFIG_ORIGIN` so a flag is still reported as a flag).
 
-## Sections (50 keys)
+## Sections (51 keys)
 
 | Section | Keys |
 | --- | --- |
 | `[run]` | `spec_style menu agent_model trusted_set assumption_package speed_bar_mult max_iterations string_encoding join_chain examples narrow_cells parallel_vstd` |
-| `[agent]` | `agent_timeout_sec max_budget_usd agent_submit_ends_session agent_data_mode agent_resource_exhausted_retries claude_effort claude_thinking_tokens claude_tool_search mcp_iterate_rows` |
+| `[agent]` | `agent_timeout_sec max_budget_usd agent_submit_ends_session agent_data_mode agent_resource_exhausted_retries agent_auth claude_effort claude_thinking_tokens claude_tool_search mcp_iterate_rows` |
 | `[prover]` | `verus_rlimit verus_timeout_sec run_timeout_sec target_cpu dense_slot_budget` |
 | `[measure]` | `official_rounds official_duck_reps duck_memory_limit duck_threads` |
 | `[data]` | `duckdb_path data_profile` |
@@ -62,6 +62,13 @@ Kept although partly inert: `mcp_iterate_rows` (prompt text and the probe-pin ch
 * Environment only (secrets and paths, never in the file): `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `LEMMA_CLAUDE_CONFIG_DIR`, `AGENT_CREDENTIALS_DIR`, `AGENT_AUTH_DIR`, `AGENT_CLI_DIR`, `HTTPS_PROXY`, `LEMMA_VERUS_BIN` (bypass the guard on purpose), `LEMMA_VERUS_REAL`, `LEMMA_MENU_ALLOW_OVERRIDE` (library-level `resolve_menu`).
 * Legacy imperative / overnight / Spot / dev scripts keep their own variables (`LEMMA_FAMILY`, `LEMMA_SHUFFLE_*`, `LEMMA_HARVEST_*`, `LEMMA_LAPTOP_LEASE*`, `LEMMA_BUDGET_USD`, `LEMMA_BENCH_TIMEOUT_SEC`, `MAX_ITERATIONS`, `COMPILE_TIMEOUT_SEC`, `AGENT_NETWORK`, `OPENROUTER_*`, `LEMMA_DEMO*`, ...). They are listed in `NOT_CONFIG` in `lemma_config.py` so the startup check accepts them; they are not part of a container run and were not refactored.
 * Deep readers that need "not a SEC run" to be expressible still read `LEMMA_DUCKDB_PATH` from the environment (`dataset_config`, `workload_config`, ...); the container launcher exports the resolved absolute `duckdb_path` there.
+
+## Agent authentication (`agent_auth`)
+
+`agent_auth = "login" | "api_key"` (`LEMMA_AGENT_AUTH`, or `lemma setup --auth api-key`), default `login`. It decides how the Claude Code agent inside the sandbox container authenticates; the two never switch silently.
+
+* `login`: the host Claude Code login file (`~/.claude/.credentials.json`, read-only mount; run `claude` once to log in). `ANTHROPIC_API_KEY` in the environment is ignored and never passed to the container. (`CLAUDE_CODE_OAUTH_TOKEN` and `LEMMA_CLAUDE_CONFIG_DIR` remain login-type credentials of this mode.)
+* `api_key`: `ANTHROPIC_API_KEY` from the environment, handed to the container with `docker run -e ANTHROPIC_API_KEY` (name only: the value is never on a command line, written to disk, put in a manifest or logged; `lemma` redacts it from any output it prints). If the variable is empty the run stops; it does not fall back to the login.
 
 ## The agent prompt
 

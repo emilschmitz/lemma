@@ -1,0 +1,67 @@
+"""Entry point of the `lemma` command."""
+
+from __future__ import annotations
+
+import argparse
+import sys
+
+from lemma_cli.common import CliError, redact, repo_root, say
+
+
+def build_parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(prog="lemma", description="Verified query synthesis. Agents run in the Docker sandbox only.")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    s = sub.add_parser("setup", help="check docker, build/verify the agent image, run the sandbox self-test, fetch libduckdb, check credentials")
+    s.add_argument("--auth", choices=["login", "api-key"], help="how the agent authenticates (saved): the Claude Code login, or ANTHROPIC_API_KEY from the environment")
+    s.add_argument("--rebuild", action="store_true", help="rebuild the agent image")
+    a = sub.add_parser("assumptions", help="profile a DuckDB, approve every claim, check the package")
+    a.add_argument("--db", required=True)
+    a.add_argument("--margin", type=int, default=4)
+    a.add_argument("--value-margin", type=int, default=1)
+    a.add_argument("--join", action="append", default=[], help="a.x=b.y; repeatable")
+    a.add_argument("--reprofile", action="store_true", help="measure again (drops the earlier approval)")
+    o = sub.add_parser("optimize", help="prove and cache an executor for one query (--sql) or for the queued misses (--queue)")
+    o.add_argument("--db")
+    o.add_argument("--sql", help="a .sql file or the SQL text")
+    o.add_argument("--params", nargs="*", default=[], help="values for ? placeholders, in order")
+    o.add_argument("--queue", action="store_true", help="process $LEMMA_HOME/queue/*.sql in file-name order")
+    o.add_argument("--force", action="store_true")
+    sub.add_parser("status", help="image, sandbox test, auth mode, DuckDB version, cached executors")
+    return ap
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        root = repo_root()
+        if str(root) not in sys.path:
+            sys.path.insert(0, str(root))
+        if args.cmd == "setup":
+            from lemma_cli.setup_cmd import setup
+
+            return setup(args.auth.replace("-", "_") if args.auth else None, args.rebuild)
+        if args.cmd == "status":
+            from lemma_cli.setup_cmd import status
+
+            return status()
+        if args.cmd == "assumptions":
+            from lemma_cli.assumptions import assumptions
+
+            return assumptions(args.db, margin=args.margin, value_margin=args.value_margin, joins=tuple(args.join), reprofile=args.reprofile)
+        from lemma_cli import optimize as opt
+
+        if args.queue:
+            return opt.process_queue(args.db, args.force)
+        if not (args.db and args.sql):
+            raise CliError("lemma optimize needs --db PATH and --sql FILE_OR_TEXT (or --queue)")
+        return opt.optimize(args.db, args.sql, args.params, args.force)
+    except CliError as exc:
+        say(f"lemma: {exc}", err=True)
+        return 2
+    except Exception as exc:  # any other failure is printed redacted, never with a value of a secret
+        say(f"lemma: {type(exc).__name__}: {redact(str(exc))}", err=True)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
