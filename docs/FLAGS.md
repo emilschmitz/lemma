@@ -26,7 +26,7 @@ lemma.toml  <  experiment file (configs/experiments/X.toml)  <  environment vari
 | `[prover]` | `verus_rlimit verus_timeout_sec run_timeout_sec target_cpu dense_slot_budget` |
 | `[measure]` | `official_rounds official_duck_reps duck_memory_limit duck_threads` |
 | `[data]` | `duckdb_path data_profile` |
-| `[sql]` | `agg_times_constant derived_agg_expr cte_reuse left_join_count` (new SQL shapes of the transpiler, all default false; verdicts in `research_loop/menus/sql_<feature>_ADVERSARY_VERDICT.md`) |
+| `[sql]` | `agg_times_constant derived_agg_expr cte_reuse left_join_count templates` (new SQL shapes of the transpiler, all default false; verdicts in `research_loop/menus/sql_<feature>_ADVERSARY_VERDICT.md`) |
 | `[wip]` | `zero_copy cold_stream cold_stream_mode` (parked pin path, default off, see `research_loop/menus/pin_path_archive.md`; nothing here is used by a container run) |
 | `[safety]` | `allow_dirty scope_memory_max egress_profile egress_allowlist heavy_lock heavy_min_avail_mb heavy_mem_max verus_mem_max verus_slots verus_min_avail_mb` |
 

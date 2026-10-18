@@ -39,18 +39,25 @@ def duck_reps() -> int:
     return int(lemma_config.get("official_duck_reps"))
 
 
-def interleave(ours: Callable[[], int], duck: Callable[[], int], k: int) -> list[dict]:
-    """K rounds, each timing both sides back to back; even rounds run ours first, odd rounds DuckDB first."""
+def interleave(ours: Callable[..., int], duck: Callable[..., int], k: int, bindings: list[dict] | None = None) -> list[dict]:
+    """K rounds, each timing both sides back to back; even rounds run ours first, odd rounds DuckDB first.
+
+    ``bindings`` (a query template): round i passes ``bindings[i % len(bindings)]`` to BOTH sides, so each round compares the two
+    engines on the same fresh parameter values; the binding is recorded in the round."""
     rounds: list[dict] = []
     for index in range(k):
         ours_first = index % 2 == 0
+        args = () if bindings is None else (bindings[index % len(bindings)],)
         if ours_first:
-            ours_us = ours()
-            duck_us = duck()
+            ours_us = ours(*args)
+            duck_us = duck(*args)
         else:
-            duck_us = duck()
-            ours_us = ours()
-        rounds.append({"round": index, "order": "ours_first" if ours_first else "duck_first", "ours_us": ours_us, "duck_us": duck_us})
+            duck_us = duck(*args)
+            ours_us = ours(*args)
+        entry = {"round": index, "order": "ours_first" if ours_first else "duck_first", "ours_us": ours_us, "duck_us": duck_us}
+        if bindings is not None:
+            entry["binding"] = dict(args[0])
+        rounds.append(entry)
     return rounds
 
 
@@ -68,8 +75,12 @@ def summarize(rounds: list[dict]) -> dict:
     }
 
 
-def duck_round_timer(speed_bar: dict, work_dir: Path) -> tuple[Callable[[], int], Callable[[], None]]:
-    """(time one round of DuckDB in microseconds, close). Opens the database read-only under the settings the bar was prepared with."""
+def duck_round_timer(speed_bar: dict, work_dir: Path) -> tuple[Callable[..., int], Callable[[], None]]:
+    """(time one round of DuckDB in microseconds, close). Opens the database read-only under the settings the bar was prepared with.
+
+    For a query template (``template_bindings`` in expect.json) a round takes the binding: DuckDB executes the template text as a
+    prepared statement with those values bound to ``$name``, and the round's result rows (canonical, as the row check compares
+    them) are appended to ``one_round.rows`` (with the binding's LIMIT cut and tie group)."""
     import duckdb
 
     missing = [key for key in ("sql", "db_path", "duck_settings") if not speed_bar.get(key)]
@@ -87,6 +98,9 @@ def duck_round_timer(speed_bar: dict, work_dir: Path) -> tuple[Callable[[], int]
         raise ValueError(str(exc)) from exc
     sql = str(speed_bar["sql"])
     reps = duck_reps()
+    template_bindings = speed_bar.get("template_bindings")
+    if template_bindings:
+        return _template_round_timer(con, sql, speed_bar, template_bindings, reps, tmp)
     for _ in range(2):  # warm: the same two warmups the prepare-time timing takes
         con.execute(sql).fetchall()
 
@@ -110,5 +124,55 @@ def duck_round_timer(speed_bar: dict, work_dir: Path) -> tuple[Callable[[], int]
     def close() -> None:
         con.close()
         shutil.rmtree(tmp, ignore_errors=True)  # spill files of a small memory_limit can be GBs
+
+    return one_round, close
+
+
+def _template_round_timer(con, sql: str, speed_bar: dict, bindings: list[dict], reps: int, tmp: Path) -> tuple[Callable[[dict], int], Callable[[], None]]:
+    """The DuckDB side of a query template's rounds: the same protocol as fixed SQL, with the round's values bound."""
+    from declarative_spec import templates
+    from declarative_spec.bench import cut_applies, order_info
+    from research_loop.decl_query_measure import _tie_group_rows, canonical_rows
+
+    template = templates.parse_template(sql)
+    if template is None:
+        raise ValueError("expect.json has template_bindings but its SQL is not a query template")
+    row_format = speed_bar.get("row_format")
+    if not row_format:
+        raise ValueError("expect.json lacks row_format: re-run prepare so the official measure can check each binding's rows")
+    out_fields = [tuple(f) for f in row_format["out_fields"]]
+    scales = row_format.get("scales")
+    warm = templates.python_values(template, bindings[0])
+    for _ in range(2):
+        con.execute(sql, warm).fetchall()
+    probe: list[float] = []
+    for _ in range(reps):
+        t0 = time.perf_counter()
+        con.execute("SELECT 1").fetchall()
+        probe.append((time.perf_counter() - t0) * 1_000_000)
+    rows_log: list[list] = []
+
+    def one_round(binding: dict) -> int:
+        params = templates.python_values(template, binding)
+        cur = con.execute(sql, params)  # untimed first run, as for fixed SQL; its rows are this binding's expected rows
+        result = cur.fetchall()
+        names = [str(col[0]) for col in cur.description]
+        types = [str(col[1]) for col in cur.description]
+        rows = canonical_rows(result, names, types, out_fields, scales)[0]
+        plain = templates.instantiate(template, binding)  # the same query as fixed-constant SQL: its LIMIT cut and tie group
+        rows_log.append({"rows": rows, "limited": cut_applies(order_info(plain), len(rows)), "tie_rows": _tie_group_rows(con, plain, rows, out_fields, scales)})
+        samples: list[float] = []
+        for _ in range(reps):
+            t0 = time.perf_counter()
+            con.execute(sql, params).fetchall()
+            samples.append((time.perf_counter() - t0) * 1_000_000)
+        return int(statistics.median(samples))
+
+    one_round.python_overhead_us = int(statistics.median(probe))  # type: ignore[attr-defined]
+    one_round.rows = rows_log  # type: ignore[attr-defined]
+
+    def close() -> None:
+        con.close()
+        shutil.rmtree(tmp, ignore_errors=True)
 
     return one_round, close

@@ -19,3 +19,7 @@ def cte_reuse() -> bool:
 
 def left_join_count() -> bool:
     return bool(lemma_config.get("left_join_count"))
+
+
+def templates() -> bool:
+    return bool(lemma_config.get("templates"))

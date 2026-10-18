@@ -494,6 +494,20 @@ _FLOAT_EXAMPLES: tuple[tuple[str, str], ...] = (
 )
 
 
+def _template_section(spec_text: str) -> list[str]:
+    """A query template ([sql] templates): one fact, generated from the spec's parameters."""
+    from declarative_spec.templates import spec_params
+
+    params = spec_params(spec_text)
+    if not params:
+        return []
+    names = ", ".join(f"`param_{name}`" for name, _ty, _lo, _hi in params)
+    return [
+        f"This query is a template: `run_query` takes its parameters {names} as arguments, the spec holds for every value its `requires` allow, and each official timed round runs the binary and DuckDB with the same freshly drawn values.",
+        "",
+    ]
+
+
 def _nullable_section(spec_text: str) -> list[str]:
     """Nullable columns: the validity vector is part of the row, `row_hit` already reads it."""
     if "__valid" not in spec_text:
@@ -1283,6 +1297,7 @@ def build_declarative_prompt(
             "",
         ]),
         (P.TASK, ["## SQL", "", "```sql", sql.strip(), "```", ""]),
+        (P.TASK, _template_section(spec_text)),
         (P.LIMITS, _scale_section(spec_text)),
         (P.HARDWARE, _hardware_facts()),
         (P.RECIPE, _hardware_guidance()),

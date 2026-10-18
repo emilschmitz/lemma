@@ -76,10 +76,29 @@ def _write_query_measure(
     catalog: CatalogAssumptions | None,
     db_path: Path,
     dest: Path,
+    bindings: list[dict[str, str]] | None = None,
 ) -> dict:
-    """Write one column file per input struct and the DuckDB median for ``sql``."""
+    """Write one column file per input struct and the DuckDB median for ``sql``.
+
+    A query template (``declarative_spec/templates.py``) needs ``bindings``: the parameter values of the official rounds (round i
+    binds ``bindings[i % len]`` on both sides). The prepare-time DuckDB timing, the expected rows and the in-session runs use
+    ``bindings[0]``."""
     if not db_path.is_file():
         raise FileNotFoundError(f"measure database missing at {db_path}")
+    from declarative_spec import templates
+
+    template = templates.parse_template(sql)
+    params0: dict | None = None
+    plain_sql = sql
+    if template is not None:
+        if not bindings:
+            raise ValueError("a query template needs parameter bindings for the measure (templates.generate_bindings)")
+        for binding in bindings:
+            templates.binary_args(template, binding)  # loud on a missing name or a value outside its type
+        params0 = templates.python_values(template, bindings[0])
+        plain_sql = templates.instantiate(template, bindings[0])
+    elif bindings:
+        raise ValueError("bindings given for SQL that is not a query template")
     spec = emit_declarative_spec(sql, schema, catalog)
     structs = re.findall(r"pub struct (Cols_[A-Za-z0-9_]+)\s*\{([^}]+)\}", spec)
     out_match = re.search(r"pub struct OutRow\s*\{([^}]+)\}", spec)
@@ -105,7 +124,7 @@ def _write_query_measure(
     # The emitter parses the exact-integer rewrite of the SQL (a ratio's `/` only parses there), so name the table from it.
     from declarative_spec.numeric_rewrite import rewrite_numeric
 
-    integer_sql, _scales = rewrite_numeric(sql, schema, catalog)
+    integer_sql, _scales = rewrite_numeric(plain_sql, schema, catalog)
     model = SchemaModel.from_caller(schema, flatten_derived(parse_query(integer_sql)).tables[0]).with_nullable(catalog)
     # Plan every table's column mapping before the first export: an unmappable field must fail in milliseconds, not after a 1 GB export.
     plans = {}
@@ -135,20 +154,27 @@ def _write_query_measure(
         scales = [int(x) for x in scales_match.group(1).split(",")] if scales_match else None
         duck_threads = int(con.execute("SELECT current_setting('threads')").fetchone()[0])
         duck_cfg["memory_limit_effective"] = str(con.execute("SELECT current_setting('memory_limit')").fetchone()[0])
-        duck_us, rows, kinds = _time_query(con, sql, out_fields, scales)
-        tie_rows = _tie_group_rows(con, sql, rows, out_fields, scales)
+        duck_us, rows, kinds = _time_query(con, sql, out_fields, scales, params0)
+        tie_rows = _tie_group_rows(con, plain_sql, rows, out_fields, scales)  # a template: the fixed-constant SQL of bindings[0]
         from declarative_spec.bench import cut_applies, order_info
 
-        order = order_info(sql)
+        order = order_info(plain_sql)
         tie_info = {"order_cols": order["order_cols"], "limited": cut_applies(order, len(rows))}  # in expect.json too: the in-session MCP check reads it
         con.execute("SET threads=1")
-        duck1_us = _median_us(con, sql)
+        duck1_us = _median_us(con, sql, params0)
     except duckdb.Error as exc:
         raise ValueError(str(exc)) from exc
     finally:
         con.close()
     if not bins:
         raise DeclarativeUnsupported("measure wrote no column files")
+    template_info: dict = {}
+    if template is not None:
+        template_info = {
+            "template_bindings": bindings,  # official round i binds bindings[i % len] on both sides
+            "binding_args": templates.binary_args(template, bindings[0]),  # the binary's command line for the in-session runs (rows above)
+            "row_format": {"out_fields": out_fields, "scales": scales},  # how the official rounds canonicalize DuckDB's rows per binding
+        }
     # The in-session run_runquery tool loads this (declarative_spec.bench.load_speed_bar): the agent's
     # runs then use the official column files, the DuckDB bar and the expected result rows.
     expect = {
@@ -164,6 +190,7 @@ def _write_query_measure(
         "duck_settings": duck_cfg,
         "sql": sql,  # the official measure re-times DuckDB on this text, on this file, under duck_settings
         "db_path": str(db_path),
+        **template_info,
     }
     (dest / "expect.json").write_text(json.dumps(expect) + "\n", encoding="utf-8")
     return {
@@ -180,6 +207,7 @@ def _write_query_measure(
         "duck_settings": duck_cfg,
         "sql": sql,
         "db_path": str(db_path),
+        **template_info,
     }
 
 
@@ -543,22 +571,40 @@ def _time_query(
     sql: str,
     out_fields: list[tuple[str, str]],
     scales: list[int] | None = None,
+    params: dict | None = None,
 ) -> tuple[int, list[list[object]], list[str] | None]:
+    """``params``: the values bound to a query template's ``$name`` placeholders (None for fixed-constant SQL)."""
+
+    def run():
+        return con.execute(sql) if params is None else con.execute(sql, params)
+
     for _ in range(2):
-        con.execute(sql).fetchall()
+        run().fetchall()
     samples: list[float] = []
     result: list[tuple] | None = None
     names: list[str] = []
     duck_types: list[str] = []
     for _ in range(5):
         t0 = time.perf_counter()
-        cur = con.execute(sql)
+        cur = run()
         result = cur.fetchall()
         samples.append((time.perf_counter() - t0) * 1_000_000)
         names = [str(col[0]) for col in cur.description]
         duck_types = [str(col[1]) for col in cur.description]
     if result is None:
         raise RuntimeError("no timing sample")
+    rows, kinds = canonical_rows(result, names, duck_types, out_fields, scales)
+    return int(statistics.median(samples)), rows, kinds
+
+
+def canonical_rows(
+    result: list[tuple],
+    names: list[str],
+    duck_types: list[str],
+    out_fields: list[tuple[str, str]],
+    scales: list[int] | None = None,
+) -> tuple[list[list[object]], list[str] | None]:
+    """DuckDB's result as the row check compares it with the binary's printed rows: ``(rows, kinds)``; kinds None for a map result."""
     indexes: list[int] = []
     if all(not fname for fname, _fty in out_fields):
         if len(names) != len(out_fields):
@@ -568,7 +614,7 @@ def _time_query(
         if any(k != "int" for k in kinds):
             raise ValueError("map result keys and values must be integers")
         pairs = sorted((_canon(out_fields[0][1], r[0]), _canon(out_fields[1][1], r[1])) for r in result)
-        return int(statistics.median(samples)), [[k, v] for k, v in pairs], None
+        return [[k, v] for k, v in pairs], None
     # Result columns are matched by position: the SELECT order is the OutRow order. DuckDB's own
     # column names (`sum(l_quantity)`) are not the spec's field names.
     if len(names) != len(out_fields):
@@ -588,17 +634,21 @@ def _time_query(
     rows: list[list[object]] = []
     for record in result:
         rows.append([_canon(out_fields[i][1], record[indexes[i]], scales[i]) for i in range(len(out_fields))])
-    return int(statistics.median(samples)), rows, kinds
+    return rows, kinds
 
 
-def _median_us(con: duckdb.DuckDBPyConnection, sql: str) -> int:
+def _median_us(con: duckdb.DuckDBPyConnection, sql: str, params: dict | None = None) -> int:
     """Median of five timed runs after two warmups, in the connection's current thread setting."""
+
+    def run():
+        return con.execute(sql) if params is None else con.execute(sql, params)
+
     for _ in range(2):
-        con.execute(sql).fetchall()
+        run().fetchall()
     samples: list[float] = []
     for _ in range(5):
         t0 = time.perf_counter()
-        con.execute(sql).fetchall()
+        run().fetchall()
         samples.append((time.perf_counter() - t0) * 1_000_000)
     return int(statistics.median(samples))
 
