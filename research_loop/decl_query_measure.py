@@ -112,8 +112,21 @@ def _write_query_measure(
     for struct_name, body in structs:
         suffix = struct_name.removeprefix("Cols_")
         plans[suffix] = _plan_table(model, _table_for_suffix(model, suffix), _FIELD.findall(body))
+    # Predicate pushdown (lemma.toml [run] pushdown): the export keeps only rows that can matter (declarative_spec/pushdown.py
+    # states the rule and its soundness argument). The reference answer below is still DuckDB on the full original SQL.
+    pushdown = None
+    wheres: dict[str, str | None] = {suffix: None for suffix in plans}
+    if lemma_config.get("pushdown"):
+        from declarative_spec.pushdown import plan_pushdown, scan_plan
+
+        pushdown = plan_pushdown(sql, schema, dialect="duckdb")
+        for suffix, plan in plans.items():
+            if pushdown.params(plan[0]):
+                raise ValueError(f"pushed predicate on {plan[0]} binds parameters {pushdown.params(plan[0])}; the export has no values for them")
+            wheres[suffix] = pushdown.where(plan[0])
     dest.mkdir(parents=True, exist_ok=True)
     (dest / "expect.json").unlink(missing_ok=True)  # stale until the export and timing succeed
+    (dest / "scan_plan.json").unlink(missing_ok=True)
     bins: dict[str, str] = {}
     table_rows: dict[str, int] = {}
     dict_sizes: dict[str, int] = {}  # `<struct suffix>.<column>` -> entries of its dictionary
@@ -127,10 +140,18 @@ def _write_query_measure(
             part = path.with_suffix(".bin.part")
             with part.open("wb") as fh:
                 sizes: dict[str, int] = {}
-                table_rows[suffix] = _export_planned_to(con, plan, fh, sizes)
+                table_rows[suffix] = _export_planned_to(con, plan, fh, sizes, where=wheres[suffix])
             dict_sizes.update({f"{suffix}.{col}": n for col, n in sizes.items()})
             part.replace(path)  # a refused export leaves the earlier file, not a truncated one
             bins[suffix] = str(path)
+        pushdown_info = None
+        if pushdown is not None:
+            pushdown_info = scan_plan(spec, pushdown, schema, sql)
+            for suffix, plan in plans.items():
+                entry = pushdown_info["tables"][next(t for t, e in pushdown_info["tables"].items() if e["struct"] == f"Cols_{suffix}")]
+                entry["rows_full"] = _count_rows(con, _quote(plan[0]))
+                entry["rows_delivered"] = table_rows[suffix]
+            (dest / "scan_plan.json").write_text(json.dumps(pushdown_info, indent=1) + "\n", encoding="utf-8")
         scales_match = _OUT_SCALES.search(spec)
         scales = [int(x) for x in scales_match.group(1).split(",")] if scales_match else None
         duck_threads = int(con.execute("SELECT current_setting('threads')").fetchone()[0])
@@ -165,8 +186,11 @@ def _write_query_measure(
         "sql": sql,  # the official measure re-times DuckDB on this text, on this file, under duck_settings
         "db_path": str(db_path),
     }
+    if pushdown_info is not None:  # absent with pushdown off: expect.json stays byte-identical
+        expect["scan_plan"] = pushdown_info
     (dest / "expect.json").write_text(json.dumps(expect) + "\n", encoding="utf-8")
     return {
+        **({"scan_plan": pushdown_info} if pushdown_info is not None else {}),
         "bins": bins,
         "duck_us": duck_us,
         "duck_threads": duck_threads,
@@ -277,15 +301,27 @@ def _export_planned(con: duckdb.DuckDBPyConnection, plan: tuple) -> bytes:
     return sink.getvalue()
 
 
-def _export_planned_to(con: duckdb.DuckDBPyConnection, plan: tuple, sink: BinaryIO, dict_sizes: dict[str, int] | None = None) -> int:
+def _export_planned_to(
+    con: duckdb.DuckDBPyConnection,
+    plan: tuple,
+    sink: BinaryIO,
+    dict_sizes: dict[str, int] | None = None,
+    *,
+    where: str | None = None,
+) -> int:
     """Write the column file for ``plan`` to ``sink``; memory is bounded by ``_BATCH_ROWS`` rows (plus the dictionaries), not the table.
 
-    ``dict_sizes``, when given, receives the entry count of every dictionary written (column name -> len), the numbers the host `main` sees."""
+    ``dict_sizes``, when given, receives the entry count of every dictionary written (column name -> len), the numbers the host `main` sees.
+    ``where`` (pushdown): only the rows on which this predicate is TRUE are delivered, in table order; dictionaries, value checks and the
+    row count are those of the delivered rows. ``None`` is the full scan, byte-identical to the export without pushdown."""
     table, names, types, infos, nullable, dict_of, valid_fields = plan
     # The per-column spool files sit beside the destination: /tmp is often RAM (tmpfs), which would put the table back in memory.
     name = getattr(sink, "name", None)
     spool_dir = str(Path(name).parent) if isinstance(name, str) else None
-    return _encode_columns(con, table, names, types, infos, nullable, dict_of, valid_fields, sink, spool_dir, dict_sizes)
+    return _encode_columns(
+        con, table, names, types, infos, nullable, dict_of, valid_fields, sink, spool_dir, dict_sizes,
+        where=where,
+    )
 
 
 _BATCH_ROWS = 1_000_000  # rows per scan batch of the exporter
@@ -341,6 +377,19 @@ def _decimal_unscaled_sql(name: str, scale: int, src_scale: int, width: int = 38
     return f"(CAST({ip} AS HUGEINT) * {10**scale}::HUGEINT + {frac} * {10 ** (scale - src_scale)}::HUGEINT)"
 
 
+def int_cell_sql(q: str, fty: str, info: ColumnTypeInfo, base: str) -> str:
+    """SQL for the integer a cell is loaded as (date: days since 1970-01-01; DECIMAL: the scaled integer); ``q`` is the quoted column.
+"""
+    m = _DECIMAL_TYPE.fullmatch(base)
+    if info.is_date:
+        return f"CAST({q} - DATE '1970-01-01' AS BIGINT)"
+    if m:
+        return _decimal_unscaled_sql(q, info.scale, int(m.group(2)), int(m.group(1)))
+    if fty == "i128" or base in ("HUGEINT", "UHUGEINT", "UBIGINT"):
+        return f"CAST({q} AS HUGEINT)"
+    return f"CAST({q} AS BIGINT)"
+
+
 def _encode_columns(
     con: duckdb.DuckDBPyConnection,
     table: str,
@@ -353,6 +402,8 @@ def _encode_columns(
     sink: BinaryIO,
     spool_dir: str | None = None,
     dict_sizes: dict[str, int] | None = None,
+    *,
+    where: str | None = None,
 ) -> int:
     """Bulk export to ``sink`` (returns the row count): DuckDB projects every cell at its loaded width, in row batches, as numpy arrays.
 
@@ -361,6 +412,9 @@ def _encode_columns(
     catalog does not declare nullable is refused, and so is a value outside its loaded type.
     """
     t = _quote(table)
+    # Pushdown: every read of the rows below (dictionaries, value checks, count, batches) sees only the delivered rows.
+    and_pushed = f" AND ({where})" if where else ""
+    where_pushed = f" WHERE ({where})" if where else ""
     uniq = list(dict.fromkeys(names))
     try:
         desc = con.execute(f"SELECT {', '.join(_quote(n) for n in uniq)} FROM {t} LIMIT 0").description
@@ -389,7 +443,7 @@ def _encode_columns(
             q = _quote(names[idx])
             # Distinct non-NULL cells in order of first appearance (physical row order), which is the code order.
             rows = con.execute(
-                f"SELECT s FROM (SELECT CAST({q} AS VARCHAR) AS s, min(rowid) AS m FROM {t} WHERE {q} IS NOT NULL GROUP BY 1) ORDER BY m"
+                f"SELECT s FROM (SELECT CAST({q} AS VARCHAR) AS s, min(rowid) AS m FROM {t} WHERE {q} IS NOT NULL{and_pushed} GROUP BY 1) ORDER BY m"
             ).fetchall()
             entries = [r[0] for r in rows]
             if any("\x00" in e for e in entries):
@@ -422,19 +476,11 @@ def _encode_columns(
                 scaled = _decimal_unscaled_sql(q, infos[idx].scale, int(m.group(2)), int(m.group(1))) if m else q
                 plan[idx], kinds[idx] = f"CAST({scaled} AS DOUBLE)", "value"
             else:
-                if infos[idx].is_date:
-                    plan[idx] = f"CAST({q} - DATE '1970-01-01' AS BIGINT)"
-                elif m:
-                    plan[idx] = _decimal_unscaled_sql(q, infos[idx].scale, int(m.group(2)), int(m.group(1)))
-                elif fty == "i128" or base in ("HUGEINT", "UHUGEINT", "UBIGINT"):
-                    plan[idx] = f"CAST({q} AS HUGEINT)"
-                else:
-                    plan[idx] = f"CAST({q} AS BIGINT)"
-                kinds[idx] = "int"
+                plan[idx], kinds[idx] = int_cell_sql(q, fty, infos[idx], base), "int"
         # A value outside its loaded type is refused before the narrowing cast (which would raise without naming the cell).
         ints = [i for i, k in kinds.items() if k == "int" and types[i] != "i128"]
         if ints:
-            bounds = con.execute(f"SELECT {', '.join(f'min({plan[i]}), max({plan[i]})' for i in ints)} FROM {t}").fetchone()
+            bounds = con.execute(f"SELECT {', '.join(f'min({plan[i]}), max({plan[i]})' for i in ints)} FROM {t}{where_pushed}").fetchone()
             for pos, i in enumerate(ints):
                 lo, hi = _INT_RANGE[types[i]]
                 for v in (bounds[2 * pos], bounds[2 * pos + 1]):
@@ -449,7 +495,7 @@ def _encode_columns(
                     continue
                 expr = f"CAST({expr} AS {_SQL_TARGET[types[i]]})"
             select.append(f"{expr} AS c{i}")
-        total = _count_rows(con, t)
+        total = _count_rows(con, t + where_pushed)
         bounds_rowid = con.execute(f"SELECT min(rowid), max(rowid) FROM {t}").fetchone()
         # Column-major layout (all of column 0, then column 1, ...) from a row-batch scan: each column's bytes go to its own
         # temporary file, so memory is bounded by the batch, not the table. The batches are rowid ranges (row-group pruned).
@@ -458,7 +504,7 @@ def _encode_columns(
         lo = bounds_rowid[0]
         while select and lo is not None and lo <= bounds_rowid[1]:
             hi = lo + _BATCH_ROWS
-            arrays = con.execute(f"SELECT {', '.join(select)} FROM {t} WHERE rowid >= {lo} AND rowid < {hi}").fetchnumpy()
+            arrays = con.execute(f"SELECT {', '.join(select)} FROM {t} WHERE rowid >= {lo} AND rowid < {hi}{and_pushed}").fetchnumpy()
             lo = hi
             n = len(next(iter(arrays.values())))
             seen += n

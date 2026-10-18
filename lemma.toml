@@ -31,6 +31,7 @@ string_encoding = "dict"                    # plain | dict: dictionary-encoded s
 join_chain = true                           # fact table first, unique-key tables nested after it. A query whose tables lack unique keys in the assumption package keeps the general (non-chain) form; false forces the general form always
 examples = "full"                           # full | principles | none: which verified examples the agent sees
 narrow_cells = false                        # INTEGER/SMALLINT/TINYINT and capped DECIMAL columns loaded as i32/i16/i8
+pushdown = true                             # the export applies the transpiler's sound single-table WHERE conjuncts in DuckDB's scan (declarative_spec/pushdown.py; scan_plan.json beside the column files); spec unchanged; false = full-table export, byte-identical to before
 parallel_vstd = "auto"                      # off | auto | on. Decision: explicit "auto" (the frozen run's effective value; it used to be forced silently and the shell value was overwritten). on = every spec gets Arc params, a shape without a variant fails at emit
 
 [agent]
