@@ -1,0 +1,346 @@
+{
+  "name": "tpch_sf10",
+  "max_rows": 268435456,
+  "max_rows_cube": 268435456,
+  "max_rows_4": 268435456,
+  "max_cell_u64": 67108864,
+  "max_native_u32": 2147483648,
+  "max_string_len": 256,
+  "tables": {
+    "customer": {
+      "max_rows": 8388608,
+      "columns": {
+        "c_custkey": {
+          "max_value_exclusive": 2097152
+        },
+        "c_name": {
+          "max_string_len": 32,
+          "max_distinct": 8388608
+        },
+        "c_address": {
+          "max_string_len": 64,
+          "max_distinct": 8388608
+        },
+        "c_nationkey": {
+          "max_value_exclusive": 32
+        },
+        "c_phone": {
+          "max_string_len": 16,
+          "max_distinct": 8388608
+        },
+        "c_acctbal": {
+          "max_value_exclusive": 1048576,
+          "scale": 2
+        },
+        "c_mktsegment": {
+          "max_string_len": 16,
+          "max_distinct": 32
+        },
+        "c_comment": {
+          "max_string_len": 128,
+          "max_distinct": 8388608
+        }
+      },
+      "unique_keys": [
+        [
+          "c_custkey"
+        ]
+      ]
+    },
+    "lineitem": {
+      "max_rows": 268435456,
+      "columns": {
+        "l_orderkey": {
+          "max_value_exclusive": 67108864
+        },
+        "l_partkey": {
+          "max_value_exclusive": 2097152
+        },
+        "l_suppkey": {
+          "max_value_exclusive": 131072
+        },
+        "l_linenumber": {
+          "max_value_exclusive": 8
+        },
+        "l_quantity": {
+          "max_value_exclusive": 8192,
+          "scale": 2
+        },
+        "l_extendedprice": {
+          "max_value_exclusive": 16777216,
+          "scale": 2
+        },
+        "l_discount": {
+          "max_value_exclusive": 16,
+          "scale": 2
+        },
+        "l_tax": {
+          "max_value_exclusive": 16,
+          "scale": 2
+        },
+        "l_returnflag": {
+          "max_string_len": 1,
+          "max_distinct": 16
+        },
+        "l_linestatus": {
+          "max_string_len": 1,
+          "max_distinct": 8
+        },
+        "l_shipdate": {},
+        "l_commitdate": {},
+        "l_receiptdate": {},
+        "l_shipinstruct": {
+          "max_string_len": 32,
+          "max_distinct": 16
+        },
+        "l_shipmode": {
+          "max_string_len": 8,
+          "max_distinct": 32
+        },
+        "l_comment": {
+          "max_string_len": 64,
+          "max_distinct": 33554432
+        }
+      },
+      "unique_keys": [
+        [
+          "l_orderkey",
+          "l_linenumber"
+        ]
+      ]
+    },
+    "nation": {
+      "max_rows": 128,
+      "columns": {
+        "n_nationkey": {
+          "max_value_exclusive": 32
+        },
+        "n_name": {
+          "max_string_len": 16,
+          "max_distinct": 128
+        },
+        "n_regionkey": {
+          "max_value_exclusive": 8
+        },
+        "n_comment": {
+          "max_string_len": 128,
+          "max_distinct": 128
+        }
+      },
+      "unique_keys": [
+        [
+          "n_nationkey"
+        ]
+      ]
+    },
+    "orders": {
+      "max_rows": 67108864,
+      "columns": {
+        "o_orderkey": {
+          "max_value_exclusive": 67108864
+        },
+        "o_custkey": {
+          "max_value_exclusive": 2097152
+        },
+        "o_orderstatus": {
+          "max_string_len": 1,
+          "max_distinct": 16
+        },
+        "o_totalprice": {
+          "max_value_exclusive": 67108864,
+          "scale": 2
+        },
+        "o_orderdate": {},
+        "o_orderpriority": {
+          "max_string_len": 16,
+          "max_distinct": 32
+        },
+        "o_clerk": {
+          "max_string_len": 16,
+          "max_distinct": 65536
+        },
+        "o_shippriority": {
+          "max_value_exclusive": 1
+        },
+        "o_comment": {
+          "max_string_len": 128,
+          "max_distinct": 33554432
+        }
+      },
+      "unique_keys": [
+        [
+          "o_orderkey"
+        ]
+      ]
+    },
+    "part": {
+      "max_rows": 8388608,
+      "columns": {
+        "p_partkey": {
+          "max_value_exclusive": 2097152
+        },
+        "p_name": {
+          "max_string_len": 64,
+          "max_distinct": 8388608
+        },
+        "p_mfgr": {
+          "max_string_len": 16,
+          "max_distinct": 32
+        },
+        "p_brand": {
+          "max_string_len": 8,
+          "max_distinct": 128
+        },
+        "p_type": {
+          "max_string_len": 32,
+          "max_distinct": 1024
+        },
+        "p_size": {
+          "max_value_exclusive": 64
+        },
+        "p_container": {
+          "max_string_len": 16,
+          "max_distinct": 256
+        },
+        "p_retailprice": {
+          "max_value_exclusive": 262144,
+          "scale": 2
+        },
+        "p_comment": {
+          "max_string_len": 32,
+          "max_distinct": 4194304
+        }
+      },
+      "unique_keys": [
+        [
+          "p_partkey"
+        ]
+      ]
+    },
+    "partsupp": {
+      "max_rows": 33554432,
+      "columns": {
+        "ps_partkey": {
+          "max_value_exclusive": 2097152
+        },
+        "ps_suppkey": {
+          "max_value_exclusive": 131072
+        },
+        "ps_availqty": {
+          "max_value_exclusive": 16384
+        },
+        "ps_supplycost": {
+          "max_value_exclusive": 131072,
+          "scale": 2
+        },
+        "ps_comment": {
+          "max_string_len": 256,
+          "max_distinct": 33554432
+        }
+      },
+      "unique_keys": [
+        [
+          "ps_partkey",
+          "ps_suppkey"
+        ]
+      ]
+    },
+    "region": {
+      "max_rows": 32,
+      "columns": {
+        "r_regionkey": {
+          "max_value_exclusive": 8
+        },
+        "r_name": {
+          "max_string_len": 16,
+          "max_distinct": 32
+        },
+        "r_comment": {
+          "max_string_len": 128,
+          "max_distinct": 32
+        }
+      },
+      "unique_keys": [
+        [
+          "r_regionkey"
+        ]
+      ]
+    },
+    "supplier": {
+      "max_rows": 524288,
+      "columns": {
+        "s_suppkey": {
+          "max_value_exclusive": 131072
+        },
+        "s_name": {
+          "max_string_len": 32,
+          "max_distinct": 524288
+        },
+        "s_address": {
+          "max_string_len": 64,
+          "max_distinct": 524288
+        },
+        "s_nationkey": {
+          "max_value_exclusive": 32
+        },
+        "s_phone": {
+          "max_string_len": 16,
+          "max_distinct": 524288
+        },
+        "s_acctbal": {
+          "max_value_exclusive": 1048576,
+          "scale": 2
+        },
+        "s_comment": {
+          "max_string_len": 128,
+          "max_distinct": 524288
+        }
+      },
+      "unique_keys": [
+        [
+          "s_suppkey"
+        ]
+      ]
+    }
+  },
+  "join_caps": [],
+  "proposals": {
+    "unique_keys": {
+      "customer": [
+        [
+          "c_name"
+        ],
+        [
+          "c_address"
+        ]
+      ],
+      "nation": [
+        [
+          "n_name"
+        ],
+        [
+          "n_comment"
+        ]
+      ],
+      "region": [
+        [
+          "r_name"
+        ],
+        [
+          "r_comment"
+        ]
+      ],
+      "supplier": [
+        [
+          "s_name"
+        ],
+        [
+          "s_address"
+        ],
+        [
+          "s_phone"
+        ]
+      ]
+    }
+  }
+}
