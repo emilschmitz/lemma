@@ -55,6 +55,20 @@ The host splices the admitted `run_query` into the verified program with `spec.r
 
 The agent never assembles the full crate.
 
+### Predicate pushdown at export (`[run] pushdown`)
+
+The export may deliver only the rows of a table that satisfy the WHERE conjuncts the transpiler pushed
+(`declarative_spec/pushdown.py`; `scan_plan.json` beside the column files). Soundness: for a plain SELECT over inner joins in which a
+table occurs once and no subquery reads it, a WHERE conjunct C over that table alone is part of an AND, so every joined row built
+from a table row on which C is not TRUE fails WHERE (FALSE or NULL); GROUP BY, HAVING, aggregates, DISTINCT, ORDER BY and LIMIT only
+see rows that pass WHERE. Replacing the table by σ_C(table) therefore leaves the query result unchanged, and the spec (which states
+the same WHERE with DuckDB's semantics) gives the same value on the delivered rows as on the full table. Every catalog assumption
+(row caps, value bounds, abs-sum and distinct caps, unique keys, join caps) is an upper bound or uniqueness claim, so it holds of a
+subset of rows; `main` re-checks them on what is delivered. Outer and anti joins, NOT EXISTS, subqueries, CTEs, set operations,
+windows, HAVING and self-joined tables are refused (nothing pushed). Trusted: DuckDB evaluates the pushed predicate correctly. The
+rule itself is host code like the rest of the transpiler; `tests/test_pushdown_differential.py` checks it end to end (proved
+bodies on pushed vs full data vs DuckDB). The reference answer is always DuckDB on the full original SQL.
+
 ## 5. Verus verify
 
 Verus must prove `run_query` satisfies the admitted `ensures` against `method_spec` (and any proof obligations in the body). Failure is loud — no silent DuckDB fallback for “verified” success.

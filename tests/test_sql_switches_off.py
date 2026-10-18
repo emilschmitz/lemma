@@ -25,8 +25,11 @@ CATALOG = assumption_package("tpch_sf1")
 
 
 def emit_tpch(name: str) -> str:
-    """The spec without the comment quoting the SQL above run_query (added after the hashes were taken; tests/test_sql_comment.py covers it)."""
-    spec = emit_declarative_spec((FIXTURES / f"{name}.sql").read_text().strip(), SCHEMA, CATALOG)
+    """The spec without the comment quoting the SQL above run_query (added after the hashes were taken; tests/test_sql_comment.py covers it)
+    and without the agent-scan block (flag agent_scan, also later; tests/test_agent_scan.py covers it)."""
+    from declarative_spec.agent_scan import without_scans
+
+    spec = without_scans(emit_declarative_spec((FIXTURES / f"{name}.sql").read_text().strip(), SCHEMA, CATALOG))
     out, quoting = [], False
     for line in spec.splitlines(keepends=True):
         if line.startswith("// SQL (the query this spec states):"):

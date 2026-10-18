@@ -44,6 +44,7 @@ def main() -> int:
     os.environ["LEMMA_ASSUMPTIONS"] = "1"
     os.environ["LEMMA_PARALLEL_VSTD"] = "off"
     os.environ["LEMMA_JOIN_CHAIN"] = "0"
+    os.environ["LEMMA_AGENT_SCAN"] = "0"  # agent scans came later; the golden is the spec without scan handles
     out = {}
     for name, encoding in CASES:
         spec, program = spec_and_program(name, encoding)

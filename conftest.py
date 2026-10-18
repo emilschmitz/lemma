@@ -28,6 +28,9 @@ def _tests_do_not_depend_on_the_run_defaults_of_lemma_toml(monkeypatch: pytest.M
     # assumptions = false is the run default since 2026-10-17; the existing tests and proved fixtures describe the (now UNMAINTAINED)
     # assumption-package path, which must stay byte-identical. Tests of the default delete this variable (tests/test_assumptions_flag.py).
     monkeypatch.setenv("LEMMA_ASSUMPTIONS", "1")
+    # agent_scan = true (run default since 2026-10-17) adds scan handles to run_query; the older spec/assemble tests and goldens describe
+    # run_query without them. Tests of agent scans set or delete this variable (tests/test_agent_scan.py).
+    monkeypatch.setenv("LEMMA_AGENT_SCAN", "0")
     lemma_config.clear_cli()  # CLI overrides are process-global: no test leaks its flags into the next
     yield
     lemma_config.clear_cli()

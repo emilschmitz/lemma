@@ -76,7 +76,8 @@ def test_measure_exports_several_rust_keyword_columns_end_to_end(tmp_path: Path)
     prepared = write_query_measure(sql=_KW_SQL, schema=_KW_SCHEMA, catalog=None, db_path=db, dest=tmp_path / "out")
     assert sorted(prepared["rows"]) == [["a", 1]]
     blob = Path(prepared["bins"]["u"]).read_bytes()
-    assert struct.unpack_from("<Q", blob)[0] == 3
+    # pushdown (default on) applies `"abstract" = 0 AND "type" = 'x'` in the export: the keyword columns are quoted, one row is delivered
+    assert struct.unpack_from("<Q", blob)[0] == 1
 
 
 def test_a_bad_field_in_a_later_table_fails_before_any_table_is_exported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from declarative_spec import decline, parallel
 
@@ -160,7 +161,7 @@ def assemble_declarative_program(
     join_cap_checks = _join_cap_checks(verus_part)
     if is_stateful:
         return _assemble_stateful(verus_part, loaders, mains_load, join_cap_checks, column_bins is not None, serve)
-    run_call, arc_lets = _run_call(verus_part, mains_args)
+    run_call, arc_lets = _run_call(verus_part, mains_args, column_bins)
     param_prelude, param_args = _param_prelude(verus_part)
     if param_args:
         run_call = run_call[:-1] + (", " if run_call != "run_query()" else "") + ", ".join(param_args) + ")"
@@ -254,8 +255,8 @@ def _loader_fn(verus_part: str, struct_name: str, fields: list[tuple[str, str]])
 }}"""
 
 
-def _run_call(verus_part: str, mains_args: list[str]) -> tuple[str, str]:
-    """``(the run_query call, the Arc lets it needs)`` over the loaded ``cols_<suffix>`` structs."""
+def _run_call(verus_part: str, mains_args: list[str], column_bins: dict[str, str] | None = None) -> tuple[str, str]:
+    """``(the run_query call, the Arc and scan-handle lets it needs)`` over the loaded ``cols_<suffix>`` structs."""
     if not mains_args:
         return "run_query()", ""
     # One argument per parameter: two aliases of one table (a self join) share one loaded struct.
@@ -269,6 +270,12 @@ def _run_call(verus_part: str, mains_args: list[str]) -> tuple[str, str]:
             f"    let arc_{suffix} = std::sync::Arc::new(cols_{suffix});\n" for suffix in dict.fromkeys(structs_in_sig)
         )
         args = [f"&*arc_{suffix}" for suffix in structs_in_sig] + [f"&arc_{suffix}" for suffix in structs_in_sig]
+    # Agent scans (declarative_spec/agent_scan.py): one handle per table, over the directory of that table's column file.
+    for suffix in re.findall(r":\s*&Scan_([A-Za-z0-9_]+)", sig.group(1)) if sig else []:
+        scan_dir = "" if column_bins is None else str(Path(column_bins[suffix]).parent)
+        escaped = scan_dir.replace("\\", "\\\\").replace('"', '\\"')
+        arc_lets += f'    let scan_{suffix} = scan_open_{suffix}("{escaped}");\n'
+        args.append(f"&scan_{suffix}")
     return f"run_query({', '.join(args)})", arc_lets
 
 
@@ -615,7 +622,7 @@ def _string_map_dump(verus_part: str) -> tuple[str, str]:
     One `ROW`, hex key, value line (unit-separated) per distinct key, as an OutRow prints; the key column is
     the one the run_query ``ensures`` ranges over (``cols.<field>@[j]@ == k``).
     """
-    suffix = re.search(r"pub fn run_query\(cols: &Cols_(\w+)\)", verus_part)
+    suffix = re.search(r"pub fn run_query\(cols: &Cols_(\w+)(?:, cols_scan: &Scan_\1)?\)", verus_part)
     field = re.search(r"cols\.((?:r#)?\w+)@\[j\]@ == k", verus_part)
     if suffix is None or field is None:
         raise ValueError("a StringHashMap result needs a one-table run_query keyed by `cols.<field>@[j]@ == k`")

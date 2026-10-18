@@ -18,11 +18,11 @@ lemma.toml  <  experiment file (configs/experiments/X.toml)  <  environment vari
 * Every container run writes all keys with `value`, `section`, `source` (`file`/`experiment`/`env`/`cli`) and `origin` into the run manifest (`lemma_config`) and the `RESULT` line (`config`), with `git_sha`, `git_dirty` and `git_untracked_files` (a count; untracked files never make `git_dirty` true). A dirty tree (tracked files; untracked and gitignored data do not count) is refused unless `allow_dirty = true`.
 * `container_batch.py` forwards nothing by name. The child reads `lemma.toml` itself; the batch passes only values that differ from the file (`lemma_config.forwarded_env`, plus `LEMMA_CONFIG_ORIGIN` so a flag is still reported as a flag).
 
-## Sections (54 keys)
+## Sections (56 keys)
 
 | Section | Keys |
 | --- | --- |
-| `[run]` | `spec_style menu agent_model trusted_set assumptions assumption_package speed_bar_mult max_iterations string_encoding join_chain examples narrow_cells parallel_vstd stateful` |
+| `[run]` | `spec_style menu agent_model trusted_set assumptions assumption_package speed_bar_mult max_iterations string_encoding join_chain examples narrow_cells pushdown agent_scan parallel_vstd stateful` |
 | `[agent]` | `speed_target max_idle_sessions agent_timeout_sec max_budget_usd agent_submit_ends_session agent_data_mode agent_resource_exhausted_retries agent_auth claude_effort claude_thinking_tokens claude_tool_search mcp_iterate_rows` |
 | `[prover]` | `verus_rlimit verus_timeout_sec run_timeout_sec target_cpu dense_slot_budget` |
 | `[measure]` | `official_rounds official_duck_reps duck_memory_limit duck_threads` |
@@ -132,6 +132,26 @@ with this flag; a self join and a requires on a runtime parameter are refused. D
 ## Partial verification
 
 The MCP tool `verify_functions(names, path)` runs Verus on the assembled program with `--verify-root --verify-function <name>` once per name (same admission, same Verus guards, `verus_timeout_sec` for all names together). No compile, no timing, no row check. The result is labelled "partial check: not a proof of run_query"; it is stored under `mcp_results/runs/` with `partial: true` and `ok: false`, and `submit_runquery` refuses its run_id.
+
+## Predicate pushdown and agent scans (`[run] pushdown`, `[run] agent_scan`; both default `true`)
+
+* `pushdown = true`: the data export (`research_loop/decl_query_measure.py`) reads each table with `SELECT <needed columns> FROM t WHERE
+  <pushed conjuncts>` instead of the full scan. The transpiler's rule (`declarative_spec/pushdown.py`, allow-list in its docstring) picks the
+  WHERE conjuncts that mention one table only, in a plain SELECT over inner joins with no subquery; it refuses outer / anti joins, NOT
+  EXISTS, subqueries, CTEs, windows, HAVING, self-joined tables and anything off its expression allow-list. `scan_plan.json` beside the
+  column files (and `expect.json` key `scan_plan`) lists per table the needed columns, the pushed SQL fragments with their parameter
+  names, and rows full vs delivered. The spec text does not change; `table_rows` and the dictionaries are those of the delivered rows;
+  DuckDB's reference answer is still computed on the full original SQL. `false`: full-table export, byte-identical to before, no
+  `scan_plan.json`, no `scan_plan` key.
+* `agent_scan = true`: `run_query` gets one handle `<p>_scan: &Scan_<t>` per table parameter `<p>: &Cols_<t>` and may call `scan_where_<t>(handle, &pred)`, the ONE
+  authorized DuckDB-filter trusted item (`docs/TRUSTED_FAMILIES.md`, "Agent scans"); its rows come from a host export with
+  `WHERE <pushed> AND <pred>` (`research_loop/scan_export.py`, run on demand by the binary through `<data dir>/scan_cmd`). The ensures is
+  unchanged, so a too-narrow predicate fails the proof. `false`: spec and assembled `main` byte-identical to before.
+* Both on: they compose. The table the scan handle stands for (`scan_full_<t>`) is the pushed-down export the loader checks; an agent
+  scan is the conjunction of the transpiler's pushed predicate and the agent's. With no `scan_where` call (or `agent_scan = false`) the
+  transpiler pushdown alone applies.
+* Measurement: the pushed filter (and an agent scan's DuckDB filter) runs in the export, outside the timed `run_query`, while DuckDB's
+  reference time includes its own filtering. See `docs/COMPARABILITY.md`.
 
 ## Defaults changed with this section
 

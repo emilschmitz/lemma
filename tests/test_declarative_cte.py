@@ -80,7 +80,9 @@ def test_a_with_name_in_a_scalar_subquery_alone_substitutes_the_definition() -> 
 
 
 def test_the_group_join_shape_emits_a_max_over_the_groups_of_the_with_name() -> None:
-    spec = _emit(Q15_SHAPE)
+    from declarative_spec.agent_scan import without_scans
+
+    spec = without_scans(_emit(Q15_SHAPE))  # the authorized agent-scan block is the only trusted item (tests/test_agent_scan.py)
     assert "_ext(" in spec and "Option<int>" in spec
     assert "arbitrary()" not in spec and "assume(" not in spec and "external_body" not in spec
 

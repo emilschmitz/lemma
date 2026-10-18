@@ -281,7 +281,7 @@ def test_flat_schema_int_key_single_table_exports_its_own_table(sec_db: Path, tm
 
 def test_flat_schema_filtered_scan_exports_its_own_table(sec_db: Path, tmp_path: Path) -> None:
     prepared = _measure(sec_db, tmp_path, _FILTERED, {"line": "BIGINT", "report": "BIGINT"})
-    assert prepared["table_rows"] == {"pre": 5}
+    assert prepared["table_rows"] == {"pre": 3}  # pushdown (default on) delivers only the rows with line > 5; tests/test_pushdown.py has flag off
     assert sorted(prepared["rows"]) == [[1, 1], [2, 2]]
     assert prepared["kinds"] == ["int", "int"]
 

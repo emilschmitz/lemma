@@ -75,6 +75,7 @@ def test_the_package_module_says_it_is_unmaintained() -> None:
 @pytest.mark.parametrize("name,encoding", CASES)
 def test_flag_on_spec_and_program_are_byte_identical_to_before(name: str, encoding: str, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LEMMA_ASSUMPTIONS", "1")
+    monkeypatch.setenv("LEMMA_AGENT_SCAN", "0")  # the golden predates agent scans (a later flag; on, it adds the scan handles)
     spec, program = spec_and_program(name, encoding)
     want = json.loads(GOLDEN.read_text())[f"{name}_{encoding}"]
     assert hashlib.sha256(spec.encode()).hexdigest() == want["spec"]
@@ -345,6 +346,8 @@ def test_flag_off_measure_exports_through_the_structural_catalog(tmp_path: Path,
     sql = "SELECT k, COUNT(*) AS c, SUM(v) AS t FROM f WHERE s = 'a' GROUP BY k"
     prepared = write_query_measure(sql=sql, schema=schema, catalog=structural_catalog_from_db(db), db_path=db, dest=tmp_path / "out")
     assert sorted(prepared["rows"]) == [[1, 1, 10], [3, 1, 1]]
-    # Without the validity vector the NULL cannot be loaded: refused loudly, never a default cell.
+    # Without the validity vector the NULL cannot be loaded: refused loudly, never a default cell. (With pushdown on, `s = 'a'` is
+    # applied in the export and the NULL row never reaches the loader; the refusal is about the full-table export.)
+    monkeypatch.setenv("LEMMA_PUSHDOWN", "0")
     with pytest.raises(ValueError, match="has NULLs"):
         write_query_measure(sql=sql, schema=schema, catalog=None, db_path=db, dest=tmp_path / "out2")

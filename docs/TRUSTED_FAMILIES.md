@@ -395,6 +395,45 @@ The premise "DuckDB returns inf/NaN" holds for DuckDB 1.5.4 with default setting
 What is false about it: nothing about the IEEE operation; the surrounding idealization (casts of sums above 2^53, the real
 quotient) carries the accepted float limitations.
 
+## Agent scans: DuckDB filters correctly (the single DuckDB-filter trust; `[run] agent_scan`)
+
+Authorization: Emil, 2026-10-17, "we can add a trusted that duckdb filters correctly" (relayed to the implementing agent by the
+orchestrator). This is the only trusted item that states what DuckDB returns; it is emitted per table by
+`declarative_spec/agent_scan.py` when `agent_scan = true` and nowhere else.
+
+Statement (per table `t`, exact text in the emitted spec): `scan_full_t(s)` is an uninterpreted spec fn, the table the handle `s`
+scans; `run_query` `requires scan_full_t(<p>_scan) == *<p>` (the handle scans exactly the table the spec is about; `main` builds both
+from the same column file directory). The trusted function
+
+```rust
+// TRUSTED (the one authorized DuckDB-filter item): DuckDB returns exactly the rows of the full table that satisfy `pred`, in table order.
+#[verifier::external_body]
+pub fn scan_where_t(s: &Scan_t, pred: &Vec<ScanAtom_t>) -> (out: (Cols_t, Ghost<Seq<int>>))
+    ensures
+        out.1@ == scan_rows_t(&scan_full_t(s), pred@, scan_full_t(s).n as int),
+        out.0.n as int == out.1@.len(),
+        // per column f:     out.0.f@.len() == out.0.n as int,
+        //                   forall|k| 0 <= k < out.0.n ==> out.0.f@[k] == scan_full_t(s).f@[out.1@[k]],
+        // per dictionary:   out.0.f__dict@ == scan_full_t(s).f__dict@,
+```
+
+`scan_rows_t` is a plain recursive filter over `scan_holds_t` (every atom holds; `Range(col, lo, hi)` is `lo <= cell <= hi`, `In(col, vs)`
+is membership; a NULL cell of a nullable column satisfies no atom), all open spec fns the agent can read. What the row list is
+(in range, strictly increasing, each satisfies the predicate, every satisfying row is in it) is `lemma_scan_rows_t`, a host-PROVED
+lemma, not trusted. The scan columns are the integer cells (integers, dates as days, DECIMALs as scaled integers); strings, codes,
+floats and booleans are not in the predicate language.
+
+What it trusts, concretely: (1) DuckDB evaluates `WHERE (<pushed>) AND ((<cell>) BETWEEN lo AND hi) AND ((<cell>) IN (..))` correctly and
+returns the rows in rowid order, where `<cell>` is the exact SQL the exporter loads that column as
+(`decl_query_measure.int_cell_sql`); (2) the fixed host code around it: the Rust key serialization and file lookup in the
+`external_body`/`external` items, `research_loop/scan_export.py` (key -> SQL, export through the same exporter as the column file,
+with the full table's dictionaries), and `main` opening the handle on the directory of the loaded column file. The ensures is the
+only fact the proof gets; the spec's `ensures` of `run_query` is unchanged, so a predicate that drops a row the query needs fails
+the proof (tests/test_agent_scan.py: `scan_filtered_sum.rs` verifies, the same body with `line >= 7` or an upper bound of
+1000 does not). Tested against a Python transcription of the spec fns on DuckDB data with dates, DECIMALs, NULLs and a
+dictionary column, with pushdown on and off. Admission: the agent may call `scan_where_t` and the scan spec fns; it cannot define
+or redefine them (host names) and cannot write `external_body`, `assume` or a type.
+
 ## Menu (25 families)
 
 | id | kind | spec_ret | purpose |

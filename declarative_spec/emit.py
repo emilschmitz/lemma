@@ -516,6 +516,10 @@ def _emit_fixed(
         except DeclarativeUnsupported:
             if parallel.strict():
                 raise
+    from declarative_spec import agent_scan
+
+    if agent_scan.enabled():  # lemma.toml [run] agent_scan: scan handles + the one DuckDB-filter trusted item per table
+        out = agent_scan.add_scans(out)
     return out
 
 
