@@ -14,7 +14,7 @@ from typing import Any
 from lemma_cli.common import lemma_home, normalize_sql, read_json, sha256_file, sql_key, write_json
 
 MANIFEST_FIELDS = (
-    "sql_key", "sql", "db_path", "assumption_package_sha256", "agent_model", "agent_auth", "image_id", "git_sha", "run_dir",
+    "sql_key", "sql", "db_path", "assumptions", "assumption_package_sha256", "agent_model", "agent_auth", "image_id", "git_sha", "run_dir",
     "speedup", "binary", "binary_sha256", "lib", "installed_at",
 )
 

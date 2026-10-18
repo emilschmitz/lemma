@@ -72,8 +72,11 @@ def child_env(mode: str) -> dict[str, str]:
     return env
 
 
-def run_pipeline(sql: str, db: Path, package: Path, mode: str, log: Path) -> dict[str, Any]:
-    """Start run_container_agent.py for ``sql``; its output is redacted into ``log``. Returns the RESULT record."""
+def run_pipeline(sql: str, db: Path, package: Path | None, mode: str, log: Path) -> dict[str, Any]:
+    """Start run_container_agent.py for ``sql``; its output is redacted into ``log``. Returns the RESULT record.
+
+    ``package`` is the approved assumption package (lemma.toml ``assumptions = true``, the UNMAINTAINED path) or None (the default: no data
+    assumptions, the child gets no ``--assumption-package``)."""
     root = repo_root()
     if mode == "login":
         from research_loop.scripts.container_batch import LoginRefreshFailed, refresh_login
@@ -86,7 +89,9 @@ def run_pipeline(sql: str, db: Path, package: Path, mode: str, log: Path) -> dic
     log.parent.mkdir(parents=True, exist_ok=True)
     qfile = log.with_suffix(".sql")
     qfile.write_text(sql + "\n")
-    cmd = [sys.executable, str(root / "research_loop" / "scripts" / "run_container_agent.py"), "--query-file", str(qfile), "--duckdb-path", str(db), "--assumption-package", str(package)]
+    cmd = [sys.executable, str(root / "research_loop" / "scripts" / "run_container_agent.py"), "--query-file", str(qfile), "--duckdb-path", str(db)]
+    if package is not None:
+        cmd += ["--assumption-package", str(package)]
     result: dict[str, Any] | None = None
     with log.open("w") as fh:
         proc = subprocess.Popen(cmd, cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -108,20 +113,33 @@ def optimize_one(sql: str, db: Path, *, force: bool = False) -> Path:
     state = require_setup()
     apply_home_config()
     mode = auth_mode()
-    package = approved_package(db)
+    import lemma_config
+
+    # assumptions = false (the default since 2026-10-17): no package, no approval step; the proof makes no data assumption and the program may
+    # decline. assumptions = true is the UNMAINTAINED package path and still requires an approved package.
+    with_assumptions = lemma_config.assumptions_enabled()
+    package = approved_package(db) if with_assumptions else None
     key = sql_key(sql)
-    pkg_sha, existing = sha256_file(package), read_json(cache.executor_dir(key) / "manifest.json")
-    if existing and not force and existing.get("assumption_package_sha256") == pkg_sha and existing.get("db_path") == str(db):
+    pkg_sha, existing = (sha256_file(package) if package is not None else None), read_json(cache.executor_dir(key) / "manifest.json")
+    if (
+        existing and not force and existing.get("assumption_package_sha256") == pkg_sha and existing.get("db_path") == str(db)
+        and bool(existing.get("assumptions", True)) == with_assumptions  # an executor cached before the flag was made under a package
+    ):
         say(f"already optimized: {cache.executor_dir(key)} (--force to redo)")
         return cache.executor_dir(key)
     log = lemma_home() / "logs" / f"{key}.log"
     record = run_pipeline(normalize_sql(sql), db, package, mode, log)
+    if record.get("status") == "DECLINED":
+        raise CliError(
+            "not optimized: DECLINED (the proved program returned None on this data, e.g. a checked overflow; nothing is installed and no other "
+            f"engine's answer stands in for it): {record.get('error', '')[-600:]}\nlog: {log}"
+        )
     if record.get("status") != "SUCCESS":
         raise CliError(f"not optimized: status {record.get('status')}: {record.get('error', '')[-600:]}\nlog: {log}")
     run_dir = Path(record["run_dir"])
     official = record.get("official") or {}
     dest = cache.install(sql, {
-        "db_path": str(db), "assumption_package_sha256": pkg_sha, "agent_model": record.get("model"), "agent_auth": mode,
+        "db_path": str(db), "assumptions": with_assumptions, "assumption_package_sha256": pkg_sha, "agent_model": record.get("model"), "agent_auth": mode,
         "image_id": state.get("image_id"), "git_sha": record.get("git_sha"), "run_dir": str(run_dir),
         "speedup": official.get("speedup") if isinstance(official, dict) else None,
     }, run_dir)

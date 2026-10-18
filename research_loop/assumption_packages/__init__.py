@@ -1,5 +1,14 @@
 """Named assumption packages. Each package is a separate config.
 
+==================================================================================================================
+UNMAINTAINED, OFF BY DEFAULT SINCE 2026-10-17 (owner decision). Packages are used only with lemma.toml
+``assumptions = true``. The default (``assumptions = false``) follows JetStream (arXiv 2610.20527): the spec makes no
+data-value assumptions (exact integers, no row/value/dictionary/unique-key/join caps), and ``run_query`` returns
+``Option`` and may DECLINE (None), e.g. on a checked overflow; a declined query is labelled DECLINED and counts as a
+failure in experiments. See ``declarative_spec/decline.py`` and docs/FLAGS.md. Do not extend this package path; keep
+it byte-identical for the old runs (tests/test_assumptions_flag.py).
+==================================================================================================================
+
 Select one with ``LEMMA_ASSUMPTION_PACKAGE``: a built-in name, a JSON file in ``registry/`` by name, or a path to a
 JSON file (``json_io.py``; ``profile.py`` writes one from your data). Unset measures the SEC product
 catalog from ``LEMMA_DUCKDB_PATH`` and raises when that is unavailable. The

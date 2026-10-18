@@ -345,6 +345,16 @@ def catalog_assumptions_for_workload(workload: str | None = None):
     ``None`` so the transpiler keeps engine defaults (no ``LEMMA_MAX_CELL_U64``).
     """
     name = (workload or workload_env_name()).lower()
+    import lemma_config
+
+    if name == "sec" and not lemma_config.assumptions_enabled() and lemma_config.get("spec_style") == "declarative":
+        # assumptions = false (the default since 2026-10-17): no package; the catalog says only which columns hold NULLs (research_loop/structural_catalog.py).
+        db = os.environ.get("LEMMA_DUCKDB_PATH", "").strip()
+        if not db:
+            raise ValueError("assumptions = false needs LEMMA_DUCKDB_PATH: the loaded columns' nullability is read from the database")
+        from research_loop.structural_catalog import structural_catalog_from_db
+
+        return structural_catalog_from_db(db)
     if name == "sec":
         package = os.environ.get("LEMMA_ASSUMPTION_PACKAGE", "").strip()
         if package:

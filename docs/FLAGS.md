@@ -10,20 +10,20 @@ lemma.toml  <  experiment file (configs/experiments/X.toml)  <  environment vari
 
 * The variable of a key is `LEMMA_` + the key upper-cased, in any section: `[measure] official_rounds` is `LEMMA_OFFICIAL_ROUNDS`. An empty variable counts as unset. Booleans are `0/1/true/false`.
 * CLI flags exist on the launcher (`run_container_agent.py`: `--style --menu --agent --trusted-set --assumption-package --speed-bar-mult --max-iterations`); `container_batch.py` takes `model:query` pairs and passes the model as `--agent`.
-* The experiment file is the fourth source (`experiment`, origin = its path): `[settings]` use lemma.toml keys (unknown keys fail), and each `[[run]]` supplies `agent_model`, `duckdb_path`, `assumption_package`. A replicable run (`container_batch.py --experiment`) refuses any `env`/`cli` source; see AGENTS.md "Replicable experiments".
+* The experiment file is the fourth source (`experiment`, origin = its path): `[settings]` use lemma.toml keys (unknown keys fail), and each `[[run]]` supplies `agent_model`, `duckdb_path`, plus `assumption_package` exactly when the experiment has `assumptions = true` (with the default `false` a package is refused). A replicable run (`container_batch.py --experiment`) refuses any `env`/`cli` source; see AGENTS.md "Replicable experiments".
 * Query templates in a container run: a `[[run]]` whose query has a `-- params:` header also sets `bindings_rules` (repo-relative substitution JSON, tracked at HEAD; the entry named by the query file's stem is used) and `bindings_seed` (integer). `drive.py` draws `official_rounds + 1` bindings from (rules, seed) with `templates.generate_bindings`, uses `[0]` for prepare and in-session runs, and records rules path, seed and the full list in the run manifest (`template_bindings`). A template without them is refused before the agent starts.
 * No other source. `research_loop/config.env` no longer owns any container-run setting (it keeps only the legacy imperative / overnight / OpenRouter ones, see its header).
-* Startup check (`container_batch.py`, `run_container_agent.py`, `python -m lemma_config check`): an unknown `LEMMA_*` variable (typo or dead flag), a dead setting, a bad value or type, or a duck memory limit at or above the scope cap raises, listing the culprits. Nothing falls back to a default. Two keys have no default at all: `duckdb_path` and `assumption_package` (empty in the file; a run without a value, from the file, `LEMMA_<KEY>` or a flag, stops at startup with a message; `assumption_package = "auto"` remains valid as an explicit value).
+* Startup check (`container_batch.py`, `run_container_agent.py`, `python -m lemma_config check`): an unknown `LEMMA_*` variable (typo or dead flag), a dead setting, a bad value or type, or a duck memory limit at or above the scope cap raises, listing the culprits. Nothing falls back to a default. Two keys have no default at all: `duckdb_path`, and `assumption_package` while `assumptions = true` (empty in the file; a run without a value, from the file, `LEMMA_<KEY>` or a flag, stops at startup with a message; `assumption_package = "auto"` remains valid as an explicit value). With `assumptions = false` (the default) `assumption_package` must stay empty; a value stops the run.
 * Old spellings still work with a one-line deprecation message (table below). If both spellings are set to different values it raises.
 * Every container run writes all keys with `value`, `section`, `source` (`file`/`experiment`/`env`/`cli`) and `origin` into the run manifest (`lemma_config`) and the `RESULT` line (`config`), with `git_sha`, `git_dirty` and `git_untracked_files` (a count; untracked files never make `git_dirty` true). A dirty tree (tracked files; untracked and gitignored data do not count) is refused unless `allow_dirty = true`.
 * `container_batch.py` forwards nothing by name. The child reads `lemma.toml` itself; the batch passes only values that differ from the file (`lemma_config.forwarded_env`, plus `LEMMA_CONFIG_ORIGIN` so a flag is still reported as a flag).
 
-## Sections (51 keys)
+## Sections (54 keys)
 
 | Section | Keys |
 | --- | --- |
-| `[run]` | `spec_style menu agent_model trusted_set assumption_package speed_bar_mult max_iterations string_encoding join_chain examples narrow_cells parallel_vstd stateful` |
-| `[agent]` | `agent_timeout_sec max_budget_usd agent_submit_ends_session agent_data_mode agent_resource_exhausted_retries agent_auth claude_effort claude_thinking_tokens claude_tool_search mcp_iterate_rows` |
+| `[run]` | `spec_style menu agent_model trusted_set assumptions assumption_package speed_bar_mult max_iterations string_encoding join_chain examples narrow_cells parallel_vstd stateful` |
+| `[agent]` | `speed_target max_idle_sessions agent_timeout_sec max_budget_usd agent_submit_ends_session agent_data_mode agent_resource_exhausted_retries agent_auth claude_effort claude_thinking_tokens claude_tool_search mcp_iterate_rows` |
 | `[prover]` | `verus_rlimit verus_timeout_sec run_timeout_sec target_cpu dense_slot_budget` |
 | `[measure]` | `official_rounds official_duck_reps duck_memory_limit duck_threads` |
 | `[data]` | `duckdb_path data_profile` |
@@ -33,6 +33,38 @@ lemma.toml  <  experiment file (configs/experiments/X.toml)  <  environment vari
 | `[safety]` | `allow_dirty scope_memory_max egress_profile egress_allowlist heavy_lock heavy_min_avail_mb heavy_mem_max verus_mem_max verus_slots verus_min_avail_mb` |
 
 Meaning, allowed values and defaults are in the file. `menu` selects a profile (`research_loop/menu_profile.py`); the next four axis keys override its values (the launcher takes them as authority and the selection printed first shows them as overrides).
+
+## No data assumptions: `assumptions` (default `false` since 2026-10-17)
+
+Owner decision, following JetStream (arXiv 2610.20527). The assumption-package path (`assumptions = true`) is **UNMAINTAINED**: it stays
+byte-identical for the old runs (`tests/test_assumptions_flag.py` hashes the spec and the assembled program of five TPC-H queries) but is
+not extended.
+
+With `assumptions = false` (declarative chain; `declarative_spec/decline.py`):
+
+* **Spec.** No row caps (`ROW_CAP_*`), no value or DECIMAL-precision bounds, no dictionary-size caps, no unique keys, no join caps in
+  `valid_cols_*`. What remains is what the fixed loader builds and checks: each column vector has length `n`, dictionary codes index their
+  dictionary, dictionary entries are distinct, and (for an integer SUM) `n <= isize::MAX`, a fact of the Rust types. A catalog with any cap
+  passed to the emitter is refused. Cell types come from the SQL type alone: DECIMAL(p,s) i64 (p <= 18) or i128, BIGINT i64,
+  INTEGER/SMALLINT/TINYINT i32/i16/i8, DATE i32 (days), VARCHAR a u32 dictionary code (dictionary mode). Arithmetic in the spec is over
+  exact integers; nothing is refused for possible overflow (a SUM that may leave i128 is the body's problem: it declines).
+* **Contract.** `run_query` returns `Option<T>` (T = the old result type); the old `ensures` clauses are the spec fn
+  `run_query_ok(<params>, res: T)`, and `run_query` ensures `res matches Some(res) ==> run_query_ok(.., res)`. `None` = DECLINE, always
+  allowed. When to decline (e.g. `checked_add` returned None) is the agent's choice: coverage and speed, not correctness. The prompt says
+  this in one paragraph, with no recipe.
+* **Nullability** is read from the database (`research_loop/structural_catalog.py`: a column holding a NULL gets a validity vector). It
+  is a representation choice, not a proof assumption: the exporter refuses a NULL in any other column.
+* **Generated main.** No cap `assert!`s (they followed the caps). The structural checks stay: lengths, codes in range, distinct entries,
+  `n <= isize::MAX`. On `None` the program prints `LEMMA_DECLINED` and exits with code **3** before any row or latency line.
+* **Harness.** `pipeline.compile_and_run` turns that exit into status **`DECLINED`** (`proof_verified` true, no latency). A decline in a
+  later official round (another template binding) is also `DECLINED`. The MCP `run_runquery` result has `ok: false, declined: true`
+  (submit refuses it); the loop's result and the launcher's `RESULT` line say `status: DECLINED`, `declined: true` and exit 1: in
+  experiments a declined query is a FAILED query. The official measure never substitutes DuckDB's answer or time for ours.
+* **C ABI (for the in-DuckDB extension, built elsewhere).** Status codes `0` OK, `1` DECLINED, `2` error (`decline.ABI_STATUS_*`). The
+  extension may answer a declined query with DuckDB only under its user flag `lemma_route_unproved`, and must label that answer as not
+  produced by the proved program.
+* **CLI.** `lemma optimize` needs no approved package (`lemma assumptions` is only for `assumptions = true`); a DECLINED run installs nothing.
+* **Experiments.** `configs/experiments/*.toml` omit `assumption_package`; the three older files set `assumptions = true` to replay as recorded.
 
 ## Resolved conflicts (one value each)
 
