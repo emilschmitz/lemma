@@ -1,0 +1,73 @@
+{
+  "path": "holdout/gendb_sec_edgar/duckdb/sec_edgar_dec.duckdb",
+  "opened": "read-only; a sibling .wal (791494 bytes, Oct 4) exists and was not applied to the file; sha256 covers the main file only",
+  "why": "GenDB 2022-2024 SEC data (row counts match GenDB: num 39,401,761, pre 9,600,799). DECIMAL variant made by make_decimal_variant.py: every DOUBLE column cast through its shortest round-trip text to DECIMAL(38,4), so num.value is DECIMAL(38,4), matching the full-DECIMAL type policy. The DOUBLE original is sec_edgar.duckdb beside it.",
+  "duckdb_version": "1.5.6",
+  "file": "sec_edgar_dec.duckdb",
+  "bytes": 1689268224,
+  "sha256": "62d4970355b8acbd78f43b3e7961c2d92e682a8eb4dbec66308f95bf66cdf9be",
+  "rows": {
+    "num": 39401761,
+    "pre": 9600799,
+    "sub": 86135,
+    "tag": 1070662
+  },
+  "columns": {
+    "num": {
+      "adsh": "VARCHAR",
+      "tag": "VARCHAR",
+      "version": "VARCHAR",
+      "ddate": "INTEGER",
+      "qtrs": "INTEGER",
+      "uom": "VARCHAR",
+      "coreg": "VARCHAR",
+      "value": "DECIMAL(38,4)",
+      "footnote": "VARCHAR"
+    },
+    "pre": {
+      "adsh": "VARCHAR",
+      "report": "INTEGER",
+      "line": "INTEGER",
+      "stmt": "VARCHAR",
+      "inpth": "INTEGER",
+      "rfile": "VARCHAR",
+      "tag": "VARCHAR",
+      "version": "VARCHAR",
+      "plabel": "VARCHAR",
+      "negating": "INTEGER"
+    },
+    "sub": {
+      "adsh": "VARCHAR",
+      "cik": "INTEGER",
+      "name": "VARCHAR",
+      "sic": "INTEGER",
+      "countryba": "VARCHAR",
+      "stprba": "VARCHAR",
+      "cityba": "VARCHAR",
+      "countryinc": "VARCHAR",
+      "form": "VARCHAR",
+      "period": "INTEGER",
+      "fy": "INTEGER",
+      "fp": "VARCHAR",
+      "filed": "INTEGER",
+      "accepted": "VARCHAR",
+      "prevrpt": "INTEGER",
+      "nciks": "INTEGER",
+      "afs": "VARCHAR",
+      "wksi": "INTEGER",
+      "fye": "VARCHAR",
+      "instance": "VARCHAR"
+    },
+    "tag": {
+      "tag": "VARCHAR",
+      "version": "VARCHAR",
+      "custom": "INTEGER",
+      "abstract": "INTEGER",
+      "datatype": "VARCHAR",
+      "iord": "VARCHAR",
+      "crdr": "VARCHAR",
+      "tlabel": "VARCHAR",
+      "doc": "VARCHAR"
+    }
+  }
+}
