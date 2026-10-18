@@ -58,6 +58,36 @@ def submitted_speedup(workspace: Path) -> float | None:
     return None if metrics.get("speedup") is None else float(metrics["speedup"])
 
 
+def template_bindings(sql_query: str) -> dict | None:
+    """The per-round parameter bindings of a query template, drawn from the experiment run's rules and seed, or None for fixed-constant SQL.
+
+    ``official_rounds + 1`` bindings: ``[0]`` is the one prepare and the in-session runs use, round i of the official measure binds
+    ``[i % len]``. The rules are the entry named by the query file's stem in the run's ``bindings_rules`` JSON. A template with no
+    ``bindings_rules`` / ``bindings_seed`` in the experiment run is refused (a dev run has no replicable draw)."""
+    from declarative_spec import templates
+
+    template = templates.parse_template(sql_query)
+    if template is None:
+        return None
+    named = lemma_config.experiment_bindings()
+    if named is None:
+        raise ValueError("the SQL is a query template (`-- params:`) but the experiment run names no bindings_rules and bindings_seed")
+    all_rules = json.loads(Path(named["rules"]).read_text())
+    name = Path(named["query"]).stem
+    if name not in all_rules:
+        raise ValueError(f"{named['rules_rel']} has no rules for {name!r} (the query file's stem); it has {sorted(k for k in all_rules if not k.startswith('_'))}")
+    n = int(lemma_config.get("official_rounds")) + 1
+    bindings = templates.generate_bindings(template, all_rules[name], n, named["seed"])
+    return {"rules": named["rules_rel"], "seed": named["seed"], "rule_set": name, "bindings": bindings}
+
+
+def _record_bindings(manifest: Path, record: dict) -> None:
+    if manifest.is_file():
+        data = json.loads(manifest.read_text())
+        data["template_bindings"] = record
+        manifest.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
 def _maybe_large_table(
     *,
     sql_query: str,
@@ -69,7 +99,11 @@ def _maybe_large_table(
     if measure_db:
         from research_loop.decl_query_measure import write_query_measure
 
+        drawn = template_bindings(sql_query)
+        if drawn is not None:
+            _record_bindings(workspace.parent / "manifest.json", drawn)
         prepared = write_query_measure(
+            bindings=None if drawn is None else drawn["bindings"],
             sql=sql_query,
             schema=schema,
             catalog=catalog,

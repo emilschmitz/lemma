@@ -28,7 +28,8 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent
 TOML = ROOT / "lemma.toml"
 PREFIX = "LEMMA_"
-EXPERIMENT_KEYS = ("model", "query", "duckdb_path", "assumption_package")  # every [[run]] entry has exactly these
+EXPERIMENT_KEYS = ("model", "query", "duckdb_path", "assumption_package")  # every [[run]] entry has these strings
+BINDING_KEYS = ("bindings_rules", "bindings_seed")  # optional, both or neither: a query template's substitution rules (repo-relative path) and the seed that draws its per-round bindings
 MODEL_ALIASES = {"haiku": "claude-haiku-4-5-20251001", "sonnet": "claude-sonnet-5-5"}
 ORIGIN_ENV = "LEMMA_CONFIG_ORIGIN"  # handoff of the batch launcher: {"key": "cli"|"env"} for values it forwarded as environment
 
@@ -399,7 +400,7 @@ def _git(root: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, check=True).stdout.strip()
 
 
-def load_experiment(path: Path | str, root: Path | None = None) -> tuple[dict[str, Any], list[dict[str, str]]]:
+def load_experiment(path: Path | str, root: Path | None = None) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Parse an experiment file: ``[settings]`` (lemma.toml keys, type-checked like the file) and ``[[run]]`` entries
     (``model`` slug or alias, ``query``, ``duckdb_path``, ``assumption_package``; the two paths repo-relative). Unknown anything raises."""
     root = root or ROOT
@@ -422,18 +423,24 @@ def load_experiment(path: Path | str, root: Path | None = None) -> tuple[dict[st
     runs = raw.get("run", [])
     if not runs:
         raise ConfigError(f"{full}: no [[run]] entries")
-    out: list[dict[str, str]] = []
+    out: list[dict[str, Any]] = []
     for i, entry in enumerate(runs):
-        if set(entry) != set(EXPERIMENT_KEYS) or not all(isinstance(v, str) and v for v in entry.values()):
-            raise ConfigError(f"{full}: [[run]] #{i} must have exactly the string keys {list(EXPERIMENT_KEYS)}, got {entry}")
-        for key in ("query", "assumption_package"):
+        if not set(EXPERIMENT_KEYS) <= set(entry) <= set(EXPERIMENT_KEYS) | set(BINDING_KEYS) or not all(isinstance(entry[k], str) and entry[k] for k in EXPERIMENT_KEYS if k in entry):
+            raise ConfigError(f"{full}: [[run]] #{i} must have exactly the string keys {list(EXPERIMENT_KEYS)} (plus, optionally, {list(BINDING_KEYS)}), got {entry}")
+        if ("bindings_rules" in entry) != ("bindings_seed" in entry):
+            raise ConfigError(f"{full}: [[run]] #{i}: bindings_rules and bindings_seed go together (the seed makes the bindings replicable)")
+        if "bindings_rules" in entry and (not isinstance(entry["bindings_rules"], str) or not entry["bindings_rules"] or isinstance(entry["bindings_seed"], bool) or not isinstance(entry["bindings_seed"], int)):
+            raise ConfigError(f"{full}: [[run]] #{i}: bindings_rules must be a path string and bindings_seed an integer, got {entry}")
+        for key in ("query", "assumption_package", "bindings_rules"):
+            if key not in entry:
+                continue
             if Path(entry[key]).is_absolute():
                 raise ConfigError(f"{full}: [[run]] #{i} {key} must be repo-relative (and tracked at HEAD), got {entry[key]!r}")
         out.append({**entry, "model": MODEL_ALIASES.get(entry["model"], entry["model"])})
     return settings, out
 
 
-def use_experiment(path: Path | str, run_index: int, pinned_sha: str | None = None, root: Path | None = None) -> dict[str, str]:
+def use_experiment(path: Path | str, run_index: int, pinned_sha: str | None = None, root: Path | None = None) -> dict[str, Any]:
     """Make run ``run_index`` of the experiment file the "experiment" source of this process (settings plus the run's model, database and
     package; the database and package paths are resolved against the repo root). Returns the run entry."""
     global _experiment
@@ -447,7 +454,8 @@ def use_experiment(path: Path | str, run_index: int, pinned_sha: str | None = No
         _check(key, values[key], f"{full} [[run]] #{run_index}")
     rel = str(full.relative_to(root))
     _experiment = {
-        "files": [run["query"], run["assumption_package"]], "path": rel, "blob_sha": _git(root, "hash-object", str(full)), "pinned_sha": pinned_sha, "run_index": run_index, "values": values,
+        "files": [run["query"], run["assumption_package"], *([run["bindings_rules"]] if "bindings_rules" in run else [])], "path": rel,
+        "bindings": {"rules": str(root / run["bindings_rules"]), "rules_rel": run["bindings_rules"], "seed": run["bindings_seed"], "query": run["query"]} if "bindings_rules" in run else None, "blob_sha": _git(root, "hash-object", str(full)), "pinned_sha": pinned_sha, "run_index": run_index, "values": values,
     }
     return run
 
@@ -455,6 +463,11 @@ def use_experiment(path: Path | str, run_index: int, pinned_sha: str | None = No
 def clear_experiment() -> None:
     global _experiment
     _experiment = None
+
+
+def experiment_bindings() -> dict[str, Any] | None:
+    """The query-template binding rules of the loaded experiment run (absolute ``rules`` path, ``rules_rel``, ``seed``, the ``query`` file), or None."""
+    return None if _experiment is None else _experiment["bindings"]
 
 
 def experiment_record() -> dict[str, Any] | None:

@@ -1,0 +1,15 @@
+# Smoke run of a query template (TPC-H q06): the constants are parameters, the official rounds bind fresh values drawn from the TPC-H substitution rules with seed 1.
+# The package research_loop/assumption_packages/registry/tpch_sf10.json is a PLACEHOLDER name: the owner approves that package later. Until the file is committed the run refuses (not tracked at HEAD).
+# Run: uv run python research_loop/scripts/container_batch.py --experiment configs/experiments/tpch_sf10_templates_smoke.toml
+[settings]
+examples = "none"
+data_profile = "stats"
+templates = true
+
+[[run]]
+model = "claude-opus-5-5"
+query = "configs/query_templates/tpch/q06.sql"
+duckdb_path = "research_loop/generated/tpch_sf10.duckdb"
+assumption_package = "research_loop/assumption_packages/registry/tpch_sf10.json"
+bindings_rules = "configs/query_templates/tpch/substitution.json"
+bindings_seed = 1

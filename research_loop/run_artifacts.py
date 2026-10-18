@@ -383,6 +383,7 @@ def begin_run(
         "effective": effective_settings(git_commit, git_dirty),
         "lemma_config": lemma_config.effective_dict(),  # every key of lemma.toml with its value and source (file/experiment/env/cli)
         "experiment": (exp := lemma_config.experiment_record()) and {"path": exp["path"], "blob_sha": exp["blob_sha"]},
+        "template_bindings_source": (b := lemma_config.experiment_bindings()) and {"rules": b["rules_rel"], "seed": b["seed"]},
         "pinned_sha": exp["pinned_sha"] if exp else None,
         "replicable": exp is not None,  # only a run started from a committed experiment file passed require_replicable
         **_evidence,
