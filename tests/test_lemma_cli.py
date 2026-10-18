@@ -43,6 +43,17 @@ else:
 GOOD_SELFTEST = {"direct_blocked": True, "allowed": {"api.anthropic.com": 200}, "denied": {"example.com": 403, "api.anthropic.com.example.com": 403}}
 
 
+@pytest.fixture(autouse=True)
+def _restore_auth_env():
+    """The CLI exports the saved auth choice into os.environ (for its child processes); restore it so later test files are unaffected."""
+    saved = os.environ.get("LEMMA_AGENT_AUTH")
+    yield
+    if saved is None:
+        os.environ.pop("LEMMA_AGENT_AUTH", None)
+    else:
+        os.environ["LEMMA_AGENT_AUTH"] = saved
+
+
 @pytest.fixture
 def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A fresh user: empty HOME and LEMMA_HOME, a stub docker with an image, no credentials, no LEMMA_*/secret variables."""
@@ -176,6 +187,7 @@ def test_api_key_setup_without_the_variable_stops_and_does_not_use_the_login(env
 
 def test_the_auth_choice_is_saved_and_an_environment_variable_beats_it(env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", KEY)
+    monkeypatch.setenv("LEMMA_AGENT_AUTH", "")  # registers the variable with monkeypatch first, so teardown removes what setup exports
     assert main(["setup", "--auth", "api-key"]) == 0
     assert json.loads(common.config_path().read_text()) == {"agent_auth": "api_key"}
     monkeypatch.delenv("LEMMA_AGENT_AUTH")  # the setup call exported it into this process
