@@ -30,6 +30,8 @@ from research_loop.decl_query_measure import _canon, _time_query, decimal_scaled
 from research_loop.table_assumptions import CatalogAssumptions, TableAssumptions
 from scripts.export_tpch import export_tpch_duckdb
 
+pytestmark = pytest.mark.usefixtures("exact_division_off")  # the real-form AVG / ratio and f64 idealization (lemma.toml [sql] exact_division = false)
+
 VERUS = Path("/home/emil/tools/verus/verus")
 EPOCH = dt.date(1970, 1, 1)
 

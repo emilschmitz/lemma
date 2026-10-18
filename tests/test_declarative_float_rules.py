@@ -21,6 +21,8 @@ from declarative_spec.assemble import assemble_declarative_program
 from declarative_spec.emit import DeclarativeUnsupported, emit_declarative_spec
 from research_loop.table_assumptions import CatalogAssumptions, ColumnAssumption, TableAssumptions
 
+pytestmark = pytest.mark.usefixtures("exact_division_off")  # the real-form AVG / ratio and f64 idealization (lemma.toml [sql] exact_division = false)
+
 GUARD = Path(__file__).resolve().parents[1] / "scripts" / "ram" / "verus_guarded.sh"
 VERUS = Path("/home/emil/tools/verus/verus")
 

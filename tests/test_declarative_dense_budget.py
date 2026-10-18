@@ -13,6 +13,8 @@ from declarative_spec.emit import emit_declarative_spec
 from declarative_spec.prompt import build_declarative_prompt
 from research_loop.table_assumptions import CatalogAssumptions, ColumnAssumption, TableAssumptions
 
+pytestmark = pytest.mark.usefixtures("exact_division_off")  # the real-form AVG / ratio and f64 idealization (lemma.toml [sql] exact_division = false)
+
 SCHEMA = {"t": {"a": "varchar", "b": "varchar", "v": "bigint"}}
 SQL = "SELECT a, b, COUNT(*) AS c FROM t GROUP BY a, b"
 

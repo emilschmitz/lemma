@@ -23,3 +23,8 @@ def left_join_count() -> bool:
 
 def templates() -> bool:
     return bool(lemma_config.get("templates"))
+
+
+def exact_division() -> bool:
+    """AVG and `/` as exact rationals, no float idealization; a FLOAT/DOUBLE operand is refused (see ``declarative_spec/exact_rational.py``)."""
+    return bool(lemma_config.get("exact_division"))

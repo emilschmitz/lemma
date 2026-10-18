@@ -657,7 +657,7 @@ def _kind(exec_rust: str) -> str:
     exec_rust = exec_rust.removeprefix("Option<").removesuffix(">")
     if exec_rust == "String":
         return "str"
-    if exec_rust == "f64":
+    if exec_rust in ("f64", "Rat"):  # Rat: an exact rational the binary prints as a double (lemma.toml [sql] exact_division)
         return "float"
     return "int"
 
@@ -689,7 +689,7 @@ def _canon(exec_rust: str, value: object, scale: int = 0) -> object:
         return (value - _EPOCH).days
     if exec_rust == "String":
         return "" if value is None else str(value)
-    if exec_rust == "f64":
+    if exec_rust in ("f64", "Rat"):
         if value is None:
             raise ValueError("null float in a measured result")
         return _as_float(value)

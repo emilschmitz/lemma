@@ -26,6 +26,8 @@ from declarative_spec.parse import DeclarativeUnsupported
 from research_loop.decl_query_measure import _canon, decimal_scaled
 from research_loop.table_assumptions import CatalogAssumptions, ColumnAssumption, TableAssumptions
 
+pytestmark = pytest.mark.usefixtures("exact_division_off")  # the real-form AVG / ratio and f64 idealization (lemma.toml [sql] exact_division = false)
+
 @pytest.fixture(autouse=True)
 def _switch_on(monkeypatch: pytest.MonkeyPatch) -> None:
     """These tests are about the shape being on: lemma.toml [sql] agg_times_constant."""

@@ -19,6 +19,8 @@ from research_loop.table_assumptions import (
 )
 from verus_transpiler import transpile_sql_to_verus
 
+pytestmark = pytest.mark.usefixtures("exact_division_off")  # the real-form AVG / ratio and f64 idealization (lemma.toml [sql] exact_division = false)
+
 VERUS = Path("/home/emil/tools/verus/verus")
 
 _COUNT_SQL = "SELECT k, COUNT(*) AS cnt FROM t GROUP BY k"

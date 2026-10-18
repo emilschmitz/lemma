@@ -604,6 +604,10 @@ class _Rewriter:
             finally:
                 self.in_ratio = False
             if t.kind != "num":
+                if t.kind == "float" and sql_switches.exact_division():
+                    from declarative_spec.exact_rational import FLOAT_REFUSAL
+
+                    raise DeclarativeUnsupported(FLOAT_REFUSAL)
                 raise DeclarativeUnsupported(f"division operand of kind {t.kind}: only SUM / COUNT of integer or DECIMAL values")
             if position == 1 and sql_switches.agg_times_constant() and _is_constant_literal(t.node):
                 if _unparen(t.node).this == "0":  # type: ignore[union-attr]

@@ -23,3 +23,12 @@ def _tests_do_not_depend_on_the_run_defaults_of_lemma_toml(monkeypatch: pytest.M
     lemma_config.clear_cli()  # CLI overrides are process-global: no test leaks its flags into the next
     yield
     lemma_config.clear_cli()
+
+
+@pytest.fixture
+def exact_division_off(monkeypatch: pytest.MonkeyPatch):
+    """lemma.toml [sql] exact_division = false: the f64 idealization and the real-form AVG / ratio specs (byte-identical to before the flag).
+
+    The modules that state or prove that form (`pytestmark = pytest.mark.usefixtures("exact_division_off")`) use it; the default (on) is
+    tested in tests/test_declarative_exact_division.py."""
+    monkeypatch.setenv("LEMMA_EXACT_DIVISION", "0")

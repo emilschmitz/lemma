@@ -506,6 +506,8 @@ def _row_printer(run_call: str, fields: list[tuple[str, str]]) -> tuple[str, str
                 shown = "row_hex(v)"
             elif inner == "bool":
                 shown = 'format!("{}", if *v { 1u8 } else { 0u8 })'
+            elif inner == "Rat":
+                shown = 'format!("{:.17}", (v.num as f64) / (v.den as f64))'
             else:
                 fmt_one = "{:.17}" if inner == "f64" else "{}"
                 shown = f'format!("{fmt_one}", v)'
@@ -513,6 +515,11 @@ def _row_printer(run_call: str, fields: list[tuple[str, str]]) -> tuple[str, str
         elif fty == "f64":
             placeholders.append("{:.17}")
             args.append(access)
+        elif fty == "Rat":
+            # An exact rational (lemma.toml [sql] exact_division) printed as DuckDB's DOUBLE: num / den in IEEE double,
+            # outside the proof. den == 0 gives +inf, -inf or NaN by the sign of num, as DuckDB's division by zero does.
+            placeholders.append("{:.17}")
+            args.append(f"({access}.num as f64) / ({access}.den as f64)")
         elif fty == "bool":
             placeholders.append("{}")
             args.append(f"if {access} {{ 1u8 }} else {{ 0u8 }}")
