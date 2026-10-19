@@ -29,8 +29,6 @@ import duckdb
 import sqlglot
 from sqlglot import exp
 
-from declarative_spec.parse_query import parse_query
-
 DIALECT = "duckdb"
 MEMORY_LIMIT = "2GB"
 QUERY_TIMEOUT_SEC = 120.0
@@ -440,7 +438,9 @@ def _selects(expression: exp.Expression) -> list[exp.Select]:
 
 def build_profile(sql: str, db_path: Path | str, *, timeout_sec: float = QUERY_TIMEOUT_SEC) -> str:
     """The markdown profile of ``sql`` on the database at ``db_path`` (opened read-only, memory limit 2GB)."""
-    parse_query(sql)  # the profile covers what the declarative transpiler accepts; anything else raises DeclarativeUnsupported
+    # No transpiler gate here: whether the SQL is supported is decided by the spec emitter (which first rewrites DECIMAL/DATE and
+    # ratios of aggregates, so a raw `parse_query` refused SQL the emitter accepts, e.g. `100.00 * SUM(..) / SUM(..)`).
+    # The profile is informational text for the agent and is not an input of the spec or the proof.
     runner = _Runner(Path(db_path), timeout_sec)
     try:
         selects = _selects(sqlglot.parse_one(sql))
