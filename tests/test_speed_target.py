@@ -125,6 +125,8 @@ def test_duckdb_path_and_assumption_package_have_no_default(monkeypatch: pytest.
     with pytest.raises(lc.ConfigError, match="has no default"):
         lc.require_run_settings()
     monkeypatch.setenv("LEMMA_DUCKDB_PATH", "/x.duckdb")
+    lc.require_run_settings()  # assumptions = false (the default): no package is needed
+    monkeypatch.setenv("LEMMA_ASSUMPTIONS", "1")
     with pytest.raises(lc.ConfigError, match="assumption_package has no default"):
         lc.require_run_settings()
     monkeypatch.setenv("LEMMA_ASSUMPTION_PACKAGE", "auto")  # "auto" stays valid as an explicit value
@@ -136,7 +138,8 @@ def test_new_defaults_are_dict_and_join_chain() -> None:
     assert lc.get("string_encoding") == "dict" and lc.get("join_chain") is True
 
 
-def test_a_query_without_unique_keys_keeps_the_general_form_under_the_default() -> None:
+def test_a_query_without_unique_keys_keeps_the_general_form_under_the_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LEMMA_ASSUMPTIONS", "1")  # the catalogs below carry caps: the assumption-package path
     from declarative_spec.emit import emit_declarative_spec
     from tests.test_join_chain import SCHEMA, STAR, _catalog, _params
 
@@ -194,6 +197,7 @@ def test_the_prompt_has_the_speed_target_and_the_partial_tool_in_every_mode(monk
     from tests.test_declarative_prompt_kinds import STAR, _prompt
 
     monkeypatch.setenv("LEMMA_SPEED_TARGET", "7")
+    monkeypatch.setenv("LEMMA_ASSUMPTIONS", "1")  # the fixture catalog carries caps: the assumption-package path
     text = _prompt(monkeypatch, STAR, mode)
     assert "## Target speedup" in text and "7x the reference engine" in text and "Keep a copy of the last submitted file" in text
     assert "`verify_functions`" in text and "does not count as a submission" in text

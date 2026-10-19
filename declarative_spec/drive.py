@@ -158,7 +158,7 @@ def _maybe_large_table(
     return {prepared["suffix"]: prepared["bin"]}, {
         "duck_us": prepared["duck_us"],
         "rows": prepared["rows"],
-        "synthetic": True,  # no DuckDB file behind this dev bar: the official measure cannot re-time it
+        "synthetic": True,  # no database file behind this dev bar: the official measure cannot re-time it
     }
 
 
