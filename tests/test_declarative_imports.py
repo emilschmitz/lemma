@@ -33,6 +33,8 @@ from tests.test_declarative_vec_outrow_proof import (
     needs_verus,
 )
 
+pytestmark = pytest.mark.usefixtures("exact_division_off")  # the real-form AVG / ratio and f64 idealization (lemma.toml [sql] exact_division = false)
+
 _USUM_SPEC = _spec(USUM[1], USUM[2])
 _GROUP = "broadcast use vstd::seq::group_seq_axioms;"
 

@@ -146,6 +146,33 @@ def _unparen(node: exp.Expression) -> exp.Expression:
     return node
 
 
+def _restate_avg_in_stored_units(node: exp.Expression, scale: int) -> bool:
+    """lemma.toml [sql] exact_division: ``node`` (an AVG, or a scalar subquery whose one column is an AVG) is compared with a
+    DECIMAL of ``scale``, stored as value * 10**scale. An AVG of a DECIMAL of scale k is marked ``__dec<k>`` (natural units:
+    the sum over count * 10**k); restate it as ``__dec<k - scale>`` (no mark at k == scale), so both sides of the comparison are
+    in the stored units and the emitter cross-multiplies them exactly. False (unchanged) for any other shape or k < scale."""
+    node = _unparen(node)
+    if isinstance(node, exp.Subquery):
+        node = _unparen(node.this)
+    if isinstance(node, exp.Select):
+        if len(node.expressions) != 1:
+            return False
+        node = node.expressions[0]
+        node = node.this if isinstance(node, exp.Alias) else node
+    if not isinstance(node, exp.Avg):
+        return False
+    arg = node.this
+    m = re.fullmatch(r"__dec(\d+)", arg.name) if isinstance(arg, exp.Anonymous) else None
+    if m is None or int(m.group(1)) < scale:
+        return False
+    rest = int(m.group(1)) - scale
+    if rest == 0:
+        node.set("this", arg.expressions[0])
+    else:
+        arg.set("this", f"__dec{rest}")
+    return True
+
+
 def _iso_date_days(node: exp.Expression) -> int | None:
     if isinstance(node, exp.Literal) and node.is_string:
         match = _ISO_DATE.match(str(node.this))
@@ -360,6 +387,10 @@ class _Rewriter:
                             "a non-constant integer or DECIMAL value compared with a float column: "
                             "mixed with a float column"
                         )
+                    if num.scale > 0 and sql_switches.exact_division() and _restate_avg_in_stored_units(flt.node, num.scale):
+                        # exact rationals: the AVG of a DECIMAL (scale k) is now stated in the units of the DECIMAL side
+                        # (value * 10**scale), and the emitter compares the two cross-multiplied, exactly
+                        return left, right
                     if num.scale > 0:
                         # The emitter widens the stored integer, which is the value times 10**scale, to a real; the
                         # float side is in natural units, so the comparison would be off by that power of ten.
@@ -607,6 +638,10 @@ class _Rewriter:
             finally:
                 self.in_ratio = False
             if t.kind != "num":
+                if t.kind == "float" and sql_switches.exact_division():
+                    from declarative_spec.exact_rational import FLOAT_REFUSAL
+
+                    raise DeclarativeUnsupported(FLOAT_REFUSAL)
                 raise DeclarativeUnsupported(f"division operand of kind {t.kind}: only SUM / COUNT of integer or DECIMAL values")
             if position == 1 and sql_switches.agg_times_constant() and _is_constant_literal(t.node):
                 if _unparen(t.node).this == "0":  # type: ignore[union-attr]

@@ -19,6 +19,8 @@ from declarative_spec.parse_query import parse_query
 from declarative_spec.resolve import flatten_derived
 from research_loop.table_assumptions import CatalogAssumptions, ColumnAssumption, TableAssumptions
 
+pytestmark = pytest.mark.usefixtures("exact_division_off")  # the real-form AVG / ratio and f64 idealization (lemma.toml [sql] exact_division = false)
+
 @pytest.fixture(autouse=True)
 def _switch_on(monkeypatch: pytest.MonkeyPatch) -> None:
     """These tests are about the shape being on: lemma.toml [sql] derived_agg_expr."""

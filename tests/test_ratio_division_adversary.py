@@ -20,6 +20,8 @@ from declarative_spec.emit import DeclarativeUnsupported, emit_declarative_spec
 from declarative_spec.lemmas import float_div_zero_lemma_rs
 from research_loop.table_assumptions import CatalogAssumptions, ColumnAssumption, TableAssumptions
 
+pytestmark = pytest.mark.usefixtures("exact_division_off")  # the real-form AVG / ratio and f64 idealization (lemma.toml [sql] exact_division = false)
+
 SCHEMA = {
     "li": {
         "okey": "bigint",

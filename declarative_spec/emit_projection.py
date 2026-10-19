@@ -30,8 +30,7 @@ from declarative_spec.emit_surface import (
     _one_scalar,
     _param_call,
     _param_sig,
-    _promote_int_side,
-    _scalar_returns_real,
+    _place_scalar,
     _quant,
     _reindex,
     _row_hit_fn,
@@ -225,9 +224,7 @@ def _projection_where(
         bound = _compile_pred(bound_src, main, [], model, {})
         pred = pred.replace(token, f"{builders[name]}{bound})")
     for name, call in values.items():
-        if _scalar_returns_real("\n".join(blocks), call):
-            pred = _promote_int_side(pred, f"__VAL{name}__")
-        pred = pred.replace(f"__VAL{name}__", call)
+        pred = _place_scalar(pred, name, call, "\n".join(blocks))
     if re.search(r"\bsq_\d+\b(?!\s*\()", pred):
         raise DeclarativeUnsupported("scalar subquery")
     return pred

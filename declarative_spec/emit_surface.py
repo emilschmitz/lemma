@@ -120,7 +120,7 @@ def _emit_with_string_tokens(
         facts = dataclasses.replace(facts, unique_aliases=tuple(merged.items())) if facts else _JoinBound(1, tuple(merged.items()))
 
     structs = _structs(helpers.params, model, catalog)
-    int_sum = any(a.kind == "SUM" and not a.float_out for a in helpers.aggs)
+    int_sum = any(a.kind == "SUM" and not a.float_out or a.kind == "AVG" and a.exec == "Rat" for a in helpers.aggs)
     valids = _valids(helpers.params, model, catalog, int_sum=int_sum, facts=facts)
     consts = _consts(helpers.params, model, catalog)
     cap_source, cap_requires = _join_cap_text(facts, helpers, model, catalog)
@@ -184,6 +184,30 @@ _REAL_CMP = r"(?:<=|>=|==|!=|<|>)"
 def _scalar_returns_real(source: str, call: str) -> bool:
     fn = call.split("(")[0]
     return re.search(rf"spec fn {re.escape(fn)}\([^)]*\)\s*->\s*real\b", source) is not None
+
+
+def _scalar_rat(source: str, call: str) -> tuple[str, ...] | None:
+    """An exact-rational scalar (``<f>_num`` / ``<f>_den`` in ``source``): the two calls, and ``<f>_nonempty`` when the AVG
+    may be over no rows (SQL NULL; see ``exact_rational.rat_compare``); None for any other scalar."""
+    fn, _, args = call.partition("(")
+    if re.search(rf"spec fn {re.escape(fn)}_den\(", source) is None:
+        return None
+    if re.search(rf"spec fn {re.escape(fn)}_nonempty\(", source) is None:
+        return f"{fn}_num({args}", f"{fn}_den({args}"
+    return f"{fn}_num({args}", f"{fn}_den({args}", f"{fn}_nonempty({args}"
+
+
+def _place_scalar(pred: str, name: str, call: str, source: str) -> str:
+    """Put scalar ``call`` where the compiled predicate has ``__VAL<name>__``; an exact rational is compared cross-multiplied."""
+    token = f"__VAL{name}__"
+    rat = _scalar_rat(source, call)
+    if rat is not None:
+        from declarative_spec.exact_rational import rat_compare
+
+        return rat_compare(pred, {token: rat})
+    if _scalar_returns_real(source, call):
+        pred = _promote_int_side(pred, token)
+    return pred.replace(token, call)
 
 
 def _promote_int_side(text: str, token: str) -> str:
@@ -290,9 +314,7 @@ def _emit_helpers(query: Query, prefix: str, model: SchemaModel, chain=None) -> 
         where_expr = re.sub(rf"\b{re.escape(name)}\b", f"__VAL{name}__", where_expr)
     pred = _compile_pred(where_expr, main, [], model, exists_calls)
     for name, call in scalars[0].items():
-        if _scalar_returns_real(scalars[1], call):
-            pred = _promote_int_side(pred, f"__VAL{name}__")
-        pred = pred.replace(f"__VAL{name}__", call)
+        pred = _place_scalar(pred, name, call, scalars[1])
     if re.search(r"\bsq_\d+\b(?!\s*\()", pred):
         raise DeclarativeUnsupported("a scalar subquery in the WHERE of an aggregate query")
     blocks.append(_row_hit_fn(row_hit, query, main, params, pred))
@@ -777,6 +799,8 @@ def _emit_agg(
         if chain_lemmas and not is_float:
             blocks.append(_LIBRARY_MARK + _chain_library(name, add, main, params, key_ty, chain_row_hit))
         return _AggFn(alias, kind, name, ret, is_float, "fold", exec_ty)
+    if kind == "AVG" and sql_switches.exact_division():
+        return _emit_exact_avg(blocks, agg, name, alias, is_float, main, params, model, key_ty, hit)
     if kind == "AVG":
         # SQL AVG is a real quotient, including AVG over an integer column.
         natural_float = is_float
@@ -813,6 +837,56 @@ def _emit_agg(
     raise DeclarativeUnsupported(kind)
 
 
+def _emit_exact_avg(
+    blocks: list[str],
+    agg: Agg,
+    name: str,
+    alias: str,
+    is_float: bool,
+    main: list[_Slot],
+    params: list[_Slot],
+    model: SchemaModel,
+    key_ty: str | None,
+    hit: str,
+) -> _AggFn:
+    """AVG as an exact rational (lemma.toml [sql] exact_division): ``<name>_num / <name>_den`` in natural units.
+
+    ``<name>_sum`` folds the stored integers (a DECIMAL cell is value * 10**s), ``<name>_count`` counts the rows, and the
+    value is ``sum * f0 / (count * 10**s * f1)`` for the constant factor f0/f1 of ``c * AVG(x)``. With no row the pair is
+    ``0 / 1``, never read as a value: an output AVG of no rows is its field's ``None``, a group always has a row, and a scalar-subquery AVG is compared only when ``<f>_nonempty`` (SQL NULL otherwise). ``<name>(.., r)`` says the result
+    field ``r`` is that rational (``rat_is``)."""
+    from declarative_spec.exact_rational import FLOAT_REFUSAL
+
+    if is_float:
+        raise DeclarativeUnsupported(FLOAT_REFUSAL)
+    sum_name, cnt_name = f"{name}_sum", f"{name}_count"
+    value = _value_fn(blocks, f"{name}_val", agg, main, params, model, "int")
+    p_sig, p_call = _param_sig(params), _param_call(params)
+    _emit_fold(blocks, sum_name, "int", "0int", f"if {hit} {{ {value}({p_call}, {_idx_call(main)}) }} else {{ 0int }}", main, params, key_ty)
+    _emit_fold(blocks, cnt_name, "int", "0int", f"if {hit} {{ 1int }} else {{ 0int }}", main, params, key_ty, unit_step=True)
+    key_sig = f", k: {key_ty}" if key_ty else ""
+    key_call = ", k" if key_ty else ""
+    f0, f1 = agg.avg_factor
+    scale = 10**agg.avg_scale * f1
+    num = f"{sum_name}({p_call}, i0{key_call})" + (f" * {f0}" if f0 != 1 else "")
+    den = "c" + (f" * {scale}" if scale != 1 else "")
+    blocks.append(
+        f"""pub open spec fn {name}_num({p_sig}, i0: int{key_sig}) -> int {{
+    {num}
+}}
+
+pub open spec fn {name}_den({p_sig}, i0: int{key_sig}) -> int {{
+    let c = {cnt_name}({p_call}, i0{key_call});
+    if c > 0 {{ {den} }} else {{ 1int }}
+}}
+
+pub open spec fn {name}({p_sig}, i0: int{key_sig}, r: Rat) -> bool {{
+    rat_is(r, {name}_num({p_call}, i0{key_call}), {name}_den({p_call}, i0{key_call}))
+}}"""
+    )
+    return _AggFn(alias, "AVG", name, "rat", False, "ratio", "Rat")
+
+
 def _emit_ratio(
     blocks: list[str],
     query: Query,
@@ -842,6 +916,10 @@ def _emit_ratio(
         if op.kind.upper() not in ("SUM", "COUNT"):
             raise DeclarativeUnsupported("division operand must be a SUM or COUNT")
         if _agg_is_float(op, main, model):
+            if sql_switches.exact_division():
+                from declarative_spec.exact_rational import FLOAT_REFUSAL
+
+                raise DeclarativeUnsupported(FLOAT_REFUSAL)
             raise DeclarativeUnsupported(
                 "division of a float SUM: the quotient of two floating sums has no magnitude bound the proof can use"
             )
@@ -851,6 +929,22 @@ def _emit_ratio(
     key_sig = f", k: {key_ty}" if key_ty else ""
     key_call = ", k" if key_ty else ""
     p_call = _param_call(params)
+    if sql_switches.exact_division():
+        # The exact rational (K * N / 10**sN) / (D / 10**sD) = (K * N * 10**sD) / (D * 10**sN); `rat_is` covers D == 0.
+        num = f"{k} * {num_fn}({p_call}, i0{key_call})" + (f" * {10**den_scale}" if den_scale else "")
+        den = (str(agg.ratio_den_const) if agg.ratio_den_const is not None else f"{den_fn}({p_call}, i0{key_call})") + (
+            f" * {10**num_scale}" if num_scale else ""
+        )
+        blocks.append(
+            f"""pub open spec fn {name}({_param_sig(params)}, i0: int{key_sig}, r: Rat) -> bool {{
+    rat_is(r, {num}, {den})
+}}"""
+        )
+        fn = _AggFn(rust_ident(agg.alias), "RATIO", name, "rat", False, "ratio", "Rat")
+        fn.ratio_nullable = (
+            operands[0].kind.upper() == "SUM" if agg.ratio_den_const is not None else any(op.kind.upper() == "SUM" for op in operands)
+        ) and key_ty is None
+        return fn
     if agg.ratio_den_const is not None:
         # A nonzero constant denominator: no zero branch, DuckDB's DOUBLE quotient of the exact natural values.
         assert agg.ratio_den_const > 0
@@ -1288,6 +1382,22 @@ def _one_scalar(
     if len(helpers.aggs) != 1 or helpers.key_ty is not None:
         raise DeclarativeUnsupported("scalar subquery")
     agg = helpers.aggs[0]
+    if agg.kind == "AVG" and agg.exec == "Rat":
+        # An exact rational: the scalar is the pair `<name>_num / <name>_den` (den > 0), compared cross-multiplied.
+        p = _param_call(helpers.main)
+        wrap = f"""pub open spec fn {name}_num({_param_sig(helpers.main)}) -> int {{
+    {agg.name}_num({p}, 0)
+}}
+
+pub open spec fn {name}_den({_param_sig(helpers.main)}) -> int {{
+    {agg.name}_den({p}, 0)
+}}
+
+// SQL's AVG of no rows is NULL: a comparison with it is never TRUE (exact_rational.rat_compare).
+pub open spec fn {name}_nonempty({_param_sig(helpers.main)}) -> bool {{
+    {agg.name}_count({p}, 0) > 0
+}}"""
+        return f"{name}({_map_args(helpers.main, outer_params)})", helpers.source + "\n\n" + wrap
     if agg.style != "fold":
         raise DeclarativeUnsupported("scalar subquery")
     inner_call = f"{agg.name}({_param_call(helpers.main)}, 0)"
@@ -1342,6 +1452,8 @@ def _reduce_groups(
     first = f"{helpers.row_hit}({p}, {idxs}) && !({earlier})"
     if kind in ("MAX", "MIN"):
         return _extreme_over_groups(name, kind, target, helpers, first, key_here, outer_params)
+    if sql_switches.exact_division() and (kind == "AVG" or target.ret != "int"):
+        return _avg_over_groups_exact(name, outer, kind, target, helpers, first, key_here, outer_params)
     is_real = target.ret == "real" or kind == "AVG" and target.ret == "real"
     zero = "0real" if target.ret == "real" else "0int"
     acc_add = f"if {first} {{ {target.name}({p}, 0, {key_here}) }} else {{ {zero} }}"
@@ -1366,6 +1478,52 @@ def _reduce_groups(
     del is_real
     wrap = f"""pub open spec fn {name}({_param_sig(helpers.params)}) -> {ret} {{
     {body}
+}}"""
+    call = f"{name}({_map_args(helpers.params, outer_params)})"
+    return call, helpers.source + "\n\n" + "\n\n".join(blocks) + "\n\n" + wrap
+
+
+def _avg_over_groups_exact(
+    name: str,
+    outer: Agg,
+    kind: str,
+    target: _AggFn,
+    helpers: _Helpers,
+    first: str,
+    key_here: str,
+    outer_params: dict[str, str],
+) -> tuple[str, str]:
+    """``AVG`` over the groups of a derived table as an exact rational (lemma.toml [sql] exact_division).
+
+    ``<name>_num`` is the sum of the group values (stored integers), ``<name>_den`` the number of groups times 10**s for a
+    DECIMAL group value; with no group the pair is ``0 / 1`` and ``<name>_nonempty`` is false: SQL NULL, a comparison with it never holds."""
+    from declarative_spec.exact_rational import FLOAT_REFUSAL
+
+    if target.ret == "real":
+        raise DeclarativeUnsupported(FLOAT_REFUSAL)
+    if kind != "AVG" or target.ret != "int":
+        raise DeclarativeUnsupported("an aggregate over the groups of an AVG or a division (not stated exactly)")
+    p = _param_call(helpers.params)
+    acc_add = f"if {first} {{ {target.name}({p}, 0, {key_here}) }} else {{ 0int }}"
+    cnt_add = f"if {first} {{ 1int }} else {{ 0int }}"
+    blocks: list[str] = []
+    _emit_fold(blocks, f"{name}_acc", "int", "0int", acc_add, helpers.main, helpers.params, None)
+    _emit_fold(blocks, f"{name}_groups", "int", "0int", cnt_add, helpers.main, helpers.params, None)
+    scale = 10**outer.avg_scale
+    den = "c" + (f" * {scale}" if scale != 1 else "")
+    sig = _param_sig(helpers.params)
+    wrap = f"""pub open spec fn {name}_num({sig}) -> int {{
+    {name}_acc({p}, 0)
+}}
+
+pub open spec fn {name}_den({sig}) -> int {{
+    let c = {name}_groups({p}, 0);
+    if c > 0 {{ {den} }} else {{ 1int }}
+}}
+
+// SQL's AVG of no rows (no group) is NULL: a comparison with it is never TRUE (exact_rational.rat_compare).
+pub open spec fn {name}_nonempty({sig}) -> bool {{
+    {name}_groups({p}, 0) > 0
 }}"""
     call = f"{name}({_map_args(helpers.params, outer_params)})"
     return call, helpers.source + "\n\n" + "\n\n".join(blocks) + "\n\n" + wrap
@@ -1441,7 +1599,10 @@ def _ensures_lines(query: Query, helpers: _Helpers, model: SchemaModel) -> tuple
     """The ensures conjuncts, and how many leading ones are the grouped-result facts (the rest is the ORDER BY / LIMIT tail)."""
     del model
     ratio_aliases = {rust_ident(a.alias) for a in helpers.aggs if a.kind == "RATIO"}
+    rat_aliases = {rust_ident(a.alias) for a in helpers.aggs if a.exec == "Rat"}
     for key in query.order_by:
+        if rust_ident(key.column.split(".")[-1]) in rat_aliases:
+            raise DeclarativeUnsupported("ORDER BY an AVG or a division (an exact rational result column): not stated yet")
         if rust_ident(key.column.split(".")[-1]) in ratio_aliases:
             raise DeclarativeUnsupported("ORDER BY a division: its result is an IEEE double (NaN has no place in an order)")
     lines: list[str] = []
@@ -1708,11 +1869,19 @@ def _having(query: Query, helpers: _Helpers, scalars: dict[str, str], key: str) 
     p = _param_call(helpers.params)
     key_arg = f", {key}" if key and helpers.key_ty else ""
     repl: list[tuple[str, str]] = []
+    rats: dict[str, tuple[str, ...]] = {}
     for agg, src in zip(helpers.aggs, query.aggs, strict=True):
         if not re.search(rf"\b{re.escape(src.alias)}\b", expr):
             continue
         if agg.kind == "RATIO":
+            if agg.exec == "Rat":
+                raise DeclarativeUnsupported("HAVING on a division (an exact rational result column): not stated yet")
             raise DeclarativeUnsupported("HAVING on a division: its result is an IEEE double, not an exact value")
+        if agg.exec == "Rat":  # an exact-rational AVG: compared cross-multiplied below
+            token = f"__RAT{len(rats)}__"
+            rats[token] = (f"{agg.name}_num({p}, 0{key_arg})", f"{agg.name}_den({p}, 0{key_arg})")
+            repl.append((src.alias, token))
+            continue
         if agg.kind in ("MIN", "MAX"):
             # The bound predicate holds for exactly one value of a group that has rows: that value is the MIN/MAX.
             ty = "real" if agg.ret == "real" else "int"
@@ -1721,6 +1890,12 @@ def _having(query: Query, helpers: _Helpers, scalars: dict[str, str], key: str) 
         repl.append((src.alias, f"{agg.name}({p}, 0{key_arg})"))
     for name, call in scalars.items():
         if re.search(rf"\b{re.escape(name)}\b", expr):
+            rat = _scalar_rat(helpers.source, call)
+            if rat is not None:  # an exact-rational scalar: compared cross-multiplied below
+                token = f"__RAT{len(rats)}__"
+                rats[token] = rat
+                repl.append((name, token))
+                continue
             if _scalar_returns_real(helpers.source, call):
                 for i, (agg, src) in enumerate(zip(helpers.aggs, query.aggs, strict=True)):
                     if agg.ret == "real" or agg.float_out:
@@ -1743,6 +1918,10 @@ def _having(query: Query, helpers: _Helpers, scalars: dict[str, str], key: str) 
         expr = re.sub(rf"\b{re.escape(name)}\b", lambda _m, rep=replacement: rep, expr)
     for token, piece in held:
         expr = expr.replace(token, piece)
+    if rats:
+        from declarative_spec.exact_rational import rat_compare
+
+        expr = rat_compare(expr, rats)
     for agg in helpers.aggs:
         if agg.ret == "real":
             call = re.escape(f"{agg.name}({p}, 0{key_arg})")
@@ -2223,8 +2402,9 @@ def _require_sum_fits(
     for slot in helpers.main:
         plain *= _row_cap(catalog, slot.table) or 1
     needs_facts = False
+    exact_avg = sql_switches.exact_division()  # an exact AVG holds its sum as an integer too
     for src in query.aggs:
-        if src.kind.upper() != "SUM" or src.expr or src.arith or not src.column or src.column == "*":
+        if src.kind.upper() not in (("SUM", "AVG") if exact_avg else ("SUM",)) or src.expr or src.arith or not src.column or src.column == "*":
             continue
         slot, info = _find_col(src.column, src.table, helpers.main, model)
         if info.is_float or info.spec_as != "int":

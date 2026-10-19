@@ -40,6 +40,7 @@ from tests.test_in_duckdb import EXTENSION, PROOFS, ROOT, VERUS, _connect, _same
 FIX = PROOFS / "decline"
 SCHEMA = {"pre": {"line": "bigint", "cost": "decimal(38,2)"}}
 SQL = "SELECT SUM(cost) AS total FROM pre WHERE line > 5"
+AVG_SQL = "SELECT AVG(cost) AS avg_cost FROM pre WHERE line > 5"  # an exact rational (lemma.toml [sql] exact_division)
 TEMPLATE = "-- params: lo BIGINT\nSELECT SUM(cost) AS total FROM pre WHERE line > $lo"
 HALF = 2**126  # cents: two of these are one past i128::MAX
 GUARD = ROOT / "scripts" / "ram" / "verus_guarded.sh"
@@ -231,8 +232,15 @@ def libraries(tmp_path_factory: pytest.TempPathFactory) -> dict[str, ctypes.CDLL
         mp.setenv("LEMMA_VERUS_BIN", str(GUARD))
         mp.setenv("LEMMA_VERUS_TIMEOUT_SEC", "3000")
         mp.setenv("LEMMA_TARGET_CPU", "generic")
-        for name, sql in (("fixed", SQL), ("template", TEMPLATE)):
-            program = assemble_library_program(_spec(sql), _body(sql), sql=sql)
+        mp.setenv("LEMMA_EXACT_DIVISION", "1")
+        for name, sql in (("fixed", SQL), ("template", TEMPLATE), ("avg", AVG_SQL)):
+            if sql == AVG_SQL:  # an exact rational (Rat) result column
+                from declarative_spec.regions import extract_agent_edit, extract_agent_helpers
+
+                src = (FIX / "exact_avg_checked.rs").read_text()
+                program = assemble_library_program(_spec(sql), extract_agent_edit(src), helpers=extract_agent_helpers(src), sql=sql)
+            else:
+                program = assemble_library_program(_spec(sql), _body(sql), sql=sql)
             so, proof = in_duckdb.compile_library(program, tmp_path_factory.mktemp(f"decline_lib_{name}"))
             assert proof.endswith("verified, 0 errors")
             lib = ctypes.CDLL(str(so))
@@ -270,6 +278,42 @@ def test_the_template_library_declines_per_binding_and_checks_the_types_range(li
     assert code == 0 and _total(data) is None
     code, data = _call(lib, FITS, [-(2**63)])  # i64::MIN is one below the type range the spec states
     assert code == 2 and b"outside its declared range" in data
+
+
+def test_a_rat_result_column_is_a_double_in_the_layout_and_the_manifest_types() -> None:
+    spec = _spec(AVG_SQL)
+    assert output_layout(spec) == [("avg_cost", "Option<Rat>")]
+    program = assemble_library_program(spec, "    None", sql=AVG_SQL)
+    assert "out.extend_from_slice(&[2]);" in program  # kind 2: a double cell
+    assert "(((*v).num as f64) / ((*v).den as f64)).to_le_bytes()" in program
+    con = duckdb.connect()
+    _fill(con, FITS)
+    assert in_duckdb.output_descriptors(AVG_SQL, spec, con)[0]["duck_type"] == "DOUBLE"  # DuckDB's AVG(DECIMAL) is a DOUBLE
+
+
+def _double(data: bytes) -> float | None:
+    assert data[:4] == b"LMR1"
+    rows, ncols = struct.unpack_from("<QI", data, 20)
+    assert (rows, ncols, data[32]) == (1, 1, 2)  # one row, one column of kind 2 (a double)
+    return struct.unpack_from("<d", data, 34)[0] if data[33] else None
+
+
+@needs_verus
+@pytest.mark.parametrize("rows", [FITS, [(10, 1), (9, 2), (8, 2)], [(1, 5)], [(10, -7), (6, 3), (9, 1)]])
+def test_an_exact_avg_leaves_the_library_as_duckdbs_double(rows: list[tuple[int, int]], libraries: dict) -> None:
+    from declarative_spec.bench import float_tolerance
+
+    con = duckdb.connect()
+    _fill(con, rows)
+    (want,) = con.execute(AVG_SQL).fetchone()
+    code, data = _call(libraries["avg"], rows)
+    got = _double(data) if code == 0 else data
+    if want is None:  # no row passes: SQL's AVG is NULL, the proved result's Option is None
+        assert code == 0 and got is None
+    else:
+        assert code == 0 and abs(got - want) <= float_tolerance(want), (got, want)  # the measure's tolerance
+    code, data = _call(libraries["avg"], OVERFLOW)  # the exact sum leaves i128: the body declines
+    assert code == decline.ABI_STATUS_DECLINED and b"run_query returned None" in data
 
 
 # ---------------------------------------------------------------- the extension (built)

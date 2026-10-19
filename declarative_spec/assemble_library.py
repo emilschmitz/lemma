@@ -58,6 +58,8 @@ ABI does not carry yet (with or without ``assumptions``).
 Result (``out`` on return 0): ``LMR1``, u64 load_us, u64 run_us, u64 rows, u32 columns, one kind byte per column
 (1 integer as i128, 2 f64, 3 bool, 4 string), then column-major per column: one validity byte per row (0 = NULL), then the cells
 (i128 16 bytes, f64 8 bytes, bool 1 byte, string u32 length + bytes; a NULL cell holds the zero value).
+An exact rational ``Rat { num, den }`` (lemma.toml [sql] exact_division) is a kind-2 cell: the IEEE double ``num / den``, computed
+here outside the proof exactly as the standalone program prints it (``assemble._row_printer``; den == 0 gives +inf, -inf or NaN).
 """
 
 from __future__ import annotations
@@ -110,7 +112,7 @@ def _kind(ty: str, name: str) -> int:
     inner = ty[len("Option<") : -1] if ty.startswith("Option<") else ty
     if inner in _INT_TYPES:
         return KIND_INT
-    if inner == "f64":
+    if inner in ("f64", "Rat"):
         return KIND_F64
     if inner == "bool":
         return KIND_BOOL
@@ -220,6 +222,10 @@ def _encode_column(fname: str, fty: str) -> str:
     if kind == KIND_INT:
         put = "out.extend_from_slice(&(({v}) as i128).to_le_bytes());"
         zero = "out.extend_from_slice(&0i128.to_le_bytes());"
+    elif kind == KIND_F64 and (fty[len("Option<") : -1] if option else fty) == "Rat":
+        # an exact rational: the double num / den, outside the proof (as assemble._row_printer prints it)
+        put = "out.extend_from_slice(&((({v}).num as f64) / (({v}).den as f64)).to_le_bytes());"
+        zero = "out.extend_from_slice(&0f64.to_le_bytes());"
     elif kind == KIND_F64:
         put = "out.extend_from_slice(&({v}).to_le_bytes());"
         zero = "out.extend_from_slice(&0f64.to_le_bytes());"

@@ -20,6 +20,8 @@ from research_loop.assumption_packages.sec_margin import (
 )
 from research_loop.scripts.sqlsmith_trusted_coverage import load_sec_schema
 
+pytestmark = pytest.mark.usefixtures("exact_division_off")  # the real-form AVG / ratio and f64 idealization (lemma.toml [sql] exact_division = false)
+
 _ROOT = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location(
     "make_decimal_variant", _ROOT / "holdout" / "gendb_sec_edgar" / "make_decimal_variant.py"

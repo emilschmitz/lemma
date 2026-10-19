@@ -17,6 +17,8 @@ from declarative_spec.admit import admit_helpers
 from declarative_spec.emit import emit_declarative_spec
 from research_loop.table_assumptions import CatalogAssumptions, ColumnAssumption, TableAssumptions
 
+pytestmark = pytest.mark.usefixtures("exact_division_off")  # the real-form AVG / ratio and f64 idealization (lemma.toml [sql] exact_division = false)
+
 VERUS = Path("/home/emil/tools/verus/verus")
 SCHEMA = {"t": {"k": "integer", "v": "double", "w": "double"}}
 CATALOG = CatalogAssumptions(

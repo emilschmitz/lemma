@@ -46,8 +46,11 @@ def spec_divides_by_zero(spec: str | None) -> bool:
 
 
 def _default_lemmas_rs(spec: str | None = None) -> str:
+    from declarative_spec import sql_switches
     from declarative_spec.lemmas import float_div_zero_lemma_rs, float_error_lemmas_rs
 
+    if sql_switches.exact_division():
+        return ""  # exact rationals (lemma.toml [sql] exact_division): no float trusted item, whatever the text; float specs are refused
     if not spec_uses_floats(spec):
         return ""
     text = float_error_lemmas_rs().rstrip()
@@ -92,7 +95,10 @@ Dictionary-encoded string columns (this spec has `<col>__dict` fields):
 def _default_index_markdown(spec: str | None = None) -> str:
     from declarative_spec.lemma_index import lemma_index_markdown
 
-    text = lemma_index_markdown(floats=spec_uses_floats(spec), div_zero=spec_divides_by_zero(spec))
+    from declarative_spec import sql_switches
+
+    exact = sql_switches.exact_division()  # no float lemma is pasted, so the index lists none
+    text = lemma_index_markdown(floats=not exact and spec_uses_floats(spec), div_zero=not exact and spec_divides_by_zero(spec))
     if spec is not None and "__dict@" in spec:
         text += _dict_note()
     return text

@@ -217,6 +217,9 @@ def test_assemble_loads_strings_raw_idents_and_every_struct() -> None:
     assert "row_hex" in loaded
 
 
+pytestmark = pytest.mark.usefixtures("exact_division_off")  # the real-form AVG / ratio and f64 idealization (lemma.toml [sql] exact_division = false)
+
+
 # --- single-table SEC-shaped queries, as the product runs them (flat projected schema) ---
 
 import re  # noqa: E402
@@ -225,6 +228,7 @@ from declarative_spec.bench import rows_from_stdout_general, rows_match_error  #
 from declarative_spec.emit import emit_declarative_spec  # noqa: E402
 from declarative_spec.pipeline import run_declarative_metrics  # noqa: E402
 from research_loop.table_assumptions import (  # noqa: E402
+
     CatalogAssumptions,
     ColumnAssumption,
     TableAssumptions,
