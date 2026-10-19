@@ -52,6 +52,11 @@ def install_run(run_dir: Path, home: Path) -> Path:
     os.environ[lemma_config.env_name("assumptions")] = "true" if assumptions else "false"
     db = Path(manifest["duckdb_path"])
     schema, _measured = tpch_schema_and_catalog(db)
+    used = run_dir / "workspace" / "context" / "ro" / "schema.json"
+    if used.is_file():
+        # The catalog the run's spec was emitted from (the optimizer's normalized kinds, e.g. BIGINT as `int`): the body was proved
+        # against that spec, so the install states the same one.
+        schema = json.loads(used.read_text())
     if assumptions:
         catalog = assumption_package(manifest["env"]["LEMMA_ASSUMPTION_PACKAGE"])
     else:

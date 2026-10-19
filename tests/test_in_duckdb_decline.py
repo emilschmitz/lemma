@@ -493,3 +493,24 @@ def test_the_install_command_fails_when_a_run_fails(tmp_path: Path, monkeypatch:
     monkeypatch.setattr(sys, "argv", ["x", "--home", str(tmp_path), str(tmp_path / "r1"), str(tmp_path / "r2")])
     with pytest.raises(SystemExit, match="2 of 2 runs failed to install"):
         in_duckdb_install_run.main()
+
+
+def test_installing_a_run_uses_the_schema_its_spec_was_emitted_from(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # SF10 Q12 (2026-10-19): the run's spec had o_orderkey as i32 (catalog kind `int`); re-reading the database (BIGINT -> i64) broke the body.
+    from research_loop.scripts.in_duckdb_install_run import install_run
+
+    seen = _capture_install(monkeypatch)
+    run = _run_dir(tmp_path, tmp_path / "d.duckdb", {}, {"LEMMA_ASSUMPTION_PACKAGE": "tpch_sf1"})
+    (run / "workspace" / "context" / "ro").mkdir(parents=True)
+    used = {"pre": {"line": "int", "report": "int"}}
+    (run / "workspace" / "context" / "ro" / "schema.json").write_text(json.dumps(used))
+    install_run(run, tmp_path / "home")
+    assert seen["schema"] == used
+
+
+def test_installing_a_run_without_a_saved_schema_reads_the_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from research_loop.scripts.in_duckdb_install_run import install_run
+
+    seen = _capture_install(monkeypatch)
+    install_run(_run_dir(tmp_path, tmp_path / "d.duckdb", {}, {"LEMMA_ASSUMPTION_PACKAGE": "tpch_sf1"}), tmp_path / "home")
+    assert seen["schema"] == SCHEMA
