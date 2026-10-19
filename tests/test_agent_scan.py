@@ -17,6 +17,7 @@ import subprocess
 from pathlib import Path
 
 import duckdb
+import lemma_config
 import pytest
 
 from declarative_spec import agent_scan
@@ -292,3 +293,57 @@ def test_the_proved_scan_body_matches_duckdb_on_several_tables(pushdown: str, tm
         got = rows_from_stdout_general(stdout)
         assert rows_match_error(got, prepared["rows"], prepared["kinds"]) is None, (size, got, prepared["rows"])
         assert list(data.glob("scan_pre_*.bin")), "the body's scan went through the host export"
+
+
+
+def _verify_scan_lemmas(tmp_path: Path, spec: str) -> list[str]:
+    """Verus on each host lemma_scan_rows_<t> of the assembled program alone (host-proved, not trusted): one result line per table."""
+    body = "None" if "(res: Option<" in spec else "Vec::new()"  # it only has to type-check: only the host lemma is verified
+    path = tmp_path / "program.rs"
+    path.write_text(assemble_declarative_program(spec, body, helpers=""))
+    out = []
+    for t in re.findall(r"pub proof fn (lemma_scan_rows_\w+)\(", spec):
+        p = subprocess.run([str(ROOT / "scripts" / "ram" / "verus_guarded.sh"), str(path), "--crate-type=lib", "--rlimit",
+                            str(lemma_config.get("verus_rlimit")), "--verify-root", "--verify-function", t],
+                           capture_output=True, text=True, timeout=600)
+        out.append(t + ": " + (re.search(r"verification results:: .*", p.stdout + p.stderr) or [p.stderr[-1500:]])[0])
+    return out
+
+
+SEC_Q6_DDL = """
+CREATE TABLE num (adsh VARCHAR, tag VARCHAR, version VARCHAR, uom VARCHAR, value DECIMAL(38,4));
+CREATE TABLE sub (adsh VARCHAR, name VARCHAR, fy {fy_type});
+CREATE TABLE pre (adsh VARCHAR, tag VARCHAR, version VARCHAR, stmt VARCHAR, plabel VARCHAR);
+INSERT INTO sub VALUES ('a', 'x', 2023), ('b', 'y', NULL);
+"""
+SEC_Q6_SQL = """SELECT s.name, p.stmt, n.tag, p.plabel, SUM(n.value) AS total_value, COUNT(*) AS cnt
+FROM num n JOIN sub s ON n.adsh = s.adsh JOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version
+WHERE n.uom = 'USD' AND p.stmt = 'IS' AND s.fy = 2023 AND n.value IS NOT NULL
+GROUP BY s.name, p.stmt, n.tag, p.plabel ORDER BY total_value DESC LIMIT 200"""
+
+
+@needs_verus
+def test_the_host_scan_row_lemma_verifies_with_assumptions(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    out = _verify_scan_lemmas(tmp_path, _spec(monkeypatch, "1"))
+    assert len(out) == 1 and "1 verified, 0 errors" in out[0], out
+
+
+@needs_verus
+@pytest.mark.parametrize("fy_type", ["INTEGER", "BIGINT"])
+def test_the_host_scan_row_lemma_verifies_on_a_nullable_column_without_assumptions(monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+                                                                                   fy_type: str) -> None:
+    # SEC Q6 (2026-10-19, assumptions = false): lemma_scan_rows_sub over the nullable `fy` left the not-kept branch to Z3 and failed
+    # its last ensures (78 verified, 1 errors, host-owned line); both branches are now proved.
+    from research_loop.structural_catalog import structural_catalog_from_db
+
+    db = tmp_path / "t.duckdb"
+    with duckdb.connect(str(db)) as con:
+        con.execute(SEC_Q6_DDL.format(fy_type=fy_type))
+        schema = {t: dict(con.execute(f"SELECT column_name, lower(data_type) FROM information_schema.columns WHERE table_name = '{t}'").fetchall())
+                  for t in ("num", "sub", "pre")}
+    monkeypatch.setenv("LEMMA_AGENT_SCAN", "1")
+    monkeypatch.setenv("LEMMA_ASSUMPTIONS", "0")
+    spec = emit_declarative_spec(SEC_Q6_SQL, schema, structural_catalog_from_db(db))
+    assert "c.fy__valid@[i]" in spec  # the scan column is nullable, as in SEC
+    out = _verify_scan_lemmas(tmp_path, spec)
+    assert out and all("1 verified, 0 errors" in line for line in out), out

@@ -151,6 +151,12 @@ pub proof fn lemma_scan_rows_{t}(c: &Cols_{t}, pred: Seq<ScanAtom_{t}>, n: int)
                     assert(s[k] == i);
                 }}
             }}
+        }} else {{
+            assert(scan_rows_{t}(c, pred, n) == r);
+            assert forall|i: int| 0 <= i < n && #[trigger] scan_holds_{t}(c, pred, i) implies exists|k: int| 0 <= k < r.len() && r[k] == i by {{
+                assert(i != n - 1);
+                assert(0 <= i < n - 1 && scan_holds_{t}(c, pred, i));
+            }}
         }}
     }}
 }}
