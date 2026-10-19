@@ -36,6 +36,7 @@ from research_loop.spec_styles import STYLES, check_style
 
 
 REFUSED_EXIT = 3  # require_replicable said no: container_batch stops the batch
+INFRA_EXIT = 4  # a session's agent API call failed (auth, proxy): container_batch stops the batch
 
 
 def new_run_dirs(runs_dir: Path, before: set[Path]) -> list[Path]:
@@ -236,6 +237,7 @@ def run(
         "wall_s": round(time.time() - t0, 1),
         "status": result.get("status"),  # DECLINED (assumptions = false: the proved run_query returned None) is a failed query, never a success
         "declined": result.get("status") == "DECLINED",
+        "infra_error": result.get("infra_error"),  # "INFRA: agent API error: ..." (status INFRA, or beside a SUCCESS whose submit came first)
         "assumptions": lemma_config.assumptions_enabled(),
         "latency_us": result.get("best_latency_us"),
         # The imperative loop leaves "error" empty and keeps the reason per iteration in the history.
@@ -313,6 +315,8 @@ def main(argv: list[str] | None = None) -> int:
         max_iterations=lemma_config.get("max_iterations"),
     )
     print(f"RESULT {json.dumps(record)}", flush=True)
+    if record.get("infra_error"):
+        return INFRA_EXIT
     return 0 if record["status"] == "SUCCESS" else 1
 
 

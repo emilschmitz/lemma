@@ -328,3 +328,18 @@ def test_the_batch_refuses_a_query_that_is_not_committed(batch) -> None:
     with pytest.raises(lemma_config.ConfigError, match="q1.sql .*not tracked"):
         cb.main(["--experiment", "configs/experiments/e.toml"])
     assert launches == []
+
+
+def test_the_batch_stops_when_a_run_ends_on_an_agent_api_error(batch, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    """A run that exits INFRA_EXIT (expired login, proxy refused) stops the batch: the remaining runs are not started."""
+    from research_loop.scripts.run_container_agent import INFRA_EXIT
+
+    _, launches = batch
+    inner = cb.subprocess.run
+
+    class Infra:
+        returncode = INFRA_EXIT
+
+    monkeypatch.setattr(cb.subprocess, "run", lambda cmd, **kw: (inner(cmd, **kw), Infra())[1] if cmd[0] == "choom" else inner(cmd, **kw))
+    assert cb.main(["--experiment", "configs/experiments/e.toml"]) == 2 and len(launches) == 1
+    assert "the agent API failed (INFRA" in capsys.readouterr().err

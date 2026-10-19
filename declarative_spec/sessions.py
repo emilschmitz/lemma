@@ -2,6 +2,8 @@
 
 Rules (settings in lemma.toml: ``max_iterations``, ``agent_timeout_sec``, ``speed_target``, ``max_idle_sessions``, ``max_budget_usd``):
 
+* A session whose Claude result is an API/auth/connectivity error (``Outcome.infra_error``) ends the query at once: no further session,
+  no retry, no other credential. A submit measured in that session (an earlier marked submit) still counts.
 * ``max_budget_usd`` > 0: no further session once the spend of the sessions so far reaches it ("budget used"); each session is told the remainder.
 
 * No body has verified and beaten the bar yet: a further session starts while fewer than ``max_iterations`` sessions have run (the old rule).
@@ -35,6 +37,7 @@ class Outcome:
     source: str | None = None  # the file of a success (the base of a continuation session)
     cost_usd: float | None = 0.0  # model spend of the session (total_cost_usd of its stream-json result event); None = the session was killed before that event: unreported
     tokens: dict | None = None  # token totals of the session from the stream's per-message usage (present even when the session was killed)
+    infra_error: str | None = None  # "INFRA: agent API error: ..." when the session's result event was an API/auth/connectivity error
 
 
 @dataclass
@@ -49,12 +52,15 @@ class Sessions:
     spent_usd: float = 0.0  # reported spend only; a session with cost_usd None adds nothing (and is logged), it is not counted as 0 in the manifest total
     idle: int = 0
     best: Outcome | None = None
+    infra_error: str | None = None  # the first session's infra error: no further session starts
 
     def best_speedup(self) -> float | None:
         return None if self.best is None else self.best.speedup
 
     def stop_reason(self) -> str | None:
         """Why no further session starts after the sessions so far, or None when one does."""
+        if self.infra_error is not None:
+            return self.infra_error
         if self.budget_usd > 0 and self.spent_usd >= self.budget_usd:
             return f"budget used (${self.spent_usd:.2f} of ${self.budget_usd:.2f})"
         if self.best is None:
@@ -88,6 +94,8 @@ class Sessions:
         )
 
     def add(self, n: int, start: float, end: float, outcome: Outcome) -> None:
+        if outcome.infra_error is not None and self.infra_error is None:
+            self.infra_error = outcome.infra_error
         improved = outcome.success and outcome.speedup is not None and (self.best_speedup() is None or outcome.speedup > (self.best_speedup() or 0.0))
         if outcome.success and (self.best is None or improved):
             self.best = outcome
@@ -111,6 +119,7 @@ class Sessions:
             "success": outcome.success,
             "session_speedup": outcome.speedup,
             "best_speedup": self.best_speedup(),
+            **({"infra_error": outcome.infra_error} if outcome.infra_error is not None else {}),
         })
 
 
@@ -150,6 +159,9 @@ def record_in_manifest(manifest: Path, records: list[dict[str, Any]]) -> None:
     if manifest.is_file():
         data = json.loads(manifest.read_text())
         data["sessions"] = records
+        infra = next((r["infra_error"] for r in records if r.get("infra_error")), None)
+        if infra is not None:
+            data["infra_error"] = infra  # the query stopped on an agent API/auth/connectivity error, not on the agent
         data["total_cost_usd"] = round(sum(r["cost_usd"] for r in records if r.get("cost_usd") is not None), 6)  # reported sessions only
         data["total_cost_complete"] = all(r.get("cost_reported", True) for r in records)  # False: some session's cost is unknown, the total is a lower bound
         data["total_tokens"] = {k: sum(int((r.get("tokens") or {}).get(k, 0)) for r in records) for k in {k for r in records for k in (r.get("tokens") or {})}}

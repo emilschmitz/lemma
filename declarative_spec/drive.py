@@ -346,6 +346,7 @@ def run_declarative_optimization_loop(
         }
 
     from research_loop.agent_sandbox import (
+        claude_api_error,
         claude_result_count,
         claude_spend_usd,
         claude_tokens,
@@ -518,6 +519,9 @@ def run_declarative_optimization_loop(
         outcome.cost_usd = claude_spend_usd(raw_stream) - before if claude_result_count(raw_stream) > results_before else None
         tokens_after = claude_tokens(raw_stream)
         outcome.tokens = {k: tokens_after[k] - tokens_before[k] for k in tokens_after}
+        outcome.infra_error = claude_api_error(raw_stream, results_before)
+        if outcome.infra_error is not None:
+            history[-1]["infra_error"] = outcome.infra_error
         return outcome
 
     manifest = workspace.parent / "manifest.json"
@@ -530,8 +534,23 @@ def run_declarative_optimization_loop(
         max_budget_usd=max_budget_usd,
         on_record=lambda records: sessions_mod.record_in_manifest(manifest, records),
     )
+    infra = {} if done.infra_error is None else {"infra_error": done.infra_error}
     if done.best is not None:
-        return {**done.best.result, "history": history, "sessions": done.records}
+        # A marked submit measured before (or in) the session that hit the API error stays valid; the infra error is recorded beside it.
+        return {**done.best.result, "history": history, "sessions": done.records, **infra}
+    if done.infra_error is not None:
+        return {
+            "status": "INFRA",  # the agent API failed (auth, proxy): an infrastructure failure, never an agent failure
+            "declined": False,
+            "best_latency_us": -1,
+            "duck_us": None if speed_bar is None else speed_bar.get("duck_us"),
+            "official": None,
+            "history": history,
+            "sessions": done.records,
+            "error": done.infra_error,
+            "infra_error": done.infra_error,
+            "proof_verified": state["proof_verified"],
+        }
 
     return {
         # The last host measure declined: say so (DECLINED is a failed query, not a proof failure); anything else that did not succeed is FAILED.

@@ -29,7 +29,7 @@ if str(ROOT) not in sys.path:
 
 import lemma_config  # noqa: E402
 from research_loop.agent_image_check import ImageMismatch  # noqa: E402
-from research_loop.scripts.run_container_agent import REFUSED_EXIT  # noqa: E402
+from research_loop.scripts.run_container_agent import INFRA_EXIT, REFUSED_EXIT  # noqa: E402
 OUT = ROOT / "research_loop" / "generated" / "container_runs"
 MODELS = lemma_config.MODEL_ALIASES
 
@@ -155,6 +155,10 @@ def main(argv: list[str]) -> int:
             return 2
         if not marker.is_file():
             print(f"STOPPED at {short}:{sql_file.name}: no login refresh happened (see {log}): log in with `claude` in your terminal, then restart the batch", file=sys.stderr, flush=True)
+            return 2
+        if done.returncode == INFRA_EXIT:
+            print(f"STOPPED at {short}:{sql_file.name}: the agent API failed (INFRA: auth/proxy/connectivity, see {log}); "
+                  "the remaining runs were not started: fix the login or network, then restart the batch", file=sys.stderr, flush=True)
             return 2
         logs.append(str(log))
         print("done", log, flush=True)

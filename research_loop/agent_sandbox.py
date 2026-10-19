@@ -258,6 +258,23 @@ def claude_result_count(raw: Path) -> int:
     return sum(1 for line in raw.read_text(encoding="utf-8").splitlines() if line.strip() and json.loads(line).get("type") == "result")
 
 
+API_ERROR_MARKERS = ("API Error", "Failed to authenticate", "401", "ERR_PROXY")
+
+
+def claude_api_error(raw: Path, results_before: int) -> str | None:
+    """``INFRA: agent API error: <text>`` when a ``result`` event after the first ``results_before`` is an API/auth/connectivity error
+    (``is_error`` true and the text names one of ``API_ERROR_MARKERS``: an expired OAuth token, a proxy that refused the tunnel), else None.
+    Such a session never reached the model: it is an infrastructure failure, not an agent session (run 20261019T070230Z_q701967_a559cc92)."""
+    if not raw.is_file():
+        return None
+    results = [e for e in (json.loads(line) for line in raw.read_text(encoding="utf-8").splitlines() if line.strip()) if e.get("type") == "result"]
+    for event in results[results_before:]:
+        text = str(event.get("result") or "")
+        if event.get("is_error") and any(m in text for m in API_ERROR_MARKERS):
+            return f"INFRA: agent API error: {text[:200]}"
+    return None
+
+
 TOKEN_KEYS = ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
 
 
