@@ -38,8 +38,9 @@ def install_run(run_dir: Path, home: Path) -> Path:
             value = config[key]["value"] if isinstance(config[key], dict) else config[key]
             os.environ[lemma_config.env_name(key)] = str(value).lower() if isinstance(value, bool) else str(value)
     # Keys that shape the spec but came later: a run that predates them had them off (agent_scan adds scan handles to run_query;
-    # templates makes a `-- params:` header a template). The pushdown of the executor's scan is this install's setting (lemma.toml).
-    for key in ("agent_scan", "templates"):
+    # templates makes a `-- params:` header a template; exact_division states AVG and `/` as exact rationals instead of f64). The pushdown
+    # of the executor's scan is this install's setting (lemma.toml).
+    for key in ("agent_scan", "templates", "exact_division"):
         raw_key = config.get(key)
         if raw_key is None:
             value = key == "templates" and "-- params:" in manifest["sql"]  # a template run had the switch on
@@ -65,11 +66,15 @@ def main() -> None:
     ap.add_argument("--home", type=Path, required=True)
     ap.add_argument("runs", type=Path, nargs="+")
     args = ap.parse_args()
+    failed = 0
     for run in args.runs:
         try:
             print(run.name, "->", install_run(run, args.home), flush=True)
         except Exception as exc:  # noqa: BLE001  # one line per run, then the next
+            failed += 1
             print(run.name, "FAILED:", str(exc)[-2500:], flush=True)
+    if failed:
+        raise SystemExit(f"{failed} of {len(args.runs)} runs failed to install")
 
 
 if __name__ == "__main__":

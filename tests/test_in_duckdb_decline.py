@@ -434,12 +434,13 @@ def _capture_install(monkeypatch: pytest.MonkeyPatch) -> dict:
     seen: dict = {}
 
     def fake_install(**kw):
-        seen.update(kw, assumptions_env=os.environ.get("LEMMA_ASSUMPTIONS"))
+        seen.update(kw, assumptions_env=os.environ.get("LEMMA_ASSUMPTIONS"), exact_division_env=os.environ.get("LEMMA_EXACT_DIVISION"))
         return Path("/installed")
 
     monkeypatch.setattr(in_duckdb, "install_executor", fake_install)
     monkeypatch.setattr(declarative_round, "tpch_schema_and_catalog", lambda db: (SCHEMA, None))
     monkeypatch.setenv("LEMMA_ASSUMPTIONS", "unset-by-install_run")  # install_run must set it from the run
+    monkeypatch.setenv("LEMMA_EXACT_DIVISION", "unset-by-install_run")
     return seen
 
 
@@ -463,3 +464,32 @@ def test_installing_a_run_from_before_the_flag_keeps_its_package(tmp_path: Path,
     seen = _capture_install(monkeypatch)
     install_run(_run_dir(tmp_path, tmp_path / "d.duckdb", {}, {"LEMMA_ASSUMPTION_PACKAGE": "tpch_sf1"}), tmp_path / "home")
     assert seen["assumptions_env"] == "true" and seen["catalog"].tables["lineitem"].max_rows is not None
+
+
+def test_installing_a_run_from_before_exact_division_states_its_f64_spec(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # SF10 batch (2026-10-19): bodies proved at 5c8537c (f64 AVG) failed to re-verify against the exact-rational spec of a later commit.
+    from research_loop.scripts.in_duckdb_install_run import install_run
+
+    seen = _capture_install(monkeypatch)
+    install_run(_run_dir(tmp_path, tmp_path / "d.duckdb", {}, {"LEMMA_ASSUMPTION_PACKAGE": "tpch_sf1"}), tmp_path / "home")
+    assert seen["exact_division_env"] == "false"
+
+
+def test_installing_a_run_with_exact_division_keeps_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from research_loop.scripts.in_duckdb_install_run import install_run
+
+    seen = _capture_install(monkeypatch)
+    config = {"exact_division": {"value": True}}
+    install_run(_run_dir(tmp_path, tmp_path / "d.duckdb", config, {"LEMMA_ASSUMPTION_PACKAGE": "tpch_sf1"}), tmp_path / "home")
+    assert seen["exact_division_env"] == "true"
+
+
+def test_the_install_command_fails_when_a_run_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+
+    from research_loop.scripts import in_duckdb_install_run
+
+    monkeypatch.setattr(in_duckdb_install_run, "install_run", lambda run, home: (_ for _ in ()).throw(RuntimeError("verify failed")))
+    monkeypatch.setattr(sys, "argv", ["x", "--home", str(tmp_path), str(tmp_path / "r1"), str(tmp_path / "r2")])
+    with pytest.raises(SystemExit, match="2 of 2 runs failed to install"):
+        in_duckdb_install_run.main()
