@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 import lemma_config
+from db_extension.agent.measure_core import get_submitted, runquery_sha256
 from declarative_spec import best_so_far
 from declarative_spec import sessions as sessions_mod
 from declarative_spec.admit import admit_declarative_body
@@ -56,6 +57,20 @@ def submitted_speedup(workspace: Path) -> float | None:
         return None
     metrics = json.loads(path.read_text()).get("metrics") or {}
     return None if metrics.get("speedup") is None else float(metrics["speedup"])
+
+
+def host_measure_source(workspace: Path, agent_path: Path) -> str:
+    """The file the end-of-session host measure checks: the body the agent marked with ``submit_runquery``
+    (``mcp_results/submitted.json``, the frozen snapshot of that verified run) when there is one, else the file
+    left at ``agent_path``. The leftover file may have been edited after the submit (a speed chase that no longer
+    verifies); the marked submit is the official one. A snapshot whose sha256 does not match is refused (ValueError)."""
+    submitted = get_submitted(ws=workspace)
+    if submitted is None:
+        return agent_path.read_text()
+    body = submitted["runquery_body"]
+    if runquery_sha256(body) != submitted["runquery_sha256"]:
+        raise ValueError(f"submitted.json run {submitted.get('run_id')}: runquery_sha256 does not match runquery_body")
+    return body
 
 
 def template_bindings(sql_query: str) -> dict | None:
@@ -434,8 +449,8 @@ def run_declarative_optimization_loop(
             return sessions_mod.Outcome(False, submitted_speedup(workspace), agent_s)
 
         try:
-            agent_source = agent_path.read_text()
-            state["prev_source"] = agent_source
+            state["prev_source"] = agent_path.read_text()  # the file the session left: the restart reference
+            agent_source = host_measure_source(workspace, agent_path)  # the marked submit, else that file
             body = _extract_agent_edit_region(agent_source)
         except (OSError, ValueError) as exc:
             iter_record["error"] = f"read agent body: {exc}"
