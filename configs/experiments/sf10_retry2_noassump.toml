@@ -1,0 +1,24 @@
+# Continuation of sf10_retry1_noassump.toml (66ad4eb, 2026-10-19): that family finished Q14, Q9 and SEC q2 and was stopped by hand before
+# SEC q3 when the agent's Claude login token expired (401 in q2's later sessions; q2's submit precedes them). Same SQL and settings; only the
+# three queries that never ran. Fixes and history: sf10_retry1_noassump.toml.
+# Run: uv run python research_loop/scripts/container_batch.py --experiment configs/experiments/sf10_retry2_noassump.toml
+[settings]
+assumptions = false
+examples = "none"
+data_profile = "stats"
+templates = true
+
+[[run]]
+model = "claude-opus-5-5"
+query = "configs/queries/sec_edgar/q3.sql"
+duckdb_path = "holdout/gendb_sec_edgar/duckdb/sec_edgar_dec.duckdb"
+
+[[run]]
+model = "claude-opus-5-5"
+query = "configs/queries/sec_edgar/q4.sql"
+duckdb_path = "holdout/gendb_sec_edgar/duckdb/sec_edgar_dec.duckdb"
+
+[[run]]
+model = "claude-opus-5-5"
+query = "configs/queries/sec_edgar/q6.sql"
+duckdb_path = "holdout/gendb_sec_edgar/duckdb/sec_edgar_dec.duckdb"
