@@ -12,7 +12,9 @@ the database (no EXPLAIN, no plan, no sampling, no timings in the file, so the s
 
 The module is schema-driven: it reads table and column names from the query and the database and names none itself. A statistic that
 does not apply to the query (no filter, no join, no group key, no LIMIT) is omitted. The profile covers the top-level SELECT; each side of a
-set operation is profiled on its own; a derived table over plain joins is inlined; any other source that is not a base table (CTE, derived table) is not profiled, the query-level numbers still are.
+set operation is profiled on its own; a derived table over plain joins in FROM is inlined; any other derived table (subquery in FROM or JOIN)
+is profiled as a relation of its own (its rows, its output columns, the filters and join keys on it); a source that is neither (a CTE,
+a table function) is not profiled, and no single-table statistic uses a condition that references it (the query-level numbers still are).
 Every generated query has a timeout; a query that fails or times out raises :class:`ProfileError` with the query text (no partial profile).
 """
 
@@ -42,8 +44,14 @@ class ProfileError(RuntimeError):
 @dataclass
 class _Source:
     alias: str
-    table: exp.Table
-    columns: list[str]  # lower-cased column names of the base table, in table order
+    relation: exp.Expression  # the FROM/JOIN item: a base table, or a derived table (aliased subquery)
+    label: str  # the base table's name, or "derived" for a subquery
+    columns: list[str]  # lower-cased column names of the relation, in order
+    derived: bool
+
+    @property
+    def from_sql(self) -> str:
+        return _sql(self.relation)
 
 
 class _Runner:
@@ -119,6 +127,7 @@ class _SelectProfile:
         self.r = runner
         self.sources: list[_Source] = []
         self.skipped: list[str] = []
+        self.unprofiled: set[str] = set()  # lower-cased aliases of FROM/JOIN items that are not profiled
         self._collect_sources()
         self.by_alias = {s.alias.lower(): s for s in self.sources}
         self.out_alias = {
@@ -132,8 +141,14 @@ class _SelectProfile:
         for node in nodes:
             if node is None:
                 continue
+            if isinstance(node, exp.Subquery) and node.alias and isinstance(node.this, exp.Query):
+                described = self.r.run(f"DESCRIBE SELECT * FROM {_sql(node)}")
+                self.sources.append(_Source(node.alias, node, "derived", [str(c[0]).lower() for c in described], True))
+                continue
             if not isinstance(node, exp.Table):
-                self.skipped.append(f"derived table `{_cell(_sql(node))}`")
+                if node.alias_or_name:
+                    self.unprofiled.add(node.alias_or_name.lower())
+                self.skipped.append(f"`{_cell(_sql(node))}` (not a base table or an aliased derived table)")
                 continue
             described = self.r.run(
                 f"SELECT column_name FROM information_schema.columns WHERE table_name = '{node.name}' "
@@ -141,9 +156,10 @@ class _SelectProfile:
                 + "ORDER BY ordinal_position"
             )
             if not described:
+                self.unprofiled.add(node.alias_or_name.lower())
                 self.skipped.append(f"`{node.name}` (not a base table of the database)")
                 continue
-            self.sources.append(_Source(node.alias_or_name, node, [str(c[0]).lower() for c in described]))
+            self.sources.append(_Source(node.alias_or_name, node, node.name, [str(c[0]).lower() for c in described], False))
 
     def _owner(self, col: exp.Column) -> str | None:
         """Lower-cased alias of the source a column belongs to; None for an output alias or a column of an unprofiled source."""
@@ -153,7 +169,7 @@ class _SelectProfile:
             if q in self.by_alias:
                 return q
             for s in self.sources:
-                if s.table.name.lower() == q:
+                if not s.derived and s.relation.name.lower() == q:
                     return s.alias.lower()
             return None
         owners = [s.alias.lower() for s in self.sources if name in s.columns]
@@ -172,6 +188,17 @@ class _SelectProfile:
             out.append(col)
         return out
 
+    def _unresolved(self, node: exp.Expression) -> bool:
+        """True when ``node`` reads a column of no profiled source: a column of an unprofiled FROM/JOIN item (or one this module cannot
+        place). Such a condition is not a single-source filter or a join of two profiled sources; using it as one would give a wrong number."""
+        for col in node.find_all(exp.Column):
+            own = col.find_ancestor(exp.Select) is self.select
+            if col.table and col.table.lower() in self.unprofiled:
+                return True
+            if own and self._owner(col) is None and (col.table or col.name.lower() not in self.out_alias):
+                return True
+        return False
+
     def aliases_of(self, node: exp.Expression) -> list[str]:
         found = {a for c in self._columns_of(node) if (a := self._owner(c)) is not None}
         return sorted(found, key=lambda a: [s.alias.lower() for s in self.sources].index(a))
@@ -187,6 +214,8 @@ class _SelectProfile:
         for join in self.select.args.get("joins") or []:
             conds += _conjuncts(join.args.get("on"))
         for cond in conds:
+            if self._unresolved(cond):
+                continue
             aliases = self.aliases_of(cond)
             if isinstance(cond, exp.EQ) and isinstance(cond.left, exp.Column) and isinstance(cond.right, exp.Column):
                 left, right = self._owner(cond.left), self._owner(cond.right)
@@ -224,7 +253,7 @@ class _SelectProfile:
         if self.skipped:
             out += ["Not profiled per table: " + "; ".join(self.skipped) + ".", ""]
         filters, equalities = self._predicates()
-        totals = {s.alias.lower(): self.r.count(f"SELECT 1 FROM {_sql(s.table)}") for s in self.sources}
+        totals = {s.alias.lower(): self.r.count(f"SELECT 1 FROM {s.from_sql}") for s in self.sources}
         out += self._tables(totals)
         out += self._columns(totals)
         out += self._filters(filters, totals)
@@ -237,7 +266,7 @@ class _SelectProfile:
         if not self.sources:
             return []
         out = ["## Tables", "", "| table | alias | rows |", "|---|---|---|"]
-        out += [f"| {s.table.name} | {s.alias} | {_num(totals[s.alias.lower()])} |" for s in self.sources]
+        out += [f"| {s.label} | {s.alias} | {_num(totals[s.alias.lower()])} |" for s in self.sources]
         return out + [""]
 
     def _columns(self, totals: dict[str, int]) -> list[str]:
@@ -252,12 +281,12 @@ class _SelectProfile:
             if not names:
                 continue
             total = totals[s.alias.lower()]
-            out += [f"### Columns of {s.alias} ({s.table.name}, {_num(total)} rows)", "", "| column | type | min | max | NULL fraction | distinct |", "|---|---|---|---|---|---|"]
-            types = {str(r[0]).lower(): str(r[1]) for r in self.r.run(f"DESCRIBE SELECT * FROM {_sql(s.table)}")}
+            out += [f"### Columns of {s.alias} ({s.label}, {_num(total)} rows)", "", "| column | type | min | max | NULL fraction | distinct |", "|---|---|---|---|---|---|"]
+            types = {str(r[0]).lower(): str(r[1]) for r in self.r.run(f"DESCRIBE SELECT * FROM {s.from_sql}")}
             for name in names:
                 q = _ident(name)
                 lo, hi, nulls, distinct = self.r.one(
-                    f"SELECT min({q}), max({q}), count(*) - count({q}), count(DISTINCT {q}) FROM {_sql(s.table)}"
+                    f"SELECT min({q}), max({q}), count(*) - count({q}), count(DISTINCT {q}) FROM {s.from_sql}"
                 )
                 out.append(f"| {name} | {types[name]} | {_cell(lo)} | {_cell(hi)} | {_ratio(int(nulls), total)} | {_num(int(distinct))} |")
             out.append("")
@@ -274,11 +303,11 @@ class _SelectProfile:
                 continue
             total = totals[key]
             for cond in conds:
-                n = self.r.count(f"SELECT 1 FROM {_sql(s.table)} WHERE {_sql(cond)}")
+                n = self.r.count(f"SELECT 1 FROM {s.from_sql} WHERE {_sql(cond)}")
                 rows.append(f"| {s.alias} | `{_cell(_sql(cond))}` | {_num(n)} / {_num(total)} | {_ratio(n, total)} |")
             if len(conds) > 1:
                 both = " AND ".join(f"({_sql(c)})" for c in conds)
-                n = self.r.count(f"SELECT 1 FROM {_sql(s.table)} WHERE {both}")
+                n = self.r.count(f"SELECT 1 FROM {s.from_sql} WHERE {both}")
                 rows.append(f"| {s.alias} | all of the above together | {_num(n)} / {_num(total)} | {_ratio(n, total)} |")
         if not rows:
             return []
@@ -289,7 +318,7 @@ class _SelectProfile:
         s = self.by_alias[owner]
         key = _ident(col.name)
         where = " AND ".join(f"({_sql(c)})" for c in filters[owner])
-        return s, key, f"FROM {_sql(s.table)}", f"WHERE {where}" if where else ""
+        return s, key, f"FROM {s.from_sql}", f"WHERE {where}" if where else ""
 
     def _joins(self, filters: dict[str, list[exp.Expression]], equalities: list[tuple[exp.Column, exp.Column]]) -> list[str]:
         out: list[str] = []
@@ -310,17 +339,21 @@ class _SelectProfile:
                 )
             out.append("")
         if len(self.sources) > 1 or self.select.args.get("where") is not None:
+            # A derived table has no rowid: how many of its rows take part is not reported for it (n/a), never approximated.
+            based = [s for s in self.sources if not s.derived]
             count_items = [exp.Count(this=exp.Star())] + [
-                exp.Count(this=exp.Distinct(expressions=[exp.column("rowid", table=s.alias)])) for s in self.sources
+                exp.Count(this=exp.Distinct(expressions=[exp.column("rowid", table=s.alias)])) for s in based
             ]
             sel = self._stripped([exp.alias_(i, f"c{n}") for n, i in enumerate(count_items)], keep_group=False)
             row = self.r.one(_sql(sel))
             out += ["## Rows after all joins and filters", "", f"Joined rows: {_num(int(row[0]))}.", ""]
             if len(self.sources) > 1 or filters:
                 out += ["| table | rows of the table that still match | of |", "|---|---|---|"]
-                total_by = {s.alias.lower(): self.r.count(f"SELECT 1 FROM {_sql(s.table)}") for s in self.sources}
-                for n, s in enumerate(self.sources, start=1):
-                    out.append(f"| {s.alias} | {_num(int(row[n]))} | {_num(total_by[s.alias.lower()])} |")
+                total_by = {s.alias.lower(): self.r.count(f"SELECT 1 FROM {s.from_sql}") for s in self.sources}
+                matched = {s.alias.lower(): int(v) for s, v in zip(based, row[1:])}
+                for s in self.sources:
+                    m = matched.get(s.alias.lower())
+                    out.append(f"| {s.alias} | {'n/a' if m is None else _num(m)} | {_num(total_by[s.alias.lower()])} |")
                 out.append("")
         return out
 
@@ -333,9 +366,9 @@ class _SelectProfile:
         for key in keys:
             aliases = self.aliases_of(key)
             overall = "n/a"
-            if len(aliases) == 1 and not list(key.find_all(exp.Select)):
+            if len(aliases) == 1 and not list(key.find_all(exp.Select)) and not self._unresolved(key):
                 s = self.by_alias[aliases[0]]
-                overall = _num(int(self.r.one(f"SELECT count(DISTINCT {_sql(key)}) FROM {_sql(s.table)}")[0]))
+                overall = _num(int(self.r.one(f"SELECT count(DISTINCT {_sql(key)}) FROM {s.from_sql}")[0]))
             sel = self._stripped([exp.alias_(exp.Count(this=exp.Distinct(expressions=[key.copy()])), "d")], keep_group=False)
             after = _num(int(self.r.one(_sql(sel))[0]))
             rows.append(f"| `{_cell(_sql(key))}` | {overall} | {after} |")

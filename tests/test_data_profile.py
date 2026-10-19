@@ -74,6 +74,40 @@ def test_derived_table_over_joins_is_inlined(db: Path) -> None:
     assert "Joined rows: 4." in text and "(before LIMIT): 2." in text  # EU: ids 3,5,6; US: id 4
 
 
+def test_join_to_a_derived_aggregate_is_profiled_as_a_relation(db: Path) -> None:
+    # The shape of a decorrelated "row with the per-group max": the ON equalities to the derived table are joins, never single-table filters.
+    sql = (
+        "SELECT fact.id, fact.qty FROM fact JOIN (SELECT d_k, MAX(qty) AS mx FROM fact WHERE flag IS NOT NULL GROUP BY d_k) m "
+        "ON fact.d_k = m.d_k AND fact.qty = m.mx WHERE fact.flag = 'b' ORDER BY fact.id"
+    )
+    text = dp.build_profile(sql, db)
+    assert "| derived | m | 2 |" in text  # d_k 1 -> 50, d_k 2 -> 30 (d_k 3 only has a NULL flag)
+    assert "| mx | INTEGER | 30 | 50 | 0 | 2 |" in text
+    assert "| fact | `fact.flag = 'b'` | 2 / 6 | 0.333333 |" in text  # ids 3, 4
+    assert "`fact.d_k = m.d_k`" not in text and "| m | `" not in text  # no filter row built from a join condition
+    assert "| fact.d_k = m.d_k | 3 / 1 | 2 / 2 | 1 |" in text  # fact keys {1,2,3}, after flag='b' {2}; m keys {1,2}
+    assert "| fact.qty = m.mx | 5 / 1 | 2 / 2 | 1 |" in text  # fact qty {10..50}, after flag='b' {30}; m {30,50}
+    assert "Joined rows: 2." in text and "| fact | 2 | 6 |" in text and "| m | n/a | 2 |" in text  # ids 3, 4 (both qty 30 = max of d_k 2)
+    assert "Result rows: 2." in text
+
+
+def test_filtered_subquery_in_from_with_a_join_and_a_cte_reference(db: Path) -> None:
+    # A derived table in FROM next to joins is not inlined: it is a relation; a condition naming a CTE is not used as a filter of dim.
+    sql = (
+        "WITH c AS (SELECT k FROM cust WHERE region = 'US') "
+        "SELECT dim.name, d.q FROM (SELECT d_k, qty AS q FROM fact WHERE qty > 25) AS d JOIN dim ON d.d_k = dim.k "
+        "JOIN c ON dim.k = c.k WHERE d.q < 50"
+    )
+    text = dp.build_profile(sql, db)
+    assert "Not profiled per table: `c` (not a base table of the database)." in text
+    assert "| derived | d | 4 |" in text and "| dim | dim | 3 |" in text  # qty > 25: ids 3, 4, 5, 6
+    assert "| d | `d.q < 50` | 3 / 4 | 0.75 |" in text  # ids 3, 4, 5
+    assert "c.k" not in text.split("## Joins")[0].split("## Filters")[-1]  # dim.k = c.k is no filter row
+    assert "| d.d_k = dim.k | 3 / 2 | 3 / 3 | 2 |" in text  # d keys {1,2,3}, after q < 50 {2,3}
+    assert "Joined rows: 2." in text  # c = {2}: ids 3, 4
+    assert "| d | n/a | 4 |" in text and "| dim | 1 | 3 |" in text
+
+
 def test_deterministic(db: Path) -> None:
     assert dp.build_profile(STAR, db) == dp.build_profile(STAR, db)
     assert dp.build_profile(TOPN, db) == dp.build_profile(TOPN, db)
