@@ -1,0 +1,43 @@
+# Retry family of sf10_batch_noassump.toml (SHA 5c8537c, 2026-10-19): only the six queries that failed on host software, same SQL and settings.
+# retry_of = "sf10_batch_noassump" from_sha = "5c8537c" to_sha = this commit. Fixes (each with tests):
+#   tpch Q9, SEC q4: step 7, the host measure re-checked the leftover file instead of the marked submit (9ef668e)
+#   tpch Q14: step 1, data profile refused division (9d3e53a); SEC q2: step 1, data profile on a join to a derived table (dc867a1)
+#   SEC q6: step 5, host lemma_scan_rows_<t> failed on a nullable scan column (12306cd); SEC q3: step 2, HAVING SUM > AVG(..) needs exact division (merged)
+# Run: uv run python research_loop/scripts/container_batch.py --experiment configs/experiments/sf10_retry1_noassump.toml
+[settings]
+assumptions = false
+examples = "none"
+data_profile = "stats"
+templates = true
+
+[[run]]
+model = "claude-opus-5-5"
+query = "configs/query_templates/tpch/q14.sql"
+duckdb_path = "research_loop/generated/tpch_sf10.duckdb"
+bindings_rules = "configs/query_templates/tpch/substitution.json"
+bindings_seed = 1
+
+[[run]]
+model = "claude-opus-5-5"
+query = "configs/queries/tpch/tpch_q09.sql"
+duckdb_path = "research_loop/generated/tpch_sf10.duckdb"
+
+[[run]]
+model = "claude-opus-5-5"
+query = "configs/queries/sec_edgar/q2.sql"
+duckdb_path = "holdout/gendb_sec_edgar/duckdb/sec_edgar_dec.duckdb"
+
+[[run]]
+model = "claude-opus-5-5"
+query = "configs/queries/sec_edgar/q3.sql"
+duckdb_path = "holdout/gendb_sec_edgar/duckdb/sec_edgar_dec.duckdb"
+
+[[run]]
+model = "claude-opus-5-5"
+query = "configs/queries/sec_edgar/q4.sql"
+duckdb_path = "holdout/gendb_sec_edgar/duckdb/sec_edgar_dec.duckdb"
+
+[[run]]
+model = "claude-opus-5-5"
+query = "configs/queries/sec_edgar/q6.sql"
+duckdb_path = "holdout/gendb_sec_edgar/duckdb/sec_edgar_dec.duckdb"
