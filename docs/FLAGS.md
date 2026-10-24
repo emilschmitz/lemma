@@ -18,13 +18,13 @@ lemma.toml  <  experiment file (configs/experiments/X.toml)  <  environment vari
 * Every container run writes all keys with `value`, `section`, `source` (`file`/`experiment`/`env`/`cli`) and `origin` into the run manifest (`lemma_config`) and the `RESULT` line (`config`), with `git_sha`, `git_dirty` and `git_untracked_files` (a count; untracked files never make `git_dirty` true). A dirty tree (tracked files; untracked and gitignored data do not count) is refused unless `allow_dirty = true`.
 * `container_batch.py` forwards nothing by name. The child reads `lemma.toml` itself; the batch passes only values that differ from the file (`lemma_config.forwarded_env`, plus `LEMMA_CONFIG_ORIGIN` so a flag is still reported as a flag).
 
-## Sections (58 keys)
+## Sections (61 keys)
 
 | Section | Keys |
 | --- | --- |
-| `[run]` | `spec_style menu agent_model trusted_set assumptions assumption_package speed_bar_mult max_iterations string_encoding join_chain examples narrow_cells pushdown agent_scan parallel_vstd stateful` |
+| `[run]` | `spec_style menu agent_model trusted_set assumptions assumption_package speed_bar_mult max_iterations string_encoding join_chain examples narrow_cells pushdown agent_scan parallel_vstd stateful prover` |
 | `[agent]` | `speed_target max_idle_sessions agent_timeout_sec max_budget_usd agent_submit_ends_session agent_data_mode agent_resource_exhausted_retries harness agent_auth claude_effort claude_thinking_tokens claude_tool_search mcp_iterate_rows` |
-| `[prover]` | `verus_rlimit verus_timeout_sec run_timeout_sec target_cpu dense_slot_budget` |
+| `[prover]` | `verus_rlimit verus_timeout_sec run_timeout_sec target_cpu dense_slot_budget verus_home prover_image` |
 | `[measure]` | `official_rounds official_duck_reps duck_memory_limit duck_threads` |
 | `[data]` | `duckdb_path data_profile` |
 | `[sql]` | `agg_times_constant derived_agg_expr cte_reuse left_join_count exact_division templates` (new SQL shapes of the transpiler, default false, verdicts in `research_loop/menus/sql_<feature>_ADVERSARY_VERDICT.md`; except `exact_division`, default **true**: AVG and `/` over exact operands are exact rationals with no float trusted item, a FLOAT/DOUBLE operand is refused, false = the f64 idealization, see `docs/TRUSTED_FAMILIES.md`) |

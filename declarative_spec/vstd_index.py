@@ -1,4 +1,5 @@
-"""The vstd modules, and the broadcast groups in them, read from the pinned Verus install.
+"""The vstd modules, and the broadcast groups in them, read from the pinned Verus install (``declarative_spec.prover.verus_home``: the host's
+``[prover] verus_home``, or the prover image's copy with ``prover = "docker"``).
 
 The spec preamble imports every vstd module by glob so the proving agent needs no imports of
 its own. The module list and the group list come from the vstd source, not from a hand-kept list.
@@ -11,8 +12,24 @@ import re
 from functools import lru_cache
 from pathlib import Path
 
-VERUS_HOME = Path.home() / "tools" / "verus"
-VSTD = VERUS_HOME / "vstd"
+
+
+def vstd_dir() -> Path:
+    from declarative_spec.prover import verus_home
+
+    return verus_home() / "vstd"
+
+
+def __getattr__(name: str) -> Path:
+    """``VERUS_HOME`` / ``VSTD``, resolved on first use (lemma.toml may select the docker prover, whose source is copied out of the image)."""
+    from declarative_spec.prover import verus_home
+
+    if name == "VERUS_HOME":
+        return verus_home()
+    if name == "VSTD":
+        return vstd_dir()
+    raise AttributeError(name)
+
 
 # Modules that have their own submodules we also import.
 _RECURSE = ("std_specs", "arithmetic")
@@ -33,11 +50,11 @@ def _submodules(path: Path) -> list[str]:
 def vstd_modules() -> tuple[str, ...]:
     """Module paths below ``vstd::``, e.g. ``seq_lib`` or ``std_specs::hash``."""
     found: list[str] = []
-    for top in _submodules(VSTD / "vstd.rs"):
+    for top in _submodules(vstd_dir() / "vstd.rs"):
         if top in EXCLUDED:
             continue
         if top in _RECURSE:
-            found.extend(f"{top}::{sub}" for sub in _submodules(VSTD / top / "mod.rs"))
+            found.extend(f"{top}::{sub}" for sub in _submodules(vstd_dir() / top / "mod.rs"))
         else:
             found.append(top)
     return tuple(found)
@@ -50,7 +67,7 @@ def preamble_uses() -> str:
 
 
 def _module_file(module: str) -> Path:
-    base = VSTD / module.replace("::", "/")
+    base = vstd_dir() / module.replace("::", "/")
     flat = base.with_suffix(".rs")
     return flat if flat.is_file() else base / "mod.rs"
 

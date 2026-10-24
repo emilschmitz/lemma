@@ -335,10 +335,9 @@ def resolve_verus_bin() -> str | None:
     found = shutil.which("verus")
     if found:
         return found
-    for c in (
-        os.path.expanduser("~/tools/verus/verus"),
-        "/home/emil/tools/verus/verus",
-    ):
+    from declarative_spec.prover import host_verus_home
+
+    for c in (str(host_verus_home() / "verus"),):
         if os.path.isfile(c) and os.access(c, os.X_OK):
             return c
     return None

@@ -44,6 +44,7 @@ pushdown = true                             # the export applies the transpiler'
 agent_scan = true                           # run_query gets one scan handle per table and may call the ONE authorized trusted item scan_where_<t> (DuckDB filters correctly; docs/TRUSTED_FAMILIES.md) for the rows matching a predicate it picks; ensures unchanged, so a too-narrow predicate fails the proof. Composes with pushdown: the scan's "full table" is the pushed-down export. false = spec and main byte-identical to before
 parallel_vstd = "auto"                      # off | auto | on. Decision: explicit "auto" (the frozen run's effective value; it used to be forced silently and the shell value was overwritten). on = every spec gets Arc params, a shape without a variant fails at emit
 stateful = false                            # true: the contract is an agent-written state QState with build(cols) and execute(&QState, params), both proved against the same query spec; the fixed host runtime rebuilds the state lazily when the caller's data version changes (declarative_spec/stateful.py, docs/STATEFUL.md). The parallel (Arc) variant is not emitted then. false = run_query, byte-identical specs
+prover = "host"                             # host | docker: where Verus and the rustc build of every proved program run (declarative_spec/prover.py). host = Verus at [prover] verus_home with its rustup toolchain on this machine, through scripts/ram/verus_guarded.sh (research runs: byte-identical to before the key). docker = the pinned image prover_image (same Verus release, toolchain and linker; network none, read-only root and source, memory capped at verus_mem_max) and vstd read from that image. The product CLI (lemma setup / optimize) uses docker unless `lemma setup --prover host`
 
 [agent]
 speed_target = 10.0                         # float >= 1.0: speedup over the reference engine the agent is told to aim for after its first body beats the bar (prompt, section "Target speedup"). Within the per-query budget (max_iterations x agent_timeout_sec) a session that ends early below this target is followed by another one from the best submitted body. 1.0 = the old behaviour (a further session only after one that did not verify)
@@ -66,6 +67,8 @@ verus_timeout_sec = 300                     # wall limit of verify + optimized b
 run_timeout_sec = 60                        # wall limit of one compiled-binary run (load, warm-up, timed runs)
 target_cpu = "x86-64-v3"                    # rustc -C target-cpu of the compiled binary (generic = no flag; native can SIGILL elsewhere)
 dense_slot_budget = 4194304                 # largest dense slot table (product of key dictionary sizes) a body may allocate
+verus_home = "~/tools/verus"                # the host Verus install (prover = host): binary, vstd and builtin source, version.json
+prover_image = "lemma-prover:0.2026.07.18.3a4d30b"  # the prover image (prover = docker), built from docker/prover/Dockerfile by `lemma setup`
 
 [measure]
 official_rounds = 5                         # interleaved rounds (ours vs DuckDB) of the official verdict

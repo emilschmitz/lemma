@@ -24,7 +24,7 @@ from declarative_spec.verus_docs import (
     lemmas_markdown,
     lookups_markdown,
 )
-from declarative_spec.vstd_index import VERUS_HOME, groups_markdown
+from declarative_spec.vstd_index import groups_markdown
 from declarative_spec.prompt import build_declarative_prompt, mount_examples
 from research_loop.data_profile import ProfileError, build_profile
 
@@ -191,7 +191,6 @@ def _extract_agent_edit_region(source: str) -> str:
     return extract_agent_edit(source)
 
 
-_VERUS_HOME = VERUS_HOME
 
 _VERUS_INDEX = """# Verus reference (read-only)
 
@@ -228,10 +227,13 @@ def mount_verus_docs(ro: Path) -> None:
 
     Fails loudly if either is missing (run ``research_loop/scripts/fetch_verus_docs.sh``).
     """
+    from declarative_spec.prover import verus_home
+
+    home = verus_home()
     dest = ro / "verus"
     if dest.exists():
         shutil.rmtree(dest)
-    shutil.copytree(_VERUS_HOME / "vstd", dest / "vstd", ignore=shutil.ignore_patterns("target", "*.vir"))
+    shutil.copytree(home / "vstd", dest / "vstd", ignore=shutil.ignore_patterns("target", "*.vir"))
     for sub in ("guide", "examples", "tests"):
         shutil.copytree(
             DOCS_CACHE / sub, dest / sub, ignore=shutil.ignore_patterns("*.png", "*.svg", "cargo-tests", "target")
@@ -239,7 +241,7 @@ def mount_verus_docs(ro: Path) -> None:
     (dest / "LEMMAS.md").write_text(lemmas_markdown(dest / "vstd"))
     (dest / "EXAMPLES_INDEX.md").write_text(examples_index_markdown(dest))
     (dest / "GUIDE_INDEX.md").write_text(guide_index_markdown(dest / "guide"))
-    version = (_VERUS_HOME / "version.txt").read_text().strip()
+    version = (home / "version.txt").read_text().strip()
     (dest / "INDEX.md").write_text(_VERUS_INDEX.format(version=version, groups=groups_markdown(), lookups=lookups_markdown()))
 
 
