@@ -236,6 +236,7 @@ def test_fixed_constant_sql_is_byte_identical_with_the_switch_on_or_off(name: st
     sql = (TPCH22 / f"{name}.sql").read_text().strip()
     for key in ("agg_times_constant", "derived_agg_expr", "cte_reuse", "left_join_count"):
         monkeypatch.delenv(lemma_config.env_name(key), raising=False)
+    monkeypatch.setenv("LEMMA_EXACT_DIVISION", "0")  # emit_golden.json predates exact rationals (on, AVG and `/` are stated as Rat)
     on = emit_declarative_spec(sql, schema, assumption_package("tpch_sf1"))
     monkeypatch.delenv("LEMMA_TEMPLATES", raising=False)
     off = emit_declarative_spec(sql, schema, assumption_package("tpch_sf1"))
