@@ -423,12 +423,14 @@ struct LemmaIn<T> {
     lent: bool,
 }
 
+#[verifier::external]  // outside verus!: Verus must not take these impls (a Deref/Drop impl here changed what it proves, SEC q24)
 impl<T> LemmaIn<T> {
     fn into_vec(mut self) -> Vec<T> {
         self.v.take().unwrap()
     }
 }
 
+#[verifier::external]  // outside verus!: Verus must not take these impls (a Deref/Drop impl here changed what it proves, SEC q24)
 impl<T> std::ops::Deref for LemmaIn<T> {
     type Target = Vec<T>;
     fn deref(&self) -> &Vec<T> {
@@ -436,6 +438,7 @@ impl<T> std::ops::Deref for LemmaIn<T> {
     }
 }
 
+#[verifier::external]  // outside verus!: Verus must not take these impls (a Deref/Drop impl here changed what it proves, SEC q24)
 impl<T> Drop for LemmaIn<T> {
     fn drop(&mut self) {
         if self.lent {
@@ -463,12 +466,14 @@ struct LemmaLent<C> {
     release: fn(&mut C),
 }
 
+#[verifier::external]  // outside verus!: Verus must not take these impls (a Deref/Drop impl here changed what it proves, SEC q24)
 impl<C> LemmaLent<C> {
     fn new(cols: C, lent: bool, release: fn(&mut C)) -> LemmaLent<C> {
         LemmaLent { cols: Some(cols), lent, release }
     }
 }
 
+#[verifier::external]  // outside verus!: Verus must not take these impls (a Deref/Drop impl here changed what it proves, SEC q24)
 impl<C> std::ops::Deref for LemmaLent<C> {
     type Target = C;
     fn deref(&self) -> &C {
@@ -476,6 +481,7 @@ impl<C> std::ops::Deref for LemmaLent<C> {
     }
 }
 
+#[verifier::external]  // outside verus!: Verus must not take these impls (a Deref/Drop impl here changed what it proves, SEC q24)
 impl<C> Drop for LemmaLent<C> {
     fn drop(&mut self) {
         if let Some(mut c) = self.cols.take() {
@@ -495,6 +501,7 @@ struct LemmaLentArc<C> {
     release: fn(&mut C),
 }
 
+#[verifier::external]  // outside verus!: Verus must not take these impls (a Deref/Drop impl here changed what it proves, SEC q24)
 impl<C> LemmaLentArc<C> {
     fn new(mut l: LemmaLent<C>) -> LemmaLentArc<C> {
         let cols = l.cols.take().unwrap();
@@ -502,6 +509,7 @@ impl<C> LemmaLentArc<C> {
     }
 }
 
+#[verifier::external]  // outside verus!: Verus must not take these impls (a Deref/Drop impl here changed what it proves, SEC q24)
 impl<C> std::ops::Deref for LemmaLentArc<C> {
     type Target = std::sync::Arc<C>;
     fn deref(&self) -> &std::sync::Arc<C> {
@@ -509,6 +517,7 @@ impl<C> std::ops::Deref for LemmaLentArc<C> {
     }
 }
 
+#[verifier::external]  // outside verus!: Verus must not take these impls (a Deref/Drop impl here changed what it proves, SEC q24)
 impl<C> Drop for LemmaLentArc<C> {
     fn drop(&mut self) {
         if let Some(mut a) = self.arc.take() {

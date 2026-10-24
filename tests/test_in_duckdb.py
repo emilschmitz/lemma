@@ -924,3 +924,29 @@ def test_a_body_proved_for_a_smaller_catalog_is_not_installed_at_sf1(fixture: st
         _install((fixture, sql), tmp_path, SF1, schema=schema, catalog=catalog, encoding="plain")
     assert not (tmp_path / "executors" / in_duckdb.executor_key(sql)).exists()
     assert not [p for p in (tmp_path / "executors").iterdir() if p.name.startswith(".")]
+
+
+@pytest.mark.parametrize("key", ["usum", "join"])
+def test_every_impl_of_the_host_template_is_external_to_verus(key: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    # SEC q24 (2026-10-24): the ABI-5 glue's Deref/Drop impls, though outside verus!, were taken by Verus and an agent proof that
+    # verified at ABI 4 (61 verified, 0 errors) failed (60 verified, 1 errors) with a byte-identical verus! part.
+    spec, body, sql = _spec(key, monkeypatch)
+    lib = assemble_library_program(spec, body, sql=sql)
+    lines = lib[lib.index("// ===== HOST C ABI") :].splitlines()
+    impls = [i for i, line in enumerate(lines) if re.match(r"(unsafe )?impl\b", line)]
+    assert impls and all(lines[i - 1].startswith("#[verifier::external]") for i in impls)
+
+
+@needs_ext
+def test_the_abi5_library_verifies_exactly_like_abi4(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import subprocess
+
+    spec, body, sql = _spec("group", monkeypatch)
+    counts = []
+    for abi in (4, 5):
+        rs = tmp_path / f"lib{abi}.rs"
+        rs.write_text(assemble_library_program(spec, body, sql=sql, abi=abi))
+        out = subprocess.run([str(ROOT / "scripts" / "ram" / "verus_guarded.sh"), str(rs), "--triggers-mode", "silent", "--crate-type=lib"],
+                             capture_output=True, text=True, timeout=900)
+        counts.append(re.search(r"verification results:: \d+ verified, \d+ errors", out.stdout + out.stderr)[0])
+    assert counts[0] == counts[1] and counts[0].endswith(" 0 errors"), counts
