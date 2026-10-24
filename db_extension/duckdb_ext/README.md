@@ -49,10 +49,14 @@ Or run our CLI, where Lemma is already loaded: `build/release/duckdb db.duckdb`.
 | `SELECT * FROM lemma_query('<template>', v1, v2, ...)` | a query template (`-- params:` header, `$name` placeholders, lemma.toml `[sql] templates`): one value per parameter in declaration order. BIGINT takes an integer value, DATE a DATE value (`DATE '1995-01-01'`), DECIMAL(p,s) an integer or DECIMAL value with at most s fractional digits (exact, never rounded), VARCHAR a VARCHAR. A wrong count or type, NULL, or a value outside the range `run_query` requires is an error, never rows. In `lemma_mode` a template executor is an error (the plan replacement cannot see bound values) |
 | `SET lemma_mode = true` | every table-reading SELECT of the session is looked up; with an executor the plan is replaced by it (same snapshot, same result types), EXPLAIN shows a `LEMMA_QUERY` node with `engine: lemma`, the executor key and the proof line |
 | `SET lemma_route_unproved = true` | in Lemma mode, a query without an executor runs on DuckDB unchanged instead of raising the error; labelled `engine=duckdb` in `lemma_last_query()`. Default `false`. Experiments never set it |
-| `SELECT * FROM lemma_last_query()` | `engine` (`lemma`, `duckdb` or `none`), `reason`, `query_key`, `sql`, and for Lemma: `scan_us` (scan + copy), `load_us` (decode + every assumption check in the library), `run_us` (proved `run_query`), `total_us`, `rows` |
+| `SELECT * FROM lemma_last_query()` | `engine` (`lemma`, `duckdb` or `none`), `reason`, `query_key`, `sql`, and for Lemma: `scan_us` (scan + copy), `load_us` (decode + every assumption check in the library), `run_us` (proved `run_query`), `total_us`, `rows`, `cache` (`hit`, `miss: stored`, `miss: not stored (...)`, `skip: <why>`, `off`) and `cache_bytes`; on a hit `scan_us` is the plan + the copy of the cached inputs |
 | `SET lemma_enqueue_misses = true` | a miss also writes `${lemma_home}/queue/<key>.sql` for the offline `lemma optimize`. Default `false` |
 | `SET lemma_scan_threads = <n>` | threads of the scan that hands the columns to the executor; `0` (default) = DuckDB's `threads`. The bytes are the same for every value |
-| `SELECT * FROM lemma_scan_inputs('<sql>')` | the input buffers `lemma_query` would hand to the executor (input, name, role, n, data), from the same scan; the executor does not run. For tests |
+| `SELECT * FROM lemma_scan_inputs('<sql>')` | the input buffers `lemma_query` would hand to the executor (input, name, role, n, data), from the same scan (never the input cache); the executor does not run. For tests |
+| `SET lemma_cache = false` | turn the input cache off (default `true`, see "Input cache"): every call scans |
+| `SET lemma_cache_max_mb = <n>` | size cap of the input cache in MB (a DOUBLE: fractions allowed), least recently used entries evicted first; `-1` (default) = a quarter of `memory_limit`; `0` stores nothing |
+| `SELECT * FROM lemma_cache_stats()` | `enabled`, `entries`, `bytes`, `max_bytes`, `hits`, `misses`, `stores`, `evictions`, `skips`, `data_epoch` (process-wide) |
+| `SELECT * FROM lemma_cache_clear()` | drop every entry (one row: entries and bytes dropped); the measure's cold rounds use it |
 | `SET lemma_home = '<dir>'` | default `$LEMMA_HOME`, else `~/.local/share/lemma` (read at LOAD) |
 | `lemma_normalize_sql(s)`, `lemma_sql_key(s)` | the cache-key form of a SQL text and its sha256 |
 
@@ -152,6 +156,51 @@ whose types differ from the plan's.
 * Executor libraries are loaded once per process (by `lib_sha256`) from a private copy, so replacing `lib.so` on disk never changes
   a loaded executor; they are never unloaded.
 
+## Input cache
+
+The scan and conversion of the inputs (DuckDB vectors to the executor's cells, dictionaries numbered) usually costs more than the
+proved `run_query` (SEC q4 at 2026-10-19: scan 7.6 s, `run_query` 0.6 s, DuckDB's whole query 0.75 s). A call whose snapshot reads
+the same data as an earlier call reuses that call's converted buffers and only runs the executor. On by default (`SET lemma_cache =
+false` turns it off); process-wide, shared by all connections.
+
+**Key.** sha256 of the manifest (query, layouts, inputs, pushed predicates) and of the library, the data epoch, and per table: catalog,
+schema, name, the database and storage addresses, and the pushed predicate with this call's template values substituted plus the
+table filters and residual expression DuckDB planned for it (so a setting that changes how the predicate binds is a different key).
+A template's values reach the inputs only through the pushed predicates (the parameters themselves go to `lemma_run` on every call),
+so two bindings are two entries; a template without a pushed predicate shares one entry across bindings, correctly.
+
+**When an entry may be used or stored** (the data version, the ONE trusted item of the cache, `docs/TRUSTED_FAMILIES.md` "Input
+cache"). DuckDB's `last_commit` moves on every commit, read-only autocommit SELECTs included, so it never repeats. The version is
+kept from DuckDB's transaction notifications instead: every connection's state sees `TransactionBegin` (before the transaction
+reads anything) and `TransactionCommit` / `TransactionRollback` (after DuckDB finished it); a transaction that changed a non-temporary
+database has `MetaTransaction::ModifiedDatabase()`. The **epoch** counts ended transactions that modified a database (rollbacks
+too, conservatively); **open** counts connections inside a transaction or a query. A call uses or fills the cache only if, after its
+transaction is open on every table it reads:
+
+1. no table it reads is temporary;
+2. its transaction has no changes of its own (`ModifiedDatabase()` unset; each table's `DuckTransaction` read-only, no local rows,
+   deletes or updates); otherwise `skip: this transaction has uncommitted changes`;
+3. its transaction began at the current epoch (no write ended since it began); otherwise `skip: a write committed since ...`;
+4. no other connection is open (inside a transaction or a query); otherwise `skip: another connection has an open transaction`.
+
+Why it is sound: a writer that ended before the caller began committed before the caller's snapshot was taken and is counted in the
+epoch; one that ended after the caller began moved the epoch (3 fails); one that has not ended is open (4 fails). So a call meeting
+1-4 at epoch E reads exactly the commits of the writers counted in E, and so does the call that stored an entry at E: same key, same
+bytes. A skipped call scans and stores nothing. Connections already open when the extension was LOADed count as open until their
+transaction ends (their begin was not seen); a connection destroyed mid-transaction moves the epoch; an entry is dropped when the
+epoch moves, and one whose database was detached (weak reference) is never used. With several connections busy at once the cache is
+mostly skipped (4): it serves repeated queries on a quiet database, never a stale one.
+
+**Memory and threads.** Entries are immutable once stored and handed out as `shared_ptr`; eviction (least recently used first, under
+`lemma_cache_max_mb`, default a quarter of `memory_limit`; an entry larger than the cap is not stored) only drops the cache's
+reference, so a running call keeps its buffers. The cache's bytes are outside DuckDB's buffer manager.
+
+**ABI (unchanged, version 4).** `lemma_run` takes every OWNED input buffer (fixed-width integer and f64 cells, `lemma_alloc_input`)
+as its `Vec`'s memory and frees it, so a cached owned input cannot be handed over as is: the cache keeps its own copy and each call
+gets a fresh library buffer filled by a parallel `memcpy` (the cheapest sound option without changing the generated Rust: no
+decoding, no dictionary work). Borrowed inputs (strings, dictionaries, bool and validity bytes; the library only reads them) are
+handed over from the entry itself. A miss that stores pays one extra copy of the owned cells. v4 executors work unchanged.
+
 * **Next step: stateful executors.** A later ABI version would keep one `QRuntime` per loaded library (behind a lock) and add
   `lemma_is_current(version)` and `lemma_run_at(version, ...)`: the extension asks first and scans only on a version change. The
   hard part is the version: it must change whenever any table the executor reads changes in the caller's snapshot (a transaction's
@@ -162,7 +211,10 @@ whose types differ from the plan's.
 
 `research_loop/official_measure.py` `measure_in_duckdb` times `SELECT * FROM lemma_query('<sql>')` (scan + copy + checks +
 `run_query` + rows back) against the SQL on DuckDB, K interleaved rounds with alternating first side, both on one read-only
-connection under the measure's DuckDB settings. A query template binds round i to the bar's `template_bindings[i % n]` on both
+connection under the measure's DuckDB settings. It runs the rounds twice: **cold** (`lemma_cache_clear()` before every timed call:
+the first call, scan included; the top-level medians and `speedup`, as before the cache) and **warm** (the same query and binding
+ran just before: inputs from the cache); `cold` / `warm` carry both with labels and `verdict.basis` says which the verdict uses
+(`cold`). A query template binds round i to the bar's `template_bindings[i % n]` on both
 sides (`lemma_query('<template>', literals...)` against the template run with the values bound), as the official verdict does. `research_loop/scripts/in_duckdb_bench.py` runs it for installed executors.
 
 ## Tests

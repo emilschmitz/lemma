@@ -147,7 +147,7 @@ def test_a_decline_in_any_round_makes_the_in_duckdb_measure_declined(tmp_path: P
                 raise official_measure.InDuckdbDeclined("Invalid Input Error: Lemma: declined: run_query returned None")
             return 100
 
-        return ours, (lambda: (calls.append("duck"), 300)[1]), (lambda: calls.append("closed"))
+        return ours, ours, (lambda: (calls.append("duck"), 300)[1]), (lambda: calls.append("closed"))
 
     out = official_measure.measure_in_duckdb({}, tmp_path, extension=tmp_path, home=tmp_path, k=3, timers=timers)
     assert out["status"] == "DECLINED" and out["declined"] is True and "Lemma: declined:" in out["error"]

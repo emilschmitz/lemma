@@ -143,11 +143,13 @@ def test_in_duckdb_measure_gives_both_sides_the_rounds_binding(tmp_path: Path) -
     seen: list[tuple[str, dict]] = []
 
     def timers(_bar, _dir, *, extension, home):
-        return (lambda b: (seen.append(("ours", b)), 100)[1]), (lambda b: (seen.append(("duck", b)), 200)[1]), lambda: None
+        ours = lambda b: (seen.append(("ours", b)), 100)[1]
+        return ours, ours, (lambda b: (seen.append(("duck", b)), 200)[1]), lambda: None
 
     bar = {"sql": SUM_SQL, "template_bindings": [{"lo": "1"}, {"lo": "2"}]}
     out = official_measure.measure_in_duckdb(bar, tmp_path, extension=tmp_path, home=tmp_path, k=3, timers=timers)
-    assert seen == [("ours", {"lo": "1"}), ("duck", {"lo": "1"}), ("duck", {"lo": "2"}), ("ours", {"lo": "2"}), ("ours", {"lo": "1"}), ("duck", {"lo": "1"})]
+    one_pass = [("ours", {"lo": "1"}), ("duck", {"lo": "1"}), ("duck", {"lo": "2"}), ("ours", {"lo": "2"}), ("ours", {"lo": "1"}), ("duck", {"lo": "1"})]
+    assert seen == one_pass + one_pass  # cold rounds, then warm rounds
     assert [r["binding"] for r in out["rounds"]] == [{"lo": "1"}, {"lo": "2"}, {"lo": "1"}]
     assert out["measurement"] == official_measure.MEASUREMENT_IN_DUCKDB and out["speedup"] == 2.0
 

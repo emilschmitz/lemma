@@ -368,7 +368,7 @@ def test_the_in_duckdb_measure_says_it_includes_the_scan_and_is_reported(tmp_pat
     from research_loop import official_measure as om
 
     def timers(_bar, _work, *, extension, home):
-        return (lambda: 100), (lambda: 200), (lambda: None)
+        return (lambda: 100), (lambda: 100), (lambda: 200), (lambda: None)
 
     monkeypatch.setenv("LEMMA_PUSHDOWN", "1")
     out = om.measure_in_duckdb({"sql": "SELECT 1"}, tmp_path, extension=tmp_path, home=tmp_path, k=3, timers=timers)

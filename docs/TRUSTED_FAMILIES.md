@@ -470,6 +470,48 @@ SQL-type cells), or, with `stateful`, `build` and the runtime's `refresh` (`requ
 handle; serve mode refuses a build that calls `scan_where_t`). Not in library mode: an executor whose body calls `scan_where_t` is
 refused at install, so no in-DuckDB answer depends on this item yet.
 
+## Input cache: DuckDB's data version (the in-DuckDB extension; `SET lemma_cache`, default on)
+
+Authorization: Emil, 2026-10-24 (relayed to the implementing agent by the orchestrator): one new trusted item, "the data version
+from DuckDB". It is not Rust and not in any spec: it is fixed C++ in `db_extension/duckdb_ext/src/lemma_extension.cpp`
+(`DataVersion`, `LemmaState::Transaction*`, `CacheBlocker`) that decides whether a `lemma_query` call may reuse input buffers an
+earlier call converted instead of scanning. The proof is untouched: the executor gets the same bytes either way and runs every
+check it runs on a scan.
+
+Statement: **DuckDB's commit counter changes on every committed write, and a snapshot that sees no newer commit and has no local
+changes reads the same data.** DuckDB's own `last_commit` moves on every commit, read-only autocommit SELECTs included, so it would
+never repeat; the counter is therefore kept from DuckDB's transaction notifications, and the item consists of these DuckDB
+behaviours (vendored v1.5.6 source):
+
+1. Every transaction of every connection is announced to each connection's registered state: `TransactionBegin` before the
+   transaction reads or writes (its snapshot is taken later, on first access; `TransactionContext::BeginTransaction`), and
+   `TransactionCommit` / `TransactionRollback` after DuckDB committed or rolled it back (`TransactionContext::Commit` / `Rollback`).
+   The extension registers its state on every connection (`OnConnectionOpened`, and at LOAD for the ones already open).
+2. A transaction that changed a non-temporary database has `MetaTransaction::ModifiedDatabase()` set: changes reach a table only
+   through `ModifyDatabase` (it flips the transaction to read-write, and `DuckTransactionManager::CommitTransaction` throws on
+   changes made by a read-only transaction).
+3. A transaction's snapshot contains every commit that finished before the snapshot was taken, and no commit that starts after
+   it (DuckDB's MVCC: start and commit ids from one counter, under the transaction lock).
+
+The epoch counts ended transactions with `ModifiedDatabase()` (commits and, conservatively, rollbacks). The rule a call must meet,
+checked after its transaction is open on every table it reads: (a) no table is temporary; (b) its transaction is read-only and has
+no local changes (`ModifiedDatabase()` unset, each table's `DuckTransaction` read-only without changes); (c) its transaction began
+(seen by `TransactionBegin`) at the current epoch; (d) no other connection is inside a transaction or a query. Why that suffices:
+every writer that ended before the caller began committed before the caller's snapshot (1, 3) and is counted in the epoch; a writer
+that ended since then moved the epoch (c fails); a writer that has not ended is open (d fails). So a call meeting the rule at epoch
+E reads exactly the commits of the writers counted in E, and two such calls with the same E (and no changes of their own, b) read
+the same committed data. An entry stored at E is used only by a call meeting the rule at the same E with the same key (manifest,
+tables by catalog/schema/name/address, each table's pushed predicate with this call's parameter values as DuckDB planned it); a
+connection already open at LOAD counts as open until its transaction ends, a destroyed connection moves the epoch, and an entry
+whose database was detached is never used.
+
+What is false about it: nothing known. Not covered (documented limits, each makes calls MISS, never hit wrongly, except the first):
+a write by code that bypasses `ModifyDatabase` (no such path in DuckDB 1.5.6 core; a third-party extension writing storage
+directly would break the rule), a second process writing the same file (DuckDB's file lock forbids it while this process has the
+file open). Tests: `tests/test_in_duckdb_cache.py` (hit on repeat; INSERT/UPDATE/DELETE from this and another connection
+invalidate; no reuse with local changes; another open transaction; template bindings are separate entries; cache off; LRU
+eviction; concurrent readers; every answer equals DuckDB's and the cache-off answer).
+
 ## Menu (25 families)
 
 | id | kind | spec_ret | purpose |
