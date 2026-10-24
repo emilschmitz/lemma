@@ -8,6 +8,13 @@ heavy phase (no export or proof at the same time). Prints one JSON line per quer
 plus ``lemma_last_query()`` timings of one extra cold call (input cache emptied first: scan, executor load+checks, run_query, total)
 and of the warm call right after it (inputs from the input cache), and ``lemma_cache_stats()``. The measure's top-level medians and
 ``verdict`` are the cold ones; ``warm`` holds the repeated-call medians.
+
+Memory on this machine (14 GB): the measure's DuckDB ``memory_limit`` is lemma.toml ``duck_memory_limit`` (8GB), above the 5G scope of
+``scripts/ram/heavy.sh`` (``heavy_mem_max``), and the input cache's default cap is a quarter of it (2 GB: TPC-H SF10 Q1's 2.6 GB of
+inputs are then never stored, so "warm" would scan). For a big query run under heavy.sh, lower DuckDB's limit and raise the cache
+cap explicitly, e.g. ``--memory-limit 1500MB --cache-max-mb 3000``: DuckDB's buffer pool + the cached inputs (held once with ABI 5)
++ the executor's own memory stay under the scope. Both are bench flags (each printed line records them in ``duck_settings``), not
+lemma.toml: the official measure keeps its frozen settings.
 """
 
 from __future__ import annotations
@@ -36,6 +43,8 @@ def main() -> None:
     ap.add_argument("--extension", type=Path, default=EXTENSION)
     ap.add_argument("--rounds", type=int, default=None)
     ap.add_argument("--bindings", help="a query template's bindings, JSON list of {name: value}: round i binds bindings[i %% len]")
+    ap.add_argument("--memory-limit", help="DuckDB memory_limit of the bench connections (default: lemma.toml duck_memory_limit)")
+    ap.add_argument("--cache-max-mb", type=float, help="SET lemma_cache_max_mb on the bench connections (default: the extension's)")
     args = ap.parse_args()
     bindings = json.loads(args.bindings) if args.bindings else None
     work = Path(tempfile.mkdtemp(prefix="in-duckdb-bench-"))
@@ -45,13 +54,22 @@ def main() -> None:
     if not sqls:
         ap.error("give --sql or --all")
     for sql in sqls:
-        bar = {"sql": sql, "db_path": str(args.db), "duck_settings": duck_settings(work)}
+        settings = duck_settings(work)
+        if args.memory_limit:
+            settings["memory_limit"] = args.memory_limit
+        if args.cache_max_mb is not None:
+            settings["lemma_cache_max_mb"] = args.cache_max_mb
+        bar = {"sql": sql, "db_path": str(args.db), "duck_settings": settings}
         if bindings:
             bar["template_bindings"] = bindings
         with heavy_phase("measure"):
             out = official_measure.measure_in_duckdb(bar, work, extension=args.extension, home=args.home, k=args.rounds)
         con = duckdb.connect(str(args.db), read_only=True, config={"allow_unsigned_extensions": "true"})
+        con.execute(f"PRAGMA memory_limit='{settings['memory_limit']}'")
+        con.execute(f"PRAGMA threads={int(settings['threads'])}")
         con.execute(f"LOAD '{args.extension}'")
+        if args.cache_max_mb is not None:
+            con.execute(f"SET lemma_cache_max_mb = {args.cache_max_mb}")
         con.execute(f"SET lemma_home = '{args.home}'")
         query = official_measure.lemma_query_sql(sql, bindings[0] if bindings else None)
         names = ("scan", "executor_load_and_checks", "run_query", "total_in_init", "rows", "cache", "cache_bytes")
@@ -68,6 +86,7 @@ def main() -> None:
         out["split_us_warm"] = dict(zip(names, warm, strict=True))  # "scan" = plan + copy of the cached inputs
         out["cache_stats"] = stats
         out["sql"] = sql
+        out["duck_settings"] = settings
         print(json.dumps(out), flush=True)
 
 
