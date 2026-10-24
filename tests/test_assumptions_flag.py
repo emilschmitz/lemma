@@ -76,6 +76,7 @@ def test_the_package_module_says_it_is_unmaintained() -> None:
 def test_flag_on_spec_and_program_are_byte_identical_to_before(name: str, encoding: str, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LEMMA_ASSUMPTIONS", "1")
     monkeypatch.setenv("LEMMA_AGENT_SCAN", "0")  # the golden predates agent scans (a later flag; on, it adds the scan handles)
+    monkeypatch.setenv("LEMMA_EXACT_DIVISION", "0")  # and exact rationals (a later flag; on, AVG and `/` are stated as Rat)
     spec, program = spec_and_program(name, encoding)
     want = json.loads(GOLDEN.read_text())[f"{name}_{encoding}"]
     assert hashlib.sha256(spec.encode()).hexdigest() == want["spec"]

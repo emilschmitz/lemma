@@ -67,6 +67,7 @@ def test_resolve_schema_unknown_fails():
 
 
 def test_run_optimization_loop_custom_schema_mock(monkeypatch):
+    monkeypatch.setenv("LEMMA_SPEC_STYLE", "imperative")  # the mock pipeline is the imperative path (declarative refuses the mock)
     schema = {"V": "int"}
     metrics = {
         "status": "SUCCESS",
