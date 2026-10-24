@@ -14,8 +14,8 @@ DuckDB, the extension, the input cache.
 MOCKED: the model. Claude Code talks to research_loop/scripts/mock_anthropic_api.py (through the real bridge, test-only override
 LEMMA_TEST_MOCK_ANTHROPIC_*), which writes a fixed, already proved body (tests/fixtures/declarative_proofs/decline/group_count_sum_checked.rs)
 into AGENT_EDIT, calls run_runquery, then submit_runquery. The API key is a dummy.
-NOT FROM THE BUNDLE: Verus and the Rust toolchain are this machine's (~/tools/verus, ~/.rustup): the fresh HOME points at them with
-LEMMA_VERUS_REAL / RUSTUP_HOME / CARGO_HOME, as a user who installed them would have them.
+NOT FROM THE BUNDLE: Verus and the Rust toolchain are this machine's: the fresh HOME gets ~/tools/verus as a symlink to the real install
+and RUSTUP_HOME / CARGO_HOME point at ~/.rustup / ~/.cargo, as a user who installed them would have them.
 """
 
 from __future__ import annotations
@@ -56,13 +56,13 @@ def user(tmp_path_factory: pytest.TempPathFactory) -> dict:
     bundle = _bundle()
     tmp = tmp_path_factory.mktemp("fresh_machine")
     home = tmp / "home"
-    home.mkdir()
+    (home / "tools").mkdir(parents=True)
+    (home / "tools" / "verus").symlink_to(VERUS.parent)  # this machine's Verus, where a user unpacks it
     env = {k: v for k, v in os.environ.items() if not k.startswith("LEMMA_") and k not in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "VIRTUAL_ENV")}
     env.update({
         "HOME": str(home),
         "PATH": f"{home / '.local' / 'bin'}{os.pathsep}{os.environ['PATH']}",
         "UV_CACHE_DIR": os.environ.get("UV_CACHE_DIR") or str(Path.home() / ".cache" / "uv"),  # reuse downloads, nothing else
-        "LEMMA_VERUS_REAL": str(VERUS),
         "RUSTUP_HOME": os.environ.get("RUSTUP_HOME") or str(Path.home() / ".rustup"),
         "CARGO_HOME": os.environ.get("CARGO_HOME") or str(Path.home() / ".cargo"),
         "ANTHROPIC_API_KEY": DUMMY_KEY,

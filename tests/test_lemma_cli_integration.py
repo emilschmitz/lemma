@@ -45,11 +45,12 @@ def fresh_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     for name in list(os.environ):
         if name.startswith("LEMMA_") or name in common.SECRET_ENV:
             monkeypatch.delenv(name)
-    monkeypatch.setenv("LEMMA_VERUS_REAL", str(verus))
     monkeypatch.setenv("RUSTUP_HOME", os.environ.get("RUSTUP_HOME") or str(Path.home() / ".rustup"))
     monkeypatch.setenv("CARGO_HOME", os.environ.get("CARGO_HOME") or str(Path.home() / ".cargo"))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    (tmp_path / "home").mkdir()
+    (tmp_path / "home" / "tools").mkdir(parents=True)
+    (tmp_path / "home" / "tools" / "verus").symlink_to(verus.parent)
+    (tmp_path / "home").mkdir(exist_ok=True)
     monkeypatch.setenv("LEMMA_HOME", str(tmp_path / "lemma_home"))
     monkeypatch.setenv("ANTHROPIC_API_KEY", KEY)
     return tmp_path

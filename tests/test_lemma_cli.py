@@ -498,13 +498,12 @@ def test_lemma_duckdb_runs_our_cli_with_the_lemma_home_and_a_missing_install_say
 
 def test_setup_stops_when_verus_is_missing_and_says_how_to_get_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HOME", str(tmp_path / "empty_home"))
-    monkeypatch.delenv("LEMMA_VERUS_REAL", raising=False)
-    with pytest.raises(common.CliError, match="Verus not found at .*tools/verus/verus: install Verus 0.2026.07.18.3a4d30b"):
+    with pytest.raises(common.CliError, match=r"Verus not found at .*tools/verus/verus \(binary and vstd/\): unpack Verus 0.2026.07.18.3a4d30b"):
         setup_cmd.check_prover()
-    fake = tmp_path / "verus"
+    fake = tmp_path / "empty_home" / "tools" / "verus" / "verus"
+    (fake.parent / "vstd").mkdir(parents=True)
     fake.write_text("#!/bin/sh\necho 'Verus\n  Version: 0.2025.01.01.0000000'\n")
     fake.chmod(0o755)
-    monkeypatch.setenv("LEMMA_VERUS_REAL", str(fake))
     with pytest.raises(common.CliError, match="is not Verus 0.2026.07.18.3a4d30b"):
         setup_cmd.check_prover()
 

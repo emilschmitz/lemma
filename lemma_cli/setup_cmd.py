@@ -20,7 +20,8 @@ LIBDUCKDB_SO = "libduckdb.so"
 VERUS_VERSION = "0.2026.07.18.3a4d30b"
 VERUS_TOOLCHAIN = "1.96.0-x86_64-unknown-linux-gnu"
 VERUS_HOWTO = (
-    f"install Verus {VERUS_VERSION} into ~/tools/verus (or set LEMMA_VERUS_REAL to its `verus`) and its toolchain `rustup install {VERUS_TOOLCHAIN}`: "
+    f"unpack Verus {VERUS_VERSION} into ~/tools/verus (Lemma reads the binary and vstd from there) and install its toolchain "
+    f"`rustup install {VERUS_TOOLCHAIN}`: "
     "https://github.com/verus-lang/verus/releases/tag/release/" + VERUS_VERSION + " (steps: research_loop/scripts/install_verus.md)"
 )
 
@@ -39,15 +40,16 @@ def ensure_libduckdb() -> str:
 
 
 def verus_path() -> Path:
-    """The real Verus binary the guard (scripts/ram/verus_guarded.sh) runs."""
-    return Path(os.environ.get("LEMMA_VERUS_REAL") or Path.home() / "tools" / "verus" / "verus")
+    """The Verus install Lemma uses: the guard (scripts/ram/verus_guarded.sh) runs ~/tools/verus/verus and the spec emitter reads vstd from
+    ~/tools/verus (declarative_spec/vstd_index.py)."""
+    return Path.home() / "tools" / "verus" / "verus"
 
 
 def check_prover() -> str:
     """Verus (pinned release), its rustup toolchain, and systemd-run (the guard's memory cap) are on this machine. Nothing is installed here."""
     verus = verus_path()
-    if not (verus.is_file() and os.access(verus, os.X_OK)):
-        raise CliError(f"Verus not found at {verus}: {VERUS_HOWTO}")
+    if not (verus.is_file() and os.access(verus, os.X_OK) and (verus.parent / "vstd").is_dir()):
+        raise CliError(f"Verus not found at {verus} (binary and vstd/): {VERUS_HOWTO}")
     done = subprocess.run([str(verus), "--version"], capture_output=True, text=True, timeout=60, check=False)
     if done.returncode != 0 or f"Version: {VERUS_VERSION}" not in done.stdout:
         raise CliError(f"{verus} is not Verus {VERUS_VERSION} (exit {done.returncode}: {redact((done.stdout + done.stderr).strip()[-300:])}): {VERUS_HOWTO}")
