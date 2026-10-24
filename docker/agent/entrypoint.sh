@@ -22,6 +22,16 @@ if [[ -d /root/.claude-host ]]; then
   cp -R --no-preserve=ownership,timestamps /root/.claude-host/. /root/.claude/
   chmod -R u+rwX /root/.claude
 fi
+# Codex / Gemini CLI login files (agent_auth = login; mounted RO at .codex-host / .gemini-host) -> their writable config dirs.
+mkdir -p /root/.codex /root/.gemini
+for pair in "/root/.codex-host:/root/.codex" "/root/.gemini-host:/root/.gemini"; do
+  src="${pair%%:*}"; dst="${pair##*:}"
+  if [[ -d "$src" ]]; then
+    cp -R --no-preserve=ownership,timestamps "$src/." "$dst/"
+    chmod -R u+rwX "$dst"
+  fi
+done
+export CODEX_HOME=/root/.codex
 export DISABLE_TELEMETRY=1 DISABLE_ERROR_REPORTING=1 DISABLE_AUTOUPDATER=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 mkdir -p /root/.cursor/projects /root/.cursor/chats /root/.cursor/ai-tracking
 
@@ -80,6 +90,46 @@ server = {
 }
 with open(sys.argv[1], "w") as f:
     json.dump({"mcpServers": {"lemma-host": server}}, f, indent=2)
+
+# The same server for the other harnesses (LEMMA_HARNESS is set by the host for codex/gemini containers only).
+harness = os.environ.get("LEMMA_HARNESS", "")
+timeout_sec = 3600  # run_runquery (Verus + compile + timed run) takes minutes; codex defaults to 60 s per tool call
+if harness == "codex":
+    q = json.dumps  # a JSON string literal is a valid TOML basic string
+    lines = [
+        'web_search = "disabled"',  # the hosted web search runs on the vendor side, past the egress allowlist
+        "check_for_update_on_startup = false",
+        "[analytics]",
+        "enabled = false",
+        # vendor-side tools and connectors (they would reach content past the allowlist) and desktop-only tools
+        "[features]",
+        *(f"{name} = false" for name in ("apps", "plugins", "remote_plugin", "browser_use", "browser_use_external", "in_app_browser",
+                                         "computer_use", "standalone_web_search", "image_generation")),
+        "[mcp_servers.lemma-host]",
+        f"command = {q(server['command'])}",
+        "args = [" + ", ".join(q(a) for a in server["args"]) + "]",
+        "startup_timeout_sec = 60",
+        f"tool_timeout_sec = {timeout_sec}",
+        "required = true",
+        "[mcp_servers.lemma-host.env]",
+        *(f"{k} = {q(v)}" for k, v in server["env"].items()),
+    ]
+    with open("/root/.codex/config.toml", "w") as f:
+        f.write("\n".join(lines) + "\n")
+elif harness == "gemini":
+    auth = os.environ["LEMMA_AGENT_AUTH"]  # set by the host with the credential; never guessed here
+    settings = {
+        # PYTHONPATH=/app is in the container environment already; gemini refuses it as a per-server override (and says so on stderr)
+        "mcpServers": {"lemma-host": {**server, "env": {k: v for k, v in server["env"].items() if k != "PYTHONPATH"},
+                                      "timeout": timeout_sec * 1000, "trust": True}},
+        "security": {"auth": {"selectedType": {"api_key": "gemini-api-key", "login": "oauth-personal"}[auth]}, "folderTrust": {"enabled": False}},
+        # google_web_search / web_fetch run on the vendor side, past the egress allowlist
+        "tools": {"exclude": ["google_web_search", "web_fetch"]},
+        "privacy": {"usageStatisticsEnabled": False},
+        "general": {"enableAutoUpdate": False, "enableAutoUpdateNotification": False},
+    }
+    with open("/root/.gemini/settings.json", "w") as f:
+        json.dump(settings, f, indent=2)
 PY
     # Also seed CURSOR_CONFIG_DIR so discovery is not only under /workspace/.cursor.
     if [[ -n "${CURSOR_CONFIG_DIR:-}" ]]; then

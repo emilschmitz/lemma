@@ -63,15 +63,29 @@ def synthetic_group_counts() -> list[dict]:
     return out
 
 
+def cli_of_cmd(agent_cmd: str) -> str | None:
+    """The agent CLI an AGENT_CMD runs (claude, codex, gemini), None for the legacy Cursor ``agent``."""
+    from research_loop.agent_harness import harness_of_cmd
+
+    harness = harness_of_cmd(agent_cmd)
+    return None if harness == "cursor" else harness
+
+
 def agent_env(model: str, style: str) -> dict[str, str]:
-    """Per-run agent env for spec ``style``. ``claude-*`` slugs run Claude Code, everything else the Cursor agent."""
+    """Per-run agent env for spec ``style``. lemma.toml ``harness`` picks the CLI: codex / gemini run that CLI in its image (a model of another
+    vendor is a loud error); claude runs Claude Code for ``claude-*`` slugs and, for any other slug, the legacy Cursor agent (unchanged)."""
+    from research_loop.agent_harness import IMAGES, agent_cmd_for, selected_harness
+
+    harness = selected_harness()
     env = {
         "LEMMA_SPEC_STYLE": ENV_VALUE[check_style(style)],
         "USE_AGENT_DOCKER": "1",
         "LEMMA_AGENT_BACKEND": "cli",
         "LEMMA_RESEARCH_LOG": "1",
     }
-    if model.startswith("claude-"):
+    if harness != "claude":
+        env.update(AGENT_IMAGE=IMAGES[harness], AGENT_ENV="", AGENT_CMD=agent_cmd_for(harness, model))
+    elif model.startswith("claude-"):
         env.update(AGENT_IMAGE=CLAUDE_IMAGE, AGENT_ENV="", AGENT_CMD=claude_agent_cmd(model))
     else:
         env.update(

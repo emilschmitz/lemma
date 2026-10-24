@@ -171,10 +171,13 @@ def run(
     from research_loop.scripts.sqlsmith_trusted_coverage import load_sec_schema
 
     os.environ.update(agent_env(model, resolved.style))
-    if model.startswith("claude-"):
-        from research_loop.agent_sandbox import claude_docker_args
+    from research_loop.scripts.declarative_ladder import cli_of_cmd
 
-        claude_docker_args()  # raises before any work when no credentials are set
+    cli = cli_of_cmd(os.environ["AGENT_CMD"])  # claude | codex | gemini, None = the legacy Cursor agent
+    if cli is not None:
+        from research_loop.agent_harness import credential_status
+
+        credential_status(cli, str(lemma_config.get("agent_auth")))  # raises before any work when the credential is missing
     from research_loop.scripts.declarative_draws import package_for_db
 
     db_path = resolve_sec_db()
@@ -184,7 +187,7 @@ def run(
     from research_loop.agent_image_check import check_agent_image
 
     # Before anything launches: the image, with the commit's agent code mounted, must serve every tool the prompt advertises (ImageMismatch = loud stop).
-    code_evidence = check_agent_image(os.environ["AGENT_IMAGE"], claude_cli=model.startswith("claude-"))
+    code_evidence = check_agent_image(os.environ["AGENT_IMAGE"], cli=cli)
     set_run_evidence({"data_sha256": file_sha256(db_path), "agent_image_digest": image_digest(os.environ["AGENT_IMAGE"]), **duckdb_versions(), **code_evidence})
     if resolved.style == "declarative":
         os.environ["LEMMA_MEASURE_DB"] = str(db_path)
