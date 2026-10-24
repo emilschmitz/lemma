@@ -3,19 +3,20 @@
     scripts/release/build_bundle.sh [--duckdb-build DIR]        # dist/lemma-<version>-linux-x86_64.tar.gz of HEAD
     uv run pytest -m slow tests/test_product_smoke.py -s
 
-In an empty HOME: unpack the bundle, run its install.sh, then the README quick start with the installed `lemma` command only:
+In an empty HOME with no Verus and no Rust toolchain (no ~/tools/verus, no RUSTUP_HOME / CARGO_HOME, no cargo or rustup on PATH):
+unpack the bundle, run its install.sh, then the README quick start with the installed `lemma` command only:
 `lemma setup --auth api-key`, `lemma optimize` on a tiny DuckDB, `lemma list`, `lemma duckdb ... -c`, and the user's own DuckDB 1.5.6 (the
 Python package) with the bundled extension loaded.
 
-REAL: install.sh, the uv tool install of the wheel, the source tree it unpacks, Docker, the agent image (built by `lemma setup` if
-missing), the sandbox self-test (needs internet for api.anthropic.com), Claude Code in the container, the egress bridge, the MCP host,
+REAL: install.sh, the uv tool install of the wheel, the source tree it unpacks, Docker, the prover image (the CLI default prover = docker:
+Verus and rustc run there; built by `lemma setup` if missing, its vstd copied into the fresh HOME's ~/.cache), the agent image (built by
+`lemma setup` if missing), the sandbox self-test (needs internet for api.anthropic.com), Claude Code in the container, the egress bridge, the MCP host,
 the spec, admission, Verus (both the pipeline's proof and the install's re-verification + library compile), the timed run against
 DuckDB, the extension, the input cache.
 MOCKED: the model. Claude Code talks to research_loop/scripts/mock_anthropic_api.py (through the real bridge, test-only override
 LEMMA_TEST_MOCK_ANTHROPIC_*), which writes a fixed, already proved body (tests/fixtures/declarative_proofs/decline/group_count_sum_checked.rs)
 into AGENT_EDIT, calls run_runquery, then submit_runquery. The API key is a dummy.
-NOT FROM THE BUNDLE: Verus and the Rust toolchain are this machine's: the fresh HOME gets ~/tools/verus as a symlink to the real install
-and RUSTUP_HOME / CARGO_HOME point at ~/.rustup / ~/.cargo, as a user who installed them would have them.
+NOT FROM THE BUNDLE: nothing of this machine's Verus or Rust; the uv download cache is shared (downloads only).
 """
 
 from __future__ import annotations
@@ -30,7 +31,6 @@ import duckdb
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-VERUS = Path.home() / "tools" / "verus" / "verus"
 BODY = ROOT / "tests" / "fixtures" / "declarative_proofs" / "decline" / "group_count_sum_checked.rs"
 SQL = "SELECT report, COUNT(*) AS cnt, SUM(line) AS total FROM pre WHERE line > 5 GROUP BY report"
 DUMMY_KEY = "sk-ant-api03-SMOKE-dummy-NOT-A-REAL-KEY-0000"
@@ -51,22 +51,24 @@ def _bundle() -> Path:
 
 @pytest.fixture(scope="module")
 def user(tmp_path_factory: pytest.TempPathFactory) -> dict:
-    if not (shutil.which("docker") and shutil.which("openssl") and shutil.which("uv") and VERUS.is_file()):
-        pytest.skip("needs docker, openssl, uv and Verus at ~/tools/verus")
+    if not (shutil.which("docker") and shutil.which("openssl") and shutil.which("uv")):
+        pytest.skip("needs docker, openssl and uv")
     bundle = _bundle()
     tmp = tmp_path_factory.mktemp("fresh_machine")
     home = tmp / "home"
-    (home / "tools").mkdir(parents=True)
-    (home / "tools" / "verus").symlink_to(VERUS.parent)  # this machine's Verus, where a user unpacks it
-    env = {k: v for k, v in os.environ.items() if not k.startswith("LEMMA_") and k not in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "VIRTUAL_ENV")}
+    home.mkdir(parents=True)
+    drop = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "VIRTUAL_ENV", "RUSTUP_HOME", "CARGO_HOME", "RUSTUP_TOOLCHAIN", "XDG_CACHE_HOME")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("LEMMA_") and k not in drop}
+    # No Rust toolchain and no Verus reachable: PATH without cargo/rustup/verus directories.
+    path = [p for p in os.environ["PATH"].split(os.pathsep) if not any(t in p for t in (".cargo", "rustup", "tools/verus"))]
     env.update({
         "HOME": str(home),
-        "PATH": f"{home / '.local' / 'bin'}{os.pathsep}{os.environ['PATH']}",
+        "PATH": os.pathsep.join([str(home / ".local" / "bin"), *path]),
         "UV_CACHE_DIR": os.environ.get("UV_CACHE_DIR") or str(Path.home() / ".cache" / "uv"),  # reuse downloads, nothing else
-        "RUSTUP_HOME": os.environ.get("RUSTUP_HOME") or str(Path.home() / ".rustup"),
-        "CARGO_HOME": os.environ.get("CARGO_HOME") or str(Path.home() / ".cargo"),
         "ANTHROPIC_API_KEY": DUMMY_KEY,
     })
+    for tool in ("cargo", "rustc", "rustup", "verus"):
+        assert shutil.which(tool, path=env["PATH"]) is None, f"{tool} is still on the fresh user's PATH"
     subprocess.run(["tar", "-xzf", str(bundle), "-C", str(tmp)], check=True)
     (unpacked,) = [p for p in tmp.iterdir() if p.name.startswith("lemma-")]
     done = subprocess.run(["bash", str(unpacked / "install.sh")], cwd=tmp, env=env, capture_output=True, text=True, check=False)
@@ -101,7 +103,9 @@ def test_setup_optimize_list_and_run_in_duckdb_from_a_fresh_home(user: dict) -> 
     from research_loop.scripts.mock_anthropic_api import Conversation, MockAnthropic, make_ca
 
     done = lemma(user, "setup", "--auth", "api-key", timeout=1800)
-    assert done.returncode == 0 and "READY" in done.stdout and "[ok] prover: Verus" in done.stdout and "[ok] duckdb: v1.5.6" in done.stdout
+    assert done.returncode == 0 and "READY" in done.stdout and "[ok] duckdb: v1.5.6" in done.stdout
+    assert "[ok] prover (docker): Verus 0.2026.07.18.3a4d30b and Rust 1.96.0-x86_64-unknown-linux-gnu in the image" in done.stdout
+    assert not (user["home"] / "tools").exists() and (user["home"] / ".cache" / "lemma" / "prover").is_dir()  # vstd from the image
 
     cert, key = make_ca(user["tmp"])
     with MockAnthropic(Conversation(BODY.read_text().strip("\n")), cert, key, user["tmp"] / "mock_requests.jsonl") as mock:

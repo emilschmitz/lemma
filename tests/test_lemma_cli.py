@@ -85,7 +85,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("FAKE_DOCKER_DIR", str(fake))
     monkeypatch.setenv("PATH", f"{binary}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setattr(setup_cmd, "ensure_libduckdb", lambda: "present")
-    monkeypatch.setattr(setup_cmd, "check_prover", lambda: "verus (stub)")
+    monkeypatch.setattr(setup_cmd, "check_prover", lambda rebuild=False: "verus (stub)")
     monkeypatch.setattr(duck, "check", lambda: "duckdb (stub)")
     return fake
 
@@ -244,6 +244,21 @@ def test_api_key_setup_without_the_variable_stops_and_does_not_use_the_login(env
     err = capsys.readouterr().err
     assert "ANTHROPIC_API_KEY is not set" in err
     assert not common.state_path().exists()
+
+
+def test_the_cli_proves_in_docker_by_default_and_a_saved_or_environment_prover_wins(env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    import lemma_config
+
+    login()
+    monkeypatch.setenv("LEMMA_PROVER", "")  # registered with monkeypatch, so teardown removes what setup exports
+    assert lemma_config.default("prover") == "host"  # research runs: unchanged
+    assert main(["setup"]) == 0 and os.environ["LEMMA_PROVER"] == "docker" and "[ok] prover (docker)" in capsys.readouterr().out
+    assert main(["setup", "--prover", "host"]) == 0 and json.loads(common.config_path().read_text())["prover"] == "host"
+    monkeypatch.delenv("LEMMA_PROVER")
+    assert common.home_config_sources()["prover"] == str(common.config_path()) and common.prover() == "host"
+    monkeypatch.setenv("LEMMA_PROVER", "docker")
+    assert common.home_config_sources()["prover"].startswith("environment") and common.prover() == "docker"
+    assert main(["status"]) == 0 and "prover          docker  (from environment LEMMA_PROVER)" in capsys.readouterr().out
 
 
 def test_the_auth_choice_is_saved_and_an_environment_variable_beats_it(env: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -22,8 +22,13 @@ HARNESS_CHOICES = ("claude", "codex", "gemini")
 AUTH_ENV = "LEMMA_AGENT_AUTH"
 HARNESS_ENV = "LEMMA_HARNESS"
 MODEL_ENV = "LEMMA_AGENT_MODEL"
+PROVER_ENV = "LEMMA_PROVER"
+PROVER_CHOICES = ("docker", "host")
 # Saved choices of `lemma setup` ($LEMMA_HOME/config.json key -> the environment variable that makes it effective).
-HOME_CONFIG_ENV = {"agent_auth": AUTH_ENV, "harness": HARNESS_ENV, "agent_model": MODEL_ENV}
+HOME_CONFIG_ENV = {"agent_auth": AUTH_ENV, "harness": HARNESS_ENV, "agent_model": MODEL_ENV, "prover": PROVER_ENV}
+# The product's own defaults where they differ from lemma.toml (whose values are the research defaults, kept so experiments stay
+# byte-identical): the CLI proves and compiles in the pinned prover image, so the user needs no Verus or Rust toolchain.
+CLI_DEFAULTS = {"prover": "docker"}
 
 
 class CliError(RuntimeError):
@@ -77,8 +82,8 @@ def config_path() -> Path:
 
 
 def apply_home_config() -> str:
-    """Make the saved choices effective (environment ``LEMMA_<KEY>`` > ``$LEMMA_HOME/config.json`` > lemma.toml) for ``agent_auth``, ``harness``
-    and ``agent_model``. Returns the source of ``agent_auth``; ``home_config_sources`` has all three."""
+    """Make the saved choices effective (environment ``LEMMA_<KEY>`` > ``$LEMMA_HOME/config.json`` > ``CLI_DEFAULTS`` > lemma.toml) for
+    ``agent_auth``, ``harness``, ``agent_model`` and ``prover``. Returns the source of ``agent_auth``; ``home_config_sources`` has all of them."""
     return home_config_sources()["agent_auth"]
 
 
@@ -91,6 +96,9 @@ def home_config_sources() -> dict[str, str]:
         elif saved.get(key):
             os.environ[env] = saved[key]
             sources[key] = str(config_path())
+        elif key in CLI_DEFAULTS:
+            os.environ[env] = CLI_DEFAULTS[key]
+            sources[key] = "lemma CLI default"
         else:
             sources[key] = "lemma.toml"
     return sources
@@ -112,6 +120,12 @@ def agent_model() -> str:
     import lemma_config
 
     return lemma_config.get("agent_model")
+
+
+def prover() -> str:
+    import lemma_config
+
+    return lemma_config.get("prover")
 
 
 def sha256_file(path: Path) -> str:

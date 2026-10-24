@@ -12,8 +12,9 @@
 #   $PREFIX/share/lemma/duckdb/lemma.duckdb_extension   the extension for your own DuckDB v1.5.6
 # Executors land in ${LEMMA_HOME:-~/.local/share/lemma}/executors/ when you run `lemma optimize`.
 #
-# Needs: uv, git, tar. To prove queries (lemma setup checks all of these and says how to get them): Docker, the pinned Verus release
-# with its Rust toolchain (rustup), a systemd Linux session. Re-running replaces the previous install of the source and binaries.
+# Needs: uv, git, tar. To prove queries: Docker (lemma setup builds the prover image with the pinned Verus release and its Rust toolchain,
+# and the agent sandbox image; it checks everything and says what is missing). The DuckDB binaries need glibc >= 2.28.
+# Re-running replaces the previous install of the source and binaries.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PREFIX="${PREFIX:-$HOME/.local}"
@@ -65,6 +66,6 @@ if [[ "$SHARE" != "$HOME/.local/share/lemma" ]]; then
 fi
 echo
 echo "Next:"
-echo "  lemma setup                                  # checks Docker, Verus, DuckDB; builds the agent sandbox; uses your Claude Code login"
+echo "  lemma setup                                  # checks Docker and DuckDB; builds the prover image and the agent sandbox; uses your Claude Code login"
 echo "  lemma optimize --db my.duckdb --sql \"SELECT ...\""
 echo "  lemma duckdb my.duckdb                       # run it; SELECT * FROM lemma_last_query() shows which engine answered"
