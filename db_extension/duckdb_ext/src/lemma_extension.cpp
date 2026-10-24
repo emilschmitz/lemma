@@ -1296,9 +1296,13 @@ uint64_t ScanTable(ClientContext &context, DuckTransaction &transaction, DataTab
 	if (staged && (!finished.empty() || frontier != next_seq)) {
 		throw InternalException("Lemma: a staged scan task was never committed");
 	}
-	// Row order: tasks by position; pack fixed-width cells toward the front where a task left a gap.
-	std::sort(tasks.begin(), tasks.end(),
-	          [](const std::unique_ptr<TaskOut> &a, const std::unique_ptr<TaskOut> &b) { return a->offset < b->offset; });
+	// Row order: tasks by position; pack fixed-width cells toward the front where a task left a gap. A staged task that kept no
+	// row has the same final offset as the task after it: the hand-out order (seq) breaks that tie, else an unstable sort could
+	// put the empty task second and the check below would see an overlap (SEC q24 with its pushed predicate). Unstaged tasks have
+	// distinct offsets (their row-group positions) and seq 0.
+	std::sort(tasks.begin(), tasks.end(), [](const std::unique_ptr<TaskOut> &a, const std::unique_ptr<TaskOut> &b) {
+		return a->offset != b->offset ? a->offset < b->offset : a->seq < b->seq;
+	});
 	uint64_t total = 0;
 	for (auto &t : tasks) {
 		if (t->offset < total) {

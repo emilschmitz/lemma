@@ -48,7 +48,7 @@ def phome(tmp_path_factory: pytest.TempPathFactory) -> Path:
     con = duckdb.connect(str(db))
     _fill(con, 0)
     con.close()
-    for key in WHERE:
+    for key in [*WHERE, "join"]:  # join: two tables, for a pushed predicate on one of them (_one_table_where)
         fixture, sql, schema, encoding = SMALL[key]
         with pytest.MonkeyPatch.context() as mp:
             mp.setenv("LEMMA_IN_DUCKDB", "true")
@@ -159,6 +159,111 @@ def test_a_predicate_duckdb_proves_empty_scans_no_row_and_a_bad_one_is_an_error(
     _fill(con, 2)
     with pytest.raises(duckdb.Error, match="nope"):
         con.execute(official_measure.lemma_query_sql(SMALL["usum"][1])).fetchall()
+
+
+# ---- many small row groups: filtered tasks that keep no row (the "overlapping scan tasks" bug of SEC q24) ------------------------
+#
+# A pushed predicate makes tasks that survive the zone maps but keep no row (every match deleted, or values around the constant).
+# Such a task sits at the same final offset as the next task that keeps rows; the tasks used to be sorted by offset alone, so an
+# unstable sort could put the empty task second and the scan failed with "Lemma: overlapping scan tasks". Row groups of 2048 rows
+# (ATTACH ... ROW_GROUP_SIZE) give dozens of tasks, so both the sort and the threads reorder them.
+
+SMALL_RG = 2048
+
+
+def _small_row_groups(con: duckdb.DuckDBPyConnection, path: Path) -> None:
+    con.execute(f"ATTACH '{path}' AS rg (ROW_GROUP_SIZE {SMALL_RG})")
+    con.execute("USE rg")
+
+
+def _num_with_empty_tasks(con: duckdb.DuckDBPyConnection, groups: int) -> None:
+    """`num` over `groups` row groups: every third holds 'USD' rows; the others hold only 'EUR' and 'pure' (their zone map
+    ['EUR', 'pure'] contains 'USD', so the scan reads them and keeps no row); every seventh is all 'zzz' (skipped by its zone map)."""
+    uom = f"""CASE WHEN (i // {SMALL_RG}) % 7 = 6 THEN 'zzz'
+                  WHEN (i // {SMALL_RG}) % 3 = 0 THEN ['USD', 'EUR', 'USD', 'shares'][1 + i % 4]
+                  ELSE ['EUR', 'pure'][1 + i % 2] END"""
+    con.execute("CREATE OR REPLACE TABLE num (adsh VARCHAR, qtrs BIGINT, uom VARCHAR, value DECIMAL(38,4))")
+    con.execute(
+        f"INSERT INTO num SELECT 'a' || (i % 13), i % 5, {uom}, CAST((i * 7919) % 20011 - 10005 AS DECIMAL(38,4)) / 100 "
+        f"FROM range({groups * SMALL_RG}) t(i)"
+    )
+
+
+@needs_ext
+@pytest.mark.parametrize("threads", [1, 3, 8])
+def test_a_filtered_scan_over_many_row_groups_with_tasks_that_keep_no_row(threads: int, phome: Path, tmp_path: Path) -> None:
+    con = _connect(phome)
+    _small_row_groups(con, tmp_path / "rg.duckdb")
+    _num_with_empty_tasks(con, 60)
+    con.execute("CHECKPOINT")
+    assert con.execute("SELECT COUNT(DISTINCT row_group_id) FROM pragma_storage_info('num')").fetchone()[0] >= 60
+    con.execute(f"SET lemma_scan_threads = {threads}")
+    ref = duckdb.connect()
+    _num_with_empty_tasks(ref, 60)
+    ref.execute("CREATE TABLE kept AS SELECT * FROM num WHERE uom = 'USD' ORDER BY rowid")
+    ref.execute("DROP TABLE num")
+    ref.execute("ALTER TABLE kept RENAME TO num")
+    want = _reference(ref, json.loads(_manifest_path(phome, "dict").read_text()))
+    sql = SMALL["dict"][1]
+    for _ in range(4):  # the task order differs from call to call
+        got = _scan(con, sql)
+        assert [g[:4] for g in got] == [w[:4] for w in want]
+        assert all(g[4] == w[4] for g, w in zip(got, want, strict=True))
+        con.execute("SET lemma_cache = false")
+        assert _same(con.execute(official_measure.lemma_query_sql(sql)).fetchall(), con.execute(sql).fetchall(), False)
+        con.execute("SET lemma_cache = true")
+
+
+def _one_table_where(phome: Path, tmp_path: Path, key: str, table: str, where: str) -> Path:
+    """A copy of the home whose manifest of `key` pushes `where` on `table` only (the extension's mechanism, not the rule)."""
+    copy = tmp_path / "home"
+    shutil.copytree(phome, copy)
+    path = _manifest_path(copy, key)
+    m = json.loads(path.read_text())
+    for e in m["inputs"]:
+        if e["kind"] == "rows" and e["table"] == table:
+            e["where"] = where
+    path.write_text(json.dumps(m))
+    return copy
+
+
+def _join_tables(con: duckdb.DuckDBPyConnection, num_groups: int, sub_groups: int) -> None:
+    """`num` whose rows with qtrs > 2 are all deleted in two of every three row groups (the zone map still says max 9: the scan
+    reads those groups and keeps no row), and an unfiltered `sub` over several row groups."""
+    con.execute("CREATE OR REPLACE TABLE num (adsh VARCHAR, qtrs BIGINT)")
+    con.execute(
+        f"INSERT INTO num SELECT 'a' || (i % 97), CASE WHEN (i // {SMALL_RG}) % 3 = 0 THEN i % 5 WHEN i % 500 = 7 THEN 9 ELSE i % 3 END "
+        f"FROM range({num_groups * SMALL_RG}) t(i)"
+    )
+    con.execute("CREATE OR REPLACE TABLE sub (adsh VARCHAR, fy BIGINT)")
+    con.execute(f"INSERT INTO sub SELECT 'a' || i, 2000 + i % 4 FROM range({sub_groups * SMALL_RG}) t(i)")
+
+
+@needs_ext
+@pytest.mark.parametrize("threads", [1, 4, 8])
+def test_two_tables_one_filtered_with_empty_tasks_one_whole(threads: int, phome: Path, tmp_path: Path) -> None:
+    """The q24 shape: a filtered table (num) and a whole one (sub) in one executor's scan; both over many row groups."""
+    home = _one_table_where(phome, tmp_path, "join", "num", '("qtrs" > 2) AND ("qtrs" + "qtrs" < 100)')
+    manifest = json.loads(_manifest_path(home, "join").read_text())
+    con = _connect(home)
+    _small_row_groups(con, tmp_path / "rg2.duckdb")
+    _join_tables(con, 48, 9)
+    con.execute("CHECKPOINT")
+    con.execute("DELETE FROM num WHERE qtrs = 9")
+    con.execute(f"SET lemma_scan_threads = {threads}")
+    ref = duckdb.connect()
+    _join_tables(ref, 48, 9)
+    ref.execute("DELETE FROM num WHERE qtrs = 9")
+    ref.execute("CREATE TABLE kept AS SELECT * FROM num WHERE qtrs > 2 ORDER BY rowid")
+    ref.execute("DROP TABLE num")
+    ref.execute("ALTER TABLE kept RENAME TO num")
+    want = _reference(ref, manifest)
+    assert 0 < want[0][3] < con.execute("SELECT COUNT(*) FROM num").fetchone()[0]
+    assert [w[3] for w in want if w[2] == "rows"][1] == 9 * SMALL_RG
+    for _ in range(4):
+        got = _scan(con, SMALL["join"][1])
+        assert [g[:4] for g in got] == [w[:4] for w in want]
+        assert all(g[4] == w[4] for g, w in zip(got, want, strict=True))
 
 
 # ---- query templates: the pushed predicate binds the values lemma_query gets ----------------------------------------------------
