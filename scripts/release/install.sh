@@ -33,7 +33,7 @@ mkdir -p "$SHARE"
 # Source tree: replaced as a whole (anything a previous version left there, runs included, goes with it).
 rm -rf "$SHARE/src.new"
 mkdir -p "$SHARE/src.new"
-tar -xzf "$HERE/src.tar.gz" -C "$SHARE/src.new"
+tar -xzf "$HERE/src.tar.gz" -C "$SHARE/src.new" --no-same-owner  # owned by the installing user (as root, tar would keep the builder uid and git refuses the tree)
 (
   cd "$SHARE/src.new"
   # One fixed commit (same tree, same author, same date: the same commit id on every machine). Runs refuse a dirty tree and record this id.
