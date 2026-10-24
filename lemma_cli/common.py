@@ -46,11 +46,13 @@ def say(message: str = "", *, err: bool = False) -> None:
 def repo_root() -> Path:
     """The Lemma checkout the pipeline lives in: ``LEMMA_REPO``, else the checkout this package sits in, else the cwd's ancestors."""
     candidates = [Path(os.environ["LEMMA_REPO"])] if os.environ.get("LEMMA_REPO") else []
-    candidates += [Path(__file__).resolve().parents[1], Path.cwd().resolve(), *Path.cwd().resolve().parents]
+    # the checkout this package sits in (editable install), the source tree the release bundle's install.sh unpacks, the cwd's ancestors
+    candidates += [Path(__file__).resolve().parents[1], lemma_home() / "src", Path.home() / ".local" / "share" / "lemma" / "src"]
+    candidates += [Path.cwd().resolve(), *Path.cwd().resolve().parents]
     for path in candidates:
         if (path / "lemma.toml").is_file() and (path / "research_loop").is_dir():
             return path
-    raise CliError("cannot find the Lemma checkout (lemma.toml + research_loop/): install with `uv tool install --editable .` from it, or set LEMMA_REPO")
+    raise CliError("cannot find the Lemma source tree (lemma.toml + research_loop/): install the release bundle (install.sh), or `uv tool install --editable .` from a checkout, or set LEMMA_REPO")
 
 
 def lemma_home() -> Path:
@@ -120,14 +122,13 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-_QUOTED = re.compile(r"('(?:[^']|'')*')")
-
-
 def normalize_sql(sql: str) -> str:
-    """Whitespace collapsed, lower-cased outside single-quoted literals, trailing ``;`` dropped. Same SQL modulo layout = same key."""
-    parts = _QUOTED.split(sql.strip())
-    out = [p if i % 2 else re.sub(r"\s+", " ", p).lower() for i, p in enumerate(parts)]
-    return "".join(out).strip().rstrip(";").strip()
+    """The executor-cache key form of ``sql``: the in-DuckDB extension's normalization (``research_loop.in_duckdb.normalize_sql``, mirrored
+    by the extension's ``NormalizeSql``), so the key ``lemma optimize`` installs under is the key DuckDB looks up. Whitespace collapsed outside
+    quotes and comments, trailing ``;`` dropped, case kept."""
+    from research_loop.in_duckdb import normalize_sql as in_duckdb_normalize
+
+    return in_duckdb_normalize(sql)
 
 
 def sql_key(sql: str) -> str:

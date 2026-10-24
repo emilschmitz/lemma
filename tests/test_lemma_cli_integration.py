@@ -1,8 +1,8 @@
 """`lemma` against the REAL local Docker and the existing lemma-agent:claude image. Opt in: `uv run pytest -m slow tests/test_lemma_cli_integration.py -s`.
 
 Real here: docker, the image, the egress bridge, the sandbox settings, the sandbox self-test (a non-allowlisted host must be refused,
-the model API host must be reachable), the profiler, the assumption check, the cache. Stubbed: only the LLM agent session
-(``optimize.run_pipeline``). A dummy API key (never a real one) is set and every file and output of each run is searched for it.
+the model API host must be reachable), the profiler, the assumption check, the cache. Stubbed: the LLM agent session
+(``optimize.run_pipeline``) and the in-DuckDB install after it (tests/test_product_smoke.py runs both for real, with a mock model). A dummy API key (never a real one) is set and every file and output of each run is searched for it.
 """
 
 from __future__ import annotations
@@ -15,13 +15,25 @@ from pathlib import Path
 
 import pytest
 
-from lemma_cli import common, optimize as opt, sandbox
+from lemma_cli import common, duck, optimize as opt, sandbox, setup_cmd
 from lemma_cli.main import main
 
 pytestmark = [
     pytest.mark.slow,
     pytest.mark.skipif(not (sandbox.shutil.which("docker") and sandbox.image_exists()), reason="needs docker and the lemma-agent:claude image"),
 ]
+
+
+def _duckdb_side() -> bool:
+    try:
+        duck.binaries()
+        return True
+    except common.CliError:
+        return False
+
+
+# `lemma setup` checks the DuckDB side (our CLI + extension) and the prover (Verus): the setup walkthroughs need both on this machine.
+needs_product = pytest.mark.skipif(not (_duckdb_side() and setup_cmd.verus_path().is_file()), reason="needs the built extension (db_extension/duckdb_ext/build.sh) and Verus")
 KEY = "sk-ant-api03-INTEGRATIONCANARY-9f8e7d6c5b4a-notarealkey"
 ROOT = common.repo_root()
 
@@ -29,11 +41,16 @@ ROOT = common.repo_root()
 @pytest.fixture
 def fresh_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Empty HOME and LEMMA_HOME (empty executor cache, no config, no state), the dummy key in the environment, no LEMMA_* variable."""
+    verus = setup_cmd.verus_path()  # this machine's prover and Rust toolchain, kept across the HOME change (setup checks them)
     for name in list(os.environ):
         if name.startswith("LEMMA_") or name in common.SECRET_ENV:
             monkeypatch.delenv(name)
+    monkeypatch.setenv("RUSTUP_HOME", os.environ.get("RUSTUP_HOME") or str(Path.home() / ".rustup"))
+    monkeypatch.setenv("CARGO_HOME", os.environ.get("CARGO_HOME") or str(Path.home() / ".cargo"))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    (tmp_path / "home").mkdir()
+    (tmp_path / "home" / "tools").mkdir(parents=True)
+    (tmp_path / "home" / "tools" / "verus").symlink_to(verus.parent)
+    (tmp_path / "home").mkdir(exist_ok=True)
     monkeypatch.setenv("LEMMA_HOME", str(tmp_path / "lemma_home"))
     monkeypatch.setenv("ANTHROPIC_API_KEY", KEY)
     return tmp_path
@@ -54,6 +71,7 @@ def all_text(*roots: Path) -> str:
     return "\n".join(p.read_bytes().decode("latin-1") for root in roots for p in root.rglob("*") if p.is_file() and not p.is_symlink())
 
 
+@needs_product
 def test_real_setup_runs_the_real_sandbox_selftest_and_is_idempotent(fresh_user: Path, capsys: pytest.CaptureFixture) -> None:
     assert main(["setup", "--auth", "api-key"]) == 0
     out = capsys.readouterr()
@@ -94,6 +112,7 @@ def test_a_key_is_handed_to_a_container_by_name_and_login_mode_never_passes_it(f
     assert inside(claude_docker_args()) == "absent"  # the key is in the environment, the user chose login: it stays out
 
 
+@needs_product
 def test_fresh_user_walkthrough_from_zero_with_only_the_llm_session_stubbed(fresh_user: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
     """The README quick start in order, in an empty HOME/LEMMA_HOME: setup -> assumptions (answered on stdin of a real process) -> optimize -> status."""
     home, lemma_home = fresh_user / "home", fresh_user / "lemma_home"
@@ -119,11 +138,17 @@ def test_fresh_user_walkthrough_from_zero_with_only_the_llm_session_stubbed(fres
         opt.child_env(mode)  # the real environment rules still apply (api_key needs the variable)
         return {"status": "SUCCESS", "run_dir": str(run_dir), "model": "claude-sonnet-5-5", "git_sha": "0" * 40, "official": {"speedup": 1.7}}
 
+    def stub_install(run: Path) -> Path:  # the in-DuckDB install (Verus + compile of lib.so) is stubbed too; tests/test_product_smoke.py runs it for real
+        from tests.test_lemma_cli import fake_executor
+
+        return fake_executor(calls[-1]["sql"])
+
     monkeypatch.setattr(opt, "run_pipeline", stub_session)
+    monkeypatch.setattr(opt, "install_in_duckdb", stub_install)
     assert main(["optimize", "--db", str(db), "--sql", "SELECT region, SUM(qty) AS q FROM orders GROUP BY region"]) == 0
-    assert calls[0]["mode"] == "api_key" and "group by region" in calls[0]["sql"]
+    assert calls[0]["mode"] == "api_key" and "GROUP BY region" in calls[0]["sql"]
     executor = next((lemma_home / "executors").iterdir())
-    assert sorted(p.name for p in executor.iterdir()) == ["executor", "manifest.json", "proved", "query.sql"]
+    assert sorted(p.name for p in executor.iterdir()) == ["lib.so", "manifest.json", "optimize.json", "proved", "query.sql"]
     assert main(["status"]) == 0
     status = capsys.readouterr().out
     print(status)

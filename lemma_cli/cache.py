@@ -1,21 +1,24 @@
-"""The shared executor cache: ``$LEMMA_HOME/executors/<sha256 of normalized SQL>/{query.sql, manifest.json, executor, proved/, lib.so}``.
+"""The executor cache, shared with the in-DuckDB extension: ``$LEMMA_HOME/executors/<sha256 of the normalized SQL>/``.
 
-``executor`` (the compiled proved binary) and ``lib.so`` (the in-DuckDB library) are optional: the manifest says
-``binary`` / ``lib`` = a file name, ``"pending"`` (not produced yet) or ``null``. ``proved/`` holds the verified source of the run.
+What the extension reads (written by ``research_loop.in_duckdb.install_executor``): ``lib.so`` (the proved ``run_query`` compiled as a
+library), ``manifest.json`` (tables/columns/types, the proof line, hashes) and ``query.sql``. What the CLI adds beside them:
+``optimize.json`` (where it came from: database, harness, model, auth, image, pipeline run directory, the run's timing) and ``proved/``
+(the agent's verified source, the spec it was proved against, the marked submission).
 """
 
 from __future__ import annotations
 
+import re
 import shutil
 import time
 from pathlib import Path
 from typing import Any
 
-from lemma_cli.common import lemma_home, normalize_sql, read_json, sha256_file, sql_key, write_json
+from lemma_cli.common import CliError, lemma_home, read_json, write_json
 
-MANIFEST_FIELDS = (
-    "sql_key", "sql", "db_path", "assumptions", "assumption_package_sha256", "agent_harness", "agent_model", "agent_auth", "image_id", "git_sha", "run_dir",
-    "speedup", "binary", "binary_sha256", "lib", "installed_at",
+PROVENANCE = "optimize.json"
+PROVENANCE_FIELDS = (
+    "db_path", "assumptions", "assumption_package_sha256", "agent_harness", "agent_model", "agent_auth", "image_id", "run_dir", "speedup", "installed_at",
 )
 
 
@@ -28,50 +31,44 @@ def executor_dir(key: str) -> Path:
 
 
 def list_executors() -> list[dict[str, Any]]:
-    return [read_json(m) for m in sorted(executors_dir().glob("*/manifest.json"))]
+    """One record per installed executor: its manifest plus ``optimize.json`` under ``"optimize"`` (empty when installed another way)."""
+    out = []
+    for manifest in sorted(executors_dir().glob("*/manifest.json")):
+        doc = read_json(manifest)
+        doc["dir"] = str(manifest.parent)
+        doc["optimize"] = read_json(manifest.parent / PROVENANCE)
+        out.append(doc)
+    return out
 
 
-def find_binary(run_dir: Path) -> Path | None:
-    """The newest ELF executable under a pipeline run directory, if the run kept one."""
-    found = []
-    for path in run_dir.rglob("*"):
-        if path.is_file() and not path.is_symlink() and path.stat().st_mode & 0o111:
-            with path.open("rb") as fh:
-                if fh.read(4) == b"\x7fELF":
-                    found.append(path)
-    return max(found, key=lambda p: p.stat().st_mtime) if found else None
-
-
-def install(sql: str, record: dict[str, Any], run_dir: Path) -> Path:
-    """Install the proved result of ``run_dir`` for ``sql``. ``record`` carries the manifest fields except sql/key/binary/lib/installed_at."""
-    key = sql_key(sql)
-    dest = executor_dir(key)
-    tmp = dest.with_name(key + ".tmp")
-    shutil.rmtree(tmp, ignore_errors=True)
-    tmp.mkdir(parents=True)
-    (tmp / "query.sql").write_text(normalize_sql(sql) + "\n")
-    proved = tmp / "proved"
-    proved.mkdir()
+def record_provenance(dest: Path, record: dict[str, Any], run_dir: Path) -> None:
+    """Write ``optimize.json`` and copy the run's verified sources into ``dest/proved/``."""
+    proved = dest / "proved"
+    proved.mkdir(exist_ok=True)
     workspace = run_dir / "workspace"
     for src in (workspace / "runquery_agent.rs", workspace / "context" / "ro" / "spec.rs", workspace / "mcp_results" / "submitted.json"):
         if src.is_file():
             shutil.copy2(src, proved / src.name)
-    binary = find_binary(run_dir)
-    if binary is not None:
-        shutil.copy2(binary, tmp / "executor")
-    manifest = {
-        **record,
-        "sql_key": key,
-        "sql": normalize_sql(sql),
-        "binary": "executor" if binary is not None else None,
-        "binary_sha256": sha256_file(tmp / "executor") if binary is not None else None,
-        "lib": "pending",  # the in-DuckDB library mode is built elsewhere; nothing here produces lib.so yet
-        "installed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    }
-    missing = [f for f in MANIFEST_FIELDS if f not in manifest]
+    doc = {**record, "installed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    missing = [f for f in PROVENANCE_FIELDS if f not in doc]
     if missing:
-        raise KeyError(f"manifest fields missing: {missing}")
-    write_json(tmp / "manifest.json", manifest)
-    shutil.rmtree(dest, ignore_errors=True)
-    tmp.rename(dest)
-    return dest
+        raise KeyError(f"provenance fields missing: {missing}")
+    write_json(dest / PROVENANCE, doc)
+
+
+def resolve(key: str) -> Path:
+    """The executor directory whose key is ``key`` or starts with it (at least 6 hex digits); ambiguous or unknown prefixes are errors."""
+    if not re.fullmatch(r"[0-9a-f]{6,64}", key):
+        raise CliError(f"{key!r} is not an executor key: give at least 6 hex characters of it (`lemma list` shows them)")
+    hits = [p for p in executors_dir().glob(key + "*") if p.is_dir() and not p.name.startswith(".")]
+    if not hits:
+        raise CliError(f"no installed executor with key {key}* in {executors_dir()} (`lemma list`)")
+    if len(hits) > 1:
+        raise CliError(f"key {key} is ambiguous: {', '.join(p.name[:16] for p in hits)}")
+    return hits[0]
+
+
+def remove(key: str) -> Path:
+    path = resolve(key)
+    shutil.rmtree(path)
+    return path

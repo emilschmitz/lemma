@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -14,6 +15,16 @@ from lemma_cli.common import (
 )
 
 LIBDUCKDB_SO = "libduckdb.so"
+# Proofs and the compile of every executor run on THIS machine (the agent's container only edits the body): the pinned Verus release and the
+# Rust toolchain it was built with (research_loop/scripts/install_verus.md). scripts/ram/verus_guarded.sh runs it in a memory-capped
+# systemd user scope.
+VERUS_VERSION = "0.2026.07.18.3a4d30b"
+VERUS_TOOLCHAIN = "1.96.0-x86_64-unknown-linux-gnu"
+VERUS_HOWTO = (
+    f"unpack Verus {VERUS_VERSION} into ~/tools/verus (Lemma reads the binary and vstd from there) and install its toolchain "
+    f"`rustup install {VERUS_TOOLCHAIN}`: "
+    "https://github.com/verus-lang/verus/releases/tag/release/" + VERUS_VERSION + " (steps: research_loop/scripts/install_verus.md)"
+)
 
 
 def libduckdb_dir() -> Path:
@@ -27,6 +38,35 @@ def ensure_libduckdb() -> str:
     if done.returncode != 0 or not (libduckdb_dir() / LIBDUCKDB_SO).is_file():
         raise CliError(f"fetching libduckdb failed (exit {done.returncode}): {redact(done.stderr.strip()[-500:])}")
     return "fetched"
+
+
+def verus_path() -> Path:
+    """The Verus install Lemma uses: the guard (scripts/ram/verus_guarded.sh) runs ~/tools/verus/verus and the spec emitter reads vstd from
+    ~/tools/verus (declarative_spec/vstd_index.py)."""
+    return Path.home() / "tools" / "verus" / "verus"
+
+
+def check_prover() -> str:
+    """Verus (pinned release), its rustup toolchain, and systemd-run (the guard's memory cap) are on this machine. Nothing is installed here."""
+    verus = verus_path()
+    if not (verus.is_file() and os.access(verus, os.X_OK) and (verus.parent / "vstd").is_dir()):
+        raise CliError(f"Verus not found at {verus} (binary and vstd/): {VERUS_HOWTO}")
+    done = subprocess.run([str(verus), "--version"], capture_output=True, text=True, timeout=60, check=False)
+    if done.returncode != 0 or f"Version: {VERUS_VERSION}" not in done.stdout:
+        raise CliError(f"{verus} is not Verus {VERUS_VERSION} (exit {done.returncode}: {redact((done.stdout + done.stderr).strip()[-300:])}): {VERUS_HOWTO}")
+    docs = repo_root() / "research_loop" / "vendor" / "verus_docs" / "COMMIT"  # the Verus guide/examples the agent reads (declarative_spec/drive.py)
+    commit = json.loads((verus.parent / "version.json").read_text())["verus"]["commit"]
+    if not docs.is_file() or docs.read_text().strip() != commit:
+        raise CliError(f"the Verus docs for the agent ({docs.parent}) are missing or not at Verus commit {commit[:12]}: the release bundle ships "
+                       "them; in a checkout run research_loop/scripts/fetch_verus_docs.sh")
+    if shutil.which("rustup") is None:
+        raise CliError(f"rustup not found on PATH (Verus compiles with the Rust toolchain {VERUS_TOOLCHAIN}): install rustup (https://rustup.rs), then {VERUS_HOWTO}")
+    toolchains = subprocess.run(["rustup", "toolchain", "list"], capture_output=True, text=True, timeout=60, check=False).stdout
+    if VERUS_TOOLCHAIN not in toolchains:
+        raise CliError(f"the Rust toolchain {VERUS_TOOLCHAIN} that Verus needs is not installed: rustup install {VERUS_TOOLCHAIN}")
+    if shutil.which("systemd-run") is None:
+        raise CliError("systemd-run not found: Lemma runs Verus in a memory-capped systemd user scope (scripts/ram/verus_guarded.sh); it needs a systemd Linux session")
+    return f"Verus {VERUS_VERSION} at {verus}, toolchain {VERUS_TOOLCHAIN}"
 
 
 def check_credentials(mode: str, harness_name: str = "claude") -> str:
@@ -80,6 +120,10 @@ def setup(auth: str | None, rebuild: bool = False, harness_name: str | None = No
     version = sandbox.check_docker()
     say(f"  [ok] docker daemon {version}")
     say(f"  [ok] harness {chosen}, model {slug}, auth {mode}")
+    say(f"  [ok] prover: {check_prover()}")
+    from lemma_cli import duck
+
+    say(f"  [ok] duckdb: {duck.check()}")
     if rebuild or not sandbox.image_exists(image_name):
         say(f"  [..] building {image_name} ({chosen} CLI {sandbox.pinned_version(chosen)}); this takes a few minutes")
         sandbox.build_image(image_name, chosen)
@@ -103,7 +147,10 @@ def setup(auth: str | None, rebuild: bool = False, harness_name: str | None = No
         "image": image_name, "image_id": sandbox.image_digest(image_name), "selftest": test, "harness": chosen, "agent_cli": cli_version,
         "auth": mode, **({"claude_code": cli_version} if chosen == "claude" else {}),
     })
-    say(f"READY. Next: lemma assumptions --db PATH   then   lemma optimize --db PATH --sql QUERY.sql   (home: {lemma_home()})")
+    import lemma_config
+
+    first = "lemma assumptions --db PATH   then   " if lemma_config.assumptions_enabled() else ""
+    say(f"READY. Next: {first}lemma optimize --db PATH --sql QUERY.sql   then   lemma duckdb PATH   (home: {lemma_home()})")
     return 0
 
 
@@ -139,5 +186,13 @@ def status() -> int:
     executors = list_executors()
     say(f"executors       {len(executors)} cached")
     for e in executors:
-        say(f"  {e['sql_key'][:12]}  binary={'yes' if e.get('binary') else 'no'} lib={e.get('lib')}  {e.get('sql', '')[:60]}")
+        key = e.get("key") or e.get("sql_key") or Path(e["dir"]).name
+        say(f"  {key[:12]}  {e.get('proof', 'old CLI format, no lib.so')}  {e.get('normalized_sql', e.get('sql', ''))[:60]}")
+    try:
+        from lemma_cli import duck
+
+        cli, ext = duck.binaries()
+        say(f"duckdb (lemma)   {cli}  extension {ext}")
+    except CliError as exc:
+        say(f"duckdb (lemma)   {exc}")
     return 0

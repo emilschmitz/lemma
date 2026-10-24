@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import stat
 from pathlib import Path
 
 import pytest
 
-from lemma_cli import cache, common, optimize as opt, sandbox, setup_cmd
+from lemma_cli import cache, common, duck, optimize as opt, sandbox, setup_cmd
 from lemma_cli.assumptions import approved_package, assumptions, package_dir
 from lemma_cli.main import main
 
@@ -84,6 +85,8 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("FAKE_DOCKER_DIR", str(fake))
     monkeypatch.setenv("PATH", f"{binary}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setattr(setup_cmd, "ensure_libduckdb", lambda: "present")
+    monkeypatch.setattr(setup_cmd, "check_prover", lambda: "verus (stub)")
+    monkeypatch.setattr(duck, "check", lambda: "duckdb (stub)")
     return fake
 
 
@@ -362,9 +365,18 @@ def test_assumptions_needs_a_terminal_there_is_no_blanket_yes(env: Path, tmp_pat
 
 
 def test_same_sql_modulo_layout_has_the_same_key_and_literals_stay_significant() -> None:
-    a, b = "SELECT  SUM(a)\nFROM t WHERE b = 'X y';", "select sum(a) from t where b = 'X y'"
+    a, b = "SELECT  SUM(a)\nFROM t WHERE b = 'X y';", "SELECT SUM(a) FROM t WHERE b = 'X y'"
     assert common.sql_key(a) == common.sql_key(b) and len(common.sql_key(a)) == 64
-    assert common.sql_key(a) != common.sql_key("select sum(a) from t where b = 'x y'")
+    assert common.sql_key(a) != common.sql_key("SELECT SUM(a) FROM t WHERE b = 'x y'")
+
+
+def test_the_cli_key_is_the_key_the_duckdb_extension_looks_up() -> None:
+    """The extension normalizes with research_loop.in_duckdb.normalize_sql (case kept): an executor the CLI installs must be found by it."""
+    from research_loop import in_duckdb
+
+    for sql in ("SELECT  Region, SUM(qty) AS Q\nFROM orders GROUP BY Region;", "select 1 -- Note\n from t"):
+        assert common.sql_key(sql) == in_duckdb.executor_key(sql)
+    assert common.sql_key("SELECT A FROM t") != common.sql_key("select a from t")  # case is kept, as DuckDB's result names keep it
 
 
 def test_params_fill_placeholders_in_order_and_quote_text() -> None:
@@ -379,48 +391,126 @@ def test_params_count_mismatch_is_an_error() -> None:
         opt.bind_params("SELECT 1", ["1"])
 
 
-# --- cache layout and manifest ---
+# --- the executor cache (shared with the DuckDB extension) ---
 
 
-def fake_run(tmp_path: Path, binary: bool) -> Path:
+def fake_run(tmp_path: Path) -> Path:
     run = tmp_path / "run"
     (run / "workspace" / "mcp_results").mkdir(parents=True, exist_ok=True)
     (run / "workspace" / "context" / "ro").mkdir(parents=True, exist_ok=True)
     (run / "workspace" / "runquery_agent.rs").write_text("// verified body\n")
     (run / "workspace" / "context" / "ro" / "spec.rs").write_text("// spec\n")
     (run / "workspace" / "mcp_results" / "submitted.json").write_text('{"run": {"ok": true}}')
-    if binary:
-        exe = run / "bin" / "q"
-        exe.parent.mkdir(exist_ok=True)
-        exe.write_bytes(b"\x7fELF" + b"\0" * 60)
-        exe.chmod(0o755)
     return run
 
 
-RECORD = {"db_path": "/d.duckdb", "assumptions": True, "assumption_package_sha256": "p" * 64, "agent_harness": "claude", "agent_model": "claude-sonnet-5-5", "agent_auth": "api_key", "image_id": "sha256:x", "git_sha": "a" * 40, "run_dir": "/r", "speedup": 3.2}
+RECORD = {"db_path": "/d.duckdb", "assumptions": False, "assumption_package_sha256": None, "agent_harness": "claude", "agent_model": "claude-sonnet-5-5", "agent_auth": "api_key", "image_id": "sha256:x", "run_dir": "/r", "speedup": 3.2}
 
 
-def test_cache_layout_and_manifest_fields(env: Path, tmp_path: Path) -> None:
-    sql = "SELECT SUM(a) FROM t;"
-    dest = cache.install(sql, RECORD, fake_run(tmp_path, binary=True))
-    key = common.sql_key(sql)
-    assert dest == common.lemma_home() / "executors" / key
-    assert sorted(p.name for p in dest.iterdir()) == ["executor", "manifest.json", "proved", "query.sql"]
+def fake_executor(sql: str) -> Path:
+    """What research_loop.in_duckdb.install_executor leaves: lib.so, manifest.json, query.sql under the extension's key."""
+    from research_loop import in_duckdb
+
+    dest = cache.executor_dir(common.sql_key(sql))
+    shutil.rmtree(dest, ignore_errors=True)  # install_executor replaces an existing executor of the same key
+    dest.mkdir(parents=True)
+    (dest / "lib.so").write_bytes(b"\x7fELF")
+    (dest / "query.sql").write_text(sql + "\n")
+    manifest = {"key": dest.name, "sql": sql, "normalized_sql": in_duckdb.normalize_sql(sql), "proof": "41 verified, 0 errors", "in_duckdb": True,
+                "assumptions": False, "spec_sha256": "s" * 64, "lib_sha256": "l" * 64}
+    (dest / "manifest.json").write_text(json.dumps(manifest))
+    return dest
+
+
+def test_provenance_is_recorded_beside_the_extension_files(env: Path, tmp_path: Path) -> None:
+    dest = fake_executor("SELECT SUM(a) FROM t")
+    cache.record_provenance(dest, RECORD, fake_run(tmp_path))
+    assert sorted(p.name for p in dest.iterdir()) == ["lib.so", "manifest.json", "optimize.json", "proved", "query.sql"]
     assert sorted(p.name for p in (dest / "proved").iterdir()) == ["runquery_agent.rs", "spec.rs", "submitted.json"]
-    manifest = json.loads((dest / "manifest.json").read_text())
-    assert set(cache.MANIFEST_FIELDS) <= set(manifest)
-    assert manifest["sql_key"] == key and manifest["binary"] == "executor" and manifest["lib"] == "pending" and len(manifest["binary_sha256"]) == 64
-    assert (dest / "query.sql").read_text().strip() == "select sum(a) from t"
+    (listed,) = cache.list_executors()
+    assert listed["proof"] == "41 verified, 0 errors" and listed["optimize"]["agent_model"] == "claude-sonnet-5-5" and listed["optimize"]["installed_at"]
+    with pytest.raises(KeyError, match="run_dir"):
+        cache.record_provenance(dest, {k: v for k, v in RECORD.items() if k != "run_dir"}, fake_run(tmp_path))
 
 
-def test_cache_without_a_binary_is_marked_and_reinstall_replaces(env: Path, tmp_path: Path) -> None:
-    sql = "select 1 from t"
-    dest = cache.install(sql, RECORD, fake_run(tmp_path, binary=False))
-    manifest = json.loads((dest / "manifest.json").read_text())
-    assert manifest["binary"] is None and manifest["binary_sha256"] is None and not (dest / "executor").exists()
-    cache.install(sql, {**RECORD, "speedup": 9.0}, fake_run(tmp_path, binary=True))
-    assert json.loads((dest / "manifest.json").read_text())["speedup"] == 9.0 and (dest / "executor").is_file()
-    assert [m["sql_key"] for m in cache.list_executors()] == [common.sql_key(sql)]
+def test_list_shows_key_proof_db_and_sql_and_flags_an_old_cli_entry(env: Path, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    assert main(["list"]) == 0
+    assert "no executors installed" in capsys.readouterr().out
+    dest = fake_executor("SELECT SUM(a) FROM t")
+    cache.record_provenance(dest, RECORD, fake_run(tmp_path))
+    old = cache.executor_dir("ab" * 32)
+    old.mkdir(parents=True)
+    (old / "manifest.json").write_text(json.dumps({"sql_key": "ab" * 32, "sql": "select 1", "binary": None, "lib": "pending"}))
+    assert main(["list"]) == 0
+    out = capsys.readouterr().out
+    assert f"{dest.name[:12]}  41 verified, 0 errors  created " in out and "db /d.duckdb" in out and "SELECT SUM(a) FROM t" in out
+    assert "abababababab  NOT USABLE IN DUCKDB" in out
+
+
+def test_remove_takes_a_unique_prefix_and_refuses_bad_or_ambiguous_keys(env: Path, capsys: pytest.CaptureFixture) -> None:
+    a = fake_executor("SELECT SUM(a) FROM t")
+    b = fake_executor("SELECT SUM(b) FROM t")
+    assert main(["remove", "abc"]) == 2 and "at least 6 hex" in capsys.readouterr().err
+    assert main(["remove", "../../x1"]) == 2
+    assert main(["remove", "0" * 12 if not a.name.startswith("0" * 12) else "f" * 12]) == 2 and "no installed executor" in capsys.readouterr().err
+    assert main(["remove", a.name[:8]]) == 0
+    assert not a.exists() and b.exists() and f"removed {a}" in capsys.readouterr().out
+
+
+# --- lemma duckdb ---
+
+
+def fake_binaries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+    """An installed bundle layout: <share>/lemma/src (the source tree) beside <share>/lemma/duckdb/{duckdb, lemma.duckdb_extension}."""
+    src = tmp_path / "share" / "lemma" / "src"
+    src.mkdir(parents=True)
+    cli = src.parent / "duckdb" / "duckdb"
+    cli.parent.mkdir()
+    cli.write_text("#!/bin/sh\necho \"ARGS $*\"\necho \"HOME=$LEMMA_HOME\"\n")
+    cli.chmod(0o755)
+    ext = cli.parent / "lemma.duckdb_extension"
+    ext.write_bytes(b"ext")
+    monkeypatch.setattr(duck, "repo_root", lambda: src)
+    return cli, ext
+
+
+def test_duckdb_args_turn_lemma_mode_on_and_take_an_absolute_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cli, ext = fake_binaries(tmp_path, monkeypatch)
+    assert duck.binaries() == (cli, ext)
+    monkeypatch.chdir(tmp_path)
+    assert duck.cli_args("my.duckdb", cli=cli) == [str(cli), "-cmd", "SET lemma_mode = true", str(tmp_path / "my.duckdb")]
+    assert duck.cli_args(None, cli=cli, sql="SELECT 1") == [str(cli), "-cmd", "SET lemma_mode = true", "-c", "SELECT 1"]
+    text = duck.own_duckdb_help(ext, "my.duckdb")
+    assert "allow_unsigned_extensions': True" in text and f"LOAD '{ext}'" in text and "SET lemma_mode = true" in text and "duckdb -unsigned" in text
+
+
+def test_lemma_duckdb_runs_our_cli_with_the_lemma_home_and_a_missing_install_says_how(env: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture) -> None:
+    db = make_db(tmp_path)
+    monkeypatch.setattr(duck, "repo_root", lambda: tmp_path / "nowhere" / "src")
+    assert main(["duckdb", str(db), "-c", "SELECT 1"]) == 2
+    assert "install the release bundle" in capfd.readouterr().err
+    fake_binaries(tmp_path, monkeypatch)
+    assert main(["duckdb", str(tmp_path / "missing.duckdb"), "-c", "SELECT 1"]) == 2
+    assert main(["duckdb", str(db), "-c", "SELECT 1"]) == 0
+    out = capfd.readouterr().out
+    assert f"ARGS -cmd SET lemma_mode = true {db.resolve()} -c SELECT 1" in out and f"HOME={common.lemma_home()}" in out
+
+
+def test_setup_stops_when_verus_is_missing_and_says_how_to_get_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "empty_home"))
+    with pytest.raises(common.CliError, match=r"Verus not found at .*tools/verus/verus \(binary and vstd/\): unpack Verus 0.2026.07.18.3a4d30b"):
+        setup_cmd.check_prover()
+    fake = tmp_path / "empty_home" / "tools" / "verus" / "verus"
+    (fake.parent / "vstd").mkdir(parents=True)
+    fake.write_text("#!/bin/sh\necho 'Verus\n  Version: 0.2025.01.01.0000000'\n")
+    fake.chmod(0o755)
+    with pytest.raises(common.CliError, match="is not Verus 0.2026.07.18.3a4d30b"):
+        setup_cmd.check_prover()
+    fake.write_text("#!/bin/sh\necho 'Verus\n  Version: 0.2026.07.18.3a4d30b'\n")
+    (fake.parent / "version.json").write_text(json.dumps({"verus": {"commit": "3a4d30b" + "0" * 33}}))
+    monkeypatch.setattr(setup_cmd, "repo_root", lambda: tmp_path / "src")
+    with pytest.raises(common.CliError, match="Verus docs for the agent .* missing or not at Verus commit 3a4d30b00000"):
+        setup_cmd.check_prover()
 
 
 # --- the pipeline child process (a stub run_container_agent.py: the only thing stubbed is the LLM session) ---
@@ -447,7 +537,18 @@ def pipeline(env: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
     (repo / "research_loop" / "scripts" / "run_container_agent.py").write_text(STUB_PIPELINE)
     monkeypatch.setattr(opt, "repo_root", lambda: repo)
     monkeypatch.setenv("STUB_OUT", str(tmp_path / "stub_out"))
-    return tmp_path / "stub_out"
+    out = tmp_path / "stub_out"
+
+    def fake_install(run_dir: Path) -> Path:
+        """research_loop.in_duckdb_install_run.install_run: re-emits the spec from the run, verifies, compiles lib.so (mocked)."""
+        argv = json.loads((out / "argv.json").read_text())
+        (out / "installed_from").write_text(str(run_dir))
+        if os.environ.get("STUB_INSTALL_FAIL"):
+            raise RuntimeError("library did not verify and compile (exit 1): verification results:: 3 verified, 1 errors")
+        return fake_executor(Path(argv[argv.index("--query-file") + 1]).read_text().strip())
+
+    monkeypatch.setattr(opt, "install_in_duckdb", fake_install)
+    return out
 
 
 def test_optimize_api_key_runs_the_pipeline_with_the_key_in_the_child_and_installs(env: Path, pipeline: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
@@ -457,10 +558,13 @@ def test_optimize_api_key_runs_the_pipeline_with_the_key_in_the_child_and_instal
     assert main(["optimize", "--db", str(db), "--sql", "SELECT SUM(a) FROM t"]) == 0
     seen = json.loads((pipeline / "seen.json").read_text())
     assert seen == {"has_key": True, "auth": "api_key", "argv_has_key": False}
-    manifest = json.loads(next((common.lemma_home() / "executors").glob("*/manifest.json")).read_text())
-    assert manifest["agent_auth"] == "api_key" and manifest["speedup"] == 2.5 and manifest["db_path"] == str(db.resolve())
-    assert KEY not in capsys.readouterr().out
-    assert main(["optimize", "--db", str(db), "--sql", "select sum(a) from t;"]) == 0  # same key: cache hit, no second run
+    made = json.loads(next((common.lemma_home() / "executors").glob("*/optimize.json")).read_text())
+    assert made["agent_auth"] == "api_key" and made["speedup"] == 2.5 and made["db_path"] == str(db.resolve())
+    assert Path((pipeline / "installed_from").read_text()).name.startswith("run_")  # the proved run is what gets installed
+    out = capsys.readouterr().out
+    assert KEY not in out
+    assert "PROVED  41 verified, 0 errors (Verus)" in out and f"lemma duckdb {db.resolve()}" in out and "lemma_last_query()" in out
+    assert main(["optimize", "--db", str(db), "--sql", "SELECT  SUM(a)\n FROM t;"]) == 0  # same key: cache hit, no second run
     assert "already optimized" in capsys.readouterr().out
 
 
@@ -486,9 +590,12 @@ def test_optimize_needs_no_package_when_assumptions_are_off(env: Path, pipeline:
     assert main(["optimize", "--db", str(db), "--sql", "SELECT SUM(a) FROM t"]) == 0
     argv = json.loads((pipeline / "argv.json").read_text())
     assert "--assumption-package" not in argv and "--duckdb-path" in argv
-    manifest = json.loads(next((common.lemma_home() / "executors").glob("*/manifest.json")).read_text())
-    assert manifest["assumptions"] is False and manifest["assumption_package_sha256"] is None
-    assert main(["optimize", "--db", str(db), "--sql", "select sum(a) from t"]) == 0
+    made = json.loads(next((common.lemma_home() / "executors").glob("*/optimize.json")).read_text())
+    assert made["assumptions"] is False and made["assumption_package_sha256"] is None
+    assert main(["optimize", "--db", str(db), "SELECT SUM(a) FROM t"]) == 2  # a positional argument is a .sql FILE
+    sql_file = tmp_path / "q.sql"
+    sql_file.write_text("SELECT SUM(a)\nFROM t;\n")
+    assert main(["optimize", "--db", str(db), str(sql_file)]) == 0
     assert "already optimized" in capsys.readouterr().out
 
 
@@ -523,6 +630,37 @@ def test_a_failed_pipeline_installs_nothing_and_says_why(env: Path, pipeline: Pa
     assert main(["optimize", "--db", str(db), "--sql", "SELECT 3 FROM t"]) == 2
     assert "stub failure" in capsys.readouterr().err
     assert cache.list_executors() == []
+
+
+def test_a_proof_whose_in_duckdb_install_fails_installs_nothing_and_says_so(env: Path, pipeline: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    ready(env, monkeypatch)
+    monkeypatch.setenv("STUB_INSTALL_FAIL", "1")
+    db = make_db(tmp_path)
+    assert main(["optimize", "--db", str(db), "--sql", "SELECT 5 FROM t"]) == 2
+    err = capsys.readouterr().err
+    assert "proved, but the in-DuckDB install failed, nothing installed" in err and "3 verified, 1 errors" in err
+    assert cache.list_executors() == []
+
+
+def test_bench_prints_cold_and_warm_against_duckdb(env: Path, pipeline: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    ready(env, monkeypatch)
+    seen: list[tuple[str, Path]] = []
+
+    def fake_bench(sql: str, db: Path) -> dict:
+        seen.append((sql, db))
+        return {"cold": {"ours_median_us": 1500, "duck_median_us": 3000, "speedup": 2.0, "rounds": [1] * 5},
+                "warm": {"ours_median_us": 400, "duck_median_us": 3000, "speedup": 7.5, "rounds": [1] * 5}}
+
+    monkeypatch.setattr(opt, "bench", fake_bench)
+    db = make_db(tmp_path)
+    assert main(["optimize", "--db", str(db), "--sql", "SELECT 6 FROM t"]) == 0
+    assert seen == []  # only with --bench
+    assert main(["optimize", "--db", str(db), "--sql", "SELECT 7 FROM t", "--bench"]) == 0
+    assert seen == [("SELECT 7 FROM t", db.resolve())]
+    assert "cold 1.5 ms vs DuckDB 3.0 ms (2.00x); warm 400 us (7.50x)" in capsys.readouterr().out
+    assert main(["optimize", "--db", str(db), "--sql", "SELECT 6 FROM t", "--bench"]) == 0  # already installed: no pipeline run, still timed
+    out = capsys.readouterr().out
+    assert "already optimized" in out and "(2.00x)" in out and seen[-1] == ("SELECT 6 FROM t", db.resolve())
 
 
 # --- queue ---
@@ -606,7 +744,7 @@ def test_the_pipeline_log_redacts_a_key_the_child_prints(env: Path, pipeline: Pa
 
 def test_status_reports_auth_image_selftest_and_executors(env: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
     ready(env, monkeypatch)
-    cache.install("select 1 from t", RECORD, fake_run(tmp_path, binary=False))
+    fake_executor("SELECT 1 FROM t")
     assert main(["status"]) == 0
     out = capsys.readouterr().out
     assert "auth            api_key" in out and "PASSED" in out and "lemma-agent:claude present" in out and "1 cached" in out and "duckdb (python) 1.5.6" in out
