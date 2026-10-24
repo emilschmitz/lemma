@@ -25,28 +25,33 @@ _EXEC_RUN_QUERY_RE = re.compile(
 )
 
 
-def _normalize_col_type(raw: str) -> str:
+def _normalize_col_type(raw: str, *, sql_types: bool = False) -> str:
+    """Legacy (imperative) kinds: every signed integer width becomes ``int`` and every string type ``string``.
+
+    ``sql_types``: keep the declared SQL type word (lowercased), so the declarative spec types a cell from its SQL width
+    (``declarative_spec/schema_types.classify_sql_type``: BIGINT is i64, INTEGER i32, SMALLINT i16 under ``assumptions = false``).
+    Collapsing BIGINT to ``int`` there made BIGINT columns i32 cells."""
     t = raw.strip().lower()
+    if sql_types:
+        return t
     if t in ("int", "integer", "bigint", "smallint", "tinyint", "hugeint"):
         return "int"
     if t in ("string", "varchar", "text", "char"):
         return "string"
-    if t == "int":
-        return "int"
     return t
 
 
-def _normalize_schema_dict(schema: dict) -> dict:
-    """Normalize catalog/transpiler schema values to verus kinds (int/string)."""
+def _normalize_schema_dict(schema: dict, *, sql_types: bool = False) -> dict:
+    """Normalize catalog/transpiler schema values to verus kinds (int/string), or only lowercase them (``sql_types``)."""
     if not schema:
         return schema
     sample = next(iter(schema.values()))
     if isinstance(sample, dict):
         return {
-            table: {col: _normalize_col_type(t) for col, t in cols.items()}
+            table: {col: _normalize_col_type(t, sql_types=sql_types) for col, t in cols.items()}
             for table, cols in schema.items()
         }
-    return {col: _normalize_col_type(t) for col, t in schema.items()}
+    return {col: _normalize_col_type(t, sql_types=sql_types) for col, t in schema.items()}
 
 
 def extract_tables_from_sql(sql: str) -> list[str]:
@@ -83,15 +88,18 @@ def resolve_schema_for_sql(
     schema: dict | None = None,
     *,
     catalog: DatabaseCatalog | None = None,
+    sql_types: bool = False,
 ) -> dict:
-    """Resolve flat or multi-table schema for SQL (explicit > env > catalog)."""
+    """Resolve flat or multi-table schema for SQL (explicit > env > catalog).
+
+    ``sql_types``: keep each column's SQL type word (the declarative path); off, the legacy int/string kinds."""
     if schema is not None:
-        return _normalize_schema_dict(schema)
+        return _normalize_schema_dict(schema, sql_types=sql_types)
 
     env_path = os.environ.get("LEMMA_SCHEMA_JSON", "").strip()
     if env_path:
         with open(env_path, encoding="utf-8") as f:
-            return _normalize_schema_dict(json.load(f))
+            return _normalize_schema_dict(json.load(f), sql_types=sql_types)
 
     tables = extract_tables_from_sql(sql)
     if not tables:
@@ -106,13 +114,13 @@ def resolve_schema_for_sql(
     if len(tables) == 1:
         table_schema = cat.get_table_schema(tables[0])
         if table_schema:
-            return _normalize_schema_dict(table_schema)
+            return _normalize_schema_dict(table_schema, sql_types=sql_types)
 
     multi: dict[str, dict[str, str]] = {}
     for table in tables:
         table_schema = cat.get_table_schema(table)
         if table_schema:
-            multi[table] = _normalize_schema_dict(table_schema)
+            multi[table] = _normalize_schema_dict(table_schema, sql_types=sql_types)
 
     if multi:
         if len(tables) == 1:

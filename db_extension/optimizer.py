@@ -660,8 +660,10 @@ def run_optimization_loop(
     from research_loop.menu_profile import activate_menu_from_env
 
     activate_menu_from_env()  # LEMMA_MENU=<profile> sets style, trust env, speed bar; unset = unchanged
+    spec_style = _read_lemma_spec_style()
     try:
-        catalog_schema = resolve_schema_for_sql(sql_query, schema)
+        # The declarative spec types each cell from its SQL type (BIGINT i64, INTEGER i32 ...); the legacy path wants int/string.
+        catalog_schema = resolve_schema_for_sql(sql_query, schema, sql_types=spec_style == "declarative")
         # Same projection the harness uses — agent must see the Cols/MethodSpec that assemble verifies.
         try:
             _flat, multi = normalize_schema(catalog_schema)
@@ -722,7 +724,6 @@ def run_optimization_loop(
         research_log=bool(run),
     )
 
-    spec_style = _read_lemma_spec_style()
     if spec_style == "declarative":
         from declarative_spec.drive import run_declarative_optimization_loop
 
