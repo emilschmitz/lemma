@@ -18,12 +18,12 @@ lemma.toml  <  experiment file (configs/experiments/X.toml)  <  environment vari
 * Every container run writes all keys with `value`, `section`, `source` (`file`/`experiment`/`env`/`cli`) and `origin` into the run manifest (`lemma_config`) and the `RESULT` line (`config`), with `git_sha`, `git_dirty` and `git_untracked_files` (a count; untracked files never make `git_dirty` true). A dirty tree (tracked files; untracked and gitignored data do not count) is refused unless `allow_dirty = true`.
 * `container_batch.py` forwards nothing by name. The child reads `lemma.toml` itself; the batch passes only values that differ from the file (`lemma_config.forwarded_env`, plus `LEMMA_CONFIG_ORIGIN` so a flag is still reported as a flag).
 
-## Sections (57 keys)
+## Sections (58 keys)
 
 | Section | Keys |
 | --- | --- |
 | `[run]` | `spec_style menu agent_model trusted_set assumptions assumption_package speed_bar_mult max_iterations string_encoding join_chain examples narrow_cells pushdown agent_scan parallel_vstd stateful` |
-| `[agent]` | `speed_target max_idle_sessions agent_timeout_sec max_budget_usd agent_submit_ends_session agent_data_mode agent_resource_exhausted_retries agent_auth claude_effort claude_thinking_tokens claude_tool_search mcp_iterate_rows` |
+| `[agent]` | `speed_target max_idle_sessions agent_timeout_sec max_budget_usd agent_submit_ends_session agent_data_mode agent_resource_exhausted_retries harness agent_auth claude_effort claude_thinking_tokens claude_tool_search mcp_iterate_rows` |
 | `[prover]` | `verus_rlimit verus_timeout_sec run_timeout_sec target_cpu dense_slot_budget` |
 | `[measure]` | `official_rounds official_duck_reps duck_memory_limit duck_threads` |
 | `[data]` | `duckdb_path data_profile` |
@@ -97,9 +97,19 @@ Kept although partly inert: `mcp_iterate_rows` (prompt text and the probe-pin ch
 * Legacy imperative / overnight / Spot / dev scripts keep their own variables (`LEMMA_FAMILY`, `LEMMA_SHUFFLE_*`, `LEMMA_HARVEST_*`, `LEMMA_LAPTOP_LEASE*`, `LEMMA_BUDGET_USD`, `LEMMA_BENCH_TIMEOUT_SEC`, `MAX_ITERATIONS`, `COMPILE_TIMEOUT_SEC`, `AGENT_NETWORK`, `OPENROUTER_*`, `LEMMA_DEMO*`, ...). They are listed in `NOT_CONFIG` in `lemma_config.py` so the startup check accepts them; they are not part of a container run and were not refactored.
 * Deep readers that need "not a SEC run" to be expressible still read `LEMMA_DUCKDB_PATH` from the environment (`dataset_config`, `workload_config`, ...); the container launcher exports the resolved absolute `duckdb_path` there.
 
+## Agent harness (`harness`)
+
+`harness = "claude" | "codex" | "gemini"` (`LEMMA_HARNESS`, or `lemma setup --harness codex`), default `claude`: which agent CLI runs in the
+sandbox container. Image `lemma-agent:<harness>`; `agent_model` must be a model of that harness (codex: an OpenAI model such as
+`gpt-6.1-sol`; gemini: a `gemini-*` model; claude: `claude-*`, any other slug keeps running the legacy Cursor agent). A model of another vendor
+is a loud error, and nothing switches harness or credential silently. Details and the per-harness command, MCP config, credentials and egress
+hosts: `research_loop/AGENT_SANDBOX.md` "Agent harnesses".
+
 ## Agent authentication (`agent_auth`)
 
-`agent_auth = "login" | "api_key"` (`LEMMA_AGENT_AUTH`, or `lemma setup --auth api-key`), default `login`. It decides how the Claude Code agent inside the sandbox container authenticates; the two never switch silently.
+`agent_auth = "login" | "api_key"` (`LEMMA_AGENT_AUTH`, or `lemma setup --auth api-key`), default `login`. It decides how the agent CLI of the
+selected `harness` authenticates inside the sandbox container; the two never switch silently. Below for Claude Code; codex uses `CODEX_API_KEY`
+or `~/.codex/auth.json`, gemini `GEMINI_API_KEY` or `~/.gemini/oauth_creds.json` (same rules: by name only, or the login file read-only).
 
 * `login`: the host Claude Code login file (`~/.claude/.credentials.json`, read-only mount; run `claude` once to log in). `ANTHROPIC_API_KEY` in the environment is ignored and never passed to the container. (`CLAUDE_CODE_OAUTH_TOKEN` and `LEMMA_CLAUDE_CONFIG_DIR` remain login-type credentials of this mode.)
 * `api_key`: `ANTHROPIC_API_KEY` from the environment, handed to the container with `docker run -e ANTHROPIC_API_KEY` (name only: the value is never on a command line, written to disk, put in a manifest or logged; `lemma` redacts it from any output it prints). If the variable is empty the run stops; it does not fall back to the login.
@@ -111,7 +121,7 @@ Every run value the prompt states (DuckDB threads and memory limit, iterate cap,
 ## Speed target and further sessions
 
 * `speed_target` (float >= 1.0, default 10.0): the prompt (section "Target speedup", present in every examples mode) tells the agent to submit a first verified body that beats the reference engine, then keep trying faster verified bodies until this speedup, submitting each improvement and never replacing a submitted body with a slower or unverified one.
-* `max_budget_usd` (float >= 0, default 20.0, 0 = no cap) is the model spend cap per query across all its agent sessions (Claude only). Each session's command gets `--max-budget-usd <remaining>` (cap minus the earlier sessions' spend). Spend is the sum of `total_cost_usd` of the `result` events in `workspace/logs/claude_raw.jsonl` (appended by every session; a session killed before its result event counts 0). No further session starts once the cap is used (`budget used`); the manifest records `cost_usd` per entry of `sessions` and a top-level `total_cost_usd`.
+* `max_budget_usd` (float >= 0, default 20.0, 0 = no cap) is the model spend cap per query across all its agent sessions (Claude only; codex and gemini report tokens but no cost, so their sessions record `cost_usd: null` with `cost_note: "not reported by harness (...)"` and the cap is not enforced). Each session's command gets `--max-budget-usd <remaining>` (cap minus the earlier sessions' spend). Spend is the sum of `total_cost_usd` of the `result` events in `workspace/logs/claude_raw.jsonl` (appended by every session; a session killed before its result event counts 0). No further session starts once the cap is used (`budget used`); the manifest records `cost_usd` per entry of `sessions` and a top-level `total_cost_usd`.
 * The per-query wall budget is `max_iterations x agent_timeout_sec`. Until a body has beaten the bar the old rule holds (a further session only after a session that did not verify, at most `max_iterations`). After one has, a session that ends early with the best speedup (official measure or the agent's submitted run, whichever is higher) below `speed_target` is followed by another session that starts from the best body, with a short host message (best speedup, target, minutes left); its wall limit is the time left. Stop: target reached, budget used, or `max_idle_sessions` sessions in a row without a better speedup. `speed_target = 1.0` is the old behaviour (the first body that beats the bar ends the query). `speed_bar_mult`, the acceptance bar of `submit_runquery`, is unchanged.
 * The manifest has `sessions`: per session start, end, agent seconds, session speedup, best speedup so far, and the stop reason on the last one.
 

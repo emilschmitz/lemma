@@ -57,7 +57,8 @@ LEMMA_AGENT_BACKEND=cli AGENT_IMAGE=lemma-agent:cli uv run python -m db_extensio
 |-------------|------------------|-------------|
 | `agent …` | `cursor` | `CURSOR_API_KEY` + `~/.cursor` |
 | `claude …` | `anthropic` | `ANTHROPIC_API_KEY` |
-| `codex …` | `openai` | `OPENAI_API_KEY` |
+| `codex …` | `openai` (+ `chatgpt` with a login) | `CODEX_API_KEY` or `~/.codex/auth.json` (see "Agent harnesses") |
+| `gemini …` | `google` | `GEMINI_API_KEY` or `~/.gemini/oauth_creds.json` (see "Agent harnesses") |
 
 `AGENT_EGRESS_PROFILE=cursor,anthropic` unions allowlists.
 
@@ -203,6 +204,50 @@ first and stored in the run's `manifest.json` under `menu`. Note: a shell that e
 | `LEMMA_CLAUDE_CONFIG_DIR` login-file mount and its format | not tested | needs your real login file |
 | Model behavior, proof success rate, rate limits / 429 / overload errors, real costs | not testable | needs your run |
 | Real stream details the mock cannot produce (thinking blocks, usage/cost, `api_retry` on real errors) | not testable | check `claude_raw.jsonl` once |
+
+## Agent harnesses (`[agent] harness`: claude | codex | gemini)
+
+One sandbox, three CLIs. `lemma.toml [agent] harness` (or `lemma setup --harness X`) picks the CLI; `agent_model` is that CLI's model.
+Every harness gets exactly what Claude gets: `--network none`, `--cap-drop ALL`, 3 GB, egress only to its vendor's API hosts through the host
+allowlist bridge (`mcp_results/egress_bridge.jsonl`, refusals in `egress_denied.jsonl`), the workspace rw with `context/ro` read-only, the
+commit's agent code mounted read-only, the lemma-host MCP tools over the Unix socket (same `mcp_proxy`), and only its own credential.
+
+| | claude | codex | gemini |
+|---|---|---|---|
+| image (build) | `lemma-agent:claude` (`docker/agent/Dockerfile`, `INSTALL_CLAUDE_CODE=1`) | `lemma-agent:codex` (`docker/agent/Dockerfile.harness`, `HARNESS=codex`) | `lemma-agent:gemini` (`Dockerfile.harness`, `HARNESS=gemini`) |
+| CLI (pinned) | Claude Code 2.1.289 | `@openai/codex@0.162.1` (Node 22) | `@google/gemini-cli@0.63.0` (Node 22) |
+| command | `claude -p --model M --output-format stream-json ...` | `codex exec --json --model M --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox --cd /workspace - < PROMPT.txt` | `gemini --model M --output-format stream-json --approval-mode yolo --skip-trust -p '...' < PROMPT.txt` |
+| MCP config (entrypoint) | `/root/.cursor/mcp.json` | `/root/.codex/config.toml` `[mcp_servers.lemma-host]`, `required = true`, `tool_timeout_sec = 3600` | `/root/.gemini/settings.json` `mcpServers.lemma-host`, `trust`, `timeout` 3600 s |
+| vendor-side tools off | `--disallowedTools WebSearch,WebFetch` | `web_search = "disabled"`, `[features]` apps/plugins/browser/computer use/image generation off | `tools.exclude = [google_web_search, web_fetch]` |
+| `agent_auth = api_key` | `ANTHROPIC_API_KEY` by name | `CODEX_API_KEY` by name | `GEMINI_API_KEY` by name |
+| `agent_auth = login` | `~/.claude/.credentials.json` ro (or `CLAUDE_CODE_OAUTH_TOKEN`) | `~/.codex/auth.json` ro, copied into a writable `CODEX_HOME` | `~/.gemini/oauth_creds.json` (+ `google_accounts.json`) ro, copied into `/root/.gemini` |
+| egress profile | `anthropic` | `openai` (`openai,chatgpt` with a login: a ChatGPT-plan login talks to `chatgpt.com`) | `google` (`googleapis.com`: the API, and `oauth2`/`cloudcode-pa` for a login) |
+| stream | `logs/claude_raw.jsonl`, converted to the Cursor-style `agent_stream.jsonl` | `logs/codex_raw.jsonl` (codex JSONL events; also `agent_stream.jsonl`, not converted) | `logs/gemini_raw.jsonl` (gemini stream-json; also `agent_stream.jsonl`, not converted) |
+| cost / tokens in the manifest | `total_cost_usd` of the result events; `--max-budget-usd` | tokens from `turn.completed.usage`; `cost_usd: null`, `cost_note: "not reported by harness (codex)..."`, no budget cap | tokens from `result.stats`; cost null with the same note |
+| INFRA (API/auth error) | result event `is_error` + marker | `turn.failed` with an auth/connectivity marker (e.g. `401 Unauthorized`) | `result` with `status: error` and a marker (e.g. `API key not valid`) |
+
+Docker is the sandbox, so each CLI's own sandbox/approval layer is off inside it (codex `--dangerously-bypass-approvals-and-sandbox`, gemini
+`--approval-mode yolo`), the same as Claude's headless permission mode. A missing credential is a loud error (`agent_harness.credential_status`),
+never a switch to the other auth mode or harness; a model of another vendor for the harness is refused (`agent_harness.check_model`).
+
+Model defaults (`agent_harness.DEFAULT_MODELS`, written by `lemma setup --harness X` without `--model`; checked 2026-10-24): codex
+`gpt-6.1-sol` (recommended for complex coding at https://learn.chatgpt.com/docs/models), gemini `gemini-3.8-flash` (recommended for new
+projects at https://ai.google.dev/gemini-api/docs/models; the CLI docs say it is not optimized for the flagship `gemini-4-argon` yet).
+Smoke prompts use the cheapest: `gpt-6-luna`, `gemini-3.5-flash-lite`.
+
+Smoke tests (real Docker, dummy keys only): `uv run pytest -m slow tests/test_harness_smoke.py`. Observed 2026-10-24:
+
+- claude, `agent_auth = api_key`: Claude Code sends `x-api-key` to the mock API through the bridge (`apiKeySource: ANTHROPIC_API_KEY`) and
+  calls `mcp__lemma-host__mcp_health`; the only host contacted is the mock's.
+- codex: `codex mcp list` shows lemma-host; the required server initialises (a broken server stops codex before any model call); example.com
+  and `api.openai.com.example.com` get 403, direct network is off; the dummy key reaches `api.openai.com` and comes back `401 Unauthorized`,
+  classified INFRA. With an API key codex also tries `chatgpt.com` (model list); that is refused and logged, the session runs. One real prompt
+  (`gpt-6-luna`, "Reply with the word ok.", host `~/.codex/auth.json` read-only) answered `ok` (9,982 input / 5 output tokens).
+- gemini: `gemini mcp list` shows `lemma-host ... Connected`; the egress checks as above; the dummy key reaches
+  `generativelanguage.googleapis.com` and comes back `API key not valid`, classified INFRA. A Google login works through the sandbox
+  (`oauth2` and `cloudcode-pa.googleapis.com` reached), but a free-tier personal account is refused by Google ("This client is no longer
+  supported for Gemini Code Assist for individuals", Gemini CLI was replaced by Antigravity CLI for that tier): use `GEMINI_API_KEY`
+  (`agent_auth = api_key`) or a paid Code Assist / Workspace login.
 
 ## Run artifacts (GCP harvest)
 
