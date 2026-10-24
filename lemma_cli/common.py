@@ -1,6 +1,6 @@
 """Shared pieces of the CLI: paths, secret redaction, small state files, SQL normalisation.
 
-Secrets: the API key lives in the environment only. Nothing here reads it except ``redact`` (to remove it from text that
+Secrets: the API keys live in the environment only. Nothing here reads it except ``redact`` (to remove it from text that
 is about to be printed or written); no file the CLI writes may contain it.
 """
 
@@ -14,10 +14,16 @@ import sys
 from pathlib import Path
 from typing import Any
 
-SECRET_ENV = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN")
-_KEY_SHAPE = re.compile(r"sk-ant-[A-Za-z0-9_\-]{8,}")
+SECRET_ENV = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN", "CODEX_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY")
+# Anthropic (sk-ant-...), OpenAI (sk-proj-..., sk-...) and Google (AIza...) key shapes.
+_KEY_SHAPE = re.compile(r"sk-ant-[A-Za-z0-9_\-]{8,}|sk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_\-]{20,}|AIza[0-9A-Za-z_\-]{30,}")
 AUTH_CHOICES = ("login", "api_key")
+HARNESS_CHOICES = ("claude", "codex", "gemini")
 AUTH_ENV = "LEMMA_AGENT_AUTH"
+HARNESS_ENV = "LEMMA_HARNESS"
+MODEL_ENV = "LEMMA_AGENT_MODEL"
+# Saved choices of `lemma setup` ($LEMMA_HOME/config.json key -> the environment variable that makes it effective).
+HOME_CONFIG_ENV = {"agent_auth": AUTH_ENV, "harness": HARNESS_ENV, "agent_model": MODEL_ENV}
 
 
 class CliError(RuntimeError):
@@ -69,20 +75,41 @@ def config_path() -> Path:
 
 
 def apply_home_config() -> str:
-    """Make the saved ``agent_auth`` choice effective (environment ``LEMMA_AGENT_AUTH`` > ``$LEMMA_HOME/config.json`` > lemma.toml). Returns its source."""
-    if os.environ.get(AUTH_ENV, "").strip():
-        return f"environment {AUTH_ENV}"
-    saved = read_json(config_path()).get("agent_auth")
-    if saved:
-        os.environ[AUTH_ENV] = saved
-        return str(config_path())
-    return "lemma.toml"
+    """Make the saved choices effective (environment ``LEMMA_<KEY>`` > ``$LEMMA_HOME/config.json`` > lemma.toml) for ``agent_auth``, ``harness``
+    and ``agent_model``. Returns the source of ``agent_auth``; ``home_config_sources`` has all three."""
+    return home_config_sources()["agent_auth"]
+
+
+def home_config_sources() -> dict[str, str]:
+    saved = read_json(config_path())
+    sources = {}
+    for key, env in HOME_CONFIG_ENV.items():
+        if os.environ.get(env, "").strip():
+            sources[key] = f"environment {env}"
+        elif saved.get(key):
+            os.environ[env] = saved[key]
+            sources[key] = str(config_path())
+        else:
+            sources[key] = "lemma.toml"
+    return sources
 
 
 def auth_mode() -> str:
     import lemma_config
 
     return lemma_config.get("agent_auth")
+
+
+def harness() -> str:
+    import lemma_config
+
+    return lemma_config.get("harness")
+
+
+def agent_model() -> str:
+    import lemma_config
+
+    return lemma_config.get("agent_model")
 
 
 def sha256_file(path: Path) -> str:

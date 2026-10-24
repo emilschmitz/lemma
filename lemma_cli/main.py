@@ -11,8 +11,11 @@ from lemma_cli.common import CliError, redact, repo_root, say
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="lemma", description="Verified query synthesis. Agents run in the Docker sandbox only.")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    s = sub.add_parser("setup", help="check docker, build/verify the agent image, run the sandbox self-test, fetch libduckdb, check credentials")
-    s.add_argument("--auth", choices=["login", "api-key"], help="how the agent authenticates (saved): the Claude Code login, or ANTHROPIC_API_KEY from the environment")
+    s = sub.add_parser("setup", help="choose the harness/model/auth, check docker, build/verify the agent image, run the sandbox self-test, fetch libduckdb, check credentials")
+    s.add_argument("--harness", choices=["claude", "codex", "gemini"], help="the agent CLI in the sandbox (saved): Claude Code, OpenAI Codex CLI or Google Gemini CLI")
+    s.add_argument("--model", help="the model of that harness (saved); default with --harness: that harness's default model")
+    s.add_argument("--auth", choices=["login", "api-key", "api_key"], help="how the agent authenticates (saved): the harness's host login file (read-only), or its API key "
+                   "variable from the environment (claude: ANTHROPIC_API_KEY, codex: CODEX_API_KEY, gemini: GEMINI_API_KEY), passed by name only")
     s.add_argument("--rebuild", action="store_true", help="rebuild the agent image")
     a = sub.add_parser("assumptions", help="profile a DuckDB, approve every claim, check the package")
     a.add_argument("--db", required=True)
@@ -26,7 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
     o.add_argument("--params", nargs="*", default=[], help="values for ? placeholders, in order")
     o.add_argument("--queue", action="store_true", help="process $LEMMA_HOME/queue/*.sql in file-name order")
     o.add_argument("--force", action="store_true")
-    sub.add_parser("status", help="image, sandbox test, auth mode, DuckDB version, cached executors")
+    sub.add_parser("status", help="harness, model, auth mode, image, sandbox test, DuckDB version, cached executors")
     return ap
 
 
@@ -39,7 +42,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "setup":
             from lemma_cli.setup_cmd import setup
 
-            return setup(args.auth.replace("-", "_") if args.auth else None, args.rebuild)
+            return setup(args.auth.replace("-", "_") if args.auth else None, args.rebuild, args.harness, args.model)
         if args.cmd == "status":
             from lemma_cli.setup_cmd import status
 
