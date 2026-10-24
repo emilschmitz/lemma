@@ -119,11 +119,16 @@ def run_pipeline(sql: str, db: Path, package: Path | None, mode: str, log: Path,
     return result
 
 
+def in_duckdb_on() -> None:
+    """The product path installs and times executors for the in-DuckDB extension: lemma.toml [engine] ``in_duckdb`` on for this process."""
+    os.environ["LEMMA_IN_DUCKDB"] = "true"
+
+
 def install_in_duckdb(run_dir: Path) -> Path:
     """Install the marked submission of ``run_dir`` as an in-DuckDB executor under ``$LEMMA_HOME/executors``. The spec is emitted again from
     the run's own settings and schema (the spec its body was proved against) and Verus verifies and compiles the library again; any
     failure installs nothing (``install_executor`` stages and renames)."""
-    os.environ["LEMMA_IN_DUCKDB"] = "true"  # the product path installs for the in-DuckDB extension (lemma.toml [engine] in_duckdb)
+    in_duckdb_on()
     from research_loop.scripts.in_duckdb_install_run import install_run
 
     return install_run(run_dir, lemma_home())
@@ -144,6 +149,7 @@ def bench(sql: str, db: Path) -> dict[str, Any]:
     from research_loop.decl_query_measure import duck_settings
 
     _cli, ext = duck.binaries()
+    in_duckdb_on()
     with tempfile.TemporaryDirectory(prefix="lemma-bench-") as tmp:
         work = Path(tmp)
         bar = {"sql": sql, "db_path": str(db), "duck_settings": duck_settings(work)}
