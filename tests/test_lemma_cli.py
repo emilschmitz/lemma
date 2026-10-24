@@ -45,13 +45,15 @@ GOOD_SELFTEST = {"direct_blocked": True, "allowed": {"api.anthropic.com": 200}, 
 
 @pytest.fixture(autouse=True)
 def _restore_auth_env():
-    """The CLI exports the saved auth choice into os.environ (for its child processes); restore it so later test files are unaffected."""
-    saved = os.environ.get("LEMMA_AGENT_AUTH")
+    """The CLI exports the saved choices into os.environ (for its child processes); restore them so later test files are unaffected."""
+    names = tuple(common.HOME_CONFIG_ENV.values())
+    saved = {n: os.environ.get(n) for n in names}
     yield
-    if saved is None:
-        os.environ.pop("LEMMA_AGENT_AUTH", None)
-    else:
-        os.environ["LEMMA_AGENT_AUTH"] = saved
+    for name, value in saved.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
 
 
 @pytest.fixture
@@ -123,6 +125,62 @@ def test_setup_builds_a_missing_image_once_with_the_pinned_build_args(env: Path)
     builds = [c for c in calls(env) if c[0] == "build"]
     assert len(builds) == 1  # second run: image exists, verified, not rebuilt
     assert "INSTALL_CLAUDE_CODE=1" in builds[0] and "lemma-agent:claude" in builds[0]
+
+
+def _as_codex(env: Path) -> None:
+    (env / "cli_version").write_text(f"codex-cli {sandbox.pinned_version('codex')}")
+    (env / "selftest.json").write_text(json.dumps({"direct_blocked": True, "allowed": {"api.openai.com": 200}, "denied": {"example.com": 403, "api.openai.com.example.com": 403}}))
+
+
+def test_setup_harness_codex_builds_its_image_saves_the_default_model_and_status_shows_it(env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    from research_loop.agent_harness import DEFAULT_MODELS
+
+    (env / "no_image").write_text("")
+    _as_codex(env)
+    monkeypatch.setenv("CODEX_API_KEY", KEY)
+    for name in common.HOME_CONFIG_ENV.values():
+        monkeypatch.setenv(name, "")  # registered with monkeypatch, so teardown removes what setup exports
+    assert main(["setup", "--harness", "codex", "--auth", "api-key"]) == 0
+    assert json.loads(common.config_path().read_text()) == {"agent_auth": "api_key", "harness": "codex", "agent_model": DEFAULT_MODELS["codex"]}
+    (build,) = [c for c in calls(env) if c[0] == "build"]
+    assert "HARNESS=codex" in build and "lemma-agent:codex" in build and build[build.index("-f") + 1].endswith("Dockerfile.harness")
+    state = json.loads(common.state_path().read_text())
+    assert state["harness"] == "codex" and state["image"] == "lemma-agent:codex" and state["selftest"]["ok"]
+    out = capsys.readouterr().out
+    assert "CODEX_API_KEY is set" in out and KEY not in out
+    assert main(["status"]) == 0
+    out = capsys.readouterr().out
+    assert "harness         codex" in out and f"model           {DEFAULT_MODELS['codex']}" in out and "lemma-agent:codex present" in out and "PASSED" in out
+
+
+def test_setup_harness_codex_without_its_key_is_loud_and_never_uses_the_anthropic_key(env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    _as_codex(env)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", KEY)  # another vendor's key: not a substitute
+    for name in common.HOME_CONFIG_ENV.values():
+        monkeypatch.setenv(name, "")
+    assert main(["setup", "--harness", "codex", "--auth", "api-key"]) == 2
+    assert "CODEX_API_KEY is not set" in capsys.readouterr().err and not common.state_path().exists()
+
+
+def test_setup_refuses_a_model_of_another_vendor(env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    for name in common.HOME_CONFIG_ENV.values():
+        monkeypatch.setenv(name, "")
+    assert main(["setup", "--harness", "gemini", "--model", "gpt-6.1-sol"]) == 2
+    assert "gemini cannot run model 'gpt-6.1-sol'" in capsys.readouterr().err
+
+
+def test_child_env_keeps_only_the_chosen_harness_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in common.SECRET_ENV:
+        monkeypatch.setenv(name, KEY)
+    env = opt.child_env("api_key", "codex")
+    assert env["CODEX_API_KEY"] == KEY and env["LEMMA_HARNESS"] == "codex"
+    assert not [n for n in common.SECRET_ENV if n != "CODEX_API_KEY" and n in env]
+    assert not [n for n in common.SECRET_ENV if n in opt.child_env("login", "gemini")]
+
+
+def test_redact_covers_openai_and_google_key_shapes() -> None:
+    out = common.redact("a sk-proj-" + "A" * 40 + " b AIza" + "B" * 35 + " c")
+    assert out == "a [REDACTED] b [REDACTED] c"
 
 
 def test_setup_is_idempotent_and_writes_the_same_state(env: Path) -> None:
@@ -339,7 +397,7 @@ def fake_run(tmp_path: Path, binary: bool) -> Path:
     return run
 
 
-RECORD = {"db_path": "/d.duckdb", "assumptions": True, "assumption_package_sha256": "p" * 64, "agent_model": "claude-sonnet-5-5", "agent_auth": "api_key", "image_id": "sha256:x", "git_sha": "a" * 40, "run_dir": "/r", "speedup": 3.2}
+RECORD = {"db_path": "/d.duckdb", "assumptions": True, "assumption_package_sha256": "p" * 64, "agent_harness": "claude", "agent_model": "claude-sonnet-5-5", "agent_auth": "api_key", "image_id": "sha256:x", "git_sha": "a" * 40, "run_dir": "/r", "speedup": 3.2}
 
 
 def test_cache_layout_and_manifest_fields(env: Path, tmp_path: Path) -> None:

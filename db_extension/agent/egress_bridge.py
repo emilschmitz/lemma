@@ -57,6 +57,8 @@ VENDOR_ALLOWLISTS: dict[str, tuple[str, ...]] = {
         "api.openai.com",
         "auth.openai.com",
     ),
+    # A ChatGPT-plan Codex login (agent_auth = login, harness = codex) reaches the Codex backend here; added only for that case.
+    "chatgpt": ("chatgpt.com",),
     "openrouter": (
         "openrouter.ai",
         "api.openrouter.ai",

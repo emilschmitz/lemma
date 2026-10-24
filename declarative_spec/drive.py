@@ -384,10 +384,14 @@ def run_declarative_optimization_loop(
         return {"status": "FAILED", "best_latency_us": -1, "error": f"data profile: {exc}", "history": [], "proof_verified": False}
 
     max_budget_usd = float(lemma_config.get("max_budget_usd"))
-    raw_stream = workspace / "logs" / "claude_raw.jsonl"  # appended by every Claude session of the query
+    cfg = load_agent_config()
+    from research_loop import agent_harness
+
+    harness = agent_harness.harness_of_cmd(cfg.get("AGENT_CMD", ""))  # claude | codex | gemini | cursor
+    # appended by every session of the query (Claude stream-json, codex/gemini JSONL events); the Cursor path writes none
+    raw_stream = workspace / "logs" / agent_harness.RAW_STREAMS.get(harness, "claude_raw.jsonl")
     state = {"prev_source": None, "last_error": last_error, "proof_verified": False, "remaining_usd": None, "declined": False}  # the file the previous session left; the last error; any proof so far
     best_source: list[str] = []  # the file of the best success so far: the base of a continuation session
-    cfg = load_agent_config()
 
     def run_one(iteration: int, host_note: str, timeout_s: int | None) -> sessions_mod.Outcome:
         iter_record: dict = {"iteration": iteration}
@@ -509,7 +513,23 @@ def run_declarative_optimization_loop(
             return sessions_mod.Outcome(True, speedup, agent_s, result, agent_source)
         return sessions_mod.Outcome(False, speedup, agent_s)
 
+    def run_one_reported(iteration: int, host_note: str, timeout_s: int | None) -> sessions_mod.Outcome:
+        """codex / gemini: tokens and API errors from the harness's own events; no cost (null with a note, never 0, and no budget cap)."""
+        results_before = agent_harness.result_count(harness, raw_stream)
+        tokens_before = agent_harness.tokens(harness, raw_stream)
+        outcome = run_one(iteration, host_note, timeout_s)
+        outcome.cost_usd = None
+        outcome.cost_note = f"{agent_harness.COST_NOT_REPORTED} ({harness}); max_budget_usd is not enforced"
+        tokens_after = agent_harness.tokens(harness, raw_stream)
+        outcome.tokens = {k: tokens_after[k] - tokens_before.get(k, 0) for k in tokens_after}
+        outcome.infra_error = agent_harness.api_error(harness, raw_stream, results_before)
+        if outcome.infra_error is not None:
+            history[-1]["infra_error"] = outcome.infra_error
+        return outcome
+
     def run_one_costed(iteration: int, host_note: str, timeout_s: int | None) -> sessions_mod.Outcome:
+        if harness in ("codex", "gemini"):
+            return run_one_reported(iteration, host_note, timeout_s)
         before = claude_spend_usd(raw_stream)
         results_before = claude_result_count(raw_stream)
         tokens_before = claude_tokens(raw_stream)

@@ -17,7 +17,8 @@ from typing import Any
 from lemma_cli import cache
 from lemma_cli.assumptions import approved_package, resolve_db
 from lemma_cli.common import (
-    CliError, apply_home_config, auth_mode, lemma_home, normalize_sql, read_json, redact, repo_root, say, sha256_file, sql_key, state_path,
+    SECRET_ENV, CliError, apply_home_config, auth_mode, harness, lemma_home, normalize_sql, read_json, redact, repo_root, say, sha256_file, sql_key,
+    state_path,
 )
 
 
@@ -58,34 +59,42 @@ def require_setup() -> dict[str, Any]:
     state = read_json(state_path())
     if not state.get("selftest", {}).get("ok"):
         raise CliError("the sandbox has not passed its self-test on this machine: run `lemma setup` first")
+    if state.get("harness", "claude") != harness():
+        raise CliError(f"`lemma setup` last ran for harness {state.get('harness', 'claude')!r}, but harness is now {harness()!r}: run `lemma setup` again")
     return state
 
 
-def child_env(mode: str) -> dict[str, str]:
-    """Environment of the pipeline process. login: the API key is removed (never passed on); api_key: the variable stays and is handed to docker by name."""
+def child_env(mode: str, harness_name: str = "claude") -> dict[str, str]:
+    """Environment of the pipeline process. Only the chosen harness's key variable may stay, and only with api_key (handed to docker by name);
+    login removes every API key variable, so nothing but the login file reaches the container."""
+    from research_loop.agent_harness import API_KEY_ENV
+
     env = dict(os.environ)
     env["LEMMA_AGENT_AUTH"] = mode
-    if mode == "login":
-        env.pop("ANTHROPIC_API_KEY", None)
-    elif not env.get("ANTHROPIC_API_KEY"):
-        raise CliError("auth is api_key but ANTHROPIC_API_KEY is not set: export it in your shell yourself (nothing is read from or written to disk)")
+    env["LEMMA_HARNESS"] = harness_name
+    keep = API_KEY_ENV[harness_name] if mode == "api_key" else None
+    for name in SECRET_ENV:
+        if name != keep and not (harness_name == "claude" and mode == "login" and name == "CLAUDE_CODE_OAUTH_TOKEN"):
+            env.pop(name, None)
+    if keep is not None and not env.get(keep):
+        raise CliError(f"auth is api_key but {keep} is not set: export it in your shell yourself (nothing is read from or written to disk)")
     return env
 
 
-def run_pipeline(sql: str, db: Path, package: Path | None, mode: str, log: Path) -> dict[str, Any]:
+def run_pipeline(sql: str, db: Path, package: Path | None, mode: str, log: Path, harness_name: str = "claude") -> dict[str, Any]:
     """Start run_container_agent.py for ``sql``; its output is redacted into ``log``. Returns the RESULT record.
 
     ``package`` is the approved assumption package (lemma.toml ``assumptions = true``, the UNMAINTAINED path) or None (the default: no data
     assumptions, the child gets no ``--assumption-package``)."""
     root = repo_root()
-    if mode == "login":
+    if mode == "login" and harness_name == "claude":
         from research_loop.scripts.container_batch import LoginRefreshFailed, refresh_login
 
         try:
             refresh_login()
         except LoginRefreshFailed as exc:
             raise CliError(str(exc)) from exc
-    env = child_env(mode)
+    env = child_env(mode, harness_name)
     log.parent.mkdir(parents=True, exist_ok=True)
     qfile = log.with_suffix(".sql")
     qfile.write_text(sql + "\n")
@@ -128,7 +137,7 @@ def optimize_one(sql: str, db: Path, *, force: bool = False) -> Path:
         say(f"already optimized: {cache.executor_dir(key)} (--force to redo)")
         return cache.executor_dir(key)
     log = lemma_home() / "logs" / f"{key}.log"
-    record = run_pipeline(normalize_sql(sql), db, package, mode, log)
+    record = run_pipeline(normalize_sql(sql), db, package, mode, log, harness())
     if record.get("status") == "DECLINED":
         raise CliError(
             "not optimized: DECLINED (the proved program returned None on this data, e.g. a checked overflow; nothing is installed and no other "
@@ -139,7 +148,7 @@ def optimize_one(sql: str, db: Path, *, force: bool = False) -> Path:
     run_dir = Path(record["run_dir"])
     official = record.get("official") or {}
     dest = cache.install(sql, {
-        "db_path": str(db), "assumptions": with_assumptions, "assumption_package_sha256": pkg_sha, "agent_model": record.get("model"), "agent_auth": mode,
+        "db_path": str(db), "assumptions": with_assumptions, "assumption_package_sha256": pkg_sha, "agent_harness": harness(), "agent_model": record.get("model"), "agent_auth": mode,
         "image_id": state.get("image_id"), "git_sha": record.get("git_sha"), "run_dir": str(run_dir),
         "speedup": official.get("speedup") if isinstance(official, dict) else None,
     }, run_dir)

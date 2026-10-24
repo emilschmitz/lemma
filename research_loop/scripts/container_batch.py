@@ -107,10 +107,11 @@ def plan(argv: list[str]) -> list[tuple[str, str, Path, int | None]]:
 def preflight_images(models: list[str]) -> None:
     """Once, before the first run: each image the batch uses must serve every tool the prompt advertises (``ImageMismatch`` stops the batch)."""
     from research_loop.agent_image_check import check_agent_image
-    from research_loop.scripts.declarative_ladder import agent_env
+    from research_loop.scripts.declarative_ladder import agent_env, cli_of_cmd
 
     for model in sorted(set(models)):
-        check_agent_image(agent_env(model, lemma_config.get("spec_style"))["AGENT_IMAGE"], claude_cli=model.startswith("claude-"))
+        env = agent_env(model, lemma_config.get("spec_style"))
+        check_agent_image(env["AGENT_IMAGE"], cli=cli_of_cmd(env["AGENT_CMD"]))
 
 
 def main(argv: list[str]) -> int:

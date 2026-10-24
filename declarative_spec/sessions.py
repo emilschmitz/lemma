@@ -38,6 +38,7 @@ class Outcome:
     cost_usd: float | None = 0.0  # model spend of the session (total_cost_usd of its stream-json result event); None = the session was killed before that event: unreported
     tokens: dict | None = None  # token totals of the session from the stream's per-message usage (present even when the session was killed)
     infra_error: str | None = None  # "INFRA: agent API error: ..." when the session's result event was an API/auth/connectivity error
+    cost_note: str | None = None  # why cost_usd is None when it is not a kill: e.g. "not reported by harness (codex)"; recorded beside it, never a 0
 
 
 @dataclass
@@ -106,7 +107,8 @@ class Sessions:
         if reported:
             self.spent_usd += outcome.cost_usd
         else:
-            log_warn("sessions", "cost_unreported", f"session {n} ended without a result event: its cost is unknown and not part of the budget", session=n)
+            why = outcome.cost_note or "the session ended without a result event"
+            log_warn("sessions", "cost_unreported", f"session {n}: {why}: its cost is unknown and not part of the budget", session=n)
         self.records.append({
             "session": n,
             "start": datetime.fromtimestamp(start, UTC).isoformat(),
@@ -114,6 +116,7 @@ class Sessions:
             "agent_s": round(outcome.agent_s, 1),
             "cost_usd": round(outcome.cost_usd, 6) if reported else None,
             "cost_reported": reported,
+            **({"cost_note": outcome.cost_note} if outcome.cost_note is not None else {}),
             "tokens": outcome.tokens or {},
             "output_tokens_partial": bool(outcome.tokens),  # the stream's output_tokens undercounts; the input-side counts are exact
             "success": outcome.success,
