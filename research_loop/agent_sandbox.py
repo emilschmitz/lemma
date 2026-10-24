@@ -1249,9 +1249,14 @@ def run_agent_docker(
         cli_dir,
     )
     timeout = int(cfg.get("AGENT_TIMEOUT_SEC", "600"))
-    claude = is_claude_cmd(agent_cmd)
+    from research_loop.agent_harness import HARNESSES, SECRET_ENVS, harness_docker_args, harness_of_cmd
+    from research_loop.agent_harness import egress_profile as harness_egress_profile
+
+    harness = harness_of_cmd(agent_cmd)  # claude | codex | gemini | cursor (the legacy `agent` CLI)
+    claude = harness == "claude"
     agent_cmd = apply_session_budget(agent_cmd, cfg)
-    claude_args = claude_docker_args() if claude else []
+    # The harness's credential (by name, or its login file read-only); raises when it is missing. The legacy Cursor path mounts ~/.cursor below.
+    harness_args = harness_docker_args(harness) if harness in HARNESSES else []
     (workspace / "PROMPT.txt").write_text(prompt)
 
     from db_extension.agent.egress_bridge import (
@@ -1263,8 +1268,9 @@ def run_agent_docker(
     from db_extension.agent.measure_core import MeasureContext
 
     env = parse_agent_env(cfg, base={})
-    if claude:
+    if harness in HARNESSES:
         env.pop("CURSOR_API_KEY", None)
+    if claude:
         tool_search = claude_tool_search()
         if tool_search is not None:
             env["ENABLE_TOOL_SEARCH"] = tool_search
@@ -1286,7 +1292,7 @@ def run_agent_docker(
 
     profile = infer_egress_profile(
         agent_cmd,
-        lemma_config.get("egress_profile") or None,
+        lemma_config.get("egress_profile") or (harness_egress_profile(harness) if harness in HARNESSES else None),
     )
     mock = claude_test_mock() if claude else None
     if mock is not None:
@@ -1386,9 +1392,9 @@ def run_agent_docker(
         cmd.extend(["--entrypoint", "/bin/bash"])
         use_host_entrypoint = True
         log_info(COMPONENT, "entrypoint_mount", str(entrypoint_host))
-    if claude:
-        # Cursor credentials and CLI never enter the claude container.
-        cmd.extend(claude_args)
+    if harness in HARNESSES:
+        # Cursor credentials and CLI never enter a claude/codex/gemini container.
+        cmd.extend(harness_args)
     else:
         if cli_dir is not None:
             cmd.extend(["-v", f"{cli_dir}:/opt/cursor-agent:ro"])
@@ -1426,8 +1432,8 @@ def run_agent_docker(
         "LEMMA_AGENT_STREAM_LOG",
         "LEMMA_AGENT_STDERR_LOG",
         "PATH",
-        "ANTHROPIC_API_KEY",
-        "CLAUDE_CODE_OAUTH_TOKEN",  # by name only (claude_docker_args): a value on the command line leaks
+        # Credentials go by name only (claude_docker_args / harness_docker_args): a value on the command line leaks.
+        *SECRET_ENVS,
     }
     for k, v in env.items():
         if k in skip_env:

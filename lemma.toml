@@ -17,7 +17,7 @@
 #
 # NOT here, because they are fixed by the container launcher rather than chosen: USE_AGENT_DOCKER=1, LEMMA_AGENT_BACKEND=cli,
 # the agent image and command, the agent container limits (--memory 3g --network none --cap-drop ALL), scope swap 0, oom score 800,
-# the Verus guard slot lock. Secrets (ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN) are never config: environment only.
+# the Verus guard slot lock. Secrets (ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN, CODEX_API_KEY, GEMINI_API_KEY) are never config: environment only.
 
 # ======================================================================================================================
 # DATA ASSUMPTIONS ARE OFF BY DEFAULT (owner decision, 2026-10-17). The assumption-package path (assumptions = true:
@@ -30,7 +30,7 @@
 [run]
 spec_style = "declarative"                  # declarative | imperative: the whole chain (emitter, assembler, admission, prompt, measure)
 menu = "adversary_declarative0"             # menu profile (research_loop/menu_profile.py); its axes are the next five keys
-agent_model = "claude-sonnet-5-5"           # prover model slug; claude-* runs Claude Code in the container. Decision: the frozen run's model (the menu profile said haiku)
+agent_model = "claude-sonnet-5-5"           # prover model slug of the selected [agent] harness (claude-* runs Claude Code in the container). Decision: the frozen run's model (the menu profile said haiku)
 trusted_set = "declarative_default"         # host lemma block pasted into the spec
 assumptions = false                         # false (default since 2026-10-17): no data assumptions, run_query may decline (None), see the block above. true = the UNMAINTAINED assumption-package path (byte-identical to before the flag; needs assumption_package)
 assumption_package = ""                     # only with assumptions = true (UNMAINTAINED), then REQUIRED (empty fails loudly): a package name, a .json path, or the explicit value "auto" = the package that matches the DuckDB file (sec_margin_dec for DECIMAL). With assumptions = false it must stay empty
@@ -49,11 +49,12 @@ stateful = false                            # true: the contract is an agent-wri
 speed_target = 10.0                         # float >= 1.0: speedup over the reference engine the agent is told to aim for after its first body beats the bar (prompt, section "Target speedup"). Within the per-query budget (max_iterations x agent_timeout_sec) a session that ends early below this target is followed by another one from the best submitted body. 1.0 = the old behaviour (a further session only after one that did not verify)
 max_idle_sessions = 2                       # int >= 1: stop starting further sessions after this many consecutive sessions without a better submitted speedup
 agent_timeout_sec = 1800                    # wall seconds per agent session. Decision: 1800 (2 x 1800 s = 60 min per query with max_iterations = 2; was 900, 750, earlier 600)
-max_budget_usd = 20.0                       # float >= 0: model spend cap PER QUERY across all its agent sessions (Claude only). Each session gets `--max-budget-usd <remaining>`; remaining = this minus the spend of the earlier sessions (total_cost_usd of the stream-json result event). No further session once it is used up. 0 = no cap
+max_budget_usd = 20.0                       # float >= 0: model spend cap PER QUERY across all its agent sessions (Claude only: codex and gemini report no cost, so there it is not enforced and every session record says so in cost_note). Each session gets `--max-budget-usd <remaining>`; remaining = this minus the spend of the earlier sessions (total_cost_usd of the stream-json result event). No further session once it is used up. 0 = no cap
 agent_submit_ends_session = false           # true: a successful submit_runquery ends the session
 agent_data_mode = "none"                    # none | stats | full: interactive DuckDB tool for the agent. Decision: none (what config.env gave the frozen run; code default stats; the CLI container is network-none anyway)
 agent_resource_exhausted_retries = 8        # Cursor agent only: retries on API quota errors
-agent_auth = "login"                        # login | api_key: how the Claude agent container authenticates. login = the host Claude Code login (read-only mount; ANTHROPIC_API_KEY is ignored and never passed). api_key = ANTHROPIC_API_KEY from the environment, passed into the container by NAME only (never written to disk, a manifest or a log). An explicit choice, never a fallback: api_key without the variable set fails loudly
+harness = "claude"                          # claude | codex | gemini: the agent CLI in the sandbox container (image lemma-agent:<harness>, research_loop/AGENT_SANDBOX.md "Agent harnesses"). agent_model must be a model of that harness (claude: claude-* (other slugs = the legacy Cursor agent), codex: e.g. gpt-6.1-sol, gemini: gemini-*); a mismatch fails loudly. Same sandbox for all: network none, egress only to that vendor's API hosts, read-only mounts. No fallback between harnesses
+agent_auth = "login"                        # login | api_key: how the agent container authenticates, for the selected harness. login = that CLI's host login file, mounted read-only (claude: ~/.claude/.credentials.json or CLAUDE_CODE_OAUTH_TOKEN; codex: ~/.codex/auth.json; gemini: ~/.gemini/oauth_creds.json); the API-key variables are ignored and never passed. api_key = the harness's key variable from the environment (claude: ANTHROPIC_API_KEY, codex: CODEX_API_KEY, gemini: GEMINI_API_KEY), passed into the container by NAME only (never written to disk, a manifest or a log). An explicit choice, never a fallback: a missing credential fails loudly
 claude_effort = "none"                      # none | low | medium | high | xhigh | max: Claude Code --effort (none omits the flag)
 claude_thinking_tokens = ""                 # MAX_THINKING_TOKENS of the Claude agent; empty = CLI default
 claude_tool_search = ""                     # ENABLE_TOOL_SEARCH of the Claude agent: true | false | auto | auto:N; empty = CLI default

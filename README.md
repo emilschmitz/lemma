@@ -44,18 +44,24 @@ trusted item needs a written proposal and a separate adversary review
 
 ## Quick start
 
-Needs Docker, Python 3.11+, [uv](https://docs.astral.sh/uv/), and either a Claude Code login (`claude login`) or an `ANTHROPIC_API_KEY`
-that you export in your own shell. Every agent runs in the Docker sandbox (network off, only `api.anthropic.com` allowed), never on the host.
+Needs Docker, Python 3.11+, [uv](https://docs.astral.sh/uv/), and credentials for one agent harness: Claude Code (default; `claude login`
+or `ANTHROPIC_API_KEY`), OpenAI Codex CLI (`codex login` or `CODEX_API_KEY`) or Google Gemini CLI (`GEMINI_API_KEY`, or a paid Google login).
+Export a key in your own shell. Every agent runs in the Docker sandbox (network off, only its vendor's API hosts allowed), never on the host.
 
 ```bash
 uv tool install --editable .   # from this checkout: installs the `lemma` command
-lemma setup                    # or `lemma setup --auth api-key`: checks Docker, builds the agent image, tests the sandbox, fetches libduckdb
+lemma setup                    # Claude Code with your login; checks Docker, builds the agent image, tests the sandbox, fetches libduckdb
+lemma setup --auth api-key     # ... or Claude Code with ANTHROPIC_API_KEY
+lemma setup --harness codex --auth api-key    # ... or OpenAI Codex CLI with CODEX_API_KEY (default model gpt-6.1-sol; --model to change)
+lemma setup --harness gemini --auth api-key   # ... or Google Gemini CLI with GEMINI_API_KEY (default model gemini-3.8-flash)
 lemma optimize --db my.duckdb --sql query.sql    # agent writes, Verus proves, compiled; the executor lands in ~/.local/share/lemma/executors/
-lemma status                   # image, sandbox test, auth mode, DuckDB version, cached executors
+lemma status                   # harness, model, auth mode, image, sandbox test, DuckDB version, cached executors
 ```
 
-`lemma optimize --queue` proves the queries waiting in `$LEMMA_HOME/queue/*.sql`. Auth is an explicit choice (`agent_auth`, `docs/FLAGS.md`);
-a key goes into the container by name only and is never written anywhere. The in-DuckDB library (`lib.so`) is still pending.
+`lemma optimize --queue` proves the queries waiting in `$LEMMA_HOME/queue/*.sql`. Harness and auth are explicit choices (`harness`, `agent_auth`,
+`docs/FLAGS.md`; per-harness details in `research_loop/AGENT_SANDBOX.md` "Agent harnesses"); a key goes into the container by name only and is
+never written anywhere, a missing one stops setup, and nothing falls back to another harness or auth mode. Only Claude Code reports spend, so
+`max_budget_usd` caps Claude runs only. The in-DuckDB library (`lib.so`) is still pending.
 
 No assumption step is needed: with the default `assumptions = false` the proof makes no claim about your data. `lemma assumptions --db my.duckdb`
 (profile and approve data bounds) belongs to the UNMAINTAINED assumption-package path and is required only with `assumptions = true`.

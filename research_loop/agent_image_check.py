@@ -45,15 +45,19 @@ def advertised_tools() -> tuple[str, ...]:
     return ADVERTISED_TOOLS
 
 
-def check_agent_image(image: str, *, claude_cli: bool) -> dict:
+def check_agent_image(image: str, *, claude_cli: bool = False, cli: str | None = None) -> dict:
     """Run ``image`` once (network none, same code mounts) and compare the proxy's tools with the prompt's.
 
-    Returns ``{"agent_code_mounted": True, "agent_cli_version": ...}`` (the version only with ``claude_cli``). Raises ``ImageMismatch`` when a
+    ``cli`` names the agent CLI the image must hold (claude, codex, gemini); ``claude_cli=True`` is the old spelling of ``cli="claude"``.
+    Returns ``{"agent_code_mounted": True, "agent_cli_version": ...}`` (the version only with a CLI). Raises ``ImageMismatch`` when a
     tool is missing; a docker or import failure raises ``CalledProcessError`` (no fallback).
     """
+    cli = cli or ("claude" if claude_cli else None)
+    if cli is not None and cli not in ("claude", "codex", "gemini"):
+        raise ValueError(f"unknown agent CLI {cli!r}")
     script = f'python -c "{_LIST_TOOLS}"'
-    if claude_cli:
-        script += ' && echo "CLI $(claude --version)"'
+    if cli is not None:
+        script += f' && echo "CLI $({cli} --version)"'
     done = subprocess.run(
         ["docker", "run", "--rm", "--network", "none", "-e", "LEMMA_RUN_RUNQUERY_BLURB=preflight", *agent_code_mount_args(),
          "--entrypoint", "/bin/bash", image, "-c", script],
@@ -68,6 +72,6 @@ def check_agent_image(image: str, *, claude_cli: bool) -> dict:
     if missing:
         raise ImageMismatch(f"image {image} does not register the advertised MCP tool(s) {missing} (registered: {sorted(registered)}); nothing launched")
     evidence: dict = {"agent_code_mounted": True}
-    if claude_cli:
+    if cli is not None:
         evidence["agent_cli_version"] = lines["CLI"]
     return evidence

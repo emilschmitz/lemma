@@ -108,6 +108,7 @@ CHOICES: dict[str, tuple[Any, ...]] = {
     "agent_data_mode": ("none", "stats", "full"),
     "data_profile": ("none", "stats"),
     "agent_auth": ("login", "api_key"),
+    "harness": ("claude", "codex", "gemini"),
     "claude_effort": ("none", "low", "medium", "high", "xhigh", "max"),
     "cold_stream_mode": ("aggregate", "scalar"),
 }

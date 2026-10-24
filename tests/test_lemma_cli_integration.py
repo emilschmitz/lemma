@@ -114,7 +114,7 @@ def test_fresh_user_walkthrough_from_zero_with_only_the_llm_session_stubbed(fres
     exe.chmod(0o755)
     calls: list[dict] = []
 
-    def stub_session(sql: str, db_path: Path, package: Path, mode: str, log: Path) -> dict:
+    def stub_session(sql: str, db_path: Path, package: Path, mode: str, log: Path, harness_name: str = "claude") -> dict:
         calls.append({"sql": sql, "mode": mode, "package": str(package)})
         opt.child_env(mode)  # the real environment rules still apply (api_key needs the variable)
         return {"status": "SUCCESS", "run_dir": str(run_dir), "model": "claude-sonnet-5-5", "git_sha": "0" * 40, "official": {"speedup": 1.7}}

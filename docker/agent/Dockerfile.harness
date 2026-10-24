@@ -1,0 +1,37 @@
+# Agent sandbox image for the npm-installed agent harnesses ([agent] harness in lemma.toml), one image per harness:
+#   HARNESS=codex   -> lemma-agent:codex   (OpenAI Codex CLI, @openai/codex@0.162.1)
+#   HARNESS=gemini  -> lemma-agent:gemini  (Google Gemini CLI, @google/gemini-cli@0.63.0; needs Node >= 20)
+# Claude Code stays in docker/agent/Dockerfile (lemma-agent:claude). Same Python side as that file: MCP proxy, egress sidecar, entrypoint.
+# Build with host networking (the docker bridge here has no network at build time); runs stay --network none:
+#   docker build --network host --build-arg HARNESS=codex -t lemma-agent:codex -f docker/agent/Dockerfile.harness .
+# The versions are pinned for reproducible builds (lemma_cli/sandbox.py reads them from this file).
+
+FROM node:22.20.0-bookworm-slim AS node-cli
+ARG HARNESS
+RUN case "$HARNESS" in \
+      codex)  npm install -g --no-fund --no-audit @openai/codex@0.162.1 ;; \
+      gemini) npm install -g --no-fund --no-audit @google/gemini-cli@0.63.0 ;; \
+      *) echo "HARNESS must be codex or gemini, got '$HARNESS'" >&2; exit 2 ;; \
+    esac
+
+FROM python:3.12-slim-bookworm
+ARG HARNESS
+RUN apt-get update && apt-get install -y --no-install-recommends bash ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=node-cli /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-cli /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN case "$HARNESS" in \
+      codex)  ln -s /usr/local/lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex && codex --version ;; \
+      gemini) ln -s /usr/local/lib/node_modules/@google/gemini-cli/bundle/gemini.js /usr/local/bin/gemini && gemini --version ;; \
+    esac
+ENV PATH="/root/.local/bin:${PATH}"
+# duckdb: sandbox SQL. mcp/httpx: MCP stdio proxy + model sidecar → host UDS. Pin mcp<2 (PyPI also ships an unrelated mcp 2.x).
+RUN pip install --no-cache-dir duckdb==1.5.6 "mcp>=1.28,<2" httpx
+# Standalone use only: container runs bind-mount the repo's copy of these paths read-only over them (research_loop/agent_image_check.py).
+COPY db_extension/agent/ /app/lemma_agent/
+COPY research_loop/assemble_runquery.py /app/research_loop/assemble_runquery.py
+RUN printf '' > /app/research_loop/__init__.py
+COPY docker/agent/entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+ENV PYTHONPATH=/app
+WORKDIR /workspace
+ENTRYPOINT ["/app/entrypoint.sh"]
