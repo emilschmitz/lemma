@@ -19,6 +19,12 @@ Verdict: ``median(ours) * speed_bar_mult < median(duck)``; the bar is unchanged.
 excludes DuckDB's filtering (it happened at export), so the binary's rounds are labelled ``hot, excludes scan/filter`` and
 ``measure_in_duckdb`` is the REPORTED number (:func:`timing_labels`, docs/COMPARABILITY.md). The in-session ``run_runquery`` keeps its
 single binary run against the prepare-time DuckDB median and is labelled ``in_session_single_vs_prepare_duck``.
+
+The extension keeps an input cache (``lemma_cache``, db_extension/duckdb_ext/README.md): a repeated call on unchanged data reuses the
+converted input buffers. ``measure_in_duckdb`` therefore times our side twice: COLD (the cache is emptied before every timed call: the
+first call's cost, scan included) and WARM (the same query and binding just ran: inputs from the cache). The top-level medians and
+``speedup`` are the cold ones (what every call cost before the cache), ``cold`` / ``warm`` hold both, and ``verdict.basis`` names the
+one the verdict uses (cold).
 """
 
 from __future__ import annotations
@@ -212,6 +218,10 @@ def _template_round_timer(con, sql: str, speed_bar: dict, bindings: list[dict], 
 # ---- the in-DuckDB path (lemma.toml [engine] in_duckdb): the proved executor called from inside DuckDB, end to end ----
 
 MEASUREMENT_IN_DUCKDB = "in_duckdb_interleaved_medians"
+COLD_LABEL = "cold: first call, the extension's input cache emptied before every timed lemma_query (scan included)"
+WARM_LABEL = "warm: repeated call, the same query and binding ran just before (inputs from the input cache, no scan)"
+VERDICT_BASIS = "cold"
+CLEAR_CACHE_SQL = "SELECT * FROM lemma_cache_clear()"
 # The extension's error text when the proved run_query returned None (lemma.toml assumptions = false) and lemma_route_unproved is off.
 EXTENSION_DECLINED = "Lemma: declined:"
 
@@ -249,13 +259,16 @@ def lemma_query_sql(sql: str, binding: dict | None = None) -> str:
     return f"SELECT * FROM lemma_query({args})"
 
 
-def _median_round(con, sql: str, reps: int, params: dict | None = None, *, ours: bool = False) -> int:
+def _median_round(con, sql: str, reps: int, params: dict | None = None, *, ours: bool = False, cold: bool = False) -> int:
     """One round as in :func:`duck_round_timer`: an untimed run, then ``reps`` timed runs (execute + fetchall); their median.
-    ``ours``: the ``lemma_query`` side, whose decline is raised as :class:`InDuckdbDeclined` (never timed, never replaced)."""
+    ``ours``: the ``lemma_query`` side, whose decline is raised as :class:`InDuckdbDeclined` (never timed, never replaced).
+    ``cold``: the extension's input cache is emptied (untimed) before every timed run, so each one is a first call."""
     run = (lambda: _ours(con, sql)) if ours else (lambda: con.execute(sql, params).fetchall())
     run()
     samples: list[float] = []
     for _ in range(reps):
+        if cold:
+            con.execute(CLEAR_CACHE_SQL).fetchall()
         t0 = time.perf_counter()
         run()
         samples.append((time.perf_counter() - t0) * 1_000_000)
@@ -264,8 +277,10 @@ def _median_round(con, sql: str, reps: int, params: dict | None = None, *, ours:
 
 def in_duckdb_round_timers(
     speed_bar: dict, work_dir: Path, *, extension: Path, home: Path
-) -> tuple[Callable[..., int], Callable[..., int], Callable[[], None]]:
-    """(one round of ``lemma_query``, one round of DuckDB, close), both on ONE read-only connection under the bar's settings.
+) -> tuple[Callable[..., int], Callable[..., int], Callable[..., int], Callable[[], None]]:
+    """(one COLD round of ``lemma_query``, one WARM round of it, one round of DuckDB, close), all on ONE read-only connection under
+    the bar's settings. Cold: the extension's input cache is emptied before every timed call; warm: the round's untimed first call
+    fills it and the timed calls reuse it (``lemma_cache`` on).
 
     ``lemma_query`` is the whole in-DuckDB path: the scan of the needed columns in the caller's snapshot, the copy into the
     executor's buffers, the runtime check of every data assumption, the proved ``run_query`` and the rows back into DuckDB
@@ -290,6 +305,7 @@ def in_duckdb_round_timers(
         con.execute(f"PRAGMA temp_directory='{tmp}'")
         con.execute(f"LOAD '{extension}'")
         con.execute(f"SET lemma_home = '{home}'")
+        con.execute("SET lemma_cache = true")
     except duckdb.Error as exc:
         con.close()
         raise ValueError(str(exc)) from exc
@@ -312,6 +328,9 @@ def in_duckdb_round_timers(
         def ours_t(binding: dict) -> int:
             return _median_round(con, lemma_query_sql(sql, binding), reps, ours=True)
 
+        def ours_cold_t(binding: dict) -> int:
+            return _median_round(con, lemma_query_sql(sql, binding), reps, ours=True, cold=True)
+
         def duck_t(binding: dict) -> int:
             return _median_round(con, sql, reps, templates.python_values(template, binding))
 
@@ -322,7 +341,7 @@ def in_duckdb_round_timers(
         except BaseException:
             close()
             raise
-        return ours_t, duck_t, close
+        return ours_cold_t, ours_t, duck_t, close
     ours_sql = lemma_query_sql(sql)
     try:
         for _ in range(2):  # warm both sides (and load the executor library once)
@@ -331,13 +350,23 @@ def in_duckdb_round_timers(
     except BaseException:
         close()
         raise
-    return (lambda: _median_round(con, ours_sql, reps, ours=True)), (lambda: _median_round(con, sql, reps)), close
+    return (
+        (lambda: _median_round(con, ours_sql, reps, ours=True, cold=True)),
+        (lambda: _median_round(con, ours_sql, reps, ours=True)),
+        (lambda: _median_round(con, sql, reps)),
+        close,
+    )
 
 
 def measure_in_duckdb(
     speed_bar: dict, work_dir: Path, *, extension: Path, home: Path, k: int | None = None, timers: Callable | None = None
 ) -> dict:
-    """K interleaved rounds (alternating which side goes first) of the in-DuckDB path against DuckDB, summarized like the verdict.
+    """K interleaved rounds (alternating which side goes first) of the in-DuckDB path against DuckDB, summarized like the verdict;
+    twice: COLD (input cache emptied before every timed call) then WARM (repeated call, inputs from the cache).
+
+    The top-level fields (``ours_median_us``, ``duck_median_us``, ``speedup``, ``ratio_*``, ``rounds``) are the COLD rounds, the
+    meaning they had before the cache; ``cold`` and ``warm`` hold both summaries with their labels, and ``verdict`` says which one
+    the verdict is (``basis: cold``).
 
     A query template binds round i to ``template_bindings[i % len]`` on both sides, as the official measure does.
     ``timers`` stands in for :func:`in_duckdb_round_timers` (tests).
@@ -350,15 +379,27 @@ def measure_in_duckdb(
         return {"measurement": MEASUREMENT_IN_DUCKDB, "duck_reps": duck_reps(), "status": STATUS_DECLINED, "declined": True, "error": str(exc)}
 
     try:
-        ours, duck, close = (timers or in_duckdb_round_timers)(speed_bar, work_dir, extension=extension, home=home)
+        ours_cold, ours_warm, duck, close = (timers or in_duckdb_round_timers)(speed_bar, work_dir, extension=extension, home=home)
     except InDuckdbDeclined as exc:
         return declined(exc)
+    rounds_k = official_rounds() if k is None else k
+    bindings = speed_bar.get("template_bindings") or None
     try:
-        rounds = interleave(ours, duck, official_rounds() if k is None else k, speed_bar.get("template_bindings") or None)
+        cold = summarize(interleave(ours_cold, duck, rounds_k, bindings))
+        warm = summarize(interleave(ours_warm, duck, rounds_k, bindings))
     except InDuckdbDeclined as exc:
         return declined(exc)
     finally:
         close()
-    # The scan (with the transpiler's pushed predicate applied inside it) is in our time here: with pushdown/agent_scan on this is
-    # the reported number (timing_labels).
-    return {"measurement": MEASUREMENT_IN_DUCKDB, "duck_reps": duck_reps(), "includes_scan": True, "reported": filtering_on(), **summarize(rounds)}
+    # The scan (with the transpiler's pushed predicate applied inside it) is in our cold time: with pushdown/agent_scan on this is
+    # the reported number (timing_labels). The warm time reuses the inputs a previous call converted (same snapshot data).
+    return {
+        "measurement": MEASUREMENT_IN_DUCKDB,
+        "duck_reps": duck_reps(),
+        "includes_scan": True,
+        "reported": filtering_on(),
+        **cold,
+        "cold": {"label": COLD_LABEL, **cold},
+        "warm": {"label": WARM_LABEL, **warm},
+        "verdict": {"basis": VERDICT_BASIS, "label": COLD_LABEL, "speedup": cold["speedup"], "warm_speedup": warm["speedup"]},
+    }

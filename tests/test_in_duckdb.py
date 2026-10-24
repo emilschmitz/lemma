@@ -266,20 +266,28 @@ def test_in_duckdb_measure_interleaves_and_labels(tmp_path: Path) -> None:
     calls: list[str] = []
 
     def timers(_bar, _dir, *, extension, home):
-        def ours() -> int:
-            calls.append("ours")
+        def cold() -> int:
+            calls.append("cold")
             return 100
+
+        def warm() -> int:
+            calls.append("warm")
+            return 50
 
         def duck() -> int:
             calls.append("duck")
             return 300
 
-        return ours, duck, lambda: calls.append("closed")
+        return cold, warm, duck, lambda: calls.append("closed")
 
     out = official_measure.measure_in_duckdb({}, tmp_path, extension=tmp_path, home=tmp_path, k=3, timers=timers)
     assert out["measurement"] == official_measure.MEASUREMENT_IN_DUCKDB
-    assert calls == ["ours", "duck", "duck", "ours", "ours", "duck", "closed"]
+    assert calls == ["cold", "duck", "duck", "cold", "cold", "duck", "warm", "duck", "duck", "warm", "warm", "duck", "closed"]
+    # top level = cold (the first call, the meaning these fields had before the input cache); both labelled; the verdict names its basis
     assert out["ours_median_us"] == 100 and out["duck_median_us"] == 300 and out["speedup"] == 3.0
+    assert out["cold"]["speedup"] == 3.0 and out["warm"]["speedup"] == 6.0 and out["warm"]["ours_median_us"] == 50
+    assert out["cold"]["label"].startswith("cold") and out["warm"]["label"].startswith("warm")
+    assert out["verdict"] == {"basis": "cold", "label": out["cold"]["label"], "speedup": 3.0, "warm_speedup": 6.0}
 
 
 def test_in_duckdb_measure_closes_on_a_failed_round(tmp_path: Path) -> None:
@@ -289,7 +297,7 @@ def test_in_duckdb_measure_closes_on_a_failed_round(tmp_path: Path) -> None:
         def ours() -> int:
             raise RuntimeError("executor refused the data")
 
-        return ours, (lambda: 1), lambda: closed.append(True)
+        return ours, ours, (lambda: 1), lambda: closed.append(True)
 
     with pytest.raises(RuntimeError, match="refused"):
         official_measure.measure_in_duckdb({}, tmp_path, extension=tmp_path, home=tmp_path, k=2, timers=timers)

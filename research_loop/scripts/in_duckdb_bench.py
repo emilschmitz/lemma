@@ -5,7 +5,9 @@
 
 Each SQL must already have an executor in ``<home>/executors`` (``research_loop.in_duckdb.install_executor``). Runs as one
 heavy phase (no export or proof at the same time). Prints one JSON line per query (``official_measure.measure_in_duckdb``),
-plus ``lemma_last_query()`` timings of one extra call (scan, executor load+checks, run_query, total).
+plus ``lemma_last_query()`` timings of one extra cold call (input cache emptied first: scan, executor load+checks, run_query, total)
+and of the warm call right after it (inputs from the input cache), and ``lemma_cache_stats()``. The measure's top-level medians and
+``verdict`` are the cold ones; ``warm`` holds the repeated-call medians.
 """
 
 from __future__ import annotations
@@ -51,10 +53,20 @@ def main() -> None:
         con = duckdb.connect(str(args.db), read_only=True, config={"allow_unsigned_extensions": "true"})
         con.execute(f"LOAD '{args.extension}'")
         con.execute(f"SET lemma_home = '{args.home}'")
-        con.execute(official_measure.lemma_query_sql(sql, bindings[0] if bindings else None)).fetchall()
-        split = con.execute("SELECT scan_us, load_us, run_us, total_us, rows FROM lemma_last_query()").fetchone()
+        query = official_measure.lemma_query_sql(sql, bindings[0] if bindings else None)
+        names = ("scan", "executor_load_and_checks", "run_query", "total_in_init", "rows", "cache", "cache_bytes")
+        last = "SELECT scan_us, load_us, run_us, total_us, rows, cache, cache_bytes FROM lemma_last_query()"
+        con.execute(official_measure.CLEAR_CACHE_SQL).fetchall()
+        con.execute(query).fetchall()  # cold: the input cache is empty, the inputs are scanned (and stored)
+        cold = con.execute(last).fetchone()
+        con.execute(query).fetchall()  # warm: the same call again, inputs from the cache
+        warm = con.execute(last).fetchone()
+        cur = con.execute("SELECT * FROM lemma_cache_stats()")
+        stats = dict(zip((d[0] for d in cur.description), cur.fetchone(), strict=True))
         con.close()
-        out["split_us"] = dict(zip(("scan", "executor_load_and_checks", "run_query", "total_in_init", "rows"), split, strict=True))
+        out["split_us"] = dict(zip(names, cold, strict=True))  # the cold call ("scan" = scan + store into the cache)
+        out["split_us_warm"] = dict(zip(names, warm, strict=True))  # "scan" = plan + copy of the cached inputs
+        out["cache_stats"] = stats
         out["sql"] = sql
         print(json.dumps(out), flush=True)
 
