@@ -62,6 +62,9 @@
 #include "duckdb/storage/table/scan_state.hpp"
 #include "duckdb/transaction/duck_transaction.hpp"
 #include "duckdb/transaction/local_storage.hpp"
+#include "duckdb/transaction/meta_transaction.hpp"
+#include "duckdb/storage/buffer_manager.hpp"
+#include "duckdb/main/attached_database.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -77,6 +80,7 @@
 #include <dlfcn.h>
 #include <fstream>
 #include <condition_variable>
+#include <list>
 #include <map>
 #include <mutex>
 #include <regex>
@@ -156,7 +160,38 @@ struct LastQuery {
 	bool set = false;
 	std::string engine, reason, key, sql;
 	int64_t scan_us = -1, load_us = -1, run_us = -1, total_us = -1, rows = -1;
+	// The input cache (lemma_cache): "hit", "miss: stored", "miss: not stored (<why>)", "skip: <why>" or "off"; and the bytes of
+	// the cached inputs used or stored (-1: none).
+	std::string cache;
+	int64_t cache_bytes = -1;
 };
+
+// ---------------------------------------------------------------- the data version (the ONE trusted item of the input cache)
+//
+// DuckDB's own counter (DuckTransactionManager::last_commit) moves on EVERY commit, read-only ones included (every autocommit
+// SELECT commits and takes a commit id), so it cannot tell a repeated query that nothing changed. The version used here is built
+// from DuckDB's transaction notifications instead, which every connection's LemmaState receives (README "Input cache"):
+//   * TransactionBegin runs before the transaction can read or write anything (its snapshot is taken later, on first access);
+//   * TransactionCommit / TransactionRollback run after DuckDB committed (or rolled back) it;
+//   * a transaction that changed a non-temporary database has MetaTransaction::ModifiedDatabase() set (DuckDB refuses to commit
+//     changes of a transaction that never went through ModifyDatabase: the InternalException in CommitTransaction).
+// `epoch` counts ended transactions that modified a database (rollbacks too, conservatively); `open` counts connections inside a
+// transaction or a query. A transaction X whose snapshot is CURRENT AT EPOCH E (X's begin saw epoch E, the epoch is still E, and no
+// other connection is open) sees exactly the commits of the writers counted in E: every writer that ended before X began committed
+// before X's snapshot; a writer that ended after X began moved the epoch; a writer still running is open. So two transactions
+// current at the same epoch, without changes of their own, read the same committed data.
+struct DataVersion {
+	std::mutex lock;
+	uint64_t epoch = 0;
+	uint64_t open = 0;
+};
+
+DataVersion &Version() {
+	static auto *v = new DataVersion(); // never destroyed: connection states may outlive static destruction order
+	return *v;
+}
+
+constexpr uint64_t NO_EPOCH = UINT64_MAX; // a transaction that began before LOAD: its begin was not seen
 
 struct RunResult;
 
@@ -165,6 +200,8 @@ struct PendingRun {
 	std::string signature; // executor key + encoded parameters
 	std::shared_ptr<RunResult> result;
 	int64_t scan_us = 0;
+	std::string cache;
+	int64_t cache_bytes = -1;
 };
 
 class LemmaState : public ClientContextState {
@@ -176,8 +213,69 @@ public:
 	// lemma_query declined and lemma_route_unproved handed its SQL to DuckDB: the optimizer hook leaves that plan and its label alone.
 	bool routed_decline = false;
 	PendingRun pending;
+	// The data version (DataVersion), guarded by Version().lock: inside a transaction / a query, counted in `open`, and the epoch
+	// the current transaction began at (NO_EPOCH: unknown).
+	bool tx_open = false, query_open = false, counted = false;
+	uint64_t begin_epoch = NO_EPOCH;
+
+	~LemmaState() override {
+		auto &v = Version();
+		std::lock_guard<std::mutex> guard(v.lock);
+		if (counted) {
+			v.open--;
+			v.epoch++; // a connection destroyed inside a transaction: whatever it did, no cache entry outlives it
+		}
+	}
+	// Under Version().lock.
+	void Recount(DataVersion &v) {
+		bool now = tx_open || query_open;
+		if (now != counted) {
+			if (now) {
+				v.open++;
+			} else {
+				v.open--;
+			}
+			counted = now;
+		}
+	}
+	void MarkOpenUnknown() {
+		auto &v = Version();
+		std::lock_guard<std::mutex> guard(v.lock);
+		tx_open = true;
+		begin_epoch = NO_EPOCH;
+		Recount(v);
+	}
+	void TransactionBegin(MetaTransaction &, ClientContext &) override {
+		auto &v = Version();
+		std::lock_guard<std::mutex> guard(v.lock);
+		tx_open = true;
+		begin_epoch = v.epoch;
+		Recount(v);
+	}
+	void TransactionEnd(MetaTransaction &transaction) {
+		auto &v = Version();
+		std::lock_guard<std::mutex> guard(v.lock);
+		if (transaction.ModifiedDatabase()) {
+			v.epoch++;
+		}
+		tx_open = false;
+		begin_epoch = NO_EPOCH;
+		Recount(v);
+	}
+	void TransactionCommit(MetaTransaction &transaction, ClientContext &) override {
+		TransactionEnd(transaction);
+	}
+	void TransactionRollback(MetaTransaction &transaction, ClientContext &) override {
+		TransactionEnd(transaction); // a failed commit is reported here too: count it as a write
+	}
 
 	void QueryBegin(ClientContext &context) override {
+		{
+			auto &v = Version();
+			std::lock_guard<std::mutex> guard(v.lock);
+			query_open = true;
+			Recount(v);
+		}
 		std::lock_guard<std::mutex> guard(lock);
 		in_query = true;
 		query = context.GetCurrentQuery();
@@ -185,6 +283,12 @@ public:
 		pending = PendingRun();
 	}
 	void QueryEnd(ClientContext &context) override {
+		{
+			auto &v = Version();
+			std::lock_guard<std::mutex> guard(v.lock);
+			query_open = false;
+			Recount(v);
+		}
 		std::lock_guard<std::mutex> guard(lock);
 		in_query = false;
 		query.clear();
@@ -246,6 +350,7 @@ struct Executor {
 
 struct Manifest {
 	std::string dir, key, sql, normalized_sql, proof, lib_sha256, git_sha;
+	std::string manifest_sha256; // of manifest.json: part of the input cache key
 	std::vector<InEntry> inputs;
 	std::vector<OutCol> outputs;
 	std::vector<ParamSpec> params;
@@ -378,14 +483,18 @@ std::unique_ptr<Manifest> FindExecutor(ClientContext &context, const std::string
 		return nullptr;
 	}
 	lemma::Json j;
+	std::string manifest_text_sha;
 	try {
-		j = lemma::ParseJson(ReadFile(dir + "/manifest.json"));
+		std::string text = ReadFile(dir + "/manifest.json");
+		manifest_text_sha = lemma::Sha256Hex(text);
+		j = lemma::ParseJson(text);
 	} catch (std::runtime_error &e) {
 		throw InvalidInputException("Lemma: %s/manifest.json: %s", dir, std::string(e.what()));
 	}
 	auto m = make_uniq<Manifest>();
 	try {
 		m->dir = dir;
+		m->manifest_sha256 = manifest_text_sha;
 		m->key = j.At("key").Str();
 		m->sql = j.At("sql").Str();
 		m->normalized_sql = j.At("normalized_sql").Str();
@@ -914,12 +1023,30 @@ void DecodeChunk(const ColPlan &p, Vector &vec, idx_t count, TaskOut &t) {
 	}
 }
 
+// The converted inputs of one executor call, kept by the input cache (lemma_cache). Immutable once in the cache: every call that
+// uses it only reads it (shared_ptr), and eviction only drops the cache's reference.
+struct CachedInputs {
+	enum Kind : uint8_t { ROWS, OWNED, BYTES, BUFFER };
+	std::vector<Kind> kind;
+	std::vector<std::string> buffers;                 // BUFFER: strings, dictionaries (borrowed by lemma_run as they are)
+	std::vector<std::vector<uint8_t>> bytes;          // BYTES: bool, validity (borrowed as they are)
+	std::vector<std::unique_ptr<uint8_t[]>> owned;    // OWNED: a copy of the cells; each call gets its own library buffer
+	std::vector<uint64_t> width;                      // OWNED: bytes per cell
+	std::vector<LemmaCol> cols;                       // n of every input; data/len of BYTES and BUFFER inputs
+	uint64_t size = 0;                                // bytes held
+	uint64_t epoch = 0;
+	std::vector<weak_ptr<AttachedDatabase>> databases; // the databases read, alive: an address in the key is not reused
+};
+
 struct ScanResult {
 	std::vector<std::string> buffers;                // borrowed byte inputs: strings, dictionaries
 	std::vector<std::vector<uint8_t>> bytes;         // borrowed one-byte inputs: bool, validity
 	std::vector<std::unique_ptr<OwnedBuffer>> owned; // owned inputs (null where an input is not owned)
 	std::vector<LemmaCol> cols;
 	int64_t scan_us = 0;
+	std::shared_ptr<const CachedInputs> hold; // borrowed inputs that live in the input cache
+	std::string cache = "off";               // LastQuery::cache
+	int64_t cache_bytes = -1;
 
 	// lemma_run takes the owned buffers whatever it returns: from here on they are the library's.
 	void ReleaseOwned() {
@@ -1420,18 +1547,25 @@ PushedScan PlanPushdown(ClientContext &context, TableCatalogEntry &entry, const 
 // given; the same substitution as the SQL DuckDB answers a routed decline with.
 std::string SubstituteParams(const Manifest &m, const std::string &sql, const std::unordered_map<std::string, std::string> &literal);
 
-// Scan exactly the columns the manifest names, table by table, in the caller's transaction (its snapshot, its own uncommitted
-// changes included), on lemma_scan_threads threads (default: DuckDB's `threads`), in single-threaded row order. Fixed-width
-// integer and f64 fields are decoded once, straight into buffers of the executor library (owned inputs, ABI 3); bool and
-// validity into byte buffers; strings and dictionaries into byte strings.
-ScanResult ScanInputs(ClientContext &context, const Manifest &m, const std::unordered_map<std::string, std::string> &literals) {
-	auto start = std::chrono::steady_clock::now();
-	ScanResult res;
-	res.buffers.resize(m.inputs.size());
-	res.bytes.resize(m.inputs.size());
-	res.owned.resize(m.inputs.size());
-	res.cols.resize(m.inputs.size());
-	idx_t want_threads = ScanThreads(context);
+// One table of the manifest, resolved in the caller's transaction and planned: what ScanTable reads, and the scan's identity for
+// the input cache (the table, its pushed predicate as DuckDB planned it in this call).
+struct TablePrep {
+	size_t i = 0;
+	TableCatalogEntry *entry = nullptr;
+	DataTable *storage = nullptr;
+	DuckTransaction *transaction = nullptr;
+	vector<StorageIndex> ids;
+	vector<LogicalType> types;
+	std::vector<ColPlan> plans;
+	PushedScan pushed;
+	std::string identity;
+};
+
+// Resolve and plan every table of the manifest (column type checks, the pushed predicate with this call's values) without
+// reading a row.
+std::vector<TablePrep> PrepareInputs(ClientContext &context, const Manifest &m,
+                                     const std::unordered_map<std::string, std::string> &literals) {
+	std::vector<TablePrep> preps;
 	size_t i = 0;
 	while (i < m.inputs.size()) {
 		const InEntry &rows = m.inputs[i];
@@ -1552,9 +1686,54 @@ ScanResult ScanInputs(ClientContext &context, const Manifest &m, const std::unor
 				types = pushed.types;
 			}
 		}
-		uint64_t total = ScanTable(context, transaction, storage, ids, types, plans, m.exec, res, want_threads,
-		                           pushed.filters.get(), pushed.residual.get());
-		res.cols[i] = LemmaCol {nullptr, 0, total};
+		TablePrep prep;
+		prep.i = i;
+		prep.entry = &entry;
+		prep.storage = &storage;
+		prep.transaction = &transaction;
+		auto &catalog = entry.ParentCatalog();
+		prep.identity = catalog.GetName() + "." + entry.schema.name + "." + entry.name + "@" +
+		                std::to_string(reinterpret_cast<uintptr_t>(&catalog.GetAttached())) + "/" +
+		                std::to_string(reinterpret_cast<uintptr_t>(&storage)) + " where " +
+		                (rows.where.empty() ? std::string("-") : SubstituteParams(m, rows.where, literals));
+		if (pushed.empty) {
+			prep.identity += " planned: empty";
+		}
+		if (pushed.filters) {
+			for (auto &f : pushed.filters->filters) {
+				prep.identity += " filter[" + std::to_string(f.first) + "]: " + f.second->ToString("c" + std::to_string(f.first));
+			}
+		}
+		if (pushed.residual) {
+			prep.identity += " residual: " + pushed.residual->ToString();
+		}
+		prep.ids = std::move(ids);
+		prep.types = std::move(types);
+		prep.plans = std::move(plans);
+		prep.pushed = std::move(pushed);
+		preps.push_back(std::move(prep));
+		i = end;
+	}
+	return preps;
+}
+
+// Scan the prepared tables: exactly the columns the manifest names, in the caller's transaction (its snapshot, its own
+// uncommitted changes included), on lemma_scan_threads threads (default: DuckDB's `threads`), in single-threaded row order.
+// Fixed-width integer and f64 fields are decoded once, straight into buffers of the executor library (owned inputs, ABI 3); bool
+// and validity into byte buffers; strings and dictionaries into byte strings.
+ScanResult ScanPrepared(ClientContext &context, const Manifest &m, std::vector<TablePrep> &preps) {
+	auto start = std::chrono::steady_clock::now();
+	ScanResult res;
+	res.buffers.resize(m.inputs.size());
+	res.bytes.resize(m.inputs.size());
+	res.owned.resize(m.inputs.size());
+	res.cols.resize(m.inputs.size());
+	idx_t want_threads = ScanThreads(context);
+	for (auto &prep : preps) {
+		auto &plans = prep.plans;
+		uint64_t total = ScanTable(context, *prep.transaction, *prep.storage, prep.ids, prep.types, plans, m.exec, res,
+		                           want_threads, prep.pushed.filters.get(), prep.pushed.residual.get());
+		res.cols[prep.i] = LemmaCol {nullptr, 0, total};
 		for (auto &p : plans) {
 			if (p.role == Role::String) {
 				res.cols[p.k] = LemmaCol {nullptr, 0, total};
@@ -1567,7 +1746,6 @@ ScanResult ScanInputs(ClientContext &context, const Manifest &m, const std::unor
 				}
 			}
 		}
-		i = end;
 	}
 	for (size_t k = 0; k < res.cols.size(); k++) {
 		if (!res.owned[k] && res.bytes[k].empty() && !m.inputs[k].rows) {
@@ -1575,6 +1753,277 @@ ScanResult ScanInputs(ClientContext &context, const Manifest &m, const std::unor
 			res.cols[k].len = res.buffers[k].size();
 		}
 	}
+	res.scan_us = MicrosSince(start);
+	return res;
+}
+
+// ---------------------------------------------------------------- the input cache (lemma_cache)
+//
+// Key: the manifest (its sha256: the query, layouts, inputs, pushed predicates), the data epoch, and per table its identity (catalog,
+// schema, name, database and storage addresses) and its pushed predicate with this call's values substituted and as DuckDB
+// planned it. A query template's values reach the inputs only through the pushed predicates, so different values are different
+// keys. An entry is used only by a call whose snapshot is current at the entry's epoch (DataVersion) and that has no changes of its
+// own; otherwise the call scans and stores nothing. LRU eviction under lemma_cache_max_mb.
+
+struct InputCache {
+	std::mutex lock;
+	std::list<std::string> lru; // most recently used first
+	std::unordered_map<std::string, std::pair<std::shared_ptr<const CachedInputs>, std::list<std::string>::iterator>> map;
+	uint64_t bytes = 0, hits = 0, misses = 0, stores = 0, evictions = 0, skips = 0;
+
+	// Under `lock`.
+	void Drop(std::unordered_map<std::string, std::pair<std::shared_ptr<const CachedInputs>, std::list<std::string>::iterator>>::iterator it) {
+		bytes -= it->second.first->size;
+		lru.erase(it->second.second);
+		map.erase(it);
+	}
+	void DropOtherEpochs(uint64_t epoch) {
+		for (auto it = map.begin(); it != map.end();) {
+			auto next = std::next(it);
+			if (it->second.first->epoch != epoch) {
+				Drop(it);
+				evictions++;
+			}
+			it = next;
+		}
+	}
+};
+
+InputCache &Cache() {
+	static auto *c = new InputCache(); // never destroyed (see Version())
+	return *c;
+}
+
+uint64_t CacheCapBytes(ClientContext &context) {
+	Value v;
+	double mb = -1;
+	if (context.TryGetCurrentSetting("lemma_cache_max_mb", v) && !v.IsNull()) {
+		mb = v.GetValue<double>();
+	}
+	if (mb < 0) { // default: a quarter of DuckDB's memory_limit
+		return BufferManager::GetBufferManager(context).GetMaxMemory() / 4;
+	}
+	return uint64_t(mb * 1024.0 * 1024.0);
+}
+
+// memcpy of many (dest, src, bytes) jobs on `threads` threads, in pieces of at most 32 MB.
+void ParallelCopy(const std::vector<std::tuple<uint8_t *, const uint8_t *, uint64_t>> &jobs, idx_t threads) {
+	constexpr uint64_t PIECE = 32ull << 20;
+	std::vector<std::tuple<uint8_t *, const uint8_t *, uint64_t>> pieces;
+	for (auto &j : jobs) {
+		for (uint64_t off = 0; off < std::get<2>(j); off += PIECE) {
+			pieces.emplace_back(std::get<0>(j) + off, std::get<1>(j) + off, MinValue<uint64_t>(PIECE, std::get<2>(j) - off));
+		}
+	}
+	std::atomic<size_t> next {0};
+	auto work = [&]() {
+		for (size_t i = next++; i < pieces.size(); i = next++) {
+			std::memcpy(std::get<0>(pieces[i]), std::get<1>(pieces[i]), std::get<2>(pieces[i]));
+		}
+	};
+	idx_t n = MaxValue<idx_t>(1, MinValue<idx_t>(threads, idx_t(pieces.size())));
+	std::vector<std::thread> pool;
+	for (idx_t i = 1; i < n; i++) {
+		pool.emplace_back(work);
+	}
+	work();
+	for (auto &t : pool) {
+		t.join();
+	}
+}
+
+// Why this call may not use or fill the input cache ("" if it may), and the epoch its snapshot is current at.
+std::string CacheBlocker(ClientContext &context, std::vector<TablePrep> &preps, uint64_t &epoch) {
+	for (auto &prep : preps) {
+		auto &catalog = prep.entry->ParentCatalog();
+		if (catalog.IsTemporaryCatalog() || catalog.IsSystemCatalog() || catalog.GetAttached().IsTemporary()) {
+			return "reads a temporary table";
+		}
+		// The caller's own uncommitted changes (local appends, deletes, updates) are in its snapshot, not in anyone else's.
+		if (!prep.transaction->IsReadOnly() || prep.transaction->ChangesMade()) {
+			return "this transaction has uncommitted changes";
+		}
+	}
+	if (MetaTransaction::Get(context).ModifiedDatabase()) {
+		return "this transaction has uncommitted changes";
+	}
+	auto &st = GetState(context);
+	auto &v = Version();
+	std::lock_guard<std::mutex> guard(v.lock);
+	if (!st.tx_open || st.begin_epoch == NO_EPOCH) {
+		return "this transaction began before LOAD";
+	}
+	if (st.begin_epoch != v.epoch) {
+		return "a write committed since this transaction began";
+	}
+	if (v.open > (st.counted ? 1u : 0u)) {
+		return "another connection has an open transaction";
+	}
+	epoch = v.epoch;
+	return "";
+}
+
+std::string CacheKey(const Manifest &m, uint64_t epoch, const std::vector<TablePrep> &preps) {
+	std::string key = m.manifest_sha256 + "|" + m.lib_sha256 + "|epoch " + std::to_string(epoch);
+	for (auto &prep : preps) {
+		key += "|" + prep.identity;
+	}
+	return key;
+}
+
+// The inputs of one call from a cache entry: owned inputs copied into fresh buffers of the library (lemma_run takes them), the
+// borrowed ones handed over from the entry itself.
+ScanResult FromCache(ClientContext &context, const Manifest &m, const std::shared_ptr<const CachedInputs> &e) {
+	ScanResult res;
+	res.owned.resize(m.inputs.size());
+	res.cols = e->cols;
+	std::vector<std::tuple<uint8_t *, const uint8_t *, uint64_t>> jobs;
+	for (size_t k = 0; k < e->cols.size(); k++) {
+		if (e->kind[k] != CachedInputs::OWNED) {
+			continue;
+		}
+		uint64_t n = e->cols[k].n;
+		res.owned[k] = make_uniq<OwnedBuffer>(m.exec, k, n, e->width[k]);
+		res.cols[k] = LemmaCol {res.owned[k]->ptr, res.owned[k]->len, n};
+		jobs.emplace_back(res.owned[k]->ptr, e->owned[k].get(), n * e->width[k]);
+	}
+	ParallelCopy(jobs, ScanThreads(context));
+	res.hold = e;
+	res.cache_bytes = int64_t(e->size);
+	return res;
+}
+
+// A cache entry from a fresh scan: the borrowed inputs move into it (and `res` points at them there), the owned cells are copied.
+std::shared_ptr<CachedInputs> ToCache(ClientContext &context, const Manifest &m, ScanResult &res, uint64_t epoch,
+                                      std::vector<TablePrep> &preps) {
+	auto e = std::make_shared<CachedInputs>();
+	size_t n = m.inputs.size();
+	e->kind.resize(n);
+	e->buffers.resize(n);
+	e->bytes.resize(n);
+	e->owned.resize(n);
+	e->width.resize(n, 0);
+	e->cols = res.cols;
+	e->epoch = epoch;
+	std::vector<std::tuple<uint8_t *, const uint8_t *, uint64_t>> jobs;
+	for (size_t k = 0; k < n; k++) {
+		if (m.inputs[k].rows) {
+			e->kind[k] = CachedInputs::ROWS;
+		} else if (res.owned[k]) {
+			e->kind[k] = CachedInputs::OWNED;
+			e->width[k] = res.owned[k]->width;
+			uint64_t len = res.cols[k].n * e->width[k];
+			e->owned[k] = std::unique_ptr<uint8_t[]>(new uint8_t[MaxValue<uint64_t>(len, 1)]);
+			jobs.emplace_back(e->owned[k].get(), res.owned[k]->ptr, len);
+			e->cols[k] = LemmaCol {nullptr, 0, res.cols[k].n};
+			e->size += len;
+		} else if (!res.bytes[k].empty()) {
+			e->kind[k] = CachedInputs::BYTES;
+			e->bytes[k] = std::move(res.bytes[k]);
+			e->cols[k] = LemmaCol {e->bytes[k].data(), res.cols[k].len, res.cols[k].n};
+			e->size += e->bytes[k].size();
+		} else {
+			e->kind[k] = CachedInputs::BUFFER;
+			e->buffers[k] = std::move(res.buffers[k]);
+			e->cols[k] = LemmaCol {reinterpret_cast<const uint8_t *>(e->buffers[k].data()), e->buffers[k].size(), res.cols[k].n};
+			e->size += e->buffers[k].size();
+		}
+		if (e->kind[k] == CachedInputs::BYTES || e->kind[k] == CachedInputs::BUFFER) {
+			res.cols[k] = e->cols[k]; // the moved bytes (a short string's bytes move with it)
+		}
+	}
+	ParallelCopy(jobs, ScanThreads(context));
+	for (auto &prep : preps) {
+		e->databases.push_back(prep.entry->ParentCatalog().GetAttached().shared_from_this());
+	}
+	res.hold = e;
+	return e;
+}
+
+// The inputs of one executor call: from the input cache when this call's snapshot allows it and an entry exists, else from a
+// scan (stored in the cache when allowed). res.scan_us is the whole preparation (plan + cache or scan); res.cache says which.
+ScanResult ScanInputs(ClientContext &context, const Manifest &m, const std::unordered_map<std::string, std::string> &literals) {
+	auto start = std::chrono::steady_clock::now();
+	auto preps = PrepareInputs(context, m, literals);
+	if (!BoolSetting(context, "lemma_cache")) {
+		auto res = ScanPrepared(context, m, preps);
+		res.cache = "off";
+		res.scan_us = MicrosSince(start);
+		return res;
+	}
+	auto &cache = Cache();
+	uint64_t epoch = 0;
+	std::string blocker = CacheBlocker(context, preps, epoch);
+	if (!blocker.empty()) {
+		{
+			std::lock_guard<std::mutex> guard(cache.lock);
+			cache.skips++;
+		}
+		auto res = ScanPrepared(context, m, preps);
+		res.cache = "skip: " + blocker;
+		res.scan_us = MicrosSince(start);
+		return res;
+	}
+	std::string key = CacheKey(m, epoch, preps);
+	std::shared_ptr<const CachedInputs> found;
+	{
+		std::lock_guard<std::mutex> guard(cache.lock);
+		cache.DropOtherEpochs(epoch);
+		auto it = cache.map.find(key);
+		if (it != cache.map.end()) {
+			bool alive = it->second.first->databases.size() == preps.size();
+			for (size_t t = 0; alive && t < preps.size(); t++) {
+				auto db = it->second.first->databases[t].lock();
+				alive = db && db.get() == &preps[t].entry->ParentCatalog().GetAttached();
+			}
+			if (alive) {
+				found = it->second.first;
+				cache.lru.splice(cache.lru.begin(), cache.lru, it->second.second);
+				cache.hits++;
+			} else {
+				cache.Drop(it);
+				cache.evictions++;
+			}
+		}
+		if (!found) {
+			cache.misses++;
+		}
+	}
+	if (found) {
+		auto res = FromCache(context, m, found);
+		res.cache = "hit";
+		res.scan_us = MicrosSince(start);
+		return res;
+	}
+	auto res = ScanPrepared(context, m, preps);
+	uint64_t cap = CacheCapBytes(context);
+	uint64_t need = 0;
+	for (size_t k = 0; k < m.inputs.size(); k++) {
+		need += res.owned[k] ? res.cols[k].n * res.owned[k]->width : res.bytes[k].size() + res.buffers[k].size();
+	}
+	if (need > cap) {
+		res.cache = "miss: not stored (" + std::to_string(need) + " bytes > lemma_cache_max_mb)";
+		res.scan_us = MicrosSince(start);
+		return res;
+	}
+	auto entry = ToCache(context, m, res, epoch, preps);
+	{
+		std::lock_guard<std::mutex> guard(cache.lock);
+		auto it = cache.map.find(key);
+		if (it != cache.map.end()) {
+			cache.Drop(it); // a concurrent call stored the same inputs first
+		}
+		while (!cache.lru.empty() && cache.bytes + entry->size > cap) {
+			cache.Drop(cache.map.find(cache.lru.back()));
+			cache.evictions++;
+		}
+		cache.lru.push_front(key);
+		cache.map[key] = {entry, cache.lru.begin()};
+		cache.bytes += entry->size;
+		cache.stores++;
+	}
+	res.cache = "miss: stored";
+	res.cache_bytes = int64_t(entry->size);
 	res.scan_us = MicrosSince(start);
 	return res;
 }
@@ -1871,6 +2320,8 @@ struct LemmaBindData : public TableFunctionData {
 	// lemma_route_unproved: the executor already ran (at bind or plan time, to be able to route a decline); Init uses this result.
 	std::shared_ptr<RunResult> precomputed;
 	int64_t precomputed_scan_us = 0;
+	std::string precomputed_cache;
+	int64_t precomputed_cache_bytes = -1;
 
 	unique_ptr<FunctionData> Copy() const override {
 		auto c = make_uniq<LemmaBindData>();
@@ -1881,6 +2332,8 @@ struct LemmaBindData : public TableFunctionData {
 		c->from_optimizer = from_optimizer;
 		c->precomputed = precomputed;
 		c->precomputed_scan_us = precomputed_scan_us;
+		c->precomputed_cache = precomputed_cache;
+		c->precomputed_cache_bytes = precomputed_cache_bytes;
 		return std::move(c);
 	}
 	bool Equals(const FunctionData &other) const override {
@@ -1910,13 +2363,23 @@ std::string RunSignature(const Manifest &m, const std::vector<ParamBytes> &param
 	return sig;
 }
 
-// Scan in the caller's transaction and run the executor once: (result, scan_us).
-std::pair<std::shared_ptr<RunResult>, int64_t> ScanAndRun(ClientContext &context, const Manifest &m,
-                                                          const std::vector<ParamBytes> &params,
-                                                          const std::unordered_map<std::string, std::string> &literals) {
+// The inputs (input cache or scan) in the caller's transaction, then the executor once.
+struct Ran {
+	std::shared_ptr<RunResult> first;
+	int64_t second = 0; // scan_us: plan + scan or cache
+	std::string cache;
+	int64_t cache_bytes = -1;
+};
+
+Ran ScanAndRun(ClientContext &context, const Manifest &m, const std::vector<ParamBytes> &params,
+               const std::unordered_map<std::string, std::string> &literals) {
 	auto scan = ScanInputs(context, m, literals);
-	auto result = std::make_shared<RunResult>(RunExecutor(m, scan, params));
-	return {result, scan.scan_us};
+	Ran out;
+	out.first = std::make_shared<RunResult>(RunExecutor(m, scan, params));
+	out.second = scan.scan_us;
+	out.cache = scan.cache;
+	out.cache_bytes = scan.cache_bytes;
+	return out;
 }
 
 std::string DeclinedRouteReason(const std::string &reason) {
@@ -2006,6 +2469,8 @@ unique_ptr<TableRef> LemmaQueryBindReplace(ClientContext &context, TableFunction
 		state.pending.signature = RunSignature(*manifest, params);
 		state.pending.result = run.first;
 		state.pending.scan_us = run.second;
+		state.pending.cache = run.cache;
+		state.pending.cache_bytes = run.cache_bytes;
 		return nullptr;
 	}
 	Parser parser(context.GetParserOptions());
@@ -2020,6 +2485,8 @@ unique_ptr<TableRef> LemmaQueryBindReplace(ClientContext &context, TableFunction
 	lq.key = manifest->key;
 	lq.sql = sql;
 	lq.scan_us = run.second;
+	lq.cache = run.cache;
+	lq.cache_bytes = run.cache_bytes;
 	lq.total_us = MicrosSince(start);
 	state.Record(lq);
 	{
@@ -2070,6 +2537,8 @@ unique_ptr<FunctionData> LemmaQueryBind(ClientContext &context, TableFunctionBin
 		if (st.pending.result && st.pending.signature == RunSignature(*manifest, bind->params)) {
 			bind->precomputed = st.pending.result;
 			bind->precomputed_scan_us = st.pending.scan_us;
+			bind->precomputed_cache = st.pending.cache;
+			bind->precomputed_cache_bytes = st.pending.cache_bytes;
 			st.pending = PendingRun();
 		}
 	}
@@ -2083,15 +2552,19 @@ unique_ptr<GlobalTableFunctionState> LemmaQueryInit(ClientContext &context, Tabl
 	auto start = std::chrono::steady_clock::now();
 	auto state = make_uniq<LemmaGlobalState>();
 	int64_t scan_us;
+	LastQuery lq;
 	if (bind.precomputed) {
 		state->result = bind.precomputed;
 		scan_us = bind.precomputed_scan_us;
+		lq.cache = bind.precomputed_cache;
+		lq.cache_bytes = bind.precomputed_cache_bytes;
 	} else {
 		auto run = ScanAndRun(context, *bind.manifest, bind.params, bind.literals);
 		state->result = run.first;
 		scan_us = run.second;
+		lq.cache = run.cache;
+		lq.cache_bytes = run.cache_bytes;
 	}
-	LastQuery lq;
 	lq.key = bind.manifest->key;
 	lq.sql = bind.sql;
 	lq.scan_us = scan_us;
@@ -2181,7 +2654,8 @@ unique_ptr<FunctionData> ScanInputsBind(ClientContext &context, TableFunctionBin
 unique_ptr<GlobalTableFunctionState> ScanInputsInit(ClientContext &context, TableFunctionInitInput &input) {
 	auto &bind = input.bind_data->Cast<LemmaBindData>();
 	const Manifest &m = *bind.manifest;
-	auto scan = ScanInputs(context, m, {}); // fixed SQL only: a template's pushed predicate without its values is an error
+	auto preps = PrepareInputs(context, m, {}); // fixed SQL only: a template's pushed predicate without its values is an error
+	auto scan = ScanPrepared(context, m, preps); // always a scan: the input cache is not consulted
 	auto state = make_uniq<ScanInputsState>();
 	for (size_t k = 0; k < m.inputs.size(); k++) {
 		const InEntry &e = m.inputs[k];
@@ -2225,9 +2699,10 @@ struct LastState : public GlobalTableFunctionState {
 
 unique_ptr<FunctionData> LastQueryBind(ClientContext &context, TableFunctionBindInput &input, vector<LogicalType> &types,
                                        vector<string> &names) {
-	names = {"engine", "reason", "query_key", "sql", "scan_us", "load_us", "run_us", "total_us", "rows"};
+	names = {"engine", "reason", "query_key", "sql", "scan_us", "load_us", "run_us", "total_us", "rows", "cache", "cache_bytes"};
 	types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::BIGINT,
-	         LogicalType::BIGINT,  LogicalType::BIGINT,  LogicalType::BIGINT,  LogicalType::BIGINT};
+	         LogicalType::BIGINT,  LogicalType::BIGINT,  LogicalType::BIGINT,  LogicalType::BIGINT,  LogicalType::VARCHAR,
+	         LogicalType::BIGINT};
 	auto bind = make_uniq<LastBind>();
 	auto &st = GetState(context);
 	std::lock_guard<std::mutex> guard(st.lock);
@@ -2257,6 +2732,64 @@ void LastQueryFunction(ClientContext &, TableFunctionInput &data, DataChunk &out
 	output.SetValue(6, 0, num(q.run_us));
 	output.SetValue(7, 0, num(q.total_us));
 	output.SetValue(8, 0, num(q.rows));
+	output.SetValue(9, 0, q.cache.empty() ? Value(LogicalType::VARCHAR) : Value(q.cache));
+	output.SetValue(10, 0, num(q.cache_bytes));
+	output.SetCardinality(1);
+}
+
+// ---------------------------------------------------------------- lemma_cache_stats(), lemma_cache_clear()
+
+struct CacheStatsBind : public TableFunctionData {
+	std::vector<Value> row;
+};
+
+unique_ptr<FunctionData> CacheStatsBindFn(ClientContext &context, TableFunctionBindInput &, vector<LogicalType> &types,
+                                         vector<string> &names) {
+	names = {"enabled", "entries", "bytes", "max_bytes", "hits", "misses", "stores", "evictions", "skips", "data_epoch"};
+	types = {LogicalType::BOOLEAN, LogicalType::BIGINT, LogicalType::BIGINT, LogicalType::BIGINT, LogicalType::BIGINT,
+	         LogicalType::BIGINT,  LogicalType::BIGINT, LogicalType::BIGINT, LogicalType::BIGINT, LogicalType::BIGINT};
+	auto bind = make_uniq<CacheStatsBind>();
+	uint64_t epoch;
+	{
+		auto &v = Version();
+		std::lock_guard<std::mutex> guard(v.lock);
+		epoch = v.epoch;
+	}
+	auto &c = Cache();
+	std::lock_guard<std::mutex> guard(c.lock);
+	auto big = [](uint64_t x) { return Value::BIGINT(int64_t(x)); };
+	bind->row = {Value::BOOLEAN(BoolSetting(context, "lemma_cache")), big(c.map.size()), big(c.bytes),
+	             big(CacheCapBytes(context)), big(c.hits), big(c.misses), big(c.stores), big(c.evictions), big(c.skips),
+	             big(epoch)};
+	return std::move(bind);
+}
+
+// lemma_cache_clear(): drop every entry (calls holding one keep it until they finish); one row: entries and bytes dropped.
+unique_ptr<FunctionData> CacheClearBind(ClientContext &, TableFunctionBindInput &, vector<LogicalType> &types,
+                                        vector<string> &names) {
+	names = {"entries", "bytes"};
+	types = {LogicalType::BIGINT, LogicalType::BIGINT};
+	auto bind = make_uniq<CacheStatsBind>();
+	auto &c = Cache();
+	std::lock_guard<std::mutex> guard(c.lock);
+	bind->row = {Value::BIGINT(int64_t(c.map.size())), Value::BIGINT(int64_t(c.bytes))};
+	c.map.clear();
+	c.lru.clear();
+	c.bytes = 0;
+	return std::move(bind);
+}
+
+void OneRowFunction(ClientContext &, TableFunctionInput &data, DataChunk &output) {
+	auto &st = data.global_state->Cast<LastState>();
+	if (st.done) {
+		output.SetCardinality(0);
+		return;
+	}
+	st.done = true;
+	auto &row = data.bind_data->Cast<CacheStatsBind>().row;
+	for (idx_t i = 0; i < row.size(); i++) {
+		output.SetValue(i, 0, row[i]);
+	}
 	output.SetCardinality(1);
 }
 
@@ -2389,12 +2922,16 @@ void LemmaOptimize(OptimizerExtensionInput &input, unique_ptr<LogicalOperator> &
 			lq.engine = "duckdb";
 			lq.reason = DeclinedRouteReason(run.first->decline_reason);
 			lq.scan_us = run.second;
+			lq.cache = run.cache;
+			lq.cache_bytes = run.cache_bytes;
 			lq.total_us = MicrosSince(start);
 			state.Record(lq);
 			return;
 		}
 		bind->precomputed = run.first;
 		bind->precomputed_scan_us = run.second;
+		bind->precomputed_cache = run.cache;
+		bind->precomputed_cache_bytes = run.cache_bytes;
 	}
 	bind->manifest = std::shared_ptr<Manifest>(manifest.release());
 	bind->sql = query_sql;
@@ -2444,6 +2981,14 @@ void LoadInternal(ExtensionLoader &loader) {
 	                          "Threads of the in-DuckDB scan that hands the columns to a proved executor (0: DuckDB's threads "
 	                          "setting). The rows are the same for every value",
 	                          LogicalType::BIGINT, Value::BIGINT(0));
+	config.AddExtensionOption("lemma_cache",
+	                          "Keep the converted input buffers of a proved executor call and reuse them for a repeated call whose "
+	                          "snapshot reads the same data (README: input cache); false: every call scans",
+	                          LogicalType::BOOLEAN, Value::BOOLEAN(true));
+	config.AddExtensionOption("lemma_cache_max_mb",
+	                          "Size cap of the input cache in MB (fractions allowed), least recently used entries evicted first; "
+	                          "-1 (default): a quarter of memory_limit",
+	                          LogicalType::DOUBLE, Value::DOUBLE(-1));
 	config.AddExtensionOption("lemma_home", "Lemma's directory: executors/<key>/{lib.so,manifest.json,query.sql}, queue/",
 	                          LogicalType::VARCHAR, Value(DefaultHome()));
 	loader.RegisterFunction(LemmaQueryFunctionDef());
@@ -2451,6 +2996,8 @@ void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(last);
 	loader.RegisterFunction(
 	    TableFunction("lemma_scan_inputs", {LogicalType::VARCHAR}, ScanInputsFunction, ScanInputsBind, ScanInputsInit));
+	loader.RegisterFunction(TableFunction("lemma_cache_stats", {}, OneRowFunction, CacheStatsBindFn, LastQueryInit));
+	loader.RegisterFunction(TableFunction("lemma_cache_clear", {}, OneRowFunction, CacheClearBind, LastQueryInit));
 	loader.RegisterFunction(
 	    ScalarFunction("lemma_normalize_sql", {LogicalType::VARCHAR}, LogicalType::VARCHAR, NormalizeSqlScalar));
 	loader.RegisterFunction(ScalarFunction("lemma_sql_key", {LogicalType::VARCHAR}, LogicalType::VARCHAR, SqlKeyScalar));
@@ -2459,7 +3006,9 @@ void LoadInternal(ExtensionLoader &loader) {
 	OptimizerExtension::Register(config, ext);
 	ExtensionCallback::Register(config, make_shared_ptr<LemmaConnectionCallback>());
 	for (auto &connection : ConnectionManager::Get(db).GetConnectionList()) {
-		GetState(*connection); // connections opened before LOAD (including the one running it)
+		// Connections opened before LOAD (including the one running it): their transaction may have begun unseen, so each counts
+		// as open, at an unknown epoch, until its next commit or rollback (the input cache stays unused until then).
+		GetState(*connection).MarkOpenUnknown();
 	}
 	loader.SetDescription("Lemma: proved query executors (Verus-verified run_query) inside DuckDB");
 }
