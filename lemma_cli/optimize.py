@@ -1,4 +1,5 @@
-"""`lemma optimize`: run the pipeline (transpile -> sandboxed agent -> verify -> compile) for one query and install the result in the cache.
+"""`lemma optimize`: run the pipeline (transpile -> sandboxed agent -> verify -> compile) for one query and install the proved result as an
+in-DuckDB executor (``$LEMMA_HOME/executors/<key>/lib.so`` + manifest, read by the DuckDB extension).
 
 The pipeline itself is research_loop/scripts/run_container_agent.py, started as a child process; the agent session runs inside the
 Docker sandbox that script sets up (network none, allowlisted model-API egress). Nothing here runs a model on the host.
@@ -118,7 +119,66 @@ def run_pipeline(sql: str, db: Path, package: Path | None, mode: str, log: Path,
     return result
 
 
-def optimize_one(sql: str, db: Path, *, force: bool = False) -> Path:
+def install_in_duckdb(run_dir: Path) -> Path:
+    """Install the marked submission of ``run_dir`` as an in-DuckDB executor under ``$LEMMA_HOME/executors``. The spec is emitted again from
+    the run's own settings and schema (the spec its body was proved against) and Verus verifies and compiles the library again; any
+    failure installs nothing (``install_executor`` stages and renames)."""
+    os.environ["LEMMA_IN_DUCKDB"] = "true"  # the product path installs for the in-DuckDB extension (lemma.toml [engine] in_duckdb)
+    from research_loop.scripts.in_duckdb_install_run import install_run
+
+    return install_run(run_dir, lemma_home())
+
+
+def _us(value: Any) -> str:
+    return "?" if not isinstance(value, (int, float)) or value < 0 else (f"{value / 1000:.1f} ms" if value >= 1000 else f"{value:.0f} us")
+
+
+def bench(sql: str, db: Path) -> dict[str, Any]:
+    """The in-DuckDB measure (``official_measure.measure_in_duckdb``): ``lemma_query`` against the same SQL on DuckDB, interleaved, cold
+    (input cache emptied first) and warm (inputs from the cache)."""
+    import tempfile
+
+    from declarative_spec.heavy_phase import heavy_phase
+    from lemma_cli import duck
+    from research_loop import official_measure
+    from research_loop.decl_query_measure import duck_settings
+
+    _cli, ext = duck.binaries()
+    with tempfile.TemporaryDirectory(prefix="lemma-bench-") as tmp:
+        work = Path(tmp)
+        bar = {"sql": sql, "db_path": str(db), "duck_settings": duck_settings(work)}
+        with heavy_phase("measure"):
+            return official_measure.measure_in_duckdb(bar, work, extension=ext, home=lemma_home())
+
+
+def summary(dest: Path, db: Path, record: dict[str, Any], measured: dict[str, Any] | None) -> list[str]:
+    manifest = read_json(dest / "manifest.json")
+    lines = [
+        f"PROVED  {manifest['proof']} (Verus), installed {dest}",
+        f"  sql:  {manifest['normalized_sql']}",
+        "  " + ("no data assumptions: it may decline (e.g. a checked overflow), then the query is an error, or DuckDB answers it labelled "
+                "when you SET lemma_route_unproved = true" if not manifest["assumptions"] else "proved under an assumption package (checked at run time)"),
+    ]
+    if measured is not None:
+        if measured.get("status") == "DECLINED":
+            lines.append(f"  bench: DECLINED on this data ({measured.get('error', '')[-200:]})")
+        else:
+            cold, warm = measured["cold"], measured["warm"]
+            lines.append(f"  bench (in DuckDB, median of {len(cold.get('rounds', [])) or '?'} rounds): cold {_us(cold['ours_median_us'])} vs DuckDB "
+                         f"{_us(cold['duck_median_us'])} ({cold['speedup']:.2f}x); warm {_us(warm['ours_median_us'])} ({warm['speedup']:.2f}x)")
+    official = record.get("official") or {}
+    if isinstance(official, dict) and official.get("speedup") is not None:
+        lines.append(f"  pipeline measure (proved binary vs DuckDB, details in the run log): {official['speedup']:.2f}x")
+    lines += [
+        "Use it:",
+        f"  lemma duckdb {db}          # our DuckDB with Lemma mode on; type the query",
+        f"  lemma duckdb {db} -c \"{manifest['normalized_sql']}\"",
+        "  SELECT * FROM lemma_last_query();   -- engine = lemma when the proved program answered",
+    ]
+    return lines
+
+
+def optimize_one(sql: str, db: Path, *, force: bool = False, measure: bool = False) -> Path:
     state = require_setup()
     apply_home_config()
     mode = auth_mode()
@@ -129,10 +189,11 @@ def optimize_one(sql: str, db: Path, *, force: bool = False) -> Path:
     with_assumptions = lemma_config.assumptions_enabled()
     package = approved_package(db) if with_assumptions else None
     key = sql_key(sql)
-    pkg_sha, existing = (sha256_file(package) if package is not None else None), read_json(cache.executor_dir(key) / "manifest.json")
+    pkg_sha = sha256_file(package) if package is not None else None
+    existing = read_json(cache.executor_dir(key) / cache.PROVENANCE)
     if (
-        existing and not force and existing.get("assumption_package_sha256") == pkg_sha and existing.get("db_path") == str(db)
-        and bool(existing.get("assumptions", True)) == with_assumptions  # an executor cached before the flag was made under a package
+        existing and not force and (cache.executor_dir(key) / "lib.so").is_file() and existing.get("assumption_package_sha256") == pkg_sha
+        and existing.get("db_path") == str(db) and bool(existing.get("assumptions")) == with_assumptions
     ):
         say(f"already optimized: {cache.executor_dir(key)} (--force to redo)")
         return cache.executor_dir(key)
@@ -146,24 +207,26 @@ def optimize_one(sql: str, db: Path, *, force: bool = False) -> Path:
     if record.get("status") != "SUCCESS":
         raise CliError(f"not optimized: status {record.get('status')}: {record.get('error', '')[-600:]}\nlog: {log}")
     run_dir = Path(record["run_dir"])
+    say("proved by the pipeline; installing the in-DuckDB executor (Verus verifies the same body again and compiles the library) ...")
+    try:
+        dest = install_in_duckdb(run_dir)
+    except Exception as exc:  # the proof stands, but nothing is installed: say so, never install something else
+        raise CliError(f"proved, but the in-DuckDB install failed, nothing installed: {type(exc).__name__}: {str(exc)[-1500:]}\nrun: {run_dir}") from exc
     official = record.get("official") or {}
-    dest = cache.install(sql, {
-        "db_path": str(db), "assumptions": with_assumptions, "assumption_package_sha256": pkg_sha, "agent_harness": harness(), "agent_model": record.get("model"), "agent_auth": mode,
-        "image_id": state.get("image_id"), "git_sha": record.get("git_sha"), "run_dir": str(run_dir),
-        "speedup": official.get("speedup") if isinstance(official, dict) else None,
+    cache.record_provenance(dest, {
+        "db_path": str(db), "assumptions": with_assumptions, "assumption_package_sha256": pkg_sha, "agent_harness": harness(), "agent_model": record.get("model"),
+        "agent_auth": mode, "image_id": state.get("image_id"), "run_dir": str(run_dir), "speedup": official.get("speedup") if isinstance(official, dict) else None,
     }, run_dir)
-    manifest = read_json(dest / "manifest.json")
-    say(f"installed {dest}")
-    if manifest["binary"] is None:
-        say("  note: this pipeline run kept no compiled binary; the proof and the verified body are in proved/, binary and lib.so are pending")
+    for line in summary(dest, db, record, bench(normalize_sql(sql), db) if measure else None):
+        say(line)
     return dest
 
 
-def optimize(db_arg: str, sql_arg: str, params: list[str], force: bool) -> int:
+def optimize(db_arg: str, sql_arg: str, params: list[str], force: bool, measure: bool = False) -> int:
     sql = read_sql(sql_arg)
     if params:
         sql = bind_params(sql, params)
-    optimize_one(sql, resolve_db(db_arg), force=force)
+    optimize_one(sql, resolve_db(db_arg), force=force, measure=measure)
     return 0
 
 

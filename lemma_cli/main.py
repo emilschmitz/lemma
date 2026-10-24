@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from lemma_cli.common import CliError, redact, repo_root, say
 
@@ -25,12 +26,38 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--reprofile", action="store_true", help="measure again (drops the earlier approval)")
     o = sub.add_parser("optimize", help="prove and cache an executor for one query (--sql) or for the queued misses (--queue)")
     o.add_argument("--db")
+    o.add_argument("sql_file", nargs="?", help="a .sql file (or use --sql)")
     o.add_argument("--sql", help="a .sql file or the SQL text")
     o.add_argument("--params", nargs="*", default=[], help="values for ? placeholders, in order")
     o.add_argument("--queue", action="store_true", help="process $LEMMA_HOME/queue/*.sql in file-name order")
     o.add_argument("--force", action="store_true")
+    o.add_argument("--bench", action="store_true", help="after installing, time the executor inside DuckDB against DuckDB (cold and warm)")
+    sub.add_parser("list", help="installed executors: key, SQL, database, proof line, created")
+    r = sub.add_parser("remove", help="delete one installed executor")
+    r.add_argument("key", help="the executor key or a prefix of it (at least 6 hex characters, see `lemma list`)")
+    d = sub.add_parser("duckdb", help="start our DuckDB 1.5.6 with the Lemma extension and lemma_mode on; prints how to use it from your own DuckDB")
+    d.add_argument("db", nargs="?", help="a DuckDB file (default: in-memory)")
+    d.add_argument("-c", dest="command", help="run this SQL and exit")
     sub.add_parser("status", help="harness, model, auth mode, image, sandbox test, DuckDB version, cached executors")
     return ap
+
+
+def list_cmd() -> int:
+    from lemma_cli import cache
+
+    executors = cache.list_executors()
+    if not executors:
+        say(f"no executors installed in {cache.executors_dir()} (lemma optimize --db FILE --sql QUERY)")
+        return 0
+    for e in executors:
+        made = e.get("optimize") or {}
+        key = e.get("key") or e.get("sql_key") or Path(e["dir"]).name
+        if "lib_sha256" not in e:  # a manifest of the CLI before the in-DuckDB install (no lib.so): the extension does not run it
+            say(f"{key[:12]}  NOT USABLE IN DUCKDB (old CLI format, no lib.so): lemma remove {key[:12]}, then lemma optimize again")
+            continue
+        say(f"{key[:12]}  {e.get('proof', '?')}  created {made.get('installed_at') or '?'}  db {made.get('db_path') or '?'}")
+        say(f"              {e.get('normalized_sql', e.get('sql', ''))[:200]}")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -51,13 +78,29 @@ def main(argv: list[str] | None = None) -> int:
             from lemma_cli.assumptions import assumptions
 
             return assumptions(args.db, margin=args.margin, value_margin=args.value_margin, joins=tuple(args.join), reprofile=args.reprofile)
+        if args.cmd == "list":
+            return list_cmd()
+        if args.cmd == "remove":
+            from lemma_cli import cache
+
+            say(f"removed {cache.remove(args.key)}")
+            return 0
+        if args.cmd == "duckdb":
+            from lemma_cli import duck
+
+            return duck.run(args.db, args.command)
         from lemma_cli import optimize as opt
 
         if args.queue:
             return opt.process_queue(args.db, args.force)
-        if not (args.db and args.sql):
-            raise CliError("lemma optimize needs --db PATH and --sql FILE_OR_TEXT (or --queue)")
-        return opt.optimize(args.db, args.sql, args.params, args.force)
+        if args.sql and args.sql_file:
+            raise CliError("give the SQL once: --sql or a .sql file, not both")
+        if args.sql_file and not Path(args.sql_file).is_file():
+            raise CliError(f"no SQL file {args.sql_file} (SQL text goes in --sql \"...\")")
+        sql = args.sql or args.sql_file
+        if not (args.db and sql):
+            raise CliError("lemma optimize needs --db PATH and the query (--sql TEXT_OR_FILE, or a .sql file), or --queue")
+        return opt.optimize(args.db, sql, args.params, args.force, args.bench)
     except CliError as exc:
         say(f"lemma: {exc}", err=True)
         return 2
