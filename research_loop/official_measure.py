@@ -306,6 +306,8 @@ def in_duckdb_round_timers(
         con.execute(f"LOAD '{extension}'")
         con.execute(f"SET lemma_home = '{home}'")
         con.execute("SET lemma_cache = true")
+        if settings.get("lemma_cache_max_mb") is not None:  # a bench override (in_duckdb_bench --cache-max-mb); else the default cap
+            con.execute(f"SET lemma_cache_max_mb = {float(settings['lemma_cache_max_mb'])}")
     except duckdb.Error as exc:
         con.close()
         raise ValueError(str(exc)) from exc

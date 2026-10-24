@@ -8,6 +8,7 @@ mode into a temporary LEMMA_HOME, as tests/test_in_duckdb.py does).
 
 from __future__ import annotations
 
+import json
 import threading
 from pathlib import Path
 
@@ -239,3 +240,68 @@ def test_concurrent_readers_get_correct_rows(chome: Path, tmp_path: Path) -> Non
     for th in threads:
         th.join()
     assert not errors, errors[0]
+
+
+# ---------------------------------------------------------------- lent inputs (ABI 5) and the version-4 path
+
+
+def _abi(home: Path, sql: str) -> int:
+    return json.loads((in_duckdb.executor_dir(sql, home) / "manifest.json").read_text())["abi_version"]
+
+
+@needs_ext
+@pytest.mark.parametrize("sql", [USUM, GROUP])
+def test_abi5_the_cache_lends_its_buffers_with_no_copy(sql: str, chome: Path, tmp_path: Path) -> None:
+    """ABI 5: a miss stores the scan's own buffers (no copy) and every hit lends them to lemma_run_borrowed (no allocation, no
+    copy): the cache's bytes do not move on hits, the copy counter stays put, and the rows equal DuckDB's and the cache-off rows."""
+    assert _abi(chome, sql) == 5
+    con = _db(chome, tmp_path)
+    con.execute("SELECT * FROM lemma_cache_clear()").fetchall()
+    want = con.execute(sql).fetchall()
+    before = _stats(con)
+    first, cache = _lemma(con, sql)
+    stored = _stats(con)
+    assert cache == "miss: stored" and _same(first, want, False)
+    assert stored["entries"] == 1 and stored["bytes"] > 0 and stored["copies"] == before["copies"]
+    for _ in range(3):
+        assert _lemma(con, sql) == (first, "hit")
+    after = _stats(con)
+    assert (after["bytes"], after["entries"], after["copies"], after["copy_bytes"]) == (
+        stored["bytes"], 1, before["copies"], before["copy_bytes"]
+    )
+    assert after["hits"] == stored["hits"] + 3
+    assert _same(_cache_off(con, sql), want, False)
+
+
+@pytest.fixture(scope="module")
+def v4home(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """GROUP installed as a version-4 library (lemma_run only: the library takes its input buffers)."""
+    if not EXTENSION.is_file() or not VERUS.is_file():
+        pytest.skip("build the extension first (db_extension/duckdb_ext/build.sh) and install Verus")
+    root = tmp_path_factory.mktemp("lemma_home_v4")
+    db = root / "schema.duckdb"
+    con = duckdb.connect(str(db))
+    _fill(con, 0)
+    con.close()
+    _install("group", root, db, abi=4)
+    return root
+
+
+@needs_ext
+def test_a_version_4_executor_still_runs_and_copies_its_cached_inputs(v4home: Path, chome: Path, tmp_path: Path) -> None:
+    assert _abi(v4home, GROUP) == 4 and _abi(chome, GROUP) == 5
+    con = _connect(v4home, str(tmp_path / "v4.duckdb"))
+    _fill(con, 11, rows=60)
+    con.execute("SELECT * FROM lemma_cache_clear()").fetchall()
+    want = con.execute(GROUP).fetchall()
+    before = _stats(con)
+    v4_rows, cache = _lemma(con, GROUP)
+    assert cache == "miss: stored" and _same(v4_rows, want, False)
+    stored = _stats(con)
+    assert stored["copies"] == before["copies"] + 1  # ABI 4: the store copies the owned cells (lemma_run takes the scan's buffers)
+    assert _lemma(con, GROUP) == (v4_rows, "hit")
+    hit = _stats(con)
+    assert hit["copies"] == stored["copies"] + 1 and hit["bytes"] == stored["bytes"]  # each hit copies into fresh library buffers
+    assert _same(_cache_off(con, GROUP), want, False)
+    con.execute(f"SET lemma_home = '{chome}'")  # the version-5 executor of the same SQL, on the same data
+    assert _same(_lemma(con, GROUP)[0], v4_rows, False) and _same(_lemma(con, GROUP)[0], v4_rows, False)

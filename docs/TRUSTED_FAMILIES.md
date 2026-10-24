@@ -512,6 +512,12 @@ file open). Tests: `tests/test_in_duckdb_cache.py` (hit on repeat; INSERT/UPDATE
 invalidate; no reuse with local changes; another open transaction; template bindings are separate entries; cache off; LRU
 eviction; concurrent readers; every answer equals DuckDB's and the cache-off answer).
 
+Executor ABI 5 (`lemma_run_borrowed`) changes how the cached bytes reach the executor, not this item: the owned input cells are
+lent to the library (read in place) instead of copied into a buffer it takes. That is fixed host glue of the library template
+(`db_extension/duckdb_ext/README.md` "unsafe", block 6: a `Vec` over the lent buffer that is never written or dropped) and of
+the extension (the entry's buffers are immutable and held by `shared_ptr` until the call returns); the executor gets the same
+bytes and runs the same checks, the proof is untouched.
+
 ## Menu (25 families)
 
 | id | kind | spec_ret | purpose |

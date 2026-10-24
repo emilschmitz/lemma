@@ -1,5 +1,6 @@
-// The C ABI of a Lemma executor library (ABI version 4: version 3 plus owned input columns; version 3 added the DECLINED
-// status of lemma_run, version 2 query-template parameters). Emitted by declarative_spec/assemble_library.py, the same
+// The C ABI of a Lemma executor library (ABI version 5: version 4 plus lemma_run_borrowed, which reads the owned-type input
+// columns in place without taking them; version 4 added owned input columns, version 3 the DECLINED status of lemma_run,
+// version 2 query-template parameters). Emitted by declarative_spec/assemble_library.py, the same
 // template for every query; the proved run_query sits behind lemma_run. Little-endian cells throughout.
 #pragma once
 
@@ -17,6 +18,9 @@ extern "C" {
 // (cap * cell width), n <= cap cells written by the caller. lemma_run (called with the layout's ncols) takes every owned
 // buffer as the memory of its Vec, whatever it returns; a buffer never passed to lemma_run goes back with lemma_free_input.
 // Every other field is BORROWED: the library reads but never writes or keeps it.
+// LENT owned buffers (ABI 5, lemma_run_borrowed): the same buffers of lemma_alloc_input, but the library only reads them during
+// the call and never frees, writes or keeps them; the caller keeps them (unwritten) at least until the call returns and returns
+// them with lemma_free_input afterwards. One buffer may be lent to several calls, also at the same time.
 typedef struct {
 	const uint8_t *data;
 	uint64_t len;
@@ -55,9 +59,11 @@ typedef const char *(*lemma_text_fn)(void); // lemma_query_sql, lemma_input_layo
 typedef int32_t (*lemma_run_fn)(const LemmaCol *cols, uint64_t ncols, const LemmaParam *params, uint64_t nparams,
                                 LemmaOut *out);
 typedef void (*lemma_free_out_fn)(LemmaOut *out);
+// ABI 5: lemma_run_borrowed has lemma_run's signature and statuses; its owned-type columns are LENT, not taken (see LemmaCol).
 // An owned buffer of `cap` zeroed cells for input `index` (NULL when that input is not owned).
 typedef uint8_t *(*lemma_alloc_input_fn)(uint64_t index, uint64_t cap);
-// Return an owned buffer of input `index` (len = its allocated bytes) that was never passed to lemma_run.
+// Return an owned buffer of input `index` (len = its allocated bytes) that was never passed to lemma_run (a buffer only ever
+// LENT to lemma_run_borrowed, ABI 5, goes back here after its last call returned).
 typedef void (*lemma_free_input_fn)(uint64_t index, uint8_t *data, uint64_t len);
 
 #ifdef __cplusplus
