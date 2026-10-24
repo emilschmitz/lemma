@@ -13,12 +13,15 @@
 #   duckdb/duckdb                  our DuckDB v1.5.6 CLI with Lemma statically linked
 #   duckdb/lemma.duckdb_extension  the loadable extension for a stock DuckDB v1.5.6
 #
-# The DuckDB binaries come from DIR (default db_extension/duckdb_ext/build/release, made by db_extension/duckdb_ext/build.sh).
+# The DuckDB binaries come from DIR (default db_extension/duckdb_ext/build/portable/release, made by scripts/release/build_portable.sh in
+# the manylinux_2_28 container, so they run on glibc >= 2.28). Binaries that need a newer glibc than MAX_GLIBC (e.g. a host build of
+# db_extension/duckdb_ext/build.sh on a rolling distribution) are refused: they would not start on the user's machine.
 # The Verus docs come from DIR (default research_loop/vendor/verus_docs); their COMMIT must be the pinned Verus commit.
 # The tree must be clean: the bundle is HEAD, nothing else. dist/ is gitignored; nothing here is committed.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-BUILD="$ROOT/db_extension/duckdb_ext/build/release"
+BUILD="$ROOT/db_extension/duckdb_ext/build/portable/release"
+MAX_GLIBC=2.28
 DOCS="$ROOT/research_loop/vendor/verus_docs"
 VERUS_COMMIT=3a4d30bcdc4571e7927af97be9c4664973083eda  # Verus 0.2026.07.18.3a4d30b (lemma_cli/setup_cmd.py VERUS_VERSION)
 while [[ $# -gt 0 ]]; do
@@ -33,7 +36,10 @@ DUCKDB_VERSION=v1.5.6
 CLI="$BUILD/duckdb"
 EXT="$BUILD/extension/lemma/lemma.duckdb_extension"
 for f in "$CLI" "$EXT"; do
-  [[ -f "$f" ]] || { echo "missing $f: build it with db_extension/duckdb_ext/build.sh (or pass --duckdb-build DIR)" >&2; exit 1; }
+  [[ -f "$f" ]] || { echo "missing $f: build it with scripts/release/build_portable.sh (or pass --duckdb-build DIR)" >&2; exit 1; }
+  need="$(objdump -T "$f" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)"
+  [[ "$(printf '%s\n' "${need#GLIBC_}" "$MAX_GLIBC" | sort -V | tail -1)" == "$MAX_GLIBC" ]] || {
+    echo "$f needs $need, newer than glibc $MAX_GLIBC: build the portable binaries with scripts/release/build_portable.sh" >&2; exit 1; }
 done
 got="$("$CLI" -csv -noheader -c "SELECT version()")"
 [[ "$got" == "$DUCKDB_VERSION" ]] || { echo "$CLI is DuckDB $got, not $DUCKDB_VERSION" >&2; exit 1; }
@@ -72,7 +78,7 @@ chmod 755 "$OUT/install.sh" "$OUT/duckdb/duckdb"
 cat > "$OUT/VERSION" <<EOF
 lemma $VERSION
 source $SHA
-duckdb $DUCKDB_VERSION (CLI and extension, platform linux_amd64)
+duckdb $DUCKDB_VERSION (CLI and extension, platform linux_amd64, glibc >= $MAX_GLIBC)
 built $(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
 
