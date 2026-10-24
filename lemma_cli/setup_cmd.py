@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -53,6 +54,11 @@ def check_prover() -> str:
     done = subprocess.run([str(verus), "--version"], capture_output=True, text=True, timeout=60, check=False)
     if done.returncode != 0 or f"Version: {VERUS_VERSION}" not in done.stdout:
         raise CliError(f"{verus} is not Verus {VERUS_VERSION} (exit {done.returncode}: {redact((done.stdout + done.stderr).strip()[-300:])}): {VERUS_HOWTO}")
+    docs = repo_root() / "research_loop" / "vendor" / "verus_docs" / "COMMIT"  # the Verus guide/examples the agent reads (declarative_spec/drive.py)
+    commit = json.loads((verus.parent / "version.json").read_text())["verus"]["commit"]
+    if not docs.is_file() or docs.read_text().strip() != commit:
+        raise CliError(f"the Verus docs for the agent ({docs.parent}) are missing or not at Verus commit {commit[:12]}: the release bundle ships "
+                       "them; in a checkout run research_loop/scripts/fetch_verus_docs.sh")
     if shutil.which("rustup") is None:
         raise CliError(f"rustup not found on PATH (Verus compiles with the Rust toolchain {VERUS_TOOLCHAIN}): install rustup (https://rustup.rs), then {VERUS_HOWTO}")
     toolchains = subprocess.run(["rustup", "toolchain", "list"], capture_output=True, text=True, timeout=60, check=False).stdout

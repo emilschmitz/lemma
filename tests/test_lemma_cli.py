@@ -506,6 +506,11 @@ def test_setup_stops_when_verus_is_missing_and_says_how_to_get_it(tmp_path: Path
     fake.chmod(0o755)
     with pytest.raises(common.CliError, match="is not Verus 0.2026.07.18.3a4d30b"):
         setup_cmd.check_prover()
+    fake.write_text("#!/bin/sh\necho 'Verus\n  Version: 0.2026.07.18.3a4d30b'\n")
+    (fake.parent / "version.json").write_text(json.dumps({"verus": {"commit": "3a4d30b" + "0" * 33}}))
+    monkeypatch.setattr(setup_cmd, "repo_root", lambda: tmp_path / "src")
+    with pytest.raises(common.CliError, match="Verus docs for the agent .* missing or not at Verus commit 3a4d30b00000"):
+        setup_cmd.check_prover()
 
 
 # --- the pipeline child process (a stub run_container_agent.py: the only thing stubbed is the LLM session) ---
