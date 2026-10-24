@@ -6,13 +6,13 @@ columns as caller buffers through ``lemma_run``. That entry point is a FIXED TEM
 the per-field decode lines generated from the spec's column structs: no agent code is in it. Its caller in research_loop
 (the in-engine executor cache) emits it only when the feature flag of lemma.toml is on.
 
-C ABI (version 4; the C header is ``lemma_abi.h`` of the database extension):
+C ABI (version 5; the C header is ``lemma_abi.h`` of the database extension):
 
     struct LemmaCol   { const uint8_t *data; uint64_t len; uint64_t n; };     // len bytes at data; n values
     struct LemmaParam { uint32_t kind; const uint8_t *data; uint64_t len; };  // one query-template parameter value
     struct LemmaOut   { uint8_t *ptr; uint64_t len; uint64_t cap; };          // owned by the library: release with lemma_free_out
 
-    uint32_t    lemma_abi_version(void);       // 4
+    uint32_t    lemma_abi_version(void);       // 5 (4 for a library assembled with abi=4: no lemma_run_borrowed)
     const char *lemma_query_sql(void);         // the SQL the spec was emitted from (NUL-terminated)
     const char *lemma_input_layout(void);      // one line per LemmaCol, in order: "rows <table>" or "<table>.<field> <rust type>"
     const char *lemma_output_layout(void);     // one line per result column: "<field> <rust type>"
@@ -21,6 +21,8 @@ C ABI (version 4; the C header is ``lemma_abi.h`` of the database extension):
     void        lemma_free_input(uint64_t index, uint8_t *data, uint64_t len); // give back an owned buffer lemma_run never got
     int32_t     lemma_run(const LemmaCol *cols, uint64_t ncols, const LemmaParam *params, uint64_t nparams, LemmaOut *out);
                                                // 0 OK, 1 DECLINED, 2 ERROR (declarative_spec/decline.py ABI_STATUS_*)
+    int32_t     lemma_run_borrowed(const LemmaCol *cols, uint64_t ncols, const LemmaParam *params, uint64_t nparams, LemmaOut *out);
+                                               // version 5: the same, the owned-type columns LENT (read in place, never freed)
     void        lemma_free_out(LemmaOut *out);
 
 Inputs, per column struct of the spec in order: one ``rows`` entry (``n`` = the table's row count, no data), then one entry per
@@ -44,6 +46,16 @@ cells); the caller writes the cells in place and passes ``len`` = the allocated 
 truncated to ``n``) before it checks anything else, so the cells are copied once (DuckDB vector -> this buffer) and the library
 frees them whatever ``lemma_run`` returns; a buffer the caller never passes it returns with ``lemma_free_input``. Borrowed
 columns (``bool``, strings, dictionaries) are read, never written or kept, as in version 2.
+
+Lent columns (new in version 5): ``lemma_run_borrowed`` takes the same arguments as ``lemma_run`` but does NOT take the owned-type
+buffers: each must still be a buffer of ``lemma_alloc_input`` of this library for that column (so a ``Box<[T]>`` of ``len / size_of::<T>()``
+cells, any bit pattern a T), which the caller keeps alive and unwritten until the call returns and frees later with
+``lemma_free_input``. The library reads it in place: a ``Vec`` made over the buffer (``Vec::from_raw_parts``, UNSAFE 6/6) is never
+written, grown or dropped. It is held by ``LemmaIn`` until the verified loader moves it into the column struct, which is then held by
+``LemmaLent`` (``LemmaLentArc`` for a parallel spec, released only once every other reference to the struct is gone); both forget
+the lent ``Vec``s instead of dropping them, on every path, unwinding included. Everything in between makes only shared references to
+the columns: the checks (``&[T]``, ``iter``), the verified loader (a move into the struct) and ``run_query`` (``&Cols``). The
+extension's input cache hands its buffers to many calls this way, with no copy; ``lemma_run`` keeps its version-4 meaning.
 
 Parameters (a query template, ``declarative_spec/templates.py``; new in version 2): one ``LemmaParam`` per ``// PARAM`` line of
 the spec, in ``run_query``'s order. ``kind`` 1 = an integer, ``data`` its 8 bytes as a little-endian i64 (BIGINT as is, DATE the day
@@ -78,7 +90,8 @@ from declarative_spec.assemble import (
     _stitch_verus,
 )
 
-ABI_VERSION = 4
+ABI_VERSION = 5
+ABI_VERSIONS = (4, 5)  # 4: lemma_run only (owned columns taken); 5 adds lemma_run_borrowed (owned columns lent)
 STATUS_OK, STATUS_DECLINED, STATUS_ERROR = decline.ABI_STATUS_OK, decline.ABI_STATUS_DECLINED, decline.ABI_STATUS_ERROR
 DECLINE_REASON = "run_query returned None (assumptions = false: the proved body declined this data; no rows were computed)"
 KIND_INT, KIND_F64, KIND_BOOL, KIND_STR = 1, 2, 3, 4
@@ -146,7 +159,7 @@ def _decode_field(index: int, suffix: str, fname: str, fty: str) -> str:
     var = f"{suffix}_{_local_ident(fname)}"
     label = f"{suffix}.{_local_ident(fname)}"
     if owned(fty):
-        return f'    let {var}: Vec<{fty}> = lemma_take(&cols[{index}], "{label}");\n'
+        return f'    let {var}: LemmaIn<{fty}> = lemma_input(&cols[{index}], "{label}", lend);\n'
     if fty == "String":
         return f'    let {var}: Vec<String> = lemma_strings(&cols[{index}], "{label}");\n'
     if fty == "bool":
@@ -246,7 +259,7 @@ def _encode_column(fname: str, fty: str) -> str:
     return f"    for r in res.iter() {{\n{valid}    }}\n    for r in res.iter() {{\n{cell}    }}\n"
 
 
-# The fixed host template. `unsafe` appears ONLY here, in five small functions, each commented with the caller's contract.
+# The fixed host template. `unsafe` appears ONLY here, in six small functions, each commented with the caller's contract.
 _TEMPLATE_HEAD = r"""
 // ===== HOST C ABI (fixed template, not agent code; outside verus!, unverified, reviewed) =====
 #[repr(C)]
@@ -303,7 +316,7 @@ pub extern "C" fn lemma_param_layout() -> *const u8 {
     LEMMA_PARAM_LAYOUT.as_ptr()
 }
 
-// UNSAFE 1/5. Contract: `ptr` points to `n` initialized T (the caller's LemmaCol or LemmaParam array) that outlive the call.
+// UNSAFE 1/6. Contract: `ptr` points to `n` initialized T (the caller's LemmaCol or LemmaParam array) that outlive the call.
 fn lemma_slice<'a, T>(ptr: *const T, n: u64, what: &str) -> &'a [T] {
     if n == 0 {
         return &[];
@@ -312,7 +325,7 @@ fn lemma_slice<'a, T>(ptr: *const T, n: u64, what: &str) -> &'a [T] {
     unsafe { std::slice::from_raw_parts(ptr, n as usize) }
 }
 
-// UNSAFE 2/5. Contract: `data` points to `len` readable bytes (a LemmaCol or LemmaParam buffer) that outlive the call and are
+// UNSAFE 2/6. Contract: `data` points to `len` readable bytes (a LemmaCol or LemmaParam buffer) that outlive the call and are
 // not written during it.
 fn lemma_bytes<'a>(data: *const u8, len: u64, what: &str) -> &'a [u8] {
     if len == 0 {
@@ -338,14 +351,14 @@ fn lemma_param_str(p: &LemmaParam, name: &str) -> String {
     String::from_utf8(lemma_bytes(p.data, p.len, "a parameter").to_vec()).expect("a string parameter is not UTF-8")
 }
 
-// UNSAFE 3/5. Contract: `out` points to a writable LemmaOut. The bytes move to the caller, who returns them with lemma_free_out.
+// UNSAFE 3/6. Contract: `out` points to a writable LemmaOut. The bytes move to the caller, who returns them with lemma_free_out.
 fn lemma_write_out(out: *mut LemmaOut, bytes: Vec<u8>) {
     let mut bytes = std::mem::ManuallyDrop::new(bytes);
     let value = LemmaOut { ptr: bytes.as_mut_ptr(), len: bytes.len() as u64, cap: bytes.capacity() as u64 };
     unsafe { out.write(value) };
 }
 
-// UNSAFE 4/5. Contract: `out` was filled by lemma_run of this library and not freed before; it is reset to empty.
+// UNSAFE 4/6. Contract: `out` was filled by lemma_run of this library and not freed before; it is reset to empty.
 #[no_mangle]
 pub extern "C" fn lemma_free_out(out: *mut LemmaOut) {
     if out.is_null() {
@@ -363,13 +376,13 @@ pub extern "C" fn lemma_free_out(out: *mut LemmaOut) {
 }
 
 // Owned input columns (ABI 3). A fixed-width field arrives in a buffer this library allocated (lemma_alloc_input): a Box<[T]>
-// of `cap` zeroed cells, written in place by the caller. Allocation is safe code; taking it back is UNSAFE 5/5.
+// of `cap` zeroed cells, written in place by the caller. Allocation is safe code; taking it back is UNSAFE 5/6.
 fn lemma_alloc_vec<T: Copy + Default>(cap: u64) -> *mut u8 {
     let cells: Box<[T]> = vec![T::default(); cap as usize].into_boxed_slice();
     Box::into_raw(cells) as *mut T as *mut u8
 }
 
-// UNSAFE 5/5. Contract: `col.data` was returned by lemma_alloc_input of this library for this very column (so it is a
+// UNSAFE 5/6. Contract: `col.data` was returned by lemma_alloc_input of this library for this very column (so it is a
 // Box<[T]> of col.len / size_of::<T>() cells: the same T, the same length), every cell holds a T (any bit pattern is one for
 // the integer and f64 cell types this is used with), and the caller gives the buffer up with this call: it is taken once, by
 // lemma_run or by lemma_free_input, never both. The Vec owns the memory afterwards and frees it.
@@ -384,6 +397,132 @@ fn lemma_take<T>(col: &LemmaCol, label: &str) -> Vec<T> {
     assert!(col.n <= cap as u64, "{}: {} values in a buffer of {} cells", label, col.n, cap);
     cells.truncate(col.n as usize);
     cells
+}
+
+// UNSAFE 6/6 (ABI 5, lemma_run_borrowed). Contract: `col.data` was returned by lemma_alloc_input of this library for this very
+// column (a Box<[T]> of col.len / size_of::<T>() cells of the global allocator: the same T, the same length), every cell holds a T,
+// and the caller neither writes nor frees it before lemma_run_borrowed returns. The Vec made here is LENT: it is only read (shared
+// references), never written, grown, shrunk or dropped: LemmaIn, LemmaLent and LemmaLentArc forget it on every path, unwinding
+// included, so the caller still owns the buffer afterwards. Two calls may read one buffer at once (only reads).
+fn lemma_borrow<T>(col: &LemmaCol, label: &str) -> Vec<T> {
+    let w = std::mem::size_of::<T>() as u64;
+    assert!(
+        !col.data.is_null() && col.len % w == 0 && (col.data as usize) % std::mem::align_of::<T>() == 0,
+        "{}: not an owned buffer of {}-byte cells", label, w
+    );
+    let cap = (col.len / w) as usize;
+    assert!(col.n <= cap as u64, "{}: {} values in a buffer of {} cells", label, col.n, cap);
+    unsafe { Vec::from_raw_parts(col.data as *mut T, col.n as usize, cap) }
+}
+
+// An owned-type input column in lemma_execute: TAKEN (lemma_run: the Vec owns the library buffer and frees it as any Vec) or LENT
+// (lemma_run_borrowed: the Vec of lemma_borrow, forgotten instead of dropped). Until the verified loader moves it into its column
+// struct (into_vec), only shared references to it are made (the checks).
+struct LemmaIn<T> {
+    v: Option<Vec<T>>,
+    lent: bool,
+}
+
+impl<T> LemmaIn<T> {
+    fn into_vec(mut self) -> Vec<T> {
+        self.v.take().unwrap()
+    }
+}
+
+impl<T> std::ops::Deref for LemmaIn<T> {
+    type Target = Vec<T>;
+    fn deref(&self) -> &Vec<T> {
+        self.v.as_ref().unwrap()
+    }
+}
+
+impl<T> Drop for LemmaIn<T> {
+    fn drop(&mut self) {
+        if self.lent {
+            if let Some(v) = self.v.take() {
+                std::mem::forget(v);
+            }
+        }
+    }
+}
+
+fn lemma_input<T>(col: &LemmaCol, label: &str, lend: bool) -> LemmaIn<T> {
+    if lend {
+        LemmaIn { v: Some(lemma_borrow(col, label)), lent: true }
+    } else {
+        LemmaIn { v: Some(lemma_take(col, label)), lent: false }
+    }
+}
+
+// A loaded column struct whose lent fields (lemma_run_borrowed) are forgotten, not freed, when it is dropped (on every path,
+// unwinding included): `release` replaces each lent Vec by an empty one and forgets it; the struct's other fields (strings, bools,
+// dictionaries the library decoded) drop as usual. run_query gets `&C` (Deref).
+struct LemmaLent<C> {
+    cols: Option<C>,
+    lent: bool,
+    release: fn(&mut C),
+}
+
+impl<C> LemmaLent<C> {
+    fn new(cols: C, lent: bool, release: fn(&mut C)) -> LemmaLent<C> {
+        LemmaLent { cols: Some(cols), lent, release }
+    }
+}
+
+impl<C> std::ops::Deref for LemmaLent<C> {
+    type Target = C;
+    fn deref(&self) -> &C {
+        self.cols.as_ref().unwrap()
+    }
+}
+
+impl<C> Drop for LemmaLent<C> {
+    fn drop(&mut self) {
+        if let Some(mut c) = self.cols.take() {
+            if self.lent {
+                (self.release)(&mut c);
+            }
+        }
+    }
+}
+
+// The same for a parallel spec (run_query also takes `&Arc<C>` and may clone it into threads): the lent fields are released once
+// this is the only reference left (a thread still holding a clone would otherwise free them when it drops the last one), so the
+// drop waits for every clone to go.
+struct LemmaLentArc<C> {
+    arc: Option<std::sync::Arc<C>>,
+    lent: bool,
+    release: fn(&mut C),
+}
+
+impl<C> LemmaLentArc<C> {
+    fn new(mut l: LemmaLent<C>) -> LemmaLentArc<C> {
+        let cols = l.cols.take().unwrap();
+        LemmaLentArc { arc: Some(std::sync::Arc::new(cols)), lent: l.lent, release: l.release }
+    }
+}
+
+impl<C> std::ops::Deref for LemmaLentArc<C> {
+    type Target = std::sync::Arc<C>;
+    fn deref(&self) -> &std::sync::Arc<C> {
+        self.arc.as_ref().unwrap()
+    }
+}
+
+impl<C> Drop for LemmaLentArc<C> {
+    fn drop(&mut self) {
+        if let Some(mut a) = self.arc.take() {
+            if self.lent {
+                loop {
+                    if let Some(c) = std::sync::Arc::get_mut(&mut a) {
+                        (self.release)(c);
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }
+        }
+    }
 }
 
 // Fast evaluation of the generated data checks: the same predicates, one pass per column, split over the cores.
@@ -525,6 +664,7 @@ fn lemma_panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
     }
 }
 
+// lemma_run: every owned-type column is TAKEN (ABI 4). lemma_run_borrowed (ABI 5): every owned-type column is LENT (UNSAFE 6/6).
 #[no_mangle]
 pub extern "C" fn lemma_run(
     cols: *const LemmaCol,
@@ -533,6 +673,17 @@ pub extern "C" fn lemma_run(
     nparams: u64,
     out: *mut LemmaOut,
 ) -> i32 {
+    lemma_run_cols(cols, ncols, params, nparams, out, false)
+}
+__RUN_BORROWED__
+fn lemma_run_cols(
+    cols: *const LemmaCol,
+    ncols: u64,
+    params: *const LemmaParam,
+    nparams: u64,
+    out: *mut LemmaOut,
+    lend: bool,
+) -> i32 {
     if out.is_null() {
         return LEMMA_STATUS_ERROR;
     }
@@ -540,7 +691,7 @@ pub extern "C" fn lemma_run(
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         assert!(ncols == __NCOLS__, "lemma_run: {} column buffers, the layout has __NCOLS__", ncols);
         assert!(nparams == __NPARAMS__, "lemma_run: {} parameters, this query takes __NPARAMS__", nparams);
-        lemma_execute(lemma_slice(cols, ncols, "cols"), lemma_slice(params, nparams, "params"))
+        lemma_execute(lemma_slice(cols, ncols, "cols"), lemma_slice(params, nparams, "params"), lend)
     }));
     match outcome {
         Ok(Ok(bytes)) => {
@@ -556,6 +707,20 @@ pub extern "C" fn lemma_run(
             LEMMA_STATUS_ERROR
         }
     }
+}
+"""
+
+
+_RUN_BORROWED = """
+#[no_mangle]
+pub extern "C" fn lemma_run_borrowed(
+    cols: *const LemmaCol,
+    ncols: u64,
+    params: *const LemmaParam,
+    nparams: u64,
+    out: *mut LemmaOut,
+) -> i32 {
+    lemma_run_cols(cols, ncols, params, nparams, out, true)
 }
 """
 
@@ -597,9 +762,13 @@ def _param_decode(verus_part: str) -> tuple[str, list[str]]:
     return "".join(lines), args
 
 
-def assemble_library_program(spec_rs: str, agent_body: str, *, helpers: str = "", sql: str) -> str:
-    """The library program: the verified part of :func:`assemble_declarative_program` plus the fixed C entry point (no ``main``)."""
+def assemble_library_program(spec_rs: str, agent_body: str, *, helpers: str = "", sql: str, abi: int = ABI_VERSION) -> str:
+    """The library program: the verified part of :func:`assemble_declarative_program` plus the fixed C entry point (no ``main``).
+    ``abi`` 4 omits ``lemma_run_borrowed`` (a version-4 library: tests of the extension's version-4 path)."""
     from declarative_spec import stateful
+
+    if abi not in ABI_VERSIONS:
+        raise ValueError(f"library mode emits ABI versions {ABI_VERSIONS}, not {abi}")
 
     if stateful.is_stateful(spec_rs):
         raise ValueError(
@@ -622,6 +791,7 @@ def assemble_library_program(spec_rs: str, agent_body: str, *, helpers: str = ""
     take: list[str] = []  # owned columns: taken before anything can fail, so the library frees them on every path
     owned_cols: list[tuple[int, str]] = []
     load: list[str] = []
+    releases: list[str] = []  # per column struct: forget its lent (owned-type) fields instead of freeing them (LemmaLent)
     args: list[str] = []
     index = 0
     for struct_name, body in structs:
@@ -649,20 +819,27 @@ def assemble_library_program(spec_rs: str, agent_body: str, *, helpers: str = ""
         # The same runtime checks `main` makes: every non-length `valid_cols` conjunct (catalog caps, codes, unique keys).
         var_types = {f"{suffix}_{_local_ident(f)}": t for f, t in fields}
         lines.extend(fast_check(c, var_types) + "\n" for c in _runtime_checks(verus_part, suffix, fields))
-        call = ", ".join([f"n_{suffix}"] + [f"{suffix}_{_local_ident(f)}" for f, _ in fields])
-        lines.append(f"    let cols_{suffix} = load_cols_{suffix}({call});\n")
+        call = ", ".join(
+            [f"n_{suffix}"] + [f"{suffix}_{_local_ident(f)}" + (".into_vec()" if owned(t) else "") for f, t in fields]
+        )
+        lines.append(f"    let cols_{suffix} = LemmaLent::new(load_cols_{suffix}({call}), lend, lemma_release_{suffix});\n")
+        forget = "".join(f"    std::mem::forget(std::mem::take(&mut c.{f}));\n" for f, t in fields if owned(t))
+        releases.append(f"fn lemma_release_{suffix}({'c' if forget else '_c'}: &mut {struct_name}) {{\n{forget}}}\n")
         load.append("".join(lines))
         loaders.append(_loader_fn(verus_part, struct_name, fields))
         args.append(f"&cols_{suffix}")
     run_call, arc_lets = _run_call(verus_part, args)
+    arc_lets = arc_lets.replace("= std::sync::Arc::new(cols_", "= LemmaLentArc::new(cols_")
     if param_args:
         run_call = run_call[:-1] + (", " if run_call != "run_query()" else "") + ", ".join(param_args) + ")"
 
     kinds = ", ".join(str(_kind(ty, name)) for name, ty in outputs)
     declines = decline.is_decline_spec(verus_part)
     # Ok(bytes) = the result; Err(reason) = a decline (assumptions = false: run_query returned None). Errors are panics (status 2).
-    execute = "fn lemma_execute(cols: &[LemmaCol], params: &[LemmaParam]) -> Result<Vec<u8>, String> {\n"
-    # Owned buffers are taken first (O(1) each, no copy): from here on the Vecs own them, so any failure below frees them.
+    # `lend` false (lemma_run): every owned-type column is taken; true (lemma_run_borrowed): lent (read in place, never freed here).
+    execute = "fn lemma_execute(cols: &[LemmaCol], params: &[LemmaParam], lend: bool) -> Result<Vec<u8>, String> {\n"
+    # Owned buffers are taken first (O(1) each, no copy): from here on the Vecs own them, so any failure below frees them; lent ones
+    # are wrapped first, so any failure below forgets them.
     execute += "".join(take)
     execute += "    let _ = params;\n" if not params else ""
     execute += param_code  # every parameter is checked before a column is decoded or checked
@@ -699,11 +876,13 @@ def assemble_library_program(spec_rs: str, agent_body: str, *, helpers: str = ""
         + _static("LEMMA_PARAM_LAYOUT", "\n".join(params))
     )
     head = (
-        _TEMPLATE_HEAD.replace("__ABI__", str(ABI_VERSION))
+        _TEMPLATE_HEAD.replace("__ABI__", str(abi))
+        .replace("__RUN_BORROWED__", _RUN_BORROWED if abi >= 5 else "")
         .replace("__STATUS_OK__", str(STATUS_OK))
         .replace("__STATUS_DECLINED__", str(STATUS_DECLINED))
         .replace("__STATUS_ERROR__", str(STATUS_ERROR))
         .replace("__NCOLS__", str(len(layout)))
         .replace("__NPARAMS__", str(len(params)))
     )
-    return verus_with_loaders + head + "\n" + _owned_alloc_fns(owned_cols) + "\n" + statics + "\n" + execute
+    releases_rs = "\n".join(releases)
+    return verus_with_loaders + head + "\n" + _owned_alloc_fns(owned_cols) + "\n" + releases_rs + "\n" + statics + "\n" + execute

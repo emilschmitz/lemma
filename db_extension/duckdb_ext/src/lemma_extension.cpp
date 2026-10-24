@@ -97,7 +97,9 @@ namespace {
 
 using i128 = __int128;
 
-constexpr uint32_t ABI_VERSION = 4;
+// Executor ABI versions this extension runs: 4 (lemma_run takes the owned input buffers) and 5 (lemma_run_borrowed reads them in
+// place: the input cache lends its buffers, no copy). The manifest's abi_version must equal the library's.
+constexpr uint32_t ABI_MIN = 4, ABI_VERSION = 5;
 constexpr uint32_t PARAM_INT = 1, PARAM_STR = 4;
 constexpr int KIND_INT = 1, KIND_F64 = 2, KIND_BOOL = 3, KIND_STR = 4;
 const char *MISS_MESSAGE = "no proved executor for this query; run `lemma optimize`";
@@ -346,11 +348,14 @@ struct Executor {
 	lemma_free_out_fn free_out = nullptr;
 	lemma_alloc_input_fn alloc_input = nullptr; // ABI 3: owned input buffers
 	lemma_free_input_fn free_input = nullptr;
+	uint32_t abi = 0;
+	lemma_run_fn run_borrowed = nullptr; // ABI 5: the owned-type inputs are lent (read in place), not taken
 };
 
 struct Manifest {
 	std::string dir, key, sql, normalized_sql, proof, lib_sha256, git_sha;
 	std::string manifest_sha256; // of manifest.json: part of the input cache key
+	uint32_t abi = 0;            // the executor ABI version (manifest abi_version, equal to the library's)
 	std::vector<InEntry> inputs;
 	std::vector<OutCol> outputs;
 	std::vector<ParamSpec> params;
@@ -457,8 +462,17 @@ std::shared_ptr<Executor> LoadLibrary(const Manifest &m, const std::string &inpu
 	exec->free_out = reinterpret_cast<lemma_free_out_fn>(sym("lemma_free_out"));
 	exec->alloc_input = reinterpret_cast<lemma_alloc_input_fn>(sym("lemma_alloc_input"));
 	exec->free_input = reinterpret_cast<lemma_free_input_fn>(sym("lemma_free_input"));
-	if (abi() != ABI_VERSION) {
-		throw InvalidInputException("Lemma: executor ABI version %d, this extension speaks %d", int(abi()), int(ABI_VERSION));
+	exec->abi = abi();
+	if (exec->abi < ABI_MIN || exec->abi > ABI_VERSION) {
+		throw InvalidInputException("Lemma: executor ABI version %d, this extension speaks %d to %d", int(exec->abi), int(ABI_MIN),
+		                            int(ABI_VERSION));
+	}
+	if (exec->abi != m.abi) {
+		throw InvalidInputException("Lemma: the executor library of %s has ABI version %d, its manifest says %d", m.key,
+		                            int(exec->abi), int(m.abi));
+	}
+	if (exec->abi >= 5) {
+		exec->run_borrowed = reinterpret_cast<lemma_run_fn>(sym("lemma_run_borrowed"));
 	}
 	if (lemma::NormalizeSql(lib_sql()) != m.normalized_sql) {
 		throw InvalidInputException("Lemma: the executor library of %s was built for another query", m.key);
@@ -501,9 +515,10 @@ std::unique_ptr<Manifest> FindExecutor(ClientContext &context, const std::string
 		m->proof = j.At("proof").Str();
 		m->lib_sha256 = j.At("lib_sha256").Str();
 		m->git_sha = j.At("git_sha").Str();
-		if (j.At("format").Int() != 1 || j.At("abi_version").Int() != ABI_VERSION) {
+		if (j.At("format").Int() != 1 || j.At("abi_version").Int() < ABI_MIN || j.At("abi_version").Int() > ABI_VERSION) {
 			throw InvalidInputException("Lemma: %s: manifest format/ABI not understood by this extension", dir);
 		}
+		m->abi = uint32_t(j.At("abi_version").Int());
 		if (!j.At("in_duckdb").Bool()) {
 			throw InvalidInputException("Lemma: %s was not installed for in-DuckDB execution (in_duckdb is false)", dir);
 		}
@@ -1026,13 +1041,16 @@ void DecodeChunk(const ColPlan &p, Vector &vec, idx_t count, TaskOut &t) {
 // The converted inputs of one executor call, kept by the input cache (lemma_cache). Immutable once in the cache: every call that
 // uses it only reads it (shared_ptr), and eviction only drops the cache's reference.
 struct CachedInputs {
-	enum Kind : uint8_t { ROWS, OWNED, BYTES, BUFFER };
+	enum Kind : uint8_t { ROWS, OWNED, LENT, BYTES, BUFFER };
 	std::vector<Kind> kind;
+	// LENT (ABI 5): the scan's own library buffer, kept here and lent to every call (lemma_run_borrowed reads it in place); freed
+	// with lemma_free_input when the entry and every call holding it are gone.
+	std::vector<std::shared_ptr<OwnedBuffer>> lent;
 	std::vector<std::string> buffers;                 // BUFFER: strings, dictionaries (borrowed by lemma_run as they are)
 	std::vector<std::vector<uint8_t>> bytes;          // BYTES: bool, validity (borrowed as they are)
-	std::vector<std::unique_ptr<uint8_t[]>> owned;    // OWNED: a copy of the cells; each call gets its own library buffer
-	std::vector<uint64_t> width;                      // OWNED: bytes per cell
-	std::vector<LemmaCol> cols;                       // n of every input; data/len of BYTES and BUFFER inputs
+	std::vector<std::unique_ptr<uint8_t[]>> owned;    // OWNED (ABI 4): a copy of the cells; each call gets its own library buffer
+	std::vector<uint64_t> width;                      // OWNED, LENT: bytes per cell
+	std::vector<LemmaCol> cols;                       // n of every input; data/len of LENT, BYTES and BUFFER inputs
 	uint64_t size = 0;                                // bytes held
 	uint64_t epoch = 0;
 	std::vector<weak_ptr<AttachedDatabase>> databases; // the databases read, alive: an address in the key is not reused
@@ -1041,14 +1059,16 @@ struct CachedInputs {
 struct ScanResult {
 	std::vector<std::string> buffers;                // borrowed byte inputs: strings, dictionaries
 	std::vector<std::vector<uint8_t>> bytes;         // borrowed one-byte inputs: bool, validity
-	std::vector<std::unique_ptr<OwnedBuffer>> owned; // owned inputs (null where an input is not owned)
+	// owned inputs (null where an input is not owned): taken by lemma_run (ABI 4), or lent to lemma_run_borrowed (ABI 5) and freed
+	// here afterwards unless the input cache keeps them
+	std::vector<std::shared_ptr<OwnedBuffer>> owned;
 	std::vector<LemmaCol> cols;
 	int64_t scan_us = 0;
 	std::shared_ptr<const CachedInputs> hold; // borrowed inputs that live in the input cache
 	std::string cache = "off";               // LastQuery::cache
 	int64_t cache_bytes = -1;
 
-	// lemma_run takes the owned buffers whatever it returns: from here on they are the library's.
+	// lemma_run (ABI 4) takes the owned buffers whatever it returns: from here on they are the library's.
 	void ReleaseOwned() {
 		for (auto &o : owned) {
 			if (o) {
@@ -1125,7 +1145,7 @@ uint64_t ScanTable(ClientContext &context, DuckTransaction &transaction, DataTab
 			throw InternalException("Lemma: input %d scanned twice", int64_t(p.k));
 		}
 		if (OwnedType(p.e.rust_type)) {
-			res.owned[p.k] = make_uniq<OwnedBuffer>(exec, p.k, upper, p.width);
+			res.owned[p.k] = std::make_shared<OwnedBuffer>(exec, p.k, upper, p.width);
 			p.dest = res.owned[p.k]->ptr;
 		} else {
 			res.bytes[p.k].resize(upper);
@@ -1774,6 +1794,8 @@ struct InputCache {
 	std::list<std::string> lru; // most recently used first
 	std::unordered_map<std::string, std::pair<std::shared_ptr<const CachedInputs>, std::list<std::string>::iterator>> map;
 	uint64_t bytes = 0, hits = 0, misses = 0, stores = 0, evictions = 0, skips = 0;
+	// Copies of owned cells into or out of the cache (ABI 4 executors only: lemma_run takes its buffers): calls that copied, bytes.
+	uint64_t copies = 0, copy_bytes = 0;
 
 	// Under `lock`.
 	void Drop(std::unordered_map<std::string, std::pair<std::shared_ptr<const CachedInputs>, std::list<std::string>::iterator>>::iterator it) {
@@ -1875,8 +1897,25 @@ std::string CacheKey(const Manifest &m, uint64_t epoch, const std::vector<TableP
 	return key;
 }
 
-// The inputs of one call from a cache entry: owned inputs copied into fresh buffers of the library (lemma_run takes them), the
-// borrowed ones handed over from the entry itself.
+InputCache &Cache();
+
+void CountCopy(const std::vector<std::tuple<uint8_t *, const uint8_t *, uint64_t>> &jobs) {
+	if (jobs.empty()) {
+		return;
+	}
+	uint64_t bytes = 0;
+	for (auto &j : jobs) {
+		bytes += std::get<2>(j);
+	}
+	auto &c = Cache();
+	std::lock_guard<std::mutex> guard(c.lock);
+	c.copies++;
+	c.copy_bytes += bytes;
+}
+
+// The inputs of one call from a cache entry. ABI 5: every input is handed over from the entry itself (the owned cells are lent:
+// no allocation, no copy). ABI 4: owned inputs copied into fresh buffers of the library (lemma_run takes them), the borrowed ones
+// handed over from the entry.
 ScanResult FromCache(ClientContext &context, const Manifest &m, const std::shared_ptr<const CachedInputs> &e) {
 	ScanResult res;
 	res.owned.resize(m.inputs.size());
@@ -1887,17 +1926,19 @@ ScanResult FromCache(ClientContext &context, const Manifest &m, const std::share
 			continue;
 		}
 		uint64_t n = e->cols[k].n;
-		res.owned[k] = make_uniq<OwnedBuffer>(m.exec, k, n, e->width[k]);
+		res.owned[k] = std::make_shared<OwnedBuffer>(m.exec, k, n, e->width[k]);
 		res.cols[k] = LemmaCol {res.owned[k]->ptr, res.owned[k]->len, n};
 		jobs.emplace_back(res.owned[k]->ptr, e->owned[k].get(), n * e->width[k]);
 	}
 	ParallelCopy(jobs, ScanThreads(context));
+	CountCopy(jobs);
 	res.hold = e;
 	res.cache_bytes = int64_t(e->size);
 	return res;
 }
 
-// A cache entry from a fresh scan: the borrowed inputs move into it (and `res` points at them there), the owned cells are copied.
+// A cache entry from a fresh scan: the borrowed inputs move into it (and `res` points at them there). The owned cells: ABI 5, the
+// entry keeps the scan's library buffers themselves (lent to this call and every later one, no copy); ABI 4, they are copied.
 std::shared_ptr<CachedInputs> ToCache(ClientContext &context, const Manifest &m, ScanResult &res, uint64_t epoch,
                                       std::vector<TablePrep> &preps) {
 	auto e = std::make_shared<CachedInputs>();
@@ -1906,6 +1947,7 @@ std::shared_ptr<CachedInputs> ToCache(ClientContext &context, const Manifest &m,
 	e->buffers.resize(n);
 	e->bytes.resize(n);
 	e->owned.resize(n);
+	e->lent.resize(n);
 	e->width.resize(n, 0);
 	e->cols = res.cols;
 	e->epoch = epoch;
@@ -1913,6 +1955,11 @@ std::shared_ptr<CachedInputs> ToCache(ClientContext &context, const Manifest &m,
 	for (size_t k = 0; k < n; k++) {
 		if (m.inputs[k].rows) {
 			e->kind[k] = CachedInputs::ROWS;
+		} else if (res.owned[k] && m.exec->abi >= 5) {
+			e->kind[k] = CachedInputs::LENT;
+			e->width[k] = res.owned[k]->width;
+			e->lent[k] = res.owned[k];
+			e->size += res.cols[k].n * e->width[k];
 		} else if (res.owned[k]) {
 			e->kind[k] = CachedInputs::OWNED;
 			e->width[k] = res.owned[k]->width;
@@ -1937,6 +1984,7 @@ std::shared_ptr<CachedInputs> ToCache(ClientContext &context, const Manifest &m,
 		}
 	}
 	ParallelCopy(jobs, ScanThreads(context));
+	CountCopy(jobs);
 	for (auto &prep : preps) {
 		e->databases.push_back(prep.entry->ParentCatalog().GetAttached().shared_from_this());
 	}
@@ -2136,8 +2184,16 @@ RunResult RunExecutor(const Manifest &m, ScanResult &in, const std::vector<Param
 		abi_params.push_back(
 		    LemmaParam {p.kind, reinterpret_cast<const uint8_t *>(p.bytes.data()), uint64_t(p.bytes.size())});
 	}
-	in.ReleaseOwned(); // lemma_run takes every owned input buffer, whatever it returns (lemma_abi.h)
-	int32_t code = m.exec->run(in.cols.data(), in.cols.size(), abi_params.data(), abi_params.size(), &out);
+	int32_t code;
+	if (m.exec->abi >= 5) {
+		// The owned-type inputs are LENT: the library reads them in place and gives them back untouched; they stay alive in `in`
+		// (its own buffers, or the input cache entry it holds) until after the call, and are freed (or kept by the cache) by the
+		// extension.
+		code = m.exec->run_borrowed(in.cols.data(), in.cols.size(), abi_params.data(), abi_params.size(), &out);
+	} else {
+		in.ReleaseOwned(); // lemma_run takes every owned input buffer, whatever it returns (lemma_abi.h)
+		code = m.exec->run(in.cols.data(), in.cols.size(), abi_params.data(), abi_params.size(), &out);
+	}
 	std::string bytes(reinterpret_cast<const char *>(out.ptr), size_t(out.len));
 	m.exec->free_out(&out);
 	RunResult r;
@@ -2749,9 +2805,11 @@ struct CacheStatsBind : public TableFunctionData {
 
 unique_ptr<FunctionData> CacheStatsBindFn(ClientContext &context, TableFunctionBindInput &, vector<LogicalType> &types,
                                          vector<string> &names) {
-	names = {"enabled", "entries", "bytes", "max_bytes", "hits", "misses", "stores", "evictions", "skips", "data_epoch"};
-	types = {LogicalType::BOOLEAN, LogicalType::BIGINT, LogicalType::BIGINT, LogicalType::BIGINT, LogicalType::BIGINT,
-	         LogicalType::BIGINT,  LogicalType::BIGINT, LogicalType::BIGINT, LogicalType::BIGINT, LogicalType::BIGINT};
+	names = {"enabled", "entries", "bytes", "max_bytes", "hits", "misses", "stores", "evictions", "skips", "data_epoch",
+	         "copies", "copy_bytes"};
+	types = {LogicalType::BOOLEAN, LogicalType::BIGINT, LogicalType::BIGINT, LogicalType::BIGINT,
+	         LogicalType::BIGINT,  LogicalType::BIGINT, LogicalType::BIGINT, LogicalType::BIGINT,
+	         LogicalType::BIGINT,  LogicalType::BIGINT, LogicalType::BIGINT, LogicalType::BIGINT};
 	auto bind = make_uniq<CacheStatsBind>();
 	uint64_t epoch;
 	{
@@ -2764,7 +2822,7 @@ unique_ptr<FunctionData> CacheStatsBindFn(ClientContext &context, TableFunctionB
 	auto big = [](uint64_t x) { return Value::BIGINT(int64_t(x)); };
 	bind->row = {Value::BOOLEAN(BoolSetting(context, "lemma_cache")), big(c.map.size()), big(c.bytes),
 	             big(CacheCapBytes(context)), big(c.hits), big(c.misses), big(c.stores), big(c.evictions), big(c.skips),
-	             big(epoch)};
+	             big(epoch), big(c.copies), big(c.copy_bytes)};
 	return std::move(bind);
 }
 

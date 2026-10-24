@@ -61,16 +61,16 @@ def test_library_mode_checks_every_parameter_before_any_column_and_passes_it_to_
     range_check = next(ln.strip() for ln in main.splitlines() if "outside its declared range" in ln)
     assert range_check in execute  # the same range check the command line of `main` gets
     decode = execute.index('lemma_param_int(&params[0], "lo")')
-    # the owned column buffer is taken first (O(1), so the library frees it on every path); nothing is decoded or checked
-    # before the parameters are
-    assert execute.index('lemma_take(&cols[1], "t.x")') < decode < execute.index(range_check) < execute.index("load_start")
+    # the owned column buffer is taken (or lent, ABI 5) first (O(1): the library frees or forgets it on every path); nothing is
+    # decoded or checked before the parameters are
+    assert execute.index('lemma_input(&cols[1], "t.x", lend)') < decode < execute.index(range_check) < execute.index("load_start")
     assert execute.index("load_start") < execute.index("assert!(t_x.len() == n_t")
     assert "param_lo)" in execute[execute.index("run_query(") :].split("\n")[0]
     assert "nparams == 1" in lib and "lemma_param_layout" in lib
     assert param_layout(spec) == ["lo i64 -999999 999999"]
     verified = main[: main.index("\nfn main()")]
     tail = lib[len(verified) :]
-    assert tail.count("unsafe {") == 5  # the parameter buffers go through the same two commented readers
+    assert tail.count("unsafe {") == 6  # the parameter buffers go through the same two commented readers
 
 
 def test_library_mode_date_parameters_are_narrowed_to_i32_with_a_check_and_fixed_sql_takes_none() -> None:
@@ -234,7 +234,7 @@ def test_the_library_answers_each_binding_like_duckdb(lo: int, sum_library: ctyp
     con.execute("CREATE TABLE t AS SELECT i AS x FROM range(1, 11) r(i)")
     (want,) = con.execute(SUM_SQL, {"lo": lo}).fetchone()
     assert _sum_result(data) == (None if want is None else int(want))
-    assert sum_library.lemma_abi_version() == ABI_VERSION == 4
+    assert sum_library.lemma_abi_version() == ABI_VERSION == 5
     assert sum_library.lemma_param_layout() == b"lo i64 -999999 999999"
 
 
@@ -292,6 +292,43 @@ def test_more_values_than_the_owned_buffer_holds_is_refused(sum_library: ctypes.
     data = ctypes.string_at(out.ptr, out.len)
     sum_library.lemma_free_out(ctypes.byref(out))
     assert code == 2 and b"11 values in a buffer of 10 cells" in data
+
+
+# ---------------------------------------------------------------- lent input buffers (ABI 5), through the C ABI (Verus)
+
+
+def _run_lent(lib: ctypes.CDLL, col: _Col, n: int, lo: int) -> tuple[int, bytes]:
+    cols = (_Col * 2)(_Col(None, 0, n), col)
+    buf = ctypes.create_string_buffer(struct.pack("<q", lo), 8)
+    ps = (_Param * 1)(_Param(1, ctypes.cast(buf, ctypes.c_void_p), 8))
+    out = _Out()
+    code = lib.lemma_run_borrowed(cols, 2, ps, 1, ctypes.byref(out))
+    data = ctypes.string_at(out.ptr, out.len)
+    lib.lemma_free_out(ctypes.byref(out))
+    return code, data
+
+
+@needs_verus
+def test_a_lent_buffer_is_read_in_place_many_times_and_stays_the_callers(sum_library: ctypes.CDLL) -> None:
+    """lemma_run_borrowed reads the owned-type column in place and never frees or writes it: the same buffer answers several calls
+    (as an input cache entry does), on success, decline-free errors and refusals alike, and goes back with lemma_free_input."""
+    sum_library.lemma_run_borrowed.restype = ctypes.c_int32
+    xs = list(range(1, 11))
+    col = _owned_i64(sum_library, 1, xs, cap=16)
+    before = ctypes.string_at(col.data, 8 * 16)
+    for lo in (3, -5, 8, 3):
+        code, data = _run_lent(sum_library, col, len(xs), lo)
+        assert code == 0, data
+        assert _sum_result(data) == _sum_result(_call(sum_library, xs, [(1, struct.pack("<q", lo))])[1]) == sum(x for x in xs if x > lo)
+    code, data = _run_lent(sum_library, col, len(xs), 10**6)  # a refused parameter: the lent buffer is still not freed
+    assert code == 2 and b"outside its declared range" in data
+    bad = _Col(col.data, col.len, 17)  # more values than cells: refused before a Vec is made over the buffer
+    code, data = _run_lent(sum_library, bad, 17, 3)
+    assert code == 2 and b"17 values in a buffer of 16 cells" in data
+    assert ctypes.string_at(col.data, 8 * 16) == before  # never written
+    code, data = _run_lent(sum_library, col, len(xs), 3)
+    assert code == 0 and _sum_result(data) == sum(range(4, 11))
+    sum_library.lemma_free_input(1, col.data, col.len)
 
 
 # ---------------------------------------------------------------- the extension (built): lemma_query('<template>', v...)

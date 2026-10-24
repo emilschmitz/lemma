@@ -85,7 +85,7 @@ def test_a_declining_library_returns_status_declined_and_states_no_caps() -> Non
     assert "-> Result<Vec<u8>, String>" in execute and "None => return Err(String::from(" in execute and "Ok(out)" in execute
     assert "const LEMMA_STATUS_OK: i32 = 0;" in lib and "const LEMMA_STATUS_DECLINED: i32 = 1;" in lib and "const LEMMA_STATUS_ERROR: i32 = 2;" in lib
     assert "Ok(Err(reason)) => {" in lib and f"pub extern \"C\" fn lemma_abi_version() -> u32 {{\n    {ABI_VERSION}\n}}" in lib
-    assert ABI_VERSION == 4  # 3 added DECLINED, 4 owned input buffers
+    assert ABI_VERSION == 5  # 3 added DECLINED, 4 owned input buffers, 5 lent input buffers (lemma_run_borrowed)
     for cap in ("exceed the catalog cap", "catalog bound", "catalog magnitude", "catalog distinct cap", "declared unique key", "join cap"):
         assert cap not in lib
     assert "values for {} rows" in execute  # the structural length check stays
@@ -256,7 +256,7 @@ def libraries(tmp_path_factory: pytest.TempPathFactory) -> dict[str, ctypes.CDLL
 @needs_verus
 def test_the_library_answers_or_declines_through_the_c_abi(libraries: dict) -> None:
     lib = libraries["fixed"]
-    assert lib.lemma_abi_version() == 4
+    assert lib.lemma_abi_version() == 5
     code, data = _call(lib, FITS)
     assert code == 0 and _total(data) == 125
     code, data = _call(lib, OVERFLOW)
@@ -355,7 +355,7 @@ def _last(con: duckdb.DuckDBPyConnection) -> tuple[str, str]:
 def test_the_manifest_records_assumptions_and_the_abi(home: Path) -> None:
     for sql in (SQL, TEMPLATE):
         manifest = json.loads((in_duckdb.executor_dir(sql, home) / "manifest.json").read_text())
-        assert manifest["assumptions"] is False and manifest["abi_version"] == 4
+        assert manifest["assumptions"] is False and manifest["abi_version"] == 5
 
 
 @needs_ext

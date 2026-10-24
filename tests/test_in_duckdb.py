@@ -127,9 +127,10 @@ def test_library_mode_keeps_the_verified_part_and_replaces_main(key: str, monkey
     assert lib.startswith(verified.rstrip("\n"))  # the verus! part and the loaders are byte-identical
     assert "fn main(" not in lib and "pub extern \"C\" fn lemma_run(" in lib
     tail = lib[len(verified) :]
-    # only the five commented blocks of the fixed template (the fifth, ABI 3: an owned input buffer becomes the Vec)
-    assert tail.count("unsafe {") + tail.count("unsafe{") == 5
-    assert all(f"// UNSAFE {i}/5. Contract:" in tail for i in range(1, 6))
+    # only the six commented blocks of the fixed template (the fifth, ABI 3: an owned input buffer becomes the Vec; the sixth,
+    # ABI 5: a lent buffer read in place by lemma_run_borrowed)
+    assert tail.count("unsafe {") + tail.count("unsafe{") == 6
+    assert all(f"// UNSAFE {i}/6" in tail for i in range(1, 7)) and "pub extern \"C\" fn lemma_run_borrowed(" in tail
     assert "unsafe" not in body
     assert "catch_unwind" in tail and "load_cols_" in tail
 
@@ -349,7 +350,7 @@ def _same(got: list, want: list, ordered: bool) -> bool:
     return True
 
 
-def _install(key_or_case, home: Path, db_path: Path, schema=None, catalog=None, encoding=None) -> Path:
+def _install(key_or_case, home: Path, db_path: Path, schema=None, catalog=None, encoding=None, abi: int | None = None) -> Path:
     if isinstance(key_or_case, str):
         fixture, sql, schema, encoding = SMALL[key_or_case]
         catalog = _catalog(key_or_case)
@@ -365,7 +366,8 @@ def _install(key_or_case, home: Path, db_path: Path, schema=None, catalog=None, 
         # scan has its own tests (tests/test_in_duckdb_pushdown.py) and the SF1 tests install with the run default (pushdown on).
         mp.setenv("LEMMA_PUSHDOWN", "0")
         return in_duckdb.install_executor(
-            sql=sql, schema=schema, catalog=catalog, agent_source=(PROOFS / fixture).read_text(), db_path=db_path, home=home
+            sql=sql, schema=schema, catalog=catalog, agent_source=(PROOFS / fixture).read_text(), db_path=db_path, home=home,
+            **({} if abi is None else {"abi": abi}),
         )
 
 

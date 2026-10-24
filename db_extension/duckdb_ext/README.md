@@ -49,13 +49,13 @@ Or run our CLI, where Lemma is already loaded: `build/release/duckdb db.duckdb`.
 | `SELECT * FROM lemma_query('<template>', v1, v2, ...)` | a query template (`-- params:` header, `$name` placeholders, lemma.toml `[sql] templates`): one value per parameter in declaration order. BIGINT takes an integer value, DATE a DATE value (`DATE '1995-01-01'`), DECIMAL(p,s) an integer or DECIMAL value with at most s fractional digits (exact, never rounded), VARCHAR a VARCHAR. A wrong count or type, NULL, or a value outside the range `run_query` requires is an error, never rows. In `lemma_mode` a template executor is an error (the plan replacement cannot see bound values) |
 | `SET lemma_mode = true` | every table-reading SELECT of the session is looked up; with an executor the plan is replaced by it (same snapshot, same result types), EXPLAIN shows a `LEMMA_QUERY` node with `engine: lemma`, the executor key and the proof line |
 | `SET lemma_route_unproved = true` | in Lemma mode, a query without an executor runs on DuckDB unchanged instead of raising the error; labelled `engine=duckdb` in `lemma_last_query()`. Default `false`. Experiments never set it |
-| `SELECT * FROM lemma_last_query()` | `engine` (`lemma`, `duckdb` or `none`), `reason`, `query_key`, `sql`, and for Lemma: `scan_us` (scan + copy), `load_us` (decode + every assumption check in the library), `run_us` (proved `run_query`), `total_us`, `rows`, `cache` (`hit`, `miss: stored`, `miss: not stored (...)`, `skip: <why>`, `off`) and `cache_bytes`; on a hit `scan_us` is the plan + the copy of the cached inputs |
+| `SELECT * FROM lemma_last_query()` | `engine` (`lemma`, `duckdb` or `none`), `reason`, `query_key`, `sql`, and for Lemma: `scan_us` (scan + copy), `load_us` (decode + every assumption check in the library), `run_us` (proved `run_query`), `total_us`, `rows`, `cache` (`hit`, `miss: stored`, `miss: not stored (...)`, `skip: <why>`, `off`) and `cache_bytes`; on a hit `scan_us` is the plan (ABI 5: the cached inputs are lent as they are; ABI 4: plus the copy of the cached owned cells) |
 | `SET lemma_enqueue_misses = true` | a miss also writes `${lemma_home}/queue/<key>.sql` for the offline `lemma optimize`. Default `false` |
 | `SET lemma_scan_threads = <n>` | threads of the scan that hands the columns to the executor; `0` (default) = DuckDB's `threads`. The bytes are the same for every value |
 | `SELECT * FROM lemma_scan_inputs('<sql>')` | the input buffers `lemma_query` would hand to the executor (input, name, role, n, data), from the same scan (never the input cache); the executor does not run. For tests |
 | `SET lemma_cache = false` | turn the input cache off (default `true`, see "Input cache"): every call scans |
 | `SET lemma_cache_max_mb = <n>` | size cap of the input cache in MB (a DOUBLE: fractions allowed), least recently used entries evicted first; `-1` (default) = a quarter of `memory_limit`; `0` stores nothing |
-| `SELECT * FROM lemma_cache_stats()` | `enabled`, `entries`, `bytes`, `max_bytes`, `hits`, `misses`, `stores`, `evictions`, `skips`, `data_epoch` (process-wide) |
+| `SELECT * FROM lemma_cache_stats()` | `enabled`, `entries`, `bytes`, `max_bytes`, `hits`, `misses`, `stores`, `evictions`, `skips`, `data_epoch`, `copies` and `copy_bytes` (calls that copied owned cells into or out of the cache, and the bytes: ABI 4 executors only; 0 with ABI 5) (process-wide) |
 | `SELECT * FROM lemma_cache_clear()` | drop every entry (one row: entries and bytes dropped); the measure's cold rounds use it |
 | `SET lemma_home = '<dir>'` | default `$LEMMA_HOME`, else `~/.local/share/lemma` (read at LOAD) |
 | `lemma_normalize_sql(s)`, `lemma_sql_key(s)` | the cache-key form of a SQL text and its sha256 |
@@ -105,7 +105,8 @@ whose types differ from the plan's.
 * **Library mode** (`declarative_spec/assemble_library.py`): the `verus!` part (spec, agent body, host lemmas, verified
   `load_cols_*`) is byte for byte what the binary gets; `main` is replaced by a fixed C entry point, the same template for every
   query. C ABI (`src/include/lemma_abi.h`): `lemma_run(const LemmaCol *cols, uint64_t ncols, const LemmaParam *params,
-  uint64_t nparams, LemmaOut *out)` (ABI version 4); `params` carries a query template's values (since version 2: kind 1 = little-endian i64 as `run_query` takes it, i.e. DATE as
+  uint64_t nparams, LemmaOut *out)` (ABI version 4) and, since ABI version 5, `lemma_run_borrowed` with the same signature
+  (owned inputs LENT, below); `params` carries a query template's values (since version 2: kind 1 = little-endian i64 as `run_query` takes it, i.e. DATE as
   the day number and DECIMAL scaled by 10^s; kind 4 = UTF-8 bytes; `lemma_param_layout` lists them and must equal the manifest).
   The fixed template checks count, kinds, lengths, the Rust type and the `requires` range of every parameter before it decodes a
   column; fixed SQL takes `nparams == 0`. A **stateful** spec (lemma.toml `stateful`) is refused in library mode: its runtime needs
@@ -114,8 +115,13 @@ whose types differ from the plan's.
   reads (little-endian cells; strings as u32 length + UTF-8). **Owned inputs** (ABI version 4): a field of fixed-width integer
   or `f64` cells arrives in a buffer the library allocated (`lemma_alloc_input(index, cap)`, a `Box<[T]>` of zeroed cells) and
   filled in place by the extension; `lemma_run` takes each as its `Vec`'s memory (no copy) before anything can fail, so the library
-  frees it on every path (`lemma_free_input` returns one that never reached `lemma_run`). `bool`, string and dictionary fields stay
-  borrowed. The library runs EVERY check `main` runs (lengths, dictionary codes and uniqueness; with lemma.toml `assumptions =
+  frees it on every path (`lemma_free_input` returns one that never reached `lemma_run`). **Lent inputs** (ABI version 5,
+  `lemma_run_borrowed`): the same library buffers, but the call only reads them in place (a `Vec` over the buffer that is never
+  written, grown or dropped: `LemmaIn` holds it until the verified loader moves it into its column struct, `LemmaLent` /
+  `LemmaLentArc` hold the struct and forget the lent `Vec`s instead of dropping them, on every path including a panic); the
+  extension keeps the buffer, unwritten, at least until the call returns and frees it with `lemma_free_input` afterwards. The
+  extension uses `lemma_run_borrowed` for every ABI 5 executor and `lemma_run` for an ABI 4 one (the manifest's `abi_version`
+  equals the library's). `bool`, string and dictionary fields stay borrowed. The library runs EVERY check `main` runs (lengths, dictionary codes and uniqueness; with lemma.toml `assumptions =
   true` also catalog row and value caps, declared unique keys, join caps: the same generated checks, the known shapes evaluated by
   fast helpers of the template: min/max per chunk on all cores, a sort of the dictionary instead of a hash set, a bitmap or sorted
   copy for an integer unique key; `assemble_library.fast_check`), and only then calls the verified loaders and `run_query`. The
@@ -128,10 +134,16 @@ whose types differ from the plan's.
   route on, the executor runs while the statement is bound (`lemma_query`, through `bind_replace`) or planned (Lemma mode), so that
   a decline can still become DuckDB's own plan; a result that did not decline is the answer, not run twice. The manifest records
   `assumptions` (false: the executor may decline).
-* **unsafe**: only in the fixed template, five blocks: (1) `slice::from_raw_parts` over the caller's `LemmaCol` / `LemmaParam`
+* **unsafe**: only in the fixed template, six blocks: (1) `slice::from_raw_parts` over the caller's `LemmaCol` / `LemmaParam`
   array, (2) over each input or parameter buffer, (3) writing the result into the caller's `LemmaOut`, (4) `Vec::from_raw_parts` in
   `lemma_free_out` to free it, (5) `Box::from_raw` of an owned input buffer (`lemma_take`: the buffer `lemma_alloc_input` made for
-  that column, taken once).
+  that column, taken once), (6) since ABI 5, `Vec::from_raw_parts` over a LENT owned buffer (`lemma_borrow`: a buffer of
+  `lemma_alloc_input` for that column, with its allocated capacity, `n <= cap` checked first). What (6) trusts beyond (5): the
+  caller does not write or free the buffer during the call (the extension holds it in its scan result or its input cache entry,
+  immutable, by `shared_ptr`, until the call returned), and the fixed glue never lets the `Vec` be dropped or mutated (it is
+  only borrowed shared: the checks take `&[T]`, the verified loader moves it into the column struct, `run_query` takes `&Cols`;
+  `LemmaIn` / `LemmaLent` / `LemmaLentArc` forget it on every path; `LemmaLentArc` of a parallel spec waits until no thread
+  holds a clone of the struct). Two calls may read one buffer at once (only reads).
   Each states its contract in a comment. No unsafe in agent regions (admission rejects it as before).
 * **Compile**: `verus <file> --crate-type=cdylib --compile -- -C opt-level=3 -C codegen-units=1 -C target-cpu=<lemma.toml
   target_cpu>`; the proof line of that same run goes into the manifest.
@@ -195,11 +207,19 @@ mostly skipped (4): it serves repeated queries on a quiet database, never a stal
 `lemma_cache_max_mb`, default a quarter of `memory_limit`; an entry larger than the cap is not stored) only drops the cache's
 reference, so a running call keeps its buffers. The cache's bytes are outside DuckDB's buffer manager.
 
-**ABI (unchanged, version 4).** `lemma_run` takes every OWNED input buffer (fixed-width integer and f64 cells, `lemma_alloc_input`)
-as its `Vec`'s memory and frees it, so a cached owned input cannot be handed over as is: the cache keeps its own copy and each call
-gets a fresh library buffer filled by a parallel `memcpy` (the cheapest sound option without changing the generated Rust: no
-decoding, no dictionary work). Borrowed inputs (strings, dictionaries, bool and validity bytes; the library only reads them) are
-handed over from the entry itself. A miss that stores pays one extra copy of the owned cells. v4 executors work unchanged.
+**ABI 5: lent inputs, held once.** An ABI 5 executor reads its owned inputs (fixed-width integer and f64 cells) in place
+(`lemma_run_borrowed`). A miss scans into library buffers (`lemma_alloc_input`) that the call reads and that then BECOME the cache
+entry (no copy); a hit hands the entry's buffers to the call as they are (no allocation, no copy: `lemma_cache_stats()` `copies`
+stays 0 and `bytes` does not move). The cache's `bytes` is the memory it holds, once: the owned cells (`n` cells each; the buffer
+of a filtered scan is sized for the whole table but only the first `n` cells are ever written, so the zeroed pages behind them are
+not resident), dictionaries, strings, bool and validity bytes. Borrowed inputs are handed over from the entry itself, as before.
+An entry's library buffers go back with `lemma_free_input` when the entry and every call holding it are gone (executor libraries
+are never unloaded). TPC-H SF10 Q1 (2.6 GB of inputs) used to pay a 2.6 GB copy per hit (as long as DuckDB's whole query) and
+twice the memory.
+
+**ABI 4 executors (still run).** `lemma_run` takes every owned input buffer as its `Vec`'s memory and frees it, so a cached owned
+input cannot be handed over as is: the cache keeps its own copy and each call gets a fresh library buffer filled by a parallel
+`memcpy` (counted in `copies` / `copy_bytes`); a miss that stores pays one extra copy of the owned cells.
 
 * **Next step: stateful executors.** A later ABI version would keep one `QRuntime` per loaded library (behind a lock) and add
   `lemma_is_current(version)` and `lemma_run_at(version, ...)`: the extension asks first and scans only on a version change. The

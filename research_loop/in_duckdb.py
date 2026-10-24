@@ -222,11 +222,13 @@ def install_executor(
     db_path: Path,
     home: Path | None = None,
     work_dir: Path | None = None,
+    abi: int = ABI_VERSION,
 ) -> Path:
     """Emit the spec, admit the body, assemble library mode, verify + compile, and install ``executors/<key>/``. Returns the dir.
 
     The manifest records what the extension needs and checks: the input layout with the DuckDB column types read at install,
-    the result types, the DuckDB version, the proof line, the spec and library hashes, the git commit."""
+    the result types, the DuckDB version, the proof line, the spec and library hashes, the git commit. ``abi`` 4 installs a
+    version-4 library (no ``lemma_run_borrowed``; for tests of the extension's version-4 path)."""
     require_enabled()
     from declarative_spec.admit import admit_declarative_body, admit_helpers
     from declarative_spec.regions import extract_agent_edit, extract_agent_helpers
@@ -241,7 +243,7 @@ def install_executor(
         violations += admit_helpers(helpers, spec).violations
     if violations:
         raise ValueError("; ".join(violations))
-    program = assemble_library_program(spec, body, helpers=helpers, sql=sql)
+    program = assemble_library_program(spec, body, helpers=helpers, sql=sql, abi=abi)
     plain_sql, params = template_params(sql, spec)
     con = duckdb.connect(str(db_path), read_only=True)
     try:
@@ -261,7 +263,7 @@ def install_executor(
         sha, dirty = _git()
         manifest = {
             "format": MANIFEST_FORMAT,
-            "abi_version": ABI_VERSION,
+            "abi_version": abi,
             "in_duckdb": True,
             # lemma.toml assumptions of the spec this executor proves: false = no data assumptions, run_query may decline (lemma_run status 1).
             "assumptions": not decline.is_decline_spec(spec),
