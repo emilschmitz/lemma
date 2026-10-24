@@ -7,6 +7,67 @@ tests.
 
 https://github.com/user-attachments/assets/7f7891c7-5ef6-406b-882b-8e01134ed37c
 
+## Quick start
+
+Lemma makes a proved, compiled executor for a SQL query on your DuckDB database and runs it inside DuckDB 1.5.6.
+
+**You need** Linux x86_64 with a systemd session, [uv](https://docs.astral.sh/uv/), git, Docker (your user may run containers),
+[Verus 0.2026.07.18.3a4d30b](https://github.com/verus-lang/verus/releases/tag/release/0.2026.07.18.3a4d30b) unpacked into
+`~/tools/verus` with its Rust toolchain (`rustup install 1.96.0-x86_64-unknown-linux-gnu`; steps in
+[install_verus.md](research_loop/scripts/install_verus.md)), and credentials for one agent harness (below). The agent runs in the Docker
+sandbox; the proof (Verus) and the compile of the executor run on your machine. `lemma setup` checks every item and says what is missing.
+Network: `install.sh` fetches the Python dependencies (uv, versions pinned to `uv.lock`), `lemma setup` builds the agent image and fetches
+libduckdb 1.5.6 from GitHub; a run reaches only the harness's model API.
+
+```bash
+tar -xzf lemma-0.1.0-linux-x86_64.tar.gz && ./lemma-0.1.0-linux-x86_64/install.sh   # ~/.local/bin/lemma, ~/.local/share/lemma/
+lemma setup                                    # Docker, Verus, DuckDB; builds the agent image, tests the sandbox; your Claude Code login
+lemma optimize --db my.duckdb --sql "SELECT region, SUM(qty) AS q FROM orders GROUP BY region"   # or: lemma optimize --db my.duckdb q.sql
+lemma duckdb my.duckdb                         # our DuckDB with Lemma mode on: type the query; SELECT * FROM lemma_last_query();
+lemma list                                     # installed executors (key, proof line, database, SQL); lemma remove KEY
+```
+
+`lemma optimize` runs the agent in the sandbox until Verus proves its `run_query` against the query's spec, then verifies the same
+body again as a library and installs it under `~/.local/share/lemma/executors/<sha256 of the SQL>/` (`lib.so`, `manifest.json`; the
+proved sources in `proved/`). If the proof or the install fails, nothing is installed. `--bench` also times it inside DuckDB against
+DuckDB (cold = first call, scan included; warm = the input cache below). In your own DuckDB 1.5.6 (the extension is not signed):
+
+```python
+import duckdb, os
+con = duckdb.connect("my.duckdb", config={"allow_unsigned_extensions": True})
+con.execute(f"LOAD '{os.path.expanduser('~/.local/share/lemma/duckdb/lemma.duckdb_extension')}'")   # `lemma duckdb` prints this path
+con.execute("SET lemma_mode = true")   # every SELECT with an installed executor runs the proved program
+```
+
+In Lemma mode a query without an executor is an error, never silently DuckDB's answer; `SET lemma_route_unproved = true` lets DuckDB
+answer it, labelled `engine = duckdb` in `lemma_last_query()`. A proved program may DECLINE (no data assumptions: e.g. a checked overflow),
+which is the same error or the same labelled route. All settings: [db_extension/duckdb_ext/README.md](db_extension/duckdb_ext/README.md).
+
+**Verified vs trusted.** Verus proves that the agent's `run_query` returns exactly the result the query's specification states, and the
+specification is generated from the SQL by the transpiler. Not proved: that the transpiler's specification means what DuckDB computes
+(checked per query shape against DuckDB, not proved), the extension's scan and conversion of DuckDB's columns into the executor's inputs,
+Verus, Z3 and rustc. The trusted items are listed in [docs/TRUSTED_FAMILIES.md](docs/TRUSTED_FAMILIES.md): the host's fixed helper
+bridges, DuckDB evaluating a pushed-down filter correctly (agent scans), the input cache's data version, and only with
+`exact_division = false` the float idealization. The agent cannot add trusted code (admission rejects `assume`, `external_body` and the like).
+
+**The input cache.** The scan and conversion of the inputs often costs more than the proved program. A repeated query on unchanged data
+reuses the converted inputs (`lemma_last_query()` says `cache = hit`); any committed write, or another open transaction, makes the next call
+scan again. `SET lemma_cache = false` turns it off, `lemma_cache_max_mb` caps it. Details and the soundness argument:
+[db_extension/duckdb_ext/README.md](db_extension/duckdb_ext/README.md) "Input cache".
+
+**Harness and auth.** Claude Code is the default (`claude login`, or `lemma setup --auth api-key` with `ANTHROPIC_API_KEY`); also
+`lemma setup --harness codex --auth api-key` (`CODEX_API_KEY`, default model gpt-6.1-sol) and `--harness gemini --auth api-key`
+(`GEMINI_API_KEY`, default gemini-3.8-flash); `--model` picks another model. Export a key in your own shell: it reaches the container by
+name only and is never written anywhere; a missing one stops setup, and nothing falls back to another harness or auth mode. Only Claude
+Code reports spend, so `max_budget_usd` caps Claude runs only. Per-harness details: `research_loop/AGENT_SANDBOX.md` "Agent harnesses".
+`lemma status` shows the choices, the image, the sandbox test and the installed executors.
+
+The release bundle is built with `scripts/release/build_bundle.sh` (from a clean checkout with the extension built); from a checkout you can
+instead run `uv tool install --editable .` and use the binaries in `db_extension/duckdb_ext/build/release`.
+`lemma optimize --queue` proves the queries the extension enqueued (`SET lemma_enqueue_misses = true`) in `$LEMMA_HOME/queue/*.sql`.
+No assumption step is needed: with the default `assumptions = false` the proof makes no claim about your data. `lemma assumptions --db my.duckdb`
+belongs to the UNMAINTAINED assumption-package path and is required only with `assumptions = true`.
+
 ## How it works
 
 ```
@@ -41,30 +102,6 @@ trusted item needs a written proposal and a separate adversary review
 ([protocol](research_loop/menus/TRUSTED_ADDITION_PROTOCOL.md)). By default there are no data assumptions
 (`assumptions = false`, since 2026-10-17): the spec uses exact integers and the program may decline (see below). Limitations are in
 [docs/paper/article_draft.md](docs/paper/article_draft.md).
-
-## Quick start
-
-Needs Docker, Python 3.11+, [uv](https://docs.astral.sh/uv/), and credentials for one agent harness: Claude Code (default; `claude login`
-or `ANTHROPIC_API_KEY`), OpenAI Codex CLI (`codex login` or `CODEX_API_KEY`) or Google Gemini CLI (`GEMINI_API_KEY`, or a paid Google login).
-Export a key in your own shell. Every agent runs in the Docker sandbox (network off, only its vendor's API hosts allowed), never on the host.
-
-```bash
-uv tool install --editable .   # from this checkout: installs the `lemma` command
-lemma setup                    # Claude Code with your login; checks Docker, builds the agent image, tests the sandbox, fetches libduckdb
-lemma setup --auth api-key     # ... or Claude Code with ANTHROPIC_API_KEY
-lemma setup --harness codex --auth api-key    # ... or OpenAI Codex CLI with CODEX_API_KEY (default model gpt-6.1-sol; --model to change)
-lemma setup --harness gemini --auth api-key   # ... or Google Gemini CLI with GEMINI_API_KEY (default model gemini-3.8-flash)
-lemma optimize --db my.duckdb --sql query.sql    # agent writes, Verus proves, compiled; the executor lands in ~/.local/share/lemma/executors/
-lemma status                   # harness, model, auth mode, image, sandbox test, DuckDB version, cached executors
-```
-
-`lemma optimize --queue` proves the queries waiting in `$LEMMA_HOME/queue/*.sql`. Harness and auth are explicit choices (`harness`, `agent_auth`,
-`docs/FLAGS.md`; per-harness details in `research_loop/AGENT_SANDBOX.md` "Agent harnesses"); a key goes into the container by name only and is
-never written anywhere, a missing one stops setup, and nothing falls back to another harness or auth mode. Only Claude Code reports spend, so
-`max_budget_usd` caps Claude runs only. The in-DuckDB library (`lib.so`) is still pending.
-
-No assumption step is needed: with the default `assumptions = false` the proof makes no claim about your data. `lemma assumptions --db my.duckdb`
-(profile and approve data bounds) belongs to the UNMAINTAINED assumption-package path and is required only with `assumptions = true`.
 
 ## Quick start for development
 

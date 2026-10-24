@@ -174,7 +174,8 @@ def summary(dest: Path, db: Path, record: dict[str, Any], measured: dict[str, An
                          f"{_us(cold['duck_median_us'])} ({cold['speedup']:.2f}x); warm {_us(warm['ours_median_us'])} ({warm['speedup']:.2f}x)")
     official = record.get("official") or {}
     if isinstance(official, dict) and official.get("speedup") is not None:
-        lines.append(f"  pipeline measure (proved binary vs DuckDB, details in the run log): {official['speedup']:.2f}x")
+        lines.append(f"  pipeline measure: {official['speedup']:.2f}x DuckDB for the proved run_query alone (scan and conversion excluded; "
+                     "the time inside DuckDB is --bench)")
     lines += [
         "Use it:",
         f"  lemma duckdb {db}          # our DuckDB with Lemma mode on; type the query",
