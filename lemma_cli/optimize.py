@@ -196,6 +196,9 @@ def optimize_one(sql: str, db: Path, *, force: bool = False, measure: bool = Fal
         and existing.get("db_path") == str(db) and bool(existing.get("assumptions")) == with_assumptions
     ):
         say(f"already optimized: {cache.executor_dir(key)} (--force to redo)")
+        if measure:
+            for line in summary(cache.executor_dir(key), db, {}, bench(normalize_sql(sql), db)):
+                say(line)
         return cache.executor_dir(key)
     log = lemma_home() / "logs" / f"{key}.log"
     record = run_pipeline(normalize_sql(sql), db, package, mode, log, harness())

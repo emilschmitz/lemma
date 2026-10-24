@@ -52,6 +52,7 @@ tar -xzf "$OUT/src.tar.gz" -C "$STAGE/src"
 
 # Wheels built from that exported tree (not the working copy), and the locked versions as install constraints.
 (cd "$STAGE/src" && uv build --quiet --wheel --all-packages -o "$OUT/wheels")
+rm -f "$OUT/wheels/.gitignore"
 (cd "$STAGE/src" && uv export --quiet --frozen --no-dev --no-hashes --no-emit-workspace --no-header -o "$OUT/wheels/constraints.txt")
 
 cp "$CLI" "$OUT/duckdb/duckdb"

@@ -654,6 +654,9 @@ def test_bench_prints_cold_and_warm_against_duckdb(env: Path, pipeline: Path, tm
     assert main(["optimize", "--db", str(db), "--sql", "SELECT 7 FROM t", "--bench"]) == 0
     assert seen == [("SELECT 7 FROM t", db.resolve())]
     assert "cold 1.5 ms vs DuckDB 3.0 ms (2.00x); warm 400 us (7.50x)" in capsys.readouterr().out
+    assert main(["optimize", "--db", str(db), "--sql", "SELECT 6 FROM t", "--bench"]) == 0  # already installed: no pipeline run, still timed
+    out = capsys.readouterr().out
+    assert "already optimized" in out and "(2.00x)" in out and seen[-1] == ("SELECT 6 FROM t", db.resolve())
 
 
 # --- queue ---
