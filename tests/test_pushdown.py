@@ -107,22 +107,27 @@ def test_an_or_spanning_two_tables_pushes_the_implied_per_table_disjunction_q19_
         "select count(*) as c from lineitem where l_quantity > 1 and l_partkey not in (select p_partkey from part)",
     ],
 )
-def test_not_exists_and_anti_joins_push_nothing(sql: str) -> None:
+def test_not_exists_and_anti_joins_push_only_the_outer_tables_own_conjuncts(sql: str) -> None:
+    # The subquery's table has no conjunct of its own (only the correlation / nothing): it is exported in full.
     plan = plan_pushdown(sql, TPCH)
-    assert plan.pushed == {} and plan.refused
+    assert plan.refused is None and plan.pushed.keys() == {"lineitem"} and _sql(plan, "lineitem") == ['"l_quantity" > 1']
+
+
+def test_a_left_join_pushes_the_preserved_side_only() -> None:
+    plan = plan_pushdown("select count(p_partkey) as c from lineitem left join part on l_partkey = p_partkey where l_quantity > 3", TPCH)
+    assert plan.refused is None and plan.pushed.keys() == {"lineitem"} and _sql(plan, "lineitem") == ['"l_quantity" > 3']
 
 
 @pytest.mark.parametrize(
     "sql",
     [
-        "select count(p_partkey) as c from lineitem left join part on l_partkey = p_partkey where l_quantity > 3",  # preserved side
         "select count(*) as c from part right join lineitem on l_partkey = p_partkey where l_quantity > 3 and p_size > 1",
         "select count(*) as c from lineitem full join part on l_partkey = p_partkey where p_size > 1",
     ],
 )
-def test_outer_joins_push_nothing_on_either_side(sql: str) -> None:
+def test_right_and_full_joins_push_nothing_on_either_side(sql: str) -> None:
     plan = plan_pushdown(sql, TPCH)
-    assert plan.pushed == {} and "JOIN" in plan.refused
+    assert plan.pushed == {} and any("JOIN in its block" in k for k in plan.kept)
 
 
 @pytest.mark.parametrize(
