@@ -2,8 +2,9 @@
 
 A DuckDB extension that answers a query with its **proved executor**: the `run_query` an agent wrote and Verus proved equal to
 the query's MethodSpec, compiled as a shared library. The extension scans the columns the spec needs in the caller's transaction,
-hands them to the library, and returns the library's rows as the query result. No LLM, no network and no agent run inside
-DuckDB: an executor is made offline (`lemma optimize`, or `research_loop/in_duckdb.py`) and only looked up here.
+hands them to the library, and returns the library's rows as the query result. No LLM, no network and no agent run inside the
+DuckDB process: an executor is made by the pipeline (`lemma optimize`, or `lemma generate`, which `lemma('<sql>')` starts as a
+separate process for a query without one, see "lemma(...)" below) and only looked up and run here.
 
 Everything is behind the `in_duckdb` flag of `lemma.toml` (`[engine]`, default `false`): with it off, the assembler does not
 emit library mode, `research_loop/in_duckdb.py` installs nothing and the in-DuckDB measure refuses to run. The extension
@@ -45,8 +46,16 @@ Or run our CLI, where Lemma is already loaded: `build/release/duckdb db.duckdb`.
 
 | SQL | What |
 | --- | --- |
-| `SELECT * FROM lemma_query('<sql>')` | the proved executor's rows for `<sql>` (same column names and types as DuckDB's answer). No executor: error `no proved executor for this query; run `lemma optimize``. Never answered by DuckDB. |
-| `SELECT * FROM lemma_query('<template>', v1, v2, ...)` | a query template (`-- params:` header, `$name` placeholders, lemma.toml `[sql] templates`): one value per parameter in declaration order. BIGINT takes an integer value, DATE a DATE value (`DATE '1995-01-01'`), DECIMAL(p,s) an integer or DECIMAL value with at most s fractional digits (exact, never rounded), VARCHAR a VARCHAR. A wrong count or type, NULL, or a value outside the range `run_query` requires is an error, never rows. In `lemma_mode` a template executor is an error (the plan replacement cannot see bound values) |
+| `SELECT * FROM lemma('<sql>')` | the proved executor's rows for `<sql>` (same column names and types as DuckDB's answer): the executor installed for exactly this text, else a stored query template this text instantiates (see "Query templates"). None: one is GENERATED (`lemma_generate`, below) and then answers. Never answered by DuckDB, except under `lemma_route_unproved`, labelled |
+| `SELECT * FROM lemma('<sql>', regenerate := true)` | prove a new executor for `<sql>` (its template, when lifted) and replace the installed one ONLY if the new one proves and installs; on a failure the old one stays and the call is an error (block) |
+| `SET lemma_generate = 'block' \| 'background' \| 'off'` | what `lemma(...)` does without an executor. `block` (default): run the generator, wait (minutes), its log on stderr, Ctrl-C cancels it (SIGTERM to its process group, nothing installed). `background`: start it and raise `no proved executor for this query yet; generating one in the background (job ..., log ...)`, or, only with `lemma_route_unproved = true`, return DuckDB's answer labelled `engine = duckdb`; a later call finds the running job (no second one). `off`: the miss error |
+| `SET lemma_generator = '<shell command>'` | the generator (default `$LEMMA_GENERATOR` at LOAD, else `lemma generate`). It runs as `<cmd> --db <snapshot.duckdb> --sql-file <query.sql> --source-db <caller's db path> --lift-constants\|--no-lift-constants [--regenerate]` with `LEMMA_HOME` = `lemma_home`, in its own session; exit 0 = installed |
+| `SET lemma_lift_constants = false` | generate an executor for the exact text instead of a query template (default `true`, see "Constant lifting") |
+| `SELECT * FROM lemma_jobs()` | generations: `job_id`, `status` (`starting`, `running`, `done`, `failed`, `cancelled`, `lost`), `query_key`, `sql`, `mode`, `regenerate`, `created`, `finished`, `exit_code`, `installed_key` (from the log's `INSTALLED <key>`), `snapshot_bytes`, `log`, `error` (the log's last line, failed or lost) |
+| `SELECT * FROM lemma_list()` | installed executors (the store `lemma list` shows): `key`, `kind` (`query` / `template`), `sql`, `params` (`name TYPE, ...`), `proof`, `created`, `size_bytes` (lib.so), `last_used` (any process, to 10 s), `runs` and `cache_hits` (this process since LOAD), `dir` |
+| `SELECT * FROM lemma_remove('<key or prefix>')` | delete one installed executor (at least 6 hex characters, unambiguous; as `lemma remove`): its directory and its template index entry; one row `key, sql, dir` |
+| `SELECT * FROM lemma_query('<sql>')` | the older name of `lemma(...)`: the same lookup (exact text, then a stored template) but it NEVER generates and takes no `regenerate` (scripts and the measure keep their behaviour): no executor is the error `no proved executor for this query; run `lemma optimize``. |
+| `SELECT * FROM lemma_query('<template>', v1, v2, ...)` | a query template (`-- params:` header, `$name` placeholders, lemma.toml `[sql] templates`): one value per parameter in declaration order. BIGINT takes an integer value, DATE a DATE value (`DATE '1995-01-01'`), DECIMAL(p,s) an integer or DECIMAL value with at most s fractional digits (exact, never rounded), VARCHAR a VARCHAR. A wrong count or type, NULL, or a value outside the range `run_query` requires is an error, never rows. In `lemma_mode` the template TEXT is an error (the plan replacement cannot see bound values); a plain query that instantiates a stored template is answered by it (see "Query templates") |
 | `SET lemma_mode = true` | every table-reading SELECT of the session is looked up; with an executor the plan is replaced by it (same snapshot, same result types), EXPLAIN shows a `LEMMA_QUERY` node with `engine: lemma`, the executor key and the proof line |
 | `SET lemma_route_unproved = true` | in Lemma mode, a query without an executor runs on DuckDB unchanged instead of raising the error; labelled `engine=duckdb` in `lemma_last_query()`. Default `false`. Experiments never set it |
 | `SELECT * FROM lemma_last_query()` | `engine` (`lemma`, `duckdb` or `none`), `reason`, `query_key`, `sql`, and for Lemma: `scan_us` (scan + copy), `load_us` (decode + every assumption check in the library), `run_us` (proved `run_query`), `total_us`, `rows`, `cache` (`hit`, `miss: stored`, `miss: not stored (...)`, `skip: <why>`, `off`) and `cache_bytes`; on a hit `scan_us` is the plan (ABI 5: the cached inputs are lent as they are; ABI 4: plus the copy of the cached owned cells) |
@@ -59,10 +68,77 @@ Or run our CLI, where Lemma is already loaded: `build/release/duckdb db.duckdb`.
 | `SELECT * FROM lemma_cache_clear()` | drop every entry (one row: entries and bytes dropped); the measure's cold rounds use it |
 | `SET lemma_home = '<dir>'` | default `$LEMMA_HOME`, else `~/.local/share/lemma` (read at LOAD) |
 | `lemma_normalize_sql(s)`, `lemma_sql_key(s)` | the cache-key form of a SQL text and its sha256 |
+| `lemma_template_skeleton(s)`, `lemma_match_template(template, sql)` | the text the template index is keyed by; the literals `sql` binds to a template's parameters (`name=literal`) or NULL. For tests |
+
+Examples:
+
+```sql
+LOAD 'lemma.duckdb_extension';
+SELECT * FROM lemma('SELECT SUM(cost) AS total FROM pre WHERE line > 5');      -- first time: generates (blocks), then answers
+SELECT * FROM lemma('SELECT SUM(cost) AS total FROM pre WHERE line > 9');      -- the lifted template answers, no generation
+SELECT engine, reason FROM lemma_last_query();   -- lemma | proved executor (...) via lemma(), template 503fd699116d ($p1 = 9)
+SELECT * FROM lemma('SELECT SUM(cost) AS total FROM pre WHERE line > 5', regenerate := true);
+SET lemma_generate = 'background';  SET lemma_route_unproved = true;   -- answer now with DuckDB (labelled), generate meanwhile
+SELECT job_id, status, log FROM lemma_jobs();
+SELECT key, kind, sql, runs, last_used FROM lemma_list();
+SELECT * FROM lemma_remove('503fd6');
+```
 
 Statements that read no table (SET, constants, table functions such as `lemma_query` itself) and writes (INSERT, UPDATE, DELETE,
 CREATE TABLE AS, COPY) are never routed. An explicitly PREPAREd statement in Lemma mode is an error (the extension cannot see its
 text); run it as a plain query.
+
+## lemma(...): generation, snapshots and query templates
+
+**Generation.** `lemma('<sql>')` without an executor (exact text or template, below) runs the generator: `lemma generate`
+(`lemma_cli/generate.py`), the same pipeline as `lemma optimize` (sandboxed agent proves `run_query`, Verus verifies and compiles the
+library, `install_executor` stages it and renames it into place, so a replaced executor is swapped only after the new one proved).
+The job lives in `${lemma_home}/jobs/<id>/` (`job.json`, `query.sql`, `log`, `pgid`, `exit_code`, `cancelled`); `lemma_jobs()`
+reads it. It runs detached in its own session (`posix_spawn` with `POSIX_SPAWN_SETSID`), so the caller's terminal's Ctrl-C never
+reaches it; a blocking `lemma(...)` turns its own interrupt into SIGTERM to the job's process group (SIGKILL 5 s later). Generation
+starts a shell command and writes files: it is refused when `enable_external_access = false`. Executors are keyed by QUERY, not by
+database: the manifest records each input column's DuckDB type at install, and the extension refuses (an error, never a
+generation or DuckDB's rows) an executor whose tables' column types differ now (`pre.line is INTEGER now, the executor was proved
+for BIGINT`).
+
+**Data snapshot.** The generator is a separate process and the caller's DuckDB holds the lock on its database file, so the
+extension first copies, in the caller's transaction, every base table the query reads (found by binding the query; tables with
+generated columns and non-DuckDB tables are refused; a query over a VIEW gets the view's base tables but not the view, so its
+generation fails in the pipeline) into `${job}/snapshot.duckdb`: the table's own CREATE TABLE (types, defaults, constraints; catalog name
+dropped, schema kept) and all its columns, scanned with the caller's `DuckTransaction` (`DataTable::InitializeScan` / `Scan`:
+its snapshot, its own uncommitted inserts and deletes, nobody else's), appended with an `Appender` into a fresh DuckDB file. The proof
+does not depend on these rows (`assumptions = false`: no data assumption); the pipeline reads the snapshot's schema, profile and
+timing data. Cost: one full copy of every table the query reads, all columns, on disk (`snapshot_bytes` in `lemma_jobs()`), written
+before the job starts, while the caller waits; the job deletes it when it ends (and a cancel does).
+
+**Query templates.** A template executor (a `-- params:` header, `$name` placeholders: lifted by `lemma generate` or written by hand
+and installed with `lemma optimize`) is listed at install in `${lemma_home}/templates/<sha256 of its skeleton>/<executor key>` (an
+empty file; `lemma_remove` / `lemma remove` delete it). The skeleton is the normalized text with every `$name` and every literal token
+replaced by `?` (`lemma::TemplateSkeleton`, mirrored by `research_loop/in_duckdb.py` `template_skeleton`; tests check both agree). A
+query without an exact executor is looked up by its own skeleton; a candidate MATCHES only if the query's normalized text equals the
+template body (normalized with the same whitespace rule, `$` kept) with each placeholder replaced by ONE literal token of the
+parameter's kind, character for character (`lemma::MatchTemplate`; a name used twice binds the same text), and every bound value fits
+the parameter's type exactly and lies in the range `run_query` requires (manifest `lo`/`hi`): BIGINT an unsigned integer token that
+fits i64; DECIMAL(p,s) an unsigned number with at most s fractional digits (never rounded); DATE a `DATE 'YYYY-MM-DD'` literal of a
+valid day; VARCHAR a `'...'` string. Literal tokens: `[0-9]+(.[0-9]+)?` not touching an identifier character or `.`; `'...'` with
+`''` escapes; `DATE '...'` (any case, at most one space). So a match IS the template's own text with the query's literals, and the
+proof (`run_query` equal to the spec for every parameter value in the range) covers it: the values are passed as the executor's
+parameters, as `lemma_query('<template>', v...)` does. Anything else is no match (a different literal form, `-5`, `(7)`, `7e1`, more
+text, another case): the exact key is tried first, the template second; one executor per template. `lemma_mode` uses the same
+lookup (exact, then template), so a template executor now answers plain SELECTs in Lemma mode with the literals bound.
+
+**Constant lifting** (`lemma_lift_constants`, default on; `declarative_spec/lift.py` has the exact rule and the tests). `lemma generate`
+lifts a literal token into a typed parameter when it stands in a WHERE or HAVING clause (not in a nested SELECT list, JOIN ... ON,
+GROUP BY, ORDER BY, LIMIT/OFFSET, QUALIFY or window), is one side of `column <op> literal` (`= <> < <= > >=`), a bound of `column
+BETWEEN a AND b` or an item of `column IN (a, b, ...)` (fixed length: one parameter per item), `column` a plain base-table column,
+and the literal fits the column: integer column, integer token (BIGINT); DECIMAL(p,s), a number with at most s fractional digits
+(DECIMAL(min(p,18),s)); DATE, a `DATE '...'` literal; VARCHAR, a string under `=`, `<>` or IN only; and the value lies in the
+template's range. NOT lifted: LIMIT/OFFSET, ORDER BY, GROUP BY, column or table names, SELECT-list constants (CASE), JOIN ... ON
+constants, negated numbers, `'1995-01-01'` without DATE, CAST / `::` literals, DOUBLE/FLOAT/BOOLEAN/TIMESTAMP columns, comparisons of
+expressions or aggregates (`SUM(x) > 5`). The template is proved for all values in range (`declarative_spec/templates.py`: the spec is
+emitted at sentinel values and must differ only where the value is printed; else the template is refused and the generation FAILS
+loudly; `SET lemma_lift_constants = false` then proves the exact text) and measured on the query's own values (`run_container_agent.py
+--template-binding`).
 
 ## Cache layout (shared with the `lemma` CLI)
 
@@ -71,6 +147,8 @@ ${LEMMA_HOME:-~/.local/share/lemma}/executors/<key>/lib.so          the verified
                                                /manifest.json    see below
                                                /query.sql
 ${LEMMA_HOME:-~/.local/share/lemma}/queue/<key>.sql              misses (lemma_enqueue_misses)
+${LEMMA_HOME:-~/.local/share/lemma}/templates/<skeleton sha>/<key>   the template index (see "Query templates")
+${LEMMA_HOME:-~/.local/share/lemma}/jobs/<id>/                      generations started by lemma(...) (see "Generation")
 ```
 
 `<key>` is the sha256 of the normalized SQL (`research_loop/in_duckdb.py` `normalize_sql`, mirrored by `NormalizeSql` in
@@ -246,5 +324,8 @@ uv run pytest -m slow tests/test_in_duckdb.py              # + TPC-H SF1 (resear
 
 ## Limits (today)
 
-Only `Vec<OutRow>` results (no map-shaped results); string columns must be VARCHAR; no query parameters; executors are not
-unloaded; string fields are copied twice (DuckDB vector -> per-task buffer -> `String`).
+Only `Vec<OutRow>` results (no map-shaped results); string columns must be VARCHAR; executors are not unloaded; string fields are
+copied twice (DuckDB vector -> per-task buffer -> `String`). Generation: one executor per template (a query whose literal does not fit
+the stored template's parameter, e.g. out of its range, gets its own executor); two DIFFERENT queries of one template generating at
+the same time both prove it (the later install replaces the earlier, both proved); cancelling kills the job's process group, but a
+Docker container the pipeline already started is the pipeline's to stop; `lemma_query` and `lemma_mode` never generate.

@@ -65,6 +65,8 @@
 #include "duckdb/transaction/meta_transaction.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/main/attached_database.hpp"
+#include "duckdb/storage/storage_manager.hpp"
+#include "duckdb/parser/parsed_data/create_table_info.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -85,8 +87,17 @@
 #include <mutex>
 #include <regex>
 #include <sstream>
+#include <dirent.h>
+#include <functional>
+#include <ftw.h>
+#include <signal.h>
+#include <spawn.h>
 #include <sys/stat.h>
+#include <sys/time.h>
+#include <sys/wait.h>
 #include <unistd.h>
+
+extern char **environ;
 #include <unordered_map>
 
 static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "the executor ABI is little-endian");
@@ -215,6 +226,7 @@ public:
 	// lemma_query declined and lemma_route_unproved handed its SQL to DuckDB: the optimizer hook leaves that plan and its label alone.
 	bool routed_decline = false;
 	PendingRun pending;
+	std::string gen_note; // lemma(...) generated (or is regenerating) an executor in this query: said in lemma_last_query()
 	// The data version (DataVersion), guarded by Version().lock: inside a transaction / a query, counted in `open`, and the epoch
 	// the current transaction began at (NO_EPOCH: unknown).
 	bool tx_open = false, query_open = false, counted = false;
@@ -283,6 +295,7 @@ public:
 		query = context.GetCurrentQuery();
 		routed_decline = false;
 		pending = PendingRun();
+		gen_note.clear();
 	}
 	void QueryEnd(ClientContext &context) override {
 		{
@@ -333,6 +346,10 @@ struct InEntry {
 struct ParamSpec {
 	std::string name, sql_type, rust_type;
 	int scale = 0;
+	// The range run_query requires (manifest lo / hi, in run_query's units: DATE a day number, DECIMAL scaled by 10^scale); a
+	// VARCHAR parameter has none. Template matching uses it (a literal outside it is no match); the library checks it on every call.
+	bool has_range = false;
+	int64_t lo = 0, hi = 0;
 };
 
 struct OutCol {
@@ -487,15 +504,28 @@ std::shared_ptr<Executor> LoadLibrary(const Manifest &m, const std::string &inpu
 	return exec;
 }
 
-// The executor for `sql`, or nullptr on a miss. Every check that fails on a PRESENT executor is an error, never a miss.
+bool FileExists(const std::string &path) {
+	struct stat st;
+	return stat(path.c_str(), &st) == 0;
+}
+
+std::unique_ptr<Manifest> LoadExecutor(const std::string &dir, const std::string &key, const std::string *normalized_sql);
+
+// The executor for `sql` (its exact text, normalized), or nullptr on a miss. Every check that fails on a PRESENT executor is an
+// error, never a miss.
 std::unique_ptr<Manifest> FindExecutor(ClientContext &context, const std::string &sql) {
 	std::string normalized = lemma::NormalizeSql(sql);
 	std::string key = lemma::Sha256Hex(normalized);
 	std::string dir = HomeSetting(context) + "/executors/" + key;
-	struct stat st;
-	if (stat((dir + "/manifest.json").c_str(), &st) != 0) {
+	if (!FileExists(dir + "/manifest.json")) {
 		return nullptr;
 	}
+	return LoadExecutor(dir, key, &normalized);
+}
+
+// The executor installed in `dir` under `key` (checked against the manifest, and its normalized SQL against `normalized_sql` when
+// given; a template found through the template index is checked against its own key and text).
+std::unique_ptr<Manifest> LoadExecutor(const std::string &dir, const std::string &key, const std::string *normalized_sql) {
 	lemma::Json j;
 	std::string manifest_text_sha;
 	try {
@@ -522,7 +552,8 @@ std::unique_ptr<Manifest> FindExecutor(ClientContext &context, const std::string
 		if (!j.At("in_duckdb").Bool()) {
 			throw InvalidInputException("Lemma: %s was not installed for in-DuckDB execution (in_duckdb is false)", dir);
 		}
-		if (m->key != key || m->normalized_sql != normalized) {
+		if (m->key != key || (normalized_sql && m->normalized_sql != *normalized_sql) ||
+		    lemma::Sha256Hex(m->normalized_sql) != key) {
 			throw InvalidInputException("Lemma: %s holds the executor of another query", dir);
 		}
 		std::string version = j.At("duckdb_version").Str();
@@ -540,6 +571,12 @@ std::unique_ptr<Manifest> FindExecutor(ClientContext &context, const std::string
 			p.sql_type = e.At("sql_type").Str();
 			p.rust_type = e.At("rust_type").Str();
 			p.scale = int(e.At("scale").Int());
+			if (e.Has("lo") && e.Has("hi") && e.At("lo").kind == lemma::Json::Kind::Number &&
+			    e.At("hi").kind == lemma::Json::Kind::Number) {
+				p.has_range = true;
+				p.lo = e.At("lo").Int();
+				p.hi = e.At("hi").Int();
+			}
 			m->params.push_back(p);
 		}
 		if (m->params.size() != j.At("param_layout").Arr().size()) {
@@ -2369,6 +2406,739 @@ void WriteCell(Vector &vec, idx_t out_i, const OutCol &c, const ResultColumn &rc
 	}
 }
 
+// ---------------------------------------------------------------- query templates: matching a query's literals to a stored template
+//
+// A template executor (`-- params:` header, `$name` placeholders; lifted automatically by `lemma generate` or written by hand) is
+// listed in ${lemma_home}/templates/<sha256 of its skeleton>/<executor key> (research_loop/in_duckdb.py index_template). A query
+// without an exact executor is looked up there by ITS skeleton (lemma::TemplateSkeleton: every literal token and placeholder is `?`),
+// and matches a candidate only if its normalized text equals the template body (normalized, `$` kept) with each placeholder replaced
+// by one literal token of the parameter's kind, character for character (lemma::MatchTemplate), and every bound value fits the
+// parameter's type and the range run_query requires. So the query IS the template's text instantiated with its own literals: the
+// executor's proof (for every parameter value in that range) covers it.
+
+// The query as an executor answers it: the manifest, the values lemma_query would take, and the SQL DuckDB answers a routed decline with.
+struct Resolved {
+	std::unique_ptr<Manifest> manifest;
+	vector<Value> inputs; // [the executor's SQL text, parameter values...]
+	std::string sql;      // the caller's SQL
+	bool via_template = false;
+	std::string duck_sql; // for a template match: the caller's text (it is the template with these values); else empty
+};
+
+lemma::LiteralKind ParamLiteralKind(const ParamSpec &p) {
+	if (p.sql_type == "VARCHAR") {
+		return lemma::LiteralKind::String;
+	}
+	if (p.sql_type == "DATE") {
+		return lemma::LiteralKind::Date;
+	}
+	return lemma::LiteralKind::Number;
+}
+
+// The value of a bound literal for parameter `p`, or false when it does not fit the parameter's type or the range run_query requires
+// (no match: a different executor is needed). Exact: a DECIMAL literal with more fractional digits than the scale never matches.
+bool LiteralValue(const ParamSpec &p, const std::string &text, Value &out) {
+	if (p.sql_type == "VARCHAR") {
+		std::string inner;
+		for (size_t i = 1; i + 1 < text.size(); i++) {
+			inner += text[i];
+			if (text[i] == '\'') {
+				i++; // '' is one quote
+			}
+		}
+		out = Value(inner);
+		return true;
+	}
+	if (p.sql_type == "DATE") {
+		size_t q = text.find('\'');
+		std::string day = text.substr(q + 1, text.size() - q - 2);
+		static const std::regex iso("^[0-9]{4}-[0-9]{2}-[0-9]{2}$");
+		if (!std::regex_match(day, iso)) {
+			return false;
+		}
+		date_t d;
+		idx_t pos = 0;
+		bool special = false;
+		if (Date::TryConvertDate(day.c_str(), day.size(), pos, d, special, true) != DateCastResult::SUCCESS || special) {
+			return false;
+		}
+		if (p.has_range && (int64_t(d.days) < p.lo || int64_t(d.days) > p.hi)) {
+			return false;
+		}
+		out = Value::DATE(d);
+		return true;
+	}
+	int scale = p.sql_type == "BIGINT" ? 0 : p.scale;
+	if (p.sql_type != "BIGINT" && p.sql_type.rfind("DECIMAL(", 0) != 0) {
+		return false;
+	}
+	size_t dot = text.find('.');
+	std::string whole = text.substr(0, dot);
+	std::string frac = dot == std::string::npos ? "" : text.substr(dot + 1);
+	if (int(frac.size()) > scale) {
+		return false;
+	}
+	std::string digits = whole + frac + std::string(size_t(scale) - frac.size(), '0');
+	i128 scaled = 0;
+	for (char c : digits) {
+		scaled = scaled * 10 + (c - '0');
+		if (scaled > i128(INT64_MAX)) {
+			return false;
+		}
+	}
+	int64_t v = int64_t(scaled);
+	if (p.has_range && (v < p.lo || v > p.hi)) {
+		return false;
+	}
+	out = scale == 0 && p.sql_type == "BIGINT" ? Value::BIGINT(v) : Value::DECIMAL(v, 18, uint8_t(scale));
+	return true;
+}
+
+// The template text without its `-- params:` header line (templates.parse_template: the line's text goes, its newline stays).
+std::string TemplateBody(const std::string &sql) {
+	size_t start = 0;
+	while (start <= sql.size()) {
+		size_t end = sql.find('\n', start);
+		if (end == std::string::npos) {
+			end = sql.size();
+		}
+		size_t i = start;
+		while (i < end && (sql[i] == ' ' || sql[i] == '\t')) {
+			i++;
+		}
+		if (sql.compare(i, 2, "--") == 0) {
+			i += 2;
+			while (i < end && (sql[i] == ' ' || sql[i] == '\t')) {
+				i++;
+			}
+			if (end - i >= 6 && StringUtil::CIEquals(sql.substr(i, 6), "params")) {
+				i += 6;
+				while (i < end && (sql[i] == ' ' || sql[i] == '\t')) {
+					i++;
+				}
+				if (i < end && sql[i] == ':') {
+					return sql.substr(0, start) + sql.substr(end);
+				}
+			}
+		}
+		start = end + 1;
+	}
+	return sql;
+}
+
+// The installed executors listed under `skeleton_key`, sorted (deterministic).
+std::vector<std::string> IndexEntries(const std::string &home, const std::string &skeleton_key) {
+	std::vector<std::string> out;
+	std::string dir = home + "/templates/" + skeleton_key;
+	DIR *d = opendir(dir.c_str());
+	if (!d) {
+		return out;
+	}
+	while (auto *e = readdir(d)) {
+		std::string name = e->d_name;
+		if (name.size() == 64 && name.find_first_not_of("0123456789abcdef") == std::string::npos) {
+			out.push_back(name);
+		}
+	}
+	closedir(d);
+	std::sort(out.begin(), out.end());
+	return out;
+}
+
+// A stored template whose instance is exactly `sql`, or nullptr. A present but broken or refused executor is an error, as for an exact
+// key; a stale index entry (its executor removed) is skipped.
+std::unique_ptr<Resolved> MatchStoredTemplate(ClientContext &context, const std::string &sql) {
+	std::string normalized = lemma::NormalizeSql(sql);
+	if (normalized != lemma::NormalizeSql(sql, true)) {
+		return nullptr; // a `$` outside quotes (a prepared parameter, dollar quoting): never a template instance
+	}
+	std::string home = HomeSetting(context);
+	for (auto &key : IndexEntries(home, lemma::Sha256Hex(lemma::TemplateSkeleton(normalized)))) {
+		std::string dir = home + "/executors/" + key;
+		if (!FileExists(dir + "/manifest.json")) {
+			continue;
+		}
+		auto m = LoadExecutor(dir, key, nullptr);
+		if (m->params.empty()) {
+			continue;
+		}
+		std::map<std::string, lemma::LiteralKind> kinds;
+		for (auto &p : m->params) {
+			kinds[p.name] = ParamLiteralKind(p);
+		}
+		std::map<std::string, std::string> bound;
+		if (!lemma::MatchTemplate(lemma::NormalizeSql(TemplateBody(m->sql), true), normalized, kinds, bound)) {
+			continue;
+		}
+		auto r = make_uniq<Resolved>();
+		r->inputs.push_back(Value(m->sql));
+		bool fits = true;
+		for (auto &p : m->params) {
+			Value v;
+			if (bound.find(p.name) == bound.end() || !LiteralValue(p, bound[p.name], v)) {
+				fits = false;
+				break;
+			}
+			r->inputs.push_back(v);
+		}
+		if (!fits) {
+			continue;
+		}
+		r->manifest = std::move(m);
+		r->sql = sql;
+		r->via_template = true;
+		r->duck_sql = sql;
+		return r;
+	}
+	return nullptr;
+}
+
+// Exact key first (the caller's own values follow the SQL for a template text), then a stored template (no values may follow).
+std::unique_ptr<Resolved> Resolve(ClientContext &context, const vector<Value> &inputs) {
+	auto sql = StringValue::Get(inputs[0]);
+	auto m = FindExecutor(context, sql);
+	if (m) {
+		auto r = make_uniq<Resolved>();
+		r->manifest = std::move(m);
+		r->inputs = inputs;
+		r->sql = sql;
+		return r;
+	}
+	if (inputs.size() != 1) {
+		return nullptr;
+	}
+	return MatchStoredTemplate(context, sql);
+}
+
+// ---------------------------------------------------------------- per-executor use (lemma_list)
+
+struct Usage {
+	int64_t runs = 0, cache_hits = 0;
+	std::chrono::steady_clock::time_point touched;
+	bool ever_touched = false;
+};
+std::mutex usage_lock;
+std::unordered_map<std::string, Usage> usage; // by executor directory, since LOAD (this process)
+
+// Count a run and keep ${dir}/last_used's mtime at the last use (written at most every 10 s per executor and process).
+void RecordUse(const Manifest &m, const std::string &cache) {
+	bool touch = false;
+	{
+		std::lock_guard<std::mutex> guard(usage_lock);
+		auto &u = usage[m.dir];
+		u.runs++;
+		if (cache == "hit") {
+			u.cache_hits++;
+		}
+		auto now = std::chrono::steady_clock::now();
+		if (!u.ever_touched || now - u.touched > std::chrono::seconds(10)) {
+			u.touched = now;
+			u.ever_touched = true;
+			touch = true;
+		}
+	}
+	if (touch) {
+		std::string path = m.dir + "/last_used";
+		std::ofstream(path, std::ios::app).flush(); // creates it; utimes sets the time (never fails a query)
+		utimes(path.c_str(), nullptr);
+	}
+}
+
+std::string IsoTime(time_t t) {
+	char buf[32];
+	struct tm tmv;
+	gmtime_r(&t, &tmv);
+	strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tmv);
+	return buf;
+}
+
+std::string MtimeIso(const std::string &path) {
+	struct stat st;
+	return stat(path.c_str(), &st) == 0 ? IsoTime(st.st_mtime) : std::string();
+}
+
+int64_t FileSize(const std::string &path) {
+	struct stat st;
+	return stat(path.c_str(), &st) == 0 ? int64_t(st.st_size) : -1;
+}
+
+std::string JsonQuote(const std::string &s) {
+	std::string out = "\"";
+	for (unsigned char c : s) {
+		if (c == '"' || c == '\\') {
+			out += '\\';
+			out += char(c);
+		} else if (c < 0x20) {
+			char buf[8];
+			snprintf(buf, sizeof(buf), "\\u%04x", c);
+			out += buf;
+		} else {
+			out += char(c);
+		}
+	}
+	return out + "\"";
+}
+
+void WriteFileAtomic(const std::string &path, const std::string &text) {
+	std::string part = path + ".part" + std::to_string(getpid());
+	{
+		std::ofstream out(part, std::ios::binary);
+		out << text;
+		if (!out) {
+			throw IOException("Lemma: cannot write %s", part);
+		}
+	}
+	if (std::rename(part.c_str(), path.c_str()) != 0) {
+		throw IOException("Lemma: cannot write %s", path);
+	}
+}
+
+int RemoveEntry(const char *path, const struct stat *, int, struct FTW *) {
+	return ::remove(path);
+}
+
+void RemoveTree(const std::string &path) {
+	if (nftw(path.c_str(), RemoveEntry, 16, FTW_DEPTH | FTW_PHYS) != 0 && errno != ENOENT) {
+		throw IOException("Lemma: cannot remove %s", path);
+	}
+}
+
+// ---------------------------------------------------------------- generation: lemma(...) for a query without an executor
+//
+// The pipeline (sandboxed agent, Verus, compile, install: `lemma generate`, lemma_cli/generate.py) is a separate process. It cannot open
+// the caller's database file (DuckDB holds its lock), so the extension first writes a SNAPSHOT: every table the query reads, all its
+// columns, as this transaction sees them (its own uncommitted rows included), into a fresh DuckDB file in the job directory. The proof
+// does not depend on the data (assumptions = false: no data assumption); the snapshot gives the pipeline the schema, the profile and
+// the timing data. The job runs detached (its own session), writes `log`, and `exit_code` when it ends; the snapshot is deleted then.
+//
+//   ${lemma_home}/jobs/<id>/job.json      what was asked (query, key, mode, regenerate, snapshot size, generator command, ...)
+//                          /query.sql     the caller's SQL
+//                          /snapshot.duckdb   while the job runs
+//                          /log           the generator's stdout + stderr
+//                          /pgid          the job's process group (written once it started)
+//                          /exit_code     when it ended (0: an executor was installed)
+//                          /cancelled     Ctrl-C of a blocking lemma(...) (the process group got SIGTERM)
+
+std::string Setting(ClientContext &context, const char *name) {
+	Value v;
+	if (!context.TryGetCurrentSetting(name, v) || v.IsNull()) {
+		throw InvalidInputException("Lemma: %s is not set", std::string(name));
+	}
+	return v.ToString();
+}
+
+std::string GenerateMode(ClientContext &context) {
+	auto mode = StringUtil::Lower(Setting(context, "lemma_generate"));
+	if (mode != "block" && mode != "background" && mode != "off") {
+		throw InvalidInputException("Lemma: lemma_generate is '%s'; it takes 'block', 'background' or 'off'", mode);
+	}
+	return mode;
+}
+
+std::string Trimmed(std::string s) {
+	StringUtil::Trim(s);
+	return s;
+}
+
+std::string ReadSmall(const std::string &path) {
+	std::ifstream in(path, std::ios::binary);
+	std::ostringstream ss;
+	ss << in.rdbuf();
+	return ss.str();
+}
+
+struct JobView {
+	std::string id, dir, status, key, sql, mode, created, finished, log, error, installed;
+	bool regenerate = false;
+	int64_t exit_code = -1, snapshot_bytes = -1, pgid = 0;
+};
+
+bool GroupAlive(int64_t pgid) {
+	return pgid > 0 && (kill(-pid_t(pgid), 0) == 0 || errno == EPERM);
+}
+
+// The last non-empty line of the log that starts with `prefix` ("" = any), at most 600 bytes of it.
+std::string LastLogLine(const std::string &log, const std::string &prefix) {
+	std::string text = ReadSmall(log);
+	std::string found;
+	size_t start = 0;
+	while (start < text.size()) {
+		size_t end = text.find('\n', start);
+		if (end == std::string::npos) {
+			end = text.size();
+		}
+		std::string line = text.substr(start, end - start);
+		if (!Trimmed(line).empty() && line.compare(0, prefix.size(), prefix) == 0) {
+			found = line;
+		}
+		start = end + 1;
+	}
+	return found.size() > 600 ? found.substr(found.size() - 600) : found;
+}
+
+// `details`: also read the log (installed key, error line); the status alone does not need it.
+JobView ReadJob(const std::string &dir, const std::string &id, bool details = true) {
+	JobView j;
+	j.id = id;
+	j.dir = dir;
+	j.log = dir + "/log";
+	auto doc = lemma::ParseJson(ReadFile(dir + "/job.json"));
+	j.key = doc.At("key").Str();
+	j.sql = doc.At("sql").Str();
+	j.mode = doc.At("mode").Str();
+	j.created = doc.At("created").Str();
+	j.regenerate = doc.At("regenerate").Bool();
+	j.snapshot_bytes = doc.At("snapshot_bytes").Int();
+	std::string pg = Trimmed(ReadSmall(dir + "/pgid")), code = Trimmed(ReadSmall(dir + "/exit_code"));
+	j.pgid = pg.empty() ? 0 : std::stoll(pg);
+	if (!code.empty()) {
+		j.exit_code = std::stoll(code);
+		j.finished = MtimeIso(dir + "/exit_code");
+	}
+	if (FileExists(dir + "/cancelled")) {
+		j.status = "cancelled";
+		j.finished = MtimeIso(dir + "/cancelled");
+	} else if (!code.empty()) {
+		j.status = j.exit_code == 0 ? "done" : "failed";
+	} else if (j.pgid == 0) {
+		j.status = "starting";
+	} else if (GroupAlive(j.pgid)) {
+		j.status = "running";
+	} else if (FileExists(dir + "/exit_code")) {
+		return ReadJob(dir, id, details); // it ended between the two reads
+	} else {
+		j.status = "lost"; // its processes are gone without an exit code (killed, or the machine restarted)
+	}
+	if (!details) {
+		return j;
+	}
+	j.installed = LastLogLine(j.log, "INSTALLED ");
+	if (!j.installed.empty()) {
+		j.installed = Trimmed(j.installed.substr(10));
+		j.installed = j.installed.substr(0, j.installed.find(' '));
+	}
+	if (j.status == "failed" || j.status == "lost") {
+		j.error = LastLogLine(j.log, "");
+	}
+	return j;
+}
+
+std::vector<JobView> ListJobs(const std::string &home, bool details = true) {
+	std::vector<JobView> out;
+	std::string root = home + "/jobs";
+	DIR *d = opendir(root.c_str());
+	if (!d) {
+		return out;
+	}
+	std::vector<std::string> ids;
+	while (auto *e = readdir(d)) {
+		std::string name = e->d_name;
+		if (name[0] != '.' && FileExists(root + "/" + name + "/job.json")) {
+			ids.push_back(name);
+		}
+	}
+	closedir(d);
+	std::sort(ids.begin(), ids.end());
+	for (auto &id : ids) {
+		out.push_back(ReadJob(root + "/" + id, id, details));
+	}
+	return out;
+}
+
+// The base tables `sql` reads, bound in the caller's context (a query that does not bind is an error before anything starts).
+std::vector<TableCatalogEntry *> TablesRead(ClientContext &context, const std::string &sql) {
+	Parser parser(context.GetParserOptions());
+	parser.ParseQuery(sql);
+	if (parser.statements.size() != 1 || parser.statements[0]->type != StatementType::SELECT_STATEMENT) {
+		throw InvalidInputException("Lemma: lemma() takes one SELECT statement");
+	}
+	auto binder = Binder::CreateBinder(context);
+	auto bound = binder->Bind(*parser.statements[0]);
+	std::vector<TableCatalogEntry *> out;
+	std::function<void(LogicalOperator &)> walk = [&](LogicalOperator &op) {
+		if (op.type == LogicalOperatorType::LOGICAL_GET) {
+			auto table = op.Cast<LogicalGet>().GetTable();
+			if (table && std::find(out.begin(), out.end(), table.get()) == out.end()) {
+				out.push_back(table.get());
+			}
+		}
+		for (auto &child : op.children) {
+			walk(*child);
+		}
+	};
+	walk(*bound.plan);
+	if (out.empty()) {
+		throw InvalidInputException("Lemma: the query reads no table; there is nothing to generate an executor for");
+	}
+	return out;
+}
+
+// Every table in `tables`, all its columns, as the caller's transaction sees them (committed rows of its snapshot and its own
+// uncommitted ones), into a new DuckDB file at `path` (same schema names, table names and CREATE TABLE text). Returns the rows.
+int64_t ExportSnapshot(ClientContext &context, const std::vector<TableCatalogEntry *> &tables, const std::string &path) {
+	DBConfig config;
+	DuckDB db(path, &config);
+	Connection con(db);
+	int64_t rows = 0;
+	for (auto *entry : tables) {
+		if (!entry->IsDuckTable()) {
+			throw InvalidInputException("Lemma: %s is not a DuckDB table; the generator's snapshot can only copy DuckDB tables", entry->name);
+		}
+		for (auto &col : entry->GetColumns().Logical()) {
+			if (col.Generated()) {
+				throw InvalidInputException("Lemma: %s.%s is a generated column; the generator's snapshot cannot copy it", entry->name,
+				                            col.Name());
+			}
+		}
+		if (entry->schema.name != DEFAULT_SCHEMA) {
+			auto r = con.Query("CREATE SCHEMA IF NOT EXISTS " + KeywordHelper::WriteQuoted(entry->schema.name, '"'));
+			if (r->HasError()) {
+				throw InvalidInputException("Lemma: snapshot: %s", r->GetError());
+			}
+		}
+		// The table's own CREATE TABLE (columns, types, defaults, constraints), without the caller's catalog name.
+		auto info = entry->GetInfo();
+		info->catalog.clear();
+		auto created = con.Query(info->ToString());
+		if (created->HasError()) {
+			throw InvalidInputException("Lemma: snapshot of %s: %s", entry->name, created->GetError());
+		}
+		auto &storage = entry->GetStorage();
+		auto &transaction = DuckTransaction::Get(context, entry->ParentCatalog());
+		vector<StorageIndex> ids;
+		vector<LogicalType> types;
+		for (auto &col : entry->GetColumns().Physical()) {
+			ids.emplace_back(col.StorageOid());
+			types.push_back(col.Type());
+		}
+		TableScanState state;
+		storage.InitializeScan(context, transaction, state, ids);
+		DataChunk chunk;
+		chunk.Initialize(Allocator::Get(context), types);
+		Appender appender(con, entry->schema.name, entry->name);
+		while (true) {
+			chunk.Reset();
+			storage.Scan(transaction, chunk, state);
+			if (chunk.size() == 0) {
+				break;
+			}
+			rows += int64_t(chunk.size());
+			appender.AppendDataChunk(chunk);
+		}
+		appender.Close();
+	}
+	auto done = con.Query("CHECKPOINT");
+	if (done->HasError()) {
+		throw InvalidInputException("Lemma: snapshot: %s", done->GetError());
+	}
+	return rows;
+}
+
+std::atomic<uint64_t> job_counter {0};
+
+// Start the generator for `sql` as a detached job (its own session and process group); returns the job id.
+std::string StartJob(ClientContext &context, const std::string &sql, bool regenerate, const std::string &mode) {
+	Value external;
+	if (context.TryGetCurrentSetting("enable_external_access", external) && !external.IsNull() && !BooleanValue::Get(external)) {
+		throw PermissionException("Lemma: generating an executor runs the generator command and writes a snapshot file, and "
+		                          "enable_external_access is false");
+	}
+	std::string home = HomeSetting(context);
+	if (home.empty() || home[0] != '/') { // the job runs in its own directory: every path it gets is absolute
+		char cwd[4096];
+		if (!getcwd(cwd, sizeof(cwd))) {
+			throw IOException("Lemma: cannot resolve lemma_home %s", home);
+		}
+		home = std::string(cwd) + "/" + home;
+	}
+	std::string generator = Setting(context, "lemma_generator");
+	if (Trimmed(generator).empty()) {
+		throw InvalidInputException("Lemma: lemma_generator is empty");
+	}
+	auto tables = TablesRead(context, sql);
+	std::string key = lemma::Sha256Hex(lemma::NormalizeSql(sql));
+	std::string id = IsoTime(time(nullptr)) + "-" + key.substr(0, 12) + "-" + std::to_string(getpid()) + "-" +
+	                 std::to_string(job_counter++);
+	for (auto &c : id) {
+		if (c == ':') {
+			c = '-';
+		}
+	}
+	std::string dir = home + "/jobs/" + id;
+	MakeDirs(dir);
+	WriteFileAtomic(dir + "/query.sql", sql + "\n");
+	auto start = std::chrono::steady_clock::now();
+	std::string snapshot = dir + "/snapshot.duckdb";
+	int64_t rows;
+	try {
+		rows = ExportSnapshot(context, tables, snapshot);
+	} catch (...) {
+		RemoveTree(dir); // nothing started: no job
+		throw;
+	}
+	int64_t export_us = MicrosSince(start);
+	int64_t bytes = FileSize(snapshot);
+	std::string source = tables[0]->ParentCatalog().GetAttached().GetStorageManager().GetDBPath();
+	std::string names;
+	for (auto *t : tables) {
+		names += (names.empty() ? "" : ", ") + JsonQuote(t->schema.name + "." + t->name);
+	}
+	bool lift = BoolSetting(context, "lemma_lift_constants");
+	WriteFileAtomic(dir + "/job.json",
+	                "{\n \"id\": " + JsonQuote(id) + ",\n \"key\": " + JsonQuote(key) + ",\n \"sql\": " + JsonQuote(sql) +
+	                    ",\n \"mode\": " + JsonQuote(mode) + ",\n \"regenerate\": " + (regenerate ? "true" : "false") +
+	                    ",\n \"lift_constants\": " + (lift ? "true" : "false") + ",\n \"created\": " + JsonQuote(IsoTime(time(nullptr))) +
+	                    ",\n \"source_db\": " + JsonQuote(source) + ",\n \"tables\": [" + names + "],\n \"snapshot_rows\": " +
+	                    std::to_string(rows) + ",\n \"snapshot_bytes\": " + std::to_string(bytes) + ",\n \"export_us\": " +
+	                    std::to_string(export_us) + ",\n \"generator\": " + JsonQuote(generator) + "\n}\n");
+	// /bin/sh -c SCRIPT lemma-generate <dir> <args...>: the generator runs in a background subshell of a new session (so a Ctrl-C of
+	// the caller's terminal does not reach it, and its whole process group can be signalled), output to `log`; then the snapshot is
+	// deleted and exit_code written. The launching shell exits at once (no zombie is left to this process).
+	std::string script = "cd \"$1\" || exit 97; shift; (" + generator +
+	                     " \"$@\" >>log 2>&1; c=$?; rm -f snapshot.duckdb snapshot.duckdb.wal; echo $c >exit_code.part; "
+	                     "mv exit_code.part exit_code) </dev/null >/dev/null 2>&1 &";
+	std::vector<std::string> args = {"/bin/sh", "-c", script, "lemma-generate", dir, "--db", snapshot, "--sql-file",
+	                                 dir + "/query.sql", "--source-db", source, lift ? "--lift-constants" : "--no-lift-constants"};
+	if (regenerate) {
+		args.push_back("--regenerate");
+	}
+	std::vector<char *> argv;
+	for (auto &a : args) {
+		argv.push_back(const_cast<char *>(a.c_str()));
+	}
+	argv.push_back(nullptr);
+	std::vector<std::string> env_text;
+	for (char **e = environ; *e; e++) {
+		if (std::strncmp(*e, "LEMMA_HOME=", 11) != 0) {
+			env_text.emplace_back(*e);
+		}
+	}
+	env_text.push_back("LEMMA_HOME=" + home);
+	std::vector<char *> envp;
+	for (auto &e : env_text) {
+		envp.push_back(const_cast<char *>(e.c_str()));
+	}
+	envp.push_back(nullptr);
+	posix_spawnattr_t attr;
+	posix_spawnattr_init(&attr);
+	posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSID);
+	pid_t pid;
+	int err = posix_spawn(&pid, "/bin/sh", nullptr, &attr, argv.data(), envp.data());
+	posix_spawnattr_destroy(&attr);
+	if (err != 0) {
+		throw IOException("Lemma: cannot start the generator: %s", std::string(strerror(err)));
+	}
+	int status = 0;
+	waitpid(pid, &status, 0); // the launcher only backgrounds the job
+	WriteFileAtomic(dir + "/pgid", std::to_string(pid) + "\n");
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+		throw IOException("Lemma: the generator launcher failed (job %s)", dir);
+	}
+	return id;
+}
+
+// A job for this exact query that is still running (its id), or "".
+std::string RunningJob(const std::string &home, const std::string &key) {
+	for (auto &j : ListJobs(home, false)) {
+		if (j.key == key && (j.status == "running" || j.status == "starting")) {
+			return j.id;
+		}
+	}
+	return "";
+}
+
+// lemma_generate = 'block': wait for the job, copying its log to stderr; Ctrl-C (an interrupted query) cancels it: SIGTERM to its
+// process group, SIGKILL 5 s later. Returns the job as it ended.
+JobView WaitJob(ClientContext &context, const std::string &home, const std::string &id) {
+	std::string dir = home + "/jobs/" + id;
+	std::ifstream log;
+	std::string pending;
+	auto pump = [&]() {
+		if (!log.is_open()) {
+			log.open(dir + "/log", std::ios::binary);
+			if (!log.is_open()) {
+				return;
+			}
+		}
+		log.clear();
+		char buf[4096];
+		while (log.read(buf, sizeof(buf)) || log.gcount() > 0) {
+			pending.append(buf, size_t(log.gcount()));
+			if (log.eof()) {
+				break;
+			}
+		}
+		log.clear();
+		size_t nl;
+		while ((nl = pending.find('\n')) != std::string::npos) {
+			fprintf(stderr, "[lemma generate] %s\n", pending.substr(0, nl).c_str());
+			pending.erase(0, nl + 1);
+		}
+		fflush(stderr);
+	};
+	fprintf(stderr, "[lemma generate] job %s started (log %s/log); Ctrl-C cancels it\n", id.c_str(), dir.c_str());
+	while (true) {
+		pump();
+		auto job = ReadJob(dir, id, false);
+		if (job.status != "running" && job.status != "starting") {
+			pump();
+			return ReadJob(dir, id);
+		}
+		if (context.interrupted) {
+			WriteFileAtomic(dir + "/cancelled", IsoTime(time(nullptr)) + "\n");
+			kill(-pid_t(job.pgid), SIGTERM);
+			for (int i = 0; i < 50 && GroupAlive(job.pgid); i++) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(100));
+			}
+			if (GroupAlive(job.pgid)) {
+				kill(-pid_t(job.pgid), SIGKILL);
+			}
+			std::remove((dir + "/snapshot.duckdb").c_str());
+			std::remove((dir + "/snapshot.duckdb.wal").c_str());
+			fprintf(stderr, "[lemma generate] job %s cancelled\n", id.c_str());
+			throw InterruptException();
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(200));
+	}
+}
+
+// What lemma(...) does when the query has no executor (or regenerate := true). `existing`: an executor answers it now.
+// Returns "" when lemma(...) should go on and answer (block: the job finished and installed one; background regenerate: the existing
+// executor answers meanwhile; off: the bind raises the usual miss), else the id of a background job still generating (no executor yet).
+std::string GenerateFor(ClientContext &context, const std::string &sql, bool existing, bool regenerate, std::string &note) {
+	std::string mode = GenerateMode(context);
+	if (mode == "off") {
+		if (regenerate) {
+			throw InvalidInputException("Lemma: regenerate := true, but lemma_generate is 'off' (SET lemma_generate = 'block' or 'background')");
+		}
+		return "";
+	}
+	std::string home = HomeSetting(context);
+	std::string key = lemma::Sha256Hex(lemma::NormalizeSql(sql));
+	std::string id = RunningJob(home, key);
+	if (id.empty()) {
+		id = StartJob(context, sql, regenerate, mode);
+	}
+	std::string dir = home + "/jobs/" + id;
+	if (mode == "background") {
+		if (existing) {
+			note = "; regenerating in the background (job " + id + "), the installed executor answers until a new one proves";
+			return "";
+		}
+		return id;
+	}
+	auto job = WaitJob(context, home, id);
+	if (job.status != "done") {
+		throw InvalidInputException("Lemma: generating an executor failed (job %s, %s%s): %s%s", id, job.status,
+		                            job.exit_code >= 0 ? ", exit " + std::to_string(job.exit_code) : std::string(),
+		                            job.error.empty() ? std::string("see the log") : job.error,
+		                            std::string("; log: ") + job.log +
+		                                (existing ? "; the installed executor is unchanged" : ""));
+	}
+	note = "; generated now (job " + id + ")";
+	return "";
+}
+
 // ---------------------------------------------------------------- the executor table function
 
 struct LemmaBindData : public TableFunctionData {
@@ -2377,6 +3147,8 @@ struct LemmaBindData : public TableFunctionData {
 	std::vector<ParamBytes> params; // a query template's values, encoded for the executor
 	std::unordered_map<std::string, std::string> literals; // the same values as SQL literals (a pushed predicate's `$name`)
 	bool from_optimizer = false;     // lemma_mode replaced the plan of a plain SELECT
+	std::string via = "lemma_query()"; // how the executor was reached, for lemma_last_query()'s reason
+	std::string note;                  // generation news for lemma_last_query()'s reason (lemma(...))
 	// lemma_route_unproved: the executor already ran (at bind or plan time, to be able to route a decline); Init uses this result.
 	std::shared_ptr<RunResult> precomputed;
 	int64_t precomputed_scan_us = 0;
@@ -2390,6 +3162,8 @@ struct LemmaBindData : public TableFunctionData {
 		c->params = params;
 		c->literals = literals;
 		c->from_optimizer = from_optimizer;
+		c->via = via;
+		c->note = note;
 		c->precomputed = precomputed;
 		c->precomputed_scan_us = precomputed_scan_us;
 		c->precomputed_cache = precomputed_cache;
@@ -2504,26 +3278,94 @@ std::string SubstituteParams(const Manifest &m, const std::string &sql, const st
 	return out;
 }
 
-// lemma_route_unproved = true: run the executor while lemma_query is bound, so a DECLINE can still become DuckDB's own plan of the
-// same SQL (a subquery, in the caller's transaction), labelled engine=duckdb. Otherwise (route off, a miss, a wrong argument count)
-// nothing happens here and LemmaQueryBind decides; a result that did not decline is handed to that bind (PendingRun).
+// How a template match is shown in lemma_last_query(): the executor and the values bound from the caller's literals.
+std::string TemplateVia(const Resolved &r) {
+	std::string via = "template " + r.manifest->key.substr(0, 12) + " (";
+	for (idx_t i = 0; i < r.manifest->params.size(); i++) {
+		via += (i ? ", $" : "$") + r.manifest->params[i].name + " = " + r.inputs[i + 1].ToSQLString();
+	}
+	return via + ")";
+}
+
+bool RegenerateArg(TableFunctionBindInput &input) {
+	auto it = input.named_parameters.find("regenerate");
+	return it != input.named_parameters.end() && !it->second.IsNull() && BooleanValue::Get(it->second);
+}
+
+// DuckDB's own plan of `sql` as the answer of lemma(...) (a subquery, in the caller's transaction), labelled by `lq`.
+unique_ptr<TableRef> DuckdbAnswers(ClientContext &context, const std::string &sql, LastQuery lq) {
+	Parser parser(context.GetParserOptions());
+	parser.ParseQuery(sql);
+	if (parser.statements.size() != 1 || parser.statements[0]->type != StatementType::SELECT_STATEMENT) {
+		throw InvalidInputException("Lemma: %s, and the SQL is not one SELECT DuckDB could answer", lq.reason);
+	}
+	auto &state = GetState(context);
+	state.Record(lq);
+	{
+		std::lock_guard<std::mutex> guard(state.lock);
+		state.routed_decline = true;
+	}
+	auto select = unique_ptr_cast<SQLStatement, SelectStatement>(std::move(parser.statements[0]));
+	return make_uniq<SubqueryRef>(std::move(select));
+}
+
+// Before the bind. lemma(...) only: a query without an executor (exact key, then a stored template), or regenerate := true, goes to the
+// generator (lemma_generate: block waits for it, background starts it, off does nothing). Then, with lemma_route_unproved = true,
+// the executor runs now so that a DECLINE can still become DuckDB's own plan of the same SQL (a subquery, in the caller's
+// transaction), labelled engine=duckdb; a result that did not decline is handed to the bind (PendingRun). A background generation
+// with nothing to answer yet is an error, or with lemma_route_unproved DuckDB's answer, labelled.
 unique_ptr<TableRef> LemmaQueryBindReplace(ClientContext &context, TableFunctionBindInput &input) {
-	if (!BoolSetting(context, "lemma_route_unproved") || input.inputs.empty() || input.inputs[0].IsNull() ||
-	    input.inputs[0].type().id() != LogicalTypeId::VARCHAR) {
-		return nullptr;
+	if (input.inputs.empty() || input.inputs[0].IsNull() || input.inputs[0].type().id() != LogicalTypeId::VARCHAR) {
+		return nullptr; // the bind raises the argument error
 	}
 	auto sql = StringValue::Get(input.inputs[0]);
-	auto manifest = FindExecutor(context, sql);
-	if (!manifest || input.inputs.size() != 1 + manifest->params.size()) {
+	bool route = BoolSetting(context, "lemma_route_unproved");
+	auto resolved = Resolve(context, input.inputs);
+	auto &state = GetState(context);
+	if (input.table_function.name == "lemma" && input.inputs.size() == 1 && (!resolved || RegenerateArg(input))) {
+		std::string note;
+		std::string waiting = GenerateFor(context, sql, resolved != nullptr, RegenerateArg(input), note);
+		if (!waiting.empty()) {
+			std::string log = HomeSetting(context) + "/jobs/" + waiting + "/log";
+			LastQuery lq;
+			lq.key = lemma::Sha256Hex(lemma::NormalizeSql(sql));
+			lq.sql = sql;
+			if (route) {
+				lq.engine = "duckdb";
+				lq.reason = "no proved executor yet: generating one in the background (job " + waiting +
+				            "); answered by DuckDB (lemma_route_unproved = true), not by a proved executor";
+				return DuckdbAnswers(context, sql, lq);
+			}
+			lq.engine = "none";
+			lq.reason = "no proved executor yet: generating one in the background (job " + waiting + ")";
+			state.Record(lq);
+			throw InvalidInputException("Lemma: no proved executor for this query yet; generating one in the background (job %s, "
+			                            "log %s): see SELECT * FROM lemma_jobs()",
+			                            waiting, log);
+		}
+		if (!note.empty()) {
+			std::lock_guard<std::mutex> guard(state.lock);
+			state.gen_note = note;
+		}
+		if (StringUtil::StartsWith(note, "; generated")) {
+			resolved = Resolve(context, input.inputs);
+			if (!resolved) {
+				throw InvalidInputException("Lemma: the generator finished (%s) but no installed executor answers this query; see "
+				                            "SELECT * FROM lemma_jobs()",
+				                            note.substr(2));
+			}
+		}
+	}
+	if (!route || !resolved || resolved->inputs.size() != 1 + resolved->manifest->params.size()) {
 		return nullptr;
 	}
+	auto &manifest = resolved->manifest;
 	std::vector<ParamBytes> params;
 	for (idx_t i = 0; i < manifest->params.size(); i++) {
-		params.push_back(EncodeParam(manifest->params[i], input.inputs[i + 1]));
+		params.push_back(EncodeParam(manifest->params[i], resolved->inputs[i + 1]));
 	}
 	auto start = std::chrono::steady_clock::now();
-	auto run = ScanAndRun(context, *manifest, params, ParamLiterals(*manifest, input.inputs));
-	auto &state = GetState(context);
+	auto run = ScanAndRun(context, *manifest, params, ParamLiterals(*manifest, resolved->inputs));
 	if (!run.first->declined) {
 		std::lock_guard<std::mutex> guard(state.lock);
 		state.pending.signature = RunSignature(*manifest, params);
@@ -2532,12 +3374,6 @@ unique_ptr<TableRef> LemmaQueryBindReplace(ClientContext &context, TableFunction
 		state.pending.cache = run.cache;
 		state.pending.cache_bytes = run.cache_bytes;
 		return nullptr;
-	}
-	Parser parser(context.GetParserOptions());
-	parser.ParseQuery(InstantiateForDuckdb(*manifest, sql, input.inputs));
-	if (parser.statements.size() != 1 || parser.statements[0]->type != StatementType::SELECT_STATEMENT) {
-		throw InvalidInputException("Lemma: declined (%s), and the SQL of executor %s is not one SELECT DuckDB could answer",
-		                            run.first->decline_reason, manifest->key);
 	}
 	LastQuery lq;
 	lq.engine = "duckdb";
@@ -2548,23 +3384,21 @@ unique_ptr<TableRef> LemmaQueryBindReplace(ClientContext &context, TableFunction
 	lq.cache = run.cache;
 	lq.cache_bytes = run.cache_bytes;
 	lq.total_us = MicrosSince(start);
-	state.Record(lq);
-	{
-		std::lock_guard<std::mutex> guard(state.lock);
-		state.routed_decline = true;
-	}
-	auto select = unique_ptr_cast<SQLStatement, SelectStatement>(std::move(parser.statements[0]));
-	return make_uniq<SubqueryRef>(std::move(select));
+	return DuckdbAnswers(context,
+	                     resolved->via_template ? resolved->duck_sql
+	                                            : InstantiateForDuckdb(*manifest, StringValue::Get(resolved->inputs[0]), resolved->inputs),
+	                     lq);
 }
 
 unique_ptr<FunctionData> LemmaQueryBind(ClientContext &context, TableFunctionBindInput &input,
                                         vector<LogicalType> &return_types, vector<string> &names) {
+	const std::string fn = input.table_function.name;
 	if (input.inputs.empty() || input.inputs[0].IsNull() || input.inputs[0].type().id() != LogicalTypeId::VARCHAR) {
-		throw BinderException("lemma_query takes a non-NULL VARCHAR, the SQL text, then a query template's parameter values");
+		throw BinderException("%s takes a non-NULL VARCHAR, the SQL text, then a query template's parameter values", fn);
 	}
 	auto sql = StringValue::Get(input.inputs[0]);
-	auto manifest = FindExecutor(context, sql);
-	if (!manifest) {
+	auto resolved = Resolve(context, input.inputs);
+	if (!resolved) {
 		LastQuery lq;
 		lq.engine = "none";
 		lq.reason = std::string(MISS_MESSAGE);
@@ -2573,27 +3407,27 @@ unique_ptr<FunctionData> LemmaQueryBind(ClientContext &context, TableFunctionBin
 		GetState(context).Record(lq);
 		ThrowMiss(context, sql);
 	}
+	auto &manifest = resolved->manifest;
 	auto bind = make_uniq<LemmaBindData>();
-	if (input.inputs.size() != 1 + manifest->params.size()) {
+	if (resolved->inputs.size() != 1 + manifest->params.size()) {
 		std::string want;
 		for (auto &p : manifest->params) {
 			want += (want.empty() ? "" : ", ") + p.name + " " + p.sql_type;
 		}
-		throw BinderException("lemma_query: executor %s takes %d parameter value(s) after the SQL text (%s), got %d",
-		                      manifest->key, int64_t(manifest->params.size()), want.empty() ? "none" : want,
-		                      int64_t(input.inputs.size() - 1));
+		throw BinderException("%s: executor %s takes %d parameter value(s) after the SQL text (%s), got %d", fn, manifest->key,
+		                      int64_t(manifest->params.size()), want.empty() ? "none" : want, int64_t(resolved->inputs.size() - 1));
 	}
 	for (idx_t i = 0; i < manifest->params.size(); i++) {
-		bind->params.push_back(EncodeParam(manifest->params[i], input.inputs[i + 1]));
+		bind->params.push_back(EncodeParam(manifest->params[i], resolved->inputs[i + 1]));
 	}
-	bind->literals = ParamLiterals(*manifest, input.inputs);
+	bind->literals = ParamLiterals(*manifest, resolved->inputs);
 	for (auto &c : manifest->outputs) {
 		return_types.push_back(c.type);
 		names.push_back(c.name);
 	}
+	auto &st = GetState(context);
 	{
-		auto &st = GetState(context); // the result LemmaQueryBindReplace computed for exactly this call (route on)
-		std::lock_guard<std::mutex> guard(st.lock);
+		std::lock_guard<std::mutex> guard(st.lock); // the result LemmaQueryBindReplace computed for exactly this call (route on)
 		if (st.pending.result && st.pending.signature == RunSignature(*manifest, bind->params)) {
 			bind->precomputed = st.pending.result;
 			bind->precomputed_scan_us = st.pending.scan_us;
@@ -2601,7 +3435,9 @@ unique_ptr<FunctionData> LemmaQueryBind(ClientContext &context, TableFunctionBin
 			bind->precomputed_cache_bytes = st.pending.cache_bytes;
 			st.pending = PendingRun();
 		}
+		bind->note = st.gen_note;
 	}
+	bind->via = fn + "()" + (resolved->via_template ? ", " + TemplateVia(*resolved) : std::string());
 	bind->manifest = std::shared_ptr<Manifest>(manifest.release());
 	bind->sql = sql;
 	return std::move(bind);
@@ -2639,13 +3475,14 @@ unique_ptr<GlobalTableFunctionState> LemmaQueryInit(ClientContext &context, Tabl
 		                            state->result->decline_reason, bind.manifest->key);
 	}
 	lq.engine = "lemma";
-	lq.reason = std::string("proved executor (") + bind.manifest->proof + ", git " + bind.manifest->git_sha + ")" +
-	            (bind.from_optimizer ? " via lemma_mode" : " via lemma_query()");
+	lq.reason = std::string("proved executor (") + bind.manifest->proof + ", git " + bind.manifest->git_sha + ") via " + bind.via +
+	            bind.note;
 	lq.load_us = state->result->load_us;
 	lq.run_us = state->result->run_us;
 	lq.rows = int64_t(state->result->rows);
 	lq.total_us = MicrosSince(start);
 	GetState(context).Record(lq);
+	RecordUse(*bind.manifest, lq.cache);
 	return std::move(state);
 }
 
@@ -2676,11 +3513,16 @@ InsertionOrderPreservingMap<string> LemmaQueryToString(TableFunctionToStringInpu
 	return out;
 }
 
-TableFunction LemmaQueryFunctionDef() {
-	TableFunction f("lemma_query", {LogicalType::VARCHAR}, LemmaQueryFunction, LemmaQueryBind, LemmaQueryInit);
+// lemma(sql [, values...] [, regenerate := true]) and its older name lemma_query(sql [, values...]). Both answer with the proved executor
+// (exact key, then a stored template); only lemma(...) generates a missing one (lemma_generate) and takes regenerate.
+TableFunction LemmaQueryFunctionDef(const std::string &name = "lemma_query") {
+	TableFunction f(name, {LogicalType::VARCHAR}, LemmaQueryFunction, LemmaQueryBind, LemmaQueryInit);
 	f.varargs = LogicalType::ANY; // a query template's parameter values
-	f.bind_replace = LemmaQueryBindReplace; // only acts with lemma_route_unproved = true (a decline becomes DuckDB's plan)
+	f.bind_replace = LemmaQueryBindReplace; // generation (lemma only); with lemma_route_unproved a decline becomes DuckDB's plan
 	f.to_string = LemmaQueryToString;
+	if (name == "lemma") {
+		f.named_parameters["regenerate"] = LogicalType::BOOLEAN;
+	}
 	return f;
 }
 
@@ -2937,8 +3779,9 @@ void LemmaOptimize(OptimizerExtensionInput &input, unique_ptr<LogicalOperator> &
 	std::string query_sql = explain ? StripExplain(lemma::NormalizeSql(sql)) : sql;
 	lq.sql = query_sql;
 	lq.key = lemma::Sha256Hex(lemma::NormalizeSql(query_sql));
-	auto manifest = FindExecutor(context, query_sql);
-	if (!manifest) {
+	vector<Value> inputs {Value(query_sql)};
+	auto resolved = Resolve(context, inputs); // the exact key, then a stored template whose instance this text is
+	if (!resolved) {
 		if (BoolSetting(context, "lemma_route_unproved")) {
 			EnqueueMiss(context, query_sql);
 			lq.engine = "duckdb";
@@ -2951,7 +3794,8 @@ void LemmaOptimize(OptimizerExtensionInput &input, unique_ptr<LogicalOperator> &
 		state.Record(lq);
 		ThrowMiss(context, query_sql);
 	}
-	if (!manifest->params.empty()) {
+	auto &manifest = resolved->manifest;
+	if (!resolved->via_template && !manifest->params.empty()) {
 		lq.engine = "none";
 		lq.reason = "a query template: lemma_mode cannot see its parameter values";
 		state.Record(lq);
@@ -2976,10 +3820,14 @@ void LemmaOptimize(OptimizerExtensionInput &input, unique_ptr<LogicalOperator> &
 		names.push_back(manifest->outputs[i].name);
 	}
 	auto bind = make_uniq<LemmaBindData>();
+	for (idx_t i = 0; i < manifest->params.size(); i++) {
+		bind->params.push_back(EncodeParam(manifest->params[i], resolved->inputs[i + 1]));
+	}
+	bind->literals = ParamLiterals(*manifest, resolved->inputs);
 	if (BoolSetting(context, "lemma_route_unproved")) {
 		// Run now, while DuckDB's own plan is still here: a decline keeps that plan (labelled), anything else is the answer.
 		auto start = std::chrono::steady_clock::now();
-		auto run = ScanAndRun(context, *manifest, {}, {});
+		auto run = ScanAndRun(context, *manifest, bind->params, bind->literals);
 		if (run.first->declined) {
 			lq.engine = "duckdb";
 			lq.reason = DeclinedRouteReason(run.first->decline_reason);
@@ -2995,6 +3843,7 @@ void LemmaOptimize(OptimizerExtensionInput &input, unique_ptr<LogicalOperator> &
 		bind->precomputed_cache = run.cache;
 		bind->precomputed_cache_bytes = run.cache_bytes;
 	}
+	bind->via = "lemma_mode" + (resolved->via_template ? ", " + TemplateVia(*resolved) : std::string());
 	bind->manifest = std::shared_ptr<Manifest>(manifest.release());
 	bind->sql = query_sql;
 	bind->from_optimizer = true;
@@ -3008,6 +3857,242 @@ void LemmaOptimize(OptimizerExtensionInput &input, unique_ptr<LogicalOperator> &
 	lq.engine = "lemma";
 	lq.reason = "planned: proved executor replaces the DuckDB plan (lemma_mode)";
 	state.Record(lq);
+}
+
+// ---------------------------------------------------------------- lemma_list(), lemma_remove(key_or_prefix), lemma_jobs()
+//
+// The same store as the `lemma` CLI (`lemma list`, `lemma remove`): ${lemma_home}/executors/<key>/ and the template index.
+
+struct RowsBind : public TableFunctionData {
+	std::vector<std::vector<Value>> rows;
+};
+
+struct RowsState : public GlobalTableFunctionState {
+	size_t next = 0;
+};
+
+unique_ptr<GlobalTableFunctionState> RowsInit(ClientContext &, TableFunctionInitInput &) {
+	return make_uniq<RowsState>();
+}
+
+void RowsFunction(ClientContext &, TableFunctionInput &data, DataChunk &output) {
+	auto &st = data.global_state->Cast<RowsState>();
+	auto &rows = data.bind_data->Cast<RowsBind>().rows;
+	idx_t count = 0;
+	while (st.next < rows.size() && count < STANDARD_VECTOR_SIZE) {
+		auto &row = rows[st.next++];
+		for (idx_t c = 0; c < row.size(); c++) {
+			output.SetValue(c, count, row[c]);
+		}
+		count++;
+	}
+	output.SetCardinality(count);
+}
+
+Value TextOrNull(const std::string &s) {
+	return s.empty() ? Value(LogicalType::VARCHAR) : Value(s);
+}
+
+std::vector<std::string> ExecutorKeys(const std::string &home) {
+	std::vector<std::string> keys;
+	std::string root = home + "/executors";
+	DIR *d = opendir(root.c_str());
+	if (!d) {
+		return keys;
+	}
+	while (auto *e = readdir(d)) {
+		std::string name = e->d_name;
+		if (name[0] != '.' && FileExists(root + "/" + name + "/manifest.json")) {
+			keys.push_back(name);
+		}
+	}
+	closedir(d);
+	std::sort(keys.begin(), keys.end());
+	return keys;
+}
+
+std::string ParamsText(const lemma::Json &manifest) {
+	std::string out;
+	for (auto &p : manifest.At("params").Arr()) {
+		out += (out.empty() ? "" : ", ") + p.At("name").Str() + " " + p.At("sql_type").Str();
+	}
+	return out;
+}
+
+unique_ptr<FunctionData> ListBind(ClientContext &context, TableFunctionBindInput &, vector<LogicalType> &types,
+                                  vector<string> &names) {
+	names = {"key", "kind", "sql", "params", "proof", "created", "size_bytes", "last_used", "runs", "cache_hits", "dir"};
+	types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
+	         LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::BIGINT,  LogicalType::VARCHAR,
+	         LogicalType::BIGINT,  LogicalType::BIGINT,  LogicalType::VARCHAR};
+	auto bind = make_uniq<RowsBind>();
+	std::string home = HomeSetting(context);
+	for (auto &key : ExecutorKeys(home)) {
+		std::string dir = home + "/executors/" + key;
+		std::string kind = "unreadable", sql, params, proof, created = MtimeIso(dir + "/manifest.json");
+		try {
+			auto j = lemma::ParseJson(ReadFile(dir + "/manifest.json"));
+			sql = j.At("sql").Str();
+			proof = j.Has("proof") ? j.At("proof").Str() : "";
+			if (j.Has("params")) {
+				params = ParamsText(j);
+				kind = params.empty() ? "query" : "template";
+			} else {
+				kind = "query";
+			}
+			if (FileExists(dir + "/optimize.json")) {
+				auto made = lemma::ParseJson(ReadFile(dir + "/optimize.json"));
+				if (made.Has("installed_at") && made.At("installed_at").kind == lemma::Json::Kind::String) {
+					created = made.At("installed_at").Str();
+				}
+			}
+		} catch (std::exception &) {
+			// listed as unreadable: lemma_remove still removes it
+		}
+		int64_t runs = 0, hits = 0;
+		{
+			std::lock_guard<std::mutex> guard(usage_lock);
+			auto it = usage.find(dir);
+			if (it != usage.end()) {
+				runs = it->second.runs;
+				hits = it->second.cache_hits;
+			}
+		}
+		int64_t size = FileSize(dir + "/lib.so");
+		bind->rows.push_back({Value(key), Value(kind), TextOrNull(sql), TextOrNull(params), TextOrNull(proof), TextOrNull(created),
+		                      size < 0 ? Value(LogicalType::BIGINT) : Value::BIGINT(size), TextOrNull(MtimeIso(dir + "/last_used")),
+		                      Value::BIGINT(runs), Value::BIGINT(hits), Value(dir)});
+	}
+	return std::move(bind);
+}
+
+// The installed executor whose key is `key` or starts with it (at least 6 hex digits; ambiguous or unknown is an error), as
+// lemma_cli/cache.py resolve.
+std::string ResolveKey(const std::string &home, const std::string &prefix) {
+	static const std::regex hex("^[0-9a-f]{6,64}$");
+	if (!std::regex_match(prefix, hex)) {
+		throw InvalidInputException("Lemma: '%s' is not an executor key: give at least 6 hex characters of it (SELECT key FROM lemma_list())",
+		                            prefix);
+	}
+	std::vector<std::string> hits;
+	for (auto &key : ExecutorKeys(home)) {
+		if (key.compare(0, prefix.size(), prefix) == 0) {
+			hits.push_back(key);
+		}
+	}
+	if (hits.empty()) {
+		throw InvalidInputException("Lemma: no installed executor with key %s* in %s/executors (SELECT * FROM lemma_list())", prefix, home);
+	}
+	if (hits.size() > 1) {
+		std::string all;
+		for (auto &h : hits) {
+			all += (all.empty() ? "" : ", ") + h.substr(0, 16);
+		}
+		throw InvalidInputException("Lemma: key %s is ambiguous: %s", prefix, all);
+	}
+	return hits[0];
+}
+
+// The template index key of an executor's SQL text (empty for fixed SQL): research_loop/in_duckdb.py template_index_key.
+std::string TemplateIndexKey(const std::string &sql) {
+	return lemma::Sha256Hex(lemma::TemplateSkeleton(lemma::NormalizeSql(TemplateBody(sql), true)));
+}
+
+// lemma_remove(key_or_prefix): delete one installed executor (its directory and its template index entry). An already loaded
+// library stays loaded in this process (executors are never unloaded) but is no longer found. One row: key, sql, dir.
+unique_ptr<FunctionData> RemoveBind(ClientContext &context, TableFunctionBindInput &input, vector<LogicalType> &types,
+                                    vector<string> &names) {
+	if (input.inputs.size() != 1 || input.inputs[0].IsNull()) {
+		throw BinderException("lemma_remove takes an executor key or a prefix of it (at least 6 hex characters)");
+	}
+	names = {"key", "sql", "dir"};
+	types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR};
+	std::string home = HomeSetting(context);
+	std::string key = ResolveKey(home, StringValue::Get(input.inputs[0]));
+	std::string dir = home + "/executors/" + key;
+	std::string sql;
+	try {
+		sql = lemma::ParseJson(ReadFile(dir + "/manifest.json")).At("sql").Str();
+	} catch (std::exception &) {
+	}
+	if (!sql.empty()) {
+		std::string index = home + "/templates/" + TemplateIndexKey(sql);
+		std::remove((index + "/" + key).c_str());
+		rmdir(index.c_str()); // only when empty
+	}
+	std::string doomed = home + "/executors/.removed-" + key + "-" + std::to_string(getpid());
+	if (std::rename(dir.c_str(), doomed.c_str()) != 0) {
+		throw IOException("Lemma: cannot remove %s", dir);
+	}
+	RemoveTree(doomed);
+	{
+		std::lock_guard<std::mutex> guard(usage_lock);
+		usage.erase(dir);
+	}
+	auto bind = make_uniq<RowsBind>();
+	bind->rows.push_back({Value(key), TextOrNull(sql), Value(dir)});
+	return std::move(bind);
+}
+
+unique_ptr<FunctionData> JobsBind(ClientContext &context, TableFunctionBindInput &, vector<LogicalType> &types,
+                                  vector<string> &names) {
+	names = {"job_id", "status", "query_key", "sql", "mode", "regenerate", "created", "finished", "exit_code", "installed_key",
+	         "snapshot_bytes", "log", "error"};
+	types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
+	         LogicalType::BOOLEAN, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::BIGINT,  LogicalType::VARCHAR,
+	         LogicalType::BIGINT,  LogicalType::VARCHAR, LogicalType::VARCHAR};
+	auto bind = make_uniq<RowsBind>();
+	for (auto &j : ListJobs(HomeSetting(context))) {
+		bind->rows.push_back({Value(j.id), Value(j.status), Value(j.key), Value(j.sql), Value(j.mode), Value::BOOLEAN(j.regenerate),
+		                      Value(j.created), TextOrNull(j.finished),
+		                      j.exit_code < 0 ? Value(LogicalType::BIGINT) : Value::BIGINT(j.exit_code), TextOrNull(j.installed),
+		                      Value::BIGINT(j.snapshot_bytes), Value(j.log), TextOrNull(j.error)});
+	}
+	return std::move(bind);
+}
+
+// lemma_template_skeleton(sql): the text the template index is keyed by (tests: equal to research_loop/in_duckdb.py's).
+void SkeletonScalar(DataChunk &args, ExpressionState &, Vector &result) {
+	UnaryExecutor::Execute<string_t, string_t>(args.data[0], result, args.size(), [&](string_t s) {
+		return StringVector::AddString(result, lemma::TemplateSkeleton(lemma::NormalizeSql(TemplateBody(s.GetString()), true)));
+	});
+}
+
+// lemma_match_template(template_sql, sql): the literal of each parameter (`name=literal`, in declaration order) when `sql` is the
+// template instantiated with them (the matcher lemma(...) uses, without the range check), else NULL. For tests.
+void MatchScalar(DataChunk &args, ExpressionState &, Vector &result) {
+	static const std::regex decl("\\s*([A-Za-z_][A-Za-z0-9_]*)\\s+(BIGINT|DATE|VARCHAR|DECIMAL\\s*\\(\\s*\\d+\\s*,\\s*\\d+\\s*\\))\\s*(,|$)",
+	                             std::regex::icase);
+	for (idx_t i = 0; i < args.size(); i++) {
+		auto t = args.data[0].GetValue(i), q = args.data[1].GetValue(i);
+		if (t.IsNull() || q.IsNull()) {
+			result.SetValue(i, Value(LogicalType::LIST(LogicalType::VARCHAR)));
+			continue;
+		}
+		std::string tmpl = StringValue::Get(t);
+		std::string body = TemplateBody(tmpl);
+		size_t colon = tmpl.find(':');
+		std::string list = colon == std::string::npos ? "" : tmpl.substr(colon + 1, tmpl.find('\n', colon) - colon - 1);
+		std::map<std::string, lemma::LiteralKind> kinds;
+		std::vector<std::string> order;
+		for (std::sregex_iterator it(list.begin(), list.end(), decl), end; it != end; ++it) {
+			std::string type = StringUtil::Upper((*it)[2].str());
+			kinds[(*it)[1].str()] = type == "VARCHAR" ? lemma::LiteralKind::String
+			                        : type == "DATE" ? lemma::LiteralKind::Date
+			                                         : lemma::LiteralKind::Number;
+			order.push_back((*it)[1].str());
+		}
+		std::map<std::string, std::string> bound;
+		if (!lemma::MatchTemplate(lemma::NormalizeSql(body, true), lemma::NormalizeSql(StringValue::Get(q)), kinds, bound)) {
+			result.SetValue(i, Value(LogicalType::LIST(LogicalType::VARCHAR)));
+			continue;
+		}
+		vector<Value> out;
+		for (auto &name : order) {
+			out.push_back(Value(name + "=" + bound[name]));
+		}
+		result.SetValue(i, Value::LIST(LogicalType::VARCHAR, out));
+	}
 }
 
 // ---------------------------------------------------------------- scalar helpers
@@ -3053,7 +4138,30 @@ void LoadInternal(ExtensionLoader &loader) {
 	                          LogicalType::DOUBLE, Value::DOUBLE(-1));
 	config.AddExtensionOption("lemma_home", "Lemma's directory: executors/<key>/{lib.so,manifest.json,query.sql}, queue/",
 	                          LogicalType::VARCHAR, Value(DefaultHome()));
+	config.AddExtensionOption("lemma_generate",
+	                          "What lemma(...) does for a query without a proved executor: 'block' (default: run the generator "
+	                          "and wait, its log on stderr, Ctrl-C cancels), 'background' (start it and raise 'generating', or "
+	                          "with lemma_route_unproved answer with DuckDB, labelled) or 'off' (an error)",
+	                          LogicalType::VARCHAR, Value("block"));
+	const char *gen_env = std::getenv("LEMMA_GENERATOR");
+	config.AddExtensionOption("lemma_generator",
+	                          "The shell command lemma(...) runs to generate an executor (default $LEMMA_GENERATOR at LOAD, else "
+	                          "'lemma generate'); it gets --db <snapshot> --sql-file <file> --source-db <path> "
+	                          "--lift-constants|--no-lift-constants [--regenerate] and LEMMA_HOME",
+	                          LogicalType::VARCHAR, Value(gen_env && *gen_env ? gen_env : "lemma generate"));
+	config.AddExtensionOption("lemma_lift_constants",
+	                          "Generate a query template: the generator lifts the literal constants of WHERE/HAVING comparisons "
+	                          "into typed parameters, so the executor answers every query that differs only in them",
+	                          LogicalType::BOOLEAN, Value::BOOLEAN(true));
 	loader.RegisterFunction(LemmaQueryFunctionDef());
+	loader.RegisterFunction(LemmaQueryFunctionDef("lemma"));
+	loader.RegisterFunction(TableFunction("lemma_list", {}, RowsFunction, ListBind, RowsInit));
+	loader.RegisterFunction(TableFunction("lemma_remove", {LogicalType::VARCHAR}, RowsFunction, RemoveBind, RowsInit));
+	loader.RegisterFunction(TableFunction("lemma_jobs", {}, RowsFunction, JobsBind, RowsInit));
+	loader.RegisterFunction(
+	    ScalarFunction("lemma_template_skeleton", {LogicalType::VARCHAR}, LogicalType::VARCHAR, SkeletonScalar));
+	loader.RegisterFunction(ScalarFunction("lemma_match_template", {LogicalType::VARCHAR, LogicalType::VARCHAR},
+	                                       LogicalType::LIST(LogicalType::VARCHAR), MatchScalar));
 	TableFunction last("lemma_last_query", {}, LastQueryFunction, LastQueryBind, LastQueryInit);
 	loader.RegisterFunction(last);
 	loader.RegisterFunction(

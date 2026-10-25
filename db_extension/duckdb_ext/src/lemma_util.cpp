@@ -1,5 +1,6 @@
 #include "lemma_util.hpp"
 
+#include <cctype>
 #include <cstring>
 #include <stdexcept>
 
@@ -115,7 +116,7 @@ std::string StripEnd(std::string text) {
 }
 } // namespace
 
-std::string NormalizeSql(const std::string &sql) {
+std::string NormalizeSql(const std::string &sql, bool keep_dollar) {
 	std::string out;
 	size_t i = 0, n = sql.size();
 	bool pending_space = false;
@@ -140,7 +141,7 @@ std::string NormalizeSql(const std::string &sql) {
 		} else if (sql.compare(i, 2, "/*") == 0) {
 			j = sql.find("*/", i + 2);
 			j = j == std::string::npos ? n : j + 2;
-		} else if (c == '$') {
+		} else if (c == '$' && !keep_dollar) {
 			return StripEnd(sql);
 		} else {
 			j = i + 1;
@@ -149,6 +150,173 @@ std::string NormalizeSql(const std::string &sql) {
 		i = j;
 	}
 	return StripEnd(out);
+}
+
+// ---------------------------------------------------------------- literal tokens, template skeletons and template matching
+
+namespace {
+bool IdentChar(char c) {
+	unsigned char u = static_cast<unsigned char>(c);
+	return std::isalnum(u) || c == '_' || u >= 0x80;
+}
+bool Digit(char c) {
+	return c >= '0' && c <= '9';
+}
+// The end of a '...' string at i ('' is an escaped quote inside it); npos when it is not closed.
+size_t StringEnd(const std::string &s, size_t i) {
+	size_t j = i + 1;
+	while (j < s.size()) {
+		if (s[j] == '\'') {
+			if (j + 1 < s.size() && s[j + 1] == '\'') {
+				j += 2;
+				continue;
+			}
+			return j + 1;
+		}
+		j++;
+	}
+	return std::string::npos;
+}
+// The end of a quoted segment or comment starting at i (the same rule as NormalizeSql), or i when none starts there.
+size_t OpaqueEnd(const std::string &s, size_t i) {
+	size_t n = s.size(), j;
+	char c = s[i];
+	if (c == '\'' || c == '"') {
+		j = s.find(c, i + 1);
+		return j == std::string::npos ? n : j + 1;
+	}
+	if (s.compare(i, 2, "--") == 0) {
+		j = s.find('\n', i);
+		return j == std::string::npos ? n : j + 1;
+	}
+	if (s.compare(i, 2, "/*") == 0) {
+		j = s.find("*/", i + 2);
+		return j == std::string::npos ? n : j + 2;
+	}
+	return i;
+}
+size_t PlaceholderEnd(const std::string &s, size_t i) {
+	if (s[i] != '$' || i + 1 >= s.size() || !(std::isalpha(static_cast<unsigned char>(s[i + 1])) || s[i + 1] == '_')) {
+		return i;
+	}
+	size_t j = i + 1;
+	while (j < s.size() && (std::isalnum(static_cast<unsigned char>(s[j])) || s[j] == '_')) {
+		j++;
+	}
+	return j;
+}
+} // namespace
+
+LiteralKind LiteralAt(const std::string &s, size_t i, size_t &end) {
+	size_t n = s.size();
+	if (i >= n || (i > 0 && (IdentChar(s[i - 1]) || s[i - 1] == '.' || s[i - 1] == '$' || s[i - 1] == '\'' || s[i - 1] == '"'))) {
+		return LiteralKind::None;
+	}
+	if (Digit(s[i])) {
+		size_t j = i;
+		while (j < n && Digit(s[j])) {
+			j++;
+		}
+		if (j + 1 < n && s[j] == '.' && Digit(s[j + 1])) {
+			j++;
+			while (j < n && Digit(s[j])) {
+				j++;
+			}
+		}
+		if (j < n && (IdentChar(s[j]) || s[j] == '.')) {
+			return LiteralKind::None;
+		}
+		end = j;
+		return LiteralKind::Number;
+	}
+	if (s[i] == '\'') {
+		size_t j = StringEnd(s, i);
+		if (j == std::string::npos) {
+			return LiteralKind::None;
+		}
+		end = j;
+		return LiteralKind::String;
+	}
+	if (i + 4 <= n && (s[i] == 'D' || s[i] == 'd') && (s[i + 1] == 'A' || s[i + 1] == 'a') && (s[i + 2] == 'T' || s[i + 2] == 't') &&
+	    (s[i + 3] == 'E' || s[i + 3] == 'e')) {
+		size_t q = i + 4;
+		if (q < n && s[q] == ' ') {
+			q++;
+		}
+		if (q < n && s[q] == '\'') {
+			size_t j = StringEnd(s, q);
+			if (j != std::string::npos) {
+				end = j;
+				return LiteralKind::Date;
+			}
+		}
+	}
+	return LiteralKind::None;
+}
+
+std::string TemplateSkeleton(const std::string &normalized) {
+	std::string out;
+	size_t i = 0, n = normalized.size();
+	while (i < n) {
+		size_t end = 0;
+		size_t p = PlaceholderEnd(normalized, i);
+		if (p > i) {
+			out += '?';
+			i = p;
+			continue;
+		}
+		if (LiteralAt(normalized, i, end) != LiteralKind::None) {
+			out += '?';
+			i = end;
+			continue;
+		}
+		size_t j = OpaqueEnd(normalized, i);
+		if (j > i) {
+			out.append(normalized, i, j - i);
+			i = j;
+			continue;
+		}
+		out += normalized[i++];
+	}
+	return out;
+}
+
+bool MatchTemplate(const std::string &tmpl, const std::string &query, const std::map<std::string, LiteralKind> &params,
+                   std::map<std::string, std::string> &bound) {
+	bound.clear();
+	size_t i = 0, j = 0, n = tmpl.size(), m = query.size();
+	while (i < n) {
+		size_t p = PlaceholderEnd(tmpl, i);
+		if (p > i) {
+			auto it = params.find(tmpl.substr(i + 1, p - i - 1));
+			if (it == params.end()) {
+				return false;
+			}
+			size_t end = 0;
+			if (LiteralAt(query, j, end) != it->second) {
+				return false;
+			}
+			std::string text = query.substr(j, end - j);
+			auto seen = bound.find(it->first);
+			if (seen != bound.end() && seen->second != text) {
+				return false;
+			}
+			bound[it->first] = text;
+			i = p;
+			j = end;
+			// the text after the placeholder must not continue the literal (e.g. `$p.5` against `1.5`): checked by LiteralAt's end
+			// rule on the query, and the template's next character is compared below as usual
+			continue;
+		}
+		size_t e = OpaqueEnd(tmpl, i);
+		size_t len = e > i ? e - i : 1;
+		if (j + len > m || query.compare(j, len, tmpl, i, len) != 0) {
+			return false;
+		}
+		i += len;
+		j += len;
+	}
+	return j == m;
 }
 
 // ---------------------------------------------------------------- JSON

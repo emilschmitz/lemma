@@ -13,7 +13,25 @@ namespace lemma {
 std::string Sha256Hex(const std::string &bytes);
 
 //! The cache-key form of a SQL text. Mirror of research_loop/in_duckdb.py normalize_sql (see its docstring); tests check both agree.
-std::string NormalizeSql(const std::string &sql);
+//! keep_dollar: a `$` is an ordinary character (a query template's body: its `$name` placeholders); the whitespace is collapsed as
+//! everywhere else (research_loop/in_duckdb.py normalize_template_body).
+std::string NormalizeSql(const std::string &sql, bool keep_dollar = false);
+
+//! A literal token the template matcher can bind (mirror of research_loop/in_duckdb.py literal_at): Number `[0-9]+(.[0-9]+)?`, String
+//! `'...'` ('' escapes), Date `DATE '...'` (any case, at most one space). It must start a token: the character before it is not an
+//! identifier character, `.`, `$` or a quote; a Number is not followed by an identifier character or `.`.
+enum class LiteralKind { None, Number, String, Date };
+LiteralKind LiteralAt(const std::string &s, size_t i, size_t &end);
+
+//! The template index key text: the normalized SQL with every `$name` and every literal token replaced by `?` (quoted identifiers
+//! and comments kept). A query and a template it matches have the same skeleton.
+std::string TemplateSkeleton(const std::string &normalized);
+
+//! Does `query` (normalized) equal the template body `tmpl` (normalized with keep_dollar) with each `$name` replaced by one literal
+//! token of the parameter's kind? Character for character outside the placeholders; a name used twice binds the same text.
+//! `bound`: name -> the literal's text in the query.
+bool MatchTemplate(const std::string &tmpl, const std::string &query, const std::map<std::string, LiteralKind> &params,
+                   std::map<std::string, std::string> &bound);
 
 //! A parsed JSON value (objects keep their keys sorted; the manifest never depends on key order).
 struct Json {
