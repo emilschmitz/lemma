@@ -6,7 +6,7 @@ in the recipe table of `prompt.py`, or in `UNMOUNTED`: `tests/test_declarative_r
 
 from __future__ import annotations
 
-import pathlib
+import lemma_config
 
 # Registered fixtures that are not the recipe's own example: more shapes for the index, each a body Verus verified against
 # a spec of that shape. A `dict_` basename is mounted in dictionary mode only.
@@ -188,7 +188,7 @@ UNMOUNTED: dict[str, str] = {
 UNMOUNTED.update(
     {
         f.name: "fixture of the parked pin path (lemma.toml [wip]); never mounted"
-        for f in (pathlib.Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "declarative_proofs").glob("*")
+        for f in lemma_config.resource("tests", "fixtures", "declarative_proofs").glob("*")
         if f.name.startswith(("cold_", "zero_copy_"))
     }
 )

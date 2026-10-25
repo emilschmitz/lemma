@@ -32,7 +32,8 @@ def mode() -> str:
 
 
 def image() -> str:
-    return str(lemma_config.get("prover_image"))
+    """The prover image: ``[prover] prover_image``, under ``[run] image_registry`` when one is set (lemma_config.prover_image)."""
+    return lemma_config.prover_image()
 
 
 def host_verus_home() -> Path:

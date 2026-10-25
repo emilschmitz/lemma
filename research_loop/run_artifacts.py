@@ -346,7 +346,9 @@ def begin_run(
     extra_manifest: dict[str, Any] | None = None,
 ) -> RunArtifacts:
     root_path = Path(root).resolve()
-    runs_root = root_path / "research_loop" / "runs"
+    # An installed wheel: the runs go under $LEMMA_HOME (never site-packages) and there is no git to ask; the package provenance stands in.
+    installed = lemma_config.INSTALLED and root_path == lemma_config.ROOT
+    runs_root = lemma_config.writable("research_loop", "runs") if installed else root_path / "research_loop" / "runs"
     short = secrets.token_hex(4)
     run_id = f"{_utc_stamp()}_q{query_id}_{short}"
     path = runs_root / run_id
@@ -355,8 +357,8 @@ def begin_run(
     workspace.mkdir(parents=True, exist_ok=True)
     logs_dir.mkdir(parents=True, exist_ok=True)
 
-    git_commit = _git_sha(root_path)
-    git_dirty = _git_dirty(root_path)
+    git_commit = None if installed else _git_sha(root_path)
+    git_dirty = None if installed else _git_dirty(root_path)
     if lemma_experiment() and not git_commit:
         raise SystemExit(
             "LEMMA_EXPERIMENT=1 requires a git commit hash in the run manifest, "
@@ -372,7 +374,8 @@ def begin_run(
         "git_sha": git_commit,
         "git_commit": git_commit,
         "git_dirty": git_dirty,
-        "git_untracked_files": _git_untracked_count(root_path),
+        "git_untracked_files": None if installed else _git_untracked_count(root_path),
+        **({"package": lemma_config.package_provenance()} if installed else {}),
         "agent_backend": (os.environ.get("LEMMA_AGENT_BACKEND") or "").strip() or None,
         "agent_model": env_snap.get("agent_model"),
         "agent_cmd": (os.environ.get("AGENT_CMD") or "").strip() or None,

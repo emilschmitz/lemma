@@ -27,7 +27,6 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import tempfile
 from pathlib import Path
 
@@ -198,11 +197,13 @@ def compile_library(rs_source: str, work_dir: Path, *, timeout_sec: int | None =
     return lib, proof.group(1)
 
 
-def _git() -> tuple[str, bool]:
-    root = Path(__file__).resolve().parents[1]
-    sha = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
-    dirty = bool(subprocess.run(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=no"], capture_output=True, text=True, check=True).stdout.strip())
-    return sha, dirty
+def _provenance() -> dict:
+    """``git_sha`` / ``git_dirty`` of the checkout. An installed wheel has no git: ``git_sha`` is the commit the wheel was built from (its
+    BUILD_INFO; the extension reads this field as a string), ``git_dirty`` None, and ``package`` the version and wheel hash."""
+    state = lemma_config.git_state()
+    if "package" in state:
+        return {"git_sha": state["package"]["source_commit"] or "", "git_dirty": None, "package": state["package"]}
+    return {"git_sha": state["git_sha"], "git_dirty": state["git_dirty"]}
 
 
 def _sha256_file(path: Path) -> str:
@@ -258,7 +259,7 @@ def install_executor(
     try:
         lib, proof = compile_library(program, work_dir or (stage / "build"))
         shutil.copyfile(lib, stage / "lib.so")
-        sha, dirty = _git()
+        provenance = _provenance()
         manifest = {
             "format": MANIFEST_FORMAT,
             "abi_version": ABI_VERSION,
@@ -269,8 +270,7 @@ def install_executor(
             "sql": sql,
             "normalized_sql": normalize_sql(sql),
             "duckdb_version": "v" + duckdb.__version__,
-            "git_sha": sha,
-            "git_dirty": dirty,
+            **provenance,
             "proof": proof,
             "spec_sha256": hashlib.sha256(spec.encode("utf-8")).hexdigest(),
             "lib_sha256": _sha256_file(stage / "lib.so"),

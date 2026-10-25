@@ -211,7 +211,7 @@ def run(
             resolved = record_effective_axis("assumption_package", package_for_db(db_path), f"default for {db_path.name}")
     os.environ.pop("LEMMA_DECL_ROWS", None)
     os.environ.pop("LEMMA_DECL_SEED", None)
-    runs_dir = ROOT / "research_loop" / "runs"
+    runs_dir = lemma_config.writable("research_loop", "runs")  # where begin_run puts it: the checkout, or $LEMMA_HOME (installed)
     before = set(runs_dir.glob("*")) if runs_dir.is_dir() else set()
     t0 = time.time()
     result = run_optimization_loop(
@@ -235,6 +235,7 @@ def run(
         "config": config_record["config"],  # every lemma.toml key: value, section, source (file/env/cli), origin
         "git_sha": config_record["git_sha"],
         "git_dirty": config_record["git_dirty"],
+        **({"package": config_record["package"]} if "package" in config_record else {}),  # an installed wheel: version + wheel hash, no git
         "replicable": lemma_config.experiment_record() is not None,
         "sql": sql,
         "wall_s": round(time.time() - t0, 1),

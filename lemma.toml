@@ -68,7 +68,8 @@ run_timeout_sec = 60                        # wall limit of one compiled-binary 
 target_cpu = "x86-64-v3"                    # rustc -C target-cpu of the compiled binary (generic = no flag; native can SIGILL elsewhere)
 dense_slot_budget = 4194304                 # largest dense slot table (product of key dictionary sizes) a body may allocate
 verus_home = "~/tools/verus"                # the host Verus install (prover = host): binary, vstd and builtin source, version.json
-prover_image = "lemma-prover:0.2026.07.18.3a4d30b"  # the prover image (prover = docker), built from docker/prover/Dockerfile by `lemma setup`
+prover_image = "lemma-prover:0.2026.07.18.3a4d30b"  # the prover image (prover = docker), built from docker/prover/Dockerfile (`lemma setup --build-images`, scripts/release/build_images.sh)
+image_registry = ""                         # "" = the local image tags above and lemma-agent:<harness> (research runs: byte-identical to before the key). A registry prefix (e.g. ghcr.io/emilschmitz) names the published product images instead: <registry>/lemma-agent-<harness>:<lemma version> and <registry>/<prover_image>; `lemma setup` pulls them. The product CLI defaults to ghcr.io/emilschmitz (lemma_cli/common.py CLI_DEFAULTS)
 
 [measure]
 official_rounds = 5                         # interleaved rounds (ours vs DuckDB) of the official verdict

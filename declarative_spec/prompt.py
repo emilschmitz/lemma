@@ -147,7 +147,7 @@ map
 """.strip()
 
 
-_FIXTURES = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "declarative_proofs"
+_FIXTURES = lemma_config.resource("tests", "fixtures", "declarative_proofs")  # the checkout's, or the installed package's copy
 
 # Shapes with a verified worked example, by recipe name. The file is a `run_query` body that
 # Verus proved against a spec of that shape (column and table names differ in your spec).

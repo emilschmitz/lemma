@@ -8,6 +8,7 @@
     python -m lemma_config get <key>      # one value (shell scripts use this)
     python -m lemma_config dump           # every key, value and source
     python -m lemma_config check          # fail loudly on unknown LEMMA_* variables and bad values
+    python -m lemma_config image prover   # the effective prover image (image_registry applied); `image claude` etc. for the agent images
 
 Stdlib only, so shell scripts can call it with the system python.
 """
@@ -26,7 +27,79 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent
-TOML = ROOT / "lemma.toml"
+# Two layouts. A checkout: ROOT is the repository (pyproject.toml beside this file); research runs and experiments need it (git SHA, clean tree).
+# An installed wheel (`uv tool install lemma-<v>.whl`, the product): ROOT is site-packages, the Python packages keep their repo-relative layout
+# there (research_loop/, declarative_spec/, db_extension/, ...), and the repo-root files the runtime reads (lemma.toml, scripts/ram, docker/agent,
+# tests/fixtures/declarative_proofs) are package data under ROOT/lemma_data. Nothing is ever written below ROOT then: writable paths (runs,
+# libduckdb) live under $LEMMA_HOME (``writable``). Runs record the installed package (``package_provenance``) instead of a git SHA.
+INSTALLED = not (ROOT / "pyproject.toml").is_file()
+RESOURCES = ROOT / "lemma_data" if INSTALLED else ROOT
+TOML = RESOURCES / "lemma.toml"
+DIST_NAME = "lemma"  # the distribution name of the product wheel
+# The agent images of the research path ([run] image_registry = ""); a registry names the published product images instead (agent_image).
+LOCAL_AGENT_IMAGES = {"claude": "lemma-agent:claude", "codex": "lemma-agent:codex", "gemini": "lemma-agent:gemini"}
+
+
+def resource(*parts: str) -> Path:
+    """A repo-root resource the runtime reads (lemma.toml, scripts/ram/verus_guarded.sh, docker/agent/..., tests/fixtures/declarative_proofs):
+    the checkout's file, or the installed package's copy."""
+    return RESOURCES.joinpath(*parts)
+
+
+def lemma_home() -> Path:
+    """``LEMMA_HOME`` (default ``~/.local/share/lemma``): executors, logs, the CLI's state; in an installed wheel also every runtime write."""
+    return Path(os.environ.get("LEMMA_HOME") or Path.home() / ".local" / "share" / "lemma")
+
+
+def writable(*parts: str) -> Path:
+    """A repo-relative directory the runtime writes (``research_loop/runs``, ``build/libduckdb``): in the checkout as before, in an installed
+    wheel the same relative path under ``lemma_home()`` (never site-packages)."""
+    return (lemma_home() if INSTALLED else ROOT).joinpath(*parts)
+
+
+def package_version() -> str:
+    """The version of the installed ``lemma`` distribution (the wheel, or the checkout's editable install)."""
+    from importlib.metadata import version
+
+    return version(DIST_NAME)
+
+
+def package_provenance() -> dict[str, Any]:
+    """What an installed (wheel) run records instead of a git SHA: the package version, the sha256 of the wheel it was installed from (from
+    the installer's direct_url.json when it recorded one), the sha256 of the installed RECORD (the hashes of every installed file), and the
+    source commit the wheel was built from (lemma_data/BUILD_INFO.json, written by scripts/release/build_product.sh)."""
+    import hashlib
+    from importlib.metadata import distribution
+
+    dist = distribution(DIST_NAME)
+    direct = json.loads(dist.read_text("direct_url.json") or "{}")
+    archive = direct.get("archive_info", {})
+    # pip records archive_info hashes; uv keeps the URL's #sha256= fragment (install.sh installs `lemma @ file://<wheel>#sha256=<hash>`)
+    fragment = direct.get("url", "").partition("#sha256=")[2] or None
+    wheel_sha = (archive.get("hashes") or {}).get("sha256") or (archive.get("hash", "").removeprefix("sha256=") or None) or fragment
+    record = dist.read_text("RECORD") or ""
+    build = resource("BUILD_INFO.json")
+    return {
+        "lemma_version": dist.version,
+        "wheel_sha256": wheel_sha,
+        "wheel_url": direct.get("url"),
+        "installed_record_sha256": hashlib.sha256(record.encode()).hexdigest(),
+        "source_commit": json.loads(build.read_text())["source_commit"] if build.is_file() else None,
+    }
+
+
+def agent_image(harness: str) -> str:
+    """The agent sandbox image of ``harness``: the local research tag (``lemma-agent:<harness>``) when ``image_registry`` is empty, else the
+    published product image ``<registry>/lemma-agent-<harness>:<lemma version>``."""
+    registry = str(get("image_registry")).rstrip("/")
+    return f"{registry}/lemma-agent-{harness}:{package_version()}" if registry else LOCAL_AGENT_IMAGES[harness]
+
+
+def prover_image() -> str:
+    """The prover image: ``[prover] prover_image`` (``lemma-prover:<verus version>``), under ``image_registry`` when one is set."""
+    registry = str(get("image_registry")).rstrip("/")
+    tag = str(get("prover_image"))
+    return f"{registry}/{tag}" if registry else tag
 PREFIX = "LEMMA_"
 EXPERIMENT_KEYS = ("model", "query", "duckdb_path")  # every [[run]] entry has these strings
 PACKAGE_KEY = "assumption_package"  # a [[run]] string key exactly when the experiment has assumptions = true (the UNMAINTAINED package path); absent otherwise
@@ -94,7 +167,7 @@ NOT_CONFIG: frozenset[str] = frozenset(
     LEMMA_CHECK_TIMEOUT LEMMA_SEC_PACKAGE LEMMA_TPCH_PACKAGE LEMMA_TPCH_SF LEMMA_TPCH_DB LEMMA_FILTER_DUCK_MEMORY LEMMA_HOLDOUT_SEED
     LEMMA_SESSION_HOT_SYNTHETIC LEMMA_RUN_HOLDOUT_BENCH LEMMA_DUCKDB_H1_SMOKE LEMMA_DUCKDB_EXPORT_DIR LEMMA_DUCKDB_EXPORT_TABLES
     LEMMA_DUCKDB_PIN_TABLES LEMMA_E2E_JOBS LEMMA_E2E_FORCE_ALL LEMMA_DOCKER_NEWGRP LEMMA_LOCAL_AGENT_LOG LEMMA_PROVE_QUERY LEMMA_PROVE_LIMITS
-    LEMMA_VERUS_DOCKER_IMAGE LEMMA_REPO LEMMA_SHUFFLE_FILTER_WORKERS LEMMA_HOME
+    LEMMA_VERUS_DOCKER_IMAGE LEMMA_REPO LEMMA_PYTHON LEMMA_SHUFFLE_FILTER_WORKERS LEMMA_HOME
     LEMMA_ZC_DIFF_SEEDS LEMMA_ZC_TEMP_DIR LEMMA_ZC_MEMORY_LIMIT LEMMA_ZC_MAX_LOAD LEMMA_ZC_MAX_OTHERS_CORES
     """.split()
 )
@@ -386,7 +459,10 @@ def forwarded_env() -> dict[str, str]:
 
 
 def git_state(root: Path | None = None) -> dict[str, Any]:
-    """{"git_sha": ..., "git_dirty": bool, "dirty_files": [...]}: dirty = a TRACKED file differs from HEAD (untracked files, e.g. gitignored data, do not count)."""
+    """{"git_sha": ..., "git_dirty": bool, "dirty_files": [...]}: dirty = a TRACKED file differs from HEAD (untracked files, e.g. gitignored data, do not count).
+    An installed wheel (no checkout, no git): {"git_sha": None, "git_dirty": None, "dirty_files": [], "package": package_provenance()}."""
+    if root is None and INSTALLED:
+        return {"git_sha": None, "git_dirty": None, "dirty_files": [], "package": package_provenance()}
     root = root or ROOT
     sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True).stdout.strip()
     porcelain = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=root, capture_output=True, text=True, check=True).stdout
@@ -410,7 +486,10 @@ def require_clean_tree(root: Path | None = None) -> dict[str, Any]:
 def record(root: Path | None = None) -> dict[str, Any]:
     """The reproducibility record of a run: the effective config (value, source, origin of every key) plus git SHA and dirtiness."""
     state = git_state(root)
-    return {"config": effective_dict(), "git_sha": state["git_sha"], "git_dirty": state["git_dirty"]}
+    out = {"config": effective_dict(), "git_sha": state["git_sha"], "git_dirty": state["git_dirty"]}
+    if "package" in state:
+        out["package"] = state["package"]
+    return out
 
 
 # --- experiments: committed configs/experiments/*.toml, the only source of a replicable run ---
@@ -473,6 +552,8 @@ def use_experiment(path: Path | str, run_index: int, pinned_sha: str | None = No
     """Make run ``run_index`` of the experiment file the "experiment" source of this process (settings plus the run's model, database and
     package; the database and package paths are resolved against the repo root). Returns the run entry."""
     global _experiment
+    if root is None and INSTALLED:
+        raise ConfigError("experiments run from a git checkout of Lemma (clean tree, pinned SHA); this is an installed package, which has neither")
     root = (root or ROOT).resolve()
     full = (Path(path) if Path(path).is_absolute() else root / path).resolve()
     settings, runs = load_experiment(full, root)
@@ -549,6 +630,12 @@ def main(argv: list[str]) -> int:
     if cmd == "get" and len(argv) == 2:
         value = get(argv[1])
         print(str(value).lower() if isinstance(value, bool) else value)
+        return 0
+    if cmd == "image" and len(argv) == 2 and argv[1] in ("prover", *LOCAL_AGENT_IMAGES):
+        print(prover_image() if argv[1] == "prover" else agent_image(argv[1]))
+        return 0
+    if cmd == "resource" and len(argv) >= 2:
+        print(resource(*argv[1:]))
         return 0
     if cmd == "dump":
         for key, s in effective().items():

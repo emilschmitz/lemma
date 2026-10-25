@@ -8,6 +8,7 @@ import select
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -967,7 +968,10 @@ def _run_subprocess_tee_agent_log(
 
 def _lemma_host_mcp_payload(workspace: Path) -> dict:
     py = ROOT / ".venv" / "bin" / "python"
-    command = str(py if py.is_file() else Path(os.environ.get("PYTHON", "python3")))
+    if lemma_config.INSTALLED:  # an installed wheel: the interpreter of this process has the package and its dependencies
+        command = sys.executable
+    else:
+        command = str(py if py.is_file() else Path(os.environ.get("PYTHON", "python3")))
     return {
         "mcpServers": {
             "lemma-host": {
@@ -1386,7 +1390,7 @@ def run_agent_docker(
     ]
     # Host bind-mounts are often noexec; copy into container /tmp then exec.
     use_host_entrypoint = False
-    entrypoint_host = ROOT / "docker" / "agent" / "entrypoint.sh"
+    entrypoint_host = lemma_config.resource("docker", "agent", "entrypoint.sh")
     if entrypoint_host.is_file():
         cmd.extend(["-v", f"{entrypoint_host.resolve()}:/app/entrypoint.host.sh:ro"])
         cmd.extend(["--entrypoint", "/bin/bash"])

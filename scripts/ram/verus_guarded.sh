@@ -12,7 +12,10 @@
 #           group) also kills the container: a watchdog outside that group stops it when this script is gone.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-cfg() { PYTHONPATH="$ROOT" python3 -m lemma_config get "$1"; }
+# lemma_config.py sits at the checkout root, or (installed wheel) in site-packages, the parent of lemma_data/ where this script is then.
+# LEMMA_PYTHON: the interpreter Lemma runs on (set by the lemma CLI): the system python3 may be missing or older than 3.11 (tomllib).
+PYROOT="$ROOT"; [[ -f "$PYROOT/lemma_config.py" ]] || PYROOT="$(dirname "$ROOT")"
+cfg() { PYTHONPATH="$PYROOT" "${LEMMA_PYTHON:-python3}" -m lemma_config get "$1"; }
 SLOTS="$(cfg verus_slots)"
 T0=$SECONDS
 MEM_MAX="$(cfg verus_mem_max)"
@@ -46,7 +49,7 @@ echo "LEMMA_VERUS_QUEUE_WAIT_SEC=$(( SECONDS - T0 ))" >&2
 if [ "$PROVER" = "host" ]; then
   exec systemd-run --user --scope --quiet --slice=lemma.slice -p MemoryMax="$MEM_MAX" -p MemorySwapMax=0 "$VERUS" "$@"
 fi
-IMAGE="$(cfg prover_image)"
+IMAGE="$(PYTHONPATH="$PYROOT" "${LEMMA_PYTHON:-python3}" -m lemma_config image prover)"  # prover_image under image_registry when set
 mounts=(-v "$PWD:$PWD")
 for arg in "$@"; do
   if [[ "$arg" != -* && -f "$arg" ]]; then

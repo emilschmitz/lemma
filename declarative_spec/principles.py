@@ -17,7 +17,7 @@ from pathlib import Path
 from research_loop.table_assumptions import CatalogAssumptions, ColumnAssumption, TableAssumptions
 
 ENV = lemma_config.env_name("examples")
-FIXTURES = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "declarative_proofs" / "principles"
+FIXTURES = lemma_config.resource("tests", "fixtures", "declarative_proofs", "principles")
 
 SCHEMA: dict[str, dict[str, str]] = {
     "events": {
