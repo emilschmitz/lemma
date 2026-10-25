@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 from lemma_cli.common import CliError, redact, repo_root, say
@@ -32,7 +33,14 @@ def build_parser() -> argparse.ArgumentParser:
     o.add_argument("--queue", action="store_true", help="process $LEMMA_HOME/queue/*.sql in file-name order")
     o.add_argument("--force", action="store_true")
     o.add_argument("--bench", action="store_true", help="after installing, time the executor inside DuckDB against DuckDB (cold and warm)")
-    sub.add_parser("list", help="installed executors: key, SQL, database, proof line, created")
+    g = sub.add_parser("generate", help="what DuckDB's lemma('<sql>') runs for a query without an executor: lift its constants into a template, prove, install")
+    g.add_argument("--db", required=True, help="the snapshot DuckDB file the extension wrote (the tables the query reads)")
+    g.add_argument("--sql-file", required=True)
+    g.add_argument("--source-db", help="the user's database the snapshot was taken from (recorded in optimize.json)")
+    g.add_argument("--lift-constants", dest="lift", action="store_true", default=True, help="(default) lift WHERE/HAVING constants into template parameters")
+    g.add_argument("--no-lift-constants", dest="lift", action="store_false", help="prove the query exactly as written")
+    g.add_argument("--regenerate", action="store_true", help="prove again even when an executor is installed (it is replaced only if the new one proves)")
+    sub.add_parser("list", help="installed executors: key, SQL or template, proof line, created, last used")
     r = sub.add_parser("remove", help="delete one installed executor")
     r.add_argument("key", help="the executor key or a prefix of it (at least 6 hex characters, see `lemma list`)")
     d = sub.add_parser("duckdb", help="start our DuckDB 1.5.6 with the Lemma extension and lemma_mode on; prints how to use it from your own DuckDB")
@@ -52,10 +60,14 @@ def list_cmd() -> int:
     for e in executors:
         made = e.get("optimize") or {}
         key = e.get("key") or e.get("sql_key") or Path(e["dir"]).name
+        last_used = Path(e["dir"]) / "last_used"
+        used = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(last_used.stat().st_mtime)) if last_used.is_file() else "never"
+        params = ", ".join(f"{p['name']} {p['sql_type']}" for p in e.get("params") or [])
         if "lib_sha256" not in e:  # a manifest of the CLI before the in-DuckDB install (no lib.so): the extension does not run it
             say(f"{key[:12]}  NOT USABLE IN DUCKDB (old CLI format, no lib.so): lemma remove {key[:12]}, then lemma optimize again")
             continue
-        say(f"{key[:12]}  {e.get('proof', '?')}  created {made.get('installed_at') or '?'}  db {made.get('db_path') or '?'}")
+        kind = f"template({params})" if params else "query"
+        say(f"{key[:12]}  {e.get('proof', '?')}  created {made.get('installed_at') or '?'}  db {made.get('db_path') or '?'}  {kind}  last used {used}")
         say(f"              {e.get('normalized_sql', e.get('sql', ''))[:200]}")
     return 0
 
@@ -85,6 +97,10 @@ def main(argv: list[str] | None = None) -> int:
 
             say(f"removed {cache.remove(args.key)}")
             return 0
+        if args.cmd == "generate":
+            from lemma_cli.generate import generate
+
+            return generate(args.db, args.sql_file, args.source_db, args.lift, args.regenerate)
         if args.cmd == "duckdb":
             from lemma_cli import duck
 

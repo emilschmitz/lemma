@@ -82,7 +82,9 @@ def child_env(mode: str, harness_name: str = "claude") -> dict[str, str]:
     return env
 
 
-def run_pipeline(sql: str, db: Path, package: Path | None, mode: str, log: Path, harness_name: str = "claude") -> dict[str, Any]:
+def run_pipeline(
+    sql: str, db: Path, package: Path | None, mode: str, log: Path, harness_name: str = "claude", binding: dict[str, str] | None = None
+) -> dict[str, Any]:
     """Start run_container_agent.py for ``sql``; its output is redacted into ``log``. Returns the RESULT record.
 
     ``package`` is the approved assumption package (lemma.toml ``assumptions = true``, the UNMAINTAINED path) or None (the default: no data
@@ -102,6 +104,8 @@ def run_pipeline(sql: str, db: Path, package: Path | None, mode: str, log: Path,
     cmd = [sys.executable, str(root / "research_loop" / "scripts" / "run_container_agent.py"), "--query-file", str(qfile), "--duckdb-path", str(db)]
     if package is not None:
         cmd += ["--assumption-package", str(package)]
+    if binding is not None:  # a query template lifted from one query (lemma generate): measured on that query's values
+        cmd += ["--template-binding", json.dumps(binding)]
     result: dict[str, Any] | None = None
     with log.open("w") as fh:
         proc = subprocess.Popen(cmd, cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -185,7 +189,11 @@ def summary(dest: Path, db: Path, record: dict[str, Any], measured: dict[str, An
     return lines
 
 
-def optimize_one(sql: str, db: Path, *, force: bool = False, measure: bool = False) -> Path:
+def optimize_one(
+    sql: str, db: Path, *, force: bool = False, measure: bool = False, binding: dict[str, str] | None = None, source_db: Path | None = None
+) -> Path:
+    """Prove and install ``sql`` on ``db``. ``binding``: ``sql`` is a query template lifted from a query with these values (lemma generate);
+    ``source_db``: the user's database the snapshot ``db`` was taken from (recorded as the executor's database)."""
     state = require_setup()
     apply_home_config()
     mode = auth_mode()
@@ -208,7 +216,7 @@ def optimize_one(sql: str, db: Path, *, force: bool = False, measure: bool = Fal
                 say(line)
         return cache.executor_dir(key)
     log = lemma_home() / "logs" / f"{key}.log"
-    record = run_pipeline(normalize_sql(sql), db, package, mode, log, harness())
+    record = run_pipeline(sql if binding is not None else normalize_sql(sql), db, package, mode, log, harness(), binding)
     if record.get("status") == "DECLINED":
         raise CliError(
             "not optimized: DECLINED (the proved program returned None on this data, e.g. a checked overflow; nothing is installed and no other "
@@ -224,7 +232,7 @@ def optimize_one(sql: str, db: Path, *, force: bool = False, measure: bool = Fal
         raise CliError(f"proved, but the in-DuckDB install failed, nothing installed: {type(exc).__name__}: {str(exc)[-1500:]}\nrun: {run_dir}") from exc
     official = record.get("official") or {}
     cache.record_provenance(dest, {
-        "db_path": str(db), "assumptions": with_assumptions, "assumption_package_sha256": pkg_sha, "agent_harness": harness(), "agent_model": record.get("model"),
+        "db_path": str(source_db or db), "assumptions": with_assumptions, "assumption_package_sha256": pkg_sha, "agent_harness": harness(), "agent_model": record.get("model"),
         "agent_auth": mode, "image_id": state.get("image_id"), "run_dir": str(run_dir), "speedup": official.get("speedup") if isinstance(official, dict) else None,
     }, run_dir)
     for line in summary(dest, db, record, bench(normalize_sql(sql), db) if measure else None):

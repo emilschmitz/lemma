@@ -8,6 +8,7 @@ library), ``manifest.json`` (tables/columns/types, the proof line, hashes) and `
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import time
@@ -34,6 +35,8 @@ def list_executors() -> list[dict[str, Any]]:
     """One record per installed executor: its manifest plus ``optimize.json`` under ``"optimize"`` (empty when installed another way)."""
     out = []
     for manifest in sorted(executors_dir().glob("*/manifest.json")):
+        if manifest.parent.name.startswith("."):
+            continue  # an install's staging directory, or an executor being replaced or removed
         doc = read_json(manifest)
         doc["dir"] = str(manifest.parent)
         doc["optimize"] = read_json(manifest.parent / PROVENANCE)
@@ -69,6 +72,14 @@ def resolve(key: str) -> Path:
 
 
 def remove(key: str) -> Path:
+    """Delete one executor and its template index entry (``lemma_remove`` in DuckDB does the same)."""
+    from research_loop.in_duckdb import unindex_template
+
     path = resolve(key)
-    shutil.rmtree(path)
+    sql = read_json(path / "manifest.json").get("sql")
+    if sql:
+        unindex_template(lemma_home(), path.name, sql)
+    doomed = path.parent / f".removed-{path.name}-{os.getpid()}"
+    path.rename(doomed)  # gone for every reader at once, then deleted
+    shutil.rmtree(doomed)
     return path
