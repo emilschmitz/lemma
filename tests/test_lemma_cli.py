@@ -32,6 +32,10 @@ elif args[0] == "image":
         print("sha256:" + "ab" * 32)
 elif args[0] == "build":
     open(d + "/built", "w").write("1")
+elif args[0] == "pull":
+    if flag("pull_fail"):
+        print("Error response from daemon: manifest unknown", file=sys.stderr); sys.exit(1)
+    open(d + "/built", "w").write("1")
 elif args[0] == "run":
     if "/bin/bash" in args:
         print("TOOLS " + open(d + "/tools.json").read())
@@ -120,14 +124,61 @@ def test_setup_with_unreachable_daemon_names_the_group_fix(env: Path, capsys: py
     assert "not reachable" in err and "docker group" in err
 
 
-def test_setup_builds_a_missing_image_once_with_the_pinned_build_args(env: Path) -> None:
+def published(harness: str) -> str:
+    import lemma_config
+
+    return f"{common.DEFAULT_REGISTRY}/lemma-agent-{harness}:{lemma_config.package_version()}"
+
+
+def test_setup_pulls_a_missing_image_once_and_builds_nothing(env: Path) -> None:
     (env / "no_image").write_text("")
     login()
     assert main(["setup"]) == 0
     assert main(["setup"]) == 0
-    builds = [c for c in calls(env) if c[0] == "build"]
-    assert len(builds) == 1  # second run: image exists, verified, not rebuilt
-    assert "INSTALL_CLAUDE_CODE=1" in builds[0] and "lemma-agent:claude" in builds[0]
+    pulls = [c for c in calls(env) if c[0] == "pull"]
+    assert pulls == [["pull", published("claude")]]  # second run: image exists, verified, not pulled again
+    assert [c for c in calls(env) if c[0] == "build"] == []
+
+
+def test_setup_with_a_failed_pull_is_loud_names_build_images_and_builds_nothing(env: Path, capsys: pytest.CaptureFixture) -> None:
+    (env / "no_image").write_text("")
+    (env / "pull_fail").write_text("")
+    login()
+    assert main(["setup"]) == 2
+    err = capsys.readouterr().err
+    assert f"pulling {published('claude')} failed" in err and "manifest unknown" in err and "lemma setup --build-images" in err
+    assert [c for c in calls(env) if c[0] == "build"] == [] and not common.state_path().exists()
+
+
+def test_setup_build_images_builds_the_published_tag_from_a_minimal_context_with_the_pinned_build_args(env: Path) -> None:
+    login()
+    assert main(["setup", "--build-images"]) == 0
+    (build,) = [c for c in calls(env) if c[0] == "build"]
+    assert "INSTALL_CLAUDE_CODE=1" in build and published("claude") in build and [c for c in calls(env) if c[0] == "pull"] == []
+    context = Path(build[-1])  # a temporary directory with only what the Dockerfile copies (removed after the build)
+    assert context.name.startswith("lemma-agent-ctx-") and not context.exists()
+
+
+def test_agent_build_context_holds_exactly_what_the_dockerfiles_copy(tmp_path: Path) -> None:
+    ctx = sandbox.agent_build_context(tmp_path / "ctx")
+    assert (ctx / "db_extension" / "agent" / "mcp_proxy.py").is_file() and (ctx / "research_loop" / "assemble_runquery.py").is_file()
+    assert (ctx / "docker" / "agent" / "entrypoint.sh").is_file() and (ctx / "docker" / "agent" / "Dockerfile.harness").is_file()
+    assert {p.name for p in ctx.iterdir()} == {"db_extension", "research_loop", "docker"} and not list(ctx.rglob("__pycache__"))
+
+
+def test_an_empty_image_registry_selects_the_local_research_tags(env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    login()
+    for name in common.HOME_CONFIG_ENV.values():
+        monkeypatch.setenv(name, "")
+    assert main(["setup", "--image-registry", ""]) == 0
+    assert json.loads(common.config_path().read_text())["image_registry"] == ""
+    assert json.loads(common.state_path().read_text())["image"] == "lemma-agent:claude"
+    from declarative_spec.prover import image
+
+    assert image() == "lemma-prover:0.2026.07.18.3a4d30b"
+    monkeypatch.setenv("LEMMA_IMAGE_REGISTRY", "")
+    common.apply_home_config()
+    assert sandbox.image_for("gemini") == "lemma-agent:gemini"
 
 
 def _as_codex(env: Path) -> None:
@@ -143,17 +194,17 @@ def test_setup_harness_codex_builds_its_image_saves_the_default_model_and_status
     monkeypatch.setenv("CODEX_API_KEY", KEY)
     for name in common.HOME_CONFIG_ENV.values():
         monkeypatch.setenv(name, "")  # registered with monkeypatch, so teardown removes what setup exports
-    assert main(["setup", "--harness", "codex", "--auth", "api-key"]) == 0
+    assert main(["setup", "--harness", "codex", "--auth", "api-key", "--build-images"]) == 0
     assert json.loads(common.config_path().read_text()) == {"agent_auth": "api_key", "harness": "codex", "agent_model": DEFAULT_MODELS["codex"]}
     (build,) = [c for c in calls(env) if c[0] == "build"]
-    assert "HARNESS=codex" in build and "lemma-agent:codex" in build and build[build.index("-f") + 1].endswith("Dockerfile.harness")
+    assert "HARNESS=codex" in build and published("codex") in build and build[build.index("-f") + 1].endswith("Dockerfile.harness")
     state = json.loads(common.state_path().read_text())
-    assert state["harness"] == "codex" and state["image"] == "lemma-agent:codex" and state["selftest"]["ok"]
+    assert state["harness"] == "codex" and state["image"] == published("codex") and state["selftest"]["ok"]
     out = capsys.readouterr().out
     assert "CODEX_API_KEY is set" in out and KEY not in out
     assert main(["status"]) == 0
     out = capsys.readouterr().out
-    assert "harness         codex" in out and f"model           {DEFAULT_MODELS['codex']}" in out and "lemma-agent:codex present" in out and "PASSED" in out
+    assert "harness         codex" in out and f"model           {DEFAULT_MODELS['codex']}" in out and f"{published('codex')} present" in out and "PASSED" in out
 
 
 def test_setup_harness_codex_without_its_key_is_loud_and_never_uses_the_anthropic_key(env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
@@ -222,12 +273,13 @@ def test_setup_fails_when_the_container_has_network_or_the_model_api_is_unreacha
     assert "not reachable through the bridge" in capsys.readouterr().err
 
 
-def test_setup_rebuilds_nothing_when_the_cli_version_differs_unless_the_image_can_be_built(env: Path, capsys: pytest.CaptureFixture) -> None:
+def test_setup_stops_when_the_image_has_another_cli_version_and_builds_nothing(env: Path, capsys: pytest.CaptureFixture) -> None:
     login()
     (env / "cli_version").write_text("2.0.0 (Claude Code)")
-    assert main(["setup"]) == 2  # the stub image never gets the pinned version, so the rebuild also fails loudly
-    assert "pins 2.1.289" in capsys.readouterr().err
-    assert len([c for c in calls(env) if c[0] == "build"]) == 1
+    assert main(["setup"]) == 2  # no silent rebuild: the user pulls again or asks for --build-images
+    err = capsys.readouterr().err
+    assert "pins 2.1.289" in err and "lemma setup --build-images" in err
+    assert [c for c in calls(env) if c[0] in ("build", "pull")] == []
 
 
 # --- credentials ---
@@ -476,17 +528,29 @@ def test_remove_takes_a_unique_prefix_and_refuses_bad_or_ambiguous_keys(env: Pat
 
 
 def fake_binaries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
-    """An installed bundle layout: <share>/lemma/src (the source tree) beside <share>/lemma/duckdb/{duckdb, lemma.duckdb_extension}."""
-    src = tmp_path / "share" / "lemma" / "src"
-    src.mkdir(parents=True)
-    cli = src.parent / "duckdb" / "duckdb"
-    cli.parent.mkdir()
-    cli.write_text("#!/bin/sh\necho \"ARGS $*\"\necho \"HOME=$LEMMA_HOME\"\n")
-    cli.chmod(0o755)
-    ext = cli.parent / "lemma.duckdb_extension"
-    ext.write_bytes(b"ext")
-    monkeypatch.setattr(duck, "repo_root", lambda: src)
-    return cli, ext
+    """The installed layout (install.sh, or lemma setup --duckdb-from): $LEMMA_HOME/duckdb/{duckdb, lemma.duckdb_extension}."""
+    release = tmp_path / "release" / "duckdb"
+    release.mkdir(parents=True)
+    (release / "duckdb").write_text("#!/bin/sh\necho \"ARGS $*\"\necho \"HOME=$LEMMA_HOME\"\n")
+    (release / "lemma.duckdb_extension").write_bytes(b"ext")
+    if not os.environ.get("LEMMA_HOME"):
+        monkeypatch.setenv("LEMMA_HOME", str(tmp_path / "lemma_home"))
+    monkeypatch.setattr(duck, "repo_root", lambda: tmp_path / "no_checkout")
+    dest = duck.install_from(release)
+    return dest / "duckdb", dest / "lemma.duckdb_extension"
+
+
+def test_install_from_takes_a_release_dir_or_a_build_dir_and_refuses_a_partial_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cli, ext = fake_binaries(tmp_path, monkeypatch)
+    assert cli.stat().st_mode & 0o111 and ext.read_bytes() == b"ext"
+    build = tmp_path / "build" / "release"
+    (build / "extension" / "lemma").mkdir(parents=True)
+    (build / "duckdb").write_text("#!/bin/sh\n")
+    (build / "extension" / "lemma" / "lemma.duckdb_extension").write_bytes(b"ext2")
+    assert duck.install_from(build) == cli.parent and ext.read_bytes() == b"ext2"
+    (build / "duckdb").unlink()
+    with pytest.raises(common.CliError, match="does not hold duckdb and lemma.duckdb_extension"):
+        duck.install_from(build)
 
 
 def test_duckdb_args_turn_lemma_mode_on_and_take_an_absolute_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -503,7 +567,7 @@ def test_lemma_duckdb_runs_our_cli_with_the_lemma_home_and_a_missing_install_say
     db = make_db(tmp_path)
     monkeypatch.setattr(duck, "repo_root", lambda: tmp_path / "nowhere" / "src")
     assert main(["duckdb", str(db), "-c", "SELECT 1"]) == 2
-    assert "install the release bundle" in capfd.readouterr().err
+    assert "run the release's install.sh, or `lemma setup --duckdb-from DIR`" in capfd.readouterr().err
     fake_binaries(tmp_path, monkeypatch)
     assert main(["duckdb", str(tmp_path / "missing.duckdb"), "-c", "SELECT 1"]) == 2
     assert main(["duckdb", str(db), "-c", "SELECT 1"]) == 0
@@ -762,5 +826,5 @@ def test_status_reports_auth_image_selftest_and_executors(env: Path, tmp_path: P
     fake_executor("SELECT 1 FROM t")
     assert main(["status"]) == 0
     out = capsys.readouterr().out
-    assert "auth            api_key" in out and "PASSED" in out and "lemma-agent:claude present" in out and "1 cached" in out and "duckdb (python) 1.5.6" in out
+    assert "auth            api_key" in out and "PASSED" in out and f"{published('claude')} present" in out and "1 cached" in out and "duckdb (python) 1.5.6" in out
 

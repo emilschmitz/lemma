@@ -17,7 +17,8 @@ from lemma_cli.common import (
 LIBDUCKDB_SO = "libduckdb.so"
 # Proofs and the compile of every executor (the agent's container only edits the body) run with the pinned Verus release and the Rust
 # toolchain it was built with, through scripts/ram/verus_guarded.sh. lemma.toml [run] prover (the CLI default is docker, lemma_cli/common.py
-# CLI_DEFAULTS): docker = the prover image (docker/prover/Dockerfile), built here, nothing else on this machine; host = Verus at
+# CLI_DEFAULTS): docker = the prover image (docker/prover/Dockerfile), pulled here (or built with --build-images), nothing else on this
+# machine; host = Verus at
 # [prover] verus_home and its rustup toolchain on this machine, in a memory-capped systemd user scope
 # (research_loop/scripts/install_verus.md).
 VERUS_VERSION = "0.2026.07.18.3a4d30b"
@@ -31,13 +32,19 @@ VERUS_HOWTO = (
 
 
 def libduckdb_dir() -> Path:
-    return repo_root() / "build" / "libduckdb"
+    """The native libduckdb the pipeline compiles and measures against: the checkout's build/libduckdb, or $LEMMA_HOME/build/libduckdb."""
+    import lemma_config
+
+    return lemma_config.writable("build", "libduckdb")
 
 
 def ensure_libduckdb() -> str:
+    import lemma_config
+
     if (libduckdb_dir() / LIBDUCKDB_SO).is_file():
         return "present"
-    done = subprocess.run(["bash", str(repo_root() / "scripts" / "fetch_libduckdb.sh")], capture_output=True, text=True, check=False)
+    script = lemma_config.resource("scripts", "fetch_libduckdb.sh")
+    done = subprocess.run(["bash", str(script), str(libduckdb_dir())], capture_output=True, text=True, check=False)
     if done.returncode != 0 or not (libduckdb_dir() / LIBDUCKDB_SO).is_file():
         raise CliError(f"fetching libduckdb failed (exit {done.returncode}): {redact(done.stderr.strip()[-500:])}")
     return "fetched"
@@ -54,31 +61,36 @@ def verus_path() -> Path:
 def _check_docs(commit: str) -> None:
     docs = repo_root() / "research_loop" / "vendor" / "verus_docs" / "COMMIT"  # the Verus guide/examples the agent reads (declarative_spec/drive.py)
     if not docs.is_file() or docs.read_text().strip() != commit:
-        raise CliError(f"the Verus docs for the agent ({docs.parent}) are missing or not at Verus commit {commit[:12]}: the release bundle ships "
-                       "them; in a checkout run research_loop/scripts/fetch_verus_docs.sh")
+        raise CliError(f"the Verus docs for the agent ({docs.parent}) are missing or not at Verus commit {commit[:12]}: the lemma wheel ships "
+                       "them (scripts/release/build_product.sh); in a checkout run research_loop/scripts/fetch_verus_docs.sh")
 
 
-def check_prover(rebuild: bool = False) -> str:
-    """The prover of lemma.toml [run] prover is ready: the docker image (built here when missing or on ``rebuild``), or the host install."""
-    return check_prover_docker(rebuild) if prover() == "docker" else check_prover_host()
+def check_prover(build: bool = False) -> str:
+    """The prover of lemma.toml [run] prover is ready: the docker image (pulled when missing, built on ``build``), or the host install."""
+    return check_prover_docker(build) if prover() == "docker" else check_prover_host()
 
 
-def check_prover_docker(rebuild: bool = False) -> str:
-    """The prover image exists (else it is built from docker/prover/Dockerfile: Verus, its toolchain and a linker, every download pinned by
-    sha256), runs the pinned Verus with no network, and its vstd source is copied out for the spec emitter. Nothing else is needed here."""
+def check_prover_docker(build: bool = False) -> str:
+    """The prover image exists (pulled from the registry when missing; with ``build`` built here from docker/prover/Dockerfile: Verus, its
+    toolchain and a linker, every download pinned by sha256), runs the pinned Verus with no network, and its vstd source is copied out for
+    the spec emitter. Nothing else is needed here. A failed pull is an error that names --build-images; nothing is built without it."""
+    import lemma_config
     from declarative_spec import prover
 
     image = prover.image()
-    if rebuild or subprocess.run(["docker", "image", "inspect", image], capture_output=True, check=False).returncode != 0:
+    if build:
         say(f"  [..] building the prover image {image} (Verus {VERUS_VERSION}, Rust {VERUS_TOOLCHAIN}; about 400 MB download, a few minutes)")
-        built = subprocess.run(["docker", "build", "-t", image, str(repo_root() / "docker" / "prover")], capture_output=True, text=True, check=False)
+        built = subprocess.run(["docker", "build", "-t", image, str(lemma_config.resource("docker", "prover"))], capture_output=True, text=True, check=False)
         if built.returncode != 0:
             raise CliError(f"building the prover image {image} failed (exit {built.returncode}): {redact((built.stdout + built.stderr).strip()[-1500:])}")
         shutil.rmtree(prover.image_source_dir(image), ignore_errors=True)  # a rebuilt image: copy its source again
+    elif not sandbox.image_exists(image):
+        say(f"  [..] pulling the prover image {image} (Verus {VERUS_VERSION}, Rust {VERUS_TOOLCHAIN}; about 400 MB)")
+        sandbox.pull_image(image)
     done = subprocess.run(["docker", "run", "--rm", "--network", "none", image, "--version"], capture_output=True, text=True, timeout=120, check=False)
     if done.returncode != 0 or f"Version: {VERUS_VERSION}" not in done.stdout:
         raise CliError(f"the prover image {image} does not run Verus {VERUS_VERSION} (exit {done.returncode}: "
-                       f"{redact((done.stdout + done.stderr).strip()[-300:])}): rebuild it with `lemma setup --rebuild`")
+                       f"{redact((done.stdout + done.stderr).strip()[-300:])}): pull it again (docker pull {image}) or build it with `lemma setup --build-images`")
     try:
         source = prover.extract_image_source(image)
     except (RuntimeError, subprocess.CalledProcessError) as exc:
@@ -127,9 +139,11 @@ def check_credentials(mode: str, harness_name: str = "claude") -> str:
     return "Claude Code login found (mounted read-only into the container)"
 
 
-def setup(auth: str | None, rebuild: bool = False, harness_name: str | None = None, model: str | None = None, prover_choice: str | None = None) -> int:
-    """``harness_name`` / ``model`` / ``auth`` / ``prover_choice`` are saved in $LEMMA_HOME/config.json when given. A new harness without ``--model`` saves that
-    harness's default model (research_loop/agent_harness.py DEFAULT_MODELS), so the saved model never belongs to another vendor."""
+def setup(auth: str | None, build_images: bool = False, harness_name: str | None = None, model: str | None = None, prover_choice: str | None = None,
+          *, image_registry: str | None = None, duckdb_from: str | None = None) -> int:
+    """``harness_name`` / ``model`` / ``auth`` / ``prover_choice`` / ``image_registry`` are saved in $LEMMA_HOME/config.json when given. A new harness
+    without ``--model`` saves that harness's default model (research_loop/agent_harness.py DEFAULT_MODELS), so the saved model never belongs to
+    another vendor. The images are pulled from the registry when missing; ``build_images`` builds them here instead (never as a fallback)."""
     from research_loop.agent_harness import DEFAULT_MODELS, check_model
 
     say("lemma setup")
@@ -149,6 +163,8 @@ def setup(auth: str | None, rebuild: bool = False, harness_name: str | None = No
         if prover_choice not in PROVER_CHOICES:
             raise CliError(f"--prover must be one of {', '.join(PROVER_CHOICES)}, got {prover_choice!r}")
         saved["prover"] = prover_choice
+    if image_registry is not None:
+        saved["image_registry"] = image_registry.strip().rstrip("/")
     if saved != read_json(config_path()):
         write_json(config_path(), saved)
     apply_home_config()
@@ -161,21 +177,23 @@ def setup(auth: str | None, rebuild: bool = False, harness_name: str | None = No
     version = sandbox.check_docker()
     say(f"  [ok] docker daemon {version}")
     say(f"  [ok] harness {chosen}, model {slug}, auth {mode}")
-    say(f"  [ok] prover ({prover()}): {check_prover(rebuild)}")
+    say(f"  [ok] prover ({prover()}): {check_prover(build_images)}")
     from lemma_cli import duck
 
+    if duckdb_from is not None:
+        src = Path(duckdb_from).expanduser()
+        say(f"  [ok] duckdb binaries installed: {duck.install_from(src)}")
+        if (src / LIBDUCKDB_SO).is_file():  # a release ships the official libduckdb beside them: no download in ensure_libduckdb
+            libduckdb_dir().mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src / LIBDUCKDB_SO, libduckdb_dir() / LIBDUCKDB_SO)
     say(f"  [ok] duckdb: {duck.check()}")
-    if rebuild or not sandbox.image_exists(image_name):
+    if build_images:
         say(f"  [..] building {image_name} ({chosen} CLI {sandbox.pinned_version(chosen)}); this takes a few minutes")
         sandbox.build_image(image_name, chosen)
-    try:
-        image = sandbox.verify_image(image_name, chosen)
-    except CliError as exc:
-        if rebuild:
-            raise
-        say(f"  [..] image does not match this checkout ({exc}); rebuilding")
-        sandbox.build_image(image_name, chosen)
-        image = sandbox.verify_image(image_name, chosen)
+    elif not sandbox.image_exists(image_name):
+        say(f"  [..] pulling {image_name}")
+        sandbox.pull_image(image_name)
+    image = sandbox.verify_image(image_name, chosen)
     cli_version = image.get("claude_code") or image["agent_cli"]
     say(f"  [ok] image {image_name}: {'Claude Code' if chosen == 'claude' else chosen + ' CLI'} {cli_version}, advertised MCP tools served")
     test = sandbox.selftest(image_name, harness=chosen)
