@@ -23,8 +23,11 @@ from declarative_spec.verus_limits import (
     verus_timeout_sec,
 )
 
+from declarative_spec.prover import host_verus_home
+
+# The host Verus (lemma.toml [prover] verus_home); used directly only when the guarded wrapper is missing. Tests skip on its absence.
 VERUS_CANDIDATES = (
-    Path("/home/emil/tools/verus/verus"),
+    host_verus_home() / "verus",
     Path("verus"),
 )
 
@@ -35,7 +38,7 @@ def _verus_binary() -> str:
         return override
     # Default: the guarded wrapper (one slot machine-wide, memory-capped, waits for free memory). A runaway Z3 once took
     # the whole desktop session down; set LEMMA_VERUS_BIN to the real binary only on purpose.
-    guard = Path(__file__).resolve().parents[1] / "scripts" / "ram" / "verus_guarded.sh"
+    guard = lemma_config.resource("scripts", "ram", "verus_guarded.sh")
     if guard.is_file() and os.access(guard, os.X_OK):
         return str(guard)
     for p in VERUS_CANDIDATES:
@@ -55,22 +58,18 @@ def _text(chunk: str | bytes | None) -> str:
 def verify_assembled(rs_source: str, *, timeout_sec: int | None = None) -> tuple[bool, str]:
     timeout_sec = verus_timeout_sec() if timeout_sec is None else timeout_sec
     verus = _verus_binary()
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".rs", delete=False) as f:
-        f.write(rs_source)
-        path = f.name
-    try:
-        # cwd = the temp file's directory: Verus leaves a compiled executable named after the source in its cwd
-        proc = run_verus([verus, path, *verus_limit_args()], timeout=timeout_sec, cwd=Path(path).parent)
-        combined = (proc.stdout or "") + (proc.stderr or "")
-        return proc.returncode == 0, combined
-    except subprocess.TimeoutExpired as e:
-        out = _text(e.stdout) + _text(e.stderr)
-        return False, timeout_message(out, timeout_sec, getattr(e, 'wait_sec', None), getattr(e, 'run_sec', None))
-    finally:
+    # A private temp directory as cwd: Verus leaves a compiled executable named after the source in its cwd, and the docker prover mounts
+    # the cwd writable (never the whole system temp directory).
+    with tempfile.TemporaryDirectory(prefix="decl-verify-") as tmp:
+        path = str(Path(tmp) / "declarative_check.rs")
+        Path(path).write_text(rs_source)
         try:
-            os.unlink(path)
-        except OSError:
-            pass
+            proc = run_verus([verus, path, *verus_limit_args()], timeout=timeout_sec, cwd=Path(tmp))
+            combined = (proc.stdout or "") + (proc.stderr or "")
+            return proc.returncode == 0, combined
+        except subprocess.TimeoutExpired as e:
+            out = _text(e.stdout) + _text(e.stderr)
+            return False, timeout_message(out, timeout_sec, getattr(e, 'wait_sec', None), getattr(e, 'run_sec', None))
 
 
 def _proof_verified(output: str) -> bool:

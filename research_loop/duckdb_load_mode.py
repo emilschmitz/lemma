@@ -26,7 +26,9 @@ def resolve_duckdb_lib_dir() -> Path:
     raw = os.environ.get("LEMMA_DUCKDB_LIB_DIR", "").strip()
     if raw:
         return Path(raw).resolve()
-    return (_REPO_ROOT / "build" / "libduckdb").resolve()
+    import lemma_config
+
+    return lemma_config.writable("build", "libduckdb").resolve()  # the checkout's build/libduckdb, or $LEMMA_HOME/build/libduckdb (installed)
 
 
 def require_duckdb_lib_dir() -> Path:

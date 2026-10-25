@@ -26,6 +26,10 @@ def _utc_iso() -> str:
 
 
 def _git_head(root: Path | str | None = None) -> str | None:
+    import lemma_config
+
+    if lemma_config.INSTALLED:  # an installed wheel has no checkout: never ask git about whatever directory the user is in
+        return None
     cwd = Path(root) if root is not None else Path.cwd()
     try:
         out = subprocess.run(

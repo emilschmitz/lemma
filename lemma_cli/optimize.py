@@ -108,7 +108,11 @@ def run_pipeline(
         cmd += ["--template-binding", json.dumps(binding)]
     result: dict[str, Any] | None = None
     with log.open("w") as fh:
-        proc = subprocess.Popen(cmd, cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        import lemma_config
+
+        cwd = lemma_home() if lemma_config.INSTALLED else root  # an installed wheel: never run in (or write to) site-packages
+        cwd.mkdir(parents=True, exist_ok=True)
+        proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         assert proc.stdout is not None
         for line in proc.stdout:
             clean = redact(line)

@@ -95,10 +95,11 @@ def ambiguous_verus_names() -> frozenset[str]:
     like a name defined in two of them is rejected as ambiguous (``sub``, ``add``). Read from the
     pinned Verus install; fails loudly when it is missing.
     """
-    from declarative_spec.vstd_index import VERUS_HOME, VSTD
+    from declarative_spec.prover import verus_home
 
+    home = verus_home()
     sources: dict[str, set[str]] = {}
-    for path in [VERUS_HOME / "builtin" / "src" / "lib.rs", *sorted(VSTD.rglob("*.rs"))]:
+    for path in [home / "builtin" / "src" / "lib.rs", *sorted((home / "vstd").rglob("*.rs"))]:
         for name in _VALUE_DEF.findall(path.read_text()):
             sources.setdefault(name, set()).add(str(path))
     return frozenset(name for name, files in sources.items() if len(files) >= 2)

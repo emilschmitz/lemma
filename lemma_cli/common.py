@@ -22,8 +22,17 @@ HARNESS_CHOICES = ("claude", "codex", "gemini")
 AUTH_ENV = "LEMMA_AGENT_AUTH"
 HARNESS_ENV = "LEMMA_HARNESS"
 MODEL_ENV = "LEMMA_AGENT_MODEL"
+PROVER_ENV = "LEMMA_PROVER"
+PROVER_CHOICES = ("docker", "host")
+REGISTRY_ENV = "LEMMA_IMAGE_REGISTRY"
+# Where the published images live (`lemma setup` pulls <registry>/lemma-agent-<harness>:<version> and <registry>/lemma-prover:<verus>).
+DEFAULT_REGISTRY = "ghcr.io/emilschmitz"
 # Saved choices of `lemma setup` ($LEMMA_HOME/config.json key -> the environment variable that makes it effective).
-HOME_CONFIG_ENV = {"agent_auth": AUTH_ENV, "harness": HARNESS_ENV, "agent_model": MODEL_ENV}
+HOME_CONFIG_ENV = {"agent_auth": AUTH_ENV, "harness": HARNESS_ENV, "agent_model": MODEL_ENV, "prover": PROVER_ENV, "image_registry": REGISTRY_ENV}
+# The product's own defaults where they differ from lemma.toml (whose values are the research defaults, kept so experiments stay
+# byte-identical): the CLI proves and compiles in the pinned prover image, so the user needs no Verus or Rust toolchain, and it uses the
+# published (pulled) images rather than the research path's local tags.
+CLI_DEFAULTS = {"prover": "docker", "image_registry": DEFAULT_REGISTRY}
 
 
 class CliError(RuntimeError):
@@ -44,15 +53,12 @@ def say(message: str = "", *, err: bool = False) -> None:
 
 
 def repo_root() -> Path:
-    """The Lemma checkout the pipeline lives in: ``LEMMA_REPO``, else the checkout this package sits in, else the cwd's ancestors."""
-    candidates = [Path(os.environ["LEMMA_REPO"])] if os.environ.get("LEMMA_REPO") else []
-    # the checkout this package sits in (editable install), the source tree the release bundle's install.sh unpacks, the cwd's ancestors
-    candidates += [Path(__file__).resolve().parents[1], lemma_home() / "src", Path.home() / ".local" / "share" / "lemma" / "src"]
-    candidates += [Path.cwd().resolve(), *Path.cwd().resolve().parents]
-    for path in candidates:
-        if (path / "lemma.toml").is_file() and (path / "research_loop").is_dir():
-            return path
-    raise CliError("cannot find the Lemma source tree (lemma.toml + research_loop/): install the release bundle (install.sh), or `uv tool install --editable .` from a checkout, or set LEMMA_REPO")
+    """Where the pipeline's packages live: the checkout this package sits in (editable install, `uv tool install --editable .`), or the
+    site-packages of an installed wheel. Repo-root files are ``lemma_config.resource(...)`` (the wheel ships them under ``lemma_data/``)."""
+    root = Path(__file__).resolve().parents[1]
+    if not ((root / "lemma_config.py").is_file() and (root / "research_loop").is_dir()):
+        raise CliError(f"{root} has no lemma_config.py and research_loop/: a broken install; reinstall the lemma wheel (install.sh)")
+    return root
 
 
 def lemma_home() -> Path:
@@ -77,8 +83,8 @@ def config_path() -> Path:
 
 
 def apply_home_config() -> str:
-    """Make the saved choices effective (environment ``LEMMA_<KEY>`` > ``$LEMMA_HOME/config.json`` > lemma.toml) for ``agent_auth``, ``harness``
-    and ``agent_model``. Returns the source of ``agent_auth``; ``home_config_sources`` has all three."""
+    """Make the saved choices effective (environment ``LEMMA_<KEY>`` > ``$LEMMA_HOME/config.json`` > ``CLI_DEFAULTS`` > lemma.toml) for
+    ``agent_auth``, ``harness``, ``agent_model`` and ``prover``. Returns the source of ``agent_auth``; ``home_config_sources`` has all of them."""
     return home_config_sources()["agent_auth"]
 
 
@@ -88,9 +94,12 @@ def home_config_sources() -> dict[str, str]:
     for key, env in HOME_CONFIG_ENV.items():
         if os.environ.get(env, "").strip():
             sources[key] = f"environment {env}"
-        elif saved.get(key):
+        elif saved.get(key) or (key == "image_registry" and key in saved):  # a saved "" registry = the local tags, not the default
             os.environ[env] = saved[key]
             sources[key] = str(config_path())
+        elif key in CLI_DEFAULTS:
+            os.environ[env] = CLI_DEFAULTS[key]
+            sources[key] = "lemma CLI default"
         else:
             sources[key] = "lemma.toml"
     return sources
@@ -112,6 +121,12 @@ def agent_model() -> str:
     import lemma_config
 
     return lemma_config.get("agent_model")
+
+
+def prover() -> str:
+    import lemma_config
+
+    return lemma_config.get("prover")
 
 
 def sha256_file(path: Path) -> str:

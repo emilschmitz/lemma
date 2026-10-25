@@ -18,7 +18,7 @@ from pathlib import Path
 import lemma_config
 
 HARNESSES = ("claude", "codex", "gemini")
-IMAGES = {"claude": "lemma-agent:claude", "codex": "lemma-agent:codex", "gemini": "lemma-agent:gemini"}
+IMAGES = lemma_config.LOCAL_AGENT_IMAGES  # the local research tags; image_for() applies [run] image_registry
 # Default model per harness (written by `lemma setup --harness X` when no model is given). Sources, checked 2026-10-24:
 #   claude: lemma.toml agent_model (the frozen run's model).
 #   codex:  https://learn.chatgpt.com/docs/models  -- "gpt-6.1-sol" is the model recommended for complex coding and agentic work.
@@ -41,6 +41,12 @@ CONTAINER_LOGIN_DIRS = {"codex": "/root/.codex-host", "gemini": "/root/.gemini-h
 COST_NOT_REPORTED = "not reported by harness"
 # MCP tool calls (run_runquery = Verus + compile + timed run) may take minutes; the CLIs' defaults are 60 s (codex) and 10 min (gemini).
 MCP_TOOL_TIMEOUT_SEC = 3600
+
+
+def image_for(harness: str) -> str:
+    """The sandbox image of ``harness``: ``IMAGES[harness]``, or the published ``<image_registry>/lemma-agent-<harness>:<version>`` when
+    lemma.toml ``image_registry`` is set (lemma_config.agent_image)."""
+    return lemma_config.agent_image(harness)
 
 
 def selected_harness() -> str:

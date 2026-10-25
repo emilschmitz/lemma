@@ -3,22 +3,31 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
 
-from lemma_cli.common import CliError, redact, repo_root, say
+from lemma_cli.common import DEFAULT_REGISTRY, CliError, redact, repo_root, say
 
 
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="lemma", description="Verified query synthesis. Agents run in the Docker sandbox only.")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    s = sub.add_parser("setup", help="choose the harness/model/auth, check docker, build/verify the agent image, run the sandbox self-test, fetch libduckdb, check credentials")
+    s = sub.add_parser("setup", help="choose the harness/model/auth/prover, check docker, pull (or build) and verify the agent and prover images, run the sandbox self-test, "
+                       "install the DuckDB binaries, fetch libduckdb, check credentials")
     s.add_argument("--harness", choices=["claude", "codex", "gemini"], help="the agent CLI in the sandbox (saved): Claude Code, OpenAI Codex CLI or Google Gemini CLI")
     s.add_argument("--model", help="the model of that harness (saved); default with --harness: that harness's default model")
     s.add_argument("--auth", choices=["login", "api-key", "api_key"], help="how the agent authenticates (saved): the harness's host login file (read-only), or its API key "
                    "variable from the environment (claude: ANTHROPIC_API_KEY, codex: CODEX_API_KEY, gemini: GEMINI_API_KEY), passed by name only")
-    s.add_argument("--rebuild", action="store_true", help="rebuild the agent image")
+    s.add_argument("--prover", choices=["docker", "host"], help="where Verus and the compile of each executor run (saved): docker (default) = the pinned "
+                   "prover image, nothing to install; host = Verus at [prover] verus_home (~/tools/verus) and its rustup toolchain on this machine")
+    s.add_argument("--build-images", action="store_true", help="build the agent image (and the prover image with --prover docker) on this machine "
+                   "instead of pulling the published ones (needs network for the base images and the pinned downloads; a few minutes)")
+    s.add_argument("--image-registry", help=f"where the published images are pulled from (saved; default {DEFAULT_REGISTRY}); \"\" = the local research "
+                   "tags lemma-agent:<harness> / lemma-prover:<verus>, which only --build-images (or a checkout's own build) provides")
+    s.add_argument("--duckdb-from", metavar="DIR", help="install our DuckDB CLI and lemma.duckdb_extension from DIR (a release's duckdb/ directory, "
+                   "or a build's release/ directory) into $LEMMA_HOME/duckdb/; install.sh does this for you")
     a = sub.add_parser("assumptions", help="profile a DuckDB, approve every claim, check the package")
     a.add_argument("--db", required=True)
     a.add_argument("--margin", type=int, default=4)
@@ -78,10 +87,13 @@ def main(argv: list[str] | None = None) -> int:
         root = repo_root()
         if str(root) not in sys.path:
             sys.path.insert(0, str(root))
+        # The guard scripts (scripts/ram/*.sh) read lemma.toml through this interpreter, not the system python3 (which may be < 3.11).
+        os.environ["LEMMA_PYTHON"] = sys.executable
         if args.cmd == "setup":
             from lemma_cli.setup_cmd import setup
 
-            return setup(args.auth.replace("-", "_") if args.auth else None, args.rebuild, args.harness, args.model)
+            return setup(args.auth.replace("-", "_") if args.auth else None, args.build_images, args.harness, args.model, args.prover,
+                         image_registry=args.image_registry, duckdb_from=args.duckdb_from)
         if args.cmd == "status":
             from lemma_cli.setup_cmd import status
 

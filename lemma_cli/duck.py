@@ -1,11 +1,11 @@
 """The DuckDB side of the product: our DuckDB 1.5.6 CLI (Lemma statically linked) and the loadable `lemma.duckdb_extension`.
 
-Where they are, relative to the Lemma source tree (``repo_root()``):
+Where they are:
 
-* installed from the release bundle (``install.sh``): ``<share>/lemma/src`` is the source tree and ``<share>/lemma/duckdb/`` holds
-  ``duckdb`` and ``lemma.duckdb_extension``;
+* installed (``install.sh`` of the release, or ``lemma setup --duckdb-from DIR``): ``$LEMMA_HOME/duckdb/{duckdb, lemma.duckdb_extension}``
+  (default ``~/.local/share/lemma/duckdb/``);
 * a development checkout: ``db_extension/duckdb_ext/build/release/{duckdb, extension/lemma/lemma.duckdb_extension}``
-  (``db_extension/duckdb_ext/build.sh``).
+  (``db_extension/duckdb_ext/build.sh``), or the portable build of scripts/release/build_portable.sh.
 
 Nothing is downloaded or built here; a missing file is an error that says how to get it.
 """
@@ -22,13 +22,40 @@ DUCKDB_VERSION = "v1.5.6"
 LEMMA_MODE = "SET lemma_mode = true"
 
 
+CLI_NAME, EXT_NAME = "duckdb", "lemma.duckdb_extension"
+
+
+def installed_dir() -> Path:
+    return lemma_home() / "duckdb"
+
+
 def _candidates() -> list[tuple[Path, Path]]:
-    root = repo_root()
-    build = root / "db_extension" / "duckdb_ext" / "build" / "release"
-    return [
-        (root.parent / "duckdb" / "duckdb", root.parent / "duckdb" / "lemma.duckdb_extension"),
-        (build / "duckdb", build / "extension" / "lemma" / "lemma.duckdb_extension"),
-    ]
+    out = [(installed_dir() / CLI_NAME, installed_dir() / EXT_NAME)]
+    import lemma_config
+
+    if not lemma_config.INSTALLED:  # a checkout's own builds
+        for build in (repo_root() / "db_extension" / "duckdb_ext" / "build" / sub / "release" for sub in ("", "portable")):
+            out.append((build / CLI_NAME, build / "extension" / "lemma" / EXT_NAME))
+    return out
+
+
+def install_from(src: Path) -> Path:
+    """Copy our DuckDB CLI and the extension from ``src`` into ``installed_dir()``: ``src`` is a release's ``duckdb/`` directory (both files
+    side by side) or a build's ``release/`` directory (``duckdb`` and ``extension/lemma/lemma.duckdb_extension``). Missing files are an error."""
+    import shutil
+
+    cli = src / CLI_NAME
+    ext = next((p for p in (src / EXT_NAME, src / "extension" / "lemma" / EXT_NAME) if p.is_file()), None)
+    if not cli.is_file() or ext is None:
+        raise CliError(f"{src} does not hold {CLI_NAME} and {EXT_NAME} (a release's duckdb/ directory, or a build's release/ directory)")
+    dest = installed_dir()
+    dest.mkdir(parents=True, exist_ok=True)
+    for source, name, mode in ((cli, CLI_NAME, 0o755), (ext, EXT_NAME, 0o644)):
+        tmp = dest / f".{name}.new"
+        shutil.copyfile(source, tmp)
+        tmp.chmod(mode)
+        tmp.replace(dest / name)
+    return dest
 
 
 def binaries() -> tuple[Path, Path]:
@@ -38,8 +65,8 @@ def binaries() -> tuple[Path, Path]:
             return cli, ext
     looked = "; ".join(f"{c.parent}" for c, _e in _candidates())
     raise CliError(
-        f"the Lemma DuckDB binaries (duckdb CLI + lemma.duckdb_extension) are not installed (looked in: {looked}): install the release bundle "
-        "(install.sh), or in a checkout build them with db_extension/duckdb_ext/build.sh"
+        f"the Lemma DuckDB binaries (duckdb CLI + lemma.duckdb_extension) are not installed (looked in: {looked}): run the release's install.sh, "
+        "or `lemma setup --duckdb-from DIR` (the release's duckdb/ directory), or in a checkout build them with db_extension/duckdb_ext/build.sh"
     )
 
 
