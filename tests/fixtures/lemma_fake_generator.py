@@ -6,7 +6,8 @@ store, but instead of the pipeline it installs an executor that is already prove
 Environment (set by the test; not LEMMA_* so the real config never sees them):
     FAKE_GEN_STORE   a LEMMA_HOME with proved fixtures installed
     FAKE_GEN_KEY     the executor key to install from it
-    FAKE_GEN_MODE    install (default) | fail | sleep (sleep FAKE_GEN_SLEEP seconds, then install)
+    FAKE_GEN_MODE    install (default) | fail | sleep (sleep FAKE_GEN_SLEEP seconds, then install) | container (start a labelled
+                     container with `docker run`, then hang) | container-fail (start one, then exit 1)
     FAKE_GEN_RECORD  if set: write {"argv": [...], "tables": {table: rows}} of the snapshot here first
 """
 
@@ -43,6 +44,16 @@ def main() -> int:
         return 3
     if mode == "sleep":
         time.sleep(float(os.environ.get("FAKE_GEN_SLEEP", "3")))
+    if mode in ("container", "container-fail"):  # start a container as the pipeline's sandbox does: labelled with the job
+        import subprocess
+
+        from research_loop.job_label import job_label_args
+
+        subprocess.run(["docker", "run", "-d", *job_label_args(), "lemma-agent:test", "sleep", "600"], check=True)
+        if mode == "container-fail":
+            print("fake generator: died with a container running", flush=True)
+            return 1
+        time.sleep(600)
     from research_loop.in_duckdb import index_template
 
     home = Path(os.environ["LEMMA_HOME"])

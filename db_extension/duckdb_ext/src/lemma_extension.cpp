@@ -2727,6 +2727,76 @@ std::string Setting(ClientContext &context, const char *name) {
 	return v.ToString();
 }
 
+// The generator command of each database (read from $LEMMA_GENERATOR at LOAD, else `lemma generate`).
+std::mutex generator_lock;
+std::unordered_map<DatabaseInstance *, std::string> generators;
+
+std::string GeneratorCommand(ClientContext &context) {
+	std::lock_guard<std::mutex> guard(generator_lock);
+	auto it = generators.find(&DatabaseInstance::GetDatabase(context));
+	if (it == generators.end()) {
+		throw InternalException("Lemma: no generator command recorded for this database");
+	}
+	return it->second;
+}
+
+// Removes the containers a job's pipeline started (label lemma.job=<id>, research_loop/job_label.py); its output goes to the job's log.
+const char *DOCKER_CLEANUP = "command -v docker >/dev/null 2>&1 && { ids=$(docker ps -aq --filter \"label=lemma.job=$LEMMA_JOB_ID\"); "
+                             "[ -z \"$ids\" ] || docker rm -f $ids; }";
+
+// The job's environment: this process's, with LEMMA_HOME = lemma_home and LEMMA_JOB_ID = the job.
+std::vector<std::string> JobEnvironment(const std::string &home, const std::string &id) {
+	std::vector<std::string> env_text;
+	for (char **e = environ; *e; e++) {
+		if (std::strncmp(*e, "LEMMA_HOME=", 11) != 0 && std::strncmp(*e, "LEMMA_JOB_ID=", 13) != 0) {
+			env_text.emplace_back(*e);
+		}
+	}
+	env_text.push_back("LEMMA_HOME=" + home);
+	env_text.push_back("LEMMA_JOB_ID=" + id);
+	return env_text;
+}
+
+pid_t SpawnShell(const std::vector<std::string> &args, const std::vector<std::string> &env_text, bool new_session) {
+	std::vector<char *> argv, envp;
+	for (auto &a : args) {
+		argv.push_back(const_cast<char *>(a.c_str()));
+	}
+	argv.push_back(nullptr);
+	for (auto &e : env_text) {
+		envp.push_back(const_cast<char *>(e.c_str()));
+	}
+	envp.push_back(nullptr);
+	posix_spawnattr_t attr;
+	posix_spawnattr_init(&attr);
+	if (new_session) {
+		posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSID);
+	}
+	pid_t pid;
+	int err = posix_spawn(&pid, "/bin/sh", nullptr, &attr, argv.data(), envp.data());
+	posix_spawnattr_destroy(&attr);
+	if (err != 0) {
+		throw IOException("Lemma: cannot start /bin/sh: %s", std::string(strerror(err)));
+	}
+	return pid;
+}
+
+// Remove the job's containers now (a cancelled job's runner was killed before it could): at most 60 s.
+void CleanupJobContainers(const std::string &home, const std::string &id) {
+	std::string dir = home + "/jobs/" + id;
+	pid_t pid = SpawnShell({"/bin/sh", "-c", std::string("(") + DOCKER_CLEANUP + ") >>\"$1/log\" 2>&1", "lemma-cleanup", dir},
+	                       JobEnvironment(home, id), false);
+	int status = 0;
+	for (int i = 0; i < 600; i++) {
+		if (waitpid(pid, &status, WNOHANG) == pid) {
+			return;
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(100));
+	}
+	kill(pid, SIGKILL);
+	waitpid(pid, &status, 0);
+}
+
 std::string GenerateMode(ClientContext &context) {
 	auto mode = StringUtil::Lower(Setting(context, "lemma_generate"));
 	if (mode != "block" && mode != "background" && mode != "off") {
@@ -2951,9 +3021,9 @@ std::string StartJob(ClientContext &context, const std::string &sql, bool regene
 		}
 		home = std::string(cwd) + "/" + home;
 	}
-	std::string generator = Setting(context, "lemma_generator");
+	std::string generator = GeneratorCommand(context);
 	if (Trimmed(generator).empty()) {
-		throw InvalidInputException("Lemma: lemma_generator is empty");
+		throw InvalidInputException("Lemma: the generator command ($LEMMA_GENERATOR at LOAD) is empty");
 	}
 	auto tables = TablesRead(context, sql);
 	std::string key = lemma::Sha256Hex(lemma::NormalizeSql(sql));
@@ -2994,40 +3064,16 @@ std::string StartJob(ClientContext &context, const std::string &sql, bool regene
 	// /bin/sh -c SCRIPT lemma-generate <dir> <args...>: the generator runs in a background subshell of a new session (so a Ctrl-C of
 	// the caller's terminal does not reach it, and its whole process group can be signalled), output to `log`; then the snapshot is
 	// deleted and exit_code written. The launching shell exits at once (no zombie is left to this process).
-	std::string script = "cd \"$1\" || exit 97; shift; (" + generator +
-	                     " \"$@\" >>log 2>&1; c=$?; rm -f snapshot.duckdb snapshot.duckdb.wal; echo $c >exit_code.part; "
+	// When the generator ends (or dies), the containers its pipeline left with the job's label are removed.
+	std::string script = "cd \"$1\" || exit 97; shift; (" + generator + " \"$@\" >>log 2>&1; c=$?; (" + DOCKER_CLEANUP +
+	                     ") >>log 2>&1; rm -f snapshot.duckdb snapshot.duckdb.wal; echo $c >exit_code.part; "
 	                     "mv exit_code.part exit_code) </dev/null >/dev/null 2>&1 &";
 	std::vector<std::string> args = {"/bin/sh", "-c", script, "lemma-generate", dir, "--db", snapshot, "--sql-file",
 	                                 dir + "/query.sql", "--source-db", source, lift ? "--lift-constants" : "--no-lift-constants"};
 	if (regenerate) {
 		args.push_back("--regenerate");
 	}
-	std::vector<char *> argv;
-	for (auto &a : args) {
-		argv.push_back(const_cast<char *>(a.c_str()));
-	}
-	argv.push_back(nullptr);
-	std::vector<std::string> env_text;
-	for (char **e = environ; *e; e++) {
-		if (std::strncmp(*e, "LEMMA_HOME=", 11) != 0) {
-			env_text.emplace_back(*e);
-		}
-	}
-	env_text.push_back("LEMMA_HOME=" + home);
-	std::vector<char *> envp;
-	for (auto &e : env_text) {
-		envp.push_back(const_cast<char *>(e.c_str()));
-	}
-	envp.push_back(nullptr);
-	posix_spawnattr_t attr;
-	posix_spawnattr_init(&attr);
-	posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSID);
-	pid_t pid;
-	int err = posix_spawn(&pid, "/bin/sh", nullptr, &attr, argv.data(), envp.data());
-	posix_spawnattr_destroy(&attr);
-	if (err != 0) {
-		throw IOException("Lemma: cannot start the generator: %s", std::string(strerror(err)));
-	}
+	pid_t pid = SpawnShell(args, JobEnvironment(home, id), true);
 	int status = 0;
 	waitpid(pid, &status, 0); // the launcher only backgrounds the job
 	WriteFileAtomic(dir + "/pgid", std::to_string(pid) + "\n");
@@ -3093,6 +3139,7 @@ JobView WaitJob(ClientContext &context, const std::string &home, const std::stri
 			if (GroupAlive(job.pgid)) {
 				kill(-pid_t(job.pgid), SIGKILL);
 			}
+			CleanupJobContainers(home, id); // the runner that would have removed them is gone
 			std::remove((dir + "/snapshot.duckdb").c_str());
 			std::remove((dir + "/snapshot.duckdb.wal").c_str());
 			fprintf(stderr, "[lemma generate] job %s cancelled\n", id.c_str());
@@ -4143,12 +4190,13 @@ void LoadInternal(ExtensionLoader &loader) {
 	                          "and wait, its log on stderr, Ctrl-C cancels), 'background' (start it and raise 'generating', or "
 	                          "with lemma_route_unproved answer with DuckDB, labelled) or 'off' (an error)",
 	                          LogicalType::VARCHAR, Value("block"));
-	const char *gen_env = std::getenv("LEMMA_GENERATOR");
-	config.AddExtensionOption("lemma_generator",
-	                          "The shell command lemma(...) runs to generate an executor (default $LEMMA_GENERATOR at LOAD, else "
-	                          "'lemma generate'); it gets --db <snapshot> --sql-file <file> --source-db <path> "
-	                          "--lift-constants|--no-lift-constants [--regenerate] and LEMMA_HOME",
-	                          LogicalType::VARCHAR, Value(gen_env && *gen_env ? gen_env : "lemma generate"));
+	{
+		// The generator command: from the environment at LOAD, fixed for this database; NOT a setting (a SQL user must not choose
+		// what shell command runs).
+		const char *gen_env = std::getenv("LEMMA_GENERATOR");
+		std::lock_guard<std::mutex> guard(generator_lock);
+		generators[&db] = gen_env && *gen_env ? gen_env : "lemma generate";
+	}
 	config.AddExtensionOption("lemma_lift_constants",
 	                          "Generate a query template: the generator lifts the literal constants of WHERE/HAVING comparisons "
 	                          "into typed parameters, so the executor answers every query that differs only in them",

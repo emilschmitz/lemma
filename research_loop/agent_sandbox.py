@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import lemma_config
+from research_loop.job_label import job_label_args
 from research_loop.agent_image_check import agent_code_mount_args
 from research_loop.pipeline_demo import resolve_demo_view_dir
 from research_loop.pipeline_log import log_debug, log_info, log_trace, log_warn
@@ -1356,6 +1357,7 @@ def run_agent_docker(
     cmd = [
         "docker", "run", "--rm",
         "--name", container_name,
+        *job_label_args(),  # lemma('<sql>')'s job: removed when the job is cancelled (research_loop/job_label.py)
         "--network", "none",
         "--memory", "3g", "--memory-swap", "3g",
         "--cap-drop", "ALL",

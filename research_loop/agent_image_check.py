@@ -12,6 +12,8 @@ import json
 import subprocess
 from pathlib import Path
 
+from research_loop.job_label import job_label_args
+
 ROOT = Path(__file__).resolve().parents[1]
 AGENT_CODE_DIR = ROOT / "db_extension" / "agent"
 ASSEMBLE_RUNQUERY = ROOT / "research_loop" / "assemble_runquery.py"
@@ -59,7 +61,7 @@ def check_agent_image(image: str, *, claude_cli: bool = False, cli: str | None =
     if cli is not None:
         script += f' && echo "CLI $({cli} --version)"'
     done = subprocess.run(
-        ["docker", "run", "--rm", "--network", "none", "-e", "LEMMA_RUN_RUNQUERY_BLURB=preflight", *agent_code_mount_args(),
+        ["docker", "run", "--rm", *job_label_args(), "--network", "none", "-e", "LEMMA_RUN_RUNQUERY_BLURB=preflight", *agent_code_mount_args(),
          "--entrypoint", "/bin/bash", image, "-c", script],
         capture_output=True, text=True, check=False,
     )

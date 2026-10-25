@@ -45,11 +45,15 @@ needs_ext = pytest.mark.skipif(
 )
 
 
+FAKE_GENERATOR = f"{sys.executable} {FAKE}"
+
+
 @pytest.fixture(autouse=True)
 def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LEMMA_ASSUMPTIONS", raising=False)
     monkeypatch.setenv("LEMMA_IN_DUCKDB", "true")
     monkeypatch.setenv("LEMMA_TEMPLATES", "1")
+    monkeypatch.setenv("LEMMA_GENERATOR", FAKE_GENERATOR)  # read at LOAD (_connect); never a SQL setting
 
 
 # ---------------------------------------------------------------- constant lifting (no extension)
@@ -170,7 +174,7 @@ def _connect(home: Path, database: str = ":memory:") -> duckdb.DuckDBPyConnectio
 
 
 def _fake(con: duckdb.DuckDBPyConnection, monkeypatch: pytest.MonkeyPatch, store: Path, sql: str, mode: str = "install", **extra: str) -> None:
-    con.execute(f"SET lemma_generator = '{sys.executable} {FAKE}'")
+    """How the fake generator (LEMMA_GENERATOR, set before LOAD by _env) behaves; read by it when the job starts."""
     monkeypatch.setenv("FAKE_GEN_STORE", str(store))
     monkeypatch.setenv("FAKE_GEN_KEY", in_duckdb.executor_key(sql))
     monkeypatch.setenv("FAKE_GEN_MODE", mode)
@@ -406,7 +410,9 @@ def test_a_failed_generation_is_an_error_with_its_log(store: Path, tmp_path: Pat
     (status, error, log) = con.execute("SELECT status, error, log FROM lemma_jobs()").fetchone()
     assert status == "failed" and "did not prove" in error and Path(log).is_file()
     # a generator that exits 0 without installing anything is an error too
-    con.execute(f"SET lemma_generator = '{sys.executable} -c pass'")
+    monkeypatch.setenv("LEMMA_GENERATOR", f"{sys.executable} -c pass")
+    con = _connect(_home(store, tmp_path / "again"))
+    _fill(con)
     with pytest.raises(duckdb.Error, match="the generator finished .* but no installed executor answers this query"):
         con.execute(_lemma(SQL)).fetchall()
 
@@ -520,6 +526,68 @@ def test_an_executor_is_refused_when_the_table_types_changed(store: Path, tmp_pa
 
 
 @needs_ext
+def test_the_generator_command_is_not_a_sql_setting_and_comes_from_the_environment_at_load(store: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    marker = tmp_path / "ran"
+    monkeypatch.setenv("LEMMA_GENERATOR", f"touch {marker}; false")
+    con = _connect(_home(store, tmp_path))
+    _fill(con)
+    with pytest.raises(duckdb.Error, match="lemma_generator"):
+        con.execute("SET lemma_generator = 'touch /tmp/pwned'")
+    with pytest.raises(duckdb.Error, match="lemma_generator"):
+        con.execute("SET GLOBAL lemma_generator = 'touch /tmp/pwned'")
+    monkeypatch.setenv("LEMMA_GENERATOR", FAKE_GENERATOR)  # after LOAD: no effect on this database
+    with pytest.raises(duckdb.Error, match="generating an executor failed"):
+        con.execute(_lemma(SQL)).fetchall()
+    assert marker.is_file()
+    (generator,) = [json.loads((job / "job.json").read_text())["generator"] for job in (tmp_path / "home" / "jobs").iterdir()]
+    assert generator == f"touch {marker}; false"
+
+
+@needs_ext
+def test_cancel_removes_the_containers_the_job_started(store: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The fake generator starts a container labelled lemma.job=<job> (research_loop/job_label.py, as the pipeline does) through a fake
+    `docker` on PATH, then hangs; Ctrl-C removes the container (docker ps --filter label / docker rm -f). A generator that dies by itself
+    gets its containers removed by the job runner."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "docker").write_text(f"#!/bin/sh\nexec {sys.executable} {ROOT / 'tests' / 'fixtures' / 'fake_docker.py'} \"$@\"\n")
+    (bin_dir / "docker").chmod(0o755)
+    state = tmp_path / "docker_state"
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("FAKE_DOCKER_STATE", str(state))
+    home = _home(store, tmp_path)
+    con = _connect(home)
+    _fill(con)
+    _fake(con, monkeypatch, store, SQL, mode="container")
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            con.execute(_lemma(SQL)).fetchall()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    t = threading.Thread(target=run)
+    t.start()
+    deadline = time.time() + 30
+    while not list(state.glob("containers/*")) and time.time() < deadline:
+        time.sleep(0.1)
+    (container,) = list(state.glob("containers/*"))
+    (job,) = list(home.glob("jobs/*"))
+    assert container.read_text() == f"lemma.job={job.name}"  # the label carries this job's id
+    con.interrupt()
+    t.join(60)
+    assert not t.is_alive() and errors and "INTERRUPT" in str(errors[0]).upper()
+    assert not list(state.glob("containers/*")) and f"rm -f {container.name}" in (state / "calls.log").read_text()
+    assert container.name in (job / "log").read_text()  # docker rm's output, in the job's log
+    # the job runner cleans up when the generator dies on its own (here: it exits 1 right after starting a container)
+    _fake(con, monkeypatch, store, SQL, mode="container-fail")
+    with pytest.raises(duckdb.Error, match="generating an executor failed"):
+        con.execute(_lemma(SQL)).fetchall()
+    assert not list(state.glob("containers/*")) and (state / "calls.log").read_text().count("rm -f") == 2
+
+
+@needs_ext
 def test_generation_is_refused_without_external_access(store: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     con = _connect(_home(store, tmp_path))
     _fill(con)
@@ -566,9 +634,9 @@ def test_real_generator_lifts_proves_installs_and_answers_with_the_mock_model(tm
     assert done.returncode == 0 and "READY" in done.stdout
 
     db = tmp_path / "shop.duckdb"
+    monkeypatch.setenv("LEMMA_GENERATOR", f"{sys.executable} -m lemma_cli.main generate")  # the real `lemma generate`
     con = _connect(lemma_home, str(db))
     _fill(con, n=2000, seed=11)
-    con.execute(f"SET lemma_generator = '{sys.executable} -m lemma_cli.main generate'")
     body = (FIX / "template_usum_checked.rs").read_text().replace("param_lo", "param_p1").strip("\n")
     cert, key = make_ca(tmp_path)
     text = "SELECT SUM(cost) AS total FROM pre WHERE line > 5"

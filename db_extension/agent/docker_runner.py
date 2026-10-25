@@ -10,6 +10,7 @@ from pathlib import Path
 
 from db_extension.agent.config import AgentFlags
 from research_loop.agent_image_check import agent_code_mount_args
+from research_loop.job_label import job_label_args
 from research_loop.sandbox_hide import shadow_mount_args
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -90,6 +91,7 @@ def start_tool_container(
         "-i",
         "--name",
         name,
+        *job_label_args(),
         "--cap-drop",
         "ALL",
         "-v",

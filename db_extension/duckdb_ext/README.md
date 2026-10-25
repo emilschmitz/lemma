@@ -49,7 +49,7 @@ Or run our CLI, where Lemma is already loaded: `build/release/duckdb db.duckdb`.
 | `SELECT * FROM lemma('<sql>')` | the proved executor's rows for `<sql>` (same column names and types as DuckDB's answer): the executor installed for exactly this text, else a stored query template this text instantiates (see "Query templates"). None: one is GENERATED (`lemma_generate`, below) and then answers. Never answered by DuckDB, except under `lemma_route_unproved`, labelled |
 | `SELECT * FROM lemma('<sql>', regenerate := true)` | prove a new executor for `<sql>` (its template, when lifted) and replace the installed one ONLY if the new one proves and installs; on a failure the old one stays and the call is an error (block) |
 | `SET lemma_generate = 'block' \| 'background' \| 'off'` | what `lemma(...)` does without an executor. `block` (default): run the generator, wait (minutes), its log on stderr, Ctrl-C cancels it (SIGTERM to its process group, nothing installed). `background`: start it and raise `no proved executor for this query yet; generating one in the background (job ..., log ...)`, or, only with `lemma_route_unproved = true`, return DuckDB's answer labelled `engine = duckdb`; a later call finds the running job (no second one). `off`: the miss error |
-| `SET lemma_generator = '<shell command>'` | the generator (default `$LEMMA_GENERATOR` at LOAD, else `lemma generate`). It runs as `<cmd> --db <snapshot.duckdb> --sql-file <query.sql> --source-db <caller's db path> --lift-constants\|--no-lift-constants [--regenerate]` with `LEMMA_HOME` = `lemma_home`, in its own session; exit 0 = installed |
+| `LEMMA_GENERATOR=<shell command>` (environment, read at LOAD) | the generator command: `$LEMMA_GENERATOR` when the extension is LOADed, else `lemma generate`, fixed for that database. It is NOT a setting (`SET lemma_generator` is an unknown option): a SQL user, e.g. of DuckDB embedded in a server, must not choose a shell command to run. It runs as `<cmd> --db <snapshot.duckdb> --sql-file <query.sql> --source-db <caller's db path> --lift-constants\|--no-lift-constants [--regenerate]` with `LEMMA_HOME` = `lemma_home`, in its own session; exit 0 = installed |
 | `SET lemma_lift_constants = false` | generate an executor for the exact text instead of a query template (default `true`, see "Constant lifting") |
 | `SELECT * FROM lemma_jobs()` | generations: `job_id`, `status` (`starting`, `running`, `done`, `failed`, `cancelled`, `lost`), `query_key`, `sql`, `mode`, `regenerate`, `created`, `finished`, `exit_code`, `installed_key` (from the log's `INSTALLED <key>`), `snapshot_bytes`, `log`, `error` (the log's last line, failed or lost) |
 | `SELECT * FROM lemma_list()` | installed executors (the store `lemma list` shows): `key`, `kind` (`query` / `template`), `sql`, `params` (`name TYPE, ...`), `proof`, `created`, `size_bytes` (lib.so), `last_used` (any process, to 10 s), `runs` and `cache_hits` (this process since LOAD), `dir` |
@@ -95,8 +95,13 @@ text); run it as a plain query.
 library, `install_executor` stages it and renames it into place, so a replaced executor is swapped only after the new one proved).
 The job lives in `${lemma_home}/jobs/<id>/` (`job.json`, `query.sql`, `log`, `pgid`, `exit_code`, `cancelled`); `lemma_jobs()`
 reads it. It runs detached in its own session (`posix_spawn` with `POSIX_SPAWN_SETSID`), so the caller's terminal's Ctrl-C never
-reaches it; a blocking `lemma(...)` turns its own interrupt into SIGTERM to the job's process group (SIGKILL 5 s later). Generation
-starts a shell command and writes files: it is refused when `enable_external_access = false`. Executors are keyed by QUERY, not by
+reaches it; a blocking `lemma(...)` turns its own interrupt into SIGTERM to the job's process group (SIGKILL 5 s later), then removes
+the job's Docker containers. The job gets `LEMMA_JOB_ID=<id>`, and every container the pipeline starts carries the label
+`lemma.job=<id>` (`research_loop/job_label.py`: the agent sandbox, the image preflight, the OpenRouter tool container); the cleanup is
+`docker ps -aq --filter label=lemma.job=<id>` then `docker rm -f` (output in the job's log). The job runner does the same when the
+generator ends by itself (also when it dies), the extension after a cancel (the runner was killed with it). A job that disappears
+otherwise (status `lost`, e.g. the machine restarted) is not cleaned up. Generation starts a shell command and writes files: it is
+refused when `enable_external_access = false`. Executors are keyed by QUERY, not by
 database: the manifest records each input column's DuckDB type at install, and the extension refuses (an error, never a
 generation or DuckDB's rows) an executor whose tables' column types differ now (`pre.line is INTEGER now, the executor was proved
 for BIGINT`).
@@ -327,5 +332,4 @@ uv run pytest -m slow tests/test_in_duckdb.py              # + TPC-H SF1 (resear
 Only `Vec<OutRow>` results (no map-shaped results); string columns must be VARCHAR; executors are not unloaded; string fields are
 copied twice (DuckDB vector -> per-task buffer -> `String`). Generation: one executor per template (a query whose literal does not fit
 the stored template's parameter, e.g. out of its range, gets its own executor); two DIFFERENT queries of one template generating at
-the same time both prove it (the later install replaces the earlier, both proved); cancelling kills the job's process group, but a
-Docker container the pipeline already started is the pipeline's to stop; `lemma_query` and `lemma_mode` never generate.
+the same time both prove it (the later install replaces the earlier, both proved); `lemma_query` and `lemma_mode` never generate.

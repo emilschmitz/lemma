@@ -207,6 +207,9 @@ Default `false`. Nothing in a container run reads it. With it on:
   `target_cpu` of `[prover]`) and installs `${LEMMA_HOME:-~/.local/share/lemma}/executors/<sha256 of the normalized SQL>/`
   (`lib.so`, `manifest.json`, `query.sql`). Off, it raises `InDuckdbDisabled` and installs nothing. `LEMMA_HOME` is a path, not a
   setting (listed in `NOT_CONFIG`).
+* `LEMMA_GENERATOR` (the shell command DuckDB's `lemma('<sql>')` runs to generate an executor, read by the extension at LOAD; default
+  `lemma generate`; deliberately not a SQL setting) and `LEMMA_JOB_ID` (set by the extension for that job; every container the
+  pipeline starts is labelled `lemma.job=<id>` so a cancel removes it, `research_loop/job_label.py`) are not settings (`NOT_CONFIG`).
 * `research_loop/official_measure.py` `measure_in_duckdb` times `SELECT * FROM lemma_query('<sql>')` end to end (scan + copy +
   checks + `run_query` + rows back) against DuckDB, interleaved like the official verdict (a template: each round on its
   binding, both sides); it refuses with the flag off.
