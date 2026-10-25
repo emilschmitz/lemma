@@ -26,7 +26,7 @@ Verus at `~/tools/verus` with its rustup toolchain? `lemma setup --prover host` 
 tar -xzf lemma-0.1.0-linux-x86_64.tar.gz && ./lemma-0.1.0-linux-x86_64/install.sh   # ~/.local/bin/lemma, ~/.local/share/lemma/duckdb/
 lemma setup                                    # Docker, DuckDB; pulls the prover and agent images, tests the sandbox; your Claude Code login
 lemma optimize --db my.duckdb --sql "SELECT region, SUM(qty) AS q FROM orders GROUP BY region"   # or: lemma optimize --db my.duckdb q.sql
-lemma duckdb my.duckdb                         # our DuckDB with Lemma mode on: type the query; SELECT * FROM lemma_last_query();
+lemma duckdb my.duckdb                         # a full DuckDB; in it: SELECT * FROM lemma('<your SQL>');  (generates on first use)
 lemma list                                     # installed executors (key, proof line, database, SQL); lemma remove KEY
 ```
 
