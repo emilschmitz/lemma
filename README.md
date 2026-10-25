@@ -11,23 +11,27 @@ https://github.com/user-attachments/assets/7f7891c7-5ef6-406b-882b-8e01134ed37c
 
 Lemma makes a proved, compiled executor for a SQL query on your DuckDB database and runs it inside DuckDB 1.5.6.
 
-**You need** Linux x86_64, Docker (your user may run containers), [uv](https://docs.astral.sh/uv/) (it brings Python; `install.sh` also
-uses git and tar), and credentials for one agent harness (below). Nothing else: the agent runs in the Docker sandbox, and the proof (Verus
-0.2026.07.18.3a4d30b) and the compile of each executor (its Rust 1.96.0 toolchain) run in the prover image `lemma-prover:0.2026.07.18.3a4d30b`
-that `lemma setup` builds (no network at run time, memory-capped). The bundled DuckDB CLI and extension run on glibc >= 2.28; the executors
-compiled in the prover image need glibc >= 2.34 (Ubuntu 22.04+, Debian 12+, RHEL 9+). `lemma setup` checks every item and says what is
-missing. Network: `install.sh` fetches the Python dependencies (uv, versions pinned to `uv.lock`), `lemma setup` builds the agent and prover
-images (Verus, rustup and the toolchain pinned by sha256) and fetches libduckdb 1.5.6 from GitHub; a run reaches only the harness's model API.
-Already have Verus at `~/tools/verus` with its rustup toolchain and want to use it? `lemma setup --prover host` (lemma.toml `prover`,
-`verus_home`; research runs default to `host`).
+**You need** Linux x86_64, Docker (your user may run containers), [uv](https://docs.astral.sh/uv/) (it brings Python), and credentials for
+one agent harness (below). Nothing else: no source checkout, no git, no Verus or Rust. Lemma is one wheel; the agent runs in the Docker
+sandbox, and the proof (Verus 0.2026.07.18.3a4d30b) and the compile of each executor (its Rust 1.96.0 toolchain) run in the prover image
+`ghcr.io/emilschmitz/lemma-prover:0.2026.07.18.3a4d30b` that `lemma setup` pulls (no network at run time, memory-capped), next to the agent
+image `ghcr.io/emilschmitz/lemma-agent-claude:<version>`. The bundled DuckDB CLI and extension run on glibc >= 2.28; the executors compiled in
+the prover image need glibc >= 2.34 (Ubuntu 22.04+, Debian 12+, RHEL 9+). `lemma setup` checks every item and says what is missing. Network:
+`install.sh` fetches the Python dependencies (uv, versions pinned to the release's `constraints.txt`), `lemma setup` pulls the two images; a
+run reaches only the harness's model API. Offline: `install.sh --load-images` loads the images from a release built with them. Already have
+Verus at `~/tools/verus` with its rustup toolchain? `lemma setup --prover host` (lemma.toml `prover`, `verus_home`; research runs default to
+`host`). Build the images yourself instead of pulling: `lemma setup --build-images`.
 
 ```bash
-tar -xzf lemma-0.1.0-linux-x86_64.tar.gz && ./lemma-0.1.0-linux-x86_64/install.sh   # ~/.local/bin/lemma, ~/.local/share/lemma/
-lemma setup                                    # Docker, DuckDB; builds the prover and agent images, tests the sandbox; your Claude Code login
+tar -xzf lemma-0.1.0-linux-x86_64.tar.gz && ./lemma-0.1.0-linux-x86_64/install.sh   # ~/.local/bin/lemma, ~/.local/share/lemma/duckdb/
+lemma setup                                    # Docker, DuckDB; pulls the prover and agent images, tests the sandbox; your Claude Code login
 lemma optimize --db my.duckdb --sql "SELECT region, SUM(qty) AS q FROM orders GROUP BY region"   # or: lemma optimize --db my.duckdb q.sql
 lemma duckdb my.duckdb                         # our DuckDB with Lemma mode on: type the query; SELECT * FROM lemma_last_query();
 lemma list                                     # installed executors (key, proof line, database, SQL); lemma remove KEY
 ```
+
+`install.sh` is `uv tool install` of the wheel plus a copy of the DuckDB binaries; by hand that is
+`uv tool install --constraints constraints.txt ./lemma-0.1.0-py3-none-any.whl` and `lemma setup --duckdb-from ./duckdb`.
 
 `lemma optimize` runs the agent in the sandbox until Verus proves its `run_query` against the query's spec, then verifies the same
 body again as a library and installs it under `~/.local/share/lemma/executors/<sha256 of the SQL>/` (`lib.so`, `manifest.json`; the
@@ -64,9 +68,26 @@ name only and is never written anywhere; a missing one stops setup, and nothing 
 Code reports spend, so `max_budget_usd` caps Claude runs only. Per-harness details: `research_loop/AGENT_SANDBOX.md` "Agent harnesses".
 `lemma status` shows the choices, the image, the sandbox test and the installed executors.
 
-The release bundle is built with `scripts/release/build_bundle.sh` from a clean checkout, after `scripts/release/build_portable.sh` (builds the
-DuckDB CLI and extension in DuckDB's own manylinux_2_28 release image, so they need glibc 2.28 only; heavy, about an hour at -j4 the first
-time); from a checkout you can instead run `uv tool install --editable .` and use the binaries in `db_extension/duckdb_ext/build/release`.
+**Building a release.** `scripts/release/build_product.sh` builds everything from a clean checkout in one go: the DuckDB CLI and extension
+(`build_portable.sh`, in DuckDB's own manylinux_2_28 release image from whatever extension source is checked out, so they need glibc 2.28
+only; heavy, about 40 minutes the first time, `--skip-duckdb-build` reuses it), the images (`build_images.sh`: tagged
+`<registry>/lemma-agent-claude:<version>` and `<registry>/lemma-prover:<verus>`, `--save-images` adds `docker save` tarballs for offline
+installs), the wheel (`build_wheel.py`: the runtime packages, `lemma.toml`, the guard scripts, the Dockerfiles, the agent's worked examples
+and the Verus docs as package data; nothing is read from or written to a checkout at run time) and `dist/lemma-<version>-linux-x86_64/`
+(+ `.tar.gz`) with `install.sh` and a short README. From a checkout you can instead run `uv tool install --editable .` and use the binaries
+in `db_extension/duckdb_ext/build/release` (runs then record the git SHA; an installed wheel records its version and the wheel's sha256).
+
+**Publishing a release** (Emil's decision; nothing in the scripts publishes without these explicit steps):
+
+```bash
+docker login ghcr.io -u emilschmitz                                   # a token with write:packages
+scripts/release/build_product.sh --push                               # or: scripts/release/build_images.sh --push (after a build_product.sh)
+gh release create v0.1.0 dist/lemma-0.1.0-linux-x86_64.tar.gz dist/lemma-0.1.0-linux-x86_64/lemma-0.1.0-py3-none-any.whl
+# later, PyPI (`pip install lemma` / `uv tool install lemma`; the DuckDB binaries then come from `lemma setup --duckdb-from DIR`):
+uv publish dist/lemma-0.1.0-linux-x86_64/lemma-0.1.0-py3-none-any.whl
+```
+
+The ghcr.io packages must be public for an anonymous `docker pull` (GitHub: package settings, visibility).
 `lemma optimize --queue` proves the queries the extension enqueued (`SET lemma_enqueue_misses = true`) in `$LEMMA_HOME/queue/*.sql`.
 No assumption step is needed: with the default `assumptions = false` the proof makes no claim about your data. `lemma assumptions --db my.duckdb`
 belongs to the UNMAINTAINED assumption-package path and is required only with `assumptions = true`.
