@@ -9,9 +9,10 @@ the same text with the values bound) and ONE header comment that declares every 
 Without the header nothing here applies (the SQL is emitted exactly as before). With the header and the switch off the
 emitter refuses loudly.
 
-Where a parameter may stand: one side of ``column <op> $p`` (``= <> < <= > >=``) or a bound of ``column BETWEEN $a AND $b``,
-the column a base-table column of the parameter's type (BIGINT: integer column; DATE: DATE column; DECIMAL(p,s): DECIMAL
-column of the same scale s; VARCHAR: string column, ``=`` and ``<>`` only). Anything else is refused.
+Where a parameter may stand: one side of ``column <op> $p`` (``= <> < <= > >=``), a bound of ``column BETWEEN $a AND $b`` or
+an item of a fixed-length list ``column IN ($a, $b, ...)``, the column a base-table column of the parameter's type (BIGINT:
+integer column; DATE: DATE column; DECIMAL(p,s): DECIMAL column of the same scale s; VARCHAR: string column, ``=``, ``<>`` and
+IN lists only). Anything else is refused.
 
 How the spec is made (no new trusted item, no assume): the template is emitted twice by the unchanged emitter, once with
 every parameter replaced by a literal near the low end of its range and once near the high end. The two specs must be the
@@ -306,7 +307,12 @@ def param_ranges(template: Template, schema: Mapping, catalog) -> dict[str, tupl
     from declarative_spec.schema_types import SchemaModel
 
     try:
-        tree = sqlglot.parse_one(template.body, read="duckdb")
+        # A space after each placeholder: sqlglot reads `$a,$b` (an IN list written without spaces) as a dollar-quoted string.
+        spaced, last = [], 0
+        for _start, end, _name in _placeholders(template.body):
+            spaced += [template.body[last:end], " "]
+            last = end
+        tree = sqlglot.parse_one("".join(spaced) + template.body[last:], read="duckdb")
     except sqlglot.errors.SqlglotError as exc:
         raise DeclarativeUnsupported(f"template does not parse: {exc}") from exc
     aliases: dict[str, str] = {}
@@ -330,15 +336,18 @@ def param_ranges(template: Template, schema: Mapping, catalog) -> dict[str, tupl
             other = parent.expression if parent.this is node else parent.this
         elif isinstance(parent, exp.Between) and parent.this is not node and not parent.args.get("symmetric"):
             other = parent.this
+        elif isinstance(parent, exp.In) and parent.this is not node and parent.args.get("query") is None and any(e is node for e in parent.expressions):
+            other = parent.this  # one item of a fixed-length IN list: `column IN ($a, $b, ...)`
         else:
             raise DeclarativeUnsupported(
-                f"parameter ${name} in `{where[:80]}`: a parameter may only be one side of `column <op> $p` or a bound of `column BETWEEN $a AND $b`"
+                f"parameter ${name} in `{where[:80]}`: a parameter may only be one side of `column <op> $p`, a bound of `column BETWEEN $a AND $b` "
+                "or an item of `column IN ($a, ...)`"
             )
         other = _unparen(other)
         if not isinstance(other, exp.Column):
             raise DeclarativeUnsupported(f"parameter ${name} in `{where[:80]}` is not compared with a plain column")
-        if param.kind == "VARCHAR" and not isinstance(parent, (exp.EQ, exp.NEQ)):
-            raise DeclarativeUnsupported(f"VARCHAR parameter ${name} in `{where[:80]}`: only `=` and `<>` are parameterized")
+        if param.kind == "VARCHAR" and not isinstance(parent, (exp.EQ, exp.NEQ, exp.In)):
+            raise DeclarativeUnsupported(f"VARCHAR parameter ${name} in `{where[:80]}`: only `=`, `<>` and IN lists are parameterized")
         table = _column_table(other, aliases, model)
         orig, info = model.lookup_column(table, other.name)
         _check_type(param, info, f"{table}.{orig}")

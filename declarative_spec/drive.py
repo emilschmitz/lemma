@@ -73,6 +73,16 @@ def host_measure_source(workspace: Path, agent_path: Path) -> str:
     return body
 
 
+_PRODUCT_BINDING: dict[str, str] | None = None
+
+
+def set_product_binding(binding: dict[str, str] | None) -> None:
+    """``lemma generate`` (not an experiment): a query template lifted from one query is measured on that query's own values, every
+    round (``run_container_agent.py --template-binding``). An experiment run keeps its replicable rules and seed."""
+    global _PRODUCT_BINDING
+    _PRODUCT_BINDING = None if binding is None else dict(binding)
+
+
 def template_bindings(sql_query: str) -> dict | None:
     """The per-round parameter bindings of a query template, drawn from the experiment run's rules and seed, or None for fixed-constant SQL.
 
@@ -85,6 +95,13 @@ def template_bindings(sql_query: str) -> dict | None:
     if template is None:
         return None
     named = lemma_config.experiment_bindings()
+    if named is None and _PRODUCT_BINDING is not None:
+        if set(_PRODUCT_BINDING) != {p.name for p in template.params}:
+            raise ValueError(f"the product binding names {sorted(_PRODUCT_BINDING)}, the template declares {[p.name for p in template.params]}")
+        for p in template.params:
+            templates.spec_value(p, _PRODUCT_BINDING[p.name])  # loud on a value outside the type
+        n = int(lemma_config.get("official_rounds")) + 1
+        return {"rules": None, "seed": None, "rule_set": "the lifted query's own constants (lemma generate)", "bindings": [dict(_PRODUCT_BINDING) for _ in range(n)]}
     if named is None:
         raise ValueError("the SQL is a query template (`-- params:`) but the experiment run names no bindings_rules and bindings_seed")
     all_rules = json.loads(Path(named["rules"]).read_text())

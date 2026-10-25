@@ -278,6 +278,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--experiment", help="committed configs/experiments/X.toml: run entry --run-index of it (model, database, package and settings come from the file)")
     ap.add_argument("--run-index", type=int, default=0)
     ap.add_argument("--pinned-sha", help="the batch's pinned commit; the run refuses to start when HEAD differs")
+    ap.add_argument("--template-binding", help="JSON {name: value}: a query template (lemma generate's lifted constants) is measured on these "
+                    "values in every round (not with --experiment, whose rules and seed draw them)")
     args = ap.parse_args(argv)
     lemma_config.clear_cli()
     lemma_config.clear_experiment()
@@ -302,6 +304,12 @@ def main(argv: list[str] | None = None) -> int:
             return REFUSED_EXIT  # the batch stops on this code
     else:
         lemma_config.require_clean_tree()  # a run must be reproducible from its commit
+    if args.template_binding is not None:
+        if args.experiment:
+            ap.error("--template-binding is for product runs; an experiment draws its bindings from its rules and seed")
+        from declarative_spec import drive
+
+        drive.set_product_binding(json.loads(args.template_binding))
     if (args.query_sql is None) == (args.query_file is None):
         ap.error("give exactly one of --query-sql and --query-file")
     sql = args.query_sql if args.query_sql is not None else Path(args.query_file).read_text().strip()

@@ -183,9 +183,9 @@ def test_the_fixed_constant_spec_is_the_template_spec_at_that_value() -> None:
         ("-- params: a BIGINT\nSELECT COUNT(*) AS c FROM t WHERE x > $a + 1", "only be one side"),
         ("-- params: a BIGINT, b BIGINT\nSELECT COUNT(*) AS c FROM t WHERE $a < $b", "plain column"),
         ("-- params: a BIGINT\nSELECT x + $a AS y FROM t", "only be one side"),
-        ("-- params: a BIGINT\nSELECT COUNT(*) AS c FROM t WHERE x IN ($a, 2)", "only be one side"),
+        ("-- params: a BIGINT\nSELECT COUNT(*) AS c FROM t WHERE $a IN (x, 2)", "only be one side"),  # an IN list item is fine, the IN subject is not
         ("-- params: a VARCHAR\nSELECT COUNT(*) AS c FROM t WHERE s LIKE $a", "only be one side"),
-        ("-- params: a VARCHAR\nSELECT COUNT(*) AS c FROM t WHERE s < $a", "only `=` and `<>`"),
+        ("-- params: a VARCHAR\nSELECT COUNT(*) AS c FROM t WHERE s < $a", "only `=`, `<>` and IN lists"),
         ("-- params: a BIGINT\nSELECT x, COUNT(*) AS c FROM t GROUP BY x HAVING COUNT(*) > $a", "plain column"),
         ("-- params: a BIGINT\nSELECT x FROM t ORDER BY x LIMIT $a", "only be one side"),
         ("-- params: a DECIMAL(15,2)\nSELECT COUNT(*) AS c FROM t WHERE q < $a", "of type decimal\\(15,4\\)"),

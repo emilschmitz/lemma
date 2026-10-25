@@ -59,8 +59,11 @@ def require_enabled() -> None:
         raise InDuckdbDisabled("in_duckdb is off: set in_duckdb = true in lemma.toml [engine] (or LEMMA_IN_DUCKDB=true)")
 
 
-def normalize_sql(sql: str) -> str:
-    """The cache-key form of ``sql`` (module docstring). Mirrored byte for byte by the extension's ``NormalizeSql``."""
+def normalize_sql(sql: str, keep_dollar: bool = False) -> str:
+    """The cache-key form of ``sql`` (module docstring). Mirrored byte for byte by the extension's ``NormalizeSql``.
+
+    ``keep_dollar``: a ``$`` is an ordinary character and the whitespace is collapsed as everywhere else (a query template's body,
+    whose ``$name`` placeholders the template matcher compares; :func:`template_skeleton`)."""
     out: list[str] = []
     i, n = 0, len(sql)
     pending_space = False
@@ -88,7 +91,7 @@ def normalize_sql(sql: str) -> str:
             j = n if j == -1 else j + 2
             out.append(sql[i:j])
             i = j
-        elif c == "$":
+        elif c == "$" and not keep_dollar:
             return _strip_end(sql)
         else:
             out.append(c)
@@ -101,6 +104,134 @@ def _strip_end(text: str) -> str:
     while text.endswith(";"):
         text = text[:-1].rstrip(_WS)
     return text
+
+
+# ---- query templates: the literal tokens the extension's matcher binds, and the template index -----------------------------------
+#
+# A template executor is listed in ``<home>/templates/<template_index_key>/<executor key>`` (an empty file). The extension looks a query
+# without an exact executor up there by the same key computed from the query (``lemma::TemplateSkeleton`` in
+# db_extension/duckdb_ext/src/lemma_util.cpp, mirrored here; tests check both agree), then matches it character for character against
+# the template (``lemma::MatchTemplate``): the query must BE the template's text with one literal token per placeholder.
+
+
+def _ident_char(c: str) -> bool:
+    return c.isascii() and (c.isalnum() or c == "_") or not c.isascii()
+
+
+def _string_end(s: str, i: int) -> int | None:
+    j = i + 1
+    while j < len(s):
+        if s[j] == "'":
+            if j + 1 < len(s) and s[j + 1] == "'":
+                j += 2
+                continue
+            return j + 1
+        j += 1
+    return None
+
+
+def literal_at(s: str, i: int) -> tuple[str, int] | None:
+    """``(kind, end)`` of the literal token starting at ``i`` (``number`` ``[0-9]+(.[0-9]+)?``, ``string`` ``'...'``, ``date``
+    ``DATE '...'`` with at most one space, any case), or None. It must start a token: the character before is not an identifier
+    character, ``.``, ``$`` or a quote; a number is not followed by an identifier character or ``.``. Mirror of ``lemma::LiteralAt``."""
+    n = len(s)
+    if i >= n or (i > 0 and (_ident_char(s[i - 1]) or s[i - 1] in ".$'\"")):
+        return None
+    if "0" <= s[i] <= "9":
+        j = i
+        while j < n and "0" <= s[j] <= "9":
+            j += 1
+        if j + 1 < n and s[j] == "." and "0" <= s[j + 1] <= "9":
+            j += 1
+            while j < n and "0" <= s[j] <= "9":
+                j += 1
+        if j < n and (_ident_char(s[j]) or s[j] == "."):
+            return None
+        return "number", j
+    if s[i] == "'":
+        end = _string_end(s, i)
+        return None if end is None else ("string", end)
+    if s[i : i + 4].casefold() == "date":
+        q = i + 4
+        if q < n and s[q] == " ":
+            q += 1
+        if q < n and s[q] == "'":
+            end = _string_end(s, q)
+            if end is not None:
+                return "date", end
+    return None
+
+
+def _opaque_end(s: str, i: int) -> int:
+    c = s[i]
+    if c in "'\"":
+        j = s.find(c, i + 1)
+        return len(s) if j == -1 else j + 1
+    if s.startswith("--", i):
+        j = s.find("\n", i)
+        return len(s) if j == -1 else j + 1
+    if s.startswith("/*", i):
+        j = s.find("*/", i + 2)
+        return len(s) if j == -1 else j + 2
+    return i
+
+
+_PLACEHOLDER = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*")
+
+
+def template_skeleton(normalized: str) -> str:
+    """``normalized`` with every ``$name`` and every literal token (:func:`literal_at`) replaced by ``?``; quoted identifiers and
+    comments are kept. Mirror of ``lemma::TemplateSkeleton``."""
+    out: list[str] = []
+    i, n = 0, len(normalized)
+    while i < n:
+        m = _PLACEHOLDER.match(normalized, i)
+        if m:
+            out.append("?")
+            i = m.end()
+            continue
+        lit = literal_at(normalized, i)
+        if lit is not None:
+            out.append("?")
+            i = lit[1]
+            continue
+        j = _opaque_end(normalized, i)
+        if j > i:
+            out.append(normalized[i:j])
+            i = j
+            continue
+        out.append(normalized[i])
+        i += 1
+    return "".join(out)
+
+
+def template_body(sql: str) -> str:
+    """A query template without its ``-- params:`` header line (``templates.parse_template``); other SQL as is."""
+    from declarative_spec.templates import _HEADER
+
+    m = _HEADER.search(sql)
+    return sql if m is None else sql[: m.start()] + sql[m.end() :]
+
+
+def template_index_key(sql: str) -> str:
+    """The key the extension finds this executor's template (or a query that instantiates it) under."""
+    return hashlib.sha256(template_skeleton(normalize_sql(template_body(sql), keep_dollar=True)).encode("utf-8")).hexdigest()
+
+
+def index_template(home: Path, key: str, sql: str) -> None:
+    """List the template executor ``key`` under its template index key (idempotent)."""
+    entry = home / "templates" / template_index_key(sql) / key
+    entry.parent.mkdir(parents=True, exist_ok=True)
+    entry.touch()
+
+
+def unindex_template(home: Path, key: str, sql: str) -> None:
+    entry = home / "templates" / template_index_key(sql) / key
+    entry.unlink(missing_ok=True)
+    try:
+        entry.parent.rmdir()
+    except OSError:
+        pass  # another template shares the skeleton (or it is gone)
 
 
 def executor_key(sql: str) -> str:
@@ -288,11 +419,18 @@ def install_executor(
         (stage / "query.sql").write_text(sql + "\n")
         shutil.rmtree(stage / "build", ignore_errors=True)
         if final.exists():
-            shutil.rmtree(final)
-        stage.rename(final)
+            # Replace in two renames, so a reader never sees a half-removed executor: the old one leaves under a dot name first.
+            old = final.parent / f".old-{key[:12]}-{os.getpid()}"
+            final.rename(old)
+            stage.rename(final)
+            shutil.rmtree(old, ignore_errors=True)
+        else:
+            stage.rename(final)
     except BaseException:
         shutil.rmtree(stage, ignore_errors=True)
         raise
+    if params:
+        index_template(home, key, sql)  # lemma(...) finds it for any query that is this template with literals in place of $name
     return final
 
 
