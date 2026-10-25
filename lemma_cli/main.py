@@ -52,9 +52,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("list", help="installed executors: key, SQL or template, proof line, created, last used")
     r = sub.add_parser("remove", help="delete one installed executor")
     r.add_argument("key", help="the executor key or a prefix of it (at least 6 hex characters, see `lemma list`)")
-    d = sub.add_parser("duckdb", help="start our DuckDB 1.5.6 with the Lemma extension and lemma_mode on; prints how to use it from your own DuckDB")
+    d = sub.add_parser("duckdb", help="start our DuckDB 1.5.6 with the Lemma extension (plain DuckDB plus lemma('<sql>')); prints how to use it from your own DuckDB")
     d.add_argument("db", nargs="?", help="a DuckDB file (default: in-memory)")
     d.add_argument("-c", dest="command", help="run this SQL and exit")
+    d.add_argument("--lemma-mode", action="store_true", help="SET lemma_mode = true: every SELECT goes through Lemma (no executor = error)")
     sub.add_parser("status", help="harness, model, auth mode, image, sandbox test, DuckDB version, cached executors")
     return ap
 
@@ -116,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "duckdb":
             from lemma_cli import duck
 
-            return duck.run(args.db, args.command)
+            return duck.run(args.db, args.command, args.lemma_mode)
         from lemma_cli import optimize as opt
 
         if args.queue:

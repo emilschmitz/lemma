@@ -70,9 +70,10 @@ def binaries() -> tuple[Path, Path]:
     )
 
 
-def cli_args(db: str | None, *, cli: Path, sql: str | None = None) -> list[str]:
-    """The command line of our DuckDB CLI on ``db`` (in-memory when None) with Lemma mode on; ``sql`` runs it and exits."""
-    args = [str(cli), "-cmd", LEMMA_MODE]
+def cli_args(db: str | None, *, cli: Path, sql: str | None = None, lemma_mode: bool = False) -> list[str]:
+    """The command line of our DuckDB CLI on ``db`` (in-memory when None): plain DuckDB plus ``lemma('<sql>')``, or with ``lemma_mode`` every
+    SELECT goes through Lemma; ``sql`` runs it and exits."""
+    args = [str(cli)] + (["-cmd", LEMMA_MODE] if lemma_mode else [])
     if db is not None:
         args.append(str(Path(db).expanduser().resolve()))
     if sql is not None:
@@ -86,10 +87,10 @@ def own_duckdb_help(ext: Path, db: str | None) -> str:
     return "\n".join([
         f"Your own DuckDB {DUCKDB_VERSION} (the extension is not signed, so allow unsigned extensions):",
         f"  CLI:     duckdb -unsigned {db_text}",
-        f"           LOAD '{ext}'; SET lemma_mode = true;",
+        f"           LOAD '{ext}';   then SELECT * FROM lemma('<your SQL>');  (or SET lemma_mode = true for every SELECT)",
         "  Python:  import duckdb",
         f"           con = duckdb.connect('{db_text}', config={{'allow_unsigned_extensions': True}})",
-        f"           con.execute(\"LOAD '{ext}'\"); con.execute('SET lemma_mode = true')",
+        f"           con.execute(\"LOAD '{ext}'\"); con.sql(\"SELECT * FROM lemma('<your SQL>')\")",
         "  Then run your SQL as usual; SELECT * FROM lemma_last_query() says which engine answered (lemma / duckdb / none).",
         f"  Executors are read from {lemma_home()} (LEMMA_HOME at LOAD, or SET lemma_home = '<dir>').",
     ])
@@ -110,17 +111,22 @@ def check() -> str:
     return f"{DUCKDB_VERSION} CLI {cli}, extension {ext}"
 
 
-def run(db: str | None, sql: str | None = None) -> int:
-    """Start our DuckDB CLI in Lemma mode (replaces this process when interactive)."""
+def run(db: str | None, sql: str | None = None, lemma_mode: bool = False) -> int:
+    """Start our DuckDB CLI: plain DuckDB with the Lemma functions, or in Lemma mode (replaces this process when interactive)."""
     cli, ext = binaries()
     if db is not None and not Path(db).expanduser().is_file():
         raise CliError(f"no database file {db}")
-    args = cli_args(db, cli=cli, sql=sql)
+    args = cli_args(db, cli=cli, sql=sql, lemma_mode=lemma_mode)
     os.environ["LEMMA_HOME"] = str(lemma_home())
     if sql is not None:
         return subprocess.run(args, check=False).returncode
     print(own_duckdb_help(ext, db), flush=True)
-    print(f"\nStarting {cli.name} with Lemma mode on (queries with an installed executor run the proved program; others are an error "
-          "unless you SET lemma_route_unproved = true, then DuckDB answers them, labelled).", flush=True)
+    if lemma_mode:
+        print(f"\nStarting {cli.name} with Lemma mode on (queries with an installed executor run the proved program; others are an error "
+              "unless you SET lemma_route_unproved = true, then DuckDB answers them, labelled).", flush=True)
+    else:
+        print(f"\nStarting {cli.name}: plain DuckDB. Run a query through Lemma with SELECT * FROM lemma('<your SQL>') (it generates and proves "
+              "an executor the first time, then reuses it, also for the same query with other constants); lemma_list(), lemma_remove(key), "
+              "lemma_jobs(), lemma_last_query().", flush=True)
     os.execv(args[0], args)
     return 0  # not reached

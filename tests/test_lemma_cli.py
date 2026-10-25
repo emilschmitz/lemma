@@ -553,14 +553,15 @@ def test_install_from_takes_a_release_dir_or_a_build_dir_and_refuses_a_partial_o
         duck.install_from(build)
 
 
-def test_duckdb_args_turn_lemma_mode_on_and_take_an_absolute_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_duckdb_args_are_plain_duckdb_unless_lemma_mode_and_take_an_absolute_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cli, ext = fake_binaries(tmp_path, monkeypatch)
     assert duck.binaries() == (cli, ext)
     monkeypatch.chdir(tmp_path)
-    assert duck.cli_args("my.duckdb", cli=cli) == [str(cli), "-cmd", "SET lemma_mode = true", str(tmp_path / "my.duckdb")]
-    assert duck.cli_args(None, cli=cli, sql="SELECT 1") == [str(cli), "-cmd", "SET lemma_mode = true", "-c", "SELECT 1"]
+    assert duck.cli_args("my.duckdb", cli=cli) == [str(cli), str(tmp_path / "my.duckdb")]
+    assert duck.cli_args(None, cli=cli, sql="SELECT 1") == [str(cli), "-c", "SELECT 1"]
+    assert duck.cli_args("my.duckdb", cli=cli, lemma_mode=True) == [str(cli), "-cmd", "SET lemma_mode = true", str(tmp_path / "my.duckdb")]
     text = duck.own_duckdb_help(ext, "my.duckdb")
-    assert "allow_unsigned_extensions': True" in text and f"LOAD '{ext}'" in text and "SET lemma_mode = true" in text and "duckdb -unsigned" in text
+    assert "allow_unsigned_extensions': True" in text and f"LOAD '{ext}'" in text and "lemma('<your SQL>')" in text and "duckdb -unsigned" in text
 
 
 def test_lemma_duckdb_runs_our_cli_with_the_lemma_home_and_a_missing_install_says_how(env: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture) -> None:
@@ -572,7 +573,7 @@ def test_lemma_duckdb_runs_our_cli_with_the_lemma_home_and_a_missing_install_say
     assert main(["duckdb", str(tmp_path / "missing.duckdb"), "-c", "SELECT 1"]) == 2
     assert main(["duckdb", str(db), "-c", "SELECT 1"]) == 0
     out = capfd.readouterr().out
-    assert f"ARGS -cmd SET lemma_mode = true {db.resolve()} -c SELECT 1" in out and f"HOME={common.lemma_home()}" in out
+    assert f"ARGS {db.resolve()} -c SELECT 1" in out and f"HOME={common.lemma_home()}" in out
 
 
 def test_setup_stops_when_verus_is_missing_and_says_how_to_get_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
