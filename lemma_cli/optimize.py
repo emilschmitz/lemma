@@ -235,7 +235,7 @@ def optimize_one(
         "db_path": str(source_db or db), "assumptions": with_assumptions, "assumption_package_sha256": pkg_sha, "agent_harness": harness(), "agent_model": record.get("model"),
         "agent_auth": mode, "image_id": state.get("image_id"), "run_dir": str(run_dir), "speedup": official.get("speedup") if isinstance(official, dict) else None,
     }, run_dir)
-    for line in summary(dest, db, record, bench(normalize_sql(sql), db) if measure else None):
+    for line in summary(dest, source_db or db, record, bench(normalize_sql(sql), db) if measure else None):
         say(line)
     return dest
 
