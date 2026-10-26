@@ -56,7 +56,21 @@ def test_explicit_join_untouched():
 def test_emit_comma_equals_explicit():
     comma = "select sum(f_v) as s from fact, da where f_a = a_key and a_attr = 3"
     explicit = "select sum(f_v) as s from fact join da on f_a = a_key where a_attr = 3"
-    assert emit_declarative_spec(comma, SCHEMA) == emit_declarative_spec(explicit, SCHEMA)
+    # The spec quotes the caller's SQL in a comment (0d0676e), which differs; everything else must be the same text.
+    assert _without_sql_comment(emit_declarative_spec(comma, SCHEMA)) == _without_sql_comment(emit_declarative_spec(explicit, SCHEMA))
+
+
+def _without_sql_comment(spec: str) -> str:
+    out, quoting = [], False
+    for line in spec.splitlines(keepends=True):
+        if line.startswith("// SQL (the query this spec states):"):
+            quoting = True
+            continue
+        if quoting and (line.startswith("//     ") or line.rstrip("\n") == "//"):
+            continue
+        quoting = False
+        out.append(line)
+    return "".join(out)
 
 
 def _random_db(seed: int) -> duckdb.DuckDBPyConnection:

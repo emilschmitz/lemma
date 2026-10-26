@@ -26,7 +26,9 @@ CATALOG = CatalogAssumptions(
         "SELECT COUNT(*) AS c FROM t WHERE e < (SELECT AVG(i) FROM t)",
     ],
 )
-def test_a_decimal_beside_a_float_aggregate_is_refused_not_misscaled(sql: str) -> None:
+def test_a_decimal_beside_a_float_aggregate_is_refused_not_misscaled(sql: str, exact_division_off: None) -> None:
+    # The float-form AVG (exact_division = false). The exact form states a same-scale DECIMAL vs AVG(DECIMAL) exactly and refuses the
+    # misaligned scales itself (tests/test_declarative_exact_division.py, the GenDB SEC Q3 cases).
     with pytest.raises(DeclarativeUnsupported, match="scales are not aligned"):
         emit_declarative_spec(sql, SCHEMA, CATALOG)
 
