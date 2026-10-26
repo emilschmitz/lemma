@@ -185,4 +185,45 @@ an exact i128 fallback (no catalog assumptions) and branch-free masks; the proof
 Deviations from the sketch above: `p` instead of `p@`; no separate `gsegs` (the ghost segments are `segs@`); `exec_*` by value;
 `exec_finish` returns `StreamOut` (not `Option`); `q_finish`'s requires is stated over `t@`; m (chunks handed out) is untrusted, only
 n and `valid_cols` are S2's claim; the gate also refuses DISTINCT, a nullable GROUP BY key, floats, VARCHAR template parameters, map
-results, `stateful`, `in_duckdb` and `assumptions = true`.
+results, `stateful` and `assumptions = true` (`in_duckdb` composes since the ABI 6 template below exists).
+
+## Phase 1, execution side: ABI 6 in DuckDB (built 2026-10-26)
+
+Library (`declarative_spec/assemble_library.py` `assemble_stream_library_program`; C side `db_extension/duckdb_ext/src/include/lemma_abi.h`
+"ABI 6"): the `verus!` part of `assemble_stream_program` byte for byte, then a fixed template instead of the binary-mode `main`. Per query
+only the `RawChunk_<t>` fill (one line per column), the `Params` fill (decoded and range-checked as `lemma_run` does), the layouts and the
+LMR1 encoders are generated. No `impl` outside `verus!`; ten `unsafe` blocks, each `// UNSAFE n/10` with its caller's contract (C arrays,
+parameter / bool bytes, `out` write / free, the stream / worker / chunk handles, the S2 `StreamEnd` write, close). Entry points:
+```c
+uint32_t lemma_abi_version(void);                       // 6
+const char *lemma_stream_layout(void);                  // per chunk column: "<field> <rust type> <bytes per cell>" | "<field> String str"
+LemmaStream *lemma_stream_open(const LemmaCol *build, uint64_t nbuild, const LemmaParam *params, uint64_t nparams, LemmaOut *err);
+LemmaWorker *lemma_stream_worker(LemmaStream *s, LemmaOut *err);          // exec_new
+int32_t lemma_stream_step(LemmaWorker *w, const LemmaChunk *c);          // exec_step: 0 go on, 1 poisoned, 2 glue error
+int32_t lemma_stream_merge(LemmaWorker *into, LemmaWorker *from);        // exec_merge, `from` consumed
+int32_t lemma_stream_finish(LemmaWorker *w, uint64_t m, uint64_t n, LemmaOut *out);  // StreamEnd = (m, n), exec_finish: LMR1 / decline / error
+void lemma_stream_drop(LemmaWorker *w); void lemma_stream_close(LemmaStream *s); void lemma_free_out(LemmaOut *out);
+typedef struct { const uint8_t *data; const uint32_t *sel; uint64_t nents; uint64_t dict; } LemmaVec;   // one column of a chunk
+typedef struct { uint64_t j, off, len, ncols; const LemmaVec *cols; } LemmaChunk;
+```
+(plus `lemma_query_sql` / `lemma_input_layout` / `lemma_output_layout` / `lemma_param_layout` as ABI 5). The glue checks the column count,
+null / misaligned buffers and that bool cells are 0 or 1 before building `RawChunk_<t>`; S1's body keeps its own checks (selection range,
+UTF-8). `nbuild` must be 0 in phase 1. A panic never crosses the boundary; a worker whose call panicked or whose chunk the glue refused
+has no `Exec` any more, and finishing anything merged with it is an ERROR.
+
+Extension (`StreamRun` in `lemma_extension.cpp`): manifest `abi_version` 6 with `mode: "stream"` (each implies the other) and a `stream`
+section (`layout`, `pushdown: false`); reached from `lemma_query`, `lemma(...)` and `lemma_mode` like ABI 4/5. The `ScanTable` sources
+(committed row groups with MVCC in the caller's transaction, then its own uncommitted rows), no pushed predicate, one worker per thread
+(`lemma_scan_threads`, default DuckDB's `threads`, at most the row groups + sources). Per chunk a `LemmaChunk`: fixed-width columns in
+place when the vector is FLAT, of the target width and signedness and not rescaled (a nullable column even with NULLs: its NULL cells are
+not promised), else decoded by the tested `DecodeIntegers` into a 2048-cell per-worker buffer; `__valid` from the validity at the physical
+index; VARCHAR in place for FLAT without NULLs (identity selection) and for DICTIONARY of known size over a FLAT child without NULLs (its
+selection, its entries, its id hashed to u64), else the rows' `string_t` gathered (a NULL row: the empty string). `(j, off)` from one
+`fetch_add` of a 64-bit counter (j in the high 28 bits, off in the low 36). `context.interrupted` is checked per chunk; a poisoned step
+stops the scan. Then a pairwise merge (each round on its own threads), finish with the counter's final `(m, n)`, LMR1 as today.
+`lemma_last_query()` gains `mode` (`batch` / `stream`), `chunks`, `threads`; the input cache says `skip: streaming executor`;
+`lemma_scan_inputs` refuses a stream executor. TEST ONLY: `SET lemma_stream_fault = 'drop' | 'duplicate' | 'shift' | 'count'` injects a
+lost, doubled or misplaced chunk or a wrong row count; the proved runtime answers ERROR (tests/test_in_duckdb_stream.py).
+
+Install (`research_loop/in_duckdb.install_executor`): a stream spec is admitted with `admit_stream`, assembled with the ABI 6 template,
+verified and compiled as a cdylib; no pushdown.

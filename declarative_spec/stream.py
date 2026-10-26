@@ -154,8 +154,7 @@ def check_settings() -> None:
         raise _refuse("needs assumptions = false (q_finish and exec_finish may decline); the assumption-package path is not stated")
     if lemma_config.get("stateful"):
         raise _refuse("stateful = true is another contract for run_query; switch one of them off")
-    if lemma_config.get("in_duckdb"):
-        raise _refuse("library mode (in_duckdb) is the ABI 5 run_query entry point; the ABI 6 stream template is not built yet")
+    # in_duckdb composes since the ABI 6 stream template exists (assemble_library.assemble_stream_library_program): the same spec.
 
 
 def check_sql(sql: str) -> None:

@@ -210,11 +210,18 @@ def test_the_gate_refuses_a_nullable_group_key(stream_on: None) -> None:
         _emit_t("SELECT b, COUNT(*) AS c FROM t GROUP BY b")
 
 
-@pytest.mark.parametrize("setting, value, why", [("LEMMA_ASSUMPTIONS", "1", "assumptions"), ("LEMMA_STATEFUL", "1", "stateful"), ("LEMMA_IN_DUCKDB", "1", "in_duckdb")])
+@pytest.mark.parametrize("setting, value, why", [("LEMMA_ASSUMPTIONS", "1", "assumptions"), ("LEMMA_STATEFUL", "1", "stateful")])
 def test_settings_the_stream_does_not_compose_with_are_refused(setting: str, value: str, why: str, stream_on: None, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(setting, value)
     with pytest.raises(DeclarativeUnsupported, match=why):
         emit_declarative_spec(_template("q06"), TPCH_SCHEMA, None)
+
+
+def test_in_duckdb_composes_with_the_stream_and_emits_the_same_spec(stream_on: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """in_duckdb only allows library mode; the ABI 6 template (assemble_library.assemble_stream_library_program) takes the same spec."""
+    spec = emit_declarative_spec(_template("q06"), TPCH_SCHEMA, None)
+    monkeypatch.setenv("LEMMA_IN_DUCKDB", "1")
+    assert emit_declarative_spec(_template("q06"), TPCH_SCHEMA, None) == spec
 
 
 def test_run_query_assembler_refuses_a_stream_spec(stream_on: None) -> None:
