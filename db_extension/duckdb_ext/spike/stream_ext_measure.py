@@ -78,7 +78,8 @@ def main() -> None:
         for side in (("lemma", "duckdb") if r % 2 == 0 else ("duckdb", "lemma")):
             ms, _rows = timed(con, lemma_sql(sql) if side == "lemma" else sql)
             warm[side].append(ms)
-    wlast = con.execute("SELECT mode, chunks, threads, scan_us, run_us, total_us FROM lemma_last_query()").fetchone()
+            if side == "lemma":
+                wlast = con.execute("SELECT mode, chunks, threads, scan_us, run_us, total_us FROM lemma_last_query()").fetchone()
     for name, d in (("FIRST", first), ("WARM", warm)):
         for side, v in d.items():
             print(f"{name} {side} median {statistics.median(v):.2f} min {min(v):.2f} max {max(v):.2f} n={len(v)}")
