@@ -9,6 +9,8 @@ import pytest
 
 from research_loop.scripts.local_e2e_gendb_suite import (
     PAPER_FAILED_QIDS,
+    R17_CLASSIFY,
+    R23_RESULTS,
     build_suite_entries,
     failed_r17_qids,
     failed_r23_qids,
@@ -25,6 +27,10 @@ def test_suite_starts_with_gendb_t1_t30() -> None:
     assert all(e["sql"].upper().lstrip().startswith("SELECT") for e in gendb)
 
 
+@pytest.mark.skipif(
+    not (R23_RESULTS.is_file() and R17_CLASSIFY.is_file()),
+    reason="the r23rocket / r17 overnight result files (holdout/gendb_sec_edgar/results/) are not on this machine",
+)
 def test_suite_includes_failed_overnight_and_paper() -> None:
     entries = build_suite_entries()
     sources = {e["source"] for e in entries}
