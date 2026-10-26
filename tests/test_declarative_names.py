@@ -104,7 +104,8 @@ def test_like_in_a_plain_projection_defines_spec_like() -> None:
         "SELECT fy, AVG(cik) AS a FROM sub GROUP BY fy HAVING 5 < AVG(cik) AND COUNT(*) > 2",
     ],
 )
-def test_having_an_integer_average_against_an_integer_literal_typechecks(sql: str) -> None:
+def test_having_an_integer_average_against_an_integer_literal_typechecks(sql: str, exact_division_off: None) -> None:
+    # "5real" is the real-form AVG comparison (exact_division = false); the exact Rat form also typechecks (checked 2026-10-25).
     spec = _emit(sql)
     assert "5real" in spec
     _typechecks(spec)
@@ -118,7 +119,8 @@ def test_having_an_integer_average_against_an_integer_literal_typechecks(sql: st
         "SELECT COUNT(*) AS n FROM sub WHERE fy = (SELECT COUNT(*) FROM sub)",
     ],
 )
-def test_an_uncorrelated_scalar_subquery_in_the_where_of_an_aggregate_typechecks(sql: str) -> None:
+def test_an_uncorrelated_scalar_subquery_in_the_where_of_an_aggregate_typechecks(sql: str, exact_division_off: None) -> None:
+    # `sq_1(` is the real-form scalar subquery fn (exact_division = false); the exact Rat form also typechecks.
     spec = _emit(sql)
     assert "sq_1(" in spec
     _typechecks(spec)
