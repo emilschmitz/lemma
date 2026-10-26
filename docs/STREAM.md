@@ -265,6 +265,6 @@ the rest (rdtsc inside a timing copy of the body: `fold_rows` 90 %, the per-chun
 (124 ms) and 4 (147 ms) on this 4-core / 8-thread machine.
 
 Trust not added (it would not buy time here): (a) VARCHAR is valid UTF-8 (DuckDB validates on ingest): with dictionaries handed in
-place the check covers ~4 entries per chunk, unmeasurable against noise (a build without it: 112 vs 113 ms); (b) a dictionary-id
+place the check covers ~4 entries per chunk, within run-to-run noise (builds with and without it: 113 vs 112 ms); (b) a dictionary-id
 clause (equal ids within a stream => equal `ents`, so a memo across chunks): it would save the agent's `build_codes`, ~6 % of
 `q_step` (~3 ms wall). Both may matter for FLAT high-cardinality strings or large SEC dictionaries; measure there first.
