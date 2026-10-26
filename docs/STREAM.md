@@ -246,3 +246,25 @@ lost, doubled or misplaced chunk or a wrong row count; the proved runtime answer
 
 Install (`research_loop/in_duckdb.install_executor`): a stream spec is admitted with `admit_stream`, assembled with the ABI 6 template,
 verified and compiled as a cdylib; no pushdown.
+
+## Host overhead, SF10 Q1 (profiled 2026-10-26)
+
+The first agent-written proved Q1 executor (run `20261026T114511Z_q688622_a770af30`, 104 verified) ran in DuckDB in ~290 ms, DuckDB
+~290 ms (threads 8, memory_limit 1500MB). Per-phase timers in `StreamRun` (no perf on this box; CPU summed over the 8 workers): DuckDB's
+scan 330-390 ms, building the `LemmaChunk`s 260-300 ms, `lemma_stream_step` 1600-1800 ms. Cause: l_returnflag / l_linestatus come as
+DICTIONARY vectors in 29290 of 29291 chunks, but a storage dictionary's entry 0 is NULL, so the in-place condition (child all valid)
+never held: every chunk gathered 2048 `string_t` per column, S1 checked 2048 entries for UTF-8, and the agent's per-chunk entry memo
+walked 2048 entries instead of ~4. Fixed in the glue (the entry copy above; no trusted item). Also: the panic hook is installed once,
+not per call; S1's selection check is a branch-free maximum.
+
+After (same settings, `in_duckdb_bench`, 5 interleaved rounds): cold 110 ms vs DuckDB 237 ms (2.16x), warm 124 vs 250 ms (2.02x); right
+after an `INSERT` of ~100k committed, not checkpointed lineitem rows (a copy of the database, 6 rounds): 119 vs 247 ms (before the fix
+283 vs 248 ms). CPU split: scan ~295 ms, chunk build ~28 ms, step ~490 ms, of which S1 and the glue ~85 ms and the agent's `q_step`
+the rest (rdtsc inside a timing copy of the body: `fold_rows` 90 %, the per-chunk entry memo `build_codes` 6 %, `merge_loc` 2 %,
+`max_sel` 2 %). Wall: scan alone 40-46 ms, + chunk build 50-56 ms, + S1 and glue 60-66 ms, + `q_step` 103-110 ms. 8 workers beat 6
+(124 ms) and 4 (147 ms) on this 4-core / 8-thread machine.
+
+Trust not added (it would not buy time here): (a) VARCHAR is valid UTF-8 (DuckDB validates on ingest): with dictionaries handed in
+place the check covers ~4 entries per chunk, unmeasurable against noise (a build without it: 112 vs 113 ms); (b) a dictionary-id
+clause (equal ids within a stream => equal `ents`, so a memo across chunks): it would save the agent's `build_codes`, ~6 % of
+`q_step` (~3 ms wall). Both may matter for FLAT high-cardinality strings or large SEC dictionaries; measure there first.
