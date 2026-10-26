@@ -77,7 +77,7 @@ EQUIVALENT = [
     "SELECT x, COUNT(a) AS s FROM t GROUP BY x",
     "SELECT x, COUNT(DISTINCT a) AS s FROM t GROUP BY x",
     "SELECT a, COUNT(*) AS c FROM t GROUP BY a HAVING COUNT(*) > 1",
-    "SELECT COUNT(*) AS c FROM t, u WHERE t.a = u.m",
+    "SELECT COUNT(*) AS c FROM t, u WHERE t.a = u.m AND t.a IS NOT NULL AND u.m IS NOT NULL",
     "SELECT COUNT(*) AS c FROM t WHERE EXISTS (SELECT 1 FROM u WHERE u.m = t.a)",
     "SELECT COUNT(*) AS c FROM t WHERE NOT EXISTS (SELECT 1 FROM u WHERE u.m = t.a)",
     "SELECT COUNT(*) AS c FROM t WHERE a IN (SELECT k FROM u)",
@@ -148,6 +148,8 @@ def test_a_not_between_with_nullable_bounds_does_not_prove_them_non_null() -> No
 # ---- refusals are the correct outcome ----------------------------------------------------------------------------------------
 
 REFUSED = [
+    # The comma-join rewrite (ee714d4) turns this into JOIN u ON t.a = u.m: a nullable JOIN key, refused like the JOINs below.
+    "SELECT COUNT(*) AS c FROM t, u WHERE t.a = u.m",
     "SELECT COUNT(*) AS c FROM t JOIN u ON t.a = u.k",
     "SELECT COUNT(*) AS c FROM t JOIN u ON t.x = u.m",
     "SELECT COUNT(*) AS c FROM t LEFT JOIN u ON t.a = u.k",
