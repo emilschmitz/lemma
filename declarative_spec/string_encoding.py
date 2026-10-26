@@ -18,7 +18,8 @@ DICT_SUFFIX = "__dict"
 
 
 def dict_mode() -> bool:
-    return lemma_config.get("string_encoding") == "dict"
+    """Stream tables (lemma.toml [run] stream) use the plain encoding in the ghost spec: the strings are never materialized."""
+    return lemma_config.get("string_encoding") == "dict" and not lemma_config.get("stream")
 
 
 def code_type(max_distinct: int | None) -> str:

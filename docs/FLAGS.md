@@ -18,11 +18,11 @@ lemma.toml  <  experiment file (configs/experiments/X.toml)  <  environment vari
 * Every container run writes all keys with `value`, `section`, `source` (`file`/`experiment`/`env`/`cli`) and `origin` into the run manifest (`lemma_config`) and the `RESULT` line (`config`), with `git_sha`, `git_dirty` and `git_untracked_files` (a count; untracked files never make `git_dirty` true). A dirty tree (tracked files; untracked and gitignored data do not count) is refused unless `allow_dirty = true`.
 * `container_batch.py` forwards nothing by name. The child reads `lemma.toml` itself; the batch passes only values that differ from the file (`lemma_config.forwarded_env`, plus `LEMMA_CONFIG_ORIGIN` so a flag is still reported as a flag).
 
-## Sections (62 keys)
+## Sections (63 keys)
 
 | Section | Keys |
 | --- | --- |
-| `[run]` | `spec_style menu agent_model trusted_set assumptions assumption_package speed_bar_mult max_iterations string_encoding join_chain examples narrow_cells pushdown agent_scan parallel_vstd stateful prover` |
+| `[run]` | `spec_style menu agent_model trusted_set assumptions assumption_package speed_bar_mult max_iterations string_encoding join_chain examples narrow_cells pushdown agent_scan parallel_vstd stateful stream prover` |
 | `[agent]` | `speed_target max_idle_sessions agent_timeout_sec max_budget_usd agent_submit_ends_session agent_data_mode agent_resource_exhausted_retries harness agent_auth claude_effort claude_thinking_tokens claude_tool_search mcp_iterate_rows` |
 | `[prover]` | `verus_rlimit verus_timeout_sec run_timeout_sec target_cpu dense_slot_budget verus_home prover_image image_registry` |
 | `[measure]` | `official_rounds official_duck_reps duck_memory_limit duck_threads` |
@@ -138,6 +138,23 @@ with the data version it was built from; `execute_at(version)` answers only from
 tables). The measure `main` builds once (`STATE_BUILD_US`, outside the timer) and times `execute` only; `serve=True` gives a `main` that takes one
 call per stdin line (`<version> <column file per table>`) and rebuilds only when the version changes. The parallel (Arc) variant is not emitted
 with this flag; a self join and a requires on a runtime parameter are refused. Design note: `docs/STATEFUL.md`.
+
+## Streaming executors (`stream`)
+
+`[run] stream` (bool, default `false`; `LEMMA_STREAM`). Off: every spec and program is byte-identical to the emitter without the flag
+(`tests/fixtures/stream_flag_off_golden.json`: the TPC-H 22 and the TPC-H templates, run defaults and test defaults). On (phase 1 of
+`docs/STREAM.md`, `declarative_spec/stream.py`): `run_query` is replaced by the streaming contract over one ghost table
+`stream_table_<t>(id)` (the table's rows, no pushed predicate: the spec's WHERE is in `agg_row`). Host, proved: `Params`, `Key`, the
+spec-only `Agg`, `agg_zero` / `agg_plus` / `agg_row` / `agg_rng`, `lemma_agg_step` / `lemma_agg_empty` / `lemma_agg_laws` /
+`lemma_agg_total`, the generic library `research_loop/verus_lib/stream_lib.rs`, the chunk view `Chunk_<t>`, and the runtime `Exec`
+(type invariant; `exec_finish` checks at run time that the chunks tile `[0, n)`). Trusted, data loading only, authorized 2026-10-25:
+S1 (`chunk_<t>`, `str_ent`) and S2 (`stream_end_<t>`), the only `external_body` items. Agent regions `AGENT_STATE` (`QAcc`), `AGENT_HELPERS`
+(`qacc_inv`, `st_val`), `AGENT_INIT` / `STEP` / `MERGE` / `FINISH` (`admit.admit_stream`). Phase 1 takes single-table grouped or ungrouped
+aggregates (SUM / COUNT / AVG incl. exact rationals / MIN / MAX, WHERE, template parameters, HAVING / ORDER BY / LIMIT in `q_finish`) and
+refuses everything else loudly (joins, DISTINCT, rowid, order-dependent aggregates, a nullable GROUP BY key, floats, map results); it needs
+`assumptions = false`, refuses `stateful` and `in_duckdb`, emits no Arc variant and no scan handles, and forces the plain string encoding
+for the stream table. `assemble.assemble_stream_program` builds a binary-mode `main` (column file, random chunk sizes, several threads;
+argv: the template parameters, then optionally `<chunk_max> <threads> <seed>`). Tests: `tests/test_stream.py`.
 
 ## Partial verification
 
