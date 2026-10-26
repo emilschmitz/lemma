@@ -178,6 +178,10 @@ UNMOUNTED: dict[str, str] = {
     "decline/scan_usum_checked.rs": "assumptions = false x agent_scan check (tests/test_pushdown_combos.py): scan_where then a checked SUM",
     "decline/stateful_scan_usum_checked.rs": "assumptions = false x stateful x agent_scan check (tests/test_pushdown_combos.py): build scans",
     "decline/template_usum_checked.rs":"assumptions = false x query template check (tests/test_in_duckdb_decline.py): library mode, ctypes and the extension",
+    "decline/exact_avg_checked.rs": "assumptions = false x exact_division check (tests/test_assumptions_off_fixtures.py): AVG as an exact Rat, declines on overflow",
+    "decline/exact_q14_ratio_checked.rs": "assumptions = false x exact_division check (tests/test_assumptions_off_fixtures.py): the Q14 ratio as an exact Rat",
+    "decline/exact_q14_ratio_unchecked_must_fail.rs": "assumptions = false x exact_division NEGATIVE check: the Q14 ratio unchecked must not verify",
+    "decline/stateful_exact_avg_checked.rs": "assumptions = false x exact_division x stateful check (tests/test_assumptions_off_fixtures.py)",
     # stateful (lemma.toml `stateful`): four-region fixtures of the build/execute contract, checked by tests/test_stateful.py.
     "stateful_date_prefix.rs": "stateful check (tests/test_stateful.py): prefix-sum state over the date column, serve-mode differential",
     "stateful_degenerate_sum.rs": "stateful check (tests/test_stateful.py): the degenerate state that owns the table",
