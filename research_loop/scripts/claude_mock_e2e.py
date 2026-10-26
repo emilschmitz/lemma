@@ -72,14 +72,23 @@ STYLE_CASES = {
 
 def run_style_case(style: str, conversation_cls=Conversation, directory: Path | None = None) -> dict:
     """The launcher, in ``style``, against the mock. Returns the launcher's result record."""
+    import lemma_config
     from research_loop.scripts.run_container_agent import run
 
     sql, body_file, menu = STYLE_CASES[style]
+    agent = "claude-haiku-4-5-20251001"
+    # As the CLI does (run_container_agent.main): the flags go through lemma_config, so run()'s export_env carries the same values
+    # and activate_menu sees no LEMMA_AGENT_MODEL / LEMMA_SPEC_STYLE from lemma.toml conflicting with them.
+    lemma_config.set_cli("agent_model", agent, "--agent")
+    lemma_config.set_cli("spec_style", style, "--style")
+    if style == "imperative":  # lemma.toml's trusted_set is the declarative one; the imperative menu's own set
+        lemma_config.set_cli("trusted_set", "rocketship", "--trusted-set")
     with tempfile.TemporaryDirectory() as tmp:
         with mock_model(conversation_cls(body_file.read_text().strip("\n")), directory or Path(tmp)):
             # The imperative profile's default agent is a Cursor slug, so Claude needs the override.
             return run(
-                menu, style, sql, agent="claude-haiku-4-5-20251001", allow_override=style == "imperative"
+                menu, style, sql, agent=agent, allow_override=style == "imperative",
+                max_iterations=lemma_config.get("max_iterations"),  # run() takes it as a required keyword since 779ac90; the CLI passes the same
             )
 
 

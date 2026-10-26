@@ -39,6 +39,11 @@ def guarded_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
         "LEMMA_SPEED_BAR_MULT", "LEMMA_AGENT_MODEL", "LEMMA_MENU_ALLOW_OVERRIDE",
     ):
         monkeypatch.delenv(key, raising=False)
+    # The mock takes any key. With agent_auth = login (the lemma.toml default) the host's real Claude login is mounted, and the CLI's
+    # OAuth account calls (api.anthropic.com, platform.claude.com) hit the egress deny list; the mock run uses no real credential.
+    monkeypatch.setenv("LEMMA_AGENT_AUTH", "api_key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "mock-test-key-not-a-secret")
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     return tmp_path
 
 
@@ -107,6 +112,8 @@ def _style_run(style: str, guarded_env: Path, monkeypatch: pytest.MonkeyPatch, c
     monkeypatch.setenv("LEMMA_DUCKDB_LIB_DIR", "/home/emil/projects/lemma-db/build/libduckdb")
     monkeypatch.setenv("REQUIRE_PROOF", "1")
     monkeypatch.setenv("ENABLE_VERUS_VERIFY", "1")
+    # conftest pins assumptions = true (the path these fixtures prove); that path now needs an explicit package, "auto" = the old default.
+    monkeypatch.setenv("LEMMA_ASSUMPTION_PACKAGE", "auto")
     saved = dict(os.environ)
     try:
         record = run_style_case(style, conversation_cls or Conversation, guarded_env)
