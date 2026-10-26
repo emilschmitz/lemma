@@ -123,8 +123,9 @@ def run_stream_case(directory: Path, agent: str = "claude-haiku-4-5-20251001") -
 
     db = directory / "stream_t.duckdb"
     stream_table(db)
-    saved = {k: os.environ.get(k) for k in (*STREAM_ENV, "LEMMA_DUCKDB_PATH")}
-    os.environ.update({**STREAM_ENV, "LEMMA_DUCKDB_PATH": str(db)})
+    saved = {k: os.environ.get(k) for k in (*STREAM_ENV, "LEMMA_DUCKDB_PATH", "LEMMA_AGENT_MODEL")}
+    # the model slug through lemma.toml's key too, so the launcher's --agent and the exported config agree
+    os.environ.update({**STREAM_ENV, "LEMMA_DUCKDB_PATH": str(db), "LEMMA_AGENT_MODEL": agent})
     try:
         regions = stream.extract_regions(STREAM_FIXTURE.read_text())
         with mock_model(StreamConversation(regions), directory):
