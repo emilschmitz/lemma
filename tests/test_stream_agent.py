@@ -312,14 +312,14 @@ def test_mcp_run_reply_does_not_echo_the_stream_file_but_the_stored_run_keeps_it
 
 def test_the_committed_stream_experiment(monkeypatch: pytest.MonkeyPatch) -> None:
     settings, runs = lemma_config.load_experiment(ROOT / "configs" / "experiments" / "stream_q1_opus.toml")
-    assert settings == {"assumptions": False, "examples": "none", "data_profile": "stats", "templates": True, "stream": True, "pushdown": False, "agent_scan": False}
+    assert settings == {"assumptions": False, "examples": "principles", "data_profile": "stats", "templates": True, "stream": True, "pushdown": False, "agent_scan": False}
     assert runs == [{
         "model": "claude-opus-5-5", "query": "configs/query_templates/tpch/q01.sql", "duckdb_path": "research_loop/generated/tpch_sf10.duckdb",
         "bindings_rules": "configs/query_templates/tpch/substitution.json", "bindings_seed": 1,
     }]
     # the SF10 batch it is compared with uses the same example and profile settings
     sf10, _ = lemma_config.load_experiment(ROOT / "configs" / "experiments" / "sf10_batch_noassump.toml")
-    assert all(settings[k] == sf10[k] for k in ("assumptions", "examples", "data_profile", "templates"))
+    assert all(settings[k] == sf10[k] for k in ("assumptions", "data_profile", "templates"))  # examples: principles (the stream speed recipe), see the file
     # and the gate takes its query under its settings
     _env(monkeypatch, **{f"LEMMA_{k.upper()}": ("1" if v is True else "0" if v is False else str(v)) for k, v in settings.items()})
     spec = emit_declarative_spec((ROOT / runs[0]["query"]).read_text(), TPCH_SCHEMA, None)
