@@ -133,9 +133,9 @@ def test_flag_is_in_lemma_toml_and_off_by_default(stateful_off: None) -> None:
 
 
 @pytest.mark.parametrize("name", sorted(OFF_GOLDEN))
-def test_flag_off_emits_byte_identical_specs(name: str, stateful_off: None) -> None:
+def test_flag_off_emits_byte_identical_specs(name: str, stateful_off: None, exact_division_off: None) -> None:
     """sha256 of the spec (or the refusal) that the emitter of a254d17 (main before this flag) produced, for the 22 TPC-H queries
-    and the two fixture queries (tests/fixtures/stateful_flag_off_golden.json)."""
+    and the two fixture queries (tests/fixtures/stateful_flag_off_golden.json). a254d17 predates exact_division = true (q01, q14)."""
     want = OFF_GOLDEN[name]
     sql = {"stateful_group": GROUP_SQL, "stateful_date": DATE_SQL}.get(name) or (TPCH / f"{name}.sql").read_text().strip()
     if "sha256" not in want:
