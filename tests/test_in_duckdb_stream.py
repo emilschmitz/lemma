@@ -335,6 +335,60 @@ def test_every_vector_form(name: str, compression: str, home: Path, tmp_path: Pa
         assert _sorted(_lemma(con, sql)) == _sorted(con.execute(sql).fetchall()), (compression, threads)
 
 
+def _dictionary_table(con: duckdb.DuckDBPyConnection, groups: list[list[str]], rows_per_group: int, *, nulls: bool = False) -> None:
+    """A persistent t whose VARCHAR s is dictionary-compressed, one row group (so one dictionary) per entry of `groups`, each
+    drawing s from its own strings: the same dictionary index means another string in the next row group."""
+    con.execute("PRAGMA force_compression = 'dictionary'")
+    con.execute(f"CREATE TABLE t (a INTEGER NOT NULL, b BIGINT, d DATE NOT NULL, s VARCHAR{'' if nulls else ' NOT NULL'}, m DECIMAL(12,2) NOT NULL)")
+    rng = random.Random(len(groups) * 1000 + rows_per_group)
+    rows = []
+    for keys in groups:
+        for i in range(rows_per_group):
+            s = None if nulls and i < 2048 and i % 997 == 5 else keys[i % len(keys)] if i < len(keys) else rng.choice(keys)
+            rows.append((rng.randint(-5, 20), rng.randint(-(10**9), 10**9), 9500 + rng.randint(0, 2000), s, rng.randint(-(10**7), 10**7) / 100))
+    con.executemany("INSERT INTO t VALUES (?, ?, DATE '1970-01-01' + CAST(? AS INTEGER), ?, CAST(? AS DECIMAL(12,2)))", rows)
+    con.execute("CHECKPOINT")
+    used = {r[0] for r in con.execute("SELECT DISTINCT compression FROM pragma_storage_info('t') WHERE column_name = 's' AND segment_type <> 'VALIDITY'").fetchall()}
+    assert any("dict" in str(c).lower() for c in used), used
+
+
+@needs_ext
+@pytest.mark.parametrize("distinct", [3, 1500])
+def test_a_storage_dictionary_is_copied_once_per_dictionary_and_never_reused_for_another(distinct: int, home: Path, tmp_path: Path) -> None:
+    """DuckDB's storage dictionaries keep entry 0 as a NULL entry: StreamTable hands their selection in place with a copy of the
+    entries (NULL entry -> empty string), reused across the chunks of one dictionary only. Row groups of 4096 rows (two chunks per
+    dictionary; with 1500 distinct strings per 3000 rows, dictionaries of more entries than a chunk has rows) whose dictionaries put
+    other strings (short, inline, and long, behind a pointer) at the same indices: a stale copy would count the rows under the
+    previous row group's strings."""
+    rows_per_group = 4096 if distinct == 3 else 3000
+    groups = [[f"{k}-{g}-{i}" + "x" * ((g + i) % 20) for i in range(distinct)] for g, k in enumerate(KEYS[1:] * 2)]
+    con = _connect(home, tmp_path / "dict.duckdb", 4096)
+    _dictionary_table(con, groups, rows_per_group)
+    sql = FIXTURES["grouped"][1]
+    want = _sorted(con.execute(sql).fetchall())
+    assert len(want) == len({s for keys in groups for s in keys})
+    for threads in (1, 4):
+        con.execute(f"SET lemma_scan_threads = {threads}")
+        for _ in range(2):  # the second call starts every worker's copy over (a new scan, the same dictionaries)
+            assert _sorted(_lemma(con, sql)) == want, threads
+            assert _last(con)["mode"] == "stream"
+
+
+@needs_ext
+def test_a_null_in_a_dictionary_column_the_catalog_says_is_not_null_is_an_error(home: Path, tmp_path: Path) -> None:
+    """The grouped fixture's catalog declares s NOT NULL: a NULL row must stop the query, never be counted as the empty string the
+    entry copy holds at the dictionary's NULL entry. NULLs only in the first chunk of each row group (DuckDB 1.5.6 hands a vector
+    with NULL rows FLAT with its validity, refused by the gather path; a DICTIONARY row selecting the NULL entry is refused by the copy
+    path's own per-row check); the second chunk of each dictionary has none. After the DELETE the same dictionaries answer as DuckDB."""
+    con = _connect(home, tmp_path / "dictnull.duckdb", 4096)
+    _dictionary_table(con, [["p", "q", "a string longer than twelve"], ["r", "", "q"]], 4096, nulls=True)
+    assert con.execute("SELECT COUNT(*) FROM t WHERE s IS NULL").fetchone()[0] > 0
+    with pytest.raises(duckdb.Error, match="has NULLs"):
+        _lemma(con, FIXTURES["grouped"][1])
+    con.execute("DELETE FROM t WHERE s IS NULL")  # the same dictionaries (entry 0 still NULL), no NULL row left
+    assert _sorted(_lemma(con, FIXTURES["grouped"][1])) == _sorted(con.execute(FIXTURES["grouped"][1]).fetchall())
+
+
 @needs_ext
 @pytest.mark.parametrize("name", ["ungrouped", "grouped"])
 def test_the_callers_transaction_deletes_updates_and_local_rows(name: str, home: Path, tmp_path: Path) -> None:

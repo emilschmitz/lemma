@@ -759,8 +759,10 @@ fn lemma_stream_str_bytes<'a>(e: &'a StrRaw) -> &'a [u8] {{
 
 #[verifier::external]
 fn lemma_stream_strings_ok(sel: &[u32], ents: &[StrRaw]) -> bool {{
-    // part of S1 (checked, not trusted): every selection index is in range and every entry is UTF-8
-    sel.iter().all(|&s| (s as usize) < ents.len()) && ents.iter().all(|e| std::str::from_utf8(lemma_stream_str_bytes(e)).is_ok())
+    // part of S1 (checked, not trusted): every selection index is in range (their maximum: a branch-free pass) and every entry
+    // is UTF-8 (a DICTIONARY vector hands its few entries, a FLAT one its len)
+    (sel.is_empty() || (sel.iter().fold(0u32, |m, &s| m.max(s)) as usize) < ents.len())
+        && ents.iter().all(|e| std::str::from_utf8(lemma_stream_str_bytes(e)).is_ok())
 }}
 
 // TRUSTED S1 (chunk view), {TRUSTED_LINE}.

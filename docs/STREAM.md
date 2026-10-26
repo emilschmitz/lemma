@@ -232,7 +232,12 @@ section (`layout`, `pushdown: false`); reached from `lemma_query`, `lemma(...)` 
 place when the vector is FLAT, of the target width and signedness and not rescaled (a nullable column even with NULLs: its NULL cells are
 not promised), else decoded by the tested `DecodeIntegers` into a 2048-cell per-worker buffer; `__valid` from the validity at the physical
 index; VARCHAR in place for FLAT without NULLs (identity selection) and for DICTIONARY of known size over a FLAT child without NULLs (its
-selection, its entries, its id hashed to u64), else the rows' `string_t` gathered (a NULL row: the empty string). `(j, off)` from one
+selection, its entries, its id hashed to u64); DICTIONARY over a FLAT child WITH NULL entries (every storage dictionary: dictionary and
+dict_fsst compression keep entry 0 as a NULL entry, whose `string_t` dictionary compression never writes) hands DuckDB's selection in
+place with a per-worker copy of the entries, each NULL entry the empty string, made once per dictionary and reused while the next
+chunk's dictionary is the same object (same non-empty id, a random UUID per `CreateReusableDictionary`; same entry array and size;
+DuckDB writes those entries once, when a segment's scan creates the dictionary), a row selecting a NULL entry being a NULL cell; else
+the rows' `string_t` gathered (a NULL row: the empty string). `(j, off)` from one
 `fetch_add` of a 64-bit counter (j in the high 28 bits, off in the low 36). `context.interrupted` is checked per chunk; a poisoned step
 stops the scan. Then a pairwise merge (each round on its own threads), finish with the counter's final `(m, n)`, LMR1 as today.
 `lemma_last_query()` gains `mode` (`batch` / `stream`), `chunks`, `threads`; the input cache says `skip: streaming executor`;

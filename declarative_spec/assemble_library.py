@@ -1099,9 +1099,11 @@ fn lemma_panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
     }
 }
 
-// A panic never crosses the C boundary: it becomes the error message.
+// A panic never crosses the C boundary: it becomes the error message. The (process-wide) silent hook is installed once, not per
+// call: lemma_stream_step runs once per chunk on every scan thread, and set_hook takes a global lock and frees the old hook.
 fn lemma_guard<R>(f: impl FnOnce() -> R) -> Result<R, String> {
-    std::panic::set_hook(Box::new(|_| {})); // the message goes back through `out`, not to the host's stderr
+    static LEMMA_HOOK: std::sync::Once = std::sync::Once::new();
+    LEMMA_HOOK.call_once(|| std::panic::set_hook(Box::new(|_| {}))); // the message goes back through `out`, not to the host's stderr
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(lemma_panic_message)
 }
 

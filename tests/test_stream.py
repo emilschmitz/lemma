@@ -267,6 +267,67 @@ def test_admission_rejects(region: str, text: str, why: str, stream_on: None) ->
     assert any(why in v for v in res.violations), res.violations
 
 
+# ---- S1's checked part: the selection range and UTF-8 check, compiled alone with rustc ---------------------------------------------
+
+_S1_CHECK_MAIN = r"""
+fn inline(s: &[u8]) -> StrRaw {
+    let mut b = [0u8; 16];
+    b[..4].copy_from_slice(&(s.len() as u32).to_le_bytes());
+    b[4..4 + s.len()].copy_from_slice(s);
+    StrRaw { w0: u64::from_le_bytes(b[..8].try_into().unwrap()), w1: u64::from_le_bytes(b[8..].try_into().unwrap()) }
+}
+fn long(s: &'static [u8]) -> StrRaw {
+    let mut b = [0u8; 8];
+    b[..4].copy_from_slice(&(s.len() as u32).to_le_bytes());
+    b[4..].copy_from_slice(&s[..4]);
+    StrRaw { w0: u64::from_le_bytes(b), w1: s.as_ptr() as u64 }
+}
+fn main() {
+    let ents = || vec![inline(b"A"), inline(b""), long("a string longer than twelve".as_bytes()), inline("ünï".as_bytes())];
+    let mut sel: Vec<u32> = (0..2048).map(|r| (r * 7 % 4) as u32).collect();
+    let mut out = Vec::new();
+    out.push(lemma_stream_strings_ok(&[], &[]));                  // empty chunk
+    out.push(lemma_stream_strings_ok(&sel, &ents()));                // every index < 4
+    sel[2047] = 4;
+    out.push(lemma_stream_strings_ok(&sel, &ents()));                // the last row's index == nents
+    sel[2047] = 0;
+    sel[0] = u32::MAX;
+    out.push(lemma_stream_strings_ok(&sel, &ents()));                // the first row's index far out of range
+    sel[0] = 3;
+    out.push(lemma_stream_strings_ok(&sel, &ents()[..3]));           // index 3 of 3 entries
+    out.push(lemma_stream_strings_ok(&[0], &[]));                  // an index into no entries
+    let mut e = ents();
+    e[3] = inline(&[0x41, 0xff]);
+    out.push(lemma_stream_strings_ok(&sel, &e));  // an entry not UTF-8 (inline)
+    static BAD: [u8; 14] = [0x61; 14];
+    let mut bad_long = BAD;
+    bad_long[13] = 0xc3;                                          // a truncated 2-byte sequence at the end
+    let bad: &'static [u8] = Box::leak(Box::new(bad_long));
+    let mut e = ents();
+    e[2] = long(bad);
+    out.push(lemma_stream_strings_ok(&sel, &e));  // a long entry not UTF-8
+    println!("{:?}", out);
+}
+"""
+
+
+def test_s1_selection_and_utf8_check(stream_on: None, tmp_path: Path) -> None:
+    """S1's body refuses a chunk (None) unless every selection index is in range and every entry is UTF-8: no out-of-range index
+    reaches `ents@[sel@[r]]` and no non-UTF-8 byte reaches a `&str` (str_ent) or a proof claim about `Seq<char>`. The check (a
+    branch-free maximum over the selection since 2026-10-26) is extracted from the emitted spec and run on edge cases."""
+    spec = emit_declarative_spec(_template("q01"), TPCH_SCHEMA, None)
+    items = []
+    for name in ("pub struct StrRaw", "fn lemma_stream_str_bytes", "fn lemma_stream_strings_ok"):
+        start = spec.index(name)
+        start = spec.rindex("\n", 0, spec.rindex("#[", 0, start) if name.startswith("fn") else start) + 1
+        items.append(spec[start : spec.index("\n}\n", start) + 3].replace("#[verifier::external]\n", ""))
+    src = tmp_path / "s1_check.rs"
+    src.write_text("#![allow(dead_code)]\n" + "\n".join(items) + _S1_CHECK_MAIN)
+    subprocess.run(["rustc", "-O", "--edition", "2021", "-o", str(tmp_path / "s1_check"), str(src)], check=True, capture_output=True)
+    out = subprocess.run([str(tmp_path / "s1_check")], check=True, capture_output=True, text=True).stdout.strip()
+    assert out == "[true, true, false, false, false, false, false, false]", out
+
+
 # ---- Verus: library, host scaffold, fixtures, mutants -----------------------------------------------------------------------------
 
 

@@ -2403,6 +2403,14 @@ uint64_t DictIdOf(const std::string &id) {
 struct StreamCol {
 	std::vector<uint8_t> cells;
 	std::vector<string_t> ents;
+	// a DICTIONARY vector whose dictionary has NULL entries: its entries with each NULL one replaced by the empty string, and the
+	// dictionary they were copied from (DuckDB's id and entry array; reused while the next chunk has the same dictionary)
+	std::vector<string_t> dict_ents;
+	std::vector<uint8_t> dict_valid;
+	std::string dict_id;
+	const string_t *dict_src = nullptr;
+	idx_t dict_nulls = 0;   // its NULL entries
+	uint32_t dict_null = 0; // the last of them
 };
 
 // DuckDB's cells of this column ARE the column-file encoding (same width and signedness, no rescaling): handed in place.
@@ -2422,7 +2430,9 @@ bool InPlaceInts(const ColPlan &p) {
 // rescaled DECIMALs; a NULL in a column not declared nullable is an error there). A nullable column's NULL cells keep whatever DuckDB
 // has: S1 promises a value only where the cell is valid; its __valid column comes from the validity at the physical index.
 // VARCHAR: FLAT without NULLs, or DICTIONARY of known size over a FLAT child without NULLs: DuckDB's string_t entries and selection
-// in place; else the entries of the chunk's rows gathered into the buffer (a NULL row: the empty string, its __valid says NULL).
+// in place; DICTIONARY over a FLAT child with NULL entries (every storage dictionary: entry 0 is NULL): DuckDB's selection in place,
+// the entries copied once per dictionary with each NULL entry the empty string; else the entries of the chunk's rows gathered into
+// the buffer (a NULL row: the empty string, its __valid says NULL).
 void StreamVec(const ColPlan &p, Vector &vec, idx_t n, StreamCol &buf, LemmaVec &out) {
 	out = LemmaVec {nullptr, nullptr, 0, 0};
 	switch (p.role) {
@@ -2467,14 +2477,71 @@ void StreamVec(const ColPlan &p, Vector &vec, idx_t n, StreamCol &buf, LemmaVec 
 			return;
 		}
 		if (type == VectorType::DICTIONARY_VECTOR && DictionaryVector::DictionarySize(vec).IsValid() &&
-		    DictionaryVector::Child(vec).GetVectorType() == VectorType::FLAT_VECTOR &&
-		    FlatVector::Validity(DictionaryVector::Child(vec)).AllValid()) {
+		    DictionaryVector::Child(vec).GetVectorType() == VectorType::FLAT_VECTOR) {
+			auto &child = DictionaryVector::Child(vec);
 			auto &sel = DictionaryVector::SelVector(vec);
-			out.data = reinterpret_cast<const uint8_t *>(FlatVector::GetData<string_t>(DictionaryVector::Child(vec)));
-			out.nents = DictionaryVector::DictionarySize(vec).GetIndex();
-			out.sel = sel.IsSet() ? sel.data() : IdentitySel(); // no selection vector: row r is entry r (S1 checks r < nents)
-			out.dict = DictIdOf(DictionaryVector::DictionaryId(vec));
-			return;
+			const uint32_t *rows = sel.IsSet() ? sel.data() : IdentitySel(); // no selection vector: row r is entry r
+			idx_t nents = DictionaryVector::DictionarySize(vec).GetIndex();
+			const auto *entries = FlatVector::GetData<string_t>(child);
+			auto &validity = FlatVector::Validity(child);
+			const std::string &id = DictionaryVector::DictionaryId(vec);
+			if (validity.AllValid()) {
+				out.data = reinterpret_cast<const uint8_t *>(entries);
+				out.nents = nents;
+				out.sel = rows; // S1 checks sel < nents
+				out.dict = DictIdOf(id);
+				return;
+			}
+			// DuckDB's storage dictionaries (dictionary and dict_fsst compression) keep entry 0 as a NULL entry, so their child is
+			// never "all valid", and a NULL entry's string_t may be uninitialized (dictionary compression never writes entry 0).
+			// DuckDB's selection is handed in place with a copy of the entries in which every NULL entry is the empty string, made
+			// once per dictionary: the copy is reused while the next chunk's dictionary is the same object (the same non-empty id,
+			// a fresh random UUID per DictionaryVector::CreateReusableDictionary, the same entry array and size; DuckDB writes a
+			// reusable dictionary's entries once, when a segment's scan creates it). A row that selects a NULL entry is a NULL cell
+			// (an error unless the column is nullable; its __valid comes from the validity at the physical index).
+			bool same = !id.empty() && id == buf.dict_id && entries == buf.dict_src && nents == buf.dict_ents.size();
+			if (same || nents <= n) {
+				if (!same) {
+					buf.dict_ents.resize(nents);
+					buf.dict_valid.resize(nents);
+					buf.dict_nulls = 0;
+					for (idx_t e = 0; e < nents; e++) {
+						bool ok = validity.RowIsValid(e);
+						buf.dict_valid[e] = ok ? 1 : 0;
+						buf.dict_ents[e] = ok ? entries[e] : string_t(uint32_t(0)); // the empty string, inline
+						if (!ok) {
+							buf.dict_nulls++;
+							buf.dict_null = uint32_t(e);
+						}
+					}
+					buf.dict_id = id;
+					buf.dict_src = entries;
+				}
+				if (!p.e.nullable) { // a nullable column may have NULL rows (its __valid says which)
+					bool null_row = false;
+					if (buf.dict_nulls == 1) { // the storage dictionaries: entry 0 only (a branch-free compare per row)
+						uint32_t z = buf.dict_null, hit = 0;
+						for (idx_t r = 0; r < n; r++) {
+							hit |= uint32_t(rows[r] == z);
+						}
+						null_row = hit != 0;
+					} else {
+						const uint8_t *ok = buf.dict_valid.data();
+						for (idx_t r = 0; r < n && !null_row; r++) {
+							uint32_t e = rows[r];
+							null_row = e < nents && !ok[e]; // an index out of range: S1's own check refuses the chunk
+						}
+					}
+					if (null_row) {
+						p.NullCell();
+					}
+				}
+				out.data = reinterpret_cast<const uint8_t *>(buf.dict_ents.data());
+				out.nents = nents;
+				out.sel = rows;
+				out.dict = DictIdOf(id);
+				return;
+			}
 		}
 		UnifiedVectorFormat f;
 		vec.ToUnifiedFormat(n, f);
