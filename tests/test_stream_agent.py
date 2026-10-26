@@ -295,6 +295,21 @@ def test_the_stream_main_holds_codes_not_one_string_per_row(monkeypatch: pytest.
     assert not re.search(r"Vec<String> = Vec::with_capacity\(n_", main)
 
 
+def test_mcp_run_reply_does_not_echo_the_stream_file_but_the_stored_run_keeps_it(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from db_extension.agent import measure_core as mc
+
+    _stream_on(monkeypatch)
+    spec = emit_declarative_spec(GROUPED_SQL, T_SCHEMA, T_CATALOG)
+    ws = _workspace(tmp_path, spec, (FIX / "group_string_count_sum.rs").read_text())
+    monkeypatch.setattr(mc, "_invoke_harness", lambda **kw: ({"status": "SUCCESS", "proof_verified": True, "latency_us": 5}, 0))
+    monkeypatch.setattr(mc, "mcp_iterate_dataset_size", lambda: 50_000)
+    out = mc.run_solution(query_id=1, ws=ws)
+    assert out["ok"] is True and "runquery_body" not in out and "runquery_body_omitted" in out
+    stored = mc.load_run(out["run_id"], ws=ws)
+    assert stored["runquery_body"] == (FIX / "group_string_count_sum.rs").read_text()
+    assert mc.mark_submit(out["run_id"], ws=ws)["ok"] is True
+
+
 def test_the_committed_stream_experiment(monkeypatch: pytest.MonkeyPatch) -> None:
     settings, runs = lemma_config.load_experiment(ROOT / "configs" / "experiments" / "stream_q1_opus.toml")
     assert settings == {"assumptions": False, "examples": "none", "data_profile": "stats", "templates": True, "stream": True, "pushdown": False, "agent_scan": False}

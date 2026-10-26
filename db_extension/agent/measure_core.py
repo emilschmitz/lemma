@@ -464,6 +464,10 @@ def run_solution(
         out["runquery_body"] = runquery_body
         out["runquery_sha256"] = runquery_sha256(runquery_body)
     _store_run(out, ws=base)
+    if "runquery_body" in out and _stream_spec(base) is not None:
+        # a stream file is the whole spec (over a thousand lines): the stored run keeps the snapshot for submit, the reply does not echo it
+        out = {k: v for k, v in out.items() if k != "runquery_body"}
+        out["runquery_body_omitted"] = "the checked file's snapshot is kept in the stored run (submit_runquery uses it)"
     return out
 
 
