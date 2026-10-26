@@ -5,7 +5,7 @@ those constants (one proof: declarative_spec/templates.py) and the DuckDB extens
 them (``lemma::MatchTemplate``: the query must be the template's text with one literal token per placeholder, character for character
 after normalization).
 
-EXACTLY what is lifted: a literal token of the normalized SQL (``research_loop.in_duckdb.literal_at``: an unsigned number
+EXACTLY what is lifted: a literal token of the normalized SQL (``declarative_spec.sql_text.literal_at``: an unsigned number
 ``123`` / ``1.50``, a string ``'abc'``, a date ``DATE 'YYYY-MM-DD'``) that
 
 * stands inside a WHERE or HAVING clause (of the query or of a subquery), and not inside a nested SELECT list, JOIN ... ON,
@@ -41,7 +41,7 @@ class Lifted:
 
 
 def _candidates(qn: str) -> list[tuple[int, int, str]]:
-    from research_loop.in_duckdb import _opaque_end, literal_at
+    from declarative_spec.sql_text import _opaque_end, literal_at
 
     out = []
     i = 0
@@ -144,7 +144,7 @@ def lift_constants(sql: str, schema: dict, catalog) -> Lifted | None:
     """The query template of ``sql`` with its liftable constants as parameters (module docstring), or None when nothing is lifted.
     The template's text instantiated with ``literals`` is ``normalize_sql(sql)`` exactly. Needs lemma.toml [sql] templates on."""
     from declarative_spec import templates
-    from research_loop.in_duckdb import normalize_sql
+    from declarative_spec.sql_text import normalize_sql
 
     qn = normalize_sql(sql)
     if qn != normalize_sql(sql, keep_dollar=True):

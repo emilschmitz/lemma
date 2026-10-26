@@ -376,7 +376,7 @@ def _apply_speed_bar(metrics: dict, speed_bar: dict | None, *, parallel_hint: bo
     speedup = duck_us / max(latency, 1)
     attained = {
         **rounds_info,
-        **om.timing_labels(),  # pushdown/agent_scan on: this time is "hot, excludes scan/filter"; measure_in_duckdb is the reported number
+        **om.timing_labels(),  # pushdown/agent_scan on: this time is "hot, excludes scan/filter"; the in-DuckDB measure is the reported number
         "speed_bar_mult": mult,
         "official_tables": speed_bar.get("table_rows"),  # the timed run is on these FULL tables, whatever dataset_size says
         "speedup": speedup,  # in session: median of the binary's timed runs vs the prepare-time DuckDB median; official: median of rounds vs median of rounds
