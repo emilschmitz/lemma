@@ -157,7 +157,8 @@ def test_integer_order_by_does_not_pull_in_seq_le() -> None:
         "SELECT q, COUNT(*) AS c FROM a GROUP BY q HAVING COUNT(*) > (SELECT AVG(r) FROM a)",
     ],
 )
-def test_integer_compared_with_real_scalar_is_promoted(sql: str) -> None:
+def test_integer_compared_with_real_scalar_is_promoted(sql: str, exact_division_off: None) -> None:
+    # The `as real` promotion is the real-form AVG (exact_division = false); the exact form compares Rats.
     spec = _emit(sql)
     assert re.search(r"as int\) as real\)|\) as real\) [<>]", spec), "int side not promoted"
     _typechecks(spec)
