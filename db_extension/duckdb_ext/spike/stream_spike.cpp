@@ -24,6 +24,8 @@
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/types/hugeint.hpp"
+#include "duckdb/common/operator/decimal_cast_operators.hpp"
+#include "duckdb/storage/statistics/numeric_stats.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/optimizer/filter_pushdown.hpp"
@@ -406,6 +408,18 @@ struct StrTable {
 	}
 	int32_t Find(const string_t &s) {
 		return Find(s, HashStr(s));
+	}
+	int32_t Lookup(const string_t &s) const { // read-only: the slot, or -1
+		uint64_t h = HashStr(s);
+		for (uint64_t i = h & mask;; i = (i + 1) & mask) {
+			const E &e = tab[i];
+			if (e.slot < 0) {
+				return -1;
+			}
+			if (e.hash == h && EqStr(e.key, s)) {
+				return e.slot;
+			}
+		}
 	}
 	int32_t Find(const string_t &s, uint64_t h) {
 		uint64_t i = h & mask;
@@ -952,7 +966,7 @@ struct KeyAgg {
 struct ScanOnly : SerialMerge<ScanOnly> {
 	std::vector<idx_t> cols;
 	idx_t c_sum = 0;
-	bool huge = false;
+	bool huge = false, small = false; // hugeint / int32 checksum column (else int64)
 	int64_t sum = 0;
 	uint64_t rows = 0;
 	void Chunk(DataChunk &c) {
@@ -969,6 +983,11 @@ struct ScanOnly : SerialMerge<ScanOnly> {
 			auto d = UnifiedVectorFormat::GetData<hugeint_t>(f);
 			for (idx_t r = 0; r < n; r++) {
 				s += int64_t(d[f.sel->get_index(r)].lower);
+			}
+		} else if (small) {
+			auto d = UnifiedVectorFormat::GetData<int32_t>(f);
+			for (idx_t r = 0; r < n; r++) {
+				s += d[f.sel->get_index(r)];
 			}
 		} else {
 			auto d = UnifiedVectorFormat::GetData<int64_t>(f);
@@ -1079,6 +1098,587 @@ struct Stats : SerialMerge<Stats> {
 	}
 };
 
+// ------------------------------------------------------------------------------------------------ joins (build + streamed probe)
+
+// Per-chunk int32 code of a VARCHAR column through `fn` (NULL -> null_code). A DICTIONARY vector is coded once per dictionary
+// entry, the memo carried across chunks with the same dictionary id and size; other vectors per row with a previous-row shortcut.
+struct StrMap {
+	std::function<int32_t(const string_t &)> fn;
+	int32_t null_code = -1;
+	std::vector<int32_t> memo;
+	std::string id;
+	idx_t size = 0;
+	uint64_t calls = 0, rows = 0, dict_chunks = 0, chunks = 0;
+	void Code(Vector &v, idx_t n, int32_t *out) {
+		rows += n;
+		chunks++;
+		if (v.GetVectorType() == VectorType::DICTIONARY_VECTOR && DictionaryVector::DictionarySize(v).IsValid() &&
+		    DictionaryVector::Child(v).GetVectorType() == VectorType::FLAT_VECTOR) {
+			dict_chunks++;
+			idx_t dsize = DictionaryVector::DictionarySize(v).GetIndex();
+			auto &did = DictionaryVector::DictionaryId(v);
+			if (did.empty() || did != id || dsize != size) {
+				memo.assign(dsize, INT32_MIN);
+				id = did;
+				size = dsize;
+			}
+			auto &child = DictionaryVector::Child(v);
+			auto data = FlatVector::GetData<string_t>(child);
+			auto &valid = FlatVector::Validity(child);
+			auto &sel = DictionaryVector::SelVector(v);
+			for (idx_t r = 0; r < n; r++) {
+				idx_t i = sel.get_index(r);
+				int32_t c = memo[i];
+				if (c == INT32_MIN) {
+					calls++;
+					c = memo[i] = valid.RowIsValid(i) ? fn(data[i]) : null_code;
+				}
+				out[r] = c;
+			}
+			return;
+		}
+		size = 0;
+		id.clear();
+		if (v.GetVectorType() == VectorType::CONSTANT_VECTOR) {
+			calls++;
+			int32_t c = ConstantVector::IsNull(v) ? null_code : fn(ConstantVector::GetData<string_t>(v)[0]);
+			for (idx_t r = 0; r < n; r++) {
+				out[r] = c;
+			}
+			return;
+		}
+		UnifiedVectorFormat f;
+		v.ToUnifiedFormat(n, f);
+		auto data = UnifiedVectorFormat::GetData<string_t>(f);
+		const string_t *prev = nullptr;
+		int32_t prev_c = 0;
+		for (idx_t r = 0; r < n; r++) {
+			idx_t i = f.sel->get_index(r);
+			if (!f.validity.RowIsValid(i)) {
+				out[r] = null_code;
+				continue;
+			}
+			if (prev && EqStr(*prev, data[i])) {
+				out[r] = prev_c;
+				continue;
+			}
+			calls++;
+			prev = &data[i];
+			prev_c = out[r] = fn(data[i]);
+		}
+	}
+};
+
+static bool StrIs(const string_t &s, const char *lit) {
+	size_t len = strlen(lit);
+	return s.GetSize() == len && std::memcmp(s.GetData(), lit, len) == 0;
+}
+
+// Two 4-bit counters per integer key (a = low nibble, b = high nibble), exact up to 15 rows per key and counter (more: loud
+// failure). Dense: a byte per key over the key range DuckDB's column statistics give (a bound of every stored value), filled by
+// all build threads at once with byte CAS. Hash: open addressing over the collected build rows, built by one thread.
+struct DenseNibbles {
+	int64_t min = 0;
+	uint64_t range = 0;
+	std::vector<uint8_t> cells;
+	void Add(int64_t key, int which) {
+		uint64_t o = uint64_t(key) - uint64_t(min);
+		if (key < min || o >= range) {
+			throw InvalidInputException("spike: build key %d outside the column statistics' range", key);
+		}
+		uint8_t *c = &cells[o];
+		uint8_t old = __atomic_load_n(c, __ATOMIC_RELAXED), nw;
+		do {
+			uint8_t nib = which ? old >> 4 : old & 15;
+			if (nib == 15) {
+				throw InvalidInputException("spike: more than 15 build rows for one key");
+			}
+			nw = uint8_t(old + (which ? 16 : 1));
+		} while (!__atomic_compare_exchange_n(c, &old, nw, true, __ATOMIC_RELAXED, __ATOMIC_RELAXED));
+	}
+	inline uint8_t Get(int64_t key) const {
+		uint64_t o = uint64_t(key) - uint64_t(min);
+		return o < range ? cells[o] : 0;
+	}
+};
+
+struct HashNibbles {
+	std::vector<int64_t> keys;
+	std::vector<uint8_t> vals; // 0 = empty slot (an inserted key always has a nonzero count)
+	uint64_t mask = 0;
+	void Build(const std::vector<std::pair<int64_t, uint8_t>> &rows) {
+		uint64_t cap = 16;
+		while (cap < rows.size() * 2) {
+			cap *= 2;
+		}
+		keys.assign(cap, 0);
+		vals.assign(cap, 0);
+		mask = cap - 1;
+		for (auto &kv : rows) {
+			uint64_t i = Mix(uint64_t(kv.first)) & mask;
+			while (vals[i] && keys[i] != kv.first) {
+				i = (i + 1) & mask;
+			}
+			keys[i] = kv.first;
+			uint8_t nib = kv.second ? vals[i] >> 4 : vals[i] & 15;
+			if (nib == 15) {
+				throw InvalidInputException("spike: more than 15 build rows for one key");
+			}
+			vals[i] = uint8_t(vals[i] + (kv.second ? 16 : 1));
+		}
+	}
+	inline uint8_t Get(int64_t key) const {
+		for (uint64_t i = Mix(uint64_t(key)) & mask;; i = (i + 1) & mask) {
+			uint8_t v = vals[i];
+			if (!v || keys[i] == key) {
+				return v;
+			}
+		}
+	}
+};
+
+static DenseNibbles DenseFromStats(ClientContext &context, TableCatalogEntry &entry, const std::string &col) {
+	auto &c = entry.GetColumn(col);
+	auto stats = entry.GetStorage().GetStatistics(context, StorageIndex(c.StorageOid()));
+	if (!stats || !NumericStats::HasMinMax(*stats)) {
+		throw InvalidInputException("spike: no min/max statistics for %s", col);
+	}
+	DenseNibbles d;
+	d.min = NumericStats::Min(*stats).GetValue<int64_t>();
+	int64_t max = NumericStats::Max(*stats).GetValue<int64_t>();
+	d.range = uint64_t(max - d.min) + 1;
+	if (d.range > (uint64_t(1) << 31)) {
+		throw InvalidInputException("spike: key range too large for a dense table");
+	}
+	d.cells.assign(d.range, 0);
+	return d;
+}
+
+// Q12 lineitem side: l_orderkey, l_shipmode, l_commitdate, l_receiptdate, l_shipdate with the filter in the kernel (branch-free
+// mask, then the few qualifying rows). mode: 0 MAIL, 1 SHIP. Either collects (orderkey, mode) or probes an orders table.
+template <class T>
+struct Q12Line : SerialMerge<Q12Line<T>> {
+	idx_t c_k = 0, c_m = 0, c_c = 0, c_r = 0, c_s = 0;
+	int32_t lo = 0, hi = 0;
+	StrMap mode;
+	DenseNibbles *dense_build = nullptr;            // build into (direction A, dense)
+	std::vector<std::pair<int64_t, uint8_t>> pairs; // build into (direction A, hash)
+	bool collect = false;
+	const T *probe = nullptr; // probe (direction B): nibbles = (low, high) priority counts per orderkey
+	uint64_t high[2] = {0, 0}, low[2] = {0, 0}, joined[2] = {0, 0};
+	Q12Line() {
+		mode.fn = [](const string_t &s) { return StrIs(s, "MAIL") ? 0 : StrIs(s, "SHIP") ? 1 : -1; };
+	}
+	void Chunk(DataChunk &c) {
+		idx_t n = c.size();
+		int32_t m[STANDARD_VECTOR_SIZE];
+		int64_t tk[STANDARD_VECTOR_SIZE];
+		int32_t tc[STANDARD_VECTOR_SIZE], tr[STANDARD_VECTOR_SIZE], ts[STANDARD_VECTOR_SIZE];
+		uint8_t keep[STANDARD_VECTOR_SIZE];
+		mode.Code(c.data[c_m], n, m);
+		if (!AllValid(c.data[c_k], n) || !AllValid(c.data[c_c], n) || !AllValid(c.data[c_r], n) || !AllValid(c.data[c_s], n)) {
+			throw InvalidInputException("spike Q12: NULL input");
+		}
+		const int64_t *k = Dense<int64_t>(c.data[c_k], n, tk);
+		auto cd = reinterpret_cast<const int32_t *>(Dense<date_t>(c.data[c_c], n, reinterpret_cast<date_t *>(tc)));
+		auto rd = reinterpret_cast<const int32_t *>(Dense<date_t>(c.data[c_r], n, reinterpret_cast<date_t *>(tr)));
+		auto sd = reinterpret_cast<const int32_t *>(Dense<date_t>(c.data[c_s], n, reinterpret_cast<date_t *>(ts)));
+		for (idx_t r = 0; r < n; r++) {
+			keep[r] = (m[r] >= 0) & (cd[r] < rd[r]) & (sd[r] < cd[r]) & (rd[r] >= lo) & (rd[r] < hi);
+		}
+		for (idx_t r = 0; r < n; r++) {
+			if (!keep[r]) {
+				continue;
+			}
+			if (probe) {
+				uint8_t v = probe->Get(k[r]);
+				low[m[r]] += v & 15;
+				high[m[r]] += v >> 4;
+				joined[m[r]] += (v != 0);
+			} else if (collect) {
+				pairs.emplace_back(k[r], uint8_t(m[r]));
+			} else {
+				dense_build->Add(k[r], m[r]);
+			}
+		}
+	}
+	void Merge(Q12Line &o) {
+		pairs.insert(pairs.end(), o.pairs.begin(), o.pairs.end());
+		for (int i = 0; i < 2; i++) {
+			high[i] += o.high[i], low[i] += o.low[i], joined[i] += o.joined[i];
+		}
+	}
+};
+
+// Q12 orders side: o_orderkey, o_orderpriority (1 = '1-URGENT' or '2-HIGH', 0 = other, -1 = NULL: in neither CASE).
+template <class T>
+struct Q12Orders : SerialMerge<Q12Orders<T>> {
+	idx_t c_k = 0, c_p = 0;
+	StrMap prio;
+	DenseNibbles *dense_build = nullptr; // build (direction B): nibbles (low, high)
+	const T *probe = nullptr;            // probe (direction A): nibbles (MAIL, SHIP) line counts per orderkey
+	uint64_t high[2] = {0, 0}, low[2] = {0, 0}, joined[2] = {0, 0};
+	Q12Orders() {
+		prio.fn = [](const string_t &s) { return StrIs(s, "1-URGENT") || StrIs(s, "2-HIGH") ? 1 : 0; };
+		prio.null_code = -1;
+	}
+	void Chunk(DataChunk &c) {
+		idx_t n = c.size();
+		int32_t p[STANDARD_VECTOR_SIZE];
+		int64_t tk[STANDARD_VECTOR_SIZE];
+		prio.Code(c.data[c_p], n, p);
+		if (!AllValid(c.data[c_k], n)) {
+			throw InvalidInputException("spike Q12: NULL o_orderkey");
+		}
+		const int64_t *k = Dense<int64_t>(c.data[c_k], n, tk);
+		if (dense_build) {
+			for (idx_t r = 0; r < n; r++) {
+				if (p[r] >= 0) {
+					dense_build->Add(k[r], p[r]);
+				}
+			}
+			return;
+		}
+		uint64_t hm = 0, lm = 0, hs = 0, ls = 0, jm = 0, js = 0;
+		for (idx_t r = 0; r < n; r++) {
+			uint8_t v = probe->Get(k[r]);
+			uint64_t a = v & 15, b = v >> 4;
+			uint64_t ishigh = p[r] == 1, islow = p[r] == 0;
+			hm += a * ishigh, lm += a * islow, hs += b * ishigh, ls += b * islow;
+			jm += a, js += b;
+		}
+		high[0] += hm, low[0] += lm, high[1] += hs, low[1] += ls, joined[0] += jm, joined[1] += js;
+	}
+	void Merge(Q12Orders &o) {
+		for (int i = 0; i < 2; i++) {
+			high[i] += o.high[i], low[i] += o.low[i], joined[i] += o.joined[i];
+		}
+	}
+};
+
+static std::vector<std::string> Q12Rows(const uint64_t *high, const uint64_t *low, const uint64_t *joined) {
+	std::vector<std::string> out;
+	const char *names[2] = {"MAIL", "SHIP"};
+	for (int i = 0; i < 2; i++) {
+		if (joined[i]) {
+			out.push_back(std::string(names[i]) + "|" + std::to_string(high[i]) + "|" + std::to_string(low[i]));
+		}
+	}
+	return out;
+}
+
+// SEC q3 build side: sub WHERE fy = 2022 (pushed: the table is small), rows (adsh, cik, name) collected per thread.
+struct Q3Sub : SerialMerge<Q3Sub> {
+	idx_t c_a = 0, c_c = 0, c_n = 0;
+	struct Row {
+		std::string adsh, name;
+		bool adsh_null, name_null, cik_null;
+		int32_t cik;
+	};
+	std::vector<Row> rows;
+	void Chunk(DataChunk &c) {
+		idx_t n = c.size();
+		UnifiedVectorFormat fa, fc, fn;
+		c.data[c_a].ToUnifiedFormat(n, fa);
+		c.data[c_c].ToUnifiedFormat(n, fc);
+		c.data[c_n].ToUnifiedFormat(n, fn);
+		auto a = UnifiedVectorFormat::GetData<string_t>(fa);
+		auto ck = UnifiedVectorFormat::GetData<int32_t>(fc);
+		auto nm = UnifiedVectorFormat::GetData<string_t>(fn);
+		for (idx_t r = 0; r < n; r++) {
+			idx_t ia = fa.sel->get_index(r), ic = fc.sel->get_index(r), in = fn.sel->get_index(r);
+			Row row;
+			row.adsh_null = !fa.validity.RowIsValid(ia);
+			row.name_null = !fn.validity.RowIsValid(in);
+			row.cik_null = !fc.validity.RowIsValid(ic);
+			if (!row.adsh_null) {
+				row.adsh = a[ia].GetString();
+			}
+			if (!row.name_null) {
+				row.name = nm[in].GetString();
+			}
+			row.cik = row.cik_null ? 0 : ck[ic];
+			rows.push_back(std::move(row));
+		}
+	}
+	void Merge(Q3Sub &o) {
+		for (auto &r : o.rows) {
+			rows.push_back(std::move(r));
+		}
+	}
+};
+
+// The build: adsh -> group (name, cik), groups numbered densely.
+struct Q3Build {
+	StrTable adsh;              // slot = index into gid_of
+	std::vector<int32_t> gid_of; // adsh slot -> group
+	std::vector<const Q3Sub::Row *> group_row; // a row of each group (its name, cik)
+	void Build(const Q3Sub &s) {
+		std::unordered_map<std::string, int32_t> groups;
+		for (auto &r : s.rows) {
+			if (r.adsh_null) {
+				continue; // never equal to anything
+			}
+			std::string gk = (r.name_null ? std::string("\1") : "\0" + r.name) + "|" + (r.cik_null ? "N" : std::to_string(r.cik));
+			auto it = groups.find(gk);
+			int32_t g;
+			if (it == groups.end()) {
+				g = int32_t(group_row.size());
+				groups.emplace(std::move(gk), g);
+				group_row.push_back(&r);
+			} else {
+				g = it->second;
+			}
+			int32_t before = adsh.Size();
+			int32_t slot = adsh.Find(string_t(r.adsh.data(), uint32_t(r.adsh.size())));
+			if (slot < before) {
+				throw InvalidInputException("spike q3: duplicate adsh on the build side (a multi-match join is not implemented)");
+			}
+			gid_of.push_back(g);
+		}
+	}
+};
+
+// SEC q3 probe side: num adsh, uom, value. adsh codes through the dictionary memo straight to the build's group (-1: no match).
+struct Q3Num : SerialMerge<Q3Num> {
+	idx_t c_a = 0, c_u = 0, c_v = 0;
+	const Q3Build *build = nullptr;
+	StrMap adsh, usd;
+	std::vector<i128> sum;
+	std::vector<uint64_t> cnt;
+	void Init(const Q3Build *b) {
+		build = b;
+		adsh.fn = [b](const string_t &s) {
+			int32_t slot = b->adsh.Lookup(s);
+			return slot < 0 ? -1 : b->gid_of[slot];
+		};
+		adsh.null_code = -1;
+		usd.fn = [](const string_t &s) { return StrIs(s, "USD") ? 1 : 0; };
+		usd.null_code = 0;
+		sum.assign(b->group_row.size(), 0);
+		cnt.assign(b->group_row.size(), 0);
+	}
+	void Chunk(DataChunk &c) {
+		idx_t n = c.size();
+		int32_t g[STANDARD_VECTOR_SIZE], u[STANDARD_VECTOR_SIZE];
+		usd.Code(c.data[c_u], n, u);
+		adsh.Code(c.data[c_a], n, g);
+		UnifiedVectorFormat f;
+		c.data[c_v].ToUnifiedFormat(n, f);
+		auto v = UnifiedVectorFormat::GetData<hugeint_t>(f);
+		for (idx_t r = 0; r < n; r++) {
+			if (g[r] < 0 || !u[r]) {
+				continue;
+			}
+			idx_t vi = f.sel->get_index(r);
+			if (!f.validity.RowIsValid(vi)) {
+				continue;
+			}
+			i128 x = (i128(v[vi].upper) << 64) | i128(v[vi].lower);
+			if (__builtin_add_overflow(sum[g[r]], x, &sum[g[r]])) {
+				throw InvalidInputException("spike: SUM overflow");
+			}
+			cnt[g[r]]++;
+		}
+	}
+	void Merge(Q3Num &o) {
+		for (size_t i = 0; i < sum.size(); i++) {
+			if (__builtin_add_overflow(sum[i], o.sum[i], &sum[i])) {
+				throw InvalidInputException("spike: SUM overflow");
+			}
+			cnt[i] += o.cnt[i];
+		}
+		adsh.calls += o.adsh.calls, adsh.rows += o.adsh.rows, adsh.dict_chunks += o.adsh.dict_chunks, adsh.chunks += o.adsh.chunks;
+	}
+	// HAVING SUM(value) > AVG(per-cik SUM(value)) (DuckDB: DECIMAL(38,4) -> DOUBLE for the comparison, AVG of the hugeint sums in
+	// long double), ORDER BY total DESC LIMIT 100.
+	std::vector<std::string> Rows() {
+		std::map<std::pair<bool, int32_t>, i128> per_cik;
+		for (size_t i = 0; i < sum.size(); i++) {
+			if (cnt[i]) {
+				auto *row = build->group_row[i];
+				per_cik[{row->cik_null, row->cik}] += sum[i];
+			}
+		}
+		i128 total = 0;
+		for (auto &kv : per_cik) {
+			if (__builtin_add_overflow(total, kv.second, &total)) {
+				throw InvalidInputException("spike: SUM overflow");
+			}
+		}
+		hugeint_t ht;
+		ht.lower = uint64_t(total), ht.upper = int64_t(total >> 64);
+		long double lt;
+		Hugeint::TryCast(ht, lt);
+		double avg = double(lt / ((long double)per_cik.size() * 10000.0L));
+		std::vector<std::pair<i128, size_t>> keep;
+		for (size_t i = 0; i < sum.size(); i++) {
+			if (!cnt[i]) {
+				continue;
+			}
+			hugeint_t h;
+			h.lower = uint64_t(sum[i]), h.upper = int64_t(sum[i] >> 64);
+			double d;
+			CastParameters params;
+			TryCastFromDecimal::Operation(h, d, params, 38, 4);
+			if (d > avg) {
+				keep.emplace_back(sum[i], i);
+			}
+		}
+		std::sort(keep.begin(), keep.end(), [](const std::pair<i128, size_t> &a, const std::pair<i128, size_t> &b) { return a.first > b.first; });
+		std::vector<std::string> out;
+		for (size_t j = 0; j < keep.size() && j < 100; j++) {
+			auto *row = build->group_row[keep[j].second];
+			out.push_back((row->name_null ? std::string("NULL") : row->name) + "|" + (row->cik_null ? "NULL" : std::to_string(row->cik)) +
+			              "|" + DecStr(keep[j].first, 4));
+		}
+		if (keep.size() > 100 && keep[99].first == keep[100].first) {
+			fprintf(stderr, "  q3: a tie at the LIMIT boundary; DuckDB may pick another row\n");
+		}
+		return out;
+	}
+};
+
+static const char *Q12_SQL =
+    "SELECT l_shipmode, sum(CASE WHEN o_orderpriority = '1-URGENT' OR o_orderpriority = '2-HIGH' THEN 1 ELSE 0 END) AS "
+    "high_line_count, sum(CASE WHEN o_orderpriority <> '1-URGENT' AND o_orderpriority <> '2-HIGH' THEN 1 ELSE 0 END) AS "
+    "low_line_count FROM orders, lineitem WHERE o_orderkey = l_orderkey AND l_shipmode IN ('MAIL', 'SHIP') AND l_commitdate < "
+    "l_receiptdate AND l_shipdate < l_commitdate AND l_receiptdate >= CAST('1994-01-01' AS date) AND l_receiptdate < "
+    "CAST('1995-01-01' AS date) GROUP BY l_shipmode ORDER BY l_shipmode";
+static const char *Q3_SQL =
+    "SELECT s.name, s.cik, SUM(n.value) AS total_value FROM num n JOIN sub s ON n.adsh = s.adsh WHERE n.uom = 'USD' AND s.fy = "
+    "2022 AND n.value IS NOT NULL GROUP BY s.name, s.cik HAVING SUM(n.value) > (SELECT AVG(sub_total) FROM (SELECT SUM(n2.value) "
+    "AS sub_total FROM num n2 JOIN sub s2 ON n2.adsh = s2.adsh WHERE n2.uom = 'USD' AND s2.fy = 2022 AND n2.value IS NOT NULL "
+    "GROUP BY s2.cik) avg_sub) ORDER BY total_value DESC LIMIT 100";
+
+static double g_build_ms = -1; // the last join task's build phase (scan of the build side + table), ms
+
+struct Tab {
+	TableCatalogEntry *entry;
+	DataTable *storage;
+	DuckTransaction *transaction;
+};
+static Tab TabOf(ClientContext &context, const std::string &name) {
+	auto &entry = Catalog::GetEntry<TableCatalogEntry>(context, INVALID_CATALOG, INVALID_SCHEMA, name);
+	return {&entry, &entry.GetStorage(), &DuckTransaction::Get(context, entry.ParentCatalog())};
+}
+
+// Join tasks: q12a (build filtered lineitem -> hash on l_orderkey, stream orders), q12ad (the same with a dense table over
+// l_orderkey's statistics range), q12b (build orders -> dense on o_orderkey, stream lineitem), q3 (build sub fy=2022, stream num);
+// scan:<q> scans both sides' columns with the scan-only kernel.
+static std::vector<std::string> RunJoin(Connection &con, const std::string &kind, const std::string &q, int32_t lo, int32_t hi) {
+	auto &context = *con.context;
+	std::vector<std::string> rows;
+	auto b0 = std::chrono::steady_clock::now();
+	auto build_done = [&]() { g_build_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - b0).count(); };
+	if (q.substr(0, 3) == "q12") {
+		Tab li = TabOf(context, "lineitem"), od = TabOf(context, "orders");
+		std::vector<std::string> lcols = {"l_orderkey", "l_shipmode", "l_commitdate", "l_receiptdate", "l_shipdate"};
+		std::vector<std::string> ocols = {"o_orderkey", "o_orderpriority"};
+		PushedScan lps = PlanScan(context, *li.entry, "lineitem", lcols, "");
+		PushedScan ops = PlanScan(context, *od.entry, "orders", ocols, "");
+		if (kind == "scan") {
+			ScanOnly a, b;
+			for (auto &c : lcols) {
+				a.cols.push_back(lps.pos.at(c));
+			}
+			a.c_sum = lps.pos.at("l_orderkey");
+			for (auto &c : ocols) {
+				b.cols.push_back(ops.pos.at(c));
+			}
+			b.c_sum = ops.pos.at("o_orderkey");
+			StreamTable(context, *li.transaction, *li.storage, lps, a);
+			StreamTable(context, *od.transaction, *od.storage, ops, b);
+			return {a.Rows()[0], b.Rows()[0]};
+		}
+		auto line_cols = [&](auto &k) {
+			k.c_k = lps.pos.at("l_orderkey"), k.c_m = lps.pos.at("l_shipmode"), k.c_c = lps.pos.at("l_commitdate");
+			k.c_r = lps.pos.at("l_receiptdate"), k.c_s = lps.pos.at("l_shipdate");
+			k.lo = lo, k.hi = hi;
+		};
+		auto ord_cols = [&](auto &k) { k.c_k = ops.pos.at("o_orderkey"), k.c_p = ops.pos.at("o_orderpriority"); };
+		if (q == "q12a") {
+			Q12Line<HashNibbles> b;
+			line_cols(b);
+			b.collect = true;
+			StreamTable(context, *li.transaction, *li.storage, lps, b);
+			HashNibbles table;
+			table.Build(b.pairs);
+			build_done();
+			Q12Orders<HashNibbles> p;
+			ord_cols(p);
+			p.probe = &table;
+			StreamTable(context, *od.transaction, *od.storage, ops, p);
+			return Q12Rows(p.high, p.low, p.joined);
+		}
+		if (q == "q12ad") {
+			DenseNibbles table = DenseFromStats(context, *li.entry, "l_orderkey");
+			Q12Line<DenseNibbles> b;
+			line_cols(b);
+			b.dense_build = &table;
+			StreamTable(context, *li.transaction, *li.storage, lps, b);
+			build_done();
+			Q12Orders<DenseNibbles> p;
+			ord_cols(p);
+			p.probe = &table;
+			StreamTable(context, *od.transaction, *od.storage, ops, p);
+			return Q12Rows(p.high, p.low, p.joined);
+		}
+		if (q == "q12b") {
+			DenseNibbles table = DenseFromStats(context, *od.entry, "o_orderkey");
+			Q12Orders<DenseNibbles> b;
+			ord_cols(b);
+			b.dense_build = &table;
+			StreamTable(context, *od.transaction, *od.storage, ops, b);
+			build_done();
+			Q12Line<DenseNibbles> p;
+			line_cols(p);
+			p.probe = &table;
+			StreamTable(context, *li.transaction, *li.storage, lps, p);
+			return Q12Rows(p.high, p.low, p.joined);
+		}
+		throw InvalidInputException("unknown join %s", q);
+	}
+	// q3
+	Tab su = TabOf(context, "sub"), nu = TabOf(context, "num");
+	std::vector<std::string> scols = {"adsh", "cik", "name"};
+	std::vector<std::string> ncols = {"adsh", "uom", "value"};
+	PushedScan sps = PlanScan(context, *su.entry, "sub", scols, "fy = 2022");
+	PushedScan nps = PlanScan(context, *nu.entry, "num", ncols, "");
+	if (kind == "scan") {
+		ScanOnly a, b;
+		for (auto &c : scols) {
+			a.cols.push_back(sps.pos.at(c));
+		}
+		a.c_sum = sps.pos.at("cik");
+		a.small = true;
+		for (auto &c : ncols) {
+			b.cols.push_back(nps.pos.at(c));
+		}
+		b.c_sum = nps.pos.at("value");
+		b.huge = true;
+		StreamTable(context, *su.transaction, *su.storage, sps, a);
+		StreamTable(context, *nu.transaction, *nu.storage, nps, b);
+		return {a.Rows()[0], b.Rows()[0]};
+	}
+	Q3Sub s;
+	s.c_a = sps.pos.at("adsh"), s.c_c = sps.pos.at("cik"), s.c_n = sps.pos.at("name");
+	StreamTable(context, *su.transaction, *su.storage, sps, s);
+	Q3Build build;
+	build.Build(s);
+	build_done();
+	Q3Num p;
+	p.c_a = nps.pos.at("adsh"), p.c_u = nps.pos.at("uom"), p.c_v = nps.pos.at("value");
+	p.Init(&build);
+	StreamTable(context, *nu.transaction, *nu.storage, nps, p);
+	if (getenv("SPIKE_VERBOSE")) {
+		fprintf(stderr, "  q3: build %zu sub rows, %zu groups; num.adsh: %llu of %llu chunks dictionary, %llu lookups for %llu rows\n",
+		        s.rows.size(), build.group_row.size(), (unsigned long long)p.adsh.dict_chunks, (unsigned long long)p.adsh.chunks,
+		        (unsigned long long)p.adsh.calls, (unsigned long long)p.adsh.rows);
+	}
+	return p.Rows();
+}
+
 // ------------------------------------------------------------------------------------------------ queries
 
 static const char *Q1_SQL =
@@ -1143,11 +1743,22 @@ static int32_t Days(Connection &con, const char *lit) {
 static std::vector<std::string> RunTask(Connection &con, const std::string &task, double &ms) {
 	auto colon = task.find(':');
 	std::string kind = task.substr(0, colon), q = task.substr(colon + 1);
-	Def def = DefOf(q);
+	bool join = q.substr(0, 3) == "q12" || q == "q3";
+	// q3j (duck: only): q3's join + GROUP BY once, without the HAVING subquery that DuckDB answers with a second join
+	static const std::string Q3J_SQL = "SELECT s.name, s.cik, SUM(n.value) AS total_value FROM num n JOIN sub s ON n.adsh = s.adsh "
+	                                   "WHERE n.uom = 'USD' AND s.fy = 2022 AND n.value IS NOT NULL GROUP BY s.name, s.cik";
+	Def def = q == "q3j" ? Def {Q3J_SQL, "", "", {}} : join ? Def {q == "q3" ? Q3_SQL : Q12_SQL, "", "", {}} : DefOf(q);
 	auto t0 = std::chrono::steady_clock::now();
 	std::vector<std::string> rows;
+	g_build_ms = -1;
 	if (kind == "duck") {
 		rows = DuckRows(con, def.sql);
+	} else if (join) {
+		int32_t lo = Days(con, "DATE '1994-01-01'"), hi = Days(con, "DATE '1995-01-01'");
+		t0 = std::chrono::steady_clock::now();
+		con.BeginTransaction();
+		rows = RunJoin(con, kind, q, lo, hi);
+		con.Commit();
 	} else {
 		int32_t q1_cut = 0, q6_lo = 0, q6_hi = 0;
 		if (q == "q1k") {
@@ -1267,6 +1878,9 @@ static int Main(int argc, char **argv) {
 		double ms;
 		auto rows = RunTask(con, task, ms);
 		printf("FIRST %s %.2f\n", task.c_str(), ms);
+		if (g_build_ms >= 0) {
+			printf("FIRST %s#build %.2f\n", task.c_str(), g_build_ms);
+		}
 		auto colon = task.find(':');
 		if (task.substr(0, colon) == "stats" || task.substr(0, colon) == "scan") {
 			for (auto &r : rows) {
@@ -1296,10 +1910,14 @@ static int Main(int argc, char **argv) {
 			double ms;
 			RunTask(con, t, ms);
 			times[t].push_back(ms);
+			if (g_build_ms >= 0) {
+				times[t + "#build"].push_back(g_build_ms);
+			}
 		}
 	}
-	for (auto &t : tasks) {
-		auto v = times[t];
+	for (auto &kv : times) {
+		auto &t = kv.first;
+		auto v = kv.second;
 		if (v.empty()) {
 			continue;
 		}
