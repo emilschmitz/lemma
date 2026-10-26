@@ -253,9 +253,9 @@ def _cases() -> list[dict]:
     classify(
         "no_marked_missing_leftover",
         "no marked submit\nLEFTOVER_VERIFY_MISSING\n",
-        3,
-        "agent stupidity",
-        "no marked submit (leftover missing)",
+        5,
+        "infra",  # AGENTS.md hard rule: missing traces are never agent stupidity (tests/test_gcp_move_misconfig.py too)
+        "traces not harvested",
     )
     classify(
         "entrypoint_denied",
