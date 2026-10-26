@@ -117,6 +117,10 @@ def assemble_declarative_program(
     ``serve`` its ``main`` answers one call per stdin line (``<version> <column file per table>``) instead of the timed runs."""
     from declarative_spec import stateful
 
+    from declarative_spec import stream
+
+    if stream.is_stream(spec_rs):
+        raise ValueError("a stream spec (lemma.toml [run] stream) has no run_query: use assemble_stream_program")
     is_stateful = stateful.is_stateful(spec_rs)
     if not is_stateful and (state.strip() or build.strip() or serve):
         raise ValueError("state / build / serve are for a stateful spec (lemma.toml `stateful`)")
@@ -862,3 +866,237 @@ def _assemble_stateful(
     )
     main_fn += timed + "}\n"
     return verus_all + "\n" + decline_const + hex_fn + main_fn
+
+
+# ---- streaming executors (lemma.toml [run] stream, declarative_spec/stream.py) ---------------------------------------------------
+
+STREAM_DEFAULT_CHUNK_MAX = 2048
+STREAM_DEFAULT_THREADS = 4
+STREAM_DEFAULT_SEED = 1
+
+
+def _stitch_stream(spec_rs: str, regions: dict[str, str]) -> str:
+    """The stream spec with the agent's six regions filled and the host lemmas pasted: the ``verus!`` part of the program."""
+    from declarative_spec import stream
+    from declarative_spec.regions import HELPERS_END, HELPERS_START, STATE_END, STATE_START
+    from declarative_spec.trusted_sets import current
+
+    text = _fill_region(spec_rs, STATE_START, STATE_END, regions["state"])
+    text = _fill_region(text, HELPERS_START, HELPERS_END, regions["helpers"])
+    for name, (start, end) in stream.BODY_REGIONS.items():
+        text = _fill_region(text, start, end, regions[name])
+    host_start = text.find("// HOST_LEMMAS_START")
+    host_end = text.find("// HOST_LEMMAS_END")
+    if host_start == -1 or host_end == -1 or host_end < host_start:
+        raise ValueError("HOST_LEMMAS markers missing from spec")
+    inner = host_start + len("// HOST_LEMMAS_START")
+    text = text[:inner] + "\n" + current().lemmas_rs(text) + "\n" + text[host_end:]
+    m = re.search(r"verus!\s*\{", text)
+    if not m:
+        raise ValueError("verus! block not found")
+    depth = 0
+    for i in range(m.end() - 1, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[: i + 1]
+    raise ValueError("unclosed verus! block")
+
+
+def assemble_stream_program(spec_rs: str, regions: dict[str, str], *, column_bins: dict[str, str] | None = None) -> str:
+    """A stream spec (``stream.is_stream``) + the agent's regions (state, helpers, init, step, merge, finish) + the binary-mode ``main``.
+
+    The ``main`` (plain Rust, outside ``verus!``; with the column-file reader it is the only host code here that is not proved)
+    reads the column file (the existing format) and checks ``valid_cols`` on it (what S2 claims), cuts the rows into chunks of
+    random sizes in ``[1, chunk_max]`` (alternately FLAT and dictionary-style VARCHAR entries, so both string forms are run), and in
+    each timed run lets ``threads`` workers take chunk indices from one atomic counter and drive the ``Exec`` API (``exec_new`` /
+    ``exec_step``), then merges the workers' executors (``exec_merge``) and calls ``exec_finish``. Command line: the template
+    parameters (as for ``run_query``), then optionally ``<chunk_max> <threads> <seed>``. A decline prints ``LEMMA_DECLINED`` and exits
+    with the decline code; an error of the glue or the scheduling (``StreamOut::Error``) panics."""
+    from declarative_spec import stream
+    from declarative_spec.templates import spec_params
+
+    if not stream.is_stream(spec_rs):
+        raise ValueError("not a stream spec (lemma.toml [run] stream)")
+    verus_part = _stitch_stream(spec_rs, regions)
+    structs = re.findall(r"pub struct (Cols_[A-Za-z0-9_]+)\s*\{([^}]+)\}", verus_part, re.DOTALL)
+    if len(structs) != 1:
+        raise ValueError("a stream program reads one table")
+    struct_name, body = structs[0]
+    ts = struct_name.removeprefix("Cols_")
+    fields = re.findall(r"pub\s+((?:r#)?[A-Za-z_][A-Za-z0-9_]*):\s+Vec<([^>]+)>", body)
+    if column_bins is None:
+        load = f"    let n_{ts}: usize = 0;\n" + "".join(
+            f"    let {ts}_{_local_ident(f)}: Vec<{t}> = Vec::new();\n" for f, t in fields
+        )
+    else:
+        bin_path = column_bins.get(ts)
+        if not bin_path:
+            raise ValueError(f"no column file for {ts}")
+        load, _args = _read_column_prelude(bin_path, ts, fields, checks=_runtime_checks(verus_part, ts, fields))
+    params = spec_params(verus_part)
+    np = len(params)
+    names = ", ".join(n for n, _t, _lo, _hi in params)
+    prelude = [
+        "    let lemma_argv: Vec<String> = std::env::args().collect();",
+        f'    assert!(lemma_argv.len() == {np + 1} || lemma_argv.len() == {np + 4}, "expected {np} query parameter values ({names}), then optionally <chunk_max> <threads> <seed>");',
+    ]
+    inits = []
+    for index, (name, ty, lo, hi) in enumerate(params, start=1):
+        if ty == "String":
+            raise ValueError("a stream spec has no VARCHAR template parameter")
+        prelude.append(f'    let param_{name}: {ty} = lemma_argv[{index}].parse::<{ty}>().expect("parameter {name}: not a {ty}");')
+        if lo is not None and hi is not None:
+            prelude.append(
+                f'    assert!((param_{name} as i128) >= {lo}i128 && (param_{name} as i128) <= {hi}i128, "parameter {name} = {{}} is outside its declared range [{lo}, {hi}]", param_{name});'
+            )
+        inits.append(f"{name}: param_{name}")
+    prelude.append(
+        f"    let (lemma_chunk_max, lemma_threads, lemma_seed): (usize, usize, u64) = if lemma_argv.len() == {np + 4} {{\n"
+        f'        (lemma_argv[{np + 1}].parse().expect("chunk_max"), lemma_argv[{np + 2}].parse().expect("threads"), lemma_argv[{np + 3}].parse().expect("seed"))\n'
+        f"    }} else {{\n        ({STREAM_DEFAULT_CHUNK_MAX}, {STREAM_DEFAULT_THREADS}, {STREAM_DEFAULT_SEED})\n    }};\n"
+        '    assert!(lemma_chunk_max >= 1 && lemma_threads >= 1, "chunk_max and threads must be at least 1");'
+    )
+    params_init = f"Params {{ {', '.join(inits)} }}"
+    # per chunk: one RawChunk with one address per column; VARCHAR columns get their sel / entries buffers built here
+    str_cols = [f for f, t in fields if t == "String"]
+    str_bufs = "".join(
+        f"        let (sel_{_local_ident(f)}, ents_{_local_ident(f)}) = lemma_str_chunk(&{ts}_{_local_ident(f)}[off..off + len], c % 2 == 1);\n"
+        for f in str_cols
+    )
+    raw_fields = []
+    for f, t in fields:
+        v = f"{ts}_{_local_ident(f)}"
+        if t == "String":
+            raw_fields += [
+                f"{_local_ident(f)}_sel: sel_{_local_ident(f)}.as_ptr() as usize",
+                f"{_local_ident(f)}_ents: ents_{_local_ident(f)}.as_ptr() as usize",
+                f"{_local_ident(f)}_nents: ents_{_local_ident(f)}.len() as u64",
+                f"{_local_ident(f)}_dict: if c % 2 == 1 {{ c as u64 + 1 }} else {{ 0 }}",
+            ]
+        else:
+            raw_fields.append(f"{_local_ident(f)}: {v}[off..].as_ptr() as usize")
+    keep = "".join(f"        lemma_keep.push((sel_{_local_ident(f)}, ents_{_local_ident(f)}));\n" for f in str_cols)
+    fields_out = _out_row_fields(verus_part)
+    hex_fn, rows = _row_printer("lemma_rows", fields_out)
+    main_fn = f"""// ---- binary-mode stream main (lemma.toml [run] stream): plain Rust, not proved ----
+
+// xorshift64*: the chunk sizes (reproducible from the seed)
+fn lemma_next(s: &mut u64) -> u64 {{
+    *s ^= *s >> 12;
+    *s ^= *s << 25;
+    *s ^= *s >> 27;
+    s.wrapping_mul(0x2545_f491_4f6c_dd1d)
+}}
+
+// DuckDB's string_t for one string (the bytes stay where they are: the column vector owns them).
+fn lemma_str_raw(s: &str) -> StrRaw {{
+    let b = s.as_bytes();
+    let mut w = [0u8; 16];
+    w[0..4].copy_from_slice(&(b.len() as u32).to_le_bytes());
+    if b.len() <= 12 {{
+        w[4..4 + b.len()].copy_from_slice(b);
+    }} else {{
+        w[4..8].copy_from_slice(&b[0..4]);
+        w[8..16].copy_from_slice(&(b.as_ptr() as u64).to_le_bytes());
+    }}
+    StrRaw {{ w0: u64::from_le_bytes(w[0..8].try_into().unwrap()), w1: u64::from_le_bytes(w[8..16].try_into().unwrap()) }}
+}}
+
+// One chunk of a VARCHAR column: FLAT (one entry per row, sel the identity) or dictionary-style (distinct entries, sel into them).
+fn lemma_str_chunk(rows: &[String], dict: bool) -> (Vec<u32>, Vec<StrRaw>) {{
+    let mut sel = Vec::with_capacity(rows.len());
+    let mut ents = Vec::new();
+    if dict {{
+        let mut seen: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+        for s in rows {{
+            let next = ents.len() as u32;
+            let j = *seen.entry(s.as_str()).or_insert(next);
+            if j == next {{
+                ents.push(lemma_str_raw(s));
+            }}
+            sel.push(j);
+        }}
+    }} else {{
+        for (r, s) in rows.iter().enumerate() {{
+            ents.push(lemma_str_raw(s));
+            sel.push(r as u32);
+        }}
+    }}
+    (sel, ents)
+}}
+
+fn main() {{
+{chr(10).join(prelude)}
+    let lemma_p = {params_init};
+    let load_start = std::time::Instant::now();
+{load}    println!("LOAD_US: {{}}", load_start.elapsed().as_micros());
+    // the chunks: random sizes in [1, chunk_max], in row order; chunk c is [off, off + len)
+    let mut lemma_rng: u64 = lemma_seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+    let mut lemma_raws: Vec<RawChunk_{ts}> = Vec::new();
+    let mut lemma_keep: Vec<(Vec<u32>, Vec<StrRaw>)> = Vec::new();
+    let mut off: usize = 0;
+    let mut c: usize = 0;
+    while off < n_{ts} {{
+        let len = std::cmp::min(1 + (lemma_next(&mut lemma_rng) as usize) % lemma_chunk_max, n_{ts} - off);
+{str_bufs}        lemma_raws.push(RawChunk_{ts} {{ j: c as u64, off: off as u64, len: len as u64, {", ".join(raw_fields)} }});
+{keep}        off += len;
+        c += 1;
+    }}
+    let _ = &lemma_keep;
+    let lemma_end = StreamEnd_{ts} {{ m: lemma_raws.len() as u64, n: n_{ts} as u64 }};
+    let lemma_sh_raw = &lemma_end as *const StreamEnd_{ts} as usize;
+    println!("STREAM_CHUNKS: {{}}", lemma_raws.len());
+    println!("STREAM_THREADS: {{}}", lemma_threads);
+    let mut samples: [u128; {TIMED_RUNS}] = [0; {TIMED_RUNS}];
+    let mut lemma_out: Option<StreamOut> = None;
+    let mut s: usize = 0;
+    while s < {TIMED_RUNS} {{
+        let start = std::time::Instant::now();
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let raws = &lemma_raws;
+        let mut execs: Vec<Exec> = std::thread::scope(|sc| {{
+            let handles: Vec<_> = (0..lemma_threads)
+                .map(|_| {{
+                    let next = &next;
+                    sc.spawn(move || {{
+                        let mut e = exec_new(Stream_{ts} {{ id: 0, raw: lemma_sh_raw }}, lemma_p);
+                        loop {{
+                            let j = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            if j >= raws.len() {{
+                                break;
+                            }}
+                            e = exec_step(e, &raws[j]);
+                        }}
+                        e
+                    }})
+                }})
+                .collect();
+            handles.into_iter().map(|h| h.join().expect("a stream worker panicked")).collect()
+        }});
+        let mut e = execs.pop().expect("at least one worker");
+        while let Some(other) = execs.pop() {{
+            e = exec_merge(e, other);
+        }}
+        let out = exec_finish(e);
+        samples[s] = start.elapsed().as_micros();
+        lemma_out = Some(out);
+        s += 1;
+    }}
+    samples.sort();
+    let lemma_rows = match lemma_out.expect("timed runs") {{
+        StreamOut::Rows(r) => r,
+        StreamOut::Declined => {{
+            println!("{decline.DECLINE_LINE}");
+            std::process::exit({decline.DECLINE_EXIT_CODE});
+        }}
+        StreamOut::Error => panic!("LEMMA_STREAM_ERROR: a chunk was lost, doubled or malformed (the stream runtime refused to answer)"),
+    }};
+    println!("QUERY_LATENCY_US: {{}}", samples[{TIMED_RUNS // 2}]);
+    println!("QUERY_LATENCY_BEST_US: {{}}", samples[0]);
+    println!("TIMED_RUNS: {TIMED_RUNS}");
+{rows}}}
+"""
+    return verus_part + "\n\n" + hex_fn + main_fn

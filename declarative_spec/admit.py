@@ -383,3 +383,47 @@ def admit_stateful(*, state: str, build: str, execute: str, helpers: str, spec_r
     if not re.search(r"\bspec\s+fn\s+qstate_inv\s*\(", cleaned):
         violations.append("helper region must define `spec fn qstate_inv(s: &QState) -> bool` (the state invariant)")
     return AdmitResult(ok=len(violations) == 0, violations=list(dict.fromkeys(violations)))
+
+
+# Stream contract (lemma.toml [run] stream, declarative_spec/stream.py): names of the host runtime, the chunk glue and the trusted items
+# S1/S2 that no agent region may use. The agent reads a chunk only through its public view (c.off, c.len, c.<col>, c.<col>.sel,
+# c.<col>.ents and str_ent); the string_t buffer (`.raw`), the glue's chunk / stream structs and the runtime's Exec are internals.
+_STREAM_INTERNALS = re.compile(
+    r"\b(?:Exec|exec_new|exec_step|exec_merge|exec_finish|exec_ok|StreamOut|StrRaw|seg_fold|seg_agg|lemma_stream_total"
+    r"|RawChunk_\w+|StreamEnd_\w+|Stream_\w+|stream_end_\w+|lemma_stream_slice|lemma_stream_str_bytes|lemma_stream_strings_ok)\b"
+    r"|\bchunk_(?!ok_)\w+\s*\("  # S1 (chunk_<t>); the predicate chunk_ok_<t> is allowed
+    r"|\.\s*raw\b"
+    r"|\b(?:Chunk_\w+|StrCol)\s*\{"  # building a chunk view by hand
+)
+
+
+def _stream_internals(cleaned: str) -> list[str]:
+    return [f"stream internals: {m.group(0).strip()}" for m in _STREAM_INTERNALS.finditer(cleaned)]
+
+
+def admit_stream(*, state: str, helpers: str, init: str, step: str, merge: str, finish: str, spec_rs: str) -> AdmitResult:
+    """The six agent regions of a stream spec. State: `struct` / `enum` items, `QAcc` among them; bodies: the `run_query` body rules;
+    helpers: the helper rules, and they must define `spec fn qacc_inv` and `spec fn st_val`. No region may add trusted items
+    (external_body / assume / admit are rejected by the shared rules) or touch the runtime, the glue or S1/S2 (`_STREAM_INTERNALS`)."""
+    violations = list(admit_state(state, spec_rs).violations)
+    violations = [v.replace("(the agent part of QState)", "(the stream state)") for v in violations]
+    for name, body in (("init", init), ("step", step), ("merge", merge), ("finish", finish)):
+        violations += [f"{name}: {v}" for v in admit_declarative_body(body).violations]
+    violations += admit_helpers(helpers, spec_rs).violations
+    for name, text in (("state", state), ("helpers", helpers), ("init", init), ("step", step), ("merge", merge), ("finish", finish)):
+        try:
+            cleaned = _strip_comments_and_strings(text)
+        except ValueError:
+            continue  # reported above
+        violations += [f"{name}: {v}" for v in _stream_internals(cleaned)]
+        if name == "state" and re.search(r"&|'[A-Za-z_]", cleaned):
+            violations.append("state: QAcc and its types hold no references or lifetimes")
+    try:
+        h = _strip_comments_and_strings(helpers)
+    except ValueError:
+        h = ""
+    if not re.search(r"\bspec\s+fn\s+qacc_inv\s*\(", h):
+        violations.append("helper region must define `spec fn qacc_inv(s: &QAcc) -> bool` (the state invariant)")
+    if not re.search(r"\bspec\s+fn\s+st_val\s*\(", h):
+        violations.append("helper region must define `spec fn st_val(s: &QAcc, k: Key) -> Agg` (the value a state stands for)")
+    return AdmitResult(ok=len(violations) == 0, violations=list(dict.fromkeys(violations)))

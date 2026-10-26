@@ -472,8 +472,11 @@ def emit_declarative_spec(
 
     SQL with a ``-- params:`` header is a query template ([sql] templates, see ``templates``): its parameters become
     arguments of the spec and of ``run_query``."""
-    from declarative_spec import decline, stateful, templates
+    from declarative_spec import decline, stateful, stream, templates
 
+    if stream.enabled():
+        stream.check_settings()
+        stream.check_sql(sql)
     decline.check_catalog(catalog)
     template = templates.parse_template(sql)
     if template is not None:
@@ -486,7 +489,11 @@ def emit_declarative_spec(
         spec = stateful.to_stateful(spec)
         return stateful.wrap_decline(spec) if decline.enabled() else spec
     # lemma.toml assumptions = false (the default): no data caps were stated above, and run_query may decline (decline.py).
-    return decline.wrap_option(spec) if decline.enabled() else spec
+    spec = decline.wrap_option(spec) if decline.enabled() else spec
+    if stream.enabled():
+        # The streaming executor contract replaces run_query (declarative_spec/stream.py, docs/STREAM.md); other shapes are refused there.
+        return stream.to_stream(spec)
+    return spec
 
 
 def _emit_fixed(
@@ -514,8 +521,11 @@ def _emit_fixed(
         from declarative_spec.exact_rational import finish_exact_spec
 
         out = finish_exact_spec(out)  # exact rationals, no float: a FLOAT/DOUBLE operand is refused here
-    from declarative_spec import agent_scan, parallel, stateful
+    from declarative_spec import agent_scan, parallel, stateful, stream
 
+    if stream.enabled():
+        # no Arc (parallel) variant and no scan handles: the stream contract has its own chunk view (declarative_spec/stream.py)
+        return out
     if stateful.enabled():
         # no Arc (parallel) variant: the state may hold Arcs itself; emit_declarative_spec applies the stateful contract (scan handles go to build)
         return agent_scan.add_scans(out) if agent_scan.enabled() else out
