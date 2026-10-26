@@ -34,7 +34,16 @@ import duckdb
 import lemma_config
 
 from declarative_spec import decline
-from declarative_spec.assemble_library import ABI_VERSION, assemble_library_program, input_layout, output_layout, param_layout
+from declarative_spec.assemble_library import (
+    ABI_VERSION,
+    STREAM_ABI_VERSION,
+    assemble_library_program,
+    assemble_stream_library_program,
+    input_layout,
+    output_layout,
+    param_layout,
+    stream_layout,
+)
 from declarative_spec.emit import emit_declarative_spec
 from declarative_spec.sql_text import _WS, _ident_char, _opaque_end, _string_end, _strip_end, literal_at, normalize_sql  # noqa: F401  (moved; re-exported)
 from research_loop.decl_query_measure import _DECIMAL_TYPE, plan_tables
@@ -251,22 +260,37 @@ def install_executor(
 
     The manifest records what the extension needs and checks: the input layout with the DuckDB column types read at install,
     the result types, the DuckDB version, the proof line, the spec and library hashes, the git commit. ``abi`` 4 installs a
-    version-4 library (no ``lemma_run_borrowed``; for tests of the extension's version-4 path)."""
+    version-4 library (no ``lemma_run_borrowed``; for tests of the extension's version-4 path).
+
+    A stream spec (lemma.toml [run] stream, docs/STREAM.md) installs a STREAMING executor: ``agent_source`` holds the six regions
+    (AGENT_STATE / HELPERS / INIT / STEP / MERGE / FINISH, admitted by ``admit_stream``), the library is the ABI 6 template
+    (``assemble_stream_library_program``; ``abi`` is then 6 whatever was passed), and the manifest says ``mode: "stream"`` with a
+    ``stream`` section (the chunk layout). No pushed predicate (docs/STREAM.md: the proved step evaluates the WHERE)."""
     require_enabled()
-    from declarative_spec.admit import admit_declarative_body, admit_helpers
+    from declarative_spec import stream
+    from declarative_spec.admit import admit_declarative_body, admit_helpers, admit_stream
     from declarative_spec.regions import extract_agent_edit, extract_agent_helpers
 
     spec = emit_declarative_spec(sql, schema, catalog)
-    if "AGENT_EDIT_START" in agent_source:
-        body, helpers = extract_agent_edit(agent_source), extract_agent_helpers(agent_source)
+    streaming = stream.is_stream(spec)
+    if streaming:
+        regions = stream.extract_regions(agent_source)
+        violations = list(admit_stream(**regions, spec_rs=spec).violations)
+        if violations:
+            raise ValueError("; ".join(violations))
+        program = assemble_stream_library_program(spec, regions, sql=sql)
+        abi = STREAM_ABI_VERSION
     else:
-        body, helpers = agent_source.strip(), ""
-    violations = list(admit_declarative_body(body).violations)
-    if helpers:
-        violations += admit_helpers(helpers, spec).violations
-    if violations:
-        raise ValueError("; ".join(violations))
-    program = assemble_library_program(spec, body, helpers=helpers, sql=sql, abi=abi)
+        if "AGENT_EDIT_START" in agent_source:
+            body, helpers = extract_agent_edit(agent_source), extract_agent_helpers(agent_source)
+        else:
+            body, helpers = agent_source.strip(), ""
+        violations = list(admit_declarative_body(body).violations)
+        if helpers:
+            violations += admit_helpers(helpers, spec).violations
+        if violations:
+            raise ValueError("; ".join(violations))
+        program = assemble_library_program(spec, body, helpers=helpers, sql=sql, abi=abi)
     plain_sql, params = template_params(sql, spec)
     con = duckdb.connect(str(db_path), read_only=True)
     try:
@@ -274,7 +298,8 @@ def install_executor(
         outputs = output_descriptors(plain_sql, spec, con)
     finally:
         con.close()
-    add_pushdown(inputs, sql, schema)
+    if not streaming:
+        add_pushdown(inputs, sql, schema)
     home = home or lemma_home()
     key = executor_key(sql)
     final = home / "executors" / key
@@ -306,6 +331,10 @@ def install_executor(
             "inputs": inputs,
             "outputs": outputs,
         }
+        if streaming:
+            # ABI 6: the extension's StreamTable hands DuckDB's chunks to the library in this column order (lemma_stream_layout).
+            manifest["mode"] = "stream"
+            manifest["stream"] = {"layout": stream_layout(spec), "pushdown": False}
         (stage / "manifest.json").write_text(json.dumps(manifest, indent=1) + "\n")
         (stage / "query.sql").write_text(sql + "\n")
         shutil.rmtree(stage / "build", ignore_errors=True)

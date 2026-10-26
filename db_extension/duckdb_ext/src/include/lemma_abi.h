@@ -1,4 +1,5 @@
-// The C ABI of a Lemma executor library (ABI version 5: version 4 plus lemma_run_borrowed, which reads the owned-type input
+// The C ABI of a Lemma executor library. ABI version 6 (below, "ABI 6") is the streaming executor: no lemma_run, chunks handed in
+// place. ABI version 5: version 4 plus lemma_run_borrowed, which reads the owned-type input
 // columns in place without taking them; version 4 added owned input columns, version 3 the DECLINED status of lemma_run,
 // version 2 query-template parameters). Emitted by declarative_spec/assemble_library.py, the same
 // template for every query; the proved run_query sits behind lemma_run. Little-endian cells throughout.
@@ -65,6 +66,55 @@ typedef uint8_t *(*lemma_alloc_input_fn)(uint64_t index, uint64_t cap);
 // Return an owned buffer of input `index` (len = its allocated bytes) that was never passed to lemma_run (a buffer only ever
 // LENT to lemma_run_borrowed, ABI 5, goes back here after its last call returned).
 typedef void (*lemma_free_input_fn)(uint64_t index, uint8_t *data, uint64_t len);
+
+// ---- ABI 6: streaming executors (lemma.toml [run] stream, docs/STREAM.md; declarative_spec/assemble_library.py "ABI 6") ----------
+// A stream executor has no lemma_run: the extension's scan hands it DuckDB's chunks in place. Per query: lemma_stream_open (the
+// parameters), one lemma_stream_worker per scan thread, lemma_stream_step per chunk, pairwise lemma_stream_merge, one
+// lemma_stream_finish (LMR1 as lemma_run), lemma_stream_close. lemma_input_layout / lemma_output_layout / lemma_param_layout as above;
+// lemma_stream_layout: one line per LemmaVec of a chunk, "<field> <rust type> <bytes per cell>" or "<field> String str".
+//
+// What the extension promises (the trusted items S1 / S2 of the proof rely on it): each chunk is rows of DuckDB's parallel scan of the
+// table in the caller's transaction (MVCC applied, the transaction's own uncommitted rows included, no pushed predicate), every row
+// exactly once; (j, off) of a chunk come from ONE fetch_add of the stream's counter (j += 1, off += len), each chunk is stepped once on
+// one worker; finish gets m = chunks handed out and n = rows (the counter's final values) after every worker returned and was merged.
+// Fixed-width cells are in the column-file encoding (DATE days i32, DECIMAL scaled to the spec's scale, bool one byte 0/1, a nullable
+// column's NULL cells any value with its __valid column 0 there); VARCHAR: `sel` len u32 indices into `nents` DuckDB string_t
+// entries (16 bytes), every entry a valid string_t (NULL rows point at an empty entry). The library checks the column count, null and
+// misaligned buffers, bool cells, selection ranges and UTF-8; its proved runtime checks that the chunks tile [0, n) (ERROR otherwise).
+
+// One column of a chunk.
+typedef struct {
+	const uint8_t *data;  // fixed width: len cells; VARCHAR: nents string_t entries
+	const uint32_t *sel;  // VARCHAR: len indices into the entries; NULL for a fixed-width column
+	uint64_t nents;       // VARCHAR: entries at data
+	uint64_t dict;        // VARCHAR: DuckDB's dictionary id (hashed; 0 = FLAT or unknown). Plain data: nothing is claimed about it
+} LemmaVec;
+
+typedef struct {
+	uint64_t j, off, len; // chunk index and first row (one fetch_add), rows
+	uint64_t ncols;
+	const LemmaVec *cols; // ncols columns in lemma_stream_layout order
+} LemmaChunk;
+
+typedef struct LemmaStream LemmaStream;
+typedef struct LemmaWorker LemmaWorker;
+
+// lemma_stream_step / lemma_stream_merge: go on; poisoned (the answer will be a decline or an error: hand no more chunks); the glue
+// refused the chunk or a call panicked (finishing anything merged with this worker is an ERROR).
+#define LEMMA_STEP_OK 0
+#define LEMMA_STEP_POISONED 1
+#define LEMMA_STEP_ERROR 2
+
+// build/nbuild: phase 2 (joins); phase 1 takes nbuild = 0. NULL on a bad parameter, err = the message (free it with lemma_free_out).
+typedef LemmaStream *(*lemma_stream_open_fn)(const LemmaCol *build, uint64_t nbuild, const LemmaParam *params, uint64_t nparams,
+                                             LemmaOut *err);
+typedef LemmaWorker *(*lemma_stream_worker_fn)(LemmaStream *s, LemmaOut *err);
+typedef int32_t (*lemma_stream_step_fn)(LemmaWorker *w, const LemmaChunk *c);
+typedef int32_t (*lemma_stream_merge_fn)(LemmaWorker *into, LemmaWorker *from); // `from` is consumed
+// `w` is consumed; LEMMA_STATUS_* as lemma_run (OK: out = LMR1, load_us 0).
+typedef int32_t (*lemma_stream_finish_fn)(LemmaWorker *w, uint64_t m, uint64_t n, LemmaOut *out);
+typedef void (*lemma_stream_drop_fn)(LemmaWorker *w);
+typedef void (*lemma_stream_close_fn)(LemmaStream *s); // after every worker of it is finished or dropped
 
 #ifdef __cplusplus
 }
