@@ -166,8 +166,12 @@ def _db(values: list[str | None]) -> duckdb.DuckDBPyConnection:
 
 
 def test_export_round_trips_tricky_strings_exactly() -> None:
-    """Emoji, NUL, newline, CRLF, trailing space, empty, composed vs decomposed e, 100 kB: dict[code[i]] == DuckDB's cell."""
-    values = TRICKY + TRICKY[::-1] + ["a"] * 5
+    """Emoji, newline, CRLF, trailing space, empty, composed vs decomposed e, 100 kB: dict[code[i]] == DuckDB's cell.
+
+    NUL is left out: since the bulk exporter (6a72b18, exporter_bulk_ADVERSARY_VERDICT.md finding 4) a NUL in a dictionary
+    string is a loud refusal, checked below."""
+    tricky = [v for v in TRICKY if "\x00" not in v]
+    values = tricky + tricky[::-1] + ["a"] * 5
     con = _db(values)
     model = SchemaModel.from_caller(SCHEMA, "t")
     blob = _export_table(con, model, "t", [("s", "u8"), ("s__dict", "String")])
@@ -178,6 +182,13 @@ def test_export_round_trips_tricky_strings_exactly() -> None:
     duck_cells = [r[0] for r in con.execute("SELECT s FROM t ORDER BY a").fetchall()]
     assert [entries[c] for c in codes] == duck_cells == values
     assert len(entries) == con.execute("SELECT COUNT(DISTINCT s) FROM t").fetchone()[0]
+
+
+def test_export_refuses_a_nul_byte_in_a_dictionary_string() -> None:
+    con = _db(["a", "nul\x00byte"])
+    model = SchemaModel.from_caller(SCHEMA, "t")
+    with pytest.raises(ValueError, match="NUL byte in a dictionary string"):
+        _export_table(con, model, "t", [("s", "u8"), ("s__dict", "String")])
 
 
 def _decode_dict_after_codes(blob: bytes, n: int, width: int) -> list[str]:
