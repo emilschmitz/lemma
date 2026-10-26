@@ -434,13 +434,15 @@ def _capture_install(monkeypatch: pytest.MonkeyPatch) -> dict:
     seen: dict = {}
 
     def fake_install(**kw):
-        seen.update(kw, assumptions_env=os.environ.get("LEMMA_ASSUMPTIONS"), exact_division_env=os.environ.get("LEMMA_EXACT_DIVISION"))
+        seen.update(kw, assumptions_env=os.environ.get("LEMMA_ASSUMPTIONS"), exact_division_env=os.environ.get("LEMMA_EXACT_DIVISION"),
+                    stream_env=os.environ.get("LEMMA_STREAM"))
         return Path("/installed")
 
     monkeypatch.setattr(in_duckdb, "install_executor", fake_install)
     monkeypatch.setattr(declarative_round, "tpch_schema_and_catalog", lambda db: (SCHEMA, None))
     monkeypatch.setenv("LEMMA_ASSUMPTIONS", "unset-by-install_run")  # install_run must set it from the run
     monkeypatch.setenv("LEMMA_EXACT_DIVISION", "unset-by-install_run")
+    monkeypatch.setenv("LEMMA_STREAM", "unset-by-install_run")
     return seen
 
 
@@ -514,3 +516,20 @@ def test_installing_a_run_without_a_saved_schema_reads_the_database(tmp_path: Pa
     seen = _capture_install(monkeypatch)
     install_run(_run_dir(tmp_path, tmp_path / "d.duckdb", {}, {"LEMMA_ASSUMPTION_PACKAGE": "tpch_sf1"}), tmp_path / "home")
     assert seen["schema"] == SCHEMA
+
+
+def test_installing_a_stream_run_states_the_stream_spec(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # stream Q1 (2026-10-26): a streaming run's body was admitted as a run_query body because the install ignored [run] stream
+    from research_loop.scripts.in_duckdb_install_run import install_run
+
+    seen = _capture_install(monkeypatch)
+    install_run(_run_dir(tmp_path, tmp_path / "d.duckdb", {"stream": {"value": True}}, {"LEMMA_ASSUMPTION_PACKAGE": "tpch_sf1"}), tmp_path / "home")
+    assert seen["stream_env"] == "true"
+
+
+def test_installing_a_run_from_before_stream_is_not_a_stream(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from research_loop.scripts.in_duckdb_install_run import install_run
+
+    seen = _capture_install(monkeypatch)
+    install_run(_run_dir(tmp_path, tmp_path / "d.duckdb", {}, {"LEMMA_ASSUMPTION_PACKAGE": "tpch_sf1"}), tmp_path / "home")
+    assert seen["stream_env"] == "false"

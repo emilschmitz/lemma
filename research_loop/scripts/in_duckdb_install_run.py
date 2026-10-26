@@ -40,7 +40,7 @@ def install_run(run_dir: Path, home: Path) -> Path:
     # Keys that shape the spec but came later: a run that predates them had them off (agent_scan adds scan handles to run_query;
     # templates makes a `-- params:` header a template; exact_division states AVG and `/` as exact rationals instead of f64). The pushdown
     # of the executor's scan is this install's setting (lemma.toml).
-    for key in ("agent_scan", "templates", "exact_division"):
+    for key in ("agent_scan", "templates", "exact_division", "stream"):  # stream: a streaming executor (ABI 6, docs/STREAM.md)
         raw_key = config.get(key)
         if raw_key is None:
             value = key == "templates" and "-- params:" in manifest["sql"]  # a template run had the switch on
