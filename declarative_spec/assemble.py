@@ -554,6 +554,43 @@ def _read_column_prelude(
     return "\n".join(lines) + "\n", ", ".join(args)
 
 
+def _read_stream_prelude(path: str, suffix: str, fields: list[tuple[str, str]], *, checks: list[str]) -> str:
+    """The binary-mode stream main's reader of the same column file as ``_read_column_prelude`` (n, then each column in Cols order),
+    read front to back through a buffer instead of whole: a fixed-width column becomes ``Vec<ty>``, a VARCHAR column ``<var>: Vec<u32>``
+    (one code per row) plus ``<var>_dict: Vec<String>`` (its distinct strings). Same loud checks (exact length, the ``valid_cols``
+    conjuncts in ``checks``)."""
+    escaped = path.replace("\\", "\\\\").replace('"', '\\"')
+    lines = [
+        "    use std::io::Read as _;",
+        f'    let mut rd_{suffix} = std::io::BufReader::with_capacity(1 << 22, std::fs::File::open("{escaped}").expect("cols"));',
+        f"    let n_{suffix} = u64::from_le_bytes(lemma_read_bytes(&mut rd_{suffix}, 8)[..].try_into().unwrap()) as usize;",
+    ]
+    for fname, fty in fields:
+        var = f"{suffix}_{_local_ident(fname)}"
+        if fname.endswith("__dict"):
+            raise ValueError("a stream table has plain strings (no dictionary column)")
+        if fty == "String":
+            lines.append(f'    let ({var}, {var}_dict) = lemma_read_strings(&mut rd_{suffix}, n_{suffix}, "{suffix}.{_local_ident(fname)}");')
+        elif fty == "bool":
+            lines.append(f"    let {var}: Vec<bool> = lemma_read_bytes(&mut rd_{suffix}, n_{suffix}).iter().map(|&x| x != 0).collect();")
+        elif fty in _WIDTH:
+            width = _WIDTH[fty]
+            lines.append(
+                f"    let {var}: Vec<{fty}> = lemma_read_bytes(&mut rd_{suffix}, n_{suffix} * {width}).chunks_exact({width})"
+                f".map(|x| {fty}::from_le_bytes(x.try_into().unwrap())).collect();"
+            )
+        else:
+            raise ValueError(f"cannot load column type {fty}")
+    lines.append(
+        f'    assert!(rd_{suffix}.read(&mut [0u8; 1]).expect("cols") == 0, "{suffix}: column file has trailing or missing bytes");'
+    )
+    for fname, _fty in fields:
+        var = f"{suffix}_{_local_ident(fname)}"
+        lines.append(f'    assert!({var}.len() == n_{suffix}, "{suffix}.{_local_ident(fname)}: {{}} values for {{}} rows", {var}.len(), n_{suffix});')
+    lines.extend(checks)
+    return "\n".join(lines) + "\n"
+
+
 def _out_row_fields(verus_part: str) -> list[tuple[str, str]]:
     match = re.search(r"pub struct OutRow\s*\{([^}]+)\}", verus_part)
     if not match:
@@ -929,13 +966,21 @@ def assemble_stream_program(spec_rs: str, regions: dict[str, str], *, column_bin
     fields = re.findall(r"pub\s+((?:r#)?[A-Za-z_][A-Za-z0-9_]*):\s+Vec<([^>]+)>", body)
     if column_bins is None:
         load = f"    let n_{ts}: usize = 0;\n" + "".join(
-            f"    let {ts}_{_local_ident(f)}: Vec<{t}> = Vec::new();\n" for f, t in fields
+            f"    let {ts}_{_local_ident(f)}: Vec<{'u32' if t == 'String' else t}> = Vec::new();\n"
+            + (f"    let {ts}_{_local_ident(f)}_dict: Vec<String> = Vec::new();\n" if t == "String" else "")
+            for f, t in fields
         )
     else:
         bin_path = column_bins.get(ts)
         if not bin_path:
             raise ValueError(f"no column file for {ts}")
-        load, _args = _read_column_prelude(bin_path, ts, fields, checks=_runtime_checks(verus_part, ts, fields))
+        load = _read_stream_prelude(bin_path, ts, fields, checks=_runtime_checks(verus_part, ts, fields))
+    # every distinct string of a VARCHAR column once, as DuckDB's string_t (inline up to 12 bytes, else pointing into the String's buffer)
+    load += "".join(
+        f"    let {ts}_{_local_ident(f)}_raws: Vec<StrRaw> = {ts}_{_local_ident(f)}_dict.iter().map(|s| lemma_str_raw(s)).collect();\n"
+        for f, t in fields
+        if t == "String"
+    )
     params = spec_params(verus_part)
     np = len(params)
     names = ", ".join(n for n, _t, _lo, _hi in params)
@@ -963,7 +1008,7 @@ def assemble_stream_program(spec_rs: str, regions: dict[str, str], *, column_bin
     # per chunk: one RawChunk with one address per column; VARCHAR columns get their sel / entries buffers built here
     str_cols = [f for f, t in fields if t == "String"]
     str_bufs = "".join(
-        f"        let (sel_{_local_ident(f)}, ents_{_local_ident(f)}) = lemma_str_chunk(&{ts}_{_local_ident(f)}[off..off + len], c % 2 == 1);\n"
+        f"        let (sel_{_local_ident(f)}, ents_{_local_ident(f)}) = lemma_str_chunk(&{ts}_{_local_ident(f)}[off..off + len], &{ts}_{_local_ident(f)}_raws, c % 2 == 1);\n"
         for f in str_cols
     )
     raw_fields = []
@@ -1005,27 +1050,64 @@ fn lemma_str_raw(s: &str) -> StrRaw {{
     StrRaw {{ w0: u64::from_le_bytes(w[0..8].try_into().unwrap()), w1: u64::from_le_bytes(w[8..16].try_into().unwrap()) }}
 }}
 
-// One chunk of a VARCHAR column: FLAT (one entry per row, sel the identity) or dictionary-style (distinct entries, sel into them).
-fn lemma_str_chunk(rows: &[String], dict: bool) -> (Vec<u32>, Vec<StrRaw>) {{
-    let mut sel = Vec::with_capacity(rows.len());
+// One chunk of a VARCHAR column (its rows as codes into the column's distinct strings `raws`): FLAT (one entry per row, sel the
+// identity) or dictionary-style (the chunk's distinct entries, sel into them).
+fn lemma_str_chunk(codes: &[u32], raws: &[StrRaw], dict: bool) -> (Vec<u32>, Vec<StrRaw>) {{
+    let mut sel = Vec::with_capacity(codes.len());
     let mut ents = Vec::new();
     if dict {{
-        let mut seen: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
-        for s in rows {{
+        let mut seen: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+        for &code in codes {{
             let next = ents.len() as u32;
-            let j = *seen.entry(s.as_str()).or_insert(next);
+            let j = *seen.entry(code).or_insert(next);
             if j == next {{
-                ents.push(lemma_str_raw(s));
+                let e = &raws[code as usize];
+                ents.push(StrRaw {{ w0: e.w0, w1: e.w1 }});
             }}
             sel.push(j);
         }}
     }} else {{
-        for (r, s) in rows.iter().enumerate() {{
-            ents.push(lemma_str_raw(s));
+        for (r, &code) in codes.iter().enumerate() {{
+            let e = &raws[code as usize];
+            ents.push(StrRaw {{ w0: e.w0, w1: e.w1 }});
             sel.push(r as u32);
         }}
     }}
     (sel, ents)
+}}
+
+// The column file, read front to back (it is column-major in Cols order): fixed-width columns as Vecs; a VARCHAR column as one u32
+// code per row into its distinct strings, so the main does not hold one String per row (SF10 lineitem: 120M of them).
+fn lemma_read_bytes(rd: &mut impl std::io::Read, n: usize) -> Vec<u8> {{
+    let mut b = vec![0u8; n];
+    rd.read_exact(&mut b).expect("cols: column file is shorter than its header says");
+    b
+}}
+
+fn lemma_read_strings(rd: &mut impl std::io::Read, n: usize, what: &str) -> (Vec<u32>, Vec<String>) {{
+    let mut codes: Vec<u32> = Vec::with_capacity(n);
+    let mut dict: Vec<String> = Vec::new();
+    let mut idx: std::collections::HashMap<Vec<u8>, u32> = std::collections::HashMap::new();
+    let mut buf: Vec<u8> = Vec::new();
+    let mut lb = [0u8; 4];
+    for _ in 0..n {{
+        rd.read_exact(&mut lb).expect("cols: column file is shorter than its header says");
+        let len = u32::from_le_bytes(lb) as usize;
+        buf.resize(len, 0);
+        rd.read_exact(&mut buf).expect("cols: column file is shorter than its header says");
+        let code = match idx.get(&buf[..]) {{
+            Some(&c) => c,
+            None => {{
+                assert!(dict.len() < u32::MAX as usize, "{{}}: more than u32::MAX distinct strings", what);
+                let c = dict.len() as u32;
+                dict.push(String::from_utf8(buf.clone()).expect("utf8"));
+                idx.insert(buf.clone(), c);
+                c
+            }}
+        }};
+        codes.push(code);
+    }}
+    (codes, dict)
 }}
 
 fn main() {{

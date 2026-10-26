@@ -199,6 +199,21 @@ from declarative_spec.principles import names as _principle_names  # noqa: E402
 UNMOUNTED.update({f"principles/{n}": "mounted only with LEMMA_EXAMPLES=principles (declarative_spec/principles.py)" for n in _principle_names()})
 
 
+# lemma.toml [run] stream: verified six-region stream programs on the invented table `t` (no benchmark query). With the stream flag on,
+# examples = full and principles mount these (and only these: a run_query body does not apply); examples = none mounts nothing.
+STREAM_EXAMPLES: tuple[tuple[str, str], ...] = (
+    (
+        "stream/ungrouped_sum_filter.rs",
+        "ungrouped SUM of a nullable BIGINT with a two-column filter: a three-field state (sum, rows passing the WHERE, summed cells), checked i128 adds that decline on overflow, NULL when no cell is summed",
+    ),
+    (
+        "stream/group_string_count_sum.rs",
+        "GROUP BY a VARCHAR key, COUNT(*) and SUM of a DECIMAL: key -> slot `StringHashMap` with its key list and per-slot Vecs, an exec helper `add_to`, merge slot by slot, finish with `lemma_agg_total` per group",
+    ),
+)
+UNMOUNTED.update({name: "mounted only with lemma.toml [run] stream (STREAM_EXAMPLES; checked by tests/test_stream.py)" for name, _w in STREAM_EXAMPLES})
+
+
 INDEX_GROUPS: tuple[tuple[str, str], ...] = (
     (
         r"(^|/)dict_",

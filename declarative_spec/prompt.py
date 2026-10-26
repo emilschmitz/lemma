@@ -475,6 +475,11 @@ def mount_examples(ro: Path) -> None:
     dest = ro / "examples"
     if principles.examples_none():
         return  # LEMMA_EXAMPLES=none: no example file and no examples directory at all
+    from declarative_spec import stream
+
+    if stream.enabled():  # lemma.toml [run] stream: the stream programs only (on an invented table; a run_query body does not apply)
+        mount_stream_examples(dest)
+        return
     if principles.principles_only():
         principles.mount(dest)  # LEMMA_EXAMPLES=principles: the curated technique set only, no benchmark-shaped body
         return
@@ -485,6 +490,36 @@ def mount_examples(ro: Path) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text((_FIXTURES / name).read_text())
     (dest / "INDEX.md").write_text(example_index_markdown(dict_on))
+
+
+def mount_stream_examples(dest: Path) -> None:
+    """lemma.toml [run] stream with examples = full or principles: the verified stream programs (``STREAM_EXAMPLES``) and their INDEX.md.
+    Like ``principles.mount`` it refuses a directory that already holds other files (mount into a fresh workspace)."""
+    from declarative_spec.example_registry import STREAM_EXAMPLES
+
+    dest.mkdir(parents=True, exist_ok=True)
+    wanted = {*(Path(n).name for n, _w in STREAM_EXAMPLES), "INDEX.md"}
+    stale = sorted(str(p.relative_to(dest)) for p in dest.rglob("*") if p.is_file() and str(p.relative_to(dest)) not in wanted)
+    if stale:
+        raise RuntimeError(f"{dest} holds files that are not stream examples ({stale[:5]}...): mount into a fresh workspace")
+    rows = []
+    for name, what in STREAM_EXAMPLES:
+        text = (_FIXTURES / name).read_text()
+        (dest / Path(name).name).write_text(text)
+        rows.append(f"| {what} | `{Path(name).name}` | {len(text.splitlines())} |")
+    (dest / "INDEX.md").write_text("\n".join([
+        "# Worked examples: verified stream programs",
+        "",
+        "Each file holds the six agent regions (AGENT_STATE, AGENT_HELPERS, AGENT_INIT, AGENT_STEP, AGENT_MERGE, AGENT_FINISH) of a stream",
+        "program that Verus verified against the stream contract of a small invented table `t` (columns `a` INTEGER, `b` BIGINT nullable,",
+        "`d` DATE, `s` VARCHAR, `m` DECIMAL(12,2)); the SQL is in each file's header. Your table, columns, `Agg` fields and SQL differ:",
+        "take the proof structure, rename, and redo the arithmetic. They are proof templates, not speed templates.",
+        "",
+        "| shape | file | lines |",
+        "|---|---|---|",
+        *rows,
+        "",
+    ]))
 
 
 _FLOAT_EXAMPLES: tuple[tuple[str, str], ...] = (
@@ -1375,7 +1410,17 @@ def build_declarative_prompt(
     ``spec_text`` is the emitted spec: it selects the one recipe that matches its result type and the
     list of hard features it contains. ``dict_sizes`` (``<table>.<column>`` -> dictionary entries, measured at prepare time) lets the
     prompt say whether a dense slot table over the group-key dictionaries is allowed. When ``in_docker`` is set, paths are the container mount.
+    A stream spec (lemma.toml [run] stream) has no ``run_query``: its prompt is ``stream_prompt.build_stream_prompt``.
     """
+    from declarative_spec import stream
+
+    if stream.is_stream(spec_text):
+        from declarative_spec.stream_prompt import build_stream_prompt
+
+        return build_stream_prompt(
+            sql=sql, spec_path=spec_path, edit_path=edit_path, lemma_index=lemma_index, last_error=last_error,
+            in_docker=in_docker, spec_text=spec_text, restart_note=restart_note,
+        )
     if in_docker:
         spec_path = "/workspace/context/ro/spec.rs"
         edit_path = "/workspace/runquery_agent.rs"

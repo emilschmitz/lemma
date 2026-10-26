@@ -83,9 +83,69 @@ def run_style_case(style: str, conversation_cls=Conversation, directory: Path | 
             )
 
 
+# lemma.toml [run] stream: the grouped stream fixture (all six regions) as the mock's "answer", on a small table of the fixture's shape.
+STREAM_SQL = "SELECT s, COUNT(*) AS c, SUM(m) AS sm FROM t GROUP BY s"
+STREAM_FIXTURE = PROOFS / "stream" / "group_string_count_sum.rs"
+STREAM_ENV = {
+    "LEMMA_STREAM": "1",
+    "LEMMA_PUSHDOWN": "0",  # the stream contract evaluates the WHERE itself (docs/STREAM.md); no pushed export
+    "LEMMA_AGENT_SCAN": "0",
+    "LEMMA_EXAMPLES": "none",  # the experiment's setting: the stream prompt without technique recipes, no example mounted
+}
+# a 20k-row table: the binary-mode main and DuckDB both take about a millisecond, so the bar would be a coin toss; the dry run shows
+# the plumbing (prove, compile, time, official rounds, submit), not a speedup
+STREAM_SPEED_BAR = "0.001"
+
+
+def stream_table(db: Path, rows: int = 20_000, seed: int = 1) -> None:
+    """``t`` as in the stream fixtures (tests/test_stream.py): s VARCHAR and m DECIMAL(12,2), no NULLs in them."""
+    import random
+
+    import duckdb
+
+    rng = random.Random(seed)
+    keys = ["", "x", "short", "a string longer than twelve", "ünïcödé", "A", "x" * 40]
+    con = duckdb.connect(str(db))
+    con.execute("CREATE OR REPLACE TABLE t (a INTEGER NOT NULL, b BIGINT, d DATE NOT NULL, s VARCHAR NOT NULL, m DECIMAL(12,2) NOT NULL)")
+    con.executemany(
+        "INSERT INTO t VALUES (?, ?, DATE '1970-01-01' + CAST(? AS INTEGER), ?, CAST(? AS DECIMAL(12,2)))",
+        [(rng.randint(-5, 20), rng.randint(-1000, 1000), rng.randint(9000, 11500), rng.choice(keys), rng.randint(-(10**9), 10**9) / 100) for _ in range(rows)],
+    )
+    con.close()
+
+
+def run_stream_case(directory: Path, agent: str = "claude-haiku-4-5-20251001") -> dict:
+    """The launcher on a stream spec, against the mock that writes the grouped stream fixture's six regions, then calls
+    run_runquery and submit_runquery. Returns the launcher's result record. ``directory`` holds the database and the mock's files."""
+    from declarative_spec import stream
+    from research_loop.scripts.mock_anthropic_api import StreamConversation
+    from research_loop.scripts.run_container_agent import run
+
+    db = directory / "stream_t.duckdb"
+    stream_table(db)
+    saved = {k: os.environ.get(k) for k in (*STREAM_ENV, "LEMMA_DUCKDB_PATH")}
+    os.environ.update({**STREAM_ENV, "LEMMA_DUCKDB_PATH": str(db)})
+    try:
+        regions = stream.extract_regions(STREAM_FIXTURE.read_text())
+        with mock_model(StreamConversation(regions), directory):
+            return run(
+                "adversary_declarative0", "declarative", STREAM_SQL, agent=agent, speed_bar_mult=STREAM_SPEED_BAR, allow_override=True, max_iterations=1
+            )
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
 def main(scenario: str) -> int:
     from research_loop.scripts.declarative_ladder import run_ladder
 
+    if scenario == "stream":
+        with tempfile.TemporaryDirectory() as tmp:
+            print(json.dumps(run_stream_case(Path(tmp)), indent=2, default=str))
+        return 0
     if scenario.startswith("style-"):
         style, _, hang = scenario.removeprefix("style-").partition("-")
         print(run_style_case(style, Hang if hang == "hang" else Conversation))

@@ -179,6 +179,20 @@ finishes; argv: the template parameters, then optionally `<chunk_max> <threads> 
 `STREAM_THREADS`, the timed-run lines and the rows as the `run_query` main does; a decline prints `LEMMA_DECLINED` and exits 3; `Error`
 panics.
 
+The main reads the column file front to back through a buffer and keeps a VARCHAR column as one `u32` code per row into its distinct
+strings (each once as a `StrRaw`), not one `String` per row: SF10 lineitem has 120M string cells, which as `String`s alone exceed the
+9 GB scope.
+
+Agent and MCP (2026-10-26): `prompt.build_declarative_prompt` hands a stream spec to `declarative_spec/stream_prompt.py` (flag off:
+every prompt byte-identical, `tests/fixtures/stream_prompt_flag_off_golden.json`). It states the six regions, the four contracts
+verbatim from the spec, what S1 gives, the host lemmas, the proof shape and the timing; with `examples = "none"` the technique advice
+(per-chunk entry memo for string keys, branch-free step, checked fast path with an exact `i128` fallback) is left out like every other
+recipe. `examples = full | principles` mount the two fixtures of `tests/fixtures/declarative_proofs/stream/` (on the invented table
+`t`) and nothing else. `run_runquery` / `verify_functions` / `submit_runquery` and the host's end-of-session measure admit with
+`admit_stream` and build with `assemble_stream_program`; the binary gets `<params> 2048 <duck_threads> 1` (one worker per DuckDB
+thread of the reference measure) in session and in every official round, and every result carries `stream_measure`: the
+binary-mode main over the exported column file, NOT yet the in-DuckDB ABI 6 measure. First run: `configs/experiments/stream_q1_opus.toml`.
+
 Speed note for the prompt (later; from the spike): the fast exact path was 32x32->64-bit products guarded by a per-chunk range check with
 an exact i128 fallback (no catalog assumptions) and branch-free masks; the proof covers both paths (the runtime check gives the bounds).
 

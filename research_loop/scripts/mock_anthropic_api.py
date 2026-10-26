@@ -134,6 +134,60 @@ class Conversation:
         return [{"type": "text", "text": "Submitted."}]
 
 
+class StreamConversation(Conversation):
+    """A stream spec (lemma.toml [run] stream): the same script, but step 2 fills the six empty agent regions (one Edit each) with
+    ``regions`` (``declarative_spec.stream.extract_regions`` of a verified fixture: state, helpers, init, step, merge, finish)."""
+
+    MARKS = {
+        "state": "AGENT_STATE",
+        "helpers": "AGENT_HELPERS",
+        "init": "AGENT_INIT",
+        "step": "AGENT_STEP",
+        "merge": "AGENT_MERGE",
+        "finish": "AGENT_FINISH",
+    }
+
+    def __init__(self, regions: dict[str, str], workspace_file: str = "/workspace/runquery_agent.rs") -> None:
+        super().__init__("", workspace_file)
+        self.regions = regions
+
+    def blocks(self, messages: list[dict]) -> list[dict]:
+        done = {
+            b["id"]
+            for m in messages
+            if m["role"] == "assistant" and isinstance(m["content"], list)
+            for b in m["content"]
+            if b.get("type") == "tool_use" and next_user_results(messages, b["id"]) is not None
+        }
+        if "toolu_mock_read" in done:
+            for name, mark in self.MARKS.items():
+                tool_id = f"toolu_mock_edit_{name}"
+                if tool_id not in done:
+                    return [
+                        {
+                            "type": "tool_use",
+                            "id": tool_id,
+                            "name": "Edit",
+                            "input": {
+                                "file_path": self.file,
+                                "old_string": f"// {mark}_START\n// {mark}_END",
+                                "new_string": f"// {mark}_START\n{self.regions[name]}\n// {mark}_END",
+                            },
+                        }
+                    ]
+            if "toolu_mock_edit" not in done:  # the base script's single edit is replaced by the six above
+                messages = [*messages, *_fake_done(messages, "toolu_mock_edit")]
+        return super().blocks(messages)
+
+
+def _fake_done(messages: list[dict], tool_id: str) -> list[dict]:
+    """A synthetic finished tool call in the history the base script reads (never sent to Claude Code)."""
+    return [
+        {"role": "assistant", "content": [{"type": "tool_use", "id": tool_id, "name": "Edit", "input": {}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_id, "content": "done"}]},
+    ]
+
+
 class Hang(Conversation):
     """Never answers the main request: for the AGENT_TIMEOUT_SEC test."""
 

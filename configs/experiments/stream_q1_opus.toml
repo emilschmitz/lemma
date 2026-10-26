@@ -1,0 +1,26 @@
+# Stream Q1, 2026-10-25: the first agent run of the streaming executor contract (lemma.toml [run] stream, docs/STREAM.md phase 1). TPC-H SF10
+# Q1 as a template with fresh TPC-H bindings (seed 1, as in sf10_batch_noassump.toml), Opus 5.5, no worked examples (examples = "none", as in the
+# SF10 batch: the prompt then has the stream contract, the chunk view, the host lemmas and the timing facts, but no technique recipe), data
+# profile, no data assumptions (decline).
+# pushdown = false and agent_scan = false: the stream contract evaluates the WHERE in q_step over every scanned row (docs/STREAM.md
+# "Contract": NO pushed predicate by default) and has no scan handles; with both off the binary's official rounds are the reported number.
+# MEASURE: the timed number is the binary-mode stream main (assemble.assemble_stream_program) over the exported column file, one worker per
+# DuckDB thread, chunks of random sizes in [1, 2048] cut before the clock; every result says so in `stream_measure`. It is NOT yet the
+# in-DuckDB ABI 6 measure (DuckDB's own scan handing its chunks to the executor).
+# Run from main after the merge (clean tree, pinned SHA):
+#   uv run python research_loop/scripts/container_batch.py --experiment configs/experiments/stream_q1_opus.toml
+[settings]
+assumptions = false
+examples = "none"
+data_profile = "stats"
+templates = true
+stream = true
+pushdown = false
+agent_scan = false
+
+[[run]]
+model = "claude-opus-5-5"
+query = "configs/query_templates/tpch/q01.sql"
+duckdb_path = "research_loop/generated/tpch_sf10.duckdb"
+bindings_rules = "configs/query_templates/tpch/substitution.json"
+bindings_seed = 1
