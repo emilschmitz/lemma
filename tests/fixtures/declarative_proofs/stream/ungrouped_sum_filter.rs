@@ -1,4 +1,4 @@
-// Stream contract (lemma.toml [run] stream), host test fixture: an ungrouped SUM with a filter (TPC-H Q6 shape).
+// Stream contract (lemma.toml [run] stream), verified fixture (tests/test_stream.py) and worked example: an ungrouped SUM with a filter.
 //   SELECT SUM(b) AS sb FROM t WHERE a > 3 AND d < DATE '2000-01-01'
 //   (t: a INTEGER, b BIGINT nullable, d DATE; SUM skips NULL cells and is NULL when no cell is summed)
 // The state: the exact sum (i128, checked: an overflow declines), the rows that pass the WHERE, and the summed (non-NULL) cells.

@@ -241,6 +241,56 @@ def _trusted_usage_payload(*, raw: str, spec_rs: str | None, ws: Path | None) ->
     }
 
 
+def _stream_spec(ws: Path | None) -> str | None:
+    """The workspace spec when it is a stream spec (lemma.toml [run] stream, declarative_spec/stream.py), else None."""
+    spec_path = (ws or workspace()) / "context" / "ro" / "spec.rs"
+    if not spec_path.is_file():
+        return None
+    from declarative_spec import stream
+
+    text = spec_path.read_text(encoding="utf-8")
+    return text if stream.is_stream(text) else None
+
+
+def _validate_stream_solution(*, path: str | None, body: str | None, ws: Path | None, spec_rs: str) -> dict:
+    """A stream file: the six agent regions (state, helpers, init, step, merge, finish) admitted by ``admit_stream``.
+    ``body`` (the whole file text) is written to the workspace file first, as the run_query path writes a body."""
+    from declarative_spec import stream
+    from declarative_spec.admit import admit_stream
+
+    base = ws or workspace()
+    if body is not None:
+        unlink_planted_symlinks(base)
+        target = base / DEFAULT_RUNQUERY
+        target.write_text(body, encoding="utf-8")
+    else:
+        try:
+            target = _resolve_under_workspace(path or DEFAULT_RUNQUERY, ws)
+        except (ValueError, PermissionError) as exc:
+            return {"ok": False, "phase": "read", "errors": [str(exc)], "runquery_path": None}
+        if target != (base / DEFAULT_RUNQUERY).resolve():
+            # the harness checks the workspace file; checking another one would report on a file that is not run
+            return {"ok": False, "phase": "read", "errors": [f"a stream program is checked from {DEFAULT_RUNQUERY} only, not {path}"], "runquery_path": None}
+        if not target.is_file():
+            return {"ok": False, "phase": "read", "errors": [f"file not found: {target}"], "runquery_path": None}
+    text = target.read_text(encoding="utf-8")
+    try:
+        regions = stream.extract_regions(text)
+    except ValueError as exc:
+        return {"ok": False, "phase": "extract", "errors": [str(exc)], "runquery_path": None}
+    violations = admit_stream(**regions, spec_rs=spec_rs).violations
+    if violations:
+        return {"ok": False, "phase": "validate", "errors": list(violations), "runquery_path": None, "source_path": str(target)}
+    return {
+        "ok": True,
+        "phase": "validated",
+        "errors": [],
+        "runquery_path": str(base / DEFAULT_RUNQUERY),
+        "body_chars": sum(len(v) for v in regions.values()),
+        "source_path": str(target),
+    }
+
+
 def validate_solution(
     *,
     path: str | None = None,
@@ -248,6 +298,9 @@ def validate_solution(
     ws: Path | None = None,
 ) -> dict:
     """Validate run_query body; on success write marked runquery file."""
+    stream_spec = _stream_spec(ws)
+    if stream_spec is not None:
+        return _validate_stream_solution(path=path, body=body, ws=ws, spec_rs=stream_spec)
     try:
         inner, source = _read_body(path=path, body=body, ws=ws)
     except FileNotFoundError as exc:
@@ -411,6 +464,10 @@ def run_solution(
         out["runquery_body"] = runquery_body
         out["runquery_sha256"] = runquery_sha256(runquery_body)
     _store_run(out, ws=base)
+    if "runquery_body" in out and _stream_spec(base) is not None:
+        # a stream file is the whole spec (over a thousand lines): the stored run keeps the snapshot for submit, the reply does not echo it
+        out = {k: v for k, v in out.items() if k != "runquery_body"}
+        out["runquery_body_omitted"] = "the checked file's snapshot is kept in the stored run (submit_runquery uses it)"
     return out
 
 

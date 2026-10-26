@@ -450,9 +450,13 @@ def _official_rounds(metrics: dict, speed_bar: dict) -> tuple[dict, int, int, in
     k = om.official_rounds()
     mult_ = speed_bar_mult()
     bests: list[int] = []
+    extra = list(metrics.get("stream_run_args") or [])  # a stream program: <chunk_max> <threads> <seed> after the parameters
 
     def ours() -> int:
-        latency, best = run_binary_timed(binary, directory)
+        if extra:
+            latency, best, _stdout = run_binary_round(binary, directory, extra)
+        else:
+            latency, best = run_binary_timed(binary, directory)
         bests.append(best)
         return latency
 
@@ -472,7 +476,7 @@ def _official_rounds(metrics: dict, speed_bar: dict) -> tuple[dict, int, int, in
                 from research_loop.decl_query_measure import activate_binding
 
                 activate_binding(binding_data, bindings.index(binding))
-            latency, best, stdout = run_binary_round(binary, directory, templates.binary_args(template, binding))
+            latency, best, stdout = run_binary_round(binary, directory, [*templates.binary_args(template, binding), *extra])
             bests.append(best)
             outputs.append(stdout)
             return latency
@@ -510,9 +514,48 @@ def _official_rounds(metrics: dict, speed_bar: dict) -> tuple[dict, int, int, in
     return info, summary["ours_median_us"], summary["duck_median_us"], min(bests)
 
 
+# lemma.toml [run] stream: what the timed number of a stream program is, in every result of one (docs/STREAM.md "Binary mode").
+STREAM_MEASURE_NOTE = (
+    "stream binary mode: the proved q_init/q_step/q_merge/q_finish driven by the host's binary-mode stream main over the exported column "
+    "files (chunks of random sizes in [1, 2048], one worker per DuckDB thread, the chunks cut before the clock starts); NOT yet the in-DuckDB "
+    "ABI 6 measure (DuckDB's own scan handing its chunks to the executor)"
+)
+STREAM_CHUNK_MAX = 2048  # DuckDB's vector size: the largest chunk its scan hands out
+STREAM_SEED = 1
+
+
+def stream_run_args() -> list[str]:
+    """The binary-mode stream main's optional arguments after the template parameters: ``<chunk_max> <threads> <seed>``.
+    One worker per DuckDB thread of the reference measure (lemma.toml ``duck_threads``), so both sides use the same cores."""
+    return [str(STREAM_CHUNK_MAX), str(int(lemma_config.get("duck_threads"))), str(STREAM_SEED)]
+
+
+def _admit_and_assemble_stream(spec_rs: str, agent_source: str, column_bins: dict[str, str] | None) -> tuple[str, str, str]:
+    """A stream spec (lemma.toml [run] stream): the six regions, ``admit_stream``, ``assemble_stream_program`` (binary-mode main)."""
+    from declarative_spec import stream
+    from declarative_spec.admit import admit_stream
+    from declarative_spec.assemble import assemble_stream_program
+
+    try:
+        regions = stream.extract_regions(agent_source)
+    except ValueError as exc:
+        return "", "", str(exc)
+    violations = admit_stream(**regions, spec_rs=spec_rs).violations
+    if violations:
+        return "", "", "; ".join(violations)
+    try:
+        assembled = assemble_stream_program(spec_rs, regions, column_bins=column_bins)
+    except ValueError as exc:
+        return "", "", str(exc)
+    return assembled, regions["step"], ""
+
+
 def _admit_and_assemble(spec_rs: str, agent_source: str, column_bins: dict[str, str] | None, speed_bar: dict | None) -> tuple[str, str, str]:
     """Admit the agent edit and assemble the program: ``(assembled, body, "")``, or ``("", "", error message)``."""
-    from declarative_spec import stateful
+    from declarative_spec import stateful, stream
+
+    if stream.is_stream(spec_rs):
+        return _admit_and_assemble_stream(spec_rs, agent_source, column_bins)
     from declarative_spec.admit import admit_declarative_body, admit_helpers, admit_stateful
     from declarative_spec.assemble import assemble_declarative_program
     from declarative_spec.regions import extract_agent_build, extract_agent_state
@@ -640,16 +683,24 @@ def run_declarative_metrics(
     assembled, body, error = _admit_and_assemble(spec_rs, agent_source, column_bins, speed_bar)
     if error:
         return {"status": "FAILURE", "proof_verified": False, "latency_us": -1, "compiler_error": error}
+    from declarative_spec import stream
     from declarative_spec.templates import spec_params
 
+    is_stream = stream.is_stream(spec_rs)
     run_args: list[str] | None = None
     if spec_params(spec_rs):
         run_args = (speed_bar or {}).get("binding_args")
         if run_args is None:
             return {"status": "FAILURE", "proof_verified": False, "latency_us": -1, "compiler_error": "a query template's binary needs parameter values: prepare the data with bindings (expect.json binding_args)"}
+    if is_stream:
+        run_args = [*(run_args or []), *stream_run_args()]
     metrics = compile_and_run(
         assembled, work_dir=work_dir, timeout_sec=timeout_sec, agent_source=agent_source, keep_binary=official and speed_bar is not None and not speed_bar.get("synthetic"), run_args=run_args
     )
+    if is_stream:
+        # the official rounds append the same chunk/thread arguments after each round's parameter values
+        metrics = {**metrics, "stream_run_args": stream_run_args()}
+        return {**_apply_speed_bar(metrics, speed_bar, official=official), "stream_measure": STREAM_MEASURE_NOTE}
     from declarative_spec import parallel
 
     # A body that never spawns a thread loses a bandwidth-bound scan to the all-core engine: tell it so when it can still upgrade.

@@ -1,4 +1,4 @@
-// Stream contract (lemma.toml [run] stream), host test fixture: a small GROUP BY with a string key.
+// Stream contract (lemma.toml [run] stream), verified fixture (tests/test_stream.py) and worked example: a GROUP BY with a string key.
 //   SELECT s, COUNT(*) AS c, SUM(m) AS sm FROM t GROUP BY s      (t: m DECIMAL(12,2), s VARCHAR; no NULLs in them)
 // The state: one slot per key seen (`keys`, a StringHashMap from key to slot), its count and exact sum (checked: an overflow declines).
 // AGENT_STATE_START

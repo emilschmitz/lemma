@@ -614,6 +614,7 @@ _SPEED_KEYS = (
     "inconclusive",
     "duck_python_overhead_us",
     "prepare_duck_us",
+    "stream_measure",  # lemma.toml [run] stream: the timed number is the binary-mode stream main, not yet the in-DuckDB measure
 )
 
 

@@ -47,7 +47,10 @@ def official_record(metrics: dict) -> dict | None:
     """The official interleaved measurement of one host run (per-round numbers, medians, speedup of medians), or None if there was none."""
     if not metrics.get("official_rounds"):
         return None
-    return {k: metrics.get(k) for k in OFFICIAL_KEYS}
+    record = {k: metrics.get(k) for k in OFFICIAL_KEYS}
+    if metrics.get("stream_measure"):  # lemma.toml [run] stream: the binary-mode stream main, not yet the in-DuckDB measure
+        record["stream_measure"] = metrics["stream_measure"]
+    return record
 
 
 def submitted_speedup(workspace: Path) -> float | None:
@@ -472,16 +475,26 @@ def run_declarative_optimization_loop(
             iter_record["error"] = failure
             return sessions_mod.Outcome(False, submitted_speedup(workspace), agent_s)
 
+        from declarative_spec import stream
+
         try:
             state["prev_source"] = agent_path.read_text()  # the file the session left: the restart reference
             agent_source = host_measure_source(workspace, agent_path)  # the marked submit, else that file
-            body = _extract_agent_edit_region(agent_source)
+            if stream.is_stream(spec):  # lemma.toml [run] stream: six regions instead of the run_query body
+                stream_regions = stream.extract_regions(agent_source)
+            else:
+                body = _extract_agent_edit_region(agent_source)
         except (OSError, ValueError) as exc:
             iter_record["error"] = f"read agent body: {exc}"
             state["last_error"] = str(exc)
             return sessions_mod.Outcome(False, submitted_speedup(workspace), agent_s)
 
-        admit = admit_declarative_body(body)
+        if stream.is_stream(spec):
+            from declarative_spec.admit import admit_stream
+
+            admit = admit_stream(**stream_regions, spec_rs=spec)
+        else:
+            admit = admit_declarative_body(body)
         if not admit.ok:
             iter_record["admit_violations"] = list(admit.violations)
             state["last_error"] = "; ".join(admit.violations)
