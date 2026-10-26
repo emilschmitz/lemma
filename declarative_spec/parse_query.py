@@ -1473,7 +1473,8 @@ def rewrite_comma_joins(sql: str, schema: dict) -> str:
     A SELECT whose joins are all plain comma joins over tables of ``schema`` gets one ``JOIN t ON ...`` per table,
     ordered so each table joins through a WHERE column equality to the tables before it (any order in FROM). Equalities
     that connect a table are moved into its ON; every other conjunct stays in WHERE. A table with no connecting
-    equality (a cross product) is refused. Other SELECTs are left unchanged.
+    equality (a cross product, or a theta/OR-only join such as TPC-H Q19) leaves the SQL unchanged: the general path then states it
+    (a nested-loop spec) or refuses it. Other SELECTs are left unchanged.
     """
     from declarative_spec.schema_types import SchemaModel
 
@@ -1493,8 +1494,7 @@ def rewrite_comma_joins(sql: str, schema: dict) -> str:
         nodes = [from_clause.this] + [j.this for j in joins]
         if any(n.name.casefold() not in model.tables for n in nodes):
             continue
-        _rewrite_comma_select(select, nodes, model)
-        changed = True
+        changed = _rewrite_comma_select(select, nodes, model) or changed
     return tree.sql() if changed else sql
 
 
@@ -1517,7 +1517,7 @@ def _and_conjuncts(node: exp.Expression) -> list[exp.Expression]:
     return [node]
 
 
-def _rewrite_comma_select(select: exp.Select, nodes: list[exp.Table], model) -> None:
+def _rewrite_comma_select(select: exp.Select, nodes: list[exp.Table], model) -> bool:
     names = [n.name for n in nodes]
     by_qualifier = {(n.alias or n.name).casefold(): i for i, n in enumerate(nodes)}
 
@@ -1547,9 +1547,7 @@ def _rewrite_comma_select(select: exp.Select, nodes: list[exp.Table], model) -> 
         found = [(p, [c for c, a, b in links if p in (a, b) and {a, b} - {p} <= included]) for p in pending]
         pick = next(((p, on) for p, on in found if on), None)
         if pick is None:
-            raise DeclarativeUnsupported(
-                f"comma join: no column equality connects table {names[pending[0]]!r} (cross product)"
-            )
+            return False  # no top-level equality joins this table: not an equi-join rewrite (nothing changed yet); the general path decides
         ordered.append(pick)
         included.add(pick[0])
         pending.remove(pick[0])
@@ -1561,3 +1559,4 @@ def _rewrite_comma_select(select: exp.Select, nodes: list[exp.Table], model) -> 
     )
     rest = [c for c in conjuncts if id(c) not in used]
     select.set("where", exp.Where(this=exp.and_(*[c.copy() for c in rest])) if rest else None)
+    return True

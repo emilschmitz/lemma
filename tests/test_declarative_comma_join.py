@@ -1,4 +1,4 @@
-"""Comma joins (``FROM a, b WHERE a.x = b.y``) are rewritten to inner equi-joins; cross products stay refused."""
+"""Comma joins (``FROM a, b WHERE a.x = b.y``) are rewritten to inner equi-joins; a cross product is left to the general path."""
 
 from __future__ import annotations
 
@@ -41,11 +41,10 @@ def test_five_table_star_any_from_order():
     assert "f_b = b_key" in out.split("JOIN db")[1].split("JOIN")[0]
 
 
-def test_cross_product_is_refused():
-    with pytest.raises(DeclarativeUnsupported, match="cross product"):
-        rewrite_comma_joins("select count(*) as n from fact, da where f_v > 1", SCHEMA)
-    with pytest.raises(DeclarativeUnsupported, match="'dc'"):
-        rewrite_comma_joins("select count(*) as n from fact, da, dc where f_a = a_key", SCHEMA)
+def test_a_cross_product_is_left_to_the_general_path():
+    # TPC-H Q19 (equalities only inside OR) and theta self-joins are stated by the general path, which tests prove against DuckDB
+    for sql in ("select count(*) as n from fact, da where f_v > 1", "select count(*) as n from fact, da, dc where f_a = a_key"):
+        assert rewrite_comma_joins(sql, SCHEMA) == sql
 
 
 def test_explicit_join_untouched():
