@@ -251,7 +251,9 @@ def test_measure_exports_only_the_columns_the_spec_reads_and_the_row_count(tmp_p
 
 
 @pytest.mark.parametrize("null_in", ["s", "k"])
-def test_measure_refuses_a_null_in_a_column_the_query_reads(tmp_path: Path, null_in: str) -> None:
+def test_measure_refuses_a_null_in_a_column_the_query_reads(tmp_path: Path, null_in: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    # pushdown = true (later default) applies WHERE s = 'a' in DuckDB, so the NULL-s row never reaches the export; this checks the full export.
+    monkeypatch.setenv("LEMMA_PUSHDOWN", "0")
     db = tmp_path / "n.duckdb"
     _tiny_db(db, [(None if null_in == "k" else 1, None if null_in == "s" else "a", 0.5), (2, "a", 0.5)])
     with pytest.raises(ValueError, match="has NULLs"):
@@ -296,7 +298,9 @@ def test_unread_columns_are_absent_from_the_struct_and_valid_cols() -> None:
         "SELECT k, COUNT(DISTINCT s) AS c FROM t GROUP BY k",  # in an aggregate
     ],
 )
-def test_a_null_in_a_column_the_query_reads_still_raises(tmp_path: Path, sql: str) -> None:
+def test_a_null_in_a_column_the_query_reads_still_raises(tmp_path: Path, sql: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    # pushdown = true (later default) filters the NULL-s row out in DuckDB for the WHERE case; this checks the full export.
+    monkeypatch.setenv("LEMMA_PUSHDOWN", "0")
     db = tmp_path / "u.duckdb"
     _tiny_db(db, [(1, None, 0.5), (2, "b", 0.5)])  # NULL in s, the column these queries read
     with pytest.raises(ValueError, match="NULL"):

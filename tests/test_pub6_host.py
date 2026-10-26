@@ -102,16 +102,25 @@ def test_no_denials_means_all_three_fields_are_empty(tmp_path: Path) -> None:
 
 
 # --- the manifest records the settings the run actually used ---
+def _checkout(path: Path) -> Path:
+    """begin_run on a source checkout reads git (sha, dirty, untracked count since 629aa42): give it a repository, as a checkout is."""
+    import subprocess
+
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+    return path
+
+
 def test_manifest_records_effective_settings_with_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from research_loop.run_artifacts import begin_run
 
     for key in ("LEMMA_STRING_ENCODING", "LEMMA_NARROW_CELLS", "LEMMA_PARALLEL_VSTD", "LEMMA_ENABLE_PARALLEL", "LEMMA_ASSUMPTION_PACKAGE"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("LEMMA_RESEARCH_LOG", "1")
-    run = begin_run(query_id=1, sql_query="SELECT 1", root=tmp_path)
+    run = begin_run(query_id=1, sql_query="SELECT 1", root=_checkout(tmp_path))
     eff = json.loads((run.path / "manifest.json").read_text())["effective"]
-    assert eff["LEMMA_STRING_ENCODING"] == "plain" and eff["LEMMA_NARROW_CELLS"] == "0"
-    assert eff["LEMMA_PARALLEL_VSTD"] == "off" and eff["LEMMA_ENABLE_PARALLEL"] == "0" and eff["LEMMA_ASSUMPTION_PACKAGE"] is None
+    # The lemma.toml defaults since 629aa42 / the frozen run: string_encoding = "dict", parallel_vstd = "auto".
+    assert eff["LEMMA_STRING_ENCODING"] == "dict" and eff["LEMMA_NARROW_CELLS"] == "0"
+    assert eff["LEMMA_PARALLEL_VSTD"] == "auto" and eff["LEMMA_ENABLE_PARALLEL"] == "0" and eff["LEMMA_ASSUMPTION_PACKAGE"] is None
     assert "git_sha" in eff and "git_dirty" in eff
 
 
@@ -126,7 +135,7 @@ def test_manifest_records_set_values(tmp_path: Path, monkeypatch: pytest.MonkeyP
         "LEMMA_ASSUMPTION_PACKAGE": "sec_margin_dec",
     }.items():
         monkeypatch.setenv(key, val)
-    run = begin_run(query_id=1, sql_query="SELECT 1", root=tmp_path)
+    run = begin_run(query_id=1, sql_query="SELECT 1", root=_checkout(tmp_path))
     eff = json.loads((run.path / "manifest.json").read_text())["effective"]
     assert (eff["LEMMA_STRING_ENCODING"], eff["LEMMA_NARROW_CELLS"], eff["LEMMA_PARALLEL_VSTD"], eff["LEMMA_ENABLE_PARALLEL"]) == ("dict", "1", "auto", "1")
     assert eff["LEMMA_ASSUMPTION_PACKAGE"] == "sec_margin_dec"
@@ -147,7 +156,7 @@ def test_a_launcher_default_package_shows_in_the_selection_and_the_manifest_menu
         assert resolved.as_dict()["axes"]["assumption_package"] == {"value": "sec_margin_dec", "source": "default for db"}
         assert menu_profile.active_menu() is resolved
         monkeypatch.setenv("LEMMA_ASSUMPTION_PACKAGE", "sec_margin_dec")
-        run = begin_run(query_id=1, sql_query="SELECT 1", root=tmp_path)
+        run = begin_run(query_id=1, sql_query="SELECT 1", root=_checkout(tmp_path))
         manifest = json.loads((run.path / "manifest.json").read_text())
         assert manifest["menu"]["axes"]["assumption_package"]["value"] == manifest["effective"]["LEMMA_ASSUMPTION_PACKAGE"] == "sec_margin_dec"
     finally:

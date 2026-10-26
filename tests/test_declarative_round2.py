@@ -197,7 +197,8 @@ def test_aliases_containing_min_or_max_do_not_break_the_bound_helpers(sql: str) 
 # ---- DECIMAL: AVG in natural units, CASE over a decimal column ---------------------------------------------------------
 
 
-def test_avg_over_a_decimal_divides_by_the_scale() -> None:
+def test_avg_over_a_decimal_divides_by_the_scale(exact_division_off: None) -> None:
+    # The real-form AVG (exact_division = false); the exact form states the scale in the Rat denominator (tests/test_declarative_exact_division.py).
     spec = _emit("SELECT g, AVG(d) AS m FROM t GROUP BY g")
     assert "* 10000real" in spec
     _verify(spec, lemmas=False)

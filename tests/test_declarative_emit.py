@@ -188,9 +188,40 @@ def test_package_has_no_forbidden_imports_or_names() -> None:
             continue
         if path.name == "example_registry.py":  # the registry lists fixture FILE names (tpch_q14_...rs); it is data about examples, not engine code
             continue
-        text = path.read_text().replace('read="duckdb"', "").replace('_PROOFS + "tpch_', "")  # a sqlglot dialect name and fixture file names, not engine dependencies
+        text = path.read_text().replace('read="duckdb"', "").replace('dialect="duckdb"', "").replace('_PROOFS + "tpch_', "")  # a sqlglot dialect name and fixture file names, not engine dependencies
         for token in forbidden:
             assert token not in text, f"{path.name} contains forbidden {token!r}"
+
+
+def test_constant_lifting_runs_without_loading_duckdb() -> None:
+    """lift.py once reached the SQL-text helpers through research_loop.in_duckdb, which imports duckdb (and the whole
+    in-DuckDB executor); they live in declarative_spec/sql_text.py now. Lift a query in a fresh interpreter and check."""
+    import subprocess
+    import sys
+
+    code = (
+        "import sys\n"
+        "from declarative_spec.lift import lift_constants\n"
+        "got = lift_constants(\"SELECT SUM(cost) AS total FROM pre WHERE line > 5\", "
+        "{'pre': {'line': 'bigint', 'cost': 'decimal(38,2)'}}, None)\n"
+        "assert got is not None\n"
+        "assert 'duckdb' not in sys.modules and 'research_loop.in_duckdb' not in sys.modules, sorted(m for m in sys.modules if 'duckdb' in m)\n"
+    )
+    import os
+
+    env = {**os.environ, "LEMMA_TEMPLATES": "1"}  # lifting produces a query template
+    out = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=env, capture_output=True, text=True, check=False)
+    assert out.returncode == 0, out.stderr[-2000:]
+
+
+def test_in_duckdb_reexports_the_moved_sql_text_helpers() -> None:
+    from declarative_spec import sql_text
+    from research_loop import in_duckdb
+
+    for name in ("normalize_sql", "literal_at", "_opaque_end", "_strip_end"):
+        assert getattr(in_duckdb, name) is getattr(sql_text, name)
+    assert in_duckdb.normalize_sql("  SELECT 1 ;;\n") == "SELECT 1"
+    assert in_duckdb.literal_at("x > DATE '2020-01-01'", 4) == ("date", 21)
 
 
 def test_fetch_first_is_refused_not_silently_dropped() -> None:

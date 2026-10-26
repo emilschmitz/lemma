@@ -37,6 +37,9 @@ def _double_db(path: Path, values: list[float]) -> Path:
     con.execute("CREATE TABLE sub (adsh VARCHAR, fy INTEGER)")
     con.executemany("INSERT INTO num VALUES ('a', 20230101, ?)", [(v,) for v in values])
     con.execute("INSERT INTO sub VALUES ('a', 2023)")
+    # pre and tag make it the SEC database for load_sec_schema (03e3b16: any other file's catalog is read from the file itself).
+    con.execute("CREATE TABLE pre (adsh VARCHAR, line INTEGER)")
+    con.execute("CREATE TABLE tag (tag VARCHAR, version VARCHAR)")
     con.close()
     return path
 

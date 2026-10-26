@@ -143,4 +143,7 @@ def test_the_declarative_loop_returns_success_only_for_a_proved_run():
     from pathlib import Path
 
     src = (Path(__file__).resolve().parents[1] / "declarative_spec" / "drive.py").read_text()
-    assert 'metrics.get("status") == "SUCCESS" and proof_verified' in src
+    # The session refactor keeps the proof flag in state["proof_verified"] (= the official run's proof_verified, set just above).
+    assert 'metrics.get("status") == "SUCCESS" and state["proof_verified"]' in src
+    assert 'state["proof_verified"] = bool(iter_record["proof_verified"])' in src
+    assert src.count('"status": "SUCCESS"') == 1

@@ -29,6 +29,8 @@ from tests.test_declarative_tpch_q3_q14_q19 import Q3, Q14
 ROOT = Path(__file__).resolve().parents[1]
 PROOFS = ROOT / "tests" / "fixtures" / "declarative_proofs"
 VERUS = Path("/home/emil/tools/verus/verus")
+# The fixture bodies are the real-form AVG / ratio and f64 idealization (lemma.toml [sql] exact_division = false), as in the modules they come from.
+pytestmark = pytest.mark.usefixtures("exact_division_off")
 MAIN = Path("/home/emil/projects/lemma-db")  # the generated databases are gitignored; a worktree reads the main checkout's (read-only)
 
 

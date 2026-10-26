@@ -149,7 +149,7 @@ def _row_hit(spec: str) -> str:
         "SELECT COUNT(*) AS c FROM t WHERE s NOT IN ('x', 'y')",
         "SELECT COUNT(*) AS c FROM t WHERE s LIKE 'x%'",
         "SELECT COUNT(*) AS c FROM t WHERE s = g",
-        "SELECT COUNT(*) AS c FROM t, u WHERE t.s = u.k",
+        # FROM t, u WHERE t.s = u.k: the comma-join rewrite (ee714d4) makes it JOIN u ON t.s = u.k, refused below.
     ],
 )
 def test_every_dictionary_comparison_checks_the_validity_bit_before_reading_the_cell(sql: str) -> None:
@@ -180,6 +180,7 @@ def test_count_distinct_counts_valid_cells_only() -> None:
     "sql",
     [
         "SELECT COUNT(*) AS c FROM t JOIN u ON t.s = u.k",
+        "SELECT COUNT(*) AS c FROM t, u WHERE t.s = u.k",  # rewritten to the JOIN above (ee714d4)
         "SELECT COUNT(*) AS c FROM t JOIN u ON t.g = u.k",
         "SELECT COUNT(*) AS c FROM t JOIN u ON t.s = u.k WHERE u.k IS NOT NULL",
     ],
@@ -251,7 +252,7 @@ def test_256_distinct_values_plus_null_fit_u8() -> None:
 
 
 def test_one_more_distinct_value_overflows_u8_loudly() -> None:
-    with pytest.raises(ValueError, match="cannot pack 256 as u8"):
+    with pytest.raises(ValueError, match="cannot pack code 256 as u8"):  # message since the bulk exporter (6a72b18)
         _export([f"v{i}" for i in range(257)] + [None], max_distinct=256, fty="u8")
 
 

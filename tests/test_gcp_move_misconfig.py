@@ -97,6 +97,23 @@ def _pair(tmp_path: Path) -> tuple[Path, Path]:
     return local, remote
 
 
+def _tiny_data(base: Path, max_rows: int = 4) -> tuple[Path, Path]:
+    """A real DuckDB file and a package that names it, for the preflight's data gate (0518240): the gate runs the real check."""
+    import json
+
+    import duckdb
+
+    db = base / "tiny.duckdb"
+    if not db.exists():
+        con = duckdb.connect(str(db))
+        con.execute("CREATE TABLE t (k BIGINT NOT NULL)")
+        con.execute("INSERT INTO t VALUES (1), (2), (3)")
+        con.close()
+    pkg = base / f"tiny_pkg_{max_rows}.json"
+    pkg.write_text(json.dumps({"name": "tiny", "max_rows": max_rows, "tables": {"t": {"max_rows": max_rows, "columns": {"k": {"max_value_exclusive": 16}}}}}))
+    return db, pkg
+
+
 def _preflight(
     local: Path,
     *,
@@ -105,6 +122,9 @@ def _preflight(
 ) -> subprocess.CompletedProcess[str]:
     run_env = os.environ.copy()
     run_env.pop("LEMMA_EXPERIMENT_ALLOW_DIRTY", None)
+    db, pkg = _tiny_data(local.parent)
+    run_env["LEMMA_DUCKDB_PATH"] = str(db)
+    run_env["LEMMA_ASSUMPTION_PACKAGE"] = str(pkg)
     run_env.setdefault("LEMMA_PREFLIGHT_SSH", "0")
     run_env.setdefault("LEMMA_FAMILY", "r32rocket")
     run_env.setdefault("LEMMA_EMIT_AGENT_PRIMITIVES", "0")
@@ -251,6 +271,21 @@ def test_ssh_off_does_not_call_gcloud(tmp_path: Path) -> None:
     assert "skipping SSH" in proc.stdout
     log = Path(env["GCLOUD_LOG"])
     assert not log.exists() or log.read_text() == ""
+
+
+def test_no_database_means_no_launch(tmp_path: Path) -> None:
+    local, _remote = _pair(tmp_path)
+    proc = _preflight(local, env={"LEMMA_DUCKDB_PATH": ""})
+    assert proc.returncode == 1
+    assert "LEMMA_DUCKDB_PATH is not set" in proc.stderr
+
+
+def test_a_package_the_data_contradicts_stops_the_launch(tmp_path: Path) -> None:
+    local, _remote = _pair(tmp_path)
+    _db, too_small = _tiny_data(tmp_path, max_rows=2)  # the table has 3 rows
+    proc = _preflight(local, env={"LEMMA_ASSUMPTION_PACKAGE": str(too_small)})
+    assert proc.returncode == 1
+    assert "failed the data check" in proc.stderr
 
 
 def test_rocket_fast_on_exits_1(tmp_path: Path) -> None:

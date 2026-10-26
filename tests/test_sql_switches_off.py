@@ -22,6 +22,8 @@ SQL_KEYS = ("agg_times_constant", "derived_agg_expr", "cte_reuse", "left_join_co
 SCHEMA = json.loads((FIXTURES / "schema.json").read_text())
 GOLDEN = json.loads((FIXTURES / "emit_golden.json").read_text())
 CATALOG = assumption_package("tpch_sf1")
+# The hashes predate exact_division = true (now the default): they are the f64 / real-form AVG and ratio specs.
+pytestmark = pytest.mark.usefixtures("exact_division_off")
 
 
 def emit_tpch(name: str) -> str:
