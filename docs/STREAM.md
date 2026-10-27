@@ -198,7 +198,7 @@ an exact i128 fallback (no catalog assumptions) and branch-free masks; the proof
 
 Deviations from the sketch above: `p` instead of `p@`; no separate `gsegs` (the ghost segments are `segs@`); `exec_*` by value;
 `exec_finish` returns `StreamOut` (not `Option`); `q_finish`'s requires is stated over `t@`; m (chunks handed out) is untrusted, only
-n and `valid_cols` are S2's claim; the gate also refuses DISTINCT, a nullable GROUP BY key, floats, VARCHAR template parameters, map
+n and `valid_cols` are S2's claim; the gate also refuses DISTINCT other than COUNT(DISTINCT x) and a nullable GROUP BY key (both stated since 2026-10-27, see "NULL group keys and COUNT DISTINCT"), floats, VARCHAR template parameters, map
 results, `stateful` and `assumptions = true` (`in_duckdb` composes since the ABI 6 template below exists).
 
 ## Phase 1, execution side: ABI 6 in DuckDB (built 2026-10-26)
@@ -292,7 +292,7 @@ the OUTER fold: `X(t, b, i0, k) = X_d1(t, b, i0, 0, k) + X(t, b, i0 + 1, k)`.
 
 Gate (`stream_join.check_sql`, then the spec reader): refused loudly are outer / semi / anti / cross / natural / asof / positional joins,
 USING, subqueries (IN / EXISTS / scalar / derived tables), CTEs, set operations, self joins, a join without an ON equality, MIN / MAX
-over a join, and (as in phase 1) DISTINCT, rowid, order-dependent aggregates, a nullable GROUP BY key, floats, VARCHAR template
+over a join, and (as in phase 1) DISTINCT other than COUNT(DISTINCT x), rowid, order-dependent aggregates, floats, VARCHAR template
 parameters, map results. NULL join keys follow the emitter's rule (`<col> IS NOT NULL` in the WHERE). Cells: phase 1's types plus
 `i128` (DECIMAL(38, s), DuckDB HUGEINT; binary mode only, the ABI 6 glue does not hand 16-byte cells yet).
 
@@ -363,3 +363,45 @@ entry memo for a streamed string key). Example `stream/join_group_build_key.rs` 
 
 Gate checks (Verus, a stub agent, `tests/test_stream_join.py`): the invented join, TPC-H Q12 streaming orders and streaming lineitem,
 SEC q3 without its HAVING subquery (subqueries are refused) all `N verified, 0 errors`.
+
+## NULL group keys and COUNT DISTINCT (`declarative_spec/stream_distinct.py`, 2026-10-27)
+
+Both were refused before; they blocked every GenDB SEC join query (a GROUP BY over `pre.stmt`, `pre.plabel`, `sub.sic` or `tag.tlabel`,
+all nullable in `sec_edgar_dec.duckdb`; SEC q4 and q1 have COUNT DISTINCT). No trusted item was added; phase 1 and phase 2a specs and
+prompts without them are byte-identical (`stream_phase1_flag_on_golden.json`, the flag-off goldens).
+
+**A nullable GROUP BY key** is the batch spec's pair: `key_at` gives `(true, v)` for a value and `(false, <the type's empty value>)` for
+NULL, so `Key` is e.g. `(bool, Seq<char>)` (a tuple component per nullable column) and all NULL rows are one group of their own, apart
+from every value group. Nothing else changes: S1 already gives each nullable column's `__valid` cells and promises the value only
+where the cell is valid, and `key_at` reads a value only under its own validity bit. The gate (`stream.check_key_guards`, one table and
+joins) checks exactly that: every nullable column `key_at` reads is inside `(if t.c__valid@[i] { (true, ..) } else { (false, <no cell>) })`,
+or `row_hit` tests its bit (the emitter's form for `WHERE c IS NOT NULL`); anything else is refused. The ABI 6 glue needed no change:
+a nullable VARCHAR's `__valid` comes from the validity at the physical index, a NULL row's entry is the empty string (FLAT with NULLs:
+gathered; a storage dictionary's NULL entry: its copy), and the proved code keeps the NULL group apart from the empty string's
+(`tests/test_in_duckdb_stream_null_distinct.py`, every vector form).
+
+**COUNT(DISTINCT x)** is stated by the batch spec as a last-occurrence fold (a row, or a tuple of rows over a join, counts when no
+lexicographically later one of its group has the same value); that is not a difference of suffix folds, so the stream `Agg` gets a SET
+field `set_<fold>: Set<V>` instead of an int: `agg_zero` the empty set, `agg_plus` the union, `agg_row` the row's values (one table: a
+singleton when the row passes the fold's predicate, `hit_x` for a nullable x, and has key k, else empty; a join: the values of the
+row's matching build tuples), `agg_rng` the range fold `stream_set_<fold>`. Host, proved, per COUNT DISTINCT fold over m build tables:
+`set_<fold>_d<e>` (the values of the hit tuples whose first e indices are fixed and whose index e is at least i_e; level 0 is the
+stream table), `lemma_set_<fold>_d<e>_mem` (membership = some such tuple has the value), `lemma_set_<fold>_d<e>_count` (the spec's
+count fold at level e = the size of that set minus the values of the tuples after the block, by induction over the nesting: the
+last-occurrence count is the number of distinct values), `lemma_stream_set_<fold>`; `lemma_agg_laws` gains the sets' extensional
+equalities and `lemma_agg_total` states `agg_rng(.., 0, n, k, p).set_<fold>.len() == <fold>(.., 0, k)`. `q_finish` takes the size. The
+gate accepts the fold only in the emitter's exact text (`stream_distinct.parse_term`; the join's middle levels plain nested sums) and
+still refuses SELECT DISTINCT, SUM / AVG(DISTINCT ..) and a DISTINCT over several expressions.
+
+Prompt (`stream_prompt.py`, only when the spec has a nullable key or a set field): the NULL key is its own group (pair, test the bit
+first, a slot of its own, `None` in the output row); a distinct field is a set merged by union, the size taken in `q_finish`, an exec set
+whose view is it (`HashSetWithView` / `StringHashSet`); RECIPE (left out with `examples = none`): insert a value into a group's set once
+per chunk (a per-chunk memo per dictionary entry for a string value), merge the smaller set into the larger. Examples (mounted with the
+stream examples): `stream/group_nullable_key_count_sum.rs`, `stream/group_count_distinct.rs`.
+
+Gate check (Verus, stub agent, `tests/test_stream_null_distinct.py`): SEC q6 and q4 streaming `num` (the stream_join rule on
+`sec_edgar_dec.duckdb`: q6 num 33,234,006 rows after its filters, pre 1,767,049, sub 26,612; q4 num 33,234,006, tag 1,070,662, pre
+1,242,132, sub 5,242) `N verified, 0 errors`. Survey of every GenDB SEC query (configs/queries/sec_edgar, holdout queries_all.sql) with
+the rule's stream table: accepted and `N verified, 0 errors` with a stub: Q1 (one table, COUNT DISTINCT), Q4, Q6, Q7, Q8, Q9 and Q11
+(stream pre: 3,143,073 rows after its filters vs num 3,091,826), Q12, Q13, Q15, Q18, Q25. Still refused: Q2, Q3, Q24 (subqueries),
+Q5, Q10, Q14, Q16, Q17, Q19-Q23 (SELECT DISTINCT and subqueries), configs q24 (LEFT JOIN).

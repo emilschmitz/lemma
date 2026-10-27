@@ -475,6 +475,61 @@ def _join_contract_section(spec_text: str, n: dict[str, str], builds: list[str])
     ]
 
 
+def _set_fields(spec_text: str) -> list[str]:
+    """The COUNT DISTINCT fields of `Agg` (`set_<fold>: Set<V>`)."""
+    return [f for f in _agg_fields(spec_text) if re.fullmatch(r"set_\w+: Set<.+>", f)]
+
+
+def _null_key(spec_text: str) -> bool:
+    """The group key has a nullable column: key_at reads a validity bit."""
+    m = re.search(r"pub open spec fn key_at\([^\n]*\n(.*?)\n\}\n", spec_text, re.DOTALL)
+    return m is not None and "__valid@[" in m.group(1)
+
+
+def _null_key_and_distinct_section(spec_text: str) -> list[str]:
+    """General notes for a nullable GROUP BY key and for COUNT(DISTINCT x); nothing when the spec has neither."""
+    sets = _set_fields(spec_text)
+    null_key = _null_key(spec_text)
+    if not sets and not null_key:
+        return []
+    lines = ["## NULL group keys and COUNT DISTINCT", ""]
+    if null_key:
+        lines += [
+            "A nullable GROUP BY column is a pair in `Key`: `(true, v)` for a value `v`, `(false, <the type's empty value>)` for NULL",
+            "(`key_at` reads the cell only when its validity bit is set). SQL puts all rows whose key cell is NULL into ONE group of their",
+            "own: that group is neither dropped nor merged into a value group (not the empty string's, not zero's). In `q_step` test",
+            "`c.x__valid@[r]` first and use the cell (or its string entry) only when it is set; keep the NULL group as a slot of its own",
+            "(for example a key -> slot map keyed by the validity and the value). Its output row has `None` in that column.",
+            "",
+        ]
+    if sets:
+        lines += [
+            "A `COUNT(DISTINCT x)` is a SET field of `Agg` (" + ", ".join(f"`{f}`" for f in sets) + "): the distinct values of `x` over",
+            "the group's rows that pass the WHERE (a NULL `x` is not counted). `agg_row` gives a row's values (one value or none; over a",
+            "join, the values of the row's matching build rows), `agg_plus` is the UNION: a value seen in two chunks or by two workers is",
+            "counted once. `lemma_agg_laws` covers the union. `lemma_agg_total` gives `agg_rng(.., 0, n, k, p).set_<fold>.len() ==",
+            "<fold>(.., 0, ..)`: `q_finish` answers with the size of the group's set. The state keeps, per group, an exec set whose view",
+            "is that set (`HashSetWithView` for an integer value, `StringHashSet` for a string), and `q_merge` unions the two states' sets.",
+            "",
+        ]
+    return lines
+
+
+def _distinct_recipe_section(spec_text: str) -> list[str]:
+    """Technique advice for COUNT DISTINCT (a RECIPE: left out with examples = none); nothing without a set field."""
+    if not _set_fields(spec_text):
+        return []
+    return [
+        "## COUNT DISTINCT fast",
+        "",
+        "- Insert each value into a group's set once per chunk, not once per row: per chunk, keep a set (or a memo per dictionary entry of",
+        "  a string value: entry index -> already inserted for this group) and skip a value the chunk has already added.",
+        "- Merge: insert the smaller of the two sets into the larger.",
+        "- The size is only taken in `q_finish`; HAVING on a distinct count is done there too.",
+        "",
+    ]
+
+
 def _join_probe_section() -> list[str]:
     return [
         "## Probe structures (a join)",
@@ -594,10 +649,12 @@ def build_stream_prompt(
         (P.RULES, _join_regions_and_rules(root, n, builds) if join else _regions_and_rules(root, n)),
         (P.TASK, ["## SQL", "", "```sql", sql.strip(), "```", ""]),
         (P.RULES, _join_contract_section(spec_text, n, builds) if join else _contract_section(spec_text, n)),
+        (P.RULES, _null_key_and_distinct_section(spec_text)),
         (P.LIMITS, _join_timing_section() if join else _timing_section()),
         (P.HARDWARE, _hardware_facts()),
         (P.EXAMPLE_POINTER, examples),
         (P.RECIPE, _speed_section()),
+        (P.RECIPE, _distinct_recipe_section(spec_text)),
         *([(P.RECIPE, _join_probe_section())] if join else []),
         (P.RULES, _exact_rational_section(spec_text)),
         (P.RECIPE, group_close),

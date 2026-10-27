@@ -111,6 +111,7 @@ class Shape:
     minmax: list[MinMax] = field(default_factory=list)
     hit_preds: list[tuple[str, list[str]]] = field(default_factory=list)  # (hit_X, its arguments after (t, i0))
     ok_args: list[str] = field(default_factory=list)  # run_query_ok's arguments after t, before res
+    distincts: list = field(default_factory=list)  # COUNT(DISTINCT x) folds (stream_distinct.Distinct): set-valued Agg fields
 
 
 def _split_args(text: str) -> list[tuple[str, str]]:
@@ -157,11 +158,26 @@ def check_settings() -> None:
     # in_duckdb composes since the ABI 6 stream template exists (assemble_library.assemble_stream_library_program): the same spec.
 
 
+def _check_distinct(sql: str) -> None:
+    """COUNT(DISTINCT x) is a set-valued field of the stream monoid; every other DISTINCT (SELECT DISTINCT, SUM(DISTINCT ..), a
+    DISTINCT over several expressions) is refused."""
+    import sqlglot
+    from sqlglot import exp
+
+    try:
+        tree = sqlglot.parse_one(sql, read="duckdb")
+    except sqlglot.errors.SqlglotError:
+        raise _refuse("DISTINCT in a query the gate cannot parse") from None
+    for d in tree.find_all(exp.Distinct):
+        if not (isinstance(d.parent, exp.Count) and len(d.expressions) == 1):
+            raise _refuse("DISTINCT: only COUNT(DISTINCT x) is stated (a set-valued field); SELECT DISTINCT and other DISTINCT aggregates are not")
+
+
 def check_sql(sql: str) -> None:
-    """SQL-level refusals of phase 1 (before the spec is read): rowid and order-dependent aggregates."""
+    """SQL-level refusals (before the spec is read): DISTINCT other than COUNT(DISTINCT x), rowid and order-dependent aggregates."""
     low = sql.lower()
     if re.search(r"\bdistinct\b", low):
-        raise _refuse("DISTINCT: COUNT DISTINCT / SELECT DISTINCT need a set-valued field (phase 2)")
+        _check_distinct(sql)
     if re.search(r"\browid\b", low):
         raise _refuse("rowid: the stream offsets are the scan's, not the table's row ids")
     for fn in ("first", "last", "any_value", "arg_min", "arg_max", "string_agg", "list", "array_agg", "group_concat"):
@@ -209,8 +225,8 @@ def read_shape(spec: str) -> Shape:
             raise _refuse(f"column {ts}.{f}: Vec<{ty}> has no chunk view")
     ka = re.search(rf"pub open spec fn key_at\({re.escape(tv)}: &{cols_name}, i0: int\) -> ([^\n]+) \{{\n", spec)
     key = ka.group(1).strip() if ka else None
-    if key is not None and "bool" in key:
-        raise _refuse("a GROUP BY key over a nullable column (a NULL cell's value is not part of the chunk view)")
+    if key is not None:
+        check_key_guards(spec, {tv: nullable_fields(cols)})
     rh = _spec_fn_sig(spec, "row_hit")
     if rh is None or rh[:2] != [(tv, f"&{cols_name}"), ("i0", "int")]:
         raise _refuse("no row_hit(t, i0, ..) of the expected form")
@@ -244,10 +260,21 @@ def read_shape(spec: str) -> Shape:
         if call != args:
             raise _refuse(f"fold {fm.group(1)} recurses with other arguments")
         if re.search(r"\b(?:exists|forall|choose)\s*\|", fm.group(3) + fm.group(4)):
-            raise _refuse(f"fold {fm.group(1)}: its per-row term looks at other rows (COUNT DISTINCT and similar are not phase 1)")
+            from declarative_spec import stream_distinct
+
+            term = stream_distinct.parse_term(fm.group(3), fm.group(4), [tv], ["i0"], spec, sub)
+            if term is None:
+                raise _refuse(f"fold {fm.group(1)}: its per-row term looks at other rows (only COUNT DISTINCT's last-occurrence form is stated)")
+            pred, pargs, keyed, valfn, vtype = term
+            shape.distincts.append(stream_distinct.Distinct(
+                name=fm.group(1), pred=pred, pred_args=pargs, keyed=keyed, valfn=valfn, vtype=vtype, args=subs(args), levels=0,
+                tabs=[tv], types=[ts],
+            ))
+            continue
         found[fm.group(1)] = Fold(name=fm.group(1), args=subs(args), cond=sub(fm.group(3)), val=sub(fm.group(4)))
+    dnames = {d.name for d in shape.distincts}
     for name in recursive:
-        if name in found or name == "seq_le":
+        if name in found or name in dnames or name == "seq_le":
             continue
         raise _refuse(f"spec fn {name} is not a recognized fold (COUNT DISTINCT and other folds are not phase 1)")
     shape.folds = list(found.values())
@@ -276,9 +303,49 @@ def read_shape(spec: str) -> Shape:
         if hs is None or hs[:2] != [(tv, f"&{cols_name}"), ("i0", "int")]:
             raise _refuse(f"{name}: unexpected signature")
         shape.hit_preds.append((name, subs([n for n, _t in hs[2:]])))
-    if not shape.folds and not shape.minmax:
+    if not shape.folds and not shape.minmax and not shape.distincts:
         raise _refuse("not an aggregate query (phase 1 streams grouped or ungrouped aggregates only)")
     return shape
+
+
+def nullable_fields(cols: list[tuple[str, str]]) -> set[str]:
+    """The value columns of a column struct that carry a validity vector (`<col>__valid`)."""
+    names = {f for f, _t in cols}
+    return {f for f in names if not f.endswith("__valid") and f"{f}__valid" in names}
+
+
+_KEY_GUARD = re.compile(r"\(if (\w+)\.((?:r#)?\w+)__valid@\[(i\d+)\] \{ \(true, (.*?)\) \} else \{ \(false, ([^{}]*?)\) \}\)")
+
+
+def check_key_guards(spec: str, nullable: dict[str, set[str]]) -> None:
+    """A GROUP BY key over a nullable column is the pair `(valid, value)` (SQL: all NULLs are one group): key_at must read each
+    nullable column's value only under its own validity bit, `(if t.c__valid@[i] { (true, <t.c@[i]>) } else { (false, <default>) })`
+    (S1 promises the value only where the cell is valid). Anything else is refused loudly."""
+    m = re.search(r"pub open spec fn key_at\([^\n]*\) -> [^\n]+ \{\n(.*?)\n\}\n", spec, re.DOTALL)
+    if m is None:
+        raise _refuse("no key_at of the expected form")
+    body = m.group(1)
+
+    def reads(tv: str, col: str, text: str) -> bool:
+        return re.search(rf"(?<![\w.]){re.escape(tv)}\.{re.escape(col)}@\[", text) is not None
+
+    def strip(g: re.Match) -> str:
+        v, c, _i, val, default = g.groups()
+        if c not in nullable.get(v, set()):
+            raise _refuse(f"a GROUP BY key guards {v}.{c}, which is not a nullable column")
+        for tv, cols in nullable.items():
+            for other in cols:
+                if reads(tv, other, default) or ((tv, other) != (v, c) and reads(tv, other, val)):
+                    raise _refuse(f"a GROUP BY key reads {tv}.{other} under the validity of {v}.{c}")
+        return "GUARDED"
+
+    rest = _KEY_GUARD.sub(strip, body)
+    # an unguarded read is the emitter's form when the WHERE keeps only valid cells (`c IS NOT NULL`): row_hit tests the bit
+    rh = re.search(r"pub open spec fn row_hit\([^\n]*\n(.*?)\n\}\n", spec, re.DOTALL)
+    for tv, cols in nullable.items():
+        for c in sorted(cols):
+            if reads(tv, c, rest) and not (rh is not None and re.search(rf"(?<![\w.]){re.escape(tv)}\.{re.escape(c)}__valid@\[", rh.group(1))):
+                raise _refuse(f"a GROUP BY key reads the nullable column {tv}.{c} outside its validity guard (not stated)")
 
 
 # ---- emission ---------------------------------------------------------------------------------------------------------------------
@@ -304,6 +371,10 @@ def emit_contract(shape: Shape) -> str:
     for mm in shape.minmax:
         cond_i = re.sub(r"\bj0\b", "i0", mm.cond)
         fields.append((mm.name, "Option<int>", "None", "o" + mm.kind, f"if {cond_i} {{ Some({mm.valfn}({tv}, i0)) }} else {{ None }}"))
+    from declarative_spec import stream_distinct
+
+    for d in shape.distincts:
+        fields.append((d.field, f"Set<{d.vtype}>", f"Set::<{d.vtype}>::empty()", "union", stream_distinct.row_expr(d)))
     fields.append(("hits", "int", "0int", "+", f"if {_hit_cond(shape)} {{ 1int }} else {{ 0int }}"))
     for name, args in shape.hit_preds:
         fields.append((f"n_{name}", "int", "0int", "+", f"if {_hit_cond(shape, name, args)} {{ 1int }} else {{ 0int }}"))
@@ -312,6 +383,8 @@ def emit_contract(shape: Shape) -> str:
     zero = ", ".join(f"{n}: {z}" for n, _t, z, _p, _r in fields)
 
     def plus_of(n: str, op: str) -> str:
+        if op == "union":
+            return f"{n}: a.{n}.union(b.{n})"
         return f"{n}: a.{n} + b.{n}" if op == "+" else f"{n}: {op}(a.{n}, b.{n})"
 
     plus = ",\n        ".join(plus_of(n, op) for n, _t, _z, op, _r in fields)
@@ -335,6 +408,10 @@ def emit_contract(shape: Shape) -> str:
         {op}(stream_{n}({tv}, lo, hi - 1, k, p), agg_row({tv}, hi - 1, k, p).{n})
     }}
 }}""")
+            rng_parts.append(f"{n}: stream_{n}({tv}, lo, hi, k, p)")
+        elif t.startswith("Set<"):
+            d = next(x for x in shape.distincts if x.field == n)
+            extra_fns.extend(stream_distinct.emit_fns(d))
             rng_parts.append(f"{n}: stream_{n}({tv}, lo, hi, k, p)")
         elif n == "hits" or n.startswith("n_hit_"):
             extra_fns.append(f"""pub open spec fn stream_{n}({tv}: &{cols}, i0: int, k: Key, p: &Params) -> int
@@ -362,10 +439,13 @@ def emit_contract(shape: Shape) -> str:
             )
     step_body = "\n".join(step_lines)
 
-    def at(args: tuple[str, str, str]) -> str:
-        """The omin / omax laws of every MIN / MAX field at the points of one law (a, b, c are Agg names or `a`)."""
+    def at(args: tuple[str, str, str], law: str = "") -> str:
+        """The omin / omax laws of every MIN / MAX field at the points of one law (a, b, c are Agg names or `a`), then the set fields'
+        extensional equalities of that law."""
         x, y, z = args
-        return " ".join(f"lemma_{op}_at({x}.{n}, {y}.{n}, {z}.{n});" for n, _t, _z, op, _r in fields if op in ("omin", "omax"))
+        mm = " ".join(f"lemma_{op}_at({x}.{n}, {y}.{n}, {z}.{n});" for n, _t, _z, op, _r in fields if op in ("omin", "omax"))
+        sets = stream_distinct.laws([d.field for d in shape.distincts], law) if law else ""
+        return " ".join(part for part in (mm, sets) if part)
 
     # lemma_agg_total: the full range agrees with the spec's folds and predicates
     tot_ens = []
@@ -468,6 +548,10 @@ def emit_contract(shape: Shape) -> str:
         }}
     }}
 }}""")
+    for d in shape.distincts:
+        e, b = stream_distinct.total(d, f"agg_rng({tv}, 0, {tv}.n as int, k, p)")
+        tot_ens += e
+        tot_body.append(b)
     tot_ens_s = "\n".join(tot_ens)
     tot_body_s = "\n".join(tot_body)
 
@@ -569,10 +653,10 @@ pub proof fn lemma_agg_laws()
         monoid_laws(agg_zero(), agg_plus_f()),
         comm_laws(agg_plus_f()),
 {{
-    assert forall|a: Agg| #[trigger] agg_plus(agg_zero(), a) == a by {{ {at(("a", "a", "a"))} }}
-    assert forall|a: Agg| #[trigger] agg_plus(a, agg_zero()) == a by {{ {at(("a", "a", "a"))} }}
-    assert forall|a: Agg, b: Agg| #[trigger] agg_plus(a, b) == agg_plus(b, a) by {{ {at(("a", "b", "b"))} }}
-    assert forall|a: Agg, b: Agg, c: Agg| #[trigger] agg_plus(agg_plus(a, b), c) == agg_plus(a, agg_plus(b, c)) by {{ {at(("a", "b", "c"))} }}
+    assert forall|a: Agg| #[trigger] agg_plus(agg_zero(), a) == a by {{ {at(("a", "a", "a"), "left")} }}
+    assert forall|a: Agg| #[trigger] agg_plus(a, agg_zero()) == a by {{ {at(("a", "a", "a"), "right")} }}
+    assert forall|a: Agg, b: Agg| #[trigger] agg_plus(a, b) == agg_plus(b, a) by {{ {at(("a", "b", "b"), "comm")} }}
+    assert forall|a: Agg, b: Agg, c: Agg| #[trigger] agg_plus(agg_plus(a, b), c) == agg_plus(a, agg_plus(b, c)) by {{ {at(("a", "b", "c"), "assoc")} }}
 }}
 
 // The whole table: what q_finish needs to meet run_query_ok.

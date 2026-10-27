@@ -194,7 +194,7 @@ def test_stream_strings_are_plain_even_with_dict_default(stream_on: None) -> Non
     "sql, why",
     [
         ("SELECT s, a FROM t WHERE a > 3", "not a recognized fold|not an aggregate"),
-        ("SELECT COUNT(DISTINCT a) AS c FROM t", "DISTINCT"),
+        ("SELECT DISTINCT s FROM t", "DISTINCT"),  # COUNT(DISTINCT x) is stated (tests/test_stream_null_distinct.py); nothing else
         ("SELECT t.s, COUNT(*) AS c FROM t JOIN t AS u ON t.a = u.a GROUP BY t.s", "one table"),
         ("SELECT COUNT(*) AS c FROM t WHERE rowid < 5", "rowid"),
         ("SELECT first(a) AS f FROM t", "order-dependent"),
@@ -205,9 +205,10 @@ def test_the_gate_refuses_loudly(sql: str, why: str, stream_on: None) -> None:
         _emit_t(sql)
 
 
-def test_the_gate_refuses_a_nullable_group_key(stream_on: None) -> None:
-    with pytest.raises(DeclarativeUnsupported, match="nullable"):
-        _emit_t("SELECT b, COUNT(*) AS c FROM t GROUP BY b")
+def test_the_gate_accepts_a_nullable_group_key(stream_on: None) -> None:
+    # 2026-10-27: a nullable GROUP BY key is the pair (valid, value), as in the batch spec (tests/test_stream_null_distinct.py)
+    spec = _emit_t("SELECT b, COUNT(*) AS c FROM t GROUP BY b")
+    assert "pub type Key = (bool, int);" in spec
 
 
 @pytest.mark.parametrize("setting, value, why", [("LEMMA_ASSUMPTIONS", "1", "assumptions"), ("LEMMA_STATEFUL", "1", "stateful")])
@@ -500,9 +501,12 @@ def test_declined_sum_overflow_is_a_decline_not_a_wrong_answer(stream_on: None, 
 
 
 def test_a_fold_whose_row_term_reads_other_rows_is_refused_by_the_spec_gate(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The SQL check refuses DISTINCT first; the spec gate refuses it again (a per-row term with a quantifier is not chunk-local)."""
+    """A per-row term with a quantifier is not chunk-local: only COUNT DISTINCT's exact last-occurrence form is stated (a set field);
+    the same fold with another order (`j0 >= i0`) is refused."""
     _set_env(monkeypatch, {"LEMMA_TEMPLATES": "1", "LEMMA_PARALLEL_VSTD": "off", "LEMMA_AGENT_SCAN": "0", "LEMMA_STRING_ENCODING": "plain"})
     spec = _emit_t("SELECT COUNT(DISTINCT a) AS c FROM t")
     monkeypatch.setenv("LEMMA_STREAM", "1")
+    assert "pub set_count_distinct_c: Set<int>," in stream.to_stream(spec)
+    assert spec.count("((j0 > i0))") == 1
     with pytest.raises(DeclarativeUnsupported, match="other rows"):
-        stream.to_stream(spec)
+        stream.to_stream(spec.replace("((j0 > i0))", "((j0 >= i0))"))
