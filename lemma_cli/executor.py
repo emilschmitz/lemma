@@ -77,6 +77,7 @@ def setting() -> str:
 def gate(sql: str, db: Path) -> str | None:
     """The stream gate's verdict on ``sql`` over the tables of ``db``: None = accepted, else the refusal. The stream spec is emitted with
     the stream settings (``STREAM_ENV``) and the database's schema and structural catalog (what the pipeline emits from)."""
+    from declarative_spec import stream_join
     from declarative_spec.emit import emit_declarative_spec
     from declarative_spec.parse import DeclarativeUnsupported
     from research_loop.scripts.sqlsmith_trusted_coverage import load_sec_schema
@@ -84,7 +85,11 @@ def gate(sql: str, db: Path) -> str | None:
 
     with _env(STREAM_ENV):
         try:
-            emit_declarative_spec(sql, load_sec_schema(db), structural_catalog_from_db(db))
+            schema = load_sec_schema(db)
+            if stream_join.is_join_sql(sql) and stream_join.header_table(sql) is None:
+                # a join: the stream table by the pipeline's own rule on this database (drive.py writes the same line again)
+                sql = stream_join.with_header(sql, stream_join.choose_stream_table(sql, schema, db)["table"])
+            emit_declarative_spec(sql, schema, structural_catalog_from_db(db))
         except DeclarativeUnsupported as exc:
             text = str(exc)
             return text[len(GATE_PREFIX):] if text.startswith(GATE_PREFIX) else f"the transpiler refuses its stream spec: {text}"

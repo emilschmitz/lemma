@@ -446,3 +446,15 @@ def test_join_differential_against_duckdb(seed: int, n_t: int, n_u: int, keys: i
             assert f"STREAM_THREADS: {threads}" in proc.stdout and "STREAM_BUILD_US: " in proc.stdout
             err = rows_match_error(rows_from_stdout_general(proc.stdout), prep["rows"], prep["kinds"], prep.get("order_cols"), bool(prep.get("limited")), prep.get("tie_rows"))
             assert err is None, (chunk_max, threads, err, proc.stdout[-2000:], prep["rows"])
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT SUM(a) AS s FROM t WHERE a > (SELECT AVG(a) FROM t)",          # scalar subquery over the streamed table itself
+    "SELECT COUNT(*) AS c FROM t WHERE a IN (SELECT a FROM t WHERE a > 3)",  # IN subquery, one table
+])
+def test_the_gate_refuses_a_subquery_on_one_table(sql: str) -> None:
+    # 2026-10-27: phase 1's single-table path accepted these; one streaming pass cannot know a whole-table value per chunk
+    from declarative_spec import stream_join
+
+    with pytest.raises(DeclarativeUnsupported, match="subquery"):
+        stream_join.check_sql(sql)

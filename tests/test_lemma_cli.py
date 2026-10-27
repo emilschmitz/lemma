@@ -841,7 +841,8 @@ def test_status_reports_auth_image_selftest_and_executors(env: Path, tmp_path: P
 # --- the executor kind ([product] executor: auto | stream | batch; lemma_cli/executor.py) ---
 
 STREAM_SQL = "SELECT b, COUNT(*) AS c, SUM(a) AS s FROM t GROUP BY b"
-JOIN_SQL = "SELECT t.b, COUNT(*) AS c FROM t JOIN u ON t.b = u.b GROUP BY t.b"
+JOIN_SQL = "SELECT t.b, COUNT(*) AS c FROM t JOIN u ON t.b = u.b GROUP BY t.b"  # an inner equi-join: streamed (phase 2a)
+LEFT_JOIN_SQL = "SELECT t.b, COUNT(*) AS c FROM t LEFT JOIN u ON t.b = u.b GROUP BY t.b"  # outer: still refused by the stream gate
 SUBQUERY_SQL = "SELECT SUM(a) AS s FROM t WHERE b IN (SELECT b FROM u)"
 
 
@@ -857,18 +858,18 @@ def make_db2(tmp_path: Path) -> Path:
 
 
 def test_auto_streams_a_single_table_aggregate_and_batches_a_join_or_a_subquery(env: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The gate decides before generation (phase 1: joins are not in the gate yet; when they are, the gate's verdict is the choice)."""
+    """The gate decides before generation: single-table aggregates and inner equi-joins stream; outer joins, subqueries, DISTINCT batch."""
     from lemma_cli import executor
 
     db = make_db2(tmp_path)
     assert executor.setting() == "auto"
-    for sql in (STREAM_SQL, "SELECT SUM(a) AS s FROM t WHERE b > 2"):
+    for sql in (STREAM_SQL, "SELECT SUM(a) AS s FROM t WHERE b > 2", JOIN_SQL):
         choice = executor.choose(sql, db)
         assert (choice.kind, choice.abi, choice.setting) == ("stream", 6, "auto") and "accepts" in choice.reason
-    for sql in (JOIN_SQL, SUBQUERY_SQL, "SELECT COUNT(DISTINCT b) AS d FROM t"):
+    for sql in (LEFT_JOIN_SQL, SUBQUERY_SQL, "SELECT COUNT(DISTINCT b) AS d FROM t"):
         choice = executor.choose(sql, db)
         assert (choice.kind, choice.abi) == ("batch", 5) and choice.reason.startswith("the stream gate refuses it: "), choice
-    assert "joins are phase 2" in executor.choose(JOIN_SQL, db).reason
+    assert "LEFT JOIN" in executor.choose(LEFT_JOIN_SQL, db).reason
     assert "DISTINCT" in executor.choose("SELECT COUNT(DISTINCT b) AS d FROM t", db).reason
     assert all(k not in os.environ for k in executor.STREAM_ENV)  # the gate's emission leaves the environment as it found it
     monkeypatch.setenv("LEMMA_EXECUTOR", "batch")
@@ -889,23 +890,23 @@ def test_auto_runs_the_stream_pipeline_with_the_stream_settings_and_records_the_
     dest = cache.executor_dir(common.sql_key(STREAM_SQL))
     assert json.loads((dest / "optimize.json").read_text())["executor"] == recorded
     assert os.environ["LEMMA_PUSHDOWN"] == "true" and "LEMMA_STREAM" not in os.environ  # put back after the run
-    assert main(["optimize", "--db", str(db), "--sql", JOIN_SQL]) == 0
+    assert main(["optimize", "--db", str(db), "--sql", LEFT_JOIN_SQL]) == 0
     out = capsys.readouterr().out
-    assert "executor: batch (ABI 5; [product] executor = auto): the stream gate refuses it: phase 1 streams one table" in out
+    assert "executor: batch (ABI 5; [product] executor = auto): the stream gate refuses it: " in out and "LEFT JOIN" in out
     assert json.loads((pipeline / "env.json").read_text()) == {"LEMMA_STREAM": "false", "LEMMA_PUSHDOWN": "true", "LEMMA_AGENT_SCAN": None}
     assert main(["list"]) == 0
     listed = capsys.readouterr().out
-    assert f"{dest.name[:12]}  stream  " in listed and f"{common.sql_key(JOIN_SQL)[:12]}  batch  " in listed
+    assert f"{dest.name[:12]}  stream  " in listed and f"{common.sql_key(LEFT_JOIN_SQL)[:12]}  batch  " in listed
 
 
 def test_explicit_stream_on_a_refused_shape_is_an_error_and_runs_nothing(env: Path, pipeline: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
     ready(env, monkeypatch)
     monkeypatch.setenv("LEMMA_EXECUTOR", "stream")
     db = make_db2(tmp_path)
-    for sql in (JOIN_SQL, SUBQUERY_SQL):
+    for sql in (LEFT_JOIN_SQL, SUBQUERY_SQL):
         assert main(["optimize", "--db", str(db), "--sql", sql]) == 2
         err = capsys.readouterr().err
-        assert "[product] executor = stream, but the stream gate refuses this query: phase 1 streams one table" in err and "nothing was generated" in err
+        assert "[product] executor = stream, but the stream gate refuses this query: " in err and "nothing was generated" in err
     assert not (pipeline / "argv.json").exists() and cache.list_executors() == []
     assert main(["optimize", "--db", str(db), "--sql", STREAM_SQL]) == 0  # an accepted shape streams
     assert "executor: stream (ABI 6; [product] executor = stream)" in capsys.readouterr().out
