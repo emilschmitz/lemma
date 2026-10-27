@@ -116,6 +116,23 @@ typedef int32_t (*lemma_stream_finish_fn)(LemmaWorker *w, uint64_t m, uint64_t n
 typedef void (*lemma_stream_drop_fn)(LemmaWorker *w);
 typedef void (*lemma_stream_close_fn)(LemmaStream *s); // after every worker of it is finished or dropped
 
+// ---- ABI 6 for a join (phase 2a, docs/STREAM.md "Phase 2a, execution side"): one streamed table, materialized build tables ----------
+// A join library's proved runtime is ONE Pool per stream (the build tables, the agent's QBuild, one locked slot per worker). Its
+// lemma_stream_open refuses; the stream opens with lemma_stream_open_pool, which takes every build table's columns (in the order of
+// lemma_stream_builds; per table the ABI 5 inputs of lemma_input_layout: its "rows" entry, then its fields in Cols order, cells in the
+// column-file encoding as lemma_run takes them; nothing is taken or kept) and the slot count (one per scan thread), decodes and
+// length-checks them, loads them with the verified loaders and calls pool_open. lemma_stream_ready says how pool_open ended. A worker
+// is a slot (lemma_stream_worker hands out 0, 1, .. below nslots); lemma_stream_step(w, c) = pool_step on that slot; lemma_stream_merge
+// only drops `from` (both of one stream; pool_finish merges the slots); lemma_stream_finish(w, m, n) = StreamEnd, then pool_finish, once
+// per stream after every worker returned. A panic inside a step (it may leave the slot's lock held) makes every later step and the
+// finish an ERROR (pool_finish is not called: it would wait for that lock forever). LMR1's load_us = decoding the builds + pool_open.
+typedef const char *(*lemma_stream_builds_fn)(void); // the build tables' Cols suffixes, one per line, in q_build's order
+// NULL on bad parameters / build columns or a panic (err = the message).
+typedef LemmaStream *(*lemma_stream_open_pool_fn)(const LemmaCol *build, uint64_t nbuild, const LemmaParam *params, uint64_t nparams,
+                                                  uint64_t nslots, LemmaOut *err);
+// pool_open's outcome: LEMMA_STATUS_OK (workers may start), DECLINED (q_build declined; msg = the reason), ERROR (msg).
+typedef int32_t (*lemma_stream_ready_fn)(const LemmaStream *s, LemmaOut *msg);
+
 #ifdef __cplusplus
 }
 #endif

@@ -265,7 +265,16 @@ def install_executor(
     A stream spec (lemma.toml [run] stream, docs/STREAM.md) installs a STREAMING executor: ``agent_source`` holds the six regions
     (AGENT_STATE / HELPERS / INIT / STEP / MERGE / FINISH, admitted by ``admit_stream``), the library is the ABI 6 template
     (``assemble_stream_library_program``; ``abi`` is then 6 whatever was passed), and the manifest says ``mode: "stream"`` with a
-    ``stream`` section (the chunk layout). No pushed predicate (docs/STREAM.md: the proved step evaluates the WHERE)."""
+    ``stream`` section (the chunk layout). No pushed predicate (docs/STREAM.md: the proved step evaluates the WHERE).
+
+    A stream JOIN (phase 2a, ``stream_join.is_join``): ``sql`` must carry the run's ``-- stream: <table>`` line (the recorded choice,
+    ``<run dir>/stream_choice.json``; emitting a join without it is refused). The agent source holds seven regions (also AGENT_BUILD),
+    the library is the Pool template, the manifest's ``stream`` section names the streamed table and the build tables (Cols suffixes,
+    q_build's order), and each BUILD table's rows entry gets its own pushed single-table predicate (``where``) whatever lemma.toml
+    ``pushdown`` says: the extension materializes the build tables through the ABI 5 input path, and the spec re-applies the WHERE to
+    every pair, so dropping build rows that fail a conjunct of their own table is sound (declarative_spec/pushdown.py). The streamed
+    table is never filtered. The executor's key and SQL are the query WITHOUT the ``-- stream:`` line (what a caller sends); the choice
+    lives in the manifest and in the spec."""
     require_enabled()
     from declarative_spec import stream
     from declarative_spec.admit import admit_declarative_body, admit_helpers, admit_stream
@@ -273,12 +282,16 @@ def install_executor(
 
     spec = emit_declarative_spec(sql, schema, catalog)
     streaming = stream.is_stream(spec)
+    from declarative_spec import stream_join
+
+    join = streaming and stream_join.is_join(spec)
+    query_sql = without_stream_header(sql) if join else sql  # the key, the manifest's SQL and the library's lemma_query_sql
     if streaming:
         regions = stream.extract_regions(agent_source)
         violations = list(admit_stream(**regions, spec_rs=spec).violations)
         if violations:
             raise ValueError("; ".join(violations))
-        program = assemble_stream_library_program(spec, regions, sql=sql)
+        program = assemble_stream_library_program(spec, regions, sql=query_sql)
         abi = STREAM_ABI_VERSION
     else:
         if "AGENT_EDIT_START" in agent_source:
@@ -300,8 +313,11 @@ def install_executor(
         con.close()
     if not streaming:
         add_pushdown(inputs, sql, schema)
+    elif join:
+        builds = stream_builds(spec)
+        add_pushdown(inputs, sql, schema, suffixes=set(builds), always=True)
     home = home or lemma_home()
-    key = executor_key(sql)
+    key = executor_key(query_sql)
     final = home / "executors" / key
     final.parent.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=f".{key[:12]}-", dir=final.parent))
@@ -316,8 +332,8 @@ def install_executor(
             # lemma.toml assumptions of the spec this executor proves: false = no data assumptions, run_query may decline (lemma_run status 1).
             "assumptions": not decline.is_decline_spec(spec),
             "key": key,
-            "sql": sql,
-            "normalized_sql": normalize_sql(sql),
+            "sql": query_sql,
+            "normalized_sql": normalize_sql(query_sql),
             "duckdb_version": "v" + duckdb.__version__,
             **provenance,
             "proof": proof,
@@ -335,8 +351,13 @@ def install_executor(
             # ABI 6: the extension's StreamTable hands DuckDB's chunks to the library in this column order (lemma_stream_layout).
             manifest["mode"] = "stream"
             manifest["stream"] = {"layout": stream_layout(spec), "pushdown": False}
+            if join:
+                # the streamed table and the build tables (Cols suffixes; the builds in q_build's order = lemma_stream_builds)
+                manifest["stream"]["table"] = stream_table(spec)
+                manifest["stream"]["builds"] = builds
+                manifest["stream"]["stream_header"] = f"-- stream: {stream_join.header_table(sql)}"
         (stage / "manifest.json").write_text(json.dumps(manifest, indent=1) + "\n")
-        (stage / "query.sql").write_text(sql + "\n")
+        (stage / "query.sql").write_text(query_sql + "\n")
         shutil.rmtree(stage / "build", ignore_errors=True)
         if final.exists():
             # Replace in two renames, so a reader never sees a half-removed executor: the old one leaves under a dot name first.
@@ -350,22 +371,44 @@ def install_executor(
         shutil.rmtree(stage, ignore_errors=True)
         raise
     if params:
-        index_template(home, key, sql)  # lemma(...) finds it for any query that is this template with literals in place of $name
+        index_template(home, key, query_sql)  # lemma(...) finds it for any query that is this template with literals in place of $name
     return final
 
 
-def add_pushdown(inputs: list[dict], sql: str, schema: dict) -> None:
+_STREAM_LINE = re.compile(r"^[ \t]*--[ \t]*stream:[^\n]*(?:\n|$)", re.MULTILINE | re.IGNORECASE)
+
+
+def without_stream_header(sql: str) -> str:
+    """``sql`` without its ``-- stream: <table>`` line (stream_join.with_header puts it first): the query as a caller sends it."""
+    return _STREAM_LINE.sub("", sql, count=1)
+
+
+def stream_table(spec: str) -> str:
+    """The streamed table's Cols suffix of a stream spec (``stream_table_<t>``)."""
+    return re.search(r"pub uninterp spec fn stream_table_(\w+)\(id: u64\)", spec).group(1)
+
+
+def stream_builds(spec: str) -> list[str]:
+    """The build tables' Cols suffixes of a join stream spec, in q_build's (pool_open's) order."""
+    sig = re.search(r"pub fn pool_open\(sh: Stream_\w+, (.*?), p: Params, nslots: usize\)", spec)
+    return [part.split(":")[1].strip().removeprefix("Cols_") for part in sig.group(1).split(", ")]
+
+
+def add_pushdown(inputs: list[dict], sql: str, schema: dict, *, suffixes: set[str] | None = None, always: bool = False) -> None:
     """lemma.toml ``pushdown``: each ``rows`` entry gets the transpiler's pushed-down predicate of its table (``where``, DuckDB SQL;
     a query template's ``$name`` placeholders stay, the extension substitutes the values ``lemma_query`` gets) and the parameters it
     reads (``where_params``). The extension applies it inside its scan (DuckDB's filter pushdown in the caller's snapshot), so only
     rows that can matter are handed to the executor. Sound by ``declarative_spec/pushdown.py``; the spec is unchanged. Flag off, or
-    nothing pushed for a table: no key, the whole table is scanned as before."""
-    if not lemma_config.get("pushdown"):
+    nothing pushed for a table: no key, the whole table is scanned as before. ``suffixes``: only those tables (a stream join's build
+    tables); ``always``: whatever the flag says (a build table, see install_executor)."""
+    if not always and not lemma_config.get("pushdown"):
         return
     from declarative_spec.pushdown import plan_pushdown
 
     plan = plan_pushdown(sql, schema, dialect="duckdb")
     for entry in inputs:
+        if suffixes is not None and entry["suffix"] not in suffixes:
+            continue
         if entry["kind"] == "rows" and plan.where(entry["table"]) is not None:
             entry["where"] = plan.where(entry["table"])
             entry["where_params"] = list(plan.params(entry["table"]))

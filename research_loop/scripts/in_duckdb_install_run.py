@@ -63,7 +63,17 @@ def install_run(run_dir: Path, home: Path) -> Path:
         from research_loop.structural_catalog import structural_catalog_from_db
 
         catalog = structural_catalog_from_db(db)
-    return in_duckdb.install_executor(sql=manifest["sql"], schema=schema, catalog=catalog, agent_source=body, db_path=db, home=home)
+    sql = manifest["sql"]
+    from declarative_spec import stream_join
+
+    if os.environ[lemma_config.env_name("stream")] == "true" and stream_join.is_join_sql(sql) and stream_join.header_table(sql) is None:
+        # A stream join: the run chose its stream table once (drive.py, stream_join.ensure_header) and recorded it; the install states
+        # the same spec with the same `-- stream:` line. No record: refused (never chosen again here, on another database).
+        choice_file = run_dir / "stream_choice.json"
+        if not choice_file.is_file():
+            raise ValueError(f"{run_dir}: a stream join without stream_choice.json (the run's choice of its stream table)")
+        sql = stream_join.with_header(sql, json.loads(choice_file.read_text())["table"])
+    return in_duckdb.install_executor(sql=sql, schema=schema, catalog=catalog, agent_source=body, db_path=db, home=home)
 
 
 def main() -> None:

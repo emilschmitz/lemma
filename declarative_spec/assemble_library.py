@@ -944,9 +944,12 @@ STREAM_ERROR_REASON = (
     "the proved stream runtime refused to answer (exec_finish: StreamOut::Error): a chunk was lost, doubled or out of place, a chunk "
     "failed S1's checks (selection index out of range, not UTF-8), or two streams were merged"
 )
-_CELL_BYTES = {"i8": 1, "u8": 1, "bool": 1, "i16": 2, "u16": 2, "i32": 4, "u32": 4, "i64": 8, "u64": 8}
+# i128: DECIMAL(38, s) (DuckDB HUGEINT storage: the same 16 little-endian bytes)
+_CELL_BYTES = {"i8": 1, "u8": 1, "bool": 1, "i16": 2, "u16": 2, "i32": 4, "u32": 4, "i64": 8, "u64": 8, "i128": 16}
 
-_STREAM_HEAD = r"""
+# The ABI 6 template in four parts: the shared head (C structs, statuses, text entry points, UNSAFE 1-4), the handles of the
+# runtime (phase 1: a per-worker Exec; a join: one Pool per stream), the per-chunk cell checks, and the entry points.
+_STREAM_COMMON = r"""
 // ===== HOST C ABI 6: the streaming executor (fixed template, not agent code; outside verus!, unverified, reviewed) =====
 // `unsafe` appears ONLY in the ten small functions marked UNSAFE n/10 below, each with its caller's contract (lemma_abi.h), besides
 // the S1/S2 items inside verus! (the spec's lemma_stream_slice, lemma_stream_str_bytes, str_ent, stream_end_<t>), which are S1/S2.
@@ -1033,7 +1036,8 @@ pub extern "C" fn lemma_stream_layout() -> *const u8 {
     LEMMA_STREAM_LAYOUT.as_ptr()
 }
 
-// UNSAFE 1/10. Contract: `ptr` points to `n` initialized T (the caller's LemmaParam or LemmaVec array) that outlive the call.
+// UNSAFE 1/10. Contract: `ptr` points to `n` initialized T (the caller's LemmaParam, LemmaVec or build LemmaCol array) that outlive
+// the call.
 fn lemma_slice<'a, T>(ptr: *const T, n: u64, what: &str) -> &'a [T] {
     if n == 0 {
         return &[];
@@ -1043,8 +1047,8 @@ fn lemma_slice<'a, T>(ptr: *const T, n: u64, what: &str) -> &'a [T] {
     unsafe { std::slice::from_raw_parts(ptr, n as usize) }
 }
 
-// UNSAFE 2/10. Contract: `data` points to `len` readable bytes (a LemmaParam value, or the cells of a bool chunk column) that outlive
-// the call and are not written during it.
+// UNSAFE 2/10. Contract: `data` points to `len` readable bytes (a LemmaParam value, the cells of a bool chunk column, or a build
+// column's cells) that outlive the call and are not written during it.
 fn lemma_bytes<'a>(data: *const u8, len: u64, what: &str) -> &'a [u8] {
     if len == 0 {
         return &[];
@@ -1113,7 +1117,9 @@ fn lemma_put_str(out: &mut Vec<u8>, s: &str) {
     out.extend_from_slice(s.as_bytes());
 }
 
-// The stream handle: the ghost table's id, the parameters, and the StreamEnd S2 reads (a heap cell of its own: its address is
+"""
+
+_STREAM_EXEC_HANDLES = r"""// The stream handle: the ghost table's id, the parameters, and the StreamEnd S2 reads (a heap cell of its own: its address is
 // Stream___TS__.raw in every worker's Exec, so it stays put until lemma_stream_close).
 pub struct LemmaStream {
     id: u64,
@@ -1165,7 +1171,9 @@ fn lemma_set_end(end: *mut StreamEnd___TS__, m: u64, n: u64) {
     }
 }
 
-// The address of a fixed-width column's len cells of type T (checked: not null when len > 0, aligned for T).
+"""
+
+_STREAM_CELLS = r"""// The address of a fixed-width column's len cells of type T (checked: not null when len > 0, aligned for T).
 fn lemma_cells<T>(v: &LemmaVec, len: usize, label: &str) -> usize {
     assert!(
         len == 0 || (!v.data.is_null() && (v.data as usize) % std::mem::align_of::<T>() == 0),
@@ -1202,7 +1210,9 @@ fn lemma_str_ents(v: &LemmaVec, label: &str) -> usize {
     v.data as usize
 }
 
-#[no_mangle]
+"""
+
+_STREAM_EXEC_API = r"""#[no_mangle]
 pub extern "C" fn lemma_stream_open(
     build: *const LemmaCol,
     nbuild: u64,
@@ -1362,10 +1372,16 @@ pub extern "C" fn lemma_stream_close(s: *mut LemmaStream) {
 }
 """
 
+_STREAM_HEAD = _STREAM_COMMON + _STREAM_EXEC_HANDLES + _STREAM_CELLS + _STREAM_EXEC_API
+
 
 def stream_layout(verus_part: str) -> list[str]:
-    """One line per ``LemmaVec`` of a chunk, in ``Cols_<t>`` order: ``<field> <rust type> <bytes per cell>``, ``<field> String str``."""
+    """One line per ``LemmaVec`` of a chunk, in ``Cols_<t>`` order: ``<field> <rust type> <bytes per cell>``, ``<field> String str``.
+    A join (phase 2a): the chunks are the stream table's (``stream_table_<t>``); the build tables are ABI 5 inputs."""
     structs = re.findall(r"pub struct (Cols_[A-Za-z0-9_]+)\s*\{([^}]+)\}", verus_part, re.DOTALL)
+    streamed = re.search(r"pub uninterp spec fn stream_table_(\w+)\(id: u64\)", verus_part)
+    if streamed is not None and len(structs) > 1:
+        structs = [(n, b) for n, b in structs if n == f"Cols_{streamed.group(1)}"]
     if len(structs) != 1:
         raise ValueError("a stream program reads one table")
     out = []
@@ -1379,6 +1395,35 @@ def stream_layout(verus_part: str) -> list[str]:
     return out
 
 
+def _raw_chunk_fn(ts: str, fields: list[tuple[str, str]]) -> str:
+    """``lemma_raw_chunk``: the chunk as S1 takes it (``RawChunk_<t>``), after the glue's checks."""
+    # the RawChunk_<t> fill: one LemmaVec per column, in Cols_<t> order (the order of RawChunk_<t> and of lemma_stream_layout)
+    raw = ["j: c.j", "off: c.off", "len: c.len"]
+    for i, (fname, fty) in enumerate(fields):
+        label = f"{ts}.{_local_ident(fname)}"
+        if fty == "String":
+            raw += [
+                f'{fname}_sel: lemma_str_sel(&cols[{i}], len, "{label}")',
+                f'{fname}_ents: lemma_str_ents(&cols[{i}], "{label}")',
+                f"{fname}_nents: cols[{i}].nents",
+                f"{fname}_dict: cols[{i}].dict",
+            ]
+        elif fty == "bool":
+            raw.append(f'{fname}: lemma_bool_cells(&cols[{i}], len, "{label}")')
+        else:
+            raw.append(f'{fname}: lemma_cells::<{fty}>(&cols[{i}], len, "{label}")')
+    return (
+        f"// The chunk as S1 takes it (RawChunk_{ts}), after the glue's checks, one column per LemmaVec in Cols_{ts} order.\n"
+        f"fn lemma_raw_chunk(c: &LemmaChunk) -> RawChunk_{ts} {{\n"
+        f'    assert!(c.ncols == {len(fields)}, "lemma_stream_step: {{}} chunk columns, the layout has {len(fields)}", c.ncols);\n'
+        '    assert!(c.len <= isize::MAX as u64 && c.off <= isize::MAX as u64, "lemma_stream_step: a chunk beyond isize");\n'
+        '    let cols: &[LemmaVec] = lemma_slice(c.cols, c.ncols, "the chunk columns");\n'
+        "    let len = c.len as usize;\n"
+        "    let _ = (&cols, len);\n"
+        f"    RawChunk_{ts} {{\n        " + ",\n        ".join(raw) + ",\n    }\n}\n"
+    )
+
+
 def assemble_stream_library_program(spec_rs: str, regions: dict[str, str], *, sql: str) -> str:
     """The ABI 6 library: the verified ``verus!`` part of :func:`declarative_spec.assemble.assemble_stream_program` (the stream spec,
     the agent's six regions, the host lemmas) plus the fixed C entry points above instead of the binary-mode ``main``."""
@@ -1388,6 +1433,10 @@ def assemble_stream_library_program(spec_rs: str, regions: dict[str, str], *, sq
 
     if not stream.is_stream(spec_rs):
         raise ValueError("not a stream spec (lemma.toml [run] stream): use assemble_library_program (ABI 4/5)")
+    from declarative_spec import stream_join
+
+    if stream_join.is_join(spec_rs):
+        return _assemble_stream_join_library(spec_rs, regions, sql=sql)
     verus_part = _stitch_stream(spec_rs, regions)
     structs = re.findall(r"pub struct (Cols_[A-Za-z0-9_]+)\s*\{([^}]+)\}", verus_part, re.DOTALL)
     if len(structs) != 1:
@@ -1408,31 +1457,7 @@ def assemble_stream_library_program(spec_rs: str, regions: dict[str, str], *, sq
     names = [n for n, _t, _lo, _hi in spec_params(verus_part)]
     params_init = "Params { " + ", ".join(f"{n}: {a}" for n, a in zip(names, param_args, strict=True)) + " }" if names else "Params {}"
     outputs = output_layout(verus_part)
-    # the RawChunk_<t> fill: one LemmaVec per column, in Cols_<t> order (the order of RawChunk_<t> and of lemma_stream_layout)
-    raw = ["j: c.j", "off: c.off", "len: c.len"]
-    for i, (fname, fty) in enumerate(fields):
-        label = f"{ts}.{_local_ident(fname)}"
-        if fty == "String":
-            raw += [
-                f'{fname}_sel: lemma_str_sel(&cols[{i}], len, "{label}")',
-                f'{fname}_ents: lemma_str_ents(&cols[{i}], "{label}")',
-                f"{fname}_nents: cols[{i}].nents",
-                f"{fname}_dict: cols[{i}].dict",
-            ]
-        elif fty == "bool":
-            raw.append(f'{fname}: lemma_bool_cells(&cols[{i}], len, "{label}")')
-        else:
-            raw.append(f'{fname}: lemma_cells::<{fty}>(&cols[{i}], len, "{label}")')
-    raw_fn = (
-        f"// The chunk as S1 takes it (RawChunk_{ts}), after the glue's checks, one column per LemmaVec in Cols_{ts} order.\n"
-        f"fn lemma_raw_chunk(c: &LemmaChunk) -> RawChunk_{ts} {{\n"
-        f'    assert!(c.ncols == {len(fields)}, "lemma_stream_step: {{}} chunk columns, the layout has {len(fields)}", c.ncols);\n'
-        '    assert!(c.len <= isize::MAX as u64 && c.off <= isize::MAX as u64, "lemma_stream_step: a chunk beyond isize");\n'
-        '    let cols: &[LemmaVec] = lemma_slice(c.cols, c.ncols, "the chunk columns");\n'
-        "    let len = c.len as usize;\n"
-        "    let _ = (&cols, len);\n"
-        f"    RawChunk_{ts} {{\n        " + ",\n        ".join(raw) + ",\n    }\n}\n"
-    )
+    raw_fn = _raw_chunk_fn(ts, fields)
     kinds = ", ".join(str(_kind(ty, name)) for name, ty in outputs)
     encode = (
         "// LMR1 (as lemma_run): load_us 0 (nothing is loaded), run_us = exec_finish, then the rows column-major.\n"
@@ -1469,3 +1494,447 @@ def assemble_stream_library_program(spec_rs: str, regions: dict[str, str], *, sq
         .replace("__TS__", ts)
     )
     return verus_part + "\n" + head + "\n" + raw_fn + "\n" + encode + "\n" + statics
+
+
+# ---- ABI 6 for a join (phase 2a, declarative_spec/stream_join.py): one Pool per stream ----------------------------------------------
+#
+# A join's proved runtime is the Pool (pool_open / pool_step / pool_finish), not a per-worker Exec. The same entry points as phase 1,
+# plus three (docs/STREAM.md "Phase 2a, execution side"; lemma_abi.h):
+#
+#     const char  *lemma_stream_builds(void);   // the build tables, one Cols suffix per line, in q_build's (pool_open's) order
+#     LemmaStream *lemma_stream_open_pool(const LemmaCol *build, uint64_t nbuild, const LemmaParam *params, uint64_t nparams,
+#                                         uint64_t nslots, LemmaOut *err);
+#                  // every build table in lemma_stream_builds order, each as ABI 5 inputs: its rows entry, then its fields in Cols order
+#                  // (lemma_input_layout's lines of that table); decoded and length-checked, loaded by the verified load_cols_<b>, then
+#                  // pool_open(.., nslots). NULL: bad parameters or build columns, or a panic (err = the message)
+#     int32_t      lemma_stream_ready(const LemmaStream *s, LemmaOut *msg);   // pool_open's outcome: 0 ready, 1 DECLINED (q_build
+#                  // declined; msg = the reason), 2 ERROR (a build table is not well formed; msg). Workers only for a ready stream
+#
+# lemma_stream_open of a join library refuses (it carries no slot count). lemma_stream_worker hands out slot w = 0, 1, .. (at most
+# nslots); lemma_stream_step(w, chunk) is pool_step on that slot; lemma_stream_merge only checks that both workers belong to one stream and
+# drops `from` (pool_finish merges the slots); lemma_stream_finish(w, m, n) sets StreamEnd and calls pool_finish (by value, once per
+# stream), after every worker has returned. A panic inside pool_step (the agent's q_step under the slot's write lock) leaves that lock
+# held: pool_finish would wait for it forever, so the stream is marked broken and finish answers ERROR without calling pool_finish. The
+# LMR1 result's load_us is the decode of the build columns plus pool_open (q_build, q_init per slot).
+
+_STREAM_POOL_HANDLES = r"""// The stream handle of a join: the ghost table's id, its Pool (the build tables, the agent's QBuild, one locked slot per worker;
+// taken by the one finish), pool_open's outcome (0 ready, 1 declined, 2 error), the StreamEnd S2 reads (a heap cell of its own: its
+// address is Stream___TS__.raw in the Pool, so it stays put until lemma_stream_close), the slots handed out, and `broken`: a call into
+// the Pool panicked, so a slot's lock may still be held (pool_finish would wait for it forever): the stream answers ERROR without it.
+#[allow(dead_code)]
+pub struct LemmaStream {
+    id: u64,
+    pool: std::sync::RwLock<Option<Pool>>,
+    state: i32,
+    end: *mut StreamEnd___TS__,
+    nslots: usize,
+    next_slot: std::sync::atomic::AtomicUsize,
+    broken: std::sync::atomic::AtomicBool,
+    open_us: u64,
+}
+
+// One worker: slot `w` (below nslots, handed out once) of the Pool of stream `s`.
+pub struct LemmaWorker {
+    s: *const LemmaStream,
+    w: usize,
+}
+
+// The scan threads share one Pool (pool_step takes &Pool): it must be Send + Sync. Checked by the compiler here.
+fn lemma_shared<T: Send + Sync>() {}
+#[allow(dead_code)]
+fn lemma_pool_is_shared() {
+    lemma_shared::<Pool>();
+}
+
+// Every stream of this process gets its own ghost-table id.
+static LEMMA_NEXT_STREAM: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+// UNSAFE 5/10. Contract: `s` was returned by lemma_stream_open_pool of this library and is not closed during the call (a worker's
+// stream outlives the worker: lemma_stream_close comes after every worker is finished or dropped).
+fn lemma_stream_ref<'a>(s: *const LemmaStream) -> &'a LemmaStream {
+    assert!(!s.is_null(), "lemma_stream: a null stream");
+    unsafe { &*s }
+}
+
+// UNSAFE 6/10. Contract: `w` was returned by lemma_stream_worker of this library and is neither finished nor dropped during the call
+// (it is only read: several calls may read one worker, though the extension runs one scan thread per worker).
+fn lemma_worker_ref<'a>(w: *const LemmaWorker) -> &'a LemmaWorker {
+    assert!(!w.is_null(), "lemma_stream: a null worker");
+    unsafe { &*w }
+}
+
+// UNSAFE 7/10. Contract: as UNSAFE 6/10, no other call uses the worker at the same time, and the caller gives it up with this call
+// (finish, merge's `from`, drop).
+fn lemma_worker_take(w: *mut LemmaWorker) -> Box<LemmaWorker> {
+    assert!(!w.is_null(), "lemma_stream: a null worker");
+    unsafe { Box::from_raw(w) }
+}
+
+// UNSAFE 8/10. Contract: `c` points to a LemmaChunk whose column array and buffers stay valid and unwritten until the call returns.
+fn lemma_chunk_ref<'a>(c: *const LemmaChunk) -> &'a LemmaChunk {
+    assert!(!c.is_null(), "lemma_stream: a null chunk");
+    unsafe { &*c }
+}
+
+// UNSAFE 9/10. Contract: `end` is the StreamEnd of an open stream and every worker of it has returned from its last step (nothing
+// reads or writes it at the same time; pool_finish runs after this on the same thread). S2 then reads (m, n).
+fn lemma_set_end(end: *mut StreamEnd___TS__, m: u64, n: u64) {
+    assert!(!end.is_null(), "lemma_stream: a stream without its StreamEnd");
+    unsafe {
+        (*end).m = m;
+        (*end).n = n;
+    }
+}
+
+// A build column of fixed-width cells (ABI 5 input encoding: n little-endian cells of W bytes), copied into the Vec its loader takes.
+#[allow(dead_code)]
+fn lemma_fixed<T, const W: usize>(col: &LemmaCol, label: &str, conv: fn([u8; W]) -> T) -> Vec<T> {
+    let bytes = lemma_bytes(col.data, col.len, label);
+    let n = col.n as usize;
+    assert!(n.checked_mul(W) == Some(bytes.len()), "{}: {} bytes for {} values of {} bytes", label, bytes.len(), n, W);
+    bytes.chunks_exact(W).map(|c| conv(c.try_into().unwrap())).collect()
+}
+
+// A build column of strings (ABI 5 input encoding: per value a u32 byte length, then its UTF-8 bytes).
+#[allow(dead_code)]
+fn lemma_strings(col: &LemmaCol, label: &str) -> Vec<String> {
+    let bytes = lemma_bytes(col.data, col.len, label);
+    let n = col.n as usize;
+    let mut out: Vec<String> = Vec::with_capacity(n);
+    let mut off: usize = 0;
+    while out.len() < n {
+        assert!(off + 4 <= bytes.len(), "{}: string buffer ends early", label);
+        let len = u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap()) as usize;
+        off += 4;
+        assert!(off + len <= bytes.len(), "{}: string buffer ends early", label);
+        out.push(String::from_utf8(bytes[off..off + len].to_vec()).expect("a build string is not UTF-8"));
+        off += len;
+    }
+    assert!(off == bytes.len(), "{}: string buffer has trailing bytes", label);
+    out
+}
+
+"""
+
+_STREAM_POOL_API = r"""#[no_mangle]
+pub extern "C" fn lemma_stream_builds() -> *const u8 {
+    LEMMA_STREAM_BUILDS.as_ptr()
+}
+
+// A join stream needs its slot count when its Pool opens: lemma_stream_open_pool.
+#[no_mangle]
+pub extern "C" fn lemma_stream_open(
+    build: *const LemmaCol,
+    nbuild: u64,
+    params: *const LemmaParam,
+    nparams: u64,
+    err: *mut LemmaOut,
+) -> *mut LemmaStream {
+    let _ = (build, nbuild, params, nparams);
+    lemma_write_out(err, b"lemma_stream_open: a join stream opens its Pool with lemma_stream_open_pool (build tables and slot count)".to_vec());
+    std::ptr::null_mut()
+}
+
+#[no_mangle]
+pub extern "C" fn lemma_stream_open_pool(
+    build: *const LemmaCol,
+    nbuild: u64,
+    params: *const LemmaParam,
+    nparams: u64,
+    nslots: u64,
+    err: *mut LemmaOut,
+) -> *mut LemmaStream {
+    let r = lemma_guard(|| {
+        assert!(nparams == __NPARAMS__, "lemma_stream_open_pool: {} parameters, this query takes __NPARAMS__", nparams);
+        assert!(nbuild == __NBUILD__, "lemma_stream_open_pool: {} build columns, the build tables have __NBUILD__", nbuild);
+        assert!(nslots >= 1 && nslots <= 65536, "lemma_stream_open_pool: {} slots (1 to 65536)", nslots);
+        let params: &[LemmaParam] = lemma_slice(params, nparams, "params");
+        let _ = params;
+__PARAM_CODE__        let p = __PARAMS_INIT__;
+        let build: &[LemmaCol] = lemma_slice(build, nbuild, "the build columns");
+        let start = std::time::Instant::now();
+        let cols = lemma_load_builds(build);
+        let id = LEMMA_NEXT_STREAM.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // the StreamEnd's heap cell: freed by the unwind if pool_open panics, else handed to the stream (lemma_stream_close frees it)
+        let end_cell = Box::new(StreamEnd___TS__ { m: 0, n: 0 });
+        let sh = Stream___TS__ { id, raw: &*end_cell as *const StreamEnd___TS__ as usize };
+        let (pool, state) = match __POOL_OPEN__ {
+            PoolOpen::Ready(pl) => (Some(pl), 0),
+            PoolOpen::Declined => (None, 1),
+            PoolOpen::Error => (None, 2),
+        };
+        let open_us = start.elapsed().as_micros() as u64;
+        let end = Box::into_raw(end_cell);
+        Box::into_raw(Box::new(LemmaStream {
+            id,
+            pool: std::sync::RwLock::new(pool),
+            state,
+            end,
+            nslots: nslots as usize,
+            next_slot: std::sync::atomic::AtomicUsize::new(0),
+            broken: std::sync::atomic::AtomicBool::new(false),
+            open_us,
+        }))
+    });
+    match r {
+        Ok(s) => s,
+        Err(msg) => {
+            lemma_write_out(err, msg.into_bytes());
+            std::ptr::null_mut()
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn lemma_stream_ready(s: *const LemmaStream, msg: *mut LemmaOut) -> i32 {
+    if s.is_null() {
+        lemma_write_out(msg, b"lemma_stream_ready: a null stream".to_vec());
+        return LEMMA_STATUS_ERROR;
+    }
+    match lemma_stream_ref(s).state {
+        0 => LEMMA_STATUS_OK,
+        1 => {
+            lemma_write_out(msg, String::from(__BUILD_DECLINE_REASON__).into_bytes());
+            LEMMA_STATUS_DECLINED
+        }
+        _ => {
+            lemma_write_out(msg, String::from(__BUILD_ERROR_REASON__).into_bytes());
+            LEMMA_STATUS_ERROR
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn lemma_stream_worker(s: *mut LemmaStream, err: *mut LemmaOut) -> *mut LemmaWorker {
+    let r = lemma_guard(|| {
+        let st = lemma_stream_ref(s);
+        assert!(st.state == 0, "lemma_stream_worker: the stream's Pool did not open (status {})", st.state);
+        let w = st.next_slot.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        assert!(w < st.nslots, "lemma_stream_worker: the Pool has {} slots, all handed out", st.nslots);
+        Box::into_raw(Box::new(LemmaWorker { s: s as *const LemmaStream, w }))
+    });
+    match r {
+        Ok(w) => w,
+        Err(msg) => {
+            lemma_write_out(err, msg.into_bytes());
+            std::ptr::null_mut()
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn lemma_stream_step(w: *mut LemmaWorker, c: *const LemmaChunk) -> i32 {
+    if w.is_null() {
+        return LEMMA_STEP_ERROR;
+    }
+    let w = lemma_worker_ref(w);
+    let s = lemma_stream_ref(w.s);
+    if s.broken.load(std::sync::atomic::Ordering::Acquire) {
+        return LEMMA_STEP_ERROR;
+    }
+    match lemma_guard(|| {
+        let raw = lemma_raw_chunk(lemma_chunk_ref(c));
+        let pool = s.pool.read().unwrap_or_else(|e| e.into_inner());
+        match pool.as_ref() {
+            Some(pl) => pool_step(pl, w.w, &raw),
+            None => 2,
+        }
+    }) {
+        Ok(0) => LEMMA_STEP_OK,
+        Ok(1) => LEMMA_STEP_POISONED,
+        Ok(_) => LEMMA_STEP_ERROR, // no slot w, or no Pool
+        Err(_) => {
+            // the panic may have left slot w's lock held: pool_finish must not run (it would wait forever)
+            s.broken.store(true, std::sync::atomic::Ordering::Release);
+            LEMMA_STEP_ERROR
+        }
+    }
+}
+
+// Nothing to merge in a join (pool_finish merges the Pool's slots): `from` is consumed, and both must belong to one stream.
+#[no_mangle]
+pub extern "C" fn lemma_stream_merge(into: *mut LemmaWorker, from: *mut LemmaWorker) -> i32 {
+    if into.is_null() || from.is_null() || into == from {
+        return LEMMA_STEP_ERROR;
+    }
+    let b = lemma_worker_take(from);
+    let a = lemma_worker_ref(into);
+    if a.s == b.s { LEMMA_STEP_OK } else { LEMMA_STEP_ERROR }
+}
+
+#[no_mangle]
+pub extern "C" fn lemma_stream_finish(w: *mut LemmaWorker, m: u64, n: u64, out: *mut LemmaOut) -> i32 {
+    if w.is_null() {
+        lemma_write_out(out, b"lemma_stream_finish: a null worker".to_vec());
+        return LEMMA_STATUS_ERROR;
+    }
+    let w = lemma_worker_take(w);
+    let s = lemma_stream_ref(w.s);
+    if s.broken.load(std::sync::atomic::Ordering::Acquire) {
+        lemma_write_out(
+            out,
+            b"a call into the stream's Pool panicked (or the glue refused a chunk); pool_finish was not called; no rows were computed".to_vec(),
+        );
+        return LEMMA_STATUS_ERROR;
+    }
+    let r = lemma_guard(move || {
+        let taken = s.pool.write().unwrap_or_else(|e| e.into_inner()).take();
+        let pl = match taken {
+            Some(pl) => pl,
+            None => return Err((LEMMA_STATUS_ERROR, String::from("lemma_stream_finish: the stream's Pool is gone (finished before, or never opened)"))),
+        };
+        lemma_set_end(s.end, m, n);
+        let start = std::time::Instant::now();
+        let o = pool_finish(pl);
+        let run_us = start.elapsed().as_micros() as u64;
+        match o {
+            StreamOut::Rows(res) => Ok(lemma_encode(&res, s.open_us, run_us)),
+            StreamOut::Declined => Err((LEMMA_STATUS_DECLINED, String::from(__DECLINE_REASON__))),
+            StreamOut::Error => Err((LEMMA_STATUS_ERROR, String::from(__ERROR_REASON__))),
+        }
+    });
+    match r {
+        Ok(Ok(bytes)) => {
+            lemma_write_out(out, bytes);
+            LEMMA_STATUS_OK
+        }
+        Ok(Err((code, why))) => {
+            lemma_write_out(out, why.into_bytes());
+            code
+        }
+        Err(msg) => {
+            lemma_write_out(out, msg.into_bytes());
+            LEMMA_STATUS_ERROR
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn lemma_stream_drop(w: *mut LemmaWorker) {
+    if w.is_null() {
+        return;
+    }
+    drop(lemma_worker_take(w));
+}
+
+// UNSAFE 10/10. Contract: `s` was returned by lemma_stream_open_pool of this library, is closed once, and every worker of it is
+// finished or dropped. Its Pool (if not finished) is dropped here: a slot whose lock a panicked step still holds leaks its state, it
+// never blocks (vstd's RwLock has no Drop and keeps its value in a PCell that never drops it).
+#[no_mangle]
+pub extern "C" fn lemma_stream_close(s: *mut LemmaStream) {
+    if s.is_null() {
+        return;
+    }
+    unsafe {
+        let s = Box::from_raw(s);
+        drop(Box::from_raw(s.end));
+    }
+}
+"""
+
+STREAM_BUILD_DECLINE_REASON = "the proved stream executor declined (q_build returned None; assumptions = false): no rows were computed"
+STREAM_BUILD_ERROR_REASON = "pool_open refused a build table (its columns have other lengths than its row count, or too many rows)"
+
+
+def _assemble_stream_join_library(spec_rs: str, regions: dict[str, str], *, sql: str) -> str:
+    """The ABI 6 library of a join stream spec: the verified part of the binary-mode program
+    (:func:`declarative_spec.assemble._assemble_stream_join_program`: the spec, the seven regions, the host lemmas, the verified loaders
+    ``load_cols_<b>`` of the build tables) plus the fixed Pool glue above instead of the binary-mode ``main``."""
+    from declarative_spec.assemble import _LEN_CONJ, _stitch_stream, _valid_cols_conjuncts
+    from declarative_spec.templates import spec_params
+
+    verus_part = _stitch_stream(spec_rs, regions)
+    ts = re.search(r"pub uninterp spec fn stream_table_(\w+)\(id: u64\)", verus_part).group(1)
+    structs = dict(re.findall(r"pub struct (Cols_[A-Za-z0-9_]+)\s*\{([^}]+)\}", verus_part, re.DOTALL))
+    sig = re.search(r"pub fn pool_open\(sh: Stream_\w+, (.*?), p: Params, nslots: usize\)", verus_part)
+    builds = [part.split(":")[1].strip().removeprefix("Cols_") for part in sig.group(1).split(", ")]
+    fields = re.findall(r"pub\s+((?:r#)?[A-Za-z_][A-Za-z0-9_]*):\s+Vec<([^>]+)>", structs[f"Cols_{ts}"])
+    # S2 claims valid_cols_<t> of the ghost table: only the structural conjuncts (as phase 1); the builds' are checked by cols_ok_<b>
+    param, conj = _valid_cols_conjuncts(verus_part, ts)
+    for c in conj:
+        if not _LEN_CONJ.match(c) and c != f"{param}.n as int <= 0x7fff_ffff_ffff_ffffint":
+            raise ValueError(f"valid_cols_{ts} states {c!r}: S2 (stream end) cannot check it on a stream; only lengths and the row bound")
+    for _f, fty in fields:
+        if fty != "String" and fty not in _CELL_BYTES:
+            raise ValueError(f"a stream chunk has no cells of type {fty}")
+    # the build tables: decoded from their ABI 5 inputs (rows entry, then the fields in Cols order), loaded by the verified loader
+    loaders: list[str] = []
+    load = [
+        "// The build tables from their ABI 5 inputs (each: the rows entry, then its fields in Cols order), lengths checked, then the\n"
+        "// verified loaders (pool_open checks valid_cols again: cols_ok_<b>).\n"
+        f"fn lemma_load_builds(build: &[LemmaCol]) -> ({', '.join(f'Cols_{b}' for b in builds)},) {{\n",
+    ]
+    index = 0
+    for b in builds:
+        bfields = re.findall(r"pub\s+((?:r#)?[A-Za-z_][A-Za-z0-9_]*):\s+Vec<([^>]+)>", structs[f"Cols_{b}"])
+        load.append(f'    assert!(build[{index}].len == 0, "{b}: the rows entry carries no data");\n')
+        load.append(f"    let n_{b}: usize = build[{index}].n as usize;\n")
+        index += 1
+        for fname, fty in bfields:
+            var, label = f"{b}_{_local_ident(fname)}", f"{b}.{_local_ident(fname)}"
+            if fty == "String":
+                load.append(f'    let {var}: Vec<String> = lemma_strings(&build[{index}], "{label}");\n')
+            elif fty == "bool":
+                load.append(f'    let {var}: Vec<bool> = lemma_fixed(&build[{index}], "{label}", |c: [u8; 1]| c[0] != 0);\n')
+            elif fty in _CELL_BYTES:
+                load.append(f'    let {var}: Vec<{fty}> = lemma_fixed(&build[{index}], "{label}", {fty}::from_le_bytes);\n')
+            else:
+                raise ValueError(f"a build table has no cells of type {fty} ({label})")
+            load.append(f'    assert!({var}.len() == n_{b}, "{label}: {{}} values for {{}} rows", {var}.len(), n_{b});\n')
+            index += 1
+        load.append(f"    let cols_{b} = load_cols_{b}({', '.join([f'n_{b}'] + [f'{b}_{_local_ident(f)}' for f, _t in bfields])});\n")
+        loaders.append(_loader_fn(verus_part, f"Cols_{b}", bfields))
+    load.append(f"    ({', '.join(f'cols_{b}' for b in builds)},)\n}}\n")
+    nbuild = index
+    pool_open = f"pool_open(sh, {', '.join(f'cols.{i}' for i in range(len(builds)))}, p, nslots as usize)"
+    param_code, param_args = _param_decode(verus_part)
+    names = [n for n, _t, _lo, _hi in spec_params(verus_part)]
+    params_init = "Params { " + ", ".join(f"{n}: {a}" for n, a in zip(names, param_args, strict=True)) + " }" if names else "Params {}"
+    outputs = output_layout(verus_part)
+    raw_fn = _raw_chunk_fn(ts, fields)
+    kinds = ", ".join(str(_kind(ty, name)) for name, ty in outputs)
+    encode = (
+        "// LMR1 (as lemma_run): load_us = decoding the build columns and pool_open, run_us = pool_finish, then the rows column-major.\n"
+        "fn lemma_encode(res: &Vec<OutRow>, load_us: u64, run_us: u64) -> Vec<u8> {\n"
+        "    let mut out: Vec<u8> = Vec::new();\n"
+        '    out.extend_from_slice(b"LMR1");\n'
+        "    out.extend_from_slice(&load_us.to_le_bytes());\n"
+        "    out.extend_from_slice(&run_us.to_le_bytes());\n"
+        "    out.extend_from_slice(&(res.len() as u64).to_le_bytes());\n"
+        f"    out.extend_from_slice(&({len(outputs)}u32).to_le_bytes());\n"
+        f"    out.extend_from_slice(&[{kinds}]);\n"
+        + "".join(_encode_column(name, ty) for name, ty in outputs)
+        + "    out\n}\n"
+    )
+    params = param_layout(verus_part)
+    statics = (
+        _static("LEMMA_SQL", sql)
+        + _static("LEMMA_INPUT_LAYOUT", "\n".join(input_layout(verus_part)))
+        + _static("LEMMA_OUTPUT_LAYOUT", "\n".join(f"{n} {t}" for n, t in outputs))
+        + _static("LEMMA_PARAM_LAYOUT", "\n".join(params))
+        + _static("LEMMA_STREAM_LAYOUT", "\n".join(stream_layout(verus_part)))
+        + _static("LEMMA_STREAM_BUILDS", "\n".join(builds))
+    )
+    indented = "".join("    " + line if line.strip() else line for line in param_code.splitlines(keepends=True))
+    head = (
+        (_STREAM_COMMON + _STREAM_POOL_HANDLES + _STREAM_CELLS + _STREAM_POOL_API)
+        .replace("__ABI__", str(STREAM_ABI_VERSION))
+        .replace("__STATUS_OK__", str(STATUS_OK))
+        .replace("__STATUS_DECLINED__", str(STATUS_DECLINED))
+        .replace("__STATUS_ERROR__", str(STATUS_ERROR))
+        .replace("__NPARAMS__", str(len(params)))
+        .replace("__NBUILD__", str(nbuild))
+        .replace("__PARAM_CODE__", indented)
+        .replace("__PARAMS_INIT__", params_init)
+        .replace("__POOL_OPEN__", pool_open)
+        .replace("__DECLINE_REASON__", _rust_str(STREAM_DECLINE_REASON))
+        .replace("__ERROR_REASON__", _rust_str(STREAM_ERROR_REASON))
+        .replace("__BUILD_DECLINE_REASON__", _rust_str(STREAM_BUILD_DECLINE_REASON))
+        .replace("__BUILD_ERROR_REASON__", _rust_str(STREAM_BUILD_ERROR_REASON))
+        .replace("__TS__", ts)
+    )
+    closed = verus_part.rstrip()
+    if not closed.endswith("}"):
+        raise ValueError("verus block did not end at '}'")
+    verus_with_loaders = closed[:-1] + "\n" + "\n\n".join(loaders) + "\n}\n"
+    return verus_with_loaders + "\n" + head + "\n" + raw_fn + "\n" + "".join(load) + "\n" + encode + "\n" + statics

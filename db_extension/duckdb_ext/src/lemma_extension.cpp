@@ -69,6 +69,8 @@
 #include "duckdb/parser/parsed_data/create_table_info.hpp"
 
 #include <algorithm>
+#include <set>
+#include <cstddef>
 #include <atomic>
 #include <cerrno>
 #include <climits>
@@ -182,6 +184,8 @@ struct LastQuery {
 	// chunks it stepped and the scan threads (-1: none / not a stream).
 	std::string mode;
 	int64_t chunks = -1, threads = -1;
+	// A stream join (phase 2a): the build tables' materialization (scan + decode) and pool_open (-1: no build tables).
+	int64_t build_us = -1;
 };
 
 // ---------------------------------------------------------------- the data version (the ONE trusted item of the input cache)
@@ -339,6 +343,7 @@ public:
 struct InEntry {
 	bool rows = false;
 	std::string table, column, field, rust_type, role, duck_type;
+	std::string suffix; // the spec's Cols_<suffix> of this table
 	bool nullable = false;
 	int scale = 0, source_scale = 0;
 	int64_t codes_of = -1;
@@ -380,6 +385,9 @@ struct Executor {
 	lemma_stream_finish_fn stream_finish = nullptr;
 	lemma_stream_drop_fn stream_drop = nullptr;
 	lemma_stream_close_fn stream_close = nullptr;
+	// ABI 6 for a join (phase 2a): the stream's Pool opens with the build tables (lemma_abi.h)
+	lemma_stream_open_pool_fn stream_open_pool = nullptr;
+	lemma_stream_ready_fn stream_ready = nullptr;
 };
 
 struct Manifest {
@@ -387,6 +395,10 @@ struct Manifest {
 	std::string manifest_sha256; // of manifest.json: part of the input cache key
 	uint32_t abi = 0;            // the executor ABI version (manifest abi_version, equal to the library's)
 	bool stream = false;         // manifest mode "stream" (ABI 6): StreamTable, no input buffers, no input cache
+	// a stream join (phase 2a; manifest stream.table / stream.builds): the streamed table's suffix and the build tables' suffixes in
+	// q_build's order (empty: one table, phase 1)
+	std::string stream_table;
+	std::vector<std::string> stream_builds;
 	std::vector<InEntry> inputs;
 	std::vector<OutCol> outputs;
 	std::vector<ParamSpec> params;
@@ -511,6 +523,18 @@ std::shared_ptr<Executor> LoadLibrary(const Manifest &m, const std::string &inpu
 		if (std::string(lib_stream()) != stream_layout) {
 			throw InvalidInputException("Lemma: the stream executor library of %s has another chunk layout than its manifest", m.key);
 		}
+		if (!m.stream_builds.empty()) { // a join: the Pool opens with the build tables
+			exec->stream_open_pool = reinterpret_cast<lemma_stream_open_pool_fn>(sym("lemma_stream_open_pool"));
+			exec->stream_ready = reinterpret_cast<lemma_stream_ready_fn>(sym("lemma_stream_ready"));
+			auto lib_builds = reinterpret_cast<lemma_stream_builds_fn>(sym("lemma_stream_builds"));
+			std::string builds;
+			for (size_t i = 0; i < m.stream_builds.size(); i++) {
+				builds += (i ? "\n" : "") + m.stream_builds[i];
+			}
+			if (std::string(lib_builds()) != builds) {
+				throw InvalidInputException("Lemma: the stream executor library of %s builds other tables than its manifest", m.key);
+			}
+		}
 	} else {
 		exec->run = reinterpret_cast<lemma_run_fn>(sym("lemma_run"));
 		exec->alloc_input = reinterpret_cast<lemma_alloc_input_fn>(sym("lemma_alloc_input"));
@@ -618,6 +642,9 @@ std::unique_ptr<Manifest> LoadExecutor(const std::string &dir, const std::string
 		for (auto &e : j.At("inputs").Arr()) {
 			InEntry in;
 			in.table = e.At("table").Str();
+			if (e.Has("suffix") && e.At("suffix").kind == lemma::Json::Kind::String) {
+				in.suffix = e.At("suffix").Str();
+			}
 			if (e.At("kind").Str() == "rows") {
 				in.rows = true;
 				if (e.Has("where") && e.At("where").kind == lemma::Json::Kind::String) {
@@ -653,20 +680,50 @@ std::unique_ptr<Manifest> LoadExecutor(const std::string &dir, const std::string
 		}
 		std::string stream_layout;
 		if (m->stream) {
-			stream_layout = JoinLines(j.At("stream").At("layout").Arr());
-			if (j.At("stream").At("layout").Arr().size() + 1 != m->inputs.size()) {
-				throw InvalidInputException("Lemma: %s: the stream layout and the inputs differ in length", dir);
-			}
-			for (auto &in : m->inputs) {
-				if (in.rows ? !in.where.empty() : (in.role == "code" || in.role == "dict" || in.role == "f64")) {
-					throw InvalidInputException("Lemma: %s: a stream executor reads plain columns of one table, without a pushed "
-					                            "predicate (input %s.%s)",
-					                            dir, in.table, in.rows ? std::string("rows") : in.column);
+			auto &sec = j.At("stream");
+			stream_layout = JoinLines(sec.At("layout").Arr());
+			// A join (phase 2a): stream.table is the streamed table, stream.builds the build tables (Cols suffixes, q_build's order).
+			if (sec.Has("builds")) {
+				m->stream_table = sec.At("table").Str();
+				for (auto &b : sec.At("builds").Arr()) {
+					m->stream_builds.push_back(b.Str());
 				}
 			}
-			if (m->inputs.empty() || !m->inputs[0].rows ||
-			    std::count_if(m->inputs.begin(), m->inputs.end(), [](const InEntry &e) { return e.rows; }) != 1) {
-				throw InvalidInputException("Lemma: %s: a stream executor reads exactly one table", dir);
+			size_t ntables = std::count_if(m->inputs.begin(), m->inputs.end(), [](const InEntry &e) { return e.rows; });
+			if (m->inputs.empty() || !m->inputs[0].rows || ntables != 1 + m->stream_builds.size()) {
+				throw InvalidInputException("Lemma: %s: a stream executor reads one streamed table and %d build tables, its inputs "
+				                            "have %d tables",
+				                            dir, int64_t(m->stream_builds.size()), int64_t(ntables));
+			}
+			std::string table = m->stream_table.empty() ? m->inputs[0].suffix : m->stream_table;
+			size_t streamed = 0;
+			std::set<std::string> seen;
+			std::string current;
+			for (auto &in : m->inputs) {
+				if (in.rows) {
+					current = in.suffix;
+					bool build = std::find(m->stream_builds.begin(), m->stream_builds.end(), current) != m->stream_builds.end();
+					if (current != table && !build) {
+						throw InvalidInputException("Lemma: %s: input table %s is neither the streamed table nor a build table", dir,
+						                            in.table);
+					}
+					if (!seen.insert(current).second) {
+						throw InvalidInputException("Lemma: %s: table %s is read twice", dir, in.table);
+					}
+				}
+				bool on_stream = current == table;
+				// The streamed table: plain columns and no pushed predicate (the proved step applies the WHERE to every row). A build
+				// table (materialized through the ABI 5 inputs) may carry its own pushed single-table predicate: the spec re-applies it.
+				if (on_stream ? (in.rows ? !in.where.empty() : (in.role == "code" || in.role == "dict" || in.role == "f64"))
+				              : (!in.rows && (in.role == "code" || in.role == "dict" || in.role == "f64"))) {
+					throw InvalidInputException("Lemma: %s: a stream executor reads plain columns, without a pushed predicate on the "
+					                            "streamed table (input %s.%s)",
+					                            dir, in.table, in.rows ? std::string("rows") : in.column);
+				}
+				streamed += on_stream && !in.rows;
+			}
+			if (sec.At("layout").Arr().size() != streamed) {
+				throw InvalidInputException("Lemma: %s: the stream layout and the streamed table's inputs differ in length", dir);
 			}
 		}
 		m->exec = LoadLibrary(*m, JoinLines(j.At("input_layout").Arr()), JoinLines(j.At("output_layout").Arr()),
@@ -1232,11 +1289,13 @@ uint64_t ScanTable(ClientContext &context, DuckTransaction &transaction, DataTab
 		if (res.owned[p.k]) {
 			throw InternalException("Lemma: input %d scanned twice", int64_t(p.k));
 		}
-		if (OwnedType(p.e.rust_type)) {
+		if (OwnedType(p.e.rust_type) && exec->alloc_input) {
 			res.owned[p.k] = std::make_shared<OwnedBuffer>(exec, p.k, upper, p.width);
 			p.dest = res.owned[p.k]->ptr;
 		} else {
-			res.bytes[p.k].resize(upper);
+			// bool / validity bytes; or (a stream join's build table: ABI 6 has no lemma_alloc_input) the cells of any fixed width,
+			// read by the library in place and copied into its Vecs
+			res.bytes[p.k].resize(upper * p.width);
 			p.dest = res.bytes[p.k].data();
 		}
 	}
@@ -1833,7 +1892,9 @@ std::vector<TablePrep> PrepareInputs(ClientContext &context, const Manifest &m,
 // uncommitted changes included), on lemma_scan_threads threads (default: DuckDB's `threads`), in single-threaded row order.
 // Fixed-width integer and f64 fields are decoded once, straight into buffers of the executor library (owned inputs, ABI 3); bool
 // and validity into byte buffers; strings and dictionaries into byte strings.
-ScanResult ScanPrepared(ClientContext &context, const Manifest &m, std::vector<TablePrep> &preps) {
+// `only`: scan just the tables whose rows entry is in it (a stream join's build tables), else every table.
+ScanResult ScanPrepared(ClientContext &context, const Manifest &m, std::vector<TablePrep> &preps,
+                        const std::set<size_t> *only = nullptr) {
 	auto start = std::chrono::steady_clock::now();
 	ScanResult res;
 	res.buffers.resize(m.inputs.size());
@@ -1842,6 +1903,9 @@ ScanResult ScanPrepared(ClientContext &context, const Manifest &m, std::vector<T
 	res.cols.resize(m.inputs.size());
 	idx_t want_threads = ScanThreads(context);
 	for (auto &prep : preps) {
+		if (only && !only->count(prep.i)) {
+			continue;
+		}
 		auto &plans = prep.plans;
 		uint64_t total = ScanTable(context, *prep.transaction, *prep.storage, prep.ids, prep.types, plans, m.exec, res,
 		                           want_threads, prep.pushed.filters.get(), prep.pushed.residual.get());
@@ -1853,8 +1917,8 @@ ScanResult ScanPrepared(ClientContext &context, const Manifest &m, std::vector<T
 				if (res.owned[p.k]) {
 					res.cols[p.k] = LemmaCol {res.owned[p.k]->ptr, res.owned[p.k]->len, total};
 				} else {
-					res.bytes[p.k].resize(total);
-					res.cols[p.k] = LemmaCol {res.bytes[p.k].data(), total, total};
+					res.bytes[p.k].resize(total * p.width);
+					res.cols[p.k] = LemmaCol {res.bytes[p.k].data(), total * p.width, total};
 				}
 			}
 		}
@@ -2186,6 +2250,7 @@ struct RunResult {
 	std::string decline_reason;
 	std::string mode = "batch"; // "batch" (ABI 4/5, lemma_run) or "stream" (ABI 6, StreamRun)
 	int64_t chunks = -1, threads = -1; // stream: chunks stepped, scan threads (workers)
+	int64_t build_us = -1;             // stream join: the build tables materialized and handed to pool_open (-1: no build)
 };
 
 template <class T>
@@ -2371,6 +2436,11 @@ RunResult ParseRun(const Manifest &m, int32_t code, std::string bytes) {
 
 static_assert(sizeof(string_t) == 16 && string_t::INLINE_LENGTH == 12, "the stream ABI passes DuckDB 1.5.6 string_t as 16 bytes");
 static_assert(sizeof(sel_t) == 4, "a stream VARCHAR selection is u32");
+// A chunk's fixed-width cells must be aligned for their Rust type (the glue checks it; i128: 16 bytes). The worker buffers and the
+// build inputs are std::vector<uint8_t> storage from operator new, aligned to alignof(std::max_align_t).
+static_assert(alignof(std::max_align_t) >= 16, "the stream buffers hold i128 cells (16-byte aligned)");
+static_assert(sizeof(hugeint_t) == 16 && offsetof(hugeint_t, lower) == 0 && offsetof(hugeint_t, upper) == 8,
+              "a HUGEINT cell is the i128 little-endian layout (DECIMAL(38, s) in place)");
 
 constexpr uint64_t STREAM_OFF_BITS = 36; // the counter: chunk index in the high 28 bits, row offset in the low 36 bits
 constexpr uint64_t STREAM_OFF_MASK = (uint64_t(1) << STREAM_OFF_BITS) - 1;
@@ -2439,7 +2509,9 @@ void StreamVec(const ColPlan &p, Vector &vec, idx_t n, StreamCol &buf, LemmaVec 
 	case Role::Int:
 	case Role::Date:
 	case Role::Decimal:
+		// in place only where the cells are aligned for their Rust type (a FLAT vector may point into a storage block: i128 at 8)
 		if (vec.GetVectorType() == VectorType::FLAT_VECTOR && InPlaceInts(p) &&
+		    reinterpret_cast<uintptr_t>(FlatVector::GetData(vec)) % p.width == 0 &&
 		    (p.e.nullable || FlatVector::Validity(vec).AllValid())) {
 			out.data = FlatVector::GetData(vec);
 			return;
@@ -2617,39 +2689,51 @@ StreamFault StreamFaultSetting(ClientContext &context) {
 
 // The stream executor of `m` over its table, in the caller's transaction. scan_us: catalog + scan + steps (until every worker
 // returned); the merge and exec_finish are the result's run_us (finish) and part of the caller's total.
-RunResult StreamRun(ClientContext &context, const Manifest &m, const std::vector<ParamBytes> &params, int64_t &scan_us) {
+// A join (phase 2a, m.stream_builds): first every build table is materialized through the ABI 5 input path (ScanTable: the caller's
+// transaction, its own pushed single-table predicate, the column-file encoding) and handed to lemma_stream_open_pool with one slot per
+// scan thread; then the streamed table is scanned as in phase 1. The result's build_us is that materialization plus pool_open.
+RunResult StreamRun(ClientContext &context, const Manifest &m, const std::vector<ParamBytes> &params,
+                    const std::unordered_map<std::string, std::string> &literals, int64_t &scan_us) {
 	auto start = std::chrono::steady_clock::now();
 	const Executor &exec = *m.exec;
-	auto preps = PrepareInputs(context, m, {});
-	if (preps.size() != 1) {
-		throw InvalidInputException("Lemma: stream executor %s reads %d tables, a stream reads one", m.key, int64_t(preps.size()));
+	auto preps = PrepareInputs(context, m, literals);
+	if (preps.size() != 1 + m.stream_builds.size()) {
+		throw InvalidInputException("Lemma: stream executor %s reads %d tables, it streams one and builds %d", m.key,
+		                            int64_t(preps.size()), int64_t(m.stream_builds.size()));
 	}
-	TablePrep &prep = preps[0];
+	std::unordered_map<std::string, TablePrep *> by_suffix;
+	for (auto &pr : preps) {
+		by_suffix[m.inputs[pr.i].suffix] = &pr;
+	}
+	auto find_prep = [&](const std::string &suffix) -> TablePrep & {
+		auto it = by_suffix.find(suffix);
+		if (it == by_suffix.end()) {
+			throw InvalidInputException("Lemma: stream executor %s has no input table %s", m.key, suffix);
+		}
+		return *it->second;
+	};
+	TablePrep &prep = find_prep(m.stream_table.empty() ? m.inputs[0].suffix : m.stream_table);
 	auto &plans = prep.plans;
-	if (plans.size() + 1 != m.inputs.size()) {
+	auto table_end = [&](size_t i) {
+		size_t e = i + 1;
+		while (e < m.inputs.size() && !m.inputs[e].rows) {
+			e++;
+		}
+		return e;
+	};
+	if (plans.size() + 1 != table_end(prep.i) - prep.i) {
 		throw InternalException("Lemma: stream executor %s: %d planned columns for %d inputs", m.key, int64_t(plans.size()),
-		                        int64_t(m.inputs.size()));
+		                        int64_t(table_end(prep.i) - prep.i - 1));
 	}
 	for (size_t i = 0; i < plans.size(); i++) {
-		if (plans[i].k != i + 1 || (plans[i].width == 0) != (plans[i].role == Role::String)) {
+		if (plans[i].k != prep.i + 1 + i || (plans[i].width == 0) != (plans[i].role == Role::String)) {
 			throw InternalException("Lemma: stream executor %s: column %d is out of layout order", m.key, int64_t(i));
 		}
 	}
-	StreamFault fault = StreamFaultSetting(context);
-	StreamHandles h;
-	h.exec = &exec;
-	{
-		std::vector<LemmaParam> abi_params;
-		for (auto &p : params) {
-			abi_params.push_back(LemmaParam {p.kind, reinterpret_cast<const uint8_t *>(p.bytes.data()), uint64_t(p.bytes.size())});
-		}
-		LemmaOut err {nullptr, 0, 0};
-		h.stream = exec.stream_open(nullptr, 0, abi_params.data(), abi_params.size(), &err);
-		std::string msg = TakeOut(exec, err);
-		if (!h.stream) {
-			throw InvalidInputException("Lemma: the stream executor refused its parameters (no rows returned): %s", msg);
-		}
+	if (prep.pushed.filters || prep.pushed.residual || prep.pushed.empty) {
+		throw InternalException("Lemma: stream executor %s: a pushed predicate on the streamed table", m.key);
 	}
+	StreamFault fault = StreamFaultSetting(context);
 	// the sources, as ScanTable: the committed row groups, then this transaction's own uncommitted rows
 	DataTable &storage = *prep.storage;
 	DuckTransaction &transaction = *prep.transaction;
@@ -2670,6 +2754,64 @@ RunResult StreamRun(ClientContext &context, const Manifest &m, const std::vector
 	}
 	idx_t row_group_rows = MaxValue<idx_t>(1, storage.GetRowGroupSize());
 	idx_t nthreads = MaxValue<idx_t>(1, MinValue<idx_t>(ScanThreads(context), upper / row_group_rows + sources.size()));
+	StreamHandles h;
+	h.exec = &exec;
+	int64_t build_us = -1;
+	{
+		std::vector<LemmaParam> abi_params;
+		for (auto &p : params) {
+			abi_params.push_back(LemmaParam {p.kind, reinterpret_cast<const uint8_t *>(p.bytes.data()), uint64_t(p.bytes.size())});
+		}
+		LemmaOut err {nullptr, 0, 0};
+		if (m.stream_builds.empty()) {
+			h.stream = exec.stream_open(nullptr, 0, abi_params.data(), abi_params.size(), &err);
+			std::string msg = TakeOut(exec, err);
+			if (!h.stream) {
+				throw InvalidInputException("Lemma: the stream executor refused its parameters (no rows returned): %s", msg);
+			}
+		} else {
+			// The build tables, materialized before the stream starts (in the caller's transaction, with each table's own pushed
+			// predicate: sound for a build input, the spec re-applies the WHERE to every pair), in q_build's order: per table its
+			// rows entry, then its fields in Cols order (the ABI 5 inputs of lemma_input_layout).
+			auto build_start = std::chrono::steady_clock::now();
+			std::set<size_t> only;
+			std::vector<TablePrep *> builds;
+			for (auto &b : m.stream_builds) {
+				TablePrep &bp = find_prep(b);
+				if (&bp == &prep || !only.insert(bp.i).second) {
+					throw InvalidInputException("Lemma: stream executor %s builds table %s twice or streams it", m.key, b);
+				}
+				builds.push_back(&bp);
+			}
+			ScanResult built = ScanPrepared(context, m, preps, &only);
+			std::vector<LemmaCol> cols;
+			for (auto *bp : builds) {
+				for (size_t k = bp->i; k < table_end(bp->i); k++) {
+					cols.push_back(built.cols[k]);
+				}
+			}
+			h.stream = exec.stream_open_pool(cols.data(), cols.size(), abi_params.data(), abi_params.size(), uint64_t(nthreads), &err);
+			std::string msg = TakeOut(exec, err);
+			if (!h.stream) {
+				throw InvalidInputException("Lemma: the stream executor refused its parameters or build tables (no rows returned): %s",
+				                            msg);
+			}
+			LemmaOut why {nullptr, 0, 0};
+			int32_t ready = exec.stream_ready(h.stream, &why);
+			std::string reason = TakeOut(exec, why);
+			build_us = MicrosSince(build_start);
+			if (ready == LEMMA_STATUS_DECLINED) {
+				RunResult r = ParseRun(m, ready, std::move(reason));
+				r.mode = "stream";
+				r.build_us = build_us;
+				scan_us = MicrosSince(start);
+				return r;
+			}
+			if (ready != LEMMA_STATUS_OK) {
+				throw InvalidInputException("Lemma: the proved stream executor refused to answer (ERROR, no rows returned): %s", reason);
+			}
+		}
+	}
 	for (idx_t w = 0; w < nthreads; w++) {
 		LemmaOut err {nullptr, 0, 0};
 		LemmaWorker *worker = exec.stream_worker(h.stream, &err);
@@ -2802,6 +2944,7 @@ RunResult StreamRun(ClientContext &context, const Manifest &m, const std::vector
 	r.mode = "stream";
 	r.chunks = int64_t(m_chunks);
 	r.threads = int64_t(nthreads);
+	r.build_us = build_us;
 	return r;
 }
 
@@ -3763,7 +3906,7 @@ Ran ScanAndRun(ClientContext &context, const Manifest &m, const std::vector<Para
 	if (m.stream) {
 		// ABI 6: no input buffers, so nothing to cache; the chunks go to the proved executor as DuckDB's scan hands them out.
 		Ran out;
-		out.first = std::make_shared<RunResult>(StreamRun(context, m, params, out.second));
+		out.first = std::make_shared<RunResult>(StreamRun(context, m, params, literals, out.second));
 		out.cache = "skip: streaming executor";
 		return out;
 	}
@@ -3781,6 +3924,7 @@ void LabelRun(LastQuery &lq, const RunResult &r) {
 	lq.mode = r.mode;
 	lq.chunks = r.chunks;
 	lq.threads = r.threads;
+	lq.build_us = r.build_us;
 }
 
 std::string DeclinedRouteReason(const std::string &reason) {
@@ -4176,10 +4320,10 @@ struct LastState : public GlobalTableFunctionState {
 unique_ptr<FunctionData> LastQueryBind(ClientContext &context, TableFunctionBindInput &input, vector<LogicalType> &types,
                                        vector<string> &names) {
 	names = {"engine", "reason", "query_key", "sql", "scan_us", "load_us", "run_us", "total_us", "rows", "cache", "cache_bytes",
-	         "mode", "chunks", "threads"};
+	         "mode", "chunks", "threads", "build_us"};
 	types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::BIGINT,
 	         LogicalType::BIGINT,  LogicalType::BIGINT,  LogicalType::BIGINT,  LogicalType::BIGINT,  LogicalType::VARCHAR,
-	         LogicalType::BIGINT,  LogicalType::VARCHAR, LogicalType::BIGINT,  LogicalType::BIGINT};
+	         LogicalType::BIGINT,  LogicalType::VARCHAR, LogicalType::BIGINT,  LogicalType::BIGINT,  LogicalType::BIGINT};
 	auto bind = make_uniq<LastBind>();
 	auto &st = GetState(context);
 	std::lock_guard<std::mutex> guard(st.lock);
@@ -4214,6 +4358,7 @@ void LastQueryFunction(ClientContext &, TableFunctionInput &data, DataChunk &out
 	output.SetValue(11, 0, q.mode.empty() ? Value(LogicalType::VARCHAR) : Value(q.mode));
 	output.SetValue(12, 0, num(q.chunks));
 	output.SetValue(13, 0, num(q.threads));
+	output.SetValue(14, 0, num(q.build_us));
 	output.SetCardinality(1);
 }
 
@@ -4500,24 +4645,27 @@ std::string ParamsText(const lemma::Json &manifest) {
 
 unique_ptr<FunctionData> ListBind(ClientContext &context, TableFunctionBindInput &, vector<LogicalType> &types,
                                   vector<string> &names) {
-	names = {"key", "kind", "sql", "params", "proof", "created", "size_bytes", "last_used", "runs", "cache_hits", "dir"};
-	types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
-	         LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::BIGINT,  LogicalType::VARCHAR,
-	         LogicalType::BIGINT,  LogicalType::BIGINT,  LogicalType::VARCHAR};
+	// kind: how the executor runs, as `lemma list` says it (lemma_cli/executor.kind_of_manifest): 'stream' for manifest mode
+	// "stream" (ABI 6), else 'batch'; form: 'query' (fixed SQL) or 'template' (it takes parameters)
+	names = {"key", "kind", "form", "sql", "params", "proof", "created", "size_bytes", "last_used", "runs", "cache_hits", "dir"};
+	types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
+	         LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::BIGINT,  LogicalType::VARCHAR, LogicalType::BIGINT,
+	         LogicalType::BIGINT,  LogicalType::VARCHAR};
 	auto bind = make_uniq<RowsBind>();
 	std::string home = HomeSetting(context);
 	for (auto &key : ExecutorKeys(home)) {
 		std::string dir = home + "/executors/" + key;
-		std::string kind = "unreadable", sql, params, proof, created = MtimeIso(dir + "/manifest.json");
+		std::string kind = "unreadable", form = "unreadable", sql, params, proof, created = MtimeIso(dir + "/manifest.json");
 		try {
 			auto j = lemma::ParseJson(ReadFile(dir + "/manifest.json"));
 			sql = j.At("sql").Str();
 			proof = j.Has("proof") ? j.At("proof").Str() : "";
+			kind = j.Has("mode") && j.At("mode").kind == lemma::Json::Kind::String && j.At("mode").Str() == "stream" ? "stream" : "batch";
 			if (j.Has("params")) {
 				params = ParamsText(j);
-				kind = params.empty() ? "query" : "template";
+				form = params.empty() ? "query" : "template";
 			} else {
-				kind = "query";
+				form = "query";
 			}
 			if (FileExists(dir + "/optimize.json")) {
 				auto made = lemma::ParseJson(ReadFile(dir + "/optimize.json"));
@@ -4538,7 +4686,7 @@ unique_ptr<FunctionData> ListBind(ClientContext &context, TableFunctionBindInput
 			}
 		}
 		int64_t size = FileSize(dir + "/lib.so");
-		bind->rows.push_back({Value(key), Value(kind), TextOrNull(sql), TextOrNull(params), TextOrNull(proof), TextOrNull(created),
+		bind->rows.push_back({Value(key), Value(kind), Value(form), TextOrNull(sql), TextOrNull(params), TextOrNull(proof), TextOrNull(created),
 		                      size < 0 ? Value(LogicalType::BIGINT) : Value::BIGINT(size), TextOrNull(MtimeIso(dir + "/last_used")),
 		                      Value::BIGINT(runs), Value::BIGINT(hits), Value(dir)});
 	}

@@ -486,10 +486,11 @@ def test_list_and_remove_in_sql_and_the_cli_share_the_store(store: Path, tmp_pat
     con.execute(_lemma(SQL)).fetchall()
     con.execute(_lemma("SELECT SUM(cost) AS total FROM pre WHERE line > 2")).fetchall()
     con.execute(_lemma("SELECT SUM(cost) AS total FROM pre WHERE line > 2")).fetchall()
-    rows = {r[0]: r for r in con.execute("SELECT key, kind, sql, params, proof, size_bytes, last_used, runs, cache_hits FROM lemma_list()").fetchall()}
+    rows = {r[0]: r for r in con.execute("SELECT key, form, sql, params, proof, size_bytes, last_used, runs, cache_hits FROM lemma_list()").fetchall()}
     k_sql, k_tpl = in_duckdb.executor_key(SQL), in_duckdb.executor_key(TEMPLATE)
     assert set(rows) == {k_sql, k_tpl}
     assert rows[k_sql][1:4] == ("query", SQL, None) and rows[k_tpl][1:4] == ("template", TEMPLATE, "lo BIGINT")
+    assert set(con.execute("SELECT kind FROM lemma_list()").fetchall()) == {("batch",)}  # ABI 4/5 executors (a stream one: 'stream')
     assert re.fullmatch(r"\d+ verified, 0 errors", rows[k_sql][4]) and rows[k_sql][5] > 0 and rows[k_sql][6] is not None
     assert rows[k_sql][7:] == (1, 0) and rows[k_tpl][7] == 2  # runs, input-cache hits (this process)
     with pytest.raises(duckdb.Error, match="at least 6 hex"):
