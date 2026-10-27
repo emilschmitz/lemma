@@ -49,7 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--lift-constants", dest="lift", action="store_true", default=True, help="(default) lift WHERE/HAVING constants into template parameters")
     g.add_argument("--no-lift-constants", dest="lift", action="store_false", help="prove the query exactly as written")
     g.add_argument("--regenerate", action="store_true", help="prove again even when an executor is installed (it is replaced only if the new one proves)")
-    sub.add_parser("list", help="installed executors: key, SQL or template, proof line, created, last used")
+    sub.add_parser("list", help="installed executors: key, executor kind (stream/batch), SQL or template, proof line, created, last used")
     r = sub.add_parser("remove", help="delete one installed executor")
     r.add_argument("key", help="the executor key or a prefix of it (at least 6 hex characters, see `lemma list`)")
     d = sub.add_parser("duckdb", help="start our DuckDB 1.5.6 with the Lemma extension (plain DuckDB plus lemma('<sql>')); prints how to use it from your own DuckDB")
@@ -61,7 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def list_cmd() -> int:
-    from lemma_cli import cache
+    from lemma_cli import cache, executor
 
     executors = cache.list_executors()
     if not executors:
@@ -77,7 +77,8 @@ def list_cmd() -> int:
             say(f"{key[:12]}  NOT USABLE IN DUCKDB (old CLI format, no lib.so): lemma remove {key[:12]}, then lemma optimize again")
             continue
         kind = f"template({params})" if params else "query"
-        say(f"{key[:12]}  {e.get('proof', '?')}  created {made.get('installed_at') or '?'}  db {made.get('db_path') or '?'}  {kind}  last used {used}")
+        say(f"{key[:12]}  {executor.kind_of_manifest(e)}  {e.get('proof', '?')}  created {made.get('installed_at') or '?'}  db {made.get('db_path') or '?'}  {kind}  "
+            f"last used {used}")
         say(f"              {e.get('normalized_sql', e.get('sql', ''))[:200]}")
     return 0
 
@@ -110,6 +111,10 @@ def main(argv: list[str] | None = None) -> int:
 
             say(f"removed {cache.remove(args.key)}")
             return 0
+        if args.cmd in ("generate", "optimize"):
+            from lemma_cli.executor import check_user_env
+
+            check_user_env()  # [product] executor decides stream/batch; a LEMMA_STREAM beside it is refused
         if args.cmd == "generate":
             from lemma_cli.generate import generate
 

@@ -133,8 +133,8 @@ def check_sql(sql: str) -> None:
         tree = sqlglot.parse_one(sql, read="duckdb")  # DuckDB's join words (SEMI, ANTI, ASOF, POSITIONAL), not table aliases
     except sqlglot.errors.SqlglotError:
         return  # the emitter reports the parse error
-    if not list(tree.find_all(exp.Join)):
-        return  # one table: phase 1's gate (stream.check_sql, stream.read_shape) decides
+    # One table or a join alike: a subquery's value depends on the whole table (e.g. WHERE a > (SELECT AVG(a) FROM t)), which one
+    # streaming pass cannot know when it folds a chunk.
     if not isinstance(tree, exp.Select):
         raise _refuse("a set operation (UNION / EXCEPT / INTERSECT) is not stated")
     if tree.args.get("with_") is not None:
@@ -142,6 +142,8 @@ def check_sql(sql: str) -> None:
     nested = [s for s in tree.find_all(exp.Select) if s is not tree]
     if nested:
         raise _refuse("a subquery (IN / EXISTS / scalar / derived table) is not stated (phase 3)")
+    if not list(tree.find_all(exp.Join)):
+        return  # one table: phase 1's gate (stream.check_sql, stream.read_shape) decides the rest
     joins = tree.args.get("joins") or []
     for j in joins:
         side = (j.args.get("side") or "").upper()

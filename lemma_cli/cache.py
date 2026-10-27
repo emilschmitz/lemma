@@ -19,7 +19,7 @@ from lemma_cli.common import CliError, lemma_home, read_json, write_json
 
 PROVENANCE = "optimize.json"
 PROVENANCE_FIELDS = (
-    "db_path", "assumptions", "assumption_package_sha256", "agent_harness", "agent_model", "agent_auth", "image_id", "run_dir", "speedup", "installed_at",
+    "db_path", "assumptions", "assumption_package_sha256", "agent_harness", "agent_model", "agent_auth", "image_id", "run_dir", "speedup", "executor", "installed_at",
 )
 
 

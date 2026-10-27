@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from lemma_cli import cache
+from lemma_cli import cache, executor
 from lemma_cli.assumptions import approved_package, resolve_db
 from lemma_cli.common import (
     SECRET_ENV, CliError, apply_home_config, auth_mode, harness, lemma_home, normalize_sql, read_json, redact, repo_root, say, sha256_file, sql_key,
@@ -83,7 +83,8 @@ def child_env(mode: str, harness_name: str = "claude") -> dict[str, str]:
 
 
 def run_pipeline(
-    sql: str, db: Path, package: Path | None, mode: str, log: Path, harness_name: str = "claude", binding: dict[str, str] | None = None
+    sql: str, db: Path, package: Path | None, mode: str, log: Path, harness_name: str = "claude", binding: dict[str, str] | None = None,
+    choice: executor.Choice | None = None,
 ) -> dict[str, Any]:
     """Start run_container_agent.py for ``sql``; its output is redacted into ``log``. Returns the RESULT record.
 
@@ -106,6 +107,8 @@ def run_pipeline(
         cmd += ["--assumption-package", str(package)]
     if binding is not None:  # a query template lifted from one query (lemma generate): measured on that query's values
         cmd += ["--template-binding", json.dumps(binding)]
+    if choice is not None:  # the product's executor choice, recorded in the run manifest (product_executor)
+        cmd += ["--executor-choice", json.dumps(choice.as_dict())]
     result: dict[str, Any] | None = None
     with log.open("w") as fh:
         import lemma_config
@@ -167,8 +170,10 @@ def bench(sql: str, db: Path) -> dict[str, Any]:
 
 def summary(dest: Path, db: Path, record: dict[str, Any], measured: dict[str, Any] | None) -> list[str]:
     manifest = read_json(dest / "manifest.json")
+    kind = executor.kind_of_manifest(manifest)
     lines = [
         f"PROVED  {manifest['proof']} (Verus), installed {dest}",
+        f"  executor: {kind} (ABI {executor.ABI[kind]})",
         f"  sql:  {manifest['normalized_sql']}",
         "  " + ("no data assumptions: it may decline (e.g. a checked overflow), then the query is an error, or DuckDB answers it labelled "
                 "when you SET lemma_route_unproved = true" if not manifest["assumptions"] else "proved under an assumption package (checked at run time)"),
@@ -209,10 +214,15 @@ def optimize_one(
     package = approved_package(db) if with_assumptions else None
     key = sql_key(sql)
     pkg_sha = sha256_file(package) if package is not None else None
+    # The executor kind, chosen BEFORE generation from the query shape ([product] executor; lemma_cli/executor.py). Not a fallback: a stream
+    # run whose proof fails is a failed run.
+    choice = executor.choose(sql if binding is not None else normalize_sql(sql), db)
+    say(choice.line())
     existing = read_json(cache.executor_dir(key) / cache.PROVENANCE)
     if (
         existing and not force and (cache.executor_dir(key) / "lib.so").is_file() and existing.get("assumption_package_sha256") == pkg_sha
         and existing.get("db_path") == str(db) and bool(existing.get("assumptions")) == with_assumptions
+        and executor.kind_of_manifest(read_json(cache.executor_dir(key) / "manifest.json")) == choice.kind
     ):
         say(f"already optimized: {cache.executor_dir(key)} (--force to redo)")
         if measure:
@@ -220,7 +230,15 @@ def optimize_one(
                 say(line)
         return cache.executor_dir(key)
     log = lemma_home() / "logs" / f"{key}.log"
-    record = run_pipeline(sql if binding is not None else normalize_sql(sql), db, package, mode, log, harness(), binding)
+    with executor.applied(choice):
+        return _prove_and_install(sql, db, choice, package, pkg_sha, mode, log, state, with_assumptions, measure, binding, source_db)
+
+
+def _prove_and_install(
+    sql: str, db: Path, choice: executor.Choice, package: Path | None, pkg_sha: str | None, mode: str, log: Path, state: dict[str, Any],
+    with_assumptions: bool, measure: bool, binding: dict[str, str] | None, source_db: Path | None,
+) -> Path:
+    record = run_pipeline(sql if binding is not None else normalize_sql(sql), db, package, mode, log, harness(), binding, choice)
     if record.get("status") == "DECLINED":
         raise CliError(
             "not optimized: DECLINED (the proved program returned None on this data, e.g. a checked overflow; nothing is installed and no other "
@@ -238,6 +256,7 @@ def optimize_one(
     cache.record_provenance(dest, {
         "db_path": str(source_db or db), "assumptions": with_assumptions, "assumption_package_sha256": pkg_sha, "agent_harness": harness(), "agent_model": record.get("model"),
         "agent_auth": mode, "image_id": state.get("image_id"), "run_dir": str(run_dir), "speedup": official.get("speedup") if isinstance(official, dict) else None,
+        "executor": choice.as_dict(),
     }, run_dir)
     for line in summary(dest, source_db or db, record, bench(normalize_sql(sql), db) if measure else None):
         say(line)
