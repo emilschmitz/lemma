@@ -247,6 +247,10 @@ lost, doubled or misplaced chunk or a wrong row count; the proved runtime answer
 Install (`research_loop/in_duckdb.install_executor`): a stream spec is admitted with `admit_stream`, assembled with the ABI 6 template,
 verified and compiled as a cdylib; no pushdown.
 
+Product (`lemma optimize`, `lemma generate`; lemma.toml `[product] executor`, default `auto`, docs/FLAGS.md "Product executor kind"):
+the CLI emits the query's stream spec before generation and proves a streaming executor when this gate accepts it, else a batch
+(ABI 5) executor; a stream proof failure is a failed run, never retried as batch. Research runs keep `[run] stream` as written.
+
 ## Host overhead, SF10 Q1 (profiled 2026-10-26)
 
 The first agent-written proved Q1 executor (run `20261026T114511Z_q688622_a770af30`, 104 verified) ran in DuckDB in ~290 ms, DuckDB

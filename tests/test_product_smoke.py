@@ -184,13 +184,13 @@ def test_setup_optimize_and_run_in_duckdb_from_the_installed_wheel(user: dict) -
     assert shown.returncode == 0 and re.search(r"│\s*lemma\s*│\s*stream\s*│", shown.stdout)
     for write in ("", "INSERT INTO t VALUES ('key 9', 1.50), ('key 0', 2.25); "):  # fresh data: the first call after a write streams too
         csv = subprocess.run([str(user["share"] / "duckdb" / "duckdb"), "-csv", "-noheader", "-cmd", "SET lemma_mode = true", str(user["db"]),
-                              "-c", f"{write}{SQL}; SELECT engine || ',' || mode FROM lemma_last_query();"], cwd=user["cwd"],
+                              "-c", f"{write}{SQL}; SELECT engine || '/' || mode FROM lemma_last_query();"], cwd=user["cwd"],
                              env={**user["env"], "LEMMA_HOME": str(user["share"])}, capture_output=True, text=True, check=True).stdout
         con = duckdb.connect(str(user["db"]), read_only=True)
         want = sorted((s, str(c), str(sm)) for s, c, sm in con.execute(SQL).fetchall())
         con.close()
         lines = [line for line in csv.splitlines() if line]
-        assert lines[-1] == "lemma,stream", csv
+        assert lines[-1] == "lemma/stream", csv
         got = sorted(tuple(line.rsplit(",", 2)) for line in lines[:-1])
         assert got == want and len(want) == (6 if write else 5), (got, want)
 
