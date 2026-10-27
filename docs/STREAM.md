@@ -82,8 +82,8 @@ index. Phase 3: a host-proved open-addressing byte hash table (equality proved; 
 ## Joins
 
 Inner joins, streamed table outermost (the nested fold keeps "difference of suffix folds"). Phase 2a: build side materialized through
-the ABI 5 inputs (`q_build -> QBuild`, read-only in `Shared`). Phase 2b: streamed build stages (`lemma_stream_seal`). The generator
-streams the table that is largest after filters.
+the ABI 5 inputs (`q_build -> QBuild`, read-only in the `Pool`; built 2026-10-26, see "Phase 2a" below). Phase 2b: streamed build
+stages (`lemma_stream_seal`). The generator streams the table that is largest after filters.
 
 ## Phases
 
@@ -268,3 +268,94 @@ Trust not added (it would not buy time here): (a) VARCHAR is valid UTF-8 (DuckDB
 place the check covers ~4 entries per chunk, within run-to-run noise (builds with and without it: 113 vs 112 ms); (b) a dictionary-id
 clause (equal ids within a stream => equal `ents`, so a memo across chunks): it would save the agent's `build_codes`, ~6 % of
 `q_step` (~3 ms wall). Both may matter for FLAT high-cardinality strings or large SEC dictionaries; measure there first.
+
+## Phase 2a, spec and binary side: inner equi-joins (`declarative_spec/stream_join.py`, 2026-10-26)
+
+One STREAMED table and one or more MATERIALIZED build tables, under the same flag (`[run] stream`). No trusted item was added: the
+chunk view, S1 and S2 are phase 1's, for the stream table only. Phase 1 specs and prompts are byte-identical
+(`tests/fixtures/stream_phase1_flag_on_golden.json`, besides the flag-off goldens).
+
+**The stream table** is named by a `-- stream: <table>` line of the SQL text. Rule (`stream_join.choose_stream_table`, deterministic):
+the table with the most rows after its own single-table filter conjuncts (WHERE and every ON; found as the data profile finds them) on
+the run's database; a tie goes to the table first in FROM. `drive.run_declarative_optimization_loop` writes the line once from
+`LEMMA_MEASURE_DB` (a template: its first binding's literals) and records `<run dir>/stream_choice.json` (table, counts, rule, db); the
+line is part of the query text from then on, so prepare, every session, the official measure and an install emit the same spec (the
+spec's SQL comment shows it). A join without the line is refused (no default). TPC-H Q12 on SF10: orders 15,000,000 rows, lineitem
+310,803 after its filters: stream orders, build the filtered lineitem (the spike's direction A). SEC q3 on `sec_edgar_dec`: num
+33,234,006, sub 27,333 (fy = 2022): stream num, build sub. `stream_join.outermost` puts the stream table first in FROM (inner joins
+commute) and `rewrite_comma_joins` connects the builds through their equalities, so the emitter states the join with the stream table as
+the OUTER fold: `X(t, b, i0, k) = X_d1(t, b, i0, 0, k) + X(t, b, i0 + 1, k)`.
+
+Gate (`stream_join.check_sql`, then the spec reader): refused loudly are outer / semi / anti / cross / natural / asof / positional joins,
+USING, subqueries (IN / EXISTS / scalar / derived tables), CTEs, set operations, self joins, a join without an ON equality, MIN / MAX
+over a join, and (as in phase 1) DISTINCT, rowid, order-dependent aggregates, a nullable GROUP BY key, floats, VARCHAR template
+parameters, map results. NULL join keys follow the emitter's rule (`<col> IS NOT NULL` in the WHERE). Cells: phase 1's types plus
+`i128` (DECIMAL(38, s), DuckDB HUGEINT; binary mode only, the ABI 6 glue does not hand 16-byte cells yet).
+
+What is emitted (`to_stream_join`, replacing `run_query` after the decline wrap; everything else in the spec unchanged). Variable names:
+the stream table is `t`, a build table `<b>` is `b_<b>` (a bare table name such as `sub` can clash with a glob-imported vstd function):
+* host, proved: `Params`, `Key`, `Agg` (SUM / COUNT / AVG folds, `hits` = PAIRS of rows in group `k` passing the WHERE and the ON,
+  `n_hit_*`), `agg_zero`, `agg_plus`, `agg_plus_f`, `agg_row(t, b_.., i0, k, p)` (zero outside the table; inside, the spec's own inner
+  folds at the row: `sum_x: sum_x_d1(t, b_u, i0, 0, k)`, `hits: stream_hits_d1(t, b_u, i0, 0, k, p)`), the count folds
+  `stream_<c>_d<j>` (nested over build j) and `stream_<c>` (over the stream rows) with their positivity lemmas, `agg_rng` (differences
+  of suffix folds), `lemma_agg_empty`, `lemma_agg_step`, `lemma_agg_laws`, `lemma_agg_total(t, b_.., k, p)` (folds field by field;
+  `hits > 0 <==> exists|i0, i1, ..| row_hit(..) && key_at(..) == k`);
+* the chunk view of the stream table, S1, S2 (phase 1, unchanged);
+* the agent: AGENT_STATE (`QAcc` and `QBuild`), AGENT_HELPERS (`qbuild_inv(bld, b_.., p)`, `qacc_inv(s, bld)`, `st_val(s, bld, k)`),
+  and the bodies AGENT_BUILD / INIT / STEP / MERGE / FINISH of
+```rust
+pub fn q_build(b_u: &Cols_u, p: &Params) -> (r: Option<QBuild>)
+    requires valid_cols_u(b_u), ensures r matches Some(bld) ==> qbuild_inv(&bld, b_u, p);
+pub fn q_init(bld: &QBuild, b_u: &Cols_u, p: &Params) -> (s: QAcc)
+    requires valid_cols_u(b_u), qbuild_inv(bld, b_u, p), ensures qacc_inv(&s, bld), forall|k| st_val(&s, bld, k) == agg_zero();
+pub fn q_step(s: &mut QAcc, c: &Chunk_t, bld: &QBuild, b_u: &Cols_u, p: &Params) -> (ok: bool)
+    requires qacc_inv(old(s), bld), chunk_ok_t(c), valid_cols_u(b_u), qbuild_inv(bld, b_u, p),
+    ensures ok ==> qacc_inv(final(s), bld) && forall|k| st_val(final(s), bld, k)
+        == agg_plus(st_val(old(s), bld, k), agg_rng(&stream_table_t(c.sid), b_u, c.off as int, c.off + c.len, k, p));
+pub fn q_merge(a: QAcc, b: QAcc, bld: &QBuild, b_u: &Cols_u, p: &Params) -> (r: Option<QAcc>)   // both qacc_inv(_, bld)
+pub fn q_finish(s: QAcc, t: Ghost<Cols_t>, bld: &QBuild, b_u: &Cols_u, p: &Params) -> (res: Option<Vec<OutRow>>)
+    requires .., forall|k| st_val(&s, bld, k) == agg_rng(&t@, b_u, 0, t@.n as int, k, p), ensures res matches Some(r) ==> run_query_ok(&t@, b_u, r);
+```
+  No uniqueness assumption: the agent proves its build structure from the build table's cells (duplicates handled, or a decline).
+  Admission (`admit_stream(.., build=..)`): QBuild and qbuild_inv required; no region may name `Pool`, `PoolOpen`, `Slot`, `SlotPred`,
+  `pool_*`, `cols_ok_*`, `load_cols_*` (besides phase 1's internals).
+* the host runtime of a join, `Pool` (replaces phase 1's per-worker `Exec`). Why: merging two workers' states is sound only if both
+  were folded against the same build, and no run-time check short of comparing the build tables proves that (vstd has no spec for an
+  `Arc` pointer comparison; one would be a new trusted item). So ONE `Pool` per stream holds the build tables, the `QBuild` and one
+  `vstd::rwlock::RwLock<Slot, SlotPred>` per worker (`Slot { acc: Option<QAcc>, err, segs }`; the lock's predicate: the state is the
+  fold of its segments against this pool's build); the type invariant says every slot's predicate names the pool's build.
+```rust
+pub enum PoolOpen { Ready(Pool), Declined, Error }
+pub fn cols_ok_u(x: &Cols_u) -> (r: bool) ensures r ==> valid_cols_u(x)     // lengths and the row bound, checked at run time
+pub fn pool_open(sh: Stream_t, b_u: Cols_u, p: Params, nslots: usize) -> (r: PoolOpen)  // cols_ok_*, q_build once, q_init per slot
+    ensures r matches PoolOpen::Ready(pl) ==> pl.sid() == sh.id && pl.params() == p && pl.build_u() == b_u && pl.nslots() == nslots
+pub fn pool_step(pl: &Pool, w: usize, raw: &RawChunk_t) -> (r: u8)        // worker w's slot: 0 go on, 1 poisoned, 2 no slot w
+pub fn pool_finish(pl: Pool) -> (r: StreamOut)                             // S2, merge all slots (q_merge), tiling check, q_finish
+    ensures r matches StreamOut::Rows(res) ==> run_query_ok(&stream_table_t(pl.sid()), &pl.build_u(), res)
+```
+
+Binary mode (`assemble._assemble_stream_join_program`): the stream table is read as in phase 1; each build table is read from its
+column file as `run_query`'s main reads it (the `valid_cols` checks) and loaded by its verified loader `load_cols_<b>` (in `verus!`)
+before each timed run (not timed: a copy of the columns); the timed run is `pool_open` (q_build), `threads` workers stepping their own
+slot from one atomic chunk counter, `pool_finish`. Prints `STREAM_BUILD_US` (median of `pool_open`) besides phase 1's lines.
+
+For the extension agent (ABI 6 with builds; not wired yet, `assemble_stream_library_program` still refuses a join spec):
+`lemma_stream_open(build, nbuild, params, ..)` must hand every build table's columns in `Cols_<b>` order of the spec (the ABI 5 input
+layout of `lemma_input_layout`, one `LemmaCol` per field), build tables in `q_build`'s parameter order; the template loads each with `load_cols_<b>` (its `requires` checked by asserts as in ABI 5; `pool_open` re-checks lengths) and
+calls `pool_open(Stream_t { id, raw: end }, b_.., p, nslots)` with `nslots` = the number of scan workers it will start (a worker is a
+slot index `w < nslots`, one per scan thread; two threads on one slot are serialized by the lock, not wrong). `Declined` / `Error` at
+open answer DECLINED / ERROR before any scan. Per chunk `pool_step(&pool, w, &raw)`; there is no `exec_merge`: `lemma_stream_merge`
+has nothing to do for a join (the merge is inside `pool_finish`). After every worker has returned: set `StreamEnd (m, n)`, then
+`pool_finish(pool)` by value. A panic inside `pool_step` leaves that slot's lock held: `pool_finish` would then wait forever, so after a
+panicked step the template must answer ERROR without calling `pool_finish`. The build rows may be the build table's rows that pass its
+own single-table conjuncts (pushdown): the spec re-applies the WHERE, and Q12's build is then 310,803 rows instead of 59,986,052.
+The manifest should record the stream table and the builds (the spec's `// LEMMA_STREAM_JOIN:` line, `stream_choice.json`).
+
+Prompt (`stream_prompt.py`, join specs only): seven regions, the five contracts verbatim, the join's `agg_row` as the inner fold, the
+build-side facts (keys repeat, may be NULL, may match nothing; no uniqueness assumption) and the proof shape (a skip lemma by induction
+over the inner fold); RECIPE (left out with `examples = none`): probe structures (a key -> first-row map with a `next` chain built from
+the last row, or a dense table over an integer key's run-time range, declining when too wide; group slots per build row; a per-chunk
+entry memo for a streamed string key). Example `stream/join_group_build_key.rs` (mounted with the stream examples).
+
+Gate checks (Verus, a stub agent, `tests/test_stream_join.py`): the invented join, TPC-H Q12 streaming orders and streaming lineitem,
+SEC q3 without its HAVING subquery (subqueries are refused) all `N verified, 0 errors`.

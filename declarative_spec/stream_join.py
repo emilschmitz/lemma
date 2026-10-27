@@ -73,7 +73,7 @@ def is_join(spec_rs: str) -> bool:
 
 # ---- the stream table: header, rule, reorder ----------------------------------------------------------------------------------------
 
-_HEADER = re.compile(r"^[ \t]*--[ \t]*stream:[ \t]*(.*?)[ \t]*$", re.M | re.I)
+_HEADER = re.compile(r"^[ \t]*--[ \t]*stream:[ \t]*(.*?)[ \t]*$", re.MULTILINE | re.IGNORECASE)
 _CHOSEN: contextvars.ContextVar[str | None] = contextvars.ContextVar("lemma_stream_table", default=None)
 
 
@@ -130,7 +130,7 @@ def _tables(select: exp.Select) -> list[exp.Table]:
 def check_sql(sql: str) -> None:
     """The phase-2a join gate (SQL level): inner equi-joins of base tables, no subquery, no CTE, no self join."""
     try:
-        tree = sqlglot.parse_one(sql)
+        tree = sqlglot.parse_one(sql, read="duckdb")  # DuckDB's join words (SEMI, ANTI, ASOF, POSITIONAL), not table aliases
     except sqlglot.errors.SqlglotError:
         return  # the emitter reports the parse error
     if not list(tree.find_all(exp.Join)):
@@ -166,12 +166,12 @@ def outermost(sql: str, schema: dict, table: str) -> str:
     if table.casefold() not in names:
         raise _refuse(f"`-- stream: {table}` names no table of the query ({', '.join(n.name for n in nodes)})")
     pos = names.index(table.casefold())
-    if pos == 0:
-        return sql
     joins = select.args.get("joins") or []
     conds = [j.args["on"] for j in joins if j.args.get("on") is not None]
     if len(conds) != len(joins):
         raise _refuse("a join without an ON equality (a cross product) is not streamed")
+    if pos == 0:
+        return sql
     where = select.args.get("where")
     if where is not None:
         conds.append(where.this)
@@ -200,7 +200,7 @@ def outermost_for_emit(sql: str, schema: dict) -> str:
         if chosen is not None and not (isinstance(single, exp.Table) and single.name.casefold() == chosen.casefold()):
             raise _refuse(f"`-- stream: {chosen}` names no table of the query")
         return sql  # one table (phase 1): unchanged
-    nodes = _tables(tree)
+    _tables(tree)  # base tables only (refused otherwise)
     if chosen is None:
         raise _refuse(
             "a join needs its stream table named: a `-- stream: <table>` line in the SQL (stream_join.choose_stream_table: "
@@ -217,7 +217,12 @@ def choose_stream_table(sql: str, schema: dict, db_path: Path | str) -> dict:
     conjunct whose columns all belong to one table), each table counted once with all of its conjuncts. ``sql`` is fixed-constant SQL
     (a template: one binding's literals)."""
     from declarative_spec.parse_query import rewrite_comma_joins
-    from research_loop.data_profile import QUERY_TIMEOUT_SEC, _Runner, _SelectProfile, _sql
+    from research_loop.data_profile import (
+        QUERY_TIMEOUT_SEC,
+        _Runner,
+        _SelectProfile,
+        _sql,
+    )
 
     check_sql(sql)
     select = sqlglot.parse_one(rewrite_comma_joins(sql, schema), read="duckdb")
@@ -424,11 +429,11 @@ def read_join_shape(spec: str) -> JoinShape:
         base = re.sub(r"_d\d+$", "", name)
         if base not in found or not (name in inner_names or re.fullmatch(rf"{re.escape(base)}_d\d+", name)):
             raise _refuse(f"spec fn {name} is not a recognized fold over the join (COUNT DISTINCT and other folds are not phase 2a)")
-        body = re.search(rf"pub open spec fn {re.escape(name)}\(.*?\n\}}\n", spec, re.S)
+        body = re.search(rf"pub open spec fn {re.escape(name)}\(.*?\n\}}\n", spec, re.DOTALL)
         if body is not None and re.search(r"\b(?:exists|forall|choose)\s*\|", body.group(0)):
             raise _refuse(f"fold {name}: its per-row term looks at other rows (not phase 2a)")
     shape.folds = list(found.values())
-    ok = re.search(r"pub open spec fn run_query_ok\([^\n]*\n(.*?)\n\}\n", spec, re.S)
+    ok = re.search(r"pub open spec fn run_query_ok\([^\n]*\n(.*?)\n\}\n", spec, re.DOTALL)
     if ok is None:
         raise _refuse("no run_query_ok")
     ex_vars = ", ".join(f"{i}: int" for i in idx)
@@ -871,7 +876,7 @@ def _runtime(sh: JoinShape, ok_pl: str) -> str:
     pred_fields = "\n".join(f"    pub {v}: Cols_{b}," for v, b in vb)
     pool_fields = "\n".join(f"    {v}: Cols_{b}," for v, b in vb)
     self_br = ", ".join(f"&self.{v}" for v, _b in vb)
-    pred_of = lambda pre: "(SlotPred { id: " + pre + "sh.id, " + ", ".join(f"{v}: {pre}{v}" for v, _b in vb) + f", bld: {pre}bld, p: {pre}p }})"  # noqa: E731
+    pred_of = lambda pre: "(SlotPred { id: " + pre + "sh.id, " + ", ".join(f"{v}: {pre}{v}" for v, _b in vb) + f", bld: {pre}bld, p: {pre}p }})"
     b_names = ", ".join(sh.bvars)
     pl_b = ", ".join(f"pl.{v}" for v, _b in vb)
     pl_br = ", ".join(f"&pl.{v}" for v, _b in vb)

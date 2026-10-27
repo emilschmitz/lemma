@@ -21,9 +21,7 @@ from declarative_spec import principles
 
 def _contract_text(spec_text: str) -> str:
     """The four contracts as the spec states them (signature, requires, ensures; bodies are the agent's regions)."""
-    from declarative_spec import stream
-
-    from declarative_spec import stream_join
+    from declarative_spec import stream, stream_join
 
     out = []
     regions = dict(stream.BODY_REGIONS)

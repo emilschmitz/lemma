@@ -467,16 +467,20 @@ pub proof fn lemma_added(s0: &QAcc, s: &QAcc, bld: &QBuild, t: &Cols_t, u: &Cols
 // AGENT_STEP_END
 // AGENT_MERGE_START
     let g = a.cnt.len();
+    let ghost a0 = a;
     let mut m = a;
     let mut j: usize = 0;
     while j < g
         invariant
             g == bld.gkeys@.len(),
-            qacc_inv(&m, bld),
+            g == a0.cnt@.len(),
+            g == a0.sum@.len(),
+            m.cnt@.len() == g,
+            m.sum@.len() == g,
             qacc_inv(&b, bld),
             j <= g,
-            forall|x: int| #![trigger m.cnt@[x]] 0 <= x < j ==> m.cnt@[x] as int == a.cnt@[x] + b.cnt@[x] && m.sum@[x] as int == a.sum@[x] + b.sum@[x],
-            forall|x: int| #![trigger m.cnt@[x]] j <= x < g ==> m.cnt@[x] == a.cnt@[x] && m.sum@[x] == a.sum@[x],
+            forall|x: int| #![trigger m.cnt@[x]] 0 <= x < j ==> m.cnt@[x] as int == a0.cnt@[x] + b.cnt@[x] && m.sum@[x] as int == a0.sum@[x] + b.sum@[x],
+            forall|x: int| #![trigger m.cnt@[x]] j <= x < g ==> m.cnt@[x] == a0.cnt@[x] && m.sum@[x] == a0.sum@[x],
         decreases g - j,
     {
         let c = match m.cnt[j].checked_add(b.cnt[j]) {
@@ -487,15 +491,27 @@ pub proof fn lemma_added(s0: &QAcc, s: &QAcc, bld: &QBuild, t: &Cols_t, u: &Cols
             Some(v) => v,
             None => return None,
         };
+        let ghost m1 = m;
         m.cnt.set(j, c);
         m.sum.set(j, v);
+        proof {
+            assert forall|x: int| #![trigger m.cnt@[x]] 0 <= x < j + 1 implies m.cnt@[x] as int == a0.cnt@[x] + b.cnt@[x]
+                && m.sum@[x] as int == a0.sum@[x] + b.sum@[x] by {
+                if x < j {
+                    assert(m.cnt@[x] == m1.cnt@[x] && m.sum@[x] == m1.sum@[x]);
+                }
+            }
+            assert forall|x: int| #![trigger m.cnt@[x]] j + 1 <= x < g implies m.cnt@[x] == a0.cnt@[x] && m.sum@[x] == a0.sum@[x] by {
+                assert(m.cnt@[x] == m1.cnt@[x] && m.sum@[x] == m1.sum@[x]);
+            }
+        }
         j = j + 1;
     }
     proof {
-        assert forall|k: Key| #[trigger] st_val(&m, bld, k) == agg_plus(st_val(&a, bld, k), st_val(&b, bld, k)) by {
+        assert forall|k: Key| #[trigger] st_val(&m, bld, k) == agg_plus(st_val(&a0, bld, k), st_val(&b, bld, k)) by {
             if bld.gidx@.contains_key(k) {
                 let x = bld.gidx@[k] as int;
-                assert(m.cnt@[x] as int == a.cnt@[x] + b.cnt@[x]);
+                assert(m.cnt@[x] as int == a0.cnt@[x] + b.cnt@[x]);
             }
         }
     }

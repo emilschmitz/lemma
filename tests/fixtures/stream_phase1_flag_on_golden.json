@@ -1,0 +1,17 @@
+{
+ "_comment": "sha256 of phase-1 stream specs (lemma.toml [run] stream on, templates on, pushdown off) and of their stream prompts (examples none / full), emitted by the tree before phase 2a (joins, commit 078a6af); tests/test_stream_join.py checks that the join work left them byte-identical",
+ "q01": "0e061a82f96e50d13ef573afda1b60d7ffe019dbd9b0b4cb7503f3b522c0042b",
+ "q06": "1217fb084ac0b83e9a79b64e6208fbadb23e90e058056e00dc92789dcac8d18b",
+ "t0": "f8619746e79cdbe5b386a2c6a33df32878c9b02a9b8ff6c1ed13722641b15139",
+ "t0_prompt_none": "5eb309799729f319a46f793630102bc90a5f1da13b60f2de1304b51565478c66",
+ "t0_prompt_full": "58386017df199648710feebe68265846d81e0953de1cfd826b35b9aa14ce641d",
+ "t1": "cd4dc6b9a2fc07cbc305d996c950a7ef878bce3b8303d31c392f1acdf14270e3",
+ "t1_prompt_none": "de6cb3c744ccf7cc134bceaa5dc139075107db2f1faf04fedf9bd90e78073aa2",
+ "t1_prompt_full": "e4aa870409fc6ca2a810fcc88405bdbc5843239a45a9a6bc32e011f528ba7bee",
+ "t2": "80a4c7392ef3797afbeb8c083307ca5edc5bb4b050add06064196611991e3c49",
+ "t2_prompt_none": "628b6d357981d59d927de958768f14aa27d4ff95fe22347f3c51f313902da22c",
+ "t2_prompt_full": "a66cac721e3d17bb9606eb40a3943473beccc693a7677a7e6633ddf1afe9c894",
+ "t3": "45fbb8380c8aa4b2ccfb501e7ad3d44ac81c33889cb963877e82bf57a003eeca",
+ "t3_prompt_none": "6c9cd582ccd2870272ba96297e032148a43ff7f48e465b7ad1f8f38b5bf5487d",
+ "t3_prompt_full": "8f898a7d2f0f679c5296b557f2ab92d874c0e07b14924f1ffc00551e98c4ebe9"
+}
