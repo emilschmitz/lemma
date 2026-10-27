@@ -186,6 +186,7 @@ UNMOUNTED: dict[str, str] = {
     "stateful_date_prefix.rs": "stateful check (tests/test_stateful.py): prefix-sum state over the date column, serve-mode differential",
     "stateful_degenerate_sum.rs": "stateful check (tests/test_stateful.py): the degenerate state that owns the table",
     "stateful_group_table.rs": "stateful check (tests/test_stateful.py): grouped table state, serve-mode differential",
+    "stream/ungrouped_sum_filter_template.rs": "stream ABI 6 check (tests/test_in_duckdb_stream.py): template parameters through lemma_query",
 }
 
 # Parked pin path (lemma.toml [wip] zero_copy / cold_stream, research_loop/menus/pin_path_archive.md): test fixtures of that path, never mounted.

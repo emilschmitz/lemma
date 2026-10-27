@@ -1,0 +1,29 @@
+# Stream SEC, 2026-10-27: streaming executors (docs/STREAM.md) on GenDB's SEC-EDGAR queries that the stream gate now accepts (nullable GROUP
+# BY keys and COUNT DISTINCT, commits c76a528/390f8e9): q6 (num ⋈ sub ⋈ pre, nullable keys), q4 (num ⋈ sub ⋈ tag ⋈ pre, COUNT DISTINCT),
+# q1 (pre, COUNT DISTINCT). Same settings as stream_q1_opus.toml / stream_joins_opus.toml: Opus 5.5, examples = principles, no data
+# assumptions (decline), stream = true, pushdown = false (the streamed table is never filtered; build tables get their own pushed filter at
+# install), agent_scan = false. Reported numbers: in-DuckDB (in_duckdb_bench) after install, first call on fresh data.
+# Run: uv run python research_loop/scripts/container_batch.py --experiment configs/experiments/stream_sec_opus.toml
+[settings]
+assumptions = false
+examples = "principles"
+data_profile = "stats"
+templates = true
+stream = true
+pushdown = false
+agent_scan = false
+
+[[run]]
+model = "claude-opus-5-5"
+query = "configs/queries/sec_edgar/q6.sql"
+duckdb_path = "holdout/gendb_sec_edgar/duckdb/sec_edgar_dec.duckdb"
+
+[[run]]
+model = "claude-opus-5-5"
+query = "configs/queries/sec_edgar/q4.sql"
+duckdb_path = "holdout/gendb_sec_edgar/duckdb/sec_edgar_dec.duckdb"
+
+[[run]]
+model = "claude-opus-5-5"
+query = "configs/queries/sec_edgar/q1.sql"
+duckdb_path = "holdout/gendb_sec_edgar/duckdb/sec_edgar_dec.duckdb"
