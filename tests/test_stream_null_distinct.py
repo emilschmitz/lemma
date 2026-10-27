@@ -144,6 +144,28 @@ def test_phase2a_specs_and_prompts_are_byte_identical(stream_on: None, monkeypat
         monkeypatch.delenv("LEMMA_EXAMPLES")
 
 
+# ---- the scorer: a NULL group key beside value keys (2026-10-27: sorting None against a str raised TypeError) --------------------------
+
+
+def _hex(s: str) -> str:
+    return s.encode().hex()
+
+
+def test_scorer_matches_rows_with_a_null_string_key_in_any_order() -> None:
+    expect = [("", 2, 10), (None, 3, 7), ("x", 1, -4)]
+    got = [["NULL", "3", "7"], [_hex("x"), "1", "-4"], [_hex(""), "2", "10"]]  # another order than DuckDB's
+    assert rows_match_error(got, expect, ["str", "int", "int"], None, False, None) is None
+    wrong = [["NULL", "3", "7"], [_hex("x"), "1", "-4"], ["NULL", "2", "10"]]  # the empty string's group answered as NULL
+    assert rows_match_error(wrong, expect, ["str", "int", "int"], None, False, None) is not None
+
+
+def test_scorer_matches_rows_with_null_integer_and_float_cells() -> None:
+    expect = [(None, 1.5), (3, None), (-1, 2.0), (None, None)]
+    got = [["3", "NULL"], ["NULL", "NULL"], ["-1", "2.0"], ["NULL", "1.5"]]
+    assert rows_match_error(got, expect, ["int", "float"], None, False, None) is None
+    assert rows_match_error([["3", "NULL"], ["NULL", "NULL"], ["-1", "2.0"], ["NULL", "2.5"]], expect, ["int", "float"], None, False, None) is not None
+
+
 # ---- the contract text and the gate ---------------------------------------------------------------------------------------------------
 
 
