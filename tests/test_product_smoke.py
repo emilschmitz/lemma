@@ -9,18 +9,20 @@ install.sh --load-images loads them back; otherwise the registry tags named in t
 
 In an empty HOME, from an empty working directory, with no PYTHONPATH, no Verus and no Rust toolchain (no ~/tools/verus, no RUSTUP_HOME /
 CARGO_HOME, no cargo or rustup on PATH) and a `git` on PATH that fails and leaves a mark when anything calls it: install.sh of the release,
-then the user's steps with the installed `lemma` only: `lemma setup --auth api-key` (prover = docker), `lemma optimize` on a tiny DuckDB,
-`lemma list`, `lemma duckdb -c` (the proved executor answers, equal to DuckDB, then an input-cache hit; and ordinary DuckDB SQL: CREATE
-TABLE, INSERT, a join, read_csv), a second `lemma optimize` (already optimized), and the run's provenance (package version and wheel sha256,
-no git). A last test installs the same release into a stock ubuntu:22.04 container (uv only) and runs our DuckDB there with the executor
-the second test proved.
+then the user's steps with the installed `lemma` only: `lemma setup --auth api-key` (prover = docker), `lemma optimize` on a tiny DuckDB
+of a GROUP BY that the stream gate accepts (lemma.toml [product] executor = auto: a STREAMING executor, ABI 6, docs/STREAM.md), `lemma list`
+(kind stream), `lemma duckdb -c` (the proved executor answers, equal to DuckDB, lemma_last_query engine = lemma, mode = stream; again right
+after an INSERT; and ordinary DuckDB SQL: CREATE TABLE, INSERT, a join, read_csv), a second `lemma optimize` (already optimized), and the
+run's provenance (package version and wheel sha256, no git; the executor choice as product_executor). A last test installs the same
+release into a stock ubuntu:22.04 container (uv only) and runs our DuckDB there with the executor the second test proved.
 
 REAL: install.sh, `uv tool install` of the wheel, Docker, the prover image (Verus and rustc run there), the agent image, the sandbox
 self-test (needs internet for api.anthropic.com), Claude Code in the container, the egress bridge, the MCP host, the spec, admission,
 Verus (the pipeline's proof and the install's re-verification + library compile), the timed run against DuckDB, the extension, the cache.
 MOCKED: the model. Claude Code talks to research_loop/scripts/mock_anthropic_api.py (through the real bridge, test-only override
-LEMMA_TEST_MOCK_ANTHROPIC_*), which writes a fixed, already proved body (tests/fixtures/declarative_proofs/decline/group_count_sum_checked.rs)
-into AGENT_EDIT, calls run_runquery, then submit_runquery. The API key is a dummy.
+LEMMA_TEST_MOCK_ANTHROPIC_*), whose StreamConversation writes the six regions of a fixed, already proved stream body
+(tests/fixtures/declarative_proofs/stream/group_string_count_sum.rs) into the agent file, calls run_runquery, then submit_runquery. The API
+key is a dummy.
 SHARED WITH THIS MACHINE: the uv download caches (downloads only) and the Docker daemon's images.
 """
 
@@ -38,8 +40,9 @@ import duckdb
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-BODY = ROOT / "tests" / "fixtures" / "declarative_proofs" / "decline" / "group_count_sum_checked.rs"
-SQL = "SELECT report, COUNT(*) AS cnt, SUM(line) AS total FROM pre WHERE line > 5 GROUP BY report"
+BODY = ROOT / "tests" / "fixtures" / "declarative_proofs" / "stream" / "group_string_count_sum.rs"
+SQL = "SELECT s, COUNT(*) AS c, SUM(m) AS sm FROM t GROUP BY s"  # the fixture's query (t: m DECIMAL(12,2), s VARCHAR, no NULLs)
+CHOICE = {"kind": "stream", "setting": "auto", "reason": "the stream gate accepts this query", "abi": 6}
 DUMMY_KEY = "sk-ant-api03-SMOKE-dummy-NOT-A-REAL-KEY-0000"
 PLAIN_SQL = (  # ordinary DuckDB, no executor: Lemma mode off for this connection
     "SET lemma_mode = false; CREATE TABLE city(id INTEGER, name VARCHAR); INSERT INTO city VALUES (1, 'Oslo'), (2, 'Lima'); "
@@ -106,8 +109,9 @@ def user(tmp_path_factory: pytest.TempPathFactory) -> dict:
     assert done.returncode == 0
     db = tmp / "shop.duckdb"
     con = duckdb.connect(str(db))
-    con.execute("CREATE TABLE pre(line BIGINT, report BIGINT)")
-    con.execute("INSERT INTO pre SELECT (i * 7) % 23, i % 5 FROM range(2000) r(i)")
+    con.execute("CREATE TABLE t(s VARCHAR, m DECIMAL(12,2))")
+    con.execute("INSERT INTO t SELECT 'key ' || (i % 5) || (CASE WHEN i % 5 = 3 THEN ' longer than twelve' ELSE '' END), "
+                "((i * 7) % 2300) / 100 FROM range(2000) r(i)")
     con.close()
     (tmp / "sales.csv").write_text("city_id,qty\n1,5\n2,7\n")
     return {"home": home, "env": env, "db": db, "tmp": tmp, "cwd": cwd, "trap": trap, "release": release, "images": images,
@@ -135,8 +139,9 @@ def test_install_lays_out_the_wheel_and_the_duckdb_binaries_and_no_source_tree(u
 
 
 def test_setup_optimize_and_run_in_duckdb_from_the_installed_wheel(user: dict) -> None:
+    from declarative_spec import stream
     from research_loop.agent_sandbox import MOCK_CA_ENV, MOCK_PORT_ENV
-    from research_loop.scripts.mock_anthropic_api import Conversation, MockAnthropic, make_ca
+    from research_loop.scripts.mock_anthropic_api import MockAnthropic, StreamConversation, make_ca
 
     done = lemma(user, "setup", "--auth", "api-key", timeout=1800)
     assert done.returncode == 0 and "READY" in done.stdout and "[ok] duckdb: v1.5.6" in done.stdout
@@ -145,11 +150,13 @@ def test_setup_optimize_and_run_in_duckdb_from_the_installed_wheel(user: dict) -
     assert not (user["home"] / "tools").exists() and (user["home"] / ".cache" / "lemma" / "prover").is_dir()  # vstd from the image
 
     cert, key = make_ca(user["tmp"])
-    with MockAnthropic(Conversation(BODY.read_text().strip("\n")), cert, key, user["tmp"] / "mock_requests.jsonl") as mock:
+    with MockAnthropic(StreamConversation(stream.extract_regions(BODY.read_text())), cert, key, user["tmp"] / "mock_requests.jsonl") as mock:
         env = {**user["env"], MOCK_PORT_ENV: str(mock.port), MOCK_CA_ENV: str(cert)}
         done = lemma(user, "optimize", "--db", str(user["db"]), "--sql", SQL, env=env)
     assert done.returncode == 0, done.stderr[-3000:]
     assert re.search(r"PROVED  \d+ verified, 0 errors \(Verus\)", done.stdout)
+    assert "executor: stream (ABI 6; [product] executor = auto): the stream gate accepts this query" in done.stdout
+    assert "  executor: stream (ABI 6)" in done.stdout
     (executor,) = (user["share"] / "executors").iterdir()
     assert {"lib.so", "manifest.json", "optimize.json", "proved", "query.sql"} <= {p.name for p in executor.iterdir()}
 
@@ -159,26 +166,33 @@ def test_setup_optimize_and_run_in_duckdb_from_the_installed_wheel(user: dict) -
     package = manifest["package"]
     assert package["wheel_sha256"] == hashlib.sha256(wheel.read_bytes()).hexdigest() and package["lemma_version"] in wheel.name
     assert manifest["git_dirty"] is None and manifest["git_sha"] == package["source_commit"]
+    assert manifest["mode"] == "stream" and manifest["abi_version"] == 6
+    assert json.loads((executor / "optimize.json").read_text())["executor"] == CHOICE
     run_dir = Path(json.loads((executor / "optimize.json").read_text())["run_dir"])
     assert run_dir.is_relative_to(user["share"])  # the run went under LEMMA_HOME, never into site-packages
     run_manifest = json.loads((run_dir / "manifest.json").read_text())
     assert run_manifest["git_sha"] is None and run_manifest["package"]["wheel_sha256"] == package["wheel_sha256"]
+    assert run_manifest["product_executor"] == CHOICE
+    effective = run_manifest["lemma_config"]
+    assert (effective["stream"]["value"], effective["pushdown"]["value"], effective["agent_scan"]["value"]) == (True, False, False)
 
     listed = lemma(user, "list")
-    assert listed.returncode == 0 and executor.name[:12] in listed.stdout and SQL in listed.stdout
+    assert listed.returncode == 0 and f"{executor.name[:12]}  stream  " in listed.stdout and SQL in listed.stdout
 
-    # Our DuckDB CLI with Lemma mode on: the executor answers (equal to DuckDB), the second call hits the input cache.
-    shown = lemma(user, "duckdb", str(user["db"]), "-c", f"{SQL}; SELECT engine, cache FROM lemma_last_query(); {SQL}; SELECT engine, cache FROM lemma_last_query();")
-    assert shown.returncode == 0
-    assert re.search(r"│\s*lemma\s*│\s*miss[^│]*│", shown.stdout) and re.search(r"│\s*lemma\s*│\s*hit\s*│", shown.stdout)
-    con = duckdb.connect(str(user["db"]), read_only=True)
-    want = sorted(con.execute(SQL).fetchall())
-    con.close()
-    csv = subprocess.run([str(user["share"] / "duckdb" / "duckdb"), "-csv", "-noheader", "-cmd", "SET lemma_mode = true", str(user["db"]),
-                          "-c", SQL], cwd=user["cwd"], env={**user["env"], "LEMMA_HOME": str(user["share"])}, capture_output=True, text=True,
-                         check=True).stdout
-    got = sorted(tuple(int(x) for x in line.split(",")) for line in csv.split())
-    assert got == want and len(want) == 5
+    # Our DuckDB CLI with Lemma mode on: the streaming executor answers (equal to DuckDB) on DuckDB's own scan chunks.
+    shown = lemma(user, "duckdb", str(user["db"]), "-c", f"{SQL}; SELECT engine, mode FROM lemma_last_query();")
+    assert shown.returncode == 0 and re.search(r"│\s*lemma\s*│\s*stream\s*│", shown.stdout)
+    for write in ("", "INSERT INTO t VALUES ('key 9', 1.50), ('key 0', 2.25); "):  # fresh data: the first call after a write streams too
+        csv = subprocess.run([str(user["share"] / "duckdb" / "duckdb"), "-csv", "-noheader", "-cmd", "SET lemma_mode = true", str(user["db"]),
+                              "-c", f"{write}{SQL}; SELECT engine || ',' || mode FROM lemma_last_query();"], cwd=user["cwd"],
+                             env={**user["env"], "LEMMA_HOME": str(user["share"])}, capture_output=True, text=True, check=True).stdout
+        con = duckdb.connect(str(user["db"]), read_only=True)
+        want = sorted((s, str(c), str(sm)) for s, c, sm in con.execute(SQL).fetchall())
+        con.close()
+        lines = [line for line in csv.splitlines() if line]
+        assert lines[-1] == "lemma,stream", csv
+        got = sorted(tuple(line.rsplit(",", 2)) for line in lines[:-1])
+        assert got == want and len(want) == (6 if write else 5), (got, want)
 
     # Full DuckDB in the same CLI: DDL, DML, a join with read_csv.
     plain = lemma(user, "duckdb", "-c", PLAIN_SQL.format(csv=user["tmp"] / "sales.csv"))

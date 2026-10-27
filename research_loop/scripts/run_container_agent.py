@@ -188,7 +188,8 @@ def run(
 
     # Before anything launches: the image, with the commit's agent code mounted, must serve every tool the prompt advertises (ImageMismatch = loud stop).
     code_evidence = check_agent_image(os.environ["AGENT_IMAGE"], cli=cli)
-    set_run_evidence({"data_sha256": file_sha256(db_path), "agent_image_digest": image_digest(os.environ["AGENT_IMAGE"]), **duckdb_versions(), **code_evidence})
+    set_run_evidence({"data_sha256": file_sha256(db_path), "agent_image_digest": image_digest(os.environ["AGENT_IMAGE"]), **duckdb_versions(), **code_evidence,
+                      **({"product_executor": _product_executor} if _product_executor is not None else {})})
     if resolved.style == "declarative":
         os.environ["LEMMA_MEASURE_DB"] = str(db_path)
         # The catalog is its own axis: the package that matches the database file (DECIMAL or DOUBLE `value`) unless
@@ -237,6 +238,7 @@ def run(
         "git_dirty": config_record["git_dirty"],
         **({"package": config_record["package"]} if "package" in config_record else {}),  # an installed wheel: version + wheel hash, no git
         "replicable": lemma_config.experiment_record() is not None,
+        **({"product_executor": _product_executor} if _product_executor is not None else {}),  # the product CLI's stream/batch choice
         "sql": sql,
         "wall_s": round(time.time() - t0, 1),
         "status": result.get("status"),  # DECLINED (assumptions = false: the proved run_query returned None) is a failed query, never a success
@@ -264,6 +266,19 @@ def verdict_error(result: dict) -> str:
     return (result.get("error") or next((h["error"] for h in reversed(result.get("history", [])) if h.get("error")), ""))[-2000:]
 
 
+# The product CLI's executor choice for this run (--executor-choice), or None (a research run: [run] stream as written).
+_product_executor: dict | None = None
+
+
+def set_product_executor(choice: dict) -> None:
+    """Record the product's executor choice; its kind must be what [run] stream says for this run (the CLI set it), else a loud stop."""
+    global _product_executor
+    want = "stream" if lemma_config.get("stream") else "batch"
+    if choice.get("kind") != want:
+        raise lemma_config.ConfigError(f"--executor-choice says {choice.get('kind')!r} but [run] stream is {lemma_config.get('stream')} ({want})")
+    _product_executor = choice
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--style", choices=STYLES, help="spec_style (default: lemma.toml)")
@@ -281,6 +296,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--pinned-sha", help="the batch's pinned commit; the run refuses to start when HEAD differs")
     ap.add_argument("--template-binding", help="JSON {name: value}: a query template (lemma generate's lifted constants) is measured on these "
                     "values in every round (not with --experiment, whose rules and seed draw them)")
+    ap.add_argument("--executor-choice", help="JSON {kind, setting, reason, abi}: the product CLI's executor choice ([product] executor, "
+                    "lemma_cli/executor.py), recorded in the run manifest as product_executor; its kind must agree with [run] stream")
     args = ap.parse_args(argv)
     lemma_config.clear_cli()
     lemma_config.clear_experiment()
@@ -311,6 +328,10 @@ def main(argv: list[str] | None = None) -> int:
         from declarative_spec import drive
 
         drive.set_product_binding(json.loads(args.template_binding))
+    if args.executor_choice is not None:
+        if args.experiment:
+            ap.error("--executor-choice is for product runs; an experiment's [run] stream decides")
+        set_product_executor(json.loads(args.executor_choice))
     if (args.query_sql is None) == (args.query_file is None):
         ap.error("give exactly one of --query-sql and --query-file")
     sql = args.query_sql if args.query_sql is not None else Path(args.query_file).read_text().strip()

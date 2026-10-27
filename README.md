@@ -27,8 +27,12 @@ tar -xzf lemma-0.1.0-linux-x86_64.tar.gz && ./lemma-0.1.0-linux-x86_64/install.s
 lemma setup                                    # Docker, DuckDB; pulls the prover and agent images, tests the sandbox; your Claude Code login
 lemma optimize --db my.duckdb --sql "SELECT region, SUM(qty) AS q FROM orders GROUP BY region"   # or: lemma optimize --db my.duckdb q.sql
 lemma duckdb my.duckdb                         # a full DuckDB; in it: SELECT * FROM lemma('<your SQL>');  (generates on first use)
-lemma list                                     # installed executors (key, proof line, database, SQL); lemma remove KEY
+lemma list                                     # installed executors (key, stream/batch, proof line, database, SQL); lemma remove KEY
 ```
+
+Streaming: for a query the stream gate accepts (today single-table aggregates) `lemma optimize` proves a streaming executor that folds
+DuckDB's own scan chunks in place, so it is fast on fresh data and the first call after a write is as fast as any call; other queries
+get the batch executor (`executor: stream|batch ... : <reason>` is printed; lemma.toml `[product] executor = auto | stream | batch`).
 
 `install.sh` is `uv tool install` of the wheel plus a copy of the DuckDB binaries; by hand that is
 `uv tool install --constraints constraints.txt ./lemma-0.1.0-py3-none-any.whl` and `lemma setup --duckdb-from ./duckdb`.

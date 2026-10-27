@@ -18,7 +18,7 @@ lemma.toml  <  experiment file (configs/experiments/X.toml)  <  environment vari
 * Every container run writes all keys with `value`, `section`, `source` (`file`/`experiment`/`env`/`cli`) and `origin` into the run manifest (`lemma_config`) and the `RESULT` line (`config`), with `git_sha`, `git_dirty` and `git_untracked_files` (a count; untracked files never make `git_dirty` true). A dirty tree (tracked files; untracked and gitignored data do not count) is refused unless `allow_dirty = true`.
 * `container_batch.py` forwards nothing by name. The child reads `lemma.toml` itself; the batch passes only values that differ from the file (`lemma_config.forwarded_env`, plus `LEMMA_CONFIG_ORIGIN` so a flag is still reported as a flag).
 
-## Sections (63 keys)
+## Sections (66 keys)
 
 | Section | Keys |
 | --- | --- |
@@ -29,6 +29,7 @@ lemma.toml  <  experiment file (configs/experiments/X.toml)  <  environment vari
 | `[data]` | `duckdb_path data_profile` |
 | `[sql]` | `agg_times_constant derived_agg_expr cte_reuse left_join_count exact_division templates` (new SQL shapes of the transpiler, default false, verdicts in `research_loop/menus/sql_<feature>_ADVERSARY_VERDICT.md`; except `exact_division`, default **true**: AVG and `/` over exact operands are exact rationals with no float trusted item, a FLOAT/DOUBLE operand is refused, false = the f64 idealization, see `docs/TRUSTED_FAMILIES.md`) |
 | `[engine]` | `in_duckdb` (Lemma inside DuckDB, default off; see the section below) |
+| `[product]` | `executor` (the product CLI's stream/batch choice, default `auto`; research and experiment runs never read it; see "Product executor kind" below) |
 | `[wip]` | `zero_copy cold_stream cold_stream_mode` (parked pin path, default off, see `research_loop/menus/pin_path_archive.md`; nothing here is used by a container run) |
 | `[safety]` | `allow_dirty scope_memory_max egress_profile egress_allowlist heavy_lock heavy_min_avail_mb heavy_mem_max verus_mem_max verus_slots verus_min_avail_mb` |
 
@@ -155,6 +156,28 @@ refuses everything else loudly (joins, DISTINCT, rowid, order-dependent aggregat
 `assumptions = false`, refuses `stateful` and `in_duckdb`, emits no Arc variant and no scan handles, and forces the plain string encoding
 for the stream table. `assemble.assemble_stream_program` builds a binary-mode `main` (column file, random chunk sizes, several threads;
 argv: the template parameters, then optionally `<chunk_max> <threads> <seed>`). Tests: `tests/test_stream.py`.
+
+### Product executor kind (`[product] executor`)
+
+`executor` (`auto` | `stream` | `batch`, default `auto`; `LEMMA_EXECUTOR`). Read only by the product CLI (`lemma optimize`, and
+`lemma generate`, which DuckDB's `lemma('<sql>')` runs); research and experiment runs never read it, there `[run] stream` decides as
+written, so experiments stay replicable. `lemma_cli/executor.py` chooses BEFORE generation from the query shape: it emits the query's
+spec from the SQL and the database's schema with the stream settings, and the stream gate (`declarative_spec/stream.py`, unchanged)
+accepts or refuses it.
+
+* `auto`: a streaming executor (ABI 6) when the gate accepts, else the batch executor (ABI 5, `run_query`) with the gate's refusal as
+  the reason (phase 1: joins, subqueries over another table, DISTINCT, non-aggregates are batch; when the gate learns joins, it decides).
+* `stream`: the gate's refusal is an error; nothing is generated.
+* `batch`: never stream.
+
+Not a fallback: a stream run whose proof fails is a failed run, never retried as batch. `lemma optimize` prints
+`executor: <kind> (ABI <n>; [product] executor = <setting>): <reason>`. A stream run forces `stream = true`, `pushdown = false` and
+`agent_scan = false` for that run (as `configs/experiments/stream_q1_opus.toml`); a batch run has `stream = false` and the user's own
+pushdown / agent_scan. The choice (`kind`, `setting`, `reason`, `abi`) is recorded in the run manifest and the RESULT line as
+`product_executor` (`run_container_agent.py --executor-choice`, which refuses a kind that disagrees with `[run] stream`) and in the
+executor's `optimize.json` as `executor`. `LEMMA_STREAM` set beside it is refused by the CLI. An installed executor of the other kind
+is proved again. `lemma list` shows the kind (from the manifest's `mode`, what the extension dispatches on). Tests:
+`tests/test_lemma_cli.py` (`-k executor or stream`), `tests/test_product_smoke.py` (a stream executor end to end).
 
 ## Partial verification
 
