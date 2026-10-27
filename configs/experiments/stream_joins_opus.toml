@@ -1,0 +1,32 @@
+# Stream joins, 2026-10-26: the first agent runs of the phase-2a join contract (lemma.toml [run] stream, docs/STREAM.md "Phase 2a"):
+# one streamed table, materialized build tables, the Pool runtime; the in-DuckDB execution side (ABI 6 Pool glue, build tables through
+# the ABI 5 input path) exists, so a proved run installs with research_loop/scripts/in_duckdb_install_run.py (the run's
+# stream_choice.json gives the `-- stream:` line).
+# Settings as stream_q1_opus.toml: Opus 5.5, examples = "principles" (the stream contract and the general recipe, the two phase-1 stream
+# examples and the join example on invented tables), data profile, no data assumptions (decline). pushdown = false and agent_scan = false:
+# the stream contract evaluates the WHERE in q_step and has no scan handles. MEASURE: the binary-mode stream main over the exported column
+# files (stream_measure), not yet the in-DuckDB ABI 6 measure.
+#
+# Gate (stream emit with the rule's stream table on the run's database + Verus with the stub agent, 2026-10-26, this commit):
+#   TPC-H Q12 on tpch_sf10: stream orders (15,000,000 rows; lineitem 310,803 after its filters): 51 verified, 0 errors.  -> run below.
+#   SEC q6 (configs/queries/sec_edgar/q6.sql): REFUSED, "a GROUP BY key over a nullable column": p.plabel is nullable on
+#     sec_edgar_dec (1,332 NULLs; p.stmt too, 1,073, though the WHERE fixes it to 'IS').
+#   SEC q4: REFUSED, COUNT(DISTINCT s.cik) needs a set-valued field (phase 2, not built).
+#   No substitute: every GenDB SEC join query is refused (holdout/gendb_sec_edgar/queries_all.sql, the 25 selected: Q2 / Q3 subqueries,
+#   Q4 COUNT DISTINCT, Q24 LEFT JOIN, Q6 Q7 Q8 Q9 Q11 Q12 Q13 Q15 Q18 Q25 a nullable GROUP BY key). SEC runs need a gate change first
+#   (a nullable GROUP BY key in the stream contract, or COUNT DISTINCT as a set field); they are added here once one passes.
+# Run from main after the merge (clean tree, pinned SHA):
+#   uv run python research_loop/scripts/container_batch.py --experiment configs/experiments/stream_joins_opus.toml
+[settings]
+assumptions = false
+examples = "principles"
+data_profile = "stats"
+templates = true
+stream = true
+pushdown = false
+agent_scan = false
+
+[[run]]
+model = "claude-opus-5-5"
+query = "configs/queries/tpch/tpch_q12.sql"
+duckdb_path = "research_loop/generated/tpch_sf10.duckdb"

@@ -294,7 +294,7 @@ Gate (`stream_join.check_sql`, then the spec reader): refused loudly are outer /
 USING, subqueries (IN / EXISTS / scalar / derived tables), CTEs, set operations, self joins, a join without an ON equality, MIN / MAX
 over a join, and (as in phase 1) DISTINCT, rowid, order-dependent aggregates, a nullable GROUP BY key, floats, VARCHAR template
 parameters, map results. NULL join keys follow the emitter's rule (`<col> IS NOT NULL` in the WHERE). Cells: phase 1's types plus
-`i128` (DECIMAL(38, s), DuckDB HUGEINT; binary mode only, the ABI 6 glue does not hand 16-byte cells yet).
+`i128` (DECIMAL(38, s), DuckDB HUGEINT; in binary mode and, since the execution side below, in the ABI 6 glue: chunk cells and build inputs).
 
 What is emitted (`to_stream_join`, replacing `run_query` after the decline wrap; everything else in the spec unchanged). Variable names:
 the stream table is `t`, a build table `<b>` is `b_<b>` (a bare table name such as `sub` can clash with a glob-imported vstd function):
@@ -343,7 +343,7 @@ column file as `run_query`'s main reads it (the `valid_cols` checks) and loaded 
 before each timed run (not timed: a copy of the columns); the timed run is `pool_open` (q_build), `threads` workers stepping their own
 slot from one atomic chunk counter, `pool_finish`. Prints `STREAM_BUILD_US` (median of `pool_open`) besides phase 1's lines.
 
-For the extension agent (ABI 6 with builds; not wired yet, `assemble_stream_library_program` still refuses a join spec):
+For the extension (ABI 6 with builds; built, see "Phase 2a, execution side" below):
 `lemma_stream_open(build, nbuild, params, ..)` must hand every build table's columns in `Cols_<b>` order of the spec (the ABI 5 input
 layout of `lemma_input_layout`, one `LemmaCol` per field), build tables in `q_build`'s parameter order; the template loads each with `load_cols_<b>` (its `requires` checked by asserts as in ABI 5; `pool_open` re-checks lengths) and
 calls `pool_open(Stream_t { id, raw: end }, b_.., p, nslots)` with `nslots` = the number of scan workers it will start (a worker is a
@@ -363,3 +363,46 @@ entry memo for a streamed string key). Example `stream/join_group_build_key.rs` 
 
 Gate checks (Verus, a stub agent, `tests/test_stream_join.py`): the invented join, TPC-H Q12 streaming orders and streaming lineitem,
 SEC q3 without its HAVING subquery (subqueries are refused) all `N verified, 0 errors`.
+
+## Phase 2a, execution side: stream joins in DuckDB (built 2026-10-26)
+
+Library (`assemble_library._assemble_stream_join_library`, C side `lemma_abi.h` "ABI 6 for a join"): the verified part of the binary-mode
+join program (spec, seven regions, host lemmas, the verified build loaders `load_cols_<b>`), then a fixed Pool glue. Phase 1's head is
+shared; ten `unsafe` blocks again (`// UNSAFE n/10`: C arrays, parameter / build bytes, `out` write / free, stream / worker / chunk
+handles, the S2 `StreamEnd` write, close); no `impl` outside `verus!`; the glue calls only `pool_open` / `pool_step` / `pool_finish`. No
+trusted item. Three more entry points (join libraries only):
+```c
+const char  *lemma_stream_builds(void);   // the build tables' Cols suffixes, q_build's order (checked against the manifest)
+LemmaStream *lemma_stream_open_pool(const LemmaCol *build, uint64_t nbuild, const LemmaParam *params, uint64_t nparams,
+                                    uint64_t nslots, LemmaOut *err);   // per build table: rows entry + fields (ABI 5 inputs)
+int32_t      lemma_stream_ready(const LemmaStream *s, LemmaOut *msg); // pool_open: 0 Ready, 1 Declined (q_build None), 2 Error
+```
+`lemma_stream_open` of a join library refuses (no slot count). `open_pool` copies the build columns into `Vec`s (`lemma_fixed` /
+`lemma_strings`, lengths checked; nothing of the caller's is taken or kept), loads them with `load_cols_<b>` and calls `pool_open` with
+`nslots` = the scan threads. A worker is a slot index (handed out once each); `lemma_stream_step` = `pool_step`; `lemma_stream_merge`
+only checks both workers belong to one stream and drops `from` (the merge is inside `pool_finish`); `lemma_stream_finish` sets
+`StreamEnd`, takes the Pool (once) and calls `pool_finish`. The Pool sits in a `std::sync::RwLock<Option<Pool>>` (steps read, the finish
+takes it); a compile-time check requires `Pool: Send + Sync`. A panic inside a step (the agent's `q_step` under its slot's write lock)
+marks the stream broken: every later step and the finish answer ERROR and `pool_finish` is never called (it would wait for that lock);
+closing the stream drops the Pool without blocking (vstd's `RwLock` has no `Drop`; the held slot's state leaks). LMR1 `load_us` = build
+decode + `pool_open`.
+
+Extension (`StreamRun`): manifest `stream.table` / `stream.builds` (Cols suffixes) and per input its `suffix`. Before the stream starts,
+the build tables are materialized through the ABI 5 input path (`PrepareInputs` with the call's template literals, `ScanPrepared` on just
+those tables: the caller's transaction, MVCC and its own uncommitted rows, each build table's own pushed single-table predicate, the
+column-file encoding; a stream library has no `lemma_alloc_input`, so fixed-width cells go to extension byte buffers), handed to
+`lemma_stream_open_pool` in `lemma_stream_builds` order; a Declined open answers DECLINED (or a labelled DuckDB answer with
+`lemma_route_unproved`), an Error open is an ERROR. Then the streamed table is scanned exactly as in phase 1 (never filtered).
+`lemma_last_query()` gains `build_us` (materialization + `pool_open`; -1 without builds). i128 chunk cells are handed in place only where
+DuckDB's buffer is 16-aligned (a FLAT vector can point into a storage block), else decoded into the 16-aligned worker buffer.
+`lemma_list()`: `kind` is `stream` / `batch` (as `lemma list`), the former query / template column is `form`.
+
+Install (`in_duckdb.install_executor`): the SQL carries the run's `-- stream: <table>` line (`in_duckdb_install_run` adds the recorded
+`<run dir>/stream_choice.json` choice; no record: refused); the executor key, manifest SQL and the library's `lemma_query_sql` are the
+query WITHOUT that line (what a caller sends); the build tables' rows entries get their pushed predicate (`where`) whatever lemma.toml
+`pushdown` says (sound for a build input: the spec re-applies the WHERE to every pair); the streamed table gets none.
+
+Tests (`tests/test_in_duckdb_stream_join.py`): the join fixture installed and run against DuckDB: duplicate and NULL build keys, no
+match, empty tables, a build side its predicate mostly filters, deletes / updates / uncommitted rows on both tables in the caller's
+transaction (another connection's invisible), threads 1 / 3 / 8 on 2048-row row groups, i128 cells in the chunks and in the build input,
+a declining `q_build`, the scheduling faults, and a panic in `q_step` (ERROR within the deadline, no hang).
