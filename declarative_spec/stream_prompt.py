@@ -23,8 +23,13 @@ def _contract_text(spec_text: str) -> str:
     """The four contracts as the spec states them (signature, requires, ensures; bodies are the agent's regions)."""
     from declarative_spec import stream
 
+    from declarative_spec import stream_join
+
     out = []
-    for name, (start, _end) in stream.BODY_REGIONS.items():
+    regions = dict(stream.BODY_REGIONS)
+    if stream_join.is_join(spec_text):
+        regions = {"build": (stream_join.BUILD_START, stream_join.BUILD_END), **regions}
+    for name, (start, _end) in regions.items():
         m = re.search(rf"pub fn q_{name}\(.*?\n\{{\n{re.escape(start)}", spec_text, re.DOTALL)
         if m is None:
             raise ValueError(f"stream spec without the q_{name} contract")
@@ -233,6 +238,17 @@ def _timing_section() -> list[str]:
     ]
 
 
+def _join_timing_section() -> list[str]:
+    lines = _timing_section()
+    i = lines.index("The reported time does not include reading the file. The later in-DuckDB measure (DuckDB's own parallel scan handing its")
+    return [
+        *lines[:i],
+        "In a join the build tables are read from their column files and loaded before each timed run (not timed); the timed run starts",
+        "with `q_build` (once, on one thread: it is part of the query's time, reported alone as `STREAM_BUILD_US`) and `q_init` per worker.",
+        *lines[i:],
+    ]
+
+
 def _timed_runs() -> int:
     from declarative_spec.assemble import TIMED_RUNS
 
@@ -329,6 +345,180 @@ def _helper_example() -> list[str]:
     ]
 
 
+# ---- a join (phase 2a, declarative_spec/stream_join.py): one streamed table, materialized build tables -------------------------------
+
+
+def _join_names(spec_text: str) -> list[str]:
+    m = re.search(r"pub fn q_build\((.*?), p: &Params\) -> ", spec_text)
+    if m is None:
+        raise ValueError("join stream spec without q_build")
+    return [part.split(":")[0].strip() for part in m.group(1).split(", ")]
+
+
+def _join_regions_and_rules(root: str, n: dict[str, str], builds: list[str]) -> list[str]:
+    bp = ", ".join(f"{b}: &Cols_{b}" for b in builds)
+    lines = _regions_and_rules(root, n)
+    out: list[str] = []
+    for ln in lines:
+        if ln == "- Six regions are kept, everything else in the file is discarded:":
+            out.append("- Seven regions are kept, everything else in the file is discarded:")
+        elif ln.startswith("  - `// AGENT_STATE_START`"):
+            out += [
+                "  - `// AGENT_STATE_START` .. `// AGENT_STATE_END`: `pub struct QAcc { .. }` (a worker's state), `pub struct QBuild { .. }`",
+                "    (what `q_build` makes once per stream from the build tables, read-only afterwards, shared by every worker) and any further",
+                "    `struct` / `enum` they use. No",
+            ]
+        elif ln.startswith("    `spec fn qacc_inv(s: &QAcc) -> bool`"):
+            out += [
+                f"    `spec fn qbuild_inv(bld: &QBuild, {bp}, p: &Params) -> bool` (what your build structure says about the build tables),",
+                "    `spec fn qacc_inv(s: &QAcc, bld: &QBuild) -> bool` (your state invariant) and `spec fn st_val(s: &QAcc, bld: &QBuild, k: Key)",
+                "    -> Agg` (the value of group `k` that the state stands for; it may read the build, e.g. a group slot the build numbered).",
+            ]
+        elif ln.startswith("    `k` that the state stands for). A helper may not reuse"):
+            out.append("    A helper may not reuse a name the host spec defines.")
+        elif ln.startswith("  - the bodies of `q_init`, `q_step`, `q_merge` and `q_finish` between"):
+            out += [
+                "  - the bodies of `q_build`, `q_init`, `q_step`, `q_merge` and `q_finish` between `// AGENT_BUILD_START` / `_END`,",
+                "    `// AGENT_INIT_START` / `_END`, `// AGENT_STEP_START` / `_END`, `// AGENT_MERGE_START` / `_END` and `// AGENT_FINISH_START` /",
+            ]
+        elif ln.startswith("    `_END`, `// AGENT_MERGE_START` / `_END` and `// AGENT_FINISH_START` / `_END`."):
+            out.append("    `_END`. A nested `proof fn` or `spec fn` inside a body does not work: helpers go in the helper region.")
+        elif ln.startswith("    does not work: helpers go in the helper region."):
+            continue
+        elif ln.startswith("- No region may name the host runtime or the glue:"):
+            out.append("- No region may name the host runtime or the glue: `Pool`, `PoolOpen`, `Slot`, `SlotPred`, `pool_*`, `cols_ok_*`,")
+            out.append("  `load_cols_*`, `Exec`, `exec_*`, `StreamOut`, `Stream_*`, `RawChunk_*`, `StreamEnd_*`,")
+        else:
+            out.append(ln)
+    return out
+
+
+def _join_contract_section(spec_text: str, n: dict[str, str], builds: list[str]) -> list[str]:
+    ts, cols, key = n["ts"], n["cols"], n["key"]
+    fields = _agg_fields(spec_text)
+    chunk = _chunk_fields(spec_text, ts)
+    params = _params(spec_text)
+    strings = [f.split(":")[0] for f in chunk if f.endswith("StrCol<'a>")]
+    nullable = [f.split(":")[0] for f in chunk if f.split(":")[0].endswith("__valid")]
+    ba = ", ".join(builds)
+    bl = ", ".join(f"`{b}: &Cols_{b}`" for b in builds)
+    return [
+        "## Streaming contract of a join (this spec has no `run_query`)",
+        "",
+        f"The query joins the STREAMED table `{ts}` with the BUILD table{'s' if len(builds) > 1 else ''} {bl}. The build tables are",
+        "loaded column structs you can index (`valid_cols_..` holds of each); the stream table is not. A ghost table",
+        f"`T = stream_table_{ts}(id)` stands for the rows the scan of `{ts}` returns (each row once). The scan hands the rows out in",
+        "CHUNKS of consecutive rows `[c.off, c.off + c.len)` (at most 2048 rows each), to several worker threads at once, in any order.",
+        "`q_build` runs ONCE per stream on the build tables and makes your `QBuild` (a hash or dense table of the build rows: whatever",
+        "`q_step` needs to find a stream row's matches); every worker reads that same `QBuild`. Each worker owns one state: `q_init` makes",
+        "it, `q_step` folds one chunk into it, `q_merge` combines two workers' states, and `q_finish` answers from the state of all chunks.",
+        "The host runtime around them (`Pool`, fixed and proved: it holds the build tables, the `QBuild` and one locked slot per worker)",
+        "checks at run time that the stepped chunks tile `[0, n)` exactly; you never see the scheduling.",
+        "",
+        "What you prove is that your state stands for a value of the query's aggregate MONOID, per group: `st_val(s, bld, k)` is an",
+        f"`Agg` (spec-only, mathematical `int` fields; `Key` is `{key}`):",
+        "",
+        "```rust",
+        "pub struct Agg { " + ", ".join(fields) + " }",
+        "```",
+        "",
+        "one field per fold the spec's result uses (a SUM, a COUNT, the sum and the count of an AVG), `hits` = the PAIRS (stream row,",
+        "build row) of group `k` that pass the WHERE and the ON, and `n_hit_*` = per nullable aggregate, the pairs whose cell is summed.",
+        "The host defines and proves (call by bare name; nothing here is trusted):",
+        "",
+        f"- `agg_zero()`, `agg_plus(a, b)` (fieldwise `+`), `agg_row(t, {ba}, i0, k, p)` (stream row `i0`'s contribution to group `k`: the",
+        "  spec's own INNER fold over the build rows at row `i0`, e.g. `agg_row(..).sum_x == sum_x_d1(t, .., i0, 0, k)`, and",
+        f"  `hits == stream_hits_d1(t, .., i0, 0, k, p)`; zero outside the table), `agg_rng(t, {ba}, lo, hi, k, p)` (the fold of",
+        f"  `agg_row` over stream rows `[lo, hi)`; `t: &{cols}`). Each inner fold is a suffix fold over the build rows",
+        "  (`X_d1(.., i0, i1, k) == term(i0, i1) + X_d1(.., i0, i1 + 1, k)` for `0 <= i1 < n`, 0 at `i1 >= n`): read them in the spec.",
+        f"- `lemma_agg_empty(t, {ba}, lo, k, p)`, `lemma_agg_step(t, {ba}, lo, hi, k, p)` (a range grows by one stream row at its end),",
+        f"  `lemma_agg_laws()` (identity, associativity, commutativity of `agg_plus`), `lemma_agg_total(t, {ba}, k, p)` (the range",
+        "  `[0, t.n)` equals the spec's own folds field by field, and `hits > 0 <==>` some pair of rows of group `k` passes the WHERE and",
+        "  the ON: what `q_finish` needs for `run_query_ok`).",
+        "- From the generic library (pasted in the spec): `fold_by`, `sum_by` and their lemmas, `monoid_laws`, `comm_laws`.",
+        "",
+        "The contracts you implement (verbatim from the spec):",
+        "",
+        "```rust",
+        _contract_text(spec_text),
+        "```",
+        "",
+        f"What the chunk view `c: &Chunk_{ts}` gives you (the host's trusted item S1, stated as `chunk_ok_{ts}(c)`; read it in the spec). With",
+        f"`T = stream_table_{ts}(c.sid)`: `c.off + c.len <= T.n`, and for every row `0 <= r < c.len`:",
+        "",
+        "- a fixed-width column `x`: `c.x@.len() == c.len` and `c.x@[r] == T.x@[c.off + r]`;",
+        *(["- a nullable column `x` has `c.x__valid` beside it: `c.x__valid@[r] == T.x__valid@[c.off + r]` always, and the value",
+           "  `c.x@[r] == T.x@[c.off + r]` only where the cell is valid."] if nullable else []),
+        *(["- a VARCHAR column `g` is a `StrCol`: `c.g.sel@.len() == c.len`, every `c.g.sel@[r] < c.g.ents@.len()`, and",
+           "  `c.g.ents@[c.g.sel@[r] as int] == T.g@[c.off + r]@`; read an entry with `str_ent(&c.g, j)` (requires `j < c.g.ents@.len()`,",
+           "  ensures `s@ == c.g.ents@[j as int]`). Several rows may share an entry or each row has its own: never assume either.",
+           "  `c.g.dict_id` is plain data (nothing is promised about it): a memo that survives the chunk cannot be proved."] if strings else []),
+        "",
+        "A build table promises nothing beyond `valid_cols_..` and its own cells: a join key may repeat (several build rows match one",
+        "stream row: each pair counts), may be NULL (if the spec carries `__valid` for it), and a stream row may match nothing. There is no",
+        "uniqueness assumption: handle duplicates (a list or chain of all matching build rows per key) or decline when you meet one.",
+        "",
+        "Every value is exact (`int` in the spec); there are no data assumptions. An exec addition or product that could overflow must be",
+        "checked (`checked_add` / `checked_mul`, decline on `None`) or proved in range from a run-time check you made.",
+        "",
+        "Declining: `q_build` returning `None`, `q_step` returning `false`, `q_merge` or `q_finish` returning `None` declines the query",
+        "(never a wrong answer). A run that declines on the measured data is reported as DECLINED and counts as a failed query.",
+        "",
+        "The proof shape that works: `qbuild_inv` states what your build structure means in terms of the build table's cells (for every",
+        "key: which build rows carry it), proved by a loop in `q_build`. In `q_step` a forward loop over the chunk's rows with the invariant",
+        "`forall|k: Key| #[trigger] st_val(s, bld, k) == agg_plus(st_val(&s0, bld, k), agg_rng(&T, .., c.off as int, c.off + r, k, p))`, and",
+        "per row: walk the row's matches and show that what you added is `agg_row(&T, .., c.off + r, k, p)` (the inner folds unfolded",
+        "over the build rows: a lemma of yours that skips the build rows that do not match, by induction over the inner fold), then",
+        "`lemma_agg_step`. `q_merge` adds two states group by group; `q_finish` calls `lemma_agg_total` per group.",
+        "",
+        *(["This query is a template: its parameters are the fields of `p: &Params` (" + ", ".join(f"`{x}`" for x in params) + "); the proof",
+           "holds for every value of their types.",
+           ""] if params else []),
+    ]
+
+
+def _join_probe_section() -> list[str]:
+    return [
+        "## Probe structures (a join)",
+        "",
+        "- `q_build` runs once per stream and is timed with the query: a linear pass over the build tables is what to aim for. Build a",
+        "  structure that maps a join key to ALL build rows carrying it: a hash map (`StringHashMap` / `HashMapWithView`) from the key to",
+        "  the first row of a chain of `next` row indices (one `Vec<usize>` over the build rows: the next row with the same key, or `n`),",
+        "  built in one pass from the last row to the first; or, for an integer key, a DENSE table over the key's range `[min, max]`",
+        "  measured at run time in `q_build` (one slot per key value: the first row of its chain), declining when the range is too wide",
+        "  for memory. A dense table is an array read per probe; a hash map costs a hash per probe.",
+        "- Precompute in `q_build` what every match needs: the group slot of each build row (number the groups once), the build-side",
+        "  values the aggregate reads. Then a probe adds into dense per-slot accumulators.",
+        "- A string join key on the STREAMED side: per chunk, map each ENTRY of the key column to its matches once (a memo of length",
+        "  `1 + max sel[r]` holding the chain head per entry, or `n` for no match), then per row an array read. Same for a string key",
+        "  that is only used to filter.",
+        "- Rows of the stream table that match nothing contribute nothing: test the cheapest condition first, and skip the walk.",
+        "",
+    ]
+
+
+def _join_helper_example() -> list[str]:
+    return [
+        "## Region example (the shape of a file; names are placeholders)",
+        "",
+        "```rust",
+        "// AGENT_STATE_START",
+        "pub struct QAcc { pub cnt: Vec<u64> }",
+        "pub struct QBuild { pub head: StringHashMap<usize>, pub next: Vec<usize> }",
+        "// AGENT_STATE_END",
+        "// AGENT_HELPERS_START",
+        "pub open spec fn qbuild_inv(bld: &QBuild, .., p: &Params) -> bool { .. }",
+        "pub open spec fn qacc_inv(s: &QAcc, bld: &QBuild) -> bool { .. }",
+        "pub open spec fn st_val(s: &QAcc, bld: &QBuild, k: Key) -> Agg { .. }",
+        "// AGENT_HELPERS_END",
+        "// AGENT_BUILD_START",
+        "    .. Some(QBuild { head, next })",
+        "// AGENT_BUILD_END",
+        "```",
+        "",
+    ]
+
+
 def build_stream_prompt(
     *,
     sql: str,
@@ -372,33 +562,51 @@ def build_stream_prompt(
         if ln not in outline
     ]
     P = principles
+    from declarative_spec import stream_join
+
+    join = stream_join.is_join(spec_text)
+    builds = _join_names(spec_text) if join else []
+    examples = [
+        "## Worked examples",
+        "",
+        f"`{root}/examples/INDEX.md` lists verified stream programs (all six regions) on a small invented table `t`: an ungrouped",
+        "SUM with a filter and a nullable column, and a GROUP BY a string key with COUNT and SUM (a key -> slot `StringHashMap` with",
+        "its key list, merge slot by slot, finish with `lemma_agg_total`). They are proof templates, not speed templates (their",
+        "`q_step` looks the key up per row): see the speed section for the hot loop.",
+        "",
+    ]
+    if join:
+        examples[2:6] = [
+            f"`{root}/examples/INDEX.md` lists verified stream programs on small invented tables `t` (streamed) and `u` (built), among",
+            "them a join: a GROUP BY a build-side string key with COUNT and SUM over `t JOIN u ON` a string key with duplicates and NULLs",
+            "(`q_build`: a key -> first-row `StringHashMap` with a `next` chain over the build rows and a group slot per build row;",
+            "`q_step` walks a row's chain; a lemma skips the build rows between two matches). They are proof templates, not speed",
+            "templates: see the speed and probe sections for the hot loop.",
+        ]
     parts: list[tuple[str, list[str]]] = [
-        (P.TASK, ["# Declarative streaming executor (q_init / q_step / q_merge / q_finish)", ""]),
-        (P.TOOLS, head),
+        (P.TASK, [
+            "# Declarative streaming executor of a join (q_build / q_init / q_step / q_merge / q_finish)" if join
+            else "# Declarative streaming executor (q_init / q_step / q_merge / q_finish)",
+            "",
+        ]),
+        (P.TOOLS, [ln.replace("six empty agent regions", "seven empty agent regions") for ln in head] if join else head),
         (P.EXAMPLE_POINTER, pointer),
         (P.TOOLS, tools),
         (P.TASK, _speed_target_section(lemma_config.get("speed_target"))),
-        (P.RULES, _regions_and_rules(root, n)),
+        (P.RULES, _join_regions_and_rules(root, n, builds) if join else _regions_and_rules(root, n)),
         (P.TASK, ["## SQL", "", "```sql", sql.strip(), "```", ""]),
-        (P.RULES, _contract_section(spec_text, n)),
-        (P.LIMITS, _timing_section()),
+        (P.RULES, _join_contract_section(spec_text, n, builds) if join else _contract_section(spec_text, n)),
+        (P.LIMITS, _join_timing_section() if join else _timing_section()),
         (P.HARDWARE, _hardware_facts()),
-        (P.EXAMPLE_POINTER, [
-            "## Worked examples",
-            "",
-            f"`{root}/examples/INDEX.md` lists verified stream programs (all six regions) on a small invented table `t`: an ungrouped",
-            "SUM with a filter and a nullable column, and a GROUP BY a string key with COUNT and SUM (a key -> slot `StringHashMap` with",
-            "its key list, merge slot by slot, finish with `lemma_agg_total`). They are proof templates, not speed templates (their",
-            "`q_step` looks the key up per row): see the speed section for the hot loop.",
-            "",
-        ]),
+        (P.EXAMPLE_POINTER, examples),
         (P.RECIPE, _speed_section()),
+        *([(P.RECIPE, _join_probe_section())] if join else []),
         (P.RULES, _exact_rational_section(spec_text)),
         (P.RECIPE, group_close),
         (P.LIMITS, _data_profile_section(root)),
         (P.RULES, _do_not_section()),
         (P.RULES, [_hygiene_section_text()]),
-        (P.RULES, _helper_example()),
+        (P.RULES, _join_helper_example() if join else _helper_example()),
         (P.TOOLS, ["## Lemma index", "", lemma_index.replace("Write the `run_query` edit before", "Write your regions before").rstrip()]),
     ]
     sections: list[str] = []

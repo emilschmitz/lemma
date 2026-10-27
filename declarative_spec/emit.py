@@ -479,7 +479,16 @@ def emit_declarative_spec(
         stream.check_sql(sql)
     decline.check_catalog(catalog)
     template = templates.parse_template(sql)
-    if template is not None:
+    if stream.enabled():
+        from declarative_spec import stream_join
+
+        # a join streams the table its `-- stream: <table>` line names (stream_join.choose_stream_table); _emit_fixed puts it outermost
+        with stream_join.emitting(sql):
+            if template is not None:
+                spec = templates.emit_template(template, schema, catalog, _emit_fixed)
+            else:
+                spec = with_sql_comment(_emit_fixed(sql, schema, catalog), sql)
+    elif template is not None:
         spec = templates.emit_template(template, schema, catalog, _emit_fixed)
     else:
         spec = with_sql_comment(_emit_fixed(sql, schema, catalog), sql)
@@ -506,6 +515,12 @@ def _emit_fixed(
     from declarative_spec.parse_query import rewrite_comma_joins
 
     sql = rewrite_comma_joins(sql, schema)
+    from declarative_spec import stream
+
+    if stream.enabled():
+        from declarative_spec import stream_join
+
+        sql = stream_join.outermost_for_emit(sql, schema)  # the stream table outermost (inner joins commute); one table: unchanged
     sql = _flatten_group_derived_sql(sql)
     sql = _null_rewrite_sql(sql, schema, catalog)
     integer_sql, scales = rewrite_numeric(sql, schema, catalog)

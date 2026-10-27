@@ -401,27 +401,59 @@ def _stream_internals(cleaned: str) -> list[str]:
     return [f"stream internals: {m.group(0).strip()}" for m in _STREAM_INTERNALS.finditer(cleaned)]
 
 
-def admit_stream(*, state: str, helpers: str, init: str, step: str, merge: str, finish: str, spec_rs: str) -> AdmitResult:
-    """The six agent regions of a stream spec. State: `struct` / `enum` items, `QAcc` among them; bodies: the `run_query` body rules;
-    helpers: the helper rules, and they must define `spec fn qacc_inv` and `spec fn st_val`. No region may add trusted items
-    (external_body / assume / admit are rejected by the shared rules) or touch the runtime, the glue or S1/S2 (`_STREAM_INTERNALS`)."""
+# A join stream spec (phase 2a, declarative_spec/stream_join.py) adds the host runtime Pool (one locked slot per worker) and the run-time
+# check of the build tables; no agent region may use them either.
+_STREAM_JOIN_INTERNALS = re.compile(r"\b(?:Pool|PoolOpen|Slot|SlotPred|pool_open|pool_step|pool_finish|cols_ok_\w+|load_cols_\w+)\b")
+
+
+def admit_stream(
+    *, state: str, helpers: str, init: str, step: str, merge: str, finish: str, spec_rs: str, build: str | None = None
+) -> AdmitResult:
+    """The six agent regions of a stream spec (seven for a join: also `build`, the body of `q_build`). State: `struct` / `enum` items,
+    `QAcc` among them (and `QBuild` for a join); bodies: the `run_query` body rules; helpers: the helper rules, and they must define
+    `spec fn qacc_inv` and `spec fn st_val` (and `spec fn qbuild_inv` for a join). No region may add trusted items (external_body /
+    assume / admit are rejected by the shared rules) or touch the runtime, the glue or S1/S2 (`_STREAM_INTERNALS`)."""
+    from declarative_spec import stream_join
+
+    join = stream_join.is_join(spec_rs)
+    if join and build is None:
+        return AdmitResult(ok=False, violations=["a join stream spec needs the AGENT_BUILD region (the body of q_build)"])
+    if not join and build is not None:
+        return AdmitResult(ok=False, violations=["an AGENT_BUILD region is for a join stream spec only"])
     violations = list(admit_state(state, spec_rs).violations)
     violations = [v.replace("(the agent part of QState)", "(the stream state)") for v in violations]
-    for name, body in (("init", init), ("step", step), ("merge", merge), ("finish", finish)):
+    bodies = (("init", init), ("step", step), ("merge", merge), ("finish", finish)) + ((("build", build),) if join else ())
+    for name, body in bodies:
         violations += [f"{name}: {v}" for v in admit_declarative_body(body).violations]
     violations += admit_helpers(helpers, spec_rs).violations
-    for name, text in (("state", state), ("helpers", helpers), ("init", init), ("step", step), ("merge", merge), ("finish", finish)):
+    for name, text in (("state", state), ("helpers", helpers), *bodies):
         try:
             cleaned = _strip_comments_and_strings(text)
         except ValueError:
             continue  # reported above
         violations += [f"{name}: {v}" for v in _stream_internals(cleaned)]
+        if join:
+            violations += [f"{name}: stream internals: {m.group(0)}" for m in _STREAM_JOIN_INTERNALS.finditer(cleaned)]
         if name == "state" and re.search(r"&|'[A-Za-z_]", cleaned):
             violations.append("state: QAcc and its types hold no references or lifetimes")
     try:
         h = _strip_comments_and_strings(helpers)
     except ValueError:
         h = ""
+    if join:
+        try:
+            s = _strip_comments_and_strings(state)
+        except ValueError:
+            s = ""
+        if not re.search(r"\bstruct\s+QBuild\b", s):
+            violations.append("state region must define `pub struct QBuild` (made once per stream by q_build)")
+        if not re.search(r"\bspec\s+fn\s+qbuild_inv\s*\(", h):
+            violations.append("helper region must define `spec fn qbuild_inv(bld: &QBuild, <build tables>, p: &Params) -> bool`")
+        if not re.search(r"\bspec\s+fn\s+qacc_inv\s*\(", h):
+            violations.append("helper region must define `spec fn qacc_inv(s: &QAcc, bld: &QBuild) -> bool` (the state invariant)")
+        if not re.search(r"\bspec\s+fn\s+st_val\s*\(", h):
+            violations.append("helper region must define `spec fn st_val(s: &QAcc, bld: &QBuild, k: Key) -> Agg` (the value a state stands for)")
+        return AdmitResult(ok=len(violations) == 0, violations=list(dict.fromkeys(violations)))
     if not re.search(r"\bspec\s+fn\s+qacc_inv\s*\(", h):
         violations.append("helper region must define `spec fn qacc_inv(s: &QAcc) -> bool` (the state invariant)")
     if not re.search(r"\bspec\s+fn\s+st_val\s*\(", h):

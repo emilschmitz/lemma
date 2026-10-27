@@ -167,6 +167,9 @@ def check_sql(sql: str) -> None:
     for fn in ("first", "last", "any_value", "arg_min", "arg_max", "string_agg", "list", "array_agg", "group_concat"):
         if re.search(rf"\b{fn}\s*\(", low):
             raise _refuse(f"{fn}(): an order-dependent aggregate has no stream contract")
+    from declarative_spec import stream_join
+
+    stream_join.check_sql(sql)  # phase 2a: inner equi-joins only, no subquery, no CTE, no self join
 
 
 def read_shape(spec: str) -> Shape:
@@ -1095,6 +1098,10 @@ pub fn exec_finish(e: Exec) -> (r: StreamOut)
 def to_stream(spec: str) -> str:
     """Replace run_query of an emitted (assumptions = false) spec by the stream contract; refuse every other shape loudly."""
     check_settings()
+    if len(re.findall(r"pub struct Cols_\w+ \{\n", spec)) > 1:
+        from declarative_spec import stream_join
+
+        return stream_join.to_stream_join(spec)  # phase 2a: one streamed table, the others materialized build tables
     shape = read_shape(spec)
     m = _RUN_QUERY.search(spec)
     assert m is not None
@@ -1115,4 +1122,8 @@ def extract_regions(source: str) -> dict[str, str]:
            "helpers": _required(source, HELPERS_START, HELPERS_END, "AGENT_HELPERS")}
     for name, (start, end) in BODY_REGIONS.items():
         out[name] = _required(source, start, end, f"AGENT_{name.upper()}")
+    from declarative_spec import stream_join
+
+    if stream_join.BUILD_START in source:  # a join (phase 2a): the body of q_build as well
+        out["build"] = _required(source, stream_join.BUILD_START, stream_join.BUILD_END, "AGENT_BUILD")
     return out
