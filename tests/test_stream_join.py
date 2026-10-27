@@ -306,7 +306,7 @@ def test_join_prompt_states_the_build_contract(examples: str, stream_on: None, m
 
 @pytest.mark.parametrize(
     "case",
-    ["invented", "tpch_q12_stream_orders", "tpch_q12_stream_lineitem", "sec_q3_without_having"],
+    ["invented", "invented_two_builds", "tpch_q12_stream_orders", "tpch_q12_stream_lineitem", "sec_q3_without_having"],
 )
 def test_join_host_scaffold_verifies_with_a_stub_agent(case: str, stream_on: None, tmp_path: Path) -> None:
     """AGENTS.md "Host scaffold": every host item (agg lemmas, chunk view, Pool runtime) is proved with q_build None, q_step false,
@@ -315,6 +315,12 @@ def test_join_host_scaffold_verifies_with_a_stub_agent(case: str, stream_on: Non
     _needs_verus()
     spec = {
         "invented": lambda: _emit_j(),
+        # two build tables: the inner fold nests (stream_hits_d1 over u, stream_hits_d2 over v)
+        "invented_two_builds": lambda: emit_declarative_spec(
+            "-- stream: t\nSELECT v.h, COUNT(*) AS c, SUM(t.m) AS sm FROM t JOIN u ON t.k = u.k JOIN v ON u.g = v.g GROUP BY v.h",
+            {**J_SCHEMA, "v": {"g": "varchar", "h": "integer"}},
+            structural_catalog(set()),
+        ),
         "tpch_q12_stream_orders": lambda: emit_declarative_spec(stream_join.with_header(Q12, "orders"), TPCH_SCHEMA, None),
         "tpch_q12_stream_lineitem": lambda: emit_declarative_spec(stream_join.with_header(Q12, "lineitem"), TPCH_SCHEMA, None),
         "sec_q3_without_having": lambda: emit_declarative_spec(stream_join.with_header(SEC_Q3, "num"), SEC_SCHEMA, SEC_CATALOG),
