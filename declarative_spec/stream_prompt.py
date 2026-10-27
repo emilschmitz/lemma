@@ -352,11 +352,11 @@ def _join_names(spec_text: str) -> list[str]:
     m = re.search(r"pub fn q_build\((.*?), p: &Params\) -> ", spec_text)
     if m is None:
         raise ValueError("join stream spec without q_build")
-    return [part.split(":")[0].strip() for part in m.group(1).split(", ")]
+    return [part.strip() for part in m.group(1).split(", ")]  # `b_<suffix>: &Cols_<suffix>`
 
 
 def _join_regions_and_rules(root: str, n: dict[str, str], builds: list[str]) -> list[str]:
-    bp = ", ".join(f"{b}: &Cols_{b}" for b in builds)
+    bp = ", ".join(builds)
     lines = _regions_and_rules(root, n)
     out: list[str] = []
     for ln in lines:
@@ -400,8 +400,8 @@ def _join_contract_section(spec_text: str, n: dict[str, str], builds: list[str])
     params = _params(spec_text)
     strings = [f.split(":")[0] for f in chunk if f.endswith("StrCol<'a>")]
     nullable = [f.split(":")[0] for f in chunk if f.split(":")[0].endswith("__valid")]
-    ba = ", ".join(builds)
-    bl = ", ".join(f"`{b}: &Cols_{b}`" for b in builds)
+    ba = ", ".join(b.split(":")[0] for b in builds)
+    bl = ", ".join(f"`{b}`" for b in builds)
     return [
         "## Streaming contract of a join (this spec has no `run_query`)",
         "",

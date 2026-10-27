@@ -184,31 +184,31 @@ pub proof fn lemma_added(s0: &QAcc, s: &QAcc, bld: &QBuild, t: &Cols_t, u: &Cols
 }
 // AGENT_HELPERS_END
 // AGENT_BUILD_START
-    let n = u.n;
-    // the groups: one slot per distinct u.g, and every build row's slot
+    let n = b_u.n;
+    // the groups: one slot per distinct b_u.g, and every build row's slot
     let mut gidx: StringHashMap<usize> = StringHashMap::new();
     let mut gkeys: Vec<String> = Vec::new();
     let mut gslot: Vec<usize> = Vec::new();
     let mut i: usize = 0;
     while i < n
         invariant
-            valid_cols_u(u),
-            n == u.n,
+            valid_cols_u(b_u),
+            n == b_u.n,
             i <= n,
             gslot@.len() == i,
             groups_ok(gidx@, gkeys@),
-            slots_ok(u, gslot@, gkeys@, i as int),
+            slots_ok(b_u, gslot@, gkeys@, i as int),
         decreases n - i,
     {
-        let g = u.g[i].as_str();
+        let g = b_u.g[i].as_str();
         match gidx.get(g) {
             Some(jr) => {
                 let j = *jr;
                 gslot.push(j);
                 proof {
-                    assert forall|x: int| #![trigger gslot@[x]] 0 <= x < i + 1 implies (gslot@[x] as int) < gkeys@.len() && gkeys@[gslot@[x] as int]@ == u.g@[x]@ by {
+                    assert forall|x: int| #![trigger gslot@[x]] 0 <= x < i + 1 implies (gslot@[x] as int) < gkeys@.len() && gkeys@[gslot@[x] as int]@ == b_u.g@[x]@ by {
                         if x < i {
-                            assert(slots_ok(u, gslot@.drop_last(), gkeys@, i as int));
+                            assert(slots_ok(b_u, gslot@.drop_last(), gkeys@, i as int));
                             assert(gslot@.drop_last()[x] == gslot@[x]);
                         }
                     }
@@ -235,7 +235,7 @@ pub proof fn lemma_added(s0: &QAcc, s: &QAcc, bld: &QBuild, t: &Cols_t, u: &Cols
                             assert(m0.contains_key(k0[x]@));
                         }
                     }
-                    assert forall|x: int| #![trigger gslot@[x]] 0 <= x < i + 1 implies (gslot@[x] as int) < gkeys@.len() && gkeys@[gslot@[x] as int]@ == u.g@[x]@ by {
+                    assert forall|x: int| #![trigger gslot@[x]] 0 <= x < i + 1 implies (gslot@[x] as int) < gkeys@.len() && gkeys@[gslot@[x] as int]@ == b_u.g@[x]@ by {
                         if x < i {
                             assert(gslot@[x] == sl0[x]);
                             assert(gkeys@[sl0[x] as int] == k0[sl0[x] as int]);
@@ -262,19 +262,19 @@ pub proof fn lemma_added(s0: &QAcc, s: &QAcc, bld: &QBuild, t: &Cols_t, u: &Cols
     let mut i: usize = n;
     while i > 0
         invariant
-            valid_cols_u(u),
-            n == u.n,
+            valid_cols_u(b_u),
+            n == b_u.n,
             i <= n,
             nxt@.len() == n,
-            heads_ok(u, head@, i as int),
-            nxt_ok(u, nxt@, i as int),
+            heads_ok(b_u, head@, i as int),
+            nxt_ok(b_u, nxt@, i as int),
         decreases i,
     {
         let x = i - 1;
         let ghost h0 = head@;
         let ghost n0 = nxt@;
-        if u.k__valid[x] {
-            let kk = u.k[x].as_str();
+        if b_u.k__valid[x] {
+            let kk = b_u.k[x].as_str();
             let v = match head.get(kk) {
                 Some(h) => *h,
                 None => n,
@@ -282,54 +282,54 @@ pub proof fn lemma_added(s0: &QAcc, s: &QAcc, bld: &QBuild, t: &Cols_t, u: &Cols
             nxt.set(x, v);
             head.insert(kk.to_owned(), x);
             proof {
-                let kq = u.k@[x as int]@;
+                let kq = b_u.k@[x as int]@;
                 assert(kk@ == kq);
                 if h0.contains_key(kq) {
                     assert(v == h0[kq]);
-                    assert(gap(u, i as int, h0[kq] as int, kq));
+                    assert(gap(b_u, i as int, h0[kq] as int, kq));
                 } else {
                     assert(v == n);
-                    assert forall|j: int| x + 1 <= j < n implies !#[trigger] bm(u, j, kq) by {
-                        if bm(u, j, kq) {
-                            assert(h0.contains_key(u.k@[j]@));
+                    assert forall|j: int| x + 1 <= j < n implies !#[trigger] bm(b_u, j, kq) by {
+                        if bm(b_u, j, kq) {
+                            assert(h0.contains_key(b_u.k@[j]@));
                         }
                     }
                 }
-                assert(gap(u, x + 1, v as int, kq));
-                assert forall|j: int| #![trigger nxt@[j]] x <= j < u.n && u.k__valid@[j] implies j < nxt@[j] <= u.n
-                    && (nxt@[j] < u.n ==> bm(u, nxt@[j] as int, u.k@[j]@)) && gap(u, j + 1, nxt@[j] as int, u.k@[j]@) by {
+                assert(gap(b_u, x + 1, v as int, kq));
+                assert forall|j: int| #![trigger nxt@[j]] x <= j < b_u.n && b_u.k__valid@[j] implies j < nxt@[j] <= b_u.n
+                    && (nxt@[j] < b_u.n ==> bm(b_u, nxt@[j] as int, b_u.k@[j]@)) && gap(b_u, j + 1, nxt@[j] as int, b_u.k@[j]@) by {
                     if j > x {
                         assert(nxt@[j] == n0[j]);
                     }
                 }
-                assert forall|k2: Seq<char>| #[trigger] head@.contains_key(k2) implies x <= head@[k2] < u.n && bm(u, head@[k2] as int, k2)
-                    && gap(u, x as int, head@[k2] as int, k2) by {
+                assert forall|k2: Seq<char>| #[trigger] head@.contains_key(k2) implies x <= head@[k2] < b_u.n && bm(b_u, head@[k2] as int, k2)
+                    && gap(b_u, x as int, head@[k2] as int, k2) by {
                     if k2 != kq {
                         assert(h0.contains_key(k2));
-                        assert(gap(u, i as int, h0[k2] as int, k2));
-                        assert forall|j: int| x <= j < head@[k2] implies !#[trigger] bm(u, j, k2) by {
+                        assert(gap(b_u, i as int, h0[k2] as int, k2));
+                        assert forall|j: int| x <= j < head@[k2] implies !#[trigger] bm(b_u, j, k2) by {
                             if j == x {
-                                assert(u.k@[x as int]@ == kq);
+                                assert(b_u.k@[x as int]@ == kq);
                             }
                         }
                     }
                 }
-                assert forall|j: int| x <= j < u.n && u.k__valid@[j] implies head@.contains_key(#[trigger] u.k@[j]@) by {
+                assert forall|j: int| x <= j < b_u.n && b_u.k__valid@[j] implies head@.contains_key(#[trigger] b_u.k@[j]@) by {
                     if j != x {
-                        assert(h0.contains_key(u.k@[j]@));
+                        assert(h0.contains_key(b_u.k@[j]@));
                     }
                 }
             }
         } else {
             proof {
-                assert forall|k2: Seq<char>| #[trigger] head@.contains_key(k2) implies x <= head@[k2] < u.n && bm(u, head@[k2] as int, k2)
-                    && gap(u, x as int, head@[k2] as int, k2) by {
-                    assert(gap(u, i as int, h0[k2] as int, k2));
-                    assert forall|j: int| x <= j < head@[k2] implies !#[trigger] bm(u, j, k2) by {}
+                assert forall|k2: Seq<char>| #[trigger] head@.contains_key(k2) implies x <= head@[k2] < b_u.n && bm(b_u, head@[k2] as int, k2)
+                    && gap(b_u, x as int, head@[k2] as int, k2) by {
+                    assert(gap(b_u, i as int, h0[k2] as int, k2));
+                    assert forall|j: int| x <= j < head@[k2] implies !#[trigger] bm(b_u, j, k2) by {}
                 }
-                assert forall|j: int| x <= j < u.n && u.k__valid@[j] implies head@.contains_key(#[trigger] u.k@[j]@) by {}
-                assert forall|j: int| #![trigger nxt@[j]] x <= j < u.n && u.k__valid@[j] implies j < nxt@[j] <= u.n
-                    && (nxt@[j] < u.n ==> bm(u, nxt@[j] as int, u.k@[j]@)) && gap(u, j + 1, nxt@[j] as int, u.k@[j]@) by {}
+                assert forall|j: int| x <= j < b_u.n && b_u.k__valid@[j] implies head@.contains_key(#[trigger] b_u.k@[j]@) by {}
+                assert forall|j: int| #![trigger nxt@[j]] x <= j < b_u.n && b_u.k__valid@[j] implies j < nxt@[j] <= b_u.n
+                    && (nxt@[j] < b_u.n ==> bm(b_u, nxt@[j] as int, b_u.k@[j]@)) && gap(b_u, j + 1, nxt@[j] as int, b_u.k@[j]@) by {}
             }
         }
         i = x;
@@ -373,10 +373,10 @@ pub proof fn lemma_added(s0: &QAcc, s: &QAcc, bld: &QBuild, t: &Cols_t, u: &Cols
             chunk_ok_t(c),
             tt == stream_table_t(c.sid),
             r <= c.len,
-            valid_cols_u(u),
-            qbuild_inv(bld, u, p),
+            valid_cols_u(b_u),
+            qbuild_inv(bld, b_u, p),
             qacc_inv(s, bld),
-            forall|k: Key| #[trigger] st_val(s, bld, k) == agg_plus(st_val(&s0, bld, k), agg_rng(&tt, u, c.off as int, c.off + r, k, p)),
+            forall|k: Key| #[trigger] st_val(s, bld, k) == agg_plus(st_val(&s0, bld, k), agg_rng(&tt, b_u, c.off as int, c.off + r, k, p)),
         decreases c.len - r,
     {
         let key = str_ent(&c.k, c.k.sel[r] as usize);
@@ -389,24 +389,24 @@ pub proof fn lemma_added(s0: &QAcc, s: &QAcc, bld: &QBuild, t: &Cols_t, u: &Cols
         }
         let mut a: usize = match bld.head.get(key) {
             Some(h) => *h,
-            None => u.n,
+            None => b_u.n,
         };
         proof {
             if bld.head@.contains_key(key@) {
-                assert(gap(u, 0, a as int, key@));
+                assert(gap(b_u, 0, a as int, key@));
             } else {
-                assert forall|j: int| 0 <= j < u.n implies !#[trigger] bm(u, j, key@) by {
-                    if bm(u, j, key@) {
-                        assert(bld.head@.contains_key(u.k@[j]@));
+                assert forall|j: int| 0 <= j < b_u.n implies !#[trigger] bm(b_u, j, key@) by {
+                    if bm(b_u, j, key@) {
+                        assert(bld.head@.contains_key(b_u.k@[j]@));
                     }
                 }
             }
-            assert forall|k: Key| #[trigger] agg_plus(st_val(s, bld, k), inner(&tt, u, i0, a as int, k, p))
-                == agg_plus(st_val(&s1, bld, k), inner(&tt, u, i0, 0, k, p)) by {
-                lemma_skip(&tt, u, i0, 0, a as int, k, p);
+            assert forall|k: Key| #[trigger] agg_plus(st_val(s, bld, k), inner(&tt, b_u, i0, a as int, k, p))
+                == agg_plus(st_val(&s1, bld, k), inner(&tt, b_u, i0, 0, k, p)) by {
+                lemma_skip(&tt, b_u, i0, 0, a as int, k, p);
             }
         }
-        while a < u.n
+        while a < b_u.n
             invariant
                 chunk_ok_t(c),
                 tt == stream_table_t(c.sid),
@@ -415,19 +415,19 @@ pub proof fn lemma_added(s0: &QAcc, s: &QAcc, bld: &QBuild, t: &Cols_t, u: &Cols
                 0 <= i0 < tt.n,
                 key@ == tt.k@[i0]@,
                 tt.m@[i0] == m,
-                valid_cols_u(u),
-                qbuild_inv(bld, u, p),
+                valid_cols_u(b_u),
+                qbuild_inv(bld, b_u, p),
                 qacc_inv(s, bld),
-                a <= u.n,
-                a < u.n ==> bm(u, a as int, key@),
-                forall|k: Key| #[trigger] agg_plus(st_val(s, bld, k), inner(&tt, u, i0, a as int, k, p))
-                    == agg_plus(st_val(&s1, bld, k), inner(&tt, u, i0, 0, k, p)),
-            decreases u.n - a,
+                a <= b_u.n,
+                a < b_u.n ==> bm(b_u, a as int, key@),
+                forall|k: Key| #[trigger] agg_plus(st_val(s, bld, k), inner(&tt, b_u, i0, a as int, k, p))
+                    == agg_plus(st_val(&s1, bld, k), inner(&tt, b_u, i0, 0, k, p)),
+            decreases b_u.n - a,
         {
             let gs = bld.gslot[a];
             let ghost s2 = *s;
             proof {
-                assert(slots_ok(u, bld.gslot@, bld.gkeys@, u.n as int));
+                assert(slots_ok(b_u, bld.gslot@, bld.gkeys@, b_u.n as int));
                 assert((bld.gslot@[a as int] as int) < bld.gkeys@.len());
             }
             if !add_slot(s, gs, m) {
@@ -435,30 +435,30 @@ pub proof fn lemma_added(s0: &QAcc, s: &QAcc, bld: &QBuild, t: &Cols_t, u: &Cols
             }
             let nj = bld.nxt[a];
             proof {
-                lemma_added(&s2, s, bld, &tt, u, i0, a as int, p);
-                assert(nxt_ok(u, bld.nxt@, 0));
+                lemma_added(&s2, s, bld, &tt, b_u, i0, a as int, p);
+                assert(nxt_ok(b_u, bld.nxt@, 0));
                 assert(bld.nxt@[a as int] == nj);
-                assert(u.k@[a as int]@ == key@);
-                assert(gap(u, a + 1, nj as int, key@));
-                assert forall|k: Key| #[trigger] agg_plus(st_val(s, bld, k), inner(&tt, u, i0, nj as int, k, p))
-                    == agg_plus(st_val(&s1, bld, k), inner(&tt, u, i0, 0, k, p)) by {
-                    lemma_take(&tt, u, i0, a as int, k, p);
-                    lemma_skip(&tt, u, i0, a + 1, nj as int, k, p);
-                    assert(st_val(s, bld, k) == agg_plus(st_val(&s2, bld, k), pair_val(&tt, u, i0, a as int, k)));
-                    assert(agg_plus(st_val(&s2, bld, k), inner(&tt, u, i0, a as int, k, p))
-                        == agg_plus(st_val(&s1, bld, k), inner(&tt, u, i0, 0, k, p)));
+                assert(b_u.k@[a as int]@ == key@);
+                assert(gap(b_u, a + 1, nj as int, key@));
+                assert forall|k: Key| #[trigger] agg_plus(st_val(s, bld, k), inner(&tt, b_u, i0, nj as int, k, p))
+                    == agg_plus(st_val(&s1, bld, k), inner(&tt, b_u, i0, 0, k, p)) by {
+                    lemma_take(&tt, b_u, i0, a as int, k, p);
+                    lemma_skip(&tt, b_u, i0, a + 1, nj as int, k, p);
+                    assert(st_val(s, bld, k) == agg_plus(st_val(&s2, bld, k), pair_val(&tt, b_u, i0, a as int, k)));
+                    assert(agg_plus(st_val(&s2, bld, k), inner(&tt, b_u, i0, a as int, k, p))
+                        == agg_plus(st_val(&s1, bld, k), inner(&tt, b_u, i0, 0, k, p)));
                 }
             }
             a = nj;
         }
         proof {
-            assert forall|k: Key| #[trigger] st_val(s, bld, k) == agg_plus(st_val(&s0, bld, k), agg_rng(&tt, u, c.off as int, c.off + r + 1, k, p)) by {
-                lemma_end(&tt, u, i0, k, p);
-                lemma_agg_step(&tt, u, c.off as int, c.off + r + 1, k, p);
-                assert(agg_row(&tt, u, i0, k, p) == inner(&tt, u, i0, 0, k, p));
-                assert(agg_plus(st_val(s, bld, k), inner(&tt, u, i0, u.n as int, k, p))
-                    == agg_plus(st_val(&s1, bld, k), inner(&tt, u, i0, 0, k, p)));
-                assert(st_val(&s1, bld, k) == agg_plus(st_val(&s0, bld, k), agg_rng(&tt, u, c.off as int, c.off + r, k, p)));
+            assert forall|k: Key| #[trigger] st_val(s, bld, k) == agg_plus(st_val(&s0, bld, k), agg_rng(&tt, b_u, c.off as int, c.off + r + 1, k, p)) by {
+                lemma_end(&tt, b_u, i0, k, p);
+                lemma_agg_step(&tt, b_u, c.off as int, c.off + r + 1, k, p);
+                assert(agg_row(&tt, b_u, i0, k, p) == inner(&tt, b_u, i0, 0, k, p));
+                assert(agg_plus(st_val(s, bld, k), inner(&tt, b_u, i0, b_u.n as int, k, p))
+                    == agg_plus(st_val(&s1, bld, k), inner(&tt, b_u, i0, 0, k, p)));
+                assert(st_val(&s1, bld, k) == agg_plus(st_val(&s0, bld, k), agg_rng(&tt, b_u, c.off as int, c.off + r, k, p)));
             }
         }
         r = r + 1;
@@ -532,28 +532,28 @@ pub proof fn lemma_added(s0: &QAcc, s: &QAcc, bld: &QBuild, t: &Cols_t, u: &Cols
     }
     proof {
         let tt = t@;
-        assert forall|q: int| #![trigger res@[q]] 0 <= q < res@.len() implies out_row_ok(&tt, u, res@[q]) by {
+        assert forall|q: int| #![trigger res@[q]] 0 <= q < res@.len() implies out_row_ok(&tt, b_u, res@[q]) by {
             let x = sel[q];
             let k = bld.gkeys@[x]@;
-            lemma_agg_total(&tt, u, k, p);
+            lemma_agg_total(&tt, b_u, k, p);
             assert(bld.gidx@[k] == x);
-            assert(st_val(&s, bld, k) == agg_rng(&tt, u, 0, tt.n as int, k, p));
-            let (i0, i1) = choose|i0: int, i1: int| #![trigger row_hit(&tt, u, i0, i1)] row_hit(&tt, u, i0, i1) && key_at(&tt, u, i0, i1) == k;
-            assert(row_hit(&tt, u, i0, i1) && key_at(&tt, u, i0, i1) == res@[q].g@);
+            assert(st_val(&s, bld, k) == agg_rng(&tt, b_u, 0, tt.n as int, k, p));
+            let (i0, i1) = choose|i0: int, i1: int| #![trigger row_hit(&tt, b_u, i0, i1)] row_hit(&tt, b_u, i0, i1) && key_at(&tt, b_u, i0, i1) == k;
+            assert(row_hit(&tt, b_u, i0, i1) && key_at(&tt, b_u, i0, i1) == res@[q].g@);
         }
         assert forall|q1: int, q2: int| #![trigger res@[q1], res@[q2]] 0 <= q1 < q2 < res@.len() implies res@[q1].g@ != res@[q2].g@ by {
             assert(sel[q1] < sel[q2]);
             assert(bld.gidx@[bld.gkeys@[sel[q1]]@] == sel[q1]);
             assert(bld.gidx@[bld.gkeys@[sel[q2]]@] == sel[q2]);
         }
-        assert forall|i0: int, i1: int| #![trigger row_hit(&tt, u, i0, i1)] row_hit(&tt, u, i0, i1) && (true) implies exists|q: int| #![trigger res@[q]] 0 <= q < res@.len() && key_at(&tt, u, i0, i1) == res@[q].g@ by {
-            let k = key_at(&tt, u, i0, i1);
-            assert(k == u.g@[i1]@);
-            assert(slots_ok(u, bld.gslot@, bld.gkeys@, u.n as int));
+        assert forall|i0: int, i1: int| #![trigger row_hit(&tt, b_u, i0, i1)] row_hit(&tt, b_u, i0, i1) && (true) implies exists|q: int| #![trigger res@[q]] 0 <= q < res@.len() && key_at(&tt, b_u, i0, i1) == res@[q].g@ by {
+            let k = key_at(&tt, b_u, i0, i1);
+            assert(k == b_u.g@[i1]@);
+            assert(slots_ok(b_u, bld.gslot@, bld.gkeys@, b_u.n as int));
             assert(bld.gkeys@[bld.gslot@[i1] as int]@ == k);
             assert(bld.gidx@.contains_key(k));
-            lemma_agg_total(&tt, u, k, p);
-            assert(st_val(&s, bld, k) == agg_rng(&tt, u, 0, tt.n as int, k, p));
+            lemma_agg_total(&tt, b_u, k, p);
+            assert(st_val(&s, bld, k) == agg_rng(&tt, b_u, 0, tt.n as int, k, p));
             let x = bld.gidx@[k] as int;
             assert(s.cnt@[x] > 0);
             let q = at[x];

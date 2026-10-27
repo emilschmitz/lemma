@@ -136,11 +136,11 @@ def test_stream_examples_are_mounted_instead_of_the_run_query_set(mode: str, mon
     _env(monkeypatch, LEMMA_STREAM="1", LEMMA_EXAMPLES=mode)
     mount_examples(tmp_path)
     files = sorted(p.name for p in (tmp_path / "examples").iterdir())
-    assert files == ["INDEX.md", "group_string_count_sum.rs", "ungrouped_sum_filter.rs"]
+    assert files == ["INDEX.md", "group_string_count_sum.rs", "join_group_build_key.rs", "ungrouped_sum_filter.rs"]
     for name in files[1:]:
         assert (tmp_path / "examples" / name).read_text() == (FIX / name).read_text()
     index = (tmp_path / "examples" / "INDEX.md").read_text()
-    assert "group_string_count_sum.rs" in index and "ungrouped_sum_filter.rs" in index
+    assert "group_string_count_sum.rs" in index and "ungrouped_sum_filter.rs" in index and "join_group_build_key.rs" in index
     for text in [index, *((FIX / n).read_text() for n in files[1:])]:
         for name in ("TPC", "Q6", "Q1", "lineitem"):
             assert name not in text, name

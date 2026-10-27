@@ -214,6 +214,10 @@ STREAM_EXAMPLES: tuple[tuple[str, str], ...] = (
         "stream/group_string_count_sum.rs",
         "GROUP BY a VARCHAR key, COUNT(*) and SUM of a DECIMAL: key -> slot `StringHashMap` with its key list and per-slot Vecs, an exec helper `add_to`, merge slot by slot, finish with `lemma_agg_total` per group",
     ),
+    (
+        "stream/join_group_build_key.rs",
+        "a JOIN (phase 2a, seven regions): `t` streamed JOIN `u` built ON a VARCHAR key that repeats and may be NULL, GROUP BY a build-side VARCHAR, COUNT(*) and SUM: `q_build` makes a key -> first-row `StringHashMap` with a `next` chain over the build rows (one pass from the last row) and a group slot per build row; `q_step` walks a row's chain, `lemma_skip` / `lemma_take` unfold the inner fold",
+    ),
 )
 UNMOUNTED.update({name: "mounted only with lemma.toml [run] stream (STREAM_EXAMPLES; checked by tests/test_stream.py)" for name, _w in STREAM_EXAMPLES})
 

@@ -63,13 +63,6 @@ STUB = {
     "finish": "None",
 }
 
-# Names the host's join code uses for its own variables; a build table may not be called like one (its Cols_<b> argument is named <b>).
-_RESERVED = frozenset(
-    "s c p a b r k t m n o e h q w x y j i i2 bld res lo hi id sh raw pl acc err segs segs_b tiles pa pb pos rng row filled soff slen "
-    "pred ok slots sl first cur l mm sa sb gx gy old_segs".split()
-)
-
-
 def _refuse(why: str) -> DeclarativeUnsupported:
     return DeclarativeUnsupported(f"stream (lemma.toml [run] stream): {why}")
 
@@ -248,6 +241,40 @@ def choose_stream_table(sql: str, schema: dict, db_path: Path | str) -> dict:
     return {"table": table, "rows_after_filters": counts, "rule": RULE}
 
 
+def is_join_sql(sql: str) -> bool:
+    try:
+        tree = sqlglot.parse_one(sql)
+    except sqlglot.errors.SqlglotError:
+        return False
+    return bool(list(tree.find_all(exp.Join)))
+
+
+def ensure_header(sql: str, schema: dict, db_path: Path | str | None, record_dir: Path | None) -> str:
+    """A join without a ``-- stream:`` line gets the one the rule (:func:`choose_stream_table`) picks on ``db_path`` (the run's
+    database); the choice and the counts are written to ``<record_dir>/stream_choice.json``. Fixed SQL, a one-table query or SQL that
+    already names its stream table is returned unchanged. A template is counted with its first binding's literals (``binding``)."""
+    if header_table(sql) is not None or not is_join_sql(sql):
+        return sql
+    if not db_path:
+        raise _refuse("a join needs its stream table, chosen on the run's database (LEMMA_MEASURE_DB is not set)")
+    from declarative_spec import templates
+
+    literal = sql
+    template = templates.parse_template(sql)
+    if template is not None:
+        from declarative_spec.drive import template_bindings
+
+        drawn = template_bindings(sql)
+        literal = templates.with_literals(sql, drawn["bindings"][0])
+    choice = choose_stream_table(literal, schema, db_path)
+    if record_dir is not None:
+        import json
+
+        record_dir.mkdir(parents=True, exist_ok=True)
+        (record_dir / "stream_choice.json").write_text(json.dumps({**choice, "db_path": str(db_path)}, indent=2) + "\n")
+    return with_header(sql, choice["table"])
+
+
 # ---- reading the emitted join spec ----------------------------------------------------------------------------------------------------
 
 
@@ -270,8 +297,18 @@ class JoinShape:
     hit_preds: list[tuple[str, list[str]]] = field(default_factory=list)
     ok_args: list[str] = field(default_factory=list)
 
+    # Variable names: the stream table is `t`, a build table `b_<suffix>` (a bare table name can clash with a glob-imported vstd
+    # function, e.g. `sub`, which Verus then reports as ambiguous; the host's own names never start with `b_`).
+    @property
+    def bvars(self) -> list[str]:
+        return [f"b_{b}" for b in self.builds]
+
     @property
     def tabs(self) -> list[str]:
+        return ["t", *self.bvars]
+
+    @property
+    def types(self) -> list[str]:
         return [self.ts, *self.builds]
 
     @property
@@ -280,8 +317,8 @@ class JoinShape:
 
     @property
     def tp(self) -> str:
-        """The tables as parameters of a host spec fn: `t: &Cols_t, u: &Cols_u`."""
-        return ", ".join(f"{s}: &Cols_{s}" for s in self.tabs)
+        """The tables as parameters of a host spec fn: `t: &Cols_t, b_u: &Cols_u`."""
+        return ", ".join(f"{v}: &Cols_{s}" for v, s in zip(self.tabs, self.types, strict=True))
 
     @property
     def ta(self) -> str:
@@ -289,11 +326,11 @@ class JoinShape:
 
     @property
     def bp(self) -> str:
-        return ", ".join(f"{s}: &Cols_{s}" for s in self.builds)
+        return ", ".join(f"{v}: &Cols_{s}" for v, s in zip(self.bvars, self.builds, strict=True))
 
     @property
     def ba(self) -> str:
-        return ", ".join(self.builds)
+        return ", ".join(self.bvars)
 
 
 def read_join_shape(spec: str) -> JoinShape:
@@ -318,11 +355,6 @@ def read_join_shape(spec: str) -> JoinShape:
     if len(set(types)) != len(types):
         raise _refuse("a self join (one table twice) is not stated")
     ts, builds = types[0], types[1:]
-    if ts in ("k", "p", "lo", "hi", "x", "j") or re.fullmatch(r"i\d+", ts):
-        raise _refuse(f"a stream table named `{ts}` clashes with a name of the host's join code")
-    for b in builds:
-        if b in _RESERVED or re.fullmatch(r"i\d+", b):
-            raise _refuse(f"a build table named `{b}` clashes with a name of the host's join code")
     declared = {name: ty for name, ty, _lo, _hi in spec_params(spec)}
     params: list[tuple[str, str]] = []
     for name, ty in sig[ntab:]:
@@ -331,7 +363,8 @@ def read_join_shape(spec: str) -> JoinShape:
         if ty not in ("i64", "i32"):
             raise _refuse(f"template parameter {name}: {ty}: only integer, DECIMAL and DATE parameters are stated")
         params.append((name.removeprefix("param_"), ty))
-    allowed = ("i64", "i32", "i16", "i8", "u64", "u32", "u16", "u8", "bool", "String")
+    # i128: DECIMAL(38, s) cells (DuckDB HUGEINT storage, the same 16 little-endian bytes); the ABI 6 glue does not hand them yet
+    allowed = ("i128", "i64", "i32", "i16", "i8", "u64", "u32", "u16", "u8", "bool", "String")
     cols_of: dict[str, list[tuple[str, str]]] = {}
     for s in types:
         body = re.search(rf"pub struct Cols_{s} \{{\n((?:    pub [^\n]+\n)+)\}}", spec)
@@ -489,7 +522,7 @@ def _count_fns(sh: JoinShape) -> list[str]:
         }}
     }}
 }}""")
-        t0 = sh.ts
+        t0 = sh.tabs[0]
         out.append(f"""pub open spec fn stream_{c}({sh.tp}, i0: int, k: Key, p: &Params) -> int
     decreases {t0}.n as int - i0,
 {{
@@ -523,7 +556,7 @@ def _count_fns(sh: JoinShape) -> list[str]:
 
 def _total_count(sh: JoinShape, c: str, pred: str, args: list[str]) -> tuple[list[str], str]:
     """lemma_agg_total's ensures and body for one count field: > 0 iff some tuple of rows meets the pair condition."""
-    t0 = sh.ts
+    t0 = sh.tabs[0]
     idx = sh.idx
     m = len(sh.builds)
     rng = f"agg_rng({sh.ta}, 0, {t0}.n as int, k, p).{c}"
@@ -570,7 +603,7 @@ def _total_count(sh: JoinShape, c: str, pred: str, args: list[str]) -> tuple[lis
 def emit_join_contract(sh: JoinShape) -> str:
     from declarative_spec import stream
 
-    tv, ts = sh.ts, sh.ts
+    tv, ts = sh.tabs[0], sh.ts
     cols = f"Cols_{ts}"
     key = sh.key or "()"
     fields: list[tuple[str, str, str]] = []  # (field, row expr, rng expr)
@@ -607,7 +640,7 @@ def emit_join_contract(sh: JoinShape) -> str:
     ok_pl = ", ".join(
         [f"&stream_table_{ts}(pl.sid())", *[f"&pl.build_{b}()" for b in sh.builds], *[f"pl.params().{a.removeprefix('param_')}" for a in sh.ok_args]]
     )
-    vb = ",\n        ".join(f"valid_cols_{b}({b})" for b in sh.builds)
+    vb = ",\n        ".join(f"valid_cols_{b}({v})" for v, b in zip(sh.bvars, sh.builds, strict=True))
     chunk = stream._chunk_items(stream.Shape(tv=tv, ts=ts, cols=sh.cols, params=sh.params, key=sh.key, rh_args=sh.rh_args))
     extra = "\n\n".join(_count_fns(sh))
     builds_txt = ", ".join(f"`{b}`" for b in sh.builds)
@@ -832,21 +865,22 @@ pub fn cols_ok_{b}(x: &Cols_{b}) -> (r: bool)
 
 def _runtime(sh: JoinShape, ok_pl: str) -> str:
     ts = sh.ts
-    bg = ", ".join(f"{b}: Cols_{b}" for b in sh.builds)  # ghost / by value
-    br = ", ".join(f"&{b}" for b in sh.builds)  # spec references to by-value ghosts
-    pred_fields = "\n".join(f"    pub {b}: Cols_{b}," for b in sh.builds)
-    pool_fields = "\n".join(f"    {b}: Cols_{b}," for b in sh.builds)
-    self_b = ", ".join(f"self.{b}" for b in sh.builds)
-    self_br = ", ".join(f"&self.{b}" for b in sh.builds)
-    pred_of = lambda pre: "(SlotPred { id: " + pre + "sh.id, " + ", ".join(f"{b}: {pre}{b}" for b in sh.builds) + f", bld: {pre}bld, p: {pre}p }})"  # noqa: E731
-    b_names = ", ".join(sh.builds)
-    pl_b = ", ".join(f"pl.{b}" for b in sh.builds)
-    pl_br = ", ".join(f"&pl.{b}" for b in sh.builds)
-    getters = "\n\n".join(f"    pub closed spec fn build_{b}(self) -> Cols_{b} {{\n        self.{b}\n    }}" for b in sh.builds)
-    wf_b = "\n".join(f"        &&& valid_cols_{b}(&self.{b})" for b in sh.builds)
-    ens_b = " && ".join(f"pl.build_{b}() == {b}" for b in sh.builds)
-    ok_checks = " || ".join(f"!cols_ok_{b}(&{b})" for b in sh.builds)
-    inv_b = "\n".join(f"            valid_cols_{b}(&{b})," for b in sh.builds)
+    vb = list(zip(sh.bvars, sh.builds, strict=True))  # (variable / field name b_<suffix>, suffix)
+    bg = ", ".join(f"{v}: Cols_{b}" for v, b in vb)  # ghost / by value
+    br = ", ".join(f"&{v}" for v, _b in vb)  # spec references to by-value ghosts
+    pred_fields = "\n".join(f"    pub {v}: Cols_{b}," for v, b in vb)
+    pool_fields = "\n".join(f"    {v}: Cols_{b}," for v, b in vb)
+    self_br = ", ".join(f"&self.{v}" for v, _b in vb)
+    pred_of = lambda pre: "(SlotPred { id: " + pre + "sh.id, " + ", ".join(f"{v}: {pre}{v}" for v, _b in vb) + f", bld: {pre}bld, p: {pre}p }})"  # noqa: E731
+    b_names = ", ".join(sh.bvars)
+    pl_b = ", ".join(f"pl.{v}" for v, _b in vb)
+    pl_br = ", ".join(f"&pl.{v}" for v, _b in vb)
+    getters = "\n\n".join(f"    pub closed spec fn build_{b}(self) -> Cols_{b} {{\n        self.{v}\n    }}" for v, b in vb)
+    wf_b = "\n".join(f"        &&& valid_cols_{b}(&self.{v})" for v, b in vb)
+    ens_b = " && ".join(f"pl.build_{b}() == {v}" for v, b in vb)
+    ok_checks = " || ".join(f"!cols_ok_{b}(&{v})" for v, b in vb)
+    inv_b = "\n".join(f"            valid_cols_{b}(&{v})," for v, b in vb)
+    self_bs = ", ".join(f"self.{v}" for v, _b in vb)
     return f"""// ---- the host runtime of a join (fixed, verified) ----
 
 pub open spec fn seg_agg(id: u64, {bg}, k: Key, p: Params) -> spec_fn(Seg) -> Agg {{
@@ -910,7 +944,7 @@ pub struct SlotPred {{
 impl vstd::rwlock::RwLockPredicate<Slot> for SlotPred {{
     open spec fn inv(self, s: Slot) -> bool {{
         s.acc matches Some(a) ==> qacc_inv(&a, &self.bld) && forall|k: Key| #[trigger] st_val(&a, &self.bld, k)
-            == seg_fold(self.id, {', '.join(f'self.{b}' for b in sh.builds)}, s.segs@, k, self.p)
+            == seg_fold(self.id, {self_bs}, s.segs@, k, self.p)
     }}
 }}
 

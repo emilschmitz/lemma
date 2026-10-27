@@ -384,6 +384,22 @@ def run_declarative_optimization_loop(
     proof_verified = False
     lemma_index = current_trusted_set().index_markdown()
     speed_bar: dict | None = None
+    from declarative_spec import stream as stream_mod
+
+    if stream_mod.enabled():
+        # lemma.toml [run] stream, a join (phase 2a): the stream table is chosen once on the run's database and written into the SQL
+        # (`-- stream: <table>`, stream_join.choose_stream_table; recorded in <run dir>/stream_choice.json); every later emission sees it.
+        from declarative_spec import stream_join
+
+        try:
+            sql_query = stream_join.ensure_header(
+                sql_query,
+                resolved_schema,
+                os.environ.get("LEMMA_MEASURE_DB", "").strip() or None,
+                Path(os.environ.get("LEMMA_RUN_DIR", "").strip() or workspace.parent),
+            )
+        except (DeclarativeUnsupported, ProfileError, ValueError, OSError) as exc:
+            return {"status": "FAILED", "best_latency_us": -1, "error": f"stream table: {exc}", "history": [], "proof_verified": False}
     try:
         column_bins, speed_bar = _maybe_large_table(
             sql_query=sql_query,

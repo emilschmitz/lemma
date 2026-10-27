@@ -1211,7 +1211,7 @@ def _assemble_stream_join_program(spec_rs: str, regions: dict[str, str], *, colu
     ts = re.search(r"pub uninterp spec fn stream_table_(\w+)\(id: u64\)", verus_part).group(1)
     structs = dict(re.findall(r"pub struct (Cols_[A-Za-z0-9_]+)\s*\{([^}]+)\}", verus_part, re.DOTALL))
     sig = re.search(r"pub fn pool_open\(sh: Stream_\w+, (.*?), p: Params, nslots: usize\)", verus_part)
-    builds = [part.split(":")[0].strip() for part in sig.group(1).split(", ")]
+    builds = [part.split(":")[1].strip().removeprefix("Cols_") for part in sig.group(1).split(", ")]  # `b_<suffix>: Cols_<suffix>`
     fields = re.findall(r"pub\s+((?:r#)?[A-Za-z_][A-Za-z0-9_]*):\s+Vec<([^>]+)>", structs[f"Cols_{ts}"])
     if column_bins is None:
         load = f"    let n_{ts}: usize = 0;\n" + "".join(
