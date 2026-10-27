@@ -107,6 +107,11 @@ templates = false                           # query templates: a `-- params: nam
 # Lemma inside DuckDB (db_extension/duckdb_ext/README.md). Default off; nothing here is used by a container run.
 in_duckdb = false                           # true: the assembler may emit library mode (the proved run_query as a cdylib with the fixed C entry point lemma_run) and research_loop/in_duckdb.py may install executors into ${LEMMA_HOME}/executors for the DuckDB extension. Off: library mode is refused and nothing is installed
 
+[product]
+# The product CLI only (`lemma optimize`, `lemma generate` behind DuckDB's lemma('<sql>')). Research and experiment runs never read it: there
+# [run] stream decides, as written (experiments stay replicable).
+executor = "auto"                           # auto | stream | batch: which executor the CLI proves for a query. auto = the streaming executor (ABI 6, docs/STREAM.md) when the stream gate (declarative_spec/stream.py) accepts the query's spec, else the batch executor (ABI 5, run_query); decided BEFORE generation from the SQL and schema, printed with the gate's reason, recorded in the run manifest (product_executor) and optimize.json. A stream run that fails to prove is a failed run, never retried as batch. stream = refuse loudly when the gate refuses. batch = never stream. A stream run forces stream = true, pushdown = false, agent_scan = false for that run
+
 [wip]
 # Parked work, integrated for reference and switched off. Nothing here is used by a container run. Each key points at the document that says why it is parked.
 zero_copy = false                           # WIP/parked: read DuckDB's pinned chunks in place (trusted ZC-1), shelved 2026-10-07, see research_loop/menus/pin_path_archive.md

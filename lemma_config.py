@@ -185,6 +185,7 @@ CHOICES: dict[str, tuple[Any, ...]] = {
     "claude_effort": ("none", "low", "medium", "high", "xhigh", "max"),
     "cold_stream_mode": ("aggregate", "scalar"),
     "prover": ("host", "docker"),
+    "executor": ("auto", "stream", "batch"),
 }
 # Smallest allowed value of a numeric key.
 MINIMUM: dict[str, float] = {

@@ -82,6 +82,11 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     claude = binary / "claude"
     claude.write_text("#!/bin/sh\nexit 0\n")
     claude.chmod(0o755)
+    # The executor choice emits the stream spec (lemma_cli/executor.py), which reads vstd: this machine's Verus source, not the stub image's.
+    from declarative_spec import prover
+
+    verus = prover.host_verus_home()
+    monkeypatch.setattr(prover, "verus_home", lambda: verus)
     home = tmp_path / "home"
     (home / ".claude").mkdir(parents=True)
     monkeypatch.setenv("HOME", str(home))
@@ -471,10 +476,11 @@ def fake_run(tmp_path: Path) -> Path:
     return run
 
 
-RECORD = {"db_path": "/d.duckdb", "assumptions": False, "assumption_package_sha256": None, "agent_harness": "claude", "agent_model": "claude-sonnet-5-5", "agent_auth": "api_key", "image_id": "sha256:x", "run_dir": "/r", "speedup": 3.2}
+RECORD = {"db_path": "/d.duckdb", "assumptions": False, "assumption_package_sha256": None, "agent_harness": "claude", "agent_model": "claude-sonnet-5-5", "agent_auth": "api_key", "image_id": "sha256:x", "run_dir": "/r", "speedup": 3.2,
+          "executor": {"kind": "batch", "setting": "auto", "reason": "r", "abi": 5}}
 
 
-def fake_executor(sql: str) -> Path:
+def fake_executor(sql: str, mode: str | None = None) -> Path:
     """What research_loop.in_duckdb.install_executor leaves: lib.so, manifest.json, query.sql under the extension's key."""
     from research_loop import in_duckdb
 
@@ -484,7 +490,7 @@ def fake_executor(sql: str) -> Path:
     (dest / "lib.so").write_bytes(b"\x7fELF")
     (dest / "query.sql").write_text(sql + "\n")
     manifest = {"key": dest.name, "sql": sql, "normalized_sql": in_duckdb.normalize_sql(sql), "proof": "41 verified, 0 errors", "in_duckdb": True,
-                "assumptions": False, "spec_sha256": "s" * 64, "lib_sha256": "l" * 64}
+                "assumptions": False, "spec_sha256": "s" * 64, "lib_sha256": "l" * 64, **({"mode": mode} if mode else {})}
     (dest / "manifest.json").write_text(json.dumps(manifest))
     return dest
 
@@ -510,7 +516,7 @@ def test_list_shows_key_proof_db_and_sql_and_flags_an_old_cli_entry(env: Path, t
     (old / "manifest.json").write_text(json.dumps({"sql_key": "ab" * 32, "sql": "select 1", "binary": None, "lib": "pending"}))
     assert main(["list"]) == 0
     out = capsys.readouterr().out
-    assert f"{dest.name[:12]}  41 verified, 0 errors  created " in out and "db /d.duckdb" in out and "SELECT SUM(a) FROM t" in out
+    assert f"{dest.name[:12]}  batch  41 verified, 0 errors  created " in out and "db /d.duckdb" in out and "SELECT SUM(a) FROM t" in out
     assert "abababababab  NOT USABLE IN DUCKDB" in out
 
 
@@ -602,6 +608,7 @@ args = sys.argv[1:]
 out = Path(os.environ["STUB_OUT"]); out.mkdir(exist_ok=True)
 (out / "seen.json").write_text(json.dumps({"has_key": "ANTHROPIC_API_KEY" in os.environ, "auth": os.environ.get("LEMMA_AGENT_AUTH"), "argv_has_key": any("sk-ant" in a for a in args)}))
 (out / "argv.json").write_text(json.dumps(args))
+(out / "env.json").write_text(json.dumps({k: os.environ.get(k) for k in ("LEMMA_STREAM", "LEMMA_PUSHDOWN", "LEMMA_AGENT_SCAN")}))
 run = out / ("run_" + Path(args[args.index("--query-file") + 1]).stem[:8])
 (run / "workspace" / "mcp_results").mkdir(parents=True, exist_ok=True)
 (run / "workspace" / "runquery_agent.rs").write_text("body")
@@ -625,7 +632,8 @@ def pipeline(env: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
         (out / "installed_from").write_text(str(run_dir))
         if os.environ.get("STUB_INSTALL_FAIL"):
             raise RuntimeError("library did not verify and compile (exit 1): verification results:: 3 verified, 1 errors")
-        return fake_executor(Path(argv[argv.index("--query-file") + 1]).read_text().strip())
+        # install_run carries the run's [run] stream: a stream run installs a streaming (ABI 6) executor
+        return fake_executor(Path(argv[argv.index("--query-file") + 1]).read_text().strip(), "stream" if os.environ.get("LEMMA_STREAM") == "true" else None)
 
     monkeypatch.setattr(opt, "install_in_duckdb", fake_install)
     return out
@@ -828,4 +836,110 @@ def test_status_reports_auth_image_selftest_and_executors(env: Path, tmp_path: P
     assert main(["status"]) == 0
     out = capsys.readouterr().out
     assert "auth            api_key" in out and "PASSED" in out and f"{published('claude')} present" in out and "1 cached" in out and "duckdb (python) 1.5.6" in out
+
+
+# --- the executor kind ([product] executor: auto | stream | batch; lemma_cli/executor.py) ---
+
+STREAM_SQL = "SELECT b, COUNT(*) AS c, SUM(a) AS s FROM t GROUP BY b"
+JOIN_SQL = "SELECT t.b, COUNT(*) AS c FROM t JOIN u ON t.b = u.b GROUP BY t.b"
+SUBQUERY_SQL = "SELECT SUM(a) AS s FROM t WHERE b IN (SELECT b FROM u)"
+
+
+def make_db2(tmp_path: Path) -> Path:
+    import duckdb
+
+    path = make_db(tmp_path)
+    con = duckdb.connect(str(path))
+    con.execute("CREATE TABLE u(b INTEGER, c VARCHAR)")
+    con.execute("INSERT INTO u SELECT i, 'x' FROM range(7) r(i)")
+    con.close()
+    return path
+
+
+def test_auto_streams_a_single_table_aggregate_and_batches_a_join_or_a_subquery(env: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The gate decides before generation (phase 1: joins are not in the gate yet; when they are, the gate's verdict is the choice)."""
+    from lemma_cli import executor
+
+    db = make_db2(tmp_path)
+    assert executor.setting() == "auto"
+    for sql in (STREAM_SQL, "SELECT SUM(a) AS s FROM t WHERE b > 2"):
+        choice = executor.choose(sql, db)
+        assert (choice.kind, choice.abi, choice.setting) == ("stream", 6, "auto") and "accepts" in choice.reason
+    for sql in (JOIN_SQL, SUBQUERY_SQL, "SELECT COUNT(DISTINCT b) AS d FROM t"):
+        choice = executor.choose(sql, db)
+        assert (choice.kind, choice.abi) == ("batch", 5) and choice.reason.startswith("the stream gate refuses it: "), choice
+    assert "joins are phase 2" in executor.choose(JOIN_SQL, db).reason
+    assert "DISTINCT" in executor.choose("SELECT COUNT(DISTINCT b) AS d FROM t", db).reason
+    assert all(k not in os.environ for k in executor.STREAM_ENV)  # the gate's emission leaves the environment as it found it
+    monkeypatch.setenv("LEMMA_EXECUTOR", "batch")
+    assert executor.choose(STREAM_SQL, db) == executor.Choice("batch", "batch", "[product] executor = batch")
+
+
+def test_auto_runs_the_stream_pipeline_with_the_stream_settings_and_records_the_choice(env: Path, pipeline: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    ready(env, monkeypatch)
+    monkeypatch.setenv("LEMMA_PUSHDOWN", "true")  # the user's own value: forced off for a stream run, kept for a batch run
+    db = make_db2(tmp_path)
+    assert main(["optimize", "--db", str(db), "--sql", STREAM_SQL]) == 0
+    out = capsys.readouterr().out
+    assert "executor: stream (ABI 6; [product] executor = auto): the stream gate accepts this query" in out and "  executor: stream (ABI 6)" in out
+    assert json.loads((pipeline / "env.json").read_text()) == {"LEMMA_STREAM": "true", "LEMMA_PUSHDOWN": "false", "LEMMA_AGENT_SCAN": "false"}
+    argv = json.loads((pipeline / "argv.json").read_text())
+    recorded = json.loads(argv[argv.index("--executor-choice") + 1])
+    assert recorded == {"kind": "stream", "setting": "auto", "reason": "the stream gate accepts this query", "abi": 6}
+    dest = cache.executor_dir(common.sql_key(STREAM_SQL))
+    assert json.loads((dest / "optimize.json").read_text())["executor"] == recorded
+    assert os.environ["LEMMA_PUSHDOWN"] == "true" and "LEMMA_STREAM" not in os.environ  # put back after the run
+    assert main(["optimize", "--db", str(db), "--sql", JOIN_SQL]) == 0
+    out = capsys.readouterr().out
+    assert "executor: batch (ABI 5; [product] executor = auto): the stream gate refuses it: phase 1 streams one table" in out
+    assert json.loads((pipeline / "env.json").read_text()) == {"LEMMA_STREAM": "false", "LEMMA_PUSHDOWN": "true", "LEMMA_AGENT_SCAN": None}
+    assert main(["list"]) == 0
+    listed = capsys.readouterr().out
+    assert f"{dest.name[:12]}  stream  " in listed and f"{common.sql_key(JOIN_SQL)[:12]}  batch  " in listed
+
+
+def test_explicit_stream_on_a_refused_shape_is_an_error_and_runs_nothing(env: Path, pipeline: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    ready(env, monkeypatch)
+    monkeypatch.setenv("LEMMA_EXECUTOR", "stream")
+    db = make_db2(tmp_path)
+    for sql in (JOIN_SQL, SUBQUERY_SQL):
+        assert main(["optimize", "--db", str(db), "--sql", sql]) == 2
+        err = capsys.readouterr().err
+        assert "[product] executor = stream, but the stream gate refuses this query: phase 1 streams one table" in err and "nothing was generated" in err
+    assert not (pipeline / "argv.json").exists() and cache.list_executors() == []
+    assert main(["optimize", "--db", str(db), "--sql", STREAM_SQL]) == 0  # an accepted shape streams
+    assert "executor: stream (ABI 6; [product] executor = stream)" in capsys.readouterr().out
+
+
+def test_a_stream_setting_beside_the_product_setting_is_refused(env: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    ready(env, monkeypatch)
+    monkeypatch.setenv("LEMMA_STREAM", "false")
+    assert main(["optimize", "--db", str(make_db(tmp_path)), "--sql", STREAM_SQL]) == 2
+    assert "LEMMA_STREAM is set" in capsys.readouterr().err
+
+
+def test_an_installed_executor_of_the_other_kind_is_proved_again(env: Path, pipeline: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    ready(env, monkeypatch)
+    db = make_db(tmp_path)
+    monkeypatch.setenv("LEMMA_EXECUTOR", "batch")
+    assert main(["optimize", "--db", str(db), "--sql", STREAM_SQL]) == 0
+    monkeypatch.delenv("LEMMA_EXECUTOR")
+    capsys.readouterr()
+    assert main(["optimize", "--db", str(db), "--sql", STREAM_SQL]) == 0
+    assert "already optimized" not in capsys.readouterr().out
+    assert main(["optimize", "--db", str(db), "--sql", STREAM_SQL]) == 0
+    assert "already optimized" in capsys.readouterr().out
+
+
+def test_the_pipeline_refuses_a_product_choice_that_disagrees_with_run_stream(monkeypatch: pytest.MonkeyPatch) -> None:
+    import lemma_config
+    from research_loop.scripts import run_container_agent as rca
+
+    monkeypatch.setattr(rca, "_product_executor", None)
+    monkeypatch.setenv("LEMMA_STREAM", "false")
+    with pytest.raises(lemma_config.ConfigError, match="says 'stream' but"):
+        rca.set_product_executor({"kind": "stream", "setting": "auto", "reason": "r", "abi": 6})
+    monkeypatch.setenv("LEMMA_STREAM", "true")
+    rca.set_product_executor({"kind": "stream", "setting": "auto", "reason": "r", "abi": 6})
+    assert rca._product_executor["kind"] == "stream"
 
