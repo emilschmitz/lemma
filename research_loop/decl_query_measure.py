@@ -126,10 +126,20 @@ def _write_query_measure(
     # states the rule and its soundness argument). The reference answer below is still DuckDB on the full original SQL.
     pushdown = None
     wheres: dict[str, str | None] = {suffix: None for suffix in plans}
-    if lemma_config.get("pushdown"):
+    # A stream join (docs/STREAM.md): the build tables always get their own pushed conjuncts, as in the extension (in_duckdb.install_executor), and
+    # the streamed table never does, whatever `pushdown` says. Unfiltered, TPC-H SF10 Q12's 60M-row build side took the binary to 9 GB (OOM).
+    from declarative_spec import stream_join
+
+    stream_builds_only = "pub fn pool_open(" in spec and stream_join.is_join(spec)
+    if lemma_config.get("pushdown") or stream_builds_only:
         from declarative_spec.pushdown import plan_pushdown, scan_plan
 
         pushdown = plan_pushdown(sql, schema, dialect="duckdb")
+        if stream_builds_only:
+            from research_loop.in_duckdb import stream_builds
+
+            builds = {plans[suffix][0].casefold() for suffix in stream_builds(spec)}
+            pushdown.pushed = {table: frags for table, frags in pushdown.pushed.items() if table in builds}
         for suffix, plan in plans.items():
             # A query template: a pushed conjunct may compare with a parameter; the canonical files hold bindings[0] (the in-session
             # runs and the expected rows use it) and every binding gets its own export below (official round i: bindings[i % len]).

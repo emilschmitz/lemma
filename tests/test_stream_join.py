@@ -458,3 +458,37 @@ def test_the_gate_refuses_a_subquery_on_one_table(sql: str) -> None:
 
     with pytest.raises(DeclarativeUnsupported, match="subquery"):
         stream_join.check_sql(sql)
+
+
+def _export_rows(path: str) -> int:
+    return int.from_bytes(Path(path).read_bytes()[:8], "little")
+
+
+def test_the_export_filters_the_build_table_and_never_the_stream_table(stream_on: None, tmp_path: Path) -> None:
+    # TPC-H SF10 Q12 (2026-10-30): with pushdown = false the 60M-row build side reached the binary unfiltered and it was OOM-killed at 9 GB
+    from research_loop.decl_query_measure import write_query_measure
+
+    db = tmp_path / "j.duckdb"
+    con = duckdb.connect(str(db))
+    con.execute("CREATE TABLE t (a INTEGER NOT NULL, k VARCHAR NOT NULL, m DECIMAL(12,2) NOT NULL)")
+    con.execute("CREATE TABLE u (k VARCHAR, g VARCHAR NOT NULL, w INTEGER NOT NULL)")
+    con.execute("INSERT INTO t SELECT i, 'k' || (i % 5), 1.5 FROM range(100) r(i)")
+    con.execute("INSERT INTO u SELECT 'k' || (i % 5), 'g', i FROM range(50) r(i)")
+    con.close()
+    sql = "-- stream: t\nSELECT u.g, COUNT(*) AS c, SUM(t.m) AS sm FROM t JOIN u ON t.k = u.k WHERE u.w < 5 AND t.a >= 0 GROUP BY u.g"
+    prep = write_query_measure(sql=sql, schema=J_SCHEMA, catalog=structural_catalog(set()), db_path=db, dest=tmp_path / "prep")
+    assert _export_rows(prep["bins"]["u"]) == 5  # u.w < 5 applied to the build table
+    assert _export_rows(prep["bins"]["t"]) == 100  # t.a >= 0 stays in q_step: the stream table is whole
+    assert len(prep["rows"]) == 1  # the reference is DuckDB on the original SQL
+
+
+def test_a_phase_1_stream_export_is_still_unfiltered_with_pushdown_off(stream_on: None, tmp_path: Path) -> None:
+    from research_loop.decl_query_measure import write_query_measure
+
+    db = tmp_path / "one.duckdb"
+    con = duckdb.connect(str(db))
+    con.execute("CREATE TABLE t (a INTEGER NOT NULL, k VARCHAR NOT NULL, m DECIMAL(12,2) NOT NULL)")
+    con.execute("INSERT INTO t SELECT i, 'k', 1.5 FROM range(20) r(i)")
+    con.close()
+    prep = write_query_measure(sql="SELECT COUNT(*) AS c FROM t WHERE a < 3", schema={"t": J_SCHEMA["t"]}, catalog=structural_catalog(set()), db_path=db, dest=tmp_path / "prep")
+    assert _export_rows(prep["bins"]["t"]) == 20
