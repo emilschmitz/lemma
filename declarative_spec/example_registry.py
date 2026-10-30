@@ -186,6 +186,7 @@ UNMOUNTED: dict[str, str] = {
     "stateful_date_prefix.rs": "stateful check (tests/test_stateful.py): prefix-sum state over the date column, serve-mode differential",
     "stateful_degenerate_sum.rs": "stateful check (tests/test_stateful.py): the degenerate state that owns the table",
     "stateful_group_table.rs": "stateful check (tests/test_stateful.py): grouped table state, serve-mode differential",
+    "stream/ungrouped_sum_filter_template.rs": "stream ABI 6 check (tests/test_in_duckdb_stream.py): template parameters through lemma_query",
 }
 
 # Parked pin path (lemma.toml [wip] zero_copy / cold_stream, research_loop/menus/pin_path_archive.md): test fixtures of that path, never mounted.
@@ -217,6 +218,14 @@ STREAM_EXAMPLES: tuple[tuple[str, str], ...] = (
     (
         "stream/join_group_build_key.rs",
         "a JOIN (phase 2a, seven regions): `t` streamed JOIN `u` built ON a VARCHAR key that repeats and may be NULL, GROUP BY a build-side VARCHAR, COUNT(*) and SUM: `q_build` makes a key -> first-row `StringHashMap` with a `next` chain over the build rows (one pass from the last row) and a group slot per build row; `q_step` walks a row's chain, `lemma_skip` / `lemma_take` unfold the inner fold",
+    ),
+    (
+        "stream/group_nullable_key_count_sum.rs",
+        "GROUP BY a NULLABLE VARCHAR key, COUNT(*) and SUM: `Key` is `(valid, value)`; the NULL rows are one group of their own (a separate slot, never the empty string's), the validity bit tested before the entry is read; its output row has `None`",
+    ),
+    (
+        "stream/group_count_distinct.rs",
+        "COUNT(DISTINCT x) of a nullable VARCHAR per group: the Agg field is a `Set` (union); per slot a `StringHashSet` (its view is the set) and the same values as a list for `q_merge`, swapped out of the Vec with `set_and_swap`; `q_finish` takes the set's size",
     ),
 )
 UNMOUNTED.update({name: "mounted only with lemma.toml [run] stream (STREAM_EXAMPLES; checked by tests/test_stream.py)" for name, _w in STREAM_EXAMPLES})

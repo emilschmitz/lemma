@@ -136,7 +136,10 @@ def test_stream_examples_are_mounted_instead_of_the_run_query_set(mode: str, mon
     _env(monkeypatch, LEMMA_STREAM="1", LEMMA_EXAMPLES=mode)
     mount_examples(tmp_path)
     files = sorted(p.name for p in (tmp_path / "examples").iterdir())
-    assert files == ["INDEX.md", "group_string_count_sum.rs", "join_group_build_key.rs", "ungrouped_sum_filter.rs"]
+    assert files == [
+        "INDEX.md", "group_count_distinct.rs", "group_nullable_key_count_sum.rs", "group_string_count_sum.rs", "join_group_build_key.rs",
+        "ungrouped_sum_filter.rs",
+    ]
     for name in files[1:]:
         assert (tmp_path / "examples" / name).read_text() == (FIX / name).read_text()
     index = (tmp_path / "examples" / "INDEX.md").read_text()

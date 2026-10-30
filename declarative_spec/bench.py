@@ -202,14 +202,15 @@ def _rows_equal(
 
 
 def _row_key(row: list[object], kinds: list[str]) -> tuple[object, ...]:
+    # NULL sorts first as (False, 0): a bare None does not compare with a value (a NULL group key beside string keys)
     parts: list[object] = []
     for value, kind in zip(row, kinds, strict=True):
         if value is None:
-            parts.append(None)
+            parts.append((False, 0))
         elif kind == "float":
-            parts.append(round(_as_float(value), 6))
+            parts.append((True, round(_as_float(value), 6)))
         else:
-            parts.append(value)
+            parts.append((True, value))
     return tuple(parts)
 
 

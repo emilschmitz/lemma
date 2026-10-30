@@ -303,6 +303,7 @@ class JoinShape:
     folds: list[JFold] = field(default_factory=list)
     hit_preds: list[tuple[str, list[str]]] = field(default_factory=list)
     ok_args: list[str] = field(default_factory=list)
+    distincts: list = field(default_factory=list)  # COUNT(DISTINCT x) folds (stream_distinct.Distinct): set-valued Agg fields
 
     # Variable names: the stream table is `t`, a build table `b_<suffix>` (a bare table name can clash with a glob-imported vstd
     # function, e.g. `sub`, which Verus then reports as ambiguous; the host's own names never start with `b_`).
@@ -387,8 +388,8 @@ def read_join_shape(spec: str) -> JoinShape:
     idx_p = ", ".join(f"{i}: int" for i in idx)
     ka = re.search(rf"pub open spec fn key_at\({re.escape(tp_spec)}, {re.escape(idx_p)}\) -> ([^\n]+) \{{\n", spec)
     key = ka.group(1).strip() if ka else None
-    if key is not None and "bool" in key:
-        raise _refuse("a GROUP BY key over a nullable column (a NULL cell's value is not part of the chunk view)")
+    if key is not None:
+        stream.check_key_guards(spec, {n: stream.nullable_fields(cols_of[t]) for n, t in zip(pvars, types, strict=True)})
     rh = stream._spec_fn_sig(spec, "row_hit")
     if rh is None or rh[: 2 * ntab] != [*tabs, *[(i, "int") for i in idx]]:
         raise _refuse("no row_hit(<tables>, <row indices>, ..) of the expected form")
@@ -424,17 +425,23 @@ def read_join_shape(spec: str) -> JoinShape:
         if rec != args or inner_args != args:
             raise _refuse(f"fold {fm.group(1)} recurses with other arguments")
         found[fm.group(1)] = JFold(name=fm.group(1), inner=fm.group(3), args=[sub(a) for a in args])
+    distinct = _read_distincts(spec, found, pvars, types, idx, sub)
     inner_names = {f.inner for f in found.values()}
     for name in re.findall(r"pub open spec fn (\w+)\([^\n]*\n    decreases ", spec):
         if name in found or name == "seq_le":
             continue
         base = re.sub(r"_d\d+$", "", name)
         if base not in found or not (name in inner_names or re.fullmatch(rf"{re.escape(base)}_d\d+", name)):
-            raise _refuse(f"spec fn {name} is not a recognized fold over the join (COUNT DISTINCT and other folds are not phase 2a)")
+            raise _refuse(f"spec fn {name} is not a recognized fold over the join (only SUM / COUNT / AVG and COUNT DISTINCT are stated)")
+        if name == f"{base}_d{ntab - 1}" and base in distinct:
+            continue  # the last-occurrence term of a COUNT DISTINCT (read by _read_distincts)
         body = re.search(rf"pub open spec fn {re.escape(name)}\(.*?\n\}}\n", spec, re.DOTALL)
         if body is not None and re.search(r"\b(?:exists|forall|choose)\s*\|", body.group(0)):
             raise _refuse(f"fold {name}: its per-row term looks at other rows (not phase 2a)")
-    shape.folds = list(found.values())
+    shape.folds = [f for f in found.values() if f.name not in distinct]
+    shape.distincts = [distinct[n] for n in found if n in distinct]
+    for d in shape.distincts:
+        d.tabs, d.types = shape.tabs, shape.types
     ok = re.search(r"pub open spec fn run_query_ok\([^\n]*\n(.*?)\n\}\n", spec, re.DOTALL)
     if ok is None:
         raise _refuse("no run_query_ok")
@@ -444,9 +451,55 @@ def read_join_shape(spec: str) -> JoinShape:
         if hs is None or hs[: 2 * ntab] != [*tabs, *[(i, "int") for i in idx]]:
             raise _refuse(f"{name}: unexpected signature")
         shape.hit_preds.append((name, [sub(n) for n, _t in hs[2 * ntab :]]))
-    if not shape.folds:
+    if not shape.folds and not shape.distincts:
         raise _refuse("not an aggregate query (phase 2a streams grouped or ungrouped aggregates over a join only)")
     return shape
+
+
+def _read_distincts(spec: str, found: dict[str, JFold], pvars: list[str], types: list[str], idx: list[str], sub) -> dict:
+    """The COUNT DISTINCT folds among ``found``: the innermost level is the spec's last-occurrence term, every level between a plain
+    nested sum (``X_d<e+1>(.., ie, 0, ..) + X_d<e>(.., ie + 1, ..)``). Others are left to the caller (refused if they quantify)."""
+    from declarative_spec import stream_distinct
+
+    m = len(pvars) - 1
+    pv = ", ".join(pvars)
+    out = {}
+    for f in found.values():
+        last = re.search(rf"pub open spec fn {re.escape(f.name)}_d{m}\(.*?\n\}}\n", spec, re.DOTALL)
+        if last is None or not re.search(r"\bexists\s*\|", last.group(0)):
+            continue
+        rec_args = "".join(f", {a}" for a in re.findall(r"\w+", ",".join(_spec_args(spec, f.name))))
+        tm = re.search(
+            rf"\n        \(if (.+?) \{{ (\w+) \}} else \{{ 0int \}}\) \+ {re.escape(f.name)}_d{m}\({re.escape(pv)}, "
+            rf"{re.escape(', '.join(idx[:m]))}, i{m} \+ 1{re.escape(rec_args)}\)\n",
+            last.group(0),
+        )
+        term = None if tm is None else stream_distinct.parse_term(tm.group(1), tm.group(2), pvars, idx, spec, sub)
+        if term is None:
+            raise _refuse(f"fold {f.name}: its per-row term looks at other rows (only COUNT DISTINCT's last-occurrence form is stated)")
+        if f.inner != f"{f.name}_d1":
+            raise _refuse(f"COUNT DISTINCT {f.name}: unexpected nesting")
+        for e in range(1, m):
+            line = (
+                f"        {f.name}_d{e + 1}({pv}, {', '.join(idx[: e + 1])}, 0{rec_args}) + "
+                f"{f.name}_d{e}({pv}, {', '.join([*idx[:e], f'i{e} + 1'])}{rec_args})\n"
+            )
+            if line not in spec:
+                raise _refuse(f"COUNT DISTINCT {f.name}: level {e} is not a plain nested sum")
+        pred, pargs, keyed, valfn, vtype = term
+        out[f.name] = stream_distinct.Distinct(
+            name=f.name, pred=pred, pred_args=pargs, keyed=keyed, valfn=valfn, vtype=vtype, args=f.args, levels=m,
+        )
+    return out
+
+
+def _spec_args(spec: str, name: str) -> list[str]:
+    """The argument names of the spec fold ``name`` after its tables and ``i0`` (``k``, ``param_*``)."""
+    from declarative_spec import stream
+
+    sig = stream._spec_fn_sig(spec, name) or []
+    names = [n for n, _t in sig]
+    return names[names.index("i0") + 1 :] if "i0" in names else []
 
 
 # ---- emission -------------------------------------------------------------------------------------------------------------------------
@@ -613,16 +666,21 @@ def emit_join_contract(sh: JoinShape) -> str:
     tv, ts = sh.tabs[0], sh.ts
     cols = f"Cols_{ts}"
     key = sh.key or "()"
+    from declarative_spec import stream_distinct
+
     fields: list[tuple[str, str, str]] = []  # (field, row expr, rng expr)
     for f in sh.folds:
         fields.append(
             (f.name, _c(f.inner, sh.ta, "i0", "0", *f.args), f"{_c(f.name, sh.ta, 'lo', *f.args)} - {_c(f.name, sh.ta, 'hi', *f.args)}")
         )
+    for d in sh.distincts:  # COUNT DISTINCT: a set of values, merged by union (stream_distinct)
+        fields.append((d.field, stream_distinct.row_expr(d), f"stream_{d.field}({sh.ta}, lo, hi, k, p)"))
     for c, _pred, _args in _counts(sh):
         fields.append((c, _c(f"stream_{c}_d1", sh.ta, "i0", "0", "k", "p"), f"stream_{c}({sh.ta}, lo, k, p) - stream_{c}({sh.ta}, hi, k, p)"))
-    struct_fields = "\n".join(f"    pub {n}: int," for n, _r, _g in fields)
-    zero = ", ".join(f"{n}: 0int" for n, _r, _g in fields)
-    plus = ",\n        ".join(f"{n}: a.{n} + b.{n}" for n, _r, _g in fields)
+    sets = {d.field: d.vtype for d in sh.distincts}
+    struct_fields = "\n".join(f"    pub {n}: {f'Set<{sets[n]}>' if n in sets else 'int'}," for n, _r, _g in fields)
+    zero = ", ".join(f"{n}: {f'Set::<{sets[n]}>::empty()' if n in sets else '0int'}" for n, _r, _g in fields)
+    plus = ",\n        ".join(f"{n}: a.{n}.union(b.{n})" if n in sets else f"{n}: a.{n} + b.{n}" for n, _r, _g in fields)
     row_in = ",\n            ".join(f"{n}: {r}" for n, r, _g in fields)
     rng = ",\n        ".join(f"{n}: {g}" for n, _r, g in fields)
 
@@ -640,6 +698,11 @@ def emit_join_contract(sh: JoinShape) -> str:
         e, b = _total_count(sh, c, pred, args)
         tot_ens += e
         tot_body.append(b)
+    for d in sh.distincts:
+        e, b = stream_distinct.total(d, f"agg_rng({sh.ta}, 0, {tv}.n as int, k, p)")
+        tot_ens += e
+        tot_body.append(b)
+    law = {x: stream_distinct.laws([d.field for d in sh.distincts], x) for x in ("left", "right", "comm", "assoc")}
 
     params_struct = "\n".join(f"    pub {n}: {t}," for n, t in sh.params)
     params_eq = " && ".join(f"a.{n} == b.{n}" for n, _t in sh.params) or "true"
@@ -649,7 +712,7 @@ def emit_join_contract(sh: JoinShape) -> str:
     )
     vb = ",\n        ".join(f"valid_cols_{b}({v})" for v, b in zip(sh.bvars, sh.builds, strict=True))
     chunk = stream._chunk_items(stream.Shape(tv=tv, ts=ts, cols=sh.cols, params=sh.params, key=sh.key, rh_args=sh.rh_args))
-    extra = "\n\n".join(_count_fns(sh))
+    extra = "\n\n".join([*_count_fns(sh), *(fn for d in sh.distincts for fn in stream_distinct.emit_fns(d))])
     builds_txt = ", ".join(f"`{b}`" for b in sh.builds)
     return f"""{stream.STREAM_MARKER}
 {JOIN_MARKER} {ts} is streamed (outermost); {', '.join(sh.builds)} {'is a build table' if len(sh.builds) == 1 else 'are build tables'} (materialized, read-only)
@@ -747,10 +810,10 @@ pub proof fn lemma_agg_laws()
         monoid_laws(agg_zero(), agg_plus_f()),
         comm_laws(agg_plus_f()),
 {{
-    assert forall|a: Agg| #[trigger] agg_plus(agg_zero(), a) == a by {{  }}
-    assert forall|a: Agg| #[trigger] agg_plus(a, agg_zero()) == a by {{  }}
-    assert forall|a: Agg, b: Agg| #[trigger] agg_plus(a, b) == agg_plus(b, a) by {{  }}
-    assert forall|a: Agg, b: Agg, c: Agg| #[trigger] agg_plus(agg_plus(a, b), c) == agg_plus(a, agg_plus(b, c)) by {{  }}
+    assert forall|a: Agg| #[trigger] agg_plus(agg_zero(), a) == a by {{ {law["left"]} }}
+    assert forall|a: Agg| #[trigger] agg_plus(a, agg_zero()) == a by {{ {law["right"]} }}
+    assert forall|a: Agg, b: Agg| #[trigger] agg_plus(a, b) == agg_plus(b, a) by {{ {law["comm"]} }}
+    assert forall|a: Agg, b: Agg, c: Agg| #[trigger] agg_plus(agg_plus(a, b), c) == agg_plus(a, agg_plus(b, c)) by {{ {law["assoc"]} }}
 }}
 
 // The whole stream table against the builds: what q_finish needs to meet run_query_ok.
