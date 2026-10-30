@@ -858,7 +858,7 @@ def make_db2(tmp_path: Path) -> Path:
 
 
 def test_auto_streams_a_single_table_aggregate_and_batches_a_join_or_a_subquery(env: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The gate decides before generation: single-table aggregates and inner equi-joins stream; outer joins, subqueries, DISTINCT batch."""
+    """The gate decides before generation: single-table aggregates (COUNT DISTINCT too) and inner equi-joins stream; outer joins, subqueries, SELECT DISTINCT batch."""
     from lemma_cli import executor
 
     db = make_db2(tmp_path)
@@ -866,11 +866,12 @@ def test_auto_streams_a_single_table_aggregate_and_batches_a_join_or_a_subquery(
     for sql in (STREAM_SQL, "SELECT SUM(a) AS s FROM t WHERE b > 2", JOIN_SQL):
         choice = executor.choose(sql, db)
         assert (choice.kind, choice.abi, choice.setting) == ("stream", 6, "auto") and "accepts" in choice.reason
-    for sql in (LEFT_JOIN_SQL, SUBQUERY_SQL, "SELECT COUNT(DISTINCT b) AS d FROM t"):
+    for sql in (LEFT_JOIN_SQL, SUBQUERY_SQL, "SELECT DISTINCT b FROM t"):
         choice = executor.choose(sql, db)
         assert (choice.kind, choice.abi) == ("batch", 5) and choice.reason.startswith("the stream gate refuses it: "), choice
     assert "LEFT JOIN" in executor.choose(LEFT_JOIN_SQL, db).reason
-    assert "DISTINCT" in executor.choose("SELECT COUNT(DISTINCT b) AS d FROM t", db).reason
+    assert "DISTINCT" in executor.choose("SELECT DISTINCT b FROM t", db).reason
+    assert executor.choose("SELECT COUNT(DISTINCT b) AS d FROM t", db).kind == "stream"  # a set-valued field since c76a528
     assert all(k not in os.environ for k in executor.STREAM_ENV)  # the gate's emission leaves the environment as it found it
     monkeypatch.setenv("LEMMA_EXECUTOR", "batch")
     assert executor.choose(STREAM_SQL, db) == executor.Choice("batch", "batch", "[product] executor = batch")
