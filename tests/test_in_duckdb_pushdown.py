@@ -148,6 +148,97 @@ def test_a_predicate_duckdb_keeps_above_its_scan_is_evaluated_on_each_chunk(phom
     assert _same(con.execute(official_measure.lemma_query_sql(sql)).fetchall(), con.execute(sql).fetchall(), False)
 
 
+# ---- conjuncts over one VARCHAR column: DuckDB's executor on the dictionary's entries, one byte per row (DictMaskScan) ----------------
+TEN = {
+    "in": "\"uom\" IN ('USD', 'EUR')",
+    "not_in": "\"uom\" NOT IN ('USD')",  # a NULL row: NULL, not kept
+    "like": "\"uom\" LIKE 'late-%'",
+    "null_entry": "(\"uom\" IS NULL) OR (\"uom\" = 'USD')",  # the NULL entry's verdict is true: NULL rows are kept
+    "with_others": "(\"uom\" IN ('USD', 'late-1')) AND (\"adsh\" LIKE 'a1%') AND (\"qtrs\" + 1 > 1)",  # two masks chained, then the residual
+}
+
+
+def _edited_nullable(phome: Path, tmp_path: Path, key: str, where: str) -> Path:
+    """_edited, and the fields declared nullable in the manifest (the scan keeps NULL rows instead of raising)."""
+    home = _edited(phome, tmp_path, key, where)
+    path = _manifest_path(home, key)
+    m = json.loads(path.read_text())
+    for e in m["inputs"]:
+        if e["kind"] == "field":
+            e["nullable"] = True
+    path.write_text(json.dumps(m))
+    return home
+
+
+def _checkpoint_as(con: duckdb.DuckDBPyConnection, compression: str) -> None:
+    """After `PRAGMA force_compression` and the inserts: the committed rows of num.uom on disk, in that compression."""
+    con.execute("CHECKPOINT")
+    seen = {str(r[0]).lower() for r in con.execute("SELECT compression FROM pragma_storage_info('num') WHERE column_name = 'uom' AND segment_type = 'VARCHAR'").fetchall()}
+    assert compression in seen, seen
+
+
+@needs_ext
+@pytest.mark.parametrize("compression", ["dictionary", "fsst", "uncompressed"])
+@pytest.mark.parametrize("name", sorted(TEN))
+def test_a_varchar_conjunct_keeps_exactly_duckdbs_rows_in_every_vector_form(name: str, compression: str, phome: Path, tmp_path: Path) -> None:
+    """Byte for byte against the Python encoding of the rows DuckDB keeps: DICTIONARY vectors (mask, NULL entry, a filtered selection over
+    it, deleted rows) and FSST / FLAT ones (the executor on the rows), several row groups, 8 threads."""
+    where = TEN[name]
+    home = _edited_nullable(phome, tmp_path, "dict", where)
+    con = _connect(home, str(tmp_path / "t.duckdb"))
+    con.execute(f"PRAGMA force_compression = '{compression}'")
+    _big_num(con, 3 * ROW_GROUP + 4567, nulls=True)
+    _checkpoint_as(con, compression)
+    con.execute("SET lemma_scan_threads = 8")
+    got = _scan(con, SMALL["dict"][1])
+    ref = duckdb.connect()
+    _big_num(ref, 3 * ROW_GROUP + 4567, nulls=True)
+    ref.execute(f"CREATE TABLE kept AS SELECT * FROM num WHERE {where} ORDER BY rowid")
+    ref.execute("DROP TABLE num")
+    ref.execute("ALTER TABLE kept RENAME TO num")
+    want = _reference(ref, json.loads(_manifest_path(home, "dict").read_text()))
+    assert 0 < got[0][3] < con.execute("SELECT COUNT(*) FROM num").fetchone()[0]
+    assert [g[:4] for g in got] == [w[:4] for w in want]
+    for g, w in zip(got, want, strict=True):
+        assert g[4] == w[4], g[1]
+
+
+@needs_ext
+def test_a_dictionary_bigger_than_a_vector_and_the_callers_uncommitted_rows(phome: Path, tmp_path: Path) -> None:
+    """5000 entries (the executor takes 2048 at a time; a verdict must land on its own entry), then the transaction's own rows: FLAT vectors
+    after the committed dictionary ones, in the same scan."""
+    where = "\"uom\" LIKE 's1%'"
+    home = _edited(phome, tmp_path, "dict", where)
+    con = _connect(home, str(tmp_path / "t.duckdb"))
+    con.execute("PRAGMA force_compression = 'dictionary'")
+    con.execute("CREATE TABLE num (adsh VARCHAR, qtrs BIGINT, uom VARCHAR, value DECIMAL(38,4))")
+    con.execute(f"INSERT INTO num SELECT 'a', i % 5, 's' || (i % 5000), 1 FROM range({2 * ROW_GROUP}) t(i)")
+    _checkpoint_as(con, "dictionary")
+    count = f"SELECT COUNT(*) FROM num WHERE {where}"
+    assert _scan(con, SMALL["dict"][1])[0][3] == con.execute(count).fetchone()[0] > 0
+    con.execute("BEGIN")
+    con.execute("INSERT INTO num SELECT 'a', 0, ['s1-local', 'other'][1 + i % 2], 1 FROM range(1000) t(i)")
+    con.execute("DELETE FROM num WHERE uom = 's1234'")
+    assert _scan(con, SMALL["dict"][1])[0][3] == con.execute(count).fetchone()[0]
+    con.execute("ROLLBACK")
+
+
+@needs_ext
+def test_a_throwing_conjunct_never_sees_the_dictionary_entries_of_rows_a_filter_dropped(phome: Path, tmp_path: Path) -> None:
+    """'abc' is in the dictionary, but `qtrs = 0` (a table filter) drops its rows: the conjunct that would raise on it stays per row, so this
+    is DuckDB's answer, not an error (a mask would evaluate it on every entry)."""
+    where = "(\"qtrs\" = 0) AND ((CASE WHEN \"uom\" = 'abc' THEN CAST(error('boom') AS INTEGER) ELSE 1 END) = 1)"
+    home = _edited(phome, tmp_path, "dict", where)
+    con = _connect(home, str(tmp_path / "t.duckdb"))
+    con.execute("PRAGMA force_compression = 'dictionary'")
+    con.execute("CREATE TABLE num (adsh VARCHAR, qtrs BIGINT, uom VARCHAR, value DECIMAL(38,4))")
+    con.execute(
+        f"INSERT INTO num SELECT 'a', CASE WHEN i % 3 = 0 THEN 1 ELSE 0 END, CASE WHEN i % 3 = 0 THEN 'abc' ELSE (1 + i % 2)::VARCHAR END, 1 FROM range({ROW_GROUP}) t(i)"
+    )
+    _checkpoint_as(con, "dictionary")
+    assert _scan(con, SMALL["dict"][1])[0][3] == con.execute(f"SELECT COUNT(*) FROM num WHERE {where}").fetchone()[0] > 0
+
+
 @needs_ext
 def test_a_predicate_duckdb_proves_empty_scans_no_row_and_a_bad_one_is_an_error(phome: Path, tmp_path: Path) -> None:
     home = _edited(phome, tmp_path, "usum", '("line" > 5) AND ("line" < 3)')

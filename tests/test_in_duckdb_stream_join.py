@@ -17,6 +17,9 @@ from __future__ import annotations
 import json
 import random
 import re
+import shutil
+import subprocess
+import sys
 import threading
 from decimal import Decimal
 from pathlib import Path
@@ -335,6 +338,74 @@ def test_the_build_side_is_filtered_by_its_own_predicate(home: Path) -> None:
     _fill(con, random.Random(21), 4000, 20_000, keys=2, null_share=0.95)
     assert con.execute("SELECT COUNT(*) FROM u WHERE k IS NULL").fetchone()[0] > 18_000
     assert _sorted(_lemma(con)) == _sorted(con.execute(PLAIN).fetchall())
+
+
+# The build table's destinations are sized for the whole table and never zero-filled (ScanTable, ByteBuffer): nothing of that memory may
+# reach the executor, and a filtered scan must not touch it (Q12's build side wrote 1.2 GB of zeros for 310,803 rows).
+RSS_SCRIPT = """
+import resource, sys, duckdb
+db, ext, home, sql = sys.argv[1:5]
+con = duckdb.connect(db, read_only=True, config={"allow_unsigned_extensions": "true"})
+con.execute(f"LOAD '{ext}'")
+con.execute(f"SET lemma_home = '{home}'")
+con.execute("SET lemma_scan_threads = 4")
+rows = con.execute("SELECT COUNT(k), COUNT(g), SUM(w) FROM u").fetchall()  # the pages in the buffer pool
+before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+got = con.execute(f"SELECT * FROM lemma_query('{sql}')").fetchall()
+after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+print(after - before, len(got))
+"""
+
+
+@needs_ext
+def test_a_filtered_build_table_does_not_touch_its_whole_table_destination(home: Path, tmp_path: Path) -> None:
+    """6M build rows of 16-byte cells (96 MB of destination), 60 kept: the call's peak grows by far less than the destination."""
+    path = tmp_path / "wide.duckdb"
+    con = duckdb.connect(str(path))
+    _create(con, u_w="DECIMAL(38,2)")
+    con.execute("INSERT INTO t VALUES (1, 'x', 1.00)")
+    con.execute("INSERT INTO u SELECT CASE WHEN i % 100000 = 0 THEN 'x' END, 'G', 1.50 FROM range(6000000) r(i)")
+    con.close()
+    out = subprocess.run([sys.executable, "-c", RSS_SCRIPT, str(path), str(EXTENSION), str(home), PLAIN_BUILD_SUM], check=True, capture_output=True, text=True)
+    grown_kb, rows = map(int, out.stdout.split())
+    assert rows == 1
+    assert grown_kb < 48 * 1024, f"the call grew the peak by {grown_kb} KB; the destination is 96 MB"
+
+
+@needs_ext
+@pytest.mark.parametrize("threads", [1, 3, 8])
+@pytest.mark.parametrize(
+    "where",
+    [
+        None,  # the installed `k IS NOT NULL`
+        "\"g\" <> 'nope'",  # NULL keys kept: the validity bytes hold both values, the spec drops those rows
+        "(\"g\" NOT IN ('nope', 'never')) AND ((\"k\" IS NULL) OR (\"k\" <> 'none'))",  # two conjuncts over one VARCHAR column each (masks)
+    ],
+)
+def test_a_build_side_whose_first_row_groups_keep_nothing(where: str | None, threads: int, home: Path, tmp_path: Path) -> None:
+    """Row groups of 2048: the first 40 of u have only NULL keys (group 'nope' or G; every predicate here is sound: no 'nope' row has a key),
+    the kept rows come late and some are deleted: only the staged commit writes the (uninitialized) destinations."""
+    run_home = home
+    if where is not None:
+        run_home = tmp_path / "home"
+        shutil.copytree(home, run_home)
+        path = run_home / "executors" / in_duckdb.executor_key(PLAIN) / "manifest.json"
+        m = json.loads(path.read_text())
+        for e in m["inputs"]:
+            if e["kind"] == "rows" and e["suffix"] == "u":
+                e["where"] = where
+        path.write_text(json.dumps(m))
+    con = _connect(run_home, tmp_path / "rg.duckdb", 2048)
+    _create(con)
+    con.execute("INSERT INTO t SELECT i % 5, ['x', 'k1', 'k2', 'zz'][1 + i % 4], i FROM range(6000) r(i)")
+    con.execute(f"INSERT INTO u SELECT NULL, ['nope', 'G'][1 + i % 2], 1 FROM range({40 * 2048}) r(i)")
+    con.execute("INSERT INTO u SELECT ['x', 'k1', 'k3', NULL][1 + i % 4], ['G', 'H', 'I'][1 + i % 3], i % 7 FROM range(9000) r(i)")
+    con.execute("CHECKPOINT")
+    con.execute("DELETE FROM u WHERE w = 3 AND k = 'x'")
+    con.execute(f"SET lemma_scan_threads = {threads}")
+    got = _lemma(con)
+    assert _last(con)["build_us"] >= 0
+    assert _sorted(got) == _sorted(con.execute(PLAIN).fetchall())
 
 
 @needs_ext

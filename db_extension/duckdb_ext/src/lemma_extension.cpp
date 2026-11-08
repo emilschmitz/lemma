@@ -932,6 +932,26 @@ struct LocalDict {
 	std::vector<int64_t> memo;   // per chunk: dictionary-vector index -> code
 };
 
+// Byte buffers a scan writes itself: resize() leaves the cells uninitialized. A destination is sized for the table's upper bound before
+// the scan; zero-filling it would touch every page although a filtered scan keeps a sliver (TPC-H SF10 Q12's build table: 1.2 GB of
+// zeros, serially, for 310,803 rows: half of the query's wall clock, docs/STREAM.md).
+template <class T>
+struct UninitAllocator : std::allocator<T> {
+	template <class U>
+	struct rebind {
+		using other = UninitAllocator<U>;
+	};
+	template <class U>
+	void construct(U *ptr) noexcept {
+		::new (static_cast<void *>(ptr)) U;
+	}
+	template <class U, class... Args>
+	void construct(U *ptr, Args &&...args) {
+		::new (static_cast<void *>(ptr)) U(std::forward<Args>(args)...);
+	}
+};
+using ByteBuffer = std::vector<uint8_t, UninitAllocator<uint8_t>>;
+
 // What one scan task produced: rows [offset, offset + count) of every fixed-width destination, its strings and dictionaries.
 struct TaskOut {
 	uint64_t offset = 0, count = 0;
@@ -939,7 +959,7 @@ struct TaskOut {
 	std::vector<LocalDict> dicts;
 	// A filtered scan (pushed predicate): the task decodes its fixed-width cells into staging buffers (one per plan, in plan
 	// order), copied to their final place once every earlier task's row count is known; no gaps, no packing afterwards.
-	std::unique_ptr<std::vector<std::vector<uint8_t>>> stage;
+	std::unique_ptr<std::vector<ByteBuffer>> stage;
 	uint64_t seq = 0;
 };
 
@@ -1192,7 +1212,7 @@ struct CachedInputs {
 	// with lemma_free_input when the entry and every call holding it are gone.
 	std::vector<std::shared_ptr<OwnedBuffer>> lent;
 	std::vector<std::string> buffers;                 // BUFFER: strings, dictionaries (borrowed by lemma_run as they are)
-	std::vector<std::vector<uint8_t>> bytes;          // BYTES: bool, validity (borrowed as they are)
+	std::vector<ByteBuffer> bytes;                    // BYTES: bool, validity (borrowed as they are)
 	std::vector<std::unique_ptr<uint8_t[]>> owned;    // OWNED (ABI 4): a copy of the cells; each call gets its own library buffer
 	std::vector<uint64_t> width;                      // OWNED, LENT: bytes per cell
 	std::vector<LemmaCol> cols;                       // n of every input; data/len of LENT, BYTES and BUFFER inputs
@@ -1203,7 +1223,7 @@ struct CachedInputs {
 
 struct ScanResult {
 	std::vector<std::string> buffers;                // borrowed byte inputs: strings, dictionaries
-	std::vector<std::vector<uint8_t>> bytes;         // borrowed one-byte inputs: bool, validity
+	std::vector<ByteBuffer> bytes;                   // borrowed one-byte inputs: bool, validity
 	// owned inputs (null where an input is not owned): taken by lemma_run (ABI 4), or lent to lemma_run_borrowed (ABI 5) and freed
 	// here afterwards unless the input cache keeps them
 	std::vector<std::shared_ptr<OwnedBuffer>> owned;
@@ -1243,15 +1263,113 @@ struct ScanSource {
 	uint64_t upper = 0;  // rows in the collection (visible or not): an upper bound of what this source yields
 };
 
+// A conjunct of a pushed predicate that reads one VARCHAR column (PushedScan::dict), applied by DictMaskScan.
+struct DictConjunct {
+	idx_t col = 0;               // its chunk column
+	unique_ptr<Expression> expr; // over chunk column 0
+};
+
+// The scan worker's side of those conjuncts. Above the scan a conjunct runs per row (TPC-H SF10 Q12: `l_shipmode IN ('MAIL', 'SHIP')`
+// cost 25 ns per row, 30 % of the build scan's CPU). A DICTIONARY vector's row IS its entry, so DuckDB's executor runs once per dictionary,
+// on the entries (the NULL entry too: its verdict is a NULL row's), and each row reads one byte; the mask is kept while the next chunk
+// has the same dictionary object (same non-empty id, a random UUID per reusable dictionary; same entry array and size, as StreamVec).
+// Other vectors, and a dictionary without an id that is bigger than the chunk: the executor on the chunk's rows.
+struct DictMaskScan {
+	struct One {
+		const DictConjunct *c = nullptr;
+		unique_ptr<ExpressionExecutor> exec;
+		DataChunk column; // the one column the executor reads
+		std::vector<uint8_t> mask;
+		std::string id;
+		const string_t *entries = nullptr;
+	};
+	std::vector<unique_ptr<One>> ones;
+	SelectionVector a, b, tmp;
+
+	DictMaskScan(ClientContext &context, const std::vector<DictConjunct> &dict, const vector<LogicalType> &types)
+	    : a(STANDARD_VECTOR_SIZE), b(STANDARD_VECTOR_SIZE), tmp(STANDARD_VECTOR_SIZE) {
+		for (auto &d : dict) {
+			ones.push_back(make_uniq<One>());
+			ones.back()->c = &d;
+			ones.back()->exec = make_uniq<ExpressionExecutor>(context, *d.expr);
+			ones.back()->column.InitializeEmpty(vector<LogicalType> {types[d.col]});
+		}
+	}
+
+	// mask[e] = the verdict on entry e of `child` (the executor takes at most a vector at a time).
+	void EvalEntries(One &o, Vector &child, idx_t nents) {
+		o.mask.assign(nents, 0);
+		for (idx_t lo = 0; lo < nents; lo += STANDARD_VECTOR_SIZE) {
+			idx_t hi = MinValue<idx_t>(nents, lo + STANDARD_VECTOR_SIZE);
+			o.column.data[0].Slice(child, lo, hi);
+			o.column.SetCardinality(hi - lo);
+			idx_t kept = o.exec->SelectExpression(o.column, tmp);
+			for (idx_t i = 0; i < kept; i++) {
+				o.mask[lo + tmp.get_index(i)] = 1;
+			}
+		}
+	}
+
+	// The rows of `chunk` that pass every conjunct: their count; `sel` is their selection (nullptr: no conjunct ran).
+	idx_t Apply(DataChunk &chunk, SelectionVector *&sel) {
+		idx_t count = chunk.size();
+		sel = nullptr;
+		SelectionVector *out = &a;
+		for (auto &op : ones) {
+			One &o = *op;
+			if (count == 0) {
+				break;
+			}
+			Vector &vec = chunk.data[o.c->col];
+			bool by_mask = false;
+			if (vec.GetVectorType() == VectorType::DICTIONARY_VECTOR && DictionaryVector::DictionarySize(vec).IsValid() &&
+			    DictionaryVector::Child(vec).GetVectorType() == VectorType::FLAT_VECTOR) {
+				auto &child = DictionaryVector::Child(vec);
+				idx_t nents = DictionaryVector::DictionarySize(vec).GetIndex();
+				const auto *entries = FlatVector::GetData<string_t>(child);
+				const std::string &id = DictionaryVector::DictionaryId(vec);
+				bool same = !id.empty() && id == o.id && entries == o.entries && nents == o.mask.size();
+				if (same || !id.empty() || nents <= chunk.size()) {
+					if (!same) {
+						EvalEntries(o, child, nents);
+						o.id = id;
+						o.entries = entries;
+					}
+					auto &rows = DictionaryVector::SelVector(vec);
+					const uint8_t *mask = o.mask.data();
+					sel_t *dst = out->data();
+					idx_t n = 0;
+					for (idx_t r = 0; r < count; r++) { // branch-free: the row is kept by moving n past it
+						sel_t row = sel ? sel_t(sel->get_index(r)) : sel_t(r);
+						dst[n] = row;
+						n += mask[rows.get_index(row)];
+					}
+					count = n;
+					by_mask = true;
+				}
+			}
+			if (!by_mask) {
+				o.column.data[0].Reference(vec);
+				o.column.SetCardinality(chunk.size());
+				count = o.exec->SelectExpression(o.column, *out, sel, count);
+			}
+			sel = out;
+			out = out == &a ? &b : &a;
+		}
+		return count;
+	}
+};
+
 // Rows of one table, in the single-threaded scan order: parallel tasks write their rows at their row-group position, then the
 // rows are packed toward the front where a task returned fewer rows than its range (deleted rows, rows of a newer snapshot).
 // Every worker uses the caller's transaction, so all see one snapshot (and its own uncommitted rows).
 // With a pushed-down predicate (PushedScan): DuckDB's table filters are applied inside the scan (zone maps skip row groups and
-// vectors; a vector returns only its matching rows) and the filters DuckDB kept above its scan (`residual`) select rows of each
-// chunk before any cell is decoded, so only matching rows are handed over.
+// vectors; a vector returns only its matching rows) and the filters DuckDB kept above its scan (`dict`, then `residual`) select rows
+// of each chunk before any cell is decoded, so only matching rows are handed over.
 uint64_t ScanTable(ClientContext &context, DuckTransaction &transaction, DataTable &storage, const vector<StorageIndex> &ids,
                    const vector<LogicalType> &types, std::vector<ColPlan> &plans, const std::shared_ptr<Executor> &exec,
-                   ScanResult &res, idx_t want_threads, TableFilterSet *filters, const Expression *residual) {
+                   ScanResult &res, idx_t want_threads, TableFilterSet *filters, const Expression *residual,
+                   const std::vector<DictConjunct> &dict) {
 	std::vector<std::unique_ptr<ScanSource>> sources;
 	auto committed = make_uniq<ScanSource>();
 	committed->collection = storage.GetRowGroupCollection().get();
@@ -1309,10 +1427,10 @@ uint64_t ScanTable(ClientContext &context, DuckTransaction &transaction, DataTab
 	std::exception_ptr error;
 	// A filtered scan stages each task's cells and commits them in task order (TaskOut::stage); a whole-table scan writes them
 	// at the task's row-group position and packs the (rare) gaps of deleted rows afterwards.
-	const bool staged = filters || residual;
+	const bool staged = filters || residual || !dict.empty();
 	std::mutex order_lock;
 	std::condition_variable order_cv;
-	std::vector<std::unique_ptr<std::vector<std::vector<uint8_t>>>> spare; // free staging sets
+	std::vector<std::unique_ptr<std::vector<ByteBuffer>>> spare; // free staging sets
 	idx_t stage_sets = 0;
 	uint64_t next_seq = 0, frontier = 0, frontier_at = 0, last_start = 0;
 	std::map<uint64_t, TaskOut *> finished; // decoded tasks waiting for every earlier task's row count
@@ -1351,6 +1469,7 @@ uint64_t ScanTable(ClientContext &context, DuckTransaction &transaction, DataTab
 			if (residual) {
 				keep = make_uniq<ExpressionExecutor>(context, *residual);
 			}
+			DictMaskScan masks(context, dict, types);
 			for (auto &src : sources) {
 				CollectionScanState &cs = src->local ? ts.local_state : ts.table_state;
 				while (!stop.load()) {
@@ -1362,7 +1481,7 @@ uint64_t ScanTable(ClientContext &context, DuckTransaction &transaction, DataTab
 						std::unique_lock<std::mutex> lk(order_lock);
 						if (spare.empty() && stage_sets < 2 * nthreads) {
 							stage_sets++;
-							auto set = make_uniq<std::vector<std::vector<uint8_t>>>(plans.size());
+							auto set = make_uniq<std::vector<ByteBuffer>>(plans.size());
 							for (auto &p : plans) {
 								(*set)[p.idx].resize(p.width * row_group_rows);
 							}
@@ -1411,13 +1530,18 @@ uint64_t ScanTable(ClientContext &context, DuckTransaction &transaction, DataTab
 						if (t->count + chunk.size() > range) {
 							throw InternalException("Lemma: a scan task returned more rows than its range");
 						}
-						if (keep) {
-							idx_t kept = keep->SelectExpression(chunk, sel);
+						if (keep || !dict.empty()) {
+							SelectionVector *so_far = nullptr;
+							idx_t kept = masks.Apply(chunk, so_far);
+							if (keep && kept > 0) {
+								kept = keep->SelectExpression(chunk, sel, so_far, kept);
+								so_far = &sel;
+							}
 							if (kept == 0) {
 								continue;
 							}
 							if (kept < chunk.size()) {
-								chunk.Slice(sel, kept);
+								chunk.Slice(*so_far, kept);
 							}
 						}
 						for (auto &p : plans) {
@@ -1589,6 +1713,7 @@ struct PushedScan {
 	std::unordered_map<std::string, idx_t> pos; // column name -> chunk column
 	unique_ptr<TableFilterSet> filters;
 	unique_ptr<Expression> residual;
+	std::vector<DictConjunct> dict; // conjuncts over one VARCHAR column, applied before `residual` (DictMaskScan)
 	bool empty = false;
 };
 
@@ -1603,6 +1728,39 @@ unique_ptr<Expression> ToChunkRefs(unique_ptr<Expression> e, const std::map<std:
 	}
 	ExpressionIterator::EnumerateChildren(*e, [&](unique_ptr<Expression> &child) { child = ToChunkRefs(std::move(child), chunk_col); });
 	return e;
+}
+
+void ChunkRefsOf(const Expression &e, std::set<idx_t> &refs) {
+	if (e.GetExpressionClass() == ExpressionClass::BOUND_REF) {
+		refs.insert(e.Cast<BoundReferenceExpression>().index);
+	}
+	ExpressionIterator::EnumerateChildren(e, [&](const Expression &child) { ChunkRefsOf(child, refs); });
+}
+
+void RefsToColumnZero(Expression &e) {
+	if (e.GetExpressionClass() == ExpressionClass::BOUND_REF) {
+		e.Cast<BoundReferenceExpression>().index = 0;
+	}
+	ExpressionIterator::EnumerateChildren(e, [&](Expression &child) { RefsToColumnZero(child); });
+}
+
+// A conjunct DuckDB kept above its scan that reads one VARCHAR column (`c IN (..)`, `c LIKE ..`), deterministic and unable to throw (a
+// dictionary holds strings no selected row has), moves to PushedScan::dict (DictMaskScan). False: `e` stays with the caller.
+bool TakeDictConjunct(unique_ptr<Expression> &e, PushedScan &out) {
+	std::set<idx_t> refs;
+	ChunkRefsOf(*e, refs);
+	if (refs.size() != 1 || e->IsVolatile() || e->CanThrow()) {
+		return false;
+	}
+	idx_t col = *refs.begin();
+	if (out.types[col].id() != LogicalTypeId::VARCHAR) {
+		return false;
+	}
+	RefsToColumnZero(*e);
+	out.dict.emplace_back();
+	out.dict.back().col = col;
+	out.dict.back().expr = std::move(e);
+	return true;
 }
 
 // `SELECT <cols> FROM <table> WHERE <where>` bound in the caller's context and given DuckDB's own expression rewriter and filter
@@ -1703,7 +1861,10 @@ PushedScan PlanPushdown(ClientContext &context, TableCatalogEntry &entry, const 
 			chunk_col[{bindings[i].table_index, bindings[i].column_index}] = get.projection_ids.empty() ? i : get.projection_ids[i];
 		}
 		for (auto &e : kept) {
-			residual.push_back(ToChunkRefs(std::move(e), chunk_col));
+			e = ToChunkRefs(std::move(e), chunk_col);
+			if (!TakeDictConjunct(e, out)) {
+				residual.push_back(std::move(e));
+			}
 		}
 	}
 	unique_ptr<Expression> all;
@@ -1878,6 +2039,9 @@ std::vector<TablePrep> PrepareInputs(ClientContext &context, const Manifest &m,
 		if (pushed.residual) {
 			prep.identity += " residual: " + pushed.residual->ToString();
 		}
+		for (auto &d : pushed.dict) {
+			prep.identity += " dict[" + std::to_string(d.col) + "]: " + d.expr->ToString();
+		}
 		prep.ids = std::move(ids);
 		prep.types = std::move(types);
 		prep.plans = std::move(plans);
@@ -1908,7 +2072,7 @@ ScanResult ScanPrepared(ClientContext &context, const Manifest &m, std::vector<T
 		}
 		auto &plans = prep.plans;
 		uint64_t total = ScanTable(context, *prep.transaction, *prep.storage, prep.ids, prep.types, plans, m.exec, res,
-		                           want_threads, prep.pushed.filters.get(), prep.pushed.residual.get());
+		                           want_threads, prep.pushed.filters.get(), prep.pushed.residual.get(), prep.pushed.dict);
 		res.cols[prep.i] = LemmaCol {nullptr, 0, total};
 		for (auto &p : plans) {
 			if (p.role == Role::String) {
