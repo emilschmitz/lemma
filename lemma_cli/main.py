@@ -42,6 +42,8 @@ def build_parser() -> argparse.ArgumentParser:
     o.add_argument("--queue", action="store_true", help="process $LEMMA_HOME/queue/*.sql in file-name order")
     o.add_argument("--force", action="store_true")
     o.add_argument("--bench", action="store_true", help="after installing, time the executor inside DuckDB against DuckDB (cold and warm)")
+    o.add_argument("--no-lift-constants", dest="lift", action="store_false", default=True,
+                   help="prove the query exactly as written (default: WHERE/HAVING constants become template parameters, as lemma('<sql>') does)")
     g = sub.add_parser("generate", help="what DuckDB's lemma('<sql>') runs for a query without an executor: lift its constants into a template, prove, install")
     g.add_argument("--db", required=True, help="the snapshot DuckDB file the extension wrote (the tables the query reads)")
     g.add_argument("--sql-file", required=True)
@@ -134,7 +136,7 @@ def main(argv: list[str] | None = None) -> int:
         sql = args.sql or args.sql_file
         if not (args.db and sql):
             raise CliError("lemma optimize needs --db PATH and the query (--sql TEXT_OR_FILE, or a .sql file), or --queue")
-        return opt.optimize(args.db, sql, args.params, args.force, args.bench)
+        return opt.optimize(args.db, sql, args.params, args.force, args.bench, args.lift)
     except CliError as exc:
         say(f"lemma: {exc}", err=True)
         return 2

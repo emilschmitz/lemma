@@ -945,3 +945,26 @@ def test_the_pipeline_refuses_a_product_choice_that_disagrees_with_run_stream(mo
     rca.set_product_executor({"kind": "stream", "setting": "auto", "reason": "r", "abi": 6})
     assert rca._product_executor["kind"] == "stream"
 
+
+
+def test_optimize_lifts_where_constants_into_a_template_by_default(env: Path, pipeline: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    # 2026-11-08: lemma optimize proved the exact text while lemma('<sql>') lifted constants; both lift now
+    from lemma_cli.generate import target_sql
+
+    ready(env, monkeypatch)
+    db = make_db2(tmp_path)
+    sql = "SELECT b, COUNT(*) AS c, SUM(a) AS s FROM t WHERE a > 2 GROUP BY b"
+    template, binding = target_sql(sql, db, True)
+    assert binding and "$" in template
+    assert main(["optimize", "--db", str(db), "--sql", sql]) == 0
+    assert "lifted 1 constant(s) into a query template" in capsys.readouterr().out
+    assert (cache.executor_dir(common.sql_key(template)) / "optimize.json").is_file()
+
+
+def test_optimize_no_lift_constants_proves_the_exact_text(env: Path, pipeline: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    ready(env, monkeypatch)
+    db = make_db2(tmp_path)
+    sql = "SELECT b, COUNT(*) AS c, SUM(a) AS s FROM t WHERE a > 2 GROUP BY b"
+    assert main(["optimize", "--db", str(db), "--sql", sql, "--no-lift-constants"]) == 0
+    assert "lifted" not in capsys.readouterr().out
+    assert (cache.executor_dir(common.sql_key(sql)) / "optimize.json").is_file()

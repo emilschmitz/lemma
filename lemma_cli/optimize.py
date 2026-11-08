@@ -263,11 +263,23 @@ def _prove_and_install(
     return dest
 
 
-def optimize(db_arg: str, sql_arg: str, params: list[str], force: bool, measure: bool = False) -> int:
+def optimize(db_arg: str, sql_arg: str, params: list[str], force: bool, measure: bool = False, lift: bool = True) -> int:
+    """Prove and install one query. With ``lift`` (the default, as ``lemma('<sql>')`` / ``lemma generate``) its WHERE/HAVING constants become
+    template parameters (declarative_spec/lift.py), so the executor also answers the same query with other values; a SQL that already
+    declares ``-- params:`` is a template as written."""
+    from lemma_cli.generate import target_sql
+
     sql = read_sql(sql_arg)
     if params:
         sql = bind_params(sql, params)
-    optimize_one(sql, resolve_db(db_arg), force=force, measure=measure)
+    db = resolve_db(db_arg)
+    binding = None
+    if "-- params:" not in sql:
+        sql, binding = target_sql(sql, db, lift)
+        if binding is not None:
+            say(f"lifted {len(binding)} constant(s) into a query template (this query's values: "
+                + ", ".join(f"${k} = {v}" for k, v in binding.items()) + "; --no-lift-constants proves the exact text)")
+    optimize_one(sql, db, force=force, measure=measure, binding=binding)
     return 0
 
 
