@@ -82,7 +82,7 @@ def list_cmd() -> int:
         kind = f"template({params})" if params else "query"
         say(f"{key[:12]}  {executor.kind_of_manifest(e)}  {e.get('proof', '?')}  created {made.get('installed_at') or '?'}  db {made.get('db_path') or '?'}  {kind}  "
             f"last used {used}")
-        say(f"              {e.get('normalized_sql', e.get('sql', ''))[:200]}")
+        say(f"              {cache.sql_line(e)[:200]}")
     return 0
 
 

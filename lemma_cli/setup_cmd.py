@@ -255,13 +255,13 @@ def status() -> int:
             say(f"prover image    {image()} {'present, id ' + sandbox.image_digest(image())[:19] if present else 'MISSING (run lemma setup)'}")
     test = state.get("selftest") if state.get("harness", "claude") == chosen else None
     say("sandbox test   " + (f" {'PASSED' if test['ok'] else 'FAILED'} at {test['at']}" if test else f" not run for harness {chosen} (run lemma setup)"))
-    from lemma_cli.cache import list_executors
+    from lemma_cli.cache import list_executors, sql_line
 
     executors = list_executors()
     say(f"executors       {len(executors)} cached")
     for e in executors:
         key = e.get("key") or e.get("sql_key") or Path(e["dir"]).name
-        say(f"  {key[:12]}  {e.get('proof', 'old CLI format, no lib.so')}  {e.get('normalized_sql', e.get('sql', ''))[:60]}")
+        say(f"  {key[:12]}  {e.get('proof', 'old CLI format, no lib.so')}  {sql_line(e)[:60]}")
     try:
         from lemma_cli import duck
 

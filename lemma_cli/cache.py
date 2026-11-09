@@ -71,6 +71,11 @@ def resolve(key: str) -> Path:
     return hits[0]
 
 
+def sql_line(manifest: dict) -> str:
+    """An executor's SQL on one line (a template's `-- params:` header and line breaks become spaces) for `lemma list` / `lemma status`."""
+    return " ".join(str(manifest.get("normalized_sql", manifest.get("sql", ""))).split())
+
+
 def index_installed_template(path: Path) -> None:
     """List the installed template executor at ``path`` in the template index (idempotent; a query executor needs no entry). The install
     writes the entry; this restores it for an executor that is installed but not listed (an executors/ directory copied to another

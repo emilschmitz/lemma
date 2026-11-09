@@ -1028,3 +1028,18 @@ def test_lemma_generate_already_installed_restores_the_template_index_entry(env:
     path = _installed(common.sql_key(template), template, [{"name": "p1", "type": "INTEGER"}])
     assert main(["generate", "--db", str(db), "--sql-file", str(sql_file)]) == 0  # already installed: no pipeline run
     assert (common.lemma_home() / "templates" / template_index_key(template) / path.name).is_file()
+
+
+def test_list_and_status_print_a_template_on_one_line(env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    ready(env, monkeypatch)
+    template = "-- params: p1 BIGINT\nSELECT SUM(b) AS total\nFROM t WHERE a > $p1"
+    path = _installed("ef" * 32, template, [{"name": "p1", "sql_type": "BIGINT"}])
+    (path / "manifest.json").write_text(json.dumps({"sql": template, "params": [{"name": "p1", "sql_type": "BIGINT"}], "lib_sha256": "0" * 64,
+                                                    "proof": "6 verified, 0 errors"}))
+    flat = "-- params: p1 BIGINT SELECT SUM(b) AS total FROM t WHERE a > $p1"
+    capsys.readouterr()
+    assert main(["list"]) == 0
+    out = capsys.readouterr().out
+    assert f"              {flat}\n" in out and "template(p1 BIGINT)" in out
+    assert main(["status"]) == 0
+    assert f"  efefefefefef  6 verified, 0 errors  {flat[:60]}\n" in capsys.readouterr().out
