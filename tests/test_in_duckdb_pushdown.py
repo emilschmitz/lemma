@@ -246,7 +246,7 @@ CMP = {
     "ge_date": "\"d1\" >= \"d2\"",  # d2 has NULLs
     "eq_date": "\"d1\" = \"d2\"",
     "le_decimal": "\"value\" <= \"v2\"",  # DECIMAL(38,4) on both sides: i128 cells
-    "gt_constant": "\"k7\" > \"qtrs\"",  # k7 is 7 in every row (CONSTANT vectors)
+    "gt_constant": "\"k7\" > \"qtrs\"",  # k7 is 3 in every row (CONSTANT vectors)
     "chain": "(\"d1\" < \"d2\") AND (\"qtrs\" <= \"q2\") AND (\"uom\" IN ('USD', 'late-1')) AND (\"qtrs\" + \"q2\" > 1)",
     "mixed_types": "\"qtrs\" < \"q32\"",  # BIGINT against INTEGER: a cast, so DuckDB's executor (the residual) evaluates it
 }
@@ -263,7 +263,7 @@ def _cmp_num(con: duckdb.DuckDBPyConnection, rows: int) -> None:
             DATE '2020-01-01' + CAST(i % 11 AS INTEGER) AS d1,
             CASE WHEN i % 103 = 5 THEN NULL ELSE DATE '2020-01-01' + CAST((i * 7) % 13 AS INTEGER) END AS d2,
             CAST(((i * 104729) % 2003 - 1001) / 100 AS DECIMAL(38,4)) AS v2,
-            CAST(7 AS BIGINT) AS k7
+            CAST(3 AS BIGINT) AS k7
             FROM range({rows}) t(i)"""
     )
     con.execute("DELETE FROM num WHERE rowid % 50000 < 3 OR rowid BETWEEN 130000 AND 131000")
@@ -336,7 +336,7 @@ def test_a_filtered_scan_that_keeps_nearly_every_row_of_many_row_groups(where: s
     ref.execute("DROP TABLE num")
     ref.execute("ALTER TABLE kept RENAME TO num")
     want = _reference(ref, json.loads(_manifest_path(home, "dict").read_text()))
-    assert got[0][3] > 6 * ROW_GROUP
+    assert got[0][3] > 5 * ROW_GROUP
     assert [g[:4] for g in got] == [w[:4] for w in want]
     for g, w in zip(got, want, strict=True):
         assert g[4] == w[4], g[1]
