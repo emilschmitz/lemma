@@ -24,7 +24,8 @@ Verus at `~/tools/verus` with its rustup toolchain? `lemma setup --prover host` 
 
 ```bash
 tar -xzf lemma-0.1.0-linux-x86_64.tar.gz && ./lemma-0.1.0-linux-x86_64/install.sh   # ~/.local/bin/lemma, ~/.local/share/lemma/duckdb/
-lemma setup                                    # Docker, DuckDB; pulls the prover and agent images, tests the sandbox; your Claude Code login
+export ANTHROPIC_API_KEY=...                   # your key, in your own shell (never in a file or a chat)
+lemma setup                                    # Docker, DuckDB; pulls the prover and agent images, tests the sandbox
 lemma optimize --db my.duckdb --sql "SELECT region, SUM(qty) AS q FROM orders GROUP BY region"   # or: lemma optimize --db my.duckdb q.sql
 lemma duckdb my.duckdb                         # a full DuckDB; in it: SELECT * FROM lemma('<your SQL>');  (generates on first use)
 lemma list                                     # installed executors (key, stream/batch, proof line, database, SQL); lemma remove KEY
@@ -66,7 +67,7 @@ reuses the converted inputs (`lemma_last_query()` says `cache = hit`); any commi
 scan again. `SET lemma_cache = false` turns it off, `lemma_cache_max_mb` caps it. Details and the soundness argument:
 [db_extension/duckdb_ext/README.md](db_extension/duckdb_ext/README.md) "Input cache".
 
-**Harness and auth.** Claude Code is the default (`claude login`, or `lemma setup --auth api-key` with `ANTHROPIC_API_KEY`); also
+**Harness and auth.** Claude Code with `ANTHROPIC_API_KEY` is the default (an API key, as Anthropic's terms ask of tools: https://code.claude.com/docs/en/legal-and-compliance; `--auth login` uses your own subscription login, for your own personal use only); also
 `lemma setup --harness codex --auth api-key` (`CODEX_API_KEY`, default model gpt-6.1-sol) and `--harness gemini --auth api-key`
 (`GEMINI_API_KEY`, default gemini-3.8-flash); `--model` picks another model. Export a key in your own shell: it reaches the container by
 name only and is never written anywhere; a missing one stops setup, and nothing falls back to another harness or auth mode. Only Claude

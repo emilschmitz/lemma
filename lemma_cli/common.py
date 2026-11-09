@@ -32,7 +32,9 @@ HOME_CONFIG_ENV = {"agent_auth": AUTH_ENV, "harness": HARNESS_ENV, "agent_model"
 # The product's own defaults where they differ from lemma.toml (whose values are the research defaults, kept so experiments stay
 # byte-identical): the CLI proves and compiles in the pinned prover image, so the user needs no Verus or Rust toolchain, and it uses the
 # published (pulled) images rather than the research path's local tags.
-CLI_DEFAULTS = {"prover": "docker", "image_registry": DEFAULT_REGISTRY}
+# agent_auth: the product's default is the harness's API key. Anthropic's terms (code.claude.com/docs/en/legal-and-compliance) ask products to
+# use API keys and not to route requests through users' subscription logins; `--auth login` stays for your own personal use, with a note.
+CLI_DEFAULTS = {"prover": "docker", "image_registry": DEFAULT_REGISTRY, "agent_auth": "api_key"}
 
 
 class CliError(RuntimeError):

@@ -139,6 +139,13 @@ def check_credentials(mode: str, harness_name: str = "claude") -> str:
     return "Claude Code login found (mounted read-only into the container)"
 
 
+LOGIN_NOTE = (
+    "  note: auth = login runs the unmodified harness CLI in the sandbox with YOUR OWN subscription login, for your own personal use. "
+    "Anthropic's terms ask tools to use API keys (https://code.claude.com/docs/en/legal-and-compliance); check your provider's terms. "
+    "The default is api-key: lemma setup --auth api-key"
+)
+
+
 def setup(auth: str | None, build_images: bool = False, harness_name: str | None = None, model: str | None = None, prover_choice: str | None = None,
           *, image_registry: str | None = None, duckdb_from: str | None = None) -> int:
     """``harness_name`` / ``model`` / ``auth`` / ``prover_choice`` / ``image_registry`` are saved in $LEMMA_HOME/config.json when given. A new harness
@@ -177,6 +184,8 @@ def setup(auth: str | None, build_images: bool = False, harness_name: str | None
     version = sandbox.check_docker()
     say(f"  [ok] docker daemon {version}")
     say(f"  [ok] harness {chosen}, model {slug}, auth {mode}")
+    if mode == "login":
+        say(LOGIN_NOTE)
     say(f"  [ok] prover ({prover()}): {check_prover(build_images)}")
     from lemma_cli import duck
 

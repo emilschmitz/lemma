@@ -7,8 +7,7 @@ extension:
   version: 0.1.0
   language: C++
   build: cmake
-  # PLACEHOLDER: the repository has no LICENSE file yet. Emil picks the license and adds LICENSE at the root first.
-  license: <SPDX id, e.g. MIT>
+  license: MIT
   maintainers:
     - emilschmitz
   # linux_amd64 only (db_extension/duckdb_ext: POSIX only: posix_spawn of /bin/sh, dlopen, kill/waitpid; GCC/Clang __int128, executors are

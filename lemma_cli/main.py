@@ -18,8 +18,9 @@ def build_parser() -> argparse.ArgumentParser:
                        "install the DuckDB binaries, fetch libduckdb, check credentials")
     s.add_argument("--harness", choices=["claude", "codex", "gemini"], help="the agent CLI in the sandbox (saved): Claude Code, OpenAI Codex CLI or Google Gemini CLI")
     s.add_argument("--model", help="the model of that harness (saved); default with --harness: that harness's default model")
-    s.add_argument("--auth", choices=["login", "api-key", "api_key"], help="how the agent authenticates (saved): the harness's host login file (read-only), or its API key "
-                   "variable from the environment (claude: ANTHROPIC_API_KEY, codex: CODEX_API_KEY, gemini: GEMINI_API_KEY), passed by name only")
+    s.add_argument("--auth", choices=["login", "api-key", "api_key"], help="how the agent authenticates (saved). api-key (default): the harness's API key variable from the environment "
+                   "(claude: ANTHROPIC_API_KEY, codex: CODEX_API_KEY, gemini: GEMINI_API_KEY), passed by name only. login: your own CLI login file "
+                   "(read-only), for your own personal use only (see the note it prints)")
     s.add_argument("--prover", choices=["docker", "host"], help="where Verus and the compile of each executor run (saved): docker (default) = the pinned "
                    "prover image, nothing to install; host = Verus at [prover] verus_home (~/tools/verus) and its rustup toolchain on this machine")
     s.add_argument("--build-images", action="store_true", help="build the agent image (and the prover image with --prover docker) on this machine "

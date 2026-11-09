@@ -105,7 +105,12 @@ def calls(fake: Path) -> list[list[str]]:
 
 
 def login(tmp_path_home: str | None = None) -> None:
+    """A host Claude Code login, and the user's saved choice to use it (`lemma setup --auth login` earlier): api_key is the CLI default."""
     (Path(os.environ["HOME"]) / ".claude" / ".credentials.json").write_text("{}")
+    cfg = common.config_path()
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    saved = json.loads(cfg.read_text()) if cfg.is_file() else {}
+    cfg.write_text(json.dumps({**saved, "agent_auth": "login"}))
 
 
 def everything_written(*roots: Path) -> str:
@@ -291,7 +296,7 @@ def test_setup_stops_when_the_image_has_another_cli_version_and_builds_nothing(e
 
 
 def test_login_setup_without_a_login_says_how_to_log_in(env: Path, capsys: pytest.CaptureFixture) -> None:
-    assert main(["setup"]) == 2
+    assert main(["setup", "--auth", "login"]) == 2
     assert "claude login" in capsys.readouterr().err
 
 
@@ -968,3 +973,18 @@ def test_optimize_no_lift_constants_proves_the_exact_text(env: Path, pipeline: P
     assert main(["optimize", "--db", str(db), "--sql", sql, "--no-lift-constants"]) == 0
     assert "lifted" not in capsys.readouterr().out
     assert (cache.executor_dir(common.sql_key(sql)) / "optimize.json").is_file()
+
+
+def test_the_cli_defaults_to_the_api_key_and_login_prints_the_terms_note(env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    # 2026-11-08: Anthropic's terms ask products to use API keys; the subscription login is an explicit, personal-use choice
+    (Path(os.environ["HOME"]) / ".claude" / ".credentials.json").write_text("{}")  # a login exists, but is not chosen
+    assert main(["setup"]) == 2
+    assert "auth is api_key but ANTHROPIC_API_KEY is not set" in capsys.readouterr().err
+    monkeypatch.setenv("ANTHROPIC_API_KEY", KEY)
+    assert main(["setup"]) == 0
+    out = capsys.readouterr().out
+    assert "auth api_key" in out and "personal use" not in out
+    monkeypatch.delenv("ANTHROPIC_API_KEY")
+    monkeypatch.delenv(common.AUTH_ENV)  # each `lemma` call is its own process: the default the previous call put in os.environ is gone
+    assert main(["setup", "--auth", "login"]) == 0
+    assert "for your own personal use" in capsys.readouterr().out

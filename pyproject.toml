@@ -9,7 +9,9 @@ version = "0.1.0"
 description = "Lemma: verified query synthesis (an AI agent writes run_query, Verus proves it, DuckDB runs it)"
 readme = "README.md"
 requires-python = ">=3.11"
-authors = [{ name = "Emil Schmitz", email = "emilalexanderschmitz@gmail.com" }]
+authors = [{ name = "Emil Schmitz" }]
+license = "MIT"
+license-files = ["LICENSE"]
 keywords = ["duckdb", "verus", "formal-verification", "sql", "query-compilation", "rust", "llm-agents"]
 classifiers = [
     "Development Status :: 3 - Alpha",
