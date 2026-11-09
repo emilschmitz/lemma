@@ -49,7 +49,7 @@ docker build -q -t "$IMAGE" "$ROOT/docker/duckdb_build" >/dev/null
   --memory "$MEM" --memory-swap "$MEM" \
   -v "$EXT:/src:ro" -v "$OUT:/src/build" -v "$OUT/.cache:/src/.cache" -w /src \
   -e GEN=ninja -e CMAKE_BUILD_PARALLEL_LEVEL="$JOBS" -e OVERRIDE_GIT_DESCRIBE=v1.5.6 -e DUCKDB_PLATFORM=linux_amd64 \
-  "$IMAGE" make release
+  "$IMAGE" make release EXT_FLAGS=-DBUILD_UNITTESTS=0   # no DuckDB unittest binary (the Makefile builds one for DuckDB's extension CI)
 CLI="$OUT/release/duckdb"
 LIB="$OUT/release/extension/lemma/lemma.duckdb_extension"
 for f in "$CLI" "$LIB"; do

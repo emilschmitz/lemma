@@ -42,6 +42,23 @@ con.execute("LOAD 'path/lemma.duckdb_extension'")
 
 Or run our CLI, where Lemma is already loaded: `build/release/duckdb db.duckdb`.
 
+## Installing from DuckDB community extensions (pending)
+
+Not available yet. Once the descriptor (`docs/release/community-extension/description.yml`) is merged into
+`duckdb/community-extensions`, a stock DuckDB on linux_amd64 installs the signed build, no `-unsigned` needed:
+
+```sql
+INSTALL lemma FROM community;
+LOAD lemma;
+```
+
+Blocking first: a LICENSE file, and a build against DuckDB v2.0.0 (the community CI builds the latest stable release; this
+extension is pinned to v1.5.6). Other platforms are excluded (POSIX process and `dlopen` code, Linux executor libraries).
+Generation still needs the `lemma` CLI on the machine; without it `lemma('<sql>')` fails loudly (`lemma: command not found`,
+exit 127) and an executor installed by `lemma optimize` is the only way to get rows. Requirements, gaps and the submission
+checklist: `docs/release/community-extension/README.md`. `test/sql/lemma.test` is the SQLLogicTest the community CI runs
+(`make test`; `build.sh` skips the unittest binary).
+
 ## Use
 
 | SQL | What |

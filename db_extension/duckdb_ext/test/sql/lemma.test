@@ -1,0 +1,55 @@
+# name: test/sql/lemma.test
+# description: Lemma extension without an installed executor and without the `lemma` CLI (the DuckDB community-extension CI case).
+#   Every miss is an error, never DuckDB's rows. The full tests are pytest: tests/test_in_duckdb.py.
+# group: [lemma]
+
+require lemma
+
+statement ok
+SET lemma_home = '__TEST_DIR__/lemma_home'
+
+query T
+SELECT lemma_normalize_sql('SELECT   x
+  FROM t ;')
+----
+SELECT x FROM t
+
+query T
+SELECT lemma_sql_key('SELECT 1')
+----
+e004ebd5b5532a4b85984a62f8ad48a81aa3460c1ca07701f386135d72cdecf5
+
+query I
+SELECT count(*) FROM lemma_list()
+----
+0
+
+statement ok
+CREATE TABLE t AS SELECT range::BIGINT AS x FROM range(10)
+
+# lemma_query never generates.
+statement error
+SELECT * FROM lemma_query('SELECT SUM(x) AS s FROM t')
+----
+no proved executor for this query
+
+statement ok
+SET lemma_generate = 'off'
+
+statement error
+SELECT * FROM lemma('SELECT SUM(x) AS s FROM t')
+----
+no proved executor for this query
+
+# Generation refused when external access is off (it starts a shell command and writes a snapshot). Last: the setting cannot be
+# turned back on.
+statement ok
+SET lemma_generate = 'block'
+
+statement ok
+SET enable_external_access = false
+
+statement error
+SELECT * FROM lemma('SELECT SUM(x) AS s FROM t')
+----
+enable_external_access is false

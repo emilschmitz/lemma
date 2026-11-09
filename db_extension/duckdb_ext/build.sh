@@ -18,6 +18,7 @@ if [ "$version" != "v1.5.6" ] && [ "$version" != "069cc9f9b5be802405797faecc2849
   exit 1
 fi
 jobs="${LEMMA_EXT_JOBS:-2}"
+# EXT_FLAGS: no DuckDB unittest binary locally (our tests are pytest); the Makefile leaves it on for DuckDB's extension CI.
 # OVERRIDE_GIT_DESCRIBE: a shallow submodule has no tag history; DuckDB derives its version (and the extension's ABI tag) from it.
 exec "$root/scripts/ram/heavy.sh" env GEN=ninja CMAKE_BUILD_PARALLEL_LEVEL="$jobs" OVERRIDE_GIT_DESCRIBE=v1.5.6 \
-  make -C "$here" release
+  make -C "$here" release EXT_FLAGS=-DBUILD_UNITTESTS=0
