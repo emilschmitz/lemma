@@ -1595,22 +1595,46 @@ fn lemma_fixed<T, const W: usize>(col: &LemmaCol, label: &str, conv: fn([u8; W])
     bytes.chunks_exact(W).map(|c| conv(c.try_into().unwrap())).collect()
 }
 
-// A build column of strings (ABI 5 input encoding: per value a u32 byte length, then its UTF-8 bytes).
+// A build column of strings (ABI 5 input encoding: per value a u32 byte length, then its UTF-8 bytes). One String per value is one
+// allocation each (TPC-H SF10 Q12: 310,803 of them took 11 ms, serially, before the scan could start): one pass finds where every
+// value starts (the lengths checked), then up to 8 threads make the Strings of consecutive ranges, concatenated in order.
 #[allow(dead_code)]
 fn lemma_strings(col: &LemmaCol, label: &str) -> Vec<String> {
     let bytes = lemma_bytes(col.data, col.len, label);
     let n = col.n as usize;
-    let mut out: Vec<String> = Vec::with_capacity(n);
+    let mut starts: Vec<usize> = Vec::with_capacity(n + 1);
     let mut off: usize = 0;
-    while out.len() < n {
+    while starts.len() < n {
         assert!(off + 4 <= bytes.len(), "{}: string buffer ends early", label);
         let len = u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap()) as usize;
-        off += 4;
-        assert!(off + len <= bytes.len(), "{}: string buffer ends early", label);
-        out.push(String::from_utf8(bytes[off..off + len].to_vec()).expect("a build string is not UTF-8"));
-        off += len;
+        assert!(off + 4 + len <= bytes.len(), "{}: string buffer ends early", label);
+        starts.push(off);
+        off += 4 + len;
     }
     assert!(off == bytes.len(), "{}: string buffer has trailing bytes", label);
+    starts.push(off);
+    let make = |lo: usize, hi: usize| -> Vec<String> {
+        (lo..hi)
+            .map(|i| String::from_utf8(bytes[starts[i] + 4..starts[i + 1]].to_vec()).expect("a build string is not UTF-8"))
+            .collect()
+    };
+    let threads = std::thread::available_parallelism().map(|t| t.get()).unwrap_or(1).min(8).min(n / 16384).max(1);
+    if threads == 1 {
+        return make(0, n);
+    }
+    let per = (n + threads - 1) / threads;
+    let parts: Vec<Vec<String>> = std::thread::scope(|sc| {
+        let handles: Vec<_> = (0..threads).map(|t| {
+            let make = &make;
+            sc.spawn(move || make((t * per).min(n), ((t + 1) * per).min(n)))
+        }).collect();
+        handles.into_iter().map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect()
+    });
+    let mut out: Vec<String> = Vec::with_capacity(n);
+    for part in parts {
+        out.extend(part);
+    }
+    assert!(out.len() == n, "{}: {} strings for {} values", label, out.len(), n);
     out
 }
 
