@@ -174,6 +174,7 @@ def test_a_literal_query_is_answered_through_the_template_index(home: Path) -> N
     con = _connect(home)
     _fill(con, random.Random(8), 4000)
     plain = "SELECT COUNT(*) AS c, SUM(m) AS sm FROM t WHERE s = 'ab' AND g IN ('x', 'abc')"
-    assert con.execute(f"SELECT * FROM lemma({_q(plain)})").fetchall() == con.execute(plain).fetchall()
+    want = con.execute(plain).fetchall()
+    assert con.execute(f"SELECT * FROM lemma({_q(plain)})").fetchall() == want
     last = _last(con)
     assert last["engine"] == "lemma" and last["mode"] == "stream", last
