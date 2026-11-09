@@ -518,6 +518,25 @@ lent to the library (read in place) instead of copied into a buffer it takes. Th
 the extension (the entry's buffers are immutable and held by `shared_ptr` until the call returns); the executor gets the same
 bytes and runs the same checks, the proof is untouched.
 
+## Streaming data loading: S1, S2 and the build-table filters (`[run] stream`; authorized by Emil 2026-10-25)
+
+Emil authorized new trusted items for DATA LOADING only ("a new trusted or two", then "you can add a few more if you need"). Details and
+soundness arguments: [docs/STREAM.md](STREAM.md).
+
+* **S1, chunk view** (`chunk_<t>`, `str_ent`; `external_body`): a chunk the extension hands to a worker is rows `off..off+len` of the stream
+  table, in DuckDB's vector format (fixed-width cells, validity, string dictionary entries + selection). Run-time checks in the glue: selection
+  indices in range, lengths, UTF-8.
+* **S2, stream end** (`stream_end_<t>`; `external_body`): once every worker returned, the rows handed out are the whole stream table. The
+  runtime proves the rest: chunks must tile `[0, n)` exactly (a lost, doubled or shifted chunk is an ERROR, never rows).
+* **Build-table loading (fixed host C++, same family as the existing column conversion).** A stream join's build tables are materialized
+  through the ABI 5 input path in the caller's transaction, with the table's own pushed-down single-table conjuncts. Some conjuncts are
+  evaluated by Lemma's C++ instead of DuckDB's expression executor (2026-11-09, Q12 speed-up): a VARCHAR `IN`/`=` list once per dictionary
+  entry (`DictMaskScan`), and a comparison of two columns of the same integer-like type, branch-free, NULL operand dropped (`ColCmp`).
+  Trusted claim: a row is dropped only if it fails its conjunct. If that code dropped a row it should keep, the proof would not see it
+  (the spec re-applies WHERE to the rows it is handed). Tests: tests/test_in_duckdb_pushdown.py (every comparison operator over DATE,
+  BIGINT and i128 cells, NULL operands, CONSTANT vectors, a mixed-type case left to DuckDB, three compressions, the caller's
+  uncommitted rows and deletes at 1/3/8 threads). The streamed table is never filtered.
+
 ## Menu (25 families)
 
 | id | kind | spec_ret | purpose |
