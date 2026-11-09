@@ -1,0 +1,6 @@
+-- params: p1 VARCHAR, p2 VARCHAR, p3 BIGINT, p4 BIGINT, p5 BIGINT
+-- Lifted from configs/queries/sec_edgar/q4.sql by declarative_spec.lift.lift_constants (schema and structural catalog of sec_edgar_dec.duckdb); the query's own values: $p1 = USD, $p2 = EQ, $p3 = 4000, $p4 = 4999, $p5 = 0
+-- Source: https://raw.githubusercontent.com/SolidLao/GenDB/main/benchmarks/sec-edgar/queries.sql
+-- Upstream repo commit 0ccf053ade163137775cd2e9c6e1288ea89d524b (2026-06-08; holdout/gendb_sec_edgar/SOURCE.md verified byte-identical); file last changed in 72619a92a87f702e7bb2ab3590db38e32cab1537 (2026-02-24). Below: that query normalized (declarative_spec.sql_text.normalize_sql) with its lifted constants as parameters.
+-- Q4: joins=3, agg=True, sub=False, tables=4, rows=500, time=420.4ms
+SELECT s.sic, t.tlabel, p.stmt, COUNT(DISTINCT s.cik) AS num_companies, SUM(n.value) AS total_value, AVG(n.value) AS avg_value FROM num n JOIN sub s ON n.adsh = s.adsh JOIN tag t ON n.tag = t.tag AND n.version = t.version JOIN pre p ON n.adsh = p.adsh AND n.tag = p.tag AND n.version = p.version WHERE n.uom = $p1 AND p.stmt = $p2 AND s.sic BETWEEN $p3 AND $p4 AND n.value IS NOT NULL AND t.abstract = $p5 GROUP BY s.sic, t.tlabel, p.stmt HAVING COUNT(DISTINCT s.cik) >= 2 ORDER BY total_value DESC LIMIT 500

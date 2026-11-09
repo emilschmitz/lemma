@@ -17,5 +17,12 @@
   "q14": {
     "ship_lo": {"kind": "date_range", "lo": "1993-01-01", "hi": "1997-12-01", "unit": "month"},
     "ship_hi": {"kind": "date_shift", "of": "ship_lo", "amount": 1, "unit": "month"}
+  },
+  "_q12": "TPC-H 3.0.1 clause 2.4.12.3: SHIPMODE1 is randomly selected within the list of values defined for Modes in clause 4.2.2.13 (REG AIR, AIR, RAIL, SHIP, TRUCK, MAIL, FOB); SHIPMODE2 likewise and must be different from SHIPMODE1 (distinct_from); DATE is the first of January of a randomly selected year within [1993 .. 1997], and the query's upper bound DATE + INTERVAL '1' YEAR is rcpt_hi, a one-year shift of rcpt_lo. Validation values (clause 2.4.12.4): MAIL, SHIP, 1994-01-01.",
+  "q12": {
+    "mode1": {"kind": "choice", "values": ["REG AIR", "AIR", "RAIL", "SHIP", "TRUCK", "MAIL", "FOB"]},
+    "mode2": {"kind": "choice", "values": ["REG AIR", "AIR", "RAIL", "SHIP", "TRUCK", "MAIL", "FOB"], "distinct_from": "mode1"},
+    "rcpt_lo": {"kind": "date_range", "lo": "1993-01-01", "hi": "1997-01-01", "unit": "year"},
+    "rcpt_hi": {"kind": "date_shift", "of": "rcpt_lo", "amount": 1, "unit": "year"}
   }
 }
