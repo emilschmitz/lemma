@@ -205,3 +205,25 @@ def test_the_built_wheel_holds_every_resource_the_runtime_reads(tmp_path: Path) 
     assert "Requires-Dist: duckdb==1.5.6" in metadata and "verus-transpiler" not in metadata and "pytest" not in metadata
     assert "Name: lemma-db" in metadata and "Author: Emil Schmitz" in metadata and "Author-email" not in metadata and "Project-URL: Source, https://github.com/emilschmitz/lemma" in metadata
     assert "file:" not in metadata and "](docs/" not in metadata  # no path dependency; the long description links to GitHub
+
+
+def test_install_sh_next_steps_name_the_api_key_default_not_a_login() -> None:
+    # 0.2.0 release check: install.sh still said `lemma setup` "uses your Claude Code login" after the CLI default became api_key (686798e).
+    from lemma_cli.common import CLI_DEFAULTS
+
+    assert CLI_DEFAULTS["agent_auth"] == "api_key"
+    text = (ROOT / "scripts" / "release" / "install.sh").read_text()
+    nxt = text[text.index('echo "Next:"'):]
+    assert "export ANTHROPIC_API_KEY=..." in nxt and "api-key is the default" in nxt
+    assert "login" not in nxt.lower()
+
+
+def test_release_readme_names_the_api_key_default_and_login_as_opt_in() -> None:
+    from lemma_cli.common import CLI_DEFAULTS
+
+    assert CLI_DEFAULTS["agent_auth"] == "api_key"
+    text = (ROOT / "scripts" / "release" / "README.dist.md").read_text()
+    assert "an API key by default" in text and "`lemma setup --auth login`" in text and "personal use" in text
+    assert "login by default" not in text and "checks your login" not in text
+    install = text[text.index("## Install"):text.index("## First query")]
+    assert install.index("export ANTHROPIC_API_KEY=...") < install.index("lemma setup")

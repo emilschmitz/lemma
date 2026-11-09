@@ -65,6 +65,7 @@ if [[ "$LEMMA_HOME" != "$HOME/.local/share/lemma" ]]; then
 fi
 echo
 echo "Next:"
-echo "  lemma setup                                  # checks Docker and DuckDB, pulls the prover and agent images, tests the sandbox; uses your Claude Code login"
+echo "  export ANTHROPIC_API_KEY=...                 # your key, in your own shell (lemma setup --auth api-key is the default)"
+echo "  lemma setup                                  # checks Docker and DuckDB, pulls the prover and agent images, tests the sandbox, checks the API key is set"
 echo "  lemma optimize --db my.duckdb --sql \"SELECT ...\""
 echo "  lemma duckdb my.duckdb                       # full DuckDB plus SELECT * FROM lemma('<sql>'); --lemma-mode routes every SELECT through Lemma"
