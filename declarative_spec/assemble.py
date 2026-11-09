@@ -1002,8 +1002,10 @@ def assemble_stream_program(spec_rs: str, regions: dict[str, str], *, column_bin
     ]
     inits = []
     for index, (name, ty, lo, hi) in enumerate(params, start=1):
-        if ty == "String":
-            raise ValueError("a stream spec has no VARCHAR template parameter")
+        if ty == "String":  # a VARCHAR parameter: the argument's text, as the run_query main passes it
+            prelude.append(f"    let param_{name}: String = lemma_argv[{index}].clone();")
+            inits.append(f"{name}: param_{name}")
+            continue
         prelude.append(f'    let param_{name}: {ty} = lemma_argv[{index}].parse::<{ty}>().expect("parameter {name}: not a {ty}");')
         if lo is not None and hi is not None:
             prelude.append(
@@ -1017,6 +1019,8 @@ def assemble_stream_program(spec_rs: str, regions: dict[str, str], *, column_bin
         '    assert!(lemma_chunk_max >= 1 && lemma_threads >= 1, "chunk_max and threads must be at least 1");'
     )
     params_init = f"Params {{ {', '.join(inits)} }}"
+    # Params is Copy without a VARCHAR parameter; with one each worker's Exec gets its own clone (exec_merge compares the texts)
+    p_clone = "                    let lemma_p = lemma_p.clone();\n" if any(ty == "String" for _n, ty, _lo, _hi in params) else ""
     # per chunk: one RawChunk with one address per column; VARCHAR columns get their sel / entries buffers built here
     str_cols = [f for f, t in fields if t == "String"]
     str_bufs = "".join(
@@ -1155,7 +1159,7 @@ fn main() {{
             let handles: Vec<_> = (0..lemma_threads)
                 .map(|_| {{
                     let next = &next;
-                    sc.spawn(move || {{
+{p_clone}                    sc.spawn(move || {{
                         let mut e = exec_new(Stream_{ts} {{ id: 0, raw: lemma_sh_raw }}, lemma_p);
                         loop {{
                             let j = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1253,8 +1257,10 @@ def _assemble_stream_join_program(spec_rs: str, regions: dict[str, str], *, colu
     ]
     inits = []
     for index, (name, ty, lo, hi) in enumerate(params, start=1):
-        if ty == "String":
-            raise ValueError("a stream spec has no VARCHAR template parameter")
+        if ty == "String":  # a VARCHAR parameter: the argument's text, as the run_query main passes it
+            prelude.append(f"    let param_{name}: String = lemma_argv[{index}].clone();")
+            inits.append(f"{name}: param_{name}")
+            continue
         prelude.append(f'    let param_{name}: {ty} = lemma_argv[{index}].parse::<{ty}>().expect("parameter {name}: not a {ty}");')
         if lo is not None and hi is not None:
             prelude.append(
@@ -1268,6 +1274,8 @@ def _assemble_stream_join_program(spec_rs: str, regions: dict[str, str], *, colu
         '    assert!(lemma_chunk_max >= 1 && lemma_threads >= 1, "chunk_max and threads must be at least 1");'
     )
     params_init = f"Params {{ {', '.join(inits)} }}"
+    # Params is Copy without a VARCHAR parameter; with one each timed run's pool_open gets a clone
+    p_arg = "lemma_p.clone()" if any(ty == "String" for _n, ty, _lo, _hi in params) else "lemma_p"
     str_cols = [f for f, t in fields if t == "String"]
     str_bufs = "".join(
         f"        let (sel_{_local_ident(f)}, ents_{_local_ident(f)}) = lemma_str_chunk(&{ts}_{_local_ident(f)}[off..off + len], &{ts}_{_local_ident(f)}_raws, c % 2 == 1);\n"
@@ -1401,7 +1409,7 @@ fn main() {{
     let mut s: usize = 0;
     while s < {TIMED_RUNS} {{
 {"".join(per_run)}        let start = std::time::Instant::now();
-        let pool = match pool_open(Stream_{ts} {{ id: 0, raw: lemma_sh_raw }}, {build_args}, lemma_p, lemma_threads) {{
+        let pool = match pool_open(Stream_{ts} {{ id: 0, raw: lemma_sh_raw }}, {build_args}, {p_arg}, lemma_threads) {{
             PoolOpen::Ready(pl) => pl,
             PoolOpen::Declined => {{
                 println!("{decline.DECLINE_LINE}");

@@ -515,6 +515,62 @@ def _null_key_and_distinct_section(spec_text: str) -> list[str]:
     return lines
 
 
+def _string_params(spec_text: str) -> list[str]:
+    """The VARCHAR template parameters (`String` fields of Params)."""
+    return [f.split(":")[0] for f in _params(spec_text) if f.endswith(": String")]
+
+
+def _like(spec_text: str) -> bool:
+    return "pub open spec fn spec_like(" in spec_text
+
+
+def _strings_and_like_section(spec_text: str) -> list[str]:
+    """General notes for VARCHAR template parameters and for SQL LIKE; nothing when the spec has neither."""
+    strs = _string_params(spec_text)
+    like = _like(spec_text)
+    if not strs and not like:
+        return []
+    lines = ["## String parameters and LIKE", ""]
+    if strs:
+        canon = "pub open spec fn params_canon(" in spec_text
+        x = strs[0]
+        lines += [
+            "A VARCHAR parameter is a `String` field of `p` (" + ", ".join(f"`p.{s}`" for s in strs) + "); the spec compares a cell's",
+            "text with the parameter's text (`@`, a `Seq<char>`).",
+            *([
+                f"The spec reads it as `params_canon(p).{x}` (a `String` with the same text: workers' Params with equal texts then give",
+                f"one fold); `params_canon(p).{x}@ == p.{x}@` holds by `lemma_param_text`, which is in scope everywhere.",
+            ] if canon else [f"The spec reads it as `&p.{x}` (its text `p.{x}@`)."]),
+            "vstd specifies `String == String` (`r == (a@ == b@)`) but not `==` on `&str`: compare an entry with a parameter as two",
+            "`String`s, or char by char (`unicode_len` / `get_char`, exact vstd specs).",
+            "",
+        ]
+    if like:
+        lines += [
+            "`LIKE` is `spec_like(text, pattern)` over `Seq<char>` (in the spec: `%` any run, `_` one char, case sensitive), a",
+            "per-row predicate inside `agg_row` like any other condition. For a pattern `'lit%'` whose `lit` has no `%` or `_` it is",
+            "\"starts with lit\": a lemma of yours, by induction on the literal, turns `spec_like(s, \"lit%\"@)` into a test of the first",
+            "chars (`reveal_strlit` gives the literal's chars).",
+            "",
+        ]
+    return lines
+
+
+def _strings_and_like_recipe(spec_text: str) -> list[str]:
+    """Technique advice for string parameters and LIKE (a RECIPE: left out with examples = none)."""
+    if not _string_params(spec_text) and not _like(spec_text):
+        return []
+    return [
+        "## String parameters and LIKE fast",
+        "",
+        "- Compare a VARCHAR column with a string parameter once per ENTRY of the chunk, not per row: per chunk, take",
+        "  `m = 1 + max sel[r]` and fill a `Vec<bool>` memo of length `m` (entry `j` equals the parameter, or is one of an IN list's",
+        "  values); per row the test is `memo[sel[r]]`, an array read. Same for a LIKE: test each dictionary entry once per chunk.",
+        "- Prove the memo with `forall|j| j < m ==> memo@[j] == (c.x.ents@[j] == ..)` and the row's `c.x.ents@[c.x.sel@[r]] == T.x@[..]@`.",
+        "",
+    ]
+
+
 def _distinct_recipe_section(spec_text: str) -> list[str]:
     """Technique advice for COUNT DISTINCT (a RECIPE: left out with examples = none); nothing without a set field."""
     if not _set_fields(spec_text):
@@ -650,11 +706,13 @@ def build_stream_prompt(
         (P.TASK, ["## SQL", "", "```sql", sql.strip(), "```", ""]),
         (P.RULES, _join_contract_section(spec_text, n, builds) if join else _contract_section(spec_text, n)),
         (P.RULES, _null_key_and_distinct_section(spec_text)),
+        (P.RULES, _strings_and_like_section(spec_text)),
         (P.LIMITS, _join_timing_section() if join else _timing_section()),
         (P.HARDWARE, _hardware_facts()),
         (P.EXAMPLE_POINTER, examples),
         (P.RECIPE, _speed_section()),
         (P.RECIPE, _distinct_recipe_section(spec_text)),
+        (P.RECIPE, _strings_and_like_recipe(spec_text)),
         *([(P.RECIPE, _join_probe_section())] if join else []),
         (P.RULES, _exact_rational_section(spec_text)),
         (P.RECIPE, group_close),

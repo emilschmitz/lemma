@@ -1005,6 +1005,8 @@ const LEMMA_STEP_ERROR: i32 = 2;
 
 #[allow(dead_code)]
 const LEMMA_PARAM_INT: u32 = 1;
+#[allow(dead_code)]
+const LEMMA_PARAM_STR: u32 = 4;
 
 #[no_mangle]
 pub extern "C" fn lemma_abi_version() -> u32 {
@@ -1063,6 +1065,13 @@ fn lemma_param_int(p: &LemmaParam, name: &str) -> i64 {
     let bytes = lemma_bytes(p.data, p.len, "a parameter");
     assert!(bytes.len() == 8, "parameter {}: {} bytes, an integer is 8", name, bytes.len());
     i64::from_le_bytes(bytes.try_into().unwrap())
+}
+
+// A VARCHAR template parameter: its bytes, checked to be UTF-8, as an owned String (moved into Params).
+#[allow(dead_code)]
+fn lemma_param_str(p: &LemmaParam, name: &str) -> String {
+    assert!(p.kind == LEMMA_PARAM_STR, "parameter {}: kind {}, expected {} (a string)", name, p.kind, LEMMA_PARAM_STR);
+    String::from_utf8(lemma_bytes(p.data, p.len, "a parameter").to_vec()).expect("a string parameter is not UTF-8")
 }
 
 // UNSAFE 3/10. Contract: `out` is null or points to a writable LemmaOut. The bytes move to the caller, who returns them with
@@ -1455,7 +1464,8 @@ def assemble_stream_library_program(spec_rs: str, regions: dict[str, str], *, sq
             raise ValueError(f"a stream chunk has no cells of type {fty}")
     param_code, param_args = _param_decode(verus_part)
     names = [n for n, _t, _lo, _hi in spec_params(verus_part)]
-    params_init = "Params { " + ", ".join(f"{n}: {a}" for n, a in zip(names, param_args, strict=True)) + " }" if names else "Params {}"
+    # a VARCHAR parameter is decoded into an owned String (lemma_param_str) and moved into Params (run_query took `&param_x`)
+    params_init = "Params { " + ", ".join(f"{n}: {a.removeprefix('&')}" for n, a in zip(names, param_args, strict=True)) + " }" if names else "Params {}"
     outputs = output_layout(verus_part)
     raw_fn = _raw_chunk_fn(ts, fields)
     kinds = ", ".join(str(_kind(ty, name)) for name, ty in outputs)
@@ -1493,6 +1503,11 @@ def assemble_stream_library_program(spec_rs: str, regions: dict[str, str], *, sq
         .replace("__ERROR_REASON__", _rust_str(STREAM_ERROR_REASON))
         .replace("__TS__", ts)
     )
+    if any(ty == "String" for _n, ty, _lo, _hi in spec_params(verus_part)):
+        # Params is Clone, not Copy, with a VARCHAR parameter: each worker's Exec gets its own copy (exec_merge compares the texts)
+        worker = f"exec_new(Stream_{ts} {{ id: s.id, raw: s.end as usize }}, s.p);"
+        assert head.count(worker) == 1, worker
+        head = head.replace(worker, worker.replace("s.p);", "s.p.clone());"))
     return verus_part + "\n" + head + "\n" + raw_fn + "\n" + encode + "\n" + statics
 
 
@@ -1889,7 +1904,8 @@ def _assemble_stream_join_library(spec_rs: str, regions: dict[str, str], *, sql:
     pool_open = f"pool_open(sh, {', '.join(f'cols.{i}' for i in range(len(builds)))}, p, nslots as usize)"
     param_code, param_args = _param_decode(verus_part)
     names = [n for n, _t, _lo, _hi in spec_params(verus_part)]
-    params_init = "Params { " + ", ".join(f"{n}: {a}" for n, a in zip(names, param_args, strict=True)) + " }" if names else "Params {}"
+    # a VARCHAR parameter is decoded into an owned String (lemma_param_str) and moved into Params (run_query took `&param_x`)
+    params_init = "Params { " + ", ".join(f"{n}: {a.removeprefix('&')}" for n, a in zip(names, param_args, strict=True)) + " }" if names else "Params {}"
     outputs = output_layout(verus_part)
     raw_fn = _raw_chunk_fn(ts, fields)
     kinds = ", ".join(str(_kind(ty, name)) for name, ty in outputs)

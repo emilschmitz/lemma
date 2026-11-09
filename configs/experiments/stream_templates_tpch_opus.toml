@@ -5,14 +5,13 @@
 #
 # GATE (2026-11-08, this commit; stream emit with stream_join's rule on research_loop/generated/tpch_sf10.duckdb at binding 0 of the seed-1 draw):
 #   Q3  (binding 0: BUILDING, 1995-03-19): stream lineitem (32,233,888 rows after its filter; orders 7,314,636, customer 300,276).
-#       REFUSED: "template parameter param_segment: &String: only integer, DECIMAL and DATE parameters are stated".
+#       (first draft: REFUSED "template parameter param_segment: &String: only integer, DECIMAL and DATE parameters are stated")
 #   Q12 (binding 0: AIR, MAIL, 1993-01-01): stream orders (15,000,000; lineitem 312,478).
-#       REFUSED: "template parameter param_mode1: &String: only integer, DECIMAL and DATE parameters are stated".
+#       (first draft: REFUSED the same way, param_mode1)
 #   Q14 (binding 0: 1993-09-01): stream part (2,000,000; lineitem 749,991).
-#       REFUSED: "spec fn spec_like is not a recognized fold over the join (only SUM / COUNT / AVG and COUNT DISTINCT are stated)" (the
-#       fixed-constant Q14 is refused the same way: the CASE ... LIKE 'PROMO%' inside SUM).
-# Do not launch until the stream gate states VARCHAR template parameters (Q3, Q12) and a CASE/LIKE-guarded SUM over a join (Q14): every run
-# below is refused at emit today.
+#       (first draft: REFUSED "spec fn spec_like is not a recognized fold over the join (..)"; the fixed-constant Q14 the same way)
+# 2026-11-08 later: the stream gate states VARCHAR template parameters and LIKE (docs/STREAM.md "String parameters and LIKE"); host
+# scaffold with a stub agent: Q3 54 verified, 0 errors; Q12 51 verified, 0 errors; Q14 48 verified, 0 errors (tests/test_stream_strings.py).
 # Run (from main after the merge, clean tree, pinned SHA):
 #   uv run python research_loop/scripts/container_batch.py --experiment configs/experiments/stream_templates_tpch_opus.toml
 [settings]
