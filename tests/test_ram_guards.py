@@ -101,13 +101,13 @@ def test_heavy_with_the_lock_held_by_the_caller_skips_the_lock_but_not_otherwise
     holder = subprocess.Popen(["flock", str(lock), "sleep", "30"])
     try:
         for _ in range(50):  # until the holder has it
-            if subprocess.run(["flock", "-n", str(lock), "true"]).returncode != 0:
+            if subprocess.run(["flock", "-n", str(lock), "true"], check=False).returncode != 0:
                 break
-            subprocess.run(["sleep", "0.1"])
-        held = subprocess.run([str(ROOT / "scripts/ram/heavy.sh"), "true"], env={**env, "LEMMA_HEAVY_LOCK_HELD": "1"}, timeout=10)
+            subprocess.run(["sleep", "0.1"], check=False)
+        held = subprocess.run([str(ROOT / "scripts/ram/heavy.sh"), "true"], env={**env, "LEMMA_HEAVY_LOCK_HELD": "1"}, timeout=10, check=False)
         assert held.returncode == 0
         with pytest.raises(subprocess.TimeoutExpired):  # someone else's lock: still waits
-            subprocess.run([str(ROOT / "scripts/ram/heavy.sh"), "true"], env=env, timeout=3, capture_output=True)
+            subprocess.run([str(ROOT / "scripts/ram/heavy.sh"), "true"], env=env, timeout=3, capture_output=True, check=False)
     finally:
         holder.kill()
         holder.wait()
