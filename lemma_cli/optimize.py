@@ -224,6 +224,7 @@ def optimize_one(
         and existing.get("db_path") == str(db) and bool(existing.get("assumptions")) == with_assumptions
         and executor.kind_of_manifest(read_json(cache.executor_dir(key) / "manifest.json")) == choice.kind
     ):
+        cache.index_installed_template(cache.executor_dir(key))
         say(f"already optimized: {cache.executor_dir(key)} (--force to redo)")
         if measure:
             for line in summary(cache.executor_dir(key), db, {}, bench(normalize_sql(sql), db)):

@@ -71,6 +71,17 @@ def resolve(key: str) -> Path:
     return hits[0]
 
 
+def index_installed_template(path: Path) -> None:
+    """List the installed template executor at ``path`` in the template index (idempotent; a query executor needs no entry). The install
+    writes the entry; this restores it for an executor that is installed but not listed (an executors/ directory copied to another
+    LEMMA_HOME, or an entry deleted), so `lemma generate` / `lemma optimize` answering "already installed" leave lemma('<sql>') able to find it."""
+    from research_loop.in_duckdb import index_template
+
+    manifest = read_json(path / "manifest.json")
+    if manifest.get("params") and manifest.get("sql"):
+        index_template(lemma_home(), path.name, manifest["sql"])
+
+
 def remove(key: str) -> Path:
     """Delete one executor and its template index entry (``lemma_remove`` in DuckDB does the same)."""
     from research_loop.in_duckdb import unindex_template

@@ -988,3 +988,43 @@ def test_the_cli_defaults_to_the_api_key_and_login_prints_the_terms_note(env: Pa
     monkeypatch.delenv(common.AUTH_ENV)  # each `lemma` call is its own process: the default the previous call put in os.environ is gone
     assert main(["setup", "--auth", "login"]) == 0
     assert "for your own personal use" in capsys.readouterr().out
+
+
+# --- template index of an installed executor ---
+
+
+def _installed(key: str, sql: str, params: list[dict]) -> Path:
+    path = cache.executor_dir(key)
+    path.mkdir(parents=True)
+    (path / "manifest.json").write_text(json.dumps({"sql": sql, "params": params}))
+    return path
+
+
+def test_an_installed_template_missing_from_the_index_is_listed_again_and_a_query_executor_never(env: Path) -> None:
+    """An executors/ directory copied into another LEMMA_HOME has no templates/ entries: the extension's lemma('<sql>') could not find the
+    template, generated, got "already installed" and failed ("no installed executor answers this query")."""
+    from research_loop.in_duckdb import template_index_key
+
+    template = "-- params: p1 BIGINT\nSELECT SUM(b) AS total FROM t WHERE a > $p1"
+    path = _installed("ab" * 32, template, [{"name": "p1", "type": "BIGINT"}])
+    cache.index_installed_template(path)
+    cache.index_installed_template(path)  # idempotent
+    assert [p.relative_to(common.lemma_home()) for p in (common.lemma_home() / "templates").rglob("*") if p.is_file()] == [
+        Path("templates") / template_index_key(template) / path.name]
+    query = _installed("cd" * 32, "SELECT SUM(b) AS total FROM t", [])
+    cache.index_installed_template(query)
+    assert len([p for p in (common.lemma_home() / "templates").rglob("*") if p.is_file()]) == 1
+
+
+def test_lemma_generate_already_installed_restores_the_template_index_entry(env: Path, tmp_path: Path) -> None:
+    from lemma_cli.generate import target_sql
+    from research_loop.in_duckdb import template_index_key
+
+    db = make_db(tmp_path)
+    sql_file = tmp_path / "q.sql"
+    sql_file.write_text("SELECT SUM(b) AS total FROM t WHERE a > 5")
+    template, binding = target_sql(sql_file.read_text(), db, True)
+    assert binding == {"p1": "5"}
+    path = _installed(common.sql_key(template), template, [{"name": "p1", "type": "INTEGER"}])
+    assert main(["generate", "--db", str(db), "--sql-file", str(sql_file)]) == 0  # already installed: no pipeline run
+    assert (common.lemma_home() / "templates" / template_index_key(template) / path.name).is_file()

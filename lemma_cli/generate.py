@@ -53,6 +53,7 @@ def generate(db_arg: str, sql_file: str, source_db: str | None, lift: bool, rege
         say(f"lemma generate: lifted {len(binding)} constant(s) into a query template (key {key[:12]}):\n{target}\n  this query's values: "
             + ", ".join(f"${k} = {v}" for k, v in binding.items()))
     if (cache.executor_dir(key) / "manifest.json").is_file() and not regenerate:
+        cache.index_installed_template(cache.executor_dir(key))
         say(f"INSTALLED {key} (already installed; --regenerate proves a new one)")
         return 0
     dest = optimize_one(target, db, force=True, binding=binding, source_db=Path(source_db) if source_db else None)
