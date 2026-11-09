@@ -1,0 +1,52 @@
+# DRAFT descriptor for github.com/duckdb/community-extensions: copy to extensions/lemma/description.yml in a fork of that repo.
+# NOT submitted. Fill the <...> fields first (docs/release/community-extension/README.md, "Checklist").
+# Schema as read by scripts/build.py of duckdb/community-extensions (2026-11-08); unknown keys are ignored there.
+extension:
+  name: lemma
+  description: Answer a query with an executor that Verus proved equal to the query's specification
+  version: 0.1.0
+  language: C++
+  build: cmake
+  # PLACEHOLDER: the repository has no LICENSE file yet. Emil picks the license and adds LICENSE at the root first.
+  license: <SPDX id, e.g. MIT>
+  maintainers:
+    - emilschmitz
+  # linux_amd64 only (db_extension/duckdb_ext: POSIX only: posix_spawn of /bin/sh, dlopen, kill/waitpid; GCC/Clang __int128, executors are
+  # Linux shared libraries compiled by the user's `lemma` pipeline). Opt-in platforms (osx_amd64, linux_*_musl, windows_arm64)
+  # are off unless listed in opt_in_platforms, so only the default ones are excluded here.
+  excluded_platforms: "linux_arm64;osx_arm64;windows_amd64;windows_amd64_mingw;wasm_mvp;wasm_eh;wasm_threads;"
+  # No requires_toolchains / vcpkg: the extension links only libdl. The Rust executors are built at run time by the user's
+  # `lemma` pipeline, never by this build.
+
+repo:
+  github: emilschmitz/lemma
+  # The extension is a subdirectory of the monorepo, not the repo root.
+  build_directory: db_extension/duckdb_ext
+  # ref = a commit that builds against the CI's latest stable DuckDB (v2.0.0 as of 2026-11-08). The extension is written
+  # against DuckDB v1.5.6's C++ internals and has NOT been built against v2.0.0 yet: a port is needed before this field exists.
+  ref: <40-hex commit that builds against DuckDB v2.0.0>
+  # variegata = the DuckDB v1.5.6 build (build.py selects it when the CI runs with DUCKDB_VERSION=v1.5.6; the default PR
+  # build is v2.0.0 only, so a v1.5.6 build needs a run dispatched by the DuckDB maintainers).
+  variegata: <40-hex commit on main that contains db_extension/duckdb_ext/test/sql/lemma.test>
+
+docs:
+  hello_world: |
+    -- needs the `lemma` CLI (pip/uv) for generation; without an executor and without the CLI every call is an error
+    SET lemma_generate = 'off';
+    SELECT lemma_sql_key('SELECT 1') AS executor_key;
+    SELECT key, kind, sql, proof FROM lemma_list();
+  extended_description: |
+    Lemma answers a SQL query with a proved executor: a Rust program whose `run_query` the Verus verifier proved equal to a
+    specification generated from the query, compiled as a shared library. The extension scans the columns the executor needs
+    in the caller's transaction, hands them to the library and returns its rows; it never substitutes DuckDB's answer
+    (except under `SET lemma_route_unproved = true`, labelled in `lemma_last_query()`).
+
+    Executors are made outside DuckDB by the `lemma` command-line tool (`lemma optimize`, or `lemma generate`, which
+    `lemma('<sql>')` starts as a separate process when no executor exists). That tool runs an LLM agent in a Docker sandbox and
+    Verus; it is not part of this extension. Without it, `lemma('<sql>')` fails with the generator's error
+    (`lemma: command not found`, exit 127), and with `enable_external_access = false` generation is refused.
+
+    Functions: `lemma(sql)`, `lemma_query(sql [, params...])`, `lemma_list()`, `lemma_jobs()`, `lemma_remove(key)`,
+    `lemma_last_query()`, `lemma_cache_stats()`, `lemma_cache_clear()`, `lemma_normalize_sql(sql)`, `lemma_sql_key(sql)`.
+    Settings: `lemma_mode`, `lemma_generate`, `lemma_home`, `lemma_route_unproved`, `lemma_cache`, `lemma_cache_max_mb`,
+    `lemma_scan_threads`, `lemma_lift_constants`. Documentation: https://github.com/emilschmitz/lemma/tree/main/db_extension/duckdb_ext
