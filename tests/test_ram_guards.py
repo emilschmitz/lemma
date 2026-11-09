@@ -80,3 +80,34 @@ def test_a_job_over_its_cap_is_killed_alone() -> None:
         env=env, timeout=60, capture_output=True,
     )
     assert r.returncode != 0
+
+
+def _unheld() -> dict[str, str]:
+    return {k: v for k, v in os.environ.items() if k != "LEMMA_HEAVY_LOCK_HELD"}
+
+
+def test_heavy_inside_heavy_runs_instead_of_waiting_for_its_own_lock(tmp_path: Path) -> None:
+    """build_product.sh under heavy.sh runs build_images.sh, whose docker builds go through heavy.sh again: the inner call must not wait for
+    the lock the outer one holds (it did, forever)."""
+    heavy = str(ROOT / "scripts/ram/heavy.sh")
+    env = {**_unheld(), "LEMMA_HEAVY_MIN_AVAIL_MB": "0", "LEMMA_HEAVY_LOCK": str(tmp_path / "heavy.lock")}
+    ok = subprocess.run([heavy, "bash", "-c", f"{heavy} true && {heavy} bash -c 'exit 3'"], env=env, timeout=60, check=False)
+    assert ok.returncode == 3  # both nested calls ran; the inner status comes back
+
+
+def test_heavy_with_the_lock_held_by_the_caller_skips_the_lock_but_not_otherwise(tmp_path: Path) -> None:
+    lock = tmp_path / "heavy.lock"
+    env = {**_unheld(), "LEMMA_HEAVY_MIN_AVAIL_MB": "0", "LEMMA_HEAVY_LOCK": str(lock)}
+    holder = subprocess.Popen(["flock", str(lock), "sleep", "30"])
+    try:
+        for _ in range(50):  # until the holder has it
+            if subprocess.run(["flock", "-n", str(lock), "true"]).returncode != 0:
+                break
+            subprocess.run(["sleep", "0.1"])
+        held = subprocess.run([str(ROOT / "scripts/ram/heavy.sh"), "true"], env={**env, "LEMMA_HEAVY_LOCK_HELD": "1"}, timeout=10)
+        assert held.returncode == 0
+        with pytest.raises(subprocess.TimeoutExpired):  # someone else's lock: still waits
+            subprocess.run([str(ROOT / "scripts/ram/heavy.sh"), "true"], env=env, timeout=3, capture_output=True)
+    finally:
+        holder.kill()
+        holder.wait()

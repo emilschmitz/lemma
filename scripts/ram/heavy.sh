@@ -11,6 +11,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # lemma_config.py sits at the checkout root, or (installed wheel) in site-packages, the parent of lemma_data/ where this script is then.
 # LEMMA_PYTHON: the interpreter Lemma runs on (set by the lemma CLI): the system python3 may be missing or older than 3.11 (tomllib).
 PYROOT="$ROOT"; [[ -f "$PYROOT/lemma_config.py" ]] || PYROOT="$(dirname "$ROOT")"
+# Nested (a heavy job that runs heavy.sh again, e.g. build_product.sh under heavy.sh -> build_images.sh -> heavy.sh docker build): the
+# outer heavy.sh holds the lock and its scope caps the memory, so run the command as it is (taking the lock again would wait forever).
+if [ "${LEMMA_HEAVY_LOCK_HELD:-0}" = "1" ]; then exec "$@"; fi
 cfg() { PYTHONPATH="$PYROOT" "${LEMMA_PYTHON:-python3}" -m lemma_config get "$1"; }
 MEM_MAX="$(cfg heavy_mem_max)"
 MIN_AVAIL_MB="$(cfg heavy_min_avail_mb)"
