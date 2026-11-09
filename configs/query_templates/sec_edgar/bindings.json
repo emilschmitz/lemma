@@ -1,0 +1,22 @@
+{
+  "_source": "Binding rules for the lifted SEC-EDGAR templates in this directory (declarative_spec.templates.generate_bindings; drawn with random.Random(bindings_seed), so a seed gives the same list every time). GenDB publishes no substitution parameters for its SEC queries, so each parameter is drawn from the column's actual domain on holdout/gendb_sec_edgar/duckdb/sec_edgar_dec.duckdb (read 2026-11-08), restricted to the values that carry at least 1 % of the rows the comparison filters, so a drawn instance is never a near-empty query. Each list contains the query's own value, so binding by hand to it gives back the GenDB query (the template header's comment names those values).",
+  "_domains": {
+    "num.uom": "non-NULL num.value rows per uom: USD 33,234,006, shares 3,091,826, pure 1,364,900 (each >= 1 % of 39.4M); the next, CAD, has 339,308 (0.9 %)",
+    "pre.stmt": "pre rows per stmt: BS 3,143,073, CF 2,934,606, IS 1,767,049, EQ 1,242,132, CI 252,621, UN 233,958 (each >= 1 % of 9.6M); SI 26,283, CP 4 and NULL 1,073 are below",
+    "sub.fy": "sub rows per fiscal year: 2021 7,732, 2022 27,333, 2023 26,612, 2024 18,535, 2025 1,025 (each >= 1 % of 86,135); 2012-2020 together 249, NULL 4,662",
+    "sub.sic": "an SIC division range [d*1000, d*1000 + 999] (q4's 4000-4999 is d = 4): d in 1..8, each >= 1 % of sub (division 1 4,802 rows ... division 8 3,398); division 0 (574 rows, 0.7 %) and NULL (1,215) are left out",
+    "tag.abstract": "tag.abstract is 0 in all 1,070,662 rows: the only value"
+  },
+  "q6": {
+    "p1": {"kind": "choice", "values": ["USD", "shares", "pure"]},
+    "p2": {"kind": "choice", "values": ["BS", "CF", "IS", "EQ", "CI", "UN"]},
+    "p3": {"kind": "int_range", "lo": 2021, "hi": 2025}
+  },
+  "q4": {
+    "p1": {"kind": "choice", "values": ["USD", "shares", "pure"]},
+    "p2": {"kind": "choice", "values": ["BS", "CF", "IS", "EQ", "CI", "UN"]},
+    "p3": {"kind": "choice", "values": ["1000", "2000", "3000", "4000", "5000", "6000", "7000", "8000"]},
+    "p4": {"kind": "int_shift", "of": "p3", "amount": 999},
+    "p5": {"kind": "choice", "values": ["0"]}
+  }
+}

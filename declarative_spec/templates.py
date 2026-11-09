@@ -662,7 +662,14 @@ def _shift_date(day: dt.date, amount: int, unit: str) -> dt.date:
 def _draw(rule: Mapping, param: Param, rng: random.Random, done: Mapping[str, str]) -> str:
     kind = rule.get("kind")
     if kind == "choice":
-        return str(rng.choice(list(rule["values"])))
+        values = [str(v) for v in rule["values"]]
+        if "distinct_from" in rule:  # e.g. TPC-H Q12's SHIPMODE2 "must be different from SHIPMODE1" (section 2.4.12.3)
+            others = [str(rule["distinct_from"])] if isinstance(rule["distinct_from"], str) else [str(o) for o in rule["distinct_from"]]
+            for other in others:
+                if other not in done:
+                    raise ValueError(f"rule for {param.name} must differ from {other!r}, which has no value yet (list it earlier)")
+            values = [v for v in values if v not in {done[o] for o in others}]
+        return rng.choice(values)
     if kind == "int_range":
         return str(rng.randint(int(rule["lo"]), int(rule["hi"])))
     if kind == "decimal_range":
@@ -695,7 +702,8 @@ def _draw(rule: Mapping, param: Param, rng: random.Random, done: Mapping[str, st
 
 def generate_bindings(template: Template, rules: Mapping[str, Mapping], n: int, seed: int) -> list[dict[str, str]]:
     """``n`` bindings drawn with ``random.Random(seed)`` from per-parameter rules (data, e.g. a benchmark's substitution
-    rules). A rule is ``{"kind": ...}``: ``choice`` (``values``), ``int_range`` / ``decimal_range`` (``lo``, ``hi``),
+    rules). A rule is ``{"kind": ...}``: ``choice`` (``values``; optional ``distinct_from``: a parameter listed earlier, or a list of
+    them, whose value is left out of the draw), ``int_range`` / ``decimal_range`` (``lo``, ``hi``),
     ``date_range`` (``lo``, ``hi``, ``unit`` day | month | year: a day, a first of month or a first of January in the range),
     or a shift of a parameter listed earlier: ``date_shift`` (``of``, ``amount``, ``unit``), ``int_shift`` /
     ``decimal_shift`` (``of``, ``amount``). Every value is checked against its declared type."""

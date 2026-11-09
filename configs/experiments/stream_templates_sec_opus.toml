@@ -1,0 +1,37 @@
+# Stream templates, SEC-EDGAR, prepared 2026-11-08 (NOT run): GenDB SEC q6 and q4 as query templates, lifted by declarative_spec/lift.py
+# (configs/query_templates/sec_edgar/q6.sql, q4.sql), fresh bindings per official round from configs/query_templates/sec_edgar/bindings.json
+# (the columns' actual domains on sec_edgar_dec.duckdb, documented there), seed 1. Settings as stream_q1_opus.toml: Opus 5.5,
+# examples = "principles", data profile, no data assumptions (decline), stream = true, pushdown = false, agent_scan = false.
+# q1 is not here: its only predicate is `stmt IS NOT NULL`, lift makes no template (it runs fixed in stream_sec_opus.toml).
+#
+# GATE (2026-11-08, this commit; stream emit with stream_join's rule on holdout/gendb_sec_edgar/duckdb/sec_edgar_dec.duckdb at binding 0 of
+# the seed-1 draw):
+#   q6 (binding 0: USD, CI, 2021): stream num (33,234,006 rows after its filter; pre 252,621, sub 7,732).
+#      REFUSED: "template parameter param_p1: &String: only integer, DECIMAL and DATE parameters are stated".
+#   q4 (binding 0: USD, CI, 2000, 2999, 0): stream num (33,234,006; tag 1,070,662, pre 252,621, sub 16,559).
+#      REFUSED: "template parameter param_p1: &String: only integer, DECIMAL and DATE parameters are stated".
+# Do not launch until the stream gate states VARCHAR template parameters: every run below is refused at emit today.
+# Run (from main after the merge, clean tree, pinned SHA):
+#   uv run python research_loop/scripts/container_batch.py --experiment configs/experiments/stream_templates_sec_opus.toml
+[settings]
+assumptions = false
+examples = "principles"
+data_profile = "stats"
+templates = true
+stream = true
+pushdown = false
+agent_scan = false
+
+[[run]]
+model = "claude-opus-5-5"
+query = "configs/query_templates/sec_edgar/q6.sql"
+duckdb_path = "holdout/gendb_sec_edgar/duckdb/sec_edgar_dec.duckdb"
+bindings_rules = "configs/query_templates/sec_edgar/bindings.json"
+bindings_seed = 1
+
+[[run]]
+model = "claude-opus-5-5"
+query = "configs/query_templates/sec_edgar/q4.sql"
+duckdb_path = "holdout/gendb_sec_edgar/duckdb/sec_edgar_dec.duckdb"
+bindings_rules = "configs/query_templates/sec_edgar/bindings.json"
+bindings_seed = 1
