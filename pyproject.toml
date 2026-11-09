@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 # The distribution name: `lemma` is taken on PyPI (an unrelated project), so the wheel is `lemma-db`; the command is still `lemma`.
 name = "lemma-db"
-version = "0.1.0"
+version = "0.2.0"
 description = "Lemma: verified query synthesis (an AI agent writes run_query, Verus proves it, DuckDB runs it)"
 readme = "README.md"
 requires-python = ">=3.11"

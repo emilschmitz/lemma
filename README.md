@@ -23,7 +23,7 @@ Verus at `~/tools/verus` with its rustup toolchain? `lemma setup --prover host` 
 `host`). Build the images yourself instead of pulling: `lemma setup --build-images`.
 
 ```bash
-tar -xzf lemma-0.1.0-linux-x86_64.tar.gz && ./lemma-0.1.0-linux-x86_64/install.sh   # ~/.local/bin/lemma, ~/.local/share/lemma/duckdb/
+tar -xzf lemma-0.2.0-linux-x86_64.tar.gz && ./lemma-0.2.0-linux-x86_64/install.sh   # ~/.local/bin/lemma, ~/.local/share/lemma/duckdb/
 export ANTHROPIC_API_KEY=...                   # your key, in your own shell (never in a file or a chat)
 lemma setup                                    # Docker, DuckDB; pulls the prover and agent images, tests the sandbox
 lemma optimize --db my.duckdb --sql "SELECT region, SUM(qty) AS q FROM orders GROUP BY region"   # or: lemma optimize --db my.duckdb q.sql
@@ -31,12 +31,13 @@ lemma duckdb my.duckdb                         # a full DuckDB; in it: SELECT * 
 lemma list                                     # installed executors (key, stream/batch, proof line, database, SQL); lemma remove KEY
 ```
 
-Streaming: for a query the stream gate accepts (today single-table aggregates) `lemma optimize` proves a streaming executor that folds
+Streaming: for a query the stream gate accepts (single-table aggregates and inner equi-joins, with VARCHAR template parameters and
+LIKE; docs/STREAM.md) `lemma optimize` proves a streaming executor that folds
 DuckDB's own scan chunks in place, so it is fast on fresh data and the first call after a write is as fast as any call; other queries
 get the batch executor (`executor: stream|batch ... : <reason>` is printed; lemma.toml `[product] executor = auto | stream | batch`).
 
 `install.sh` is `uv tool install` of the wheel plus a copy of the DuckDB binaries; by hand that is
-`uv tool install --constraints constraints.txt ./lemma_db-0.1.0-py3-none-any.whl` and `lemma setup --duckdb-from ./duckdb`. The
+`uv tool install --constraints constraints.txt ./lemma_db-0.2.0-py3-none-any.whl` and `lemma setup --duckdb-from ./duckdb`. The
 distribution is `lemma-db` (the name `lemma` on PyPI is an unrelated project); the command is `lemma`.
 
 `lemma optimize` runs the agent in the sandbox until Verus proves its `run_query` against the query's spec, then verifies the same
@@ -88,7 +89,7 @@ in `db_extension/duckdb_ext/build/release` (runs then record the git SHA; an ins
 ```bash
 docker login ghcr.io -u emilschmitz                                   # a token with write:packages
 scripts/release/build_product.sh --push                               # or: scripts/release/build_images.sh --push (after a build_product.sh)
-gh release create v0.1.0 dist/lemma-0.1.0-linux-x86_64.tar.gz dist/lemma-0.1.0-linux-x86_64/lemma_db-0.1.0-py3-none-any.whl
+gh release create v0.2.0 dist/lemma-0.2.0-linux-x86_64.tar.gz dist/lemma-0.2.0-linux-x86_64/lemma_db-0.2.0-py3-none-any.whl
 ```
 
 **PyPI** (distribution `lemma-db`; users then run `uv tool install lemma-db` or `pipx install lemma-db` and get the `lemma` command; the
@@ -103,13 +104,13 @@ the first upload).
 
 ```bash
 python3 scripts/release/build_wheel.py --out dist/pypi                # from a clean, pushed HEAD
-uvx twine check --strict dist/pypi/lemma_db-0.1.0-py3-none-any.whl    # metadata and README rendering
+uvx twine check --strict dist/pypi/lemma_db-0.2.0-py3-none-any.whl    # metadata and README rendering
 # TestPyPI first (the token is read from the environment, never typed on the command line):
-UV_PUBLISH_TOKEN="$TEST_PYPI_TOKEN" uv publish --publish-url https://test.pypi.org/legacy/ dist/pypi/lemma_db-0.1.0-py3-none-any.whl
+UV_PUBLISH_TOKEN="$TEST_PYPI_TOKEN" uv publish --publish-url https://test.pypi.org/legacy/ dist/pypi/lemma_db-0.2.0-py3-none-any.whl
 uv tool install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ --index-strategy unsafe-best-match lemma-db
 lemma --help && lemma status && uv tool uninstall lemma-db
 # then PyPI:
-UV_PUBLISH_TOKEN="$PYPI_TOKEN" uv publish dist/pypi/lemma_db-0.1.0-py3-none-any.whl
+UV_PUBLISH_TOKEN="$PYPI_TOKEN" uv publish dist/pypi/lemma_db-0.2.0-py3-none-any.whl
 ```
 
 The ghcr.io packages must be public for an anonymous `docker pull` (GitHub: package settings, visibility).

@@ -81,7 +81,7 @@ def test_the_checkout_still_refuses_a_dirty_tree_and_records_git(monkeypatch: py
 
 def test_package_provenance_reads_the_wheel_hash_from_the_install_record(monkeypatch: pytest.MonkeyPatch, installed: Path) -> None:
     class Dist:
-        version = "0.1.0"
+        version = "0.2.0"
 
         def __init__(self, direct: dict) -> None:
             self.files = {"direct_url.json": json.dumps(direct), "RECORD": "lemma_config.py,sha256=x,1\n"}
@@ -93,12 +93,12 @@ def test_package_provenance_reads_the_wheel_hash_from_the_install_record(monkeyp
     import importlib.metadata as md
 
     (installed / "lemma_data" / "BUILD_INFO.json").write_text(json.dumps({"source_commit": "f" * 40}))
-    for direct in ({"url": f"file:///x/lemma_db-0.1.0-py3-none-any.whl#sha256={sha}", "archive_info": {}},  # uv (install.sh)
+    for direct in ({"url": f"file:///x/lemma_db-0.2.0-py3-none-any.whl#sha256={sha}", "archive_info": {}},  # uv (install.sh)
                    {"url": "file:///x/lemma.whl", "archive_info": {"hashes": {"sha256": sha}}},  # pip --hash
                    {"url": "file:///x/lemma.whl", "archive_info": {"hash": f"sha256={sha}"}}):
         monkeypatch.setattr(md, "distribution", lambda _name, d=direct: Dist(d))
         got = lc.package_provenance()
-        assert got["wheel_sha256"] == sha and got["lemma_version"] == "0.1.0" and got["source_commit"] == "f" * 40
+        assert got["wheel_sha256"] == sha and got["lemma_version"] == "0.2.0" and got["source_commit"] == "f" * 40
         assert got["installed_record_sha256"] == hashlib.sha256(b"lemma_config.py,sha256=x,1\n").hexdigest()
 
 
