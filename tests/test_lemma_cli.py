@@ -882,6 +882,24 @@ def test_auto_streams_a_single_table_aggregate_and_batches_a_join_or_a_subquery(
     assert executor.choose(STREAM_SQL, db) == executor.Choice("batch", "batch", "[product] executor = batch")
 
 
+def test_auto_streams_a_lifted_string_constant_and_a_like(env: Path, tmp_path: Path) -> None:
+    """2026-11-08: the stream gate states VARCHAR template parameters and LIKE; before, every lemma('...') with a string literal in
+    WHERE (lifted by default into a VARCHAR parameter) was refused by the gate and proved as a batch executor."""
+    from lemma_cli import executor
+    from lemma_cli.generate import target_sql
+
+    db = make_db2(tmp_path)
+    template, binding = target_sql("SELECT b, COUNT(*) AS n FROM u WHERE c = 'x' GROUP BY b", db, True)
+    assert binding == {"p1": "x"} and "p1 VARCHAR" in template, (template, binding)
+    choice = executor.choose(template, db)
+    assert (choice.kind, choice.abi) == ("stream", 6) and "accepts" in choice.reason, choice
+    template, binding = target_sql("SELECT COUNT(*) AS n FROM u WHERE c IN ('x', 'y') AND c <> 'z'", db, True)
+    assert binding and template.count("VARCHAR") == 3, template
+    assert executor.choose(template, db).kind == "stream"
+    assert executor.choose("SELECT SUM(CASE WHEN c LIKE 'x%' THEN b ELSE 0 END) AS s FROM u", db).kind == "stream"
+    assert executor.choose("SELECT COUNT(*) AS n FROM u WHERE c LIKE '%x_'", db).kind == "stream"
+
+
 def test_auto_runs_the_stream_pipeline_with_the_stream_settings_and_records_the_choice(env: Path, pipeline: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
     ready(env, monkeypatch)
     monkeypatch.setenv("LEMMA_PUSHDOWN", "true")  # the user's own value: forced off for a stream run, kept for a batch run
