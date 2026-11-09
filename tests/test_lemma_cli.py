@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import stat
 from pathlib import Path
@@ -12,6 +13,7 @@ import pytest
 
 from lemma_cli import cache, common, duck, optimize as opt, sandbox, setup_cmd
 from lemma_cli.assumptions import approved_package, assumptions, package_dir
+from lemma_cli.main import build_parser as main_parser
 from lemma_cli.main import main
 
 KEY = "sk-ant-api03-DUMMYDUMMYDUMMY-leak-canary-0123456789"  # recognisable dummy; never a real key
@@ -656,7 +658,10 @@ def test_optimize_api_key_runs_the_pipeline_with_the_key_in_the_child_and_instal
     assert Path((pipeline / "installed_from").read_text()).name.startswith("run_")  # the proved run is what gets installed
     out = capsys.readouterr().out
     assert KEY not in out
-    assert "PROVED  41 verified, 0 errors (Verus)" in out and f"lemma duckdb {db.resolve()}" in out and "lemma_last_query()" in out
+    assert "PROVED  41 verified, 0 errors (Verus)" in out and f"lemma duckdb --lemma-mode {db.resolve()}" in out and "lemma_last_query()" in out
+    # Every printed `lemma duckdb` hint routes the query through Lemma (plain `lemma duckdb` is DuckDB: lemma_last_query would say engine none).
+    hints = [line.split("#")[0].strip() for line in out.splitlines() if line.strip().startswith("lemma duckdb")]
+    assert len(hints) == 2 and all(main_parser().parse_args(shlex.split(h)[1:]).lemma_mode for h in hints), hints
     assert main(["optimize", "--db", str(db), "--sql", "SELECT  SUM(a)\n FROM t;"]) == 0  # same key: cache hit, no second run
     assert "already optimized" in capsys.readouterr().out
 

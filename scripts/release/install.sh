@@ -67,4 +67,4 @@ echo
 echo "Next:"
 echo "  lemma setup                                  # checks Docker and DuckDB, pulls the prover and agent images, tests the sandbox; uses your Claude Code login"
 echo "  lemma optimize --db my.duckdb --sql \"SELECT ...\""
-echo "  lemma duckdb my.duckdb                       # full DuckDB with Lemma mode on; SELECT * FROM lemma_last_query() shows which engine answered"
+echo "  lemma duckdb my.duckdb                       # full DuckDB plus SELECT * FROM lemma('<sql>'); --lemma-mode routes every SELECT through Lemma"

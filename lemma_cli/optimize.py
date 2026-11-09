@@ -191,8 +191,8 @@ def summary(dest: Path, db: Path, record: dict[str, Any], measured: dict[str, An
                      "the time inside DuckDB is --bench)")
     lines += [
         "Use it:",
-        f"  lemma duckdb {db}          # our DuckDB with Lemma mode on; type the query",
-        f"  lemma duckdb {db} -c \"{manifest['normalized_sql']}\"",
+        f"  lemma duckdb --lemma-mode {db}          # our DuckDB with Lemma mode on; type the query",
+        f"  lemma duckdb --lemma-mode {db} -c \"{manifest['normalized_sql']}\"",
         "  SELECT * FROM lemma_last_query();   -- engine = lemma when the proved program answered",
     ]
     return lines

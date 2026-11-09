@@ -203,5 +203,5 @@ def test_the_built_wheel_holds_every_resource_the_runtime_reads(tmp_path: Path) 
     assert not [n for n in names if n.startswith("tests/") or "/artifacts/" in n or "__pycache__" in n]
     metadata = z.read(next(n for n in names if n.endswith("METADATA"))).decode()
     assert "Requires-Dist: duckdb==1.5.6" in metadata and "verus-transpiler" not in metadata and "pytest" not in metadata
-    assert "Name: lemma-db" in metadata and "Author-email: Emil Schmitz" in metadata and "Project-URL: Source, https://github.com/emilschmitz/lemma" in metadata
+    assert "Name: lemma-db" in metadata and "Author: Emil Schmitz" in metadata and "Author-email" not in metadata and "Project-URL: Source, https://github.com/emilschmitz/lemma" in metadata
     assert "file:" not in metadata and "](docs/" not in metadata  # no path dependency; the long description links to GitHub

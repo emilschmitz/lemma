@@ -20,7 +20,7 @@ Offline machine: `./install.sh --load-images` loads the images shipped in `image
 
 ```bash
 lemma optimize --db my.duckdb --sql "SELECT region, SUM(qty) AS q FROM orders GROUP BY region"
-lemma duckdb my.duckdb -c "SELECT region, SUM(qty) AS q FROM orders GROUP BY region; SELECT * FROM lemma_last_query();"
+lemma duckdb --lemma-mode my.duckdb -c "SELECT region, SUM(qty) AS q FROM orders GROUP BY region; SELECT * FROM lemma_last_query();"
 lemma list                                         # installed executors; lemma remove KEY
 ```
 

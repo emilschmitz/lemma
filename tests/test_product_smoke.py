@@ -180,7 +180,7 @@ def test_setup_optimize_and_run_in_duckdb_from_the_installed_wheel(user: dict) -
     assert listed.returncode == 0 and f"{executor.name[:12]}  stream  " in listed.stdout and SQL in listed.stdout
 
     # Our DuckDB CLI with Lemma mode on: the streaming executor answers (equal to DuckDB) on DuckDB's own scan chunks.
-    shown = lemma(user, "duckdb", str(user["db"]), "-c", f"{SQL}; SELECT engine, mode FROM lemma_last_query();")
+    shown = lemma(user, "duckdb", "--lemma-mode", str(user["db"]), "-c", f"{SQL}; SELECT engine, mode FROM lemma_last_query();")
     assert shown.returncode == 0 and re.search(r"│\s*lemma\s*│\s*stream\s*│", shown.stdout)
     for write in ("", "INSERT INTO t VALUES ('key 9', 1.50), ('key 0', 2.25); "):  # fresh data: the first call after a write streams too
         csv = subprocess.run([str(user["share"] / "duckdb" / "duckdb"), "-csv", "-noheader", "-cmd", "SET lemma_mode = true", str(user["db"]),
@@ -224,7 +224,7 @@ export HOME=/box/home PATH=/box/home/.local/bin:/box/bin:/usr/bin:/bin LEMMA_HOM
 mkdir -p $HOME
 /release/install.sh
 lemma duckdb -c "{PLAIN_SQL.format(csv='/box/sales.csv')}"
-lemma duckdb /box/shop.duckdb -c "{SQL}; SELECT engine FROM lemma_last_query();"
+lemma duckdb --lemma-mode /box/shop.duckdb -c "{SQL}; SELECT engine FROM lemma_last_query();"
 lemma list
 """
     done = subprocess.run(
