@@ -4,14 +4,16 @@ Full DuckDB 1.5.6 plus Lemma: give it a SQL query and your database, an AI agent
 computes exactly what the SQL says, and DuckDB runs the proved program from then on.
 
 **You need** Linux x86_64 (glibc >= 2.34), Docker (your user may run containers), [uv](https://docs.astral.sh/uv/), and credentials for one
-agent harness (Claude Code login by default, or an API key: `lemma setup --auth api-key` with `ANTHROPIC_API_KEY` exported).
+agent harness: an API key by default (`ANTHROPIC_API_KEY` exported in your shell; `lemma setup --harness codex` / `--harness gemini`
+take `CODEX_API_KEY` / `GEMINI_API_KEY`). `lemma setup --auth login` uses your own CLI login instead, for your own personal use only.
 
 ## Install
 
 ```bash
 tar -xzf lemma-<version>-linux-x86_64.tar.gz
 ./lemma-<version>-linux-x86_64/install.sh          # ~/.local/bin/lemma, ~/.local/share/lemma/duckdb/
-lemma setup                                        # pulls the agent and prover images, tests the sandbox, checks your login
+export ANTHROPIC_API_KEY=...                       # your key, in your own shell (never in a file or a chat)
+lemma setup                                        # pulls the agent and prover images, tests the sandbox, checks the API key is set
 ```
 
 Offline machine: `./install.sh --load-images` loads the images shipped in `images/` (when the release has them) instead of pulling.
