@@ -149,6 +149,132 @@ def _refuse(why: str) -> DeclarativeUnsupported:
     return DeclarativeUnsupported(f"stream (lemma.toml [run] stream): {why}")
 
 
+# ---- template parameters (shared with stream_join) --------------------------------------------------------------------------------
+
+
+def read_params(sig: list[tuple[str, str]], declared: dict) -> list[tuple[str, str]]:
+    """The run_query template parameters as Params fields: (name without `param_`, type); a VARCHAR parameter (`&String` in the
+    spec, `=` / `<>` / IN only, templates.param_ranges) is a `String` field."""
+    params: list[tuple[str, str]] = []
+    for name, ty in sig:
+        if not name.startswith("param_") or name.removeprefix("param_") not in declared:
+            raise _refuse(f"run_query parameter {name}: {ty} is not a template parameter")
+        if ty not in ("i64", "i32", "&String"):
+            raise _refuse(f"template parameter {name}: {ty}: only integer, DECIMAL, DATE and VARCHAR parameters are stated")
+        params.append((name.removeprefix("param_"), "String" if ty == "&String" else ty))
+    return params
+
+
+def has_strings(params: list[tuple[str, str]]) -> bool:
+    return any(t == "String" for _n, t in params)
+
+
+def param_sub(params: list[tuple[str, str]], canon: bool):
+    """The spec's `param_<name>` as fields of the stream contract's `p: &Params`: an integer `p.<name>`; a string `&p.<name>` (an
+    argument) or `p.<name>@` (its text). With ``canon`` (one table: Exec merges workers' own Params) a string reads
+    `params_canon(p).<name>`, a String of the same text that depends on the text only (see :func:`params_block`)."""
+    kinds = dict(params)
+    base = "params_canon(p)" if canon else "p"
+
+    def one(m: re.Match) -> str:
+        name, at = m.group(1), m.group(2)
+        if kinds.get(name) == "String":
+            return f"{base}.{name}@" if at else f"&{base}.{name}"
+        if name in kinds:
+            return f"p.{name}{at}"
+        return m.group(0)
+
+    return lambda text: re.sub(r"(?<![\w.])param_(\w+)\b(@?)", one, text)
+
+
+def param_arg(params: list[tuple[str, str]], name: str, owner: str, canon: bool) -> str:
+    """run_query_ok's argument for parameter ``name`` of ``owner`` (an expression of type &Params: `p`, `&e.params()`)."""
+    plain = owner.removeprefix("&")
+    if dict(params).get(name) != "String":
+        return f"{plain}.{name}"
+    return f"&params_canon({owner}).{name}" if canon else f"&{plain}.{name}"
+
+
+def canon_calls(text: str) -> str:
+    """Calls of the host range / suffix folds and their lemmas with `p` -> with `&params_canon(p)` (one table with a string
+    parameter): a fold's value then depends on the parameters' texts only, as agg_row's does."""
+    return re.sub(r"\bk, p([,)])", r"k, &params_canon(p)\1", text)
+
+
+def params_block(params: list[tuple[str, str]], key: str, canon: bool) -> str:
+    """Params (the template parameters), Key and params_eq. Without a string parameter the text of phase 1 (Copy, `==`). With one:
+    Clone; params_eq compares the texts; with ``canon`` also param_str / params_canon (proved, nothing trusted)."""
+    fields = "\n".join(f"    pub {n}: {t}," for n, t in params)
+    eq = " && ".join(f"a.{n} == b.{n}" for n, _t in params) or "true"
+    if not has_strings(params):
+        return f"""// The template parameters (an empty struct when the query has none).
+#[derive(Clone, Copy)]
+pub struct Params {{
+{fields}
+}}
+
+// The group key (key_at's type); `()` for an ungrouped aggregate.
+pub type Key = {key};
+
+pub fn params_eq(a: &Params, b: &Params) -> (r: bool)
+    ensures
+        r == (*a == *b),
+{{
+    {eq}
+}}"""
+    views = " && ".join(f"a.{n}@ == b.{n}@" if t == "String" else f"a.{n} == b.{n}" for n, t in params)
+    out = f"""// The template parameters; a VARCHAR parameter is a String (the spec reads its text, `@`). Clone is for the glue (one copy per
+// worker); verified code never clones Params.
+#[derive(Clone)]
+#[verifier::allow(autoderive_clone_without_spec)]
+pub struct Params {{
+{fields}
+}}
+
+// The group key (key_at's type); `()` for an ungrouped aggregate.
+pub type Key = {key};
+
+// Same texts and numbers (vstd's String `==` compares the texts).
+pub fn params_eq(a: &Params, b: &Params) -> (r: bool)
+    ensures
+        r == ({views}),
+{{
+    {eq}
+}}"""
+    if not canon:
+        return out
+    canon_fields = ", ".join(f"{n}: param_str(p.{n}@)" if t == "String" else f"{n}: p.{n}" for n, t in params)
+    return out + f"""
+
+// A string parameter enters the stream's folds by its text only. param_str(v) is a String whose text is v (choose; proved, not
+// trusted: lemma_param_str, in scope everywhere) and params_canon(p) is p with each string replaced by param_str of its text: two
+// Params with the same texts and numbers have one params_canon. agg_row, agg_rng and q_finish's run_query_ok read the strings
+// through params_canon(p) (`params_canon(p).x@ == p.x@` by lemma_param_str), so workers' Params need equal texts, not one String.
+// (A module of its own: a module-level `broadcast use` of a lemma in the same module is a cycle for Verus.)
+pub mod params_text {{
+    use vstd::prelude::*;
+
+    pub open spec fn param_str(v: Seq<char>) -> String {{
+        choose|s: String| s@ == v
+    }}
+
+    pub broadcast proof fn lemma_param_str(s: String)
+        ensures
+            #[trigger] param_str(s@)@ == s@,
+    {{
+        assert(s@ == s@);
+    }}
+}}
+
+use params_text::param_str;
+
+broadcast use params_text::lemma_param_str;
+
+pub open spec fn params_canon(p: &Params) -> Params {{
+    Params {{ {canon_fields} }}
+}}"""
+
+
 def check_settings() -> None:
     """The settings the stream contract does not compose with: refused loudly, never silently changed."""
     if lemma_config.assumptions_enabled():
@@ -212,13 +338,7 @@ def read_shape(spec: str) -> Shape:
     from declarative_spec.templates import spec_params
 
     declared = {name: ty for name, ty, _lo, _hi in spec_params(spec)}
-    params: list[tuple[str, str]] = []
-    for name, ty in sig[1:]:
-        if not name.startswith("param_") or name.removeprefix("param_") not in declared:
-            raise _refuse(f"run_query parameter {name}: {ty} is not a template parameter")
-        if ty not in ("i64", "i32"):
-            raise _refuse(f"template parameter {name}: {ty}: only integer, DECIMAL and DATE parameters are stated")
-        params.append((name.removeprefix("param_"), ty))
+    params = read_params(sig[1:], declared)
     cols = re.findall(r"    pub ((?:r#)?\w+): Vec<([^>\n]+)>,", body)
     for f, ty in cols:
         if ty not in ("i64", "i32", "i16", "i8", "u64", "u32", "u16", "u8", "bool", "String"):
@@ -230,11 +350,7 @@ def read_shape(spec: str) -> Shape:
     rh = _spec_fn_sig(spec, "row_hit")
     if rh is None or rh[:2] != [(tv, f"&{cols_name}"), ("i0", "int")]:
         raise _refuse("no row_hit(t, i0, ..) of the expected form")
-    pnames = {n for n, _t in params}
-
-    def sub(text: str) -> str:
-        """The spec's `param_<name>` arguments are fields of the stream contract's `p: &Params`."""
-        return re.sub(r"(?<![\w.])param_(\w+)\b", lambda m: f"p.{m.group(1)}" if m.group(1) in pnames else m.group(0), text)
+    sub = param_sub(params, canon=True)  # the spec's `param_<name>` arguments are fields of the stream contract's `p: &Params`
 
     def subs(args: list[str]) -> list[str]:
         return [sub(a) for a in args]
@@ -274,7 +390,7 @@ def read_shape(spec: str) -> Shape:
         found[fm.group(1)] = Fold(name=fm.group(1), args=subs(args), cond=sub(fm.group(3)), val=sub(fm.group(4)))
     dnames = {d.name for d in shape.distincts}
     for name in recursive:
-        if name in found or name in dnames or name == "seq_le":
+        if name in found or name in dnames or pure_recursive(spec, name):
             continue
         raise _refuse(f"spec fn {name} is not a recognized fold (COUNT DISTINCT and other folds are not phase 1)")
     shape.folds = list(found.values())
@@ -306,6 +422,14 @@ def read_shape(spec: str) -> Shape:
     if not shape.folds and not shape.minmax and not shape.distincts:
         raise _refuse("not an aggregate query (phase 1 streams grouped or ungrouped aggregates only)")
     return shape
+
+
+def pure_recursive(spec: str, name: str) -> bool:
+    """A recursive spec fn that is a function of its values, not a fold over a table: `seq_le` (string order) and the emitter's
+    `spec_like` (SQL LIKE over Seq<char>, emit_like.SPEC_LIKE_FN, exactly): a per-row predicate inside agg_row like any other."""
+    from declarative_spec.emit_like import SPEC_LIKE_FN
+
+    return name == "seq_le" or (name == "spec_like" and SPEC_LIKE_FN in spec)
 
 
 def nullable_fields(cols: list[tuple[str, str]]) -> set[str]:
@@ -425,6 +549,9 @@ def emit_contract(shape: Shape) -> str:
 }}""")
             rng_parts.append(f"{n}: stream_{n}({tv}, lo, k, p) - stream_{n}({tv}, hi, k, p)")
     rng = ",\n        ".join(rng_parts)
+    canon = has_strings(shape.params)
+    if canon:
+        rng = canon_calls(rng)
 
     # lemma_agg_step: unfold each suffix fold at i0 = hi - 1
     step_lines = []
@@ -438,6 +565,8 @@ def emit_contract(shape: Shape) -> str:
                 f"        assert(stream_{n}({tv}, i0, k, p) == agg_row({tv}, i0, k, p).{n} + stream_{n}({tv}, i0 + 1, k, p));"
             )
     step_body = "\n".join(step_lines)
+    if canon:
+        step_body = canon_calls(step_body)
 
     def at(args: tuple[str, str, str], law: str = "") -> str:
         """The omin / omax laws of every MIN / MAX field at the points of one law (a, b, c are Agg names or `a`), then the set fields'
@@ -554,11 +683,11 @@ def emit_contract(shape: Shape) -> str:
         tot_body.append(b)
     tot_ens_s = "\n".join(tot_ens)
     tot_body_s = "\n".join(tot_body)
+    if canon:
+        tot_body_s = canon_calls(tot_body_s)
 
-    params_struct = "\n".join(f"    pub {n}: {t}," for n, t in shape.params)
-    params_eq = " && ".join(f"a.{n} == b.{n}" for n, _t in shape.params) or "true"
-    ok_args_p = ", ".join(f"p.{a.removeprefix('param_')}" for a in shape.ok_args)
-    ok_args_e = ", ".join(f"e.params().{a.removeprefix('param_')}" for a in shape.ok_args)
+    ok_args_p = ", ".join(param_arg(shape.params, a.removeprefix("param_"), "p", True) for a in shape.ok_args)
+    ok_args_e = ", ".join(param_arg(shape.params, a.removeprefix("param_"), "&e.params()", True) for a in shape.ok_args)
     ok_p = f"&t@{', ' + ok_args_p if ok_args_p else ''}"
     ok_e = f"&stream_table_{ts}(e.sid()){', ' + ok_args_e if ok_args_e else ''}"
 
@@ -574,21 +703,7 @@ def emit_contract(shape: Shape) -> str:
 
 // ---- the query's aggregate as a commutative monoid (host, proved) ----
 
-// The template parameters (an empty struct when the query has none).
-#[derive(Clone, Copy)]
-pub struct Params {{
-{params_struct}
-}}
-
-// The group key (key_at's type); `()` for an ungrouped aggregate.
-pub type Key = {key};
-
-pub fn params_eq(a: &Params, b: &Params) -> (r: bool)
-    ensures
-        r == (*a == *b),
-{{
-    {params_eq}
-}}
+{params_block(shape.params, key, True)}
 
 // Spec-only: one field per suffix fold of the spec, one per MIN / MAX (None = no row), `hits` (rows of the group that pass the
 // WHERE) and one count per further existence predicate the result mentions.
@@ -893,6 +1008,14 @@ pub fn stream_end_{ts}(sh: &Stream_{ts}) -> (r: (usize, usize))
 
 def _runtime(shape: Shape, ok_e: str) -> str:
     ts = shape.ts
+    if has_strings(shape.params):
+        # b's state is the fold against b's own Params; params_eq gave equal texts, so its folds (through params_canon) are a's
+        merge_b = (
+            "                                assert(st_val(&gy, k) == seg_fold(sh.id, sb, k, p_b));\n"
+            "                                assert(seg_agg(sh.id, k, p_b) =~= seg_agg(sh.id, k, p));"
+        )
+    else:
+        merge_b = "                                assert(st_val(&gy, k) == seg_fold(sh.id, sb, k, p));"
     return f"""// ---- the host runtime (fixed, verified) ----
 
 pub open spec fn seg_agg(id: u64, k: Key, p: Params) -> spec_fn(Seg) -> Agg {{
@@ -1048,7 +1171,7 @@ pub fn exec_merge(a: Exec, b: Exec) -> (r: Exec)
                             lemma_agg_laws();
                             assert forall|k: Key| #[trigger] st_val(&m, k) == seg_fold(sh.id, segs@, k, p) by {{
                                 assert(st_val(&gx, k) == seg_fold(sh.id, sa, k, p));
-                                assert(st_val(&gy, k) == seg_fold(sh.id, sb, k, p));
+{merge_b}
                                 lemma_fold_concat(sa, sb, seg_agg(sh.id, k, p), agg_zero(), agg_plus_f());
                             }}
                         }}

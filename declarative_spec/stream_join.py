@@ -364,13 +364,7 @@ def read_join_shape(spec: str) -> JoinShape:
         raise _refuse("a self join (one table twice) is not stated")
     ts, builds = types[0], types[1:]
     declared = {name: ty for name, ty, _lo, _hi in spec_params(spec)}
-    params: list[tuple[str, str]] = []
-    for name, ty in sig[ntab:]:
-        if not name.startswith("param_") or name.removeprefix("param_") not in declared:
-            raise _refuse(f"run_query parameter {name}: {ty} is not a template parameter")
-        if ty not in ("i64", "i32"):
-            raise _refuse(f"template parameter {name}: {ty}: only integer, DECIMAL and DATE parameters are stated")
-        params.append((name.removeprefix("param_"), ty))
+    params = stream.read_params(sig[ntab:], declared)
     # i128: DECIMAL(38, s) cells (DuckDB HUGEINT storage, the same 16 little-endian bytes); the ABI 6 glue does not hand them yet
     allowed = ("i128", "i64", "i32", "i16", "i8", "u64", "u32", "u16", "u8", "bool", "String")
     cols_of: dict[str, list[tuple[str, str]]] = {}
@@ -393,10 +387,7 @@ def read_join_shape(spec: str) -> JoinShape:
     rh = stream._spec_fn_sig(spec, "row_hit")
     if rh is None or rh[: 2 * ntab] != [*tabs, *[(i, "int") for i in idx]]:
         raise _refuse("no row_hit(<tables>, <row indices>, ..) of the expected form")
-    pnames = {n for n, _t in params}
-
-    def sub(text: str) -> str:
-        return re.sub(r"(?<![\w.])param_(\w+)\b", lambda mm: f"p.{mm.group(1)}" if mm.group(1) in pnames else mm.group(0), text)
+    sub = stream.param_sub(params, canon=False)  # one Pool, one Params: the strings are read as `&p.<name>` / `p.<name>@`
 
     shape = JoinShape(ts=ts, builds=builds, cols=cols_of[ts], params=params, key=key, rh_args=[sub(n) for n, _t in rh[2 * ntab :]])
     call_args = [a.strip() for a in m.group("args").split(",")]
@@ -428,7 +419,7 @@ def read_join_shape(spec: str) -> JoinShape:
     distinct = _read_distincts(spec, found, pvars, types, idx, sub)
     inner_names = {f.inner for f in found.values()}
     for name in re.findall(r"pub open spec fn (\w+)\([^\n]*\n    decreases ", spec):
-        if name in found or name == "seq_le":
+        if name in found or stream.pure_recursive(spec, name):
             continue
         base = re.sub(r"_d\d+$", "", name)
         if base not in found or not (name in inner_names or re.fullmatch(rf"{re.escape(base)}_d\d+", name)):
@@ -704,11 +695,10 @@ def emit_join_contract(sh: JoinShape) -> str:
         tot_body.append(b)
     law = {x: stream_distinct.laws([d.field for d in sh.distincts], x) for x in ("left", "right", "comm", "assoc")}
 
-    params_struct = "\n".join(f"    pub {n}: {t}," for n, t in sh.params)
-    params_eq = " && ".join(f"a.{n} == b.{n}" for n, _t in sh.params) or "true"
-    ok_p = ", ".join(["&t@", sh.ba, *[f"p.{a.removeprefix('param_')}" for a in sh.ok_args]])
+    ok_p = ", ".join(["&t@", sh.ba, *[stream.param_arg(sh.params, a.removeprefix("param_"), "p", False) for a in sh.ok_args]])
     ok_pl = ", ".join(
-        [f"&stream_table_{ts}(pl.sid())", *[f"&pl.build_{b}()" for b in sh.builds], *[f"pl.params().{a.removeprefix('param_')}" for a in sh.ok_args]]
+        [f"&stream_table_{ts}(pl.sid())", *[f"&pl.build_{b}()" for b in sh.builds],
+         *[stream.param_arg(sh.params, a.removeprefix("param_"), "&pl.params()", False) for a in sh.ok_args]]
     )
     vb = ",\n        ".join(f"valid_cols_{b}({v})" for v, b in zip(sh.bvars, sh.builds, strict=True))
     chunk = stream._chunk_items(stream.Shape(tv=tv, ts=ts, cols=sh.cols, params=sh.params, key=sh.key, rh_args=sh.rh_args))
@@ -726,21 +716,7 @@ def emit_join_contract(sh: JoinShape) -> str:
 
 // ---- the query's aggregate as a commutative monoid (host, proved) ----
 
-// The template parameters (an empty struct when the query has none).
-#[derive(Clone, Copy)]
-pub struct Params {{
-{params_struct}
-}}
-
-// The group key (key_at's type); `()` for an ungrouped aggregate.
-pub type Key = {key};
-
-pub fn params_eq(a: &Params, b: &Params) -> (r: bool)
-    ensures
-        r == (*a == *b),
-{{
-    {params_eq}
-}}
+{stream.params_block(sh.params, key, False)}
 
 // Spec-only: one field per suffix fold of the spec, `hits` (pairs of rows of the stream table and the builds in group k that pass the
 // WHERE and the ON) and one count per further existence predicate the result mentions.

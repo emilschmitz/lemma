@@ -1455,7 +1455,8 @@ def assemble_stream_library_program(spec_rs: str, regions: dict[str, str], *, sq
             raise ValueError(f"a stream chunk has no cells of type {fty}")
     param_code, param_args = _param_decode(verus_part)
     names = [n for n, _t, _lo, _hi in spec_params(verus_part)]
-    params_init = "Params { " + ", ".join(f"{n}: {a}" for n, a in zip(names, param_args, strict=True)) + " }" if names else "Params {}"
+    # a VARCHAR parameter is decoded into an owned String (lemma_param_str) and moved into Params (run_query took `&param_x`)
+    params_init = "Params { " + ", ".join(f"{n}: {a.removeprefix('&')}" for n, a in zip(names, param_args, strict=True)) + " }" if names else "Params {}"
     outputs = output_layout(verus_part)
     raw_fn = _raw_chunk_fn(ts, fields)
     kinds = ", ".join(str(_kind(ty, name)) for name, ty in outputs)
@@ -1493,6 +1494,11 @@ def assemble_stream_library_program(spec_rs: str, regions: dict[str, str], *, sq
         .replace("__ERROR_REASON__", _rust_str(STREAM_ERROR_REASON))
         .replace("__TS__", ts)
     )
+    if any(ty == "String" for _n, ty, _lo, _hi in spec_params(verus_part)):
+        # Params is Clone, not Copy, with a VARCHAR parameter: each worker's Exec gets its own copy (exec_merge compares the texts)
+        worker = f"exec_new(Stream_{ts} {{ id: s.id, raw: s.end as usize }}, s.p);"
+        assert head.count(worker) == 1, worker
+        head = head.replace(worker, worker.replace("s.p);", "s.p.clone());"))
     return verus_part + "\n" + head + "\n" + raw_fn + "\n" + encode + "\n" + statics
 
 
@@ -1889,7 +1895,8 @@ def _assemble_stream_join_library(spec_rs: str, regions: dict[str, str], *, sql:
     pool_open = f"pool_open(sh, {', '.join(f'cols.{i}' for i in range(len(builds)))}, p, nslots as usize)"
     param_code, param_args = _param_decode(verus_part)
     names = [n for n, _t, _lo, _hi in spec_params(verus_part)]
-    params_init = "Params { " + ", ".join(f"{n}: {a}" for n, a in zip(names, param_args, strict=True)) + " }" if names else "Params {}"
+    # a VARCHAR parameter is decoded into an owned String (lemma_param_str) and moved into Params (run_query took `&param_x`)
+    params_init = "Params { " + ", ".join(f"{n}: {a.removeprefix('&')}" for n, a in zip(names, param_args, strict=True)) + " }" if names else "Params {}"
     outputs = output_layout(verus_part)
     raw_fn = _raw_chunk_fn(ts, fields)
     kinds = ", ".join(str(_kind(ty, name)) for name, ty in outputs)
