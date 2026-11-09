@@ -122,6 +122,22 @@ int64_t MicrosSince(std::chrono::steady_clock::time_point start) {
 	return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count();
 }
 
+// PROF (temporary): per-phase CPU nanoseconds summed over threads, printed to stderr when STREAM_PROF is set.
+struct Prof {
+	std::atomic<int64_t> v[32];
+	const char *names[32] = {"b_prepare","b_scanwall","b_alloc","b_next","b_scan","b_filter","b_decode","b_commit","b_post","open_pool","ready",
+	                         "s_workers","s_wall","s_scan","s_vec","s_step","s_merge","s_finish","b_rows","s_chunks","b_threads","b_tasks","b_wait"};
+	Prof() { for (auto &x : v) x = 0; }
+	void Dump() {
+		if (!std::getenv("STREAM_PROF")) return;
+		for (int i = 0; i < 23; i++) { fprintf(stderr, "%s=%.2f ", names[i], (i >= 18 && i < 22) ? double(v[i].load()) : v[i].load() / 1e6); v[i] = 0; }
+		fprintf(stderr, "\n");
+	}
+};
+Prof &PROF() { static Prof p; return p; }
+inline int64_t NowNs() { return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+#define PROF_ADD(i, t0) PROF().v[i] += NowNs() - (t0)
+
 std::string ReadFile(const std::string &path) {
 	std::ifstream in(path, std::ios::binary);
 	if (!in) {
@@ -1370,6 +1386,7 @@ uint64_t ScanTable(ClientContext &context, DuckTransaction &transaction, DataTab
                    const vector<LogicalType> &types, std::vector<ColPlan> &plans, const std::shared_ptr<Executor> &exec,
                    ScanResult &res, idx_t want_threads, TableFilterSet *filters, const Expression *residual,
                    const std::vector<DictConjunct> &dict) {
+	int64_t prof_t0 = NowNs();
 	std::vector<std::unique_ptr<ScanSource>> sources;
 	auto committed = make_uniq<ScanSource>();
 	committed->collection = storage.GetRowGroupCollection().get();
@@ -1391,6 +1408,7 @@ uint64_t ScanTable(ClientContext &context, DuckTransaction &transaction, DataTab
 		sources.push_back(std::move(local));
 	}
 	// destinations, sized for the upper bound
+	int64_t prof_ta = NowNs();
 	size_t nstrings = 0, ndicts = 0;
 	for (size_t pi = 0; pi < plans.size(); pi++) {
 		plans[pi].idx = pi;
@@ -1417,6 +1435,7 @@ uint64_t ScanTable(ClientContext &context, DuckTransaction &transaction, DataTab
 			p.dest = res.bytes[p.k].data();
 		}
 	}
+	PROF_ADD(2, prof_ta);
 	idx_t row_group_rows = MaxValue<idx_t>(1, storage.GetRowGroupSize());
 	idx_t tasks_estimate = upper / row_group_rows + sources.size();
 	idx_t nthreads = MaxValue<idx_t>(1, MinValue<idx_t>(want_threads, tasks_estimate));
@@ -1429,9 +1448,7 @@ uint64_t ScanTable(ClientContext &context, DuckTransaction &transaction, DataTab
 	// at the task's row-group position and packs the (rare) gaps of deleted rows afterwards.
 	const bool staged = filters || residual || !dict.empty();
 	std::mutex order_lock;
-	std::condition_variable order_cv;
-	std::vector<std::unique_ptr<std::vector<ByteBuffer>>> spare; // free staging sets
-	idx_t stage_sets = 0;
+	std::vector<std::unique_ptr<std::vector<ByteBuffer>>> spare; // free staging sets (their buffers keep their capacity)
 	uint64_t next_seq = 0, frontier = 0, frontier_at = 0, last_start = 0;
 	std::map<uint64_t, TaskOut *> finished; // decoded tasks waiting for every earlier task's row count
 	auto commit = [&](TaskOut *t) {
@@ -1455,7 +1472,6 @@ uint64_t ScanTable(ClientContext &context, DuckTransaction &transaction, DataTab
 			}
 			std::lock_guard<std::mutex> guard(order_lock);
 			spare.push_back(std::move(r->stage));
-			order_cv.notify_all();
 		}
 	};
 	auto worker = [&]() {
@@ -1474,27 +1490,24 @@ uint64_t ScanTable(ClientContext &context, DuckTransaction &transaction, DataTab
 				CollectionScanState &cs = src->local ? ts.local_state : ts.table_state;
 				while (!stop.load()) {
 					auto t = make_uniq<TaskOut>();
+					int64_t pn = NowNs();
 					bool got;
 					if (staged) {
-						// A staging set and the next task under one lock: task order = sequence order, and the earliest unfinished
-						// task always holds a set, so a worker waiting for a set never waits on itself.
+						// A staging set and the next task under one lock: task order = sequence order. A worker never waits for a
+						// set: with none spare it starts an empty one (its buffers grow with the rows the task keeps), so a task
+						// that is slow to finish (a descheduled thread) holds back only the commits after it, never the scan.
 						std::unique_lock<std::mutex> lk(order_lock);
-						if (spare.empty() && stage_sets < 2 * nthreads) {
-							stage_sets++;
-							auto set = make_uniq<std::vector<ByteBuffer>>(plans.size());
-							for (auto &p : plans) {
-								(*set)[p.idx].resize(p.width * row_group_rows);
-							}
-							spare.push_back(std::move(set));
-						}
-						order_cv.wait(lk, [&]() { return !spare.empty() || stop.load(); });
 						if (stop.load()) {
 							break;
 						}
 						got = src->collection->NextParallelScan(context, src->state, cs);
 						if (got) {
-							t->stage = std::move(spare.back());
-							spare.pop_back();
+							if (spare.empty()) {
+								t->stage = make_uniq<std::vector<ByteBuffer>>(plans.size());
+							} else {
+								t->stage = std::move(spare.back());
+								spare.pop_back();
+							}
 							t->seq = next_seq++;
 							uint64_t at = src->offset + (cs.row_group->GetRowStart() + cs.vector_index * STANDARD_VECTOR_SIZE - src->base);
 							if (t->seq > 0 && at < last_start) {
@@ -1505,6 +1518,7 @@ uint64_t ScanTable(ClientContext &context, DuckTransaction &transaction, DataTab
 					} else {
 						got = src->collection->NextParallelScan(context, src->state, cs);
 					}
+					PROF_ADD(3, pn);
 					if (!got) {
 						break;
 					}
@@ -1524,9 +1538,13 @@ uint64_t ScanTable(ClientContext &context, DuckTransaction &transaction, DataTab
 					t->dicts.resize(ndicts);
 					while (true) {
 						chunk.Reset();
+						int64_t ps = NowNs();
 						if (!cs.Scan(transaction, chunk) || chunk.size() == 0) {
+							PROF_ADD(4, ps);
 							break;
 						}
+						PROF_ADD(4, ps);
+						ps = NowNs();
 						if (t->count + chunk.size() > range) {
 							throw InternalException("Lemma: a scan task returned more rows than its range");
 						}
@@ -1538,15 +1556,28 @@ uint64_t ScanTable(ClientContext &context, DuckTransaction &transaction, DataTab
 								so_far = &sel;
 							}
 							if (kept == 0) {
+								PROF_ADD(5, ps);
 								continue;
 							}
 							if (kept < chunk.size()) {
 								chunk.Slice(*so_far, kept);
 							}
 						}
+						PROF_ADD(5, ps);
+						ps = NowNs();
+						if (staged) { // room for this chunk's rows after the task's earlier ones (amortized doubling)
+							for (auto &p : plans) {
+								ByteBuffer &b = (*t->stage)[p.idx];
+								size_t need = p.width * (t->count + chunk.size());
+								if (b.size() < need) {
+									b.resize(MaxValue<size_t>(need, MinValue<size_t>(2 * b.size(), p.width * row_group_rows)));
+								}
+							}
+						}
 						for (auto &p : plans) {
 							DecodeChunk(p, chunk.data[p.chunk_col], chunk.size(), *t);
 						}
+						PROF_ADD(6, ps);
 						t->count += chunk.size();
 					}
 					TaskOut *raw = t.get();
@@ -1555,7 +1586,9 @@ uint64_t ScanTable(ClientContext &context, DuckTransaction &transaction, DataTab
 						tasks.push_back(std::move(t));
 					}
 					if (staged) {
+						int64_t pc = NowNs();
 						commit(raw);
+						PROF_ADD(7, pc);
 					}
 				}
 			}
@@ -1566,9 +1599,7 @@ uint64_t ScanTable(ClientContext &context, DuckTransaction &transaction, DataTab
 					error = std::current_exception();
 				}
 			}
-			std::lock_guard<std::mutex> guard(order_lock);
 			stop = true;
-			order_cv.notify_all();
 		}
 	};
 	{
@@ -1584,6 +1615,9 @@ uint64_t ScanTable(ClientContext &context, DuckTransaction &transaction, DataTab
 	if (error) {
 		std::rethrow_exception(error);
 	}
+	int64_t prof_tp = NowNs();
+	PROF().v[20] += nthreads;
+	PROF().v[21] += tasks.size();
 	if (staged && (!finished.empty() || frontier != next_seq)) {
 		throw InternalException("Lemma: a staged scan task was never committed");
 	}
@@ -1701,6 +1735,9 @@ uint64_t ScanTable(ClientContext &context, DuckTransaction &transaction, DataTab
 			res.buffers[p.k] = std::move(out);
 		}
 	}
+	PROF_ADD(8, prof_tp);
+	PROF_ADD(1, prof_t0);
+	PROF().v[18] += total;
 	return total;
 }
 
@@ -2860,7 +2897,10 @@ RunResult StreamRun(ClientContext &context, const Manifest &m, const std::vector
                     const std::unordered_map<std::string, std::string> &literals, int64_t &scan_us) {
 	auto start = std::chrono::steady_clock::now();
 	const Executor &exec = *m.exec;
+	int64_t pp = NowNs();
 	auto preps = PrepareInputs(context, m, literals);
+	PROF_ADD(0, pp);
+	if (std::getenv("STREAM_PROF")) { for (auto &pr : preps) fprintf(stderr, "PREP %s\n", pr.identity.c_str()); }
 	if (preps.size() != 1 + m.stream_builds.size()) {
 		throw InvalidInputException("Lemma: stream executor %s reads %d tables, it streams one and builds %d", m.key,
 		                            int64_t(preps.size()), int64_t(m.stream_builds.size()));
@@ -2954,14 +2994,18 @@ RunResult StreamRun(ClientContext &context, const Manifest &m, const std::vector
 					cols.push_back(built.cols[k]);
 				}
 			}
+			int64_t po = NowNs();
 			h.stream = exec.stream_open_pool(cols.data(), cols.size(), abi_params.data(), abi_params.size(), uint64_t(nthreads), &err);
+			PROF_ADD(9, po);
 			std::string msg = TakeOut(exec, err);
 			if (!h.stream) {
 				throw InvalidInputException("Lemma: the stream executor refused its parameters or build tables (no rows returned): %s",
 				                            msg);
 			}
 			LemmaOut why {nullptr, 0, 0};
+			int64_t pr = NowNs();
 			int32_t ready = exec.stream_ready(h.stream, &why);
+			PROF_ADD(10, pr);
 			std::string reason = TakeOut(exec, why);
 			build_us = MicrosSince(build_start);
 			if (ready == LEMMA_STATUS_DECLINED) {
@@ -2976,6 +3020,7 @@ RunResult StreamRun(ClientContext &context, const Manifest &m, const std::vector
 			}
 		}
 	}
+	int64_t pw = NowNs();
 	for (idx_t w = 0; w < nthreads; w++) {
 		LemmaOut err {nullptr, 0, 0};
 		LemmaWorker *worker = exec.stream_worker(h.stream, &err);
@@ -2986,6 +3031,8 @@ RunResult StreamRun(ClientContext &context, const Manifest &m, const std::vector
 		h.workers.push_back(worker);
 	}
 
+	PROF_ADD(11, pw);
+	int64_t pwall = NowNs();
 	std::atomic<uint64_t> counter {0};
 	std::atomic<bool> stop {false}, interrupted {false};
 	std::mutex err_lock;
@@ -3016,13 +3063,19 @@ RunResult StreamRun(ClientContext &context, const Manifest &m, const std::vector
 							break;
 						}
 						chunk.Reset();
+						int64_t ps = NowNs();
 						if (!cs.Scan(transaction, chunk) || chunk.size() == 0) {
+							PROF_ADD(13, ps);
 							break;
 						}
+						PROF_ADD(13, ps);
+						ps = NowNs();
 						idx_t n = chunk.size();
 						for (size_t i = 0; i < plans.size(); i++) {
 							StreamVec(plans[i], chunk.data[plans[i].chunk_col], n, bufs[i], vecs[i]);
 						}
+						PROF_ADD(14, ps);
+						ps = NowNs();
 						// (j, off): ONE fetch_add hands the chunk its index and its first row (S1's offset of these rows in the stream)
 						uint64_t packed = counter.fetch_add((uint64_t(1) << STREAM_OFF_BITS) | uint64_t(n));
 						uint64_t j = packed >> STREAM_OFF_BITS, off = packed & STREAM_OFF_MASK;
@@ -3044,6 +3097,7 @@ RunResult StreamRun(ClientContext &context, const Manifest &m, const std::vector
 							}
 							st = exec.stream_step(worker, &c);
 						}
+						PROF_ADD(15, ps);
 						if (st != LEMMA_STEP_OK) {
 							stop = true; // declined or refused: the answer is a decline or an error whatever the other chunks hold
 						}
@@ -3075,6 +3129,8 @@ RunResult StreamRun(ClientContext &context, const Manifest &m, const std::vector
 		throw InterruptException();
 	}
 	scan_us = MicrosSince(start);
+	PROF_ADD(12, pwall);
+	int64_t pm = NowNs();
 	// pairwise merge, each round on its own threads: worker 2i takes worker 2i + 1 (consumed)
 	while (h.workers.size() > 1) {
 		size_t pairs = h.workers.size() / 2;
@@ -3099,7 +3155,12 @@ RunResult StreamRun(ClientContext &context, const Manifest &m, const std::vector
 	LemmaWorker *last = h.workers[0];
 	h.workers.clear(); // finish consumes it
 	LemmaOut out {nullptr, 0, 0};
+	PROF_ADD(16, pm);
+	int64_t pf = NowNs();
 	int32_t code = exec.stream_finish(last, m_chunks, n_rows, &out);
+	PROF_ADD(17, pf);
+	PROF().v[19] += m_chunks;
+	PROF().Dump();
 	std::string bytes = TakeOut(exec, out);
 	if (code == LEMMA_STATUS_ERROR) {
 		throw InvalidInputException("Lemma: the proved stream executor refused to answer (ERROR, no rows returned): %s", bytes);
