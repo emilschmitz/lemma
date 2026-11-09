@@ -406,6 +406,57 @@ Tests (`tests/test_in_duckdb_stream_join.py`): the join fixture installed and ru
 match, empty tables, a build side its predicate mostly filters, deletes / updates / uncommitted rows on both tables in the caller's
 transaction (another connection's invisible), threads 1 / 3 / 8 on 2048-row row groups, i128 cells in the chunks and in the build input,
 a declining `q_build`, the scheduling faults, and a panic in `q_step` (ERROR within the deadline, no hang).
+## Host overhead, SF10 Q12 (profiled 2026-11-08)
+
+The Opus-written proved Q12 executor (run `20261030T181000Z_q601629_3054393b`: stream orders, 15M rows; build lineitem filtered to
+310,803 of 60M rows) ran in DuckDB at 0.71x (223 vs 159 ms, threads 8, memory_limit 1500MB). Per-phase timers in `StreamRun` /
+`ScanTable` (temporary, removed; CPU summed over 8 workers, one warm call; the box was shared with other jobs, absolute numbers move
++-30 %): the build materialization was most of the wall clock, the stream itself ~10 ms.
+
+| phase (Q12, per call) | before | after |
+|---|---|---|
+| build scan, wall | 180-340 ms | 64-72 ms |
+| - DuckDB's scan with the three table filters (CPU) | 420-650 ms | 400-430 ms (unchanged: DuckDB's) |
+| - zero-filling the whole-table destinations (serial) | ~1.2 GB of zeros | none |
+| - waiting for a staging set (CPU) | 45-110 ms | 0 |
+| - residual + `l_shipmode IN` + `DataChunk::Slice` (CPU) | 100-300 ms | 30 ms |
+| - decode + commit (CPU) | 70-140 ms | 25 ms |
+| `lemma_stream_open_pool` (serial: decode + verified loaders + `q_build`) | 12-17 ms | 11-13 ms (unchanged) |
+| stream: scan + `LemmaChunk` + S1 + `q_step` + lock, wall | 8-15 ms | 8-12 ms |
+| `pool_finish` (serial: merge, tiling check, `q_finish`, dropping the build) | 5-7 ms | 5-7 ms (unchanged) |
+
+Fixes, all in the extension's scan (no trusted item, no change to the spec, the runtime or the agent's body):
+* destinations of a filtered scan are never zero-filled (`ByteBuffer`, uninitialized `resize`): the table's upper bound is
+  allocated, only the kept rows are written (the staged commit), the rest is never touched;
+* a VARCHAR conjunct DuckDB keeps above its scan (`l_shipmode IN ('MAIL', 'SHIP')`) runs once per dictionary on its entries, a byte
+  per row after that (`DictMaskScan`; deterministic, non-throwing conjuncts only);
+* a comparison of two columns of one integer-like type (`l_commitdate < l_receiptdate`, `l_shipdate < l_commitdate`; DATE, TIMESTAMP,
+  integers, DECIMAL of one width and scale) runs branch-free over the incoming selection (`ColCmp`, a NULL operand drops the row);
+  DuckDB's executor took 35 ns per row on it;
+* the kept rows are decoded through their selection (`RowSel`) instead of `DataChunk::Slice` (a merged selection allocated per vector
+  per chunk);
+* a scan task never waits for a staging set: with none spare it starts empty buffers that grow with the rows it keeps (before: 2 sets
+  per thread of a row group each; one descheduled thread stalled every other one).
+
+Measured with `in_duckdb_bench` (5 interleaved rounds, memory_limit 1500MB, threads 8; load average 5-9 from other jobs during these
+runs, so DuckDB itself measured 158-190 ms instead of the earlier 147-159): Q12 cold 115 vs DuckDB 188 ms (1.64x), warm 104 vs 167 ms
+(1.60x); the old extension under the same load 633 ms (0.30x; its zero-filling suffers most from memory pressure). Right after an
+INSERT into a copy of the database (25,000 orders and 100,000 lineitem rows, committed, not checkpointed): 102 vs 159 ms (1.55x), old
+extension 579 ms. SF10 streaming Q1 (run `20261026T114511Z_q688622_a770af30`, its manifest bindings): 2.23x before, 2.30x after; 2.17x
+after the INSERT. The answers equal DuckDB's.
+
+What remains is not host glue:
+* The build table's VARCHAR column is a `Vec<String>` in the spec's `Cols_lineitem`: 310,803 heap Strings made serially in
+  `lemma_stream_open_pool` (8-9 ms of its 12; building them on 8 threads did not help on this box: malloc did not scale and the
+  frees in `pool_finish` got slower) and freed serially when `pool_finish` drops the build (~4 ms). A dictionary-coded build column
+  (codes + entries, as the batch path's `string_encoding = dict`), or a borrowed view of the extension's buffer, would remove both;
+  either changes the spec and needs a new agent proof (the agent's `q_build` reads `l_shipmode` as strings). Not done.
+* The agent's `q_build` declines when the build rows are not in `l_orderkey` order: after an INSERT of lineitem rows whose keys are below
+  the table's maximum, Q12 answers DECLINED (correct, never wrong rows); the INSERT round above appends larger keys. A prompt point, not
+  a host bug.
+* DuckDB's own scan of the build side (table filters on three bitpacked DATE columns of 60M rows) is ~400 ms CPU, ~60 ms wall: at
+  DuckDB's floor (its own `SELECT .. FROM lineitem WHERE <the five conjuncts>` is ~95 ms).
+
 ## NULL group keys and COUNT DISTINCT (`declarative_spec/stream_distinct.py`, 2026-10-27)
 
 Both were refused before; they blocked every GenDB SEC join query (a GROUP BY over `pre.stmt`, `pre.plabel`, `sub.sic` or `tag.tlabel`,

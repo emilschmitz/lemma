@@ -42,7 +42,9 @@
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/parser/keyword_helper.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
+#include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
+#include "duckdb/common/operator/comparison_operators.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
@@ -932,6 +934,26 @@ struct LocalDict {
 	std::vector<int64_t> memo;   // per chunk: dictionary-vector index -> code
 };
 
+// Byte buffers a scan writes itself: resize() leaves the cells uninitialized. A destination is sized for the table's upper bound before
+// the scan; zero-filling it would touch every page although a filtered scan keeps a sliver (TPC-H SF10 Q12's build table: 1.2 GB of
+// zeros, serially, for 310,803 rows: half of the query's wall clock, docs/STREAM.md).
+template <class T>
+struct UninitAllocator : std::allocator<T> {
+	template <class U>
+	struct rebind {
+		using other = UninitAllocator<U>;
+	};
+	template <class U>
+	void construct(U *ptr) noexcept {
+		::new (static_cast<void *>(ptr)) U;
+	}
+	template <class U, class... Args>
+	void construct(U *ptr, Args &&...args) {
+		::new (static_cast<void *>(ptr)) U(std::forward<Args>(args)...);
+	}
+};
+using ByteBuffer = std::vector<uint8_t, UninitAllocator<uint8_t>>;
+
 // What one scan task produced: rows [offset, offset + count) of every fixed-width destination, its strings and dictionaries.
 struct TaskOut {
 	uint64_t offset = 0, count = 0;
@@ -939,7 +961,7 @@ struct TaskOut {
 	std::vector<LocalDict> dicts;
 	// A filtered scan (pushed predicate): the task decodes its fixed-width cells into staging buffers (one per plan, in plan
 	// order), copied to their final place once every earlier task's row count is known; no gaps, no packing afterwards.
-	std::unique_ptr<std::vector<std::vector<uint8_t>>> stage;
+	std::unique_ptr<std::vector<ByteBuffer>> stage;
 	uint64_t seq = 0;
 };
 
@@ -947,32 +969,46 @@ void PutCell(uint8_t *out, size_t width, i128 v) {
 	std::memcpy(out, &v, width); // little-endian: the low `width` bytes
 }
 
+// The chunk row of output row r: `rows` selects the rows of a chunk of `full` rows that a pushed predicate kept (no DataChunk::Slice:
+// it allocated a merged selection per vector per chunk, 40 ms CPU in TPC-H SF10 Q12's build scan); nullptr: every row, count == full.
+struct RowSel {
+	const SelectionVector *rows;
+	idx_t full;
+	RowSel() : rows(nullptr), full(0) {
+	}
+	RowSel(const SelectionVector *rows, idx_t full) : rows(rows), full(full) {
+	}
+	idx_t operator()(idx_t r) const {
+		return rows ? rows->get_index(r) : r;
+	}
+};
+
 // Integer cells (INT*, UINT*, HUGEINT, DATE, DECIMAL) of one chunk at `out`: scale, range check, `width` LE bytes each. A flat
 // vector without NULLs whose source type is the target's width and fits its range is one memcpy.
 template <class SRC, class TO_I128>
-void DecodeInts(const ColPlan &p, Vector &vec, idx_t count, uint8_t *out, TO_I128 to_i128) {
+void DecodeInts(const ColPlan &p, Vector &vec, idx_t count, uint8_t *out, TO_I128 to_i128, RowSel rs) {
 	size_t w = p.width;
 	bool scale = p.role == Role::Decimal && p.mul != 1;
 	auto range = SourceRange<SRC>();
-	if (!scale && sizeof(SRC) == w && range.first >= p.target.lo && range.second <= p.target.hi &&
+	if (!rs.rows && !scale && sizeof(SRC) == w && range.first >= p.target.lo && range.second <= p.target.hi &&
 	    vec.GetVectorType() == VectorType::FLAT_VECTOR && FlatVector::Validity(vec).AllValid()) {
 		std::memcpy(out, FlatVector::GetData<SRC>(vec), w * count);
 		return;
 	}
 	UnifiedVectorFormat f;
-	vec.ToUnifiedFormat(count, f);
+	vec.ToUnifiedFormat(rs.rows ? rs.full : count, f);
 	auto data = UnifiedVectorFormat::GetData<SRC>(f);
 	bool all_valid = f.validity.AllValid();
 	if (!scale && sizeof(SRC) == w && range.first >= p.target.lo && range.second <= p.target.hi && all_valid) {
 		// A selected (filtered, dictionary) vector of the target's width and range: a gather, no per-cell check needed.
 		auto dst = reinterpret_cast<SRC *>(out);
 		for (idx_t r = 0; r < count; r++) {
-			std::memcpy(dst + r, data + f.sel->get_index(r), sizeof(SRC));
+			std::memcpy(dst + r, data + f.sel->get_index(rs(r)), sizeof(SRC));
 		}
 		return;
 	}
 	for (idx_t r = 0; r < count; r++) {
-		idx_t idx = f.sel->get_index(r);
+		idx_t idx = f.sel->get_index(rs(r));
 		i128 v = 0;
 		if (all_valid || f.validity.RowIsValid(idx)) {
 			v = to_i128(data[idx]);
@@ -989,21 +1025,21 @@ void DecodeInts(const ColPlan &p, Vector &vec, idx_t count, uint8_t *out, TO_I12
 	}
 }
 
-void DecodeIntegers(const ColPlan &p, Vector &vec, idx_t count, uint8_t *out) {
+void DecodeIntegers(const ColPlan &p, Vector &vec, idx_t count, uint8_t *out, RowSel rs = RowSel()) {
 	auto huge = [](hugeint_t h) { return HugeOf(h); };
 	auto same = [](int64_t v) { return i128(v); };
 	const LogicalType &t = p.type;
 	switch (t.id()) {
 	case LogicalTypeId::DATE:
-		return DecodeInts<date_t>(p, vec, count, out, [](date_t d) { return i128(d.days); });
+		return DecodeInts<date_t>(p, vec, count, out, [](date_t d) { return i128(d.days); }, rs);
 	case LogicalTypeId::UBIGINT:
-		return DecodeInts<uint64_t>(p, vec, count, out, [](uint64_t v) { return i128(v); });
+		return DecodeInts<uint64_t>(p, vec, count, out, [](uint64_t v) { return i128(v); }, rs);
 	case LogicalTypeId::UINTEGER:
-		return DecodeInts<uint32_t>(p, vec, count, out, same);
+		return DecodeInts<uint32_t>(p, vec, count, out, same, rs);
 	case LogicalTypeId::USMALLINT:
-		return DecodeInts<uint16_t>(p, vec, count, out, same);
+		return DecodeInts<uint16_t>(p, vec, count, out, same, rs);
 	case LogicalTypeId::UTINYINT:
-		return DecodeInts<uint8_t>(p, vec, count, out, same);
+		return DecodeInts<uint8_t>(p, vec, count, out, same, rs);
 	case LogicalTypeId::TINYINT:
 	case LogicalTypeId::SMALLINT:
 	case LogicalTypeId::INTEGER:
@@ -1012,15 +1048,15 @@ void DecodeIntegers(const ColPlan &p, Vector &vec, idx_t count, uint8_t *out) {
 	case LogicalTypeId::DECIMAL:
 		switch (t.InternalType()) {
 		case PhysicalType::INT8:
-			return DecodeInts<int8_t>(p, vec, count, out, same);
+			return DecodeInts<int8_t>(p, vec, count, out, same, rs);
 		case PhysicalType::INT16:
-			return DecodeInts<int16_t>(p, vec, count, out, same);
+			return DecodeInts<int16_t>(p, vec, count, out, same, rs);
 		case PhysicalType::INT32:
-			return DecodeInts<int32_t>(p, vec, count, out, same);
+			return DecodeInts<int32_t>(p, vec, count, out, same, rs);
 		case PhysicalType::INT64:
-			return DecodeInts<int64_t>(p, vec, count, out, same);
+			return DecodeInts<int64_t>(p, vec, count, out, same, rs);
 		case PhysicalType::INT128:
-			return DecodeInts<hugeint_t>(p, vec, count, out, huge);
+			return DecodeInts<hugeint_t>(p, vec, count, out, huge, rs);
 		default:
 			break;
 		}
@@ -1079,20 +1115,20 @@ uint32_t CodeOf(const ColPlan &p, LocalDict &d, const string_t &s) {
 
 // Task-local dictionary codes of one chunk, rows [pos, pos + count) of the task. A DuckDB dictionary vector: the same index is
 // the same string, so each index is looked up once per chunk.
-void DecodeCodes(const ColPlan &p, Vector &vec, idx_t count, uint8_t *out, LocalDict &d, uint64_t pos) {
+void DecodeCodes(const ColPlan &p, Vector &vec, idx_t count, uint8_t *out, LocalDict &d, uint64_t pos, RowSel rs) {
 	UnifiedVectorFormat f;
-	vec.ToUnifiedFormat(count, f);
+	vec.ToUnifiedFormat(rs.rows ? rs.full : count, f);
 	auto data = UnifiedVectorFormat::GetData<string_t>(f);
 	bool dict = vec.GetVectorType() == VectorType::DICTIONARY_VECTOR;
 	if (dict) {
 		idx_t max_idx = 0;
 		for (idx_t r = 0; r < count; r++) {
-			max_idx = MaxValue<idx_t>(max_idx, f.sel->get_index(r));
+			max_idx = MaxValue<idx_t>(max_idx, f.sel->get_index(rs(r)));
 		}
 		d.memo.assign(max_idx + 1, -1);
 	}
 	for (idx_t r = 0; r < count; r++) {
-		idx_t idx = f.sel->get_index(r);
+		idx_t idx = f.sel->get_index(rs(r));
 		uint32_t code = 0;
 		if (!f.validity.RowIsValid(idx)) {
 			p.NullCell();
@@ -1119,24 +1155,25 @@ void PutStr(std::string &out, const char *data, size_t len) {
 }
 
 // One chunk of one field into the task's rows [t.count, t.count + count), i.e. table rows t.offset + t.count + r.
-void DecodeChunk(const ColPlan &p, Vector &vec, idx_t count, TaskOut &t) {
+// `rs`: the chunk rows a pushed predicate kept (count of them), or every row.
+void DecodeChunk(const ColPlan &p, Vector &vec, idx_t count, TaskOut &t, RowSel rs = RowSel()) {
 	uint64_t row = t.offset + t.count;
 	uint8_t *out = p.dest ? (t.stage ? (*t.stage)[p.idx].data() + p.width * t.count : p.dest + p.width * row) : nullptr;
 	switch (p.role) {
 	case Role::Int:
 	case Role::Date:
 	case Role::Decimal:
-		return DecodeIntegers(p, vec, count, out);
+		return DecodeIntegers(p, vec, count, out, rs);
 	case Role::Code:
-		return DecodeCodes(p, vec, count, out, t.dicts[p.slot], t.count);
+		return DecodeCodes(p, vec, count, out, t.dicts[p.slot], t.count, rs);
 	default:
 		break;
 	}
 	UnifiedVectorFormat f;
-	vec.ToUnifiedFormat(count, f);
+	vec.ToUnifiedFormat(rs.rows ? rs.full : count, f);
 	const LogicalType &type = p.type;
 	for (idx_t r = 0; r < count; r++) {
-		idx_t idx = f.sel->get_index(r);
+		idx_t idx = f.sel->get_index(rs(r));
 		bool valid = f.validity.RowIsValid(idx);
 		if (p.role == Role::Valid) {
 			out[r] = valid ? 1 : 0;
@@ -1192,7 +1229,7 @@ struct CachedInputs {
 	// with lemma_free_input when the entry and every call holding it are gone.
 	std::vector<std::shared_ptr<OwnedBuffer>> lent;
 	std::vector<std::string> buffers;                 // BUFFER: strings, dictionaries (borrowed by lemma_run as they are)
-	std::vector<std::vector<uint8_t>> bytes;          // BYTES: bool, validity (borrowed as they are)
+	std::vector<ByteBuffer> bytes;                    // BYTES: bool, validity (borrowed as they are)
 	std::vector<std::unique_ptr<uint8_t[]>> owned;    // OWNED (ABI 4): a copy of the cells; each call gets its own library buffer
 	std::vector<uint64_t> width;                      // OWNED, LENT: bytes per cell
 	std::vector<LemmaCol> cols;                       // n of every input; data/len of LENT, BYTES and BUFFER inputs
@@ -1203,7 +1240,7 @@ struct CachedInputs {
 
 struct ScanResult {
 	std::vector<std::string> buffers;                // borrowed byte inputs: strings, dictionaries
-	std::vector<std::vector<uint8_t>> bytes;         // borrowed one-byte inputs: bool, validity
+	std::vector<ByteBuffer> bytes;                   // borrowed one-byte inputs: bool, validity
 	// owned inputs (null where an input is not owned): taken by lemma_run (ABI 4), or lent to lemma_run_borrowed (ABI 5) and freed
 	// here afterwards unless the input cache keeps them
 	std::vector<std::shared_ptr<OwnedBuffer>> owned;
@@ -1243,15 +1280,222 @@ struct ScanSource {
 	uint64_t upper = 0;  // rows in the collection (visible or not): an upper bound of what this source yields
 };
 
+// A conjunct of a pushed predicate that reads one VARCHAR column (PushedScan::dict), applied by DictMaskScan.
+struct DictConjunct {
+	idx_t col = 0;               // its chunk column
+	unique_ptr<Expression> expr; // over chunk column 0
+};
+
+// A conjunct of a pushed predicate that compares two integer-like columns of one type (`a < b`; TPC-H Q12: `l_commitdate <
+// l_receiptdate`), applied by DictMaskScan: per row of the incoming selection, branch-free, through each vector's unified format (FLAT,
+// CONSTANT, DICTIONARY), a row with a NULL operand dropped (the comparison is NULL). DuckDB's executor on those rows cost 35 ns per row
+// (Q12's build scan: 90 ms CPU for 2.5M rows, docs/STREAM.md).
+struct ColCmp {
+	idx_t a = 0, b = 0; // chunk columns
+	idx_t (*select)(const UnifiedVectorFormat &, const UnifiedVectorFormat &, bool, const SelectionVector *, idx_t, sel_t *) = nullptr;
+};
+
+template <class T, class OP>
+idx_t ColCmpSelect(const UnifiedVectorFormat &fa, const UnifiedVectorFormat &fb, bool nulls, const SelectionVector *sel, idx_t count,
+                   sel_t *dst) {
+	const T *da = UnifiedVectorFormat::GetData<T>(fa);
+	const T *db = UnifiedVectorFormat::GetData<T>(fb);
+	idx_t n = 0;
+	for (idx_t r = 0; r < count; r++) { // branch-free: the row is kept by moving n past it
+		sel_t row = sel ? sel_t(sel->get_index(r)) : sel_t(r);
+		idx_t ia = fa.sel->get_index(row), ib = fb.sel->get_index(row);
+		bool keep = OP::Operation(da[ia], db[ib]);
+		if (nulls) {
+			keep = keep && fa.validity.RowIsValid(ia) && fb.validity.RowIsValid(ib);
+		}
+		dst[n] = row;
+		n += keep;
+	}
+	return n;
+}
+
+template <class T>
+bool ColCmpFor(ExpressionType op, ColCmp &c) {
+	switch (op) {
+	case ExpressionType::COMPARE_EQUAL:
+		c.select = ColCmpSelect<T, Equals>;
+		return true;
+	case ExpressionType::COMPARE_NOTEQUAL:
+		c.select = ColCmpSelect<T, NotEquals>;
+		return true;
+	case ExpressionType::COMPARE_LESSTHAN:
+		c.select = ColCmpSelect<T, LessThan>;
+		return true;
+	case ExpressionType::COMPARE_GREATERTHAN:
+		c.select = ColCmpSelect<T, GreaterThan>;
+		return true;
+	case ExpressionType::COMPARE_LESSTHANOREQUALTO:
+		c.select = ColCmpSelect<T, LessThanEquals>;
+		return true;
+	case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
+		c.select = ColCmpSelect<T, GreaterThanEquals>;
+		return true;
+	default:
+		return false;
+	}
+}
+
+// `e` is `#a <op> #b` over two chunk columns of one LogicalType (DATE, TIMESTAMP, DECIMAL of one width and scale, the integers: their
+// physical cells compare as the values do) with op = < <= > >= = <>: `c` then evaluates it. Floats (NaN ordering), strings, casts and
+// IS [NOT] DISTINCT FROM stay with the executor.
+bool AsColCmp(const Expression &e, const vector<LogicalType> &types, ColCmp &c) {
+	if (e.GetExpressionClass() != ExpressionClass::BOUND_COMPARISON) {
+		return false;
+	}
+	auto &cmp = e.Cast<BoundComparisonExpression>();
+	if (cmp.left->GetExpressionClass() != ExpressionClass::BOUND_REF ||
+	    cmp.right->GetExpressionClass() != ExpressionClass::BOUND_REF) {
+		return false;
+	}
+	c.a = cmp.left->Cast<BoundReferenceExpression>().index;
+	c.b = cmp.right->Cast<BoundReferenceExpression>().index;
+	if (c.a >= types.size() || c.b >= types.size() || types[c.a] != types[c.b]) {
+		return false;
+	}
+	switch (types[c.a].InternalType()) {
+	case PhysicalType::INT8:
+		return ColCmpFor<int8_t>(e.GetExpressionType(), c);
+	case PhysicalType::INT16:
+		return ColCmpFor<int16_t>(e.GetExpressionType(), c);
+	case PhysicalType::INT32:
+		return ColCmpFor<int32_t>(e.GetExpressionType(), c);
+	case PhysicalType::INT64:
+		return ColCmpFor<int64_t>(e.GetExpressionType(), c);
+	case PhysicalType::INT128:
+		return ColCmpFor<hugeint_t>(e.GetExpressionType(), c);
+	case PhysicalType::UINT8:
+		return ColCmpFor<uint8_t>(e.GetExpressionType(), c);
+	case PhysicalType::UINT16:
+		return ColCmpFor<uint16_t>(e.GetExpressionType(), c);
+	case PhysicalType::UINT32:
+		return ColCmpFor<uint32_t>(e.GetExpressionType(), c);
+	case PhysicalType::UINT64:
+		return ColCmpFor<uint64_t>(e.GetExpressionType(), c);
+	default:
+		return false;
+	}
+}
+
+// The scan worker's side of those conjuncts. Above the scan a conjunct runs per row (TPC-H SF10 Q12: `l_shipmode IN ('MAIL', 'SHIP')`
+// cost 25 ns per row, 30 % of the build scan's CPU). A DICTIONARY vector's row IS its entry, so DuckDB's executor runs once per dictionary,
+// on the entries (the NULL entry too: its verdict is a NULL row's), and each row reads one byte; the mask is kept while the next chunk
+// has the same dictionary object (same non-empty id, a random UUID per reusable dictionary; same entry array and size, as StreamVec).
+// Other vectors, and a dictionary without an id that is bigger than the chunk: the executor on the chunk's rows.
+struct DictMaskScan {
+	struct One {
+		const DictConjunct *c = nullptr;
+		unique_ptr<ExpressionExecutor> exec;
+		DataChunk column; // the one column the executor reads
+		std::vector<uint8_t> mask;
+		std::string id;
+		const string_t *entries = nullptr;
+	};
+	std::vector<unique_ptr<One>> ones;
+	const std::vector<ColCmp> &cmps;
+	UnifiedVectorFormat fa, fb;
+	SelectionVector a, b, tmp;
+
+	DictMaskScan(ClientContext &context, const std::vector<DictConjunct> &dict, const std::vector<ColCmp> &cmps,
+	             const vector<LogicalType> &types)
+	    : cmps(cmps), a(STANDARD_VECTOR_SIZE), b(STANDARD_VECTOR_SIZE), tmp(STANDARD_VECTOR_SIZE) {
+		for (auto &d : dict) {
+			ones.push_back(make_uniq<One>());
+			ones.back()->c = &d;
+			ones.back()->exec = make_uniq<ExpressionExecutor>(context, *d.expr);
+			ones.back()->column.InitializeEmpty(vector<LogicalType> {types[d.col]});
+		}
+	}
+
+	// mask[e] = the verdict on entry e of `child` (the executor takes at most a vector at a time).
+	void EvalEntries(One &o, Vector &child, idx_t nents) {
+		o.mask.assign(nents, 0);
+		for (idx_t lo = 0; lo < nents; lo += STANDARD_VECTOR_SIZE) {
+			idx_t hi = MinValue<idx_t>(nents, lo + STANDARD_VECTOR_SIZE);
+			o.column.data[0].Slice(child, lo, hi);
+			o.column.SetCardinality(hi - lo);
+			idx_t kept = o.exec->SelectExpression(o.column, tmp);
+			for (idx_t i = 0; i < kept; i++) {
+				o.mask[lo + tmp.get_index(i)] = 1;
+			}
+		}
+	}
+
+	// The rows of `chunk` that pass every conjunct: their count; `sel` is their selection (nullptr: no conjunct ran).
+	idx_t Apply(DataChunk &chunk, SelectionVector *&sel) {
+		idx_t count = chunk.size();
+		sel = nullptr;
+		SelectionVector *out = &a;
+		for (auto &op : ones) {
+			One &o = *op;
+			if (count == 0) {
+				break;
+			}
+			Vector &vec = chunk.data[o.c->col];
+			bool by_mask = false;
+			if (vec.GetVectorType() == VectorType::DICTIONARY_VECTOR && DictionaryVector::DictionarySize(vec).IsValid() &&
+			    DictionaryVector::Child(vec).GetVectorType() == VectorType::FLAT_VECTOR) {
+				auto &child = DictionaryVector::Child(vec);
+				idx_t nents = DictionaryVector::DictionarySize(vec).GetIndex();
+				const auto *entries = FlatVector::GetData<string_t>(child);
+				const std::string &id = DictionaryVector::DictionaryId(vec);
+				bool same = !id.empty() && id == o.id && entries == o.entries && nents == o.mask.size();
+				if (same || !id.empty() || nents <= chunk.size()) {
+					if (!same) {
+						EvalEntries(o, child, nents);
+						o.id = id;
+						o.entries = entries;
+					}
+					auto &rows = DictionaryVector::SelVector(vec);
+					const uint8_t *mask = o.mask.data();
+					sel_t *dst = out->data();
+					idx_t n = 0;
+					for (idx_t r = 0; r < count; r++) { // branch-free: the row is kept by moving n past it
+						sel_t row = sel ? sel_t(sel->get_index(r)) : sel_t(r);
+						dst[n] = row;
+						n += mask[rows.get_index(row)];
+					}
+					count = n;
+					by_mask = true;
+				}
+			}
+			if (!by_mask) {
+				o.column.data[0].Reference(vec);
+				o.column.SetCardinality(chunk.size());
+				count = o.exec->SelectExpression(o.column, *out, sel, count);
+			}
+			sel = out;
+			out = out == &a ? &b : &a;
+		}
+		for (auto &c : cmps) {
+			if (count == 0) {
+				break;
+			}
+			chunk.data[c.a].ToUnifiedFormat(chunk.size(), fa);
+			chunk.data[c.b].ToUnifiedFormat(chunk.size(), fb);
+			bool nulls = !fa.validity.AllValid() || !fb.validity.AllValid();
+			count = c.select(fa, fb, nulls, sel, count, out->data());
+			sel = out;
+			out = out == &a ? &b : &a;
+		}
+		return count;
+	}
+};
+
 // Rows of one table, in the single-threaded scan order: parallel tasks write their rows at their row-group position, then the
 // rows are packed toward the front where a task returned fewer rows than its range (deleted rows, rows of a newer snapshot).
 // Every worker uses the caller's transaction, so all see one snapshot (and its own uncommitted rows).
 // With a pushed-down predicate (PushedScan): DuckDB's table filters are applied inside the scan (zone maps skip row groups and
-// vectors; a vector returns only its matching rows) and the filters DuckDB kept above its scan (`residual`) select rows of each
-// chunk before any cell is decoded, so only matching rows are handed over.
+// vectors; a vector returns only its matching rows) and the filters DuckDB kept above its scan (`dict`, then `residual`) select rows
+// of each chunk before any cell is decoded, so only matching rows are handed over.
 uint64_t ScanTable(ClientContext &context, DuckTransaction &transaction, DataTable &storage, const vector<StorageIndex> &ids,
                    const vector<LogicalType> &types, std::vector<ColPlan> &plans, const std::shared_ptr<Executor> &exec,
-                   ScanResult &res, idx_t want_threads, TableFilterSet *filters, const Expression *residual) {
+                   ScanResult &res, idx_t want_threads, TableFilterSet *filters, const Expression *residual,
+                   const std::vector<DictConjunct> &dict, const std::vector<ColCmp> &cmps) {
 	std::vector<std::unique_ptr<ScanSource>> sources;
 	auto committed = make_uniq<ScanSource>();
 	committed->collection = storage.GetRowGroupCollection().get();
@@ -1309,11 +1553,9 @@ uint64_t ScanTable(ClientContext &context, DuckTransaction &transaction, DataTab
 	std::exception_ptr error;
 	// A filtered scan stages each task's cells and commits them in task order (TaskOut::stage); a whole-table scan writes them
 	// at the task's row-group position and packs the (rare) gaps of deleted rows afterwards.
-	const bool staged = filters || residual;
+	const bool staged = filters || residual || !dict.empty() || !cmps.empty();
 	std::mutex order_lock;
-	std::condition_variable order_cv;
-	std::vector<std::unique_ptr<std::vector<std::vector<uint8_t>>>> spare; // free staging sets
-	idx_t stage_sets = 0;
+	std::vector<std::unique_ptr<std::vector<ByteBuffer>>> spare; // free staging sets (their buffers keep their capacity)
 	uint64_t next_seq = 0, frontier = 0, frontier_at = 0, last_start = 0;
 	std::map<uint64_t, TaskOut *> finished; // decoded tasks waiting for every earlier task's row count
 	auto commit = [&](TaskOut *t) {
@@ -1337,7 +1579,6 @@ uint64_t ScanTable(ClientContext &context, DuckTransaction &transaction, DataTab
 			}
 			std::lock_guard<std::mutex> guard(order_lock);
 			spare.push_back(std::move(r->stage));
-			order_cv.notify_all();
 		}
 	};
 	auto worker = [&]() {
@@ -1351,31 +1592,28 @@ uint64_t ScanTable(ClientContext &context, DuckTransaction &transaction, DataTab
 			if (residual) {
 				keep = make_uniq<ExpressionExecutor>(context, *residual);
 			}
+			DictMaskScan masks(context, dict, cmps, types);
 			for (auto &src : sources) {
 				CollectionScanState &cs = src->local ? ts.local_state : ts.table_state;
 				while (!stop.load()) {
 					auto t = make_uniq<TaskOut>();
 					bool got;
 					if (staged) {
-						// A staging set and the next task under one lock: task order = sequence order, and the earliest unfinished
-						// task always holds a set, so a worker waiting for a set never waits on itself.
+						// A staging set and the next task under one lock: task order = sequence order. A worker never waits for a
+						// set: with none spare it starts an empty one (its buffers grow with the rows the task keeps), so a task
+						// that is slow to finish (a descheduled thread) holds back only the commits after it, never the scan.
 						std::unique_lock<std::mutex> lk(order_lock);
-						if (spare.empty() && stage_sets < 2 * nthreads) {
-							stage_sets++;
-							auto set = make_uniq<std::vector<std::vector<uint8_t>>>(plans.size());
-							for (auto &p : plans) {
-								(*set)[p.idx].resize(p.width * row_group_rows);
-							}
-							spare.push_back(std::move(set));
-						}
-						order_cv.wait(lk, [&]() { return !spare.empty() || stop.load(); });
 						if (stop.load()) {
 							break;
 						}
 						got = src->collection->NextParallelScan(context, src->state, cs);
 						if (got) {
-							t->stage = std::move(spare.back());
-							spare.pop_back();
+							if (spare.empty()) {
+								t->stage = make_uniq<std::vector<ByteBuffer>>(plans.size());
+							} else {
+								t->stage = std::move(spare.back());
+								spare.pop_back();
+							}
 							t->seq = next_seq++;
 							uint64_t at = src->offset + (cs.row_group->GetRowStart() + cs.vector_index * STANDARD_VECTOR_SIZE - src->base);
 							if (t->seq > 0 && at < last_start) {
@@ -1411,19 +1649,36 @@ uint64_t ScanTable(ClientContext &context, DuckTransaction &transaction, DataTab
 						if (t->count + chunk.size() > range) {
 							throw InternalException("Lemma: a scan task returned more rows than its range");
 						}
-						if (keep) {
-							idx_t kept = keep->SelectExpression(chunk, sel);
+						RowSel rs;
+						idx_t count = chunk.size();
+						if (keep || !dict.empty() || !cmps.empty()) {
+							SelectionVector *so_far = nullptr;
+							idx_t kept = masks.Apply(chunk, so_far);
+							if (keep && kept > 0) {
+								kept = keep->SelectExpression(chunk, sel, so_far, kept);
+								so_far = &sel;
+							}
 							if (kept == 0) {
 								continue;
 							}
 							if (kept < chunk.size()) {
-								chunk.Slice(sel, kept);
+								rs = RowSel(so_far, chunk.size());
+								count = kept;
+							}
+						}
+						if (staged) { // room for this chunk's rows after the task's earlier ones (amortized doubling)
+							for (auto &p : plans) {
+								ByteBuffer &b = (*t->stage)[p.idx];
+								size_t need = p.width * (t->count + count);
+								if (b.size() < need) {
+									b.resize(MaxValue<size_t>(need, MinValue<size_t>(2 * b.size(), p.width * row_group_rows)));
+								}
 							}
 						}
 						for (auto &p : plans) {
-							DecodeChunk(p, chunk.data[p.chunk_col], chunk.size(), *t);
+							DecodeChunk(p, chunk.data[p.chunk_col], count, *t, rs);
 						}
-						t->count += chunk.size();
+						t->count += count;
 					}
 					TaskOut *raw = t.get();
 					{
@@ -1442,9 +1697,7 @@ uint64_t ScanTable(ClientContext &context, DuckTransaction &transaction, DataTab
 					error = std::current_exception();
 				}
 			}
-			std::lock_guard<std::mutex> guard(order_lock);
 			stop = true;
-			order_cv.notify_all();
 		}
 	};
 	{
@@ -1589,6 +1842,9 @@ struct PushedScan {
 	std::unordered_map<std::string, idx_t> pos; // column name -> chunk column
 	unique_ptr<TableFilterSet> filters;
 	unique_ptr<Expression> residual;
+	std::vector<DictConjunct> dict; // conjuncts over one VARCHAR column, applied before `residual` (DictMaskScan)
+	std::vector<ColCmp> cmps;       // column-to-column comparisons, applied after `dict`, before `residual` (DictMaskScan)
+	std::vector<std::string> cmp_text;
 	bool empty = false;
 };
 
@@ -1603,6 +1859,39 @@ unique_ptr<Expression> ToChunkRefs(unique_ptr<Expression> e, const std::map<std:
 	}
 	ExpressionIterator::EnumerateChildren(*e, [&](unique_ptr<Expression> &child) { child = ToChunkRefs(std::move(child), chunk_col); });
 	return e;
+}
+
+void ChunkRefsOf(const Expression &e, std::set<idx_t> &refs) {
+	if (e.GetExpressionClass() == ExpressionClass::BOUND_REF) {
+		refs.insert(e.Cast<BoundReferenceExpression>().index);
+	}
+	ExpressionIterator::EnumerateChildren(e, [&](const Expression &child) { ChunkRefsOf(child, refs); });
+}
+
+void RefsToColumnZero(Expression &e) {
+	if (e.GetExpressionClass() == ExpressionClass::BOUND_REF) {
+		e.Cast<BoundReferenceExpression>().index = 0;
+	}
+	ExpressionIterator::EnumerateChildren(e, [&](Expression &child) { RefsToColumnZero(child); });
+}
+
+// A conjunct DuckDB kept above its scan that reads one VARCHAR column (`c IN (..)`, `c LIKE ..`), deterministic and unable to throw (a
+// dictionary holds strings no selected row has), moves to PushedScan::dict (DictMaskScan). False: `e` stays with the caller.
+bool TakeDictConjunct(unique_ptr<Expression> &e, PushedScan &out) {
+	std::set<idx_t> refs;
+	ChunkRefsOf(*e, refs);
+	if (refs.size() != 1 || e->IsVolatile() || e->CanThrow()) {
+		return false;
+	}
+	idx_t col = *refs.begin();
+	if (out.types[col].id() != LogicalTypeId::VARCHAR) {
+		return false;
+	}
+	RefsToColumnZero(*e);
+	out.dict.emplace_back();
+	out.dict.back().col = col;
+	out.dict.back().expr = std::move(e);
+	return true;
 }
 
 // `SELECT <cols> FROM <table> WHERE <where>` bound in the caller's context and given DuckDB's own expression rewriter and filter
@@ -1703,7 +1992,14 @@ PushedScan PlanPushdown(ClientContext &context, TableCatalogEntry &entry, const 
 			chunk_col[{bindings[i].table_index, bindings[i].column_index}] = get.projection_ids.empty() ? i : get.projection_ids[i];
 		}
 		for (auto &e : kept) {
-			residual.push_back(ToChunkRefs(std::move(e), chunk_col));
+			e = ToChunkRefs(std::move(e), chunk_col);
+			ColCmp c;
+			if (AsColCmp(*e, out.types, c)) {
+				out.cmps.push_back(c);
+				out.cmp_text.push_back(e->ToString());
+			} else if (!TakeDictConjunct(e, out)) {
+				residual.push_back(std::move(e));
+			}
 		}
 	}
 	unique_ptr<Expression> all;
@@ -1878,6 +2174,12 @@ std::vector<TablePrep> PrepareInputs(ClientContext &context, const Manifest &m,
 		if (pushed.residual) {
 			prep.identity += " residual: " + pushed.residual->ToString();
 		}
+		for (auto &d : pushed.dict) {
+			prep.identity += " dict[" + std::to_string(d.col) + "]: " + d.expr->ToString();
+		}
+		for (auto &t : pushed.cmp_text) {
+			prep.identity += " cmp: " + t;
+		}
 		prep.ids = std::move(ids);
 		prep.types = std::move(types);
 		prep.plans = std::move(plans);
@@ -1908,7 +2210,8 @@ ScanResult ScanPrepared(ClientContext &context, const Manifest &m, std::vector<T
 		}
 		auto &plans = prep.plans;
 		uint64_t total = ScanTable(context, *prep.transaction, *prep.storage, prep.ids, prep.types, plans, m.exec, res,
-		                           want_threads, prep.pushed.filters.get(), prep.pushed.residual.get());
+		                           want_threads, prep.pushed.filters.get(), prep.pushed.residual.get(), prep.pushed.dict,
+		                           prep.pushed.cmps);
 		res.cols[prep.i] = LemmaCol {nullptr, 0, total};
 		for (auto &p : plans) {
 			if (p.role == Role::String) {
@@ -2730,7 +3033,7 @@ RunResult StreamRun(ClientContext &context, const Manifest &m, const std::vector
 			throw InternalException("Lemma: stream executor %s: column %d is out of layout order", m.key, int64_t(i));
 		}
 	}
-	if (prep.pushed.filters || prep.pushed.residual || prep.pushed.empty) {
+	if (prep.pushed.filters || prep.pushed.residual || !prep.pushed.dict.empty() || !prep.pushed.cmps.empty() || prep.pushed.empty) {
 		throw InternalException("Lemma: stream executor %s: a pushed predicate on the streamed table", m.key);
 	}
 	StreamFault fault = StreamFaultSetting(context);
