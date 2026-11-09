@@ -139,7 +139,7 @@ def test_one_table_string_parameters_are_string_fields_read_through_params_canon
     # params_eq compares the texts (vstd's String ==); params_canon depends on the texts only
     assert "        r == (a.x@ == b.x@ && a.y@ == b.y@ && a.z@ == b.z@),\n{\n    a.x == b.x && a.y == b.y && a.z == b.z\n}" in spec
     assert "pub open spec fn params_canon(p: &Params) -> Params {\n    Params { x: param_str(p.x@), y: param_str(p.y@), z: param_str(p.z@) }\n}" in spec
-    assert "        choose|s: String| s@ == v\n" in spec and "broadcast use params_text::lemma_param_str;" in spec
+    assert "        choose|s: String| s@ == v\n" in spec and "broadcast use params_text::lemma_param_text;" in spec
     assert "row_hit(t, i0, &params_canon(p).x, &params_canon(p).y, &params_canon(p).z)" in spec  # agg_row
     assert "res matches Some(r) ==> run_query_ok(&t@, &params_canon(p).x, &params_canon(p).y, &params_canon(p).z, r)," in spec
     assert "assert(seg_agg(sh.id, k, p_b) =~= seg_agg(sh.id, k, p));" in spec  # exec_merge: b's fold is a's when the texts agree
@@ -207,7 +207,7 @@ def test_a_spec_like_of_another_text_is_still_refused(monkeypatch: pytest.Monkey
     ["one_table_params_grouped", "one_table_like_where", "join_params", "join_like", *sorted(REAL)],
 )
 def test_host_scaffold_verifies_with_a_stub_agent(case: str, stream_on: None, tmp_path: Path) -> None:
-    """AGENTS.md "Host scaffold": params_canon / param_str / lemma_param_str, the agg lemmas over canonical parameters, the exec_merge
+    """AGENTS.md "Host scaffold": params_canon / param_str / lemma_param_text, the agg lemmas over canonical parameters, the exec_merge
     text check, the Pool with a String Params: `N verified, 0 errors` with a stub agent. The real templates stream the table the
     stream_join rule picks on the real database (REAL)."""
     _needs_verus()

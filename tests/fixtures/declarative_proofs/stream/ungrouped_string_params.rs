@@ -1,7 +1,7 @@
 // Stream contract (lemma.toml [run] stream), verified fixture (tests/test_stream_strings.py): VARCHAR template parameters.
 //   -- params: x VARCHAR, y VARCHAR, z VARCHAR
 //   SELECT COUNT(*) AS c, SUM(m) AS sm FROM t WHERE s = $x AND g IN ($y, $z)      (t: g, s VARCHAR, m DECIMAL(12,2); no NULLs)
-// Params holds the strings (p.x, p.y, p.z); the spec reads them through params_canon(p), whose texts are p's (lemma_param_str).
+// Params holds the strings (p.x, p.y, p.z); the spec reads them through params_canon(p), whose texts are p's (lemma_param_text).
 // Per chunk, each ENTRY of s and g is compared with the parameters once (a Vec<bool> memo indexed by entry); per row the WHERE
 // is two array reads. The state: the count and the exact sum (checked: an overflow declines).
 // AGENT_STATE_START

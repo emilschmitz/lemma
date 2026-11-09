@@ -539,7 +539,7 @@ def _strings_and_like_section(spec_text: str) -> list[str]:
             "text with the parameter's text (`@`, a `Seq<char>`).",
             *([
                 f"The spec reads it as `params_canon(p).{x}` (a `String` with the same text: workers' Params with equal texts then give",
-                f"one fold); `params_canon(p).{x}@ == p.{x}@` holds by `lemma_param_str`, which is in scope everywhere.",
+                f"one fold); `params_canon(p).{x}@ == p.{x}@` holds by `lemma_param_text`, which is in scope everywhere.",
             ] if canon else [f"The spec reads it as `&p.{x}` (its text `p.{x}@`)."]),
             "vstd specifies `String == String` (`r == (a@ == b@)`) but not `==` on `&str`: compare an entry with a parameter as two",
             "`String`s, or char by char (`unicode_len` / `get_char`, exact vstd specs).",

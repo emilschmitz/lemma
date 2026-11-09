@@ -7,10 +7,11 @@
 # GATE (2026-11-08, this commit; stream emit with stream_join's rule on holdout/gendb_sec_edgar/duckdb/sec_edgar_dec.duckdb at binding 0 of
 # the seed-1 draw):
 #   q6 (binding 0: USD, CI, 2021): stream num (33,234,006 rows after its filter; pre 252,621, sub 7,732).
-#      REFUSED: "template parameter param_p1: &String: only integer, DECIMAL and DATE parameters are stated".
+#      (first draft: REFUSED "template parameter param_p1: &String: only integer, DECIMAL and DATE parameters are stated")
 #   q4 (binding 0: USD, CI, 2000, 2999, 0): stream num (33,234,006; tag 1,070,662, pre 252,621, sub 16,559).
-#      REFUSED: "template parameter param_p1: &String: only integer, DECIMAL and DATE parameters are stated".
-# Do not launch until the stream gate states VARCHAR template parameters: every run below is refused at emit today.
+#      (first draft: REFUSED the same way)
+# 2026-11-08 later: the stream gate states VARCHAR template parameters (docs/STREAM.md "String parameters and LIKE"); host scaffold with
+# a stub agent: q6 57 verified, 0 errors; q4 85 verified, 0 errors (tests/test_stream_strings.py).
 # Run (from main after the merge, clean tree, pinned SHA):
 #   uv run python research_loop/scripts/container_batch.py --experiment configs/experiments/stream_templates_sec_opus.toml
 [settings]

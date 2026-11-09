@@ -107,8 +107,8 @@ Only the three items marked TRUSTED are `external_body`; three `#[verifier::exte
 
 Host, proved (per query):
 * `pub struct Params { pub <name>: i32|i64, .. }` (the template parameters, `#[derive(Clone, Copy)]`; empty without templates),
-  `params_eq`. The run_query `requires` on parameter ranges are not carried over (they only bounded the old arguments; VARCHAR
-  parameters are refused in phase 1).
+  `params_eq`. The run_query `requires` on parameter ranges are not carried over (they only bounded the old arguments). VARCHAR
+  parameters are `String` fields since 2026-11-08 (see "String parameters and LIKE").
 * `pub type Key = <key_at's type>`, or `()` for an ungrouped aggregate.
 * `pub struct Agg` (spec-only, `int` / `Option<int>` fields): one field per suffix fold of the spec, named like the fold (`sum_x`,
   `count_x`, `avg_x_sum`, `avg_x_count`), one `Option<int>` per MIN / MAX predicate (`min_x`, `max_x`), `hits` (rows of group `k`
@@ -198,7 +198,7 @@ an exact i128 fallback (no catalog assumptions) and branch-free masks; the proof
 
 Deviations from the sketch above: `p` instead of `p@`; no separate `gsegs` (the ghost segments are `segs@`); `exec_*` by value;
 `exec_finish` returns `StreamOut` (not `Option`); `q_finish`'s requires is stated over `t@`; m (chunks handed out) is untrusted, only
-n and `valid_cols` are S2's claim; the gate also refuses DISTINCT other than COUNT(DISTINCT x) and a nullable GROUP BY key (both stated since 2026-10-27, see "NULL group keys and COUNT DISTINCT"), floats, VARCHAR template parameters, map
+n and `valid_cols` are S2's claim; the gate also refuses DISTINCT other than COUNT(DISTINCT x) and a nullable GROUP BY key (both stated since 2026-10-27, see "NULL group keys and COUNT DISTINCT"), floats, map
 results, `stateful` and `assumptions = true` (`in_duckdb` composes since the ABI 6 template below exists).
 
 ## Phase 1, execution side: ABI 6 in DuckDB (built 2026-10-26)
@@ -292,8 +292,8 @@ the OUTER fold: `X(t, b, i0, k) = X_d1(t, b, i0, 0, k) + X(t, b, i0 + 1, k)`.
 
 Gate (`stream_join.check_sql`, then the spec reader): refused loudly are outer / semi / anti / cross / natural / asof / positional joins,
 USING, subqueries (IN / EXISTS / scalar / derived tables), CTEs, set operations, self joins, a join without an ON equality, MIN / MAX
-over a join, and (as in phase 1) DISTINCT other than COUNT(DISTINCT x), rowid, order-dependent aggregates, floats, VARCHAR template
-parameters, map results. NULL join keys follow the emitter's rule (`<col> IS NOT NULL` in the WHERE). Cells: phase 1's types plus
+over a join, and (as in phase 1) DISTINCT other than COUNT(DISTINCT x), rowid, order-dependent aggregates, floats, map results
+(VARCHAR template parameters and LIKE are stated since 2026-11-08, "String parameters and LIKE"). NULL join keys follow the emitter's rule (`<col> IS NOT NULL` in the WHERE). Cells: phase 1's types plus
 `i128` (DECIMAL(38, s), DuckDB HUGEINT; in binary mode and, since the execution side below, in the ABI 6 glue: chunk cells and build inputs).
 
 What is emitted (`to_stream_join`, replacing `run_query` after the decline wrap; everything else in the spec unchanged). Variable names:
@@ -447,3 +447,52 @@ Gate check (Verus, stub agent, `tests/test_stream_null_distinct.py`): SEC q6 and
 the rule's stream table: accepted and `N verified, 0 errors` with a stub: Q1 (one table, COUNT DISTINCT), Q4, Q6, Q7, Q8, Q9 and Q11
 (stream pre: 3,143,073 rows after its filters vs num 3,091,826), Q12, Q13, Q15, Q18, Q25. Still refused: Q2, Q3, Q24 (subqueries),
 Q5, Q10, Q14, Q16, Q17, Q19-Q23 (SELECT DISTINCT and subqueries), configs q24 (LEFT JOIN).
+
+## String parameters and LIKE (`declarative_spec/stream.py` `read_params` / `params_block`, 2026-11-08)
+
+Both were refused before: every lifted query with a string constant (TPC-H Q3's segment, Q12's ship modes, SEC uom / stmt, and in the
+product every `lemma('...')` with a string literal in WHERE, since lifting is on by default) went to the batch path, and TPC-H Q14's
+`SUM(CASE WHEN p_type LIKE 'PROMO%' ...)` was refused even as fixed SQL ("spec fn spec_like is not a recognized fold"). No trusted item
+was added; specs and prompts without a string parameter or a LIKE are byte-identical (the phase-1 / 2a / null-distinct flag-on goldens,
+the flag-off goldens).
+
+**A VARCHAR template parameter** is what the batch spec states (`=`, `<>`, fixed-length IN lists: `templates.param_ranges`; what
+`lift.lift_constants` lifts): a `param_x: &String` argument whose text `param_x@` the spec compares with a cell's text. In the stream
+contract it is a `String` field of `Params` (`#[derive(Clone)]`, no longer `Copy`: the glue clones it per worker; verified code never
+clones it) and `params_eq` compares the texts (vstd's `String ==`: `r == (a.x@ == b.x@ && ..)`).
+
+* One table: `Exec` keeps each worker's own Params and `exec_merge` merges two workers whose Params `params_eq` found equal. vstd says
+  nothing that makes two Strings of one text equal values, so a fold over `&a.x` and one over `&b.x` would not be provably the same. The
+  contract therefore reads every string through `params_canon(p)`: `param_str(v)` = `choose|s: String| s@ == v` (an open spec fn in the
+  host module `params_text`), `lemma_param_text(s)` (broadcast, in scope everywhere, proved: `param_str(s@)@ == s@`) and
+  `params_canon(p) = Params { x: param_str(p.x@), .., i: p.i }`. `agg_row` / `agg_rng` (and the host range folds they call, with
+  `&params_canon(p)`) depend on the texts only, so `exec_merge` proves `seg_agg(id, k, p_b) =~= seg_agg(id, k, p)` from the text check.
+  `q_finish` / `exec_finish` ensure `run_query_ok(.., &params_canon(p).x, ..)`: the spec reads a string parameter only through `@`, so
+  this is `run_query_ok` at the parameter's text, as before.
+* A join: one `Pool` holds one Params for all slots (no merge of two Params), so the spec reads `&p.x` / `p.x@` directly.
+* Glue: binary mode passes the argument's text (`String`, as the run_query main); ABI 6 decodes a `LemmaParam` of kind string
+  (`lemma_param_str`, UTF-8 checked, the ABI 5 decoder) into an owned String moved into Params; phase 1 clones Params per worker.
+
+**LIKE** is the batch spec's `spec_like(s, p)` over `Seq<char>` (`emit_like.SPEC_LIKE_FN`; recursive, but a function of its two
+values, not a fold over a table): accepted, in WHERE (`row_hit`) or inside a CASE inside SUM / COUNT (`<fold>_val`), as part of
+`agg_row` like any other per-row predicate; `agg_rng` and the laws are unchanged. The gate accepts exactly the emitter's text
+(`stream.pure_recursive`, as `seq_le`); any other recursive spec fn is still refused.
+
+Prompt (`stream_prompt.py`, only when the spec has a string parameter or a LIKE): the parameter's text, `params_canon(p).x@ == p.x@`
+by `lemma_param_text`, no `==` spec on `&str` (compare as Strings or char by char); `spec_like` and the prefix case `'lit%'`; RECIPE
+(left out with `examples = none`): compare each chunk ENTRY with a parameter once per chunk (a `Vec<bool>` memo of `1 + max sel[r]`),
+test LIKE per dictionary entry once per chunk.
+
+Fixtures (test fixtures, not mounted): `stream/ungrouped_string_params.rs` (`WHERE s = $x AND g IN ($y, $z)`, COUNT and SUM; per chunk
+a memo per entry, `eq_text` by `unicode_len` / `get_char`), `stream/ungrouped_like_case.rs` (`SUM(CASE WHEN s LIKE 'ab%' ..)`, SUM, COUNT;
+`lemma_like_prefix`). Mutants that must not verify: a parameter ignored, read as another, an IN value ignored, a memo that says "equal"
+for every entry, LIKE ignored, half checked or negated, and `exec_merge` without its parameter check (`tests/test_stream_strings.py`).
+
+Gate check (Verus, stub agent; the stream table the stream_join rule picks at binding 0 of the seed-1 draw on the real databases, read
+only): TPC-H Q3 stream lineitem (32,233,888 rows after its filter; orders 7,314,636, customer 300,276) 54 verified, 0 errors; Q12
+stream orders (15,000,000; lineitem 312,478) 51 verified; Q14 stream part (2,000,000; lineitem 749,991) 48 verified; SEC q6 stream num
+(33,234,006; pre 252,621, sub 7,732) 57 verified; SEC q4 stream num (33,234,006; tag 1,070,662, pre 252,621, sub 16,559) 85 verified.
+Tests: `tests/test_stream_strings.py` (gate, scaffolds, fixtures, mutants, binary differential against DuckDB under several bindings:
+the empty string, no match, long and non-ASCII strings), `tests/test_in_duckdb_stream_strings.py` (ABI 6 through `lemma_query` with
+string parameters and `lemma(...)` on a literal query, 1 and 4 scan threads, every vector form). Product: a lifted string constant and a
+LIKE now pick a stream executor under `[product] executor = auto` (`tests/test_lemma_cli.py`).

@@ -247,9 +247,9 @@ pub fn params_eq(a: &Params, b: &Params) -> (r: bool)
     return out + f"""
 
 // A string parameter enters the stream's folds by its text only. param_str(v) is a String whose text is v (choose; proved, not
-// trusted: lemma_param_str, in scope everywhere) and params_canon(p) is p with each string replaced by param_str of its text: two
+// trusted: lemma_param_text, in scope everywhere) and params_canon(p) is p with each string replaced by param_str of its text: two
 // Params with the same texts and numbers have one params_canon. agg_row, agg_rng and q_finish's run_query_ok read the strings
-// through params_canon(p) (`params_canon(p).x@ == p.x@` by lemma_param_str), so workers' Params need equal texts, not one String.
+// through params_canon(p) (`params_canon(p).x@ == p.x@` by lemma_param_text), so workers' Params need equal texts, not one String.
 // (A module of its own: a module-level `broadcast use` of a lemma in the same module is a cycle for Verus.)
 pub mod params_text {{
     use vstd::prelude::*;
@@ -258,7 +258,7 @@ pub mod params_text {{
         choose|s: String| s@ == v
     }}
 
-    pub broadcast proof fn lemma_param_str(s: String)
+    pub broadcast proof fn lemma_param_text(s: String)
         ensures
             #[trigger] param_str(s@)@ == s@,
     {{
@@ -268,7 +268,7 @@ pub mod params_text {{
 
 use params_text::param_str;
 
-broadcast use params_text::lemma_param_str;
+broadcast use params_text::lemma_param_text;
 
 pub open spec fn params_canon(p: &Params) -> Params {{
     Params {{ {canon_fields} }}

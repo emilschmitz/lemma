@@ -14,7 +14,6 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from declarative_spec import templates
 from research_loop import in_duckdb
 from research_loop.structural_catalog import structural_catalog
 
@@ -98,6 +97,11 @@ def _lemma(con: duckdb.DuckDBPyConnection, sql: str, *params: str) -> list:
     return con.execute(f"SELECT * FROM lemma_query({_q(sql)}{args})").fetchall()
 
 
+def _instance(b: dict[str, str]) -> str:
+    """PARAMS_SQL at the binding ``b``: the fixed-constant query DuckDB answers."""
+    return f"SELECT COUNT(*) AS c, SUM(m) AS sm FROM t WHERE s = {_q(b['x'])} AND g IN ({_q(b['y'])}, {_q(b['z'])})"
+
+
 def _last(con: duckdb.DuckDBPyConnection) -> dict:
     cur = con.execute("SELECT * FROM lemma_last_query()")
     names = [d[0] for d in cur.description]
@@ -121,7 +125,7 @@ def test_string_parameters_through_lemma_query(threads: int, home: Path, tmp_pat
     con.execute("CHECKPOINT")
     con.execute(f"SET lemma_scan_threads = {threads}")
     for binding in BINDINGS:
-        want = con.execute(templates.with_literals(PARAMS_SQL, binding)).fetchall()
+        want = con.execute(_instance(binding)).fetchall()
         got = _lemma(con, PARAMS_SQL, *(_q(binding[k]) for k in ("x", "y", "z")))
         assert got == want, (binding, got, want)
         last = _last(con)
@@ -147,7 +151,7 @@ def test_small_tables_and_the_empty_table(n: int, home: Path) -> None:
     con = _connect(home)
     _fill(con, random.Random(n), n)
     for binding in BINDINGS[:2]:
-        assert _lemma(con, PARAMS_SQL, *(_q(binding[k]) for k in ("x", "y", "z"))) == con.execute(templates.with_literals(PARAMS_SQL, binding)).fetchall()
+        assert _lemma(con, PARAMS_SQL, *(_q(binding[k]) for k in ("x", "y", "z"))) == con.execute(_instance(binding)).fetchall()
     assert _lemma(con, LIKE_SQL) == con.execute(LIKE_SQL).fetchall()
 
 
@@ -161,7 +165,7 @@ def test_every_vector_form(compression: str, home: Path, tmp_path: Path) -> None
     con.execute("CHECKPOINT")
     con.execute("SET lemma_scan_threads = 4")
     for binding in (BINDINGS[0], {"x": "ab", "y": "ab", "z": "q"}):
-        assert _lemma(con, PARAMS_SQL, *(_q(binding[k]) for k in ("x", "y", "z"))) == con.execute(templates.with_literals(PARAMS_SQL, binding)).fetchall(), binding
+        assert _lemma(con, PARAMS_SQL, *(_q(binding[k]) for k in ("x", "y", "z"))) == con.execute(_instance(binding)).fetchall(), binding
     assert _lemma(con, LIKE_SQL) == con.execute(LIKE_SQL).fetchall()
 
 

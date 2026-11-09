@@ -1005,6 +1005,8 @@ const LEMMA_STEP_ERROR: i32 = 2;
 
 #[allow(dead_code)]
 const LEMMA_PARAM_INT: u32 = 1;
+#[allow(dead_code)]
+const LEMMA_PARAM_STR: u32 = 4;
 
 #[no_mangle]
 pub extern "C" fn lemma_abi_version() -> u32 {
@@ -1063,6 +1065,13 @@ fn lemma_param_int(p: &LemmaParam, name: &str) -> i64 {
     let bytes = lemma_bytes(p.data, p.len, "a parameter");
     assert!(bytes.len() == 8, "parameter {}: {} bytes, an integer is 8", name, bytes.len());
     i64::from_le_bytes(bytes.try_into().unwrap())
+}
+
+// A VARCHAR template parameter: its bytes, checked to be UTF-8, as an owned String (moved into Params).
+#[allow(dead_code)]
+fn lemma_param_str(p: &LemmaParam, name: &str) -> String {
+    assert!(p.kind == LEMMA_PARAM_STR, "parameter {}: kind {}, expected {} (a string)", name, p.kind, LEMMA_PARAM_STR);
+    String::from_utf8(lemma_bytes(p.data, p.len, "a parameter").to_vec()).expect("a string parameter is not UTF-8")
 }
 
 // UNSAFE 3/10. Contract: `out` is null or points to a writable LemmaOut. The bytes move to the caller, who returns them with
