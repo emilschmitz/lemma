@@ -1,4 +1,4 @@
-"""Build the product wheel dist/lemma-<version>-py3-none-any.whl: everything `lemma` runs, nothing that needs a checkout.
+"""Build the product wheel dist/lemma_db-<version>-py3-none-any.whl: everything `lemma` runs, nothing that needs a checkout.
 
     python3 scripts/release/build_wheel.py [--out DIR] [--verus-docs DIR] [--allow-dirty]
 
@@ -17,6 +17,12 @@ build info says ``-dirty``), so it never picks up local data, runs or generated 
 Left out: research_loop/artifacts (prove_loop tarballs), research_loop/testdata, db_extension's C++ sources and tests, every tests/ directory.
 The dependencies keep pyproject.toml's ranges (uv.lock has a numpy per Python version); install.sh pins every version to uv.lock with its
 constraints.txt.
+
+PyPI: the wheel is what gets published (distribution ``lemma-db``; ``lemma`` on PyPI is another project). Its metadata (name, version,
+description, authors, keywords, classifiers, URLs, license once there is one) is pyproject.toml's; only the dependencies differ (no
+workspace packages, no path sources). The README is pyproject's README.md with its relative links made absolute GitHub URLs at the source
+commit, so they work on the PyPI page. There is no sdist: the wheel is staged from a layout that exists only at build time (vendored
+transpilers, the Verus docs), and the checkout's own sdist would carry workspace path dependencies.
 """
 
 from __future__ import annotations
@@ -24,6 +30,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -37,6 +44,10 @@ ROOT = Path(__file__).resolve().parents[2]
 VERUS_COMMIT = "3a4d30bcdc4571e7927af97be9c4664973083eda"  # Verus 0.2026.07.18.3a4d30b (lemma_cli/setup_cmd.py VERUS_VERSION)
 # The runtime dependencies: pyproject.toml's, minus the workspace packages (vendored above) and pytest (tests only), plus what those two need.
 DROP_DEPS = ("sql-transpiler", "verus-transpiler", "pytest")
+VENDORED = ("verus_transpiler/pyproject.toml", "db_extension/dafny_transpiler/pyproject.toml")
+REPO_URL = "https://github.com/emilschmitz/lemma"
+# pyproject.toml [project] keys copied into the wheel's metadata as they are (dependencies, scripts and the build layout are the wheel's own).
+METADATA_KEYS = ("name", "version", "description", "requires-python", "license", "license-files", "authors", "keywords", "classifiers", "urls")
 
 # repo path prefix -> path inside the wheel. The first matching prefix wins; a path matching none is not shipped.
 PACKAGES = (
@@ -64,18 +75,7 @@ PACKAGES = (
     ("tests/fixtures/declarative_proofs/", "lemma_data/tests/fixtures/declarative_proofs/"),
 )
 
-PYPROJECT = """[build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
-
-[project]
-name = "lemma"
-version = "{version}"
-description = "Lemma: verified query synthesis (an AI agent writes run_query, Verus proves it, DuckDB runs it)"
-readme = "README.md"
-requires-python = ">=3.11"
-dependencies = {deps}
-
+LAYOUT = """
 [project.scripts]
 lemma = "lemma_cli.main:main"
 
@@ -91,6 +91,48 @@ namespaces = true
 [tool.setuptools.package-data]
 "*" = ["**/*"]
 """
+
+
+def toml_value(value: object) -> str:
+    """A TOML value for the metadata we copy: strings, lists of strings, and inline tables of strings (JSON spells those the same way,
+    except tables)."""
+    if isinstance(value, dict):
+        return "{ " + ", ".join(f"{json.dumps(k)} = {toml_value(v)}" for k, v in value.items()) + " }"
+    if isinstance(value, list):
+        return "[" + ", ".join(toml_value(v) for v in value) + "]"
+    return json.dumps(value)
+
+
+def wheel_pyproject(project: dict, deps: list[str]) -> str:
+    """The staged pyproject.toml: the checkout's [project] metadata, the runtime dependencies, the wheel's package layout."""
+    lines = ["[build-system]", 'requires = ["setuptools>=77"]', 'build-backend = "setuptools.build_meta"', "", "[project]"]
+    for key in METADATA_KEYS:
+        if key in project and key != "urls":
+            lines.append(f"{key} = {toml_value(project[key])}")
+    lines += ['readme = "README.md"', f"dependencies = {toml_value(deps)}"]
+    if "urls" in project:
+        lines += ["", "[project.urls]", *(f"{json.dumps(k)} = {json.dumps(v)}" for k, v in project["urls"].items())]
+    return "\n".join(lines) + "\n" + LAYOUT
+
+
+def absolute_links(readme: str, commit: str) -> str:
+    """README.md for the PyPI page: every relative Markdown link or image target becomes the GitHub URL of that path at ``commit``
+    (``blob`` for links, ``raw`` for images); absolute URLs and in-page anchors stay."""
+    sha = commit.removesuffix("-dirty")
+
+    def repl(m: re.Match[str]) -> str:
+        bang, text, target = m.group(1), m.group(2), m.group(3)
+        if re.match(r"^([a-z][a-z0-9+.-]*:|#|/)", target):
+            return m.group(0)
+        kind = "raw" if bang else "blob"
+        return f"{bang}[{text}]({REPO_URL}/{kind}/{sha}/{target.removeprefix('./')})"
+
+    return re.sub(r"(!?)\[([^\]]*)\]\(([^)\s]+)\)", repl, readme)
+
+
+def wheel_name(project: dict) -> str:
+    """The wheel's file name: the normalized distribution name (``lemma-db`` -> ``lemma_db``), the version, a pure-Python tag."""
+    return f"{re.sub(r'[-_.]+', '_', project['name']).lower()}-{project['version']}-py3-none-any.whl"
 
 
 def target(rel: str) -> str | None:
@@ -129,8 +171,8 @@ def main() -> int:
     if (args.verus_docs / "COMMIT").is_file() is False or (args.verus_docs / "COMMIT").read_text().strip() != VERUS_COMMIT:
         sys.exit(f"{args.verus_docs} is not the Verus docs at {VERUS_COMMIT}: run research_loop/scripts/fetch_verus_docs.sh (or pass --verus-docs DIR)")
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
-    vendored = tomllib.loads((ROOT / "verus_transpiler" / "pyproject.toml").read_text())["project"]["dependencies"]
-    deps = [d for d in project["dependencies"] if not d.startswith(DROP_DEPS)] + vendored
+    vendored = [d for f in VENDORED for d in tomllib.loads((ROOT / f).read_text())["project"]["dependencies"]]
+    deps = list(dict.fromkeys([d for d in project["dependencies"] if not d.startswith(DROP_DEPS)] + vendored))
     with tempfile.TemporaryDirectory(prefix="lemma-wheel-") as tmp:
         src, stage = Path(tmp) / "src", Path(tmp) / "stage"
         src.mkdir()
@@ -150,11 +192,13 @@ def main() -> int:
         info = {"lemma_version": project["version"], "source_commit": commit, "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "verus_docs_commit": VERUS_COMMIT}
         (stage / "lemma_data" / "BUILD_INFO.json").write_text(json.dumps(info, indent=2) + "\n")
-        shutil.copy2(ROOT / "README.md", stage / "README.md")
-        (stage / "pyproject.toml").write_text(PYPROJECT.format(version=project["version"], deps=json.dumps(deps)))
+        (stage / "README.md").write_text(absolute_links((ROOT / project["readme"]).read_text(), commit))
+        for name in project.get("license-files", []):
+            shutil.copy2(ROOT / name, stage / name)
+        (stage / "pyproject.toml").write_text(wheel_pyproject(project, deps))
         args.out.mkdir(parents=True, exist_ok=True)
         subprocess.run(["uv", "build", "--quiet", "--wheel", "--no-build-logs", "-o", str(args.out), str(stage)], check=True)
-    wheel = args.out / f"lemma-{project['version']}-py3-none-any.whl"
+    wheel = args.out / wheel_name(project)
     print(f"built {wheel} ({wheel.stat().st_size / 1e6:.1f} MB, {shipped} files from {commit[:12]}, plus the Verus docs)")
     return 0
 

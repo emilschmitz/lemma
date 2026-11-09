@@ -28,14 +28,14 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent
 # Two layouts. A checkout: ROOT is the repository (pyproject.toml beside this file); research runs and experiments need it (git SHA, clean tree).
-# An installed wheel (`uv tool install lemma-<v>.whl`, the product): ROOT is site-packages, the Python packages keep their repo-relative layout
+# An installed wheel (`uv tool install lemma_db-<v>-py3-none-any.whl`, the product): ROOT is site-packages, the Python packages keep their repo-relative layout
 # there (research_loop/, declarative_spec/, db_extension/, ...), and the repo-root files the runtime reads (lemma.toml, scripts/ram, docker/agent,
 # tests/fixtures/declarative_proofs) are package data under ROOT/lemma_data. Nothing is ever written below ROOT then: writable paths (runs,
 # libduckdb) live under $LEMMA_HOME (``writable``). Runs record the installed package (``package_provenance``) instead of a git SHA.
 INSTALLED = not (ROOT / "pyproject.toml").is_file()
 RESOURCES = ROOT / "lemma_data" if INSTALLED else ROOT
 TOML = RESOURCES / "lemma.toml"
-DIST_NAME = "lemma"  # the distribution name of the product wheel
+DIST_NAME = "lemma-db"  # the distribution name of the product wheel (on PyPI; `lemma` there is another project)
 # The agent images of the research path ([run] image_registry = ""); a registry names the published product images instead (agent_image).
 LOCAL_AGENT_IMAGES = {"claude": "lemma-agent:claude", "codex": "lemma-agent:codex", "gemini": "lemma-agent:gemini"}
 
@@ -74,7 +74,7 @@ def package_provenance() -> dict[str, Any]:
     dist = distribution(DIST_NAME)
     direct = json.loads(dist.read_text("direct_url.json") or "{}")
     archive = direct.get("archive_info", {})
-    # pip records archive_info hashes; uv keeps the URL's #sha256= fragment (install.sh installs `lemma @ file://<wheel>#sha256=<hash>`)
+    # pip records archive_info hashes; uv keeps the URL's #sha256= fragment (install.sh installs `lemma-db @ file://<wheel>#sha256=<hash>`)
     fragment = direct.get("url", "").partition("#sha256=")[2] or None
     wheel_sha = (archive.get("hashes") or {}).get("sha256") or (archive.get("hash", "").removeprefix("sha256=") or None) or fragment
     record = dist.read_text("RECORD") or ""

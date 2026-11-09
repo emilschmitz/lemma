@@ -19,7 +19,7 @@ exclude-newer-span = "P7D"
 
 [manifest]
 members = [
-    "lemma",
+    "lemma-db",
     "sql-transpiler",
     "verus-transpiler",
 ]
@@ -709,7 +709,7 @@ wheels = [
 ]
 
 [[package]]
-name = "lemma"
+name = "lemma-db"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
@@ -718,7 +718,6 @@ dependencies = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "openai" },
-    { name = "pytest" },
     { name = "sql-transpiler" },
     { name = "tree-sitter" },
     { name = "tree-sitter-rust" },
@@ -730,6 +729,7 @@ dev = [
     { name = "matplotlib" },
     { name = "pandas" },
     { name = "psycopg", extra = ["binary"] },
+    { name = "pytest" },
     { name = "seaborn" },
 ]
 
@@ -739,7 +739,6 @@ requires-dist = [
     { name = "mcp", specifier = ">=1.28.1" },
     { name = "numpy", specifier = ">=2.4.6" },
     { name = "openai", specifier = ">=2.45.0" },
-    { name = "pytest", specifier = ">=9.1.1" },
     { name = "sql-transpiler", editable = "db_extension/dafny_transpiler" },
     { name = "tree-sitter", specifier = ">=0.25.2" },
     { name = "tree-sitter-rust", specifier = ">=0.24.2" },
@@ -751,6 +750,7 @@ dev = [
     { name = "matplotlib", specifier = ">=3.11.0" },
     { name = "pandas", specifier = ">=3.0.3" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.4" },
+    { name = "pytest", specifier = ">=9.1.1" },
     { name = "seaborn", specifier = ">=0.13.2" },
 ]
 

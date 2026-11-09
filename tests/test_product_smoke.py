@@ -131,7 +131,7 @@ def test_install_lays_out_the_wheel_and_the_duckdb_binaries_and_no_source_tree(u
     assert (share / "duckdb" / "duckdb").is_file() and (share / "duckdb" / "lemma.duckdb_extension").is_file()
     assert (share / "build" / "libduckdb" / "libduckdb.so").is_file()
     assert not (share / "src").exists() and not list(home.rglob(".git"))
-    tool_python = home / ".local" / "share" / "uv" / "tools" / "lemma" / "bin" / "python"
+    tool_python = home / ".local" / "share" / "uv" / "tools" / "lemma-db" / "bin" / "python"
     probe = subprocess.run([str(tool_python), "-c", "import lemma_config, json; print(json.dumps([lemma_config.INSTALLED, str(lemma_config.ROOT), "
                             "str(lemma_config.TOML)]))"], cwd=user["cwd"], env=user["env"], capture_output=True, text=True, check=True)
     installed, root, toml = json.loads(probe.stdout)
@@ -161,7 +161,7 @@ def test_setup_optimize_and_run_in_duckdb_from_the_installed_wheel(user: dict) -
     assert {"lib.so", "manifest.json", "optimize.json", "proved", "query.sql"} <= {p.name for p in executor.iterdir()}
 
     # Provenance without git: the installed package's version and the wheel's sha256 (install.sh), in the executor and the run manifest.
-    wheel = next(user["release"].glob("lemma-*.whl"))
+    wheel = next(user["release"].glob("lemma_db-*.whl"))
     manifest = json.loads((executor / "manifest.json").read_text())
     package = manifest["package"]
     assert package["wheel_sha256"] == hashlib.sha256(wheel.read_bytes()).hexdigest() and package["lemma_version"] in wheel.name

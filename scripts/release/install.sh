@@ -30,14 +30,14 @@ command -v uv >/dev/null || { echo "install.sh: uv not found on PATH: https://do
 for f in VERSION constraints.txt duckdb/duckdb duckdb/lemma.duckdb_extension duckdb/libduckdb.so; do
   [[ -f "$HERE/$f" ]] || { echo "install.sh: $HERE/$f is missing: run me from the unpacked release" >&2; exit 1; }
 done
-WHEEL="$(ls "$HERE"/lemma-*.whl)"
+WHEEL="$(ls "$HERE"/lemma_db-*.whl)"
 VERSION="$(awk '$1 == "lemma" {print $2}' "$HERE/VERSION")"
 echo "Installing Lemma $VERSION: command into $BIN_DIR, DuckDB binaries into $LEMMA_HOME"
 
 mkdir -p "$BIN_DIR"
 # The #sha256 fragment makes uv check the wheel and keep its hash in the install record (runs record it: lemma_config.package_provenance).
 UV_TOOL_BIN_DIR="$BIN_DIR" uv tool install --quiet --force --python ">=3.11" --constraints "$HERE/constraints.txt" \
-  "lemma @ file://$WHEEL#sha256=$(sha256sum "$WHEEL" | cut -d' ' -f1)"
+  "lemma-db @ file://$WHEEL#sha256=$(sha256sum "$WHEEL" | cut -d' ' -f1)"
 
 mkdir -p "$LEMMA_HOME/duckdb" "$LEMMA_HOME/build/libduckdb"
 install -m 755 "$HERE/duckdb/duckdb" "$LEMMA_HOME/duckdb/duckdb"

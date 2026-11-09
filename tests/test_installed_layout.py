@@ -93,7 +93,7 @@ def test_package_provenance_reads_the_wheel_hash_from_the_install_record(monkeyp
     import importlib.metadata as md
 
     (installed / "lemma_data" / "BUILD_INFO.json").write_text(json.dumps({"source_commit": "f" * 40}))
-    for direct in ({"url": f"file:///x/lemma-0.1.0-py3-none-any.whl#sha256={sha}", "archive_info": {}},  # uv (install.sh)
+    for direct in ({"url": f"file:///x/lemma_db-0.1.0-py3-none-any.whl#sha256={sha}", "archive_info": {}},  # uv (install.sh)
                    {"url": "file:///x/lemma.whl", "archive_info": {"hashes": {"sha256": sha}}},  # pip --hash
                    {"url": "file:///x/lemma.whl", "archive_info": {"hash": f"sha256={sha}"}}):
         monkeypatch.setattr(md, "distribution", lambda _name, d=direct: Dist(d))
@@ -150,13 +150,46 @@ def test_build_wheel_maps_the_runtime_and_leaves_out_tests_and_artifacts() -> No
         assert target(left_out) is None, left_out
 
 
+def test_the_checkout_pins_no_test_only_runtime_dependency_and_the_wheel_carries_pyproject_metadata() -> None:
+    """pytest is a dev dependency (no shipped module imports it); the staged pyproject is the checkout's metadata with PyPI-only deps."""
+    import tomllib
+
+    bw = _build_wheel_module()
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    project = pyproject["project"]
+    assert not [d for d in project["dependencies"] if d.startswith("pytest")]
+    assert any(d.startswith("pytest") for d in pyproject["dependency-groups"]["dev"])
+    assert project["name"] == "lemma-db" and lc.DIST_NAME == project["name"] and bw.wheel_name(project) == f"lemma_db-{project['version']}-py3-none-any.whl"
+    staged = tomllib.loads(bw.wheel_pyproject(project, ["duckdb==1.5.6", "sqlglot>=30.11.0"]))
+    for key in ("name", "version", "description", "requires-python", "authors", "keywords", "classifiers", "urls"):
+        assert staged["project"][key] == project[key], key
+    assert staged["project"]["dependencies"] == ["duckdb==1.5.6", "sqlglot>=30.11.0"] and staged["project"]["readme"] == "README.md"
+    assert staged["project"]["scripts"] == {"lemma": "lemma_cli.main:main"} and "uv" not in staged.get("tool", {})
+    with_license = tomllib.loads(bw.wheel_pyproject({**project, "license": "MIT", "license-files": ["LICENSE"]}, []))["project"]
+    assert with_license["license"] == "MIT" and with_license["license-files"] == ["LICENSE"]
+
+
+def test_the_pypi_readme_links_to_github_at_the_source_commit() -> None:
+    absolute = _build_wheel_module().absolute_links
+    sha = "a" * 40
+    text = ("See [trusted](docs/TRUSTED_FAMILIES.md), [ext](./db_extension/duckdb_ext/README.md#input-cache) and ![plot](docs/fig.png); "
+            "keep [uv](https://docs.astral.sh/uv/), [here](#quick-start) and [mail](mailto:x@y.z).")
+    assert absolute(text, sha + "-dirty") == (
+        f"See [trusted](https://github.com/emilschmitz/lemma/blob/{sha}/docs/TRUSTED_FAMILIES.md), "
+        f"[ext](https://github.com/emilschmitz/lemma/blob/{sha}/db_extension/duckdb_ext/README.md#input-cache) and "
+        f"![plot](https://github.com/emilschmitz/lemma/raw/{sha}/docs/fig.png); "
+        "keep [uv](https://docs.astral.sh/uv/), [here](#quick-start) and [mail](mailto:x@y.z).")
+    readme = absolute((ROOT / "README.md").read_text(), sha)
+    assert "](docs/" not in readme and "](research_loop/" not in readme and "](db_extension/" not in readme
+
+
 @pytest.mark.slow
 def test_the_built_wheel_holds_every_resource_the_runtime_reads(tmp_path: Path) -> None:
     docs = ROOT / "research_loop" / "vendor" / "verus_docs"
     if not (docs / "COMMIT").is_file():
         pytest.skip("no Verus docs (research_loop/scripts/fetch_verus_docs.sh)")
     subprocess.run([sys.executable, str(ROOT / "scripts" / "release" / "build_wheel.py"), "--out", str(tmp_path), "--allow-dirty"], check=True)
-    (wheel,) = tmp_path.glob("lemma-*.whl")
+    (wheel,) = tmp_path.glob("lemma_db-*.whl")
     z = zipfile.ZipFile(wheel)
     names = set(z.namelist())
     for need in ("lemma_config.py", "lemma_cli/main.py", "lemma_data/lemma.toml", "lemma_data/docker/agent/Dockerfile", "lemma_data/docker/agent/entrypoint.sh",
@@ -170,3 +203,5 @@ def test_the_built_wheel_holds_every_resource_the_runtime_reads(tmp_path: Path) 
     assert not [n for n in names if n.startswith("tests/") or "/artifacts/" in n or "__pycache__" in n]
     metadata = z.read(next(n for n in names if n.endswith("METADATA"))).decode()
     assert "Requires-Dist: duckdb==1.5.6" in metadata and "verus-transpiler" not in metadata and "pytest" not in metadata
+    assert "Name: lemma-db" in metadata and "Author-email: Emil Schmitz" in metadata and "Project-URL: Source, https://github.com/emilschmitz/lemma" in metadata
+    assert "file:" not in metadata and "](docs/" not in metadata  # no path dependency; the long description links to GitHub

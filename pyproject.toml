@@ -3,15 +3,33 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "lemma"
+# The distribution name: `lemma` is taken on PyPI (an unrelated project), so the wheel is `lemma-db`; the command is still `lemma`.
+name = "lemma-db"
 version = "0.1.0"
-description = "Lemma — verified query synthesis (Verus proofs + native Rust + DuckDB extension)"
+description = "Lemma: verified query synthesis (an AI agent writes run_query, Verus proves it, DuckDB runs it)"
 readme = "README.md"
 requires-python = ">=3.11"
+authors = [{ name = "Emil Schmitz", email = "emilalexanderschmitz@gmail.com" }]
+keywords = ["duckdb", "verus", "formal-verification", "sql", "query-compilation", "rust", "llm-agents"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Rust",
+    "Topic :: Database",
+    "Topic :: Software Development :: Compilers",
+]
 dependencies = [
     "sql-transpiler",
     "verus-transpiler",
-    "pytest>=9.1.1",
     "tree-sitter>=0.25.2",
     "tree-sitter-rust>=0.24.2",
     "openai>=2.45.0",
@@ -19,6 +37,11 @@ dependencies = [
     "duckdb==1.5.6",
     "numpy>=2.4.6",
 ]
+
+[project.urls]
+Homepage = "https://github.com/emilschmitz/lemma"
+Source = "https://github.com/emilschmitz/lemma"
+Issues = "https://github.com/emilschmitz/lemma/issues"
 
 [project.scripts]
 lemma = "lemma_cli.main:main"
@@ -39,6 +62,7 @@ verus-transpiler = { workspace = true }
 
 [dependency-groups]
 dev = [
+    "pytest>=9.1.1",
     "matplotlib>=3.11.0",
     "pandas>=3.0.3",
     "psycopg[binary]>=3.3.4",

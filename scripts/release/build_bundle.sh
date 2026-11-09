@@ -7,7 +7,7 @@
 #   install.sh                     `uv tool install` of the wheel + copies the DuckDB binaries (see that file)
 #   README.md                      install and first query (scripts/release/README.dist.md)
 #   VERSION                        version, source commit, DuckDB version, image names
-#   lemma-<version>-py3-none-any.whl   the whole runtime (scripts/release/build_wheel.py), built here from HEAD
+#   lemma_db-<version>-py3-none-any.whl the whole runtime (scripts/release/build_wheel.py), built here from HEAD
 #   constraints.txt                every dependency version of uv.lock (install.sh passes it to uv)
 #   duckdb/duckdb                  our DuckDB v1.5.6 CLI with Lemma statically linked (full DuckDB plus the Lemma functions)
 #   duckdb/lemma.duckdb_extension  the loadable extension for a stock DuckDB v1.5.6
@@ -55,7 +55,7 @@ OUT="$ROOT/dist/$NAME"
 rm -rf "$OUT"
 mkdir -p "$OUT/duckdb"
 python3 scripts/release/build_wheel.py --out "$OUT" "${DIRTY[@]}"
-SHA="$(python3 -c 'import json, sys, zipfile; z = zipfile.ZipFile(sys.argv[1]); print(json.loads(z.read("lemma_data/BUILD_INFO.json"))["source_commit"])' "$OUT/lemma-$VERSION-py3-none-any.whl")"
+SHA="$(python3 -c 'import json, sys, zipfile; z = zipfile.ZipFile(sys.argv[1]); print(json.loads(z.read("lemma_data/BUILD_INFO.json"))["source_commit"])' "$OUT/lemma_db-$VERSION-py3-none-any.whl")"
 uv export --quiet --frozen --no-dev --no-hashes --no-emit-workspace --no-header -o "$OUT/constraints.txt"
 install -m 755 "$CLI" "$OUT/duckdb/duckdb"
 install -m 644 "$EXT" "$OUT/duckdb/lemma.duckdb_extension"

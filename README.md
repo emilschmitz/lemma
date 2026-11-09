@@ -35,7 +35,8 @@ DuckDB's own scan chunks in place, so it is fast on fresh data and the first cal
 get the batch executor (`executor: stream|batch ... : <reason>` is printed; lemma.toml `[product] executor = auto | stream | batch`).
 
 `install.sh` is `uv tool install` of the wheel plus a copy of the DuckDB binaries; by hand that is
-`uv tool install --constraints constraints.txt ./lemma-0.1.0-py3-none-any.whl` and `lemma setup --duckdb-from ./duckdb`.
+`uv tool install --constraints constraints.txt ./lemma_db-0.1.0-py3-none-any.whl` and `lemma setup --duckdb-from ./duckdb`. The
+distribution is `lemma-db` (the name `lemma` on PyPI is an unrelated project); the command is `lemma`.
 
 `lemma optimize` runs the agent in the sandbox until Verus proves its `run_query` against the query's spec, then verifies the same
 body again as a library and installs it under `~/.local/share/lemma/executors/<sha256 of the SQL>/` (`lib.so`, `manifest.json`; the
@@ -86,9 +87,28 @@ in `db_extension/duckdb_ext/build/release` (runs then record the git SHA; an ins
 ```bash
 docker login ghcr.io -u emilschmitz                                   # a token with write:packages
 scripts/release/build_product.sh --push                               # or: scripts/release/build_images.sh --push (after a build_product.sh)
-gh release create v0.1.0 dist/lemma-0.1.0-linux-x86_64.tar.gz dist/lemma-0.1.0-linux-x86_64/lemma-0.1.0-py3-none-any.whl
-# later, PyPI (`pip install lemma` / `uv tool install lemma`; the DuckDB binaries then come from `lemma setup --duckdb-from DIR`):
-uv publish dist/lemma-0.1.0-linux-x86_64/lemma-0.1.0-py3-none-any.whl
+gh release create v0.1.0 dist/lemma-0.1.0-linux-x86_64.tar.gz dist/lemma-0.1.0-linux-x86_64/lemma_db-0.1.0-py3-none-any.whl
+```
+
+**PyPI** (distribution `lemma-db`; users then run `uv tool install lemma-db` or `pipx install lemma-db` and get the `lemma` command; the
+DuckDB binaries are not in the wheel, they come from the GitHub release via `lemma setup --duckdb-from DIR`). Wheel only, no sdist: the wheel
+is staged by `build_wheel.py` (vendored `verus_transpiler`/`sql_transpiler`, the Verus docs), which a source tree of this repo cannot
+rebuild without the workspace. Its metadata is `pyproject.toml`'s `[project]`; the PyPI description is this README with its relative links
+rewritten to GitHub URLs at the wheel's source commit, so publish only a commit that is pushed. A version number can be uploaded once, ever
+(PyPI refuses a re-upload even after a delete): bump `version` in `pyproject.toml` for every release. Before the first upload: a license
+(`license = "<SPDX>"` and `license-files = ["LICENSE"]` in `pyproject.toml` plus the LICENSE file; build_wheel.py copies both), accounts on
+https://test.pypi.org and https://pypi.org with 2FA, and an API token from each (account settings, API tokens; scope it to `lemma-db` after
+the first upload).
+
+```bash
+python3 scripts/release/build_wheel.py --out dist/pypi                # from a clean, pushed HEAD
+uvx twine check --strict dist/pypi/lemma_db-0.1.0-py3-none-any.whl    # metadata and README rendering
+# TestPyPI first (the token is read from the environment, never typed on the command line):
+UV_PUBLISH_TOKEN="$TEST_PYPI_TOKEN" uv publish --publish-url https://test.pypi.org/legacy/ dist/pypi/lemma_db-0.1.0-py3-none-any.whl
+uv tool install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ --index-strategy unsafe-best-match lemma-db
+lemma --help && lemma status && uv tool uninstall lemma-db
+# then PyPI:
+UV_PUBLISH_TOKEN="$PYPI_TOKEN" uv publish dist/pypi/lemma_db-0.1.0-py3-none-any.whl
 ```
 
 The ghcr.io packages must be public for an anonymous `docker pull` (GitHub: package settings, visibility).
