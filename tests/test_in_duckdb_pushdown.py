@@ -239,6 +239,109 @@ def test_a_throwing_conjunct_never_sees_the_dictionary_entries_of_rows_a_filter_
     assert _scan(con, SMALL["dict"][1])[0][3] == con.execute(f"SELECT COUNT(*) FROM num WHERE {where}").fetchone()[0] > 0
 
 
+# ---- conjuncts comparing two integer-like columns of one type: evaluated branch-free in the scan worker (ColCmp) --------------------------
+CMP = {
+    "lt_bigint": "\"qtrs\" < \"q2\"",  # q2 has NULLs: such a row is never kept
+    "ne_bigint": "\"qtrs\" <> \"q2\"",
+    "ge_date": "\"d1\" >= \"d2\"",  # d2 has NULLs
+    "eq_date": "\"d1\" = \"d2\"",
+    "le_decimal": "\"value\" <= \"v2\"",  # DECIMAL(38,4) on both sides: i128 cells
+    "gt_constant": "\"k7\" > \"qtrs\"",  # k7 is 7 in every row (CONSTANT vectors)
+    "chain": "(\"d1\" < \"d2\") AND (\"qtrs\" <= \"q2\") AND (\"uom\" IN ('USD', 'late-1')) AND (\"qtrs\" + \"q2\" > 1)",
+    "mixed_types": "\"qtrs\" < \"q32\"",  # BIGINT against INTEGER: a cast, so DuckDB's executor (the residual) evaluates it
+}
+
+
+def _cmp_num(con: duckdb.DuckDBPyConnection, rows: int) -> None:
+    """`num` with the dict fixture's columns and more of the same types: NULLs, several row groups, deletes leaving gaps."""
+    con.execute(
+        f"""CREATE OR REPLACE TABLE num AS SELECT 'a' || (i % 13) AS adsh, CAST(i % 5 AS BIGINT) AS qtrs,
+            CASE WHEN i < 200000 THEN ['USD', 'EUR'][1 + i % 2] ELSE 'late-' || (i % 3) END AS uom,
+            CAST(((i * 7919) % 2003 - 1001) / 100 AS DECIMAL(38,4)) AS value,
+            CASE WHEN i % 101 = 3 THEN NULL ELSE CAST((i * 31) % 7 - 1 AS BIGINT) END AS q2,
+            CAST((i * 31) % 7 - 1 AS INTEGER) AS q32,
+            DATE '2020-01-01' + CAST(i % 11 AS INTEGER) AS d1,
+            CASE WHEN i % 103 = 5 THEN NULL ELSE DATE '2020-01-01' + CAST((i * 7) % 13 AS INTEGER) END AS d2,
+            CAST(((i * 104729) % 2003 - 1001) / 100 AS DECIMAL(38,4)) AS v2,
+            CAST(7 AS BIGINT) AS k7
+            FROM range({rows}) t(i)"""
+    )
+    con.execute("DELETE FROM num WHERE rowid % 50000 < 3 OR rowid BETWEEN 130000 AND 131000")
+
+
+@needs_ext
+@pytest.mark.parametrize("compression", ["bitpacking", "rle", "uncompressed"])
+@pytest.mark.parametrize("name", sorted(CMP))
+def test_a_column_comparison_keeps_exactly_duckdbs_rows(name: str, compression: str, phome: Path, tmp_path: Path) -> None:
+    """Byte for byte against the Python encoding of the rows DuckDB keeps: every operator, DATE / BIGINT / i128 cells, NULL operands,
+    CONSTANT vectors, a chain with a dictionary mask and a residual after it, several row groups, deletes, 8 threads."""
+    where = CMP[name]
+    home = _edited(phome, tmp_path, "dict", where)
+    con = _connect(home, str(tmp_path / "t.duckdb"))
+    con.execute(f"PRAGMA force_compression = '{compression}'")
+    _cmp_num(con, 3 * ROW_GROUP + 4567)
+    con.execute("CHECKPOINT")
+    con.execute("SET lemma_scan_threads = 8")
+    got = _scan(con, SMALL["dict"][1])
+    ref = duckdb.connect()
+    _cmp_num(ref, 3 * ROW_GROUP + 4567)
+    ref.execute(f"CREATE TABLE kept AS SELECT * FROM num WHERE {where} ORDER BY rowid")
+    ref.execute("DROP TABLE num")
+    ref.execute("ALTER TABLE kept RENAME TO num")
+    want = _reference(ref, json.loads(_manifest_path(home, "dict").read_text()))
+    assert 0 < got[0][3] < con.execute("SELECT COUNT(*) FROM num").fetchone()[0]
+    assert [g[:4] for g in got] == [w[:4] for w in want]
+    for g, w in zip(got, want, strict=True):
+        assert g[4] == w[4], g[1]
+
+
+@needs_ext
+@pytest.mark.parametrize("threads", [1, 3, 8])
+def test_a_column_comparison_over_the_callers_uncommitted_rows_and_a_selective_table_filter(threads: int, phome: Path, tmp_path: Path) -> None:
+    """A table filter first (`qtrs = 2`: the scan hands selected vectors), then the comparison on them; then the transaction's own rows
+    (FLAT vectors) and a delete in the same scan; the answer is DuckDB's in every case."""
+    where = "(\"qtrs\" = 2) AND (\"d1\" < \"d2\")"
+    home = _edited(phome, tmp_path, "dict", where)
+    con = _connect(home, str(tmp_path / "t.duckdb"))
+    _cmp_num(con, 2 * ROW_GROUP + 99)
+    con.execute("CHECKPOINT")
+    con.execute(f"SET lemma_scan_threads = {threads}")
+    count = f"SELECT COUNT(*) FROM num WHERE {where}"
+    assert _scan(con, SMALL["dict"][1])[0][3] == con.execute(count).fetchone()[0] > 0
+    con.execute("BEGIN")
+    con.execute("INSERT INTO num SELECT 'a', 2, 'USD', 1, NULL, 0, DATE '2021-01-01', DATE '2021-01-01' + CAST(i % 3 AS INTEGER), 1, 7 FROM range(3000) t(i)")
+    con.execute("DELETE FROM num WHERE d1 = DATE '2020-01-03'")
+    assert _scan(con, SMALL["dict"][1])[0][3] == con.execute(count).fetchone()[0]
+    sql = SMALL["dict"][1]
+    assert _same(con.execute(official_measure.lemma_query_sql(sql)).fetchall(), con.execute(sql.replace("WHERE uom = 'USD'", f"WHERE {where} AND uom = 'USD'")).fetchall(), False)
+    con.execute("ROLLBACK")
+
+
+# ---- a filtered scan never waits for a staging set: each task's buffers grow with the rows it keeps --------------------------------------
+@needs_ext
+@pytest.mark.parametrize("threads", [1, 8])
+@pytest.mark.parametrize("where", ["(\"qtrs\" >= 0)", "(\"qtrs\" <> 3) OR (\"uom\" = 'EUR')"])
+def test_a_filtered_scan_that_keeps_nearly_every_row_of_many_row_groups(where: str, threads: int, phome: Path, tmp_path: Path) -> None:
+    """Many more tasks than threads, each keeping (nearly) a whole row group: the staging buffers grow from empty to a row group and are
+    reused with their capacity, byte for byte the rows DuckDB keeps, in row order."""
+    home = _edited_nullable(phome, tmp_path, "dict", where)
+    con = _connect(home, str(tmp_path / "t.duckdb"))
+    _big_num(con, 7 * ROW_GROUP + 321, nulls=True)
+    con.execute("CHECKPOINT")
+    con.execute(f"SET lemma_scan_threads = {threads}")
+    got = _scan(con, SMALL["dict"][1])
+    ref = duckdb.connect()
+    _big_num(ref, 7 * ROW_GROUP + 321, nulls=True)
+    ref.execute(f"CREATE TABLE kept AS SELECT * FROM num WHERE {where} ORDER BY rowid")
+    ref.execute("DROP TABLE num")
+    ref.execute("ALTER TABLE kept RENAME TO num")
+    want = _reference(ref, json.loads(_manifest_path(home, "dict").read_text()))
+    assert got[0][3] > 6 * ROW_GROUP
+    assert [g[:4] for g in got] == [w[:4] for w in want]
+    for g, w in zip(got, want, strict=True):
+        assert g[4] == w[4], g[1]
+
+
 @needs_ext
 def test_a_predicate_duckdb_proves_empty_scans_no_row_and_a_bad_one_is_an_error(phome: Path, tmp_path: Path) -> None:
     home = _edited(phome, tmp_path, "usum", '("line" > 5) AND ("line" < 3)')
