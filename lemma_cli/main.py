@@ -28,7 +28,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--image-registry", help=f"where the published images are pulled from (saved; default {DEFAULT_REGISTRY}); \"\" = the local research "
                    "tags lemma-agent:<harness> / lemma-prover:<verus>, which only --build-images (or a checkout's own build) provides")
     s.add_argument("--duckdb-from", metavar="DIR", help="install our DuckDB CLI and lemma.duckdb_extension from DIR (a release's duckdb/ directory, "
-                   "or a build's release/ directory) into $LEMMA_HOME/duckdb/; install.sh does this for you")
+                   "or a build's release/ directory) into $LEMMA_HOME/duckdb/; install.sh does this for you. Without it an installed lemma "
+                   "downloads its version's release asset lemma-<version>-duckdb-linux-x86_64.tar.gz once and checks its sha256")
     a = sub.add_parser("assumptions", help="profile a DuckDB, approve every claim, check the package")
     a.add_argument("--db", required=True)
     a.add_argument("--margin", type=int, default=4)

@@ -2,27 +2,85 @@
 
 Where they are:
 
-* installed (``install.sh`` of the release, or ``lemma setup --duckdb-from DIR``): ``$LEMMA_HOME/duckdb/{duckdb, lemma.duckdb_extension}``
-  (default ``~/.local/share/lemma/duckdb/``);
+* installed (``install.sh`` of the release, ``lemma setup --duckdb-from DIR``, or ``lemma setup`` of an installed wheel, which downloads the
+  release asset ``lemma-<version>-duckdb-linux-x86_64.tar.gz`` and checks it against the sha256 the wheel was built with):
+  ``$LEMMA_HOME/duckdb/{duckdb, lemma.duckdb_extension}`` (default ``~/.local/share/lemma/duckdb/``);
 * a development checkout: ``db_extension/duckdb_ext/build/release/{duckdb, extension/lemma/lemma.duckdb_extension}``
   (``db_extension/duckdb_ext/build.sh``), or the portable build of scripts/release/build_portable.sh.
 
-Nothing is downloaded or built here; a missing file is an error that says how to get it.
+Nothing is built here; a missing file is an error that says how to get it. The only download is ``download_release`` (``lemma setup``).
 """
 
 from __future__ import annotations
 
+import json
 import os
+import platform
 import subprocess
+import sys
+import tarfile
+import urllib.error
+import urllib.request
 from pathlib import Path
 
-from lemma_cli.common import CliError, lemma_home, redact, repo_root
+from lemma_cli.common import CliError, lemma_home, redact, repo_root, say, sha256_file
 
 DUCKDB_VERSION = "v1.5.6"
 LEMMA_MODE = "SET lemma_mode = true"
 
 
 CLI_NAME, EXT_NAME = "duckdb", "lemma.duckdb_extension"
+# The release asset holding exactly duckdb/{duckdb, lemma.duckdb_extension, libduckdb.so} (scripts/release/build_bundle.sh). The wheel carries
+# its sha256 and size in lemma_data/duckdb_asset.json (scripts/release/build_wheel.py --duckdb-asset).
+RELEASE_BASE = "https://github.com/emilschmitz/lemma/releases/download"
+ASSET_INFO = "duckdb_asset.json"
+FROM_HINT = ("download lemma-{version}-linux-x86_64.tar.gz from https://github.com/emilschmitz/lemma/releases, unpack it and run "
+             "`lemma setup --duckdb-from DIR` (DIR = its duckdb/ directory)")
+
+
+def asset_name(version: str) -> str:
+    return f"lemma-{version}-duckdb-linux-x86_64.tar.gz"
+
+
+def asset_info_path() -> Path:
+    import lemma_config
+
+    return lemma_config.resource(ASSET_INFO)
+
+
+def is_installed() -> bool:
+    return (installed_dir() / CLI_NAME).is_file() and (installed_dir() / EXT_NAME).is_file()
+
+
+def download_release(dest: Path) -> Path:
+    """Download the DuckDB asset of the installed lemma version into ``dest`` (an empty temporary directory), check its sha256 against the one
+    the wheel was built with, unpack it, and return the unpacked ``duckdb/`` directory. A failed download or a mismatch is an error that names
+    --duckdb-from; nothing is installed here (``install_from`` does that)."""
+    import lemma_config
+
+    version = lemma_config.package_version()
+    hint = FROM_HINT.format(version=version)
+    if sys.platform != "linux" or platform.machine() not in ("x86_64", "AMD64"):
+        raise CliError(f"Lemma's DuckDB binaries are built for Linux x86_64 only, this is {sys.platform} {platform.machine()}")
+    info_path = asset_info_path()
+    if not info_path.is_file():
+        raise CliError(f"this lemma install has no {info_path} (the sha256 of its DuckDB asset): {hint}")
+    info = json.loads(info_path.read_text())
+    url = f"{RELEASE_BASE}/v{version}/{asset_name(version)}"
+    say(f"  [..] downloading {url} ({info['size'] / 1e6:.1f} MB, expected sha256 {info['sha256']})")
+    tarball = dest / asset_name(version)
+    try:
+        with urllib.request.urlopen(url, timeout=120) as response, tarball.open("wb") as out:
+            while block := response.read(1 << 20):
+                out.write(block)
+    except (urllib.error.URLError, OSError) as exc:
+        raise CliError(f"downloading {url} failed ({exc}): {hint}") from exc
+    got = sha256_file(tarball)
+    if got != info["sha256"]:
+        raise CliError(f"{url} has sha256 {got}, lemma {version} expects {info['sha256']}: nothing installed; {hint}")
+    with tarfile.open(tarball) as tar:
+        tar.extractall(dest / "unpacked", filter="data")
+    return dest / "unpacked" / "duckdb"
 
 
 def installed_dir() -> Path:
@@ -65,8 +123,9 @@ def binaries() -> tuple[Path, Path]:
             return cli, ext
     looked = "; ".join(f"{c.parent}" for c, _e in _candidates())
     raise CliError(
-        f"the Lemma DuckDB binaries (duckdb CLI + lemma.duckdb_extension) are not installed (looked in: {looked}): run the release's install.sh, "
-        "or `lemma setup --duckdb-from DIR` (the release's duckdb/ directory), or in a checkout build them with db_extension/duckdb_ext/build.sh"
+        f"the Lemma DuckDB binaries (duckdb CLI + lemma.duckdb_extension) are not installed (looked in: {looked}): run `lemma setup` (it downloads "
+        "them), the release's install.sh, or `lemma setup --duckdb-from DIR` (the release's duckdb/ directory), or in a checkout build them "
+        "with db_extension/duckdb_ext/build.sh"
     )
 
 

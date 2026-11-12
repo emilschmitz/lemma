@@ -11,7 +11,9 @@
 #                                        (--save-images also writes docker-save tarballs into the release for offline installs).
 #                                        --skip-images skips this step (the release then relies on images built or pushed earlier).
 # 3. scripts/release/build_bundle.sh     dist/lemma-<version>-linux-x86_64/ (+ .tar.gz): the wheel (scripts/release/build_wheel.py),
-#                                        constraints.txt, the DuckDB CLI/extension/libduckdb, install.sh, README.md, VERSION, images/.
+#                                        constraints.txt, the DuckDB CLI/extension/libduckdb, install.sh, README.md, VERSION, images/;
+#                                        dist/lemma-<version>-duckdb-linux-x86_64.tar.gz (built first, its sha256 is in the wheel) and
+#                                        dist/SHA256SUMS.
 #
 # PUBLISHING IS SEPARATE AND NEEDS EMIL'S APPROVAL: nothing is pushed or uploaded unless --push is given, and then only the images
 # (`docker push`, after `docker login`). The wheel and the tarball stay in dist/ (a GitHub release / PyPI upload is a documented manual step,

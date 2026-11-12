@@ -1,6 +1,10 @@
 """Build the product wheel dist/lemma_db-<version>-py3-none-any.whl: everything `lemma` runs, nothing that needs a checkout.
 
-    python3 scripts/release/build_wheel.py [--out DIR] [--verus-docs DIR] [--allow-dirty]
+    python3 scripts/release/build_wheel.py --duckdb-asset dist/lemma-<version>-duckdb-linux-x86_64.tar.gz [--out DIR] [--verus-docs DIR] [--allow-dirty]
+
+--duckdb-asset is the release asset with our DuckDB binaries (scripts/release/build_bundle.sh writes it before the wheel). Its sha256 and size
+go into lemma_data/duckdb_asset.json: `lemma setup` of the installed wheel downloads that asset of its version from the GitHub release and
+refuses any other bytes (lemma_cli/duck.py download_release). So the asset uploaded to the release must be this exact file.
 
 The wheel is staged from the files git tracks at HEAD (``git archive``; with --allow-dirty the tracked files of the working tree, and the
 build info says ``-dirty``), so it never picks up local data, runs or generated files. Layout inside the wheel (site-packages):
@@ -12,7 +16,7 @@ build info says ``-dirty``), so it never picks up local data, runs or generated 
                                                                                  in the checkout, made by research_loop/scripts/fetch_verus_docs.sh)
   lemma_data/                                                                    the repo-root files the runtime reads (lemma_config.resource):
       lemma.toml, scripts/ram/*.sh, scripts/fetch_libduckdb.sh, docker/agent/*, docker/prover/Dockerfile, tests/fixtures/declarative_proofs/,
-      BUILD_INFO.json (source commit, build time)
+      BUILD_INFO.json (source commit, build time), duckdb_asset.json (name, sha256 and size of the DuckDB release asset)
 
 Left out: research_loop/artifacts (prove_loop tarballs), research_loop/testdata, db_extension's C++ sources and tests, every tests/ directory.
 The dependencies keep pyproject.toml's ranges (uv.lock has a numpy per Python version); install.sh pins every version to uv.lock with its
@@ -28,6 +32,7 @@ transpilers, the Verus docs), and the checkout's own sdist would carry workspace
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import json
 import re
@@ -167,10 +172,15 @@ def main() -> int:
     ap.add_argument("--out", type=Path, default=ROOT / "dist")
     ap.add_argument("--verus-docs", type=Path, default=ROOT / "research_loop" / "vendor" / "verus_docs")
     ap.add_argument("--allow-dirty", action="store_true", help="build from the working tree's tracked files (test builds only; BUILD_INFO says -dirty)")
+    ap.add_argument("--duckdb-asset", type=Path, required=True, help="the DuckDB release asset lemma-<version>-duckdb-linux-x86_64.tar.gz (build_bundle.sh)")
     args = ap.parse_args()
     if (args.verus_docs / "COMMIT").is_file() is False or (args.verus_docs / "COMMIT").read_text().strip() != VERUS_COMMIT:
         sys.exit(f"{args.verus_docs} is not the Verus docs at {VERUS_COMMIT}: run research_loop/scripts/fetch_verus_docs.sh (or pass --verus-docs DIR)")
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
+    asset = f"lemma-{project['version']}-duckdb-linux-x86_64.tar.gz"  # lemma_cli/duck.py asset_name
+    if args.duckdb_asset.name != asset:
+        sys.exit(f"--duckdb-asset is {args.duckdb_asset.name}, this version's asset is {asset}")
+    asset_info = {"name": asset, "sha256": hashlib.sha256(args.duckdb_asset.read_bytes()).hexdigest(), "size": args.duckdb_asset.stat().st_size}
     vendored = [d for f in VENDORED for d in tomllib.loads((ROOT / f).read_text())["project"]["dependencies"]]
     deps = list(dict.fromkeys([d for d in project["dependencies"] if not d.startswith(DROP_DEPS)] + vendored))
     with tempfile.TemporaryDirectory(prefix="lemma-wheel-") as tmp:
@@ -192,6 +202,7 @@ def main() -> int:
         info = {"lemma_version": project["version"], "source_commit": commit, "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "verus_docs_commit": VERUS_COMMIT}
         (stage / "lemma_data" / "BUILD_INFO.json").write_text(json.dumps(info, indent=2) + "\n")
+        (stage / "lemma_data" / "duckdb_asset.json").write_text(json.dumps(asset_info, indent=2) + "\n")
         (stage / "README.md").write_text(absolute_links((ROOT / project["readme"]).read_text(), commit))
         for name in project.get("license-files", []):
             shutil.copy2(ROOT / name, stage / name)

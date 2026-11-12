@@ -581,12 +581,112 @@ def test_lemma_duckdb_runs_our_cli_with_the_lemma_home_and_a_missing_install_say
     db = make_db(tmp_path)
     monkeypatch.setattr(duck, "repo_root", lambda: tmp_path / "nowhere" / "src")
     assert main(["duckdb", str(db), "-c", "SELECT 1"]) == 2
-    assert "run the release's install.sh, or `lemma setup --duckdb-from DIR`" in capfd.readouterr().err
+    assert "run `lemma setup` (it downloads them), the release's install.sh, or `lemma setup --duckdb-from DIR`" in capfd.readouterr().err
     fake_binaries(tmp_path, monkeypatch)
     assert main(["duckdb", str(tmp_path / "missing.duckdb"), "-c", "SELECT 1"]) == 2
     assert main(["duckdb", str(db), "-c", "SELECT 1"]) == 0
     out = capfd.readouterr().out
     assert f"ARGS {db.resolve()} -c SELECT 1" in out and f"HOME={common.lemma_home()}" in out
+
+
+# --- lemma setup of an installed wheel: the DuckDB release asset (a local HTTP server, no real network) ---
+
+
+@pytest.fixture
+def release(env: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """An installed wheel (INSTALLED, its duckdb_asset.json) and a local server holding v<version>/lemma-<version>-duckdb-linux-x86_64.tar.gz
+    like the GitHub release. Yields (asset info path, served asset path, requested paths)."""
+    import functools
+    import http.server
+    import tarfile
+    import threading
+
+    import lemma_config
+
+    version = lemma_config.package_version()
+    staged = tmp_path / "asset_src" / "duckdb"
+    staged.mkdir(parents=True)
+    (staged / "duckdb").write_text("#!/bin/sh\necho fake duckdb\n")
+    (staged / "lemma.duckdb_extension").write_bytes(b"ext-from-release")
+    (staged / "libduckdb.so").write_bytes(b"libduckdb-from-release")
+    served = tmp_path / "www" / f"v{version}" / duck.asset_name(version)
+    served.parent.mkdir(parents=True)
+    with tarfile.open(served, "w:gz") as tar:
+        for name in ("duckdb", "lemma.duckdb_extension", "libduckdb.so"):
+            tar.add(staged / name, arcname=f"duckdb/{name}")
+    info = tmp_path / "lemma_data" / "duckdb_asset.json"
+    info.parent.mkdir()
+    info.write_text(json.dumps({"name": served.name, "sha256": common.sha256_file(served), "size": served.stat().st_size}))
+    requested: list[str] = []
+
+    class Handler(http.server.SimpleHTTPRequestHandler):
+        def log_message(self, *args: object) -> None:
+            requested.append(self.path)
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(Handler, directory=str(tmp_path / "www")))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setattr(lemma_config, "INSTALLED", True)
+    monkeypatch.setattr(duck, "asset_info_path", lambda: info)
+    monkeypatch.setattr(duck, "RELEASE_BASE", f"http://127.0.0.1:{server.server_address[1]}")
+    monkeypatch.setattr(duck, "repo_root", lambda: tmp_path / "no_checkout")
+    login()
+    yield info, served, requested
+    server.shutdown()
+
+
+def test_setup_of_an_installed_wheel_downloads_the_checked_duckdb_asset_once(release, capsys: pytest.CaptureFixture) -> None:
+    info, served, requested = release
+    assert main(["setup"]) == 0
+    out = capsys.readouterr().out
+    assert f"/v{served.parent.name[1:]}/{served.name} ({served.stat().st_size / 1e6:.1f} MB, expected sha256 {json.loads(info.read_text())['sha256']})" in out
+    assert (duck.installed_dir() / "lemma.duckdb_extension").read_bytes() == b"ext-from-release"
+    assert (duck.installed_dir() / "duckdb").stat().st_mode & 0o111
+    assert (setup_cmd.libduckdb_dir() / "libduckdb.so").read_bytes() == b"libduckdb-from-release"
+    assert main(["setup"]) == 0 and len(requested) == 1  # installed now: no second download
+
+
+def test_setup_refuses_a_duckdb_asset_with_another_sha256_and_installs_nothing(release, capsys: pytest.CaptureFixture) -> None:
+    info, _served, _requested = release
+    info.write_text(json.dumps({**json.loads(info.read_text()), "sha256": "0" * 64}))
+    assert main(["setup"]) == 2
+    err = capsys.readouterr().err
+    assert f"expects {'0' * 64}: nothing installed" in err and "lemma setup --duckdb-from DIR" in err
+    assert not duck.installed_dir().exists() and not (setup_cmd.libduckdb_dir() / "libduckdb.so").exists()
+
+
+def test_setup_with_a_missing_duckdb_asset_is_loud_and_names_duckdb_from(release, capsys: pytest.CaptureFixture) -> None:
+    _info, served, _requested = release
+    served.unlink()
+    assert main(["setup"]) == 2
+    err = capsys.readouterr().err
+    assert f"downloading {duck.RELEASE_BASE}/{served.parent.name}/{served.name} failed (HTTP Error 404" in err
+    assert "lemma setup --duckdb-from DIR" in err and not duck.installed_dir().exists()
+
+
+def test_setup_without_the_embedded_checksum_or_off_linux_x86_64_downloads_nothing(release, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    info, _served, requested = release
+    monkeypatch.setattr(duck.platform, "machine", lambda: "aarch64")
+    assert main(["setup"]) == 2 and "built for Linux x86_64 only, this is linux aarch64" in capsys.readouterr().err
+    monkeypatch.setattr(duck.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(duck, "asset_info_path", lambda: info.parent / "absent.json")
+    assert main(["setup"]) == 2 and "absent.json (the sha256 of its DuckDB asset)" in capsys.readouterr().err
+    assert requested == []
+
+
+def test_setup_duckdb_from_still_installs_without_a_download_and_a_checkout_never_downloads(release, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _info, _served, requested = release
+    src = tmp_path / "unpacked_release" / "duckdb"
+    src.mkdir(parents=True)
+    (src / "duckdb").write_text("#!/bin/sh\n")
+    (src / "lemma.duckdb_extension").write_bytes(b"ext-from-dir")
+    assert main(["setup", "--duckdb-from", str(src)]) == 0
+    assert (duck.installed_dir() / "lemma.duckdb_extension").read_bytes() == b"ext-from-dir"
+    import lemma_config
+
+    shutil.rmtree(duck.installed_dir())
+    monkeypatch.setattr(lemma_config, "INSTALLED", False)  # a checkout: its own builds (duck.check is stubbed here)
+    assert main(["setup"]) == 0 and not duck.installed_dir().exists()
+    assert requested == []
 
 
 def test_setup_stops_when_verus_is_missing_and_says_how_to_get_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

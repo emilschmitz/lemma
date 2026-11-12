@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Assemble the downloadable release: dist/lemma-<version>-linux-x86_64/ and dist/lemma-<version>-linux-x86_64.tar.gz
+# Assemble the downloadable release: dist/lemma-<version>-linux-x86_64/ and dist/lemma-<version>-linux-x86_64.tar.gz, plus
+# dist/lemma-<version>-duckdb-linux-x86_64.tar.gz (exactly duckdb/{duckdb, lemma.duckdb_extension, libduckdb.so}; built BEFORE the wheel,
+# which embeds its sha256 so `lemma setup` of a PyPI install downloads and checks it) and dist/SHA256SUMS (bundle, DuckDB asset, wheel).
 #
 #   scripts/release/build_bundle.sh [--duckdb-build DIR] [--libduckdb DIR] [--images DIR] [--allow-dirty]
 #
@@ -30,7 +32,7 @@ while [[ $# -gt 0 ]]; do
     --libduckdb) LIBDUCKDB="$2"; shift 2 ;;
     --images) IMAGES="$2"; shift 2 ;;
     --allow-dirty) DIRTY=(--allow-dirty); shift ;;
-    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,21p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -54,12 +56,17 @@ NAME="lemma-$VERSION-linux-x86_64"
 OUT="$ROOT/dist/$NAME"
 rm -rf "$OUT"
 mkdir -p "$OUT/duckdb"
-python3 scripts/release/build_wheel.py --out "$OUT" "${DIRTY[@]}"
-SHA="$(python3 -c 'import json, sys, zipfile; z = zipfile.ZipFile(sys.argv[1]); print(json.loads(z.read("lemma_data/BUILD_INFO.json"))["source_commit"])' "$OUT/lemma_db-$VERSION-py3-none-any.whl")"
-uv export --quiet --frozen --no-dev --no-hashes --no-emit-workspace --no-header -o "$OUT/constraints.txt"
 install -m 755 "$CLI" "$OUT/duckdb/duckdb"
 install -m 644 "$EXT" "$OUT/duckdb/lemma.duckdb_extension"
 install -m 644 "$LIBDUCKDB/libduckdb.so" "$OUT/duckdb/libduckdb.so"
+# The DuckDB asset first: the wheel embeds its sha256 (lemma_data/duckdb_asset.json), and `lemma setup` of a PyPI install downloads it.
+ASSET="lemma-$VERSION-duckdb-linux-x86_64.tar.gz"
+tar -C "$OUT" --sort=name --owner=0 --group=0 --numeric-owner --mtime=@0 -czf "$ROOT/dist/$ASSET" \
+  duckdb/duckdb duckdb/lemma.duckdb_extension duckdb/libduckdb.so
+python3 scripts/release/build_wheel.py --out "$OUT" --duckdb-asset "$ROOT/dist/$ASSET" "${DIRTY[@]}"
+WHEEL="lemma_db-$VERSION-py3-none-any.whl"
+SHA="$(python3 -c 'import json, sys, zipfile; z = zipfile.ZipFile(sys.argv[1]); print(json.loads(z.read("lemma_data/BUILD_INFO.json"))["source_commit"])' "$OUT/$WHEEL")"
+uv export --quiet --frozen --no-dev --no-hashes --no-emit-workspace --no-header -o "$OUT/constraints.txt"
 rm -f "$OUT/.gitignore"  # uv build drops one into its output directory
 install -m 755 scripts/release/install.sh "$OUT/install.sh"
 install -m 644 scripts/release/README.dist.md "$OUT/README.md"
@@ -77,4 +84,6 @@ prover_image $(LEMMA_IMAGE_REGISTRY="$REGISTRY" uv run --frozen --quiet python -
 built $(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
 tar -C "$ROOT/dist" -czf "$ROOT/dist/$NAME.tar.gz" "$NAME"
-echo "built dist/$NAME/ and dist/$NAME.tar.gz ($(du -h "$ROOT/dist/$NAME.tar.gz" | cut -f1)) from $SHA"
+# The release's checksums, by the file names the GitHub release uploads (the wheel is the same file on PyPI).
+( cd "$ROOT/dist" && sha256sum "$NAME.tar.gz" "$ASSET" && cd "$OUT" && sha256sum "$WHEEL" ) > "$ROOT/dist/SHA256SUMS"
+echo "built dist/$NAME/, dist/$NAME.tar.gz ($(du -h "$ROOT/dist/$NAME.tar.gz" | cut -f1)), dist/$ASSET ($(du -h "$ROOT/dist/$ASSET" | cut -f1)) and dist/SHA256SUMS from $SHA"

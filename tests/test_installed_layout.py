@@ -188,10 +188,21 @@ def test_the_built_wheel_holds_every_resource_the_runtime_reads(tmp_path: Path) 
     docs = ROOT / "research_loop" / "vendor" / "verus_docs"
     if not (docs / "COMMIT").is_file():
         pytest.skip("no Verus docs (research_loop/scripts/fetch_verus_docs.sh)")
-    subprocess.run([sys.executable, str(ROOT / "scripts" / "release" / "build_wheel.py"), "--out", str(tmp_path), "--allow-dirty"], check=True)
+    from lemma_cli.duck import asset_name
+
+    asset = tmp_path / "assets" / asset_name(lc.package_version())  # stands in for build_bundle.sh's DuckDB asset
+    asset.parent.mkdir()
+    asset.write_bytes(b"duckdb asset bytes")
+    build = [sys.executable, str(ROOT / "scripts" / "release" / "build_wheel.py"), "--out", str(tmp_path), "--allow-dirty", "--duckdb-asset"]
+    wrong = tmp_path / "assets" / "lemma-0.0.0-duckdb-linux-x86_64.tar.gz"
+    wrong.write_bytes(b"x")
+    assert "this version's asset is" in subprocess.run([*build, str(wrong)], capture_output=True, text=True, check=False).stderr
+    subprocess.run([*build, str(asset)], check=True)
     (wheel,) = tmp_path.glob("lemma_db-*.whl")
     z = zipfile.ZipFile(wheel)
     names = set(z.namelist())
+    assert json.loads(z.read("lemma_data/duckdb_asset.json")) == {"name": asset.name, "sha256": hashlib.sha256(b"duckdb asset bytes").hexdigest(),
+                                                                  "size": len(b"duckdb asset bytes")}
     for need in ("lemma_config.py", "lemma_cli/main.py", "lemma_data/lemma.toml", "lemma_data/docker/agent/Dockerfile", "lemma_data/docker/agent/entrypoint.sh",
                  "lemma_data/docker/prover/Dockerfile", "lemma_data/scripts/fetch_libduckdb.sh", "lemma_data/BUILD_INFO.json",
                  "research_loop/scripts/run_container_agent.py", "research_loop/vendor/verus_docs/COMMIT", "research_loop/config.env",

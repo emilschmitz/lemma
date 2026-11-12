@@ -9,14 +9,30 @@ take `CODEX_API_KEY` / `GEMINI_API_KEY`). `lemma setup --auth login` uses your o
 
 ## Install
 
+From PyPI:
+
+```bash
+uv tool install lemma-db                           # the `lemma` command
+export ANTHROPIC_API_KEY=...                       # your key, in your own shell (never in a file or a chat)
+lemma setup --build-images                         # downloads the DuckDB binaries (sha256-checked), builds the images, tests the sandbox
+lemma duckdb                                       # a full DuckDB 1.5.6 with Lemma
+```
+
+The first `lemma setup` downloads `lemma-<version>-duckdb-linux-x86_64.tar.gz` of the installed version from this GitHub release (it prints
+the URL and size first) and installs it only if its sha256 is the one the wheel was built with; otherwise it stops and installs nothing.
+`--build-images` builds the agent and prover images here (they are not on a registry yet).
+
+Or from this release directory (the same wheel, every dependency pinned to `constraints.txt`, the DuckDB binaries copied, no download):
+
 ```bash
 tar -xzf lemma-<version>-linux-x86_64.tar.gz
 ./lemma-<version>-linux-x86_64/install.sh          # ~/.local/bin/lemma, ~/.local/share/lemma/duckdb/
-export ANTHROPIC_API_KEY=...                       # your key, in your own shell (never in a file or a chat)
-lemma setup                                        # pulls the agent and prover images, tests the sandbox, checks the API key is set
+export ANTHROPIC_API_KEY=...
+lemma setup --build-images
 ```
 
-Offline machine: `./install.sh --load-images` loads the images shipped in `images/` (when the release has them) instead of pulling.
+Offline machine: `./install.sh --load-images` loads the images shipped in `images/` (when the release has them); then `lemma setup`
+without `--build-images` uses them.
 
 ## First query
 

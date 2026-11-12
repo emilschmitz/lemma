@@ -66,6 +66,6 @@ fi
 echo
 echo "Next:"
 echo "  export ANTHROPIC_API_KEY=...                 # your key, in your own shell (lemma setup --auth api-key is the default)"
-echo "  lemma setup                                  # checks Docker and DuckDB, pulls the prover and agent images, tests the sandbox, checks the API key is set"
+echo "  lemma setup --build-images                   # checks Docker and DuckDB, builds the prover and agent images (--load-images ones: plain lemma setup), tests the sandbox, checks the API key is set"
 echo "  lemma optimize --db my.duckdb --sql \"SELECT ...\""
 echo "  lemma duckdb my.duckdb                       # full DuckDB plus SELECT * FROM lemma('<sql>'); --lemma-mode routes every SELECT through Lemma"

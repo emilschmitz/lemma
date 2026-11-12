@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 from lemma_cli import sandbox
@@ -187,14 +188,14 @@ def setup(auth: str | None, build_images: bool = False, harness_name: str | None
     if mode == "login":
         say(LOGIN_NOTE)
     say(f"  [ok] prover ({prover()}): {check_prover(build_images)}")
+    import lemma_config
     from lemma_cli import duck
 
     if duckdb_from is not None:
-        src = Path(duckdb_from).expanduser()
-        say(f"  [ok] duckdb binaries installed: {duck.install_from(src)}")
-        if (src / LIBDUCKDB_SO).is_file():  # a release ships the official libduckdb beside them: no download in ensure_libduckdb
-            libduckdb_dir().mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(src / LIBDUCKDB_SO, libduckdb_dir() / LIBDUCKDB_SO)
+        install_duckdb(Path(duckdb_from).expanduser())
+    elif lemma_config.INSTALLED and not duck.is_installed():  # a wheel (PyPI): the release asset of this version, checked by sha256
+        with tempfile.TemporaryDirectory(prefix="lemma-duckdb-") as tmp:
+            install_duckdb(duck.download_release(Path(tmp)))
     say(f"  [ok] duckdb: {duck.check()}")
     if build_images:
         say(f"  [..] building {image_name} ({chosen} CLI {sandbox.pinned_version(chosen)}); this takes a few minutes")
@@ -215,11 +216,19 @@ def setup(auth: str | None, build_images: bool = False, harness_name: str | None
         "image": image_name, "image_id": sandbox.image_digest(image_name), "selftest": test, "harness": chosen, "agent_cli": cli_version,
         "auth": mode, "prover": prover(), **({"claude_code": cli_version} if chosen == "claude" else {}),
     })
-    import lemma_config
-
     first = "lemma assumptions --db PATH   then   " if lemma_config.assumptions_enabled() else ""
     say(f"READY. Next: {first}lemma optimize --db PATH --sql QUERY.sql   then   lemma duckdb PATH   (home: {lemma_home()})")
     return 0
+
+
+def install_duckdb(src: Path) -> None:
+    """Our DuckDB CLI and the extension from ``src`` into $LEMMA_HOME/duckdb/; a release's libduckdb beside them (no download in ensure_libduckdb)."""
+    from lemma_cli import duck
+
+    say(f"  [ok] duckdb binaries installed: {duck.install_from(src)}")
+    if (src / LIBDUCKDB_SO).is_file():
+        libduckdb_dir().mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src / LIBDUCKDB_SO, libduckdb_dir() / LIBDUCKDB_SO)
 
 
 def status() -> int:
