@@ -14,7 +14,7 @@ Lemma makes a proved, compiled executor for a SQL query on your DuckDB database 
 **You need** Linux x86_64, Docker (your user may run containers), [uv](https://docs.astral.sh/uv/) (it brings Python), and credentials for
 one agent harness (below). Nothing else: no source checkout, no git, no Verus or Rust. Lemma is one wheel; the agent runs in the Docker
 sandbox, and the proof (Verus 0.2026.07.18.3a4d30b) and the compile of each executor (its Rust 1.96.0 toolchain) run in the prover image
-`ghcr.io/emilschmitz/lemma-prover:0.2026.07.18.3a4d30b` that `lemma setup` pulls (no network at run time, memory-capped), next to the agent
+`ghcr.io/emilschmitz/lemma-prover:0.2026.07.18.3a4d30b` that `lemma setup` pulls (or builds, with `--build-images`) (no network at run time, memory-capped), next to the agent
 image `ghcr.io/emilschmitz/lemma-agent-claude:<version>`. The bundled DuckDB CLI and extension run on glibc >= 2.28; the executors compiled in
 the prover image need glibc >= 2.34 (Ubuntu 22.04+, Debian 12+, RHEL 9+). `lemma setup` checks every item and says what is missing. Network:
 `uv tool install` fetches the Python dependencies, `lemma setup` downloads the DuckDB binaries of its version once (below) and pulls or
@@ -42,9 +42,9 @@ LIKE; docs/STREAM.md) `lemma optimize` proves a streaming executor that folds
 DuckDB's own scan chunks in place, so it is fast on fresh data and the first call after a write is as fast as any call; other queries
 get the batch executor (`executor: stream|batch ... : <reason>` is printed; lemma.toml `[product] executor = auto | stream | batch`).
 
-From the release tarball instead: `tar -xzf lemma-0.2.0-linux-x86_64.tar.gz && ./lemma-0.2.0-linux-x86_64/install.sh` (`uv tool install`
+From the release tarball instead: `tar -xzf lemma-0.2.1-linux-x86_64.tar.gz && ./lemma-0.2.1-linux-x86_64/install.sh` (`uv tool install`
 of the bundled wheel, every dependency pinned to its `constraints.txt`, plus a copy of the DuckDB binaries; by hand that is
-`uv tool install --constraints constraints.txt ./lemma_db-0.2.0-py3-none-any.whl` and `lemma setup --duckdb-from ./duckdb`). The
+`uv tool install --constraints constraints.txt ./lemma_db-0.2.1-py3-none-any.whl` and `lemma setup --duckdb-from ./duckdb`). The
 distribution is `lemma-db` (the name `lemma` on PyPI is an unrelated project); the command is `lemma`.
 
 `lemma optimize` runs the agent in the sandbox until Verus proves its `run_query` against the query's spec, then verifies the same
@@ -96,8 +96,8 @@ in `db_extension/duckdb_ext/build/release` (runs then record the git SHA; an ins
 ```bash
 docker login ghcr.io -u emilschmitz                                   # a token with write:packages
 scripts/release/build_product.sh --push                               # or: scripts/release/build_images.sh --push (after a build_product.sh)
-gh release create v0.2.0 dist/lemma-0.2.0-linux-x86_64.tar.gz dist/lemma-0.2.0-duckdb-linux-x86_64.tar.gz dist/SHA256SUMS \
-    dist/lemma-0.2.0-linux-x86_64/lemma_db-0.2.0-py3-none-any.whl
+gh release create v0.2.1 dist/lemma-0.2.1-linux-x86_64.tar.gz dist/lemma-0.2.1-duckdb-linux-x86_64.tar.gz dist/SHA256SUMS \
+    dist/lemma-0.2.1-linux-x86_64/lemma_db-0.2.1-py3-none-any.whl
 ```
 
 `build_bundle.sh` writes the DuckDB asset `dist/lemma-<version>-duckdb-linux-x86_64.tar.gz` first and builds the wheel with its sha256
@@ -116,12 +116,12 @@ https://test.pypi.org and https://pypi.org with 2FA, and an API token from each 
 the first upload).
 
 ```bash
-WHEEL=dist/lemma-0.2.0-linux-x86_64/lemma_db-0.2.0-py3-none-any.whl   # build_product.sh / build_bundle.sh, from a clean, pushed HEAD
+WHEEL=dist/lemma-0.2.1-linux-x86_64/lemma_db-0.2.1-py3-none-any.whl   # build_product.sh / build_bundle.sh, from a clean, pushed HEAD
 uvx twine check --strict "$WHEEL"                                    # metadata and README rendering
 # TestPyPI first (the token is read from the environment, never typed on the command line):
 UV_PUBLISH_TOKEN="$TEST_PYPI_TOKEN" uv publish --publish-url https://test.pypi.org/legacy/ "$WHEEL"
 uv tool install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ --index-strategy unsafe-best-match lemma-db
-lemma --help && lemma status && uv tool uninstall lemma-db   # (lemma setup there downloads the v0.2.0 asset: release first)
+lemma --help && lemma status && uv tool uninstall lemma-db   # (lemma setup there downloads the v0.2.1 asset: release first)
 # then PyPI:
 UV_PUBLISH_TOKEN="$PYPI_TOKEN" uv publish "$WHEEL"
 ```

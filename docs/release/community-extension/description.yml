@@ -4,7 +4,7 @@
 extension:
   name: lemma
   description: Answer a query with an executor that Verus proved equal to the query's specification
-  version: 0.2.0
+  version: 0.2.1
   language: C++
   build: cmake
   license: MIT
